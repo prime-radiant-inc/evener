@@ -95,8 +95,13 @@ The set of behavior tags is exactly the old set of distinct provider behaviors:
 `providers.toml` is the **always-on** model for instance configuration. Every
 client build goes through the config path — either loading the file when it
 exists, or seeding the config in memory from the environment when it does not.
-The `providers.toml` at `<state-root>/providers.toml` holds only **descriptors**
-(never credentials), which is what lets `name != type` exist:
+The `providers.toml` at `<state-root>/providers.toml` holds **descriptors**,
+which is what lets `name != type` exist. Serf itself never writes credentials
+into it (`WriteFile` scrubs struct-held keys and restores only what the
+on-disk file already carried, so hub rewrites preserve — and never invent —
+inline keys); a hand-authored instance MAY
+carry an `api_key` — a literal or, better, a `$ENV`/`${ENV}` reference resolved
+at point of use (see the compat section below):
 
 ```toml
 default = "work"          # optional; the default instance (else first by sorted name)
@@ -105,8 +110,12 @@ default = "work"          # optional; the default instance (else first by sorted
 type      = "openai"      # the provider TYPE — drives the behavior tag
 api_style = "responses"   # openai only: "responses"/"auto" → openai tag; "chat-completions" → openai-compatible
 base_url  = "..."         # optional override (captured from env when seeded)
-quirks    = "..."         # optional; selects a quirks preset (openai-compatible types)
-# no api_key — credentials are resolved separately and injected in memory only
+quirks    = "..."         # optional; selects a quirks preset (openai-compatible types) —
+                           # see "OpenAI-compatible compat & per-model config" below for the
+                           # composable `[instances.X.compat]` / `[instances.X.models]` alternative
+# api_key = "$WORK_KEY"  # optional, hand-authored only: literal or $ENV reference;
+                          # omitted → credentials store / env resolution as below.
+                          # Serf never writes this field back when rewriting the file.
 ```
 
 - **Load or seed** — `cmdutil.LoadClient` (`cmdutil/load_client.go:31`):
@@ -124,10 +133,10 @@ quirks    = "..."         # optional; selects a quirks preset (openai-compatible
   calls this once on startup when the file is absent, then passes the path to
   spawned children via `SERF_PROVIDERS_CONFIG` so they load the same file instead
   of re-seeding. A failed write is a hard error.
-- **Descriptors-only** — `providerconfig.Seed` (`internal/providerconfig/materialize.go:12`)
-  and `Marshal` (`:78`) emit only `type` / `api_style` / `base_url` / `quirks`;
-  `api_key` is never written. The openai seed captures `OPENAI_BASE_URL` like every
-  other type.
+- **Descriptors-only seeding** — `providerconfig.Seed` builds env-derived
+  instances without credentials, and `WriteFile`'s scrub/restore means the
+  hub-materialized file stays credential-free unless the user hand-authors an
+  `api_key`. The openai seed captures `OPENAI_BASE_URL` like every other type.
 - **Credential injection** — after loading or seeding the descriptor config,
   `LoadClient` calls `credentials.Store.ResolveKey(name, typ)` (`store.go:184`)
   for each instance and sets the resolved key on the **in-memory** config only;
@@ -154,6 +163,342 @@ quirks    = "..."         # optional; selects a quirks preset (openai-compatible
   `(type, apiStyle)` seed (so the tag is right), then `WithProviderID(raw, name)`
   stamps the instance name **without** changing the tag — the "build-then-rename"
   pattern.
+
+## OpenAI-compatible compat & per-model config (`[instances.X.compat]` / `[instances.X.models]`)
+
+Beyond the four descriptor fields above, an instance whose type routes through
+the openai-compat adapter — `kimi`, `glm`, `openrouter`, `ollama`, or `openai`
+with `api_style = "chat-completions"` (`compatFamily`,
+`llm/providercfg/load.go:86`) — may also carry a `compat` table and a `models`
+table. Any other type rejects them at load (`load.go:211-217`).
+
+```toml
+[instances.lunaroute]
+type      = "openai"
+api_style = "chat-completions"
+base_url  = "https://gw.lunaroute.com/v1"
+api_key   = "$LUNAROUTE_API_KEY"
+
+[instances.lunaroute.compat]                    # instance-wide overrides
+thinking_format = "..."
+
+[instances.lunaroute.models."glm-5.2-nvfp4"]    # per-model catalog overlay + wire behavior
+context_window    = 1048576
+max_output_tokens = 131072
+reasoning         = true
+thinking_levels   = { minimal = "high", low = "high", medium = "high", high = "high", xhigh = "max" }
+
+[instances.lunaroute.models."glm-5.2-nvfp4".compat]   # per-model compat, overlays the instance's
+thinking_format           = "zai"
+supports_reasoning_effort = true
+tool_stream               = true
+```
+
+### Overlay precedence
+
+Three layers combine field-by-field — later wins, `nil`/unset always inherits
+(`ApplyCompatConfig`, `llm/providers/openaicompat/compat.go:60-146`):
+
+1. **Quirks preset** — the base `ProviderQuirks` selected by `quirks = "..."`
+   or the provider type's built-in default (`QuirksPreset`,
+   `llm/providers/openaicompat/quirks.go:66`).
+2. **Instance compat** (`[instances.X.compat]`) overlays the preset.
+3. **Per-model compat** (`[instances.X.models."<id>".compat]`) overlays the
+   instance's already-overlaid quirks.
+
+`resolveModelCompat` (`compat.go:141`) builds one `ModelCompat` per declared
+model at adapter-construction time; `compatFor(model)` (`compat.go:164`)
+returns that entry when the model was declared, else the instance-wide
+quirks. `FinishReasonMap` is the one field that **replaces wholesale** rather
+than merging key-by-key when set at a given layer (`compat.go:126-131`).
+
+### `[instances.X.compat]` / `[instances.X.models."<id>".compat]` fields
+
+Every field is optional; unset means "inherit from the layer below"
+(`providercfg.CompatConfig`, `llm/providercfg/providercfg.go:44-108`):
+
+| TOML key | Type | Meaning |
+|---|---|---|
+| `thinking_format` | string | wire dialect for reasoning; see the table below |
+| `supports_strict_mode` | bool | when **explicitly true**, add `strict: false` inside every tool's `function` object; `nil`/`false` sends no `strict` field (serf's default — see the Pi divergence note below) |
+| `chat_template_kwargs` | table (scalars) | emitted verbatim as the request's `chat_template_kwargs` when `thinking_format = "chat-template"` and an effort is set; replaces wholesale on overlay (like `finish_reason_map`) |
+| `supports_reasoning_effort` | bool | gate the `reasoning_effort` field for formats that treat it as optional (openai/deepseek/together); default follows the format (see below) |
+| `max_tokens_field` | string | `"max_tokens"` (default) or `"max_completion_tokens"` |
+| `tool_stream` | bool | send z.ai's `tool_stream: true` when tools are present |
+| `supports_store` | bool | send `store: false` to opt out of server-side retention |
+| `supports_developer_role` | bool | send the system prompt under the `"developer"` role |
+| `supports_usage_in_streaming` | bool | `nil`/`true` sends `stream_options: {include_usage: true}`; `false` omits it |
+| `requires_tool_result_name` | bool | add a `name` field to `tool`-role messages |
+| `requires_assistant_after_tool_result` | bool | insert an empty assistant message between a tool result and a following user message |
+| `requires_thinking_as_text` | bool | replay assistant thinking as plain text instead of a reasoning field |
+| `requires_reasoning_content_on_assistant` | bool | add `reasoning_content: ""` to a replayed assistant message that carries none |
+| `cache_control_format` | string | only `"anthropic"` is accepted — applies Anthropic `cache_control` markers (system prompt, last tool, last message) for gateways that forward them |
+| `supports_long_cache_retention` | bool | when true, emit `prompt_cache_key` + `prompt_cache_retention: "24h"` (and, with `cache_control_format = "anthropic"`, add `ttl: "1h"` to the ephemeral markers) — see "Prompt caching through gateways" below |
+| `send_session_affinity_headers` | bool | when true and the request carries a session id, send the `session_id` / `x-client-request-id` / `x-session-affinity` request headers so a gateway can pin a conversation's turns to one backend/cache |
+| `lock_temperature` / `lock_top_p` / `lock_frequency_penalty` / `lock_presence_penalty` | bool | drop that sampling param from the request |
+| `tool_choice_auto_only` | bool | force any `tool_choice` other than `auto`/`none` down to `auto` |
+| `max_stop_sequences` | int (≥0) | truncate the `stop` array to this length |
+| `strip_empty_content` | bool | drop empty-text content parts before sending |
+| `no_json_schema` | bool | downgrade `response_format: json_schema` to `json_object` |
+| `finish_reason_map` | table of string→string | remap raw finish reasons (replaces wholesale, not merged) |
+| `translate_max_to_xhigh` | bool | map serf's `max` wire value to `xhigh` when no `thinking_levels` map applies (OpenRouter vocabulary) |
+
+`thinking_format`, `max_tokens_field`, and `cache_control_format` are
+validated at load (`load.go:101-116`): an unrecognized value is a hard config
+error, not a silent no-op.
+
+### Prompt caching through gateways
+
+serf sets `req.SessionID` on every request and derives a stable prompt cache
+key from it. On the native OpenAI Responses path the session emits
+`prompt_cache_key` + `prompt_cache_retention` itself; the openai-compat path
+stays silent unless you opt in, because a gateway that doesn't know these fields
+should never see them. Three independent knobs turn caching on for a gateway
+that does:
+
+- **`supports_long_cache_retention`** — emits `prompt_cache_key` +
+  `prompt_cache_retention: "24h"` on the request. The key is `req.PromptCacheKey`
+  when set, else `"serf-session-" + req.SessionID` — the exact convention the
+  session uses on the openai path, so a request routed either way caches on the
+  same key. When there is no key material (no explicit key and no session id),
+  neither field is emitted.
+- **`send_session_affinity_headers`** — sends `session_id`,
+  `x-client-request-id`, and `x-session-affinity` (all set to the session id) as
+  request headers so a load-balancing gateway can pin a conversation's turns to
+  one backend, keeping its cache warm. A user-configured `[instances.X.headers]`
+  entry of the same name overrides the derived value. Emitted only when the
+  request carries a session id.
+- **`cache_control_format = "anthropic"`** with `supports_long_cache_retention`
+  — the ephemeral `cache_control` markers gain `ttl: "1h"`. Without long
+  retention the marker stays `{"type": "ephemeral"}`.
+
+Enable these for gateways that forward OpenAI 24h prompt caching, Anthropic
+`cache_control`, or that route by session (Portkey, Helicone, LiteLLM, and
+similar). Leave them off for a bare model server that would reject the fields.
+
+### `[instances.X.models."<id>"]` fields
+
+(`providercfg.ModelConfig`, `providercfg.go:91-101`)
+
+| TOML key | Meaning |
+|---|---|
+| `context_window` | overlays the catalog's context window for this model (must be ≥0) |
+| `max_output_tokens` | sent as the output cap when a request doesn't set one (`ModelCompat.DefaultMaxTokens`, `compat.go:20`) |
+| `reasoning` | `true`/`false` — declares whether the model accepts a reasoning-effort control at all; `false` clears the profile's effort levels entirely (`agent/provider/profile.go:1130-1135`) |
+| `thinking_levels` | map of serf effort level → wire string (see below) |
+| `compat` | per-model `CompatConfig`, overlays the instance's |
+
+### `thinking_levels` semantics
+
+- **The map, when present, is complete authority.** The model's supported
+  effort ladder is exactly its keys, in serf rank order — that feeds
+  `ReasoningEffortLevels()`, the session clamp, the spawn-form effort chip, and
+  the `task_list` tool's effort enum (`agent/provider/profile.go:1136-1137`,
+  `orderedEffortLevels` at `:1183`). A level absent from the map is
+  unsupported and gets clamped away by `llm.ClampReasoningEffort`
+  (`llm/types.go:587`) before it ever reaches the adapter.
+- **Keys** are serf's canonical levels — `minimal`, `low`, `medium`, `high`,
+  `xhigh` — normalized lowercase at load; `max` is accepted as an input alias
+  and folded into `xhigh` (serf's rank table treats them as one tier).
+  `"off"` is rejected at load — serf's `none` effort clears the setting to the
+  provider default rather than forcing an explicit disable, so there's no slot
+  for an explicit "off" wire value (`llm/providercfg/load.go:149-152`).
+- **Values** are the literal wire strings sent to the provider — they need not
+  match serf's vocabulary (the lunaroute example below maps every level to
+  `"high"` except the top tier).
+- **No map declared** → the model's effort passes through by name (today's
+  backward-compatible default) and the `translate_max_to_xhigh` quirk (if set)
+  still applies (`wireEffort`, `llm/providers/openaicompat/compat.go:28-46`).
+- **Empty values** are rejected at load — a key must map to a non-empty wire
+  string (`load.go:157-160`).
+
+### `thinking_format`: exact wire JSON per dialect
+
+`applyThinkingFormat` (`llm/providers/openaicompat/request.go:141-179`) runs
+after the session's clamp and the `thinking_levels` translation. **When no
+reasoning effort is set on the request, nothing is emitted for any format** —
+serf's `none` clears the setting to the provider default rather than forcing
+an explicit disable (`request.go:147-149`). The table below is what's sent
+once an effort **is** set (`wire` = the post-clamp, post-`thinking_levels`
+value):
+
+| `thinking_format` | Wire body added |
+|---|---|
+| `""` / `"openai"` (default) | `reasoning_effort: <wire>`, gated on `supports_reasoning_effort` (default **true**) |
+| `"zai"` | always `thinking: {"type":"enabled","clear_thinking":false}`; plus `reasoning_effort: <wire>`, gated on `supports_reasoning_effort` (default **false**) |
+| `"deepseek"` | always `thinking: {"type":"enabled"}`; plus `reasoning_effort: <wire>`, gated on `supports_reasoning_effort` (default **true**) |
+| `"openrouter"` | `reasoning: {"effort": <wire>}` — unconditional; `supports_reasoning_effort` has no effect on this format |
+| `"together"` | always `reasoning: {"enabled": true}`; plus `reasoning_effort: <wire>`, gated on `supports_reasoning_effort` (default **true**) |
+| `"qwen"` | `enable_thinking: true` — unconditional; the effort value itself is never sent on the wire |
+| `"qwen-chat-template"` | `chat_template_kwargs: {"enable_thinking": true, "preserve_thinking": true}` — the effort value itself is never sent on the wire |
+| `"chat-template"` | `chat_template_kwargs: <compat.chat_template_kwargs verbatim>`; omitted entirely when the resolved kwargs are empty |
+| `"string-thinking"` | `thinking: <wire>` (the effort string is the field's value, not an object) — unconditional |
+
+`clear_thinking: false` on the `zai` format keeps z.ai from pruning prior-turn
+reasoning server-side; serf manages thinking replay itself.
+
+**Divergences from Pi** (`applyThinkingFormat`,
+`llm/providers/openaicompat/request.go:152`): Pi's `convertTools` always sends
+`strict: false` and its `qwen-chat-template` always sends `enable_thinking`
+(`false` when reasoning is off). serf deliberately does neither by default —
+`supports_strict_mode` is opt-in (flipping the wire shape of every existing serf
+request is not worth the risk), and serf's `none`-clears convention means the
+`qwen-chat-template`/`chat-template` bodies are emitted **only** when an effort
+is set (nothing otherwise). serf also skips Pi's per-value `$var` indirection in
+`chat_template_kwargs` (YAGNI) — the table is sent verbatim.
+
+The built-in `glm` type's `QuirksPreset("glm-5")`
+(`llm/providers/openaicompat/quirks.go:77-89`) now sets `ThinkingFormat: "zai"`
+by default, so a plain `type = "glm"` instance speaks z.ai's thinking dialect
+with **no config needed**. The preset does *not* turn on `tool_stream` by
+default — set `compat.tool_stream = true` explicitly if the gateway supports
+incremental tool-call argument streaming.
+
+### Stock catalog defaults for z.ai GLM & DeepSeek v4 (zero config)
+
+Current z.ai GLM and DeepSeek v4 models ship their effort ladders, context
+windows, and output caps in the Serf catalog overrides
+(`llm/data/serf_model_catalog_overrides.json`), so a plain `type = "glm"` (or a
+DeepSeek openai-compat instance) gets the right shape with **no
+`[instances.X.models]` entry at all**. Two things flow from the catalog when a
+model has no instance entry:
+
+- `newOpenAICompatProfile` reads `context_window` and (for effort-parameter
+  models) `reasoning_effort_levels` from the catalog for the profile's context
+  window and effort ladder.
+- the adapter's `compatFor` → `fillFromCatalog` (`compat.go`) seeds
+  `DefaultMaxTokens` from `max_output_tokens`, and turns the `reasoning_effort`
+  gate **on** when `supports_effort_parameter = true`. This gate fill is
+  **positive-only**: a `true` in the catalog flips the gate on, but a missing or
+  `false` flag is left as "no opinion" (nil) — it never turns the gate *off*, so
+  it can't regress openai-format providers whose gate defaults on.
+
+The effort ladders are stored **wire-spelled** (e.g. `["high", "max"]`), which
+under `ClampReasoningEffort` reproduces Pi's per-model `thinkingLevelMap`
+exactly: below-range requests raise to the lowest supported level and the top
+tier resolves to the model's own spelling (`xhigh`/`max` → `"max"`). So no
+separate per-model thinking-map field is needed — the levels list suffices.
+
+| model | context | max_output | effort param | catalog levels |
+|-------|---------|------------|--------------|----------------|
+| `glm-4.5-air` | 131072 | 98304 | no | default ladder |
+| `glm-4.7` | 204800 | 131072 | no | default ladder |
+| `glm-5-turbo` | 200000 | 131072 | no | default ladder |
+| `glm-5.1` | 200000 | 131072 | no | default ladder |
+| `glm-5.2` | 1000000 | 131072 | yes | `["high","max"]` |
+| `glm-5v-turbo` | 200000 | 131072 | no | default ladder |
+| `deepseek-v4-flash` | 1000000 | 384000 | yes | `["high","max"]` |
+| `deepseek-v4-pro` | 1000000 | 384000 | yes | `["high","max"]` |
+
+Models with "no" effort param keep the profile's default effort ladder; the
+`zai` thinking format only toggles thinking on/off for them (no
+`reasoning_effort` field on the wire). An explicit `[instances.X.models."<id>"]`
+entry always wins over these catalog defaults.
+
+### Reasoning replay: same field it arrived on
+
+When replaying assistant thinking on a later turn, the adapter doesn't
+hardcode `reasoning_content` — it replays to whichever field the reasoning
+text actually arrived on: `reasoning_content`, `reasoning`, or
+`reasoning_text` (`reasoningReplayField`, `request.go:339-354`). The field
+name rides in the content part's `Signature`, set when the field was parsed
+off a streamed delta or a non-streamed response
+(`llm/providers/openaicompat/response.go:89,189`). A signature that isn't one
+of those three field names (e.g. an Anthropic crypto blob riding a
+cross-provider transcript) falls back to `reasoning_content`.
+
+### `$ENV` / `${ENV}` / `$$` in `api_key`
+
+`api_key` accepts environment-variable references, resolved by
+`providercfg.ResolveAPIKey` (`llm/providercfg/apikey.go:16`):
+
+- `$NAME` or `${NAME}` substitutes the named variable.
+- `$$` escapes a literal `$`.
+- A value with no `$` passes through unchanged.
+- A referenced variable that is unset or empty is an **error** — never a
+  silently-empty key that would surface later as an opaque 401.
+- Resolution happens **at the point of use** — adapter construction
+  (`llm/providers_config.go:96`) and live `/models` probes
+  (`cmdutil/cmdutil.go:88`) — not at `Load`, so one instance's missing
+  variable never blocks unrelated instances. The runtime load path
+  (`cmdutil.LoadClient` → `llm.NewFromAvailableProviders`) skips a failing
+  instance and keeps the rest of the client usable.
+- On-disk `api_key` handling lives in `providercfg.WriteFile`
+  (`llm/providercfg/mutate.go`): struct-held keys are scrubbed (a loaded
+  config may carry in-memory credentials-store injections that must never
+  reach the 0644 file) and each instance's key is restored from whatever the
+  existing file already carried. So hub rewrites (edit/set-default/remove)
+  PRESERVE a hand-authored `api_key` — literal or `$ENV` reference — and
+  serf itself never introduces one the user didn't write.
+
+### `[instances.X.headers]` — extra request headers (all types)
+
+Any instance — **not just the compat family** — may carry a `headers` table of
+extra HTTP headers sent on every request to its endpoint. This is how an
+instance sits behind a gateway (Portkey, Helicone, a Cloudflare worker) that
+needs its own auth or routing headers.
+
+```toml
+[instances.work]
+type    = "anthropic"
+headers = { "X-Portkey-Provider" = "anthropic", "Authorization" = "$PORTKEY_KEY" }
+```
+
+- **`$ENV` resolution** — header values accept the same `$NAME` / `${NAME}` /
+  `$$` expansion as `api_key`, resolved by `providercfg.ResolveHeaderValue`
+  (`llm/providercfg/apikey.go:26`, sharing the core with `ResolveAPIKey`) at the
+  same choke point — `newFromProviders` (`llm/providers_config.go:113`) — so a
+  missing variable fails just that instance (its name **and** the header key are
+  named in the error), leaving unrelated instances usable.
+- **Precedence** — a user header is merged into the adapter's `DefaultHeaders`
+  and **overrides a provider-set default of the same name** (e.g. kimi's
+  coding-plan `User-Agent`), but that default **survives** when the user sets no
+  header of that name (`llm.MergeHeaders`, `llm/headers.go:26`). Hard-wired
+  protocol headers the adapter sets last — `Authorization`/`x-api-key`,
+  `Content-Type`, `anthropic-version` — still win over any configured header.
+- **Delivery** — wired through every adapter's `DefaultHeaders` seam:
+  openai-compat family (`kimi`/`glm`/`openrouter`/`ollama`/`openai` +
+  `chat-completions`) via `OpenAICompatInstanceParams.Headers`, and the
+  non-compat adapters (`anthropic`, `openai` responses, `google`, `minimax`,
+  `kimi-anthropic`, `openrouter-anthropic`) via their own `*InstanceParams.Headers`.
+- **Marshal round-trips the raw value** — unlike `api_key`, `providercfg.Marshal`
+  writes header values back **verbatim**, including any `$ENV` reference. That is
+  exactly why `$ENV` form is the recommended way to hold a secret in a header:
+  the reference, not the secret, lands on disk. Header **names** must be
+  non-empty; values are otherwise unrestricted.
+
+### Worked example: lunaroute GLM gateway
+
+```toml
+[instances.lunaroute]
+type      = "openai"
+api_style = "chat-completions"
+base_url  = "https://gw.lunaroute.com/v1"
+api_key   = "$LUNAROUTE_API_KEY"
+
+[instances.lunaroute.models."glm-5.2-nvfp4"]
+context_window    = 1048576
+max_output_tokens = 131072
+reasoning         = true
+thinking_levels   = { minimal = "high", low = "high", medium = "high", high = "high", xhigh = "max" }
+
+[instances.lunaroute.models."glm-5.2-nvfp4".compat]
+thinking_format           = "zai"
+supports_reasoning_effort = true
+tool_stream               = true
+```
+
+This is `type = "openai"` with `api_style = "chat-completions"` — a plain
+gateway, not serf's `glm` type — so it routes through the openai-compat
+adapter (`compatFamily`, `load.go:86`) but starts from the empty
+`ProviderQuirks{}`, not the `glm-5` preset; every wire behavior here comes
+from the `compat` table. `glm-5.2-nvfp4` gets a 1M-token context window and a
+128K output cap from the model table (instead of the compat-family default of
+128K context / no output cap), advertises `minimal`–`xhigh` as its effort
+ladder (instead of the default `low`/`medium`/`high`), maps every level to the
+gateway's coarse `"high"` except the top tier (`"max"`), and speaks z.ai's
+`thinking:{...}` + `reasoning_effort` dialect with tool-call argument
+streaming enabled.
 
 ## Provider profiles (`agent/profile.go`)
 

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/internal/providerfwd"
 	"primeradiant.com/serf/llm/providers/kimicoding"
 	"primeradiant.com/serf/llm/providers/openaicompat"
@@ -117,6 +118,34 @@ func TestNewForInstance_DefaultQuirks(t *testing.T) {
 	}
 }
 
+// TestNewForInstance_ForwardsCompatAndModels verifies that InstanceParams.Compat
+// and .Models reach the backing openaicompat adapter: instance-wide compat
+// overlays the kimi-k2.5 preset, and per-model config resolves into the
+// adapter's Models table.
+func TestNewForInstance_ForwardsCompatAndModels(t *testing.T) {
+	a := NewForInstance(InstanceParams{
+		Name:   "kc",
+		APIKey: "k",
+		Compat: &providercfg.CompatConfig{ThinkingFormat: "openai"},
+		Models: map[string]providercfg.ModelConfig{
+			"kimi-k2.6": {MaxOutputTokens: 65536},
+		},
+	})
+	if a.Quirks.ThinkingFormat != "openai" {
+		t.Fatalf("Quirks.ThinkingFormat = %q, want openai", a.Quirks.ThinkingFormat)
+	}
+	mc, ok := a.Models["kimi-k2.6"]
+	if !ok {
+		t.Fatal(`Models["kimi-k2.6"] missing`)
+	}
+	if mc.DefaultMaxTokens != 65536 {
+		t.Fatalf("DefaultMaxTokens = %d, want 65536", mc.DefaultMaxTokens)
+	}
+	if mc.Quirks.ThinkingFormat != "openai" {
+		t.Fatalf("model ThinkingFormat = %q, want openai (inherited from instance compat)", mc.Quirks.ThinkingFormat)
+	}
+}
+
 func TestNewForInstance_CustomBaseURL(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "kc", APIKey: "k", BaseURL: "http://custom"})
 	if a.BaseURL != "http://custom" {
@@ -139,6 +168,31 @@ func TestNewForInstance_AnnouncesCodingAgentUserAgent(t *testing.T) {
 	}
 	if gotUA != kimicoding.UserAgent {
 		t.Fatalf("User-Agent = %q, want %q", gotUA, kimicoding.UserAgent)
+	}
+}
+
+func TestNewForInstance_UserHeadersDelivered_UAOverridable(t *testing.T) {
+	var gotUA, gotGateway string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		gotGateway = r.Header.Get("X-Gateway")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","model":"kimi-for-coding","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := NewForInstance(InstanceParams{Name: "kimi", BaseURL: srv.URL, APIKey: "k", Headers: map[string]string{
+		"X-Gateway":  "portkey",
+		"User-Agent": "my-agent",
+	}})
+	if _, err := a.Complete(context.Background(), llm.Request{Model: "kimi-for-coding", Messages: []llm.Message{llm.User("hi")}}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if gotGateway != "portkey" {
+		t.Errorf("X-Gateway = %q, want portkey (user header delivered)", gotGateway)
+	}
+	if gotUA != "my-agent" {
+		t.Errorf("User-Agent = %q, want my-agent (user overrides coding-plan default)", gotUA)
 	}
 }
 
@@ -213,10 +267,23 @@ func TestAdapter_CountInputTokens_UsesEstimateEndpoint(t *testing.T) {
 	if len(tools) != 1 {
 		t.Fatalf("len(tools) = %d, want 1", len(tools))
 	}
-	for _, key := range []string{"max_tokens", "temperature", "top_p", "stop", "stream", "stream_options"} {
+	for _, key := range []string{"max_tokens", "max_completion_tokens", "temperature", "top_p", "stop", "stream", "stream_options"} {
 		if _, ok := gotBody[key]; ok {
 			t.Fatalf("%s should be omitted from token-count body: %#v", key, gotBody)
 		}
+	}
+}
+
+// A model configured with max_tokens_field = "max_completion_tokens" must not
+// leak that output-cap field into the token-count request either.
+func TestStripKimiTokenCountOutputFields_StripsMaxCompletionTokens(t *testing.T) {
+	body := map[string]any{"model": "m", "max_tokens": 7, "max_completion_tokens": 42}
+	stripKimiTokenCountOutputFields(body)
+	if _, ok := body["max_tokens"]; ok {
+		t.Error("max_tokens survived the strip")
+	}
+	if _, ok := body["max_completion_tokens"]; ok {
+		t.Error("max_completion_tokens survived the strip")
 	}
 }
 

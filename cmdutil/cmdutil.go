@@ -66,27 +66,73 @@ func ResolveProfileWithLiveWindow(cfg providercfg.Config, ref string) (*provider
 	if err != nil {
 		return nil, err
 	}
-	if isOpenAICompatTag(p.BehaviorTag()) {
+	if isOpenAICompatTag(p.BehaviorTag()) && !instanceConfiguresContextWindow(cfg, p.ID(), p.Model()) {
 		// Query the instance's own endpoint: an instance may set base_url in
 		// providers.toml (e.g. the Kimi coding plan at api.kimi.com/coding/v1)
 		// that the provider-type default does not know about.
-		baseURL, apiKey := instanceEndpoint(cfg, p.ID())
-		if window := queryModelContextWindow(p.BehaviorTag(), p.Model(), baseURL, apiKey); window > 0 {
+		baseURL, apiKey, headers, authOK := instanceEndpoint(cfg, p.ID())
+		if !authOK {
+			// Configured auth material ($ENV api_key or Authorization header)
+			// failed to resolve. Probing anyway would let the provider-type
+			// env-key fallback send an unrelated secret to the instance's
+			// base_url — the same credential-misdirection the adapter path
+			// avoids by failing the instance. Keep the catalog window.
+			return p, nil
+		}
+		if window := queryModelContextWindow(p.BehaviorTag(), p.Model(), baseURL, apiKey, headers); window > 0 {
 			p = provider.WithContextWindow(p, window)
 		}
 	}
 	return p, nil
 }
 
-// instanceEndpoint returns the base URL and inline api key configured for the
-// instance named name, or empty strings when not found.
-func instanceEndpoint(cfg providercfg.Config, name string) (baseURL, apiKey string) {
+// instanceConfiguresContextWindow reports whether the instance's providers.toml
+// models table pins a context window for this model. Explicit user config is
+// authoritative — the live /models probe must not override it.
+func instanceConfiguresContextWindow(cfg providercfg.Config, name, model string) bool {
 	for _, inst := range cfg.Instances {
 		if inst.Name == name {
-			return strings.TrimSpace(inst.BaseURL), strings.TrimSpace(inst.APIKey)
+			return inst.Models[model].ContextWindow > 0
 		}
 	}
-	return "", ""
+	return false
+}
+
+// instanceEndpoint returns the base URL, inline api key, and request headers
+// configured for the instance named name, or zero values when not found.
+// $ENV references are expanded. authOK reports whether the instance's AUTH
+// material resolved: a failed api_key or Authorization-header reference
+// means the caller must not probe at all — degrading auth to absent would
+// re-engage the provider-type env-key fallback and send an unrelated secret
+// to the instance's endpoint. Failed NON-auth headers merely drop (the probe
+// is best-effort).
+func instanceEndpoint(cfg providercfg.Config, name string) (baseURL, apiKey string, headers map[string]string, authOK bool) {
+	for _, inst := range cfg.Instances {
+		if inst.Name != name {
+			continue
+		}
+		authOK = true
+		key, err := providercfg.ResolveAPIKey(strings.TrimSpace(inst.APIKey))
+		if err != nil {
+			key = ""
+			authOK = false
+		}
+		if len(inst.Headers) > 0 {
+			headers = make(map[string]string, len(inst.Headers))
+			for hk, hv := range inst.Headers {
+				resolved, err := providercfg.ResolveHeaderValue(hk, hv)
+				if err != nil {
+					if strings.EqualFold(hk, "Authorization") {
+						authOK = false
+					}
+					continue
+				}
+				headers[hk] = resolved
+			}
+		}
+		return strings.TrimSpace(inst.BaseURL), key, headers, authOK
+	}
+	return "", "", nil, true
 }
 
 // ResolveProfileForProvider resolves a bare provider/model pair to a
@@ -308,30 +354,60 @@ func trimNonEmpty(parts []string) []string {
 // HTTP requests. `provider` must be the provider TYPE / behavior tag
 // (kimi/glm/openrouter), not an instance name — the lookup keys on
 // providerEnvConfig by that tag.
-var queryModelContextWindow = func(provider, model, instanceBaseURL, instanceAPIKey string) int {
-	if provider != "kimi" && provider != "glm" && provider != "openrouter" {
+var queryModelContextWindow = func(provider, model, instanceBaseURL, instanceAPIKey string, instanceHeaders map[string]string) int {
+	switch provider {
+	case "kimi", "glm", "openrouter":
+		// Provider types with an env-registry fallback for key/base URL.
+	case "openai-compatible":
+		// openai + api_style=chat-completions instances (custom gateways):
+		// there is no meaningful type-level default endpoint, so the probe
+		// needs the instance's own base_url from providers.toml.
+		if strings.TrimSpace(instanceBaseURL) == "" {
+			return 0
+		}
+	default:
+		// ollama deliberately excluded: its native model listing is not the
+		// OpenAI /models shape and local models have no upstream window.
 		return 0
 	}
-	env, ok := envvars.Provider(provider)
-	if !ok || len(env.APIKeyVars) == 0 {
-		return 0
-	}
+	env, envOK := envvars.Provider(provider)
 	// Prefer the instance's configured key/base URL (providers.toml) over the
 	// provider-type env var / default, so an instance with a custom endpoint
 	// (the Kimi coding plan) is queried at its real /models.
 	apiKey := strings.TrimSpace(instanceAPIKey)
-	if apiKey == "" {
+	// The env-registry key fallback belongs to the provider TYPES whose
+	// endpoints it was set for (kimi/glm/openrouter). An openai-compatible
+	// instance is a custom gateway at its own base_url — sending it the
+	// global OPENAI_COMPATIBLE_API_KEY would leak an unrelated secret to
+	// whatever host the instance points at; keyless gateways probe keyless.
+	instanceAuthHeader := false
+	for hk := range instanceHeaders {
+		if strings.EqualFold(hk, "Authorization") {
+			instanceAuthHeader = true
+			break
+		}
+	}
+	if apiKey == "" && !instanceAuthHeader && provider != "openai-compatible" && envOK && len(env.APIKeyVars) > 0 {
+		// The env fallback must never clobber a configured Authorization
+		// header — a header-authenticated gateway would receive the wrong
+		// secret. An explicit instance api_key still wins over headers.
 		apiKey = env.APIKeyVars[0].Trimmed()
 	}
-	if apiKey == "" {
+	if apiKey == "" && provider != "openai-compatible" && !instanceAuthHeader && len(instanceHeaders) == 0 {
+		// Gateways may be keyless (local proxies) and any instance may
+		// authenticate via configured headers; a bare upstream type with
+		// neither has nothing to probe with.
 		return 0
 	}
 	baseURL := strings.TrimSpace(instanceBaseURL)
-	if baseURL == "" && len(env.BaseURLVars) > 0 {
+	if baseURL == "" && envOK && len(env.BaseURLVars) > 0 {
 		baseURL = env.BaseURLVars[0].Trimmed()
 	}
-	if baseURL == "" {
+	if baseURL == "" && envOK {
 		baseURL = env.DefaultBaseURL
+	}
+	if baseURL == "" {
+		return 0
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 
@@ -342,7 +418,14 @@ var queryModelContextWindow = func(provider, model, instanceBaseURL, instanceAPI
 	if err != nil {
 		return 0
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	// Instance headers first (a gateway may authenticate via them); the
+	// bearer and the kimi UA below take precedence on collision.
+	for k, v := range instanceHeaders {
+		req.Header.Set(k, v)
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 	if provider == "kimi" {
 		// Kimi For Coding gates its endpoints behind a coding-agent User-Agent
 		// allowlist; announce it so the /models query survives if the gate is

@@ -141,6 +141,16 @@ func applyOverlayFields(m *ModelInfo, ov map[string]any) {
 	if v, ok := ov["supports_effort_parameter"].(bool); ok {
 		m.SupportsEffortParameter = v
 	}
+	if v := overrideInt(ov["max_output_tokens"]); v > 0 {
+		mo := v
+		m.MaxOutputTokens = &mo
+	}
+	if v := overrideInt(ov["context_window"]); v > 0 {
+		// Matched upstream models take the override's window too — the
+		// overrides layer always wins, so upstream later adding one of our
+		// materialized models can't regress its curated shape.
+		m.ContextWindow = v
+	}
 	if v, ok := ov["supports_web_search"].(bool); ok {
 		b := v
 		m.SupportsWebSearch = &b

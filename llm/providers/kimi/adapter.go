@@ -42,6 +42,12 @@ type InstanceParams struct {
 	Name    string
 	BaseURL string
 	APIKey  string
+	// Compat (instance-wide) and Models (per-model) overlay the kimi-k2.5
+	// quirks preset; see providercfg.InstanceConfig.
+	Compat *providercfg.CompatConfig
+	Models map[string]providercfg.ModelConfig
+	// Headers are user-configured request headers ([instances.X.headers]).
+	Headers map[string]string
 }
 
 // NewForInstance constructs a kimi adapter from explicit parameters.
@@ -59,14 +65,20 @@ func NewForInstance(params InstanceParams) *adapter {
 		base = defaultBaseURL
 	}
 	backing := openaicompat.NewForInstance(openaicompat.OpenAICompatInstanceParams{
-		Name:    params.Name,
-		BaseURL: base,
-		APIKey:  params.APIKey,
-		Quirks:  openaicompat.QuirksPreset("kimi-k2.5"),
+		Name:       params.Name,
+		BaseURL:    base,
+		APIKey:     params.APIKey,
+		Quirks:     openaicompat.QuirksPreset("kimi-k2.5"),
+		Compat:     params.Compat,
+		Models:     params.Models,
+		CatalogTag: "kimi",
+		Headers:    params.Headers,
+		// Kimi For Coding gates its endpoints behind a coding-agent User-Agent
+		// allowlist; announce as Claude Code so the coding-plan base URL is
+		// accepted. A user-configured User-Agent header overrides this, but it
+		// survives when the user sets none.
+		ProviderHeaders: map[string]string{"User-Agent": kimicoding.UserAgent},
 	})
-	// Kimi For Coding gates its endpoints behind a coding-agent User-Agent
-	// allowlist; announce as Claude Code so the coding-plan base URL is accepted.
-	backing.DefaultHeaders = map[string]string{"User-Agent": kimicoding.UserAgent}
 	return &adapter{OpenAICompat: providerfwd.NewOpenAICompat(params.Name, providerName, backing)}
 }
 
@@ -135,7 +147,7 @@ func (a *adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 }
 
 func stripKimiTokenCountOutputFields(body map[string]any) {
-	for _, key := range []string{"max_tokens", "temperature", "top_p", "stop", "stream", "stream_options"} {
+	for _, key := range []string{"max_tokens", "max_completion_tokens", "temperature", "top_p", "stop", "stream", "stream_options"} {
 		delete(body, key)
 	}
 }
@@ -158,6 +170,9 @@ func init() {
 			Name:    inst.Name,
 			BaseURL: inst.BaseURL,
 			APIKey:  inst.APIKey,
+			Compat:  inst.Compat,
+			Models:  inst.Models,
+			Headers: inst.Headers,
 		}), nil
 	})
 }

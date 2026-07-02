@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/openaicompat"
 )
 
@@ -216,6 +217,33 @@ func TestNewForInstance_CustomBaseURL(t *testing.T) {
 	a := newForInstance(InstanceParams{Name: "ol", BaseURL: "http://custom/v1"})
 	if a.BaseURL != "http://custom/v1" {
 		t.Fatalf("Adapter.BaseURL = %q, want http://custom/v1", a.BaseURL)
+	}
+}
+
+// TestNewForInstance_ForwardsCompatAndModels verifies that InstanceParams.Compat
+// and .Models reach the backing openaicompat adapter: instance-wide compat sets
+// the wire thinking format (ollama has no built-in preset), and per-model
+// config resolves into the adapter's Models table.
+func TestNewForInstance_ForwardsCompatAndModels(t *testing.T) {
+	a := newForInstance(InstanceParams{
+		Name:   "ol",
+		Compat: &providercfg.CompatConfig{ThinkingFormat: "openai"},
+		Models: map[string]providercfg.ModelConfig{
+			"qwen2.5-coder": {MaxOutputTokens: 32768},
+		},
+	})
+	if a.Quirks.ThinkingFormat != "openai" {
+		t.Fatalf("Quirks.ThinkingFormat = %q, want openai", a.Quirks.ThinkingFormat)
+	}
+	mc, ok := a.Models["qwen2.5-coder"]
+	if !ok {
+		t.Fatal(`Models["qwen2.5-coder"] missing`)
+	}
+	if mc.DefaultMaxTokens != 32768 {
+		t.Fatalf("DefaultMaxTokens = %d, want 32768", mc.DefaultMaxTokens)
+	}
+	if mc.Quirks.ThinkingFormat != "openai" {
+		t.Fatalf("model ThinkingFormat = %q, want openai (inherited from instance compat)", mc.Quirks.ThinkingFormat)
 	}
 }
 

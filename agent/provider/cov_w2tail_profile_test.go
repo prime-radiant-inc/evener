@@ -56,7 +56,7 @@ func TestW2Tail_cloneStringSlice_Nil(t *testing.T) {
 // CheapModel falls through to the main model when no cheap model is configured
 // and the provider has no default (openai-compat "kimi").
 func TestW2Tail_CheapModel_DefaultFallthrough(t *testing.T) {
-	p := newOpenAICompatProfile("kimi", "kimi-k2", 0)
+	p := newOpenAICompatProfile("kimi", "kimi-k2", 0, nil)
 	if got := p.CheapModel(); got != p.Model() {
 		t.Errorf("CheapModel default fallthrough = %q, want main model %q", got, p.Model())
 	}
@@ -82,7 +82,7 @@ func TestW2Tail_WithLiveModelInfo_Branches(t *testing.T) {
 		t.Errorf("nil.WithLiveModelInfo != nil")
 	}
 
-	base := newOpenAICompatProfile("kimi", "kimi-k2", 100_000)
+	base := newOpenAICompatProfile("kimi", "kimi-k2", 100_000, nil)
 	yes := true
 	q := base.WithLiveModelInfo(llm.ModelInfo{
 		ContextWindow:     222_222,
@@ -146,7 +146,7 @@ func TestW2Tail_WithCommunicateOverridesFrom_AppendAndNoop(t *testing.T) {
 // the self-prefix strip, the cross-provider fallthrough, and the empty-model
 // default.
 func TestW2Tail_WithModel_Paths(t *testing.T) {
-	kimi := newOpenAICompatProfile("kimi", "kimi-k2", 0)
+	kimi := newOpenAICompatProfile("kimi", "kimi-k2", 0, nil)
 
 	// Empty model keeps the current model.
 	if got := kimi.WithModel("  "); got.Model() != kimi.Model() {

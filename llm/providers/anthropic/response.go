@@ -2,7 +2,6 @@ package anthropic
 
 import (
 	"encoding/json"
-	"strings"
 
 	"primeradiant.com/serf/llm"
 )
@@ -164,55 +163,10 @@ func parseUsage(u map[string]any) llm.Usage {
 }
 
 // clampEffort ensures the requested effort level is within the model's supported
-// range. If the requested level isn't in supportedLevels, clamp down to the
-// highest supported level. If supportedLevels is empty, return the input unchanged.
+// range. It delegates to llm.ClampReasoningEffort so the anthropic provider
+// shares the same full effort vocabulary (minimal/low/medium/high/xhigh/max,
+// with xhigh and max ranked as the same top tier) as the rest of serf instead
+// of maintaining its own narrower hierarchy that can drift out of sync.
 func clampEffort(requested string, supportedLevels []string) string {
-	if len(supportedLevels) == 0 {
-		return requested
-	}
-	requested = strings.ToLower(strings.TrimSpace(requested))
-
-	// Check if requested is directly supported.
-	for _, lvl := range supportedLevels {
-		if strings.EqualFold(lvl, requested) {
-			return requested
-		}
-	}
-
-	// Effort hierarchy for comparison: low < medium < high < max.
-	hierarchy := []string{"low", "medium", "high", "max"}
-	reqIdx := -1
-	for i, h := range hierarchy {
-		if h == requested {
-			reqIdx = i
-			break
-		}
-	}
-	if reqIdx < 0 {
-		// Unknown level; return as-is and let the API handle it.
-		return requested
-	}
-
-	// Find highest supported level that's at or below requested.
-	highestIdx := -1
-	for _, lvl := range supportedLevels {
-		lvlLower := strings.ToLower(lvl)
-		for i, h := range hierarchy {
-			if h == lvlLower && i <= reqIdx && i > highestIdx {
-				highestIdx = i
-			}
-		}
-	}
-	if highestIdx >= 0 {
-		return hierarchy[highestIdx]
-	}
-	// No lower level available; return the lowest supported level.
-	for _, h := range hierarchy {
-		for _, lvl := range supportedLevels {
-			if strings.EqualFold(lvl, h) {
-				return h
-			}
-		}
-	}
-	return requested
+	return llm.ClampReasoningEffort(requested, supportedLevels)
 }

@@ -182,9 +182,13 @@ func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
 	}
 	// This request is built manually (not via buildModelRequest), so clamp the
 	// effort to the model's supported levels here too — otherwise a top-tier
-	// alias like "max"/"xhigh" can reach a model that doesn't accept it.
-	effort = llm.ClampReasoningEffort(effort, profile.ReasoningEffortLevels())
-	req.ReasoningEffort = &effort
+	// alias like "max"/"xhigh" can reach a model that doesn't accept it. Gated
+	// on SupportsReasoning so a model explicitly declared non-reasoning
+	// (providers.toml reasoning=false) never gets reasoning_effort on the wire.
+	if profile.SupportsReasoning() {
+		effort = llm.ClampReasoningEffort(effort, profile.ReasoningEffortLevels())
+		req.ReasoningEffort = &effort
+	}
 	s.applyModelRequestMetadata(profile, &req)
 
 	resp, err := s.client.Complete(ctx, req)

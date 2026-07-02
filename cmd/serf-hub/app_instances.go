@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -121,14 +122,12 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 		return fmt.Errorf("instance %q not found", params.Name)
 	}
 
-	// Type is immutable; build the updated record from the existing type.
-	updated := providercfg.InstanceConfig{
-		Name:     existing.Name,
-		Type:     existing.Type, // immutable
-		APIStyle: providercfg.APIStyle(params.APIStyle),
-		BaseURL:  params.BaseURL,
-		Quirks:   existing.Quirks,
-	}
+	// Start from the existing record so fields the edit form doesn't touch
+	// (Headers, Compat, Models, Quirks, APIKey, ...) survive by construction;
+	// only APIStyle/BaseURL are mutated. Type is immutable.
+	updated := *existing
+	updated.APIStyle = providercfg.APIStyle(params.APIStyle)
+	updated.BaseURL = params.BaseURL
 	if err := providercfg.ValidateAPIStyle(updated.Type, updated.APIStyle); err != nil {
 		return fmt.Errorf("invalid api_style: %w", err)
 	}
@@ -180,7 +179,15 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		newCfg = newCfg.WithDefault(newDefault)
 	}
 
-	if err := providercfg.WriteFile(c.providersConfigPath, newCfg); err != nil {
+	if len(newCfg.Instances) == 0 {
+		// Removing the last instance: an empty config would fail the next
+		// Load (WriteFile rightly refuses to persist one), and the documented
+		// absent-file behavior is exactly what the user is asking for — the
+		// hub re-seeds providers.toml from the environment on next startup.
+		if err := os.Remove(c.providersConfigPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove providers.toml: %w", err)
+		}
+	} else if err := providercfg.WriteFile(c.providersConfigPath, newCfg); err != nil {
 		return fmt.Errorf("write providers.toml: %w", err)
 	}
 

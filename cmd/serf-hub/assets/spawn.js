@@ -1555,14 +1555,21 @@
   const DEFAULT_EFFORT_LEVELS = ["minimal", "low", "medium", "high"];
 
   // effortLevelsForModel returns the reasoning-effort levels the given model
-  // (a "provider/model" ref) supports, from the /api/models entry, falling back
-  // to a default set when the model isn't found or declares none.
+  // (a "provider/model" ref) supports, from the /api/models entry. A model
+  // the hub explicitly reports as non-reasoning (supports_reasoning === false)
+  // returns an empty array — that's a KNOWN answer of "no levels", distinct
+  // from a model that's simply missing effort-level data, which falls back to
+  // the default set (the daemon clamps to what the model actually accepts, so
+  // an over-broad default list there is safe).
   function effortLevelsForModel(models, modelRef) {
     modelRef = (modelRef || "").trim();
     for (let i = 0; i < models.length; i++) {
       const m = models[i];
       const full = (m.provider ? m.provider + "/" : "") + m.model;
       if (modelRef && (full === modelRef || m.model === modelRef)) {
+        if (m.supports_reasoning === false) {
+          return [];
+        }
         const lvls = m.reasoning_effort_levels || m.reasoningEffortLevels;
         if (Array.isArray(lvls) && lvls.length > 0) {
           return lvls.slice();
@@ -1618,6 +1625,21 @@
 
       const picker = document.createElement("div");
       picker.className = "chip-picker";
+      // A known-empty level set (the hub reports supports_reasoning: false for
+      // this model) means the model doesn't support reasoning effort at all —
+      // say so instead of offering (default)/none as if it did.
+      if (levels.length === 0) {
+        const note = document.createElement("div");
+        note.className = "chip-picker-option";
+        note.textContent = "(this model does not support reasoning effort)";
+        picker.appendChild(note);
+        chip.parentNode.style.position = "relative";
+        chip.parentNode.appendChild(picker);
+        picker.style.position = "absolute";
+        placeChipPicker(picker, chip);
+        attachPickerDismiss(picker);
+        return;
+      }
       // Launch context: "(default)" means "inherit the global/project default",
       // while "none" overrides it to empty — the only way to clear an inherited
       // high/max. Both are offered (they differ here, unlike at runtime).

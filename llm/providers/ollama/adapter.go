@@ -137,6 +137,13 @@ type InstanceParams struct {
 	Name    string
 	BaseURL string
 	APIKey  string
+	// Compat (instance-wide) and Models (per-model) configure wire behavior;
+	// ollama has no built-in quirks preset, so these are the only source of
+	// overrides. See providercfg.InstanceConfig.
+	Compat *providercfg.CompatConfig
+	Models map[string]providercfg.ModelConfig
+	// Headers are user-configured request headers ([instances.X.headers]).
+	Headers map[string]string
 }
 
 // newForInstance constructs an ollama adapter from explicit parameters.
@@ -150,6 +157,14 @@ func newForInstance(params InstanceParams) *adapter {
 		Name:    params.Name,
 		BaseURL: base,
 		APIKey:  params.APIKey,
+		Compat:  params.Compat,
+		Models:  params.Models,
+		Headers: params.Headers,
+		// Local ollama models are unrelated to any upstream catalog entry
+		// that happens to share the bare name (see profile.go's
+		// suppressBareCatalogLookup, which applies the same rule on the
+		// session-config side).
+		SuppressCatalogDefaults: true,
 	}))
 }
 
@@ -162,9 +177,10 @@ func init() {
 		// "silent default provider" concern is handled at the client
 		// level. Explicit --provider ollama works zero-config.
 		return newAdapter("", &openaicompat.Adapter{
-			APIKey:  keyEnv,
-			BaseURL: resolveBaseURL(baseEnv, hostEnv),
-			Client:  &http.Client{Timeout: 0},
+			APIKey:                  keyEnv,
+			BaseURL:                 resolveBaseURL(baseEnv, hostEnv),
+			Client:                  &http.Client{Timeout: 0},
+			SuppressCatalogDefaults: true,
 		}), true, nil
 	})
 	llm.RegisterInstanceAdapterFactory("ollama", "", func(inst providercfg.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
@@ -172,6 +188,9 @@ func init() {
 			Name:    inst.Name,
 			BaseURL: inst.BaseURL,
 			APIKey:  inst.APIKey,
+			Compat:  inst.Compat,
+			Models:  inst.Models,
+			Headers: inst.Headers,
 		}), nil
 	})
 }

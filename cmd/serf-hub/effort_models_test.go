@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/appwire"
+	hubcore "primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 // wantOpus46Levels is the canonical effort-level slice for claude-opus-4-6 as
@@ -16,7 +18,7 @@ var wantOpus46Levels = []string{"low", "medium", "high", "max"}
 func TestModelDescriptorsToAPIModels_IncludesReasoningEffortLevels(t *testing.T) {
 	models := modelDescriptorsToAPIModels([]appwire.ModelDescriptor{
 		{Provider: "anthropic", Model: "claude-opus-4-6"},
-	})
+	}, nil)
 	if len(models) != 1 {
 		t.Fatalf("got %d models, want 1", len(models))
 	}
@@ -35,7 +37,7 @@ func TestModelDescriptorsToAPIModels_IncludesReasoningEffortLevels(t *testing.T)
 func TestModelDescriptorsToAPIModels_ProviderQualifiedModelResolvesLevels(t *testing.T) {
 	models := modelDescriptorsToAPIModels([]appwire.ModelDescriptor{
 		{Provider: "openrouter-anthropic", Model: "anthropic/claude-opus-4-6"},
-	})
+	}, nil)
 	if len(models) != 1 {
 		t.Fatalf("got %d models, want 1", len(models))
 	}
@@ -45,5 +47,159 @@ func TestModelDescriptorsToAPIModels_ProviderQualifiedModelResolvesLevels(t *tes
 	}
 	if !reflect.DeepEqual(levels, wantOpus46Levels) {
 		t.Errorf("namespaced model: reasoning_effort_levels = %v, want %v (catalog strip-prefix must resolve to opus-4-6 entry)", levels, wantOpus46Levels)
+	}
+}
+
+// An instance-defined model in providers.toml must win over the embedded
+// catalog: its ThinkingLevels keys, rank-ordered, are what the effort chip
+// offers — even when the catalog has its own (different) opinion for the same
+// bare model id.
+func TestModelDescriptorsToAPIModels_InstanceModelLevelsWinOverCatalog(t *testing.T) {
+	cfg := &providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
+			{
+				Name: "lunaroute",
+				Type: "openai",
+				Models: map[string]providercfg.ModelConfig{
+					"glm-5.2-nvfp4": {
+						// Deliberately out of rank order to prove the hub
+						// re-sorts by llm.ReasoningEffortRank rather than
+						// trusting map/TOML iteration order.
+						ThinkingLevels: map[string]string{
+							"xhigh":   "xhigh",
+							"low":     "low",
+							"medium":  "medium",
+							"minimal": "minimal",
+							"high":    "high",
+						},
+					},
+				},
+			},
+		},
+	}
+	models := modelDescriptorsToAPIModels([]appwire.ModelDescriptor{
+		{Provider: "lunaroute", Model: "glm-5.2-nvfp4"},
+	}, cfg)
+	if len(models) != 1 {
+		t.Fatalf("got %d models, want 1", len(models))
+	}
+	levels, ok := models[0]["reasoning_effort_levels"].([]string)
+	if !ok {
+		t.Fatalf("reasoning_effort_levels = %v (%T), want []string", models[0]["reasoning_effort_levels"], models[0]["reasoning_effort_levels"])
+	}
+	want := []string{"minimal", "low", "medium", "high", "xhigh"}
+	if !reflect.DeepEqual(levels, want) {
+		t.Errorf("reasoning_effort_levels = %v, want %v (rank order)", levels, want)
+	}
+}
+
+// An instance model declared non-reasoning (reasoning=false) must report no
+// effort levels at all, even if the catalog has levels for the same bare id.
+func TestModelDescriptorsToAPIModels_InstanceModelReasoningFalseClearsLevels(t *testing.T) {
+	no := false
+	cfg := &providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
+			{
+				Name: "anthropic",
+				Type: "anthropic",
+				Models: map[string]providercfg.ModelConfig{
+					"claude-opus-4-6": {Reasoning: &no},
+				},
+			},
+		},
+	}
+	models := modelDescriptorsToAPIModels([]appwire.ModelDescriptor{
+		{Provider: "anthropic", Model: "claude-opus-4-6"},
+	}, cfg)
+	if len(models) != 1 {
+		t.Fatalf("got %d models, want 1", len(models))
+	}
+	if levels, ok := models[0]["reasoning_effort_levels"].([]string); ok && len(levels) > 0 {
+		t.Errorf("reasoning_effort_levels = %v, want empty (reasoning=false)", levels)
+	}
+	if got, ok := models[0]["supports_reasoning"].(bool); !ok || got {
+		t.Errorf("supports_reasoning = %v, want false", models[0]["supports_reasoning"])
+	}
+}
+
+// A model absent from the instance's Models map falls back to catalog
+// behavior unchanged, even when the instance defines other models.
+func TestModelDescriptorsToAPIModels_ModelAbsentFromInstanceFallsBackToCatalog(t *testing.T) {
+	cfg := &providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
+			{
+				Name: "anthropic",
+				Type: "anthropic",
+				Models: map[string]providercfg.ModelConfig{
+					"some-other-model": {ContextWindow: 999},
+				},
+			},
+		},
+	}
+	models := modelDescriptorsToAPIModels([]appwire.ModelDescriptor{
+		{Provider: "anthropic", Model: "claude-opus-4-6"},
+	}, cfg)
+	if len(models) != 1 {
+		t.Fatalf("got %d models, want 1", len(models))
+	}
+	levels, ok := models[0]["reasoning_effort_levels"].([]string)
+	if !ok {
+		t.Fatalf("reasoning_effort_levels = %v (%T), want []string", models[0]["reasoning_effort_levels"], models[0]["reasoning_effort_levels"])
+	}
+	if !reflect.DeepEqual(levels, wantOpus46Levels) {
+		t.Errorf("reasoning_effort_levels = %v, want %v (unchanged catalog behavior)", levels, wantOpus46Levels)
+	}
+}
+
+// reasoning = true without custom levels must still override a live/catalog
+// supports_reasoning=false — the session treats the model as reasoning-capable,
+// so the spawn UI must not hide the effort picker.
+func TestModelDescriptorsToAPIModels_InstanceReasoningTrueOverridesCatalog(t *testing.T) {
+	on := true
+	cfg := &providercfg.Config{Instances: []providercfg.InstanceConfig{{
+		Name:     "gw",
+		Type:     "openai",
+		APIStyle: providercfg.StyleChatCompletions,
+		Models: map[string]providercfg.ModelConfig{
+			"local-reasoner": {Reasoning: &on},
+		},
+	}}}
+	entry := map[string]any{"supports_reasoning": false}
+	applyInstanceModelOverride(entry, cfg, "gw", "local-reasoner")
+	if got, _ := entry["supports_reasoning"].(bool); !got {
+		t.Errorf("supports_reasoning = %v, want true (explicit reasoning=true beats catalog/live)", entry["supports_reasoning"])
+	}
+	if _, ok := entry["reasoning_effort_levels"]; ok {
+		t.Errorf("levels should stay derived when only reasoning=true is configured: %v", entry["reasoning_effort_levels"])
+	}
+}
+
+// overlayLiveEntries must never mutate the raw cached entries — the cache
+// keeps raw live values so overlays stay a per-request, per-config view.
+func TestOverlayLiveEntries_DoesNotMutateCache(t *testing.T) {
+	cfg := &providercfg.Config{Instances: []providercfg.InstanceConfig{{
+		Name:     "gw",
+		Type:     "openai",
+		APIStyle: providercfg.StyleChatCompletions,
+		Models: map[string]providercfg.ModelConfig{
+			"m": {ContextWindow: 999_999},
+		},
+	}}}
+	s := &WebServer{cfg: hubcore.WebConfig{ProviderConfig: cfg}}
+	cached := []map[string]any{{"provider": "gw", "model": "m", "context_window": 100}}
+
+	out := s.overlayLiveEntries(cached)
+	if got := out[0]["context_window"]; got != 999_999 {
+		t.Fatalf("overlay context_window = %v, want 999999", got)
+	}
+	if got := cached[0]["context_window"]; got != 100 {
+		t.Fatalf("cached raw entry mutated: context_window = %v, want 100", got)
+	}
+
+	// A server with no overrides sees the raw values, not a prior overlay.
+	plain := &WebServer{cfg: hubcore.WebConfig{ProviderConfig: &providercfg.Config{}}}
+	out2 := plain.overlayLiveEntries(cached)
+	if got := out2[0]["context_window"]; got != 100 {
+		t.Fatalf("config-free server saw a foreign overlay: context_window = %v, want 100", got)
 	}
 }

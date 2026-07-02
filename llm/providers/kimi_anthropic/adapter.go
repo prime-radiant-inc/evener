@@ -45,6 +45,10 @@ type InstanceParams struct {
 	Name    string
 	BaseURL string
 	APIKey  string
+	// Headers are user-configured request headers ([instances.X.headers]). A
+	// user-set User-Agent overrides the coding-plan default, but the default
+	// survives when the user sets none.
+	Headers map[string]string
 }
 
 // NewForInstance constructs a kimi-anthropic adapter from explicit parameters.
@@ -55,10 +59,12 @@ func NewForInstance(params InstanceParams) *adapter {
 		base = defaultBaseURL
 	}
 	return providerfwd.NewAnthropic(params.Name, providerName, &anthropic.Adapter{
-		APIKey:         params.APIKey,
-		BaseURL:        strings.TrimRight(base, "/"),
-		Client:         &http.Client{Timeout: 0},
-		DefaultHeaders: map[string]string{"User-Agent": kimicoding.UserAgent},
+		APIKey:  params.APIKey,
+		BaseURL: strings.TrimRight(base, "/"),
+		Client:  &http.Client{Timeout: 0},
+		// Kimi For Coding gates its endpoints behind a coding-agent User-Agent
+		// allowlist; user headers override it but do not erase it.
+		DefaultHeaders: llm.MergeHeaders(map[string]string{"User-Agent": kimicoding.UserAgent}, params.Headers),
 	})
 }
 
@@ -89,6 +95,7 @@ func init() {
 			Name:    inst.Name,
 			BaseURL: inst.BaseURL,
 			APIKey:  inst.APIKey,
+			Headers: inst.Headers,
 		}), nil
 	})
 }

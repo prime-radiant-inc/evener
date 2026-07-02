@@ -81,6 +81,10 @@ type OpenAIInstanceParams struct {
 	// default client and behavior is byte-identical; tests inject a fake transport
 	// to exercise the OAuth branch without a real network call.
 	AuthHTTPClient *http.Client
+	// Headers are user-configured request headers ([instances.X.headers]),
+	// merged into DefaultHeaders. Provider-set headers (Authorization,
+	// OpenAI-Beta, account id) still take precedence — setHeaders sets them last.
+	Headers map[string]string
 }
 
 // NewForInstance constructs an Adapter from explicit parameters.
@@ -147,6 +151,7 @@ func NewForInstance(params OpenAIInstanceParams) (*Adapter, error) {
 			AuthScopeIdentity:  authScope,
 			ContinuationHasher: params.ContinuationHasher,
 			Client:             &http.Client{Timeout: 0},
+			DefaultHeaders:     llm.MergeHeaders(nil, params.Headers),
 		}, nil
 	}
 
@@ -182,7 +187,8 @@ func NewForInstance(params OpenAIInstanceParams) (*Adapter, error) {
 			ProjectIDHash:      projectIDHash,
 			ContinuationHasher: params.ContinuationHasher,
 			// Avoid short client-level timeouts; rely on request context deadlines instead.
-			Client: &http.Client{Timeout: 0},
+			Client:         &http.Client{Timeout: 0},
+			DefaultHeaders: llm.MergeHeaders(nil, params.Headers),
 		}, nil
 	}
 
@@ -206,6 +212,7 @@ func init() {
 		if err != nil {
 			return nil, err
 		}
+		params.Headers = inst.Headers
 		return NewForInstance(params)
 	}
 	llm.RegisterInstanceAdapterFactory("openai", "responses", factory)

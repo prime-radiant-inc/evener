@@ -82,3 +82,27 @@ func TestReasoningBudget_MinimalAndXHigh(t *testing.T) {
 		t.Errorf("ReasoningBudget(xhigh) = %d, want it to equal max %d", ReasoningBudget("xhigh"), ReasoningBudget("max"))
 	}
 }
+
+func TestIsOpenAICompatEncryptedReasoning(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{name: "compat array", in: `[{"type":"reasoning.encrypted","id":"rc_1","data":"D"}]`, want: true},
+		{name: "multi item", in: `[{"type":"reasoning.encrypted","id":"a","data":"x"},{"type":"reasoning.encrypted","id":"b","data":"y"}]`, want: true},
+		{name: "empty", in: "", want: false},
+		{name: "openai opaque blob", in: "gAAAAABopaqueblob", want: false},
+		{name: "json array of other items", in: `[{"type":"reasoning.text","text":"t"}]`, want: false},
+		{name: "mixed types rejected", in: `[{"type":"reasoning.encrypted","id":"a","data":"x"},{"type":"other"}]`, want: false},
+		{name: "empty array", in: `[]`, want: false},
+		{name: "not json", in: "[broken", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsOpenAICompatEncryptedReasoning(tc.in); got != tc.want {
+				t.Errorf("IsOpenAICompatEncryptedReasoning(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}

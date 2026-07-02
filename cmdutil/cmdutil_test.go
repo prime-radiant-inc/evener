@@ -202,7 +202,7 @@ func stubQueryModelContextWindow(t *testing.T, fn func(provider, model string) i
 		gotMod  string
 	}{}
 	orig := queryModelContextWindow
-	queryModelContextWindow = func(provider, model, _, _ string) int {
+	queryModelContextWindow = func(provider, model, _, _ string, _ map[string]string) int {
 		rec.called = true
 		rec.gotProv = provider
 		rec.gotMod = model
@@ -389,7 +389,7 @@ func TestQueryModelContextWindow_UsesInstanceBaseURL(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	got := queryModelContextWindow("kimi", "kimi-for-coding", srv.URL, "inst-key")
+	got := queryModelContextWindow("kimi", "kimi-for-coding", srv.URL, "inst-key", nil)
 	if got != 262144 {
 		t.Fatalf("queryModelContextWindow = %d, want 262144 (must hit the instance base URL)", got)
 	}
@@ -417,7 +417,7 @@ func TestQueryModelContextWindow_NonKimiOmitsCodingUserAgent(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	got := queryModelContextWindow("glm", "glm-4.6", srv.URL, "inst-key")
+	got := queryModelContextWindow("glm", "glm-4.6", srv.URL, "inst-key", nil)
 	if got != 200000 {
 		t.Fatalf("queryModelContextWindow = %d, want 200000", got)
 	}
@@ -427,5 +427,173 @@ func TestQueryModelContextWindow_NonKimiOmitsCodingUserAgent(t *testing.T) {
 	// check would silently pass.
 	if gotUA != "Go-http-client/1.1" {
 		t.Fatalf("User-Agent = %q, want %q (must not inject any explicit UA for non-kimi provider)", gotUA, "Go-http-client/1.1")
+	}
+}
+
+// TestResolveProfileWithLiveWindow_ConfiguredWindowSkipsLiveOverride verifies
+// that an explicit models.<id>.context_window in providers.toml beats the live
+// /models probe — user config is authoritative over provider metadata.
+func TestResolveProfileWithLiveWindow_ConfiguredWindowSkipsLiveOverride(t *testing.T) {
+	rec := stubQueryModelContextWindow(t, func(provider, model string) int {
+		return 999_999
+	})
+
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
+			{
+				Name:     "gw",
+				Type:     "openai",
+				APIStyle: providercfg.StyleChatCompletions,
+				Models: map[string]providercfg.ModelConfig{
+					"glm-5.2-nvfp4": {ContextWindow: 1_048_576},
+				},
+			},
+		},
+	}
+	p, err := ResolveProfileWithLiveWindow(cfg, "gw/glm-5.2-nvfp4")
+	if err != nil {
+		t.Fatalf("ResolveProfileWithLiveWindow: %v", err)
+	}
+	if got := p.ContextWindowSize(); got != 1_048_576 {
+		t.Fatalf("ContextWindowSize() = %d, want configured 1048576 (live probe must not override)", got)
+	}
+	if rec.called {
+		t.Fatal("live lookup ran despite a configured context_window")
+	}
+
+	// A model on the same instance WITHOUT a configured window still refines
+	// from the live probe.
+	q, err := ResolveProfileWithLiveWindow(cfg, "gw/other-model")
+	if err != nil {
+		t.Fatalf("ResolveProfileWithLiveWindow(other): %v", err)
+	}
+	if got := q.ContextWindowSize(); got != 999_999 {
+		t.Fatalf("ContextWindowSize(other) = %d, want live 999999", got)
+	}
+}
+
+// An openai + api_style=chat-completions instance (behavior tag
+// "openai-compatible") is a custom gateway: the live window probe must query
+// its configured base_url — including keyless local gateways — and must bail
+// without one (there is no meaningful type-level default endpoint).
+func TestQueryModelContextWindow_OpenAICompatibleInstance(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"glm-5.2-nvfp4","context_length":204800}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	if got := queryModelContextWindow("openai-compatible", "glm-5.2-nvfp4", srv.URL, "gw-key", nil); got != 204800 {
+		t.Fatalf("queryModelContextWindow = %d, want 204800", got)
+	}
+	if gotAuth != "Bearer gw-key" {
+		t.Fatalf("auth = %q, want Bearer gw-key", gotAuth)
+	}
+
+	// Keyless gateways (local proxies) still probe — without an Authorization
+	// header rather than a bogus "Bearer ", and WITHOUT falling back to the
+	// global OPENAI_COMPATIBLE_API_KEY (that secret belongs to a different
+	// endpoint; leaking it to an arbitrary gateway host is not acceptable).
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "sk-global-must-not-leak")
+	gotAuth = "unset"
+	if got := queryModelContextWindow("openai-compatible", "glm-5.2-nvfp4", srv.URL, "", nil); got != 204800 {
+		t.Fatalf("keyless queryModelContextWindow = %d, want 204800", got)
+	}
+	if gotAuth != "" {
+		t.Fatalf("keyless auth header = %q, want absent (no env-key fallback)", gotAuth)
+	}
+
+	// No configured base_url → no probe (0 keeps the catalog window).
+	if got := queryModelContextWindow("openai-compatible", "glm-5.2-nvfp4", "", "gw-key", nil); got != 0 {
+		t.Fatalf("no-base-url queryModelContextWindow = %d, want 0", got)
+	}
+}
+
+// A header-authenticated gateway (no api_key at all) still gets the
+// best-effort context-window probe, with its configured headers on the
+// request.
+func TestQueryModelContextWindow_HeaderAuthenticatedGateway(t *testing.T) {
+	var gotGateway, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotGateway = r.Header.Get("X-Gateway-Auth")
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"m","context_length":65536}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	got := queryModelContextWindow("openai-compatible", "m", srv.URL, "", map[string]string{"X-Gateway-Auth": "tok"})
+	if got != 65536 {
+		t.Fatalf("queryModelContextWindow = %d, want 65536", got)
+	}
+	if gotGateway != "tok" {
+		t.Fatalf("X-Gateway-Auth = %q, want tok", gotGateway)
+	}
+	if gotAuth != "" {
+		t.Fatalf("Authorization = %q, want absent", gotAuth)
+	}
+}
+
+// An env-fallback API key must never clobber a configured Authorization
+// header — a header-authenticated gateway would receive the wrong secret.
+func TestQueryModelContextWindow_EnvKeyDoesNotClobberAuthHeader(t *testing.T) {
+	t.Setenv("GLM_API_KEY", "sk-env-must-not-be-sent")
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"m","context_length":4096}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	got := queryModelContextWindow("glm", "m", srv.URL, "", map[string]string{"Authorization": "Custom scheme-token"})
+	if got != 4096 {
+		t.Fatalf("queryModelContextWindow = %d, want 4096", got)
+	}
+	if gotAuth != "Custom scheme-token" {
+		t.Fatalf("Authorization = %q, want the configured header, not the env bearer", gotAuth)
+	}
+}
+
+// An UNRESOLVABLE $ENV auth reference must skip the live probe entirely —
+// degrading it to "absent" would re-engage the provider-type env-key fallback
+// and send an unrelated secret to the instance's endpoint.
+func TestResolveProfileWithLiveWindow_UnresolvableAuthSkipsProbe(t *testing.T) {
+	t.Setenv("GLM_API_KEY", "sk-env-must-not-be-sent")
+	rec := stubQueryModelContextWindow(t, func(provider, model string) int {
+		return 999_999
+	})
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{{
+			Name:    "gw",
+			Type:    "glm",
+			BaseURL: "https://gw.example.com/v1",
+			Headers: map[string]string{"Authorization": "$SERF_TEST_GW_TOKEN_UNSET"},
+		}},
+	}
+	p, err := ResolveProfileWithLiveWindow(cfg, "gw/glm-5.2")
+	if err != nil {
+		t.Fatalf("ResolveProfileWithLiveWindow: %v", err)
+	}
+	if rec.called {
+		t.Fatal("probe ran despite unresolvable Authorization header")
+	}
+	if got := p.ContextWindowSize(); got == 999_999 {
+		t.Fatalf("live window applied (%d) despite skipped probe", got)
+	}
+
+	// Same for an unresolvable api_key.
+	cfg.Instances[0].Headers = nil
+	cfg.Instances[0].APIKey = "$SERF_TEST_GW_KEY_UNSET"
+	rec2 := stubQueryModelContextWindow(t, func(provider, model string) int {
+		return 999_999
+	})
+	if _, err := ResolveProfileWithLiveWindow(cfg, "gw/glm-5.2"); err != nil {
+		t.Fatalf("ResolveProfileWithLiveWindow: %v", err)
+	}
+	if rec2.called {
+		t.Fatal("probe ran despite unresolvable api_key")
 	}
 }

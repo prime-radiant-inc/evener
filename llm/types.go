@@ -3,6 +3,7 @@ package llm
 import (
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 )
@@ -198,12 +199,81 @@ type ToolResultData struct {
 
 // ThinkingData holds a model reasoning (thinking) content part.
 type ThinkingData struct {
-	ID               string   `json:"id,omitempty"`
-	Text             string   `json:"text"`
+	ID   string `json:"id,omitempty"`
+	Text string `json:"text"`
+	// Signature is provider-scoped replay metadata: Anthropic stores its
+	// cryptographic thinking signature; OpenAI-compatible providers store the
+	// wire field the reasoning arrived on (see OpenAICompatReasoningFields).
+	// Providers must guard against replaying a foreign provider's value.
 	Signature        string   `json:"signature,omitempty"`
 	Redacted         bool     `json:"redacted,omitempty"`
 	EncryptedContent string   `json:"encrypted_content,omitempty"`
 	Summary          []string `json:"summary,omitempty"`
+}
+
+// openAICompatReasoningFields is the canonical ordered list of wire fields
+// OpenAI-compatible providers use for assistant reasoning. Order matters:
+// parsers take the first non-empty variant per chunk.
+var openAICompatReasoningFields = []string{"reasoning_content", "reasoning", "reasoning_text"}
+
+// OpenAICompatReasoningFields returns the wire field names OpenAI-compatible
+// providers use for assistant reasoning. ThinkingData.Signature carries one of
+// these when thinking arrived from such a provider, so replay can route it
+// back to the same field.
+func OpenAICompatReasoningFields() []string {
+	return append([]string(nil), openAICompatReasoningFields...)
+}
+
+// OrderedEffortLevels returns a thinking-levels map's keys sorted by
+// ReasoningEffortRank (minimal → xhigh) — the shape ReasoningEffortLevels,
+// the task_list enum, the spawn-form chip, and ClampReasoningEffort all
+// expect. One definition so those surfaces cannot drift.
+func OrderedEffortLevels(levels map[string]string) []string {
+	out := make([]string, 0, len(levels))
+	for k := range levels {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return ReasoningEffortRank(out[i]) < ReasoningEffortRank(out[j])
+	})
+	return out
+}
+
+// IsOpenAICompatReasoningField reports whether sig names one of the
+// OpenAI-compatible reasoning wire fields. Providers whose thinking signatures
+// are cryptographic (Anthropic) use this to treat such a value as "no
+// signature" instead of replaying it as a signature the API would reject.
+func IsOpenAICompatReasoningField(sig string) bool {
+	for _, f := range openAICompatReasoningFields {
+		if sig == f {
+			return true
+		}
+	}
+	return false
+}
+
+// IsOpenAICompatEncryptedReasoning reports whether s is the JSON array of
+// {"type":"reasoning.encrypted", ...} items the openai-compat adapter stores
+// in ThinkingData.EncryptedContent for OpenRouter-style encrypted reasoning.
+// Providers whose EncryptedContent is an opaque blob (OpenAI Responses) use
+// this to skip replaying a foreign provider's value on a cross-provider
+// transcript.
+func IsOpenAICompatEncryptedReasoning(s string) bool {
+	if len(s) == 0 || s[0] != '[' {
+		return false
+	}
+	var items []struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(s), &items); err != nil || len(items) == 0 {
+		return false
+	}
+	for _, it := range items {
+		if it.Type != "reasoning.encrypted" {
+			return false
+		}
+	}
+	return true
 }
 
 // WebSearchData holds a web-search content part, including the query and the raw provider payload.

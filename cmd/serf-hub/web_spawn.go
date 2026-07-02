@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/serf/hubapi"
 	"primeradiant.com/serf/internal/diagnostic"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 // handleWorkspaceSpawn renders the prompt-first spawn surface partial.
@@ -160,7 +161,7 @@ func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
 			writeAPIWireError(w, http.StatusBadGateway, err)
 			return
 		}
-		writeModelsResponse(w, modelDescriptorsToAPIModels(resp.Data), resp.Diagnostics, includeDiagnostics)
+		writeModelsResponse(w, modelDescriptorsToAPIModels(resp.Data, s.cfg.ProviderConfig), resp.Diagnostics, includeDiagnostics)
 		return
 	}
 
@@ -169,7 +170,7 @@ func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
 		writeAPIWireError(w, http.StatusBadGateway, err)
 		return
 	}
-	models := modelDescriptorsToAPIModels(launchResp.Data)
+	models := modelDescriptorsToAPIModels(launchResp.Data, s.cfg.ProviderConfig)
 	if len(models) == 0 && !hasSerfLaunchModelLister(s.cfg) {
 		liveModels := s.fetchLiveModels
 		if s.cfg.LiveModels != nil {
@@ -212,7 +213,13 @@ func launchModelListErrorDiagnostic(err error) appwire.ModelListDiagnostic {
 	}
 }
 
-func modelDescriptorsToAPIModels(models []appwire.ModelDescriptor) []map[string]any {
+// modelDescriptorsToAPIModels builds the /api/models response entries. The
+// embedded catalog supplies default metadata (display name, context window,
+// cost, effort levels); when providerCfg carries a providers.toml instance
+// that defines the model, its ModelConfig wins — an instance author who sets
+// custom ThinkingLevels or a context_window knows their deployment better
+// than the catalog's guess for the bare model id.
+func modelDescriptorsToAPIModels(models []appwire.ModelDescriptor, providerCfg *providercfg.Config) []map[string]any {
 	if len(models) == 0 {
 		return nil
 	}
@@ -239,19 +246,62 @@ func modelDescriptorsToAPIModels(models []appwire.ModelDescriptor) []map[string]
 				}
 			}
 		}
+		applyInstanceModelOverride(entry, providerCfg, m.Provider, m.Model)
 		out = append(out, entry)
 	}
 	return out
 }
 
+// applyInstanceModelOverride overlays a providers.toml instance's ModelConfig
+// (when one is defined for m.Provider/m.Model) onto an /api/models entry
+// already populated from the embedded catalog. Mirrors the precedence
+// newOpenAICompatProfile applies at session-build time (agent/provider) so the
+// spawn-form effort chip matches the levels the session will actually honor.
+func applyInstanceModelOverride(entry map[string]any, providerCfg *providercfg.Config, provider, model string) {
+	if providerCfg == nil {
+		return
+	}
+	var inst *providercfg.InstanceConfig
+	for i := range providerCfg.Instances {
+		if providerCfg.Instances[i].Name == provider {
+			inst = &providerCfg.Instances[i]
+			break
+		}
+	}
+	if inst == nil {
+		return
+	}
+	mc, ok := inst.Models[model]
+	if !ok {
+		return
+	}
+	switch {
+	case mc.Reasoning != nil && !*mc.Reasoning:
+		// A declared non-reasoning model advertises no effort levels at all.
+		entry["reasoning_effort_levels"] = []string{}
+		entry["supports_reasoning"] = false
+	case len(mc.ThinkingLevels) > 0:
+		entry["reasoning_effort_levels"] = llm.OrderedEffortLevels(mc.ThinkingLevels)
+		entry["supports_reasoning"] = true
+	case mc.Reasoning != nil && *mc.Reasoning:
+		// reasoning = true without custom levels: the model IS
+		// reasoning-capable even if the live/catalog data says otherwise;
+		// levels stay as derived (the UI falls back to the default ladder).
+		entry["supports_reasoning"] = true
+	}
+	if mc.ContextWindow > 0 {
+		entry["context_window"] = mc.ContextWindow
+	}
+}
+
 func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
-	liveModelsCache.mu.Lock()
-	if time.Now().Before(liveModelsCache.expires) && liveModelsCache.models != nil {
-		out := liveModelsCache.models
-		liveModelsCache.mu.Unlock()
+	s.liveModels.mu.Lock()
+	if time.Now().Before(s.liveModels.expires) && s.liveModels.models != nil {
+		out := s.overlayLiveEntries(s.liveModels.models)
+		s.liveModels.mu.Unlock()
 		return out
 	}
-	liveModelsCache.mu.Unlock()
+	s.liveModels.mu.Unlock()
 
 	c, _, _, err := cmdutil.LoadClient()
 	if err != nil || c == nil {
@@ -340,10 +390,32 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 		}
 	}
 
-	liveModelsCache.mu.Lock()
-	liveModelsCache.models = out
-	liveModelsCache.expires = time.Now().Add(liveModelsTTL)
-	liveModelsCache.mu.Unlock()
+	// The cache is per-WebServer (each server's provider set/config owns its
+	// own entries) and holds RAW live values; providers.toml overrides are
+	// applied per request on fresh copies (overlayLiveEntries).
+	s.liveModels.mu.Lock()
+	s.liveModels.models = out
+	s.liveModels.expires = time.Now().Add(liveModelsTTL)
+	s.liveModels.mu.Unlock()
+	return s.overlayLiveEntries(out)
+}
+
+// overlayLiveEntries returns fresh copies of raw live-model entries with this
+// server's providers.toml instance overrides applied. The copies keep the
+// server's live-models cache config-agnostic: overlays never mutate cached
+// state.
+func (s *WebServer) overlayLiveEntries(entries []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(entries))
+	for _, entry := range entries {
+		clone := make(map[string]any, len(entry))
+		for k, v := range entry {
+			clone[k] = v
+		}
+		prov, _ := clone["provider"].(string)
+		model, _ := clone["model"].(string)
+		applyInstanceModelOverride(clone, s.cfg.ProviderConfig, prov, model)
+		out = append(out, clone)
+	}
 	return out
 }
 

@@ -300,3 +300,56 @@ func TestLoadClientSeedsInMemoryAndInjects(t *testing.T) {
 		t.Errorf("key not injected into in-memory cfg: %+v", cfg.Instances)
 	}
 }
+
+// Credential-store injection must not fill a key into an instance that
+// authenticates via a configured Authorization header — the adapter's bearer
+// would clobber that header on every request, sending an unrelated secret to
+// the gateway.
+func TestLoadProviderConfig_SkipsInjectionForAuthorizationHeaderInstances(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "providers.toml")
+	providers := `
+schema = 1
+default = "hdrgw"
+
+[instances.hdrgw]
+type = "glm"
+base_url = "https://gw.example.com/v1"
+headers = { "Authorization" = "Custom scheme-token" }
+
+[instances.plain]
+type = "glm"
+`
+	if err := os.WriteFile(path, []byte(providers), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	creds := `
+schema = 1
+
+[providers.plain]
+api_key = "sk-glm-store"
+
+[providers.hdrgw]
+api_key = "sk-hdr-store-must-not-inject"
+`
+	credPath := filepath.Join(dir, "credentials.toml")
+	if err := os.WriteFile(credPath, []byte(creds), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SERF_PROVIDERS_CONFIG", path)
+
+	cfg, hasConfig, err := LoadProviderConfig()
+	if err != nil || !hasConfig {
+		t.Fatalf("LoadProviderConfig: %v hasConfig=%v", err, hasConfig)
+	}
+	byName := map[string]string{}
+	for _, inst := range cfg.Instances {
+		byName[inst.Name] = inst.APIKey
+	}
+	if byName["hdrgw"] != "" {
+		t.Errorf("header-authenticated instance got an injected key %q, want none", byName["hdrgw"])
+	}
+	if byName["plain"] != "sk-glm-store" {
+		t.Errorf("plain keyless instance APIKey = %q, want store-injected sk-glm-store", byName["plain"])
+	}
+}

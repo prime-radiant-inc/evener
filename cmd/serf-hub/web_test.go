@@ -30,6 +30,7 @@ import (
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/selfupdate"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -3640,12 +3641,6 @@ func TestWeb_Settings_Transcript_Renders(t *testing.T) {
 // run against a live provider API. Skips unless live tests are explicitly
 // enabled and a real API key is set.
 func TestWeb_ApiModels_ReturnsListWithProviderEnv(t *testing.T) {
-	// Force-clear cache to make the test run a fresh fetch.
-	liveModelsCache.mu.Lock()
-	liveModelsCache.expires = time.Time{}
-	liveModelsCache.models = nil
-	liveModelsCache.mu.Unlock()
-	t.Cleanup(func() { liveModelsCache = modelsCache{} })
 	if os.Getenv("SERF_LIVE_TESTS") != "1" {
 		t.Skip("set SERF_LIVE_TESTS=1 to run live provider model-list test")
 	}
@@ -3697,11 +3692,6 @@ func disableStoredOpenAIAuthForModelTest(t *testing.T) {
 }
 
 func TestWeb_ApiModels_ReturnsSerfLaunchContractWhenLiveUnavailable(t *testing.T) {
-	liveModelsCache.mu.Lock()
-	liveModelsCache.expires = time.Time{}
-	liveModelsCache.models = nil
-	liveModelsCache.mu.Unlock()
-	t.Cleanup(func() { liveModelsCache = modelsCache{} })
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("GEMINI_API_KEY", "")
@@ -3779,11 +3769,6 @@ func TestWeb_ApiModels_UsesWorkingDirForSerfLaunchContract(t *testing.T) {
 }
 
 func TestWeb_ApiModels_DoesNotUseLiveProvidersWhenLaunchContractIsEmpty(t *testing.T) {
-	liveModelsCache.mu.Lock()
-	liveModelsCache.expires = time.Time{}
-	liveModelsCache.models = nil
-	liveModelsCache.mu.Unlock()
-	t.Cleanup(func() { liveModelsCache = modelsCache{} })
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("GEMINI_API_KEY", "")
@@ -3945,11 +3930,6 @@ func TestWeb_ApiModels_DiagnosticsParamReturnsModelsAndDiagnostics(t *testing.T)
 	// the launchable models and the launch-check diagnostics, so a configured
 	// provider that failed to list (e.g. bad key) surfaces a reason instead of
 	// silently vanishing. Without the param the response stays a bare array.
-	liveModelsCache.mu.Lock()
-	liveModelsCache.expires = time.Time{}
-	liveModelsCache.models = nil
-	liveModelsCache.mu.Unlock()
-	t.Cleanup(func() { liveModelsCache = modelsCache{} })
 
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
@@ -3989,11 +3969,6 @@ func TestWeb_ApiModels_DiagnosticsParamReturnsModelsAndDiagnostics(t *testing.T)
 }
 
 func TestWeb_ApiModels_FiltersOpenRouterLiveModelsToToolCapable(t *testing.T) {
-	liveModelsCache.mu.Lock()
-	liveModelsCache.expires = time.Time{}
-	liveModelsCache.models = nil
-	liveModelsCache.mu.Unlock()
-	t.Cleanup(func() { liveModelsCache = modelsCache{} })
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("GEMINI_API_KEY", "")
@@ -4042,14 +4017,72 @@ func TestWeb_ApiModels_FiltersOpenRouterLiveModelsToToolCapable(t *testing.T) {
 	}
 }
 
+// TestWeb_ApiModels_LiveFallbackAppliesInstanceModelOverride pins that the
+// live-model-listing fallback in fetchLiveModels overlays a providers.toml
+// instance's ModelConfig onto the entry, same as the serf-launch-contract
+// path (modelDescriptorsToAPIModels) already does. Before the fix, an
+// override configured for a live-listed model (here: a custom context_window
+// on openrouter/deepseek/deepseek-chat) was silently ignored.
+func TestWeb_ApiModels_LiveFallbackAppliesInstanceModelOverride(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("GEMINI_API_KEY", "")
+	t.Setenv("GLM_API_KEY", "")
+	t.Setenv("GROK_API_KEY", "")
+	t.Setenv("KIMI_API_KEY", "")
+	t.Setenv("MINIMAX_API_KEY", "")
+	t.Setenv("OPENROUTER_API_KEY", "")
+	disableLiveOllamaForModelTest(t)
+	isolateProviderConfigForModelTest(t)
+	disableStoredOpenAIAuthForModelTest(t)
+
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":[{"id":"deepseek/deepseek-chat"}]}`)) //nolint:errcheck
+	}))
+	defer live.Close()
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+	t.Setenv("OPENROUTER_BASE_URL", live.URL+"/v1")
+
+	overrideCfg := &providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
+			{
+				Name: "openrouter",
+				Type: "openrouter",
+				Models: map[string]providercfg.ModelConfig{
+					"deepseek/deepseek-chat": {ContextWindow: 999999},
+				},
+			},
+		},
+	}
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", ProviderConfig: overrideCfg})
+	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var models []hubapi.ModelOption
+	if err := json.Unmarshal(rec.Body.Bytes(), &models); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("models: got %d, want 1; body=%s", len(models), rec.Body.String())
+	}
+	if models[0].ContextWindow != 999999 {
+		t.Fatalf("context_window = %d, want 999999 (instance override not applied); body=%s", models[0].ContextWindow, rec.Body.String())
+	}
+}
+
 // TestWeb_ApiModels_NoProvidersConfigured returns an empty list when no
 // providers have keys in the environment.
 func TestWeb_ApiModels_NoProvidersConfigured(t *testing.T) {
-	liveModelsCache.mu.Lock()
-	liveModelsCache.expires = time.Time{}
-	liveModelsCache.models = nil
-	liveModelsCache.mu.Unlock()
-	t.Cleanup(func() { liveModelsCache = modelsCache{} })
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("GEMINI_API_KEY", "")
@@ -6065,7 +6098,7 @@ func TestModelDescriptorsToAPIModels_OneMillionContext(t *testing.T) {
 	out := modelDescriptorsToAPIModels([]appwire.ModelDescriptor{
 		{Provider: "anthropic", Model: "claude-opus-4-5"},
 		{Provider: "anthropic", Model: "claude-opus-4-5[1m]"},
-	})
+	}, nil)
 	if len(out) != 2 {
 		t.Fatalf("got %d entries, want 2", len(out))
 	}

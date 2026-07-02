@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/internal/providerfwd"
 	"primeradiant.com/serf/llm/providers/openaicompat"
 )
@@ -82,6 +83,37 @@ func TestNewForInstance_DefaultQuirks(t *testing.T) {
 	want := openaicompat.ProviderQuirks{TranslateMaxToXHigh: true}
 	if !reflect.DeepEqual(a.Quirks, want) {
 		t.Fatalf("Quirks = %+v, want %+v", a.Quirks, want)
+	}
+}
+
+// TestNewForInstance_ForwardsCompatAndModels verifies that InstanceParams.Compat
+// and .Models reach the backing openaicompat adapter: instance-wide compat
+// overlays the openrouter preset, and per-model config resolves into the
+// adapter's Models table.
+func TestNewForInstance_ForwardsCompatAndModels(t *testing.T) {
+	a := NewForInstance(InstanceParams{
+		Name:   "oc",
+		APIKey: "k",
+		Compat: &providercfg.CompatConfig{ThinkingFormat: "openai"},
+		Models: map[string]providercfg.ModelConfig{
+			"anthropic/claude-3.5": {MaxOutputTokens: 8192},
+		},
+	})
+	if a.Quirks.ThinkingFormat != "openai" {
+		t.Fatalf("Quirks.ThinkingFormat = %q, want openai", a.Quirks.ThinkingFormat)
+	}
+	if !a.Quirks.TranslateMaxToXHigh {
+		t.Fatal("Quirks.TranslateMaxToXHigh should still be true (preset field untouched by compat overlay)")
+	}
+	mc, ok := a.Models["anthropic/claude-3.5"]
+	if !ok {
+		t.Fatal(`Models["anthropic/claude-3.5"] missing`)
+	}
+	if mc.DefaultMaxTokens != 8192 {
+		t.Fatalf("DefaultMaxTokens = %d, want 8192", mc.DefaultMaxTokens)
+	}
+	if mc.Quirks.ThinkingFormat != "openai" {
+		t.Fatalf("model ThinkingFormat = %q, want openai (inherited from instance compat)", mc.Quirks.ThinkingFormat)
 	}
 }
 

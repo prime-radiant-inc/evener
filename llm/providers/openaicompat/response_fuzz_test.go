@@ -58,25 +58,28 @@ func FuzzFromChatCompletionResponse(f *testing.F) {
 		// encoding/json's case-insensitive field matching (a map key lookup here
 		// would miss mixed-case keys the product still binds).
 		firstMsg, haveChoice := firstChoiceMessage(m)
-		var wantReasoning string
+		var wantReasoning, wantEncrypted string
 		if haveChoice {
-			wantReasoning = extractReasoning(firstMsg)
+			wantReasoning, _ = extractReasoning(firstMsg)
+			wantEncrypted = encodeEncryptedDetails(firstMsg.ReasoningDetails)
 		}
 		var thinkingParts, gotToolCalls int
 		for _, p := range resp.Message.Content {
 			switch p.Kind {
 			case llm.ContentThinking:
 				thinkingParts++
-				if p.Thinking == nil || p.Thinking.Text == "" {
+				// Encrypted-only reasoning_details validly produce a thinking
+				// part with empty Text and non-empty EncryptedContent.
+				if p.Thinking == nil || (p.Thinking.Text == "" && p.Thinking.EncryptedContent == "") {
 					t.Fatalf("emitted an empty thinking part (raw=%s)", raw)
 				}
 			case llm.ContentToolCall:
 				gotToolCalls++
 			}
 		}
-		if (wantReasoning != "") != (thinkingParts == 1) {
-			t.Fatalf("thinking-part presence=%v but extractReasoning non-empty=%v (raw=%s)",
-				thinkingParts == 1, wantReasoning != "", raw)
+		if (wantReasoning != "" || wantEncrypted != "") != (thinkingParts == 1) {
+			t.Fatalf("thinking-part presence=%v but reasoning non-empty=%v encrypted non-empty=%v (raw=%s)",
+				thinkingParts == 1, wantReasoning != "", wantEncrypted != "", raw)
 		}
 
 		wantToolCalls := len(firstMsg.ToolCalls)

@@ -262,9 +262,14 @@ func FuzzAreqClampEffort(f *testing.F) {
 		}
 
 		norm := strings.ToLower(strings.TrimSpace(requested))
-		// Mirror clampEffort's own comparisons exactly: it lowercases (but does NOT
-		// trim) each supported level, so a whitespace-padded level is, correctly,
-		// invisible to both the membership and directly-supported checks.
+		// This oracle deliberately uses a narrower notion of "known"/"directly
+		// supported" than clampEffort itself: it lowercases (but does not trim)
+		// each supported level and only recognizes the low/medium/high/max
+		// hierarchy, whereas clampEffort delegates to llm.ClampReasoningEffort,
+		// which trims and also recognizes minimal/xhigh. That makes this check a
+		// conservative under-approximation — it can only skip an assertion it
+		// isn't sure about, never wrongly demand one — so it stays valid even
+		// though it no longer mirrors clampEffort's comparisons exactly.
 		supportedHasKnown := false
 		directlySupported := false
 		for _, l := range levels {

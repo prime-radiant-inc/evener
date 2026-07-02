@@ -554,7 +554,7 @@ func TestBuildRequestBody_SanitizesMalformedHistoricalToolCallArguments(t *testi
 				},
 			}},
 		}},
-	}, false, ProviderQuirks{})
+	}, false, ModelCompat{})
 	if err != nil {
 		t.Fatalf("buildRequestBody: %v", err)
 	}
@@ -2153,6 +2153,9 @@ func TestQuirksPreset_GLM5(t *testing.T) {
 	if q.FinishReasonMap["sensitive"] != "content_filter" {
 		t.Fatal("glm-5 should map sensitive to content_filter")
 	}
+	if q.ThinkingFormat != "zai" {
+		t.Fatalf("glm-5 ThinkingFormat: %q, want zai", q.ThinkingFormat)
+	}
 }
 
 func TestQuirksPreset_Unknown_ReturnsZeroValue(t *testing.T) {
@@ -2576,7 +2579,7 @@ func TestBuildRequestBody_TranslateMaxToXHigh_OpenRouter(t *testing.T) {
 		ReasoningEffort: &effort,
 	}
 	quirks := QuirksPreset("openrouter")
-	body, err := buildRequestBody(req, false, quirks)
+	body, err := buildRequestBody(req, false, ModelCompat{Quirks: quirks})
 	if err != nil {
 		t.Fatalf("buildRequestBody: %v", err)
 	}
@@ -2598,7 +2601,7 @@ func TestBuildRequestBody_NoTranslation_OtherProviders(t *testing.T) {
 		ReasoningEffort: &effort,
 	}
 	quirks := ProviderQuirks{} // No translation quirk
-	body, err := buildRequestBody(req, false, quirks)
+	body, err := buildRequestBody(req, false, ModelCompat{Quirks: quirks})
 	if err != nil {
 		t.Fatalf("buildRequestBody: %v", err)
 	}
@@ -2622,7 +2625,7 @@ func TestBuildRequestBody_TranslateMaxToXHigh_CaseInsensitive(t *testing.T) {
 				ReasoningEffort: &e,
 			}
 			quirks := QuirksPreset("openrouter")
-			body, err := buildRequestBody(req, false, quirks)
+			body, err := buildRequestBody(req, false, ModelCompat{Quirks: quirks})
 			if err != nil {
 				t.Fatalf("buildRequestBody: %v", err)
 			}
@@ -2649,7 +2652,7 @@ func TestBuildRequestBody_OtherEffortLevels_NoTranslation(t *testing.T) {
 				Messages:        []llm.Message{{Role: "user", Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "hi"}}}},
 				ReasoningEffort: &e,
 			}
-			body, err := buildRequestBody(req, false, quirks)
+			body, err := buildRequestBody(req, false, ModelCompat{Quirks: quirks})
 			if err != nil {
 				t.Fatalf("buildRequestBody: %v", err)
 			}
@@ -2719,5 +2722,93 @@ func TestAdapter_ListModels_ParsesContextLength(t *testing.T) {
 	}
 	if models[0].ContextWindow != 262144 {
 		t.Fatalf("ContextWindow = %d, want 262144 (provider context_length must be parsed)", models[0].ContextWindow)
+	}
+}
+
+// Non-stream responses must parse encrypted reasoning_details onto the thinking
+// part's EncryptedContent (OpenRouter Gemini/o-series opaque reasoning chain).
+func TestComplete_EncryptedReasoningDetails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+			"id": "chatcmpl-1", "model": "m",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"finish_reason": "stop",
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": "answer",
+					"reasoning_details": []any{
+						map[string]any{"type": "reasoning.encrypted", "id": "rc_1", "data": "OPAQUE"},
+					},
+				},
+			}},
+		})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{Model: "m", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var enc string
+	for _, p := range resp.Message.Content {
+		if p.Kind == llm.ContentThinking && p.Thinking != nil {
+			enc = p.Thinking.EncryptedContent
+		}
+	}
+	if enc == "" || !strings.Contains(enc, "OPAQUE") {
+		t.Fatalf("encrypted content = %q, want it to carry OPAQUE", enc)
+	}
+}
+
+// Moonshot/Kimi may report usage on choices[0].usage instead of top-level usage.
+func TestComplete_ChoiceLevelUsageFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+			"id": "chatcmpl-1", "model": "m",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"finish_reason": "stop",
+				"message":       map[string]any{"role": "assistant", "content": "hi"},
+				"usage":         map[string]any{"prompt_tokens": 7, "completion_tokens": 2, "total_tokens": 9},
+			}},
+		})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{Model: "m", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.InputTokens != 7 || resp.Usage.OutputTokens != 2 {
+		t.Fatalf("choice-level usage not picked up: %+v", resp.Usage)
+	}
+}
+
+// When both top-level and choice-level usage are present, top-level wins.
+func TestComplete_TopLevelUsageWinsOverChoice(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+			"id": "chatcmpl-1", "model": "m",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"finish_reason": "stop",
+				"message":       map[string]any{"role": "assistant", "content": "hi"},
+				"usage":         map[string]any{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+			}},
+			"usage": map[string]any{"prompt_tokens": 7, "completion_tokens": 2, "total_tokens": 9},
+		})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{Model: "m", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.InputTokens != 7 || resp.Usage.OutputTokens != 2 {
+		t.Fatalf("top-level usage should win: %+v", resp.Usage)
 	}
 }
