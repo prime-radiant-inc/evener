@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/provenance"
 )
 
 // FuzzWxEvaluateWatchEvent drives evaluateWatchEvent — the pure decision core
@@ -61,6 +62,17 @@ func FuzzWxEvaluateWatchEvent(f *testing.F) {
 		}
 		if dec.eventCount < eventCount || dec.eventCount > eventCount+1 {
 			t.Fatalf("eventCount %d out of [%d,%d]", dec.eventCount, eventCount, eventCount+1)
+		}
+
+		// Inform+breaker invariant: the routing decision is provenance-
+		// INDEPENDENT. An event carrying this watch's own (watch_id,
+		// generation) key must decide identically to the bare event — the echo
+		// is delivered and classified at the observation site, never gated
+		// here (the runaway fuse in recordWatchSend bounds the loop).
+		selfEv := ev
+		selfEv.Provenance = provenance.WithWatch(nil, snap.watchID, snap.generation, "wd_fuzz", "sess_fuzz", snap.target)
+		if selfDec := evaluateWatchEvent(snap, selfEv); selfDec != dec {
+			t.Fatalf("self-influenced provenance changed the decision: %+v vs %+v", selfDec, dec)
 		}
 	})
 }

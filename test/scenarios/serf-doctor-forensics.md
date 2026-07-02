@@ -67,15 +67,23 @@ card proves it against a built binary on a real state-dir shape.
    `grep -c watch_send_pending "$SESS/$SID/jobs.jsonl"` == `5`, which is NOT the
    delivery count. The dropped delivery shows `reason=send_to gone`.
 
-3. **`watches --self-loops` flags w2 via the Chain, not the stamp.**
+3. **`watches --self-loops` returns only fired fuses (breaker telemetry).**
+   Under the inform+breaker policy the doctor no longer re-derives self-loop
+   verdicts from the Chain — it reads the RECORDED telemetry: per-delivery
+   `self_influence_depth` stamps, the per-watch `max_self_influence_depth`,
+   and `runaway_drops` (dropped sends whose `diagnostic_reason == "runaway"`).
+   Append a runaway drop for `w2` so the fuse registers:
    ```bash
+   cat >> "$SESS/$SID/jobs.jsonl" <<'EOF'
+  {"kind":"watch_send_dropped","seq":12,"watch_id":"w2","watch_send":{"key":{"watch_id":"w2"},"delivery_id":"dr","diagnostic_reason":"runaway","self_influence_depth":8}}
+  EOF
    /tmp/serf-doctor watches "$SID" --state-dir "$SCR" --self-loops --json
    ```
-   ASSERT exactly one watch (`w2`) is returned; `self_loop.detected == true` and
-   `self_loop.delivery_ids == ["dl"]`. ASSERT `w1` is NOT in the output (its sole
-   delivery's `Chain` has only its own stamp — no same-`watch_id` prior hop —
-   even though its `WatchKeys` contains its own key). An empty result serializes
-   as `"watches": []`.
+   ASSERT exactly one watch (`w2`) is returned with `runaway_drops == 1` and
+   `max_self_influence_depth == 8`. ASSERT `w1` is NOT in the output (no
+   runaway drops — `--self-loops` filters on fired fuses, not on carrying its
+   own key). The rendered (non-JSON) form shows `breaker: FIRED` for `w2`. An
+   empty result serializes as `"watches": []`.
 
 4. **`transcript --count` distinguishes calls from mentions.** Append an
    assistant turn that *names* `delegate_send` without calling it, plus a real

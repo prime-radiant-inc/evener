@@ -284,17 +284,18 @@ func TestWatchSendStateCarriesDeliveryProvenance(t *testing.T) {
 	}
 }
 
-// TestObserverInjectionDoesNotRetriggerSameWatch proves that when an observer
-// receives a watch delivery and calls delegate_send(to="caller"), the resulting
-// steering injected into the parent carries the watch's provenance, so the
-// parent's acknowledgement communicate event is suppressed by shouldSuppressWatch
-// and the watch does not fire a second time.
+// TestObserverInjectionReFiresSameWatchClassifiedSelfInfluenced proves that when
+// an observer receives a watch delivery and calls delegate_send(to="caller"), the
+// resulting steering injected into the parent carries the watch's provenance, so
+// the parent's acknowledgement communicate event is recognized as this watch's own
+// echo. Under the breaker policy the echo is delivered (not suppressed) and
+// classified self-influenced; termination is the runaway fuse's job, proven
+// elsewhere.
 //
-// The load-bearing assertion is cfg.nextUpdateSeq == 1 after the suppressed ack:
-// each real watch firing increments nextUpdateSeq in watchSendSnapshot; suppression
-// skips watchSendSnapshot entirely. If shouldSuppressWatch were removed, the ack
-// emit would re-fire the watch and nextUpdateSeq would be 2.
-func TestObserverInjectionDoesNotRetriggerSameWatch(t *testing.T) {
+// The load-bearing assertion is cfg.nextUpdateSeq == 2 after the ack: the external
+// trigger fired once and the self-echo re-fires exactly once, each incrementing
+// nextUpdateSeq in watchSendSnapshot.
+func TestObserverInjectionReFiresSameWatchClassifiedSelfInfluenced(t *testing.T) {
 	t.Parallel()
 	parent := newTestSession(t)
 	observer := newTestSession(t)
@@ -348,10 +349,11 @@ func TestObserverInjectionDoesNotRetriggerSameWatch(t *testing.T) {
 	}
 	parent.emit(events.EventCommunicate, events.CommunicateData{Message: "acknowledged quote", EndTurn: false})
 
-	// nextUpdateSeq must still be 1: the ack communicate was suppressed and did not
-	// call watchSendSnapshot again. A value of 2 would mean suppression regressed.
-	if cfg.nextUpdateSeq != 1 {
-		t.Fatalf("nextUpdateSeq = %d after suppressed ack, want 1 (only the original external trigger)", cfg.nextUpdateSeq)
+	// nextUpdateSeq must be 2: the self-echo ack re-fired the watch exactly once on
+	// top of the original external trigger (delivered + classified self-influenced,
+	// no longer suppressed).
+	if cfg.nextUpdateSeq != 2 {
+		t.Fatalf("nextUpdateSeq = %d after self-echo ack, want 2 (external trigger + one self-influenced re-fire)", cfg.nextUpdateSeq)
 	}
 }
 
@@ -630,8 +632,8 @@ func TestIdleWatchSendObserverCallerSendCarriesProvenance(t *testing.T) {
 	}
 
 	parent.emit(events.EventCommunicate, events.CommunicateData{Message: "acknowledged observer", EndTurn: false})
-	if cfg.nextUpdateSeq != 1 {
-		t.Fatalf("nextUpdateSeq = %d after observer ack, want 1 (same-watch echo suppressed)", cfg.nextUpdateSeq)
+	if cfg.nextUpdateSeq != 2 {
+		t.Fatalf("nextUpdateSeq = %d after observer ack, want 2 (self-echo delivered + classified self-influenced, re-fires once)", cfg.nextUpdateSeq)
 	}
 }
 
@@ -809,15 +811,16 @@ func TestRunningDelegateSendFallsBackToActiveProvenance(t *testing.T) {
 	}
 }
 
-// TestObserverNotificationAcknowledgementDoesNotRetriggerSameWatch proves that
-// when the parent acknowledges an observer's terminal notification (whose pending
-// event carried the watch's provenance), the resulting communicate event is
-// suppressed by shouldSuppressWatch and the watch does not fire.
+// TestObserverNotificationAcknowledgementReFiresSameWatchClassifiedSelfInfluenced
+// proves that when the parent acknowledges an observer's terminal notification
+// (whose pending event carried the watch's provenance), the resulting communicate
+// event is recognized as this watch's own echo. Under the breaker policy the echo
+// is delivered (not suppressed) and classified self-influenced; the runaway fuse,
+// proven elsewhere, is what bounds a runaway.
 //
-// The load-bearing assertion is cfg.nextUpdateSeq == 0 (no firing) after the
-// communicate emit. If shouldSuppressWatch were removed, the ack communicate
-// would fire the watch and nextUpdateSeq would be 1.
-func TestObserverNotificationAcknowledgementDoesNotRetriggerSameWatch(t *testing.T) {
+// The load-bearing assertion is cfg.nextUpdateSeq == 1 after the communicate emit:
+// the self-echo re-fires the watch exactly once.
+func TestObserverNotificationAcknowledgementReFiresSameWatchClassifiedSelfInfluenced(t *testing.T) {
 	t.Parallel()
 	parent := newTestSession(t)
 	// Seed the watch send target (dlg_observer / job_observer).
@@ -848,17 +851,24 @@ func TestObserverNotificationAcknowledgementDoesNotRetriggerSameWatch(t *testing
 		t.Fatal("notification input should proceed")
 	}
 	// After accepting the notification, the parent's active provenance carries the
-	// watch provenance. An acknowledgement communicate must be suppressed.
+	// watch provenance. The acknowledgement communicate is this watch's own echo:
+	// delivered and classified self-influenced, so it re-fires once.
 	parent.emit(events.EventCommunicate, events.CommunicateData{Message: "observer done acknowledged", EndTurn: false})
 
-	// nextUpdateSeq must still be 0: the ack communicate was suppressed and did not
-	// call watchSendSnapshot. A value of 1 would mean suppression regressed.
-	if cfg.nextUpdateSeq != 0 {
-		t.Fatalf("nextUpdateSeq = %d after suppressed ack, want 0 (notification ack must not retrigger watch)", cfg.nextUpdateSeq)
+	// nextUpdateSeq must be 1: the self-echo ack re-fired the watch exactly once
+	// (delivered + classified self-influenced, no longer suppressed).
+	if cfg.nextUpdateSeq != 1 {
+		t.Fatalf("nextUpdateSeq = %d after self-echo ack, want 1 (notification ack re-fires the watch once)", cfg.nextUpdateSeq)
 	}
 }
 
-func TestWatchDrivenDelegateJobNotificationDoesNotRetriggerSameWatch(t *testing.T) {
+// TestWatchDrivenDelegateJobNotificationReFiresSameWatchClassifiedSelfInfluenced
+// proves that a job.notification from a delegate the watch itself launched (the
+// delegate's run provenance carries the watch's key) is recognized as this watch's
+// own echo. Under the breaker policy the echo is delivered (not suppressed) and
+// classified self-influenced — it re-fires the watch exactly once and records one
+// pending send. The runaway fuse, proven elsewhere, bounds a runaway.
+func TestWatchDrivenDelegateJobNotificationReFiresSameWatchClassifiedSelfInfluenced(t *testing.T) {
 	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
@@ -895,15 +905,20 @@ func TestWatchDrivenDelegateJobNotificationDoesNotRetriggerSameWatch(t *testing.
 		t.Fatalf("finalize watch-driven delegate: %v", err)
 	}
 
-	if cfg.nextUpdateSeq != 0 {
-		t.Fatalf("nextUpdateSeq = %d after watch-driven delegate completion, want 0 (own notification must be suppressed)", cfg.nextUpdateSeq)
+	if cfg.nextUpdateSeq != 1 {
+		t.Fatalf("nextUpdateSeq = %d after watch-driven delegate completion, want 1 (own notification delivered + classified self-influenced, re-fires once)", cfg.nextUpdateSeq)
 	}
-	if len(cfg.pending) != 0 {
-		t.Fatalf("pending sends = %d after watch-driven delegate completion, want 0", len(cfg.pending))
+	if len(cfg.pending) != 1 {
+		t.Fatalf("pending sends = %d after watch-driven delegate completion, want 1 (self-echo delivered)", len(cfg.pending))
 	}
 }
 
-func TestDelegateOutputCausedByWatchDoesNotRetriggerOutputMatchWatch(t *testing.T) {
+// TestDelegateOutputCausedByWatchReFiresOutputMatchWatchClassifiedSelfInfluenced
+// proves that delegate output whose feed provenance carries this output_match
+// watch's own key is recognized as the watch's echo. Under the breaker policy the
+// echo is delivered (not suppressed) and classified self-influenced — it re-fires
+// once. The runaway fuse, proven elsewhere, bounds a runaway.
+func TestDelegateOutputCausedByWatchReFiresOutputMatchWatchClassifiedSelfInfluenced(t *testing.T) {
 	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
@@ -932,15 +947,21 @@ func TestDelegateOutputCausedByWatchDoesNotRetriggerOutputMatchWatch(t *testing.
 		t.Fatalf("finalize delegate: %v", err)
 	}
 
-	if len(watchNotifications) != 0 {
-		t.Fatalf("same-watch delegate output_match must be suppressed; got %d notifications: %+v", len(watchNotifications), watchNotifications)
+	if len(watchNotifications) != 1 {
+		t.Fatalf("same-watch delegate output_match must re-fire once (delivered + classified self-influenced); got %d notifications: %+v", len(watchNotifications), watchNotifications)
 	}
-	if cfg.deliveries != 0 {
-		t.Fatalf("deliveries = %d, want 0 for same-watch delegate output", cfg.deliveries)
+	if cfg.deliveries != 1 {
+		t.Fatalf("deliveries = %d, want 1 for self-echo delegate output", cfg.deliveries)
 	}
 }
 
-func TestDelegateOutputCausedByCompletedWatchTurnDoesNotRetriggerOutputMatchWatch(t *testing.T) {
+// TestDelegateOutputCausedByCompletedWatchTurnReFiresOutputMatchWatchClassifiedSelfInfluenced
+// proves that even when the watch's key reaches the output via a COMPLETED child
+// turn's provenance (not the active turn), the output is still recognized as this
+// watch's echo: delivered and classified self-influenced under the breaker policy,
+// re-firing once. The unrelated later child turn's key must NOT leak into the
+// emitted job lifecycle provenance.
+func TestDelegateOutputCausedByCompletedWatchTurnReFiresOutputMatchWatchClassifiedSelfInfluenced(t *testing.T) {
 	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
@@ -975,11 +996,11 @@ func TestDelegateOutputCausedByCompletedWatchTurnDoesNotRetriggerOutputMatchWatc
 		t.Fatalf("finalize delegate: %v", err)
 	}
 
-	if len(watchNotifications) != 0 {
-		t.Fatalf("same-watch delegate output_match must be suppressed; got %d notifications: %+v", len(watchNotifications), watchNotifications)
+	if len(watchNotifications) != 1 {
+		t.Fatalf("same-watch delegate output_match must re-fire once (delivered + classified self-influenced); got %d notifications: %+v", len(watchNotifications), watchNotifications)
 	}
-	if cfg.deliveries != 0 {
-		t.Fatalf("deliveries = %d, want 0 for same-watch delegate output", cfg.deliveries)
+	if cfg.deliveries != 1 {
+		t.Fatalf("deliveries = %d, want 1 for self-echo delegate output", cfg.deliveries)
 	}
 
 	var sawFinished, sawPending bool
@@ -1014,7 +1035,12 @@ func TestDelegateOutputCausedByCompletedWatchTurnDoesNotRetriggerOutputMatchWatc
 	}
 }
 
-func TestDelegateJobNotificationCausedByCompletedWatchTurnDoesNotRetriggerSameWatch(t *testing.T) {
+// TestDelegateJobNotificationCausedByCompletedWatchTurnReFiresSameWatchClassifiedSelfInfluenced
+// proves that a job.notification carrying this watch's key via a COMPLETED child
+// turn's provenance is recognized as the watch's echo: delivered and classified
+// self-influenced under the breaker policy, re-firing once and recording one
+// pending send. The runaway fuse, proven elsewhere, bounds a runaway.
+func TestDelegateJobNotificationCausedByCompletedWatchTurnReFiresSameWatchClassifiedSelfInfluenced(t *testing.T) {
 	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
@@ -1043,11 +1069,11 @@ func TestDelegateJobNotificationCausedByCompletedWatchTurnDoesNotRetriggerSameWa
 		t.Fatalf("finalize delegate: %v", err)
 	}
 
-	if pending := loadWatchSendRecord(t, parent.jobManager).Pending; len(pending) != 0 {
-		t.Fatalf("same-watch delegate job.notification must be suppressed; pending sends: %+v", pending)
+	if pending := loadWatchSendRecord(t, parent.jobManager).Pending; len(pending) != 1 {
+		t.Fatalf("same-watch delegate job.notification must re-fire once (delivered + classified self-influenced); pending sends: %+v", pending)
 	}
-	if cfg.nextUpdateSeq != 0 {
-		t.Fatalf("nextUpdateSeq = %d, want 0 for same-watch delegate job.notification", cfg.nextUpdateSeq)
+	if cfg.nextUpdateSeq != 1 {
+		t.Fatalf("nextUpdateSeq = %d, want 1 for self-echo delegate job.notification (re-fires once)", cfg.nextUpdateSeq)
 	}
 }
 

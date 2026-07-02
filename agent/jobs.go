@@ -59,13 +59,25 @@ type jobManager struct {
 	// dropped rather than corrupting the matcher's scan-offset accounting.
 	// Guarded by jm.mu.
 	lastFedOffset map[string]int64
-	closing       bool
-	appendEvent   func(jobstore.Event) error
-	appendEvents  func([]jobstore.Event) error
-	emit          func(events.EventKind, events.EventData, *provenance.Causal)
-	forward       func(jobstore.Event) error
-	parentJobID   string
-	enqueue       func(jobNotification)
+	// deliveredWatchSendIDs is the set of watch-send delivery IDs that have
+	// settled delivered, keyed by delivery_id. It is the delivered() oracle the
+	// self-influence depth metric consults so a coalesced-away (never delivered)
+	// predecessor cannot inflate depth. Guarded by jm.mu.
+	deliveredWatchSendIDs map[string]struct{}
+	// watchLineage remembers, per watch key, the watchID lineage of configs
+	// that ENDED in that slot (cleared/replaced/expired) so the next install
+	// for the same key inherits it and a clear-and-recreate loop cannot reset
+	// the runaway fuse. Bounded (watchLineageKeyCap keys, oldest evicted);
+	// in-memory like the volume-budget counter. Guarded by jm.mu.
+	watchLineage      map[watchKey][]string
+	watchLineageOrder []watchKey
+	closing           bool
+	appendEvent       func(jobstore.Event) error
+	appendEvents      func([]jobstore.Event) error
+	emit              func(events.EventKind, events.EventData, *provenance.Causal)
+	forward           func(jobstore.Event) error
+	parentJobID       string
+	enqueue           func(jobNotification)
 	// currentProvenance reports the owning session's active causal provenance at
 	// call time. A job records this at creation so its detached lifecycle events
 	// and terminal notification carry the origin of whatever input launched it.
@@ -329,22 +341,24 @@ func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*
 		return nil, err
 	}
 	jm := &jobManager{
-		dir:                dir,
-		stateDir:           stateDir,
-		sessionID:          sessionID,
-		transcriptRef:      encodeRef("", sessionID),
-		store:              store,
-		running:            make(map[string]*runningJob),
-		watches:            make(map[watchKey]*watchConfig),
-		lastFedOffset:      make(map[string]int64),
-		appendEvent:        store.Append,
-		appendEvents:       store.AppendBatch,
-		enqueue:            enqueue,
-		now:                time.Now,
-		clock:              clock.Real(),
-		closeGrace:         defaultCloseGrace,
-		quietWindow:        delegateQuietWindow,
-		quietCheckInterval: delegateQuietCheckInterval,
+		dir:                   dir,
+		stateDir:              stateDir,
+		sessionID:             sessionID,
+		transcriptRef:         encodeRef("", sessionID),
+		store:                 store,
+		running:               make(map[string]*runningJob),
+		watches:               make(map[watchKey]*watchConfig),
+		lastFedOffset:         make(map[string]int64),
+		deliveredWatchSendIDs: make(map[string]struct{}),
+		watchLineage:          make(map[watchKey][]string),
+		appendEvent:           store.Append,
+		appendEvents:          store.AppendBatch,
+		enqueue:               enqueue,
+		now:                   time.Now,
+		clock:                 clock.Real(),
+		closeGrace:            defaultCloseGrace,
+		quietWindow:           delegateQuietWindow,
+		quietCheckInterval:    delegateQuietCheckInterval,
 	}
 	if err := jm.restoreWatchSendPending(); err != nil {
 		_ = store.Close()

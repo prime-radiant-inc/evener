@@ -1,0 +1,480 @@
+package agent
+
+import (
+	"strings"
+	"testing"
+
+	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/provenance"
+)
+
+// TestWatchSendDeliveredLockedFlipsOnSettle proves the delivered() oracle: a
+// delivery ID is absent until its watch-send settles delivered, then present.
+// This is the predicate the self-influence depth metric consults so a
+// coalesced-away (never delivered) predecessor cannot inflate depth.
+func TestWatchSendDeliveredLockedFlipsOnSettle(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+
+	jm.mu.Lock()
+	pre := jm.watchSendDeliveredLocked("wd_1")
+	jm.mu.Unlock()
+	if pre {
+		t.Fatal("watchSendDeliveredLocked(\"wd_1\") = true before settle, want false")
+	}
+
+	cfg := &watchConfig{}
+	state := jobstore.WatchSendState{
+		Key:        jobstore.WatchSendKey{VisibleSessionID: jm.sessionID},
+		DeliveryID: "wd_1",
+	}
+	if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
+		t.Fatal(err)
+	}
+
+	jm.mu.Lock()
+	post := jm.watchSendDeliveredLocked("wd_1")
+	unknown := jm.watchSendDeliveredLocked("wd_missing")
+	jm.mu.Unlock()
+	if !post {
+		t.Fatal("watchSendDeliveredLocked(\"wd_1\") = false after settle, want true")
+	}
+	if unknown {
+		t.Fatal("watchSendDeliveredLocked(\"wd_missing\") = true, want false for unknown id")
+	}
+}
+
+func TestClassifySelfInfluenceLocked(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+
+	cases := []struct {
+		name      string
+		delivered map[string]struct{}
+		cfg       *watchConfig
+		p         *provenance.Causal
+		want      selfInfluence
+	}{
+		{
+			name:      "not self-influenced",
+			delivered: map[string]struct{}{},
+			cfg:       &watchConfig{watchID: "w1", generation: "g1"},
+			p: &provenance.Causal{
+				WatchKeys: []provenance.WatchKey{{WatchID: "w2", WatchGeneration: "g9"}},
+				Chain:     []provenance.Entry{{Kind: "watch", WatchID: "w2", WatchGeneration: "g9", DeliveryID: "wd_other"}},
+			},
+			want: selfInfluence{self: false, gradientDepth: 0, fuseDepth: 0, truncated: false},
+		},
+		{
+			name:      "one delivered prior same generation",
+			delivered: map[string]struct{}{"wd_1": {}},
+			cfg:       &watchConfig{watchID: "w1", generation: "g1"},
+			p: &provenance.Causal{
+				WatchKeys: []provenance.WatchKey{{WatchID: "w1", WatchGeneration: "g1"}},
+				Chain:     []provenance.Entry{{Kind: "watch", WatchID: "w1", WatchGeneration: "g1", DeliveryID: "wd_1"}},
+			},
+			want: selfInfluence{self: true, gradientDepth: 1, fuseDepth: 1, truncated: false},
+		},
+		{
+			name:      "cross-generation scopes differ",
+			delivered: map[string]struct{}{"wd_1": {}, "wd_2": {}},
+			cfg:       &watchConfig{watchID: "w1", generation: "g2"},
+			p: &provenance.Causal{
+				WatchKeys: []provenance.WatchKey{
+					{WatchID: "w1", WatchGeneration: "g1"},
+					{WatchID: "w1", WatchGeneration: "g2"},
+				},
+				Chain: []provenance.Entry{
+					{Kind: "watch", WatchID: "w1", WatchGeneration: "g1", DeliveryID: "wd_1"},
+					{Kind: "watch", WatchID: "w1", WatchGeneration: "g2", DeliveryID: "wd_2"},
+				},
+			},
+			want: selfInfluence{self: true, gradientDepth: 1, fuseDepth: 2, truncated: false},
+		},
+		{
+			name:      "coalesced-away prior excluded",
+			delivered: map[string]struct{}{"wd_survivor": {}},
+			cfg:       &watchConfig{watchID: "w1", generation: "g1"},
+			p: &provenance.Causal{
+				WatchKeys: []provenance.WatchKey{{WatchID: "w1", WatchGeneration: "g1"}},
+				Chain: []provenance.Entry{
+					{Kind: "watch", WatchID: "w1", WatchGeneration: "g1", DeliveryID: "wd_survivor"},
+					{Kind: "watch", WatchID: "w1", WatchGeneration: "g1", DeliveryID: "wd_coalesced"},
+				},
+			},
+			want: selfInfluence{self: true, gradientDepth: 1, fuseDepth: 1, truncated: false},
+		},
+		{
+			name:      "truncated backstop",
+			delivered: map[string]struct{}{},
+			cfg:       &watchConfig{watchID: "w1", generation: "g1"},
+			p: &provenance.Causal{
+				WatchKeys:      []provenance.WatchKey{{WatchID: "w1", WatchGeneration: "g1"}},
+				Chain:          []provenance.Entry{},
+				ChainTruncated: true,
+			},
+			want: selfInfluence{self: true, gradientDepth: 0, fuseDepth: 0, truncated: true},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			jm.mu.Lock()
+			jm.deliveredWatchSendIDs = tc.delivered
+			got := jm.classifySelfInfluenceLocked(tc.cfg, tc.p)
+			jm.mu.Unlock()
+			if got != tc.want {
+				t.Fatalf("classifySelfInfluenceLocked = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRecordWatchSendRunawayFuse covers the circuit-breaker fuse core: a send
+// whose carried fuseDepth is below the runaway threshold persists as pending
+// with its depth stamped on the durable state, while a send at/over the
+// threshold is dropped as a runaway (persist-then-drop, mirroring the
+// unresolvable-target drop) carrying DiagnosticReason "runaway".
+func TestRecordWatchSendRunawayFuse(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
+	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}, Send: &watchSendArgs{To: "dlg_obs"}})
+	cfg := onlyWatchConfigForTest(t, jm)
+
+	build := func(fuseDepth int) watchSendDelivery {
+		jm.mu.Lock()
+		d := jm.watchSendSnapshot(cfg, "caller", "test", events.SessionEvent{SessionID: jm.sessionID})
+		jm.mu.Unlock()
+		d.fuseDepth = fuseDepth
+		return d
+	}
+
+	// Below threshold: persists pending, depth stamped through.
+	state, _, ok, err := jm.recordWatchSend(build(runawaySelfInfluenceDepth - 1))
+	if err != nil || !ok {
+		t.Fatalf("shallow send should persist: ok=%v err=%v", ok, err)
+	}
+	if state.SelfInfluenceDepth != runawaySelfInfluenceDepth-1 {
+		t.Fatalf("SelfInfluenceDepth=%d, want %d", state.SelfInfluenceDepth, runawaySelfInfluenceDepth-1)
+	}
+
+	// At threshold: dropped as runaway (ok=false, no error). A fresh delivery
+	// (new updateSeq) so it is the current pending.
+	_, _, ok, err = jm.recordWatchSend(build(runawaySelfInfluenceDepth))
+	if err != nil {
+		t.Fatalf("runaway drop should not error: %v", err)
+	}
+	if ok {
+		t.Fatal("send at runaway depth must be dropped (ok=false)")
+	}
+
+	var droppedReason string
+	for _, event := range loadJobStoreEvents(t, jm) {
+		if event.Kind == jobstore.EventWatchSendDropped && event.WatchSend != nil {
+			droppedReason = event.WatchSend.DiagnosticReason
+		}
+	}
+	if droppedReason != "runaway" {
+		t.Fatalf("dropped reason = %q, want %q", droppedReason, "runaway")
+	}
+}
+
+// TestSelfInfluenceNotice covers the breaker's worker-facing wording: empty when
+// the delivery is not self-influenced, a terse "responded to your last message"
+// line when shallow, a pointed "~N exchanges deep ... disengaging" line as the
+// loop tightens, and the depth-less "many exchanges deep" line when the chain
+// truncated (so the exact depth is unknown). Every non-empty line is wrapped in a
+// <system-reminder> so the worker reads it as machinery, not as the watcher.
+func TestSelfInfluenceNotice(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name          string
+		self          bool
+		gradientDepth int
+		truncated     bool
+		wantEmpty     bool
+		wantContains  []string
+		wantAbsent    []string
+	}{
+		{
+			name:      "not self-influenced is empty",
+			self:      false,
+			wantEmpty: true,
+		},
+		{
+			name:         "shallow depth 0 is terse",
+			self:         true,
+			wantContains: []string{"<system-reminder>", "</system-reminder>", "responded to your last message"},
+		},
+		{
+			name:          "shallow depth 1 is terse",
+			self:          true,
+			gradientDepth: 1,
+			wantContains:  []string{"<system-reminder>", "responded to your last message"},
+		},
+		{
+			name:          "deeper depth is pointed with number",
+			self:          true,
+			gradientDepth: 3,
+			wantContains:  []string{"<system-reminder>", "~3", "disengaging"},
+		},
+		{
+			name:         "truncated is pointed without number",
+			self:         true,
+			truncated:    true,
+			wantContains: []string{"<system-reminder>", "many exchanges deep", "disengaging"},
+			wantAbsent:   []string{"~"},
+		},
+		{
+			name:          "truncated overrides a known depth (no number)",
+			self:          true,
+			gradientDepth: 5,
+			truncated:     true,
+			wantContains:  []string{"many exchanges deep"},
+			wantAbsent:    []string{"~5", "~"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := selfInfluenceNotice(tc.self, tc.gradientDepth, tc.truncated)
+			if tc.wantEmpty {
+				if got != "" {
+					t.Fatalf("want empty, got %q", got)
+				}
+				return
+			}
+			for _, want := range tc.wantContains {
+				if !strings.Contains(got, want) {
+					t.Fatalf("notice missing %q:\n%s", want, got)
+				}
+			}
+			for _, absent := range tc.wantAbsent {
+				if strings.Contains(got, absent) {
+					t.Fatalf("notice should not contain %q:\n%s", absent, got)
+				}
+			}
+		})
+	}
+}
+
+// TestSnapshotWatchSendFrameAddsSelfInfluenceNotice guards that a self-influenced
+// send delivery gets the breaker's <system-reminder> line prepended to its frame
+// (while the normal watch-frame body survives), and that a delivery that is not
+// self-influenced carries no such line.
+func TestSnapshotWatchSendFrameAddsSelfInfluenceNotice(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
+	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}, Send: &watchSendArgs{To: "dlg_obs"}})
+	cfg := onlyWatchConfigForTest(t, jm)
+
+	build := func() watchSendDelivery {
+		jm.mu.Lock()
+		d := jm.watchSendSnapshot(cfg, "caller", "test", events.SessionEvent{SessionID: jm.sessionID})
+		jm.mu.Unlock()
+		return d
+	}
+
+	self := build()
+	self.selfInfluence = true
+	self.gradientDepth = 1
+	self = jm.snapshotWatchSendFrame(self)
+	if !strings.HasPrefix(self.frame, "<system-reminder>") {
+		t.Fatalf("self-influenced frame should begin with the breaker line:\n%s", self.frame)
+	}
+	if !strings.Contains(self.frame, "responded to your last message") {
+		t.Fatalf("self-influenced frame missing the breaker notice:\n%s", self.frame)
+	}
+	if !strings.Contains(self.frame, "Watch frame") {
+		t.Fatalf("self-influenced frame dropped the normal body:\n%s", self.frame)
+	}
+
+	plain := build()
+	plain.selfInfluence = false
+	plain = jm.snapshotWatchSendFrame(plain)
+	if strings.Contains(plain.frame, "<system-reminder>") {
+		t.Fatalf("non-self-influenced frame should carry no breaker line:\n%s", plain.frame)
+	}
+	if !strings.Contains(plain.frame, "Watch frame") {
+		t.Fatalf("non-self-influenced frame missing the normal body:\n%s", plain.frame)
+	}
+}
+
+// TestRecordWatchSendRunawayFuseSeesCoalescedDepth: coalescing unions the
+// superseded pending's provenance into the survivor, so the runaway fuse must
+// run against the UNIONED ancestry, not the latest trigger's own stamp — two
+// below-threshold sends for the same key whose delivered same-watch priors are
+// disjoint can cross the threshold only in union.
+func TestRecordWatchSendRunawayFuseSeesCoalescedDepth(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
+	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}, Send: &watchSendArgs{To: "dlg_obs"}})
+	cfg := onlyWatchConfigForTest(t, jm)
+
+	// Half the threshold of delivered priors on each branch, disjoint IDs.
+	half := runawaySelfInfluenceDepth / 2
+	branch := func(prefix string) *provenance.Causal {
+		p := &provenance.Causal{WatchKeys: []provenance.WatchKey{{WatchID: cfg.watchID, WatchGeneration: cfg.generation}}}
+		jm.mu.Lock()
+		for i := 0; i < half; i++ {
+			id := prefix + string(rune('0'+i))
+			p.Chain = append(p.Chain, provenance.Entry{Kind: "watch", WatchID: cfg.watchID, WatchGeneration: cfg.generation, DeliveryID: id})
+			jm.deliveredWatchSendIDs[id] = struct{}{}
+		}
+		jm.mu.Unlock()
+		return p
+	}
+
+	build := func(p *provenance.Causal) watchSendDelivery {
+		jm.mu.Lock()
+		d := jm.watchSendSnapshot(cfg, "caller", "test", events.SessionEvent{SessionID: jm.sessionID, Provenance: p})
+		c := jm.classifySelfInfluenceLocked(cfg, p)
+		jm.mu.Unlock()
+		return d.withSelfInfluence(c)
+	}
+
+	// First send: depth = half, persists.
+	_, _, ok, err := jm.recordWatchSend(build(branch("wa_")))
+	if err != nil || !ok {
+		t.Fatalf("first send should persist: ok=%v err=%v", ok, err)
+	}
+
+	// Second send for the same key, disjoint priors: its own depth is also
+	// half, but the coalesced union reaches the threshold — dropped as runaway.
+	_, _, ok, err = jm.recordWatchSend(build(branch("wb_")))
+	if err != nil {
+		t.Fatalf("coalesced runaway drop should not error: %v", err)
+	}
+	if ok {
+		t.Fatal("coalesced union at runaway depth must be dropped (ok=false)")
+	}
+	var dropped *jobstore.WatchSendState
+	for _, event := range loadJobStoreEvents(t, jm) {
+		if event.Kind == jobstore.EventWatchSendDropped && event.WatchSend != nil {
+			dropped = event.WatchSend
+		}
+	}
+	if dropped == nil || dropped.DiagnosticReason != "runaway" {
+		t.Fatalf("dropped state = %+v, want runaway drop", dropped)
+	}
+	// The recorded drop must carry the COALESCED evidence: both branches'
+	// delivered priors and the union depth that tripped the fuse.
+	if dropped.SelfInfluenceDepth != runawaySelfInfluenceDepth {
+		t.Fatalf("dropped SelfInfluenceDepth = %d, want union depth %d", dropped.SelfInfluenceDepth, runawaySelfInfluenceDepth)
+	}
+	ids := map[string]bool{}
+	if dropped.Provenance != nil {
+		for _, e := range dropped.Provenance.Chain {
+			ids[e.DeliveryID] = true
+		}
+	}
+	if !ids["wa_0"] || !ids["wb_0"] {
+		t.Fatalf("dropped provenance chain %v must carry both coalesced branches (wa_*, wb_*)", ids)
+	}
+}
+
+// TestClassifySelfInfluenceCountsReplacedLineage: replacing a watch (same key,
+// changed config) mints a fresh watchID — the fuse must not reset. The new
+// config inherits the predecessor's watchID lineage, and fuseDepth counts
+// delivered priors across the whole lineage; gradientDepth stays scoped to the
+// CURRENT identity (a genuine reconfiguration reads fresh to the sidecar).
+func TestClassifySelfInfluenceCountsReplacedLineage(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
+	if _, err := jm.configureWatch(watchArgs{
+		Target: "caller",
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "dlg_obs", Message: "v1"},
+	}); err != nil {
+		t.Fatalf("configure v1: %v", err)
+	}
+	oldCfg := onlyWatchConfigForTest(t, jm)
+	oldID, oldGen := oldCfg.watchID, oldCfg.generation
+
+	// Replace: same key (target+send target), changed config.
+	if _, err := jm.configureWatch(watchArgs{
+		Target: "caller",
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "dlg_obs", Message: "v2 changed"},
+	}); err != nil {
+		t.Fatalf("configure v2 (replace): %v", err)
+	}
+	cfg := onlyWatchConfigForTest(t, jm)
+	if cfg.watchID == oldID {
+		t.Fatal("test premise broken: replacement did not mint a fresh watchID")
+	}
+
+	// An event descending from delivered priors of the OLD identity.
+	p := &provenance.Causal{
+		WatchKeys: []provenance.WatchKey{{WatchID: oldID, WatchGeneration: oldGen}},
+		Chain: []provenance.Entry{
+			{Kind: "watch", WatchID: oldID, WatchGeneration: oldGen, DeliveryID: "wd_old1"},
+			{Kind: "watch", WatchID: oldID, WatchGeneration: oldGen, DeliveryID: "wd_old2"},
+		},
+	}
+	jm.mu.Lock()
+	jm.deliveredWatchSendIDs["wd_old1"] = struct{}{}
+	jm.deliveredWatchSendIDs["wd_old2"] = struct{}{}
+	got := jm.classifySelfInfluenceLocked(cfg, p)
+	jm.mu.Unlock()
+
+	if got.fuseDepth != 2 {
+		t.Fatalf("fuseDepth = %d, want 2 (replaced-lineage priors count toward the fuse)", got.fuseDepth)
+	}
+	if got.gradientDepth != 0 {
+		t.Fatalf("gradientDepth = %d, want 0 (gradient stays scoped to the current identity)", got.gradientDepth)
+	}
+}
+
+// TestClassifySelfInfluenceCountsClearedLineage: clearing a watch and
+// recreating the same key must not reset the fuse either — the lineage
+// survives as a bounded tombstone keyed by the watch key and is adopted by
+// the next install.
+func TestClassifySelfInfluenceCountsClearedLineage(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
+	args := watchArgs{
+		Target: "caller",
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "dlg_obs", Message: "observe"},
+	}
+	if _, err := jm.configureWatch(args); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	oldCfg := onlyWatchConfigForTest(t, jm)
+	oldID, oldGen := oldCfg.watchID, oldCfg.generation
+
+	clear := args
+	clear.Clear = true
+	if _, err := jm.configureWatch(clear); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if _, err := jm.configureWatch(args); err != nil {
+		t.Fatalf("recreate: %v", err)
+	}
+	cfg := onlyWatchConfigForTest(t, jm)
+	if cfg.watchID == oldID {
+		t.Fatal("test premise broken: recreate did not mint a fresh watchID")
+	}
+
+	p := &provenance.Causal{
+		WatchKeys: []provenance.WatchKey{{WatchID: oldID, WatchGeneration: oldGen}},
+		Chain: []provenance.Entry{
+			{Kind: "watch", WatchID: oldID, WatchGeneration: oldGen, DeliveryID: "wd_c1"},
+			{Kind: "watch", WatchID: oldID, WatchGeneration: oldGen, DeliveryID: "wd_c2"},
+		},
+	}
+	jm.mu.Lock()
+	jm.deliveredWatchSendIDs["wd_c1"] = struct{}{}
+	jm.deliveredWatchSendIDs["wd_c2"] = struct{}{}
+	got := jm.classifySelfInfluenceLocked(cfg, p)
+	jm.mu.Unlock()
+
+	if got.fuseDepth != 2 {
+		t.Fatalf("fuseDepth = %d, want 2 (cleared-lineage priors count toward the fuse)", got.fuseDepth)
+	}
+}

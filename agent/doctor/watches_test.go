@@ -47,18 +47,6 @@ func ownStamp(watchID, gen, deliveryID string) *provenance.Causal {
 	}
 }
 
-// loopStamp builds the provenance a self-loop delivery carries: a PRIOR hop of
-// the same watch (different delivery id) followed by this delivery's own stamp.
-func loopStamp(watchID, gen, priorDeliveryID, deliveryID string) *provenance.Causal {
-	return &provenance.Causal{
-		WatchKeys: []provenance.WatchKey{{WatchID: watchID, WatchGeneration: gen}},
-		Chain: []provenance.Entry{
-			{Kind: "watch", WatchID: watchID, WatchGeneration: gen, DeliveryID: priorDeliveryID},
-			{Kind: "watch", WatchID: watchID, WatchGeneration: gen, DeliveryID: deliveryID},
-		},
-	}
-}
-
 func watchesFixture(t *testing.T) (base, sid string) {
 	t.Helper()
 	base = t.TempDir()
@@ -72,7 +60,8 @@ func watchesFixture(t *testing.T) (base, sid string) {
 	kW1Evict := key("worker", "w1", "job:j3", "obs", "g1")
 	kW2Healthy := key("worker", "w2", "job:j9", "obs", "g2")
 	kW2Prior := key("worker", "w2", "job:j8", "obs", "g2")
-	kW2Loop := key("worker", "w2", "job:j9b", "obs", "g2")
+	kW2Influenced := key("worker", "w2", "job:j9b", "obs", "g2")
+	kW2Runaway := key("worker", "w2", "job:j9c", "obs", "g2")
 
 	writeJobsEvents(t, jobsPath, []jobstore.Event{
 		// w1 registration.
@@ -97,16 +86,20 @@ func watchesFixture(t *testing.T) (base, sid string) {
 		// w2 registration.
 		{Kind: jobstore.EventWatchRegistered, WatchID: "w2", Watch: &jobstore.WatchEvent{
 			Generation: "g2", OwnerSessionID: "obs", VisibleSessionID: "worker", Target: "job:j9", SendTo: "obs", ConfigHash: "cfg2"}},
-		// w2: a HEALTHY delivery (own stamp only).
+		// w2: a HEALTHY delivery (no self-influence; depth stamp 0).
 		{Kind: jobstore.EventWatchSendDelivered, WatchID: "w2", WatchSend: &jobstore.WatchSendState{
 			Key: kW2Healthy, DeliveryID: "dh", UpdateSeq: 1, Provenance: ownStamp("w2", "g2", "dh")}},
-		// w2: dprior — a genuine PRIOR delivered delivery (its own distinct slot).
+		// w2: dprior — another delivered delivery, also without self-influence.
 		{Kind: jobstore.EventWatchSendDelivered, WatchID: "w2", WatchSend: &jobstore.WatchSendState{
 			Key: kW2Prior, DeliveryID: "dprior", UpdateSeq: 1, Provenance: ownStamp("w2", "g2", "dprior")}},
-		// w2: a SELF-LOOP delivery — its chain carries a prior hop of dprior, a
-		// delivery that actually DELIVERED, so this is a genuine feedback loop.
+		// w2: a BOUNDED self-influenced delivery — the runtime stamped depth 2 (the
+		// breaker informed but did not fire).
 		{Kind: jobstore.EventWatchSendDelivered, WatchID: "w2", WatchSend: &jobstore.WatchSendState{
-			Key: kW2Loop, DeliveryID: "dl", UpdateSeq: 1, Provenance: loopStamp("w2", "g2", "dprior", "dl")}},
+			Key: kW2Influenced, DeliveryID: "dl", UpdateSeq: 1, SelfInfluenceDepth: 2, Provenance: ownStamp("w2", "g2", "dl")}},
+		// w2: the runaway fuse FIRING — a dropped send the depth fuse rejected at
+		// depth 8, carrying DiagnosticReason "runaway".
+		{Kind: jobstore.EventWatchSendDropped, WatchID: "w2", WatchSend: &jobstore.WatchSendState{
+			Key: kW2Runaway, DeliveryID: "dr", UpdateSeq: 1, SelfInfluenceDepth: 8, DiagnosticReason: "runaway", Provenance: ownStamp("w2", "g2", "dr")}},
 	})
 	return base, sid
 }
@@ -118,45 +111,6 @@ func findWatch(r WatchReport, watchID string) *WatchView {
 		}
 	}
 	return nil
-}
-
-// A coalesced-away pending predecessor is NOT a self-loop. When a new pending
-// supersedes an earlier pending for the same slot, the runtime unions their
-// provenance (job_watch.go: "the coalesced frame stands in for both"), so the
-// survivor's Chain carries the superseded delivery_id — but that predecessor
-// never independently delivered. This is the real 01KVEZ5K… production pattern;
-// flagging it is a false positive.
-func TestWatches_CoalescedPredecessorIsNotSelfLoop(t *testing.T) {
-	base := t.TempDir()
-	bucket := stateHomeBucket(base, hash1)
-	sid := sidA
-	writeSession(t, bucket, sid)
-	jobsPath := filepath.Join(bucket, "sessions", sid, "jobs.jsonl")
-	slot := key("worker", "wc", "caller", "obs", "gc")
-
-	writeJobsEvents(t, jobsPath, []jobstore.Event{
-		{Kind: jobstore.EventWatchRegistered, WatchID: "wc", Watch: &jobstore.WatchEvent{
-			Generation: "gc", OwnerSessionID: "worker", VisibleSessionID: "worker", Target: "caller", SendTo: "obs", ConfigHash: "cfgc"}},
-		// dpend: a pending frame for the slot, never delivered.
-		{Kind: jobstore.EventWatchSendPending, WatchID: "wc", WatchSend: &jobstore.WatchSendState{Key: slot, DeliveryID: "dpend", UpdateSeq: 5}},
-		// dco: the next pending coalesces over dpend (same slot) and delivers; its
-		// Chain carries dpend's hop by the coalescing-union design.
-		{Kind: jobstore.EventWatchSendPending, WatchID: "wc", WatchSend: &jobstore.WatchSendState{Key: slot, DeliveryID: "dco", UpdateSeq: 6, CoalescedCount: 1}},
-		{Kind: jobstore.EventWatchSendDelivered, WatchID: "wc", WatchSend: &jobstore.WatchSendState{
-			Key: slot, DeliveryID: "dco", UpdateSeq: 6, CoalescedCount: 1, Provenance: loopStamp("wc", "gc", "dpend", "dco")}},
-	})
-
-	r, err := Watches(base, sid, WatchOpts{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	wc := findWatch(r, "wc")
-	if wc == nil {
-		t.Fatal("wc missing")
-	}
-	if wc.SelfLoop.Detected {
-		t.Errorf("a coalesced-away pending predecessor (dpend, never delivered) must NOT be a self-loop; got %v", wc.SelfLoop.DeliveryIDs)
-	}
 }
 
 func TestWatches_CoalescingCollapse(t *testing.T) {
@@ -219,34 +173,37 @@ func TestWatches_DroppedAndEvictedHaveTerminalAndReason(t *testing.T) {
 	}
 }
 
-func TestWatches_SelfLoopVerdictFromChain(t *testing.T) {
+func TestWatches_BreakerTelemetryFromStamps(t *testing.T) {
 	base, sid := watchesFixture(t)
 	r, _ := Watches(base, sid, WatchOpts{})
 	w2 := findWatch(r, "w2")
 	if w2 == nil {
 		t.Fatal("w2 missing")
 	}
-	if !w2.SelfLoop.Detected {
-		t.Fatal("w2 self-loop should be detected (a prior same-watch_id hop)")
+	// The deepest stamped self-influence is the runaway drop's depth 8.
+	if w2.MaxSelfInfluenceDepth != 8 {
+		t.Errorf("MaxSelfInfluenceDepth = %d, want 8 (the runaway drop's stamp)", w2.MaxSelfInfluenceDepth)
 	}
-	if len(w2.SelfLoop.DeliveryIDs) != 1 || w2.SelfLoop.DeliveryIDs[0] != "dl" {
-		t.Errorf("self-loop delivery ids = %v, want [dl]", w2.SelfLoop.DeliveryIDs)
+	if w2.RunawayDrops != 1 {
+		t.Errorf("RunawayDrops = %d, want 1", w2.RunawayDrops)
 	}
-	// The healthy delivery (own stamp only) must NOT be flagged, proving the
-	// always-present WatchKeys stamp is not the discriminator.
+	// A healthy delivery carries no self-influence; the breaker stamps it 0.
 	for _, d := range w2.Deliveries {
-		if d.DeliveryID == "dh" && d.SelfLoop {
-			t.Error("healthy delivery dh was wrongly flagged as a self-loop")
+		if d.DeliveryID == "dh" && d.SelfInfluenceDepth != 0 {
+			t.Errorf("healthy delivery dh has SelfInfluenceDepth = %d, want 0", d.SelfInfluenceDepth)
 		}
 	}
 }
 
-func TestWatches_HealthyWatchHasNoSelfLoop(t *testing.T) {
+func TestWatches_HealthyWatchHasNoSelfInfluence(t *testing.T) {
 	base, sid := watchesFixture(t)
 	r, _ := Watches(base, sid, WatchOpts{})
 	w1 := findWatch(r, "w1")
-	if w1.SelfLoop.Detected {
-		t.Errorf("w1 should have no self-loop; got %v", w1.SelfLoop.DeliveryIDs)
+	if w1.MaxSelfInfluenceDepth != 0 {
+		t.Errorf("w1 MaxSelfInfluenceDepth = %d, want 0", w1.MaxSelfInfluenceDepth)
+	}
+	if w1.RunawayDrops != 0 {
+		t.Errorf("w1 RunawayDrops = %d, want 0", w1.RunawayDrops)
 	}
 }
 
@@ -254,7 +211,10 @@ func TestWatches_SelfLoopsOnlyFilter(t *testing.T) {
 	base, sid := watchesFixture(t)
 	r, _ := Watches(base, sid, WatchOpts{SelfLoopsOnly: true})
 	if len(r.Watches) != 1 || r.Watches[0].WatchID != "w2" {
-		t.Errorf("SelfLoopsOnly should yield only w2, got %d watches", len(r.Watches))
+		t.Errorf("SelfLoopsOnly should yield only w2 (where the runaway fuse fired), got %d watches", len(r.Watches))
+	}
+	if r.Watches[0].RunawayDrops == 0 {
+		t.Error("the filtered watch must have a runaway drop")
 	}
 }
 
@@ -266,15 +226,18 @@ func TestWatches_WatchIDFilter(t *testing.T) {
 	}
 }
 
-func TestWatches_RenderMentionsCoalescingAndVerdict(t *testing.T) {
+func TestWatches_RenderMentionsCoalescingAndBreaker(t *testing.T) {
 	base, sid := watchesFixture(t)
 	r, _ := Watches(base, sid, WatchOpts{})
 	out := RenderWatches(r)
 	if !strings.Contains(out, "coalescing collapsed") {
 		t.Error("render should note coalescing on w1")
 	}
-	if !strings.Contains(out, "SELF-LOOP") {
-		t.Error("render should flag w2's self-loop")
+	if !strings.Contains(out, "breaker:") {
+		t.Errorf("render should show the breaker line; got:\n%s", out)
+	}
+	if !strings.Contains(out, "runaway") {
+		t.Errorf("render should flag w2's fired runaway fuse; got:\n%s", out)
 	}
 	if !strings.Contains(out, "3 distinct") {
 		t.Errorf("render should show distinct delivery count; got:\n%s", out)
@@ -284,9 +247,9 @@ func TestWatches_RenderMentionsCoalescingAndVerdict(t *testing.T) {
 func TestEmptyWatchesMessage(t *testing.T) {
 	cases := map[string]string{
 		"":                    "no watches recorded",
-		"self-loops":          "no watches with a self-loop verdict (the session's watches are healthy)",
+		"self-loops":          "no watches where the runaway fuse fired (self-influence is bounded)",
 		"watch:w9":            "watch w9 not found in this session",
-		"self-loops,watch:w9": "no watches with a self-loop verdict (the session's watches are healthy)",
+		"self-loops,watch:w9": "no watches where the runaway fuse fired (self-influence is bounded)",
 	}
 	for filtered, want := range cases {
 		if got := emptyWatchesMessage(filtered); got != want {
@@ -307,9 +270,9 @@ func TestFilterLabel(t *testing.T) {
 	}
 }
 
-// A healthy watch under --self-loops must not read as "no watches recorded":
-// w1 in the fixture has no self-loop, so the filtered result is empty but the
-// session clearly has watches.
+// A watch with no runaway drop under --self-loops must not read as "no watches
+// recorded": w1 in the fixture never fired the fuse, so the filtered result is
+// empty but the session clearly has watches.
 func TestWatches_SelfLoopsEmptyMessageIsUnambiguous(t *testing.T) {
 	base, sid := watchesFixture(t)
 	r, err := Watches(base, sid, WatchOpts{WatchID: "w1", SelfLoopsOnly: true})
@@ -318,9 +281,9 @@ func TestWatches_SelfLoopsEmptyMessageIsUnambiguous(t *testing.T) {
 	}
 	out := RenderWatches(r)
 	if strings.Contains(out, "no watches recorded") {
-		t.Errorf("healthy --self-loops should not say 'no watches recorded':\n%s", out)
+		t.Errorf("a no-runaway --self-loops result should not say 'no watches recorded':\n%s", out)
 	}
-	if !strings.Contains(out, "self-loop verdict") {
-		t.Errorf("expected the self-loop-verdict empty message:\n%s", out)
+	if !strings.Contains(out, "runaway fuse fired") {
+		t.Errorf("expected the runaway-fuse empty message:\n%s", out)
 	}
 }

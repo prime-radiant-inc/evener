@@ -1,25 +1,25 @@
-# Runbook: observer self-loop
+# Runbook: observer self-loop (runaway fuse)
 
-**Question:** did any watch re-deliver its own downstream output back to itself —
-an observer/watch feedback loop the causal-provenance suppression should have
-prevented?
+**Question:** did any watch's self-influence go **unbounded** — did the runaway
+fuse fire? Self-influenced deliveries (a watch reacting to a session that its own
+earlier delivery influenced) are **normal and expected** under inform+breaker;
+the Finding is a loop that climbed until the machinery had to cut it.
 
 ## HEALTHY
 
-- No settled delivery's provenance `Chain` contains a **prior hop of the same
-  `watch_id`** (a hop with a different `delivery_id` than the delivery's own
-  stamp). `serf-doctor watches --self-loops` reports **no watches**.
-- Note: every recorded delivery's `WatchKeys` contains its own
-  `(watch_id, watch_generation)` by construction (the delivery-time stamp). That
-  is **not** the health signal — do not read it as one. The signal is the absence
-  of a same-`watch_id` prior `Chain` hop.
+- No watch has a `runaway` drop. `serf-doctor watches --self-loops` reports
+  **no watches** (it surfaces only watches whose fuse FIRED).
+- Self-influenced deliveries with a **bounded** `self_influence_depth` are fine —
+  the sidecar saw its own echo, was informed by the depth-gradient line, and
+  either disengaged or stayed shallow. A non-zero `max_self_influence_depth` that
+  never reached the fuse is healthy, not a problem.
 
 ## INSPECT
 
 Take the target session id from the runbook invocation — never hardcode one.
 
 ```
-# Self-loop verdict for every watch on the session (empty output ⇒ healthy):
+# Watches whose runaway fuse FIRED on the session (empty output ⇒ healthy):
 serf-doctor watches <selector> --self-loops --json
 
 # Optional: enumerate observer sessions feeding this worker, to widen the sweep:
@@ -31,17 +31,22 @@ surfaces.
 
 ## CLASSIFY
 
-- For each watch in the `--self-loops` output, `self_loop.detected == true` is a
-  **confirmed self-loop**. Emit one Finding:
-  - `category`: `watch_self_loop`
+- For each watch in the `--self-loops` output, `runaway_drops > 0` is the
+  **Finding** — the fuse fired, so a real runaway loop was bounded by the
+  machinery (sends at `self_influence_depth >= 8` were dropped with
+  `diagnostic_reason: "runaway"`). Emit one Finding:
+  - `category`: `watch_runaway`
   - `severity`: `high`
-  - `signature`: `watch_self_loop:<sessionID>:<watchID>`
-  - `evidence`: `watchIds` = the watch, `deliveryIds` = `self_loop.delivery_ids`,
-    `doctorCommand` = the `serf-doctor watches … --self-loops` invocation.
-  - `suggestedFix.type`: `diagnosis` (a self-loop that escaped suppression is a
-    bug in serf's suppression, not in the doctor's machinery — report it).
-  - If `self_loop.chain_truncated == true`, say so in `description`: the `Chain`
-    was truncated (`maxDiagnosticChain`), so the loop may be deeper than shown.
+  - `signature`: `watch_runaway:<sessionID>:<watchID>`
+  - `evidence`: `watchIds` = the watch, `deliveryIds` = the dropped-send delivery
+    ids, `doctorCommand` = the `serf-doctor watches … --self-loops` invocation.
+    Put `max_self_influence_depth` and `runaway_drops` in the `description`.
+  - `suggestedFix.type`: `diagnosis` (a runaway that the fuse had to cut is a
+    sidecar/watch-topology problem in serf, not in the doctor's machinery —
+    report it).
+- A watch that is self-influenced but **bounded** (`runaway_drops == 0`, any
+  `max_self_influence_depth`) is **not** a Finding — the inform+breaker design
+  expects it. `--self-loops` will not list it.
 - Empty `--self-loops` output (no watches) ⇒ **PASS, emit nothing.**
 
-A run that finds no self-loops is the expected, correct outcome.
+A run where no fuse fired is the expected, correct outcome.

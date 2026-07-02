@@ -14,22 +14,21 @@ import (
 //   - mutual exclusion: a send delivery and a budget-counted notification are
 //     never both requested by one tick;
 //   - a tick that does not keep the goroutine alive never fires;
-//   - suppression keeps the goroutine alive but never fires;
+//   - a LIVE tick always fires (the breaker policy removed the suppression
+//     branch: self-influence classifies at the fire site, never gates here);
 //   - a fire always keeps the goroutine alive and routes exactly one way.
 func FuzzWvProgressTick(f *testing.F) {
-	f.Add(false, true, false, true, false, true, "dlg_1")
-	f.Add(false, true, true, false, false, false, "*")
-	f.Add(false, true, false, true, true, false, "dlg_2")
-	f.Add(true, true, true, true, false, true, "job_x")
-	f.Add(false, false, false, false, false, false, "")
+	f.Add(false, true, false, true, true, "dlg_1")
+	f.Add(false, true, true, false, false, "*")
+	f.Add(true, true, true, true, true, "job_x")
+	f.Add(false, false, false, false, false, "")
 
-	f.Fuzz(func(t *testing.T, closing, stillRegistered, sessionTarget, targetRunning, suppressed, hasSend bool, target string) {
+	f.Fuzz(func(t *testing.T, closing, stillRegistered, sessionTarget, targetRunning, hasSend bool, target string) {
 		snap := progressTickSnapshot{
 			closing:         closing,
 			stillRegistered: stillRegistered,
 			sessionTarget:   sessionTarget,
 			targetRunning:   targetRunning,
-			suppressed:      suppressed,
 			hasSend:         hasSend,
 			target:          target,
 		}
@@ -43,10 +42,8 @@ func FuzzWvProgressTick(f *testing.F) {
 		if !dec.keepAlive && dec.fire {
 			t.Fatalf("dead tick must not fire: %+v", dec)
 		}
-		if suppressed && stillRegistered && !closing && (sessionTarget || targetRunning) {
-			if !dec.keepAlive || dec.fire {
-				t.Fatalf("suppressed live tick must keep alive without firing: %+v", dec)
-			}
+		if stillRegistered && !closing && (sessionTarget || targetRunning) && !dec.fire {
+			t.Fatalf("live tick must fire under the breaker policy (no suppression branch): %+v", dec)
 		}
 		if dec.fire {
 			if !dec.keepAlive {

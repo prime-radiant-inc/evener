@@ -9,10 +9,10 @@ import (
 	"testing"
 )
 
-// fixture writes a session state tree with a self-loop watch delivery, using raw
-// JSONL. The cmd/ layer cannot import agent/internal/jobstore (the internal wall
-// — exactly why agent/doctor is the facade), so this wiring test writes the
-// on-disk bytes directly; the fold semantics are covered by agent/doctor tests.
+// fixture writes a session state tree with a runaway-fuse drop, using raw JSONL.
+// The cmd/ layer cannot import agent/internal/jobstore (the internal wall —
+// exactly why agent/doctor is the facade), so this wiring test writes the on-disk
+// bytes directly; the fold semantics are covered by agent/doctor tests.
 func fixture(t *testing.T) (base, sid string) {
 	t.Helper()
 	base = t.TempDir()
@@ -27,10 +27,10 @@ func fixture(t *testing.T) (base, sid string) {
 
 	jobs := strings.Join([]string{
 		`{"kind":"watch_registered","seq":1,"job_id":"","watch_id":"w1","watch":{"generation":"g1","owner_session_id":"o","visible_session_id":"v","target":"job:x","config_hash":"h"}}`,
-		// dprior: a genuine prior DELIVERED delivery (its own slot).
-		`{"kind":"watch_send_delivered","seq":2,"job_id":"","watch_id":"w1","watch_send":{"key":{"watch_id":"w1","watch_target":"prior"},"delivery_id":"dprior","provenance":{"watch_keys":[{"watch_id":"w1","watch_generation":"g1"}],"chain":[{"kind":"watch","watch_id":"w1","delivery_id":"dprior"}]}}}`,
-		// dl: caused by a prior hop of dprior (which delivered) — a genuine self-loop.
-		`{"kind":"watch_send_delivered","seq":3,"job_id":"","watch_id":"w1","watch_send":{"key":{"watch_id":"w1","watch_target":"loop"},"delivery_id":"dl","provenance":{"watch_keys":[{"watch_id":"w1","watch_generation":"g1"}],"chain":[{"kind":"watch","watch_id":"w1","delivery_id":"dprior"},{"kind":"watch","watch_id":"w1","delivery_id":"dl"}]}}}`,
+		// A delivered send the runtime stamped self-influenced (bounded, depth 2).
+		`{"kind":"watch_send_delivered","seq":2,"job_id":"","watch_id":"w1","watch_send":{"key":{"watch_id":"w1","watch_target":"infl"},"delivery_id":"dl","self_influence_depth":2}}`,
+		// dr: the runaway fuse firing — a dropped send rejected at depth 8.
+		`{"kind":"watch_send_dropped","seq":3,"job_id":"","watch_id":"w1","watch_send":{"key":{"watch_id":"w1","watch_target":"runaway"},"delivery_id":"dr","self_influence_depth":8,"diagnostic_reason":"runaway"}}`,
 	}, "\n") + "\n"
 	mustWrite(t, filepath.Join(sess, sid, "jobs.jsonl"), jobs)
 	return base, sid
@@ -71,14 +71,14 @@ func TestRun_LocateJSON(t *testing.T) {
 	}
 }
 
-func TestRun_WatchesSelfLoop(t *testing.T) {
+func TestRun_WatchesRunawayFuse(t *testing.T) {
 	base, sid := fixture(t)
 	var out, errb bytes.Buffer
 	if code := run([]string{"watches", "--state-dir", base, "--self-loops", sid}, &out, &errb); code != 0 {
 		t.Fatal(errb.String())
 	}
-	if !strings.Contains(out.String(), "SELF-LOOP") {
-		t.Errorf("watches --self-loops should surface the loop:\n%s", out.String())
+	if !strings.Contains(out.String(), "runaway") {
+		t.Errorf("watches --self-loops should surface the fired runaway fuse:\n%s", out.String())
 	}
 }
 

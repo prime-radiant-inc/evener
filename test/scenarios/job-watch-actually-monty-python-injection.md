@@ -1,9 +1,15 @@
-# job-watch-actually-monty-python-injection: content-bearing observer frames suppress self-loops
+# job-watch-actually-monty-python-injection: content-bearing observer frames deliver and are bounded (inform + breaker), not suppressed
 
 **What this covers**: an observer that injects `Ni!` whenever the
-caller says the whole word `actually`, and the causal-provenance safety
-rule that prevents observer-injected steering or notification
-acknowledgements from retriggering the same watch.
+caller says the whole word `actually`. Under inform + breaker there is
+no self-echo suppression: observer-injected steering and notification
+acknowledgements ARE delivered and re-fire the watch, and each
+self-influenced delivered frame carries a `<system-reminder>` depth
+line so the observer sees it is reacting to its own influence. The loop
+is bounded by the runaway fuse, but in this card the observer's own
+logic keeps it from escalating: it injects only on the whole word
+`actually`, and its acknowledgements never contain that word, so the
+loop stays shallow and the fuse never fires.
 Contract anchor: `docs/job-control.md` "Observer and
 sidecar composition", `delegate_send(to="caller")`, and caller-event
 watch frames.
@@ -84,12 +90,18 @@ watch frames.
   containing `PYTHON_QUOTE delivery=<delivery_id> quote=Ni!`, and none
   for the plain turn or setup chatter.
 - The injected caller steering entries and any parent acknowledgement
-  turns do not create extra observer jobs for the same watch. The
-  parent's `jobs.jsonl` has no additional `watch_send_pending` entries
-  caused by `PYTHON_QUOTE` or acknowledgement traffic.
+  turns ARE self-influenced events that deliver and re-fire the watch:
+  the parent's `jobs.jsonl` does show additional `watch_send_pending` /
+  `watch_send_delivered` entries from that traffic, and the resulting
+  delivered frames carry the self-influence `<system-reminder>` depth
+  line. Because the observer injects only on the whole word `actually`
+  (its acknowledgements never contain it) and the loop stays shallow,
+  the runaway fuse never fires: there is no `watch_send_dropped` with
+  `reason: runaway`. Exact counts are not a contract -- coalescing is
+  latest-wins.
 - A later external human message containing `Actually` triggers a second
   legitimate observer delivery, proving top-level external input resets
-  active provenance to empty.
+  active provenance to empty and the self-influence depth back to 0.
 
 ## Cleanup
 

@@ -72,11 +72,15 @@ composition" plus the caller-event rail.
 - Watch frames include `watch_id:`, `delivery_id:`, and the triggering
   event metadata needed for the observer to understand what it is
   commenting on.
-- Observer lifecycle and notification traffic does not recursively
-  trigger the same caller watch.
+- Observer lifecycle and notification traffic that carries the watch's
+  own provenance IS delivered and classified self-influenced (bounded
+  by the runaway fuse), not suppressed. Such self-influenced deliveries
+  may appear, each carrying the `<system-reminder>` depth line.
 - The parent's `jobs.jsonl` shows `watch_send_pending` followed by
-  `watch_send_delivered` for the deliveries, and no
-  `watch_send_dropped`.
+  `watch_send_delivered` for the deliveries. Self-influenced deliveries
+  may appear with the depth line, but because this scenario stays
+  shallow the fuse never fires: there is no `watch_send_dropped` with
+  `reason: runaway`.
 - The parent session returns to `idle` after observer notifications
   drain. If a human or model later answers those notifications with
   `communicate`, that is another watched caller event and may create
@@ -90,9 +94,12 @@ composition" plus the caller-event rail.
 
 ## Sharp edges
 
-- Do not configure `send.to` as `"caller"` for this card. That is the
-  rejected self-delivery feedback-loop shape; this card is about a real
-  observer delegate.
+- This card configures `send.to` as a real observer delegate, not
+  `"caller"`, to demonstrate the observer-in-its-own-thread pattern
+  specifically. `send.to="caller"` self-delivery is no longer forbidden
+  (the create-time feedback-loop forbid is gone) -- it is now allowed
+  and bounded by the breaker -- but it is a different shape than the one
+  this card exercises.
 - The observer's comments must be about actions, not people. The
   scenario needs snide tone to make the thread visibly distinct, not
   personal abuse.

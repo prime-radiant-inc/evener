@@ -72,7 +72,7 @@ SUBCOMMANDS:
   locate      resolve a selector to its on-disk transcript/meta/jobs paths
   transcript  render a session's turns; --count <tool> prints the structural call count
   apilog      API-call diagnostics: per-call tokens/latency, empties, errors, cache spikes
-  watches     watch/delivery inspector: distinct deliveries, provenance, self-loop verdict
+  watches     watch/delivery inspector: distinct deliveries, provenance, breaker telemetry (self-influence depth, runaway drops)
   tree        parent ↔ delegate/observer session tree across buckets
 
 SELECTOR:
@@ -240,7 +240,7 @@ func cmdAPILog(args []string, stdout, stderr io.Writer) int {
 func cmdWatches(args []string, stdout, stderr io.Writer) int {
 	fs, stateDir, asJSON := stateFlags("watches", stderr)
 	watchID := fs.String("watch", "", "scope to one watch_id")
-	selfLoops := fs.Bool("self-loops", false, "only watches with a self-loop verdict")
+	selfLoops := fs.Bool("self-loops", false, "only watches where the runaway fuse fired (bounded self-influence is normal and not returned)")
 	sel, code := parseSelectorAndFlags(fs, args)
 	if code != 0 {
 		return code

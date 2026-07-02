@@ -166,6 +166,7 @@ type WatchSendState struct {
 	ReceiverSessionID  string             `json:"receiver_session_id,omitempty"`
 	ReceiverDelegateID string             `json:"receiver_delegate_id,omitempty"`
 	DiagnosticReason   string             `json:"diagnostic_reason,omitempty"`
+	SelfInfluenceDepth int                `json:"self_influence_depth,omitempty"`
 	CreatedAt          time.Time          `json:"created_at,omitempty"`
 	UpdatedAt          time.Time          `json:"updated_at,omitempty"`
 	Provenance         *provenance.Causal `json:"provenance,omitempty"`
