@@ -14,6 +14,16 @@
 # covdata; 78.5 would false-alarm the next complete-denominator run, so we do NOT
 # bless it. Arc: llm 39.3 -> 73.0 -> 74.3 (honest, complete-denominator);
 # agent 26.4 -> 45.9 -> 54.9 -> 52.1 -> 53.0.
+#
+# 2026-07-02 orchestration wave (extraction + sequence fuzzers + fc1/fc2): COVERED
+# rose to an all-time high — agent 11303, llm 4744 fuzz-reachable statements — but
+# the % is DENOMINATOR-UNSTABLE: agent `total` swung 21152->22015->23211 across
+# identical measurement runs (covdata's -coverpkg serffuzz build-set varies), so
+# the % reads 48.5-51.3% while covered is at its peak. The floors below are NOT a
+# reliable %-ratchet for agent right now; the honest signal is COVERED-COUNT
+# (rising). Stabilizing the denominator (fixed go-list statement base, not
+# covdata's varying build-set) is the tracked fix before the fuzz %-ratchet can
+# be trusted in CI. Floors left as-is (not lowered) pending that fix.
 . 9.8
 agent 53.0
 llm 74.0
