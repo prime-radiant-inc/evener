@@ -1,21 +1,26 @@
 # Global fuzz-reachable coverage floors (whole-module statement %).
 # Managed by scripts/fuzz-coverage-global.sh --bless. Raised upward only, EXCEPT a
-# documented downward reset when the DENOMINATOR genuinely changes (not a
-# regression). A partial `--bless --modules X` rewrites this file to just X;
-# restore the other module lines afterward.
+# documented downward reset when the MEASUREMENT BASIS changes (not a regression).
+# A partial `--bless --modules X` rewrites this file to just X; restore the others.
 #
-# DENOMINATOR NOW STABLE (2026-07-02): the % is computed against a `-run '^$'`
-# instrument-only pass (a deterministic block set that depends only on
-# compilation) instead of covdata's varying per-binary merge. The earlier agent
-# %-wobble — total swinging 19592/21152/23211 across IDENTICAL runs, so the %
-# read 48-57% on unchanged code — is gone. This is the first bless on the stable
-# basis:
-#   agent 57.7% = 11303/19592 (covered/stable-total); was reading a noisy 48-51%.
-#   llm   79.9% =  4744/ 5937; was 73-80% noisy.
-# Fuzz-reachable COVERED-COUNT arc over the campaign: agent ~10730 -> 11303,
-# llm 4656 -> 4744. Overall arc (now honest+stable): agent 26.4 -> 57.7,
-# llm 39.3 -> 79.9. `.` (root) is still 9.8 on the OLD basis — root fuzz is
-# UI-capped (TUI/serving code that shouldn't be fuzzed); not re-measured here.
-. 9.8
-agent 57.7
-llm 79.9
+# 2026-07-02 MEASUREMENT-BASIS FIX (robust per-package method). The prior numbers
+# were produced by `go test -coverpkg=./... ./...`, whose covdata textfmt merge
+# emits boundary-variant duplicate blocks across the many per-package test
+# binaries; deduping by exact position cannot collapse the overlapping variants,
+# so the statement TOTAL inflated past the real count (agent: real 19661 stmts vs
+# a merged 25605, +30%). The inflation was latent and surfaced only once new
+# per-package fuzz binaries joined the merge — so the earlier "stable denominator"
+# was stable-but-wrong. The script now measures each package in its own
+# single-package coverage binary and concatenates, so block boundaries are
+# canonical and the total equals the ground-truth statement count. These floors
+# are the first bless on that honest basis:
+#   .     17.4% = 3612/20713   (was 9.8 on the old basis — robust method is higher)
+#   agent 53.4% = 10492/19661  (was reading an inflated 57.7)
+#   llm   77.9% = 4625/5937    (was reading an inflated 79.9)
+# NOTE: this counts native `go test -fuzz` targets (^Fuzz) only. The rapid.Check
+# SEQUENCE fuzzers (Test*SeqFuzz) drive the big orchestration methods and are NOT
+# in this denominator — extracting+fuzzing small pure cores moves the % only by
+# the size of those cores; the sequence fuzzers are the larger reachability lever.
+. 17.4
+agent 53.4
+llm 77.9

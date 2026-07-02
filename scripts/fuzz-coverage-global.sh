@@ -84,20 +84,42 @@ stmt_counts() {
 	           printf "%d %d", c+0, t+0 }' "$1"
 }
 
-# stmt_counts_stable prints "covered total" using a STABLE denominator. The total
-# comes from the denominator profile (arg 2, produced by a `-run '^$'` pass that
-# instruments every package but runs no test — so it depends only on compilation,
-# not on which flaky/slow test binaries happened to emit counters), and covered is
-# the subset of THOSE blocks the fuzz pass (arg 1) actually hit. This fixes the
-# %-wobble where the plain `-run '^Fuzz'` total swung run-to-run (21k-23k for
-# agent) because covdata dropped packages whose binaries timed out; the denom pass
-# is deterministic (agent: 19592 stmts every run), so the % is now monotonic in
-# real coverage. Both files are deduped by block position.
-stmt_counts_stable() {
-	awk 'FNR==NR { if (FNR>1 && $3>0) fcov[$1]=1; next }
-	     FNR>1  { dstmts[$1]=$2 }
-	     END { for (p in dstmts) { t+=dstmts[p]; if (p in fcov) c+=dstmts[p] }
-	           printf "%d %d", c+0, t+0 }' "$1" "$2"
+# measure_module_profile writes a whole-module coverage profile to $4 by running
+# each package's tests in its OWN single-package coverage binary (default -cover,
+# self-package only) and concatenating the profiles under one synthetic header.
+#   $1 module dir, $2 -run regex, $3 extra go-test flags (e.g. "-tags serffuzz"), $4 out
+#
+# This deliberately AVOIDS `-coverpkg=./... ./...` whole-module instrumentation.
+# That form makes covdata merge many per-binary textfmt profiles, and the merge
+# emits BOUNDARY-VARIANT duplicate blocks for the same source lines (one binary
+# splits a statement range where another doesn't). Deduping by exact position
+# cannot collapse those overlapping variants, so the statement TOTAL inflates past
+# the real count — measured on the agent module: real 19661 stmts vs a merged
+# 25605 (+30%), and the inflation appeared only after new per-package fuzz binaries
+# joined the merge. A single-package binary instruments its own code exactly once,
+# so block boundaries are canonical and stmt_counts dedupes cleanly; the resulting
+# total equals the ground-truth statement count. Fuzz targets each fuzz their own
+# package, so self-coverage is precisely the fuzz-reachable signal. Sets the global
+# `measure_build_err` to a captured build failure, or "" on success.
+measure_build_err=""
+measure_module_profile() {
+	local mdir="$1" runre="$2" tagflags="$3" out="$4"
+	measure_build_err=""
+	echo "mode: set" >"$out"
+	local pp="$out.pp" pkg out_txt
+	while IFS= read -r pkg; do
+		[ -n "$pkg" ] || continue
+		rm -f "$pp"
+		if out_txt="$( cd "$mdir" && "$capped" "$go_bin" test $tagflags \
+				-timeout 20m -run "$runre" -coverprofile="$pp" "$pkg" 2>&1 )"; then
+			[ -s "$pp" ] && grep -v '^mode:' "$pp" >>"$out"
+		elif printf '%s\n' "$out_txt" | grep -qiE 'build failed|^#|panic:|--- FAIL|^FAIL'; then
+			measure_build_err="$out_txt"
+			rm -f "$pp"
+			return 0
+		fi
+		rm -f "$pp"
+	done < <( cd "$mdir" && "$go_bin" list ./... 2>/dev/null )
 }
 
 echo "=== global FUZZ-REACHABLE coverage — what the corpus alone drives, NOT total"
@@ -112,39 +134,22 @@ repo_c=0 repo_t=0 repo_fc=0 repo_ft=0 fail=0
 declare -A measured=()
 for m in $modules; do
 	prof="$profiles_dir/${m//\//_}.cov"
-	# Replay every Fuzz target's committed corpus across the whole module under one
-	# whole-module coverage profile. -run '^Fuzz' replays seeds (no -fuzz search).
-	# Whole-module instrumentation over the full corpus is heavy on big modules;
-	# give it a generous test timeout (override the go default 10m).
-	if ! out="$( cd "$repo_root/$m" && "$capped" "$go_bin" test -tags serffuzz \
-			-timeout 45m -run '^Fuzz' -coverpkg=./... -coverprofile="$prof" ./... 2>&1 )"; then
-		# A build/test failure is fatal to the measurement. Surface the actual
-		# cause (the FAIL/panic/error line), not just the trailing output.
+	# Replay every Fuzz target's committed corpus, per package, into one
+	# concatenated whole-module profile. -run '^Fuzz' replays seeds (no -fuzz
+	# search). A package with no fuzz targets still emits its (all-uncovered) block
+	# set, so it counts toward the denominator honestly.
+	measure_module_profile "$repo_root/$m" '^Fuzz' '-tags serffuzz' "$prof"
+	if [ -n "$measure_build_err" ]; then
+		# A build/test failure is fatal to the measurement. Surface the actual cause.
 		printf '%-10s %s\n' "$m" "MEASUREMENT FAILED:"
-		if printf '%s\n' "$out" | grep -q 'no such tool "covdata"'; then
-			echo "    go is missing the prebuilt 'covdata' tool that -coverpkg=./... needs for" >&2
-			echo "    packages without tests. Build it into the toolchain (writable GOTOOLDIR):" >&2
-			echo "      go build -o \"\$(go env GOTOOLDIR)/covdata\" cmd/covdata" >&2
-		fi
-		printf '%s\n' "$out" | grep -iE '^(FAIL|--- FAIL|panic|# )|build failed|no such tool|signal: killed|timed out' | head -6 | sed 's/^/    /'
+		printf '%s\n' "$measure_build_err" | grep -iE '^(FAIL|--- FAIL|panic|# )|build failed|signal: killed|timed out' | head -6 | sed 's/^/    /'
 		fail=1
 		continue
 	fi
-	[ -f "$prof" ] || { printf '%-10s %s\n' "$m" "no coverage profile (no fuzz targets?)"; continue; }
+	# More than just the "mode:" header line?
+	[ "$(wc -l <"$prof")" -gt 1 ] || { printf '%-10s %s\n' "$m" "no coverage profile (no fuzz targets?)"; continue; }
 
-	# Stable denominator: a `-run '^$'` pass instruments every package but runs no
-	# test, so its block set is deterministic (immune to the flaky per-binary
-	# counter drops that made the plain fuzz-pass total swing). Total from it;
-	# covered = the subset the fuzz pass hit. Falls back to the single-profile
-	# count if the denom pass somehow produces nothing.
-	denomprof="$prof.denom"
-	( cd "$repo_root/$m" && "$capped" "$go_bin" test -tags serffuzz \
-		-timeout 20m -run '^$' -coverpkg=./... -coverprofile="$denomprof" ./... ) >/dev/null 2>&1 || true
-	if [ -s "$denomprof" ]; then
-		read -r c t < <(stmt_counts_stable "$prof" "$denomprof")
-	else
-		read -r c t < <(stmt_counts "$prof")
-	fi
+	read -r c t < <(stmt_counts "$prof")
 	[ "$t" -gt 0 ] || { printf '%-10s %s\n' "$m" "no statements measured"; continue; }
 	pct="$(awk -v c="$c" -v t="$t" 'BEGIN{printf "%.1f", 100*c/t}')"
 	measured["$m"]="$pct"
@@ -155,8 +160,8 @@ for m in $modules; do
 		# Best-effort full-suite pass for CONTEXT (not ratcheted): a flaky/env-gated
 		# test failing here must not block the fuzz ratchet, so on failure show "—".
 		fullprof="$profiles_dir/${m//\//_}.full.cov"
-		if ( cd "$repo_root/$m" && "$capped" "$go_bin" test -timeout 45m \
-				-coverpkg=./... -coverprofile="$fullprof" ./... ) >/dev/null 2>&1 && [ -f "$fullprof" ]; then
+		measure_module_profile "$repo_root/$m" '.' '' "$fullprof"
+		if [ -z "$measure_build_err" ] && [ "$(wc -l <"$fullprof")" -gt 1 ]; then
 			read -r fc ft < <(stmt_counts "$fullprof")
 			full_pct="$(awk -v c="$fc" -v t="$ft" 'BEGIN{ printf "%.1f", (t>0)?(100*c/t):0 }')"
 			ratio="$(awk -v f="$pct" -v u="$full_pct" 'BEGIN{ r=(u>0)?(100*f/u):0; printf "%.0f%%", r }')"

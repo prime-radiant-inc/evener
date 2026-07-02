@@ -25,6 +25,9 @@ cap="$work/cap.sh"; printf '#!/usr/bin/env bash\nexec "$@"\n' >"$cap"; chmod +x 
 gobin="$work/go.sh"
 cat >"$gobin" <<'STUB'
 #!/usr/bin/env bash
+# `go list ./...` -> one synthetic package per module dir (the per-package
+# measurement iterates these, running a single-package coverage binary for each).
+if [ "$1" = list ]; then echo "example.com/$(basename "$PWD")"; exit 0; fi
 prof=""
 for a in "$@"; do case "$a" in -coverprofile=*) prof="${a#*=}";; esac; done
 [ -n "$prof" ] || exit 0
