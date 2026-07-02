@@ -43,4 +43,9 @@ regexes = [
 # example keys (e.g. the package path "internal/hubapi" the generic rule trips on).
 paths = [
   '''docs/superpowers/.*''',
+  # inspo/ holds untracked vendored reference source (Pi, codex) whose test
+  # fixtures carry deliberately-planted fake keys; it is gitignored and never
+  # committed, but `make secret-scan` walks the whole working tree. .env is
+  # deliberately NOT allowlisted — the scan should scream if it ever appears.
+  '''inspo/.*''',
 ]
