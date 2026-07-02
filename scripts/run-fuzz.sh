@@ -333,6 +333,31 @@ TARGETS=(
 	"native:agent:./execenv:FuzzFc2ResolveGrepDir::local.go#resolveGrepDir"
 	"native:agent:./internal/jobstore:FuzzFc2Reconcile::reconcile.go#Reconcile"
 	"rapid:agent:.:TestJobsFc2DescendantMergeSeqFuzz"
+
+	# --- 2026-07-02 orchestration-extraction wave: pure decision cores lifted out
+	# of lock/effect-guarded turn-lifecycle, model-call, watch, delegate, jobs, and
+	# tool/contextmgr methods (behavior-identical), each fuzzed over its snapshot.
+	"native:agent:.:FuzzMcClassifyModelError::session_model_call.go#classifyModelError"
+	"native:agent:.:FuzzMcDecideNoToolCalls::session_tool_round.go#decideNoToolCalls"
+	"native:agent:.:FuzzMcEffectiveRecordedInputTokens::session_model_call.go#effectiveRecordedInputTokens"
+	"native:agent:.:FuzzMcContextUsageWarning::session_model_call.go#contextUsageWarning"
+	"native:agent:.:FuzzWvValidateSendTarget::job_watch.go#validateWatchSendDeliveryTarget"
+	"native:agent:.:FuzzWvProgressTick::job_watch.go#decideProgressTick"
+	"native:agent:.:FuzzWvQuietWatchdogTick::job_watch.go#decideQuietWatchdogTick"
+	"native:agent:.:FuzzWvDeliveryLoop::job_watch.go#validateWatchDeliveryLoop"
+	"native:agent:.:FuzzLfClassifyRoundContent::session_lifecycle.go#classifyRoundContent"
+	"native:agent:.:FuzzLfRouteNoToolCalls::session_lifecycle.go#routeNoToolCalls"
+	"native:agent:.:FuzzLfSelectDrainNextAction::session_lifecycle.go#selectDrainNextAction"
+	"native:agent:.:FuzzJdKeepListedJobRow::jobs.go#keepListedJobRow"
+	"native:agent:.:FuzzJdValidateDelegateGrant::job_delegate.go#validateDelegateGrant"
+	"native:agent:.:FuzzJdResolveDelegateTerminalStatus::job_delegate.go#resolveDelegateTerminalStatus"
+	"native:agent:.:FuzzJdClassifyDelegateSendTarget::job_delegate.go#classifyDelegateSendTarget"
+	"native:agent:.:FuzzJdRearmTerminalNotificationDecision::jobs.go#rearmTerminalNotificationDecision"
+	"native:agent:.:FuzzCtShellResultDisposition::session_tools_shell.go#shellResultDisposition"
+	"native:agent:.:FuzzCtClampJobBlockTimeout::session_tools_jobs.go#clampJobBlockTimeout"
+	"native:agent:.:FuzzCtCanonicalizeToolNames::session_tools.go#canonicalizeToolNames"
+	"native:agent:.:FuzzCtProviderVisibleToolNames::session_tools.go#providerVisibleToolNames"
+	"native:agent:./internal/contextmgr:FuzzCtMaskToolResult::context_manager.go#maskToolResultContent"
 )
 
 duration="60s"
