@@ -428,3 +428,53 @@ func TestClassifySelfInfluenceCountsReplacedLineage(t *testing.T) {
 		t.Fatalf("gradientDepth = %d, want 0 (gradient stays scoped to the current identity)", got.gradientDepth)
 	}
 }
+
+// TestClassifySelfInfluenceCountsClearedLineage: clearing a watch and
+// recreating the same key must not reset the fuse either — the lineage
+// survives as a bounded tombstone keyed by the watch key and is adopted by
+// the next install.
+func TestClassifySelfInfluenceCountsClearedLineage(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
+	args := watchArgs{
+		Target: "caller",
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "dlg_obs", Message: "observe"},
+	}
+	if _, err := jm.configureWatch(args); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	oldCfg := onlyWatchConfigForTest(t, jm)
+	oldID, oldGen := oldCfg.watchID, oldCfg.generation
+
+	clear := args
+	clear.Clear = true
+	if _, err := jm.configureWatch(clear); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if _, err := jm.configureWatch(args); err != nil {
+		t.Fatalf("recreate: %v", err)
+	}
+	cfg := onlyWatchConfigForTest(t, jm)
+	if cfg.watchID == oldID {
+		t.Fatal("test premise broken: recreate did not mint a fresh watchID")
+	}
+
+	p := &provenance.Causal{
+		WatchKeys: []provenance.WatchKey{{WatchID: oldID, WatchGeneration: oldGen}},
+		Chain: []provenance.Entry{
+			{Kind: "watch", WatchID: oldID, WatchGeneration: oldGen, DeliveryID: "wd_c1"},
+			{Kind: "watch", WatchID: oldID, WatchGeneration: oldGen, DeliveryID: "wd_c2"},
+		},
+	}
+	jm.mu.Lock()
+	jm.deliveredWatchSendIDs["wd_c1"] = struct{}{}
+	jm.deliveredWatchSendIDs["wd_c2"] = struct{}{}
+	got := jm.classifySelfInfluenceLocked(cfg, p)
+	jm.mu.Unlock()
+
+	if got.fuseDepth != 2 {
+		t.Fatalf("fuseDepth = %d, want 2 (cleared-lineage priors count toward the fuse)", got.fuseDepth)
+	}
+}
