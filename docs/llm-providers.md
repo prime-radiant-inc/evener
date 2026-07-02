@@ -168,8 +168,8 @@ quirks    = "..."         # optional; selects a quirks preset (openai-compatible
 
 Beyond the four descriptor fields above, an instance whose type routes through
 the openai-compat adapter — `kimi`, `glm`, `openrouter`, `ollama`, or `openai`
-with `api_style = "chat-completions"` (`compatFamily`,
-`llm/providercfg/load.go:86`) — may also carry a `compat` table and a `models`
+with `api_style = "chat-completions"` (`providercfg.CompatFamily`,
+`llm/providercfg/load.go`) — may also carry a `compat` table and a `models`
 table. Any other type rejects them at load (`load.go:211-217`).
 
 ```toml
@@ -498,7 +498,7 @@ tool_stream               = true
 
 This is `type = "openai"` with `api_style = "chat-completions"` — a plain
 gateway, not serf's `glm` type — so it routes through the openai-compat
-adapter (`compatFamily`, `load.go:86`) but starts from the empty
+adapter (`providercfg.CompatFamily`) but starts from the empty
 `ProviderQuirks{}`, not the `glm-5` preset; every wire behavior here comes
 from the `compat` table. `glm-5.2-nvfp4` gets a 1M-token context window and a
 128K output cap from the model table (instead of the compat-family default of
