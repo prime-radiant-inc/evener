@@ -316,6 +316,19 @@ TARGETS=(
 	"native:agent:.:FuzzArScanSegment::session_tools_jobs.go#scanSegment"
 	"native:agent:.:FuzzArJobResultBody::transcript_render.go#jobResultBody"
 	"native:agent:./doctor:FuzzArRenderTranscript::transcript.go#RenderTranscript"
+	# fc2: jobs / execenv / tool-dispatch decision cores extracted for fuzzing
+	# (shell terminal classification, ripgrep arg build, job-read window dispatch,
+	# stop-outcome, output-window status, tool-start description, descendant-walk
+	# dedupe, and the pure reconcile recovery decision).
+	"native:agent:.:FuzzFc2ShellTerminalDecision::job_shell.go#shellTerminalDecision"
+	"native:agent:.:FuzzFc2ClassifyJobReadWindow::session_tools_jobs.go#classifyJobReadWindow"
+	"native:agent:.:FuzzFc2ClassifyStopOutcome::session_tools_jobs.go#classifyStopOutcome"
+	"native:agent:.:FuzzFc2OutputWindowStatus::session_tools_shell.go#outputWindowStatus"
+	"native:agent:.:FuzzFc2ToolStartDescription::session_tools.go#toolStartDescription"
+	"native:agent:./execenv:FuzzFc2BuildRipgrepArgs::local.go#buildRipgrepArgs"
+	"native:agent:./execenv:FuzzFc2ResolveGrepDir::local.go#resolveGrepDir"
+	"native:agent:./internal/jobstore:FuzzFc2Reconcile::reconcile.go#Reconcile"
+	"rapid:agent:.:TestJobsFc2DescendantMergeSeqFuzz"
 )
 
 duration="60s"

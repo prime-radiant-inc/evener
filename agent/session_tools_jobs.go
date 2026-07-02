@@ -371,6 +371,42 @@ func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars
 	return marshalDelegateResult(res, maxChars)
 }
 
+// jobReadWindowMode names the read window jobReadOutputTool serves for a call.
+type jobReadWindowMode int
+
+const (
+	jobReadModeGrep     jobReadWindowMode = iota // grep scan of the retained output
+	jobReadModeFromLine                          // explicit from_line/line_count range
+	jobReadModeHeadTail                          // head+tail digest
+	jobReadModeHead                              // one-sided head slice
+	jobReadModeTail                              // one-sided tail slice
+	jobReadModeDigest                            // default head+tail digest
+)
+
+// classifyJobReadWindow selects which read window jobReadOutputTool serves, from
+// the presence of a grep pattern and the head/tail/from_line line-window args.
+// Precedence mirrors the request contract: a grep scan dominates, then an explicit
+// from_line range, then a head+tail digest, then a one-sided head or tail slice,
+// then the default digest. Pure over the presence flags so the dispatch order is
+// fuzzable in isolation. (jobReadOutputTool rejects from_line combined with
+// head/tail before reaching this, so that conflicting shape is unreachable live.)
+func classifyJobReadWindow(hasGrep, hasFromLine, hasHead, hasTail bool) jobReadWindowMode {
+	switch {
+	case hasGrep:
+		return jobReadModeGrep
+	case hasFromLine:
+		return jobReadModeFromLine
+	case hasHead && hasTail:
+		return jobReadModeHeadTail
+	case hasHead:
+		return jobReadModeHead
+	case hasTail:
+		return jobReadModeTail
+	default:
+		return jobReadModeDigest
+	}
+}
+
 func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, registryMaxChars int) (any, error) {
 	jobID := strings.TrimSpace(stringArg(args, "job_id"))
 	if jobID == "" {
@@ -501,14 +537,14 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 	}
 
 	var snap jobReadOutputSnapshot
-	switch {
-	case grepRE != nil:
+	switch classifyJobReadWindow(grepRE != nil, hasFromLine, hasHead, hasTail) {
+	case jobReadModeGrep:
 		if granted != nil {
 			snap, err = granted.snapshot(jobLineReadBudget, false, grepRE)
 		} else {
 			snap, err = readSession.readJobOutputSnapshot(jm, fallbackTarget, jobID, jobLineReadBudget, false, grepRE)
 		}
-	case hasFromLine:
+	case jobReadModeFromLine:
 		snap, err = readWindow(maxJobOutputBytes, true)
 		if err == nil {
 			sliced, _, before, after := midLineBytes([]byte(snap.Content), fromLine, lineCount)
@@ -517,9 +553,9 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 				snap.Truncated = true // lines outside the requested range exist
 			}
 		}
-	case hasHead && hasTail:
+	case jobReadModeHeadTail:
 		snap, err = readJobOutputDigest(readWindow, headLines, tailLines)
-	case hasHead:
+	case jobReadModeHead:
 		snap, err = readWindow(jobLineReadBudget, true)
 		if err == nil {
 			sliced, _, more := firstLineBytes([]byte(snap.Content), headLines)
@@ -528,7 +564,7 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 				snap.Truncated = true // the line slice dropped later lines
 			}
 		}
-	case hasTail:
+	case jobReadModeTail:
 		snap, err = readWindow(jobLineReadBudget, false)
 		if err == nil {
 			sliced, _, more := lastLineBytes([]byte(snap.Content), tailLines)
