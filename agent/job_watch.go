@@ -108,9 +108,15 @@ type watchKey struct {
 type watchConfig struct {
 	// id is a stable per-session handle for this watch, assigned at install and
 	// preserved across idempotent re-configure; a replacement gets a fresh id.
-	id                 string
-	watchID            string
-	configHash         string
+	id         string
+	watchID    string
+	configHash string
+	// lineageWatchIDs carries the watchIDs of PREDECESSOR configs replaced in
+	// this slot (same watch key). The runaway fuse counts delivered priors
+	// across the whole lineage so a self-reconfiguring loop cannot reset the
+	// fuse by replacing itself; capped, most-recent kept. In-memory only,
+	// like the volume-budget deliveries counter.
+	lineageWatchIDs    []string
 	sourcePublic       string
 	receiverSessionID  string
 	receiverDelegateID string
@@ -633,6 +639,7 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 		}
 		jm.recordWatchEndedLocked(key, existing, "replaced")
 		closeWatchConfig(existing)
+		cfg.lineageWatchIDs = inheritWatchLineage(existing)
 		stop := cfg.initProgressStop()
 		jm.watches[key] = cfg
 		result := watchResultFromConfig(cfg, true)
@@ -2262,20 +2269,50 @@ type selfInfluence struct {
 	truncated     bool // self-influenced AND the diagnostic chain was truncated (depth may undercount)
 }
 
+// watchLineageCap bounds how many predecessor watchIDs a config retains: a
+// loop replacing itself thousands of times must not grow the slice or the
+// classify cost unboundedly. Most-recent predecessors are kept — stale ids stop
+// appearing in fresh chains anyway.
+const watchLineageCap = 15
+
+// inheritWatchLineage returns the lineage the replacement config inherits from
+// the config it replaces: the predecessor's lineage plus the predecessor's own
+// watchID, capped to the most recent watchLineageCap entries.
+func inheritWatchLineage(existing *watchConfig) []string {
+	lineage := append(append([]string{}, existing.lineageWatchIDs...), existing.watchID)
+	if len(lineage) > watchLineageCap {
+		lineage = lineage[len(lineage)-watchLineageCap:]
+	}
+	return lineage
+}
+
 // classifySelfInfluenceLocked classifies triggering provenance p for watch cfg.
-// gradientDepth is generation-scoped (a genuine re-arm reads as fresh); fuseDepth
-// is generation-agnostic (a re-arm-every-delivery watch cannot reset and evade the
-// fuse). truncated is the runaway backstop: WatchKeys never truncate so `self`
-// stays reliable, but a truncated Chain can undercount the depths. Caller holds
-// jm.mu (reads the delivered set via watchSendDeliveredLocked).
+// gradientDepth is scoped to the CURRENT identity and generation (a genuine
+// re-arm or reconfiguration reads as fresh to the sidecar); fuseDepth is
+// generation-agnostic AND lineage-wide (neither a re-arm-every-delivery watch
+// nor a replace-itself loop can reset the fuse). truncated is the runaway
+// backstop: WatchKeys never truncate so `self` stays reliable, but a truncated
+// Chain can undercount the depths. Caller holds jm.mu (reads the delivered set
+// via watchSendDeliveredLocked).
 func (jm *jobManager) classifySelfInfluenceLocked(cfg *watchConfig, p *provenance.Causal) selfInfluence {
 	self := provenance.ContainsWatch(p, cfg.watchID, cfg.generation)
 	return selfInfluence{
 		self:          self,
 		gradientDepth: provenance.SelfInfluenceDepth(p, cfg.watchID, cfg.generation, jm.watchSendDeliveredLocked),
-		fuseDepth:     provenance.SelfInfluenceDepth(p, cfg.watchID, "", jm.watchSendDeliveredLocked),
+		fuseDepth:     jm.fuseDepthLocked(cfg, p),
 		truncated:     self && p != nil && p.ChainTruncated,
 	}
+}
+
+// fuseDepthLocked is the runaway fuse's read of provenance p for cfg: delivered
+// priors of the current identity plus every lineage predecessor (distinct
+// watchIDs mark disjoint chain hops, so per-id depths sum). Caller holds jm.mu.
+func (jm *jobManager) fuseDepthLocked(cfg *watchConfig, p *provenance.Causal) int {
+	depth := provenance.SelfInfluenceDepth(p, cfg.watchID, "", jm.watchSendDeliveredLocked)
+	for _, id := range cfg.lineageWatchIDs {
+		depth += provenance.SelfInfluenceDepth(p, id, "", jm.watchSendDeliveredLocked)
+	}
+	return depth
 }
 
 // selfInfluenceNotice is the breaker's worker-facing line for a self-influenced
@@ -2963,7 +3000,7 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 	jm.mu.Lock()
 	if existing := d.cfg.pending[state.Key]; existing != nil && state.UpdateSeq > existing.UpdateSeq {
 		union := provenance.Union(existing.Provenance, state.Provenance)
-		if ud := provenance.SelfInfluenceDepth(union, d.cfg.watchID, "", jm.watchSendDeliveredLocked); ud > d.fuseDepth {
+		if ud := jm.fuseDepthLocked(d.cfg, union); ud > d.fuseDepth {
 			d.fuseDepth = ud
 			state.SelfInfluenceDepth = ud
 		}

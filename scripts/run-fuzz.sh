@@ -345,7 +345,7 @@ TARGETS=(
 	"native:agent:.:FuzzWvProgressTick::job_watch.go#decideProgressTick"
 	"native:agent:.:FuzzWvQuietWatchdogTick::job_watch.go#decideQuietWatchdogTick"
 	"native:agent:.:FuzzWvSelfInfluenceNotice::job_watch.go#selfInfluenceNotice"
-	"native:agent:.:FuzzWvSelfInfluenceDepth::provenance/provenance.go#SelfInfluenceDepth"
+	"native:agent:./provenance:FuzzWvSelfInfluenceDepth::provenance.go#SelfInfluenceDepth"
 	"native:agent:.:FuzzLfClassifyRoundContent::session_lifecycle.go#classifyRoundContent"
 	"native:agent:.:FuzzLfRouteNoToolCalls::session_lifecycle.go#routeNoToolCalls"
 	"native:agent:.:FuzzLfSelectDrainNextAction::session_lifecycle.go#selectDrainNextAction"

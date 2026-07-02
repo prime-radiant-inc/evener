@@ -360,3 +360,57 @@ func TestRecordWatchSendRunawayFuseSeesCoalescedDepth(t *testing.T) {
 		t.Fatalf("dropped reason = %q, want runaway", droppedReason)
 	}
 }
+
+// TestClassifySelfInfluenceCountsReplacedLineage: replacing a watch (same key,
+// changed config) mints a fresh watchID — the fuse must not reset. The new
+// config inherits the predecessor's watchID lineage, and fuseDepth counts
+// delivered priors across the whole lineage; gradientDepth stays scoped to the
+// CURRENT identity (a genuine reconfiguration reads fresh to the sidecar).
+func TestClassifySelfInfluenceCountsReplacedLineage(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
+	if _, err := jm.configureWatch(watchArgs{
+		Target: "caller",
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "dlg_obs", Message: "v1"},
+	}); err != nil {
+		t.Fatalf("configure v1: %v", err)
+	}
+	oldCfg := onlyWatchConfigForTest(t, jm)
+	oldID, oldGen := oldCfg.watchID, oldCfg.generation
+
+	// Replace: same key (target+send target), changed config.
+	if _, err := jm.configureWatch(watchArgs{
+		Target: "caller",
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "dlg_obs", Message: "v2 changed"},
+	}); err != nil {
+		t.Fatalf("configure v2 (replace): %v", err)
+	}
+	cfg := onlyWatchConfigForTest(t, jm)
+	if cfg.watchID == oldID {
+		t.Fatal("test premise broken: replacement did not mint a fresh watchID")
+	}
+
+	// An event descending from delivered priors of the OLD identity.
+	p := &provenance.Causal{
+		WatchKeys: []provenance.WatchKey{{WatchID: oldID, WatchGeneration: oldGen}},
+		Chain: []provenance.Entry{
+			{Kind: "watch", WatchID: oldID, WatchGeneration: oldGen, DeliveryID: "wd_old1"},
+			{Kind: "watch", WatchID: oldID, WatchGeneration: oldGen, DeliveryID: "wd_old2"},
+		},
+	}
+	jm.mu.Lock()
+	jm.deliveredWatchSendIDs["wd_old1"] = struct{}{}
+	jm.deliveredWatchSendIDs["wd_old2"] = struct{}{}
+	got := jm.classifySelfInfluenceLocked(cfg, p)
+	jm.mu.Unlock()
+
+	if got.fuseDepth != 2 {
+		t.Fatalf("fuseDepth = %d, want 2 (replaced-lineage priors count toward the fuse)", got.fuseDepth)
+	}
+	if got.gradientDepth != 0 {
+		t.Fatalf("gradientDepth = %d, want 0 (gradient stays scoped to the current identity)", got.gradientDepth)
+	}
+}
