@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"os"
 	"strings"
 	"testing"
 
@@ -82,19 +81,22 @@ func TestNewFromProviders_OpenAIUnresolvedKeyDefersToFactory(t *testing.T) {
 			{Name: "work", Type: "openai", APIStyle: providercfg.StyleResponses, APIKey: "$SERF_TEST_OPENAI_KEY_UNSET"},
 		},
 	}
-	stateDir, err := os.MkdirTemp("", "serf-oauth-none")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(stateDir)
-	_, err = NewFromProviders(cfg, WithStateDir(stateDir))
+	// Isolate OAuth state: the openai factory reads OAuth records under
+	// XDG_STATE_HOME (WithStateDir sets the unrelated StateDir), and a
+	// developer's real stored OAuth must not leak into — or be refreshed by —
+	// this test. With OAuth absent and the env key cleared, the factory MUST
+	// fail with its own no-credentials error, never the $ENV one.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("OPENAI_API_KEY", "")
+	_, err := NewFromProviders(cfg)
 	if err == nil {
-		// OAuth may exist in exotic environments; the assertion below covers
-		// the common no-credentials case.
-		return
+		t.Fatal("NewFromProviders succeeded with no credentials at all")
 	}
 	if strings.Contains(err.Error(), "SERF_TEST_OPENAI_KEY_UNSET") {
 		t.Fatalf("resolution hard-failed before the OAuth-first factory ran: %v", err)
+	}
+	if !strings.Contains(err.Error(), `provider "work"`) {
+		t.Fatalf("error should be the factory's instance-scoped credentials failure, got: %v", err)
 	}
 }
 

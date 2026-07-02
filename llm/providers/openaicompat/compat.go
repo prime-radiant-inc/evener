@@ -223,18 +223,23 @@ func resolveModelCompat(instanceQuirks ProviderQuirks, models map[string]provide
 // This runs once per request. The catalog lookup is a single map access
 // (LookupModelInfo) done once here, not per field.
 func (a *Adapter) compatFor(model string) ModelCompat {
-	if mc, ok := a.Models[model]; ok {
-		return mc
+	// FIELD-wise precedence: a declared [instances.X.models] entry wins for
+	// every field it sets, and the catalog fills the remaining gaps — so
+	// declaring only a context_window for glm-5.2 doesn't silently drop the
+	// catalog's effort-parameter support or output cap.
+	mc, ok := a.Models[model]
+	if !ok {
+		mc = ModelCompat{Quirks: a.Quirks}
 	}
-	mc := ModelCompat{Quirks: a.Quirks}
 	if !a.SuppressCatalogDefaults {
 		fillFromCatalog(&mc, model)
 	}
 	return mc
 }
 
-// fillFromCatalog seeds the two wire-behavior gaps an undeclared model would
-// otherwise miss from the embedded catalog:
+// fillFromCatalog seeds the two wire-behavior gaps a model's resolved compat
+// may leave from the embedded catalog (field-wise: explicitly-set instance
+// fields are never overwritten, each fill guards on the unset value):
 //
 //   - the reasoning_effort gate, when the model declares
 //     supports_effort_parameter and the effective quirks leave the gate unset
@@ -245,8 +250,7 @@ func (a *Adapter) compatFor(model string) ModelCompat {
 //   - the output cap (DefaultMaxTokens), when the catalog reports
 //     max_output_tokens and no instance cap already applies.
 //
-// A model with an explicit instance [instances.X.models] entry never reaches
-// here — that entry is authoritative.
+// A declared non-reasoning model gets no effort gate.
 func fillFromCatalog(mc *ModelCompat, model string) {
 	cat := llm.EmbeddedModelCatalog()
 	if cat == nil {
@@ -258,7 +262,7 @@ func fillFromCatalog(mc *ModelCompat, model string) {
 	if mi == nil {
 		return
 	}
-	if mi.SupportsEffortParameter && mc.Quirks.SupportsReasoningEffort == nil {
+	if mi.SupportsEffortParameter && mc.Quirks.SupportsReasoningEffort == nil && !mc.ReasoningOff {
 		on := true
 		mc.Quirks.SupportsReasoningEffort = &on
 	}

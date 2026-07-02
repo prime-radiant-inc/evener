@@ -189,25 +189,31 @@ func TestCompatFor_CatalogNeverTurnsEffortOff(t *testing.T) {
 	}
 }
 
-// TestCompatFor_InstanceEntryWinsOverCatalog verifies a providers.toml model
-// entry is authoritative — the catalog fallback is not consulted for it.
+// TestCompatFor_InstanceEntryWinsOverCatalog verifies field-wise precedence:
+// every field a providers.toml model entry SETS beats the catalog, while the
+// catalog still fills the fields it leaves unset (see
+// TestCompatFor_DeclaredEntryStillGetsCatalogGapFill for the gap-fill side).
 func TestCompatFor_InstanceEntryWinsOverCatalog(t *testing.T) {
+	off := false
 	a := NewForInstance(OpenAICompatInstanceParams{
 		Name:    "glm",
 		BaseURL: "https://api.z.ai/api/coding/paas/v4",
 		Quirks:  QuirksPreset("glm-5"),
 		Models: map[string]providercfg.ModelConfig{
-			"glm-5.2": {MaxOutputTokens: 4096},
+			"glm-5.2": {
+				MaxOutputTokens: 4096,
+				Compat:          &providercfg.CompatConfig{SupportsReasoningEffort: &off},
+			},
 		},
 	})
 	mc := a.compatFor("glm-5.2")
 	if mc.DefaultMaxTokens != 4096 {
-		t.Errorf("DefaultMaxTokens = %d, want 4096 (instance entry wins)", mc.DefaultMaxTokens)
+		t.Errorf("DefaultMaxTokens = %d, want 4096 (explicit instance cap beats catalog's 131072)", mc.DefaultMaxTokens)
 	}
-	// Instance entry declared no reasoning-effort support and the catalog is not
-	// consulted, so the gate stays the zai default (nil).
-	if mc.Quirks.SupportsReasoningEffort != nil {
-		t.Errorf("SupportsReasoningEffort = %v, want nil (catalog not consulted for instance entry)", mc.Quirks.SupportsReasoningEffort)
+	// The entry explicitly turned the effort gate off; the catalog's
+	// supports_effort_parameter=true must not overwrite an explicit setting.
+	if mc.Quirks.SupportsReasoningEffort == nil || *mc.Quirks.SupportsReasoningEffort {
+		t.Errorf("SupportsReasoningEffort = %v, want explicit false to survive the catalog fill", mc.Quirks.SupportsReasoningEffort)
 	}
 }
 
@@ -781,5 +787,39 @@ func TestReasoningOff_SuppressesProviderOptionReasoning(t *testing.T) {
 		if _, ok := m["reasoning_details"]; ok {
 			t.Errorf("assistant message used reasoning_details replay despite reasoning=false: %v", m)
 		}
+	}
+}
+
+// Instance model entries take precedence FIELD-wise, not entry-wise: an entry
+// declaring only a context_window must not drop the catalog's effort gate or
+// output cap for the same model.
+func TestCompatFor_DeclaredEntryStillGetsCatalogGapFill(t *testing.T) {
+	a := NewForInstance(OpenAICompatInstanceParams{
+		Name:    "gw",
+		BaseURL: "https://gw.example.com/v1",
+		Models: map[string]providercfg.ModelConfig{
+			"glm-5.2": {ContextWindow: 500_000},
+		},
+	})
+	mc := a.compatFor("glm-5.2")
+	if mc.Quirks.SupportsReasoningEffort == nil || !*mc.Quirks.SupportsReasoningEffort {
+		t.Errorf("SupportsReasoningEffort = %v, want catalog-filled true despite a declared entry", mc.Quirks.SupportsReasoningEffort)
+	}
+	if mc.DefaultMaxTokens != 131072 {
+		t.Errorf("DefaultMaxTokens = %d, want catalog-filled 131072", mc.DefaultMaxTokens)
+	}
+
+	// A declared non-reasoning model gets no effort gate from the catalog.
+	off := false
+	b := NewForInstance(OpenAICompatInstanceParams{
+		Name:    "gw",
+		BaseURL: "https://gw.example.com/v1",
+		Models: map[string]providercfg.ModelConfig{
+			"glm-5.2": {Reasoning: &off},
+		},
+	})
+	mcOff := b.compatFor("glm-5.2")
+	if mcOff.Quirks.SupportsReasoningEffort != nil {
+		t.Errorf("reasoning=false entry got an effort gate from the catalog: %v", *mcOff.Quirks.SupportsReasoningEffort)
 	}
 }
