@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"sort"
 	"strings"
 
 	"primeradiant.com/serf/agent/internal/tool"
@@ -48,6 +49,10 @@ type Profile struct {
 	// web_fetch Q&A) to a different provider instance than the main model. Empty
 	// means same provider as the main model. Set via WithCheapModel("provider/model").
 	cheapProvider string
+	// instModels carries the instance's providers.toml model definitions so a
+	// runtime model switch (WithModel rebuild) re-resolves the new model
+	// against the same table instead of losing the user's configuration.
+	instModels map[string]providercfg.ModelConfig
 }
 
 type toolCapability string
@@ -420,10 +425,13 @@ func (p *Profile) WithLiveModelInfo(info llm.ModelInfo) *Profile {
 		return nil
 	}
 	clone := *p
-	if info.ContextWindow > 0 {
+	// providers.toml model definitions are explicit user intent and beat live
+	// /models enrichment for the fields they set.
+	instEntry, hasInstEntry := p.instModels[p.model]
+	if info.ContextWindow > 0 && !(hasInstEntry && instEntry.ContextWindow > 0) {
 		clone.contextWindow = info.ContextWindow
 	}
-	if len(info.ReasoningEffortLevels) > 0 {
+	if len(info.ReasoningEffortLevels) > 0 && !(hasInstEntry && len(instEntry.ThinkingLevels) > 0) {
 		clone.effortLevels = append([]string(nil), info.ReasoningEffortLevels...)
 		// Keep the effort-enum tool schema (task_list) in sync with the live
 		// levels, or the model sees the constructor enum instead.
@@ -612,7 +620,7 @@ func restampInstanceIdentity(p *Profile, behaviorTag, id string) *Profile {
 // or handled by the dedicated anthropic branch of WithModel.
 func rebuildOnSameProviderChange(behaviorTag string) bool {
 	switch behaviorTag {
-	case "kimi", "glm", "openrouter", "ollama", "openrouter-anthropic":
+	case "kimi", "glm", "openrouter", "ollama", "openrouter-anthropic", "openai-compatible":
 		return true
 	}
 	return false
@@ -681,7 +689,7 @@ func (p *Profile) WithModel(model string) *Profile {
 		case "openrouter-anthropic":
 			rebuilt = newOpenRouterAnthropicProfile(model)
 		default:
-			rebuilt = newOpenAICompatProfile(p.behaviorTag, model, 0)
+			rebuilt = newOpenAICompatProfile(p.behaviorTag, model, 0, p.instModels)
 		}
 		// Re-stamp the instance identity onto the rebuilt profile so that a
 		// renamed instance (id != behaviorTag, via WithProviderID) keeps its
@@ -1099,11 +1107,16 @@ func resolveOpenAICompatCatalogModel(lookup func(string) *llm.ModelInfo, behavio
 //
 // The wire model name is always the bare value; only the catalog lookup
 // is broadened.
-func newOpenAICompatProfile(id, model string, contextWindow int) *Profile {
+func newOpenAICompatProfile(id, model string, contextWindow int, instModels map[string]providercfg.ModelConfig) *Profile {
 	model = strings.TrimSpace(model)
+	entry, hasEntry := instModels[model]
 	var catModel *llm.ModelInfo
 	if cat := llm.EmbeddedModelCatalog(); cat != nil {
 		catModel = resolveOpenAICompatCatalogModel(cat.GetModelInfo, id, model)
+	}
+	// Precedence for model shape: instance config > embedded catalog > default.
+	if contextWindow == 0 && hasEntry && entry.ContextWindow > 0 {
+		contextWindow = entry.ContextWindow
 	}
 	if contextWindow == 0 && catModel != nil && catModel.ContextWindow > 0 {
 		contextWindow = catModel.ContextWindow
@@ -1112,10 +1125,19 @@ func newOpenAICompatProfile(id, model string, contextWindow int) *Profile {
 		contextWindow = 128_000
 	}
 	defaultEfforts := []string{"low", "medium", "high"}
+	reasoning := true
 	var efforts []string
-	if catModel != nil && len(catModel.ReasoningEffortLevels) > 0 {
+	switch {
+	case hasEntry && entry.Reasoning != nil && !*entry.Reasoning:
+		// A declared non-reasoning model advertises no effort levels at all.
+		// Non-nil empty keeps buildBaseProfile from re-deriving defaults.
+		reasoning = false
+		efforts = []string{}
+	case hasEntry && len(entry.ThinkingLevels) > 0:
+		efforts = orderedEffortLevels(entry.ThinkingLevels)
+	case catModel != nil && len(catModel.ReasoningEffortLevels) > 0:
 		efforts = append([]string(nil), catModel.ReasoningEffortLevels...)
-	} else {
+	default:
 		efforts = resolveEffortLevels(model, defaultEfforts)
 	}
 	// MiniMax via OpenRouter uses reasoning_details for multi-turn reasoning
@@ -1140,7 +1162,7 @@ func newOpenAICompatProfile(id, model string, contextWindow int) *Profile {
 		parallel:        true,
 		contextWindow:   contextWindow,
 		docFiles:        []string{"AGENTS.md"},
-		reasoning:       true,
+		reasoning:       reasoning,
 		streaming:       true,
 		webSearch:       false,
 		defaultTimeout:  120_000,
@@ -1151,5 +1173,20 @@ func newOpenAICompatProfile(id, model string, contextWindow int) *Profile {
 		toolNameMap:     nil,
 		capabilities:    openAICodexCapabilities,
 	})
+	bp.instModels = instModels
 	return &bp
+}
+
+// orderedEffortLevels returns a thinking_levels map's keys in serf rank order
+// (minimal → xhigh), the shape ReasoningEffortLevels and the task_list enum
+// expect.
+func orderedEffortLevels(levels map[string]string) []string {
+	out := make([]string, 0, len(levels))
+	for k := range levels {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return llm.ReasoningEffortRank(out[i]) < llm.ReasoningEffortRank(out[j])
+	})
+	return out
 }

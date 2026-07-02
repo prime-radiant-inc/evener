@@ -79,11 +79,17 @@ func ResolveProfileWithLiveWindow(cfg providercfg.Config, ref string) (*provider
 }
 
 // instanceEndpoint returns the base URL and inline api key configured for the
-// instance named name, or empty strings when not found.
+// instance named name, or empty strings when not found. $ENV references in the
+// api_key are expanded; an unresolvable reference degrades to no key (the live
+// /models probe is best-effort and falls back to the catalog window).
 func instanceEndpoint(cfg providercfg.Config, name string) (baseURL, apiKey string) {
 	for _, inst := range cfg.Instances {
 		if inst.Name == name {
-			return strings.TrimSpace(inst.BaseURL), strings.TrimSpace(inst.APIKey)
+			key, err := providercfg.ResolveAPIKey(strings.TrimSpace(inst.APIKey))
+			if err != nil {
+				key = ""
+			}
+			return strings.TrimSpace(inst.BaseURL), key
 		}
 	}
 	return "", ""

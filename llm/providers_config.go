@@ -90,6 +90,19 @@ func newFromProviders(cfg providercfg.Config, allowPartial bool, opts ...EnvOpti
 		if !ok {
 			return nil, nil, fmt.Errorf("provider %q: unknown type/apiStyle combination (%q, %q)", inst.Name, inst.Type, inst.APIStyle)
 		}
+		// Expand $ENV references in the api_key here — the one choke point
+		// every instance adapter passes through — so a missing variable fails
+		// just this instance, with its name in the error.
+		apiKey, err := providercfg.ResolveAPIKey(inst.APIKey)
+		if err != nil {
+			wrapped := fmt.Errorf("provider %q: %w", inst.Name, err)
+			if allowPartial {
+				initErrs = append(initErrs, wrapped)
+				continue
+			}
+			return nil, nil, wrapped
+		}
+		inst.APIKey = apiKey
 		adapter, err := factory(inst, envCfg.StateHome)
 		if err != nil {
 			wrapped := fmt.Errorf("provider %q: %w", inst.Name, err)
