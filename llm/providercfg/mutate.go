@@ -8,14 +8,41 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/BurntSushi/toml"
 	"github.com/spf13/afero"
 )
 
 // WriteFile marshals cfg and atomically writes it to path (temp + rename),
-// mode 0644. It creates parent directories as needed. It never writes api_key
-// values even if cfg contains them.
+// mode 0644. It creates parent directories as needed. api_key handling:
+// struct-held keys are SCRUBBED (a loaded config may carry credentials-store
+// injections that must never reach the 0644 file) and each instance's key is
+// restored from whatever the on-disk file already carried — so a
+// hand-authored api_key (literal or $ENV reference) survives hub
+// edit/set-default/remove rewrites, and serf itself still never introduces a
+// key the user didn't write.
 func WriteFile(path string, cfg Config) error {
 	return writeFileFS(afero.NewOsFs(), path, cfg)
+}
+
+// onDiskAPIKeys returns instance-name → api_key from the existing file at
+// path, tolerating an absent or unparseable file (nil map). It decodes the
+// raw shape without validation so a restore can't fail a rewrite.
+func onDiskAPIKeys(fs afero.Fs, path string) map[string]string {
+	data, err := afero.ReadFile(fs, path)
+	if err != nil {
+		return nil
+	}
+	var raw fileShape
+	if _, err := toml.Decode(string(data), &raw); err != nil {
+		return nil
+	}
+	keys := make(map[string]string, len(raw.Instances))
+	for name, inst := range raw.Instances {
+		if inst.APIKey != "" {
+			keys[name] = inst.APIKey
+		}
+	}
+	return keys
 }
 
 // writeFileFS is the filesystem seam beneath WriteFile: it performs the atomic
@@ -24,6 +51,12 @@ func WriteFile(path string, cfg Config) error {
 // byte-identical to using os calls; tests and fuzzers inject an in-memory or
 // sandboxed filesystem to exercise persistence without touching real disk.
 func writeFileFS(fs afero.Fs, path string, cfg Config) error {
+	disk := onDiskAPIKeys(fs, path)
+	scrubbed := Config{Default: cfg.Default, Instances: append([]InstanceConfig(nil), cfg.Instances...)}
+	for i := range scrubbed.Instances {
+		scrubbed.Instances[i].APIKey = disk[scrubbed.Instances[i].Name]
+	}
+	cfg = scrubbed
 	data, err := Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("providers.toml: marshal: %w", err)

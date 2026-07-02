@@ -7,8 +7,13 @@ import (
 	"strings"
 )
 
-// Marshal emits providers.toml content for cfg. It never emits api_key even
-// if InstanceConfig.APIKey is set. The output round-trips through Load.
+// Marshal emits providers.toml content for cfg, including api_key when set on
+// an instance. Callers that rewrite the ON-DISK file must go through WriteFile,
+// which scrubs struct-held keys and restores only what the existing file
+// already carried — that split is what keeps credentials-store injections
+// (cmdutil.LoadProviderConfig writes resolved keys into InstanceConfig.APIKey
+// in memory) from ever landing on disk while hand-authored keys survive hub
+// edit/set-default/remove rewrites. The output round-trips through Load.
 func Marshal(cfg Config) ([]byte, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "default = %q\n", cfg.Default)
@@ -20,6 +25,9 @@ func Marshal(cfg Config) ([]byte, error) {
 		}
 		if inst.BaseURL != "" {
 			fmt.Fprintf(&b, "base_url = %q\n", inst.BaseURL)
+		}
+		if inst.APIKey != "" {
+			fmt.Fprintf(&b, "api_key = %q\n", inst.APIKey)
 		}
 		if inst.Quirks != "" {
 			fmt.Fprintf(&b, "quirks = %q\n", inst.Quirks)
@@ -98,20 +106,24 @@ func writeCompat(b *strings.Builder, header string, c *CompatConfig) {
 	}
 	writeBool(b, "strip_empty_content", c.StripEmptyContent)
 	writeBool(b, "no_json_schema", c.NoJSONSchema)
-	if len(c.FinishReasonMap) > 0 {
+	if c.FinishReasonMap != nil {
+		// Non-nil includes the explicitly-empty table, which is an override
+		// (clears the inherited map) and must survive the round-trip.
 		pairs := make([]string, 0, len(c.FinishReasonMap))
 		for _, k := range sortedKeys(c.FinishReasonMap) {
 			pairs = append(pairs, fmt.Sprintf("%q = %q", k, c.FinishReasonMap[k]))
 		}
-		fmt.Fprintf(b, "finish_reason_map = { %s }\n", strings.Join(pairs, ", "))
+		fmt.Fprintf(b, "finish_reason_map = {%s}\n", joinInline(pairs))
 	}
 	writeBool(b, "translate_max_to_xhigh", c.TranslateMaxToXHigh)
-	if len(c.ChatTemplateKwargs) > 0 {
+	if c.ChatTemplateKwargs != nil {
+		// Non-nil includes the explicitly-empty table (an override that
+		// clears the inherited kwargs); it must survive the round-trip.
 		pairs := make([]string, 0, len(c.ChatTemplateKwargs))
 		for _, k := range sortedKeys(c.ChatTemplateKwargs) {
 			pairs = append(pairs, fmt.Sprintf("%q = %s", k, tomlScalar(c.ChatTemplateKwargs[k])))
 		}
-		fmt.Fprintf(b, "chat_template_kwargs = { %s }\n", strings.Join(pairs, ", "))
+		fmt.Fprintf(b, "chat_template_kwargs = {%s}\n", joinInline(pairs))
 	}
 }
 
@@ -134,6 +146,15 @@ func tomlScalar(v any) string {
 	default:
 		return fmt.Sprintf("%q", fmt.Sprint(x))
 	}
+}
+
+// joinInline renders inline-table contents: "{}" for an empty (but explicit)
+// table, "{ k = v, ... }" otherwise.
+func joinInline(pairs []string) string {
+	if len(pairs) == 0 {
+		return ""
+	}
+	return " " + strings.Join(pairs, ", ") + " "
 }
 
 func writeBool(b *strings.Builder, key string, v *bool) {

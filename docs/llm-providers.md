@@ -97,7 +97,9 @@ client build goes through the config path — either loading the file when it
 exists, or seeding the config in memory from the environment when it does not.
 The `providers.toml` at `<state-root>/providers.toml` holds **descriptors**,
 which is what lets `name != type` exist. Serf itself never writes credentials
-into it (`Marshal` omits `api_key` even when set); a hand-authored instance MAY
+into it (`WriteFile` scrubs struct-held keys and restores only what the
+on-disk file already carried, so hub rewrites preserve — and never invent —
+inline keys); a hand-authored instance MAY
 carry an `api_key` — a literal or, better, a `$ENV`/`${ENV}` reference resolved
 at point of use (see the compat section below):
 
@@ -131,10 +133,10 @@ quirks    = "..."         # optional; selects a quirks preset (openai-compatible
   calls this once on startup when the file is absent, then passes the path to
   spawned children via `SERF_PROVIDERS_CONFIG` so they load the same file instead
   of re-seeding. A failed write is a hard error.
-- **Descriptors-only** — `providerconfig.Seed` (`internal/providerconfig/materialize.go:12`)
-  and `Marshal` (`:78`) emit only `type` / `api_style` / `base_url` / `quirks`;
-  `api_key` is never written. The openai seed captures `OPENAI_BASE_URL` like every
-  other type.
+- **Descriptors-only seeding** — `providerconfig.Seed` builds env-derived
+  instances without credentials, and `WriteFile`'s scrub/restore means the
+  hub-materialized file stays credential-free unless the user hand-authors an
+  `api_key`. The openai seed captures `OPENAI_BASE_URL` like every other type.
 - **Credential injection** — after loading or seeding the descriptor config,
   `LoadClient` calls `credentials.Store.ResolveKey(name, typ)` (`store.go:184`)
   for each instance and sets the resolved key on the **in-memory** config only;
@@ -421,11 +423,13 @@ cross-provider transcript) falls back to `reasoning_content`.
   variable never blocks unrelated instances. The runtime load path
   (`cmdutil.LoadClient` → `llm.NewFromAvailableProviders`) skips a failing
   instance and keeps the rest of the client usable.
-- `providercfg.Marshal` (`llm/providercfg/materialize.go:12`) still never
-  writes `api_key` back to disk, `$ENV` references included — the
-  hub-materialized descriptors file stays credential-free. Hand-authored
-  instances (like the lunaroute example, never seeded by the hub) are the
-  normal way `api_key` ends up in `providers.toml` at all.
+- On-disk `api_key` handling lives in `providercfg.WriteFile`
+  (`llm/providercfg/mutate.go`): struct-held keys are scrubbed (a loaded
+  config may carry in-memory credentials-store injections that must never
+  reach the 0644 file) and each instance's key is restored from whatever the
+  existing file already carried. So hub rewrites (edit/set-default/remove)
+  PRESERVE a hand-authored `api_key` — literal or `$ENV` reference — and
+  serf itself never introduces one the user didn't write.
 
 ### `[instances.X.headers]` — extra request headers (all types)
 

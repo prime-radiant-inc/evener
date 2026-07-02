@@ -5,17 +5,21 @@ import (
 	"testing"
 )
 
+// Marshal emits the struct verbatim, api_key included — the secrets-never-
+// reach-disk guarantee lives in WriteFile, which scrubs struct-held keys and
+// restores only what the on-disk file already carried (see mutate_test.go and
+// TestWriteFile_PreservesOnDiskAPIKeyAndScrubsInjected).
 func TestMarshalDescriptorsOnly(t *testing.T) {
 	cfg := Config{Default: "openai", Instances: []InstanceConfig{
-		{Name: "openai", Type: "openai", APIStyle: StyleResponses, APIKey: "sk-LEAK"},
+		{Name: "openai", Type: "openai", APIStyle: StyleResponses, APIKey: "$OPENAI_KEY"},
 		{Name: "vllm", Type: "openai", APIStyle: StyleChatCompletions, BaseURL: "https://vllm.local/v1", Quirks: "vllm-quirk"},
 	}}
 	data, err := Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(data), "sk-LEAK") || strings.Contains(string(data), "api_key") {
-		t.Fatalf("Marshal leaked a secret:\n%s", data)
+	if !strings.Contains(string(data), `api_key = "$OPENAI_KEY"`) {
+		t.Fatalf("Marshal dropped the api_key it was given:\n%s", data)
 	}
 	got, err := Load(data)
 	if err != nil {

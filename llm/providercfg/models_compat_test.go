@@ -1,6 +1,7 @@
 package providercfg
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -439,9 +440,10 @@ func TestMarshalRoundTripsCompatAndModels(t *testing.T) {
 	if mcOut.Compat.ToolStream == nil || !*mcOut.Compat.ToolStream {
 		t.Errorf("round-trip lost tool_stream: %+v", mcOut.Compat)
 	}
-	// api_key must still never be emitted.
-	if strings.Contains(string(data), "api_key") {
-		t.Errorf("Marshal emitted api_key:\n%s", data)
+	// api_key round-trips through Marshal (the on-disk scrub/restore guard
+	// lives in WriteFile, not here).
+	if out.APIKey != in.APIKey {
+		t.Errorf("round-trip APIKey = %q, want %q", out.APIKey, in.APIKey)
 	}
 }
 
@@ -482,5 +484,100 @@ func TestResolveAPIKey(t *testing.T) {
 				t.Errorf("ResolveAPIKey(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// A rewrite (hub edit/set-default/remove flows) must not destroy a
+// hand-authored api_key: WriteFile restores whatever the on-disk file already
+// carried, while struct-held keys (possibly injected from the credentials
+// store) are scrubbed and never written.
+func TestWriteFile_PreservesOnDiskAPIKeyAndScrubsInjected(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/providers.toml"
+	src := `
+default = "lunaroute"
+[instances.lunaroute]
+type = "openai"
+api_style = "chat-completions"
+base_url = "https://gw.example.com/v1"
+api_key = "$LUNAROUTE_API_KEY"
+
+[instances.literal]
+type = "glm"
+api_key = "sk-hand-authored"
+`
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, exists, err := LoadFile(path)
+	if err != nil || !exists {
+		t.Fatalf("LoadFile: %v exists=%v", err, exists)
+	}
+	// Simulate a credentials-store injection on a mutated copy plus an edit.
+	for i := range cfg.Instances {
+		if cfg.Instances[i].Name == "lunaroute" {
+			cfg.Instances[i].BaseURL = "https://gw2.example.com/v1"
+		}
+		if cfg.Instances[i].Name == "literal" {
+			cfg.Instances[i].APIKey = "sk-INJECTED-FROM-CRED-STORE"
+		}
+	}
+	if err := WriteFile(path, cfg); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	out, _ := os.ReadFile(path)
+	text := string(out)
+	if !strings.Contains(text, `api_key = "$LUNAROUTE_API_KEY"`) {
+		t.Errorf("rewrite dropped the hand-authored $ENV api_key:\n%s", text)
+	}
+	if !strings.Contains(text, `api_key = "sk-hand-authored"`) {
+		t.Errorf("rewrite dropped the hand-authored literal api_key:\n%s", text)
+	}
+	if strings.Contains(text, "sk-INJECTED-FROM-CRED-STORE") {
+		t.Errorf("rewrite leaked a struct-held (injected) api_key:\n%s", text)
+	}
+	if !strings.Contains(text, `base_url = "https://gw2.example.com/v1"`) {
+		t.Errorf("rewrite lost the edit itself:\n%s", text)
+	}
+	// The rewritten file must still load.
+	if _, _, err := LoadFile(path); err != nil {
+		t.Fatalf("rewritten file fails LoadFile: %v", err)
+	}
+}
+
+// Explicitly-empty compat tables are overrides (clear the inherited value),
+// distinct from absent fields (inherit). BurntSushi decodes `x = {}` to a
+// non-nil empty map, so the distinction survives parsing.
+func TestLoad_ExplicitEmptyCompatMapsSurvive(t *testing.T) {
+	src := `
+[instances.gw]
+type = "glm"
+[instances.gw.compat]
+finish_reason_map = {}
+chat_template_kwargs = {}
+`
+	cfg, err := Load([]byte(src))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	c := cfg.Instances[0].Compat
+	if c.FinishReasonMap == nil {
+		t.Error("explicit empty finish_reason_map decoded to nil (indistinguishable from absent)")
+	}
+	if c.ChatTemplateKwargs == nil {
+		t.Error("explicit empty chat_template_kwargs decoded to nil")
+	}
+	// And they round-trip through Marshal.
+	data, err := Marshal(cfg)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	cfg2, err := Load(data)
+	if err != nil {
+		t.Fatalf("Load(Marshal): %v\n%s", err, data)
+	}
+	c2 := cfg2.Instances[0].Compat
+	if c2 == nil || c2.FinishReasonMap == nil || c2.ChatTemplateKwargs == nil {
+		t.Errorf("explicit empty maps lost in round-trip:\n%s", data)
 	}
 }

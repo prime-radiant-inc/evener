@@ -141,7 +141,9 @@ func ApplyCompatConfig(base ProviderQuirks, c *providercfg.CompatConfig) Provide
 		v := *c.SupportsStrictMode
 		q.SupportsStrictMode = &v
 	}
-	if len(c.ChatTemplateKwargs) > 0 {
+	if c.ChatTemplateKwargs != nil {
+		// Non-nil includes the explicitly-empty table, which clears the
+		// inherited kwargs (wholesale replacement, like FinishReasonMap).
 		q.ChatTemplateKwargs = make(map[string]any, len(c.ChatTemplateKwargs))
 		for k, v := range c.ChatTemplateKwargs {
 			q.ChatTemplateKwargs[k] = v
@@ -171,7 +173,9 @@ func ApplyCompatConfig(base ProviderQuirks, c *providercfg.CompatConfig) Provide
 	if c.NoJSONSchema != nil {
 		q.NoJSONSchema = *c.NoJSONSchema
 	}
-	if len(c.FinishReasonMap) > 0 {
+	if c.FinishReasonMap != nil {
+		// Non-nil includes the explicitly-empty table, which clears the
+		// inherited map (wholesale replacement).
 		q.FinishReasonMap = make(map[string]string, len(c.FinishReasonMap))
 		for k, v := range c.FinishReasonMap {
 			q.FinishReasonMap[k] = v
