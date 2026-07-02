@@ -107,6 +107,14 @@ func QuirksPreset(name string) ProviderQuirks {
 	case "openrouter":
 		return ProviderQuirks{
 			TranslateMaxToXHigh: true,
+			// OpenRouter's canonical reasoning control is the
+			// {"reasoning":{"effort":...}} object. Live-verified 2026-07-02:
+			// behaves identically to top-level reasoning_effort on OpenAI AND
+			// Anthropic routed models (effort→budget translation happens
+			// either way), and accepts the full serf vocabulary incl.
+			// xhigh/minimal — the canonical form also carries future knobs
+			// (exclude, max_tokens) top-level reasoning_effort cannot.
+			ThinkingFormat: "openrouter",
 		}
 	default:
 		return ProviderQuirks{}

@@ -50,9 +50,11 @@ func TestAdapter_Complete_DelegatesToInner(t *testing.T) {
 }
 
 func TestAdapter_Quirks(t *testing.T) {
-	// OpenRouter should have minimal quirks — no restrictions, but does translate max→xhigh.
+	// OpenRouter translates max→xhigh and speaks its canonical reasoning
+	// object ({"reasoning":{"effort":...}}, live-verified 2026-07-02 to
+	// accept the full serf vocabulary incl. xhigh/minimal).
 	quirks := openaicompat.QuirksPreset("openrouter")
-	want := openaicompat.ProviderQuirks{TranslateMaxToXHigh: true}
+	want := openaicompat.ProviderQuirks{TranslateMaxToXHigh: true, ThinkingFormat: "openrouter"}
 	if !reflect.DeepEqual(quirks, want) {
 		t.Fatalf("openrouter quirks = %+v, want %+v", quirks, want)
 	}
@@ -80,7 +82,7 @@ func TestNewForInstance_DefaultBaseURL(t *testing.T) {
 
 func TestNewForInstance_DefaultQuirks(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "oc", APIKey: "k"})
-	want := openaicompat.ProviderQuirks{TranslateMaxToXHigh: true}
+	want := openaicompat.ProviderQuirks{TranslateMaxToXHigh: true, ThinkingFormat: "openrouter"}
 	if !reflect.DeepEqual(a.Quirks, want) {
 		t.Fatalf("Quirks = %+v, want %+v", a.Quirks, want)
 	}

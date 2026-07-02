@@ -259,8 +259,9 @@ func TestNewFromEnv_CompleteAutoFallbackPreservesOpenAICompatibleQuirks(t *testi
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
-	if got := chatBody["reasoning_effort"]; got != "xhigh" {
-		t.Fatalf("chat fallback reasoning_effort = %#v, want xhigh", got)
+	obj, _ := chatBody["reasoning"].(map[string]any)
+	if obj == nil || obj["effort"] != "xhigh" {
+		t.Fatalf("chat fallback reasoning = %#v, want {effort: xhigh} (openrouter preset)", chatBody["reasoning"])
 	}
 }
 
@@ -2570,6 +2571,26 @@ func TestRescueClaudeXMLArgs(t *testing.T) {
 
 // ================== Effort translation tests ==================
 
+// openrouterWireEffort extracts the effort from OpenRouter's canonical
+// reasoning object ({"reasoning": {"effort": ...}}), the preset's
+// thinking_format="openrouter" wire shape (live-verified 2026-07-02:
+// the full serf vocabulary incl. xhigh/minimal is accepted).
+func openrouterWireEffort(t *testing.T, body map[string]any) string {
+	t.Helper()
+	if _, ok := body["reasoning_effort"]; ok {
+		t.Fatal("openrouter preset must emit the reasoning object, not top-level reasoning_effort")
+	}
+	obj, ok := body["reasoning"].(map[string]any)
+	if !ok {
+		t.Fatal("expected reasoning object in body")
+	}
+	got, ok := obj["effort"].(string)
+	if !ok {
+		t.Fatal("expected reasoning.effort in body")
+	}
+	return got
+}
+
 func TestBuildRequestBody_TranslateMaxToXHigh_OpenRouter(t *testing.T) {
 	// OpenRouter quirk translates "max" to "xhigh".
 	effort := "max"
@@ -2583,12 +2604,8 @@ func TestBuildRequestBody_TranslateMaxToXHigh_OpenRouter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildRequestBody: %v", err)
 	}
-	got, ok := body["reasoning_effort"].(string)
-	if !ok {
-		t.Fatal("expected reasoning_effort in body")
-	}
-	if got != "xhigh" {
-		t.Fatalf("expected reasoning_effort='xhigh', got %q", got)
+	if got := openrouterWireEffort(t, body); got != "xhigh" {
+		t.Fatalf("expected reasoning.effort='xhigh', got %q", got)
 	}
 }
 
@@ -2629,12 +2646,8 @@ func TestBuildRequestBody_TranslateMaxToXHigh_CaseInsensitive(t *testing.T) {
 			if err != nil {
 				t.Fatalf("buildRequestBody: %v", err)
 			}
-			got, ok := body["reasoning_effort"].(string)
-			if !ok {
-				t.Fatal("expected reasoning_effort in body")
-			}
-			if got != "xhigh" {
-				t.Fatalf("expected reasoning_effort='xhigh', got %q", got)
+			if got := openrouterWireEffort(t, body); got != "xhigh" {
+				t.Fatalf("expected reasoning.effort='xhigh', got %q", got)
 			}
 		})
 	}
@@ -2656,12 +2669,8 @@ func TestBuildRequestBody_OtherEffortLevels_NoTranslation(t *testing.T) {
 			if err != nil {
 				t.Fatalf("buildRequestBody: %v", err)
 			}
-			got, ok := body["reasoning_effort"].(string)
-			if !ok {
-				t.Fatal("expected reasoning_effort in body")
-			}
-			if got != level {
-				t.Fatalf("expected reasoning_effort=%q, got %q", level, got)
+			if got := openrouterWireEffort(t, body); got != level {
+				t.Fatalf("expected reasoning.effort=%q, got %q", level, got)
 			}
 		})
 	}
