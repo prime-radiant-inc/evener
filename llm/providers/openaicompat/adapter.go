@@ -394,6 +394,11 @@ func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm
 	var model string
 	var finishReason string
 	var usage *llm.Usage
+	// sawTopLevelUsage gives top-level usage strict precedence across the
+	// WHOLE stream (matching the non-stream path), not just within a chunk —
+	// a mixed emitter must not have late choice-level numbers overwrite
+	// earlier top-level ones.
+	var sawTopLevelUsage bool
 	finished := false
 
 	rawReqBody := string(jsonBody)
@@ -517,6 +522,7 @@ func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm
 			if chunk.Usage != nil {
 				u := openaichat.ParseChatUsage(chunk.Usage)
 				usage = &u
+				sawTopLevelUsage = true
 			}
 
 			if len(chunk.Choices) == 0 {
@@ -526,7 +532,7 @@ func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm
 
 			// Usage fallback: Moonshot/Kimi report usage on choices[0].usage
 			// instead of the top-level chunk usage. Top-level wins.
-			if chunk.Usage == nil && choice.Usage != nil {
+			if chunk.Usage == nil && choice.Usage != nil && !sawTopLevelUsage {
 				u := openaichat.ParseChatUsage(choice.Usage)
 				usage = &u
 			}

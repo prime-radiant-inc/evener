@@ -422,3 +422,18 @@ func TestReplay_ForeignEncryptedContentSkipped(t *testing.T) {
 		t.Errorf("thinking text should still replay normally, got %v", got)
 	}
 }
+
+// Top-level usage takes strict precedence across the WHOLE stream: a later
+// choice-level usage chunk must not overwrite earlier top-level numbers
+// (matching the non-stream path's precedence).
+func TestStream_TopLevelUsageWinsAcrossChunks(t *testing.T) {
+	a := streamChunks(t, []string{
+		`{"model":"m","choices":[{"index":0,"delta":{"content":"a"},"finish_reason":null}],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}}`,
+		`{"model":"m","choices":[{"index":0,"delta":{"content":"b"},"finish_reason":null,"usage":{"prompt_tokens":99,"completion_tokens":99,"total_tokens":198}}]}`,
+		`{"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+	})
+	_, final := collectThinking(t, a)
+	if final.Usage.InputTokens != 10 {
+		t.Fatalf("InputTokens = %d, want the earlier top-level 10, not the later choice-level 99", final.Usage.InputTokens)
+	}
+}

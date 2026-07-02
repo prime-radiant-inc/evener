@@ -33,14 +33,15 @@ type ModelCompat struct {
 // A model-level map wins; without one, the TranslateMaxToXHigh quirk still
 // applies (OpenRouter vocabulary).
 //
-// When a map is present, it is documented as the complete authority for this
-// model: the requested effort is first clamped to the map's own keys via
+// When a map is present, it is the authority for serf's effort vocabulary:
+// the requested effort is first clamped to the map's own keys via
 // llm.ClampReasoningEffort (the same guard the session-side profile clamp
-// uses), then translated through the map. A level the map doesn't carry is
-// no longer passed through by name — it's clamped to the nearest level the
-// map declares before translation. Without a map, effort passes through by
-// name unchanged (aside from the TranslateMaxToXHigh quirk), since there's no
-// declared vocabulary to clamp against.
+// uses), then translated through the map — a serf level the map doesn't
+// carry is clamped to the nearest declared level before translation. Values
+// OUTSIDE serf's vocabulary (e.g. "turbo" from a direct llm.Client caller)
+// pass through unchanged, matching ClampReasoningEffort's serf-wide
+// permissive contract for unknown vocabulary. Without a map, effort passes
+// through by name unchanged (aside from the TranslateMaxToXHigh quirk).
 func (mc ModelCompat) wireEffort(effort string) string {
 	norm := strings.ToLower(strings.TrimSpace(effort))
 	if len(mc.ThinkingLevels) > 0 {
