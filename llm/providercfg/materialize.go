@@ -86,6 +86,8 @@ func writeCompat(b *strings.Builder, header string, c *CompatConfig) {
 	if c.CacheControlFormat != "" {
 		fmt.Fprintf(b, "cache_control_format = %q\n", c.CacheControlFormat)
 	}
+	writeBool(b, "supports_long_cache_retention", c.SupportsLongCacheRetention)
+	writeBool(b, "send_session_affinity_headers", c.SendSessionAffinityHeaders)
 	writeBool(b, "lock_temperature", c.LockTemperature)
 	writeBool(b, "lock_top_p", c.LockTopP)
 	writeBool(b, "lock_frequency_penalty", c.LockFrequencyPenalty)

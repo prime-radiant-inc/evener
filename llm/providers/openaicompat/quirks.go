@@ -50,6 +50,16 @@ type ProviderQuirks struct {
 	// CacheControlFormat: "anthropic" applies Anthropic cache_control markers
 	// for gateways that forward them.
 	CacheControlFormat string
+	// SupportsLongCacheRetention emits prompt_cache_key +
+	// prompt_cache_retention:"24h" (and, with CacheControlFormat "anthropic",
+	// ttl:"1h" on the ephemeral markers). The cache key derives from
+	// req.PromptCacheKey, else "serf-session-"+req.SessionID — the same
+	// convention agent.Session uses on the openai path, so both agree.
+	SupportsLongCacheRetention bool
+	// SendSessionAffinityHeaders sends per-request session-affinity headers
+	// (session_id, x-client-request-id, x-session-affinity) when the request
+	// carries a session id.
+	SendSessionAffinityHeaders bool
 	// SupportsStrictMode, when explicitly true, adds strict:false inside every
 	// tool definition's function object. nil/false emits no strict field.
 	SupportsStrictMode *bool

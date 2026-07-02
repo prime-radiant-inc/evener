@@ -94,6 +94,18 @@ type CompatConfig struct {
 	// CacheControlFormat: "anthropic" applies Anthropic cache_control markers
 	// (system prompt, last tool, last message) for gateways that forward them.
 	CacheControlFormat string `toml:"cache_control_format"`
+	// SupportsLongCacheRetention, when true, emits OpenAI's prompt_cache_key +
+	// prompt_cache_retention:"24h" for gateways that honor 24h prompt caching,
+	// and (with cache_control_format = "anthropic") adds ttl:"1h" to the
+	// ephemeral cache_control markers. Leave unset for gateways that don't know
+	// these fields — they should never see them.
+	SupportsLongCacheRetention *bool `toml:"supports_long_cache_retention"`
+	// SendSessionAffinityHeaders, when true and the request carries a session
+	// id, sends the session-affinity request headers (session_id,
+	// x-client-request-id, x-session-affinity) so a gateway can route a
+	// conversation's turns to the same backend/cache. A user-configured header
+	// of the same name overrides the derived value.
+	SendSessionAffinityHeaders *bool `toml:"send_session_affinity_headers"`
 	// The remaining knobs mirror the built-in quirks presets.
 	LockTemperature      *bool             `toml:"lock_temperature"`
 	LockTopP             *bool             `toml:"lock_top_p"`

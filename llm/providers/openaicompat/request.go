@@ -84,6 +84,12 @@ func buildRequestBody(req llm.Request, stream bool, mc ModelCompat) (map[string]
 	if quirks.SendStoreFalse {
 		body["store"] = false
 	}
+	if quirks.SupportsLongCacheRetention {
+		if key := promptCacheKey(req); key != "" {
+			body["prompt_cache_key"] = key
+			body["prompt_cache_retention"] = "24h"
+		}
+	}
 	if len(req.Metadata) > 0 {
 		body["metadata"] = req.Metadata
 	}
@@ -139,10 +145,24 @@ func buildRequestBody(req llm.Request, stream bool, mc ModelCompat) (map[string]
 		}
 	}
 	if quirks.CacheControlFormat == "anthropic" {
-		anthropicCacheControl(body)
+		anthropicCacheControl(body, quirks.SupportsLongCacheRetention)
 	}
 
 	return body, nil
+}
+
+// promptCacheKey returns the prompt cache key to send: the request's explicit
+// PromptCacheKey when set, else the session-derived "serf-session-"+SessionID
+// (mirroring agent.Session's openai-path convention so the two agree), else ""
+// when there is no key material to cache on.
+func promptCacheKey(req llm.Request) string {
+	if k := strings.TrimSpace(req.PromptCacheKey); k != "" {
+		return k
+	}
+	if sid := strings.TrimSpace(req.SessionID); sid != "" {
+		return "serf-session-" + sid
+	}
+	return ""
 }
 
 // applyThinkingFormat emits the reasoning controls in the wire dialect the

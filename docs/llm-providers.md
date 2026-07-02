@@ -231,6 +231,8 @@ Every field is optional; unset means "inherit from the layer below"
 | `requires_thinking_as_text` | bool | replay assistant thinking as plain text instead of a reasoning field |
 | `requires_reasoning_content_on_assistant` | bool | add `reasoning_content: ""` to a replayed assistant message that carries none |
 | `cache_control_format` | string | only `"anthropic"` is accepted — applies Anthropic `cache_control` markers (system prompt, last tool, last message) for gateways that forward them |
+| `supports_long_cache_retention` | bool | when true, emit `prompt_cache_key` + `prompt_cache_retention: "24h"` (and, with `cache_control_format = "anthropic"`, add `ttl: "1h"` to the ephemeral markers) — see "Prompt caching through gateways" below |
+| `send_session_affinity_headers` | bool | when true and the request carries a session id, send the `session_id` / `x-client-request-id` / `x-session-affinity` request headers so a gateway can pin a conversation's turns to one backend/cache |
 | `lock_temperature` / `lock_top_p` / `lock_frequency_penalty` / `lock_presence_penalty` | bool | drop that sampling param from the request |
 | `tool_choice_auto_only` | bool | force any `tool_choice` other than `auto`/`none` down to `auto` |
 | `max_stop_sequences` | int (≥0) | truncate the `stop` array to this length |
@@ -242,6 +244,35 @@ Every field is optional; unset means "inherit from the layer below"
 `thinking_format`, `max_tokens_field`, and `cache_control_format` are
 validated at load (`load.go:101-116`): an unrecognized value is a hard config
 error, not a silent no-op.
+
+### Prompt caching through gateways
+
+serf sets `req.SessionID` on every request and derives a stable prompt cache
+key from it. On the native OpenAI Responses path the session emits
+`prompt_cache_key` + `prompt_cache_retention` itself; the openai-compat path
+stays silent unless you opt in, because a gateway that doesn't know these fields
+should never see them. Three independent knobs turn caching on for a gateway
+that does:
+
+- **`supports_long_cache_retention`** — emits `prompt_cache_key` +
+  `prompt_cache_retention: "24h"` on the request. The key is `req.PromptCacheKey`
+  when set, else `"serf-session-" + req.SessionID` — the exact convention the
+  session uses on the openai path, so a request routed either way caches on the
+  same key. When there is no key material (no explicit key and no session id),
+  neither field is emitted.
+- **`send_session_affinity_headers`** — sends `session_id`,
+  `x-client-request-id`, and `x-session-affinity` (all set to the session id) as
+  request headers so a load-balancing gateway can pin a conversation's turns to
+  one backend, keeping its cache warm. A user-configured `[instances.X.headers]`
+  entry of the same name overrides the derived value. Emitted only when the
+  request carries a session id.
+- **`cache_control_format = "anthropic"`** with `supports_long_cache_retention`
+  — the ephemeral `cache_control` markers gain `ttl: "1h"`. Without long
+  retention the marker stays `{"type": "ephemeral"}`.
+
+Enable these for gateways that forward OpenAI 24h prompt caching, Anthropic
+`cache_control`, or that route by session (Portkey, Helicone, LiteLLM, and
+similar). Leave them off for a bare model server that would reject the fields.
 
 ### `[instances.X.models."<id>"]` fields
 

@@ -129,8 +129,22 @@ func (a *Adapter) Name() string {
 	return "openai-compatible"
 }
 
-func (a *Adapter) setChatHeaders(httpReq *http.Request) {
-	// Apply default headers first so provider-specific headers take precedence.
+// sessionAffinityHeaders are the per-request headers a gateway uses to pin a
+// conversation's turns to one backend/cache (mirrors Pi's createClient).
+var sessionAffinityHeaders = []string{"session_id", "x-client-request-id", "x-session-affinity"}
+
+func (a *Adapter) setChatHeaders(httpReq *http.Request, req llm.Request) {
+	// Session-affinity headers are derived per-request and go first so a user's
+	// DefaultHeaders of the same name override them.
+	if a.compatFor(req.Model).Quirks.SendSessionAffinityHeaders {
+		if sid := strings.TrimSpace(req.SessionID); sid != "" {
+			for _, h := range sessionAffinityHeaders {
+				httpReq.Header.Set(h, sid)
+			}
+		}
+	}
+	// Apply default headers next so they win over affinity headers; Content-Type
+	// and Authorization below take precedence over everything.
 	for k, v := range a.DefaultHeaders {
 		httpReq.Header.Set(k, v)
 	}
@@ -174,7 +188,7 @@ func (a *Adapter) completeViaChatCompletions(ctx context.Context, req llm.Reques
 	ctx, adapterCancel := llm.ApplyAdapterTimeout(ctx, req.AdapterTimeout, false)
 	defer adapterCancel()
 
-	raw, rawReqBody, rawRespBody, statusCode, headers, err := a.doHTTP(ctx, body, req.AdapterTimeout)
+	raw, rawReqBody, rawRespBody, statusCode, headers, err := a.doHTTP(ctx, req, body)
 	if err != nil {
 		return llm.Response{}, err
 	}
@@ -232,7 +246,7 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 	if err != nil {
 		return nil, err
 	}
-	a.setChatHeaders(httpReq)
+	a.setChatHeaders(httpReq, req)
 
 	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
@@ -582,7 +596,7 @@ func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm
 
 // --- HTTP helpers ---
 
-func (a *Adapter) doHTTP(ctx context.Context, body map[string]any, at *llm.AdapterTimeout) (raw map[string]any, rawReqBody []byte, rawRespBody []byte, status int, hdr http.Header, err error) {
+func (a *Adapter) doHTTP(ctx context.Context, req llm.Request, body map[string]any) (raw map[string]any, rawReqBody []byte, rawRespBody []byte, status int, hdr http.Header, err error) {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
 		return nil, nil, nil, 0, nil, err
@@ -592,9 +606,9 @@ func (a *Adapter) doHTTP(ctx context.Context, body map[string]any, at *llm.Adapt
 	if err != nil {
 		return nil, nil, nil, 0, nil, err
 	}
-	a.setChatHeaders(httpReq)
+	a.setChatHeaders(httpReq, req)
 
-	client := llm.ClientWithConnectTimeout(a.Client, at)
+	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, nil, nil, 0, nil, llm.WrapContextError("openai-compatible", err)

@@ -100,6 +100,12 @@ func ApplyCompatConfig(base ProviderQuirks, c *providercfg.CompatConfig) Provide
 	if c.CacheControlFormat != "" {
 		q.CacheControlFormat = c.CacheControlFormat
 	}
+	if c.SupportsLongCacheRetention != nil {
+		q.SupportsLongCacheRetention = *c.SupportsLongCacheRetention
+	}
+	if c.SendSessionAffinityHeaders != nil {
+		q.SendSessionAffinityHeaders = *c.SendSessionAffinityHeaders
+	}
 	if c.SupportsStrictMode != nil {
 		v := *c.SupportsStrictMode
 		q.SupportsStrictMode = &v
@@ -223,8 +229,12 @@ func fillFromCatalog(mc *ModelCompat, model string) {
 // through gateways that forward cache_control: the system prompt, the last
 // tool definition, and the last conversation message each get an ephemeral
 // marker (mirrors the placement Anthropic documents for messages API callers).
-func anthropicCacheControl(body map[string]any) {
+// With longRetention the marker gains ttl:"1h" (mirrors Pi's getCompatCacheControl).
+func anthropicCacheControl(body map[string]any, longRetention bool) {
 	cc := map[string]any{"type": "ephemeral"}
+	if longRetention {
+		cc["ttl"] = "1h"
+	}
 	msgs, _ := body["messages"].([]map[string]any)
 	for _, m := range msgs {
 		if m["role"] == "system" || m["role"] == "developer" {
