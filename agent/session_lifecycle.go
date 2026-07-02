@@ -1004,7 +1004,33 @@ func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]de
 	if err != nil {
 		return survivors, durableRaw, nil
 	}
-	injected := make([]deliverableJobNotification, 0, len(durableRaw))
+	alreadyInjected := make(map[string]bool, len(durableRaw))
+	for _, n := range durableRaw {
+		rec := recs[n.JobID]
+		if rec == nil || !jobstore.ShouldDeliver(rec) {
+			continue
+		}
+		if _, ok := alreadyInjected[rec.JobID]; !ok {
+			alreadyInjected[rec.JobID] = s.jobNotificationAlreadyInjected(rec.JobID)
+		}
+	}
+	durableSurvivors, injected := classifyDurableNotifications(durableRaw, recs, alreadyInjected)
+	survivors = append(survivors, durableSurvivors...)
+	return survivors, nil, injected
+}
+
+// classifyDurableNotifications is the pure durable-notification classification
+// core: given the drained durable notifications, the loaded job records, and a
+// per-job "already injected into history" snapshot, it partitions the durable
+// entries into fresh survivors and already-injected replays. It applies the
+// ShouldDeliver gate and the terminal-generation dedupe (DedupeKey), so an exact
+// duplicate terminal event contributes at most one deliverable. It takes only
+// data snapshots and performs no I/O, locking, mutation, or event emission.
+func classifyDurableNotifications(
+	durableRaw []jobNotification,
+	recs map[string]*jobstore.JobRecord,
+	alreadyInjected map[string]bool,
+) (survivors, injected []deliverableJobNotification) {
 	seen := make(map[jobstore.DedupeKey]bool)
 	for _, n := range durableRaw {
 		rec := recs[n.JobID]
@@ -1020,13 +1046,13 @@ func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]de
 			notification: jobNotificationFromRecord(rec),
 			terminalGen:  rec.TerminalGen,
 		}
-		if s.jobNotificationAlreadyInjected(rec.JobID) {
+		if alreadyInjected[rec.JobID] {
 			injected = append(injected, deliverable)
 			continue
 		}
 		survivors = append(survivors, deliverable)
 	}
-	return survivors, nil, injected
+	return survivors, injected
 }
 
 func (s *Session) jobNotificationAlreadyInjected(jobID string) bool {
