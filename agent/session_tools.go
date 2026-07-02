@@ -204,10 +204,6 @@ func (s *Session) canonicalizeToolNames(names []string) []string {
 	return canonicalizeToolNames(names, s.currentProfile().ToolNameMap())
 }
 
-func (s *Session) providerToolName(name string) string {
-	return providerToolName(name, s.profile.ToolNameMap())
-}
-
 func (s *Session) providerVisibleToolNames(names []string) []string {
 	return providerVisibleToolNames(names, s.profile.ToolNameMap())
 }

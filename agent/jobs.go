@@ -1578,8 +1578,9 @@ func rearmTerminalNotificationDecision(rec *jobstore.JobRecord, sessionID string
 	if rec.OwnerSessionID != "" && rec.OwnerSessionID != sessionID {
 		return false, false
 	}
-	if !(rec.Status.IsTerminal() && rec.TerminalGen != "" &&
-		(rec.NotifyState == jobstore.NotifyNotArmed || rec.NotifyState == jobstore.NotifyPending)) {
+	terminalPending := rec.Status.IsTerminal() && rec.TerminalGen != "" &&
+		(rec.NotifyState == jobstore.NotifyNotArmed || rec.NotifyState == jobstore.NotifyPending)
+	if !terminalPending {
 		return false, false
 	}
 	return true, rec.NotifyState == jobstore.NotifyNotArmed
