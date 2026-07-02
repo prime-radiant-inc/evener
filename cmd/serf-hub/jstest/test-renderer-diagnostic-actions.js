@@ -1,11 +1,11 @@
 // Coverage for SerfRenderer.buildDiagnosticActions — verifies that the
-// diagnostic card produced by appendBanner() carries the correct retry button
-// for both provider-source and hub-source errors.
+// diagnostic card produced by appendBanner() carries the correct recovery
+// button for both provider-source and hub-source errors.
 //
-// Provider-source errors → "Retry turn" (existing behavior).
+// Provider-source errors → "Retry turn" before work, "Continue" after work.
 // Hub-source errors      → "Reconnect & retry" (kata e465, added once the
 // hub's auto-resume layer in t65c/ws5f/xcas could relaunch a dead daemon on
-// the next startTurn).  The onclick body is shared with the Retry turn flow.
+// the next startTurn).
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
 
@@ -165,6 +165,33 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
     pass(startTurnCalls[0].images[0].name === "shot.png",
       "hub onclick: wrong image payload " + JSON.stringify(startTurnCalls[0].images[0]));
   }
+
+  // Provider failures after partial agent work must continue from the existing
+  // transcript instead of replaying the original user turn.
+  renderer.handleData("USER_INPUT", { text: "do it now" });
+  renderer.handleData("TOOL_CALL_START", { call_id: "tool_1", tool_name: "shell", arguments_json: "{}" });
+  renderer.handleData("TOOL_CALL_END", { call_id: "tool_1", tool_name: "shell", output: "partial progress" });
+  const continueActions = renderer.buildDiagnosticActions({
+    severity: "error", source: "provider", message: "stream ended without finish event",
+  });
+  pass(Array.isArray(continueActions) && continueActions.length === 1,
+    "provider after partial work: expected single action, got " + JSON.stringify(continueActions));
+  if (continueActions && continueActions.length) {
+    pass(continueActions[0].label === "Continue",
+      "provider after partial work: label should be 'Continue', got " + continueActions[0].label);
+    startTurnCalls.length = 0;
+    await continueActions[0].onclick();
+    pass(startTurnCalls.length === 1, "continue onclick should call startTurn once, got " + startTurnCalls.length);
+    if (startTurnCalls.length) {
+      pass(startTurnCalls[0].text === "continue",
+        "continue onclick should send a continuation prompt, got " + startTurnCalls[0].text);
+      pass(Array.isArray(startTurnCalls[0].images) && startTurnCalls[0].images.length === 0,
+        "continue onclick should not replay attachments, got " + JSON.stringify(startTurnCalls[0].images));
+    }
+  }
+
+  renderer.handleData("USER_INPUT", { text: "say hello" });
+  renderer.lastSubmittedTurn = { text: "say hello", items: [{ type: "image", media_type: "image/png", data: "abc", name: "shot.png" }] };
 
   // ------------------------------------------------------------------
   // 6. Verify failure-banner wording adapts to the source label.
