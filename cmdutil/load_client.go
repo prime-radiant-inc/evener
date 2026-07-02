@@ -3,6 +3,7 @@ package cmdutil
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/envvars"
@@ -57,14 +58,30 @@ func LoadProviderConfig(opts ...llm.EnvOption) (providercfg.Config, bool, error)
 	}
 
 	for i := range cfg.Instances {
-		if cfg.Instances[i].APIKey == "" {
-			if key, _ := store.ResolveKey(cfg.Instances[i].Name, string(cfg.Instances[i].Type)); key != "" {
-				cfg.Instances[i].APIKey = key
-			}
+		if cfg.Instances[i].APIKey != "" || hasAuthorizationHeader(cfg.Instances[i].Headers) {
+			// A configured Authorization header IS the instance's
+			// authentication: injecting a type-level fallback key would make
+			// the adapter's bearer clobber that header on every request,
+			// sending an unrelated secret to the gateway.
+			continue
+		}
+		if key, _ := store.ResolveKey(cfg.Instances[i].Name, string(cfg.Instances[i].Type)); key != "" {
+			cfg.Instances[i].APIKey = key
 		}
 	}
 
 	return cfg, true, nil
+}
+
+// hasAuthorizationHeader reports whether the instance's configured headers
+// carry an Authorization header (case-insensitive, per HTTP semantics).
+func hasAuthorizationHeader(headers map[string]string) bool {
+	for k := range headers {
+		if strings.EqualFold(k, "Authorization") {
+			return true
+		}
+	}
+	return false
 }
 
 // LoadClient constructs an LLM client that is always config-driven.
