@@ -417,35 +417,48 @@ func maskObservations(history []schema.Turn, preserveRecent int, resultToolName 
 			}
 			tr := p.ToolResult
 
-			// Never mask error results.
-			if tr.IsError {
-				continue
-			}
-			// Never mask result tool results.
-			if tr.Name == resultToolName {
-				continue
-			}
-
-			content, ok := tr.Content.(string)
-			if !ok {
-				continue
-			}
-			// Skip already-masked results (start with "[").
-			if strings.HasPrefix(content, "[") && strings.HasSuffix(strings.TrimSpace(content), "]") {
-				continue
-			}
-
 			// Find the tool call arguments from the preceding assistant turn.
 			args := findToolCallArgs(history[:i], tr.ToolCallID)
 
-			summary := summarizeToolResult(tr.Name, content, args)
-			// Skip masking if the summary is not shorter than the original.
-			if len(summary) >= len(content) {
-				continue
+			if newContent, mask := maskToolResultContent(tr, resultToolName, summarizeToolResult, args); mask {
+				tr.Content = newContent
 			}
-			tr.Content = summary
 		}
 	}
+}
+
+// maskToolResultContent decides whether a tool result's content should be
+// replaced with a one-line summary, and computes that summary. It preserves
+// error results, result-tool results, non-string content, and already-masked
+// content ("[…]"); it also declines to mask when the summary would not be
+// strictly shorter than the original. summarize is injected (summarizeToolResult)
+// and args are the matching tool-call arguments. When mask is false newContent
+// is empty and the caller leaves the result untouched.
+func maskToolResultContent(tr *llm.ToolResultData, resultToolName string, summarize func(name string, content any, args json.RawMessage) string, args json.RawMessage) (newContent string, mask bool) {
+	// Never mask error results.
+	if tr.IsError {
+		return "", false
+	}
+	// Never mask result tool results.
+	if tr.Name == resultToolName {
+		return "", false
+	}
+
+	content, ok := tr.Content.(string)
+	if !ok {
+		return "", false
+	}
+	// Skip already-masked results (start with "[").
+	if strings.HasPrefix(content, "[") && strings.HasSuffix(strings.TrimSpace(content), "]") {
+		return "", false
+	}
+
+	summary := summarize(tr.Name, content, args)
+	// Skip masking if the summary is not shorter than the original.
+	if len(summary) >= len(content) {
+		return "", false
+	}
+	return summary, true
 }
 
 // findToolCallArgs looks backward from the tool result to find the matching

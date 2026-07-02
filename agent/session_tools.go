@@ -197,11 +197,31 @@ func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
 }
 
 func (s *Session) canonicalToolName(name string) string {
+	return canonicalToolName(name, s.currentProfile().ToolNameMap())
+}
+
+func (s *Session) canonicalizeToolNames(names []string) []string {
+	return canonicalizeToolNames(names, s.currentProfile().ToolNameMap())
+}
+
+func (s *Session) providerToolName(name string) string {
+	return providerToolName(name, s.profile.ToolNameMap())
+}
+
+func (s *Session) providerVisibleToolNames(names []string) []string {
+	return providerVisibleToolNames(names, s.profile.ToolNameMap())
+}
+
+// canonicalToolName resolves a single tool name to its canonical form: a
+// provider-visible name (a value in nameMap) maps back to its canonical key;
+// anything else (already canonical, or unknown) passes through trimmed. Empty
+// input yields empty.
+func canonicalToolName(name string, nameMap map[string]string) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return ""
 	}
-	for canonical, provider := range s.currentProfile().ToolNameMap() {
+	for canonical, provider := range nameMap {
 		if provider == name {
 			return canonical
 		}
@@ -209,11 +229,14 @@ func (s *Session) canonicalToolName(name string) string {
 	return name
 }
 
-func (s *Session) canonicalizeToolNames(names []string) []string {
+// canonicalizeToolNames maps each name to its canonical form via nameMap
+// (canonical -> provider-visible), preserving first-seen order while dropping
+// empties and duplicates.
+func canonicalizeToolNames(names []string, nameMap map[string]string) []string {
 	seen := make(map[string]bool, len(names))
 	out := make([]string, 0, len(names))
 	for _, name := range names {
-		canonical := s.canonicalToolName(name)
+		canonical := canonicalToolName(name, nameMap)
 		if canonical == "" || seen[canonical] {
 			continue
 		}
@@ -223,22 +246,27 @@ func (s *Session) canonicalizeToolNames(names []string) []string {
 	return out
 }
 
-func (s *Session) providerToolName(name string) string {
+// providerToolName resolves a single canonical name to the provider-visible
+// name via nameMap, passing through trimmed when unmapped. Empty input yields
+// empty.
+func providerToolName(name string, nameMap map[string]string) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return ""
 	}
-	if provider, ok := s.profile.ToolNameMap()[name]; ok {
+	if provider, ok := nameMap[name]; ok {
 		return provider
 	}
 	return name
 }
 
-func (s *Session) providerVisibleToolNames(names []string) []string {
+// providerVisibleToolNames maps each name to its provider-visible form via
+// nameMap, dropping empties and duplicates, and returns them sorted.
+func providerVisibleToolNames(names []string, nameMap map[string]string) []string {
 	seen := make(map[string]bool, len(names))
 	out := make([]string, 0, len(names))
 	for _, name := range names {
-		visible := s.providerToolName(name)
+		visible := providerToolName(name, nameMap)
 		if visible == "" || seen[visible] {
 			continue
 		}
