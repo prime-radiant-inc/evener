@@ -437,3 +437,87 @@ func TestStream_TopLevelUsageWinsAcrossChunks(t *testing.T) {
 		t.Fatalf("InputTokens = %d, want the earlier top-level 10, not the later choice-level 99", final.Usage.InputTokens)
 	}
 }
+
+// OpenRouter's Anthropic route delivers the thinking SIGNATURE as a
+// reasoning.text item (streamed: a trailing text-less item; non-stream: text
+// and signature merged on one item). Dropping it breaks multi-turn reasoning
+// continuation, so it must survive into EncryptedContent…
+func TestStream_SignatureReasoningDetailSurvives(t *testing.T) {
+	a := streamChunks(t, []string{
+		`{"model":"m","choices":[{"index":0,"delta":{"reasoning":"think","reasoning_details":[{"type":"reasoning.text","text":"think","format":"anthropic-claude-v1","index":0}]},"finish_reason":null}]}`,
+		`{"model":"m","choices":[{"index":0,"delta":{"reasoning_details":[{"type":"reasoning.text","signature":"SIGBLOB","format":"anthropic-claude-v1","index":0}]},"finish_reason":null}]}`,
+		`{"model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}`,
+	})
+	_, final := collectThinking(t, a)
+	var enc string
+	for _, td := range thinkingParts(final) {
+		enc = td.EncryptedContent
+	}
+	if !strings.Contains(enc, "SIGBLOB") {
+		t.Fatalf("signature item dropped: EncryptedContent = %q", enc)
+	}
+}
+
+// …and replay as OpenRouter's canonical merged shape: ONE reasoning.text item
+// carrying the accumulated text plus the signature/format — not a synthetic
+// text item alongside a text-less signature item.
+func TestToChatMessages_MergesTextIntoSignatureItem(t *testing.T) {
+	msgs := []llm.Message{{
+		Role: llm.RoleAssistant,
+		Content: []llm.ContentPart{{
+			Kind: llm.ContentThinking,
+			Thinking: &llm.ThinkingData{
+				Text:             "think",
+				Signature:        "reasoning",
+				EncryptedContent: `[{"type":"reasoning.text","signature":"SIGBLOB","format":"anthropic-claude-v1","index":0}]`,
+			},
+		}, {Kind: llm.ContentText, Text: "hi"}},
+	}}
+	out, err := toChatMessages(msgs, ModelCompat{}, false)
+	if err != nil {
+		t.Fatalf("toChatMessages: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("messages = %d, want 1", len(out))
+	}
+	details, _ := out[0]["reasoning_details"].([]map[string]any)
+	if len(details) != 1 {
+		t.Fatalf("reasoning_details = %#v, want exactly one merged item", out[0]["reasoning_details"])
+	}
+	d := details[0]
+	if d["text"] != "think" || d["signature"] != "SIGBLOB" || d["format"] != "anthropic-claude-v1" {
+		t.Fatalf("merged item = %#v, want text+signature+format together", d)
+	}
+}
+
+// Anthropic-routed OpenRouter models silently return NO reasoning when
+// tool_choice forces tool use (direct Anthropic 400s on the combo; OpenRouter
+// degrades silently — live-bisected 2026-07-02). With the quirk, an active
+// reasoning request downgrades a forcing tool_choice to "auto"; without
+// reasoning the forcing stays.
+func TestBuildRequestBody_ToolChoiceAutoUnderReasoning(t *testing.T) {
+	quirks := QuirksPreset("openrouter")
+	effort := "high"
+	req := llm.Request{
+		Model:           "anthropic/claude-sonnet-4.5",
+		Messages:        []llm.Message{llm.User("hi")},
+		ReasoningEffort: &effort,
+		ToolChoice:      &llm.ToolChoice{Mode: "required"},
+	}
+	body, err := buildRequestBody(req, true, ModelCompat{Quirks: quirks})
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+	if got := body["tool_choice"]; got != "auto" {
+		t.Fatalf("tool_choice = %#v, want auto under reasoning", got)
+	}
+
+	req.ReasoningEffort = nil
+	body, err = buildRequestBody(req, true, ModelCompat{Quirks: quirks})
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+	if got := body["tool_choice"]; got != "required" {
+		t.Fatalf("tool_choice = %#v, want required without reasoning", got)
+	}
+}

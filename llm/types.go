@@ -269,7 +269,11 @@ func IsOpenAICompatEncryptedReasoning(s string) bool {
 		return false
 	}
 	for _, it := range items {
-		if it.Type != "reasoning.encrypted" {
+		// The array carries every continuation-bearing detail item —
+		// encrypted blocks and signature-bearing reasoning.text — so any
+		// "reasoning."-typed item marks the value as ours. An OpenAI
+		// Responses opaque blob is not a JSON array of typed items at all.
+		if !strings.HasPrefix(it.Type, "reasoning.") {
 			return false
 		}
 	}

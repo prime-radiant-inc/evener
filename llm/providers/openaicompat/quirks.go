@@ -16,6 +16,14 @@ type ProviderQuirks struct {
 	FinishReasonMap      map[string]string
 	TranslateMaxToXHigh  bool // OpenRouter vocab: our "max" → their "xhigh"
 
+	// ToolChoiceAutoUnderReasoning downgrades a FORCING tool_choice
+	// ("required"/named) to "auto" only while the request carries active
+	// reasoning controls. Anthropic-routed OpenRouter models silently return
+	// no reasoning under forced tool use (the direct Anthropic API 400s on
+	// the same combo; that guard lives in the anthropic adapter) —
+	// live-bisected 2026-07-02: dropping tool_choice restored reasoning.
+	ToolChoiceAutoUnderReasoning bool
+
 	// ThinkingFormat selects the reasoning wire shape; see
 	// providercfg.CompatConfig.ThinkingFormat for the vocabulary. Empty means
 	// the OpenAI default (top-level reasoning_effort).
@@ -106,7 +114,8 @@ func QuirksPreset(name string) ProviderQuirks {
 		}
 	case "openrouter":
 		return ProviderQuirks{
-			TranslateMaxToXHigh: true,
+			TranslateMaxToXHigh:          true,
+			ToolChoiceAutoUnderReasoning: true,
 			// OpenRouter's canonical reasoning control is the
 			// {"reasoning":{"effort":...}} object. Live-verified 2026-07-02:
 			// behaves identically to top-level reasoning_effort on OpenAI AND

@@ -360,12 +360,13 @@ tests ~600–850. Plus a docs/llm-providers.md section.
   giving the `glm-5` preset both `ThinkingFormat:"zai"` *and*
   `ToolStream:true`, and giving the `openrouter` preset
   `ThinkingFormat:"openrouter"`. Only `glm-5`'s `ThinkingFormat:"zai"`
-  shipped (`llm/providers/openaicompat/quirks.go:77-89`); `ToolStream` stays
+  shipped (`llm/providers/openaicompat/quirks.go`); `ToolStream` stays
   off by default even for `type = "glm"` instances (opt in via
-  `compat.tool_stream`), and the `openrouter` preset is unchanged
-  (`TranslateMaxToXHigh` only) — an `openrouter` instance that wants
-  `reasoning: {"effort": ...}` must set `compat.thinking_format =
-  "openrouter"` explicitly.
+  `compat.tool_stream`). The `openrouter` preset now also ships
+  `thinking_format = "openrouter"` (the canonical `reasoning: {"effort"}`
+  object) — flipped 2026-07-02 after live verification with a real key
+  showed identical behavior to top-level `reasoning_effort` on OpenAI and
+  Anthropic routed models and acceptance of the full serf vocabulary.
 - **Pre-existing `WithModel` shallow-clone staleness bug, found and fixed.**
   While wiring instance model definitions through `WithModel` rebuilds
   (`agent/provider/profile.go`), this pass found that

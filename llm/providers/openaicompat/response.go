@@ -44,6 +44,11 @@ type reasoningDetailItem struct {
 	Text   string `json:"text,omitempty"`
 	Format string `json:"format,omitempty"`
 	Index  int    `json:"index,omitempty"`
+	// Signature carries the provider's continuation signature on
+	// reasoning.text items (OpenRouter's Anthropic route: streamed as a
+	// trailing text-less item, non-stream merged with the text). It must
+	// round-trip or Anthropic-routed reasoning continuations break.
+	Signature string `json:"signature,omitempty"`
 	// Thinking is kept for backward compatibility with older OpenRouter format
 	// variants that used {type: "thinking", thinking: "..."}.
 	Thinking string `json:"thinking,omitempty"`
@@ -75,6 +80,13 @@ func (d reasoningDetailItem) isEncrypted() bool {
 	return d.Type == "reasoning.encrypted" && d.ID != "" && d.Data != ""
 }
 
+// carriesContinuation reports whether the item holds provider continuation
+// material that must survive replay: encrypted blocks, or reasoning.text
+// items bearing a signature.
+func (d reasoningDetailItem) carriesContinuation() bool {
+	return d.isEncrypted() || (d.Type == "reasoning.text" && d.Signature != "")
+}
+
 // encodeEncryptedDetails serializes the encrypted items of a reasoning_details
 // array into the JSON string carried on ThinkingData.EncryptedContent, in
 // arrival order. Returns "" when there are none.
@@ -90,14 +102,15 @@ func encodeEncryptedDetails(items []reasoningDetailItem) string {
 	return string(b)
 }
 
-// collectEncryptedDetails returns the encrypted items as wire maps, preserving
+// collectEncryptedDetails returns the continuation-bearing items (encrypted
+// blocks and signature-carrying reasoning.text) as wire maps, preserving
 // order AND every field the provider sent (decoded from the item's verbatim
 // Raw JSON — replay must be lossless or continuation can break). Used both to
 // build EncryptedContent and to accumulate streamed items.
 func collectEncryptedDetails(items []reasoningDetailItem) []map[string]any {
 	var enc []map[string]any
 	for _, d := range items {
-		if !d.isEncrypted() {
+		if !d.carriesContinuation() {
 			continue
 		}
 		var verbatim map[string]any

@@ -93,8 +93,12 @@ func TestIsOpenAICompatEncryptedReasoning(t *testing.T) {
 		{name: "multi item", in: `[{"type":"reasoning.encrypted","id":"a","data":"x"},{"type":"reasoning.encrypted","id":"b","data":"y"}]`, want: true},
 		{name: "empty", in: "", want: false},
 		{name: "openai opaque blob", in: "gAAAAABopaqueblob", want: false},
-		{name: "json array of other items", in: `[{"type":"reasoning.text","text":"t"}]`, want: false},
-		{name: "mixed types rejected", in: `[{"type":"reasoning.encrypted","id":"a","data":"x"},{"type":"other"}]`, want: false},
+		// Signature-bearing reasoning.text items ride the same array
+		// (OpenRouter Anthropic continuation signatures), so any
+		// reasoning.*-typed item family is ours.
+		{name: "signature text item", in: `[{"type":"reasoning.text","text":"t","signature":"S"}]`, want: true},
+		{name: "text plus encrypted", in: `[{"type":"reasoning.text","signature":"S"},{"type":"reasoning.encrypted","id":"a","data":"x"}]`, want: true},
+		{name: "non-reasoning type rejected", in: `[{"type":"reasoning.encrypted","id":"a","data":"x"},{"type":"other"}]`, want: false},
 		{name: "empty array", in: `[]`, want: false},
 		{name: "not json", in: "[broken", want: false},
 	}
