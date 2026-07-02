@@ -43,7 +43,7 @@ jobs_path, bucket_hash}`.
 ```
 serf-doctor watches $SID
 serf-doctor watches $SID --self-loops
-serf-doctor watches $SID --json | jq '.watches[0] | {pending_lines, distinct_deliveries, delivered, dropped, evicted, self_loop}'
+serf-doctor watches $SID --json | jq '.watches[0] | {pending_lines, distinct_deliveries, delivered, dropped, evicted, max_self_influence_depth, runaway_drops}'
 ```
 
 Assert, for the observer watch:

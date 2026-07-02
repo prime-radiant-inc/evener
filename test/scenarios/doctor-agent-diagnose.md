@@ -40,7 +40,8 @@ ASSERT the doctor:
 - invokes `serf-doctor watches <SID> --json` (and/or `--self-loops`) via the shell
   tool — it does NOT hand-parse `jobs.jsonl`;
 - reports **zero findings**, and explicitly treats coalescing
-  (`pending_lines > distinct_deliveries`) as expected, NOT a finding;
+  (`pending_lines > distinct_deliveries`) AND bounded self-influence (depth
+  stamps without runaway drops) as expected, NOT findings;
 - emits a structured result with `findings: []`.
 
 Observed (real run, session `01KVF40N0MV1R492KM4QJY7QN0`): the doctor ran
@@ -48,10 +49,12 @@ Observed (real run, session `01KVF40N0MV1R492KM4QJY7QN0`): the doctor ran
 were not detected … 8 pending lines coalesced into 4 distinct deliveries"* and
 `{"findings":[]}`. **PASS.**
 
-### B. Defective session (self-loop) ⇒ one Finding
+### B. Defective session (fired runaway fuse) ⇒ one Finding
 
-Synthesize a scratch state dir with a watch whose delivery's provenance `Chain`
-carries a same-`watch_id` **prior** hop (a self-loop that escaped suppression):
+Synthesize a scratch state dir with a watch whose sends ran the self-influence
+depth up to the fuse: a delivered send plus a send DROPPED with
+`diagnostic_reason: "runaway"` (under the inform+breaker policy self-influence
+is normal; the diagnosable event is the fired fuse):
 
 ```bash
 SCR=$(mktemp -d); BSID=01BROKENLOOPAAAAAAAAAAAAAAA; mkdir -p "$SCR/sessions/$BSID"
@@ -59,27 +62,30 @@ printf '{"kind":"header","session_id":"%s"}\n' "$BSID" > "$SCR/sessions/$BSID.tr
 printf '{"id":"%s"}' "$BSID" > "$SCR/sessions/$BSID.meta.json"
 cat > "$SCR/sessions/$BSID/jobs.jsonl" <<'JOBS'
 {"kind":"watch_registered","seq":1,"watch_id":"wLOOP","watch":{"generation":"g1","target":"caller","send_to":"obs"}}
-{"kind":"watch_send_delivered","seq":2,"watch_id":"wLOOP","watch_send":{"key":{"watch_id":"wLOOP"},"delivery_id":"dl2","provenance":{"watch_keys":[{"watch_id":"wLOOP","watch_generation":"g1"}],"chain":[{"kind":"watch","watch_id":"wLOOP","delivery_id":"dl1"},{"kind":"watch","watch_id":"wLOOP","delivery_id":"dl2"}]}}}
+{"kind":"watch_send_delivered","seq":2,"watch_id":"wLOOP","watch_send":{"key":{"watch_id":"wLOOP"},"delivery_id":"dl2","self_influence_depth":7,"provenance":{"watch_keys":[{"watch_id":"wLOOP","watch_generation":"g1"}],"chain":[{"kind":"watch","watch_id":"wLOOP","delivery_id":"dl1"},{"kind":"watch","watch_id":"wLOOP","delivery_id":"dl2"}]}}}
+{"kind":"watch_send_dropped","seq":3,"watch_id":"wLOOP","watch_send":{"key":{"watch_id":"wLOOP"},"delivery_id":"dl3","diagnostic_reason":"runaway","self_influence_depth":8}}
 JOBS
 
 PATH="$PWD:$PATH" serf --agent doctor --model openai/gpt-5.4-mini run \
-  --prompt "Diagnose serf session $BSID for watch self-loops. The state dir is $SCR
+  --prompt "Diagnose serf session $BSID for watch runaways. The state dir is $SCR
             (pass it via --state-dir). Use the observer-self-loop runbook. Report findings."
 ```
 
 ASSERT the doctor emits **exactly one** Finding conforming to the contract:
-- `category: watch_self_loop`, `severity: high`;
-- `signature: watch_self_loop:<SID>:wLOOP` (the structural-defect signature format);
-- `evidence.deliveryIds == ["dl2"]` and `evidence.doctorCommand` is the
-  `serf-doctor watches … --self-loops --json` invocation it actually ran;
-- `suggestedFix.type: diagnosis` (a self-loop that escaped suppression is a bug in
-  **serf**, not the doctor's machinery — report-only, per the finding contract's
-  accepted scope limit).
+- `category: watch_runaway`, `severity: high`;
+- `signature: watch_runaway:<SID>:wLOOP` (the structural-defect signature format);
+- `evidence.deliveryIds == ["dl3"]` (the runaway-dropped send) and
+  `evidence.doctorCommand` is the `serf-doctor watches … --self-loops --json`
+  invocation it actually ran;
+- `suggestedFix.type: diagnosis` (a fired fuse means a runaway feedback loop
+  ran to the machinery floor — report the loop's participants; the drop itself
+  is the breaker working as designed).
 
-Observed (real run): the doctor ran `serf-doctor watches --state-dir $SCR $BSID
---self-loops --json`, caught `dl2`, and emitted the Finding above verbatim
-(`signature: watch_self_loop:01BROKENLOOPAAAAAAAAAAAAAAA:wLOOP`,
-`suggestedFix.type: diagnosis`). **PASS.**
+Observed (real run, PRE-breaker baseline): the doctor ran `serf-doctor watches
+--state-dir $SCR $BSID --self-loops --json` and emitted one Finding. The card
+was re-baselined 2026-07-02 for the inform+breaker telemetry (runaway drop
+fixture, `watch_runaway` category, `dl3` evidence) and needs a fresh observed
+run.
 
 ## Falsifiable failure modes
 
