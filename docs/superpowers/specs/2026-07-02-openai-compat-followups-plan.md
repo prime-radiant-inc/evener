@@ -1,27 +1,33 @@
 # OpenAI-compat follow-ups — execution plan (continuation-safe)
 
-Status: ALL WAVES 1-3 LANDED 2026-07-03 (commits through cc06ddb3 + refresh-model-catalog automation); Wave 4 wrap-up in progress (gate green, e2e verified incl. live lunaroute; refine loop next). Jesse approved: "we need to fix 1, 2, 3, 4 and
-the smaller stuff" (the adopt-next list from the Pi study) + "assign subagents
-to do the work, then you check them". This file is the handoff state: any
-session can resume from here.
+Status: **COMPLETE 2026-07-02** — all waves landed; the roborev refine loop
+ran to convergence on top (rounds documented below). Jesse approved: "we need
+to fix 1, 2, 3, 4 and the smaller stuff" (the adopt-next list from the Pi
+study) + "assign subagents to do the work, then you check them". This file is
+the historical execution record; the base spec
+`2026-07-02-openai-compat-providers.md` describes what shipped.
 
 Branch: `bot/openaicompat-provider-design`, worktree
-`.worktrees/openaicompat-providers`. Base spec (what already shipped on this
-branch): `2026-07-02-openai-compat-providers.md`. Everything through commit
-`4b59a965` is committed and gate-green; e2e verified against a fake gateway
-(wire assertions) and LIVE lunaroute glm-5.2-nvfp4 (xhigh + none).
+`.worktrees/openaicompat-providers`. Gate green throughout (build, full
+test suite, -race on touched, `make lint`, jstests); e2e verified against a
+fake gateway (wire assertions for every new surface) and LIVE lunaroute
+glm-5.2-nvfp4 (xhigh + none; a later re-check hit the gateway's own
+503 INFERENCE_UNAVAILABLE outage, confirmed via raw curl — not a serf
+regression).
 
-## Review-loop state
+## Review-loop state (all closed)
 
-- roborev job 2113: fixed (5 findings) + closed.
-- **roborev job 2116: OPEN, 1 Medium finding** — `reasoning = false` models
-  can still be sent `reasoning_effort` (ClampReasoningEffort passes through on
-  an EMPTY supported set; session attaches whenever an effort is configured)
-  and WithLiveModelInfo can re-enable reasoning from live metadata. Fix is
-  Wave-1 package A (below). After it lands: `roborev comment --commenter
-  roborev-refine --job 2116 -m ...` then `roborev close 2116`, then continue
-  the refine loop (`roborev review --branch --wait`) until PASS, per
-  /roborev-refine.
+- job 2113: 5 findings fixed + closed.
+- job 2116: reasoning=false leak — fixed by Wave-1 package A + closed.
+- job 2148: 6 findings (adapter-level enforcement, catalog fill scoping,
+  hub override gaps, header canonicalization) — fixed + closed.
+- job 2151: 4 findings (api_key survives WriteFile rewrites via
+  scrub/restore, explicit-empty compat tables, mktemp portability,
+  .PHONY) — fixed + closed.
+- job 2153: 3 findings (ReasoningOff vs ProviderOptions passthrough,
+  fallback clamp vs configured levels, this doc's staleness) — fixed;
+  loop continues until PASS or until findings stop being real (Jesse's
+  stop rule).
 
 ## Orchestration protocol (Jesse's direction)
 
@@ -36,7 +42,7 @@ commits. Rules learned the hard way this session:
   touched pkgs + `gofmt -l`; full `make lint` + jstests before the final
   review loop.
 
-## Wave 1 — RUNNING (3 agents dispatched)
+## Wave 1 — DONE (3 agents; committed 5f492706, 1774b787, 41d31650)
 
 - **A. reasoning=false guards** (fixes job 2116): guard `req.ReasoningEffort`
   attachment on `profile.SupportsReasoning()` at (1) buildModelRequest main
@@ -61,7 +67,7 @@ commits. Rules learned the hard way this session:
   `llm.ReasoningEffortRank` order; reasoning=false → empty). Files:
   `cmd/serf-hub/`, `server/`. Must keep jstests green.
 
-## Wave 2 — after Wave 1 is committed
+## Wave 2 — DONE (af363192 headers+compat, bd3dc7bd catalog defaults; plus refresh-model-catalog automation f81c550c/a2f57838)
 
 - **D. providers.toml `[instances.X.headers]`** (+ per-model?
   instance-level is enough — YAGNI per-model until needed): map of header →
@@ -89,7 +95,7 @@ commits. Rules learned the hard way this session:
   instance entry) to consult them. This gives stock `type="glm"` users the
   xhigh→max map with zero config.
 
-## Wave 3 — prompt-caching bundle (biggest; run alone)
+## Wave 3 — DONE (cc06ddb3; scouting found req.SessionID/PromptCacheKey already plumbed, so no session-side changes were needed)
 
 - **G.** Investigate serf's EXISTING `llm.Request.PromptCacheKey` /
   `PromptCacheRetention` fields (seen in `agent/session_model_call.go`
@@ -103,7 +109,7 @@ commits. Rules learned the hard way this session:
   anthropic `cache_control` ttl "1h" tie-in. Mirror Pi buildParams:551-568 +
   createClient:521-525. Config surface + docs + tests.
 
-## Wave 4 — wrap-up
+## Wave 4 — wrap-up (gate/e2e/docs done; refine loop + final report remain)
 
 1. Full gate: `go build ./... && go test ./...` (+ `-race` touched), full
    `make lint`, jstests, e2e re-run: fake-gateway wire assertions script

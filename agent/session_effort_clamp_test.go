@@ -201,3 +201,69 @@ func TestFallbackChain_OmitsEffortWhenFallbackProfileDoesNotSupportReasoning(t *
 		t.Fatal("fallback request set ReasoningEffort, want nil (fallback profile declared non-reasoning)")
 	}
 }
+
+// Explicit providers.toml thinking_levels on the fallback model are
+// authoritative: the fallback clamp must not replace them with catalog levels
+// for the same model id. glm-5.2 ships catalog levels [high, max]; the
+// instance here restricts it to [low, medium], so a session effort of "max"
+// must clamp DOWN to medium — with the old catalog-first behavior it would
+// stay at the catalog's "max".
+func TestFallbackChain_ConfiguredLevelsBeatCatalog(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	var fbEffort string
+	permErr := llm.ErrorFromHTTPStatus("lunaroute", 403, "primary denied", nil, nil)
+
+	adapter := &agenttest.ModelTrackingAdapter{
+		Provider: "lunaroute",
+		Respond: func(req llm.Request) (llm.Response, error) {
+			if req.Model == "glm-5.2" {
+				if req.ReasoningEffort != nil {
+					fbEffort = *req.ReasoningEffort
+				}
+				return agenttest.FinalResponse("fallback answered"), nil
+			}
+			return llm.Response{}, permErr
+		},
+	}
+	c.Register(adapter)
+
+	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{
+		Name:     "lunaroute",
+		Type:     "openai",
+		APIStyle: providercfg.StyleChatCompletions,
+		Models: map[string]providercfg.ModelConfig{
+			"glm-5.2": {ThinkingLevels: map[string]string{"low": "low", "medium": "medium"}},
+		},
+	}}}
+	primary, err := provider.ResolveProfileFromConfig(cfg, "lunaroute/glm-5.2-nvfp4")
+	if err != nil {
+		t.Fatalf("ResolveProfileFromConfig: %v", err)
+	}
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, primary, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:        dir,
+		LLMRetryPolicy:  &policy,
+		ModelFallbacks:  []string{"glm-5.2"},
+		ReasoningEffort: "max",
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err != nil {
+		t.Fatalf("ProcessInput: %v (fallback should succeed)", err)
+	}
+	if fbEffort != "medium" {
+		t.Fatalf("fallback ReasoningEffort = %q, want %q (configured levels beat catalog)", fbEffort, "medium")
+	}
+}

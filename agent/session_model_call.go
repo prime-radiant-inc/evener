@@ -718,9 +718,14 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 				// non-reasoning never gets reasoning_effort on the wire (see the
 				// same guard on the primary path above).
 				fbLevels := fbProfile.ReasoningEffortLevels()
-				if cat := llm.EmbeddedModelCatalog(); cat != nil {
-					if mi := cat.LookupModelInfo(fbProfile.Model()); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
-						fbLevels = mi.ReasoningEffortLevels
+				// Explicit providers.toml thinking_levels / reasoning config is
+				// authoritative — only consult the catalog when the profile's
+				// levels were derived (and might be stale primary-model state).
+				if !fbProfile.EffortLevelsConfigured() {
+					if cat := llm.EmbeddedModelCatalog(); cat != nil {
+						if mi := cat.LookupModelInfo(fbProfile.Model()); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
+							fbLevels = mi.ReasoningEffortLevels
+						}
 					}
 				}
 				clamped := llm.ClampReasoningEffort(origEffort, fbLevels)

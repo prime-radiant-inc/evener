@@ -18,8 +18,10 @@ func buildRequestBody(req llm.Request, stream bool, mc ModelCompat) (map[string]
 	// Check if provider options supply a custom "reasoning" field (e.g. OpenRouter
 	// MiniMax format: {"reasoning": {"enabled": true}}). When present, skip the
 	// default reasoning_effort field and use reasoning_details for multi-turn.
+	// A model declared reasoning=false ignores the trigger — its replay must
+	// not route through reasoning_details either.
 	useReasoningDetails := false
-	if req.ProviderOptions != nil {
+	if req.ProviderOptions != nil && !mc.ReasoningOff {
 		if ov, ok := req.ProviderOptions["openai-compatible"].(map[string]any); ok {
 			if _, has := ov["reasoning"]; has {
 				useReasoningDetails = true
@@ -100,10 +102,16 @@ func buildRequestBody(req llm.Request, stream bool, mc ModelCompat) (map[string]
 		}
 	}
 
-	// Provider options passthrough.
+	// Provider options passthrough. A reasoning=false model drops the known
+	// reasoning-control keys — profile-injected options (e.g. the
+	// openrouter/minimax reasoning:{enabled:true}) must not re-enable what
+	// the model config turned off; everything else passes through untouched.
 	if req.ProviderOptions != nil {
 		if ov, ok := req.ProviderOptions["openai-compatible"].(map[string]any); ok {
 			for k, v := range ov {
+				if mc.ReasoningOff && isReasoningControlKey(k) {
+					continue
+				}
 				body[k] = v
 			}
 		}
@@ -149,6 +157,17 @@ func buildRequestBody(req llm.Request, stream bool, mc ModelCompat) (map[string]
 	}
 
 	return body, nil
+}
+
+// isReasoningControlKey reports whether a request-body key is one of the
+// reasoning controls the thinking formats emit — the set a reasoning=false
+// model must never carry, whatever the source.
+func isReasoningControlKey(k string) bool {
+	switch k {
+	case "reasoning", "reasoning_effort", "thinking", "enable_thinking":
+		return true
+	}
+	return false
 }
 
 // promptCacheKey returns the prompt cache key to send: the request's explicit

@@ -1186,6 +1186,19 @@ func newOpenAICompatProfile(id, model string, contextWindow int, instModels map[
 	return &bp
 }
 
+// EffortLevelsConfigured reports whether this profile's effort ladder comes
+// from explicit providers.toml model configuration (a thinking_levels map or
+// an explicit reasoning flag) rather than catalog or default derivation.
+// Callers that re-derive levels from the embedded catalog (the model-fallback
+// clamp) must not second-guess configured levels with catalog data.
+func (p *Profile) EffortLevelsConfigured() bool {
+	entry, ok := p.instModels[p.model]
+	if !ok {
+		return false
+	}
+	return len(entry.ThinkingLevels) > 0 || entry.Reasoning != nil
+}
+
 // orderedEffortLevels returns a thinking_levels map's keys in serf rank order
 // (minimal → xhigh), the shape ReasoningEffortLevels and the task_list enum
 // expect.

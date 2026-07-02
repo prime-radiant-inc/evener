@@ -732,3 +732,53 @@ func TestAnthropicCacheControl(t *testing.T) {
 		t.Errorf("last tool = %v, want cache_control", tools[len(tools)-1])
 	}
 }
+
+// ReasoningOff must also defeat reasoning controls arriving via
+// ProviderOptions passthrough (e.g. the openrouter/minimax profile injects
+// reasoning:{enabled:true}) and the reasoning_details replay routing that
+// piggybacks on that option.
+func TestReasoningOff_SuppressesProviderOptionReasoning(t *testing.T) {
+	req := llm.Request{
+		Model: "m",
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "q"}}},
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "pondered"}},
+				{Kind: llm.ContentText, Text: "a"},
+			}},
+			{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "q2"}}},
+		},
+		ProviderOptions: map[string]any{
+			"openai-compatible": map[string]any{
+				"reasoning":        map[string]any{"enabled": true},
+				"reasoning_effort": "high",
+				"thinking":         map[string]any{"type": "enabled"},
+				"enable_thinking":  true,
+				"custom_pass":      "keep-me",
+			},
+		},
+	}
+	effort := "high"
+	req.ReasoningEffort = &effort
+	body, err := buildRequestBody(req, false, ModelCompat{ReasoningOff: true})
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+	for _, key := range []string{"reasoning", "reasoning_effort", "thinking", "enable_thinking"} {
+		if v, ok := body[key]; ok {
+			t.Errorf("body[%q] = %v, want absent for a reasoning=false model", key, v)
+		}
+	}
+	if body["custom_pass"] != "keep-me" {
+		t.Errorf("non-reasoning provider option dropped: %v", body["custom_pass"])
+	}
+	// The reasoning-details replay routing must not trigger either: prior
+	// thinking replays via the plain reasoning_content field (or as usual),
+	// not as a reasoning_details array.
+	msgs := body["messages"].([]map[string]any)
+	for _, m := range msgs {
+		if _, ok := m["reasoning_details"]; ok {
+			t.Errorf("assistant message used reasoning_details replay despite reasoning=false: %v", m)
+		}
+	}
+}
