@@ -99,6 +99,18 @@ func (s *Session) walkDescendantJobs(filter listFilter) ([]jobListEntry, error) 
 	return jobs, nil
 }
 
+// keepIncomingDescendantRow decides whether an incoming record replaces the row
+// already merged for its job id during the descendant walk. An owner record wins
+// over a forwarded copy; between two records of the same authority the
+// already-recorded (shallower) one is kept. It is the pure dedupe decision core of
+// collectDescendantJobs's merge loop (existingIsOwner is consulted only when seen).
+func keepIncomingDescendantRow(seen, existingIsOwner, incomingIsOwner bool) bool {
+	if seen && (existingIsOwner || !incomingIsOwner) {
+		return false
+	}
+	return true
+}
+
 type descendantWalkRow struct {
 	rec       *jobstore.JobRecord
 	depth     int
@@ -141,7 +153,7 @@ func (s *Session) collectDescendantJobs(node *Session, depth int, filter listFil
 		existing, seen := merged[rec.JobID]
 		// Owner record wins over a forwarded copy. Between two records of the
 		// same authority the shallower (already-recorded) one is kept.
-		if seen && (existing.isOwner || !isOwner) {
+		if !keepIncomingDescendantRow(seen, existing.isOwner, isOwner) {
 			continue
 		}
 		// ownerSess is the session this row was read from (node), so the LIST

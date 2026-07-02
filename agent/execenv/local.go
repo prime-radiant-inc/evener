@@ -580,27 +580,25 @@ func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string) ([]str
 // case-insensitive matching, and maxResults caps the output (default 100).
 // outputMode selects the result format: "files_with_matches", "count", or
 // matching lines otherwise.
-func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
-	rg, err := execLookPath("rg")
-	if err != nil {
-		// Fallback to native Go regex search when ripgrep is absent
-		dir := strings.TrimSpace(path)
-		if dir == "" {
-			dir = e.RootDir
-		}
-		if !filepath.IsAbs(dir) {
-			dir = filepath.Join(e.RootDir, dir)
-		}
-		return e.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults, outputMode)
-	}
+// resolveGrepDir resolves a grep path argument against the environment root: a
+// blank path means the root, and a relative path is joined under it. It is the
+// pure directory-resolution core shared by Grep's ripgrep and native-fallback arms.
+func resolveGrepDir(path, rootDir string) string {
 	dir := strings.TrimSpace(path)
 	if dir == "" {
-		dir = e.RootDir
+		dir = rootDir
 	}
 	if !filepath.IsAbs(dir) {
-		dir = filepath.Join(e.RootDir, dir)
+		dir = filepath.Join(rootDir, dir)
 	}
+	return dir
+}
 
+// buildRipgrepArgs builds the ripgrep argument vector for a Grep call. It is the
+// pure arg-construction core: a fixed no-heading / no-color prefix, then exactly
+// one output-mode flag (files-with-matches / count / line-number), then optional
+// case-insensitivity and glob filter, then the trailing pattern and directory.
+func buildRipgrepArgs(outputMode string, caseInsensitive bool, globFilter, pattern, dir string) []string {
 	args := []string{"--no-heading", "--color", "never"}
 	switch outputMode {
 	case "files_with_matches":
@@ -617,6 +615,18 @@ func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter
 		args = append(args, "-g", globFilter)
 	}
 	args = append(args, pattern, dir)
+	return args
+}
+
+func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
+	rg, err := execLookPath("rg")
+	if err != nil {
+		// Fallback to native Go regex search when ripgrep is absent
+		return e.grepNative(pattern, resolveGrepDir(path, e.RootDir), globFilter, caseInsensitive, maxResults, outputMode)
+	}
+	dir := resolveGrepDir(path, e.RootDir)
+
+	args := buildRipgrepArgs(outputMode, caseInsensitive, globFilter, pattern, dir)
 
 	ctx := context.Background()
 	if maxResults <= 0 {

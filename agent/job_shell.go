@@ -589,17 +589,29 @@ func (jm *jobManager) shellTerminal(run *runningJob, exitCode int, timedOut bool
 	jm.mu.Lock()
 	stopStatus, stopReason := run.stopStatus, run.stopReason
 	jm.mu.Unlock()
+	status, reason := shellTerminalDecision(stopStatus, stopReason, exitCode, timedOut, waitErr)
+	return status, reason, &code
+}
+
+// shellTerminalDecision is the pure terminal-classification core of shellTerminal:
+// given a shell run's stop request (if any) and its process outcome, it maps to the
+// terminal status and reason. Precedence: an explicit stop wins over everything,
+// then a runtime timeout, then a wait error, then the exit code (zero = completed,
+// non-zero = failed). It takes only value snapshots (the caller reads run.stopStatus
+// under jm.mu; the exit-code passthrough stays in the wrapper), so the classification
+// is fuzzable in isolation.
+func shellTerminalDecision(stopStatus jobstore.Status, stopReason string, exitCode int, timedOut bool, waitErr error) (jobstore.Status, string) {
 	if stopStatus != "" {
-		return stopStatus, stopReason, &code
+		return stopStatus, stopReason
 	}
 	if timedOut {
-		return jobstore.StatusStopped, "run_timeout", &code
+		return jobstore.StatusStopped, "run_timeout"
 	}
 	if waitErr != nil {
-		return jobstore.StatusFailed, "wait_failed", &code
+		return jobstore.StatusFailed, "wait_failed"
 	}
 	if exitCode == 0 {
-		return jobstore.StatusCompleted, "exit_zero", &code
+		return jobstore.StatusCompleted, "exit_zero"
 	}
-	return jobstore.StatusFailed, "exit_nonzero", &code
+	return jobstore.StatusFailed, "exit_nonzero"
 }

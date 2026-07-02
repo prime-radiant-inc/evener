@@ -310,11 +310,8 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 	if len(call.Arguments) > 0 {
 		_ = json.Unmarshal(call.Arguments, &args)
 	}
-	if purpose, ok := args["purpose"].(string); ok && purpose != "" {
-		startData.Description = purpose
-	} else if desc, ok := args["description"].(string); ok && desc != "" {
-		// Backward compatibility for older shell calls and transcripts.
-		startData.Description = desc
+	if d := toolStartDescription(args); d != "" {
+		startData.Description = d
 	}
 	startEmitted := false
 	toolEventOpen := false
@@ -428,6 +425,20 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 	}
 
 	return res
+}
+
+// toolStartDescription resolves the tool-call-start Description from a tool call's
+// decoded arguments: an explicit "purpose" wins, falling back to "description"
+// (backward compatibility for older shell calls and transcripts), else empty. Pure
+// over the args map, so the promotion order is fuzzable in isolation.
+func toolStartDescription(args map[string]any) string {
+	if purpose, ok := args["purpose"].(string); ok && purpose != "" {
+		return purpose
+	}
+	if desc, ok := args["description"].(string); ok && desc != "" {
+		return desc
+	}
+	return ""
 }
 
 func applyUpdatedToolInput(call *llm.ToolCallData, updated map[string]any) error {
