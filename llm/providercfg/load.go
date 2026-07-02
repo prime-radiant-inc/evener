@@ -120,6 +120,16 @@ func validateCompat(errs []string, instName, where string, c *CompatConfig) []st
 	if c.MaxStopSequences != nil && *c.MaxStopSequences < 0 {
 		errs = append(errs, fmt.Sprintf("instance %q: %s: max_stop_sequences must not be negative", instName, where))
 	}
+	for k, v := range c.ChatTemplateKwargs {
+		switch v.(type) {
+		case bool, int64, float64, string:
+			// The documented contract: a table of scalars. Nested values
+			// would silently degrade to fmt.Sprint strings on the first
+			// Marshal round-trip (hub rewrites), corrupting the wire kwargs.
+		default:
+			errs = append(errs, fmt.Sprintf("instance %q: %s: chat_template_kwargs[%q] must be a scalar (bool, integer, float, or string), not %T", instName, where, k, v))
+		}
+	}
 	return errs
 }
 

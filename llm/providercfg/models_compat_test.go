@@ -581,3 +581,34 @@ chat_template_kwargs = {}
 		t.Errorf("explicit empty maps lost in round-trip:\n%s", data)
 	}
 }
+
+// chat_template_kwargs is a table of SCALARS by contract — a nested table
+// would silently degrade to a fmt.Sprint string on the first hub rewrite.
+func TestLoad_ChatTemplateKwargsRejectsNestedValues(t *testing.T) {
+	src := `
+[instances.gw]
+type = "glm"
+[instances.gw.compat]
+thinking_format = "chat-template"
+chat_template_kwargs = { thinking = { budget = 2048 } }
+`
+	_, err := Load([]byte(src))
+	if err == nil {
+		t.Fatal("Load accepted a nested chat_template_kwargs value")
+	}
+	if !strings.Contains(err.Error(), "chat_template_kwargs") || !strings.Contains(err.Error(), "scalar") {
+		t.Errorf("error %q should name the field and the scalar contract", err)
+	}
+
+	// Scalars of every kind stay valid.
+	ok := `
+[instances.gw]
+type = "glm"
+[instances.gw.compat]
+thinking_format = "chat-template"
+chat_template_kwargs = { enable_thinking = true, budget = 2048, temp = 0.5, mode = "deep" }
+`
+	if _, err := Load([]byte(ok)); err != nil {
+		t.Fatalf("Load rejected scalar kwargs: %v", err)
+	}
+}
