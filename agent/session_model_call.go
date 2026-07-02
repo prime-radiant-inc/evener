@@ -719,9 +719,11 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 				// same guard on the primary path above).
 				fbLevels := fbProfile.ReasoningEffortLevels()
 				// Explicit providers.toml thinking_levels / reasoning config is
-				// authoritative — only consult the catalog when the profile's
-				// levels were derived (and might be stale primary-model state).
-				if !fbProfile.EffortLevelsConfigured() {
+				// authoritative, and ollama's local model names never resolve
+				// against the upstream catalog — only consult it when the
+				// profile's levels were derived (and might be stale
+				// primary-model state).
+				if fbProfile.CatalogEffortFallbackEligible() {
 					if cat := llm.EmbeddedModelCatalog(); cat != nil {
 						if mi := cat.LookupModelInfo(fbProfile.Model()); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
 							fbLevels = mi.ReasoningEffortLevels

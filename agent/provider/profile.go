@@ -1146,6 +1146,11 @@ func newOpenAICompatProfile(id, model string, contextWindow int, instModels map[
 		efforts = orderedEffortLevels(entry.ThinkingLevels)
 	case catModel != nil && len(catModel.ReasoningEffortLevels) > 0:
 		efforts = append([]string(nil), catModel.ReasoningEffortLevels...)
+	case suppressBareCatalogLookup(id):
+		// resolveEffortLevels does a bare catalog lookup of its own; ollama
+		// local names must not inherit a same-named upstream entry's levels
+		// (the same rule resolveOpenAICompatCatalogModel applied above).
+		efforts = append([]string(nil), defaultEfforts...)
 	default:
 		efforts = resolveEffortLevels(model, defaultEfforts)
 	}
@@ -1184,6 +1189,19 @@ func newOpenAICompatProfile(id, model string, contextWindow int, instModels map[
 	})
 	bp.instModels = instModels
 	return &bp
+}
+
+// CatalogEffortFallbackEligible reports whether the model-fallback clamp may
+// re-derive this profile's effort levels from the embedded catalog. False
+// when the levels are explicitly configured (authoritative), and false for
+// ollama — a local model name is unrelated to a same-named upstream catalog
+// entry, the same suppression newOpenAICompatProfile and the adapter's
+// catalog-fill apply.
+func (p *Profile) CatalogEffortFallbackEligible() bool {
+	if p.EffortLevelsConfigured() {
+		return false
+	}
+	return !suppressBareCatalogLookup(p.behaviorTag)
 }
 
 // EffortLevelsConfigured reports whether this profile's effort ladder comes

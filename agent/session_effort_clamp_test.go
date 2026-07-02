@@ -267,3 +267,65 @@ func TestFallbackChain_ConfiguredLevelsBeatCatalog(t *testing.T) {
 		t.Fatalf("fallback ReasoningEffort = %q, want %q (configured levels beat catalog)", fbEffort, "medium")
 	}
 }
+
+// An ollama fallback model whose local name collides with an upstream catalog
+// entry must clamp against the PROFILE's levels, not inherit the catalog's —
+// the same bare-lookup suppression profile construction and the adapter's
+// catalog-fill apply. glm-5.2 ships catalog levels [high, max]; the profile
+// default ladder is [low, medium, high], so effort "low" must survive as
+// "low" (the old catalog-first behavior raised it to "high").
+func TestFallbackChain_OllamaSkipsCatalogLevels(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	var fbEffort string
+	permErr := llm.ErrorFromHTTPStatus("local", 403, "primary denied", nil, nil)
+
+	adapter := &agenttest.ModelTrackingAdapter{
+		Provider: "local",
+		Respond: func(req llm.Request) (llm.Response, error) {
+			if req.Model == "glm-5.2" {
+				if req.ReasoningEffort != nil {
+					fbEffort = *req.ReasoningEffort
+				}
+				return agenttest.FinalResponse("fallback answered"), nil
+			}
+			return llm.Response{}, permErr
+		},
+	}
+	c.Register(adapter)
+
+	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{
+		Name: "local",
+		Type: "ollama",
+	}}}
+	primary, err := provider.ResolveProfileFromConfig(cfg, "local/llama3:8b")
+	if err != nil {
+		t.Fatalf("ResolveProfileFromConfig: %v", err)
+	}
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, primary, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:        dir,
+		LLMRetryPolicy:  &policy,
+		ModelFallbacks:  []string{"glm-5.2"},
+		ReasoningEffort: "low",
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err != nil {
+		t.Fatalf("ProcessInput: %v (fallback should succeed)", err)
+	}
+	if fbEffort != "low" {
+		t.Fatalf("fallback ReasoningEffort = %q, want %q (ollama must not inherit catalog levels)", fbEffort, "low")
+	}
+}
