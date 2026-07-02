@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
@@ -282,7 +281,7 @@ func applyInstanceModelOverride(entry map[string]any, providerCfg *providercfg.C
 		entry["reasoning_effort_levels"] = []string{}
 		entry["supports_reasoning"] = false
 	case len(mc.ThinkingLevels) > 0:
-		entry["reasoning_effort_levels"] = orderedThinkingLevels(mc.ThinkingLevels)
+		entry["reasoning_effort_levels"] = llm.OrderedEffortLevels(mc.ThinkingLevels)
 		entry["supports_reasoning"] = true
 	case mc.Reasoning != nil && *mc.Reasoning:
 		// reasoning = true without custom levels: the model IS
@@ -293,22 +292,6 @@ func applyInstanceModelOverride(entry map[string]any, providerCfg *providercfg.C
 	if mc.ContextWindow > 0 {
 		entry["context_window"] = mc.ContextWindow
 	}
-}
-
-// orderedThinkingLevels returns a ThinkingLevels map's keys in serf rank order
-// (minimal → xhigh), the shape the effort chip and reasoning_effort_levels
-// expect. Mirrors agent/provider's unexported orderedEffortLevels; kept local
-// rather than imported since that helper is a package-private detail of
-// profile construction.
-func orderedThinkingLevels(levels map[string]string) []string {
-	out := make([]string, 0, len(levels))
-	for k := range levels {
-		out = append(out, k)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return llm.ReasoningEffortRank(out[i]) < llm.ReasoningEffortRank(out[j])
-	})
-	return out
 }
 
 func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {

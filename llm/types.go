@@ -3,6 +3,7 @@ package llm
 import (
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 )
@@ -221,6 +222,21 @@ var openAICompatReasoningFields = []string{"reasoning_content", "reasoning", "re
 // back to the same field.
 func OpenAICompatReasoningFields() []string {
 	return append([]string(nil), openAICompatReasoningFields...)
+}
+
+// OrderedEffortLevels returns a thinking-levels map's keys sorted by
+// ReasoningEffortRank (minimal → xhigh) — the shape ReasoningEffortLevels,
+// the task_list enum, the spawn-form chip, and ClampReasoningEffort all
+// expect. One definition so those surfaces cannot drift.
+func OrderedEffortLevels(levels map[string]string) []string {
+	out := make([]string, 0, len(levels))
+	for k := range levels {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return ReasoningEffortRank(out[i]) < ReasoningEffortRank(out[j])
+	})
+	return out
 }
 
 // IsOpenAICompatReasoningField reports whether sig names one of the

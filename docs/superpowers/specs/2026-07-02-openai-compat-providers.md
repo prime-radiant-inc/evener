@@ -292,19 +292,24 @@ Decisions taken, one per question:
    (no null values — TOML can't express them cleanly, so "absent key" is the
    unsupported marker instead of an explicit null).
 3. **Initial format scope**: openai/zai/openrouter/deepseek — right cut?
-   **Decision: grew.** Shipped scope is
-   `openai/zai/deepseek/openrouter/together/qwen/string-thinking` — seven
-   formats, not four (`llm/providercfg/load.go` `validThinkingFormats`;
-   `llm/providers/openaicompat/request.go applyThinkingFormat`). Pi's
-   remaining three (`qwen-chat-template`, `chat-template`, `ant-ling`) stayed
-   out.
+   **Decision: grew twice.** The initial pass shipped seven formats
+   (`openai/zai/deepseek/openrouter/together/qwen/string-thinking`); the
+   follow-up waves added `qwen-chat-template` and `chat-template` (with a
+   verbatim `chat_template_kwargs` compat table) for nine total
+   (`llm/providercfg/load.go` `validThinkingFormats`;
+   `llm/providers/openaicompat/request.go applyThinkingFormat`). Only Pi's
+   `ant-ling` stayed out.
 4. **$ENV in api_key**: comfortable adopting? (Marshal already never emits
    api_key, so no round-trip risk.)
    **Decision: yes, adopted** — `$VAR`, `${VAR}`, and `$$` (literal `$`),
    resolved at the point of use (adapter construction and live `/models`
    probes) rather than at `Load`, so one instance's missing variable errors
-   only that instance (`llm/providercfg/apikey.go ResolveAPIKey`). `Marshal`
-   still never writes `api_key`, confirming the no-round-trip-risk premise.
+   only that instance (`llm/providercfg/apikey.go ResolveAPIKey`). The
+   round-trip model changed during the refine loop: `Marshal` now emits
+   `api_key` verbatim, and the on-disk guarantee lives in `WriteFile`, which
+   scrubs struct-held keys and restores what the existing file already
+   carried — hand-authored keys survive hub rewrites and injected
+   credentials can never land on disk (`llm/providercfg/mutate.go`).
 5. Does the `type="glm"` built-in provider also get thinking_format="zai"
    by default via its preset (proposed: yes — fixes GLM thinking today with
    zero user config)?

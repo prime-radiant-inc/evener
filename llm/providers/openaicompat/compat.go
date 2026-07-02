@@ -1,7 +1,6 @@
 package openaicompat
 
 import (
-	"sort"
 	"strings"
 
 	"primeradiant.com/serf/llm"
@@ -30,20 +29,6 @@ type ModelCompat struct {
 	ReasoningOff bool
 }
 
-// orderedThinkingLevelKeys returns a ThinkingLevels map's keys in serf rank
-// order (minimal → xhigh), the shape llm.ClampReasoningEffort expects as its
-// supported-levels set.
-func orderedThinkingLevelKeys(levels map[string]string) []string {
-	out := make([]string, 0, len(levels))
-	for k := range levels {
-		out = append(out, k)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return llm.ReasoningEffortRank(out[i]) < llm.ReasoningEffortRank(out[j])
-	})
-	return out
-}
-
 // wireEffort translates a serf effort level to the provider's wire value.
 // A model-level map wins; without one, the TranslateMaxToXHigh quirk still
 // applies (OpenRouter vocabulary).
@@ -65,7 +50,7 @@ func (mc ModelCompat) wireEffort(effort string) string {
 			// keyed on the canonical xhigh.
 			key = "xhigh"
 		}
-		key = llm.ClampReasoningEffort(key, orderedThinkingLevelKeys(mc.ThinkingLevels))
+		key = llm.ClampReasoningEffort(key, llm.OrderedEffortLevels(mc.ThinkingLevels))
 		if v, ok := mc.ThinkingLevels[key]; ok {
 			return v
 		}

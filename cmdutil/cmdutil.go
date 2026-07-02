@@ -70,7 +70,15 @@ func ResolveProfileWithLiveWindow(cfg providercfg.Config, ref string) (*provider
 		// Query the instance's own endpoint: an instance may set base_url in
 		// providers.toml (e.g. the Kimi coding plan at api.kimi.com/coding/v1)
 		// that the provider-type default does not know about.
-		baseURL, apiKey, headers := instanceEndpoint(cfg, p.ID())
+		baseURL, apiKey, headers, authOK := instanceEndpoint(cfg, p.ID())
+		if !authOK {
+			// Configured auth material ($ENV api_key or Authorization header)
+			// failed to resolve. Probing anyway would let the provider-type
+			// env-key fallback send an unrelated secret to the instance's
+			// base_url — the same credential-misdirection the adapter path
+			// avoids by failing the instance. Keep the catalog window.
+			return p, nil
+		}
 		if window := queryModelContextWindow(p.BehaviorTag(), p.Model(), baseURL, apiKey, headers); window > 0 {
 			p = provider.WithContextWindow(p, window)
 		}
@@ -92,31 +100,39 @@ func instanceConfiguresContextWindow(cfg providercfg.Config, name, model string)
 
 // instanceEndpoint returns the base URL, inline api key, and request headers
 // configured for the instance named name, or zero values when not found.
-// $ENV references are expanded; an unresolvable reference degrades to
-// absent (the live /models probe is best-effort and falls back to the
-// catalog window).
-func instanceEndpoint(cfg providercfg.Config, name string) (baseURL, apiKey string, headers map[string]string) {
+// $ENV references are expanded. authOK reports whether the instance's AUTH
+// material resolved: a failed api_key or Authorization-header reference
+// means the caller must not probe at all — degrading auth to absent would
+// re-engage the provider-type env-key fallback and send an unrelated secret
+// to the instance's endpoint. Failed NON-auth headers merely drop (the probe
+// is best-effort).
+func instanceEndpoint(cfg providercfg.Config, name string) (baseURL, apiKey string, headers map[string]string, authOK bool) {
 	for _, inst := range cfg.Instances {
 		if inst.Name != name {
 			continue
 		}
+		authOK = true
 		key, err := providercfg.ResolveAPIKey(strings.TrimSpace(inst.APIKey))
 		if err != nil {
 			key = ""
+			authOK = false
 		}
 		if len(inst.Headers) > 0 {
 			headers = make(map[string]string, len(inst.Headers))
 			for hk, hv := range inst.Headers {
 				resolved, err := providercfg.ResolveHeaderValue(hk, hv)
 				if err != nil {
+					if strings.EqualFold(hk, "Authorization") {
+						authOK = false
+					}
 					continue
 				}
 				headers[hk] = resolved
 			}
 		}
-		return strings.TrimSpace(inst.BaseURL), key, headers
+		return strings.TrimSpace(inst.BaseURL), key, headers, authOK
 	}
-	return "", "", nil
+	return "", "", nil, true
 }
 
 // ResolveProfileForProvider resolves a bare provider/model pair to a

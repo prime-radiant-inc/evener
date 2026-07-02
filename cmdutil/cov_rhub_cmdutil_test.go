@@ -51,11 +51,11 @@ func TestInstanceEndpoint(t *testing.T) {
 			{Name: "kc", BaseURL: " https://api.kimi.com/coding/v1 ", APIKey: " sk-abc "},
 		},
 	}
-	baseURL, apiKey, _ := instanceEndpoint(cfg, "kc")
+	baseURL, apiKey, _, _ := instanceEndpoint(cfg, "kc")
 	if baseURL != "https://api.kimi.com/coding/v1" || apiKey != "sk-abc" {
 		t.Fatalf("instanceEndpoint=%q,%q (must trim)", baseURL, apiKey)
 	}
-	baseURL, apiKey, _ = instanceEndpoint(cfg, "missing")
+	baseURL, apiKey, _, _ = instanceEndpoint(cfg, "missing")
 	if baseURL != "" || apiKey != "" {
 		t.Fatalf("instanceEndpoint(missing)=%q,%q, want empty", baseURL, apiKey)
 	}

@@ -556,3 +556,44 @@ func TestQueryModelContextWindow_EnvKeyDoesNotClobberAuthHeader(t *testing.T) {
 		t.Fatalf("Authorization = %q, want the configured header, not the env bearer", gotAuth)
 	}
 }
+
+// An UNRESOLVABLE $ENV auth reference must skip the live probe entirely —
+// degrading it to "absent" would re-engage the provider-type env-key fallback
+// and send an unrelated secret to the instance's endpoint.
+func TestResolveProfileWithLiveWindow_UnresolvableAuthSkipsProbe(t *testing.T) {
+	t.Setenv("GLM_API_KEY", "sk-env-must-not-be-sent")
+	rec := stubQueryModelContextWindow(t, func(provider, model string) int {
+		return 999_999
+	})
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{{
+			Name:    "gw",
+			Type:    "glm",
+			BaseURL: "https://gw.example.com/v1",
+			Headers: map[string]string{"Authorization": "$SERF_TEST_GW_TOKEN_UNSET"},
+		}},
+	}
+	p, err := ResolveProfileWithLiveWindow(cfg, "gw/glm-5.2")
+	if err != nil {
+		t.Fatalf("ResolveProfileWithLiveWindow: %v", err)
+	}
+	if rec.called {
+		t.Fatal("probe ran despite unresolvable Authorization header")
+	}
+	if got := p.ContextWindowSize(); got == 999_999 {
+		t.Fatalf("live window applied (%d) despite skipped probe", got)
+	}
+
+	// Same for an unresolvable api_key.
+	cfg.Instances[0].Headers = nil
+	cfg.Instances[0].APIKey = "$SERF_TEST_GW_KEY_UNSET"
+	rec2 := stubQueryModelContextWindow(t, func(provider, model string) int {
+		return 999_999
+	})
+	if _, err := ResolveProfileWithLiveWindow(cfg, "gw/glm-5.2"); err != nil {
+		t.Fatalf("ResolveProfileWithLiveWindow: %v", err)
+	}
+	if rec2.called {
+		t.Fatal("probe ran despite unresolvable api_key")
+	}
+}

@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"sort"
 	"strings"
 
 	"primeradiant.com/serf/agent/internal/tool"
@@ -1143,7 +1142,7 @@ func newOpenAICompatProfile(id, model string, contextWindow int, instModels map[
 		reasoning = false
 		efforts = []string{}
 	case hasEntry && len(entry.ThinkingLevels) > 0:
-		efforts = orderedEffortLevels(entry.ThinkingLevels)
+		efforts = llm.OrderedEffortLevels(entry.ThinkingLevels)
 	case catModel != nil && len(catModel.ReasoningEffortLevels) > 0:
 		efforts = append([]string(nil), catModel.ReasoningEffortLevels...)
 	case suppressBareCatalogLookup(id):
@@ -1215,18 +1214,4 @@ func (p *Profile) EffortLevelsConfigured() bool {
 		return false
 	}
 	return len(entry.ThinkingLevels) > 0 || entry.Reasoning != nil
-}
-
-// orderedEffortLevels returns a thinking_levels map's keys in serf rank order
-// (minimal → xhigh), the shape ReasoningEffortLevels and the task_list enum
-// expect.
-func orderedEffortLevels(levels map[string]string) []string {
-	out := make([]string, 0, len(levels))
-	for k := range levels {
-		out = append(out, k)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return llm.ReasoningEffortRank(out[i]) < llm.ReasoningEffortRank(out[j])
-	})
-	return out
 }
