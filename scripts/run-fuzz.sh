@@ -169,6 +169,9 @@ TARGETS=(
 	"native:agent:./internal/contextmgr:FuzzCtxmgrCheckpointPredManageContext::strategy_checkpoint_pred.go#ManageContext"
 	"native:agent:./internal/contextmgr:FuzzCtxmgrSessionLogManageContext::strategy_session_log.go#ManageContext"
 	"native:agent:./internal/contextmgr:FuzzCtxmgrSummarizeSteered::context_manager.go#summarizeWithLLMSteered"
+	"native:agent:./internal/contextmgr:FuzzFc1EstimateUsedTokens::context_manager.go#estimateUsedTokens"
+	"native:agent:./internal/contextmgr:FuzzFc1SummarizationRoutes::context_manager.go#summarizationModels"
+	"native:agent:.:FuzzFc1RepairOrphanedToolResults::history_repair.go#repairOrphanedToolResults"
 	"native:agent:./doctor:FuzzDoctorRenderAPILog::apilog.go#RenderAPILog"
 	"native:agent:./doctor:FuzzDoctorRenderWatches::watches.go#RenderWatches"
 	"native:agent:./execenv:FuzzEgrepGrepNative::local.go#grepNative"
@@ -279,6 +282,7 @@ TARGETS=(
 	"native:agent:.:FuzzLifecycleSeq::"
 	"rapid:agent:./internal/jobstore:TestJobstoreSeqFuzz"
 	"rapid:agent:./internal/contextmgr:TestCompactionSeqFuzz"
+	"rapid:agent:./internal/contextmgr:TestFc1MaybeCompactSeqFuzz"
 	"rapid:.:./internal/appserver:TestRouterSeqFuzz"
 	"rapid:.:./internal/appserver:TestHubMultiSessionSeqFuzz"
 	# Wave 2: next-tier agent-package surface — doctor rendering, ctx/jobstore

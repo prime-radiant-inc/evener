@@ -159,17 +159,24 @@ func (cm *Manager) estimatePressure(history []schema.Turn, sysPromptChars int) f
 	measuredLen := cm.historyLenAtMeasure
 	cm.mu.Unlock()
 
-	var totalTokens int
+	totalTokens := estimateUsedTokens(lastTokens, measuredLen, history, sysPromptChars)
+	return float64(totalTokens) / float64(cw)
+}
+
+// estimateUsedTokens is the pure token-accounting core shared by estimatePressure
+// and EstimateUsage: it returns the estimated input tokens for a history given the
+// last API-reported token count and the history length at which it was measured.
+// When a measurement is available and still applies (lastTokens > 0 and the
+// measured length is within the current history), it uses the measurement as a
+// baseline and estimates only the turns appended since; otherwise it falls back to
+// the char/4 heuristic over the whole history plus the system prompt.
+func estimateUsedTokens(lastTokens, measuredLen int, history []schema.Turn, sysPromptChars int) int {
 	if lastTokens > 0 && measuredLen <= len(history) {
 		// Use the known token count as baseline, then estimate only new turns.
-		newTurns := history[measuredLen:]
-		totalTokens = lastTokens + estimateTokens(newTurns)
-	} else {
-		// Fall back to char/4 for everything.
-		totalTokens = estimateTokens(history) + sysPromptChars/4
+		return lastTokens + estimateTokens(history[measuredLen:])
 	}
-
-	return float64(totalTokens) / float64(cw)
+	// Fall back to char/4 for everything.
+	return estimateTokens(history) + sysPromptChars/4
 }
 
 // EstimatePressure returns the estimated fraction of context window in use.
@@ -189,12 +196,7 @@ func (cm *Manager) EstimateUsage(history []schema.Turn, sysPromptChars int) sche
 	measuredLen := cm.historyLenAtMeasure
 	cm.mu.Unlock()
 
-	var used int
-	if lastTokens > 0 && measuredLen <= len(history) {
-		used = lastTokens + estimateTokens(history[measuredLen:])
-	} else {
-		used = estimateTokens(history) + sysPromptChars/4
-	}
+	used := estimateUsedTokens(lastTokens, measuredLen, history, sysPromptChars)
 	remaining := cw - used
 	if remaining < 0 {
 		remaining = 0
