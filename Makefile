@@ -189,6 +189,17 @@ fuzz-coverage-global:
 fuzz-coverage-global-selftest:
 	@scripts/fuzz-coverage-global-selftest.sh
 
+# test-coverage-floor ratchets whole-module FULL-SUITE (unit+integration) coverage
+# against scripts/testcov-global-floors.txt — the companion to fuzz-coverage-global
+# (fuzz-reachable). CHECK=1 fails on a drop; BLESS=1 raises floors. Heavy + local.
+test-coverage-floor:
+	@scripts/test-coverage-floor.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(COV_ARGS)
+
+# mutation-floor gates the gremlins kill score: MIN=95 fails any curated package
+# whose test efficacy drops below 95%. Slow (nightly). No MIN = report only.
+mutation-floor:
+	@scripts/fuzz-mutation-score.sh $(if $(MIN),--min-efficacy $(MIN)) $(MUT_ARGS)
+
 # fuzz-bisect pinpoints the commit that introduced a crasher via git bisect,
 # replaying one saved corpus entry per step. Supply args through FUZZ_ARGS, e.g.
 # `make fuzz-bisect FUZZ_ARGS="--target llm:FuzzParseSSE --crasher <file> --good <ref>"`.

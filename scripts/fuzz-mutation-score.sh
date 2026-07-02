@@ -44,7 +44,17 @@ if ! command -v gremlins >/dev/null 2>&1; then
 	exit 2
 fi
 
-declare -a targets=("$@")
+# --min-efficacy N turns this into a GATE: any curated package whose kill score
+# (test efficacy) drops below N% fails the run. Default unset = report only. Set
+# below 100 (e.g. 95) to absorb legitimately-equivalent mutants that survive.
+min_eff=""
+declare -a targets=()
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--min-efficacy) min_eff="$2"; shift 2 ;;
+		*) targets+=("$1"); shift ;;
+	esac
+done
 if [ ${#targets[@]} -eq 0 ]; then
 	# Curated fuzz-covered parse/logic packages, one per module. Kept small: this
 	# is a slow nightly pass, not the gate. Pass args to score other packages.
@@ -63,10 +73,19 @@ for t in "${targets[@]}"; do
 	module="${t%%:*}"
 	pkg="${t#*:}"
 	echo "=== mutation score: $t (coeff $coeff) ==="
-	if ! ( cd "$repo_root/$module" && gremlins unleash --timeout-coefficient "$coeff" "$pkg" 2>&1 |
-		grep -iE 'LIVED|NOT COVERED|Killed:|Test efficacy|Mutator coverage' ); then
+	out="$( cd "$repo_root/$module" && gremlins unleash --timeout-coefficient "$coeff" "$pkg" 2>&1 )"
+	if [ $? -ne 0 ] && ! printf '%s\n' "$out" | grep -q 'Test efficacy'; then
 		echo "fuzz-mutation-score: gremlins failed for $t" >&2
 		fail=1
+		continue
+	fi
+	printf '%s\n' "$out" | grep -iE 'LIVED|NOT COVERED|Killed:|Test efficacy|Mutator coverage'
+	if [ -n "$min_eff" ]; then
+		eff="$(printf '%s\n' "$out" | grep -iE 'Test efficacy' | grep -oE '[0-9]+\.[0-9]+' | head -1)"
+		if [ -n "$eff" ] && [ "$(awk -v e="$eff" -v m="$min_eff" 'BEGIN{print (e < m) ? 1 : 0}')" = "1" ]; then
+			echo "    MUTATION REGRESSION: $t efficacy ${eff}% < floor ${min_eff}%" >&2
+			fail=1
+		fi
 	fi
 done
 exit "$fail"

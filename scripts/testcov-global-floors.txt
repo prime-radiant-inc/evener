@@ -1,0 +1,8 @@
+# Full-suite (unit+integration) whole-module statement-coverage floors.
+# Managed by scripts/test-coverage-floor.sh --bless. Raised upward only;
+# a downward reset (denominator change, not a regression) is a hand edit.
+. 48.9
+agent 94.1
+llm 90.4
+auth 92.0
+envvars 100.0
