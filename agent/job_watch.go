@@ -2108,50 +2108,21 @@ func watchEventFilterSummary(filter *watchEventFilter) string {
 
 func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 	kind := ev.Kind
-	data := ev.Data
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
 	var overBudget []*watchConfig
 
 	jm.mu.Lock()
 	for _, cfg := range jm.watches {
-		if !isActiveWatchTargetLocked(jm, cfg.target) {
+		dec := evaluateWatchEvent(cfg.eventSnapshot(isActiveWatchTargetLocked(jm, cfg.target)), ev)
+		cfg.eventCount = dec.eventCount
+		if !dec.matched {
 			continue
 		}
-		if cfg.wildcardEvents {
-			if !isSupportedWatchEventKind(kind) {
-				continue
-			}
-		} else if !cfg.eventKinds[kind] {
-			continue
-		}
-		if !watchEventMatchesTarget(cfg.target, data) {
-			continue
-		}
-		if shouldSuppressWatch(cfg, ev.Provenance) {
-			continue
-		}
-		if !watchEventFilterMatches(cfg.eventFilter, ev) {
-			continue
-		}
-		if cfg.triggerEvery > 0 && cfg.triggerKind == kind {
-			cfg.eventCount++
-			if cfg.eventCount%cfg.triggerEvery != 0 {
-				continue
-			}
-		}
-		watchedIdentity := watchEventWatchedIdentity(cfg.target, data)
-		if cfg.send != nil {
-			if cfg.send.To == runtimeMessageAliasWatched && isWatchSessionTarget(watchedIdentity) {
-				continue
-			}
-			deliveries = append(deliveries, jm.watchSendSnapshot(cfg, watchedIdentity, fmt.Sprintf("event: %s", kind), ev))
+		if dec.send {
+			deliveries = append(deliveries, jm.watchSendSnapshot(cfg, dec.watchedIdentity, fmt.Sprintf("event: %s", kind), ev))
 		} else {
-			notifyJobID := watchedIdentity
-			if isWatchSessionTarget(notifyJobID) {
-				notifyJobID = ""
-			}
-			notifications = append(notifications, jm.watchNotificationFromWatch(cfg, notifyJobID, fmt.Sprintf("event: %s", kind), ev.Provenance))
+			notifications = append(notifications, jm.watchNotificationFromWatch(cfg, dec.notifyJobID, fmt.Sprintf("event: %s", kind), ev.Provenance))
 			if jm.recordWatchDeliveryLocked(cfg) {
 				overBudget = append(overBudget, cfg)
 			}
@@ -2164,6 +2135,107 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 	jm.enqueueWatchNotifications(notifications)
 	jm.recordWatchSendsAndKick(deliveries)
 	jm.autoClearOverBudgetWatches(overBudget)
+}
+
+// watchEventSnapshot is a read-only copy of the per-watch fields that decide
+// whether a session event fires a watch, taken under jm.mu so evaluateWatchEvent
+// can run as a pure function of (snapshot, event). eventKinds is aliased, not
+// deep-copied — the evaluator only reads it.
+type watchEventSnapshot struct {
+	target         string
+	targetActive   bool
+	wildcardEvents bool
+	eventKinds     map[events.EventKind]bool
+	eventFilter    *watchEventFilter
+	watchID        string
+	generation     string
+	triggerKind    events.EventKind
+	triggerEvery   int
+	eventCount     int
+	hasSend        bool
+	sendTo         string
+}
+
+func (cfg *watchConfig) eventSnapshot(targetActive bool) watchEventSnapshot {
+	snap := watchEventSnapshot{
+		target:         cfg.target,
+		targetActive:   targetActive,
+		wildcardEvents: cfg.wildcardEvents,
+		eventKinds:     cfg.eventKinds,
+		eventFilter:    cfg.eventFilter,
+		watchID:        cfg.watchID,
+		generation:     cfg.generation,
+		triggerKind:    cfg.triggerKind,
+		triggerEvery:   cfg.triggerEvery,
+		eventCount:     cfg.eventCount,
+	}
+	if cfg.send != nil {
+		snap.hasSend = true
+		snap.sendTo = cfg.send.To
+	}
+	return snap
+}
+
+// watchEventDecision is what evaluateWatchEvent returns for one watch: whether it
+// fires, how it routes, and the throttle counter the wrapper must store back.
+// eventCount is always the post-evaluation counter (unchanged when this watch has
+// no every-Nth throttle for the event kind), so the wrapper can assign it
+// unconditionally.
+type watchEventDecision struct {
+	matched         bool
+	send            bool
+	watchedIdentity string
+	notifyJobID     string
+	eventCount      int
+}
+
+// evaluateWatchEvent is the pure decision core lifted out of onSessionEvent: it
+// applies the target/kind/target-match/provenance/filter/throttle gates to a
+// snapshot and reports the routing decision plus the advanced throttle counter.
+// It locks nothing, mutates nothing, and emits nothing; the caller performs the
+// effects (snapshot deliveries, notifications, over-budget clears).
+func evaluateWatchEvent(snap watchEventSnapshot, ev events.SessionEvent) watchEventDecision {
+	kind := ev.Kind
+	data := ev.Data
+	miss := watchEventDecision{eventCount: snap.eventCount}
+	if !snap.targetActive {
+		return miss
+	}
+	if snap.wildcardEvents {
+		if !isSupportedWatchEventKind(kind) {
+			return miss
+		}
+	} else if !snap.eventKinds[kind] {
+		return miss
+	}
+	if !watchEventMatchesTarget(snap.target, data) {
+		return miss
+	}
+	if provenance.ContainsWatch(ev.Provenance, snap.watchID, snap.generation) {
+		return miss
+	}
+	if !watchEventFilterMatches(snap.eventFilter, ev) {
+		return miss
+	}
+	eventCount := snap.eventCount
+	if snap.triggerEvery > 0 && snap.triggerKind == kind {
+		eventCount++
+		if eventCount%snap.triggerEvery != 0 {
+			return watchEventDecision{eventCount: eventCount}
+		}
+	}
+	watchedIdentity := watchEventWatchedIdentity(snap.target, data)
+	if snap.hasSend {
+		if snap.sendTo == runtimeMessageAliasWatched && isWatchSessionTarget(watchedIdentity) {
+			return watchEventDecision{eventCount: eventCount}
+		}
+		return watchEventDecision{matched: true, send: true, watchedIdentity: watchedIdentity, eventCount: eventCount}
+	}
+	notifyJobID := watchedIdentity
+	if isWatchSessionTarget(notifyJobID) {
+		notifyJobID = ""
+	}
+	return watchEventDecision{matched: true, watchedIdentity: watchedIdentity, notifyJobID: notifyJobID, eventCount: eventCount}
 }
 
 // shouldSuppressWatch drops an event whose causal provenance already carries this
@@ -4180,7 +4252,52 @@ func (s *Session) retryRestoredPendingWatchSends(ctx context.Context) error {
 	return nil
 }
 
+// watchSendTargetResolver supplies the read-only lookups the pure classifier
+// needs. The live wrapper backs these with the real store / job-record /
+// resumability I/O; a fuzz harness backs them with an in-memory world. The
+// classifier itself (classifyWatchSendDeliveryTarget) locks nothing, mutates no
+// shared state, and does no direct I/O — every effect is one of these injected
+// reads, invoked lazily at exactly the point the original inline code reached
+// it, so the branch-by-branch call order is preserved.
+type watchSendTargetResolver struct {
+	sessionID       string
+	hasJobManager   bool
+	loadDelegates   func() (map[string]*jobstore.DelegateRecord, error)
+	findJobRecord   func(jobID string) (*jobstore.JobRecord, error)
+	assessResumable func(rec *jobstore.JobRecord) delegateResumability
+}
+
 func (s *Session) classifyRestoredWatchSendTarget(target string) (watchSendDeliveryClass, string) {
+	return classifyWatchSendDeliveryTarget(target, s.watchSendTargetResolver())
+}
+
+// watchSendTargetResolver builds the read-only lookup bundle for this session's
+// live classifier pass. When there is no job manager the resolver's closures are
+// left nil; the classifier never calls them in that case because it short-circuits
+// to watchSendBusy first.
+func (s *Session) watchSendTargetResolver() watchSendTargetResolver {
+	if s == nil || s.jobManager == nil {
+		return watchSendTargetResolver{}
+	}
+	jm := s.jobManager
+	return watchSendTargetResolver{
+		sessionID:     s.id,
+		hasJobManager: true,
+		loadDelegates: jm.store.LoadDelegates,
+		findJobRecord: func(jobID string) (*jobstore.JobRecord, error) {
+			return findJobRecord(jm, jobID)
+		},
+		assessResumable: func(rec *jobstore.JobRecord) delegateResumability {
+			return s.assessDelegateResumability(rec, delegateResumabilityProjection)
+		},
+	}
+}
+
+// classifyWatchSendDeliveryTarget is the pure decision tree that maps a restored
+// watch-send target to a delivery class (delivered / busy / hard-failure) plus a
+// reason. It reads only its argument snapshot and the resolver's injected lookups;
+// it never touches jm.mu, a live watchConfig, or the store directly.
+func classifyWatchSendDeliveryTarget(target string, r watchSendTargetResolver) (watchSendDeliveryClass, string) {
 	target = strings.TrimSpace(target)
 	if isRuntimeMessageAlias(target) {
 		return watchSendDelivered, ""
@@ -4191,14 +4308,14 @@ func (s *Session) classifyRestoredWatchSendTarget(target string) (watchSendDeliv
 	if isUnsupportedRuntimeMessageAlias(target) {
 		return watchSendHardFailure, fmt.Sprintf("target_not_found: job %q not found", target)
 	}
-	if s == nil || s.jobManager == nil {
+	if !r.hasJobManager {
 		return watchSendBusy, ""
 	}
 	if strings.HasPrefix(target, "job_") {
 		return watchSendHardFailure, "invalid_request: job_id is a job/turn handle; watch sends target delegate_id"
 	}
 	if strings.HasPrefix(target, "dlg_") {
-		delegates, err := s.jobManager.store.LoadDelegates()
+		delegates, err := r.loadDelegates()
 		if err != nil {
 			return watchSendBusy, ""
 		}
@@ -4206,7 +4323,7 @@ func (s *Session) classifyRestoredWatchSendTarget(target string) (watchSendDeliv
 		if d == nil {
 			return watchSendHardFailure, fmt.Sprintf("target_not_found: delegate %q not found", target)
 		}
-		if d.OwnerSessionID != "" && d.OwnerSessionID != s.id {
+		if d.OwnerSessionID != "" && d.OwnerSessionID != r.sessionID {
 			return watchSendHardFailure, fmt.Sprintf("not_controllable: delegate %q is not owned by this session", target)
 		}
 		jobID := d.CurrentJobID
@@ -4216,11 +4333,11 @@ func (s *Session) classifyRestoredWatchSendTarget(target string) (watchSendDeliv
 		if jobID == "" {
 			return watchSendHardFailure, fmt.Sprintf("target_not_resumable: delegate %q has no job history", target)
 		}
-		rec, err := findJobRecord(s.jobManager, jobID)
+		rec, err := r.findJobRecord(jobID)
 		if err != nil {
 			return watchSendHardFailure, "target_not_found: " + err.Error()
 		}
-		if rec.OwnerSessionID != "" && rec.OwnerSessionID != s.id {
+		if rec.OwnerSessionID != "" && rec.OwnerSessionID != r.sessionID {
 			return watchSendHardFailure, fmt.Sprintf("not_controllable: delegate job %q is owned by descendant session %q; you may only message your own direct delegates", target, rec.OwnerSessionID)
 		}
 		if rec.Type != jobstore.JobDelegate {
@@ -4238,13 +4355,13 @@ func (s *Session) classifyRestoredWatchSendTarget(target string) (watchSendDeliv
 		if rec.Resumable == nil || !*rec.Resumable {
 			return watchSendHardFailure, fmt.Sprintf("target_not_resumable: delegate job %q is %s", jobID, rec.Status)
 		}
-		assessment := s.assessDelegateResumability(rec, delegateResumabilityProjection)
+		assessment := r.assessResumable(rec)
 		if !assessment.Resumable {
 			return watchSendHardFailure, "target_not_resumable:" + assessment.Reason
 		}
 		return watchSendBusy, ""
 	}
-	rec, err := findJobRecord(s.jobManager, target)
+	rec, err := r.findJobRecord(target)
 	if err != nil {
 		return watchSendHardFailure, "target_not_found: " + err.Error()
 	}
@@ -4255,7 +4372,7 @@ func (s *Session) classifyRestoredWatchSendTarget(target string) (watchSendDeliv
 		return watchSendBusy, ""
 	}
 	if isRuntimeLostDelegate(rec) {
-		assessment := s.assessDelegateResumability(rec, delegateResumabilityProjection)
+		assessment := r.assessResumable(rec)
 		if !assessment.Resumable {
 			return watchSendHardFailure, "target_not_resumable:" + assessment.Reason
 		}
@@ -4266,7 +4383,7 @@ func (s *Session) classifyRestoredWatchSendTarget(target string) (watchSendDeliv
 	if !rec.Status.IsTerminal() || rec.Resumable == nil || !*rec.Resumable {
 		return watchSendHardFailure, fmt.Sprintf("target_not_resumable: delegate job %q is %s", target, rec.Status)
 	}
-	assessment := s.assessDelegateResumability(rec, delegateResumabilityProjection)
+	assessment := r.assessResumable(rec)
 	if !assessment.Resumable {
 		return watchSendHardFailure, "target_not_resumable:" + assessment.Reason
 	}
