@@ -1,6 +1,6 @@
 # OpenAI-compat follow-ups — execution plan (continuation-safe)
 
-Status: IN FLIGHT 2026-07-03. Jesse approved: "we need to fix 1, 2, 3, 4 and
+Status: ALL WAVES 1-3 LANDED 2026-07-03 (commits through cc06ddb3 + refresh-model-catalog automation); Wave 4 wrap-up in progress (gate green, e2e verified incl. live lunaroute; refine loop next). Jesse approved: "we need to fix 1, 2, 3, 4 and
 the smaller stuff" (the adopt-next list from the Pi study) + "assign subagents
 to do the work, then you check them". This file is the handoff state: any
 session can resume from here.
