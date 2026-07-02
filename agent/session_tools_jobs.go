@@ -60,6 +60,20 @@ const (
 	grantedReadBlockUnsupportedErr = "invalid_request: max_wait_ms is not supported for cross-session reads"
 )
 
+// clampJobBlockTimeout clamps a positive max_wait_ms request into the supported
+// inline-block window [minJobBlockTimeoutMS, maxJobBlockTimeoutMS] and returns
+// it as a wait duration. Callers gate on ms > 0 (and reject negatives) upstream.
+func clampJobBlockTimeout(ms int) time.Duration {
+	clamped := ms
+	if clamped < minJobBlockTimeoutMS {
+		clamped = minJobBlockTimeoutMS
+	}
+	if clamped > maxJobBlockTimeoutMS {
+		clamped = maxJobBlockTimeoutMS
+	}
+	return time.Duration(clamped) * time.Millisecond
+}
+
 var rootOnlyJobControlTools = []string{"delegate", "job_watch"}
 
 func registerJobTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
@@ -143,16 +157,9 @@ func delegateSendTool(ctx context.Context, s *Session, args map[string]any, maxC
 		if n < 0 {
 			return "", errors.New("invalid_request: max_wait_ms must be non-negative")
 		}
-		clamped := n
-		if clamped < minJobBlockTimeoutMS {
-			clamped = minJobBlockTimeoutMS
-		}
-		if clamped > maxJobBlockTimeoutMS {
-			clamped = maxJobBlockTimeoutMS
-		}
 		a.Background = false
 		a.BackgroundSet = true
-		a.BlockTimeoutMS = clamped
+		a.BlockTimeoutMS = int(clampJobBlockTimeout(n) / time.Millisecond)
 	}
 
 	res := s.sendDelegateMessage(ctx, a)
@@ -512,14 +519,7 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 		if granted != nil || deepDescendant {
 			return "", errors.New(grantedReadBlockUnsupportedErr)
 		}
-		clamped := maxWaitMS
-		if clamped < minJobBlockTimeoutMS {
-			clamped = minJobBlockTimeoutMS
-		}
-		if clamped > maxJobBlockTimeoutMS {
-			clamped = maxJobBlockTimeoutMS
-		}
-		timeout := time.Duration(clamped) * time.Millisecond
+		timeout := clampJobBlockTimeout(maxWaitMS)
 		if grepRE != nil {
 			waitForJobGrepMatch(ctx, jm, jobID, grepRE, timeout)
 		} else {
@@ -1076,14 +1076,7 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 		}
 	}
 	if maxWaitMS > 0 {
-		clamped := maxWaitMS
-		if clamped < minJobBlockTimeoutMS {
-			clamped = minJobBlockTimeoutMS
-		}
-		if clamped > maxJobBlockTimeoutMS {
-			clamped = maxJobBlockTimeoutMS
-		}
-		done := waitForJobDone(ctx, targetJM, jobID, time.Duration(clamped)*time.Millisecond)
+		done := waitForJobDone(ctx, targetJM, jobID, clampJobBlockTimeout(maxWaitMS))
 		if _, latest, err := s.nestedOrLocalJobManager(jobID); err == nil {
 			rec = latest
 		}

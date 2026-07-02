@@ -355,9 +355,8 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.StateRes
 	// (output too big to inline) and the tool-result char bound (the rendered
 	// result would overflow maxChars). Either → keep a durable job so the model
 	// can page; neither → return the complete output inline and discard the job.
-	embedExceeded := len(res.Output) > shellRideWholeBytes
-	charBoundExceeded := !embedExceeded && maxChars > 0 && len([]rune(formatShellResult(out))) > maxChars
-	if !embedExceeded && !charBoundExceeded {
+	disp := shellResultDisposition(len(res.Output), len([]rune(formatShellResult(out))), maxChars, shellRideWholeBytes)
+	if !disp.Keep {
 		_ = res.settle(false)
 		return tool.StateResult{Output: formatShellResult(out), State: out}, nil
 	}
@@ -374,6 +373,28 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.StateRes
 	out.Output = &digest
 	out.Truncated = &peekTruncated
 	return tool.StateResult{Output: formatShellResult(out), State: out}, nil
+}
+
+// shellSettleDisposition is the keep-vs-discard decision for a within-bound
+// shell completion (spec §6.4c). Keep reports whether the delayed job must be
+// retained; EmbedExceeded and CharBoundExceeded attribute why. The two reasons
+// are mutually exclusive: EmbedExceeded short-circuits the char-bound check.
+type shellSettleDisposition struct{ Keep, EmbedExceeded, CharBoundExceeded bool }
+
+// shellResultDisposition decides whether a within-bound shell completion must
+// keep its delayed job. rawOutputBytes is the byte length of the full output;
+// renderedRuneLen is the rune length of the rendered tool result. Output larger
+// than rideWholeBytes cannot ride whole inline (EmbedExceeded); otherwise a
+// rendered result over a positive maxChars exceeds the char bound
+// (CharBoundExceeded). Either reason keeps the job.
+func shellResultDisposition(rawOutputBytes, renderedRuneLen, maxChars, rideWholeBytes int) shellSettleDisposition {
+	embedExceeded := rawOutputBytes > rideWholeBytes
+	charBoundExceeded := !embedExceeded && maxChars > 0 && renderedRuneLen > maxChars
+	return shellSettleDisposition{
+		Keep:              embedExceeded || charBoundExceeded,
+		EmbedExceeded:     embedExceeded,
+		CharBoundExceeded: charBoundExceeded,
+	}
 }
 
 // outputWindowStatus classifies an output window for the model: "all_retained"
