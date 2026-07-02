@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 // wantOpus46Levels is the canonical effort-level slice for claude-opus-4-6 as
@@ -16,7 +17,7 @@ var wantOpus46Levels = []string{"low", "medium", "high", "max"}
 func TestModelDescriptorsToAPIModels_IncludesReasoningEffortLevels(t *testing.T) {
 	models := modelDescriptorsToAPIModels([]appwire.ModelDescriptor{
 		{Provider: "anthropic", Model: "claude-opus-4-6"},
-	})
+	}, nil)
 	if len(models) != 1 {
 		t.Fatalf("got %d models, want 1", len(models))
 	}
@@ -35,7 +36,7 @@ func TestModelDescriptorsToAPIModels_IncludesReasoningEffortLevels(t *testing.T)
 func TestModelDescriptorsToAPIModels_ProviderQualifiedModelResolvesLevels(t *testing.T) {
 	models := modelDescriptorsToAPIModels([]appwire.ModelDescriptor{
 		{Provider: "openrouter-anthropic", Model: "anthropic/claude-opus-4-6"},
-	})
+	}, nil)
 	if len(models) != 1 {
 		t.Fatalf("got %d models, want 1", len(models))
 	}
@@ -45,5 +46,106 @@ func TestModelDescriptorsToAPIModels_ProviderQualifiedModelResolvesLevels(t *tes
 	}
 	if !reflect.DeepEqual(levels, wantOpus46Levels) {
 		t.Errorf("namespaced model: reasoning_effort_levels = %v, want %v (catalog strip-prefix must resolve to opus-4-6 entry)", levels, wantOpus46Levels)
+	}
+}
+
+// An instance-defined model in providers.toml must win over the embedded
+// catalog: its ThinkingLevels keys, rank-ordered, are what the effort chip
+// offers — even when the catalog has its own (different) opinion for the same
+// bare model id.
+func TestModelDescriptorsToAPIModels_InstanceModelLevelsWinOverCatalog(t *testing.T) {
+	cfg := &providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
+			{
+				Name: "lunaroute",
+				Type: "openai",
+				Models: map[string]providercfg.ModelConfig{
+					"glm-5.2-nvfp4": {
+						// Deliberately out of rank order to prove the hub
+						// re-sorts by llm.ReasoningEffortRank rather than
+						// trusting map/TOML iteration order.
+						ThinkingLevels: map[string]string{
+							"xhigh":   "xhigh",
+							"low":     "low",
+							"medium":  "medium",
+							"minimal": "minimal",
+							"high":    "high",
+						},
+					},
+				},
+			},
+		},
+	}
+	models := modelDescriptorsToAPIModels([]appwire.ModelDescriptor{
+		{Provider: "lunaroute", Model: "glm-5.2-nvfp4"},
+	}, cfg)
+	if len(models) != 1 {
+		t.Fatalf("got %d models, want 1", len(models))
+	}
+	levels, ok := models[0]["reasoning_effort_levels"].([]string)
+	if !ok {
+		t.Fatalf("reasoning_effort_levels = %v (%T), want []string", models[0]["reasoning_effort_levels"], models[0]["reasoning_effort_levels"])
+	}
+	want := []string{"minimal", "low", "medium", "high", "xhigh"}
+	if !reflect.DeepEqual(levels, want) {
+		t.Errorf("reasoning_effort_levels = %v, want %v (rank order)", levels, want)
+	}
+}
+
+// An instance model declared non-reasoning (reasoning=false) must report no
+// effort levels at all, even if the catalog has levels for the same bare id.
+func TestModelDescriptorsToAPIModels_InstanceModelReasoningFalseClearsLevels(t *testing.T) {
+	no := false
+	cfg := &providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
+			{
+				Name: "anthropic",
+				Type: "anthropic",
+				Models: map[string]providercfg.ModelConfig{
+					"claude-opus-4-6": {Reasoning: &no},
+				},
+			},
+		},
+	}
+	models := modelDescriptorsToAPIModels([]appwire.ModelDescriptor{
+		{Provider: "anthropic", Model: "claude-opus-4-6"},
+	}, cfg)
+	if len(models) != 1 {
+		t.Fatalf("got %d models, want 1", len(models))
+	}
+	if levels, ok := models[0]["reasoning_effort_levels"].([]string); ok && len(levels) > 0 {
+		t.Errorf("reasoning_effort_levels = %v, want empty (reasoning=false)", levels)
+	}
+	if got, ok := models[0]["supports_reasoning"].(bool); !ok || got {
+		t.Errorf("supports_reasoning = %v, want false", models[0]["supports_reasoning"])
+	}
+}
+
+// A model absent from the instance's Models map falls back to catalog
+// behavior unchanged, even when the instance defines other models.
+func TestModelDescriptorsToAPIModels_ModelAbsentFromInstanceFallsBackToCatalog(t *testing.T) {
+	cfg := &providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
+			{
+				Name: "anthropic",
+				Type: "anthropic",
+				Models: map[string]providercfg.ModelConfig{
+					"some-other-model": {ContextWindow: 999},
+				},
+			},
+		},
+	}
+	models := modelDescriptorsToAPIModels([]appwire.ModelDescriptor{
+		{Provider: "anthropic", Model: "claude-opus-4-6"},
+	}, cfg)
+	if len(models) != 1 {
+		t.Fatalf("got %d models, want 1", len(models))
+	}
+	levels, ok := models[0]["reasoning_effort_levels"].([]string)
+	if !ok {
+		t.Fatalf("reasoning_effort_levels = %v (%T), want []string", models[0]["reasoning_effort_levels"], models[0]["reasoning_effort_levels"])
+	}
+	if !reflect.DeepEqual(levels, wantOpus46Levels) {
+		t.Errorf("reasoning_effort_levels = %v, want %v (unchanged catalog behavior)", levels, wantOpus46Levels)
 	}
 }

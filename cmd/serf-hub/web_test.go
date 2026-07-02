@@ -6065,7 +6065,7 @@ func TestModelDescriptorsToAPIModels_OneMillionContext(t *testing.T) {
 	out := modelDescriptorsToAPIModels([]appwire.ModelDescriptor{
 		{Provider: "anthropic", Model: "claude-opus-4-5"},
 		{Provider: "anthropic", Model: "claude-opus-4-5[1m]"},
-	})
+	}, nil)
 	if len(out) != 2 {
 		t.Fatalf("got %d entries, want 2", len(out))
 	}

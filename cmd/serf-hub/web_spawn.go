@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"primeradiant.com/serf/hubapi"
 	"primeradiant.com/serf/internal/diagnostic"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 // handleWorkspaceSpawn renders the prompt-first spawn surface partial.
@@ -160,7 +162,7 @@ func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
 			writeAPIWireError(w, http.StatusBadGateway, err)
 			return
 		}
-		writeModelsResponse(w, modelDescriptorsToAPIModels(resp.Data), resp.Diagnostics, includeDiagnostics)
+		writeModelsResponse(w, modelDescriptorsToAPIModels(resp.Data, s.cfg.ProviderConfig), resp.Diagnostics, includeDiagnostics)
 		return
 	}
 
@@ -169,7 +171,7 @@ func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
 		writeAPIWireError(w, http.StatusBadGateway, err)
 		return
 	}
-	models := modelDescriptorsToAPIModels(launchResp.Data)
+	models := modelDescriptorsToAPIModels(launchResp.Data, s.cfg.ProviderConfig)
 	if len(models) == 0 && !hasSerfLaunchModelLister(s.cfg) {
 		liveModels := s.fetchLiveModels
 		if s.cfg.LiveModels != nil {
@@ -212,7 +214,13 @@ func launchModelListErrorDiagnostic(err error) appwire.ModelListDiagnostic {
 	}
 }
 
-func modelDescriptorsToAPIModels(models []appwire.ModelDescriptor) []map[string]any {
+// modelDescriptorsToAPIModels builds the /api/models response entries. The
+// embedded catalog supplies default metadata (display name, context window,
+// cost, effort levels); when providerCfg carries a providers.toml instance
+// that defines the model, its ModelConfig wins — an instance author who sets
+// custom ThinkingLevels or a context_window knows their deployment better
+// than the catalog's guess for the bare model id.
+func modelDescriptorsToAPIModels(models []appwire.ModelDescriptor, providerCfg *providercfg.Config) []map[string]any {
 	if len(models) == 0 {
 		return nil
 	}
@@ -239,8 +247,62 @@ func modelDescriptorsToAPIModels(models []appwire.ModelDescriptor) []map[string]
 				}
 			}
 		}
+		applyInstanceModelOverride(entry, providerCfg, m.Provider, m.Model)
 		out = append(out, entry)
 	}
+	return out
+}
+
+// applyInstanceModelOverride overlays a providers.toml instance's ModelConfig
+// (when one is defined for m.Provider/m.Model) onto an /api/models entry
+// already populated from the embedded catalog. Mirrors the precedence
+// newOpenAICompatProfile applies at session-build time (agent/provider) so the
+// spawn-form effort chip matches the levels the session will actually honor.
+func applyInstanceModelOverride(entry map[string]any, providerCfg *providercfg.Config, provider, model string) {
+	if providerCfg == nil {
+		return
+	}
+	var inst *providercfg.InstanceConfig
+	for i := range providerCfg.Instances {
+		if providerCfg.Instances[i].Name == provider {
+			inst = &providerCfg.Instances[i]
+			break
+		}
+	}
+	if inst == nil {
+		return
+	}
+	mc, ok := inst.Models[model]
+	if !ok {
+		return
+	}
+	switch {
+	case mc.Reasoning != nil && !*mc.Reasoning:
+		// A declared non-reasoning model advertises no effort levels at all.
+		entry["reasoning_effort_levels"] = []string{}
+		entry["supports_reasoning"] = false
+	case len(mc.ThinkingLevels) > 0:
+		entry["reasoning_effort_levels"] = orderedThinkingLevels(mc.ThinkingLevels)
+		entry["supports_reasoning"] = true
+	}
+	if mc.ContextWindow > 0 {
+		entry["context_window"] = mc.ContextWindow
+	}
+}
+
+// orderedThinkingLevels returns a ThinkingLevels map's keys in serf rank order
+// (minimal → xhigh), the shape the effort chip and reasoning_effort_levels
+// expect. Mirrors agent/provider's unexported orderedEffortLevels; kept local
+// rather than imported since that helper is a package-private detail of
+// profile construction.
+func orderedThinkingLevels(levels map[string]string) []string {
+	out := make([]string, 0, len(levels))
+	for k := range levels {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return llm.ReasoningEffortRank(out[i]) < llm.ReasoningEffortRank(out[j])
+	})
 	return out
 }
 
