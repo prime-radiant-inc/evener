@@ -246,6 +246,14 @@ fuzz-coverage:
 fuzz-gap-check:
 	@scripts/fuzz-gap-check.sh
 
+# refresh-model-catalog replaces the vendored LiteLLM model-catalog snapshot
+# with the current upstream and runs the catalog sanity tests. The vendored
+# file must never be hand-edited (serf-curated data lives in
+# serf_model_catalog_overrides.json); use `--check` via the script directly
+# for a dry-run delta report.
+refresh-model-catalog:
+	@scripts/refresh-model-catalog.sh
+
 # secret-scan runs gitleaks over the whole working tree using the committed
 # .gitleaks.toml ruleset. Part of the gate (`make lint`); skips with a warning
 # when gitleaks is not installed (required in CI).
