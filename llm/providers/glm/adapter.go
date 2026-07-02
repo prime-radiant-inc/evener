@@ -33,6 +33,10 @@ type InstanceParams struct {
 	Name    string
 	BaseURL string
 	APIKey  string
+	// Compat (instance-wide) and Models (per-model) overlay the glm-5 quirks
+	// preset; see providercfg.InstanceConfig.
+	Compat *providercfg.CompatConfig
+	Models map[string]providercfg.ModelConfig
 }
 
 // NewForInstance constructs a glm adapter from explicit parameters.
@@ -47,6 +51,8 @@ func NewForInstance(params InstanceParams) *adapter {
 		BaseURL: base,
 		APIKey:  params.APIKey,
 		Quirks:  openaicompat.QuirksPreset("glm-5"),
+		Compat:  params.Compat,
+		Models:  params.Models,
 	}))
 }
 
@@ -68,6 +74,8 @@ func init() {
 			Name:    inst.Name,
 			BaseURL: inst.BaseURL,
 			APIKey:  inst.APIKey,
+			Compat:  inst.Compat,
+			Models:  inst.Models,
 		}), nil
 	})
 }

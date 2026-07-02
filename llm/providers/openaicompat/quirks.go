@@ -84,6 +84,8 @@ func QuirksPreset(name string) ProviderQuirks {
 				"sensitive":     "content_filter",
 				"network_error": "error",
 			},
+			// z.ai's dialect: thinking:{"type":"enabled","clear_thinking":false}.
+			ThinkingFormat: "zai",
 		}
 	case "openrouter":
 		return ProviderQuirks{

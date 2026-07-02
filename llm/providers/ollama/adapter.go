@@ -137,6 +137,11 @@ type InstanceParams struct {
 	Name    string
 	BaseURL string
 	APIKey  string
+	// Compat (instance-wide) and Models (per-model) configure wire behavior;
+	// ollama has no built-in quirks preset, so these are the only source of
+	// overrides. See providercfg.InstanceConfig.
+	Compat *providercfg.CompatConfig
+	Models map[string]providercfg.ModelConfig
 }
 
 // newForInstance constructs an ollama adapter from explicit parameters.
@@ -150,6 +155,8 @@ func newForInstance(params InstanceParams) *adapter {
 		Name:    params.Name,
 		BaseURL: base,
 		APIKey:  params.APIKey,
+		Compat:  params.Compat,
+		Models:  params.Models,
 	}))
 }
 
@@ -172,6 +179,8 @@ func init() {
 			Name:    inst.Name,
 			BaseURL: inst.BaseURL,
 			APIKey:  inst.APIKey,
+			Compat:  inst.Compat,
+			Models:  inst.Models,
 		}), nil
 	})
 }

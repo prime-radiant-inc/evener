@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/internal/providerfwd"
 	"primeradiant.com/serf/llm/providers/openaicompat"
 )
@@ -117,5 +118,33 @@ func TestNewForInstance_DefaultQuirks(t *testing.T) {
 	}
 	if !a.Quirks.NoJSONSchema {
 		t.Fatal("glm quirks: NoJSONSchema should be true")
+	}
+}
+
+// TestNewForInstance_ForwardsCompatAndModels verifies that InstanceParams.Compat
+// and .Models reach the backing openaicompat adapter: instance-wide compat
+// overlays the glm-5 preset, and per-model config resolves into the adapter's
+// Models table.
+func TestNewForInstance_ForwardsCompatAndModels(t *testing.T) {
+	a := NewForInstance(InstanceParams{
+		Name:   "gc",
+		APIKey: "k",
+		Compat: &providercfg.CompatConfig{ThinkingFormat: "openai"},
+		Models: map[string]providercfg.ModelConfig{
+			"glm-5.2-nvfp4": {MaxOutputTokens: 131072},
+		},
+	})
+	if a.Quirks.ThinkingFormat != "openai" {
+		t.Fatalf("Quirks.ThinkingFormat = %q, want openai (instance compat should override the glm-5 preset's zai default)", a.Quirks.ThinkingFormat)
+	}
+	mc, ok := a.Models["glm-5.2-nvfp4"]
+	if !ok {
+		t.Fatal(`Models["glm-5.2-nvfp4"] missing`)
+	}
+	if mc.DefaultMaxTokens != 131072 {
+		t.Fatalf("DefaultMaxTokens = %d, want 131072", mc.DefaultMaxTokens)
+	}
+	if mc.Quirks.ThinkingFormat != "openai" {
+		t.Fatalf("model ThinkingFormat = %q, want openai (inherited from instance compat)", mc.Quirks.ThinkingFormat)
 	}
 }

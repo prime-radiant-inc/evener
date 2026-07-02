@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/internal/providerfwd"
 	"primeradiant.com/serf/llm/providers/kimicoding"
 	"primeradiant.com/serf/llm/providers/openaicompat"
@@ -114,6 +115,34 @@ func TestNewForInstance_DefaultQuirks(t *testing.T) {
 		q.ToolChoiceAutoOnly != want.ToolChoiceAutoOnly ||
 		q.NoJSONSchema != want.NoJSONSchema {
 		t.Fatalf("Quirks = %+v, want %+v", q, want)
+	}
+}
+
+// TestNewForInstance_ForwardsCompatAndModels verifies that InstanceParams.Compat
+// and .Models reach the backing openaicompat adapter: instance-wide compat
+// overlays the kimi-k2.5 preset, and per-model config resolves into the
+// adapter's Models table.
+func TestNewForInstance_ForwardsCompatAndModels(t *testing.T) {
+	a := NewForInstance(InstanceParams{
+		Name:   "kc",
+		APIKey: "k",
+		Compat: &providercfg.CompatConfig{ThinkingFormat: "openai"},
+		Models: map[string]providercfg.ModelConfig{
+			"kimi-k2.6": {MaxOutputTokens: 65536},
+		},
+	})
+	if a.Quirks.ThinkingFormat != "openai" {
+		t.Fatalf("Quirks.ThinkingFormat = %q, want openai", a.Quirks.ThinkingFormat)
+	}
+	mc, ok := a.Models["kimi-k2.6"]
+	if !ok {
+		t.Fatal(`Models["kimi-k2.6"] missing`)
+	}
+	if mc.DefaultMaxTokens != 65536 {
+		t.Fatalf("DefaultMaxTokens = %d, want 65536", mc.DefaultMaxTokens)
+	}
+	if mc.Quirks.ThinkingFormat != "openai" {
+		t.Fatalf("model ThinkingFormat = %q, want openai (inherited from instance compat)", mc.Quirks.ThinkingFormat)
 	}
 }
 

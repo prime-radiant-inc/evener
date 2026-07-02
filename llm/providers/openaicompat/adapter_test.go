@@ -2153,6 +2153,9 @@ func TestQuirksPreset_GLM5(t *testing.T) {
 	if q.FinishReasonMap["sensitive"] != "content_filter" {
 		t.Fatal("glm-5 should map sensitive to content_filter")
 	}
+	if q.ThinkingFormat != "zai" {
+		t.Fatalf("glm-5 ThinkingFormat: %q, want zai", q.ThinkingFormat)
+	}
 }
 
 func TestQuirksPreset_Unknown_ReturnsZeroValue(t *testing.T) {
