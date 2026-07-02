@@ -581,8 +581,12 @@ func makeSnippet(text, query string, width int) string {
 	}
 
 	runes := []rune(flat)
-	// Convert the byte index into a rune index for safe slicing.
-	matchRune := len([]rune(flat[:idx]))
+	// Convert the byte index into a rune index for safe slicing. idx is a byte
+	// offset into lower, which may differ in byte length from flat (ToLower can
+	// re-encode a rune to a different byte count, e.g. an invalid byte → RuneError),
+	// so count runes in lower's prefix — ToLower preserves rune count, so the rune
+	// index is valid for flat's rune slice.
+	matchRune := len([]rune(lower[:idx]))
 	qLen := len([]rune(query))
 
 	half := (width - qLen) / 2
