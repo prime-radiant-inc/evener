@@ -24,13 +24,62 @@ import (
 // in t and returns retry=true to inject the steering and retry the round, or
 // retry=false with the terminal error once the relevant retry budget is spent.
 func (s *Session) handleNoToolCalls(noContent bool, t *retryTracker) (retry bool, ferr error) {
+	dec := decideNoToolCalls(noContent, *t, s.resultToolName())
+	*t = dec.Tracker
+	if dec.Retry {
+		s.emit(events.EventWarning, events.WarningData{Message: dec.WarningMsg})
+		s.appendTurn(schema.TurnSteering, llm.User(dec.SteeringText))
+		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: dec.SteeringText})
+		return true, nil
+	}
+	switch dec.TerminalKind {
+	case noToolTerminalEmptyExhausted:
+		err := &emptyResponseExhaustedError{retries: maxEmptyRetries}
+		s.emit(events.EventError, errorDataFromError(err))
+		s.finishProcessingAtBoundary(context.Background(), SessionIdle)
+		return false, err
+	case noToolTerminalBareTextExhausted:
+		err := &bareTextWithoutResultToolError{
+			toolName: s.resultToolName(),
+			retries:  maxBareTextRetries,
+		}
+		s.emit(events.EventError, errorDataFromError(err))
+		s.finishProcessingAtBoundary(context.Background(), SessionIdle)
+		return false, err
+	}
+	return false, nil
+}
+
+// noToolTerminal names the terminal outcome when the no-tool-calls retry budget is
+// exhausted (none when the round should retry instead).
+type noToolTerminal int
+
+const (
+	noToolTerminalNone noToolTerminal = iota
+	noToolTerminalEmptyExhausted
+	noToolTerminalBareTextExhausted
+)
+
+// noToolCallsDecision is the outcome of decideNoToolCalls.
+type noToolCallsDecision struct {
+	Tracker      retryTracker
+	Retry        bool
+	WarningMsg   string
+	SteeringText string
+	TerminalKind noToolTerminal
+}
+
+// decideNoToolCalls is the pure decision core lifted out of handleNoToolCalls. Given
+// whether the response was truly empty (noContent) versus bare text that bypassed the
+// result tool, the current retry counters, and the result tool's name, it advances the
+// counters and decides whether to retry (with the warning + steering text to inject)
+// or to terminate (empty- or bare-text-budget exhausted). The caller performs all
+// side effects. The returned Tracker is the updated counter snapshot.
+func decideNoToolCalls(noContent bool, t retryTracker, resultToolName string) noToolCallsDecision {
 	if noContent {
 		t.consecutiveEmpty++
 		t.totalEmpty++
 		if t.consecutiveEmpty <= maxEmptyRetries && t.totalEmpty <= maxTotalEmptyResponses {
-			s.emit(events.EventWarning, events.WarningData{
-				Message: fmt.Sprintf("empty response from model (retry %d/%d)", t.consecutiveEmpty, maxEmptyRetries),
-			})
 			var steering string
 			switch t.consecutiveEmpty {
 			case 1:
@@ -40,40 +89,34 @@ func (s *Session) handleNoToolCalls(noContent bool, t *retryTracker) (retry bool
 					"to notes.txt, then try a different approach. You have plenty of rounds left."
 			default:
 				steering = "You've produced multiple empty responses. You MUST either call a tool to continue " +
-					"working, or call " + s.resultToolName() + " with your best effort so far. Take a breath — you've " +
+					"working, or call " + resultToolName + " with your best effort so far. Take a breath — you've " +
 					"got this. Try a completely different approach."
 			}
-			s.appendTurn(schema.TurnSteering, llm.User(steering))
-			s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: steering})
-			return true, nil
+			return noToolCallsDecision{
+				Tracker:      t,
+				Retry:        true,
+				WarningMsg:   fmt.Sprintf("empty response from model (retry %d/%d)", t.consecutiveEmpty, maxEmptyRetries),
+				SteeringText: steering,
+			}
 		}
-		err := &emptyResponseExhaustedError{retries: maxEmptyRetries}
-		s.emit(events.EventError, errorDataFromError(err))
-		s.finishProcessingAtBoundary(context.Background(), SessionIdle)
-		return false, err
+		return noToolCallsDecision{Tracker: t, TerminalKind: noToolTerminalEmptyExhausted}
 	}
 
 	t.consecutiveEmpty = 0
 	t.consecutiveBareText++
 	if t.consecutiveBareText <= maxBareTextRetries {
-		s.emit(events.EventWarning, events.WarningData{
-			Message: fmt.Sprintf("bare text response without tool call (retry %d/%d)", t.consecutiveBareText, maxBareTextRetries),
-		})
 		steering := "You responded with bare text instead of a tool call. " +
-			"All user-facing messages MUST use " + s.resultToolName() + ". " +
-			"If that bare text was meant for the user, call " + s.resultToolName() + " now with that text in message, set end_turn=true, and include the output envelope. " +
+			"All user-facing messages MUST use " + resultToolName + ". " +
+			"If that bare text was meant for the user, call " + resultToolName + " now with that text in message, set end_turn=true, and include the output envelope. " +
 			"Otherwise call your next tool and keep working."
-		s.appendTurn(schema.TurnSteering, llm.User(steering))
-		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: steering})
-		return true, nil
+		return noToolCallsDecision{
+			Tracker:      t,
+			Retry:        true,
+			WarningMsg:   fmt.Sprintf("bare text response without tool call (retry %d/%d)", t.consecutiveBareText, maxBareTextRetries),
+			SteeringText: steering,
+		}
 	}
-	err := &bareTextWithoutResultToolError{
-		toolName: s.resultToolName(),
-		retries:  maxBareTextRetries,
-	}
-	s.emit(events.EventError, errorDataFromError(err))
-	s.finishProcessingAtBoundary(context.Background(), SessionIdle)
-	return false, err
+	return noToolCallsDecision{Tracker: t, TerminalKind: noToolTerminalBareTextExhausted}
 }
 
 // execToolBatch executes the round's tool calls and returns their results. When the

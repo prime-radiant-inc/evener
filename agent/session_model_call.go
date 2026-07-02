@@ -130,21 +130,37 @@ func (s *Session) maybeWarnContextUsage(profile *provider.Profile, req llm.Reque
 	}
 
 	count := llm.EstimateInputTokens(req)
-	approxTokens := float64(count.Tokens)
-	threshold := float64(cw) * 0.8
-	if approxTokens <= threshold {
+	warn, approxTokens, pct := contextUsageWarning(cw, count.Tokens)
+	if !warn {
 		return false
 	}
 
-	pct := int(math.Round((approxTokens / float64(cw)) * 100.0))
 	msg := fmt.Sprintf("Context usage at ~%d%% of context window", pct)
 	s.emit(events.EventWarning, events.WarningData{
 		Message:           msg,
-		ApproxTokens:      int(math.Round(approxTokens)),
+		ApproxTokens:      approxTokens,
 		ContextWindowSize: cw,
 		Percent:           pct,
 	})
 	return true
+}
+
+// contextUsageWarning decides whether the input tokens for a request have crossed
+// the 80%-of-context-window warning threshold. It is the pure decision core lifted
+// out of maybeWarnContextUsage: given the model's context window and the estimated
+// input token count, it reports whether to warn, the rounded token count, and the
+// percentage of the window used. A non-positive context window never warns.
+func contextUsageWarning(contextWindow int, estimatedTokens int) (warn bool, approxTokens int, percent int) {
+	if contextWindow <= 0 {
+		return false, 0, 0
+	}
+	approx := float64(estimatedTokens)
+	threshold := float64(contextWindow) * 0.8
+	if approx <= threshold {
+		return false, 0, 0
+	}
+	pct := int(math.Round((approx / float64(contextWindow)) * 100.0))
+	return true, int(math.Round(approx)), pct
 }
 
 // prepareModelRequest runs the per-round input phases and assembles the llm.Request
@@ -476,13 +492,22 @@ func responsesContinuationRegistryHasEnabledSupport(registry map[llm.ResponsesEn
 // value (so callers can distinguish a provider failure from agent quiescence; the
 // original error is preserved via errors.Unwrap, kata 3xbh) or the raw cancellation.
 func (s *Session) handleModelError(ctx context.Context, err error, req llm.Request, contentFilterRetried *bool) (retry bool, ferr error) {
-	if isTurnCancellation(ctx, err) {
-		return false, err
-	}
+	var le llm.Error
+	llmErrNonRetryable := errors.As(err, &le) && !le.Retryable()
+	dec := classifyModelError(
+		isTurnCancellation(ctx, err),
+		llm.Kind(err),
+		*contentFilterRetried,
+		s.contextMgr != nil,
+		llmErrNonRetryable,
+	)
 
-	// Content filter recovery: compaction often removes the offending content,
-	// allowing the next request to succeed. Try once.
-	if llm.Kind(err) == llm.KindContentFilter && !*contentFilterRetried && s.contextMgr != nil {
+	switch dec.Action {
+	case modelErrorCancel:
+		return false, err
+	case modelErrorContentFilterRetry:
+		// Content filter recovery: compaction often removes the offending content,
+		// allowing the next request to succeed. Try once.
 		*contentFilterRetried = true
 		s.emit(events.EventWarning, warningDataFromError("Content filter hit — compacting context and retrying", err))
 		s.mu.Lock()
@@ -502,12 +527,11 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 	s.emit(events.EventError, errData)
 
 	// Spec: context overflow should emit a warning (no automatic compaction).
-	if llm.Kind(err) == llm.KindContextLength {
+	if dec.EmitContextLenWarn {
 		s.emit(events.EventWarning, warningDataFromError("Context length exceeded", err))
 	}
 	// Spec: non-retryable/unrecoverable errors transition the session to closed.
-	var le llm.Error
-	if errors.As(err, &le) && !le.Retryable() {
+	if dec.CloseSession {
 		// Emit the goal's terminal report BEFORE Close() shuts the events
 		// channel — a later emit after Close is a silent no-op, so the
 		// "told why it stopped" promise would be lost otherwise (spec §2/C11).
@@ -525,6 +549,46 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 	return false, fmt.Errorf("provider error: %w", err)
 }
 
+// modelErrorAction names the branch handleModelError takes on a failed model call.
+type modelErrorAction int
+
+const (
+	// modelErrorCancel: the failure is a turn cancellation; propagate it verbatim.
+	modelErrorCancel modelErrorAction = iota
+	// modelErrorContentFilterRetry: recover from a content filter by compacting
+	// away the offending content and retrying the round once.
+	modelErrorContentFilterRetry
+	// modelErrorTerminal: emit the terminal error and end the round.
+	modelErrorTerminal
+)
+
+// modelErrorDecision is the outcome of classifyModelError.
+type modelErrorDecision struct {
+	Action             modelErrorAction
+	EmitContextLenWarn bool
+	CloseSession       bool
+}
+
+// classifyModelError is the pure decision core lifted out of handleModelError. It
+// classifies a failed model call into cancel / content-filter-retry / terminal and,
+// for the terminal case, whether to warn about context overflow and whether to close
+// the session. haveContextMgr gates content-filter recovery (which needs the context
+// manager to compact); llmErrNonRetryable reports whether the error is a
+// non-retryable llm.Error (closing the session). All side effects stay in the caller.
+func classifyModelError(isCancellation bool, kind llm.ErrorKind, contentFilterAlreadyRetried bool, haveContextMgr bool, llmErrNonRetryable bool) modelErrorDecision {
+	if isCancellation {
+		return modelErrorDecision{Action: modelErrorCancel}
+	}
+	if kind == llm.KindContentFilter && !contentFilterAlreadyRetried && haveContextMgr {
+		return modelErrorDecision{Action: modelErrorContentFilterRetry}
+	}
+	return modelErrorDecision{
+		Action:             modelErrorTerminal,
+		EmitContextLenWarn: kind == llm.KindContextLength,
+		CloseSession:       llmErrNonRetryable,
+	}
+}
+
 // recordResponseUsage accumulates the response usage into the context manager and
 // records the input token count for pressure calculation. For continuation delta
 // requests, pressure uses the larger full-history shadow estimate so local
@@ -537,31 +601,52 @@ func (s *Session) recordResponseUsage(resp llm.Response, req llm.Request) {
 	}
 	s.contextMgr.AddUsage(resp.Usage)
 
-	hasServerWebSearch := false
-	for _, p := range resp.Message.Content {
+	tokens, record := effectiveRecordedInputTokens(
+		resp.Usage,
+		req.FullHistoryInputTokensEstimate,
+		responseHasServerWebSearch(resp.Message.Content),
+	)
+	if record {
+		s.mu.Lock()
+		hLen := len(s.history)
+		s.mu.Unlock()
+		s.contextMgr.RecordInputTokens(tokens, hLen)
+	}
+}
+
+// responseHasServerWebSearch reports whether a response's content includes a
+// server-side web-search part, whose combined (~2x) usage baseline is skipped for
+// pressure calculation.
+func responseHasServerWebSearch(content []llm.ContentPart) bool {
+	for _, p := range content {
 		if p.Kind == llm.ContentWebSearch {
-			hasServerWebSearch = true
-			break
+			return true
 		}
 	}
-	if !hasServerWebSearch {
-		totalInput := resp.Usage.InputTokens
-		if resp.Usage.CacheReadTokens != nil {
-			totalInput += *resp.Usage.CacheReadTokens
-		}
-		if resp.Usage.CacheWriteTokens != nil {
-			totalInput += *resp.Usage.CacheWriteTokens
-		}
-		if req.FullHistoryInputTokensEstimate > totalInput {
-			totalInput = req.FullHistoryInputTokensEstimate
-		}
-		if totalInput > 0 {
-			s.mu.Lock()
-			hLen := len(s.history)
-			s.mu.Unlock()
-			s.contextMgr.RecordInputTokens(totalInput, hLen)
-		}
+	return false
+}
+
+// effectiveRecordedInputTokens is the pure decision core lifted out of
+// recordResponseUsage: it computes the input token count to record for pressure
+// (real input + cache reads/writes, floored by the full-history shadow estimate for
+// continuation delta requests) and whether to record it at all. A response carrying
+// server-side web search is never recorded (its inflated baseline would corrupt the
+// previous value), and a non-positive count is not recorded.
+func effectiveRecordedInputTokens(usage llm.Usage, fullHistoryEstimate int, hasServerWebSearch bool) (tokens int, record bool) {
+	if hasServerWebSearch {
+		return 0, false
 	}
+	totalInput := usage.InputTokens
+	if usage.CacheReadTokens != nil {
+		totalInput += *usage.CacheReadTokens
+	}
+	if usage.CacheWriteTokens != nil {
+		totalInput += *usage.CacheWriteTokens
+	}
+	if fullHistoryEstimate > totalInput {
+		totalInput = fullHistoryEstimate
+	}
+	return totalInput, totalInput > 0
 }
 
 // emitAssistantResponse emits the assistant text lifecycle events for a round (start
