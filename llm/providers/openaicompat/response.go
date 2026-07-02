@@ -37,8 +37,8 @@ type chatMessage struct {
 // reasoningDetailItem represents an element in the reasoning_details array
 // used by OpenRouter for models like MiniMax M2.7. MiniMax's actual format
 // is {type: "reasoning.text", text: "...", format: "...", index: N}.
-// We preserve unknown fields via the Extra map so round-tripping the message
-// back to the model keeps the reasoning chain intact.
+// Raw keeps the item's verbatim JSON so encrypted items replay unchanged —
+// providers may require metadata beyond the fields decoded here.
 type reasoningDetailItem struct {
 	Type   string `json:"type"`
 	Text   string `json:"text,omitempty"`
@@ -47,11 +47,26 @@ type reasoningDetailItem struct {
 	// Thinking is kept for backward compatibility with older OpenRouter format
 	// variants that used {type: "thinking", thinking: "..."}.
 	Thinking string `json:"thinking,omitempty"`
+	// Raw is the verbatim wire JSON of this item, captured by UnmarshalJSON.
+	Raw json.RawMessage `json:"-"`
 	// ID and Data carry the opaque {type: "reasoning.encrypted", id, data}
 	// items OpenRouter emits for Gemini/o-series: the reasoning chain is
 	// encrypted server-side and must be round-tripped verbatim.
 	ID   string `json:"id,omitempty"`
 	Data string `json:"data,omitempty"`
+}
+
+// UnmarshalJSON decodes the known fields and keeps the item's verbatim JSON
+// in Raw for lossless replay of encrypted items.
+func (d *reasoningDetailItem) UnmarshalJSON(b []byte) error {
+	type plain reasoningDetailItem
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*d = reasoningDetailItem(p)
+	d.Raw = append(json.RawMessage(nil), b...)
+	return nil
 }
 
 // isEncrypted reports whether the item is an opaque encrypted reasoning block
@@ -76,13 +91,22 @@ func encodeEncryptedDetails(items []reasoningDetailItem) string {
 }
 
 // collectEncryptedDetails returns the encrypted items as wire maps, preserving
-// order. Used both to build EncryptedContent and to accumulate streamed items.
+// order AND every field the provider sent (decoded from the item's verbatim
+// Raw JSON — replay must be lossless or continuation can break). Used both to
+// build EncryptedContent and to accumulate streamed items.
 func collectEncryptedDetails(items []reasoningDetailItem) []map[string]any {
 	var enc []map[string]any
 	for _, d := range items {
-		if d.isEncrypted() {
-			enc = append(enc, map[string]any{"type": d.Type, "id": d.ID, "data": d.Data})
+		if !d.isEncrypted() {
+			continue
 		}
+		var verbatim map[string]any
+		if len(d.Raw) > 0 && json.Unmarshal(d.Raw, &verbatim) == nil {
+			enc = append(enc, verbatim)
+			continue
+		}
+		// Raw missing (item built programmatically): fall back to known fields.
+		enc = append(enc, map[string]any{"type": d.Type, "id": d.ID, "data": d.Data})
 	}
 	return enc
 }

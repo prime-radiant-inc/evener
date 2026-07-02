@@ -65,13 +65,14 @@ func NewForInstance(params InstanceParams) *adapter {
 		base = defaultBaseURL
 	}
 	backing := openaicompat.NewForInstance(openaicompat.OpenAICompatInstanceParams{
-		Name:    params.Name,
-		BaseURL: base,
-		APIKey:  params.APIKey,
-		Quirks:  openaicompat.QuirksPreset("kimi-k2.5"),
-		Compat:  params.Compat,
-		Models:  params.Models,
-		Headers: params.Headers,
+		Name:       params.Name,
+		BaseURL:    base,
+		APIKey:     params.APIKey,
+		Quirks:     openaicompat.QuirksPreset("kimi-k2.5"),
+		Compat:     params.Compat,
+		Models:     params.Models,
+		CatalogTag: "kimi",
+		Headers:    params.Headers,
 		// Kimi For Coding gates its endpoints behind a coding-agent User-Agent
 		// allowlist; announce as Claude Code so the coding-plan base URL is
 		// accepted. A user-configured User-Agent header overrides this, but it

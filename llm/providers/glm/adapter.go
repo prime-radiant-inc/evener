@@ -49,13 +49,14 @@ func NewForInstance(params InstanceParams) *adapter {
 		base = defaultBaseURL
 	}
 	return providerfwd.NewOpenAICompat(params.Name, providerName, openaicompat.NewForInstance(openaicompat.OpenAICompatInstanceParams{
-		Name:    params.Name,
-		BaseURL: base,
-		APIKey:  params.APIKey,
-		Quirks:  openaicompat.QuirksPreset("glm-5"),
-		Compat:  params.Compat,
-		Models:  params.Models,
-		Headers: params.Headers,
+		Name:       params.Name,
+		BaseURL:    base,
+		APIKey:     params.APIKey,
+		Quirks:     openaicompat.QuirksPreset("glm-5"),
+		Compat:     params.Compat,
+		Models:     params.Models,
+		CatalogTag: "glm",
+		Headers:    params.Headers,
 	}))
 }
 

@@ -1,6 +1,7 @@
 package openaicompat
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 
@@ -869,5 +870,58 @@ func TestReasoningOff_SuppressesThinkingReplay(t *testing.T) {
 	msgs = body["messages"].([]map[string]any)
 	if got := msgs[1]["content"]; got != "pondered\n\na" {
 		t.Errorf("ThinkingAsText content = %q, want thinking flattened into text", got)
+	}
+}
+
+// Catalog gap-fill tries the provider-qualified key first: an openrouter
+// request for minimax/minimax-m2 must pick up the bundled
+// "openrouter/minimax/minimax-m2" defaults.
+func TestFillFromCatalog_ProviderQualifiedLookup(t *testing.T) {
+	a := NewForInstance(OpenAICompatInstanceParams{
+		Name:       "openrouter",
+		BaseURL:    "https://openrouter.ai/api/v1",
+		Quirks:     QuirksPreset("openrouter"),
+		CatalogTag: "openrouter",
+	})
+	mc := a.compatFor("minimax/minimax-m2")
+	// The bundled entry has supports_effort_parameter=false and no output cap,
+	// so the observable effect is that the QUALIFIED entry resolved at all:
+	// its levels/flags must match the openrouter/... catalog entry, and the
+	// positive-only gate stays nil (false never flips it).
+	if mc.Quirks.SupportsReasoningEffort != nil {
+		t.Errorf("SupportsReasoningEffort = %v, want nil (qualified entry has effort_param=false; positive-only)", *mc.Quirks.SupportsReasoningEffort)
+	}
+	// glm-5.2 through a non-matching tag still resolves via the bare fallback.
+	b := NewForInstance(OpenAICompatInstanceParams{
+		Name:       "gw",
+		BaseURL:    "https://gw.example.com/v1",
+		CatalogTag: "openai-compatible",
+	})
+	mcGLM := b.compatFor("glm-5.2")
+	if mcGLM.Quirks.SupportsReasoningEffort == nil || !*mcGLM.Quirks.SupportsReasoningEffort {
+		t.Errorf("bare fallback lost: glm-5.2 gate = %v, want true", mcGLM.Quirks.SupportsReasoningEffort)
+	}
+	if mcGLM.DefaultMaxTokens != 131072 {
+		t.Errorf("bare fallback DefaultMaxTokens = %d, want 131072", mcGLM.DefaultMaxTokens)
+	}
+}
+
+// Encrypted reasoning_details replay verbatim — provider metadata beyond the
+// decoded fields must survive the round trip.
+func TestEncryptedDetails_VerbatimReplay(t *testing.T) {
+	raw := `{"type":"reasoning.encrypted","id":"rc_1","data":"OPAQUE","format":"openai-o3","index":7,"vendor_extra":"keep-me"}`
+	var item reasoningDetailItem
+	if err := json.Unmarshal([]byte(raw), &item); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	enc := collectEncryptedDetails([]reasoningDetailItem{item})
+	if len(enc) != 1 {
+		t.Fatalf("collected %d items, want 1", len(enc))
+	}
+	if enc[0]["vendor_extra"] != "keep-me" {
+		t.Errorf("unknown field dropped on replay: %v", enc[0])
+	}
+	if enc[0]["format"] != "openai-o3" || enc[0]["index"] != float64(7) {
+		t.Errorf("known-but-unserialized fields dropped: %v", enc[0])
 	}
 }

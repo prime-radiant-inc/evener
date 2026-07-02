@@ -232,7 +232,7 @@ func (a *Adapter) compatFor(model string) ModelCompat {
 		mc = ModelCompat{Quirks: a.Quirks}
 	}
 	if !a.SuppressCatalogDefaults {
-		fillFromCatalog(&mc, model)
+		fillFromCatalog(&mc, a.CatalogTag, model)
 	}
 	return mc
 }
@@ -251,14 +251,22 @@ func (a *Adapter) compatFor(model string) ModelCompat {
 //     max_output_tokens and no instance cap already applies.
 //
 // A declared non-reasoning model gets no effort gate.
-func fillFromCatalog(mc *ModelCompat, model string) {
+func fillFromCatalog(mc *ModelCompat, catalogTag, model string) {
 	cat := llm.EmbeddedModelCatalog()
 	if cat == nil {
 		return
 	}
-	// Bare ids for these stock GLM/DeepSeek models; LookupModelInfo also handles
-	// any "[1m]"/dated canonicalization a ref might carry.
-	mi := cat.LookupModelInfo(model)
+	// Provider-qualified entry first (openrouter models are keyed
+	// "openrouter/<model>" in the bundled catalog), then the bare id —
+	// mirroring newOpenAICompatProfile's lookup precedence. LookupModelInfo
+	// also handles any "[1m]"/dated canonicalization a ref might carry.
+	var mi *llm.ModelInfo
+	if catalogTag != "" {
+		mi = cat.LookupModelInfo(catalogTag + "/" + model)
+	}
+	if mi == nil {
+		mi = cat.LookupModelInfo(model)
+	}
 	if mi == nil {
 		return
 	}

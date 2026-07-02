@@ -36,6 +36,11 @@ type Adapter struct {
 	// [instances.X.models] via NewForInstance.
 	Models   map[string]ModelCompat
 	Adaptive bool
+	// CatalogTag is the provider behavior tag used for provider-qualified
+	// catalog lookups (e.g. "openrouter" so "minimax/minimax-m2" resolves the
+	// bundled "openrouter/minimax/minimax-m2" entry), mirroring
+	// newOpenAICompatProfile's lookup precedence. Empty means bare-only.
+	CatalogTag string
 	// SuppressCatalogDefaults skips the embedded-catalog fallback fill
 	// (fillFromCatalog) for models undeclared in Models. Set by providers
 	// whose bare model ids are locally-defined and unrelated to any
@@ -67,6 +72,9 @@ type OpenAICompatInstanceParams struct {
 	// SuppressCatalogDefaults is passed through to the constructed Adapter;
 	// see Adapter.SuppressCatalogDefaults.
 	SuppressCatalogDefaults bool
+	// CatalogTag is passed through to the constructed Adapter; see
+	// Adapter.CatalogTag.
+	CatalogTag string
 }
 
 // NewForInstance constructs an Adapter from explicit parameters.
@@ -82,6 +90,7 @@ func NewForInstance(params OpenAICompatInstanceParams) *Adapter {
 		Adaptive:                params.Adaptive,
 		DefaultHeaders:          llm.MergeHeaders(params.ProviderHeaders, params.Headers),
 		SuppressCatalogDefaults: params.SuppressCatalogDefaults,
+		CatalogTag:              params.CatalogTag,
 	}
 }
 
@@ -101,13 +110,14 @@ func init() {
 	// apiStyle=chat-completions routes through the openaicompat adapter.
 	llm.RegisterInstanceAdapterFactory("openai", "chat-completions", func(inst providercfg.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
 		return NewForInstance(OpenAICompatInstanceParams{
-			Name:    inst.Name,
-			BaseURL: inst.BaseURL,
-			APIKey:  inst.APIKey,
-			Quirks:  QuirksPreset(inst.Quirks),
-			Compat:  inst.Compat,
-			Models:  inst.Models,
-			Headers: inst.Headers,
+			Name:       inst.Name,
+			BaseURL:    inst.BaseURL,
+			APIKey:     inst.APIKey,
+			Quirks:     QuirksPreset(inst.Quirks),
+			Compat:     inst.Compat,
+			Models:     inst.Models,
+			Headers:    inst.Headers,
+			CatalogTag: "openai-compatible",
 		}), nil
 	})
 }
