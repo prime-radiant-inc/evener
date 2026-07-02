@@ -654,6 +654,115 @@ func TestApplyOverrides_MaterializesSerfOnlyModel(t *testing.T) {
 	}
 }
 
+// TestApplyOverrides_MaxOutputTokens verifies the overrides schema carries
+// max_output_tokens onto both a materialized Serf-only entry and an overlay of
+// an existing catalog model.
+func TestApplyOverrides_MaxOutputTokens(t *testing.T) {
+	cat, err := parseLiteLLMCatalog([]byte(`{"existing-model": {"litellm_provider": "x", "max_input_tokens": 4096}}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	applyOverrides(cat, []byte(`{
+		"serf-only":      {"provider": "zai", "context_window": 1000000, "max_output_tokens": 131072},
+		"existing-model": {"max_output_tokens": 8192}
+	}`))
+
+	serfOnly := cat.GetModelInfo("serf-only")
+	if serfOnly == nil {
+		t.Fatal("serf-only model was not materialized")
+	}
+	if serfOnly.MaxOutputTokens == nil || *serfOnly.MaxOutputTokens != 131072 {
+		t.Errorf("serf-only MaxOutputTokens = %v, want 131072", serfOnly.MaxOutputTokens)
+	}
+
+	existing := cat.GetModelInfo("existing-model")
+	if existing == nil {
+		t.Fatal("existing-model missing")
+	}
+	if existing.MaxOutputTokens == nil || *existing.MaxOutputTokens != 8192 {
+		t.Errorf("existing-model MaxOutputTokens = %v, want 8192 (overlay)", existing.MaxOutputTokens)
+	}
+}
+
+// TestEmbeddedCatalog_ZAIGLMModels verifies the stock z.ai GLM catalog defaults
+// ship with zero providers.toml config: context windows, output caps, and the
+// glm-5.2 effort ladder derived from Pi's thinkingLevelMap.
+func TestEmbeddedCatalog_ZAIGLMModels(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+
+	// glm-5.2: reasoning_effort supported, wire-spelled ladder ["high","max"].
+	glm52 := cat.GetModelInfo("glm-5.2")
+	if glm52 == nil {
+		t.Fatal("glm-5.2 missing from embedded catalog")
+	}
+	if glm52.ContextWindow != 1000000 {
+		t.Errorf("glm-5.2 ContextWindow = %d, want 1000000", glm52.ContextWindow)
+	}
+	if glm52.MaxOutputTokens == nil || *glm52.MaxOutputTokens != 131072 {
+		t.Errorf("glm-5.2 MaxOutputTokens = %v, want 131072", glm52.MaxOutputTokens)
+	}
+	if !glm52.SupportsEffortParameter {
+		t.Error("glm-5.2 SupportsEffortParameter should be true")
+	}
+	if got := glm52.ReasoningEffortLevels; len(got) != 2 || got[0] != "high" || got[1] != "max" {
+		t.Errorf("glm-5.2 ReasoningEffortLevels = %v, want [high max]", got)
+	}
+
+	// glm-4.7: no effort param — keeps default ladder, thinking on/off only.
+	glm47 := cat.GetModelInfo("glm-4.7")
+	if glm47 == nil {
+		t.Fatal("glm-4.7 missing from embedded catalog")
+	}
+	if glm47.ContextWindow != 204800 {
+		t.Errorf("glm-4.7 ContextWindow = %d, want 204800", glm47.ContextWindow)
+	}
+	if glm47.MaxOutputTokens == nil || *glm47.MaxOutputTokens != 131072 {
+		t.Errorf("glm-4.7 MaxOutputTokens = %v, want 131072", glm47.MaxOutputTokens)
+	}
+	if glm47.SupportsEffortParameter {
+		t.Error("glm-4.7 SupportsEffortParameter should be false (no effort param)")
+	}
+	if len(glm47.ReasoningEffortLevels) != 0 {
+		t.Errorf("glm-4.7 ReasoningEffortLevels = %v, want empty (default ladder)", glm47.ReasoningEffortLevels)
+	}
+
+	// glm-4.5-air output cap differs (98304).
+	air := cat.GetModelInfo("glm-4.5-air")
+	if air == nil {
+		t.Fatal("glm-4.5-air missing from embedded catalog")
+	}
+	if air.ContextWindow != 131072 {
+		t.Errorf("glm-4.5-air ContextWindow = %d, want 131072", air.ContextWindow)
+	}
+	if air.MaxOutputTokens == nil || *air.MaxOutputTokens != 98304 {
+		t.Errorf("glm-4.5-air MaxOutputTokens = %v, want 98304", air.MaxOutputTokens)
+	}
+}
+
+// TestEmbeddedCatalog_DeepSeekV4Models verifies DeepSeek v4 catalog defaults:
+// both models support the effort parameter with the ["high","max"] ladder.
+func TestEmbeddedCatalog_DeepSeekV4Models(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+	for _, id := range []string{"deepseek-v4-flash", "deepseek-v4-pro"} {
+		mi := cat.GetModelInfo(id)
+		if mi == nil {
+			t.Fatalf("%s missing from embedded catalog", id)
+		}
+		if mi.ContextWindow != 1000000 {
+			t.Errorf("%s ContextWindow = %d, want 1000000", id, mi.ContextWindow)
+		}
+		if mi.MaxOutputTokens == nil || *mi.MaxOutputTokens != 384000 {
+			t.Errorf("%s MaxOutputTokens = %v, want 384000", id, mi.MaxOutputTokens)
+		}
+		if !mi.SupportsEffortParameter {
+			t.Errorf("%s SupportsEffortParameter should be true", id)
+		}
+		if got := mi.ReasoningEffortLevels; len(got) != 2 || got[0] != "high" || got[1] != "max" {
+			t.Errorf("%s ReasoningEffortLevels = %v, want [high max]", id, got)
+		}
+	}
+}
+
 func TestEmbeddedCatalog_KimiForCoding(t *testing.T) {
 	cat := EmbeddedModelCatalog()
 	mi := cat.GetModelInfo("kimi-for-coding")

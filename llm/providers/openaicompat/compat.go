@@ -3,6 +3,7 @@ package openaicompat
 import (
 	"strings"
 
+	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 )
 
@@ -170,12 +171,52 @@ func resolveModelCompat(instanceQuirks ProviderQuirks, models map[string]provide
 }
 
 // compatFor returns the resolved wire behavior for one model: the model's
-// entry when the instance declared it, else the instance-wide quirks.
+// entry when the instance declared it, else the instance-wide quirks with two
+// gaps filled from the embedded model catalog (see fillFromCatalog).
+//
+// This runs once per request. The catalog lookup is a single map access
+// (LookupModelInfo) done once here, not per field.
 func (a *Adapter) compatFor(model string) ModelCompat {
 	if mc, ok := a.Models[model]; ok {
 		return mc
 	}
-	return ModelCompat{Quirks: a.Quirks}
+	mc := ModelCompat{Quirks: a.Quirks}
+	fillFromCatalog(&mc, model)
+	return mc
+}
+
+// fillFromCatalog seeds the two wire-behavior gaps an undeclared model would
+// otherwise miss from the embedded catalog:
+//
+//   - the reasoning_effort gate, when the model declares
+//     supports_effort_parameter and the effective quirks leave the gate unset
+//     (nil). This is POSITIVE-ONLY: catalog data can turn the gate ON but never
+//     OFF. Most catalog entries simply omit the flag, and forcing it off would
+//     regress openai-format providers whose gate defaults on — so a missing or
+//     false catalog flag is left as "no opinion" (nil), not an override.
+//   - the output cap (DefaultMaxTokens), when the catalog reports
+//     max_output_tokens and no instance cap already applies.
+//
+// A model with an explicit instance [instances.X.models] entry never reaches
+// here — that entry is authoritative.
+func fillFromCatalog(mc *ModelCompat, model string) {
+	cat := llm.EmbeddedModelCatalog()
+	if cat == nil {
+		return
+	}
+	// Bare ids for these stock GLM/DeepSeek models; LookupModelInfo also handles
+	// any "[1m]"/dated canonicalization a ref might carry.
+	mi := cat.LookupModelInfo(model)
+	if mi == nil {
+		return
+	}
+	if mi.SupportsEffortParameter && mc.Quirks.SupportsReasoningEffort == nil {
+		on := true
+		mc.Quirks.SupportsReasoningEffort = &on
+	}
+	if mc.DefaultMaxTokens == 0 && mi.MaxOutputTokens != nil && *mi.MaxOutputTokens > 0 {
+		mc.DefaultMaxTokens = *mi.MaxOutputTokens
+	}
 }
 
 // anthropicCacheControl marks the request for Anthropic-style prompt caching

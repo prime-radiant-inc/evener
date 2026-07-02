@@ -65,6 +65,56 @@ func TestNewOpenAICompatProfile_UnknownModelKeepsDefaults(t *testing.T) {
 	}
 }
 
+// A stock `type = "glm"` user with NO providers.toml model config must resolve
+// glm-5.2's effort ladder and context window purely from the embedded catalog
+// overrides, and those levels must feed ClampReasoningEffort correctly.
+func TestNewOpenAICompatProfile_GLM52CatalogDefaults(t *testing.T) {
+	p := newOpenAICompatProfile("glm", "glm-5.2", 0, nil)
+
+	if got := p.ContextWindowSize(); got != 1_000_000 {
+		t.Errorf("ContextWindowSize = %d, want 1000000 (from catalog)", got)
+	}
+	wantLevels := []string{"high", "max"}
+	levels := p.ReasoningEffortLevels()
+	if !reflect.DeepEqual(levels, wantLevels) {
+		t.Fatalf("ReasoningEffortLevels = %v, want %v (from catalog)", levels, wantLevels)
+	}
+	if !p.SupportsReasoning() {
+		t.Error("SupportsReasoning = false, want true")
+	}
+
+	// The resolved levels clamp requests the way Pi's thinkingLevelMap does:
+	// xhigh → max (top tier resolves to the model's spelling), low → high
+	// (below-range raises to the lowest supported level).
+	if got := llm.ClampReasoningEffort("xhigh", levels); got != "max" {
+		t.Errorf("clamp(xhigh) = %q, want max", got)
+	}
+	if got := llm.ClampReasoningEffort("low", levels); got != "high" {
+		t.Errorf("clamp(low) = %q, want high", got)
+	}
+	if got := llm.ClampReasoningEffort("max", levels); got != "max" {
+		t.Errorf("clamp(max) = %q, want max", got)
+	}
+	if got := llm.ClampReasoningEffort("high", levels); got != "high" {
+		t.Errorf("clamp(high) = %q, want high", got)
+	}
+}
+
+// A stock glm user on a no-effort-param GLM model (glm-4.7) resolves the context
+// window from the catalog but keeps the provider default effort ladder (the zai
+// thinking format only toggles thinking on/off for these models).
+func TestNewOpenAICompatProfile_GLM47CatalogDefaults(t *testing.T) {
+	p := newOpenAICompatProfile("glm", "glm-4.7", 0, nil)
+	if got := p.ContextWindowSize(); got != 204_800 {
+		t.Errorf("ContextWindowSize = %d, want 204800 (from catalog)", got)
+	}
+	// No catalog effort levels → falls back to the openai-compat default ladder.
+	wantLevels := []string{"low", "medium", "high"}
+	if got := p.ReasoningEffortLevels(); !reflect.DeepEqual(got, wantLevels) {
+		t.Errorf("ReasoningEffortLevels = %v, want %v (default ladder)", got, wantLevels)
+	}
+}
+
 // A runtime model switch re-resolves the new model against the SAME instance
 // model table — and switching back restores the original shape.
 func TestWithModel_CarriesInstanceModels(t *testing.T) {

@@ -133,6 +133,124 @@ func TestNewForInstance_ResolvesPerModelCompat(t *testing.T) {
 	}
 }
 
+// TestCompatFor_CatalogFillsDefaults verifies that, for a model with no
+// providers.toml [instances.X.models] entry, compatFor fills the reasoning-effort
+// gate and output cap from the embedded catalog — positive-only for the gate.
+func TestCompatFor_CatalogFillsDefaults(t *testing.T) {
+	a := NewForInstance(OpenAICompatInstanceParams{
+		Name:    "glm",
+		BaseURL: "https://api.z.ai/api/coding/paas/v4",
+		Quirks:  QuirksPreset("glm-5"),
+	})
+
+	// glm-5.2: catalog declares supports_effort_parameter → gate flips on, and
+	// max_output_tokens seeds DefaultMaxTokens.
+	mc := a.compatFor("glm-5.2")
+	if mc.Quirks.SupportsReasoningEffort == nil || !*mc.Quirks.SupportsReasoningEffort {
+		t.Errorf("glm-5.2 SupportsReasoningEffort = %v, want true (from catalog)", mc.Quirks.SupportsReasoningEffort)
+	}
+	if mc.DefaultMaxTokens != 131072 {
+		t.Errorf("glm-5.2 DefaultMaxTokens = %d, want 131072 (from catalog)", mc.DefaultMaxTokens)
+	}
+
+	// glm-4.7: catalog has supports_effort_parameter=false → gate must NOT flip
+	// (stays nil so the zai format default OFF is preserved). Output cap still fills.
+	mc47 := a.compatFor("glm-4.7")
+	if mc47.Quirks.SupportsReasoningEffort != nil {
+		t.Errorf("glm-4.7 SupportsReasoningEffort = %v, want nil (catalog must not flip the zai default)", mc47.Quirks.SupportsReasoningEffort)
+	}
+	if mc47.DefaultMaxTokens != 131072 {
+		t.Errorf("glm-4.7 DefaultMaxTokens = %d, want 131072 (from catalog)", mc47.DefaultMaxTokens)
+	}
+
+	// A model absent from the catalog gets the bare instance quirks.
+	unknown := a.compatFor("totally-unknown-model")
+	if unknown.Quirks.SupportsReasoningEffort != nil || unknown.DefaultMaxTokens != 0 {
+		t.Errorf("unknown model = %+v, want bare instance quirks", unknown)
+	}
+}
+
+// TestCompatFor_CatalogNeverTurnsEffortOff verifies the positive-only asymmetry:
+// an instance whose format defaults the gate on (openai) is never regressed by a
+// catalog model that lacks supports_effort_parameter.
+func TestCompatFor_CatalogNeverTurnsEffortOff(t *testing.T) {
+	a := NewForInstance(OpenAICompatInstanceParams{
+		Name:    "compat",
+		BaseURL: "https://gw.example.com/v1",
+		// openai default format: gate defaults on when SupportsReasoningEffort is nil.
+	})
+	mc := a.compatFor("glm-4.7") // catalog says the effort param is unsupported
+	if mc.Quirks.SupportsReasoningEffort != nil {
+		t.Errorf("SupportsReasoningEffort = %v, want nil (never turned OFF from catalog)", mc.Quirks.SupportsReasoningEffort)
+	}
+	// The openai format default still resolves to on.
+	if !mc.Quirks.supportsEffort(true) {
+		t.Error("openai-format gate should stay on (catalog must not regress it)")
+	}
+}
+
+// TestCompatFor_InstanceEntryWinsOverCatalog verifies a providers.toml model
+// entry is authoritative — the catalog fallback is not consulted for it.
+func TestCompatFor_InstanceEntryWinsOverCatalog(t *testing.T) {
+	a := NewForInstance(OpenAICompatInstanceParams{
+		Name:    "glm",
+		BaseURL: "https://api.z.ai/api/coding/paas/v4",
+		Quirks:  QuirksPreset("glm-5"),
+		Models: map[string]providercfg.ModelConfig{
+			"glm-5.2": {MaxOutputTokens: 4096},
+		},
+	})
+	mc := a.compatFor("glm-5.2")
+	if mc.DefaultMaxTokens != 4096 {
+		t.Errorf("DefaultMaxTokens = %d, want 4096 (instance entry wins)", mc.DefaultMaxTokens)
+	}
+	// Instance entry declared no reasoning-effort support and the catalog is not
+	// consulted, so the gate stays the zai default (nil).
+	if mc.Quirks.SupportsReasoningEffort != nil {
+		t.Errorf("SupportsReasoningEffort = %v, want nil (catalog not consulted for instance entry)", mc.Quirks.SupportsReasoningEffort)
+	}
+}
+
+// TestGLMCatalogDefaults_WireBody is the end-to-end wire check: a stock glm
+// instance (no per-model config) drives correct thinking/effort/max_tokens for
+// GLM models purely from the catalog defaults.
+func TestGLMCatalogDefaults_WireBody(t *testing.T) {
+	a := NewForInstance(OpenAICompatInstanceParams{
+		Name:    "glm",
+		BaseURL: "https://api.z.ai/api/coding/paas/v4",
+		Quirks:  QuirksPreset("glm-5"),
+	})
+
+	// glm-5.2 with effort max: thinking enabled + reasoning_effort:"max" + catalog max_tokens.
+	req52 := plainReq("glm-5.2")
+	req52.ReasoningEffort = strp("max")
+	body52 := requestBody(t, req52, false, a.compatFor("glm-5.2"))
+	wantThinking := map[string]any{"type": "enabled", "clear_thinking": false}
+	if got := body52["thinking"]; !reflect.DeepEqual(got, wantThinking) {
+		t.Errorf("glm-5.2 thinking = %#v, want %#v", got, wantThinking)
+	}
+	if got := body52["reasoning_effort"]; got != "max" {
+		t.Errorf("glm-5.2 reasoning_effort = %v, want max", got)
+	}
+	if got := body52["max_tokens"]; got != 131072 {
+		t.Errorf("glm-5.2 max_tokens = %v, want 131072", got)
+	}
+
+	// glm-4.7 with effort high: thinking enabled, NO reasoning_effort, catalog max_tokens.
+	req47 := plainReq("glm-4.7")
+	req47.ReasoningEffort = strp("high")
+	body47 := requestBody(t, req47, false, a.compatFor("glm-4.7"))
+	if got := body47["thinking"]; !reflect.DeepEqual(got, wantThinking) {
+		t.Errorf("glm-4.7 thinking = %#v, want %#v", got, wantThinking)
+	}
+	if _, present := body47["reasoning_effort"]; present {
+		t.Errorf("glm-4.7 reasoning_effort present = %v, want absent", body47["reasoning_effort"])
+	}
+	if got := body47["max_tokens"]; got != 131072 {
+		t.Errorf("glm-4.7 max_tokens = %v, want 131072", got)
+	}
+}
+
 // requestBody builds a body through the model-aware path.
 func requestBody(t *testing.T, req llm.Request, stream bool, mc ModelCompat) map[string]any {
 	t.Helper()

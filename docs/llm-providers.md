@@ -321,6 +321,47 @@ with **no config needed**. The preset does *not* turn on `tool_stream` by
 default — set `compat.tool_stream = true` explicitly if the gateway supports
 incremental tool-call argument streaming.
 
+### Stock catalog defaults for z.ai GLM & DeepSeek v4 (zero config)
+
+Current z.ai GLM and DeepSeek v4 models ship their effort ladders, context
+windows, and output caps in the Serf catalog overrides
+(`llm/data/serf_model_catalog_overrides.json`), so a plain `type = "glm"` (or a
+DeepSeek openai-compat instance) gets the right shape with **no
+`[instances.X.models]` entry at all**. Two things flow from the catalog when a
+model has no instance entry:
+
+- `newOpenAICompatProfile` reads `context_window` and (for effort-parameter
+  models) `reasoning_effort_levels` from the catalog for the profile's context
+  window and effort ladder.
+- the adapter's `compatFor` → `fillFromCatalog` (`compat.go`) seeds
+  `DefaultMaxTokens` from `max_output_tokens`, and turns the `reasoning_effort`
+  gate **on** when `supports_effort_parameter = true`. This gate fill is
+  **positive-only**: a `true` in the catalog flips the gate on, but a missing or
+  `false` flag is left as "no opinion" (nil) — it never turns the gate *off*, so
+  it can't regress openai-format providers whose gate defaults on.
+
+The effort ladders are stored **wire-spelled** (e.g. `["high", "max"]`), which
+under `ClampReasoningEffort` reproduces Pi's per-model `thinkingLevelMap`
+exactly: below-range requests raise to the lowest supported level and the top
+tier resolves to the model's own spelling (`xhigh`/`max` → `"max"`). So no
+separate per-model thinking-map field is needed — the levels list suffices.
+
+| model | context | max_output | effort param | catalog levels |
+|-------|---------|------------|--------------|----------------|
+| `glm-4.5-air` | 131072 | 98304 | no | default ladder |
+| `glm-4.7` | 204800 | 131072 | no | default ladder |
+| `glm-5-turbo` | 200000 | 131072 | no | default ladder |
+| `glm-5.1` | 200000 | 131072 | no | default ladder |
+| `glm-5.2` | 1000000 | 131072 | yes | `["high","max"]` |
+| `glm-5v-turbo` | 200000 | 131072 | no | default ladder |
+| `deepseek-v4-flash` | 1000000 | 384000 | yes | `["high","max"]` |
+| `deepseek-v4-pro` | 1000000 | 384000 | yes | `["high","max"]` |
+
+Models with "no" effort param keep the profile's default effort ladder; the
+`zai` thinking format only toggles thinking on/off for them (no
+`reasoning_effort` field on the wire). An explicit `[instances.X.models."<id>"]`
+entry always wins over these catalog defaults.
+
 ### Reasoning replay: same field it arrived on
 
 When replaying assistant thinking on a later turn, the adapter doesn't
