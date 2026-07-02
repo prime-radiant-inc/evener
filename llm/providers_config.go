@@ -3,6 +3,7 @@ package llm
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 
 	"primeradiant.com/serf/llm/providercfg"
@@ -149,7 +150,11 @@ func newFromProviders(cfg providercfg.Config, allowPartial bool, opts ...EnvOpti
 	if allowPartial && len(c.ProviderNames()) == 0 && len(initErrs) > 0 {
 		return nil, initErrs, fmt.Errorf("no providers initialized: %w", errors.Join(initErrs...))
 	}
-	if cfg.Default != "" {
+	if cfg.Default != "" && slices.Contains(c.ProviderNames(), cfg.Default) {
+		// A partial init may have skipped the configured default (factory
+		// error, unresolved $ENV key). Pointing the client at an unregistered
+		// default would fail every default-routed request with "unknown
+		// provider" — leave the auto-elected healthy default instead.
 		c.SetDefaultProvider(cfg.Default)
 	}
 

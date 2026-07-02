@@ -97,3 +97,30 @@ func TestNewFromProviders_OpenAIUnresolvedKeyDefersToFactory(t *testing.T) {
 		t.Fatalf("resolution hard-failed before the OAuth-first factory ran: %v", err)
 	}
 }
+
+// A partial init that skips the configured default instance must not point
+// the client at the unregistered provider — default-routed requests would
+// fail "unknown provider" despite healthy registered instances.
+func TestNewFromAvailableProviders_SkippedDefaultNotElected(t *testing.T) {
+	t.Setenv("SERF_TEST_PROVIDER_KEY", "sk-ok")
+	RegisterInstanceAdapterFactory("apikey-probe", "", func(inst providercfg.InstanceConfig, _ string) (ProviderAdapter, error) {
+		return &fakeAdapter{name: inst.Name}, nil
+	})
+	cfg := providercfg.Config{
+		Default: "bad",
+		Instances: []providercfg.InstanceConfig{
+			{Name: "bad", Type: "apikey-probe", APIKey: "$SERF_TEST_KEY_DEFINITELY_UNSET"},
+			{Name: "good", Type: "apikey-probe", APIKey: "$SERF_TEST_PROVIDER_KEY"},
+		},
+	}
+	c, initErrs, err := NewFromAvailableProviders(cfg)
+	if err != nil {
+		t.Fatalf("NewFromAvailableProviders: %v", err)
+	}
+	if len(initErrs) != 1 {
+		t.Fatalf("initErrs = %v, want exactly the skipped default", initErrs)
+	}
+	if got := c.DefaultProvider(); got == "bad" {
+		t.Fatalf("DefaultProvider = %q, want a registered provider, not the skipped default", got)
+	}
+}

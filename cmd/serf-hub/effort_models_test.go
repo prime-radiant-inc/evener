@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/appwire"
+	hubcore "primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/llm/providercfg"
 )
 
@@ -170,5 +171,36 @@ func TestModelDescriptorsToAPIModels_InstanceReasoningTrueOverridesCatalog(t *te
 	}
 	if _, ok := entry["reasoning_effort_levels"]; ok {
 		t.Errorf("levels should stay derived when only reasoning=true is configured: %v", entry["reasoning_effort_levels"])
+	}
+}
+
+// overlayLiveEntries must never mutate the (globally cached) raw entries — a
+// later config change or a second WebServer with different providers.toml in
+// the same process reads the same cache.
+func TestOverlayLiveEntries_DoesNotMutateCache(t *testing.T) {
+	cfg := &providercfg.Config{Instances: []providercfg.InstanceConfig{{
+		Name:     "gw",
+		Type:     "openai",
+		APIStyle: providercfg.StyleChatCompletions,
+		Models: map[string]providercfg.ModelConfig{
+			"m": {ContextWindow: 999_999},
+		},
+	}}}
+	s := &WebServer{cfg: hubcore.WebConfig{ProviderConfig: cfg}}
+	cached := []map[string]any{{"provider": "gw", "model": "m", "context_window": 100}}
+
+	out := s.overlayLiveEntries(cached)
+	if got := out[0]["context_window"]; got != 999_999 {
+		t.Fatalf("overlay context_window = %v, want 999999", got)
+	}
+	if got := cached[0]["context_window"]; got != 100 {
+		t.Fatalf("cached raw entry mutated: context_window = %v, want 100", got)
+	}
+
+	// A server with no overrides sees the raw values, not a prior overlay.
+	plain := &WebServer{cfg: hubcore.WebConfig{ProviderConfig: &providercfg.Config{}}}
+	out2 := plain.overlayLiveEntries(cached)
+	if got := out2[0]["context_window"]; got != 100 {
+		t.Fatalf("config-free server saw a foreign overlay: context_window = %v, want 100", got)
 	}
 }

@@ -314,7 +314,7 @@ func orderedThinkingLevels(levels map[string]string) []string {
 func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 	liveModelsCache.mu.Lock()
 	if time.Now().Before(liveModelsCache.expires) && liveModelsCache.models != nil {
-		out := liveModelsCache.models
+		out := s.overlayLiveEntries(liveModelsCache.models)
 		liveModelsCache.mu.Unlock()
 		return out
 	}
@@ -403,20 +403,36 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 					entry["reasoning_effort_levels"] = mi.ReasoningEffortLevels
 				}
 			}
-			// Overlay any providers.toml instance override before the entry is
-			// cached (below) so both a fresh fetch and a subsequent cache hit
-			// return the configured reasoning/context_window, not the raw live
-			// values. Mirrors modelDescriptorsToAPIModels's precedence for the
-			// serf-launch-contract path.
-			applyInstanceModelOverride(entry, s.cfg.ProviderConfig, prov, m.ID)
 			out = append(out, entry)
 		}
 	}
 
+	// The cache holds RAW live entries; providers.toml overrides are applied
+	// per request on fresh copies (overlayLiveEntries), so a config change or
+	// another WebServer with a different ProviderConfig in the same process
+	// never sees a previous config's overlays baked into shared cache state.
 	liveModelsCache.mu.Lock()
 	liveModelsCache.models = out
 	liveModelsCache.expires = time.Now().Add(liveModelsTTL)
 	liveModelsCache.mu.Unlock()
+	return s.overlayLiveEntries(out)
+}
+
+// overlayLiveEntries returns fresh copies of raw live-model entries with this
+// server's providers.toml instance overrides applied. The copies keep the
+// shared liveModelsCache config-agnostic: overlays never mutate cached state.
+func (s *WebServer) overlayLiveEntries(entries []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(entries))
+	for _, entry := range entries {
+		clone := make(map[string]any, len(entry))
+		for k, v := range entry {
+			clone[k] = v
+		}
+		prov, _ := clone["provider"].(string)
+		model, _ := clone["model"].(string)
+		applyInstanceModelOverride(clone, s.cfg.ProviderConfig, prov, model)
+		out = append(out, clone)
+	}
 	return out
 }
 

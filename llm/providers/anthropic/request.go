@@ -440,7 +440,11 @@ func toAnthropicMessages(msgs []llm.Message) (system string, messages []map[stri
 						"input": in,
 					})
 				case llm.ContentThinking:
-					if p.Thinking == nil {
+					if p.Thinking == nil || p.Thinking.Text == "" {
+						// Encrypted-only thinking parts (OpenAI-compatible or
+						// Responses transcripts riding a cross-provider model
+						// switch) carry no replayable Anthropic thinking; an
+						// empty thinking:"" block is invalid continuation state.
 						continue
 					}
 					sig := p.Thinking.Signature

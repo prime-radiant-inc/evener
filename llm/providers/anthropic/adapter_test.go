@@ -3885,3 +3885,34 @@ func TestBuildRequestBody_ForeignReasoningFieldSignatureReplaysUnsigned(t *testi
 		t.Errorf("anthropic signature = %q, want round-trip", got)
 	}
 }
+
+// Encrypted-only thinking parts (empty Text, non-empty EncryptedContent — the
+// shape OpenAI-compatible encrypted reasoning produces) must not replay as an
+// Anthropic thinking block: thinking:"" is invalid continuation state.
+func TestBuildRequestBody_SkipsEncryptedOnlyThinking(t *testing.T) {
+	a := &Adapter{APIKey: "k"}
+	body, err := a.buildRequestBody(llm.Request{
+		Model: "claude-opus-4-6",
+		Messages: []llm.Message{
+			llm.User("q"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
+					Text:             "",
+					EncryptedContent: `[{"type":"reasoning.encrypted","id":"rc_1","data":"OPAQUE"}]`,
+				}},
+				{Kind: llm.ContentText, Text: "a"},
+			}},
+			llm.User("q2"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+	msgs := body["messages"].([]map[string]any)
+	blocks := msgs[1]["content"].([]map[string]any)
+	for _, blk := range blocks {
+		if blk["type"] == "thinking" {
+			t.Fatalf("encrypted-only thinking replayed as an Anthropic thinking block: %v", blk)
+		}
+	}
+}
