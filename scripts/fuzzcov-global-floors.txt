@@ -1,29 +1,21 @@
 # Global fuzz-reachable coverage floors (whole-module statement %).
 # Managed by scripts/fuzz-coverage-global.sh --bless. Raised upward only, EXCEPT a
-# documented downward reset when the DENOMINATOR changes (a refactor adds
-# production-only plumbing, or a measurement-completeness correction) rather than
-# a coverage regression.
+# documented downward reset when the DENOMINATOR genuinely changes (not a
+# regression). A partial `--bless --modules X` rewrites this file to just X;
+# restore the other module lines afterward.
 #
-# 2026-07-02 fuzz-harness wave: COVERED rose in both modules from new fuzz targets
-# (agent codecs/render/config + llm transforms) — the honest gain:
-#   agent covered 10730->11203 (+473); floor 52.1->53.0 (measured total 21152).
-#   llm   covered  4656-> 4743 (+87).
-# The llm floor is set from the COMPLETE denominator (6382): 4743/6382 = 74.3% ->
-# floor 74.0. A raw --bless run measured 78.5% against an INCOMPLETE denominator
-# (6045) because some packages' serffuzz test binaries intermittently drop out of
-# covdata; 78.5 would false-alarm the next complete-denominator run, so we do NOT
-# bless it. Arc: llm 39.3 -> 73.0 -> 74.3 (honest, complete-denominator);
-# agent 26.4 -> 45.9 -> 54.9 -> 52.1 -> 53.0.
-#
-# 2026-07-02 orchestration wave (extraction + sequence fuzzers + fc1/fc2): COVERED
-# rose to an all-time high — agent 11303, llm 4744 fuzz-reachable statements — but
-# the % is DENOMINATOR-UNSTABLE: agent `total` swung 21152->22015->23211 across
-# identical measurement runs (covdata's -coverpkg serffuzz build-set varies), so
-# the % reads 48.5-51.3% while covered is at its peak. The floors below are NOT a
-# reliable %-ratchet for agent right now; the honest signal is COVERED-COUNT
-# (rising). Stabilizing the denominator (fixed go-list statement base, not
-# covdata's varying build-set) is the tracked fix before the fuzz %-ratchet can
-# be trusted in CI. Floors left as-is (not lowered) pending that fix.
+# DENOMINATOR NOW STABLE (2026-07-02): the % is computed against a `-run '^$'`
+# instrument-only pass (a deterministic block set that depends only on
+# compilation) instead of covdata's varying per-binary merge. The earlier agent
+# %-wobble — total swinging 19592/21152/23211 across IDENTICAL runs, so the %
+# read 48-57% on unchanged code — is gone. This is the first bless on the stable
+# basis:
+#   agent 57.7% = 11303/19592 (covered/stable-total); was reading a noisy 48-51%.
+#   llm   79.9% =  4744/ 5937; was 73-80% noisy.
+# Fuzz-reachable COVERED-COUNT arc over the campaign: agent ~10730 -> 11303,
+# llm 4656 -> 4744. Overall arc (now honest+stable): agent 26.4 -> 57.7,
+# llm 39.3 -> 79.9. `.` (root) is still 9.8 on the OLD basis — root fuzz is
+# UI-capped (TUI/serving code that shouldn't be fuzzed); not re-measured here.
 . 9.8
-agent 53.0
-llm 74.0
+agent 57.7
+llm 79.9

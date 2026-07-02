@@ -84,6 +84,22 @@ stmt_counts() {
 	           printf "%d %d", c+0, t+0 }' "$1"
 }
 
+# stmt_counts_stable prints "covered total" using a STABLE denominator. The total
+# comes from the denominator profile (arg 2, produced by a `-run '^$'` pass that
+# instruments every package but runs no test — so it depends only on compilation,
+# not on which flaky/slow test binaries happened to emit counters), and covered is
+# the subset of THOSE blocks the fuzz pass (arg 1) actually hit. This fixes the
+# %-wobble where the plain `-run '^Fuzz'` total swung run-to-run (21k-23k for
+# agent) because covdata dropped packages whose binaries timed out; the denom pass
+# is deterministic (agent: 19592 stmts every run), so the % is now monotonic in
+# real coverage. Both files are deduped by block position.
+stmt_counts_stable() {
+	awk 'FNR==NR { if (FNR>1 && $3>0) fcov[$1]=1; next }
+	     FNR>1  { dstmts[$1]=$2 }
+	     END { for (p in dstmts) { t+=dstmts[p]; if (p in fcov) c+=dstmts[p] }
+	           printf "%d %d", c+0, t+0 }' "$1" "$2"
+}
+
 echo "=== global FUZZ-REACHABLE coverage — what the corpus alone drives, NOT total"
 echo "    test coverage (the full suite covers far more); modules: $modules ==="
 if $with_full; then
@@ -116,7 +132,19 @@ for m in $modules; do
 	fi
 	[ -f "$prof" ] || { printf '%-10s %s\n' "$m" "no coverage profile (no fuzz targets?)"; continue; }
 
-	read -r c t < <(stmt_counts "$prof")
+	# Stable denominator: a `-run '^$'` pass instruments every package but runs no
+	# test, so its block set is deterministic (immune to the flaky per-binary
+	# counter drops that made the plain fuzz-pass total swing). Total from it;
+	# covered = the subset the fuzz pass hit. Falls back to the single-profile
+	# count if the denom pass somehow produces nothing.
+	denomprof="$prof.denom"
+	( cd "$repo_root/$m" && "$capped" "$go_bin" test -tags serffuzz \
+		-timeout 20m -run '^$' -coverpkg=./... -coverprofile="$denomprof" ./... ) >/dev/null 2>&1 || true
+	if [ -s "$denomprof" ]; then
+		read -r c t < <(stmt_counts_stable "$prof" "$denomprof")
+	else
+		read -r c t < <(stmt_counts "$prof")
+	fi
 	[ "$t" -gt 0 ] || { printf '%-10s %s\n' "$m" "no statements measured"; continue; }
 	pct="$(awk -v c="$c" -v t="$t" 'BEGIN{printf "%.1f", 100*c/t}')"
 	measured["$m"]="$pct"
