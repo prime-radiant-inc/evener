@@ -166,8 +166,8 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	s.mu.Lock()
 	ownAllowance := s.delegationAllowance
 	s.mu.Unlock()
-	if args.DelegationAllowance >= ownAllowance {
-		return delegateStartFailed(fmt.Errorf("invalid_request: delegation_allowance must be less than your own allowance (%d); valid grants: %s", ownAllowance, validGrantRange(ownAllowance)))
+	if ok, validRange := validateDelegateGrant(args.DelegationAllowance, ownAllowance); !ok {
+		return delegateStartFailed(fmt.Errorf("invalid_request: delegation_allowance must be less than your own allowance (%d); valid grants: %s", ownAllowance, validRange))
 	}
 
 	blockTimeout := time.Duration(clampShellBlockTimeoutMS(args.BlockTimeoutMS)) * time.Millisecond
@@ -245,6 +245,68 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	}
 }
 
+// delegateTargetKind names how a delegate_send target should be dispatched, as
+// decided by classifyDelegateSendTarget.
+type delegateTargetKind int
+
+const (
+	// delegateTargetRejected: the request fails pre-dispatch validation.
+	delegateTargetRejected delegateTargetKind = iota
+	// delegateTargetCallerAlias: steer the message back to the caller route.
+	delegateTargetCallerAlias
+	// delegateTargetJobHandle: a job_-prefixed handle (not a send target).
+	delegateTargetJobHandle
+	// delegateTargetDelegateID: a delegate-id path (dlg_ prefix, or a bare
+	// target the delegate-id handling then rejects as target_not_found).
+	delegateTargetDelegateID
+)
+
+// classifyDelegateSendTarget is the pure pre-dispatch decision lifted out of
+// sendDelegateMessage. Given the already-trimmed target/message, the resolved
+// on_idle, the requested block timeout, and the caller's routing context, it
+// decides how the target is dispatched (or why it is rejected) without touching
+// the job manager or store. The wrapper performs the matching effect per kind
+// and preserves the original ordering: rejections and the caller-alias steer
+// happen before sessionJobManager; the job_/delegate-id handling happens after.
+// A rejected reason is fully rendered (including the target where the original
+// embedded it) so the wrapper can wrap it verbatim.
+func classifyDelegateSendTarget(target, message, onIdle string, blockTimeoutMS int, fromWatch, hasCallerRoute bool) (kind delegateTargetKind, reason string) {
+	if target == "" {
+		return delegateTargetRejected, "invalid_request: target is required"
+	}
+	if message == "" {
+		return delegateTargetRejected, "invalid_request: message is required"
+	}
+	if blockTimeoutMS < 0 {
+		return delegateTargetRejected, "invalid_request: max_wait_ms must be non-negative"
+	}
+	if onIdle != "fail" && onIdle != "start" {
+		return delegateTargetRejected, "invalid_request: on_idle must be start or fail"
+	}
+	if target == "main" || target == runtimeMessageAliasWatched {
+		return delegateTargetRejected, fmt.Sprintf("invalid_request: %s is not a delegate_send target", target)
+	}
+	if strings.HasPrefix(target, "local:") || strings.HasPrefix(target, "proj:") {
+		return delegateTargetRejected, "invalid_request: transcript_ref is an archival read handle, not a control target"
+	}
+	if isRuntimeMessageAlias(target) {
+		if !hasCallerRoute {
+			return delegateTargetRejected, "invalid_request: caller is only available from a delegate/watch-delivered context"
+		}
+		// Watch sends to the caller route through the notification rail
+		// (drainPendingWatchSends enqueues a wake token), never here. A FromWatch
+		// caller send reaching sendDelegateMessage is an internal routing bug.
+		if fromWatch {
+			return delegateTargetRejected, "internal: watch sends to caller route via the notification rail"
+		}
+		return delegateTargetCallerAlias, ""
+	}
+	if strings.HasPrefix(target, "job_") {
+		return delegateTargetJobHandle, ""
+	}
+	return delegateTargetDelegateID, ""
+}
+
 func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs) sendMessageResult {
 	if ctx == nil {
 		ctx = context.Background()
@@ -255,38 +317,15 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	}
 	target := strings.TrimSpace(args.Target)
 	message := strings.TrimSpace(args.Message)
-	if target == "" {
-		return sendMessageFailed(target, errors.New("invalid_request: target is required"))
-	}
-	if message == "" {
-		return sendMessageFailed(target, errors.New("invalid_request: message is required"))
-	}
-	if args.BlockTimeoutMS < 0 {
-		return sendMessageFailed(target, errors.New("invalid_request: max_wait_ms must be non-negative"))
-	}
 	onIdle := strings.TrimSpace(args.OnIdle)
 	if onIdle == "" {
 		onIdle = "fail"
 	}
-	if onIdle != "fail" && onIdle != "start" {
-		return sendMessageFailed(target, errors.New("invalid_request: on_idle must be start or fail"))
-	}
-	if target == "main" || target == runtimeMessageAliasWatched {
-		return sendMessageFailed(target, fmt.Errorf("invalid_request: %s is not a delegate_send target", target))
-	}
-	if strings.HasPrefix(target, "local:") || strings.HasPrefix(target, "proj:") {
-		return sendMessageFailed(target, errors.New("invalid_request: transcript_ref is an archival read handle, not a control target"))
-	}
-	if isRuntimeMessageAlias(target) {
-		if !s.hasCallerRoute() {
-			return sendMessageFailed(target, errors.New("invalid_request: caller is only available from a delegate/watch-delivered context"))
-		}
-		// Watch sends to the caller route through the notification rail
-		// (drainPendingWatchSends enqueues a wake token), never here. A FromWatch
-		// caller send reaching sendDelegateMessage is an internal routing bug.
-		if args.FromWatch {
-			return sendMessageFailed(target, errors.New("internal: watch sends to caller route via the notification rail"))
-		}
+	kind, reason := classifyDelegateSendTarget(target, message, onIdle, args.BlockTimeoutMS, args.FromWatch, s.hasCallerRoute())
+	switch kind {
+	case delegateTargetRejected:
+		return sendMessageFailed(target, errors.New(reason))
+	case delegateTargetCallerAlias:
 		callerProvenance := provenance.Clone(args.Provenance)
 		if callerProvenance == nil {
 			callerProvenance = s.activeCausalProvenance()
@@ -326,7 +365,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	if err != nil {
 		return sendMessageFailed(target, err)
 	}
-	if strings.HasPrefix(target, "job_") {
+	if kind == delegateTargetJobHandle {
 		if rec, ok := delegateJobRecordForJobID(jm, target); ok {
 			if !delegateControlOwnedBySession(rec.OwnerSessionID, s.id) {
 				return sendMessageFailed(target, fmt.Errorf("not_controllable: delegate job %q is owned by descendant session %q; you may only message your own direct delegates", target, rec.OwnerSessionID))
@@ -1297,6 +1336,14 @@ func validGrantRange(own int) string {
 	return fmt.Sprintf("0..%d", own-1)
 }
 
+// validateDelegateGrant is the pure grant decision lifted out of startDelegate:
+// a session may grant a child an allowance strictly less than its own (spec §1).
+// It folds the accept predicate with the human-facing range renderer so the
+// wrapper only reads its own allowance under lock and constructs the error.
+func validateDelegateGrant(requested, own int) (ok bool, validRange string) {
+	return requested < own, validGrantRange(own)
+}
+
 func delegateStartFailed(err error) delegateResult {
 	return delegateResult{
 		Type:   string(jobstore.JobDelegate),
@@ -1858,16 +1905,25 @@ func appendDelegateOutput(jm *jobManager, run *runningJob, b []byte, p *provenan
 }
 
 func delegateTerminalStatus(jm *jobManager, run *runningJob, status SubagentStatus) (jobstore.Status, string) {
+	var stopStatus jobstore.Status
+	var stopReason string
 	if jm != nil && run != nil {
 		jm.mu.Lock()
-		stopStatus, stopReason := run.stopStatus, run.stopReason
+		stopStatus, stopReason = run.stopStatus, run.stopReason
 		jm.mu.Unlock()
-		if stopStatus != "" {
-			return stopStatus, stopReason
-		}
 	}
+	return resolveDelegateTerminalStatus(stopStatus, stopReason, status)
+}
 
-	switch status {
+// resolveDelegateTerminalStatus is the pure terminal-status decision lifted out
+// of delegateTerminalStatus: a parent-recorded stop status always overrides the
+// child's own outcome, otherwise the child's SubagentStatus maps to a terminal
+// job Status. The wrapper reads run.stopStatus/run.stopReason under lock.
+func resolveDelegateTerminalStatus(stopStatus jobstore.Status, stopReason string, child SubagentStatus) (jobstore.Status, string) {
+	if stopStatus != "" {
+		return stopStatus, stopReason
+	}
+	switch child {
 	case SubagentCompleted:
 		return jobstore.StatusCompleted, ""
 	case SubagentFailed:
