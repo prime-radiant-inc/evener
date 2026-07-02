@@ -834,6 +834,24 @@ func (jm *jobManager) terminalWatchTargetStatus(target string) (status jobstore.
 }
 
 func (jm *jobManager) validateWatchSendTarget(target string, a watchArgs) error {
+	r := watchSendTargetResolver{
+		sessionID:     jm.sessionID,
+		hasJobManager: true,
+		loadDelegates: jm.store.LoadDelegates,
+		findJobRecord: func(jobID string) (*jobstore.JobRecord, error) {
+			return findJobRecord(jm, jobID)
+		},
+	}
+	return validateWatchSendDeliveryTarget(target, a, r)
+}
+
+// validateWatchSendDeliveryTarget is the pure install-time validation decision
+// tree for an internal watch-send delivery target. It reads only its arguments
+// and the resolver's injected lookups; it touches no lock and no store directly.
+// It is the install-time twin of the restore-time classifyWatchSendDeliveryTarget
+// and shares its dlg_ branch shape. Every target yields nil or a non-empty typed
+// error.
+func validateWatchSendDeliveryTarget(target string, a watchArgs, r watchSendTargetResolver) error {
 	if target == "" {
 		return errors.New("invalid_request: internal watch delivery target is required")
 	}
@@ -851,7 +869,7 @@ func (jm *jobManager) validateWatchSendTarget(target string, a watchArgs) error 
 	if !strings.HasPrefix(target, "dlg_") {
 		return watchTargetNotFoundError(target)
 	}
-	delegates, err := jm.store.LoadDelegates()
+	delegates, err := r.loadDelegates()
 	if err != nil {
 		return err
 	}
@@ -859,7 +877,7 @@ func (jm *jobManager) validateWatchSendTarget(target string, a watchArgs) error 
 	if d == nil {
 		return fmt.Errorf("target_not_found: delegate %q not found", target)
 	}
-	if d.OwnerSessionID != "" && d.OwnerSessionID != jm.sessionID {
+	if d.OwnerSessionID != "" && d.OwnerSessionID != r.sessionID {
 		return fmt.Errorf("not_controllable: delegate %q is not owned by this session", target)
 	}
 	jobID := d.CurrentJobID
@@ -869,11 +887,11 @@ func (jm *jobManager) validateWatchSendTarget(target string, a watchArgs) error 
 	if jobID == "" {
 		return fmt.Errorf("target_not_resumable: delegate %q has no job history", target)
 	}
-	rec, err := findJobRecord(jm, jobID)
+	rec, err := r.findJobRecord(jobID)
 	if err != nil {
 		return fmt.Errorf("target_not_found: %w", err)
 	}
-	if rec.OwnerSessionID != "" && rec.OwnerSessionID != jm.sessionID {
+	if rec.OwnerSessionID != "" && rec.OwnerSessionID != r.sessionID {
 		return fmt.Errorf("not_controllable: delegate job %q is owned by descendant session %q; you may only message your own direct delegates", target, rec.OwnerSessionID)
 	}
 	if rec.Type != jobstore.JobDelegate {
@@ -2638,6 +2656,58 @@ func (jm *jobManager) startProgressTimer(key watchKey, cfg *watchConfig, stop <-
 	}()
 }
 
+// progressTickSnapshot is the read-only view fireProgressTick gathers under the
+// lock before consulting decideProgressTick. target is the raw watch target,
+// echoed into the notification job id for non-session targets.
+type progressTickSnapshot struct {
+	closing         bool
+	stillRegistered bool
+	sessionTarget   bool
+	targetRunning   bool
+	suppressed      bool
+	hasSend         bool
+	target          string
+}
+
+// progressTickDecision is what decideProgressTick returns for one tick: whether
+// the timer goroutine keeps running (keepAlive), whether this tick delivers
+// (fire) and how it routes — a watch send (sendDelivery) or a notification whose
+// delivery counts against the budget (recordBudget), plus the notification job id.
+type progressTickDecision struct {
+	keepAlive    bool
+	fire         bool
+	sendDelivery bool
+	recordBudget bool
+	notifyJobID  string
+}
+
+// decideProgressTick is the pure decision core lifted out of fireProgressTick. It
+// gates a progress tick on manager/registration/liveness/suppression and reports
+// how the surviving tick routes. It locks nothing and mutates nothing; the caller
+// performs the effects. A send tick and a budget-counted notification are mutually
+// exclusive, and a non-keepAlive tick never fires.
+func decideProgressTick(snap progressTickSnapshot) progressTickDecision {
+	if snap.closing || !snap.stillRegistered {
+		return progressTickDecision{}
+	}
+	if !snap.sessionTarget && !snap.targetRunning {
+		return progressTickDecision{}
+	}
+	if snap.suppressed {
+		return progressTickDecision{keepAlive: true}
+	}
+	dec := progressTickDecision{keepAlive: true, fire: true}
+	if snap.hasSend {
+		dec.sendDelivery = true
+		return dec
+	}
+	dec.recordBudget = true
+	if !snap.sessionTarget {
+		dec.notifyJobID = snap.target
+	}
+	return dec
+}
+
 func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
@@ -2645,30 +2715,25 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 
 	root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, cfg.target)}
 	jm.mu.Lock()
-	if jm.closing {
+	snap := progressTickSnapshot{
+		closing:         jm.closing,
+		stillRegistered: jm.watches[key] == cfg,
+		sessionTarget:   isWatchSessionTarget(cfg.target),
+		targetRunning:   jm.running[cfg.target] != nil,
+		suppressed:      shouldSuppressWatch(cfg, root.Provenance),
+		hasSend:         cfg.send != nil,
+		target:          cfg.target,
+	}
+	dec := decideProgressTick(snap)
+	if !dec.keepAlive {
 		jm.mu.Unlock()
 		return false
 	}
-	if jm.watches[key] != cfg {
-		jm.mu.Unlock()
-		return false
-	}
-	if !isWatchSessionTarget(cfg.target) && jm.running[cfg.target] == nil {
-		jm.mu.Unlock()
-		return false
-	}
-	if shouldSuppressWatch(cfg, root.Provenance) {
-		jm.mu.Unlock()
-		return true
-	}
-	if cfg.send != nil {
+	if dec.sendDelivery {
 		deliveries = append(deliveries, jm.watchSendSnapshot(cfg, cfg.target, "progress_tick", root))
-	} else {
-		notifyJobID := cfg.target
-		if isWatchSessionTarget(notifyJobID) {
-			notifyJobID = ""
-		}
-		notifications = append(notifications, jm.watchNotificationFromWatch(cfg, notifyJobID, "progress_tick", root.Provenance))
+	}
+	if dec.recordBudget {
+		notifications = append(notifications, jm.watchNotificationFromWatch(cfg, dec.notifyJobID, "progress_tick", root.Provenance))
 		overBudget = jm.recordWatchDeliveryLocked(cfg)
 	}
 	jm.mu.Unlock()
@@ -2744,33 +2809,76 @@ func (jm *jobManager) startQuietWatchdog(jobID string, stop <-chan struct{}) {
 // running job. Otherwise it enqueues at most one quiet notification per quiet
 // stretch and kicks the drain loop. It performs no delivery and never touches
 // Session.emit or responseSideEffectsMu (spec §3), mirroring fireProgressTick.
+// quietTickSnapshot is the read-only view fireQuietWatchdogTick gathers under the
+// lock before consulting decideQuietWatchdogTick. isDelegate captures the running
+// & rec & delegate-type gate; last/now/window/alreadyNotified drive the quiet
+// accounting and the once-per-stretch latch.
+type quietTickSnapshot struct {
+	closing         bool
+	isDelegate      bool
+	last            time.Time
+	now             time.Time
+	window          time.Duration
+	alreadyNotified bool
+}
+
+// quietTickDecision is what decideQuietWatchdogTick returns for one tick: whether
+// the watchdog goroutine keeps running (keepAlive), whether this tick enqueues a
+// quiet notification (fire), and the new value of the once-per-stretch latch the
+// caller must store back (newNotifiedLatch).
+type quietTickDecision struct {
+	keepAlive        bool
+	fire             bool
+	newNotifiedLatch bool
+}
+
+// decideQuietWatchdogTick is the pure decision core lifted out of
+// fireQuietWatchdogTick. It ends the goroutine (keepAlive=false) when the manager
+// is closing or the delegate is no longer a running job. Otherwise it fires at
+// most one notification per quiet stretch: quiet>=window latches the notified
+// flag (firing only on the first such tick), while quiet<window clears it so the
+// next quiet stretch fires again. The window boundary is inclusive.
+func decideQuietWatchdogTick(snap quietTickSnapshot) quietTickDecision {
+	if snap.closing || !snap.isDelegate {
+		return quietTickDecision{}
+	}
+	dec := quietTickDecision{keepAlive: true}
+	if snap.now.Sub(snap.last) >= snap.window {
+		dec.newNotifiedLatch = true
+		if !snap.alreadyNotified {
+			dec.fire = true
+		}
+	}
+	return dec
+}
+
 func (jm *jobManager) fireQuietWatchdogTick(jobID string, window time.Duration) bool {
 	var notifications []jobNotification
 
 	jm.mu.Lock()
-	if jm.closing {
-		jm.mu.Unlock()
-		return false
-	}
 	run := jm.running[jobID]
-	if run == nil || run.rec == nil || run.rec.Type != jobstore.JobDelegate {
+	isDelegate := run != nil && run.rec != nil && run.rec.Type == jobstore.JobDelegate
+	snap := quietTickSnapshot{
+		closing:    jm.closing,
+		isDelegate: isDelegate,
+		window:     window,
+	}
+	if !snap.closing && isDelegate {
+		snap.last = run.rec.StartedAt
+		if run.rec.LastActivity != nil {
+			snap.last = *run.rec.LastActivity
+		}
+		snap.now = jm.now()
+		snap.alreadyNotified = run.quietNotified
+	}
+	dec := decideQuietWatchdogTick(snap)
+	if !dec.keepAlive {
 		jm.mu.Unlock()
 		return false
 	}
-	last := run.rec.StartedAt
-	if run.rec.LastActivity != nil {
-		last = *run.rec.LastActivity
-	}
-	quiet := jm.now().Sub(last)
-	if quiet >= window {
-		if !run.quietNotified {
-			run.quietNotified = true
-			notifications = append(notifications, watchNotification(jobID, quietWatchdogMessage(window, last)))
-		}
-	} else {
-		// Activity resumed within the window: clear the latch so the next quiet
-		// stretch fires again.
-		run.quietNotified = false
+	run.quietNotified = dec.newNotifiedLatch
+	if dec.fire {
+		notifications = append(notifications, watchNotification(jobID, quietWatchdogMessage(window, snap.last)))
 	}
 	jm.mu.Unlock()
 
