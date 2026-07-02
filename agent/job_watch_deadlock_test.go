@@ -39,14 +39,12 @@ func newCallerSendWatchSession(t *testing.T, watchEvent string) *Session {
 		withConfig(SessionConfig{StateDir: t.TempDir()}),
 	)
 
-	// Install the caller-send watch BELOW the validation layer. configureWatch
-	// (and the job_watch tool) now reject this exact shape as a feedback loop
-	// (target=caller, send.to=caller on a self-generated kind). The loop-prevention
-	// guard is asserted separately by TestValidateWatchDeliveryLoop; here we need a
-	// live caller-send watch on jm.watches so driveWithWatchdog exercises the real
-	// firing+delivery path (onSessionEvent -> recordWatchSendsAndKick -> token ->
-	// drain). newWatchConfig runs no loop guard, so this direct install is legal
-	// and mirrors exactly what configureWatch builds and installs.
+	// Install the caller-send watch directly (below the configureWatch arg-shape
+	// layer) so this test exercises the live firing+delivery path: we need a
+	// caller-send watch on jm.watches (target=caller, send.to=caller on a
+	// self-generated kind) so driveWithWatchdog drives onSessionEvent ->
+	// recordWatchSendsAndKick -> token -> drain. This direct install mirrors exactly
+	// what configureWatch builds and installs for this shape.
 	installWatchBelowValidation(t, sess.jobManager, watchArgs{
 		Target: "caller",
 		Events: []string{watchEvent},

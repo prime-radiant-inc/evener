@@ -9,24 +9,26 @@ gotchas" are seeded from this. Cite Go **symbols**, never `file:line`.
 
 ## Watch / delivery shapes (the ones that produced wrong numbers)
 
-### Watch self-loop
-- **Symptom:** an observer/watch seems to keep re-triggering on its own output;
-  a delivery count that won't settle.
-- **What it is:** a delivery caused (transitively) by a **prior delivery of the
-  same watch**. Suppression should have dropped the trigger before it became a
-  delivery.
-- **Confirm:** `serf-doctor watches <sel> --self-loops`. A watch with
-  `self_loop.detected == true` is confirmed. The verdict is a **same-`watch_id`
-  prior hop in the provenance `Chain`** (a hop whose `delivery_id` differs from the
-  delivery's own stamp) — `provenance.Causal.Chain`, not `ContainsWatch`.
-- **Mechanics:** `watchSendSnapshot` stamps every delivery with its own watch key
-  via `provenance.WithWatch`, so `ContainsWatch`/`WatchKeys` is vacuously true on
-  any recorded delivery and is **not** the signal. Runtime suppression
-  (`shouldSuppressWatch` → `ContainsWatch`) keys on `watch_id`+`watch_generation`;
-  the Chain hop check keys on `watch_id` alone — so a **re-arm / generation bump**
-  escapes suppression but the Chain still catches it. Caveat: the Chain is
-  truncatable (`maxDiagnosticChain = 16`, `ChainTruncated`), so a deep loop is a
-  positive signal, not a completeness guarantee.
+### Watch runaway (fuse fired)
+- **Symptom:** an observer/watch keeps reacting to its own influence and climbs
+  instead of disengaging; a delivery count that won't settle until it stops cold.
+- **What it is:** self-influence that went **unbounded** — the watch kept
+  delivering on its own causal descendants until the depth fuse had to cut it.
+  (Self-influence itself is **normal**: watches always deliver, and a
+  self-influenced delivery is informed by a depth-gradient line, not dropped. The
+  failure is only the *unbounded* case the fuse had to terminate.)
+- **Confirm:** `serf-doctor watches <sel> --self-loops` — it surfaces only watches
+  whose fuse fired. A watch with `runaway_drops > 0` is confirmed; its
+  `max_self_influence_depth` reached the fuse. A merely self-influenced but
+  **bounded** watch (`runaway_drops == 0`) is healthy and is **not** listed.
+- **Mechanics:** the runtime computes a coalescing-aware self-influence depth
+  (distinct *delivered* prior deliveries of this watch in the lineage; a
+  coalesced-away pending that never independently delivered does not count),
+  stamps it as `WatchSendState.SelfInfluenceDepth`, and at depth **8**
+  (`runawaySelfInfluenceDepth`) drops the send with `DiagnosticReason = "runaway"`.
+  The volume breaker (`watchDeliveryBudget = 50`) is the floor behind it. The
+  doctor **reads** the stamped depth and the `runaway` drop reason — it does not
+  re-derive a loop from the `Chain`.
 
 ### Pending lines counted as deliveries (overcount)
 - **Symptom:** `grep -c watch_send_pending jobs.jsonl` says N; the real delivery

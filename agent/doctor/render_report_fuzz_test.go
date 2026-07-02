@@ -119,11 +119,8 @@ func doctor_buildWatchView(r *doctor_reader) WatchView {
 		Coalesced:          r.doctor_bool(),
 	}
 	if r.doctor_bool() {
-		w.SelfLoop.Detected = true
-		w.SelfLoop.ChainTruncated = r.doctor_bool()
-		for i, n := 0, r.doctor_int(4); i < n; i++ {
-			w.SelfLoop.DeliveryIDs = append(w.SelfLoop.DeliveryIDs, r.doctor_str())
-		}
+		w.MaxSelfInfluenceDepth = r.doctor_int(12)
+		w.RunawayDrops = r.doctor_int(4)
 	}
 	for i, n := 0, r.doctor_int(5); i < n; i++ {
 		w.Deliveries = append(w.Deliveries, DeliveryView{
@@ -133,8 +130,8 @@ func doctor_buildWatchView(r *doctor_reader) WatchView {
 			TriggerReason:    r.doctor_str(),
 			CoalescedCount:   r.doctor_int(10),
 			DiagnosticReason: r.doctor_str(),
-			SelfLoop:         r.doctor_bool(),
-			Provenance:       doctor_buildProvenance(r),
+			SelfInfluenceDepth: r.doctor_int(12),
+			Provenance:         doctor_buildProvenance(r),
 		})
 	}
 	return w
@@ -211,10 +208,9 @@ func FuzzDoctorRenderWatches(f *testing.F) {
 		w.doctor_putInt(0)     // Evicted
 		w.doctor_putInt(3)     // StillPending (> 0 -> still-pending line)
 		w.doctor_putBool(true) // Coalesced
-		w.doctor_putBool(true) // SelfLoop.Detected
-		w.doctor_putBool(true) // SelfLoop.ChainTruncated
-		w.doctor_putInt(1)     // one self-loop delivery id
-		w.doctor_putStr("L")   // that id
+		w.doctor_putBool(true) // breaker telemetry present
+		w.doctor_putInt(9)     // MaxSelfInfluenceDepth
+		w.doctor_putInt(2)     // RunawayDrops
 		w.doctor_putInt(2)     // two deliveries
 		// delivery 1 — fully populated, with provenance.
 		w.doctor_putStr("D1")  // DeliveryID
@@ -223,7 +219,7 @@ func FuzzDoctorRenderWatches(f *testing.F) {
 		w.doctor_putStr("tr")  // TriggerReason
 		w.doctor_putInt(3)     // CoalescedCount
 		w.doctor_putStr("dr")  // DiagnosticReason
-		w.doctor_putBool(true) // SelfLoop
+		w.doctor_putInt(7)     // SelfInfluenceDepth
 		w.doctor_putBool(true) // has provenance
 		w.doctor_putBool(true) // provenance.ChainTruncated
 		w.doctor_putInt(1)     // one watch key
@@ -240,7 +236,7 @@ func FuzzDoctorRenderWatches(f *testing.F) {
 		w.doctor_putStr("")     // TriggerReason
 		w.doctor_putInt(0)      // CoalescedCount
 		w.doctor_putStr("")     // DiagnosticReason
-		w.doctor_putBool(false) // SelfLoop
+		w.doctor_putInt(0)      // SelfInfluenceDepth
 		w.doctor_putBool(false) // no provenance
 		return w.b
 	}
@@ -271,12 +267,11 @@ func FuzzDoctorRenderWatches(f *testing.F) {
 			if !strings.Contains(out, "watch "+w.WatchID) {
 				t.Fatalf("output omits watch id %q\n%s", w.WatchID, out)
 			}
-			if w.SelfLoop.Detected {
-				for _, id := range w.SelfLoop.DeliveryIDs {
-					if id != "" && !strings.Contains(out, id) {
-						t.Fatalf("output omits self-loop delivery id %q\n%s", id, out)
-					}
-				}
+			if w.RunawayDrops > 0 && !strings.Contains(out, "breaker: FIRED") {
+				t.Fatalf("output omits the fired-breaker line for watch %q\n%s", w.WatchID, out)
+			}
+			if w.RunawayDrops == 0 && w.MaxSelfInfluenceDepth > 0 && !strings.Contains(out, "bounded self-influence") {
+				t.Fatalf("output omits the bounded-self-influence line for watch %q\n%s", w.WatchID, out)
 			}
 			for _, d := range w.Deliveries {
 				if d.DeliveryID != "" && !strings.Contains(out, d.DeliveryID) {

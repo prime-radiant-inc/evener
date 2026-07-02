@@ -130,7 +130,8 @@ scan** of the `watch_send_delivered/dropped/evicted` events. The doctor tool doe
 this for you.
 
 **Read it via:** `serf-doctor watches <selector>` (distinct deliveries vs pending
-lines, per-delivery terminal + reason + provenance, self-loop verdict).
+lines, per-delivery terminal + reason + provenance, self-influence/breaker
+telemetry).
 
 ### Delegates and grants → the session tree
 
@@ -142,7 +143,7 @@ the **worker's** `SessionMeta.ObservedBy[]` and mirrored by `FoldGrants`.
 
 ---
 
-## Provenance (`provenance.Causal`) — and the self-loop trap
+## Provenance (`provenance.Causal`) — and the runaway breaker
 
 Watch-send deliveries and some job events carry causal provenance:
 
@@ -154,32 +155,37 @@ provenance.Causal{
 }
 ```
 
-- `WatchKeys` is the **runtime suppression** set: `shouldSuppressWatch` →
-  `ContainsWatch(p, watchID, generation)` is applied to an *incoming* event's
-  provenance **pre-stamp**; if the triggering event already carries the key, the
-  delivery is suppressed and **never recorded**. So a healthy watch records
-  **zero** self-loop deliveries by construction.
-- Therefore `ContainsWatch` / `WatchKeys` is **useless as a post-hoc verdict**: a
-  *recorded* delivery is stamped with its own watch's key at delivery time
-  (`watchSendSnapshot` → `WithWatch`), so `ContainsWatch` over it is **vacuously
-  true for every delivery**.
-- The forensic self-loop verdict is the **`Chain`**: a delivery whose `Chain`
-  contains a **prior hop of the same `watch_id`** (a hop with a *different*
-  `delivery_id` than its own stamp) was caused, transitively, by an earlier
-  delivery of this watch — a loop.
+- **There is no echo suppression.** Watches **always deliver**. A self-influenced
+  delivery — one whose triggering event already carries this watch's key
+  (`ContainsWatch(p, watchID, generation)`) — is **delivered and recorded**, not
+  dropped; the runtime injects a depth-gradient `<system-reminder>` line so the
+  sidecar can self-regulate (inform+breaker). So self-influence is **normal**, and
+  a watch records self-influenced deliveries by design — that is not a defect.
+- `WatchKeys` / the `Chain` are **diagnostic provenance**, not a suppression set.
+  `WatchKeys` is the deduped `(watch_id, watch_generation)` set carried for causal
+  reasoning; the `Chain` is the ordered diagnostic trail. A recorded delivery is
+  stamped with its own watch's key at delivery time (`watchSendSnapshot` →
+  `WithWatch`), so `ContainsWatch` over a recorded delivery is **vacuously true** —
+  it is not a verdict on anything.
+- **The breaker signal is the recorded `SelfInfluenceDepth`** (an int the runtime
+  stamps on each `WatchSendState`) plus the **`runaway` drops**. The runtime
+  computes a coalescing-aware self-influence depth — distinct *delivered* prior
+  deliveries of this watch in the lineage (a coalesced-away pending that never
+  independently delivered does **not** count) — sizes the gradient line from it,
+  and at depth **8** (`runawaySelfInfluenceDepth`) drops the send with
+  `DiagnosticReason = "runaway"`. The volume breaker (`watchDeliveryBudget = 50`)
+  is the floor that bounds the no-send notification path.
+- The doctor **reads** these recorded facts (the stamped `SelfInfluenceDepth` and
+  the `runaway` drop reason); it does **not** re-derive a loop from the `Chain`. A
+  forensic tool observes recorded reality, it does not re-simulate the runtime.
 - Caveat: `Chain` is truncatable (`maxDiagnosticChain = 16`, sets
-  `ChainTruncated`), so a deep loop can lose middle hops — a positive verdict is
-  a real signal, its absence is not a completeness guarantee.
-- Nuance: the Chain-hop check keys on `watch_id` alone while suppression keys on
-  `watch_id`+`watch_generation`, so a re-arm / generation bump escapes suppression
-  but is exactly the loop the `Chain` still catches.
+  `ChainTruncated`), so a deep lineage can lose middle hops. Truncation sharpens
+  the gradient line but does not drive the fuse — the runaway is bounded by the
+  recorded depth and, ultimately, by the volume breaker.
 
-There is **no** durable "count of legitimate external triggers" to compare
-against — the triggering `events.SessionEvent`s are ephemeral and never
-persisted — so a "deliveries ≤ external triggers" invariant is uncomputable from
-durable state. The Chain is the signal.
-
-**Read it via:** `serf-doctor watches <selector> --self-loops`.
+**Read it via:** `serf-doctor watches <selector> --self-loops` (now reads breaker
+telemetry: per-watch `max_self_influence_depth` and `runaway_drops`, surfacing
+only watches whose fuse fired).
 
 ---
 

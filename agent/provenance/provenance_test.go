@@ -143,3 +143,99 @@ func TestLatestDeliveryID(t *testing.T) {
 		t.Fatalf("last-only chain: got %q, want %q", got, "wd_3")
 	}
 }
+
+func TestSelfInfluenceDepth(t *testing.T) {
+	chain := func(entries ...Entry) *Causal { return &Causal{Chain: entries} }
+	watchHop := func(watchID, generation, deliveryID string) Entry {
+		return Entry{Kind: "watch", WatchID: watchID, WatchGeneration: generation, DeliveryID: deliveryID}
+	}
+
+	tests := []struct {
+		name       string
+		p          *Causal
+		watchID    string
+		generation string
+		delivered  map[string]bool
+		want       int
+	}{
+		{
+			name:    "nil provenance",
+			p:       nil,
+			watchID: "watch_A",
+			want:    0,
+		},
+		{
+			name:    "empty chain",
+			p:       &Causal{},
+			watchID: "watch_A",
+			want:    0,
+		},
+		{
+			name:      "empty watch id",
+			p:         chain(watchHop("watch_A", "wg_1", "wd_1")),
+			watchID:   "",
+			delivered: map[string]bool{"wd_1": true},
+			want:      0,
+		},
+		{
+			name:      "one delivered self hop",
+			p:         chain(watchHop("watch_A", "wg_1", "wd_1")),
+			watchID:   "watch_A",
+			delivered: map[string]bool{"wd_1": true},
+			want:      1,
+		},
+		{
+			name:      "coalesced-away self hop is not counted",
+			p:         chain(watchHop("watch_A", "wg_1", "wd_1")),
+			watchID:   "watch_A",
+			delivered: map[string]bool{"wd_1": false},
+			want:      0,
+		},
+		{
+			name:      "same delivery id twice dedupes",
+			p:         chain(watchHop("watch_A", "wg_1", "wd_1"), watchHop("watch_A", "wg_1", "wd_1")),
+			watchID:   "watch_A",
+			delivered: map[string]bool{"wd_1": true},
+			want:      1,
+		},
+		{
+			name:       "generation filter counts only that generation",
+			p:          chain(watchHop("watch_A", "g1", "wd_1"), watchHop("watch_A", "g2", "wd_2")),
+			watchID:    "watch_A",
+			generation: "g1",
+			delivered:  map[string]bool{"wd_1": true, "wd_2": true},
+			want:       1,
+		},
+		{
+			name:       "no generation filter counts across generations",
+			p:          chain(watchHop("watch_A", "g1", "wd_1"), watchHop("watch_A", "g2", "wd_2")),
+			watchID:    "watch_A",
+			generation: "",
+			delivered:  map[string]bool{"wd_1": true, "wd_2": true},
+			want:       2,
+		},
+		{
+			name:      "different watch id is ignored",
+			p:         chain(watchHop("watch_B", "wg_1", "wd_1")),
+			watchID:   "watch_A",
+			delivered: map[string]bool{"wd_1": true},
+			want:      0,
+		},
+		{
+			name:      "non-watch kind is ignored",
+			p:         chain(Entry{Kind: "manual", WatchID: "watch_A", WatchGeneration: "wg_1", DeliveryID: "wd_1"}),
+			watchID:   "watch_A",
+			delivered: map[string]bool{"wd_1": true},
+			want:      0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			delivered := func(id string) bool { return tc.delivered[id] }
+			if got := SelfInfluenceDepth(tc.p, tc.watchID, tc.generation, delivered); got != tc.want {
+				t.Fatalf("SelfInfluenceDepth = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

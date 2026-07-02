@@ -34,7 +34,7 @@ evidence.
 Adopt the diagnostic categories from Contract 3 where they apply — `validation`,
 `policy_denied`, `unavailable`, `timeout`, `cancellation`, `provider_error`,
 `hook_blocked`, `hook_failed`, `transcript_unavailable` — plus the forensic
-shapes this skill adds: `watch_self_loop`, `dropped_delivery`, `provenance_gap`,
+shapes this skill adds: `watch_runaway`, `dropped_delivery`, `provenance_gap`,
 `stuck_processing`, `orphaned_runtime`. The category routes and groups.
 
 ### Signature formats
@@ -42,7 +42,7 @@ shapes this skill adds: `watch_self_loop`, `dropped_delivery`, `provenance_gap`,
 Stable and deterministic so dedup can suppress repeats:
 
 - structural defect: `{shape}:{sessionID}:{watchID|turn}` — e.g.
-  `watch_self_loop:01J…:w_42`.
+  `watch_runaway:01J…:w_42`.
 - recurring audit finding: `{runbook}:{category}:{bucket}` where bucket is an ISO
   week/date/month — e.g. `watch-delivery-health:dropped_delivery:2026-W25`.
 
@@ -75,15 +75,15 @@ code. That is an honest limit of an on-demand forensic doctor.
 
 ```json
 {
-  "signature": "watch_self_loop:01JABCWORKER:w_42",
+  "signature": "watch_runaway:01JABCWORKER:w_42",
   "severity": "high",
-  "category": "watch_self_loop",
-  "title": "Watch w_42 re-delivered its own output (self-loop)",
-  "description": "Delivery dl_9 of watch w_42 carries a Chain hop of the same watch_id (delivery dl_3) before its own stamp — it was caused by an earlier delivery of this watch. Suppression should have dropped it; a generation bump likely escaped the watch_id+generation key.",
+  "category": "watch_runaway",
+  "title": "Watch w_42 self-influence went unbounded — runaway fuse fired",
+  "description": "Watch w_42 reached max_self_influence_depth 8 and the machinery cut it: 3 sends were dropped with diagnostic_reason \"runaway\" (runaway_drops=3). Self-influence is normal, but this watch kept reacting to its own influence without backing off until the depth fuse had to terminate the loop — a sidecar/watch-topology problem to investigate.",
   "evidence": {
     "sessionRefs": ["proj:6f…:01JABCWORKER"],
     "watchIds": ["w_42"],
-    "deliveryIds": ["dl_9", "dl_3"],
+    "deliveryIds": ["dl_9"],
     "doctorCommand": "serf-doctor watches proj:6f…:01JABCWORKER --self-loops"
   },
   "suggestedFix": { "type": "diagnosis" }
@@ -104,8 +104,9 @@ code. That is an honest limit of an on-demand forensic doctor.
 
 ## When NOT to emit
 
-- A rule working correctly ("suppression dropped the self-loop trigger as
-  designed") — that is HEALTHY, emit nothing.
+- A watch reacting to its own influence at a **bounded** depth (the fuse never
+  fired, `runaway_drops == 0`) — self-influence is normal under inform+breaker;
+  that is HEALTHY, emit nothing.
 - Informational / visibility metrics the runbook itself labels non-violations
   (e.g. expected coalescing: "8 pending lines → 4 deliveries").
 - Clean scorecards, healthy funnels, expected baselines.

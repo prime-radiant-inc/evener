@@ -11,10 +11,10 @@ HEALTHY/INSPECT/CLASSIFY), each a heading:
 ## The three sections
 
 1. **HEALTHY** — what steady state looks like, in terms of `serf-doctor` output.
-   Be precise about the *signal* (e.g. "no settled delivery's `Chain` has a
-   same-`watch_id` prior hop"), and call out any look-alike that is **not** the
-   signal (e.g. the always-present `WatchKeys` stamp). A reader must be able to
-   tell PASS from FAIL without guessing.
+   Be precise about the *signal* (e.g. "no watch has a `runaway` drop"), and call
+   out any look-alike that is **not** the signal (e.g. a bounded self-influenced
+   delivery — normal, not a runaway). A reader must be able to tell PASS from FAIL
+   without guessing.
 2. **INSPECT** — the exact `serf-doctor <cmd>` invocations to run. **Pull live
    state first; never hardcode a session id, a watch id, or a threshold** — take
    them from the target selector the runbook is invoked with. Prefer `--json` so
@@ -65,11 +65,11 @@ A run that finds nothing is the expected, correct outcome.
 
 ## Worked sketch
 
-The seed `observer-self-loop.md` is the canonical example: HEALTHY = no
-same-`watch_id` prior `Chain` hop; INSPECT = `serf-doctor watches <selector>
---self-loops --json`; CLASSIFY = each `self_loop.detected == true` → one
-`watch_self_loop` Finding, empty output → PASS. Read it before authoring a new
-one.
+The seed `observer-self-loop.md` is the canonical example: HEALTHY = no watch has
+a `runaway` drop (bounded self-influence is normal); INSPECT = `serf-doctor
+watches <selector> --self-loops --json`; CLASSIFY = each watch with
+`runaway_drops > 0` → one `watch_runaway` Finding, empty output → PASS. Read it
+before authoring a new one.
 
 ## When you are *extending* (authoring a brand-new runbook)
 

@@ -152,7 +152,7 @@ func dr2_distinctTerminals(events []jobstore.Event) int {
 func dr2_reportEqual(a, b WatchReport) bool { return reflect.DeepEqual(a, b) }
 
 // FuzzDr2BuildWatchReport drives buildWatchReport (and, through it,
-// buildWatchView, orderedWatchIDs, terminalKind, and deliverySelfLoop) over a
+// buildWatchView, orderedWatchIDs, and terminalKind) over a
 // fuzzed jobstore event log and watch-filter opts. Oracles beyond never-panic:
 //   - determinism: the same event log + opts fold to a DeepEqual-identical report
 //     (no map-iteration order or unstable-sort leaks into the output);
@@ -161,7 +161,8 @@ func dr2_reportEqual(a, b WatchReport) bool { return reflect.DeepEqual(a, b) }
 //   - per-view internal consistency: the delivery-row count equals
 //     DistinctDeliveries, the delivered/dropped/evicted tallies sum to it, the
 //     Coalesced flag is exactly PendingLines>DistinctDeliveries, and the
-//     self-loop delivery-id list matches the per-delivery SelfLoop flags;
+//     breaker telemetry (max depth, runaway drops) matches the per-delivery
+//     recorded stamps;
 //   - filter honesty: a WatchID filter yields only that watch, and SelfLoopsOnly
 //     yields only self-looping watches;
 //   - count preservation: with no filter, the report's total distinct deliveries
@@ -210,21 +211,27 @@ func FuzzDr2BuildWatchReport(f *testing.F) {
 			if opts.WatchID != "" && w.WatchID != opts.WatchID {
 				t.Fatalf("WatchID filter %q leaked watch %q", opts.WatchID, w.WatchID)
 			}
-			if opts.SelfLoopsOnly && !w.SelfLoop.Detected {
-				t.Fatalf("SelfLoopsOnly returned non-self-loop watch %q", w.WatchID)
+			if opts.SelfLoopsOnly && w.RunawayDrops == 0 {
+				t.Fatalf("SelfLoopsOnly returned watch %q with no runaway drops", w.WatchID)
 			}
 
-			perDelivery := 0
+			// Breaker telemetry is read from recorded state, not re-derived:
+			// the view's max depth must equal the deepest per-delivery stamp,
+			// and runaway drops must match dropped-with-reason-runaway rows.
+			maxDepth, runaway := 0, 0
 			for _, d := range w.Deliveries {
-				if d.SelfLoop {
-					perDelivery++
+				if d.SelfInfluenceDepth > maxDepth {
+					maxDepth = d.SelfInfluenceDepth
+				}
+				if d.Terminal == "dropped" && d.DiagnosticReason == "runaway" {
+					runaway++
 				}
 			}
-			if perDelivery != len(w.SelfLoop.DeliveryIDs) {
-				t.Fatalf("watch %s: %d self-loop deliveries but %d verdict ids", w.WatchID, perDelivery, len(w.SelfLoop.DeliveryIDs))
+			if w.MaxSelfInfluenceDepth != maxDepth {
+				t.Fatalf("watch %s: MaxSelfInfluenceDepth=%d but deepest delivery stamp=%d", w.WatchID, w.MaxSelfInfluenceDepth, maxDepth)
 			}
-			if (perDelivery > 0) != w.SelfLoop.Detected {
-				t.Fatalf("watch %s: SelfLoop.Detected=%v but %d self-loop deliveries", w.WatchID, w.SelfLoop.Detected, perDelivery)
+			if w.RunawayDrops != runaway {
+				t.Fatalf("watch %s: RunawayDrops=%d but %d dropped-runaway deliveries", w.WatchID, w.RunawayDrops, runaway)
 			}
 		}
 

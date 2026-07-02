@@ -109,6 +109,33 @@ func LatestDeliveryID(p *Causal) string {
 	return ""
 }
 
+// SelfInfluenceDepth counts distinct *delivered* prior deliveries of watchID in
+// p.Chain. Coalescing-aware: a hop counts only if delivered(hop.DeliveryID) — a
+// superseded pending unions its chain entry into a survivor but never
+// independently delivered, so it must not inflate the count.
+//
+//	generation == ""      → count across all generations (the runaway-fuse scope)
+//	generation == "<gen>" → count only that generation    (the gradient scope)
+func SelfInfluenceDepth(p *Causal, watchID, generation string, delivered func(string) bool) int {
+	if p == nil || watchID == "" {
+		return 0
+	}
+	seen := make(map[string]bool)
+	for _, entry := range p.Chain {
+		if entry.Kind != "watch" || entry.WatchID != watchID || entry.DeliveryID == "" {
+			continue
+		}
+		if generation != "" && entry.WatchGeneration != generation {
+			continue
+		}
+		if !delivered(entry.DeliveryID) || seen[entry.DeliveryID] {
+			continue
+		}
+		seen[entry.DeliveryID] = true
+	}
+	return len(seen)
+}
+
 func truncateChain(p *Causal) {
 	if p == nil || len(p.Chain) <= maxDiagnosticChain {
 		return

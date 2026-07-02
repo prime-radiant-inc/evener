@@ -1,6 +1,6 @@
 ---
 name: doctoring-serf
-description: Use when diagnosing a serf session, job, watch, or the session tree — investigating watch self-loops, dropped/coalesced deliveries, "how many times did X actually get called", stuck turns, or parent↔delegate↔observer linkage. Covers the serf-doctor forensic tools, the Finding contract, runbook authoring, and graduated repair.
+description: Use when diagnosing a serf session, job, watch, or the session tree — investigating watch runaways (self-influence depth + runaway-fuse drops), dropped/coalesced deliveries, "how many times did X actually get called", stuck turns, or parent↔delegate↔observer linkage. Covers the serf-doctor forensic tools, the Finding contract, runbook authoring, and graduated repair.
 ---
 
 # Doctoring serf
@@ -55,7 +55,7 @@ Run them via the shell tool. First positional arg is a session selector:
 | `serf-doctor locate <sel>` | where are this session's transcript / meta / jobs files? | `--all-buckets` |
 | `serf-doctor transcript <sel>` | render the turns; **how many real `X` calls?** | `--count <tool>`, `--format outline\|markdown`, `--range last:N` |
 | `serf-doctor apilog <sel>` | per-call tokens/latency, **empty responses, errors, cache spikes**, session token spend | `--empty`, `--errors`, `--cache-spikes [--threshold N]`, `--summary` |
-| `serf-doctor watches <sel>` | distinct deliveries (collapsing coalescing), provenance, **self-loop verdict** | `--watch <id>`, `--self-loops` |
+| `serf-doctor watches <sel>` | distinct deliveries (collapsing coalescing), provenance, **breaker telemetry (self-influence depth + runaway drops)** | `--watch <id>`, `--self-loops` |
 | `serf-doctor tree <sel>` | parent ↔ delegate/observer tree across buckets | `--depth N`, `--observers` |
 
 Flag-level detail lives in each subcommand's `--help`, not here.
@@ -85,6 +85,6 @@ FYI/PASS noise. **Healthy ⇒ zero findings.** Full schema:
 | Read an artifact before reading `data-model.md` | Consult the data model first |
 | Count `watch_send_pending` lines as deliveries | Read distinct deliveries from `serf-doctor watches` |
 | Treat a `delegate_send` text mention as a call | `serf-doctor transcript --count delegate_send` |
-| Use `ContainsWatch` / `WatchKeys` as a self-loop verdict | Read the `Chain` for a same-`watch_id` **prior** hop (the recorded `WatchKeys` stamp is always present — vacuously true) |
+| Treat any self-influenced delivery as a bug, or re-derive a loop from the `Chain` | Self-influence is normal; flag only a runaway — read the recorded breaker telemetry (`max_self_influence_depth`, `runaway_drops`) via `serf-doctor watches --self-loops` |
 | Emit a PASS / FYI / "looks fine" finding | Emit only confirmed, actionable problems; healthy ⇒ zero |
 | Silently apply a core-skill or doctor-tool repair | Propose only, behind review + the validation gate (`repair-guardrails.md`) |

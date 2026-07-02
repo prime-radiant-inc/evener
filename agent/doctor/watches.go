@@ -17,8 +17,8 @@ type WatchReport struct {
 	Watches   []WatchView `json:"watches"`
 }
 
-// WatchView is one watch's registration, delivery accounting, and self-loop
-// verdict.
+// WatchView is one watch's registration, delivery accounting, and breaker
+// telemetry (self-influence depth + runaway-fuse drops).
 type WatchView struct {
 	WatchID          string `json:"watch_id"`
 	Generation       string `json:"generation,omitempty"`
@@ -42,37 +42,31 @@ type WatchView struct {
 	StillPending       int  `json:"still_pending"`
 	Coalesced          bool `json:"coalesced"`
 
-	Deliveries []DeliveryView  `json:"deliveries,omitempty"`
-	SelfLoop   SelfLoopVerdict `json:"self_loop"`
+	// Breaker telemetry, read from the runtime's stamps (never re-derived from the
+	// provenance Chain). Under the inform+breaker policy self-influence is normal;
+	// what matters is the deepest stamped depth and whether the runaway fuse fired.
+	MaxSelfInfluenceDepth int `json:"max_self_influence_depth"` // deepest stamped self-influence depth across deliveries
+	RunawayDrops          int `json:"runaway_drops"`            // sends the depth fuse dropped (DiagnosticReason "runaway")
+
+	Deliveries []DeliveryView `json:"deliveries,omitempty"`
 }
 
 // DeliveryView is one settled watch-send delivery.
 type DeliveryView struct {
-	DeliveryID       string             `json:"delivery_id,omitempty"`
-	Terminal         string             `json:"terminal"` // delivered | dropped | evicted
-	TriggerIdentity  string             `json:"trigger_identity,omitempty"`
-	TriggerReason    string             `json:"trigger_reason,omitempty"`
-	CoalescedCount   int                `json:"coalesced_count,omitempty"`
-	DiagnosticReason string             `json:"diagnostic_reason,omitempty"`
-	SelfLoop         bool               `json:"self_loop"`
-	Provenance       *provenance.Causal `json:"provenance,omitempty"`
-}
-
-// SelfLoopVerdict reports whether any settled delivery of the watch was caused
-// (transitively) by a PRIOR delivery of the same watch. The verdict is read from
-// the diagnostic Chain — a same-watch_id hop with a different delivery_id — never
-// from the always-present WatchKeys stamp (which a recorded delivery carries for
-// its own watch by construction, so ContainsWatch is vacuously true on it).
-type SelfLoopVerdict struct {
-	Detected       bool     `json:"detected"`
-	DeliveryIDs    []string `json:"delivery_ids,omitempty"`
-	ChainTruncated bool     `json:"chain_truncated,omitempty"` // a flagged delivery had a truncated chain — a positive signal, not a completeness guarantee
+	DeliveryID         string             `json:"delivery_id,omitempty"`
+	Terminal           string             `json:"terminal"` // delivered | dropped | evicted
+	TriggerIdentity    string             `json:"trigger_identity,omitempty"`
+	TriggerReason      string             `json:"trigger_reason,omitempty"`
+	CoalescedCount     int                `json:"coalesced_count,omitempty"`
+	DiagnosticReason   string             `json:"diagnostic_reason,omitempty"`
+	SelfInfluenceDepth int                `json:"self_influence_depth,omitempty"`
+	Provenance         *provenance.Causal `json:"provenance,omitempty"`
 }
 
 // WatchOpts narrows a watch report.
 type WatchOpts struct {
 	WatchID       string // scope to one watch_id
-	SelfLoopsOnly bool   // only watches with a self-loop verdict
+	SelfLoopsOnly bool   // only watches where the runaway fuse fired
 }
 
 // settledDelivery is one terminal watch-send event (delivered/dropped/evicted).
@@ -82,9 +76,10 @@ type settledDelivery struct {
 }
 
 // Watches resolves the selector and reports each watch's registration, distinct
-// (coalescing-collapsed) deliveries, provenance, and self-loop verdict — read
-// from the real jobstore folds + a raw scan of the settled watch_send_* events
-// (FoldWatchSends discards terminal payloads, surfacing only pending frames).
+// (coalescing-collapsed) deliveries, provenance, and breaker telemetry (the
+// runtime-stamped self-influence depth + runaway-fuse drops) — read from the real
+// jobstore folds + a raw scan of the settled watch_send_* events (FoldWatchSends
+// discards terminal payloads, surfacing only pending frames).
 func Watches(stateBase, selector string, opts WatchOpts) (WatchReport, error) {
 	paths, err := Locate(stateBase, selector)
 	if err != nil {
@@ -136,7 +131,7 @@ func buildWatchReport(paths Paths, events []jobstore.Event, opts WatchOpts) Watc
 			continue
 		}
 		view := buildWatchView(wID, registry[wID], terminals[wID], pendingLines[wID], stillPending[wID])
-		if opts.SelfLoopsOnly && !view.SelfLoop.Detected {
+		if opts.SelfLoopsOnly && view.RunawayDrops == 0 {
 			continue
 		}
 		report.Watches = append(report.Watches, view)
@@ -158,26 +153,22 @@ func buildWatchView(wID string, rec *jobstore.WatchRecord, settledByID map[strin
 	}
 
 	deliveries := make([]settledDelivery, 0, len(settledByID))
-	deliveredIDs := make(map[string]bool, len(settledByID))
-	for id, d := range settledByID {
+	for _, d := range settledByID {
 		deliveries = append(deliveries, d)
-		if d.kind == "delivered" {
-			deliveredIDs[id] = true
-		}
 	}
 	sort.Slice(deliveries, func(i, j int) bool { return deliveries[i].ev.Seq < deliveries[j].ev.Seq })
 
 	for _, d := range deliveries {
 		ws := d.ev.WatchSend
 		dv := DeliveryView{
-			DeliveryID:       ws.DeliveryID,
-			Terminal:         d.kind,
-			TriggerIdentity:  ws.TriggerIdentity,
-			TriggerReason:    ws.TriggerReason,
-			CoalescedCount:   ws.CoalescedCount,
-			DiagnosticReason: ws.DiagnosticReason,
-			Provenance:       ws.Provenance,
-			SelfLoop:         deliverySelfLoop(wID, ws, deliveredIDs),
+			DeliveryID:         ws.DeliveryID,
+			Terminal:           d.kind,
+			TriggerIdentity:    ws.TriggerIdentity,
+			TriggerReason:      ws.TriggerReason,
+			CoalescedCount:     ws.CoalescedCount,
+			DiagnosticReason:   ws.DiagnosticReason,
+			SelfInfluenceDepth: ws.SelfInfluenceDepth,
+			Provenance:         ws.Provenance,
 		}
 		switch d.kind {
 		case "delivered":
@@ -187,46 +178,17 @@ func buildWatchView(wID string, rec *jobstore.WatchRecord, settledByID map[strin
 		case "evicted":
 			v.Evicted++
 		}
-		if dv.SelfLoop {
-			v.SelfLoop.Detected = true
-			v.SelfLoop.DeliveryIDs = append(v.SelfLoop.DeliveryIDs, ws.DeliveryID)
-			if ws.Provenance != nil && ws.Provenance.ChainTruncated {
-				v.SelfLoop.ChainTruncated = true
-			}
+		if ws.SelfInfluenceDepth > v.MaxSelfInfluenceDepth {
+			v.MaxSelfInfluenceDepth = ws.SelfInfluenceDepth
+		}
+		if d.kind == "dropped" && ws.DiagnosticReason == "runaway" {
+			v.RunawayDrops++
 		}
 		v.Deliveries = append(v.Deliveries, dv)
 	}
 	v.DistinctDeliveries = len(deliveries)
 	v.Coalesced = v.PendingLines > v.DistinctDeliveries
 	return v
-}
-
-// deliverySelfLoop reports whether a settled delivery was caused by a prior
-// delivery of the SAME watch — a same-watch_id hop in the diagnostic Chain whose
-// delivery_id is a DIFFERENT, genuinely-delivered delivery of this watch. The own
-// delivery-time stamp (matching delivery_id) is excluded; the WatchKeys set is
-// never consulted (it always contains the watch's own key on a recorded
-// delivery).
-//
-// Crucially, a hop only counts when its delivery_id actually DELIVERED. When a
-// pending frame is superseded by a later one for the same slot, the runtime
-// unions their provenance (the survivor "stands in for both"), so the survivor's
-// Chain carries the coalesced-away predecessor's delivery_id — but that
-// predecessor never independently delivered and is not a distinct prior delivery.
-// Counting it is a false positive (the real 01KVEZ5K… production case).
-func deliverySelfLoop(watchID string, ws *jobstore.WatchSendState, deliveredIDs map[string]bool) bool {
-	if ws == nil || ws.Provenance == nil {
-		return false
-	}
-	for _, hop := range ws.Provenance.Chain {
-		if hop.WatchID != watchID || hop.DeliveryID == ws.DeliveryID {
-			continue // a different watch, or this delivery's own stamp
-		}
-		if deliveredIDs[hop.DeliveryID] {
-			return true
-		}
-	}
-	return false
 }
 
 func terminalKind(k jobstore.EventKind) string {
@@ -296,14 +258,13 @@ func RenderWatches(r WatchReport) string {
 		if w.StillPending > 0 {
 			fmt.Fprintf(&b, "  still-pending (unsettled) frames: %d\n", w.StillPending)
 		}
-		if w.SelfLoop.Detected {
-			fmt.Fprintf(&b, "  SELF-LOOP: %d deliver(ies) caused by a prior delivery of this watch: %s\n",
-				len(w.SelfLoop.DeliveryIDs), strings.Join(w.SelfLoop.DeliveryIDs, ", "))
-			if w.SelfLoop.ChainTruncated {
-				b.WriteString("    (a flagged chain was truncated — a deeper loop may have lost middle hops)\n")
-			}
-		} else {
-			b.WriteString("  self-loop: none (verdict from the provenance Chain; the WatchKeys stamp is always present and is not the signal)\n")
+		switch {
+		case w.RunawayDrops > 0:
+			fmt.Fprintf(&b, "  breaker: FIRED — %d runaway drop(s) (depth fuse); max self-influence depth %d\n", w.RunawayDrops, w.MaxSelfInfluenceDepth)
+		case w.MaxSelfInfluenceDepth > 0:
+			fmt.Fprintf(&b, "  breaker: bounded self-influence, max depth %d (no runaway)\n", w.MaxSelfInfluenceDepth)
+		default:
+			b.WriteString("  breaker: no self-influence\n")
 		}
 		for _, d := range w.Deliveries {
 			fmt.Fprintf(&b, "  · %s %s", dash(d.DeliveryID), d.Terminal)
@@ -316,8 +277,8 @@ func RenderWatches(r WatchReport) string {
 			if d.DiagnosticReason != "" {
 				fmt.Fprintf(&b, "  reason=%s", d.DiagnosticReason)
 			}
-			if d.SelfLoop {
-				b.WriteString("  [SELF-LOOP]")
+			if d.SelfInfluenceDepth > 0 {
+				fmt.Fprintf(&b, "  depth=%d", d.SelfInfluenceDepth)
 			}
 			b.WriteString("\n")
 		}
@@ -351,7 +312,7 @@ func filterLabel(opts WatchOpts) string {
 func emptyWatchesMessage(filtered string) string {
 	switch {
 	case strings.Contains(filtered, "self-loops"):
-		return "no watches with a self-loop verdict (the session's watches are healthy)"
+		return "no watches where the runaway fuse fired (self-influence is bounded)"
 	case strings.HasPrefix(filtered, "watch:"):
 		return "watch " + strings.TrimPrefix(filtered, "watch:") + " not found in this session"
 	default:

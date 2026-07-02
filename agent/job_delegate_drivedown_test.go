@@ -1414,7 +1414,7 @@ func TestSendMessageMidDriveSteersNoSecondTurn(t *testing.T) {
 // TestWatchResumeMidDriveSteersNotDropped proves the A7 fix's FromWatch leg: a
 // watch-send resume (FromWatch==true) arriving while a coordinator's drive turn is
 // in flight (sub.driving==true, sub.running==false) must STEER into that single
-// in-flight turn — delivered via trySteer — and MUST NOT be permanently dropped.
+// in-flight turn — delivered via trySteerWithProvenance — and MUST NOT be permanently dropped.
 //
 // A backgrounded coordinator that finished its run carries a TERMINAL job record
 // (not StatusRunning), and a drive turn mints NO running runtime job. So a
@@ -1432,9 +1432,9 @@ func TestSendMessageMidDriveSteersNoSecondTurn(t *testing.T) {
 // (a permanent drop), contradicting the A7 "steer into the drive turn" decision and
 // silently losing the watch delivery.
 //
-// GREEN after the fix: a driving child's FromWatch send steers via trySteer
+// GREEN after the fix: a driving child's FromWatch send steers via trySteerWithProvenance
 // (Delivered / Action=="steered", classifyWatchSendDelivery != watchSendHardFailure)
-// — or, if trySteer ever declined, returns watchSendBusy so the frame stays pending
+// — or, if trySteerWithProvenance ever declined, returns watchSendBusy so the frame stays pending
 // for A6 re-delivery — never a hard failure.
 func TestWatchResumeMidDriveSteersNotDropped(t *testing.T) {
 	t.Parallel()
