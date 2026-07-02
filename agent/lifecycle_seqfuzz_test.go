@@ -128,16 +128,18 @@ func TestLifecycleSeqFuzz(t *testing.T) {
 type responseKind int
 
 const (
-	kindFinal    responseKind = iota // communicate end_turn=true (terminal)
-	kindAwait                        // communicate end_turn=false (awaits reply)
-	kindText                         // bare assistant text, no tool calls
-	kindEmpty                        // empty response (null content)
-	kindPause                        // pause_turn finish reason
-	kindReadFile                     // tool call: read_file
-	kindGlob                         // tool call: glob
-	kindGrep                         // tool call: grep
-	kindShell                        // tool call: shell (foreground)
-	kindCompact                      // tool call: compact (forces history shrink)
+	kindFinal     responseKind = iota // communicate end_turn=true (terminal)
+	kindAwait                         // communicate end_turn=false (awaits reply)
+	kindText                          // bare assistant text, no tool calls
+	kindEmpty                         // empty response (null content)
+	kindPause                         // pause_turn finish reason
+	kindReadFile                      // tool call: read_file
+	kindGlob                          // tool call: glob
+	kindGrep                          // tool call: grep
+	kindShell                         // tool call: shell (foreground)
+	kindCompact                       // tool call: compact (forces history shrink)
+	kindWebSearch                     // assistant text carrying a server web_search part
+	kindThinking                      // assistant text carrying a thinking part
 	numResponseKinds
 )
 
@@ -176,6 +178,21 @@ func buildResponse(kind responseKind, callSeq int) llm.Response {
 		return lifecycleToolCall(id, "shell", map[string]any{"command": "echo " + strconv.Itoa(callSeq)})
 	case kindCompact:
 		return lifecycleToolCall(id, "compact", map[string]any{"instructions": "tighten"})
+	case kindWebSearch:
+		// A response whose content carries a server-side web_search part plus text.
+		// Drives recordResponseUsage's web-search usage-suppression arm
+		// (responseHasServerWebSearch) and the bare-text no-tool-calls path.
+		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Query: "q" + strconv.Itoa(callSeq)}},
+			{Kind: llm.ContentText, Text: "searched " + strconv.Itoa(callSeq)},
+		}}}
+	case kindThinking:
+		// A response carrying a thinking part plus text — drives thinking content
+		// classification/handling in the round.
+		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "think " + strconv.Itoa(callSeq)}},
+			{Kind: llm.ContentText, Text: "thought " + strconv.Itoa(callSeq)},
+		}}}
 	case kindShellBackground:
 		return lifecycleToolCall(id, "shell", map[string]any{"command": "echo bg " + strconv.Itoa(callSeq), "background": true})
 	case kindDelegate:
@@ -242,6 +259,18 @@ func (r opRecord) opContainsCompact() bool {
 	return false
 }
 
+// opAllowsHistoryShrink reports whether this op is permitted to shrink history.
+// Compaction is the one sanctioned shrink, reached two ways: an explicit compact
+// tool call in the script, OR a content-filter fault — handleModelError's
+// content-filter recovery force-compacts to drop the offending content before
+// retrying the round, which legitimately shortens history.
+func (r opRecord) opAllowsHistoryShrink() bool {
+	if r.opContainsCompact() {
+		return true
+	}
+	return lifecycleOpCode(r.Code) == opLLMError && llmFaultKind(r.FaultKind) == faultContentFilter
+}
+
 // opRecord is one drawn operation with every parameter it needs, so the artifact
 // is self-contained and a replay never touches rapid.
 type opRecord struct {
@@ -251,6 +280,44 @@ type opRecord struct {
 	Dur         int64  `json:"d,omitempty"`  // advance duration (ns) for opAdvanceClock
 	IntAt       int    `json:"i,omitempty"`  // round at which to cancel ctx (interrupt)
 	ChildScript []int  `json:"cs,omitempty"` // delegate child's per-round response kinds
+	FaultKind   int    `json:"fk,omitempty"` // llmFaultKind injected on opLLMError's first model call
+}
+
+// llmFaultKind selects the TYPED provider error opLLMError injects on a turn's
+// first model call, so the fuzzer drives each distinct handleModelError arm:
+// content-filter recovery (compact + retry), non-retryable close (auth), the
+// context-length warning, and the retryable paths (rate-limit/server).
+type llmFaultKind int
+
+const (
+	faultGeneric       llmFaultKind = iota // plain error — recoverable/unknown
+	faultContentFilter                     // 400 content-filter → compact-and-retry recovery
+	faultRateLimit                         // 429 → retryable
+	faultServer                            // 503 → retryable
+	faultContextLength                     // 413 → context-length warning + terminal
+	faultAuth                              // 401 → non-retryable, closes the session
+	numFaultKinds
+)
+
+// faultError builds the typed llm.Error for a fault kind via the real HTTP-status
+// classifier, so llm.Kind/llm.Classify see a genuine *contentFilterError etc. (a
+// hand-rolled llm.Error would classify as KindUnknown — Kind switches on concrete
+// type). Any out-of-range kind (e.g. from a decoded fuzz artifact) → generic.
+func faultError(k llmFaultKind) error {
+	switch k {
+	case faultContentFilter:
+		return llm.ErrorFromHTTPStatus("openai", 400, "content filter policy violated", nil, nil)
+	case faultRateLimit:
+		return llm.ErrorFromHTTPStatus("openai", 429, "rate limit exceeded", nil, nil)
+	case faultServer:
+		return llm.ErrorFromHTTPStatus("openai", 503, "service unavailable", nil, nil)
+	case faultContextLength:
+		return llm.ErrorFromHTTPStatus("openai", 413, "context length exceeded", nil, nil)
+	case faultAuth:
+		return llm.ErrorFromHTTPStatus("openai", 401, "invalid api key", nil, nil)
+	default:
+		return errors.New("lifecycle-fuzz: injected model-call fault")
+	}
 }
 
 // lifecycleArtifact is the minimized reproducer: the op sequence plus the env
@@ -278,6 +345,9 @@ func drawLifecycleArtifact(rt *rapid.T) lifecycleArtifact {
 			rec.Text = rapid.SampledFrom(inputTexts).Draw(rt, "text")
 			if code == opProcessInterrupted {
 				rec.IntAt = rapid.IntRange(0, scriptLen).Draw(rt, "intAt")
+			}
+			if code == opLLMError {
+				rec.FaultKind = rapid.IntRange(0, int(numFaultKinds)-1).Draw(rt, "faultKind")
 			}
 		case opSteer, opEnqueue, opFollowUp, opSetGoal:
 			rec.Text = rapid.SampledFrom(inputTexts).Draw(rt, "text")
@@ -361,6 +431,7 @@ func lifecycleOracleRunInjected(art lifecycleArtifact, inj lifecycleInject) *pro
 	var cancelFn func()          // set per interrupt op
 	var pendingChildScript []int // consumed by the next child the factory builds
 	var armFault bool            // W1: when set, the next model call fails once
+	var faultKind llmFaultKind   // W1: which TYPED provider error to inject
 	cancelAt = -1
 
 	responder := func(req llm.Request) llm.Response {
@@ -379,13 +450,16 @@ func lifecycleOracleRunInjected(art lifecycleArtifact, inj lifecycleInject) *pro
 	}
 
 	adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: responder}
-	// W1 fault injection: opLLMError arms this so the next model call fails once,
-	// exercising the turn loop's error/retry recovery under the full interleaving.
-	// One-shot (disarms itself) so the session can recover on a retry.
+	// W1 fault injection: opLLMError arms this so the next model call fails once
+	// with the op's TYPED fault (content-filter/rate-limit/server/context-length/
+	// auth/generic), exercising every handleModelError arm — content-filter
+	// compact-and-retry recovery, non-retryable close, the context-length warning,
+	// and the retryable paths — under the full interleaving. One-shot (disarms
+	// itself) so a recoverable fault lets the round succeed on the retry.
 	adapter.FaultResponder = func(llm.Request) error {
 		if armFault {
 			armFault = false
-			return errors.New("lifecycle-fuzz: injected model-call fault")
+			return faultError(faultKind)
 		}
 		return nil
 	}
@@ -469,6 +543,7 @@ func lifecycleOracleRunInjected(art lifecycleArtifact, inj lifecycleInject) *pro
 		cancelFn = nil
 		pendingChildScript = op.ChildScript
 		armFault = lifecycleOpCode(op.Code) == opLLMError // W1: fail this op's first model call
+		faultKind = llmFaultKind(op.FaultKind)
 
 		res := runOpSafely(sess, clk, op, &cancelAt, &cancelFn)
 		if res.wedged {
@@ -626,7 +701,7 @@ func checkLifecycleOracles(sess *Session, m *lifecycleModel, op opRecord, art li
 	if _, repairs := repairOrphanedToolResults(histCopy); repairs != 0 {
 		return lifecycleFailure(promoter.Invariant, art, step, fmt.Sprintf("orphaned-tool-results:%d", repairs))
 	}
-	if histLen < m.prevHistLen && !op.opContainsCompact() {
+	if histLen < m.prevHistLen && !op.opAllowsHistoryShrink() {
 		return lifecycleFailure(promoter.Invariant, art, step, fmt.Sprintf("history-shrank-without-compaction:%d->%d", m.prevHistLen, histLen))
 	}
 

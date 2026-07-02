@@ -358,6 +358,12 @@ TARGETS=(
 	"native:agent:.:FuzzCtCanonicalizeToolNames::session_tools.go#canonicalizeToolNames"
 	"native:agent:.:FuzzCtProviderVisibleToolNames::session_tools.go#providerVisibleToolNames"
 	"native:agent:./internal/contextmgr:FuzzCtMaskToolResult::context_manager.go#maskToolResultContent"
+
+	# Native bridge of the rapid lifecycle SEQUENCE fuzzer: replays a JSON-encoded
+	# op sequence through the real offline Session (turn loop, handleModelError
+	# fault arms, drain, compaction, delegate, jobs), so the big orchestration
+	# methods count toward fuzz-reachable and go-fuzz can mutate whole sequences.
+	"native:agent:.:FuzzLifecycleSequence::session_lifecycle.go#processInputKindWithProvenance"
 )
 
 duration="60s"

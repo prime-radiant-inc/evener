@@ -15,12 +15,17 @@
 # canonical and the total equals the ground-truth statement count. These floors
 # are the first bless on that honest basis:
 #   .     17.4% = 3612/20713   (was 9.8 on the old basis — robust method is higher)
-#   agent 53.4% = 10492/19661  (was reading an inflated 57.7)
-#   llm   77.9% = 4625/5937    (was reading an inflated 79.9)
-# NOTE: this counts native `go test -fuzz` targets (^Fuzz) only. The rapid.Check
-# SEQUENCE fuzzers (Test*SeqFuzz) drive the big orchestration methods and are NOT
-# in this denominator — extracting+fuzzing small pure cores moves the % only by
-# the size of those cores; the sequence fuzzers are the larger reachability lever.
+#   agent 54.0% = 10619/19661  (was inflated-reading 57.7)
+#   llm   77.9% = 4625/5937    (was inflated-reading 79.9)
+# The agent bump 53.4->54.0 (+127 stmts) is FuzzLifecycleSequence — a native
+# `go test -fuzz` bridge that replays JSON-encoded op sequences through the real
+# offline Session, so the big orchestration methods (turn loop, handleModelError
+# fault arms, drain, compaction, delegate) now count toward ^Fuzz. It made
+# handleModelError go 0% -> 96% fuzz-covered and processInputKindWithProvenance
+# 0% -> 78%. The whole-module % moves modestly because (1) the pure DECISION cores
+# were already covered by the per-core fuzzers so only the orchestration GLUE is
+# net-new, and (2) the module denominator is diluted by subpackages. go-fuzz
+# mutates whole sequences from the seed corpus for deeper bug-finding reach.
 . 17.4
-agent 53.4
+agent 54.0
 llm 77.9
