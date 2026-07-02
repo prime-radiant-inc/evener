@@ -505,37 +505,56 @@ func isRuntimeLostDelegate(rec *jobstore.JobRecord) bool {
 		rec.Reason == "runtime_lost"
 }
 
-func (s *Session) assessDelegateResumability(rec *jobstore.JobRecord, mode delegateResumabilityMode) delegateResumability {
-	if s == nil || rec == nil || rec.Type != jobstore.JobDelegate {
-		return delegateResumability{Reason: notResumableMissingDelegateResumeMetadata}
+// validateDelegateRestoreState runs the pure record/descriptor validation gate
+// that precedes any on-disk restore work: parent linkage, transcript-ref shape,
+// env/working-dir policy, frozen-skill consistency, and state-dir presence. It
+// returns the notResumable reason for the first failing check, or "" when every
+// pure precondition holds and the caller should proceed to load the child's
+// on-disk session meta and transcript. It performs no I/O, locking, or mutation:
+// parentSessionID and hasStateDir are snapshots supplied by the caller.
+func validateDelegateRestoreState(rec *jobstore.JobRecord, parentSessionID string, hasStateDir bool) string {
+	if rec == nil || rec.Type != jobstore.JobDelegate {
+		return notResumableMissingDelegateResumeMetadata
 	}
 	desc := rec.DelegateRestore
 	if desc == nil {
-		return delegateResumability{Reason: notResumableMissingDelegateResumeMetadata}
+		return notResumableMissingDelegateResumeMetadata
 	}
 	childID := strings.TrimSpace(desc.ChildSessionID)
 	if childID == "" || desc.TranscriptRef != rec.TranscriptRef ||
-		desc.ParentSessionID != s.ID() ||
+		desc.ParentSessionID != parentSessionID ||
 		desc.ParentJobID != rec.JobID ||
 		desc.OwnerSessionID != rec.OwnerSessionID ||
 		desc.VisibleSessionID != rec.VisibleToSession {
-		return delegateResumability{Reason: notResumableParentLinkageUnavailable}
+		return notResumableParentLinkageUnavailable
 	}
 	if _, transcriptChildID, err := decodeRef(rec.TranscriptRef); err != nil || transcriptChildID != childID {
-		return delegateResumability{Reason: notResumableParentLinkageUnavailable}
+		return notResumableParentLinkageUnavailable
 	}
 	if !hasValidDelegateRestoreLocalEnvPolicy(desc) {
-		return delegateResumability{Reason: notResumableParentLinkageUnavailable}
+		return notResumableParentLinkageUnavailable
 	}
 	if !hasValidDelegateRestoreWorkingDir(desc) {
-		return delegateResumability{Reason: notResumableParentLinkageUnavailable}
+		return notResumableParentLinkageUnavailable
 	}
 	if _, err := restoreFrozenSkillBodies(desc.FrozenSkillNames, desc.FrozenSkillBodies); err != nil {
-		return delegateResumability{Reason: notResumableCorruptChildSessionMeta}
+		return notResumableCorruptChildSessionMeta
 	}
-	if s.stateDir == "" {
-		return delegateResumability{Reason: notResumableMissingChildSessionMeta}
+	if !hasStateDir {
+		return notResumableMissingChildSessionMeta
 	}
+	return ""
+}
+
+func (s *Session) assessDelegateResumability(rec *jobstore.JobRecord, mode delegateResumabilityMode) delegateResumability {
+	if s == nil {
+		return delegateResumability{Reason: notResumableMissingDelegateResumeMetadata}
+	}
+	if reason := validateDelegateRestoreState(rec, s.ID(), s.stateDir != ""); reason != "" {
+		return delegateResumability{Reason: reason}
+	}
+	desc := rec.DelegateRestore
+	childID := strings.TrimSpace(desc.ChildSessionID)
 
 	meta, err := schema.LoadSessionMeta(s.stateDir, childID)
 	if err != nil {

@@ -52,6 +52,8 @@ TARGETS=(
 	"native:agent:.:FuzzTranscriptReadersAgree::transcript_read.go"
 	"native:agent:.:FuzzLineWindowExtractors::job_output_digest.go"
 	"native:agent:.:FuzzAcPartialJSONStringField::session_stream.go#partialJSONStringField"
+	"native:agent:.:FuzzLxClassifyDurableNotifications::session_lifecycle.go#classifyDurableNotifications"
+	"native:agent:.:FuzzLxValidateDelegateRestoreState::job_delegate.go#validateDelegateRestoreState"
 	"native:agent:./internal/jobstore:FuzzAcOutputMetaCodec::output.go#readValidOutputMetaFs"
 	"native:.:./cmd/serf-hub:FuzzHubReplayCarryThrough::app_threadread.go#replayTurnToAgentTurn"
 	"native:.:./cmd/serf-hub:FuzzHubReplayLiveVsReload::app_threadread.go#replayTurnToAgentTurn"
