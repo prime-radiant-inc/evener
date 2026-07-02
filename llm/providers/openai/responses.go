@@ -848,7 +848,11 @@ func toResponsesInput(msgs []llm.Message, model string) (instructions string, it
 				}
 			}
 			for _, p := range m.Content {
-				if p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.EncryptedContent != "" {
+				if p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.EncryptedContent != "" &&
+					!llm.IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent) {
+					// The guard skips OpenRouter-style encrypted reasoning_details
+					// riding a cross-provider transcript — those are not OpenAI
+					// Responses encrypted_content blobs and the API rejects them.
 					item := map[string]any{
 						"type":              "reasoning",
 						"encrypted_content": p.Thinking.EncryptedContent,

@@ -247,17 +247,25 @@ func toChatMessages(messages []llm.Message, quirks ProviderQuirks, useReasoningD
 				}
 				reasoning = ""
 			}
-			if reasoning != "" {
-				if useReasoningDetails {
-					// MiniMax format: {type: "reasoning.text", text: "...", format: "unknown", index: 0}
-					msg["reasoning_details"] = []map[string]any{
-						{
+			encrypted := encryptedDetailsFromParts(content)
+			// Encrypted reasoning (OpenRouter Gemini/o-series) must round-trip
+			// through reasoning_details regardless of the useReasoningDetails
+			// flag. When present, text rides the same array (text first, then
+			// encrypted) to mirror OpenRouter's unified reasoning_details shape.
+			if reasoning != "" || len(encrypted) > 0 {
+				if useReasoningDetails || len(encrypted) > 0 {
+					var details []map[string]any
+					if reasoning != "" {
+						// MiniMax format: {type: "reasoning.text", text: "...", format: "unknown", index: 0}
+						details = append(details, map[string]any{
 							"type":   "reasoning.text",
 							"text":   reasoning,
 							"format": "unknown",
 							"index":  0,
-						},
+						})
 					}
+					details = append(details, encrypted...)
+					msg["reasoning_details"] = details
 				} else {
 					msg[reasoningReplayField(content)] = reasoning
 				}
@@ -351,6 +359,26 @@ func reasoningReplayField(parts []llm.ContentPart) string {
 		}
 	}
 	return "reasoning_content"
+}
+
+// encryptedDetailsFromParts decodes the opaque encrypted reasoning_details
+// items carried on assistant thinking parts (serialized in EncryptedContent),
+// concatenated in part order, ready to replay in the reasoning_details array.
+func encryptedDetailsFromParts(parts []llm.ContentPart) []map[string]any {
+	var out []map[string]any
+	for _, p := range parts {
+		if p.Kind == llm.ContentThinking && p.Thinking != nil &&
+			llm.IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent) {
+			// The guard also keeps a foreign provider's opaque blob (OpenAI
+			// Responses encrypted_content) off the wire on a cross-provider
+			// transcript — it would not parse as our item array anyway.
+			var items []map[string]any
+			if err := json.Unmarshal([]byte(p.Thinking.EncryptedContent), &items); err == nil {
+				out = append(out, items...)
+			}
+		}
+	}
+	return out
 }
 
 func thinkingFromParts(parts []llm.ContentPart) string {

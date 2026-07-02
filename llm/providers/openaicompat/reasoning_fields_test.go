@@ -216,3 +216,209 @@ func TestComplete_ReasoningFieldVariants(t *testing.T) {
 		})
 	}
 }
+
+// assistantReasoningDetails returns the reasoning_details array emitted on the
+// (single) assistant message of a built request body.
+func assistantReasoningDetails(t *testing.T, req llm.Request) []map[string]any {
+	t.Helper()
+	body, err := buildRequestBody(req, false, ModelCompat{})
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+	msgs := body["messages"].([]map[string]any)
+	for _, m := range msgs {
+		if m["role"] != "assistant" {
+			continue
+		}
+		rd, ok := m["reasoning_details"]
+		if !ok {
+			return nil
+		}
+		details, ok := rd.([]map[string]any)
+		if !ok {
+			t.Fatalf("reasoning_details not []map[string]any: %T", rd)
+		}
+		return details
+	}
+	t.Fatal("no assistant message in body")
+	return nil
+}
+
+// Encrypted reasoning_details (OpenRouter Gemini/o-series) arrive as opaque
+// {type,id,data} items with no text. They must be captured on the thinking
+// part's EncryptedContent so the reasoning chain survives replay, and must
+// replay back into the reasoning_details array.
+func TestStream_EncryptedReasoningDetails_RoundTrip(t *testing.T) {
+	a := streamChunks(t, []string{
+		`{"model":"m","choices":[{"index":0,"delta":{"reasoning_details":[{"type":"reasoning.encrypted","id":"rc_1","data":"OPAQUE"}]},"finish_reason":null}]}`,
+		`{"model":"m","choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":null}]}`,
+		`{"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+	})
+	_, final := collectThinking(t, a)
+	parts := thinkingParts(final)
+	if len(parts) != 1 {
+		t.Fatalf("thinking parts = %d, want 1 (encrypted-only must still make a thinking part)", len(parts))
+	}
+	if parts[0].EncryptedContent == "" {
+		t.Fatalf("encrypted content dropped; thinking = %+v", parts[0])
+	}
+	if !strings.Contains(parts[0].EncryptedContent, "OPAQUE") || !strings.Contains(parts[0].EncryptedContent, "reasoning.encrypted") {
+		t.Fatalf("encrypted content = %q", parts[0].EncryptedContent)
+	}
+
+	// Replay: the encrypted item must return in reasoning_details.
+	req := llm.Request{Model: "m", Messages: []llm.Message{
+		llm.User("q"),
+		{Role: llm.RoleAssistant, Content: final.Message.Content},
+		llm.User("q2"),
+	}}
+	details := assistantReasoningDetails(t, req)
+	if len(details) != 1 {
+		t.Fatalf("reasoning_details = %v, want 1 encrypted item", details)
+	}
+	if details[0]["type"] != "reasoning.encrypted" || details[0]["id"] != "rc_1" || details[0]["data"] != "OPAQUE" {
+		t.Fatalf("replayed encrypted detail = %v", details[0])
+	}
+}
+
+// A turn can carry both a reasoning.text item and a reasoning.encrypted item in
+// the same reasoning_details array. The text lands on Text, the encrypted on
+// EncryptedContent, and both replay back into reasoning_details.
+func TestStream_MixedTextAndEncryptedReasoningDetails(t *testing.T) {
+	a := streamChunks(t, []string{
+		`{"model":"m","choices":[{"index":0,"delta":{"reasoning_details":[{"type":"reasoning.text","text":"deep thought","format":"unknown","index":0},{"type":"reasoning.encrypted","id":"rc_1","data":"OPAQUE"}]},"finish_reason":null}]}`,
+		`{"model":"m","choices":[{"index":0,"delta":{"content":"a"},"finish_reason":null}]}`,
+		`{"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+	})
+	_, final := collectThinking(t, a)
+	parts := thinkingParts(final)
+	if len(parts) != 1 {
+		t.Fatalf("thinking parts = %d, want 1", len(parts))
+	}
+	if parts[0].Text != "deep thought" {
+		t.Errorf("thinking text = %q, want %q", parts[0].Text, "deep thought")
+	}
+	if !strings.Contains(parts[0].EncryptedContent, "OPAQUE") {
+		t.Errorf("encrypted content = %q", parts[0].EncryptedContent)
+	}
+}
+
+// An encrypted detail can stream in a chunk before its tool call finishes; it
+// must still be captured (carrier is the thinking part, not the tool call, so
+// arrival order is irrelevant).
+func TestStream_EncryptedDetailBeforeToolCall(t *testing.T) {
+	a := streamChunks(t, []string{
+		`{"model":"m","choices":[{"index":0,"delta":{"reasoning_details":[{"type":"reasoning.encrypted","id":"call_1","data":"OPAQUE"}]},"finish_reason":null}]}`,
+		`{"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"f","arguments":"{}"}}]},"finish_reason":null}]}`,
+		`{"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+	})
+	_, final := collectThinking(t, a)
+	parts := thinkingParts(final)
+	if len(parts) != 1 || parts[0].EncryptedContent == "" {
+		t.Fatalf("encrypted detail not captured before tool call; parts = %+v", parts)
+	}
+	if !strings.Contains(parts[0].EncryptedContent, "OPAQUE") {
+		t.Errorf("encrypted content = %q", parts[0].EncryptedContent)
+	}
+}
+
+// Replay composes text (MiniMax reasoning_details) with encrypted details:
+// the text item comes first, encrypted after.
+func TestReplay_MixedTextAndEncryptedReasoningDetails(t *testing.T) {
+	encrypted := `[{"type":"reasoning.encrypted","id":"rc_1","data":"OPAQUE"}]`
+	req := llm.Request{
+		Model: "m",
+		ProviderOptions: map[string]any{
+			"openai-compatible": map[string]any{"reasoning": map[string]any{"enabled": true}},
+		},
+		Messages: []llm.Message{
+			llm.User("q"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "deep thought", EncryptedContent: encrypted}},
+				{Kind: llm.ContentText, Text: "a"},
+			}},
+			llm.User("q2"),
+		},
+	}
+	details := assistantReasoningDetails(t, req)
+	if len(details) != 2 {
+		t.Fatalf("reasoning_details = %v, want [text, encrypted]", details)
+	}
+	if details[0]["type"] != "reasoning.text" || details[0]["text"] != "deep thought" {
+		t.Errorf("details[0] = %v, want reasoning.text", details[0])
+	}
+	if details[1]["type"] != "reasoning.encrypted" || details[1]["data"] != "OPAQUE" {
+		t.Errorf("details[1] = %v, want reasoning.encrypted", details[1])
+	}
+}
+
+// Encrypted details must replay even without the useReasoningDetails flag:
+// OpenRouter Gemini/o-series require the encrypted block returned regardless.
+func TestReplay_EncryptedOnlyWithoutReasoningFlag(t *testing.T) {
+	encrypted := `[{"type":"reasoning.encrypted","id":"rc_1","data":"OPAQUE"}]`
+	req := llm.Request{Model: "m", Messages: []llm.Message{
+		llm.User("q"),
+		{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{EncryptedContent: encrypted}},
+			{Kind: llm.ContentText, Text: "a"},
+		}},
+		llm.User("q2"),
+	}}
+	details := assistantReasoningDetails(t, req)
+	if len(details) != 1 || details[0]["type"] != "reasoning.encrypted" {
+		t.Fatalf("reasoning_details = %v, want single encrypted item", details)
+	}
+}
+
+// Moonshot/Kimi may report usage on choices[0].usage instead of the top-level
+// chunk usage; the stream loop must pick it up.
+func TestStream_ChoiceLevelUsageFallback(t *testing.T) {
+	a := streamChunks(t, []string{
+		`{"model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`,
+		`{"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop","usage":{"prompt_tokens":7,"completion_tokens":2,"total_tokens":9}}]}`,
+	})
+	_, final := collectThinking(t, a)
+	if final.Usage.InputTokens != 7 || final.Usage.OutputTokens != 2 {
+		t.Fatalf("choice-level usage not picked up: %+v", final.Usage)
+	}
+}
+
+// When both top-level and choice-level usage are present, top-level wins.
+func TestStream_TopLevelUsageWinsOverChoice(t *testing.T) {
+	a := streamChunks(t, []string{
+		`{"model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`,
+		`{"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}],"usage":{"prompt_tokens":7,"completion_tokens":2,"total_tokens":9}}`,
+	})
+	_, final := collectThinking(t, a)
+	if final.Usage.InputTokens != 7 || final.Usage.OutputTokens != 2 {
+		t.Fatalf("top-level usage should win: %+v", final.Usage)
+	}
+}
+
+// A foreign provider's opaque EncryptedContent (an OpenAI Responses blob on a
+// cross-provider transcript) must not replay into reasoning_details.
+func TestReplay_ForeignEncryptedContentSkipped(t *testing.T) {
+	req := llm.Request{Model: "m", Messages: []llm.Message{
+		llm.User("q"),
+		{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
+				Text:             "pondered",
+				EncryptedContent: "gAAAAABopaqueOpenAIResponsesBlob",
+			}},
+			{Kind: llm.ContentText, Text: "a"},
+		}},
+		llm.User("q2"),
+	}}
+	body, err := buildRequestBody(req, false, ModelCompat{})
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+	msgs := body["messages"].([]map[string]any)
+	assistant := msgs[1]
+	if _, ok := assistant["reasoning_details"]; ok {
+		t.Errorf("foreign EncryptedContent replayed into reasoning_details: %v", assistant)
+	}
+	if got := assistant["reasoning_content"]; got != "pondered" {
+		t.Errorf("thinking text should still replay normally, got %v", got)
+	}
+}

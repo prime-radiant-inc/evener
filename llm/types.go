@@ -236,6 +236,30 @@ func IsOpenAICompatReasoningField(sig string) bool {
 	return false
 }
 
+// IsOpenAICompatEncryptedReasoning reports whether s is the JSON array of
+// {"type":"reasoning.encrypted", ...} items the openai-compat adapter stores
+// in ThinkingData.EncryptedContent for OpenRouter-style encrypted reasoning.
+// Providers whose EncryptedContent is an opaque blob (OpenAI Responses) use
+// this to skip replaying a foreign provider's value on a cross-provider
+// transcript.
+func IsOpenAICompatEncryptedReasoning(s string) bool {
+	if len(s) == 0 || s[0] != '[' {
+		return false
+	}
+	var items []struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(s), &items); err != nil || len(items) == 0 {
+		return false
+	}
+	for _, it := range items {
+		if it.Type != "reasoning.encrypted" {
+			return false
+		}
+	}
+	return true
+}
+
 // WebSearchData holds a web-search content part, including the query and the raw provider payload.
 type WebSearchData struct {
 	Query string          `json:"query,omitempty"`

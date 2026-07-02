@@ -5593,3 +5593,41 @@ func TestIsUnconfigured(t *testing.T) {
 		})
 	}
 }
+
+// OpenRouter-style encrypted reasoning_details (a JSON array the openai-compat
+// adapter stores in EncryptedContent) riding a cross-provider transcript must
+// NOT replay as an OpenAI Responses encrypted_content blob — the API rejects
+// foreign values.
+func TestToResponsesInput_SkipsOpenAICompatEncryptedReasoning(t *testing.T) {
+	msgs := []llm.Message{
+		llm.User("q"),
+		{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{
+					Kind: llm.ContentThinking,
+					Thinking: &llm.ThinkingData{
+						Text:             "pondered",
+						EncryptedContent: `[{"type":"reasoning.encrypted","id":"rc_1","data":"OPAQUE"}]`,
+					},
+				},
+				{Kind: llm.ContentText, Text: "a"},
+			},
+		},
+		llm.User("q2"),
+	}
+
+	_, items, err := toResponsesInput(msgs, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("toResponsesInput: %v", err)
+	}
+	for _, itemAny := range items {
+		item, ok := itemAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		if item["type"] == "reasoning" {
+			t.Fatalf("openai-compat encrypted reasoning replayed as a Responses reasoning item: %#v", item)
+		}
+	}
+}

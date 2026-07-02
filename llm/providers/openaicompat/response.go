@@ -18,9 +18,10 @@ type chatCompletionResponse struct {
 }
 
 type chatChoice struct {
-	Index        int         `json:"index"`
-	Message      chatMessage `json:"message"`
-	FinishReason string      `json:"finish_reason"`
+	Index        int            `json:"index"`
+	Message      chatMessage    `json:"message"`
+	FinishReason string         `json:"finish_reason"`
+	Usage        map[string]any `json:"usage,omitempty"`
 }
 
 type chatMessage struct {
@@ -46,6 +47,44 @@ type reasoningDetailItem struct {
 	// Thinking is kept for backward compatibility with older OpenRouter format
 	// variants that used {type: "thinking", thinking: "..."}.
 	Thinking string `json:"thinking,omitempty"`
+	// ID and Data carry the opaque {type: "reasoning.encrypted", id, data}
+	// items OpenRouter emits for Gemini/o-series: the reasoning chain is
+	// encrypted server-side and must be round-tripped verbatim.
+	ID   string `json:"id,omitempty"`
+	Data string `json:"data,omitempty"`
+}
+
+// isEncrypted reports whether the item is an opaque encrypted reasoning block
+// that must be replayed verbatim to preserve the reasoning chain.
+func (d reasoningDetailItem) isEncrypted() bool {
+	return d.Type == "reasoning.encrypted" && d.ID != "" && d.Data != ""
+}
+
+// encodeEncryptedDetails serializes the encrypted items of a reasoning_details
+// array into the JSON string carried on ThinkingData.EncryptedContent, in
+// arrival order. Returns "" when there are none.
+func encodeEncryptedDetails(items []reasoningDetailItem) string {
+	enc := collectEncryptedDetails(items)
+	if len(enc) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(enc)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// collectEncryptedDetails returns the encrypted items as wire maps, preserving
+// order. Used both to build EncryptedContent and to accumulate streamed items.
+func collectEncryptedDetails(items []reasoningDetailItem) []map[string]any {
+	var enc []map[string]any
+	for _, d := range items {
+		if d.isEncrypted() {
+			enc = append(enc, map[string]any{"type": d.Type, "id": d.ID, "data": d.Data})
+		}
+	}
+	return enc
 }
 
 type chatToolCall struct {
@@ -67,9 +106,10 @@ type chatCompletionChunk struct {
 }
 
 type chatChunkChoice struct {
-	Index        int       `json:"index"`
-	Delta        chatDelta `json:"delta"`
-	FinishReason string    `json:"finish_reason"`
+	Index        int            `json:"index"`
+	Delta        chatDelta      `json:"delta"`
+	FinishReason string         `json:"finish_reason"`
+	Usage        map[string]any `json:"usage,omitempty"`
 }
 
 type chatDelta struct {
@@ -179,10 +219,12 @@ func fromChatCompletionResponse(raw map[string]any, quirks ProviderQuirks) (llm.
 
 	// Build message.
 	parts := []llm.ContentPart{}
-	if reasoning, field := extractReasoning(choice.Message); reasoning != "" {
+	reasoning, field := extractReasoning(choice.Message)
+	encrypted := encodeEncryptedDetails(choice.Message.ReasoningDetails)
+	if reasoning != "" || encrypted != "" {
 		parts = append(parts, llm.ContentPart{
 			Kind:     llm.ContentThinking,
-			Thinking: &llm.ThinkingData{Text: reasoning, Signature: field},
+			Thinking: &llm.ThinkingData{Text: reasoning, Signature: field, EncryptedContent: encrypted},
 		})
 	}
 	if choice.Message.Content != "" {
@@ -221,8 +263,12 @@ func fromChatCompletionResponse(raw map[string]any, quirks ProviderQuirks) (llm.
 		Raw:      raw,
 	}
 
+	// Usage is normally top-level, but Moonshot/Kimi sometimes report it on
+	// choices[0].usage instead. Top-level wins when both are present.
 	if parsed.Usage != nil {
 		resp.Usage = openaichat.ParseChatUsage(parsed.Usage)
+	} else if choice.Usage != nil {
+		resp.Usage = openaichat.ParseChatUsage(choice.Usage)
 	}
 
 	if resp.Usage.ReasoningTokens == nil && resp.Usage.ReasoningTokensEstimated == nil {

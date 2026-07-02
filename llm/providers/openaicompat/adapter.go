@@ -342,6 +342,10 @@ func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm
 	// reasoningField remembers which wire field the first reasoning delta
 	// arrived on so replay can route thinking back to the same field.
 	var reasoningField string
+	// encryptedDetails accumulates opaque reasoning.encrypted items (OpenRouter
+	// Gemini/o-series) in arrival order; they ride the thinking part's
+	// EncryptedContent so the reasoning chain survives replay.
+	var encryptedDetails []map[string]any
 	var model string
 	var finishReason string
 	var usage *llm.Usage
@@ -395,10 +399,16 @@ func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm
 
 				// Build final response.
 				msg := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{}}
-				if reasoningBuf.Len() > 0 {
+				if reasoningBuf.Len() > 0 || len(encryptedDetails) > 0 {
+					td := &llm.ThinkingData{Text: reasoningBuf.String(), Signature: reasoningField}
+					if len(encryptedDetails) > 0 {
+						if b, err := json.Marshal(encryptedDetails); err == nil {
+							td.EncryptedContent = string(b)
+						}
+					}
 					msg.Content = append(msg.Content, llm.ContentPart{
 						Kind:     llm.ContentThinking,
-						Thinking: &llm.ThinkingData{Text: reasoningBuf.String(), Signature: reasoningField},
+						Thinking: td,
 					})
 				}
 				if textBuf.Len() > 0 {
@@ -469,9 +479,20 @@ func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm
 			}
 			choice := chunk.Choices[0]
 
+			// Usage fallback: Moonshot/Kimi report usage on choices[0].usage
+			// instead of the top-level chunk usage. Top-level wins.
+			if chunk.Usage == nil && choice.Usage != nil {
+				u := openaichat.ParseChatUsage(choice.Usage)
+				usage = &u
+			}
+
 			if choice.FinishReason != "" {
 				finishReason = choice.FinishReason
 			}
+
+			// Accumulate opaque encrypted reasoning items (they carry no text,
+			// so reasoningFromDelta skips them).
+			encryptedDetails = append(encryptedDetails, collectEncryptedDetails(choice.Delta.ReasoningDetails)...)
 
 			// Reasoning delta — providers vary the field name; take the first
 			// non-empty variant per chunk (duplicated identical fields must
