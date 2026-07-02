@@ -52,13 +52,17 @@ case "$1" in
 	env)  echo "${STUB_GOCACHE:-/nonexistent-gocache}"; exit 0 ;;
 	list) echo "example.com/stub/pkg"; exit 0 ;;
 	test)
+		ec="${STUB_GO_TEST_EXIT:-1}"
 		if [ -n "${STUB_GO_FLAKY:-}" ]; then
 			cnt="${STUB_COUNTER:-/tmp/stubgo.cnt}"
 			n=$(cat "$cnt" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" >"$cnt"
 			# fail (1) on odd run, pass (0) on even -> passes on replay 2.
-			[ $((n % 2)) -eq 0 ] && exit 0 || exit 1
+			[ $((n % 2)) -eq 0 ] && ec=0 || ec=1
 		fi
-		exit "${STUB_GO_TEST_EXIT:-1}"
+		# Emit a realistic failure line on failure so the detail-summary path has
+		# something to capture (mirrors a real `go test` assertion line).
+		[ "$ec" -ne 0 ] && echo "stub_fuzz_test.go:1: synthetic crasher detail boom"
+		exit "$ec"
 		;;
 esac
 exit 0
@@ -158,6 +162,15 @@ assert_has "$out" "committed to local branch fuzz/crash-abc123def456" "s6: --no-
 if git -C "$r" rev-parse --verify -q fuzz/crash-abc123def456 >/dev/null; then ok "s6: crasher branch created"; else bad "s6: crasher branch missing"; fi
 status=$(jq -r '.["FuzzFoo:abc123def456789"].status' "$r/fuzz/state/ledger.json" 2>/dev/null || echo "")
 [ "$status" = "found" ] && ok "s6: ledger records status=found" || bad "s6: ledger status=$status, want found"
+# Change #1: filing the crasher must NOT switch the working tree off its branch.
+wt=$(git -C "$r" branch --show-current)
+[ "$wt" = "main" ] && ok "s6: working tree stays on main (never switched to the crash branch)" || bad "s6: working tree left on '$wt', want main"
+# The crasher artifact is actually committed on the branch (plumbing staged it).
+if git -C "$r" cat-file -e fuzz/crash-abc123def456:agent/testdata/fuzz/FuzzFoo/abc123def456789 2>/dev/null; then ok "s6: crasher artifact committed on the branch"; else bad "s6: crasher artifact missing from the branch"; fi
+# Change #2: the captured failure line rides into the ledger detail + commit body.
+detail=$(jq -r '.["FuzzFoo:abc123def456789"].detail' "$r/fuzz/state/ledger.json" 2>/dev/null || echo "")
+assert_has "$detail" "synthetic crasher detail boom" "s6: ledger detail carries the real failure line"
+assert_has "$(git -C "$r" log -1 --format=%B fuzz/crash-abc123def456 2>/dev/null)" "synthetic crasher detail boom" "s6: crash-branch commit body carries the real failure"
 
 # Scenario 7: gh unauthenticated -> degrade gracefully (no push), default (PR) mode.
 r=$(fresh_repo s7)

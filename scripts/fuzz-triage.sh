@@ -65,6 +65,44 @@ now()  { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 git_repo() { git -C "$repo_root" "$@"; }
 
+# commit_to_branch builds a commit on <branch> (creating or fast-forwarding its
+# ref) from <parent>'s tree plus the current working-tree content of the given
+# files, WITHOUT switching HEAD or the working tree. Filing a crasher must never
+# strand the developer's checkout on a fuzz/crash-* branch — a killed run mid-file
+# used to leave exactly that. Uses a throwaway index + commit-tree + update-ref.
+# NOTE: commit-tree is plumbing, so pre-commit hooks do NOT run — intentional here
+# (this is a machine-filed crash artifact on a review branch, not a human commit,
+# and there is no checkout of that branch to run a hook against).
+commit_to_branch() { # branch, parent, message, files...
+	local branch="$1" parent="$2" msg="$3"; shift 3
+	local idx tree commit rc f
+	idx="$(mktemp)"
+	if ! GIT_INDEX_FILE="$idx" git_repo read-tree "$parent" 2>/dev/null; then
+		rm -f "$idx"; return 1
+	fi
+	for f in "$@"; do
+		[ -n "$f" ] || continue
+		GIT_INDEX_FILE="$idx" git_repo add -- "$f" 2>/dev/null || true
+	done
+	tree="$(GIT_INDEX_FILE="$idx" git_repo write-tree 2>/dev/null)"; rc=$?
+	rm -f "$idx"
+	{ [ $rc -eq 0 ] && [ -n "$tree" ]; } || return 1
+	commit="$(printf '%s\n' "$msg" | git_repo commit-tree "$tree" -p "$parent" 2>/dev/null)" || return 1
+	git_repo update-ref "refs/heads/$branch" "$commit"
+}
+
+# summarize_failure distills a one-line detail from a `go test` failure: a
+# panic/fatal line if present, else the first "*_test.go:NN: message" assertion.
+# This is what turns a ledger/PR "detail" from a useless "crasher in FuzzX" into
+# the actual failure ("out of memory", "not a fixed point", …) so triage needs no
+# re-reproduction.
+summarize_failure() { # raw go-test output -> one-line summary (may be empty)
+	local out="$1" line
+	line="$(printf '%s\n' "$out" | grep -m1 -E 'panic:|fatal error:' || true)"
+	[ -n "$line" ] || line="$(printf '%s\n' "$out" | grep -m1 -E '_test\.go:[0-9]+:' || true)"
+	printf '%s' "$line" | tr -d '\r' | sed 's/^[[:space:]]*//' | cut -c1-200
+}
+
 # --- ledger helpers (jq; the ledger is a signature -> record map) -------------
 
 ledger_write() { # filter, then jq args... — apply to $ledger atomically
@@ -155,13 +193,17 @@ new_untracked() { # echoes paths that became untracked (??) between the snapshot
 # FAILS all K. survived_runs is the run index at which it first passed.
 
 flake_survived=0
+flake_output=""     # the first replay's failure output, for the detail summary
 flake_guard_native() { # pkgdir, fuzzname, hash -> 0 deterministic, 1 flaky
-	local pkgdir="$1" fuzz="$2" hash="$3" i
+	local pkgdir="$1" fuzz="$2" hash="$3" i out rc
+	flake_output=""
 	for ((i = 1; i <= K; i++)); do
-		if ( cd "$repo_root/$pkgdir" && go test -run "${fuzz}/${hash}" -count=1 . ) >/dev/null 2>&1; then
+		out="$( cd "$repo_root/$pkgdir" && go test -run "${fuzz}/${hash}" -count=1 . 2>&1 )"; rc=$?
+		if [ $rc -eq 0 ]; then
 			flake_survived=$((i - 1))
 			return 1 # passed a replay -> not deterministic
 		fi
+		[ -n "$flake_output" ] || flake_output="$out" # keep the first failure's output
 	done
 	return 0 # failed all K -> deterministic
 }
@@ -205,13 +247,14 @@ open_pr() { # sig12, sigkey, surface, oracle, detail, kind, pkg, run, test_path,
 		--arg first "$first" --arg now "$ts" --arg kind "$kind" --arg pkg "$pkg" \
 		--arg run "$run" --arg test_path "$test_path" --arg detail "$detail"
 
-	# Each distinct bug gets its own PR branched from the base branch, not from a
-	# previously-filed crasher branch.
-	git_repo switch "$base_branch" >/dev/null 2>&1 || true
-	git_repo switch -c "$branch" || { echo "fuzz-triage: branch $branch exists; skipping" >&2; return 1; }
-	git_repo add "$artifact" "$ledger" "$buckets" 2>/dev/null || true
-	[ -n "$test_path" ] && git_repo add "$test_path" 2>/dev/null || true
-	git_repo commit -q -F - <<EOF
+	# File the crasher on its own branch off the base branch — WITHOUT switching the
+	# working tree (a killed run must never strand the checkout on a crash branch).
+	# One distinct bug per branch; skip if it already exists.
+	if git_repo show-ref --verify --quiet "refs/heads/$branch"; then
+		echo "fuzz-triage: branch $branch exists; skipping" >&2; return 1
+	fi
+	local msg
+	msg="$(cat <<EOF
 test(fuzz): regression for $surface/$oracle $sig12
 
 Auto-filed by scripts/fuzz-triage.sh. The committed regression test is red on
@@ -219,6 +262,10 @@ main until the bug is fixed; $detail.
 
 Claude-Session: https://claude.ai/code/session_0111JibAhU1kVtGpvgYeGJRV
 EOF
+	)"
+	if ! commit_to_branch "$branch" "$base_branch" "$msg" "$artifact" "$ledger" "$buckets" "$test_path"; then
+		echo "fuzz-triage: failed to file branch $branch" >&2; return 1
+	fi
 
 	if $no_pr; then
 		note "committed to local branch $branch (--no-pr: not pushed)"
@@ -237,10 +284,11 @@ EOF
 	rm -f "$bodyfile"
 	if [ -n "$url" ]; then
 		ledger_write '.[$k] += {pr:$pr}' --arg k "$sigkey" --arg pr "$url"
-		git_repo commit -qam "chore(fuzz): record PR url for $sig12
+		# Amend the crash branch's ledger with the PR url — again without a checkout.
+		commit_to_branch "$branch" "$branch" "chore(fuzz): record PR url for $sig12
 
-Claude-Session: https://claude.ai/code/session_0111JibAhU1kVtGpvgYeGJRV" || true
-		git_repo push || true
+Claude-Session: https://claude.ai/code/session_0111JibAhU1kVtGpvgYeGJRV" "$ledger" || true
+		git_repo push origin "$branch" || true
 		note "opened PR $url"
 	else
 		note "gh pr create failed; left on local branch $branch"
@@ -274,8 +322,13 @@ handle_native() { # path under */testdata/fuzz/<FuzzName>/<hash>
 		note "dedup (pr-exists): fuzz/crash-$sig12"
 		return
 	fi
-	# Flake-guard.
-	if ! flake_guard_native "$pkgdir" "$fuzz" "$hash"; then
+	# Flake-guard (also captures the failure output so the detail names the real
+	# cause — "out of memory", "not a fixed point", … — instead of just the target).
+	local guard_deterministic=true
+	flake_guard_native "$pkgdir" "$fuzz" "$hash" || guard_deterministic=false
+	local summary; summary="$(summarize_failure "$flake_output")"
+	[ -n "$summary" ] && detail="$detail: $summary"
+	if ! $guard_deterministic; then
 		note "quarantine: survived a replay (run $flake_survived of $K) — not deterministic"
 		if ! $dry_run; then
 			git_repo checkout -- "$path" 2>/dev/null || rm -f "$repo_root/$path"
