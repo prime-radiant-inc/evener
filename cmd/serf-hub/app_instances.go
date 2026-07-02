@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -178,7 +179,15 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		newCfg = newCfg.WithDefault(newDefault)
 	}
 
-	if err := providercfg.WriteFile(c.providersConfigPath, newCfg); err != nil {
+	if len(newCfg.Instances) == 0 {
+		// Removing the last instance: an empty config would fail the next
+		// Load (WriteFile rightly refuses to persist one), and the documented
+		// absent-file behavior is exactly what the user is asking for — the
+		// hub re-seeds providers.toml from the environment on next startup.
+		if err := os.Remove(c.providersConfigPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove providers.toml: %w", err)
+		}
+	} else if err := providercfg.WriteFile(c.providersConfigPath, newCfg); err != nil {
 		return fmt.Errorf("write providers.toml: %w", err)
 	}
 

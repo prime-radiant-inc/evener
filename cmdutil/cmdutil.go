@@ -70,8 +70,8 @@ func ResolveProfileWithLiveWindow(cfg providercfg.Config, ref string) (*provider
 		// Query the instance's own endpoint: an instance may set base_url in
 		// providers.toml (e.g. the Kimi coding plan at api.kimi.com/coding/v1)
 		// that the provider-type default does not know about.
-		baseURL, apiKey := instanceEndpoint(cfg, p.ID())
-		if window := queryModelContextWindow(p.BehaviorTag(), p.Model(), baseURL, apiKey); window > 0 {
+		baseURL, apiKey, headers := instanceEndpoint(cfg, p.ID())
+		if window := queryModelContextWindow(p.BehaviorTag(), p.Model(), baseURL, apiKey, headers); window > 0 {
 			p = provider.WithContextWindow(p, window)
 		}
 	}
@@ -90,21 +90,33 @@ func instanceConfiguresContextWindow(cfg providercfg.Config, name, model string)
 	return false
 }
 
-// instanceEndpoint returns the base URL and inline api key configured for the
-// instance named name, or empty strings when not found. $ENV references in the
-// api_key are expanded; an unresolvable reference degrades to no key (the live
-// /models probe is best-effort and falls back to the catalog window).
-func instanceEndpoint(cfg providercfg.Config, name string) (baseURL, apiKey string) {
+// instanceEndpoint returns the base URL, inline api key, and request headers
+// configured for the instance named name, or zero values when not found.
+// $ENV references are expanded; an unresolvable reference degrades to
+// absent (the live /models probe is best-effort and falls back to the
+// catalog window).
+func instanceEndpoint(cfg providercfg.Config, name string) (baseURL, apiKey string, headers map[string]string) {
 	for _, inst := range cfg.Instances {
-		if inst.Name == name {
-			key, err := providercfg.ResolveAPIKey(strings.TrimSpace(inst.APIKey))
-			if err != nil {
-				key = ""
-			}
-			return strings.TrimSpace(inst.BaseURL), key
+		if inst.Name != name {
+			continue
 		}
+		key, err := providercfg.ResolveAPIKey(strings.TrimSpace(inst.APIKey))
+		if err != nil {
+			key = ""
+		}
+		if len(inst.Headers) > 0 {
+			headers = make(map[string]string, len(inst.Headers))
+			for hk, hv := range inst.Headers {
+				resolved, err := providercfg.ResolveHeaderValue(hk, hv)
+				if err != nil {
+					continue
+				}
+				headers[hk] = resolved
+			}
+		}
+		return strings.TrimSpace(inst.BaseURL), key, headers
 	}
-	return "", ""
+	return "", "", nil
 }
 
 // ResolveProfileForProvider resolves a bare provider/model pair to a
@@ -326,7 +338,7 @@ func trimNonEmpty(parts []string) []string {
 // HTTP requests. `provider` must be the provider TYPE / behavior tag
 // (kimi/glm/openrouter), not an instance name — the lookup keys on
 // providerEnvConfig by that tag.
-var queryModelContextWindow = func(provider, model, instanceBaseURL, instanceAPIKey string) int {
+var queryModelContextWindow = func(provider, model, instanceBaseURL, instanceAPIKey string, instanceHeaders map[string]string) int {
 	switch provider {
 	case "kimi", "glm", "openrouter":
 		// Provider types with an env-registry fallback for key/base URL.
@@ -355,8 +367,10 @@ var queryModelContextWindow = func(provider, model, instanceBaseURL, instanceAPI
 	if apiKey == "" && provider != "openai-compatible" && envOK && len(env.APIKeyVars) > 0 {
 		apiKey = env.APIKeyVars[0].Trimmed()
 	}
-	if apiKey == "" && provider != "openai-compatible" {
-		// Gateways may be keyless (local proxies); the upstream types are not.
+	if apiKey == "" && provider != "openai-compatible" && len(instanceHeaders) == 0 {
+		// Gateways may be keyless (local proxies) and any instance may
+		// authenticate via configured headers; a bare upstream type with
+		// neither has nothing to probe with.
 		return 0
 	}
 	baseURL := strings.TrimSpace(instanceBaseURL)
@@ -377,6 +391,11 @@ var queryModelContextWindow = func(provider, model, instanceBaseURL, instanceAPI
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/models", nil)
 	if err != nil {
 		return 0
+	}
+	// Instance headers first (a gateway may authenticate via them); the
+	// bearer and the kimi UA below take precedence on collision.
+	for k, v := range instanceHeaders {
+		req.Header.Set(k, v)
 	}
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)

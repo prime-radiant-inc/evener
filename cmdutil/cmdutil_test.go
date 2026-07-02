@@ -202,7 +202,7 @@ func stubQueryModelContextWindow(t *testing.T, fn func(provider, model string) i
 		gotMod  string
 	}{}
 	orig := queryModelContextWindow
-	queryModelContextWindow = func(provider, model, _, _ string) int {
+	queryModelContextWindow = func(provider, model, _, _ string, _ map[string]string) int {
 		rec.called = true
 		rec.gotProv = provider
 		rec.gotMod = model
@@ -389,7 +389,7 @@ func TestQueryModelContextWindow_UsesInstanceBaseURL(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	got := queryModelContextWindow("kimi", "kimi-for-coding", srv.URL, "inst-key")
+	got := queryModelContextWindow("kimi", "kimi-for-coding", srv.URL, "inst-key", nil)
 	if got != 262144 {
 		t.Fatalf("queryModelContextWindow = %d, want 262144 (must hit the instance base URL)", got)
 	}
@@ -417,7 +417,7 @@ func TestQueryModelContextWindow_NonKimiOmitsCodingUserAgent(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	got := queryModelContextWindow("glm", "glm-4.6", srv.URL, "inst-key")
+	got := queryModelContextWindow("glm", "glm-4.6", srv.URL, "inst-key", nil)
 	if got != 200000 {
 		t.Fatalf("queryModelContextWindow = %d, want 200000", got)
 	}
@@ -485,7 +485,7 @@ func TestQueryModelContextWindow_OpenAICompatibleInstance(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	if got := queryModelContextWindow("openai-compatible", "glm-5.2-nvfp4", srv.URL, "gw-key"); got != 204800 {
+	if got := queryModelContextWindow("openai-compatible", "glm-5.2-nvfp4", srv.URL, "gw-key", nil); got != 204800 {
 		t.Fatalf("queryModelContextWindow = %d, want 204800", got)
 	}
 	if gotAuth != "Bearer gw-key" {
@@ -498,7 +498,7 @@ func TestQueryModelContextWindow_OpenAICompatibleInstance(t *testing.T) {
 	// endpoint; leaking it to an arbitrary gateway host is not acceptable).
 	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "sk-global-must-not-leak")
 	gotAuth = "unset"
-	if got := queryModelContextWindow("openai-compatible", "glm-5.2-nvfp4", srv.URL, ""); got != 204800 {
+	if got := queryModelContextWindow("openai-compatible", "glm-5.2-nvfp4", srv.URL, "", nil); got != 204800 {
 		t.Fatalf("keyless queryModelContextWindow = %d, want 204800", got)
 	}
 	if gotAuth != "" {
@@ -506,7 +506,32 @@ func TestQueryModelContextWindow_OpenAICompatibleInstance(t *testing.T) {
 	}
 
 	// No configured base_url → no probe (0 keeps the catalog window).
-	if got := queryModelContextWindow("openai-compatible", "glm-5.2-nvfp4", "", "gw-key"); got != 0 {
+	if got := queryModelContextWindow("openai-compatible", "glm-5.2-nvfp4", "", "gw-key", nil); got != 0 {
 		t.Fatalf("no-base-url queryModelContextWindow = %d, want 0", got)
+	}
+}
+
+// A header-authenticated gateway (no api_key at all) still gets the
+// best-effort context-window probe, with its configured headers on the
+// request.
+func TestQueryModelContextWindow_HeaderAuthenticatedGateway(t *testing.T) {
+	var gotGateway, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotGateway = r.Header.Get("X-Gateway-Auth")
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"m","context_length":65536}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	got := queryModelContextWindow("openai-compatible", "m", srv.URL, "", map[string]string{"X-Gateway-Auth": "tok"})
+	if got != 65536 {
+		t.Fatalf("queryModelContextWindow = %d, want 65536", got)
+	}
+	if gotGateway != "tok" {
+		t.Fatalf("X-Gateway-Auth = %q, want tok", gotGateway)
+	}
+	if gotAuth != "" {
+		t.Fatalf("Authorization = %q, want absent", gotAuth)
 	}
 }

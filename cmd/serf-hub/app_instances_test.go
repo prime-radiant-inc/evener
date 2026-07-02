@@ -604,3 +604,30 @@ thinking_format = "zai"
 		t.Fatalf("rejected edit mutated the file: %+v", cfg.Instances[0])
 	}
 }
+
+// Removing the LAST instance deletes providers.toml (the documented
+// absent-file behavior re-seeds from env on next startup) instead of failing
+// WriteFile's cannot-load validation or writing an unloadable empty file.
+func TestInstances_Remove_LastInstanceDeletesFile(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+
+	content := `schema = 1
+default = "only"
+
+[instances.only]
+type = "glm"
+`
+	if err := os.WriteFile(tomlPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+	ctl := newTestInstancesController(t, tomlPath, dir, stateDir)
+	if err := ctl.Remove(appwire.InstanceRemoveParams{Name: "only"}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := os.Stat(tomlPath); !os.IsNotExist(err) {
+		t.Fatalf("providers.toml still exists after removing the last instance (stat err=%v)", err)
+	}
+}
