@@ -48,10 +48,12 @@ if ! curl -fsSL --max-time 120 "${UPSTREAM_URL}" -o "${tmp}"; then
   exit 1
 fi
 
-python3 - "${TARGET}" "${tmp}" "${MIN_KEEP_RATIO}" <<'PYEOF'
+OVERRIDES="${ROOT}/llm/data/serf_model_catalog_overrides.json"
+
+python3 - "${TARGET}" "${tmp}" "${MIN_KEEP_RATIO}" "${OVERRIDES}" <<'PYEOF'
 import json, sys
 
-target, fresh_path, min_keep = sys.argv[1], sys.argv[2], float(sys.argv[3])
+target, fresh_path, min_keep, overrides_path = sys.argv[1], sys.argv[2], float(sys.argv[3]), sys.argv[4]
 
 try:
     fresh = json.load(open(fresh_path))
@@ -81,6 +83,31 @@ def preview(label, keys):
         print(f"  {label}: {head}{more}")
 preview("added", added)
 preview("removed", removed)
+
+# Drift audit: our curated overrides against the incoming snapshot. This is
+# the generator-grade cross-check without a generator — curation that upstream
+# has caught up with (or now contradicts) should be reconciled by hand.
+overrides = {k: v for k, v in json.load(open(overrides_path)).items() if not k.startswith("_")}
+materialized = sorted(k for k, v in overrides.items()
+                      if k not in cur_keys and k in new_keys and "context_window" in v)
+if materialized:
+    print("DRIFT: upstream now defines models we materialized in overrides —")
+    print("       our entry SHADOWS upstream; reconcile or slim the override:")
+    for k in materialized:
+        print(f"  {k}")
+window_conflicts = []
+for k, v in overrides.items():
+    want = v.get("context_window")
+    if want and k in fresh:
+        got = fresh[k].get("max_input_tokens") or fresh[k].get("max_tokens")
+        if got and got != want:
+            window_conflicts.append(f"{k}: override {want} vs upstream {got}")
+if window_conflicts:
+    print("DRIFT: context_window disagreements (override wins at load; verify it should):")
+    for line in window_conflicts:
+        print(f"  {line}")
+if not materialized and not window_conflicts:
+    print("overrides drift audit: clean")
 PYEOF
 
 if [[ "${mode}" == "check" ]]; then
