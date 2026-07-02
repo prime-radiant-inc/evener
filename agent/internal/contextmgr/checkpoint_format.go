@@ -164,11 +164,35 @@ func markdownSection(text, heading string) string {
 		return ""
 	}
 	rest := text[bodyStart:]
+	// End the section at the next top-level "## " (or [END CHECKPOINT]) line — but
+	// skip any such line INSIDE a fenced code block. Conversation content
+	// legitimately contains lines like "## 0" (a user message), and the renderer
+	// wraps every entry in a fence; a fence-blind scan would truncate the section
+	// there and drop entries on a render/extract round-trip. This mirrors the fence
+	// tracking parseMarkdownBlocks applies to the section body.
 	end := len(rest)
-	for _, marker := range []string{"\n## ", "\n[END CHECKPOINT]"} {
-		if idx := strings.Index(rest, marker); idx >= 0 && idx < end {
-			end = idx
+	inFence := false
+	fenceMarker := ""
+	offset := 0
+	first := true
+	for _, line := range strings.SplitAfter(rest, "\n") {
+		if line == "" {
+			break
 		}
+		content := strings.TrimSuffix(line, "\n")
+		if marker := markdownFenceMarker(content); marker != "" {
+			if !inFence {
+				inFence, fenceMarker = true, marker
+			} else if strings.TrimSpace(content) == fenceMarker {
+				inFence, fenceMarker = false, ""
+			}
+		} else if !inFence && !first &&
+			(strings.HasPrefix(content, "## ") || strings.HasPrefix(content, "[END CHECKPOINT]")) {
+			end = offset
+			break
+		}
+		offset += len(line)
+		first = false
 	}
 	return rest[:end]
 }
