@@ -248,6 +248,127 @@ const (
 	EntryWatchDelivery
 )
 
+// roundContentClass classifies a model round's assistant content. NoContent marks
+// a round with no text and no tool calls (a model glitch that triggers the
+// empty-retry path). HasPhase marks any content part carrying OpenAI Responses
+// phase metadata (e.g. "final_answer"), which must be preserved in history even
+// when otherwise empty so the model sees its own phase annotation and can
+// course-correct. SkipHistory is a no-content round with no phase metadata — truly
+// nothing to append.
+type roundContentClass struct {
+	NoContent   bool
+	HasPhase    bool
+	SkipHistory bool
+}
+
+// classifyRoundContent derives the round-content classification from the assistant
+// text, the tool-call count, and the response content parts. It is pure: no
+// locking, I/O, or mutation.
+func classifyRoundContent(txt string, callCount int, content []llm.ContentPart) roundContentClass {
+	noContent := strings.TrimSpace(txt) == "" && callCount == 0
+	hasPhase := false
+	for _, p := range content {
+		if p.Phase != "" {
+			hasPhase = true
+			break
+		}
+	}
+	return roundContentClass{
+		NoContent:   noContent,
+		HasPhase:    hasPhase,
+		SkipHistory: noContent && !hasPhase,
+	}
+}
+
+// noCallsRoute selects how processOneInput handles a round that produced no tool
+// calls.
+type noCallsRoute int
+
+const (
+	// finishIdle ends the turn idle without a retry: a bare-text (non-empty)
+	// response to a watch-delivery or notification turn is an acknowledgement, not a
+	// glitch, and no user awaits a reply.
+	finishIdle noCallsRoute = iota
+	// runNoToolCalls routes through the empty/bare-text retry budget.
+	runNoToolCalls
+)
+
+// routeNoToolCalls decides the no-tool-calls route for a round from the input kind
+// and whether the round had no content. It is pure and total over EntryKind: only
+// a non-empty watch-delivery or notification turn finishes idle; everything else
+// (including any empty round) routes through the retry budget.
+func routeNoToolCalls(kind EntryKind, noContent bool) noCallsRoute {
+	if (kind == EntryWatchDelivery || kind == EntryNotification) && !noContent {
+		return finishIdle
+	}
+	return runNoToolCalls
+}
+
+// drainInputs is the snapshot the drain loop feeds selectDrainNextAction after a
+// completed (non-error) turn: the kind of the turn that just ran, whether a goal
+// continuation is already deferred, the popped follow-up text and queued message
+// (its text plus image count), and whether any job notifications are pending.
+type drainInputs struct {
+	RanKind              EntryKind
+	HaveDeferredCont     bool
+	FollowUp             string
+	QueuedText           string
+	QueuedImages         int
+	NotificationsPending bool
+}
+
+// drainAction is the next action the drain loop takes after a completed turn.
+type drainAction int
+
+const (
+	// runFollowUp runs the popped per-turn follow-up as the next turn.
+	runFollowUp drainAction = iota
+	// runQueued runs the popped queued user message as the next turn.
+	runQueued
+	// armGoalGate marks that the goal-continuation gate folds this turn and, with no
+	// notification pending, the resulting turn is the deferred continuation (if the
+	// fold arms one) or idle.
+	armGoalGate
+	// runNotification runs a pending job-notification turn next.
+	runNotification
+	// runDeferredContInline runs an already-deferred goal continuation inline.
+	runDeferredContInline
+	// goIdle ends the input: settle any turn-tail goal and emit SESSION_END.
+	goIdle
+)
+
+// selectDrainNextAction is the pure priority decision for the drain loop's tail.
+// The wrapper performs the pops and the goal-gate fold (side effects) and feeds
+// their results in; this function only decides. skipGoalGate reports whether the
+// wrapper should SKIP folding the goal gate this turn — true after a notification
+// turn (which must not advance or terminate the goal) or while a continuation is
+// already deferred (one fold per turn).
+//
+// Priority: a pending follow-up, then a queued user message, then a pending
+// notification, then the goal gate's deferred continuation, then idle. The goal
+// gate always folds BEFORE the notification turn runs: the wrapper arms on
+// !skipGoalGate before acting on runNotification, so the fold stays ahead of the
+// notification interleave even though the notification is the turn that runs next.
+// armGoalGate is returned only when the gate is eligible AND no notification
+// preempts, so the resulting turn depends on the (side-effectful) fold result.
+func selectDrainNextAction(in drainInputs) (action drainAction, skipGoalGate bool) {
+	skipGoalGate = in.RanKind == EntryNotification || in.HaveDeferredCont
+	switch {
+	case strings.TrimSpace(in.FollowUp) != "":
+		return runFollowUp, skipGoalGate
+	case strings.TrimSpace(in.QueuedText) != "" || in.QueuedImages > 0:
+		return runQueued, skipGoalGate
+	case in.RanKind != EntryNotification && in.NotificationsPending:
+		return runNotification, skipGoalGate
+	case !skipGoalGate:
+		return armGoalGate, skipGoalGate
+	case in.HaveDeferredCont:
+		return runDeferredContInline, skipGoalGate
+	default:
+		return goIdle, skipGoalGate
+	}
+}
+
 // ProcessInput processes a single user input (with optional image attachments)
 // through to completion and returns the accumulated assistant output. It is a
 // thin delegate to ProcessInputKind with kind EntryUserInput.
@@ -381,21 +502,42 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			s.finishProcessingAtBoundary(processCtx, SessionIdle)
 			return strings.Join(outputs, "\n"), err
 		}
+		// Drain the next action after a completed (non-error) turn. The pops and the
+		// goal-gate fold are side effects kept here; selectDrainNextAction is the pure
+		// priority decision over their results. popQueueHead is reached only when no
+		// follow-up is pending (it consumes a queued message), matching the original
+		// short-circuit; peekNotifications is likewise consulted only at its ladder
+		// rung and only for a non-notification turn.
 		fu := s.popFollowUp()
-		if strings.TrimSpace(fu) != "" {
+		var queued queuedInput
+		if strings.TrimSpace(fu) == "" {
+			// kata 111a / t5j6: each drained queued message becomes a distinct user
+			// turn; its image attachments ride along as ContentImage parts.
+			queued = s.popQueueHead()
+		}
+		noFollowUpOrQueued := strings.TrimSpace(fu) == "" &&
+			strings.TrimSpace(queued.Text) == "" && len(queued.Images) == 0
+		notificationsPending := false
+		if noFollowUpOrQueued && ranKind != EntryNotification {
+			notificationsPending = s.peekNotifications() > 0
+		}
+		action, skipGoalGate := selectDrainNextAction(drainInputs{
+			RanKind:              ranKind,
+			HaveDeferredCont:     haveDeferredCont,
+			FollowUp:             fu,
+			QueuedText:           queued.Text,
+			QueuedImages:         len(queued.Images),
+			NotificationsPending: notificationsPending,
+		})
+
+		switch action {
+		case runFollowUp:
 			next = fu
 			s.mu.Lock()
 			s.sessionEndEmitted = false
 			s.mu.Unlock()
 			continue
-		}
-		// kata 111a: when the per-turn followup queue is empty, drain the
-		// next user-typed queued message and run it as a fresh user turn.
-		// Each drain consumes exactly one message so each becomes a
-		// distinct user turn in the transcript. Image attachments on the
-		// queued entry are forwarded as ContentImage parts on that turn
-		// (kata t5j6).
-		if queued := s.popQueueHead(); strings.TrimSpace(queued.Text) != "" || len(queued.Images) > 0 {
+		case runQueued:
 			next = queued.Text
 			nextImages = queued.Images
 			s.mu.Lock()
@@ -403,6 +545,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			s.mu.Unlock()
 			continue
 		}
+
 		// Goal continuation gate (priority 4, strictly below user input): runs in
 		// its NORMAL tail position so the just-finished continuation folds its
 		// progress signal (armGoalContinuation → RecordContinuation → the
@@ -412,12 +555,12 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		//
 		// The decided next continuation is DEFERRED (not run yet) so a pending
 		// notification can interleave ahead of it; it is then run inline below.
-		// Skipped when the turn that just ran was a notification (a notification
-		// must neither advance nor terminate the goal — it already folded at its own
-		// gate), and while a continuation is already deferred (one fold per turn).
-		// On a terminal/stop decision the gate emits the terminal report and leaves
-		// haveDeferredCont false, so we fall through to EventSessionEnd (idle).
-		if ranKind != EntryNotification && !haveDeferredCont {
+		// skipGoalGate is true when the turn that just ran was a notification (a
+		// notification must neither advance nor terminate the goal — it already folded
+		// at its own gate), and while a continuation is already deferred (one fold per
+		// turn). On a terminal/stop decision the gate emits the terminal report and
+		// leaves haveDeferredCont false, so we fall through to EventSessionEnd (idle).
+		if !skipGoalGate {
 			// The gate's fold + terminal-report side effects (RecordContinuation, the
 			// no-progress breaker, EventGoalEnded) happen here; the rendered prompt it
 			// returns is discarded because the inline-run site below re-renders the
@@ -430,12 +573,11 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// Notification interleave (priority 3): a pending job notification runs
 		// AFTER the fold above but BEFORE the deferred continuation, so it is
 		// transparent to goal accounting (the just-finished continuation already
-		// folded). This is a non-draining length check; the queue is consumed inside
-		// acceptNotificationInput when the EntryNotification turn runs (an empty
-		// queue there is a no-op, but the peek guards against it).
-		// After a notification turn, do not immediately rerun this gate: job
-		// notifications may have been requeued because durable state was unavailable.
-		if ranKind != EntryNotification && s.peekNotifications() > 0 {
+		// folded). The queue is consumed inside acceptNotificationInput when the
+		// EntryNotification turn runs (an empty queue there is a no-op, but the peek
+		// guards against it). After a notification turn this rung is skipped (selector
+		// gate) because job notifications may have been requeued.
+		if action == runNotification {
 			next = ""
 			nextImages = nil
 			nextKind = EntryNotification
@@ -636,15 +778,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		//    truly nothing to append. Responses with phase annotations
 		//    (e.g., "final_answer") must be preserved in history so the
 		//    model sees its own phase metadata and can course-correct.
-		noContent := strings.TrimSpace(txt) == "" && len(calls) == 0
-		hasPhase := false
-		for _, p := range resp.Message.Content {
-			if p.Phase != "" {
-				hasPhase = true
-				break
-			}
-		}
-		skipHistory := noContent && !hasPhase
+		rc := classifyRoundContent(txt, len(calls), resp.Message.Content)
+		noContent := rc.NoContent
+		skipHistory := rc.SkipHistory
 
 		if abortErr := s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory, attempt); abortErr != nil {
 			return "", progressed, abortErr
@@ -670,18 +806,14 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		progressed = progressed || s.callsMadeProgress(calls)
 
 		if len(calls) == 0 {
-			if kind == EntryWatchDelivery && !noContent {
-				s.finishProcessingAtBoundary(ctx, SessionIdle)
-				return "", progressed, nil
-			}
-			// A bare-text response to a notification turn is the agent acknowledging
-			// a terminal notification it has nothing to act on (it often already read
-			// the job's output itself). Finish idle instead of scolding it toward a
-			// no-op communicate — the text is already in the transcript, and a
-			// system-initiated notification turn carries no user awaiting a reply.
-			// A truly empty (no-content) response is a model glitch and still routes
-			// through the empty-retry path below.
-			if kind == EntryNotification && !noContent {
+			// A bare-text (non-empty) response to a watch-delivery or notification turn
+			// is the agent acknowledging a frame it has nothing to act on (it often
+			// already read the job's output itself). Finish idle instead of scolding it
+			// toward a no-op communicate — the text is already in the transcript, and a
+			// system-initiated turn carries no user awaiting a reply. A truly empty
+			// (no-content) response is a model glitch and still routes through the
+			// empty-retry path below.
+			if routeNoToolCalls(kind, noContent) == finishIdle {
 				s.finishProcessingAtBoundary(ctx, SessionIdle)
 				return "", progressed, nil
 			}
