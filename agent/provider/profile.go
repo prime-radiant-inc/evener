@@ -428,10 +428,12 @@ func (p *Profile) WithLiveModelInfo(info llm.ModelInfo) *Profile {
 	// providers.toml model definitions are explicit user intent and beat live
 	// /models enrichment for the fields they set.
 	instEntry, hasInstEntry := p.instModels[p.model]
-	if info.ContextWindow > 0 && !(hasInstEntry && instEntry.ContextWindow > 0) {
+	configuredWindow := hasInstEntry && instEntry.ContextWindow > 0
+	configuredLevels := hasInstEntry && len(instEntry.ThinkingLevels) > 0
+	if info.ContextWindow > 0 && !configuredWindow {
 		clone.contextWindow = info.ContextWindow
 	}
-	if len(info.ReasoningEffortLevels) > 0 && !(hasInstEntry && len(instEntry.ThinkingLevels) > 0) {
+	if len(info.ReasoningEffortLevels) > 0 && !configuredLevels {
 		clone.effortLevels = append([]string(nil), info.ReasoningEffortLevels...)
 		// Keep the effort-enum tool schema (task_list) in sync with the live
 		// levels, or the model sees the constructor enum instead.
