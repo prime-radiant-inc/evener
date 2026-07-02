@@ -73,7 +73,18 @@ func LoadProviderConfig(opts ...llm.EnvOption) (providercfg.Config, bool, error)
 			// supplementary and store injection still applies.
 			continue
 		}
-		if key, _ := store.ResolveKey(inst.Name, string(inst.Type)); key != "" {
+		typ := string(inst.Type)
+		if providercfg.BehaviorTag(string(inst.Type), string(inst.APIStyle)) == "openai-compatible" && strings.TrimSpace(inst.BaseURL) != "" {
+			// A custom chat-completions gateway is NOT the type's own
+			// endpoint: falling back to the type-level env key
+			// (OPENAI_API_KEY) would send that secret to an arbitrary
+			// base_url — the injection-side twin of the live-probe guard.
+			// File entries and name-scoped env keys still resolve; an
+			// instance WITHOUT base_url targets api.openai.com, where the
+			// type key is exactly right.
+			typ = ""
+		}
+		if key, _ := store.ResolveKey(inst.Name, typ); key != "" {
 			inst.APIKey = key
 		}
 	}

@@ -391,3 +391,45 @@ api_key = "sk-ant-store"
 		t.Errorf("anthropic instance APIKey = %q, want store-injected sk-ant-store (headers are supplementary for non-compat types)", got)
 	}
 }
+
+// A keyless custom chat-completions gateway must not receive the type-level
+// env key (OPENAI_API_KEY belongs to api.openai.com, not an arbitrary
+// base_url); an instance WITHOUT base_url targets OpenAI itself, where that
+// key is exactly right.
+func TestLoadProviderConfig_NoTypeEnvKeyForCustomGateways(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-openai-env")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "providers.toml")
+	providers := `
+schema = 1
+default = "gw"
+
+[instances.gw]
+type = "openai"
+api_style = "chat-completions"
+base_url = "https://gw.example.com/v1"
+
+[instances.plainoai]
+type = "openai"
+api_style = "chat-completions"
+`
+	if err := os.WriteFile(path, []byte(providers), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SERF_PROVIDERS_CONFIG", path)
+
+	cfg, _, err := LoadProviderConfig()
+	if err != nil {
+		t.Fatalf("LoadProviderConfig: %v", err)
+	}
+	byName := map[string]string{}
+	for _, inst := range cfg.Instances {
+		byName[inst.Name] = inst.APIKey
+	}
+	if byName["gw"] != "" {
+		t.Errorf("custom gateway got the type env key %q, want keyless", byName["gw"])
+	}
+	if byName["plainoai"] != "sk-openai-env" {
+		t.Errorf("default-endpoint instance APIKey = %q, want the env key (it targets api.openai.com)", byName["plainoai"])
+	}
+}

@@ -759,6 +759,11 @@ func TestEmbeddedCatalog_DeepSeekV4Models(t *testing.T) {
 		if !mi.SupportsEffortParameter {
 			t.Errorf("%s SupportsEffortParameter should be true", id)
 		}
+		// Upstream now defines these models WITHOUT the reasoning flag; the
+		// override must overlay it or the spawn UI hides the effort picker.
+		if !mi.SupportsReasoning {
+			t.Errorf("%s SupportsReasoning should be true (override overlays matched models)", id)
+		}
 		if got := mi.ReasoningEffortLevels; len(got) != 2 || got[0] != "high" || got[1] != "max" {
 			t.Errorf("%s ReasoningEffortLevels = %v, want [high max]", id, got)
 		}
