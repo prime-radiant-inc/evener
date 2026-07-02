@@ -130,13 +130,13 @@ func FuzzMiscOpenAICompatBuilder(f *testing.F) {
 		stream := sel&1 == 1
 		req := miscBuilderRequest(model, sys, user, imgData, thinking, effort, sel, useReasoning, passKey, passVal)
 
-		body, err := buildRequestBody(req, stream, quirks)
+		body, err := buildRequestBody(req, stream, ModelCompat{Quirks: quirks})
 		if err != nil {
 			return // structured build error (e.g. unsupported tool_choice) is acceptable.
 		}
 
 		// Determinism: pure function, equal inputs -> deeply equal output.
-		body2, err2 := buildRequestBody(req, stream, quirks)
+		body2, err2 := buildRequestBody(req, stream, ModelCompat{Quirks: quirks})
 		if err2 != nil {
 			t.Fatalf("buildRequestBody nondeterministic error: first nil, second %v", err2)
 		}

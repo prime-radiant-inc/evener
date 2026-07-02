@@ -9,7 +9,8 @@ import (
 	"primeradiant.com/serf/llm/providers/internal/openaichat"
 )
 
-func buildRequestBody(req llm.Request, stream bool, quirks ProviderQuirks) (map[string]any, error) {
+func buildRequestBody(req llm.Request, stream bool, mc ModelCompat) (map[string]any, error) {
+	quirks := mc.Quirks
 	body := map[string]any{
 		"model": req.Model,
 	}
@@ -34,6 +35,9 @@ func buildRequestBody(req llm.Request, stream bool, quirks ProviderQuirks) (map[
 
 	if len(req.Tools) > 0 {
 		body["tools"] = openaichat.ToChatTools(req.Tools)
+		if quirks.ToolStream {
+			body["tool_stream"] = true
+		}
 	}
 	if req.ToolChoice != nil {
 		tc, err := toChatToolChoice(*req.ToolChoice)
@@ -48,8 +52,14 @@ func buildRequestBody(req llm.Request, stream bool, quirks ProviderQuirks) (map[
 	if req.TopP != nil {
 		body["top_p"] = *req.TopP
 	}
+	maxTokensField := quirks.MaxTokensField
+	if maxTokensField == "" {
+		maxTokensField = "max_tokens"
+	}
 	if req.MaxTokens != nil {
-		body["max_tokens"] = *req.MaxTokens
+		body[maxTokensField] = *req.MaxTokens
+	} else if mc.DefaultMaxTokens > 0 {
+		body[maxTokensField] = mc.DefaultMaxTokens
 	}
 	if len(req.StopSequences) > 0 {
 		body["stop"] = req.StopSequences
@@ -57,20 +67,20 @@ func buildRequestBody(req llm.Request, stream bool, quirks ProviderQuirks) (map[
 	if req.ResponseFormat != nil {
 		body["response_format"] = openaichat.ToChatResponseFormat(*req.ResponseFormat)
 	}
-	if req.ReasoningEffort != nil && !useReasoningDetails {
-		effort := *req.ReasoningEffort
-		// OpenRouter uses "xhigh" where we say "max".
-		if quirks.TranslateMaxToXHigh && strings.EqualFold(effort, "max") {
-			effort = "xhigh"
-		}
-		body["reasoning_effort"] = effort
+	if !useReasoningDetails {
+		applyThinkingFormat(body, req, mc)
+	}
+	if quirks.SendStoreFalse {
+		body["store"] = false
 	}
 	if len(req.Metadata) > 0 {
 		body["metadata"] = req.Metadata
 	}
 	if stream {
 		body["stream"] = true
-		body["stream_options"] = map[string]any{"include_usage": true}
+		if !quirks.OmitStreamUsage {
+			body["stream_options"] = map[string]any{"include_usage": true}
+		}
 	}
 
 	// Provider options passthrough.
@@ -117,11 +127,76 @@ func buildRequestBody(req llm.Request, stream bool, quirks ProviderQuirks) (map[
 			}
 		}
 	}
+	if quirks.CacheControlFormat == "anthropic" {
+		anthropicCacheControl(body)
+	}
 
 	return body, nil
 }
 
+// applyThinkingFormat emits the reasoning controls in the wire dialect the
+// provider speaks. No effort on the request means "send nothing" for every
+// format — serf's "none" clears the setting to the provider default rather
+// than forcing an explicit disable.
+func applyThinkingFormat(body map[string]any, req llm.Request, mc ModelCompat) {
+	quirks := mc.Quirks
+	wire := ""
+	if req.ReasoningEffort != nil {
+		wire = mc.wireEffort(*req.ReasoningEffort)
+	}
+	if wire == "" {
+		return
+	}
+	switch quirks.ThinkingFormat {
+	case "", "openai":
+		if quirks.supportsEffort(true) {
+			body["reasoning_effort"] = wire
+		}
+	case "zai":
+		// clear_thinking:false keeps z.ai from pruning prior-turn reasoning
+		// server-side; serf manages thinking replay itself.
+		body["thinking"] = map[string]any{"type": "enabled", "clear_thinking": false}
+		if quirks.supportsEffort(false) {
+			body["reasoning_effort"] = wire
+		}
+	case "deepseek":
+		body["thinking"] = map[string]any{"type": "enabled"}
+		if quirks.supportsEffort(true) {
+			body["reasoning_effort"] = wire
+		}
+	case "openrouter":
+		body["reasoning"] = map[string]any{"effort": wire}
+	case "together":
+		body["reasoning"] = map[string]any{"enabled": true}
+		if quirks.supportsEffort(true) {
+			body["reasoning_effort"] = wire
+		}
+	case "qwen":
+		body["enable_thinking"] = true
+	case "string-thinking":
+		body["thinking"] = wire
+	}
+}
+
 func toChatMessages(messages []llm.Message, quirks ProviderQuirks, useReasoningDetails bool) ([]map[string]any, error) {
+	systemRole := "system"
+	if quirks.UseDeveloperRole {
+		systemRole = "developer"
+	}
+	// Tool names for RequireToolResultName: a tool result only carries the
+	// call id, so recover the name from the assistant tool_call that issued it.
+	var toolNamesByCallID map[string]string
+	if quirks.RequireToolResultName {
+		toolNamesByCallID = map[string]string{}
+		for _, m := range messages {
+			for _, p := range m.Content {
+				if p.Kind == llm.ContentToolCall && p.ToolCall != nil {
+					toolNamesByCallID[p.ToolCall.ID] = p.ToolCall.Name
+				}
+			}
+		}
+	}
+
 	out := make([]map[string]any, 0, len(messages))
 	for _, m := range messages {
 		content := m.Content
@@ -139,7 +214,7 @@ func toChatMessages(messages []llm.Message, quirks ProviderQuirks, useReasoningD
 		switch m.Role {
 		case llm.RoleSystem, llm.RoleDeveloper:
 			out = append(out, map[string]any{
-				"role":    "system",
+				"role":    systemRole,
 				"content": textFromParts(content),
 			})
 		case llm.RoleUser:
@@ -161,6 +236,17 @@ func toChatMessages(messages []llm.Message, quirks ProviderQuirks, useReasoningD
 			text := textFromParts(content)
 			calls := toolCallsFromParts(content)
 			reasoning := thinkingFromParts(content)
+			if reasoning != "" && quirks.ThinkingAsText {
+				// Replay thinking as ordinary text (no tags — tagged thinking
+				// teaches the model to mimic the tags). The reasoning field
+				// stays unset.
+				if text != "" {
+					text = reasoning + "\n\n" + text
+				} else {
+					text = reasoning
+				}
+				reasoning = ""
+			}
 			if reasoning != "" {
 				if useReasoningDetails {
 					// MiniMax format: {type: "reasoning.text", text: "...", format: "unknown", index: 0}
@@ -175,6 +261,8 @@ func toChatMessages(messages []llm.Message, quirks ProviderQuirks, useReasoningD
 				} else {
 					msg["reasoning_content"] = reasoning
 				}
+			} else if quirks.EmptyReasoningContentOnAssistant && !useReasoningDetails {
+				msg["reasoning_content"] = ""
 			}
 			if len(calls) > 0 {
 				msg["tool_calls"] = calls
@@ -196,16 +284,43 @@ func toChatMessages(messages []llm.Message, quirks ProviderQuirks, useReasoningD
 						b, _ := json.Marshal(v)
 						resultContent = string(b)
 					}
-					out = append(out, map[string]any{
+					toolMsg := map[string]any{
 						"role":         "tool",
 						"tool_call_id": p.ToolResult.ToolCallID,
 						"content":      resultContent,
-					})
+					}
+					if quirks.RequireToolResultName {
+						name := p.ToolResult.Name
+						if name == "" {
+							name = toolNamesByCallID[p.ToolResult.ToolCallID]
+						}
+						if name != "" {
+							toolMsg["name"] = name
+						}
+					}
+					out = append(out, toolMsg)
 				}
 			}
 		}
 	}
+	if quirks.RequireAssistantAfterToolResult {
+		out = insertAssistantAfterToolResults(out)
+	}
 	return out, nil
+}
+
+// insertAssistantAfterToolResults places an empty assistant message between a
+// tool result and a following user message, for providers whose templates
+// reject the tool→user transition.
+func insertAssistantAfterToolResults(msgs []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(msgs))
+	for i, m := range msgs {
+		out = append(out, m)
+		if m["role"] == "tool" && i+1 < len(msgs) && msgs[i+1]["role"] == "user" {
+			out = append(out, map[string]any{"role": "assistant", "content": ""})
+		}
+	}
+	return out
 }
 
 func textFromParts(parts []llm.ContentPart) string {

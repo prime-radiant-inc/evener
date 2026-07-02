@@ -111,7 +111,7 @@ func FuzzOpenaicompatCompleteRoundTrip(f *testing.F) {
 		// Reference: the body the direct (pre-seam) build path produces for the
 		// same request. buildRequestBody is exactly what completeViaChatCompletions
 		// marshals before the HTTP call.
-		wantBody, buildErr := buildRequestBody(req, false, a.Quirks)
+		wantBody, buildErr := buildRequestBody(req, false, a.compatFor(req.Model))
 		var wantBytes []byte
 		var marshalErr error
 		if buildErr == nil {
@@ -193,7 +193,7 @@ func FuzzOpenaicompatStreamRoundTrip(f *testing.F) {
 
 		// The streaming build path marshals buildRequestBody(req, true) directly as
 		// the wire body — including "stream":true and stream_options.
-		wantBody, buildErr := buildRequestBody(req, true, a.Quirks)
+		wantBody, buildErr := buildRequestBody(req, true, a.compatFor(req.Model))
 
 		stream, err := a.Stream(context.Background(), req)
 		if buildErr != nil {

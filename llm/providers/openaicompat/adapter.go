@@ -31,26 +31,36 @@ type Adapter struct {
 	Client         *http.Client
 	DefaultHeaders map[string]string
 	Quirks         ProviderQuirks
-	Adaptive       bool
+	// Models holds fully-resolved per-model wire behavior keyed by wire model
+	// id; models absent here use Quirks. Populated from providers.toml
+	// [instances.X.models] via NewForInstance.
+	Models   map[string]ModelCompat
+	Adaptive bool
 }
 
 // OpenAICompatInstanceParams holds the configuration for a single openai-compatible adapter instance.
 type OpenAICompatInstanceParams struct {
-	Name     string
-	BaseURL  string
-	APIKey   string
+	Name    string
+	BaseURL string
+	APIKey  string
+	// Quirks is the preset base; Compat (instance-wide) and Models (per-model)
+	// overlay it field by field.
 	Quirks   ProviderQuirks
+	Compat   *providercfg.CompatConfig
+	Models   map[string]providercfg.ModelConfig
 	Adaptive bool
 }
 
 // NewForInstance constructs an Adapter from explicit parameters.
 func NewForInstance(params OpenAICompatInstanceParams) *Adapter {
+	quirks := ApplyCompatConfig(params.Quirks, params.Compat)
 	return &Adapter{
 		name:     params.Name,
 		APIKey:   params.APIKey,
 		BaseURL:  strings.TrimRight(params.BaseURL, "/"),
 		Client:   &http.Client{Timeout: 0},
-		Quirks:   params.Quirks,
+		Quirks:   quirks,
+		Models:   resolveModelCompat(quirks, params.Models),
 		Adaptive: params.Adaptive,
 	}
 }
@@ -75,6 +85,8 @@ func init() {
 			BaseURL: inst.BaseURL,
 			APIKey:  inst.APIKey,
 			Quirks:  QuirksPreset(inst.Quirks),
+			Compat:  inst.Compat,
+			Models:  inst.Models,
 		}), nil
 	})
 }
@@ -122,7 +134,7 @@ func (a *Adapter) setChatHeaders(httpReq *http.Request) {
 // this adapter. Provider wrappers use it when an adjacent endpoint accepts the
 // same message shape.
 func (a *Adapter) ChatCompletionsBody(req llm.Request, stream bool) (map[string]any, error) {
-	return buildRequestBody(req, stream, a.Quirks)
+	return buildRequestBody(req, stream, a.compatFor(req.Model))
 }
 
 // Complete sends a non-streaming Chat Completions request.
@@ -144,7 +156,7 @@ func (a *Adapter) completeViaChatCompletions(ctx context.Context, req llm.Reques
 		a.Client = &http.Client{Timeout: 0}
 	}
 
-	body, err := buildRequestBody(req, false, a.Quirks)
+	body, err := buildRequestBody(req, false, a.compatFor(req.Model))
 	if err != nil {
 		return llm.Response{}, err
 	}
@@ -162,7 +174,7 @@ func (a *Adapter) completeViaChatCompletions(ctx context.Context, req llm.Reques
 		return llm.Response{}, llm.ErrorFromHTTPStatusWithRawBodies("openai-compatible", statusCode, msg, raw, retryAfter, string(rawReqBody), string(rawRespBody))
 	}
 
-	resp, err := fromChatCompletionResponse(raw, a.Quirks)
+	resp, err := fromChatCompletionResponse(raw, a.compatFor(req.Model).Quirks)
 	if err != nil {
 		return resp, err
 	}
@@ -196,7 +208,7 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 	ctx, timeoutCancel := llm.ApplyAdapterTimeout(ctx, req.AdapterTimeout, true)
 	defer timeoutCancel()
 
-	body, err := buildRequestBody(req, true, a.Quirks)
+	body, err := buildRequestBody(req, true, a.compatFor(req.Model))
 	if err != nil {
 		return nil, err
 	}
@@ -397,7 +409,7 @@ func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm
 				}
 
 				rawFinish := finishReason
-				mappedFinish := a.Quirks.mapFinishReason(rawFinish)
+				mappedFinish := a.compatFor(req.Model).Quirks.mapFinishReason(rawFinish)
 				var finish llm.FinishReason
 				if mappedFinish == rawFinish {
 					finish = llm.NormalizeFinishReason("", rawFinish)

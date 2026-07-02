@@ -89,7 +89,7 @@ func FuzzOpenAICompatRequestBuild(f *testing.F) {
 	f.Fuzz(func(t *testing.T, model, system, user string, toolArgs, toolParams []byte, sel byte) {
 		req := buildFuzzRequest(model, system, user, toolArgs, toolParams, sel)
 
-		body, err := buildRequestBody(req, sel&8 == 8, ProviderQuirks{})
+		body, err := buildRequestBody(req, sel&8 == 8, ModelCompat{})
 		if err != nil {
 			return // structured build error (e.g. unsupported tool_choice) is acceptable.
 		}

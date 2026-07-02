@@ -554,7 +554,7 @@ func TestBuildRequestBody_SanitizesMalformedHistoricalToolCallArguments(t *testi
 				},
 			}},
 		}},
-	}, false, ProviderQuirks{})
+	}, false, ModelCompat{})
 	if err != nil {
 		t.Fatalf("buildRequestBody: %v", err)
 	}
@@ -2576,7 +2576,7 @@ func TestBuildRequestBody_TranslateMaxToXHigh_OpenRouter(t *testing.T) {
 		ReasoningEffort: &effort,
 	}
 	quirks := QuirksPreset("openrouter")
-	body, err := buildRequestBody(req, false, quirks)
+	body, err := buildRequestBody(req, false, ModelCompat{Quirks: quirks})
 	if err != nil {
 		t.Fatalf("buildRequestBody: %v", err)
 	}
@@ -2598,7 +2598,7 @@ func TestBuildRequestBody_NoTranslation_OtherProviders(t *testing.T) {
 		ReasoningEffort: &effort,
 	}
 	quirks := ProviderQuirks{} // No translation quirk
-	body, err := buildRequestBody(req, false, quirks)
+	body, err := buildRequestBody(req, false, ModelCompat{Quirks: quirks})
 	if err != nil {
 		t.Fatalf("buildRequestBody: %v", err)
 	}
@@ -2622,7 +2622,7 @@ func TestBuildRequestBody_TranslateMaxToXHigh_CaseInsensitive(t *testing.T) {
 				ReasoningEffort: &e,
 			}
 			quirks := QuirksPreset("openrouter")
-			body, err := buildRequestBody(req, false, quirks)
+			body, err := buildRequestBody(req, false, ModelCompat{Quirks: quirks})
 			if err != nil {
 				t.Fatalf("buildRequestBody: %v", err)
 			}
@@ -2649,7 +2649,7 @@ func TestBuildRequestBody_OtherEffortLevels_NoTranslation(t *testing.T) {
 				Messages:        []llm.Message{{Role: "user", Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "hi"}}}},
 				ReasoningEffort: &e,
 			}
-			body, err := buildRequestBody(req, false, quirks)
+			body, err := buildRequestBody(req, false, ModelCompat{Quirks: quirks})
 			if err != nil {
 				t.Fatalf("buildRequestBody: %v", err)
 			}
