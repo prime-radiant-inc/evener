@@ -266,6 +266,14 @@ func fillFromCatalog(mc *ModelCompat, lookup func(string) *llm.ModelInfo, catalo
 		mc.Quirks.SupportsReasoningEffort = &on
 	}
 	if mc.DefaultMaxTokens == 0 && mi.MaxOutputTokens != nil && *mi.MaxOutputTokens > 0 {
+		// An output cap that equals or exceeds the context window is junk
+		// catalog data — input and output share the window, so the claimed
+		// cap can't coexist with any prompt (LiteLLM's qualified openrouter
+		// entries do this; sending it 400s the provider). Leave the default
+		// unset and let the provider's own default govern.
+		if mi.ContextWindow > 0 && *mi.MaxOutputTokens >= mi.ContextWindow {
+			return
+		}
 		mc.DefaultMaxTokens = *mi.MaxOutputTokens
 	}
 }

@@ -140,6 +140,18 @@ func buildRequestBody(req llm.Request, stream bool, mc ModelCompat) (map[string]
 			}
 		}
 	}
+	if quirks.ToolChoiceAutoUnderReasoning && hasReasoningControls(body) {
+		// Mirrors the anthropic adapter's thinking guard: forcing tool use
+		// while reasoning is active makes Anthropic-routed models silently
+		// drop their reasoning (the direct API rejects the combo outright).
+		// "auto" keeps the reasoning; prompting still drives tool use.
+		switch body["tool_choice"] {
+		case nil, "auto", "none":
+			// nothing to downgrade
+		default:
+			body["tool_choice"] = "auto"
+		}
+	}
 	if quirks.MaxStopSequences > 0 {
 		if stops, ok := body["stop"].([]string); ok && len(stops) > quirks.MaxStopSequences {
 			body["stop"] = stops[:quirks.MaxStopSequences]
@@ -157,6 +169,17 @@ func buildRequestBody(req llm.Request, stream bool, mc ModelCompat) (map[string]
 	}
 
 	return body, nil
+}
+
+// hasReasoningControls reports whether the body carries any active reasoning
+// control emitted by applyThinkingFormat or provider options.
+func hasReasoningControls(body map[string]any) bool {
+	for k := range body {
+		if isReasoningControlKey(k) {
+			return true
+		}
+	}
+	return false
 }
 
 // isReasoningControlKey reports whether a request-body key is one of the
@@ -342,7 +365,24 @@ func toChatMessages(messages []llm.Message, mc ModelCompat, useReasoningDetails 
 			if reasoning != "" || len(encrypted) > 0 {
 				if useReasoningDetails || len(encrypted) > 0 {
 					var details []map[string]any
+					// A signature-bearing reasoning.text item (OpenRouter's
+					// Anthropic route) absorbs the accumulated text: the
+					// provider's canonical non-stream shape is ONE item with
+					// text+signature merged, not a synthetic text item beside
+					// a text-less signature item.
+					merged := false
 					if reasoning != "" {
+						for _, e := range encrypted {
+							if e["type"] == "reasoning.text" {
+								if t, _ := e["text"].(string); t == "" {
+									e["text"] = reasoning
+								}
+								merged = true
+								break
+							}
+						}
+					}
+					if reasoning != "" && !merged {
 						// MiniMax format: {type: "reasoning.text", text: "...", format: "unknown", index: 0}
 						details = append(details, map[string]any{
 							"type":   "reasoning.text",
