@@ -925,3 +925,24 @@ func TestEncryptedDetails_VerbatimReplay(t *testing.T) {
 		t.Errorf("known-but-unserialized fields dropped: %v", enc[0])
 	}
 }
+
+// Catalog gap-fill must use EXACT lookups: a namespaced gateway model whose
+// last segment matches a bundled entry (local/gpt-4o vs gpt-4o) must not
+// inherit that entry's defaults through canonicalization fallbacks.
+func TestFillFromCatalog_NamespacedModelNoLastSegmentFallback(t *testing.T) {
+	if llm.EmbeddedModelCatalog().GetModelInfo("gpt-4o") == nil {
+		t.Fatal("test premise broken: gpt-4o missing from the bundled catalog")
+	}
+	a := NewForInstance(OpenAICompatInstanceParams{
+		Name:       "gw",
+		BaseURL:    "https://gw.example.com/v1",
+		CatalogTag: "openai-compatible",
+	})
+	mc := a.compatFor("local/gpt-4o")
+	if mc.Quirks.SupportsReasoningEffort != nil {
+		t.Errorf("namespaced model inherited an effort gate: %v", *mc.Quirks.SupportsReasoningEffort)
+	}
+	if mc.DefaultMaxTokens != 0 {
+		t.Errorf("namespaced model inherited DefaultMaxTokens = %d from gpt-4o", mc.DefaultMaxTokens)
+	}
+}

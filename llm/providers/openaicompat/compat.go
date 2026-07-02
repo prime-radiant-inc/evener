@@ -258,14 +258,17 @@ func fillFromCatalog(mc *ModelCompat, catalogTag, model string) {
 	}
 	// Provider-qualified entry first (openrouter models are keyed
 	// "openrouter/<model>" in the bundled catalog), then the bare id —
-	// mirroring newOpenAICompatProfile's lookup precedence. LookupModelInfo
-	// also handles any "[1m]"/dated canonicalization a ref might carry.
+	// mirroring newOpenAICompatProfile's lookup precedence. EXACT lookups
+	// only: LookupModelInfo's last-segment canonicalization would let a
+	// namespaced gateway model like "local/gpt-4o" inherit the bundled
+	// gpt-4o defaults, which is exactly the cross-contamination the profile
+	// side avoids by using GetModelInfo.
 	var mi *llm.ModelInfo
 	if catalogTag != "" {
-		mi = cat.LookupModelInfo(catalogTag + "/" + model)
+		mi = cat.GetModelInfo(catalogTag + "/" + model)
 	}
 	if mi == nil {
-		mi = cat.LookupModelInfo(model)
+		mi = cat.GetModelInfo(model)
 	}
 	if mi == nil {
 		return
