@@ -231,9 +231,13 @@ func TestAcceptNotificationInputAdoptsCallerWatchSendStateProvenance(t *testing.
 		t.Fatalf("steering event provenance = %+v, want %s/%s", ev.Provenance, cfg.watchID, cfg.generation)
 	}
 
-	s.emit(events.EventAssistantTextEnd, events.AssistantTextEndData{Text: "watch-send acknowledgement"})
-	if cfg.nextUpdateSeq != beforeSeq {
-		t.Fatalf("nextUpdateSeq = %d after acknowledgement, want %d (same-watch echo suppressed)", cfg.nextUpdateSeq, beforeSeq)
+	// The helper's watch listens for communicate events; the acknowledgement
+	// must be one to be the watch's own echo. Under the breaker policy the echo
+	// is delivered (not suppressed) and classified self-influenced — it re-fires
+	// exactly once.
+	s.emit(events.EventCommunicate, events.CommunicateData{Message: "watch-send acknowledgement", EndTurn: false})
+	if cfg.nextUpdateSeq != beforeSeq+1 {
+		t.Fatalf("nextUpdateSeq = %d after acknowledgement, want %d (self-echo delivered + classified self-influenced, re-fires once)", cfg.nextUpdateSeq, beforeSeq+1)
 	}
 }
 

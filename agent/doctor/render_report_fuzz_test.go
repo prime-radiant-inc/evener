@@ -124,12 +124,12 @@ func doctor_buildWatchView(r *doctor_reader) WatchView {
 	}
 	for i, n := 0, r.doctor_int(5); i < n; i++ {
 		w.Deliveries = append(w.Deliveries, DeliveryView{
-			DeliveryID:       r.doctor_str(),
-			Terminal:         []string{"delivered", "dropped", "evicted"}[r.doctor_int(3)],
-			TriggerIdentity:  r.doctor_str(),
-			TriggerReason:    r.doctor_str(),
-			CoalescedCount:   r.doctor_int(10),
-			DiagnosticReason: r.doctor_str(),
+			DeliveryID:         r.doctor_str(),
+			Terminal:           []string{"delivered", "dropped", "evicted"}[r.doctor_int(3)],
+			TriggerIdentity:    r.doctor_str(),
+			TriggerReason:      r.doctor_str(),
+			CoalescedCount:     r.doctor_int(10),
+			DiagnosticReason:   r.doctor_str(),
 			SelfInfluenceDepth: r.doctor_int(12),
 			Provenance:         doctor_buildProvenance(r),
 		})

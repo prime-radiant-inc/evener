@@ -52,6 +52,16 @@ child observes your session with `job_watch(operation="create", source="parent",
 ...)` and reports findings with `communicate(end_turn:true)`. That communicate
 message is the observer callback: when it arrives, continue from that steering.
 
+You can also watch your own events (`source:"self"`, including
+assistant.tool/communicate) with delivery back to yourself. When an event is
+itself a reaction to one of this watch's earlier frames, the delivered frame
+carries a `<system-reminder>` noting you are responding to your own influence
+and roughly how deep the loop runs. Let it steer you: respond if it helps, but
+back off and disengage as the depth climbs — a runaway loop is hard-stopped by
+the machinery (the frame is dropped) once it gets too deep. For sustained
+observation prefer an observer delegate; self-watching suits a short,
+self-limiting loop.
+
 For watch-driven tasks, complete this sequence:
 
 1. Start the observer with `watch_parent:true`.

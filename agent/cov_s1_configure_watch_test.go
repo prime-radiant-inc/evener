@@ -37,11 +37,16 @@ func TestS1Cov_configureWatch_ClearSessionTargetNoActiveWatch(t *testing.T) {
 	}
 }
 
-// A durable watch-registered append failure fails the install.
+// A durable watch-registered append failure fails the install. (job.notification
+// rather than a self-generated kind: under the old create-time forbid the
+// communicate shape errored BEFORE the append, passing this test vacuously.)
 func TestS1Cov_configureWatch_RegisterAppendFailure(t *testing.T) {
 	jm := newTestJM(t)
+	// The registry append prefers the batch seam; drop to the singular seam so
+	// failAppendN (which wraps appendEvent) can inject the failure.
+	jm.appendEvents = nil
 	failAppendN(jm, jobstore.EventWatchRegistered, 1)
-	if _, err := jm.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}}); err == nil {
+	if _, err := jm.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"job.notification"}}); err == nil {
 		t.Fatal("configureWatch must surface the watch-registered append failure")
 	}
 }

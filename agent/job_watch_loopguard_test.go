@@ -12,40 +12,37 @@ import (
 	"primeradiant.com/serf/agent/provenance"
 )
 
-// TestValidateWatchDeliveryLoop covers the feedback-loop guard: configureWatch
-// must reject any watch whose resolved event kinds include a self-generated kind
-// (assistant.tool/communicate, including via "*") AND whose
-// delivery returns to the generating session (send omitted or send.to=caller).
-// The guard is target-independent: onSessionEvent matches kinds across all
-// watches regardless of cfg.target, so a job-target watch with send.to=caller
-// loops just as a caller-target one does.
-func TestValidateWatchDeliveryLoop(t *testing.T) {
+// TestSelfDeliveryWatchShapesInstall covers the self-delivery watch shapes the
+// removed create-time forbid used to reject: any watch whose resolved event kinds
+// include a self-generated kind (assistant.tool/communicate, including via "*")
+// AND whose delivery returns to the generating session (send omitted or
+// send.to=caller). configureWatch now ACCEPTS every one of these — the breaker
+// bounds the loop at runtime (the depth fuse via recordWatchSend on the send
+// path, the volume breaker watchDeliveryBudget on the no-send notification path)
+// instead of a create-time forbid.
+func TestSelfDeliveryWatchShapesInstall(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name    string
-		build   func(t *testing.T, jm *jobManager) watchArgs
-		wantErr bool
+		name  string
+		build func(t *testing.T, jm *jobManager) watchArgs
 	}{
 		{
 			name: "notify_self_assistant_tool",
 			build: func(*testing.T, *jobManager) watchArgs {
 				return watchArgs{Target: "caller", Events: []string{"assistant.tool"}}
 			},
-			wantErr: true,
 		},
 		{
 			name: "send_to_self_incident_shape",
 			build: func(*testing.T, *jobManager) watchArgs {
 				return watchArgs{Target: "caller", Events: []string{"assistant.tool"}, Send: &watchSendArgs{To: "caller"}}
 			},
-			wantErr: true,
 		},
 		{
 			name: "every_derived_single_kind_to_self",
 			build: func(*testing.T, *jobManager) watchArgs {
 				return watchArgs{Target: "caller", Events: []string{"assistant.tool"}, Every: 2, Send: &watchSendArgs{To: "caller"}}
 			},
-			wantErr: true,
 		},
 		{
 			name: "job_target_self_kind_to_caller",
@@ -56,28 +53,24 @@ func TestValidateWatchDeliveryLoop(t *testing.T) {
 				}
 				return watchArgs{Target: rec.JobID, Events: []string{"assistant.tool"}, Send: &watchSendArgs{To: "caller"}}
 			},
-			wantErr: true,
 		},
 		{
 			name: "wildcard_send_to_self",
 			build: func(*testing.T, *jobManager) watchArgs {
 				return watchArgs{Target: "caller", Events: []string{"*"}, Send: &watchSendArgs{To: "caller"}}
 			},
-			wantErr: true,
 		},
 		{
 			name: "wildcard_notify_self",
 			build: func(*testing.T, *jobManager) watchArgs {
 				return watchArgs{Target: "caller", Events: []string{"*"}}
 			},
-			wantErr: true,
 		},
 		{
 			name: "communicate_notify_self",
 			build: func(*testing.T, *jobManager) watchArgs {
 				return watchArgs{Target: "caller", Events: []string{"communicate"}}
 			},
-			wantErr: true,
 		},
 		{
 			name: "sidecar_delivery_to_delegate",
@@ -85,14 +78,12 @@ func TestValidateWatchDeliveryLoop(t *testing.T) {
 				seedCommonWatchSendTargets(t, jm)
 				return watchArgs{Target: "caller", Events: []string{"communicate"}, Send: &watchSendArgs{To: "dlg_obs"}}
 			},
-			wantErr: false,
 		},
 		{
 			name: "job_notification_self_watch",
 			build: func(*testing.T, *jobManager) watchArgs {
 				return watchArgs{Target: "caller", Events: []string{"job.notification"}}
 			},
-			wantErr: false,
 		},
 		{
 			name: "output_match_only_to_caller",
@@ -103,7 +94,6 @@ func TestValidateWatchDeliveryLoop(t *testing.T) {
 				}
 				return watchArgs{Target: rec.JobID, OutputMatch: "ready", Send: &watchSendArgs{To: "caller"}}
 			},
-			wantErr: false,
 		},
 	}
 
@@ -114,26 +104,11 @@ func TestValidateWatchDeliveryLoop(t *testing.T) {
 			jm.enqueue = func(jobNotification) {}
 			args := tt.build(t, jm)
 			res, err := jm.configureWatch(args)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("configureWatch(%+v) = nil error, want feedback-loop rejection", args)
-				}
-				if !strings.Contains(err.Error(), "feedback loop") {
-					t.Fatalf("error = %v, want message containing \"feedback loop\"", err)
-				}
-				if !strings.Contains(err.Error(), "invalid_request") {
-					t.Fatalf("error = %v, want message containing \"invalid_request\"", err)
-				}
-				if jm.watchCount() != 0 {
-					t.Fatalf("rejected watch must not be installed; watchCount = %d", jm.watchCount())
-				}
-				return
-			}
 			if err != nil {
-				t.Fatalf("configureWatch(%+v) = %v, want no error", args, err)
+				t.Fatalf("configureWatch(%+v) = %v, want install under the breaker policy", args, err)
 			}
 			if jm.watchCount() == 0 {
-				t.Fatalf("allowed watch was not installed; watchCount = 0, result = %+v", res)
+				t.Fatalf("watch was not installed; watchCount = 0, result = %+v", res)
 			}
 		})
 	}
@@ -156,28 +131,33 @@ func TestJobWatchCreateSelfSourceFormatsSource(t *testing.T) {
 	}
 }
 
-func TestJobWatchSelfSourceKeepsLoopGuard(t *testing.T) {
+// TestJobWatchSelfSourceSelfKindInstalls: watching your own assistant.tool events
+// with delivery back to yourself is allowed under the breaker policy — the
+// create-time loop guard is gone; the runtime breaker bounds the loop.
+func TestJobWatchSelfSourceSelfKindInstalls(t *testing.T) {
 	t.Parallel()
 	sess := newTestSession(t)
-	_, err := jobWatchTool(sess, map[string]any{
+	res, err := jobWatchTool(sess, map[string]any{
 		"operation": "create",
 		"source":    "self",
 		"events":    []any{"assistant.tool"},
 	}, jobToolResultDefaultMaxChar)
-	if err == nil {
-		t.Fatal("jobWatchTool succeeded, want loop guard error")
+	if err != nil {
+		t.Fatalf("jobWatchTool: %v, want self-watch install under the breaker policy", err)
 	}
-	if !strings.Contains(err.Error(), "feedback loop") {
-		t.Fatalf("error = %v, want feedback loop", err)
+	state := res.(tooldefs.StateResult).State.(jobWatchToolResult)
+	if !state.Watching {
+		t.Fatalf("watch state = %+v, want watching", state)
 	}
 }
 
-// TestEventWatchIgnoresWatchOriginatedSubagentEvents covers per-watch causal
-// suppression on the job.notification rail: an event whose provenance already
-// carries THIS watch's (watch_id, generation) key is dropped before any pending
-// send is recorded (it is the watch's own downstream echo), while an event
-// without that key records the send normally.
-func TestEventWatchIgnoresWatchOriginatedSubagentEvents(t *testing.T) {
+// TestEventWatchDeliversWatchOriginatedSubagentEventsClassified covers the
+// breaker policy on the job.notification rail: an event whose provenance already
+// carries THIS watch's (watch_id, generation) key is the watch's own downstream
+// echo — delivered (not suppressed) and classified self-influenced, recording a
+// pending send like any other fire. The runaway fuse, proven elsewhere, bounds a
+// runaway.
+func TestEventWatchDeliversWatchOriginatedSubagentEventsClassified(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
@@ -197,17 +177,27 @@ func TestEventWatchIgnoresWatchOriginatedSubagentEvents(t *testing.T) {
 		Provenance: provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_echo", jm.sessionID, "caller"),
 	}
 	jm.onSessionEvent(ownEcho)
-	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
-		t.Fatalf("watch-originated job event retriggered watch send: %+v", pending)
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("self-echo job event must record one pending send (delivered + classified), got %d: %+v", len(pending), pending)
 	}
 
+	// A second fire for the same watch key COALESCES with the pending echo
+	// (superseded, not appended): still one pending entry, but the fire counter
+	// advanced.
 	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_worker", JobType: "delegate", Status: "completed"})
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
-		t.Fatalf("ordinary job event must record one pending watch send, got %d", len(pending))
+		t.Fatalf("ordinary job event must coalesce into the pending entry, got %d", len(pending))
+	}
+	if cfg.nextUpdateSeq != 2 {
+		t.Fatalf("nextUpdateSeq = %d, want 2 (echo fire + ordinary fire)", cfg.nextUpdateSeq)
 	}
 }
 
-func TestNoSendWatchNotificationCarriesProvenanceForEchoSuppression(t *testing.T) {
+// TestNoSendWatchNotificationCarriesProvenanceForEchoClassification: the
+// notification's provenance still carries the watch key (that is how a downstream
+// event is RECOGNIZED as the watch's echo) — but under the breaker policy the
+// echo re-notifies instead of being suppressed; the volume budget bounds it.
+func TestNoSendWatchNotificationCarriesProvenanceForEchoClassification(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
@@ -238,19 +228,20 @@ func TestNoSendWatchNotificationCarriesProvenanceForEchoSuppression(t *testing.T
 		Data:       events.JobFinishedData{JobID: "job_echo", JobType: "delegate", Status: "completed"},
 		Provenance: notified[0].Provenance,
 	})
-	if len(notified) != 1 {
-		t.Fatalf("same-watch echo retriggered notification: %+v", notified)
+	if len(notified) != 2 {
+		t.Fatalf("self-echo must re-notify once (delivered + classified); notifications = %d: %+v", len(notified), notified)
 	}
-	if cfg.deliveries != 1 {
-		t.Fatalf("deliveries = %d, want only the first fire counted", cfg.deliveries)
+	if cfg.deliveries != 2 {
+		t.Fatalf("deliveries = %d, want both fires counted", cfg.deliveries)
 	}
 }
 
-// TestWatchOriginSuppressesDelegateLifecycleWatchSends covers the same per-watch
-// causal suppression for the delegate-lifecycle (job.notification on "*") rail:
-// JobStarted/JobFinished events stamped with the watch's own provenance key are
-// dropped before any pending send is recorded.
-func TestWatchOriginSuppressesDelegateLifecycleWatchSends(t *testing.T) {
+// TestWatchOriginDeliversDelegateLifecycleWatchSendsClassified covers the breaker
+// policy on the delegate-lifecycle (job.notification on "*") rail: the JobFinished
+// event stamped with the watch's own provenance key is delivered (not suppressed)
+// and classified self-influenced, recording one pending send. JobStarted/running
+// is not a watch-matchable job.notification and never fires.
+func TestWatchOriginDeliversDelegateLifecycleWatchSendsClassified(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
@@ -277,12 +268,16 @@ func TestWatchOriginSuppressesDelegateLifecycleWatchSends(t *testing.T) {
 		Provenance: own,
 	})
 
-	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
-		t.Fatalf("watch-originated delegate lifecycle events recorded watch sends: %+v", pending)
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("self-echo JobFinished must record one pending send (delivered + classified), got %d: %+v", len(pending), pending)
 	}
 }
 
-func TestOutputMatchSuppressesSameWatchProvenance(t *testing.T) {
+// TestOutputMatchDeliversSameWatchProvenanceClassifiedSelfInfluenced proves that
+// an output_match feed carrying this watch's own (watch_id, generation) key is the
+// watch's echo: delivered (not suppressed) and classified self-influenced under the
+// breaker policy, firing once. The runaway fuse, proven elsewhere, bounds a runaway.
+func TestOutputMatchDeliversSameWatchProvenanceClassifiedSelfInfluenced(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
@@ -298,11 +293,11 @@ func TestOutputMatchSuppressesSameWatchProvenance(t *testing.T) {
 	chunk := []byte("server READY\n")
 	jm.feedJobOutputWithProvenance(rec.JobID, chunk, int64(len(chunk)), p)
 
-	if len(notified) != 0 {
-		t.Fatalf("same-watch output_match must be suppressed; got %d notifications: %+v", len(notified), notified)
+	if len(notified) != 1 {
+		t.Fatalf("self-echo output_match must fire once (delivered + classified); got %d notifications: %+v", len(notified), notified)
 	}
-	if cfg.deliveries != 0 {
-		t.Fatalf("deliveries = %d, want 0 for suppressed output_match", cfg.deliveries)
+	if cfg.deliveries != 1 {
+		t.Fatalf("deliveries = %d, want 1 for self-echo output_match", cfg.deliveries)
 	}
 }
 
@@ -330,7 +325,11 @@ func TestOutputMatchAllowsDifferentWatchProvenance(t *testing.T) {
 	}
 }
 
-func TestOutputMatchSuppressesSameWatchProvenanceAcrossSplitLine(t *testing.T) {
+// TestOutputMatchDeliversSameWatchProvenanceAcrossSplitLineClassified proves the
+// breaker policy holds when the watch's key reaches the match via the FIRST chunk
+// of a token split across two feeds: the match is the watch's echo — delivered
+// and classified self-influenced, firing once.
+func TestOutputMatchDeliversSameWatchProvenanceAcrossSplitLineClassified(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
@@ -346,15 +345,19 @@ func TestOutputMatchSuppressesSameWatchProvenanceAcrossSplitLine(t *testing.T) {
 	jm.feedJobOutputWithProvenance(rec.JobID, []byte("re"), 2, p)
 	jm.feedJobOutputWithProvenance(rec.JobID, []byte("ady\n"), 6, nil)
 
-	if len(notified) != 0 {
-		t.Fatalf("split same-watch output_match must be suppressed; got %d notifications: %+v", len(notified), notified)
+	if len(notified) != 1 {
+		t.Fatalf("split self-echo output_match must fire once (delivered + classified); got %d notifications: %+v", len(notified), notified)
 	}
-	if cfg.deliveries != 0 {
-		t.Fatalf("deliveries = %d, want 0 for suppressed split output_match", cfg.deliveries)
+	if cfg.deliveries != 1 {
+		t.Fatalf("deliveries = %d, want 1 for self-echo split output_match", cfg.deliveries)
 	}
 }
 
-func TestOutputMatchSuppressesSameWatchProvenanceOnTerminalFlush(t *testing.T) {
+// TestOutputMatchDeliversSameWatchProvenanceOnTerminalFlushClassified proves the
+// breaker policy on the terminal-flush fire site: a self-echo match completed only
+// by the final flush at finalize is delivered and classified self-influenced,
+// persisting one pending send.
+func TestOutputMatchDeliversSameWatchProvenanceOnTerminalFlushClassified(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
@@ -377,12 +380,15 @@ func TestOutputMatchSuppressesSameWatchProvenanceOnTerminalFlush(t *testing.T) {
 		t.Fatalf("finalize: %v", err)
 	}
 
-	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
-		t.Fatalf("terminal flush split same-watch output_match persisted pending = %+v, want none", pending)
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("terminal-flush self-echo output_match must persist one pending send (delivered + classified); got %+v", pending)
 	}
 }
 
-func TestProgressTickSuppressesSameWatchProvenance(t *testing.T) {
+// TestProgressTickDeliversSameWatchProvenanceClassified proves the breaker policy
+// on the progress-tick fire site: a tick whose target job provenance carries the
+// watch's own key is delivered and classified self-influenced, firing once.
+func TestProgressTickDeliversSameWatchProvenanceClassified(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
@@ -403,11 +409,11 @@ func TestProgressTickSuppressesSameWatchProvenance(t *testing.T) {
 	if !jm.fireProgressTick(key, cfg) {
 		t.Fatal("progress tick returned false for live watch")
 	}
-	if len(notified) != 0 {
-		t.Fatalf("same-watch progress tick must be suppressed; got %d notifications: %+v", len(notified), notified)
+	if len(notified) != 1 {
+		t.Fatalf("self-echo progress tick must fire once (delivered + classified); got %d notifications: %+v", len(notified), notified)
 	}
-	if cfg.deliveries != 0 {
-		t.Fatalf("deliveries = %d, want 0 for suppressed progress tick", cfg.deliveries)
+	if cfg.deliveries != 1 {
+		t.Fatalf("deliveries = %d, want 1 for self-echo progress tick", cfg.deliveries)
 	}
 }
 
@@ -1158,7 +1164,13 @@ func TestJobWatchAllowsDescendantConcreteJobSource(t *testing.T) {
 	}
 }
 
-func TestJobWatchSuppressesSameWatchProvenanceBeforeDeliveryAccounting(t *testing.T) {
+// TestJobWatchDeliversSameWatchProvenanceClassifiedSelfInfluenced proves the
+// breaker policy on the session-event fire site: a communicate event carrying the
+// watch's own (watch_id, generation) key is delivered (not suppressed) and
+// classified self-influenced, recording one pending send. cfg.deliveries stays 0
+// because send deliveries are not pre-counted at fire time (they settle on their
+// own path). The runaway fuse, proven elsewhere, bounds a runaway.
+func TestJobWatchDeliversSameWatchProvenanceClassifiedSelfInfluenced(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	seedWatchSendDelegateTarget(t, jm, "dlg_1")
@@ -1175,14 +1187,17 @@ func TestJobWatchSuppressesSameWatchProvenanceBeforeDeliveryAccounting(t *testin
 
 	jm.onSessionEvent(ev)
 
-	if cfg.deliveries != 0 {
-		t.Fatalf("deliveries = %d, want 0 for suppressed event", cfg.deliveries)
+	if cfg.nextUpdateSeq != 1 {
+		t.Fatalf("nextUpdateSeq = %d, want 1 for self-echo event (delivered + classified, fires once)", cfg.nextUpdateSeq)
 	}
-	if len(cfg.pending) != 0 {
-		t.Fatalf("pending sends = %d, want 0 for suppressed event", len(cfg.pending))
+	if len(cfg.pending) != 1 {
+		t.Fatalf("pending sends = %d, want 1 for self-echo event", len(cfg.pending))
 	}
 }
 
+// TestJobWatchDifferentGenerationFiresUnclassified: an old generation's key does
+// not classify the new generation's fire as self-influenced (gradient scope), so
+// the watch fires normally.
 func TestJobWatchDoesNotSuppressDifferentGeneration(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)

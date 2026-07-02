@@ -259,6 +259,10 @@ func TestJobWatchRejectsRemovedPublicShapes(t *testing.T) {
 	}
 }
 
+// (The former "self tool event loop" case is gone with the create-time
+// feedback-loop forbid: watching your own assistant.tool events now installs —
+// the runtime breaker bounds the loop. TestJobWatchSelfSourceSelfKindInstalls
+// covers the install.)
 func TestJobWatchValidationGuidesObserversToParentSource(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -275,11 +279,6 @@ func TestJobWatchValidationGuidesObserversToParentSource(t *testing.T) {
 			name: "communicate event filter",
 			args: `{"operation":"create","source":"self","events":["communicate"],"event_filter":{"tool_name":"read_file","status":"ok"}}`,
 			want: `source="parent"`,
-		},
-		{
-			name: "self tool event loop",
-			args: `{"operation":"create","source":"self","events":["assistant.tool"]}`,
-			want: `delegate(watch_parent=true)`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

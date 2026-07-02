@@ -53,6 +53,10 @@ const (
 	// watchDeliveryBudget caps model-facing deliveries per watch config before the
 	// circuit breaker auto-clears it (spec §4 F1). Hard-coded, no config knob.
 	watchDeliveryBudget = 50
+	// runawaySelfInfluenceDepth caps how many delivered self-influenced priors a
+	// watch send may descend from before the breaker drops it as a runaway. The
+	// existing watchDeliveryBudget is the coarser whole-watch volume floor.
+	runawaySelfInfluenceDepth = 8
 )
 
 // delegateQuietWindow is how long a running delegate may emit no
@@ -294,6 +298,18 @@ type watchSendDelivery struct {
 	provenance *provenance.Causal
 	eventKind  events.EventKind
 	eventData  events.EventData
+	// self-influence classification, stamped at the observation site; fuseDepth
+	// drives the runaway fuse, the rest the gradient inform.
+	selfInfluence bool
+	gradientDepth int
+	fuseDepth     int
+	truncated     bool
+}
+
+// withSelfInfluence stamps the breaker's classification onto a built delivery.
+func (d watchSendDelivery) withSelfInfluence(c selfInfluence) watchSendDelivery {
+	d.selfInfluence, d.gradientDepth, d.fuseDepth, d.truncated = c.self, c.gradientDepth, c.fuseDepth, c.truncated
+	return d
 }
 
 type restoredWatchConfigKey struct {
@@ -401,6 +417,9 @@ func (jm *jobManager) settleWatchSendDelivered(cfg *watchConfig, state jobstore.
 	}
 	jm.removePendingWatchSend(cfg, delivered.Key, delivered.UpdateSeq)
 	jm.mu.Lock()
+	if delivered.DeliveryID != "" {
+		jm.deliveredWatchSendIDs[delivered.DeliveryID] = struct{}{}
+	}
 	crossedBudget := jm.recordWatchDeliveryLocked(cfg)
 	jm.mu.Unlock()
 	if crossedBudget {
@@ -409,9 +428,16 @@ func (jm *jobManager) settleWatchSendDelivered(cfg *watchConfig, state jobstore.
 	return nil
 }
 
+// watchSendDeliveredLocked reports whether a watch-send with deliveryID has
+// settled delivered. Caller holds jm.mu.
+func (jm *jobManager) watchSendDeliveredLocked(deliveryID string) bool {
+	_, ok := jm.deliveredWatchSendIDs[deliveryID]
+	return ok
+}
+
 // validateWatchConfig runs the target-independent validation a watch install must
-// pass — condition presence, send target, config build, and delivery-loop safety —
-// and returns the built config. configureWatch routes install validation through it.
+// pass — condition presence, send target, and config build — and returns the built
+// config. configureWatch routes install validation through it.
 // Event-arg shape (validateWatchEventArgs) and session-target shape are validated by
 // the caller.
 func (jm *jobManager) validateWatchConfig(a watchArgs) (*watchConfig, error) {
@@ -425,9 +451,6 @@ func (jm *jobManager) validateWatchConfig(a watchArgs) (*watchConfig, error) {
 	}
 	cfg, err := newWatchConfig(a, jm.now())
 	if err != nil {
-		return nil, err
-	}
-	if err := validateWatchDeliveryLoop(cfg); err != nil {
 		return nil, err
 	}
 	return cfg, nil
@@ -1033,32 +1056,6 @@ func resolveEventKinds(names []string) (map[events.EventKind]bool, bool) {
 		resolved[kind] = true
 	}
 	return resolved, wildcard
-}
-
-// validateWatchDeliveryLoop rejects configs that deliver self-generated event
-// kinds back into the session that generates them — a structural feedback loop
-// regardless of watch target (spec §6.1). assistant.tool/communicate
-// (including via the "*" wildcard) are produced by the owning
-// session's own turn, and onSessionEvent matches event kinds across every watch
-// independent of cfg.target, so delivering such a kind back to the same session
-// makes each delivery cause the next event.
-func validateWatchDeliveryLoop(cfg *watchConfig) error {
-	if cfg.receiverSessionID != "" {
-		// Cross-session receivers are not delivering back into the session whose
-		// event stream is being watched.
-		return nil
-	}
-	selfDelivery := cfg.send == nil || cfg.send.To == runtimeMessageAliasCaller
-	if !selfDelivery {
-		return nil
-	}
-	selfGenerated := cfg.wildcardEvents ||
-		cfg.eventKinds[events.EventToolCallEnd] ||
-		cfg.eventKinds[events.EventCommunicate]
-	if !selfGenerated {
-		return nil
-	}
-	return errors.New(`invalid_request: feedback loop: watching assistant.tool/communicate on source="self" feeds back into your own tool/result events; to observe this session, start an observer with delegate(watch_parent=true), then inside that child call job_watch(source="parent", events=[...]) and report with communicate(end_turn=true)`)
 }
 
 func canonicalWatchEvents(events []string) []string {
@@ -2138,7 +2135,7 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 			continue
 		}
 		if dec.send {
-			deliveries = append(deliveries, jm.watchSendSnapshot(cfg, dec.watchedIdentity, fmt.Sprintf("event: %s", kind), ev))
+			deliveries = append(deliveries, jm.watchSendSnapshot(cfg, dec.watchedIdentity, fmt.Sprintf("event: %s", kind), ev).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, ev.Provenance)))
 		} else {
 			notifications = append(notifications, jm.watchNotificationFromWatch(cfg, dec.notifyJobID, fmt.Sprintf("event: %s", kind), ev.Provenance))
 			if jm.recordWatchDeliveryLocked(cfg) {
@@ -2208,8 +2205,11 @@ type watchEventDecision struct {
 }
 
 // evaluateWatchEvent is the pure decision core lifted out of onSessionEvent: it
-// applies the target/kind/target-match/provenance/filter/throttle gates to a
-// snapshot and reports the routing decision plus the advanced throttle counter.
+// applies the target/kind/target-match/filter/throttle gates to a snapshot and
+// reports the routing decision plus the advanced throttle counter. Self-influence
+// (the event carrying this watch's own provenance key) does NOT gate matching —
+// under the inform+breaker policy the echo is delivered and classified at the
+// observation site; the runaway fuse in recordWatchSend bounds the loop.
 // It locks nothing, mutates nothing, and emits nothing; the caller performs the
 // effects (snapshot deliveries, notifications, over-budget clears).
 func evaluateWatchEvent(snap watchEventSnapshot, ev events.SessionEvent) watchEventDecision {
@@ -2227,9 +2227,6 @@ func evaluateWatchEvent(snap watchEventSnapshot, ev events.SessionEvent) watchEv
 		return miss
 	}
 	if !watchEventMatchesTarget(snap.target, data) {
-		return miss
-	}
-	if provenance.ContainsWatch(ev.Provenance, snap.watchID, snap.generation) {
 		return miss
 	}
 	if !watchEventFilterMatches(snap.eventFilter, ev) {
@@ -2256,16 +2253,46 @@ func evaluateWatchEvent(snap watchEventSnapshot, ev events.SessionEvent) watchEv
 	return watchEventDecision{matched: true, watchedIdentity: watchedIdentity, notifyJobID: notifyJobID, eventCount: eventCount}
 }
 
-// shouldSuppressWatch drops an event whose causal provenance already carries this
-// watch's own (watch_id, generation) key: the event is the watch's own downstream
-// echo, so re-delivering it would loop. Membership is per-watch and generation-
-// scoped, so a recreated watch (new generation) is never silenced by a prior
-// generation's deliveries.
-func shouldSuppressWatch(cfg *watchConfig, p *provenance.Causal) bool {
-	if cfg == nil {
-		return false
+// selfInfluence is the breaker's read of an incoming triggering provenance for
+// one watch.
+type selfInfluence struct {
+	self          bool // the event carries this watch's (watch_id, generation) key
+	gradientDepth int  // distinct delivered priors of this watch, this generation (sidecar-facing)
+	fuseDepth     int  // distinct delivered priors of this watch, any generation (runaway fuse)
+	truncated     bool // self-influenced AND the diagnostic chain was truncated (depth may undercount)
+}
+
+// classifySelfInfluenceLocked classifies triggering provenance p for watch cfg.
+// gradientDepth is generation-scoped (a genuine re-arm reads as fresh); fuseDepth
+// is generation-agnostic (a re-arm-every-delivery watch cannot reset and evade the
+// fuse). truncated is the runaway backstop: WatchKeys never truncate so `self`
+// stays reliable, but a truncated Chain can undercount the depths. Caller holds
+// jm.mu (reads the delivered set via watchSendDeliveredLocked).
+func (jm *jobManager) classifySelfInfluenceLocked(cfg *watchConfig, p *provenance.Causal) selfInfluence {
+	self := provenance.ContainsWatch(p, cfg.watchID, cfg.generation)
+	return selfInfluence{
+		self:          self,
+		gradientDepth: provenance.SelfInfluenceDepth(p, cfg.watchID, cfg.generation, jm.watchSendDeliveredLocked),
+		fuseDepth:     provenance.SelfInfluenceDepth(p, cfg.watchID, "", jm.watchSendDeliveredLocked),
+		truncated:     self && p != nil && p.ChainTruncated,
 	}
-	return provenance.ContainsWatch(p, cfg.watchID, cfg.generation)
+}
+
+// selfInfluenceNotice is the breaker's worker-facing line for a self-influenced
+// delivery: terse when shallow, pointed as the loop tightens (or when the chain
+// truncated, so the exact depth is unknown). Empty when not self-influenced.
+func selfInfluenceNotice(self bool, gradientDepth int, truncated bool) string {
+	if !self {
+		return ""
+	}
+	switch {
+	case truncated:
+		return "<system-reminder>↳ you're many exchanges deep responding to your own influence — consider disengaging.</system-reminder>"
+	case gradientDepth >= 2:
+		return fmt.Sprintf("<system-reminder>↳ you're ~%d exchanges deep responding to your own influence — consider disengaging.</system-reminder>", gradientDepth)
+	default:
+		return "<system-reminder>↳ this turn responded to your last message.</system-reminder>"
+	}
 }
 
 func watchEventFilterMatches(filter *watchEventFilter, ev events.SessionEvent) bool {
@@ -2375,13 +2402,10 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 		}
 		matches := cfg.outputMatcher.FeedAtWithProvenance(chunk, endOffset, root.Provenance)
 		for _, match := range matches {
-			if shouldSuppressWatch(cfg, match.Provenance) {
-				continue
-			}
 			matchRoot := root
 			matchRoot.Provenance = provenance.Clone(match.Provenance)
 			if cfg.send != nil {
-				deliveries = append(deliveries, jm.watchSendSnapshot(cfg, jobID, "output_match: "+match.Line, matchRoot))
+				deliveries = append(deliveries, jm.watchSendSnapshot(cfg, jobID, "output_match: "+match.Line, matchRoot).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, match.Provenance)))
 			} else {
 				notifications = append(notifications, jm.watchNotificationFromWatch(cfg, jobID, "output_match: "+match.Line, match.Provenance))
 				if jm.recordWatchDeliveryLocked(cfg) {
@@ -2600,14 +2624,12 @@ func (jm *jobManager) completeExpiredJobWatchesLocked(jobID string, expired []ex
 		if cfg.outputMatcher != nil {
 			trackTerminalFlush := len(cfg.pending) != 0
 			for _, match := range cfg.outputMatcher.FlushWithProvenance(root.Provenance) {
-				if shouldSuppressWatch(cfg, match.Provenance) {
-					continue
-				}
 				matchRoot := root
 				matchRoot.Provenance = provenance.Clone(match.Provenance)
 				if cfg.send != nil {
 					delivery := jm.watchSendSnapshot(cfg, jobID, "output_match: "+match.Line, matchRoot)
 					delivery.allowAfterTerminalExpiry = true
+					delivery = delivery.withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, match.Provenance))
 					deliveries = append(deliveries, delivery)
 					trackTerminalFlush = true
 				} else {
@@ -2664,7 +2686,6 @@ type progressTickSnapshot struct {
 	stillRegistered bool
 	sessionTarget   bool
 	targetRunning   bool
-	suppressed      bool
 	hasSend         bool
 	target          string
 }
@@ -2682,7 +2703,7 @@ type progressTickDecision struct {
 }
 
 // decideProgressTick is the pure decision core lifted out of fireProgressTick. It
-// gates a progress tick on manager/registration/liveness/suppression and reports
+// gates a progress tick on manager/registration/liveness and reports
 // how the surviving tick routes. It locks nothing and mutates nothing; the caller
 // performs the effects. A send tick and a budget-counted notification are mutually
 // exclusive, and a non-keepAlive tick never fires.
@@ -2692,9 +2713,6 @@ func decideProgressTick(snap progressTickSnapshot) progressTickDecision {
 	}
 	if !snap.sessionTarget && !snap.targetRunning {
 		return progressTickDecision{}
-	}
-	if snap.suppressed {
-		return progressTickDecision{keepAlive: true}
 	}
 	dec := progressTickDecision{keepAlive: true, fire: true}
 	if snap.hasSend {
@@ -2720,7 +2738,6 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 		stillRegistered: jm.watches[key] == cfg,
 		sessionTarget:   isWatchSessionTarget(cfg.target),
 		targetRunning:   jm.running[cfg.target] != nil,
-		suppressed:      shouldSuppressWatch(cfg, root.Provenance),
 		hasSend:         cfg.send != nil,
 		target:          cfg.target,
 	}
@@ -2730,7 +2747,7 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 		return false
 	}
 	if dec.sendDelivery {
-		deliveries = append(deliveries, jm.watchSendSnapshot(cfg, cfg.target, "progress_tick", root))
+		deliveries = append(deliveries, jm.watchSendSnapshot(cfg, cfg.target, "progress_tick", root).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, root.Provenance)))
 	}
 	if dec.recordBudget {
 		notifications = append(notifications, jm.watchNotificationFromWatch(cfg, dec.notifyJobID, "progress_tick", root.Provenance))
@@ -2917,6 +2934,9 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 		Data:       d.eventData,
 		Provenance: provenance.Clone(d.triggerProvenance),
 	}, d.triggerProvenance)
+	if notice := selfInfluenceNotice(d.selfInfluence, d.gradientDepth, d.truncated); notice != "" {
+		d.frame = notice + "\n" + d.frame
+	}
 	return d
 }
 
@@ -2947,6 +2967,9 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 	}
 	if terr != nil {
 		return jobstore.WatchSendState{}, nil, false, jm.dropWatchSend(state, d.cfg, terr.Error())
+	}
+	if d.fuseDepth >= runawaySelfInfluenceDepth {
+		return jobstore.WatchSendState{}, nil, false, jm.dropWatchSend(state, d.cfg, "runaway")
 	}
 	return state, d.cfg, true, nil
 }
@@ -3002,6 +3025,7 @@ func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string)
 		DelegateGeneration: d.delegateGeneration,
 		ReceiverSessionID:  d.cfg.receiverSessionID,
 		ReceiverDelegateID: d.cfg.receiverDelegateID,
+		SelfInfluenceDepth: d.fuseDepth,
 	}
 }
 
