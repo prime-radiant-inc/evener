@@ -39,7 +39,7 @@ if [[ ! -f "${TARGET}" ]]; then
   exit 1
 fi
 
-tmp="$(mktemp "${TMPDIR:-/tmp}/serf-model-catalog.XXXXXX.json")"
+tmp="$(mktemp "${TMPDIR:-/tmp}/serf-model-catalog.XXXXXX")"
 trap 'rm -f "${tmp}"' EXIT
 
 echo "fetching ${UPSTREAM_URL}"

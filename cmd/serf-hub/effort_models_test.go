@@ -149,3 +149,26 @@ func TestModelDescriptorsToAPIModels_ModelAbsentFromInstanceFallsBackToCatalog(t
 		t.Errorf("reasoning_effort_levels = %v, want %v (unchanged catalog behavior)", levels, wantOpus46Levels)
 	}
 }
+
+// reasoning = true without custom levels must still override a live/catalog
+// supports_reasoning=false — the session treats the model as reasoning-capable,
+// so the spawn UI must not hide the effort picker.
+func TestModelDescriptorsToAPIModels_InstanceReasoningTrueOverridesCatalog(t *testing.T) {
+	on := true
+	cfg := &providercfg.Config{Instances: []providercfg.InstanceConfig{{
+		Name:     "gw",
+		Type:     "openai",
+		APIStyle: providercfg.StyleChatCompletions,
+		Models: map[string]providercfg.ModelConfig{
+			"local-reasoner": {Reasoning: &on},
+		},
+	}}}
+	entry := map[string]any{"supports_reasoning": false}
+	applyInstanceModelOverride(entry, cfg, "gw", "local-reasoner")
+	if got, _ := entry["supports_reasoning"].(bool); !got {
+		t.Errorf("supports_reasoning = %v, want true (explicit reasoning=true beats catalog/live)", entry["supports_reasoning"])
+	}
+	if _, ok := entry["reasoning_effort_levels"]; ok {
+		t.Errorf("levels should stay derived when only reasoning=true is configured: %v", entry["reasoning_effort_levels"])
+	}
+}

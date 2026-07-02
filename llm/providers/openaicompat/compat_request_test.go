@@ -750,11 +750,12 @@ func TestReasoningOff_SuppressesProviderOptionReasoning(t *testing.T) {
 		},
 		ProviderOptions: map[string]any{
 			"openai-compatible": map[string]any{
-				"reasoning":        map[string]any{"enabled": true},
-				"reasoning_effort": "high",
-				"thinking":         map[string]any{"type": "enabled"},
-				"enable_thinking":  true,
-				"custom_pass":      "keep-me",
+				"reasoning":            map[string]any{"enabled": true},
+				"reasoning_effort":     "high",
+				"thinking":             map[string]any{"type": "enabled"},
+				"enable_thinking":      true,
+				"chat_template_kwargs": map[string]any{"enable_thinking": true},
+				"custom_pass":          "keep-me",
 			},
 		},
 	}
@@ -764,7 +765,7 @@ func TestReasoningOff_SuppressesProviderOptionReasoning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildRequestBody: %v", err)
 	}
-	for _, key := range []string{"reasoning", "reasoning_effort", "thinking", "enable_thinking"} {
+	for _, key := range []string{"reasoning", "reasoning_effort", "thinking", "enable_thinking", "chat_template_kwargs"} {
 		if v, ok := body[key]; ok {
 			t.Errorf("body[%q] = %v, want absent for a reasoning=false model", key, v)
 		}

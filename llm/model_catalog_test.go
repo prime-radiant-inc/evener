@@ -781,3 +781,24 @@ func TestEmbeddedCatalog_KimiForCoding(t *testing.T) {
 		t.Error("kimi-for-coding should be SupportsTools=true")
 	}
 }
+
+// A context_window override must also win for models the upstream catalog
+// already defines (not just materialized serf-only entries) — the overrides
+// layer is authoritative, so upstream later adding one of our curated models
+// can't regress its shape.
+func TestApplyOverrides_ContextWindowOverlaysMatchedModel(t *testing.T) {
+	base := []byte(`{"m-upstream": {"litellm_provider": "openai", "mode": "chat", "max_input_tokens": 100}}`)
+	overrides := []byte(`{"m-upstream": {"context_window": 999}}`)
+	cat, err := parseLiteLLMCatalog(base)
+	if err != nil {
+		t.Fatalf("parseLiteLLMCatalog: %v", err)
+	}
+	applyOverrides(cat, overrides)
+	mi := cat.GetModelInfo("m-upstream")
+	if mi == nil {
+		t.Fatal("m-upstream missing after overlay")
+	}
+	if mi.ContextWindow != 999 {
+		t.Errorf("ContextWindow = %d, want 999 (override beats upstream)", mi.ContextWindow)
+	}
+}

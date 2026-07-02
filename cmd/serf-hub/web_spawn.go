@@ -284,6 +284,11 @@ func applyInstanceModelOverride(entry map[string]any, providerCfg *providercfg.C
 	case len(mc.ThinkingLevels) > 0:
 		entry["reasoning_effort_levels"] = orderedThinkingLevels(mc.ThinkingLevels)
 		entry["supports_reasoning"] = true
+	case mc.Reasoning != nil && *mc.Reasoning:
+		// reasoning = true without custom levels: the model IS
+		// reasoning-capable even if the live/catalog data says otherwise;
+		// levels stay as derived (the UI falls back to the default ladder).
+		entry["supports_reasoning"] = true
 	}
 	if mc.ContextWindow > 0 {
 		entry["context_window"] = mc.ContextWindow

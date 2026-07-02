@@ -164,7 +164,10 @@ func buildRequestBody(req llm.Request, stream bool, mc ModelCompat) (map[string]
 // model must never carry, whatever the source.
 func isReasoningControlKey(k string) bool {
 	switch k {
-	case "reasoning", "reasoning_effort", "thinking", "enable_thinking":
+	case "reasoning", "reasoning_effort", "thinking", "enable_thinking", "chat_template_kwargs":
+		// chat_template_kwargs is how the qwen/chat-template formats toggle
+		// thinking; on a reasoning=false model any passthrough kwargs are
+		// presumed thinking controls and dropped with the rest.
 		return true
 	}
 	return false
