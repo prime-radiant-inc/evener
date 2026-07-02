@@ -244,7 +244,11 @@ func NormalizePastedPath(text string) string {
 	quoted := false
 	if len(t) >= 2 {
 		if (t[0] == '"' && t[len(t)-1] == '"') || (t[0] == '\'' && t[len(t)-1] == '\'') {
-			t = t[1 : len(t)-1]
+			// Trim boundary whitespace inside the quotes too: a quoted path may keep
+			// interior spaces ("/My Pictures/a.png"), but a leading/trailing control
+			// char (e.g. '/\f') is stripped by TrimSpace on a second normalization
+			// pass, so returning it verbatim would break idempotence.
+			t = strings.TrimSpace(t[1 : len(t)-1])
 			quoted = true
 		}
 	}
@@ -252,8 +256,14 @@ func NormalizePastedPath(text string) string {
 	// file:// URL.
 	if strings.HasPrefix(strings.ToLower(t), "file://") {
 		if u, err := url.Parse(t); err == nil && u.Scheme == "file" {
-			if u.Path != "" {
-				return u.Path
+			// A percent-encoded control/whitespace char (e.g. file:///%0A, %0B)
+			// decodes to a path with a boundary newline/vtab; returning "/\n" then
+			// re-normalizes to "/" (via TrimSpace) on a second pass, breaking
+			// idempotence, and an embedded CR/LF is rejected by the whitespace guard
+			// below. Return the decoded path only when it is trim-stable and free of
+			// CR/LF; a legitimate space-bearing path (file:///a%20b) still passes.
+			if p := u.Path; p != "" && p == strings.TrimSpace(p) && !strings.ContainsAny(p, "\r\n") {
+				return p
 			}
 		}
 	}

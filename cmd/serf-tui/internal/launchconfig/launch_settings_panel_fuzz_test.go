@@ -178,7 +178,12 @@ func anchorOne(root, s string) string {
 		return trimmed
 	}
 	cand := filepath.Clean(filepath.Join(root, trimmed))
-	if withinRoot(root, cand) {
+	// applyEdit stores each entry after strings.TrimSpace (via splitTrim), which
+	// can re-interpret a trailing-whitespace component — a dir literally named
+	// ".. " cleans to root/".. " (inside root) but trims to root/".." (an escape).
+	// Validate the candidate AS IT WILL BE STORED so such a value is rejected here
+	// rather than anchored and then escaping past the oracle.
+	if withinRoot(root, strings.TrimSpace(cand)) {
 		return cand
 	}
 	// Would escape the sandbox: hand the validator a relative path, which it

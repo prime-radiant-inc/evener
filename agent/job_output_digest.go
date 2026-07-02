@@ -4,7 +4,35 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
+
+// trimTrailingPartialRune drops an incomplete UTF-8 sequence left dangling at the
+// END of a byte slice cut at an arbitrary offset, so slicing valid UTF-8 output
+// never yields an invalid tail fragment.
+func trimTrailingPartialRune(b []byte) []byte {
+	i := len(b) - 1
+	for i >= 0 && !utf8.RuneStart(b[i]) {
+		i--
+	}
+	if i < 0 {
+		return b
+	}
+	if r, size := utf8.DecodeRune(b[i:]); r == utf8.RuneError && size == 1 {
+		return b[:i]
+	}
+	return b
+}
+
+// trimLeadingPartialRune drops UTF-8 continuation bytes left dangling at the START
+// of a byte slice cut at an arbitrary offset.
+func trimLeadingPartialRune(b []byte) []byte {
+	i := 0
+	for i < len(b) && !utf8.RuneStart(b[i]) {
+		i++
+	}
+	return b[i:]
+}
 
 // assembleOutputDigest renders a head+tail line digest: the head slice, an
 // elision marker describing what sits between, then the tail slice. total is the
@@ -74,6 +102,9 @@ func shellInlineDigest(full string, total, dropped int64) string {
 		if i := bytes.LastIndexByte(headRaw, '\n'); i >= 0 {
 			headRaw = headRaw[:i+1]
 		}
+		// A single long line with no newline before the cut leaves the byte slice
+		// ending mid-rune; drop the dangling partial rune so the head is valid UTF-8.
+		headRaw = trimTrailingPartialRune(headRaw)
 	}
 	tailRaw := b
 	if len(tailRaw) > shellDigestHalfBytes {
@@ -82,6 +113,8 @@ func shellInlineDigest(full string, total, dropped int64) string {
 		if i := bytes.IndexByte(tailRaw, '\n'); i >= 0 {
 			tailRaw = tailRaw[i+1:]
 		}
+		// Likewise drop a dangling partial rune at the cut so the tail is valid UTF-8.
+		tailRaw = trimLeadingPartialRune(tailRaw)
 	}
 	head, _, _ := firstLineBytes(headRaw, shellDigestLines)
 	tail, _, _ := lastLineBytes(tailRaw, shellDigestLines)

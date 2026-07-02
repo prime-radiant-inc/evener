@@ -100,7 +100,15 @@ func paginateDirEntries(path string, entries []execenv.DirEntry, offset, limit i
 	if start > total {
 		start = total
 	}
-	page := make([]execenv.DirEntry, 0, limit)
+	// Cap the pre-allocation to the entries actually available past the offset: a
+	// page can never exceed that, so sizing it by the raw (caller-supplied) limit
+	// would let a huge limit (e.g. 1e10) allocate an enormous slice and OOM before
+	// a single entry is read. The char budget and limit still bound what is filled.
+	capHint := limit
+	if remaining := total - start; capHint > remaining {
+		capHint = remaining
+	}
+	page := make([]execenv.DirEntry, 0, capHint)
 	used := 0
 	end := start
 	for end < total && len(page) < limit {
