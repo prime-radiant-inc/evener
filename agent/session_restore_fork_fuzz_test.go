@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/oklog/ulid/v2"
@@ -133,7 +134,12 @@ func FuzzRfzForkSession(f *testing.F) {
 		editedMessage := rfzTexts[r.intn(len(rfzTexts))]
 		label := ""
 		if r.intn(2) == 0 {
-			label = rfzTexts[r.intn(len(rfzTexts))]
+			// A fork label is human-readable UI text (valid UTF-8 by contract). The
+			// meta persists as JSON, which coerces invalid UTF-8 to U+FFFD, so the
+			// byte-identity round-trip oracle below only holds for valid-UTF-8 labels;
+			// coerce here rather than assert a round-trip JSON cannot provide. The raw
+			// non-UTF-8 payload in rfzTexts still exercises message/name/note fields.
+			label = strings.ToValidUTF8(rfzTexts[r.intn(len(rfzTexts))], "�")
 		}
 
 		childID, err := ForkSession(stateDir, parentID, divergenceTurn, editedMessage, label)
