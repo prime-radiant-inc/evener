@@ -31,6 +31,7 @@ regexes = [
   '''serf-continuation-scope-v1''', # domain-separation label in llm/continuation_secret.go, not a secret
   '''observation/drains''',         # benign phrase mis-flagged in agent/job_delegate_send_test.go
   '''sk-LIVETEST[0-9a-f]*''',       # fake illustrative key in subagent fixtures + design docs
+  '''a\.eyJlbWFpbCI6ImpAZXhhbXBsZS5jb20ifQ\.sig''', # fake JWT ({"email":"j@example.com"}) in auth/openai fuzz seeds
 ]
 
 # The seed corpora are deliberately NOT path-allowlisted: that would make
