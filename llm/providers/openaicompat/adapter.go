@@ -339,6 +339,9 @@ func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm
 	var textBuf strings.Builder
 	var reasoningStarted bool
 	var reasoningBuf strings.Builder
+	// reasoningField remembers which wire field the first reasoning delta
+	// arrived on so replay can route thinking back to the same field.
+	var reasoningField string
 	var model string
 	var finishReason string
 	var usage *llm.Usage
@@ -395,7 +398,7 @@ func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm
 				if reasoningBuf.Len() > 0 {
 					msg.Content = append(msg.Content, llm.ContentPart{
 						Kind:     llm.ContentThinking,
-						Thinking: &llm.ThinkingData{Text: reasoningBuf.String()},
+						Thinking: &llm.ThinkingData{Text: reasoningBuf.String(), Signature: reasoningField},
 					})
 				}
 				if textBuf.Len() > 0 {
@@ -470,16 +473,19 @@ func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm
 				finishReason = choice.FinishReason
 			}
 
-			// Reasoning content delta.
-			if choice.Delta.ReasoningContent != "" {
+			// Reasoning delta — providers vary the field name; take the first
+			// non-empty variant per chunk (duplicated identical fields must
+			// not double the text) and remember the field for replay.
+			if delta, field := reasoningFromDelta(choice.Delta); delta != "" {
 				if !reasoningStarted {
 					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
 					reasoningStarted = true
+					reasoningField = field
 				}
-				reasoningBuf.WriteString(choice.Delta.ReasoningContent)
+				reasoningBuf.WriteString(delta)
 				s.Send(llm.StreamEvent{
 					Type:           llm.StreamEventReasoningDelta,
-					ReasoningDelta: choice.Delta.ReasoningContent,
+					ReasoningDelta: delta,
 				})
 			}
 

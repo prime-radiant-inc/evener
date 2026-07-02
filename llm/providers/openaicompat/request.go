@@ -259,7 +259,7 @@ func toChatMessages(messages []llm.Message, quirks ProviderQuirks, useReasoningD
 						},
 					}
 				} else {
-					msg["reasoning_content"] = reasoning
+					msg[reasoningReplayField(content)] = reasoning
 				}
 			} else if quirks.EmptyReasoningContentOnAssistant && !useReasoningDetails {
 				msg["reasoning_content"] = ""
@@ -334,6 +334,23 @@ func textFromParts(parts []llm.ContentPart) string {
 		}
 	}
 	return b.String()
+}
+
+// reasoningReplayField returns the wire field assistant thinking replays to:
+// the field the thinking originally arrived on (recorded in the part's
+// Signature) when it names a known reasoning field, else reasoning_content.
+// Signatures that aren't field names (e.g. Anthropic crypto blobs riding a
+// cross-provider transcript) fall back to the default.
+func reasoningReplayField(parts []llm.ContentPart) string {
+	for _, p := range parts {
+		if p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.Text != "" {
+			if isReasoningFieldName(p.Thinking.Signature) {
+				return p.Thinking.Signature
+			}
+			break
+		}
+	}
+	return "reasoning_content"
 }
 
 func thinkingFromParts(parts []llm.ContentPart) string {

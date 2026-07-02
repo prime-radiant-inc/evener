@@ -27,6 +27,8 @@ type chatMessage struct {
 	Role             string                `json:"role"`
 	Content          string                `json:"content"`
 	ReasoningContent string                `json:"reasoning_content,omitempty"`
+	Reasoning        string                `json:"reasoning,omitempty"`
+	ReasoningText    string                `json:"reasoning_text,omitempty"`
 	ReasoningDetails []reasoningDetailItem `json:"reasoning_details,omitempty"`
 	ToolCalls        []chatToolCall        `json:"tool_calls,omitempty"`
 }
@@ -71,10 +73,55 @@ type chatChunkChoice struct {
 }
 
 type chatDelta struct {
-	Role             string              `json:"role"`
-	Content          string              `json:"content"`
-	ReasoningContent string              `json:"reasoning_content,omitempty"`
-	ToolCalls        []chatChunkToolCall `json:"tool_calls,omitempty"`
+	Role             string                `json:"role"`
+	Content          string                `json:"content"`
+	ReasoningContent string                `json:"reasoning_content,omitempty"`
+	Reasoning        string                `json:"reasoning,omitempty"`
+	ReasoningText    string                `json:"reasoning_text,omitempty"`
+	ReasoningDetails []reasoningDetailItem `json:"reasoning_details,omitempty"`
+	ToolCalls        []chatChunkToolCall   `json:"tool_calls,omitempty"`
+}
+
+// reasoningFieldNames are the wire fields OpenAI-compatible providers use for
+// reasoning deltas. Providers pick one (llama.cpp: reasoning_content;
+// OpenRouter/chutes: reasoning; some gateways: reasoning_text); chutes.ai
+// duplicates identical content across two, so exactly one is read per chunk.
+var reasoningFieldNames = [...]string{"reasoning_content", "reasoning", "reasoning_text"}
+
+// reasoningFromDelta returns the chunk's reasoning text and the field it
+// arrived on — the first non-empty of reasoning_content/reasoning/
+// reasoning_text, falling back to reasoning_details text items (which replay
+// through the reasoning_details path, so they report no field).
+func reasoningFromDelta(d chatDelta) (text, field string) {
+	for i, v := range [...]string{d.ReasoningContent, d.Reasoning, d.ReasoningText} {
+		if v != "" {
+			return v, reasoningFieldNames[i]
+		}
+	}
+	if len(d.ReasoningDetails) > 0 {
+		var b strings.Builder
+		for _, item := range d.ReasoningDetails {
+			piece := item.Text
+			if piece == "" {
+				piece = item.Thinking
+			}
+			b.WriteString(piece)
+		}
+		return b.String(), ""
+	}
+	return "", ""
+}
+
+// isReasoningFieldName reports whether a thinking signature names one of the
+// known reasoning wire fields (as opposed to a cryptographic signature from
+// another provider's transcript).
+func isReasoningFieldName(sig string) bool {
+	for _, f := range reasoningFieldNames {
+		if sig == f {
+			return true
+		}
+	}
+	return false
 }
 
 type chatChunkToolCall struct {
@@ -84,11 +131,13 @@ type chatChunkToolCall struct {
 	Function chatFunctionCall `json:"function"`
 }
 
-// extractReasoning returns the reasoning text from a chat message, checking
-// reasoning_details (OpenRouter MiniMax format) first, then reasoning_content.
+// extractReasoning returns the reasoning text from a chat message and the wire
+// field it arrived on, checking reasoning_details (OpenRouter MiniMax format)
+// first, then the reasoning_content/reasoning/reasoning_text field variants.
 // MiniMax uses {type: "reasoning.text", text: "..."}; older/alternate formats
-// use {type: "thinking", thinking: "..."}.
-func extractReasoning(msg chatMessage) string {
+// use {type: "thinking", thinking: "..."}. Details report no field — they
+// replay through the reasoning_details path.
+func extractReasoning(msg chatMessage) (text, field string) {
 	if len(msg.ReasoningDetails) > 0 {
 		var b strings.Builder
 		for _, d := range msg.ReasoningDetails {
@@ -106,10 +155,15 @@ func extractReasoning(msg chatMessage) string {
 			}
 		}
 		if b.Len() > 0 {
-			return b.String()
+			return b.String(), ""
 		}
 	}
-	return msg.ReasoningContent
+	for i, v := range [...]string{msg.ReasoningContent, msg.Reasoning, msg.ReasoningText} {
+		if v != "" {
+			return v, reasoningFieldNames[i]
+		}
+	}
+	return "", ""
 }
 
 func fromChatCompletionResponse(raw map[string]any, quirks ProviderQuirks) (llm.Response, error) {
@@ -129,10 +183,10 @@ func fromChatCompletionResponse(raw map[string]any, quirks ProviderQuirks) (llm.
 
 	// Build message.
 	parts := []llm.ContentPart{}
-	if reasoning := extractReasoning(choice.Message); reasoning != "" {
+	if reasoning, field := extractReasoning(choice.Message); reasoning != "" {
 		parts = append(parts, llm.ContentPart{
 			Kind:     llm.ContentThinking,
-			Thinking: &llm.ThinkingData{Text: reasoning},
+			Thinking: &llm.ThinkingData{Text: reasoning, Signature: field},
 		})
 	}
 	if choice.Message.Content != "" {

@@ -60,7 +60,7 @@ func FuzzFromChatCompletionResponse(f *testing.F) {
 		firstMsg, haveChoice := firstChoiceMessage(m)
 		var wantReasoning string
 		if haveChoice {
-			wantReasoning = extractReasoning(firstMsg)
+			wantReasoning, _ = extractReasoning(firstMsg)
 		}
 		var thinkingParts, gotToolCalls int
 		for _, p := range resp.Message.Content {
