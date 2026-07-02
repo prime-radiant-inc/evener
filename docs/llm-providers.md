@@ -105,7 +105,9 @@ default = "work"          # optional; the default instance (else first by sorted
 type      = "openai"      # the provider TYPE — drives the behavior tag
 api_style = "responses"   # openai only: "responses"/"auto" → openai tag; "chat-completions" → openai-compatible
 base_url  = "..."         # optional override (captured from env when seeded)
-quirks    = "..."         # optional; selects a quirks preset (openai-compatible types)
+quirks    = "..."         # optional; selects a quirks preset (openai-compatible types) —
+                           # see "OpenAI-compatible compat & per-model config" below for the
+                           # composable `[instances.X.compat]` / `[instances.X.models]` alternative
 # no api_key — credentials are resolved separately and injected in memory only
 ```
 
@@ -154,6 +156,218 @@ quirks    = "..."         # optional; selects a quirks preset (openai-compatible
   `(type, apiStyle)` seed (so the tag is right), then `WithProviderID(raw, name)`
   stamps the instance name **without** changing the tag — the "build-then-rename"
   pattern.
+
+## OpenAI-compatible compat & per-model config (`[instances.X.compat]` / `[instances.X.models]`)
+
+Beyond the four descriptor fields above, an instance whose type routes through
+the openai-compat adapter — `kimi`, `glm`, `openrouter`, `ollama`, or `openai`
+with `api_style = "chat-completions"` (`compatFamily`,
+`llm/providercfg/load.go:86`) — may also carry a `compat` table and a `models`
+table. Any other type rejects them at load (`load.go:211-217`).
+
+```toml
+[instances.lunaroute]
+type      = "openai"
+api_style = "chat-completions"
+base_url  = "https://gw.lunaroute.com/v1"
+api_key   = "$LUNAROUTE_API_KEY"
+
+[instances.lunaroute.compat]                    # instance-wide overrides
+thinking_format = "..."
+
+[instances.lunaroute.models."glm-5.2-nvfp4"]    # per-model catalog overlay + wire behavior
+context_window    = 1048576
+max_output_tokens = 131072
+reasoning         = true
+thinking_levels   = { minimal = "high", low = "high", medium = "high", high = "high", xhigh = "max" }
+
+[instances.lunaroute.models."glm-5.2-nvfp4".compat]   # per-model compat, overlays the instance's
+thinking_format           = "zai"
+supports_reasoning_effort = true
+tool_stream               = true
+```
+
+### Overlay precedence
+
+Three layers combine field-by-field — later wins, `nil`/unset always inherits
+(`ApplyCompatConfig`, `llm/providers/openaicompat/compat.go:60-136`):
+
+1. **Quirks preset** — the base `ProviderQuirks` selected by `quirks = "..."`
+   or the provider type's built-in default (`QuirksPreset`,
+   `llm/providers/openaicompat/quirks.go:66`).
+2. **Instance compat** (`[instances.X.compat]`) overlays the preset.
+3. **Per-model compat** (`[instances.X.models."<id>".compat]`) overlays the
+   instance's already-overlaid quirks.
+
+`resolveModelCompat` (`compat.go:141`) builds one `ModelCompat` per declared
+model at adapter-construction time; `compatFor(model)` (`compat.go:164`)
+returns that entry when the model was declared, else the instance-wide
+quirks. `FinishReasonMap` is the one field that **replaces wholesale** rather
+than merging key-by-key when set at a given layer (`compat.go:126-131`).
+
+### `[instances.X.compat]` / `[instances.X.models."<id>".compat]` fields
+
+Every field is optional; unset means "inherit from the layer below"
+(`providercfg.CompatConfig`, `llm/providercfg/providercfg.go:36-86`):
+
+| TOML key | Type | Meaning |
+|---|---|---|
+| `thinking_format` | string | wire dialect for reasoning; see the table below |
+| `supports_reasoning_effort` | bool | gate the `reasoning_effort` field for formats that treat it as optional (openai/deepseek/together); default follows the format (see below) |
+| `max_tokens_field` | string | `"max_tokens"` (default) or `"max_completion_tokens"` |
+| `tool_stream` | bool | send z.ai's `tool_stream: true` when tools are present |
+| `supports_store` | bool | send `store: false` to opt out of server-side retention |
+| `supports_developer_role` | bool | send the system prompt under the `"developer"` role |
+| `supports_usage_in_streaming` | bool | `nil`/`true` sends `stream_options: {include_usage: true}`; `false` omits it |
+| `requires_tool_result_name` | bool | add a `name` field to `tool`-role messages |
+| `requires_assistant_after_tool_result` | bool | insert an empty assistant message between a tool result and a following user message |
+| `requires_thinking_as_text` | bool | replay assistant thinking as plain text instead of a reasoning field |
+| `requires_reasoning_content_on_assistant` | bool | add `reasoning_content: ""` to a replayed assistant message that carries none |
+| `cache_control_format` | string | only `"anthropic"` is accepted — applies Anthropic `cache_control` markers (system prompt, last tool, last message) for gateways that forward them |
+| `lock_temperature` / `lock_top_p` / `lock_frequency_penalty` / `lock_presence_penalty` | bool | drop that sampling param from the request |
+| `tool_choice_auto_only` | bool | force any `tool_choice` other than `auto`/`none` down to `auto` |
+| `max_stop_sequences` | int (≥0) | truncate the `stop` array to this length |
+| `strip_empty_content` | bool | drop empty-text content parts before sending |
+| `no_json_schema` | bool | downgrade `response_format: json_schema` to `json_object` |
+| `finish_reason_map` | table of string→string | remap raw finish reasons (replaces wholesale, not merged) |
+| `translate_max_to_xhigh` | bool | map serf's `max` wire value to `xhigh` when no `thinking_levels` map applies (OpenRouter vocabulary) |
+
+`thinking_format`, `max_tokens_field`, and `cache_control_format` are
+validated at load (`load.go:101-116`): an unrecognized value is a hard config
+error, not a silent no-op.
+
+### `[instances.X.models."<id>"]` fields
+
+(`providercfg.ModelConfig`, `providercfg.go:91-101`)
+
+| TOML key | Meaning |
+|---|---|
+| `context_window` | overlays the catalog's context window for this model (must be ≥0) |
+| `max_output_tokens` | sent as the output cap when a request doesn't set one (`ModelCompat.DefaultMaxTokens`, `compat.go:20`) |
+| `reasoning` | `true`/`false` — declares whether the model accepts a reasoning-effort control at all; `false` clears the profile's effort levels entirely (`agent/provider/profile.go:1130-1135`) |
+| `thinking_levels` | map of serf effort level → wire string (see below) |
+| `compat` | per-model `CompatConfig`, overlays the instance's |
+
+### `thinking_levels` semantics
+
+- **The map, when present, is complete authority.** The model's supported
+  effort ladder is exactly its keys, in serf rank order — that feeds
+  `ReasoningEffortLevels()`, the session clamp, the spawn-form effort chip, and
+  the `task_list` tool's effort enum (`agent/provider/profile.go:1136-1137`,
+  `orderedEffortLevels` at `:1183`). A level absent from the map is
+  unsupported and gets clamped away by `llm.ClampReasoningEffort`
+  (`llm/types.go:587`) before it ever reaches the adapter.
+- **Keys** are serf's canonical levels — `minimal`, `low`, `medium`, `high`,
+  `xhigh` — normalized lowercase at load; `max` is accepted as an input alias
+  and folded into `xhigh` (serf's rank table treats them as one tier).
+  `"off"` is rejected at load — serf's `none` effort clears the setting to the
+  provider default rather than forcing an explicit disable, so there's no slot
+  for an explicit "off" wire value (`llm/providercfg/load.go:149-152`).
+- **Values** are the literal wire strings sent to the provider — they need not
+  match serf's vocabulary (the lunaroute example below maps every level to
+  `"high"` except the top tier).
+- **No map declared** → the model's effort passes through by name (today's
+  backward-compatible default) and the `translate_max_to_xhigh` quirk (if set)
+  still applies (`wireEffort`, `llm/providers/openaicompat/compat.go:28-46`).
+- **Empty values** are rejected at load — a key must map to a non-empty wire
+  string (`load.go:157-160`).
+
+### `thinking_format`: exact wire JSON per dialect
+
+`applyThinkingFormat` (`llm/providers/openaicompat/request.go:141-179`) runs
+after the session's clamp and the `thinking_levels` translation. **When no
+reasoning effort is set on the request, nothing is emitted for any format** —
+serf's `none` clears the setting to the provider default rather than forcing
+an explicit disable (`request.go:147-149`). The table below is what's sent
+once an effort **is** set (`wire` = the post-clamp, post-`thinking_levels`
+value):
+
+| `thinking_format` | Wire body added |
+|---|---|
+| `""` / `"openai"` (default) | `reasoning_effort: <wire>`, gated on `supports_reasoning_effort` (default **true**) |
+| `"zai"` | always `thinking: {"type":"enabled","clear_thinking":false}`; plus `reasoning_effort: <wire>`, gated on `supports_reasoning_effort` (default **false**) |
+| `"deepseek"` | always `thinking: {"type":"enabled"}`; plus `reasoning_effort: <wire>`, gated on `supports_reasoning_effort` (default **true**) |
+| `"openrouter"` | `reasoning: {"effort": <wire>}` — unconditional; `supports_reasoning_effort` has no effect on this format |
+| `"together"` | always `reasoning: {"enabled": true}`; plus `reasoning_effort: <wire>`, gated on `supports_reasoning_effort` (default **true**) |
+| `"qwen"` | `enable_thinking: true` — unconditional; the effort value itself is never sent on the wire |
+| `"string-thinking"` | `thinking: <wire>` (the effort string is the field's value, not an object) — unconditional |
+
+`clear_thinking: false` on the `zai` format keeps z.ai from pruning prior-turn
+reasoning server-side; serf manages thinking replay itself.
+
+The built-in `glm` type's `QuirksPreset("glm-5")`
+(`llm/providers/openaicompat/quirks.go:77-89`) now sets `ThinkingFormat: "zai"`
+by default, so a plain `type = "glm"` instance speaks z.ai's thinking dialect
+with **no config needed**. The preset does *not* turn on `tool_stream` by
+default — set `compat.tool_stream = true` explicitly if the gateway supports
+incremental tool-call argument streaming.
+
+### Reasoning replay: same field it arrived on
+
+When replaying assistant thinking on a later turn, the adapter doesn't
+hardcode `reasoning_content` — it replays to whichever field the reasoning
+text actually arrived on: `reasoning_content`, `reasoning`, or
+`reasoning_text` (`reasoningReplayField`, `request.go:339-354`). The field
+name rides in the content part's `Signature`, set when the field was parsed
+off a streamed delta or a non-streamed response
+(`llm/providers/openaicompat/response.go:89,189`). A signature that isn't one
+of those three field names (e.g. an Anthropic crypto blob riding a
+cross-provider transcript) falls back to `reasoning_content`.
+
+### `$ENV` / `${ENV}` / `$$` in `api_key`
+
+`api_key` accepts environment-variable references, resolved by
+`providercfg.ResolveAPIKey` (`llm/providercfg/apikey.go:16`):
+
+- `$NAME` or `${NAME}` substitutes the named variable.
+- `$$` escapes a literal `$`.
+- A value with no `$` passes through unchanged.
+- A referenced variable that is unset or empty is an **error** — never a
+  silently-empty key that would surface later as an opaque 401.
+- Resolution happens **at the point of use** — adapter construction
+  (`llm/providers_config.go:96`) and live `/models` probes
+  (`cmdutil/cmdutil.go:88`) — not at `Load`, so one instance's missing
+  variable never blocks unrelated instances. The runtime load path
+  (`cmdutil.LoadClient` → `llm.NewFromAvailableProviders`) skips a failing
+  instance and keeps the rest of the client usable.
+- `providercfg.Marshal` (`llm/providercfg/materialize.go:11`) still never
+  writes `api_key` back to disk, `$ENV` references included — the
+  hub-materialized descriptors file stays credential-free. Hand-authored
+  instances (like the lunaroute example, never seeded by the hub) are the
+  normal way `api_key` ends up in `providers.toml` at all.
+
+### Worked example: lunaroute GLM gateway
+
+```toml
+[instances.lunaroute]
+type      = "openai"
+api_style = "chat-completions"
+base_url  = "https://gw.lunaroute.com/v1"
+api_key   = "$LUNAROUTE_API_KEY"
+
+[instances.lunaroute.models."glm-5.2-nvfp4"]
+context_window    = 1048576
+max_output_tokens = 131072
+reasoning         = true
+thinking_levels   = { minimal = "high", low = "high", medium = "high", high = "high", xhigh = "max" }
+
+[instances.lunaroute.models."glm-5.2-nvfp4".compat]
+thinking_format           = "zai"
+supports_reasoning_effort = true
+tool_stream               = true
+```
+
+This is `type = "openai"` with `api_style = "chat-completions"` — a plain
+gateway, not serf's `glm` type — so it routes through the openai-compat
+adapter (`compatFamily`, `load.go:86`) but starts from the empty
+`ProviderQuirks{}`, not the `glm-5` preset; every wire behavior here comes
+from the `compat` table. `glm-5.2-nvfp4` gets a 1M-token context window and a
+128K output cap from the model table (instead of the compat-family default of
+128K context / no output cap), advertises `minimal`–`xhigh` as its effort
+ladder (instead of the default `low`/`medium`/`high`), maps every level to the
+gateway's coarse `"high"` except the top tier (`"max"`), and speaks z.ai's
+`thinking:{...}` + `reasoning_effort` dialect with tool-call argument
+streaming enabled.
 
 ## Provider profiles (`agent/profile.go`)
 

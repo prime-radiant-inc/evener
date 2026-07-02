@@ -32,7 +32,7 @@ instances — a `providers.toml`:
 |-------|------|--------|-------|----------|
 | Credentials store | `<hubStateRoot>/credentials.toml` (chmod 600) | TOML | `internal/credentials` | API keys, keyed by provider type |
 | OpenAI OAuth record | `<stateDir>/auth/<instance>.json` (chmod 600) | JSON | `internal/auth/openai` | OpenAI ChatGPT/Codex OAuth tokens, per instance |
-| Providers config | `<stateRoot>/providers.toml` | TOML | `internal/providerconfig` | descriptors-only instance list (type, apiStyle, base URL, quirks — never `api_key`) |
+| Providers config | `<stateRoot>/providers.toml` | TOML | `internal/providerconfig` | descriptors-only instance list (type, apiStyle, base URL, quirks, plus optional per-instance/per-model `compat` and `models` tables — `api_key` may hold a literal key or a `$ENV`/`${ENV}` reference, but is never written back by the hub's materializer) |
 | Process environment | n/a | env vars | the OS | fallback / base URLs / tuning |
 
 The **hub process never runs a model**. To validate or list models it spawns
