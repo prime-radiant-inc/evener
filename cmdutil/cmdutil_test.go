@@ -535,3 +535,24 @@ func TestQueryModelContextWindow_HeaderAuthenticatedGateway(t *testing.T) {
 		t.Fatalf("Authorization = %q, want absent", gotAuth)
 	}
 }
+
+// An env-fallback API key must never clobber a configured Authorization
+// header — a header-authenticated gateway would receive the wrong secret.
+func TestQueryModelContextWindow_EnvKeyDoesNotClobberAuthHeader(t *testing.T) {
+	t.Setenv("GLM_API_KEY", "sk-env-must-not-be-sent")
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"m","context_length":4096}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	got := queryModelContextWindow("glm", "m", srv.URL, "", map[string]string{"Authorization": "Custom scheme-token"})
+	if got != 4096 {
+		t.Fatalf("queryModelContextWindow = %d, want 4096", got)
+	}
+	if gotAuth != "Custom scheme-token" {
+		t.Fatalf("Authorization = %q, want the configured header, not the env bearer", gotAuth)
+	}
+}

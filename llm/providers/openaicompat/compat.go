@@ -220,8 +220,8 @@ func resolveModelCompat(instanceQuirks ProviderQuirks, models map[string]provide
 // catalog entry, e.g. local ollama models, should not inherit that entry's
 // defaults).
 //
-// This runs once per request. The catalog lookup is a single map access
-// (LookupModelInfo) done once here, not per field.
+// This runs once per request; the catalog fill is at most two exact
+// GetModelInfo map accesses (tag-qualified, then bare).
 func (a *Adapter) compatFor(model string) ModelCompat {
 	// FIELD-wise precedence: a declared [instances.X.models] entry wins for
 	// every field it sets, and the catalog fills the remaining gaps — so
@@ -232,7 +232,9 @@ func (a *Adapter) compatFor(model string) ModelCompat {
 		mc = ModelCompat{Quirks: a.Quirks}
 	}
 	if !a.SuppressCatalogDefaults {
-		fillFromCatalog(&mc, a.CatalogTag, model)
+		if cat := llm.EmbeddedModelCatalog(); cat != nil {
+			fillFromCatalog(&mc, cat.GetModelInfo, a.CatalogTag, model)
+		}
 	}
 	return mc
 }
@@ -251,11 +253,11 @@ func (a *Adapter) compatFor(model string) ModelCompat {
 //     max_output_tokens and no instance cap already applies.
 //
 // A declared non-reasoning model gets no effort gate.
-func fillFromCatalog(mc *ModelCompat, catalogTag, model string) {
-	cat := llm.EmbeddedModelCatalog()
-	if cat == nil {
-		return
-	}
+//
+// lookup is injected (production passes the embedded catalog's GetModelInfo)
+// so precedence is unit-testable with a fake catalog — the same seam
+// resolveOpenAICompatCatalogModel uses on the profile side.
+func fillFromCatalog(mc *ModelCompat, lookup func(string) *llm.ModelInfo, catalogTag, model string) {
 	// Provider-qualified entry first (openrouter models are keyed
 	// "openrouter/<model>" in the bundled catalog), then the bare id —
 	// mirroring newOpenAICompatProfile's lookup precedence. EXACT lookups
@@ -265,10 +267,10 @@ func fillFromCatalog(mc *ModelCompat, catalogTag, model string) {
 	// side avoids by using GetModelInfo.
 	var mi *llm.ModelInfo
 	if catalogTag != "" {
-		mi = cat.GetModelInfo(catalogTag + "/" + model)
+		mi = lookup(catalogTag + "/" + model)
 	}
 	if mi == nil {
-		mi = cat.GetModelInfo(model)
+		mi = lookup(model)
 	}
 	if mi == nil {
 		return

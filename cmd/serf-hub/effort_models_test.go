@@ -174,9 +174,8 @@ func TestModelDescriptorsToAPIModels_InstanceReasoningTrueOverridesCatalog(t *te
 	}
 }
 
-// overlayLiveEntries must never mutate the (globally cached) raw entries — a
-// later config change or a second WebServer with different providers.toml in
-// the same process reads the same cache.
+// overlayLiveEntries must never mutate the raw cached entries — the cache
+// keeps raw live values so overlays stay a per-request, per-config view.
 func TestOverlayLiveEntries_DoesNotMutateCache(t *testing.T) {
 	cfg := &providercfg.Config{Instances: []providercfg.InstanceConfig{{
 		Name:     "gw",

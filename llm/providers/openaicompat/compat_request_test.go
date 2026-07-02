@@ -873,31 +873,42 @@ func TestReasoningOff_SuppressesThinkingReplay(t *testing.T) {
 	}
 }
 
-// Catalog gap-fill tries the provider-qualified key first: an openrouter
-// request for minimax/minimax-m2 must pick up the bundled
-// "openrouter/minimax/minimax-m2" defaults.
+// Catalog gap-fill tries the provider-qualified key first, then the bare id —
+// proven with a fake catalog whose qualified and bare entries carry DIFFERENT
+// output caps, so ignoring the tag is a visible failure (the embedded
+// catalog's openrouter entries have no fill-observable fields).
 func TestFillFromCatalog_ProviderQualifiedLookup(t *testing.T) {
-	a := NewForInstance(OpenAICompatInstanceParams{
-		Name:       "openrouter",
-		BaseURL:    "https://openrouter.ai/api/v1",
-		Quirks:     QuirksPreset("openrouter"),
-		CatalogTag: "openrouter",
-	})
-	mc := a.compatFor("minimax/minimax-m2")
-	// The bundled entry has supports_effort_parameter=false and no output cap,
-	// so the observable effect is that the QUALIFIED entry resolved at all:
-	// its levels/flags must match the openrouter/... catalog entry, and the
-	// positive-only gate stays nil (false never flips it).
-	if mc.Quirks.SupportsReasoningEffort != nil {
-		t.Errorf("SupportsReasoningEffort = %v, want nil (qualified entry has effort_param=false; positive-only)", *mc.Quirks.SupportsReasoningEffort)
+	q, b := 111, 222
+	lookup := func(key string) *llm.ModelInfo {
+		switch key {
+		case "openrouter/minimax/minimax-m2":
+			return &llm.ModelInfo{MaxOutputTokens: &q}
+		case "minimax/minimax-m2":
+			return &llm.ModelInfo{MaxOutputTokens: &b}
+		}
+		return nil
 	}
-	// glm-5.2 through a non-matching tag still resolves via the bare fallback.
-	b := NewForInstance(OpenAICompatInstanceParams{
+
+	mc := ModelCompat{}
+	fillFromCatalog(&mc, lookup, "openrouter", "minimax/minimax-m2")
+	if mc.DefaultMaxTokens != 111 {
+		t.Errorf("DefaultMaxTokens = %d, want 111 (qualified entry preferred)", mc.DefaultMaxTokens)
+	}
+
+	mc = ModelCompat{}
+	fillFromCatalog(&mc, lookup, "", "minimax/minimax-m2")
+	if mc.DefaultMaxTokens != 222 {
+		t.Errorf("DefaultMaxTokens = %d, want 222 (bare fallback without a tag)", mc.DefaultMaxTokens)
+	}
+
+	// Real embedded catalog: glm-5.2 through a non-matching tag still resolves
+	// via the bare fallback with its bundled defaults.
+	gw := NewForInstance(OpenAICompatInstanceParams{
 		Name:       "gw",
 		BaseURL:    "https://gw.example.com/v1",
 		CatalogTag: "openai-compatible",
 	})
-	mcGLM := b.compatFor("glm-5.2")
+	mcGLM := gw.compatFor("glm-5.2")
 	if mcGLM.Quirks.SupportsReasoningEffort == nil || !*mcGLM.Quirks.SupportsReasoningEffort {
 		t.Errorf("bare fallback lost: glm-5.2 gate = %v, want true", mcGLM.Quirks.SupportsReasoningEffort)
 	}

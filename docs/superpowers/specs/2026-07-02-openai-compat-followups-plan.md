@@ -24,10 +24,11 @@ regression).
 - job 2151: 4 findings (api_key survives WriteFile rewrites via
   scrub/restore, explicit-empty compat tables, mktemp portability,
   .PHONY) — fixed + closed.
-- job 2153: 3 findings (ReasoningOff vs ProviderOptions passthrough,
-  fallback clamp vs configured levels, this doc's staleness) — fixed;
-  loop continues until PASS or until findings stop being real (Jesse's
-  stop rule).
+- job 2153 and every later branch round (2155/2157/2159/2166/2170/2172/
+  2175/2177/2179/2181/2183/2185/2187): all findings fixed and jobs closed;
+  the per-commit hook reviews were adjudicated at the end (three residual
+  items fixed, the rest already covered by branch rounds) and closed. The
+  loop converged when round 17 (2187) produced only comment/doc staleness.
 
 ## Orchestration protocol (Jesse's direction)
 

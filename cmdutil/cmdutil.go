@@ -364,10 +364,20 @@ var queryModelContextWindow = func(provider, model, instanceBaseURL, instanceAPI
 	// instance is a custom gateway at its own base_url — sending it the
 	// global OPENAI_COMPATIBLE_API_KEY would leak an unrelated secret to
 	// whatever host the instance points at; keyless gateways probe keyless.
-	if apiKey == "" && provider != "openai-compatible" && envOK && len(env.APIKeyVars) > 0 {
+	instanceAuthHeader := false
+	for hk := range instanceHeaders {
+		if strings.EqualFold(hk, "Authorization") {
+			instanceAuthHeader = true
+			break
+		}
+	}
+	if apiKey == "" && !instanceAuthHeader && provider != "openai-compatible" && envOK && len(env.APIKeyVars) > 0 {
+		// The env fallback must never clobber a configured Authorization
+		// header — a header-authenticated gateway would receive the wrong
+		// secret. An explicit instance api_key still wins over headers.
 		apiKey = env.APIKeyVars[0].Trimmed()
 	}
-	if apiKey == "" && provider != "openai-compatible" && len(instanceHeaders) == 0 {
+	if apiKey == "" && provider != "openai-compatible" && !instanceAuthHeader && len(instanceHeaders) == 0 {
 		// Gateways may be keyless (local proxies) and any instance may
 		// authenticate via configured headers; a bare upstream type with
 		// neither has nothing to probe with.
