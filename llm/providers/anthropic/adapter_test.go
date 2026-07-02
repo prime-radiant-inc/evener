@@ -3763,9 +3763,33 @@ func TestClampEffort(t *testing.T) {
 			want:      "medium",
 		},
 		{
-			name:      "unknown level passes through",
+			name:      "xhigh clamped down to high when model tops out at high",
 			requested: "xhigh",
 			supported: []string{"low", "medium", "high"},
+			want:      "high",
+		},
+		{
+			name:      "unknown level passes through",
+			requested: "turbo",
+			supported: []string{"low", "medium", "high"},
+			want:      "turbo",
+		},
+		{
+			name:      "minimal raised to lowest supported",
+			requested: "minimal",
+			supported: []string{"low", "medium", "high", "max"},
+			want:      "low",
+		},
+		{
+			name:      "exact match at the bottom rank is not raised further",
+			requested: "minimal",
+			supported: []string{"minimal", "low", "medium"},
+			want:      "minimal",
+		},
+		{
+			name:      "max maps to the model's xhigh spelling at the top rank",
+			requested: "max",
+			supported: []string{"low", "medium", "high", "xhigh"},
 			want:      "xhigh",
 		},
 		{
