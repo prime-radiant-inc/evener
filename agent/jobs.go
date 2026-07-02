@@ -621,19 +621,7 @@ func (jm *jobManager) listWithError(filter listFilter) ([]*jobstore.JobRecord, e
 
 	jobs := make([]*jobstore.JobRecord, 0, len(recs))
 	for _, rec := range recs {
-		if !filter.IncludeNested && rec.ParentJobID != "" && rec.OwnerSessionID != jm.sessionID {
-			continue
-		}
-		if filter.Status != "" && rec.Status != filter.Status {
-			continue
-		}
-		if len(filter.Statuses) > 0 && !statusAllowed(rec.Status, filter.Statuses) {
-			continue
-		}
-		if filter.Type != "" && rec.Type != filter.Type {
-			continue
-		}
-		if len(filter.Types) > 0 && !typeAllowed(rec.Type, filter.Types) {
+		if !keepListedJobRow(rec, filter, jm.sessionID) {
 			continue
 		}
 		jobs = append(jobs, cloneJobRecord(rec))
@@ -648,6 +636,31 @@ func (jm *jobManager) listWithError(filter listFilter) ([]*jobstore.JobRecord, e
 		jobs = jobs[:filter.Limit]
 	}
 	return jobs, nil
+}
+
+// keepListedJobRow is the pure per-record filter decision lifted out of
+// listWithError: given a record, the requested filter, and the listing
+// session's ID, it reports whether the record survives the filter. The wrapper
+// keeps every effect (store load, running-job overlay, cloning, sort, limit);
+// it merely calls this to decide inclusion. Behavior mirrors the original
+// clause order exactly.
+func keepListedJobRow(rec *jobstore.JobRecord, filter listFilter, sessionID string) bool {
+	if !filter.IncludeNested && rec.ParentJobID != "" && rec.OwnerSessionID != sessionID {
+		return false
+	}
+	if filter.Status != "" && rec.Status != filter.Status {
+		return false
+	}
+	if len(filter.Statuses) > 0 && !statusAllowed(rec.Status, filter.Statuses) {
+		return false
+	}
+	if filter.Type != "" && rec.Type != filter.Type {
+		return false
+	}
+	if len(filter.Types) > 0 && !typeAllowed(rec.Type, filter.Types) {
+		return false
+	}
+	return true
 }
 
 func statusAllowed(status jobstore.Status, allowed []jobstore.Status) bool {
@@ -1555,6 +1568,23 @@ func (jm *jobManager) forwardDisabled(run *runningJob) bool {
 	return run != nil && run.forwardDisabled
 }
 
+// rearmTerminalNotificationDecision is the pure per-record decision lifted out
+// of armPendingTerminalNotifications: on restore a session re-arms only its own
+// terminal records that still carry a terminal generation and have not yet
+// delivered (spec §3 settle). rearm reports whether the record is re-armed and
+// enqueued; appendEvent reports whether a fresh pending event must first be
+// persisted (only for a not-yet-armed record). appendEvent implies rearm.
+func rearmTerminalNotificationDecision(rec *jobstore.JobRecord, sessionID string) (rearm, appendEvent bool) {
+	if rec.OwnerSessionID != "" && rec.OwnerSessionID != sessionID {
+		return false, false
+	}
+	if !(rec.Status.IsTerminal() && rec.TerminalGen != "" &&
+		(rec.NotifyState == jobstore.NotifyNotArmed || rec.NotifyState == jobstore.NotifyPending)) {
+		return false, false
+	}
+	return true, rec.NotifyState == jobstore.NotifyNotArmed
+}
+
 func (jm *jobManager) armPendingTerminalNotifications() error {
 	recs, err := jm.store.Load()
 	if err != nil {
@@ -1569,11 +1599,7 @@ func (jm *jobManager) armPendingTerminalNotifications() error {
 		// the parent's rail would wake-storm the parent about jobs it does not own
 		// at every restart. The child's own ledger re-arms in the child's own
 		// restore and renders in the child's own turn; the parent drives it.
-		if rec.OwnerSessionID != "" && rec.OwnerSessionID != jm.sessionID {
-			continue
-		}
-		if rec.Status.IsTerminal() && rec.TerminalGen != "" &&
-			(rec.NotifyState == jobstore.NotifyNotArmed || rec.NotifyState == jobstore.NotifyPending) {
+		if rearm, _ := rearmTerminalNotificationDecision(rec, jm.sessionID); rearm {
 			jobs = append(jobs, rec)
 		}
 	}
@@ -1592,7 +1618,7 @@ func (jm *jobManager) armPendingTerminalNotifications() error {
 			TerminalGen: rec.TerminalGen,
 			Provenance:  provenance.Clone(rec.Provenance),
 		}
-		if rec.NotifyState == jobstore.NotifyNotArmed {
+		if _, appendEvent := rearmTerminalNotificationDecision(rec, jm.sessionID); appendEvent {
 			if err := jm.appendEvent(pending); err != nil {
 				return err
 			}
