@@ -471,3 +471,39 @@ func TestResolveProfileWithLiveWindow_ConfiguredWindowSkipsLiveOverride(t *testi
 		t.Fatalf("ContextWindowSize(other) = %d, want live 999999", got)
 	}
 }
+
+// An openai + api_style=chat-completions instance (behavior tag
+// "openai-compatible") is a custom gateway: the live window probe must query
+// its configured base_url — including keyless local gateways — and must bail
+// without one (there is no meaningful type-level default endpoint).
+func TestQueryModelContextWindow_OpenAICompatibleInstance(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"glm-5.2-nvfp4","context_length":204800}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	if got := queryModelContextWindow("openai-compatible", "glm-5.2-nvfp4", srv.URL, "gw-key"); got != 204800 {
+		t.Fatalf("queryModelContextWindow = %d, want 204800", got)
+	}
+	if gotAuth != "Bearer gw-key" {
+		t.Fatalf("auth = %q, want Bearer gw-key", gotAuth)
+	}
+
+	// Keyless gateways (local proxies) still probe — without an Authorization
+	// header rather than a bogus "Bearer ".
+	gotAuth = "unset"
+	if got := queryModelContextWindow("openai-compatible", "glm-5.2-nvfp4", srv.URL, ""); got != 204800 {
+		t.Fatalf("keyless queryModelContextWindow = %d, want 204800", got)
+	}
+	if gotAuth != "" {
+		t.Fatalf("keyless auth header = %q, want absent", gotAuth)
+	}
+
+	// No configured base_url → no probe (0 keeps the catalog window).
+	if got := queryModelContextWindow("openai-compatible", "glm-5.2-nvfp4", "", "gw-key"); got != 0 {
+		t.Fatalf("no-base-url queryModelContextWindow = %d, want 0", got)
+	}
+}

@@ -327,29 +327,42 @@ func trimNonEmpty(parts []string) []string {
 // (kimi/glm/openrouter), not an instance name — the lookup keys on
 // providerEnvConfig by that tag.
 var queryModelContextWindow = func(provider, model, instanceBaseURL, instanceAPIKey string) int {
-	if provider != "kimi" && provider != "glm" && provider != "openrouter" {
+	switch provider {
+	case "kimi", "glm", "openrouter":
+		// Provider types with an env-registry fallback for key/base URL.
+	case "openai-compatible":
+		// openai + api_style=chat-completions instances (custom gateways):
+		// there is no meaningful type-level default endpoint, so the probe
+		// needs the instance's own base_url from providers.toml.
+		if strings.TrimSpace(instanceBaseURL) == "" {
+			return 0
+		}
+	default:
+		// ollama deliberately excluded: its native model listing is not the
+		// OpenAI /models shape and local models have no upstream window.
 		return 0
 	}
-	env, ok := envvars.Provider(provider)
-	if !ok || len(env.APIKeyVars) == 0 {
-		return 0
-	}
+	env, envOK := envvars.Provider(provider)
 	// Prefer the instance's configured key/base URL (providers.toml) over the
 	// provider-type env var / default, so an instance with a custom endpoint
 	// (the Kimi coding plan) is queried at its real /models.
 	apiKey := strings.TrimSpace(instanceAPIKey)
-	if apiKey == "" {
+	if apiKey == "" && envOK && len(env.APIKeyVars) > 0 {
 		apiKey = env.APIKeyVars[0].Trimmed()
 	}
-	if apiKey == "" {
+	if apiKey == "" && provider != "openai-compatible" {
+		// Gateways may be keyless (local proxies); the upstream types are not.
 		return 0
 	}
 	baseURL := strings.TrimSpace(instanceBaseURL)
-	if baseURL == "" && len(env.BaseURLVars) > 0 {
+	if baseURL == "" && envOK && len(env.BaseURLVars) > 0 {
 		baseURL = env.BaseURLVars[0].Trimmed()
 	}
-	if baseURL == "" {
+	if baseURL == "" && envOK {
 		baseURL = env.DefaultBaseURL
+	}
+	if baseURL == "" {
+		return 0
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 
@@ -360,7 +373,9 @@ var queryModelContextWindow = func(provider, model, instanceBaseURL, instanceAPI
 	if err != nil {
 		return 0
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 	if provider == "kimi" {
 		// Kimi For Coding gates its endpoints behind a coding-agent User-Agent
 		// allowlist; announce it so the /models query survives if the gate is

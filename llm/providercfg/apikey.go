@@ -57,7 +57,8 @@ func resolveEnvValue(raw, what string) (string, error) {
 		case next == '{':
 			end := strings.IndexByte(raw[i+2:], '}')
 			if end < 0 {
-				return "", fmt.Errorf("%s: unterminated ${ in %q", what, raw)
+				// Do not echo raw — api_key/header values may hold literal secrets.
+				return "", fmt.Errorf("%s: unterminated ${ in value", what)
 			}
 			name := raw[i+2 : i+2+end]
 			if !validEnvName(name) {
