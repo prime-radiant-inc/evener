@@ -347,7 +347,12 @@ var queryModelContextWindow = func(provider, model, instanceBaseURL, instanceAPI
 	// provider-type env var / default, so an instance with a custom endpoint
 	// (the Kimi coding plan) is queried at its real /models.
 	apiKey := strings.TrimSpace(instanceAPIKey)
-	if apiKey == "" && envOK && len(env.APIKeyVars) > 0 {
+	// The env-registry key fallback belongs to the provider TYPES whose
+	// endpoints it was set for (kimi/glm/openrouter). An openai-compatible
+	// instance is a custom gateway at its own base_url — sending it the
+	// global OPENAI_COMPATIBLE_API_KEY would leak an unrelated secret to
+	// whatever host the instance points at; keyless gateways probe keyless.
+	if apiKey == "" && provider != "openai-compatible" && envOK && len(env.APIKeyVars) > 0 {
 		apiKey = env.APIKeyVars[0].Trimmed()
 	}
 	if apiKey == "" && provider != "openai-compatible" {

@@ -493,13 +493,16 @@ func TestQueryModelContextWindow_OpenAICompatibleInstance(t *testing.T) {
 	}
 
 	// Keyless gateways (local proxies) still probe — without an Authorization
-	// header rather than a bogus "Bearer ".
+	// header rather than a bogus "Bearer ", and WITHOUT falling back to the
+	// global OPENAI_COMPATIBLE_API_KEY (that secret belongs to a different
+	// endpoint; leaking it to an arbitrary gateway host is not acceptable).
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "sk-global-must-not-leak")
 	gotAuth = "unset"
 	if got := queryModelContextWindow("openai-compatible", "glm-5.2-nvfp4", srv.URL, ""); got != 204800 {
 		t.Fatalf("keyless queryModelContextWindow = %d, want 204800", got)
 	}
 	if gotAuth != "" {
-		t.Fatalf("keyless auth header = %q, want absent", gotAuth)
+		t.Fatalf("keyless auth header = %q, want absent (no env-key fallback)", gotAuth)
 	}
 
 	// No configured base_url → no probe (0 keeps the catalog window).
