@@ -2992,21 +2992,13 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 		jm.mintWatchSendReadGrant(d.cfg, target, d.watchedIdentity)
 	}
 	state = jm.watchSendState(d, target)
-	// Coalescing unions the superseded pending's provenance into the survivor
-	// (recordWatchSendPending), so the effective self-influence ancestry of the
-	// frame the sidecar will see is the UNION — two below-threshold branches
-	// with disjoint delivered priors can cross the runaway threshold only in
-	// union. Raise the fuse depth to the union depth before persisting/fusing.
-	jm.mu.Lock()
-	if existing := d.cfg.pending[state.Key]; existing != nil && state.UpdateSeq > existing.UpdateSeq {
-		union := provenance.Union(existing.Provenance, state.Provenance)
-		if ud := jm.fuseDepthLocked(d.cfg, union); ud > d.fuseDepth {
-			d.fuseDepth = ud
-			state.SelfInfluenceDepth = ud
-		}
-	}
-	jm.mu.Unlock()
-	persisted, perr := jm.persistPendingWatchSend(state, d)
+	// Coalescing (recordWatchSendPending) unions the superseded pending's
+	// provenance into the survivor and recomputes the self-influence depth on
+	// the union — two below-threshold branches with disjoint delivered priors
+	// can cross the runaway threshold only together. Everything downstream
+	// (the fuse decision and any drop event) uses the PERSISTED coalesced
+	// state so the recorded evidence carries the ancestry that tripped it.
+	persistedState, persisted, perr := jm.persistPendingWatchSend(state, d)
 	if perr != nil {
 		if d.allowAfterTerminalExpiry && !persisted {
 			jm.rememberUnpersistedTerminalPendingWatchSend(d.cfg, state)
@@ -3016,10 +3008,11 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 	if !persisted {
 		return jobstore.WatchSendState{}, nil, false, nil
 	}
+	state = persistedState
 	if terr != nil {
 		return jobstore.WatchSendState{}, nil, false, jm.dropWatchSend(state, d.cfg, terr.Error())
 	}
-	if d.fuseDepth >= runawaySelfInfluenceDepth {
+	if state.SelfInfluenceDepth >= runawaySelfInfluenceDepth {
 		return jobstore.WatchSendState{}, nil, false, jm.dropWatchSend(state, d.cfg, "runaway")
 	}
 	return state, d.cfg, true, nil
@@ -3585,17 +3578,17 @@ func (jm *jobManager) isCurrentWatchSendDeliveryLocked(d watchSendDelivery) bool
 	return jm.watches[d.key] == d.cfg
 }
 
-func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d watchSendDelivery) (bool, error) {
+func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d watchSendDelivery) (jobstore.WatchSendState, bool, error) {
 	record := jm.recordWatchSendPending(state, d)
 	if len(record.pendingEvents) == 0 {
-		return false, nil
+		return state, false, nil
 	}
 	if err := jm.appendWatchSendEvents(record.pendingEvents); err != nil {
 		jm.rollbackWatchSendPendingRecord(record)
 		jm.enqueueWatchNotifications([]jobNotification{
 			watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 		})
-		return false, err
+		return state, false, err
 	}
 	var evictionDiagnostics []jobNotification
 	for _, eviction := range record.evictions {
@@ -3605,7 +3598,7 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 			jm.enqueueWatchNotifications([]jobNotification{
 				watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 			})
-			return true, err
+			return record.persisted, true, err
 		}
 		jm.removeWatchSendTerminalSnapshots(applied)
 		evictionDiagnostics = append(evictionDiagnostics, eviction.diagnostic)
@@ -3613,7 +3606,7 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 	for _, diagnostic := range evictionDiagnostics {
 		jm.enqueueWatchNotifications([]jobNotification{diagnostic})
 	}
-	return true, nil
+	return record.persisted, true, nil
 }
 
 type watchSendPendingRecord struct {
@@ -3622,6 +3615,9 @@ type watchSendPendingRecord struct {
 	cfg           *watchConfig
 	key           jobstore.WatchSendKey
 	previous      *jobstore.WatchSendState
+	// persisted is the exact state written to the pending map and event log
+	// (post-coalescing: unioned provenance, recomputed self-influence depth).
+	persisted jobstore.WatchSendState
 }
 
 type watchSendEviction struct {
@@ -3657,8 +3653,14 @@ func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d wa
 		state.CoalescedCount = existing.CoalescedCount + 1
 		state.CreatedAt = existing.CreatedAt
 		// The coalesced frame stands in for both the superseded delivery and this
-		// one, so it must carry both causes to suppress either's downstream echo.
+		// one, so it must carry both causes so either's downstream echo is
+		// recognized — and the breaker must judge the UNION: two below-threshold
+		// branches with disjoint delivered priors can cross the runaway
+		// threshold only together.
 		state.Provenance = provenance.Union(existing.Provenance, state.Provenance)
+		if ud := jm.fuseDepthLocked(cfg, state.Provenance); ud > state.SelfInfluenceDepth {
+			state.SelfInfluenceDepth = ud
+		}
 	} else {
 		cfg.pendingOrder = append(cfg.pendingOrder, state.Key)
 	}
@@ -3667,6 +3669,7 @@ func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d wa
 	}
 	state.UpdatedAt = now
 	pendingState := state
+	record.persisted = pendingState
 	cfg.pending[state.Key] = &pendingState
 	if d.allowAfterTerminalExpiry {
 		jm.rememberDetachedPendingLocked(cfg)

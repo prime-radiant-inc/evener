@@ -350,14 +350,28 @@ func TestRecordWatchSendRunawayFuseSeesCoalescedDepth(t *testing.T) {
 	if ok {
 		t.Fatal("coalesced union at runaway depth must be dropped (ok=false)")
 	}
-	var droppedReason string
+	var dropped *jobstore.WatchSendState
 	for _, event := range loadJobStoreEvents(t, jm) {
 		if event.Kind == jobstore.EventWatchSendDropped && event.WatchSend != nil {
-			droppedReason = event.WatchSend.DiagnosticReason
+			dropped = event.WatchSend
 		}
 	}
-	if droppedReason != "runaway" {
-		t.Fatalf("dropped reason = %q, want runaway", droppedReason)
+	if dropped == nil || dropped.DiagnosticReason != "runaway" {
+		t.Fatalf("dropped state = %+v, want runaway drop", dropped)
+	}
+	// The recorded drop must carry the COALESCED evidence: both branches'
+	// delivered priors and the union depth that tripped the fuse.
+	if dropped.SelfInfluenceDepth != runawaySelfInfluenceDepth {
+		t.Fatalf("dropped SelfInfluenceDepth = %d, want union depth %d", dropped.SelfInfluenceDepth, runawaySelfInfluenceDepth)
+	}
+	ids := map[string]bool{}
+	if dropped.Provenance != nil {
+		for _, e := range dropped.Provenance.Chain {
+			ids[e.DeliveryID] = true
+		}
+	}
+	if !ids["wa_0"] || !ids["wb_0"] {
+		t.Fatalf("dropped provenance chain %v must carry both coalesced branches (wa_*, wb_*)", ids)
 	}
 }
 
