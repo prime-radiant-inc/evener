@@ -2,6 +2,8 @@
 
 Status: Proposed evergreen spec. This doc defines the lightweight-helper path as standalone LLM calls. It is not a new subagent layer, not a job registry, and not a hidden child-session runtime.
 
+> **Evergreen pointer:** the shipped helper-isolation invariants (helper calls never register a subagent, write a child transcript, run tools, or appear in `job_list`) are documented as current reality in [`../subagent-runtime-contracts.md`](../subagent-runtime-contracts.md) ("Lightweight helper isolation"). The helper API proposed below is not built; this file is the design record.
+
 ## Purpose
 
 Give Serf and SDK embedders a clear, small pattern for one-off model calls used by bounded helper work: summaries, titles, lint-style checks, classification, object extraction, hook prompt handlers, and prompt transformations.

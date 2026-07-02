@@ -905,6 +905,8 @@ The v1 model-facing tool matrix is:
 
 Tool availability is part of the model-facing contract. If an implementation narrows these permissions for policy reasons, it must make that visible in tool availability or tool descriptions rather than failing late with surprising generic errors.
 
+This matrix is the job-tool slice of the broader effective-capability policy (how a child's whole tool set is narrowed, visibility vs execution, `grant_tools`). For that and the other cross-cutting subagent runtime contracts (lifecycle hooks, helper isolation, lineage), see [`subagent-runtime-contracts.md`](subagent-runtime-contracts.md).
+
 ## Removed / intentionally absent tools
 
 ### No `wait_job`

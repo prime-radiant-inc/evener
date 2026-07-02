@@ -7,6 +7,8 @@ deferred phases (B–E) as a roadmap. This document's job is to define the line
 between what serf implements and what it only recognizes — so docs, tests, CLI
 output, and APIs never imply Claude parity serf has not built.
 
+> **Evergreen pointer:** the shipped hook subset (the nine fired events, discovery, matcher rules, command/prompt handlers, `PreToolUse` allow/deny + input rewrite, the exit-2 block scope) is documented as current reality in [`../subagent-runtime-contracts.md`](../subagent-runtime-contracts.md) ("Lifecycle hooks (Claude-compatible subset)"). This file remains the full contract-and-roadmap record, including reserved behavior.
+
 **Shipped behavior lives elsewhere.** How hooks work **today** — discovery, the
 matcher, the `command`/`prompt` handlers, the input/output fields serf populates
 and honors, the env vars, the fired-event exit codes, diagnostics — plus a

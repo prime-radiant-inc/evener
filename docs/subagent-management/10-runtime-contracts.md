@@ -2,6 +2,8 @@
 
 Status: Proposed evergreen spec. This is doc 10 for subagent management and replaces the skipped declarative workflow-template spec. Serf already has task/template design coverage and plugin agent task seeds; this spec defines the cross-cutting runtime contracts that docs 6-9 depend on instead of adding another workflow-template layer.
 
+> **As-of update (2026-06-14):** Parts of Contract 1 have since shipped and the doc's current-state notes have drifted. In particular, `delegate`/`job_watch` for child agents are now **allowance-gated** (a non-zero `delegation_allowance`), **not** categorically root-only and **not** "stripped by depth" — so rule 5 and the "Current Serf treats … stripped by depth" note below describe the pre-recursion design, not current behavior. The authoritative, current tool-availability/allowance contract lives in the evergreen [`docs/job-control.md`](../job-control.md) (sections **"Delegation allowance (recursive delegation)"** and **"V1 tool availability"**). More broadly, the parts of all six contracts here that have actually shipped are documented as current reality in [`../subagent-runtime-contracts.md`](../subagent-runtime-contracts.md); this spec is retained as the point-in-time design record (target contracts, acceptance criteria, test matrix). Consult those evergreen docs for what ships today.
+
 ## Purpose
 
 Define shared contracts for policy, events, diagnostics, compatibility, lightweight helper isolation, and history invariants across subagent management features. These contracts keep plugin/agent validation, lifecycle hooks, standalone LLM helpers, and history/tree work consistent without introducing a new framework.
