@@ -84,9 +84,11 @@ var validThinkingLevelKeys = map[string]bool{
 	"xhigh":   true,
 }
 
-// compatFamily reports whether an instance routes through the openai-compat
-// adapter and therefore may carry compat/models configuration.
-func compatFamily(typ Type, style APIStyle) bool {
+// CompatFamily reports whether an instance routes through the openai-compat
+// adapter — the family that may carry compat/models configuration and whose
+// adapters honor header-only authentication (no api_key; the configured
+// Authorization header is the credential).
+func CompatFamily(typ Type, style APIStyle) bool {
 	switch typ {
 	case "kimi", "glm", "openrouter", "ollama":
 		return true
@@ -227,7 +229,7 @@ func Load(data []byte) (Config, error) {
 				errs = append(errs, fmt.Sprintf("instance %q: unknown api_style %q (must be %q, %q, or %q)", name, inst.APIStyle, StyleResponses, StyleChatCompletions, StyleAuto))
 			}
 		}
-		if (inst.Compat != nil || len(inst.Models) > 0) && !compatFamily(inst.Type, inst.APIStyle) {
+		if (inst.Compat != nil || len(inst.Models) > 0) && !CompatFamily(inst.Type, inst.APIStyle) {
 			what := "compat"
 			if len(inst.Models) > 0 {
 				what = "models"

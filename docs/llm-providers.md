@@ -433,6 +433,14 @@ cross-provider transcript) falls back to `reasoning_content`.
 
 ### `[instances.X.headers]` — extra request headers (all types)
 
+> **Header-only authentication** is honored end-to-end for the
+> openai-compat family only (`providercfg.CompatFamily`): those adapters send
+> no bearer without a key, and a configured `Authorization` header suppresses
+> credential-store injection so nothing clobbers it. Other provider types
+> (openai responses, the anthropic family, google) cannot authenticate
+> header-only — they require an api_key/OAuth/store credential, and their
+> headers are supplementary (store injection still applies).
+
 Any instance — **not just the compat family** — may carry a `headers` table of
 extra HTTP headers sent on every request to its endpoint. This is how an
 instance sits behind a gateway (Portkey, Helicone, a Cloudflare worker) that
