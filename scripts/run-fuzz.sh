@@ -274,6 +274,8 @@ TARGETS=(
 	"native:llm:./providers/difftest:FuzzStreamVsNonStreamDifferential:./providers/anthropic,./providers/google,./providers/openai,./providers/openaicompat:"
 	"rapid:agent:.:TestToolArgsSchemaFuzz"
 	"rapid:agent:.:TestLifecycleSeqFuzz"
+	"rapid:agent:.:TestWatchSeqFuzz"
+	"rapid:agent:.:TestDelegateSeqFuzz"
 	"native:agent:.:FuzzLifecycleSeq::"
 	"rapid:agent:./internal/jobstore:TestJobstoreSeqFuzz"
 	"rapid:agent:./internal/contextmgr:TestCompactionSeqFuzz"
