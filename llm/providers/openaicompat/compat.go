@@ -99,6 +99,16 @@ func ApplyCompatConfig(base ProviderQuirks, c *providercfg.CompatConfig) Provide
 	if c.CacheControlFormat != "" {
 		q.CacheControlFormat = c.CacheControlFormat
 	}
+	if c.SupportsStrictMode != nil {
+		v := *c.SupportsStrictMode
+		q.SupportsStrictMode = &v
+	}
+	if len(c.ChatTemplateKwargs) > 0 {
+		q.ChatTemplateKwargs = make(map[string]any, len(c.ChatTemplateKwargs))
+		for k, v := range c.ChatTemplateKwargs {
+			q.ChatTemplateKwargs[k] = v
+		}
+	}
 	if c.LockTemperature != nil {
 		q.LockTemperature = *c.LockTemperature
 	}

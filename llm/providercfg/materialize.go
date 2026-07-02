@@ -3,6 +3,7 @@ package providercfg
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -22,6 +23,16 @@ func Marshal(cfg Config) ([]byte, error) {
 		}
 		if inst.Quirks != "" {
 			fmt.Fprintf(&b, "quirks = %q\n", inst.Quirks)
+		}
+		// Unlike api_key, header values round-trip verbatim (including any $ENV
+		// reference). That is why $ENV form is the recommended way to hold a
+		// secret in a header — the reference, not the secret, lands on disk.
+		if len(inst.Headers) > 0 {
+			pairs := make([]string, 0, len(inst.Headers))
+			for _, k := range sortedKeys(inst.Headers) {
+				pairs = append(pairs, fmt.Sprintf("%q = %q", k, inst.Headers[k]))
+			}
+			fmt.Fprintf(&b, "headers = { %s }\n", strings.Join(pairs, ", "))
 		}
 		writeCompat(&b, fmt.Sprintf("instances.%s.compat", inst.Name), inst.Compat)
 		for _, id := range sortedKeys(inst.Models) {
@@ -59,6 +70,7 @@ func writeCompat(b *strings.Builder, header string, c *CompatConfig) {
 	if c.ThinkingFormat != "" {
 		fmt.Fprintf(b, "thinking_format = %q\n", c.ThinkingFormat)
 	}
+	writeBool(b, "supports_strict_mode", c.SupportsStrictMode)
 	writeBool(b, "supports_reasoning_effort", c.SupportsReasoningEffort)
 	if c.MaxTokensField != "" {
 		fmt.Fprintf(b, "max_tokens_field = %q\n", c.MaxTokensField)
@@ -92,6 +104,34 @@ func writeCompat(b *strings.Builder, header string, c *CompatConfig) {
 		fmt.Fprintf(b, "finish_reason_map = { %s }\n", strings.Join(pairs, ", "))
 	}
 	writeBool(b, "translate_max_to_xhigh", c.TranslateMaxToXHigh)
+	if len(c.ChatTemplateKwargs) > 0 {
+		pairs := make([]string, 0, len(c.ChatTemplateKwargs))
+		for _, k := range sortedKeys(c.ChatTemplateKwargs) {
+			pairs = append(pairs, fmt.Sprintf("%q = %s", k, tomlScalar(c.ChatTemplateKwargs[k])))
+		}
+		fmt.Fprintf(b, "chat_template_kwargs = { %s }\n", strings.Join(pairs, ", "))
+	}
+}
+
+// tomlScalar renders a chat_template_kwargs value as inline-TOML. Kwargs are
+// expected to be scalars (bool/int/float/string), which is what BurntSushi
+// decodes an inline table of scalars to; any other kind falls back to a quoted
+// string so Marshal never panics or emits invalid TOML.
+func tomlScalar(v any) string {
+	switch x := v.(type) {
+	case bool:
+		return strconv.FormatBool(x)
+	case string:
+		return fmt.Sprintf("%q", x)
+	case int64:
+		return strconv.FormatInt(x, 10)
+	case int:
+		return strconv.Itoa(x)
+	case float64:
+		return strconv.FormatFloat(x, 'g', -1, 64)
+	default:
+		return fmt.Sprintf("%q", fmt.Sprint(x))
+	}
 }
 
 func writeBool(b *strings.Builder, key string, v *bool) {

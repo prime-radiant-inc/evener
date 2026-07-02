@@ -49,19 +49,28 @@ type OpenAICompatInstanceParams struct {
 	Compat   *providercfg.CompatConfig
 	Models   map[string]providercfg.ModelConfig
 	Adaptive bool
+	// Headers are user-configured request headers (providers.toml
+	// [instances.X.headers], already $ENV-resolved). They override
+	// ProviderHeaders on key collision.
+	Headers map[string]string
+	// ProviderHeaders are provider-set default headers (e.g. kimi's coding-plan
+	// User-Agent). User Headers override these but do not erase them: a default
+	// survives when the user configures no header of the same name.
+	ProviderHeaders map[string]string
 }
 
 // NewForInstance constructs an Adapter from explicit parameters.
 func NewForInstance(params OpenAICompatInstanceParams) *Adapter {
 	quirks := ApplyCompatConfig(params.Quirks, params.Compat)
 	return &Adapter{
-		name:     params.Name,
-		APIKey:   params.APIKey,
-		BaseURL:  strings.TrimRight(params.BaseURL, "/"),
-		Client:   &http.Client{Timeout: 0},
-		Quirks:   quirks,
-		Models:   resolveModelCompat(quirks, params.Models),
-		Adaptive: params.Adaptive,
+		name:           params.Name,
+		APIKey:         params.APIKey,
+		BaseURL:        strings.TrimRight(params.BaseURL, "/"),
+		Client:         &http.Client{Timeout: 0},
+		Quirks:         quirks,
+		Models:         resolveModelCompat(quirks, params.Models),
+		Adaptive:       params.Adaptive,
+		DefaultHeaders: llm.MergeHeaders(params.ProviderHeaders, params.Headers),
 	}
 }
 
@@ -87,6 +96,7 @@ func init() {
 			Quirks:  QuirksPreset(inst.Quirks),
 			Compat:  inst.Compat,
 			Models:  inst.Models,
+			Headers: inst.Headers,
 		}), nil
 	})
 }

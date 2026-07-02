@@ -142,6 +142,8 @@ type InstanceParams struct {
 	// overrides. See providercfg.InstanceConfig.
 	Compat *providercfg.CompatConfig
 	Models map[string]providercfg.ModelConfig
+	// Headers are user-configured request headers ([instances.X.headers]).
+	Headers map[string]string
 }
 
 // newForInstance constructs an ollama adapter from explicit parameters.
@@ -157,6 +159,7 @@ func newForInstance(params InstanceParams) *adapter {
 		APIKey:  params.APIKey,
 		Compat:  params.Compat,
 		Models:  params.Models,
+		Headers: params.Headers,
 	}))
 }
 
@@ -181,6 +184,7 @@ func init() {
 			APIKey:  inst.APIKey,
 			Compat:  inst.Compat,
 			Models:  inst.Models,
+			Headers: inst.Headers,
 		}), nil
 	})
 }

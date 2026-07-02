@@ -48,6 +48,8 @@ type InstanceParams struct {
 	Name    string
 	BaseURL string
 	APIKey  string
+	// Headers are user-configured request headers ([instances.X.headers]).
+	Headers map[string]string
 }
 
 // NewForInstance constructs an openrouter-anthropic adapter from explicit parameters.
@@ -58,9 +60,10 @@ func NewForInstance(params InstanceParams) *adapter {
 		base = defaultBaseURL
 	}
 	return providerfwd.NewAnthropic(params.Name, providerName, &anthropic.Adapter{
-		APIKey:  params.APIKey,
-		BaseURL: strings.TrimRight(base, "/"),
-		Client:  &http.Client{Timeout: 0},
+		APIKey:         params.APIKey,
+		BaseURL:        strings.TrimRight(base, "/"),
+		Client:         &http.Client{Timeout: 0},
+		DefaultHeaders: llm.MergeHeaders(nil, params.Headers),
 	})
 }
 
@@ -91,6 +94,7 @@ func init() {
 			Name:    inst.Name,
 			BaseURL: inst.BaseURL,
 			APIKey:  inst.APIKey,
+			Headers: inst.Headers,
 		}), nil
 	})
 }

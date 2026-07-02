@@ -195,7 +195,7 @@ tool_stream               = true
 ### Overlay precedence
 
 Three layers combine field-by-field — later wins, `nil`/unset always inherits
-(`ApplyCompatConfig`, `llm/providers/openaicompat/compat.go:60-136`):
+(`ApplyCompatConfig`, `llm/providers/openaicompat/compat.go:60-146`):
 
 1. **Quirks preset** — the base `ProviderQuirks` selected by `quirks = "..."`
    or the provider type's built-in default (`QuirksPreset`,
@@ -213,11 +213,13 @@ than merging key-by-key when set at a given layer (`compat.go:126-131`).
 ### `[instances.X.compat]` / `[instances.X.models."<id>".compat]` fields
 
 Every field is optional; unset means "inherit from the layer below"
-(`providercfg.CompatConfig`, `llm/providercfg/providercfg.go:36-86`):
+(`providercfg.CompatConfig`, `llm/providercfg/providercfg.go:44-108`):
 
 | TOML key | Type | Meaning |
 |---|---|---|
 | `thinking_format` | string | wire dialect for reasoning; see the table below |
+| `supports_strict_mode` | bool | when **explicitly true**, add `strict: false` inside every tool's `function` object; `nil`/`false` sends no `strict` field (serf's default — see the Pi divergence note below) |
+| `chat_template_kwargs` | table (scalars) | emitted verbatim as the request's `chat_template_kwargs` when `thinking_format = "chat-template"` and an effort is set; replaces wholesale on overlay (like `finish_reason_map`) |
 | `supports_reasoning_effort` | bool | gate the `reasoning_effort` field for formats that treat it as optional (openai/deepseek/together); default follows the format (see below) |
 | `max_tokens_field` | string | `"max_tokens"` (default) or `"max_completion_tokens"` |
 | `tool_stream` | bool | send z.ai's `tool_stream: true` when tools are present |
@@ -295,10 +297,22 @@ value):
 | `"openrouter"` | `reasoning: {"effort": <wire>}` — unconditional; `supports_reasoning_effort` has no effect on this format |
 | `"together"` | always `reasoning: {"enabled": true}`; plus `reasoning_effort: <wire>`, gated on `supports_reasoning_effort` (default **true**) |
 | `"qwen"` | `enable_thinking: true` — unconditional; the effort value itself is never sent on the wire |
+| `"qwen-chat-template"` | `chat_template_kwargs: {"enable_thinking": true, "preserve_thinking": true}` — the effort value itself is never sent on the wire |
+| `"chat-template"` | `chat_template_kwargs: <compat.chat_template_kwargs verbatim>`; omitted entirely when the resolved kwargs are empty |
 | `"string-thinking"` | `thinking: <wire>` (the effort string is the field's value, not an object) — unconditional |
 
 `clear_thinking: false` on the `zai` format keeps z.ai from pruning prior-turn
 reasoning server-side; serf manages thinking replay itself.
+
+**Divergences from Pi** (`applyThinkingFormat`,
+`llm/providers/openaicompat/request.go:152`): Pi's `convertTools` always sends
+`strict: false` and its `qwen-chat-template` always sends `enable_thinking`
+(`false` when reasoning is off). serf deliberately does neither by default —
+`supports_strict_mode` is opt-in (flipping the wire shape of every existing serf
+request is not worth the risk), and serf's `none`-clears convention means the
+`qwen-chat-template`/`chat-template` bodies are emitted **only** when an effort
+is set (nothing otherwise). serf also skips Pi's per-value `$var` indirection in
+`chat_template_kwargs` (YAGNI) — the table is sent verbatim.
 
 The built-in `glm` type's `QuirksPreset("glm-5")`
 (`llm/providers/openaicompat/quirks.go:77-89`) now sets `ThinkingFormat: "zai"`
@@ -335,11 +349,47 @@ cross-provider transcript) falls back to `reasoning_content`.
   variable never blocks unrelated instances. The runtime load path
   (`cmdutil.LoadClient` → `llm.NewFromAvailableProviders`) skips a failing
   instance and keeps the rest of the client usable.
-- `providercfg.Marshal` (`llm/providercfg/materialize.go:11`) still never
+- `providercfg.Marshal` (`llm/providercfg/materialize.go:12`) still never
   writes `api_key` back to disk, `$ENV` references included — the
   hub-materialized descriptors file stays credential-free. Hand-authored
   instances (like the lunaroute example, never seeded by the hub) are the
   normal way `api_key` ends up in `providers.toml` at all.
+
+### `[instances.X.headers]` — extra request headers (all types)
+
+Any instance — **not just the compat family** — may carry a `headers` table of
+extra HTTP headers sent on every request to its endpoint. This is how an
+instance sits behind a gateway (Portkey, Helicone, a Cloudflare worker) that
+needs its own auth or routing headers.
+
+```toml
+[instances.work]
+type    = "anthropic"
+headers = { "X-Portkey-Provider" = "anthropic", "Authorization" = "$PORTKEY_KEY" }
+```
+
+- **`$ENV` resolution** — header values accept the same `$NAME` / `${NAME}` /
+  `$$` expansion as `api_key`, resolved by `providercfg.ResolveHeaderValue`
+  (`llm/providercfg/apikey.go:26`, sharing the core with `ResolveAPIKey`) at the
+  same choke point — `newFromProviders` (`llm/providers_config.go:113`) — so a
+  missing variable fails just that instance (its name **and** the header key are
+  named in the error), leaving unrelated instances usable.
+- **Precedence** — a user header is merged into the adapter's `DefaultHeaders`
+  and **overrides a provider-set default of the same name** (e.g. kimi's
+  coding-plan `User-Agent`), but that default **survives** when the user sets no
+  header of that name (`llm.MergeHeaders`, `llm/headers.go:26`). Hard-wired
+  protocol headers the adapter sets last — `Authorization`/`x-api-key`,
+  `Content-Type`, `anthropic-version` — still win over any configured header.
+- **Delivery** — wired through every adapter's `DefaultHeaders` seam:
+  openai-compat family (`kimi`/`glm`/`openrouter`/`ollama`/`openai` +
+  `chat-completions`) via `OpenAICompatInstanceParams.Headers`, and the
+  non-compat adapters (`anthropic`, `openai` responses, `google`, `minimax`,
+  `kimi-anthropic`, `openrouter-anthropic`) via their own `*InstanceParams.Headers`.
+- **Marshal round-trips the raw value** — unlike `api_key`, `providercfg.Marshal`
+  writes header values back **verbatim**, including any `$ENV` reference. That is
+  exactly why `$ENV` form is the recommended way to hold a secret in a header:
+  the reference, not the secret, lands on disk. Header **names** must be
+  non-empty; values are otherwise unrestricted.
 
 ### Worked example: lunaroute GLM gateway
 

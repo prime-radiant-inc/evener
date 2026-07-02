@@ -46,14 +46,16 @@ type fileShape struct {
 // validThinkingFormats is the set of thinking_format values the openai-compat
 // request builder implements. Empty means the openai default.
 var validThinkingFormats = map[string]bool{
-	"":                true,
-	"openai":          true,
-	"zai":             true,
-	"deepseek":        true,
-	"openrouter":      true,
-	"together":        true,
-	"qwen":            true,
-	"string-thinking": true,
+	"":                   true,
+	"openai":             true,
+	"zai":                true,
+	"deepseek":           true,
+	"openrouter":         true,
+	"together":           true,
+	"qwen":               true,
+	"qwen-chat-template": true,
+	"chat-template":      true,
+	"string-thinking":    true,
 }
 
 // ThinkingFormatNames returns the sorted non-empty valid thinking_format values.
@@ -220,6 +222,13 @@ func Load(data []byte) (Config, error) {
 				what = "models"
 			}
 			errs = append(errs, fmt.Sprintf("instance %q: %s is only valid for OpenAI-compatible instances (types kimi, glm, openrouter, ollama, or openai with api_style = \"chat-completions\"), not type %q", name, what, inst.Type))
+		}
+		// Header names must be non-empty; values are otherwise unrestricted
+		// (they carry $ENV refs resolved later). Sort for deterministic errors.
+		for _, hk := range sortedKeys(inst.Headers) {
+			if strings.TrimSpace(hk) == "" {
+				errs = append(errs, fmt.Sprintf("instance %q: header name must not be empty", name))
+			}
 		}
 		errs = validateCompat(errs, name, "compat", inst.Compat)
 		var models map[string]ModelConfig

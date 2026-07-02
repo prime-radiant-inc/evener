@@ -171,6 +171,31 @@ func TestNewForInstance_AnnouncesCodingAgentUserAgent(t *testing.T) {
 	}
 }
 
+func TestNewForInstance_UserHeadersDelivered_UAOverridable(t *testing.T) {
+	var gotUA, gotGateway string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		gotGateway = r.Header.Get("X-Gateway")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","model":"kimi-for-coding","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := NewForInstance(InstanceParams{Name: "kimi", BaseURL: srv.URL, APIKey: "k", Headers: map[string]string{
+		"X-Gateway":  "portkey",
+		"User-Agent": "my-agent",
+	}})
+	if _, err := a.Complete(context.Background(), llm.Request{Model: "kimi-for-coding", Messages: []llm.Message{llm.User("hi")}}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if gotGateway != "portkey" {
+		t.Errorf("X-Gateway = %q, want portkey (user header delivered)", gotGateway)
+	}
+	if gotUA != "my-agent" {
+		t.Errorf("User-Agent = %q, want my-agent (user overrides coding-plan default)", gotUA)
+	}
+}
+
 func TestAdapter_CountInputTokens_UsesEstimateEndpoint(t *testing.T) {
 	var gotPath string
 	var gotUA string

@@ -20,6 +20,14 @@ type InstanceConfig struct {
 	BaseURL  string   `toml:"base_url"`
 	APIKey   string   `toml:"api_key"`
 	Quirks   string   `toml:"quirks"`
+	// Headers are extra HTTP request headers sent on every call to this
+	// instance's endpoint. Valid for ALL instance types — any provider may sit
+	// behind a gateway (Portkey, Helicone, a CF worker) that needs headers.
+	// Values support the same $ENV/${ENV}/$$ expansion as api_key, resolved at
+	// adapter construction (see ResolveHeaderValue). A user-configured header
+	// overrides a provider-set default of the same name (e.g. kimi's coding-plan
+	// User-Agent) but does not erase it when unset.
+	Headers map[string]string `toml:"headers"`
 	// Compat holds OpenAI-compatible protocol overrides applied to every model
 	// served by this instance. Only valid for openai-compat-family instances
 	// (openai+chat-completions, kimi, glm, openrouter, ollama).
@@ -38,8 +46,22 @@ type CompatConfig struct {
 	// "openai" (reasoning_effort, the default), "zai" (thinking:{type} object),
 	// "deepseek" (thinking:{type} + reasoning_effort), "openrouter"
 	// (reasoning:{effort}), "together" (reasoning:{enabled}), "qwen"
-	// (enable_thinking), or "string-thinking" (thinking:"<effort>").
+	// (enable_thinking), "qwen-chat-template"
+	// (chat_template_kwargs:{enable_thinking,preserve_thinking}), "chat-template"
+	// (chat_template_kwargs = ChatTemplateKwargs verbatim), or "string-thinking"
+	// (thinking:"<effort>").
 	ThinkingFormat string `toml:"thinking_format"`
+	// SupportsStrictMode, when EXPLICITLY true, adds strict:false inside every
+	// tool definition's "function" object. Default nil/false emits no strict
+	// field. This deliberately diverges from Pi, whose default always sends
+	// strict:false — flipping the wire shape of every existing serf request is
+	// not worth the risk, so serf opts in per instance instead.
+	SupportsStrictMode *bool `toml:"supports_strict_mode"`
+	// ChatTemplateKwargs is emitted verbatim as the request's
+	// chat_template_kwargs object when thinking_format = "chat-template" and an
+	// effort is set. Overlay replaces wholesale (like FinishReasonMap). serf
+	// deliberately skips Pi's per-value $var indirection (YAGNI).
+	ChatTemplateKwargs map[string]any `toml:"chat_template_kwargs"`
 	// SupportsReasoningEffort gates emitting the reasoning_effort field for
 	// formats that treat it as optional. nil defers to the format's default
 	// (openai/deepseek/together: true; zai: false).

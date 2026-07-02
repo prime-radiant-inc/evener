@@ -14,6 +14,23 @@ import (
 // use (adapter construction, live /models probes), not at Load, so one
 // instance's missing variable never blocks unrelated instances.
 func ResolveAPIKey(raw string) (string, error) {
+	return resolveEnvValue(raw, "api_key")
+}
+
+// ResolveHeaderValue expands the same environment-variable references as
+// ResolveAPIKey in a providers.toml [instances.X.headers] value. Errors name
+// the header key and the missing variable so a misconfigured gateway header is
+// diagnosable. A header value may legitimately hold a secret via $ENV — that is
+// the recommended form, because unlike api_key the raw header value is written
+// back verbatim by Marshal.
+func ResolveHeaderValue(name, raw string) (string, error) {
+	return resolveEnvValue(raw, fmt.Sprintf("header %q", name))
+}
+
+// resolveEnvValue is the shared $ENV/${ENV}/$$ expander behind ResolveAPIKey
+// and ResolveHeaderValue. what names the field in error messages (e.g.
+// "api_key" or `header "X-Foo"`).
+func resolveEnvValue(raw, what string) (string, error) {
 	if !strings.Contains(raw, "$") {
 		return raw, nil
 	}
@@ -40,15 +57,15 @@ func ResolveAPIKey(raw string) (string, error) {
 		case next == '{':
 			end := strings.IndexByte(raw[i+2:], '}')
 			if end < 0 {
-				return "", fmt.Errorf("api_key: unterminated ${ in %q", raw)
+				return "", fmt.Errorf("%s: unterminated ${ in %q", what, raw)
 			}
 			name := raw[i+2 : i+2+end]
 			if !validEnvName(name) {
-				return "", fmt.Errorf("api_key: invalid environment variable name %q", name)
+				return "", fmt.Errorf("%s: invalid environment variable name %q", what, name)
 			}
 			v := os.Getenv(name)
 			if v == "" {
-				return "", fmt.Errorf("api_key references environment variable %s, which is unset or empty", name)
+				return "", fmt.Errorf("%s references environment variable %s, which is unset or empty", what, name)
 			}
 			b.WriteString(v)
 			i += 2 + end + 1
@@ -60,7 +77,7 @@ func ResolveAPIKey(raw string) (string, error) {
 			name := raw[i+1 : j]
 			v := os.Getenv(name)
 			if v == "" {
-				return "", fmt.Errorf("api_key references environment variable %s, which is unset or empty", name)
+				return "", fmt.Errorf("%s references environment variable %s, which is unset or empty", what, name)
 			}
 			b.WriteString(v)
 			i = j

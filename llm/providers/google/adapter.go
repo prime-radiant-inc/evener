@@ -33,6 +33,9 @@ type GoogleInstanceParams struct {
 	Name    string
 	APIKey  string
 	BaseURL string
+	// Headers are user-configured request headers ([instances.X.headers]),
+	// merged into DefaultHeaders.
+	Headers map[string]string
 }
 
 // NewForInstance constructs an Adapter from explicit parameters.
@@ -49,8 +52,9 @@ func NewForInstance(params GoogleInstanceParams) (*Adapter, error) {
 		name:   params.Name,
 		APIKey: params.APIKey,
 		// Avoid short client-level timeouts; rely on request context deadlines instead.
-		BaseURL: strings.TrimRight(base, "/"),
-		Client:  &http.Client{Timeout: 0},
+		BaseURL:        strings.TrimRight(base, "/"),
+		Client:         &http.Client{Timeout: 0},
+		DefaultHeaders: llm.MergeHeaders(nil, params.Headers),
 	}, nil
 }
 
@@ -72,6 +76,7 @@ func init() {
 				Name:    inst.Name,
 				BaseURL: inst.BaseURL,
 				APIKey:  inst.APIKey,
+				Headers: inst.Headers,
 			})
 		})
 	}

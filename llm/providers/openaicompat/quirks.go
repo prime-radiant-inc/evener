@@ -50,6 +50,13 @@ type ProviderQuirks struct {
 	// CacheControlFormat: "anthropic" applies Anthropic cache_control markers
 	// for gateways that forward them.
 	CacheControlFormat string
+	// SupportsStrictMode, when explicitly true, adds strict:false inside every
+	// tool definition's function object. nil/false emits no strict field.
+	SupportsStrictMode *bool
+	// ChatTemplateKwargs is emitted verbatim as the request's
+	// chat_template_kwargs object for the "chat-template" thinking format when an
+	// effort is set.
+	ChatTemplateKwargs map[string]any
 }
 
 func (q ProviderQuirks) mapFinishReason(raw string) string {

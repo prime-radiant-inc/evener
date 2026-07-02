@@ -34,7 +34,18 @@ func buildRequestBody(req llm.Request, stream bool, mc ModelCompat) (map[string]
 	body["messages"] = msgs
 
 	if len(req.Tools) > 0 {
-		body["tools"] = openaichat.ToChatTools(req.Tools)
+		tools := openaichat.ToChatTools(req.Tools)
+		// Only emit strict when the instance explicitly opts in. Serf diverges
+		// from Pi (whose default always sends strict:false); see
+		// providercfg.CompatConfig.SupportsStrictMode.
+		if quirks.SupportsStrictMode != nil && *quirks.SupportsStrictMode {
+			for _, t := range tools {
+				if fn, ok := t["function"].(map[string]any); ok {
+					fn["strict"] = false
+				}
+			}
+		}
+		body["tools"] = tools
 		if quirks.ToolStream {
 			body["tool_stream"] = true
 		}
@@ -173,6 +184,21 @@ func applyThinkingFormat(body map[string]any, req llm.Request, mc ModelCompat) {
 		}
 	case "qwen":
 		body["enable_thinking"] = true
+	case "qwen-chat-template":
+		// Divergence from Pi: Pi always emits enable_thinking (false when off).
+		// serf's none-clears convention means we only reach here with an effort
+		// set (wire != "" above), so enable_thinking is always true.
+		body["chat_template_kwargs"] = map[string]any{
+			"enable_thinking":   true,
+			"preserve_thinking": true,
+		}
+	case "chat-template":
+		// Emit the configured kwargs verbatim. An empty/absent map omits the
+		// field entirely — the deliberate "resolved-empty" rule that keeps
+		// cross-layer validation out of Load.
+		if len(quirks.ChatTemplateKwargs) > 0 {
+			body["chat_template_kwargs"] = quirks.ChatTemplateKwargs
+		}
 	case "string-thinking":
 		body["thinking"] = wire
 	}

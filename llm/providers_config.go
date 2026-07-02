@@ -103,6 +103,29 @@ func newFromProviders(cfg providercfg.Config, allowPartial bool, opts ...EnvOpti
 			return nil, nil, wrapped
 		}
 		inst.APIKey = apiKey
+		// Resolve $ENV references in each header at the same choke point as
+		// api_key, so a missing variable fails just this instance with its name
+		// and the header key in the error.
+		if len(inst.Headers) > 0 {
+			resolved := make(map[string]string, len(inst.Headers))
+			var hdrErr error
+			for _, k := range sortedHeaderKeys(inst.Headers) {
+				v, err := providercfg.ResolveHeaderValue(k, inst.Headers[k])
+				if err != nil {
+					hdrErr = fmt.Errorf("provider %q: %w", inst.Name, err)
+					break
+				}
+				resolved[k] = v
+			}
+			if hdrErr != nil {
+				if allowPartial {
+					initErrs = append(initErrs, hdrErr)
+					continue
+				}
+				return nil, nil, hdrErr
+			}
+			inst.Headers = resolved
+		}
 		adapter, err := factory(inst, envCfg.StateHome)
 		if err != nil {
 			wrapped := fmt.Errorf("provider %q: %w", inst.Name, err)
