@@ -42,6 +42,18 @@ func FuzzLifecycleSequence(f *testing.F) {
 		{Ops: []opRecord{{Code: int(opDelegate), Script: []int{int(kindDelegate)}, Text: "task", ChildScript: []int{int(kindFinal)}}}},
 		{Ops: []opRecord{{Code: int(opBackgroundShell), Script: []int{int(kindShellBackground)}, Text: "bg"}}},
 		{Ops: []opRecord{{Code: int(opBackgroundDelegate), Script: []int{int(kindDelegate)}, Text: "bg", ChildScript: []int{int(kindText), int(kindFinal)}}}},
+		// Many tool rounds in one turn (persistToolResults over several results),
+		// then usage-bearing text (recordResponseUsage record branch) to completion.
+		{Ops: []opRecord{
+			{Code: int(opProcessInput), Script: []int{int(kindReadFile), int(kindGrep), int(kindGlob), int(kindShell), int(kindText), int(kindFinal)}, Text: "work"},
+		}},
+		// Multi-turn conversation with an awaiting turn then a follow-up + enqueue.
+		{Ops: []opRecord{
+			{Code: int(opProcessInput), Script: []int{int(kindText), int(kindAwait)}, Text: "q1"},
+			{Code: int(opFollowUp), Text: "more"},
+			{Code: int(opProcessInput), Script: []int{int(kindFinal)}, Text: "q2"},
+			{Code: int(opEnqueue), Text: "q3"},
+		}},
 		// Goal set/run/clear, and interrupt+steer+close.
 		{Ops: []opRecord{{Code: int(opSetGoal), Text: "goal"}, {Code: int(opProcessInput), Script: []int{int(kindFinal)}, Text: "go"}, {Code: int(opClearGoal)}}},
 		{Ops: []opRecord{

@@ -15,7 +15,9 @@
 # canonical and the total equals the ground-truth statement count. These floors
 # are the first bless on that honest basis:
 #   .     17.4% = 3612/20713   (was 9.8 on the old basis — robust method is higher)
-#   agent 54.0% = 10619/19661  (was inflated-reading 57.7)
+#   agent 54.2% = 10656/19661  (was inflated-reading 57.7; +enrichment pass:
+#         recordResponseUsage 44%->89% via usage-bearing scripted responses,
+#         processInputKindWithProvenance 78%->86% via deeper multi-turn seeds)
 #   llm   77.9% = 4625/5937    (was inflated-reading 79.9)
 # The agent bump 53.4->54.0 (+127 stmts) is FuzzLifecycleSequence — a native
 # `go test -fuzz` bridge that replays JSON-encoded op sequences through the real
@@ -27,5 +29,5 @@
 # net-new, and (2) the module denominator is diluted by subpackages. go-fuzz
 # mutates whole sequences from the seed corpus for deeper bug-finding reach.
 . 17.4
-agent 54.0
+agent 54.2
 llm 77.9

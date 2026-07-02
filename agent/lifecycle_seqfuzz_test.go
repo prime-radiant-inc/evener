@@ -160,7 +160,12 @@ func buildResponse(kind responseKind, callSeq int) llm.Response {
 	case kindAwait:
 		return agenttest.CommunicateResponse(false, "awaiting")
 	case kindText:
-		return llm.Response{Message: llm.Assistant("thinking " + strconv.Itoa(callSeq))}
+		// Non-zero input-token usage drives recordResponseUsage's record branch
+		// (RecordInputTokens): without usage, tokens==0 and it never records.
+		return llm.Response{
+			Message: llm.Assistant("thinking " + strconv.Itoa(callSeq)),
+			Usage:   llm.Usage{InputTokens: 40 + callSeq, OutputTokens: 5},
+		}
 	case kindEmpty:
 		return agenttest.EmptyResponse()
 	case kindPause:
@@ -182,10 +187,15 @@ func buildResponse(kind responseKind, callSeq int) llm.Response {
 		// A response whose content carries a server-side web_search part plus text.
 		// Drives recordResponseUsage's web-search usage-suppression arm
 		// (responseHasServerWebSearch) and the bare-text no-tool-calls path.
-		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-			{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Query: "q" + strconv.Itoa(callSeq)}},
-			{Kind: llm.ContentText, Text: "searched " + strconv.Itoa(callSeq)},
-		}}}
+		return llm.Response{
+			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Query: "q" + strconv.Itoa(callSeq)}},
+				{Kind: llm.ContentText, Text: "searched " + strconv.Itoa(callSeq)},
+			}},
+			// Non-zero usage present, so the web-search SUPPRESSION arm is exercised
+			// with real usage (recordResponseUsage must skip recording it).
+			Usage: llm.Usage{InputTokens: 200 + callSeq, OutputTokens: 8},
+		}
 	case kindThinking:
 		// A response carrying a thinking part plus text — drives thinking content
 		// classification/handling in the round.
