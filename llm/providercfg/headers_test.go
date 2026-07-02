@@ -178,3 +178,21 @@ func TestMarshal_CompatStrictAndChatTemplate_RoundTrip(t *testing.T) {
 		t.Errorf("round-trip thinking_budget = %#v, want int64(2048)", c.ChatTemplateKwargs["thinking_budget"])
 	}
 }
+
+// Two spellings of the same HTTP header name must be rejected at load —
+// header names are case-insensitive on the wire, and letting both through
+// would leave the surviving value to map iteration order.
+func TestLoad_Headers_CaseCollisionRejected(t *testing.T) {
+	src := `
+[instances.gw]
+type = "glm"
+headers = { "Authorization" = "a", "authorization" = "b" }
+`
+	_, err := Load([]byte(src))
+	if err == nil {
+		t.Fatal("Load accepted case-colliding header names")
+	}
+	if !strings.Contains(err.Error(), "case-insensitive") {
+		t.Errorf("error %q should explain the case-insensitivity collision", err)
+	}
+}

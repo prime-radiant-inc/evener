@@ -153,8 +153,6 @@ type modelsCache struct {
 	models  []map[string]any
 }
 
-var liveModelsCache modelsCache
-
 const liveModelsTTL = 5 * time.Minute
 
 // WorkspaceData is the template data for the workspace partial.

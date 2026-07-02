@@ -3641,12 +3641,6 @@ func TestWeb_Settings_Transcript_Renders(t *testing.T) {
 // run against a live provider API. Skips unless live tests are explicitly
 // enabled and a real API key is set.
 func TestWeb_ApiModels_ReturnsListWithProviderEnv(t *testing.T) {
-	// Force-clear cache to make the test run a fresh fetch.
-	liveModelsCache.mu.Lock()
-	liveModelsCache.expires = time.Time{}
-	liveModelsCache.models = nil
-	liveModelsCache.mu.Unlock()
-	t.Cleanup(func() { liveModelsCache = modelsCache{} })
 	if os.Getenv("SERF_LIVE_TESTS") != "1" {
 		t.Skip("set SERF_LIVE_TESTS=1 to run live provider model-list test")
 	}
@@ -3698,11 +3692,6 @@ func disableStoredOpenAIAuthForModelTest(t *testing.T) {
 }
 
 func TestWeb_ApiModels_ReturnsSerfLaunchContractWhenLiveUnavailable(t *testing.T) {
-	liveModelsCache.mu.Lock()
-	liveModelsCache.expires = time.Time{}
-	liveModelsCache.models = nil
-	liveModelsCache.mu.Unlock()
-	t.Cleanup(func() { liveModelsCache = modelsCache{} })
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("GEMINI_API_KEY", "")
@@ -3780,11 +3769,6 @@ func TestWeb_ApiModels_UsesWorkingDirForSerfLaunchContract(t *testing.T) {
 }
 
 func TestWeb_ApiModels_DoesNotUseLiveProvidersWhenLaunchContractIsEmpty(t *testing.T) {
-	liveModelsCache.mu.Lock()
-	liveModelsCache.expires = time.Time{}
-	liveModelsCache.models = nil
-	liveModelsCache.mu.Unlock()
-	t.Cleanup(func() { liveModelsCache = modelsCache{} })
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("GEMINI_API_KEY", "")
@@ -3946,11 +3930,6 @@ func TestWeb_ApiModels_DiagnosticsParamReturnsModelsAndDiagnostics(t *testing.T)
 	// the launchable models and the launch-check diagnostics, so a configured
 	// provider that failed to list (e.g. bad key) surfaces a reason instead of
 	// silently vanishing. Without the param the response stays a bare array.
-	liveModelsCache.mu.Lock()
-	liveModelsCache.expires = time.Time{}
-	liveModelsCache.models = nil
-	liveModelsCache.mu.Unlock()
-	t.Cleanup(func() { liveModelsCache = modelsCache{} })
 
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
@@ -3990,11 +3969,6 @@ func TestWeb_ApiModels_DiagnosticsParamReturnsModelsAndDiagnostics(t *testing.T)
 }
 
 func TestWeb_ApiModels_FiltersOpenRouterLiveModelsToToolCapable(t *testing.T) {
-	liveModelsCache.mu.Lock()
-	liveModelsCache.expires = time.Time{}
-	liveModelsCache.models = nil
-	liveModelsCache.mu.Unlock()
-	t.Cleanup(func() { liveModelsCache = modelsCache{} })
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("GEMINI_API_KEY", "")
@@ -4050,11 +4024,6 @@ func TestWeb_ApiModels_FiltersOpenRouterLiveModelsToToolCapable(t *testing.T) {
 // override configured for a live-listed model (here: a custom context_window
 // on openrouter/deepseek/deepseek-chat) was silently ignored.
 func TestWeb_ApiModels_LiveFallbackAppliesInstanceModelOverride(t *testing.T) {
-	liveModelsCache.mu.Lock()
-	liveModelsCache.expires = time.Time{}
-	liveModelsCache.models = nil
-	liveModelsCache.mu.Unlock()
-	t.Cleanup(func() { liveModelsCache = modelsCache{} })
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("GEMINI_API_KEY", "")
@@ -4114,11 +4083,6 @@ func TestWeb_ApiModels_LiveFallbackAppliesInstanceModelOverride(t *testing.T) {
 // TestWeb_ApiModels_NoProvidersConfigured returns an empty list when no
 // providers have keys in the environment.
 func TestWeb_ApiModels_NoProvidersConfigured(t *testing.T) {
-	liveModelsCache.mu.Lock()
-	liveModelsCache.expires = time.Time{}
-	liveModelsCache.models = nil
-	liveModelsCache.mu.Unlock()
-	t.Cleanup(func() { liveModelsCache = modelsCache{} })
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("GEMINI_API_KEY", "")

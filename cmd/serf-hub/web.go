@@ -44,6 +44,9 @@ type WebServer struct {
 	// source's sessions from the sidebar (which renders a snapshot).
 	lastGoodMu      sync.Mutex
 	lastGoodThreads map[string][]appwire.Thread // sourceID -> last successful list
+	// liveModels caches raw live /models listings for this server; per-server
+	// so another WebServer (different provider config) never shares entries.
+	liveModels *modelsCache
 }
 
 // sidebarTemplateFuncs supplies small helpers the sidebar template needs:
@@ -112,6 +115,7 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 		startedAt:           time.Now().UTC(),
 		resumeLocks:         map[string]*sync.Mutex{},
 		lastGoodThreads:     map[string][]appwire.Thread{},
+		liveModels:          &modelsCache{},
 	}
 	web.appRPC = newHubAppServer(cfg, sources)
 	return web

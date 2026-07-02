@@ -3,6 +3,7 @@ package providercfg
 import (
 	"errors"
 	"fmt"
+	"net/textproto"
 	"os"
 	"sort"
 	"strings"
@@ -223,12 +224,23 @@ func Load(data []byte) (Config, error) {
 			}
 			errs = append(errs, fmt.Sprintf("instance %q: %s is only valid for OpenAI-compatible instances (types kimi, glm, openrouter, ollama, or openai with api_style = \"chat-completions\"), not type %q", name, what, inst.Type))
 		}
-		// Header names must be non-empty; values are otherwise unrestricted
-		// (they carry $ENV refs resolved later). Sort for deterministic errors.
+		// Header names must be non-empty and unique after HTTP canonicalization
+		// (header names are case-insensitive on the wire; two spellings of one
+		// name would collide with a map-iteration-order winner). Values are
+		// otherwise unrestricted — they carry $ENV refs resolved later. Sort
+		// for deterministic errors.
+		canonSeen := make(map[string]string, len(inst.Headers))
 		for _, hk := range sortedKeys(inst.Headers) {
 			if strings.TrimSpace(hk) == "" {
 				errs = append(errs, fmt.Sprintf("instance %q: header name must not be empty", name))
+				continue
 			}
+			canon := textproto.CanonicalMIMEHeaderKey(hk)
+			if prev, dup := canonSeen[canon]; dup {
+				errs = append(errs, fmt.Sprintf("instance %q: headers %q and %q are the same HTTP header (names are case-insensitive)", name, prev, hk))
+				continue
+			}
+			canonSeen[canon] = hk
 		}
 		errs = validateCompat(errs, name, "compat", inst.Compat)
 		var models map[string]ModelConfig

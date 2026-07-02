@@ -312,13 +312,13 @@ func orderedThinkingLevels(levels map[string]string) []string {
 }
 
 func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
-	liveModelsCache.mu.Lock()
-	if time.Now().Before(liveModelsCache.expires) && liveModelsCache.models != nil {
-		out := s.overlayLiveEntries(liveModelsCache.models)
-		liveModelsCache.mu.Unlock()
+	s.liveModels.mu.Lock()
+	if time.Now().Before(s.liveModels.expires) && s.liveModels.models != nil {
+		out := s.overlayLiveEntries(s.liveModels.models)
+		s.liveModels.mu.Unlock()
 		return out
 	}
-	liveModelsCache.mu.Unlock()
+	s.liveModels.mu.Unlock()
 
 	c, _, _, err := cmdutil.LoadClient()
 	if err != nil || c == nil {
@@ -407,20 +407,20 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 		}
 	}
 
-	// The cache holds RAW live entries; providers.toml overrides are applied
-	// per request on fresh copies (overlayLiveEntries), so a config change or
-	// another WebServer with a different ProviderConfig in the same process
-	// never sees a previous config's overlays baked into shared cache state.
-	liveModelsCache.mu.Lock()
-	liveModelsCache.models = out
-	liveModelsCache.expires = time.Now().Add(liveModelsTTL)
-	liveModelsCache.mu.Unlock()
+	// The cache is per-WebServer (each server's provider set/config owns its
+	// own entries) and holds RAW live values; providers.toml overrides are
+	// applied per request on fresh copies (overlayLiveEntries).
+	s.liveModels.mu.Lock()
+	s.liveModels.models = out
+	s.liveModels.expires = time.Now().Add(liveModelsTTL)
+	s.liveModels.mu.Unlock()
 	return s.overlayLiveEntries(out)
 }
 
 // overlayLiveEntries returns fresh copies of raw live-model entries with this
 // server's providers.toml instance overrides applied. The copies keep the
-// shared liveModelsCache config-agnostic: overlays never mutate cached state.
+// server's live-models cache config-agnostic: overlays never mutate cached
+// state.
 func (s *WebServer) overlayLiveEntries(entries []map[string]any) []map[string]any {
 	out := make([]map[string]any, 0, len(entries))
 	for _, entry := range entries {
