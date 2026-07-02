@@ -430,6 +430,12 @@ func catalogModelInfo(cat *llm.ModelCatalog, behaviorTag, modelID string) *llm.M
 	// tool-capable. (The adapter's fillFromCatalog uses the opposite,
 	// exact-qualified-first order — it wants the provider-specific WIRE
 	// behavior, not the richest display metadata.)
+	if behaviorTag == "ollama" {
+		// Local ollama models are unrelated to same-named upstream catalog
+		// entries — the same bare-lookup suppression the profile and adapter
+		// paths apply. Only an explicit ollama/<model> entry counts.
+		return cat.GetModelInfo("ollama/" + modelID)
+	}
 	if mi := cat.LookupModelInfo(modelID); mi != nil {
 		return mi
 	}

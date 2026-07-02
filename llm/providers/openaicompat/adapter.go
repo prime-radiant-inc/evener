@@ -108,18 +108,32 @@ func init() {
 	})
 	// Register for the openai+chat-completions fold-in: an openai instance with
 	// apiStyle=chat-completions routes through the openaicompat adapter.
-	llm.RegisterInstanceAdapterFactory("openai", "chat-completions", func(inst providercfg.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
-		return NewForInstance(OpenAICompatInstanceParams{
-			Name:       inst.Name,
-			BaseURL:    inst.BaseURL,
-			APIKey:     inst.APIKey,
-			Quirks:     QuirksPreset(inst.Quirks),
-			Compat:     inst.Compat,
-			Models:     inst.Models,
-			Headers:    inst.Headers,
-			CatalogTag: "openai-compatible",
-		}), nil
-	})
+	llm.RegisterInstanceAdapterFactory("openai", "chat-completions", newOpenAIChatCompletionsInstance)
+}
+
+// openAIDefaultBaseURL is the endpoint an openai + chat-completions instance
+// targets when providers.toml sets no base_url: OpenAI's own Chat Completions
+// API. Without a default, requests would go to relative URLs and fail with an
+// opaque unsupported-protocol error.
+const openAIDefaultBaseURL = "https://api.openai.com/v1"
+
+// newOpenAIChatCompletionsInstance is the instance factory for
+// type = "openai" + api_style = "chat-completions".
+func newOpenAIChatCompletionsInstance(inst providercfg.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
+	base := strings.TrimSpace(inst.BaseURL)
+	if base == "" {
+		base = openAIDefaultBaseURL
+	}
+	return NewForInstance(OpenAICompatInstanceParams{
+		Name:       inst.Name,
+		BaseURL:    base,
+		APIKey:     inst.APIKey,
+		Quirks:     QuirksPreset(inst.Quirks),
+		Compat:     inst.Compat,
+		Models:     inst.Models,
+		Headers:    inst.Headers,
+		CatalogTag: "openai-compatible",
+	}), nil
 }
 
 func NewFromEnv() (*Adapter, error) {

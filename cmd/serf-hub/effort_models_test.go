@@ -245,3 +245,16 @@ func TestCatalogModelInfo_QualifiedFallback(t *testing.T) {
 		t.Errorf("behaviorTagFor(unknown) = %q, want name-as-tag", got)
 	}
 }
+
+// The hub's catalog lookup applies the ollama bare-lookup suppression: a
+// local model named like an upstream entry must not show that entry's
+// metadata in /api/models.
+func TestCatalogModelInfo_OllamaSuppressesBareLookup(t *testing.T) {
+	cat := llm.EmbeddedModelCatalog()
+	if cat.GetModelInfo("glm-5.2") == nil {
+		t.Fatal("test premise broken: glm-5.2 missing from catalog")
+	}
+	if mi := catalogModelInfo(cat, "ollama", "glm-5.2"); mi != nil {
+		t.Fatalf("ollama local model inherited upstream metadata: %+v", mi)
+	}
+}
