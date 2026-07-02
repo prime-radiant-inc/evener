@@ -3,6 +3,7 @@ package llm
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -388,6 +389,15 @@ func ParseRetryAfter(v string, now time.Time) *time.Duration {
 		return nil
 	}
 	if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
+		// A server (or a hostile proxy) can send an absurd delay-seconds value
+		// that overflows int64 nanoseconds and wraps to a negative Duration.
+		// Saturate instead so the result is always a non-negative wait; callers
+		// clamp it to their own MaxDelay.
+		const maxSecs = int64(math.MaxInt64) / int64(time.Second)
+		if int64(secs) > maxSecs {
+			d := time.Duration(math.MaxInt64)
+			return &d
+		}
 		d := time.Duration(secs) * time.Second
 		return &d
 	}
