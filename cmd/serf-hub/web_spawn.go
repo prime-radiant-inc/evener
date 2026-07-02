@@ -398,6 +398,12 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 					entry["reasoning_effort_levels"] = mi.ReasoningEffortLevels
 				}
 			}
+			// Overlay any providers.toml instance override before the entry is
+			// cached (below) so both a fresh fetch and a subsequent cache hit
+			// return the configured reasoning/context_window, not the raw live
+			// values. Mirrors modelDescriptorsToAPIModels's precedence for the
+			// serf-launch-contract path.
+			applyInstanceModelOverride(entry, s.cfg.ProviderConfig, prov, m.ID)
 			out = append(out, entry)
 		}
 	}

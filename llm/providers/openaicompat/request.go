@@ -168,8 +168,14 @@ func promptCacheKey(req llm.Request) string {
 // applyThinkingFormat emits the reasoning controls in the wire dialect the
 // provider speaks. No effort on the request means "send nothing" for every
 // format — serf's "none" clears the setting to the provider default rather
-// than forcing an explicit disable.
+// than forcing an explicit disable. A model declared reasoning=false
+// (mc.ReasoningOff) emits nothing regardless of the request's effort: the
+// adapter enforces its own declared non-reasoning models rather than relying
+// on the caller (e.g. the session-side profile clamp) to have done so.
 func applyThinkingFormat(body map[string]any, req llm.Request, mc ModelCompat) {
+	if mc.ReasoningOff {
+		return
+	}
 	quirks := mc.Quirks
 	wire := ""
 	if req.ReasoningEffort != nil {

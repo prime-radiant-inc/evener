@@ -251,6 +251,89 @@ func TestGLMCatalogDefaults_WireBody(t *testing.T) {
 	}
 }
 
+// TestReasoningOff_SuppressesAllThinkingFormats verifies that a model with
+// ReasoningOff set (mirroring providers.toml [instances.X.models.*]
+// reasoning=false) emits no reasoning-effort/thinking wire field for ANY
+// thinking format, even when the request sets ReasoningEffort directly. A
+// direct llm.Client caller — not just the session-side profile clamp — must
+// not be able to force reasoning controls onto a declared non-reasoning
+// model.
+func TestReasoningOff_SuppressesAllThinkingFormats(t *testing.T) {
+	req := plainReq("m")
+	req.ReasoningEffort = strp("high")
+
+	for _, format := range []string{"", "openai", "zai", "deepseek", "openrouter", "together", "qwen", "string-thinking"} {
+		t.Run(format, func(t *testing.T) {
+			mc := ModelCompat{
+				Quirks:       ProviderQuirks{ThinkingFormat: format, SupportsReasoningEffort: boolp(true)},
+				ReasoningOff: true,
+			}
+			body := requestBody(t, req, false, mc)
+			for _, key := range []string{"reasoning_effort", "thinking", "reasoning", "enable_thinking", "chat_template_kwargs"} {
+				if got, present := body[key]; present {
+					t.Errorf("body[%q] = %v, want absent (ReasoningOff)", key, got)
+				}
+			}
+		})
+	}
+}
+
+// TestReasoningOff_FromModelConfig verifies resolveModelCompat sets
+// ReasoningOff from a providers.toml model's reasoning=false, and that a
+// nil/true Reasoning leaves it false.
+func TestReasoningOff_FromModelConfig(t *testing.T) {
+	a := NewForInstance(OpenAICompatInstanceParams{
+		Name:    "glm",
+		BaseURL: "https://api.z.ai/api/coding/paas/v4",
+		Quirks:  QuirksPreset("glm-5"),
+		Models: map[string]providercfg.ModelConfig{
+			"glm-flash": {Reasoning: boolp(false)},
+			"glm-5.2":   {Reasoning: boolp(true)},
+			"glm-4.7":   {},
+		},
+	})
+	if !a.Models["glm-flash"].ReasoningOff {
+		t.Error("glm-flash ReasoningOff = false, want true (reasoning=false)")
+	}
+	if a.Models["glm-5.2"].ReasoningOff {
+		t.Error("glm-5.2 ReasoningOff = true, want false (reasoning=true)")
+	}
+	if a.Models["glm-4.7"].ReasoningOff {
+		t.Error("glm-4.7 ReasoningOff = true, want false (unset)")
+	}
+
+	// End-to-end: buildRequestBody for the declared non-reasoning model emits
+	// nothing even with an explicit request effort.
+	req := plainReq("glm-flash")
+	req.ReasoningEffort = strp("high")
+	body := requestBody(t, req, false, a.compatFor("glm-flash"))
+	for _, key := range []string{"reasoning_effort", "thinking"} {
+		if got, present := body[key]; present {
+			t.Errorf("glm-flash body[%q] = %v, want absent", key, got)
+		}
+	}
+}
+
+// TestCompatFor_SuppressCatalogDefaults verifies the ollama-style opt-out:
+// when SuppressCatalogDefaults is set, an undeclared model that happens to
+// share a name with a real catalog entry (glm-5.2) gets none of that entry's
+// defaults. The false (default) case keeps the existing catalog-fill
+// behavior, covered by TestCompatFor_CatalogFillsDefaults.
+func TestCompatFor_SuppressCatalogDefaults(t *testing.T) {
+	a := NewForInstance(OpenAICompatInstanceParams{
+		Name:                    "local-ollama",
+		BaseURL:                 "http://localhost:11434/v1",
+		SuppressCatalogDefaults: true,
+	})
+	mc := a.compatFor("glm-5.2")
+	if mc.Quirks.SupportsReasoningEffort != nil {
+		t.Errorf("SupportsReasoningEffort = %v, want nil (catalog suppressed)", mc.Quirks.SupportsReasoningEffort)
+	}
+	if mc.DefaultMaxTokens != 0 {
+		t.Errorf("DefaultMaxTokens = %d, want 0 (catalog suppressed)", mc.DefaultMaxTokens)
+	}
+}
+
 // requestBody builds a body through the model-aware path.
 func requestBody(t *testing.T, req llm.Request, stream bool, mc ModelCompat) map[string]any {
 	t.Helper()
@@ -411,12 +494,17 @@ func TestThinkingLevels_TranslateEffortToWireValue(t *testing.T) {
 		t.Errorf("reasoning_effort without map = %v, want xhigh", got)
 	}
 
-	// A level missing from the map passes through by name (clamp upstream
-	// should prevent this; the adapter stays permissive).
+	// A level missing from the map is clamped to the map's nearest declared
+	// level before translation, not passed through by name: the adapter
+	// itself enforces the map as complete authority for this model, rather
+	// than relying on the session-side clamp to keep requests inside it.
+	// {"high":"high","xhigh":"max"} has no level at or below "low", so it
+	// clamps up to the map's lowest declared level, "high", which then
+	// translates to wire "high".
 	req.ReasoningEffort = strp("low")
 	body = requestBody(t, req, false, mc)
-	if got := body["reasoning_effort"]; got != "low" {
-		t.Errorf("unmapped level = %v, want pass-through low", got)
+	if got := body["reasoning_effort"]; got != "high" {
+		t.Errorf("unmapped level = %v, want clamped-to-high", got)
 	}
 }
 

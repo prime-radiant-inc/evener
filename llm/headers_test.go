@@ -22,6 +22,23 @@ func TestMergeHeaders(t *testing.T) {
 	}
 }
 
+// TestMergeHeaders_CaseInsensitiveCollision guards against the base and
+// override maps disagreeing only on header-name case (e.g. "User-Agent" vs
+// "user-agent") producing two coexisting map keys: HTTP header names are
+// case-insensitive, so that would leave the winner at request time to depend
+// on nondeterministic map iteration order. Keys must canonicalize to one
+// entry with the override's value.
+func TestMergeHeaders_CaseInsensitiveCollision(t *testing.T) {
+	got := MergeHeaders(
+		map[string]string{"User-Agent": "base-value"},
+		map[string]string{"user-agent": "override-value"},
+	)
+	want := map[string]string{"User-Agent": "override-value"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("MergeHeaders = %#v, want %#v (single canonical key, override wins)", got, want)
+	}
+}
+
 // captureHeadersFactory swaps the instance factory registry for one that records
 // the headers each instance was constructed with, so header resolution at the
 // newFromProviders choke point is observable.

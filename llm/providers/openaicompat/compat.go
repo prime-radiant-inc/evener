@@ -1,6 +1,7 @@
 package openaicompat
 
 import (
+	"sort"
 	"strings"
 
 	"primeradiant.com/serf/llm"
@@ -19,13 +20,42 @@ type ModelCompat struct {
 	ThinkingLevels map[string]string
 	// DefaultMaxTokens is sent as the output cap when the request sets none.
 	DefaultMaxTokens int
+	// ReasoningOff is true for models whose config declares reasoning=false
+	// (mc.Reasoning != nil && !*mc.Reasoning). When set, the adapter emits no
+	// reasoning-effort/thinking wire representation for this model regardless
+	// of req.ReasoningEffort — the adapter enforces this itself rather than
+	// relying solely on the session-side profile clamp, so a direct
+	// llm.Client caller can't force reasoning controls onto a declared
+	// non-reasoning model.
+	ReasoningOff bool
+}
+
+// orderedThinkingLevelKeys returns a ThinkingLevels map's keys in serf rank
+// order (minimal → xhigh), the shape llm.ClampReasoningEffort expects as its
+// supported-levels set.
+func orderedThinkingLevelKeys(levels map[string]string) []string {
+	out := make([]string, 0, len(levels))
+	for k := range levels {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return llm.ReasoningEffortRank(out[i]) < llm.ReasoningEffortRank(out[j])
+	})
+	return out
 }
 
 // wireEffort translates a serf effort level to the provider's wire value.
 // A model-level map wins; without one, the TranslateMaxToXHigh quirk still
-// applies (OpenRouter vocabulary). Unmapped levels pass through by name —
-// the session's clamp keeps requests inside the supported set, and the
-// adapter stays permissive for anything it doesn't recognize.
+// applies (OpenRouter vocabulary).
+//
+// When a map is present, it is documented as the complete authority for this
+// model: the requested effort is first clamped to the map's own keys via
+// llm.ClampReasoningEffort (the same guard the session-side profile clamp
+// uses), then translated through the map. A level the map doesn't carry is
+// no longer passed through by name — it's clamped to the nearest level the
+// map declares before translation. Without a map, effort passes through by
+// name unchanged (aside from the TranslateMaxToXHigh quirk), since there's no
+// declared vocabulary to clamp against.
 func (mc ModelCompat) wireEffort(effort string) string {
 	norm := strings.ToLower(strings.TrimSpace(effort))
 	if len(mc.ThinkingLevels) > 0 {
@@ -35,6 +65,7 @@ func (mc ModelCompat) wireEffort(effort string) string {
 			// keyed on the canonical xhigh.
 			key = "xhigh"
 		}
+		key = llm.ClampReasoningEffort(key, orderedThinkingLevelKeys(mc.ThinkingLevels))
 		if v, ok := mc.ThinkingLevels[key]; ok {
 			return v
 		}
@@ -164,6 +195,7 @@ func resolveModelCompat(instanceQuirks ProviderQuirks, models map[string]provide
 		entry := ModelCompat{
 			Quirks:           ApplyCompatConfig(instanceQuirks, mc.Compat),
 			DefaultMaxTokens: mc.MaxOutputTokens,
+			ReasoningOff:     mc.Reasoning != nil && !*mc.Reasoning,
 		}
 		if len(mc.ThinkingLevels) > 0 {
 			entry.ThinkingLevels = make(map[string]string, len(mc.ThinkingLevels))
@@ -178,7 +210,11 @@ func resolveModelCompat(instanceQuirks ProviderQuirks, models map[string]provide
 
 // compatFor returns the resolved wire behavior for one model: the model's
 // entry when the instance declared it, else the instance-wide quirks with two
-// gaps filled from the embedded model catalog (see fillFromCatalog).
+// gaps filled from the embedded model catalog (see fillFromCatalog) — unless
+// a.SuppressCatalogDefaults opts the instance out entirely (see its doc: a
+// bare model id that happens to share a name with an unrelated upstream
+// catalog entry, e.g. local ollama models, should not inherit that entry's
+// defaults).
 //
 // This runs once per request. The catalog lookup is a single map access
 // (LookupModelInfo) done once here, not per field.
@@ -187,7 +223,9 @@ func (a *Adapter) compatFor(model string) ModelCompat {
 		return mc
 	}
 	mc := ModelCompat{Quirks: a.Quirks}
-	fillFromCatalog(&mc, model)
+	if !a.SuppressCatalogDefaults {
+		fillFromCatalog(&mc, model)
+	}
 	return mc
 }
 

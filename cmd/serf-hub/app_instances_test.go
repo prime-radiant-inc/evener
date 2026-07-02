@@ -233,6 +233,84 @@ func TestInstances_Edit_ChangesBaseURLAndAPIStyle(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 5b. Edit preserves fields it doesn't touch: Headers, Compat, and Models
+//     survive an APIStyle/BaseURL edit instead of being silently dropped.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestInstances_Edit_PreservesHeadersCompatModels(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+
+	content := `schema = 1
+default = "gw"
+
+[instances.gw]
+type = "openai"
+api_style = "chat-completions"
+base_url = "https://gw.example.com/v1"
+
+[instances.gw.headers]
+X-Custom = "value"
+
+[instances.gw.compat]
+thinking_format = "zai"
+
+[instances.gw.models."glm-5"]
+context_window = 131072
+`
+	if err := os.WriteFile(tomlPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+
+	ctl := newTestInstancesController(t, tomlPath, dir, stateDir)
+
+	err := ctl.Edit(appwire.InstanceEditParams{
+		Name: "gw",
+		// api_style stays "chat-completions": Models/Compat are only valid for
+		// OpenAI-compatible instances, and switching to "responses" would make
+		// the resulting file fail to load. Only BaseURL changes.
+		APIStyle: "chat-completions",
+		BaseURL:  "https://gw2.example.com/v1",
+	})
+	if err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+
+	cfg, _, err := providercfg.LoadFile(tomlPath)
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	var inst *providercfg.InstanceConfig
+	for i := range cfg.Instances {
+		if cfg.Instances[i].Name == "gw" {
+			inst = &cfg.Instances[i]
+			break
+		}
+	}
+	if inst == nil {
+		t.Fatal("'gw' not found after Edit")
+	}
+	if inst.APIStyle != "chat-completions" {
+		t.Errorf("APIStyle = %q, want chat-completions", inst.APIStyle)
+	}
+	if inst.BaseURL != "https://gw2.example.com/v1" {
+		t.Errorf("BaseURL = %q, want https://gw2.example.com/v1", inst.BaseURL)
+	}
+	if inst.Headers["X-Custom"] != "value" {
+		t.Errorf("Headers dropped by Edit: got %#v", inst.Headers)
+	}
+	if inst.Compat == nil || inst.Compat.ThinkingFormat != "zai" {
+		t.Errorf("Compat dropped by Edit: got %#v", inst.Compat)
+	}
+	mc, ok := inst.Models["glm-5"]
+	if !ok || mc.ContextWindow != 131072 {
+		t.Errorf("Models dropped by Edit: got %#v", inst.Models)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 6. Edit a missing instance → error
 // ─────────────────────────────────────────────────────────────────────────────
 

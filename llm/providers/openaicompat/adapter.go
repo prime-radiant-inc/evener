@@ -36,6 +36,13 @@ type Adapter struct {
 	// [instances.X.models] via NewForInstance.
 	Models   map[string]ModelCompat
 	Adaptive bool
+	// SuppressCatalogDefaults skips the embedded-catalog fallback fill
+	// (fillFromCatalog) for models undeclared in Models. Set by providers
+	// whose bare model ids are locally-defined and unrelated to any
+	// upstream catalog entry of the same name (e.g. ollama) — without this,
+	// a local model that happens to share a name with an upstream catalog
+	// entry would silently inherit that entry's defaults (e.g. max_tokens).
+	SuppressCatalogDefaults bool
 }
 
 // OpenAICompatInstanceParams holds the configuration for a single openai-compatible adapter instance.
@@ -57,20 +64,24 @@ type OpenAICompatInstanceParams struct {
 	// User-Agent). User Headers override these but do not erase them: a default
 	// survives when the user configures no header of the same name.
 	ProviderHeaders map[string]string
+	// SuppressCatalogDefaults is passed through to the constructed Adapter;
+	// see Adapter.SuppressCatalogDefaults.
+	SuppressCatalogDefaults bool
 }
 
 // NewForInstance constructs an Adapter from explicit parameters.
 func NewForInstance(params OpenAICompatInstanceParams) *Adapter {
 	quirks := ApplyCompatConfig(params.Quirks, params.Compat)
 	return &Adapter{
-		name:           params.Name,
-		APIKey:         params.APIKey,
-		BaseURL:        strings.TrimRight(params.BaseURL, "/"),
-		Client:         &http.Client{Timeout: 0},
-		Quirks:         quirks,
-		Models:         resolveModelCompat(quirks, params.Models),
-		Adaptive:       params.Adaptive,
-		DefaultHeaders: llm.MergeHeaders(params.ProviderHeaders, params.Headers),
+		name:                    params.Name,
+		APIKey:                  params.APIKey,
+		BaseURL:                 strings.TrimRight(params.BaseURL, "/"),
+		Client:                  &http.Client{Timeout: 0},
+		Quirks:                  quirks,
+		Models:                  resolveModelCompat(quirks, params.Models),
+		Adaptive:                params.Adaptive,
+		DefaultHeaders:          llm.MergeHeaders(params.ProviderHeaders, params.Headers),
+		SuppressCatalogDefaults: params.SuppressCatalogDefaults,
 	}
 }
 

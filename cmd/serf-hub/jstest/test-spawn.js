@@ -393,13 +393,18 @@ effortDom.window.SerfAppwire = {
 };
 // The effort chip reads per-model levels from the enriched REST /api/models
 // response (the appwire model list carries only provider/model).
+const effortModelsFixture = [
+  { provider: "anthropic", model: "claude-opus-4-6", reasoning_effort_levels: ["low", "medium", "high", "max"] },
+  // Known-empty: the hub explicitly reports this model as non-reasoning.
+  { provider: "openai", model: "gpt-5-flash", supports_reasoning: false, reasoning_effort_levels: [] },
+  // Missing/unknown: the hub has no effort-level data for this model at all.
+  { provider: "openai", model: "gpt-4-legacy" },
+];
 effortDom.window.fetch = (url) => {
   if (String(url).indexOf("/api/models") === 0) {
     return Promise.resolve({
       ok: true,
-      json: () => Promise.resolve([
-        { provider: "anthropic", model: "claude-opus-4-6", reasoning_effort_levels: ["low", "medium", "high", "max"] },
-      ]),
+      json: () => Promise.resolve(effortModelsFixture),
     });
   }
   return Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
@@ -420,6 +425,94 @@ assert(effortDom.window.document.querySelector('input[name="reasoning_effort"]')
   "selecting an effort level should set the hidden reasoning_effort input");
 assert(effortDom.window.document.querySelector("[data-chip-value-reasoning_effort]").textContent === "max",
   "selecting an effort level should update the chip display");
+
+// Known-empty: the hub reports supports_reasoning: false for this model, so
+// the picker should show no effort choices rather than falling back to the
+// generic default set.
+const noReasonDom = new JSDOM(`<!DOCTYPE html><html><body>
+  <form data-spawn-form>
+    <button class="btn btn-chip" type="button" data-chip="harness"><span class="chip-value" data-chip-value-harness>serf</span></button>
+    <button class="btn btn-chip" type="button" data-chip="model"><span class="chip-value" data-chip-value-model>gpt-5-flash</span></button>
+    <button class="btn btn-chip" type="button" data-chip="reasoning_effort"><span class="chip-value" data-chip-value-reasoning_effort>(default)</span></button>
+    <textarea name="prompt"></textarea>
+    <input type="hidden" name="harness" value="serf">
+    <input type="hidden" data-harness-option value="serf" data-label="serf">
+    <input type="hidden" name="model" value="openai/gpt-5-flash">
+    <input type="hidden" name="reasoning_effort" value="">
+    <input type="hidden" name="working_dir" value="/tmp/effort">
+    <input type="hidden" name="branch" value="">
+    <input type="hidden" name="access_mode" value="full">
+    <input type="hidden" name="agent" value="default">
+    <button class="btn btn-primary spawn-btn" type="submit">spawn</button>
+  </form>
+</body></html>`, {
+  runScripts: "outside-only",
+  pretendToBeVisual: true,
+  url: "http://127.0.0.1:9180/new",
+});
+noReasonDom.window.SerfAppwire = {
+  listModels() {
+    return { then(resolve) { resolve([{ provider: "openai", model: "gpt-5-flash" }]); return { catch() {} }; } };
+  },
+};
+noReasonDom.window.fetch = (url) => {
+  if (String(url).indexOf("/api/models") === 0) {
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(effortModelsFixture) });
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
+};
+noReasonDom.window.eval(dirPickerSrc);
+noReasonDom.window.eval(spawnSrc);
+noReasonDom.window.document.dispatchEvent(new noReasonDom.window.Event("DOMContentLoaded", { bubbles: true }));
+noReasonDom.window.document.querySelector('button[data-chip="reasoning_effort"]').click();
+await new Promise((r) => setTimeout(r, 0));
+const noReasonRows = Array.from(noReasonDom.window.document.querySelectorAll(".chip-picker .chip-picker-option")).map(el => el.textContent);
+assert(noReasonRows.length === 1 && /does not support reasoning effort/.test(noReasonRows[0]),
+  "a model reported supports_reasoning:false should show a no-effort note, not level choices, got " + JSON.stringify(noReasonRows));
+
+// Missing/unknown: the hub has no reasoning_effort_levels or supports_reasoning
+// data for this model at all — this stays the existing default-fallback UX
+// (distinct from the known-empty case above).
+const missingLevelsDom = new JSDOM(`<!DOCTYPE html><html><body>
+  <form data-spawn-form>
+    <button class="btn btn-chip" type="button" data-chip="harness"><span class="chip-value" data-chip-value-harness>serf</span></button>
+    <button class="btn btn-chip" type="button" data-chip="model"><span class="chip-value" data-chip-value-model>gpt-4-legacy</span></button>
+    <button class="btn btn-chip" type="button" data-chip="reasoning_effort"><span class="chip-value" data-chip-value-reasoning_effort>(default)</span></button>
+    <textarea name="prompt"></textarea>
+    <input type="hidden" name="harness" value="serf">
+    <input type="hidden" data-harness-option value="serf" data-label="serf">
+    <input type="hidden" name="model" value="openai/gpt-4-legacy">
+    <input type="hidden" name="reasoning_effort" value="">
+    <input type="hidden" name="working_dir" value="/tmp/effort">
+    <input type="hidden" name="branch" value="">
+    <input type="hidden" name="access_mode" value="full">
+    <input type="hidden" name="agent" value="default">
+    <button class="btn btn-primary spawn-btn" type="submit">spawn</button>
+  </form>
+</body></html>`, {
+  runScripts: "outside-only",
+  pretendToBeVisual: true,
+  url: "http://127.0.0.1:9180/new",
+});
+missingLevelsDom.window.SerfAppwire = {
+  listModels() {
+    return { then(resolve) { resolve([{ provider: "openai", model: "gpt-4-legacy" }]); return { catch() {} }; } };
+  },
+};
+missingLevelsDom.window.fetch = (url) => {
+  if (String(url).indexOf("/api/models") === 0) {
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(effortModelsFixture) });
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
+};
+missingLevelsDom.window.eval(dirPickerSrc);
+missingLevelsDom.window.eval(spawnSrc);
+missingLevelsDom.window.document.dispatchEvent(new missingLevelsDom.window.Event("DOMContentLoaded", { bubbles: true }));
+missingLevelsDom.window.document.querySelector('button[data-chip="reasoning_effort"]').click();
+await new Promise((r) => setTimeout(r, 0));
+const missingLevelsOptions = Array.from(missingLevelsDom.window.document.querySelectorAll(".chip-picker .chip-picker-option")).map(el => el.textContent);
+assert(missingLevelsOptions.join(",") === "(default),minimal,low,medium,high,none",
+  "a model with no reasoning data at all should keep the default-fallback effort set, got " + JSON.stringify(missingLevelsOptions));
 
 // Non-serf harnesses (codex) ignore reasoning effort: the chip should say so
 // rather than offer levels that silently no-op.
