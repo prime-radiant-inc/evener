@@ -138,7 +138,12 @@
     ],
     "supports_adaptive_thinking": false,
     "supports_effort_parameter": false,
-    "supports_web_search": false
+    "supports_web_search": false,
+    "_note": "MiniMax M2.7 stock model. Materialized 2026-07-02 when the LiteLLM refresh dropped the upstream entry (real, still-served model): context/capabilities restored from the pre-refresh snapshot.",
+    "provider": "minimax",
+    "context_window": 204800,
+    "supports_reasoning": true,
+    "supports_tools": true
   },
   "openrouter/minimax/minimax-m2": {
     "reasoning_effort_levels": [
@@ -165,5 +170,12 @@
     ],
     "supports_adaptive_thinking": false,
     "supports_effort_parameter": false
+  },
+  "openrouter/anthropic/claude-3-haiku-20240307": {
+    "_note": "Still served by OpenRouter; the 2026-07-02 LiteLLM refresh dropped the dated entry. Materialized from the pre-refresh snapshot (also a profile-resolution test fixture).",
+    "provider": "openrouter",
+    "context_window": 200000,
+    "max_output_tokens": 4096,
+    "supports_tools": true
   }
 }

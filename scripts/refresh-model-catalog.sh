@@ -106,7 +106,19 @@ if window_conflicts:
     print("DRIFT: context_window disagreements (override wins at load; verify it should):")
     for line in window_conflicts:
         print(f"  {line}")
-if not materialized and not window_conflicts:
+# An overlay-only override (no context_window) patches an EXISTING upstream
+# entry; if upstream drops that entry the override dangles and the model
+# silently VANISHES from the catalog (bit us 2026-07-02: upstream removed
+# minimax/minimax-m2.7 and the model — plus its tests — disappeared).
+dangling = sorted(k for k, v in overrides.items()
+                  if "context_window" not in v and k not in new_keys)
+if dangling:
+    print("DRIFT: upstream DROPPED entries these overlay-only overrides patch —")
+    print("       the model VANISHES from the catalog; materialize the override")
+    print("       (add context_window etc.) or delete it:")
+    for k in dangling:
+        print(f"  {k}")
+if not materialized and not window_conflicts and not dangling:
     print("overrides drift audit: clean")
 PYEOF
 
