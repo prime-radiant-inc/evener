@@ -300,3 +300,63 @@ func TestSnapshotWatchSendFrameAddsSelfInfluenceNotice(t *testing.T) {
 		t.Fatalf("non-self-influenced frame missing the normal body:\n%s", plain.frame)
 	}
 }
+
+// TestRecordWatchSendRunawayFuseSeesCoalescedDepth: coalescing unions the
+// superseded pending's provenance into the survivor, so the runaway fuse must
+// run against the UNIONED ancestry, not the latest trigger's own stamp — two
+// below-threshold sends for the same key whose delivered same-watch priors are
+// disjoint can cross the threshold only in union.
+func TestRecordWatchSendRunawayFuseSeesCoalescedDepth(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
+	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}, Send: &watchSendArgs{To: "dlg_obs"}})
+	cfg := onlyWatchConfigForTest(t, jm)
+
+	// Half the threshold of delivered priors on each branch, disjoint IDs.
+	half := runawaySelfInfluenceDepth / 2
+	branch := func(prefix string) *provenance.Causal {
+		p := &provenance.Causal{WatchKeys: []provenance.WatchKey{{WatchID: cfg.watchID, WatchGeneration: cfg.generation}}}
+		jm.mu.Lock()
+		for i := 0; i < half; i++ {
+			id := prefix + string(rune('0'+i))
+			p.Chain = append(p.Chain, provenance.Entry{Kind: "watch", WatchID: cfg.watchID, WatchGeneration: cfg.generation, DeliveryID: id})
+			jm.deliveredWatchSendIDs[id] = struct{}{}
+		}
+		jm.mu.Unlock()
+		return p
+	}
+
+	build := func(p *provenance.Causal) watchSendDelivery {
+		jm.mu.Lock()
+		d := jm.watchSendSnapshot(cfg, "caller", "test", events.SessionEvent{SessionID: jm.sessionID, Provenance: p})
+		c := jm.classifySelfInfluenceLocked(cfg, p)
+		jm.mu.Unlock()
+		return d.withSelfInfluence(c)
+	}
+
+	// First send: depth = half, persists.
+	_, _, ok, err := jm.recordWatchSend(build(branch("wa_")))
+	if err != nil || !ok {
+		t.Fatalf("first send should persist: ok=%v err=%v", ok, err)
+	}
+
+	// Second send for the same key, disjoint priors: its own depth is also
+	// half, but the coalesced union reaches the threshold — dropped as runaway.
+	_, _, ok, err = jm.recordWatchSend(build(branch("wb_")))
+	if err != nil {
+		t.Fatalf("coalesced runaway drop should not error: %v", err)
+	}
+	if ok {
+		t.Fatal("coalesced union at runaway depth must be dropped (ok=false)")
+	}
+	var droppedReason string
+	for _, event := range loadJobStoreEvents(t, jm) {
+		if event.Kind == jobstore.EventWatchSendDropped && event.WatchSend != nil {
+			droppedReason = event.WatchSend.DiagnosticReason
+		}
+	}
+	if droppedReason != "runaway" {
+		t.Fatalf("dropped reason = %q, want runaway", droppedReason)
+	}
+}

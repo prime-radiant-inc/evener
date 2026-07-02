@@ -2955,6 +2955,20 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 		jm.mintWatchSendReadGrant(d.cfg, target, d.watchedIdentity)
 	}
 	state = jm.watchSendState(d, target)
+	// Coalescing unions the superseded pending's provenance into the survivor
+	// (recordWatchSendPending), so the effective self-influence ancestry of the
+	// frame the sidecar will see is the UNION — two below-threshold branches
+	// with disjoint delivered priors can cross the runaway threshold only in
+	// union. Raise the fuse depth to the union depth before persisting/fusing.
+	jm.mu.Lock()
+	if existing := d.cfg.pending[state.Key]; existing != nil && state.UpdateSeq > existing.UpdateSeq {
+		union := provenance.Union(existing.Provenance, state.Provenance)
+		if ud := provenance.SelfInfluenceDepth(union, d.cfg.watchID, "", jm.watchSendDeliveredLocked); ud > d.fuseDepth {
+			d.fuseDepth = ud
+			state.SelfInfluenceDepth = ud
+		}
+	}
+	jm.mu.Unlock()
 	persisted, perr := jm.persistPendingWatchSend(state, d)
 	if perr != nil {
 		if d.allowAfterTerminalExpiry && !persisted {
