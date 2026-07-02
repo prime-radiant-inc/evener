@@ -131,6 +131,25 @@ func TestWithLiveModelInfo_DoesNotClobberInstanceModelConfig(t *testing.T) {
 	}
 }
 
+// A model explicitly declared non-reasoning (reasoning = false) must stay
+// non-reasoning even after live /models enrichment claims otherwise — the
+// providers.toml declaration is authoritative user intent, not the live
+// catalog (PRI roborev finding: without this guard live info could re-enable
+// reasoning_effort on a model that 400s on it).
+func TestWithLiveModelInfo_DoesNotReenableReasoningOffModel(t *testing.T) {
+	p := newOpenAICompatProfile("openai-compatible", "tiny-chat", 0, lunarouteModels())
+	live := p.WithLiveModelInfo(llm.ModelInfo{
+		SupportsReasoning:     true,
+		ReasoningEffortLevels: []string{"low", "high"},
+	})
+	if live.SupportsReasoning() {
+		t.Error("SupportsReasoning = true, want false (reasoning=false in config beats live info)")
+	}
+	if got := live.ReasoningEffortLevels(); len(got) != 0 {
+		t.Errorf("ReasoningEffortLevels = %v, want empty (reasoning=false in config beats live info)", got)
+	}
+}
+
 func TestResolveProfileFromConfig_PassesInstanceModels(t *testing.T) {
 	cfg := providercfg.Config{
 		Default: "lunaroute",

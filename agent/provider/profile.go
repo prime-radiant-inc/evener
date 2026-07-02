@@ -429,7 +429,14 @@ func (p *Profile) WithLiveModelInfo(info llm.ModelInfo) *Profile {
 	// /models enrichment for the fields they set.
 	instEntry, hasInstEntry := p.instModels[p.model]
 	configuredWindow := hasInstEntry && instEntry.ContextWindow > 0
-	configuredLevels := hasInstEntry && len(instEntry.ThinkingLevels) > 0
+	// An explicit reasoning=false in providers.toml is authoritative user
+	// intent and must survive live /models enrichment: a non-reasoning model
+	// declares no ThinkingLevels (there's nothing to configure), so treat
+	// reasoningOff as "levels are configured" too — otherwise live
+	// SupportsReasoning/ReasoningEffortLevels would re-enable reasoning on a
+	// model the user explicitly turned off.
+	reasoningOff := hasInstEntry && instEntry.Reasoning != nil && !*instEntry.Reasoning
+	configuredLevels := hasInstEntry && (len(instEntry.ThinkingLevels) > 0 || reasoningOff)
 	if info.ContextWindow > 0 && !configuredWindow {
 		clone.contextWindow = info.ContextWindow
 	}
@@ -445,7 +452,7 @@ func (p *Profile) WithLiveModelInfo(info llm.ModelInfo) *Profile {
 		}
 		clone.toolDefs = defs
 	}
-	if info.SupportsReasoning {
+	if info.SupportsReasoning && !reasoningOff {
 		clone.reasoning = true
 	}
 	if info.SupportsWebSearch != nil {
