@@ -154,16 +154,25 @@ func TestDisposeUnchangedLane_RemovedAndMarked(t *testing.T) {
 
 // TestDisposeChangedLane_UnlockedKept: a lane with commits beyond base is
 // unlocked, kept, and left resumable (descriptor untouched, no disposed mark);
-// the close output lists it.
+// the close output lists it, with the real commits-ahead count (not a
+// line-count over `rev-list --count`'s single-line integer output, which
+// always yields 1 for any positive count).
 func TestDisposeChangedLane_UnlockedKept(t *testing.T) {
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
-	// Add a commit in the lane so it is CHANGED.
+	// Add TWO commits in the lane so it is CHANGED, and so the ahead count is
+	// distinguishable from the line-count-based bug (which reports 1 for any
+	// positive count of commits).
 	if err := os.WriteFile(filepath.Join(lanePath, "work.txt"), []byte("progress\n"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	wtGit(t, lanePath, "add", "work.txt")
-	wtGit(t, lanePath, "commit", "-m", "lane work")
+	wtGit(t, lanePath, "commit", "-m", "lane work 1")
+	if err := os.WriteFile(filepath.Join(lanePath, "work2.txt"), []byte("progress2\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	wtGit(t, lanePath, "add", "work2.txt")
+	wtGit(t, lanePath, "commit", "-m", "lane work 2")
 
 	r.s.disposeDelegateLanesAtClose()
 
@@ -187,8 +196,12 @@ func TestDisposeChangedLane_UnlockedKept(t *testing.T) {
 			t.Error("changed lane wrongly marked disposed")
 		}
 	}
-	if !anyContainsAll(warningMessages(r.s), delegateID, "kept") {
+	msgs := warningMessages(r.s)
+	if !anyContainsAll(msgs, delegateID, "kept") {
 		t.Error("close output did not list the kept changed lane")
+	}
+	if !anyContainsAll(msgs, "2 ahead") {
+		t.Errorf("close output did not report the real commits-ahead count (want 2 ahead): %v", msgs)
 	}
 }
 

@@ -157,7 +157,9 @@ func (s *Session) disposeOneDelegateLane(local *execenv.LocalExecutionEnvironmen
 		}
 		ahead := 0
 		if aheadOut, aErr := run("-C", lanePath, "rev-list", "--count", sc.BaseSHA+"..HEAD"); aErr == nil {
-			ahead = countLines(aheadOut)
+			if n, convErr := strconv.Atoi(strings.TrimSpace(aheadOut)); convErr == nil {
+				ahead = n
+			}
 		}
 		return fmt.Sprintf("%s at %s (branch %s, %d ahead, dirty=%t)", lane.delegateID, lanePath, lane.delegateID, ahead, dirty), true
 	}
@@ -226,18 +228,6 @@ func (s *Session) unlockLaneIfOwn(run worktree.GitRunner, ev worktree.LockEvent,
 	default:
 		return false
 	}
-}
-
-// countLines counts the non-empty lines of git output (used for the
-// commits-ahead count in the close-time kept-lane listing).
-func countLines(out string) int {
-	n := 0
-	for _, line := range strings.Split(out, "\n") {
-		if strings.TrimSpace(line) != "" {
-			n++
-		}
-	}
-	return n
 }
 
 // unlockOwnManagedWorktreeAtClose unlocks the session's OWN occupied managed
