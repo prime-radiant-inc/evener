@@ -44,6 +44,28 @@ type WorktreeResult struct {
 	MainRoot string
 }
 
+// WorktreeSwitchResult is what a successful switch returns (spec §4 switch
+// by-name step 6 / by-path step 3): the worktree's absolute path and branch,
+// and whether entering it was a no-op because the session already occupied it
+// (spec §4 switch by-name step 1).
+type WorktreeSwitchResult struct {
+	Path   string
+	Branch string
+	NoOp   bool
+}
+
+// WorktreeExitResult is what a successful exit returns (spec §4 exit step 6):
+// the restored root and the path of the worktree just left. Warning is set
+// only when the restore landed the session in a managed worktree that turned
+// out to be locked by a foreign owner — exit warns and co-occupies rather
+// than refusing, since a restore has to land somewhere (spec §4 exit step 4;
+// §5 "Restores follow the same rule").
+type WorktreeExitResult struct {
+	RestoredRoot string
+	LeftPath     string
+	Warning      string
+}
+
 // worktreeGuard is the toolDeps facade the manage_worktree handler reaches
 // session state through (spec §2 registration; §7 method list), mirroring
 // taskGuard/goalGuard. Its members are closures over the owning Session so the
@@ -69,6 +91,15 @@ type worktreeGuard struct {
 	liveWorkUnder func(path string) []string
 	// create runs the create operation (spec §3) and returns its result.
 	create func(ctx context.Context, name, baseRef string) (WorktreeResult, error)
+	// switchByName runs the switch-by-name operation (spec §4 switch, by name).
+	switchByName func(ctx context.Context, name string) (WorktreeSwitchResult, error)
+	// switchByPath runs the switch-by-path operation (spec §4 switch, by path),
+	// including the managed-directory reroute to switchByName's choreography.
+	switchByPath func(ctx context.Context, path string) (WorktreeSwitchResult, error)
+	// exitOp runs the exit operation (spec §4 exit): the operation-level
+	// choreography (leave-unlock, restore, idempotent restore-relock) layered
+	// on top of the exitWorktree env-restore primitive above.
+	exitOp func(ctx context.Context) (WorktreeExitResult, error)
 }
 
 // registerWorktreeTool registers the manage_worktree lifecycle tool (spec §2)
@@ -107,7 +138,56 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 						"Created and entered worktree %q at %s (branch %s, base %s). Subsequent tools operate inside it; use manage_worktree exit to return to the main checkout.",
 						name, res.Path, res.Branch, shortSHA(res.BaseSHA)),
 				}, nil
-			case "list", "switch", "exit", "remove", "prune":
+			case "switch":
+				name, hasName := args["name"].(string)
+				path, hasPath := args["path"].(string)
+				nameSet := hasName && strings.TrimSpace(name) != ""
+				pathSet := hasPath && strings.TrimSpace(path) != ""
+				if nameSet == pathSet {
+					return nil, errors.New("manage_worktree switch: exactly one of name or path is required")
+				}
+				var (
+					res WorktreeSwitchResult
+					err error
+				)
+				if nameSet {
+					res, err = deps.worktreeGuard.switchByName(ctx, name)
+				} else {
+					res, err = deps.worktreeGuard.switchByPath(ctx, path)
+				}
+				if err != nil {
+					return nil, err
+				}
+				status, msg := "switched", fmt.Sprintf(
+					"Entered worktree at %s (branch %s). Subsequent tools operate inside it; use manage_worktree exit to return.",
+					res.Path, res.Branch)
+				if res.NoOp {
+					status, msg = "unchanged", fmt.Sprintf("Already in worktree at %s (branch %s); no-op.", res.Path, res.Branch)
+				}
+				return map[string]any{
+					"status":  status,
+					"path":    res.Path,
+					"branch":  res.Branch,
+					"message": msg,
+				}, nil
+			case "exit":
+				res, err := deps.worktreeGuard.exitOp(ctx)
+				if err != nil {
+					return nil, err
+				}
+				msg := fmt.Sprintf("Exited worktree %s; restored to %s.", res.LeftPath, res.RestoredRoot)
+				out := map[string]any{
+					"status":        "exited",
+					"restored_root": res.RestoredRoot,
+					"left_path":     res.LeftPath,
+				}
+				if res.Warning != "" {
+					msg += " Warning: " + res.Warning
+					out["warning"] = res.Warning
+				}
+				out["message"] = msg
+				return out, nil
+			case "list", "remove", "prune":
 				return nil, fmt.Errorf("manage_worktree %s: not yet implemented", operation)
 			default:
 				return nil, fmt.Errorf("manage_worktree: unknown operation %q", operation)
@@ -195,6 +275,13 @@ func (s *Session) worktreeStateSnapshot() worktreeState {
 	if local != nil {
 		st.mainRepoRoot = execenv.ResolveMainRepoRoot(local, local.WorkingDirectory())
 		if st.mainRepoRoot != "" {
+			// Canonicalize before deriving worktreeRoot/projectid, matching
+			// worktreeCreate's canonicalMain — a symlinked state home or macOS
+			// /var → /private/var must not split one repo's managed worktrees
+			// across two different worktreeRoot/projectid values.
+			if resolved, evErr := filepath.EvalSymlinks(st.mainRepoRoot); evErr == nil {
+				st.mainRepoRoot = resolved
+			}
 			st.worktreeRoot = s.worktreeRootFor(local, stateDir, st.mainRepoRoot)
 		}
 	}
@@ -393,7 +480,7 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 
 	// Step 7: creating a new worktree from inside a managed one is a LEAVE of
 	// the old one — unlock it via Decide (spec §3 step 7; §5 EvLeave).
-	if err := s.leaveOldWorktreeForCreate(run); err != nil {
+	if err := s.leaveCurrentWorktree(run); err != nil {
 		return WorktreeResult{}, err
 	}
 
@@ -435,11 +522,14 @@ func (s *Session) ensureWorktreeGitVersion(run worktree.GitRunner) error {
 	return nil
 }
 
-// leaveOldWorktreeForCreate unlocks the managed worktree the session currently
-// occupies, if any, routing the decision through Decide (spec §3 step 7 / §5
-// EvLeave). It runs before the env swap, while s.worktreeCurrentPath still
-// names the OLD worktree.
-func (s *Session) leaveOldWorktreeForCreate(run worktree.GitRunner) error {
+// leaveCurrentWorktree unlocks the managed worktree the session currently
+// occupies, if any, routing the decision through Decide (spec §5 table row
+// "leave old worktree (switch-away, create-away, exit, clean close)" —
+// EvLeave). Every caller runs it before swapping s.env away, while
+// s.worktreeCurrentPath still names the worktree being left: create's step 7
+// (create-away), switch's step 3 (switch-away, after locking the new target
+// first), and exit's step 2.
+func (s *Session) leaveCurrentWorktree(run worktree.GitRunner) error {
 	s.mu.Lock()
 	oldPath := s.worktreeCurrentPath
 	s.mu.Unlock()
@@ -449,7 +539,7 @@ func (s *Session) leaveOldWorktreeForCreate(run worktree.GitRunner) error {
 
 	locked, reason, err := lockStateOf(run, oldPath)
 	if err != nil {
-		return fmt.Errorf("manage_worktree create: inspecting the current worktree lock: %w", err)
+		return fmt.Errorf("manage_worktree: inspecting the current worktree lock: %w", err)
 	}
 	st := worktree.Unlocked
 	if locked {
@@ -457,7 +547,7 @@ func (s *Session) leaveOldWorktreeForCreate(run worktree.GitRunner) error {
 	}
 	if worktree.Decide(worktree.EvLeave, st) == worktree.ActUnlock {
 		if _, err := run("worktree", "unlock", oldPath); err != nil {
-			return fmt.Errorf("manage_worktree create: unlocking the current worktree: %w", err)
+			return fmt.Errorf("manage_worktree: unlocking the current worktree: %w", err)
 		}
 	}
 	return nil
@@ -479,6 +569,273 @@ func lockStateOf(run worktree.GitRunner, path string) (locked bool, reason strin
 		}
 	}
 	return false, "", nil
+}
+
+// worktreeControlRun builds a GitRunner over the control env rooted at
+// mainRepoRoot (spec §2 "Git control environment"), for lifecycle git calls
+// that must run outside the (possibly worktree-rooted) user-facing env.
+func (s *Session) worktreeControlRun(ctx context.Context, mainRepoRoot string) (worktree.GitRunner, error) {
+	controlEnv, err := s.worktreeControlEnv(mainRepoRoot)
+	if err != nil {
+		return nil, err
+	}
+	return gitRunner(ctx, controlEnv), nil
+}
+
+// isUnderManagedDir reports whether canonicalPath lives strictly under the
+// managed worktree directory projectDir (spec §4 switch by-path step 2; spec
+// §5 `list` step 2's "not bare HasPrefix" rule — a bare string-prefix compare
+// collides when one projectid string prefixes another). projectDir is
+// canonicalized here too (spec §5: "canonicalize both sides"); a projectDir
+// that does not exist yet canonicalizes to itself, under which nothing can
+// resolve, so isUnderManagedDir correctly reports false.
+func isUnderManagedDir(canonicalPath, projectDir string) bool {
+	canonicalProjectDir := filepath.Clean(projectDir)
+	if resolved, err := filepath.EvalSymlinks(projectDir); err == nil {
+		canonicalProjectDir = filepath.Clean(resolved)
+	}
+	rel, err := filepath.Rel(canonicalProjectDir, canonicalPath)
+	if err != nil {
+		return false
+	}
+	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// worktreeEnterManaged performs the by-name switch choreography (spec §4
+// switch by-name steps 1-6) against an already-resolved managed worktree
+// path. switchByPath's managed-directory reroute (step 2) shares it verbatim:
+// once a by-path argument resolves inside the managed directory, entering it
+// is indistinguishable from a by-name switch.
+func (s *Session) worktreeEnterManaged(st worktreeState, run worktree.GitRunner, path string) (WorktreeSwitchResult, error) {
+	target := filepath.Clean(path)
+
+	// Step 1: switch-to-current is a no-op — the lock stays exactly as it is.
+	// Without this, the ordinary lock-target/unlock-old choreography below
+	// would unlock the session's own active worktree out from under it (spec
+	// §4 switch step 1).
+	if st.currentWorktree != "" && filepath.Clean(st.currentWorktree) == target {
+		return WorktreeSwitchResult{Path: target, Branch: branchAtRoot(run, target), NoOp: true}, nil
+	}
+
+	// Step 2: the target must exist and be a real worktree (.git pointer file).
+	if _, err := os.Stat(filepath.Join(target, ".git")); err != nil {
+		return WorktreeSwitchResult{}, fmt.Errorf("manage_worktree switch: no worktree at %s", target)
+	}
+	locked, reason, err := lockStateOf(run, target)
+	if err != nil {
+		return WorktreeSwitchResult{}, fmt.Errorf("manage_worktree switch: inspecting the target lock: %w", err)
+	}
+	targetState := worktree.Unlocked
+	if locked {
+		targetState = worktree.ClassifyReason(reason, s.id, "")
+	}
+
+	// Step 3: lock the target FIRST, then unlock the current worktree. Order
+	// is load-bearing (spec §4 switch step 3): a lost race fails right here,
+	// with nothing yet changed, instead of leaving the session unlocked out of
+	// its old worktree.
+	switch worktree.Decide(worktree.EvEnter, targetState) {
+	case worktree.ActLock:
+		marker := worktree.FormatSessionMarker(s.id)
+		if _, err := run("worktree", "lock", "--reason", marker, target); err != nil {
+			return WorktreeSwitchResult{}, fmt.Errorf("manage_worktree switch: locking the target: %w", err)
+		}
+	case worktree.ActAdopt:
+		// Already carries our own marker (crash-resume case); nothing to do.
+	default:
+		return WorktreeSwitchResult{}, fmt.Errorf("manage_worktree switch: %s is locked (%s)", target, reason)
+	}
+	if err := s.leaveCurrentWorktree(run); err != nil {
+		return WorktreeSwitchResult{}, err
+	}
+
+	// Steps 4-5: swap the env directly to the target (no intermediate
+	// restore step) and refresh envInfo + the prompt cache.
+	s.enterWorktree(target)
+
+	// Step 6: report the path and branch.
+	return WorktreeSwitchResult{Path: target, Branch: branchAtRoot(run, target)}, nil
+}
+
+// worktreeSwitchByName performs the switch-by-name operation (spec §4 switch,
+// "By name"): resolve the managed path for name and run the shared entry
+// choreography.
+func (s *Session) worktreeSwitchByName(ctx context.Context, name string) (WorktreeSwitchResult, error) {
+	if err := worktree.ValidateName(name); err != nil {
+		return WorktreeSwitchResult{}, fmt.Errorf("manage_worktree switch: %w", err)
+	}
+	st := s.worktreeStateSnapshot()
+	if st.env == nil {
+		return WorktreeSwitchResult{}, errors.New("manage_worktree requires a local execution environment")
+	}
+	if st.mainRepoRoot == "" {
+		return WorktreeSwitchResult{}, errors.New("manage_worktree switch: not in a git repository")
+	}
+	run, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+	if err != nil {
+		return WorktreeSwitchResult{}, err
+	}
+	path := filepath.Join(st.worktreeRoot, worktree.ProjectID(st.mainRepoRoot), filepath.FromSlash(name))
+	return s.worktreeEnterManaged(st, run, path)
+}
+
+// worktreeSwitchByPath performs the switch-by-path operation (spec §4 switch,
+// "By path"): canonicalize rawPath, require it to be registered to this
+// repository, reroute through the managed choreography if it resolves inside
+// the managed directory, and otherwise swap the env with no lock mutation at
+// all (serf does not manage locks on worktrees it did not create).
+func (s *Session) worktreeSwitchByPath(ctx context.Context, rawPath string) (WorktreeSwitchResult, error) {
+	st := s.worktreeStateSnapshot()
+	if st.env == nil {
+		return WorktreeSwitchResult{}, errors.New("manage_worktree requires a local execution environment")
+	}
+	if st.mainRepoRoot == "" {
+		return WorktreeSwitchResult{}, errors.New("manage_worktree switch: not in a git repository")
+	}
+
+	// Step 1: canonicalize the argument and require a match in `git worktree
+	// list --porcelain` — git's own registry is the validator.
+	canonicalArg, err := filepath.EvalSymlinks(rawPath)
+	if err != nil {
+		return WorktreeSwitchResult{}, fmt.Errorf("manage_worktree switch: path %q does not exist", rawPath)
+	}
+	canonicalArg = filepath.Clean(canonicalArg)
+
+	run, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+	if err != nil {
+		return WorktreeSwitchResult{}, err
+	}
+	out, err := run("worktree", "list", "--porcelain")
+	if err != nil {
+		return WorktreeSwitchResult{}, fmt.Errorf("manage_worktree switch: listing worktrees: %w", err)
+	}
+	var matchedPath, matchedBranch string
+	found := false
+	for _, e := range worktree.ParsePorcelain(out) {
+		cp, evErr := filepath.EvalSymlinks(e.Path)
+		if evErr != nil {
+			continue // this entry's directory is momentarily absent; not a match we can canonicalize
+		}
+		if filepath.Clean(cp) == canonicalArg {
+			matchedPath, matchedBranch, found = e.Path, strings.TrimPrefix(e.Branch, "refs/heads/"), true
+			break
+		}
+	}
+	if !found {
+		return WorktreeSwitchResult{}, fmt.Errorf("manage_worktree switch: %q is not a worktree registered to this repository", rawPath)
+	}
+
+	// Step 2: reroute through the by-name choreography when the target
+	// resolves inside the managed directory (full lock guard + choreography).
+	projectDir := filepath.Join(st.worktreeRoot, worktree.ProjectID(st.mainRepoRoot))
+	if isUnderManagedDir(canonicalArg, projectDir) {
+		return s.worktreeEnterManaged(st, run, matchedPath)
+	}
+
+	// Step 3: a genuinely non-managed registered worktree — same env swap, NO
+	// lock choreography on the target. If the session is leaving a managed
+	// worktree, it is still unlocked on the way out (spec §4 switch by-path
+	// step 3).
+	if st.currentWorktree != "" && filepath.Clean(st.currentWorktree) == filepath.Clean(matchedPath) {
+		return WorktreeSwitchResult{Path: matchedPath, Branch: matchedBranch, NoOp: true}, nil
+	}
+	if err := s.leaveCurrentWorktree(run); err != nil {
+		return WorktreeSwitchResult{}, err
+	}
+	s.enterWorktree(matchedPath)
+	return WorktreeSwitchResult{Path: matchedPath, Branch: matchedBranch}, nil
+}
+
+// relockRestoreTarget applies the idempotent EvRestoreLand lock rule to a
+// restore target that resolves inside the managed directory (spec §4 exit
+// step 4; §5 "Restores follow the same rule"): lock if unlocked, adopt our
+// own marker as a no-op, or warn and co-occupy on a foreign lock — a restore
+// can never be refused, since the session has to land somewhere. Returns a
+// non-empty warning string only for the co-occupy case.
+func (s *Session) relockRestoreTarget(run worktree.GitRunner, path string) (string, error) {
+	locked, reason, err := lockStateOf(run, path)
+	if err != nil {
+		return "", fmt.Errorf("manage_worktree exit: inspecting the restore target lock: %w", err)
+	}
+	st := worktree.Unlocked
+	if locked {
+		st = worktree.ClassifyReason(reason, s.id, "")
+	}
+	switch worktree.Decide(worktree.EvRestoreLand, st) {
+	case worktree.ActLock:
+		marker := worktree.FormatSessionMarker(s.id)
+		if _, err := run("worktree", "lock", "--reason", marker, path); err != nil {
+			return "", fmt.Errorf("manage_worktree exit: locking the restore target: %w", err)
+		}
+		return "", nil
+	case worktree.ActAdopt:
+		return "", nil
+	case worktree.ActWarnCoOccupy:
+		return fmt.Sprintf("restore target %s is locked by another owner (%s); continuing and co-occupying it", path, reason), nil
+	default:
+		return "", fmt.Errorf("manage_worktree exit: internal error: unexpected restore-relock action for %s", path)
+	}
+}
+
+// worktreeExit performs the exit operation (spec §4 "exit", all six steps).
+func (s *Session) worktreeExit(ctx context.Context) (WorktreeExitResult, error) {
+	st := s.worktreeStateSnapshot()
+
+	// Step 1: not in a worktree entered via this tool → clear, non-destructive
+	// error, no side effects.
+	if st.restoreEnv == nil {
+		return WorktreeExitResult{}, errors.New("manage_worktree exit: not in a worktree")
+	}
+	leftPath := st.currentWorktree
+
+	var run worktree.GitRunner
+	if st.mainRepoRoot != "" {
+		r, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+		if err != nil {
+			return WorktreeExitResult{}, err
+		}
+		run = r
+		// Step 2: unlock the worktree being left, if managed and locked with
+		// this session's own marker (same EvLeave rule as switch-away /
+		// create-away).
+		if err := s.leaveCurrentWorktree(run); err != nil {
+			return WorktreeExitResult{}, err
+		}
+	}
+
+	// Step 3: restore the saved env, clear it, recompute envInfo, refresh the
+	// prompt cache (spec §7 exitWorktree()).
+	restoredRoot, ok := s.exitWorktree()
+	if !ok {
+		return WorktreeExitResult{}, errors.New("manage_worktree exit: not in a worktree")
+	}
+	result := WorktreeExitResult{RestoredRoot: restoredRoot, LeftPath: leftPath}
+
+	// Step 4: if the restore root is itself a managed worktree (the session
+	// was launched inside one before entering others), apply the idempotent
+	// lock rule to it.
+	if run != nil {
+		canonicalRestored := filepath.Clean(restoredRoot)
+		if resolved, evErr := filepath.EvalSymlinks(restoredRoot); evErr == nil {
+			canonicalRestored = filepath.Clean(resolved)
+		}
+		projectDir := filepath.Join(st.worktreeRoot, worktree.ProjectID(st.mainRepoRoot))
+		if isUnderManagedDir(canonicalRestored, projectDir) {
+			warning, err := s.relockRestoreTarget(run, restoredRoot)
+			if err != nil {
+				return WorktreeExitResult{}, err
+			}
+			result.Warning = warning
+			// The session now occupies this managed worktree again; record it
+			// so a later create/switch/close leaves it correctly (spec §3
+			// step 7; §5 clean-close unlock).
+			s.mu.Lock()
+			s.worktreeCurrentPath = restoredRoot
+			s.mu.Unlock()
+		}
+	}
+
+	return result, nil
 }
 
 // resolveBaseFromActiveRoot resolves baseRef to an explicit commit SHA against
