@@ -93,7 +93,7 @@ func loadRepoLayer(cwd, stateRoot string) (*RepoStatus, Layer, []Diagnostic) {
 			Message: fmt.Sprintf("hash: %v", err),
 		}}
 	}
-	meta, _ := LoadMeta(filepath.Join(stateRoot, "projects", ProjectID(cwd), "meta.toml"))
+	meta, _ := LoadMeta(filepath.Join(identityProjectDir(stateRoot, cwd), "meta.toml"))
 	state := ComputeTrustState(hash, meta)
 
 	status := &RepoStatus{Path: repoPath, Hash: hash, Trust: state}
