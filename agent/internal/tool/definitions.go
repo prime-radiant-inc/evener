@@ -640,10 +640,12 @@ func DefManageWorktree() llm.ToolDefinition {
 		"This is not for ordinary branch creation or switching; use plain git commands for that. " +
 		"Operations: create (make a new worktree from `name` and optional `base_ref`, default the active HEAD, then enter it); " +
 		"list (show known worktrees); switch (enter an existing worktree by `name` or `path`, exactly one); " +
-		"exit (return to the main checkout); remove (delete a worktree by `name`, optionally `force` to remove one with " +
-		"uncommitted changes and `delete_branch` to also delete its branch); prune (remove worktrees that have no unmerged work — " +
-		"unchanged or already-merged lanes, including ones left behind by finished sessions — the one-call way to clean up). " +
-		"Subsequent tool calls after create/switch/exit operate inside the resulting checkout."
+		"exit (return to the main checkout); remove (delete a worktree by `name`; `delete_branch` also deletes its branch, " +
+		"`force` overrides provenance/merge gating, `force_dirty` overrides the refusal to discard uncommitted changes); " +
+		"prune (remove worktrees that have no unmerged work — unchanged or already-merged lanes, including ones left behind " +
+		"by finished sessions — the one-call way to clean up). " +
+		"Subsequent tool calls after create/switch/exit operate inside the resulting checkout. There is no merge operation: " +
+		"to land a lane's work, exit and merge its branch from the main checkout with plain git."
 	return llm.ToolDefinition{
 		Name:        "manage_worktree",
 		Description: desc,
@@ -670,7 +672,11 @@ func DefManageWorktree() llm.ToolDefinition {
 				},
 				"force": map[string]any{
 					"type":        "boolean",
-					"description": "For remove: remove a worktree even if it has uncommitted changes. Default false.",
+					"description": "For remove: override provenance and merge-safety gating (unmanaged sidecar, unmerged branch deletion). Does NOT discard uncommitted changes — use force_dirty for that. Default false.",
+				},
+				"force_dirty": map[string]any{
+					"type":        "boolean",
+					"description": "For remove: remove a worktree even if it has uncommitted changes (they are discarded). Separate from force so overriding a provenance/merge refusal cannot silently discard an edit. Default false.",
 				},
 				"delete_branch": map[string]any{
 					"type":        "boolean",

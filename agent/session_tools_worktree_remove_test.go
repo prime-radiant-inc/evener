@@ -76,7 +76,7 @@ func gitArgvRecordingShim(t *testing.T) (logPath string) {
 func TestWorktreeRemove_NotInGitRepo(t *testing.T) {
 	dir := t.TempDir() // not a git repo at all
 	s := newSession(t, withDir(dir))
-	_, err := s.worktreeRemove(context.Background(), "x", false, false)
+	_, err := s.worktreeRemove(context.Background(), "x", false, false, false)
 	if err == nil || !strings.Contains(err.Error(), "not in a git repository") {
 		t.Fatalf("remove outside a git repo: err = %v, want the not-in-a-git-repository error", err)
 	}
@@ -263,9 +263,9 @@ func TestWorktreeRemove_DirtyWithoutForceErrorsListsFilesEnvUnchanged(t *testing
 	}
 }
 
-// --- 3: force removes dirty ---
+// --- 3: force_dirty removes dirty (force alone does not — F3) ---
 
-func TestWorktreeRemove_ForceRemovesDirty(t *testing.T) {
+func TestWorktreeRemove_ForceDirtyRemovesDirty(t *testing.T) {
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -276,11 +276,11 @@ func TestWorktreeRemove_ForceRemovesDirty(t *testing.T) {
 		t.Fatalf("write dirty file: %v", err)
 	}
 
-	if _, err := r.removeOp(t, map[string]any{"name": "lane", "force": true}); err != nil {
-		t.Fatalf("force remove: %v", err)
+	if _, err := r.removeOp(t, map[string]any{"name": "lane", "force_dirty": true}); err != nil {
+		t.Fatalf("force_dirty remove: %v", err)
 	}
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
-		t.Errorf("worktree dir survived a forced remove: err=%v", statErr)
+		t.Errorf("worktree dir survived a force_dirty remove: err=%v", statErr)
 	}
 }
 
@@ -964,14 +964,20 @@ func TestWorktreeRemove_LiveWorkGuardRefusesViaStub(t *testing.T) {
 
 // --- 13: cross-creator sidecar refuses without force ---
 
-func TestWorktreeRemove_CrossCreatorSidecarRefusesWithoutForce(t *testing.T) {
+// TestWorktreeRemove_CrossCreatorUnlockedLaneProceeds covers the F1
+// relaxation: an UNLOCKED lane created by another session is routine cleanup —
+// the occupancy lock (not creator identity) is the safety mechanism, so remove
+// proceeds without force. (A foreign-LOCKED lane is still refused at step 3;
+// committed work is still protected by the merge gate; uncommitted work by
+// force_dirty.) This inverts the pre-F1 cross-creator refusal.
+func TestWorktreeRemove_CrossCreatorUnlockedLaneProceeds(t *testing.T) {
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "shared"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
-	if _, err := r.exitOp(t); err != nil {
+	if _, err := r.exitOp(t); err != nil { // exit unlocks the lane
 		t.Fatalf("exit: %v", err)
 	}
 
@@ -980,22 +986,43 @@ func TestWorktreeRemove_CrossCreatorSidecarRefusesWithoutForce(t *testing.T) {
 		t.Fatal("secondSession returned the same session id")
 	}
 
-	_, err = r2.removeOp(t, map[string]any{"name": "shared"})
-	if err == nil {
-		t.Fatal("expected a cross-creator remove without force to be refused")
-	}
-	if !strings.Contains(err.Error(), r.s.id) {
-		t.Errorf("error should name the creator session %q, got: %v", r.s.id, err)
-	}
-	if _, statErr := os.Stat(path); statErr != nil {
-		t.Errorf("worktree removed despite the cross-creator refusal: %v", statErr)
-	}
-
-	if _, err := r2.removeOp(t, map[string]any{"name": "shared", "force": true}); err != nil {
-		t.Fatalf("forced cross-creator remove: %v", err)
+	if _, err := r2.removeOp(t, map[string]any{"name": "shared"}); err != nil {
+		t.Fatalf("cross-creator remove of an unlocked lane should proceed without force, got: %v", err)
 	}
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
-		t.Errorf("worktree survived a forced cross-creator remove: err=%v", statErr)
+		t.Errorf("worktree survived the cross-creator remove: err=%v", statErr)
+	}
+}
+
+// TestWorktreeRemove_ForceDoesNotDiscardUncommitted covers the F3 fix: force
+// overrides provenance/merge gating but NOT uncommitted work; a dirty tree is
+// still refused (needs force_dirty), so forcing past a provenance refusal
+// cannot silently discard an edit. The live S5 eval caught exactly this loss.
+func TestWorktreeRemove_ForceDoesNotDiscardUncommitted(t *testing.T) {
+	r := newWorktreeRepo(t)
+	if _, err := r.create(t, map[string]any{"name": "dirtylane"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// dirty the lane's checkout (uncommitted edit)
+	if err := os.WriteFile(filepath.Join(r.s.currentEnv().WorkingDirectory(), "main.go"), []byte("package main // dirty\n"), 0o644); err != nil {
+		t.Fatalf("dirty write: %v", err)
+	}
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+
+	// force:true (no force_dirty) must still refuse and preserve the edit.
+	_, err := r.removeOp(t, map[string]any{"name": "dirtylane", "force": true})
+	if err == nil {
+		t.Fatal("force alone must not discard an uncommitted edit")
+	}
+	if !strings.Contains(err.Error(), "uncommitted changes") || !strings.Contains(err.Error(), "force_dirty") {
+		t.Errorf("dirty refusal should name uncommitted changes and force_dirty, got: %v", err)
+	}
+
+	// force_dirty:true removes it.
+	if _, err := r.removeOp(t, map[string]any{"name": "dirtylane", "force_dirty": true}); err != nil {
+		t.Fatalf("force_dirty remove should succeed: %v", err)
 	}
 }
 

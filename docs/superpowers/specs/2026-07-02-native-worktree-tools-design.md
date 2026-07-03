@@ -274,7 +274,7 @@ mirroring `task_list`'s `action` pattern. Args by operation:
 | `list` | none |
 | `switch` | `name` OR `path` (exactly one) |
 | `exit` | none |
-| `remove` | `name` (required), `force` (optional bool, default false), `delete_branch` (optional bool, default false) |
+| `remove` | `name` (required), `force` (optional bool — overrides provenance/merge gating), `force_dirty` (optional bool — overrides the uncommitted-work refusal), `delete_branch` (optional bool). All default false. |
 | `prune` | none |
 
 Because the tool is non-read-only, `execToolBatch` serializes it between any
@@ -653,15 +653,24 @@ a bug — report it.
    directory today and must gain a launch-workdir field for this guard. The
    guard is best-effort — a shell command that `cd`s elsewhere after launch is
    invisible to it.
-5. **Cross-session ownership guard:** if metadata records a different creator
-   session, refuse without `force` and say who created it. (Occupancy is the
-   lock's job — this guard is about provenance: don't casually delete work you
-   didn't create.)
-6. If `force` is false, preflight dirtiness before leaving the current worktree:
-   run `git -C <path> status --porcelain=v1 --untracked-files=all` through the
-   control env. If output is non-empty, error **listing the files at stake**
-   and leave `s.env` unchanged. This preserves the user's current context when
-   removal cannot proceed.
+5. **Provenance guard:** a lane with no metadata sidecar has unknown
+   provenance — refuse without `force`. The cross-session *creator* guard was
+   **removed in rev 10** (F1 ergonomics finding): it only ever fired for an
+   unlocked lane with a foreign creator (a foreign-locked lane is already
+   refused at step 3), and an unlocked lane has no live owner — the occupancy
+   lock is the real safety, committed work is protected by the merge gate
+   (step 9), and uncommitted work by the `force_dirty` gate (step 6). Live
+   testing showed the creator refusal was the dominant friction in routine
+   cross-session cleanup ("come back later and clean up" is always
+   cross-session) with little safety value.
+6. Preflight dirtiness, gated on **`force_dirty`** (not `force`): if
+   `force_dirty` is false, run `git -C <path> status --porcelain=v1
+   --untracked-files=all` through the control env. If output is non-empty,
+   error **listing the files at stake** and leave `s.env` unchanged. Gating
+   this on its own flag (rev 10, F3 ergonomics finding) means forcing past a
+   provenance or merge gate cannot collaterally discard an uncommitted edit
+   unwarned — live testing caught exactly that loss when one `force` cleared
+   both an ownership refusal and a dirty tree.
 7. If the session is currently in this worktree, unlock it and restore `s.env`
    to the pre-worktree env via `worktreeGuard`, then recompute `s.envInfo` +
    refresh the cached system prompt (§7). If there is no safe restore env (for
@@ -1074,8 +1083,9 @@ a **false positive** — discarded.
   error telling the caller to start a new delegate.
 - `remove` target resolves outside the managed worktree directory → error.
 - `exit` when not in a worktree → clear non-destructive error.
-- `remove` on a dirty worktree without `force` → error listing the dirty
-  files, without changing the session env.
+- `remove` on a dirty worktree without `force_dirty` → error listing the dirty
+  files, without changing the session env. `force` alone does NOT clear this
+  (rev 10, F3).
 - `remove` with `delete_branch` on an unmerged branch without `force` →
   worktree removed, branch deletion refused by **serf's merge-target gate**
   with the unmerged evidence (never `git branch -d`'s HEAD-relative check —
@@ -1084,8 +1094,10 @@ a **false positive** — discarded.
   preflight error naming the required version; no degraded mode.
 - `remove` when live children/delegates/shell jobs are rooted under the target
   worktree → error (live work guard).
-- `remove` of a worktree created by another session without `force` → error
-  naming the creator.
+- `remove` of an unlocked lane created by another session → **proceeds** (rev
+  10, F1: the creator guard was removed; the occupancy lock is the safety, and
+  a foreign-*locked* lane is still refused at step 3). A lane with no sidecar
+  at all still refuses without `force` (unmanaged provenance).
 - `remove` of the active worktree with no safe restore env → error.
 - `prune` → never errors on skips; reports per-entry skip reasons (locked +
   reason, dirty, unmerged, merge target unknown, adopted, checked out,

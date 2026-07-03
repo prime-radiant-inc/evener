@@ -492,10 +492,16 @@ func TestWorktreeErrors_RemoveLiveWorkGuard(t *testing.T) {
 	}
 }
 
-// --- Row 15: remove of a worktree created by another session without force
-// -> error naming the creator ---
+// --- Row 15 (F1 relaxation): remove of an UNLOCKED lane created by another
+// session is routine cleanup and no longer errors — the occupancy lock, not
+// creator identity, is the safety mechanism. The former cross-creator refusal
+// was the dominant real-world friction with little safety value (committed
+// work is still protected by the merge gate, uncommitted by force_dirty).
+// The positive path is covered by
+// TestWorktreeRemove_CrossCreatorUnlockedLaneProceeds; this asserts the §8
+// row's inversion — no error surfaces here. ---
 
-func TestWorktreeErrors_RemoveCrossCreatorNamesCreator(t *testing.T) {
+func TestWorktreeErrors_RemoveCrossCreatorUnlockedNoLongerErrors(t *testing.T) {
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "shared"})
 	if err != nil {
@@ -507,18 +513,11 @@ func TestWorktreeErrors_RemoveCrossCreatorNamesCreator(t *testing.T) {
 	}
 	r2 := r.secondSession(t)
 
-	_, err = r2.removeOp(t, map[string]any{"name": "shared"})
-	if err == nil {
-		t.Fatal("expected a cross-creator remove without force to error")
+	if _, err := r2.removeOp(t, map[string]any{"name": "shared"}); err != nil {
+		t.Fatalf("cross-creator remove of an unlocked lane must not error under F1, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "was created by a different session") {
-		t.Errorf("error = %q, want it to contain %q", err.Error(), "was created by a different session")
-	}
-	if !strings.Contains(err.Error(), r.s.id) {
-		t.Errorf("error = %q, want it to name the creator session %q", err.Error(), r.s.id)
-	}
-	if _, statErr := os.Stat(path); statErr != nil {
-		t.Errorf("worktree removed despite the cross-creator refusal: %v", statErr)
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Errorf("worktree should be gone after the cross-creator remove: err=%v", statErr)
 	}
 }
 
@@ -630,7 +629,7 @@ func TestWorktreeErrors_NonLocalExecutionEnvironment(t *testing.T) {
 	if _, err := r.s.worktreeSwitchByPath(ctx, "/tmp/x"); err == nil || !strings.Contains(err.Error(), wantElem) {
 		t.Errorf("switch by path: err = %v, want it to contain %q", err, wantElem)
 	}
-	if _, err := r.s.worktreeRemove(ctx, "x", false, false); err == nil || !strings.Contains(err.Error(), wantElem) {
+	if _, err := r.s.worktreeRemove(ctx, "x", false, false, false); err == nil || !strings.Contains(err.Error(), wantElem) {
 		t.Errorf("remove: err = %v, want it to contain %q", err, wantElem)
 	}
 	if _, err := r.s.worktreeList(ctx); err == nil || !strings.Contains(err.Error(), wantElem) {

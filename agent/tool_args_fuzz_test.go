@@ -85,13 +85,15 @@ func FuzzToolArgsValidate(f *testing.F) {
 		`{"operation":"exit"}`,
 		`{"operation":"remove","name":"lane","force":true,"delete_branch":true}`,
 		`{"operation":"remove","name":"lane","force":false,"delete_branch":false}`,
+		`{"operation":"remove","name":"lane","force_dirty":true}`,
+		`{"operation":"remove","name":"lane","force":true,"force_dirty":true,"delete_branch":true}`,
 		`{"operation":"remove"}`,
 		`{"operation":"prune"}`,
 		`{"operation":"bogus"}`, // invalid enum value
 		`{"operation":123}`,     // wrong type for operation
 		`{"operation":"create","name":123,"base_ref":true,"force":"nope","delete_branch":[1,2,3]}`,
 		`{"operation":"create","name":null}`,
-		`{}`, // missing required "operation"
+		`{}`,                                            // missing required "operation"
 		`{"operation":"create","unexpected_field":"x"}`, // additionalProperties:false
 	}
 	for _, s := range mwSeeds {

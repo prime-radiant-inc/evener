@@ -184,7 +184,10 @@ type worktreeGuard struct {
 	// on top of the exitWorktree env-restore primitive above.
 	exitOp func(ctx context.Context) (WorktreeExitResult, error)
 	// removeOp runs the remove operation (spec §5 remove, all eleven steps).
-	removeOp func(ctx context.Context, name string, force, deleteBranch bool) (WorktreeRemoveResult, error)
+	// force overrides provenance/merge gating; forceDirty separately overrides
+	// the uncommitted-work refusal so forcing past an ownership/merge gate
+	// cannot collaterally discard an uncommitted edit (F3 ergonomics finding).
+	removeOp func(ctx context.Context, name string, force, forceDirty, deleteBranch bool) (WorktreeRemoveResult, error)
 	// listOp runs the list operation (spec §5 list, all three steps).
 	listOp func(ctx context.Context) ([]WorktreeListEntry, error)
 	// pruneOp runs the prune operation (spec §5 prune, all three sweeps).
@@ -282,8 +285,9 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 					return nil, errors.New("manage_worktree remove: name is required")
 				}
 				force, _ := args["force"].(bool)
+				forceDirty, _ := args["force_dirty"].(bool)
 				deleteBranch, _ := args["delete_branch"].(bool)
-				res, err := deps.worktreeGuard.removeOp(ctx, name, force, deleteBranch)
+				res, err := deps.worktreeGuard.removeOp(ctx, name, force, forceDirty, deleteBranch)
 				if err != nil {
 					return nil, err
 				}
@@ -1292,7 +1296,7 @@ func (s *Session) applyRestoreLandRelock(run worktree.GitRunner, restoredRoot, p
 // result rather than failing the call, since by then the worktree is already
 // gone and step 11 requires reporting whether the branch was deleted as part
 // of a confirmation.
-func (s *Session) worktreeRemove(ctx context.Context, name string, force, deleteBranch bool) (WorktreeRemoveResult, error) {
+func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceDirty, deleteBranch bool) (WorktreeRemoveResult, error) {
 	// Step 1: resolve the worktree path from name.
 	if err := worktree.ValidateName(name); err != nil {
 		return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: %w", err)
@@ -1388,34 +1392,40 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, delete
 		return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: live work under %s: %s", target, strings.Join(live, ", "))
 	}
 
-	// Step 5: cross-session ownership guard. A worktree with no sidecar has
-	// unknown provenance and is treated as another session's (spec §6
-	// "Metadata sidecar": "treated by remove as another session's — refuse
-	// without force").
+	// Step 5: provenance guard. A worktree with no sidecar has unknown
+	// provenance and is treated as another session's — refuse without force
+	// (spec §6 "Metadata sidecar"). The cross-session *creator* guard is NOT
+	// applied here: it only ever fired for an UNLOCKED lane with a foreign
+	// creator (a foreign-locked lane is already refused at step 3), and an
+	// unlocked lane has no live owner — the occupancy lock is the real safety,
+	// committed work is protected by the merge gate (step 9), and uncommitted
+	// work by the force_dirty gate (step 6). Refusing routine cross-session
+	// cleanup there was the dominant real-world friction (F1 ergonomics
+	// finding) with little safety value, so the lane proceeds.
 	sc, scErr := worktree.ReadSidecar(metaDir, name)
 	hasSidecar := scErr == nil
 	if scErr != nil && !os.IsNotExist(scErr) {
 		return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: reading metadata: %w", scErr)
 	}
-	if !force {
-		if !hasSidecar {
-			return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: %s has no metadata sidecar (unmanaged provenance); refusing without force", target)
-		}
-		if sc.CreatorSession != s.id {
-			return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: %s was created by a different session (%s); refusing without force", target, sc.CreatorSession)
-		}
+	if !force && !hasSidecar {
+		return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: %s has no metadata sidecar (unmanaged provenance); refusing without force", target)
 	}
 
-	// Step 6: dirtiness preflight (force:false only). Nothing above has
-	// mutated s.env or removed anything yet, so a refusal here leaves s.env
-	// unchanged (spec §5 remove step 6).
-	if !force {
+	// Step 6: dirtiness preflight (force_dirty:false only). Gated on its OWN
+	// flag, not force, so forcing past an ownership/merge gate cannot
+	// collaterally discard an uncommitted edit unwarned (F3 ergonomics
+	// finding: an agent forcing past a provenance refusal would otherwise
+	// never see this — the more destructive condition was masked behind the
+	// less destructive one). Nothing above has mutated s.env or removed
+	// anything yet, so a refusal here leaves s.env unchanged (spec §5 remove
+	// step 6).
+	if !forceDirty {
 		clean, offending, err := worktree.CleanTree(run, target)
 		if err != nil {
 			return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: checking for uncommitted changes: %w", err)
 		}
 		if !clean {
-			return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: %s has uncommitted changes (use force to remove anyway):\n%s", target, strings.Join(offending, "\n"))
+			return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: %s has uncommitted changes (use force_dirty to remove anyway):\n%s", target, strings.Join(offending, "\n"))
 		}
 	}
 
@@ -1458,11 +1468,13 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, delete
 		removeWarning = warning
 	}
 
-	// Step 8: remove the worktree itself. --force is included only when
-	// force:true, and only ever covers git's own dirty/untracked refusal —
-	// never locks, which step 3 already resolved (spec §5 remove step 8).
+	// Step 8: remove the worktree itself. --force covers git's own
+	// dirty/untracked refusal — never locks, which step 3 already resolved
+	// (spec §5 remove step 8). A dirty tree only reaches here under
+	// force_dirty (step 6), so git's --force is needed whenever either flag is
+	// set.
 	rmArgs := []string{"worktree", "remove"}
-	if force {
+	if force || forceDirty {
 		rmArgs = append(rmArgs, "--force")
 	}
 	rmArgs = append(rmArgs, "--", target)
