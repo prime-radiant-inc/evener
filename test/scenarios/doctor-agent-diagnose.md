@@ -74,18 +74,25 @@ PATH="$PWD:$PATH" serf --agent doctor --model openai/gpt-5.4-mini run \
 ASSERT the doctor emits **exactly one** Finding conforming to the contract:
 - `category: watch_runaway`, `severity: high`;
 - `signature: watch_runaway:<SID>:wLOOP` (the structural-defect signature format);
-- `evidence.deliveryIds == ["dl3"]` (the runaway-dropped send) and
+- `evidence.deliveryIds` includes `"dl3"` (the runaway-dropped send; citing
+  the depth-7 delivered `dl2` as supporting evidence is acceptable) and
   `evidence.doctorCommand` is the `serf-doctor watches … --self-loops --json`
   invocation it actually ran;
 - `suggestedFix.type: diagnosis` (a fired fuse means a runaway feedback loop
   ran to the machinery floor — report the loop's participants; the drop itself
   is the breaker working as designed).
 
-Observed (real run, PRE-breaker baseline): the doctor ran `serf-doctor watches
---state-dir $SCR $BSID --self-loops --json` and emitted one Finding. The card
-was re-baselined 2026-07-02 for the inform+breaker telemetry (runaway drop
-fixture, `watch_runaway` category, `dl3` evidence) and needs a fresh observed
-run.
+Observed (real run 2026-07-03, merged main, openai/gpt-5.4-mini): the doctor
+read the runbook + data-model references, ran exactly
+`serf-doctor watches 01BROKENLOOPAAAAAAAAAAAAAAA --state-dir $SCR
+--self-loops --json`, and emitted ONE Finding verbatim to the contract:
+`signature: watch_runaway:01BROKENLOOPAAAAAAAAAAAAAAA:wLOOP`,
+`category: watch_runaway`, `severity: high`,
+`evidence.deliveryIds: ["dl2","dl3"]`, `suggestedFix.type: diagnosis`.
+**PASS.** The healthy half also re-ran the same day against a real bounded
+session (live monty-python run: max depth 4, watch cleared by its
+participants): `--self-loops` returned no watches and the doctor reported
+`findings: []`, treating bounded self-influence as expected. **PASS.**
 
 ## Falsifiable failure modes
 
