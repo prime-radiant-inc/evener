@@ -40,10 +40,12 @@ func TestManageWorktreeToolRegisteredRegistryOnlyNonReadOnly(t *testing.T) {
 	}
 }
 
-// TestManageWorktreeToolUnimplementedHandler asserts the Task-12 skeleton's
-// stub handler returns a clear error rather than panicking or silently
-// no-opping. Real operation semantics land in Tasks 13-16.
-func TestManageWorktreeToolUnimplementedHandler(t *testing.T) {
+// TestManageWorktreeToolUnknownOperationErrors asserts the dispatch switch's
+// default arm returns a clear error rather than panicking or silently
+// no-opping for an operation string outside the enum. All six real
+// operations (create/list/switch/exit/remove/prune) landed across Tasks
+// 13-16; this now exercises the fallback arm, not a stub.
+func TestManageWorktreeToolUnknownOperationErrors(t *testing.T) {
 	t.Parallel()
 	s := newSession(t)
 
@@ -51,8 +53,8 @@ func TestManageWorktreeToolUnimplementedHandler(t *testing.T) {
 	if rt == nil {
 		t.Fatal("registry is missing manage_worktree")
 	}
-	_, err := rt.Exec(t.Context(), s.currentEnv(), map[string]any{"operation": "list"})
+	_, err := rt.Exec(t.Context(), s.currentEnv(), map[string]any{"operation": "bogus"})
 	if err == nil {
-		t.Fatal("expected an error from the not-yet-implemented handler, got nil")
+		t.Fatal("expected an error for an unknown operation, got nil")
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -86,6 +87,66 @@ type WorktreeRemoveResult struct {
 	Warning          string
 }
 
+// WorktreeListEntry is one worktree in the manage_worktree list result (spec
+// §5 list step 3): path, branch, current occupancy, lock state, prunable
+// annotation, and disposal-relevant staleness state pulled from the metadata
+// sidecar plus cheap git queries. HasMetadata is false for a sidecar-less
+// worktree; the metadata-derived fields (CreatorSession, DelegateID,
+// CreatedAt, AgeSeconds, BaseSHA, MergeTarget, AheadCommits, Merged,
+// MergedArm, MergeTargetUnknown) are then zero values rather than an error —
+// list surfaces provenance-unknown entries instead of refusing them.
+type WorktreeListEntry struct {
+	Name           string
+	Path           string
+	Branch         string
+	Current        bool
+	Locked         bool
+	LockReason     string
+	Prunable       bool
+	PrunableReason string
+
+	HasMetadata    bool
+	CreatorSession string
+	DelegateID     string
+	CreatedAt      string
+	AgeSeconds     float64
+
+	Dirty              bool
+	BaseSHA            string
+	AheadCommits       int
+	MergeTarget        string
+	Merged             bool
+	MergedArm          string
+	MergeTargetUnknown bool
+}
+
+// WorktreePruneEntry is one worktree or sidecar prune touched or decided to
+// leave alone (spec §5 prune's report shape: "Report removed and skipped
+// entries with per-entry reasons"). Path is empty for a sweep-2 entry whose
+// worktree directory is already gone — only its sidecar and/or branch remain.
+// An entry with none of the Removed flags set belongs in the tool dispatch's
+// "skipped" bucket; any flag set belongs in "removed" (adopted's
+// sidecar-only removal is a "removed" entry with BranchRemoved false).
+type WorktreePruneEntry struct {
+	Name            string
+	Path            string
+	WorktreeRemoved bool
+	BranchRemoved   bool
+	SidecarRemoved  bool
+	Reason          string
+}
+
+// WorktreePruneResult is the outcome of the prune operation (spec §5 prune,
+// all three sweeps): every entry prune removed something from, every entry it
+// left alone with a reason, and whether the repo-wide git registry hygiene
+// sweep (sweep 3) ran.
+type WorktreePruneResult struct {
+	Removed            []WorktreePruneEntry
+	Skipped            []WorktreePruneEntry
+	RegistryPruned     bool
+	RegistrySkipReason string
+}
+
 // worktreeGuard is the toolDeps facade the manage_worktree handler reaches
 // session state through (spec §2 registration; §7 method list), mirroring
 // taskGuard/goalGuard. Its members are closures over the owning Session so the
@@ -122,6 +183,10 @@ type worktreeGuard struct {
 	exitOp func(ctx context.Context) (WorktreeExitResult, error)
 	// removeOp runs the remove operation (spec §5 remove, all eleven steps).
 	removeOp func(ctx context.Context, name string, force, deleteBranch bool) (WorktreeRemoveResult, error)
+	// listOp runs the list operation (spec §5 list, all three steps).
+	listOp func(ctx context.Context) ([]WorktreeListEntry, error)
+	// pruneOp runs the prune operation (spec §5 prune, all three sweeps).
+	pruneOp func(ctx context.Context) (WorktreePruneResult, error)
 }
 
 // registerWorktreeTool registers the manage_worktree lifecycle tool (spec §2)
@@ -245,8 +310,47 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 					out["warning"] = res.Warning
 				}
 				return out, nil
-			case "list", "prune":
-				return nil, fmt.Errorf("manage_worktree %s: not yet implemented", operation)
+			case "list":
+				entries, err := deps.worktreeGuard.listOp(ctx)
+				if err != nil {
+					return nil, err
+				}
+				out := make([]map[string]any, len(entries))
+				for i, e := range entries {
+					out[i] = worktreeListEntryToMap(e)
+				}
+				return map[string]any{
+					"status":  "listed",
+					"entries": out,
+					"message": fmt.Sprintf("%d managed worktree(s).", len(entries)),
+				}, nil
+			case "prune":
+				res, err := deps.worktreeGuard.pruneOp(ctx)
+				if err != nil {
+					return nil, err
+				}
+				removed := make([]map[string]any, len(res.Removed))
+				for i, e := range res.Removed {
+					removed[i] = worktreePruneEntryToMap(e)
+				}
+				skipped := make([]map[string]any, len(res.Skipped))
+				for i, e := range res.Skipped {
+					skipped[i] = worktreePruneEntryToMap(e)
+				}
+				msg := fmt.Sprintf("Removed %d, skipped %d.", len(removed), len(skipped))
+				if res.RegistryPruned {
+					msg += " Git worktree registry pruned."
+				} else if res.RegistrySkipReason != "" {
+					msg += " Registry hygiene sweep skipped: " + res.RegistrySkipReason
+				}
+				return map[string]any{
+					"status":               "pruned",
+					"removed":              removed,
+					"skipped":              skipped,
+					"registry_pruned":      res.RegistryPruned,
+					"registry_skip_reason": res.RegistrySkipReason,
+					"message":              msg,
+				}, nil
 			default:
 				return nil, fmt.Errorf("manage_worktree: unknown operation %q", operation)
 			}
@@ -646,23 +750,92 @@ func (s *Session) worktreeControlRun(ctx context.Context, mainRepoRoot string) (
 	return gitRunner(ctx, controlEnv), nil
 }
 
-// isUnderManagedDir reports whether canonicalPath lives strictly under the
-// managed worktree directory projectDir (spec §4 switch by-path step 2; spec
-// §5 `list` step 2's "not bare HasPrefix" rule — a bare string-prefix compare
-// collides when one projectid string prefixes another). projectDir is
-// canonicalized here too (spec §5: "canonicalize both sides"); a projectDir
+// relPathUnderManagedDir canonicalizes projectDir (spec §5: "canonicalize
+// both sides") and, if canonicalPath lives strictly under it, returns its
+// path relative to projectDir. ok is false for canonicalPath == projectDir
+// itself, anything outside it, or an unresolvable relation — a projectDir
 // that does not exist yet canonicalizes to itself, under which nothing can
-// resolve, so isUnderManagedDir correctly reports false.
-func isUnderManagedDir(canonicalPath, projectDir string) bool {
+// resolve, so this correctly reports ok=false rather than panicking or
+// guessing. Shared by isUnderManagedDir (spec §4 switch by-path step 2) and
+// the list/prune managed-entry enumeration (spec §5 list step 2's "not bare
+// HasPrefix" rule — a bare string-prefix compare collides when one projectid
+// string prefixes another).
+func relPathUnderManagedDir(canonicalPath, projectDir string) (rel string, ok bool) {
 	canonicalProjectDir := filepath.Clean(projectDir)
 	if resolved, err := filepath.EvalSymlinks(projectDir); err == nil {
 		canonicalProjectDir = filepath.Clean(resolved)
 	}
-	rel, err := filepath.Rel(canonicalProjectDir, canonicalPath)
+	r, err := filepath.Rel(canonicalProjectDir, canonicalPath)
 	if err != nil {
-		return false
+		return "", false
 	}
-	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	if r == "." || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return r, true
+}
+
+// isUnderManagedDir reports whether canonicalPath lives strictly under the
+// managed worktree directory projectDir (spec §4 switch by-path step 2; spec
+// §5 `list` step 2).
+func isUnderManagedDir(canonicalPath, projectDir string) bool {
+	_, ok := relPathUnderManagedDir(canonicalPath, projectDir)
+	return ok
+}
+
+// canonicalOrClean resolves path's symlinks (spec §5 list step 2:
+// "canonicalize both sides... macOS /var → /private/var otherwise make
+// managed worktrees silently vanish") and falls back to filepath.Clean(path)
+// when EvalSymlinks fails — a directory git still has registered but that is
+// momentarily absent (the exact case list step 1 must tolerate, "prunable")
+// still compares correctly against a canonicalized projectDir, instead of
+// being dropped from enumeration just because it cannot be resolved.
+func canonicalOrClean(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(path)
+}
+
+// managedEntry pairs a porcelain worktree entry with its name (the path
+// relative to projectDir, slash-separated regardless of OS — spec §6: names
+// may contain "/"), shared by list and prune sweep 1's enumeration of
+// registered managed worktrees (spec §5 list step 2 / prune sweep 1).
+type managedEntry struct {
+	worktree.PorcelainEntry
+	Name string
+}
+
+// managedPorcelainEntries filters porcelain to entries whose worktree path is
+// under projectDir (spec §5 list step 2 / prune sweep 1's "registered managed
+// worktrees"), pairing each with its derived name.
+func managedPorcelainEntries(porcelain []worktree.PorcelainEntry, projectDir string) []managedEntry {
+	var out []managedEntry
+	for _, e := range porcelain {
+		rel, ok := relPathUnderManagedDir(canonicalOrClean(e.Path), projectDir)
+		if !ok {
+			continue
+		}
+		out = append(out, managedEntry{PorcelainEntry: e, Name: filepath.ToSlash(rel)})
+	}
+	return out
+}
+
+// checkoutLocationOf finds which worktree currently has refs/heads/<branch>
+// checked out, for reporting prune sweep 2's "checked out at <path>" skip
+// (spec §5 sweep 2). ok is false when no worktree has the branch checked out.
+func checkoutLocationOf(run worktree.GitRunner, branch string) (path string, ok bool) {
+	out, err := run("worktree", "list", "--porcelain")
+	if err != nil {
+		return "", false
+	}
+	full := "refs/heads/" + branch
+	for _, e := range worktree.ParsePorcelain(out) {
+		if e.Branch == full {
+			return e.Path, true
+		}
+	}
+	return "", false
 }
 
 // switchToCurrentNoOp implements the EvEnterCurrent row of the lock state
@@ -1207,6 +1380,414 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, delete
 	// carried on result: Path, Branch, BranchDeleted, BranchKeptReason,
 	// Warning).
 	return result, nil
+}
+
+// worktreeListEntryToMap renders a WorktreeListEntry into the tool result
+// shape (spec §5 list step 3).
+func worktreeListEntryToMap(e WorktreeListEntry) map[string]any {
+	return map[string]any{
+		"name":                 e.Name,
+		"path":                 e.Path,
+		"branch":               e.Branch,
+		"current":              e.Current,
+		"locked":               e.Locked,
+		"lock_reason":          e.LockReason,
+		"prunable":             e.Prunable,
+		"prunable_reason":      e.PrunableReason,
+		"has_metadata":         e.HasMetadata,
+		"creator_session":      e.CreatorSession,
+		"delegate_id":          e.DelegateID,
+		"created_at":           e.CreatedAt,
+		"age_seconds":          e.AgeSeconds,
+		"dirty":                e.Dirty,
+		"base_sha":             e.BaseSHA,
+		"ahead_commits":        e.AheadCommits,
+		"merge_target":         e.MergeTarget,
+		"merged":               e.Merged,
+		"merged_arm":           e.MergedArm,
+		"merge_target_unknown": e.MergeTargetUnknown,
+	}
+}
+
+// worktreePruneEntryToMap renders a WorktreePruneEntry into the tool result
+// shape (spec §5 prune's report shape).
+func worktreePruneEntryToMap(e WorktreePruneEntry) map[string]any {
+	return map[string]any{
+		"name":             e.Name,
+		"path":             e.Path,
+		"worktree_removed": e.WorktreeRemoved,
+		"branch_removed":   e.BranchRemoved,
+		"sidecar_removed":  e.SidecarRemoved,
+		"reason":           e.Reason,
+	}
+}
+
+// worktreeList performs the list operation (spec §5 list, all three steps):
+// enumerate managed worktrees from `git worktree list --porcelain` (never
+// running `git worktree prune`), filter with the same prefix-collision-safe,
+// symlink-canonicalized comparison remove/switch use, and report each with
+// its lock/prunable state plus disposal-relevant staleness pulled from the
+// metadata sidecar and cheap git queries.
+func (s *Session) worktreeList(ctx context.Context) ([]WorktreeListEntry, error) {
+	st := s.worktreeStateSnapshot()
+	if st.env == nil {
+		return nil, errors.New("manage_worktree requires a local execution environment")
+	}
+	if st.mainRepoRoot == "" {
+		return nil, errors.New("manage_worktree list: not in a git repository")
+	}
+	run, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	// Step 1: `git worktree list --porcelain` — never `git worktree prune`.
+	out, err := run("worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, fmt.Errorf("manage_worktree list: listing worktrees: %w", err)
+	}
+
+	// Step 2: filter to serf-managed worktrees, canonicalized comparison.
+	projectDir := filepath.Join(st.worktreeRoot, worktree.ProjectID(st.mainRepoRoot))
+	metaDir := filepath.Join(projectDir, ".meta")
+	managed := managedPorcelainEntries(worktree.ParsePorcelain(out), projectDir)
+
+	activeRoot := filepath.Clean(st.env.WorkingDirectory())
+	now := s.sclock().Now()
+
+	// Step 3: build one structured entry per managed worktree.
+	entries := make([]WorktreeListEntry, 0, len(managed))
+	for _, e := range managed {
+		entry := WorktreeListEntry{
+			Name:           e.Name,
+			Path:           e.Path,
+			Branch:         strings.TrimPrefix(e.Branch, "refs/heads/"),
+			Current:        filepath.Clean(e.Path) == activeRoot,
+			Locked:         e.Locked,
+			LockReason:     e.LockReason,
+			Prunable:       e.Prunable,
+			PrunableReason: e.PrunableReason,
+		}
+
+		if sc, scErr := worktree.ReadSidecar(metaDir, e.Name); scErr == nil {
+			entry.HasMetadata = true
+			entry.CreatorSession = sc.CreatorSession
+			entry.DelegateID = sc.DelegateID
+			entry.CreatedAt = sc.CreatedAt
+			entry.BaseSHA = sc.BaseSHA
+			entry.MergeTarget = sc.MergeTarget
+			if created, perr := time.Parse(time.RFC3339, sc.CreatedAt); perr == nil {
+				entry.AgeSeconds = now.Sub(created).Seconds()
+			}
+		}
+
+		// Cheap git queries: best-effort, and only meaningful when the
+		// worktree directory actually exists (a `prunable` entry's directory
+		// is momentarily or permanently absent — spec §5 list step 1).
+		if _, statErr := os.Stat(e.Path); statErr == nil {
+			if clean, _, cErr := worktree.CleanTree(run, e.Path); cErr == nil {
+				entry.Dirty = !clean
+			}
+			if entry.HasMetadata && entry.BaseSHA != "" {
+				if aheadOut, aErr := run("-C", e.Path, "rev-list", "--count", entry.BaseSHA+"..HEAD"); aErr == nil {
+					if n, convErr := strconv.Atoi(strings.TrimSpace(aheadOut)); convErr == nil {
+						entry.AheadCommits = n
+					}
+				}
+				if tipOut, tErr := run("-C", e.Path, "rev-parse", "HEAD"); tErr == nil {
+					tip := strings.TrimSpace(tipOut)
+					if mr, mErr := worktree.Merged(run, tip, entry.MergeTarget, entry.BaseSHA); mErr == nil {
+						entry.Merged = mr.Merged
+						entry.MergedArm = mr.Arm
+						entry.MergeTargetUnknown = mr.TargetUnknown
+					}
+				}
+			}
+		}
+
+		entries = append(entries, entry)
+	}
+
+	return entries, nil
+}
+
+// worktreePrune performs the prune operation (spec §5 prune, all three
+// sweeps in order): registered managed worktrees, sidecar reconciliation,
+// then git registry hygiene.
+func (s *Session) worktreePrune(ctx context.Context) (WorktreePruneResult, error) {
+	st := s.worktreeStateSnapshot()
+	if st.env == nil {
+		return WorktreePruneResult{}, errors.New("manage_worktree requires a local execution environment")
+	}
+	if st.mainRepoRoot == "" {
+		return WorktreePruneResult{}, errors.New("manage_worktree prune: not in a git repository")
+	}
+	run, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+	if err != nil {
+		return WorktreePruneResult{}, err
+	}
+
+	projectDir := filepath.Join(st.worktreeRoot, worktree.ProjectID(st.mainRepoRoot))
+	metaDir := filepath.Join(projectDir, ".meta")
+
+	removed1, skipped1, err := s.worktreePruneSweep1(run, projectDir, metaDir)
+	if err != nil {
+		return WorktreePruneResult{}, err
+	}
+	removed2, skipped2, err := s.worktreePruneSweep2(run, projectDir, metaDir)
+	if err != nil {
+		return WorktreePruneResult{}, err
+	}
+
+	result := WorktreePruneResult{
+		Removed: append(removed1, removed2...),
+		Skipped: append(skipped1, skipped2...),
+	}
+
+	ran, skipReason, err := worktreePruneSweep3(run, projectDir)
+	if err != nil {
+		return WorktreePruneResult{}, err
+	}
+	result.RegistryPruned = ran
+	result.RegistrySkipReason = skipReason
+
+	return result, nil
+}
+
+// worktreePruneSweep1 disposes of registered managed worktrees (spec §5
+// prune sweep 1): a worktree is collected (dir + branch + sidecar removed)
+// iff it is unlocked, has no live work under it, has a sidecar, is clean, and
+// is disposable (unchanged or merged per the recorded merge_target). Every
+// entry that fails one of those tests is reported skipped with the reason;
+// any per-entry git query failure is treated as a soft skip rather than
+// aborting the whole sweep, so one bad entry cannot block every other
+// collectible worktree.
+func (s *Session) worktreePruneSweep1(run worktree.GitRunner, projectDir, metaDir string) (removed, skipped []WorktreePruneEntry, err error) {
+	out, err := run("worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, nil, fmt.Errorf("manage_worktree prune: listing worktrees: %w", err)
+	}
+	managed := managedPorcelainEntries(worktree.ParsePorcelain(out), projectDir)
+
+	for _, e := range managed {
+		// Not locked: the occupancy rule, owner-independent (spec §5 sweep 1;
+		// EvPruneCandidate skips any locked state regardless of whose marker).
+		lockSt := worktree.Unlocked
+		if e.Locked {
+			lockSt = worktree.ClassifyReason(e.LockReason, s.id, "")
+		}
+		if worktree.Decide(worktree.EvPruneCandidate, lockSt) == worktree.ActSkip {
+			reason := "locked"
+			if e.LockReason != "" {
+				reason = fmt.Sprintf("locked (%s)", e.LockReason)
+			}
+			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: reason})
+			continue
+		}
+
+		// No live work under it (belt and braces alongside the lock).
+		if live := s.liveWorkUnder(e.Path); len(live) > 0 {
+			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "live work: " + strings.Join(live, ", ")})
+			continue
+		}
+
+		// Has a sidecar: provenance unknown otherwise, not ours to judge.
+		sc, scErr := worktree.ReadSidecar(metaDir, e.Name)
+		if scErr != nil {
+			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "sidecar-less"})
+			continue
+		}
+
+		// Clean.
+		clean, offending, cErr := worktree.CleanTree(run, e.Path)
+		if cErr != nil {
+			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "status check failed: " + cErr.Error()})
+			continue
+		}
+		if !clean {
+			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "dirty: " + strings.Join(offending, ", ")})
+			continue
+		}
+
+		// Disposable: unchanged (tip == base) or merged (per the recorded
+		// merge_target, never HEAD).
+		tipOut, tErr := run("-C", e.Path, "rev-parse", "HEAD")
+		if tErr != nil {
+			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "rev-parse HEAD failed: " + tErr.Error()})
+			continue
+		}
+		tip := strings.TrimSpace(tipOut)
+
+		disposable, reasonTag, dErr := disposableReason(run, tip, sc.BaseSHA, sc.MergeTarget)
+		if dErr != nil {
+			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "merge check failed: " + dErr.Error()})
+			continue
+		}
+		if !disposable {
+			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: reasonTag})
+			continue
+		}
+
+		// Collect: remove the worktree, delete the branch (-D, the merge gate
+		// above already passed — spec §5 sweep 1's closing note, remove step 9's
+		// rationale for never trusting `-d`), delete the sidecar.
+		if _, err := run("worktree", "remove", "--", e.Path); err != nil {
+			return nil, nil, fmt.Errorf("manage_worktree prune: removing %s: %w", e.Path, err)
+		}
+		if _, err := run("branch", "-D", e.Name); err != nil {
+			return nil, nil, fmt.Errorf("manage_worktree prune: deleting branch %q: %w", e.Name, err)
+		}
+		if err := worktree.DeleteSidecar(metaDir, e.Name); err != nil && !os.IsNotExist(err) {
+			return nil, nil, fmt.Errorf("manage_worktree prune: deleting sidecar for %q: %w", e.Name, err)
+		}
+		removed = append(removed, WorktreePruneEntry{
+			Name: e.Name, Path: e.Path,
+			WorktreeRemoved: true, BranchRemoved: true, SidecarRemoved: true,
+			Reason: reasonTag,
+		})
+	}
+
+	return removed, skipped, nil
+}
+
+// disposableReason judges whether tip is disposable per spec §5's shared
+// unchanged/merged test: tip == baseSHA (unchanged), or merged into
+// mergeTarget's recorded tip (never HEAD). reason is "unchanged",
+// "merged (ancestry)", "merged (cherry)", "merge target unknown", or
+// "unmerged" — always set, whether or not disposable is true, so callers can
+// use it directly as a skip reason on the false path.
+func disposableReason(run worktree.GitRunner, tip, baseSHA, mergeTarget string) (disposable bool, reason string, err error) {
+	if tip == baseSHA {
+		return true, "unchanged", nil
+	}
+	mr, err := worktree.Merged(run, tip, mergeTarget, baseSHA)
+	if err != nil {
+		return false, "", err
+	}
+	switch {
+	case mr.Merged:
+		return true, fmt.Sprintf("merged (%s)", mr.Arm), nil
+	case mr.TargetUnknown:
+		return false, "merge target unknown", nil
+	default:
+		return false, "unmerged", nil
+	}
+}
+
+// worktreePruneSweep2 reconciles metadata sidecars with no matching
+// registered worktree (spec §5 prune sweep 2): a sidecar younger than
+// worktree.ReconcileGrace (judged by file mtime) is left alone as
+// possibly-racing-create residue; older ones are resolved per the branch's
+// current state (gone → stale, adopted → sidecar dropped, disposable →
+// branch+sidecar deleted, checked out elsewhere → skipped, unmerged →
+// kept as residue).
+func (s *Session) worktreePruneSweep2(run worktree.GitRunner, projectDir, metaDir string) (removed, skipped []WorktreePruneEntry, err error) {
+	out, err := run("worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, nil, fmt.Errorf("manage_worktree prune: listing worktrees: %w", err)
+	}
+	registered := make(map[string]bool)
+	for _, e := range managedPorcelainEntries(worktree.ParsePorcelain(out), projectDir) {
+		registered[e.Name] = true
+	}
+
+	sidecars, err := worktree.ListSidecars(metaDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil, nil
+		}
+		return nil, nil, fmt.Errorf("manage_worktree prune: listing metadata: %w", err)
+	}
+
+	for _, sc := range sidecars {
+		if registered[sc.Name] {
+			continue // a live registered worktree exists; sweep 1's job, not reconciliation's
+		}
+
+		age, ageErr := worktree.SidecarAge(metaDir, sc.Name)
+		if ageErr == nil && age < worktree.ReconcileGrace {
+			skipped = append(skipped, WorktreePruneEntry{Name: sc.Name, Reason: "in-grace"})
+			continue
+		}
+
+		if !branchExists(run, sc.Name) {
+			if err := worktree.DeleteSidecar(metaDir, sc.Name); err != nil && !os.IsNotExist(err) {
+				return nil, nil, fmt.Errorf("manage_worktree prune: deleting stale sidecar %q: %w", sc.Name, err)
+			}
+			removed = append(removed, WorktreePruneEntry{Name: sc.Name, SidecarRemoved: true, Reason: "stale sidecar (no worktree, no branch)"})
+			continue
+		}
+
+		tipOut, tErr := run("rev-parse", "--verify", "refs/heads/"+sc.Name)
+		if tErr != nil {
+			skipped = append(skipped, WorktreePruneEntry{Name: sc.Name, Reason: "rev-parse failed: " + tErr.Error()})
+			continue
+		}
+		tip := strings.TrimSpace(tipOut)
+
+		// Adopted: the branch survived a prior branch-kept removal and the
+		// user has since built on it (tip is neither the recorded base nor
+		// the tip serf recorded at removal time) — serf's claim expires.
+		if sc.WorktreeRemoved && worktree.Adopted(tip, sc.BaseSHA, sc.TipSHAAtRemoval) {
+			if err := worktree.DeleteSidecar(metaDir, sc.Name); err != nil && !os.IsNotExist(err) {
+				return nil, nil, fmt.Errorf("manage_worktree prune: deleting adopted sidecar %q: %w", sc.Name, err)
+			}
+			removed = append(removed, WorktreePruneEntry{Name: sc.Name, SidecarRemoved: true, Reason: "adopted"})
+			continue
+		}
+
+		// Not adopted (tip == base_sha, tip == tip_sha_at_removal, or no
+		// removal record): eligible for the merge-gated branch deletion.
+		disposable, reasonTag, dErr := disposableReason(run, tip, sc.BaseSHA, sc.MergeTarget)
+		if dErr != nil {
+			skipped = append(skipped, WorktreePruneEntry{Name: sc.Name, Reason: "merge check failed: " + dErr.Error()})
+			continue
+		}
+		if !disposable {
+			skipped = append(skipped, WorktreePruneEntry{Name: sc.Name, Reason: reasonTag})
+			continue
+		}
+
+		if _, err := run("branch", "-D", sc.Name); err != nil {
+			reason := "checked out"
+			if loc, ok := checkoutLocationOf(run, sc.Name); ok {
+				reason = "checked out at " + loc
+			}
+			skipped = append(skipped, WorktreePruneEntry{Name: sc.Name, Reason: reason})
+			continue
+		}
+		if err := worktree.DeleteSidecar(metaDir, sc.Name); err != nil && !os.IsNotExist(err) {
+			return nil, nil, fmt.Errorf("manage_worktree prune: deleting sidecar %q: %w", sc.Name, err)
+		}
+		removed = append(removed, WorktreePruneEntry{Name: sc.Name, BranchRemoved: true, SidecarRemoved: true, Reason: reasonTag})
+	}
+
+	return removed, skipped, nil
+}
+
+// worktreePruneSweep3 runs repo-wide `git worktree prune` registry hygiene
+// (spec §5 prune sweep 3) only when every `prunable`-annotated porcelain
+// entry is under the managed directory; a non-managed prunable entry (a
+// user's own sibling worktree, momentarily or permanently absent) makes this
+// deliberately not this tool's call to deregister, and the whole sweep is
+// skipped with a reason naming the entry.
+func worktreePruneSweep3(run worktree.GitRunner, projectDir string) (ran bool, skipReason string, err error) {
+	out, err := run("worktree", "list", "--porcelain")
+	if err != nil {
+		return false, "", fmt.Errorf("manage_worktree prune: listing worktrees: %w", err)
+	}
+	for _, e := range worktree.ParsePorcelain(out) {
+		if !e.Prunable {
+			continue
+		}
+		if _, ok := relPathUnderManagedDir(canonicalOrClean(e.Path), projectDir); !ok {
+			return false, fmt.Sprintf("non-managed prunable entry: %s (%s)", e.Path, e.PrunableReason), nil
+		}
+	}
+	if _, err := run("worktree", "prune"); err != nil {
+		return false, "", fmt.Errorf("manage_worktree prune: git worktree prune: %w", err)
+	}
+	return true, "", nil
 }
 
 // resolveBaseFromActiveRoot resolves baseRef to an explicit commit SHA against
