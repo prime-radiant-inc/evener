@@ -1,8 +1,9 @@
 # Native Worktree Tools — Design Spec
 
 Date: 2026-07-02
-Status: Draft (rev 8, post third competitive adversarial round — merge-mode
-coverage, lock choreography corners, hub consumers, modern-git requirement)
+Status: Draft (rev 9 — implementation-ready: normative lock state table,
+phased implementation plan, restore-relock rule; reviewed across four
+adversarial rounds)
 
 ## Summary
 
@@ -494,8 +495,13 @@ root confinement makes those directories unreachable.
 3. Restore the saved pre-worktree env via `worktreeGuard.exitWorktree()`,
    clear the saved env (so a later `create`/`switch` saves afresh), recompute
    `s.envInfo`, refresh the cached system prompt (§7).
-4. The worktree, its branch, and its metadata are left untouched.
-5. Return the restored root and the path of the worktree just left.
+4. **If the restore root is itself a managed worktree** (the session was
+   launched inside one before entering others), apply the idempotent lock
+   rule to it (§5, "Restores follow the same rule"): lock, adopt, or — if
+   foreign-locked — warn and co-occupy. The same applies to
+   `remove`-current's restore.
+5. The worktree, its branch, and its metadata are left untouched.
+6. Return the restored root and the path of the worktree just left.
 
 `exit` is what makes the merge-back workflow possible: create → work → commit
 → `exit` → merge/review from the main root → `remove`. Without it, `remove`
@@ -561,6 +567,40 @@ or agent who has verified the owner is dead — or the owner itself resuming
 (same session id → adopt). `manage_worktree` never force-unlocks another
 owner's lock and `force` does not escalate to git's `remove -f -f`
 double-force.
+
+**Restores follow the same rule.** Any operation that lands the session's
+env in a managed worktree without going through `switch` — `exit` restoring
+a saved env whose root is itself a managed worktree (the launched-inside
+case), or `remove`-current restoring such a root — applies the idempotent
+lock rule to the restore target: unlocked → lock; own marker → adopt;
+foreign → warn loudly and continue co-occupying (a restore cannot be
+refused — the session has to land somewhere — so this mirrors the init-time
+foreign-lock behavior; only resume re-entry, which has the restore root as a
+safe alternative, refuses on a foreign lock).
+
+### Lock state machine (normative summary)
+
+Every lock decision in this spec reduces to this table. Body text elaborates
+each row; if a conflict is ever found, the body text wins and this table has
+a bug — report it.
+
+| Event | Target unlocked | Target locked: own marker | Target locked: foreign / reasonless |
+|---|---|---|---|
+| `create` (new worktree) | atomic `add --lock --reason` | — (branch-exists error earlier) | — |
+| leave old worktree (`switch`-away, `create`-away, `exit`, clean close) | no-op | unlock | leave untouched |
+| enter (`switch` by name, or by path resolving managed) | lock | adopt (incl. crash residue) | refuse |
+| `switch` to the worktree already occupied | — | no-op, lock kept | — |
+| restore landing in a managed worktree (`exit`, `remove`-current) | lock | adopt | warn + co-occupy |
+| session init, launch cwd inside a managed worktree | lock | adopt (resumed same id) | warn + co-occupy |
+| resume re-entry (§7) | lock | adopt | refuse re-entry → restore root + notice |
+| `remove` target, session not inside | proceed | unlock (crash residue) + proceed | refuse; `force` does not override |
+| `remove` target, session inside | proceed | unlock at the restore step | — |
+| delegate creation (§9) | atomic `add --lock` with `serf:dlg:` marker | — | — |
+| delegate revival (`delegate_send` on a kept lane) | lock (`serf:dlg:`) | adopt | refuse revival |
+| disposal, unchanged lane | unlock (vacuous) → remove | unlock → remove | — (the dlg lock is the disposer's) |
+| disposal, changed lane | keep | unlock, keep | — |
+| `prune` candidate | eligible (other conditions apply) | skip | skip |
+| hard crash | — | lock stays (stale, diagnosable) | — |
 
 ### `list`
 
@@ -1402,6 +1442,14 @@ worktree tool is pure plumbing — git operations on temp repos. Tests use real
 - **Shell `cd` escapes:** the live-work guard keys off recorded launch working
   dirs; a background command that `cd`s into a worktree after launch is
   invisible to it.
+- **Cross-session live-work blindness:** locks track *session occupancy*, not
+  background jobs. A session that launches a background shell job inside a
+  worktree and then switches away unlocks it while the job still runs there;
+  the session's own `liveWorkUnder` guard protects it from that session's
+  `remove`/`prune`, but another session's `prune` sees an unlocked, possibly
+  still-clean worktree and can collect it under the running job. Keeping the
+  lock until the job ends would couple lock lifetime to job lifetime across
+  restarts — out of scope; documented instead.
 - **Docs/skills/MCP staleness after switch:** loaded once at init by design
   (§7); a worktree on a divergent branch keeps the original root's versions
   for the rest of the session.
@@ -1420,6 +1468,47 @@ worktree tool is pure plumbing — git operations on temp repos. Tests use real
   generous precisely so ordinary skew is harmless.
 - **Scheduled orphan sweeping:** deferred; `prune` is the primitive a future
   daemon trigger calls.
+
+## 12. Implementation plan
+
+TDD throughout; each phase lands green (gate: fmt, lint, `-race`) before the
+next begins. LoC are estimates for orientation, not budgets. §10's test list
+maps onto the phases below; the lock state machine (§5) is implemented once,
+in Phase 2, as a pure decision core with table-driven tests.
+
+1. **Phase 0 — detection** (~250 impl / ~350 test):
+   `ResolveMainRepoRoot` + cache slot in `agent/execenv/gitpath.go`;
+   `internal/gitpath.ResolveMainRepoRootLocal`; `run.go`/`serve.go`
+   RuntimeDir keying; hub launch dual-root. Independent of everything else.
+2. **Phase 1 — env-swap discipline** (~200 / ~300): `currentEnv()` accessor +
+   whole-function audit of the §7 read list; `swapEnvAndRefreshLocked` with
+   the outside-mu snapshot + `GitRootOrEmpty` pre-warm; lock-discipline
+   comment; race tests.
+3. **Phase 2 — worktree core, no tool surface** (~600 / ~900): projectid /
+   worktreeRoot / sidecar codec (`O_EXCL`, `%2F`, mtime grace); marker
+   parse + porcelain parse (C-unquoting) + the **idempotent lock helper
+   implementing the §5 state table** (pure decision core, table-driven
+   tests); `unchanged` / two-arm merged / adopted predicates; git version
+   preflight. This phase is where four review rounds concentrated — it gets
+   the densest tests.
+4. **Phase 3 — the `manage_worktree` tool** (~500 / ~800): six operations
+   wired to the Phase-2 core; `worktreeGuard`; registration + description
+   with usage policy; §8 error surfaces; fuzz table extension.
+5. **Phase 4 — persistence + resume + hub** (~300 / ~400): SessionMeta
+   worktree fields; resume re-entry incl. init-inside locking; hub consumer
+   migration (`tree.go` grouping, spawn prefill, resume `--dir`).
+6. **Phase 5 — delegate isolation** (~500 / ~700): `isolation` arg;
+   descriptor `Isolation` field + spawn/restore deny; lane creation; revival
+   re-lock; disposal in `Session.close` (children-closed → before
+   `closeStoreOnly()`); `WorkingDir` stat in resumability; shell-job
+   launch-workdir field + `liveWorkUnder`.
+7. **Phase 6 — skill, docs, and live validation**: update the
+   `using-git-worktrees` skill's Step 1a to teach the native tool (promised
+   in Goals; tracked here so it ships); a doc page under `docs/`; an
+   e2e scenario card driving the real tool through create → work → exit →
+   merge → remove and a delegate fan-out on a live model — the job-control
+   campaign's lesson stands: live feel-testing catches what unit tests and
+   review both miss.
 
 ## Adversarial review record
 
@@ -1569,3 +1658,17 @@ close never unlocks it); **reasonless locks classified foreign**;
 **grace judged by sidecar mtime, not creator wall-clock**; and the stale
 `-d`-refusal rows in §8/§10, the "(post-drain)" table row, and the
 "see step 6" cross-reference corrected.
+
+Rev 9 was a fresh-eyes implementation-readiness pass (no subagents): the
+complete lock state machine was reconstructed from the body text and checked
+cell by cell, which surfaced one remaining gap — **restores landing in a
+managed worktree took no lock** (`exit` or `remove`-current restoring the
+launched-inside root) — closed with the "Restores follow the same rule"
+paragraph and the normative state table in §5. Also restored the
+cross-session live-work blindness limitation (dropped in the rev-7 lock
+redesign but still true for background jobs that outlive occupancy), and
+added §12: a phased implementation plan with the skill update (promised in
+Goals, previously tracked nowhere) as an explicit work item. Deliberately
+NOT done: a prose rewrite to strip the review archaeology — every rewrite
+this campaign introduced defects, the body text is correct, and the state
+table plus §12 now give implementers the fast path.
