@@ -229,7 +229,7 @@ func TestBehaviorTag_SectionResolver_RenamedOpenAILoadsOpenAISection(t *testing.
 	// We compare against the actual file content so the test tracks prose
 	// changes automatically rather than coupling to a specific phrase.
 	openAISection := strings.TrimRight(openAISectionContent, "\n")
-	prompt := sess.renderSystemPrompt()
+	prompt := sess.renderSystemPrompt(sess.env)
 	if !strings.Contains(prompt, openAISection) {
 		t.Fatalf("system prompt missing openai section — SectionResolver provider must be %q (behaviorTag), not %q (ID)",
 			renamedProfile.BehaviorTag(), renamedProfile.ID())
@@ -259,7 +259,7 @@ func TestBehaviorTag_SectionResolver_OpenAICompatibleDoesNotLoadOpenAISection(t 
 	defer sess.Close()
 
 	openAISection := strings.TrimRight(openAISectionContent, "\n")
-	prompt := sess.renderSystemPrompt()
+	prompt := sess.renderSystemPrompt(sess.env)
 	if strings.Contains(prompt, openAISection) {
 		t.Fatalf("system prompt contains openai section — openai-compatible must NOT load the openai section")
 	}

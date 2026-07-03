@@ -495,9 +495,9 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		subCfg.spawn.deniedToolNames = append([]string(nil), deniedTools...)
 	}
 
-	subEnv := s.env
+	subEnv := s.currentEnv()
 	if workingDir = strings.TrimSpace(workingDir); workingDir != "" {
-		if le, ok := s.env.(*execenv.LocalExecutionEnvironment); ok {
+		if le, ok := subEnv.(*execenv.LocalExecutionEnvironment); ok {
 			subEnv = le.WithWorkingDirectory(workingDir)
 		} else {
 			return nil, errors.New("execution environment does not support working_dir override")

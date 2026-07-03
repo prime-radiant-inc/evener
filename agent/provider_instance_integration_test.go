@@ -120,7 +120,7 @@ func TestProviderInstance_RenamedOpenAI_IdentityAndBehavior(t *testing.T) {
 
 	// ── Assertion 3: behavior by tag — openai prompt section in system prompt ──
 	const openAIMarker = "they execute in the order you"
-	prompt := sess.renderSystemPrompt()
+	prompt := sess.renderSystemPrompt(sess.env)
 	if !strings.Contains(prompt, openAIMarker) {
 		t.Fatalf("system prompt missing openai section marker %q — renamed openai instance must get openai-tagged behavior", openAIMarker)
 	}
@@ -163,7 +163,7 @@ func TestProviderInstance_OpenAICompatible_NoOpenAIBehavior(t *testing.T) {
 
 	// System prompt must NOT contain the openai-only section.
 	const openAIMarker = "they execute in the order you"
-	prompt := sess.renderSystemPrompt()
+	prompt := sess.renderSystemPrompt(sess.env)
 	if strings.Contains(prompt, openAIMarker) {
 		t.Fatalf("system prompt contains openai section marker %q — openai-compatible must NOT load the openai section", openAIMarker)
 	}

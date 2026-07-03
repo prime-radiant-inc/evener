@@ -76,9 +76,11 @@ type Session struct {
 	//
 	// mu guards: history, state, closing, turns, modelResponses, totalRounds,
 	//   sessionEndEmitted, profile (swapped here; read via currentProfile()),
-	//   the mutable cfg knobs (ReasoningEffort, command timeouts,
-	//   MaxToolRoundsPerInput), cachedSystemPrompt, cachedToolDefs, the
-	//   comm communicate-result, steeringQueue, activeProvenance, followups, inputQueue,
+	//   env (swapped here; read via currentEnv()), envInfo (swapped alongside
+	//   env so the two never observe a torn intermediate state), the mutable
+	//   cfg knobs (ReasoningEffort, command timeouts, MaxToolRoundsPerInput),
+	//   cachedSystemPrompt, cachedToolDefs, the comm communicate-result,
+	//   steeringQueue, activeProvenance, followups, inputQueue,
 	//   loopDetectionCount, the task* reminder counters, depth, the goalInTurn
 	//   flag and kickFunc callback, and the naming name-state. It does NOT guard
 	//   reg — the tool.Registry self-synchronizes.
@@ -458,6 +460,16 @@ func (s *Session) currentProfile() *provider.Profile {
 	return s.profile
 }
 
+// currentEnv returns the active execution environment under s.mu so reads
+// never race a future env swap (a locked swap helper reassigns s.env under
+// s.mu). Callers that already hold s.mu must read s.env directly instead of
+// calling this — s.mu is not reentrant.
+func (s *Session) currentEnv() execenv.ExecutionEnvironment {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.env
+}
+
 // Client returns the session's LLM client.
 func (s *Session) Client() *llm.Client { return s.client }
 
@@ -558,7 +570,7 @@ func (s *Session) SetModel(model string) {
 		s.reapplyProviderSpecificTools(oldTag, newTag)
 	}
 	s.rebuildToolDefsCache()
-	s.refreshSystemPromptCache()
+	s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
 	s.mu.Unlock()
 	// Flush meta.json so a daemon crash before the next happy-path turn
 	// boundary doesn't leave on-disk model stale. Kata wnfz. maybeAutoSave

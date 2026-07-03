@@ -163,7 +163,7 @@ func (s *Session) runNotificationHook(ctx context.Context, message string) {
 func (s *Session) hookInput(event plugin.HookEvent) hooks.Input {
 	input := hooks.Input{
 		SessionID:     s.id,
-		CWD:           s.env.WorkingDirectory(),
+		CWD:           s.currentEnv().WorkingDirectory(),
 		HookEventName: string(event),
 	}
 	// TranscriptPath is empty when persistence is off; omitempty silences it.

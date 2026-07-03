@@ -124,7 +124,7 @@ func (s *Session) close(cleanupEnv bool) {
 
 		// 4. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).
 		if cleanupEnv {
-			s.env.Cleanup()
+			s.currentEnv().Cleanup()
 		}
 
 		// SessionEnd hooks (best-effort, bounded timeout)

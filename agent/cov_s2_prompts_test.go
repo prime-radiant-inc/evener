@@ -27,7 +27,7 @@ func TestS2Cov_RenderSystemPrompt_AppendFiles(t *testing.T) {
 		SystemPromptAppend: []string{good, missing},
 	}))
 
-	prompt := sess.renderSystemPrompt()
+	prompt := sess.renderSystemPrompt(sess.env)
 	if !strings.Contains(prompt, "EXTRA_APPENDED_INSTRUCTIONS") {
 		t.Fatalf("rendered prompt missing appended file content")
 	}

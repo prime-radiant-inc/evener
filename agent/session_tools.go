@@ -91,7 +91,7 @@ func (s *Session) RegisterTool(name, description string, params map[string]any, 
 	})
 	// Rebuild caches so the new tool appears in tool defs and system prompt.
 	s.rebuildToolDefsCache()
-	s.refreshSystemPromptCache()
+	s.refreshSystemPromptCache(s.currentEnv())
 }
 
 // describeImage makes a side-channel API call with no tools to describe an image
@@ -385,7 +385,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 		emitCanceledEnd(err)
 		return skippedToolResult(call, err)
 	}
-	res := s.reg.ExecuteCall(ctx, s.env, call)
+	res := s.reg.ExecuteCall(ctx, s.currentEnv(), call)
 	res.DurationMS = time.Since(toolStart).Milliseconds()
 	if err := s.errIfClosing(); err != nil {
 		emitCanceledEnd(err)
@@ -755,7 +755,7 @@ func (s *Session) readBeforeWriteWarning(path string) string {
 		return ""
 	}
 	// New file creation is exempt from the warning.
-	if !s.env.FileExists(path) {
+	if !s.currentEnv().FileExists(path) {
 		return ""
 	}
 	return "[WARNING: Writing to file that has not been read in this session. Consider reading first.]\n"
@@ -766,7 +766,7 @@ func (s *Session) resolveFilePath(path string) string {
 	if p == "" || filepath.IsAbs(p) {
 		return p
 	}
-	return filepath.Join(s.env.WorkingDirectory(), p)
+	return filepath.Join(s.currentEnv().WorkingDirectory(), p)
 }
 
 func (s *Session) getOrCreateTaskStore() *task.TaskStore {
@@ -777,7 +777,7 @@ func (s *Session) getOrCreateTaskStore() *task.TaskStore {
 		}
 		dir := s.stateDir
 		if dir == "" {
-			dir = s.env.WorkingDirectory()
+			dir = s.currentEnv().WorkingDirectory()
 		}
 		s.taskStore = task.NewTaskStore(dir, s.id)
 		_ = s.taskStore.Load()

@@ -839,7 +839,11 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 }
 
 func (s *Session) restoreDelegateChildEnvironment(desc *jobstore.DelegateRestoreDescriptor) (execenv.ExecutionEnvironment, error) {
-	if s == nil || s.env == nil {
+	if s == nil {
+		return nil, errors.New("execution environment is not configured")
+	}
+	env := s.currentEnv()
+	if env == nil {
 		return nil, errors.New("execution environment is not configured")
 	}
 	policy, ok := delegateRestoreLocalEnvPolicy(desc)
@@ -850,12 +854,12 @@ func (s *Session) restoreDelegateChildEnvironment(desc *jobstore.DelegateRestore
 	if !ok {
 		return nil, errors.New("invalid delegate restore working_dir")
 	}
-	childEnv := s.env
-	if le, ok := s.env.(*execenv.LocalExecutionEnvironment); ok {
+	childEnv := env
+	if le, ok := env.(*execenv.LocalExecutionEnvironment); ok {
 		clone := le.WithWorkingDirectory(workDir)
 		clone.EnvPolicy = policy
 		childEnv = clone
-	} else if workDir != s.env.WorkingDirectory() {
+	} else if workDir != env.WorkingDirectory() {
 		return nil, errors.New("execution environment does not support restored working_dir")
 	}
 	return childEnv, nil

@@ -509,15 +509,16 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 // The Session struct fields (client, profile, env, cfg) must already be set.
 // Returns the prompt sources so the caller can emit events after SessionStart.
 func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, runSessionStartHooks bool) ([]promptSource, error) {
-	ei := envInfoFromEnv(s.env, s.sclock())
+	env := s.currentEnv()
+	ei := envInfoFromEnv(env, s.sclock())
 	ei.KnowledgeCutoff = s.profile.KnowledgeCutoff()
-	if inRepo, branch, mod, untracked, commits := snapshotGit(s.env, ei.WorkingDir); inRepo {
+	if inRepo, branch, mod, untracked, commits := snapshotGit(env, ei.WorkingDir); inRepo {
 		ei.IsGitRepo = true
 		ei.GitBranch = branch
 		ei.GitModifiedFiles = mod
 		ei.GitUntrackedFiles = untracked
 		ei.GitRecentCommitTitles = commits
-		ei.GitOriginURL = gitOriginURL(s.env, ei.WorkingDir)
+		ei.GitOriginURL = gitOriginURL(env, ei.WorkingDir)
 	}
 	s.envInfo = ei
 
@@ -545,7 +546,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		// Scan extracted dir directly (skill subdirs are immediate children).
 		skill.ScanSkillsDir(dir, s.skills)
 	}
-	for name, meta := range skill.DiscoverSkills(s.env, s.cfg.SkillsDirs...) {
+	for name, meta := range skill.DiscoverSkills(s.currentEnv(), s.cfg.SkillsDirs...) {
 		s.skills[name] = meta // filesystem shadows embedded
 	}
 
@@ -596,11 +597,11 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	}
 
 	// Cache project docs once; reused every round for system prompt rebuilds.
-	s.projectDocs, s.projectDocsTruncated = LoadProjectDocs(s.env, s.profile.ProjectDocFiles()...)
+	s.projectDocs, s.projectDocsTruncated = LoadProjectDocs(s.currentEnv(), s.profile.ProjectDocFiles()...)
 
 	// Cache tool definitions and the rendered prompt.
 	s.rebuildToolDefsCache()
-	s.refreshSystemPromptCache()
+	s.refreshSystemPromptCache(env)
 
 	return s.promptSourceLog, nil
 }
@@ -1117,7 +1118,7 @@ func unsupportedHandlerTypeWarning(pluginName, event, handlerType string) string
 // initMCP discovers and connects to MCP servers if configured.
 // Uses a 30-second timeout since NewSession doesn't take a context.
 func (s *Session) initMCP() error {
-	configs, err := mcpconfig.Discover(s.env, s.cfg.MCPConfigFiles, s.cfg.MCPInline)
+	configs, err := mcpconfig.Discover(s.currentEnv(), s.cfg.MCPConfigFiles, s.cfg.MCPInline)
 	if err != nil {
 		return err
 	}
