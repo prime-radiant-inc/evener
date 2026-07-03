@@ -1,12 +1,49 @@
 package execenv
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// fakeExecEnv is a minimal, fully scripted ExecutionEnvironment: every
+// ExecCommand call is answered by a caller-supplied function, and every
+// filesystem/query method is an inert stub. It exists to reach gitpath.go's
+// branches that need a specific ExecCommand response (empty stdout, a
+// non-zero exit, or a git-common-dir that doesn't match a real repo's
+// structural shape) that real git cannot be coaxed into producing on
+// demand — the ExecutionEnvironment interface is exactly this package's own
+// seam for that (real git is exercised everywhere else in this file via
+// NewLocalExecutionEnvironment).
+type fakeExecEnv struct {
+	workDir string
+	exec    func(ctx context.Context, command string, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error)
+}
+
+func (f *fakeExecEnv) Initialize() error        { return nil }
+func (f *fakeExecEnv) Cleanup()                 {}
+func (f *fakeExecEnv) WorkingDirectory() string { return f.workDir }
+func (f *fakeExecEnv) Platform() string         { return "test" }
+func (f *fakeExecEnv) OSVersion() string        { return "test" }
+
+func (f *fakeExecEnv) ReadFile(string, *int, *int) (string, error)           { return "", nil }
+func (f *fakeExecEnv) WriteFile(string, string) (string, error)              { return "", nil }
+func (f *fakeExecEnv) EditFile(string, string, string, bool) (string, error) { return "", nil }
+func (f *fakeExecEnv) FileExists(string) bool                                { return false }
+func (f *fakeExecEnv) Glob(string, string) ([]string, error)                 { return nil, nil }
+func (f *fakeExecEnv) Grep(string, string, string, bool, int, string) (string, error) {
+	return "", nil
+}
+func (f *fakeExecEnv) ListDirectory(string, int) ([]DirEntry, error) { return nil, nil }
+
+func (f *fakeExecEnv) ExecCommand(ctx context.Context, command string, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error) {
+	return f.exec(ctx, command, timeoutMS, workingDir, envVars)
+}
+
+var _ ExecutionEnvironment = (*fakeExecEnv)(nil)
 
 // runGit runs a git command in dir with a fixed identity and the local file
 // protocol enabled (needed for submodule fixtures on git >= 2.38).
@@ -243,5 +280,211 @@ func TestResolveMainRepoRoot_Memoized(t *testing.T) {
 	}
 	if got := ResolveMainRepoRoot(NewLocalExecutionEnvironment(wt), wt); got != "" {
 		t.Fatalf("fresh env after .git removal = %q, want empty", got)
+	}
+}
+
+// --- Non-*LocalExecutionEnvironment callers: GitRootOrEmpty and
+// ResolveMainRepoRoot both special-case *LocalExecutionEnvironment for
+// caching and fall straight through to the uncached resolver for any other
+// ExecutionEnvironment implementation. ---
+
+func TestGitRootOrEmpty_NonLocalEnv(t *testing.T) {
+	repo := t.TempDir()
+	env := &fakeExecEnv{
+		workDir: repo,
+		exec: func(_ context.Context, command string, _ int, _ string, _ map[string]string) (ExecResult, error) {
+			if strings.Contains(command, "--show-toplevel") {
+				return ExecResult{Stdout: repo, ExitCode: 0}, nil
+			}
+			return ExecResult{ExitCode: 1}, nil
+		},
+	}
+	if got, want := GitRootOrEmpty(env, repo), evalSym(t, repo); got != want {
+		t.Fatalf("GitRootOrEmpty (non-local env) = %q, want %q", got, want)
+	}
+}
+
+func TestResolveMainRepoRoot_NonLocalEnv(t *testing.T) {
+	// A plain (non-repo) dir: structuralMainRoot fails immediately, so
+	// ResolveMainRepoRoot must fall through to mainRepoRootUncached and
+	// invoke the fake env's ExecCommand rather than ever touching a cache.
+	dir := t.TempDir()
+	called := false
+	env := &fakeExecEnv{
+		workDir: dir,
+		exec: func(_ context.Context, _ string, _ int, _ string, _ map[string]string) (ExecResult, error) {
+			called = true
+			return ExecResult{ExitCode: 1}, nil
+		},
+	}
+	if got := ResolveMainRepoRoot(env, dir); got != "" {
+		t.Fatalf("ResolveMainRepoRoot (non-local env) = %q, want empty", got)
+	}
+	if !called {
+		t.Fatalf("ResolveMainRepoRoot (non-local env) never called ExecCommand")
+	}
+}
+
+// --- gitRootUncached: response-shape edge cases only reachable with a
+// scripted ExecCommand response (real git never emits exit 0 with empty
+// stdout, or a toplevel that isn't a prefix of cwd). ---
+
+func TestGitRootOrEmpty_EmptyStdout(t *testing.T) {
+	dir := t.TempDir()
+	env := &fakeExecEnv{
+		workDir: dir,
+		exec: func(_ context.Context, _ string, _ int, _ string, _ map[string]string) (ExecResult, error) {
+			return ExecResult{Stdout: "   \n", ExitCode: 0}, nil
+		},
+	}
+	if got := GitRootOrEmpty(env, dir); got != "" {
+		t.Fatalf("GitRootOrEmpty with blank stdout = %q, want empty", got)
+	}
+}
+
+func TestGitRootOrEmpty_ReportedRootNotPrefixOfCwd(t *testing.T) {
+	dir := t.TempDir()
+	elsewhere := t.TempDir()
+	env := &fakeExecEnv{
+		workDir: dir,
+		exec: func(_ context.Context, _ string, _ int, _ string, _ map[string]string) (ExecResult, error) {
+			// A root that shares no path relationship with cwd at all — the
+			// sanity check must reject it rather than trust git blindly.
+			return ExecResult{Stdout: elsewhere, ExitCode: 0}, nil
+		},
+	}
+	if got := GitRootOrEmpty(env, dir); got != "" {
+		t.Fatalf("GitRootOrEmpty with a root that isn't a prefix of cwd = %q, want empty", got)
+	}
+}
+
+// --- gitBinaryMainRoot: response-shape edge cases ---
+
+func TestResolveMainRepoRoot_CommonDirEmptyStdout(t *testing.T) {
+	dir := t.TempDir()
+	env := &fakeExecEnv{
+		workDir: dir,
+		exec: func(_ context.Context, command string, _ int, _ string, _ map[string]string) (ExecResult, error) {
+			if strings.Contains(command, "--git-common-dir") {
+				return ExecResult{Stdout: "  \n", ExitCode: 0}, nil
+			}
+			return ExecResult{ExitCode: 1}, nil
+		},
+	}
+	if got := ResolveMainRepoRoot(env, dir); got != "" {
+		t.Fatalf("ResolveMainRepoRoot with blank --git-common-dir stdout = %q, want empty", got)
+	}
+}
+
+// TestResolveMainRepoRoot_PrimaryGitBinaryCandidateSucceeds covers
+// gitBinaryMainRoot's primary success arm (candidate resolves without
+// falling to the --show-toplevel submodule recovery): a real ".git"
+// directory at <candidate>/.git, reported as the common dir by a scripted
+// --git-common-dir, with cwd deliberately outside candidate's ancestry so
+// structuralMainRoot's plain directory walk never finds it and defers to
+// the git binary — exactly the "moved worktree" shape gitBinaryMainRoot's
+// doc comment describes.
+func TestResolveMainRepoRoot_PrimaryGitBinaryCandidateSucceeds(t *testing.T) {
+	candidate := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(candidate, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cwd := t.TempDir() // unrelated to candidate; structural walk finds nothing
+	common := filepath.Join(candidate, ".git")
+
+	env := &fakeExecEnv{
+		workDir: cwd,
+		exec: func(_ context.Context, command string, _ int, _ string, _ map[string]string) (ExecResult, error) {
+			if strings.Contains(command, "--git-common-dir") {
+				return ExecResult{Stdout: common, ExitCode: 0}, nil
+			}
+			t.Fatalf("unexpected ExecCommand call: %q (want only --git-common-dir)", command)
+			return ExecResult{ExitCode: 1}, nil
+		},
+	}
+	want := evalSym(t, candidate)
+	if got := ResolveMainRepoRoot(env, cwd); got != want {
+		t.Fatalf("ResolveMainRepoRoot (primary git-binary candidate) = %q, want %q", got, want)
+	}
+}
+
+func TestResolveMainRepoRoot_ShowToplevelFails(t *testing.T) {
+	dir := t.TempDir()
+	env := &fakeExecEnv{
+		workDir: dir,
+		exec: func(_ context.Context, command string, _ int, _ string, _ map[string]string) (ExecResult, error) {
+			switch {
+			case strings.Contains(command, "--git-common-dir"):
+				// A common dir with no corresponding real .git entry anywhere
+				// forces the fallback to --show-toplevel.
+				return ExecResult{Stdout: filepath.Join(dir, "nonexistent", ".git"), ExitCode: 0}, nil
+			case strings.Contains(command, "--show-toplevel"):
+				return ExecResult{ExitCode: 128}, nil
+			}
+			return ExecResult{ExitCode: 1}, nil
+		},
+	}
+	if got := ResolveMainRepoRoot(env, dir); got != "" {
+		t.Fatalf("ResolveMainRepoRoot with a failing --show-toplevel fallback = %q, want empty", got)
+	}
+}
+
+func TestResolveMainRepoRoot_ShowToplevelEmptyStdout(t *testing.T) {
+	dir := t.TempDir()
+	env := &fakeExecEnv{
+		workDir: dir,
+		exec: func(_ context.Context, command string, _ int, _ string, _ map[string]string) (ExecResult, error) {
+			switch {
+			case strings.Contains(command, "--git-common-dir"):
+				return ExecResult{Stdout: filepath.Join(dir, "nonexistent", ".git"), ExitCode: 0}, nil
+			case strings.Contains(command, "--show-toplevel"):
+				return ExecResult{Stdout: "  \n", ExitCode: 0}, nil
+			}
+			return ExecResult{ExitCode: 1}, nil
+		},
+	}
+	if got := ResolveMainRepoRoot(env, dir); got != "" {
+		t.Fatalf("ResolveMainRepoRoot with blank --show-toplevel stdout = %q, want empty", got)
+	}
+}
+
+// --- DirsFromRootToCwd ---
+
+func TestDirsFromRootToCwd_RelError(t *testing.T) {
+	// filepath.Rel refuses to relate a relative path to an absolute one; the
+	// function must fail safe to []{cwd} rather than propagate the error.
+	got := DirsFromRootToCwd("relative/root", "/absolute/cwd")
+	want := []string{"/absolute/cwd"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("DirsFromRootToCwd with an unrelatable root/cwd pair = %v, want %v", got, want)
+	}
+}
+
+func TestDirsFromRootToCwd_Basic(t *testing.T) {
+	got := DirsFromRootToCwd("/a/b", "/a/b/c/d")
+	want := []string{"/a/b", "/a/b/c", "/a/b/c/d"}
+	if len(got) != len(want) {
+		t.Fatalf("DirsFromRootToCwd = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("DirsFromRootToCwd[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+func TestDirsFromRootToCwd_CwdOutsideRoot(t *testing.T) {
+	got := DirsFromRootToCwd("/a/b", "/x/y")
+	want := []string{"/x/y"}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("DirsFromRootToCwd with cwd outside root = %v, want %v", got, want)
+	}
+}
+
+func TestDirsFromRootToCwd_RootEqualsCwd(t *testing.T) {
+	got := DirsFromRootToCwd("/a/b", "/a/b")
+	want := []string{"/a/b"}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("DirsFromRootToCwd with root==cwd = %v, want %v", got, want)
 	}
 }

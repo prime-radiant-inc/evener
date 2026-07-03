@@ -3,7 +3,9 @@ package worktree
 import (
 	"encoding/json"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -464,4 +466,75 @@ func TestEncodeSidecarNameUsedForFilename(t *testing.T) {
 	if !ok || decoded != sc.Name {
 		t.Fatalf("DecodeSidecarName(%q) = %q, %v, want %q, true", encoded, decoded, ok, sc.Name)
 	}
+}
+
+// withTinyFileSizeLimit lowers the process's RLIMIT_FSIZE to n bytes for the
+// duration of fn, restoring the original limit afterward. It is the one
+// portable way to force a genuine os-level write failure (EFBIG) against a
+// real file — encoding/json can never fail to Marshal a Sidecar (every field
+// is a plain string or bool; there is no channel, func, complex, or NaN
+// value for it to choke on), so WriteSidecarExcl's and UpdateSidecar's
+// "encode" error branches are only reachable via the underlying io.Writer
+// actually failing, not via a marshal-time type error.
+//
+// Exceeding RLIMIT_FSIZE delivers SIGXFSZ to the process; left at its
+// default disposition that SIGNAL TERMINATES THE PROCESS rather than just
+// failing the write (POSIX: write() only returns EFBIG instead of killing
+// the caller when SIGXFSZ is caught or ignored). So this helper ignores
+// SIGXFSZ for the duration of fn and restores the default disposition
+// afterward — without that, this test would crash the whole `go test`
+// binary instead of exercising the error-return path it's here to cover.
+func withTinyFileSizeLimit(t *testing.T, n uint64, fn func()) {
+	t.Helper()
+	var original syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &original); err != nil {
+		t.Skipf("Getrlimit(RLIMIT_FSIZE): %v", err)
+	}
+	tiny := syscall.Rlimit{Cur: n, Max: original.Max}
+	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &tiny); err != nil {
+		t.Skipf("Setrlimit(RLIMIT_FSIZE, %d): %v", n, err)
+	}
+	signal.Ignore(syscall.SIGXFSZ)
+	defer func() {
+		signal.Reset(syscall.SIGXFSZ)
+		if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &original); err != nil {
+			t.Fatalf("restore RLIMIT_FSIZE: %v", err)
+		}
+	}()
+	fn()
+}
+
+// TestWriteSidecarExclEncodeFailure exercises WriteSidecarExcl's write-error
+// path (the file is created successfully, but the subsequent JSON write to
+// it fails) via a real, genuine os-level I/O failure: RLIMIT_FSIZE capped
+// below the encoded sidecar's byte size triggers a real EFBIG from the
+// kernel on write, exactly the class of failure ("disk full", "quota
+// exceeded") this branch exists to surface.
+func TestWriteSidecarExclEncodeFailure(t *testing.T) {
+	dir := t.TempDir()
+	sc := testSidecar()
+	withTinyFileSizeLimit(t, 4, func() {
+		err := WriteSidecarExcl(dir, sc.Name, sc)
+		if err == nil {
+			t.Fatalf("WriteSidecarExcl under a 4-byte RLIMIT_FSIZE = nil, want a write error")
+		}
+	})
+}
+
+// TestUpdateSidecarEncodeFailure exercises UpdateSidecar's encode-error path
+// the same way: the read succeeds (the sidecar already exists, written
+// before the limit is lowered), but re-marshaling and writing it back
+// overflows the tiny file-size limit.
+func TestUpdateSidecarEncodeFailure(t *testing.T) {
+	dir := t.TempDir()
+	sc := testSidecar()
+	if err := WriteSidecarExcl(dir, sc.Name, sc); err != nil {
+		t.Fatalf("WriteSidecarExcl: %v", err)
+	}
+	withTinyFileSizeLimit(t, 4, func() {
+		err := UpdateSidecar(dir, sc.Name, func(s *Sidecar) { s.BaseSHA = "changed" })
+		if err == nil {
+			t.Fatalf("UpdateSidecar under a 4-byte RLIMIT_FSIZE = nil, want a write error")
+		}
+	})
 }

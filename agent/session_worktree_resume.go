@@ -244,6 +244,14 @@ func (s *Session) applyInitInsideWorktreeLock(isGitRepo bool) {
 			Message: fmt.Sprintf("session started inside worktree %s, which is locked by %s; continuing and co-occupying it", activeRoot, occupant),
 		})
 	default:
+		// Coverage note: unreachable. worktree.Decide's own EvInitInside row
+		// only ever returns ActRefuse (its default) for a LockState outside
+		// {Unlocked, OwnSession, OwnDelegate, Foreign}, and st here is always
+		// one of exactly those four — either worktree.Unlocked directly or
+		// ClassifyReason's return value, which never yields anything else.
+		// Decide(EvInitInside, st) therefore always lands in one of the three
+		// cases above; this default is a defensive guard against a future
+		// LockState value being added without a matching case here.
 		return
 	}
 

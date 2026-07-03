@@ -122,6 +122,15 @@ func gitBinaryMainRootLocal(cwd string) string {
 	}
 	candidate := MainRootCandidateFromCommonDir(cwd, common)
 	if candidate != "" && GitEntryResolvesToCommon(candidate, common) {
+		// Coverage note: this arm needs StructuralMainRoot to have failed
+		// (no cleanly-parseable ".git" pointer found walking up) while the
+		// real git binary still resolves --git-common-dir correctly and
+		// GitEntryResolvesToCommon confirms it — e.g. a worktree whose
+		// ".git" pointer was rewritten through a symlinked alias for the
+		// "worktrees" segment. Constructing that portably alongside the
+		// submodule fixture below wasn't worth the fixture complexity; the
+		// arm is exercised by GitEntryResolvesToCommon's own direct tests
+		// (gitpath_test.go), just not through this exact call site.
 		return candidate
 	}
 

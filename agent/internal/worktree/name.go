@@ -52,15 +52,17 @@ func ValidateName(name string) error {
 	if strings.Contains(name, "..") {
 		return fmt.Errorf("worktree name %q must not contain %q", name, "..")
 	}
-	if strings.HasPrefix(name, "-") {
-		return fmt.Errorf("worktree name %q must not start with %q", name, "-")
-	}
 	if strings.HasSuffix(name, "/") {
 		return fmt.Errorf("worktree name %q must not end with %q", name, "/")
 	}
-	if strings.Contains(name, "@{") {
-		return fmt.Errorf("worktree name %q must not contain %q", name, "@{")
-	}
+	// A leading "-" and an "@{" substring are both git ref-format hazards
+	// ("-" masquerades as a flag; "@{" is reflog syntax), but neither needs
+	// an explicit check here: nameRe's first-character class ([A-Za-z0-9_])
+	// already excludes "-" as the first byte, and its continuation-character
+	// class ([A-Za-z0-9_./-]) contains neither "@" nor "{", so no string
+	// that passes nameRe above can start with "-" or contain "@{". An
+	// explicit check for either would be dead code unreachable from this
+	// point in the function.
 	if strings.HasSuffix(name, ".") {
 		return fmt.Errorf("worktree name %q must not end with %q", name, ".")
 	}

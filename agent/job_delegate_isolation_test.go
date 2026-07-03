@@ -260,6 +260,60 @@ func TestDelegateIsolation_SpawnFailureAfterWorktreeCreateRollsBackLane(t *testi
 	}
 }
 
+// TestDelegateIsolation_AttachFailureAfterWorktreeCreateRollsBackLane covers
+// createDelegate's SECOND rollback call site: unlike
+// TestDelegateIsolation_SpawnFailureAfterWorktreeCreateRollsBackLane above
+// (which fails at prepareSubagentRun, before a job record exists),
+// this fails one step later — prepareSubagentRun SUCCEEDS (the isolation
+// lane is created and the child env is rooted at it), but
+// attachDelegateJobWithPreparedAndDelegate then fails because its output
+// file cannot be created (the jobs dir is made read-only). The lane must
+// still be rolled back.
+func TestDelegateIsolation_AttachFailureAfterWorktreeCreateRollsBackLane(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root: directory permissions do not restrict writes")
+	}
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	r := newWtDlgRepo(t, c)
+
+	jm, err := sessionJobManager(r.s)
+	if err != nil {
+		t.Fatalf("sessionJobManager: %v", err)
+	}
+	jobsDir := filepath.Join(jm.dir, "jobs")
+	if err := os.MkdirAll(jobsDir, 0o755); err != nil {
+		t.Fatalf("mkdir jobs dir: %v", err)
+	}
+	if err := os.Chmod(jobsDir, 0o555); err != nil {
+		t.Fatalf("chmod jobs dir read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(jobsDir, 0o755) })
+
+	res := r.s.createDelegate(context.Background(), delegateArgs{
+		Task:      "do isolated work",
+		Isolation: "worktree",
+	})
+	if res.Err == nil {
+		t.Fatal("expected createDelegate to fail when the jobs output dir is unwritable")
+	}
+	if res.DelegateID == "" {
+		t.Fatal("createDelegate did not report the delegate_id it minted before failing")
+	}
+	// Restore write access so t.TempDir()'s cleanup (and the lane-removed
+	// assertion below) can proceed.
+	if err := os.Chmod(jobsDir, 0o755); err != nil {
+		t.Fatalf("restore jobs dir permissions: %v", err)
+	}
+	lane := r.lanePath(res.DelegateID)
+	if _, err := os.Stat(lane); !os.IsNotExist(err) {
+		t.Fatalf("stat lane after rollback = (%v), want it removed", err)
+	}
+	if _, err := worktree.ReadSidecar(r.metaDir(), res.DelegateID); err == nil {
+		t.Fatal("expected the sidecar to be removed by rollback")
+	}
+}
+
 // --- manage_worktree deny: spawn, all-tools agent type, and after restore ---
 
 func TestDelegateIsolation_ManageWorktreeDeniedAtSpawn(t *testing.T) {
@@ -716,5 +770,18 @@ func TestDelegateIsolation_ParentSwitchIntoLiveLaneRefused(t *testing.T) {
 	wantReason := worktree.FormatDelegateMarker(res.DelegateID, r.s.id)
 	if !strings.Contains(err.Error(), wantReason) {
 		t.Errorf("error = %q, want it to name the delegate lock reason %q", err.Error(), wantReason)
+	}
+}
+
+// TestNotResumableSendError_WorkingDirMissingMessage covers
+// notResumableSendError's notResumableWorkingDirMissing arm directly (the
+// notResumableWorktreeDisposed arm and the default machine-readable-code
+// fallback are already exercised via
+// TestResumability_RefusesDisposedDelegate in session_worktree_close_test.go
+// and the general delegate_send error-catalog tests respectively).
+func TestNotResumableSendError_WorkingDirMissingMessage(t *testing.T) {
+	err := notResumableSendError(notResumableWorkingDirMissing)
+	if err == nil || !strings.Contains(err.Error(), "working directory no longer exists") {
+		t.Fatalf("notResumableSendError(%q) = %v, want a clear working-directory-missing message", notResumableWorkingDirMissing, err)
 	}
 }

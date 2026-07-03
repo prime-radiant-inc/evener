@@ -425,6 +425,137 @@ func TestWorktreeCreate_TooOldGitPreflightErrors(t *testing.T) {
 	}
 }
 
+// TestWorktreeCreateCore_ControlEnvNonLocalEnvErrors covers
+// worktreeCreateCore's own worktreeControlEnv failure branch. Every real
+// caller (worktreeCreate, createDelegateWorktree) captures `active` from
+// s.currentEnv() and passes it straight through, so `active` and s.env are
+// always in sync in normal use — but worktreeCreateCore resolves the main
+// repo root from the `active` PARAMETER while its later control-env lookup
+// reads s.currentEnv() fresh, so a caller that decouples the two (as a
+// direct unit test, exactly as done here) can make the second lookup see a
+// non-local env even though `active` itself is a perfectly valid local one.
+func TestWorktreeCreateCore_ControlEnvNonLocalEnvErrors(t *testing.T) {
+	r := newWorktreeRepo(t)
+	active := r.s.currentEnv().(*execenv.LocalExecutionEnvironment)
+
+	r.s.mu.Lock()
+	r.s.env = &timeoutEnv{wd: r.mainRoot}
+	r.s.mu.Unlock()
+
+	marker := worktree.FormatSessionMarker(r.s.id)
+	_, _, _, _, _, err := r.s.worktreeCreateCore(context.Background(), active, "x", "", worktree.EvCreate, marker, "test", nil)
+	if err == nil || !strings.Contains(err.Error(), "local execution environment") {
+		t.Fatalf("worktreeCreateCore with a decoupled non-local session env: err = %v, want a local-execution-environment error", err)
+	}
+}
+
+// TestWorktreeCreate_RejectsGitReservedNameHEAD covers the check-ref-format
+// gate specifically (distinct from ValidateName's own regex, which is a
+// deliberately permissive SUBSET of git's real rules per its doc comment):
+// "HEAD" matches ValidateName's regex and every explicit ValidateName check
+// (no dots, no leading dash, no path components), but git's own
+// `check-ref-format --branch` rejects it as a reserved name.
+func TestWorktreeCreate_RejectsGitReservedNameHEAD(t *testing.T) {
+	r := newWorktreeRepo(t)
+	if err := worktree.ValidateName("HEAD"); err != nil {
+		t.Fatalf("fixture invalid: ValidateName(HEAD) = %v, want nil (must pass ValidateName to reach check-ref-format)", err)
+	}
+	_, err := r.create(t, map[string]any{"name": "HEAD"})
+	if err == nil || !strings.Contains(err.Error(), "is not a valid git branch name") {
+		t.Fatalf("create HEAD: err = %v, want the check-ref-format rejection message", err)
+	}
+}
+
+// TestWorktreeCreate_MetaDirMkdirFailsWhenProjectDirIsAFile covers step 5's
+// MkdirAll(metaDir) failure branch: a plain FILE occupying the exact path a
+// managed worktree's project directory would live at makes MkdirAll fail
+// with ENOTDIR, before any sidecar write or git call.
+func TestWorktreeCreate_MetaDirMkdirFailsWhenProjectDirIsAFile(t *testing.T) {
+	r := newWorktreeRepo(t)
+	canonicalMain := r.canonicalMain(t)
+	projectDir := filepath.Dir(r.managedPath(canonicalMain, "x"))
+	if err := os.MkdirAll(filepath.Dir(projectDir), 0o755); err != nil {
+		t.Fatalf("mkdir worktreeRoot: %v", err)
+	}
+	if err := os.WriteFile(projectDir, []byte("blocking file\n"), 0o644); err != nil {
+		t.Fatalf("write blocking file at projectDir: %v", err)
+	}
+
+	_, err := r.create(t, map[string]any{"name": "x"})
+	if err == nil || !strings.Contains(err.Error(), "create metadata dir") {
+		t.Fatalf("create with a file blocking the project dir: err = %v, want a metadata-dir creation error", err)
+	}
+}
+
+// TestWorktreeCreate_SidecarAlreadyExistsRace covers WriteSidecarExcl's
+// os.IsExist branch directly through create: a sidecar file already sitting
+// at the exact path create would write (simulating a concurrent create that
+// won the race) makes the O_EXCL write fail with EEXIST, surfaced as the
+// distinct "already being created" message rather than a generic write
+// error.
+func TestWorktreeCreate_SidecarAlreadyExistsRace(t *testing.T) {
+	r := newWorktreeRepo(t)
+	canonicalMain := r.canonicalMain(t)
+	metaDir := r.metaDir(canonicalMain)
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatalf("mkdir metaDir: %v", err)
+	}
+	sc := worktree.Sidecar{
+		Name:           "x",
+		Branch:         "x",
+		BaseSHA:        r.head,
+		OriginalRoot:   canonicalMain,
+		CreatorSession: "someone-else",
+		CreatedAt:      "2026-01-01T00:00:00Z",
+	}
+	if err := worktree.WriteSidecarExcl(metaDir, "x", sc); err != nil {
+		t.Fatalf("pre-seed sidecar: %v", err)
+	}
+
+	_, err := r.create(t, map[string]any{"name": "x"})
+	if err == nil || !strings.Contains(err.Error(), "already being created") {
+		t.Fatalf("create racing an existing sidecar: err = %v, want the already-being-created message", err)
+	}
+	// The pre-seeded sidecar (someone else's in-flight create) must survive
+	// untouched — create must not clobber or delete a sidecar it didn't write.
+	got, rerr := worktree.ReadSidecar(metaDir, "x")
+	if rerr != nil {
+		t.Fatalf("pre-seeded sidecar was removed: %v", rerr)
+	}
+	if got.CreatorSession != "someone-else" {
+		t.Errorf("pre-seeded sidecar mutated: creator = %q, want %q", got.CreatorSession, "someone-else")
+	}
+}
+
+// TestWorktreeCreate_WorktreeParentMkdirFailsWhenPathComponentIsAFile covers
+// step 6's MkdirAll(filepath.Dir(worktreePath)) failure branch for a
+// slash-nested name: a plain FILE occupying the exact path the worktree's
+// parent directory would live at makes MkdirAll fail with ENOTDIR, AFTER the
+// sidecar has already been written — so the failure path must also clean up
+// the just-written sidecar (proven here, not just the error text).
+func TestWorktreeCreate_WorktreeParentMkdirFailsWhenPathComponentIsAFile(t *testing.T) {
+	r := newWorktreeRepo(t)
+	canonicalMain := r.canonicalMain(t)
+	// name "blocked/nested" needs a parent dir at managedPath(.., "blocked");
+	// occupy that exact path with a file instead.
+	blocked := r.managedPath(canonicalMain, "blocked")
+	if err := os.MkdirAll(filepath.Dir(blocked), 0o755); err != nil {
+		t.Fatalf("mkdir project dir: %v", err)
+	}
+	if err := os.WriteFile(blocked, []byte("blocking file\n"), 0o644); err != nil {
+		t.Fatalf("write blocking file: %v", err)
+	}
+
+	_, err := r.create(t, map[string]any{"name": "blocked/nested"})
+	if err == nil || !strings.Contains(err.Error(), "create worktree parent dir") {
+		t.Fatalf("create with a file blocking the worktree parent dir: err = %v, want a parent-dir creation error", err)
+	}
+	metaDir := r.metaDir(canonicalMain)
+	if _, rerr := worktree.ReadSidecar(metaDir, "blocked/nested"); !os.IsNotExist(rerr) {
+		t.Errorf("sidecar survived a failed worktree-parent mkdir: err=%v, want it cleaned up", rerr)
+	}
+}
+
 // branchExistsInRepo reports whether refs/heads/<name> exists in the repo at
 // root, via a throwaway git invocation (separate from the tool's own check).
 func branchExistsInRepo(t *testing.T, root, name string) bool {

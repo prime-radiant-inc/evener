@@ -1,11 +1,14 @@
 package agent
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/worktree"
 )
 
@@ -249,7 +252,192 @@ func TestWorktreeSwitch_RequiresExactlyOneOfNameOrPath(t *testing.T) {
 	}
 }
 
+// TestWorktreeSwitch_TargetLockInspectionErrorsWhenGitUnavailable covers
+// worktreeEnterManaged's own lockStateOf error branch (distinct from the
+// same-target no-op path below): switching to a DIFFERENT managed worktree
+// needs to inspect the TARGET's lock via a real git subprocess, which fails
+// cleanly (not a panic, not a silent success) when git is hidden entirely.
+func TestWorktreeSwitch_TargetLockInspectionErrorsWhenGitUnavailable(t *testing.T) {
+	r := newWorktreeRepo(t)
+	if _, err := r.create(t, map[string]any{"name": "A"}); err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+
+	t.Setenv("PATH", t.TempDir())
+	if _, lookErr := exec.LookPath("git"); lookErr == nil {
+		t.Skip("git still resolvable after PATH override; cannot prove the no-git path")
+	}
+
+	_, err := r.switchOp(t, map[string]any{"name": "A"})
+	if err == nil || !strings.Contains(err.Error(), "inspecting the target lock") {
+		t.Fatalf("switch to A with git hidden: err = %v, want the target-lock-inspection error", err)
+	}
+}
+
+// TestWorktreeSwitch_CurrentLockInspectionErrorsWhenGitUnavailable covers
+// switchToCurrentNoOp's own lockStateOf error branch: switching to the
+// worktree the session ALREADY occupies still needs to re-verify the lock
+// (spec §4 switch step 1), which fails the same clean way with git hidden.
+func TestWorktreeSwitch_CurrentLockInspectionErrorsWhenGitUnavailable(t *testing.T) {
+	r := newWorktreeRepo(t)
+	if _, err := r.create(t, map[string]any{"name": "A"}); err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	// The session is now inside A already.
+
+	t.Setenv("PATH", t.TempDir())
+	if _, lookErr := exec.LookPath("git"); lookErr == nil {
+		t.Skip("git still resolvable after PATH override; cannot prove the no-git path")
+	}
+
+	_, err := r.switchOp(t, map[string]any{"name": "A"})
+	if err == nil || !strings.Contains(err.Error(), "inspecting the current worktree lock") {
+		t.Fatalf("switch to the already-occupied A with git hidden: err = %v, want the current-lock-inspection error", err)
+	}
+}
+
+// TestLeaveCurrentWorktree_LockStateErrorPropagates is a direct white-box
+// test of leaveCurrentWorktree's own lockStateOf error branch, reached
+// (in the tool surface) only as a sub-step of create-away/switch-away/exit —
+// this exercises it in isolation with git hidden after a real occupied
+// worktree is already in place.
+func TestLeaveCurrentWorktree_LockStateErrorPropagates(t *testing.T) {
+	r := newWorktreeRepo(t)
+	if _, err := r.create(t, map[string]any{"name": "A"}); err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	mainRoot := r.canonicalMain(t)
+	controlEnv := r.s.currentEnv().(*execenv.LocalExecutionEnvironment).WithWorkingDirectory(mainRoot)
+	run := gitRunner(context.Background(), controlEnv)
+
+	t.Setenv("PATH", t.TempDir())
+	if _, lookErr := exec.LookPath("git"); lookErr == nil {
+		t.Skip("git still resolvable after PATH override; cannot prove the no-git path")
+	}
+
+	err := r.s.leaveCurrentWorktree(run)
+	if err == nil || !strings.Contains(err.Error(), "inspecting the current worktree lock") {
+		t.Fatalf("leaveCurrentWorktree with git hidden: err = %v, want the lock-inspection error", err)
+	}
+}
+
+// TestWorktreeControlRun_NonLocalEnvErrors is a direct white-box test of
+// worktreeControlRun's own local-execution-environment guard (the same
+// underlying check as TestWorktreeControlEnv_NonLocalEnvErrors, but through
+// this thin wrapper specifically).
+func TestWorktreeControlRun_NonLocalEnvErrors(t *testing.T) {
+	r := newWorktreeRepo(t)
+	r.s.mu.Lock()
+	r.s.env = &timeoutEnv{wd: r.mainRoot}
+	r.s.mu.Unlock()
+
+	_, err := r.s.worktreeControlRun(context.Background(), r.mainRoot)
+	if err == nil || !strings.Contains(err.Error(), "local execution environment") {
+		t.Fatalf("worktreeControlRun with a non-local env: err = %v, want the local-execution-environment error", err)
+	}
+}
+
 // --- switch by path ---
+
+// TestWorktreeSwitchByPath_NotInGitRepo covers worktreeSwitchByPath's own
+// "not in a git repository" guard (st.mainRepoRoot == ""), independent of
+// worktreeSwitchByName's identical-shaped guard.
+func TestWorktreeSwitchByPath_NotInGitRepo(t *testing.T) {
+	dir := t.TempDir() // not a git repo at all
+	s := newSession(t, withDir(dir))
+	_, err := s.worktreeSwitchByPath(context.Background(), dir)
+	if err == nil || !strings.Contains(err.Error(), "not in a git repository") {
+		t.Fatalf("switch by path outside a git repo: err = %v, want the not-in-a-git-repository error", err)
+	}
+}
+
+// TestWorktreeSwitch_ByPathNonexistentPathErrors covers step 1's
+// EvalSymlinks failure when the argument path does not exist at all.
+func TestWorktreeSwitch_ByPathNonexistentPathErrors(t *testing.T) {
+	r := newWorktreeRepo(t)
+	ghost := filepath.Join(t.TempDir(), "does-not-exist")
+	_, err := r.switchOp(t, map[string]any{"path": ghost})
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("switch by path to a nonexistent path: err = %v, want a does-not-exist error", err)
+	}
+}
+
+// TestWorktreeSwitch_ByPathListWorktreesErrorsWhenGitUnavailable covers step
+// 1's `git worktree list --porcelain` error branch.
+func TestWorktreeSwitch_ByPathListWorktreesErrorsWhenGitUnavailable(t *testing.T) {
+	r := newWorktreeRepo(t)
+	t.Setenv("PATH", t.TempDir())
+	if _, lookErr := exec.LookPath("git"); lookErr == nil {
+		t.Skip("git still resolvable after PATH override; cannot prove the no-git path")
+	}
+	_, err := r.switchOp(t, map[string]any{"path": r.mainRoot})
+	if err == nil || !strings.Contains(err.Error(), "listing worktrees") {
+		t.Fatalf("switch by path with git hidden: err = %v, want the listing-worktrees error", err)
+	}
+}
+
+// TestWorktreeSwitch_ByPathSkipsMomentarilyAbsentPorcelainEntry covers step
+// 1's tolerance for a registered worktree whose directory is momentarily
+// gone (a real "prunable" entry: git's registry still lists it, but its
+// EvalSymlinks fails) — the scan must skip it rather than error out, so a
+// LATER, resolvable entry (the target we actually asked for) is still
+// found.
+func TestWorktreeSwitch_ByPathSkipsMomentarilyAbsentPorcelainEntry(t *testing.T) {
+	r := newWorktreeRepo(t)
+	// A sibling worktree whose directory is deleted out-of-band (not via
+	// `git worktree remove`), leaving a stale, unresolvable porcelain entry.
+	ghostRoot := t.TempDir()
+	ghostPath := filepath.Join(ghostRoot, "ghost")
+	wtGit(t, r.mainRoot, "worktree", "add", "-b", "ghost-branch", ghostPath, r.head)
+	if err := os.RemoveAll(ghostPath); err != nil {
+		t.Fatalf("remove ghost worktree dir: %v", err)
+	}
+
+	// A second, real sibling that we actually switch to — the scan must not
+	// abort on the ghost entry before reaching this one.
+	siblingRoot := t.TempDir()
+	siblingPath := filepath.Join(siblingRoot, "sibling")
+	wtGit(t, r.mainRoot, "worktree", "add", "-b", "sibling-branch", siblingPath, r.head)
+
+	out, err := r.switchOp(t, map[string]any{"path": siblingPath})
+	if err != nil {
+		t.Fatalf("switch by path past a ghost entry: %v", err)
+	}
+	if out["path"] != siblingPath {
+		t.Errorf("switch result path = %v, want %s", out["path"], siblingPath)
+	}
+}
+
+// TestWorktreeSwitch_ByPathLeaveCurrentErrorsOnSecondPorcelainCall covers
+// step 3's leaveCurrentWorktree error branch for the NON-managed by-path arm
+// (distinct from the managed by-name arm's own coverage of the same
+// underlying function): switching away from a currently-occupied managed
+// worktree into a non-managed sibling first lists the registry successfully
+// (step 1, to validate the target), then leaveCurrentWorktree's own
+// lockStateOf call makes a SECOND `worktree list --porcelain` call to
+// inspect the worktree being left — the shim fails only that second call.
+func TestWorktreeSwitch_ByPathLeaveCurrentErrorsOnSecondPorcelainCall(t *testing.T) {
+	r := newWorktreeRepo(t)
+	if _, err := r.create(t, map[string]any{"name": "A"}); err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	siblingRoot := t.TempDir()
+	siblingPath := filepath.Join(siblingRoot, "sibling")
+	wtGit(t, r.mainRoot, "worktree", "add", "-b", "sibling-branch", siblingPath, r.head)
+
+	gitFailOnNthMatchingCallShim(t, "worktree list --porcelain", 2)
+
+	_, err := r.switchOp(t, map[string]any{"path": siblingPath})
+	if err == nil {
+		t.Fatal("expected switch by path to fail when leaveCurrentWorktree's porcelain call fails")
+	}
+	if !strings.Contains(err.Error(), "inspecting the current worktree lock") {
+		t.Fatalf("switch by path with the 2nd porcelain call failing: err = %v, want the current-worktree-lock-inspection error", err)
+	}
+}
 
 func TestWorktreeSwitch_ByPathSiblingManualWorktreeNoLockMutation(t *testing.T) {
 	r := newWorktreeRepo(t)
@@ -384,6 +572,65 @@ func TestWorktreeSwitch_ByPathInsideManagedDirGetsFullChoreographyLocked(t *test
 }
 
 // --- exit ---
+
+// TestWorktreeExit_LeaveCurrentErrorsWhenGitUnavailable covers worktreeExit
+// step 2's own leaveCurrentWorktree error-propagation site (distinct from
+// TestLeaveCurrentWorktree_LockStateErrorPropagates' direct white-box test
+// of the callee itself): hiding git entirely fails the VERY FIRST git call
+// exit makes, so the error surfaces from this call site specifically.
+func TestWorktreeExit_LeaveCurrentErrorsWhenGitUnavailable(t *testing.T) {
+	r := newWorktreeRepo(t)
+	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
+		t.Fatalf("create lane: %v", err)
+	}
+	restore := hideGitEntirely(t)
+	defer restore()
+
+	_, err := r.exitOp(t)
+	if err == nil || !strings.Contains(err.Error(), "inspecting the current worktree lock") {
+		t.Fatalf("exit with git hidden: err = %v, want the current-worktree-lock-inspection error", err)
+	}
+}
+
+// TestWorktreeExit_RelockLockStateErrorsOnSecondPorcelainCall covers step
+// 4's relockRestoreTarget->lockStateOf error branch specifically: exit's own
+// step-2 leaveCurrentWorktree call (the 1st `worktree list --porcelain`)
+// must succeed, but relockRestoreTarget's later inspection of the restore
+// root (the 2nd) fails.
+func TestWorktreeExit_RelockLockStateErrorsOnSecondPorcelainCall(t *testing.T) {
+	r := newWorktreeRepo(t)
+	_, r2, _, _ := wtLaunchSession(t, r)
+
+	gitFailOnNthMatchingCallShim(t, "worktree list --porcelain", 2)
+
+	_, err := r2.exitOp(t)
+	if err == nil || !strings.Contains(err.Error(), "inspecting the restore target lock") {
+		t.Fatalf("exit with the 2nd porcelain call failing: err = %v, want the restore-target-lock-inspection error", err)
+	}
+}
+
+// TestWorktreeExit_RelockLockCommandFailsOnPermissionDenied covers step 4's
+// relockRestoreTarget->ActLock `git worktree lock` failure branch: the
+// restore root (launch) is genuinely unlocked, so Decide resolves to
+// ActLock, but the lock command itself fails because its internal
+// .git/worktrees/<id> directory has been made read-only (a real permission
+// error, not a scripted one — git's own lock/unlock write a "locked" marker
+// file there).
+func TestWorktreeExit_RelockLockCommandFailsOnPermissionDenied(t *testing.T) {
+	r := newWorktreeRepo(t)
+	_, r2, launchPath, _ := wtLaunchSession(t, r)
+
+	if r2.porcelainEntry(t, launchPath).Locked {
+		t.Fatal("launch worktree should still be unlocked before exit")
+	}
+	internalDir := worktreeInternalDir(t, r.mainRoot, launchPath)
+	chmodReadOnly(t, internalDir)
+
+	_, err := r2.exitOp(t)
+	if err == nil || !strings.Contains(err.Error(), "locking the restore target") {
+		t.Fatalf("exit with the lock internal dir read-only: err = %v, want the locking-the-restore-target error", err)
+	}
+}
 
 func TestWorktreeExit_RestoresEnvClearsSavedEnvUnlocks(t *testing.T) {
 	r := newWorktreeRepo(t)

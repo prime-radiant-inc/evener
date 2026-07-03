@@ -272,6 +272,68 @@ func TestWorktreeRemove_LiveWorkGuardIgnoresUnrelatedWork(t *testing.T) {
 	}
 }
 
+// TestWorktreeLiveWorkUnder_SkipsSubagentEmptyWorkingDirectory covers
+// liveWorkUnder's defensive skip for a tracked subagent whose env reports an
+// empty WorkingDirectory() — a state a real LocalExecutionEnvironment never
+// produces (RootDir is always non-empty), but reachable via any other
+// ExecutionEnvironment implementation, so the scan must not treat "" as a
+// (false) match against every target path via pathEqualOrUnder's "under root"
+// arithmetic. A SECOND, genuinely live subagent rooted under the target lane
+// is tracked alongside it to prove the skip doesn't swallow real live work.
+//
+// The sibling branch (a tracked subagent whose env is nil) is not exercised
+// here: forcing that state by directly nilling a live *Session's env field
+// breaks the session's OTHER invariants (session_lifecycle.go's close path
+// dereferences the env unconditionally and panics), so it is not a state a
+// real *Session can safely reach — see the doc comment on that branch in
+// liveWorkUnder itself.
+func TestWorktreeLiveWorkUnder_SkipsSubagentEmptyWorkingDirectory(t *testing.T) {
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	nested := filepath.Join(path, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+
+	emptyWDChild := newSession(t, withDir(r.mainRoot))
+	emptyWDChild.mu.Lock()
+	emptyWDChild.env = &timeoutEnv{wd: ""}
+	emptyWDChild.mu.Unlock()
+	r.s.subagents.track(&subagent{id: emptyWDChild.id, sess: emptyWDChild})
+	t.Cleanup(func() { r.s.subagents.remove(emptyWDChild.id) })
+	// Restore a real env before the session's own Close() cleanup runs.
+	t.Cleanup(func() {
+		emptyWDChild.mu.Lock()
+		emptyWDChild.env = execenv.NewLocalExecutionEnvironment(r.mainRoot)
+		emptyWDChild.mu.Unlock()
+	})
+
+	liveChild := newSession(t, withDir(nested))
+	r.s.subagents.track(&subagent{id: liveChild.id, sess: liveChild})
+	t.Cleanup(func() { r.s.subagents.remove(liveChild.id) })
+
+	live := r.s.liveWorkUnder(path)
+	found := false
+	for _, l := range live {
+		if strings.Contains(l, liveChild.id) {
+			found = true
+		}
+		if strings.Contains(l, emptyWDChild.id) {
+			t.Errorf("liveWorkUnder reported the empty-WorkingDirectory subagent: %v", live)
+		}
+	}
+	if !found {
+		t.Errorf("liveWorkUnder = %v, want it to still find the genuinely live subagent %s", live, liveChild.id)
+	}
+}
+
 // --- real prune plumbing (not the stub) ---
 
 // TestWorktreePrune_Sweep1_SkipsLiveRealBackgroundShellJob mirrors

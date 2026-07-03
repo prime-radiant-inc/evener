@@ -149,7 +149,10 @@ func TestDecideEveryCell(t *testing.T) {
 
 // TestDecideTotalOutOfRange confirms Decide fails safe to ActRefuse (never
 // panics) for out-of-range event and state ints — the brief's totality
-// requirement.
+// requirement. One out-of-range state per event covers every event's
+// switch-on-state default (each already enumerates all 4 valid LockState
+// values via TestDecideEveryCell, so only an out-of-range state can still
+// reach that default).
 func TestDecideTotalOutOfRange(t *testing.T) {
 	cases := []struct {
 		ev LockEvent
@@ -157,14 +160,100 @@ func TestDecideTotalOutOfRange(t *testing.T) {
 	}{
 		{LockEvent(-1), Unlocked},
 		{LockEvent(999), OwnSession},
+		{EvCreate, LockState(999)},
+		{EvLeave, LockState(999)},
 		{EvEnter, LockState(-1)},
 		{EvEnter, LockState(999)},
+		{EvEnterCurrent, LockState(999)},
+		{EvRestoreLand, LockState(999)},
+		{EvInitInside, LockState(999)},
+		{EvResumeReenter, LockState(999)},
+		{EvRemoveTarget, LockState(999)},
+		{EvRemoveCurrent, LockState(999)},
+		{EvDelegateCreate, LockState(999)},
+		{EvDelegateRevive, LockState(999)},
+		{EvDisposeUnchanged, LockState(999)},
+		{EvDisposeChanged, LockState(999)},
 		{EvPruneCandidate, LockState(42)},
 		{LockEvent(-7), LockState(-7)},
 	}
 	for _, c := range cases {
 		if got := Decide(c.ev, c.st); got != ActRefuse {
 			t.Errorf("Decide(%d, %d) = %s, want ActRefuse (fail safe)", c.ev, c.st, got)
+		}
+	}
+}
+
+// TestLockStateString, TestLockEventString, and TestLockActionString cover
+// the three Stringer implementations (used in test failure messages and any
+// future debug logging) for every named constant plus an out-of-range value,
+// matching Decide's own fail-safe-default contract.
+func TestLockStateString(t *testing.T) {
+	cases := []struct {
+		st   LockState
+		want string
+	}{
+		{Unlocked, "Unlocked"},
+		{OwnSession, "OwnSession"},
+		{OwnDelegate, "OwnDelegate"},
+		{Foreign, "Foreign"},
+		{LockState(999), "LockState(?)"},
+	}
+	for _, c := range cases {
+		if got := c.st.String(); got != c.want {
+			t.Errorf("LockState(%d).String() = %q, want %q", c.st, got, c.want)
+		}
+	}
+}
+
+func TestLockEventString(t *testing.T) {
+	cases := []struct {
+		ev   LockEvent
+		want string
+	}{
+		{EvCreate, "EvCreate"},
+		{EvLeave, "EvLeave"},
+		{EvEnter, "EvEnter"},
+		{EvEnterCurrent, "EvEnterCurrent"},
+		{EvRestoreLand, "EvRestoreLand"},
+		{EvInitInside, "EvInitInside"},
+		{EvResumeReenter, "EvResumeReenter"},
+		{EvRemoveTarget, "EvRemoveTarget"},
+		{EvRemoveCurrent, "EvRemoveCurrent"},
+		{EvDelegateCreate, "EvDelegateCreate"},
+		{EvDelegateRevive, "EvDelegateRevive"},
+		{EvDisposeUnchanged, "EvDisposeUnchanged"},
+		{EvDisposeChanged, "EvDisposeChanged"},
+		{EvPruneCandidate, "EvPruneCandidate"},
+		{LockEvent(999), "LockEvent(?)"},
+	}
+	for _, c := range cases {
+		if got := c.ev.String(); got != c.want {
+			t.Errorf("LockEvent(%d).String() = %q, want %q", c.ev, got, c.want)
+		}
+	}
+}
+
+func TestLockActionString(t *testing.T) {
+	cases := []struct {
+		act  LockAction
+		want string
+	}{
+		{ActNone, "ActNone"},
+		{ActLock, "ActLock"},
+		{ActAdopt, "ActAdopt"},
+		{ActUnlock, "ActUnlock"},
+		{ActUnlockProceed, "ActUnlockProceed"},
+		{ActRefuse, "ActRefuse"},
+		{ActWarnCoOccupy, "ActWarnCoOccupy"},
+		{ActRefuseToRestoreRoot, "ActRefuseToRestoreRoot"},
+		{ActSkip, "ActSkip"},
+		{ActAtomicAddLock, "ActAtomicAddLock"},
+		{LockAction(999), "LockAction(?)"},
+	}
+	for _, c := range cases {
+		if got := c.act.String(); got != c.want {
+			t.Errorf("LockAction(%d).String() = %q, want %q", c.act, got, c.want)
 		}
 	}
 }

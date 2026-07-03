@@ -452,6 +452,277 @@ func TestMerged_EmptyMergeTarget_TargetUnknown(t *testing.T) {
 	}
 }
 
+// --- CleanTree / Unchanged: real git error paths ---
+
+func TestCleanTree_ErrorOnNonexistentPath(t *testing.T) {
+	root, _ := initRepo(t)
+	run := makeGitRunner(t, root)
+
+	_, _, err := CleanTree(run, filepath.Join(root, "does-not-exist"))
+	if err == nil {
+		t.Fatalf("CleanTree on a nonexistent path = nil error, want error")
+	}
+}
+
+func TestUnchanged_PropagatesCleanTreeError(t *testing.T) {
+	root, _ := initRepo(t)
+	run := makeGitRunner(t, root)
+
+	_, err := Unchanged(run, filepath.Join(root, "does-not-exist"), "deadbeef")
+	if err == nil {
+		t.Fatalf("Unchanged on a nonexistent path = nil error, want error")
+	}
+}
+
+// TestUnchanged_ErrorOnUnbornHEAD covers rev-parse HEAD's own failure mode
+// (distinct from CleanTree's): a freshly `git init`'d repo with no commits
+// has an unborn HEAD, so `status --porcelain` still succeeds (empty tree,
+// clean) but `rev-parse HEAD` genuinely fails.
+func TestUnchanged_ErrorOnUnbornHEAD(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "unborn")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	runGit(t, root, "init", "-q", "-b", "main")
+	run := makeGitRunner(t, root)
+
+	_, err := Unchanged(run, root, "deadbeef")
+	if err == nil {
+		t.Fatalf("Unchanged against an unborn HEAD = nil error, want error")
+	}
+}
+
+// --- isAncestor / isBehind / cherryEquivalent / checkMerged: direct
+// white-box tests of the unexported arms (same package), covering error and
+// edge branches that Merged's fixtures above don't reach on their own. ---
+
+func TestIsAncestor_GenuineFailureNotExitOne(t *testing.T) {
+	root, base := initRepo(t)
+	run := makeGitRunner(t, root)
+
+	// A well-formed but nonexistent object: merge-base --is-ancestor fails
+	// with "fatal: Not a valid object name" (exit 128, not the "not an
+	// ancestor" exit 1) — a genuine failure, distinct from a negative result.
+	_, err := isAncestor(run, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", base)
+	if err == nil {
+		t.Fatalf("isAncestor with an unknown object = nil error, want a genuine failure")
+	}
+}
+
+func TestIsBehind_EqualSHAs(t *testing.T) {
+	root, base := initRepo(t)
+	run := makeGitRunner(t, root)
+
+	behind, err := isBehind(run, base, base)
+	if err != nil {
+		t.Fatalf("isBehind: %v", err)
+	}
+	if behind {
+		t.Fatalf("isBehind(sha, sha) = true, want false (short-circuit on equal SHAs)")
+	}
+}
+
+func TestCherryEquivalent_ErrorOnBadRef(t *testing.T) {
+	root, base := initRepo(t)
+	run := makeGitRunner(t, root)
+
+	_, err := cherryEquivalent(run, "not-a-real-ref", base, base)
+	if err == nil {
+		t.Fatalf("cherryEquivalent with a bad ref = nil error, want error")
+	}
+}
+
+// TestCherryEquivalent_ZeroCommitsSinceBase covers the "nothing to check"
+// branch: base..tip has no commits, so `git cherry` emits nothing. Per the
+// doc comment this must NOT be treated as cherry-merged (that's Unchanged's
+// case) — false, not true.
+func TestCherryEquivalent_ZeroCommitsSinceBase(t *testing.T) {
+	root, base := initRepo(t)
+	run := makeGitRunner(t, root)
+
+	got, err := cherryEquivalent(run, base, base, base)
+	if err != nil {
+		t.Fatalf("cherryEquivalent: %v", err)
+	}
+	if got {
+		t.Fatalf("cherryEquivalent with zero commits since base = true, want false")
+	}
+}
+
+func TestCheckMerged_PropagatesIsAncestorError(t *testing.T) {
+	root, base := initRepo(t)
+	run := makeGitRunner(t, root)
+
+	_, _, err := checkMerged(run, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", base, base)
+	if err == nil {
+		t.Fatalf("checkMerged with an unknown tip = nil error, want error")
+	}
+}
+
+func TestCheckMerged_PropagatesCherryEquivalentError(t *testing.T) {
+	root, base := initRepo(t)
+	wt := addWorktree(t, root, "lane", base)
+	tip := commitFile(t, wt, "lane.txt", "lane work\n", "lane commit")
+	run := makeGitRunner(t, root)
+
+	// isAncestor(tip, "unrelated-branch") is a genuine "false, no error" (tip
+	// is not an ancestor of a branch that shares no history via a valid
+	// ref)... but to reach cherryEquivalent's error arm specifically, the
+	// ancestry check must succeed (false) and then cherry itself must fail —
+	// use a nonexistent base ref to fail the `git cherry` invocation while
+	// letting merge-base -is-ancestor succeed as "not an ancestor" against a
+	// real (but unrelated) target.
+	other := addWorktree(t, root, "other", base)
+	otherTip := commitFile(t, other, "other.txt", "other work\n", "other commit")
+
+	_, _, err := checkMerged(run, tip, otherTip, "not-a-real-ref")
+	if err == nil {
+		t.Fatalf("checkMerged with a bad base ref = nil error, want error")
+	}
+}
+
+// --- remoteTrackingTips: error and parsing edge cases ---
+
+func TestRemoteTrackingTips_ErrorOutsideRepo(t *testing.T) {
+	notARepo := t.TempDir()
+	run := makeGitRunner(t, notARepo)
+
+	_, err := remoteTrackingTips(run, "main")
+	if err == nil {
+		t.Fatalf("remoteTrackingTips outside a repo = nil error, want error")
+	}
+}
+
+// TestRemoteTrackingTips_SkipsMalformedLine feeds remoteTrackingTips a fake
+// GitRunner that returns a for-each-ref line with no space separator. Real
+// `git for-each-ref --format="%(refname) %(objectname)"` output always
+// contains the literal space from the format string, so this shape cannot
+// occur from a real git invocation — this is a defensive tolerance in the
+// line parser itself (strings.Cut's ok=false arm), exercised directly
+// against a scripted stand-in for the git binary rather than asserting
+// anything about the stand-in's own behavior.
+func TestRemoteTrackingTips_SkipsMalformedLine(t *testing.T) {
+	run := func(args ...string) (string, error) {
+		return "malformed-line-no-space\nrefs/remotes/origin/main deadbeef\n", nil
+	}
+	tips, err := remoteTrackingTips(run, "main")
+	if err != nil {
+		t.Fatalf("remoteTrackingTips: %v", err)
+	}
+	if len(tips) != 1 || tips[0].ref != "refs/remotes/origin/main" || tips[0].sha != "deadbeef" {
+		t.Fatalf("expected the malformed line skipped and the well-formed one kept, got %+v", tips)
+	}
+}
+
+// --- Merged: local target ref missing entirely, only a remote-tracking tip
+// exists (the !localExists append arm) ---
+
+func TestMerged_LocalTargetMissingRemoteTrackingOnly(t *testing.T) {
+	root, base := initRepo(t)
+	wt := addWorktree(t, root, "lane", base)
+	tip := commitFile(t, wt, "lane.txt", "lane work\n", "lane commit")
+
+	// Build "feature" on a scratch clone, merge lane into it, push to a bare
+	// remote as origin/feature — then never create a local "feature" branch
+	// in root at all, so refs/heads/feature does not exist but
+	// refs/remotes/origin/feature does.
+	remoteDir := filepath.Join(t.TempDir(), "origin.git")
+	runGit(t, root, "init", "-q", "--bare", remoteDir)
+	runGit(t, root, "remote", "add", "origin", remoteDir)
+	runGit(t, root, "push", "-q", "origin", "main:feature")
+
+	scratch := filepath.Join(t.TempDir(), "scratch")
+	runGit(t, root, "clone", "-q", remoteDir, scratch)
+	runGit(t, scratch, "config", "user.email", "test@example.com")
+	runGit(t, scratch, "config", "user.name", "Test")
+	runGit(t, scratch, "checkout", "-q", "-B", "feature", "origin/feature")
+	runGit(t, scratch, "fetch", "-q", root, "lane:lane")
+	runGit(t, scratch, "merge", "-q", "--no-ff", "-m", "merge lane", "lane")
+	runGit(t, scratch, "push", "-q", "origin", "feature")
+
+	runGit(t, root, "fetch", "-q", "origin")
+
+	// Confirm the fixture: no local "feature" branch in root.
+	if _, err := exec.Command("git", "-C", root, "rev-parse", "--verify", "refs/heads/feature").CombinedOutput(); err == nil {
+		t.Fatalf("fixture setup: expected refs/heads/feature to NOT exist locally")
+	}
+
+	run := makeGitRunner(t, root)
+	result, err := Merged(run, tip, "feature", base)
+	if err != nil {
+		t.Fatalf("Merged: %v", err)
+	}
+	if !result.Merged {
+		t.Fatalf("expected merged=true via the remote-only target, got %+v", result)
+	}
+	if result.TargetRef != "refs/remotes/origin/feature" {
+		t.Fatalf("expected TargetRef=refs/remotes/origin/feature, got %+v", result)
+	}
+}
+
+// --- Merged: deep error propagation from its three git-calling helpers.
+// Scripted stand-ins are used here (rather than a real repo) because these
+// specifically are genuine-failure branches of git subcommands invoked
+// several calls deep inside Merged's own control flow, not reachable by
+// shaping real repo state without also changing which arm executes. Each
+// assertion is about Merged's own error-propagation logic, not about the
+// stand-in. ---
+
+func TestMerged_PropagatesRemoteTrackingTipsError(t *testing.T) {
+	run := func(args ...string) (string, error) {
+		if len(args) > 0 && args[0] == "for-each-ref" {
+			return "", errors.New("simulated for-each-ref failure")
+		}
+		return "", &gitRunError{args: args, err: errors.New("not found")}
+	}
+	_, err := Merged(run, "tip-sha", "main", "base-sha")
+	if err == nil {
+		t.Fatalf("Merged with a failing for-each-ref = nil error, want error")
+	}
+}
+
+func TestMerged_PropagatesIsBehindError(t *testing.T) {
+	const localSHA = "1111111111111111111111111111111111111111"
+	const remoteSHA = "2222222222222222222222222222222222222222"
+	run := func(args ...string) (string, error) {
+		switch {
+		case len(args) > 0 && args[0] == "rev-parse" && args[1] == "--verify":
+			return localSHA, nil
+		case len(args) > 0 && args[0] == "for-each-ref":
+			return "refs/remotes/origin/main " + remoteSHA + "\n", nil
+		case len(args) > 0 && args[0] == "merge-base":
+			return "", &gitRunError{args: args, err: errors.New("simulated merge-base failure")}
+		}
+		return "", &gitRunError{args: args, err: errors.New("unexpected call")}
+	}
+	_, err := Merged(run, "tip-sha", "main", "base-sha")
+	if err == nil {
+		t.Fatalf("Merged with a failing isBehind merge-base = nil error, want error")
+	}
+}
+
+func TestMerged_PropagatesCheckMergedError(t *testing.T) {
+	const localSHA = "1111111111111111111111111111111111111111"
+	run := func(args ...string) (string, error) {
+		switch {
+		case len(args) > 0 && args[0] == "rev-parse" && args[1] == "--verify":
+			return localSHA, nil
+		case len(args) > 0 && args[0] == "for-each-ref":
+			// No remote-tracking tips: only the local candidate reaches
+			// checkMerged, so this exercises checkMerged's error arm (line
+			// 250-252) rather than isBehind's (already covered above).
+			return "", nil
+		case len(args) > 0 && args[0] == "merge-base":
+			return "", &gitRunError{args: args, err: errors.New("simulated merge-base failure")}
+		}
+		return "", &gitRunError{args: args, err: errors.New("unexpected call")}
+	}
+	_, err := Merged(run, "tip-sha", "main", "base-sha")
+	if err == nil {
+		t.Fatalf("Merged with a failing checkMerged arm = nil error, want error")
+	}
+}
+
 // --- Adopted: truth table ---
 
 func TestAdopted_TruthTable(t *testing.T) {

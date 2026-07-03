@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -69,6 +70,122 @@ func gitArgvRecordingShim(t *testing.T) (logPath string) {
 }
 
 // --- 1: clean remove ---
+
+// TestWorktreeRemove_NotInGitRepo covers worktreeRemove's own "not in a git
+// repository" guard.
+func TestWorktreeRemove_NotInGitRepo(t *testing.T) {
+	dir := t.TempDir() // not a git repo at all
+	s := newSession(t, withDir(dir))
+	_, err := s.worktreeRemove(context.Background(), "x", false, false)
+	if err == nil || !strings.Contains(err.Error(), "not in a git repository") {
+		t.Fatalf("remove outside a git repo: err = %v, want the not-in-a-git-repository error", err)
+	}
+}
+
+// TestWorktreeRemove_TargetLockInspectionErrorsWhenGitUnavailable covers
+// step 3's lockStateOf error branch for a non-current target.
+func TestWorktreeRemove_TargetLockInspectionErrorsWhenGitUnavailable(t *testing.T) {
+	r := newWorktreeRepo(t)
+	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+	restore := hideGitEntirely(t)
+	defer restore()
+
+	_, err := r.removeOp(t, map[string]any{"name": "lane"})
+	if err == nil || !strings.Contains(err.Error(), "inspecting the target lock") {
+		t.Fatalf("remove with git hidden: err = %v, want the target-lock-inspection error", err)
+	}
+}
+
+// TestWorktreeRemove_CrashResidueUnlockFailsOnPermissionDenied covers step
+// 3's EvRemoveTarget ActUnlockProceed branch's own `git worktree unlock`
+// failure: the target carries this session's own stale marker (crash
+// residue) while the session is NOT currently inside it, so Decide resolves
+// to ActUnlockProceed — but the unlock command itself fails because its
+// internal .git/worktrees/<id> directory is read-only.
+func TestWorktreeRemove_CrashResidueUnlockFailsOnPermissionDenied(t *testing.T) {
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+	// Simulate a crash that left this session's own lock behind on a
+	// worktree it is not currently in (mirrors
+	// TestWorktreeRemove_OwnMarkerCrashResidueAutoUnlocksAndProceeds' setup).
+	ownReason := worktree.FormatSessionMarker(r.s.id)
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", ownReason, path)
+
+	internalDir := worktreeInternalDir(t, r.mainRoot, path)
+	chmodReadOnly(t, internalDir)
+
+	_, err = r.removeOp(t, map[string]any{"name": "lane"})
+	if err == nil || !strings.Contains(err.Error(), "unlocking crash-residue lock") {
+		t.Fatalf("remove with the crash-residue unlock failing: err = %v, want the unlocking-crash-residue-lock error", err)
+	}
+}
+
+// TestWorktreeRemove_SidecarGarbageJSONErrors covers step 5's sidecar-read
+// error branch for a genuinely corrupt (not merely absent) sidecar: garbage
+// JSON makes worktree.ReadSidecar fail with a decode error, which is NOT
+// os.IsNotExist, so remove must surface it as a distinct "reading metadata"
+// error rather than the "no metadata sidecar" unmanaged-provenance message.
+func TestWorktreeRemove_SidecarGarbageJSONErrors(t *testing.T) {
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+	canonicalMain := r.canonicalMain(t)
+	metaDir := r.metaDir(canonicalMain)
+	sidecarPath := filepath.Join(metaDir, worktree.EncodeSidecarName("lane")+".json")
+	if err := os.WriteFile(sidecarPath, []byte("not valid json{{{"), 0o644); err != nil {
+		t.Fatalf("corrupt sidecar: %v", err)
+	}
+
+	_, err = r.removeOp(t, map[string]any{"name": "lane", "force": true})
+	if err == nil || !strings.Contains(err.Error(), "reading metadata") {
+		t.Fatalf("remove with a corrupt sidecar: err = %v, want the reading-metadata error", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(path, ".git")); statErr != nil {
+		t.Errorf("worktree removed despite the sidecar read failure: %v", statErr)
+	}
+}
+
+// TestWorktreeRemove_DirtyCheckErrorsOnSecondPorcelainCallSurfacesCleanTreeError
+// covers step 6's CleanTree error branch: the earlier lockStateOf call (1st
+// `worktree list --porcelain`, step 3) must succeed, but the `git -C <target>
+// status --porcelain=v1 --untracked-files=all` call CleanTree makes must
+// fail.
+func TestWorktreeRemove_DirtyCheckErrorsWhenStatusFails(t *testing.T) {
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+
+	gitFailOnArgsShim(t, "-C", path, "status", "--porcelain=v1", "--untracked-files=all")
+
+	_, err = r.removeOp(t, map[string]any{"name": "lane"})
+	if err == nil || !strings.Contains(err.Error(), "checking for uncommitted changes") {
+		t.Fatalf("remove with the dirtiness-check status call failing: err = %v, want the checking-for-uncommitted-changes error", err)
+	}
+}
 
 func TestWorktreeRemove_CleanRemove(t *testing.T) {
 	r := newWorktreeRepo(t)
@@ -203,6 +320,169 @@ func TestWorktreeRemove_DeleteBranchMergedDeletesAfterGate(t *testing.T) {
 	canonicalMain := r.canonicalMain(t)
 	if _, scErr := worktree.ReadSidecar(r.metaDir(canonicalMain), "lane"); !os.IsNotExist(scErr) {
 		t.Errorf("sidecar survived: err=%v", scErr)
+	}
+}
+
+// TestWorktreeRemove_DeleteBranchTipLookupErrorsKeepsBranch covers
+// worktreeRemove's own delete_branch tipErr branch: the `rev-parse --verify
+// refs/heads/<name>` call the branch-tip lookup makes fails, surfaced as a
+// "branch not found" BranchKeptReason rather than aborting the whole call
+// (the worktree is already removed by step 8 at this point).
+func TestWorktreeRemove_DeleteBranchTipLookupErrorsKeepsBranch(t *testing.T) {
+	r := newWorktreeRepo(t)
+	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+
+	gitFailOnArgsShim(t, "rev-parse", "--verify", "refs/heads/lane")
+
+	out, err := r.removeOp(t, map[string]any{"name": "lane", "delete_branch": true})
+	if err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if out["branch_deleted"] != false {
+		t.Errorf("branch_deleted = %v, want false", out["branch_deleted"])
+	}
+	reason, _ := out["branch_kept_reason"].(string)
+	if !strings.Contains(reason, "not found") {
+		t.Errorf("branch_kept_reason = %q, want it to explain the branch lookup failed", reason)
+	}
+	// The branch itself is untouched (the failure was in inspecting it, not
+	// deleting it) — it still really exists.
+	if !branchExistsInRepo(t, r.mainRoot, "lane") {
+		t.Error("branch removed despite the tip lookup failing")
+	}
+}
+
+// TestWorktreeRemove_DeleteBranchMergeTargetUnknownRefusesWithEvidence
+// covers worktree.Merged's TargetUnknown arm surfacing through
+// worktreeRemove's own delete_branch evidence message: the lane's recorded
+// merge_target branch no longer exists anywhere (deleted after the lane was
+// created), so Merged cannot judge it at all.
+func TestWorktreeRemove_DeleteBranchMergeTargetUnknownRefusesWithEvidence(t *testing.T) {
+	r := newWorktreeRepo(t)
+	wtGit(t, r.mainRoot, "checkout", "-q", "-b", "feature")
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	wtGit(t, path, "config", "user.email", "test@example.com")
+	wtGit(t, path, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(path, "a.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatalf("write a.txt: %v", err)
+	}
+	wtGit(t, path, "add", "a.txt")
+	wtGit(t, path, "commit", "-m", "advance lane")
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+	// The recorded merge_target ("feature") is gone: the lane's sidecar still
+	// names it, but no local or remote-tracking ref by that name exists.
+	wtGit(t, r.mainRoot, "checkout", "-q", "main")
+	wtGit(t, r.mainRoot, "branch", "-D", "feature")
+
+	canonicalMain := r.canonicalMain(t)
+	sc, scErr := worktree.ReadSidecar(r.metaDir(canonicalMain), "lane")
+	if scErr != nil {
+		t.Fatalf("read sidecar: %v", scErr)
+	}
+	if sc.MergeTarget != "feature" {
+		t.Fatalf("fixture invalid: sidecar merge_target = %q, want feature", sc.MergeTarget)
+	}
+
+	out, err := r.removeOp(t, map[string]any{"name": "lane", "delete_branch": true})
+	if err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if out["branch_deleted"] != false {
+		t.Errorf("branch_deleted = %v, want false (merge target unknown)", out["branch_deleted"])
+	}
+	reason, _ := out["branch_kept_reason"].(string)
+	if !strings.Contains(reason, "merge target unknown") {
+		t.Errorf("branch_kept_reason = %q, want it to explain the merge target is unknown", reason)
+	}
+	if !branchExistsInRepo(t, r.mainRoot, "lane") {
+		t.Error("branch removed despite an unknown merge target")
+	}
+}
+
+// TestWorktreeRemove_DeleteSidecarFailsOnPermissionDenied covers step 10's
+// sidecar-deletion error branch (the branch-deleted arm): the metadata
+// directory is made read-only right before the merged-branch delete lands,
+// so the branch itself deletes cleanly but removing its now-orphaned
+// sidecar file fails with a genuine permission error.
+func TestWorktreeRemove_DeleteSidecarFailsOnPermissionDenied(t *testing.T) {
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	wtGit(t, path, "config", "user.email", "test@example.com")
+	wtGit(t, path, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(path, "a.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatalf("write a.txt: %v", err)
+	}
+	wtGit(t, path, "add", "a.txt")
+	wtGit(t, path, "commit", "-m", "advance lane")
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+	wtGit(t, r.mainRoot, "merge", "--ff-only", "lane")
+
+	canonicalMain := r.canonicalMain(t)
+	metaDir := r.metaDir(canonicalMain)
+	chmodReadOnly(t, metaDir)
+
+	_, err = r.removeOp(t, map[string]any{"name": "lane", "delete_branch": true})
+	if err == nil || !strings.Contains(err.Error(), "deleting sidecar") {
+		t.Fatalf("remove with a read-only metaDir: err = %v, want the deleting-sidecar error", err)
+	}
+	// The branch itself really was deleted (git's own dir, unaffected by
+	// metaDir's permissions) — only the sidecar cleanup failed.
+	if branchExistsInRepo(t, r.mainRoot, "lane") {
+		t.Error("branch survived despite the merged-branch delete gate passing")
+	}
+}
+
+// TestWorktreeRemove_MarkSidecarRemovedFailsOnPermissionDenied covers step
+// 10's sidecar-mark-removed error branch (the survives, not-deleted arm):
+// the sidecar FILE itself (not its directory) is made read-only, so
+// UpdateSidecar's read succeeds but its truncating write fails.
+func TestWorktreeRemove_MarkSidecarRemovedFailsOnPermissionDenied(t *testing.T) {
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+
+	canonicalMain := r.canonicalMain(t)
+	metaDir := r.metaDir(canonicalMain)
+	sidecarPath := filepath.Join(metaDir, worktree.EncodeSidecarName("lane")+".json")
+	if os.Getuid() == 0 {
+		t.Skip("running as root: file permissions do not restrict writes")
+	}
+	if err := os.Chmod(sidecarPath, 0o444); err != nil {
+		t.Fatalf("chmod sidecar read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sidecarPath, 0o644) })
+
+	// No delete_branch: the worktree itself is removed cleanly (step 8), but
+	// marking the surviving sidecar worktree_removed (step 10) fails.
+	_, err = r.removeOp(t, map[string]any{"name": "lane"})
+	if err == nil || !strings.Contains(err.Error(), "marking sidecar removed") {
+		t.Fatalf("remove with a read-only sidecar file: err = %v, want the marking-sidecar-removed error", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(path, ".git")); !os.IsNotExist(statErr) {
+		t.Errorf("worktree survived despite step 8 succeeding: err=%v", statErr)
 	}
 }
 
@@ -417,6 +697,74 @@ func TestWorktreeRemove_OwnMarkerCrashResidueAutoUnlocksAndProceeds(t *testing.T
 
 // --- 10: remove-current restores and applies the restore-land relock rule ---
 
+// TestWorktreeRemove_RemoveCurrentUnlockBeforeRestoreFailsOnPermissionDenied
+// covers step 7's unlockAtRestore branch's own `git worktree unlock`
+// failure: the session is currently inside the target with its own marker
+// (EvRemoveCurrent -> ActUnlock), but the internal .git/worktrees/<id>
+// directory backing the target has been made read-only.
+func TestWorktreeRemove_RemoveCurrentUnlockBeforeRestoreFailsOnPermissionDenied(t *testing.T) {
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	if !r.porcelainEntry(t, path).Locked {
+		t.Fatal("fixture invalid: expected the lane to be locked (session is inside it)")
+	}
+
+	internalDir := worktreeInternalDir(t, r.mainRoot, path)
+	chmodReadOnly(t, internalDir)
+
+	_, err = r.removeOp(t, map[string]any{"name": "lane"})
+	if err == nil || !strings.Contains(err.Error(), "unlocking before restore") {
+		t.Fatalf("remove-current with the unlock-before-restore failing: err = %v, want the unlocking-before-restore error", err)
+	}
+}
+
+// TestWorktreeRemove_RemoveCurrentApplyRestoreLandRelockErrorsOnSecondPorcelainCall
+// covers step 7's applyRestoreLandRelock error branch for remove-current:
+// the restore root (launch) is itself managed, so relockRestoreTarget's own
+// lockStateOf call must run and fail — the 1st `worktree list --porcelain`
+// (step 3, inspecting the "work" target being removed) must still succeed.
+func TestWorktreeRemove_RemoveCurrentApplyRestoreLandRelockErrorsOnSecondPorcelainCall(t *testing.T) {
+	r := newWorktreeRepo(t)
+	_, r2, _, _ := wtLaunchSession(t, r)
+
+	gitFailOnNthMatchingCallShim(t, "worktree list --porcelain", 2)
+
+	_, err := r2.removeOp(t, map[string]any{"name": "work"})
+	if err == nil || !strings.Contains(err.Error(), "inspecting the restore target lock") {
+		t.Fatalf("remove-current with the 2nd porcelain call failing: err = %v, want the restore-target-lock-inspection error", err)
+	}
+}
+
+// TestWorktreeRemove_GitWorktreeRemoveCommandFails covers step 8's own
+// `git worktree remove` failure branch: every earlier check (lock, live
+// work, sidecar ownership, dirtiness) passes, but the removal command itself
+// fails.
+func TestWorktreeRemove_GitWorktreeRemoveCommandFails(t *testing.T) {
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+
+	gitFailOnArgsShim(t, "worktree", "remove", "--", path)
+
+	_, err = r.removeOp(t, map[string]any{"name": "lane"})
+	if err == nil || !strings.Contains(err.Error(), "git worktree remove failed") {
+		t.Fatalf("remove with the git worktree remove command failing: err = %v, want the git-worktree-remove-failed error", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(path, ".git")); statErr != nil {
+		t.Errorf("worktree gone despite the remove command failing: %v", statErr)
+	}
+}
+
 func TestWorktreeRemove_RemoveCurrentRestoresAndRelocks(t *testing.T) {
 	r := newWorktreeRepo(t)
 	s2, r2, launchPath, pathWork := wtLaunchSession(t, r)
@@ -582,5 +930,54 @@ func TestWorktreeRemove_CrossCreatorSidecarRefusesWithoutForce(t *testing.T) {
 	}
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 		t.Errorf("worktree survived a forced cross-creator remove: err=%v", statErr)
+	}
+}
+
+// --- 14: remove-current whose restore lands in a foreign-locked managed
+// launch root surfaces a warning (mirrors
+// TestWorktreeExit_RestoringIntoManagedLaunchRootIdempotentRelockForeignWarns,
+// exercising applyRestoreLandRelock's ActWarnCoOccupy arm through remove's
+// own dispatch-layer warning plumbing rather than exit's) ---
+
+func TestWorktreeRemove_RemoveCurrentForeignLockedRestoreWarns(t *testing.T) {
+	r := newWorktreeRepo(t)
+	s2, r2, launchPath, pathWork := wtLaunchSession(t, r)
+
+	// Simulate another session/tool claiming the launch worktree while s2 was
+	// away in "work".
+	foreignReason := worktree.FormatSessionMarker("01FOREIGNSESSIONID0000002")
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", foreignReason, launchPath)
+
+	out, err := r2.removeOp(t, map[string]any{"name": "work"})
+	if err != nil {
+		t.Fatalf("remove-current must warn-and-continue on a foreign-locked restore target, not refuse: %v", err)
+	}
+	if out["path"] != pathWork {
+		t.Errorf("remove path = %v, want %s", out["path"], pathWork)
+	}
+	warning, _ := out["warning"].(string)
+	if warning == "" {
+		t.Fatal("expected a surfaced warning for a foreign-locked restore target")
+	}
+	if !strings.Contains(warning, foreignReason) {
+		t.Errorf("warning = %q, want it to name the foreign reason %q", warning, foreignReason)
+	}
+	if msg, _ := out["message"].(string); !strings.Contains(msg, "Warning:") {
+		t.Errorf("message = %q, want it to append the Warning: suffix", msg)
+	}
+
+	// The session still lands there despite the foreign lock (a restore
+	// cannot be refused), and the removed worktree is gone.
+	if got := s2.currentEnv().WorkingDirectory(); got != launchPath {
+		t.Errorf("currentEnv WorkingDirectory = %q, want %q", got, launchPath)
+	}
+	if _, statErr := os.Stat(pathWork); !os.IsNotExist(statErr) {
+		t.Errorf("work worktree survived remove-current: err=%v", statErr)
+	}
+	// The foreign lock on the launch worktree is left untouched (co-occupy,
+	// not a forced takeover).
+	e := r2.porcelainEntry(t, launchPath)
+	if !e.Locked || e.LockReason != foreignReason {
+		t.Errorf("launch worktree lock = (%v,%q), want untouched (%v,%q)", e.Locked, e.LockReason, true, foreignReason)
 	}
 }

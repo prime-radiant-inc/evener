@@ -204,6 +204,12 @@ func DirsFromRootToCwd(root, cwd string) []string {
 	out := []string{root}
 	cur := root
 	for _, p := range strings.Split(rel, string(filepath.Separator)) {
+		// Coverage note: unreachable given the guards above. rel == "."
+		// (the only way a component could be ".") already returned early;
+		// and filepath.Rel of two filepath.Clean'd paths never yields a
+		// leading/trailing/doubled separator, so Split never produces an
+		// empty interior component either. Kept as a defensive guard in
+		// case a future change to the guards above loosens that guarantee.
 		if p == "" || p == "." {
 			continue
 		}

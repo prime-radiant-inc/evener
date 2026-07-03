@@ -90,6 +90,14 @@ func UpdateSidecar(metaDir, name string, mutate func(*Sidecar)) error {
 	mutate(&sc)
 	raw, err := json.MarshalIndent(sc, "", "  ")
 	if err != nil {
+		// Unreachable with Sidecar's current field set (plain strings and
+		// bools only — nothing MarshalIndent can choke on: no channel, func,
+		// complex, or NaN value). Unlike WriteSidecarExcl's matching check,
+		// this one marshals to an in-memory buffer before any I/O, so it
+		// can't be reached by an os-level write failure either (see
+		// TestUpdateSidecarEncodeFailure, which forces the *subsequent*
+		// os.WriteFile below to fail instead). Kept as a guard against a
+		// future field addition introducing a non-marshalable type.
 		return fmt.Errorf("worktree: encode sidecar for %s: %w", name, err)
 	}
 	return os.WriteFile(sidecarPath(metaDir, name), raw, 0o644)

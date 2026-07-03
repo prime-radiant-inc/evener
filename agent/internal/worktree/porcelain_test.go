@@ -223,6 +223,7 @@ func TestCUnquote(t *testing.T) {
 		{"octal escape", `"bell\001end"`, "bell\x01end"},
 		{"multibyte via octal (café)", `"caf\303\251"`, "café"},
 		{"unquoted string that merely starts with a quote char is untouched", `"unterminated`, `"unterminated`},
+		{"unrecognized escape is preserved verbatim", `"a\zb"`, `a\zb`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -555,6 +555,13 @@ func (s *Session) liveWorkUnder(path string) []string {
 		for _, child := range s.subagents.sessions() {
 			env := child.currentEnv()
 			if env == nil {
+				// Defensive: every *Session's env is set at construction and
+				// stays non-nil for its whole life (session_lifecycle.go's
+				// close path dereferences it unconditionally, so a nil env
+				// would already be broken well before liveWorkUnder could
+				// observe it). Kept as a guard against the ExecutionEnvironment
+				// interface's zero value rather than assuming every caller of
+				// subagents.track upholds the invariant forever.
 				continue
 			}
 			wd := env.WorkingDirectory()
@@ -692,6 +699,15 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 	// AND lock in one atomic command (spec §3 step 6; §9 step 1; Decide gates
 	// the action).
 	if worktree.Decide(ev, worktree.Unlocked) != worktree.ActAtomicAddLock {
+		// Coverage note: unreachable with the current two call sites. Both
+		// worktreeCreate and createDelegateWorktree pass ev as a compile-time
+		// constant (EvCreate / EvDelegateCreate respectively), and Decide's
+		// table maps BOTH of those to ActAtomicAddLock for Unlocked (the only
+		// state reachable here — mr/name/branch have already been validated
+		// not to exist), proven exhaustively by
+		// agent/internal/worktree/lockstate_test.go's TestDecideEveryCell.
+		// Kept as a guard against a future caller passing an unexpected
+		// LockEvent rather than trusting every call site forever.
 		_ = worktree.DeleteSidecar(metaDir, name)
 		return "", "", "", "", nil, fmt.Errorf("%s: internal error: create is not an atomic-add-lock event", errPrefix)
 	}
@@ -1179,6 +1195,15 @@ func (s *Session) relockRestoreTarget(run worktree.GitRunner, path string) (stri
 	case worktree.ActWarnCoOccupy:
 		return fmt.Sprintf("restore target %s is locked by another owner (%s); continuing and co-occupying it", path, reason), nil
 	default:
+		// Coverage note: unreachable. st is always one of the 4 valid
+		// LockState values here (Unlocked, or ClassifyReason's result, which
+		// itself is always one of the 4 — see its own doc comment), and
+		// Decide's EvRestoreLand row only ever returns ActRefuse for an
+		// out-of-range LockState, never for any of the 4 valid ones
+		// (agent/internal/worktree/lockstate_test.go's TestDecideEveryCell
+		// enumerates all 4 for EvRestoreLand: ActLock, ActAdopt,
+		// ActWarnCoOccupy, ActWarnCoOccupy). Kept as a fail-safe guard
+		// against a future table change rather than trusting it forever.
 		return "", fmt.Errorf("manage_worktree exit: internal error: unexpected restore-relock action for %s", path)
 	}
 }
@@ -1411,6 +1436,16 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, delete
 		}
 		restoredRoot, ok := s.exitWorktree()
 		if !ok {
+			// Coverage note: unreachable without an external race.
+			// st.restoreEnv != nil was already confirmed a few lines above
+			// from the SAME worktreeStateSnapshot, and exitWorktree()
+			// re-reads that identical field (s.worktreeRestoreEnv)
+			// synchronously with nothing in between that could clear it —
+			// manage_worktree calls are serialized in the tool stream (spec
+			// §2), so no other tool call runs concurrently with this one in
+			// normal operation. Kept as a fail-safe guard against exactly
+			// that serialization invariant ever being violated, rather than
+			// trusting it silently forever.
 			return WorktreeRemoveResult{}, errors.New("manage_worktree remove: not in a worktree")
 		}
 		warning, err := s.applyRestoreLandRelock(run, restoredRoot, projectDir)
@@ -1452,6 +1487,16 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, delete
 			if !passesGate {
 				switch {
 				case !hasSidecar:
+					// Coverage note: unreachable. !passesGate here means
+					// force == false (passesGate starts as force, and
+					// nothing above this switch can set it false-to-true
+					// before this point). Step 5 above already refuses the
+					// WHOLE call with force == false and !hasSidecar before
+					// ever reaching this delete_branch gate, so by the time
+					// we're here with force == false, hasSidecar is always
+					// true. Kept as a guard against a future reordering of
+					// steps 5 and 9 rather than trusting the ordering
+					// invariant silently forever.
 					evidence = fmt.Sprintf("no metadata recorded for %q; cannot verify merge status without force", name)
 				case tipSHA == sc.BaseSHA:
 					passesGate = true

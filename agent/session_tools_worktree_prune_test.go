@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -129,6 +130,63 @@ func ageSidecar(t *testing.T, metaDir, name string, age time.Duration) {
 // ============================================================
 // list
 // ============================================================
+
+// TestWorktreeList_NotInGitRepo covers worktreeList's own "not in a git
+// repository" guard.
+func TestWorktreeList_NotInGitRepo(t *testing.T) {
+	dir := t.TempDir() // not a git repo at all
+	s := newSession(t, withDir(dir))
+	_, err := s.worktreeList(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "not in a git repository") {
+		t.Fatalf("list outside a git repo: err = %v, want the not-in-a-git-repository error", err)
+	}
+}
+
+// TestWorktreeList_ListWorktreesErrorsWhenGitUnavailable covers step 1's
+// own `git worktree list --porcelain` error branch.
+func TestWorktreeList_ListWorktreesErrorsWhenGitUnavailable(t *testing.T) {
+	r := newWorktreeRepo(t)
+	restore := hideGitEntirely(t)
+	defer restore()
+
+	_, err := r.listOp(t)
+	if err == nil || !strings.Contains(err.Error(), "listing worktrees") {
+		t.Fatalf("list with git hidden: err = %v, want the listing-worktrees error", err)
+	}
+}
+
+// TestWorktreePrune_NotInGitRepo covers worktreePrune's own "not in a git
+// repository" guard.
+func TestWorktreePrune_NotInGitRepo(t *testing.T) {
+	dir := t.TempDir() // not a git repo at all
+	s := newSession(t, withDir(dir))
+	_, err := s.worktreePrune(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "not in a git repository") {
+		t.Fatalf("prune outside a git repo: err = %v, want the not-in-a-git-repository error", err)
+	}
+}
+
+// TestWorktreePrune_Sweep1ErrorPropagatesWhenGitUnavailable covers
+// worktreePrune's own error-propagation from worktreePruneSweep1 (the FIRST
+// sweep it calls): with git hidden, sweep 1's own `worktree list
+// --porcelain` call fails and worktreePrune must surface that error rather
+// than continuing to sweep 2/3.
+func TestWorktreePrune_Sweep1ErrorPropagatesWhenGitUnavailable(t *testing.T) {
+	r := newWorktreeRepo(t)
+	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+	restore := hideGitEntirely(t)
+	defer restore()
+
+	_, err := r.pruneOp(t)
+	if err == nil {
+		t.Fatal("expected prune to fail when git is unavailable for sweep 1")
+	}
+}
 
 func TestWorktreeList_DoesNotPrune(t *testing.T) {
 	r := newWorktreeRepo(t)
@@ -348,6 +406,171 @@ func TestWorktreeList_SymlinkedWorktreeRootCanonicalization(t *testing.T) {
 // ============================================================
 // prune — sweep 1 (registered managed worktrees)
 // ============================================================
+
+// TestWorktreePrune_Sweep1_RevParseHeadFails covers sweep 1's own
+// `git -C <path> rev-parse HEAD` error branch: the candidate is unlocked,
+// has no live work, has a sidecar, and is clean, but the tip lookup itself
+// fails — reported as a skip, never as a hard error (spec §5 sweep 1: a
+// per-entry git-query failure is a soft skip).
+func TestWorktreePrune_Sweep1_RevParseHeadFails(t *testing.T) {
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+
+	gitFailOnArgsShim(t, "-C", path, "rev-parse", "HEAD")
+
+	out, err := r.pruneOp(t)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	e := findPruneEntry(t, pruneEntries(t, out, "skipped"), "lane")
+	if e == nil {
+		t.Fatal("lane not reported skipped")
+	}
+	reason, _ := e["reason"].(string)
+	if !strings.Contains(reason, "rev-parse HEAD failed") {
+		t.Errorf("reason = %q, want it to explain the rev-parse HEAD failure", reason)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Errorf("worktree removed despite the rev-parse HEAD failure: %v", statErr)
+	}
+}
+
+// TestWorktreePrune_Sweep1_MergeCheckFails covers sweep 1's own
+// disposableReason error branch: the candidate has commits beyond base (not
+// unchanged), so disposableReason must call worktree.Merged, and the
+// for-each-ref call that makes fails.
+func TestWorktreePrune_Sweep1_MergeCheckFails(t *testing.T) {
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	commitInWorktree(t, path, "a.txt", "a\n", "advance lane")
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+
+	gitFailOnArgsShim(t, "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes/*/main")
+
+	out, err := r.pruneOp(t)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	e := findPruneEntry(t, pruneEntries(t, out, "skipped"), "lane")
+	if e == nil {
+		t.Fatal("lane not reported skipped")
+	}
+	reason, _ := e["reason"].(string)
+	if !strings.Contains(reason, "merge check failed") {
+		t.Errorf("reason = %q, want it to explain the merge check failure", reason)
+	}
+}
+
+// TestWorktreePrune_Sweep1_BranchDeleteFailsDuringCollect covers sweep 1's
+// own `git branch -D` failure during collection: the worktree itself
+// removes cleanly (a hard error would have aborted before this point), but
+// deleting its now-orphaned branch fails.
+func TestWorktreePrune_Sweep1_BranchDeleteFailsDuringCollect(t *testing.T) {
+	r := newWorktreeRepo(t)
+	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+
+	gitFailOnArgsShim(t, "branch", "-D", "lane")
+
+	_, err := r.pruneOp(t)
+	if err == nil || !strings.Contains(err.Error(), "deleting branch") {
+		t.Fatalf("prune with the branch -D failing: err = %v, want the deleting-branch error", err)
+	}
+}
+
+// TestWorktreePruneSweep2_NoMetaDirReturnsCleanly covers worktreePruneSweep2's
+// own os.IsNotExist tolerance for ListSidecars: a repo with no managed
+// worktree EVER created has no .meta directory at all, and prune must not
+// treat that as an error.
+func TestWorktreePruneSweep2_NoMetaDirReturnsCleanly(t *testing.T) {
+	r := newWorktreeRepo(t)
+	out, err := r.pruneOp(t)
+	if err != nil {
+		t.Fatalf("prune with no .meta dir ever created: %v", err)
+	}
+	if len(pruneEntries(t, out, "removed")) != 0 || len(pruneEntries(t, out, "skipped")) != 0 {
+		t.Errorf("prune with nothing managed = %+v, want empty removed/skipped", out)
+	}
+}
+
+// TestWorktreePrune_Sweep2_RevParseVerifyFails covers sweep 2's own
+// `git rev-parse --verify refs/heads/<name>` error branch: the sidecar's
+// branch genuinely exists (branchExists passed) per the fixture, but the
+// verify call itself fails.
+func TestWorktreePrune_Sweep2_RevParseVerifyFails(t *testing.T) {
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+	// Remove the worktree WITHOUT going through manage_worktree, leaving a
+	// sidecar with no matching registered worktree (sweep 2's own target
+	// shape) while the branch itself still exists.
+	wtGit(t, r.mainRoot, "worktree", "remove", "--", path)
+	ageSidecar(t, r.metaDir(r.canonicalMain(t)), "lane", worktree.ReconcileGrace+time.Minute)
+
+	gitFailOnArgsShim(t, "rev-parse", "--verify", "refs/heads/lane")
+
+	out, err := r.pruneOp(t)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	e := findPruneEntry(t, pruneEntries(t, out, "skipped"), "lane")
+	if e == nil {
+		t.Fatal("lane not reported skipped")
+	}
+	reason, _ := e["reason"].(string)
+	if !strings.Contains(reason, "rev-parse failed") {
+		t.Errorf("reason = %q, want it to explain the rev-parse failure", reason)
+	}
+}
+
+// TestWorktreePrune_Sweep2_DeleteStaleSidecarFailsOnPermissionDenied covers
+// sweep 2's own DeleteSidecar failure branch for the "stale sidecar, no
+// worktree, no branch" arm: the metadata directory is read-only, so
+// removing the sidecar file fails with a genuine permission error.
+func TestWorktreePrune_Sweep2_DeleteStaleSidecarFailsOnPermissionDenied(t *testing.T) {
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+	wtGit(t, r.mainRoot, "worktree", "remove", "--", path)
+	wtGit(t, r.mainRoot, "branch", "-D", "lane")
+	metaDir := r.metaDir(r.canonicalMain(t))
+	ageSidecar(t, metaDir, "lane", worktree.ReconcileGrace+time.Minute)
+	chmodReadOnly(t, metaDir)
+
+	_, err = r.pruneOp(t)
+	if err == nil || !strings.Contains(err.Error(), "deleting stale sidecar") {
+		t.Fatalf("prune with a read-only metaDir: err = %v, want the deleting-stale-sidecar error", err)
+	}
+}
 
 func TestWorktreePrune_Sweep1_CollectsUnchanged(t *testing.T) {
 	r := newWorktreeRepo(t)
@@ -897,6 +1120,46 @@ func TestWorktreePrune_Sweep2_UnmergedResidueKept(t *testing.T) {
 // ============================================================
 // prune — sweep 3 (git registry hygiene)
 // ============================================================
+
+// TestWorktreePrune_Sweep3_ListWorktreesErrorsOnThirdPorcelainCall covers
+// worktreePruneSweep3's own `worktree list --porcelain` error branch. On an
+// empty repo (nothing managed at all), sweep 1 and sweep 2 each make exactly
+// one such call themselves (both must still succeed for real); the shim
+// fails only the 3rd, which is sweep 3's own.
+func TestWorktreePrune_Sweep3_ListWorktreesErrorsOnThirdPorcelainCall(t *testing.T) {
+	r := newWorktreeRepo(t)
+	gitFailOnNthMatchingCallShim(t, "worktree list --porcelain", 3)
+
+	_, err := r.pruneOp(t)
+	if err == nil || !strings.Contains(err.Error(), "listing worktrees") {
+		t.Fatalf("prune with sweep 3's own porcelain call failing: err = %v, want the listing-worktrees error", err)
+	}
+}
+
+// TestWorktreePrune_Sweep3_GitWorktreePruneCommandFails covers sweep 3's own
+// `git worktree prune` failure branch: every prunable entry is managed (so
+// sweep 3 decides to run), but the prune command itself fails.
+func TestWorktreePrune_Sweep3_GitWorktreePruneCommandFails(t *testing.T) {
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "vanished-lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+	if err := os.RemoveAll(path); err != nil {
+		t.Fatalf("remove dir out of band: %v", err)
+	}
+
+	gitFailOnArgsShim(t, "worktree", "prune")
+
+	_, err = r.pruneOp(t)
+	if err == nil || !strings.Contains(err.Error(), "git worktree prune") {
+		t.Fatalf("prune with the git worktree prune command failing: err = %v, want the git-worktree-prune error", err)
+	}
+}
 
 func TestWorktreePrune_Sweep3_RunsWhenAllPrunableManaged(t *testing.T) {
 	r := newWorktreeRepo(t)

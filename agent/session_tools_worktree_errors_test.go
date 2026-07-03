@@ -162,6 +162,19 @@ func TestWorktreeErrors_RemoveNonexistentWorktree(t *testing.T) {
 	}
 }
 
+// TestWorktreeErrors_RemoveDispatchRequiresName covers the manage_worktree
+// tool DISPATCH layer's own "name is required" guard for the "remove"
+// operation (registerWorktreeTool's switch, before removeOp is ever called),
+// mirroring TestWorktreeCreate_RejectsInvalidName's empty-name case for
+// create but for remove's own case arm.
+func TestWorktreeErrors_RemoveDispatchRequiresName(t *testing.T) {
+	r := newWorktreeRepo(t)
+	_, err := r.removeOp(t, map[string]any{"name": ""})
+	if err == nil || !strings.Contains(err.Error(), "name is required") {
+		t.Fatalf("remove with empty name: err = %v, want it to contain %q", err, "name is required")
+	}
+}
+
 // --- Row 6: switch by path to a path not in `git worktree list` -> error ---
 
 func TestWorktreeErrors_SwitchByPathUnregistered(t *testing.T) {
@@ -632,6 +645,27 @@ func TestWorktreeErrors_NonLocalExecutionEnvironment(t *testing.T) {
 	// type. That still satisfies "errors clearly" (row 10), just with a
 	// different message; see this file's header and the task-17 report for
 	// the full discussion.
+}
+
+// TestWorktreeErrors_PruneDispatchPropagatesNonLocalEnvError covers the
+// manage_worktree tool DISPATCH layer's own `if err != nil { return nil, err
+// }` for the "prune" operation specifically (registerWorktreeTool's switch,
+// distinct from calling s.worktreePrune directly as
+// TestWorktreeErrors_NonLocalExecutionEnvironment above does): prune is
+// documented as "never errors" for every scenario reachable through real git
+// state, so the ONLY way to observe this dispatch-level error-propagation
+// branch at all is the non-local-execution-environment guard, driven through
+// rt.Exec exactly as the model would invoke it.
+func TestWorktreeErrors_PruneDispatchPropagatesNonLocalEnvError(t *testing.T) {
+	r := newWorktreeRepo(t)
+	r.s.mu.Lock()
+	r.s.env = &timeoutEnv{wd: r.mainRoot}
+	r.s.mu.Unlock()
+
+	_, err := r.pruneOp(t)
+	if err == nil || !strings.Contains(err.Error(), "local execution environment") {
+		t.Fatalf("prune via dispatch: err = %v, want it to contain %q", err, "local execution environment")
+	}
 }
 
 // --- Row 19: git unavailable -> ResolveMainRepoRoot resolves structurally

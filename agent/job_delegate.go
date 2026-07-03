@@ -243,6 +243,17 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 		return delegateStartFailedWithIDs(delegateID, jobID, err)
 	}
 	if err := s.trackAndLaunchPreparedSubagent(prepared); err != nil {
+		// Coverage note on the workingDir != "" rollback below:
+		// trackAndLaunchPreparedSubagent's only error path is the parent
+		// session being closed (closingOrClosedLocked()) at the exact
+		// instant this call runs — a genuine external race (a concurrent
+		// Close() from another goroutine), not reachable by shaping input or
+		// on-disk state in a single-threaded test the way the OTHER
+		// rollback call sites in this function are (see
+		// TestDelegateIsolation_SpawnFailureAfterWorktreeCreateRollsBackLane
+		// and TestDelegateIsolation_AttachFailureAfterWorktreeCreateRollsBackLane
+		// in job_delegate_isolation_test.go for those). The rollback call
+		// itself is identical to, and already proven correct by, those two.
 		prepared.runCancel()
 		sub.sess.Close()
 		_ = jm.finalize(run.rec.JobID, jobstore.StatusFailed, "start_failed", nil)
