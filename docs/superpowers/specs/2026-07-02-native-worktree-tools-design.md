@@ -1,7 +1,7 @@
 # Native Worktree Tools — Design Spec
 
 Date: 2026-07-02
-Status: Draft (rev 4, post cross-harness comparison + live-repo evidence)
+Status: Draft (rev 5, delegate isolation integrated into the single delivery)
 
 ## Summary
 
@@ -28,10 +28,12 @@ Four coupled changes:
 3. **Session-env mutation discipline:** an explicit env accessor/swap helper so
    changing the session working root does not introduce data races or stale
    prompt/env metadata — including across **session resume**.
-4. **Phase 2 — delegate worktree isolation:** `isolation: "worktree"` on the
+4. **Delegate worktree isolation:** `isolation: "worktree"` on the
    `delegate` tool. The harness creates a managed worktree per delegate, roots
    the child env there (so lane-straying is structurally impossible), and
-   auto-removes it when the job finishes without changes.
+   auto-removes it when the job finishes without changes. This ships in the
+   same delivery as the tool — it is the dominant real-world use, and it
+   consumes the same placement/metadata/control-env core.
 
 Worktrees live outside the project tree under
 `<worktreeRoot>/<projectid>/<name>/`, where `worktreeRoot` is derived from the
@@ -56,8 +58,8 @@ in the main checkout.
 - Keep the full lifecycle (create, list, switch, exit, remove, prune) in one
   tool, with disposal safe by default: no destruction of uncommitted files or
   unmerged commits without an explicit force.
-- Give parallel delegate lanes native worktree isolation (Phase 2) — the
-  dominant real-world use, and the one manual management has repeatedly botched
+- Give parallel delegate lanes native worktree isolation — the dominant
+  real-world use, and the one manual management has repeatedly botched
   (lanes writing to the wrong checkout).
 
 ## Non-goals (this spec)
@@ -93,7 +95,7 @@ in the main checkout.
 | Orphan cleanup | `prune` operation now; scheduled trigger deferred | The evidence says disposal is the hard problem; primitives can't be deferred |
 | Detection scope | root identity only | Full config/hook/trust layering remains separate |
 | env-restore model | single saved env (not a stack) | Restore to original repo root, not a previous worktree |
-| Delegate isolation | Phase 2, same spec | Shares placement/metadata/control-env core; designing auto-clean now avoids retrofit |
+| Delegate isolation | In scope, same delivery | Dominant real-world use; shares the placement/metadata/control-env core |
 
 ## Cross-harness evidence (why rev 4 looks like this)
 
@@ -114,7 +116,7 @@ this repo's worktree population. What transferred:
   sibling worktrees; `switch` gains a `path` mode for them (§4).
 - **Per-agent isolation is the dominant use.** Nearly all of the ~90 stale
   worktrees audited were created by agent fan-outs, not by a session entering
-  a worktree for itself. Hence Phase 2 (§9).
+  a worktree for itself. Hence delegate isolation (§9).
 - **"Auto-clean if unchanged" still leaks.** Changed worktrees are kept
   forever and nobody returns for them. Hence metadata + `prune` + staleness
   reporting in `list` — cleanup must be one call, not ninety.
@@ -474,7 +476,7 @@ One call that does what ninety manual `remove`s never happen to do:
    takes `force`; anything it skips is `remove`'s job, deliberately.
 
 The `unchanged` predicate (clean tree AND tip == recorded base SHA) is shared
-with Phase 2's auto-disposal (§9). It is why metadata must record the base SHA
+with delegate auto-disposal (§9). It is why metadata must record the base SHA
 at creation.
 
 ## 6. projectid, worktreeRoot, and metadata
@@ -539,7 +541,7 @@ Never inside the worktree's working tree (would dirty it) and never inside
 ```
 
 Consumers: `remove`'s cross-session guard, `prune`'s `unchanged` predicate,
-`list`'s staleness report, resume re-entry (§7), and Phase 2 auto-disposal
+`list`'s staleness report, resume re-entry (§7), and delegate auto-disposal
 (§9). A worktree without a sidecar (hand-made inside the managed dir, or a
 pre-metadata stray) is listed with `"unmanaged_meta": true` and is skipped by
 `prune`; `remove` treats it as another session's (refuse without `force`).
@@ -717,14 +719,15 @@ a **false positive** — discarded.
   `create`/`switch`/`exit`/`remove`/`list`/`prune` require git for lifecycle
   operations and error clearly if absent.
 
-## 9. Phase 2 — delegate worktree isolation
+## 9. Delegate worktree isolation
 
 The dominant real-world worktree use is not a session entering a worktree for
 itself; it is parallel delegate lanes needing isolation from each other and
 from the main checkout. Manual lane management has produced exactly the
 failures this feature exists to prevent (lanes writing to the wrong checkout).
-Phase 2 makes isolation a property of the *delegation*, not a behavior the
-child must remember to perform.
+This section makes isolation a property of the *delegation*, not a behavior
+the child must remember to perform. It ships in the same delivery as the rest
+of this spec.
 
 ### Tool surface
 
@@ -845,12 +848,12 @@ worktree tool is pure plumbing — git operations on temp repos. Tests use real
   `s.mu` (assert via a test hook or by verifying no `git` invocation happens
   while the lock is held — at minimum, a code-review checklist item plus the
   race test above).
-- Phase 2: delegate with `isolation: "worktree"` → child env rooted at a fresh
-  managed worktree with `job_id` metadata; unchanged child → auto-removed on
-  completion (worktree, branch, sidecar all gone); changed child → kept, job
-  result carries path/branch/ahead/dirty; killed child → kept; parent `remove`
-  of a live delegate's worktree → refused; delegate resume lands back in its
-  worktree via the existing restore descriptor.
+- Delegate isolation: delegate with `isolation: "worktree"` → child env rooted
+  at a fresh managed worktree with `job_id` metadata; unchanged child →
+  auto-removed on completion (worktree, branch, sidecar all gone); changed
+  child → kept, job result carries path/branch/ahead/dirty; killed child →
+  kept; parent `remove` of a live delegate's worktree → refused; delegate
+  resume lands back in its worktree via the existing restore descriptor.
 - Fuzz target for arg validation (extends `FuzzToolArgsValidate` table).
 
 ## 11. Known limitations
@@ -908,7 +911,11 @@ had no data source for shell jobs); cross-session creator guard;
 `switch`-by-path for git-registered worktrees; `serf run`/`serve` RuntimeDir
 keying moved to the main root (origin-less repos); symlink-canonicalized path
 comparisons; structural walk pinned to direct `os` calls; corrected the
-projectid case-sensitivity claim; and Phase 2 delegate worktree isolation.
+projectid case-sensitivity claim; and delegate worktree isolation.
 Placement stayed in the state dir (decided against in-repo `.serf/worktrees/`:
 immunity to `git clean -dxf` outweighs path legibility, and the run/serve
 keying fix removes the discovery-instability argument).
+
+Rev 5 removed the phasing: delegate worktree isolation (§9) is integrated
+into the single delivery rather than staged as a follow-on phase — one spec,
+one implementation campaign.
