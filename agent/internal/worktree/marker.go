@@ -30,9 +30,10 @@ func FormatDelegateMarker(dlgID, parentSID string) string {
 // lock with no reason or a reason that doesn't parse as a serf marker is
 // foreign").
 //
-// Parsing is strict: serf session and delegate ids never contain ':' (they
-// are generated as "ag_<ulid>" and "dlg_<ulid>" — see
-// agent/session_model_call.go and agent/internal/jobstore/record.go), so a
+// Parsing is strict: serf session and delegate ids never contain ':' (a
+// session id is a bare ULID, e.g. "01HXYZ..." — see
+// agent/session_init.go's assignment of Session.id; a delegate id is
+// "dlg_<ulid>" — see agent/internal/jobstore/record.go's NewDelegateID), so a
 // genuine marker is exactly "serf:<sid>" (2 colon-separated segments) or
 // "serf:dlg:<dlg>:<sid>" (4 segments). Anything else — a truncated
 // "serf:dlg:x", an over-long "serf:dlg:a:b:c", or a segment that is present
