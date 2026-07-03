@@ -97,8 +97,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		stateDir = envvars.SERFStateDir.Getenv()
 	}
 	if stateDir == "" {
-		originURL := cmdutil.GitOriginURLFromDir(cfg.workDir)
-		stateDir = agent.RuntimeDir(originURL, cfg.workDir, "")
+		stateDir = cmdutil.DefaultProjectStateDir(cfg.workDir)
 	}
 
 	// --list-sessions: print and exit.

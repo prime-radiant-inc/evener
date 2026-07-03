@@ -448,9 +448,9 @@ func TestClassifySelfInfluenceCountsClearedLineage(t *testing.T) {
 	oldCfg := onlyWatchConfigForTest(t, jm)
 	oldID, oldGen := oldCfg.watchID, oldCfg.generation
 
-	clear := args
-	clear.Clear = true
-	if _, err := jm.configureWatch(clear); err != nil {
+	clearArgs := args
+	clearArgs.Clear = true
+	if _, err := jm.configureWatch(clearArgs); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
 	if _, err := jm.configureWatch(args); err != nil {

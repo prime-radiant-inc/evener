@@ -67,6 +67,24 @@ type SessionMeta struct {
 	// a live observer's session beside this one. Append-only and deduped, like
 	// the watch read grants it mirrors; never revoked.
 	ObservedBy []string `json:"observed_by,omitempty"`
+	// WorktreePath is the absolute path of the managed or path-entered
+	// worktree the session's env is currently rooted in via manage_worktree,
+	// empty when the session is at its main/restore root. Both switch modes —
+	// managed and non-managed by-path — swap the env, so both must be
+	// persisted here (native worktree tools spec §7 "Persistence and
+	// resume": "managed or path-entered; both switch modes swap the env, so
+	// both must survive resume").
+	WorktreePath string `json:"worktree_path,omitempty"`
+	// WorktreeManaged is true when WorktreePath is a serf-managed worktree
+	// (entered via create, or switch by name/managed path) — the idempotent
+	// occupancy-lock rule applies to it on resume re-entry. False for a
+	// non-managed worktree entered by path, which carries no serf lock.
+	WorktreeManaged bool `json:"worktree_managed,omitempty"`
+	// WorktreeRestoreRoot is the root of the env saved the first time the
+	// session entered WorktreePath (native worktree tools spec §7
+	// "env-restore model"). On resume, a foreign lock or a worktree that no
+	// longer exists lands the session here instead, with a notice.
+	WorktreeRestoreRoot string `json:"worktree_restore_root,omitempty"`
 }
 
 // GoalSnapshot is the wire form of a goal.Goal persisted inside SessionMeta.

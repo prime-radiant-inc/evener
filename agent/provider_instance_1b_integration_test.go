@@ -211,7 +211,7 @@ func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 	}
 	defer workSess.Close()
 
-	workPrompt := workSess.renderSystemPrompt()
+	workPrompt := workSess.renderSystemPrompt(workSess.env)
 	if !strings.Contains(workPrompt, openAIMarker) {
 		t.Errorf("work session (tag=openai): system prompt missing openai section marker %q", openAIMarker)
 	}
@@ -234,7 +234,7 @@ func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 	}
 	defer compatSess.Close()
 
-	compatPrompt := compatSess.renderSystemPrompt()
+	compatPrompt := compatSess.renderSystemPrompt(compatSess.env)
 	if strings.Contains(compatPrompt, openAIMarker) {
 		t.Errorf("compat-x session (tag=openai-compatible): system prompt must NOT contain openai section marker %q", openAIMarker)
 	}

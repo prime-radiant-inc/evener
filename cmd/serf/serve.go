@@ -148,8 +148,7 @@ func runServe(args []string) error {
 		sd = envvars.SERFStateDir.Getenv()
 	}
 	if sd == "" {
-		originURL := cmdutil.GitOriginURLFromDir(wd)
-		sd = agent.RuntimeDir(originURL, wd, "")
+		sd = cmdutil.DefaultProjectStateDir(wd)
 	}
 
 	resuming := *resume != "" || *resumeLast

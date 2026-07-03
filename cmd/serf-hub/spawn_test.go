@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -813,6 +814,78 @@ func TestResolveSerfStateDirMatchesServeDefaultForWorkingDir(t *testing.T) {
 	wantPrefix := filepath.Join(os.Getenv("XDG_STATE_HOME"), "serf", "projects")
 	if !strings.HasPrefix(got, wantPrefix) {
 		t.Fatalf("state dir=%q, want prefix %q", got, wantPrefix)
+	}
+}
+
+// runGitForSpawn runs a git command in dir with a fixed identity, failing the
+// test on error. Mirrors cmdutil/statedir_test.go's runGit; a package-main
+// test file cannot import an unexported test helper from another package.
+func runGitForSpawn(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// newLinkedWorktreeForSpawn builds an origin-less main repo with one commit
+// and a linked worktree, returning their absolute paths. Mirrors
+// cmdutil/statedir_test.go's newLinkedWorktree fixture.
+func newLinkedWorktreeForSpawn(t *testing.T) (main, wt string) {
+	t.Helper()
+	base := t.TempDir()
+	main = filepath.Join(base, "main")
+	runGitForSpawn(t, base, "init", "-q", "main")
+	runGitForSpawn(t, main, "commit", "-q", "--allow-empty", "-m", "init")
+	wt = filepath.Join(base, "wt")
+	runGitForSpawn(t, main, "worktree", "add", "-q", wt, "-b", "feat")
+	return main, wt
+}
+
+// TestResolveSerfStateDirLinkedWorktreeSameAsMain proves the fix for the bug
+// described in
+// docs/superpowers/specs/2026-07-02-native-worktree-tools-design.md §1
+// ("Runtime state keying at launch"): resolveSerfStateDirWithStateHome (the
+// path that computes req.StateDir for every hub-spawned serf session) used
+// to key off the raw workDir, so for an origin-less repo, spawning from a
+// linked worktree computed a different session state dir than spawning from
+// the main checkout — the same class of bug Task 3 already fixed in
+// cmdutil.DefaultProjectStateDir for `serf run`/`serf serve`.
+func TestResolveSerfStateDirLinkedWorktreeSameAsMain(t *testing.T) {
+	main, wt := newLinkedWorktreeForSpawn(t)
+
+	mainDir := resolveSerfStateDir(main, "")
+	wtDir := resolveSerfStateDir(wt, "")
+
+	if mainDir != wtDir {
+		t.Errorf("state dir differs between main root and linked worktree:\n  main = %q\n  wt   = %q", mainDir, wtDir)
+	}
+}
+
+// TestResolveSerfStateDirNotInRepoFallsBackToWorkDir covers the
+// not-in-a-repo case: ResolveMainRepoRootLocal returns "" and the state dir
+// must key off workDir unchanged, matching pre-existing (pre-fix) behavior
+// for non-git directories.
+func TestResolveSerfStateDirNotInRepoFallsBackToWorkDir(t *testing.T) {
+	workDir := t.TempDir()
+	other := t.TempDir()
+
+	got := resolveSerfStateDir(workDir, "")
+	if got != resolveSerfStateDir(workDir, "") {
+		t.Fatalf("resolveSerfStateDir(%q) not deterministic", workDir)
+	}
+	if got == resolveSerfStateDir(other, "") {
+		t.Errorf("resolveSerfStateDir collided for distinct non-repo workDirs %q and %q: %q", workDir, other, got)
 	}
 }
 

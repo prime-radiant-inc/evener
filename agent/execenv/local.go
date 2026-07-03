@@ -58,11 +58,12 @@ var coreEnvVars = []envvars.Var{
 // machine, rooted at RootDir and governed by EnvPolicy. It tracks the PIDs of
 // started processes so they can be terminated on cleanup.
 type LocalExecutionEnvironment struct {
-	RootDir     string       // directory that file operations and commands are rooted at
-	EnvPolicy   EnvVarPolicy // which env vars child processes inherit
-	runningPIDs *sync.Map    // pid (int) → struct{}
-	gitRoots    *gitRootCache
-	fs          afero.Fs // filesystem backing ReadFile/WriteFile/EditFile; defaults to the OS
+	RootDir     string        // directory that file operations and commands are rooted at
+	EnvPolicy   EnvVarPolicy  // which env vars child processes inherit
+	runningPIDs *sync.Map     // pid (int) → struct{}
+	gitRoots    *gitRootCache // active working-tree root per cwd (GitRootOrEmpty)
+	mainRoots   *gitRootCache // stable main repo root per cwd (ResolveMainRepoRoot)
+	fs          afero.Fs      // filesystem backing ReadFile/WriteFile/EditFile; defaults to the OS
 }
 
 // gitRootCache memoizes git-root lookups per working dir. A session resolves the
@@ -93,6 +94,7 @@ func NewLocalExecutionEnvironment(rootDir string) *LocalExecutionEnvironment {
 		RootDir:     rootDir,
 		runningPIDs: &sync.Map{},
 		gitRoots:    &gitRootCache{m: map[string]string{}},
+		mainRoots:   &gitRootCache{m: map[string]string{}},
 		fs:          afero.NewOsFs(),
 	}
 }
@@ -124,6 +126,7 @@ func (e *LocalExecutionEnvironment) WithWorkingDirectory(dir string) *LocalExecu
 		EnvPolicy:   e.EnvPolicy,
 		runningPIDs: e.runningPIDs,
 		gitRoots:    &gitRootCache{m: map[string]string{}},
+		mainRoots:   &gitRootCache{m: map[string]string{}},
 		fs:          e.fs,
 	}
 }
@@ -135,6 +138,9 @@ func (e *LocalExecutionEnvironment) Initialize() error {
 	}
 	if e.gitRoots == nil {
 		e.gitRoots = &gitRootCache{m: map[string]string{}}
+	}
+	if e.mainRoots == nil {
+		e.mainRoots = &gitRootCache{m: map[string]string{}}
 	}
 	if e.fs == nil {
 		e.fs = afero.NewOsFs()
@@ -1209,6 +1215,13 @@ func filteredEnv(extra map[string]string) []string {
 	}
 	return out
 }
+
+// ShellEscapeArgs joins args into a single shell command string, quoting each
+// token so it survives the shell word-splitting ExecCommand performs. It is the
+// argv-discipline helper the native worktree tools use to assemble git commands
+// (spec §2 "name validation": "Do not hand-build shell command strings"), so a
+// worktree name or path can never inject shell metacharacters.
+func ShellEscapeArgs(args ...string) string { return shellEscapeArgs(args...) }
 
 func shellEscapeArgs(args ...string) string {
 	var b strings.Builder

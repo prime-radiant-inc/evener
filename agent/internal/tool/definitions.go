@@ -130,6 +130,11 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 				"max_wait_ms":          map[string]any{"type": "integer", "description": "0 (default): return the delegate_id and started job_id immediately; you are notified on completion. >0: wait inline up to this many ms; a timeout leaves the job running."},
 				"delegation_allowance": map[string]any{"type": "integer", "description": "0 (default): a leaf delegate that cannot itself delegate. >0: the delegate may delegate, granting onward allowances strictly smaller than this; must be strictly less than your own allowance. The allowance only takes effect if the chosen agent_type actually has the `delegate` tool: the built-in `subagent` role is a non-delegating leaf, so a >0 allowance on it is a silent no-op. For a multi-level tree, omit agent_type (the default role can delegate)."},
 				"watch_parent":         map[string]any{"type": "boolean", "description": "Grant this child permission to observe your session with job_watch(source=\"parent\"). This does not grant delegation or any transitive watch permission."},
+				"isolation": map[string]any{
+					"type":        "string",
+					"enum":        []string{"worktree"},
+					"description": "Absent (default): the delegate runs in your current directory. \"worktree\": give the delegate its own managed git worktree lane (branched from your current HEAD), isolated from your checkout and every other lane; only valid when you are in a local git checkout. The delegate cannot use manage_worktree itself.",
+				},
 				"result_schema": map[string]any{
 					"type":                 "object",
 					"description":          "JSON-Schema-like object for structured delegate results. Serf validates it for initial and resumed turns, surfaces structured_result when valid, and reports structured_result_reason when invalid.",
@@ -618,6 +623,67 @@ func DefReadSessionTranscript() llm.ToolDefinition {
 				"range":          map[string]any{"type": "string", "description": "Turn-number window: \"12-40\" | \"last:40\" | \"start:40\". Omit for the default last 40. Applies to every format."},
 				"expand_turn":    map[string]any{"type": "integer", "description": "A Turn number whose tool results to render in full (un-truncated). markdown only."},
 			},
+		},
+	}
+}
+
+// DefManageWorktree defines the manage_worktree lifecycle tool (spec §2): a
+// single tool with an operation enum, mirroring task_list's action pattern.
+// Args are flattened across operations rather than split per-op in the
+// schema; which args apply to which operation is documented in the
+// description and enforced by the handler, not the schema (see spec's args
+// table: create takes name+base_ref, switch takes name-or-path, remove takes
+// name+force+delete_branch, list/exit/prune take none).
+func DefManageWorktree() llm.ToolDefinition {
+	desc := "Manage git worktrees for isolated, parallel, or risky work — a scratch lane to try something that might not pan out, " +
+		"parallel exploration of alternative approaches, or isolating a delegate's changes from the parent checkout. " +
+		"This is not for ordinary branch creation or switching; use plain git commands for that. " +
+		"Operations: create (make a new worktree from `name` and optional `base_ref`, default the active HEAD, then enter it); " +
+		"list (show known worktrees); switch (enter an existing worktree by `name` or `path`, exactly one); " +
+		"exit (return to the main checkout); remove (delete a worktree by `name`; `delete_branch` also deletes its branch, " +
+		"`force` overrides provenance/merge gating, `force_dirty` overrides the refusal to discard uncommitted changes); " +
+		"prune (remove worktrees that have no unmerged work — unchanged or already-merged lanes, including ones left behind " +
+		"by finished sessions — the one-call way to clean up). " +
+		"Subsequent tool calls after create/switch/exit operate inside the resulting checkout. There is no merge operation: " +
+		"to land a lane's work, exit and merge its branch from the main checkout with plain git."
+	return llm.ToolDefinition{
+		Name:        "manage_worktree",
+		Description: desc,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"operation": map[string]any{
+					"type":        "string",
+					"description": "create, list, switch, exit, remove, or prune.",
+					"enum":        []string{"create", "list", "switch", "exit", "remove", "prune"},
+				},
+				"name": map[string]any{
+					"type":        "string",
+					"description": "Worktree name; also used as the branch name. Required for create; for switch, exactly one of name/path; required for remove.",
+				},
+				"base_ref": map[string]any{
+					"type":        "string",
+					"description": "For create: commit-ish to branch from. Defaults to the active HEAD.",
+				},
+				"path": map[string]any{
+					"type":        "string",
+					"description": "For switch: path to an existing worktree. Exactly one of name/path.",
+				},
+				"force": map[string]any{
+					"type":        "boolean",
+					"description": "For remove: override provenance and merge-safety gating (unmanaged sidecar, unmerged branch deletion). Does NOT discard uncommitted changes — use force_dirty for that. Default false.",
+				},
+				"force_dirty": map[string]any{
+					"type":        "boolean",
+					"description": "For remove: remove a worktree even if it has uncommitted changes (they are discarded). Separate from force so overriding a provenance/merge refusal cannot silently discard an edit. Default false.",
+				},
+				"delete_branch": map[string]any{
+					"type":        "boolean",
+					"description": "For remove: also delete the worktree's branch. Default false.",
+				},
+			},
+			"required": []string{"operation"},
 		},
 	}
 }

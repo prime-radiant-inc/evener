@@ -43,6 +43,12 @@ type shellArgs struct {
 	Background     bool
 	BlockTimeoutMS int
 	MaxRuntimeMS   int
+	// WorkingDir is the executing env's WorkingDirectory() at launch, set by
+	// the shell tool handler (not model-supplied). It rides onto the job
+	// record so manage_worktree remove/prune's live-work guard can see which
+	// worktree, if any, a background shell job is running under (spec §5
+	// remove step 4, §7 liveWorkUnder).
+	WorkingDir string
 }
 
 type shellResult struct {
@@ -413,6 +419,7 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 			Type:             jobstore.JobShell,
 			Status:           jobstore.StatusRunning,
 			Command:          args.Command,
+			WorkingDir:       args.WorkingDir,
 			Background:       args.Background,
 			Description:      args.Description,
 			OwnerSessionID:   jm.sessionID,
@@ -489,6 +496,7 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 		ParentJobID:      rec.ParentJobID,
 		StartedAt:        &startedAt,
 		OutputPath:       rec.OutputPath,
+		WorkingDir:       rec.WorkingDir,
 		Provenance:       provenance.Clone(rec.Provenance),
 	}
 	if err := jm.appendEvent(started); err != nil {

@@ -26,6 +26,7 @@ func Fold(events []Event) map[string]*JobRecord {
 		}
 		applyEvent(r, e)
 	}
+	markDisposedDelegates(recs, sorted)
 	return recs
 }
 
@@ -51,11 +52,40 @@ func FoldOrdered(events []Event) []*JobRecord {
 		}
 		applyEvent(r, e)
 	}
+	markDisposedDelegates(recs, sorted)
 	ordered := make([]*JobRecord, 0, len(order))
 	for _, id := range order {
 		ordered = append(ordered, recs[id])
 	}
 	return ordered
+}
+
+// markDisposedDelegates sets Disposed on every job record whose delegate was
+// disposed at its creator session's close (native worktree tools spec §9
+// step 4-5). Disposal is keyed by delegate id — a delegate_disposed event
+// carries no job id — so every job record for that delegate, across resumes,
+// is marked; assessDelegateResumability then refuses revival regardless of
+// which of the delegate's jobs it resolves. sorted is the seq-ordered event
+// slice the caller already built.
+func markDisposedDelegates(recs map[string]*JobRecord, sorted []Event) {
+	var disposed map[string]bool
+	for _, e := range sorted {
+		if e.Kind != EventDelegateDisposed || e.DelegateID == "" {
+			continue
+		}
+		if disposed == nil {
+			disposed = make(map[string]bool)
+		}
+		disposed[e.DelegateID] = true
+	}
+	if disposed == nil {
+		return
+	}
+	for _, r := range recs {
+		if r.DelegateID != "" && disposed[r.DelegateID] {
+			r.Disposed = true
+		}
+	}
 }
 
 func isJobRecordEventKind(kind EventKind) bool {
@@ -310,6 +340,7 @@ func applyEvent(r *JobRecord, e Event) {
 	case EventJobStarted:
 		r.Type = e.Type
 		r.Command = e.Command
+		r.WorkingDir = e.WorkingDir
 		r.Task = e.Task
 		r.Description = e.Description
 		r.ParentSessionID = e.ParentSessionID

@@ -83,17 +83,17 @@ func TestW2Dlg_ResolveDelegateRestoreProfile_Errors(t *testing.T) {
 func TestW2Dlg_RestoreDelegateChildEnvironment_Errors(t *testing.T) {
 	t.Parallel()
 
-	if _, err := (*Session)(nil).restoreDelegateChildEnvironment(&jobstore.DelegateRestoreDescriptor{}); err == nil {
+	if _, err := (*Session)(nil).restoreDelegateChildEnvironment(&jobstore.DelegateRestoreDescriptor{}, ""); err == nil {
 		t.Fatal("nil session: want error")
 	}
 
 	s := w2dlg_session(t)
 	badPolicy := &jobstore.DelegateRestoreDescriptor{WorkingDir: "/tmp", LocalEnvPolicy: "bogus"}
-	if _, err := s.restoreDelegateChildEnvironment(badPolicy); err == nil {
+	if _, err := s.restoreDelegateChildEnvironment(badPolicy, ""); err == nil {
 		t.Fatal("invalid policy: want error")
 	}
 	badWorkDir := &jobstore.DelegateRestoreDescriptor{WorkingDir: "", LocalEnvPolicy: "default"}
-	if _, err := s.restoreDelegateChildEnvironment(badWorkDir); err == nil {
+	if _, err := s.restoreDelegateChildEnvironment(badWorkDir, ""); err == nil {
 		t.Fatal("empty working_dir: want error")
 	}
 }

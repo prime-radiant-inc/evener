@@ -508,7 +508,7 @@ func TestCachedSystemPromptComponents_DoesNotDuplicateMCPToolDescriptions(t *tes
 			return "ok", nil
 		},
 	})
-	sess.refreshSystemPromptCache()
+	sess.refreshSystemPromptCache(sess.env)
 	sess.rebuildToolDefsCache()
 
 	if strings.Contains(sess.cachedSystemPrompt, "MCP tools:") {

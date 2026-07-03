@@ -26,6 +26,7 @@ func TestFoldBuildsRunningShellRecord(t *testing.T) {
 			e.OwnerSessionID = "S1"
 			e.VisibleToSession = "S1"
 			e.StartedAt = &start
+			e.WorkingDir = "/repo/worktrees/lane"
 		}),
 	}
 	recs := Fold(events)
@@ -38,6 +39,9 @@ func TestFoldBuildsRunningShellRecord(t *testing.T) {
 	}
 	if r.Command != "npm run dev" || r.Description != "dev server" {
 		t.Errorf("command/description not folded: %+v", r)
+	}
+	if r.WorkingDir != "/repo/worktrees/lane" {
+		t.Errorf("working dir = %q, want folded launch workdir", r.WorkingDir)
 	}
 	if r.NotifyState != NotifyNotArmed {
 		t.Errorf("notify state = %q, want not_armed", r.NotifyState)
@@ -516,6 +520,7 @@ func TestDelegateRestoreDescriptorSurvivesStoreReopenAndFold(t *testing.T) {
 		LocalEnvPolicy:     "core_only",
 		ResultSchema:       map[string]any{"type": "object", "required": []any{"message"}},
 		ExplicitToolGrants: []string{"shell"},
+		Isolation:          "worktree",
 	}
 	if err := store.Append(Event{
 		Kind:             EventJobStarted,
@@ -569,7 +574,8 @@ func TestDelegateRestoreDescriptorSurvivesStoreReopenAndFold(t *testing.T) {
 		got.WorkingDir != desc.WorkingDir ||
 		got.LocalEnvPolicy != desc.LocalEnvPolicy ||
 		got.ParentWatchGranted != desc.ParentWatchGranted ||
-		got.DelegationAllowance != desc.DelegationAllowance {
+		got.DelegationAllowance != desc.DelegationAllowance ||
+		got.Isolation != desc.Isolation {
 		t.Fatalf("reopened descriptor = %+v, want %+v", got, desc)
 	}
 	if len(got.FrozenToolNames) != 2 || got.FrozenToolNames[0] != "read_file" || got.FrozenToolNames[1] != "task_list" {
@@ -923,5 +929,58 @@ func TestFoldStoresNotificationProvenanceFromPendingEvent(t *testing.T) {
 	}
 	if !provenance.ContainsWatch(rec.NotificationProvenance, "watch_A", "wg_1") {
 		t.Fatalf("notification provenance = %+v, want watch_A/wg_1", rec.NotificationProvenance)
+	}
+}
+
+// TestFoldMarksDisposedDelegate covers the native worktree tools spec §9 step 5
+// disposed flag: a delegate_disposed event keyed by delegate id marks every job
+// record of that delegate (across resumes) Disposed, and only that delegate's
+// records.
+func TestFoldMarksDisposedDelegate(t *testing.T) {
+	start := time.Unix(1, 0).UTC()
+	events := []Event{
+		ev(EventJobStarted, 1, "job_A", func(e *Event) {
+			e.Type = JobDelegate
+			e.DelegateID = "dlg_1"
+			e.OwnerSessionID = "S1"
+			e.VisibleToSession = "S1"
+			e.StartedAt = &start
+		}),
+		ev(EventJobStarted, 2, "job_A2", func(e *Event) {
+			e.Type = JobDelegate
+			e.DelegateID = "dlg_1"
+			e.OwnerSessionID = "S1"
+			e.VisibleToSession = "S1"
+			e.StartedAt = &start
+		}),
+		ev(EventJobStarted, 3, "job_B", func(e *Event) {
+			e.Type = JobDelegate
+			e.DelegateID = "dlg_2"
+			e.OwnerSessionID = "S1"
+			e.VisibleToSession = "S1"
+			e.StartedAt = &start
+		}),
+		ev(EventDelegateDisposed, 4, "", func(e *Event) {
+			e.DelegateID = "dlg_1"
+		}),
+	}
+
+	recs := Fold(events)
+	if recs["job_A"] == nil || !recs["job_A"].Disposed {
+		t.Errorf("job_A Disposed = %v, want true", recs["job_A"] != nil && recs["job_A"].Disposed)
+	}
+	if !recs["job_A2"].Disposed {
+		t.Error("job_A2 (same delegate, later resume) not marked disposed")
+	}
+	if recs["job_B"].Disposed {
+		t.Error("job_B (different delegate) wrongly marked disposed")
+	}
+
+	// Round-trips through FoldOrdered too.
+	ordered := FoldOrdered(events)
+	for _, r := range ordered {
+		if r.DelegateID == "dlg_1" && !r.Disposed {
+			t.Errorf("FoldOrdered: %s not marked disposed", r.JobID)
+		}
 	}
 }

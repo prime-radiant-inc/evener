@@ -416,6 +416,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	s.pinnedNote = meta.PinnedNote
 
+	// Re-enter the persisted active worktree BEFORE initSessionState runs, so
+	// the session is rooted in it before the environment snapshot, system
+	// prompt, and tool registry are built (native worktree tools spec §7
+	// "Persistence and resume": this ordering is load-bearing).
+	s.resumeWorktreeReentry(meta)
+
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, !restoreCfg.deferRestoreSideEffects)
 	if err != nil {
 		return nil, err
@@ -509,17 +515,25 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 // The Session struct fields (client, profile, env, cfg) must already be set.
 // Returns the prompt sources so the caller can emit events after SessionStart.
 func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, runSessionStartHooks bool) ([]promptSource, error) {
-	ei := envInfoFromEnv(s.env, s.sclock())
+	env := s.currentEnv()
+	ei := envInfoFromEnv(env, s.sclock())
 	ei.KnowledgeCutoff = s.profile.KnowledgeCutoff()
-	if inRepo, branch, mod, untracked, commits := snapshotGit(s.env, ei.WorkingDir); inRepo {
+	if inRepo, branch, mod, untracked, commits := snapshotGit(env, ei.WorkingDir); inRepo {
 		ei.IsGitRepo = true
 		ei.GitBranch = branch
 		ei.GitModifiedFiles = mod
 		ei.GitUntrackedFiles = untracked
 		ei.GitRecentCommitTitles = commits
-		ei.GitOriginURL = gitOriginURL(s.env, ei.WorkingDir)
+		ei.GitOriginURL = gitOriginURL(env, ei.WorkingDir)
 	}
 	s.envInfo = ei
+
+	// Session init whose launch cwd is already inside a managed worktree
+	// (native worktree tools spec §5 occupancy locks / §5 table row "session
+	// init, launch cwd inside a managed worktree"): apply the idempotent
+	// occupancy-lock rule. A no-op when resumeWorktreeReentry already
+	// established occupancy tracking above.
+	s.applyInitInsideWorktreeLock(ei.IsGitRepo)
 
 	// Load the core built-in agents first. Configured plugin agents are merged in
 	// during plugin initialization below.
@@ -545,7 +559,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		// Scan extracted dir directly (skill subdirs are immediate children).
 		skill.ScanSkillsDir(dir, s.skills)
 	}
-	for name, meta := range skill.DiscoverSkills(s.env, s.cfg.SkillsDirs...) {
+	for name, meta := range skill.DiscoverSkills(s.currentEnv(), s.cfg.SkillsDirs...) {
 		s.skills[name] = meta // filesystem shadows embedded
 	}
 
@@ -586,6 +600,16 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	for _, name := range s.cfg.spawn.deniedToolNames {
 		s.reg.Remove(name)
 	}
+	// An isolation delegate's manage_worktree deny must survive both the
+	// spawn path and delegate restore, and must win over an all-tools agent
+	// type (native worktree tools spec §9 lifecycle step 2's named new
+	// plumbing) — so it is applied here, after and regardless of the
+	// allowed/denied policy above, rather than folded into baseSubagentToolPolicy's
+	// deny list (which frozenSubagentToolNames drops on restore, and which
+	// the allTools branch skips entirely).
+	if s.cfg.spawn.isolation == "worktree" {
+		s.reg.Remove("manage_worktree")
+	}
 	if s.delegationAllowance <= 0 {
 		for _, name := range rootOnlySubagentTools() {
 			if s.cfg.spawn.parentWatchGranted && name == "job_watch" {
@@ -596,11 +620,11 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	}
 
 	// Cache project docs once; reused every round for system prompt rebuilds.
-	s.projectDocs, s.projectDocsTruncated = LoadProjectDocs(s.env, s.profile.ProjectDocFiles()...)
+	s.projectDocs, s.projectDocsTruncated = LoadProjectDocs(s.currentEnv(), s.profile.ProjectDocFiles()...)
 
 	// Cache tool definitions and the rendered prompt.
 	s.rebuildToolDefsCache()
-	s.refreshSystemPromptCache()
+	s.refreshSystemPromptCache(env)
 
 	return s.promptSourceLog, nil
 }
@@ -1117,7 +1141,7 @@ func unsupportedHandlerTypeWarning(pluginName, event, handlerType string) string
 // initMCP discovers and connects to MCP servers if configured.
 // Uses a 30-second timeout since NewSession doesn't take a context.
 func (s *Session) initMCP() error {
-	configs, err := mcpconfig.Discover(s.env, s.cfg.MCPConfigFiles, s.cfg.MCPInline)
+	configs, err := mcpconfig.Discover(s.currentEnv(), s.cfg.MCPConfigFiles, s.cfg.MCPInline)
 	if err != nil {
 		return err
 	}

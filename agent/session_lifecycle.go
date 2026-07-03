@@ -115,6 +115,19 @@ func (s *Session) close(cleanupEnv bool) {
 		for _, sub := range subs {
 			sub.sess.close(false)
 		}
+
+		// Native worktree tools spec §9 step 4 + §5 close-unlock: dispose the
+		// isolation delegate lanes this session created and unlock its own
+		// occupied managed worktree. Both run AFTER child sessions close (a
+		// mid-tree delegate parent disposes its own lanes first) and BEFORE the
+		// store closes, because disposal's disposed mark is a durable append
+		// (step 5). env Cleanup() below (step 4 of the ordering) kills any
+		// residual lane process; a residual writer racing the clean check is
+		// self-healing since disposal's `git worktree remove` runs without
+		// --force and downgrades to keep on a dirty refusal.
+		s.disposeDelegateLanesAtClose()
+		s.unlockOwnManagedWorktreeAtClose()
+
 		if s.jobManager != nil {
 			jobManagerCloseErr = errors.Join(jobManagerCloseErr, s.jobManager.closeStoreOnly())
 		}
@@ -124,7 +137,7 @@ func (s *Session) close(cleanupEnv bool) {
 
 		// 4. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).
 		if cleanupEnv {
-			s.env.Cleanup()
+			s.currentEnv().Cleanup()
 		}
 
 		// SessionEnd hooks (best-effort, bounded timeout)

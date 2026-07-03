@@ -253,6 +253,42 @@ func (jm *jobManager) noteJobActivity(jobID, phase string) {
 	}
 }
 
+// liveWorkHandle pairs a live job's launch-time working directory with a
+// human-readable handle identifying it, for the manage_worktree remove/prune
+// live-work guard (spec §5 remove step 4, §7 liveWorkUnder).
+type liveWorkHandle struct {
+	dir    string
+	handle string
+}
+
+// liveWorkHandles returns the launch-time working directory of every job
+// still in jm.running — shell jobs via JobRecord.WorkingDir, delegate jobs
+// via DelegateRestore.WorkingDir — paired with a handle describing it. A job
+// with no recorded working dir (delegates predating this field, or a shell
+// job whose env was not a LocalExecutionEnvironment) is omitted; the guard is
+// best-effort, not a source of false refusals.
+func (jm *jobManager) liveWorkHandles() []liveWorkHandle {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	var out []liveWorkHandle
+	for _, run := range jm.running {
+		if run == nil || run.rec == nil {
+			continue
+		}
+		switch run.rec.Type {
+		case jobstore.JobShell:
+			if wd := run.rec.WorkingDir; wd != "" {
+				out = append(out, liveWorkHandle{dir: wd, handle: run.rec.JobID + " (shell, running)"})
+			}
+		case jobstore.JobDelegate:
+			if run.rec.DelegateRestore != nil && run.rec.DelegateRestore.WorkingDir != "" {
+				out = append(out, liveWorkHandle{dir: run.rec.DelegateRestore.WorkingDir, handle: run.rec.JobID + " (delegate, running)"})
+			}
+		}
+	}
+	return out
+}
+
 type terminalJob struct {
 	status                       jobstore.Status
 	reason                       string

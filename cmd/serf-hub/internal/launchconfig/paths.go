@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"primeradiant.com/serf/internal/gitpath"
 )
 
 // ProjectID returns the 16-hex-char stable identifier used for the
@@ -26,10 +28,15 @@ type Paths struct {
 }
 
 // PathsFor computes layer paths given the hub state root (typically
-// ~/.serf) and the working directory.
+// ~/.serf) and the working directory. Repo/Project point at the active
+// content root (cwd, the checked-out worktree) so config content always
+// reflects the active branch's checkout. LegacyProject/Meta point at the
+// stable identity root (identityProjectDir) so trust metadata and legacy
+// project state survive switching between a repo's linked worktrees. See
+// docs/superpowers/specs/2026-07-02-native-worktree-tools-design.md §1
+// ("Active content root vs stable identity root").
 func PathsFor(stateRoot, cwd string) Paths {
-	id := ProjectID(cwd)
-	projectDir := filepath.Join(stateRoot, "projects", id)
+	projectDir := identityProjectDir(stateRoot, cwd)
 	return Paths{
 		Global:        filepath.Join(stateRoot, "launch.toml"),
 		Repo:          filepath.Join(cwd, ".serf", "launch.toml"),
@@ -37,6 +44,19 @@ func PathsFor(stateRoot, cwd string) Paths {
 		LegacyProject: filepath.Join(projectDir, "launch.toml"),
 		Meta:          filepath.Join(projectDir, "meta.toml"),
 	}
+}
+
+// identityProjectDir returns <stateRoot>/projects/<id>, where <id> is the
+// ProjectID of the stable identity root: the main repository root when cwd
+// resolves to one (so every linked worktree of the same repo shares one
+// trust record and one legacy-project state directory), falling back to cwd
+// itself when it is not inside a git repository.
+func identityProjectDir(stateRoot, cwd string) string {
+	identityRoot := gitpath.ResolveMainRepoRootLocal(cwd)
+	if identityRoot == "" {
+		identityRoot = cwd
+	}
+	return filepath.Join(stateRoot, "projects", ProjectID(identityRoot))
 }
 
 // ValidateRepoRelativePath ensures `path` (when resolved against repoRoot)

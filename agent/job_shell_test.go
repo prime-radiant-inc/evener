@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -474,6 +475,41 @@ func TestRunShellBackgroundReturnsImmediately(t *testing.T) {
 	rec := loadShellRecord(t, jm, res.JobID)
 	if rec.Status != jobstore.StatusCancelled || rec.Reason != "stopped_by_parent" {
 		t.Fatalf("stopped background job = %+v, want cancelled/stopped_by_parent", rec)
+	}
+}
+
+// TestRunShellBackgroundRecordsLaunchWorkingDirForLiveWorkGuard is Task 20's
+// "background shell job records env.WorkingDirectory() at launch" (spec §5
+// remove step 4's "New plumbing", §7 liveWorkUnder): shellArgs.WorkingDir
+// (set by the shell tool handler from the executing env, not the model) rides
+// onto the job record, is visible to jm.liveWorkHandles() while the job is
+// running, and survives a durable store reload.
+func TestRunShellBackgroundRecordsLaunchWorkingDirForLiveWorkGuard(t *testing.T) {
+	t.Parallel()
+	jm, se := newShellTestRig(t)
+	wd := se.(*execenv.LocalExecutionEnvironment).WorkingDirectory()
+	res := runShell(context.Background(), jm, se, shellArgs{Command: "sleep 30", Background: true, WorkingDir: wd})
+	if res.JobID == "" || !res.RunningInBackground {
+		t.Fatalf("res = %+v, want background job", res)
+	}
+
+	handles := jm.liveWorkHandles()
+	var found *liveWorkHandle
+	for i := range handles {
+		if handles[i].dir == wd {
+			found = &handles[i]
+		}
+	}
+	if found == nil || !strings.Contains(found.handle, res.JobID) {
+		t.Fatalf("liveWorkHandles() = %+v, want an entry for job %s at %s", handles, res.JobID, wd)
+	}
+
+	_, _ = jm.stop(res.JobID)
+	waitForShellDone(t, jm, res.JobID)
+
+	rec := loadShellRecord(t, jm, res.JobID)
+	if rec.WorkingDir != wd {
+		t.Fatalf("durable record working dir = %q, want %q", rec.WorkingDir, wd)
 	}
 }
 

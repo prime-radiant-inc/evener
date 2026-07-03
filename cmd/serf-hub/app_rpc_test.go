@@ -3851,6 +3851,44 @@ func TestResumeRequestForConfigErrorsOnEmptyProfileID(t *testing.T) {
 	}
 }
 
+// TestResumeRequestForConfigUsesRestoreRootWhenWorktreeActive proves the
+// native worktree tools spec §7 "Hub consumers" migration: a session
+// actively inside a worktree must resume with `--dir` set to its restore
+// root, not the worktree path — Task 18's resume re-entry logic takes the
+// session back into the worktree itself; hub-driven `--dir` must not launch
+// straight into it (or a deleted corpse of it), bypassing the lock and
+// validation rules.
+func TestResumeRequestForConfigUsesRestoreRootWhenWorktreeActive(t *testing.T) {
+	root := t.TempDir()
+	sessionID := "01PROFILE0000000000000004"
+	stateDir := filepath.Join(root, "projects", sessionID)
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID:                  sessionID,
+		ProfileID:           "openai",
+		Model:               "gpt-4o",
+		EnvInfo:             schema.EnvironmentInfo{WorkingDir: "/state/worktrees/serf-hub/dlg_01H"},
+		WorktreePath:        "/state/worktrees/serf-hub/dlg_01H",
+		WorktreeManaged:     true,
+		WorktreeRestoreRoot: "/tmp/project",
+		CreatedAt:           time.Now().UTC(),
+		UpdatedAt:           time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := resumeRequestForConfig(hubcore.WebConfig{Past: past}, sessionID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.WorkingDir != "/tmp/project" {
+		t.Fatalf("resume dir=%q, want restore root %q (not the worktree path)", req.WorkingDir, "/tmp/project")
+	}
+}
+
 func TestHubRPCThreadStartAllowsBlankCodexPromptWithoutTurnStart(t *testing.T) {
 	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
 	var startCalled bool

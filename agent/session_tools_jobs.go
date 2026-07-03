@@ -340,6 +340,7 @@ func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars
 		Model:           stringArg(args, "model"),
 		ReasoningEffort: stringArg(args, "reasoning_effort"),
 		WatchParent:     shellBoolArg(args, "watch_parent"),
+		Isolation:       stringArg(args, "isolation"),
 		Background:      true, // default: no wait, return job_id immediately
 	}
 	// max_wait_ms: 0/absent = no wait (background); positive = wait inline up to N;
@@ -1295,7 +1296,11 @@ type delegateSendResult struct {
 	StructuredResultReason string           `json:"structured_result_reason,omitempty"`
 	Watching               bool             `json:"watching,omitempty"`
 	Watches                []watchListEntry `json:"watches,omitempty"`
-	WaitIgnoredReason      string           `json:"wait_ignored_reason,omitempty"`
+	// Worktree carries the isolation lane's path/branch/ahead/dirty state for
+	// an isolated delegate's terminal job (native worktree tools spec §9
+	// lifecycle step 3); nil for a non-isolated delegate.
+	Worktree          *delegateWorktreeToolResult `json:"worktree,omitempty"`
+	WaitIgnoredReason string                      `json:"wait_ignored_reason,omitempty"`
 }
 
 type jobWatchToolResult struct {
@@ -1362,6 +1367,26 @@ type delegateToolResult struct {
 	StructuredResultReason string           `json:"structured_result_reason,omitempty"`
 	Watching               bool             `json:"watching,omitempty"`
 	Watches                []watchListEntry `json:"watches,omitempty"`
+	// Worktree carries the isolation lane's path/branch/ahead/dirty state for
+	// an isolated delegate's terminal job (native worktree tools spec §9
+	// lifecycle step 3); nil for a non-isolated delegate.
+	Worktree *delegateWorktreeToolResult `json:"worktree,omitempty"`
+}
+
+// delegateWorktreeToolResult is the tool-facing shape of delegateWorktreeReport
+// (native worktree tools spec §9 lifecycle step 3).
+type delegateWorktreeToolResult struct {
+	Path   string `json:"path"`
+	Branch string `json:"branch"`
+	Ahead  int    `json:"ahead_commits"`
+	Dirty  bool   `json:"dirty"`
+}
+
+func delegateWorktreeToolResultFrom(wt *delegateWorktreeReport) *delegateWorktreeToolResult {
+	if wt == nil {
+		return nil
+	}
+	return &delegateWorktreeToolResult{Path: wt.Path, Branch: wt.Branch, Ahead: wt.Ahead, Dirty: wt.Dirty}
 }
 
 func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error) {
@@ -1389,6 +1414,7 @@ func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error)
 		TranscriptRef:       res.TranscriptRef,
 		Watching:            res.Watching,
 		Watches:             res.Watches,
+		Worktree:            delegateWorktreeToolResultFrom(res.Worktree),
 		WaitIgnoredReason:   res.WaitIgnoredReason,
 	}
 	if !res.RunningInBackground || res.TimedOut {
@@ -1636,6 +1662,7 @@ func marshalDelegateResult(res delegateResult, maxChars int) (string, error) {
 		TranscriptRef:       res.TranscriptRef,
 		Watching:            res.Watching,
 		Watches:             res.Watches,
+		Worktree:            delegateWorktreeToolResultFrom(res.Worktree),
 	}
 	if !res.RunningInBackground || res.TimedOut {
 		out.Output = &res.Output

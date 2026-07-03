@@ -8,12 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/internal/worktree"
 	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
@@ -39,6 +41,8 @@ const (
 	notResumableTranscriptSessionMismatch     = "transcript_session_mismatch"
 	notResumableChildSessionBusy              = "child_session_busy"
 	notResumableProfileUnavailable            = "profile_unavailable"
+	notResumableWorktreeDisposed              = "isolation_worktree_disposed"
+	notResumableWorkingDirMissing             = "working_dir_missing"
 )
 
 type delegateResumability struct {
@@ -80,7 +84,20 @@ type delegateArgs struct {
 	BlockTimeoutMS      int
 	DelegationAllowance int
 	WatchParent         bool
+	Isolation           string
 	ResultSchema        map[string]any
+}
+
+// delegateWorktreeReport is the native worktree tools spec §9 lifecycle step 3
+// per-job report for an isolated delegate: the lane's path, branch, commits
+// ahead of its base, and dirty state, so the parent can merge a lane's
+// commits from the main root between jobs without guessing where it lives.
+// nil on a non-isolated delegate or when the lane cannot be inspected.
+type delegateWorktreeReport struct {
+	Path   string
+	Branch string
+	Ahead  int
+	Dirty  bool
 }
 
 type delegateResult struct {
@@ -102,6 +119,7 @@ type delegateResult struct {
 	StructuredResultReason   string
 	Watching                 bool
 	Watches                  []watchListEntry
+	Worktree                 *delegateWorktreeReport
 	Err                      error
 }
 
@@ -138,6 +156,7 @@ type sendMessageResult struct {
 	StructuredResultReason    string
 	Watching                  bool
 	Watches                   []watchListEntry
+	Worktree                  *delegateWorktreeReport
 	Delivered                 bool
 	MessageType               string
 	WatchSendDeliveryClass    watchSendDeliveryClass
@@ -153,6 +172,13 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	task := strings.TrimSpace(args.Task)
 	if task == "" {
 		return delegateStartFailed(errors.New("invalid_request: task is required"))
+	}
+	// isolation (spec §9 "Tool surface"): absent -> today's behavior; only
+	// "worktree" is defined. Validated before any durable work so an
+	// unsupported value never mints IDs or touches git.
+	isolation := strings.TrimSpace(args.Isolation)
+	if isolation != "" && isolation != "worktree" {
+		return delegateStartFailed(fmt.Errorf("invalid_request: isolation %q is not supported (expected \"worktree\")", isolation))
 	}
 	jm, err := sessionJobManager(s)
 	if err != nil {
@@ -184,8 +210,25 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	jobID := jobstore.NewJobID()
 	ctx = context.WithValue(ctx, ctxParentDelegateID, delegateID)
 	ctx = context.WithValue(ctx, ctxParentJobID, jobID)
-	prepared, err := s.prepareSubagentRun(ctx, task, args.Model, "", 0, args.AgentType, args.ReasoningEffort, nil, nil)
+
+	// spec §9 lifecycle step 1: create the isolation lane on the PARENT side,
+	// named for the delegate id, before the child spawns — its child restore
+	// descriptor's WorkingDir then simply IS the lane (prepareSubagentRun's
+	// workingDir override roots the child env there via WithWorkingDirectory).
+	workingDir := ""
+	if isolation == "worktree" {
+		lanePath, _, _, _, wtErr := s.createDelegateWorktree(ctx, delegateID)
+		if wtErr != nil {
+			return delegateStartFailedWithIDs(delegateID, jobID, wtErr)
+		}
+		workingDir = lanePath
+		ctx = context.WithValue(ctx, ctxIsolation, isolation)
+	}
+	prepared, err := s.prepareSubagentRun(ctx, task, args.Model, workingDir, 0, args.AgentType, args.ReasoningEffort, nil, nil)
 	if err != nil {
+		if workingDir != "" {
+			s.rollbackFreshDelegateWorktree(delegateID, workingDir)
+		}
 		return delegateStartFailedWithIDs(delegateID, jobID, err)
 	}
 	childID := prepared.sub.id
@@ -194,12 +237,29 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	if err != nil {
 		prepared.runCancel()
 		sub.sess.Close()
+		if workingDir != "" {
+			s.rollbackFreshDelegateWorktree(delegateID, workingDir)
+		}
 		return delegateStartFailedWithIDs(delegateID, jobID, err)
 	}
 	if err := s.trackAndLaunchPreparedSubagent(prepared); err != nil {
+		// Coverage note on the workingDir != "" rollback below:
+		// trackAndLaunchPreparedSubagent's only error path is the parent
+		// session being closed (closingOrClosedLocked()) at the exact
+		// instant this call runs — a genuine external race (a concurrent
+		// Close() from another goroutine), not reachable by shaping input or
+		// on-disk state in a single-threaded test the way the OTHER
+		// rollback call sites in this function are (see
+		// TestDelegateIsolation_SpawnFailureAfterWorktreeCreateRollsBackLane
+		// and TestDelegateIsolation_AttachFailureAfterWorktreeCreateRollsBackLane
+		// in job_delegate_isolation_test.go for those). The rollback call
+		// itself is identical to, and already proven correct by, those two.
 		prepared.runCancel()
 		sub.sess.Close()
 		_ = jm.finalize(run.rec.JobID, jobstore.StatusFailed, "start_failed", nil)
+		if workingDir != "" {
+			s.rollbackFreshDelegateWorktree(delegateID, workingDir)
+		}
 		return delegateStartFailedWithIDs(delegateID, run.rec.JobID, err)
 	}
 	if args.Background {
@@ -222,7 +282,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	select {
 	case <-done:
 		finalizeErr := s.bridgeDelegateFinalizationWithDone(run.rec.JobID, childID, sub, done, false)
-		return waitForDelegateFinalization(ctx, jm, run, finalizeErr)
+		return waitForDelegateFinalization(ctx, s, jm, run, finalizeErr)
 	case <-timer.C():
 		s.bridgeDelegateFinalizationWithDone(run.rec.JobID, childID, sub, done, true)
 		output, _, truncated, readErr := tailOutput(run.output, shellInlineOutputBytes)
@@ -468,7 +528,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	if isRuntimeLostDelegate(rec) {
 		assessment := s.assessDelegateResumability(rec, delegateResumabilityPreflight)
 		if !assessment.Resumable {
-			return sendMessageFailed(target, fmt.Errorf("target_not_resumable:%s", assessment.Reason))
+			return sendMessageFailed(target, notResumableSendError(assessment.Reason))
 		}
 		restorePreflight = assessment.Preflight
 	}
@@ -476,7 +536,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		if restorePreflight == nil {
 			assessment := s.assessDelegateResumability(rec, delegateResumabilityPreflight)
 			if !assessment.Resumable {
-				return sendMessageFailed(target, fmt.Errorf("target_not_resumable:%s", assessment.Reason))
+				return sendMessageFailed(target, notResumableSendError(assessment.Reason))
 			}
 			restorePreflight = assessment.Preflight
 		}
@@ -520,7 +580,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		return s.sendRunningDelegateMessage(target, message, active, args.FromWatch, args.Provenance)
 	}
 	if !background {
-		return waitForResumedDelegateResult(ctx, jm, target, rec.JobID, run, finalizeErr, args.BlockTimeoutMS)
+		return waitForResumedDelegateResult(ctx, s, jm, target, rec.JobID, run, finalizeErr, args.BlockTimeoutMS)
 	}
 	return sendMessageResult{
 		Target:              target,
@@ -534,6 +594,21 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		Action:              "started",
 		ResumedFromJobID:    rec.JobID,
 		TranscriptRef:       run.rec.TranscriptRef,
+	}
+}
+
+// notResumableSendError maps an assessDelegateResumability reason code to the
+// error delegate_send surfaces to the model. The two native-worktree disposal
+// reasons (spec §9 step 5) get a clear, actionable message; every other reason
+// keeps the machine-readable "target_not_resumable:<code>" shape.
+func notResumableSendError(reason string) error {
+	switch reason {
+	case notResumableWorktreeDisposed:
+		return errors.New("target_not_resumable: this delegate's isolation worktree was disposed at session close; start a new delegate")
+	case notResumableWorkingDirMissing:
+		return errors.New("target_not_resumable: this delegate's working directory no longer exists; start a new delegate")
+	default:
+		return fmt.Errorf("target_not_resumable:%s", reason)
 	}
 }
 
@@ -592,7 +667,22 @@ func (s *Session) assessDelegateResumability(rec *jobstore.JobRecord, mode deleg
 	if reason := validateDelegateRestoreState(rec, s.ID(), s.stateDir != ""); reason != "" {
 		return delegateResumability{Reason: reason}
 	}
+	// Native worktree tools spec §9 step 5 — two independent revival defenses:
+	// (1) the disposed flag (set when this delegate's isolation lane was
+	// removed at the creator session's close) is a fast, explicit refusal; and
+	// (2) an unconditional WorkingDir stat is the crash net that also covers
+	// out-of-band deletion of ANY delegate's working directory. Disposed is
+	// checked first so a properly disposed lane reports the clearer reason even
+	// though its directory is also gone.
+	if rec.Disposed {
+		return delegateResumability{Reason: notResumableWorktreeDisposed}
+	}
 	desc := rec.DelegateRestore
+	if wd := strings.TrimSpace(desc.WorkingDir); wd != "" {
+		if _, err := os.Stat(wd); err != nil {
+			return delegateResumability{Reason: notResumableWorkingDirMissing}
+		}
+	}
 	childID := strings.TrimSpace(desc.ChildSessionID)
 
 	meta, err := schema.LoadSessionMeta(s.stateDir, childID)
@@ -746,7 +836,7 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 	if len(resultSchema) > 0 {
 		profile = provider.WithCommunicateOutputSchema(profile, resultSchema)
 	}
-	childEnv, err := s.restoreDelegateChildEnvironment(desc)
+	childEnv, err := s.restoreDelegateChildEnvironment(desc, rec.DelegateID)
 	if err != nil {
 		return nil, err
 	}
@@ -779,6 +869,7 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 			rolePromptOverride:      desc.FrozenRolePrompt,
 			activatedSkillBodies:    activatedSkillBodies,
 			allowedToolNames:        restoredDelegateAllowedTools(desc),
+			isolation:               desc.Isolation,
 			communicateOutputSchema: cloneMap(resultSchema),
 		},
 		resumeHistory:           resumeHistory,
@@ -838,8 +929,12 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 	return tracked, nil
 }
 
-func (s *Session) restoreDelegateChildEnvironment(desc *jobstore.DelegateRestoreDescriptor) (execenv.ExecutionEnvironment, error) {
-	if s == nil || s.env == nil {
+func (s *Session) restoreDelegateChildEnvironment(desc *jobstore.DelegateRestoreDescriptor, delegateID string) (execenv.ExecutionEnvironment, error) {
+	if s == nil {
+		return nil, errors.New("execution environment is not configured")
+	}
+	env := s.currentEnv()
+	if env == nil {
 		return nil, errors.New("execution environment is not configured")
 	}
 	policy, ok := delegateRestoreLocalEnvPolicy(desc)
@@ -850,15 +945,73 @@ func (s *Session) restoreDelegateChildEnvironment(desc *jobstore.DelegateRestore
 	if !ok {
 		return nil, errors.New("invalid delegate restore working_dir")
 	}
-	childEnv := s.env
-	if le, ok := s.env.(*execenv.LocalExecutionEnvironment); ok {
+	if strings.TrimSpace(desc.Isolation) == "worktree" {
+		// §7 revival re-lock: a kept (unlocked) lane re-takes its serf:dlg:
+		// lock before the child resumes; a foreign lock (someone switched in
+		// meanwhile) refuses the restore instead of co-occupying. A lane
+		// still locked with our own dlg marker (the common case — the lock
+		// is held for the delegate's whole lifetime) is a no-op adopt.
+		if err := s.reacquireDelegateWorktreeLock(workDir, delegateID); err != nil {
+			return nil, err
+		}
+	}
+	childEnv := env
+	if le, ok := env.(*execenv.LocalExecutionEnvironment); ok {
 		clone := le.WithWorkingDirectory(workDir)
 		clone.EnvPolicy = policy
 		childEnv = clone
-	} else if workDir != s.env.WorkingDirectory() {
+	} else if workDir != env.WorkingDirectory() {
 		return nil, errors.New("execution environment does not support restored working_dir")
 	}
 	return childEnv, nil
+}
+
+// reacquireDelegateWorktreeLock implements the native worktree tools spec §7
+// revival re-lock rule for an isolated delegate lane: unlocked -> lock with
+// the delegate's serf:dlg: marker (a KEPT lane after disposal — §9 lifecycle
+// step 4); own dlg marker -> adopt (a literal re-lock is fatal on git; this is
+// the common case, since the lock is normally held for the delegate's whole
+// lifetime and disposal has not run); anything else (a session marker, a
+// different delegate's marker, or an unparseable lock) -> refuse, because
+// someone switched into the lane while it was unlocked (§9 Guards: "refuses
+// if someone has switched in meanwhile") — never co-occupy a live delegate
+// resume the way a plain session restore's ActWarnCoOccupy does.
+func (s *Session) reacquireDelegateWorktreeLock(lanePath, delegateID string) error {
+	local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		return errors.New("delegate isolation worktree revival requires a local execution environment")
+	}
+	rootedAtLane := local.WithWorkingDirectory(lanePath)
+	mainRoot := execenv.ResolveMainRepoRoot(rootedAtLane, lanePath)
+	if mainRoot == "" {
+		return fmt.Errorf("delegate isolation worktree %s is no longer part of a git repository", lanePath)
+	}
+	controlEnv := local.WithWorkingDirectory(mainRoot)
+	run := gitRunner(context.Background(), controlEnv)
+	locked, reason, lsErr := lockStateOf(run, lanePath)
+	if lsErr != nil {
+		return fmt.Errorf("delegate isolation worktree %s lock state could not be verified: %w", lanePath, lsErr)
+	}
+	st := worktree.Unlocked
+	if locked {
+		st = worktree.ClassifyReason(reason, s.id, delegateID)
+	}
+	switch worktree.Decide(worktree.EvDelegateRevive, st) {
+	case worktree.ActLock:
+		marker := worktree.FormatDelegateMarker(delegateID, s.id)
+		if _, err := run("worktree", "lock", "--reason", marker, lanePath); err != nil {
+			return fmt.Errorf("failed to re-lock delegate isolation worktree %s: %w", lanePath, err)
+		}
+		return nil
+	case worktree.ActAdopt:
+		return nil
+	default:
+		occupant := reason
+		if occupant == "" {
+			occupant = "an unknown owner"
+		}
+		return fmt.Errorf("delegate isolation worktree %s is locked by %s; refusing to revive into it", lanePath, occupant)
+	}
 }
 
 func hasValidDelegateRestoreLocalEnvPolicy(desc *jobstore.DelegateRestoreDescriptor) bool {
@@ -1225,18 +1378,18 @@ func delegateJobRecordForJobID(jm *jobManager, jobID string) (*jobstore.JobRecor
 	return rec, true
 }
 
-func waitForDelegateFinalization(ctx context.Context, jm *jobManager, run *runningJob, finalizeErr <-chan error) delegateResult {
+func waitForDelegateFinalization(ctx context.Context, s *Session, jm *jobManager, run *runningJob, finalizeErr <-chan error) delegateResult {
 	timer := jm.clock.NewTimer(delegateFinalizeWaitTimeout)
 	defer timer.Stop()
 
 	select {
 	case <-run.done:
-		return delegateTerminalResult(jm, run)
+		return delegateTerminalResult(s, jm, run)
 	case err := <-finalizeErr:
 		if err != nil {
 			return delegateFinalizeFailedResult(run, "finalize_failed", err)
 		}
-		return delegateTerminalResult(jm, run)
+		return delegateTerminalResult(s, jm, run)
 	case <-ctx.Done():
 		return delegateFinalizeFailedResult(run, "cancelled", ctx.Err())
 	case <-timer.C():
@@ -1244,7 +1397,7 @@ func waitForDelegateFinalization(ctx context.Context, jm *jobManager, run *runni
 	}
 }
 
-func waitForResumedDelegateResult(ctx context.Context, jm *jobManager, target, resumedFromJobID string, run *runningJob, finalizeErr <-chan error, blockTimeoutMS int) sendMessageResult {
+func waitForResumedDelegateResult(ctx context.Context, s *Session, jm *jobManager, target, resumedFromJobID string, run *runningJob, finalizeErr <-chan error, blockTimeoutMS int) sendMessageResult {
 	blockTimeout := time.Duration(clampShellBlockTimeoutMS(blockTimeoutMS)) * time.Millisecond
 	timer := jm.clock.NewTimer(blockTimeout)
 	defer timer.Stop()
@@ -1252,13 +1405,13 @@ func waitForResumedDelegateResult(ctx context.Context, jm *jobManager, target, r
 	var res delegateResult
 	select {
 	case <-run.done:
-		res = delegateTerminalResult(jm, run)
+		res = delegateTerminalResult(s, jm, run)
 	case err := <-finalizeErr:
 		if err != nil {
 			res = delegateFinalizeFailedResult(run, "finalize_failed", err)
 			break
 		}
-		res = delegateTerminalResult(jm, run)
+		res = delegateTerminalResult(s, jm, run)
 	case <-timer.C():
 		output, _, truncated, readErr := tailOutput(run.output, shellInlineOutputBytes)
 		return sendMessageResult{
@@ -1308,6 +1461,7 @@ func sendMessageResultFromDelegateResult(target, resumedFromJobID, action string
 		StructuredResultReason:   res.StructuredResultReason,
 		Watching:                 res.Watching,
 		Watches:                  res.Watches,
+		Worktree:                 res.Worktree,
 		Err:                      res.Err,
 	}
 }
@@ -1646,6 +1800,7 @@ func (s *Session) delegateRestoreDescriptor(jobID, childID, task, transcriptRef 
 	desc.FrozenSkillBodies = append([]string(nil), prepared.frozenSkillBodies...)
 	desc.WorkingDir = prepared.workingDir
 	desc.LocalEnvPolicy = prepared.localEnvPolicy
+	desc.Isolation = prepared.isolation
 	desc.ExplicitToolGrants = append([]string(nil), prepared.explicitToolGrants...)
 	if prepared.resultSchema != nil {
 		desc.ResultSchema = cloneDelegateResultSchema(prepared.resultSchema)
@@ -1694,6 +1849,7 @@ func (s *Session) resumedDelegateRestoreDescriptor(jobID, childID, transcriptRef
 		ExplicitToolGrants:  append([]string(nil), previous.ExplicitToolGrants...),
 		DelegationAllowance: previous.DelegationAllowance,
 		ParentWatchGranted:  previous.ParentWatchGranted,
+		Isolation:           previous.Isolation,
 		Provenance:          provenance.Clone(previous.Provenance),
 	}
 	if resultSchema != nil {
@@ -1935,7 +2091,7 @@ func resolveDelegateTerminalStatus(stopStatus jobstore.Status, stopReason string
 	}
 }
 
-func delegateTerminalResult(jm *jobManager, run *runningJob) delegateResult {
+func delegateTerminalResult(s *Session, jm *jobManager, run *runningJob) delegateResult {
 	rec, err := findJobRecord(jm, run.rec.JobID)
 	if err != nil {
 		return delegateResult{
@@ -1964,6 +2120,10 @@ func delegateTerminalResult(jm *jobManager, run *runningJob) delegateResult {
 	}
 	jm.mu.Unlock()
 	valid := structuredValid != nil && *structuredValid
+	var wt *delegateWorktreeReport
+	if rec.Status.IsTerminal() {
+		wt = s.isolatedDelegateWorktreeReport(rec.DelegateRestore)
+	}
 	return delegateResult{
 		DelegateID:               rec.DelegateID,
 		StartedJobID:             rec.JobID,
@@ -1982,7 +2142,64 @@ func delegateTerminalResult(jm *jobManager, run *runningJob) delegateResult {
 		StructuredResultReason:   rec.StructuredResultReason,
 		Watching:                 len(activeWatches) > 0,
 		Watches:                  activeWatches,
+		Worktree:                 wt,
 		Err:                      err,
+	}
+}
+
+// isolatedDelegateWorktreeReport computes the native worktree tools spec §9
+// lifecycle step 3 fields (path, branch, commits-ahead-of-base, dirty state)
+// for a terminal job belonging to an isolation delegate, by inspecting the
+// lane directly through the parent's control env. Returns nil when desc is
+// not an isolation delegate's descriptor, or the lane cannot be inspected
+// (its sidecar or the worktree itself is gone, or git fails) — a broken
+// partial report is omitted rather than surfaced.
+func (s *Session) isolatedDelegateWorktreeReport(desc *jobstore.DelegateRestoreDescriptor) *delegateWorktreeReport {
+	if s == nil || desc == nil || strings.TrimSpace(desc.Isolation) != "worktree" {
+		return nil
+	}
+	lanePath := strings.TrimSpace(desc.WorkingDir)
+	if lanePath == "" {
+		return nil
+	}
+	local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		return nil
+	}
+	rootedAtLane := local.WithWorkingDirectory(lanePath)
+	mainRoot := execenv.ResolveMainRepoRoot(rootedAtLane, lanePath)
+	if mainRoot == "" {
+		return nil
+	}
+	controlEnv := local.WithWorkingDirectory(mainRoot)
+	run := gitRunner(context.Background(), controlEnv)
+
+	// The sidecar (written at lane creation, see createDelegateWorktree) is
+	// the authoritative source of the lane's branch and base SHA — the
+	// worktree name has no "/" (it is the delegate id), so its metaDir is a
+	// sibling of the lane's parent dir, same as worktreeCreate's own layout.
+	metaDir := metaDirForLane(lanePath)
+	sc, err := worktree.ReadSidecar(metaDir, filepath.Base(lanePath))
+	if err != nil {
+		return nil
+	}
+	clean, _, err := worktree.CleanTree(run, lanePath)
+	if err != nil {
+		return nil
+	}
+	aheadOut, err := run("-C", lanePath, "rev-list", "--count", sc.BaseSHA+"..HEAD")
+	if err != nil {
+		return nil
+	}
+	ahead, convErr := strconv.Atoi(strings.TrimSpace(aheadOut))
+	if convErr != nil {
+		return nil
+	}
+	return &delegateWorktreeReport{
+		Path:   lanePath,
+		Branch: sc.Branch,
+		Ahead:  ahead,
+		Dirty:  !clean,
 	}
 }
 

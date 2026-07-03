@@ -52,6 +52,14 @@ const ctxWatchParent ctxKey = "watchParent"
 // into spawn plumbing so parent-source watches can route back to that child.
 const ctxParentDelegateID ctxKey = "parentDelegateID"
 
+// ctxIsolation carries delegate(isolation:"worktree") into child session spawn
+// plumbing without changing prepareSubagentRun's signature (native worktree
+// tools spec §9). createDelegate sets it after successfully creating the
+// delegate's isolation lane; prepareSubagentRun copies it onto the child's
+// spawnConfig, which session_init.go reads to unconditionally deny
+// manage_worktree regardless of the agent type's base tool policy.
+const ctxIsolation ctxKey = "isolation"
+
 const (
 	defaultAgentName = "default"
 )
@@ -77,6 +85,12 @@ func (s *Session) resultToolName() string {
 
 // RegisterTool registers a custom tool at runtime.
 func (s *Session) RegisterTool(name, description string, params map[string]any, fn func(ctx context.Context, args any) (any, error)) {
+	// s.reg self-synchronizes (see the Session.mu lock discipline comment), so
+	// Register itself can happen outside s.mu. But the cache rebuild below
+	// writes s.cachedToolDefs/s.cachedSystemPrompt and reads s.env/s.envInfo,
+	// all of which mu guards — those must happen under lock, mirroring
+	// SetModel's pattern, so they can't race a concurrent env swap or model
+	// switch.
 	_ = s.reg.Register(tool.RegisteredTool{
 		Tool: llm.Tool{
 			Definition: llm.ToolDefinition{
@@ -90,8 +104,10 @@ func (s *Session) RegisterTool(name, description string, params map[string]any, 
 		},
 	})
 	// Rebuild caches so the new tool appears in tool defs and system prompt.
+	s.mu.Lock()
 	s.rebuildToolDefsCache()
-	s.refreshSystemPromptCache()
+	s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
+	s.mu.Unlock()
 }
 
 // describeImage makes a side-channel API call with no tools to describe an image
@@ -385,7 +401,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 		emitCanceledEnd(err)
 		return skippedToolResult(call, err)
 	}
-	res := s.reg.ExecuteCall(ctx, s.env, call)
+	res := s.reg.ExecuteCall(ctx, s.currentEnv(), call)
 	res.DurationMS = time.Since(toolStart).Milliseconds()
 	if err := s.errIfClosing(); err != nil {
 		emitCanceledEnd(err)
@@ -755,7 +771,7 @@ func (s *Session) readBeforeWriteWarning(path string) string {
 		return ""
 	}
 	// New file creation is exempt from the warning.
-	if !s.env.FileExists(path) {
+	if !s.currentEnv().FileExists(path) {
 		return ""
 	}
 	return "[WARNING: Writing to file that has not been read in this session. Consider reading first.]\n"
@@ -766,7 +782,7 @@ func (s *Session) resolveFilePath(path string) string {
 	if p == "" || filepath.IsAbs(p) {
 		return p
 	}
-	return filepath.Join(s.env.WorkingDirectory(), p)
+	return filepath.Join(s.currentEnv().WorkingDirectory(), p)
 }
 
 func (s *Session) getOrCreateTaskStore() *task.TaskStore {
@@ -777,7 +793,7 @@ func (s *Session) getOrCreateTaskStore() *task.TaskStore {
 		}
 		dir := s.stateDir
 		if dir == "" {
-			dir = s.env.WorkingDirectory()
+			dir = s.currentEnv().WorkingDirectory()
 		}
 		s.taskStore = task.NewTaskStore(dir, s.id)
 		_ = s.taskStore.Load()

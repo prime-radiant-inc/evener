@@ -25,8 +25,13 @@ func prependSystemPromptToUserMessage(systemPrompt string, user llm.Message) llm
 }
 
 // rebuildPromptCache caches system prompt components that don't change between
-func (s *Session) refreshSystemPromptCache() {
-	s.cachedSystemPrompt = s.renderSystemPrompt()
+// renders. env is the execution environment to render against: callers that
+// already hold s.mu (e.g. SetModel) must pass s.env directly; callers that
+// don't must resolve it via currentEnv() first — renderSystemPrompt cannot
+// call currentEnv() itself since it is invoked from both locked and unlocked
+// contexts and s.mu is not reentrant.
+func (s *Session) refreshSystemPromptCache(env execenv.ExecutionEnvironment) {
+	s.cachedSystemPrompt = s.renderSystemPrompt(env)
 }
 
 // buildPromptData assembles a promptData from session state for template rendering.
@@ -137,8 +142,9 @@ func (s *Session) canPromptDelegation() bool {
 }
 
 // renderSystemPrompt renders the system prompt using the template resolver.
-func (s *Session) renderSystemPrompt() string {
-	gitRoot := execenv.GitRootOrEmpty(s.env, s.envInfo.WorkingDir)
+// See refreshSystemPromptCache for the env-locking contract.
+func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) string {
+	gitRoot := execenv.GitRootOrEmpty(env, s.envInfo.WorkingDir)
 	projDir := promptpath.ProjectPromptsDir(gitRoot)
 	if s.cfg.NoProjectPrompts {
 		projDir = ""

@@ -62,6 +62,13 @@ Your job is to complete the task and report your findings.`
 
 var rootOnlyJobPresenceTools = []string{"delegate", "job_watch"}
 
+// rootOnlyWorktreeTools are worktree lifecycle tools reserved for the root
+// session. Delegates receive worktree isolation via delegate(isolation:"worktree"),
+// which the parent-side harness manages; no child flow needs to call
+// manage_worktree, and a child that could would be able to force-remove
+// sibling worktrees the parent created.
+var rootOnlyWorktreeTools = []string{"manage_worktree"}
+
 type subagent struct {
 	id   string
 	sess *Session
@@ -111,6 +118,7 @@ type preparedSubagentRun struct {
 	frozenSkillBodies  []string
 	workingDir         string
 	localEnvPolicy     string
+	isolation          string
 	resultSchema       map[string]any
 	explicitToolGrants []string
 	// treeSlot is the tree-counter reservation claimed by prepareSubagentRun for
@@ -155,7 +163,8 @@ func removeStrings(items, removals []string) []string {
 }
 
 func rootOnlySubagentTools() []string {
-	return appendUniqueStrings(append([]string(nil), rootOnlyJobPresenceTools...), rootOnlyJobControlTools...)
+	all := appendUniqueStrings(append([]string(nil), rootOnlyJobPresenceTools...), rootOnlyJobControlTools...)
+	return appendUniqueStrings(all, rootOnlyWorktreeTools...)
 }
 
 func isRootOnlyJobPresenceTool(name string) bool {
@@ -391,6 +400,9 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	if delegateID, ok := ctx.Value(ctxParentDelegateID).(string); ok {
 		subCfg.spawn.parentDelegateID = delegateID
 	}
+	if isolation, ok := ctx.Value(ctxIsolation).(string); ok {
+		subCfg.spawn.isolation = isolation
+	}
 	// The granted delegation_allowance (validated by createDelegate against this
 	// session's own allowance) shapes the child's grant capability. The delegate
 	// path always sets it (0 = leaf); other spawn paths leave it at the inherited
@@ -495,9 +507,9 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		subCfg.spawn.deniedToolNames = append([]string(nil), deniedTools...)
 	}
 
-	subEnv := s.env
+	subEnv := s.currentEnv()
 	if workingDir = strings.TrimSpace(workingDir); workingDir != "" {
-		if le, ok := s.env.(*execenv.LocalExecutionEnvironment); ok {
+		if le, ok := subEnv.(*execenv.LocalExecutionEnvironment); ok {
 			subEnv = le.WithWorkingDirectory(workingDir)
 		} else {
 			return nil, errors.New("execution environment does not support working_dir override")
@@ -626,6 +638,7 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		frozenSkillBodies:  append([]string(nil), activatedSkillBodies...),
 		workingDir:         subEnv.WorkingDirectory(),
 		localEnvPolicy:     localEnvPolicyName(subEnv),
+		isolation:          subCfg.spawn.isolation,
 		resultSchema:       cloneMap(subCfg.spawn.communicateOutputSchema),
 		explicitToolGrants: append([]string(nil), canonicalGrantTools...),
 		treeSlot:           treeSlot,

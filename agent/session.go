@@ -76,13 +76,55 @@ type Session struct {
 	//
 	// mu guards: history, state, closing, turns, modelResponses, totalRounds,
 	//   sessionEndEmitted, profile (swapped here; read via currentProfile()),
-	//   the mutable cfg knobs (ReasoningEffort, command timeouts,
-	//   MaxToolRoundsPerInput), cachedSystemPrompt, cachedToolDefs, the
-	//   comm communicate-result, steeringQueue, activeProvenance, followups, inputQueue,
+	//   env (swapped here; read via currentEnv()), envInfo (swapped alongside
+	//   env so the two never observe a torn intermediate state), the mutable
+	//   cfg knobs (ReasoningEffort, command timeouts, MaxToolRoundsPerInput),
+	//   cachedSystemPrompt, cachedToolDefs, the comm communicate-result,
+	//   steeringQueue, activeProvenance, followups, inputQueue,
 	//   loopDetectionCount, the task* reminder counters, depth, the goalInTurn
-	//   flag and kickFunc callback, and the naming name-state. It does NOT guard
-	//   reg — the tool.Registry self-synchronizes.
+	//   flag and kickFunc callback, the naming name-state, and the worktree
+	//   occupancy fields (worktreeRestoreEnv, worktreeCurrentPath,
+	//   worktreeCurrentManaged, worktreeGitVersionOK, worktreeLiveWorkStub). It
+	//   does NOT guard reg — the tool.Registry self-synchronizes.
 	mu sync.Mutex
+
+	// --- native worktree occupancy (spec §7) ---
+	//
+	// worktreeRestoreEnv is the env saved the first time the session entered a
+	// worktree via manage_worktree; exit/remove restore to it. Nil when the
+	// session has never entered a worktree through the tool (single saved env,
+	// not a stack — spec §7 "env-restore model").
+	//
+	// worktreeCurrentPath is the worktree path the session currently occupies
+	// (empty when at the restore/main root) — managed or path-entered, both
+	// (spec §7 "Persistence and resume"). It drives the create-away leave
+	// (spec §3 step 7) and the occupancy-lock choreography.
+	//
+	// worktreeCurrentManaged is true when worktreeCurrentPath is a
+	// serf-managed worktree (entered via create, or switch by name/managed
+	// path) rather than a non-managed path-entered one — it gates whether the
+	// occupancy-lock rule applies and is persisted alongside worktreeCurrentPath
+	// (SessionMeta.WorktreeManaged, spec §7).
+	//
+	// worktreeGitVersionOK memoizes the once-per-session `git version` preflight
+	// (spec §3 step 6) so the floor check forks git at most once.
+	//
+	// worktreeLiveWorkStub is a test-only seam for the remove/prune live-work
+	// guard (spec §5 remove step 4): when set, liveWorkUnder calls it instead
+	// of its production job-manager/subagent scan (session_tools_worktree.go).
+	// Nothing in production code ever sets this field.
+	//
+	// worktreeDisposeBeforeRemove is a test-only seam for close-time lane
+	// disposal (spec §9 step 4): when set, disposeOneDelegateLane calls it with
+	// the lane path immediately before the non-force `git worktree remove`, so a
+	// test can dirty the lane and exercise the racing-dirty-write downgrade.
+	// Nothing in production code ever sets this field.
+	worktreeRestoreEnv          *execenv.LocalExecutionEnvironment
+	worktreeCurrentPath         string
+	worktreeCurrentManaged      bool
+	worktreeGitVersionOK        bool
+	worktreeLiveWorkStub        func(path string) []string
+	worktreeDisposeBeforeRemove func(lanePath string)
 
 	// responseSideEffectsMu serializes a response's user-visible side-effect
 	// bundle (emit + appendTurn + counter bump) against teardown.
@@ -458,6 +500,16 @@ func (s *Session) currentProfile() *provider.Profile {
 	return s.profile
 }
 
+// currentEnv returns the active execution environment under s.mu so reads
+// never race a future env swap (a locked swap helper reassigns s.env under
+// s.mu). Callers that already hold s.mu must read s.env directly instead of
+// calling this — s.mu is not reentrant.
+func (s *Session) currentEnv() execenv.ExecutionEnvironment {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.env
+}
+
 // Client returns the session's LLM client.
 func (s *Session) Client() *llm.Client { return s.client }
 
@@ -558,7 +610,7 @@ func (s *Session) SetModel(model string) {
 		s.reapplyProviderSpecificTools(oldTag, newTag)
 	}
 	s.rebuildToolDefsCache()
-	s.refreshSystemPromptCache()
+	s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
 	s.mu.Unlock()
 	// Flush meta.json so a daemon crash before the next happy-path turn
 	// boundary doesn't leave on-disk model stale. Kata wnfz. maybeAutoSave

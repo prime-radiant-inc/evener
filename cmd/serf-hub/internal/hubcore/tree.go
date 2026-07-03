@@ -184,12 +184,30 @@ func AgeString(t time.Time) string {
 	}
 }
 
+// EffectiveWorkingDir returns the directory the hub should treat as a
+// session's home for grouping, spawn prefill, and resume. When the session
+// is actively inside a worktree (managed or path-entered — native worktree
+// tools spec §7 "Hub consumers of the persisted working dir must migrate"),
+// that's the restore root the worktree was entered from, not the worktree
+// path itself: grouping/prefilling/resuming by the worktree path would land
+// on a phantom project named after the worktree leaf (e.g. "dlg_01H...") or
+// hub-driven `--dir` the session straight into the worktree, bypassing the
+// lock and validation rules Task 18's resume re-entry applies. Otherwise
+// it's just the session's persisted working directory.
+func EffectiveWorkingDir(m schema.SessionMeta) string {
+	if m.WorktreePath != "" && m.WorktreeRestoreRoot != "" {
+		return m.WorktreeRestoreRoot
+	}
+	return m.EnvInfo.WorkingDir
+}
+
 // projectName returns the sidebar project label for a session meta.
 func projectName(m schema.SessionMeta) string {
-	if m.EnvInfo.WorkingDir == "" {
+	wd := EffectiveWorkingDir(m)
+	if wd == "" {
 		return "(no project)"
 	}
-	return filepath.Base(m.EnvInfo.WorkingDir)
+	return filepath.Base(wd)
 }
 
 // nodeTitle computes the display title for a tree node.
@@ -322,8 +340,10 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 			projectOrder = append(projectOrder, pname)
 		}
 		acc := projects[pname]
-		if acc.workingDir == "" && m.EnvInfo.WorkingDir != "" {
-			acc.workingDir = m.EnvInfo.WorkingDir
+		if acc.workingDir == "" {
+			if wd := EffectiveWorkingDir(m); wd != "" {
+				acc.workingDir = wd
+			}
 		}
 		switch {
 		case m.IsSubagent && m.ParentSessionID != "":
