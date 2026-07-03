@@ -214,8 +214,16 @@ type JobRecord struct {
 	TranscriptRef    string                     `json:"transcript_ref,omitempty"`
 	Resumable        *bool                      `json:"resumable,omitempty"`
 	NotResumableWhy  string                     `json:"not_resumable_reason,omitempty"`
-	StartedAt        time.Time                  `json:"started_at"`
-	Phase            string                     `json:"phase,omitempty"`
+	// Disposed is set when this delegate's isolation worktree lane was disposed
+	// at its creator session's close (native worktree tools spec §9 step 4-5).
+	// assessDelegateResumability treats a disposed delegate as not-resumable so
+	// delegate_send cannot revive the child into a removed lane. Folded from a
+	// delegate_disposed event keyed by delegate id, so every job record for the
+	// delegate — across resumes — carries it, independent of which job the
+	// resumability check happens to resolve.
+	Disposed  bool      `json:"disposed,omitempty"`
+	StartedAt time.Time `json:"started_at"`
+	Phase     string    `json:"phase,omitempty"`
 	// LastActivity is the in-memory timestamp of the job's most recent
 	// parent-observable activity (output append or start). It is a supervision
 	// signal for RUNNING jobs and is intentionally NOT folded from a durable

@@ -41,6 +41,8 @@ const (
 	notResumableTranscriptSessionMismatch     = "transcript_session_mismatch"
 	notResumableChildSessionBusy              = "child_session_busy"
 	notResumableProfileUnavailable            = "profile_unavailable"
+	notResumableWorktreeDisposed              = "isolation_worktree_disposed"
+	notResumableWorkingDirMissing             = "working_dir_missing"
 )
 
 type delegateResumability struct {
@@ -515,7 +517,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	if isRuntimeLostDelegate(rec) {
 		assessment := s.assessDelegateResumability(rec, delegateResumabilityPreflight)
 		if !assessment.Resumable {
-			return sendMessageFailed(target, fmt.Errorf("target_not_resumable:%s", assessment.Reason))
+			return sendMessageFailed(target, notResumableSendError(assessment.Reason))
 		}
 		restorePreflight = assessment.Preflight
 	}
@@ -523,7 +525,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		if restorePreflight == nil {
 			assessment := s.assessDelegateResumability(rec, delegateResumabilityPreflight)
 			if !assessment.Resumable {
-				return sendMessageFailed(target, fmt.Errorf("target_not_resumable:%s", assessment.Reason))
+				return sendMessageFailed(target, notResumableSendError(assessment.Reason))
 			}
 			restorePreflight = assessment.Preflight
 		}
@@ -584,6 +586,21 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	}
 }
 
+// notResumableSendError maps an assessDelegateResumability reason code to the
+// error delegate_send surfaces to the model. The two native-worktree disposal
+// reasons (spec §9 step 5) get a clear, actionable message; every other reason
+// keeps the machine-readable "target_not_resumable:<code>" shape.
+func notResumableSendError(reason string) error {
+	switch reason {
+	case notResumableWorktreeDisposed:
+		return errors.New("target_not_resumable: this delegate's isolation worktree was disposed at session close; start a new delegate")
+	case notResumableWorkingDirMissing:
+		return errors.New("target_not_resumable: this delegate's working directory no longer exists; start a new delegate")
+	default:
+		return fmt.Errorf("target_not_resumable:%s", reason)
+	}
+}
+
 func isRuntimeLostDelegate(rec *jobstore.JobRecord) bool {
 	return rec != nil &&
 		rec.Type == jobstore.JobDelegate &&
@@ -639,7 +656,22 @@ func (s *Session) assessDelegateResumability(rec *jobstore.JobRecord, mode deleg
 	if reason := validateDelegateRestoreState(rec, s.ID(), s.stateDir != ""); reason != "" {
 		return delegateResumability{Reason: reason}
 	}
+	// Native worktree tools spec §9 step 5 — two independent revival defenses:
+	// (1) the disposed flag (set when this delegate's isolation lane was
+	// removed at the creator session's close) is a fast, explicit refusal; and
+	// (2) an unconditional WorkingDir stat is the crash net that also covers
+	// out-of-band deletion of ANY delegate's working directory. Disposed is
+	// checked first so a properly disposed lane reports the clearer reason even
+	// though its directory is also gone.
+	if rec.Disposed {
+		return delegateResumability{Reason: notResumableWorktreeDisposed}
+	}
 	desc := rec.DelegateRestore
+	if wd := strings.TrimSpace(desc.WorkingDir); wd != "" {
+		if _, err := os.Stat(wd); err != nil {
+			return delegateResumability{Reason: notResumableWorkingDirMissing}
+		}
+	}
 	childID := strings.TrimSpace(desc.ChildSessionID)
 
 	meta, err := schema.LoadSessionMeta(s.stateDir, childID)

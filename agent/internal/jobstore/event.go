@@ -23,6 +23,7 @@ const (
 	EventWatchReadGrant           EventKind = "watch_read_grant"
 	EventDelegateCreated          EventKind = "delegate_created"
 	EventDelegateStopGateClosed   EventKind = "delegate_stop_gate_closed"
+	EventDelegateDisposed         EventKind = "delegate_disposed"
 	EventWatchRegistered          EventKind = "watch_registered"
 	EventWatchCleared             EventKind = "watch_cleared"
 )

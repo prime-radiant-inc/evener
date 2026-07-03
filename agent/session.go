@@ -113,11 +113,18 @@ type Session struct {
 	// guard (spec §5 remove step 4): when set, liveWorkUnder calls it instead
 	// of its production job-manager/subagent scan (session_tools_worktree.go).
 	// Nothing in production code ever sets this field.
-	worktreeRestoreEnv     *execenv.LocalExecutionEnvironment
-	worktreeCurrentPath    string
-	worktreeCurrentManaged bool
-	worktreeGitVersionOK   bool
-	worktreeLiveWorkStub   func(path string) []string
+	//
+	// worktreeDisposeBeforeRemove is a test-only seam for close-time lane
+	// disposal (spec §9 step 4): when set, disposeOneDelegateLane calls it with
+	// the lane path immediately before the non-force `git worktree remove`, so a
+	// test can dirty the lane and exercise the racing-dirty-write downgrade.
+	// Nothing in production code ever sets this field.
+	worktreeRestoreEnv          *execenv.LocalExecutionEnvironment
+	worktreeCurrentPath         string
+	worktreeCurrentManaged      bool
+	worktreeGitVersionOK        bool
+	worktreeLiveWorkStub        func(path string) []string
+	worktreeDisposeBeforeRemove func(lanePath string)
 
 	// responseSideEffectsMu serializes a response's user-visible side-effect
 	// bundle (emit + appendTurn + counter bump) against teardown.

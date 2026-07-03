@@ -68,6 +68,20 @@ func (r *wtDlgRepo) lanePath(delegateID string) string {
 	return filepath.Join(r.stateDir, "worktrees", worktree.ProjectID(r.mainRoot), delegateID)
 }
 
+// commitWorkInLane makes a real commit in the lane so it is a CHANGED lane
+// (commits beyond its base): the only state close-time disposal (spec §9 step 4)
+// KEEPS. A revival test that closes the parent and expects the lane to survive
+// must first give the lane genuine work — an unchanged lane is disposed
+// (removed) at close, which is correct behavior, not a bug.
+func (r *wtDlgRepo) commitWorkInLane(t *testing.T, lane string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(lane, "lane-work.txt"), []byte("delegate work\n"), 0o644); err != nil {
+		t.Fatalf("write lane work: %v", err)
+	}
+	wtGit(t, lane, "add", "lane-work.txt")
+	wtGit(t, lane, "commit", "-m", "delegate committed work")
+}
+
 // porcelainEntryFor finds the porcelain record for path in the main repo's
 // worktree registry, failing the test if absent.
 func (r *wtDlgRepo) porcelainEntryFor(t *testing.T, path string) worktree.PorcelainEntry {
@@ -340,6 +354,10 @@ func TestDelegateIsolation_ManageWorktreeDeniedAfterRestoreAllTools(t *testing.T
 		t.Fatalf("decodeRef: %v", err)
 	}
 
+	// Give the lane genuine work so close-time disposal (spec §9 step 4) keeps
+	// it — an unchanged lane is removed at close and cannot be revived.
+	r.commitWorkInLane(t, r.lanePath(res.DelegateID))
+
 	parentMeta := r.s.Meta()
 	stateDir := r.s.stateDir
 	r.s.Close()
@@ -562,14 +580,20 @@ func TestDelegateIsolation_RevivalOnKeptUnlockedLaneReLocks(t *testing.T) {
 		t.Fatalf("decodeRef: %v", err)
 	}
 
-	// Simulate disposal already having kept the lane unlocked (Task 22, not
-	// yet built): a lock state a revival must handle regardless of how the
-	// lane got there.
-	wtGit(t, r.mainRoot, "worktree", "unlock", lane)
+	// A CHANGED lane (real commits) is what close-time disposal (spec §9
+	// step 4) keeps — it unlocks and preserves it, leaving it resumable. Give
+	// the lane genuine work, then close the parent: disposal keeps + unlocks it,
+	// reaching exactly the kept-unlocked state a revival must re-lock.
+	r.commitWorkInLane(t, lane)
 
 	parentMeta := r.s.Meta()
 	stateDir := r.s.stateDir
 	r.s.Close()
+
+	// Disposal kept the changed lane unlocked.
+	if r.porcelainEntryFor(t, lane).Locked {
+		t.Fatal("disposal must leave a kept changed lane unlocked")
+	}
 
 	restoredParentEnv := execenv.NewLocalExecutionEnvironment(r.mainRoot)
 	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), restoredParentEnv, parentMeta, RestoreSessionConfig{
