@@ -324,7 +324,7 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 				return map[string]any{
 					"status":  "listed",
 					"entries": out,
-					"message": fmt.Sprintf("%d managed worktree(s).", len(entries)),
+					"message": worktreeListSummary(entries),
 				}, nil
 			case "prune":
 				res, err := deps.worktreeGuard.pruneOp(ctx)
@@ -1560,6 +1560,30 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, delete
 	// carried on result: Path, Branch, BranchDeleted, BranchKeptReason,
 	// Warning).
 	return result, nil
+}
+
+// worktreeListSummary builds the human-readable list message: a count plus a
+// one-line-per-lane digest (name, commits ahead, dirty/clean, merged) so a
+// model that reads only the result message — not the structured entries array —
+// still learns which lanes have work. A live ergonomics run showed a strong
+// model shell out to `git log` per lane when the message was a bare count.
+func worktreeListSummary(entries []WorktreeListEntry) string {
+	if len(entries) == 0 {
+		return "0 managed worktree(s)."
+	}
+	parts := make([]string, len(entries))
+	for i, e := range entries {
+		state := "clean"
+		if e.Dirty {
+			state = "dirty"
+		}
+		merged := "unmerged"
+		if e.Merged {
+			merged = "merged"
+		}
+		parts[i] = fmt.Sprintf("%s (%d ahead, %s, %s)", e.Name, e.AheadCommits, state, merged)
+	}
+	return fmt.Sprintf("%d managed worktree(s): %s.", len(entries), strings.Join(parts, "; "))
 }
 
 // worktreeListEntryToMap renders a WorktreeListEntry into the tool result

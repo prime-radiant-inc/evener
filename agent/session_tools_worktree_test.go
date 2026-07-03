@@ -3,9 +3,11 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 )
 
 // TestManageWorktreeToolRegisteredRegistryOnlyNonReadOnly asserts spec §2's
@@ -188,5 +190,40 @@ func TestGitRunner_ExitZeroButErrorPropagates(t *testing.T) {
 	}
 	if out != "partial\n" {
 		t.Errorf("gitRunner with exit=0/err!=nil: stdout = %q, want it still returned", out)
+	}
+}
+
+// TestWorktreeListSummaryLine covers the F4 ergonomics fix: the list result's
+// human-readable message must carry a one-line-per-lane summary (name · ahead ·
+// dirty · merged), not just a bare count — a live scenario showed a strong
+// model ignore the rich entries array and shell out to git log because the
+// message alone read as uninformative.
+func TestWorktreeListSummaryLine(t *testing.T) {
+	entries := []WorktreeListEntry{
+		{Name: "untouched-lane", AheadCommits: 0, Dirty: false, Merged: true},
+		{Name: "work-lane", AheadCommits: 1, Dirty: false, Merged: false},
+	}
+	got := worktreeListSummary(entries)
+	for _, want := range []string{"2 managed worktree", "untouched-lane", "work-lane", "0 ahead", "1 ahead"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("list summary missing %q\ngot: %s", want, got)
+		}
+	}
+	if worktreeListSummary(nil) != "0 managed worktree(s)." {
+		t.Fatalf("empty summary = %q", worktreeListSummary(nil))
+	}
+}
+
+// TestPruneDescriptionConveysBulkCleanup covers the F2 ergonomics fix: prune's
+// description must convey that it removes lanes with no unmerged work
+// (including from finished sessions), not read as a narrow "stale
+// registrations" chore — no live run reached for prune under the old wording.
+func TestPruneDescriptionConveysBulkCleanup(t *testing.T) {
+	desc := tool.DefManageWorktree().Description
+	if strings.Contains(desc, "stale worktree registrations") {
+		t.Fatal("prune still described as 'stale worktree registrations' — undersells it")
+	}
+	if !strings.Contains(desc, "unmerged") {
+		t.Fatalf("prune description should mention it removes lanes with no unmerged work; got: %s", desc)
 	}
 }

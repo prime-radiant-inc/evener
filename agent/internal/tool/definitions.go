@@ -641,7 +641,8 @@ func DefManageWorktree() llm.ToolDefinition {
 		"Operations: create (make a new worktree from `name` and optional `base_ref`, default the active HEAD, then enter it); " +
 		"list (show known worktrees); switch (enter an existing worktree by `name` or `path`, exactly one); " +
 		"exit (return to the main checkout); remove (delete a worktree by `name`, optionally `force` to remove one with " +
-		"uncommitted changes and `delete_branch` to also delete its branch); prune (clean up stale worktree registrations). " +
+		"uncommitted changes and `delete_branch` to also delete its branch); prune (remove worktrees that have no unmerged work — " +
+		"unchanged or already-merged lanes, including ones left behind by finished sessions — the one-call way to clean up). " +
 		"Subsequent tool calls after create/switch/exit operate inside the resulting checkout."
 	return llm.ToolDefinition{
 		Name:        "manage_worktree",
