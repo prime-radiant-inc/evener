@@ -602,6 +602,45 @@ func TestWorktreePrune_Sweep1_SkipsUnmerged(t *testing.T) {
 	}
 }
 
+func TestWorktreePrune_Sweep1_SkipsMergeTargetUnknown(t *testing.T) {
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "orphan-target-lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	// Advance the tip so it differs from base_sha: disposableReason must reach
+	// the merge check rather than short-circuiting on the unchanged arm.
+	commitInWorktree(t, path, "o.txt", "o\n", "advance orphan-target-lane")
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+
+	// The sidecar recorded merge_target="main" (the branch checked out at the
+	// active root when the lane was created). Rename it away so that, at
+	// prune time, neither refs/heads/main nor any refs/remotes/*/main
+	// resolves — worktree.Merged's TargetUnknown path (spec §5).
+	wtGit(t, r.mainRoot, "branch", "-m", "main", "main-renamed")
+
+	out, err := r.pruneOp(t)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	e := findPruneEntry(t, pruneEntries(t, out, "skipped"), "orphan-target-lane")
+	if e == nil {
+		t.Fatal("orphan-target-lane not reported skipped")
+	}
+	if e["reason"] != "merge target unknown" {
+		t.Errorf("reason = %v, want merge target unknown", e["reason"])
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Errorf("worktree removed despite an unresolvable merge target: %v", statErr)
+	}
+	if !branchExistsInRepo(t, r.mainRoot, "orphan-target-lane") {
+		t.Error("branch removed despite an unresolvable merge target")
+	}
+}
+
 // ============================================================
 // prune — sweep 2 (sidecar reconciliation)
 // ============================================================
