@@ -820,6 +820,16 @@
       this.currentTurnHasAgentWork = true;
     },
 
+    // snapshotSubmittedTurn records the retry payload for a newly submitted
+    // turn. The payload and currentTurnHasAgentWork must describe the same
+    // turn: a stale "has work" flag makes a provider failure offer Continue
+    // (discarding the fresh prompt) when replaying the turn is correct. Pairing
+    // the two assignments here keeps every new-turn entry point consistent.
+    snapshotSubmittedTurn(payload) {
+      this.lastSubmittedTurn = payload;
+      this.currentTurnHasAgentWork = false;
+    },
+
     refreshTranscriptStatusVisibility() {
       if (!this.conversation || !this.sessionId) return false;
       if (!window.SerfAppwire || typeof window.SerfAppwire.readThread !== "function" || typeof window.SerfAppwire.eventsFromThread !== "function") {
@@ -955,8 +965,7 @@
           // live "awaiting your answer" affordances (the in-flow frame stays).
           this.clearAgentQuestion();
           this.lastUserText = data.text || "";
-          this.lastSubmittedTurn = this.retryPayload(data.text || "", data.images || []);
-          this.currentTurnHasAgentWork = false;
+          this.snapshotSubmittedTurn(this.retryPayload(data.text || "", data.images || []));
           this.dissolveWelcome();
           if (this.promoteLocalUserMessage(data)) { this.showColdStartSkeleton(); break; }
           this.userTurnIndex++;
@@ -1649,12 +1658,9 @@
     appendLocalUserMessage(text, images, turnId, previousUserCount) {
       if (this.userMessageCount() > previousUserCount) return;
       this.lastUserText = text || "";
-      this.lastSubmittedTurn = this.retryPayload(text || "", images || []);
-      // A fresh turn starts here optimistically, before the server echoes
-      // USER_INPUT/TURN_STARTED. Reset the per-turn work flag now so a provider
-      // failure racing in ahead of that echo replays this new prompt rather
-      // than inheriting the previous turn's "has work" state.
-      this.currentTurnHasAgentWork = false;
+      // Optimistic local echo: a fresh turn starts here before the server
+      // echoes USER_INPUT/TURN_STARTED, so snapshot resets the work flag now.
+      this.snapshotSubmittedTurn(this.retryPayload(text || "", images || []));
       this.userTurnIndex++;
       this.entryIndex++;
       // Cold start (mockup #21): the welcome dissolves on first send and a
@@ -4463,7 +4469,9 @@
           this.appendBanner("error", "send is not available for this session", { source: "hub", title: "Hub send error" });
           return;
         }
-        this.lastSubmittedTurn = this.retryPayload(text, items);
+        // Snapshot before the awaited startTurn/send so a provider failure
+        // arriving during that await recovers this turn, not the previous one.
+        this.snapshotSubmittedTurn(this.retryPayload(text, items));
         if (sendBtn) sendBtn.disabled = true;
         try {
           // Snapshot the items so a successful response can clear the bag

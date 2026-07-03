@@ -248,6 +248,30 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
     }
   }
 
+  // The submit handler snapshots the new turn's payload before awaiting
+  // startTurn/send. snapshotSubmittedTurn must reset the work flag at that
+  // point, so a provider failure arriving during the await recovers this turn
+  // — not the previous one — via Retry with the freshly submitted payload.
+  renderer.handleData("USER_INPUT", { text: "prior turn" });
+  renderer.handleData("ASSISTANT_TEXT_START", {});
+  renderer.handleData("ASSISTANT_TEXT_DELTA", { delta: "working" });
+  renderer.snapshotSubmittedTurn(
+    renderer.retryPayload("await-race turn", [{ type: "image", media_type: "image/png", sha256: "sha-race", name: "race.png" }]),
+  );
+  const raceActions = renderer.buildDiagnosticActions({
+    severity: "error", source: "provider", message: "stream ended without finish event",
+  });
+  pass(Array.isArray(raceActions) && raceActions.length === 1 && raceActions[0].label === "Retry turn",
+    "snapshotSubmittedTurn must reset the work flag: label should be 'Retry turn', got " + (raceActions && raceActions[0] && raceActions[0].label));
+  if (raceActions && raceActions.length) {
+    startTurnCalls.length = 0;
+    await raceActions[0].onclick();
+    if (startTurnCalls.length) {
+      pass(startTurnCalls[0].text === "await-race turn",
+        "retry during send-await should replay the new prompt, got " + startTurnCalls[0].text);
+    }
+  }
+
   renderer.handleData("USER_INPUT", { text: "say hello" });
   renderer.lastSubmittedTurn = { text: "say hello", items: [{ type: "image", media_type: "image/png", data: "abc", name: "shot.png" }] };
 
