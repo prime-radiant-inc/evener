@@ -218,6 +218,36 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
     }
   }
 
+  // A new turn submitted through the optimistic local-echo path
+  // (appendLocalUserMessage) fires before the server round-trips
+  // USER_INPUT/TURN_STARTED. It must reset the per-turn work flag, or a
+  // provider failure racing ahead of that echo inherits the previous turn's
+  // "has work" state and wrongly offers Continue for the fresh prompt.
+  renderer.handleData("USER_INPUT", { text: "first turn" });
+  renderer.handleData("TOOL_CALL_START", { call_id: "tool_leak", tool_name: "shell", arguments_json: "{}" });
+  renderer.handleData("TOOL_CALL_END", { call_id: "tool_leak", tool_name: "shell", output: "done" });
+  renderer.appendLocalUserMessage(
+    "second turn",
+    [{ type: "image", media_type: "image/png", sha256: "sha-next", name: "next.png" }],
+    "",
+    renderer.userMessageCount(),
+  );
+  const leakActions = renderer.buildDiagnosticActions({
+    severity: "error", source: "provider", message: "stream ended without finish event",
+  });
+  pass(Array.isArray(leakActions) && leakActions.length === 1 && leakActions[0].label === "Retry turn",
+    "optimistic send must reset the work flag: label should be 'Retry turn', got " + (leakActions && leakActions[0] && leakActions[0].label));
+  if (leakActions && leakActions.length) {
+    startTurnCalls.length = 0;
+    await leakActions[0].onclick();
+    if (startTurnCalls.length) {
+      pass(startTurnCalls[0].text === "second turn",
+        "retry after optimistic send should replay the new prompt, got " + startTurnCalls[0].text);
+      pass(Array.isArray(startTurnCalls[0].images) && startTurnCalls[0].images.length === 1,
+        "retry after optimistic send should carry the new attachment, got " + JSON.stringify(startTurnCalls[0].images));
+    }
+  }
+
   renderer.handleData("USER_INPUT", { text: "say hello" });
   renderer.lastSubmittedTurn = { text: "say hello", items: [{ type: "image", media_type: "image/png", data: "abc", name: "shot.png" }] };
 

@@ -1650,6 +1650,11 @@
       if (this.userMessageCount() > previousUserCount) return;
       this.lastUserText = text || "";
       this.lastSubmittedTurn = this.retryPayload(text || "", images || []);
+      // A fresh turn starts here optimistically, before the server echoes
+      // USER_INPUT/TURN_STARTED. Reset the per-turn work flag now so a provider
+      // failure racing in ahead of that echo replays this new prompt rather
+      // than inheriting the previous turn's "has work" state.
+      this.currentTurnHasAgentWork = false;
       this.userTurnIndex++;
       this.entryIndex++;
       // Cold start (mockup #21): the welcome dissolves on first send and a
