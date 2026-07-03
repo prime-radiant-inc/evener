@@ -468,3 +468,79 @@ func TestTranscriptToolDefinitions(t *testing.T) {
 		}
 	}
 }
+
+// TestDefManageWorktreeShape asserts the manage_worktree tool definition
+// against spec §2's args-by-operation table: a single tool with an
+// operation enum and the per-operation optional/required args flattened
+// into one schema (mirroring task_list's action pattern).
+func TestDefManageWorktreeShape(t *testing.T) {
+	def := DefManageWorktree()
+
+	if def.Name != "manage_worktree" {
+		t.Fatalf("Name = %q, want manage_worktree", def.Name)
+	}
+	if def.Parameters["additionalProperties"] != false {
+		t.Errorf("additionalProperties = %v, want false", def.Parameters["additionalProperties"])
+	}
+
+	required(t, def, "manage_worktree", []string{"operation"})
+
+	props, ok := def.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties = %T, want map[string]any", def.Parameters["properties"])
+	}
+
+	opProp, ok := props["operation"].(map[string]any)
+	if !ok {
+		t.Fatalf("operation property = %T, want map[string]any", props["operation"])
+	}
+	opEnum, ok := opProp["enum"].([]string)
+	if !ok {
+		t.Fatalf("operation enum = %T, want []string", opProp["enum"])
+	}
+	wantEnum := map[string]bool{"create": true, "list": true, "switch": true, "exit": true, "remove": true, "prune": true}
+	if len(opEnum) != len(wantEnum) {
+		t.Errorf("operation enum = %v, want exactly %v", opEnum, wantEnum)
+	}
+	for _, v := range opEnum {
+		if !wantEnum[v] {
+			t.Errorf("unexpected operation enum value %q", v)
+		}
+	}
+
+	// Per-operation args from spec §2's table, flattened.
+	for _, k := range []string{"name", "base_ref", "path", "force", "delete_branch"} {
+		if _, ok := props[k]; !ok {
+			t.Errorf("manage_worktree missing param %q", k)
+		}
+	}
+
+	forceProp, ok := props["force"].(map[string]any)
+	if !ok || forceProp["type"] != "boolean" {
+		t.Errorf("force property = %v, want boolean type", props["force"])
+	}
+	deleteBranchProp, ok := props["delete_branch"].(map[string]any)
+	if !ok || deleteBranchProp["type"] != "boolean" {
+		t.Errorf("delete_branch property = %v, want boolean type", props["delete_branch"])
+	}
+}
+
+// TestDefManageWorktreeDescriptionCarriesUsagePolicy asserts the description
+// carries spec §2's usage-policy paragraph: worktrees are for isolated,
+// parallel, or risky work, not ordinary branch creation/switching.
+func TestDefManageWorktreeDescriptionCarriesUsagePolicy(t *testing.T) {
+	def := DefManageWorktree()
+	desc := strings.ToLower(def.Description)
+
+	for _, phrase := range []string{"isolated", "parallel", "risky"} {
+		if !strings.Contains(desc, phrase) {
+			t.Errorf("description missing usage-policy phrase %q; got: %s", phrase, def.Description)
+		}
+	}
+	if !strings.Contains(desc, "not") || !strings.Contains(desc, "ordinary") {
+		t.Errorf("description must say this is not for ordinary branch work; got: %s", def.Description)
+	}
+	if !strings.Contains(desc, "plain git") && !strings.Contains(desc, "git commands") {
+		t.Errorf("description must point to plain git commands for ordinary branch work; got: %s", def.Description)
+	}
+}

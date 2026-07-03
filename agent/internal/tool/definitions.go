@@ -622,6 +622,60 @@ func DefReadSessionTranscript() llm.ToolDefinition {
 	}
 }
 
+// DefManageWorktree defines the manage_worktree lifecycle tool (spec §2): a
+// single tool with an operation enum, mirroring task_list's action pattern.
+// Args are flattened across operations rather than split per-op in the
+// schema; which args apply to which operation is documented in the
+// description and enforced by the handler, not the schema (see spec's args
+// table: create takes name+base_ref, switch takes name-or-path, remove takes
+// name+force+delete_branch, list/exit/prune take none).
+func DefManageWorktree() llm.ToolDefinition {
+	desc := "Manage git worktrees for isolated, parallel, or risky work — a scratch lane to try something that might not pan out, " +
+		"parallel exploration of alternative approaches, or isolating a delegate's changes from the parent checkout. " +
+		"This is not for ordinary branch creation or switching; use plain git commands for that. " +
+		"Operations: create (make a new worktree from `name` and optional `base_ref`, default the active HEAD, then enter it); " +
+		"list (show known worktrees); switch (enter an existing worktree by `name` or `path`, exactly one); " +
+		"exit (return to the main checkout); remove (delete a worktree by `name`, optionally `force` to remove one with " +
+		"uncommitted changes and `delete_branch` to also delete its branch); prune (clean up stale worktree registrations). " +
+		"Subsequent tool calls after create/switch/exit operate inside the resulting checkout."
+	return llm.ToolDefinition{
+		Name:        "manage_worktree",
+		Description: desc,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"operation": map[string]any{
+					"type":        "string",
+					"description": "create, list, switch, exit, remove, or prune.",
+					"enum":        []string{"create", "list", "switch", "exit", "remove", "prune"},
+				},
+				"name": map[string]any{
+					"type":        "string",
+					"description": "Worktree name; also used as the branch name. Required for create; for switch, exactly one of name/path; required for remove.",
+				},
+				"base_ref": map[string]any{
+					"type":        "string",
+					"description": "For create: commit-ish to branch from. Defaults to the active HEAD.",
+				},
+				"path": map[string]any{
+					"type":        "string",
+					"description": "For switch: path to an existing worktree. Exactly one of name/path.",
+				},
+				"force": map[string]any{
+					"type":        "boolean",
+					"description": "For remove: remove a worktree even if it has uncommitted changes. Default false.",
+				},
+				"delete_branch": map[string]any{
+					"type":        "boolean",
+					"description": "For remove: also delete the worktree's branch. Default false.",
+				},
+			},
+			"required": []string{"operation"},
+		},
+	}
+}
+
 // DefReadTranscript defines the generic transcript reader. It accepts archived
 // session refs and job:<job_id> refs, so callers can use one evidence reader for
 // both agent and shell jobs.

@@ -261,6 +261,7 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	}
 	registerTaskTools(reg, deps)
 	registerGoalTools(reg, deps)
+	registerWorktreeTool(reg, deps)
 	registerCompactTool(reg, deps)
 	registerWebTools(reg, deps)
 	registerCommunicateTool(reg, deps)
