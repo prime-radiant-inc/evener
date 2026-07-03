@@ -1,8 +1,8 @@
 # Native Worktree Tools — Design Spec
 
 Date: 2026-07-02
-Status: Draft (rev 7, post second competitive adversarial round — lock
-lifecycle, disposal-vs-durability, and merge-target semantics hardened)
+Status: Draft (rev 8, post third competitive adversarial round — merge-mode
+coverage, lock choreography corners, hub consumers, modern-git requirement)
 
 ## Summary
 
@@ -96,18 +96,19 @@ in the main checkout.
 | Base resolution | Always via the **active** env root, always passed as an explicit SHA | HEAD is a per-worktree ref; resolving through the main-root control env would branch lane-off-a-lane from the wrong tip |
 | Occupancy | `git worktree lock` on enter, unlock on leave **and on clean close** | Git itself then refuses removal/prune from any tool, in any session — no bespoke registry needed; only a crash leaves a lock behind |
 | Creation atomicity | `git worktree add --lock --reason … ` in one command | An add-then-lock two-step leaves a window where a concurrent `prune` legally collects the fresh worktree (rev-6 review finding) |
-| Merged predicate target | recorded `merge_target` branch, never the main root's floating HEAD | `git branch -d`'s HEAD-relative check empirically deletes a never-merged branch under detached-HEAD review, and starves when the main root is parked elsewhere (rev-6 review finding) |
-| Disposal ↔ durability | disposal marks the delegate's restore descriptor disposed first | Restore descriptors are durable; deleting the worktree without invalidating them revives children into nonexistent roots (rev-6 review finding) |
+| Merged predicate target | recorded `merge_target` (local or remote-tracking tip), ancestry OR patch-equivalence — never the main root's floating HEAD | HEAD-relative checks destroy under detached-HEAD review and starve when the root is parked elsewhere; ancestry alone is blind to squash/rebase merges (rev-6/rev-7 findings) |
+| Disposal ↔ durability | evaluate → remove → mark disposed; the `WorkingDir` stat is the crash net | Mark-first (rev 7) disposed kept lanes it promised to keep resumable; mark-after is safe because resumability stats the directory (rev-7 finding) |
+| Minimum git | require `worktree add --lock --reason` (git ≥ 2.33), preflight-checked | Jesse's call ("I'm ok with forcing new git"); the older-git fallback's own unlock step re-opened the mid-create destruction window it claimed to avoid (rev-7 finding) |
 | Placement | `<worktreeRoot>/<projectid>/<name>/` | Outside the project tree → no gitignore, immune to `git clean -dxf`; honors runtime state-dir selection |
 | projectid | `<basename>-<sha256[:16]>` of canonical abs root | Collision-resistant, fixed-length (see §6) |
 | baseRef default | active HEAD, optional validated `base_ref` arg | Parity with `git worktree add -b <name>`; no network |
-| `delete_branch` | optional, default false; `-d` unless `force` | `git branch -d` refuses unmerged branches — committed work is never silently lost |
+| `delete_branch` | optional, default false; serf's merge-target gate, then `-D`; `force` skips the gate | `git branch -d`'s built-in check is HEAD-relative and untrustworthy (see merged-predicate row); committed work is never silently lost |
 | Disposal metadata | sidecar JSON per worktree (creator, base SHA, delegate id) | Retrofitting metadata onto anonymous directories is the mess we audited; provenance enables prune, resume, and residue reconciliation |
 | Orphan cleanup | `prune` operation now; scheduled trigger deferred | The evidence says disposal is the hard problem; primitives can't be deferred |
 | Detection scope | root identity only | Full config/hook/trust layering remains separate |
 | env-restore model | single saved env (not a stack) | Restore to original repo root, not a previous worktree |
 | Delegate isolation | In scope, same delivery | Dominant real-world use; shares the placement/metadata/control-env core |
-| Delegate disposal point | Parent-session close (post-drain), not job end | Delegates are durable multi-job sessions; per-job disposal would delete the root under an idle-but-restorable child |
+| Delegate disposal point | Each session's own `Session.close`, after its children close — no drain precondition | Delegates are durable multi-job sessions; per-job disposal would delete the root under an idle-but-restorable child. Draining exists only on the one-shot surface; the dirty→kept predicate protects killed lanes |
 
 ## Cross-harness evidence (why rev 4 looks like this)
 
@@ -376,9 +377,11 @@ itself; the control env's `workingDir` stays at the main root.
    (`creator_session`/`base_sha` inversion — rev-6 review finding); with
    `O_EXCL` the loser fails cleanly here. Sidecar-first ordering means a crash
    at any later step leaves a sidecar without a worktree, which `prune`'s
-   reconciliation sweep (§5) detects and cleans **after a `created_at` grace
-   period** (the grace keeps a concurrent prune from eating the sidecar in the
-   moments before git registers the worktree); the reverse order would leave
+   reconciliation sweep (§5) detects and cleans **after a grace period judged
+   by the sidecar's file mtime** (the grace keeps a concurrent prune from
+   eating the sidecar in the moments before git registers the worktree; mtime
+   rather than the recorded `created_at`, which is the creator's clock — §5
+   sweep 2); the reverse order would leave
    an anonymous worktree that `prune` must skip and `remove` refuses without
    `force`.
 6. `MkdirAll` the parent of the worktree path (handles slash-containing
@@ -391,13 +394,28 @@ itself; the control env's `workingDir` stays at the main root.
    review finding): a separate add-then-lock two-step leaves a freshly added
    worktree registered, unlocked, clean, and `unchanged` — all four of a
    concurrent session's prune conditions — for a window in which it can be
-   legally destroyed mid-create. On an older git without `add --lock
-   --reason`, fall back to `add --lock` followed by unlock+re-lock with the
-   reason, and document the brief reasonless-lock (never unlocked) window.
-7. On success, swap `s.env` to `WithWorkingDirectory(<worktree path>)` via the
+   legally destroyed mid-create. **Serf requires a git whose `worktree add`
+   supports `--lock --reason` (git ≥ 2.33; the `--reason`-on-add series
+   landed July 2021), verified once per session by a preflight check with a
+   clear too-old error.** There is no older-git fallback — rev-7 review
+   showed the proposed fallback's own unlock step re-opened the exact
+   mid-create window atomicity closes (decision: Jesse, "I'm ok with forcing
+   new git").
+   **If `git worktree add` fails** (e.g. a `refs/heads/<name>` D/F conflict
+   with an existing branch — `feature` vs `feature/foo` passes every earlier
+   check but dies at git's ref lock), **delete the just-written sidecar in
+   the same call** before returning the error. Rev-7 review: without
+   same-call cleanup, the surviving sidecar makes the name uncreatable (the
+   retry loses at `O_EXCL`) until a post-grace `prune`.
+7. On success, if the session was already inside a *managed* worktree, unlock
+   it now (own-marker rule, §5) — `create` is an enter of the new worktree
+   and therefore a **leave** of the old one, exactly like `switch`-away;
+   rev-7 review found the missing unlock leaked a dead session's lock on a
+   fully clean create→work→close lifecycle.
+8. Swap `s.env` to `WithWorkingDirectory(<worktree path>)` via the
    `worktreeGuard`, **then** recompute `s.envInfo` and refresh the cached
    system prompt (see §7). Store the pre-worktree env for later restoration.
-8. Return the worktree absolute path, the branch name, the base SHA, and the
+9. Return the worktree absolute path, the branch name, the base SHA, and the
    main repo root.
 
 Creating while already inside a managed worktree is allowed; the default base
@@ -415,7 +433,12 @@ exist.
 By `name` (managed worktrees):
 
 1. Resolve the worktree path from `name` (same `projectid` derivation, using
-   the session's current main repo root).
+   the session's current main repo root). **If the target is the worktree the
+   session is already in, return success as a no-op** — rev-7 review: without
+   this rule, the idempotent adopt (step 3's lock is a no-op on the own
+   marker) followed by "unlock the current worktree" *unlocks the active root
+   under the live session* on a mundane redundant re-`switch`, making it
+   collectible by any concurrent prune.
 2. Verify the path exists and is a valid worktree (has the `.git` pointer
    file). If it is locked with a reason other than this session's own marker,
    refuse — another session (or a delegate) is rooted there.
@@ -442,11 +465,19 @@ By `path` (any registered worktree — Claude Code parity):
    same canonicalization) a worktree path in `git worktree list --porcelain`
    run through the control env. Paths not registered to this repository are
    rejected — git's own registry is the validator.
-2. Same env swap + refresh as above. **No lock choreography**: serf does not
-   mutate lock state on worktrees it does not manage (the user may have their
-   own locking conventions). If leaving a *managed* worktree for a by-path
-   one, the managed worktree is unlocked as in step 3 above.
-3. Worktrees entered by `path` that live outside the managed directory can be
+2. **If the canonicalized path resolves inside the managed directory
+   (`<worktreeRoot>/<projectid>/`), reroute through the by-name semantics
+   above** — full lock guard and lock choreography. Rev-7 review: without the
+   reroute, `switch path=<lane path>` was a lock-scheme bypass — it entered a
+   live delegate's locked lane (co-occupancy, defeating §9's guard, which
+   only cited the by-name check) and entered unlocked managed worktrees
+   without taking the lock (leaving the occupant prune-collectible).
+3. For genuinely non-managed registered worktrees: same env swap + refresh as
+   above, **no lock choreography** — serf does not mutate lock state on
+   worktrees it does not manage (the user may have their own locking
+   conventions). If leaving a *managed* worktree for a by-path one, the
+   managed worktree is unlocked as in step 3 above.
+4. Worktrees entered by `path` that live outside the managed directory can be
    switched into and exited from, but never removed or pruned by this tool —
    `remove` stays managed-only.
 
@@ -477,8 +508,20 @@ impossible under file-tool confinement.
 
 A session or isolated delegate rooted in a managed worktree holds a
 `git worktree lock` on it with a structured reason (`serf:<session-id>` or
-`serf:dlg:<delegate-id>:<parent-session-id>`), taken on enter/create and
-released on exit, switch-away, disposal, **and clean session close**. The
+`serf:dlg:<delegate-id>:<parent-session-id>`), taken on enter/create —
+including **at session init when the launch cwd is already inside a managed
+worktree** (rev-7 review finding: a session merely *launched* inside a kept
+lane held no lock and was prune-collectible mid-session; init applies the
+idempotent rule below, and if the lane is foreign-locked the session
+continues but warns loudly that it is co-occupying) — and released on exit,
+switch-away, **create-away** (creating a new worktree from inside one leaves
+the old one, §3 step 7), disposal, **and clean session close**. The
+`serf:dlg:` lock on a delegate lane is owned by the **parent's disposal
+lifecycle**, not the child: a child session's own clean close never unlocks
+it (rev-7 review finding: if child-close released it, the child-close →
+disposal gap would be an unlocked window in which a concurrent prune collects
+an unchanged lane mid-close, and disposal's own unlock would then hit a git
+fatal). The
 close-time unlock is not optional garnish (rev-6 review finding: without it,
 every session that ends its day inside a worktree leaves a lock, and prune's
 dead-session collection collapses back into the starvation problem the locks
@@ -501,7 +544,11 @@ lock` is fatal on an already-locked tree — even with an identical reason
 (empirically verified) — so every serf lock step means: if unlocked → lock;
 if locked with this session's own marker → adopt it (no-op; this is the
 crash-resume case, where the stale lock carries the *same* session id); if
-locked with a foreign marker → refuse the operation. A worktree found locked
+locked with a foreign marker → refuse the operation. **A lock with no reason
+or a reason that doesn't parse as a serf marker is foreign** (rev-7 review:
+bare `git worktree lock` emits a reasonless `locked` porcelain line; serf
+itself never creates reasonless locks, so any such lock is someone else's).
+A worktree found locked
 with the session's own marker while the session is *not* occupying it (crash
 residue from a mid-choreography death) is the session's to release: `remove`
 and `switch` treat it as unlocked-for-us and proceed, releasing or adopting
@@ -535,10 +582,13 @@ double-force.
 3. Return structured output per worktree: path, branch/HEAD, whether the
    session is currently in it, lock state + reason, prunable annotation, and
    **disposal-relevant state** from metadata + cheap git queries: age, dirty
-   (yes/no), commits ahead of recorded base, merged into the main root's HEAD
-   (tip is an ancestor), creator session id, and owning delegate id if
-   delegate-created (§9). This is what makes stale worktrees visible instead
-   of silently accumulating.
+   (yes/no), commits ahead of recorded base, merged **per the same
+   `merge_target` predicate `prune` uses** (rev-7 review finding: rev 7 left
+   `list` reporting merged-into-floating-HEAD — the outlawed predicate —
+   feeding the agent false data on the exact detached-HEAD scenario the fix
+   was for), creator session id, and owning delegate id if delegate-created
+   (§9). This is what makes stale worktrees visible instead of silently
+   accumulating.
 
 ### `remove`
 
@@ -584,8 +634,8 @@ double-force.
    dirty/untracked refusal — never locks, per step 3).
 9. If `delete_branch: true` without `force`: delete the branch only if serf's
    **own merged check** passes — the branch tip is `unchanged` (== recorded
-   `base_sha`) or an ancestor of the recorded `merge_target` branch's current
-   tip (§5 prune, "merged predicate"). Do **not** rely on `git branch -d`'s
+   `base_sha`) or merged per §5 prune's two-arm `merge_target` predicate
+   (ancestry or patch-equivalence). Do **not** rely on `git branch -d`'s
    built-in check: it is HEAD-relative, and rev-6 review demonstrated it
    deleting a never-merged branch while the user reviewed its tip under a
    detached HEAD in the main checkout. On a pass, delete with `-D` (the
@@ -625,38 +675,59 @@ sweeps, all through the control env:
      braces alongside the lock);
    - clean per `git -C <path> status --porcelain=v1 --untracked-files=all`;
    - **disposable**: either `unchanged` (HEAD equals the recorded base SHA —
-     nothing was ever committed) or **merged**. The merged predicate is:
-     branch tip is an ancestor of the **recorded `merge_target` branch's
-     current tip** (`git merge-base --is-ancestor <tip>
-     refs/heads/<merge_target>`), never of the main root's HEAD — HEAD is
-     whatever the user happens to have checked out, and rev-6 review
-     demonstrated both failure directions: a detached-HEAD review session
-     makes a never-merged branch "merged" (destruction), and a main root
-     parked on an old branch makes genuinely merged lanes never collectible
-     (starvation). If `merge_target` is empty (created from a detached HEAD)
-     or the target branch no longer exists, the merged arm is disabled for
+     nothing was ever committed) or **merged**. The merged predicate has two
+     arms, both judged against the **recorded `merge_target`'s tip** — taking
+     the local branch tip (`refs/heads/<merge_target>`) or, when the local
+     branch is absent or behind, any remote-tracking tip
+     (`refs/remotes/*/<merge_target>`) — never the main root's HEAD (HEAD is
+     whatever the user happens to have checked out; rev-6 review demonstrated
+     destruction under detached-HEAD review and starvation with the root
+     parked elsewhere):
+     - **ancestry**: `git merge-base --is-ancestor <tip> <target-tip>` —
+       recognizes true merges and fast-forwards;
+     - **patch-equivalence**: every lane commit since `base_sha` is marked
+       equivalent by `git cherry <target-tip> <tip> <base_sha>` (all `-`
+       lines) — recognizes **rebase-merges and single-commit squashes**,
+       which rewrite commits so ancestry never holds (rev-7 review finding:
+       ancestry alone collects nothing under GitHub's dominant squash/rebase
+       merge modes).
+     **Multi-commit squash merges are not automatically detectable** (the
+     squashed commit is the sum of the lane; no per-commit equivalence
+     exists) — documented in §11; those lanes are the agent's to dispose via
+     `remove` at merge time, which the per-job ahead/dirty report and `list`
+     staleness make an informed call.
+     If `merge_target` is empty (created from a detached HEAD)
+     or no target ref exists, the merged arm is disabled for
      that entry — only the `unchanged` arm applies, and the entry is reported
      with `merge target unknown`. Deletion is via `-D` after serf's own
-     ancestry gate (see `remove` step 9 for why `-d` is not trusted).
+     merged gate (see `remove` step 9 for why `-d` is not trusted).
    Sidecar-less worktrees inside the managed dir are skipped (provenance
    unknown → not ours to judge).
 2. **Sidecar reconciliation** (rev-5 review finding — residue is otherwise
    invisible once the worktree is gone): for every sidecar under
    `<projectid>/.meta/` with no matching registered worktree, **skipping
-   sidecars younger than a short `created_at` grace period** (a concurrent
-   `create` writes its sidecar moments before git registers the worktree —
-   rev-6 review finding: without the grace, reconciliation eats the fresh
-   sidecar and permanently demotes the new worktree to `unmanaged_meta`):
+   sidecars younger than a generous grace period judged by the sidecar
+   file's mtime on the shared filesystem** — not the recorded `created_at`
+   wall-clock string, which was stamped by the *creator's* clock and defeats
+   the grace under cross-machine skew on a shared state dir (rev-7 review
+   finding); the grace exists because a concurrent `create` writes its
+   sidecar moments before git registers the worktree — without it,
+   reconciliation eats the fresh sidecar and permanently demotes the new
+   worktree to `unmanaged_meta`:
    - branch gone too → stale sidecar; delete it (covers the crash window
      between sidecar write and `worktree add`, and out-of-band deletions);
-   - branch exists, sidecar has `worktree_removed: true`, and the tip has
-     **moved past `tip_sha_at_removal`** → the user adopted the branch;
-     delete the sidecar, keep the branch, report `adopted` (rev-6 review
-     finding — serf's claim on a kept branch must expire the moment someone
-     else builds on it);
-   - branch exists, tip unmoved since removal (or no removal record), and
-     merged per the `merge_target` predicate above or tip == `base_sha` →
-     delete the branch (`-D` after the ancestry gate) and the sidecar;
+   - branch exists, sidecar has `worktree_removed: true`, and the tip is
+     **neither `tip_sha_at_removal` nor `base_sha`** → the user adopted the
+     branch (rebases included); delete the sidecar, keep the branch, report
+     `adopted` (rev-6 review finding — serf's claim on a kept branch must
+     expire the moment someone else builds on it). The two-SHA rule is the
+     precise definition rev-7 review asked for: a branch **reset back to
+     `base_sha`** is *not* adopted — it is collectible via the `unchanged`
+     arm below, exactly as if nothing had ever been committed;
+   - branch exists, tip == `tip_sha_at_removal` or tip == `base_sha` (or no
+     removal record), and merged per the `merge_target` predicate above or
+     tip == `base_sha` → delete the branch (`-D` after the merged gate) and
+     the sidecar;
    - branch exists but is checked out in some worktree → git refuses deletion;
      skip and report `checked out at <path>` (part of the skip taxonomy, not
      an error);
@@ -903,9 +974,29 @@ Fix:
   session meta share one id and cannot be distinguished by the marker — a
   known limitation (§11).
 
-Delegate children need no extra work: their restore descriptors already
-persist `WorkingDir` (`job_delegate.go:881-889`), which will simply be a
-worktree path.
+Delegate children mostly ride the existing machinery: their restore
+descriptors already persist `WorkingDir` (`job_delegate.go:881-889`), which
+will simply be a worktree path — but a **revived kept lane must re-take its
+`serf:dlg:` lock** via the idempotent rule (rev-7 review finding: close-time
+disposal unlocks kept lanes, so a later `delegate_send(on_idle:"start")`
+would otherwise run a live delegate in an unlocked worktree — prune-collectible
+the moment its branch merges; and if the lane is now foreign-locked because
+someone `switch`ed in, revival refuses with a clear error instead of
+co-occupying).
+
+**Hub consumers of the persisted working dir must migrate** (rev-7 review
+finding — §7 changes what `EnvInfo.WorkingDir` means and the hub reads it as
+a launch directory today): `cmd/serf-hub/internal/hubcore/tree.go:325-336`
+groups sidebar projects by working-dir basename and prefills the spawn form
+with it, and `cmd/serf-hub/app_threadlifecycle.go:246` feeds it to
+`buildResumeArgs` → `--dir <path>` (`cmd/serf-hub/spawn.go:245-246`). All
+three must read the new meta fields: group and prefill by the **restore
+root** (else a worktree session migrates to a phantom sidebar project named
+`dlg_01H…` and the spawn form offers a managed worktree as a fresh session's
+cwd), and hub-driven resume must launch at the restore root and let this
+section's re-entry logic take the session into the worktree — not `--dir` it
+straight into the worktree (or its deleted corpse), bypassing the lock and
+validation rules above.
 
 ### `WithWorkingDirectory` correctness
 
@@ -946,8 +1037,11 @@ a **false positive** — discarded.
 - `remove` on a dirty worktree without `force` → error listing the dirty
   files, without changing the session env.
 - `remove` with `delete_branch` on an unmerged branch without `force` →
-  worktree removed, branch deletion refused with git's unmerged-tip message,
-  sidecar retained as branch-residue record.
+  worktree removed, branch deletion refused by **serf's merge-target gate**
+  with the unmerged evidence (never `git branch -d`'s HEAD-relative check —
+  §5 remove step 9), sidecar retained as branch-residue record.
+- git older than the `worktree add --lock --reason` floor (≥ 2.33) →
+  preflight error naming the required version; no degraded mode.
 - `remove` when live children/delegates/shell jobs are rooted under the target
   worktree → error (live work guard).
 - `remove` of a worktree created by another session without `force` → error
@@ -1024,8 +1118,12 @@ ever added, it and `isolation` must be mutually exclusive.)
    it is curious.
 3. **Per-job reporting:** every terminal job result from an isolated delegate
    carries the worktree path, branch, commits-ahead-of-base count, and dirty
-   state, so the parent can merge a lane's commits (from the main root or via
-   `switch`) at any point between jobs without guessing where the lane lives.
+   state, so the parent can merge a lane's commits **from the main root** at
+   any point between jobs without guessing where the lane lives. (Not via
+   `switch`: the delegate holds its lock for its lifetime, so `switch` into a
+   live lane is refused — rev-7 review caught rev 7 offering a route its own
+   Guards make unreachable. `switch` becomes available only after close-time
+   disposal keeps the lane.)
 4. **Disposal inside `Session.close`, on every close surface.** Rev 6 hung
    disposal off "after `DrainJobTree`", but `DrainJobTree` has exactly one
    production call site — one-shot `serf run` (`cmd/serf/run.go:238`); serve
@@ -1033,23 +1131,40 @@ ever added, it and `isolation` must be mutually exclusive.)
    rather than draining them (`agent/session_lifecycle.go:88-121`) — so rev
    6's precondition existed on one of three surfaces (rev-6 review finding).
    Pinned semantics: **each session disposes the isolation worktrees it
-   created, in its own `close` path, after its child sessions are closed** —
-   at every depth (a mid-tree delegate parent closing disposes its own
-   lanes). One-shot runs still drain first, so lanes are typically terminal;
-   on kill-style closes the predicate protects work: a lane killed mid-job
-   with uncommitted changes is *dirty* → kept. The disposal sequence per
-   lane, **in this order**:
-   - **mark the delegate's restore descriptor disposed first** (a persisted
-     flag the resumability check honors — see step 6), *then* evaluate;
-   - **unchanged** → unlock, remove worktree + branch + sidecar silently;
-   - **changed** (commits or dirty tree) → unlock and keep (descriptor stays
-     un-disposed; the lane remains resumable); the close-time output
+   created, in its own `close` path, after its child sessions are closed and
+   before `closeStoreOnly()`** — the disposed mark (step 5) is a jobstore
+   append, so the store must still be open; rev-7 review found this ordering
+   constraint unstated (the viable slot in today's `Session.close` is between
+   the children-close loop and the store close,
+   `agent/session_lifecycle.go:115-120`; env `Cleanup()` runs later and kills
+   any residual lane processes — a residual writer racing the clean check is
+   self-healing because disposal's `git worktree remove` runs **without**
+   `--force` and downgrades to keep on a dirty refusal). This holds at every
+   depth (a mid-tree delegate parent closing disposes its own lanes).
+   One-shot runs still drain first, so lanes are typically terminal; on
+   kill-style closes the predicate protects work: a lane killed mid-job with
+   uncommitted changes is *dirty* → kept. The disposal sequence per lane,
+   **in this order** (rev-7 review: rev 7's mark-disposed-*first* ordering
+   was self-contradictory — a changed lane cannot "stay un-disposed" after
+   being marked, and a crash between mark and un-mark would have stranded
+   real work in a lane that could never be resumed *and* that prune never
+   collects):
+   - **evaluate** the shared `unchanged` predicate (§5) through the control
+     env;
+   - **changed** (commits or dirty tree) → unlock and keep; the descriptor is
+     never touched, so the lane stays resumable; the close-time output
      (one-shot result, or the close event on serve/hub) lists the kept lanes
      with path/branch/ahead/dirty, and `prune` collects each one once its
-     branch is merged (or `remove` disposes of it explicitly).
-   Mark-first ordering means a crash mid-disposal strands a disposed-marked
-   descriptor next to a still-existing worktree — the safe direction: the
-   worktree is collectible by `prune`, and `delegate_send` refuses cleanly.
+     branch is merged (or `remove` disposes of it explicitly);
+   - **unchanged** → unlock, `git worktree remove` (non-force; a late dirty
+     refusal downgrades to keep and re-locks), **then mark the descriptor
+     disposed**, then delete branch + sidecar.
+   Crash windows are covered without any un-marking machinery: a crash after
+   unlock but before remove leaves an unlocked *unchanged* lane → `prune`
+   collects it; a crash after remove but before the mark leaves a live
+   descriptor pointing at a deleted directory → step 5's `WorkingDir` stat
+   refuses revival with a clear error. The mark is the fast, explicit
+   refusal; the stat is the crash net.
 5. **Disposal must invalidate durability** (rev-6 review finding — the
    BLOCKER: rev 6 deleted the worktree but left the delegate's persisted
    restore descriptor intact, and the restore path never checks the directory
@@ -1057,7 +1172,8 @@ ever added, it and `isolation` must be mutually exclusive.)
    only, and `restoreDelegateChildEnvironment` re-roots unconditionally
    (`job_delegate.go:588-656, 841-861`) — so a resumed parent's
    `delegate_send(on_idle:"start")` would revive the child into a deleted
-   root). Two defenses, both required:
+   root). Two defenses, both required (this step defines the semantics the
+   step-4 mark refers to):
    - the disposed flag from step 4: `assessDelegateResumability` treats it as
      not-resumable, and `delegate_send` returns a clear error ("this
      delegate's isolation worktree was disposed at session close; start a new
@@ -1082,7 +1198,9 @@ parent cannot `switch` into an isolated delegate's worktree at all while the
 delegate exists (§4 step 2 refuses on the foreign lock) — inspection of a
 lane happens read-only from outside (shell `git -C <path> log/diff/status`
 from the main root, or the per-job report). After close-time disposal keeps a
-changed lane, it is unlocked and `switch`-able like any managed worktree.
+changed lane, it is unlocked and `switch`-able like any managed worktree —
+until the lane's delegate is revived by `delegate_send`, which re-takes the
+`serf:dlg:` lock (§7) and refuses if someone has switched in meanwhile.
 
 ## 10. Testing
 
@@ -1114,8 +1232,10 @@ worktree tool is pure plumbing — git operations on temp repos. Tests use real
 - `remove` clean and dirty (with/without `force`, with/without
   `delete_branch`).
 - `remove` with `delete_branch` on a branch with unmerged commits → branch
-  survives (`-d` refusal surfaced) without `force`; deleted with `force`;
-  sidecar retained with `worktree_removed: true` whenever the branch survives.
+  survives (serf's merge-target gate refuses with the unmerged evidence; `-d`
+  is never invoked) without `force`; deleted (`-D`) with `force`; sidecar
+  retained with `worktree_removed: true` + `tip_sha_at_removal` whenever the
+  branch survives.
 - Dirty remove without force leaves `s.env` unchanged and lists the files.
 - `remove`-current with no safe restore env → verify refusal.
 - `remove` of a worktree whose metadata names another creator session →
@@ -1134,12 +1254,12 @@ worktree tool is pure plumbing — git operations on temp repos. Tests use real
   session no longer exists (the dead-session case rev 5 starved), which
   requires clean close to have unlocked it (fixture: close-in-worktree →
   unlocked on disk); reconciliation sweep deletes stale sidecars (no
-  worktree, no branch) only past the `created_at` grace (fixture: a fresh
+  worktree, no branch) only past the mtime-judged grace (fixture: a fresh
   sidecar during a racing create survives), collects merged **unmoved**
   branch-residue from prior `delete_branch: false` removals, reports a
-  branch whose tip moved past `tip_sha_at_removal` as `adopted` and drops
-  its sidecar without touching the branch, and keeps unmerged residue with a
-  report; repo-wide `git worktree prune` runs only when no non-managed entry
+  branch whose tip is neither `tip_sha_at_removal` nor `base_sha` as
+  `adopted` and drops its sidecar without touching the branch, and keeps
+  unmerged residue with a report; repo-wide `git worktree prune` runs only when no non-managed entry
   is prunable (fixture: a deregistrable non-managed worktree must survive a
   serf `prune`).
 - Lock lifecycle: clean `Session.close` inside a managed worktree unlocks it;
@@ -1227,6 +1347,29 @@ worktree tool is pure plumbing — git operations on temp repos. Tests use real
   field); delegate resume lands back in its worktree while the worktree
   exists.
 - Fuzz target for arg validation (extends `FuzzToolArgsValidate` table).
+- Merge-mode coverage: a rebase-merged lane and a single-commit squash-merged
+  lane are collected via the patch-equivalence arm (`git cherry`); a
+  multi-commit squash-merged lane is skipped with `unmerged` (documented
+  limitation); a lane merged on the remote only (remote-tracking target tip
+  ahead of the stale local branch) is collected.
+- Choreography corners from rev-7 review: `switch` to the current worktree is
+  a no-op that leaves the lock held; `switch path=<managed path>` routes
+  through the by-name guards (a live delegate lane is refused; an unlocked
+  managed worktree gets locked); `create` from inside a managed worktree
+  unlocks the one being left; a failed `git worktree add` (branch D/F
+  conflict fixture: existing `feature`, create `feature/foo`) deletes the
+  fresh sidecar in the same call and the name is immediately retryable; a
+  session launched with cwd inside an unlocked managed worktree locks it at
+  init (foreign-locked → loud co-occupancy warning); reconciliation judges
+  the grace by sidecar mtime; a branch reset back to `base_sha` after a
+  branch-kept removal is collected as unchanged, not misreported adopted; a
+  revived kept lane re-takes its `serf:dlg:` lock, and revival refuses when
+  the lane is foreign-locked.
+- Hub consumers: sidebar grouping and spawn prefill use the restore root for
+  a worktree-active session; hub-driven resume launches at the restore root
+  and re-enters via §7 (never `--dir`s into the worktree directly).
+- Preflight: git older than the `add --lock --reason` floor → clear error
+  from every lifecycle operation; detection (§1) still works.
 
 ## 11. Known limitations
 
@@ -1262,6 +1405,19 @@ worktree tool is pure plumbing — git operations on temp repos. Tests use real
 - **Docs/skills/MCP staleness after switch:** loaded once at init by design
   (§7); a worktree on a divergent branch keeps the original root's versions
   for the rest of the session.
+- **Multi-commit squash merges are not auto-collectible:** the squashed
+  commit is the sum of the lane, so neither ancestry nor per-commit
+  patch-equivalence can prove the merge. Such lanes are reported `unmerged`
+  by `prune` and are the agent's to dispose via `remove` at merge time (the
+  per-job report and `list` staleness carry the evidence).
+- **Launching inside a foreign-locked managed worktree co-occupies:** init
+  cannot refuse a launch, so it warns loudly and continues without the lock;
+  the occupant's protections (and the launcher's exposure) are exactly the
+  concurrent-resume limitation above.
+- **Grace periods assume a shared filesystem clock:** reconciliation judges
+  sidecar age by file mtime on the shared state dir; pathological mtime skew
+  (exotic network filesystems) narrows or widens the grace. The window is
+  generous precisely so ordinary skew is harmless.
 - **Scheduled orphan sweeping:** deferred; `prune` is the primitive a future
   daemon trigger calls.
 
@@ -1372,3 +1528,44 @@ permanently demote the new worktree); **flat `%2F`-encoded sidecar names**
 **checked-out-branch and adopted/in-grace/unknown-target rows added to
 prune's skip taxonomy**; and **porcelain C-quoting of lock/prunable reasons
 noted for the `list` parser**.
+
+Rev 8 followed a fourth competitive round, aimed at rev 7's fix layer
+(Reviewer B won on count, 14 vs 8; Reviewer A's slate was deeper per-finding
+— squash/rebase blindness, the disposal self-contradiction, switch-to-current
+unlocking the active root, kept-lane revival never re-locking; 20 distinct
+legitimate findings after dedup, zero fabrications across four straight
+rounds). Fixes: **patch-equivalence arm added to the merged predicate**
+(`git cherry`; empirically, ancestry alone recognizes neither squash nor
+rebase merges — GitHub's dominant modes — so prune would have collected
+nothing on such repos; multi-commit squash documented as
+not-auto-collectible; remote-tracking target tips accepted); **disposal
+sequence inverted to evaluate → remove → mark** (rev 7's mark-first disposed
+the kept lanes it promised to keep resumable, and its crash-safety claim was
+false for changed lanes; the `WorkingDir` stat is the crash net, and
+`Session.close` ordering — after children close, before `closeStoreOnly()`,
+non-force remove downgrading to keep — is now stated); **switch-to-current
+is a no-op** (the adopt+unlock composition unlocked the active root on a
+redundant re-switch); **kept-lane revival re-takes the `serf:dlg:` lock**
+(a resumed delegate otherwise ran in an unlocked, prune-collectible
+worktree); **`switch` by path reroutes through by-name guards for managed
+paths** (it was a full lock-scheme bypass, including into live delegate
+lanes); **init-time locking when launched inside a managed worktree**
+(a session launched in a kept lane held no lock at all); **`create`-away
+unlocks the worktree being left** (a clean create→work→close lifecycle
+leaked a permanent lock); **same-call sidecar cleanup on `worktree add`
+failure** (a branch D/F conflict — `feature` vs `feature/foo` — bricked the
+name until a post-grace prune); **modern git required, fallback deleted**
+(Jesse: "I'm ok with forcing new git"; the fallback's own unlock step
+re-opened the mid-create window, and its "never unlocked" claim was false;
+floor: `add --lock --reason`, git ≥ 2.33, preflight-checked); **hub
+consumers of `EnvInfo.WorkingDir` migrated** (sidebar grouping, spawn
+prefill, and hub resume `--dir` all read it as a launch dir); **`list`'s
+merged field pinned to the merge_target predicate** (rev 7 left the outlawed
+floating-HEAD check in the reporting surface that feeds agent decisions);
+**delegate-lane lock ownership pinned to the parent's disposal** (child
+close never unlocks it); **reasonless locks classified foreign**;
+**"adopted" defined precisely as tip ∉ {base_sha, tip_sha_at_removal}**
+(a branch reset back to base is collectible, a rebased branch is adopted);
+**grace judged by sidecar mtime, not creator wall-clock**; and the stale
+`-d`-refusal rows in §8/§10, the "(post-drain)" table row, and the
+"see step 6" cross-reference corrected.
