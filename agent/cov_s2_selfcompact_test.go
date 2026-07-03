@@ -101,8 +101,8 @@ func TestS2Cov_MaybeNudgeSelfCompact_NudgesOnceThenLatches(t *testing.T) {
 		t.Fatal("second nudge fired despite latch")
 	}
 	steered := sess.drainSteering()
-	if len(steered) != 1 || !strings.Contains(steered[0].Text, "Context is filling up") {
-		t.Fatalf("steered = %+v, want a single self-compact nudge", steered)
+	if len(steered) != 1 || !strings.Contains(steered[0].Text, "compact_context") {
+		t.Fatalf("steered = %+v, want a single self-compact nudge naming compact_context", steered)
 	}
 }
 

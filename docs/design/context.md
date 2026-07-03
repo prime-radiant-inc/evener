@@ -70,10 +70,10 @@ non-web-search response will establish a fresh baseline.
 
 ## Self-Compaction (agent-invoked)
 
-Agents can compact their own context at a clean stopping point using the `compact`
+Agents can compact their own context at a clean stopping point using the `compact_context`
 tool, rather than waiting for the automatic pressure-triggered layers.
 
-### The `compact` tool
+### The `compact_context` tool
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
@@ -118,7 +118,7 @@ facts that drop out of the recent window are allowed to fade.
 
 ### Agent-force path
 
-The `compact` tool calls `requestForceCompact(instructions)`, which sets a pending
+The `compact_context` tool calls `requestForceCompact(instructions)`, which sets a pending
 flag on the session. After the tool round drains, `applyPendingForceCompact` consumes
 the request and calls `Manager.ForceCompact(ctx, history, instructions, emitFn)`.
 This is the same `Manager` seam used by the `/compact` user command; passing non-empty
@@ -131,7 +131,7 @@ produced (false when there is no LLM client or the history is too short to summa
 ### Warn nudge
 
 When pressure crosses `WarnThreshold` (0.75), `maybeNudgeSelfCompact` injects a
-one-shot steering nudge asking the agent to call `compact` at its next clean seam.
+one-shot steering nudge asking the agent to call `compact_context` at its next clean seam.
 The nudge is best-effort: a single large tool result can jump past `CheckpointThreshold`
 before the nudge fires. The automatic checkpoint and summary layers remain the
 guarantee. The latch resets on any compaction (force or automatic) so the nudge can
@@ -164,7 +164,7 @@ i.e. the freshest about-to-be-lost facts, are kept). The call uses the summariza
 model with the same fallback loop as the summarizer.
 
 **Skip-when-set is the latch.** Because elicitation skips whenever a note is already
-present, the agent's own `compact`-tool note is never overwritten, and a turn stuck
+present, the agent's own `compact_context`-tool note is never overwritten, and a turn stuck
 above the checkpoint does not re-fire the side LLM call every round. The slot reopens
 only when the compaction consumes the note, so the *next* cycle elicits a fresh note —
 this is what keeps exact strings from decaying across *successive* summaries (the
@@ -197,7 +197,7 @@ Validation: a deterministic unit test (`renderHistoryForElicit` captures tool co
 and keeps the recent tail), an eval that the **real model** captures an opaque id which
 lives only in a tool result (`contextmgr.TestElicitNoteCapturesToolResult`), and a live
 full-loop test against a real OAuth `gpt-5.5` session — two turns, a real compaction
-folding ~130K→40 tokens, with no `compact` call by the agent — that the harness elicits
+folding ~130K→40 tokens, with no `compact_context` call by the agent — that the harness elicits
 a note the compaction hands back carrying the folded id verbatim
 (`agent/forced_note_live_test.go`, `//go:build eval`).
 
@@ -282,7 +282,7 @@ the caller's directive. This is how agent-invoked self-compaction steers the sum
 
 `ForceCompact` is used by two callers:
 - **`/compact` user command** (`Session.Compact`): passes `instructions = ""`.
-- **`compact` tool** (`applyPendingForceCompact`): passes the agent's
+- **`compact_context` tool** (`applyPendingForceCompact`): passes the agent's
   `compaction_instructions` string (may be empty).
 
 **Transcript callbacks**: Both `MaybeCompact` and `ForceCompact` fire

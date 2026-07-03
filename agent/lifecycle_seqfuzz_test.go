@@ -182,7 +182,7 @@ func buildResponse(kind responseKind, callSeq int) llm.Response {
 	case kindShell:
 		return lifecycleToolCall(id, "shell", map[string]any{"command": "echo " + strconv.Itoa(callSeq)})
 	case kindCompact:
-		return lifecycleToolCall(id, "compact", map[string]any{"instructions": "tighten"})
+		return lifecycleToolCall(id, "compact_context", map[string]any{"instructions": "tighten"})
 	case kindWebSearch:
 		// A response whose content carries a server-side web_search part plus text.
 		// Drives recordResponseUsage's web-search usage-suppression arm

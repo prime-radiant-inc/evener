@@ -78,9 +78,11 @@ func (s *Session) PinnedNote() string {
 	return s.pinnedNote
 }
 
-const selfCompactNudge = "Context is filling up. If you are at or near a clean stopping " +
-	"point, call `compact` now with a note_to_self (and optional compaction_instructions) " +
-	"to compact at a clean seam before the automatic fallback fires."
+const selfCompactNudge = "You are running low on context-window headroom. If you are " +
+	"at or near a clean stopping point, call the `compact_context` tool now to fold " +
+	"older history into a summary checkpoint and free headroom — include a note_to_self " +
+	"with the exact details that must survive (and optional compaction_instructions). " +
+	"If you don't, an automatic compaction will run without your steering."
 
 // maybeNudgeSelfCompact injects a one-time steering nudge when pressure crosses
 // WarnThreshold. Best-effort: a single large tool result can jump past the
