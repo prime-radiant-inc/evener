@@ -52,10 +52,15 @@ func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
 
 // notificationExcerpt is a rendered terminal-result excerpt plus whether it
 // contains the job's complete output. Completeness drives the body wording:
-// a complete excerpt needs no transcript-read instruction.
+// a complete excerpt needs no transcript-read instruction. worktree carries
+// the isolation lane's path/branch/ahead/dirty state for a terminal isolated
+// delegate job (native worktree tools spec §9 lifecycle step 3), so the
+// background completion-notification path surfaces the same lane report the
+// inline-wait tool result carries; nil for every non-isolated job.
 type notificationExcerpt struct {
 	text     string
 	complete bool
+	worktree *delegateWorktreeReport
 }
 
 // terminalNotificationExcerpt resolves the bounded result excerpt for a finished
@@ -80,6 +85,15 @@ func (s *Session) terminalNotificationExcerpt(n jobNotification) notificationExc
 	}
 	jobType := string(rec.Type)
 
+	// An isolated delegate's terminal notification carries its lane report
+	// (spec §9 step 3) whether or not the job produced any output — so it is
+	// computed before the empty-excerpt early return below. Empty for every
+	// non-isolated job (isolatedDelegateWorktreeReport returns nil).
+	var worktreeReport *delegateWorktreeReport
+	if jobType == string(jobstore.JobDelegate) {
+		worktreeReport = s.isolatedDelegateWorktreeReport(rec.DelegateRestore)
+	}
+
 	var (
 		excerpt   string
 		truncated bool
@@ -90,13 +104,13 @@ func (s *Session) terminalNotificationExcerpt(n jobNotification) notificationExc
 		excerpt, _, truncated, err = jm.readOutput(n.JobID, terminalExcerptBytes)
 	}
 	if err != nil || excerpt == "" {
-		return notificationExcerpt{}
+		return notificationExcerpt{worktree: worktreeReport}
 	}
 	rendered := limitWatchText(excerpt, terminalExcerptMaxChars)
 	if truncated {
 		rendered += "\n[excerpt truncated]"
 	}
-	return notificationExcerpt{text: rendered, complete: !truncated}
+	return notificationExcerpt{text: rendered, complete: !truncated, worktree: worktreeReport}
 }
 
 func notificationTranscriptRef(n jobNotification) string {
@@ -143,6 +157,18 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt) 
 	}
 	if n.TranscriptRef != "" {
 		attrs = append(attrs, fmt.Sprintf("transcript_ref=%q", n.TranscriptRef))
+	}
+	// An isolated delegate's terminal notification carries its lane report so
+	// the parent can merge the lane between jobs even in the default
+	// fire-and-forget mode, where the result never rides an inline tool
+	// response (native worktree tools spec §9 lifecycle step 3).
+	if wt := excerpt.worktree; wt != nil {
+		attrs = append(attrs,
+			fmt.Sprintf("worktree_path=%q", wt.Path),
+			fmt.Sprintf("worktree_branch=%q", wt.Branch),
+			fmt.Sprintf("worktree_ahead=%q", strconv.Itoa(wt.Ahead)),
+			fmt.Sprintf("worktree_dirty=%q", strconv.FormatBool(wt.Dirty)),
+		)
 	}
 
 	if n.Status == jobNotificationEventWatch && n.JobID == "" {

@@ -443,6 +443,50 @@ func TestDelegateIsolation_SecondJobViaDelegateSendRunsInSameLaneAndReportsWorkt
 	}
 }
 
+// The DEFAULT delegate launch is fire-and-forget (delegateTool sets
+// Background:true), so an isolated delegate's terminal result reaches the
+// parent through the completion NOTIFICATION, not an inline tool response.
+// Spec §9 step 3 requires that notification to carry path/branch/ahead/dirty
+// so the parent can merge the lane between jobs.
+func TestDelegateIsolation_BackgroundCompletionNotificationCarriesWorktreeReport(t *testing.T) {
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
+	}}
+	c := llm.NewClient()
+	c.Register(adapter)
+	r := newWtDlgRepo(t, c)
+
+	res := r.s.createDelegate(context.Background(), delegateArgs{
+		Task:       "do isolated work",
+		Isolation:  "worktree",
+		Background: true, // the default mode delegateTool uses
+	})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v", res.Err)
+	}
+	lane := r.lanePath(res.DelegateID)
+
+	// The child finishes asynchronously and arms the parent's completion
+	// notification; drive the parent's notification turn so the block is
+	// rendered into the model request.
+	waitForJobNotification(t, r.s)
+	if _, err := r.s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+
+	text := deliveredNotificationText(t, adapter)
+	for _, want := range []string{
+		`worktree_path="` + lane + `"`,
+		`worktree_branch="` + res.DelegateID + `"`,
+		`worktree_ahead="0"`,
+		`worktree_dirty="false"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("background completion notification missing %s:\n%s", want, text)
+		}
+	}
+}
+
 // isolatedDelegateWorktreeReport is exercised directly (not just through a
 // scripted no-op turn) so ahead-count and dirty detection are proven against
 // real git state, without needing a scripted tool call inside the fake LLM
