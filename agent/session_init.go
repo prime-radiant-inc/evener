@@ -416,6 +416,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	s.pinnedNote = meta.PinnedNote
 
+	// Re-enter the persisted active worktree BEFORE initSessionState runs, so
+	// the session is rooted in it before the environment snapshot, system
+	// prompt, and tool registry are built (native worktree tools spec §7
+	// "Persistence and resume": this ordering is load-bearing).
+	s.resumeWorktreeReentry(meta)
+
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, !restoreCfg.deferRestoreSideEffects)
 	if err != nil {
 		return nil, err
@@ -521,6 +527,13 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		ei.GitOriginURL = gitOriginURL(env, ei.WorkingDir)
 	}
 	s.envInfo = ei
+
+	// Session init whose launch cwd is already inside a managed worktree
+	// (native worktree tools spec §5 occupancy locks / §5 table row "session
+	// init, launch cwd inside a managed worktree"): apply the idempotent
+	// occupancy-lock rule. A no-op when resumeWorktreeReentry already
+	// established occupancy tracking above.
+	s.applyInitInsideWorktreeLock(ei.IsGitRepo)
 
 	// Load the core built-in agents first. Configured plugin agents are merged in
 	// during plugin initialization below.

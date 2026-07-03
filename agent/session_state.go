@@ -41,27 +41,34 @@ func (s *Session) Meta() schema.SessionMeta {
 		divergence = s.fork.divergence
 		isSubagent = false
 	}
+	restoreRoot := ""
+	if s.worktreeRestoreEnv != nil {
+		restoreRoot = s.worktreeRestoreEnv.WorkingDirectory()
+	}
 	return schema.SessionMeta{
-		ID:              s.id,
-		ProfileID:       s.profile.ID(),
-		Model:           s.profile.Model(),
-		CheapModel:      s.profile.CheapModelRefString(),
-		Config:          s.cfg.toSnapshot(),
-		EnvInfo:         s.envInfo,
-		CreatedAt:       now,
-		UpdatedAt:       now,
-		TurnCount:       s.modelResponses,
-		LastInputTokens: s.contextMgr.LastInputTokens(),
-		Name:            s.naming.value,
-		NameSource:      s.naming.source,
-		NameUpdatedAt:   s.naming.updated,
-		OriginalPrompt:  originalPrompt,
-		ParentSessionID: parentID,
-		DivergenceTurn:  divergence,
-		ForkLabel:       s.fork.label,
-		IsSubagent:      isSubagent,
-		Goal:            s.goalSnapshotForMeta(),
-		PinnedNote:      s.pinnedNote,
+		ID:                  s.id,
+		ProfileID:           s.profile.ID(),
+		Model:               s.profile.Model(),
+		CheapModel:          s.profile.CheapModelRefString(),
+		Config:              s.cfg.toSnapshot(),
+		EnvInfo:             s.envInfo,
+		CreatedAt:           now,
+		UpdatedAt:           now,
+		TurnCount:           s.modelResponses,
+		LastInputTokens:     s.contextMgr.LastInputTokens(),
+		Name:                s.naming.value,
+		NameSource:          s.naming.source,
+		NameUpdatedAt:       s.naming.updated,
+		OriginalPrompt:      originalPrompt,
+		ParentSessionID:     parentID,
+		DivergenceTurn:      divergence,
+		ForkLabel:           s.fork.label,
+		IsSubagent:          isSubagent,
+		Goal:                s.goalSnapshotForMeta(),
+		PinnedNote:          s.pinnedNote,
+		WorktreePath:        s.worktreeCurrentPath,
+		WorktreeManaged:     s.worktreeCurrentManaged,
+		WorktreeRestoreRoot: restoreRoot,
 	}
 }
 

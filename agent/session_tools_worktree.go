@@ -161,8 +161,10 @@ type worktreeGuard struct {
 	// a LocalExecutionEnvironment.
 	controlEnv func(mainRepoRoot string) (execenv.ExecutionEnvironment, error)
 	// enterWorktree swaps the session env into path, saving the prior env the
-	// first time (spec §7 enterWorktree()).
-	enterWorktree func(path string)
+	// first time (spec §7 enterWorktree()). managed records whether path is a
+	// serf-managed worktree, persisted via SessionMeta.WorktreeManaged (spec §7
+	// "Persistence and resume").
+	enterWorktree func(path string, managed bool)
 	// exitWorktree restores the saved pre-worktree env and clears it, returning
 	// the restored root and ok=false when no restore env was saved (spec §7
 	// exitWorktree()).
@@ -464,12 +466,12 @@ func (s *Session) worktreeRootFor(env execenv.ExecutionEnvironment, stateDir, ma
 // enterWorktree implements worktreeGuard.enterWorktree() (spec §7): swap s.env
 // to WithWorkingDirectory(path), saving the prior env the first time (single
 // saved env, not a stack — spec §7 "env-restore model") and recording the
-// occupied managed worktree path. The swap always uses WithWorkingDirectory so
-// PID/fs sharing survives (spec §7 "WithWorkingDirectory correctness"). The env
-// swap + refresh runs outside s.mu (swapEnvAndRefresh forks git for the
-// snapshot); manage_worktree is serialized in the tool stream, so nothing else
-// swaps the env concurrently.
-func (s *Session) enterWorktree(path string) {
+// occupied worktree path and whether it is serf-managed. The swap always uses
+// WithWorkingDirectory so PID/fs sharing survives (spec §7 "WithWorkingDirectory
+// correctness"). The env swap + refresh runs outside s.mu (swapEnvAndRefresh
+// forks git for the snapshot); manage_worktree is serialized in the tool
+// stream, so nothing else swaps the env concurrently.
+func (s *Session) enterWorktree(path string, managed bool) {
 	s.mu.Lock()
 	local, ok := s.env.(*execenv.LocalExecutionEnvironment)
 	if !ok {
@@ -488,6 +490,7 @@ func (s *Session) enterWorktree(path string) {
 		s.worktreeRestoreEnv = prior
 	}
 	s.worktreeCurrentPath = path
+	s.worktreeCurrentManaged = managed
 	s.mu.Unlock()
 }
 
@@ -510,6 +513,7 @@ func (s *Session) exitWorktree() (string, bool) {
 	s.mu.Lock()
 	s.worktreeRestoreEnv = nil
 	s.worktreeCurrentPath = ""
+	s.worktreeCurrentManaged = false
 	root := restore.WorkingDirectory()
 	s.mu.Unlock()
 	return root, true
@@ -654,7 +658,7 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 	}
 
 	// Step 8: enter the new worktree (env swap + refresh, saving the prior env).
-	s.enterWorktree(worktreePath)
+	s.enterWorktree(worktreePath, true)
 
 	// Step 9: report the path, branch, base SHA, and main repo root.
 	return WorktreeResult{
@@ -922,7 +926,7 @@ func (s *Session) worktreeEnterManaged(st worktreeState, run worktree.GitRunner,
 
 	// Steps 4-5: swap the env directly to the target (no intermediate
 	// restore step) and refresh envInfo + the prompt cache.
-	s.enterWorktree(target)
+	s.enterWorktree(target, true)
 
 	// Step 6: report the path and branch.
 	return WorktreeSwitchResult{Path: target, Branch: branchAtRoot(run, target)}, nil
@@ -1018,7 +1022,7 @@ func (s *Session) worktreeSwitchByPath(ctx context.Context, rawPath string) (Wor
 	if err := s.leaveCurrentWorktree(run); err != nil {
 		return WorktreeSwitchResult{}, err
 	}
-	s.enterWorktree(matchedPath)
+	s.enterWorktree(matchedPath, false)
 	return WorktreeSwitchResult{Path: matchedPath, Branch: matchedBranch}, nil
 }
 
@@ -1126,6 +1130,7 @@ func (s *Session) applyRestoreLandRelock(run worktree.GitRunner, restoredRoot, p
 	}
 	s.mu.Lock()
 	s.worktreeCurrentPath = restoredRoot
+	s.worktreeCurrentManaged = true
 	s.mu.Unlock()
 	return warning, nil
 }

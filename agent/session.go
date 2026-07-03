@@ -84,8 +84,8 @@ type Session struct {
 	//   loopDetectionCount, the task* reminder counters, depth, the goalInTurn
 	//   flag and kickFunc callback, the naming name-state, and the worktree
 	//   occupancy fields (worktreeRestoreEnv, worktreeCurrentPath,
-	//   worktreeGitVersionOK, worktreeLiveWorkStub). It does NOT guard reg —
-	//   the tool.Registry self-synchronizes.
+	//   worktreeCurrentManaged, worktreeGitVersionOK, worktreeLiveWorkStub). It
+	//   does NOT guard reg — the tool.Registry self-synchronizes.
 	mu sync.Mutex
 
 	// --- native worktree occupancy (spec §7) ---
@@ -95,9 +95,16 @@ type Session struct {
 	// session has never entered a worktree through the tool (single saved env,
 	// not a stack — spec §7 "env-restore model").
 	//
-	// worktreeCurrentPath is the managed worktree path the session currently
-	// occupies (empty when at the restore/main root). It drives the create-away
-	// leave (spec §3 step 7) and the occupancy-lock choreography.
+	// worktreeCurrentPath is the worktree path the session currently occupies
+	// (empty when at the restore/main root) — managed or path-entered, both
+	// (spec §7 "Persistence and resume"). It drives the create-away leave
+	// (spec §3 step 7) and the occupancy-lock choreography.
+	//
+	// worktreeCurrentManaged is true when worktreeCurrentPath is a
+	// serf-managed worktree (entered via create, or switch by name/managed
+	// path) rather than a non-managed path-entered one — it gates whether the
+	// occupancy-lock rule applies and is persisted alongside worktreeCurrentPath
+	// (SessionMeta.WorktreeManaged, spec §7).
 	//
 	// worktreeGitVersionOK memoizes the once-per-session `git version` preflight
 	// (spec §3 step 6) so the floor check forks git at most once.
@@ -107,10 +114,11 @@ type Session struct {
 	// of its production no-op. Real background-shell-job launch-workdir
 	// plumbing lands in Task 20 and replaces this stub with a genuine job-store
 	// query; nothing in production code ever sets this field.
-	worktreeRestoreEnv   *execenv.LocalExecutionEnvironment
-	worktreeCurrentPath  string
-	worktreeGitVersionOK bool
-	worktreeLiveWorkStub func(path string) []string
+	worktreeRestoreEnv     *execenv.LocalExecutionEnvironment
+	worktreeCurrentPath    string
+	worktreeCurrentManaged bool
+	worktreeGitVersionOK   bool
+	worktreeLiveWorkStub   func(path string) []string
 
 	// responseSideEffectsMu serializes a response's user-visible side-effect
 	// bundle (emit + appendTurn + counter bump) against teardown.
