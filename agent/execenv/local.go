@@ -1216,6 +1216,13 @@ func filteredEnv(extra map[string]string) []string {
 	return out
 }
 
+// ShellEscapeArgs joins args into a single shell command string, quoting each
+// token so it survives the shell word-splitting ExecCommand performs. It is the
+// argv-discipline helper the native worktree tools use to assemble git commands
+// (spec §2 "name validation": "Do not hand-build shell command strings"), so a
+// worktree name or path can never inject shell metacharacters.
+func ShellEscapeArgs(args ...string) string { return shellEscapeArgs(args...) }
+
 func shellEscapeArgs(args ...string) string {
 	var b strings.Builder
 	for i, a := range args {

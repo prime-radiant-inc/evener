@@ -82,9 +82,28 @@ type Session struct {
 	//   cachedSystemPrompt, cachedToolDefs, the comm communicate-result,
 	//   steeringQueue, activeProvenance, followups, inputQueue,
 	//   loopDetectionCount, the task* reminder counters, depth, the goalInTurn
-	//   flag and kickFunc callback, and the naming name-state. It does NOT guard
-	//   reg — the tool.Registry self-synchronizes.
+	//   flag and kickFunc callback, the naming name-state, and the worktree
+	//   occupancy fields (worktreeRestoreEnv, worktreeCurrentPath,
+	//   worktreeGitVersionOK). It does NOT guard reg — the tool.Registry
+	//   self-synchronizes.
 	mu sync.Mutex
+
+	// --- native worktree occupancy (spec §7) ---
+	//
+	// worktreeRestoreEnv is the env saved the first time the session entered a
+	// worktree via manage_worktree; exit/remove restore to it. Nil when the
+	// session has never entered a worktree through the tool (single saved env,
+	// not a stack — spec §7 "env-restore model").
+	//
+	// worktreeCurrentPath is the managed worktree path the session currently
+	// occupies (empty when at the restore/main root). It drives the create-away
+	// leave (spec §3 step 7) and the occupancy-lock choreography.
+	//
+	// worktreeGitVersionOK memoizes the once-per-session `git version` preflight
+	// (spec §3 step 6) so the floor check forks git at most once.
+	worktreeRestoreEnv   *execenv.LocalExecutionEnvironment
+	worktreeCurrentPath  string
+	worktreeGitVersionOK bool
 
 	// responseSideEffectsMu serializes a response's user-visible side-effect
 	// bundle (emit + appendTurn + counter bump) against teardown.

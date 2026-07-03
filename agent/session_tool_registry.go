@@ -53,6 +53,11 @@ type toolDeps struct {
 	// goalGuard exposes goal-store access. The goal store has its own mutex.
 	goalGuard goalGuard
 
+	// worktreeGuard exposes the native worktree lifecycle plumbing (env swap,
+	// control env, occupancy snapshot, create) to the manage_worktree handler,
+	// mirroring taskGuard/goalGuard (spec §2, §7).
+	worktreeGuard worktreeGuard
+
 	// now reports the session's current time through its injected clock, so
 	// goal-terminal timestamps run on the same clock as the rest of the lifecycle.
 	now func() time.Time
@@ -180,6 +185,14 @@ func newToolDeps(s *Session) *toolDeps {
 		},
 		goalGuard: goalGuard{
 			getOrCreateGoalStore: s.getOrCreateGoalStore,
+		},
+		worktreeGuard: worktreeGuard{
+			state:         s.worktreeStateSnapshot,
+			controlEnv:    s.worktreeControlEnv,
+			enterWorktree: s.enterWorktree,
+			exitWorktree:  s.exitWorktree,
+			liveWorkUnder: s.liveWorkUnder,
+			create:        s.worktreeCreate,
 		},
 		now: s.sclock().Now,
 		web: webDeps{
