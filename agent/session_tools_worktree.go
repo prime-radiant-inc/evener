@@ -1327,13 +1327,16 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, delete
 	}
 
 	// "Currently inside" is judged against the session's ACTIVE root, not the
-	// create/switch-tracked worktreeCurrentPath: a session that launched
-	// directly inside a managed worktree (never entering it via create/switch)
-	// has an empty worktreeCurrentPath even though its env is rooted there,
-	// and step 7's "no safe restore env" refusal exists precisely for that
-	// case (spec §5 remove step 7's own example).
-	activeRoot := filepath.Clean(st.env.WorkingDirectory())
-	currentlyInside := activeRoot == target
+	// create/switch-tracked worktreeCurrentPath, so that a session launched
+	// directly inside a managed worktree (which applyInitInsideWorktreeLock
+	// also stamps into worktreeCurrentPath, but which never went through
+	// create/switch) is still recognized as inside. Both sides are
+	// canonicalized the same way as canonicalTarget above so that a launch
+	// path reaching the worktree through a differently-spelled symlink still
+	// compares equal; step 7's "no safe restore env" refusal exists precisely
+	// for the launched-inside case (spec §5 remove step 7's own example).
+	activeRoot := canonicalOrClean(st.env.WorkingDirectory())
+	currentlyInside := activeRoot == canonicalTarget
 
 	// Step 3: lock guard. A foreign lock refuses regardless of force; this
 	// session's own marker on a worktree it is not currently in is crash

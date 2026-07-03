@@ -854,6 +854,72 @@ func TestWorktreeRemove_RemoveCurrentNoSafeRestoreEnvRefuses(t *testing.T) {
 	}
 }
 
+// TestWorktreeRemove_RemoveCurrentNoSafeRestoreEnvRefusesThroughSymlinkedLaunch
+// is the symlinked-launch-path variant of
+// TestWorktreeRemove_RemoveCurrentNoSafeRestoreEnvRefuses: the session's
+// active root reaches the same managed worktree through a differently-spelled
+// symlink rather than the canonical join of projectDir+name. The
+// currentlyInside comparison in worktreeRemove must canonicalize the active
+// root the same way canonicalTarget is already canonicalized, or this reads
+// as "not inside" and mis-routes into the non-inside removal path — deleting
+// the directory the session is actually rooted in, out from under it, with no
+// safe-restore-env refusal and no warning.
+func TestWorktreeRemove_RemoveCurrentNoSafeRestoreEnvRefusesThroughSymlinkedLaunch(t *testing.T) {
+	r := newWorktreeRepo(t)
+	canonicalMain := r.canonicalMain(t)
+	launchPath := r.managedPath(canonicalMain, "launch")
+	if err := os.MkdirAll(filepath.Dir(launchPath), 0o755); err != nil {
+		t.Fatalf("mkdir launch parent: %v", err)
+	}
+	wtGit(t, r.mainRoot, "worktree", "add", "-b", "launch", launchPath, r.head)
+
+	// A symlink elsewhere pointing at the real worktree directory, spelled
+	// differently from the canonical projectDir+name join.
+	aliasDir := t.TempDir()
+	aliasPath := filepath.Join(aliasDir, "launch-alias")
+	if err := os.Symlink(launchPath, aliasPath); err != nil {
+		t.Fatalf("symlink launch alias: %v", err)
+	}
+
+	// A session launched directly inside the worktree via the symlinked
+	// spelling, having never gone through create/switch — no restore env was
+	// ever saved. Give it a real sidecar (as a genuine prior `create` would
+	// have) so the isolated behavior under test is step 7's
+	// no-safe-restore-env refusal, not step 5's unmanaged-provenance refusal.
+	s2 := newSession(t, withDir(aliasPath))
+	s2.stateDir = r.stateDir
+	r2 := &wtRepo{s: s2, mainRoot: r.mainRoot, stateDir: r.stateDir, head: r.head}
+	metaDir := r2.metaDir(canonicalMain)
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatalf("mkdir metaDir: %v", err)
+	}
+	sc := worktree.Sidecar{
+		Name:           "launch",
+		Branch:         "launch",
+		BaseSHA:        r.head,
+		OriginalRoot:   canonicalMain,
+		CreatorSession: s2.id,
+		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := worktree.WriteSidecarExcl(metaDir, "launch", sc); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+
+	_, err := r2.removeOp(t, map[string]any{"name": "launch"})
+	if err == nil {
+		t.Fatal("expected remove-current (via symlinked launch path) with no safe restore env to be refused")
+	}
+	if !strings.Contains(err.Error(), "restore") {
+		t.Errorf("error should explain the missing restore env, got: %v", err)
+	}
+	if _, statErr := os.Stat(launchPath); statErr != nil {
+		t.Errorf("launch worktree removed despite the refusal: %v", statErr)
+	}
+	if got := s2.currentEnv().WorkingDirectory(); got != aliasPath {
+		t.Errorf("currentEnv WorkingDirectory = %q, want unchanged %q", got, aliasPath)
+	}
+}
+
 // --- 12: live-work guard, via the test-only stub seam ---
 
 func TestWorktreeRemove_LiveWorkGuardRefusesViaStub(t *testing.T) {
