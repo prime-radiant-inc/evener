@@ -1,9 +1,11 @@
-// Package worktree holds the pure, dependency-light decision cores for
-// serf's native git-worktree management (name validation, project
-// identifiers, metadata-sidecar filename encoding). Nothing in this package
-// touches the filesystem, git, or any other I/O; the manage_worktree tool
-// (agent/session_tools_worktree.go) owns all side effects and calls these
-// helpers to make its decisions.
+// Package worktree holds the dependency-light decision cores and metadata
+// codec for serf's native git-worktree management (name validation, project
+// identifiers, metadata-sidecar filename encoding, and the sidecar file
+// format itself). Nothing in this package touches git or a git worktree's
+// working tree; the sidecar codec (sidecar.go) does plain os file I/O
+// against the metadata directory, but the manage_worktree tool
+// (agent/session_tools_worktree.go) owns every other side effect (git
+// invocations, env swaps) and calls these helpers to make its decisions.
 package worktree
 
 import (
