@@ -276,6 +276,59 @@ func TestBuildTree_NoProjectFallback(t *testing.T) {
 	}
 }
 
+// TestBuildTree_GroupsByRestoreRootWhenWorktreeActive proves the native
+// worktree tools spec §7 "Hub consumers" migration: a session actively
+// inside a managed worktree must group (and prefill the spawn form, via
+// TreeProject.WorkingDir) under its restore root, not the worktree path —
+// else it lands under a phantom project named after the worktree leaf
+// (e.g. "dlg_01H...").
+func TestBuildTree_GroupsByRestoreRootWhenWorktreeActive(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01WT", UpdatedAt: now, OriginalPrompt: "work in lane",
+			EnvInfo:             schema.EnvironmentInfo{WorkingDir: "/state/worktrees/serf-hub/dlg_01H"},
+			WorktreePath:        "/state/worktrees/serf-hub/dlg_01H",
+			WorktreeManaged:     true,
+			WorktreeRestoreRoot: "/projects/serf-hub"},
+	}
+
+	tree := buildTree(metas, nil)
+
+	if len(tree.Projects) != 1 {
+		t.Fatalf("projects: %d", len(tree.Projects))
+	}
+	proj := tree.Projects[0]
+	if proj.Name != "serf-hub" {
+		t.Errorf("name: %q, want restore-root basename %q", proj.Name, "serf-hub")
+	}
+	if proj.WorkingDir != "/projects/serf-hub" {
+		t.Errorf("workingDir: %q, want restore root %q", proj.WorkingDir, "/projects/serf-hub")
+	}
+}
+
+// TestBuildTree_PathEnteredNonManagedWorktreeAlsoGroupsByRestoreRoot proves
+// the non-managed by-path case migrates too — spec §7 is explicit that both
+// switch modes swap the env and so must both use the restore root.
+func TestBuildTree_PathEnteredNonManagedWorktreeAlsoGroupsByRestoreRoot(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01PATHWT", UpdatedAt: now, OriginalPrompt: "poke around a sibling checkout",
+			EnvInfo:             schema.EnvironmentInfo{WorkingDir: "/home/jesse/other-checkout"},
+			WorktreePath:        "/home/jesse/other-checkout",
+			WorktreeManaged:     false,
+			WorktreeRestoreRoot: "/projects/serf-hub"},
+	}
+
+	tree := buildTree(metas, nil)
+
+	if len(tree.Projects) != 1 {
+		t.Fatalf("projects: %d", len(tree.Projects))
+	}
+	if tree.Projects[0].Name != "serf-hub" {
+		t.Errorf("name: %q, want restore-root basename %q", tree.Projects[0].Name, "serf-hub")
+	}
+}
+
 // buildTree is the test convenience wrapper around BuildTree for the cases that
 // don't exercise archive decisions: it passes an empty decision map.
 func buildTree(metas []schema.SessionMeta, live []LiveEntry) Tree {

@@ -243,7 +243,12 @@ func resumeRequestForConfig(cfg hubcore.WebConfig, id string) (hubcore.ResumeReq
 	req := hubcore.ResumeRequest{SessionID: id}
 	if cfg.Past != nil {
 		if pe, ok := cfg.Past.Find(id); ok {
-			req.WorkingDir = pe.Meta.EnvInfo.WorkingDir
+			// Restore root, not the live working dir: a session actively
+			// inside a worktree must resume at its pre-worktree home so
+			// Task 18's resume re-entry (not this `--dir`) takes it back
+			// into the worktree, honoring the lock/validation rules there
+			// (native worktree tools spec §7 "Hub consumers").
+			req.WorkingDir = hubcore.EffectiveWorkingDir(pe.Meta)
 			req.StateDir = pe.StateDir
 			provider := strings.TrimSpace(pe.Meta.ProfileID)
 			if provider == "" {
