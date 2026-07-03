@@ -51,6 +51,53 @@ func FuzzToolArgsValidate(f *testing.F) {
 		f.Add(s.name, []byte(s.args))
 	}
 
+	// manage_worktree seeds: the operation × name/path/base_ref/force/
+	// delete_branch cross-product (spec §10 "Fuzz target for arg validation
+	// (extends FuzzToolArgsValidate table)"), addressed by NAME rather than a
+	// hardcoded table index — the sorted core-tool-name order the other seeds
+	// above index into is otherwise incidental, but manage_worktree's own
+	// index would silently drift if a tool were added/renamed alphabetically
+	// around it. manage_worktree's schema (DefManageWorktree) only requires
+	// "operation" and forbids additionalProperties; which of name/path/
+	// force/delete_branch apply to which operation is enforced by the
+	// HANDLER, not the schema (see the schema's own doc comment), so a
+	// schema-valid combination here may still be operation-invalid at
+	// execution — only decode+Validate must never panic.
+	mwIdx := -1
+	for i, n := range names {
+		if n == "manage_worktree" {
+			mwIdx = i
+			break
+		}
+	}
+	if mwIdx < 0 {
+		f.Fatalf("manage_worktree not found among core tool schemas")
+	}
+	mwSeeds := []string{
+		`{"operation":"create","name":"lane","base_ref":"main"}`,
+		`{"operation":"create","name":"lane"}`,
+		`{"operation":"create"}`,
+		`{"operation":"list"}`,
+		`{"operation":"switch","name":"lane"}`,
+		`{"operation":"switch","path":"/tmp/x"}`,
+		`{"operation":"switch","name":"lane","path":"/tmp/x"}`,
+		`{"operation":"switch"}`,
+		`{"operation":"exit"}`,
+		`{"operation":"remove","name":"lane","force":true,"delete_branch":true}`,
+		`{"operation":"remove","name":"lane","force":false,"delete_branch":false}`,
+		`{"operation":"remove"}`,
+		`{"operation":"prune"}`,
+		`{"operation":"bogus"}`, // invalid enum value
+		`{"operation":123}`,     // wrong type for operation
+		`{"operation":"create","name":123,"base_ref":true,"force":"nope","delete_branch":[1,2,3]}`,
+		`{"operation":"create","name":null}`,
+		`{}`, // missing required "operation"
+		`{"operation":"create","unexpected_field":"x"}`, // additionalProperties:false
+	}
+	for _, s := range mwSeeds {
+		f.Add(mwIdx, []byte(s))
+	}
+
 	f.Fuzz(func(t *testing.T, nameIndex int, argsBytes []byte) {
 		if len(names) == 0 {
 			t.Fatal("no core tools registered")

@@ -563,11 +563,6 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 	}
 	run := gitRunner(ctx, controlEnv)
 
-	// Git version preflight (spec §3 step 6), memoized once per session.
-	if err := s.ensureWorktreeGitVersion(run); err != nil {
-		return WorktreeResult{}, err
-	}
-
 	// Step 2: projectid over the canonical main repo root.
 	canonicalMain := mainRoot
 	if resolved, evErr := filepath.EvalSymlinks(mainRoot); evErr == nil {
@@ -581,10 +576,16 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 	worktreePath := filepath.Join(projectDir, filepath.FromSlash(name))
 	metaDir := filepath.Join(projectDir, ".meta")
 
-	// Step 4: validate name (regex + git check-ref-format), resolve the base to
-	// a SHA from the active root, and reject a pre-existing branch.
+	// Step 4: validate name (regex, pure — spec §8: "name fails validation ->
+	// error before any git call") BEFORE the git version preflight (spec §3
+	// step 6, memoized once per session) and check-ref-format, so an invalid
+	// name never reaches a git subprocess; resolve the base to a SHA from the
+	// active root, and reject a pre-existing branch.
 	if err := worktree.ValidateName(name); err != nil {
 		return WorktreeResult{}, fmt.Errorf("manage_worktree create: %w", err)
+	}
+	if err := s.ensureWorktreeGitVersion(run); err != nil {
+		return WorktreeResult{}, err
 	}
 	if _, err := run("check-ref-format", "--branch", name); err != nil {
 		return WorktreeResult{}, fmt.Errorf("manage_worktree create: %q is not a valid git branch name", name)
