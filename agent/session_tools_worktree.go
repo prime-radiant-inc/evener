@@ -766,15 +766,16 @@ func (s *Session) worktreeSwitchByPath(ctx context.Context, rawPath string) (Wor
 	}
 
 	// Step 3: a genuinely non-managed registered worktree — same env swap, NO
-	// lock choreography on the target. If the session is leaving a managed
-	// worktree, it is still unlocked on the way out (spec §4 switch by-path
-	// step 3). Switch-to-current still routes through the same
-	// Decide(EvEnterCurrent, ...) gate as the managed case — a sibling
-	// worktree serf never locked has nothing to corroborate the claimed
-	// occupancy, so the ordinary (unlocked) case here refuses rather than
-	// silently no-opping.
+	// lock choreography on the target (spec §4 by-path step 3: "no lock
+	// choreography — serf does not mutate lock state on worktrees it does
+	// not manage"). There is no lock decision on this site at all, so a
+	// redundant switch back to the worktree already occupied is a plain
+	// path-compare no-op rather than a run through Decide(EvEnterCurrent,
+	// ...) — that gate exists to protect the managed case's own-session
+	// lock, which has no counterpart here. If the session is leaving a
+	// managed worktree, it is still unlocked on the way out below.
 	if st.currentWorktree != "" && filepath.Clean(st.currentWorktree) == filepath.Clean(matchedPath) {
-		return s.switchToCurrentNoOp(run, matchedPath)
+		return WorktreeSwitchResult{Path: matchedPath, Branch: matchedBranch, NoOp: true}, nil
 	}
 	if err := s.leaveCurrentWorktree(run); err != nil {
 		return WorktreeSwitchResult{}, err

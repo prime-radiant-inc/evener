@@ -276,14 +276,15 @@ func TestWorktreeSwitch_ByPathSiblingManualWorktreeNoLockMutation(t *testing.T) 
 	}
 }
 
-func TestWorktreeSwitch_ByPathToCurrentNonManagedUnlockedRefuses(t *testing.T) {
+func TestWorktreeSwitch_ByPathToCurrentNonManagedUnlockedNoOps(t *testing.T) {
 	r := newWorktreeRepo(t)
 	// A manually created worktree OUTSIDE the managed directory, never locked
-	// by serf (spec §4 switch by-path step 3: "no lock choreography"). A
-	// redundant switch back to it has nothing to corroborate the claimed
-	// occupancy through the lock state machine, so EvEnterCurrent's ordinary
-	// (unlocked) outcome refuses rather than silently no-opping — the same
-	// gate the managed by-name case goes through.
+	// by serf (spec §4 switch by-path step 3: "no lock choreography — serf
+	// does not mutate lock state on worktrees it does not manage"). There is
+	// no lock decision to adjudicate on this site at all, so a redundant
+	// switch back to it is a plain path-compare no-op, not a run through the
+	// EvEnterCurrent lock-state gate (that gate is for the managed by-name
+	// site, which does have a lock to protect).
 	siblingRoot := t.TempDir()
 	siblingPath := filepath.Join(siblingRoot, "sibling")
 	wtGit(t, r.mainRoot, "worktree", "add", "-b", "sibling-branch", siblingPath, r.head)
@@ -295,17 +296,20 @@ func TestWorktreeSwitch_ByPathToCurrentNonManagedUnlockedRefuses(t *testing.T) {
 		t.Fatalf("currentEnv WorkingDirectory = %q after first switch, want %q", got, siblingPath)
 	}
 
-	_, err := r.switchOp(t, map[string]any{"path": siblingPath})
-	if err == nil {
-		t.Fatal("expected a redundant switch-to-current on an unlocked non-managed worktree to refuse")
+	out, err := r.switchOp(t, map[string]any{"path": siblingPath})
+	if err != nil {
+		t.Fatalf("redundant switch-to-current on a non-managed worktree should no-op, not refuse: %v", err)
+	}
+	if out["status"] != "unchanged" {
+		t.Errorf("status = %v, want unchanged for a no-op switch", out["status"])
 	}
 
-	// Refusal must not have mutated the env or taken any lock.
+	// No-op must not have mutated the env or taken any lock.
 	if got := r.s.currentEnv().WorkingDirectory(); got != siblingPath {
-		t.Errorf("currentEnv WorkingDirectory = %q after refused switch, want unchanged %q", got, siblingPath)
+		t.Errorf("currentEnv WorkingDirectory = %q after no-op switch, want unchanged %q", got, siblingPath)
 	}
 	if r.porcelainEntry(t, siblingPath).Locked {
-		t.Error("refused switch-to-current must not have locked the non-managed sibling")
+		t.Error("no-op switch-to-current must not have locked the non-managed sibling")
 	}
 }
 
