@@ -1082,11 +1082,15 @@
           }
           break;
         case "JOB_STARTED":
-          this.markCurrentTurnAgentWork();
+          // Deliberately not marked as current-turn work: a job is always
+          // spawned by a tool call, whose TOOL_CALL_START already marked the
+          // turn. Job lifecycle events, by contrast, can cross turn boundaries
+          // (a background delegate/shell started in an earlier turn finishes
+          // during a later one), so marking here would wrongly offer Continue
+          // for a fresh turn that has produced no model output.
           this.beginJobRef(data);
           break;
         case "JOB_FINISHED":
-          this.markCurrentTurnAgentWork();
           this.finalizeJobRef(data);
           break;
         case "COMMUNICATE":

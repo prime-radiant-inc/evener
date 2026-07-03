@@ -190,6 +190,34 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
     }
   }
 
+  // A background job (delegate/shell) started in an earlier turn can emit a
+  // standalone JOB_FINISHED during a fresh turn that has produced no model
+  // output. That must NOT be counted as current-turn work: the correct
+  // recovery for a provider failure here is still "Retry turn" with the
+  // original payload, not a continuation that discards the prompt+attachments.
+  renderer.handleData("USER_INPUT", {
+    text: "kick off the build",
+    images: [{ type: "image", media_type: "image/png", data: "xyz", name: "spec.png" }],
+  });
+  renderer.handleData("JOB_FINISHED", { job_id: "job_prev", job_type: "delegate", status: "completed" });
+  const crossTurnJobActions = renderer.buildDiagnosticActions({
+    severity: "error", source: "provider", message: "stream ended without finish event",
+  });
+  pass(Array.isArray(crossTurnJobActions) && crossTurnJobActions.length === 1,
+    "provider after cross-turn job finish: expected single action, got " + JSON.stringify(crossTurnJobActions));
+  if (crossTurnJobActions && crossTurnJobActions.length) {
+    pass(crossTurnJobActions[0].label === "Retry turn",
+      "cross-turn JOB_FINISHED must not count as work: label should be 'Retry turn', got " + crossTurnJobActions[0].label);
+    startTurnCalls.length = 0;
+    await crossTurnJobActions[0].onclick();
+    if (startTurnCalls.length) {
+      pass(startTurnCalls[0].text === "kick off the build",
+        "retry onclick should replay the original prompt, got " + startTurnCalls[0].text);
+      pass(Array.isArray(startTurnCalls[0].images) && startTurnCalls[0].images.length === 1,
+        "retry onclick should preserve the original attachment, got " + JSON.stringify(startTurnCalls[0].images));
+    }
+  }
+
   renderer.handleData("USER_INPUT", { text: "say hello" });
   renderer.lastSubmittedTurn = { text: "say hello", items: [{ type: "image", media_type: "image/png", data: "abc", name: "shot.png" }] };
 
