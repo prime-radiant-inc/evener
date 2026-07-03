@@ -66,6 +66,26 @@ type WorktreeExitResult struct {
 	Warning      string
 }
 
+// WorktreeRemoveResult is what a successful remove returns (spec §5 remove
+// step 11): the removed path and branch name, whether the branch was
+// deleted, and why it was kept when deletion was requested but refused
+// (BranchKeptReason, empty when deletion was not requested or it succeeded).
+// The worktree removal itself (spec §5 remove step 8) is the primary action
+// and always either succeeds or the whole call errors — a delete_branch
+// refusal (step 9) is reported here rather than as an error, since step 11
+// requires reporting "whether the branch was deleted" as part of a
+// confirmation, not failing the call after the worktree is already gone.
+// Warning mirrors WorktreeExitResult's: set only when remove-current's
+// restore landed in a foreign-locked managed worktree (spec §5 "Restores
+// follow the same rule").
+type WorktreeRemoveResult struct {
+	Path             string
+	Branch           string
+	BranchDeleted    bool
+	BranchKeptReason string
+	Warning          string
+}
+
 // worktreeGuard is the toolDeps facade the manage_worktree handler reaches
 // session state through (spec §2 registration; §7 method list), mirroring
 // taskGuard/goalGuard. Its members are closures over the owning Session so the
@@ -100,6 +120,8 @@ type worktreeGuard struct {
 	// choreography (leave-unlock, restore, idempotent restore-relock) layered
 	// on top of the exitWorktree env-restore primitive above.
 	exitOp func(ctx context.Context) (WorktreeExitResult, error)
+	// removeOp runs the remove operation (spec §5 remove, all eleven steps).
+	removeOp func(ctx context.Context, name string, force, deleteBranch bool) (WorktreeRemoveResult, error)
 }
 
 // registerWorktreeTool registers the manage_worktree lifecycle tool (spec §2)
@@ -187,7 +209,43 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 				}
 				out["message"] = msg
 				return out, nil
-			case "list", "remove", "prune":
+			case "remove":
+				name, _ := args["name"].(string)
+				if strings.TrimSpace(name) == "" {
+					return nil, errors.New("manage_worktree remove: name is required")
+				}
+				force, _ := args["force"].(bool)
+				deleteBranch, _ := args["delete_branch"].(bool)
+				res, err := deps.worktreeGuard.removeOp(ctx, name, force, deleteBranch)
+				if err != nil {
+					return nil, err
+				}
+				msg := fmt.Sprintf("Removed worktree %q at %s.", name, res.Path)
+				if deleteBranch {
+					if res.BranchDeleted {
+						msg += fmt.Sprintf(" Branch %q deleted.", res.Branch)
+					} else {
+						msg += fmt.Sprintf(" Branch %q NOT deleted: %s", res.Branch, res.BranchKeptReason)
+					}
+				}
+				if res.Warning != "" {
+					msg += " Warning: " + res.Warning
+				}
+				out := map[string]any{
+					"status":         "removed",
+					"path":           res.Path,
+					"branch":         res.Branch,
+					"branch_deleted": res.BranchDeleted,
+					"message":        msg,
+				}
+				if res.BranchKeptReason != "" {
+					out["branch_kept_reason"] = res.BranchKeptReason
+				}
+				if res.Warning != "" {
+					out["warning"] = res.Warning
+				}
+				return out, nil
+			case "list", "prune":
 				return nil, fmt.Errorf("manage_worktree %s: not yet implemented", operation)
 			default:
 				return nil, fmt.Errorf("manage_worktree: unknown operation %q", operation)
@@ -357,12 +415,18 @@ func (s *Session) exitWorktree() (string, bool) {
 // child/delegate/shell working directories at or under path, for the remove and
 // prune guards (spec §5 remove step 4). The full scan depends on the
 // background-shell-job launch-workdir field spec §5 adds and on the
-// delegate-restore working-dir cross-check; both land with the remove/prune
-// operations (Tasks 15-16), which own this guard's guarded state. Task 13
-// ships the shared method so create's guard plumbing and those tasks agree on
-// the surface; with no remove/prune caller yet it reports no live work.
+// delegate-restore working-dir cross-check; both are Task 20's job-store
+// plumbing. worktreeRemove (Task 15) wires the guard call itself; until Task
+// 20 lands, this reports no live work in production — worktreeLiveWorkStub is
+// the test-only seam that exercises the guard call in the interim (see its
+// doc comment on the Session struct).
 func (s *Session) liveWorkUnder(path string) []string {
-	_ = path
+	s.mu.Lock()
+	stub := s.worktreeLiveWorkStub
+	s.mu.Unlock()
+	if stub != nil {
+		return stub(path)
+	}
 	return nil
 }
 
@@ -853,26 +917,295 @@ func (s *Session) worktreeExit(ctx context.Context) (WorktreeExitResult, error) 
 	// was launched inside one before entering others), apply the idempotent
 	// lock rule to it.
 	if run != nil {
-		canonicalRestored := filepath.Clean(restoredRoot)
-		if resolved, evErr := filepath.EvalSymlinks(restoredRoot); evErr == nil {
-			canonicalRestored = filepath.Clean(resolved)
-		}
 		projectDir := filepath.Join(st.worktreeRoot, worktree.ProjectID(st.mainRepoRoot))
-		if isUnderManagedDir(canonicalRestored, projectDir) {
-			warning, err := s.relockRestoreTarget(run, restoredRoot)
-			if err != nil {
-				return WorktreeExitResult{}, err
+		warning, err := s.applyRestoreLandRelock(run, restoredRoot, projectDir)
+		if err != nil {
+			return WorktreeExitResult{}, err
+		}
+		result.Warning = warning
+	}
+
+	return result, nil
+}
+
+// applyRestoreLandRelock applies the idempotent EvRestoreLand lock rule when
+// restoredRoot resolves inside the managed directory rooted at projectDir
+// (spec §5 "Restores follow the same rule"): exit's restore root (§4 exit
+// step 4) and remove-current's restore (§5 remove step 7) share this exact
+// choreography — lock if unlocked, adopt our own marker as a no-op, or warn
+// and co-occupy on a foreign lock. It is a no-op (empty warning, nil error)
+// when restoredRoot is not under the managed directory. When the rule fires,
+// it also records the session's occupancy (worktreeCurrentPath) so a later
+// create/switch/close leaves it correctly (spec §3 step 7; §5 clean-close
+// unlock).
+func (s *Session) applyRestoreLandRelock(run worktree.GitRunner, restoredRoot, projectDir string) (string, error) {
+	canonicalRestored := filepath.Clean(restoredRoot)
+	if resolved, evErr := filepath.EvalSymlinks(restoredRoot); evErr == nil {
+		canonicalRestored = filepath.Clean(resolved)
+	}
+	if !isUnderManagedDir(canonicalRestored, projectDir) {
+		return "", nil
+	}
+	warning, err := s.relockRestoreTarget(run, restoredRoot)
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	s.worktreeCurrentPath = restoredRoot
+	s.mu.Unlock()
+	return warning, nil
+}
+
+// worktreeRemove performs the remove operation (spec §5 remove, all eleven
+// steps in order). Removing the worktree directory (step 8) is the primary,
+// always-or-error action; a delete_branch refusal (step 9) is reported in the
+// result rather than failing the call, since by then the worktree is already
+// gone and step 11 requires reporting whether the branch was deleted as part
+// of a confirmation.
+func (s *Session) worktreeRemove(ctx context.Context, name string, force, deleteBranch bool) (WorktreeRemoveResult, error) {
+	// Step 1: resolve the worktree path from name.
+	if err := worktree.ValidateName(name); err != nil {
+		return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: %w", err)
+	}
+	st := s.worktreeStateSnapshot()
+	if st.env == nil {
+		return WorktreeRemoveResult{}, errors.New("manage_worktree requires a local execution environment")
+	}
+	if st.mainRepoRoot == "" {
+		return WorktreeRemoveResult{}, errors.New("manage_worktree remove: not in a git repository")
+	}
+	projectDir := filepath.Join(st.worktreeRoot, worktree.ProjectID(st.mainRepoRoot))
+	metaDir := filepath.Join(projectDir, ".meta")
+	target := filepath.Clean(filepath.Join(projectDir, filepath.FromSlash(name)))
+
+	// Step 2: the target must be under <worktreeRoot>/<projectid>/, canonicalized
+	// as in `list` (spec §5 `list` step 2) — never remove an arbitrary path by
+	// name. Structurally guaranteed already (ValidateName rejects ".."; target
+	// is built by joining under projectDir), but checked explicitly for
+	// defense in depth and for symlinked state homes.
+	canonicalTarget := target
+	if resolved, err := filepath.EvalSymlinks(target); err == nil {
+		canonicalTarget = filepath.Clean(resolved)
+	}
+	if !isUnderManagedDir(canonicalTarget, projectDir) {
+		return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: %s is not a managed worktree", name)
+	}
+
+	run, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+	if err != nil {
+		return WorktreeRemoveResult{}, err
+	}
+
+	// "Currently inside" is judged against the session's ACTIVE root, not the
+	// create/switch-tracked worktreeCurrentPath: a session that launched
+	// directly inside a managed worktree (never entering it via create/switch)
+	// has an empty worktreeCurrentPath even though its env is rooted there,
+	// and step 7's "no safe restore env" refusal exists precisely for that
+	// case (spec §5 remove step 7's own example).
+	activeRoot := filepath.Clean(st.env.WorkingDirectory())
+	currentlyInside := activeRoot == target
+
+	// Step 3: lock guard. A foreign lock refuses regardless of force; this
+	// session's own marker on a worktree it is not currently in is crash
+	// residue — unlocked here and the operation proceeds (spec §5 remove step
+	// 3). When the session IS currently inside the target, its own marker is
+	// ordinary occupancy and the unlock (if any) happens at the restore, step
+	// 7 below — not here (EvRemoveCurrent's own-marker row: "unlock at the
+	// restore step").
+	locked, reason, err := lockStateOf(run, target)
+	if err != nil {
+		return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: inspecting the target lock: %w", err)
+	}
+	lockSt := worktree.Unlocked
+	if locked {
+		lockSt = worktree.ClassifyReason(reason, s.id, "")
+	}
+	lockDetail := reason
+	if lockDetail == "" {
+		lockDetail = "no reason"
+	}
+	var unlockAtRestore bool
+	if currentlyInside {
+		switch worktree.Decide(worktree.EvRemoveCurrent, lockSt) {
+		case worktree.ActNone:
+			// unlocked; nothing to do here
+		case worktree.ActUnlock:
+			unlockAtRestore = true
+		default:
+			return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: %s is locked (%s); refusing", target, lockDetail)
+		}
+	} else {
+		switch worktree.Decide(worktree.EvRemoveTarget, lockSt) {
+		case worktree.ActNone:
+			// unlocked; nothing to do here
+		case worktree.ActUnlockProceed:
+			if _, err := run("worktree", "unlock", target); err != nil {
+				return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: unlocking crash-residue lock: %w", err)
 			}
-			result.Warning = warning
-			// The session now occupies this managed worktree again; record it
-			// so a later create/switch/close leaves it correctly (spec §3
-			// step 7; §5 clean-close unlock).
-			s.mu.Lock()
-			s.worktreeCurrentPath = restoredRoot
-			s.mu.Unlock()
+		default:
+			return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: %s is locked (%s); refusing (force does not override a lock)", target, lockDetail)
 		}
 	}
 
+	// Step 4: live child/job guard (spec §5 remove step 4, "widened"). Best
+	// effort: liveWorkUnder is a stub pending Task 20's background-shell-job
+	// launch-workdir field (see its doc comment), so this refuses only what
+	// that field — or a test seam standing in for it — reports today.
+	if live := s.liveWorkUnder(target); len(live) > 0 {
+		return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: live work under %s: %s", target, strings.Join(live, ", "))
+	}
+
+	// Step 5: cross-session ownership guard. A worktree with no sidecar has
+	// unknown provenance and is treated as another session's (spec §6
+	// "Metadata sidecar": "treated by remove as another session's — refuse
+	// without force").
+	sc, scErr := worktree.ReadSidecar(metaDir, name)
+	hasSidecar := scErr == nil
+	if scErr != nil && !os.IsNotExist(scErr) {
+		return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: reading metadata: %w", scErr)
+	}
+	if !force {
+		if !hasSidecar {
+			return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: %s has no metadata sidecar (unmanaged provenance); refusing without force", target)
+		}
+		if sc.CreatorSession != s.id {
+			return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: %s was created by a different session (%s); refusing without force", target, sc.CreatorSession)
+		}
+	}
+
+	// Step 6: dirtiness preflight (force:false only). Nothing above has
+	// mutated s.env or removed anything yet, so a refusal here leaves s.env
+	// unchanged (spec §5 remove step 6).
+	if !force {
+		clean, offending, err := worktree.CleanTree(run, target)
+		if err != nil {
+			return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: checking for uncommitted changes: %w", err)
+		}
+		if !clean {
+			return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: %s has uncommitted changes (use force to remove anyway):\n%s", target, strings.Join(offending, "\n"))
+		}
+	}
+
+	// Step 7: if the session is currently in this worktree, unlock it (if
+	// step 3 deferred an unlock) and restore s.env via worktreeGuard, applying
+	// the idempotent restore-land lock rule to the landing spot when it is
+	// itself a managed worktree (spec §5 "Restores follow the same rule";
+	// remove-current's restore reuses exit's applyRestoreLandRelock
+	// choreography verbatim). No safe restore env — for example, the session
+	// started directly inside the worktree being removed — refuses rather
+	// than deleting the active root out from under the session.
+	var removeWarning string
+	if currentlyInside {
+		if st.restoreEnv == nil {
+			return WorktreeRemoveResult{}, errors.New("manage_worktree remove: no safe restore env for the currently-occupied worktree (it was never entered via manage_worktree); refusing to remove the active root")
+		}
+		if unlockAtRestore {
+			if _, err := run("worktree", "unlock", target); err != nil {
+				return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: unlocking before restore: %w", err)
+			}
+		}
+		restoredRoot, ok := s.exitWorktree()
+		if !ok {
+			return WorktreeRemoveResult{}, errors.New("manage_worktree remove: not in a worktree")
+		}
+		warning, err := s.applyRestoreLandRelock(run, restoredRoot, projectDir)
+		if err != nil {
+			return WorktreeRemoveResult{}, err
+		}
+		removeWarning = warning
+	}
+
+	// Step 8: remove the worktree itself. --force is included only when
+	// force:true, and only ever covers git's own dirty/untracked refusal —
+	// never locks, which step 3 already resolved (spec §5 remove step 8).
+	rmArgs := []string{"worktree", "remove"}
+	if force {
+		rmArgs = append(rmArgs, "--force")
+	}
+	rmArgs = append(rmArgs, "--", target)
+	if _, err := run(rmArgs...); err != nil {
+		return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: git worktree remove failed: %w", err)
+	}
+
+	result := WorktreeRemoveResult{Path: target, Branch: name, Warning: removeWarning}
+
+	// Step 9: delete_branch, gated by serf's own merge check — never git's
+	// `branch -d`, which is HEAD-relative (spec §5 remove step 9: rev-6 review
+	// demonstrated `-d` deleting a never-merged branch under a detached HEAD
+	// review of that same tip in the main checkout). force bypasses the gate
+	// entirely (unconditional -D). A branch checked out in any other worktree
+	// cannot be deleted by git at all, gate or no gate — that refusal is
+	// surfaced with the checkout location git itself reports.
+	if deleteBranch {
+		tipOut, tipErr := run("rev-parse", "--verify", "refs/heads/"+name)
+		if tipErr != nil {
+			result.BranchKeptReason = fmt.Sprintf("branch %q not found: %v", name, tipErr)
+		} else {
+			tipSHA := strings.TrimSpace(tipOut)
+			passesGate := force
+			var evidence string
+			if !passesGate {
+				switch {
+				case !hasSidecar:
+					evidence = fmt.Sprintf("no metadata recorded for %q; cannot verify merge status without force", name)
+				case tipSHA == sc.BaseSHA:
+					passesGate = true
+				default:
+					mr, mErr := worktree.Merged(run, tipSHA, sc.MergeTarget, sc.BaseSHA)
+					if mErr != nil {
+						return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: checking merge status: %w", mErr)
+					}
+					switch {
+					case mr.Merged:
+						passesGate = true
+					case mr.TargetUnknown:
+						evidence = fmt.Sprintf("branch %q merge target unknown; tip %s not verified merged; re-invoke with force to delete anyway", name, shortSHA(tipSHA))
+					default:
+						evidence = fmt.Sprintf("branch %q is not merged into %s (tip %s); neither ancestry nor patch-equivalence holds; merge first or re-invoke with force to delete anyway", name, mr.TargetRef, shortSHA(tipSHA))
+					}
+				}
+			}
+			if passesGate {
+				if _, err := run("branch", "-D", name); err != nil {
+					result.BranchKeptReason = fmt.Sprintf("git refused to delete branch %q: %v", name, err)
+				} else {
+					result.BranchDeleted = true
+				}
+			} else {
+				result.BranchKeptReason = evidence
+			}
+		}
+	}
+
+	// Step 10: sidecar disposition. Gone (deleted here) → delete the sidecar;
+	// survives → keep it and mark worktree_removed + tip_sha_at_removal. The
+	// mark write is UpdateSidecar's plain truncating write, not atomic — a
+	// crash mid-write can leave it torn or unwritten, which sweep 2's
+	// reconciliation (spec §5 prune sweep 2) explicitly tolerates via its "or
+	// no removal record" branch: a sidecar with no (or a torn) removal record
+	// is judged exactly like tip == base_sha for merge-gated collection, so an
+	// unmarked sidecar is still handled correctly, just less precisely
+	// reported meanwhile.
+	if result.BranchDeleted {
+		if err := worktree.DeleteSidecar(metaDir, name); err != nil && !os.IsNotExist(err) {
+			return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: deleting sidecar: %w", err)
+		}
+	} else if hasSidecar {
+		tipOut, tipErr := run("rev-parse", "--verify", "refs/heads/"+name)
+		if tipErr == nil {
+			tipSHA := strings.TrimSpace(tipOut)
+			if err := worktree.UpdateSidecar(metaDir, name, func(sc *worktree.Sidecar) {
+				sc.WorktreeRemoved = true
+				sc.TipSHAAtRemoval = tipSHA
+			}); err != nil && !os.IsNotExist(err) {
+				return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: marking sidecar removed: %w", err)
+			}
+		}
+	}
+
+	// Step 11: report the path and whether the branch was deleted (already
+	// carried on result: Path, Branch, BranchDeleted, BranchKeptReason,
+	// Warning).
 	return result, nil
 }
 

@@ -196,6 +196,7 @@ func newToolDeps(s *Session) *toolDeps {
 			switchByName:  s.worktreeSwitchByName,
 			switchByPath:  s.worktreeSwitchByPath,
 			exitOp:        s.worktreeExit,
+			removeOp:      s.worktreeRemove,
 		},
 		now: s.sclock().Now,
 		web: webDeps{

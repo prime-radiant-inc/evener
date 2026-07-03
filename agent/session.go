@@ -84,8 +84,8 @@ type Session struct {
 	//   loopDetectionCount, the task* reminder counters, depth, the goalInTurn
 	//   flag and kickFunc callback, the naming name-state, and the worktree
 	//   occupancy fields (worktreeRestoreEnv, worktreeCurrentPath,
-	//   worktreeGitVersionOK). It does NOT guard reg — the tool.Registry
-	//   self-synchronizes.
+	//   worktreeGitVersionOK, worktreeLiveWorkStub). It does NOT guard reg —
+	//   the tool.Registry self-synchronizes.
 	mu sync.Mutex
 
 	// --- native worktree occupancy (spec §7) ---
@@ -101,9 +101,16 @@ type Session struct {
 	//
 	// worktreeGitVersionOK memoizes the once-per-session `git version` preflight
 	// (spec §3 step 6) so the floor check forks git at most once.
+	//
+	// worktreeLiveWorkStub is a test-only seam for the remove/prune live-work
+	// guard (spec §5 remove step 4): when set, liveWorkUnder calls it instead
+	// of its production no-op. Real background-shell-job launch-workdir
+	// plumbing lands in Task 20 and replaces this stub with a genuine job-store
+	// query; nothing in production code ever sets this field.
 	worktreeRestoreEnv   *execenv.LocalExecutionEnvironment
 	worktreeCurrentPath  string
 	worktreeGitVersionOK bool
+	worktreeLiveWorkStub func(path string) []string
 
 	// responseSideEffectsMu serializes a response's user-visible side-effect
 	// bundle (emit + appendTurn + counter bump) against teardown.
