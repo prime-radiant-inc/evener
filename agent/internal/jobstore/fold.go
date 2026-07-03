@@ -310,6 +310,7 @@ func applyEvent(r *JobRecord, e Event) {
 	case EventJobStarted:
 		r.Type = e.Type
 		r.Command = e.Command
+		r.WorkingDir = e.WorkingDir
 		r.Task = e.Task
 		r.Description = e.Description
 		r.ParentSessionID = e.ParentSessionID

@@ -144,6 +144,9 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 					return "", errors.New("shell jobs require an initialized JobManager")
 				}
 				shellArgs = applyShellTimeoutPolicy(deps, shellArgs)
+				// Recorded at launch (not model-supplied) for the manage_worktree
+				// remove/prune live-work guard (liveWorkUnder); see shellArgs.WorkingDir.
+				shellArgs.WorkingDir = env.WorkingDirectory()
 				return marshalShellToolResult(runShell(ctx, s.jobManager, se, shellArgs), shellToolResultMaxChars(reg))
 			}
 			return runBufferedShell(ctx, env, deps, shellArgs)

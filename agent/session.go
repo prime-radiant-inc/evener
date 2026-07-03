@@ -111,9 +111,8 @@ type Session struct {
 	//
 	// worktreeLiveWorkStub is a test-only seam for the remove/prune live-work
 	// guard (spec §5 remove step 4): when set, liveWorkUnder calls it instead
-	// of its production no-op. Real background-shell-job launch-workdir
-	// plumbing lands in Task 20 and replaces this stub with a genuine job-store
-	// query; nothing in production code ever sets this field.
+	// of its production job-manager/subagent scan (session_tools_worktree.go).
+	// Nothing in production code ever sets this field.
 	worktreeRestoreEnv     *execenv.LocalExecutionEnvironment
 	worktreeCurrentPath    string
 	worktreeCurrentManaged bool

@@ -520,14 +520,18 @@ func (s *Session) exitWorktree() (string, bool) {
 }
 
 // liveWorkUnder implements worktreeGuard.liveWorkUnder() (spec §7): live
-// child/delegate/shell working directories at or under path, for the remove and
-// prune guards (spec §5 remove step 4). The full scan depends on the
-// background-shell-job launch-workdir field spec §5 adds and on the
-// delegate-restore working-dir cross-check; both are Task 20's job-store
-// plumbing. worktreeRemove (Task 15) wires the guard call itself; until Task
-// 20 lands, this reports no live work in production — worktreeLiveWorkStub is
-// the test-only seam that exercises the guard call in the interim (see its
-// doc comment on the Session struct).
+// child/delegate/shell working directories at or under path, for the remove
+// and prune guards (spec §5 remove step 4). It scans three sources: running
+// background shell jobs (JobRecord.WorkingDir) and running delegate jobs
+// (DelegateRestore.WorkingDir) via the job manager, plus every live subagent
+// session's current env — the last of which also covers delegates (delegates
+// are subagents with a job record layered on top) and, unlike a job record's
+// launch-time snapshot, tracks a child that has since switched worktrees
+// itself. It is best-effort and read-only: a shell command that `cd`s after
+// launch is invisible to it (spec §5 remove step 4). worktreeLiveWorkStub, a
+// test-only seam, takes precedence when set (see its doc comment on the
+// Session struct) so unit tests can exercise the guard call without spinning
+// up real jobs.
 func (s *Session) liveWorkUnder(path string) []string {
 	s.mu.Lock()
 	stub := s.worktreeLiveWorkStub
@@ -535,7 +539,51 @@ func (s *Session) liveWorkUnder(path string) []string {
 	if stub != nil {
 		return stub(path)
 	}
-	return nil
+
+	target := canonicalOrClean(path)
+	var live []string
+
+	if s.jobManager != nil {
+		for _, h := range s.jobManager.liveWorkHandles() {
+			if pathEqualOrUnder(canonicalOrClean(h.dir), target) {
+				live = append(live, h.handle)
+			}
+		}
+	}
+
+	if s.subagents != nil {
+		for _, child := range s.subagents.sessions() {
+			env := child.currentEnv()
+			if env == nil {
+				continue
+			}
+			wd := env.WorkingDirectory()
+			if wd == "" {
+				continue
+			}
+			if pathEqualOrUnder(canonicalOrClean(wd), target) {
+				live = append(live, child.id+" (subagent, running)")
+			}
+		}
+	}
+
+	return live
+}
+
+// pathEqualOrUnder reports whether candidate is target itself or nested under
+// it, both already canonicalized by the caller (canonicalOrClean). This is
+// liveWorkUnder's "equal to path or under it" (spec §7) — the one case
+// relPathUnderManagedDir's "strictly under" deliberately excludes, since a
+// child rooted exactly at the worktree being removed must also refuse.
+func pathEqualOrUnder(candidate, target string) bool {
+	if candidate == target {
+		return true
+	}
+	rel, err := filepath.Rel(target, candidate)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // worktreeCreate performs the create operation (spec §3, all nine steps in
@@ -1227,9 +1275,9 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, delete
 	}
 
 	// Step 4: live child/job guard (spec §5 remove step 4, "widened"). Best
-	// effort: liveWorkUnder is a stub pending Task 20's background-shell-job
-	// launch-workdir field (see its doc comment), so this refuses only what
-	// that field — or a test seam standing in for it — reports today.
+	// effort: liveWorkUnder scans running shell/delegate jobs and live
+	// subagent envs (see its doc comment); a shell command that `cd`s after
+	// launch is invisible to it.
 	if live := s.liveWorkUnder(target); len(live) > 0 {
 		return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: live work under %s: %s", target, strings.Join(live, ", "))
 	}

@@ -54,6 +54,10 @@ type Event struct {
 	StartedAt        *time.Time                 `json:"started_at,omitempty"`
 	OutputPath       string                     `json:"output_path,omitempty"`
 	DelegateRestore  *DelegateRestoreDescriptor `json:"delegate_restore,omitempty"`
+	// WorkingDir carries JobRecord.WorkingDir for shell jobs (see its doc
+	// comment); empty for delegate jobs, which carry theirs inside
+	// DelegateRestore.WorkingDir instead.
+	WorkingDir string `json:"working_dir,omitempty"`
 
 	// job_session_assigned payload
 	TranscriptRef   string `json:"transcript_ref,omitempty"`

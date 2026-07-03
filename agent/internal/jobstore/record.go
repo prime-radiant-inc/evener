@@ -179,13 +179,21 @@ type WatchSendRecord struct {
 
 // JobRecord is the durable storage shape reconstructed from the job event log.
 type JobRecord struct {
-	JobID            string                     `json:"job_id"`
-	Type             JobType                    `json:"type"`
-	Status           Status                     `json:"status"`
-	Reason           string                     `json:"reason,omitempty"`
-	Description      string                     `json:"description,omitempty"`
-	Command          string                     `json:"command,omitempty"`
-	Background       bool                       `json:"background,omitempty"`
+	JobID       string  `json:"job_id"`
+	Type        JobType `json:"type"`
+	Status      Status  `json:"status"`
+	Reason      string  `json:"reason,omitempty"`
+	Description string  `json:"description,omitempty"`
+	Command     string  `json:"command,omitempty"`
+	Background  bool    `json:"background,omitempty"`
+	// WorkingDir is the launch-time working directory of a background shell
+	// job (the executing env's WorkingDirectory() when the shell tool call
+	// started it), recorded so manage_worktree remove/prune's live-work guard
+	// (liveWorkUnder) can refuse deleting a worktree a shell job is running
+	// under. Empty for delegate jobs, which record their working dir in
+	// DelegateRestore.WorkingDir instead. Best-effort: a command that `cd`s
+	// after launch is invisible to it.
+	WorkingDir       string                     `json:"working_dir,omitempty"`
 	Task             string                     `json:"task,omitempty"`
 	ParentSessionID  string                     `json:"parent_session_id,omitempty"`
 	OwnerSessionID   string                     `json:"owner_session_id"`

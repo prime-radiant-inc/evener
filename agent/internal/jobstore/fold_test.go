@@ -26,6 +26,7 @@ func TestFoldBuildsRunningShellRecord(t *testing.T) {
 			e.OwnerSessionID = "S1"
 			e.VisibleToSession = "S1"
 			e.StartedAt = &start
+			e.WorkingDir = "/repo/worktrees/lane"
 		}),
 	}
 	recs := Fold(events)
@@ -38,6 +39,9 @@ func TestFoldBuildsRunningShellRecord(t *testing.T) {
 	}
 	if r.Command != "npm run dev" || r.Description != "dev server" {
 		t.Errorf("command/description not folded: %+v", r)
+	}
+	if r.WorkingDir != "/repo/worktrees/lane" {
+		t.Errorf("working dir = %q, want folded launch workdir", r.WorkingDir)
 	}
 	if r.NotifyState != NotifyNotArmed {
 		t.Errorf("notify state = %q, want not_armed", r.NotifyState)
