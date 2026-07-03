@@ -8,7 +8,7 @@ import (
 func TestCompactTool_PinsAndRequests(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
-	rt := s.reg.Get("compact")
+	rt := s.reg.Get("compact_context")
 	if rt == nil {
 		t.Fatal("compact tool not registered")
 	}
@@ -32,7 +32,7 @@ func TestCompactTool_ClearNote_NoForce(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
 	s.setPinnedNote("old")
-	rt := s.reg.Get("compact")
+	rt := s.reg.Get("compact_context")
 	if rt == nil {
 		t.Fatal("compact tool not registered")
 	}
@@ -50,7 +50,7 @@ func TestCompactTool_ClearNote_NoForce(t *testing.T) {
 func TestCompactTool_DoubleCompact_Errors(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
-	rt := s.reg.Get("compact")
+	rt := s.reg.Get("compact_context")
 	if _, err := rt.Exec(context.Background(), nil, map[string]any{"note_to_self": "a"}); err != nil {
 		t.Fatalf("first compact: %v", err)
 	}

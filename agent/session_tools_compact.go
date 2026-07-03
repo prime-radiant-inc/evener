@@ -11,13 +11,15 @@ import (
 
 func defCompact() llm.ToolDefinition {
 	return llm.ToolDefinition{
-		Name: "compact",
-		Description: "Compact your own context at a clean stopping point — between tasks, " +
-			"after extracting results from a large context, before consuming substantial new " +
-			"input, or before a complex multi-step operation. Your note_to_self is handed back " +
-			"to you verbatim right after the compaction — a message from your pre-compaction " +
-			"self — then cleared; pass an empty note_to_self to clear a pending note. " +
-			"compaction_instructions (optional) steer what the summary keeps vs. drops. " +
+		Name: "compact_context",
+		Description: "Free up context-window headroom so you can keep working on a long task: " +
+			"fold your own older conversation history into a compact summary checkpoint. This " +
+			"reorganizes your working memory — it does NOT change your response style and does " +
+			"NOT touch any files. Call it at a clean stopping point: between tasks, after " +
+			"extracting what you need from bulky output, or before reading substantial new " +
+			"input. Your note_to_self survives the compaction untouched and is handed back to " +
+			"you verbatim immediately after — a message from your pre-compaction self — then " +
+			"cleared. compaction_instructions (optional) steer what the summary keeps vs. drops. " +
 			"In sessions without persistence, dropped detail is NOT recoverable, so be " +
 			"conservative about what you instruct to drop.",
 		Parameters: map[string]any{
@@ -25,12 +27,16 @@ func defCompact() llm.ToolDefinition {
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"note_to_self": map[string]any{
-					"type":        "string",
-					"description": "Note handed back to you verbatim right after the compaction, then cleared. Empty string clears a pending note.",
+					"type": "string",
+					"description": "Message to your post-compaction self, handed back verbatim right after " +
+						"the compaction, then cleared. Put the exact strings a summary would mangle here: " +
+						"IDs, paths, numbers, decisions, next steps. Empty string clears a pending note " +
+						"(and, with no compaction_instructions, skips the compaction).",
 				},
 				"compaction_instructions": map[string]any{
-					"type":        "string",
-					"description": "Optional: what the summary should preserve vs. drop.",
+					"type": "string",
+					"description": "Optional steering for the summary: what to preserve in detail vs. drop. " +
+						"Dropped detail is unrecoverable without persistence — steer toward keeping.",
 				},
 			},
 			"required": []string{"note_to_self"},

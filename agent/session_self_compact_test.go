@@ -207,8 +207,8 @@ func TestNudge_FiresOnceUntilCompaction(t *testing.T) {
 	}
 	// The nudge must reach the model: it is queued as steering, which the round
 	// loop drains into history before the next model call.
-	if got := s.SteeringQueueSnapshot(); len(got) != 1 || !strings.Contains(got[0].Text, "compact") {
-		t.Fatalf("nudge did not queue a steering message: %+v", got)
+	if got := s.SteeringQueueSnapshot(); len(got) != 1 || !strings.Contains(got[0].Text, "compact_context") {
+		t.Fatalf("nudge did not queue a steering message naming the compact_context tool: %+v", got)
 	}
 	if s.maybeNudgeSelfCompact(0) {
 		t.Fatal("nudge must not re-fire until after a compaction")
