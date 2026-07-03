@@ -601,6 +601,37 @@ func isUnderManagedDir(canonicalPath, projectDir string) bool {
 	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+// switchToCurrentNoOp implements the EvEnterCurrent row of the lock state
+// machine (spec §4 switch step 1; §5 table "switch to the worktree already
+// occupied"; lockstate.go EvEnterCurrent) for a switch whose target is the
+// worktree the session already occupies. Only the own-session occupancy
+// state may no-op with the lock kept; every other observed state — including
+// unlocked or foreign-locked, reachable only if something outside this
+// session's own choreography changed the lock between occupying the target
+// and this switch call — is refused rather than silently treated as a no-op.
+// Decide is total and fails safe here exactly as it does everywhere else in
+// the lock state machine.
+func (s *Session) switchToCurrentNoOp(run worktree.GitRunner, target string) (WorktreeSwitchResult, error) {
+	locked, reason, err := lockStateOf(run, target)
+	if err != nil {
+		return WorktreeSwitchResult{}, fmt.Errorf("manage_worktree switch: inspecting the current worktree lock: %w", err)
+	}
+	st := worktree.Unlocked
+	if locked {
+		st = worktree.ClassifyReason(reason, s.id, "")
+	}
+	if worktree.Decide(worktree.EvEnterCurrent, st) != worktree.ActNone {
+		detail := reason
+		if detail == "" {
+			detail = "unlocked"
+		}
+		return WorktreeSwitchResult{}, fmt.Errorf(
+			"manage_worktree switch: %s is the worktree already occupied, but it is not locked with this session's own marker (%s); refusing",
+			target, detail)
+	}
+	return WorktreeSwitchResult{Path: target, Branch: branchAtRoot(run, target), NoOp: true}, nil
+}
+
 // worktreeEnterManaged performs the by-name switch choreography (spec §4
 // switch by-name steps 1-6) against an already-resolved managed worktree
 // path. switchByPath's managed-directory reroute (step 2) shares it verbatim:
@@ -609,12 +640,14 @@ func isUnderManagedDir(canonicalPath, projectDir string) bool {
 func (s *Session) worktreeEnterManaged(st worktreeState, run worktree.GitRunner, path string) (WorktreeSwitchResult, error) {
 	target := filepath.Clean(path)
 
-	// Step 1: switch-to-current is a no-op — the lock stays exactly as it is.
-	// Without this, the ordinary lock-target/unlock-old choreography below
-	// would unlock the session's own active worktree out from under it (spec
-	// §4 switch step 1).
+	// Step 1: switch-to-current routes through Decide(EvEnterCurrent, ...) —
+	// only an ActNone (own-session marker) may no-op with the lock kept; any
+	// other observed state is refused (spec §4 switch step 1; lockstate.go
+	// EvEnterCurrent). Without the ActNone no-op, the ordinary
+	// lock-target/unlock-old choreography below would unlock the session's
+	// own active worktree out from under it.
 	if st.currentWorktree != "" && filepath.Clean(st.currentWorktree) == target {
-		return WorktreeSwitchResult{Path: target, Branch: branchAtRoot(run, target), NoOp: true}, nil
+		return s.switchToCurrentNoOp(run, target)
 	}
 
 	// Step 2: the target must exist and be a real worktree (.git pointer file).
@@ -735,9 +768,13 @@ func (s *Session) worktreeSwitchByPath(ctx context.Context, rawPath string) (Wor
 	// Step 3: a genuinely non-managed registered worktree — same env swap, NO
 	// lock choreography on the target. If the session is leaving a managed
 	// worktree, it is still unlocked on the way out (spec §4 switch by-path
-	// step 3).
+	// step 3). Switch-to-current still routes through the same
+	// Decide(EvEnterCurrent, ...) gate as the managed case — a sibling
+	// worktree serf never locked has nothing to corroborate the claimed
+	// occupancy, so the ordinary (unlocked) case here refuses rather than
+	// silently no-opping.
 	if st.currentWorktree != "" && filepath.Clean(st.currentWorktree) == filepath.Clean(matchedPath) {
-		return WorktreeSwitchResult{Path: matchedPath, Branch: matchedBranch, NoOp: true}, nil
+		return s.switchToCurrentNoOp(run, matchedPath)
 	}
 	if err := s.leaveCurrentWorktree(run); err != nil {
 		return WorktreeSwitchResult{}, err

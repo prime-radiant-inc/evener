@@ -155,6 +155,41 @@ func TestWorktreeSwitch_ToCurrentIsNoOpLockKept(t *testing.T) {
 	}
 }
 
+func TestWorktreeSwitch_ToCurrentOutOfBandForeignMarkerRefuses(t *testing.T) {
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "A"})
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	pathA := res["path"].(string)
+
+	// Out-of-band: replace A's own-session lock with a foreign marker while
+	// the session still believes it occupies A (simulating another tool or
+	// session interfering between create and this switch). Decide's
+	// EvEnterCurrent row treats this as unreachable in well-behaved code and
+	// fails safe — refuse rather than silently no-op.
+	wtGit(t, r.mainRoot, "worktree", "unlock", pathA)
+	foreignReason := worktree.FormatSessionMarker("01FOREIGNSESSIONID0000002")
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", foreignReason, pathA)
+
+	_, err = r.switchOp(t, map[string]any{"name": "A"})
+	if err == nil {
+		t.Fatal("expected switch-to-current to refuse when the lock is no longer this session's own marker")
+	}
+	if !strings.Contains(err.Error(), foreignReason) {
+		t.Errorf("error must name the foreign lock reason %q, got: %v", foreignReason, err)
+	}
+
+	// Refusal must not have mutated the env or the lock.
+	if got := r.s.currentEnv().WorkingDirectory(); got != pathA {
+		t.Errorf("currentEnv WorkingDirectory = %q after refused switch, want unchanged %q", got, pathA)
+	}
+	e := r.porcelainEntry(t, pathA)
+	if !e.Locked || e.LockReason != foreignReason {
+		t.Errorf("lock mutated by refused switch: got (%v,%q), want (%v,%q)", e.Locked, e.LockReason, true, foreignReason)
+	}
+}
+
 func TestWorktreeSwitch_ForeignLockedTargetRefusesNamingReason(t *testing.T) {
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "A"})
@@ -238,6 +273,39 @@ func TestWorktreeSwitch_ByPathSiblingManualWorktreeNoLockMutation(t *testing.T) 
 	e := r.porcelainEntry(t, siblingPath)
 	if e.Locked {
 		t.Errorf("sibling worktree got locked; by-path switch to a non-managed worktree must not mutate locks")
+	}
+}
+
+func TestWorktreeSwitch_ByPathToCurrentNonManagedUnlockedRefuses(t *testing.T) {
+	r := newWorktreeRepo(t)
+	// A manually created worktree OUTSIDE the managed directory, never locked
+	// by serf (spec §4 switch by-path step 3: "no lock choreography"). A
+	// redundant switch back to it has nothing to corroborate the claimed
+	// occupancy through the lock state machine, so EvEnterCurrent's ordinary
+	// (unlocked) outcome refuses rather than silently no-opping — the same
+	// gate the managed by-name case goes through.
+	siblingRoot := t.TempDir()
+	siblingPath := filepath.Join(siblingRoot, "sibling")
+	wtGit(t, r.mainRoot, "worktree", "add", "-b", "sibling-branch", siblingPath, r.head)
+
+	if _, err := r.switchOp(t, map[string]any{"path": siblingPath}); err != nil {
+		t.Fatalf("switch by path to sibling: %v", err)
+	}
+	if got := r.s.currentEnv().WorkingDirectory(); got != siblingPath {
+		t.Fatalf("currentEnv WorkingDirectory = %q after first switch, want %q", got, siblingPath)
+	}
+
+	_, err := r.switchOp(t, map[string]any{"path": siblingPath})
+	if err == nil {
+		t.Fatal("expected a redundant switch-to-current on an unlocked non-managed worktree to refuse")
+	}
+
+	// Refusal must not have mutated the env or taken any lock.
+	if got := r.s.currentEnv().WorkingDirectory(); got != siblingPath {
+		t.Errorf("currentEnv WorkingDirectory = %q after refused switch, want unchanged %q", got, siblingPath)
+	}
+	if r.porcelainEntry(t, siblingPath).Locked {
+		t.Error("refused switch-to-current must not have locked the non-managed sibling")
 	}
 }
 
@@ -376,28 +444,7 @@ func TestWorktreeExit_OutsideWorktreeErrorsNoSideEffects(t *testing.T) {
 
 func TestWorktreeExit_RestoringIntoManagedLaunchRootIdempotentRelockForeignWarns(t *testing.T) {
 	r := newWorktreeRepo(t)
-	canonicalMain := r.canonicalMain(t)
-	launchPath := r.managedPath(canonicalMain, "launch")
-
-	// Manually create the launch-root worktree (as if a prior create/switch had
-	// put it there) OUTSIDE this test's session, then root a fresh session at it
-	// — simulating "the session was launched inside a managed worktree".
-	if err := os.MkdirAll(filepath.Dir(launchPath), 0o755); err != nil {
-		t.Fatalf("mkdir launch parent: %v", err)
-	}
-	wtGit(t, r.mainRoot, "worktree", "add", "-b", "launch", launchPath, r.head)
-
-	s2 := newSession(t, withDir(launchPath))
-	s2.stateDir = r.stateDir
-	r2 := &wtRepo{s: s2, mainRoot: r.mainRoot, stateDir: r.stateDir, head: r.head}
-
-	// From inside the launch worktree, create a new lane: this saves the launch
-	// worktree as the restore env.
-	resWork, err := r2.create(t, map[string]any{"name": "work"})
-	if err != nil {
-		t.Fatalf("create work: %v", err)
-	}
-	pathWork := resWork["path"].(string)
+	s2, r2, launchPath, pathWork := wtLaunchSession(t, r)
 
 	// Simulate another session/tool claiming the launch worktree while s2 was
 	// away in "work".
@@ -433,6 +480,86 @@ func TestWorktreeExit_RestoringIntoManagedLaunchRootIdempotentRelockForeignWarns
 	// The worktree left ("work") was unlocked on the way out.
 	if r2.porcelainEntry(t, pathWork).Locked {
 		t.Error("work worktree still locked after exit")
+	}
+}
+
+// wtLaunchSession builds a managed "launch" worktree by hand (as if a prior
+// create/switch had put it there), then roots a fresh session at it —
+// simulating "the session was launched inside a managed worktree", and from
+// inside it creates a "work" lane so the launch worktree is saved as the
+// restore env. Shared by the exit relock-branch tests below and the
+// foreign-warn test.
+func wtLaunchSession(t *testing.T, r *wtRepo) (s2 *Session, r2 *wtRepo, launchPath, workPath string) {
+	t.Helper()
+	canonicalMain := r.canonicalMain(t)
+	launchPath = r.managedPath(canonicalMain, "launch")
+
+	if err := os.MkdirAll(filepath.Dir(launchPath), 0o755); err != nil {
+		t.Fatalf("mkdir launch parent: %v", err)
+	}
+	wtGit(t, r.mainRoot, "worktree", "add", "-b", "launch", launchPath, r.head)
+
+	s2 = newSession(t, withDir(launchPath))
+	s2.stateDir = r.stateDir
+	r2 = &wtRepo{s: s2, mainRoot: r.mainRoot, stateDir: r.stateDir, head: r.head}
+
+	resWork, err := r2.create(t, map[string]any{"name": "work"})
+	if err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	return s2, r2, launchPath, resWork["path"].(string)
+}
+
+func TestWorktreeExit_RestoringIntoUnlockedManagedLaunchRootTakesLock(t *testing.T) {
+	r := newWorktreeRepo(t)
+	s2, r2, launchPath, _ := wtLaunchSession(t, r)
+
+	if r2.porcelainEntry(t, launchPath).Locked {
+		t.Fatal("launch worktree should still be unlocked before exit")
+	}
+
+	out, err := r2.exitOp(t)
+	if err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+	if out["restored_root"] != launchPath {
+		t.Errorf("restored_root = %v, want %s", out["restored_root"], launchPath)
+	}
+	if warning, _ := out["warning"].(string); warning != "" {
+		t.Errorf("unexpected warning restoring into an unlocked managed launch root: %q", warning)
+	}
+
+	e := r2.porcelainEntry(t, launchPath)
+	want := worktree.FormatSessionMarker(s2.id)
+	if !e.Locked || e.LockReason != want {
+		t.Errorf("launch worktree lock after exit = (%v,%q), want (%v,%q)", e.Locked, e.LockReason, true, want)
+	}
+}
+
+func TestWorktreeExit_RestoringIntoOwnMarkerManagedLaunchRootAdopts(t *testing.T) {
+	r := newWorktreeRepo(t)
+	s2, r2, launchPath, _ := wtLaunchSession(t, r)
+
+	// Crash-residue simulation: the launch worktree already carries this
+	// session's own marker (as if a prior lock survived a crash) before the
+	// restore lands there again.
+	ownReason := worktree.FormatSessionMarker(s2.id)
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", ownReason, launchPath)
+
+	out, err := r2.exitOp(t)
+	if err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+	if out["restored_root"] != launchPath {
+		t.Errorf("restored_root = %v, want %s", out["restored_root"], launchPath)
+	}
+	if warning, _ := out["warning"].(string); warning != "" {
+		t.Errorf("unexpected warning adopting an own-marker restore target: %q", warning)
+	}
+
+	e := r2.porcelainEntry(t, launchPath)
+	if !e.Locked || e.LockReason != ownReason {
+		t.Errorf("launch worktree lock after exit = (%v,%q), want unchanged (%v,%q)", e.Locked, e.LockReason, true, ownReason)
 	}
 }
 
