@@ -597,6 +597,13 @@ func pathEqualOrUnder(candidate, target string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+// worktreeCreateCoreResult carries worktreeCreateCore's outputs; a struct
+// rather than four positional strings so callers can't transpose them.
+type worktreeCreateCoreResult struct {
+	Path, Branch, BaseSHA, MainRoot string
+	Run                             worktree.GitRunner
+}
+
 // worktreeCreateCore is the shared git-level portion of managed-worktree
 // creation (spec §3 steps 1-6): resolve the main repo root, validate the name,
 // resolve the base commit from active's active root, reject a pre-existing
@@ -614,22 +621,22 @@ func pathEqualOrUnder(candidate, target string) bool {
 // caller decides what, if anything, to do with the returned path; the
 // returned run is the control-env GitRunner (rooted at mainRoot) so a caller
 // that leaves/enters an env (worktreeCreate) does not have to rebuild it.
-func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalExecutionEnvironment, name, baseRef string, ev worktree.LockEvent, lockReason, errPrefix string, sidecarMutate func(*worktree.Sidecar)) (path, branch, baseSHA, mainRoot string, run worktree.GitRunner, err error) {
+func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalExecutionEnvironment, name, baseRef string, ev worktree.LockEvent, lockReason, errPrefix string, sidecarMutate func(*worktree.Sidecar)) (worktreeCreateCoreResult, error) {
 	activeRoot := active.WorkingDirectory()
 
 	// Step 1: resolve the main repo root through linked-worktree pointers.
 	mr := execenv.ResolveMainRepoRoot(active, activeRoot)
 	if mr == "" {
-		return "", "", "", "", nil, fmt.Errorf("%s: not in a git repository", errPrefix)
+		return worktreeCreateCoreResult{}, fmt.Errorf("%s: not in a git repository", errPrefix)
 	}
 
 	// Control env rooted at the main repo root; every lifecycle git command runs
 	// through it (spec §2 "Git control environment").
 	controlEnv, cerr := s.worktreeControlEnv(mr)
 	if cerr != nil {
-		return "", "", "", "", nil, cerr
+		return worktreeCreateCoreResult{}, cerr
 	}
-	run = gitRunner(ctx, controlEnv)
+	run := gitRunner(ctx, controlEnv)
 
 	// Step 2: projectid over the canonical main repo root.
 	canonicalMain := mr
@@ -650,18 +657,18 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 	// name never reaches a git subprocess; resolve the base to a SHA from the
 	// active root, and reject a pre-existing branch.
 	if verr := worktree.ValidateName(name); verr != nil {
-		return "", "", "", "", nil, fmt.Errorf("%s: %w", errPrefix, verr)
+		return worktreeCreateCoreResult{}, fmt.Errorf("%s: %w", errPrefix, verr)
 	}
 	if verr := s.ensureWorktreeGitVersion(run); verr != nil {
-		return "", "", "", "", nil, verr
+		return worktreeCreateCoreResult{}, verr
 	}
 	if _, verr := run("check-ref-format", "--branch", name); verr != nil {
-		return "", "", "", "", nil, fmt.Errorf("%s: %q is not a valid git branch name", errPrefix, name)
+		return worktreeCreateCoreResult{}, fmt.Errorf("%s: %q is not a valid git branch name", errPrefix, name)
 	}
 
-	baseSHA, err = resolveBaseFromActiveRoot(run, activeRoot, baseRef)
+	baseSHA, err := resolveBaseFromActiveRoot(run, activeRoot, baseRef)
 	if err != nil {
-		return "", "", "", "", nil, err
+		return worktreeCreateCoreResult{}, err
 	}
 
 	if branchExists(run, name) {
@@ -669,7 +676,7 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 		if managedWorktreeExists(worktreePath) {
 			msg += "; use manage_worktree switch to enter its worktree"
 		}
-		return "", "", "", "", nil, errors.New(msg)
+		return worktreeCreateCoreResult{}, errors.New(msg)
 	}
 
 	// merge_target is the branch checked out at the active root at creation
@@ -678,7 +685,7 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 
 	// Step 5: MkdirAll the sidecar parent and write the sidecar FIRST, O_EXCL.
 	if mkErr := os.MkdirAll(metaDir, 0o755); mkErr != nil {
-		return "", "", "", "", nil, fmt.Errorf("%s: create metadata dir: %w", errPrefix, mkErr)
+		return worktreeCreateCoreResult{}, fmt.Errorf("%s: create metadata dir: %w", errPrefix, mkErr)
 	}
 	sc := worktree.Sidecar{
 		Name:           name,
@@ -694,9 +701,9 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 	}
 	if werr := worktree.WriteSidecarExcl(metaDir, name, sc); werr != nil {
 		if os.IsExist(werr) {
-			return "", "", "", "", nil, fmt.Errorf("%s: a worktree named %q is already being created", errPrefix, name)
+			return worktreeCreateCoreResult{}, fmt.Errorf("%s: a worktree named %q is already being created", errPrefix, name)
 		}
-		return "", "", "", "", nil, fmt.Errorf("%s: write sidecar: %w", errPrefix, werr)
+		return worktreeCreateCoreResult{}, fmt.Errorf("%s: write sidecar: %w", errPrefix, werr)
 	}
 
 	// Step 6: MkdirAll the worktree parent (nested for slash names), then create
@@ -713,21 +720,27 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 		// Kept as a guard against a future caller passing an unexpected
 		// LockEvent rather than trusting every call site forever.
 		_ = worktree.DeleteSidecar(metaDir, name)
-		return "", "", "", "", nil, fmt.Errorf("%s: internal error: create is not an atomic-add-lock event", errPrefix)
+		return worktreeCreateCoreResult{}, fmt.Errorf("%s: internal error: create is not an atomic-add-lock event", errPrefix)
 	}
 	if mkErr := os.MkdirAll(filepath.Dir(worktreePath), 0o755); mkErr != nil {
 		_ = worktree.DeleteSidecar(metaDir, name)
-		return "", "", "", "", nil, fmt.Errorf("%s: create worktree parent dir: %w", errPrefix, mkErr)
+		return worktreeCreateCoreResult{}, fmt.Errorf("%s: create worktree parent dir: %w", errPrefix, mkErr)
 	}
 	if _, addErr := run("worktree", "add", "--lock", "--reason", lockReason, "-b", name, "--", worktreePath, baseSHA); addErr != nil {
 		// Step 6 crash-safety: a failed add (e.g. a refs/heads D/F conflict)
 		// must delete the just-written sidecar in the same call, or the name
 		// becomes uncreatable until a post-grace prune (spec §3 step 6).
 		_ = worktree.DeleteSidecar(metaDir, name)
-		return "", "", "", "", nil, fmt.Errorf("%s: git worktree add failed: %w", errPrefix, addErr)
+		return worktreeCreateCoreResult{}, fmt.Errorf("%s: git worktree add failed: %w", errPrefix, addErr)
 	}
 
-	return worktreePath, name, baseSHA, canonicalMain, run, nil
+	return worktreeCreateCoreResult{
+		Path:     worktreePath,
+		Branch:   name,
+		BaseSHA:  baseSHA,
+		MainRoot: canonicalMain,
+		Run:      run,
+	}, nil
 }
 
 // worktreeCreate performs the create operation (spec §3, all nine steps in
@@ -742,26 +755,26 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 		return WorktreeResult{}, errors.New("manage_worktree requires a local execution environment")
 	}
 	marker := worktree.FormatSessionMarker(s.id)
-	path, branch, baseSHA, mainRoot, run, err := s.worktreeCreateCore(ctx, active, name, baseRef, worktree.EvCreate, marker, "manage_worktree create", nil)
+	res, err := s.worktreeCreateCore(ctx, active, name, baseRef, worktree.EvCreate, marker, "manage_worktree create", nil)
 	if err != nil {
 		return WorktreeResult{}, err
 	}
 
 	// Step 7: creating a new worktree from inside a managed one is a LEAVE of
 	// the old one — unlock it via Decide (spec §3 step 7; §5 EvLeave).
-	if err := s.leaveCurrentWorktree(run); err != nil {
+	if err := s.leaveCurrentWorktree(res.Run); err != nil {
 		return WorktreeResult{}, err
 	}
 
 	// Step 8: enter the new worktree (env swap + refresh, saving the prior env).
-	s.enterWorktree(path, true)
+	s.enterWorktree(res.Path, true)
 
 	// Step 9: report the path, branch, base SHA, and main repo root.
 	return WorktreeResult{
-		Path:     path,
-		Branch:   branch,
-		BaseSHA:  baseSHA,
-		MainRoot: mainRoot,
+		Path:     res.Path,
+		Branch:   res.Branch,
+		BaseSHA:  res.BaseSHA,
+		MainRoot: res.MainRoot,
 	}, nil
 }
 
@@ -779,13 +792,13 @@ func (s *Session) createDelegateWorktree(ctx context.Context, delegateID string)
 		return "", "", "", "", errors.New(`delegate isolation:"worktree" requires a local execution environment`)
 	}
 	lockReason := worktree.FormatDelegateMarker(delegateID, s.id)
-	path, branch, baseSHA, mainRoot, _, err = s.worktreeCreateCore(ctx, active, delegateID, "", worktree.EvDelegateCreate, lockReason, `delegate isolation:"worktree"`, func(sc *worktree.Sidecar) {
+	res, err := s.worktreeCreateCore(ctx, active, delegateID, "", worktree.EvDelegateCreate, lockReason, `delegate isolation:"worktree"`, func(sc *worktree.Sidecar) {
 		sc.DelegateID = delegateID
 	})
 	if err != nil {
 		return "", "", "", "", err
 	}
-	return path, branch, baseSHA, mainRoot, nil
+	return res.Path, res.Branch, res.BaseSHA, res.MainRoot, nil
 }
 
 // rollbackFreshDelegateWorktree best-effort removes a just-created, still-empty

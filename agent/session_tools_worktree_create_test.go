@@ -443,7 +443,7 @@ func TestWorktreeCreateCore_ControlEnvNonLocalEnvErrors(t *testing.T) {
 	r.s.mu.Unlock()
 
 	marker := worktree.FormatSessionMarker(r.s.id)
-	_, _, _, _, _, err := r.s.worktreeCreateCore(context.Background(), active, "x", "", worktree.EvCreate, marker, "test", nil)
+	_, err := r.s.worktreeCreateCore(context.Background(), active, "x", "", worktree.EvCreate, marker, "test", nil)
 	if err == nil || !strings.Contains(err.Error(), "local execution environment") {
 		t.Fatalf("worktreeCreateCore with a decoupled non-local session env: err = %v, want a local-execution-environment error", err)
 	}
