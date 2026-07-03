@@ -556,9 +556,7 @@ func Fuzz_lcfg_ContinuationSecret(f *testing.F) {
 				t.Skipf("setup mkdir failed: %v", err)
 			}
 			secret := make([]byte, 32)
-			if err := os.WriteFile(path, secret, 0o644); err != nil {
-				t.Skipf("setup write failed: %v", err)
-			}
+			writeContinuationSecretForMode(t, path, secret, 0o644)
 			if _, err := LoadOrCreateContinuationSecret(stateDir); !errors.Is(err, ErrContinuationSecretUnavailable) {
 				t.Fatalf("wrong-mode secret = %v, want ErrContinuationSecretUnavailable", err)
 			}

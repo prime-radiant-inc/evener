@@ -153,6 +153,7 @@
       this.composerPasteState = { items: [] };
       this.lastUserText = "";            // most-recent user turn text (for "Retry turn")
       this.lastSubmittedTurn = null;      // {text, items} payload for diagnostic retry
+      this.currentTurnHasAgentWork = false; // true once the current turn has assistant/tool output
       // queueState is the wire-sourced authoritative queue (kata r80p):
       // every entry is a first-line-truncated string in FIFO order, sourced
       // from thread.serf.queue on cold-load and from thread/queueChanged
@@ -812,6 +813,21 @@
       this.entryIndex = 0;
       this.cheapToolCluster = null;
       this.subagentModule = null;
+      this.currentTurnHasAgentWork = false;
+    },
+
+    markCurrentTurnAgentWork() {
+      this.currentTurnHasAgentWork = true;
+    },
+
+    // snapshotSubmittedTurn records the retry payload for a newly submitted
+    // turn. The payload and currentTurnHasAgentWork must describe the same
+    // turn: a stale "has work" flag makes a provider failure offer Continue
+    // (discarding the fresh prompt) when replaying the turn is correct. Pairing
+    // the two assignments here keeps every new-turn entry point consistent.
+    snapshotSubmittedTurn(payload) {
+      this.lastSubmittedTurn = payload;
+      this.currentTurnHasAgentWork = false;
     },
 
     refreshTranscriptStatusVisibility() {
@@ -876,6 +892,7 @@
           // A new turn supersedes any prior blocking question.
           this.clearAgentQuestion();
           this.setActiveTurnId(data.turnId || "");
+          this.currentTurnHasAgentWork = false;
           // TURN_STARTED is a real signal but not yet a first frame: the
           // cold-start skeleton stands until model output arrives. If a turn
           // begins with no echo (e.g. a second tab), the welcome dissolves now.
@@ -911,6 +928,7 @@
             this.lastCurrentTaskId = null;
             this.userTurnIndex = 0;
             this.entryIndex = 0;
+            this.currentTurnHasAgentWork = false;
             this.clearAgentQuestion();
             // Drop any pending image attachments and let the composer-
             // attachments helper repaint the (now empty) chip container.
@@ -947,7 +965,7 @@
           // live "awaiting your answer" affordances (the in-flow frame stays).
           this.clearAgentQuestion();
           this.lastUserText = data.text || "";
-          this.lastSubmittedTurn = this.retryPayload(data.text || "", data.images || []);
+          this.snapshotSubmittedTurn(this.retryPayload(data.text || "", data.images || []));
           this.dissolveWelcome();
           if (this.promoteLocalUserMessage(data)) { this.showColdStartSkeleton(); break; }
           this.userTurnIndex++;
@@ -961,26 +979,32 @@
           this.showColdStartSkeleton();
           break;
         case "ASSISTANT_TEXT_START":
+          this.markCurrentTurnAgentWork();
           this.finalizeReasoning();
           this.entryIndex++;
           this.beginAssistantMessage();
           break;
         case "ASSISTANT_TEXT_DELTA":
+          this.markCurrentTurnAgentWork();
           this.appendAssistantDelta(data.delta || "");
           break;
         case "ASSISTANT_TEXT_END":
+          this.markCurrentTurnAgentWork();
           this.finalizeAssistantMessage(data);
           break;
         case "ASSISTANT_TEXT_RESET":
           this.resetAssistantMessage();
           break;
         case "REASONING_START":
+          this.markCurrentTurnAgentWork();
           this.beginReasoning();
           break;
         case "REASONING_DELTA":
+          this.markCurrentTurnAgentWork();
           this.appendReasoningDelta(data.delta || "");
           break;
         case "TOOL_CALL_START":
+          this.markCurrentTurnAgentWork();
           if (data.tool_name === "communicate") {
             // The agent talking to the user. Extract the message from the
             // tool's arguments and render as a plain assistant block.
@@ -1013,10 +1037,12 @@
           this.beginToolCall(data);
           break;
         case "TOOL_CALL_OUTPUT_DELTA":
+          this.markCurrentTurnAgentWork();
           if (this.suppressedToolCalls.has(data.call_id)) break;
           this.appendToolDelta(data);
           break;
         case "TOOL_CALL_END":
+          this.markCurrentTurnAgentWork();
           if (this.suppressedToolCalls.has(data.call_id)) {
             this.suppressedToolCalls.delete(data.call_id);
             if (data.tool_name === "communicate") {
@@ -1065,12 +1091,19 @@
           }
           break;
         case "JOB_STARTED":
+          // Deliberately not marked as current-turn work: a job is always
+          // spawned by a tool call, whose TOOL_CALL_START already marked the
+          // turn. Job lifecycle events, by contrast, can cross turn boundaries
+          // (a background delegate/shell started in an earlier turn finishes
+          // during a later one), so marking here would wrongly offer Continue
+          // for a fresh turn that has produced no model output.
           this.beginJobRef(data);
           break;
         case "JOB_FINISHED":
           this.finalizeJobRef(data);
           break;
         case "COMMUNICATE":
+          this.markCurrentTurnAgentWork();
           // Already rendered via TOOL_CALL_START's arguments_json.message.
           // The daemon emits both events for the same content; drop this one
           // to avoid duplicates.
@@ -1625,7 +1658,9 @@
     appendLocalUserMessage(text, images, turnId, previousUserCount) {
       if (this.userMessageCount() > previousUserCount) return;
       this.lastUserText = text || "";
-      this.lastSubmittedTurn = this.retryPayload(text || "", images || []);
+      // Optimistic local echo: a fresh turn starts here before the server
+      // echoes USER_INPUT/TURN_STARTED, so snapshot resets the work flag now.
+      this.snapshotSubmittedTurn(this.retryPayload(text || "", images || []));
       this.userTurnIndex++;
       this.entryIndex++;
       // Cold start (mockup #21): the welcome dissolves on first send and a
@@ -3214,9 +3249,9 @@
           message: text || (diagnostic && (diagnostic.message || diagnostic.error)) || "",
         });
         // Build action buttons for the diagnostic card.
-        // "Retry turn" is offered when the error comes from the provider and
-        // we have a user turn to replay.  Clicking it re-issues the last user
-        // turn against the same daemon — the hub auto-resumes if needed.
+        // Provider failures before the agent does work can replay the user
+        // turn. Once assistant/tool output exists, the safe recovery is a
+        // continuation prompt against the transcript already on disk.
         const actions = this.buildDiagnosticActions(payload);
         this.conversation.appendChild(window.SerfDiagnostics.render(payload, actions));
         return;
@@ -3230,24 +3265,30 @@
     // buildDiagnosticActions returns an array of action descriptors for the
     // given diagnostic payload, or null if no actions apply.
     //
-    // Two diagnostic sources can get a retry button:
-    //   - source=provider → "Retry turn"  (model/API failed mid-turn)
+    // Two diagnostic sources can get a recovery button:
+    //   - source=provider → "Retry turn" before output, "Continue" after output
     //   - source=hub      → "Reconnect & retry"  (daemon/session unavailable)
-    // Both share the same onclick body: re-issue the last user turn against
-    // the same session.  The hub's auto-resume layer transparently relaunches
-    // a fresh daemon when the original one is gone, so this button works
-    // uniformly for daemon/session-unavailable failures.
+    // Hub failures still re-issue the last user turn against the same session.
+    // The hub's auto-resume layer transparently relaunches a fresh daemon when
+    // the original one is gone, so this button works uniformly for
+    // daemon/session-unavailable failures.
     buildDiagnosticActions(payload) {
       const classified = window.SerfDiagnostics ? window.SerfDiagnostics.classify(payload) : null;
       if (!classified) return null;
       const source = classified.source;
       if (source !== "provider" && source !== "hub") return null;
       if (source === "hub" && !this.isReconnectRetryDiagnostic(classified)) return null;
-      const lastTurn = this.lastSubmittedTurn || { text: this.lastUserText || "", items: [] };
+      let lastTurn = this.lastSubmittedTurn || { text: this.lastUserText || "", items: [] };
+      let label = source === "hub" ? "Reconnect & retry" : "Retry turn";
+      let failPrefix = source === "hub" ? "reconnect failed: " : "retry failed: ";
+      let errTitle = source === "hub" ? "Reconnect error" : "Retry error";
+      if (source === "provider" && this.currentTurnHasAgentWork) {
+        lastTurn = { text: "continue", items: [] };
+        label = "Continue";
+        failPrefix = "continue failed: ";
+        errTitle = "Continue error";
+      }
       if (!lastTurn.text && (!Array.isArray(lastTurn.items) || lastTurn.items.length === 0)) return null;
-      const label = source === "hub" ? "Reconnect & retry" : "Retry turn";
-      const failPrefix = source === "hub" ? "reconnect failed: " : "retry failed: ";
-      const errTitle = source === "hub" ? "Reconnect error" : "Retry error";
       return [{ label, onclick: this.makeRetryTurnHandler(lastTurn, failPrefix, errTitle) }];
     },
 
@@ -3262,10 +3303,9 @@
         text.includes("session unavailable");
     },
 
-    // makeRetryTurnHandler builds the onclick body shared by the
-    // "Retry turn" and "Reconnect & retry" diagnostic action buttons.  The
-    // failure-banner wording is parameterised so it reads naturally for the
-    // originating source (retry vs. reconnect).
+    // makeRetryTurnHandler builds the onclick body shared by the diagnostic
+    // recovery buttons. The failure-banner wording is parameterised so it
+    // reads naturally for the originating source.
     //
     // SerfAppwire.startTurn is the only supported path: the hub's auto-resume
     // layer (katas t65c / ws5f / xcas) hangs off MethodTurnStart, so a fetch
@@ -4429,7 +4469,9 @@
           this.appendBanner("error", "send is not available for this session", { source: "hub", title: "Hub send error" });
           return;
         }
-        this.lastSubmittedTurn = this.retryPayload(text, items);
+        // Snapshot before the awaited startTurn/send so a provider failure
+        // arriving during that await recovers this turn, not the previous one.
+        this.snapshotSubmittedTurn(this.retryPayload(text, items));
         if (sendBtn) sendBtn.disabled = true;
         try {
           // Snapshot the items so a successful response can clear the bag

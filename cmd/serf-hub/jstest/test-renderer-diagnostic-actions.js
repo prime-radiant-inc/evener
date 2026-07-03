@@ -1,11 +1,11 @@
 // Coverage for SerfRenderer.buildDiagnosticActions — verifies that the
-// diagnostic card produced by appendBanner() carries the correct retry button
-// for both provider-source and hub-source errors.
+// diagnostic card produced by appendBanner() carries the correct recovery
+// button for both provider-source and hub-source errors.
 //
-// Provider-source errors → "Retry turn" (existing behavior).
+// Provider-source errors → "Retry turn" before work, "Continue" after work.
 // Hub-source errors      → "Reconnect & retry" (kata e465, added once the
 // hub's auto-resume layer in t65c/ws5f/xcas could relaunch a dead daemon on
-// the next startTurn).  The onclick body is shared with the Retry turn flow.
+// the next startTurn).
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
 
@@ -165,6 +165,115 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
     pass(startTurnCalls[0].images[0].name === "shot.png",
       "hub onclick: wrong image payload " + JSON.stringify(startTurnCalls[0].images[0]));
   }
+
+  // Provider failures after partial agent work must continue from the existing
+  // transcript instead of replaying the original user turn.
+  renderer.handleData("USER_INPUT", { text: "do it now" });
+  renderer.handleData("TOOL_CALL_START", { call_id: "tool_1", tool_name: "shell", arguments_json: "{}" });
+  renderer.handleData("TOOL_CALL_END", { call_id: "tool_1", tool_name: "shell", output: "partial progress" });
+  const continueActions = renderer.buildDiagnosticActions({
+    severity: "error", source: "provider", message: "stream ended without finish event",
+  });
+  pass(Array.isArray(continueActions) && continueActions.length === 1,
+    "provider after partial work: expected single action, got " + JSON.stringify(continueActions));
+  if (continueActions && continueActions.length) {
+    pass(continueActions[0].label === "Continue",
+      "provider after partial work: label should be 'Continue', got " + continueActions[0].label);
+    startTurnCalls.length = 0;
+    await continueActions[0].onclick();
+    pass(startTurnCalls.length === 1, "continue onclick should call startTurn once, got " + startTurnCalls.length);
+    if (startTurnCalls.length) {
+      pass(startTurnCalls[0].text === "continue",
+        "continue onclick should send a continuation prompt, got " + startTurnCalls[0].text);
+      pass(Array.isArray(startTurnCalls[0].images) && startTurnCalls[0].images.length === 0,
+        "continue onclick should not replay attachments, got " + JSON.stringify(startTurnCalls[0].images));
+    }
+  }
+
+  // A background job (delegate/shell) started in an earlier turn can emit a
+  // standalone JOB_FINISHED during a fresh turn that has produced no model
+  // output. That must NOT be counted as current-turn work: the correct
+  // recovery for a provider failure here is still "Retry turn" with the
+  // original payload, not a continuation that discards the prompt+attachments.
+  renderer.handleData("USER_INPUT", {
+    text: "kick off the build",
+    images: [{ type: "image", media_type: "image/png", data: "xyz", name: "spec.png" }],
+  });
+  renderer.handleData("JOB_FINISHED", { job_id: "job_prev", job_type: "delegate", status: "completed" });
+  const crossTurnJobActions = renderer.buildDiagnosticActions({
+    severity: "error", source: "provider", message: "stream ended without finish event",
+  });
+  pass(Array.isArray(crossTurnJobActions) && crossTurnJobActions.length === 1,
+    "provider after cross-turn job finish: expected single action, got " + JSON.stringify(crossTurnJobActions));
+  if (crossTurnJobActions && crossTurnJobActions.length) {
+    pass(crossTurnJobActions[0].label === "Retry turn",
+      "cross-turn JOB_FINISHED must not count as work: label should be 'Retry turn', got " + crossTurnJobActions[0].label);
+    startTurnCalls.length = 0;
+    await crossTurnJobActions[0].onclick();
+    if (startTurnCalls.length) {
+      pass(startTurnCalls[0].text === "kick off the build",
+        "retry onclick should replay the original prompt, got " + startTurnCalls[0].text);
+      pass(Array.isArray(startTurnCalls[0].images) && startTurnCalls[0].images.length === 1,
+        "retry onclick should preserve the original attachment, got " + JSON.stringify(startTurnCalls[0].images));
+    }
+  }
+
+  // A new turn submitted through the optimistic local-echo path
+  // (appendLocalUserMessage) fires before the server round-trips
+  // USER_INPUT/TURN_STARTED. It must reset the per-turn work flag, or a
+  // provider failure racing ahead of that echo inherits the previous turn's
+  // "has work" state and wrongly offers Continue for the fresh prompt.
+  renderer.handleData("USER_INPUT", { text: "first turn" });
+  renderer.handleData("TOOL_CALL_START", { call_id: "tool_leak", tool_name: "shell", arguments_json: "{}" });
+  renderer.handleData("TOOL_CALL_END", { call_id: "tool_leak", tool_name: "shell", output: "done" });
+  renderer.appendLocalUserMessage(
+    "second turn",
+    [{ type: "image", media_type: "image/png", sha256: "sha-next", name: "next.png" }],
+    "",
+    renderer.userMessageCount(),
+  );
+  const leakActions = renderer.buildDiagnosticActions({
+    severity: "error", source: "provider", message: "stream ended without finish event",
+  });
+  pass(Array.isArray(leakActions) && leakActions.length === 1 && leakActions[0].label === "Retry turn",
+    "optimistic send must reset the work flag: label should be 'Retry turn', got " + (leakActions && leakActions[0] && leakActions[0].label));
+  if (leakActions && leakActions.length) {
+    startTurnCalls.length = 0;
+    await leakActions[0].onclick();
+    if (startTurnCalls.length) {
+      pass(startTurnCalls[0].text === "second turn",
+        "retry after optimistic send should replay the new prompt, got " + startTurnCalls[0].text);
+      pass(Array.isArray(startTurnCalls[0].images) && startTurnCalls[0].images.length === 1,
+        "retry after optimistic send should carry the new attachment, got " + JSON.stringify(startTurnCalls[0].images));
+    }
+  }
+
+  // The submit handler snapshots the new turn's payload before awaiting
+  // startTurn/send. snapshotSubmittedTurn must reset the work flag at that
+  // point, so a provider failure arriving during the await recovers this turn
+  // — not the previous one — via Retry with the freshly submitted payload.
+  renderer.handleData("USER_INPUT", { text: "prior turn" });
+  renderer.handleData("ASSISTANT_TEXT_START", {});
+  renderer.handleData("ASSISTANT_TEXT_DELTA", { delta: "working" });
+  renderer.snapshotSubmittedTurn(
+    renderer.retryPayload("await-race turn", [{ type: "image", media_type: "image/png", sha256: "sha-race", name: "race.png" }]),
+  );
+  const raceActions = renderer.buildDiagnosticActions({
+    severity: "error", source: "provider", message: "stream ended without finish event",
+  });
+  pass(Array.isArray(raceActions) && raceActions.length === 1 && raceActions[0].label === "Retry turn",
+    "snapshotSubmittedTurn must reset the work flag: label should be 'Retry turn', got " + (raceActions && raceActions[0] && raceActions[0].label));
+  if (raceActions && raceActions.length) {
+    startTurnCalls.length = 0;
+    await raceActions[0].onclick();
+    if (startTurnCalls.length) {
+      pass(startTurnCalls[0].text === "await-race turn",
+        "retry during send-await should replay the new prompt, got " + startTurnCalls[0].text);
+    }
+  }
+
+  renderer.handleData("USER_INPUT", { text: "say hello" });
+  renderer.lastSubmittedTurn = { text: "say hello", items: [{ type: "image", media_type: "image/png", data: "abc", name: "shot.png" }] };
 
   // ------------------------------------------------------------------
   // 6. Verify failure-banner wording adapts to the source label.

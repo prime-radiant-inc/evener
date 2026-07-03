@@ -69,13 +69,21 @@ func TestContinuationSecretRejectsWrongPermissions(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(path, bytes.Repeat([]byte{1}, 32), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	writeContinuationSecretForMode(t, path, bytes.Repeat([]byte{1}, 32), 0o644)
 
 	_, err := LoadOrCreateContinuationSecret(stateDir)
 	if !errors.Is(err, ErrContinuationSecretUnavailable) {
 		t.Fatalf("error = %v, want ErrContinuationSecretUnavailable", err)
+	}
+}
+
+func writeContinuationSecretForMode(t testing.TB, path string, secret []byte, mode os.FileMode) {
+	t.Helper()
+	if err := os.WriteFile(path, secret, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatalf("Chmod: %v", err)
 	}
 }
 
