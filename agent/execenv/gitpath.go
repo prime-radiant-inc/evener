@@ -2,10 +2,11 @@ package execenv
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"primeradiant.com/serf/internal/gitpath"
 )
 
 // GitRootOrEmpty returns the absolute path of the git working-tree root
@@ -82,73 +83,33 @@ func mainRepoRootUncached(env ExecutionEnvironment, cwd string) string {
 // The walk uses os directly, not the env's confined file API: when serf is
 // launched in a repo subdirectory, .git lives above the env RootDir, where the
 // env would reject the read and silently break resolution.
+//
+// This is a thin wrapper around internal/gitpath.StructuralMainRoot, kept
+// under its established local name so this package's tests and fuzz targets
+// can keep referencing it directly.
 func structuralMainRoot(cwd string) (string, bool) {
-	dir := filepath.Clean(cwd)
-	for {
-		gitPath := filepath.Join(dir, ".git")
-		info, err := os.Stat(gitPath)
-		if err == nil {
-			if info.IsDir() {
-				return resolveClean(dir), true // main checkout
-			}
-			if content, rerr := os.ReadFile(gitPath); rerr == nil {
-				if root, ok := mainRootFromGitdirPointer(string(content), dir); ok {
-					return resolveClean(root), true
-				}
-			}
-			// .git is a file but not a linked-worktree pointer (submodule, or
-			// unreadable): defer to the git-binary fallback.
-			return "", false
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", false // reached the filesystem root without a .git entry
-		}
-		dir = parent
-	}
+	return gitpath.StructuralMainRoot(cwd)
 }
 
 // mainRootFromGitdirPointer parses a linked worktree's ".git" pointer file
 // content ("gitdir: <path>") and returns the main repository root iff the
 // pointer resolves to the ".git/worktrees/<id>" shape. Relative pointer paths
 // are resolved against ancestorDir (the directory holding the .git file). It is
-// a pure function (no filesystem access) so it is trivially fuzzable and
-// extractable into internal/gitpath.
+// a pure function (no filesystem access), so it is trivially fuzzable.
+//
+// Thin wrapper around internal/gitpath.MainRootFromGitdirPointer; see
+// structuralMainRoot for why the wrapper exists.
 func mainRootFromGitdirPointer(pointerContent, ancestorDir string) (string, bool) {
-	gitdir, ok := parseGitdirPointer(pointerContent)
-	if !ok {
-		return "", false
-	}
-	if !filepath.IsAbs(gitdir) {
-		gitdir = filepath.Join(ancestorDir, gitdir)
-	}
-	gitdir = filepath.Clean(gitdir)
-	worktreesDir := filepath.Dir(gitdir)
-	if filepath.Base(worktreesDir) != "worktrees" {
-		// A submodule points at ".git/modules/<sub>" (parent "modules"); anything
-		// else is not a standard linked worktree. Defer to the git binary.
-		return "", false
-	}
-	mainRoot := filepath.Dir(filepath.Dir(worktreesDir)) // worktrees -> .git -> root
-	if mainRoot == "" || mainRoot == "." {
-		return "", false
-	}
-	return mainRoot, true
+	return gitpath.MainRootFromGitdirPointer(pointerContent, ancestorDir)
 }
 
 // parseGitdirPointer extracts the path from the first "gitdir: <path>" line of a
 // git pointer file. Returns ok=false when no non-empty gitdir line is present.
+//
+// Thin wrapper around internal/gitpath.ParseGitdirPointer; see
+// structuralMainRoot for why the wrapper exists.
 func parseGitdirPointer(content string) (string, bool) {
-	for _, line := range strings.Split(content, "\n") {
-		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "gitdir:")
-		if !ok {
-			continue
-		}
-		if p := strings.TrimSpace(rest); p != "" {
-			return p, true
-		}
-	}
-	return "", false
+	return gitpath.ParseGitdirPointer(content)
 }
 
 // gitBinaryMainRoot is the fallback for cases the structural parse misses (moved
@@ -194,55 +155,31 @@ func gitBinaryMainRoot(env ExecutionEnvironment, cwd string) string {
 // is joined only for the relative case (joining an absolute common with cwd
 // would mangle it into "<cwd>/<abs>"). Symlinks in the result are resolved
 // best-effort.
+//
+// Thin wrapper around internal/gitpath.MainRootCandidateFromCommonDir; see
+// structuralMainRoot for why the wrapper exists.
 func mainRootCandidateFromCommonDir(cwd, common string) string {
-	if !filepath.IsAbs(common) {
-		common = filepath.Join(cwd, common)
-	}
-	common = resolveClean(common)
-	root := filepath.Dir(common)
-	if root == "" || root == "." {
-		return ""
-	}
-	return root
+	return gitpath.MainRootCandidateFromCommonDir(cwd, common)
 }
 
 // gitEntryResolvesToCommon reports whether candidate holds a .git entry that
 // resolves back to the given common .git dir. This distinguishes a genuine main
 // repo root (candidate/.git IS the common dir) from a submodule's fake candidate
 // (<super>/.git/modules, which has no .git entry of its own).
+//
+// Thin wrapper around internal/gitpath.GitEntryResolvesToCommon; see
+// structuralMainRoot for why the wrapper exists.
 func gitEntryResolvesToCommon(candidate, common string) bool {
-	gitPath := filepath.Join(candidate, ".git")
-	info, err := os.Stat(gitPath)
-	if err != nil {
-		return false
-	}
-	common = resolveClean(common)
-	if info.IsDir() {
-		return resolveClean(gitPath) == common
-	}
-	// A .git pointer file (linked worktree of a worktree, or moved worktree):
-	// the pointer is <common>/worktrees/<id>, two levels below the common dir.
-	content, err := os.ReadFile(gitPath)
-	if err != nil {
-		return false
-	}
-	gitdir, ok := parseGitdirPointer(string(content))
-	if !ok {
-		return false
-	}
-	if !filepath.IsAbs(gitdir) {
-		gitdir = filepath.Join(candidate, gitdir)
-	}
-	return resolveClean(filepath.Dir(filepath.Dir(gitdir))) == common
+	return gitpath.GitEntryResolvesToCommon(candidate, common)
 }
 
 // resolveClean returns the symlink-resolved, cleaned form of p, falling back to
 // a plain Clean when the path cannot be resolved (e.g. it does not exist).
+//
+// Thin wrapper around internal/gitpath.ResolveClean; see structuralMainRoot
+// for why the wrapper exists.
 func resolveClean(p string) string {
-	if r, err := filepath.EvalSymlinks(p); err == nil {
-		return filepath.Clean(r)
-	}
-	return filepath.Clean(p)
+	return gitpath.ResolveClean(p)
 }
 
 // DirsFromRootToCwd returns the chain of directories from root down to cwd
