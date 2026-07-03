@@ -332,6 +332,14 @@ type spawnConfig struct {
 	allowedToolNames        []string
 	deniedToolNames         []string
 	communicateOutputSchema map[string]any
+
+	// isolation is "worktree" for a delegate spawned with
+	// delegate(isolation:"worktree") (native worktree tools spec §9); empty
+	// otherwise. session_init.go reads it to unconditionally deny
+	// manage_worktree after (and regardless of) the base tool policy,
+	// including all-tools agent types — the one piece of §9 step 2's deny
+	// that allowedToolNames/deniedToolNames cannot express on their own.
+	isolation string
 }
 
 func (c *SessionConfig) applyDefaults() {

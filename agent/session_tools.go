@@ -52,6 +52,14 @@ const ctxWatchParent ctxKey = "watchParent"
 // into spawn plumbing so parent-source watches can route back to that child.
 const ctxParentDelegateID ctxKey = "parentDelegateID"
 
+// ctxIsolation carries delegate(isolation:"worktree") into child session spawn
+// plumbing without changing prepareSubagentRun's signature (native worktree
+// tools spec §9). createDelegate sets it after successfully creating the
+// delegate's isolation lane; prepareSubagentRun copies it onto the child's
+// spawnConfig, which session_init.go reads to unconditionally deny
+// manage_worktree regardless of the agent type's base tool policy.
+const ctxIsolation ctxKey = "isolation"
+
 const (
 	defaultAgentName = "default"
 )

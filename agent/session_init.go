@@ -600,6 +600,16 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	for _, name := range s.cfg.spawn.deniedToolNames {
 		s.reg.Remove(name)
 	}
+	// An isolation delegate's manage_worktree deny must survive both the
+	// spawn path and delegate restore, and must win over an all-tools agent
+	// type (native worktree tools spec §9 lifecycle step 2's named new
+	// plumbing) — so it is applied here, after and regardless of the
+	// allowed/denied policy above, rather than folded into baseSubagentToolPolicy's
+	// deny list (which frozenSubagentToolNames drops on restore, and which
+	// the allTools branch skips entirely).
+	if s.cfg.spawn.isolation == "worktree" {
+		s.reg.Remove("manage_worktree")
+	}
 	if s.delegationAllowance <= 0 {
 		for _, name := range rootOnlySubagentTools() {
 			if s.cfg.spawn.parentWatchGranted && name == "job_watch" {

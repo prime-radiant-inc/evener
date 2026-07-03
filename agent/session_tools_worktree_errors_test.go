@@ -26,12 +26,13 @@ import (
 // fixtures (same package).
 //
 // Row 8 ("delegate_send to a delegate whose isolation worktree was
-// disposed") is OUT OF SCOPE: it belongs to §9 delegate worktree isolation,
-// which is future work (Phase 4+ per .superpowers/sdd/task-17-brief.md —
-// Tasks 1-17 cover §1-§8 only). No `Isolation`/delegate-worktree plumbing
-// exists in this codebase yet (verified: no `isolation worktree was
-// disposed` or `Isolation` field anywhere under agent/). There is nothing to
-// test.
+// disposed") is STILL OUT OF SCOPE here: Task 21 built spawn/restore/revival
+// (creation, the manage_worktree deny, and the §7 re-lock rule — see
+// job_delegate_isolation_test.go) and the `DelegateRestoreDescriptor.Isolation`
+// field now exists, but close-time disposal (spec §9 lifecycle steps 4-5,
+// which is what actually produces a "disposed" isolation worktree) is not
+// built yet — that is Task 22. There is nothing to test for this row until
+// disposal exists.
 
 // --- Row 1: not in a git repo -> create errors with a clear message ---
 

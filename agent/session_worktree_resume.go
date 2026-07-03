@@ -165,6 +165,17 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) {
 // isGitRepo is the caller's already-computed snapshotGit result (session_init.go),
 // passed in to skip the ResolveMainRepoRoot git fork entirely for the common
 // non-repo case.
+//
+// Invariant carried from Task 18 into Task 21: this scoping was sound when
+// every spawn path hardcoded workingDir="" (a child always inherited
+// whatever env the parent happened to be in, never a distinct one of its
+// own); §9 isolation delegates now root the CHILD env at its OWN managed
+// worktree (createDelegateWorktree, job_delegate.go createDelegate). The
+// parentSessionID != "" check above still holds unconditionally for such a
+// child — createDelegateWorktree already takes the serf:dlg: lock atomically
+// at `git worktree add` time on the PARENT side, before the child spawns, so
+// there is no unlocked window for this function to (mis)detect on the
+// child's own init.
 func (s *Session) applyInitInsideWorktreeLock(isGitRepo bool) {
 	if !isGitRepo || s.cfg.spawn.parentSessionID != "" {
 		return

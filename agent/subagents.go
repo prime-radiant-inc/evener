@@ -111,6 +111,7 @@ type preparedSubagentRun struct {
 	frozenSkillBodies  []string
 	workingDir         string
 	localEnvPolicy     string
+	isolation          string
 	resultSchema       map[string]any
 	explicitToolGrants []string
 	// treeSlot is the tree-counter reservation claimed by prepareSubagentRun for
@@ -391,6 +392,9 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	if delegateID, ok := ctx.Value(ctxParentDelegateID).(string); ok {
 		subCfg.spawn.parentDelegateID = delegateID
 	}
+	if isolation, ok := ctx.Value(ctxIsolation).(string); ok {
+		subCfg.spawn.isolation = isolation
+	}
 	// The granted delegation_allowance (validated by createDelegate against this
 	// session's own allowance) shapes the child's grant capability. The delegate
 	// path always sets it (0 = leaf); other spawn paths leave it at the inherited
@@ -626,6 +630,7 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		frozenSkillBodies:  append([]string(nil), activatedSkillBodies...),
 		workingDir:         subEnv.WorkingDirectory(),
 		localEnvPolicy:     localEnvPolicyName(subEnv),
+		isolation:          subCfg.spawn.isolation,
 		resultSchema:       cloneMap(subCfg.spawn.communicateOutputSchema),
 		explicitToolGrants: append([]string(nil), canonicalGrantTools...),
 		treeSlot:           treeSlot,

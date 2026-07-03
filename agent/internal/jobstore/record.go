@@ -60,35 +60,42 @@ const (
 
 // DelegateRestoreDescriptor carries the durable state needed to restore a delegate job.
 type DelegateRestoreDescriptor struct {
-	Version             int                `json:"version"`
-	ChildSessionID      string             `json:"child_session_id"`
-	TranscriptRef       string             `json:"transcript_ref"`
-	ParentSessionID     string             `json:"parent_session_id,omitempty"`
-	ParentJobID         string             `json:"parent_job_id,omitempty"`
-	OwnerSessionID      string             `json:"owner_session_id,omitempty"`
-	VisibleSessionID    string             `json:"visible_session_id,omitempty"`
-	OriginTurnID        string             `json:"origin_turn_id,omitempty"`
-	OriginToolCallID    string             `json:"origin_tool_call_id,omitempty"`
-	OriginItemID        string             `json:"origin_item_id,omitempty"`
-	Task                string             `json:"task,omitempty"`
-	AgentType           string             `json:"agent_type,omitempty"`
-	RequestedModel      string             `json:"requested_model,omitempty"`
-	ResolvedProfileID   string             `json:"resolved_profile_id,omitempty"`
-	ResolvedModel       string             `json:"resolved_model,omitempty"`
-	ReasoningEffort     string             `json:"reasoning_effort,omitempty"`
-	AgentName           string             `json:"agent_name,omitempty"`
-	FrozenRolePrompt    string             `json:"frozen_role_prompt,omitempty"`
-	FrozenTaskPrompt    string             `json:"frozen_task_prompt,omitempty"`
-	FrozenToolNames     []string           `json:"frozen_tool_names,omitempty"`
-	FrozenSkillNames    []string           `json:"frozen_skill_names,omitempty"`
-	FrozenSkillBodies   []string           `json:"frozen_skill_bodies,omitempty"`
-	WorkingDir          string             `json:"working_dir,omitempty"`
-	LocalEnvPolicy      string             `json:"local_env_policy,omitempty"`
-	ResultSchema        any                `json:"result_schema,omitempty"`
-	ExplicitToolGrants  []string           `json:"explicit_tool_grants,omitempty"`
-	DelegationAllowance int                `json:"delegation_allowance,omitempty"`
-	ParentWatchGranted  bool               `json:"parent_watch_granted,omitempty"`
-	Provenance          *provenance.Causal `json:"provenance,omitempty"`
+	Version             int      `json:"version"`
+	ChildSessionID      string   `json:"child_session_id"`
+	TranscriptRef       string   `json:"transcript_ref"`
+	ParentSessionID     string   `json:"parent_session_id,omitempty"`
+	ParentJobID         string   `json:"parent_job_id,omitempty"`
+	OwnerSessionID      string   `json:"owner_session_id,omitempty"`
+	VisibleSessionID    string   `json:"visible_session_id,omitempty"`
+	OriginTurnID        string   `json:"origin_turn_id,omitempty"`
+	OriginToolCallID    string   `json:"origin_tool_call_id,omitempty"`
+	OriginItemID        string   `json:"origin_item_id,omitempty"`
+	Task                string   `json:"task,omitempty"`
+	AgentType           string   `json:"agent_type,omitempty"`
+	RequestedModel      string   `json:"requested_model,omitempty"`
+	ResolvedProfileID   string   `json:"resolved_profile_id,omitempty"`
+	ResolvedModel       string   `json:"resolved_model,omitempty"`
+	ReasoningEffort     string   `json:"reasoning_effort,omitempty"`
+	AgentName           string   `json:"agent_name,omitempty"`
+	FrozenRolePrompt    string   `json:"frozen_role_prompt,omitempty"`
+	FrozenTaskPrompt    string   `json:"frozen_task_prompt,omitempty"`
+	FrozenToolNames     []string `json:"frozen_tool_names,omitempty"`
+	FrozenSkillNames    []string `json:"frozen_skill_names,omitempty"`
+	FrozenSkillBodies   []string `json:"frozen_skill_bodies,omitempty"`
+	WorkingDir          string   `json:"working_dir,omitempty"`
+	LocalEnvPolicy      string   `json:"local_env_policy,omitempty"`
+	ResultSchema        any      `json:"result_schema,omitempty"`
+	ExplicitToolGrants  []string `json:"explicit_tool_grants,omitempty"`
+	DelegationAllowance int      `json:"delegation_allowance,omitempty"`
+	ParentWatchGranted  bool     `json:"parent_watch_granted,omitempty"`
+	// Isolation is "worktree" when this delegate was spawned with
+	// delegate(isolation:"worktree") — WorkingDir then points at the
+	// delegate's own managed worktree lane rather than the parent's plain
+	// cwd (native worktree tools spec §9 lifecycle step 1). Both the spawn
+	// path and the restore path (session_init.go) key the unconditional
+	// manage_worktree deny off this field; empty for an ordinary delegate.
+	Isolation  string             `json:"isolation,omitempty"`
+	Provenance *provenance.Causal `json:"provenance,omitempty"`
 }
 
 // DelegateRecord is the folded durable state for a delegate handle.

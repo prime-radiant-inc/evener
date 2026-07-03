@@ -83,7 +83,7 @@ func TestW2Dlg_DelegateTerminalResult_ReadFailed(t *testing.T) {
 		TranscriptRef: encodeRef("", "child_gone"),
 	}}
 
-	res := delegateTerminalResult(jm, run)
+	res := delegateTerminalResult(nil, jm, run)
 	if res.Status != jobstore.StatusFailed || res.Reason != "read_failed" || res.Err == nil {
 		t.Fatalf("result = (%q, %q, err=%v), want (failed, read_failed, non-nil)", res.Status, res.Reason, res.Err)
 	}

@@ -442,7 +442,7 @@ func TestSendDelegateMessageResumedJobCopiesCompleteDelegateDescriptor(t *testin
 		t.Fatalf("trackAndLaunchPreparedSubagent: %v", err)
 	}
 	finalizeErr, _ := sess.bridgeDelegateFinalization(run.rec.JobID, childID, prepared.sub, true)
-	first := waitForDelegateFinalization(context.Background(), sess.jobManager, run, finalizeErr)
+	first := waitForDelegateFinalization(context.Background(), sess, sess.jobManager, run, finalizeErr)
 	if first.Err != nil || first.Status != jobstore.StatusCompleted {
 		t.Fatalf("first delegate result = %+v, want completed", first)
 	}

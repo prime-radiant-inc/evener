@@ -520,6 +520,7 @@ func TestDelegateRestoreDescriptorSurvivesStoreReopenAndFold(t *testing.T) {
 		LocalEnvPolicy:     "core_only",
 		ResultSchema:       map[string]any{"type": "object", "required": []any{"message"}},
 		ExplicitToolGrants: []string{"shell"},
+		Isolation:          "worktree",
 	}
 	if err := store.Append(Event{
 		Kind:             EventJobStarted,
@@ -573,7 +574,8 @@ func TestDelegateRestoreDescriptorSurvivesStoreReopenAndFold(t *testing.T) {
 		got.WorkingDir != desc.WorkingDir ||
 		got.LocalEnvPolicy != desc.LocalEnvPolicy ||
 		got.ParentWatchGranted != desc.ParentWatchGranted ||
-		got.DelegationAllowance != desc.DelegationAllowance {
+		got.DelegationAllowance != desc.DelegationAllowance ||
+		got.Isolation != desc.Isolation {
 		t.Fatalf("reopened descriptor = %+v, want %+v", got, desc)
 	}
 	if len(got.FrozenToolNames) != 2 || got.FrozenToolNames[0] != "read_file" || got.FrozenToolNames[1] != "task_list" {

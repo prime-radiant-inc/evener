@@ -130,6 +130,11 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 				"max_wait_ms":          map[string]any{"type": "integer", "description": "0 (default): return the delegate_id and started job_id immediately; you are notified on completion. >0: wait inline up to this many ms; a timeout leaves the job running."},
 				"delegation_allowance": map[string]any{"type": "integer", "description": "0 (default): a leaf delegate that cannot itself delegate. >0: the delegate may delegate, granting onward allowances strictly smaller than this; must be strictly less than your own allowance. The allowance only takes effect if the chosen agent_type actually has the `delegate` tool: the built-in `subagent` role is a non-delegating leaf, so a >0 allowance on it is a silent no-op. For a multi-level tree, omit agent_type (the default role can delegate)."},
 				"watch_parent":         map[string]any{"type": "boolean", "description": "Grant this child permission to observe your session with job_watch(source=\"parent\"). This does not grant delegation or any transitive watch permission."},
+				"isolation": map[string]any{
+					"type":        "string",
+					"enum":        []string{"worktree"},
+					"description": "Absent (default): the delegate runs in your current directory. \"worktree\": give the delegate its own managed git worktree lane (branched from your current HEAD), isolated from your checkout and every other lane; only valid when you are in a local git checkout. The delegate cannot use manage_worktree itself.",
+				},
 				"result_schema": map[string]any{
 					"type":                 "object",
 					"description":          "JSON-Schema-like object for structured delegate results. Serf validates it for initial and resumed turns, surfaces structured_result when valid, and reports structured_result_reason when invalid.",
