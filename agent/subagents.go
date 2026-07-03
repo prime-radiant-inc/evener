@@ -62,6 +62,13 @@ Your job is to complete the task and report your findings.`
 
 var rootOnlyJobPresenceTools = []string{"delegate", "job_watch"}
 
+// rootOnlyWorktreeTools are worktree lifecycle tools reserved for the root
+// session. Delegates receive worktree isolation via delegate(isolation:"worktree"),
+// which the parent-side harness manages; no child flow needs to call
+// manage_worktree, and a child that could would be able to force-remove
+// sibling worktrees the parent created.
+var rootOnlyWorktreeTools = []string{"manage_worktree"}
+
 type subagent struct {
 	id   string
 	sess *Session
@@ -156,7 +163,8 @@ func removeStrings(items, removals []string) []string {
 }
 
 func rootOnlySubagentTools() []string {
-	return appendUniqueStrings(append([]string(nil), rootOnlyJobPresenceTools...), rootOnlyJobControlTools...)
+	all := appendUniqueStrings(append([]string(nil), rootOnlyJobPresenceTools...), rootOnlyJobControlTools...)
+	return appendUniqueStrings(all, rootOnlyWorktreeTools...)
 }
 
 func isRootOnlyJobPresenceTool(name string) bool {

@@ -656,6 +656,9 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	if !isRootOnlySubagentTool("job_watch") {
 		t.Fatal("job_watch must be a root-only subagent tool")
 	}
+	if !isRootOnlySubagentTool("manage_worktree") {
+		t.Fatal("manage_worktree must be a root-only subagent tool")
+	}
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -674,6 +677,9 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	if child.reg.Get("job_watch") != nil {
 		t.Fatal("depth>0 child must not have job_watch registered")
 	}
+	if child.reg.Get("manage_worktree") != nil {
+		t.Fatal("depth>0 child must not have manage_worktree registered")
+	}
 	if child.reg.Get("delegate_send") == nil {
 		t.Fatal("depth>0 child must keep delegate_send registered")
 	}
@@ -684,6 +690,9 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	}
 	if hasCachedCallableToolDefinition(child, "job_watch") {
 		t.Fatal("depth>0 child must not advertise job_watch")
+	}
+	if hasCachedCallableToolDefinition(child, "manage_worktree") {
+		t.Fatal("depth>0 child must not advertise manage_worktree")
 	}
 	if !hasCachedCallableToolDefinition(child, "delegate_send") {
 		t.Fatal("depth>0 child must advertise delegate_send")
