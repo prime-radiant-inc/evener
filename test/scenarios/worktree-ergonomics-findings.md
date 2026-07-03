@@ -131,6 +131,43 @@ behavior materially; the stronger model succeeds through capability and is
 less sensitive to it. Both now reach the right end state; the small model's
 *path* is much cleaner.
 
+## Follow-up round (design-review recommendations)
+
+A Fable design review recommended shipping fixes and closing three live
+coverage gaps. All done:
+
+**Shipped code fixes (rev 10):**
+- **F3 (was open):** split `force` from a new `force_dirty` so forcing past an
+  ownership/merge gate can no longer collaterally discard an uncommitted edit.
+  The dirty refusal now names `force_dirty`. Regression test added.
+- **F1 (was open):** removed the cross-session *creator* refusal for unlocked
+  lanes — the occupancy lock is the real safety, and the guard was pure
+  friction in routine cross-session cleanup. Committed work stays protected by
+  the merge gate, uncommitted by `force_dirty`. Spec §5/§8/§2 updated.
+- Description now states merge-back is manual (no merge op).
+- Refactors: `worktreeCreateCoreResult` struct (no more 4 positional strings);
+  `metaDirForLane`/`metaDirForProject` helpers.
+
+**New live evals — all PASS (the previously-untested high-risk paths):**
+- **Delegate isolation, changed lane** (`worktree-delegate-isolation.md`, Run
+  A): a delegate committed `Farewell()` in its isolation lane; after parent
+  close the branch + worktree + commit all survived. The SEV data-loss
+  falsification (changed lane silently disposed) did NOT fire — changed →
+  kept + resumable, correctly.
+- **Delegate isolation, unchanged lane** (Run B): a read-only delegate's lane
+  was fully auto-removed at close (no dir, no branch, no sidecar). No leak.
+- **Resume re-entry** (`worktree-resume-reentry.md`): a killed-then-resumed
+  session re-entered its lane — `pwd` was the worktree and the uncommitted
+  BEACON file from the first run was present, proving same-lane re-entry (not
+  a fresh create). Minor note: the model narrated re-entry as "worktree
+  created"; harmless but slightly misleading wording.
+- **Foreign-lock legibility** (`worktree-foreign-lock-legibility.md`): a
+  switch into a lane locked by another session id was refused with the owner
+  named; kimi read it, did not thrash, explained the two-writer rationale
+  correctly, and the lane was neither entered nor removed. Minor: the model
+  inferred "another *active* session" — a stale lock reads the same, so the
+  message could hedge liveness. Not worth changing now.
+
 ## Reproduction
 
 Cards: `test/scenarios/worktree-*.md`. Harness + transcripts under
