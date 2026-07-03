@@ -110,6 +110,27 @@ tool tolerates unknown/empty args) but notable: the small model treats the
 schema as "populate everything." Not worth changing unless it causes friction
 elsewhere.
 
+## Post-fix validation (F2 + F4)
+
+Re-ran S3 on both tiers with the reworded `prune` description and the
+one-line-per-lane `list` summary:
+
+- **gpt-5.4-mini** (the tier that leans on the tool's own text): read the new
+  summary (`"untouched-lane (0 ahead, clean, merged); work-lane (1 ahead,
+  clean, unmerged)"`) with **no shell-out**, then reached for **`prune`** —
+  removing the empty lane and skipping the one with work in one call, cleanly
+  sidestepping the ownership guard that blocked it before. Went from "partial,
+  blocked" to "correct and complete." Both fixes fired as intended.
+- **kimi**: still verified via raw `git log`/`git rev-list` and drove
+  `remove`+`force`. The strong model is capable enough to hand-roll regardless
+  and didn't adopt either change — a fair datapoint that F2/F4 help the weaker
+  tier most. Correct end state either way.
+
+Takeaway: the description and result-message wording move the *weaker* model's
+behavior materially; the stronger model succeeds through capability and is
+less sensitive to it. Both now reach the right end state; the small model's
+*path* is much cleaner.
+
 ## Reproduction
 
 Cards: `test/scenarios/worktree-*.md`. Harness + transcripts under
