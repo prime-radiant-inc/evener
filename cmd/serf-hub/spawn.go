@@ -436,7 +436,12 @@ func resolveSerfStateDirWithStateHome(workDir, override, stateHome string) strin
 			wd = got
 		}
 	}
-	return agent.RuntimeDirWithStateHome(cmdutil.GitOriginURLFromDir(wd), wd, "", strings.TrimSpace(stateHome))
+	// Key off the resolved main repo root, not the raw wd: for an origin-less
+	// repo, spawning from a linked worktree must compute the same session
+	// state dir as spawning from the main checkout. See
+	// cmdutil.ResolveStateKeyDir and
+	// docs/superpowers/specs/2026-07-02-native-worktree-tools-design.md §1.
+	return agent.RuntimeDirWithStateHome(cmdutil.GitOriginURLFromDir(wd), cmdutil.ResolveStateKeyDir(wd), "", strings.TrimSpace(stateHome))
 }
 
 // validateProviderCredentials checks that the credentials store has a value
