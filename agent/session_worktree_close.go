@@ -118,7 +118,7 @@ func (s *Session) disposeOneDelegateLane(local *execenv.LocalExecutionEnvironmen
 
 	// The sidecar carries the recorded base SHA the unchanged predicate needs.
 	// Without it (unknown provenance) the lane is not ours to judge — leave it.
-	metaDir := filepath.Join(filepath.Dir(lanePath), ".meta")
+	metaDir := metaDirForLane(lanePath)
 	sc, scErr := worktree.ReadSidecar(metaDir, lane.delegateID)
 	if scErr != nil {
 		return "", false

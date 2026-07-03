@@ -597,6 +597,14 @@ func pathEqualOrUnder(candidate, target string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+// metaDirForProject returns the sidecar directory for a project's managed
+// worktree tree: <projectDir>/.meta.
+func metaDirForProject(projectDir string) string { return filepath.Join(projectDir, ".meta") }
+
+// metaDirForLane returns the sidecar directory given a lane's worktree path
+// (its parent is the project dir): <dir(lanePath)>/.meta.
+func metaDirForLane(lanePath string) string { return filepath.Join(filepath.Dir(lanePath), ".meta") }
+
 // worktreeCreateCoreResult carries worktreeCreateCore's outputs; a struct
 // rather than four positional strings so callers can't transpose them.
 type worktreeCreateCoreResult struct {
@@ -649,7 +657,7 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 	worktreeRoot := s.worktreeRootFor(active, s.currentStateDir(), canonicalMain)
 	projectDir := filepath.Join(worktreeRoot, projectID)
 	worktreePath := filepath.Join(projectDir, filepath.FromSlash(name))
-	metaDir := filepath.Join(projectDir, ".meta")
+	metaDir := metaDirForProject(projectDir)
 
 	// Step 4: validate name (regex, pure — spec §8: "name fails validation ->
 	// error before any git call") BEFORE the git version preflight (spec §3
@@ -824,7 +832,7 @@ func (s *Session) rollbackFreshDelegateWorktree(delegateID, lanePath string) {
 	_, _ = run("worktree", "unlock", lanePath)
 	_, _ = run("worktree", "remove", "--force", "--", lanePath)
 	_, _ = run("branch", "-D", delegateID)
-	metaDir := filepath.Join(filepath.Dir(lanePath), ".meta")
+	metaDir := metaDirForLane(lanePath)
 	_ = worktree.DeleteSidecar(metaDir, delegateID)
 }
 
@@ -1322,7 +1330,7 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 		return WorktreeRemoveResult{}, errors.New("manage_worktree remove: not in a git repository")
 	}
 	projectDir := filepath.Join(st.worktreeRoot, worktree.ProjectID(st.mainRepoRoot))
-	metaDir := filepath.Join(projectDir, ".meta")
+	metaDir := metaDirForProject(projectDir)
 	target := filepath.Clean(filepath.Join(projectDir, filepath.FromSlash(name)))
 
 	// Step 2: the target must be under <worktreeRoot>/<projectid>/, canonicalized
@@ -1678,7 +1686,7 @@ func (s *Session) worktreeList(ctx context.Context) ([]WorktreeListEntry, error)
 
 	// Step 2: filter to serf-managed worktrees, canonicalized comparison.
 	projectDir := filepath.Join(st.worktreeRoot, worktree.ProjectID(st.mainRepoRoot))
-	metaDir := filepath.Join(projectDir, ".meta")
+	metaDir := metaDirForProject(projectDir)
 	managed := managedPorcelainEntries(worktree.ParsePorcelain(out), projectDir)
 
 	activeRoot := filepath.Clean(st.env.WorkingDirectory())
@@ -1757,7 +1765,7 @@ func (s *Session) worktreePrune(ctx context.Context) (WorktreePruneResult, error
 	}
 
 	projectDir := filepath.Join(st.worktreeRoot, worktree.ProjectID(st.mainRepoRoot))
-	metaDir := filepath.Join(projectDir, ".meta")
+	metaDir := metaDirForProject(projectDir)
 
 	removed1, skipped1, err := s.worktreePruneSweep1(run, projectDir, metaDir)
 	if err != nil {

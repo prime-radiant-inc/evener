@@ -2178,7 +2178,7 @@ func (s *Session) isolatedDelegateWorktreeReport(desc *jobstore.DelegateRestoreD
 	// the authoritative source of the lane's branch and base SHA — the
 	// worktree name has no "/" (it is the delegate id), so its metaDir is a
 	// sibling of the lane's parent dir, same as worktreeCreate's own layout.
-	metaDir := filepath.Join(filepath.Dir(lanePath), ".meta")
+	metaDir := metaDirForLane(lanePath)
 	sc, err := worktree.ReadSidecar(metaDir, filepath.Base(lanePath))
 	if err != nil {
 		return nil
