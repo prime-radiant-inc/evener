@@ -1,95 +1,93 @@
-# Attention & Status Model — Design (v3: daemon-truth)
+# Attention & Status Model — Design (v4)
 
-Date: 2026-07-03 (v3 after two adversarial review rounds and an architecture re-derivation)
+Date: 2026-07-03 (v4 after three adversarial review rounds)
 Status: Approved pending Jesse's spec review
 Workstream: 1 of 6 from the 2026-07-03 web-UI UX diagnostic
 
 ## Problem
 
-Live-verified defect: when an agent ends its turn — question or not — the thread shows plain gray **Idle**, because `agent.SessionState` collapses "waiting for your reply" and "genuinely idle" into one value (`idle`/`active`/`closed` only, agent/session_state.go:13). The wire `ThreadStatusAwaiting` is therefore unreachable for serf sessions, and every attention consumer starves: the NeedsYou tier never lists serf threads, notifications key on transitions that cannot occur (notifications.js:185) behind a 5s poll with all channels off, and nothing pushes sidebar updates for unopened sessions (lazy relay, app_rpc.go:106).
+When an agent ends its turn — question or not — the thread shows plain gray **Idle**, because `agent.SessionState` collapses "waiting for your reply" and "genuinely idle" into one value (agent/session_state.go:13). The wire `ThreadStatusAwaiting` is unreachable for serf sessions, so the NeedsYou tier never lists them, notifications key on impossible transitions behind a 5s poll with all channels off, and nothing pushes sidebar updates for unopened sessions.
 
 ## Decisions (Jesse, 2026-07-03)
 
 1. Inbox semantics: a finished turn puts the ball in the user's court.
 2. **No read-tracking** (seen-store punted). Clearing is by user action only.
-3. **Never decay**: needs-you persists until acted on.
+3. **Never decay.**
 4. Notification defaults: tab-title count + favicon ON; OS + sound opt-in.
-5. **Architecture: daemon-truth over hub overlay** (v3 pivot, after review round 2). The daemon reports `awaiting` on the existing Codex-shaped status field instead of the hub reconstructing it from a sidecar bool. Rationale: once seen-tracking was punted, the predicate became stateless and fully daemon-knowable; and the tree layer is already keyed to the `"awaiting"` string — NeedsYou filter (tree.go:602), AttentionRank (tree.go:131), rollup counts (tree.go:464), NormalizeState (tree.go:243), `hubapi.TreeNode.State`, TUI `Status.Type` (hub_types.go:170) — so daemon-truth lights up the entire existing pipeline, while a parallel field would have required rewriting every one of those sites (round-2 finding A2). Reporting `awaiting` on the standard field is convergence with the Codex app-server protocol, not extension.
+5. **Daemon-truth** (v3 pivot, review-validated): the daemon reports `awaiting` on the existing Codex-shaped status field. Round-3 reviewers confirmed the thesis's core: the tier/rank/gating pipeline consumes `"awaiting"` today, and send/steer already work in that state across appwire (`Send: !active && !closed`, appwire_runtime.go:555), the web composer, and the TUI — no capability rework needed.
 
-**Owned consequence of 1+2+3 (sign-off carried from v2).** Without read-tracking, every live, settled, unarchived session you haven't replied to is amber; the badge counts them all; each completed turn re-arms and (if opted in) re-notifies — "it's your turn again." Archive/shutdown are the triage verbs; mark-seen (below) is the pressure valve if this proves noisy.
+**Owned consequence (sign-off carried).** Every live, settled, unarchived session you haven't replied to is amber; the badge counts them all; each completed turn re-arms and (if opted in) re-notifies. Async wakes (a subagent finishing later, a job notification) legitimately re-run the session and re-arm on completion — that is "it's your turn again," not a bug. Archive/shutdown are the triage verbs; mark-seen is the future pressure valve.
 
 ## Semantics
 
-Attention **is** the normalized status plus hub-tier suppression — no separate derivation layer:
-
-| Level | Color | Source |
+| Level | Color | Normalized status |
 |---|---|---|
-| `working` | blue | status `active` |
-| `needs_you` | amber | status `awaiting` (serf daemons now produce it; external passthrough unchanged) or `warning` |
-| `error` | red | `systemError`, including the stale-wedge heuristic |
+| `working` | blue | `active` |
+| `needs_you` | amber | `awaiting`, `warning` |
+| `error` | red | `errored` |
 | `idle` | gray | everything else, including all non-live sessions |
 
-Hub-tier suppression: archived sessions and subagents never surface attention (subagents excluded as today, tree.go:614 — "a subagent's parent is the actionable unit"; upward propagation is future work with job-control). Ranking in the NeedsYou tier: `error` first, then oldest first. Live-only rule carried from v2: ended sessions are `idle` (an ended+never-decay+no-seen inbox would permanently amber all history). Un-archive or re-probe of a still-unanswered session re-arms — intended.
+**The `errored` un-collapse (round-3 findings A3/B1-B3).** `NormalizeState` today folds `systemError → "awaiting"` (tree.go:247), which made v3's distinct red level unimplementable: `AttentionRank` has no error case, the tier node hard-codes `"awaiting"`, and no client-facing source ever emits an error string — so the red favicon and `active→errored` notification paths in notifications.js are dead code today. v4 makes `errored` a first-class normalized state: `NormalizeState` emits `"errored"` for `systemError`; the NeedsYou filter (tree.go:602) admits `awaiting | warning | errored`; `AttentionRank` ranks `errored` above `awaiting`; tier sort becomes (rank desc, oldest first) — that is what "errors first" costs, and it is budgeted, not free. The client string `"errored"` already exists (notifications.js topState/favicon), so hub and client vocabularies converge. `warning` joins the tier via the same one filter edit (v3 listed it amber but the tier excluded it — round-3 A9).
 
-**Clearing:** send or steer (the daemon flips `awaiting → active` on user input), archive, shutdown. Queue is not a clearing action (`turn/queue` Conflicts on non-active sessions). Opening/reading does not clear. Never decays.
+**needs_you rule (daemon-owned):** live, top-level, unarchived session whose status is `awaiting` (rules below), `warning`, or passthrough. **Clearing:** send or steer (daemon flips to `active`), archive, shutdown. Queue is not a clearing action (Conflicts on non-active). Opening does not clear; never decays; un-archive/re-probe re-arms — intended.
 
-**Vocabulary:** pills, settings copy, notification text speak the level names ("Needs you"). Rollup `◆N` counts `awaiting`+`warning`+`systemError` (today it omits systemError, tree.go:464 — small edit); `⟳N` already counts only `active` (unchanged).
+**Vocabulary:** pills and settings copy say "Needs you" (web `stateLabel` currently says "Awaiting", web_format.go:184 — small budgeted edit, not "no work"); subagents excluded from independent attention as today (tree.go:614).
 
 ## Daemon: the `awaiting` state
 
-`agent.SessionState` gains `SessionAwaiting = "awaiting"`. This is the whole feature's truth source, so its transition rules are the spec's core (review findings A3/B5 shaped these):
+`SessionState` gains `SessionAwaiting`. Round 3 relocated and sharpened the state machine (findings A1/A2/A4/B4/B5):
 
-- **Arming.** At the serve-loop turn boundary (cmd/serf/serve.go:418): when a turn completes with agent output, the session persists, **and no autonomous input is pending** — input queue empty, no scheduled goal-engine continuation, no buffered subagent notifications — the state becomes `awaiting`. The pending-autonomy check is what prevents amber flashing between goal-loop iterations and notification-drain turns: an autonomously continuing session reads as still-working, while a goal that completes and stops correctly lands `awaiting` (the ball genuinely returns to you).
-- **Entry kinds.** `USER_INPUT`/`STEERING` are user moves; `EntryContinuation`/`EntryNotification` (server/server.go:486,499) are autonomous, not user moves — their turns run `active` and their completions follow the same arming rule.
-- **Interrupt** is a user move → `idle` (you know you interrupted; the event-bridge interrupt path sets it explicitly rather than falling through, bridge.go:44).
-- **`/compact`** and self-compaction run outside the turn boundary (serve.go:321, session_compaction.go) and never touch the state.
-- **Dormant** (no completed turns) → `idle`.
-- **Resume/daemon-restart:** state is recomputed at init from the transcript tail plus the pending-autonomy check, so `awaiting` survives restarts (the transcript is append-only; compaction appends, session_compaction.go:119).
-- **Single-writer discipline** (finding A3 noted two status writers): only the serve-loop boundary, the interrupt handler, and resume-init may set `awaiting`/`idle`; the bridge otherwise forwards.
-- **Audit gate:** every `SessionIdle` / `"idle"` comparison in the repo gets an explicit ruling — *not-busy* (now `idle || awaiting`: composer/capability gating, spawn/resume eligibility, TUI modes) vs *nothing-pending* (`idle` only). Call sites are bounded (bridge.go ×4, serve.go ×3, plus consumers); the audit list is a named implementation-plan task and its rulings land as tests.
+- **Arming site: inside the agent, not the serve loop.** The terminal state is written by the agent's `finishProcessingAtBoundary` family (13 call sites funneling into one function) and rides `EventSessionEnd{State}` to the bridge **before** `ProcessInputKind` returns — so serve-loop arming would race the bridge's forward (`bridge.go:42`) and lose. The boundary function itself computes idle-vs-awaiting; its 13 callers are untouched. Writers: the boundary function, the interrupt path (user move → `idle`), and resume-init. The serve loop mirrors (`serve.go:421`); the bridge forwards.
+- **Arming rule.** At boundary settle (after `armGoalContinuation`): `awaiting` iff the completed turn produced agent output AND no autonomy is in flight — no scheduled goal continuation, **no live child subagents** (a delegating parent stays `working`-family while its child runs — round-3 A1's false-amber case), no buffered notifications, no queued input. All four are agent-internal knowledge, checkable synchronously.
+- **Async arrivals re-arm by design.** A notification landing after arming wakes the session (`active`) and its completion re-evaluates the same rule. Micro-windows between autonomous kicks are invisible to the 5s-sampled watcher and harmless in the relay stream. The spec claims suppression only for autonomy knowable at the boundary — not for async futures (round-3 A1/B4 corrected v3's overclaim).
+- **Resume/restart (explicit rules replacing v3's continuity claim — round-3 A2).** Queue and notification buffers are not persisted, and restored goals are deliberately not re-kicked ("loaded but idle," session_init.go:405). Resume therefore evaluates: transcript tail says agent moved last AND no live subagents restored → `awaiting`. A restored mid-goal session **is** `awaiting` on purpose: nothing will move until the user acts, and amber is what surfaces the stall (the alternative — treating a dormant goal as autonomy-pending — would silently hide a stalled loop as "working" forever).
+- **Interrupt** → `idle`; **`/compact`**/self-compaction never touch state; **dormant** → `idle`.
+- **Gating verification (reframed from v3's audit — round-3 B11).** Reviewers verified the not-busy gates key on `!active`/`processing`, not `== idle`, so `awaiting` sessions can already send/steer/queue-fallback everywhere. The remaining task is a verification checklist pinning that with tests (appwire Send gate, web composer enable, TUI composer modes, spawn/fork/resume eligibility), not an open-ended audit.
 
-`appStatus()` already passes `awaiting` through to the wire (appwire_runtime.go:623 — dead plumbing comes alive). **Deleted from v2:** the `/status` `awaiting_input` bool, all prober/roster/LiveEntry plumbing, `DeriveAttention()`, `SerfThread.Attention`, and the `serf/attention/get` snapshot RPC. The prober keeps decoding `{session_id, state}` — the state string simply becomes honest. Mixed-version fleets: old daemons keep saying `idle` and stay quiet.
+`appStatus()` passes `awaiting` through today (appwire_runtime.go:623). Old daemons keep reporting `idle` and stay quiet.
 
 ## Hub
 
-- **Stale-wedge unification (kept from v2):** `sanitizeStaleProcessingStatus` currently runs only in the appwire list path for local sources (app_threadlist.go:40), so a wedged session shows red in the workspace but blue in the sidebar. The heuristic moves to a shared hubcore spot applied by tree build, list/read enrichment, and the watcher alike.
-- **Attention watcher (fan-out only, no recomputation of the world):** per-source async collectors — local sessions ride the existing roster probe (now truth-carrying); remote sources are polled per-source with per-source timeouts so one slow Codex endpoint cannot stall local updates (findings A5/B6); fsnotify events are debounced. The differ operates on an `id → (state, archived, topLevel)` map only — no `BuildTree`, no `Past.AllMetas()` per tick. Empty-but-successful remote lists get one tick of hysteresis before dropping threads, so a source restart doesn't re-arm amber and re-fire notifications (finding A5). Archive mutations feed the differ directly from the `/api/archive` handler. On change: **`serf/attention/changed`** via `BroadcastAll` (server.go:76, `notifyAuthUpdated` pattern) with `changed[] {threadId,title,project,level,prevLevel}` + `summary {needsYou,error,working}`. Restart re-seeds silently.
-- **Instant clear needs no new machinery** (dissolves v2's relay-ingestion, findings A1/B3/B4): when you reply, the daemon flips `awaiting → active` and the existing per-thread relay already broadcasts `thread/status/changed` to the open workspace, whose sidebar-refresh allowlist already includes it. The watcher's 5s tick is the latency floor only for threads open nowhere.
+- **Wedge unification, honestly costed (round-3 B6):** `sanitizeStaleProcessingStatus` needs Past lookups + a transcript tail read, so the watcher cannot apply it "map-only." The shared heuristic runs in tree build and list/read enrichment as before, and the **watcher probes only sessions sampled `active` past the stall threshold** (~3min — the heuristic's own constant): a small set, bounded disk work, no per-tick sweep.
+- **Watcher differ inputs (round-3 A5/B7):** `topLevel`, project, and auto-archive age are meta-derived, so the differ consumes a compact **meta-projection cache** (`id → {isSubagent, project, lastActivity}`) refreshed on past-index rebuilds, rendezvous events, and archive-handler pushes — not `Past.AllMetas()` per tick. Per-source async collectors with per-source timeouts; fsnotify debounced; empty-but-successful remote lists get one tick of hysteresis.
+- **Broadcast:** `serf/attention/changed` via `BroadcastAll` with `changed[]` + `summary`. The **summary is authoritative for badge counts** and is computed hub-side from the tier-eligible set (top-level, unarchived — same definition as NeedsYou), which resolves the `/api/tree`-population mismatch (subagents, remote sources) flagged in round 3 (A7/B8). Restart re-seeds silently.
 
 ## Web client
 
-- Sidebar/NeedsYou/rollups: no structural work — the tier and rank sites consume `awaiting` today. `serf/attention/changed` joins the refresh allowlist.
-- **notifications.js rewrite:** delete the 5s `/api/search` poll. Baseline = one `/api/tree` fetch on connect (no new RPC); **no baseline → no edge-firing** (a transition arriving in the connect window updates counts but never fires OS/sound — finding A6/B7); counts always recompute from the latest fetch, so missed-during-reconnect transitions self-heal silently (parity with today's poll). OS + sound fire on transitions into `needs_you`/`error`, suppressed while the hub tab is focused (window-level; per-thread visibility was punted with mark-seen). **Multi-tab dedup:** Web Locks (localStorage-CAS fallback) elects one firing tab, so N open tabs produce one OS notification, not N−1 (finding A7).
-- **Prefs migration (corrects v2's false claim — finding A4):** `commit()` merges single keys (settings.js:59-61), so partial blobs exist. One-time versioned migration: an existing non-empty prefs blob gets absent keys backfilled as explicit `false` (legacy users keep exactly the behavior they chose under old defaults); a wholly absent blob gets the new defaults (title+favicon `true`).
-- Settings copy: unified vocabulary ("Native notification when a thread needs you or errors.").
+- Sidebar/NeedsYou/rollups: the `errored` lane edits above; `serf/attention/changed` joins the refresh allowlist. Rollup `◆` counts the tier-eligible set (`awaiting|warning|errored`) — note v3's "add systemError at tree.go:464" was wrong twice over: the collapse meant it was already counted, and post-un-collapse the switch gains the `errored` case instead.
+- **notifications.js rewrite:** delete the 5s poll. Baseline = one `/api/tree` fetch on connect for initial paint; thereafter **counts come from `summary` in each `serf/attention/changed`** — no per-change tree refetch (round-3 A7). It also ingests the per-thread `thread/status/changed` relay events it already has access to via `onNotification`, so replying in an open thread clears the title/favicon instantly; the ≤5s watcher floor applies only to threads open nowhere (this was false in v3 — round-3 A6/B9 — and is now made true by the added ingestion, not by wishing). No baseline → no edge-firing. OS + sound on transitions into `needs_you`/`error`; focused-tab suppression; **multi-tab leader election** (Web Locks, localStorage-CAS fallback) so one tab fires.
+- **Prefs migration:** versioned one-time backfill — existing non-empty blob gets absent keys as explicit `false`; wholly absent blob gets new defaults (title+favicon on). (`commit()` merges single keys, settings.js:59 — partial blobs are real.)
+- Settings copy + pill label: "Needs you" vocabulary.
 
 ## TUI
 
-No wire changes at all — `hubNodeFromThread` already carries `thread.Status.Type` (hub_types.go:170). Work shrinks to: `stateLabel`/dot mappings for `awaiting` and `systemError` (hub_dashboard_view.go:505 currently lacks both), and a `◆` needs-you count in the dashboard.
+`stateLabel`/`statusDot` already handle `awaiting` (hub_dashboard_view.go:507,492 — v3 overstated this gap). Remaining: map `systemError`/`errored` (label, dot, and `attentionRankLabel`, which currently ranks it 0 on the raw-status path) and add the `◆` needs-you count. No wire changes.
 
 ## Error handling
 
-Old daemons degrade to today's quiet behavior. Watcher: per-source isolation, panic recovery, failed cycles keep the previous baseline. State transitions are covered by the single-writer rule; resume-init recompute is defensive against crashes mid-turn (a crash during `active` resumes to recomputed truth, not stale `active`).
+Old daemons degrade to today's behavior. Watcher: per-source isolation, panic recovery, baseline kept on failed cycles. Boundary-function arming is covered by the single-writer rules above; resume-init recompute is defensive after crash-mid-turn.
 
 ## Testing
 
-- Daemon state-machine table: {user, steer, continuation, notification, interrupt, compact, resume, dormant, crash-mid-turn} × {queue empty/pending, goal pending/complete} → expected state. `/status` and appwire both assert the same value.
-- `SessionIdle` audit rulings land as compile-checked tests (not-busy sites accept `awaiting`).
-- Cross-surface pin: sidebar tree state == thread/read status for the same session (now same source by construction; test prevents regression).
-- Watcher: one broadcast per change; restart re-seed emits nothing; per-source timeout isolation; empty-success hysteresis; fsnotify debounce.
-- jstest: baseline-before-edge rule, prefs migration matrix (absent blob / partial blob / explicit false), leader election, focused suppression.
-- e2e scenario card: spawn → agent completes a turn → sidebar row + NeedsYou tier amber + title count increments without opening the thread (≤5s floor) → reply in the open thread → amber clears immediately via `thread/status/changed`.
+- Agent boundary table: {user, steer, continuation, notification, interrupt, compact, resume, dormant, crash-mid-turn, live-subagent-running, restored-mid-goal} × {queue, goal, notif-buffer} → expected state, asserted at `/status` AND appwire (same value by construction; test pins it).
+- Gating checklist tests: send/steer/queue-fallback/spawn/fork against an `awaiting` session on appwire, web, TUI.
+- `errored` lane: NormalizeState, tier admission, rank ordering (errored > awaiting), rollup count, web pill/favicon red, TUI label+rank — cross-surface agreement test covers all three surfaces.
+- Watcher: one broadcast per change; re-seed emits nothing; per-source timeout isolation; hysteresis; debounce; targeted wedge probe only for >threshold actives; summary == tier-eligible count.
+- jstest: baseline-before-edge, summary-driven counts, relay-status ingestion (instant badge clear), prefs migration matrix, leader election, focused suppression.
+- e2e card (split per round-3 A6): spawn → agent completes a turn → sidebar row + tier amber and title count increment without opening (≤5s) → reply in the open thread → row/tier amber clears instantly via `thread/status/changed` AND title/favicon clear via the ingested relay event; the watcher broadcast follows as reconciliation.
 
 ## Out of scope
 
-Read-tracking (punted; protocol-clean upgrade path unchanged from v2: hub-inferred cursor from `thread/read` traffic + hub-terminated `serf/thread/seen/set`, `serf/*` namespace, daemon hop untouched), question/ask detection (job-control's `ask` becomes just another `awaiting` producer), subagent attention propagation, per-message read receipts, background push, workstreams 2–6 (recorded decisions: keep ⌘↵ + add setting; project-level delete only).
+Read-tracking (punted; protocol-clean path unchanged: hub-inferred cursor + hub-terminated `serf/thread/seen/set`), ask detection (job-control's `ask` lands as another `awaiting` producer; job-control's background jobs will slot into the same autonomy-in-flight suppressors), subagent attention propagation, per-message read receipts, background push, workstreams 2–6 (recorded: keep ⌘↵ + setting; project-level delete only).
 
 ## Estimate
 
-~800–1,150 loc including tests: daemon state machine + audit + resume recompute ~250–400, hub (wedge unification + watcher/differ + broadcast) ~250–400, web client ~200–300, TUI ~30–60.
+~1,000–1,400 loc including tests: agent boundary function + suppressors + resume rules + gating tests ~300–450; hub `errored` lane (NormalizeState/rank/tier/rollup) + watcher/differ + meta-projection cache + summary ~350–500; web client ~250–350; TUI ~50–80.
 
 ## Review log
 
-**Round 1** (two adversarial reviewers, findings verified then folded into v2): derivation input didn't exist as claimed (A1/B1); single shared derivation proposed for three divergent sites (A4/B2/B3); watcher widened beyond roster for external awaiting (B5); snapshot RPC added (A3/B4); relay-ingestion instant-clear added (A2); queue dropped from clearing (A5); warning mapped in (A7); ⟳ claim corrected (A9); subagent "absorption" corrected to exclusion (A10); interrupt = user move (A11); per-key defaults pinned (A12/B9); lit-badge consequence surfaced (B6/B1); estimate raised (B11).
+**Round 1** (v1→v2): derivation input didn't exist as claimed; single shared derivation; watcher beyond roster; snapshot RPC; relay-ingestion; queue dropped from clearing; warning mapped; ⟳ corrected; subagent absorption→exclusion; interrupt=user move; per-key defaults; lit-badge consequence owned; estimate raised.
 
-**Round 2** (fresh reviewers, prior findings excluded; scored a 6–6 tie) invalidated much of v2's own scaffolding and triggered the v3 pivot: read path couldn't carry `awaiting_input` (B2); relay ingestion had no in-process channel and fought relay teardown (A1/B3/B4); string-keyed tier/rank/rollup sites wouldn't consume a parallel field (A2 — the decisive pro-pivot finding); automation turns would false-amber and "no behavior change" was overstated (A3/B5 → the pending-autonomy arming rule); settings.js migration claim was factually false (A4 → versioned backfill migration); watcher cost/head-of-line blocking + empty-success flap (A5/B6 → per-source collectors, hysteresis, map-differ); snapshot/diff race (A6/B7 → baseline-before-edge rule, snapshot RPC deleted); multi-tab duplicate OS notifications (A7 → leader election); stale TUI field reference (A8/B1 → moot, field deleted). v3 deletes the `awaiting_input` field, prober/roster plumbing, `DeriveAttention`, `SerfThread.Attention`, snapshot RPC, and relay ingestion; daemon-truth supersedes them.
+**Round 2** (v2→v3, 6–6 tie): read path couldn't carry the sidecar bool; relay ingestion had no in-process channel; string-keyed tier sites wouldn't consume a parallel field (decisive pro-pivot finding); automation false-amber → pending-autonomy rule; settings.js migration claim false; watcher cost/flap; snapshot/diff race; multi-tab dupes; stale TUI ref. v3 pivoted to daemon-truth and deleted the overlay.
+
+**Round 3** (v3→v4, 6–6 tie) attacked v3's own claims: `NormalizeState` systemError→awaiting collapse made the red error level unimplementable and two v3 claims false (A3/B1-B3 → `errored` un-collapse, budgeted); arming mislocated at the serve loop vs the agent's `finishProcessingAtBoundary` + bridge race (A4/B5 → in-agent boundary arming); async subagent notifications and running children defeat the flash-suppression claim (A1/B4 → live-subagent suppressor + honest async-re-arm semantics); restored goals aren't re-kicked and queues aren't persisted (A2 → explicit resume rules, amber-as-stall-surfacing); wedge heuristic incompatible with map-only differ (B6 → targeted probes); differ needs meta-derived inputs (A5/B7 → meta-projection cache); open-thread badge lag falsified v3's latency invariant (A6/B9 → relay-status ingestion in notifications.js, summary-driven counts, e2e split); `/api/tree` refetch cost + population mismatch (A7/B8 → summary authoritative); TUI awaiting already handled (A8/B10); warning excluded from tier (A9 → filter edit); pill label mismatch (A10); SessionIdle audit largely vacuous — send already works in awaiting (B11 → reframed as verification checklist). Estimate raised to fund the errored lane and agent-side work.
