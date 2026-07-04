@@ -423,8 +423,10 @@ func runServe(args []string) error {
 				currentCancel = cancelTurn
 				turnCtx = agent.WithQueuedInputDrainOnInterruptHandler(turnCtx, ctx, nextTurnCtx)
 				srv.SetCancelFunc(cancelTurn)
-				srv.SetProcessing(true)
-				srv.SetState(string(agent.SessionProcessing))
+				if !holdServeStateForAwaitingWake(msg.Kind, sess.State()) {
+					srv.SetProcessing(true)
+					srv.SetState(string(agent.SessionProcessing))
+				}
 				result, processErr := sess.ProcessInputKind(turnCtx, msg.Text, msg.Images, msg.Kind)
 				srv.SetProcessing(false)
 				srv.SetState(string(sess.State()))
@@ -494,6 +496,19 @@ func runServe(args []string) error {
 	}
 	<-shutdownDone
 	return nil
+}
+
+// holdServeStateForAwaitingWake reports whether the input loop should skip
+// its Processing shadow-write for this message: the session-level entry gate
+// (agent/session_lifecycle.go's processInputKindWithProvenance, spec §5.3)
+// refuses autonomous wakes while the session awaits an ask_user reply, before
+// any state transition — so the /status shadow must not flip to active around
+// a wake the session will refuse (the flicker's active→awaiting edge would
+// re-fire the OS notification, notifications.js Task 11). Mirrors the gate's
+// predicate exactly; EntryUserInput is always let through since it is how the
+// reply resolves awaiting (spec §5.2).
+func holdServeStateForAwaitingWake(kind agent.EntryKind, state agent.SessionState) bool {
+	return kind != agent.EntryUserInput && state == agent.SessionAwaiting
 }
 
 func printServeEnvVars(w io.Writer) {
