@@ -87,14 +87,20 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 			}
 		}
 		sess := filepath.Join(e.StateDir, "sessions")
+		var removeErr error
 		for _, p := range []string{
 			filepath.Join(sess, e.ID+".meta.json"),
 			filepath.Join(sess, e.ID+".transcript.jsonl"),
 			filepath.Join(sess, e.ID+".log.jsonl"),
 		} {
 			if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-				skipped = append(skipped, projectDeleteSkip{ID: e.ID, Reason: err.Error()})
+				removeErr = err
+				break
 			}
+		}
+		if removeErr != nil {
+			skipped = append(skipped, projectDeleteSkip{ID: e.ID, Reason: removeErr.Error()})
+			continue
 		}
 		_ = os.RemoveAll(filepath.Join(sess, e.ID))
 		if s.cfg.Archive != nil {

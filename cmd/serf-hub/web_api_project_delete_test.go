@@ -116,3 +116,78 @@ func TestProjectDeleteRefusesWhenLive(t *testing.T) {
 		t.Fatal("nothing should be removed when refused")
 	}
 }
+
+// TestProjectDeleteSkipsOnRemoveFailure forces a non-ENOENT os.Remove error
+// (permission denied on the containing sessions/ dir) and asserts the
+// session lands ONLY in skipped: never also in deleted, its decision rows
+// are left intact, and its files are left in place so the delete is
+// cleanly retriable.
+func TestProjectDeleteSkipsOnRemoveFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod-based permission test is meaningless as root")
+	}
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "sha1")
+	writeSession(t, stateDir, "01A", "/w/proj")
+	dbPath := filepath.Join(root, "index.db")
+	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	_ = past.Rebuild()
+	archive := hubcore.NewArchiveStore(dbPath)
+	favorite := hubcore.NewFavoriteStore(dbPath)
+	_ = archive.Set("session", "01A", true, time.Unix(1_700_000_000, 0))
+	_ = favorite.Set("session", "01A", true, time.Unix(1_700_000_000, 0))
+	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
+
+	sessDir := filepath.Join(stateDir, "sessions")
+	if err := os.Chmod(sessDir, 0o555); err != nil {
+		t.Fatalf("chmod sessions dir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(sessDir, 0o755); err != nil {
+			t.Errorf("restore sessions dir perms: %v", err)
+		}
+	})
+
+	body := `{"key":"` + hubcore.ProjectSlug("/w/proj") + `","workingDir":"/w/proj"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Deleted []string            `json:"deleted"`
+		Skipped []projectDeleteSkip `json:"skipped"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	for _, id := range resp.Deleted {
+		if id == "01A" {
+			t.Fatalf("01A must not appear in deleted when its files could not be removed: %+v", resp)
+		}
+	}
+	skippedCount := 0
+	for _, sk := range resp.Skipped {
+		if sk.ID == "01A" {
+			skippedCount++
+		}
+	}
+	if skippedCount != 1 {
+		t.Fatalf("want exactly 1 skipped entry for 01A, got %d: %+v", skippedCount, resp)
+	}
+
+	ad, _ := archive.Decisions()
+	if _, present := ad[hubcore.ArchiveKey{Kind: "session", ID: "01A"}]; !present {
+		t.Fatal("session archive row must survive a failed removal (retriable)")
+	}
+	fd, _ := favorite.Favorites()
+	if _, present := fd[hubcore.ArchiveKey{Kind: "session", ID: "01A"}]; !present {
+		t.Fatal("session favorite row must survive a failed removal (retriable)")
+	}
+	if _, err := os.Stat(filepath.Join(sessDir, "01A.meta.json")); err != nil {
+		t.Fatalf(".meta.json must still exist after a failed removal: %v", err)
+	}
+}
