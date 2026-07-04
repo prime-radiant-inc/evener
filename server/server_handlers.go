@@ -267,6 +267,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	pfn := s.pressureFn
 	cmfn := s.contextMetricsFn
 	dfn := s.detailedStatusFn
+	wmfn := s.workMetricsFn
 	processing := s.processing
 	closed := appStatus(status.State, processing) == appwire.ThreadStatusClosed
 	steerAvailable := s.steerFunc != nil || s.steerWithImagesFunc != nil
@@ -294,6 +295,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if dfn != nil {
 		ds := dfn()
 		status.Detailed = &ds
+	}
+	if wmfn != nil {
+		workMillis, usage, activeTurnStartedAt := wmfn()
+		status.WorkMillis = workMillis
+		status.Usage = usage
+		status.ActiveTurnStartedAt = activeTurnStartedAt
 	}
 	status.Capabilities = capabilities
 

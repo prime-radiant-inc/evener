@@ -925,6 +925,64 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 	}
 }
 
+// TestServerAppWireThreadReadIncludesWorkMetrics (WS2 A7) verifies appThread
+// populates SerfThread.Usage/WorkMillis/ActiveTurnStartedAt from the
+// workMetricsFn pull callback, alongside the existing pressure/detailed-status
+// callbacks exercised by TestServerAppWireThreadReadReturnsStatus.
+func TestServerAppWireThreadReadIncludesWorkMetrics(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetWorkMetricsFunc(func() (int64, *appwire.SerfUsage, int64) {
+		return 4200, &appwire.SerfUsage{InputTokens: 10, OutputTokens: 20, CacheReadTokens: 5, TotalTokens: 30}, 1234567890
+	})
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1"}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v", resp.Kind())
+	}
+	data, ok := resp.Response.Result.(appwire.ThreadReadResponse)
+	if !ok {
+		t.Fatalf("result=%T", resp.Response.Result)
+	}
+	serf := data.Thread.Serf
+	if serf.WorkMillis != 4200 {
+		t.Fatalf("workMillis=%d, want 4200", serf.WorkMillis)
+	}
+	if serf.ActiveTurnStartedAt != 1234567890 {
+		t.Fatalf("activeTurnStartedAt=%d, want 1234567890", serf.ActiveTurnStartedAt)
+	}
+	wantUsage := appwire.SerfUsage{InputTokens: 10, OutputTokens: 20, CacheReadTokens: 5, TotalTokens: 30}
+	if serf.Usage == nil || *serf.Usage != wantUsage {
+		t.Fatalf("usage=%+v, want %+v", serf.Usage, wantUsage)
+	}
+}
+
+// TestServerAppWireThreadReadOmitsWorkMetricsWhenUnwired (WS2 A7) verifies
+// that a daemon which never wired SetWorkMetricsFunc (e.g. mid-upgrade, or a
+// non-serf thread source) projects zero/nil metrics rather than panicking on
+// a nil callback.
+func TestServerAppWireThreadReadOmitsWorkMetricsWhenUnwired(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1"}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v", resp.Kind())
+	}
+	data, ok := resp.Response.Result.(appwire.ThreadReadResponse)
+	if !ok {
+		t.Fatalf("result=%T", resp.Response.Result)
+	}
+	serf := data.Thread.Serf
+	if serf.Usage != nil || serf.WorkMillis != 0 || serf.ActiveTurnStartedAt != 0 {
+		t.Fatalf("serf=%+v, want zero work metrics when unwired", serf)
+	}
+}
+
 func TestAppTurnsFromTranscriptFilePreservesToolCallArguments(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
 	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1"})

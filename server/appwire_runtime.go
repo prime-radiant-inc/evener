@@ -433,6 +433,7 @@ func (s *Server) appThread() appwire.Thread {
 	qpfn := s.queuePreviewFn
 	qdfn := s.queueDepthFn
 	gsfn := s.goalStatusFn
+	wmfn := s.workMetricsFn
 	activeTurnID := s.appActiveTurnID
 	s.mu.RUnlock()
 
@@ -479,6 +480,12 @@ func (s *Server) appThread() appwire.Thread {
 			goalState = &appwire.GoalState{Status: status, Iterations: iterations}
 		}
 	}
+	var workMillis int64
+	var usage *appwire.SerfUsage
+	var activeTurnStartedAt int64
+	if wmfn != nil {
+		workMillis, usage, activeTurnStartedAt = wmfn()
+	}
 	return appwire.Thread{
 		ID:            threadID,
 		SessionID:     status.SessionID,
@@ -489,17 +496,20 @@ func (s *Server) appThread() appwire.Thread {
 		Path:          filepath.Base(status.WorkingDir),
 		Source:        sourceID,
 		Serf: appwire.SerfThread{
-			Ref:              ref,
-			Profile:          status.Profile,
-			ActiveTurnID:     activeTurnID,
-			ContextPressure:  pressure,
-			ContextUsed:      metrics.Used,
-			ContextWindow:    metrics.Window,
-			ContextRemaining: metrics.Remaining,
-			Capabilities:     s.appCapabilities(status.State, processing),
-			Diagnostics:      diagnostics,
-			Queue:            queue,
-			Goal:             goalState,
+			Ref:                 ref,
+			Profile:             status.Profile,
+			ActiveTurnID:        activeTurnID,
+			ContextPressure:     pressure,
+			ContextUsed:         metrics.Used,
+			ContextWindow:       metrics.Window,
+			ContextRemaining:    metrics.Remaining,
+			Capabilities:        s.appCapabilities(status.State, processing),
+			Diagnostics:         diagnostics,
+			Queue:               queue,
+			Goal:                goalState,
+			Usage:               usage,
+			WorkMillis:          workMillis,
+			ActiveTurnStartedAt: activeTurnStartedAt,
 		},
 	}
 }

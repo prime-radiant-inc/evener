@@ -79,3 +79,56 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 		t.Fatalf("Meta().CumulativeUsage = %+v, want %+v", got.CumulativeUsage, meta.CumulativeUsage)
 	}
 }
+
+// TestActiveTurnStartedAtUnix_MidTurnVsIdle pins the WS2 A7 accessor: an idle
+// session reports 0, while a session mid-turn (SessionProcessing with a
+// stamped turnStartedAt) reports that instant as a Unix timestamp. Directly
+// sets the unexported state/turnStartedAt fields to simulate mid-turn without
+// driving a real model call, mirroring TestWorkMillis_CloseMidTurnCounts'
+// established idiom in session_workmillis_test.go.
+func TestActiveTurnStartedAtUnix_MidTurnVsIdle(t *testing.T) {
+	clk := agenttest.NewFakeClock()
+	sess := newSession(t, withConfig(SessionConfig{clock: clk}))
+
+	if got := sess.ActiveTurnStartedAtUnix(); got != 0 {
+		t.Fatalf("idle ActiveTurnStartedAtUnix() = %d, want 0", got)
+	}
+
+	sess.mu.Lock()
+	sess.state = SessionProcessing
+	sess.turnStartedAt = clk.Now()
+	sess.mu.Unlock()
+
+	if want, got := clk.Now().Unix(), sess.ActiveTurnStartedAtUnix(); got != want {
+		t.Fatalf("mid-turn ActiveTurnStartedAtUnix() = %d, want %d", got, want)
+	}
+}
+
+// TestWorkMillisSnapshot_MatchesAccumulatedWork pins the WS2 A7 accessor:
+// WorkMillisSnapshot reads the same accumulated total Meta().WorkMillis
+// reports, without requiring a full Meta() call.
+func TestWorkMillisSnapshot_MatchesAccumulatedWork(t *testing.T) {
+	sess := newSession(t)
+
+	sess.mu.Lock()
+	sess.workMillis = 4200
+	sess.mu.Unlock()
+
+	if got := sess.WorkMillisSnapshot(); got != 4200 {
+		t.Fatalf("WorkMillisSnapshot() = %d, want 4200", got)
+	}
+}
+
+// TestCumulativeUsageSnapshot_MatchesContextManagerTotal pins the WS2 A7
+// accessor: CumulativeUsageSnapshot mirrors the context manager's running
+// total directly (the same source Meta().CumulativeUsage derives from).
+func TestCumulativeUsageSnapshot_MatchesContextManagerTotal(t *testing.T) {
+	sess := newSession(t)
+	want := llm.Usage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30}
+	sess.contextMgr.SetCumulativeUsage(want)
+
+	got := sess.CumulativeUsageSnapshot()
+	if got.InputTokens != want.InputTokens || got.OutputTokens != want.OutputTokens || got.TotalTokens != want.TotalTokens {
+		t.Fatalf("CumulativeUsageSnapshot() = %+v, want %+v", got, want)
+	}
+}

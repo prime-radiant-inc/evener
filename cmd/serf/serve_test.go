@@ -654,6 +654,45 @@ func TestAgentToServerDetailedStatus_Partial(t *testing.T) {
 		t.Errorf("Agents = %v, want [explorer default]", got.Agents)
 	}
 }
+
+// TestSerfUsageFromLLM_ZeroReturnsNil pins the WS2 A7 helper: an llm.Usage
+// with every total at zero (a fresh session, an old daemon that never seeded
+// usage, or a Codex thread) maps to a nil *appwire.SerfUsage, so the status
+// row hides the usage cluster rather than rendering ↑0 ↓0.
+func TestSerfUsageFromLLM_ZeroReturnsNil(t *testing.T) {
+	if got := serfUsageFromLLM(llm.Usage{}); got != nil {
+		t.Fatalf("serfUsageFromLLM(zero) = %+v, want nil", got)
+	}
+}
+
+// TestSerfUsageFromLLM_MapsTotals pins the field mapping, including
+// CacheReadTokens dereferencing the *int pointer field (distinct values on
+// every field so a transposed mapping is detectable).
+func TestSerfUsageFromLLM_MapsTotals(t *testing.T) {
+	cacheRead := 5
+	got := serfUsageFromLLM(llm.Usage{
+		InputTokens:     10,
+		OutputTokens:    20,
+		TotalTokens:     30,
+		CacheReadTokens: &cacheRead,
+	})
+	want := &appwire.SerfUsage{InputTokens: 10, OutputTokens: 20, CacheReadTokens: 5, TotalTokens: 30}
+	if got == nil || *got != *want {
+		t.Fatalf("serfUsageFromLLM = %+v, want %+v", got, want)
+	}
+}
+
+// TestSerfUsageFromLLM_NonZeroCacheReadOnlyStillReturns pins the "any of the
+// four totals nonzero" gate: CacheReadTokens alone (input/output/total all
+// zero, e.g. a fully cache-served turn) must not be hidden.
+func TestSerfUsageFromLLM_NonZeroCacheReadOnlyStillReturns(t *testing.T) {
+	cacheRead := 7
+	got := serfUsageFromLLM(llm.Usage{CacheReadTokens: &cacheRead})
+	if got == nil || got.CacheReadTokens != 7 {
+		t.Fatalf("serfUsageFromLLM(cache-read-only) = %+v, want CacheReadTokens=7", got)
+	}
+}
+
 func TestRunServe_ResumeNonexistent(t *testing.T) {
 	oldLoadClient := serveLoadClient
 	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {

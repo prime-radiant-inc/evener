@@ -78,6 +78,42 @@ func TestStatusEndpoint_ContextPressure(t *testing.T) {
 	}
 }
 
+// TestStatusEndpoint_WorkMetrics (WS2 A7) verifies /status carries the live
+// working-state/token metrics from the workMetricsFn pull callback.
+func TestStatusEndpoint_WorkMetrics(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetStatus(StatusInfo{
+		SessionID: "test-789",
+		State:     "active",
+	})
+	srv.SetWorkMetricsFunc(func() (int64, *appwire.SerfUsage, int64) {
+		return 9000, &appwire.SerfUsage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 0, TotalTokens: 3}, 42
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status code: got %d, want 200", w.Code)
+	}
+
+	var status StatusInfo
+	if err := json.NewDecoder(w.Body).Decode(&status); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if status.WorkMillis != 9000 {
+		t.Errorf("work_millis: got %d, want 9000", status.WorkMillis)
+	}
+	if status.ActiveTurnStartedAt != 42 {
+		t.Errorf("active_turn_started_at: got %d, want 42", status.ActiveTurnStartedAt)
+	}
+	want := appwire.SerfUsage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}
+	if status.Usage == nil || *status.Usage != want {
+		t.Fatalf("usage: got %+v, want %+v", status.Usage, want)
+	}
+}
+
 func TestStatus_IncludesWorkingDir(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.UpdateSessionInfo("01SESS001", "gpt-5", "openai-gpt-5")
