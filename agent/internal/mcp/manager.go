@@ -50,12 +50,12 @@ type conn struct {
 	lastErr   error
 	lastErrAt time.Time
 
-	// mu guards session, status, lastErr, lastErrAt, closed, and
-	// backoffUntil against concurrent access between Close(), a reconnect
-	// swap (Task 8), and Servers(). Because conn embeds a mutex, it must
-	// never be copied by value once it lives in Manager.conns — every access
-	// goes through a pointer (&mgr.conns[i]), never a `range mgr.conns` value
-	// copy.
+	// mu guards session, status, lastErr, lastErrAt, closed, backoffUntil,
+	// and reconnecting against concurrent access between Close(), a
+	// reconnect swap (Task 8), and Servers(). Because conn embeds a mutex, it
+	// must never be copied by value once it lives in Manager.conns — every
+	// access goes through a pointer (&mgr.conns[i]), never a `range
+	// mgr.conns` value copy.
 	mu     sync.Mutex
 	closed bool
 	// backoffUntil gates lazy reconnect attempts (Task 8): its zero value
@@ -64,6 +64,19 @@ type conn struct {
 	// after every attempt it makes, success or failure, so a burst of calls
 	// against a still-flaky server doesn't redial on every single one.
 	backoffUntil time.Time
+	// reconnecting marks that a dial is currently in flight for this conn. It
+	// is set under c.mu before the lock is released for the (lock-free) dial,
+	// and cleared under c.mu once that attempt completes, success or
+	// failure. Without it, two calls that hit ErrConnectionClosed at nearly
+	// the same moment can both pass the closed/backoffUntil gate —
+	// backoffUntil is only updated once a dial finishes, so a second
+	// concurrent caller sees the same gate state the first one did — and
+	// both dial and swap: the second commit then displaces and closes the
+	// first's freshly-committed session, silently invalidating a session the
+	// first caller was already told (ok=true) to retry against. reconnecting
+	// makes a second concurrent caller bail out immediately instead of
+	// racing its own redundant dial.
+	reconnecting bool
 }
 
 // ServerOutcome reports a per-server failure at one assembly stage. Stage is
@@ -411,9 +424,13 @@ const (
 
 // reconnect attempts to heal c after one of its calls reported
 // mcpsdk.ErrConnectionClosed. It bails out immediately, without dialing, if c
-// is already closed or a previous reconnect attempt's backoff window hasn't
-// elapsed yet — backoffUntil's zero value means "try immediately", which is
-// what every conn starts with.
+// is already closed, a reconnect is already in flight for c (reconnecting),
+// or a previous reconnect attempt's backoff window hasn't elapsed yet —
+// backoffUntil's zero value means "try immediately", which is what every conn
+// starts with. reconnecting is set under c.mu before the lock is released
+// for the dial, so a second concurrent caller sees it immediately upon
+// acquiring the lock, before doing any dialing of its own — see the field's
+// own doc comment for why this matters.
 //
 // The dial itself is bounded by its own reconnectDialTimeout, derived from
 // context.Background() rather than from ctx: a reconnect heals the conn for
@@ -438,10 +455,11 @@ const (
 // the exec closure surfaces the original triggering error.
 func (c *conn) reconnect(ctx context.Context) (*mcpsdk.ClientSession, bool) {
 	c.mu.Lock()
-	if c.closed || time.Now().Before(c.backoffUntil) {
+	if c.closed || c.reconnecting || time.Now().Before(c.backoffUntil) {
 		c.mu.Unlock()
 		return nil, false
 	}
+	c.reconnecting = true
 	dial := c.dial
 	client := c.client
 	c.mu.Unlock()
@@ -471,8 +489,11 @@ func (c *conn) reconnect(ctx context.Context) (*mcpsdk.ClientSession, bool) {
 	// The redial itself failed (dial or Connect error). Record the failure
 	// and apply the same backoff as a success, so a burst of calls against a
 	// still-dead server fails fast — returning the ORIGINAL triggering
-	// error — instead of each re-paying a fresh dial timeout.
+	// error — instead of each re-paying a fresh dial timeout. Clear
+	// reconnecting either way: this attempt is over, so a future call is
+	// once again free to try (subject to the backoff just set).
 	c.mu.Lock()
+	c.reconnecting = false
 	if !c.closed {
 		c.lastErr = err
 		c.lastErrAt = time.Now()
@@ -487,10 +508,14 @@ func (c *conn) reconnect(ctx context.Context) (*mcpsdk.ClientSession, bool) {
 // returns the displaced (old) session for the caller to Close() OUTSIDE any
 // lock, and resets backoffUntil so the next reconnect attempt waits
 // reconnectBackoff. On failure (c.closed is true), it returns (nil, false);
-// newSess is then the caller's responsibility to discard.
+// newSess is then the caller's responsibility to discard. Either way, it
+// clears reconnecting: the in-flight attempt that called swap is now
+// complete, so a future caller (there cannot be a concurrent one right now —
+// reconnecting excluded it) is once again free to try.
 func (c *conn) swap(newSess *mcpsdk.ClientSession) (old *mcpsdk.ClientSession, committed bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.reconnecting = false
 	if c.closed {
 		return nil, false
 	}

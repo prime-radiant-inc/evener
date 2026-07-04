@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -41,6 +42,16 @@ import (
 //   - (Added) A conn that never leaves "failed" at startup has no tools
 //     registered, so its exec closure — and therefore reconnect — can never
 //     be invoked.
+//   - (Added, post-review) A second concurrent reconnect attempt on the same
+//     conn never clobbers a session a sibling attempt already committed and
+//     returned as successful.
+//   - (Added, post-review) The displaced session's Close() is proven to be
+//     reconnect's own doing, isolated from the SDK's own auto-close-on-drop
+//     (which otherwise confounds a test that only ever drops a real
+//     connection).
+//   - (Added, post-review) A FAILED reconnect attempt also sets backoffUntil,
+//     so a burst of calls against a persistently dead server fails fast
+//     instead of each re-paying a full dial timeout.
 
 // newReconnectTestServer builds an in-memory MCP server named name, exposing
 // one tool (toolName) that always replies with reply, and returns both the
@@ -524,5 +535,211 @@ func TestReconnect_CloseVsSwapRace(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&dial2Closes); got != 1 {
 		t.Errorf("post-Close dial's session Close() called %d times, want exactly 1 (discarded, not leaked)", got)
+	}
+}
+
+// TestReconnect_ConcurrentSameConn_NoClobberedSession is a post-review
+// addition (not in the plan's original four-case matrix): reconnect's own
+// doc comment promises "the new session and true" on success, which the exec
+// closure trusts for its retry-once. Before conn gained a way to mark a
+// reconnect in flight, two calls that each observed ErrConnectionClosed at
+// nearly the same moment could both pass the closed/backoffUntil gate —
+// backoffUntil is only updated once a dial finishes, so a second concurrent
+// caller sees the SAME gate state the first one did — and both dial and
+// swap. The second commit then treats the first's freshly-committed session
+// as displaced and closes it, silently invalidating a session the first
+// caller was already told ok=true to retry against.
+//
+// This test drives conn.reconnect directly (not through a triggering
+// CallTool — more reliable to force concurrently) from two goroutines at
+// once, with the dial itself artificially slowed well beyond the nanosecond
+// cost of the gate's lock/check/unlock, so both goroutines are guaranteed to
+// reach the gate before either could possibly have finished a dial —
+// reproducing the race deterministically rather than leaving it to
+// scheduler luck. It asserts the property the reconnect contract requires,
+// regardless of mechanism: every caller that gets ok=true back has a session
+// that is STILL c's live session once both attempts have finished — i.e., no
+// caller is ever handed a session that a concurrent sibling then clobbers.
+func TestReconnect_ConcurrentSameConn_NoClobberedSession(t *testing.T) {
+	ctx := context.Background()
+
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "serf", Version: "v1"}, nil)
+	_, ct0 := newReconnectTestServer(t, "s0", "probe", "dial0-reply")
+	sess0, err := client.Connect(ctx, ct0, nil)
+	if err != nil {
+		t.Fatalf("initial connect: %v", err)
+	}
+
+	_, ctA := newReconnectTestServer(t, "sA", "probe", "dialA-reply")
+	_, ctB := newReconnectTestServer(t, "sB", "probe", "dialB-reply")
+
+	c := &conn{name: "s", client: client, session: sess0}
+	var dialN int32
+	c.dial = func(context.Context) (mcpsdk.Transport, error) {
+		n := atomic.AddInt32(&dialN, 1)
+		// Widen the race window far beyond the nanosecond cost of the gate's
+		// lock/check/unlock, so both goroutines are guaranteed to have
+		// passed the gate before either of them gets here.
+		time.Sleep(10 * time.Millisecond)
+		if n == 1 {
+			return ctA, nil
+		}
+		return ctB, nil
+	}
+
+	const goroutines = 2
+	start := make(chan struct{})
+	sessions := make([]*mcpsdk.ClientSession, goroutines)
+	oks := make([]bool, goroutines)
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			sessions[i], oks[i] = c.reconnect(ctx)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	c.mu.Lock()
+	final := c.session
+	c.mu.Unlock()
+	defer func() {
+		if final != nil {
+			_ = final.Close()
+		}
+	}()
+
+	successes := 0
+	for i := 0; i < goroutines; i++ {
+		if !oks[i] {
+			continue
+		}
+		successes++
+		if sessions[i] != final {
+			t.Errorf("goroutine %d: reconnect() returned ok=true, but its session is no longer c's live session — a concurrent sibling clobbered it after telling this caller it could retry", i)
+		}
+	}
+	if successes == 0 {
+		t.Fatal("expected at least one of the concurrent reconnect attempts to succeed")
+	}
+}
+
+// TestReconnect_DisplacedSessionClosedByReconnectItself isolates J7's
+// "displaced session is closed" property from the SDK's own
+// auto-close-on-drop behavior — the caveat
+// TestReconnect_DisplacedSessionClosedExactlyOnce's own doc comment flags:
+// since the only way to genuinely produce mcpsdk.ErrConnectionClosed in a
+// hermetic test is to actually drop a connection, and this SDK independently
+// tears down a dropped connection's own transport once it detects the drop,
+// a test that only ever exercises reconnect via a real drop can never tell
+// whether the spy's Close() was flipped by our own old.Close() call or by the
+// SDK noticing the drop first. A mutation-testing pass confirmed this:
+// deleting the production old.Close() call entirely left
+// TestReconnect_DisplacedSessionClosedExactlyOnce passing 10/10 runs.
+//
+// This test sidesteps the confound entirely: c's session is connected over a
+// transport that is fully alive and never dropped, and reconnect is called
+// directly — bypassing CallTool/ErrConnectionClosed detection altogether, so
+// nothing ever triggers the SDK's drop-cleanup path. With neither transport
+// ever dropped, the ONLY thing that can flip the old session's spy-Close is
+// reconnect's own explicit old.Close() call.
+func TestReconnect_DisplacedSessionClosedByReconnectItself(t *testing.T) {
+	ctx := context.Background()
+
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "serf", Version: "v1"}, nil)
+
+	_, ctOld := newReconnectTestServer(t, "old", "probe", "old-reply")
+	var oldCloses int32
+	oldSess, err := client.Connect(ctx, spyCloseTransport{inner: ctOld, closes: &oldCloses}, nil)
+	if err != nil {
+		t.Fatalf("connect old session (healthy, never dropped): %v", err)
+	}
+
+	_, ctNew := newReconnectTestServer(t, "new", "probe", "new-reply")
+
+	c := &conn{name: "s", client: client, session: oldSess, dial: staticDial(ctNew)}
+
+	newSess, ok := c.reconnect(ctx)
+	if !ok || newSess == nil {
+		t.Fatalf("reconnect() = (%v, %v), want a non-nil session and ok=true — both the old and new transports are healthy, so there is no reason for this to fail", newSess, ok)
+	}
+	defer func() { _ = newSess.Close() }()
+
+	if got := atomic.LoadInt32(&oldCloses); got != 1 {
+		t.Errorf("displaced (old) session's underlying connection Close() called %d times, want exactly 1 — neither transport was ever dropped, so only reconnect's own old.Close() call can have done this", got)
+	}
+}
+
+// TestReconnect_FailedReconnect_BackoffSuppressesImmediateRetry locks in the
+// implementer's judgment call (flagged in reconnect's own doc comment) that
+// backoffUntil is set not only after a SUCCESSFUL reconnect (the plan's own
+// case — see TestReconnect_BackoffWindow_SkipsRedialUntilElapsed) but also
+// after a FAILED one, on the reasoning that a persistently-dead server
+// shouldn't force every subsequent call to eat a fresh reconnectDialTimeout.
+// A mutation-testing pass confirmed this branch had no coverage: removing
+// the backoff-setting on the failure branch left every existing test
+// passing. This test would have caught it: after a reconnect attempt's dial
+// itself fails, a SECOND call within the backoff window must not attempt a
+// second redial — it must fail fast, surfacing its own error, exactly as the
+// successful-reconnect backoff case already does.
+func TestReconnect_FailedReconnect_BackoffSuppressesImmediateRetry(t *testing.T) {
+	ctx := context.Background()
+
+	ss1, ct1 := newReconnectTestServer(t, "s", "probe", "dial1-reply")
+	dialErr := errors.New("reconnect: dial refused (server permanently down)")
+
+	var dialCalls int32
+	dial := func(context.Context) (mcpsdk.Transport, error) {
+		n := atomic.AddInt32(&dialCalls, 1)
+		if n == 1 {
+			return ct1, nil
+		}
+		// Every reconnect attempt after the initial connect fails, as if the
+		// server died and never came back.
+		return nil, dialErr
+	}
+
+	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{{Name: "s", Type: "stdio"}},
+		[]func(context.Context) (mcpsdk.Transport, error){dial})
+	if len(outcomes) != 0 {
+		t.Fatalf("NewManager: %+v", outcomes)
+	}
+	defer mgr.Close()
+
+	reg := tool.NewRegistry()
+	if outs := mgr.RegisterTools(reg); len(outs) != 0 {
+		t.Fatalf("RegisterTools: %+v", outs)
+	}
+
+	if _, isErr := execProbe(ctx, reg, t); isErr {
+		t.Fatal("priming call against dial #1 unexpectedly failed")
+	}
+	if err := ss1.Close(); err != nil {
+		t.Fatalf("server-side close: %v", err)
+	}
+
+	// First post-drop call: triggers a reconnect attempt (dial #2), which
+	// fails outright (dead server). The call must surface an error either way.
+	if _, isErr := execProbe(ctx, reg, t); !isErr {
+		t.Fatal("expected the call to fail: the server is down and reconnect's own dial fails too")
+	}
+	if got := atomic.LoadInt32(&dialCalls); got != 2 {
+		t.Fatalf("dial factory called %d times after the first failed reconnect, want 2", got)
+	}
+
+	// Second post-drop call, still well within the failure-branch backoff
+	// window: must NOT attempt another redial — it should fail fast without
+	// paying a second dial timeout.
+	if _, isErr := execProbe(ctx, reg, t); !isErr {
+		t.Fatal("expected the call to still fail (dead server)")
+	}
+	if got := atomic.LoadInt32(&dialCalls); got != 2 {
+		t.Errorf("dial factory called %d times, want still 2 — the failure-branch backoff should have suppressed this 3rd redial attempt", got)
+	}
+	if got := mgr.conns[0].status; got != "degraded" {
+		t.Errorf("conn.status = %q, want degraded", got)
 	}
 }
