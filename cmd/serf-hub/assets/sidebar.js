@@ -1,699 +1,204 @@
-// Sidebar JS: project collapse, archive/unarchive controls, subagent fold,
-// cluster fold, mobile drawer, and rail mode.
-//
-// Project collapse: each project's state persists under
-// localStorage["serf-hub.sidebar.expanded.<key>"] as an explicit "true"/"false".
-// The collapse machinery (applyCollapseState, isCollapsed, setCollapsed) is kept
-// for localStorage-restore fidelity. Note: the current sidebar template no longer
-// emits .project-chevron or data-default-expanded, so projects default collapsed
-// (defaultExpanded always returns false). The infrastructure remains so that any
-// future template that re-introduces chevrons continues to work without changes here.
-//
-// Archive controls: .archive-btn[data-archive-kind][data-archive-id] triggers a
-// POST /api/archive with {kind, id, archived} then refreshes the sidebar tree via
-// the existing htmx sidebar:refresh path. Items inside an archived container
-// (.session-tier.archived or [data-tier=archived-projects]) send archived:false.
+// Sidebar: client-rendered navigation tree. Data (/api/tree) is the state; the
+// DOM is a keyed projection reconciled on the server's scope-qualified RowID, so
+// unchanged rows keep node identity (hover, scroll, open menus) across updates.
 (function () {
   "use strict";
 
-  var STORAGE_PREFIX = "serf-hub.sidebar.expanded.";
+  var EXPAND_PREFIX = "serf-hub.sidebar.expanded.";
+  var model = { tree: null, expanded: new Set(), lazyCache: new Map(), seq: 0, pending: new Map() };
+  window.SerfSidebarModel = model; // test/inspection surface
 
-  // defaultExpanded reads the tier hint baked into the section by the server.
-  function defaultExpanded(section) {
-    return section.getAttribute("data-default-expanded") === "true";
+  function sidebarEl() { return document.getElementById("sidebar"); }
+
+  // --- Skeleton first paint --------------------------------------------------
+  function paintSkeleton() {
+    var el = sidebarEl();
+    if (!el || el.querySelector(".sb-tree")) return;
+    var html = '<div class="sb-skeleton" aria-hidden="true">';
+    for (var i = 0; i < 6; i++) html += '<div class="sb-skeleton-row"></div>';
+    html += "</div>";
+    el.innerHTML = html;
   }
 
-  // isCollapsed resolves a project's collapsed state: an explicit stored
-  // value wins; otherwise the tier default decides.
-  function isCollapsed(key, section) {
-    var stored = null;
-    try {
-      stored = window.localStorage.getItem(STORAGE_PREFIX + key);
-    } catch (e) {
-      stored = null;
+  // --- Row + section builders ------------------------------------------------
+  function rowKey(n) { return n.row_id; }
+
+  function buildRow(n) {
+    var a = document.createElement("a");
+    a.className = "sb-row";
+    a.setAttribute("data-row-id", n.row_id);
+    a.setAttribute("data-state", n.state);
+    a.setAttribute("data-ref", n.ref);
+    a.setAttribute("href", "/s/" + n.session_id);
+    a.setAttribute("hx-get", "/_partials/s/" + n.session_id + "/workspace");
+    a.setAttribute("hx-target", "#workspace");
+    a.setAttribute("hx-swap", "innerHTML");
+    a.setAttribute("hx-push-url", "/s/" + n.session_id);
+    a.innerHTML =
+      '<div class="dot-col"><span class="status-dot" data-state="' + n.state + '"></span></div>' +
+      '<div class="text-col"><div class="title"></div><div class="meta"></div></div>';
+    a.querySelector(".title").textContent = n.title;
+    var meta = a.querySelector(".meta");
+    if (n.branch) meta.appendChild(metaSpan(n.branch));
+    meta.appendChild(metaSpan(ageString(n.updated_at)));
+    if (n.favorite) a.setAttribute("data-favorite", "");
+    // Task 21 attaches the ⋯ menu button here.
+    return a;
+  }
+  function metaSpan(text) { var s = document.createElement("span"); s.textContent = text; return s; }
+
+  function patchRow(a, n) {
+    if (a.getAttribute("data-state") !== n.state) {
+      a.setAttribute("data-state", n.state);
+      var dot = a.querySelector(".status-dot");
+      if (dot) dot.setAttribute("data-state", n.state);
     }
-    if (stored === "true") return false; // explicitly expanded
-    if (stored === "false") return true; // explicitly collapsed
-    return !defaultExpanded(section); // no explicit value → tier default
+    var title = a.querySelector(".title");
+    if (title && title.textContent !== n.title) title.textContent = n.title;
+    if (n.favorite) a.setAttribute("data-favorite", ""); else a.removeAttribute("data-favorite");
   }
 
-  // setCollapsed persists the explicit state, but prunes the entry when the
-  // state matches the section's tier default — so storage only carries
-  // deviations from the default and a default-collapsed project the user
-  // collapses leaves no residue.
-  function setCollapsed(key, collapsed, section) {
-    var matchesDefault = collapsed === !defaultExpanded(section);
-    try {
-      if (matchesDefault) {
-        window.localStorage.removeItem(STORAGE_PREFIX + key);
-      } else {
-        window.localStorage.setItem(STORAGE_PREFIX + key, collapsed ? "false" : "true");
-      }
-    } catch (e) {
-      // localStorage may be disabled; collapse still works for this session.
+  // --- Keyed reconcile -------------------------------------------------------
+  // Patch children of `container` to match `nodes` (an array of TreeNodes),
+  // keyed by row_id. Existing keys are patched in place and reordered; missing
+  // keys are removed; new keys are created + htmx.process'd.
+  function reconcile(container, nodes, build, patch) {
+    var existing = {};
+    var kids = container.children;
+    for (var i = 0; i < kids.length; i++) {
+      var k = kids[i].getAttribute("data-row-id");
+      if (k) existing[k] = kids[i];
     }
-  }
-
-  function applyCollapseState(section) {
-    var key = section.getAttribute("data-project-key");
-    if (!key) return;
-    var collapsed = isCollapsed(key, section);
-    section.classList.toggle("collapsed", collapsed);
-    var chevron = section.querySelector(".project-chevron");
-    if (chevron) {
-      chevron.textContent = collapsed ? "▸" : "▾";
-      chevron.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    var seen = {};
+    var prev = null;
+    for (var j = 0; j < nodes.length; j++) {
+      var n = nodes[j];
+      var key = rowKey(n);
+      seen[key] = true;
+      var el = existing[key];
+      if (el) { patch(el, n); } else { el = build(n); if (window.htmx && window.htmx.process) window.htmx.process(el); }
+      // Place el right after prev (stable order without destroying nodes).
+      var ref = prev ? prev.nextSibling : container.firstChild;
+      if (el !== ref) container.insertBefore(el, ref);
+      prev = el;
     }
-  }
-
-  function applyAll(root) {
-    var scope = root || document;
-    var sections = scope.querySelectorAll("[data-project-key]");
-    for (var i = 0; i < sections.length; i++) {
-      applyCollapseState(sections[i]);
-    }
-    // After applying localStorage-based state, expand the project containing
-    // the active session row so navigating to a session always reveals it.
-    var activeRow = scope.querySelector(".sb-row[data-active]");
-    if (!activeRow) {
-      // Fallback: match by current pathname if syncActiveRow hasn't run yet.
-      var path = (window.location && window.location.pathname) || "";
-      if (path && path.indexOf("/s/") === 0) {
-        var clean = path.replace(/\/+$/, "");
-        var rows = scope.querySelectorAll(".sb-row");
-        for (var j = 0; j < rows.length; j++) {
-          if ((rows[j].getAttribute("href") || "") === clean) {
-            activeRow = rows[j];
-            break;
-          }
-        }
-      }
-    }
-    if (activeRow) {
-      var activeSection = activeRow.closest("[data-project-key]");
-      if (activeSection && activeSection.classList.contains("collapsed")) {
-        var key = activeSection.getAttribute("data-project-key");
-        activeSection.classList.remove("collapsed");
-        var chevron = activeSection.querySelector(".project-chevron");
-        if (chevron) {
-          chevron.textContent = "▾";
-          chevron.setAttribute("aria-expanded", "true");
-        }
-        // Persist the expansion so it survives sidebar re-renders, and lazy-load
-        // the rows the collapsed payload omitted.
-        setCollapsed(key, false, activeSection);
-        loadProjectChildren(activeSection);
-      }
+    for (var m = container.children.length - 1; m >= 0; m--) {
+      var ck = container.children[m].getAttribute("data-row-id");
+      if (ck && !seen[ck]) container.removeChild(container.children[m]);
     }
   }
 
-  // loadProjectChildren lazy-loads a collapsed project's session rows. The
-  // server omits collapsed projects' rows from the default sidebar payload (the
-  // scale fix), so the first expand fetches them from /_partials/sidebar/project
-  // and injects the fragment. A data-children-loaded marker prevents a refetch
-  // on re-expand. Projects that already have inline children (auto-expanded live
-  // ones) are left alone.
-  function loadProjectChildren(section) {
-    var key = section.getAttribute("data-project-key");
-    if (!key) return;
-    var children = section.querySelector(".project-children");
-    if (!children) return;
-    // Already loaded, or rendered inline by the server — nothing to fetch.
-    if (children.hasAttribute("data-children-loaded")) return;
-    if (children.children.length > 0) {
-      children.setAttribute("data-children-loaded", "");
-      return;
-    }
-    children.setAttribute("data-children-loaded", "");
-    window.fetch("/_partials/sidebar/project?key=" + encodeURIComponent(key), {
-      headers: { "HX-Request": "true" },
-    }).then(function (resp) {
-      if (!resp || !resp.ok) {
-        children.removeAttribute("data-children-loaded"); // allow retry
-        return;
-      }
-      return resp.text().then(function (html) {
-        children.innerHTML = html;
-        if (window.htmx && window.htmx.process) window.htmx.process(children);
-      });
-    }).catch(function () {
-      children.removeAttribute("data-children-loaded"); // allow retry
-    });
-  }
-
-  function onChevronClick(e) {
-    var chevron = e.target.closest(".project-chevron");
-    if (!chevron) return;
-    var section = chevron.closest("[data-project-key]");
-    if (!section) return;
-    e.preventDefault();
-    e.stopPropagation();
-    var key = section.getAttribute("data-project-key");
-    var nextCollapsed = !section.classList.contains("collapsed");
-    section.classList.toggle("collapsed", nextCollapsed);
-    chevron.textContent = nextCollapsed ? "▸" : "▾";
-    chevron.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
-    setCollapsed(key, nextCollapsed, section);
-    if (!nextCollapsed) loadProjectChildren(section);
-  }
-
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", function () { applyAll(document); });
-  } else {
-    applyAll(document);
-  }
-
-  document.addEventListener("htmx:afterSwap", function (e) {
-    applyAll(e.target || document);
-  });
-
-  // First-paint stagger on the Live section. Sidebar.html re-renders every
-  // 5s (hx-trigger="every 5s"), but only the very first paint earns the
-  // choreography. After that, .stagger is removed and individual rows
-  // appear instantly.
-  var staggerApplied = false;
-  function applyLiveStagger(scope) {
-    if (staggerApplied) return;
-    var live = (scope || document).querySelector(".sidebar-live-section");
-    if (!live) return;
-    var rows = live.querySelectorAll(".sb-row");
-    if (!rows.length) return;
-    live.classList.add("stagger");
-    for (var i = 0; i < rows.length && i < 10; i++) {
-      rows[i].style.setProperty("--i", String(i));
-    }
-    staggerApplied = true;
-    // Strip the class after the longest animation finishes (10 rows × 30ms
-    // delay + 160ms duration = 460ms; round to 600ms for safety).
-    setTimeout(function () {
-      live.classList.remove("stagger");
-      for (var j = 0; j < rows.length; j++) {
-        rows[j].style.removeProperty("--i");
-      }
-    }, 600);
-  }
-
-  document.addEventListener("htmx:afterSwap", function (e) {
-    if (e && e.target && e.target.id === "sidebar") applyLiveStagger(e.target);
-  });
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", function () { applyLiveStagger(document); });
-  } else {
-    applyLiveStagger(document);
-  }
-
-  // --- Ephemeral disclosure preservation across sidebar swaps ----------------
-  // The sidebar re-renders by replacing #sidebar's innerHTML on every archive
-  // action and every notification-driven refresh. Native <details> and the
-  // JS-toggled cluster/subagent folds carry no server "open" marker, so they'd
-  // snap shut on each swap. Snapshot what's open just before the swap, reapply
-  // it just after. (Project collapse is preserved separately via localStorage.)
-  var disclosureSnapshot = null;
-
-  function projectKeyOf(el) {
-    var sec = el.closest("[data-project-key]");
-    return sec ? sec.getAttribute("data-project-key") : null;
-  }
-
-  function snapshotDisclosures(root) {
-    var snap = { archivedTiers: {}, subagents: {}, clusters: {}, archivedProjects: false };
-    var tiers = root.querySelectorAll("details.session-tier.archived");
-    for (var i = 0; i < tiers.length; i++) {
-      var tk = projectKeyOf(tiers[i]);
-      if (tk && tiers[i].open) snap.archivedTiers[tk] = true;
-    }
-    var subs = root.querySelectorAll(".project-children[data-subagents-expanded]");
-    for (var j = 0; j < subs.length; j++) {
-      var sk = projectKeyOf(subs[j]);
-      if (sk) snap.subagents[sk] = true;
-    }
-    var clusters = root.querySelectorAll(".session-cluster[data-cluster-expanded]");
-    for (var c = 0; c < clusters.length; c++) {
-      var ck = clusters[c].getAttribute("data-cluster-key");
-      if (ck) snap.clusters[ck] = true;
-    }
-    var ap = root.querySelector(".archived-projects details");
-    snap.archivedProjects = !!(ap && ap.open);
-    return snap;
-  }
-
-  function restoreDisclosures(root, snap) {
-    if (!snap) return;
-    var tiers = root.querySelectorAll("details.session-tier.archived");
-    for (var i = 0; i < tiers.length; i++) {
-      var tk = projectKeyOf(tiers[i]);
-      if (tk && snap.archivedTiers[tk]) tiers[i].open = true;
-    }
-    var subs = root.querySelectorAll(".project-children");
-    for (var j = 0; j < subs.length; j++) {
-      var sk = projectKeyOf(subs[j]);
-      if (sk && snap.subagents[sk]) setSubagentsExpanded(subs[j], true);
-    }
-    var clusters = root.querySelectorAll(".session-cluster");
-    for (var c = 0; c < clusters.length; c++) {
-      var ck = clusters[c].getAttribute("data-cluster-key");
-      if (ck && snap.clusters[ck]) setClusterExpanded(clusters[c], true);
-    }
-    if (snap.archivedProjects) {
-      var ap = root.querySelector(".archived-projects details");
-      if (ap) ap.open = true;
-    }
-  }
-
-  function isSidebarSwap(e) {
-    var t = e && e.target;
-    return !!(t && (t.id === "sidebar" || (t.closest && t.closest("#sidebar"))));
-  }
-
-  document.addEventListener("htmx:beforeSwap", function (e) {
-    if (isSidebarSwap(e)) disclosureSnapshot = snapshotDisclosures(e.target);
-  });
-  document.addEventListener("htmx:afterSwap", function (e) {
-    if (!isSidebarSwap(e)) return;
-    restoreDisclosures(e.target, disclosureSnapshot);
-    disclosureSnapshot = null;
-  });
-
-  var sidebarRefreshTimer = null;
-  function scheduleSidebarRefresh() {
-    if (!window.htmx || !document.body) return;
-    if (sidebarRefreshTimer) clearTimeout(sidebarRefreshTimer);
-    sidebarRefreshTimer = setTimeout(function () {
-      sidebarRefreshTimer = null;
-      window.htmx.trigger(document.body, "sidebar:refresh");
-    }, 50);
-  }
-
-  function notificationAffectsSidebar(method) {
-    switch (method) {
-      case "thread/started":
-      case "thread/closed":
-      case "thread/status/changed":
-      case "thread/queueChanged":
-      case "turn/started":
-      case "turn/completed":
-      case "item/started":
-      case "item/completed":
-      case "serf/job/started":
-      case "serf/job/finished":
-      case "serf/attention/changed":
-        return true;
-      default:
-        return false;
-    }
-  }
-
-  if (window.SerfAppwire && typeof window.SerfAppwire.onNotification === "function") {
-    window.SerfAppwire.onNotification(function (method) {
-      if (notificationAffectsSidebar(method)) scheduleSidebarRefresh();
-    });
-  }
-  if (window.SerfAppwire && typeof window.SerfAppwire.onConnectionRestored === "function") {
-    window.SerfAppwire.onConnectionRestored(scheduleSidebarRefresh);
-  }
-
-  document.addEventListener("click", onChevronClick);
-
-  // Archive/unarchive control — delegate clicks on .archive-btn, read
-  // data-archive-kind and data-archive-id, POST to /api/archive, then
-  // trigger the existing sidebar refresh path. Items already in an archived
-  // container (session-tier.archived or sidebar-tier[data-tier=archived-projects])
-  // send archived:false to unarchive; all others send archived:true.
-  function isInsideArchivedContainer(el) {
-    // Walk ancestors looking for either the session archived-tier
-    // (.session-tier.archived) or the archived-projects section tier
-    // ([data-tier=archived-projects]). Both classes are required on the
-    // session tier so an unrelated .archived class elsewhere can't flip
-    // the direction.
-    var node = el;
-    while (node) {
-      if (node.classList) {
-        if (node.classList.contains("session-tier") && node.classList.contains("archived")) return true;
-        if (node.getAttribute && node.getAttribute("data-tier") === "archived-projects") return true;
-      }
-      node = node.parentElement;
-    }
-    return false;
-  }
-
-  function onArchiveBtnClick(e) {
-    var btn = e.target.closest(".archive-btn");
-    if (!btn) return;
-    e.preventDefault();
-    e.stopPropagation();
-    if (btn.disabled) return; // request already in flight — ignore repeat clicks
-    var kind = btn.getAttribute("data-archive-kind");
-    var id = btn.getAttribute("data-archive-id");
-    if (!kind || !id) return;
-    var archived = !isInsideArchivedContainer(btn);
-    // Optimistic feedback: dim the affected row/section and spin the button the
-    // instant it's clicked, so the action feels responsive across the two
-    // network hops (POST, then the full sidebar refresh) before the swap lands.
-    // The swap then replaces this DOM with server truth — restoring the row if
-    // the POST failed.
-    var target = kind === "project" ? btn.closest("[data-project-key]") : btn.closest(".sb-row-wrap");
-    if (target) {
-      target.classList.add("archiving");
-      target.setAttribute("aria-busy", "true");
-    }
-    btn.disabled = true;
-    btn.setAttribute("aria-busy", "true");
-    window.fetch("/api/archive", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: kind, id: id, archived: archived }),
-    }).then(function () {
-      scheduleSidebarRefresh();
-    }).catch(function () {
-      scheduleSidebarRefresh();
-    });
-  }
-  document.addEventListener("click", onArchiveBtnClick);
-
-  // "Completed (N)" disclosure — reveals/hides the completed subagent rows
-  // within a project. The toggle flips data-subagents-expanded on the
-  // .project-children container (CSS reveals .subagent-overflow rows) and swaps
-  // its own label between "Completed (N)" and "− hide". Not persisted: subagent
-  // rows are ephemeral and the parent project's collapse state already governs
-  // visibility across re-renders.
-  // setSubagentsExpanded flips a project-children container's subagent fold and
-  // syncs every "Completed (N)" toggle inside it: aria-expanded plus the label
-  // swap between "Completed (N)" (remembered in dataset.collapsedLabel) and
-  // "− hide". Shared by the click handler and the post-swap restore.
-  function setSubagentsExpanded(children, expanded) {
-    if (expanded) {
-      children.setAttribute("data-subagents-expanded", "");
-    } else {
-      children.removeAttribute("data-subagents-expanded");
-    }
-    var toggles = children.querySelectorAll(".subagent-toggle");
-    for (var i = 0; i < toggles.length; i++) {
-      var toggle = toggles[i];
-      if (expanded) {
-        if (!toggle.dataset.collapsedLabel) toggle.dataset.collapsedLabel = toggle.textContent;
-        toggle.setAttribute("aria-expanded", "true");
-        toggle.textContent = "− hide";
-      } else {
-        toggle.setAttribute("aria-expanded", "false");
-        if (toggle.dataset.collapsedLabel) toggle.textContent = toggle.dataset.collapsedLabel;
-      }
-    }
-  }
-
-  function onSubagentToggle(e) {
-    var toggle = e.target.closest(".subagent-toggle");
-    if (!toggle) return;
-    e.preventDefault();
-    e.stopPropagation();
-    var children = toggle.closest(".project-children");
-    if (!children) return;
-    setSubagentsExpanded(children, !children.hasAttribute("data-subagents-expanded"));
-  }
-  document.addEventListener("click", onSubagentToggle);
-
-  // Open-beside control on sidebar subagent rows — delegate clicks on
-  // .subagent-row-wrap .open-beside-btn → window.SerfPanes.open("/thread/<ref>", title).
-  // Guards:
-  //   • preventDefault + stopPropagation so the sibling <a> row does not navigate.
-  //   • window.SerfPanes presence: absent when this sidebar runs inside a pane
-  //     iframe where panes must not nest.
-  function onSidebarOpenBeside(e) {
-    var btn = e.target.closest(".open-beside-btn");
-    if (!btn) return;
-    var wrap = btn.closest(".subagent-row-wrap");
-    if (!wrap) return; // only handle subagent-row-wrap open-beside here
-    e.preventDefault();
-    e.stopPropagation();
-    if (!window.SerfPanes) return;
-    var ref = wrap.getAttribute("data-ref") || "";
-    var title = wrap.getAttribute("data-title") || ref;
-    if (!ref) return;
-    var href = window.SerfPanes.threadHref ? window.SerfPanes.threadHref(ref) : ("/thread/" + encodeURIComponent(ref));
-    window.SerfPanes.open(href, title);
-  }
-  document.addEventListener("click", onSidebarOpenBeside);
-
-  // Keyboard: Enter/Space on .subagent-row-wrap .open-beside-btn.
-  function onSidebarOpenBesideKeydown(e) {
-    if (e.key !== "Enter" && e.key !== " ") return;
-    var btn = e.target.closest(".open-beside-btn");
-    if (!btn) return;
-    if (!btn.closest(".subagent-row-wrap")) return;
-    e.preventDefault();
-    e.stopPropagation();
-    btn.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
-  }
-  document.addEventListener("keydown", onSidebarOpenBesideKeydown);
-
-  // Repeated-title cluster fold toggle (mockup #10/#C) — the cluster header
-  // flips data-cluster-expanded on its .session-cluster (CSS reveals the member
-  // runs), swaps the chevron glyph, and updates aria-expanded. Not persisted:
-  // clusters are recomputed each render and the parent project's collapse state
-  // already governs visibility across re-renders.
-  // setClusterExpanded flips a repeated-title cluster's fold and syncs its
-  // header aria-expanded plus the chevron glyph. Shared by the click handler
-  // and the post-swap restore.
-  function setClusterExpanded(cluster, expanded) {
-    var header = cluster.querySelector(".cluster-header");
-    var chevron = cluster.querySelector(".cluster-chevron");
-    if (expanded) {
-      cluster.setAttribute("data-cluster-expanded", "");
-      if (header) header.setAttribute("aria-expanded", "true");
-      if (chevron) chevron.textContent = "▾";
-    } else {
-      cluster.removeAttribute("data-cluster-expanded");
-      if (header) header.setAttribute("aria-expanded", "false");
-      if (chevron) chevron.textContent = "▸";
-    }
-  }
-
-  function onClusterToggle(e) {
-    var header = e.target.closest(".cluster-header");
-    if (!header) return;
-    e.preventDefault();
-    e.stopPropagation();
-    var cluster = header.closest(".session-cluster");
-    if (!cluster) return;
-    setClusterExpanded(cluster, !cluster.hasAttribute("data-cluster-expanded"));
-  }
-  document.addEventListener("click", onClusterToggle);
-
-  // Mobile hamburger: toggle a body[data-sidebar-open] flag that the
-  // mobile media query reads to slide the sidebar in. Tapping a sidebar
-  // link also closes (via htmx:beforeRequest) so navigating to a session
-  // doesn't leave the drawer hanging. The close-on-outside handler is
-  // only armed while open — keeping it always-on caused double-fires
-  // under mobile emulation where the synthetic click stack toggled
-  // open then immediately closed.
-  var sidebarTrapHandle = null;
-
-  function setSidebarOpen(open) {
-    if (open) {
-      document.body.setAttribute("data-sidebar-open", "");
-      document.addEventListener("click", onOutsideClick, true);
-      // Only trap focus on phone — desktop sidebar isn't a drawer. Match
-      // the design-language breakpoint.
-      var isPhone = window.matchMedia && window.matchMedia("(max-width: 767px)").matches;
-      if (isPhone && window.SerfFocusTrap) {
-        var sidebar = document.getElementById("sidebar");
-        var trigger = document.querySelector("[data-sidebar-toggle]");
-        if (sidebar) {
-          sidebarTrapHandle = window.SerfFocusTrap.activate(sidebar, trigger);
-        }
-      }
-    } else {
-      document.body.removeAttribute("data-sidebar-open");
-      document.removeEventListener("click", onOutsideClick, true);
-      if (sidebarTrapHandle && window.SerfFocusTrap) {
-        window.SerfFocusTrap.deactivate(sidebarTrapHandle);
-        sidebarTrapHandle = null;
-      }
-    }
-  }
-
-  function isSidebarOpen() {
-    return document.body.hasAttribute("data-sidebar-open");
-  }
-
-  function onOutsideClick(e) {
-    var t = e.target;
-    if (!t) return;
-    if (t.closest && (t.closest("#sidebar") || t.closest("[data-sidebar-toggle]"))) {
-      return;
-    }
-    setSidebarOpen(false);
-  }
-
-  document.addEventListener("click", function (e) {
-    var t = e.target;
-    if (!t) return;
-    var trigger = t.closest && t.closest("[data-sidebar-toggle]");
-    if (trigger) {
-      e.preventDefault();
-      e.stopPropagation();
-      setSidebarOpen(!isSidebarOpen());
-    }
-  });
-
-  document.addEventListener("htmx:beforeRequest", function (e) {
-    var trigger = e.detail && e.detail.elt;
-    if (trigger && trigger.closest && trigger.closest("#sidebar")) {
-      setSidebarOpen(false);
-    }
-  });
-
-  document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape" && isSidebarOpen()) {
-      // Do not close the mobile sidebar when the event originated inside the search dialog.
-      if (e.target && e.target.closest && e.target.closest("#search-dialog")) return;
-      var dlg = document.getElementById("search-dialog");
-      if (dlg && dlg.open) return;
-      setSidebarOpen(false);
-    }
-  });
-
-  // Sidebar rail mode — persisted to localStorage. The body[data-sidebar-rail]
-  // attribute is the single source of truth that CSS reads; the helper
-  // syncs that attribute to storage and back.
-  var RAIL_KEY = "serf-hub.sidebar.rail";
-
-  function isRailEnabled() {
-    try {
-      return window.localStorage.getItem(RAIL_KEY) === "true";
-    } catch (e) {
-      return false;
-    }
-  }
-
-  function setRail(enabled) {
-    if (enabled) {
-      document.body.setAttribute("data-sidebar-rail", "");
-    } else {
-      document.body.removeAttribute("data-sidebar-rail");
-    }
-    try {
-      if (enabled) {
-        window.localStorage.setItem(RAIL_KEY, "true");
-      } else {
-        window.localStorage.removeItem(RAIL_KEY);
-      }
-    } catch (e) {
-      // localStorage may be disabled; flip still works for this session.
-    }
-    syncRailToggleLabel();
-  }
-
-  function toggleRail() {
-    setRail(!document.body.hasAttribute("data-sidebar-rail"));
-  }
-
-  // Apply persisted rail state ASAP — before first paint when possible.
-  if (isRailEnabled()) {
-    setRail(true);
-  }
-
-  document.addEventListener("click", function (e) {
-    var t = e.target;
-    if (!t || !t.closest) return;
-    var btn = t.closest("[data-sidebar-rail-toggle]");
-    if (!btn) return;
-    e.preventDefault();
-    e.stopPropagation();
-    toggleRail();
-  });
-
-  // ⌘B / Ctrl+B — toggle rail mode. Skip when the focus is on an editable
-  // surface (textarea, contenteditable, input) so the shortcut doesn't fire
-  // while the user is typing browser-native chords. Mobile (no
-  // matchMedia "(min-width: 768px)") ignores the shortcut because rail
-  // mode is a desktop affordance.
-  function isEditableTarget(el) {
-    if (!el) return false;
-    var tag = (el.tagName || "").toLowerCase();
-    if (tag === "input" || tag === "textarea" || tag === "select") return true;
-    if (el.isContentEditable) return true;
-    return false;
-  }
-
-  document.addEventListener("keydown", function (e) {
-    if (e.key !== "b" && e.key !== "B") return;
-    if (!(e.metaKey || e.ctrlKey)) return;
-    if (e.altKey || e.shiftKey) return;
-    if (isEditableTarget(e.target)) return;
-    // Desktop only — match the design-language breakpoint.
-    if (window.matchMedia && window.matchMedia("(max-width: 767px)").matches) return;
-    e.preventDefault();
-    toggleRail();
-  });
-
-  // Sync the rail-toggle button's aria-label so screen readers hear the
-  // correct direction after each flip. Runs on init + after each htmx
-  // swap (the sidebar partial re-renders frequently).
-  function syncRailToggleLabel() {
-    var btn = document.querySelector("[data-sidebar-rail-toggle]");
-    if (!btn) return;
-    var railed = document.body.hasAttribute("data-sidebar-rail");
-    btn.setAttribute("aria-label", railed ? "expand sidebar" : "collapse sidebar");
-    btn.setAttribute("title", railed ? "expand sidebar (⌘B)" : "collapse sidebar (⌘B)");
-  }
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", syncRailToggleLabel);
-  } else {
-    syncRailToggleLabel();
-  }
-  document.addEventListener("htmx:afterSwap", syncRailToggleLabel);
-
-  // data-active marker — sync after every htmx swap into #workspace. The
-  // marker is the row whose href matches the current pathname exactly (e.g.,
-  // "/s/01ABC"). /new and /settings URLs don't match any sb-row, so all
-  // rows clear.
-  // Match by exact pathname: rows have href="/s/<id>" and window.location.pathname
-  // is "/s/<id>" (with any trailing slash stripped below).
-  function syncActiveRow() {
-    var path = window.location.pathname || "";
-    var rows = document.querySelectorAll(".sb-row");
-    var matched = null;
-    if (path && path.indexOf("/s/") === 0) {
-      // Strip trailing slash for exact match.
-      var clean = path.replace(/\/+$/, "");
-      for (var i = 0; i < rows.length; i++) {
-        var href = rows[i].getAttribute("href") || "";
-        if (href === clean) { matched = rows[i]; break; }
-      }
-    }
-    for (var j = 0; j < rows.length; j++) {
-      if (rows[j] === matched) {
-        rows[j].setAttribute("data-active", "");
-      } else {
-        rows[j].removeAttribute("data-active");
-      }
-    }
-  }
-
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", syncActiveRow);
-  } else {
+  // --- Full tree render ------------------------------------------------------
+  function renderTree(tree) {
+    model.tree = tree;
+    var el = sidebarEl();
+    if (!el) return;
+    var root = el.querySelector(".sb-tree");
+    if (!root) { el.innerHTML = '<nav class="sb-tree" aria-label="Sessions"></nav>'; root = el.querySelector(".sb-tree"); }
+    var flat = flatten(applyPending(tree)); // applyPending is Task 20; identity until then
+    reconcile(root, flat, buildRowOrSection, patchRowOrSection);
     syncActiveRow();
   }
-  document.addEventListener("htmx:afterSwap", function (e) {
-    // Only resync when the swap was into #workspace OR the sidebar itself.
-    // (Sidebar swaps re-render the rows; the marker has to be re-applied.)
-    var target = e && e.target;
-    if (!target) { syncActiveRow(); return; }
-    if (target.id === "workspace" || target.id === "sidebar" || (target.closest && target.closest("#sidebar"))) {
-      syncActiveRow();
-    }
-    // After a sidebar swap, update [data-pulse] on any status dots.
-    if (target.id === "sidebar" || (target.closest && target.closest("#sidebar"))) {
-      if (window.SerfRenderer && window.SerfRenderer.applyStatusDotPulse) {
-        window.SerfRenderer.applyStatusDotPulse(document.getElementById("sidebar") || document);
+
+  // flatten emits one keyed element descriptor per rendered row/section in
+  // order: NeedsYou, Pinned, active projects, archived projects, test runs.
+  // For the core task, render session rows grouped under project section
+  // headers; expansion + lazy children are honored via model.expanded.
+  function flatten(tree) {
+    var out = [];
+    (tree.needs_you || []).forEach(function (n) { out.push(n); });
+    (tree.favorites || []).forEach(function (n) { out.push(n); });
+    (tree.projects || []).forEach(function (p) { pushProject(out, p); });
+    // archived_projects + test_runs handled by Task 21/22 section wrappers.
+    return out;
+  }
+  function pushProject(out, p) {
+    // Project header is itself a keyed element (data-row-id="header:<key>").
+    out.push({ row_id: "header:" + p.key, __project: p });
+    var expanded = model.expanded.has(p.key) || p.default_expanded;
+    if (expanded) (p.sessions || []).forEach(function (n) { out.push(n); });
+  }
+
+  function buildRowOrSection(n) { return n.__project ? buildProjectHeader(n.__project) : buildRow(n); }
+  function patchRowOrSection(el, n) { if (n.__project) patchProjectHeader(el, n.__project); else patchRow(el, n); }
+
+  function buildProjectHeader(p) {
+    var d = document.createElement("div");
+    // NOTE: intentionally NOT "sb-row" — a project header is not a session
+    // row, and the existing template/CSS (partials/sidebar.html, style.css)
+    // already style ".project-header" as its own standalone class.
+    d.className = "project-header";
+    d.setAttribute("data-row-id", "header:" + p.key);
+    d.setAttribute("data-project-key", p.key);
+    d.setAttribute("role", "button");
+    d.setAttribute("aria-expanded", String(model.expanded.has(p.key) || p.default_expanded));
+    d.innerHTML = '<span class="project-name"></span><span class="project-rollup"></span>';
+    d.querySelector(".project-name").textContent = p.name;
+    d.addEventListener("click", function () { toggleProject(p.key); });
+    return d;
+  }
+  function patchProjectHeader(el, p) {
+    el.setAttribute("aria-expanded", String(model.expanded.has(p.key) || p.default_expanded));
+  }
+
+  function toggleProject(key) {
+    if (model.expanded.has(key)) model.expanded.delete(key); else model.expanded.add(key);
+    persistExpanded(key);
+    if (model.tree) renderTree(model.tree);
+  }
+  function persistExpanded(key) {
+    try {
+      if (model.expanded.has(key)) window.localStorage.setItem(EXPAND_PREFIX + key, "true");
+      else window.localStorage.removeItem(EXPAND_PREFIX + key);
+    } catch (e) {}
+  }
+
+  function applyPending(tree) { return tree; } // Task 20 replaces this.
+
+  // --- Age formatting (client-side; server ages are up to one bucket stale) --
+  function ageString(iso) {
+    if (!iso) return "";
+    var t = Date.parse(iso);
+    if (isNaN(t)) return "";
+    var d = (Date.now() - t) / 1000;
+    if (d < 60) return "now";
+    if (d < 3600) return Math.floor(d / 60) + "m";
+    if (d < 86400) return Math.floor(d / 3600) + "h";
+    return Math.floor(d / 86400) + "d";
+  }
+
+  // --- Active row (driven off htmx:afterSwap on #workspace) -------------------
+  function syncActiveRow() {
+    var path = (window.location && window.location.pathname) || "";
+    var clean = path.replace(/\/+$/, "");
+    var rows = document.querySelectorAll("#sidebar .sb-row[href]");
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].getAttribute("href") === clean) {
+        rows[i].setAttribute("data-active", "");
+        var hdr = rows[i].closest ? null : null; // project auto-expand: Task 22
+      } else {
+        rows[i].removeAttribute("data-active");
       }
     }
+  }
+
+  // --- Fetch + lifecycle -----------------------------------------------------
+  function fetchTree() {
+    var mySeq = ++model.seq;
+    return window.fetch("/api/tree").then(function (r) { return r.json(); }).then(function (tree) {
+      if (mySeq !== model.seq) return; // sequence guard: a newer fetch won
+      renderTree(tree);
+      migrateExpansionKeys(); // Task 22 (no-op until then)
+    }).catch(function () {});
+  }
+  function migrateExpansionKeys() {} // Task 22 replaces this.
+
+  paintSkeleton();
+  fetchTree();
+
+  document.body && document.body.addEventListener("htmx:afterSwap", function (e) {
+    if (e && e.target && e.target.id === "workspace") syncActiveRow();
   });
 
-  // Expose close so other modules (e.g. search) can fully close the mobile
-  // sidebar drawer — deactivating its focus trap — before opening their own
-  // overlay. Using the internal setSidebarOpen(false) ensures the trap is
-  // properly torn down and the click-outside listener is removed.
-  window.SerfSidebar = { close: function () { setSidebarOpen(false); } };
+  window.SerfSidebar = { renderTree: renderTree, refresh: fetchTree, close: function () {} };
 })();
