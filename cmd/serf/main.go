@@ -221,6 +221,7 @@ func printRunCommands(w io.Writer) {
 	_, _ = fmt.Fprintf(tw, "  serve\tRun the serf HTTP/RPC server\n")
 	_, _ = fmt.Fprintf(tw, "  launch-check\tValidate launch contract for a provider/model\n")
 	_, _ = fmt.Fprintf(tw, "  upgrade\tUpgrade installed Serf binaries\n")
+	_, _ = fmt.Fprintf(tw, "  plugin\tManage plugin marketplaces and plugins\n")
 	_ = tw.Flush()
 }
 
@@ -275,6 +276,8 @@ func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer
 		return true, "serf openai", runOpenAI(args[1:], stdin, stdout, stderr)
 	case "upgrade":
 		return true, "serf upgrade", runUpgrade(args[1:], stdout, stderr)
+	case "plugin":
+		return true, "serf plugin", runPlugin(args[1:], stdin, stdout, stderr)
 	default:
 		return false, "", nil
 	}
