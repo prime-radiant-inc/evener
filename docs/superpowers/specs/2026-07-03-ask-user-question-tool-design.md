@@ -72,7 +72,8 @@ We also decline Codex's plan-mode-only gating (users file issues begging for the
 - The model **must not** add an "Other"/free-text option: the renderer always appends a free-text row ("Something else…") and a "You decide" row to every question. The tool description says so (Codex/Gemini/OpenCode all auto-inject the escape rather than trusting the model to).
 - `why` renders as a dim context line — the resumption cue that lets the user answer hours later without re-reading the transcript.
 - `if_unanswered` renders as a one-tap **"do that"** button carrying the model's stated fallback. It is a button, never a timer.
-- A recommended option, when the model has one, goes first with "(Recommended)" appended to its label — a description convention, not a schema field.
+- A recommended option, when the model has one, goes first and sets `recommended: true` (optional bool, at most one per question, handler-validated). A schema field on purpose: appending "(Recommended)" to the label would pollute the answer-identity key that `selected` validation and the §4.4 echo match against.
+- Option labels must be unique within a question (handler-validated at execution; a violation returns an instructive error result to the model) — `selected` matches by label.
 
 ### 4.3 Answer payload (wire) and resolutions
 
@@ -88,24 +89,25 @@ Each question resolves to exactly one of:
 
 Any resolution may carry `note: string` — the annotation (Jesse's hard requirement). A note can qualify or override the selection ("Postgres — but only the primary"); the tool description tells the model to read it before acting. Renderers must offer the note affordance on **every** resolution path: the note control is question-level, not a property of option chips, so fallback ("do that"), skip, "you decide" (whose *leaning* is a separate field), and free text are all annotatable (§6).
 
-Alternatively the user dismisses the whole form with prose: the payload is `form_response: string` with no per-question answers (mutually exclusive; the daemon rejects mixed payloads). The model sees the prose as the reply.
+Alternatively the user dismisses the whole form with prose: the payload is `formResponse: string` (camelCase everywhere — wire and `ToolState`) with no per-question answers (mutually exclusive; the daemon rejects mixed payloads). The model sees the prose as the reply.
 
 ### 4.4 Result to the model
 
 The handler returns a `tool.StateResult`: readable text for the model, structured JSON in the `ToolState` side channel for renderers.
 
-Text format (stable, tested):
+Text format (stable, tested; **every echoed model- or user-authored string renders Go-`%q`-quoted**, so embedded quotes, commas, and newlines cannot corrupt the framing — this text is the only representation the model reads):
 
 ```
-User answered (3 questions):
-1. [DB choice] → Postgres — note: "only the primary"
-2. [Naming] → you decide — leaning: "short names"
-3. [CI matrix] → skipped (no answer)
+User answered (4 questions):
+1. [DB choice] → "Postgres" — note: "only the primary"
+2. [Naming] → you decide — leaning: "short names" — note: "re-ask if it gets weird"
+3. [CI matrix] → skipped (no answer) — note: "irrelevant after #2"
+4. [Endpoint] → free text: "use RDS, not self-hosted"
 ```
 
-`fallback` renders as `→ do your stated fallback ("default to Postgres and note the assumption")`. `form_response` renders as `User replied instead of answering the form: "…"`. Multi-select joins labels with ", ".
+Every resolution line accepts the trailing `— note: "…"` suffix — the annotation is universal, on `skipped` and `fallback` too; on `delegated`, `leaning` renders before `note`, both quoted. `fallback` renders as `→ do your stated fallback ("default to Postgres and note the assumption")`. `formResponse` renders as `User replied instead of answering the form: "…"`. Multi-select joins **quoted** labels — `→ "A", "B"` — unambiguous even when a label contains a comma.
 
-`ToolState` carries `{answers: [...], form_response?: string}` verbatim so both renderers draw the resolved card without parsing prose.
+`ToolState` carries `{answers: [...], formResponse?: string}` (camelCase, byte-identical keys to the wire payload) so both renderers draw the resolved card without parsing prose.
 
 ### 4.5 Tool description (draft; Haiku-validate at implementation, house style)
 
@@ -118,7 +120,7 @@ User answered (3 questions):
 > - The call blocks until the user answers or interrupts. There is no timeout.
 > - Each answer is a selection, free text, "you decide" (choose with your judgment, honoring any stated leaning), your stated fallback, or skipped (the user declined: proceed on your best judgment, state the assumption you make, and do not immediately re-ask). Any answer may carry a user note — read it; it can qualify or override the selection.
 >
-> First try to resolve the question yourself with tools. Batch related questions at a natural breakpoint into one call instead of asking serially. Put a recommended option first with "(Recommended)" appended.
+> First try to resolve the question yourself with tools. Batch related questions at a natural breakpoint into one call instead of asking serially. When you have a recommendation, put that option first and set `recommended: true`. The user may ignore the form and reply in prose; treat that prose as the reply.
 
 ### 4.6 System-prompt guidance
 
@@ -165,7 +167,7 @@ New appwire request **`thread/ask/answer`**:
 
 ```jsonc
 { "threadId": "...", "callId": "...",          // callId = the ask_user tool-call ID
-  "answers": [ { "question_index": 0, "resolution": "selected", "selected": ["Postgres"], "note": "only the primary" } ],
+  "answers": [ { "questionIndex": 0, "resolution": "selected", "selected": ["Postgres"], "note": "only the primary" } ],
   "formResponse": null }
 ```
 
@@ -189,7 +191,7 @@ The daemon handler calls a new external `Session` method `AnswerAsk(callID, payl
 
 ### 5.4 The `awaiting` status — one emission point, three plumbing legs
 
-While an ask is pending the thread presents **`ThreadStatusAwaiting`**; on resolution it returns to the active-turn status. One producer function (`session.setAwaitingInput(bool)`), called only from the ask handler around the blocking wait, is the **only** source of `awaiting` — the structural fix for Claude Code's "permission prompts notify, questions don't" divergence.
+While an ask is pending the thread presents **`ThreadStatusAwaiting`**; on resolution it returns to the active-turn status. **Awaiting is not a stored flag: it is slot presence.** `PendingAsk().ok`, derived at read time, is the sole definition of awaiting; the ask handler is the slot's only writer. That single ownership is the structural fix for Claude Code's "permission prompts notify, questions don't" divergence — and `EventAwaitingInput` is a push hint, never a source of truth.
 
 The consumers are dormant but real (NeedsYou tier, `◆N` badge, attention pill — `hubcore/tree.go` AttentionRank/NormalizeState — and OS notifications). The **producer side does not exist and must be built**; adversarial review confirmed a pending ask is mid-turn, where every existing leg reports `active`:
 
