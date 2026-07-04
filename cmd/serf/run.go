@@ -90,6 +90,8 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err := cmdutil.EnsureUserConfigDirs(); err != nil {
 		return err
 	}
+	// --no-default-marketplaces opts out of seeding on this bare-serf path only;
+	// serve and plugin subcommands always seed (best-effort, first-run-only).
 	if !cfg.noDefaultMarketplaces {
 		if _, err := plugins.NewManager("").SeedDefaultMarketplaces(); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: seeding default marketplaces: %v\n", err)

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"time"
 )
 
 // DefaultMarketplaceSeeds is the set of marketplaces seeded on first run
@@ -20,6 +21,17 @@ func DefaultMarketplaceSeeds() map[string]Source {
 // seeded marketplace never gets it back. Seeded entries are unfetched pointers
 // (empty InstallLocation), cloned lazily on first Browse/Install.
 func (m *Manager) SeedDefaultMarketplaces() (bool, error) {
+	if _, err := os.Stat(m.marketplacesFile()); err == nil {
+		return false, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return false, err
+	}
+	release, err := acquireLock(m.lockPath(), 30*time.Second)
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	// re-check under lock
 	if _, err := os.Stat(m.marketplacesFile()); err == nil {
 		return false, nil
 	} else if !errors.Is(err, fs.ErrNotExist) {

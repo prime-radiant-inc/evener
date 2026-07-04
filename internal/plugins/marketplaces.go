@@ -224,7 +224,15 @@ func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 		return fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceNotFound)
 	}
 	if ref.Source.Kind != SourceDirectory {
-		if err := gitPull(ctx, ref.InstallLocation); err != nil {
+		if ref.InstallLocation == "" {
+			// Never fetched (seeded pointer): clone now — that is the refresh.
+			installLoc := m.marketplaceDir(name)
+			_ = os.RemoveAll(installLoc)
+			if _, err := m.fetchMarketplaceContainer(ctx, ref.Source, installLoc); err != nil {
+				return err
+			}
+			ref.InstallLocation = installLoc
+		} else if err := gitPull(ctx, ref.InstallLocation); err != nil {
 			return err
 		}
 	}

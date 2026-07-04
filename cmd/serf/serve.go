@@ -141,6 +141,9 @@ func runServe(args []string) error {
 	if err := cmdutil.EnsureUserConfigDirs(); err != nil {
 		return err
 	}
+	if _, err := plugins.NewManager("").SeedDefaultMarketplaces(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: seeding default marketplaces: %v\n", err)
+	}
 
 	// Resolve state directory.
 	// Priority: --state-dir flag > SERF_STATE_DIR env > XDG-computed default.

@@ -2,7 +2,6 @@ package plugins
 
 import (
 	"context"
-	"os"
 	"testing"
 )
 
@@ -37,12 +36,13 @@ func TestSeedDefaultMarketplaces_FirstRunOnly(t *testing.T) {
 	if err := m.RemoveMarketplace("superpowers-marketplace"); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
-	m.SeedDefaultMarketplaces()
+	if _, err := m.SeedDefaultMarketplaces(); err != nil {
+		t.Fatalf("third seed: %v", err)
+	}
 	mk, _ = m.ListMarketplaces()
 	if _, ok := mk["superpowers-marketplace"]; ok {
 		t.Fatal("removed seed was re-added")
 	}
-	_ = os.Stat
 }
 
 func TestBrowse_LazyFetchesSeededPointer(t *testing.T) {

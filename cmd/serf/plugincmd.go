@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"text/tabwriter"
 
@@ -14,6 +15,9 @@ import (
 )
 
 func runPlugin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	if _, err := plugins.NewManager("").SeedDefaultMarketplaces(); err != nil {
+		_, _ = fmt.Fprintf(stderr, "warning: seeding default marketplaces: %v\n", err)
+	}
 	if len(args) == 0 {
 		printPluginUsage(stderr)
 		return nil
@@ -149,8 +153,15 @@ func renderMarketplaces(w io.Writer, mk plugins.Marketplaces, asJSON bool) error
 		return nil
 	}
 
+	names := make([]string, 0, len(mk))
+	for name := range mk {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	for name, ref := range mk {
+	for _, name := range names {
+		ref := mk[name]
 		sourceDesc := sourceDescription(ref.Source)
 		_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\n", name, sourceDesc, ref.LastUpdated.Format("2006-01-02 15:04"))
 	}

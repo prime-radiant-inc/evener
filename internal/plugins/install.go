@@ -258,16 +258,16 @@ func (m *Manager) Remove(plugin, marketplace string) error {
 }
 
 type ListItem struct {
-	Plugin       string
-	Marketplace  string
-	Version      string
-	Enabled      bool
-	AutoUpgrade  bool
-	Broken       bool
-	InstallPath  string
-	GitCommitSha string
-	InstalledAt  time.Time
-	LastUpdated  time.Time
+	Plugin       string    `json:"plugin"`
+	Marketplace  string    `json:"marketplace"`
+	Version      string    `json:"version"`
+	Enabled      bool      `json:"enabled"`
+	AutoUpgrade  bool      `json:"autoUpgrade"`
+	Broken       bool      `json:"broken"`
+	InstallPath  string    `json:"installPath"`
+	GitCommitSha string    `json:"gitCommitSha"`
+	InstalledAt  time.Time `json:"installedAt"`
+	LastUpdated  time.Time `json:"lastUpdated"`
 }
 
 func splitKey(key string) (plugin, marketplace string) {

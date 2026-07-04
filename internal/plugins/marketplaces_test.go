@@ -123,3 +123,21 @@ func TestRemoveMarketplace_DirectorySourceKeepsContents(t *testing.T) {
 		t.Fatalf("directory source contents deleted on remove: %v", err)
 	}
 }
+
+func TestRefreshMarketplace_ClonesUnfetchedSeed(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	mktRepo := makeMarketplaceRepo(t, "acme")
+	m := NewManager(t.TempDir())
+	if err := m.saveMarketplaces(Marketplaces{"acme": {Source: Source{Kind: SourceURL, URL: mktRepo}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RefreshMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("refresh unfetched seed: %v", err)
+	}
+	mk, _ := m.ListMarketplaces()
+	if mk["acme"].InstallLocation == "" {
+		t.Fatal("refresh did not clone the unfetched seed")
+	}
+}
