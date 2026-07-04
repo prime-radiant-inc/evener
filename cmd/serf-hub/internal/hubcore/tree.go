@@ -59,10 +59,11 @@ type TreeProject struct {
 	// routes such projects into a dedicated "Test runs" group, taking
 	// precedence over IsArchived.
 	IsTestRun bool
-	// MostRecentStart is the newest session start (max CreatedAt) across the
-	// project's top-level sessions; active projects are ordered by it, desc.
-	MostRecentStart time.Time
-	RollupState     string // highest-attention state across this project's live sessions; "" if none
+	// LastActivity is the most recent last-touched moment (max last-activity,
+	// i.e. OrderUpdatedAt) across the project's top-level sessions; active
+	// projects are ordered by it, desc.
+	LastActivity time.Time
+	RollupState  string // highest-attention state across this project's live sessions; "" if none
 	// Magnitude rollup: how many of the project's live sessions are working
 	// (RollupLive) vs. awaiting input (RollupAttn). The header renders these as
 	// "⟳N · ◆M" so "how many need me" is legible without expanding — the single
@@ -80,7 +81,7 @@ type TreeProject struct {
 	MoreCurrent  int
 	MoreRecent   int
 	MoreArchived int
-	Age          string // pre-formatted relative age of MostRecentStart ("now", "2m", "3h", "5d")
+	Age          string // pre-formatted relative age of LastActivity ("now", "2m", "3h", "5d")
 	// Worktrees is the count of distinct non-empty WorktreePath values across
 	// the project's sessions, surfaced in the delete confirmation.
 	Worktrees int
@@ -518,12 +519,16 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 			}
 		}
 
-		// MostRecentStart: the project's newest session START (max CreatedAt),
-		// used to order active projects newest-first.
-		var mostRecentStart time.Time
+		// lastActivity: the project's most recent last-touched moment (max
+		// last-activity across its top-level sessions). s.UpdatedAt is already
+		// the normalized last-activity value (OrderUpdatedAt(m.UpdatedAt,
+		// m.CreatedAt), applied when each node was built above), so this just
+		// takes the max of it. Used to order active projects by last activity,
+		// not by when a session merely started.
+		var lastActivity time.Time
 		for _, s := range sessions {
-			if s.CreatedAt.After(mostRecentStart) {
-				mostRecentStart = s.CreatedAt
+			if s.UpdatedAt.After(lastActivity) {
+				lastActivity = s.UpdatedAt
 			}
 		}
 
@@ -554,32 +559,32 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		archived, moreArchived := capTier(archived, maxSidebarSessionsPerTier)
 
 		treeProjects = append(treeProjects, TreeProject{
-			Name:            acc.name,
-			Key:             projectSlug(path),
-			WorkingDir:      acc.workingDir,
-			Worktrees:       len(acc.worktrees),
-			Current:         current,
-			Recent:          recent,
-			Archived:        archived,
-			IsArchived:      isArchived,
-			IsTestRun:       acc.count > 0 && !acc.anyNonTest,
-			MostRecentStart: mostRecentStart,
-			RollupState:     rollup,
-			RollupLive:      rollupLive,
-			RollupAttn:      rollupAttn,
+			Name:         acc.name,
+			Key:          projectSlug(path),
+			WorkingDir:   acc.workingDir,
+			Worktrees:    len(acc.worktrees),
+			Current:      current,
+			Recent:       recent,
+			Archived:     archived,
+			IsArchived:   isArchived,
+			IsTestRun:    acc.count > 0 && !acc.anyNonTest,
+			LastActivity: lastActivity,
+			RollupState:  rollup,
+			RollupLive:   rollupLive,
+			RollupAttn:   rollupAttn,
 			// Auto-open only live projects (a working or awaiting session).
 			Expanded:     rollupLive > 0 || rollupAttn > 0,
 			MoreCurrent:  moreCurrent,
 			MoreRecent:   moreRecent,
 			MoreArchived: moreArchived,
-			Age:          AgeString(mostRecentStart),
+			Age:          AgeString(lastActivity),
 		})
 	}
 
 	// Split active projects from archived ones; order each newest-first by the
-	// project's most-recent session start. SliceStable keeps the insertion order
-	// (already recency-sorted via sessionMetaLess) as the tiebreak when starts
-	// are equal.
+	// project's last activity. SliceStable keeps the insertion order (already
+	// recency-sorted via sessionMetaLess) as the tiebreak when last-activity
+	// times are equal.
 	activeProjects := make([]TreeProject, 0, len(treeProjects))
 	archivedProjects := make([]TreeProject, 0)
 	for _, p := range treeProjects {
@@ -589,11 +594,11 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 			activeProjects = append(activeProjects, p)
 		}
 	}
-	byStartDesc := func(ps []TreeProject) func(i, j int) bool {
-		return func(i, j int) bool { return ps[i].MostRecentStart.After(ps[j].MostRecentStart) }
+	byLastActivityDesc := func(ps []TreeProject) func(i, j int) bool {
+		return func(i, j int) bool { return ps[i].LastActivity.After(ps[j].LastActivity) }
 	}
-	sort.SliceStable(activeProjects, byStartDesc(activeProjects))
-	sort.SliceStable(archivedProjects, byStartDesc(archivedProjects))
+	sort.SliceStable(activeProjects, byLastActivityDesc(activeProjects))
+	sort.SliceStable(archivedProjects, byLastActivityDesc(archivedProjects))
 
 	// Build the Live slice: every live session, flat, sorted by attention rank
 	// desc, then the Hub session ordering contract. The sidebar no longer

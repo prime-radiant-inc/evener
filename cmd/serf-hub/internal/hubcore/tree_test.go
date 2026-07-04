@@ -394,8 +394,8 @@ func TestBuildTreeSessionTiersAndProjectOrder(t *testing.T) {
 	if len(alpha.Current) != 1 || len(alpha.Archived) != 1 || len(alpha.Recent) != 0 {
 		t.Fatalf("alpha tiers: current=%d recent=%d archived=%d", len(alpha.Current), len(alpha.Recent), len(alpha.Archived))
 	}
-	// Projects ordered by most-recent session START desc: alpha's newest start is 2h ago,
-	// beta's is 50h ago -> alpha first.
+	// Projects ordered by last-activity desc: alpha's most recent touch was 1h
+	// ago, beta's was 48h ago -> alpha first.
 	if len(tree.Projects) < 2 || tree.Projects[0].Name != "alpha" {
 		t.Fatalf("project order wrong: %+v", projectNames(tree.Projects))
 	}
@@ -678,26 +678,55 @@ func TestBuildTree_KeepsSubagentStateWhenParentLive(t *testing.T) {
 	}
 }
 
-func TestBuildTree_OrdersProjectsByMostRecentStart(t *testing.T) {
-	// Active projects are emitted newest-first by their most-recent session START
-	// (max CreatedAt across the project's sessions).
+func TestBuildTree_OrdersProjectsByLastActivity(t *testing.T) {
+	// Active projects are emitted newest-first by their most recent
+	// last-activity (max last-activity across the project's sessions), not by
+	// when a session merely started.
 	now := time.Unix(1_700_000_000, 0)
-	mk := func(id, proj string, startedAgo time.Duration) schema.SessionMeta {
-		return schema.SessionMeta{ID: id, CreatedAt: now.Add(-startedAgo), UpdatedAt: now.Add(-startedAgo),
+	mk := func(id, proj string, createdAgo, updatedAgo time.Duration) schema.SessionMeta {
+		return schema.SessionMeta{ID: id, CreatedAt: now.Add(-createdAgo), UpdatedAt: now.Add(-updatedAgo),
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/" + proj}}
 	}
 	metas := []schema.SessionMeta{
-		mk("01R2", "started-older", 2*time.Hour),
-		mk("01R1", "started-newer", 10*time.Minute),
-		// started-older also has an even-newer session, which should lift it above
-		// started-newer because most-recent START wins.
-		mk("01R3", "started-older", 1*time.Minute),
+		// touched-older's sessions were both CREATED before touched-newer's only
+		// session, so max-CreatedAt ordering would rank touched-newer first. But
+		// one of touched-older's sessions was TOUCHED more recently than
+		// anything in touched-newer, which should lift touched-older to the top.
+		mk("01R2", "touched-older", 3*time.Hour, 3*time.Hour),
+		mk("01R3", "touched-older", 2*time.Hour, 1*time.Minute),
+		mk("01R1", "touched-newer", 10*time.Minute, 10*time.Minute),
 	}
 	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
 	got := projectNames(tree.Projects)
-	want := []string{"started-older", "started-newer"}
+	want := []string{"touched-older", "touched-newer"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("project order = %v, want %v", got, want)
+	}
+}
+
+func TestBuildTree_OrdersProjectsByLastActivityNotCreatedAt(t *testing.T) {
+	// A project's ordering key is last ACTIVITY, not session start: a project
+	// whose only session was created long ago but touched moments ago must
+	// outrank a project whose only session was created recently but has sat
+	// stale (untouched) since. Sorting by max CreatedAt (the pre-change
+	// behavior) gets this backwards — it ranks the freshly-started-but-stale
+	// project first.
+	now := time.Unix(1_700_000_000, 0)
+	mk := func(id, proj string, createdAgo, updatedAgo time.Duration) schema.SessionMeta {
+		return schema.SessionMeta{ID: id, CreatedAt: now.Add(-createdAgo), UpdatedAt: now.Add(-updatedAgo),
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/" + proj}}
+	}
+	metas := []schema.SessionMeta{
+		// old-but-touched: session started 30 days ago, touched 1 minute ago.
+		mk("01OLD", "old-but-touched", 30*24*time.Hour, 1*time.Minute),
+		// new-but-stale: session started 10 minutes ago, never touched since.
+		mk("01NEW", "new-but-stale", 10*time.Minute, 10*time.Minute),
+	}
+	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	got := projectNames(tree.Projects)
+	want := []string{"old-but-touched", "new-but-stale"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("project order = %v, want %v (must order by last activity, not session start)", got, want)
 	}
 }
 
