@@ -31,6 +31,10 @@ type composerPanel struct {
 	Attachments []*clipboard.PastedImage
 	// ChipContext provides metadata for the chip strip rendered above the textarea.
 	ChipContext composerContext
+	// AwaitingQuestion shows the "question waiting" chip whenever the
+	// session is awaiting (spec §6.2) — independent of ChipContext, which
+	// carries harness/model/branch metadata rather than transient state.
+	AwaitingQuestion bool
 }
 
 type hubComposerMode int
@@ -103,13 +107,14 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 	// → syncSessionViewport → … → hubCommandByName → hubCommandRegistry.
 	keys := []string{"esc: browse", "ctrl+p: palette", "ctrl+o: dashboard", "/help"}
 	panel := composerPanel{
-		Draft:         m.session.input.Value(),
-		MaxDraftLines: m.session.input.MaxHeight,
-		Keys:          keys,
-		ShowInput:     true,
-		Width:         m.width,
-		QueuePreview:  m.sessionQueuePreview(),
-		Attachments:   m.pendingAttachments,
+		Draft:            m.session.input.Value(),
+		MaxDraftLines:    m.session.input.MaxHeight,
+		Keys:             keys,
+		ShowInput:        true,
+		Width:            m.width,
+		QueuePreview:     m.sessionQueuePreview(),
+		Attachments:      m.pendingAttachments,
+		AwaitingQuestion: stateLabel(m.detail.State) == "awaiting",
 		ChipContext: composerContext{
 			Harness:    m.detail.SourceLabel,
 			Model:      m.detail.Model,
@@ -197,6 +202,16 @@ func (p composerPanel) View() string {
 	if p.ChipContext.Harness != "" || p.ChipContext.Model != "" || p.ChipContext.Branch != "" {
 		strip := renderComposerChipStrip(p.ChipContext)
 		b.WriteString(strip)
+		b.WriteString("\n")
+	}
+
+	// Waiting chip (spec §6.2): shown whenever the session is awaiting,
+	// independent of the harness/model chip strip above. ctrl+q is the
+	// ONLY way to open the question overlay — this chip is discoverability
+	// chrome, not a button.
+	if p.AwaitingQuestion {
+		waitingStyle := lipgloss.NewStyle().Foreground(th.StateAwaiting).Bold(true)
+		b.WriteString(waitingStyle.Render("◆ question waiting — ctrl+q to answer"))
 		b.WriteString("\n")
 	}
 

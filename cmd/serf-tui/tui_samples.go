@@ -253,6 +253,76 @@ func sampleTranscriptEvents() []transcript.ChatMessage {
 	}
 }
 
+// sampleAskUserToolCall builds a completed, non-error ask_user tool-call
+// message covering both a single-select question (recommended option, why,
+// if_unanswered) and a multi-select question with neither — so the
+// in-transcript card sample exercises every optional branch of the renderer
+// in one go.
+func sampleAskUserToolCall() transcript.ChatMessage {
+	argsJSON := `{"questions":[` +
+		`{"header":"DB choice","question":"Which datastore for the ingest path?",` +
+		`"options":[{"label":"Postgres","detail":"matches prod; heavier local setup","recommended":true},` +
+		`{"label":"SQLite","detail":"zero setup; diverges from prod"}],` +
+		`"why":"the writer refactor depends on it; a wrong guess reworks writer + tests",` +
+		`"if_unanswered":"default to Postgres and note the assumption in the PR"},` +
+		`{"header":"Targets","question":"Which platforms need the fix?","multi_select":true,` +
+		`"options":[{"label":"macOS","detail":""},{"label":"Linux","detail":""}]}` +
+		`]}`
+	return transcript.ChatMessage{
+		Kind: transcript.MsgTool,
+		Tool: &transcript.ToolCallInfo{
+			Name:    "ask_user",
+			RawArgs: argsJSON,
+			Output:  "questions posted; answers arrive in the user's reply after your turn ends",
+			Done:    true,
+		},
+	}
+}
+
+// sampleAskQuestionsSingle/sampleAskQuestionsMultiReview back the two
+// question-overlay render samples directly (not via JSON decoding — the
+// overlay's own decodeAskUserArgsJSON path is exercised by
+// question_overlay_test.go's pendingAskQuestions tests).
+func sampleAskQuestionsSingle() []askQuestion {
+	return []askQuestion{{
+		Header:       "Confirm",
+		Question:     "Ready to deploy the migration?",
+		Why:          "this touches prod data",
+		IfUnanswered: "hold off and wait for confirmation",
+		Options: []askOption{
+			{Label: "Yes, deploy", Detail: "runs now"},
+			{Label: "Not yet", Detail: "hold off"},
+		},
+	}}
+}
+
+func sampleAskQuestionsMultiReview() *questionOverlay {
+	questions := []askQuestion{
+		{
+			Header:   "DB choice",
+			Question: "Which datastore for the ingest path?",
+			Options: []askOption{
+				{Label: "Postgres", Detail: "matches prod", Recommended: true},
+				{Label: "SQLite", Detail: "zero setup"},
+			},
+		},
+		{
+			Header:   "Naming",
+			Question: "Short or long names?",
+			Options: []askOption{
+				{Label: "Short", Detail: ""},
+				{Label: "Long", Detail: ""},
+			},
+		},
+	}
+	o := newQuestionOverlay("local:01SERF", questions, 100)
+	o.applyPickerSelection() // picks "Postgres" (cursor starts on the first row)
+	o.idx++                  // -> Naming, left unanswered
+	o.rebuildPicker()
+	o.idx++ // -> review step
+	return o
+}
+
 func sampleDiagnostics() []tuiNoticeSample {
 	return []tuiNoticeSample{
 		{
@@ -319,6 +389,18 @@ func sampleRenders() []tuiSampleRender {
 		{name: "session-busy-readonly", width: 100, contains: []string{"SERF / SESSION", "read-only", "source does not advertise queue"}},
 		{name: "session-browse", width: 100, contains: []string{"SERF / SESSION", "esc/i/q: compose", "f: fork"}},
 		{name: "session-fork", width: 100, contains: []string{"SERF / SESSION", "fork draft", "edited prompt"}},
+		{name: "ask-card-pending", width: 100, contains: []string{
+			"[DB choice]", "Postgres", "SQLite", "(recommended)", "why:", "if unanswered:", "(pick any)",
+		}},
+		{name: "ask-chip-waiting", width: 100, contains: []string{"◆ question waiting", "ctrl+q to answer"}},
+		{name: "ask-overlay-single", width: 100, contains: []string{
+			"Ready to deploy the migration?", "Yes, deploy", "Not yet", "this touches prod data",
+			"do that (fallback)", "choose", "answer", "note", "next question", "defer",
+		}},
+		{name: "ask-overlay-multi-review", width: 100, contains: []string{
+			`[DB choice] → "Postgres"`, `[Naming] → skipped (no answer)`,
+			"submit with 1 unanswered → it resolves as skipped", "review answers",
+		}},
 		{name: "spawn-serf", width: 100, contains: []string{"Harness:  serf", "openai/gpt-5.5"}},
 		{name: "spawn-codex", width: 100, contains: []string{"Harness:  codex-local", "codex-local/gpt-5.3-codex"}},
 		{name: "spawn-auth-required", width: 100, contains: []string{"OpenAI login required", "openai/gpt-4.1"}},
@@ -410,6 +492,22 @@ func sampleRenderFromRealWidget(name string, width int) (tuiSampleRender, bool) 
 		m.forkDraft = &hubForkDraft{Turn: 1, OriginalText: "original before fork", Label: "original before fork"}
 		m.session.setInputValue("edited prompt")
 		return renderSample(name, width, m.sessionView()), true
+	case "ask-card-pending":
+		m := sampleSessionModel(width, sampleSessionDetails()["serf-idle"])
+		m.session.messages = []transcript.ChatMessage{sampleAskUserToolCall()}
+		m.session.refreshViewport()
+		return renderSample(name, width, m.sessionView()), true
+	case "ask-chip-waiting":
+		detail := sampleSessionDetails()["serf-idle"]
+		detail.State = "awaiting"
+		m := sampleSessionModel(width, detail)
+		return renderSample(name, width, m.sessionView()), true
+	case "ask-overlay-single":
+		o := newQuestionOverlay("local:01SERF", sampleAskQuestionsSingle(), width)
+		return renderSample(name, width, o.View()), true
+	case "ask-overlay-multi-review":
+		o := sampleAskQuestionsMultiReview()
+		return renderSample(name, width, o.View()), true
 	case "spawn-serf":
 		m := sampleSpawnModel(width, sampleSpawnOptions()[0])
 		m.session.setInputValue("Implement the next TUI task")

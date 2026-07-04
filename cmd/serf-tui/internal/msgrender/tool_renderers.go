@@ -6,6 +6,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/charmbracelet/lipgloss"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
 // ToolArgs is a decoded JSON args map with a convenience Str() accessor.
@@ -157,6 +160,104 @@ func diffResultText(_ ToolArgs, output, errStr string, _ time.Duration) string {
 	default:
 		return "ok"
 	}
+}
+
+// askUserOptionRender is one option of an ask_user question, decoded from
+// the tool call's raw arguments JSON (spec §4.2) purely for static display —
+// unlike the keypress-opened question overlay (cmd/serf-tui/question_overlay.go),
+// this renderer never mutates or answers anything; it is an always-expanded,
+// immutable historical row like any other tool call's.
+type askUserOptionRender struct {
+	Label       string `json:"label"`
+	Detail      string `json:"detail"`
+	Recommended bool   `json:"recommended"`
+}
+
+type askUserQuestionRender struct {
+	Header       string                `json:"header"`
+	Question     string                `json:"question"`
+	Options      []askUserOptionRender `json:"options"`
+	MultiSelect  bool                  `json:"multi_select"`
+	Why          string                `json:"why"`
+	IfUnanswered string                `json:"if_unanswered"`
+}
+
+// decodeAskUserQuestions parses the "questions" array out of an ask_user
+// call's decoded ToolArgs. Returns nil on any decode failure or when the
+// key is absent, so a malformed call simply renders an empty card instead
+// of panicking.
+func decodeAskUserQuestions(args ToolArgs) []askUserQuestionRender {
+	raw, ok := args["questions"]
+	if !ok {
+		return nil
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var questions []askUserQuestionRender
+	if err := json.Unmarshal(b, &questions); err != nil {
+		return nil
+	}
+	return questions
+}
+
+// askUserTarget renders "[Header1], [Header2]" — the same vocabulary the
+// web port uses for both its live target() and its settled-reply summary
+// line (cmd/serf-hub/assets/renderer-tools.js askUserRenderer.target).
+func askUserTarget(args ToolArgs) string {
+	questions := decodeAskUserQuestions(args)
+	headers := make([]string, len(questions))
+	for i, q := range questions {
+		headers[i] = "[" + q.Header + "]"
+	}
+	return strings.Join(headers, ", ")
+}
+
+// askUserBody renders the full question card: every question's text, its
+// options as chips (recommended tagged, with detail), and its optional why/
+// if-unanswered context. All real interaction (picking, notes, "you
+// decide", the fallback tap, review, and submit) happens in the ctrl+q
+// question overlay; this body never changes shape once the call completes,
+// matching every other tool's immutable historical row.
+func askUserBody(args ToolArgs, _ string, _ int) string {
+	questions := decodeAskUserQuestions(args)
+	if len(questions) == 0 {
+		return ""
+	}
+	th := tuitheme.ActiveTheme()
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(th.Accent)
+	dimStyle := lipgloss.NewStyle().Foreground(th.TextDim)
+	recStyle := lipgloss.NewStyle().Foreground(th.StateIdle)
+
+	var lines []string
+	for i, q := range questions {
+		if i > 0 {
+			lines = append(lines, "")
+		}
+		title := "[" + q.Header + "] " + q.Question
+		if q.MultiSelect {
+			title += "  " + dimStyle.Render("(pick any)")
+		}
+		lines = append(lines, headerStyle.Render(title))
+		for _, opt := range q.Options {
+			chip := "  ◇ " + opt.Label
+			if opt.Recommended {
+				chip += " " + recStyle.Render("(recommended)")
+			}
+			if opt.Detail != "" {
+				chip += dimStyle.Render(" — " + opt.Detail)
+			}
+			lines = append(lines, chip)
+		}
+		if q.Why != "" {
+			lines = append(lines, dimStyle.Render("  why: "+q.Why))
+		}
+		if q.IfUnanswered != "" {
+			lines = append(lines, dimStyle.Render("  if unanswered: "+q.IfUnanswered))
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func init() {
@@ -412,6 +513,23 @@ func init() {
 			}
 			return ""
 		},
+		ExpandedByDefault: true,
+	}
+
+	// ask_user: Verb "ask", Target = the posted question headers, Body =
+	// the full question card (options/why/if_unanswered). Always expanded —
+	// the questions are the whole point of the row, never a detail to dig
+	// for (matching edit_file/write_file/apply_patch/task_list).
+	toolRenderers["ask_user"] = ToolRenderer{
+		Verb:   func(_ ToolArgs) string { return "ask" },
+		Target: askUserTarget,
+		Result: func(_ ToolArgs, _, errStr string, _ time.Duration) string {
+			if errStr != "" {
+				return "error"
+			}
+			return ""
+		},
+		Body:              askUserBody,
 		ExpandedByDefault: true,
 	}
 

@@ -285,6 +285,10 @@ func (m *hubModel) sessionChromeText() (topBar, overlayText, footer string) {
 	}
 
 	var overlay strings.Builder
+	if m.questionOverlay != nil && !m.questionOverlay.Deferred() {
+		overlay.WriteString(m.questionOverlay.View())
+		overlay.WriteString("\n\n")
+	}
 	if m.sessionModelPicker != nil {
 		overlay.WriteString(m.sessionModelPicker.View())
 		overlay.WriteString("\n\n")

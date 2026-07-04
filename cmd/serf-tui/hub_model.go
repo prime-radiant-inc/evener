@@ -128,6 +128,13 @@ type hubModel struct {
 	followupModal        *tuipick.TextInputModal
 	launchOverridesModal *launchconfig.LaunchOverridesModal
 
+	// questionOverlay is the ctrl+q-opened ask_user answering flow
+	// (question_overlay.go). Opened ONLY by the ctrl+q keypress
+	// (toggleAskOverlay) — never by applyHubNotification or any other
+	// state change (spec §6.2). Esc defers it (hidden, answers kept)
+	// rather than clearing it; see questionOverlay.deferred.
+	questionOverlay *questionOverlay
+
 	spawnLaunchOverrides *appwire.LaunchConfigLayer
 
 	lastCtrlC       time.Time
