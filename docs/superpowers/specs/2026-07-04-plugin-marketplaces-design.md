@@ -1,11 +1,24 @@
 # Plugin Marketplaces & Lifecycle — Design
 
 **Date:** 2026-07-04
-**Status:** Approved design; ready for implementation planning
+**Status:** Approved design (v2 — adversarial review folded in); ready for
+implementation planning
 **Scope:** Give serf — CLI, web hub, and TUI — full support for Claude Code plugin
 marketplaces: add/remove/list marketplaces, explore plugins in a marketplace,
 and install / upgrade / auto-upgrade / disable / remove plugins. Bundle a couple
 of standard marketplaces. Integrate plugin health into `serf-doctor`.
+
+**v2 revision (adversarial review).** Two competing reviewers verified this spec
+against the code; 15 legitimate findings were folded in. Material changes from v1:
+the source-type discriminator is **`url`, not `git`** (§5–§7); the multi-scope
+registry/seam model is corrected — the hub injects plugin dirs into **spawned
+subprocess argv**, not `SessionConfig` (§8), and hub UIs manage **user scope** in
+v1 (§5); the loader is made **fail-soft via manager-side pre-validation + dedup**
+(§7–§8); upgrade cache dirs are keyed by **sha** and GC is **live-session-aware**
+(§5, §7, §12); slash-command execution is **not** free for the TUI (§10); the
+confirmation/trust model is specified (§7). This design also now builds on the
+repo's prior `sp3-marketplace-design.md` (§2), which already fixed the source
+types.
 
 ---
 
@@ -23,6 +36,9 @@ commands** into sessions.
 - Live hot-reload of plugins into a running session (activation is next-session;
   see §12).
 - `npm` plugin sources (parsed, warned as unsupported; see §7).
+- **Hub-driven management of *project*-scope plugins** — project scope is CLI-
+  managed and loaded at session start; the hub UIs manage user scope in v1
+  (see §5.3). Project-scope plugins still *load*.
 - Interactive permission prompts for plugin-declared hooks beyond serf's existing
   hook policy (out of scope; unchanged).
 
@@ -46,39 +62,45 @@ their manifest, skills, subagents, hooks, and MCP server configs."
   `s.hookRunner`, `s.pluginMCPConfigs`.
 - Hook parsing/execution is Claude-compatible (`agent/plugin/hooks.go`,
   `agent/internal/hooks`); MCP config matches Claude's `.mcp.json`
-  (`agent/mcpconfig`); skills use `SKILL.md` + frontmatter; agents use
-  `agents/*.md` + frontmatter.
+  (`agent/mcpconfig`); skills use `SKILL.md` + frontmatter (`agent/skill`); agents
+  use `agents/*.md` + frontmatter (`agent/plugin/agents.go`, which already imports
+  `agent/internal/frontmatter`).
 - Both UIs already have a proven management surface — the `/credentials`
   provider CRUD (PRI-1880) — and a read-only **Extensions** settings group
   (Plugins / Skills / MCP).
+- The hub already hosts long-running background goroutines on the signal context
+  (`cmd/serf-hub/main.go`), and spawns `serf serve` **subprocess** daemons that
+  outlive the spawning call (`cmd/serf-hub/spawn.go`); sessions receive their
+  config as CLI argv, not an in-process `SessionConfig` (see §8).
 
 **Greenfield (this design):**
 - Any marketplace concept: registry, catalog parsing, git fetch, install/upgrade.
 - Enable/disable state and loader gating (today serf loads *every* dir it is
-  pointed at).
+  pointed at, and aborts session init on any bad or duplicate-named plugin — §7).
 - Auto-upgrade.
 - **Slash-command loading** — the one component type serf does not load at all.
-  `Manifest.Commands` (`agent/plugin/plugin.go`) is parsed and dropped; there is
+  `Manifest.Commands` (`agent/plugin/plugin.go:31`) is parsed and dropped; there is
   no `discoverPluginCommands`, no `Commands` field on `Instance`, no `commands/`
   scan, and no slash-command execution model anywhere in serf.
 - Web + TUI management surfaces for all of the above.
 - `serf-doctor` plugin health checks.
 
 **Prior art (designed, never built).** A Claude-Code-compat effort
-(`docs/superpowers/plans/2026-05-14-claude-code-compat-*`) planned but did not
-implement the lifecycle:
-- `sp4-install-plan.md` — a full lifecycle/registry design: an `internal/plugins`
-  package with `Registry` (matching Claude's `installed_plugins.json`), atomic IO,
-  file lock, version resolution, enable/disable, and a `serf plugin` CLI. It
-  references an "SP3" `MarketplaceResolver`/`PluginSource` collaborator that was
-  never planned in detail.
-- `spb-manage-plugins-skill-plan.md` — a deliberately minimal stopgap: a markdown
-  skill teaching the agent to install/remove/list by shelling out, with **no
-  registry, no enable/disable, no auto-update, no UI**. This design supersedes
-  that stopgap and builds the pieces it punted on.
+(`docs/superpowers/{plans,specs}/2026-05-14-claude-code-compat-*`) planned but did
+not implement the lifecycle:
+- `sp3-marketplace-design.md` — the marketplace resolver: `SourceKind` =
+  {`directory`, `github`, `url`, `git-subdir`}, `known_marketplaces.json`, catalog
+  parsing, and the `cmd/serf/plugin/` scaffolding. **This design adopts its source
+  types verbatim** (the v1 draft's `git` was wrong).
+- `sp4-install-plan.md` — the lifecycle/registry: an `internal/plugins` package
+  with `Registry` (matching Claude's `installed_plugins.json`), atomic IO, file
+  lock, version resolution, enable/disable, and a `serf plugin` CLI.
+- `spb-manage-plugins-skill-plan.md` — a deliberately minimal stopgap (a markdown
+  skill, no registry, no enable/disable, no auto-update, no UI). This design
+  supersedes it.
 
-This design revives the sp4 lifecycle design, builds the missing SP3 resolver,
-adds slash-command execution, auto-upgrade, both UIs, doctoring, and bundling.
+This design revives sp3 + sp4, adds slash-command execution, auto-upgrade, both
+UIs, doctoring, and bundling, corrected by the adversarial review.
 
 ---
 
@@ -90,79 +112,75 @@ mirror Claude Code so plugins and marketplaces authored for Claude Code drop in
 unchanged, but a plugin installed in serf is invisible to Claude Code and vice
 versa.
 
-Rejected alternatives:
-- *Wrap the `claude` CLI / share `~/.claude/plugins`*: least code, but hard-depends
-  on `claude` being installed, shares mutable state (concurrent runs can corrupt
-  it), couples serf to Claude's private undocumented format, and neither
-  "bundle-with-the-product" nor scheduled auto-upgrade fit Claude's model.
-- *Native + read-only import of `~/.claude`*: adds a confusing second source of
-  truth ("why is this plugin here, how do I remove it"). A one-shot import can be
-  added later if wanted; it is not in v1.
-
-This matches how serf owns all its other config (`~/.serf`, `~/.config/serf`) and
-carries no runtime dependency on the `claude` binary.
+Rejected alternatives: *wrap the `claude` CLI / share `~/.claude/plugins`* (hard
+dependency on `claude`, shared mutable state, coupling to a private format, no fit
+for bundling or scheduled auto-upgrade); *native + read-only import of `~/.claude`*
+(a confusing second source of truth — deferrable to a later one-shot import). This
+matches how serf owns all its other config and carries no runtime dependency on
+the `claude` binary.
 
 ---
 
 ## 4. Architecture: one manager, three drivers, loader stays the consumer
 
 All lifecycle logic lives in **one new package in the root module**:
-`internal/plugins`. It is the single source of truth for on-disk plugin state,
-serialized by one file lock. Three things drive it; none reimplement it:
+`internal/plugins` (importable by `cmd/serf`, `cmd/serf-hub`, `cmd/serf-doctor`,
+all in the root module `primeradiant.com/serf`). It is the single source of truth
+for on-disk plugin state, serialized by one file lock. Three things drive it; none
+reimplement it:
 
 - **`serf plugin` CLI** (`cmd/serf/plugin/`) — calls the package directly.
 - **Web + TUI** — call it over new appwire RPCs the hub exposes
   (`serf/marketplace/*`, `serf/plugin/*`), the same way `/credentials` uses
   `serf/instance/*` today.
 - **The existing `agent/plugin` loader stays the *consumer*.** The manager
-  *materializes plugin directories*; the loader *reads* them. Clean split: manager
-  writes dirs, agent loads dirs. `agent/plugin` needs only two additions — a
-  `commands/` loader (§10) and accepting the enabled-dir set (§8) — it gains no
-  marketplace/install knowledge.
+  *materializes plugin directories and computes the validated, enabled dir set*
+  (§7–§8); the loader *reads dirs it is handed*. The **only** change to the
+  `agent` module is a new `commands/` loader (§10) — enable-gating, dedup, and
+  fail-soft validation all live in the manager, outside the agent module.
 
 ```
 internal/plugins/            NEW — the manager (root module)
   registry.go                installed_plugins.json  (sp4 design, revived)
   marketplaces.go            known_marketplaces.json + resolve / clone / pull
-  source.go                  resolve a plugin `source` → materialized dir
+  source.go                  SourceKind {directory,github,url,git-subdir}; resolve → dir
   install.go                 Install / Upgrade / Remove / Enable / Disable / List / UpdateAll
-  enabled.go                 EnabledPluginDirs(scopes…) — feeds the loader (§8)
+  enabled.go                 EnabledPluginDirs(projectRoot) — validated+deduped dirs (§8)
   doctor.go                  read-only health checks (§13)
-  git.go                     git shell-out (clone/pull, pinned checkout)
+  git.go                     git shell-out (clone / partial-clone / pinned checkout / pull)
   locks.go / atomic.go       flock + tmp-rename writes
   seed.go                    first-run default-marketplace seed (§11)
 
-cmd/serf/plugin/             NEW — `serf plugin …` CLI (§9)
+cmd/serf/plugin/             NEW — `serf plugin …` CLI (§9.5)
 cmd/serf-doctor/             MODIFY — add a `plugins` subcommand (§13)
-agent/plugin/                MODIFY — add commands/ discovery; accept enabled dirs
-appwire/ + cmd/serf-hub/     NEW — methods + hubPluginsController (§9)
-cmd/serf-hub/assets/         NEW — plugins.js, template partial (§9)
-cmd/serf-tui/                NEW — PluginsPanel overlay (§9)
+agent/plugin/commands.go     NEW — commands/*.md discovery (§10)
+agent/plugin/plugin.go       MODIFY — Instance.Commands; agent/session_init.go registers them
+appwire/ + cmd/serf-hub/     NEW — methods + hubPluginsController (§9.2)
+cmd/serf-hub/assets/         NEW — plugins.js, template partial (§9.3)
+cmd/serf-tui/                NEW — PluginsPanel overlay (§9.4)
 ```
 
-**Module note.** `internal/plugins` sits in the root module and is importable by
-`cmd/serf`, `cmd/serf-hub`, and `cmd/serf-doctor`. The `agent` module remains the
-*consumer* of materialized directories and does not import the manager, preserving
-the existing module boundary.
+The `agent` module never imports the manager, preserving the module boundary; the
+hub/CLI compute dirs with the manager and hand them to the agent as argv/config.
 
 ---
 
-## 5. On-disk state & formats
+## 5. On-disk state, formats & scopes
 
-Serf-native, Claude-*shaped*. Two scopes, matching serf's existing user/project
-config split:
+Serf-native, Claude-*shaped*. Store layout:
 
 ```
-~/.config/serf/plugins/                 USER scope
+~/.config/serf/plugins/                 USER scope (hub-managed + CLI)
   known_marketplaces.json
   installed_plugins.json
   marketplaces/<name>/                   cloned marketplace repo (.claude-plugin/marketplace.json)
-  cache/<marketplace>/<plugin>/<ver>/    materialized plugin (.claude-plugin/plugin.json)
+  cache/<marketplace>/<plugin>/<sha>/    materialized plugin (.claude-plugin/plugin.json)
 
-<project-git-root>/.serf/plugins/       PROJECT scope (same layout)
+<project-git-root>/.serf/plugins/       PROJECT scope (CLI-managed; see §5.3)
+  installed_plugins.json                 (marketplaces resolve from the user registry)
 ```
 
-**`known_marketplaces.json`** — marketplace registry, keyed by marketplace name:
+### 5.1 `known_marketplaces.json` (user scope)
 
 ```json
 {
@@ -174,10 +192,16 @@ config split:
 }
 ```
 
-`source` is one of the four real Claude-Code source shapes (§6). `directory`
-sources set `installLocation` to the referenced path (no clone).
+`source.source` is one of the four **sp3** kinds (§6): `directory`, `github`,
+`url`, `git-subdir`. (`git` is accepted as a **read-only legacy alias** for `url`
+on the marketplace container, because real `known_marketplaces.json` files written
+by older Claude Code contain it; serf never writes `git`.) A single user-level
+registry, matching Claude Code's model.
 
-**`installed_plugins.json`** — install registry (revived from sp4, extended):
+### 5.2 `installed_plugins.json`
+
+One registry per scope root; each file holds only that scope's plugins. The
+Claude `{version, plugins}` shape is retained for familiarity:
 
 ```json
 {
@@ -185,8 +209,7 @@ sources set `installLocation` to the referenced path (no clone).
   "plugins": {
     "<plugin>@<marketplace>": [
       {
-        "scope": "user",
-        "installPath": "<abs path to cache/…/<ver>/>",
+        "installPath": "<abs path to cache/…/<sha>/, or the referenced dir for directory sources>",
         "version": "1.2.0",
         "gitCommitSha": "…",
         "installedAt": "<RFC3339>",
@@ -200,110 +223,150 @@ sources set `installLocation` to the referenced path (no clone).
 }
 ```
 
-Two deliberate departures from a literal Claude clone:
-1. `enabled` and `autoUpgrade` are folded into each entry rather than living in a
-   separate `enabledPlugins` map in a `settings.json`. serf has no `settings.json`
-   to hang them on; one file, one lock, is simpler.
-2. The tree is entirely serf's; there is no interop with `~/.claude`.
+The value is a one-element **array** (Claude's shape) rather than a bare object,
+for schema drop-in familiarity; v1 writes one entry per plugin per scope-file, so
+scope is **implicit in the file location** (no redundant per-entry `scope` field —
+this resolves the v1 draft's schema contradiction). `enabled` and `autoUpgrade`
+are folded into the entry (serf has no `settings.json` to hold a separate
+`enabledPlugins` map). Mutations go through atomic tmp-rename writes under a flock.
 
-The value is an **array** of entries (matching Claude's schema) to allow the same
-plugin at multiple scopes. Registry mutations go through atomic tmp-rename writes
-under a flock (`locks.go`, `atomic.go`).
+### 5.3 Scopes
+
+- **User scope** (`~/.config/serf/plugins/`) is the primary store. The **hub UIs
+  and CLI both manage it.** Marketplaces live only here.
+- **Project scope** (`<git-root>/.serf/plugins/`) is **CLI-managed** (`serf plugin
+  … --scope project` operates on the current git root) and **loaded** at session
+  start from the session's git root (§8). Hub-driven project-scope *management* is
+  deferred: the hub serves many working directories at once and a global settings
+  page cannot disambiguate "which project." Project-scope plugins still load in
+  hub-spawned sessions whose cwd is that project. (Making project-scope management
+  a first-class hub surface — scoped to a selected session/project — is a
+  documented future extension.)
 
 ---
 
 ## 6. Marketplace resolver & fetcher
 
-**Sources** — exactly the four seen in real `known_marketplaces.json` /
-`marketplace.json`:
+**Sources** — the four sp3 kinds:
 
-| Source | Resolution |
-|---|---|
-| `github` (`owner/repo`) | clone `https://github.com/owner/repo.git` → `marketplaces/<name>/` |
-| `git` (url) | clone url → `marketplaces/<name>/` |
-| `directory` (path) | reference in place, no clone |
-| `git-subdir` (url + path + ref/sha) | clone pinned, use the named subdir |
+| `source.source` | Fields | Resolution |
+|---|---|---|
+| `github` | `repo` (`owner/repo`), opt `ref`/`sha` | clone `https://github.com/owner/repo.git` → `marketplaces/<name>/` |
+| `url` | `url` (https/http/`git@…`), opt `ref`/`sha` | clone url → `marketplaces/<name>/` |
+| `directory` | `path` | reference in place, no clone |
+| `git-subdir` | `url`+`path`, opt `ref`/`sha` | **sparse/partial** clone (`--filter=blob:none` + sparse-checkout of `path`), use the subdir |
 
-**Operations:**
-- **add** — resolve source → clone (or reference) → read
-  `.claude-plugin/marketplace.json` → validate → write the `known_marketplaces.json`
-  entry. The marketplace *name* comes from the manifest.
-- **remove** — unregister and delete the clone (never touches a `directory`
-  source's contents).
-- **list** — enumerate registered marketplaces.
-- **refresh** — `git pull --ff-only` the clone, update `lastUpdated`.
-- **browse** — parse the manifest's `plugins[]` into
-  `{name, description, author, category, source, homepage}`. This is "explore
-  plugins in a marketplace."
+**Operations:** **add** (resolve → clone/reference → read
+`.claude-plugin/marketplace.json` → validate → write registry entry; name from the
+manifest); **remove** (unregister + delete the clone; never touches a `directory`
+source's contents); **list**; **refresh** (`git pull --ff-only`, update
+`lastUpdated`); **browse** (parse `plugins[]` → `{name, description, author,
+category, source, homepage}` — "explore plugins in a marketplace").
 
-**Fetching = shell out to `git`.** serf targets developer machines where `git` is
-present, and Claude Code itself shells to git. This avoids a heavyweight `go-git`
-dependency. If `git` is absent, add/install/upgrade fail with a clear, actionable
-error (and `serf-doctor` reports it — §13). `git.go` centralizes clone, pinned
-checkout (`git checkout <ref|sha>`), and `pull --ff-only`.
-
-The manifest's optional `renames` map (old plugin name → new) is recorded and used
-to follow a plugin rename across an upgrade; a v1 nicety, not required for correct
-install.
+**Fetching = shell out to `git`** (present on dev machines; Claude Code does the
+same; avoids a `go-git` dependency). Missing `git` → clear error, reported by
+`serf-doctor` (§13). `git.go` centralizes clone, **partial/sparse clone** for
+`git-subdir`, pinned checkout (`git checkout <ref|sha>`), and `pull --ff-only`.
+The manifest's `renames` map (old→new plugin name) is recorded and followed across
+an upgrade.
 
 ---
 
 ## 7. Plugin lifecycle
 
-A marketplace plugin entry carries a `source` that is either a string
-(`./subdir`, relative to the marketplace root) or an object (`git-subdir`,
-`github`, or `git`). **Install** resolves it and materializes into
-`cache/<marketplace>/<plugin>/<version>/`:
+A marketplace plugin entry's `source` is a string (`./subdir`, relative to the
+marketplace root) or an object (`url`, `github`, or `git-subdir`). **Install**
+resolves it and materializes it:
 
-| Plugin source | Materialization |
+| Plugin `source` | Materialization |
 |---|---|
-| `./subdir` (string) | copy from the cloned marketplace repo |
-| `git-subdir` {url,path,ref,sha} | clone pinned → copy subdir → discard clone |
-| `github` / `git` | clone (pinned to sha if given) into cache |
+| `./subdir` (string) | copy from the marketplace clone (or, for a `directory` marketplace, from its referenced root at `installLocation`) into `cache/<mkt>/<plugin>/<sha>/` |
+| `git-subdir` {url,path,ref,sha} | sparse/partial clone pinned → copy subdir → discard clone |
+| `github` / `url` | clone (pinned to `sha` if given) into `cache/<mkt>/<plugin>/<sha>/` |
+| a `directory`-marketplace plugin used for local dev | **referenced in place** (no copy) so edits are live; `installPath` points at the source dir; "upgrade" is inherently current |
 | `npm` | **deferred** — parsed, warned "unsupported in v1", no install |
 
-Install then verifies `<dir>/.claude-plugin/plugin.json` parses, records `version`
-(manifest `version`, or `unknown`) and resolved `gitCommitSha`, and writes the
-registry entry with `enabled:true, autoUpgrade:false`.
+**Cache dirs are keyed by resolved `<sha>`, not `<version>`.** Claude treats every
+commit of a version-less plugin as a new version, so `version` is often static or
+absent; keying by sha guarantees each upgrade materializes a **distinct** dir
+(fixing the v1 draft's swap-then-GC-onto-the-same-dir bug). Directory sources,
+which have no sha, are referenced in place rather than cached.
+
+Install then **fully validates** the materialized plugin — not just that
+`plugin.json` parses, but that **every component parses** (`agents/*.md`,
+`hooks.json`, `.mcp.json`, `skills`, `commands/*.md`), because the session loader
+parses all of them and fails hard on any error (§8). Only a fully-valid plugin is
+committed to the registry, with `version` (manifest `version`, or `unknown`),
+resolved `gitCommitSha`, `enabled:true`, `autoUpgrade:false`.
 
 **Verbs** (the full requested set), all in `internal/plugins`, one flock, atomic
 writes:
 
 | Verb | Behavior |
 |---|---|
-| install | fetch + materialize + register |
-| upgrade / upgrade --all | re-resolve source, re-fetch to a temp dir, verify, compare sha/version; if changed, atomic-swap to a new version dir, GC the old |
-| remove | delete cache dir + registry entry |
-| disable / enable | flip `enabled` — no fetch, no delete (installed-but-not-loaded) |
-| auto-upgrade on/off | flip `autoUpgrade` (§9 daemon acts on it) |
-| list | installed plugins: scope, version, enabled, autoUpgrade, marketplace, broken? |
+| install | fetch + materialize + **full validate** + register |
+| upgrade / upgrade --all | re-resolve, re-fetch to a **new sha-dir**, full-validate; if the sha changed and validates, repoint the registry entry to the new dir; **GC of the old dir is deferred and live-session-aware** (§12) |
+| remove | delete cache dir(s) not referenced by a live session + registry entry |
+| disable / enable | flip `enabled` — no fetch, no delete |
+| auto-upgrade on/off | flip `autoUpgrade` (§9.1 daemon acts on it) |
+| list | scope, version, enabled, autoUpgrade, marketplace, broken? |
 
-**Integrity & safety:**
-- Materialize → verify manifest → atomic-rename into cache; a failed fetch never
-  leaves a half-installed plugin.
-- Honor `ref`/`sha` pins for reproducibility; record the resolved sha.
-- Broken plugins (missing/invalid manifest) surface in `list` and `doctor`, never
-  silently dropped.
-- Marketplaces and plugins are arbitrary code — `add` and `install` show the
-  source URL and require confirmation (the prior spb design's stance). Installing a
-  plugin is a trust decision equivalent to installing any third-party package.
+**Integrity, resilience & trust:**
+- Materialize → **full-validate** → atomic-rename into cache; a failed or invalid
+  fetch never enters the registry.
+- Because a plugin can still break *after* install (a mutated `directory` source,
+  or an auto-upgrade to bad code), the **session-load path is fail-soft**: the
+  manager pre-validates each enabled dir and skips broken or duplicate-named ones
+  with a loud warning (§8), rather than letting one bad plugin abort the session.
+- Honor `ref`/`sha` pins; record the resolved sha. Broken plugins surface in
+  `list` and `doctor`, never silently succeed.
+- **Confirmation/trust is a surface responsibility, not a manager primitive.**
+  `internal/plugins` exposes unconditional `AddMarketplace`/`Install`; each surface
+  gates them: the web shows a confirm dialog with the source URL, the TUI a
+  confirm key, the CLI an interactive prompt (or an explicit `--yes` for
+  `--json`/non-interactive use). **Auto-upgrade needs no per-run confirmation
+  because enabling `autoUpgrade` on an already-installed, git-backed plugin *is*
+  the standing consent.** Project-declared marketplaces reuse serf's existing
+  repo-trust precedent (`LaunchConfigTrustRepo`, `cmd/serf-hub/app_launch.go`) if
+  project scope later gains a hub surface.
 - flock serializes concurrent CLI / hub / TUI mutations.
 
 ---
 
-## 8. Loader gating: making enable/disable real
+## 8. Loader gating & the real injection seams
 
-Today serf loads every dir in `SessionConfig.PluginDirs`. The change is small and
-lives entirely in the manager: a new `EnabledPluginDirs(scopes…) []string` returns
-the **installed-AND-enabled** plugin dirs from the registry (both scopes), and
-that set feeds `SessionConfig.PluginDirs`. Disabled plugins are simply omitted.
+Today serf loads **every** dir in `SessionConfig.PluginDirs`, and the loader is
+**fail-hard**: `plugin.LoadAll` (`agent/plugin/plugin.go:238`) returns on the first
+`Load` error *and* on any duplicate plugin **name**, and `agent/session_init.go`
+(~`:574`, `:704`) propagates that so `NewSession` fails. A single broken or
+duplicate-named enabled plugin would otherwise brick every new session.
 
-The `agent/plugin` loader is otherwise **unchanged** — it still just loads the dirs
-it is handed; enable-gating never enters the agent module. Explicit `--plugin-dir`
-and the existing `pluginDirs` launch-config field remain an *additional* source
-(dev / power-user), merged with registry-enabled dirs, so hand-pointed and
-marketplace-installed plugins coexist. The hub's current default of scanning
-`~/.config/serf/plugins/*` is replaced by "enabled entries from the registry."
+**Gating + resilience live in the manager**, keeping `agent/plugin` unchanged
+(except the new commands loader). `EnabledPluginDirs(projectRoot string) []string`:
+1. Reads the user registry and, if `projectRoot != ""`, the project registry.
+2. Filters to `enabled` entries.
+3. **Pre-validates** each dir (a dry-run `plugin.Load`) and **skips** any that fail
+   to parse, emitting a loud warning surfaced to `doctor`.
+4. **Dedups by plugin name** (user scope wins over project on collision; explicit
+   `--plugin-dir` wins over both), so the fail-hard duplicate check never fires.
+5. Returns the surviving dirs.
+
+**The injection seams differ by surface (corrected from v1):**
+- **CLI** (`cmd/serf`) builds a `SessionConfig` in-process, so it sets
+  `SessionConfig.PluginDirs = EnabledPluginDirs(cwdGitRoot) + explicit --plugin-dir`.
+- **Hub** does **not** build a `SessionConfig` — it **spawns a `serf serve`
+  subprocess** (`cmd/serf-hub/spawn.go`) and passes config as **argv**. Enabled
+  dirs are injected as `--plugin-dir` arguments via the launch-config
+  `plugin_dirs` → `ToArgs` path (`cmd/serf-hub/internal/launchconfig/args.go`).
+  The `~/.config/serf/plugins/*` scan in `web_settings.go` is **display-only**
+  (`discoverPluginsForSettings`) and is *not* a session seam; the unused
+  `hubcore/config.go` `PluginDirs` default is not the mechanism either.
+
+`projectRoot` for a hub session is the spawned session's working directory (the
+same git-root resolution the skills/MCP discovery already uses); the user scope is
+always included. Explicit `--plugin-dir` and launch-config `pluginDirs` remain an
+*additional* dev/power-user source, merged (and deduped) with registry-enabled
+dirs.
 
 ---
 
@@ -311,146 +374,143 @@ marketplace-installed plugins coexist. The hub's current default of scanning
 
 ### 9.1 Auto-upgrade daemon
 
-Lives in the **hub** (`serf-hub`) — the only persistent process; CLI and TUI are
-ephemeral.
+Lives in the **hub** (`serf-hub`) — the only persistent process; it already hosts
+background goroutines on the signal context (`cmd/serf-hub/main.go`).
 
-- A background goroutine on a configurable interval (proposed default: every ~12h,
-  plus once on hub start) refreshes marketplaces (`git pull --ff-only`), then for
-  each installed plugin with `autoUpgrade:true` **and** a git-backed source runs
-  the normal upgrade flow.
-- Failure-isolated: one plugin's failure never blocks others; logged and surfaced
-  in `doctor`. A successful upgrade updates the entry's `lastUpdated`.
-- Emits an appwire `serf/plugin/updated` notification so both UIs can show
-  "X upgraded to vY." Takes effect next session (§12).
-- Global on/off + interval in `hub.toml`; per-plugin opt-in via `autoUpgrade`. A
+- A background goroutine on a configurable interval (proposed default ~12h, plus
+  once on hub start) refreshes marketplaces (`git pull --ff-only`), then for each
+  installed plugin with `autoUpgrade:true` **and** a git-backed source runs the
+  §7 upgrade flow (fetch to a new sha-dir → full-validate → repoint the registry).
+- **Never GCs a dir a live session references** (§12). A successful upgrade updates
+  the entry's `lastUpdated` and emits `serf/plugin/updated`. Failure-isolated:
+  one plugin's failure never blocks others; logged and surfaced in `doctor`.
+- Because live hub sessions hold **absolute paths** into their materialized dir
+  (skills read lazily via `os.ReadFile(meta.SkillFile)` in `agent/skill`; hook and
+  MCP commands bake the expanded dir at load in `agent/plugin/hooks.go`), the
+  daemon writes a **new** sha-dir and leaves the old one in place; running sessions
+  keep using their dir, new sessions pick up the new one (§12).
+- Global on/off + interval in `hub.toml`; per-plugin opt-in via `autoUpgrade`;
   manual "check now" from any surface runs the same code path.
 
 ### 9.2 Shared RPC surface
 
-The hub exposes one method set; web and TUI both call it (as `/credentials` shares
-`serf/instance/*`). Methods are declared in `appwire/protocol.go` (the catalog the
-protocol doc is generated from) and registered in `cmd/serf-hub/app_rpc.go` via
-`HandleTyped`, delegating to a `hubPluginsController` that mirrors
-`app_instances.go` (reload-from-disk → mutate → atomic write, mutex; delegates to
-`internal/plugins`).
+One method set the hub exposes; web and TUI both call it (as `/credentials` shares
+`serf/instance/*`). Declared in `appwire/protocol.go`, registered in
+`cmd/serf-hub/app_rpc.go` via `HandleTyped`, delegating to a `hubPluginsController`
+that mirrors `app_instances.go` (reload → mutate → atomic write, mutex; delegates
+to `internal/plugins`). **All operate on user scope** (§5.3).
 
 - `serf/marketplace/{list, add, remove, refresh, browse}`
 - `serf/plugin/{list, install, upgrade, remove, enable, disable, setAutoUpgrade, doctor}`
-- `serf/command/list` (for slash-command autocomplete — §10)
+- `serf/command/list` (slash-command catalog for autocomplete — **owned by P3**, §10)
 - Notifications: `serf/marketplace/updated`, `serf/plugin/updated`.
 
 ### 9.3 Web surface (`cmd/serf-hub`)
 
 Clones the `/credentials` end-to-end pattern (appwire RPC + htmx settings section +
-inline controller). A new **"Marketplaces & Plugins"** section in the existing
-*Extensions* nav group (`templates/partials/settings.html`), one page, three areas
-built from the existing `settings-collection*` / `btn*` / `status-badge`
-design-system classes:
-
-1. **Marketplaces** — list (name, source, last-updated) + "Add marketplace"
-   (URL / `owner/repo` / path) + per-row refresh / remove.
-2. **Browse** — pick a marketplace → its catalog (name, description, category,
-   author) with search/filter and an install button showing installed/enabled
-   state.
-3. **Installed** — per plugin: version, marketplace, scope; enable/disable toggle,
-   auto-upgrade toggle, upgrade button (flags update-available), remove; broken
-   plugins flagged.
-
-Files: a template partial (modeled on `templates/partials/credentials.html`), a new
-`assets/plugins.js` mirroring `assets/launchconfig.js` (thin wrappers over
-`SerfAppwire.request`), routing in `web.go`, section registration in
+inline controller). A new **"Marketplaces & Plugins"** section in the *Extensions*
+nav group (`templates/partials/settings.html`), one page, three areas built from
+the existing `settings-collection*` / `btn*` / `status-badge` classes:
+**Marketplaces** (list + add + refresh/remove), **Browse** (pick marketplace →
+catalog with search + install), **Installed** (enable/disable, auto-upgrade,
+upgrade, remove; broken flagged). Files: a template partial modeled on
+`templates/partials/credentials.html`; a new `assets/plugins.js` mirroring
+`assets/launchconfig.js`; routing in `web.go`; section registration in
 `web_settings.go`.
 
 ### 9.4 TUI surface (`cmd/serf-tui`)
 
-Clones the CredentialsPanel / LaunchSettingsPanel overlay pattern: a tabbed
-`PluginsPanel` (in `internal/launchconfig` or a new sibling package) modeled on
-`LaunchSettingsPanel`'s tabbed structure, with **Marketplaces │ Browse │ Installed**
-tabs and single-key actions (CredentialsPanel style): add/remove/refresh;
-`enter`=install on Browse; `e`=enable/disable, `u`=upgrade, `a`=auto-upgrade,
-`x`=remove on Installed. Opened via a `/plugins` (`/marketplaces` alias) command in
-`hub_command_registry.go`; wired through `focus_trap.go` precedence,
-`hub_update_config.go` handlers, and `Cmd*` wrappers in `launchconfig_client.go`
-calling the same RPCs as web.
+A tabbed `PluginsPanel` overlay modeled on `LaunchSettingsPanel` (**Marketplaces │
+Browse │ Installed** tabs, single-key actions like `CredentialsPanel`). Opened via
+a `/plugins` (`/marketplaces` alias) command in `hub_command_registry.go`; wired
+through `focus_trap.go` precedence, `hub_update_config.go` handlers, and `Cmd*`
+wrappers in `launchconfig_client.go` calling the same RPCs as web.
 
 ### 9.5 CLI (`cmd/serf/plugin/`)
 
 The `serf plugin` tree (sp4 design), thin over the same manager:
-`marketplace add|remove|list|refresh`, `install <plugin>@<mkt>`,
-`upgrade [--all]`, `remove`, `enable`, `disable`, `list`, `doctor` — each with
-`--json` and `--scope user|project`.
+`marketplace add|remove|list|refresh`, `install <plugin>@<mkt>`, `upgrade [--all]`,
+`remove`, `enable`, `disable`, `list`, `doctor` — each with `--json`,
+`--scope user|project`, and `--yes` (for non-interactive install/add).
 
 ---
 
 ## 10. Slash-command execution
 
-The one component type serf cannot load today. serf's existing prompt-template
-engine (`agent/section_resolver.go`) is a *system-prompt assembler* and supports
-none of `$ARGUMENTS` / `$1` / `` !`cmd` `` / `@file`, so command expansion is
-net-new. Three parts:
+The one component type serf cannot load today. serf's prompt-template engine
+(`agent/section_resolver.go`) is a *system-prompt assembler* and supports none of
+`$ARGUMENTS` / `$1` / `` !`cmd` `` / `@file`, so command expansion is net-new.
 
-**1. Discovery.** `discoverPluginCommands` mirrors the existing
-`discoverPluginAgents` (`agent/plugin/agents.go`) almost verbatim: scan
-`commands/*.md`, parse frontmatter + body with the existing `frontmatter.Parse`
-into `{name, description, argument-hint, allowed-tools, model, body}`. Add a
-`Commands` field to `plugin.Instance`; register in the same `session_init.go` load
-loop as skills/agents/hooks. Namespaced like skills (`plugin:command`) with
-collision handling.
+**1. Discovery.** `discoverPluginCommands` (new `agent/plugin/commands.go`) mirrors
+`discoverPluginAgents` (`agent/plugin/agents.go`): scan `commands/*.md`, parse
+with `agent/internal/frontmatter.Parse` into `{name, description, argument-hint,
+allowed-tools, model, body}`. Add a `Commands` field to `plugin.Instance`; register
+in the `session_init.go` load loop alongside skills/agents/hooks. Namespaced like
+skills (`plugin:command`) with collision handling.
 
-**2. Expansion engine** (net-new, ~200–400 LOC, self-contained). Given a command
-and a raw argument string, produce the expanded prompt:
-- `$ARGUMENTS` → the full argument string; `$1`..`$9` → positional (shell-split).
-- `` !`cmd` `` → run in the session's execution environment, substitute stdout
-  (bounded output, timeout).
-- `@file` → inline file contents (session-relative path, bounded).
-- Honor `allowed-tools` (restrict that turn's tool set) and `model` (override the
-  model for that turn) from frontmatter — subject to §14 verification.
+**2. Expansion engine** (net-new, self-contained). Given a command and a raw
+argument string: `$ARGUMENTS` → full args; `$1`..`$9` → positional (shell-split);
+`` !`cmd` `` → run in the session's execution environment
+(`agent/session.go` `env execenv.ExecutionEnvironment`, `currentEnv()`), substitute
+bounded stdout; `@file` → inline bounded file contents (session-relative). Honor
+`allowed-tools`/`model` per turn **subject to §14** (degrade to parsed-but-warned
+if the per-turn seams don't exist).
 
-**3. Invocation seam** (shared — this is why per-surface work stays small).
-Intercept `/name args` **at the session input boundary** (where input becomes a
-turn — `Session.ProcessInput` / `ProcessInputKind`, `agent/session_lifecycle.go`).
-If the input matches a loaded plugin command → expand → submit as the user turn
-(with that command's model/tools). If it matches a built-in UI control command
-(TUI/web) → that wins. Otherwise → today's "unknown command" behavior. Because both
-UIs already submit input through this seam, they get execution largely for free;
-their only additions are UX — the hub exposes `serf/command/list`, the TUI merges
-it into its palette, the web composer gains a `/` menu. Headless `serf /name args`
-runs the same interception.
+**3. Invocation seam — NOT free for both UIs (corrected from v1).** The expander
+lives where the session is, and both surfaces must reach it — but they differ:
+- **Web** already forwards `/`-text verbatim through `turn/start` → `inputCh` →
+  `Session.ProcessInput` (`agent/session_lifecycle.go:388`; `renderer.js`
+  composer). So server-side interception at the `ProcessInput` boundary gives web
+  execution nearly for free; its only addition is a `/` autocomplete menu.
+- **TUI** does **not**. `cmd/serf-tui/hub_session_keys.go` intercepts *all*
+  `/`-input client-side, routes it to the static `hubCommandRegistry`
+  (`runHubSlashCommand`), and dead-ends an unrecognized command with "Unknown
+  command" — it **never** forwards to `turn/start`. P6 must add a real dispatch
+  change: after the built-in registry misses, consult the plugin-command catalog
+  (`serf/command/list`) and, on a match, forward `/name args` to the session
+  (`sendHubInput`/`turn/start`) instead of erroring.
 
-**Precedence & security.** Built-in commands outrank plugin commands; cross-plugin
-name collisions are namespaced. `` !`cmd` `` and the command's tools run under
-serf's existing execution-environment / permission model — no extra privilege. A
-plugin running bash is exactly the trust decision `install` already surfaced.
+**Precedence is therefore split by construction:** built-in UI control commands
+(`/model`, `/compact`, `/plugins`, …) are handled client-side in each surface and
+win; only unrecognized-but-known-plugin commands are forwarded to the session
+expander. The server-side expander also runs for headless `serf /name args`
+(`cmd/serf/main.go` → `run` prompt path).
+
+**Security.** `` !`cmd` `` and the command's tools run under serf's existing
+execution-environment / permission model — no extra privilege. A plugin running
+bash is the trust decision `install` already surfaced (§7).
 
 ---
 
 ## 11. Bundled marketplaces
 
-On first run (no `known_marketplaces.json` yet), seed the registry with two
-standard marketplaces as **pointers**, cloned lazily on first browse:
+On first run — gated by the **user-scope** `known_marketplaces.json` not yet
+existing — seed the registry with two standard marketplaces as **pointers**,
+cloned lazily on first browse:
 - `claude-plugins-official` → `github: anthropics/claude-plugins-official`
 - `superpowers-marketplace` → `github: obra/superpowers-marketplace`
 
-The seed list is a small embedded Go constant (`seed.go`) — pointers only, not
-vendored plugin contents. Seeding is first-run only, gated by the registry file's
-existence: removing a seeded marketplace keeps it removed. A
-`--no-default-marketplaces` flag / config opt-out lets tests and power users start
-clean.
-
-(If offline out-of-the-box operation is later required, the alternative is
-vendoring marketplace contents into the binary; explicitly not chosen for v1 —
-bigger binary, goes stale.)
+Seeding is **user-scope only** and first-run only; project scopes are never seeded
+(so a fresh repo never re-adds defaults, and removing a seeded marketplace keeps it
+removed). The seed list is a small embedded Go constant (`seed.go`) — pointers
+only, not vendored contents. A `--no-default-marketplaces` flag / config opt-out
+lets tests and power users start clean. (Offline out-of-the-box operation would
+require vendoring contents into the binary; explicitly not chosen for v1.)
 
 ---
 
-## 12. Activation semantics
+## 12. Activation & GC semantics
 
 Plugin discovery runs once per session init (`agent/session_init.go`); there is no
-file-watch or hot-reload today. Therefore install / enable / disable / upgrade take
-effect on the **next session**. The hub can offer "reload" by spawning a fresh
-session; the CLI notes it; this matches Claude Code's own restart-to-load behavior.
-Live hot-reload is out of scope for v1 and can be added later without changing the
-store or the manager API.
+file-watch or hot-reload. So install / enable / disable / upgrade take effect on
+the **next session**. Live sessions are unaffected because upgrade **never mutates
+or deletes a materialized dir in use**: it writes a **new** sha-dir and repoints
+the registry, and GC of superseded dirs is deferred and **live-session-aware** —
+the hub knows which dirs its live sessions were spawned against, and a dir is only
+GC'd once no live session references it (swept on session end and on hub start).
+This closes the v1 gap where a background upgrade could delete a dir out from
+under a running session's skills/hooks/MCP. Live hot-reload remains a future
+extension; the store and manager API do not need to change for it.
 
 ---
 
@@ -459,88 +519,91 @@ store or the manager API.
 `serf-doctor` is a read-only forensic inspector (`locate` / `transcript` /
 `apilog` / `watches` / `tree`), a thin `main` over a checker package, human summary
 + `--json`. Plugin doctoring lands as a new **`serf-doctor plugins`** subcommand
-backed by health-check logic in `internal/plugins/doctor.go` (so a
-registry/manifest schema change flows through or fails to compile — matching the
-tool's philosophy), plus a `serf plugin doctor` alias for discoverability.
-Read-only, no mutation. Not session-scoped: takes `--scope` / `--project` and
-`--json` rather than a session selector.
-
-Checks, each OK/WARN/FAIL with a remediation hint:
-- **Registry ↔ disk drift** — orphaned entries (registry points at a missing dir),
-  orphaned cache dirs (no registry entry), registry version ≠ manifest version.
-- **Marketplaces** — clone exists + is a valid git repo, `marketplace.json`
-  parses, staleness (age since last pull).
+backed by `internal/plugins/doctor.go` (reusing `plugin.Load` for component
+validity — the root module already imports `agent/plugin`), plus a
+`serf plugin doctor` alias. Read-only; not session-scoped (takes `--scope` /
+`--project` and `--json`, not a session selector). Each finding OK/WARN/FAIL with a
+remediation hint:
+- **Registry ↔ disk drift** — orphaned entries (missing dir), orphaned cache dirs
+  (no entry), registry version ≠ manifest version.
+- **Marketplaces** — clone exists + valid git repo, `marketplace.json` parses,
+  staleness (age since last pull).
 - **Component validity** (per installed+enabled plugin) — `hooks.json` parses +
   referenced scripts exist & executable + `${CLAUDE_PLUGIN_ROOT}` resolves;
-  `.mcp.json` parses; skills / agents / commands frontmatter valid. Surfaces
-  serf's existing load-time warnings proactively.
+  `.mcp.json` parses; skills/agents/commands frontmatter valid. **This is the same
+  validation the fail-soft loader (§8) runs — doctor surfaces proactively what the
+  loader would skip.**
 - **Auto-upgrade sanity** — plugins marked `autoUpgrade` but backed by a non-git
   `directory` source (cannot upgrade).
-- **Environment** — `git` on PATH; store is writable.
+- **Environment** — `git` on PATH; store writable.
 
 ---
 
 ## 14. Plan-time verifications (do not assume)
 
-Two seams the exploration did not confirm; verify before relying on them, and
-degrade gracefully if absent rather than blocking the feature:
+Two seams the exploration did not confirm; verify before relying on them, degrade
+gracefully if absent rather than blocking:
 - **Per-turn `model` override** for a slash command's `model` frontmatter.
 - **Per-turn tool restriction** for a slash command's `allowed-tools` frontmatter.
 
-If either seam does not exist, that frontmatter field is parsed, warned, and not
-enforced in v1 (the command still runs with the session's default model / tools).
+If either seam does not exist, that field is parsed, warned, and not enforced in
+v1 (the command runs with the session's default model / tools).
 
 ---
 
 ## 15. Phasing
 
-One design spec, built in independently-shippable phases. Each phase gets its own
-implementation plan (writing-plans).
+One design spec, built in independently-shippable phases; each gets its own plan.
 
 | Phase | Deliverable | Depends on |
 |---|---|---|
-| **P1 Backend core** | `internal/plugins`: registry, `known_marketplaces.json`, source resolution, git fetcher, Install/Upgrade/Remove/Enable/Disable/List/UpdateAll, flock + atomic IO | — |
-| **P2 CLI + gating + bundling** | `serf plugin` tree; `EnabledPluginDirs` feeding the loader; first-run seeding | P1 |
-| **P3 Slash commands** | `discoverPluginCommands` + `Instance.Commands`; expander; session-boundary interception; `serf /name` headless | independent of P1 (parallelizable) |
-| **P4 Auto-upgrade** | hub daemon + `hub.toml` config + `serf/plugin/updated` + manual check-now | P1 |
-| **P5 Web** | appwire methods + `hubPluginsController` + Marketplaces & Plugins page + `plugins.js` | P1–P4 RPCs |
-| **P6 TUI** | `PluginsPanel` + command wiring | P1–P4 RPCs |
+| **P1 Backend core** | `internal/plugins`: registry, `known_marketplaces.json`, sp3 source resolution (incl. partial clone), git fetcher, Install/Upgrade/Remove/Enable/Disable/List/UpdateAll, **full-validate on install/upgrade**, sha-keyed cache, flock + atomic IO | — |
+| **P2 CLI + gating + bundling** | `serf plugin` tree (`--yes`); `EnabledPluginDirs` (validate + dedup) feeding CLI `SessionConfig` **and** hub spawn argv (`--plugin-dir` via `ToArgs`); user-scope first-run seeding | P1 |
+| **P3 Slash commands** | `commands.go` discovery + `Instance.Commands`; expander; server-side `ProcessInput` interception; **`serf/command/list`**; `serf /name` headless | independent of P1 |
+| **P4 Auto-upgrade** | hub daemon + `hub.toml` config + live-session-aware GC + `serf/plugin/updated` + manual check-now | P1 |
+| **P5 Web** | appwire methods + `hubPluginsController` + Marketplaces & Plugins page + `plugins.js` + `/` autocomplete | P1–P4 RPCs, **P3** |
+| **P6 TUI** | `PluginsPanel`; **plugin-command dispatch/forwarding change** (§10) + palette merge | P1–P4 RPCs, **P3** |
 | **P7 Doctoring** | `serf-doctor plugins` + `internal/plugins/doctor.go` + `serf plugin doctor` alias | P1 |
 
 ---
 
 ## 16. Testing strategy
 
-TDD, real files, real `git`, no mocks (the sp4 stance and project rules):
+TDD, real files, real `git`, no mocks:
 - **Backend** — table-driven over `t.TempDir()` + **local git-repo fixtures** for
-  each source type (`github` / `git` / `git-subdir` / `directory`); **no network**;
-  concurrency tests for flock / atomic writes; `t.Skip` if `git` absent.
+  each source type (`github` / `url` / `git-subdir` / `directory`); **no network**;
+  partial-clone path exercised against a local bare repo; concurrency tests for
+  flock / atomic writes; `t.Skip` if `git` absent.
+- **Loader resilience** — a broken enabled plugin and a duplicate-named pair ⇒
+  session still initializes, offenders skipped with a captured warning (not a
+  fatal `NewSession` error).
+- **Upgrade/GC** — advance a fixture HEAD ⇒ new sha-dir materialized; a simulated
+  live-session reference blocks GC of the old dir; GC runs once the reference
+  clears.
 - **Slash commands** — expander unit tests (`$ARGUMENTS`, `$1..$9`, `` !`cmd` ``,
-  `@file`, `allowed-tools`, `model`); discovery tests mirroring the agents-loader
-  tests; an install-fixture-plugin-with-a-command → invoke → assert-expanded-turn
-  e2e.
-- **Loader gating** — enabled/disabled ⇒ session sees / does-not-see the plugin.
-- **Auto-upgrade** — point at a local fixture, advance its HEAD, one tick ⇒ assert
-  upgrade + notification.
-- **Doctor** — fixture store with injected drift (orphan entry, orphan dir, broken
-  manifest, non-git autoUpgrade) ⇒ assert findings.
-- **UIs** — e2e scenario cards driving the real web + TUI against a freshly built
-  instance: add marketplace → browse → install → enable/disable → upgrade → remove,
-  with falsifiable assertions.
-- **Pristine output** — capture + assert load-time warnings for broken plugins.
+  `@file`, `allowed-tools`, `model`); discovery mirroring the agents-loader tests;
+  install-fixture-plugin-with-a-command → invoke → assert expanded turn; a TUI test
+  asserting an unknown-but-known-plugin command is forwarded (not "unknown").
+- **Scope** — project-scope install (CLI) loads in a session rooted at that git
+  root; user scope always loads.
+- **Doctor** — fixture store with injected drift (orphan entry/dir, broken
+  manifest, non-git `autoUpgrade`) ⇒ assert findings.
+- **UIs** — e2e scenario cards driving the real web + TUI: add marketplace → browse
+  → install → enable/disable → upgrade → remove, falsifiable assertions.
+- **Pristine output** — capture + assert the fail-soft load-time warnings.
 
 ---
 
 ## 17. Summary of new/changed files
 
 **New:** `internal/plugins/{registry,marketplaces,source,install,enabled,doctor,git,locks,atomic,seed}.go`;
-`cmd/serf/plugin/`; `cmd/serf-hub/assets/plugins.js`; a hub template partial;
-`cmd/serf-tui` PluginsPanel; `agent/plugin/commands.go` (discovery); the
-slash-command expander package.
+`cmd/serf/plugin/`; `agent/plugin/commands.go`; the slash-command expander package;
+`cmd/serf-hub/assets/plugins.js` + a template partial; `cmd/serf-tui` PluginsPanel.
 
 **Modified:** `agent/plugin/plugin.go` (`Instance.Commands`), `agent/session_init.go`
-(register commands; consume enabled dirs), `appwire/protocol.go` (method catalog),
+(register commands), `appwire/protocol.go` (method catalog),
 `cmd/serf-hub/{web.go,web_settings.go,app_rpc.go}` + new controller,
-`cmd/serf-tui/{hub_command_registry.go,focus_trap.go,hub_update_config.go,hub_model.go}`,
-`cmd/serf-doctor/main.go` (`plugins` subcommand), `cmd/serf/main.go` (`plugin`
-command), `hub.toml` config (auto-upgrade).
+`cmd/serf-hub/internal/launchconfig/args.go` (enabled dirs → `--plugin-dir` argv),
+`cmd/serf-tui/{hub_command_registry.go,hub_session_keys.go,focus_trap.go,hub_update_config.go,hub_model.go}`
+(plugin-command forwarding), `cmd/serf-doctor/main.go` (`plugins` subcommand),
+`cmd/serf/main.go` (`plugin` command), `hub.toml` (auto-upgrade config).
