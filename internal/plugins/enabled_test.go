@@ -1,7 +1,9 @@
 package plugins
 
 import (
+	"bytes"
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -51,5 +53,24 @@ func TestEnabledPluginDirs_ExplicitFirstAndDeduped(t *testing.T) {
 	dirs := m.EnabledPluginDirs([]string{explicitDir})
 	if len(dirs) != 1 || dirs[0] != explicitDir {
 		t.Fatalf("EnabledPluginDirs=%v, want [%s] (explicit wins over registry %s)", dirs, explicitDir, entry.InstallPath)
+	}
+}
+
+func TestEnabledPluginDirs_WarnsOnDuplicateExplicit(t *testing.T) {
+	a := t.TempDir()
+	b := t.TempDir()
+	writePlugin(t, a, "dup", nil)
+	writePlugin(t, b, "dup", nil) // same Manifest.Name in two explicit dirs
+
+	m := NewManager(t.TempDir())
+	var warn bytes.Buffer
+	m.Stderr = &warn
+
+	dirs := m.EnabledPluginDirs([]string{a, b})
+	if len(dirs) != 1 || dirs[0] != a {
+		t.Fatalf("EnabledPluginDirs=%v, want [%s] (first wins)", dirs, a)
+	}
+	if !strings.Contains(warn.String(), "duplicate plugin name") {
+		t.Fatalf("expected a duplicate warning, got: %q", warn.String())
 	}
 }

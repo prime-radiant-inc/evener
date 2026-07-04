@@ -13,28 +13,30 @@ import (
 // entry with the same plugin name — so the fail-hard LoadAll never sees a broken
 // or duplicate-named plugin. Dropped dirs are warned to m.stderr().
 func (m *Manager) EnabledPluginDirs(explicit []string) []string {
-	seen := map[string]bool{} // plugin name → already chosen
+	seen := map[string]bool{} // plugin name → true if the chosen dir was explicit
 	var out []string
 
 	add := func(dir string, fromRegistry bool) {
 		inst, err := agentplugin.Load(dir)
 		if err != nil {
 			if fromRegistry {
-				fmt.Fprintf(m.stderr(), "warning: skipping broken plugin %s: %v\n", dir, err)
+				_, _ = fmt.Fprintf(m.stderr(), "warning: skipping broken plugin %s: %v\n", dir, err)
 			} else {
-				fmt.Fprintf(m.stderr(), "warning: skipping invalid --plugin-dir %s: %v\n", dir, err)
+				_, _ = fmt.Fprintf(m.stderr(), "warning: skipping invalid --plugin-dir %s: %v\n", dir, err)
 			}
 			return
 		}
 		name := inst.Manifest.Name
-		if seen[name] {
-			if fromRegistry {
-				return // explicit already won; silently drop the registry dup
+		if wasExplicit, exists := seen[name]; exists {
+			// A registry entry losing to an explicit incumbent is expected — stay silent.
+			// Any other collision (explicit-vs-explicit, registry-vs-registry) is a real
+			// duplicate the user should hear about.
+			if !wasExplicit || !fromRegistry {
+				_, _ = fmt.Fprintf(m.stderr(), "warning: duplicate plugin name %q at %s; keeping the first\n", name, dir)
 			}
-			fmt.Fprintf(m.stderr(), "warning: duplicate plugin name %q at %s; keeping the first\n", name, dir)
 			return
 		}
-		seen[name] = true
+		seen[name] = !fromRegistry
 		out = append(out, dir)
 	}
 
@@ -43,7 +45,7 @@ func (m *Manager) EnabledPluginDirs(explicit []string) []string {
 	}
 
 	// Deterministic order across the enabled registry entries.
-	for _, item := range mustList(m) {
+	for _, item := range listOrWarn(m) {
 		if item.Enabled && !item.Broken {
 			add(item.InstallPath, true)
 		}
@@ -51,11 +53,11 @@ func (m *Manager) EnabledPluginDirs(explicit []string) []string {
 	return out
 }
 
-// mustList returns m.List() results or nil on error (already warned by caller).
-func mustList(m *Manager) []ListItem {
+// listOrWarn returns m.List() results or nil on error (already warned by caller).
+func listOrWarn(m *Manager) []ListItem {
 	items, err := m.List()
 	if err != nil {
-		fmt.Fprintf(m.stderr(), "warning: listing plugins: %v\n", err)
+		_, _ = fmt.Fprintf(m.stderr(), "warning: listing plugins: %v\n", err)
 		return nil
 	}
 	return items
