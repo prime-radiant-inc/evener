@@ -328,8 +328,6 @@ func (s *WebServer) handleSessionPartial(w http.ResponseWriter, r *http.Request)
 		s.renderWorkspacePartial(w, r, id)
 	case "state":
 		s.renderInputStrip(w, r, id)
-	case "meta":
-		s.renderWorkspaceMeta(w, r, id)
 	case "details":
 		s.renderDetailsPanel(w, r, id)
 	case "tasks":

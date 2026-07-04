@@ -1,4 +1,5 @@
 {{define "input_status"}}
+{{if .OOBTitle}}<span id="workspace-session-title" class="title" hx-swap-oob="true">{{.Title}}</span>{{end}}
 {{if and .SourceLabel (not .ThreadDocumentMode)}}<span class="status-item source"><span class="status-key">src</span> <span class="status-value source-label">{{.SourceLabel}}</span></span>{{end}}
 <span class="status-badge" data-state="{{.State}}"><span class="status-dot" data-state="{{.State}}"></span>{{.StateLabel}}</span>
 <span class="status-item turns"><span class="status-value turn-count">{{.TurnCount}} turn{{if ne .TurnCount 1}}s{{end}}</span></span>

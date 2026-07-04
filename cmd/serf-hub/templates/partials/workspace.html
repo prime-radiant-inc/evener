@@ -24,13 +24,6 @@
       </button>
     </div>
   </div>
-  <div class="workspace-meta workspace-meta-poll"
-       hx-get="/_partials/s/{{.ID}}/meta"
-       hx-trigger="load, every 2s"
-       hx-swap="innerHTML">
-    <span class="skeleton skeleton-meta-pill"></span>
-    <span class="skeleton skeleton-meta-pill skeleton-meta-pill-short"></span>
-  </div>
 </header>
 
 <div class="conversation"
@@ -111,7 +104,3 @@
   <input type="file" data-file-picker accept="image/*" multiple hidden>
 </form>
 {{end}}
-
-{{define "workspace_meta_content"}}{{if .SourceLabel}}<span class="meta-key">src</span><span class="source-label" data-source-label="{{.SourceLabel}}">{{.SourceLabel}}</span>{{end}}<span class="status-badge" data-state="{{.State}}"><span class="status-dot" data-state="{{.State}}"></span>{{.StateLabel}}</span><span class="turn-count">{{.TurnCount}} turn{{if ne .TurnCount 1}}s{{end}}</span>{{end}}
-
-{{define "workspace_meta"}}<span id="workspace-session-title" class="title" hx-swap-oob="true">{{.Title}}</span>{{end}}

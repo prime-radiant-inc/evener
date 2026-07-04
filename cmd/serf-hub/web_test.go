@@ -3143,7 +3143,10 @@ func TestWeb_State_RendersInputStatusPartial(t *testing.T) {
 	}
 }
 
-func TestWeb_MetaPartialRefreshesGeneratedSessionTitle(t *testing.T) {
+// TestWeb_StatePartialRefreshesGeneratedSessionTitle verifies the polled
+// /state endpoint carries an out-of-band swap of the header's session-title
+// span, using the freshest generated Name rather than the long OriginalPrompt.
+func TestWeb_StatePartialRefreshesGeneratedSessionTitle(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	if err := os.MkdirAll(proj, 0o755); err != nil {
@@ -3159,13 +3162,13 @@ func TestWeb_MetaPartialRefreshesGeneratedSessionTitle(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Simulate the async title generator updating the meta file after the past
-	// index was built. The polled meta partial should pick up this fresh Name.
+	// index was built. The polled state partial should pick up this fresh Name.
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{ID: sessionID, UpdatedAt: time.Now(), OriginalPrompt: longPrompt, Name: "Fix web session title"}); err != nil {
 		t.Fatal(err)
 	}
 
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: idx})
-	req := httptest.NewRequest(http.MethodGet, "/_partials/s/"+sessionID+"/meta", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/"+sessionID+"/state", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -3176,13 +3179,13 @@ func TestWeb_MetaPartialRefreshesGeneratedSessionTitle(t *testing.T) {
 	}
 	body := rec.Body.String()
 	if !strings.Contains(body, `id="workspace-session-title"`) || !strings.Contains(body, `hx-swap-oob="true"`) {
-		t.Fatalf("meta partial should include an out-of-band title swap: %q", body)
+		t.Fatalf("state partial should include an out-of-band title swap: %q", body)
 	}
 	if !strings.Contains(body, "Fix web session title") {
-		t.Fatalf("meta partial should use fresh generated title: %q", body)
+		t.Fatalf("state partial should use fresh generated title: %q", body)
 	}
 	if strings.Contains(body, longPrompt) {
-		t.Fatalf("meta partial should not render full original prompt as title: %q", body)
+		t.Fatalf("state partial should not render full original prompt as title: %q", body)
 	}
 }
 

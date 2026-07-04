@@ -158,9 +158,14 @@ const liveModelsTTL = 5 * time.Minute
 
 // WorkspaceData is the template data for the workspace partial.
 type WorkspaceData struct {
-	ID                 string
-	SourceLabel        string
-	Title              string
+	ID          string
+	SourceLabel string
+	Title       string
+	// OOBTitle, when true, makes the input_status partial also emit an
+	// out-of-band swap of the header's #workspace-session-title span. Only the
+	// polled /state response sets this true; the inline workspace render
+	// leaves it at its zero value so the title renders exactly once.
+	OOBTitle           bool
 	Branch             string
 	WorkingDir         string
 	HomeDir            string

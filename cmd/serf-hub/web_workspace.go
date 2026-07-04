@@ -46,8 +46,6 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 		}
 	case "state":
 		http.NotFound(w, r)
-	case "meta":
-		http.NotFound(w, r)
 	case "details":
 		http.NotFound(w, r)
 	case "tasks":
@@ -258,32 +256,6 @@ func (s *WebServer) renderSessionTasks(w http.ResponseWriter, r *http.Request, i
 	_, _ = w.Write([]byte("[]\n"))
 }
 
-// renderWorkspaceMeta returns the title-bar meta partial — status pill,
-// branch, turn count. Polled every 2s by the workspace header so live
-// state changes (idle → processing → ended) reflect promptly.
-func (s *WebServer) renderWorkspaceMeta(w http.ResponseWriter, r *http.Request, id string) {
-	data := s.workspaceData(id)
-	if data.ID == "" {
-		http.NotFound(w, r)
-		return
-	}
-	if detail, ok := s.apiSessionDetail(id); ok {
-		data.State = detail.State
-		data.StateLabel = stateLabel(detail.State)
-		data.TurnCount = detail.TurnCount
-		if detail.Model != "" {
-			data.Model = detail.Model
-		}
-		if detail.WorkingDir != "" {
-			data.WorkingDir = detail.WorkingDir
-		}
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.workspaceTmpl.ExecuteTemplate(w, "workspace_meta", data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
-}
-
 func (s *WebServer) workspaceData(id string) WorkspaceData {
 	if !isLocalRouteID(id) {
 		ref := appRefFromRouteID(id)
@@ -478,10 +450,15 @@ func (s *WebServer) fillObserverLink(data *WorkspaceData, m schema.SessionMeta) 
 func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id string) {
 	// Seed from workspaceData so WorkingDir/Branch are populated for both
 	// live and past sessions, then refresh dynamic fields from /status when
-	// the daemon is reachable.
+	// the daemon is reachable. Title/OOBTitle also ride along on this same
+	// poll: the response carries an out-of-band swap of the header's
+	// #workspace-session-title span, keeping it fresh as the session's
+	// generated name changes.
 	wd := s.workspaceData(id)
 	data := map[string]any{
 		"SourceLabel":    wd.SourceLabel,
+		"Title":          wd.Title,
+		"OOBTitle":       true,
 		"Model":          wd.Model,
 		"WorkingDir":     wd.WorkingDir,
 		"Branch":         wd.Branch,
