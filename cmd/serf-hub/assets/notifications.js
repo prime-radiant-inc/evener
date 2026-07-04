@@ -1,36 +1,47 @@
 // Browser notifications for serf-hub. Reads opt-in prefs from
 // localStorage["serf-hub.notifications"] and drives four channels:
-//   - title-bar count of awaiting sessions
-//   - favicon dot for highest-attention state
-//   - OS notification on idle->awaiting and active->errored transitions
+//   - title-bar count of sessions needing attention (needs_you + error)
+//   - favicon dot for the highest-priority attention level
+//   - OS notification on transitions into needs_you/error
 //   - short tone on the same transitions
 //
-// Polls /api/search?q= every 5s for live state. Settings pane dispatches
-// the "serf-hub:notifications-changed" event when the user toggles a
-// preference; this module re-reads prefs (and re-applies title/favicon)
-// without a reload.
+// Event-driven (spec v5): the hub broadcasts "serf/attention/changed" over
+// AppWire whenever a live session's attention level transitions, carrying
+// both the changed entries and the authoritative summary counts. A baseline
+// is fetched from /api/tree (attentionSummary) on init and on reconnect;
+// no OS/sound fires until that baseline lands, so reloading the hub never
+// re-alerts on attention that was already true before the page opened.
+// Only the Web Locks leader tab (or every tab, if that API is unavailable)
+// fires OS/sound so a multi-tab session doesn't double-alert.
+//
+// Settings pane dispatches the "serf-hub:notifications-changed" event when
+// the user toggles a preference; this module re-reads prefs (and
+// re-applies title/favicon) without a reload. Prefs are versioned
+// (serf-hub.notifications.v) so the title/favicon-on-by-default migration
+// (v2) runs once and never overrides a preference the user already set.
 (function () {
   "use strict";
 
   const PREFS_KEY = "serf-hub.notifications";
-  const POLL_MS = 5000;
+  const PREFS_VERSION_KEY = "serf-hub.notifications.v";
+  const DEFAULT_PREFS = { title: true, favicon: true, os: false, sound: false };
   const PLAIN_FAVICON =
     "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%237aa2f7'/></svg>";
 
-  // Highest priority first. Transitions of interest below use these names.
-  const STATE_PRIORITY = ["errored", "awaiting", "active", "idle"];
+  // Dot color by attention level. No "idle" entry: idle never sets a dot.
   const STATE_COLORS = {
-    errored: "#f7768e",
-    awaiting: "#e0af68",
-    active: "#7aa2f7",
-    idle: "#9ece6a",
+    error: "#f7768e",
+    needs_you: "#e0af68",
+    working: "#7aa2f7",
   };
 
-  // Per-session previous state, used to detect transitions.
-  const prevState = new Map();
-  let pollTimer = null;
+  // The authoritative badge summary, or null until the /api/tree baseline
+  // fetch resolves. No edge-firing (OS/sound) before it (spec v5): without
+  // it, a session already needs_you at page-load would look like a fresh
+  // transition on the first "serf/attention/changed" broadcast.
+  let summary = null;
   let initialized = false;
-  let latestLive = [];
+  let leader = false;
 
   function readPrefs() {
     try {
@@ -42,6 +53,27 @@
 
   function writePrefs(prefs) {
     localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+  }
+
+  // Versioned migration to the v2 defaults (title+favicon ON, os+sound
+  // opt-in). A fresh install gets the new defaults outright. An existing
+  // blob had every never-touched key implicitly OFF under the old
+  // all-off defaults; backfill that explicitly so the new ON defaults
+  // don't silently flip behavior the user never chose (round-4 A4).
+  function migratePrefs() {
+    if (localStorage.getItem(PREFS_VERSION_KEY) === "2") return;
+    const raw = localStorage.getItem(PREFS_KEY);
+    if (!raw) {
+      writePrefs(Object.assign({}, DEFAULT_PREFS));
+    } else {
+      let cur = {};
+      try { cur = JSON.parse(raw) || {}; } catch (e) { cur = {}; }
+      for (const k of ["title", "favicon", "os", "sound"]) {
+        if (typeof cur[k] !== "boolean") cur[k] = false;
+      }
+      writePrefs(cur);
+    }
+    localStorage.setItem(PREFS_VERSION_KEY, "2");
   }
 
   // Shared section-label map. Exposed as window.SerfSectionLabels so
@@ -68,24 +100,15 @@
     return "";
   }
 
-  function applyTitle(prefs, live) {
+  function applyTitle(prefs, summary) {
     const section = activeSection();
     const base = section ? section + " \xb7 serf hub" : "serf hub";
     if (!prefs.title) {
       document.title = base;
       return;
     }
-    const awaitingCount = (live || []).filter((s) => s.state === "awaiting").length;
-    document.title = awaitingCount > 0 ? "(" + awaitingCount + ") " + base : base;
-  }
-
-  // Pick the highest-priority state across live sessions.
-  function topState(live) {
-    const present = new Set((live || []).map((s) => s.state));
-    for (const s of STATE_PRIORITY) {
-      if (present.has(s)) return s;
-    }
-    return null;
+    const count = summary ? summary.needsYou + summary.error : 0;
+    document.title = count > 0 ? "(" + count + ") " + base : base;
   }
 
   function buildFaviconDataURI(dotColor) {
@@ -113,41 +136,39 @@
     link.href = href;
   }
 
-  function applyFavicon(prefs, live) {
+  function applyFavicon(prefs, summary) {
     if (!prefs.favicon) {
       setFavicon(PLAIN_FAVICON);
       return;
     }
-    const top = topState(live);
-    const color = top ? STATE_COLORS[top] : null;
+    const topLevel = summary
+      ? (summary.error > 0 ? "error" : summary.needsYou > 0 ? "needs_you" : summary.working > 0 ? "working" : null)
+      : null;
+    const color = topLevel ? STATE_COLORS[topLevel] : null;
     setFavicon(buildFaviconDataURI(color));
   }
 
-  // Pull excerpt text from the most recent .assistant-message in the workspace.
-  function latestAssistantExcerpt() {
-    const nodes = document.querySelectorAll(".assistant-message");
-    if (!nodes || nodes.length === 0) return "";
-    const last = nodes[nodes.length - 1];
-    const text = (last.textContent || "").trim().replace(/\s+/g, " ");
-    if (text.length <= 120) return text;
-    return text.slice(0, 117) + "…";
+  // Apply both title and favicon from the current prefs + summary.
+  function applyCounts() {
+    const prefs = readPrefs();
+    applyTitle(prefs, summary);
+    applyFavicon(prefs, summary);
   }
 
-  function fireOsNotification(session) {
+  function fireOsNotification(entry) {
     if (!("Notification" in window)) return;
     if (Notification.permission !== "granted") return;
     if (document.hasFocus && document.hasFocus()) return;
-    const body = latestAssistantExcerpt();
     let n;
     try {
-      n = new Notification("serf · " + (session.title || session.id), { body: body });
+      n = new Notification("serf · " + (entry.title || entry.threadId));
     } catch (e) {
       return;
     }
     if (n) {
       n.onclick = function () {
         try { window.focus(); } catch (e) {}
-        window.location.href = "/s/" + encodeURIComponent(session.id);
+        window.location.href = "/s/" + encodeURIComponent(entry.threadId);
       };
     }
   }
@@ -181,76 +202,75 @@
     } catch (e) {}
   }
 
-  // The two transitions that fire OS + sound notifications.
-  function isAlertTransition(from, to) {
-    if (from === "idle" && to === "awaiting") return true;
-    if (from === "active" && to === "errored") return true;
-    return false;
+  // Baseline fetch: the authoritative /api/tree summary. Called on init and
+  // on AppWire reconnect (a dropped connection can miss broadcasts, so the
+  // reconnect handler re-syncs rather than trusting the gap stayed empty).
+  function fetchBaseline() {
+    return fetch("/api/tree").then((r) => r.json()).then((resp) => {
+      summary = (resp && resp.attentionSummary) || { needsYou: 0, error: 0, working: 0 };
+      applyCounts();
+    }).catch(() => {});
   }
 
-  function detectTransitions(prefs, live) {
-    const seen = new Set();
-    for (const s of live || []) {
-      seen.add(s.id);
-      const before = prevState.get(s.id);
-      const after = s.state;
-      if (before && before !== after && isAlertTransition(before, after)) {
-        if (prefs.os) fireOsNotification(s);
+  // Elect one tab to fire OS/sound. Uses a held Web Lock as the election:
+  // the first tab to acquire it holds it for its lifetime (the callback
+  // never resolves its promise), so every later tab's ifAvailable request
+  // fails immediately and knows it isn't the leader. Environments without
+  // the Web Locks API (or that reject the request) fire from every tab —
+  // a duplicate alert is a smaller problem than a silent one.
+  function isLeaderTab(cb) {
+    if (navigator.locks && navigator.locks.request) {
+      navigator.locks.request("serf-hub-os-leader", { ifAvailable: true }, (lock) => {
+        if (lock) { cb(true); return new Promise(() => {}); }
+        cb(false);
+        return Promise.resolve();
+      }).catch(() => cb(true));
+      return;
+    }
+    cb(true);
+  }
+  isLeaderTab((v) => { leader = v; });
+
+  // Handles "serf/attention/changed": update the summary-driven counts
+  // unconditionally, then fire OS/sound only for entries that just
+  // transitioned into needs_you/error, only once a baseline exists, only
+  // when this tab is unfocused, and only on the leader tab.
+  function onAttentionChanged(params) {
+    const prefs = readPrefs();
+    const hadBaseline = summary !== null;
+    if (params && params.summary) summary = params.summary;
+    applyCounts();
+    if (!hadBaseline) return;
+    if (document.hasFocus && document.hasFocus()) return;
+    if (!leader) return;
+    for (const ch of (params && params.changed) || []) {
+      const into = ch.level === "needs_you" || ch.level === "error";
+      const was = ch.prevLevel === "needs_you" || ch.prevLevel === "error";
+      if (into && !was) {
+        if (prefs.os) fireOsNotification(ch);
         if (prefs.sound) playTone();
       }
-      prevState.set(s.id, after);
-    }
-    // Forget sessions that are no longer live.
-    for (const id of Array.from(prevState.keys())) {
-      if (!seen.has(id)) prevState.delete(id);
     }
   }
 
-  function applyAll(prefs, live) {
-    applyTitle(prefs, live);
-    applyFavicon(prefs, live);
-  }
-
-  function poll() {
-    const searchPromise = window.SerfAppwire
-      ? window.SerfAppwire.search("")
-      : fetch("/api/search?q=").then((r) => r.json());
-    return searchPromise
-      .then((resp) => {
-        const live = (resp && resp.live) || [];
-        latestLive = live;
-        const prefs = readPrefs();
-        applyAll(prefs, live);
-        detectTransitions(prefs, live);
-      })
-      .catch(() => {});
-  }
-
-  function startPolling() {
-    if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(poll, POLL_MS);
-  }
-
-  // Public init: read prefs, apply current state, kick off polling.
+  // Public init: migrate prefs, fetch the baseline, and subscribe to
+  // attention broadcasts plus reconnect/own-thread reconcile triggers.
   function init() {
     initialized = true;
-    const prefs = readPrefs();
-    // Reset prev-state map on init so the first poll establishes a baseline.
-    prevState.clear();
-    const initialSearch = window.SerfAppwire
-      ? window.SerfAppwire.search("")
-      : fetch("/api/search?q=").then((r) => r.json());
-    initialSearch
-      .then((resp) => {
-        const live = (resp && resp.live) || [];
-        latestLive = live;
-        applyAll(prefs, live);
-        for (const s of live) prevState.set(s.id, s.state);
-      })
-      .catch(() => {
-        applyAll(prefs, []);
+    migratePrefs();
+    fetchBaseline();
+    if (window.SerfAppwire && typeof window.SerfAppwire.onNotification === "function") {
+      window.SerfAppwire.onNotification(function (method, params) {
+        if (method === "serf/attention/changed") onAttentionChanged(params);
       });
-    startPolling();
+    }
+    if (window.SerfAppwire && typeof window.SerfAppwire.onConnectionRestored === "function") {
+      window.SerfAppwire.onConnectionRestored(fetchBaseline);
+    }
+    // Own-thread instant reconcile: renderer.js dispatches this when a live
+    // THREAD_STATUS_CHANGED frame updates the open thread's status pill, so
+    // the badge doesn't wait for the next hub-side attention tick.
+    document.addEventListener("serf-hub:thread-status", fetchBaseline);
   }
 
   // Pref-change handler: re-read prefs and re-apply title + favicon now.
@@ -282,22 +302,21 @@
         });
       } catch (e) {}
     }
-    // Re-apply title/favicon immediately using a fresh poll.
-    poll();
+    // Re-apply title/favicon immediately using the current summary.
+    applyCounts();
   }
 
   document.addEventListener("serf-hub:notifications-changed", onPrefsChanged);
 
   // Re-apply title/favicon immediately after HTMX swaps the workspace
   // (e.g., navigating between settings sections). Otherwise the title
-  // stays stale until the next poll cycle. Also sync the settings
+  // stays stale until the next attention broadcast. Also sync the settings
   // header's visible .title span to the new section so the workspace
   // header doesn't read the previous tab name.
   document.body.addEventListener("htmx:afterSettle", () => {
     if (!initialized) return;
     syncSettingsHeader();
-    const prefs = readPrefs();
-    applyAll(prefs, latestLive);
+    applyCounts();
   });
 
   function syncSettingsHeader() {
@@ -316,18 +335,18 @@
     });
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init);
-  } else {
-    init();
-  }
+  // Init runs immediately rather than waiting for DOMContentLoaded: nothing
+  // here touches DOM content synchronously (activeSection/setFavicon run
+  // later, inside fetchBaseline's async callback, by which point the page
+  // has parsed regardless) and subscribing to AppWire notifications early
+  // means no attention broadcast during page load is missed.
+  init();
 
   // Expose a tiny test/control surface.
   window.serfHubNotifications = {
     init: init,
-    poll: poll,
     _readPrefs: readPrefs,
-    _prevState: prevState,
+    _onAttentionChanged: onAttentionChanged,
   };
 })();
 
