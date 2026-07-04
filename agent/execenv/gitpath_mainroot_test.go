@@ -196,17 +196,27 @@ func TestResolveMainRepoRoot_NotARepo(t *testing.T) {
 	}
 }
 
-// gitCountingShim installs a PATH-shimmed `git` that tallies each invocation and
-// forwards to the real git. Returns the shim dir and a counter reader.
-func gitCountingShim(t *testing.T) (string, func() int) {
+// gitCountingShim installs a PATH-shimmed `git` that tallies each invocation
+// and answers `rev-parse --show-toplevel` directly with toplevel, rather than
+// forwarding to a second, real git process. GitRootOrEmpty races this shim
+// against its own hardcoded 2s exec timeout (gitRootUncached); under heavy
+// concurrent load from sibling packages' tests (this repo's agent package
+// alone has 2000+ t.Parallel subtests) a shim that forks a real git on top of
+// itself can occasionally lose that race purely on scheduling, independent of
+// whether the caching logic under test is correct — confirmed by direct
+// reproduction (a run that took just over 2s and recorded 0 forks instead of
+// 1). Keeping the shim to a single, trivial process removes that extra hop
+// without weakening the count assertions below (still exactly-once, still
+// cache-verified) or touching the production timeout. Returns the shim dir
+// and a counter reader.
+func gitCountingShim(t *testing.T, toplevel string) (string, func() int) {
 	t.Helper()
-	realGit, err := exec.LookPath("git")
-	if err != nil {
+	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
 	shimDir := t.TempDir()
 	counter := filepath.Join(shimDir, "count.log")
-	script := "#!/bin/sh\nprintf 'x' >> '" + counter + "'\nexec '" + realGit + "' \"$@\"\n"
+	script := "#!/bin/sh\nprintf 'x' >> '" + counter + "'\nprintf '%s\\n' '" + toplevel + "'\n"
 	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +239,7 @@ func TestResolveMainRepoRoot_SeparateCacheSlots(t *testing.T) {
 	wantMain := evalSym(t, main)
 	wantWt := evalSym(t, wt)
 
-	shimDir, count := gitCountingShim(t)
+	shimDir, count := gitCountingShim(t, wantWt)
 	t.Setenv("PATH", shimDir)
 
 	env := NewLocalExecutionEnvironment(wt)
