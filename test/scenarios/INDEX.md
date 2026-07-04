@@ -110,6 +110,32 @@ the area they exercise.
   the `goal <status> <iter>` header chip, `/goal status`, the B6
   continuation marker, and completion.
 
+## `ask_user` (interactive questions)
+
+End-to-end coverage for the `ask_user` tool (design:
+`docs/superpowers/specs/2026-07-03-ask-user-question-tool-design.md`): the model asks
+structured questions, the asking round ends the turn into the `awaiting` state, and the
+reply is the user's next ordinary message.
+
+- `ask-web-answer.md` — a posted question ends the turn into `awaiting`; the web card
+  renders the model's real options, an answer + note composes and reaches the model as the
+  next user message.
+- `ask-tui-answer.md` — TUI cold-attach: chip + card visible, the overlay never auto-opens,
+  `Esc` defers without discarding, and typed prose in the composer answers just as well as
+  submitting through the overlay.
+- `ask-cross-session-notify.md` — from a *different* session's viewport, an awaiting
+  session surfaces in the sidebar's NeedsYou tier + count badge and fires the OS
+  notification channel.
+- `ask-two-clients.md` — two clients on one awaiting session: the loser's card converges to
+  the winner's settled echo; a losing submit never produces a second user message.
+- `ask-restart-rederive.md` — a daemon killed with an unanswered ask reports `awaiting` on
+  its first `/status` after restart, and the form is still answerable.
+- `ask-noninteractive-invisible.md` — `ask_user` is unregistered (not merely disabled) in
+  `--non-interactive` and one-shot sessions.
+- `ask-subagent-invisible.md` — a delegate can neither see nor call `ask_user`; notes that
+  the `grant_tools` protected-grant rejection is deterministic-only today (no live caller
+  yet — see the card's Sharp edges).
+
 ## Image attachments
 
 End-to-end coverage for the composer image-attachment surfaces (kata
