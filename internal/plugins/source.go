@@ -37,6 +37,7 @@ type sourceJSON struct {
 	Path   string `json:"path,omitempty"`
 	Ref    string `json:"ref,omitempty"`
 	Sha    string `json:"sha,omitempty"`
+	Rel    bool   `json:"rel,omitempty"`
 }
 
 func (s *Source) UnmarshalJSON(b []byte) error {
@@ -62,12 +63,12 @@ func (s *Source) UnmarshalJSON(b []byte) error {
 	default:
 		return fmt.Errorf("unknown plugin source type %q", j.Source)
 	}
-	*s = Source{Kind: kind, Repo: j.Repo, URL: j.URL, Path: j.Path, Ref: j.Ref, Sha: j.Sha}
+	*s = Source{Kind: kind, Repo: j.Repo, URL: j.URL, Path: j.Path, Ref: j.Ref, Sha: j.Sha, Rel: j.Rel}
 	return nil
 }
 
 func (s Source) MarshalJSON() ([]byte, error) {
 	return json.Marshal(sourceJSON{
-		Source: string(s.Kind), Repo: s.Repo, URL: s.URL, Path: s.Path, Ref: s.Ref, Sha: s.Sha,
+		Source: string(s.Kind), Repo: s.Repo, URL: s.URL, Path: s.Path, Ref: s.Ref, Sha: s.Sha, Rel: s.Rel,
 	})
 }

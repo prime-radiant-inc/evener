@@ -45,3 +45,25 @@ func TestSource_MarshalNeverWritesGit(t *testing.T) {
 		t.Fatalf("round-trip kind = %q", round.Kind)
 	}
 }
+
+func TestSource_UnmarshalRejectsUnknownKind(t *testing.T) {
+	var s Source
+	if err := json.Unmarshal([]byte(`{"source":"bogus"}`), &s); err == nil {
+		t.Fatal("Unmarshal accepted unknown source kind; want error")
+	}
+}
+
+func TestSource_RelSurvivesRoundTrip(t *testing.T) {
+	in := Source{Kind: SourceDirectory, Path: "./plugins/widget", Rel: true}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var out Source
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if out != in {
+		t.Fatalf("round-trip = %+v, want %+v", out, in)
+	}
+}
