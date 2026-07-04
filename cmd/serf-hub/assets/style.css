@@ -591,6 +591,10 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
   background: color-mix(in srgb, var(--state-warning) 5%, transparent);
   border-left-color: var(--state-warning);
 }
+.sb-row[data-state="errored"] {
+  background: color-mix(in srgb, var(--error) 5%, transparent);
+  border-left-color: var(--error);
+}
 
 /* Active session marker — JS sets [data-active] on the row whose href
    matches the currently-rendered workspace URL. */
@@ -668,6 +672,7 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
 .project-rollup-dot[data-state="active"] { background: var(--state-processing); }
 .project-rollup-dot[data-state="warning"]    { background: var(--state-warning); }
 .project-rollup-dot[data-state="idle"]       { background: var(--state-idle); }
+.project-rollup-dot[data-state="errored"]  { background: var(--error); }
 
 /* Project header icons (gear, new) inherit .btn-icon. Keep them dim by
    default and brighten on row hover; the .btn-icon hover state handles
@@ -892,6 +897,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .subagent-row[data-state="active"]   .subagent-glyph { color: var(--state-processing); }
 .subagent-row[data-state="awaiting"] .subagent-glyph { color: var(--state-awaiting); }
 .subagent-row[data-state="warning"]  .subagent-glyph { color: var(--error); }
+.subagent-row[data-state="errored"]  .subagent-glyph { color: var(--error); }
 .subagent-row .subagent-title {
   min-width: 0;
   overflow: hidden;
@@ -982,6 +988,11 @@ body.app[data-sidebar-rail] .subagent-row-wrap > .open-beside-btn { display: non
 .status-dot[data-state="active"] { border-radius: var(--radius-pill); } /* disc */
 .status-dot[data-state="idle"],
 .status-dot[data-state="ended"] { border-radius: 1px; }                 /* square */
+.status-dot[data-state="errored"] {
+  border-radius: 0;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%); /* triangle — red alone must not be the only channel */
+  transform: none;
+}
 
 /* ============================================================
    Needs-you triage tier (mockup #11 rec A)

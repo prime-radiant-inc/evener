@@ -1369,6 +1369,48 @@ func TestWeb_Sidebar_NeedsYouTierHiddenWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestWeb_Sidebar_NeedsYouRowErroredDataState verifies that a NeedsYou row for
+// an errored session carries data-state="errored" on both the row anchor and
+// its status dot — not the hard-coded "awaiting" the tier used before errored
+// became a first-class state — so the CSS state accents and dot shape can
+// distinguish an error from an awaiting row.
+func TestWeb_Sidebar_NeedsYouRowErroredDataState(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01ERR", Name: "Broke", UpdatedAt: now, OriginalPrompt: "x",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+	}
+	live := []hubcore.LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01ERR", Status: appwire.ThreadStatusSystemError},
+	}
+	body := renderSidebar(t, hubcore.BuildTree(metas, live, map[hubcore.ArchiveKey]bool{}))
+
+	if !strings.Contains(body, `data-tier="needs-you"`) {
+		t.Fatalf("needs-you tier missing for errored session; body=\n%s", body)
+	}
+	flat := strings.Join(strings.Fields(body), " ")
+	if !strings.Contains(flat, `<span class="status-dot" data-state="errored">`) {
+		t.Errorf("needs-you dot missing data-state=\"errored\": %q", body)
+	}
+	rowFound := false
+	for _, chunk := range strings.Split(flat, "<a ") {
+		if !strings.HasPrefix(chunk, `class="sb-row needs-you-row"`) {
+			continue
+		}
+		end := strings.Index(chunk, ">")
+		if end < 0 {
+			continue
+		}
+		if strings.Contains(chunk[:end], `data-state="errored"`) {
+			rowFound = true
+			break
+		}
+	}
+	if !rowFound {
+		t.Errorf("needs-you row for errored session missing data-state=\"errored\" on its <a>: %q", body)
+	}
+}
+
 func TestWeb_Sidebar_MagnitudeRollupBadges(t *testing.T) {
 	// mockup #10 rec A: the header shows "⟳N · ◆M" magnitude, not one dot.
 	now := time.Now()
@@ -1511,6 +1553,32 @@ func TestWeb_Sidebar_HidesCompletedSubagents(t *testing.T) {
 		if strings.Contains(body[wrapStart:idx], "subagent-overflow") {
 			t.Errorf("active subagent %s must not be folded as completed:\n%s", id, body)
 		}
+	}
+}
+
+// TestSubagentDone_ErroredIsNotDone pins that an errored subagent is a working
+// state, not a terminal one — it must not fold into the sidebar's "Completed
+// (N)" disclosure alongside genuinely finished subagents.
+func TestSubagentDone_ErroredIsNotDone(t *testing.T) {
+	fn := sidebarTemplateFuncs["subagentDone"].(func(string) bool)
+	if fn("errored") {
+		t.Fatal("errored subagent must not fold into Completed(N)")
+	}
+	if !fn("ended") {
+		t.Fatal("ended stays done")
+	}
+}
+
+// TestStateLabel_ErroredAndNeedsYou pins the two label changes the errored
+// render lane requires: "awaiting" reads as "Needs you" (not the flat,
+// unlabeled "Awaiting"), and "errored" gets its own human label rather than
+// echoing the raw lowercase state string.
+func TestStateLabel_ErroredAndNeedsYou(t *testing.T) {
+	if got := stateLabel("errored"); got != "Error" {
+		t.Fatalf("stateLabel(errored) = %q, want Error", got)
+	}
+	if got := stateLabel("awaiting"); got != "Needs you" {
+		t.Fatalf("stateLabel(awaiting) = %q, want \"Needs you\"", got)
 	}
 }
 

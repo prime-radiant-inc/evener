@@ -180,8 +180,10 @@ func stateLabel(state string) string {
 	// shouts in ALL-CAPS mono, so the display text carries the capitalization.
 	// "active" reads as "Working" — the human word for a live, running session.
 	switch state {
+	case "errored":
+		return "Error"
 	case "awaiting":
-		return "Awaiting"
+		return "Needs you"
 	case "active":
 		return "Working"
 	case "warning":

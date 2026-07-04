@@ -20,13 +20,13 @@
     </header>
     {{range .NeedsYou}}
     <a class="sb-row needs-you-row"
-       data-state="awaiting"
+       data-state="{{.State}}"
        href="/s/{{.ID}}"
        hx-get="/_partials/s/{{.ID}}/workspace"
        hx-target="#workspace"
        hx-swap="innerHTML"
        hx-push-url="/s/{{.ID}}">
-      <div class="dot-col"><span class="status-dot" data-state="awaiting"></span></div>
+      <div class="dot-col"><span class="status-dot" data-state="{{.State}}"></span></div>
       <div class="text-col">
         <div class="title">{{.Title}}</div>
         <div class="meta">{{if .Project}}<span>{{.Project}}</span>{{end}}<span>{{.Age}}</span></div>
@@ -242,7 +242,7 @@
            hx-target="#workspace"
            hx-swap="innerHTML"
            hx-push-url="/s/{{.ID}}">
-          <span class="subagent-glyph" data-state="{{.State}}" aria-hidden="true">{{if eq .State "active"}}⟳{{else if eq .State "awaiting"}}◆{{else if eq .State "warning"}}✕{{else}}✓{{end}}</span>
+          <span class="subagent-glyph" data-state="{{.State}}" aria-hidden="true">{{if eq .State "active"}}⟳{{else if eq .State "awaiting"}}◆{{else if eq .State "warning"}}✕{{else if eq .State "errored"}}✕{{else}}✓{{end}}</span>
           <span class="subagent-title">{{.Title}}</span>
         </a>
         <span role="button" tabindex="0" class="open-beside-btn" aria-label="open subagent beside" title="open beside">⇲</span>
