@@ -126,42 +126,64 @@ func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, transport
 	return mgr, outcomes
 }
 
-// ToolDefinitions returns all namespaced tool definitions from all MCP servers.
+// ToolDefinitions returns namespaced tool definitions from servers whose
+// tools are actually registered and callable (status "connected"). A server
+// demoted to "failed" during RegisterTools contributes no definitions, so the
+// system-prompt-visible tool surface always matches the callable set.
 func (m *Manager) ToolDefinitions() []llm.ToolDefinition {
 	if m == nil {
 		return nil
 	}
 	var defs []llm.ToolDefinition
 	for _, c := range m.conns {
+		if c.status != "connected" {
+			continue
+		}
 		defs = append(defs, c.tools...)
 	}
 	return defs
 }
 
-// RegisterTools registers execution closures for all MCP tools into the
-// given tool.Registry. Returns an error if any namespaced tool name collides
-// with an existing registration or fails validation.
-func (m *Manager) RegisterTools(reg *tool.Registry) error {
+// RegisterTools registers execution closures for all MCP tools from
+// connected servers into the given tool.Registry. It does not abort the
+// whole batch when one server's tools fail name validation or collide with
+// an existing registration: that server is demoted to status "failed" and
+// reported in the returned []ServerOutcome with Stage "register", and the
+// next server is attempted. Only the namespaced names THAT SERVER itself
+// successfully registered before the failure are rolled back — a name that
+// already belongs to an earlier winner (or a built-in tool) is never
+// touched, because it was never added to the failing server's own list.
+func (m *Manager) RegisterTools(reg *tool.Registry) []ServerOutcome {
 	if m == nil {
 		return nil
 	}
-	for _, conn := range m.conns {
-		for _, td := range conn.tools {
+	var outcomes []ServerOutcome
+	for i := range m.conns {
+		c := &m.conns[i]
+		if c.status != "connected" {
+			continue
+		}
+
+		var added []string
+		for _, td := range c.tools {
 			// Validate the namespaced name (length, charset).
 			if err := llm.ValidateToolName(td.Name); err != nil {
-				return fmt.Errorf("MCP tool %q: %w", td.Name, err)
+				outcomes = append(outcomes, failRegister(c, reg, added, fmt.Errorf("MCP tool %q: %w", td.Name, err)))
+				break
 			}
 
-			// Check for collision with existing tools. This is safe because
-			// RegisterTools is called only during single-threaded session init,
-			// after registerCoreTools has already completed.
+			// Check for collision with existing tools (built-ins, or an
+			// earlier server's tools within this same call). This is safe
+			// because RegisterTools is called only during single-threaded
+			// session init, after registerCoreTools has already completed.
 			if reg.Get(td.Name) != nil {
-				return fmt.Errorf("MCP tool %q collides with existing tool", td.Name)
+				outcomes = append(outcomes, failRegister(c, reg, added, fmt.Errorf("MCP tool %q collides with existing tool", td.Name)))
+				break
 			}
 
 			// Look up the original MCP tool name for CallTool.
-			origName := conn.origNames[td.Name]
-			sess := conn.session
+			origName := c.origNames[td.Name]
+			sess := c.session
 
 			if err := reg.Register(tool.RegisteredTool{
 				Tool: llm.Tool{Definition: td},
@@ -184,11 +206,30 @@ func (m *Manager) RegisterTools(reg *tool.Registry) error {
 					return body, nil
 				},
 			}); err != nil {
-				return fmt.Errorf("registering MCP tool %q: %w", td.Name, err)
+				outcomes = append(outcomes, failRegister(c, reg, added, fmt.Errorf("registering MCP tool %q: %w", td.Name, err)))
+				break
 			}
+
+			added = append(added, td.Name)
 		}
 	}
-	return nil
+	return outcomes
+}
+
+// failRegister rolls back exactly the names c itself added to reg (added)
+// before hitting err, demotes c to status "failed", and returns the
+// ServerOutcome to report. It must never be passed a name that belongs to a
+// different conn: added tracks only names the CALLER appended after its own
+// successful reg.Register calls, so a collision with an earlier winner's
+// name — which never entered this conn's added list — leaves that name alone.
+func failRegister(c *conn, reg *tool.Registry, added []string, err error) ServerOutcome {
+	for _, n := range added {
+		reg.Remove(n)
+	}
+	c.status = "failed"
+	c.lastErr = err
+	c.lastErrAt = time.Now()
+	return ServerOutcome{Name: c.name, Stage: "register", Err: err}
 }
 
 // Servers returns per-server info including name and namespaced tool names.

@@ -187,7 +187,8 @@ func TestMCPManager_MultipleServers(t *testing.T) {
 }
 
 // TestMCPManager_BuiltinCollision verifies that registering an MCP tool
-// that collides with a pre-existing tool returns an error.
+// that collides with a pre-existing tool produces a register-stage
+// ServerOutcome for that server, rather than failing the whole batch.
 func TestMCPManager_BuiltinCollision(t *testing.T) {
 	ctx := context.Background()
 
@@ -229,14 +230,15 @@ func TestMCPManager_BuiltinCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := mgr.RegisterTools(reg)
-	if err == nil {
-		t.Fatal("expected collision error, got nil")
+	outcomes = mgr.RegisterTools(reg)
+	if len(outcomes) != 1 || outcomes[0].Name != "s" || outcomes[0].Stage != "register" {
+		t.Fatalf("want one register outcome for server %q, got %+v", "s", outcomes)
 	}
 }
 
 // TestMCPManager_ToolNameTooLong verifies that an MCP tool whose namespaced
-// name exceeds 64 chars is reported as an error.
+// name exceeds 64 chars produces a register-stage ServerOutcome for that
+// server, rather than failing the whole batch.
 func TestMCPManager_ToolNameTooLong(t *testing.T) {
 	ctx := context.Background()
 
@@ -268,9 +270,9 @@ func TestMCPManager_ToolNameTooLong(t *testing.T) {
 	defer mgr.Close()
 
 	reg := tool.NewRegistry()
-	err := mgr.RegisterTools(reg)
-	if err == nil {
-		t.Fatal("expected tool name too long error, got nil")
+	outcomes = mgr.RegisterTools(reg)
+	if len(outcomes) != 1 || outcomes[0].Name != "longservername" || outcomes[0].Stage != "register" {
+		t.Fatalf("want one register outcome for server %q, got %+v", "longservername", outcomes)
 	}
 }
 

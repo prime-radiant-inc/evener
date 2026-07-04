@@ -1163,18 +1163,17 @@ func (s *Session) initMCP() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// TODO(Task 4): connect-stage failures become non-fatal warnings; for now
-	// preserve the pre-Task-2 all-or-nothing fatal behavior by failing on the
-	// first reported connect outcome.
+	// TODO(Task 4): connect-stage and register-stage failures become non-fatal
+	// warnings; for now preserve the pre-Task-2 all-or-nothing fatal behavior
+	// by failing on the first reported outcome from either stage.
 	mgr, connectOutcomes := mcp.NewManager(ctx, configs, nil)
-	if len(connectOutcomes) > 0 {
+	regOutcomes := mgr.RegisterTools(s.reg)
+	if len(connectOutcomes)+len(regOutcomes) > 0 {
 		mgr.Close()
-		return fmt.Errorf("MCP server %q connect: %w", connectOutcomes[0].Name, connectOutcomes[0].Err)
-	}
-
-	if err := mgr.RegisterTools(s.reg); err != nil {
-		mgr.Close()
-		return err
+		all := make([]mcp.ServerOutcome, 0, len(connectOutcomes)+len(regOutcomes))
+		all = append(all, connectOutcomes...)
+		all = append(all, regOutcomes...)
+		return fmt.Errorf("MCP server %q %s: %w", all[0].Name, all[0].Stage, all[0].Err)
 	}
 
 	s.mcpMgr = mgr
