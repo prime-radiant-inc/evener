@@ -53,7 +53,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	projectIndexes := map[string]int{}
 	allProjects := append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...)
 	for _, p := range allProjects {
-		key := projectKey(p.Name)
+		key := p.Key
 		ap := hubapi.TreeProject{
 			Key:         key,
 			Name:        p.Name,
@@ -72,10 +72,10 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		project := filepath.Base(le.WorkingDir)
-		if project == "" || project == "." {
+		if le.WorkingDir == "" || project == "." {
 			project = "(no project)"
 		}
-		key := projectKey(project)
+		key := hubcore.ProjectSlug(le.WorkingDir)
 		node := hubcore.TreeNode{
 			ID:        le.SessionID,
 			Title:     liveTitle(le.SessionID, le, s.cfg.Past),

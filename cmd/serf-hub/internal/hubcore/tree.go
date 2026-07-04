@@ -239,6 +239,10 @@ func projectSlug(path string) string {
 	return base + "-" + hex.EncodeToString(sum[:4])
 }
 
+// ProjectSlug is the exported path-derived project key used by the hub's
+// orphan-live grouping and project-key resolution. See projectSlug.
+func ProjectSlug(path string) string { return projectSlug(path) }
+
 // nodeTitle computes the display title for a tree node.
 //
 // Older sessions persisted before OriginalPrompt was captured fall back to a

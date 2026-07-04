@@ -1,12 +1,17 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/serf/hubapi"
+	"primeradiant.com/serf/rendezvous"
 )
 
 func TestArchiveDecisionsFlowIntoTree(t *testing.T) {
@@ -70,5 +75,22 @@ func TestArchiveDecisionsHelperWithStore(t *testing.T) {
 	got := s.archiveDecisions()
 	if !got[hubcore.ArchiveKey{Kind: "project", ID: "beta"}] {
 		t.Fatalf("archiveDecisions() missing expected decision; got %v", got)
+	}
+}
+
+func TestOrphanLiveGroupingUsesPathSlug(t *testing.T) {
+	roster := hubcore.NewRosterWithEntries(
+		hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "01L", WorkingDir: "/a/foo"}, SessionID: "01L", Status: "active"},
+	)
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), Roster: roster})
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	var resp hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Projects) != 1 || resp.Projects[0].Key != hubcore.ProjectSlug("/a/foo") {
+		t.Fatalf("orphan-live must use the path slug; got %+v", resp.Projects)
 	}
 }

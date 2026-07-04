@@ -339,13 +339,6 @@ func (s *WebServer) handleSessionPartial(w http.ResponseWriter, r *http.Request)
 	}
 }
 
-func projectKey(name string) string {
-	if name == "" {
-		return "project"
-	}
-	return strings.NewReplacer("/", "_", ":", "_", " ", "_").Replace(name)
-}
-
 func localAppRef(threadID string) string {
 	return appwire.Ref{SourceID: "local", ThreadID: threadID}.String()
 }
