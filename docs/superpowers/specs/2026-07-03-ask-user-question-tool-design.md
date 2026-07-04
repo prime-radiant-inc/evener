@@ -4,7 +4,7 @@
 - **Status:** approved design, reshaped per Jesse's simplification directive; pending Jesse's spec review
 - **Scope decision (Jesse):** blocking interactive questions only. No parking in v1 — "we can always add parking later."
 - **Policy decision (Jesse):** never auto-proceed. No timers, no synthetic answers, no AFK fallback. An unanswered question waits, visibly, until answered.
-- **Shape decision (Jesse):** **communicate-adjacent poster.** `ask_user` posts structured questions **without ending the turn** — multiple calls per turn are allowed, and the tool never gets in `communicate`'s way (Jesse's refinement after the initial ends-the-turn draft). The one new mechanism is a boundary rule: a turn that concludes with posted questions unanswered rests in state `awaiting` instead of `idle`. The answer arrives as the **next user message** (the form composes it; typed prose works identically). No mid-turn blocking, no new wire methods, no turn-ender seam involvement. An earlier blocking-in-handler design was fully specified and three /par rounds hardened (git history `771aeeb42..fc559fb83`); its complexity was the cost of the shape, and the shape was wrong. Findings that survive the reshapes are folded below.
+- **Shape decision (Jesse):** **asks end the turn at their round's boundary.** The model batches `ask_user` calls — several allowed — and optionally a `communicate` into a single round; when that round's calls have executed, the turn ends and the session rests in `awaiting`. `communicate` composes rather than collides: its message delivers alongside the questions. Asking always yields the floor — ask-then-keep-working is cross-turn park, a named fast-follow (§10). The answer arrives as the **next user message** (the form composes it; typed prose works identically). No mid-turn blocking, no new wire methods. An earlier blocking-in-handler design was fully specified and three /par rounds hardened (git history `771aeeb42..fc559fb83`); its complexity was the cost of the shape, and the shape was wrong. Findings that survive the reshapes are folded below.
 - **Code anchors** cite the worktree at `ecdbd59bb`; line numbers may drift.
 
 ## 1. Problem
@@ -13,20 +13,20 @@ Serf's agent has no structured way to ask its user a question. Today the model a
 
 Meanwhile a dedicated model-invoked question tool became table stakes across the ecosystem in 2025–26 (Codex `request_user_input`, Gemini CLI `ask_user`, OpenCode `question`, Cline/Roo `ask_followup_question`, Cursor `AskQuestion`, Devin `ask_user_question`), and the HCI evidence says agents under-ask: misread intent shows up in ~27% of real coding-agent sessions, and unprompted guessing is the dominant failure mode, not over-asking.
 
-`ask_user` lets the model post structured questions mid-turn without breaking stride; a turn that concludes with questions pending rests in `awaiting` — the first real producer of the status the entire dormant needs-you chain keys on. The dormant plumbing assumed exactly this shape: a session at rest between turns, waiting on its user.
+`ask_user` lets the model yield the floor with structured questions: the round that asks is the turn's last, and the session rests in `awaiting` — the first real producer of the status the entire dormant needs-you chain keys on. The dormant plumbing assumed exactly this shape: a session at rest between turns, waiting on its user.
 
 ## 2. Goals and non-goals
 
 **Goals**
 
-1. The root agent posts structured, mostly multiple-choice questions — 1–4 per call, any number of calls per turn — without ending its turn or displacing its `communicate`; a turn that concludes with questions pending rests in `awaiting` until the user replies.
+1. The root agent asks structured, mostly multiple-choice questions — 1–4 per call, several calls per round, optionally alongside a `communicate` whose message still delivers; the asking round ends the turn, and the session rests in `awaiting` until the user replies.
 2. The user answers through a rendered form (chips, free text, "you decide", skip) or by simply typing — either way the answer is the next user message, and an annotation is always possible on any choice.
 3. `awaiting` at rest flows through the existing turn-boundary state write to `/status` → hub prober → roster → NeedsYou tier, badges, OS notification, deep link. One trigger-table line changes; everything else is already built.
 4. Renderers on both surfaces: web (activating the dormant scaffolding) and TUI (new overlay on existing widgets, opened by keypress only).
 5. Invisible — not merely disabled — in non-interactive sessions and in all subagents, including bare-resumed ones.
 6. Ordinary tool-pipeline citizenship: hooks fire, the transcript records the call and its ack, no special-cased plumbing.
 
-**Non-goals for v1** (§10 names each as a fast-follow with its trigger): cross-turn park — answers delivered *into a still-running turn* (needs the deferred-result shape; in-turn ask-and-continue ships in this design); a durable ask store; withdraw/supersede; timers or auto-answers of any kind; evidence refs beyond prose; stakes-graded rendering; hub sidebar inline answering; wizard chains; images on answers; secret-masked answers.
+**Non-goals for v1** (§10 names each as a fast-follow with its trigger): park / ask-and-continue — asking always yields the floor; the deferred-result shape is the upgrade path; a durable ask store; withdraw/supersede; timers or auto-answers of any kind; evidence refs beyond prose; stakes-graded rendering; hub sidebar inline answering; wizard chains; images on answers; secret-masked answers.
 
 ## 3. Prior art distilled (what we copy, what we avoid)
 
@@ -75,7 +75,7 @@ We also decline Codex's plan-mode-only gating (users file issues begging for the
 - `if_unanswered` renders as a one-tap **"do that"** button carrying the model's stated fallback. It is a button, never a timer.
 - `recommended` (optional bool, at most one per question, handler-validated) marks the model's suggestion; that option goes first. A schema field on purpose: appending "(Recommended)" to the label would pollute the label the reply echoes.
 - Option labels must be unique within a question (handler-validated at execution; a violation returns an instructive error result to the model, and the turn does not end).
-- Multiple `ask_user` calls per turn are allowed (each carrying 1–4 questions); they accumulate into one pending set and the user's single reply resolves them all. Posting never ends the turn, so `ask_user` coexists freely with `communicate` (§5.1).
+- Multiple `ask_user` calls may share the asking round (each carrying 1–4 questions); they accumulate into one pending set and the user's single reply resolves them all. Asking ends the turn at that round's boundary; a `communicate` in the same round composes — its message delivers alongside the questions (§5.1).
 
 ### 4.3 How answers come back: the reply-message contract
 
@@ -95,29 +95,31 @@ The user may instead ignore the form and type anything: free prose **is** a vali
 
 ### 4.4 Tool description (draft; Haiku-validate at implementation, house style)
 
-> Ask the user structured questions. Posting does not end your turn — keep working and ask more if later work surfaces new questions; end your turn when you need the answers to proceed, and the session waits visibly (no timeout). The answers arrive in the user's next message: either the numbered `[answers]` form (one resolution per question: a selection, free text, "you decide" — choose with your judgment, honoring any stated leaning —, your stated fallback, or skipped — proceed on your best judgment, state the assumption, and do not immediately re-ask) or free prose; treat either as the reply to everything you asked. Any answer may carry a user note — read it; it can qualify or override the selection.
+> Ask the user structured questions. Asking yields the floor: when the round containing your `ask_user` call(s) completes, your turn ends and the session waits visibly for the reply (no timeout). Do the work that does not need answers first, then batch every question this decision point needs — several `ask_user` calls may share the round, and a `communicate` in the same round still delivers its message. The answers arrive in the user's next message: either the numbered `[answers]` form (one resolution per question: a selection, free text, "you decide" — choose with your judgment, honoring any stated leaning —, your stated fallback, or skipped — proceed on your best judgment, state the assumption, and do not immediately re-ask) or free prose; treat either as the reply to everything you asked. Any answer may carry a user note — read it; it can qualify or override the selection.
 >
 > - `questions`: 1–4 per call, each with a short `header` (≤12 chars), the full `question`, and 2–5 `options` (`{label, detail}`, labels unique). Set `multi_select` to allow several; set `recommended: true` on at most one option and put it first.
 > - Do not add an "Other" or free-text option; the UI always offers one, plus "you decide".
 > - Optional per question: `why` (one line: what the answer changes) and `if_unanswered` (the fallback you would take; the user can accept it with one tap).
 >
-> First try to resolve the question yourself with tools. Batch related questions into one call at a natural breakpoint; post another call in the same turn only when later work surfaces genuinely new questions.
+> First try to resolve the question yourself with tools. Asking is how you end your turn when only the user can unblock the rest — finish the answer-independent work before you ask.
 
 ### 4.5 System-prompt guidance
 
 New prompt section (`agent/prompts/sections/ask-user.md.tmpl`), included only when the tool is registered (interactive root sessions), in the terse imperative of the job-control section:
 
-> **Asking the user.** Ask when being right matters more than the interruption costs — not whenever you are unsure. First resolve what evidence can settle: read the file, run the test. Ask only what evidence cannot settle. Batch questions that share a breakpoint into one `ask_user` call (≤4); posting never ends your turn, so keep working and post again only if new questions surface. End your turn — `communicate` as usual — when you need the answers; the user's next message covers everything pending. Write honest options — no straw men — and state `why` and `if_unanswered` when they help the user decide fast. The user's `note` on any answer can qualify or override the selection; honor it.
+> **Asking the user.** Ask when being right matters more than the interruption costs — not whenever you are unsure. First resolve what evidence can settle: read the file, run the test. Ask only what evidence cannot settle. Asking ends your turn at that round's boundary — finish the answer-independent work first, then batch every question this breakpoint needs into the asking round (≤4 per call, several calls if needed, a `communicate` message alongside if you have one). The user's next message covers everything you asked. Write honest options — no straw men — and state `why` and `if_unanswered` when they help the user decide fast. The user's `note` on any answer can qualify or override the selection; honor it.
 
 The existing non-interactive section (`agent/prompts/sections/non-interactive.md.tmpl`) already covers the inverse case and does not change.
 
 ## 5. Runtime semantics
 
-### 5.1 Posting questions — an ordinary tool plus one boundary rule
+### 5.1 Asking ends the turn at its round's boundary
 
-The handler registers like any core tool (`registerCoreTools` → new `registerAskTool`, `agent/session_tool_registry.go`). It validates its input (label uniqueness, one `recommended` per question — schema constraints like counts and lengths are already enforced by the registry's JSON-Schema validation), adds the questions to the session's **per-turn pending set**, and returns a short ack as its tool result ("questions posted; answers arrive in the user's reply after your turn ends"). **It does not end the turn and does not touch the communicate seam** (Jesse's directive: multiple asks per turn, never in `communicate`'s way). The model may post several `ask_user` calls across a turn, keep working between them, and end the turn as it always does — `communicate(end_turn=true)` with its message intact, or plain completion. Stop hooks, batching, and every turn-end behavior remain exactly today's; the earlier turn-ender-collision and Stop-hook special cases are gone because the tool is no longer a turn-ender.
+The handler registers like any core tool (`registerCoreTools` → new `registerAskTool`, `agent/session_tool_registry.go`). It validates its input (label uniqueness, one `recommended` per question — schema constraints like counts and lengths are already enforced by the registry's JSON-Schema validation), adds the questions to the round's **pending set**, and returns a short ack as its tool result. The calls themselves are ordinary: several may share a round, siblings execute normally, and a `communicate` in the same round records its message exactly as today.
 
-The one new mechanism sits at the boundary: **a turn that concludes with posted questions unanswered rests in `SessionAwaiting`** — a new session state alongside idle/processing/closed — **instead of `SessionIdle`**, decided at the single point where the final boundary state is already chosen (`finishProcessingAtBoundary` / the drain-loop tail). The per-turn pending set exists only to inform that choice and §4.3's global numbering; the transcript remains the questions' durable home (§6 renders from it; §5.4 restores from it). An **interrupted** turn ends idle as today even if it posted questions — the user is demonstrably present and steering; the cards remain rendered and answerable (§6), and any reply still resolves them. Because no call is ever held open, there is nothing for orphan repair to eat, no cancellation race, no lock protocol.
+The one new mechanism is a single check at the round boundary — the same place `deliverIfCommunicated` already decides whether the turn ends: **if the round posted questions, the turn ends**, and the boundary state is **`SessionAwaiting`** — a new session state alongside idle/processing/closed — instead of idle. `communicate` **composes, never collides**: an explicit `communicate` in the asking round contributes its user-facing message, and its `end_turn` value is moot because the asks already end the turn (Jesse's directive: multiple asks and a communicate in one round cause the turn end, together). A model that asks in what it meant as a mid-turn round simply ends its turn early — the tool description says asking yields the floor, and the boundary enforces it; remaining work continues after the reply.
+
+**Stop hooks are not consulted at an ask-ending boundary.** Pending questions are a stronger stop than a hook's veto: a `Blocked` result would force the model onward to answer its own questions, and a persistent one would exhaust the round cap and strand the session idle instead of awaiting (`agent/session_tool_round.go:385-398` remains communicate-only). Hooks still see every ask through Pre/PostToolUse (§5.5). An **interrupted** turn ends idle as today even if it posted questions — the user is demonstrably present and steering; the cards remain rendered and answerable (§6), and any reply still resolves them. Because no call is ever held open, there is nothing for orphan repair to eat, no cancellation race, no lock protocol. The pending set exists only to inform the boundary check and §4.3's numbering; the transcript remains the questions' durable home (§6 renders from it; §5.4 restores from it).
 
 ### 5.2 The answer is the next user message
 
@@ -147,7 +149,7 @@ Capabilities while awaiting are exactly the at-rest set: `Send` true (the sessio
 
 ### 5.5 Hooks
 
-`ask_user` runs through `execTool` like every tool: PreToolUse may deny or rewrite the questions (a denied ask posts nothing); PostToolUse observes the ack. Stop hooks are untouched — they belong to the turn-enders, and `ask_user` is not one. Stated invariant with a test (the Cursor bug class).
+`ask_user` runs through `execTool` like every tool: PreToolUse may deny or rewrite the questions (a denied ask posts nothing — and if nothing else was posted that round, the turn does not end); PostToolUse observes the ack. Stop hooks are not consulted at an ask-ending boundary (§5.1) and are unchanged everywhere else. Stated invariant with a test (the Cursor bug class).
 
 ## 6. Renderers
 
@@ -185,12 +187,14 @@ Gated at the **registration seam**, on the true root condition. Deliberately NOT
 
 **Deterministic — Session level (agenttest scripted adapter):**
 
-- boundary rule: a turn that posts questions (acks recorded) concludes with session state `SessionAwaiting`; a turn without questions concludes idle; the model works normally between posting and turn end.
-- multiple asks: two `ask_user` calls in one turn accumulate into one pending set; the boundary is `awaiting`; the reply's numbering spans both calls in posting order.
-- ask + communicate: a turn that posts questions and ends via `communicate(end_turn=true)` delivers the communicate message **and** rests awaiting.
+- boundary rule: a round that posts questions ends the turn — the model gets no further round — with session state `SessionAwaiting`; a turn without questions concludes idle.
+- early ask: an ask posted in what the model intended as a mid-turn round still ends the turn at that round's boundary.
+- multiple asks: two `ask_user` calls in one round accumulate into one pending set; one boundary; the reply's numbering spans both calls in call order.
+- ask + communicate: a round with `ask_user` calls and a `communicate` delivers the communicate message **and** rests awaiting, regardless of the communicate's `end_turn` value.
+- stop hooks: a Blocked-returning Stop hook does not prevent an ask-ending boundary; the session rests awaiting.
 - reply resumes: a subsequent `ProcessInput` with the §4.3 `[answers]` text reaches the model verbatim as the user turn; state leaves awaiting; the pending set clears.
 - interrupt after ask: an interrupted turn that posted questions ends idle (user present); the cards remain rendered and answerable.
-- input validation: duplicate labels / two `recommended` on one question → instructive error result; nothing is posted; the boundary is unaffected.
+- input validation: duplicate labels / two `recommended` on one question → instructive error result; nothing is posted; a round whose only ask was denied/invalid does not end the turn.
 - entry gate: with state awaiting, `ProcessInputKind(EntryNotification/EntryContinuation/EntryWatchDelivery)` is refused **before any state transition** — state remains `SessionAwaiting`, the notification stays queued, and it drains after the reply.
 - boundary drain gate: a job notification arriving *during* the asking turn does not drive a turn at the asking turn's boundary; queued user input from mid-turn **does** drain as the reply (documented semantics).
 - goal holds, all four paths: a running goal does not kick at the asking boundary; `settleGoalOnIdle` does not fire into awaiting; `SetGoal` while awaiting arms without kicking; a restored active goal does not kick into an awaiting session; awaiting time never trips the no-progress breaker.
@@ -232,7 +236,7 @@ Gated at the **registration seam**, on the true root condition. Deliberately NOT
 
 | follow-up | trigger | path |
 |---|---|---|
-| **Cross-turn park (answers landing mid-turn)** | in-turn ask-and-continue already ships in this design; the trigger is wanting answers delivered *into a still-running turn* without ending it (Cursor 2.4's full pattern) | the **deferred-tool-result shape**: an ask leaves a call unresolved and an answer RPC resumes with a synthesized tool result — the machinery the blocking spec designed (git history) is the upgrade path |
+| **Park / ask-and-continue** | wanting to ask without yielding the floor — the model keeps working and answers land mid-turn (Cursor 2.4's pattern) | the **deferred-tool-result shape**: an ask leaves a call unresolved and an answer RPC resumes with a synthesized tool result — the machinery the blocking spec designed (git history) is the upgrade path |
 | withdraw/supersede stale questions | park exists | — |
 | stakes field + reversibility-proportional friction | destructive-action asks appear | schema is additive |
 | evidence refs on options (file/diff/job) | options citing artifacts | `detail` is prose today; typed refs additive |
