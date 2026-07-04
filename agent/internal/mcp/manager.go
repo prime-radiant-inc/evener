@@ -26,16 +26,39 @@ type Manager struct {
 
 type conn struct {
 	name      string
+	cfg       mcpconfig.ServerConfig
 	session   *mcpsdk.ClientSession
 	tools     []llm.ToolDefinition // namespaced: servername__toolname
 	origNames map[string]string    // sanitized namespaced name → original MCP tool name
+	status    string               // "connected" / "degraded" / "failed"
+	lastErr   error
+	lastErrAt time.Time
 }
 
-// NewManager connects to all configured MCP servers, discovers their tools,
-// and namespaces them. The transports parameter is optional: when nil, transports
-// are created from configs. When provided (for testing), each transport[i]
-// corresponds to configs[i].
-func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, transports []mcpsdk.Transport) (*Manager, error) {
+// ServerOutcome reports a per-server failure at one assembly stage. Stage is
+// "connect" (transport build, connect handshake, or tools/list) or "register".
+type ServerOutcome struct {
+	Name  string
+	Stage string
+	Err   error
+}
+
+// failedConn builds a conn recording a connect-stage failure for cfg. session,
+// tools, and origNames stay at their zero values: a failed conn has no live
+// session and contributes no tools to ToolDefinitions/RegisterTools.
+func failedConn(cfg mcpconfig.ServerConfig, err error) conn {
+	return conn{name: cfg.Name, cfg: cfg, status: "failed", lastErr: err, lastErrAt: time.Now()}
+}
+
+// NewManager connects to all configured MCP servers and discovers their tools,
+// namespacing them. It does not abort the batch when one server's transport
+// build, connect, or tools/list fails: a conn is retained for every config
+// (failed ones with status "failed" and no session), and each such failure is
+// reported in the returned []ServerOutcome with Stage "connect". The manager
+// is nil only when configs is empty. The transports parameter is optional:
+// when nil, transports are created from configs. When provided (for testing),
+// each transport[i] corresponds to configs[i].
+func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, transports []mcpsdk.Transport) (*Manager, []ServerOutcome) {
 	if len(configs) == 0 {
 		return nil, nil
 	}
@@ -46,6 +69,7 @@ func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, transport
 	}, nil)
 
 	mgr := &Manager{}
+	var outcomes []ServerOutcome
 	for i, cfg := range configs {
 		var transport mcpsdk.Transport
 		if transports != nil && i < len(transports) {
@@ -54,23 +78,26 @@ func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, transport
 			var err error
 			transport, err = transportForConfig(cfg)
 			if err != nil {
-				mgr.Close()
-				return nil, fmt.Errorf("MCP server %q: %w", cfg.Name, err)
+				mgr.conns = append(mgr.conns, failedConn(cfg, err))
+				outcomes = append(outcomes, ServerOutcome{Name: cfg.Name, Stage: "connect", Err: err})
+				continue
 			}
 		}
 
 		session, err := client.Connect(ctx, transport, nil)
 		if err != nil {
-			mgr.Close()
-			return nil, fmt.Errorf("MCP server %q connect: %w", cfg.Name, err)
+			mgr.conns = append(mgr.conns, failedConn(cfg, err))
+			outcomes = append(outcomes, ServerOutcome{Name: cfg.Name, Stage: "connect", Err: err})
+			continue
 		}
 
 		// Discover tools from the server.
 		result, err := session.ListTools(ctx, nil)
 		if err != nil {
 			_ = session.Close()
-			mgr.Close()
-			return nil, fmt.Errorf("MCP server %q list tools: %w", cfg.Name, err)
+			mgr.conns = append(mgr.conns, failedConn(cfg, err))
+			outcomes = append(outcomes, ServerOutcome{Name: cfg.Name, Stage: "connect", Err: err})
+			continue
 		}
 
 		var tools []llm.ToolDefinition
@@ -88,13 +115,15 @@ func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, transport
 
 		mgr.conns = append(mgr.conns, conn{
 			name:      cfg.Name,
+			cfg:       cfg,
 			session:   session,
 			tools:     tools,
 			origNames: origNames,
+			status:    "connected",
 		})
 	}
 
-	return mgr, nil
+	return mgr, outcomes
 }
 
 // ToolDefinitions returns all namespaced tool definitions from all MCP servers.
@@ -173,7 +202,7 @@ func (m *Manager) Servers() []mcpconfig.ServerInfo {
 		for j, td := range c.tools {
 			tools[j] = td.Name
 		}
-		out[i] = mcpconfig.ServerInfo{Name: c.name, Tools: tools}
+		out[i] = mcpconfig.ServerInfo{Name: c.name, Tools: tools, Status: c.status}
 	}
 	return out
 }

@@ -25,8 +25,9 @@ type ServerConfig struct {
 
 // ServerInfo describes a connected MCP server and its tools.
 type ServerInfo struct {
-	Name  string   `json:"name"`  // server name as configured
-	Tools []string `json:"tools"` // namespaced tool names
+	Name   string   `json:"name"`             // server name as configured
+	Tools  []string `json:"tools"`            // namespaced tool names
+	Status string   `json:"status,omitempty"` // "connected" / "degraded" / "failed"
 }
 
 // mcpConfigFile is the JSON structure of an mcp.json file.

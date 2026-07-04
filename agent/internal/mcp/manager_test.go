@@ -56,11 +56,11 @@ func TestMCPManager_InMemory(t *testing.T) {
 		t.Fatalf("server connect: %v", err)
 	}
 
-	mgr, err := NewManager(ctx, []mcpconfig.ServerConfig{
+	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "testserver", Type: "stdio"},
 	}, []mcpsdk.Transport{ct})
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
+	if len(outcomes) != 0 {
+		t.Fatalf("NewManager: %+v", outcomes)
 	}
 	defer mgr.Close()
 
@@ -210,11 +210,11 @@ func TestMCPManager_BuiltinCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mgr, err := NewManager(ctx, []mcpconfig.ServerConfig{
+	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "s", Type: "stdio"},
 	}, []mcpsdk.Transport{ct})
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
+	if len(outcomes) != 0 {
+		t.Fatalf("NewManager: %+v", outcomes)
 	}
 	defer mgr.Close()
 
@@ -229,7 +229,7 @@ func TestMCPManager_BuiltinCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = mgr.RegisterTools(reg)
+	err := mgr.RegisterTools(reg)
 	if err == nil {
 		t.Fatal("expected collision error, got nil")
 	}
@@ -259,16 +259,16 @@ func TestMCPManager_ToolNameTooLong(t *testing.T) {
 	}
 
 	// "longservername__" (16) + 60 = 76 chars > 64 limit
-	mgr, err := NewManager(ctx, []mcpconfig.ServerConfig{
+	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "longservername", Type: "stdio"},
 	}, []mcpsdk.Transport{ct})
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
+	if len(outcomes) != 0 {
+		t.Fatalf("NewManager: %+v", outcomes)
 	}
 	defer mgr.Close()
 
 	reg := tool.NewRegistry()
-	err = mgr.RegisterTools(reg)
+	err := mgr.RegisterTools(reg)
 	if err == nil {
 		t.Fatal("expected tool name too long error, got nil")
 	}

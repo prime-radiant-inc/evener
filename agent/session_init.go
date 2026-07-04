@@ -1163,9 +1163,13 @@ func (s *Session) initMCP() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	mgr, err := mcp.NewManager(ctx, configs, nil)
-	if err != nil {
-		return err
+	// TODO(Task 4): connect-stage failures become non-fatal warnings; for now
+	// preserve the pre-Task-2 all-or-nothing fatal behavior by failing on the
+	// first reported connect outcome.
+	mgr, connectOutcomes := mcp.NewManager(ctx, configs, nil)
+	if len(connectOutcomes) > 0 {
+		mgr.Close()
+		return fmt.Errorf("MCP server %q connect: %w", connectOutcomes[0].Name, connectOutcomes[0].Err)
 	}
 
 	if err := mgr.RegisterTools(s.reg); err != nil {
