@@ -28,6 +28,12 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 		s.emitDiagnosticWarning(w)
 	}
 	s.pendingHookWarnings = nil
+	// Collected MCP connect/register failures (initMCP) ride the same
+	// diagnostic path: visible on the stream, no Notification hook.
+	for _, w := range s.pendingMCPWarnings {
+		s.emitDiagnosticWarning(w)
+	}
+	s.pendingMCPWarnings = nil
 	for _, src := range promptSources {
 		s.emit(events.EventPromptLoaded, events.PromptLoadedData{Label: src.Label, Size: src.Size})
 	}
