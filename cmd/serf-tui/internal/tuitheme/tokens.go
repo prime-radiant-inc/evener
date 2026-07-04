@@ -22,7 +22,7 @@ type Theme struct {
 	Accent, AccentSecondary lipgloss.Color
 	StateAwaiting, StateProcessing,
 	StateWarning, StateIdle, StateEnded,
-	StateSubagent lipgloss.Color
+	StateSubagent, StateError lipgloss.Color
 	BtnPrimaryText lipgloss.Color
 
 	StateAwaitingTint, StateProcessingTint,
@@ -120,6 +120,7 @@ var darkTheme = Theme{
 	StateIdle:       lipgloss.Color("#88a878"),
 	StateEnded:      lipgloss.Color("#5e5e64"),
 	StateSubagent:   lipgloss.Color("#a8927a"),
+	StateError:      lipgloss.Color("#d16969"),
 	BtnPrimaryText:  lipgloss.Color("#0f0f11"),
 	// Tints — faint elevated darks, used as backgrounds on tinted rows.
 	StateAwaitingTint:   lipgloss.Color("#1d1516"),
@@ -162,6 +163,7 @@ var lightTheme = Theme{
 	StateIdle:       lipgloss.Color("#4a6a35"),
 	StateEnded:      lipgloss.Color("#76746e"),
 	StateSubagent:   lipgloss.Color("#7a6850"),
+	StateError:      lipgloss.Color("#8a2a2a"),
 	BtnPrimaryText:  lipgloss.Color("#f8f7f3"),
 	// Tints — barely-perceptible washes.
 	StateAwaitingTint:   lipgloss.Color("#ede0e0"),
