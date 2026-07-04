@@ -94,3 +94,34 @@ func TestOrphanLiveGroupingUsesPathSlug(t *testing.T) {
 		t.Fatalf("orphan-live must use the path slug; got %+v", resp.Projects)
 	}
 }
+
+func TestTreeResponseProjectsCarryAdditiveFields(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		// 30h old: past the 24h "current" cutoff, well inside the 14-day "recent"
+		// window (see classifySession) — the plan's original "-time.Hour" fixture
+		// landed in "current", not "recent" as asserted below; see Task 4 deviation notes.
+		{ID: "01A", CreatedAt: now.Add(-30 * time.Hour), UpdatedAt: now.Add(-30 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/proj", GitBranch: "main"}},
+	}
+	past := hubcore.NewPastIndex("")
+	web := NewWebServer(hubcore.WebConfig{Past: past})
+	web.injectMetasForTest(metas) // helper: see step 3
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	var resp hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.TestRuns // field must exist and marshal (empty slice or null both acceptable)
+	if len(resp.Projects) != 1 {
+		t.Fatalf("want 1 project, got %d", len(resp.Projects))
+	}
+	p := resp.Projects[0]
+	if p.RollupLive != 0 || p.MoreCurrent != 0 || p.Worktrees != 0 {
+		t.Fatalf("additive project fields should be zero-valued here: %+v", p)
+	}
+	if len(p.Sessions) != 1 || p.Sessions[0].Branch != "main" || p.Sessions[0].Tier != "recent" {
+		t.Fatalf("node additive fields wrong: %+v", p.Sessions)
+	}
+}

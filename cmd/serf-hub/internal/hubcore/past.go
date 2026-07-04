@@ -358,6 +358,21 @@ func matches(e PastEntry, lowerQ string) bool {
 	return false
 }
 
+// SeedForTest replaces the in-memory index with the given metas (StateDir left
+// blank). Test-only seam; production always goes through Rebuild.
+func (i *PastIndex) SeedForTest(metas []schema.SessionMeta) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.all = i.all[:0]
+	i.byID = map[string]PastEntry{}
+	for _, m := range metas {
+		pe := PastEntry{ID: m.ID, Meta: m}
+		i.all = append(i.all, pe)
+		i.byID[m.ID] = pe
+	}
+	sort.SliceStable(i.all, func(a, b int) bool { return sessionMetaLess(i.all[a].Meta, i.all[b].Meta) })
+}
+
 // AllMetas returns the full snapshot of indexed metas. Caller must not mutate.
 func (i *PastIndex) AllMetas() []schema.SessionMeta {
 	i.mu.RLock()

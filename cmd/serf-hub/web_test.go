@@ -72,6 +72,22 @@ func controlTag(t *testing.T, body, marker string) string {
 	return body[start : start+rel+1]
 }
 
+// injectMetasForTest replaces the past index with one holding the given metas.
+func (s *WebServer) injectMetasForTest(metas []schema.SessionMeta) {
+	idx := hubcore.NewPastIndex("")
+	idx.SeedForTest(metas)
+	s.cfg.Past = idx
+}
+
+// allTreeProjects returns every project in a TreeResponse regardless of
+// activity tier. Task 4 split active/archived projects into separate wire
+// arrays (Projects/ArchivedProjects); tests that only care whether a session
+// shows up somewhere in the tree — not which tier its project landed in —
+// scan both.
+func allTreeProjects(resp hubapi.TreeResponse) []hubapi.TreeProject {
+	return append(append([]hubapi.TreeProject(nil), resp.Projects...), resp.ArchivedProjects...)
+}
+
 func TestWeb_Landing_Renders(t *testing.T) {
 	r := hubcore.NewRoster(t.TempDir(), nil)
 	idx := hubcore.NewPastIndex("")
@@ -538,7 +554,7 @@ func TestWeb_APITreeIncludesConfiguredCodexSourceThreads(t *testing.T) {
 		t.Fatalf("codex live node lost source-qualified identity: %+v", got.Live[0])
 	}
 	var foundProject bool
-	for _, project := range got.Projects {
+	for _, project := range allTreeProjects(got) {
 		for _, session := range project.Sessions {
 			if session.Ref == "codex:th_codex" && session.Title == "Codex tree task" {
 				foundProject = true
@@ -592,7 +608,7 @@ func TestWeb_APITreeMarksConfiguredCodexEndedThreadsRecent(t *testing.T) {
 		t.Fatalf("ended codex thread appeared in live tree: %+v", got.Live)
 	}
 	var found *hubapi.TreeNode
-	for _, project := range got.Projects {
+	for _, project := range allTreeProjects(got) {
 		for i := range project.Sessions {
 			if project.Sessions[i].Ref == "codex:th_codex_ended" {
 				found = &project.Sessions[i]
@@ -706,7 +722,7 @@ func TestWeb_APITreeIncludesManagedCodexLaunchThreads(t *testing.T) {
 			hasSource = true
 		}
 	}
-	for _, project := range got.Projects {
+	for _, project := range allTreeProjects(got) {
 		for _, session := range project.Sessions {
 			if session.Ref == "codex-managed:th_fake" && session.Title == "fake codex" {
 				hasThread = true

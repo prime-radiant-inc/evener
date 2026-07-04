@@ -51,21 +51,22 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	}
 	seenProjectRefs := map[string]bool{}
 	projectIndexes := map[string]int{}
-	allProjects := append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...)
-	for _, p := range allProjects {
-		key := p.Key
-		ap := hubapi.TreeProject{
-			Key:         key,
-			Name:        p.Name,
-			WorkingDir:  p.WorkingDir,
-			RollupState: p.RollupState,
-		}
+	for _, p := range tree.Projects {
+		projectIndexes[p.Key] = len(resp.Projects)
+		ap := s.apiTreeProject("project", p)
 		for _, n := range projectSessions(p) {
-			ap.Sessions = append(ap.Sessions, s.apiTreeNode("project", key, n, treeNodeCanActLive(n) && s.isLive(n.ID)))
 			seenProjectRefs[n.ID] = true
 		}
-		projectIndexes[key] = len(resp.Projects)
 		resp.Projects = append(resp.Projects, ap)
+	}
+	for _, p := range tree.ArchivedProjects {
+		for _, n := range projectSessions(p) {
+			seenProjectRefs[n.ID] = true
+		}
+		resp.ArchivedProjects = append(resp.ArchivedProjects, s.apiTreeProject("project", p))
+	}
+	for _, n := range tree.NeedsYou {
+		resp.NeedsYou = append(resp.NeedsYou, s.apiTreeNodeTier("needsyou", "", "needsyou", n))
 	}
 	for _, le := range live {
 		if le.SessionID == "" || seenProjectRefs[le.SessionID] {
@@ -377,6 +378,53 @@ func projectSessions(p hubcore.TreeProject) []hubcore.TreeNode {
 	out = append(out, p.Archived...)
 	return out
 }
+
+// apiTreeProject projects a hubcore.TreeProject onto the wire TreeProject,
+// carrying the rollup/overflow additive fields and stamping each session's
+// tier (current/recent/archived) at projection time.
+func (s *WebServer) apiTreeProject(scope string, p hubcore.TreeProject) hubapi.TreeProject {
+	ap := hubapi.TreeProject{
+		Key:             p.Key,
+		Name:            p.Name,
+		WorkingDir:      p.WorkingDir,
+		RollupState:     p.RollupState,
+		RollupLive:      p.RollupLive,
+		RollupAttn:      p.RollupAttn,
+		DefaultExpanded: p.Expanded,
+		MoreCurrent:     p.MoreCurrent,
+		MoreRecent:      p.MoreRecent,
+		MoreArchived:    p.MoreArchived,
+		Worktrees:       p.Worktrees,
+	}
+	for _, n := range p.Current {
+		ap.Sessions = append(ap.Sessions, s.apiTreeNodeTier(scope, p.Key, "current", n))
+	}
+	for _, n := range p.Recent {
+		ap.Sessions = append(ap.Sessions, s.apiTreeNodeTier(scope, p.Key, "recent", n))
+	}
+	for _, n := range p.Archived {
+		ap.Sessions = append(ap.Sessions, s.apiTreeNodeTier(scope, p.Key, "archived", n))
+	}
+	return ap
+}
+
+// apiTreeNodeTier wraps apiTreeNode and stamps the row-level fields a tiered
+// projection (project sessions, NeedsYou) carries but a bare Live row doesn't.
+func (s *WebServer) apiTreeNodeTier(scope, projectKey, tier string, n hubcore.TreeNode) hubapi.TreeNode {
+	out := s.apiTreeNode(scope, projectKey, n, treeNodeCanActLive(n) && s.isLive(n.ID))
+	out.Tier = tier
+	out.Branch = n.Branch
+	out.ClusterCount = n.ClusterCount
+	out.Favorite = s.isFavorite(n.ID)  // Task 8 wires isFavorite; stub returns false until then
+	out.Rename = s.rowRenameable(n.ID) // Task 18 wires rowRenameable; stub returns local-only
+	return out
+}
+
+// isFavorite is a temporary stub; Task 8 wires the real favorites store.
+func (s *WebServer) isFavorite(id string) bool { return false }
+
+// rowRenameable is a temporary stub; Task 18 wires the real rename gate.
+func (s *WebServer) rowRenameable(id string) bool { return isLocalRouteID(id) }
 
 func (s *WebServer) apiTreeNode(scope, projectKey string, n hubcore.TreeNode, live bool) hubapi.TreeNode {
 	ref := hubRefFromTreeNodeID(n.ID)

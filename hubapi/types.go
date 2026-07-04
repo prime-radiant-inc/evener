@@ -23,12 +23,15 @@ type HealthCapabilities struct {
 
 // TreeResponse is returned by GET /api/tree.
 type TreeResponse struct {
-	GeneratedAt time.Time     `json:"generated_at"`
-	Sources     []Source      `json:"sources"`
-	Live        []TreeNode    `json:"live"`
-	Projects    []TreeProject `json:"projects"`
-	// serf:naming-ignore
-	AttentionSummary AttentionSummary `json:"attentionSummary"` // camelCase: see AttentionSummary's doc
+	GeneratedAt      time.Time        `json:"generated_at"`
+	Sources          []Source         `json:"sources"`
+	Live             []TreeNode       `json:"live"`
+	NeedsYou         []TreeNode       `json:"needs_you"`
+	Favorites        []TreeNode       `json:"favorites"`
+	Projects         []TreeProject    `json:"projects"`
+	ArchivedProjects []TreeProject    `json:"archived_projects"`
+	TestRuns         []TreeProject    `json:"test_runs"`
+	AttentionSummary AttentionSummary `json:"attentionSummary"` // serf:naming-ignore
 }
 
 // AttentionSummary is the authoritative badge count set: how many live,
@@ -57,27 +60,39 @@ type Source struct {
 }
 
 type TreeProject struct {
-	Key         string     `json:"key"`
-	Name        string     `json:"name"`
-	WorkingDir  string     `json:"working_dir,omitempty"`
-	RollupState string     `json:"rollup_state,omitempty"`
-	Sessions    []TreeNode `json:"sessions"`
+	Key             string     `json:"key"`
+	Name            string     `json:"name"`
+	WorkingDir      string     `json:"working_dir,omitempty"`
+	RollupState     string     `json:"rollup_state,omitempty"`
+	RollupLive      int        `json:"rollup_live,omitempty"`
+	RollupAttn      int        `json:"rollup_attn,omitempty"`
+	DefaultExpanded bool       `json:"default_expanded,omitempty"`
+	MoreCurrent     int        `json:"more_current,omitempty"`
+	MoreRecent      int        `json:"more_recent,omitempty"`
+	MoreArchived    int        `json:"more_archived,omitempty"`
+	Worktrees       int        `json:"worktrees,omitempty"`
+	Sessions        []TreeNode `json:"sessions"`
 }
 
 type TreeNode struct {
-	RowID     string     `json:"row_id"`
-	Ref       string     `json:"ref"`
-	HostID    string     `json:"host_id"`
-	SessionID string     `json:"session_id"`
-	Title     string     `json:"title"`
-	Project   string     `json:"project"`
-	State     string     `json:"state"`
-	Kind      string     `json:"kind"`
-	Live      bool       `json:"live"`
-	UpdatedAt time.Time  `json:"updated_at,omitempty"`
-	Age       string     `json:"age,omitempty"`
-	Model     string     `json:"model,omitempty"`
-	Children  []TreeNode `json:"children,omitempty"`
+	RowID        string     `json:"row_id"`
+	Ref          string     `json:"ref"`
+	HostID       string     `json:"host_id"`
+	SessionID    string     `json:"session_id"`
+	Title        string     `json:"title"`
+	Project      string     `json:"project"`
+	State        string     `json:"state"`
+	Kind         string     `json:"kind"`
+	Tier         string     `json:"tier,omitempty"`
+	Branch       string     `json:"branch,omitempty"`
+	ClusterCount int        `json:"cluster_count,omitempty"`
+	Favorite     bool       `json:"favorite,omitempty"`
+	Rename       bool       `json:"rename,omitempty"`
+	Live         bool       `json:"live"`
+	UpdatedAt    time.Time  `json:"updated_at,omitempty"`
+	Age          string     `json:"age,omitempty"`
+	Model        string     `json:"model,omitempty"`
+	Children     []TreeNode `json:"children,omitempty"`
 }
 
 // SessionDetail is returned by GET /api/sessions/{ref}.
