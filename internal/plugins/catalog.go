@@ -46,3 +46,16 @@ func ParseCatalog(marketplaceRoot string) (Catalog, error) {
 	}
 	return c, nil
 }
+
+// Browse returns the parsed catalog of a registered marketplace.
+func (m *Manager) Browse(name string) (Catalog, error) {
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		return Catalog{}, err
+	}
+	ref, ok := mk[name]
+	if !ok {
+		return Catalog{}, fmt.Errorf("marketplace %q not found", name)
+	}
+	return ParseCatalog(ref.InstallLocation)
+}
