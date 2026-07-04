@@ -28,6 +28,7 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/modelcontextprotocol/go-sdk v1.3.0
 	github.com/muesli/termenv v0.16.0
+	golang.org/x/sys v0.42.0
 	golang.org/x/term v0.40.0
 	golang.org/x/tools v0.42.0
 	modernc.org/sqlite v1.50.1
