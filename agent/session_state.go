@@ -32,6 +32,36 @@ func (s *Session) State() SessionState {
 	return s.state
 }
 
+// WireState is the externally-reported session state. It equals State()
+// except for one honest override: an idle session whose autonomy is still in
+// flight (live child subagents, undelivered job notifications, queued input)
+// reads as "active" — a delegating parent is working through its children,
+// not settled (spec v5, round-4 A6). awaiting never coexists with autonomy
+// (the settle suppressors guarantee it), so this only ever upgrades idle.
+func (s *Session) WireState() string {
+	state := s.State()
+	if state == SessionIdle && s.autonomyInFlight() {
+		return string(SessionProcessing)
+	}
+	return string(state)
+}
+
+// autonomyInFlight reports whether autonomous work will move this session
+// without user input: pending job notifications, queued input, or live child
+// subagents. Reads take each signal's own lock sequentially — never nested —
+// per the settle lock discipline (spec v5). A restored-but-unkicked goal is
+// deliberately NOT autonomy: nothing will move until the user acts, and amber
+// is what surfaces that stall.
+func (s *Session) autonomyInFlight() bool {
+	if s.peekNotifications() > 0 {
+		return true
+	}
+	if s.QueueDepth() > 0 {
+		return true
+	}
+	return len(s.liveSubagentSessions()) > 0
+}
+
 // Meta returns the current session metadata without the conversation history.
 func (s *Session) Meta() schema.SessionMeta {
 	originalPrompt := s.extractOriginalPrompt()

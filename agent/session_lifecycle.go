@@ -630,11 +630,10 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		if !s.sessionEndEmitted {
 			s.sessionEndEmitted = true
 			turns := s.modelResponses
-			state := s.state
 			s.mu.Unlock()
 			s.emit(events.EventSessionEnd, events.SessionEndData{
 				Reason: "input_complete",
-				State:  string(state),
+				State:  s.WireState(),
 				Turns:  turns,
 			})
 		} else {

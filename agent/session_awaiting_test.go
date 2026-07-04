@@ -160,3 +160,16 @@ func TestProcessInput_NextInputClearsAwaiting(t *testing.T) {
 		t.Fatalf("state after second clean turn = %q, want awaiting again", got)
 	}
 }
+
+func TestWireState_ChildrenInFlightReadsActive(t *testing.T) {
+	sess := newTestSessionForState(t)
+	// Idle with no autonomy: wire state == raw state.
+	if got := sess.WireState(); got != string(SessionIdle) {
+		t.Fatalf("WireState idle = %q", got)
+	}
+	// Simulate a pending job notification (autonomy in flight while idle):
+	sess.enqueueJobNotification(jobNotification{})
+	if got := sess.WireState(); got != string(SessionProcessing) {
+		t.Fatalf("WireState with pending notification = %q, want %q", got, SessionProcessing)
+	}
+}

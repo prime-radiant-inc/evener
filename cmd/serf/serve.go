@@ -418,7 +418,7 @@ func runServe(args []string) error {
 				srv.SetState(string(agent.SessionProcessing))
 				result, processErr := sess.ProcessInputKind(turnCtx, msg.Text, msg.Images, msg.Kind)
 				srv.SetProcessing(false)
-				srv.SetState(string(sess.State()))
+				srv.SetState(sess.WireState())
 				srv.SetCancelFunc(nil)
 				currentCancel()
 				if processErr != nil {
