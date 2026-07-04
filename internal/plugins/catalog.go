@@ -1,10 +1,12 @@
 package plugins
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 type CatalogOwner struct {
@@ -47,15 +49,17 @@ func ParseCatalog(marketplaceRoot string) (Catalog, error) {
 	return c, nil
 }
 
-// Browse returns the parsed catalog of a registered marketplace.
-func (m *Manager) Browse(name string) (Catalog, error) {
-	mk, err := m.loadMarketplaces()
+// Browse returns the parsed catalog of a registered marketplace, lazily
+// cloning it first if it was only seeded as an unfetched pointer.
+func (m *Manager) Browse(ctx context.Context, name string) (Catalog, error) {
+	release, err := acquireLock(m.lockPath(), 30*time.Second)
 	if err != nil {
 		return Catalog{}, err
 	}
-	ref, ok := mk[name]
-	if !ok {
-		return Catalog{}, fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceNotFound)
+	defer release()
+	ref, err := m.ensureFetched(ctx, name)
+	if err != nil {
+		return Catalog{}, err
 	}
 	return ParseCatalog(m.catalogRoot(ref))
 }

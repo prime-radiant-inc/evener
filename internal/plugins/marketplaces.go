@@ -82,6 +82,44 @@ func (m *Manager) fetchMarketplaceContainer(ctx context.Context, src Source, des
 	}
 }
 
+// ensureFetched clones a registered-but-unfetched marketplace (empty
+// InstallLocation) into its store dir and backfills InstallLocation. A directory
+// source is always "fetched" (referenced in place). Safe to call repeatedly.
+//
+// The caller must already hold m.lockPath() — as Browse and catalogPlugin's
+// callers (Install/Upgrade) do — so this does not lock internally. flock(2)
+// locks are per open-file-description, not per-process, so a second internal
+// acquireLock here would self-deadlock (spin until its own 30s timeout) when
+// reached from Install/Upgrade, which already hold that same lock.
+func (m *Manager) ensureFetched(ctx context.Context, name string) (MarketplaceRef, error) {
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		return MarketplaceRef{}, err
+	}
+	ref, ok := mk[name]
+	if !ok {
+		return MarketplaceRef{}, fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceNotFound)
+	}
+	if ref.InstallLocation != "" {
+		return ref, nil
+	}
+	installLoc := ref.Source.Path // directory source: referenced in place
+	if ref.Source.Kind != SourceDirectory {
+		installLoc = m.marketplaceDir(name)
+		_ = os.RemoveAll(installLoc)
+		if _, err := m.fetchMarketplaceContainer(ctx, ref.Source, installLoc); err != nil {
+			return MarketplaceRef{}, err
+		}
+	}
+	ref.InstallLocation = installLoc
+	ref.LastUpdated = m.now().UTC()
+	mk[name] = ref
+	if err := m.saveMarketplaces(mk); err != nil {
+		return MarketplaceRef{}, err
+	}
+	return ref, nil
+}
+
 // AddMarketplace fetches src, reads its marketplace.json for the name (unless
 // name is given), and records it. Returns the stored ref.
 func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (MarketplaceRef, error) {

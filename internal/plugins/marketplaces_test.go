@@ -77,7 +77,7 @@ func TestAddMarketplace_GitSubdirBrowse(t *testing.T) {
 	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceGitSubdir, URL: repo, Path: "mkt"}); err != nil {
 		t.Fatalf("AddMarketplace git-subdir: %v", err)
 	}
-	cat, err := m.Browse("acme")
+	cat, err := m.Browse(context.Background(), "acme")
 	if err != nil {
 		t.Fatalf("Browse git-subdir marketplace: %v", err)
 	}

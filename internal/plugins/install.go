@@ -12,15 +12,13 @@ import (
 
 func registryKey(plugin, marketplace string) string { return plugin + "@" + marketplace }
 
-// catalogPlugin finds a named plugin's entry + its marketplace ref.
-func (m *Manager) catalogPlugin(marketplace, plugin string) (MarketplaceRef, CatalogPlugin, error) {
-	mk, err := m.loadMarketplaces()
+// catalogPlugin finds a named plugin's entry + its marketplace ref, lazily
+// fetching a seeded-but-unfetched marketplace first. Callers (Install/Upgrade)
+// already hold m.lockPath(), which ensureFetched requires.
+func (m *Manager) catalogPlugin(ctx context.Context, marketplace, plugin string) (MarketplaceRef, CatalogPlugin, error) {
+	ref, err := m.ensureFetched(ctx, marketplace)
 	if err != nil {
 		return MarketplaceRef{}, CatalogPlugin{}, err
-	}
-	ref, ok := mk[marketplace]
-	if !ok {
-		return MarketplaceRef{}, CatalogPlugin{}, fmt.Errorf("marketplace %q: %w", marketplace, ErrMarketplaceNotFound)
 	}
 	cat, err := ParseCatalog(m.catalogRoot(ref))
 	if err != nil {
@@ -93,7 +91,7 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 		return InstallEntry{}, err
 	}
 
-	ref, cp, err := m.catalogPlugin(marketplace, plugin)
+	ref, cp, err := m.catalogPlugin(ctx, marketplace, plugin)
 	if err != nil {
 		return InstallEntry{}, err
 	}
@@ -167,7 +165,7 @@ func (m *Manager) Upgrade(ctx context.Context, plugin, marketplace string) (Inst
 	}
 	prev := entries[0]
 
-	ref, cp, err := m.catalogPlugin(marketplace, plugin)
+	ref, cp, err := m.catalogPlugin(ctx, marketplace, plugin)
 	if err != nil {
 		return InstallEntry{}, err
 	}

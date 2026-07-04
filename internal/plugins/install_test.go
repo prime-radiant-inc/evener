@@ -48,6 +48,35 @@ func TestInstall_MaterializesAndRegisters(t *testing.T) {
 	}
 }
 
+// TestInstall_LazyFetchesSeededPointer guards against a self-deadlock: Install
+// already holds m.lockPath() when it reaches catalogPlugin -> ensureFetched, so
+// ensureFetched must NOT try to acquire that same lock itself (flock(2) is
+// per-open-file-description, not per-process/reentrant — a second acquisition
+// attempt from the same process spins until its own timeout and fails).
+func TestInstall_LazyFetchesSeededPointer(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	mktRepo, name := makeInstallableMarketplace(t)
+	m := NewManager(t.TempDir())
+	// seed a pointer (empty InstallLocation) directly, as SeedDefaultMarketplaces would.
+	if err := m.saveMarketplaces(Marketplaces{name: {Source: Source{Kind: SourceURL, URL: mktRepo}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	entry, err := m.Install(context.Background(), "widget", name)
+	if err != nil {
+		t.Fatalf("Install on seeded-but-unfetched marketplace: %v", err)
+	}
+	if !entry.Enabled {
+		t.Error("installed entry not enabled")
+	}
+	mk, _ := m.ListMarketplaces()
+	if mk[name].InstallLocation == "" {
+		t.Fatal("InstallLocation not backfilled after lazy fetch via Install")
+	}
+}
+
 func TestInstall_FromGitSubdirMarketplace(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
