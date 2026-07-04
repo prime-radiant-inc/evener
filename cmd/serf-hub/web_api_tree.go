@@ -35,18 +35,9 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
 		return
 	}
-	metas, live := s.navigationTreeInputs(r.Context())
-	decisions := s.archiveDecisions()
+	_, live := s.navigationTreeInputs(r.Context())
 	favs := s.favoriteDecisions()
-	var version uint64
-	if s.cfg.Inputs != nil {
-		version = s.cfg.Inputs.Load()
-	}
-	tree, attentionSummary := s.treeCache.Get(version, time.Now(), func() (hubcore.Tree, hubcore.AttentionSummary) {
-		t := hubcore.BuildTree(metas, live, decisions)
-		_, sum := hubcore.DeriveAttention(metas, live, decisions)
-		return t, sum
-	})
+	tree, attentionSummary := s.memoTree(r.Context())
 	resp := hubapi.TreeResponse{
 		GeneratedAt:      time.Now().UTC(),
 		Sources:          s.apiTreeSources(),
@@ -138,6 +129,50 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	})
 
 	writeAPIJSON(w, http.StatusOK, resp)
+}
+
+// memoTree returns the memoized full tree + attention summary, single-sourced
+// so handleAPITree and handleAPITreeProject never diverge on what "the tree"
+// is. Memoization key is the inputs version + a coarse time bucket (see
+// treeCache.Get); callers that also need live/favs must fetch those
+// themselves, since memoTree's return shape only carries what treeCache
+// stores.
+func (s *WebServer) memoTree(ctx context.Context) (hubcore.Tree, hubcore.AttentionSummary) {
+	metas, live := s.navigationTreeInputs(ctx)
+	decisions := s.archiveDecisions()
+	var version uint64
+	if s.cfg.Inputs != nil {
+		version = s.cfg.Inputs.Load()
+	}
+	return s.treeCache.Get(version, time.Now(), func() (hubcore.Tree, hubcore.AttentionSummary) {
+		t := hubcore.BuildTree(metas, live, decisions)
+		_, sum := hubcore.DeriveAttention(metas, live, decisions)
+		return t, sum
+	})
+}
+
+// handleAPITreeProject serves a single project's node by indexing the
+// memoized full tree (never a fresh full-meta scan — round-2 A4). The client
+// resync uses this to re-request only the projects it has expanded.
+func (s *WebServer) handleAPITreeProject(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
+		return
+	}
+	key := r.URL.Query().Get("key")
+	if key == "" {
+		writeAPIError(w, http.StatusBadRequest, "key is required")
+		return
+	}
+	tree, _ := s.memoTree(r.Context())
+	favs := s.favoriteDecisions()
+	for _, p := range append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...) {
+		if p.Key == key {
+			writeAPIJSON(w, http.StatusOK, s.apiTreeProject("project", favs, p))
+			return
+		}
+	}
+	writeAPIError(w, http.StatusNotFound, "project not found")
 }
 
 func (s *WebServer) navigationTreeInputs(ctx context.Context) ([]schema.SessionMeta, []hubcore.LiveEntry) {

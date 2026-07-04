@@ -125,3 +125,26 @@ func TestTreeResponseProjectsCarryAdditiveFields(t *testing.T) {
 		t.Fatalf("node additive fields wrong: %+v", p.Sessions)
 	}
 }
+
+func TestAPITreeProjectServedFromTree(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01A", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/proj"}},
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	web.injectMetasForTest(metas)
+	key := hubcore.ProjectSlug("/w/proj")
+	req := httptest.NewRequest(http.MethodGet, "/api/tree/project?key="+key, nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var p hubapi.TreeProject
+	if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Key != key || len(p.Sessions) != 1 {
+		t.Fatalf("want the single project with its session, got %+v", p)
+	}
+}
