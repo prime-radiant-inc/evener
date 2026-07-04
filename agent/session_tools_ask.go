@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -117,4 +118,39 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 			return askUserAckText, nil
 		},
 	})
+}
+
+// deriveRestoredState re-derives a restored session's at-rest state from its
+// history tail (spec §6's pending definition): walking backward from the most
+// recent turn, the first decisive turn wins. A TurnUserInput means a reply
+// already resolved whatever was pending, or nothing ever was — idle. A
+// TurnToolResults turn carrying a completed (non-error) ask_user result means
+// that round ended its turn on an unanswered question — awaiting. Every other
+// turn kind is not decisive and the scan continues past it: steering,
+// checkpoint, summary, and system turns per spec, plus a TurnToolResults turn
+// that carries no successful ask_user result. That last carve-out matters:
+// when an ask_user call is interrupted before its ack is ever recorded,
+// ResumeHistory's orphan repair (history_repair.go) synthesizes an IsError
+// TOOL_RESULTS entry named "ask_user" so the provider never sees a dangling
+// call — but that placeholder is not an ack, so it must not read as pending
+// (spec §6: "an interrupted ack-less ask is never pending"). A denied or
+// invalid ask_user call is IsError for the same reason and is excluded the
+// same way. No decisive turn anywhere in the (possibly compacted) history
+// defaults to idle, matching a fresh session.
+func deriveRestoredState(history []schema.Turn) SessionState {
+	for i := len(history) - 1; i >= 0; i-- {
+		turn := history[i]
+		switch turn.Kind {
+		case schema.TurnUserInput:
+			return SessionIdle
+		case schema.TurnToolResults:
+			for _, part := range turn.Message.Content {
+				if part.Kind == llm.ContentToolResult && part.ToolResult != nil &&
+					part.ToolResult.Name == "ask_user" && !part.ToolResult.IsError {
+					return SessionAwaiting
+				}
+			}
+		}
+	}
+	return SessionIdle
 }

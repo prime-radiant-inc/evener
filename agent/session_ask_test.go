@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/agent/internal/hooks"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -1163,5 +1164,244 @@ func TestAskUser_ClearReplacesAwaitingSessionWithFreshIdleOne(t *testing.T) {
 	}
 	if got := oldSess.askPendingCount(); got == 0 {
 		t.Fatal("old session askPendingCount after replacement built = 0, want > 0 (clear must not mutate the old session)")
+	}
+}
+
+// --- Task 8: restore re-derivation (spec §5.4, §6) ---
+//
+// A restarted daemon has no live Session to ask; RestoreSessionFromMetaWithConfig
+// must re-derive SessionAwaiting from the restored transcript's tail instead
+// of the constructor's blanket idle default. These tests drive a REAL ask
+// through the same scripted-adapter harness as the boundary tests above,
+// close the session (flushing the transcript to disk), and restore from the
+// persisted meta + transcript file — the actual production path — except for
+// the interrupted-ask variant, which by definition has no live round to drive
+// (the crash happens before the ack is ever recorded) and so writes its
+// transcript tail directly.
+
+// newAskRestoreClient builds a fresh client for a restore call, deliberately
+// decoupled from the original session's scripted adapter. Restoring issues no
+// model call on its own (construction alone never calls Complete); a separate
+// client just keeps that assumption from becoming load-bearing by accident.
+func newAskRestoreClient() *llm.Client {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	return c
+}
+
+// TestAskUser_RestoreRederivesAwaiting covers spec §5.4/§6's core restore
+// contract: a session driven to SessionAwaiting by a real, completed ask_user
+// call, closed and restored from its own persisted transcript, comes back
+// awaiting rather than RestoreSessionFromMetaWithConfig's old hardcoded idle.
+func TestAskUser_RestoreRederivesAwaiting(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("pre-restore state = %q, want %q (test setup broken)", got, SessionAwaiting)
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	if got := restored.State(); got != SessionAwaiting {
+		t.Fatalf("restored state = %q, want %q", got, SessionAwaiting)
+	}
+}
+
+// TestAskUser_RestoreRederivesAwaitingAcrossTrailingSteering covers spec §6's
+// carve-out: a steering turn trailing the ask's ack (e.g. a task-nudge
+// reminder injected before the round-boundary check runs — injectPostToolSteering
+// running before deliverIfCommunicated) does not resolve the question; the
+// tail scan must see past it to the ack underneath. Built directly via
+// appendTurn rather than through the live drained-steer/hook path: the scan
+// only inspects transcript shape, so a hand-appended TurnSteering turn
+// exercises exactly the shape the live machinery would have produced, without
+// coupling this test to which mechanism produces it.
+func TestAskUser_RestoreRederivesAwaitingAcrossTrailingSteering(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("pre-restore state = %q, want %q (test setup broken)", got, SessionAwaiting)
+	}
+	sess.appendTurn(schema.TurnSteering, llm.User("reminder: the user has not answered yet"))
+
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	if got := restored.State(); got != SessionAwaiting {
+		t.Fatalf("restored state = %q, want %q (a trailing steering turn must not resolve the pending ask)", got, SessionAwaiting)
+	}
+}
+
+// TestAskUser_RestoreRederivesIdleAfterAnsweredAsk covers spec §6's other
+// half: a user turn following the ack (the reply) resolves the question, so a
+// restore afterward must NOT re-derive awaiting.
+func TestAskUser_RestoreRederivesIdleAfterAnsweredAsk(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+			func(req llm.Request) llm.Response { return finalResponse("thanks, using Postgres") },
+		},
+	})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("first ProcessInput: %v", err)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("pre-reply state = %q, want %q (test setup broken)", got, SessionAwaiting)
+	}
+	if _, err := sess.ProcessInput(ctx, "Postgres, thanks", nil); err != nil {
+		t.Fatalf("reply ProcessInput: %v", err)
+	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("post-reply state = %q, want %q (test setup broken)", got, SessionIdle)
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	if got := restored.State(); got != SessionIdle {
+		t.Fatalf("restored state = %q, want %q (an answered ask must not re-derive awaiting)", got, SessionIdle)
+	}
+}
+
+// TestAskUser_RestoreRederivesIdleAfterInterruptedAsk covers spec §6's
+// never-pending carve-out: a crash between the model's ask_user tool call and
+// the tool actually executing leaves an orphaned call with no ack anywhere in
+// the transcript. ResumeHistory's own orphan repair (history_repair.go) turns
+// that into a synthetic TOOL_RESULTS turn named "ask_user" so a provider
+// never sees a dangling call — but that synthetic result is marked IsError,
+// so it must NOT be mistaken for the ack (spec: "an interrupted ack-less ask
+// is never pending"). Built by writing the transcript tail directly (a real
+// crash can't be scripted): a USER_INPUT turn followed by an ASSISTANT turn
+// whose tool call is never answered, with nothing else appended — the
+// "call_lost" shape TestResumeHistoryRepairsOrphanedAssistantToolCallsBeforeLaterUserInput
+// exercises one file over, but driven through the actual restore entry point
+// so the repair really runs before the state derivation sees it.
+func TestAskUser_RestoreRederivesIdleAfterInterruptedAsk(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	id := "01ASKRESTOREINTERRUPTED"
+
+	askArgs, err := json.Marshal(askUserArgsValid())
+	if err != nil {
+		t.Fatalf("marshal ask args: %v", err)
+	}
+
+	tpath := filepath.Join(dir, sessionsSubdir, id+".transcript.jsonl")
+	tw, err := transcript.NewWriter(tpath, transcript.Header{
+		SessionID: id,
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+	})
+	if err != nil {
+		t.Fatalf("transcript.NewWriter: %v", err)
+	}
+	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("which db should we use?"))); err != nil {
+		t.Fatalf("append user turn: %v", err)
+	}
+	if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Message{
+		Role: llm.RoleAssistant,
+		Content: []llm.ContentPart{
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "ask1", Name: "ask_user", Arguments: askArgs, Type: "function"}},
+		},
+	})); err != nil {
+		t.Fatalf("append assistant turn: %v", err)
+	}
+	// Deliberately nothing else: the process died before ask_user's tool
+	// result was ever recorded.
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close transcript writer: %v", err)
+	}
+
+	meta := schema.SessionMeta{
+		ID:        id,
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    (SessionConfig{}).toSnapshot(),
+	}
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	// Test-setup sanity: confirm the orphan-repair path actually ran, so a
+	// failure below proves the state derivation, not a broken fixture.
+	repaired, ok := findToolResultInHistory(restored.history, "ask1")
+	if !ok {
+		t.Fatal("test setup: orphan repair did not synthesize a result for the interrupted ask1 call")
+	}
+	if !repaired.IsError {
+		t.Fatal("test setup: synthetic orphan-repair result is not marked IsError — the case this test targets did not occur")
+	}
+
+	if got := restored.State(); got != SessionIdle {
+		t.Fatalf("restored state = %q, want %q (an interrupted ack-less ask must never be pending)", got, SessionIdle)
 	}
 }

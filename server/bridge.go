@@ -28,7 +28,11 @@ func BridgeWithObserver(srv *Server, eventCh <-chan events.SessionEvent, observe
 		case events.EventSessionStart:
 			if d, ok := ev.Data.(events.SessionStartData); ok {
 				srv.UpdateSessionInfo(ev.SessionID, d.Model, d.Profile)
-				srv.SetState(string(agent.SessionIdle))
+				if d.State != "" {
+					srv.SetState(d.State)
+				} else {
+					srv.SetState(string(agent.SessionIdle))
+				}
 			}
 		case events.EventAssistantTextEnd:
 			srv.IncrementTurns()

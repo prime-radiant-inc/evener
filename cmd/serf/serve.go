@@ -381,6 +381,15 @@ func runServe(args []string) error {
 
 	// Bridge session events to appwire notifications.
 	bridgeSession(sess)
+	if resuming {
+		// Belt-and-suspenders with the Bridge/projector SessionStart fix
+		// (spec §5.4 "two touchpoints"): the session's SessionStart event may
+		// already be sitting in its buffered event channel by the time the
+		// bridge goroutine above is scheduled to drain it, so /status could
+		// read the server's default state until then. Writing the restored
+		// state here closes that window synchronously.
+		srv.SetState(string(sess.State()))
+	}
 
 	// Input processing loop. Each turn runs under a per-turn cancellable
 	// context that is wired into the server's interrupt handler so POST

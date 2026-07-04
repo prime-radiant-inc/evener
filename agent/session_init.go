@@ -504,6 +504,14 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}
 
+	// Re-derive the at-rest state from the restored history's tail (spec §6):
+	// an unanswered ask_user call rests awaiting; everything else rests idle.
+	// NewSession never runs this scan — a fresh session always starts idle.
+	restoredState := deriveRestoredState(s.history)
+	s.mu.Lock()
+	s.state = restoredState
+	s.mu.Unlock()
+
 	s.emitSessionStartEnvelope(events.SessionStartData{
 		Profile:           profile.ID(),
 		Model:             profile.Model(),
@@ -511,6 +519,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		Turns:             s.modelResponses,
 		LastInputTokens:   meta.LastInputTokens,
 		ContextWindowSize: profile.ContextWindowSize(),
+		State:             string(restoredState),
 	}, promptSources)
 	closeJobManagerOnError = false
 	return s, nil

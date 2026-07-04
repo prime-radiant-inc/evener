@@ -71,6 +71,16 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	switch event.Kind {
 	case events.EventSessionStart:
 		data := eventData[events.SessionStartData](event.Data)
+		// A restored session carries its re-derived state on the event (spec
+		// §5.4's "two touchpoints"); a fresh session's State is empty and
+		// defaults to idle, same as an unrecognized value.
+		status := appwire.ThreadStatusIdle
+		switch data.State {
+		case appwire.ThreadStatusAwaiting:
+			status = appwire.ThreadStatusAwaiting
+		case appwire.ThreadStatusIdle:
+			status = appwire.ThreadStatusIdle
+		}
 		return []AppNotification{
 			p.notification(appwire.NotifyThreadStarted, map[string]any{
 				"threadId": p.threadID,
@@ -80,14 +90,14 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 					SessionID:     p.threadID,
 					Source:        "local",
 					ModelProvider: data.Model,
-					Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+					Status:        appwire.ThreadStatus{Type: status},
 					Serf: appwire.SerfThread{
 						Ref:     p.ref,
 						Profile: data.Profile,
 					},
 				},
 			}),
-			p.threadStatus(appwire.ThreadStatusIdle),
+			p.threadStatus(status),
 		}
 	case events.EventUserInput:
 		out := []AppNotification{}

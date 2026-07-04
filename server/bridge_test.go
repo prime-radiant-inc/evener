@@ -68,6 +68,35 @@ func TestBridge_UpdatesStatusOnSessionStart(t *testing.T) {
 	}
 }
 
+func TestBridge_UsesSessionStartStateWhenProvided(t *testing.T) {
+	srv := NewServer(ServerConfig{AppReplaySize: 100})
+	evs := make(chan events.SessionEvent, 10)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		Bridge(srv, evs)
+	}()
+
+	evs <- events.SessionEvent{
+		Kind:      events.EventSessionStart,
+		SessionID: "s1",
+		Data: events.SessionStartData{
+			Profile:  "openai",
+			Model:    "gpt-5",
+			Restored: true,
+			State:    "awaiting",
+		},
+	}
+	close(evs)
+	<-done
+
+	status := srv.GetStatus()
+	if status.State != "awaiting" {
+		t.Errorf("state: got %q, want awaiting", status.State)
+	}
+}
+
 func TestBridge_IncrementsturnsOnAssistantTextEnd(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	evs := make(chan events.SessionEvent, 10)
