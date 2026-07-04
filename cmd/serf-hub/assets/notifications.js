@@ -2,7 +2,8 @@
 // localStorage["serf-hub.notifications"] and drives four channels:
 //   - title-bar count of awaiting sessions
 //   - favicon dot for highest-attention state
-//   - OS notification on idle->awaiting and active->errored transitions
+//   - OS notification on idle->awaiting, active->errored, and
+//     active->awaiting transitions
 //   - short tone on the same transitions
 //
 // Polls /api/search?q= every 5s for live state. Settings pane dispatches
@@ -181,10 +182,11 @@
     } catch (e) {}
   }
 
-  // The two transitions that fire OS + sound notifications.
+  // The three transitions that fire OS + sound notifications.
   function isAlertTransition(from, to) {
     if (from === "idle" && to === "awaiting") return true;
     if (from === "active" && to === "errored") return true;
+    if (from === "active" && to === "awaiting") return true;
     return false;
   }
 
