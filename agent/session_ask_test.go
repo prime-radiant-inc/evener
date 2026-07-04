@@ -1121,6 +1121,48 @@ func TestAskUser_CompactSucceedsWhenIdle(t *testing.T) {
 	}
 }
 
+// --- Post-merge fixup: Compact must not over-hold on a plain awaiting rest ---
+//
+// attention-status-model v5's general inbox semantics (merged post-write-up)
+// changed what SessionAwaiting means: it is no longer produced only by a
+// pending ask_user question. A plain, output-producing turn with nothing else
+// in flight now also rests SessionAwaiting, with an EMPTY pending-ask set.
+// Compact's guard above still read raw state (s.State() == SessionAwaiting)
+// rather than askPendingCount(), so it refused Compact on ANY rested session
+// even when nothing is pending — a regression this test pins.
+
+// TestAskUser_CompactProceedsOnPlainAwaitingRestNoPendingAsk covers the
+// corrected guard: a session resting SessionAwaiting purely from a clean
+// completion (no question posted, askPendingCount()==0) must not trip the
+// pending-ask error — Compact may still fail or succeed for other reasons,
+// but not this one.
+func TestAskUser_CompactProceedsOnPlainAwaitingRestNoPendingAsk(t *testing.T) {
+	t.Parallel()
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("here is my answer") },
+		},
+	}
+	sess := newSession(t, withAdapter(f))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state after a plain completion = %q, want %q (test setup broken)", got, SessionAwaiting)
+	}
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("askPendingCount after a plain completion = %d, want 0 (test setup broken)", got)
+	}
+
+	if err := sess.Compact(context.Background()); err != nil && strings.Contains(err.Error(), compactErrPending) {
+		t.Fatalf("Compact on a plain awaiting rest with nothing pending returned the pending-ask error: %v (the hold is for a genuine pending question, not this general rest)", err)
+	}
+}
+
 // TestAskUser_ClearReplacesAwaitingSessionWithFreshIdleOne reproduces spec
 // §5.3's Clear requirement at the session level, matching the ACTUAL
 // production mechanism (cmd/serf/serve.go SetClearFunc) rather than inventing

@@ -142,14 +142,18 @@ func TestGoalHoldsAwaiting_DeferredContinuationHeldPastNotificationAsk(t *testin
 }
 
 // TestGoalHoldsAwaiting_SetGoalArmsWithoutKick covers the SetGoal-idle-kick
-// path: /goal issued while the session is resting SessionAwaiting must arm
-// (store the goal, active) rather than kick — there is no in-flight turn for
-// a drain-loop gate to back it, so without this guard SetGoal's own idle-kick
-// branch would drive a turn straight past the pending question. The armed
-// goal then kicks at the first non-awaiting settle: settleGoalOnIdle is the
-// same seam TestSettleGoalOnIdleKicksWindowGoal exercises directly for the
-// turn-tail race window; here it stands in for "a later drain tail runs after
-// the reply has resolved the ask and left the session no longer awaiting."
+// path: /goal issued while the session has a genuinely pending ask_user
+// question must arm (store the goal, active) rather than kick — there is no
+// in-flight turn for a drain-loop gate to back it, so without this guard
+// SetGoal's own idle-kick branch would drive a turn straight past the pending
+// question. The armed goal then kicks once the reply clears the pending set:
+// settleGoalOnIdle is the same seam TestSettleGoalOnIdleKicksWindowGoal
+// exercises directly for the turn-tail race window; here it stands in for "a
+// later drain tail runs after the reply has resolved the ask." The guard is
+// keyed on the pending-ask set, not raw state (post-merge, SessionAwaiting
+// alone would not be a real precondition — see the plain-rest regression
+// tests), so this test establishes a REAL pending ask rather than merely
+// forcing SessionAwaiting.
 func TestGoalHoldsAwaiting_SetGoalArmsWithoutKick(t *testing.T) {
 	t.Parallel()
 	sess := newGoalMethodSession(t)
@@ -160,6 +164,7 @@ func TestGoalHoldsAwaiting_SetGoalArmsWithoutKick(t *testing.T) {
 
 	sess.mu.Lock()
 	sess.state = SessionAwaiting
+	sess.askPending = []askQuestion{{Header: "h", Question: "q"}}
 	sess.mu.Unlock()
 
 	started, err := sess.SetGoal(context.Background(), "ship the feature")
@@ -167,20 +172,22 @@ func TestGoalHoldsAwaiting_SetGoalArmsWithoutKick(t *testing.T) {
 		t.Fatalf("SetGoal: %v", err)
 	}
 	if started {
-		t.Fatal("SetGoal while awaiting should report started=false (arm, don't kick)")
+		t.Fatal("SetGoal with a pending ask should report started=false (arm, don't kick)")
 	}
 	if len(kicked) != 0 {
-		t.Fatalf("SetGoal while awaiting must NOT kick, got %d kicks", len(kicked))
+		t.Fatalf("SetGoal with a pending ask must NOT kick, got %d kicks", len(kicked))
 	}
 	snap, ok := sess.getOrCreateGoalStore().Snapshot()
 	if !ok || snap.Status != goal.StatusActive || snap.Objective != "ship the feature" {
-		t.Fatalf("SetGoal must still store the goal while awaiting, got %+v ok=%v", snap, ok)
+		t.Fatalf("SetGoal must still store the goal while a question is pending, got %+v ok=%v", snap, ok)
 	}
 
-	// The reply resolves the ask: the session leaves awaiting, and the next
-	// drain-tail settle (settleGoalOnIdle) kicks the armed goal.
+	// The reply resolves the ask: the pending set clears (and the session goes
+	// idle), and the next drain-tail settle (settleGoalOnIdle) kicks the armed
+	// goal.
 	sess.mu.Lock()
 	sess.state = SessionIdle
+	sess.askPending = nil
 	sess.mu.Unlock()
 	sess.settleGoalOnIdle()
 
@@ -199,13 +206,15 @@ func TestGoalHoldsAwaiting_SetGoalArmsWithoutKick(t *testing.T) {
 // production sink for a kick is server.Server.SubmitContinuation, invoked
 // solely through the Session.kickFunc callback wired by bridgeSession AFTER
 // restore returns, in cmd/serf/serve.go). This test additionally proves that
-// even once the restored session reaches SessionAwaiting, the same
-// settleGoalOnIdle guard used elsewhere still refuses to kick a goal that was
-// merely loaded, not folded — so there is no distinct "startup kick" site to
-// guard beyond the settle/arm guards already covering the other three paths.
-// State-from-transcript re-derivation on restore is a separate, not-yet-built
-// seam (spec §5.4); this test forces the state directly to isolate the
-// goal-hold guarantee under test here.
+// even once the restored session has a genuinely pending ask_user question,
+// the same settleGoalOnIdle guard used elsewhere still refuses to kick a goal
+// that was merely loaded, not folded — so there is no distinct "startup kick"
+// site to guard beyond the settle/arm guards already covering the other three
+// paths. State-from-transcript re-derivation on restore is a separate,
+// not-yet-built seam (spec §5.4); this test forces the state and a real
+// pending ask directly to isolate the goal-hold guarantee under test here
+// (the guard is keyed on the pending-ask set, not raw state — see the
+// plain-rest regression tests).
 func TestGoalHoldsAwaiting_RestoredActiveGoalNoStartupKick(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
@@ -243,29 +252,31 @@ func TestGoalHoldsAwaiting_RestoredActiveGoalNoStartupKick(t *testing.T) {
 		t.Fatalf("kick count immediately after restore + wiring = %d, want 0 (no startup kick)", kicked)
 	}
 
-	// Force the awaiting state (state-from-transcript re-derivation is a
+	// Force a genuinely pending ask (state-from-transcript re-derivation is a
 	// separate seam) and confirm a drain-tail settle still holds.
 	sess.mu.Lock()
 	sess.state = SessionAwaiting
+	sess.askPending = []askQuestion{{Header: "h", Question: "q"}}
 	sess.mu.Unlock()
 
 	sess.settleGoalOnIdle()
 	if kicked != 0 {
-		t.Fatalf("kick count while the restored session stays awaiting = %d, want 0 (no startup kick)", kicked)
+		t.Fatalf("kick count while the restored session has a pending ask = %d, want 0 (no startup kick)", kicked)
 	}
 	snap, ok = sess.getOrCreateGoalStore().Snapshot()
 	if !ok || snap.Status != goal.StatusActive {
 		t.Fatalf("goal must remain active while held, got %+v ok=%v", snap, ok)
 	}
 
-	// A reply resolves the ask: the session leaves awaiting, and the next
-	// drain-tail settle kicks the restored goal.
+	// A reply resolves the ask: the pending set clears (and the session goes
+	// idle), and the next drain-tail settle kicks the restored goal.
 	sess.mu.Lock()
 	sess.state = SessionIdle
+	sess.askPending = nil
 	sess.mu.Unlock()
 	sess.settleGoalOnIdle()
 	if kicked != 1 {
-		t.Fatalf("kick count after leaving awaiting = %d, want exactly 1 (the restored goal resumes)", kicked)
+		t.Fatalf("kick count after the pending ask resolves = %d, want exactly 1 (the restored goal resumes)", kicked)
 	}
 }
 
@@ -334,5 +345,63 @@ func TestGoalHoldsAwaiting_NoProgressBreakerUnaffected(t *testing.T) {
 	}
 	if got := len(f.Requests()); got != 3 {
 		t.Fatalf("requests = %d, want 3 (ask + reply + the resumed completing continuation)", got)
+	}
+}
+
+// --- Post-merge fixup: SetGoal must not over-hold on a plain awaiting rest ---
+//
+// attention-status-model v5's general inbox semantics (merged post-write-up)
+// changed what SessionAwaiting means: it is no longer produced only by a
+// pending ask_user question. A plain, output-producing turn with nothing else
+// in flight now also rests SessionAwaiting (TestProcessInput_CleanCompletionArmsAwaiting,
+// session_awaiting_test.go), with an EMPTY pending-ask set. SetGoal's guard
+// above still read raw state (s.state == SessionAwaiting) rather than the
+// pending-ask set, so it over-held on every such rest even though nothing is
+// actually pending — a regression this test pins.
+
+// TestSetGoal_KicksOnPlainAwaitingRestNoPendingAsk covers the corrected guard:
+// a session resting SessionAwaiting purely from a clean completion (no
+// question posted, askPendingCount()==0) must let an idle /goal kick
+// immediately, exactly as it would on a plain SessionIdle session — the
+// arm-don't-kick hold is for a genuine unanswered question, not this general
+// rest state.
+func TestSetGoal_KicksOnPlainAwaitingRestNoPendingAsk(t *testing.T) {
+	t.Parallel()
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("here is my answer") },
+		},
+	}
+	sess := newSession(t, withAdapter(f))
+
+	var kicked []string
+	sess.SetKickFunc(func(prompt string) { kicked = append(kicked, prompt) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state after a plain completion = %q, want %q (test setup broken)", got, SessionAwaiting)
+	}
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("askPendingCount after a plain completion = %d, want 0 (a GENERIC awaiting rest, no pending question — test setup broken)", got)
+	}
+
+	started, err := sess.SetGoal(ctx, "ship it")
+	if err != nil {
+		t.Fatalf("SetGoal: %v", err)
+	}
+	if !started {
+		t.Fatal("SetGoal on a plain awaiting rest with nothing pending must report started=true and kick immediately (the arm-don't-kick hold is for a genuine pending question, not this general rest)")
+	}
+	if len(kicked) != 1 {
+		t.Fatalf("kick count = %d, want exactly 1", len(kicked))
+	}
+	if kicked[0] != goal.Render("ship it") {
+		t.Fatalf("kick prompt = %q, want the rendered continuation prompt", kicked[0])
 	}
 }

@@ -575,6 +575,29 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// the asking turn (FollowUp is public API with no gating of its own) is left
 		// intact in s.followups for the next drain cycle instead of being silently
 		// dropped by an awaiting rest that won't run it.
+		//
+		// Proof this capture is equivalent to askPendingCount() > 0, even though
+		// it reads raw state directly (unlike SetGoal/settleGoalOnIdle/Compact,
+		// which key on the pending-ask set): processOneInput unconditionally
+		// resets s.state to SessionProcessing and s.askPending to nil at entry
+		// (above, "s.setStateIfOpenLocked(SessionProcessing)" / "s.askPending =
+		// nil") for every accepted entry kind, so whatever this call's state was
+		// before this iteration's processOneInput call is wiped before it runs.
+		// The only path that can move it OUT of SessionProcessing before
+		// processOneInput returns on the clean-completion path is
+		// deliverIfCommunicated (session_tool_round.go), which writes
+		// SessionAwaiting via finishProcessingAtBoundary exactly when
+		// askedThisRound (this round grew askPending) — i.e. exactly when
+		// askPendingCount() > 0. The general non-ask idle→awaiting upgrade,
+		// armAwaitingAtSettle, is the only OTHER writer of SessionAwaiting
+		// reachable from this loop, but it runs strictly later, at the terminal
+		// settle (below, s.armAwaitingAtSettle), which is unconditionally
+		// followed by this call's own return — it never runs before this
+		// capture within the same ProcessInputKind call, and never more than
+		// once per call. So at this exact point, s.State() == SessionAwaiting
+		// holds if and only if askPendingCount() > 0 here; the two are
+		// interchangeable at this capture only, not as a general rule elsewhere
+		// in this file.
 		awaiting := s.State() == SessionAwaiting
 		var fu string
 		if !awaiting {

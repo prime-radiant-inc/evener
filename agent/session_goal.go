@@ -29,11 +29,16 @@ func (s *Session) SetKickFunc(f func(prompt string)) {
 // mutually exclusive with the gate's "clear flag + go idle" step (spec §7), so a
 // goal set as a turn ends can neither be dropped nor double-started.
 //
-// Arm, don't kick, while awaiting (spec §5.3): a /goal issued while the session
-// rests on a pending question has no in-flight turn for a drain-loop gate to
-// back it, so without this check the idle-kick branch below would drive a turn
-// straight past the unanswered ask. The goal is still stored active; it resumes
-// at the first non-awaiting settle once the reply resolves the ask.
+// Arm, don't kick, while a question is pending (spec §5.3): a /goal issued
+// while the session has a genuinely unanswered ask_user question has no
+// in-flight turn for a drain-loop gate to back it, so without this check the
+// idle-kick branch below would drive a turn straight past the unanswered ask.
+// The goal is still stored active; it resumes at the first settle once the
+// reply resolves the ask. The hold is keyed on the pending-ask set
+// (len(s.askPending) > 0), NOT on SessionAwaiting: under attention-status-model
+// v5, SessionAwaiting also covers a plain output-producing rest with nothing
+// pending, where an idle /goal must kick normally, exactly as it would on
+// SessionIdle.
 func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, err error) {
 	_ = ctx
 	objective = strings.TrimSpace(objective)
@@ -42,22 +47,24 @@ func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, 
 	}
 	store := s.getOrCreateGoalStore()
 
-	// Set the goal and read the in-turn flag and awaiting state under s.mu so the
-	// write is mutually exclusive with the gate's "clear flag + settle" step
+	// Set the goal and read the in-turn flag and pending-ask set under s.mu so
+	// the write is mutually exclusive with the gate's "clear flag + settle" step
 	// (settleGoalOnIdle): a first goal set as a turn ends is then either kicked
-	// here (idle) or picked up by the settle re-check (turn-tail window) — never
-	// stranded (spec §7).
+	// here (nothing pending) or picked up by the settle re-check (turn-tail
+	// window) — never stranded (spec §7). askPending is read directly under the
+	// held lock (not via askPendingCount()/HasPendingAsk(), which self-lock s.mu
+	// and would deadlock here).
 	s.mu.Lock()
 	store.Set(objective, s.sclock().Now())
 	inTurn := s.goalInTurn
 	kick := s.kickFunc
-	awaiting := s.state == SessionAwaiting
+	pendingAsk := len(s.askPending) > 0
 	s.mu.Unlock()
 
-	if inTurn || kick == nil || awaiting {
+	if inTurn || kick == nil || pendingAsk {
 		// A turn is running (its gate backs the goal), there is no way to kick an
-		// idle session, or the session is resting awaiting a reply; either way the
-		// caller cannot rely on an immediate start.
+		// idle session, or a question is genuinely pending a reply; either way
+		// the caller cannot rely on an immediate start.
 		return false, nil
 	}
 	kick(goal.Render(objective))
@@ -216,12 +223,18 @@ func (s *Session) reportGoalEnded() {
 // The kick is issued outside the lock. Mutually exclusive on s.mu with
 // SetGoal's "set goal + read flag", so the goal is kicked exactly once.
 //
-// Arm, don't kick, while awaiting (spec §5.3): goalInTurn still clears — the
-// turn genuinely finished — but the prompt is computed only when the session
-// is NOT resting on a pending question, so an active goal is left armed in
-// the store instead of being kicked past the user's unanswered ask. The
-// normal resume fold (armGoalContinuation's non-continuation branch, folded
-// at the reply turn's own drain tail) picks it up once the reply resolves it.
+// Arm, don't kick, while a question is pending (spec §5.3): goalInTurn still
+// clears — the turn genuinely finished — but the prompt is computed only when
+// the pending-ask set is empty (len(s.askPending) == 0, read directly under
+// the held lock — not via askPendingCount()/HasPendingAsk(), which self-lock
+// s.mu and would deadlock here), so an active goal is left armed in the store
+// instead of being kicked past the user's unanswered ask. The normal resume
+// fold (armGoalContinuation's non-continuation branch, folded at the reply
+// turn's own drain tail) picks it up once the reply resolves it. The hold is
+// keyed on the pending-ask set, NOT on SessionAwaiting: under
+// attention-status-model v5, SessionAwaiting also covers a plain
+// output-producing rest with nothing pending, where the goal must kick
+// normally.
 //
 // It reports whether it kicked, so the settle-state upgrade knows autonomy is
 // in flight (attention-status-model v5: a kicked goal suppresses awaiting —
@@ -230,9 +243,9 @@ func (s *Session) settleGoalOnIdle() bool {
 	s.mu.Lock()
 	s.goalInTurn = false
 	kick := s.kickFunc
-	awaiting := s.state == SessionAwaiting
+	pendingAsk := len(s.askPending) > 0
 	var prompt string
-	if kick != nil && !awaiting {
+	if kick != nil && !pendingAsk {
 		if snap, ok := s.getOrCreateGoalStore().Snapshot(); ok && snap.Status == goal.StatusActive {
 			prompt = goal.Render(snap.Objective)
 		}
