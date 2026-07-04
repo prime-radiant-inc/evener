@@ -29,6 +29,10 @@ type ArchiveStore struct {
 	// route through fs — so injecting a non-OS filesystem here only redirects
 	// the surrounding dir/stat ops, not the database read/write itself.
 	fs afero.Fs
+
+	// onChange, when set via SetOnChange, is fired after a successful Set or
+	// Delete. Nil is a safe no-op (existing tests construct stores without it).
+	onChange func()
 }
 
 // NewArchiveStore returns a store backed by the SQLite file at dbPath. An empty
@@ -43,6 +47,16 @@ func NewArchiveStore(dbPath string) *ArchiveStore {
 func (s *ArchiveStore) SetFs(fs afero.Fs) *ArchiveStore {
 	s.fs = fs
 	return s
+}
+
+// SetOnChange registers a callback fired after a successful Set or Delete.
+// Nil disables the hook.
+func (s *ArchiveStore) SetOnChange(fn func()) { s.onChange = fn }
+
+func (s *ArchiveStore) fireChange() {
+	if s.onChange != nil {
+		s.onChange()
+	}
 }
 
 const createArchiveTable = `
@@ -87,7 +101,11 @@ func (s *ArchiveStore) Set(kind, id string, archived bool, now time.Time) error 
 		`INSERT INTO archive (kind, id, archived, decided_at) VALUES (?, ?, ?, ?)
 		 ON CONFLICT(kind, id) DO UPDATE SET archived=excluded.archived, decided_at=excluded.decided_at`,
 		kind, id, flag, now.Unix())
-	return err
+	if err != nil {
+		return err
+	}
+	s.fireChange()
+	return nil
 }
 
 // Decisions returns every explicit decision. Empty when no DB / no table.
@@ -132,5 +150,9 @@ func (s *ArchiveStore) Delete(kind, id string) error {
 	}
 	defer func() { _ = db.Close() }()
 	_, err = db.Exec(`DELETE FROM archive WHERE kind = ? AND id = ?`, kind, id) //nolint:noctx // local file DB
-	return err
+	if err != nil {
+		return err
+	}
+	s.fireChange()
+	return nil
 }

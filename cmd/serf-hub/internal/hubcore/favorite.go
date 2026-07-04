@@ -15,6 +15,10 @@ import (
 type FavoriteStore struct {
 	dbPath string
 	fs     afero.Fs
+
+	// onChange, when set via SetOnChange, is fired after a successful Set or
+	// Delete. Nil is a safe no-op (existing tests construct stores without it).
+	onChange func()
 }
 
 func NewFavoriteStore(dbPath string) *FavoriteStore {
@@ -22,6 +26,16 @@ func NewFavoriteStore(dbPath string) *FavoriteStore {
 }
 
 func (s *FavoriteStore) SetFs(fs afero.Fs) *FavoriteStore { s.fs = fs; return s }
+
+// SetOnChange registers a callback fired after a successful Set or Delete.
+// Nil disables the hook.
+func (s *FavoriteStore) SetOnChange(fn func()) { s.onChange = fn }
+
+func (s *FavoriteStore) fireChange() {
+	if s.onChange != nil {
+		s.onChange()
+	}
+}
 
 const createFavoriteTable = `
 CREATE TABLE IF NOT EXISTS favorite (
@@ -64,7 +78,11 @@ func (s *FavoriteStore) Set(kind, id string, favorited bool, now time.Time) erro
 		`INSERT INTO favorite (kind, id, favorited, decided_at) VALUES (?, ?, ?, ?)
 		 ON CONFLICT(kind, id) DO UPDATE SET favorited=excluded.favorited, decided_at=excluded.decided_at`,
 		kind, id, flag, now.Unix())
-	return err
+	if err != nil {
+		return err
+	}
+	s.fireChange()
+	return nil
 }
 
 func (s *FavoriteStore) Delete(kind, id string) error {
@@ -77,7 +95,11 @@ func (s *FavoriteStore) Delete(kind, id string) error {
 	}
 	defer func() { _ = db.Close() }()
 	_, err = db.Exec(`DELETE FROM favorite WHERE kind = ? AND id = ?`, kind, id) //nolint:noctx // local file DB
-	return err
+	if err != nil {
+		return err
+	}
+	s.fireChange()
+	return nil
 }
 
 // Favorites returns every favorited=true decision. Empty when no DB / no table.

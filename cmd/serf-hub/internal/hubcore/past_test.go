@@ -574,3 +574,31 @@ func TestPastIndex_FindEmptySessionIDSkipsRebuild(t *testing.T) {
 		t.Fatalf("Find(\"\") must not trigger a rebuild, but index holds %d entries", len(all))
 	}
 }
+
+func TestPastIndexOnChangeFiresOnContentDeltaOnly(t *testing.T) {
+	dir := t.TempDir()
+	proj := filepath.Join(dir, "proj")
+	writeMeta := func(id string) {
+		m := schema.SessionMeta{ID: id, UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}
+		if err := schema.SaveSessionMeta(proj, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeMeta("01A")
+	idx := NewPastIndex(filepath.Join(dir, "*"))
+	fired := 0
+	idx.SetOnChange(func() { fired++ })
+	_ = idx.Rebuild() // first content load: delta vs empty → fires
+	if fired != 1 {
+		t.Fatalf("first rebuild with content should fire once, got %d", fired)
+	}
+	_ = idx.Rebuild() // identical content → no delta → no fire
+	if fired != 1 {
+		t.Fatalf("re-rebuild with no delta must not fire, got %d", fired)
+	}
+	writeMeta("01B")
+	_ = idx.Rebuild() // new meta → delta → fires
+	if fired != 2 {
+		t.Fatalf("rebuild after new content should fire, got %d", fired)
+	}
+}

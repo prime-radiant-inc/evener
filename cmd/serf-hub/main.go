@@ -182,6 +182,15 @@ func main() {
 	// recomputes instead of serving a stale memoized tree.
 	inputs := &hubcore.InputsVersion{}
 
+	// Wire each input source's content-delta-gated onChange hook (Task 10) to
+	// the shared inputs-version counter, so only a real change to the past
+	// index, roster, or archive/favorite decisions busts the tree memo.
+	bump := inputs.Bump
+	past.SetOnChange(bump)
+	roster.SetOnChange(bump)
+	archive.SetOnChange(bump)
+	favorite.SetOnChange(bump)
+
 	// attentionPoke lets a web handler (e.g. an archive decision) nudge the
 	// attention watcher below to recompute immediately instead of waiting for
 	// its next tick. Buffered 1 + non-blocking send: a poke that arrives while

@@ -2,6 +2,8 @@ package hubcore
 
 import (
 	"database/sql"
+	"encoding/binary"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"sort"
@@ -48,6 +50,13 @@ type PastIndex struct {
 	// SessionMeta.ObservedBy stamp (empty on existing data). Like the metas, it is
 	// rebuilt once per cycle, so it is at most one rebuild interval stale.
 	observers map[string][]string
+
+	// onChange, when set via SetOnChange, is fired by Rebuild only when the
+	// indexed content's fingerprint actually changes.
+	onChange func()
+	// fingerprint is the content hash from the most recent Rebuild (see
+	// contentFingerprint), used to gate onChange against no-op rebuilds.
+	fingerprint uint64
 }
 
 // NewPastIndex returns a PastIndex configured to glob projectGlob.
@@ -84,6 +93,27 @@ func NewPastIndexWithDB(projectGlob, dbPath string) *PastIndex {
 // StateGlob returns the project glob the index scans.
 func (i *PastIndex) StateGlob() string {
 	return i.stateGlob
+}
+
+// SetOnChange registers a callback fired by Rebuild/UpdateMeta only when the
+// indexed content actually changes (a Find-miss rebuild with no delta does not
+// fire — round-3 G5). Nil disables the hook.
+func (i *PastIndex) SetOnChange(fn func()) { i.onChange = fn }
+
+// contentFingerprint hashes the (id, UpdatedAt) pairs of the sorted entries so
+// Rebuild can detect a genuine content delta without a deep compare.
+func contentFingerprint(all []PastEntry) uint64 {
+	h := fnv.New64a()
+	for _, e := range all {
+		_, _ = h.Write([]byte(e.ID))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(e.Meta.Name))
+		_, _ = h.Write([]byte{0})
+		var b [8]byte
+		binary.LittleEndian.PutUint64(b[:], uint64(e.Meta.UpdatedAt.UnixNano()))
+		_, _ = h.Write(b[:])
+	}
+	return h.Sum64()
 }
 
 // Rebuild scans every project under stateGlob and reloads the index.
@@ -126,6 +156,14 @@ func (i *PastIndex) Rebuild() error {
 			i.fts = true
 			i.mu.Unlock()
 		}
+	}
+	fp := contentFingerprint(all)
+	i.mu.Lock()
+	changed := fp != i.fingerprint
+	i.fingerprint = fp
+	i.mu.Unlock()
+	if changed && i.onChange != nil {
+		i.onChange()
 	}
 	return nil
 }
