@@ -7,16 +7,17 @@ package toolname
 
 // claudeToSerf maps Claude Code tool names to serf canonical names.
 var claudeToSerf = map[string]string{
-	"Read":         "read_file",
-	"Write":        "write_file",
-	"Edit":         "edit_file",
-	"Bash":         "shell",
-	"Grep":         "grep",
-	"Glob":         "glob",
-	"Task":         "delegate",
-	"WebFetch":     "web_fetch",
-	"WebSearch":    "web_search",
-	"NotebookEdit": "notebook_edit",
+	"Read":            "read_file",
+	"Write":           "write_file",
+	"Edit":            "edit_file",
+	"Bash":            "shell",
+	"Grep":            "grep",
+	"Glob":            "glob",
+	"Task":            "delegate",
+	"WebFetch":        "web_fetch",
+	"WebSearch":       "web_search",
+	"NotebookEdit":    "notebook_edit",
+	"AskUserQuestion": "ask_user",
 }
 
 // serfToClaude is the reverse mapping (built at init time).

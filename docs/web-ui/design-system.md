@@ -188,9 +188,19 @@ subagent fan-out with a failure, error + truncated stderr, inline image, very lo
 style guide still needs written rules + exemplars for: main-agent error promotion (to the
 chrome, not just a row); nested subagents; multiple steers in one turn; a permission/approval
 prompt (interactive **and** needs-you — decide which color wins); plan/todo list; diff/patch;
-the agent asking the user a question; empty/just-started session; stalled agent; daemon
-disconnect; multi-image gallery; silent-success tool; interrupted turn; failed-then-retried
-tool; and **error-findability** (scroll-track markers + an attention-aware "jump to latest").
+empty/just-started session; stalled agent; daemon disconnect; multi-image gallery;
+silent-success tool; interrupted turn; failed-then-retried tool; and **error-findability**
+(scroll-track markers + an attention-aware "jump to latest").
+
+**Resolved: the agent asking the user a question.** Mockup 16
+(`mockups/16-blocking-needs-you.html`) resolved this exactly as its own recommendation footer
+prescribed: Alt A's amber-container/blue-button split is the base grammar (needs-you claims the
+frame, the one button that unblocks stays blue/primary), Alt C's docked bar is why the ask can
+never hang off-screen, and Alt D's quick-reply chips are the answering surface; Alt B (all-amber)
+was rejected. Shipped as the `ask_user` feature (`renderer.js` `markAgentQuestion` +
+`renderNeedsYouDock`/`jumpToAgentQuestion`). `notifications.js`'s transition table, which already
+fired on `idle→awaiting`, now also fires on `active→awaiting` so a question posted mid-turn
+raises the OS notification too.
 
 ---
 
@@ -255,7 +265,8 @@ The shipping UI now carries the token foundation **and** the conversation-first 
 prose is the reading hero (size + leading + paragraph rhythm); tool calls are quiet one-line rows
 whose verbose per-call intent recedes to a single dim clamped breadcrumb (full text on
 hover/expand); turn boundaries breathe; mobile is single-column and overflow-proof; the motion
-layer above is in place. Remaining from §7's deferred list is still open.
+layer above is in place, and the agent-question edge case from §7 has shipped. The rest of §7's
+deferred list is still open.
 
 **Dev loop:** set `SERF_HUB_ASSETS_DIR=<repo>/cmd/serf-hub` when launching `serf-hub` to serve
 `assets/` and re-parse `templates/` from disk — CSS/JS edits take effect on reload (templates on

@@ -114,6 +114,11 @@ func (s *Session) buildPromptData() promptData {
 	data.DelegationAllowance = s.delegationAllowance
 	data.CanDelegate = s.canPromptDelegation()
 
+	// ask_user's registration IS the interactive-root gate itself (spec §7
+	// point 1); reading it back from the registry avoids a second predicate
+	// that could drift from the real gate.
+	data.HasAskUser = s.reg.Get("ask_user") != nil
+
 	// Available subagent types
 	data.AvailableAgents = s.availableAgentEntries()
 

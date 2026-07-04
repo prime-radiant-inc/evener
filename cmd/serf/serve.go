@@ -381,6 +381,15 @@ func runServe(args []string) error {
 
 	// Bridge session events to appwire notifications.
 	bridgeSession(sess)
+	if resuming {
+		// Belt-and-suspenders with the Bridge/projector SessionStart fix
+		// (spec §5.4 "two touchpoints"): the session's SessionStart event may
+		// already be sitting in its buffered event channel by the time the
+		// bridge goroutine above is scheduled to drain it, so /status could
+		// read the server's default state until then. Writing the restored
+		// state here closes that window synchronously.
+		srv.SetState(string(sess.State()))
+	}
 
 	// Input processing loop. Each turn runs under a per-turn cancellable
 	// context that is wired into the server's interrupt handler so POST
@@ -414,8 +423,10 @@ func runServe(args []string) error {
 				currentCancel = cancelTurn
 				turnCtx = agent.WithQueuedInputDrainOnInterruptHandler(turnCtx, ctx, nextTurnCtx)
 				srv.SetCancelFunc(cancelTurn)
-				srv.SetProcessing(true)
-				srv.SetState(string(agent.SessionProcessing))
+				if !holdServeStateForAwaitingWake(msg.Kind, sess.HasPendingAsk()) {
+					srv.SetProcessing(true)
+					srv.SetState(string(agent.SessionProcessing))
+				}
 				result, processErr := sess.ProcessInputKind(turnCtx, msg.Text, msg.Images, msg.Kind)
 				srv.SetProcessing(false)
 				srv.SetState(sess.WireState())
@@ -485,6 +496,22 @@ func runServe(args []string) error {
 	}
 	<-shutdownDone
 	return nil
+}
+
+// holdServeStateForAwaitingWake reports whether the input loop should skip
+// its Processing shadow-write for this message: the session-level entry gate
+// (agent/session_lifecycle.go's processInputKindWithProvenance, spec §5.3)
+// refuses autonomous wakes while a question is pending, before any state
+// transition — so the /status shadow must not flip to active around a wake
+// the session will refuse (the flicker's active→awaiting edge would re-fire
+// the OS notification, notifications.js Task 11). Mirrors the gate's
+// predicate exactly — hasPendingAsk, not raw state (attention-status-model
+// v5 reconciliation: SessionAwaiting alone no longer implies a pending
+// question, so a general inbox-semantics re-arm with no ask pending must NOT
+// be held; async wakes re-arm by design there). EntryUserInput is always let
+// through since it is how the reply resolves a pending ask (spec §5.2).
+func holdServeStateForAwaitingWake(kind agent.EntryKind, hasPendingAsk bool) bool {
+	return kind != agent.EntryUserInput && hasPendingAsk
 }
 
 func printServeEnvVars(w io.Writer) {

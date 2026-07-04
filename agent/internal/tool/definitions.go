@@ -709,3 +709,63 @@ func DefReadTranscript() llm.ToolDefinition {
 		},
 	}
 }
+
+// DefAskUser defines the ask_user tool (spec §4): structured, mostly
+// multiple-choice questions that end the model's turn at the asking round's
+// boundary. The Description is verbatim from spec §4.4 (the blockquote,
+// leading "> " markers stripped); the schema is spec §4.2. Strict is false
+// because multi_select/why/if_unanswered/recommended are all optional.
+func DefAskUser() llm.ToolDefinition {
+	strictFalse := false
+	return llm.ToolDefinition{
+		Name: "ask_user",
+		Description: "Ask the user structured questions. Asking yields the floor: when the round containing your `ask_user` call(s) completes, your turn ends and the session waits visibly for the reply (no timeout). Do the work that does not need answers first, then batch every question this decision point needs — several `ask_user` calls may share the round, and a `communicate` in the same round still delivers its message. The answers arrive in the user's next message: either the numbered `[answers]` form (one resolution per question: a selection, free text, \"you decide\" — choose with your judgment, honoring any stated leaning —, your stated fallback, or skipped — proceed on your best judgment, state the assumption, and do not immediately re-ask) or free prose; treat either as the reply to everything you asked. Any answer may carry a user note — read it; it can qualify or override the selection.\n\n" +
+			"- `questions`: 1–4 per call, each with a short `header` (≤12 chars), the full `question`, and 2–5 `options` (`{label, detail}`, labels unique). Set `multi_select` to allow several; set `recommended: true` on at most one option and put it first.\n" +
+			"- Do not add an \"Other\" or free-text option; the UI always offers one, plus \"you decide\".\n" +
+			"- Optional per question: `why` (one line: what the answer changes) and `if_unanswered` (the fallback you would take; the user can accept it with one tap).\n\n" +
+			"First try to resolve the question yourself with tools. Asking is how you end your turn when only the user can unblock the rest — finish the answer-independent work before you ask.",
+		Strict: &strictFalse,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"questions": map[string]any{
+					"type":        "array",
+					"description": "1-4 questions to ask this round.",
+					"minItems":    1,
+					"maxItems":    4,
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"header":   map[string]any{"type": "string", "maxLength": 12, "description": "Short chip/tab label."},
+							"question": map[string]any{"type": "string", "description": "The full question text."},
+							"options": map[string]any{
+								"type":        "array",
+								"description": "2-5 options; labels must be unique within the question.",
+								"minItems":    2,
+								"maxItems":    5,
+								"items": map[string]any{
+									"type": "object",
+									"properties": map[string]any{
+										"label":       map[string]any{"type": "string"},
+										"detail":      map[string]any{"type": "string"},
+										"recommended": map[string]any{"type": "boolean", "description": "At most one per question; marks the model's suggestion, shown first."},
+									},
+									"required": []string{"label", "detail"},
+								},
+							},
+							"multi_select": map[string]any{"type": "boolean", "default": false, "description": "Allow selecting more than one option."},
+							"why":          map[string]any{"type": "string", "description": "Optional one-line context: what the answer changes."},
+							"if_unanswered": map[string]any{
+								"type":        "string",
+								"description": "Optional one-line fallback the user would take; the user can accept it with one tap.",
+							},
+						},
+						"required": []string{"header", "question", "options"},
+					},
+				},
+			},
+			"required": []string{"questions"},
+		},
+	}
+}

@@ -20,6 +20,10 @@
 {{ section "task-tracking" }}
 
 {{ section "communicate" }}
+
+{{ if .HasAskUser }}
+{{ section "ask-user" }}
+{{ end }}
 {{ end }}
 
 {{ section "tools" }}

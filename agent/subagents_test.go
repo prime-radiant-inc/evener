@@ -1003,3 +1003,79 @@ func TestGrantRejectionAllowanceTruthful(t *testing.T) {
 			"grant_tools cannot grant delegation tools regardless of allowance", errMsg)
 	}
 }
+
+// TestGrantToolsCannotRegrantAskUser verifies the protected-grants set (spec
+// §7 point 2). ask_user is deliberately NOT on rootOnlySubagentTools (that
+// list's removal is allowance-gated; ask_user's exclusion from subagents is
+// unconditional), and the grant loop otherwise consults the PARENT's own
+// registry — where ask_user is legitimately registered on a plain interactive
+// root session. Without a dedicated check, grant_tools has no reason to
+// reject it. It must be rejected anyway, with its own message.
+func TestGrantToolsCannotRegrantAskUser(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	// Sanity: ask_user is genuinely registered on this interactive root
+	// session — the exact condition the protected check exists to guard.
+	if sess.reg.Get("ask_user") == nil {
+		t.Fatal("test setup: ask_user must be registered on an interactive root session")
+	}
+
+	const wantErr = "ask_user is root-only and cannot be granted to subagents"
+
+	_, err = sess.spawnAgent(context.Background(), "help with follow-up work", "", "", 0, "", "", nil, []string{"ask_user"})
+	if err == nil {
+		t.Fatal("expected grant rejection for ask_user")
+	}
+	if err.Error() != wantErr {
+		t.Fatalf("err = %q, want %q", err.Error(), wantErr)
+	}
+}
+
+// TestGrantToolsAskUserAliasNeverSilentlyGranted covers the Claude-style
+// spelling "AskUserQuestion". Unlike a plugin's static `tools:` frontmatter
+// (converted at load time via toolname.ClaudeToSerf, agent/plugin/agents.go),
+// grant_tools is a runtime model argument canonicalized only through the
+// provider profile's canonical->wire-name map
+// (Session.canonicalizeToolNames -> Profile.ToolNameMap), which carries
+// provider wire renames (e.g. OpenAI's shell->exec_command) and does not
+// include this Claude-Code plugin/hook alias. So "AskUserQuestion" reaches
+// the grant loop unchanged, isProtectedGrantTool does not match it, and it is
+// rejected later by the pre-existing missing-from-child-registry check
+// instead of the new ask_user-specific message. This test locks in that the
+// call is still rejected either way (no silent grant under either spelling),
+// while documenting that the two spellings do NOT currently produce the same
+// error message.
+func TestGrantToolsAskUserAliasNeverSilentlyGranted(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	_, err = sess.spawnAgent(context.Background(), "help with follow-up work", "", "", 0, "", "", nil, []string{"AskUserQuestion"})
+	if err == nil {
+		t.Fatal("expected grant rejection for the AskUserQuestion alias")
+	}
+	if err.Error() == "ask_user is root-only and cannot be granted to subagents" {
+		t.Fatal("AskUserQuestion unexpectedly canonicalized to ask_user and hit the protected-grant message; " +
+			"update this test's documentation if canonicalizeToolNames grew alias support")
+	}
+}

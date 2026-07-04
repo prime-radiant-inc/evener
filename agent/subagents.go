@@ -175,6 +175,21 @@ func isRootOnlySubagentTool(name string) bool {
 	return hasString(rootOnlySubagentTools(), name)
 }
 
+// protectedGrantTools lists tools that grant_tools may never add to a
+// subagent, independent of rootOnlySubagentTools. That list's removal is
+// allowance-gated (a coordinator with delegation_allowance keeps its
+// members), but ask_user's exclusion from every subagent is unconditional
+// (spec §7 point 1) — and the grant loop otherwise consults the PARENT's own
+// registry, where ask_user is legitimately registered on an interactive root
+// session. Without this check the loop has no reason to reject it.
+func protectedGrantTools() []string {
+	return []string{"ask_user"}
+}
+
+func isProtectedGrantTool(name string) bool {
+	return hasString(protectedGrantTools(), name)
+}
+
 func removeRootOnlySubagentTools(items []string) []string {
 	return removeStrings(items, rootOnlySubagentTools())
 }
@@ -479,6 +494,9 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	if len(canonicalGrantTools) > 0 {
 		currentTools := s.reg.RegisteredNames()
 		for _, toolName := range canonicalGrantTools {
+			if isProtectedGrantTool(toolName) {
+				return nil, fmt.Errorf("%s is root-only and cannot be granted to subagents", toolName)
+			}
 			if isRootOnlySubagentTool(toolName) {
 				return nil, fmt.Errorf("cannot grant tool %q via grant_tools: delegation tools are enabled by the delegate tool's delegation_allowance parameter, not grant_tools", toolName)
 			}

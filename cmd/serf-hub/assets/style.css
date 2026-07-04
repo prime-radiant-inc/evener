@@ -1481,14 +1481,18 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
    text stays readable so it can't be mistaken for the agent thinking aloud.
    Glyph-paired (◆) for colourblind safety. The composer is the reply affordance
    — clicking the frame focuses it. (Alt A: amber-framed container + glyph
-   header.) */
-.assistant-message.agent-question {
+   header.) The ask_user card (below) shares this same amber frame — it is a
+   form with its own controls rather than plain prose, so it opts out of the
+   whole-frame "click anywhere focuses the composer" cursor. */
+.assistant-message.agent-question,
+.ask-card.agent-question {
   border: 1px solid color-mix(in srgb, var(--state-awaiting) 30%, transparent);
   background: color-mix(in srgb, var(--state-awaiting) 5%, transparent);
   border-radius: var(--radius-md);
   padding: var(--space-3) var(--space-4);
   cursor: pointer;
 }
+.ask-card.agent-question { cursor: default; }
 .agent-question-head {
   display: flex;
   align-items: center;
@@ -1500,6 +1504,137 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
   color: var(--state-awaiting);
 }
 .agent-question-glyph { color: var(--state-awaiting); }
+
+/* ── ask_user question card (spec §6.1, mockup #16 Alt D) ──────────────────
+   Sits inside the amber .agent-question frame above. Each question is its
+   own block: recommended-first option chips, then the mutually-exclusive
+   "Something else… / You decide / do that / skip" row, then the low-contrast
+   note control. One footer composes and sends every question in the card at
+   once — spec §4.3's numbering spans the whole card, not just one question. */
+.ask-questions { display: flex; flex-direction: column; gap: var(--space-5); }
+.ask-question + .ask-question { padding-top: var(--space-4); border-top: 1px solid color-mix(in srgb, var(--state-awaiting) 20%, transparent); }
+.ask-question-head { display: flex; align-items: baseline; gap: var(--space-2); font-size: var(--text-sm); font-weight: 600; color: var(--text); }
+.ask-question-num { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.ask-question-text { margin-top: var(--space-1); font-size: var(--text-base); color: var(--text); line-height: var(--leading-snug); }
+/* `why` is prose the reader needs to decide (spec §4.2) — not a hairline, so
+   it takes --text-muted (readable AA gray) like .system-line's own quiet
+   aside, not --text-dim (reserved for markers/numerals, Pass 7 contrast). */
+.ask-why { margin-top: var(--space-1); font-size: var(--text-xs); color: var(--text-muted); font-style: italic; }
+
+.ask-options { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-3); }
+.ask-option {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
+  font-size: var(--text-sm);
+  color: var(--text);
+  cursor: pointer;
+}
+.ask-option:hover { border-color: var(--accent); }
+.ask-option:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--bg-raised)); }
+.ask-option.recommended { border-color: color-mix(in srgb, var(--accent) 45%, var(--rule)); }
+.ask-option-tag {
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-radius: var(--radius-pill);
+  padding: 1px var(--space-2);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+/* Option detail is prose the reader weighs before picking — --text-muted,
+   not --text-dim, for the same contrast reason as .ask-why above. */
+.ask-option-detail { font-size: var(--text-xs); color: var(--text-muted); }
+
+.ask-alt-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-top: var(--space-3); }
+.ask-free-toggle,
+.ask-decide-toggle,
+.ask-fallback-btn,
+.ask-skip-btn {
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px dashed var(--rule);
+  border-radius: var(--radius-pill);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+}
+.ask-free-toggle:hover,
+.ask-decide-toggle:hover,
+.ask-fallback-btn:hover,
+.ask-skip-btn:hover { color: var(--text); border-color: var(--text-muted); }
+.ask-free-toggle.active,
+.ask-decide-toggle.active,
+.ask-fallback-btn.active,
+.ask-skip-btn.active {
+  color: var(--accent);
+  border-style: solid;
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.ask-free-input,
+.ask-decide-leaning {
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--text);
+  background: var(--surface-secondary);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  min-width: 200px;
+}
+.ask-free-input[hidden],
+.ask-decide-leaning[hidden] { display: none; }
+
+.ask-note-row { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-2); }
+.ask-note-toggle {
+  font: inherit;
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0 var(--space-1);
+}
+.ask-note-toggle:hover { color: var(--text-muted); }
+.ask-note-field {
+  font: inherit;
+  font-size: var(--text-xs);
+  color: var(--text);
+  background: var(--surface-secondary);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  padding: var(--space-1) var(--space-3);
+  flex: 1;
+  min-width: 160px;
+}
+.ask-note-field[hidden] { display: none; }
+
+.ask-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin-top: var(--space-4); padding-top: var(--space-3); border-top: 1px solid color-mix(in srgb, var(--state-awaiting) 20%, transparent); }
+.ask-answered-count { font-size: var(--text-xs); color: var(--text-muted); }
+
+.ask-collapsed-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--state-awaiting);
+  background: transparent;
+  border: 1px dashed color-mix(in srgb, var(--state-awaiting) 40%, transparent);
+  border-radius: var(--radius-pill);
+  padding: var(--space-2) var(--space-4);
+  cursor: pointer;
+}
+.ask-collapsed-chip[hidden] { display: none; }
+/* ─────────────────────────────────────────────────────────────────────── */
 
 /* The docked needs-you bar (Alt C): the always-reachable copy. The moment a
    blocking question is off-screen (or the session is awaiting) an amber bar

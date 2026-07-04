@@ -33,6 +33,14 @@ func (m *hubModel) resizeSessionInputFrom(prevHeight int) {
 }
 
 func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// The question overlay early-returns first: reached both via the focus
+	// trap's "question-overlay" dispatch case and directly for Esc (which
+	// bypasses the trap per keyAllowedThroughTrap). A deferred overlay is
+	// intentionally NOT handled here — Esc already hid it, and the ctrl+q
+	// binding below is what resumes it.
+	if m.questionOverlay != nil && !m.questionOverlay.Deferred() {
+		return m.updateQuestionOverlayKey(msg)
+	}
 	if m.followupModal != nil && m.launchOverridesModal != nil {
 		// followupModal is open for a launch-override edit — route to it
 		updated, cmd := m.followupModal.Update(msg)
@@ -251,6 +259,9 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if msg.Type == tea.KeyCtrlS {
 		return m.handleSessionForceSteer()
+	}
+	if msg.Type == tea.KeyCtrlQ {
+		return m.toggleAskOverlay()
 	}
 	if msg.Type == tea.KeyCtrlV || isAltVKey(msg) {
 		return m.handleClipboardPaste()

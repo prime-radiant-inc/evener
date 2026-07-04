@@ -319,6 +319,30 @@ func TestAppEventProjectorProjectsThreadLifecycle(t *testing.T) {
 	}
 }
 
+// TestAppEventProjectorRestoredSessionStartCarriesAwaitingState covers spec
+// §5.4's "two touchpoints": a SessionStart event whose payload carries the
+// restored session's re-derived state (agent/session_init.go's tail scan,
+// spec §6) projects ThreadStatusAwaiting on both the initial Thread.Status and
+// the threadStatus notification, instead of the old hardcoded idle.
+// TestAppEventProjectorProjectsThreadLifecycle above is the paired negative:
+// a SessionStart with no State set still projects idle.
+func TestAppEventProjectorRestoredSessionStartCarriesAwaitingState(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	started := projector.Project(events.SessionEvent{
+		Kind:      events.EventSessionStart,
+		SessionID: "th_1",
+		Data:      events.SessionStartData{Profile: "openai", Model: "gpt-5", Restored: true, State: appwire.ThreadStatusAwaiting},
+	})
+
+	thread := notificationThread(t, started, appwire.NotifyThreadStarted)
+	if thread.Status.Type != appwire.ThreadStatusAwaiting {
+		t.Fatalf("restored SessionStart thread status=%+v, want awaiting", thread.Status)
+	}
+	if status := notificationThreadStatus(t, started, appwire.NotifyThreadStatusChanged); status.Type != appwire.ThreadStatusAwaiting {
+		t.Fatalf("restored SessionStart status notification=%+v, want awaiting", status)
+	}
+}
+
 func TestAppEventProjectorCompletesTurnOnSessionEnd(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	started := projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})

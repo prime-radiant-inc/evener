@@ -20,6 +20,11 @@ const (
 	// autonomous work (goal kick, pending notifications, queued input, live
 	// child subagents) is in flight. It is the daemon-truth source for the
 	// hub's "needs you" attention state (spec: attention-status-model v5).
+	// The string must stay byte-equal to appwire.ThreadStatusAwaiting
+	// ("awaiting"): every status pass-through switch on the wire journey
+	// defaults unrecognized strings to idle, so changing this string would
+	// silently downgrade an awaiting session to idle across /status, the
+	// roster, and the NeedsYou tier.
 	SessionAwaiting SessionState = "awaiting"
 	// SessionClosed indicates the session has been closed.
 	SessionClosed SessionState = "closed"
@@ -239,38 +244,24 @@ func settleTerminalState(hadOutput, goalKicked, notifsPending, queuePending, chi
 	return SessionAwaiting
 }
 
-// recomputeRestoredState reruns the settle decision for a restored session: if
-// the persisted transcript ends with the agent having moved last (the ball was
-// in the user's court when the daemon stopped) and no autonomy is in flight,
-// the session resumes awaiting rather than idle. Restored active goals are
-// deliberately not autonomy — they are not re-kicked on restore ("loaded but
-// idle"), so amber is what surfaces the stall (spec v5, round-3 A2).
-//
-// "Agent moved last" is decided by walking the history backward from the tail,
-// skipping bookkeeping turns (tool results, checkpoints, summaries, system)
-// that trail the true last conversational move, and reading the kind of the
-// first user/steering/assistant turn found. This matters because a clean
-// completion's last persisted turn is TOOL_RESULTS (the communicate call's
-// result), not ASSISTANT: the assistant turn precedes it in the same round.
+// recomputeRestoredState reruns deriveRestoredState — the single
+// resume-derivation function (session_tools_ask.go) — for a restored
+// session, now that history, goal restore, and (unless deferred for nested
+// delegate reconstruction) notification/watch-send side effects are all in
+// place. It only ever upgrades from idle: the initial derivation in
+// RestoreSession already decided from history alone (including awaiting,
+// when this second pass is not needed), so this call exists purely to rule
+// an upgrade back out once autonomy signals that were not yet restored the
+// first time — live children, pending notifications, queued input — are
+// available to check. Restored active goals are deliberately not autonomy —
+// they are not re-kicked on restore ("loaded but idle"), so amber is what
+// surfaces the stall (spec v5, round-3 A2).
 func (s *Session) recomputeRestoredState() {
 	s.mu.Lock()
-	agentLast := false
-	for i := len(s.history) - 1; i >= 0; i-- {
-		switch s.history[i].Kind {
-		case schema.TurnAssistant:
-			agentLast = true
-		case schema.TurnUserInput, schema.TurnSteering:
-			agentLast = false
-		default:
-			// Bookkeeping turn (tool results, checkpoint, summary, system, ...):
-			// keep walking backward past it.
-			continue
-		}
-		break
-	}
 	idle := s.state == SessionIdle && !s.closingOrClosedLocked()
+	target := deriveRestoredState(s.history)
 	s.mu.Unlock()
-	if !idle || !agentLast {
+	if !idle || target != SessionAwaiting {
 		return
 	}
 	if s.autonomyInFlight() {

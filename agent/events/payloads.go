@@ -16,6 +16,13 @@ type SessionStartData struct {
 	Turns             int    `json:"turns,omitempty"`
 	LastInputTokens   int    `json:"last_input_tokens,omitempty"`
 	ContextWindowSize int    `json:"context_window_size,omitempty"`
+	// State is the session's state at the moment SessionStart fires, carried
+	// so a restored session's re-derived state (a completed, unanswered
+	// ask_user call at the transcript tail rests "awaiting"; see
+	// agent.SessionAwaiting) reaches the wire instead of an assumed idle. A
+	// fresh session always starts idle and leaves this empty; downstream
+	// consumers already default an empty/unrecognized value to idle.
+	State string `json:"state,omitempty"`
 }
 
 // SessionEndData is the payload for an EventSessionEnd event.

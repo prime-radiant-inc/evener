@@ -416,6 +416,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	s.pinnedNote = meta.PinnedNote
 
+	// ask_user root-only gating (spec §7.1): a bare `serve --resume
+	// <delegate-id>` restores with an empty spawn carrier (spawn is json:"-",
+	// never persisted), so cfg.spawn.parentSessionID alone would miss it.
+	// Derive subagent-ness from the persisted meta flag before
+	// initSessionState builds the tool registry.
+	s.restoredMetaIsSubagent = meta.IsSubagent
+
 	// Re-enter the persisted active worktree BEFORE initSessionState runs, so
 	// the session is rooted in it before the environment snapshot, system
 	// prompt, and tool registry are built (native worktree tools spec §7
@@ -497,6 +504,17 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}
 
+	// Re-derive the at-rest state from the restored history's tail: an
+	// unanswered ask_user call, or more generally any turn the agent moved
+	// last in with nothing else pending, rests awaiting (spec §6, generalized
+	// by attention-status-model v5's resume rule; deriveRestoredState's own
+	// doc comment has the full walk). NewSession never runs this scan — a
+	// fresh session always starts idle.
+	restoredState := deriveRestoredState(s.history)
+	s.mu.Lock()
+	s.state = restoredState
+	s.mu.Unlock()
+
 	s.emitSessionStartEnvelope(events.SessionStartData{
 		Profile:           profile.ID(),
 		Model:             profile.Model(),
@@ -504,6 +522,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		Turns:             s.modelResponses,
 		LastInputTokens:   meta.LastInputTokens,
 		ContextWindowSize: profile.ContextWindowSize(),
+		State:             string(restoredState),
 	}, promptSources)
 	// Recompute the settle decision now that history, goal restore, and (unless
 	// deferred for nested delegate reconstruction) notification/watch-send side

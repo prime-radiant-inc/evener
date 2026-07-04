@@ -9,6 +9,15 @@ import (
 // topmostOverlayName returns the name of the most-recently-opened
 // overlay on hubModel, or "" if none. Order matters: most-recent first.
 func topmostOverlayName(m hubModel) string {
+	// Gated to session mode: the question overlay is only ever opened
+	// (ctrl+q, toggleAskOverlay) while viewing a session, but Deferred
+	// leaves the pointer set even after the user returns to the dashboard
+	// (spec: esc/navigating away keeps answers, it doesn't destroy them).
+	// Without this gate a stale, non-deferred overlay from a previous
+	// session visit would trap keys outside session mode.
+	if m.mode == hubModeSession && m.questionOverlay != nil && !m.questionOverlay.Deferred() {
+		return "question-overlay"
+	}
 	if m.followupModal != nil {
 		return "followup"
 	}
@@ -48,6 +57,12 @@ func keyAllowedThroughTrap(msg tea.KeyMsg) bool {
 // hub model. Esc and ctrl+o are handled before this function is called.
 func (m hubModel) dispatchOverlayKey(name string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch name {
+	case "question-overlay":
+		// Mirrors the "picker" case below: updateSessionKey's own early
+		// return isolates the overlay's key handling (and is also reached
+		// directly for Esc, which bypasses the trap entirely).
+		return m.updateSessionKey(msg)
+
 	case "followup":
 		updated, cmd := m.followupModal.Update(msg)
 		modal := updated.(tuipick.TextInputModal)

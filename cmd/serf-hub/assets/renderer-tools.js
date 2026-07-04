@@ -754,9 +754,24 @@
     },
   });
 
+  // ask_user is always suppressed at TOOL_CALL_START/END (renderer.js builds
+  // its own interactive card and settled line, never the generic tool-call
+  // row — the same treatment task_list gets, above). This entry exists only
+  // to give "which questions did this call ask" a single reusable formatter
+  // — renderer.js's settled-line rendering calls target() the same way every
+  // other tool's row does, so the two never drift apart.
+  const askUserRenderer = {
+    mode: "default", friendly: "ask",
+    target: (a) => (Array.isArray(a.questions) ? a.questions : [])
+      .map((q) => "[" + ((q && q.header) || "") + "]")
+      .join(", "),
+    result: () => "",
+  };
+
   const toolRenderers = {
     __default__: defaultRenderer,
     "use_skill": useSkillRenderer,
+    "ask_user": askUserRenderer,
     "read_file": readRenderer,
     "grep_files": grepRenderer,
     "grep": grepRenderer,

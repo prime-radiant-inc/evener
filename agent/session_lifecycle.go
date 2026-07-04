@@ -320,7 +320,8 @@ func routeNoToolCalls(kind EntryKind, noContent bool) noCallsRoute {
 // drainInputs is the snapshot the drain loop feeds selectDrainNextAction after a
 // completed (non-error) turn: the kind of the turn that just ran, whether a goal
 // continuation is already deferred, the popped follow-up text and queued message
-// (its text plus image count), and whether any job notifications are pending.
+// (its text plus image count), whether any job notifications are pending, and
+// whether the turn just rested SessionAwaiting (spec §5.3's drain-ladder gate).
 type drainInputs struct {
 	RanKind              EntryKind
 	HaveDeferredCont     bool
@@ -328,6 +329,7 @@ type drainInputs struct {
 	QueuedText           string
 	QueuedImages         int
 	NotificationsPending bool
+	Awaiting             bool
 }
 
 // drainAction is the next action the drain loop takes after a completed turn.
@@ -354,18 +356,32 @@ const (
 // The wrapper performs the pops and the goal-gate fold (side effects) and feeds
 // their results in; this function only decides. skipGoalGate reports whether the
 // wrapper should SKIP folding the goal gate this turn — true after a notification
-// turn (which must not advance or terminate the goal) or while a continuation is
-// already deferred (one fold per turn).
+// turn (which must not advance or terminate the goal), while a continuation is
+// already deferred (one fold per turn), or while the turn that just ran rests
+// SessionAwaiting.
 //
-// Priority: a pending follow-up, then a queued user message, then a pending
-// notification, then the goal gate's deferred continuation, then idle. The goal
-// gate always folds BEFORE the notification turn runs: the wrapper arms on
-// !skipGoalGate before acting on runNotification, so the fold stays ahead of the
-// notification interleave even though the notification is the turn that runs next.
-// armGoalGate is returned only when the gate is eligible AND no notification
-// preempts, so the resulting turn depends on the (side-effectful) fold result.
+// Awaiting is checked first and overrides every other rung (spec §5.3's
+// drain-ladder gate): a turn that just posted a question holds its follow-up,
+// notification, and goal rungs — none of them may drive the model past the
+// unanswered questions — and only the queued-input rung stays live, because a
+// message the user queued mid-turn IS the reply (they are demonstrably present).
+//
+// Otherwise, priority: a pending follow-up, then a queued user message, then a
+// pending notification, then the goal gate's deferred continuation, then idle.
+// The goal gate always folds BEFORE the notification turn runs: the wrapper arms
+// on !skipGoalGate before acting on runNotification, so the fold stays ahead of
+// the notification interleave even though the notification is the turn that runs
+// next. armGoalGate is returned only when the gate is eligible AND no
+// notification preempts, so the resulting turn depends on the (side-effectful)
+// fold result.
 func selectDrainNextAction(in drainInputs) (action drainAction, skipGoalGate bool) {
-	skipGoalGate = in.RanKind == EntryNotification || in.HaveDeferredCont
+	skipGoalGate = in.RanKind == EntryNotification || in.HaveDeferredCont || in.Awaiting
+	if in.Awaiting {
+		if strings.TrimSpace(in.QueuedText) != "" || in.QueuedImages > 0 {
+			return runQueued, skipGoalGate
+		}
+		return goIdle, skipGoalGate
+	}
 	switch {
 	case strings.TrimSpace(in.FollowUp) != "":
 		return runFollowUp, skipGoalGate
@@ -411,6 +427,32 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return "", errors.New("session is closed")
+	}
+	// Entry gate (spec §5.3): while a question is pending, an autonomous wake —
+	// EntryNotification, EntryContinuation, EntryWatchDelivery — is refused here,
+	// before the Processing transition below (processOneInput's
+	// setStateIfOpenLocked(SessionProcessing)) ever runs. No state flip, no event
+	// emission: round 4's bug was that transition firing unconditionally before
+	// dispatch, so a delegate or notification finishing while the user reads the
+	// question silently turned the needs-you signal off. Refusing here leaves the
+	// wake source's own durable queue (jobstore notifications, the goal engine,
+	// the watch outbox) untouched, so it redelivers once the boundary drains
+	// after the user's reply. EntryUserInput is always accepted — it is how the
+	// reply resolves awaiting (spec §5.2).
+	//
+	// Gated on the pending set, not raw state (attention-status-model v5
+	// reconciliation): SessionAwaiting used to imply "a question is pending" —
+	// the only producer of the state before the merge — but the general
+	// inbox-semantics upgrade (armAwaitingAtSettle) now also rests a session
+	// awaiting after any clean, output-producing turn with nothing else in
+	// flight, no ask involved. Their spec's own consequence for that case is
+	// the opposite of a hold: "async wakes re-arm by design." Only a genuine
+	// pending question is a stronger stop than the wake (a delegate finishing
+	// while the user reads a QUESTION must not silently resolve it out from
+	// under them); a general re-arm has nothing pending to protect.
+	if len(s.askPending) > 0 && kind != EntryUserInput {
+		s.mu.Unlock()
+		return "", nil
 	}
 	s.sessionEndEmitted = false
 	// Mark the session as in-turn for the duration of this input. SetGoal/ClearGoal
@@ -466,6 +508,11 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			// previous round was cut short.
 			if isTurnCancellation(processCtx, err) {
 				s.finishProcessingAtBoundary(processCtx, SessionIdle)
+				// An interrupted turn ends idle even if it posted questions (spec
+				// §5.1): the user is demonstrably present. The cards stay rendered
+				// from the transcript regardless; only the pending set — which
+				// exists purely to drive the boundary check — clears.
+				s.clearAskPending()
 				s.mu.Lock()
 				closed := s.closingOrClosedLocked()
 				turns := s.modelResponses
@@ -520,8 +567,42 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// priority decision over their results. popQueueHead is reached only when no
 		// follow-up is pending (it consumes a queued message), matching the original
 		// short-circuit; peekNotifications is likewise consulted only at its ladder
-		// rung and only for a non-notification turn.
-		fu := s.popFollowUp()
+		// rung and only for a non-notification, non-awaiting turn.
+		//
+		// awaiting reflects the boundary state the turn that just ran left behind
+		// (spec §5.3's drain-ladder gate). The follow-up pop itself is skipped while
+		// awaiting — not popped and then discarded — so a follow-up queued during
+		// the asking turn (FollowUp is public API with no gating of its own) is left
+		// intact in s.followups for the next drain cycle instead of being silently
+		// dropped by an awaiting rest that won't run it.
+		//
+		// Proof this capture is equivalent to askPendingCount() > 0, even though
+		// it reads raw state directly (unlike SetGoal/settleGoalOnIdle/Compact,
+		// which key on the pending-ask set): processOneInput unconditionally
+		// resets s.state to SessionProcessing and s.askPending to nil at entry
+		// (above, "s.setStateIfOpenLocked(SessionProcessing)" / "s.askPending =
+		// nil") for every accepted entry kind, so whatever this call's state was
+		// before this iteration's processOneInput call is wiped before it runs.
+		// The only path that can move it OUT of SessionProcessing before
+		// processOneInput returns on the clean-completion path is
+		// deliverIfCommunicated (session_tool_round.go), which writes
+		// SessionAwaiting via finishProcessingAtBoundary exactly when
+		// askedThisRound (this round grew askPending) — i.e. exactly when
+		// askPendingCount() > 0. The general non-ask idle→awaiting upgrade,
+		// armAwaitingAtSettle, is the only OTHER writer of SessionAwaiting
+		// reachable from this loop, but it runs strictly later, at the terminal
+		// settle (below, s.armAwaitingAtSettle), which is unconditionally
+		// followed by this call's own return — it never runs before this
+		// capture within the same ProcessInputKind call, and never more than
+		// once per call. So at this exact point, s.State() == SessionAwaiting
+		// holds if and only if askPendingCount() > 0 here; the two are
+		// interchangeable at this capture only, not as a general rule elsewhere
+		// in this file.
+		awaiting := s.State() == SessionAwaiting
+		var fu string
+		if !awaiting {
+			fu = s.popFollowUp()
+		}
 		var queued queuedInput
 		if strings.TrimSpace(fu) == "" {
 			// kata 111a / t5j6: each drained queued message becomes a distinct user
@@ -531,7 +612,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		noFollowUpOrQueued := strings.TrimSpace(fu) == "" &&
 			strings.TrimSpace(queued.Text) == "" && len(queued.Images) == 0
 		notificationsPending := false
-		if noFollowUpOrQueued && ranKind != EntryNotification {
+		if noFollowUpOrQueued && !awaiting && ranKind != EntryNotification {
 			notificationsPending = s.peekNotifications() > 0
 		}
 		action, skipGoalGate := selectDrainNextAction(drainInputs{
@@ -541,6 +622,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			QueuedText:           queued.Text,
 			QueuedImages:         len(queued.Images),
 			NotificationsPending: notificationsPending,
+			Awaiting:             awaiting,
 		})
 
 		switch action {
@@ -570,9 +652,14 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// notification can interleave ahead of it; it is then run inline below.
 		// skipGoalGate is true when the turn that just ran was a notification (a
 		// notification must neither advance nor terminate the goal — it already folded
-		// at its own gate), and while a continuation is already deferred (one fold per
-		// turn). On a terminal/stop decision the gate emits the terminal report and
-		// leaves haveDeferredCont false, so we fall through to EventSessionEnd (idle).
+		// at its own gate), while a continuation is already deferred (one fold per
+		// turn), or when the turn that just ran rests SessionAwaiting (spec §5.3: arm,
+		// don't kick — this alone covers armGoalContinuation for the goal-hold
+		// requirement, since it is this call's only site; settleGoalOnIdle and the
+		// deferred-continuation inline-run below need their own awaiting guards
+		// because both are reached even when this fold is skipped). On a
+		// terminal/stop decision the gate emits the terminal report and leaves
+		// haveDeferredCont false, so we fall through to EventSessionEnd (idle).
 		if !skipGoalGate {
 			// The gate's fold + terminal-report side effects (RecordContinuation, the
 			// no-progress breaker, EventGoalEnded) happen here; the rendered prompt it
@@ -599,7 +686,19 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// Run the deferred continuation INLINE (via continue, not the idle kick) so
 		// the goal advances even when kickFunc==nil (e.g. one-shot `serf run` with a
 		// restored active goal whose model spawned a subagent).
-		if haveDeferredCont {
+		//
+		// Gated on !awaiting (spec §5.3): haveDeferredCont can still be true here
+		// even though THIS turn rests awaiting — it was set at an EARLIER turn's
+		// tail (this turn's own fold above is skipped by skipGoalGate, which does
+		// not clear an already-deferred flag), when a pending notification
+		// interleaved ahead of the deferred continuation and that notification's
+		// own turn is the one that just asked. Running the continuation here would
+		// drive it straight past that unanswered question. Held, haveDeferredCont
+		// is simply left set-then-abandoned (this call is about to fall through to
+		// settleGoalOnIdle and return; the goal itself is untouched in the store)
+		// — the normal resume fold picks the still-active goal up again once the
+		// reply resolves the ask.
+		if !awaiting && haveDeferredCont {
 			haveDeferredCont = false
 			// Re-validate against the goal store before running: the user may have
 			// cleared (/goal clear) or retargeted (/goal <new>) the goal during the
@@ -678,6 +777,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	}
 	s.setStateIfOpenLocked(SessionProcessing)
 	s.comm = communicateResult{}
+	// Pending asks resolve with this accepted turn (spec §5.2): clear here,
+	// beside comm's reset, under the lock already held (not via the
+	// clearAskPending helper, which takes s.mu itself and would deadlock).
+	s.askPending = nil
 	s.watchCallbackDelivered = false
 	s.mu.Unlock()
 
@@ -711,6 +814,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 	for round := 0; roundCap < 0 || round < roundCap; round++ {
 		roundStart := s.sclock().Now()
+		// Snapshot the pending-ask count before this round's tool calls run, so
+		// the delivery check below can compute the per-round delta (spec §5.1):
+		// a round that posts a question ends the turn, and the delta is the
+		// robust, self-contained way to detect that (rather than trusting the
+		// global count, which a later round should never even reach).
+		askBefore := s.askPendingCount()
 		var timings events.RoundTimings
 		timings.Round = round
 
@@ -898,8 +1007,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall - timings.ToolExec - timings.Persistence - timings.AfterAction
 		s.emit(events.EventRoundTimings, timings)
 
-		// communicate sets the flag; exit the loop with the communicated message.
-		if done, text := s.deliverIfCommunicated(ctx); done {
+		// communicate sets the flag, or this round posted question(s) (spec
+		// §5.1) — either ends the turn; deliverIfCommunicated decides the
+		// boundary state and composes them.
+		askedThisRound := s.askPendingCount() > askBefore
+		if done, text := s.deliverIfCommunicated(ctx, askedThisRound); done {
 			return text, progressed, nil
 		}
 		if yieldToObserverCallback {

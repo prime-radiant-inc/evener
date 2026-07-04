@@ -161,8 +161,9 @@ flowchart TD
 ### How a turn flows
 
 `Session.ProcessInput` drives one user input through up to `MaxToolRoundsPerInput`
-model/tool rounds, until the model delivers a result (via the communicate tool) or the
-round budget runs out. Each round (simplified):
+model/tool rounds, until the model delivers a result (via the `communicate` tool), the
+round posts one or more `ask_user` questions, or the round budget runs out. Each round
+(simplified):
 
 ```mermaid
 flowchart TD
@@ -176,8 +177,9 @@ flowchart TD
     HN --> R
     TC -->|yes| EX["execToolBatch → persistToolResults<br/>session_tool_round.go · session_tools_*.go"]
     EX --> AA["notifyStrategyAfterAction (strategy.AfterAction)<br/>+ injectPostToolSteering"]
-    AA --> DL{"communicate delivered?"}
-    DL -->|yes| DONE(["return final text"])
+    AA --> DL{"communicate delivered,<br/>or questions posted?"}
+    DL -->|communicate| DONE(["return final text<br/>state: idle"])
+    DL -->|ask_user| AWAIT(["return; no further round<br/>state: awaiting"])
     DL -->|no| R
 ```
 
@@ -185,6 +187,15 @@ The phase names map onto the files in `package agent` that the turn loop was spl
 `session_model_call.go` (request build + call), `session_stream.go` (streaming decode),
 `session_tool_round.go` + `session_tools_*.go` (tool execution), and the
 `ManageContext` compaction step backed by `agent/internal/contextmgr`.
+
+A round that posts `ask_user` questions ends the turn at the same `AA --> DL` boundary a
+delivered `communicate` does, but leaves the session resting in `SessionAwaiting` ("awaiting")
+instead of idle — the session waits, visibly, until the user's next message answers the
+questions. `ask_user` and `communicate` compose rather than collide: a `communicate` in the
+same round still delivers its message, and the boundary state is awaiting whenever the round
+posted questions, regardless of the communicate's own end-turn value. `ask_user` is
+interactive-root-only — invisible in non-interactive sessions and in every subagent — so this
+branch never applies to a delegate.
 
 ### Ownership and mailboxes
 
