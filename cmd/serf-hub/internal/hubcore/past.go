@@ -168,6 +168,51 @@ func (i *PastIndex) Rebuild() error {
 	return nil
 }
 
+// UpdateMeta targets one existing entry: it replaces the meta, re-inserts the
+// entry at its new sorted position (the title is a sort-key component), and
+// re-numbers the FTS rows so search ordering stays correct — without a
+// synchronous disk Rebuild the rename response path cannot afford (round-2
+// A5/B1, round-3 H3). StateDir is preserved (rename never moves the files).
+// No-op when the id is not already indexed.
+func (i *PastIndex) UpdateMeta(id string, meta schema.SessionMeta) {
+	i.mu.Lock()
+	old, ok := i.byID[id]
+	if !ok {
+		i.mu.Unlock()
+		return
+	}
+	pe := PastEntry{ID: id, Meta: meta, StateDir: old.StateDir}
+	i.byID[id] = pe
+	for idx := range i.all {
+		if i.all[idx].ID == id {
+			i.all = append(i.all[:idx], i.all[idx+1:]...)
+			break
+		}
+	}
+	pos := sort.Search(len(i.all), func(k int) bool { return !sessionMetaLess(i.all[k].Meta, meta) })
+	i.all = append(i.all, PastEntry{})
+	copy(i.all[pos+1:], i.all[pos:])
+	i.all[pos] = pe
+	all := append([]PastEntry(nil), i.all...)
+	i.mu.Unlock()
+
+	if i.dbPath != "" {
+		if err := i.rebuildFTS(all); err == nil {
+			i.mu.Lock()
+			i.fts = true
+			i.mu.Unlock()
+		}
+	}
+	fp := contentFingerprint(all)
+	i.mu.Lock()
+	changed := fp != i.fingerprint
+	i.fingerprint = fp
+	i.mu.Unlock()
+	if changed && i.onChange != nil {
+		i.onChange()
+	}
+}
+
 // All returns the full index sorted by the Hub session ordering contract.
 func (i *PastIndex) All() []PastEntry {
 	i.mu.RLock()

@@ -602,3 +602,36 @@ func TestPastIndexOnChangeFiresOnContentDeltaOnly(t *testing.T) {
 		t.Fatalf("rebuild after new content should fire, got %d", fired)
 	}
 }
+
+func TestUpdateMetaReordersAndPreservesStateDir(t *testing.T) {
+	dir := t.TempDir()
+	proj := filepath.Join(dir, "proj")
+	for _, id := range []string{"01A", "01B"} {
+		m := schema.SessionMeta{ID: id, Name: id, UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}
+		if err := schema.SaveSessionMeta(proj, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx := NewPastIndexWithDB(filepath.Join(dir, "*"), filepath.Join(dir, "index.db"))
+	_ = idx.Rebuild()
+	before, _ := idx.Find("01A")
+	renamed := before.Meta
+	renamed.Name = "renamed-title"
+	renamed.UpdatedAt = time.Unix(1_700_100_000, 0) // newer → sorts first
+	idx.UpdateMeta("01A", renamed)
+
+	got, ok := idx.Find("01A")
+	if !ok || got.Meta.Name != "renamed-title" {
+		t.Fatalf("UpdateMeta did not update the entry: %+v", got)
+	}
+	if got.StateDir != before.StateDir {
+		t.Fatalf("StateDir must be preserved: %q != %q", got.StateDir, before.StateDir)
+	}
+	if all := idx.All(); all[0].ID != "01A" {
+		t.Fatalf("renamed newer entry should sort first, got %q", all[0].ID)
+	}
+	// FTS search must find the new title.
+	if hits := idx.Search("renamed-title", 10, 0); len(hits) == 0 || hits[0].ID != "01A" {
+		t.Fatalf("search must reflect the new title, got %+v", hits)
+	}
+}
