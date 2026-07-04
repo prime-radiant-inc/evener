@@ -466,6 +466,11 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			// previous round was cut short.
 			if isTurnCancellation(processCtx, err) {
 				s.finishProcessingAtBoundary(processCtx, SessionIdle)
+				// An interrupted turn ends idle even if it posted questions (spec
+				// §5.1): the user is demonstrably present. The cards stay rendered
+				// from the transcript regardless; only the pending set — which
+				// exists purely to drive the boundary check — clears.
+				s.clearAskPending()
 				s.mu.Lock()
 				closed := s.closingOrClosedLocked()
 				turns := s.modelResponses
@@ -678,6 +683,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	}
 	s.setStateIfOpenLocked(SessionProcessing)
 	s.comm = communicateResult{}
+	// Pending asks resolve with this accepted turn (spec §5.2): clear here,
+	// beside comm's reset, under the lock already held (not via the
+	// clearAskPending helper, which takes s.mu itself and would deadlock).
+	s.askPending = nil
 	s.watchCallbackDelivered = false
 	s.mu.Unlock()
 
@@ -711,6 +720,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 	for round := 0; roundCap < 0 || round < roundCap; round++ {
 		roundStart := s.sclock().Now()
+		// Snapshot the pending-ask count before this round's tool calls run, so
+		// the delivery check below can compute the per-round delta (spec §5.1):
+		// a round that posts a question ends the turn, and the delta is the
+		// robust, self-contained way to detect that (rather than trusting the
+		// global count, which a later round should never even reach).
+		askBefore := s.askPendingCount()
 		var timings events.RoundTimings
 		timings.Round = round
 
@@ -898,8 +913,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall - timings.ToolExec - timings.Persistence - timings.AfterAction
 		s.emit(events.EventRoundTimings, timings)
 
-		// communicate sets the flag; exit the loop with the communicated message.
-		if done, text := s.deliverIfCommunicated(ctx); done {
+		// communicate sets the flag, or this round posted question(s) (spec
+		// §5.1) — either ends the turn; deliverIfCommunicated decides the
+		// boundary state and composes them.
+		askedThisRound := s.askPendingCount() > askBefore
+		if done, text := s.deliverIfCommunicated(ctx, askedThisRound); done {
 			return text, progressed, nil
 		}
 		if yieldToObserverCallback {

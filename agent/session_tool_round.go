@@ -367,22 +367,35 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 	return yieldToObserverCallback, nil
 }
 
-// deliverIfCommunicated checks whether the agent ended the turn this round via
-// the communicate/result tool. If so — and unless a Stop hook blocks completion,
-// in which case the turn keeps looping — it runs the Stop hooks, transitions the
-// session to idle, and returns done=true with the reply to hand back to the
-// caller. It returns done=false when nothing was delivered or a Stop hook blocked
-// completion, meaning the turn should continue to the next round.
-func (s *Session) deliverIfCommunicated(ctx context.Context) (done bool, text string) {
+// deliverIfCommunicated checks whether the round just completed ended the
+// turn — via the communicate/result tool, via a posted ask_user question, or
+// both (spec §5.1: communicate composes with an ask, never collides) — and if
+// so transitions the session to the right boundary state and returns
+// done=true with the reply to hand back to the caller. askedThisRound is the
+// caller's per-round delta (askPendingCount grew during this round); it takes
+// priority in choosing the boundary state (SessionAwaiting over SessionIdle)
+// and — critically — bypasses Stop hooks entirely: pending questions are a
+// stronger stop than a hook's veto, since a Blocked result would force the
+// model to answer its own questions and a persistent one would exhaust the
+// round cap and strand the session idle instead of awaiting. Stop hooks are
+// still consulted for a communicate-only boundary, exactly as before. It
+// returns done=false when nothing was delivered and no ask was posted, or a
+// Stop hook blocked a communicate-only completion, meaning the turn should
+// continue to the next round.
+func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool) (done bool, text string) {
 	s.mu.Lock()
 	delivered := s.comm.called
 	text = s.comm.reply
 	s.mu.Unlock()
-	if !delivered {
+	if !delivered && !askedThisRound {
 		return false, ""
 	}
-	// Stop hooks
-	if s.hookRunner != nil {
+	boundaryState := SessionIdle
+	if askedThisRound {
+		boundaryState = SessionAwaiting
+	} else if s.hookRunner != nil {
+		// Stop hooks (communicate-only boundary; not consulted at an ask
+		// boundary — spec §5.1/§5.5).
 		hi := s.hookInput(plugin.HookStop)
 		hi.Reason = "communicate.end_turn"
 		stopResult := s.hookRunner.RunStop(ctx, hi)
@@ -397,6 +410,6 @@ func (s *Session) deliverIfCommunicated(ctx context.Context) (done bool, text st
 			return false, ""
 		}
 	}
-	s.finishProcessingAtBoundary(ctx, SessionIdle)
+	s.finishProcessingAtBoundary(ctx, boundaryState)
 	return true, text
 }
