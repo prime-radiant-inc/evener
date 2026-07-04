@@ -135,6 +135,12 @@
       this.watchedChildRefs = new Map(); // child transcript ref -> subagent row (live activity push)
       this.suppressedToolCalls = new Set();
       this.pendingTaskCalls = new Map(); // callId -> args (for system-line rendering on END)
+      // ask_user (spec §6): questions are cached at TOOL_CALL_START, keyed by
+      // call_id, and consumed at TOOL_CALL_END — the live item/completed push
+      // does not carry arguments_json (only the item/started push does), so
+      // this mirrors pendingTaskCalls' cache-at-start pattern rather than
+      // re-parsing the END event.
+      this.pendingAskCalls = new Map(); // callId -> parsed questions[]
       this.lastCurrentTaskId = null;     // dedupe state for "now on X" system-line
       this.eventBuffer = [];             // queued until cold-load /tasks fetch resolves
       this.descriptionsReady = false;
@@ -177,11 +183,18 @@
       this.newContentPaintedCount = 0;
       this.newContentNeedsYou = false;
       this.newContentJumpTarget = null;
-      // Blocking "needs-you" question (mockup #16): the agentMessage element
-      // for an unanswered agent question, or null when none is
-      // pending. Drives both the in-flow amber frame (Alt A) and the docked
-      // bar above the composer (Alt C).
+      // Blocking "needs-you" question (mockup #16): the DOM element
+      // markAgentQuestion last framed — a plain prose question (Alt A) or an
+      // ask_user card (spec §6.1) — or null when none is pending. Drives both
+      // the in-flow amber frame and the docked bar above the composer (Alt C).
       this.agentQuestionEl = null;
+      // pendingAsk (spec §6): the turn's aggregated, globally-numbered set of
+      // pending ask_user questions across every call since the last resolving
+      // user turn, or null when nothing is pending. Rebuilt incrementally by
+      // handleAskUserAck (TOOL_CALL_END) and cleared by resolvePendingAsk
+      // (USER_INPUT) — the same incremental path drives cold and live attach,
+      // since both replay through handle().
+      this.pendingAsk = null;
 
       this.conversation.innerHTML = "";
 
@@ -198,6 +211,7 @@
       this.bindPaneParentLinks();
       this.syncTurnActionControls();
       this.bindKeyboard();
+      this.bindAskCardEscape();
       this.ensureLivenessEl();
       this.startLivenessTimer();
       // Cold-load hydration: fetch the task list ONCE before processing any
@@ -808,6 +822,8 @@
       this.subagentRowsByOriginItem.clear();
       this.suppressedToolCalls.clear();
       this.pendingTaskCalls.clear();
+      this.pendingAskCalls.clear();
+      this.pendingAsk = null;
       this.currentMessageId = null;
       this.userTurnIndex = 0;
       this.entryIndex = 0;
@@ -923,6 +939,8 @@
             this.subagentModule = null;
             this.suppressedToolCalls.clear();
             this.pendingTaskCalls.clear();
+            this.pendingAskCalls.clear();
+            this.pendingAsk = null;
             taskDescriptions.clear();
             taskDetails.clear();
             this.lastCurrentTaskId = null;
@@ -964,6 +982,12 @@
           // A user message answers any pending blocking question; tear down the
           // live "awaiting your answer" affordances (the in-flow frame stays).
           this.clearAgentQuestion();
+          // Resolves the WHOLE ask_user pending set at once (spec §5.2),
+          // whether this reply came from this client or another — USER_INPUT
+          // is pushed to every attached client regardless of who submitted it
+          // (spec §6.1). Steering/checkpoint/summary/system items never reach
+          // this case, so they correctly never resolve a pending ask.
+          this.resolvePendingAsk(data.text || "");
           this.lastUserText = data.text || "";
           this.snapshotSubmittedTurn(this.retryPayload(data.text || "", data.images || []));
           this.dissolveWelcome();
@@ -1033,6 +1057,19 @@
             this.pendingTaskCalls.set(data.call_id, { args, priorIds });
             break;
           }
+          if (data.tool_name === "ask_user") {
+            // The interactive card (built on ack, not on start — spec §6: a
+            // call with no ack is never pending, so there is nothing to show
+            // yet) and its eventual settled line replace the generic
+            // tool-call row entirely. Cache the questions now: the live
+            // item/completed push that drives TOOL_CALL_END does not carry
+            // arguments_json (only item/started does), so END cannot re-parse
+            // it — mirrors the task_list cache-at-start pattern above.
+            this.suppressedToolCalls.add(data.call_id);
+            const args = parseArgs(data.arguments_json);
+            this.pendingAskCalls.set(data.call_id, Array.isArray(args.questions) ? args.questions : []);
+            break;
+          }
           this.entryIndex++;
           this.beginToolCall(data);
           break;
@@ -1055,6 +1092,11 @@
             if (pending !== undefined) {
               this.pendingTaskCalls.delete(data.call_id);
               this.appendTaskListSystemLine(pending.args, parseToolState(data.tool_state), pending.priorIds);
+            }
+            if (data.tool_name === "ask_user") {
+              const questions = this.pendingAskCalls.get(data.call_id) || [];
+              this.pendingAskCalls.delete(data.call_id);
+              this.handleAskUserAck(data.call_id, questions, !!data.error);
             }
             break;
           }
@@ -1941,7 +1983,15 @@
         head.appendChild(glyph);
         head.appendChild(label);
         el.insertBefore(head, el.firstChild);
-        el.addEventListener("click", () => this.focusComposer());
+        // A plain prose question has no controls of its own, so clicking
+        // anywhere on it reasonably means "reply now" (focus the composer).
+        // The ask_user card (spec §6.1) is a form with its own chips/inputs/
+        // buttons — the whole-frame jump would fight normal interaction with
+        // them (e.g. stealing focus from a free-text field the reader just
+        // clicked into), so it wires its own click behavior instead.
+        if (!el.classList.contains("ask-card")) {
+          el.addEventListener("click", () => this.focusComposer());
+        }
       }
       this.agentQuestionEl = el;
       this.renderNeedsYouDock();
@@ -4224,7 +4274,10 @@
     },
 
     // jumpToAgentQuestion scrolls the transcript to the blocking question and
-    // focuses the composer so the reply is one keystroke away.
+    // focuses the reply control so answering is one keystroke away. An
+    // ask_user card (spec §6.1) focuses its FIRST question's own control —
+    // the reply here is a chip/button tap, not typed prose — falling back to
+    // the composer for a plain prose question (mockup #16 Alt A).
     jumpToAgentQuestion() {
       const sc = this.conversation;
       const q = this.agentQuestionEl;
@@ -4232,6 +4285,16 @@
         const top = Math.max(0, q.offsetTop - 16);
         if (typeof sc.scrollTo === "function") sc.scrollTo({ top, behavior: "smooth" });
         else sc.scrollTop = top;
+      }
+      if (this.pendingAsk) {
+        if (this.pendingAsk.collapsed) this.expandAskCard();
+        const first = this.pendingAsk.items[0];
+        const focusEl = first && first.el && first.el.querySelector("[data-ask-option-input], [data-ask-free-toggle]");
+        if (focusEl) {
+          focusEl.focus();
+          this.renderNeedsYouDock();
+          return;
+        }
       }
       this.focusComposer();
       this.renderNeedsYouDock();
@@ -4250,6 +4313,484 @@
       if (!this.agentQuestionEl) return;
       this.agentQuestionEl = null;
       this.renderNeedsYouDock();
+    },
+
+    // ── ask_user question card (spec §6/§6.1) ────────────────────────────────
+    // handleAskUserAck is the pending rule's only entry point (spec §6): a
+    // denied/failed ask posts nothing, and an ack-less (interrupted) call
+    // never reaches here at all (there is no TOOL_CALL_END to parse it from)
+    // — so both render no card, with no separate "ghost card" cleanup needed.
+    handleAskUserAck(callId, questions, hasError) {
+      if (hasError || !questions.length) return;
+      this.appendPendingAskQuestions(callId, questions);
+    },
+
+    // appendPendingAskQuestions merges a newly-acked ask_user call's questions
+    // into the turn's single aggregated card (spec §6.1: "multi-question calls
+    // stack as ONE card"), numbering them globally in posting order across
+    // every call this turn (spec §4.3). Creates the card on the first call;
+    // later calls in the same round extend it in place.
+    appendPendingAskQuestions(callId, questions) {
+      if (!this.pendingAsk) {
+        this.removeColdStartSkeleton();
+        this.endCheapCluster();
+        this.closeSubagentModule();
+        const el = this.buildAskCardEl();
+        this.conversation.appendChild(el);
+        this.pendingAsk = { el, items: [], collapsed: false, sending: false };
+      }
+      const pa = this.pendingAsk;
+      const questionsEl = pa.el.querySelector("[data-ask-questions]");
+      questions.forEach((q, idx) => {
+        q = q || {};
+        const item = {
+          key: callId + ":" + idx,
+          header: String(q.header || ""),
+          question: String(q.question || ""),
+          options: Array.isArray(q.options) ? q.options : [],
+          multiSelect: q.multi_select === true,
+          why: String(q.why || ""),
+          ifUnanswered: String(q.if_unanswered || ""),
+          note: "",
+          resolution: null,
+          el: null,
+        };
+        pa.items.push(item);
+        questionsEl.appendChild(this.buildAskQuestionEl(item));
+      });
+      this.updateAskFooter();
+      // Activates the dormant amber frame (mockup #16) and records the card
+      // as the dock's scroll target — idempotent across repeated calls.
+      this.markAgentQuestion(pa.el);
+    },
+
+    // buildAskCardEl creates the card container: the questions list, the
+    // footer (answered count + the single "Send answers" action, spec §6.1),
+    // and the Esc-collapsed "◆ question waiting" chip. Content is filled in
+    // by appendPendingAskQuestions/buildAskQuestionEl.
+    buildAskCardEl() {
+      const el = document.createElement("div");
+      el.className = "ask-card";
+      el.setAttribute("data-ask-card", "");
+
+      const questionsEl = document.createElement("div");
+      questionsEl.className = "ask-questions";
+      questionsEl.setAttribute("data-ask-questions", "");
+      el.appendChild(questionsEl);
+
+      const footer = document.createElement("div");
+      footer.className = "ask-footer";
+      const count = document.createElement("span");
+      count.className = "ask-answered-count";
+      count.setAttribute("data-ask-answered-count", "");
+      const send = document.createElement("button");
+      send.type = "button";
+      send.className = "btn btn-primary ask-send-btn";
+      send.setAttribute("data-ask-send-btn", "");
+      send.textContent = "Send answers";
+      send.addEventListener("click", () => this.sendAskAnswers());
+      footer.append(count, send);
+      el.appendChild(footer);
+
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "ask-collapsed-chip";
+      chip.setAttribute("data-ask-collapsed-chip", "");
+      chip.hidden = true;
+      chip.textContent = "◆ question waiting";
+      chip.addEventListener("click", () => this.expandAskCard());
+      el.appendChild(chip);
+
+      return el;
+    },
+
+    // buildAskQuestionEl renders one question's full control set (spec
+    // §6.1): recommended-first option chips (checkboxes when multi_select,
+    // else radios so the browser enforces single-select within the group), a
+    // free-text row, a "you decide" row with optional leaning, a "do that"
+    // fallback button when if_unanswered is present, a skip button, a dim
+    // `why` context line, and the question-level note control. Every control
+    // funnels into setQuestionResolution so exactly one resolution kind is
+    // ever active (spec §4.3: "exactly one resolution" per line).
+    buildAskQuestionEl(item) {
+      const num = this.pendingAsk.items.indexOf(item) + 1;
+      const el = document.createElement("div");
+      el.className = "ask-question";
+      el.setAttribute("data-ask-question", "");
+      el.dataset.askKey = item.key;
+
+      const head = document.createElement("div");
+      head.className = "ask-question-head";
+      const numEl = document.createElement("span");
+      numEl.className = "ask-question-num";
+      numEl.textContent = num + ".";
+      const headerEl = document.createElement("span");
+      headerEl.className = "ask-question-header";
+      headerEl.textContent = item.header;
+      head.append(numEl, headerEl);
+      el.appendChild(head);
+
+      const textEl = document.createElement("div");
+      textEl.className = "ask-question-text";
+      textEl.textContent = item.question;
+      el.appendChild(textEl);
+
+      if (item.why) {
+        const whyEl = document.createElement("div");
+        whyEl.className = "ask-why";
+        whyEl.setAttribute("data-ask-why", "");
+        whyEl.textContent = item.why;
+        el.appendChild(whyEl);
+      }
+
+      const groupName = "ask-opt-" + item.key.replace(/[^a-zA-Z0-9_-]/g, "_");
+      const optionsEl = document.createElement("div");
+      optionsEl.className = "ask-options";
+      optionsEl.setAttribute("data-ask-options", "");
+      // Recommended goes first (spec §4.2); Array.prototype.sort is stable, so
+      // non-recommended options otherwise keep the model's given order.
+      const orderedOptions = item.options.slice().sort((a, b) => {
+        const ar = a && a.recommended ? 1 : 0;
+        const br = b && b.recommended ? 1 : 0;
+        return br - ar;
+      });
+      for (const opt of orderedOptions) {
+        const label = String((opt && opt.label) || "");
+        const optLabel = document.createElement("label");
+        optLabel.className = "ask-option" + (opt && opt.recommended ? " recommended" : "");
+        optLabel.setAttribute("data-ask-option", "");
+        optLabel.dataset.optionLabel = label;
+        const input = document.createElement("input");
+        input.type = item.multiSelect ? "checkbox" : "radio";
+        if (!item.multiSelect) input.name = groupName;
+        input.setAttribute("data-ask-option-input", "");
+        input.addEventListener("change", () => {
+          if (!input.checked) {
+            // Unchecking the last-checked box in a multi-select group clears
+            // the resolution entirely (back to "nothing chosen yet").
+            if (item.resolution && item.resolution.kind === "option") {
+              const remaining = Array.from(optionsEl.querySelectorAll("[data-ask-option-input]:checked"))
+                .map((i) => i.closest("[data-ask-option]").dataset.optionLabel);
+              this.setQuestionResolution(item, remaining.length ? { kind: "option", labels: remaining } : null);
+            }
+            return;
+          }
+          if (item.multiSelect) {
+            const checked = Array.from(optionsEl.querySelectorAll("[data-ask-option-input]:checked"))
+              .map((i) => i.closest("[data-ask-option]").dataset.optionLabel);
+            this.setQuestionResolution(item, { kind: "option", labels: checked });
+          } else {
+            this.setQuestionResolution(item, { kind: "option", labels: [label] });
+          }
+        });
+        const labelText = document.createElement("span");
+        labelText.className = "ask-option-label";
+        labelText.textContent = label;
+        optLabel.append(input, labelText);
+        if (opt && opt.recommended) {
+          const tag = document.createElement("span");
+          tag.className = "ask-option-tag";
+          tag.textContent = "recommended";
+          optLabel.appendChild(tag);
+        }
+        if (opt && opt.detail) {
+          const detail = document.createElement("span");
+          detail.className = "ask-option-detail";
+          detail.textContent = opt.detail;
+          optLabel.appendChild(detail);
+        }
+        optionsEl.appendChild(optLabel);
+      }
+      el.appendChild(optionsEl);
+
+      // Free text / You decide / do that / skip: mutually exclusive with the
+      // options above and with each other (setQuestionResolution enforces one
+      // active resolution at a time). Clicking an already-active control
+      // toggles it back off, so the reader can back out without having to
+      // pick a different resolution.
+      const altRow = document.createElement("div");
+      altRow.className = "ask-alt-row";
+
+      const freeToggle = document.createElement("button");
+      freeToggle.type = "button";
+      freeToggle.className = "ask-free-toggle";
+      freeToggle.setAttribute("data-ask-free-toggle", "");
+      freeToggle.textContent = "Something else…";
+      const freeInput = document.createElement("input");
+      freeInput.type = "text";
+      freeInput.className = "ask-free-input";
+      freeInput.setAttribute("data-ask-free-input", "");
+      freeInput.placeholder = "type your answer";
+      freeInput.hidden = true;
+      freeToggle.addEventListener("click", () => {
+        if (item.resolution && item.resolution.kind === "free") { this.setQuestionResolution(item, null); return; }
+        this.setQuestionResolution(item, { kind: "free", text: "" });
+        freeInput.focus();
+      });
+      freeInput.addEventListener("input", () => {
+        this.setQuestionResolution(item, { kind: "free", text: freeInput.value }, { skipRender: true });
+      });
+      altRow.append(freeToggle, freeInput);
+
+      const decideToggle = document.createElement("button");
+      decideToggle.type = "button";
+      decideToggle.className = "ask-decide-toggle";
+      decideToggle.setAttribute("data-ask-decide-toggle", "");
+      decideToggle.textContent = "You decide";
+      const decideLeaning = document.createElement("input");
+      decideLeaning.type = "text";
+      decideLeaning.className = "ask-decide-leaning";
+      decideLeaning.setAttribute("data-ask-decide-leaning", "");
+      decideLeaning.placeholder = "leaning (optional)";
+      decideLeaning.hidden = true;
+      decideToggle.addEventListener("click", () => {
+        if (item.resolution && item.resolution.kind === "decide") { this.setQuestionResolution(item, null); return; }
+        this.setQuestionResolution(item, { kind: "decide", leaning: "" });
+        decideLeaning.focus();
+      });
+      decideLeaning.addEventListener("input", () => {
+        this.setQuestionResolution(item, { kind: "decide", leaning: decideLeaning.value }, { skipRender: true });
+      });
+      altRow.append(decideToggle, decideLeaning);
+
+      if (item.ifUnanswered) {
+        const fallbackBtn = document.createElement("button");
+        fallbackBtn.type = "button";
+        fallbackBtn.className = "ask-fallback-btn";
+        fallbackBtn.setAttribute("data-ask-fallback-btn", "");
+        fallbackBtn.textContent = "do that: " + item.ifUnanswered;
+        fallbackBtn.addEventListener("click", () => {
+          if (item.resolution && item.resolution.kind === "fallback") { this.setQuestionResolution(item, null); return; }
+          this.setQuestionResolution(item, { kind: "fallback" });
+        });
+        altRow.appendChild(fallbackBtn);
+      }
+
+      const skipBtn = document.createElement("button");
+      skipBtn.type = "button";
+      skipBtn.className = "ask-skip-btn";
+      skipBtn.setAttribute("data-ask-skip-btn", "");
+      skipBtn.textContent = "skip";
+      skipBtn.addEventListener("click", () => {
+        if (item.resolution && item.resolution.kind === "skip") { this.setQuestionResolution(item, null); return; }
+        this.setQuestionResolution(item, { kind: "skip" });
+      });
+      altRow.appendChild(skipBtn);
+      el.appendChild(altRow);
+
+      // Question-level note (spec §6.1): a low-contrast trailing control that
+      // attaches to WHICHEVER resolution is chosen, never a modal.
+      const noteRow = document.createElement("div");
+      noteRow.className = "ask-note-row";
+      const noteToggle = document.createElement("button");
+      noteToggle.type = "button";
+      noteToggle.className = "ask-note-toggle";
+      noteToggle.setAttribute("data-ask-note-toggle", "");
+      noteToggle.textContent = "+";
+      noteToggle.title = "add a note";
+      const noteField = document.createElement("input");
+      noteField.type = "text";
+      noteField.className = "ask-note-field";
+      noteField.setAttribute("data-ask-note-field", "");
+      noteField.placeholder = "note (optional)";
+      noteField.hidden = true;
+      noteToggle.addEventListener("click", () => {
+        noteField.hidden = !noteField.hidden;
+        if (!noteField.hidden) noteField.focus();
+      });
+      noteField.addEventListener("input", () => {
+        item.note = noteField.value;
+        this.updateAskFooter();
+      });
+      noteRow.append(noteToggle, noteField);
+      el.appendChild(noteRow);
+
+      item.el = el;
+      return el;
+    },
+
+    // setQuestionResolution is the single mutation point for a question's
+    // resolution, enforcing "exactly one resolution per line" (spec §4.3):
+    // setting any resolution clears every other control's active state for
+    // this question. opts.skipRender avoids fighting the caller's own input
+    // while the user is actively typing (free text / leaning) — the DOM
+    // already reflects the right control; only the answered-count needs
+    // updating.
+    setQuestionResolution(item, resolution, opts) {
+      opts = opts || {};
+      item.resolution = resolution;
+      if (!opts.skipRender && item.el) {
+        const el = item.el;
+        const kind = resolution && resolution.kind;
+        // Options: check exactly the ones named by an "option" resolution.
+        const wantLabels = kind === "option" ? new Set(resolution.labels) : new Set();
+        el.querySelectorAll("[data-ask-option]").forEach((label) => {
+          const input = label.querySelector("[data-ask-option-input]");
+          if (input) input.checked = wantLabels.has(label.dataset.optionLabel);
+        });
+        const freeInput = el.querySelector("[data-ask-free-input]");
+        if (freeInput) {
+          freeInput.hidden = kind !== "free";
+          freeInput.value = kind === "free" && resolution.text !== undefined ? resolution.text : "";
+        }
+        const decideLeaning = el.querySelector("[data-ask-decide-leaning]");
+        if (decideLeaning) {
+          decideLeaning.hidden = kind !== "decide";
+          decideLeaning.value = kind === "decide" && resolution.leaning !== undefined ? resolution.leaning : "";
+        }
+        el.querySelectorAll("[data-ask-fallback-btn], [data-ask-skip-btn], [data-ask-free-toggle], [data-ask-decide-toggle]")
+          .forEach((btn) => btn.classList.remove("active"));
+        const activeSelector = { fallback: "[data-ask-fallback-btn]", skip: "[data-ask-skip-btn]", free: "[data-ask-free-toggle]", decide: "[data-ask-decide-toggle]" }[kind];
+        if (activeSelector) {
+          const btn = el.querySelector(activeSelector);
+          if (btn) btn.classList.add("active");
+        }
+      }
+      this.updateAskFooter();
+    },
+
+    // updateAskFooter refreshes the "N of M answered" line. Send is always
+    // available regardless of this count: an unresolved question composes as
+    // "skipped (no answer)" (spec §4.3), so there is nothing to gate.
+    updateAskFooter() {
+      const pa = this.pendingAsk;
+      if (!pa || !pa.el) return;
+      const total = pa.items.length;
+      const answered = pa.items.filter((it) => it.resolution != null).length;
+      const countEl = pa.el.querySelector("[data-ask-answered-count]");
+      if (countEl) countEl.textContent = answered + " of " + total + (total === 1 ? " question" : " questions") + " answered";
+    },
+
+    // collapseAskCard / expandAskCard (spec §6.1): Esc collapses the still-
+    // pending card to a minimal "◆ question waiting" chip so it stops
+    // crowding the transcript without losing the answer; clicking the chip
+    // (or the notification deep link, jumpToAgentQuestion) restores it. Purely
+    // a visual fold — pendingAsk and every typed-but-unsent control value are
+    // untouched, so collapsing never discards an in-progress answer.
+    collapseAskCard() {
+      const pa = this.pendingAsk;
+      if (!pa || pa.collapsed) return;
+      pa.collapsed = true;
+      const questionsEl = pa.el.querySelector("[data-ask-questions]");
+      const footer = pa.el.querySelector(".ask-footer");
+      const chip = pa.el.querySelector("[data-ask-collapsed-chip]");
+      if (questionsEl) questionsEl.hidden = true;
+      if (footer) footer.hidden = true;
+      if (chip) chip.hidden = false;
+    },
+
+    expandAskCard() {
+      const pa = this.pendingAsk;
+      if (!pa || !pa.collapsed) return;
+      pa.collapsed = false;
+      const questionsEl = pa.el.querySelector("[data-ask-questions]");
+      const footer = pa.el.querySelector(".ask-footer");
+      const chip = pa.el.querySelector("[data-ask-collapsed-chip]");
+      if (questionsEl) questionsEl.hidden = false;
+      if (footer) footer.hidden = false;
+      if (chip) chip.hidden = true;
+    },
+
+    // bindAskCardEscape wires Esc to collapseAskCard, deferring to any open
+    // overlay exactly like bindSubagentEscapeToParent's existing Escape
+    // handler does (a second independent global listener, not a shared one,
+    // since the two collapse different things).
+    bindAskCardEscape() {
+      if (this.__escToAskCollapseBound) return;
+      this.__escToAskCollapseBound = true;
+      document.addEventListener("keydown", (e) => {
+        if (e.key !== "Escape" || e.metaKey || e.ctrlKey || e.altKey) return;
+        if (!this.pendingAsk || this.pendingAsk.collapsed) return;
+        if (document.getElementById("panel-scrim")) return;
+        if (document.getElementById("details-panel")) return;
+        if (document.getElementById("tasks-panel")) return;
+        const dlg = document.getElementById("search-dialog");
+        if (dlg && dlg.open) return;
+        this.collapseAskCard();
+      });
+    },
+
+    // resolvePendingAsk fires on every USER_INPUT (spec §6.1: "from this
+    // client or another") — a single reply resolves the WHOLE pending set at
+    // once (spec §5.2). Idempotent: a no-op once already resolved, so both
+    // this client's own optimistic send and the server's later echo of the
+    // same reply land safely.
+    resolvePendingAsk(replyText) {
+      if (!this.pendingAsk) return;
+      const pa = this.pendingAsk;
+      this.pendingAsk = null;
+      this.renderAskSettledLine(pa, replyText);
+      this.clearAgentQuestion();
+    },
+
+    // renderAskSettledLine replaces the interactive card with a neutral,
+    // dim line echoing the reply (spec §6.1) — reusing the ask_user tool
+    // renderer's target() formatter (renderer-tools.js) for "what was asked",
+    // the same summary every other tool's row would show.
+    renderAskSettledLine(pa, replyText) {
+      if (!pa.el || !pa.el.parentNode) return;
+      const askedSummary = toolRendererFor("ask_user").target({ questions: pa.items.map((it) => ({ header: it.header })) });
+      const echo = clip(String(replyText || "").replace(/\s+/g, " ").trim(), 160);
+      const line = document.createElement("div");
+      line.className = "system-line ask-settled-line";
+      line.textContent = "◆ asked " + askedSummary + (echo ? " — answered: " + echo : " — answered");
+      pa.el.parentNode.replaceChild(line, pa.el);
+    },
+
+    // dropComposedTextIntoComposer is the Conflict recovery path (spec
+    // §6.1): the composed reply is never auto-retried, so it drops into the
+    // ordinary composer for the user to decide what to do next.
+    dropComposedTextIntoComposer(text) {
+      const ta = document.querySelector("form[data-input-form] .message-input");
+      if (!ta) return;
+      ta.value = text;
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+      ta.focus();
+    },
+
+    // sendAskAnswers composes the §4.3 reply and submits it as an ordinary
+    // turn/start via window.SerfAppwire.startTurn — the exact function the
+    // composer's own submit handler calls (bindInputForm below) — never a
+    // parallel send path. Submit discipline (spec §6.1, "round 4"):
+    //   - Re-check before sending: every USER_INPUT this client observes —
+    //     its own reply or another client's — resolves this.pendingAsk
+    //     synchronously (the USER_INPUT case in handle()), and a suspended/
+    //     reconnecting tab re-derives it from a full transcript replay before
+    //     the composer becomes usable again (connectAppwire). So a non-null
+    //     pendingAsk here is never stale: if it's gone, a reply already
+    //     landed — collapse instead of sending.
+    //   - A turn/start Conflict (another client's reply won the daemon's
+    //     atomic reservation) is never auto-retried: the composed text drops
+    //     into the composer instead.
+    async sendAskAnswers() {
+      const pa = this.pendingAsk;
+      if (!pa || pa.sending) return;
+      pa.sending = true;
+      const composedText = composeAskAnswers(pa.items);
+      const ref = this.appwireRef || this.sessionId;
+      try {
+        if (!window.SerfAppwire || typeof window.SerfAppwire.startTurn !== "function") {
+          this.appendBanner("error", "send is not available for this session", { source: "hub", title: "Hub send error" });
+          return;
+        }
+        const previousUserCount = this.userMessageCount();
+        const resp = await window.SerfAppwire.startTurn(ref, composedText, []);
+        if (this.pendingAsk !== pa) return; // resolved/replaced while the request was in flight
+        const turnId = (resp && resp.turn && resp.turn.id) || "";
+        this.setActiveTurnId(turnId || this.activeTurnId);
+        this.appendLocalUserMessage(composedText, [], turnId, previousUserCount);
+        this.resolvePendingAsk(composedText);
+        this.ensureLiveStream();
+      } catch (err) {
+        if (this.pendingAsk !== pa) return;
+        if (err && err.serfErrorInfo === "conflict") {
+          this.dropComposedTextIntoComposer(composedText);
+          return;
+        }
+        this.appendBanner("error", "send failed: " + err.message, { source: "hub", title: "Hub send error" });
+      } finally {
+        pa.sending = false;
+      }
     },
 
     bindInputForm() {
@@ -4515,6 +5056,11 @@
             name: a.name || "",
           }));
           this.appendLocalUserMessage(text, echoImages, turnId, previousUserCount);
+          // Typed prose is a valid ask_user reply too (spec §4.3/§6.1: the
+          // composer is always the escape hatch) — resolve any pending card
+          // optimistically here, the same as sendAskAnswers' own send does,
+          // rather than waiting a round-trip for the server's USER_INPUT echo.
+          this.resolvePendingAsk(text);
           clearComposerDraftIfUnchanged(submittedValue);
           // Clear only the submitted snapshot and repaint the chip container
           // so attachments staged while this request was in flight remain.
@@ -4697,6 +5243,69 @@
     });
   }
   SerfRenderer.applyStatusDotPulse = applyStatusDotPulse;
+
+  // quoteGoString renders a string the way Go's %q verb would (spec §4.3:
+  // every echoed model-/user-authored string is Go-%q-quoted so embedded
+  // quotes, commas, and newlines can't corrupt the reply's framing). Covers
+  // exactly the realistic subset this feature needs — printable text plus the
+  // control characters a typed note or answer can actually contain (\n \t
+  // \r) — escaped exactly as strconv.Quote would; any other C0 control
+  // character falls back to \xHH (lowercase hex), matching Go's escape for
+  // bytes it doesn't special-case. Non-ASCII/DEL are not attempted: the wire
+  // format only ever carries typed prose, never binary payloads.
+  function quoteGoString(s) {
+    s = s == null ? "" : String(s);
+    let out = "\"";
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      const code = s.charCodeAt(i);
+      if (ch === "\\") out += "\\\\";
+      else if (ch === "\"") out += "\\\"";
+      else if (ch === "\n") out += "\\n";
+      else if (ch === "\t") out += "\\t";
+      else if (ch === "\r") out += "\\r";
+      else if (code < 0x20) out += "\\x" + code.toString(16).padStart(2, "0");
+      else out += ch;
+    }
+    return out + "\"";
+  }
+
+  // askResolutionText renders one question's resolution per spec §4.3's
+  // exact vocabulary. An item with no resolution composes identically to an
+  // explicit skip ("skipped (no answer)") — the reply format defines exactly
+  // 5 resolution kinds, not a 6th "unanswered" kind.
+  function askResolutionText(item) {
+    const r = item.resolution;
+    const kind = r && r.kind;
+    if (kind === "option" && Array.isArray(r.labels) && r.labels.length) {
+      return r.labels.map(quoteGoString).join(", ");
+    }
+    if (kind === "free") return "free text: " + quoteGoString(r.text || "");
+    if (kind === "decide") {
+      let s = "you decide";
+      if (r.leaning && String(r.leaning).trim()) s += " — leaning: " + quoteGoString(r.leaning);
+      return s;
+    }
+    if (kind === "fallback") return "do your stated fallback (" + quoteGoString(item.ifUnanswered || "") + ")";
+    return "skipped (no answer)";
+  }
+
+  // composeAskAnswers renders the [answers] reply (spec §4.3, byte-exact —
+  // golden-string tested): global numbering in posting order across every
+  // ask_user call in the turn's pending set, one resolution per line, every
+  // line carrying its header and an optional trailing note (spec §4.3: the
+  // annotation is universal, not chip-only).
+  function composeAskAnswers(items) {
+    const lines = ["[answers]"];
+    (items || []).forEach((item, idx) => {
+      let line = (idx + 1) + ". [" + item.header + "] → " + askResolutionText(item);
+      if (item.note && String(item.note).trim()) line += " — note: " + quoteGoString(item.note);
+      lines.push(line);
+    });
+    return lines.join("\n");
+  }
+  SerfRenderer.quoteGoString = quoteGoString;
+  SerfRenderer.composeAskAnswers = composeAskAnswers;
 
   window.SerfRenderer = SerfRenderer;
 
