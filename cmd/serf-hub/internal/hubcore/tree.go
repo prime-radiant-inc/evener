@@ -525,7 +525,7 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 
 		// Project placement: a project is archived when manually archived or when
 		// it has no non-archived (Current/Recent) sessions.
-		isArchived := decisions[ArchiveKey{Kind: "project", ID: acc.name}] ||
+		isArchived := projectArchivedDecision(decisions, path, acc.name) ||
 			(len(current) == 0 && len(recent) == 0)
 
 		// Cap each tier so a project with hundreds of runs can't bloat the
@@ -744,6 +744,20 @@ func decisionFor(decisions map[ArchiveKey]bool, id string) *bool {
 		return &v
 	}
 	return nil
+}
+
+// projectArchivedDecision resolves a project's manual archive decision. A
+// path-keyed row always wins; a legacy basename-keyed row is honored only when
+// no path-keyed row exists (round-2 B7 / round-3 G3 precedence). Returns false
+// when neither row is present.
+func projectArchivedDecision(decisions map[ArchiveKey]bool, path, basename string) bool {
+	if v, ok := decisions[ArchiveKey{Kind: "project", ID: path}]; ok {
+		return v
+	}
+	if v, ok := decisions[ArchiveKey{Kind: "project", ID: basename}]; ok {
+		return v
+	}
+	return false
 }
 
 // clusterRepeatedTitles folds same-titled idle/ended sessions into a single

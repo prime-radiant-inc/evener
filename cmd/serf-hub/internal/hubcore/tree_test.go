@@ -1127,3 +1127,22 @@ func TestNoProjectKeyIsStable(t *testing.T) {
 		t.Fatalf("want a single (no project)/no-project node, got %+v", tree.Projects)
 	}
 }
+
+func TestProjectArchiveDecisionPathKeyedWithLegacyFallback(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	mk := func(id, wd string) schema.SessionMeta {
+		return schema.SessionMeta{ID: id, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: wd}}
+	}
+	// Legacy basename row archives BOTH co-basename projects (read fallback).
+	legacy := map[ArchiveKey]bool{{Kind: "project", ID: "foo"}: true}
+	tree := BuildTreeAt([]schema.SessionMeta{mk("01A", "/a/foo"), mk("01B", "/b/foo")}, nil, legacy, now)
+	if len(tree.Projects) != 0 || len(tree.ArchivedProjects) != 2 {
+		t.Fatalf("legacy basename row should archive both; got projects=%d archived=%d", len(tree.Projects), len(tree.ArchivedProjects))
+	}
+	// A path-keyed row wins over the legacy row: /a/foo explicitly unarchived.
+	precedence := map[ArchiveKey]bool{{Kind: "project", ID: "foo"}: true, {Kind: "project", ID: "/a/foo"}: false}
+	tree = BuildTreeAt([]schema.SessionMeta{mk("01A", "/a/foo"), mk("01B", "/b/foo")}, nil, precedence, now)
+	if len(tree.Projects) != 1 || tree.Projects[0].WorkingDir != "/a/foo" {
+		t.Fatalf("path row false must win over legacy true; got %+v", tree.Projects)
+	}
+}
