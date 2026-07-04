@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -50,14 +51,23 @@ func failedConn(cfg mcpconfig.ServerConfig, err error) conn {
 	return conn{name: cfg.Name, cfg: cfg, status: "failed", lastErr: err, lastErrAt: time.Now()}
 }
 
-// NewManager connects to all configured MCP servers and discovers their tools,
-// namespacing them. It does not abort the batch when one server's transport
+// NewManager connects to all configured MCP servers concurrently and
+// discovers their tools, namespacing them. Each server's transport build,
+// connect, and tools/list run in their own goroutine under their own 10s
+// timeout (derived from ctx), so one slow or hung server cannot delay or
+// starve the others. It does not abort the batch when one server's transport
 // build, connect, or tools/list fails: a conn is retained for every config
 // (failed ones with status "failed" and no session), and each such failure is
 // reported in the returned []ServerOutcome with Stage "connect". The manager
 // is nil only when configs is empty. The transports parameter is optional:
 // when nil, transports are created from configs. When provided (for testing),
 // each transport[i] corresponds to configs[i].
+//
+// conns is preallocated to len(configs) and each goroutine writes exactly one
+// index (mgr.conns[i], matching configs[i]), so the result is always in
+// config order regardless of which server's connect finishes first — no
+// mutex is needed on conns itself, since every index has exactly one writer
+// and mgr.conns is only read after wg.Wait() establishes happens-before.
 func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, transports []mcpsdk.Transport) (*Manager, []ServerOutcome) {
 	if len(configs) == 0 {
 		return nil, nil
@@ -68,62 +78,81 @@ func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, transport
 		Version: "v1",
 	}, nil)
 
-	mgr := &Manager{}
-	var outcomes []ServerOutcome
+	mgr := &Manager{conns: make([]conn, len(configs))}
+	var wg sync.WaitGroup
+	wg.Add(len(configs))
 	for i, cfg := range configs {
 		var transport mcpsdk.Transport
 		if transports != nil && i < len(transports) {
 			transport = transports[i]
-		} else {
-			var err error
-			transport, err = transportForConfig(cfg)
-			if err != nil {
-				mgr.conns = append(mgr.conns, failedConn(cfg, err))
-				outcomes = append(outcomes, ServerOutcome{Name: cfg.Name, Stage: "connect", Err: err})
-				continue
-			}
 		}
+		go func(i int, cfg mcpconfig.ServerConfig, transport mcpsdk.Transport) {
+			defer wg.Done()
+			mgr.conns[i] = connectOne(ctx, client, cfg, transport)
+		}(i, cfg, transport)
+	}
+	wg.Wait()
 
-		session, err := client.Connect(ctx, transport, nil)
-		if err != nil {
-			mgr.conns = append(mgr.conns, failedConn(cfg, err))
-			outcomes = append(outcomes, ServerOutcome{Name: cfg.Name, Stage: "connect", Err: err})
-			continue
+	var outcomes []ServerOutcome
+	for _, c := range mgr.conns {
+		if c.status != "connected" {
+			outcomes = append(outcomes, ServerOutcome{Name: c.name, Stage: "connect", Err: c.lastErr})
 		}
-
-		// Discover tools from the server.
-		result, err := session.ListTools(ctx, nil)
-		if err != nil {
-			_ = session.Close()
-			mgr.conns = append(mgr.conns, failedConn(cfg, err))
-			outcomes = append(outcomes, ServerOutcome{Name: cfg.Name, Stage: "connect", Err: err})
-			continue
-		}
-
-		var tools []llm.ToolDefinition
-		origNames := make(map[string]string, len(result.Tools))
-		for _, t := range result.Tools {
-			namespacedName := sanitizeToolName(cfg.Name + "__" + t.Name)
-			origNames[namespacedName] = t.Name
-			params := mcpSchemaToParams(t.InputSchema)
-			tools = append(tools, llm.ToolDefinition{
-				Name:        namespacedName,
-				Description: t.Description,
-				Parameters:  params,
-			})
-		}
-
-		mgr.conns = append(mgr.conns, conn{
-			name:      cfg.Name,
-			cfg:       cfg,
-			session:   session,
-			tools:     tools,
-			origNames: origNames,
-			status:    "connected",
-		})
 	}
 
 	return mgr, outcomes
+}
+
+// connectOne builds (if transport is nil, from cfg) or reuses the given
+// transport, connects to a single MCP server, and discovers its tools — all
+// bounded by a 10s timeout derived from ctx. Any failure building the
+// transport, connecting, or listing tools yields a "failed" conn recording
+// the error; NewManager turns that into a connect-stage ServerOutcome.
+func connectOne(ctx context.Context, client *mcpsdk.Client, cfg mcpconfig.ServerConfig, transport mcpsdk.Transport) conn {
+	perServerCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	if transport == nil {
+		var err error
+		transport, err = transportForConfig(cfg)
+		if err != nil {
+			return failedConn(cfg, err)
+		}
+	}
+
+	session, err := client.Connect(perServerCtx, transport, nil)
+	if err != nil {
+		return failedConn(cfg, err)
+	}
+
+	// Discover tools from the server.
+	result, err := session.ListTools(perServerCtx, nil)
+	if err != nil {
+		_ = session.Close()
+		return failedConn(cfg, err)
+	}
+
+	var tools []llm.ToolDefinition
+	origNames := make(map[string]string, len(result.Tools))
+	for _, t := range result.Tools {
+		namespacedName := sanitizeToolName(cfg.Name + "__" + t.Name)
+		origNames[namespacedName] = t.Name
+		params := mcpSchemaToParams(t.InputSchema)
+		tools = append(tools, llm.ToolDefinition{
+			Name:        namespacedName,
+			Description: t.Description,
+			Parameters:  params,
+		})
+	}
+
+	return conn{
+		name:      cfg.Name,
+		cfg:       cfg,
+		session:   session,
+		tools:     tools,
+		origNames: origNames,
+		status:    "connected",
+	}
 }
 
 // ToolDefinitions returns namespaced tool definitions from servers whose
