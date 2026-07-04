@@ -144,7 +144,15 @@ func (m *Manager) RegisterTools(reg *tool.Registry) error {
 					if err != nil {
 						return nil, err
 					}
-					return mcpResultToString(result), nil
+					body := mcpResultToString(result)
+					if result != nil && result.IsError {
+						// Channel B: the server reported a tool-level error (e.g. an
+						// upstream 4xx). Return it through the error path so the tool
+						// result reaches the model as an error-typed tool_result and
+						// renders red, instead of a green success carrying the error text.
+						return body, errors.New("MCP tool reported an error")
+					}
+					return body, nil
 				},
 			}); err != nil {
 				return fmt.Errorf("registering MCP tool %q: %w", td.Name, err)
