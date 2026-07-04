@@ -139,12 +139,21 @@ func TestIntg_InitMCP_RegisterToolsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession must survive an MCP tool name exceeding the length limit, got: %v", err)
 	}
-	defer sess.Close()
-	if len(sess.pendingMCPWarnings) == 0 {
-		t.Fatal("expected a pending MCP warning for the register failure")
-	}
 	if want := longName + "__echo"; sess.reg.Get(want) != nil {
 		t.Error("a failed server must contribute no callable tool")
+	}
+	// The pending warning is flushed onto the event stream at SESSION_START
+	// (session_events.go's emitSessionStartEnvelope flushes pendingMCPWarnings
+	// and resets it to nil), so it no longer sits on the field by the time
+	// NewSession returns: check the stream instead.
+	var sawWarning bool
+	for _, w := range drainWarnings(t, sess) {
+		if strings.Contains(w.Message, longName) {
+			sawWarning = true
+		}
+	}
+	if !sawWarning {
+		t.Fatal("expected a WARNING event for the register failure")
 	}
 }
 
@@ -164,12 +173,21 @@ func TestIntg_InitMCP_ConnectError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession must survive a dead MCP server, got: %v", err)
 	}
-	defer sess.Close()
-	if len(sess.pendingMCPWarnings) == 0 {
-		t.Fatal("expected a pending MCP warning for the dead server")
-	}
 	if sess.reg.Get("deadsvc__echo") != nil {
 		t.Error("a failed server must contribute no callable tool")
+	}
+	// The pending warning is flushed onto the event stream at SESSION_START
+	// (session_events.go's emitSessionStartEnvelope flushes pendingMCPWarnings
+	// and resets it to nil), so it no longer sits on the field by the time
+	// NewSession returns: check the stream instead.
+	var sawWarning bool
+	for _, w := range drainWarnings(t, sess) {
+		if strings.Contains(w.Message, "deadsvc") {
+			sawWarning = true
+		}
+	}
+	if !sawWarning {
+		t.Fatal("expected a WARNING event for the dead server")
 	}
 }
 
