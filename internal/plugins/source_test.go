@@ -7,7 +7,7 @@ import (
 
 func TestSource_UnmarshalObjectForms(t *testing.T) {
 	cases := map[string]Source{
-		`{"source":"github","repo":"o/r"}`:                          {Kind: SourceGitHub, Repo: "o/r"},
+		`{"source":"github","repo":"o/r"}`:                           {Kind: SourceGitHub, Repo: "o/r"},
 		`{"source":"url","url":"https://x/y.git"}`:                   {Kind: SourceURL, URL: "https://x/y.git"},
 		`{"source":"directory","path":"/abs"}`:                       {Kind: SourceDirectory, Path: "/abs"},
 		`{"source":"git-subdir","url":"https://x.git","path":"a/b"}`: {Kind: SourceGitSubdir, URL: "https://x.git", Path: "a/b"},

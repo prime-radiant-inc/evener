@@ -93,41 +93,41 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 
 	// Fetch into a staging dir first so a bad marketplace never half-registers.
 	staging := m.marketplaceDir(".staging")
-	os.RemoveAll(staging)
+	_ = os.RemoveAll(staging)
 	root, err := m.fetchMarketplaceContainer(ctx, src, staging)
 	if err != nil {
-		os.RemoveAll(staging)
+		_ = os.RemoveAll(staging)
 		return MarketplaceRef{}, err
 	}
 	cat, err := ParseCatalog(root)
 	if err != nil {
-		os.RemoveAll(staging)
+		_ = os.RemoveAll(staging)
 		return MarketplaceRef{}, fmt.Errorf("reading marketplace.json: %w", err)
 	}
 	if name == "" {
 		name = cat.Name
 	}
 	if name == "" {
-		os.RemoveAll(staging)
+		_ = os.RemoveAll(staging)
 		return MarketplaceRef{}, errors.New("marketplace has no name and none was given")
 	}
 
 	installLoc := src.Path // directory source: in place
 	if src.Kind != SourceDirectory {
 		installLoc = m.marketplaceDir(name)
-		os.RemoveAll(installLoc)
+		_ = os.RemoveAll(installLoc)
 		if err := os.Rename(staging, installLoc); err != nil {
-			os.RemoveAll(staging)
+			_ = os.RemoveAll(staging)
 			return MarketplaceRef{}, fmt.Errorf("installing marketplace clone: %w", err)
 		}
 	} else {
-		os.RemoveAll(staging)
+		_ = os.RemoveAll(staging)
 	}
 
 	mk, err := m.loadMarketplaces()
 	if err != nil {
 		if src.Kind != SourceDirectory {
-			os.RemoveAll(installLoc)
+			_ = os.RemoveAll(installLoc)
 		}
 		return MarketplaceRef{}, err
 	}
@@ -135,7 +135,7 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 	mk[name] = ref
 	if err := m.saveMarketplaces(mk); err != nil {
 		if src.Kind != SourceDirectory {
-			os.RemoveAll(installLoc)
+			_ = os.RemoveAll(installLoc)
 		}
 		return MarketplaceRef{}, err
 	}
@@ -160,7 +160,7 @@ func (m *Manager) RemoveMarketplace(name string) error {
 	}
 	if ref.Source.Kind != SourceDirectory {
 		if err := os.RemoveAll(m.marketplaceDir(name)); err != nil {
-			fmt.Fprintf(m.stderr(), "warning: removing marketplace clone %s: %v\n", m.marketplaceDir(name), err)
+			_, _ = fmt.Fprintf(m.stderr(), "warning: removing marketplace clone %s: %v\n", m.marketplaceDir(name), err)
 		}
 	}
 	delete(mk, name)

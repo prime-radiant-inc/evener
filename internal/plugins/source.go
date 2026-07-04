@@ -103,7 +103,7 @@ func fetchPluginSource(ctx context.Context, src Source, marketplaceRoot, destDir
 		return gitHeadSHA(ctx, destDir)
 	case src.Kind == SourceGitSubdir:
 		clone := destDir + ".clone"
-		defer os.RemoveAll(clone)
+		defer func() { _ = os.RemoveAll(clone) }()
 		if err := gitSparseClone(ctx, src.URL, clone, src.Path, src.Ref, src.Sha); err != nil {
 			return "", err
 		}
@@ -117,7 +117,7 @@ func fetchPluginSource(ctx context.Context, src Source, marketplaceRoot, destDir
 }
 
 // copyTree recursively copies src to dst (files, dirs, and symlink targets as
-// regular files); dst is created fresh.
+// regular files), creating directories as needed and overwriting existing files.
 func copyTree(src, dst string) error {
 	info, err := os.Stat(src)
 	if err != nil {
@@ -142,7 +142,7 @@ func copyTree(src, dst string) error {
 		if err != nil {
 			return err
 		}
-		defer in.Close()
+		defer func() { _ = in.Close() }()
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
@@ -150,8 +150,10 @@ func copyTree(src, dst string) error {
 		if err != nil {
 			return err
 		}
-		defer out.Close()
 		_, err = io.Copy(out, in)
+		if closeErr := out.Close(); err == nil {
+			err = closeErr
+		}
 		return err
 	})
 }

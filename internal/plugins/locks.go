@@ -31,11 +31,11 @@ func acquireLock(lockPath string, timeout time.Duration) (func(), error) {
 			}, nil
 		}
 		if err != unix.EWOULDBLOCK && err != unix.EAGAIN {
-			f.Close()
+			_ = f.Close()
 			return nil, fmt.Errorf("flock %s: %w", lockPath, err)
 		}
 		if time.Now().After(deadline) {
-			f.Close()
+			_ = f.Close()
 			return nil, fmt.Errorf("another serf plugin operation is in progress (locked: %s)", lockPath)
 		}
 		time.Sleep(backoff)

@@ -6,9 +6,10 @@ import (
 )
 
 func TestDefaultRoot_UsesXDGConfigHome(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "/tmp/xdgcfg")
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
 	got := DefaultRoot()
-	want := filepath.Join("/tmp/xdgcfg", "serf", "plugins")
+	want := filepath.Join(xdg, "serf", "plugins")
 	if got != want {
 		t.Fatalf("DefaultRoot() = %q, want %q", got, want)
 	}
@@ -17,11 +18,11 @@ func TestDefaultRoot_UsesXDGConfigHome(t *testing.T) {
 func TestManagerPaths(t *testing.T) {
 	m := NewManager("/store")
 	cases := map[string]string{
-		m.registryPath():                       "/store/installed_plugins.json",
-		m.marketplacesDir():                    "/store/marketplaces",
-		m.cacheDir():                           "/store/cache",
-		m.lockPath():                           "/store/.lock",
-		m.marketplaceDir("acme"):               "/store/marketplaces/acme",
+		m.registryPath():                         "/store/installed_plugins.json",
+		m.marketplacesDir():                      "/store/marketplaces",
+		m.cacheDir():                             "/store/cache",
+		m.lockPath():                             "/store/.lock",
+		m.marketplaceDir("acme"):                 "/store/marketplaces/acme",
 		m.pluginCacheDir("acme", "widget", "ab"): "/store/cache/acme/widget/ab",
 	}
 	for got, want := range cases {

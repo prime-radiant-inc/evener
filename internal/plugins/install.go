@@ -49,10 +49,10 @@ func (m *Manager) stagePlugin(ctx context.Context, marketplace, plugin string, r
 		}
 	}
 	staging := m.pluginCacheDir(marketplace, plugin, ".staging")
-	os.RemoveAll(staging)
+	_ = os.RemoveAll(staging)
 	sha, err = fetchPluginSource(ctx, cp.Source, m.catalogRoot(ref), staging)
 	if err != nil {
-		os.RemoveAll(staging)
+		_ = os.RemoveAll(staging)
 		return "", "", false, err
 	}
 	return staging, sha, true, nil
@@ -66,13 +66,13 @@ func (m *Manager) commitStaged(marketplace, plugin, staging, sha string) (string
 		key = "unknown"
 	}
 	final := m.pluginCacheDir(marketplace, plugin, key)
-	os.RemoveAll(final)
+	_ = os.RemoveAll(final)
 	if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
-		os.RemoveAll(staging)
+		_ = os.RemoveAll(staging)
 		return "", err
 	}
 	if err := os.Rename(staging, final); err != nil {
-		os.RemoveAll(staging)
+		_ = os.RemoveAll(staging)
 		return "", err
 	}
 	return final, nil
@@ -103,7 +103,7 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 	}
 	if err := validatePluginDir(dir); err != nil {
 		if strings.HasPrefix(dir, m.cacheDir()+string(os.PathSeparator)) {
-			os.RemoveAll(dir)
+			_ = os.RemoveAll(dir)
 		}
 		return InstallEntry{}, fmt.Errorf("installed plugin failed validation: %w", err)
 	}
@@ -163,7 +163,7 @@ func (m *Manager) Upgrade(ctx context.Context, plugin, marketplace string) (Inst
 	}
 	if !staged || sha == prev.GitCommitSha {
 		if staged {
-			os.RemoveAll(staging)
+			_ = os.RemoveAll(staging)
 		}
 		return prev, nil
 	}
@@ -173,7 +173,7 @@ func (m *Manager) Upgrade(ctx context.Context, plugin, marketplace string) (Inst
 		return InstallEntry{}, err
 	}
 	if err := validatePluginDir(final); err != nil {
-		os.RemoveAll(final)
+		_ = os.RemoveAll(final)
 		return InstallEntry{}, fmt.Errorf("upgraded plugin failed validation: %w", err)
 	}
 
@@ -238,7 +238,7 @@ func (m *Manager) Remove(plugin, marketplace string) error {
 	if len(entries) > 0 {
 		p := entries[0].InstallPath
 		if strings.HasPrefix(p, m.cacheDir()+string(os.PathSeparator)) {
-			os.RemoveAll(p)
+			_ = os.RemoveAll(p)
 		}
 	}
 	delete(reg.Plugins, key)

@@ -38,7 +38,7 @@ func DefaultRoot() string {
 	return filepath.Join(dir, "serf", "plugins")
 }
 
-func (m *Manager) registryPath() string   { return filepath.Join(m.Root, "installed_plugins.json") }
+func (m *Manager) registryPath() string { return filepath.Join(m.Root, "installed_plugins.json") }
 func (m *Manager) marketplacesFile() string {
 	return filepath.Join(m.Root, "known_marketplaces.json")
 }
