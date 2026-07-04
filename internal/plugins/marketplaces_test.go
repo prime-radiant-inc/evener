@@ -58,3 +58,47 @@ func TestAddListRemoveMarketplace(t *testing.T) {
 		t.Fatal("clone dir not deleted after remove")
 	}
 }
+
+func TestAddMarketplace_GitSubdirBrowse(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := filepath.Join(t.TempDir(), "monorepo")
+	if err := os.MkdirAll(filepath.Join(repo, "mkt", ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "mkt", ".claude-plugin", "marketplace.json"),
+		[]byte(`{"name":"acme","owner":{"name":"o"},"plugins":[{"name":"widget","source":"./plugins/widget"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	makeGitRepo(t, repo, "README.md", "root") // commits everything incl. mkt/
+
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceGitSubdir, URL: repo, Path: "mkt"}); err != nil {
+		t.Fatalf("AddMarketplace git-subdir: %v", err)
+	}
+	cat, err := m.Browse("acme")
+	if err != nil {
+		t.Fatalf("Browse git-subdir marketplace: %v", err)
+	}
+	if cat.Name != "acme" || len(cat.Plugins) != 1 {
+		t.Fatalf("catalog = %+v", cat)
+	}
+}
+
+func TestRemoveMarketplace_DirectorySourceKeepsContents(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	dir := makeMarketplaceRepo(t, "local")
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceDirectory, Path: dir}); err != nil {
+		t.Fatalf("AddMarketplace directory: %v", err)
+	}
+	if err := m.RemoveMarketplace("local"); err != nil {
+		t.Fatalf("RemoveMarketplace: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".claude-plugin", "marketplace.json")); err != nil {
+		t.Fatalf("directory source contents deleted on remove: %v", err)
+	}
+}

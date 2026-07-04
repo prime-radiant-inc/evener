@@ -60,3 +60,10 @@ func (m *Manager) now() time.Time {
 	}
 	return time.Now()
 }
+
+func (m *Manager) stderr() io.Writer {
+	if m.Stderr != nil {
+		return m.Stderr
+	}
+	return os.Stderr
+}

@@ -57,5 +57,5 @@ func (m *Manager) Browse(name string) (Catalog, error) {
 	if !ok {
 		return Catalog{}, fmt.Errorf("marketplace %q not found", name)
 	}
-	return ParseCatalog(ref.InstallLocation)
+	return ParseCatalog(m.catalogRoot(ref))
 }

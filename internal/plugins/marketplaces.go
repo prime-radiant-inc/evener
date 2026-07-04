@@ -19,6 +19,16 @@ type MarketplaceRef struct {
 
 type Marketplaces map[string]MarketplaceRef
 
+// catalogRoot is the directory holding .claude-plugin/marketplace.json for a
+// registered marketplace. For a git-subdir source the manifest lives in the
+// subdir under the clone root; otherwise it is InstallLocation itself.
+func (m *Manager) catalogRoot(ref MarketplaceRef) string {
+	if ref.Source.Kind == SourceGitSubdir {
+		return filepath.Join(ref.InstallLocation, ref.Source.Path)
+	}
+	return ref.InstallLocation
+}
+
 func (m *Manager) loadMarketplaces() (Marketplaces, error) {
 	data, err := os.ReadFile(m.marketplacesFile())
 	if err != nil {
@@ -116,11 +126,17 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 
 	mk, err := m.loadMarketplaces()
 	if err != nil {
+		if src.Kind != SourceDirectory {
+			os.RemoveAll(installLoc)
+		}
 		return MarketplaceRef{}, err
 	}
 	ref := MarketplaceRef{Source: src, InstallLocation: installLoc, LastUpdated: m.now().UTC()}
 	mk[name] = ref
 	if err := m.saveMarketplaces(mk); err != nil {
+		if src.Kind != SourceDirectory {
+			os.RemoveAll(installLoc)
+		}
 		return MarketplaceRef{}, err
 	}
 	return ref, nil
@@ -143,7 +159,9 @@ func (m *Manager) RemoveMarketplace(name string) error {
 		return fmt.Errorf("marketplace %q not found", name)
 	}
 	if ref.Source.Kind != SourceDirectory {
-		os.RemoveAll(m.marketplaceDir(name)) // never delete a directory-source's own contents
+		if err := os.RemoveAll(m.marketplaceDir(name)); err != nil {
+			fmt.Fprintf(m.stderr(), "warning: removing marketplace clone %s: %v\n", m.marketplaceDir(name), err)
+		}
 	}
 	delete(mk, name)
 	return m.saveMarketplaces(mk)
