@@ -73,9 +73,9 @@ The stale-stream wedge heuristic **moves into this layer**: today `sanitizeStale
 
 **3. Initial snapshot RPC.** `serf/attention/get` returns the current map + summary. Clients call it on connect and reconnect — without it, deleting the poll leaves the default-ON title/favicon blank on every fresh load until something changes (findings A3/B4).
 
-**4. Wire field.** `appwire.Thread.Attention` (level string), stamped by the hub in the thread-list/read path via the shared derivation. Daemon never sets it. The TUI cannot import `internal/hubcore` (verified), so the wire field is its only clean path.
+**4. Wire field.** `appwire.SerfThread.Attention` (level string) — on the serf extension sidecar, **not** the Codex-shaped `Thread` struct, preserving appwire's fidelity to the Codex app-server protocol (precedent: `ContextPressure` lives there, appwire/types.go:173). Stamped by the hub in the thread-list/read path via the shared derivation; the daemon never sets it. The TUI cannot import `internal/hubcore` (verified), so the wire field is its only clean path.
 
-**5. No new stores.** Nothing persists. The punted mark-seen upgrade is additive: derivation gains a seen-cursor input, clearing gains "seen", ended sessions can join the inbox.
+**5. No new stores.** Nothing persists. The punted mark-seen upgrade is additive **and protocol-clean** (Jesse's constraint: appwire stays as close to the Codex app-server protocol as possible): seen is viewer state, so it lives only on the hub ⇄ client hop, never the daemon hop. Baseline: the hub infers a seen-cursor from `thread/read`-with-subscribe traffic it already serves (zero protocol delta). Explicit override: one hub-terminated `serf/thread/seen/set {threadId, cursor}` method, following the `serf/auth/apiKey/set` precedent — the `serf/*` namespace exists for exactly this, and retires cleanly if upstream Codex ever grows native read-state. Cursor = durable `turn_N` ordinal in a hub-side archive-store clone. Derivation gains a seen input, clearing gains "seen", ended sessions can join the inbox; clients never read the raw cursor.
 
 ## Web client
 
