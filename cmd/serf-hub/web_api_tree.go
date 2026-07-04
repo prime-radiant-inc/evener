@@ -197,7 +197,27 @@ func (s *WebServer) navigationTreeInputs(ctx context.Context) ([]schema.SessionM
 	return metas, live
 }
 
+// remoteTreeThreads returns the remote-source thread list the tree walk
+// folds into its metas/live inputs. When a RemoteThreadCache is configured
+// (production — see main.go), it reads the cache instead of performing a
+// synchronous network walk, so a tree render never blocks on a remote hop.
+// Tests that construct a WebServer without a cache fall back to the old
+// synchronous behavior via refreshRemoteThreads.
 func (s *WebServer) remoteTreeThreads(ctx context.Context) []appwire.Thread {
+	if s.cfg.RemoteThreadCache != nil {
+		return s.cfg.RemoteThreadCache.Get()
+	}
+	return s.refreshRemoteThreads(ctx)
+}
+
+// refreshRemoteThreads performs the synchronous walk across every configured
+// remote source: it lists each source's threads (via listThreadsWithFallback,
+// which retains the last-known-good result across transient errors) and
+// backfills each thread's Source and Serf.Ref. This used to run inline on
+// every /api/tree request (as remoteTreeThreads); it now runs on a background
+// ~30s ticker + poke (main.go), Storing its result into a RemoteThreadCache
+// for remoteTreeThreads to read.
+func (s *WebServer) refreshRemoteThreads(ctx context.Context) []appwire.Thread {
 	if s.sources == nil {
 		return nil
 	}

@@ -48,6 +48,11 @@ type WebConfig struct {
 
 	Inputs *InputsVersion // shared inputs-version counter; nil in tests (memo treats as version 0)
 
+	// RemoteThreadCache holds the last-refreshed remote-source thread list so
+	// the tree read path never blocks on a network hop. Nil in tests, which
+	// fall back to the old synchronous walk (see remoteTreeThreads).
+	RemoteThreadCache *RemoteThreadCache
+
 	// PokeAttention nudges the hub's attention watcher to recompute
 	// immediately (e.g. after an archive decision changes tier eligibility)
 	// instead of waiting for its next tick. Nil when the watcher isn't wired
