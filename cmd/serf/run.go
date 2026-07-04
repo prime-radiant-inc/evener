@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/envvars"
+	"primeradiant.com/serf/internal/plugins"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
 	_ "primeradiant.com/serf/llm/providers/glm"
@@ -56,6 +57,7 @@ type runConfig struct {
 	mcpServers                  []string // --mcp inline specs
 	mcpConfigs                  []string // --mcp-config file paths
 	pluginDirs                  []string // --plugin-dir directories
+	noDefaultMarketplaces       bool     // --no-default-marketplaces
 	systemPromptAsUser          bool     // --system-prompt-as-user
 	openAIResponsesContinuation string   // --openai-responses-continuation
 
@@ -87,6 +89,11 @@ func run(ctx context.Context, cfg runConfig) error {
 	}
 	if err := cmdutil.EnsureUserConfigDirs(); err != nil {
 		return err
+	}
+	if !cfg.noDefaultMarketplaces {
+		if _, err := plugins.NewManager("").SeedDefaultMarketplaces(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: seeding default marketplaces: %v\n", err)
+		}
 	}
 	openAIResponsesContinuation := resolveOpenAIResponsesContinuation(cfg.openAIResponsesContinuation, nil)
 
@@ -180,7 +187,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		SkillsDirs:                  cfg.skillsDirs,
 		MCPConfigFiles:              cfg.mcpConfigs,
 		MCPInline:                   cfg.mcpServers,
-		PluginDirs:                  cfg.pluginDirs,
+		PluginDirs:                  plugins.NewManager("").EnabledPluginDirs(cfg.pluginDirs),
 		ContextStrategy:             cfg.contextStrategy,
 		ExportATIFPath:              cfg.exportATIF,
 		ExportATIFProviderHandles:   cfg.exportATIFProviderHandles,

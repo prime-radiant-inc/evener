@@ -48,6 +48,7 @@ type runCLIFlags struct {
 	mcpServers                  stringSliceFlag
 	mcpConfigs                  stringSliceFlag
 	pluginDirs                  stringSliceFlag
+	noDefaultMarketplaces       *bool
 	systemPromptAsUser          *bool
 	openAIResponsesContinuation *string
 	cpuProfile                  *string
@@ -142,6 +143,7 @@ func main() {
 		mcpServers:                  []string(flags.mcpServers),
 		mcpConfigs:                  []string(flags.mcpConfigs),
 		pluginDirs:                  []string(flags.pluginDirs),
+		noDefaultMarketplaces:       *flags.noDefaultMarketplaces,
 		systemPromptAsUser:          *flags.systemPromptAsUser,
 		openAIResponsesContinuation: *flags.openAIResponsesContinuation,
 		stdout:                      os.Stdout,
@@ -188,6 +190,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	fs.Var(&flags.mcpServers, "mcp", "MCP server `spec` (repeatable, format: name:command args...)")
 	fs.Var(&flags.mcpConfigs, "mcp-config", "path to .mcp.json `file` (repeatable)")
 	fs.Var(&flags.pluginDirs, "plugin-dir", "plugin `directory` (repeatable)")
+	flags.noDefaultMarketplaces = fs.Bool("no-default-marketplaces", false, "do not seed the default plugin marketplaces on first run")
 	flags.systemPromptAsUser = fs.Bool("system-prompt-as-user", false, "deliver system prompt as first user message instead of system instructions")
 	flags.openAIResponsesContinuation = fs.String("openai-responses-continuation", "", "OpenAI Responses continuation `mode`: off|auto (default: off)")
 	flags.cpuProfile = fs.String("cpu-profile", "", "write CPU profile to this `file` path")
