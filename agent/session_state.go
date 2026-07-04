@@ -17,6 +17,12 @@ const (
 	SessionProcessing SessionState = "active"
 	// SessionClosed indicates the session has been closed.
 	SessionClosed SessionState = "closed"
+	// SessionAwaiting indicates the session is blocked on a question posed to
+	// the user. The string must stay byte-equal to appwire.ThreadStatusAwaiting:
+	// the status pass-through on the wire journey switches on this value and
+	// defaults any unrecognized string to idle, so a mismatch here would
+	// silently downgrade an awaiting session to idle on the wire.
+	SessionAwaiting SessionState = "awaiting"
 )
 
 // State returns the current session state.
