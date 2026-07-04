@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -238,19 +237,13 @@ func normalizeThreadListStatusFilter(status string) string {
 	}
 }
 
-// sanitizeStaleProcessingStatus rewrites a thread's status when the live source
-// claims the session is active but the on-disk transcript shows the last
-// thing recorded was a failed LLM call. The agent loop has a known gap where a
-// retryable stream error (e.g. "stream ended without finish event") returns
-// from session.Input without flipping the in-memory state back to idle; the
-// daemon then keeps answering /status with active forever, even though
-// nothing is in flight. Hub readers conclude "active" and the workspace UI
-// disables steer/send. We catch the discrepancy here by consulting the past
-// index for the same thread: if the last transcript line is an api_call whose
-// Error field is non-empty, the session is wedged and the correct status is
-// error (kata r6y9). All other tail shapes — completed assistant turns, bare
-// USER_INPUT entries with no api_call yet, successful api_calls mid-round — are
-// left alone because the daemon may legitimately still be processing them.
+// sanitizeStaleProcessingStatus rewrites a thread's status when the live
+// source claims the session is active but hubcore.WedgedStatus finds it
+// wedged (see that doc for the underlying agent-loop gap this compensates
+// for, kata r6y9) — otherwise hub readers conclude "active" and the
+// workspace UI disables steer/send forever. Only local-source threads are
+// checked: other sources have no past index entry, and therefore no
+// transcript to inspect.
 func sanitizeStaleProcessingStatus(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
 	if cfg.Past == nil {
 		return thread
@@ -274,9 +267,7 @@ func sanitizeStaleProcessingStatus(cfg hubcore.WebConfig, thread appwire.Thread)
 	if !ok {
 		return thread
 	}
-	transcriptPath := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
-	tailKind, tailHasError := transcriptTailSummary(transcriptPath)
-	if tailKind == "api_call" && tailHasError {
+	if hubcore.WedgedStatus(entry) {
 		thread.Status = appwire.ThreadStatus{Type: appwire.ThreadStatusSystemError}
 	}
 	return thread

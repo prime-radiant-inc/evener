@@ -244,15 +244,26 @@ func main() {
 	// broadcasts serf/attention/changed whenever a session's level actually
 	// transitions (notifications.js drives the tab title/favicon badge and OS
 	// notifications from it). Ticks every 5s and on-demand via attentionPoke.
+	// seenActive tracks, across ticks, how long each session has continuously
+	// reported "working" (hubcore.StaleActives); once a session has been
+	// working past hubcore.StallThreshold, the watcher runs the stale-wedge
+	// probe (hubcore.WedgedStatus) against it and, on a positive, overrides
+	// its level to "error" before broadcasting.
 	go func() {
 		w := hubcore.NewAttentionWatcher(func(p hubcore.AttentionChangedPayload) {
 			web.appRPC.BroadcastAll(appwire.NotifySerfAttentionChanged, p)
 		})
 		tick := time.NewTicker(5 * time.Second)
 		defer tick.Stop()
+		seenActive := map[string]time.Time{}
 		run := func() {
 			decisions, _ := archive.Decisions()
 			m, sum := hubcore.DeriveAttention(past.AllMetas(), roster.List(), decisions)
+			for _, id := range hubcore.StaleActives(seenActive, m, time.Now()) {
+				if entry, ok := past.Find(id); ok && hubcore.WedgedStatus(entry) {
+					hubcore.ApplyWedgeOverride(m, &sum, id)
+				}
+			}
 			w.Tick(m, sum)
 		}
 		run()

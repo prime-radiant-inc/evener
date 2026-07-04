@@ -1,10 +1,7 @@
 package main
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
-	"os"
 	"strings"
 
 	"primeradiant.com/serf/appwire"
@@ -121,37 +118,4 @@ func transcriptTargetSource(refText, fallback string) string {
 		return ref.SourceID
 	}
 	return fallback
-}
-
-// transcriptTailSummary returns the kind ("entry" | "api_call" | "") of the
-// final non-empty line of the transcript at path, and whether that api_call
-// recorded a non-empty Error field. Returns ("", false) on read failures so the
-// caller leaves the thread status unchanged when it cannot inspect the tail.
-func transcriptTailSummary(path string) (kind string, hasError bool) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", false
-	}
-	defer f.Close() //nolint:errcheck // read-only file; close error is not actionable
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
-	var lastLine []byte
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		lastLine = append(lastLine[:0], line...)
-	}
-	if scanner.Err() != nil || len(lastLine) == 0 {
-		return "", false
-	}
-	var head struct {
-		Kind  string `json:"kind"`
-		Error string `json:"error,omitempty"`
-	}
-	if err := json.Unmarshal(lastLine, &head); err != nil {
-		return "", false
-	}
-	return head.Kind, strings.TrimSpace(head.Error) != ""
 }
