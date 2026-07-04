@@ -91,7 +91,7 @@ func genValue(s Source, schema map[string]any, mode Mode, depth int) any {
 	case "array":
 		return genArray(s, schema, mode, depth)
 	case "string":
-		return genString(s, mode)
+		return genString(s, schema, mode)
 	case "integer":
 		return genInteger(s, schema, mode)
 	case "number":
@@ -163,10 +163,15 @@ func genObject(s Source, schema map[string]any, mode Mode, depth int) any {
 }
 
 // genArray generates an array value using the items subschema (or arbitrary JSON
-// when items is absent).
+// when items is absent). The length always honors minItems/maxItems — in both
+// modes, mirroring how genInteger/genNumber always honor minimum/maximum —
+// because there is no separate lever for an array-length violation; ignoring
+// the bounds would make Valid-mode output schema-invalid whenever the schema
+// declares one.
 func genArray(s Source, schema map[string]any, mode Mode, depth int) any {
 	items := asSchemaMap(schema["items"])
-	n := s.IntRange(0, 4, "array_len")
+	lo, hi := arrayLenBounds(schema)
+	n := s.IntRange(lo, hi, "array_len")
 	out := make([]any, 0, n)
 	for i := 0; i < n; i++ {
 		if len(items) == 0 {
@@ -187,12 +192,35 @@ var adversarialStrings = []string{
 	"\u00a0", "\ufeff", "\U0001f4a5", "a\x00b",
 }
 
-func genString(s Source, mode Mode) any {
+// genString generates a string value, honoring the schema's minLength/
+// maxLength (both the adversarial corpus and the free-form draw are clamped —
+// see clampStringLen) so Valid-mode output stays schema-valid whenever the
+// schema declares a length bound. schema may be nil (adjacent-type filler,
+// untyped JSON exploration), in which case clamping is a no-op.
+func genString(s Source, schema map[string]any, mode Mode) any {
+	var raw string
 	if s.Bool("string_corpus") {
-		return draw(s, adversarialStrings, "string_seed")
+		raw = draw(s, adversarialStrings, "string_seed")
+	} else {
+		_ = mode
+		raw = s.String("string")
 	}
-	_ = mode
-	return s.String("string")
+	return clampStringLen(raw, schema)
+}
+
+// clampStringLen truncates or pads str (by rune count, so multi-byte runes
+// are never split) to satisfy schema's minLength/maxLength. A nil schema or
+// one declaring neither keyword returns str unchanged.
+func clampStringLen(str string, schema map[string]any) string {
+	lo, hi := stringLenBounds(schema)
+	runes := []rune(str)
+	if len(runes) > hi {
+		runes = runes[:hi]
+	}
+	for len(runes) < lo {
+		runes = append(runes, 'x')
+	}
+	return string(runes)
 }
 
 // adversarialInts seeds the integer generator with boundary magnitudes.
@@ -275,7 +303,7 @@ func genArbitraryJSON(s Source, depth int) any {
 	case "null":
 		return nil
 	default:
-		return genString(s, Valid)
+		return genString(s, nil, Valid)
 	}
 }
 
@@ -288,9 +316,9 @@ func genWrongType(s Source, allowed []string) any {
 			case "boolean":
 				return s.Bool("wt_bool")
 			case "string":
-				return genString(s, Adjacent)
+				return genString(s, nil, Adjacent)
 			case "array":
-				return []any{genString(s, Valid)}
+				return []any{genString(s, nil, Valid)}
 			case "object":
 				return map[string]any{"wrong": true}
 			case "null":

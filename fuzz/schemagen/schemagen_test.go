@@ -62,6 +62,34 @@ var fixtures = map[string]map[string]any{
 			"limit": map[string]any{"type": "integer", "maximum": 100, "minimum": 1},
 		},
 	},
+	// Mirrors ask_user.questions: a required array with both minItems and
+	// maxItems (the constraint TestToolArgsSchemaFuzz caught when schemagen's
+	// array generator first ignored bounds entirely, drawing a length in [0,4]
+	// regardless of what the schema declared).
+	"bounded_array": {
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"questions": map[string]any{
+				"type":     "array",
+				"minItems": 1,
+				"maxItems": 4,
+				"items":    map[string]any{"type": "string"},
+			},
+		},
+		"required": []string{"questions"},
+	},
+	// Mirrors ask_user's per-question header: a string with maxLength (the
+	// constraint TestToolArgsSchemaFuzz caught when schemagen's string
+	// generator first ignored minLength/maxLength entirely).
+	"bounded_string": {
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"header": map[string]any{"type": "string", "maxLength": 12},
+		},
+		"required": []string{"header"},
+	},
 }
 
 // TestValidMode_Conforms is the central valid-mode contract: across many seeds,
@@ -240,10 +268,25 @@ func conforms(v any, schema map[string]any) (bool, string) {
 			return false, "above maximum"
 		}
 	}
+	if str, ok := v.(string); ok {
+		n := float64(len([]rune(str)))
+		if lo, has := numBound(schema, "minLength"); has && n < lo {
+			return false, "below minLength"
+		}
+		if hi, has := numBound(schema, "maxLength"); has && n > hi {
+			return false, "above maxLength"
+		}
+	}
 	switch val := v.(type) {
 	case map[string]any:
 		return objectConforms(val, schema)
 	case []any:
+		if lo, has := numBound(schema, "minItems"); has && float64(len(val)) < lo {
+			return false, "below minItems"
+		}
+		if hi, has := numBound(schema, "maxItems"); has && float64(len(val)) > hi {
+			return false, "above maxItems"
+		}
 		items := asSchemaMap(schema["items"])
 		if len(items) == 0 {
 			return true, ""

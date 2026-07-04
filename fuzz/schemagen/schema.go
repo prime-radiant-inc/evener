@@ -183,6 +183,45 @@ func intBounds(schema map[string]any) (int, int) {
 	return lo, hi
 }
 
+// arrayLenBounds returns the inclusive [lo, hi] array-length range a schema
+// permits, honoring minItems/maxItems and falling back to the generator's
+// default exploration window (0 to 4 elements) for whichever bound is absent.
+// A degenerate (inverted) range collapses to a single point so the generator
+// cannot panic.
+func arrayLenBounds(schema map[string]any) (int, int) {
+	lo, hi := 0, 4
+	if v, ok := numBound(schema, "minItems"); ok {
+		lo = int(math.Ceil(v))
+	}
+	if v, ok := numBound(schema, "maxItems"); ok {
+		hi = int(math.Floor(v))
+	}
+	if lo > hi {
+		lo = hi
+	}
+	return lo, hi
+}
+
+// stringLenBounds returns the inclusive [lo, hi] rune-length range a schema
+// permits, honoring minLength/maxLength. Absent bounds default to "no
+// constraint" (0 and a ceiling far above anything a generator would produce),
+// so a schema that declares neither keyword clamps nothing — the pre-existing
+// behavior. A degenerate (inverted) range collapses to a single point, like
+// the numeric/array bounds above.
+func stringLenBounds(schema map[string]any) (int, int) {
+	lo, hi := 0, math.MaxInt32
+	if v, ok := numBound(schema, "minLength"); ok {
+		lo = int(math.Ceil(v))
+	}
+	if v, ok := numBound(schema, "maxLength"); ok {
+		hi = int(math.Floor(v))
+	}
+	if lo > hi {
+		lo = hi
+	}
+	return lo, hi
+}
+
 // floatBounds returns the inclusive [lo, hi] float range a schema permits.
 func floatBounds(schema map[string]any) (float64, float64) {
 	lo, hi := defaultFloatLo, defaultFloatHi

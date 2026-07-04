@@ -416,6 +416,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	s.pinnedNote = meta.PinnedNote
 
+	// ask_user root-only gating (spec §7.1): a bare `serve --resume
+	// <delegate-id>` restores with an empty spawn carrier (spawn is json:"-",
+	// never persisted), so cfg.spawn.parentSessionID alone would miss it.
+	// Derive subagent-ness from the persisted meta flag before
+	// initSessionState builds the tool registry.
+	s.restoredMetaIsSubagent = meta.IsSubagent
+
 	// Re-enter the persisted active worktree BEFORE initSessionState runs, so
 	// the session is rooted in it before the environment snapshot, system
 	// prompt, and tool registry are built (native worktree tools spec §7

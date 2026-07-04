@@ -180,6 +180,13 @@ type Session struct {
 	// route succeeds, the other must not duplicate the parent steer.
 	watchCallbackDelivered bool
 
+	// askPending is the per-turn pending set of questions posted by ask_user
+	// calls this turn (spec §5.1): its length lets a round-boundary check tell
+	// whether the round just posted question(s). The transcript remains the
+	// durable, renderable record of the questions themselves; this slice exists
+	// only for that bookkeeping. Guarded by mu, like comm above.
+	askPending []askQuestion
+
 	// subagents
 	depth                            int
 	delegationAllowance              int          // mu-guarded; allowance to grant further sub-agent delegation levels
@@ -188,6 +195,15 @@ type Session struct {
 	delegateRestoreAfterClaim        func()
 	delegateRestoreBeforeTrack       func()
 	delegateRestoreBeforeSideEffects func(*Session)
+	// restoredMetaIsSubagent is set from the persisted meta.IsSubagent flag
+	// during RestoreSessionFromMetaWithConfig, before initSessionState runs. It
+	// exists because cfg.spawn is never persisted (json:"-"): a bare `serve
+	// --resume <delegate-id>` restores with an empty spawn carrier, so
+	// isSubagentSession() cannot rely on cfg.spawn.parentSessionID alone to keep
+	// a resumed subagent from regaining root-only tools (ask_user, spec §7.1).
+	// Always false on the fresh-session path. Read without a lock, like cfg —
+	// it is set once before the session goes live and never mutated after.
+	restoredMetaIsSubagent bool
 
 	// pendingJobNotifs is the durable per-parent queue of pending job-completion
 	// notifications. It is drop-safe and drained later by a notification turn.

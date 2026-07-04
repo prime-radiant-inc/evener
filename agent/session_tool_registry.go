@@ -284,6 +284,11 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	registerCompactTool(reg, deps)
 	registerWebTools(reg, deps)
 	registerCommunicateTool(reg, deps)
+	// ask_user is root-only and interactive-only (spec §7 point 1): invisible,
+	// not merely disabled, in non-interactive sessions and every subagent.
+	if !s.cfg.NonInteractive && !s.isSubagentSession() {
+		registerAskTool(reg, s, deps)
+	}
 	registerSkillTool(reg, deps)
 	for _, rt := range transcriptTools(deps) {
 		if err := reg.Register(rt); err != nil {
