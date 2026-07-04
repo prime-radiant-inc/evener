@@ -1405,3 +1405,58 @@ func TestAskUser_RestoreRederivesIdleAfterInterruptedAsk(t *testing.T) {
 		t.Fatalf("restored state = %q, want %q (an interrupted ack-less ask must never be pending)", got, SessionIdle)
 	}
 }
+
+// --- Task 10: the ask-user prompt-section gate (spec §4.5, §7) ---
+//
+// These tests render the system prompt directly (session_behavior_tag_test.go's
+// sess.renderSystemPrompt(sess.env) pattern) rather than driving a full
+// ProcessInput round trip: the gate under test is template composition, not
+// turn machinery. The three cases mirror the invisibility semantics already
+// proven for the tool's own registration above (TestAskUser_VisibleInteractiveRoot
+// / _InvisibleNonInteractive / _InvisibleForSubagent): the guidance section
+// shows exactly when ask_user is registered.
+
+// TestAskUser_PromptSectionVisibleForInteractiveRoot covers spec §4.5: an
+// interactive root session's rendered system prompt carries the ask-user
+// guidance section, opening with its verbatim "Asking the user." lead-in.
+func TestAskUser_PromptSectionVisibleForInteractiveRoot(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t, withConfig(SessionConfig{NoProjectPrompts: true}))
+
+	prompt := sess.renderSystemPrompt(sess.env)
+	if !strings.Contains(prompt, "Asking the user.") {
+		t.Fatal("system prompt missing ask-user guidance for an interactive root session")
+	}
+}
+
+// TestAskUser_PromptSectionHiddenWhenNonInteractive covers spec §4.5/§7: a
+// NonInteractive session never registers ask_user (TestAskUser_InvisibleNonInteractive
+// above), so its rendered prompt must not carry the guidance section either —
+// invisible, not merely unused.
+func TestAskUser_PromptSectionHiddenWhenNonInteractive(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t, withConfig(SessionConfig{NoProjectPrompts: true, NonInteractive: true}))
+
+	prompt := sess.renderSystemPrompt(sess.env)
+	if strings.Contains(prompt, "Asking the user.") {
+		t.Fatal("system prompt contains ask-user guidance in a NonInteractive session")
+	}
+}
+
+// TestAskUser_PromptSectionHiddenForSubagent covers spec §4.5/§7: a subagent
+// session (live spawn carrier set, the same config shape
+// TestAskUser_InvisibleForSubagent above uses) never registers ask_user, so
+// its rendered prompt must not carry the guidance section.
+func TestAskUser_PromptSectionHiddenForSubagent(t *testing.T) {
+	t.Parallel()
+	cfg := SessionConfig{NoProjectPrompts: true}
+	cfg.spawn.depth = 1
+	cfg.spawn.parentSessionID = "parent-session"
+	cfg.spawn.delegationAllowance = 1
+	sess := newSession(t, withConfig(cfg))
+
+	prompt := sess.renderSystemPrompt(sess.env)
+	if strings.Contains(prompt, "Asking the user.") {
+		t.Fatal("system prompt contains ask-user guidance in a subagent session")
+	}
+}
