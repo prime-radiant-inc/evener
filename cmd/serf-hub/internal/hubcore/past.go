@@ -174,6 +174,14 @@ func (i *PastIndex) Rebuild() error {
 // synchronous disk Rebuild the rename response path cannot afford (round-2
 // A5/B1, round-3 H3). StateDir is preserved (rename never moves the files).
 // No-op when the id is not already indexed.
+//
+// The reordered index is built into a freshly-allocated slice and only then
+// swapped into i.all under the lock — mirroring Rebuild's own
+// allocate-then-swap discipline — rather than mutated in place. Rebuild
+// publishes i.all and then, after releasing the lock, keeps reading that same
+// slice's backing array (for rebuildFTS/contentFingerprint). An in-place
+// append/copy here would write into a backing array a concurrent, unlocked
+// Rebuild may still be reading, which is a data race.
 func (i *PastIndex) UpdateMeta(id string, meta schema.SessionMeta) {
 	i.mu.Lock()
 	old, ok := i.byID[id]
@@ -183,16 +191,20 @@ func (i *PastIndex) UpdateMeta(id string, meta schema.SessionMeta) {
 	}
 	pe := PastEntry{ID: id, Meta: meta, StateDir: old.StateDir}
 	i.byID[id] = pe
-	for idx := range i.all {
-		if i.all[idx].ID == id {
-			i.all = append(i.all[:idx], i.all[idx+1:]...)
-			break
+	fresh := make([]PastEntry, 0, len(i.all))
+	removed := false
+	for _, e := range i.all {
+		if !removed && e.ID == id {
+			removed = true
+			continue
 		}
+		fresh = append(fresh, e)
 	}
-	pos := sort.Search(len(i.all), func(k int) bool { return !sessionMetaLess(i.all[k].Meta, meta) })
-	i.all = append(i.all, PastEntry{})
-	copy(i.all[pos+1:], i.all[pos:])
-	i.all[pos] = pe
+	pos := sort.Search(len(fresh), func(k int) bool { return !sessionMetaLess(fresh[k].Meta, meta) })
+	fresh = append(fresh, PastEntry{})
+	copy(fresh[pos+1:], fresh[pos:])
+	fresh[pos] = pe
+	i.all = fresh
 	all := append([]PastEntry(nil), i.all...)
 	i.mu.Unlock()
 

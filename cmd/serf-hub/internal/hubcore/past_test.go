@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -634,4 +635,51 @@ func TestUpdateMetaReordersAndPreservesStateDir(t *testing.T) {
 	if hits := idx.Search("renamed-title", 10, 0); len(hits) == 0 || hits[0].ID != "01A" {
 		t.Fatalf("search must reflect the new title, got %+v", hits)
 	}
+}
+
+// TestUpdateMetaConcurrentWithRebuildIsRaceFree pins the fix for a latent
+// data race: Rebuild publishes i.all and then, AFTER releasing the lock,
+// keeps reading that same slice's backing array for its slow
+// rebuildFTS/contentFingerprint work. UpdateMeta used to mutate i.all's
+// backing array in place (re-slicing append for removal, append+copy for
+// insert), so a concurrent UpdateMeta could write into the very array an
+// in-flight, unlocked Rebuild was still reading. This test has no
+// assertions of its own — under `go test -race` the race detector is the
+// failure mode.
+func TestUpdateMetaConcurrentWithRebuildIsRaceFree(t *testing.T) {
+	dir := t.TempDir()
+	proj := filepath.Join(dir, "proj")
+	for _, id := range []string{"01A", "01B"} {
+		m := schema.SessionMeta{ID: id, Name: id, UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}
+		if err := schema.SaveSessionMeta(proj, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx := NewPastIndexWithDB(filepath.Join(dir, "*"), filepath.Join(dir, "index.db"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	const iterations = 300
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for n := 0; n < iterations; n++ {
+			_ = idx.Rebuild()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for n := 0; n < iterations; n++ {
+			meta := schema.SessionMeta{
+				ID:        "01A",
+				Name:      "renamed-title",
+				UpdatedAt: time.Unix(1_700_000_000+int64(n), 0),
+				EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/w"},
+			}
+			idx.UpdateMeta("01A", meta)
+		}
+	}()
+	wg.Wait()
 }
