@@ -34,6 +34,14 @@ type conn struct {
 	status    string               // "connected" / "degraded" / "failed"
 	lastErr   error
 	lastErrAt time.Time
+
+	// mu guards session, status, lastErr, lastErrAt, and closed against
+	// concurrent access between Close() and a future reconnect swap (Tasks
+	// 7-8). Because conn embeds a mutex, it must never be copied by value
+	// once it lives in Manager.conns — every access goes through a pointer
+	// (&mgr.conns[i]), never a `range mgr.conns` value copy.
+	mu     sync.Mutex
+	closed bool
 }
 
 // ServerOutcome reports a per-server failure at one assembly stage. Stage is
@@ -94,7 +102,8 @@ func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, transport
 	wg.Wait()
 
 	var outcomes []ServerOutcome
-	for _, c := range mgr.conns {
+	for i := range mgr.conns {
+		c := &mgr.conns[i]
 		if c.status != "connected" {
 			outcomes = append(outcomes, ServerOutcome{Name: c.name, Stage: "connect", Err: c.lastErr})
 		}
@@ -164,7 +173,8 @@ func (m *Manager) ToolDefinitions() []llm.ToolDefinition {
 		return nil
 	}
 	var defs []llm.ToolDefinition
-	for _, c := range m.conns {
+	for i := range m.conns {
+		c := &m.conns[i]
 		if c.status != "connected" {
 			continue
 		}
@@ -262,29 +272,47 @@ func failRegister(c *conn, reg *tool.Registry, added []string, err error) Server
 }
 
 // Servers returns per-server info including name and namespaced tool names.
+// It reads each conn's live state under its mutex rather than a
+// construction-time snapshot, so a status change from a concurrent Close()
+// or (in a later task) a reconnect swap is always reflected.
 func (m *Manager) Servers() []mcpconfig.ServerInfo {
 	if m == nil {
 		return nil
 	}
 	out := make([]mcpconfig.ServerInfo, len(m.conns))
-	for i, c := range m.conns {
+	for i := range m.conns {
+		c := &m.conns[i]
+		c.mu.Lock()
+		name := c.name
+		status := c.status
 		tools := make([]string, len(c.tools))
 		for j, td := range c.tools {
 			tools[j] = td.Name
 		}
-		out[i] = mcpconfig.ServerInfo{Name: c.name, Tools: tools, Status: c.status}
+		c.mu.Unlock()
+		out[i] = mcpconfig.ServerInfo{Name: name, Tools: tools, Status: status}
 	}
 	return out
 }
 
-// Close shuts down all MCP server connections.
+// Close shuts down all MCP server connections. Each conn's mutex serializes
+// Close with a future reconnect swap (Tasks 7-8): closed is set and the
+// session reference cleared under the lock, then the session itself is
+// closed outside the lock so a slow server shutdown cannot block other
+// conns' Close or a concurrent Servers() call.
 func (m *Manager) Close() {
 	if m == nil {
 		return
 	}
-	for _, c := range m.conns {
-		if c.session != nil {
-			_ = c.session.Close()
+	for i := range m.conns {
+		c := &m.conns[i]
+		c.mu.Lock()
+		c.closed = true
+		sess := c.session
+		c.session = nil
+		c.mu.Unlock()
+		if sess != nil {
+			_ = sess.Close()
 		}
 	}
 }
