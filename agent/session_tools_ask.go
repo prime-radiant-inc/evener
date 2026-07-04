@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -76,6 +77,51 @@ func (s *Session) clearAskPending() {
 	s.askPending = nil
 }
 
+// parseAskQuestions extracts the askQuestions from an ask_user call's parsed
+// arguments. Schema-level shape (question/option counts, header maxLength,
+// required fields) is already enforced by the registry's JSON-Schema
+// validation before the live Exec below ever runs (spec §5.1) — this checks
+// only the two semantic rules the schema cannot express: option labels
+// unique within a question, and at most one recommended option per
+// question. Both are all-or-nothing per call: on either violation nothing
+// from that call is returned.
+//
+// Shared verbatim by the live Exec path below and by restore's pending-set
+// rebuild (deriveRestoredAskPending / questionsFromAskCalls, ask-attention-
+// tiering spec §2) so the two paths can never drift apart. The two callers
+// treat a returned error differently — Exec aborts the whole tool call, so
+// nothing is posted; restore treats it as "unparseable arguments" and skips
+// just that one call, never failing the restore.
+func parseAskQuestions(args map[string]any) ([]askQuestion, error) {
+	raw, _ := args["questions"].([]any)
+	parsed := make([]askQuestion, 0, len(raw))
+	for _, r := range raw {
+		qm, _ := r.(map[string]any)
+		labelsSeen := map[string]bool{}
+		recommendedCount := 0
+		opts, _ := qm["options"].([]any)
+		for _, o := range opts {
+			om, _ := o.(map[string]any)
+			label := fmt.Sprint(om["label"])
+			if labelsSeen[label] {
+				return nil, errors.New("ask_user: option labels must be unique within a question")
+			}
+			labelsSeen[label] = true
+			if rec, _ := om["recommended"].(bool); rec {
+				recommendedCount++
+			}
+		}
+		if recommendedCount > 1 {
+			return nil, errors.New("ask_user: at most one option may be recommended")
+		}
+		parsed = append(parsed, askQuestion{
+			Header:   fmt.Sprint(qm["header"]),
+			Question: fmt.Sprint(qm["question"]),
+		})
+	}
+	return parsed, nil
+}
+
 // registerAskTool registers ask_user. registerCoreTools calls this only when
 // the session is interactive and root (spec §7 point 1); the exec-time guard
 // below is defense in depth for config drift (spec §7 point 4).
@@ -91,37 +137,9 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 				return nil, errors.New(askUserUnavailableErr)
 			}
 
-			// Schema-level shape (question/option counts, header maxLength,
-			// required fields) is already enforced by the registry's JSON-Schema
-			// validation before Exec runs (spec §5.1) — only the two semantic
-			// rules the schema cannot express are checked here. Both are
-			// all-or-nothing per call: on either violation, nothing from this
-			// call is added to the pending set.
-			raw, _ := args["questions"].([]any)
-			parsed := make([]askQuestion, 0, len(raw))
-			for _, r := range raw {
-				qm, _ := r.(map[string]any)
-				labelsSeen := map[string]bool{}
-				recommendedCount := 0
-				opts, _ := qm["options"].([]any)
-				for _, o := range opts {
-					om, _ := o.(map[string]any)
-					label := fmt.Sprint(om["label"])
-					if labelsSeen[label] {
-						return nil, errors.New("ask_user: option labels must be unique within a question")
-					}
-					labelsSeen[label] = true
-					if rec, _ := om["recommended"].(bool); rec {
-						recommendedCount++
-					}
-				}
-				if recommendedCount > 1 {
-					return nil, errors.New("ask_user: at most one option may be recommended")
-				}
-				parsed = append(parsed, askQuestion{
-					Header:   fmt.Sprint(qm["header"]),
-					Question: fmt.Sprint(qm["question"]),
-				})
+			parsed, err := parseAskQuestions(args)
+			if err != nil {
+				return nil, err
 			}
 
 			s.mu.Lock()
@@ -204,4 +222,108 @@ func deriveRestoredState(history []schema.Turn) SessionState {
 		}
 	}
 	return SessionIdle
+}
+
+// deriveRestoredAskPending rebuilds the pending-ask SET from a restored
+// history's tail (ask-attention-tiering spec §2): deriveRestoredState above
+// re-derives that the session rests awaiting, but every hold keyed on
+// askPending itself — the entry gate (session_lifecycle.go:453), the goal
+// engine's arm-don't-kick paths (session_goal.go:61,:246), and Compact's
+// guard (session_compaction.go:30) — reads len(s.askPending), which stays
+// empty unless this also runs.
+//
+// This performs the IDENTICAL backward walk deriveRestoredState uses (same
+// turn-kind cases, same "not decisive, keep scanning" fallthroughs — see
+// that function's doc comment for the full rationale) so the two can never
+// disagree about which turn is decisive; it just does more once it reaches
+// one:
+//
+//   - TurnUserInput, or a TurnAssistant final with no tool calls: idle or a
+//     GENERIC awaiting rest, not an ask round — returns (nil, false); the
+//     pending set must stay empty (spec §2's first edge case).
+//   - TurnToolResults carrying only error-placeholder results: not decisive,
+//     keep scanning (matches deriveRestoredState's orphan-repair carve-out).
+//   - TurnToolResults carrying a completed (non-error) result, but none of
+//     them named "ask_user" (e.g. a communicate ack): decisive, but still a
+//     GENERIC awaiting rest — returns (nil, false).
+//   - TurnToolResults carrying at least one completed, non-error "ask_user"
+//     result: an ask round. Delegates to questionsFromAskCalls for exactly
+//     those calls, in call order (spec §2's "multiple ask_user calls in the
+//     round: union, in call order").
+//
+// isAskRound tells the caller whether an empty pending slice means "nothing
+// was pending" (false) or "an ask round was found but none of its calls'
+// arguments parsed" (true) — spec §2's unparseable-arguments edge case: the
+// caller logs a warning only for the latter, and the restore must never fail
+// over either.
+func deriveRestoredAskPending(history []schema.Turn) (pending []askQuestion, isAskRound bool) {
+	for i := len(history) - 1; i >= 0; i-- {
+		turn := history[i]
+		switch turn.Kind {
+		case schema.TurnUserInput:
+			return nil, false
+		case schema.TurnAssistant:
+			if len(assistantToolCalls(turn.Message)) == 0 {
+				return nil, false
+			}
+			// Not decisive; matches deriveRestoredState's scan past an
+			// all-error placeholder round.
+		case schema.TurnToolResults:
+			askCallIDs := map[string]bool{}
+			anyNonError := false
+			for _, part := range turn.Message.Content {
+				if part.Kind != llm.ContentToolResult || part.ToolResult == nil || part.ToolResult.IsError {
+					continue
+				}
+				anyNonError = true
+				if part.ToolResult.Name == "ask_user" {
+					askCallIDs[part.ToolResult.ToolCallID] = true
+				}
+			}
+			if !anyNonError {
+				continue // error-only placeholder; not decisive, matches deriveRestoredState
+			}
+			if len(askCallIDs) == 0 {
+				return nil, false // decisive, but a generic completion (e.g. a communicate ack)
+			}
+			return questionsFromAskCalls(history, i, askCallIDs), true
+		}
+	}
+	return nil, false
+}
+
+// questionsFromAskCalls parses the questions for a decisive ask round found
+// at history[toolResultsIdx] (a TurnToolResults turn). It walks backward for
+// the round's assistant turn: every round appends exactly one TurnAssistant
+// turn immediately followed by one aggregated TurnToolResults turn
+// (session_tool_round.go's appendAssistantTurn -> execToolBatch ->
+// persistToolResults, with nothing interposed), so the nearest preceding
+// TurnAssistant turn is always the right one. It then parses, in call order,
+// every ask_user call whose ID is in wantCallIDs (the decisive turn's
+// non-error ask_user results) via the shared parseAskQuestions — a call
+// whose arguments fail to unmarshal or fail parseAskQuestions's validation
+// is skipped, not fatal (spec §2: "rebuild what parses").
+func questionsFromAskCalls(history []schema.Turn, toolResultsIdx int, wantCallIDs map[string]bool) []askQuestion {
+	for j := toolResultsIdx - 1; j >= 0; j-- {
+		if history[j].Kind != schema.TurnAssistant {
+			continue
+		}
+		var out []askQuestion
+		for _, call := range assistantToolCalls(history[j].Message) {
+			if call.Name != "ask_user" || !wantCallIDs[call.ID] {
+				continue
+			}
+			var args map[string]any
+			if err := json.Unmarshal(call.Arguments, &args); err != nil {
+				continue // unparseable JSON; skip this call, never fail the restore
+			}
+			parsed, err := parseAskQuestions(args)
+			if err != nil {
+				continue // semantic violation on a hand-edited/drifted transcript; skip
+			}
+			out = append(out, parsed...)
+		}
+		return out
+	}
+	return nil
 }

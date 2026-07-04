@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/goal"
 	"primeradiant.com/serf/agent/internal/hooks"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/schema"
@@ -1420,9 +1421,12 @@ func TestAskUser_RestoreRederivesIdleAfterAnsweredAsk(t *testing.T) {
 
 	// The restored state is awaiting for the same general reason (agent
 	// moved last with the reply's own plain-text turn) — not because ask1
-	// re-derived as pending. askPending is never restored (it is not part of
-	// persisted meta), so checking it here would trivially read 0 regardless
-	// of transcript shape; the meaningful check already ran live above.
+	// re-derived as pending. deriveRestoredAskPending (spec §2) reads this
+	// tail as a GENERIC awaiting rest too — the decisive turn is the reply's
+	// own plain final response, with no tool calls at all — so checking
+	// askPendingCount here would still read 0: not because restore skips the
+	// set (post-§2 it doesn't), but because nothing here is genuinely
+	// pending. The meaningful check already ran live above.
 	if got := restored.State(); got != SessionAwaiting {
 		t.Fatalf("restored state = %q, want %q (agent moved last: the reply's own response)", got, SessionAwaiting)
 	}
@@ -1501,6 +1505,388 @@ func TestAskUser_RestoreRederivesIdleAfterInterruptedAsk(t *testing.T) {
 
 	if got := restored.State(); got != SessionIdle {
 		t.Fatalf("restored state = %q, want %q (an interrupted ack-less ask must never be pending)", got, SessionIdle)
+	}
+}
+
+// --- Post-merge fixup: restore must rebuild the pending-ask SET, not just the state ---
+// (ask-attention-tiering design spec, 2026-07-04, §2)
+//
+// The restore tests above prove deriveRestoredState re-derives SessionAwaiting
+// after a restart with an unanswered ask_user question. That alone is not
+// enough: every hold keyed on the pending SET rather than raw state — the
+// entry gate (session_lifecycle.go:453), the goal engine's arm-don't-kick
+// paths (session_goal.go:61,:246), and Compact's guard
+// (session_compaction.go:30) — reads len(s.askPending), which stayed empty
+// across every restore before this fix (askPending was written only by the
+// live ask_user Exec path and cleared at turn entry, session_lifecycle.go:783).
+// A restored session with a genuinely pending question therefore had every
+// one of those holds silently inert. The tests below drive the real restore
+// entry point (RestoreSessionFromMeta) and observe each hold at its own
+// production seam, mirroring the live TestAskUser_EntryGateRefusesNotificationWake
+// / TestGoalHoldsAwaiting_SetGoalArmsWithoutKick / TestAskUser_CompactRefusedWhileAwaiting
+// tests above but through a restored session instead of a live one.
+
+// TestAskUser_RestoreRebuildsPendingHoldsEntryGate covers the entry gate
+// (spec §5.3): a restored session with an unanswered ask_user question must
+// refuse an autonomous EntryNotification wake exactly as the live entry gate
+// does (TestAskUser_EntryGateRefusesNotificationWake) — proving askPending
+// itself, not just the derived SessionAwaiting state, survives restore. It
+// wires its own fakeAdapter for the restore (rather than newAskRestoreClient's
+// throwaway one) so it can assert on the request count: before the fix, the
+// entry gate's len(s.askPending)>0 condition reads false after restore, so
+// the wake is wrongly accepted and reaches Complete.
+func TestAskUser_RestoreRebuildsPendingHoldsEntryGate(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+
+	restoreAdapter := &fakeAdapter{name: "openai"}
+	restoreClient := llm.NewClient()
+	restoreClient.Register(restoreAdapter)
+	restored, err := RestoreSessionFromMeta(restoreClient, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	if got := restored.State(); got != SessionAwaiting {
+		t.Fatalf("restored state = %q, want %q (test setup broken)", got, SessionAwaiting)
+	}
+
+	restored.enqueueJobNotification(watchNotification("job_wake", "output_match: done"))
+
+	out, err := restored.ProcessInputKind(ctx, "", nil, EntryNotification)
+	if err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification) on a restored pending ask returned an error: %v", err)
+	}
+	if strings.TrimSpace(out) != "" {
+		t.Fatalf("ProcessInputKind(EntryNotification) on a restored pending ask returned %q, want empty (the wake must be held)", out)
+	}
+	if got := restored.State(); got != SessionAwaiting {
+		t.Fatalf("state after the wake = %q, want %q (must not flip)", got, SessionAwaiting)
+	}
+	if got := len(restoreAdapter.Requests()); got != 0 {
+		t.Fatalf("model requests after the notification wake = %d, want 0 (the entry gate must hold it before any model call)", got)
+	}
+	if got := restored.peekNotifications(); got != 1 {
+		t.Fatalf("peekNotifications after the held wake = %d, want 1 (queued, not drained)", got)
+	}
+}
+
+// TestAskUser_RestoreRebuildsPendingArmsSetGoalWithoutKick covers the goal
+// engine's SetGoal-idle-kick hold (spec §5.3, mirroring the live
+// TestGoalHoldsAwaiting_SetGoalArmsWithoutKick): /goal issued against a
+// restored session with an unanswered ask_user question must arm (store the
+// goal, active) rather than kick. Before the fix, SetGoal's
+// len(s.askPending)>0 read is always false post-restore, so it would kick
+// immediately instead of arming.
+func TestAskUser_RestoreRebuildsPendingArmsSetGoalWithoutKick(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	if got := restored.State(); got != SessionAwaiting {
+		t.Fatalf("restored state = %q, want %q (test setup broken)", got, SessionAwaiting)
+	}
+
+	var kicked []string
+	restored.SetKickFunc(func(prompt string) { kicked = append(kicked, prompt) })
+
+	started, err := restored.SetGoal(context.Background(), "ship the feature")
+	if err != nil {
+		t.Fatalf("SetGoal: %v", err)
+	}
+	if started {
+		t.Fatal("SetGoal against a restored pending ask reported started=true, want false (arm, don't kick)")
+	}
+	if len(kicked) != 0 {
+		t.Fatalf("SetGoal against a restored pending ask must not kick, got %d kicks", len(kicked))
+	}
+	snap, ok := restored.getOrCreateGoalStore().Snapshot()
+	if !ok || snap.Status != goal.StatusActive || snap.Objective != "ship the feature" {
+		t.Fatalf("SetGoal must still store the goal while a restored question is pending, got %+v ok=%v", snap, ok)
+	}
+}
+
+// TestAskUser_RestoreRebuildsPendingRefusesCompact covers Compact's guard
+// (spec §5.3, mirroring the live TestAskUser_CompactRefusedWhileAwaiting): a
+// restored session with an unanswered ask_user question must refuse Compact
+// with the same instructive error the live guard returns. Before the fix,
+// Compact's askPendingCount()>0 check always reads 0 post-restore, so
+// compaction would proceed and could summarize away the pending question's
+// own transcript tail.
+func TestAskUser_RestoreRebuildsPendingRefusesCompact(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	if got := restored.State(); got != SessionAwaiting {
+		t.Fatalf("restored state = %q, want %q (test setup broken)", got, SessionAwaiting)
+	}
+
+	if err := restored.Compact(context.Background()); err == nil || !strings.Contains(err.Error(), compactErrPending) {
+		t.Fatalf("Compact against a restored pending ask err = %v, want an error containing %q", err, compactErrPending)
+	}
+}
+
+// TestAskUser_RestoreRebuildsPendingCountAndOrder pins the SET's contents,
+// not just its non-emptiness: two separate ask_user calls sharing one round
+// (mirroring the live TestAskUser_MultipleAsksOneRound) must rebuild as a
+// 2-entry pending set in call order (spec §2's "multiple ask_user calls in
+// the round: union, in call order" edge case) — exercising
+// questionsFromAskCalls across two tool calls in the round's assistant turn,
+// not just one call's multi-question array.
+func TestAskUser_RestoreRebuildsPendingCountAndOrder(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask1 := askUserCall("ask1", askUserArgsValid()) // header "DB choice"
+	ask2Args := map[string]any{
+		"questions": []any{
+			map[string]any{
+				"header":   "Naming",
+				"question": "What should we call the new package?",
+				"options": []any{
+					map[string]any{"label": "short names", "detail": "terse"},
+					map[string]any{"label": "descriptive names", "detail": "verbose"},
+				},
+			},
+		},
+	}
+	ask2 := askUserCall("ask2", ask2Args)
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask1, ask2) },
+		},
+	})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "pick a db and a name", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 2 {
+		t.Fatalf("pre-restore askPendingCount = %d, want 2 (test setup broken)", got)
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	if !restored.HasPendingAsk() {
+		t.Fatal("HasPendingAsk() = false after restoring an unanswered 2-call ask round, want true")
+	}
+	if got := restored.askPendingCount(); got != 2 {
+		t.Fatalf("restored askPendingCount = %d, want 2 (one question from each ask_user call in the round)", got)
+	}
+	restored.mu.Lock()
+	pending := append([]askQuestion{}, restored.askPending...)
+	restored.mu.Unlock()
+	if len(pending) != 2 || pending[0].Header != "DB choice" || pending[1].Header != "Naming" {
+		t.Fatalf("restored askPending = %+v, want [{Header:DB choice ...} {Header:Naming ...}] in call order", pending)
+	}
+}
+
+// TestAskUser_RestoreGenericAwaitingKeepsPendingEmptyAndGoalKicks is the
+// negative control that must stay green both before and after the fix: a
+// restart after a GENERIC awaiting rest (a plain completion, no ask_user
+// involved — attention-status-model v5's general inbox semantics) must never
+// rebuild a pending set, and an idle /goal must still kick immediately, not
+// arm — mirroring the live TestSetGoal_KicksOnPlainAwaitingRestNoPendingAsk.
+// This is spec §2's "generic awaiting: no rebuild" edge case, observed
+// through restore.
+func TestAskUser_RestoreGenericAwaitingKeepsPendingEmptyAndGoalKicks(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("here is my answer") },
+		},
+	})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("pre-restore state = %q, want %q (test setup broken)", got, SessionAwaiting)
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	if got := restored.State(); got != SessionAwaiting {
+		t.Fatalf("restored state = %q, want %q (test setup broken)", got, SessionAwaiting)
+	}
+	if restored.HasPendingAsk() {
+		t.Fatal("HasPendingAsk() = true after restoring a GENERIC awaiting rest with no ask, want false")
+	}
+	if got := restored.askPendingCount(); got != 0 {
+		t.Fatalf("restored askPendingCount = %d, want 0 (a generic awaiting rest must never rebuild a pending set)", got)
+	}
+
+	var kicked []string
+	restored.SetKickFunc(func(prompt string) { kicked = append(kicked, prompt) })
+	started, err := restored.SetGoal(context.Background(), "ship it")
+	if err != nil {
+		t.Fatalf("SetGoal: %v", err)
+	}
+	if !started {
+		t.Fatal("SetGoal against a restored GENERIC awaiting rest must report started=true and kick immediately (nothing is genuinely pending)")
+	}
+	if len(kicked) != 1 {
+		t.Fatalf("kick count = %d, want exactly 1", len(kicked))
+	}
+}
+
+// TestAskUser_RestoreRebuildsPendingThenReplyClears covers the turn-entry
+// clear (session_lifecycle.go:783): once a restored session with a rebuilt
+// pending set receives the user's reply, the pending set must clear exactly
+// as it does live (spec §5.2) — proving the rebuilt set is a real, live
+// askPending and not some restore-only shadow the ordinary clear path
+// forgets about.
+func TestAskUser_RestoreRebuildsPendingThenReplyClears(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+
+	restoreClient := llm.NewClient()
+	restoreClient.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("thanks, using Postgres") },
+		},
+	})
+	restored, err := RestoreSessionFromMeta(restoreClient, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	if got := restored.askPendingCount(); got != 1 {
+		t.Fatalf("restored askPendingCount = %d, want 1 (test setup broken)", got)
+	}
+
+	if _, err := restored.ProcessInput(ctx, "Postgres, thanks", nil); err != nil {
+		t.Fatalf("reply ProcessInput: %v", err)
+	}
+	if got := restored.askPendingCount(); got != 0 {
+		t.Fatalf("askPendingCount after the reply = %d, want 0 (the turn-entry clear, session_lifecycle.go:783, must still fire on a restored session)", got)
 	}
 }
 

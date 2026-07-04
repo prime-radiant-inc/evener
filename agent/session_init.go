@@ -511,8 +511,21 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// doc comment has the full walk). NewSession never runs this scan — a
 	// fresh session always starts idle.
 	restoredState := deriveRestoredState(s.history)
+	// Rebuild the pending-ask SET alongside the state (ask-attention-tiering
+	// spec §2): deriveRestoredState alone only re-derives that the session
+	// rests awaiting, but every hold keyed on askPending itself — the entry
+	// gate, the goal engine's arm-don't-kick paths, Compact's guard — stays
+	// inert after a restart unless the set is repopulated too.
+	// isAskRound distinguishes "nothing was pending" from "an ask was pending
+	// but none of its arguments parsed"; only the latter warrants a warning,
+	// and neither may ever fail the restore.
+	restoredAskPending, isAskRound := deriveRestoredAskPending(s.history)
+	if isAskRound && len(restoredAskPending) == 0 {
+		s.emit(events.EventWarning, events.WarningData{Message: "restore: found a pending ask_user round but could not parse any of its questions; the pending-ask holds will not apply this session"})
+	}
 	s.mu.Lock()
 	s.state = restoredState
+	s.askPending = restoredAskPending
 	s.mu.Unlock()
 
 	s.emitSessionStartEnvelope(events.SessionStartData{

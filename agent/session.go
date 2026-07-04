@@ -184,7 +184,12 @@ type Session struct {
 	// calls this turn (spec §5.1): its length lets a round-boundary check tell
 	// whether the round just posted question(s). The transcript remains the
 	// durable, renderable record of the questions themselves; this slice exists
-	// only for that bookkeeping. Guarded by mu, like comm above.
+	// only for that bookkeeping. Guarded by mu, like comm above. A restored
+	// session rebuilds this set from the transcript tail at restore time
+	// (deriveRestoredAskPending, session_init.go) so the holds keyed on it —
+	// the entry gate, the goal engine's arm-don't-kick paths, Compact's guard
+	// — survive a restart (ask-attention-tiering spec §2); it is not itself
+	// part of persisted SessionMeta.
 	askPending []askQuestion
 
 	// subagents
