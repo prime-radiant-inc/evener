@@ -656,6 +656,29 @@ func (s *Session) SetTimeout(timeoutMS int) {
 	s.maybeAutoSave()
 }
 
+// Rename sets a user-chosen session title. It records NameSource="user" so the
+// auto-namers (prompt + compaction) will never overwrite it — shouldApplySession
+// NameLocked and shouldNameFromCompaction both reject any source that is not
+// "prompt"/"compaction". Persists meta so the name survives a daemon crash.
+func (s *Session) Rename(name string) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return
+	}
+	s.naming.value = name
+	s.naming.source = sessionNameSourceUser
+	s.naming.updated = s.sclock().Now().UTC()
+	s.naming.set = true
+	s.mu.Unlock()
+	// maybeAutoSave re-acquires s.mu via s.Meta(); must not hold the lock here.
+	s.maybeAutoSave()
+}
+
 func (s *Session) applyModelRequestMetadata(profile *provider.Profile, req *llm.Request) {
 	if req == nil {
 		return
