@@ -6,12 +6,18 @@
 // It lives under testdata so the normal `go build ./...` skips it; the tests
 // compile it explicitly with `go build` and run the resulting binary as a real
 // subprocess.
+//
+// An optional argv[1] names an exit-marker file: when set, it is written
+// right before the process exits, letting a test confirm this subprocess
+// actually terminated (in response to Manager.Close closing its stdin)
+// instead of being orphaned.
 package main
 
 import (
 	"context"
 	"encoding/json"
 	"log"
+	"os"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -47,7 +53,11 @@ func main() {
 		}, nil
 	})
 
-	if err := server.Run(context.Background(), &mcpsdk.StdioTransport{}); err != nil {
-		log.Fatalf("intgmcpserver: %v", err)
+	runErr := server.Run(context.Background(), &mcpsdk.StdioTransport{})
+	if len(os.Args) > 1 {
+		_ = os.WriteFile(os.Args[1], []byte("exited\n"), 0644)
+	}
+	if runErr != nil {
+		log.Fatalf("intgmcpserver: %v", runErr)
 	}
 }

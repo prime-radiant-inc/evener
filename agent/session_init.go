@@ -159,6 +159,16 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		return nil, err
 	}
 
+	// initSessionState (via initMCP) may have set s.mcpMgr to a manager holding
+	// live server connections; every error return below this point must close
+	// it rather than orphan those connections.
+	closeMCPManagerOnError := true
+	defer func() {
+		if closeMCPManagerOnError && s.mcpMgr != nil {
+			s.mcpMgr.Close()
+		}
+	}()
+
 	// Populate default tasks from agent definition (non-interactive/eval mode only).
 	agentName := cfg.AgentName
 	if agentName == "" {
@@ -244,6 +254,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// session immediately (without waiting for the first completed turn).
 	s.maybeAutoSave()
 	closeJobManagerOnError = false
+	closeMCPManagerOnError = false
 	return s, nil
 }
 
@@ -427,6 +438,16 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		return nil, err
 	}
 
+	// initSessionState (via initMCP) may have set s.mcpMgr to a manager holding
+	// live server connections; every error return below this point must close
+	// it rather than orphan those connections.
+	closeMCPManagerOnError := true
+	defer func() {
+		if closeMCPManagerOnError && s.mcpMgr != nil {
+			s.mcpMgr.Close()
+		}
+	}()
+
 	// Seed context manager with the meta's token count.
 	if meta.LastInputTokens > 0 && s.contextMgr != nil {
 		s.contextMgr.RecordInputTokens(meta.LastInputTokens, len(s.history))
@@ -513,6 +534,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		s.recomputeRestoredState()
 	}
 	closeJobManagerOnError = false
+	closeMCPManagerOnError = false
 	return s, nil
 }
 

@@ -10,8 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -183,6 +185,98 @@ func TestIntg_InitMCP_DiscoverError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "MCP") {
 		t.Errorf("error %q does not mention MCP", err.Error())
+	}
+}
+
+// TestIntg_NewSession_LateErrorClosesMCPManager covers the Task-4b fix: when
+// NewSession runs initSessionState through to a successful initMCP (mcpMgr is
+// set, backed by a genuinely connected server) but then fails later — here on
+// an unrecognized ContextStrategy, in selectStrategy — the MCP manager must
+// still be closed before the error is returned. Otherwise the connected
+// server's subprocess is orphaned: NewSession returns (nil, err), so the
+// caller never gets a handle to close it.
+//
+// Detecting the close requires a real subprocess (agent-level tests cannot
+// inject an mcpsdk.Transport spy into NewSession's real initMCP path), so this
+// relies on the intgmcpserver exit marker: Manager.Close's session.Close call
+// blocks on the child's Cmd.Wait, so by the time NewSession has returned, a
+// server that was actually closed has already written its marker file.
+func TestIntg_NewSession_LateErrorClosesMCPManager(t *testing.T) {
+	t.Parallel()
+	bin := intg_buildMCPServer(t)
+	marker := filepath.Join(t.TempDir(), "exited.marker")
+
+	client := llm.NewClient()
+	cfg := SessionConfig{
+		MCPInline:       []string{"intgsvc:" + bin + " " + marker},
+		ContextStrategy: "bogus-nonexistent-strategy",
+	}
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+	if err == nil {
+		sess.Close()
+		t.Fatal("expected NewSession to fail on an unknown context strategy")
+	}
+	if !strings.Contains(err.Error(), "unknown context strategy") {
+		t.Fatalf("err = %v, want unknown context strategy error", err)
+	}
+	if sess != nil {
+		t.Fatal("expected a nil session on error")
+	}
+	intg_awaitMCPExitMarker(t, marker, 5*time.Second)
+}
+
+// TestIntg_RestoreSession_LateErrorClosesMCPManager is the restore-path
+// counterpart of TestIntg_NewSession_LateErrorClosesMCPManager: the same
+// unknown-context-strategy failure, reached via RestoreSessionFromMetaWithConfig
+// after a successful initMCP, must also close the connected MCP manager
+// instead of orphaning its subprocess.
+func TestIntg_RestoreSession_LateErrorClosesMCPManager(t *testing.T) {
+	t.Parallel()
+	bin := intg_buildMCPServer(t)
+	marker := filepath.Join(t.TempDir(), "exited.marker")
+	stateDir := t.TempDir()
+
+	snap := SessionConfig{
+		MCPInline:       []string{"intgsvc:" + bin + " " + marker},
+		ContextStrategy: "bogus-nonexistent-strategy",
+	}.toSnapshot()
+	meta := schema.SessionMeta{ID: "01TASK4BRESTOREMCPCLOSE01", ProfileID: "openai", Model: "gpt-5.2", Config: snap}
+
+	sess, err := RestoreSessionFromMetaWithConfig(
+		w3init_restoreClient(), NewOpenAIProfile("gpt-5.2"),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()), meta,
+		RestoreSessionConfig{StateDir: stateDir},
+	)
+	if err == nil {
+		sess.Close()
+		t.Fatal("expected RestoreSessionFromMetaWithConfig to fail on an unknown context strategy")
+	}
+	if !strings.Contains(err.Error(), "unknown context strategy") {
+		t.Fatalf("err = %v, want unknown context strategy error", err)
+	}
+	if sess != nil {
+		t.Fatal("expected a nil session on error")
+	}
+	intg_awaitMCPExitMarker(t, marker, 5*time.Second)
+}
+
+// intg_awaitMCPExitMarker polls for the exit-marker file testdata/intgmcpserver
+// writes right before it exits (see main.go) and fails the test if it does not
+// appear within timeout. Manager.Close blocks on the subprocess's Cmd.Wait, so
+// a marker written by a Close'd server is already on disk by the time the
+// caller under test has returned; the poll only guards against incidental
+// scheduling jitter, not against a real close-vs-not-close race.
+func intg_awaitMCPExitMarker(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("MCP server exit marker %s never appeared; the underlying subprocess was not closed", path)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
