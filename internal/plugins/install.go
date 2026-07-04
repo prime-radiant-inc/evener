@@ -33,27 +33,33 @@ func (m *Manager) catalogPlugin(marketplace, plugin string) (MarketplaceRef, Cat
 	return MarketplaceRef{}, CatalogPlugin{}, fmt.Errorf("plugin %q not found in marketplace %q", plugin, marketplace)
 }
 
-// materialize fetches a plugin's source into the cache (or references it in
-// place for a directory marketplace) and returns its dir + resolved sha.
-func (m *Manager) materialize(ctx context.Context, marketplace, plugin string, ref MarketplaceRef, cp CatalogPlugin) (dir, sha string, err error) {
+// stagePlugin resolves a plugin's source. For a directory-marketplace it returns
+// the in-place dir (staged=false, empty sha, no copy). Otherwise it fetches into
+// a staging dir (staged=true) and returns that dir + the resolved sha; the caller
+// must either commitStaged it or remove it.
+func (m *Manager) stagePlugin(ctx context.Context, marketplace, plugin string, ref MarketplaceRef, cp CatalogPlugin) (dir, sha string, staged bool, err error) {
 	if ref.Source.Kind == SourceDirectory {
-		// referenced in place: resolve relative to the marketplace root, no copy.
 		root := ref.InstallLocation
 		if cp.Source.Rel {
-			return filepath.Join(root, cp.Source.Path), "", nil
+			return filepath.Join(root, cp.Source.Path), "", false, nil
 		}
 		if cp.Source.Kind == SourceDirectory {
-			return cp.Source.Path, "", nil
+			return cp.Source.Path, "", false, nil
 		}
 	}
-	// staging → sha → move to cache/<mkt>/<plugin>/<sha>/
 	staging := m.pluginCacheDir(marketplace, plugin, ".staging")
 	os.RemoveAll(staging)
 	sha, err = fetchPluginSource(ctx, cp.Source, m.catalogRoot(ref), staging)
 	if err != nil {
 		os.RemoveAll(staging)
-		return "", "", err
+		return "", "", false, err
 	}
+	return staging, sha, true, nil
+}
+
+// commitStaged moves a staging dir into its final sha-keyed cache location and
+// returns that path, replacing any existing dir at that sha.
+func (m *Manager) commitStaged(marketplace, plugin, staging, sha string) (string, error) {
 	key := sha
 	if key == "" {
 		key = "unknown"
@@ -62,13 +68,13 @@ func (m *Manager) materialize(ctx context.Context, marketplace, plugin string, r
 	os.RemoveAll(final)
 	if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
 		os.RemoveAll(staging)
-		return "", "", err
+		return "", err
 	}
 	if err := os.Rename(staging, final); err != nil {
 		os.RemoveAll(staging)
-		return "", "", err
+		return "", err
 	}
-	return final, sha, nil
+	return final, nil
 }
 
 // Install installs plugin from marketplace, enabled.
@@ -83,9 +89,16 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 	if err != nil {
 		return InstallEntry{}, err
 	}
-	dir, sha, err := m.materialize(ctx, marketplace, plugin, ref, cp)
+	dir, sha, staged, err := m.stagePlugin(ctx, marketplace, plugin, ref, cp)
 	if err != nil {
 		return InstallEntry{}, err
+	}
+	if staged {
+		final, cerr := m.commitStaged(marketplace, plugin, dir, sha)
+		if cerr != nil {
+			return InstallEntry{}, cerr
+		}
+		dir = final
 	}
 	if err := validatePluginDir(dir); err != nil {
 		if strings.HasPrefix(dir, m.cacheDir()) {
@@ -116,9 +129,11 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 	return entry, nil
 }
 
-// Upgrade re-materializes plugin from its marketplace and repoints the registry
-// to the new sha-dir. It never deletes the previous dir (the gc sweep, §12,
-// reclaims it) so live sessions keep working. A no-op if the sha is unchanged.
+// Upgrade re-resolves plugin from its marketplace. If the sha changed it
+// materializes a NEW sha-dir, validates, and repoints the registry — never
+// deleting the old dir (the gc sweep reclaims it) so live sessions keep working.
+// If the sha is unchanged (or the source is an in-place directory) it is a true
+// no-op: the staging clone is discarded and the live dir is never touched.
 func (m *Manager) Upgrade(ctx context.Context, plugin, marketplace string) (InstallEntry, error) {
 	release, err := acquireLock(m.lockPath(), 30*time.Second)
 	if err != nil {
@@ -141,20 +156,29 @@ func (m *Manager) Upgrade(ctx context.Context, plugin, marketplace string) (Inst
 	if err != nil {
 		return InstallEntry{}, err
 	}
-	dir, sha, err := m.materialize(ctx, marketplace, plugin, ref, cp)
+	staging, sha, staged, err := m.stagePlugin(ctx, marketplace, plugin, ref, cp)
 	if err != nil {
 		return InstallEntry{}, err
 	}
-	if dir == prev.InstallPath { // same sha → nothing changed
+	if !staged || sha == prev.GitCommitSha {
+		if staged {
+			os.RemoveAll(staging)
+		}
 		return prev, nil
 	}
-	if err := validatePluginDir(dir); err != nil {
+
+	final, err := m.commitStaged(marketplace, plugin, staging, sha)
+	if err != nil {
+		return InstallEntry{}, err
+	}
+	if err := validatePluginDir(final); err != nil {
+		os.RemoveAll(final)
 		return InstallEntry{}, fmt.Errorf("upgraded plugin failed validation: %w", err)
 	}
 
-	prev.InstallPath = dir
+	prev.InstallPath = final
 	prev.GitCommitSha = sha
-	prev.Version = computeVersion(pluginManifestVersion(dir), cp.Source.Ref, sha)
+	prev.Version = computeVersion(pluginManifestVersion(final), cp.Source.Ref, sha)
 	prev.LastUpdated = m.now().UTC()
 	prev.Source = cp.Source
 	reg.Plugins[key] = []InstallEntry{prev}
