@@ -247,6 +247,13 @@ Gated at the **registration seam**, on the true root condition. Deliberately NOT
 | unattended-grace auto-resolve | real demand only; **user/project config, dark by default, never model-settable** | `if_unanswered` is already the disclosed fallback it would use |
 | secret-masked answers | probably never — MCP URL-mode elicitation is the right path for credentials | — |
 
-## 11. Out-of-repo coordination
+## 11. Coordination with the attention & status model (lands first)
 
-A parallel session owns the broader web-UI/UX redesign (2026-07-03 diagnostic). This feature produces the `awaiting` status that work identified as the #1 gap; the shared file surfaces are `renderer.js`/`notifications.js`/`style.css` activation points. Coordinate before merging if both land in the same window.
+The attention/status-model workstream (`docs/superpowers/specs/2026-07-03-attention-status-model-design.md` v5, on `attention-status-model-spec`) merges to main **before** this branch. The designs compose — theirs upgrades `idle → awaiting` for every normally-completed turn at the drain settle; ours sets `awaiting` at the boundary for asking rounds, so their upgrade no-ops on ask turns — but the rebase must reconcile these, in order of importance:
+
+1. **Upstream amendment (needed in THEIR implementation, before they build it):** their delegating-parent wire projection reports `active` while live children or undelivered job notifications exist. A parent with a **pending ask** holds its wakes (§5.3), so under that rule it would read blue forever and the flip condition ("wake-turn completes") could never fire — the user is never told their answer is needed. Precedence must be: *ask-produced `awaiting` outranks the children-running/undelivered-notifications `active` projection.* If it doesn't make their implementation, this branch's rebase adds it.
+2. **`SessionAwaiting` constant:** both add it (same name, string `"awaiting"`). Whoever lands second dedupes the constant and its string-pin test.
+3. **`session_lifecycle.go` conflicts:** their settle-upgrade lives in the same drain-loop region as our entry/drain gates and goal guards. Mechanical merge; re-run the full ask test suite after.
+4. **notifications.js:** they delete the 5s poll (broadcast-driven). On rebase, drop our `active→awaiting` trigger line + its JSDOM test; verify their transition-into-`needs_you` broadcast fires for ask-produced awaiting (it should — it keys on the transition, not the producer) and adapt the test to that path.
+5. **Resume derivation:** unify into one function — their "agent moved last → awaiting" is the general rule; fold in our `!IsError` refinement so an orphan-repaired crash tail doesn't read as amber (or accept their looser inbox semantics deliberately; decide at rebase).
+6. **Their `errored` lane helps us:** `systemError` stops normalizing into `"awaiting"`, so errors no longer masquerade as questions in the NeedsYou tier. No action, just don't fight it.
