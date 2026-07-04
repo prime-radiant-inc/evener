@@ -689,3 +689,322 @@ func TestAskUser_PreToolUseDenyPostsNothing(t *testing.T) {
 		t.Fatalf("state = %q, want %q (a deny alone must not end the turn awaiting)", got, SessionIdle)
 	}
 }
+
+// --- Task 5: awaiting holds — the entry gate + the drain-ladder gate (spec §5.3) ---
+//
+// These tests drive full ProcessInput/ProcessInputKind round trips through a
+// scripted adapter, modeled on TestCommunicate_ResultExitsLoop and the Task 4
+// boundary tests above. Round 4's bug (per the brief) was processOneInput
+// flipping to SessionProcessing unconditionally before dispatch: a delegate or
+// notification finishing while the user reads the question would silently turn
+// the needs-you signal off. The entry gate and drain-ladder gate below sit
+// strictly before that transition.
+
+// TestAskUser_EntryGateRefusesNotificationWake covers spec §5.3's entry gate: an
+// autonomous EntryNotification wake, while the session sits in SessionAwaiting,
+// is refused at the ProcessInputKind boundary before any state transition —
+// state is asserted SessionAwaiting both before and after (round 4's blocker
+// was exactly this state getting clobbered), no model request is made, and the
+// notification stays durably queued (not drained) until a real user reply
+// resolves the ask, at which point it drains as its own follow-on turn.
+func TestAskUser_EntryGateRefusesNotificationWake(t *testing.T) {
+	t.Parallel()
+	ask := askUserCall("ask1", askUserArgsValid())
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+			func(req llm.Request) llm.Response { return finalResponse("thanks, going with Postgres") },
+			func(req llm.Request) llm.Response { return finalResponse("notification ack") },
+		},
+	}
+	sess := newSession(t, withAdapter(f))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state before entry-gate probe = %q, want %q", got, SessionAwaiting)
+	}
+
+	sess.enqueueJobNotification(watchNotification("job_wake", "output_match: done"))
+
+	out, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification)
+	if err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification) while awaiting returned an error: %v", err)
+	}
+	if strings.TrimSpace(out) != "" {
+		t.Fatalf("ProcessInputKind(EntryNotification) while awaiting returned %q, want empty (no-op)", out)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state after refused notification wake = %q, want %q (must not flip)", got, SessionAwaiting)
+	}
+	if got := len(f.Requests()); got != 1 {
+		t.Fatalf("requests after refused notification wake = %d, want 1 (no model call)", got)
+	}
+	if got := sess.peekNotifications(); got != 1 {
+		t.Fatalf("peekNotifications after refused wake = %d, want 1 (notification stays queued, not drained)", got)
+	}
+
+	if _, err := sess.ProcessInput(ctx, "let's go with Postgres", nil); err != nil {
+		t.Fatalf("reply ProcessInput: %v", err)
+	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after reply = %q, want %q", got, SessionIdle)
+	}
+	if got := len(f.Requests()); got != 3 {
+		t.Fatalf("requests after reply = %d, want 3 (reply turn + the drained notification turn)", got)
+	}
+	if got := sess.peekNotifications(); got != 0 {
+		t.Fatalf("peekNotifications after drain = %d, want 0", got)
+	}
+}
+
+// TestAskUser_EntryGateRefusesContinuationWake covers spec §5.3's entry gate for
+// EntryContinuation: refused before any state transition, state unchanged
+// throughout, no model request made. (The goal engine's own arm-vs-kick
+// machinery — whether a continuation is even offered while awaiting — is
+// Task 6; this test only proves the generic entry gate refuses the entry kind
+// regardless of what would have produced it.)
+func TestAskUser_EntryGateRefusesContinuationWake(t *testing.T) {
+	t.Parallel()
+	ask := askUserCall("ask1", askUserArgsValid())
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+			func(req llm.Request) llm.Response {
+				t.Fatalf("should not reach a model call: the entry gate must refuse EntryContinuation while awaiting")
+				return llm.Response{}
+			},
+		},
+	}
+	sess := newSession(t, withAdapter(f))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state before entry-gate probe = %q, want %q", got, SessionAwaiting)
+	}
+
+	out, err := sess.ProcessInputKind(ctx, "continue toward the goal", nil, EntryContinuation)
+	if err != nil {
+		t.Fatalf("ProcessInputKind(EntryContinuation) while awaiting returned an error: %v", err)
+	}
+	if strings.TrimSpace(out) != "" {
+		t.Fatalf("ProcessInputKind(EntryContinuation) while awaiting returned %q, want empty (no-op)", out)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state after refused continuation wake = %q, want %q (must not flip)", got, SessionAwaiting)
+	}
+	if got := len(f.Requests()); got != 1 {
+		t.Fatalf("requests after refused continuation wake = %d, want 1 (no model call)", got)
+	}
+}
+
+// TestAskUser_EntryGateRefusesWatchDeliveryWake covers spec §5.3's entry gate for
+// EntryWatchDelivery: refused before any state transition, state unchanged
+// throughout, no model request made.
+func TestAskUser_EntryGateRefusesWatchDeliveryWake(t *testing.T) {
+	t.Parallel()
+	ask := askUserCall("ask1", askUserArgsValid())
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+			func(req llm.Request) llm.Response {
+				t.Fatalf("should not reach a model call: the entry gate must refuse EntryWatchDelivery while awaiting")
+				return llm.Response{}
+			},
+		},
+	}
+	sess := newSession(t, withAdapter(f))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state before entry-gate probe = %q, want %q", got, SessionAwaiting)
+	}
+
+	out, err := sess.ProcessInputKind(ctx, "a delegate delivered a watch frame", nil, EntryWatchDelivery)
+	if err != nil {
+		t.Fatalf("ProcessInputKind(EntryWatchDelivery) while awaiting returned an error: %v", err)
+	}
+	if strings.TrimSpace(out) != "" {
+		t.Fatalf("ProcessInputKind(EntryWatchDelivery) while awaiting returned %q, want empty (no-op)", out)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state after refused watch-delivery wake = %q, want %q (must not flip)", got, SessionAwaiting)
+	}
+	if got := len(f.Requests()); got != 1 {
+		t.Fatalf("requests after refused watch-delivery wake = %d, want 1 (no model call)", got)
+	}
+}
+
+// TestAskUser_BoundaryDrainHoldsNotifications covers spec §5.3's drain-ladder
+// gate: a job notification arriving DURING the asking turn (not via a separate
+// entry-gate probe, but genuinely enqueued mid-round by a tool call sharing the
+// round with ask_user, deterministically — the same idiom
+// TestAskUser_InterruptedTurnEndsIdle uses for its trigger_cancel tool) must not
+// drive a notification turn at the ask boundary. It drains only after a real
+// reply, at that reply turn's own drain tail.
+func TestAskUser_BoundaryDrainHoldsNotifications(t *testing.T) {
+	t.Parallel()
+	ask := askUserCall("ask1", askUserArgsValid())
+	enqueueNotif := llm.ToolCallData{ID: "notif1", Name: "enqueue_test_notification", Arguments: json.RawMessage(`{}`), Type: "function"}
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask, enqueueNotif) },
+			func(req llm.Request) llm.Response { return finalResponse("thanks, going with Postgres") },
+			func(req llm.Request) llm.Response { return finalResponse("notification ack") },
+		},
+	}
+	sess := newSession(t, withAdapter(f))
+	sess.RegisterTool("enqueue_test_notification",
+		"test-only: enqueues a job notification mid-round, simulating a job finishing while the model is asking a question",
+		map[string]any{"type": "object", "properties": map[string]any{}},
+		func(context.Context, any) (any, error) {
+			sess.enqueueJobNotification(watchNotification("job_during_ask", "output_match: done"))
+			return "queued", nil
+		})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state = %q, want %q", got, SessionAwaiting)
+	}
+	if got := len(f.Requests()); got != 1 {
+		t.Fatalf("requests = %d, want 1 (a notification arriving mid-ask must not drive a turn at the boundary)", got)
+	}
+	if got := sess.peekNotifications(); got != 1 {
+		t.Fatalf("peekNotifications = %d, want 1 (held, not dropped)", got)
+	}
+
+	if _, err := sess.ProcessInput(ctx, "let's go with Postgres", nil); err != nil {
+		t.Fatalf("reply ProcessInput: %v", err)
+	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after reply = %q, want %q", got, SessionIdle)
+	}
+	if got := len(f.Requests()); got != 3 {
+		t.Fatalf("requests after reply = %d, want 3 (reply turn + the drained notification turn)", got)
+	}
+	if got := sess.peekNotifications(); got != 0 {
+		t.Fatalf("peekNotifications after drain = %d, want 0", got)
+	}
+}
+
+// TestAskUser_QueuedInputDrainsAsReply covers spec §5.3's queued-input rung,
+// which stays live by design: a message the user queues mid-round (via the
+// same deterministic same-round-tool idiom as the notification test above)
+// drains as the very next turn once the ask ends the round — it IS the reply,
+// so the session never rests awaiting, and the pending set clears.
+func TestAskUser_QueuedInputDrainsAsReply(t *testing.T) {
+	t.Parallel()
+	ask := askUserCall("ask1", askUserArgsValid())
+	enqueueFollowUpText := llm.ToolCallData{ID: "enqueue1", Name: "enqueue_test_queued_input", Arguments: json.RawMessage(`{}`), Type: "function"}
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask, enqueueFollowUpText) },
+			func(req llm.Request) llm.Response { return finalResponse("sure, running the linter too") },
+		},
+	}
+	sess := newSession(t, withAdapter(f))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sess.RegisterTool("enqueue_test_queued_input",
+		"test-only: enqueues a user message mid-round, simulating the user typing ahead while the model is asking a question",
+		map[string]any{"type": "object", "properties": map[string]any{}},
+		func(context.Context, any) (any, error) {
+			if err := sess.Enqueue(ctx, "also run the linter"); err != nil {
+				t.Fatalf("Enqueue: %v", err)
+			}
+			return "queued", nil
+		})
+
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state = %q, want %q (queued input mid-ask must drain as the reply; the session must never rest awaiting in this case)", got, SessionIdle)
+	}
+	if got := len(f.Requests()); got != 2 {
+		t.Fatalf("requests = %d, want 2 (the asking round + the queued text drained as the reply)", got)
+	}
+	if !requestsContain(f.Requests(), "also run the linter") {
+		t.Fatal("the queued text never reached the model as the next user turn")
+	}
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("askPendingCount = %d, want 0 (the queued reply resolves the pending set)", got)
+	}
+	if res, ok := findToolResultInHistory(sess.history, "ask1"); !ok || res.Content != askUserAckText {
+		t.Fatalf("ack for ask1 missing or wrong: %+v ok=%v", res, ok)
+	}
+}
+
+// TestAskUser_BoundaryDrainPreservesFollowUp exercises the follow-up
+// preservation concern directly: Session.FollowUp is exported, thread-safe
+// public API with zero production callers today (grep across every module
+// finds only two direct test callers) — so nothing at the type level prevents
+// some future caller from queueing one while an asking round is in flight. A
+// same-round test tool simulates that race. The drain-ladder gate must HOLD the
+// follow-up rung while awaiting WITHOUT popping it and discarding the result:
+// the message must survive intact in the follow-up queue, not be lost, so it
+// still runs once the session leaves awaiting.
+func TestAskUser_BoundaryDrainPreservesFollowUp(t *testing.T) {
+	t.Parallel()
+	ask := askUserCall("ask1", askUserArgsValid())
+	queueFollowUp := llm.ToolCallData{ID: "fu1", Name: "enqueue_test_followup_direct", Arguments: json.RawMessage(`{}`), Type: "function"}
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask, queueFollowUp) },
+			func(req llm.Request) llm.Response {
+				t.Fatalf("should not reach a second LLM call: an asking boundary must hold the follow-up rung")
+				return llm.Response{}
+			},
+		},
+	}
+	sess := newSession(t, withAdapter(f))
+	sess.RegisterTool("enqueue_test_followup_direct",
+		"test-only: calls Session.FollowUp mid-round, simulating a concurrent caller racing the asking round",
+		map[string]any{"type": "object", "properties": map[string]any{}},
+		func(context.Context, any) (any, error) {
+			sess.FollowUp("investigate the flaky test next")
+			return "queued", nil
+		})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state = %q, want %q", got, SessionAwaiting)
+	}
+	if got := len(f.Requests()); got != 1 {
+		t.Fatalf("requests = %d, want 1 (a follow-up queued mid-ask must not run before the reply)", got)
+	}
+	sess.mu.Lock()
+	pending := len(sess.followups)
+	sess.mu.Unlock()
+	if pending != 1 {
+		t.Fatalf("pending follow-ups after the awaiting rest = %d, want 1 (held, not dropped)", pending)
+	}
+}

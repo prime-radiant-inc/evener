@@ -320,7 +320,8 @@ func routeNoToolCalls(kind EntryKind, noContent bool) noCallsRoute {
 // drainInputs is the snapshot the drain loop feeds selectDrainNextAction after a
 // completed (non-error) turn: the kind of the turn that just ran, whether a goal
 // continuation is already deferred, the popped follow-up text and queued message
-// (its text plus image count), and whether any job notifications are pending.
+// (its text plus image count), whether any job notifications are pending, and
+// whether the turn just rested SessionAwaiting (spec §5.3's drain-ladder gate).
 type drainInputs struct {
 	RanKind              EntryKind
 	HaveDeferredCont     bool
@@ -328,6 +329,7 @@ type drainInputs struct {
 	QueuedText           string
 	QueuedImages         int
 	NotificationsPending bool
+	Awaiting             bool
 }
 
 // drainAction is the next action the drain loop takes after a completed turn.
@@ -354,18 +356,32 @@ const (
 // The wrapper performs the pops and the goal-gate fold (side effects) and feeds
 // their results in; this function only decides. skipGoalGate reports whether the
 // wrapper should SKIP folding the goal gate this turn — true after a notification
-// turn (which must not advance or terminate the goal) or while a continuation is
-// already deferred (one fold per turn).
+// turn (which must not advance or terminate the goal), while a continuation is
+// already deferred (one fold per turn), or while the turn that just ran rests
+// SessionAwaiting.
 //
-// Priority: a pending follow-up, then a queued user message, then a pending
-// notification, then the goal gate's deferred continuation, then idle. The goal
-// gate always folds BEFORE the notification turn runs: the wrapper arms on
-// !skipGoalGate before acting on runNotification, so the fold stays ahead of the
-// notification interleave even though the notification is the turn that runs next.
-// armGoalGate is returned only when the gate is eligible AND no notification
-// preempts, so the resulting turn depends on the (side-effectful) fold result.
+// Awaiting is checked first and overrides every other rung (spec §5.3's
+// drain-ladder gate): a turn that just posted a question holds its follow-up,
+// notification, and goal rungs — none of them may drive the model past the
+// unanswered questions — and only the queued-input rung stays live, because a
+// message the user queued mid-turn IS the reply (they are demonstrably present).
+//
+// Otherwise, priority: a pending follow-up, then a queued user message, then a
+// pending notification, then the goal gate's deferred continuation, then idle.
+// The goal gate always folds BEFORE the notification turn runs: the wrapper arms
+// on !skipGoalGate before acting on runNotification, so the fold stays ahead of
+// the notification interleave even though the notification is the turn that runs
+// next. armGoalGate is returned only when the gate is eligible AND no
+// notification preempts, so the resulting turn depends on the (side-effectful)
+// fold result.
 func selectDrainNextAction(in drainInputs) (action drainAction, skipGoalGate bool) {
-	skipGoalGate = in.RanKind == EntryNotification || in.HaveDeferredCont
+	skipGoalGate = in.RanKind == EntryNotification || in.HaveDeferredCont || in.Awaiting
+	if in.Awaiting {
+		if strings.TrimSpace(in.QueuedText) != "" || in.QueuedImages > 0 {
+			return runQueued, skipGoalGate
+		}
+		return goIdle, skipGoalGate
+	}
 	switch {
 	case strings.TrimSpace(in.FollowUp) != "":
 		return runFollowUp, skipGoalGate
@@ -411,6 +427,21 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return "", errors.New("session is closed")
+	}
+	// Entry gate (spec §5.3): while awaiting an answer, an autonomous wake —
+	// EntryNotification, EntryContinuation, EntryWatchDelivery — is refused here,
+	// before the Processing transition below (processOneInput's
+	// setStateIfOpenLocked(SessionProcessing)) ever runs. No state flip, no event
+	// emission: round 4's bug was that transition firing unconditionally before
+	// dispatch, so a delegate or notification finishing while the user reads the
+	// question silently turned the needs-you signal off. Refusing here leaves the
+	// wake source's own durable queue (jobstore notifications, the goal engine,
+	// the watch outbox) untouched, so it redelivers once the boundary drains
+	// after the user's reply. EntryUserInput is always accepted — it is how the
+	// reply resolves awaiting (spec §5.2).
+	if s.state == SessionAwaiting && kind != EntryUserInput {
+		s.mu.Unlock()
+		return "", nil
 	}
 	s.sessionEndEmitted = false
 	// Mark the session as in-turn for the duration of this input. SetGoal/ClearGoal
@@ -525,8 +556,19 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// priority decision over their results. popQueueHead is reached only when no
 		// follow-up is pending (it consumes a queued message), matching the original
 		// short-circuit; peekNotifications is likewise consulted only at its ladder
-		// rung and only for a non-notification turn.
-		fu := s.popFollowUp()
+		// rung and only for a non-notification, non-awaiting turn.
+		//
+		// awaiting reflects the boundary state the turn that just ran left behind
+		// (spec §5.3's drain-ladder gate). The follow-up pop itself is skipped while
+		// awaiting — not popped and then discarded — so a follow-up queued during
+		// the asking turn (FollowUp is public API with no gating of its own) is left
+		// intact in s.followups for the next drain cycle instead of being silently
+		// dropped by an awaiting rest that won't run it.
+		awaiting := s.State() == SessionAwaiting
+		var fu string
+		if !awaiting {
+			fu = s.popFollowUp()
+		}
 		var queued queuedInput
 		if strings.TrimSpace(fu) == "" {
 			// kata 111a / t5j6: each drained queued message becomes a distinct user
@@ -536,7 +578,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		noFollowUpOrQueued := strings.TrimSpace(fu) == "" &&
 			strings.TrimSpace(queued.Text) == "" && len(queued.Images) == 0
 		notificationsPending := false
-		if noFollowUpOrQueued && ranKind != EntryNotification {
+		if noFollowUpOrQueued && !awaiting && ranKind != EntryNotification {
 			notificationsPending = s.peekNotifications() > 0
 		}
 		action, skipGoalGate := selectDrainNextAction(drainInputs{
@@ -546,6 +588,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			QueuedText:           queued.Text,
 			QueuedImages:         len(queued.Images),
 			NotificationsPending: notificationsPending,
+			Awaiting:             awaiting,
 		})
 
 		switch action {
