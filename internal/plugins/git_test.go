@@ -55,3 +55,13 @@ func TestGitClone_CopiesRepoAtSha(t *testing.T) {
 		t.Fatalf("HEAD = %q err %v, want %q", got, err, sha)
 	}
 }
+
+func TestGitClone_RejectsFlagLikeArgs(t *testing.T) {
+	dst := filepath.Join(t.TempDir(), "dst")
+	if err := gitClone(context.Background(), "--upload-pack=evil", dst, "", ""); err == nil {
+		t.Fatal("gitClone accepted a flag-like url; want rejection")
+	}
+	if err := gitClone(context.Background(), "https://example/x.git", dst, "-x", ""); err == nil {
+		t.Fatal("gitClone accepted a flag-like ref; want rejection")
+	}
+}

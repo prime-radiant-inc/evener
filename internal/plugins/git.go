@@ -27,8 +27,22 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 	return string(out), nil
 }
 
+// guardGitArg rejects a value that git would parse as an option (a leading
+// dash), since url/ref/sha/subdir may come from untrusted marketplace manifests.
+func guardGitArg(name, val string) error {
+	if strings.HasPrefix(val, "-") {
+		return fmt.Errorf("refusing git %s %q: leading '-' looks like a flag", name, val)
+	}
+	return nil
+}
+
 // gitClone clones url into dir, then checks out ref and/or sha when set.
 func gitClone(ctx context.Context, url, dir, ref, sha string) error {
+	for _, g := range []struct{ n, v string }{{"url", url}, {"ref", ref}, {"sha", sha}} {
+		if err := guardGitArg(g.n, g.v); err != nil {
+			return err
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return err
 	}
@@ -36,7 +50,7 @@ func gitClone(ctx context.Context, url, dir, ref, sha string) error {
 	if sha == "" && ref == "" {
 		args = append(args, "--depth=1")
 	}
-	args = append(args, url, dir)
+	args = append(args, "--", url, dir)
 	if _, err := git(ctx, "", args...); err != nil {
 		return err
 	}
@@ -56,10 +70,15 @@ func gitClone(ctx context.Context, url, dir, ref, sha string) error {
 // gitSparseClone does a blobless, sparse clone of url into dir limited to
 // subdir, then pins ref/sha. Falls back to a full checkout of subdir contents.
 func gitSparseClone(ctx context.Context, url, dir, subdir, ref, sha string) error {
+	for _, g := range []struct{ n, v string }{{"url", url}, {"subdir", subdir}, {"ref", ref}, {"sha", sha}} {
+		if err := guardGitArg(g.n, g.v); err != nil {
+			return err
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return err
 	}
-	args := []string{"clone", "--quiet", "--filter=blob:none", "--no-checkout", url, dir}
+	args := []string{"clone", "--quiet", "--filter=blob:none", "--no-checkout", "--", url, dir}
 	if _, err := git(ctx, "", args...); err != nil {
 		return err
 	}
