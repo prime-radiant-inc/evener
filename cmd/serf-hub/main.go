@@ -16,6 +16,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hostlock"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
@@ -175,6 +176,18 @@ func main() {
 		}
 	}
 
+	// attentionPoke lets a web handler (e.g. an archive decision) nudge the
+	// attention watcher below to recompute immediately instead of waiting for
+	// its next tick. Buffered 1 + non-blocking send: a poke that arrives while
+	// one is already pending coalesces into the same recompute.
+	attentionPoke := make(chan struct{}, 1)
+	pokeAttention := func() {
+		select {
+		case attentionPoke <- struct{}{}:
+		default:
+		}
+	}
+
 	// Web
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr:             cfg.Addr,
@@ -195,6 +208,7 @@ func main() {
 		CodexSources:        cfg.CodexSources,
 		CodexLaunches:       cfg.CodexLaunches,
 		CodexLauncher:       codexLauncher,
+		PokeAttention:       pokeAttention,
 	})
 
 	// Lifecycle
@@ -221,6 +235,35 @@ func main() {
 				return
 			case <-ticker.C:
 				_ = past.Rebuild()
+			}
+		}
+	}()
+
+	// Attention watcher: derives each live session's attention level from the
+	// same roster/past-index/archive inputs the sidebar tree uses, and
+	// broadcasts serf/attention/changed whenever a session's level actually
+	// transitions (notifications.js drives the tab title/favicon badge and OS
+	// notifications from it). Ticks every 5s and on-demand via attentionPoke.
+	go func() {
+		w := hubcore.NewAttentionWatcher(func(p hubcore.AttentionChangedPayload) {
+			web.appRPC.BroadcastAll(appwire.NotifySerfAttentionChanged, p)
+		})
+		tick := time.NewTicker(5 * time.Second)
+		defer tick.Stop()
+		run := func() {
+			decisions, _ := archive.Decisions()
+			m, sum := hubcore.DeriveAttention(past.AllMetas(), roster.List(), decisions)
+			w.Tick(m, sum)
+		}
+		run()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				run()
+			case <-attentionPoke:
+				run()
 			}
 		}
 	}()

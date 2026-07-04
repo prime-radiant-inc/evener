@@ -39,5 +39,11 @@ func (s *WebServer) handleAPIArchive(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "archive store error: "+err.Error())
 		return
 	}
+	// An archive decision can move a session in or out of tier eligibility;
+	// nudge the attention watcher so the badge/notification state doesn't lag
+	// behind the sidebar until the next tick.
+	if s.cfg.PokeAttention != nil {
+		s.cfg.PokeAttention()
+	}
 	writeAPIJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

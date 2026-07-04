@@ -27,6 +27,26 @@ type TreeResponse struct {
 	Sources     []Source      `json:"sources"`
 	Live        []TreeNode    `json:"live"`
 	Projects    []TreeProject `json:"projects"`
+	// serf:naming-ignore
+	AttentionSummary AttentionSummary `json:"attentionSummary"` // camelCase: see AttentionSummary's doc
+}
+
+// AttentionSummary is the authoritative badge count set: how many live,
+// top-level, not-manually-archived sessions need attention, are erroring, or
+// are working — the NeedsYou tier's eligibility set (only an explicit archive
+// decision suppresses; age never decays attention). Notification clients
+// (notifications.js) drive the tab title and favicon badge from this on
+// baseline load. It mirrors
+// hubcore.AttentionSummary's shape as a parallel wire type — hubapi cannot
+// import the hub's internal package — including its camelCase tags: this is
+// the same "summary" object serf/attention/changed pushes incrementally
+// (hubcore.AttentionChangedPayload.Summary), so the JS layer applies one
+// field-access path to either the REST baseline or the live notification.
+type AttentionSummary struct {
+	// serf:naming-ignore
+	NeedsYou int `json:"needsYou"`
+	Error    int `json:"error"`
+	Working  int `json:"working"`
 }
 
 type Source struct {
