@@ -1146,3 +1146,35 @@ func TestProjectArchiveDecisionPathKeyedWithLegacyFallback(t *testing.T) {
 		t.Fatalf("path row false must win over legacy true; got %+v", tree.Projects)
 	}
 }
+
+func TestTwoClustersInOneProjectGetDistinctIDs(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	old := now.Add(-30 * 24 * time.Hour) // ended, clusterable
+	mk := func(id, title string) schema.SessionMeta {
+		return schema.SessionMeta{ID: id, Name: title, CreatedAt: old, UpdatedAt: old, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/p"}}
+	}
+	metas := []schema.SessionMeta{
+		mk("01A", "alpha"), mk("01B", "alpha"), mk("01C", "alpha"),
+		mk("01D", "beta"), mk("01E", "beta"), mk("01F", "beta"),
+	}
+	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	var clusters []TreeNode
+	for _, p := range tree.ArchivedProjects {
+		for _, n := range append(append([]TreeNode{}, p.Archived...), p.Recent...) {
+			if n.Kind == "cluster" {
+				clusters = append(clusters, n)
+			}
+		}
+	}
+	if len(clusters) != 2 {
+		t.Fatalf("want 2 clusters, got %d", len(clusters))
+	}
+	if clusters[0].ID == "" || clusters[1].ID == "" || clusters[0].ID == clusters[1].ID {
+		t.Fatalf("clusters need distinct non-empty IDs: %q vs %q", clusters[0].ID, clusters[1].ID)
+	}
+	for _, c := range clusters {
+		if !strings.HasPrefix(c.ID, "cluster:") {
+			t.Fatalf("cluster ID must be cluster:<hex>, got %q", c.ID)
+		}
+	}
+}

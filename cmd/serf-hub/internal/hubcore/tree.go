@@ -811,6 +811,7 @@ func clusterRepeatedTitles(sessions []TreeNode) []TreeNode {
 			}
 		}
 		out = append(out, TreeNode{
+			ID:           clusterID(s.Project, title),
 			Title:        title,
 			Project:      s.Project,
 			State:        "ended",
@@ -822,6 +823,15 @@ func clusterRepeatedTitles(sessions []TreeNode) []TreeNode {
 		})
 	}
 	return out
+}
+
+// clusterID is the stable synthetic id for a repeated-title cluster, scoped by
+// project so equal titles in different projects never collide, and never empty
+// (an empty id renders as an empty ref and collides all clusters in a project
+// at RowID "project:<key>:" — round-2 A7/B4).
+func clusterID(project, title string) string {
+	sum := sha256.Sum256([]byte(project + "\x00" + title))
+	return "cluster:" + hex.EncodeToString(sum[:4])
 }
 
 // clusterable reports whether a session row may be folded into a repeated-title
