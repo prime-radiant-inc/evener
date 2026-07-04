@@ -290,7 +290,12 @@ func (m *Manager) List() ([]ListItem, error) {
 			LastUpdated:  e.LastUpdated,
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Plugin < out[j].Plugin })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Plugin != out[j].Plugin {
+			return out[i].Plugin < out[j].Plugin
+		}
+		return out[i].Marketplace < out[j].Marketplace
+	})
 	return out, nil
 }
 
@@ -311,7 +316,11 @@ func (m *Manager) UpdateAll(ctx context.Context) ([]InstallEntry, error) {
 	var updated []InstallEntry
 	var errs []string
 	for _, key := range keys {
-		e := reg.Plugins[key][0]
+		entries := reg.Plugins[key]
+		if len(entries) == 0 {
+			continue
+		}
+		e := entries[0]
 		if e.Source.Rel || e.Source.Kind == SourceDirectory {
 			continue
 		}
