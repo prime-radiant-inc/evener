@@ -71,6 +71,10 @@ conflate the 4 meanings. Many topics are "port the golden + explore variants," n
 16. **Blocking needs-you: permission/approval & agent question** — resolve amber-vs-blue; don't let
     it hang off-screen. Alts: (a) amber container + blue button; (b) all-amber blocking; (c) docked
     approval/answer bar above composer; (d) inline diff/quick-reply-gated.
+    **Shipped for the agent-question half:** the `ask_user` feature built (a)+(c)+(d) per this
+    mockup's own recommendation — amber-container/blue-button, the needs-you dock, and quick-reply
+    chips; (b) was not adopted. (The permission/approval-prompt half of this target is a separate,
+    unrelated feature.)
 17. **Context pressure & compaction** (not in §7) — pressure gauge + compaction lifecycle. Alts:
     (a) quiet gauge coloring only near the edge; (b) compaction system-line + expand; (c) transcript
     watermark band; (d) pre-emptive amber nudge.

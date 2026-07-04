@@ -101,6 +101,13 @@ reimplementation of the Claude event — for example `PreToolUse` honors `allow`
 `deny` decisions but not `ask`/`defer` (no interactive permission prompt), and
 several events ignore their matcher target today (noted above).
 
+**`Stop` is not consulted at an ask-ending boundary.** When a round posts one or more
+`ask_user` questions, the turn ends straight into the `awaiting` session state without
+running `Stop` hooks — a pending, unanswered question is a stronger stop than a hook's
+veto (a `Blocked` result would just force the model past its own unanswered questions).
+`ask_user` is otherwise an ordinary tool: `PreToolUse` and `PostToolUse` still fire
+around the call like any other.
+
 **Other Claude events are reserved, not fired.** Names like `PostToolUseFailure`,
 `PermissionRequest`, `SubagentStart`, `PostCompact`, `Setup`, `FileChanged`, and
 the rest of the Claude vocabulary are *recognized* (serf knows they are real
@@ -153,6 +160,7 @@ matcher must name the **Claude** tool:
 | starting a delegate job | `delegate` | `Task` |
 | web fetch / search | `web_fetch` / `web_search` | `WebFetch` / `WebSearch` |
 | notebook edits | `notebook_edit` | `NotebookEdit` |
+| asking the user a question | `ask_user` | `AskUserQuestion` |
 
 MCP tools keep their `mcp__<server>__<tool>` name in both vocabularies.
 
