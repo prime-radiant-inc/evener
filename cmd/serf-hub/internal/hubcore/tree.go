@@ -1,9 +1,12 @@
 package hubcore
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"primeradiant.com/serf/agent/schema"
@@ -33,7 +36,12 @@ type Tree struct {
 // split into activity tiers (Current / Recent / Archived) computed from each
 // session's last activity and archive decision.
 type TreeProject struct {
-	Name       string
+	Name string
+	// Key is the stable, path-derived project identifier: a slug of the full
+	// working directory ("<basename>-<8-hex sha256(path)>", or "no-project" for
+	// pathless sessions). Readable and collision-resistant, not collision-free —
+	// every destructive use is path-validated. Name stays the basename for display.
+	Key        string
 	WorkingDir string // absolute path of the project's working directory; used to prefill the spawn form
 	// Sessions split by activity tier:
 	//   - Current  – last activity ≤ 24h, not archived.
@@ -67,6 +75,9 @@ type TreeProject struct {
 	MoreRecent   int
 	MoreArchived int
 	Age          string // pre-formatted relative age of MostRecentStart ("now", "2m", "3h", "5d")
+	// Worktrees is the count of distinct non-empty WorktreePath values across
+	// the project's sessions, surfaced in the delete confirmation.
+	Worktrees int
 }
 
 const (
@@ -216,6 +227,18 @@ func projectName(m schema.SessionMeta) string {
 	return filepath.Base(wd)
 }
 
+// projectSlug is the stable path-derived project key: "<basename>-<8hex>" of
+// the full working directory, or "no-project" when the path is empty. The
+// basename is sanitized for use as a URL/query key.
+func projectSlug(path string) string {
+	if path == "" {
+		return "no-project"
+	}
+	sum := sha256.Sum256([]byte(path))
+	base := strings.NewReplacer("/", "_", ":", "_", " ", "_").Replace(filepath.Base(path))
+	return base + "-" + hex.EncodeToString(sum[:4])
+}
+
 // nodeTitle computes the display title for a tree node.
 //
 // Older sessions persisted before OriginalPrompt was captured fall back to a
@@ -318,12 +341,14 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 
 	// Group metas by project name.
 	type projectAccum struct {
+		name       string // basename for display
 		topLevel   []schema.SessionMeta
 		children   map[string][]schema.SessionMeta // parentID -> children
-		workingDir string                          // first non-empty WorkingDir seen in this project
+		workingDir string                          // the full grouping path ("" for no-project)
+		worktrees  map[string]bool                 // distinct WorktreePath set
 	}
-	projects := make(map[string]*projectAccum)
-	projectOrder := []string{} // insertion order for stable output
+	projects := make(map[string]*projectAccum) // keyed by EffectiveWorkingDir path
+	projectOrder := []string{}                 // insertion order (paths) for stable output
 
 	// Build a reverse-lookup index: which session forked from each origin?
 	// Used to attach a "snapshotted original" (the parent meta with ForkLabel
@@ -338,18 +363,18 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 	}
 
 	for _, m := range metas {
-		pname := projectName(m)
-		if _, ok := projects[pname]; !ok {
-			projects[pname] = &projectAccum{
-				children: make(map[string][]schema.SessionMeta),
-			}
-			projectOrder = append(projectOrder, pname)
+		path := EffectiveWorkingDir(m)
+		acc := projects[path]
+		if acc == nil {
+			acc = &projectAccum{name: projectName(m), children: map[string][]schema.SessionMeta{}, worktrees: map[string]bool{}}
+			projects[path] = acc
+			projectOrder = append(projectOrder, path)
 		}
-		acc := projects[pname]
-		if acc.workingDir == "" {
-			if wd := EffectiveWorkingDir(m); wd != "" {
-				acc.workingDir = wd
-			}
+		if acc.workingDir == "" && path != "" {
+			acc.workingDir = path
+		}
+		if m.WorktreePath != "" {
+			acc.worktrees[m.WorktreePath] = true
 		}
 		switch {
 		case m.IsSubagent && m.ParentSessionID != "":
@@ -374,8 +399,8 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 
 	// Build the Projects slice.
 	treeProjects := make([]TreeProject, 0, len(projectOrder))
-	for _, pname := range projectOrder {
-		acc := projects[pname]
+	for _, path := range projectOrder {
+		acc := projects[path]
 
 		// Sort top-level sessions by the Hub session ordering contract.
 		sort.SliceStable(acc.topLevel, func(i, j int) bool {
@@ -388,7 +413,7 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 			node := TreeNode{
 				ID:        m.ID,
 				Title:     nodeTitle(m, kind),
-				Project:   pname,
+				Project:   acc.name,
 				Branch:    m.EnvInfo.GitBranch,
 				State:     stateFor(m.ID),
 				Kind:      kind,
@@ -432,7 +457,7 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 				node.Children = append(node.Children, TreeNode{
 					ID:        c.ID,
 					Title:     nodeTitle(c, "subagent"),
-					Project:   pname,
+					Project:   acc.name,
 					State:     childState,
 					Kind:      "subagent",
 					CreatedAt: OrderCreatedAt(c.CreatedAt, c.UpdatedAt),
@@ -444,7 +469,7 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 				node.Children = append(node.Children, TreeNode{
 					ID:        c.ID,
 					Title:     nodeTitle(c, "fork"),
-					Project:   pname,
+					Project:   acc.name,
 					State:     stateFor(c.ID),
 					Kind:      "fork",
 					CreatedAt: OrderCreatedAt(c.CreatedAt, c.UpdatedAt),
@@ -500,7 +525,7 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 
 		// Project placement: a project is archived when manually archived or when
 		// it has no non-archived (Current/Recent) sessions.
-		isArchived := decisions[ArchiveKey{Kind: "project", ID: pname}] ||
+		isArchived := decisions[ArchiveKey{Kind: "project", ID: acc.name}] ||
 			(len(current) == 0 && len(recent) == 0)
 
 		// Cap each tier so a project with hundreds of runs can't bloat the
@@ -510,8 +535,10 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		archived, moreArchived := capTier(archived, maxSidebarSessionsPerTier)
 
 		treeProjects = append(treeProjects, TreeProject{
-			Name:            pname,
-			WorkingDir:      projects[pname].workingDir,
+			Name:            acc.name,
+			Key:             projectSlug(path),
+			WorkingDir:      acc.workingDir,
+			Worktrees:       len(acc.worktrees),
 			Current:         current,
 			Recent:          recent,
 			Archived:        archived,

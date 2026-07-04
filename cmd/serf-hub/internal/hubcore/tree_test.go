@@ -1093,3 +1093,37 @@ func TestNeedsYou_ArchivedLiveAwaitingExcluded(t *testing.T) {
 		t.Fatalf("archived live awaiting session must not appear in NeedsYou; got %d", len(tree.NeedsYou))
 	}
 }
+
+func TestCoBasenameProjectsAreDistinctNodes(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	metas := []schema.SessionMeta{
+		{ID: "01A", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/a/foo"}},
+		{ID: "01B", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/b/foo"}},
+	}
+	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	if len(tree.Projects) != 2 {
+		t.Fatalf("want 2 distinct projects for co-basename dirs, got %d: %+v", len(tree.Projects), tree.Projects)
+	}
+	keys := map[string]string{}
+	for _, p := range tree.Projects {
+		if p.Name != "foo" {
+			t.Fatalf("both projects display basename foo, got %q", p.Name)
+		}
+		keys[p.Key] = p.WorkingDir
+	}
+	if len(keys) != 2 {
+		t.Fatalf("want 2 distinct Keys, got %v", keys)
+	}
+	if keys["no-project"] != "" {
+		t.Fatalf("no session should land under no-project key: %v", keys)
+	}
+}
+
+func TestNoProjectKeyIsStable(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	metas := []schema.SessionMeta{{ID: "01A", CreatedAt: now, UpdatedAt: now}}
+	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	if len(tree.Projects) != 1 || tree.Projects[0].Key != "no-project" || tree.Projects[0].Name != "(no project)" {
+		t.Fatalf("want a single (no project)/no-project node, got %+v", tree.Projects)
+	}
+}
