@@ -158,6 +158,7 @@ func pastEntryThread(entry hubcore.PastEntry, includeTurns bool) appwire.Thread 
 				Send:         true,
 				ForkFromTurn: true,
 				Goal:         true,
+				Rename:       true,
 			},
 		},
 	}

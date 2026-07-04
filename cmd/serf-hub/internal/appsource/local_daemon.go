@@ -232,6 +232,16 @@ func (s *LocalDaemonSource) SetThreadReasoningEffort(ctx context.Context, params
 	})
 }
 
+func (s *LocalDaemonSource) SetThreadName(ctx context.Context, params appwire.ThreadNameSetParams) error {
+	entry, err := s.entryForRef(params.Ref, "")
+	if err != nil {
+		return err
+	}
+	return s.withClient(ctx, entry, func(client *appwire.Client) error {
+		return client.ThreadNameSet(ctx, params)
+	})
+}
+
 func (s *LocalDaemonSource) GoalSet(ctx context.Context, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
 	entry, err := s.entryForRef(params.Ref, "")
 	if err != nil {
@@ -550,6 +560,7 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 				ChangeModel:  true,
 				Queue:        status == appwire.ThreadStatusActive,
 				Goal:         true,
+				Rename:       true,
 			},
 		},
 		Status: appwire.ThreadStatus{Type: status},

@@ -2126,6 +2126,10 @@ func (s *scriptedAppSource) SetThreadModel(context.Context, appwire.ThreadModelS
 	return appwire.Unavailable("scripted source does not set models")
 }
 
+func (s *scriptedAppSource) SetThreadName(context.Context, appwire.ThreadNameSetParams) error {
+	return appwire.Unavailable("scripted source does not set names")
+}
+
 func (s *scriptedAppSource) SetThreadReasoningEffort(context.Context, appwire.ThreadReasoningEffortSetParams) error {
 	return appwire.Unavailable("scripted source does not set reasoning effort")
 }

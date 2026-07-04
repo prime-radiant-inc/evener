@@ -49,6 +49,10 @@ func (f fakeSource) SetThreadModel(context.Context, appwire.ThreadModelSetParams
 	return nil
 }
 
+func (f fakeSource) SetThreadName(context.Context, appwire.ThreadNameSetParams) error {
+	return nil
+}
+
 func (f fakeSource) SetThreadReasoningEffort(context.Context, appwire.ThreadReasoningEffortSetParams) error {
 	return nil
 }

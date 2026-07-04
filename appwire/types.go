@@ -27,6 +27,7 @@ const (
 	MethodTurnDrainAsSteer          = "turn/drainAsSteer"
 	MethodGoalSet                   = "goal/set"
 	MethodSerfTasksList             = "serf/tasks/list"
+	MethodSerfThreadNameSet         = "serf/thread/name/set"
 	MethodSerfThreadTranscriptsList = "serf/thread/transcripts/list"
 	MethodSerfSubagentPreview       = "serf/subagentPreview"
 	MethodSerfDirsComplete          = "serf/dirs/complete"
@@ -247,6 +248,10 @@ type ThreadCapabilities struct {
 	// for a serf session that can accept a goal; false for sources without the
 	// engine (e.g. codex), so goal/set is gated like every other thread action.
 	Goal bool `json:"goal"`
+	// Rename advertises support for serf/thread/name/set. True for a live serf
+	// session (the daemon method) and for ended local sessions (the hub edits
+	// meta); false for Codex-bridged threads.
+	Rename bool `json:"rename"`
 }
 
 type SerfDiagnostics struct {
@@ -577,6 +582,12 @@ type ThreadModelSetParams struct {
 	Ref           string `json:"ref"`
 	ModelProvider string `json:"modelProvider"`
 	Model         string `json:"model"`
+}
+
+// ThreadNameSetParams renames a thread (user-chosen title).
+type ThreadNameSetParams struct {
+	Ref  string `json:"ref"`
+	Name string `json:"name"`
 }
 
 // ThreadReasoningEffortSetParams sets the reasoning effort on a running session.

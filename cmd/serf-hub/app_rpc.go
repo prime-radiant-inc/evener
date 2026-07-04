@@ -501,6 +501,16 @@ func registerThreadHandlers(
 		}
 		return appwire.EmptyResponse{}, source.SetThreadModel(ctx, params)
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfThreadNameSet, func(ctx context.Context, params appwire.ThreadNameSetParams) (appwire.EmptyResponse, error) {
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
+		if err != nil {
+			return appwire.EmptyResponse{}, err
+		}
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "rename"); err != nil {
+			return appwire.EmptyResponse{}, err
+		}
+		return appwire.EmptyResponse{}, source.SetThreadName(ctx, params)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadReasoningEffortSet, func(ctx context.Context, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {

@@ -351,6 +351,10 @@ func (s *CodexSource) SetThreadModel(context.Context, appwire.ThreadModelSetPara
 	return appwire.Unavailable("codex source does not support thread/model/set")
 }
 
+func (s *CodexSource) SetThreadName(context.Context, appwire.ThreadNameSetParams) error {
+	return appwire.Unavailable("rename is not supported for codex threads")
+}
+
 func (s *CodexSource) SetThreadReasoningEffort(context.Context, appwire.ThreadReasoningEffortSetParams) error {
 	return appwire.Unavailable("codex source does not support thread/reasoning-effort/set")
 }

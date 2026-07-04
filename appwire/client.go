@@ -286,6 +286,10 @@ func (c *Client) ThreadModelSet(ctx context.Context, params ThreadModelSetParams
 	return c.request(ctx, MethodThreadModelSet, params, nil)
 }
 
+func (c *Client) ThreadNameSet(ctx context.Context, params ThreadNameSetParams) error {
+	return c.request(ctx, MethodSerfThreadNameSet, params, nil)
+}
+
 func (c *Client) ThreadReasoningEffortSet(ctx context.Context, params ThreadReasoningEffortSetParams) error {
 	return c.request(ctx, MethodThreadReasoningEffortSet, params, nil)
 }
