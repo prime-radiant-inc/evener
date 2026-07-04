@@ -1178,3 +1178,27 @@ func TestTwoClustersInOneProjectGetDistinctIDs(t *testing.T) {
 		}
 	}
 }
+
+func TestSubagentChildrenCappedPerTier(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	parent := schema.SessionMeta{ID: "01P", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/p"}}
+	metas := []schema.SessionMeta{parent}
+	for i := 0; i < 60; i++ {
+		metas = append(metas, schema.SessionMeta{
+			ID: fmt.Sprintf("01S%02d", i), IsSubagent: true, ParentSessionID: "01P",
+			CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/p"},
+		})
+	}
+	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	var subs int
+	for _, p := range tree.Projects {
+		for _, n := range p.Current {
+			if n.ID == "01P" {
+				subs = len(n.Children)
+			}
+		}
+	}
+	if subs != maxSidebarSessionsPerTier {
+		t.Fatalf("subagent children should cap at %d, got %d", maxSidebarSessionsPerTier, subs)
+	}
+}

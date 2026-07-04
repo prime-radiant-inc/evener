@@ -443,6 +443,9 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 			sort.SliceStable(subagents, func(i, j int) bool {
 				return sessionMetaLess(subagents[i], subagents[j])
 			})
+			if len(subagents) > maxSidebarSessionsPerTier {
+				subagents = subagents[:maxSidebarSessionsPerTier]
+			}
 			sort.SliceStable(forks, func(i, j int) bool {
 				return sessionMetaLess(forks[i], forks[j])
 			})
