@@ -115,3 +115,51 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 	}
 	return entry, nil
 }
+
+// Upgrade re-materializes plugin from its marketplace and repoints the registry
+// to the new sha-dir. It never deletes the previous dir (the gc sweep, §12,
+// reclaims it) so live sessions keep working. A no-op if the sha is unchanged.
+func (m *Manager) Upgrade(ctx context.Context, plugin, marketplace string) (InstallEntry, error) {
+	release, err := acquireLock(m.lockPath(), 30*time.Second)
+	if err != nil {
+		return InstallEntry{}, err
+	}
+	defer release()
+
+	key := registryKey(plugin, marketplace)
+	reg, err := LoadRegistry(m.registryPath())
+	if err != nil {
+		return InstallEntry{}, err
+	}
+	entries, ok := reg.Plugins[key]
+	if !ok || len(entries) == 0 {
+		return InstallEntry{}, fmt.Errorf("%s is not installed", key)
+	}
+	prev := entries[0]
+
+	ref, cp, err := m.catalogPlugin(marketplace, plugin)
+	if err != nil {
+		return InstallEntry{}, err
+	}
+	dir, sha, err := m.materialize(ctx, marketplace, plugin, ref, cp)
+	if err != nil {
+		return InstallEntry{}, err
+	}
+	if dir == prev.InstallPath { // same sha → nothing changed
+		return prev, nil
+	}
+	if err := validatePluginDir(dir); err != nil {
+		return InstallEntry{}, fmt.Errorf("upgraded plugin failed validation: %w", err)
+	}
+
+	prev.InstallPath = dir
+	prev.GitCommitSha = sha
+	prev.Version = computeVersion(pluginManifestVersion(dir), cp.Source.Ref, sha)
+	prev.LastUpdated = m.now().UTC()
+	prev.Source = cp.Source
+	reg.Plugins[key] = []InstallEntry{prev}
+	if err := SaveRegistry(m.registryPath(), reg); err != nil {
+		return InstallEntry{}, err
+	}
+	return prev, nil
+}
