@@ -116,7 +116,7 @@ User answered (3 questions):
 > - Optional per question: `why` (one line: what the answer changes) and `if_unanswered` (the fallback you would take; the user can accept it with one tap).
 > - Dispatch alone: this must be the only tool call in your response.
 > - The call blocks until the user answers or interrupts. There is no timeout.
-> - Each answer is a selection, free text, "you decide" (choose with your judgment, honoring any stated leaning), your stated fallback, or skipped. Any answer may carry a user note — read it; it can qualify or override the selection.
+> - Each answer is a selection, free text, "you decide" (choose with your judgment, honoring any stated leaning), your stated fallback, or skipped (the user declined: proceed on your best judgment, state the assumption you make, and do not immediately re-ask). Any answer may carry a user note — read it; it can qualify or override the selection.
 >
 > First try to resolve the question yourself with tools. Batch related questions at a natural breakpoint into one call instead of asking serially. Put a recommended option first with "(Recommended)" appended.
 
@@ -132,18 +132,32 @@ The existing non-interactive section (`agent/prompts/sections/non-interactive.md
 
 ### 5.1 Blocking
 
-The handler registers like any core tool (`registerCoreTools` → new `registerAskTool`, `agent/session_tool_registry.go`) and blocks inside `Exec` on a per-call channel:
+The handler registers like any core tool (`registerCoreTools` → new `registerAskTool`, `agent/session_tool_registry.go`) with **`ReadOnly: false`**, deliberately: the read-batch executor may run ReadOnly tools concurrently in goroutines (`agent/session_tool_round.go:130-174`), and a blocking ask must execute serially on the turn goroutine. It blocks inside `Exec` on the session's single pending-ask slot:
+
+```go
+type pendingAsk struct {
+    callID    string
+    questions []askQuestion
+    resolved  bool               // the linearization point, guarded by s.mu
+    answered  chan answerPayload // buffered, capacity 1
+}
+```
 
 ```
 select {
 case ans := <-pending.answered:  → build StateResult
-case <-ctx.Done():               → canceled result ("question dismissed; turn interrupted")
+case <-ctx.Done():               → under s.mu: if a validated answer already won the race
+                                   (resolved set by AnswerAsk; payload buffered), drain and
+                                   use it; otherwise set resolved and return the canceled
+                                   result ("question dismissed; turn interrupted")
 }
 ```
 
-Unbounded wait is deliberate and safe here: the wait is on a human, the thread status says so (§5.4), and `ctx` cancellation covers interrupt and shutdown. This follows the `shell` foreground-wait precedent (`turn/interrupt` → `SetCancelFunc` → ctx cancel already unblocks in-flight tool waits). Job-control's ≤60s clamp governs model-vs-machine waits and does not apply; the job-control doc gains a sentence saying so (§9).
+The `resolved` flag under `s.mu` is the single linearization point: `AnswerAsk` sets it and sends on the buffered channel (never blocks); cancellation sets it and beats any later answer. The handler — and only the handler — clears the slot on exit, on both paths. This delivery is a **new** synchronous handoff to a handler blocked mid-round: serf's mailboxes deliver only at round boundaries, and the `shell` foreground-wait precedent covers only the cancellation half (`turn/interrupt` → `SetCancelFunc` → ctx cancel already unblocks in-flight tool waits). The semantics above are therefore normative, not an analogy.
 
-**Dispatch-alone rule:** if the model batches `ask_user` with other tool calls in one response, the batch executor fails the `ask_user` call (the siblings run normally) with: `ask_user must be the only tool call in your response; re-issue it alone.` This structurally prevents the Claude Code parallel-batch bug and keeps "at most one pending ask per session" an invariant (single `pendingAsk` slot on `Session`, guarded by the session mutex).
+Unbounded wait is deliberate and safe here: the wait is on a human, the thread status says so (§5.4), and `ctx` cancellation covers interrupt and shutdown. Job-control's ≤60s clamp governs model-vs-machine waits and does not apply; the job-control doc gains a sentence saying so (§9).
+
+**Dispatch-alone rule:** if the model batches `ask_user` with other tool calls in one response, the batch executor (`execToolBatch`, checked before the read-batch split) fails the `ask_user` call (the siblings run normally) with: `ask_user must be the only tool call in your response; re-issue it alone.` This structurally prevents the Claude Code parallel-batch bug and keeps "at most one pending ask per session" an invariant (single `pendingAsk` slot on `Session`, guarded by the session mutex).
 
 ### 5.2 Answer path
 
@@ -155,11 +169,15 @@ New appwire request **`thread/ask/answer`**:
   "formResponse": null }
 ```
 
-Hub forwards to the owning daemon like `turn/steer`. The daemon handler calls a new external `Session` method `AnswerAsk(callID, payload) error` (synchronized like `Steer`) which:
+**Call-ID identity:** the pending ask registers under the same ID every surface sees. When the provider sends an empty tool-call ID, `Registry.ExecuteCall` synthesizes one (`agent/internal/tool/registry.go:449-451`) while `EventToolCallStart` emits the raw ID — implementation normalizes the ID **before** event emission so START, END, and `AnswerAsk` addressing always agree.
+
+**Routing inventory** (the full fan-out a new hub-routed method needs; `turn/steer` is the template): `appwire/types.go` method constant + `appwire/protocol.go` catalog entry (cross-check tests enforce the pair), an `appwire.Client` method (shared by the TUI and the hub's `LocalDaemonSource`), the `appsource.Source` interface and its implementations, a daemon func seam on `server.Server` wired in `cmd/serf/serve.go` (the steerFunc pattern), `assets/appwire.js`, and a `docs/appwire-protocol.md` regeneration. The hub's action gate **fails closed** (`threadActionAvailable` default → `Unavailable`, `cmd/serf-hub/app_compact.go:59-94`), so `ThreadCapabilities` gains **`Answer`**, advertised `true` exactly while an ask is pending — which doubles as the clients' positive signal for answer-mode UI.
+
+The daemon handler calls a new external `Session` method `AnswerAsk(callID, payload) error` (an external method under `s.mu`, per §5.1's linearization) which:
 
 1. Validates: `callId` matches the live pending ask (none, or a mismatch — e.g. after a daemon restart — → typed error `no_pending_ask`); every question resolved exactly once (answers cover all indices — `skipped` is the explicit opt-out — or `formResponse` alone); `selected` labels ⊆ that question's options, len 1 (or 1..N when `multi_select`); `fallback` only where `if_unanswered` exists; `free_text` requires non-empty `text`; `delegated` `text` (the leaning) is optional. Invalid → typed error `invalid_answer{reason}`; **the ask stays pending** and the client re-prompts. Malformed human input never reaches the model (the re-prompt loop lives below the model — a gap in every surveyed protocol).
 2. First answer wins: resolving an already-resolved ask returns `already_answered`; the losing client re-renders from the `TOOL_CALL_END` notification it will receive anyway.
-3. Hands the payload to the blocked handler over the channel. The tool handler — which **is** the session's own loop, blocked inside `execTool` — builds the result. This respects the mailbox invariant: the external caller only validates and hands off; the owning loop delivers.
+3. Hands the payload to the blocked handler per §5.1's linearization (set `resolved`, buffered send). The handler — the session's own loop, blocked inside `execTool` — builds the result. The invariant's spirit holds: the external caller only validates and hands off; the owning loop delivers to the model.
 
 ### 5.3 Interrupt, shutdown, restart
 
@@ -167,19 +185,31 @@ Hub forwards to the owning daemon like `turn/steer`. The daemon handler calls a 
 - **Daemon restart with a pending ask:** the existing orphan repair (`agent/history_repair.go`) synthesizes the standard "tool result unavailable" error on the next activation; the model re-asks if the question still matters. Honest, cheap, and store-free. (Parking, when it arrives, adds durability; v1 does not need it.)
 - **Answer submitted to a dead daemon:** hub surfaces the transport error to the client; nothing to clean up.
 
-### 5.4 The `awaiting` status — one emission point
+### 5.4 The `awaiting` status — one emission point, three plumbing legs
 
-While an ask is pending the thread presents **`ThreadStatusAwaiting`**; on resolution it returns to the turn's normal status. One producer function (e.g. `session.setAwaitingInput(bool)`) flips it around the blocking wait and is the **only** place that produces `awaiting` — the structural fix for Claude Code's "permission prompts notify, questions don't" divergence. Implementation wires it through the existing status pipeline (the dead pass-through at `server/appwire_runtime.go` ~623 and `NormalizeState`, `cmd/serf-hub/internal/hubcore/tree.go:239`, already accept the value).
+While an ask is pending the thread presents **`ThreadStatusAwaiting`**; on resolution it returns to the active-turn status. One producer function (`session.setAwaitingInput(bool)`), called only from the ask handler around the blocking wait, is the **only** source of `awaiting` — the structural fix for Claude Code's "permission prompts notify, questions don't" divergence.
 
-Downstream, for free once produced: NeedsYou sidebar tier + `◆N` badge + attention pill (`hubcore/tree.go` AttentionRank), and OS notifications. One trigger update ships with this feature: `assets/notifications.js` fires on `idle→awaiting` today; change to `*→awaiting` since our transition is `processing→awaiting`.
+The consumers are dormant but real (NeedsYou tier, `◆N` badge, attention pill — `hubcore/tree.go` AttentionRank/NormalizeState — and OS notifications). The **producer side does not exist and must be built**; adversarial review confirmed a pending ask is mid-turn, where every existing leg reports `active`:
 
-### 5.5 Hooks
+1. **A new event kind** — `EventAwaitingInput {Pending bool}` in `agent/events` (the one exception to §6's no-new-events economy: nothing existing carries a mid-turn status change — the projector emits `NotifyThreadStatusChanged` only at session-start / user-input / goal-continuation / session-end, `internal/appprojector/appwire_projection.go:90,132,179,642`).
+2. **Snapshot + poll precedence** — `appStatus()` returns `active` for any in-flight turn before its `awaiting` case can match (`server/appwire_runtime.go:614-616`), and the `/status` poll leg reads Bridge-set state. The awaiting flag wins over `processing` in both: Bridge handles `EventAwaitingInput` (`SetState`), and `appStatus` checks awaiting before the processing early-return.
+3. **Live push** — a projector case for `EventAwaitingInput` emitting `threadStatus(awaiting)` on pending and `threadStatus(active)` on clear.
+
+Capabilities while an ask is pending: `Send` stays false (a turn is in flight); `Steer`, `Queue`, `Interrupt` stay true (§5.5); the new `Answer` capability (§5.2) is true. Producing `awaiting` also stops a real mislabeling: today the web liveness watchdog would call a blocked ask "working · quiet ~2m", then "may be stalled" (the quiet-state machine exits only when state ≠ `active`, `renderer.js` ~2050-2102) — with `awaiting` pushed, it exits correctly.
+
+One trigger update ships with this feature: `assets/notifications.js` fires on `idle→awaiting` today; change to `*→awaiting` since our transition is `processing→awaiting`.
+
+### 5.5 Steering while a question is pending
+
+`turn/steer` and `turn/queue` remain available during a pending ask (capabilities unchanged) with their normal semantics: they append to their queues and drain at the next boundary — which is **after** the ask resolves. That deferral is intended, and now stated. The composer must never silently convert intended steering into an answer: while an ask is pending the composer defaults to **answer mode with a visible indicator** ("answering ◆"), and one explicit affordance (web: the existing steer control; TUI: a mode toggle in the overlay/chip footer) sends the same text as a steer instead. Prose submits as `form_response` only from answer mode. The web's optimistic-send reconciliation gains the answer method alongside steer/queue.
+
+### 5.6 Hooks
 
 `ask_user` runs through `execTool` like every tool: PreToolUse may deny or rewrite the questions; PostToolUse observes the result. Stated invariant with a test (the Cursor bug class).
 
 ## 6. Renderers
 
-Both surfaces need no new event kinds, turn kinds, or notification methods for rendering: `TOOL_CALL_START` already carries the questions as `ArgumentsJSON`; `TOOL_CALL_END` carries the result (+ `ToolState` JSON). **Cold attach:** an unmatched `ask_user` call in the transcript renders as the answerable pending form **only when the thread status is `awaiting`** (a live pending ask exists). Unmatched call without `awaiting` — the daemon restarted while the question was pending — renders as a settled "question expired (session restarted); the agent will re-ask if it still matters" line, never an answerable form; a stale submission would get `no_pending_ask` anyway.
+Rendering rides the existing tool events — `TOOL_CALL_START` already carries the questions as `ArgumentsJSON`; `TOOL_CALL_END` carries the result (+ `ToolState` JSON) — with no new turn kinds and no per-question notification methods. The complete new wire surface is exactly: one event kind + projector case + `appStatus` precedence for `awaiting` (§5.4), and the `thread/ask/answer` method + `Answer` capability (§5.2). **Cold attach:** an unmatched `ask_user` call in the transcript renders as the answerable pending form **only when the thread status is `awaiting`** (a live pending ask exists). Unmatched call without `awaiting` — the daemon restarted while the question was pending — renders as a settled "question expired (session restarted); the agent will re-ask if it still matters" line, never an answerable form; a stale submission would get `no_pending_ask` anyway.
 
 ### 6.1 Web (`cmd/serf-hub/assets/`)
 
@@ -188,7 +218,7 @@ Activate the dormant scaffolding and build the designed-but-never-built answerin
 - **Container:** `markAgentQuestion` (renderer.js:1928, amber "◆ Needs you" frame — built, never called) wraps the question card; `renderNeedsYouDock`/`jumpToAgentQuestion` (renderer.js:4179+) dock and deep-link it. CSS already shipped (`style.css` `.agent-question`, `.needs-you-dock`).
 - **Answering (mockup 16 Alt D, `docs/web-ui/mockups/16-blocking-needs-you.html`):** per question — quick-reply chips for options (checkboxes when `multi_select`), a "Something else…" free-text row, a "You decide" row (optional leaning field), a "do that" button when `if_unanswered` is present, a skip affordance. Multi-question calls stack as one card, answerable in any order, with an answered-count line and a single **Send answers** action. Per the mockup's written guidance: amber owns the container, blue owns the primary action.
 - **Annotation (split control):** the chip body answers bare — the fast path costs nothing. A low-contrast trailing `+` (or `.` with the chip focused) opens a one-line note field under the chip; **Send** carries `{selected, note}`. Never a modal.
-- **Composer coexistence (the lens rule):** the form never traps input. Typing prose into the composer while an ask is pending submits it as `form_response` — the composer *is* the escape hatch. `Esc` collapses the card to a "◆ question waiting" chip; the dock and status keep it findable.
+- **Composer coexistence (the lens rule):** the form never traps input — and never steals it. While an ask is pending the composer shows the answer-mode indicator and prose submits as `form_response`; one explicit affordance sends the same text as a steer instead (§5.5). `Esc` collapses the card to a "◆ question waiting" chip; the dock and status keep it findable.
 - **Resolution feedback:** on `TOOL_CALL_END` the card collapses to a neutral settled line echoing the answers ("→ Postgres · you decide · skipped"); if another client answered first, this same path renders it — the losing tab just sees the question settle.
 - **Notification deep link:** clicking the OS notification lands on the session with `jumpToAgentQuestion` focused on the first unanswered question.
 
@@ -198,15 +228,16 @@ A focus-trapped question overlay (new entry in `focus_trap.go`'s priority list),
 
 - One question at a time, **paged with a header-chip strip** when N>1, plus a **review step** before submit (the convergent Codex/Gemini/OpenCode shape): review lists `header → answer` pairs and warns on unanswered questions ("submit with 1 unanswered → it resolves as skipped").
 - Options render via `PickerPanel` with two appended rows: "Something else…" and "You decide" (each opens `TextInputModal`). `.` on a highlighted option opens the note field (annotation). A "do that (fallback)" row appears when `if_unanswered` is present. Footer: `↑/↓ choose · enter answer · . note · tab next question · esc defer`.
-- `Esc` defers: the overlay closes, the composer chrome shows `◆ question waiting — ctrl+q to answer` (binding chosen at implementation against the existing keymap; `ctrl+q` is the candidate), and typing in the composer submits as `form_response`, mirroring the web lens rule.
+- `Esc` defers: the overlay closes, the composer chrome shows `◆ question waiting — ctrl+q to answer` (binding chosen at implementation against the existing keymap; `ctrl+q` is the candidate), and the composer follows the §5.5 answer-mode rule (visible indicator; explicit toggle to steer).
+- The transcript reducer already retains `ThreadItem.Raw` (`cmd/serf-tui/internal/transcript/types.go:46`, `reducer.go:475`); the ask renderer parses the `ToolState` JSON from it for the resolved card, as the web reads `data.raw`.
 - Answers submit over the same `thread/ask/answer` RPC; the TUI renders resolution from `TOOL_CALL_END` like any tool.
 
 ## 7. Invisibility
 
-Gated at the **registration seam** — the same mechanism that keeps root-only job tools out of subagents (`agent/subagents.go` `rootOnlySubagentTools`):
+Gated at the **registration seam**, on the true root condition. Deliberately NOT via `rootOnlySubagentTools()`: that list's removal is allowance-gated (`agent/session_init.go:613` skips it when `delegation_allowance > 0` — correct for `delegate`/`job_watch`, which allowance legitimately grants), so a coordinator subagent would keep anything on it. Adversarial review caught this; `ask_user` needs a gate no allowance can re-open:
 
-1. `registerAskTool` is skipped when `SessionConfig.NonInteractive` (`agent/session_config.go:88`) — the flag's first runtime consumer; today it changes prompt text only. One-shot `serf <prompt>` hardcodes `NonInteractive: true` (`cmd/serf/run.go:187`), so headless runs never see the tool. `serf serve --non-interactive` likewise.
-2. `ask_user` joins the root-only list, so every subagent — typed or untyped, regardless of `delegation_allowance` — has it removed, and `grant_tools` cannot re-add it (root-only grants are already rejected, `agent/subagents.go:483`).
+1. `registerAskTool` runs only when `!cfg.NonInteractive && cfg.spawn.parentSessionID == ""`. Children copy the parent config (`agent/subagents.go:362` `subCfg := s.cfg`) without touching `parentSessionID`-adjacent spawn fields, so the parent-ID check discriminates every subagent — typed, untyped, any allowance. `NonInteractive` (`agent/session_config.go:88`) today drives prompt text and eval-mode task seeding (`agent/session_init.go:167`); this adds its first tool-availability consumer. One-shot `serf <prompt>` hardcodes `NonInteractive: true` (`cmd/serf/run.go:187`), so headless runs never see the tool. `serf serve --non-interactive` likewise.
+2. `grant_tools` cannot re-add it: grants validate against the parent's registry and the protected set (`agent/subagents.go:483`); the rejection message gains an `ask_user`-appropriate variant (the existing text is delegation-specific).
 3. Unregistered = invisible **and** unexecutable: `rebuildToolDefsCache` and `Registry.ExecuteCall` read the same registry, so a hallucinated call hits the unknown-tool error.
 4. Defense in depth (the Gemini pattern): the handler itself re-checks at exec time and returns `ask_user unavailable: no interactive user in this session; decide with your best judgment` — covers config drift and future registration refactors.
 
@@ -223,7 +254,12 @@ Gated at the **registration seam** — the same mechanism that keeps root-only j
 - dispatch-alone: batched `ask_user` fails with the instructive error; siblings unaffected.
 - invisibility: `NonInteractive` and subagent sessions exclude `ask_user` from `cachedToolDefs`; forced execution returns the exec-time guard error.
 - hooks: PreToolUse deny blocks the ask; PostToolUse observes the result.
-- status: awaiting produced on block, cleared on resolution and on interrupt.
+- status: awaiting produced on block, cleared on resolution and on interrupt; `appStatus` reports `awaiting` while processing.
+- steer-during-ask: `Steer` during a pending ask defers (drains after resolution) and never resolves the ask.
+- answer-vs-interrupt race: concurrent cancel + valid answer resolve deterministically per §5.1 (an answer that wins the linearization point is used; a later one gets `already_answered`; a later cancel still uses the buffered answer).
+- callId identity: an empty provider tool-call ID never yields a form whose `callId` differs from the result's.
+- goal: `ask_user` rounds do not reset the goal no-progress breaker.
+- capability: `thread/ask/answer` is `Unavailable` when no ask is pending; `Answer` advertises only while one is.
 - restart staleness: with no live pending ask, `AnswerAsk` returns `no_pending_ask`; a transcript with an unmatched ask call and a non-`awaiting` status renders the expired line, not a form (JSDOM + TUI corpus cover the render).
 
 **Fuzz:** answer-payload validation (`FuzzAnswerValidate`: random payloads against random question sets never panic, never accept an invalid payload; corpus under `agent/testdata/fuzz/`).
@@ -243,13 +279,14 @@ Gated at the **registration seam** — the same mechanism that keeps root-only j
 
 **Pre-implementation spike (task 0):** prove `turn/interrupt` cancels an in-flight blocked tool wait end-to-end (shell's foreground wait says yes; verify before building on it).
 
-**Implementation verification item:** confirm the goal engine's no-progress breaker does not count a turn blocked on `ask_user` as stalling; if it does, exempt pending-ask time from the breaker's accounting.
+**Goal-engine interaction (specified):** the breaker folds per *completed* continuation turn, so a blocked ask cannot "count as stalling." The real risk is the inverse: `callsMadeProgress` treats any non-ReadOnly call as progress (`agent/session_goal.go:131-144`), so an ask-looping goal would never trip the no-progress breaker. Exclude `ask_user` from `callsMadeProgress` alongside `task_list`.
 
 ## 9. Documentation updates (same commits as the code they describe)
 
 - `docs/architecture.md`: add `ask_user` to the tool inventory; one paragraph in "How a turn flows" on the blocking wait + awaiting status.
 - `docs/job-control.md`: tool-availability matrix gains the `ask_user` row (root: yes; delegate: never); one sentence distinguishing human-waits (unbounded, ctx-cancelable) from the bounded machine-wait rule.
 - `docs/hooks.md`: name-mapping table gains `ask_user ↔ AskUserQuestion`.
+- `docs/appwire-protocol.md`: regenerated for `thread/ask/answer` + the `Answer` capability (the protocol catalog cross-check tests enforce the pairing).
 - `docs/web-ui/`: mark mockup 16 Alt A/C/D as shipped; note the notifications.js trigger change.
 - New scenario cards indexed per `test/scenarios/README.md`.
 
