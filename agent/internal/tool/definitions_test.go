@@ -2,6 +2,7 @@ package tool
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -542,5 +543,72 @@ func TestDefManageWorktreeDescriptionCarriesUsagePolicy(t *testing.T) {
 	}
 	if !strings.Contains(desc, "plain git") && !strings.Contains(desc, "git commands") {
 		t.Errorf("description must point to plain git commands for ordinary branch work; got: %s", def.Description)
+	}
+}
+
+// TestDefAskUserSchema locks the ask_user input schema to spec §4.2: questions
+// 1-4 per call, each with header (<=12 chars)/question/options (2-5 of
+// {label, detail, recommended?}), multi_select, why, and if_unanswered.
+func TestDefAskUserSchema(t *testing.T) {
+	def := DefAskUser()
+	if def.Name != "ask_user" {
+		t.Fatalf("name = %q", def.Name)
+	}
+	if def.Strict == nil || *def.Strict {
+		t.Fatalf("Strict = %v, want false", def.Strict)
+	}
+	if def.Parameters["additionalProperties"] != false {
+		t.Errorf("additionalProperties = %v, want false", def.Parameters["additionalProperties"])
+	}
+	required(t, def, "ask_user", []string{"questions"})
+
+	params := def.Parameters
+	qs := params["properties"].(map[string]any)["questions"].(map[string]any)
+	if qs["minItems"] != 1 || qs["maxItems"] != 4 {
+		t.Fatalf("questions bounds = %v/%v", qs["minItems"], qs["maxItems"])
+	}
+	item := qs["items"].(map[string]any)
+	props := item["properties"].(map[string]any)
+	for _, k := range []string{"header", "question", "options", "multi_select", "why", "if_unanswered"} {
+		if _, ok := props[k]; !ok {
+			t.Fatalf("missing question property %q", k)
+		}
+	}
+	if props["header"].(map[string]any)["maxLength"] != 12 {
+		t.Fatal("header maxLength != 12")
+	}
+	opts := props["options"].(map[string]any)
+	if opts["minItems"] != 2 || opts["maxItems"] != 5 {
+		t.Fatalf("options bounds = %v/%v", opts["minItems"], opts["maxItems"])
+	}
+	optProps := opts["items"].(map[string]any)["properties"].(map[string]any)
+	for _, k := range []string{"label", "detail", "recommended"} {
+		if _, ok := optProps[k]; !ok {
+			t.Fatalf("missing option property %q", k)
+		}
+	}
+	req := item["required"].([]string)
+	want := []string{"header", "question", "options"}
+	if !reflect.DeepEqual(req, want) {
+		t.Fatalf("required = %v, want %v", req, want)
+	}
+}
+
+// TestDefAskUserDescriptionIsSpecVerbatim pins the description to spec §4.4's
+// key contract points: yields the floor, no timeout, batching, the reply
+// contract, and the "no Other option" rule.
+func TestDefAskUserDescriptionIsSpecVerbatim(t *testing.T) {
+	def := DefAskUser()
+	for _, want := range []string{
+		"Asking yields the floor",
+		"no timeout",
+		"several `ask_user` calls may share the round",
+		"a `communicate` in the same round still delivers its message",
+		"Do not add an \"Other\" or free-text option",
+		"First try to resolve the question yourself with tools",
+	} {
+		if !strings.Contains(def.Description, want) {
+			t.Fatalf("description missing %q; got: %s", want, def.Description)
+		}
 	}
 }
