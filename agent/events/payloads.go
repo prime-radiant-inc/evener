@@ -305,3 +305,8 @@ type GoalEndedData struct {
 	Reason     string `json:"reason,omitempty"`
 	Iterations int    `json:"iterations"`
 }
+
+// TurnEndedData is the payload for an EventTurnEnded event.
+type TurnEndedData struct {
+	TurnDurationMS int64 `json:"turn_duration_ms"`
+}

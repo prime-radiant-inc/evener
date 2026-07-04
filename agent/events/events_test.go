@@ -290,3 +290,28 @@ func TestToStreamEvent_WrongPayloadReturnsNil(t *testing.T) {
 		t.Errorf("ToStreamEvent() = %+v, want nil", got)
 	}
 }
+
+func TestTurnEnded_KindAndPayload(t *testing.T) {
+	ev := events.New(events.TurnEndedData{TurnDurationMS: 1234})
+	if ev.Kind != events.EventTurnEnded {
+		t.Errorf("New(TurnEndedData).Kind = %q, want %q", ev.Kind, events.EventTurnEnded)
+	}
+
+	// Verify the payload round-trips correctly
+	data, ok := ev.Data.(events.TurnEndedData)
+	if !ok {
+		t.Fatalf("ev.Data is %T, want TurnEndedData", ev.Data)
+	}
+	if data.TurnDurationMS != 1234 {
+		t.Errorf("data.TurnDurationMS = %d, want 1234", data.TurnDurationMS)
+	}
+
+	// Verify JSON marshaling includes the payload field
+	b, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+	if !strings.Contains(string(b), `"turn_duration_ms":1234`) {
+		t.Errorf("marshaled event missing turn_duration_ms: %s", b)
+	}
+}

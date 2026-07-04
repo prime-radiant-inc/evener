@@ -64,6 +64,7 @@ func (HookEndData) eventKind() EventKind             { return EventHookEnd }
 func (ForkSummaryData) eventKind() EventKind         { return EventForkSummary }
 func (PromptLoadedData) eventKind() EventKind        { return EventPromptLoaded }
 func (RoundTimings) eventKind() EventKind            { return EventRoundTimings }
+func (TurnEndedData) eventKind() EventKind           { return EventTurnEnded }
 func (GoalContinuationData) eventKind() EventKind    { return EventGoalContinuation }
 func (GoalEndedData) eventKind() EventKind           { return EventGoalEnded }
 
@@ -98,6 +99,7 @@ var (
 	_ EventData = ForkSummaryData{}
 	_ EventData = PromptLoadedData{}
 	_ EventData = RoundTimings{}
+	_ EventData = TurnEndedData{}
 	_ EventData = GoalContinuationData{}
 	_ EventData = GoalEndedData{}
 )
