@@ -192,6 +192,9 @@ func (s *Session) applyInitInsideWorktreeLock(isGitRepo bool) {
 		return
 	}
 	activeRoot := local.WorkingDirectory()
+	if resolved, err := filepath.EvalSymlinks(activeRoot); err == nil {
+		activeRoot = resolved
+	}
 	mainRoot := execenv.ResolveMainRepoRoot(local, activeRoot)
 	if mainRoot == "" {
 		return
@@ -203,11 +206,7 @@ func (s *Session) applyInitInsideWorktreeLock(isGitRepo bool) {
 	worktreeRoot := s.worktreeRootFor(local, s.currentStateDir(), canonicalMain)
 	projectDir := filepath.Join(worktreeRoot, worktree.ProjectID(canonicalMain))
 
-	canonicalActive := activeRoot
-	if resolved, err := filepath.EvalSymlinks(activeRoot); err == nil {
-		canonicalActive = resolved
-	}
-	if !isUnderManagedDir(canonicalActive, projectDir) {
+	if !isUnderManagedDir(activeRoot, projectDir) {
 		return
 	}
 

@@ -660,3 +660,43 @@ func TestInitInside_ForeignBareLockUnknownOwnerWarns(t *testing.T) {
 		t.Errorf("Meta().WorktreePath = %q, want %q (co-occupying still tracked)", got, path)
 	}
 }
+
+// TestInitInside_SymlinkSpelledCwdCanonicalizesStoredPathAndLockKey: a session
+// launched with its cwd inside a managed worktree via a symlinked spelling of
+// that same directory (e.g. macOS's /var -> /private/var) must store and lock
+// against the SAME canonical path a canonically-spelled launch would. Two
+// spellings of one worktree must not hash to two different keys and escape
+// the occupancy lock's mutual exclusion.
+func TestInitInside_SymlinkSpelledCwdCanonicalizesStoredPathAndLockKey(t *testing.T) {
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	// r.create's own session already holds the lock; free it so the new
+	// session below takes a fresh one (isolates this test from the separate
+	// foreign/adopt lock-state cases covered above).
+	wtGit(t, r.mainRoot, "worktree", "unlock", path)
+
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(path, alias); err != nil {
+		t.Fatalf("symlink %s -> %s: %v", alias, path, err)
+	}
+	if resolved, err := filepath.EvalSymlinks(alias); err != nil {
+		t.Fatalf("EvalSymlinks(alias): %v", err)
+	} else if resolved != path {
+		t.Fatalf("test setup: alias resolves to %q, want %q", resolved, path)
+	}
+
+	sess := newSession(t, withDir(alias), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
+
+	if got := sess.Meta().WorktreePath; got != path {
+		t.Errorf("Meta().WorktreePath = %q, want canonical %q (symlink-spelled launch cwd escaped canonicalization)", got, path)
+	}
+	entry := r.porcelainEntry(t, path)
+	wantReason := worktree.FormatSessionMarker(sess.id)
+	if !entry.Locked || entry.LockReason != wantReason {
+		t.Errorf("porcelain entry for %s = locked=%v reason=%q, want locked=true reason=%q (lock key must match git's canonical porcelain entry)", path, entry.Locked, entry.LockReason, wantReason)
+	}
+}
