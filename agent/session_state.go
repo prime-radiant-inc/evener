@@ -99,7 +99,7 @@ func (s *Session) Meta() schema.SessionMeta {
 		CheapModel:          s.profile.CheapModelRefString(),
 		Config:              s.cfg.toSnapshot(),
 		EnvInfo:             s.envInfo,
-		CreatedAt:           now,
+		CreatedAt:           s.createdAt,
 		UpdatedAt:           now,
 		TurnCount:           s.modelResponses,
 		LastInputTokens:     s.contextMgr.LastInputTokens(),

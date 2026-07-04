@@ -134,6 +134,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		sessionCtx:                    sessCtx,
 		cancelFunc:                    sessCancel,
 	}
+	s.createdAt = s.sclock().Now().UTC()
 	s.subagents = newSubagentManager(s.emit)
 	jm, err := newJobManager(s.stateDir, s.id, s.enqueueJobNotificationAndNotify)
 	if err != nil {
@@ -358,6 +359,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		events:              make(chan events.SessionEvent, 256),
 		history:             resumeHistory,
 		modelResponses:      meta.TurnCount,
+		createdAt:           meta.CreatedAt,
 		fork: forkInfo{
 			parentID:   meta.ParentSessionID,
 			divergence: meta.DivergenceTurn,
