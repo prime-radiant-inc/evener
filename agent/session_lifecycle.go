@@ -618,9 +618,14 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// notification can interleave ahead of it; it is then run inline below.
 		// skipGoalGate is true when the turn that just ran was a notification (a
 		// notification must neither advance nor terminate the goal — it already folded
-		// at its own gate), and while a continuation is already deferred (one fold per
-		// turn). On a terminal/stop decision the gate emits the terminal report and
-		// leaves haveDeferredCont false, so we fall through to EventSessionEnd (idle).
+		// at its own gate), while a continuation is already deferred (one fold per
+		// turn), or when the turn that just ran rests SessionAwaiting (spec §5.3: arm,
+		// don't kick — this alone covers armGoalContinuation for the goal-hold
+		// requirement, since it is this call's only site; settleGoalOnIdle and the
+		// deferred-continuation inline-run below need their own awaiting guards
+		// because both are reached even when this fold is skipped). On a
+		// terminal/stop decision the gate emits the terminal report and leaves
+		// haveDeferredCont false, so we fall through to EventSessionEnd (idle).
 		if !skipGoalGate {
 			// The gate's fold + terminal-report side effects (RecordContinuation, the
 			// no-progress breaker, EventGoalEnded) happen here; the rendered prompt it
@@ -647,7 +652,19 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// Run the deferred continuation INLINE (via continue, not the idle kick) so
 		// the goal advances even when kickFunc==nil (e.g. one-shot `serf run` with a
 		// restored active goal whose model spawned a subagent).
-		if haveDeferredCont {
+		//
+		// Gated on !awaiting (spec §5.3): haveDeferredCont can still be true here
+		// even though THIS turn rests awaiting — it was set at an EARLIER turn's
+		// tail (this turn's own fold above is skipped by skipGoalGate, which does
+		// not clear an already-deferred flag), when a pending notification
+		// interleaved ahead of the deferred continuation and that notification's
+		// own turn is the one that just asked. Running the continuation here would
+		// drive it straight past that unanswered question. Held, haveDeferredCont
+		// is simply left set-then-abandoned (this call is about to fall through to
+		// settleGoalOnIdle and return; the goal itself is untouched in the store)
+		// — the normal resume fold picks the still-active goal up again once the
+		// reply resolves the ask.
+		if !awaiting && haveDeferredCont {
 			haveDeferredCont = false
 			// Re-validate against the goal store before running: the user may have
 			// cleared (/goal clear) or retargeted (/goal <new>) the goal during the
