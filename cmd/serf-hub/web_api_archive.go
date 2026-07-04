@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"time"
 )
 
@@ -38,6 +39,12 @@ func (s *WebServer) handleAPIArchive(w http.ResponseWriter, r *http.Request) {
 	if err := s.cfg.Archive.Set(body.Kind, body.ID, body.Archived, time.Now()); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "archive store error: "+err.Error())
 		return
+	}
+	if body.Kind == "project" && !body.Archived {
+		// Visible-wins: dropping the path row's archive also drops any legacy
+		// basename row that could re-hide this (or a co-basename) project
+		// (round-3 G3). filepath.Base of a path id yields the legacy key.
+		_ = s.cfg.Archive.Delete("project", filepath.Base(body.ID))
 	}
 	// An archive decision can move a session in or out of tier eligibility;
 	// nudge the attention watcher so the badge/notification state doesn't lag

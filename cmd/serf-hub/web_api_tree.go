@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -36,6 +37,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	}
 	metas, live := s.navigationTreeInputs(r.Context())
 	decisions := s.archiveDecisions()
+	favs := s.favoriteDecisions()
 	tree := hubcore.BuildTree(metas, live, decisions)
 	_, attentionSummary := hubcore.DeriveAttention(metas, live, decisions)
 	resp := hubapi.TreeResponse{
@@ -53,7 +55,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	projectIndexes := map[string]int{}
 	for _, p := range tree.Projects {
 		projectIndexes[p.Key] = len(resp.Projects)
-		ap := s.apiTreeProject("project", p)
+		ap := s.apiTreeProject("project", favs, p)
 		for _, n := range projectSessions(p) {
 			seenProjectRefs[n.ID] = true
 		}
@@ -63,10 +65,10 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		for _, n := range projectSessions(p) {
 			seenProjectRefs[n.ID] = true
 		}
-		resp.ArchivedProjects = append(resp.ArchivedProjects, s.apiTreeProject("project", p))
+		resp.ArchivedProjects = append(resp.ArchivedProjects, s.apiTreeProject("project", favs, p))
 	}
 	for _, n := range tree.NeedsYou {
-		resp.NeedsYou = append(resp.NeedsYou, s.apiTreeNodeTier("needsyou", "", "needsyou", n))
+		resp.NeedsYou = append(resp.NeedsYou, s.apiTreeNodeTier("needsyou", "", "needsyou", favs, n))
 	}
 	for _, le := range live {
 		if le.SessionID == "" || seenProjectRefs[le.SessionID] {
@@ -105,6 +107,29 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 			Sessions:    []hubapi.TreeNode{apiNode},
 		})
 	}
+
+	// Pinned tier: favorited, unarchived sessions across all projects,
+	// excluding anything already surfaced in NeedsYou, most-recently-updated
+	// first.
+	needsYouIDs := map[string]bool{}
+	for _, n := range resp.NeedsYou {
+		needsYouIDs[n.SessionID] = true
+	}
+	for _, p := range tree.Projects {
+		for _, n := range append(append([]hubcore.TreeNode{}, p.Current...), p.Recent...) {
+			if n.Kind != "session" || !favs[hubcore.ArchiveKey{Kind: "session", ID: n.ID}] {
+				continue
+			}
+			if needsYouIDs[hubRefFromTreeNodeID(n.ID).SessionID] {
+				continue
+			}
+			resp.Favorites = append(resp.Favorites, s.apiTreeNodeTier("pinned", "", "pinned", favs, n))
+		}
+	}
+	sort.SliceStable(resp.Favorites, func(i, j int) bool {
+		return resp.Favorites[i].UpdatedAt.After(resp.Favorites[j].UpdatedAt)
+	})
+
 	writeAPIJSON(w, http.StatusOK, resp)
 }
 
@@ -381,8 +406,10 @@ func projectSessions(p hubcore.TreeProject) []hubcore.TreeNode {
 
 // apiTreeProject projects a hubcore.TreeProject onto the wire TreeProject,
 // carrying the rollup/overflow additive fields and stamping each session's
-// tier (current/recent/archived) at projection time.
-func (s *WebServer) apiTreeProject(scope string, p hubcore.TreeProject) hubapi.TreeProject {
+// tier (current/recent/archived) at projection time. favs is the
+// once-per-request favorite-decisions map (see favoriteDecisions), forwarded
+// so apiTreeNodeTier never has to open the favorite store per node.
+func (s *WebServer) apiTreeProject(scope string, favs map[hubcore.ArchiveKey]bool, p hubcore.TreeProject) hubapi.TreeProject {
 	ap := hubapi.TreeProject{
 		Key:             p.Key,
 		Name:            p.Name,
@@ -397,31 +424,47 @@ func (s *WebServer) apiTreeProject(scope string, p hubcore.TreeProject) hubapi.T
 		Worktrees:       p.Worktrees,
 	}
 	for _, n := range p.Current {
-		ap.Sessions = append(ap.Sessions, s.apiTreeNodeTier(scope, p.Key, "current", n))
+		ap.Sessions = append(ap.Sessions, s.apiTreeNodeTier(scope, p.Key, "current", favs, n))
 	}
 	for _, n := range p.Recent {
-		ap.Sessions = append(ap.Sessions, s.apiTreeNodeTier(scope, p.Key, "recent", n))
+		ap.Sessions = append(ap.Sessions, s.apiTreeNodeTier(scope, p.Key, "recent", favs, n))
 	}
 	for _, n := range p.Archived {
-		ap.Sessions = append(ap.Sessions, s.apiTreeNodeTier(scope, p.Key, "archived", n))
+		ap.Sessions = append(ap.Sessions, s.apiTreeNodeTier(scope, p.Key, "archived", favs, n))
 	}
 	return ap
 }
 
 // apiTreeNodeTier wraps apiTreeNode and stamps the row-level fields a tiered
-// projection (project sessions, NeedsYou) carries but a bare Live row doesn't.
-func (s *WebServer) apiTreeNodeTier(scope, projectKey, tier string, n hubcore.TreeNode) hubapi.TreeNode {
+// projection (project sessions, NeedsYou, Pinned) carries but a bare Live row
+// doesn't. favs is the once-per-request favorite-decisions map computed by
+// handleAPITree (see favoriteDecisions) — never opens the store itself, so
+// this stays O(1) DB opens per /api/tree regardless of node count.
+func (s *WebServer) apiTreeNodeTier(scope, projectKey, tier string, favs map[hubcore.ArchiveKey]bool, n hubcore.TreeNode) hubapi.TreeNode {
 	out := s.apiTreeNode(scope, projectKey, n, treeNodeCanActLive(n) && s.isLive(n.ID))
 	out.Tier = tier
 	out.Branch = n.Branch
 	out.ClusterCount = n.ClusterCount
-	out.Favorite = s.isFavorite(n.ID)  // Task 8 wires isFavorite; stub returns false until then
+	out.Favorite = favs[hubcore.ArchiveKey{Kind: "session", ID: n.ID}]
 	out.Rename = s.rowRenameable(n.ID) // Task 18 wires rowRenameable; stub returns local-only
 	return out
 }
 
-// isFavorite is a temporary stub; Task 8 wires the real favorites store.
-func (s *WebServer) isFavorite(id string) bool { return false }
+// favoriteDecisions returns the current set of user-explicit favorite
+// decisions. Returns an empty map (never nil) when cfg.Favorite is nil or
+// Favorites() fails. Computed once per /api/tree request and threaded through
+// apiTreeProject/apiTreeNodeTier so a node-count-sized page never opens the
+// favorite store more than once.
+func (s *WebServer) favoriteDecisions() map[hubcore.ArchiveKey]bool {
+	if s.cfg.Favorite == nil {
+		return map[hubcore.ArchiveKey]bool{}
+	}
+	f, err := s.cfg.Favorite.Favorites()
+	if err != nil {
+		return map[hubcore.ArchiveKey]bool{}
+	}
+	return f
+}
 
 // rowRenameable is a temporary stub; Task 18 wires the real rename gate.
 func (s *WebServer) rowRenameable(id string) bool { return isLocalRouteID(id) }

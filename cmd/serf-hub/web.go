@@ -204,6 +204,7 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/_api/subagent-preview", s.handleSubagentPreview)
 	mux.HandleFunc("/api/tree", s.handleAPITree)
 	mux.HandleFunc("/api/archive", s.handleAPIArchive)
+	mux.HandleFunc("/api/favorite", s.handleAPIFavorite)
 	mux.HandleFunc("/api/spawn-schema", s.handleAPISpawnSchema)
 	mux.HandleFunc("/api/sessions/", s.handleAPISession)
 

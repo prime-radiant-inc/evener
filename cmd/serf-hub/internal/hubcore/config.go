@@ -43,7 +43,8 @@ type WebConfig struct {
 	CodexLaunches       []codexlaunch.CodexLaunchConfig
 	CodexLauncher       *codexlaunch.CodexLauncher
 
-	Archive *ArchiveStore // archive decision store; nil when not configured (tree uses empty decisions)
+	Archive  *ArchiveStore  // archive decision store; nil when not configured (tree uses empty decisions)
+	Favorite *FavoriteStore // favorite decision store; nil when not configured
 
 	// PokeAttention nudges the hub's attention watcher to recompute
 	// immediately (e.g. after an archive decision changes tier eligibility)

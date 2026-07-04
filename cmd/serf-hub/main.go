@@ -105,6 +105,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "[hub] past index rebuild: %v\n", err)
 	}
 	archive := hubcore.NewArchiveStore(pastIndexDB)
+	favorite := hubcore.NewFavoriteStore(pastIndexDB)
 
 	// Spawner
 	hubToken, err := newHubToken()
@@ -198,6 +199,7 @@ func main() {
 		Roster:              roster,
 		Past:                past,
 		Archive:             archive,
+		Favorite:            favorite,
 		Spawner:             spawner,
 		Models:              models,
 		PastPerPage:         cfg.PastResultsPerPage,
