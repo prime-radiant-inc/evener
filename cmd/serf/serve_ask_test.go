@@ -46,10 +46,14 @@ func scriptedBackgroundShellCall(id, command string) llm.ToolCallData {
 	return llm.ToolCallData{ID: id, Name: "shell", Arguments: args, Type: "function"}
 }
 
-// serveStatusState is the one field of server.StatusInfo (server/server.go's
-// GET /status response, server/server.go:79-90) these tests assert on.
+// serveStatusState is the fields of server.StatusInfo (server/server.go's
+// GET /status response, server/server.go:79-90) these tests assert on. Turns
+// is the monotonic turn counter: polling for it to advance proves a reply was
+// genuinely accepted and processed as a new turn, decoupled from any race on
+// observing the transient "active" state in between two polls.
 type serveStatusState struct {
 	State string `json:"state"`
+	Turns int    `json:"turns"`
 }
 
 // getServeAskStatus performs one GET /status and decodes the response,
@@ -120,8 +124,18 @@ func pollServeAskStatusUntil(t *testing.T, addr, want string, timeout, interval 
 // TestServeAsk_StatusAwaitingAtRest proves spec §8's serve-level claim: GET
 // /status — the endpoint the hub prober actually polls, not just the
 // in-process appStatus function — reports "awaiting" while a question is
-// pending and "idle" once the reply resolves it. This drives the real serve
-// daemon (installServeScriptedProvider + runServe, the
+// pending, and that the reply genuinely resolves it (rather than the ask
+// mechanism silently getting stuck). It does not assert "idle" once the
+// reply lands: under attention-status-model v5's inbox semantics (merged
+// after this test was first written), the reply's own turn
+// (scriptedCommunicate("answered")) is itself a clean, output-producing
+// completion with nothing else in flight, so /status legitimately settles
+// back to "awaiting" — the identical wire value an unresolved ask would
+// show. The discriminator that the reply was accepted and processed, not
+// that the ask stuck, is the Turns counter advancing; polling for that
+// (rather than for a specific state string) also sidesteps any race on
+// observing the transient "active" state between two polls. This drives the
+// real serve daemon (installServeScriptedProvider + runServe, the
 // TestServeGoal_TUIPathEndToEnd harness) rather than the Session directly,
 // because the serve-level turn-end SetState wiring (cmd/serf/serve.go) is a
 // seam agenttest cannot reach.
@@ -186,7 +200,8 @@ func TestServeAsk_StatusAwaitingAtRest(t *testing.T) {
 
 	// The asking round ends the turn at its boundary (spec §5.1); /status must
 	// report "awaiting" at rest.
-	pollServeAskStatusUntil(t, entry.Address, "awaiting", 10*time.Second, 100*time.Millisecond)
+	atRest := pollServeAskStatusUntil(t, entry.Address, "awaiting", 10*time.Second, 100*time.Millisecond)
+	turnsBeforeReply := atRest.Turns
 
 	// The reply is the next user message on the SAME input path (spec §5.2): an
 	// ordinary turn/start, not a new wire method.
@@ -197,7 +212,30 @@ func TestServeAsk_StatusAwaitingAtRest(t *testing.T) {
 		t.Fatalf("TurnStart (reply): %v", err)
 	}
 
-	pollServeAskStatusUntil(t, entry.Address, "idle", 10*time.Second, 100*time.Millisecond)
+	// Wait for the reply's own turn to actually complete: Turns advancing past
+	// turnsBeforeReply proves it was accepted and processed, independent of
+	// whatever state /status happens to report at any single poll (a
+	// never-processed reply would leave both Turns AND state stuck, so this
+	// still fails loudly if the reply silently dropped).
+	deadline := time.Now().Add(10 * time.Second)
+	var afterReply serveStatusState
+	for {
+		afterReply = getServeAskStatus(t, entry.Address)
+		if afterReply.Turns > turnsBeforeReply {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("turns did not advance past %d within 10s (the reply was never processed); last status = %+v", turnsBeforeReply, afterReply)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	// Inbox semantics (attention-status-model v5): the reply's own turn
+	// (scriptedCommunicate("answered")) is a clean, output-producing
+	// completion with nothing else in flight, so /status legitimately
+	// settles back to "awaiting" rather than "idle" — the merged truth.
+	if afterReply.State != "awaiting" {
+		t.Fatalf("state after reply's turn completed = %q, want %q (inbox semantics: the reply's own clean, output-producing turn re-arms awaiting)", afterReply.State, "awaiting")
+	}
 
 	httpResp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
 	if err != nil {

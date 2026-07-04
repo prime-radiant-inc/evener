@@ -75,6 +75,7 @@ const (
 	NotifySerfJobFinished       = "serf/job/finished"
 	NotifySerfAuthUpdated       = "serf/auth/updated"
 	NotifySerfLaunchUpdated     = "serf/launch/updated"
+	NotifySerfAttentionChanged  = "serf/attention/changed"
 )
 
 const (

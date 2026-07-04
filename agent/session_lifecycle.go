@@ -428,7 +428,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		s.mu.Unlock()
 		return "", errors.New("session is closed")
 	}
-	// Entry gate (spec §5.3): while awaiting an answer, an autonomous wake —
+	// Entry gate (spec §5.3): while a question is pending, an autonomous wake —
 	// EntryNotification, EntryContinuation, EntryWatchDelivery — is refused here,
 	// before the Processing transition below (processOneInput's
 	// setStateIfOpenLocked(SessionProcessing)) ever runs. No state flip, no event
@@ -439,7 +439,18 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	// the watch outbox) untouched, so it redelivers once the boundary drains
 	// after the user's reply. EntryUserInput is always accepted — it is how the
 	// reply resolves awaiting (spec §5.2).
-	if s.state == SessionAwaiting && kind != EntryUserInput {
+	//
+	// Gated on the pending set, not raw state (attention-status-model v5
+	// reconciliation): SessionAwaiting used to imply "a question is pending" —
+	// the only producer of the state before the merge — but the general
+	// inbox-semantics upgrade (armAwaitingAtSettle) now also rests a session
+	// awaiting after any clean, output-producing turn with nothing else in
+	// flight, no ask involved. Their spec's own consequence for that case is
+	// the opposite of a hold: "async wakes re-arm by design." Only a genuine
+	// pending question is a stronger stop than the wake (a delegate finishing
+	// while the user reads a QUESTION must not silently resolve it out from
+	// under them); a general re-arm has nothing pending to protect.
+	if len(s.askPending) > 0 && kind != EntryUserInput {
 		s.mu.Unlock()
 		return "", nil
 	}
@@ -689,16 +700,16 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// Idle transition: clear the in-turn flag and kick a goal that was set in the
 		// turn-tail window (after the gate's store read) so it is not stranded until
 		// the next user message (spec §7). No-op when no fresh goal is pending.
-		s.settleGoalOnIdle()
+		goalKicked := s.settleGoalOnIdle()
+		s.armAwaitingAtSettle(strings.TrimSpace(strings.Join(outputs, "\n")) != "", goalKicked)
 		s.mu.Lock()
 		if !s.sessionEndEmitted {
 			s.sessionEndEmitted = true
 			turns := s.modelResponses
-			state := s.state
 			s.mu.Unlock()
 			s.emit(events.EventSessionEnd, events.SessionEndData{
 				Reason: "input_complete",
-				State:  string(state),
+				State:  s.WireState(),
 				Turns:  turns,
 			})
 		} else {

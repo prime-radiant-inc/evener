@@ -54,6 +54,19 @@ func (s *Session) askPendingCount() int {
 	return len(s.askPending)
 }
 
+// HasPendingAsk reports whether the session has an unresolved ask_user
+// question. Exported so a cross-module gate can mirror the entry gate's
+// refusal predicate (session_lifecycle.go's processInputKindWithProvenance,
+// spec §5.3) exactly: cmd/serf/serve.go's pre-dispatch /status shadow-write
+// hold must skip the write for precisely the wakes the entry gate will
+// refuse. Keying on the pending set rather than raw SessionState matters
+// since attention-status-model v5: SessionAwaiting no longer implies a
+// pending question on its own (the general inbox-semantics upgrade also
+// rests a session awaiting after any clean, output-producing turn).
+func (s *Session) HasPendingAsk() bool {
+	return s.askPendingCount() > 0
+}
+
 // clearAskPending empties the pending set. Nothing in this task calls it in
 // production: a later task wires the actual clear points (a resolving user
 // turn, an interrupted turn).
@@ -121,35 +134,73 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 }
 
 // deriveRestoredState re-derives a restored session's at-rest state from its
-// history tail (spec §6's pending definition): walking backward from the most
-// recent turn, the first decisive turn wins. A TurnUserInput means a reply
-// already resolved whatever was pending, or nothing ever was — idle. A
-// TurnToolResults turn carrying a completed (non-error) ask_user result means
-// that round ended its turn on an unanswered question — awaiting. Every other
-// turn kind is not decisive and the scan continues past it: steering,
-// checkpoint, summary, and system turns per spec, plus a TurnToolResults turn
-// that carries no successful ask_user result. That last carve-out matters:
-// when an ask_user call is interrupted before its ack is ever recorded,
-// ResumeHistory's orphan repair (history_repair.go) synthesizes an IsError
-// TOOL_RESULTS entry named "ask_user" so the provider never sees a dangling
-// call — but that placeholder is not an ack, so it must not read as pending
-// (spec §6: "an interrupted ack-less ask is never pending"). A denied or
-// invalid ask_user call is IsError for the same reason and is excluded the
-// same way. No decisive turn anywhere in the (possibly compacted) history
-// defaults to idle, matching a fresh session.
+// history tail. It is the single resume-derivation function, unifying two
+// rules that were designed independently and must both hold everywhere:
+// ask_user's pending definition (spec §6: "an interrupted ack-less ask is
+// never pending") and attention-status-model v5's general resume rule ("agent
+// moved last" resumes awaiting, round-3 A2) — the ask rule is that general
+// rule's specific instance, not a competing one, since an ack is just the
+// terminal tool result of the round the agent last moved in.
+//
+// Walking backward from the most recent turn, the first decisive turn wins:
+//
+//   - TurnUserInput: a reply already resolved whatever was pending, or
+//     nothing ever was — idle.
+//   - TurnAssistant with no tool calls: a plain final response with nothing
+//     else after it — the agent moved last — awaiting.
+//   - TurnAssistant WITH tool calls: not decisive, the scan continues past
+//     it. Ordinarily a tool call is immediately followed by a matching
+//     TurnToolResults, so the scan reaches that turn first — but when every
+//     one of THIS turn's calls resolved to nothing but error placeholders
+//     (the case directly below), the scan falls through to the assistant
+//     turn that issued them, and it must not then be mistaken for a
+//     plain completed response: it is the same interrupted round, not a
+//     second, earlier one.
+//   - TurnToolResults carrying at least one completed (non-error) result:
+//     the round ended its turn on a real completion — a communicate, an
+//     ask_user ack, or any other terminal tool — awaiting.
+//   - TurnToolResults carrying ONLY error results: not decisive: the scan
+//     continues past it. This is the ask-specific carve-out generalized:
+//     when a tool call (ask_user or otherwise) is interrupted before its
+//     result is ever recorded, ResumeHistory's orphan repair
+//     (history_repair.go) synthesizes an IsError TOOL_RESULTS entry so the
+//     provider never sees a dangling call — but that placeholder is not a
+//     completion, so a crash-interrupted round must not read as "agent moved
+//     last" (spec §6: "an interrupted ack-less ask is never pending"). A
+//     denied or invalid ask_user call is IsError for the same reason and is
+//     excluded the same way.
+//   - TurnSteering, TurnCheckpoint, TurnSummary, TurnSystem, and the
+//     deprecated TurnTool: bookkeeping, not decisive — the scan continues
+//     past them. A trailing steering turn (e.g. a task-nudge reminder
+//     injected before the round-boundary check runs) must not resolve a
+//     pending ask by looking like the user moved last (spec §6); a trailing
+//     checkpoint/summary is the resume anchor ResumeHistory already
+//     truncated to, not a new decisive event.
+//
+// No decisive turn anywhere in the (possibly compacted) history defaults to
+// idle, matching a fresh session.
 func deriveRestoredState(history []schema.Turn) SessionState {
 	for i := len(history) - 1; i >= 0; i-- {
 		turn := history[i]
 		switch turn.Kind {
 		case schema.TurnUserInput:
 			return SessionIdle
+		case schema.TurnAssistant:
+			if len(assistantToolCalls(turn.Message)) == 0 {
+				return SessionAwaiting
+			}
+			// This turn's calls resolved to an all-error placeholder we
+			// already scanned past (or repair guarantees one exists ahead of
+			// it) — not a completion. Keep scanning past it too.
 		case schema.TurnToolResults:
 			for _, part := range turn.Message.Content {
-				if part.Kind == llm.ContentToolResult && part.ToolResult != nil &&
-					part.ToolResult.Name == "ask_user" && !part.ToolResult.IsError {
+				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && !part.ToolResult.IsError {
 					return SessionAwaiting
 				}
 			}
+			// Every result here is an error placeholder (orphan repair, a
+			// denied/invalid call, or a round where every call failed): not a
+			// completion. Keep scanning past it.
 		}
 	}
 	return SessionIdle

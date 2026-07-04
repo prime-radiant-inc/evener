@@ -10,8 +10,9 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// WS2a: terminal communicate returns to IDLE.
-func TestSession_EndTurnResponseGoesIdle(t *testing.T) {
+// WS2a: terminal communicate with output settles to AWAITING (the ball is in
+// the user's court — no autonomy in flight, per attention-status-model v5).
+func TestSession_EndTurnResponseGoesAwaiting(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name    string
@@ -47,8 +48,8 @@ func TestSession_EndTurnResponseGoesIdle(t *testing.T) {
 				t.Fatalf("ProcessInput: %v", err)
 			}
 
-			if got := sess.State(); got != SessionIdle {
-				t.Fatalf("state after %s: got %q want %q", tc.desc, got, SessionIdle)
+			if got := sess.State(); got != SessionAwaiting {
+				t.Fatalf("state after %s: got %q want %q", tc.desc, got, SessionAwaiting)
 			}
 			sess.Close()
 		})
@@ -91,22 +92,23 @@ func TestSession_EndTurnQuestionAllowsNextInput(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// First input: terminal question -> IDLE
+	// First input: terminal question -> AWAITING (output, no autonomy in flight)
 	_, err = sess.ProcessInput(ctx, "write code", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput #1: %v", err)
 	}
-	if got := sess.State(); got != SessionIdle {
-		t.Fatalf("state after question: got %q want %q", got, SessionIdle)
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state after question: got %q want %q", got, SessionAwaiting)
 	}
 
-	// Second input: IDLE -> PROCESSING -> IDLE
+	// Second input: AWAITING -> PROCESSING -> AWAITING (awaiting must accept
+	// the next ProcessInput just like idle does).
 	_, err = sess.ProcessInput(ctx, "Go", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput #2: %v", err)
 	}
-	if got := sess.State(); got != SessionIdle {
-		t.Fatalf("state after answer: got %q want %q", got, SessionIdle)
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state after answer: got %q want %q", got, SessionAwaiting)
 	}
 	sess.Close()
 }

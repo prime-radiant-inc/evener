@@ -296,6 +296,7 @@
       case "item/completed":
       case "serf/job/started":
       case "serf/job/finished":
+      case "serf/attention/changed":
         return true;
       default:
         return false;

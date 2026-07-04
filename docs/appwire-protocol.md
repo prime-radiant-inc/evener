@@ -157,6 +157,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `serf/job/finished` | `(inline)` | A background job finished; inline {threadId, ref, job} with status/reason/exitCode/output. |
 | `serf/auth/updated` | `(inline)` | Broadcast after a successful auth mutation; inline {provider, activeSource}. Clients refresh auth state. |
 | `serf/launch/updated` | `(inline)` | Broadcast after a launch layer/trust mutation; inline {cwd, layer}. Clients refresh launch config. |
+| `serf/attention/changed` | `(inline)` | Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons. |
 
 ## Type reference
 

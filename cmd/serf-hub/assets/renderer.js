@@ -902,6 +902,10 @@
             const seq = ++this.statusUpdateSeq;
             this.updateThreadState(status);
             this.refreshCapabilitiesForStatus(status, seq);
+            // Let notifications.js reconcile the attention badge instantly
+            // for the thread that's actually open, rather than waiting for
+            // the hub's next attention tick (up to 5s away).
+            document.dispatchEvent(new CustomEvent("serf-hub:thread-status", { detail: { status: status } }));
           }
           break;
         case "TURN_STARTED":

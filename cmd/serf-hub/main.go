@@ -16,6 +16,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hostlock"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
@@ -175,6 +176,18 @@ func main() {
 		}
 	}
 
+	// attentionPoke lets a web handler (e.g. an archive decision) nudge the
+	// attention watcher below to recompute immediately instead of waiting for
+	// its next tick. Buffered 1 + non-blocking send: a poke that arrives while
+	// one is already pending coalesces into the same recompute.
+	attentionPoke := make(chan struct{}, 1)
+	pokeAttention := func() {
+		select {
+		case attentionPoke <- struct{}{}:
+		default:
+		}
+	}
+
 	// Web
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr:             cfg.Addr,
@@ -195,6 +208,7 @@ func main() {
 		CodexSources:        cfg.CodexSources,
 		CodexLaunches:       cfg.CodexLaunches,
 		CodexLauncher:       codexLauncher,
+		PokeAttention:       pokeAttention,
 	})
 
 	// Lifecycle
@@ -221,6 +235,46 @@ func main() {
 				return
 			case <-ticker.C:
 				_ = past.Rebuild()
+			}
+		}
+	}()
+
+	// Attention watcher: derives each live session's attention level from the
+	// same roster/past-index/archive inputs the sidebar tree uses, and
+	// broadcasts serf/attention/changed whenever a session's level actually
+	// transitions (notifications.js drives the tab title/favicon badge and OS
+	// notifications from it). Ticks every 5s and on-demand via attentionPoke.
+	// seenActive tracks, across ticks, how long each session has continuously
+	// reported "working" (hubcore.StaleActives); once a session has been
+	// working past hubcore.StallThreshold, the watcher runs the stale-wedge
+	// probe (hubcore.WedgedStatus) against it and, on a positive, overrides
+	// its level to "error" before broadcasting.
+	go func() {
+		w := hubcore.NewAttentionWatcher(func(p hubcore.AttentionChangedPayload) {
+			web.appRPC.BroadcastAll(appwire.NotifySerfAttentionChanged, p)
+		})
+		tick := time.NewTicker(5 * time.Second)
+		defer tick.Stop()
+		seenActive := map[string]time.Time{}
+		run := func() {
+			decisions, _ := archive.Decisions()
+			m, sum := hubcore.DeriveAttention(past.AllMetas(), roster.List(), decisions)
+			for _, id := range hubcore.StaleActives(seenActive, m, time.Now()) {
+				if entry, ok := past.Find(id); ok && hubcore.WedgedStatus(entry) {
+					hubcore.ApplyWedgeOverride(m, &sum, id)
+				}
+			}
+			w.Tick(m, sum)
+		}
+		run()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				run()
+			case <-attentionPoke:
+				run()
 			}
 		}
 	}()

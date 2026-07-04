@@ -61,7 +61,7 @@ var sidebarTemplateFuncs = template.FuncMap{
 	// behind a "Completed (N)" disclosure.
 	"subagentDone": func(state string) bool {
 		switch state {
-		case "active", "awaiting", "warning":
+		case "active", "awaiting", "warning", "errored":
 			return false
 		default:
 			return true

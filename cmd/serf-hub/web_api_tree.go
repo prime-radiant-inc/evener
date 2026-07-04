@@ -35,10 +35,13 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	metas, live := s.navigationTreeInputs(r.Context())
-	tree := hubcore.BuildTree(metas, live, s.archiveDecisions())
+	decisions := s.archiveDecisions()
+	tree := hubcore.BuildTree(metas, live, decisions)
+	_, attentionSummary := hubcore.DeriveAttention(metas, live, decisions)
 	resp := hubapi.TreeResponse{
-		GeneratedAt: time.Now().UTC(),
-		Sources:     s.apiTreeSources(),
+		GeneratedAt:      time.Now().UTC(),
+		Sources:          s.apiTreeSources(),
+		AttentionSummary: hubAttentionSummaryFromCore(attentionSummary),
 	}
 	for _, n := range tree.Live {
 		if !treeNodeCanActLive(n) {
@@ -242,6 +245,12 @@ func appThreadTreeLive(thread appwire.Thread) bool {
 	default:
 		return true
 	}
+}
+
+// hubAttentionSummaryFromCore maps hubcore's internal attention summary to
+// hubapi's public wire type (hubapi cannot import the hub's internal package).
+func hubAttentionSummaryFromCore(sum hubcore.AttentionSummary) hubapi.AttentionSummary {
+	return hubapi.AttentionSummary{NeedsYou: sum.NeedsYou, Error: sum.Error, Working: sum.Working}
 }
 
 func (s *WebServer) apiTreeSources() []hubapi.Source {

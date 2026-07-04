@@ -156,4 +156,5 @@ var Notifications = []NotificationSpec{
 	{NotifySerfJobFinished, nil, "A background job finished; inline {threadId, ref, job} with status/reason/exitCode/output."},
 	{NotifySerfAuthUpdated, nil, "Broadcast after a successful auth mutation; inline {provider, activeSource}. Clients refresh auth state."},
 	{NotifySerfLaunchUpdated, nil, "Broadcast after a launch layer/trust mutation; inline {cwd, layer}. Clients refresh launch config."},
+	{NotifySerfAttentionChanged, nil, "Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons."},
 }

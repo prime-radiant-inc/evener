@@ -222,7 +222,11 @@ func (s *Session) reportGoalEnded() {
 // the store instead of being kicked past the user's unanswered ask. The
 // normal resume fold (armGoalContinuation's non-continuation branch, folded
 // at the reply turn's own drain tail) picks it up once the reply resolves it.
-func (s *Session) settleGoalOnIdle() {
+//
+// It reports whether it kicked, so the settle-state upgrade knows autonomy is
+// in flight (attention-status-model v5: a kicked goal suppresses awaiting —
+// suppressor condition 3 of the idle→awaiting upgrade).
+func (s *Session) settleGoalOnIdle() bool {
 	s.mu.Lock()
 	s.goalInTurn = false
 	kick := s.kickFunc
@@ -236,7 +240,9 @@ func (s *Session) settleGoalOnIdle() {
 	s.mu.Unlock()
 	if prompt != "" {
 		kick(prompt)
+		return true
 	}
+	return false
 }
 
 // terminateGoalOnError transitions an active goal to blocked and emits its

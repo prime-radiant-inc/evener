@@ -626,8 +626,12 @@ func TestAskUser_DeniedOrInvalidOnlyAskDoesNotEndTurn(t *testing.T) {
 	if strings.TrimSpace(out) != "Proceeding without the clarifying question." {
 		t.Fatalf("ProcessInput returned %q, want the round-2 communicate message", out)
 	}
-	if got := sess.State(); got != SessionIdle {
-		t.Fatalf("state = %q, want %q", got, SessionIdle)
+	// Inbox semantics (attention-status-model v5): round 2's communicate is a
+	// clean, output-producing completion with nothing else in flight, so it
+	// re-arms awaiting on its own — unrelated to the invalid ask, which posted
+	// nothing (askPendingCount below is the discriminator that proves that).
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state = %q, want %q", got, SessionAwaiting)
 	}
 	if got := sess.askPendingCount(); got != 0 {
 		t.Fatalf("askPendingCount = %d, want 0 (the invalid call posts nothing)", got)
@@ -687,8 +691,13 @@ func TestAskUser_PreToolUseDenyPostsNothing(t *testing.T) {
 	if strings.TrimSpace(out) != "Proceeding without the question." {
 		t.Fatalf("ProcessInput returned %q, want the round-2 communicate message", out)
 	}
-	if got := sess.State(); got != SessionIdle {
-		t.Fatalf("state = %q, want %q (a deny alone must not end the turn awaiting)", got, SessionIdle)
+	// Inbox semantics (attention-status-model v5): round 2's communicate is a
+	// clean, output-producing completion with nothing else in flight, so it
+	// re-arms awaiting on its own. What this test actually guards — that a
+	// deny alone does not end the turn early, at the ask boundary — is proven
+	// above by askPendingCount==0 and requests==2 (round 2 ran at all).
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state = %q, want %q (a deny alone must not end the turn AT THE ASK BOUNDARY; round 2's own communicate legitimately re-arms awaiting)", got, SessionAwaiting)
 	}
 }
 
@@ -753,8 +762,14 @@ func TestAskUser_EntryGateRefusesNotificationWake(t *testing.T) {
 	if _, err := sess.ProcessInput(ctx, "let's go with Postgres", nil); err != nil {
 		t.Fatalf("reply ProcessInput: %v", err)
 	}
-	if got := sess.State(); got != SessionIdle {
-		t.Fatalf("state after reply = %q, want %q", got, SessionIdle)
+	// Inbox semantics (attention-status-model v5): the drained notification
+	// turn runs last within this ProcessInput call and is itself a clean,
+	// output-producing completion ("notification ack") with nothing else in
+	// flight, so it re-arms awaiting on its own. What this test guards — the
+	// notification actually drained instead of staying stuck — is proven by
+	// requests==3 and peekNotifications==0 below, not by the raw rest state.
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state after reply = %q, want %q (the drained notification turn's own clean completion re-arms awaiting)", got, SessionAwaiting)
 	}
 	if got := len(f.Requests()); got != 3 {
 		t.Fatalf("requests after reply = %d, want 3 (reply turn + the drained notification turn)", got)
@@ -898,8 +913,15 @@ func TestAskUser_BoundaryDrainHoldsNotifications(t *testing.T) {
 	if _, err := sess.ProcessInput(ctx, "let's go with Postgres", nil); err != nil {
 		t.Fatalf("reply ProcessInput: %v", err)
 	}
-	if got := sess.State(); got != SessionIdle {
-		t.Fatalf("state after reply = %q, want %q", got, SessionIdle)
+	// Inbox semantics (attention-status-model v5): the drained notification
+	// turn runs last within this ProcessInput call and is itself a clean,
+	// output-producing completion ("notification ack") with nothing else in
+	// flight, so it re-arms awaiting on its own. What this test guards — the
+	// notification held during the ask actually drained afterward instead of
+	// being dropped — is proven by requests==3 and peekNotifications==0
+	// below, not by the raw rest state.
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state after reply = %q, want %q (the drained notification turn's own clean completion re-arms awaiting)", got, SessionAwaiting)
 	}
 	if got := len(f.Requests()); got != 3 {
 		t.Fatalf("requests after reply = %d, want 3 (reply turn + the drained notification turn)", got)
@@ -913,7 +935,12 @@ func TestAskUser_BoundaryDrainHoldsNotifications(t *testing.T) {
 // which stays live by design: a message the user queues mid-round (via the
 // same deterministic same-round-tool idiom as the notification test above)
 // drains as the very next turn once the ask ends the round — it IS the reply,
-// so the session never rests awaiting, and the pending set clears.
+// so the pending set clears (askPendingCount below). It does NOT prove the
+// session stays idle: under attention-status-model v5's inbox semantics, the
+// drained reply's own turn is itself a clean, output-producing completion
+// with nothing else in flight, so it independently re-arms awaiting — the
+// discriminator that the ASK resolved (rather than the reply never landing)
+// is askPendingCount==0 and the ack present in history, not the raw state.
 func TestAskUser_QueuedInputDrainsAsReply(t *testing.T) {
 	t.Parallel()
 	ask := askUserCall("ask1", askUserArgsValid())
@@ -942,8 +969,8 @@ func TestAskUser_QueuedInputDrainsAsReply(t *testing.T) {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 
-	if got := sess.State(); got != SessionIdle {
-		t.Fatalf("state = %q, want %q (queued input mid-ask must drain as the reply; the session must never rest awaiting in this case)", got, SessionIdle)
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state = %q, want %q (the drained queued text's own clean completion re-arms awaiting; see askPendingCount below for the ask-resolved discriminator)", got, SessionAwaiting)
 	}
 	if got := len(f.Requests()); got != 2 {
 		t.Fatalf("requests = %d, want 2 (the asking round + the queued text drained as the reply)", got)
@@ -1282,8 +1309,22 @@ func TestAskUser_RestoreRederivesAwaitingAcrossTrailingSteering(t *testing.T) {
 }
 
 // TestAskUser_RestoreRederivesIdleAfterAnsweredAsk covers spec §6's other
-// half: a user turn following the ack (the reply) resolves the question, so a
-// restore afterward must NOT re-derive awaiting.
+// half: a user turn following the ack (the reply) resolves the question. It
+// no longer asserts idle after the reply: under attention-status-model v5's
+// inbox semantics (merged post-write-up), the reply's OWN turn is itself a
+// clean completion with user-visible output and nothing else in flight, so
+// it legitimately re-arms awaiting — the identical wire value an unresolved
+// ask would show. What must hold, and what this test asserts instead, is
+// that the ASK genuinely resolved: askPendingCount drops to 0 the moment the
+// reply is accepted (spec §5.2, checked live, where the pending set is a
+// real in-memory signal — it is not persisted, so checking it again after
+// restore would be vacuous), and the reply demonstrably reached the model as
+// a new turn (the second fakeAdapter step only fires for a genuine new
+// round). Restored state is awaiting for the same inbox reason live state
+// was, not because ask1 resurrected as pending: the transcript-shape pending
+// definition (§6) that distinguishes "resolved" from "still pending" keys on
+// ask1's ack having a LATER TurnUserInput, which it does here regardless of
+// what the tail's own state settles to.
 func TestAskUser_RestoreRederivesIdleAfterAnsweredAsk(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -1309,11 +1350,21 @@ func TestAskUser_RestoreRederivesIdleAfterAnsweredAsk(t *testing.T) {
 	if got := sess.State(); got != SessionAwaiting {
 		t.Fatalf("pre-reply state = %q, want %q (test setup broken)", got, SessionAwaiting)
 	}
-	if _, err := sess.ProcessInput(ctx, "Postgres, thanks", nil); err != nil {
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-reply pending count = %d, want 1 (test setup broken)", got)
+	}
+	out, err := sess.ProcessInput(ctx, "Postgres, thanks", nil)
+	if err != nil {
 		t.Fatalf("reply ProcessInput: %v", err)
 	}
-	if got := sess.State(); got != SessionIdle {
-		t.Fatalf("post-reply state = %q, want %q (test setup broken)", got, SessionIdle)
+	if out != "thanks, using Postgres" {
+		t.Fatalf("reply output = %q, want the model's second-step response (the reply must reach the model as a new turn)", out)
+	}
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("post-reply pending count = %d, want 0 (the reply must resolve the ask)", got)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("post-reply state = %q, want %q (inbox semantics: the reply's own clean, output-producing turn re-arms awaiting)", got, SessionAwaiting)
 	}
 
 	meta := sess.Meta()
@@ -1325,8 +1376,13 @@ func TestAskUser_RestoreRederivesIdleAfterAnsweredAsk(t *testing.T) {
 	}
 	defer restored.Close()
 
-	if got := restored.State(); got != SessionIdle {
-		t.Fatalf("restored state = %q, want %q (an answered ask must not re-derive awaiting)", got, SessionIdle)
+	// The restored state is awaiting for the same general reason (agent
+	// moved last with the reply's own plain-text turn) — not because ask1
+	// re-derived as pending. askPending is never restored (it is not part of
+	// persisted meta), so checking it here would trivially read 0 regardless
+	// of transcript shape; the meaningful check already ran live above.
+	if got := restored.State(); got != SessionAwaiting {
+		t.Fatalf("restored state = %q, want %q (agent moved last: the reply's own response)", got, SessionAwaiting)
 	}
 }
 

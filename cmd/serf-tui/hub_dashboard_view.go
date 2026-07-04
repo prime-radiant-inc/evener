@@ -23,7 +23,7 @@ func (m hubModel) dashboardView() string {
 	if width <= 0 {
 		width = 100
 	}
-	topBar := dashboardHeader(m.hubURL, liveCount, width)
+	topBar := dashboardHeader(m.hubURL, liveCount, width, needsYouBadge(needsYouCount(m.rows)))
 	var b strings.Builder
 	if m.err != nil {
 		b.WriteString(tuitext.TruncateText(fmt.Sprintf("error: %v", m.err), width))
@@ -133,9 +133,43 @@ func (m hubModel) dashboardUsesWideLayout() bool {
 	return m.width >= 120 && m.commandPalette == nil
 }
 
-func dashboardHeader(hubURL string, liveCount int, width int) string {
-	right := fmt.Sprintf("%s · %d live", hubURL, liveCount)
+// dashboardHeader renders the dashboard's one-line top bar. badge is the
+// pre-rendered needs-you indicator (needsYouBadge; empty when quiet) and is
+// folded into the divider's right-side content: SectionDivider fills to
+// exactly width columns, so appending anything after it would wrap the
+// TopBar and break AppShell's single-line height accounting.
+func dashboardHeader(hubURL string, liveCount int, width int, badge string) string {
+	right := fmt.Sprintf("%s · %d live", hubURL, liveCount) + badge
 	return tuiprim.SectionDivider(width, "SERF LIVE", right)
+}
+
+// needsYouCount reports how many live sessions are in a state that needs the
+// user's attention (awaiting input, warning, or errored). Only hubRowSession
+// rows are counted; a project's rollup row carries the same aggregated state
+// as its children (see buildDashboardRows) and would double-count otherwise.
+func needsYouCount(rows []hubRow) int {
+	count := 0
+	for _, row := range rows {
+		if row.kind != hubRowSession || !row.live {
+			continue
+		}
+		switch stateLabel(row.state) {
+		case "awaiting", "warning", "errored":
+			count++
+		}
+	}
+	return count
+}
+
+// needsYouBadge renders the "◆N" needs-you indicator in the awaiting-attention
+// color, folded into the dashboard header divider's right-side content (with
+// its own leading separator space). Empty when n is zero so the header stays
+// quiet when nothing needs the user.
+func needsYouBadge(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return " " + lipgloss.NewStyle().Foreground(tuitheme.ActiveTheme().StateAwaiting).Render(fmt.Sprintf("◆%d", n))
 }
 
 func renderDashboardRows(rows []hubRow, selected int, width int, compact bool) string {
@@ -255,7 +289,10 @@ func renderDashboardRecentToggleRow(row hubRow, expanded bool, selected bool, wi
 
 func stateColor(state string) lipgloss.Color {
 	th := tuitheme.ActiveTheme()
-	switch state {
+	// Switch on the normalized label, not the raw value: hubRow.state can
+	// carry a raw wire status (e.g. "systemError", "closed") rather than the
+	// hub-normalized form, mirroring statusDot/attentionRankLabel below.
+	switch stateLabel(state) {
 	case "awaiting":
 		return th.StateAwaiting
 	case "active":
@@ -266,6 +303,8 @@ func stateColor(state string) lipgloss.Color {
 		return th.StateIdle
 	case "ended":
 		return th.StateEnded
+	case "errored":
+		return th.StateError
 	default:
 		return th.TextDim
 	}
@@ -305,7 +344,8 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 		// indicator; inner state colors are not needed on selected rows.
 		return styles.Selected.Width(width).Render(ansi.Strip(line))
 	}
-	if row.state == "awaiting" || row.state == "active" || row.state == "warning" {
+	switch stateLabel(row.state) {
+	case "awaiting", "active", "warning", "errored":
 		clr := stateColor(row.state)
 		line = lipgloss.NewStyle().Foreground(clr).Render(line)
 	}
@@ -497,6 +537,8 @@ func statusDot(state string) string {
 		return "●"
 	case "idle":
 		return "●"
+	case "errored":
+		return "●"
 	default:
 		return "○"
 	}
@@ -516,6 +558,8 @@ func stateLabel(state string) string {
 		return "notLoaded"
 	case "closed":
 		return "ended"
+	case "systemerror", "errored":
+		return "errored"
 	default:
 		if strings.TrimSpace(state) == "" {
 			return "notLoaded"
@@ -543,6 +587,8 @@ func projectSummary(project hubRow, rows []hubRow) string {
 
 func attentionRankLabel(state string) int {
 	switch stateLabel(state) {
+	case "errored":
+		return 5
 	case "awaiting":
 		return 4
 	case "active":

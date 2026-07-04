@@ -45,6 +45,12 @@ type WebConfig struct {
 
 	Archive *ArchiveStore // archive decision store; nil when not configured (tree uses empty decisions)
 
+	// PokeAttention nudges the hub's attention watcher to recompute
+	// immediately (e.g. after an archive decision changes tier eligibility)
+	// instead of waiting for its next tick. Nil when the watcher isn't wired
+	// (e.g. in tests that construct a WebServer directly).
+	PokeAttention func()
+
 	RelayHooks RelayLifecycleHooks // test-only relay lifecycle seams; nil in production
 
 	// Sandbox seams. Each is nil in production (the real implementation runs);
