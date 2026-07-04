@@ -38,7 +38,9 @@ import (
 //	Oracle 2 (wedge):     every op returns under a real wall-time watchdog (distinct
 //	                      from the in-session fake clock) — a hang is a wedge.
 //	Oracle 3 (status):    State() is observed only at op boundaries, where it must be
-//	                      idle or closed, and once closed it stays closed.
+//	                      idle, awaiting, or closed, and once closed it stays closed.
+//	                      awaiting (attention-status-model v5) is a clean-turn resting
+//	                      state, not a mid-turn one, so it is boundary-legal too.
 //	Oracle 4 (counters):  the turns and modelResponses counters never decrease.
 //	Oracle 5 (transcript): history stays well-formed (no orphaned tool call) and
 //	                      len(history) never decreases except across a compaction —
@@ -678,14 +680,18 @@ func applyOp(sess *Session, clk *agenttest.FakeClock, op opRecord, cancelAt *int
 func checkLifecycleOracles(sess *Session, m *lifecycleModel, op opRecord, art lifecycleArtifact, step int) *promoter.Failure {
 	st := sess.State()
 
-	// Oracle 3: status is observed only at boundaries; must be idle or closed,
-	// and once closed it stays closed.
+	// Oracle 3: status is observed only at boundaries; must be idle, awaiting,
+	// or closed, and once closed it stays closed. awaiting (attention-status-model
+	// v5) is a clean-turn resting state — a completed turn with output and no
+	// autonomy in flight settles there instead of idle — so it is boundary-legal;
+	// SessionProcessing ("active") leaking through here is still the bug this
+	// oracle exists to catch.
 	if m.closed && st != SessionClosed {
 		return lifecycleFailure(promoter.Invariant, art, step, "status-regression:closed->"+string(st))
 	}
 	if st == SessionClosed {
 		m.closed = true
-	} else if st != SessionIdle {
+	} else if st != SessionIdle && st != SessionAwaiting {
 		return lifecycleFailure(promoter.Invariant, art, step, "status-nonboundary:"+string(st))
 	}
 

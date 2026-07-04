@@ -624,7 +624,8 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// Idle transition: clear the in-turn flag and kick a goal that was set in the
 		// turn-tail window (after the gate's store read) so it is not stranded until
 		// the next user message (spec §7). No-op when no fresh goal is pending.
-		s.settleGoalOnIdle()
+		goalKicked := s.settleGoalOnIdle()
+		s.armAwaitingAtSettle(strings.TrimSpace(strings.Join(outputs, "\n")) != "", goalKicked)
 		s.mu.Lock()
 		if !s.sessionEndEmitted {
 			s.sessionEndEmitted = true

@@ -1,8 +1,11 @@
 package agent
 
 import (
+	"context"
 	"testing"
+	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
@@ -69,5 +72,91 @@ func TestSettleGoalOnIdle_ReportsKick(t *testing.T) {
 	case <-kickCh:
 	default:
 		t.Fatal("settleGoalOnIdle reported kicked but no kick arrived")
+	}
+}
+
+func TestProcessInput_CleanCompletionArmsAwaiting(t *testing.T) {
+	t.Parallel()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return finalResponse("done") },
+	}})
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventsPtr, mu, doneCh := collectEvents(sess)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state after clean completion = %q, want %q", got, SessionAwaiting)
+	}
+	sess.Close()
+	<-doneCh
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range *eventsPtr {
+		if ev.Kind == events.EventSessionEnd {
+			d, ok := ev.Data.(events.SessionEndData)
+			if !ok {
+				t.Fatal("SessionEnd data type")
+			}
+			if d.Reason == "input_complete" && d.State != string(SessionAwaiting) {
+				t.Fatalf("SessionEnd.State = %q, want %q", d.State, SessionAwaiting)
+			}
+		}
+	}
+}
+
+func TestProcessInput_InterruptStaysIdle(t *testing.T) {
+	t.Parallel()
+	c := llm.NewClient()
+	blocker := make(chan struct{})
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { <-blocker; return finalResponse("late") },
+	}})
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _, _ = sess.ProcessInput(ctx, "hello", nil); close(done) }()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	close(blocker)
+	<-done
+	if got := sess.State(); got == SessionAwaiting {
+		t.Fatalf("interrupted turn must not arm awaiting; state = %q", got)
+	}
+}
+
+func TestProcessInput_NextInputClearsAwaiting(t *testing.T) {
+	t.Parallel()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return finalResponse("one") },
+		func(req llm.Request) llm.Response { return finalResponse("two") },
+	}})
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "first", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state = %q, want awaiting before second input", got)
+	}
+	if _, err := sess.ProcessInput(ctx, "second", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state after second clean turn = %q, want awaiting again", got)
 	}
 }

@@ -1147,8 +1147,10 @@ func TestSession_AbortThenFollowup(t *testing.T) {
 	if !strings.Contains(out, "hello after interrupt") {
 		t.Fatalf("turn 2 output: %q (want it to contain follow-up reply)", out)
 	}
-	if got := sess.State(); got != SessionIdle {
-		t.Fatalf("state after turn 2: got %q want %q", got, SessionIdle)
+	// Turn 2 completes cleanly with output and no autonomy in flight, so it
+	// settles to AWAITING (attention-status-model v5), not idle.
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state after turn 2: got %q want %q", got, SessionAwaiting)
 	}
 }
 

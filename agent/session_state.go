@@ -202,3 +202,23 @@ func settleTerminalState(hadOutput, goalKicked, notifsPending, queuePending, chi
 	}
 	return SessionAwaiting
 }
+
+// armAwaitingAtSettle upgrades idle -> awaiting at the drain-loop settle when
+// settleTerminalState says the ball is in the user's court. It runs after
+// settleGoalOnIdle (so the goal kick is known) and before the EventSessionEnd
+// emit (so the emitted State carries the upgrade). The upgrade respects the
+// same closed-guard as finishProcessingAtBoundary and only ever upgrades from
+// SessionIdle, so interrupt/failure paths (which never reach the settle) and
+// closed sessions are untouched.
+func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
+	target := settleTerminalState(hadOutput, goalKicked,
+		s.peekNotifications() > 0, s.QueueDepth() > 0, len(s.liveSubagentSessions()) > 0)
+	if target != SessionAwaiting {
+		return
+	}
+	s.mu.Lock()
+	if s.state == SessionIdle && !s.closingOrClosedLocked() {
+		s.state = SessionAwaiting
+	}
+	s.mu.Unlock()
+}
