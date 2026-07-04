@@ -26,7 +26,7 @@ func TestConnMutex_ServersAndCloseConcurrent(t *testing.T) {
 
 	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "s1", Type: "stdio"},
-	}, []mcpsdk.Transport{ct})
+	}, []func(context.Context) (mcpsdk.Transport, error){staticDial(ct)})
 	if len(outcomes) != 0 {
 		t.Fatalf("NewManager: %+v", outcomes)
 	}

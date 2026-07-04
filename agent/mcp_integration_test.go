@@ -60,7 +60,9 @@ func TestMCPIntegration_ToolCallThroughSession(t *testing.T) {
 	// Create the mcp.Manager directly with the transport (bypassing config discovery).
 	mgr, outcomes := mcp.NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "ext", Type: "stdio"},
-	}, []mcpsdk.Transport{ct})
+	}, []func(context.Context) (mcpsdk.Transport, error){
+		func(context.Context) (mcpsdk.Transport, error) { return ct, nil },
+	})
 	if len(outcomes) != 0 {
 		t.Fatalf("mcp.NewManager: %+v", outcomes)
 	}

@@ -68,7 +68,7 @@ func TestIntgMCP_NewManager_SiblingSurvivesFailure(t *testing.T) {
 	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "a", Type: "stdio"},
 		{Name: "b", Type: "stdio"},
-	}, []mcpsdk.Transport{ctA, ctB})
+	}, []func(context.Context) (mcpsdk.Transport, error){staticDial(ctA), staticDial(ctB)})
 	if mgr == nil {
 		t.Fatal("expected a non-nil manager when only one of two servers fails")
 	}

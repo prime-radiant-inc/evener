@@ -78,7 +78,7 @@ func TestParallelMCP_ConfigOrder_Deterministic(t *testing.T) {
 		{Name: "s1", Type: "stdio"},
 		{Name: "s2", Type: "stdio"},
 		{Name: "s3", Type: "stdio"},
-	}, []mcpsdk.Transport{ct1, ct2, ct3})
+	}, []func(context.Context) (mcpsdk.Transport, error){staticDial(ct1), staticDial(ct2), staticDial(ct3)})
 	if len(outcomes) != 0 {
 		t.Fatalf("NewManager: %+v", outcomes)
 	}
@@ -129,7 +129,7 @@ func TestParallelMCP_ParallelBound(t *testing.T) {
 	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "p1", Type: "stdio"},
 		{Name: "p2", Type: "stdio"},
-	}, []mcpsdk.Transport{ct1, ct2})
+	}, []func(context.Context) (mcpsdk.Transport, error){staticDial(ct1), staticDial(ct2)})
 	elapsed := time.Since(start)
 	if len(outcomes) != 0 {
 		t.Fatalf("NewManager: %+v", outcomes)

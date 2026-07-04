@@ -28,6 +28,7 @@ type Manager struct {
 type conn struct {
 	name      string
 	cfg       mcpconfig.ServerConfig
+	dial      func(context.Context) (mcpsdk.Transport, error) // re-dials a fresh transport; set for every conn, even ones whose initial connect failed, so a later reconnect (Task 8) always has something to call
 	session   *mcpsdk.ClientSession
 	tools     []llm.ToolDefinition // namespaced: servername__toolname
 	origNames map[string]string    // sanitized namespaced name → original MCP tool name
@@ -54,9 +55,10 @@ type ServerOutcome struct {
 
 // failedConn builds a conn recording a connect-stage failure for cfg. session,
 // tools, and origNames stay at their zero values: a failed conn has no live
-// session and contributes no tools to ToolDefinitions/RegisterTools.
-func failedConn(cfg mcpconfig.ServerConfig, err error) conn {
-	return conn{name: cfg.Name, cfg: cfg, status: "failed", lastErr: err, lastErrAt: time.Now()}
+// session and contributes no tools to ToolDefinitions/RegisterTools. dial is
+// still stored so a later task could in principle retry the failed server.
+func failedConn(cfg mcpconfig.ServerConfig, dial func(context.Context) (mcpsdk.Transport, error), err error) conn {
+	return conn{name: cfg.Name, cfg: cfg, dial: dial, status: "failed", lastErr: err, lastErrAt: time.Now()}
 }
 
 // NewManager connects to all configured MCP servers concurrently and
@@ -67,16 +69,19 @@ func failedConn(cfg mcpconfig.ServerConfig, err error) conn {
 // build, connect, or tools/list fails: a conn is retained for every config
 // (failed ones with status "failed" and no session), and each such failure is
 // reported in the returned []ServerOutcome with Stage "connect". The manager
-// is nil only when configs is empty. The transports parameter is optional:
-// when nil, transports are created from configs. When provided (for testing),
-// each transport[i] corresponds to configs[i].
+// is nil only when configs is empty. dials is optional: when nil, or when
+// dials[i] is absent, config i dials its transport via the production
+// closure (transportForConfig). When provided (for testing, or a hermetic
+// in-memory fake), dials[i] corresponds to configs[i]. Every conn stores the
+// dial closure it used — including a conn whose initial connect failed — so
+// a later reconnect (Task 8) can call it again.
 //
 // conns is preallocated to len(configs) and each goroutine writes exactly one
 // index (mgr.conns[i], matching configs[i]), so the result is always in
 // config order regardless of which server's connect finishes first — no
 // mutex is needed on conns itself, since every index has exactly one writer
 // and mgr.conns is only read after wg.Wait() establishes happens-before.
-func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, transports []mcpsdk.Transport) (*Manager, []ServerOutcome) {
+func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, dials []func(context.Context) (mcpsdk.Transport, error)) (*Manager, []ServerOutcome) {
 	if len(configs) == 0 {
 		return nil, nil
 	}
@@ -90,14 +95,14 @@ func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, transport
 	var wg sync.WaitGroup
 	wg.Add(len(configs))
 	for i, cfg := range configs {
-		var transport mcpsdk.Transport
-		if transports != nil && i < len(transports) {
-			transport = transports[i]
+		dial := productionDial(cfg)
+		if dials != nil && i < len(dials) {
+			dial = dials[i]
 		}
-		go func(i int, cfg mcpconfig.ServerConfig, transport mcpsdk.Transport) {
+		go func(i int, cfg mcpconfig.ServerConfig, dial func(context.Context) (mcpsdk.Transport, error)) {
 			defer wg.Done()
-			mgr.conns[i] = connectOne(ctx, client, cfg, transport)
-		}(i, cfg, transport)
+			mgr.conns[i] = connectOne(ctx, client, cfg, dial)
+		}(i, cfg, dial)
 	}
 	wg.Wait()
 
@@ -112,33 +117,30 @@ func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, transport
 	return mgr, outcomes
 }
 
-// connectOne builds (if transport is nil, from cfg) or reuses the given
-// transport, connects to a single MCP server, and discovers its tools — all
-// bounded by a 10s timeout derived from ctx. Any failure building the
-// transport, connecting, or listing tools yields a "failed" conn recording
-// the error; NewManager turns that into a connect-stage ServerOutcome.
-func connectOne(ctx context.Context, client *mcpsdk.Client, cfg mcpconfig.ServerConfig, transport mcpsdk.Transport) conn {
+// connectOne dials a transport via dial, connects to a single MCP server, and
+// discovers its tools — all bounded by a 10s timeout derived from ctx. Any
+// failure dialing, connecting, or listing tools yields a "failed" conn
+// recording the error; NewManager turns that into a connect-stage
+// ServerOutcome. dial is stored on the returned conn regardless of outcome.
+func connectOne(ctx context.Context, client *mcpsdk.Client, cfg mcpconfig.ServerConfig, dial func(context.Context) (mcpsdk.Transport, error)) conn {
 	perServerCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	if transport == nil {
-		var err error
-		transport, err = transportForConfig(cfg)
-		if err != nil {
-			return failedConn(cfg, err)
-		}
+	transport, err := dial(perServerCtx)
+	if err != nil {
+		return failedConn(cfg, dial, err)
 	}
 
 	session, err := client.Connect(perServerCtx, transport, nil)
 	if err != nil {
-		return failedConn(cfg, err)
+		return failedConn(cfg, dial, err)
 	}
 
 	// Discover tools from the server.
 	result, err := session.ListTools(perServerCtx, nil)
 	if err != nil {
 		_ = session.Close()
-		return failedConn(cfg, err)
+		return failedConn(cfg, dial, err)
 	}
 
 	var tools []llm.ToolDefinition
@@ -157,11 +159,21 @@ func connectOne(ctx context.Context, client *mcpsdk.Client, cfg mcpconfig.Server
 	return conn{
 		name:      cfg.Name,
 		cfg:       cfg,
+		dial:      dial,
 		session:   session,
 		tools:     tools,
 		origNames: origNames,
 		status:    "connected",
 	}
+}
+
+// productionDial returns the default dial factory for cfg: build a fresh
+// transport via transportForConfig on every call. NewManager uses this
+// whenever the caller doesn't supply an explicit dials[i] — i.e., real,
+// non-test use, and also real reconnects (Task 8), since transportForConfig
+// builds a brand-new transport each time it runs.
+func productionDial(cfg mcpconfig.ServerConfig) func(context.Context) (mcpsdk.Transport, error) {
+	return func(context.Context) (mcpsdk.Transport, error) { return transportForConfig(cfg) }
 }
 
 // ToolDefinitions returns namespaced tool definitions from servers whose

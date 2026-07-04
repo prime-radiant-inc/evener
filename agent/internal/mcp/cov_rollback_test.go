@@ -64,7 +64,7 @@ func TestMCPManager_RegisterTools_RollbackSparesWinner(t *testing.T) {
 	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "foo_bar", Type: "stdio"},
 		{Name: "foo-bar", Type: "stdio"},
-	}, []mcpsdk.Transport{ctWinner, ctLoser})
+	}, []func(context.Context) (mcpsdk.Transport, error){staticDial(ctWinner), staticDial(ctLoser)})
 	if len(outcomes) != 0 {
 		t.Fatalf("NewManager: %+v", outcomes)
 	}
@@ -122,7 +122,7 @@ func TestMCPManager_ToolDefinitions_DefinitionsRebuiltAfterRegisterFailure(t *te
 	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "longservername", Type: "stdio"},
 		{Name: "healthy", Type: "stdio"},
-	}, []mcpsdk.Transport{ctLong, ctHealthy})
+	}, []func(context.Context) (mcpsdk.Transport, error){staticDial(ctLong), staticDial(ctHealthy)})
 	if len(outcomes) != 0 {
 		t.Fatalf("NewManager: %+v", outcomes)
 	}

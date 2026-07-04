@@ -54,7 +54,7 @@ func TestIntgMCP_NewManager_ConnectError(t *testing.T) {
 	sentinel := errors.New("intg: connect refused")
 	mgr, outcomes := NewManager(context.Background(),
 		[]mcpconfig.ServerConfig{{Name: "unreachable", Type: "stdio"}},
-		[]mcpsdk.Transport{intg_failConnectTransport{err: sentinel}})
+		[]func(context.Context) (mcpsdk.Transport, error){staticDial(intg_failConnectTransport{err: sentinel})})
 	if mgr == nil {
 		t.Fatal("expected a non-nil manager even when a server fails to connect")
 	}
@@ -93,7 +93,7 @@ func TestIntgMCP_NewManager_ListToolsError(t *testing.T) {
 
 	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "s", Type: "stdio"},
-	}, []mcpsdk.Transport{ct})
+	}, []func(context.Context) (mcpsdk.Transport, error){staticDial(ct)})
 	if mgr == nil {
 		t.Fatal("expected a non-nil manager even when a server's tools/list fails")
 	}

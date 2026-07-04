@@ -15,6 +15,13 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// staticDial adapts an already-built transport into a one-shot dial factory,
+// for tests that don't care about redialing — the factory always returns the
+// same transport value.
+func staticDial(t mcpsdk.Transport) func(context.Context) (mcpsdk.Transport, error) {
+	return func(context.Context) (mcpsdk.Transport, error) { return t, nil }
+}
+
 // TestMCPManager_InMemory creates an in-process MCP server with a test tool,
 // connects via InMemoryTransport, and verifies tool discovery and invocation.
 func TestMCPManager_InMemory(t *testing.T) {
@@ -58,7 +65,7 @@ func TestMCPManager_InMemory(t *testing.T) {
 
 	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "testserver", Type: "stdio"},
-	}, []mcpsdk.Transport{ct})
+	}, []func(context.Context) (mcpsdk.Transport, error){staticDial(ct)})
 	if len(outcomes) != 0 {
 		t.Fatalf("NewManager: %+v", outcomes)
 	}
@@ -143,7 +150,7 @@ func TestMCPManager_MultipleServers(t *testing.T) {
 	mgr, err := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "alpha", Type: "stdio"},
 		{Name: "beta", Type: "stdio"},
-	}, []mcpsdk.Transport{ct1, ct2})
+	}, []func(context.Context) (mcpsdk.Transport, error){staticDial(ct1), staticDial(ct2)})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -213,7 +220,7 @@ func TestMCPManager_BuiltinCollision(t *testing.T) {
 
 	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "s", Type: "stdio"},
-	}, []mcpsdk.Transport{ct})
+	}, []func(context.Context) (mcpsdk.Transport, error){staticDial(ct)})
 	if len(outcomes) != 0 {
 		t.Fatalf("NewManager: %+v", outcomes)
 	}
@@ -263,7 +270,7 @@ func TestMCPManager_ToolNameTooLong(t *testing.T) {
 	// "longservername__" (16) + 60 = 76 chars > 64 limit
 	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "longservername", Type: "stdio"},
-	}, []mcpsdk.Transport{ct})
+	}, []func(context.Context) (mcpsdk.Transport, error){staticDial(ct)})
 	if len(outcomes) != 0 {
 		t.Fatalf("NewManager: %+v", outcomes)
 	}
@@ -400,7 +407,7 @@ func TestMCPManager_Servers(t *testing.T) {
 	mgr, err := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "alpha", Type: "stdio"},
 		{Name: "beta", Type: "stdio"},
-	}, []mcpsdk.Transport{ct1, ct2})
+	}, []func(context.Context) (mcpsdk.Transport, error){staticDial(ct1), staticDial(ct2)})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

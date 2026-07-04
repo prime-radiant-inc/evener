@@ -35,7 +35,7 @@ func TestMCPManager_ChannelBError_IsErrorTypedResult(t *testing.T) {
 	if _, err := server.Connect(ctx, st, nil); err != nil {
 		t.Fatal(err)
 	}
-	mgr, err := NewManager(ctx, []mcpconfig.ServerConfig{{Name: "s", Type: "stdio"}}, []mcpsdk.Transport{ct})
+	mgr, err := NewManager(ctx, []mcpconfig.ServerConfig{{Name: "s", Type: "stdio"}}, []func(context.Context) (mcpsdk.Transport, error){staticDial(ct)})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
