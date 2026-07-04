@@ -46,6 +46,12 @@ type Session struct {
 	clock      clock.Clock
 	stateDir   string
 	installID  string
+	// origin marks how the session was launched: "test" for agentic-testing
+	// runs (set from SERF_SESSION_ORIGIN on fresh create), empty for normal
+	// sessions. Preserved across resume from the persisted SessionMeta.Origin.
+	// Surfaced back out via Meta().Origin so the hub can classify an
+	// all-"test" project into the "Test runs" group.
+	origin string
 	// strictTranscriptMaxLineBytes caps a child transcript line during resumability
 	// checks. Zero means the production default (transcriptJSONLMaxLineBytes); tests
 	// set a small value on their own session to exercise the oversized-line path

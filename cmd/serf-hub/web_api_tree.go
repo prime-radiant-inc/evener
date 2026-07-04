@@ -51,19 +51,34 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	}
 	seenProjectRefs := map[string]bool{}
 	projectIndexes := map[string]int{}
-	for _, p := range tree.Projects {
+	// TestRuns takes precedence over ArchivedProjects (round-2 B6): a project
+	// where every session carries Origin=="test" is routed there even if it
+	// would otherwise also qualify as archived. Every branch marks
+	// seenProjectRefs so none of its sessions re-surface as an orphan-live
+	// "project" below; only the active (non-archived, non-test) branch
+	// populates projectIndexes, since that's the only bucket the orphan-live
+	// loop can append into (it indexes into resp.Projects specifically).
+	for _, p := range append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...) {
+		if p.IsTestRun {
+			for _, n := range projectSessions(p) {
+				seenProjectRefs[n.ID] = true
+			}
+			resp.TestRuns = append(resp.TestRuns, s.apiTreeProject("project", favs, p))
+			continue
+		}
+		if p.IsArchived {
+			for _, n := range projectSessions(p) {
+				seenProjectRefs[n.ID] = true
+			}
+			resp.ArchivedProjects = append(resp.ArchivedProjects, s.apiTreeProject("project", favs, p))
+			continue
+		}
 		projectIndexes[p.Key] = len(resp.Projects)
 		ap := s.apiTreeProject("project", favs, p)
 		for _, n := range projectSessions(p) {
 			seenProjectRefs[n.ID] = true
 		}
 		resp.Projects = append(resp.Projects, ap)
-	}
-	for _, p := range tree.ArchivedProjects {
-		for _, n := range projectSessions(p) {
-			seenProjectRefs[n.ID] = true
-		}
-		resp.ArchivedProjects = append(resp.ArchivedProjects, s.apiTreeProject("project", favs, p))
 	}
 	for _, n := range tree.NeedsYou {
 		resp.NeedsYou = append(resp.NeedsYou, s.apiTreeNodeTier("needsyou", "", "needsyou", favs, n))

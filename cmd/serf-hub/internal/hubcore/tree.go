@@ -53,6 +53,12 @@ type TreeProject struct {
 	// IsArchived is true when the project lives in the bottom Archived-projects
 	// group: manually archived, or no non-archived (Current/Recent) sessions.
 	IsArchived bool
+	// IsTestRun is true when the project has at least one session and every
+	// session in it carries Origin=="test" (SERF_SESSION_ORIGIN=test): the
+	// whole project is agentic-testing output rather than real work. The hub
+	// routes such projects into a dedicated "Test runs" group, taking
+	// precedence over IsArchived.
+	IsTestRun bool
 	// MostRecentStart is the newest session start (max CreatedAt) across the
 	// project's top-level sessions; active projects are ordered by it, desc.
 	MostRecentStart time.Time
@@ -350,6 +356,8 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		children   map[string][]schema.SessionMeta // parentID -> children
 		workingDir string                          // the full grouping path ("" for no-project)
 		worktrees  map[string]bool                 // distinct WorktreePath set
+		count      int                             // number of sessions seen for this project
+		anyNonTest bool                            // true once any session's Origin != "test"
 	}
 	projects := make(map[string]*projectAccum) // keyed by EffectiveWorkingDir path
 	projectOrder := []string{}                 // insertion order (paths) for stable output
@@ -379,6 +387,10 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		}
 		if m.WorktreePath != "" {
 			acc.worktrees[m.WorktreePath] = true
+		}
+		acc.count++
+		if m.Origin != "test" {
+			acc.anyNonTest = true
 		}
 		switch {
 		case m.IsSubagent && m.ParentSessionID != "":
@@ -550,6 +562,7 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 			Recent:          recent,
 			Archived:        archived,
 			IsArchived:      isArchived,
+			IsTestRun:       acc.count > 0 && !acc.anyNonTest,
 			MostRecentStart: mostRecentStart,
 			RollupState:     rollup,
 			RollupLive:      rollupLive,

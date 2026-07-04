@@ -111,6 +111,7 @@ func (s *Session) Meta() schema.SessionMeta {
 		DivergenceTurn:      divergence,
 		ForkLabel:           s.fork.label,
 		IsSubagent:          isSubagent,
+		Origin:              s.origin,
 		Goal:                s.goalSnapshotForMeta(),
 		PinnedNote:          s.pinnedNote,
 		WorktreePath:        s.worktreeCurrentPath,

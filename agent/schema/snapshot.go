@@ -54,6 +54,10 @@ type SessionMeta struct {
 	// IsSubagent is true on sessions spawned as a subagent (i.e. the session
 	// has a parent spawn). Written by the spawn path at session initialisation.
 	IsSubagent bool `json:"is_subagent,omitempty"`
+	// Origin marks how the session was launched: "test" for agentic-testing
+	// runs (set via SERF_SESSION_ORIGIN), empty for normal sessions. The hub
+	// classifies an all-"test" project into the "Test runs" group.
+	Origin string `json:"origin,omitempty"`
 	// Goal holds the persisted goal state so the objective survives daemon
 	// restart and serf resume. It is nil when no goal is active or has been set.
 	Goal *GoalSnapshot `json:"goal,omitempty"`

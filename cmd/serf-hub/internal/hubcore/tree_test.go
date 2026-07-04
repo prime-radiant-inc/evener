@@ -1202,3 +1202,27 @@ func TestSubagentChildrenCappedPerTier(t *testing.T) {
 		t.Fatalf("subagent children should cap at %d, got %d", maxSidebarSessionsPerTier, subs)
 	}
 }
+
+func TestAllTestSessionsClassifyAsTestRun(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	mk := func(id, origin string) schema.SessionMeta {
+		return schema.SessionMeta{ID: id, Origin: origin, CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/tp"}}
+	}
+	tree := BuildTreeAt([]schema.SessionMeta{mk("01A", "test"), mk("01B", "test")}, nil, map[ArchiveKey]bool{}, now)
+	var testRun *TreeProject
+	for i := range tree.Projects {
+		if tree.Projects[i].IsTestRun {
+			testRun = &tree.Projects[i]
+		}
+	}
+	if testRun == nil {
+		t.Fatalf("all-test project should be flagged IsTestRun; projects=%+v", tree.Projects)
+	}
+	// One unmarked session reclassifies the project (hiding real work is worse).
+	tree = BuildTreeAt([]schema.SessionMeta{mk("01A", "test"), mk("01B", "")}, nil, map[ArchiveKey]bool{}, now)
+	for _, p := range tree.Projects {
+		if p.IsTestRun {
+			t.Fatalf("a mixed project must not be IsTestRun")
+		}
+	}
+}
