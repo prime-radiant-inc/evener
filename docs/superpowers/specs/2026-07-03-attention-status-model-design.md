@@ -1,62 +1,68 @@
-# Attention & Status Model — Design
+# Attention & Status Model — Design (v2, post-adversarial-review)
 
-Date: 2026-07-03
+Date: 2026-07-03 (v2 same day, after two-reviewer adversarial pass)
 Status: Approved pending Jesse's spec review
 Workstream: 1 of 6 from the 2026-07-03 web-UI UX diagnostic
 
 ## Problem
 
-Live-verified defect: when an agent ends its turn by asking the user a question, the thread shows plain gray **Idle**. The `awaiting` state is unreachable for serf daemons — `agent.SessionState` has only `idle`/`active`/`closed` (agent/session_state.go:11), and nothing daemon-side ever produces the wire `ThreadStatusAwaiting`. Every attention consumer starves as a result:
+Live-verified defect: when an agent ends its turn — question or not — the thread shows plain gray **Idle**. The daemon collapses "asked and waiting" and "finished the task" into the same `SessionIdle`: `agent.SessionState` has only `idle`/`active`/`closed` (agent/session_state.go:13), so the wire `ThreadStatusAwaiting` is unreachable for serf sessions. Every attention consumer starves:
 
-- The NeedsYou sidebar tier (internal/hubcore/tree.go:592) never lists the thread.
-- OS notifications fire only on `idle→awaiting` and `active→errored` transitions (assets/notifications.js:185), so even a correctly classified thread notifies on the wrong transition set. Channels poll `/api/search` every 5s and all default off.
-- No unread/seen concept exists anywhere.
-- Verified push gap: a session with no open workspace never pushes a sidebar update — the per-thread relay is lazy (app_rpc.go:106) and the sidebar refreshes only on notifications for already-relayed threads.
+- The NeedsYou sidebar tier (internal/hubcore/tree.go:592) never lists serf threads.
+- OS notifications key on transitions (`idle→awaiting`, `active→errored`) that cannot occur (assets/notifications.js:185); channels poll `/api/search` every 5s; all default off.
+- Push gap: with zero open workspaces, nothing pushes sidebar updates (per-thread relay is lazy, app_rpc.go:106).
 
-User feedback addressed: "optional browser notifications for 'thread is waiting for you'", "sidebar notifications of the same should be clearer", plus the vocabulary fractures found in the diagnostic.
+This design makes "the ball is in your court" a first-class, hub-derived state. It does **not** detect questions; under the chosen inbox semantics, a question-ending turn and a task-ending turn are identical — both await your move.
 
 ## Decisions (Jesse, 2026-07-03)
 
-1. Inbox semantics: a finished turn puts the ball in the user's court.
-2. **No read-tracking** in this workstream. The SeenStore / `markSeen` RPC / visible-focused-at-bottom detection from the first draft is punted. Clearing is by user action only.
-3. **Never decay**: needs-you persists until acted on.
+1. Inbox semantics: any finished turn puts the ball in the user's court.
+2. **No read-tracking** in this workstream (SeenStore / `markSeen` / visibility detection punted). Clearing is by user action only.
+3. **Never decay**: needs_you persists until acted on.
 4. Notification defaults: tab-title count and favicon tint ON; OS notification and sound opt-in.
-5. This workstream ships first; working-state placement/metrics, thread management, quick-wins, MCP resilience, and the consistency sweep follow separately.
+5. This workstream ships first; other diagnostic workstreams follow separately.
+
+**Owned consequence of 1+2+3 (review finding, sign-off required).** Without read-tracking, `needs_you` is a stateless derivation: *every* live, settled, unarchived session you haven't replied to is amber, and the tab badge counts them all. Reply-clearing is suppression-until-the-agent-moves-again, not durable acknowledgment: each time a session finishes another turn, it re-arms and (if opted in) re-notifies — which is exactly "tell me when it's my turn again," but users who keep several idle daemons alive will see a permanently lit badge until they archive or shut sessions down. Archive/shutdown are the triage verbs. If this proves noisy in practice, the mark-seen upgrade (below) is the pressure valve; we accept the trade now rather than build read-tracking speculatively.
 
 ## Semantics
 
-One hub-derived **attention level** per session — the single vocabulary all surfaces speak:
+One hub-derived **attention level** per session, computed by a **single shared derivation function** (see Architecture):
 
 | Level | Color | Meaning |
 |---|---|---|
 | `working` | blue | Daemon reports `active`. |
-| `needs_you` | amber | Live session, ball in the user's court (rule below). |
-| `error` | red | `systemError`, including the hub's stale-stream heuristic (app_threadlist.go:254). |
+| `needs_you` | amber | Live session, ball in the user's court (rule below), or wire `awaiting`/`warning`. |
+| `error` | red | `systemError`, including stale-stream wedge detection. |
 | `idle` | gray | Everything else, including all non-live sessions. |
 
 **needs_you rule.** A session is `needs_you` when all of:
-1. It is **live** (daemon running), top-level (subagents never carry their own attention; the parent absorbs it, matching today's NeedsYou behavior), and not archived.
-2. Its daemon status is not `active`.
-3. Its last completed turn is an agent turn (or the wire status is a genuine `awaiting`, which external Codex sources can pass through), **and no user input followed it** — no sent message, no steering, no queued input.
+1. Live (daemon running), top-level, not archived.
+2. Status is not `active` and not `systemError`.
+3. The daemon reports **`awaiting_input: true`** (new field, below): the session has at least one completed turn and the most recent turn-ending move was the agent's — no user send/steer followed it. Interrupting a turn is a user move (interrupt ⇒ `awaiting_input=false` ⇒ gray; the user knows they interrupted). A dormant session with no turns is never `awaiting_input`.
+4. Or, regardless of 3: the wire status is `awaiting` or `warning` (today reachable only via external source passthrough; `warning` already counts as attention in the current UI, tree.go:464, and keeps that meaning).
 
-**Clearing.** Send, steer, or queue a message; archive; or shut the session down. Opening/reading alone does not clear (decision 2). Amber never decays with age (decision 3).
+**Clearing.** Send or steer a message (a user move flips `awaiting_input`), archive, or shut down. Queueing is **not** a clearing action: `turn/queue` is rejected on non-active sessions (server/appwire_runtime.go:243), so it can never be issued against an amber thread. Opening/reading does not clear (decision 2). Amber never decays with age (decision 3). Un-archiving or re-probing a still-unanswered session re-arms amber — intended: it still needs you.
 
-**Live-only correction (flagged for review).** The approved Section 1 draft listed "session ended" as a needs_you producer. Combined with decisions 2 and 3, that would amber-flood history on ship day: nearly every past session ends with agent output, so all non-archived history would go permanently amber. Restricting needs_you to live sessions kills the flood with no backfill epoch hack, and matches the existing NeedsYou tier, which already lists only live sessions. Ended sessions read as `idle`/ended; history hygiene belongs to the thread-management workstream. When mark-seen lands later, ended-with-unseen can join the inbox safely.
+**Live-only rule (flagged in v1, unchanged).** Ended sessions are `idle`. With decisions 2+3, admitting ended sessions would permanently amber nearly all non-archived history on ship day. Ended-with-unseen joins the inbox only when mark-seen lands.
 
-**Ranking.** Within the NeedsYou tier: `error` first, then oldest needs_you first (preserves the current oldest-blocked rule, tree.go:638).
+**Ranking.** Within the NeedsYou tier: `error` first, then oldest `needs_you` first (preserves tree.go:638).
 
-**Vocabulary unification (rides along).**
-- Pills, settings copy, and notification text all use the level names above ("Needs you", not `awaiting`/`processing`).
-- Sidebar project rollup `⟳N` counts **working** sessions only — a live-but-idle daemon no longer shows an activity glyph. `◆N` counts needs_you + error.
-- The notifications settings page describes behavior as "when a thread needs you," not state-machine jargon.
+**Subagents.** Excluded from independent attention, as today (tree.go:614 skips them: "a subagent's parent is the actionable unit"). No upward propagation exists today and none is added; propagation is future work alongside job-control.
+
+**Vocabulary unification (rides along).** Pills, settings copy, and notification text use the level names ("Needs you", not `awaiting`/`processing`). Rollup badges keep current semantics — `⟳N` already counts only `active` sessions (tree.go:466; the v1 claim that it needed redefining was wrong); `◆N` becomes the `needs_you`+`error` count.
 
 ## Architecture
 
-No daemon changes. Four hub pieces:
+**0. One daemon status field (revised from v1's "no daemon changes").** v1 claimed the hub already holds last-turn data; review verified it does not — the roster prober decodes only `{session_id, state}` (internal/hubcore/prober.go:19), `/status` (`server.StatusInfo`) has no turn-kind, rendezvous entries are static, and `ListThreads` doesn't populate turns (appwire_runtime.go:482). The daemon therefore gains one **additive** field, `awaiting_input bool`, in the `/status` payload — computed at turn boundaries from state the daemon already owns; no behavior change. Plumbing: `StatusInfo` → prober `statusInfo` + `Probe` signature (roster.go:34) → `LiveEntry` → derivation. This is the honest cost of the feature; the estimate includes it.
 
-**1. Derivation in `BuildTree`** (internal/hubcore/tree.go). Attention is computed per node from the normalized state plus last-turn data. Inputs the hub already holds: roster live entries and daemon status for live sessions; the last-turn kind ("was the final completed turn an agent turn, with no user input after it") comes from the daemon's status/thread projection — exact field confirmed during implementation planning; if absent, the daemon's `/status` payload gains a `lastTurnKind`/`awaitingInput` boolean derived from data the daemon already has (`server/appwire_runtime.go` builds turns today). Codex sources: honor a raw `awaiting` passthrough (codex_mapping.go:19 already forwards it); otherwise they derive like serf sessions where turn data exists.
+**1. Single shared derivation.** One function in `hubcore`: `DeriveAttention(status, awaitingInput, archived, live, topLevel, staleWedge) → level`. All three consumer paths call it with the same inputs:
+- sidebar/tree rendering (`BuildTree`),
+- wire-field stamping in the thread-list/read path,
+- the attention watcher.
 
-**2. Attention watcher.** A hub loop on the existing roster cadence (fsnotify + 5s tick, roster.go:242) recomputes attention per live session and diffs against an in-memory baseline. On change it emits **`serf/attention/changed`** via the existing `BroadcastAll` (internal/appserver/server.go:76), mirroring `notifyAuthUpdated` (app_rpc.go:667). On hub restart the baseline re-seeds silently — no notification storm. Payload:
+The stale-stream wedge heuristic **moves into this layer**: today `sanitizeStaleProcessingStatus` runs only in the appwire list path, only for local sources with a Past index (app_threadlist.go:40), so a wedged session would show red in the workspace but blue in the sidebar and never notify. Centralizing it is what makes "one vocabulary, all surfaces" true rather than aspirational (review findings A4/B2/B3).
+
+**2. Attention watcher — full input set, not roster-only.** The watcher diffs the attention map on the roster cadence (fsnotify + 5s tick, roster.go:242), but computes it over the **same inputs the sidebar uses** (`navigationTreeInputs`: roster + past metas + remote/Codex source listings, web_api_tree.go:107) — a roster-only watcher would be blind to exactly the external sources that can emit genuine `awaiting` (finding B5). It also ingests live relay notifications: when an open thread emits `turn/started`/`turn/completed`, the watcher re-derives that thread immediately, so replying to an open thread clears amber instantly instead of at the next tick; the 5s tick is the latency floor only for threads nobody has open (finding A2). On change it emits **`serf/attention/changed`** via `BroadcastAll` (internal/appserver/server.go:76, mirroring notifyAuthUpdated, app_rpc.go:667). Restart re-seeds the baseline silently. Payload:
 
 ```json
 {
@@ -65,42 +71,46 @@ No daemon changes. Four hub pieces:
 }
 ```
 
-This also closes the verified push gap: sidebar refresh no longer depends on a lazily created per-thread relay.
+**3. Initial snapshot RPC.** `serf/attention/get` returns the current map + summary. Clients call it on connect and reconnect — without it, deleting the poll leaves the default-ON title/favicon blank on every fresh load until something changes (findings A3/B4).
 
-**3. Wire field for clients.** `appwire.Thread` gains an `Attention` field (level string), **stamped by the hub** during its existing thread-list/read enrichment (precedent: `sanitizeStaleProcessingStatus` rewrites Status there today, app_threadlist.go:254). The daemon never sets it. The TUI cannot import `internal/hubcore`, so the wire field is the only clean path (verified: TUI consumes raw `appwire.Thread`, hub_types.go:170).
+**4. Wire field.** `appwire.Thread.Attention` (level string), stamped by the hub in the thread-list/read path via the shared derivation. Daemon never sets it. The TUI cannot import `internal/hubcore` (verified), so the wire field is its only clean path.
 
-**4. No new stores.** Derivation uses live data only; nothing persists. (The punted SeenStore/`markSeen` design remains in git history; the upgrade path is additive — derivation gains a seen-cursor input, clearing gains "seen", ended sessions can join the inbox.)
+**5. No new stores.** Nothing persists. The punted mark-seen upgrade is additive: derivation gains a seen-cursor input, clearing gains "seen", ended sessions can join the inbox.
 
 ## Web client
 
-- **Sidebar**: rows, project rollups, and the NeedsYou tier render from the attention level. `serf/attention/changed` joins the sidebar-refresh allowlist (sidebar.js:288). The `⟳` redefinition lands in the tree rollup computation (tree.go:457), not the template.
-- **notifications.js rewrite**: delete the 5s `/api/search` poll; subscribe to `serf/attention/changed`. OS notification + tone fire on any transition **into** `needs_you` or `error` for a thread that is not currently visible-and-focused (`document.hasFocus()` suppression stays). Level-based, not transition-pair-based — the missed `active→awaiting`-class transitions disappear structurally. Tab-title count and favicon read `summary`. Defaults: title + favicon ON, OS + sound opt-in (decision 4; migration: absent prefs get the new defaults, existing explicit prefs win).
-- **Settings copy**: unified vocabulary; the OS-notification description becomes "Native notification when a thread needs you or errors."
-- **Ended-session input strip**: shows "ended" plainly (no attention claim); the eternal "tasks loading…" fix belongs to the quick-wins workstream.
+- **Sidebar**: rows, rollups, NeedsYou tier render from the attention level; `serf/attention/changed` joins the refresh allowlist (sidebar.js:288).
+- **notifications.js rewrite**: delete the 5s poll; on connect call `serf/attention/get`, then apply `serf/attention/changed` deltas. OS + sound fire on transitions **into** `needs_you`/`error`, suppressed when the hub tab is focused (`document.hasFocus()` — window-level: while you're looking at the hub, the sidebar and title are the signal; per-thread visibility was punted with mark-seen). Title count + favicon read `summary`. Defaults per-key: an absent key gets the new default (title/favicon ON), an explicitly stored `false` is respected (settings.js writes all keys explicitly on save, so legacy saved prefs are unaffected).
+- **Settings copy**: unified vocabulary ("Native notification when a thread needs you or errors.").
 
 ## TUI (minimal slice)
 
-Consume `Thread.Attention` in `hubNodeFromThread` (hub_types.go:151); render a `◆` marker and a needs-you count in the dashboard. No markSeen (punted), no deeper TUI work. This also removes the TUI's divergent state labeling for the attention cases (hub_dashboard_view.go:505 lacks the `systemError` mapping the web has).
+Consume `Thread.Attention` in `hubNodeFromThread` (hub_types.go:151); render `◆` marker + needs-you count in the dashboard. Removes the TUI's divergent state labeling for attention cases (hub_dashboard_view.go:505 lacks the `systemError` mapping the web has).
 
 ## Error handling
 
-- Watcher: recovers from panics, logs and continues; a failed probe cycle leaves the previous baseline (no flapping).
-- Attention stamping is nil-safe: absent turn data degrades to `idle`, never blocks a listing.
-- `BroadcastAll` failures are per-connection, already handled by appserver.
+- Watcher recovers from panics; a failed probe/list cycle keeps the previous baseline (no flapping).
+- Derivation is nil-safe: absent `awaiting_input` (older daemon binaries) degrades to `idle`-family behavior, never blocks a listing — mixed-version fleets stay correct-but-quiet.
+- `BroadcastAll` failures are per-connection, handled by appserver.
 
 ## Testing
 
-- Table-driven derivation unit tests: status × last-turn-kind × subsequent-input × live/ended × subagent matrix.
-- Watcher test: synthetic roster diff → exactly one broadcast per change; restart re-seed emits nothing.
-- Appwire golden updates for the new field and notification method.
-- jstest: notifications.js level-transition logic, defaults migration, suppression.
-- One e2e scenario card (agentic-testing): spawn → agent asks a question → sidebar row + NeedsYou tier turn amber and title count increments without opening the thread → reply → amber clears.
-- Manual: live drive per docs/agentic-testing.md.
+- Table-driven derivation tests: status × awaiting_input × archived × live × subagent × wedge matrix.
+- **Cross-surface agreement test**: sidebar tree, wire-field stamping, and watcher produce identical levels for the same synthetic inputs (finding B12b).
+- Watcher: synthetic diff → exactly one broadcast per change; restart re-seed emits nothing; relay-notification ingestion re-derives immediately.
+- `/status` round-trip: daemon sets `awaiting_input` correctly for ask-end, task-end, interrupt, dormant, steered cases.
+- Appwire golden updates: new field, new method, snapshot RPC.
+- jstest: snapshot-then-delta flow, per-key defaults migration, focus suppression, re-notify-per-turn (asserted as intended behavior).
+- e2e scenario card (rewritten per finding B12c): spawn → agent completes **any** turn → sidebar row + NeedsYou tier amber + title count increments without opening the thread (allow the ≤5s watcher floor) → reply → amber clears immediately (thread is open/relayed).
 
 ## Out of scope
 
-Mark-seen/read-tracking (punted; future upgrade path documented above), daemon ask/permission states (nothing produces them today; the `needs_you` slot is ready when job-control's `ask` lands), per-message read receipts, service-worker/background push, working-state placement + token metrics (workstream 2), thread management (workstream 3), send-key setting (quick wins; decision recorded: keep ⌘↵ default, add setting), project-level delete (workstream 3; decision recorded: projects only).
+Read-tracking (punted; upgrade path above), question/ask detection (no ask state exists; the level slot fills when job-control's `ask` lands), subagent attention propagation, per-message read receipts, service-worker/background push, workstreams 2–6 (working-state placement + metrics; thread management incl. project delete; quick wins incl. send-key setting — decisions recorded: keep ⌘↵ default + add setting, project-level delete only).
 
 ## Estimate
 
-~700–1,000 loc including tests: derivation + watcher + wire field ~350–500, web client ~250–350, TUI ~50–80, tests throughout.
+~950–1,350 loc including tests: daemon field + prober/roster plumbing ~150–250, shared derivation + watcher + snapshot RPC + wire field ~400–550, web client ~250–350, TUI ~50–80.
+
+## Review log
+
+v1 → v2 after a two-reviewer adversarial pass (both read-only, findings verified against code before adoption): derivation input did not exist as claimed — daemon `/status` field added and "no daemon changes" retracted (A1/B1); single shared derivation incl. wedge heuristic replaces three divergent sites (A4/B2/B3); watcher input set widened beyond the roster so external `awaiting` sources are covered (B5); initial-snapshot RPC added (A3/B4); reply-clear made immediate for open threads via relay ingestion, 5s floor documented for unwatched (A2); "queue" removed from clearing — unreachable on idle sessions (A5); `warning` mapped into `needs_you` (A7); ⟳ redefinition dropped as no-op, v1 claim corrected (A9); subagent "absorption" corrected to "excluded, as today" (A10); interrupt classified as user-move ⇒ gray (A11); per-key defaults migration pinned (A12/B9); lit-badge/re-notify consequence surfaced for explicit sign-off (B6/B1); Codex `awaiting` passthrough claim softened — default catch-all, unverified emission (B10); push-gap wording narrowed (A13); estimate raised to include daemon plumbing (B11).
