@@ -248,16 +248,27 @@ func Merge(layers ...[]ServerConfig) []ServerConfig {
 // Discover loads MCP configs from all sources:
 // global (~/.config/serf/mcp.json) -> project (.serf/mcp.json at git root)
 // -> CLI files -> CLI inline specs. Later sources shadow earlier by name.
-func Discover(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string) ([]ServerConfig, error) {
+//
+// A global or project config file (layers 1-2) that fails to parse or expand
+// is not fatal: its layer is skipped and a warning naming the file and error
+// is returned alongside the configs actually loaded. A missing global/project
+// file is still silent, not a warning. CLI-supplied files/specs (layers 3-4)
+// are explicit user input for this invocation, so an error there stays fatal.
+func Discover(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string) ([]ServerConfig, []string, error) {
 	var layers [][]ServerConfig
+	var warnings []string
 
 	// Layer 1: Global config.
 	globalPath := globalMCPConfigPath()
 	if globalPath != "" {
-		if configs, err := LoadFile(globalPath); err == nil {
+		if configs, err := LoadFile(globalPath); err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				warnings = append(warnings, fmt.Sprintf("MCP config %s: %v", globalPath, err))
+			}
+			// Missing global file is not an error.
+		} else {
 			layers = append(layers, configs)
 		}
-		// Missing global file is not an error.
 	}
 
 	// Layer 2: Per-project config (.serf/mcp.json at git root).
@@ -266,7 +277,11 @@ func Discover(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string
 		root := execenv.GitRootOrEmpty(env, cwd)
 		if root != "" {
 			projPath := filepath.Join(root, ".serf", "mcp.json")
-			if configs, err := LoadFile(projPath); err == nil {
+			if configs, err := LoadFile(projPath); err != nil {
+				if !errors.Is(err, os.ErrNotExist) {
+					warnings = append(warnings, fmt.Sprintf("MCP config %s: %v", projPath, err))
+				}
+			} else {
 				layers = append(layers, configs)
 			}
 		}
@@ -276,7 +291,7 @@ func Discover(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string
 	for _, path := range extraFiles {
 		configs, err := LoadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("--mcp-config %s: %w", path, err)
+			return nil, nil, fmt.Errorf("--mcp-config %s: %w", path, err)
 		}
 		layers = append(layers, configs)
 	}
@@ -285,12 +300,12 @@ func Discover(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string
 	for _, spec := range inlineSpecs {
 		cfg, err := ParseInline(spec)
 		if err != nil {
-			return nil, fmt.Errorf("--mcp %q: %w", spec, err)
+			return nil, nil, fmt.Errorf("--mcp %q: %w", spec, err)
 		}
 		layers = append(layers, []ServerConfig{cfg})
 	}
 
-	return Merge(layers...), nil
+	return Merge(layers...), warnings, nil
 }
 
 // globalMCPConfigPath returns the path to the global MCP config file.

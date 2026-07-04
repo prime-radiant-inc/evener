@@ -1170,9 +1170,14 @@ func unsupportedHandlerTypeWarning(pluginName, event, handlerType string) string
 // initMCP discovers and connects to MCP servers if configured.
 // Uses a 30-second timeout since NewSession doesn't take a context.
 func (s *Session) initMCP() error {
-	configs, err := mcpconfig.Discover(s.currentEnv(), s.cfg.MCPConfigFiles, s.cfg.MCPInline)
+	configs, cfgWarnings, err := mcpconfig.Discover(s.currentEnv(), s.cfg.MCPConfigFiles, s.cfg.MCPInline)
 	if err != nil {
 		return err
+	}
+	for _, w := range cfgWarnings {
+		s.pendingMCPWarnings = append(s.pendingMCPWarnings, events.WarningData{
+			Source: "mcp", Title: "MCP config error", Message: w,
+		})
 	}
 	// Merge plugin MCP configs as a base layer (global/project/CLI can shadow them).
 	if len(s.pluginMCPConfigs) > 0 {

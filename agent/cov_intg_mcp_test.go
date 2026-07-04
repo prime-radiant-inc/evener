@@ -206,6 +206,48 @@ func TestIntg_InitMCP_DiscoverError(t *testing.T) {
 	}
 }
 
+// TestIntg_InitMCP_GlobalConfigParseErrorSurvives is the non-fatal counterpart
+// to TestIntg_InitMCP_DiscoverError: a malformed *global* mcp.json (layer 1,
+// not CLI-supplied) must not abort session construction. mcpconfig.Discover
+// folds that layer's parse failure into a warning instead of an error, and
+// initMCP folds the warning into pendingMCPWarnings, so NewSession succeeds
+// with zero MCP servers.
+//
+// This test cannot run in parallel with its siblings: it points
+// XDG_CONFIG_HOME at a temp dir via t.Setenv, and every other test in this
+// file that constructs a Session calls t.Parallel(). Go's test driver runs
+// all non-parallel top-level tests to completion (Setenv's restore included)
+// before any parallel test body executes, so omitting t.Parallel() here is
+// what keeps this safe rather than racy.
+func TestIntg_InitMCP_GlobalConfigParseErrorSurvives(t *testing.T) {
+	globalDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", globalDir)
+	serfDir := filepath.Join(globalDir, "serf")
+	if err := os.MkdirAll(serfDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	mcpPath := filepath.Join(serfDir, "mcp.json")
+	if err := os.WriteFile(mcpPath, []byte(`{invalid`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	client := llm.NewClient()
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession must survive a malformed global MCP config, got: %v", err)
+	}
+
+	var sawWarning bool
+	for _, w := range drainWarnings(t, sess) {
+		if strings.Contains(w.Message, mcpPath) {
+			sawWarning = true
+		}
+	}
+	if !sawWarning {
+		t.Fatal("expected a WARNING event naming the malformed global MCP config path")
+	}
+}
+
 // TestIntg_NewSession_LateErrorClosesMCPManager covers the Task-4b fix: when
 // NewSession runs initSessionState through to a successful initMCP (mcpMgr is
 // set, backed by a genuinely connected server) but then fails later — here on
