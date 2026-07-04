@@ -119,3 +119,18 @@ func (s *ArchiveStore) Decisions() (map[ArchiveKey]bool, error) {
 	}
 	return out, rows.Err()
 }
+
+// Delete removes a decision row. A no-op when the DB path is empty or the row
+// is absent (idempotent — the delete/scrub paths call it unconditionally).
+func (s *ArchiveStore) Delete(kind, id string) error {
+	if s.dbPath == "" {
+		return nil
+	}
+	db, err := s.open()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+	_, err = db.Exec(`DELETE FROM archive WHERE kind = ? AND id = ?`, kind, id) //nolint:noctx // local file DB
+	return err
+}
