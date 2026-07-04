@@ -203,7 +203,9 @@ func (s *Session) reportGoalEnded() {
 // prompt so the goal is kicked rather than stranded active-but-idle until the next
 // user message (spec §7). The kick is issued outside the lock. Mutually exclusive
 // on s.mu with SetGoal's "set goal + read flag", so the goal is kicked exactly once.
-func (s *Session) settleGoalOnIdle() {
+// It reports whether it kicked, so the settle-state upgrade knows autonomy is in
+// flight (attention-status-model v5: a kicked goal suppresses awaiting).
+func (s *Session) settleGoalOnIdle() bool {
 	s.mu.Lock()
 	s.goalInTurn = false
 	kick := s.kickFunc
@@ -216,7 +218,9 @@ func (s *Session) settleGoalOnIdle() {
 	s.mu.Unlock()
 	if prompt != "" {
 		kick(prompt)
+		return true
 	}
+	return false
 }
 
 // terminateGoalOnError transitions an active goal to blocked and emits its

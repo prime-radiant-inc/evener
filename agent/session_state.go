@@ -15,6 +15,12 @@ const (
 	SessionIdle SessionState = "idle"
 	// SessionProcessing indicates the session is actively processing.
 	SessionProcessing SessionState = "active"
+	// SessionAwaiting indicates the session is idle with the ball in the
+	// user's court: the last completed turn ended with agent output and no
+	// autonomous work (goal kick, pending notifications, queued input, live
+	// child subagents) is in flight. It is the daemon-truth source for the
+	// hub's "needs you" attention state (spec: attention-status-model v5).
+	SessionAwaiting SessionState = "awaiting"
 	// SessionClosed indicates the session has been closed.
 	SessionClosed SessionState = "closed"
 )
@@ -183,4 +189,16 @@ func (s *Session) isClosingOrClosed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.closingOrClosedLocked()
+}
+
+// settleTerminalState decides the terminal session state at the drain-loop
+// settle. It runs ONLY on the clean-completion path (interrupted and failed
+// turns return from ProcessInputKind before the settle), so turn outcome is
+// implied by reachability. awaiting arms only when the turn produced
+// user-visible output and nothing autonomous will move the session next.
+func settleTerminalState(hadOutput, goalKicked, notifsPending, queuePending, childrenLive bool) SessionState {
+	if !hadOutput || goalKicked || notifsPending || queuePending || childrenLive {
+		return SessionIdle
+	}
+	return SessionAwaiting
 }
