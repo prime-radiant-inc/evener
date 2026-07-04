@@ -9,6 +9,20 @@ import (
 	"primeradiant.com/serf/internal/gitpath"
 )
 
+// gitExecTimeout bounds every git subprocess exec this file runs to resolve a
+// repo/worktree root — both the context deadline and the equal timeoutMS each
+// exec passes to ExecCommand (ExecCommand arms its own timer from timeoutMS,
+// independent of the context, so both must derive from the same value for the
+// bound to hold). It is a package-level var rather than a const solely so
+// tests can widen it for the duration of a single test (via t.Cleanup-scoped
+// reassignment) when scheduler contention from sibling packages' tests would
+// otherwise starve a trivial git invocation past a fixed deadline unrelated to
+// the behavior under test. Production always runs with this 2s default.
+var gitExecTimeout = 2 * time.Second
+
+// gitExecTimeoutMS is gitExecTimeout in the milliseconds ExecCommand takes.
+func gitExecTimeoutMS() int { return int(gitExecTimeout / time.Millisecond) }
+
 // GitRootOrEmpty returns the absolute path of the git working-tree root
 // containing cwd, or "" if cwd is not inside a git repository (or git is
 // unavailable). It runs `git rev-parse --show-toplevel` in env with a short
@@ -24,10 +38,10 @@ func GitRootOrEmpty(env ExecutionEnvironment, cwd string) string {
 }
 
 func gitRootUncached(env ExecutionEnvironment, cwd string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), gitExecTimeout)
 	defer cancel()
 
-	res, err := env.ExecCommand(ctx, "git rev-parse --show-toplevel", 2_000, cwd, nil)
+	res, err := env.ExecCommand(ctx, "git rev-parse --show-toplevel", gitExecTimeoutMS(), cwd, nil)
 	if err != nil || res.ExitCode != 0 {
 		return ""
 	}
@@ -118,10 +132,10 @@ func parseGitdirPointer(content string) (string, bool) {
 // back to `git rev-parse --show-toplevel` (the submodule's own working-tree
 // root). Returns "" when git is unavailable or cwd is not in a repository.
 func gitBinaryMainRoot(env ExecutionEnvironment, cwd string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), gitExecTimeout)
 	defer cancel()
 
-	res, err := env.ExecCommand(ctx, "git rev-parse --git-common-dir", 2_000, cwd, nil)
+	res, err := env.ExecCommand(ctx, "git rev-parse --git-common-dir", gitExecTimeoutMS(), cwd, nil)
 	if err != nil || res.ExitCode != 0 {
 		return ""
 	}
@@ -138,7 +152,7 @@ func gitBinaryMainRoot(env ExecutionEnvironment, cwd string) string {
 	// ".git/modules/<sub>", whose parent is not a working tree and is shared by
 	// every submodule of the superproject. --show-toplevel yields the
 	// submodule's own working-tree root instead.
-	res2, err := env.ExecCommand(ctx, "git rev-parse --show-toplevel", 2_000, cwd, nil)
+	res2, err := env.ExecCommand(ctx, "git rev-parse --show-toplevel", gitExecTimeoutMS(), cwd, nil)
 	if err != nil || res2.ExitCode != 0 {
 		return ""
 	}
