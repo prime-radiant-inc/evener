@@ -206,3 +206,19 @@ func TestFromFields_SourceUI_DefaultTitle(t *testing.T) {
 		t.Fatalf("Title=%q, want UI error", info.Title)
 	}
 }
+
+func TestFromFields_MCPSource_GetsMCPHints(t *testing.T) {
+	// A connection-refused MCP failure classifies as MCP, not the generic serf hint.
+	got := FromFields("mcp", "", "", "MCP server \"linear\" failed to connect: connection refused")
+	if got.Source != SourceMCP {
+		t.Fatalf("Source=%q, want %q", got.Source, SourceMCP)
+	}
+}
+
+func TestFromFields_MCP401_DoesNotMatchProvider(t *testing.T) {
+	// An MCP auth failure carrying "unauthorized" must NOT read as a provider-credential error.
+	got := FromFields("mcp", "", "", "MCP server \"linear\" failed to connect: 401 unauthorized")
+	if got.Source != SourceMCP {
+		t.Fatalf("MCP 401 misclassified: Source=%q, want %q", got.Source, SourceMCP)
+	}
+}

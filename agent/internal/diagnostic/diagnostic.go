@@ -15,6 +15,7 @@ const (
 	SourceHub      Source = "hub"
 	SourceUI       Source = "ui"
 	SourceHook     Source = "hook"
+	SourceMCP      Source = "mcp"
 )
 
 type Info struct {
@@ -78,6 +79,8 @@ func normalizeSource(source string) Source {
 		return SourceUI
 	case SourceHook:
 		return SourceHook
+	case SourceMCP:
+		return SourceMCP
 	default:
 		return ""
 	}
@@ -106,6 +109,8 @@ func defaultForSource(source Source, message string) Info {
 			Title:  "Hook message",
 			Hint:   "A plugin hook returned a user-facing message.",
 		}
+	case SourceMCP:
+		return mcpFailure()
 	default:
 		return Classify(message)
 	}
@@ -124,6 +129,14 @@ func providerFailure() Info {
 		Source: SourceProvider,
 		Title:  "Provider error",
 		Hint:   "The model provider failed to complete the response. Check the selected model, credentials, account access, and rate limits. The daemon is fine — retrying the turn or switching models may help. Note: if an OpenAI model does not support the Responses API (/v1/responses), Serf automatically falls back to Chat Completions (/v1/chat/completions). If both fail, the error message names the model and both endpoints.",
+	}
+}
+
+func mcpFailure() Info {
+	return Info{
+		Source: SourceMCP,
+		Title:  "MCP server error",
+		Hint:   "An MCP server failed to connect, authenticate, or complete a tool call. Check the command is on PATH (stdio), the URL/headers and auth token (http/sse), and that the server speaks MCP. The session runs without it; other tools are unaffected.",
 	}
 }
 
