@@ -17,6 +17,16 @@ import (
 // Runs all compaction layers (observation masking, thinking clearing,
 // checkpoint, and LLM summarization). Safe to call while idle.
 func (s *Session) Compact(ctx context.Context) error {
+	// Refused while awaiting (spec §5.3): summarizing away the transcript tail
+	// the pending question lives in would compact out from under the user's
+	// reply. Returning before any history read/mutation leaves the history and
+	// the awaiting state untouched — the reply or Clear are the only ways
+	// forward (protecting the pending-ask tail through compaction instead of
+	// refusing outright is the fast-follow).
+	if s.State() == SessionAwaiting {
+		return errors.New("a question is pending; reply or clear first")
+	}
+
 	if s.contextMgr == nil {
 		return errors.New("context manager not initialized")
 	}

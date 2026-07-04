@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1006,5 +1007,161 @@ func TestAskUser_BoundaryDrainPreservesFollowUp(t *testing.T) {
 	sess.mu.Unlock()
 	if pending != 1 {
 		t.Fatalf("pending follow-ups after the awaiting rest = %d, want 1 (held, not dropped)", pending)
+	}
+}
+
+// --- Task 7: Compact refused / Clear dismisses, while awaiting (spec §5.3) ---
+//
+// "Compact and Clear are live at rest and touch the transcript the pending
+// question lives in: v1 refuses Compact while awaiting with an instructive
+// error ... and allows Clear, which dismisses the question along with the
+// history and rests idle." Compact's guard lives in the rest-time entry,
+// agent/session_compaction.go's Compact — the one cmd/serf/serve.go's
+// SetCompactFunc calls. Clear has no in-place Session method at all: /clear
+// (serve.go SetClearFunc) constructs a brand-new agent.NewSession with
+// SessionStartKind=Clear and swaps it in for the live session, Closing the
+// old one afterward — so "Clear while awaiting" is a fresh, always-idle,
+// always-empty-pending session by construction, not a state transition on the
+// awaiting session itself. The tests below cover Compact's new guard directly
+// and reproduce Clear's actual replace-not-reset mechanism at the session
+// level; real end-to-end proof that the daemon's /clear surface reaches this
+// path belongs to a later, serve-level task.
+
+// compactErrPending is the exact instructive error text spec §5.3 requires
+// ("a question is pending; reply or clear first"), named once so the
+// production string and the test assertion can't silently drift apart.
+const compactErrPending = "a question is pending; reply or clear first"
+
+// TestAskUser_CompactRefusedWhileAwaiting covers the guard itself: Compact on
+// an awaiting session returns the instructive error, before touching history —
+// asserted by comparing a full pre-call snapshot against the post-call
+// history, not just a length check — and the session stays SessionAwaiting.
+func TestAskUser_CompactRefusedWhileAwaiting(t *testing.T) {
+	t.Parallel()
+	ask := askUserCall("ask1", askUserArgsValid())
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	}
+	sess := newSession(t, withAdapter(f))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state before Compact = %q, want %q (test setup broken)", got, SessionAwaiting)
+	}
+
+	before := currentHistory(t, sess)
+	err := sess.Compact(context.Background())
+	if err == nil || !strings.Contains(err.Error(), compactErrPending) {
+		t.Fatalf("Compact while awaiting err = %v, want an error containing %q", err, compactErrPending)
+	}
+	after := currentHistory(t, sess)
+
+	if len(after) != len(before) {
+		t.Fatalf("history length after refused Compact = %d, want %d (unchanged)", len(after), len(before))
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("history mutated by a refused Compact:\nbefore=%+v\nafter=%+v", before, after)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state after refused Compact = %q, want %q (must not flip)", got, SessionAwaiting)
+	}
+}
+
+// TestAskUser_CompactSucceedsWhenIdle is the positive control the brief asks
+// for: a session that never asked anything compacts exactly as before — the
+// new awaiting guard must not fire, or otherwise interfere, on a session
+// that is not awaiting.
+func TestAskUser_CompactSucceedsWhenIdle(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t)
+
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state = %q, want %q (test setup broken)", got, SessionIdle)
+	}
+	if err := sess.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact on an idle session: %v, want nil (awaiting guard must not fire)", err)
+	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after Compact = %q, want %q", got, SessionIdle)
+	}
+}
+
+// TestAskUser_ClearReplacesAwaitingSessionWithFreshIdleOne reproduces spec
+// §5.3's Clear requirement at the session level, matching the ACTUAL
+// production mechanism (cmd/serf/serve.go SetClearFunc) rather than inventing
+// an in-place reset that does not exist: an old session is driven into
+// SessionAwaiting with a real pending question, then a replacement is built
+// exactly as SetClearFunc builds one — same client/profile/env, cfg with only
+// SessionStartKind flipped to Clear, constructed WHILE the old session is
+// still open (serve.go closes the old session only after the swap, so this
+// test preserves that ordering). The replacement is what the user talks to
+// after /clear; it is idle with an empty pending set regardless of what the
+// old session was doing, and the old session itself is untouched (a swap, not
+// a mutation) until its own Close.
+func TestAskUser_ClearReplacesAwaitingSessionWithFreshIdleOne(t *testing.T) {
+	t.Parallel()
+	ask := askUserCall("ask1", askUserArgsValid())
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	}
+	client := llm.NewClient()
+	client.Register(f)
+	profile := NewOpenAIProfile("gpt-5.2")
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	cfg := SessionConfig{}
+
+	oldSess, err := NewSession(client, profile, env, cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { oldSess.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := oldSess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := oldSess.State(); got != SessionAwaiting {
+		t.Fatalf("old session state = %q, want %q (test setup broken)", got, SessionAwaiting)
+	}
+	if got := oldSess.askPendingCount(); got == 0 {
+		t.Fatal("old session askPendingCount = 0, want > 0 (test setup broken)")
+	}
+
+	// Mirrors serve.go's SetClearFunc: clearCfg := sessionCfg; clearCfg.SessionStartKind = plugin.SessionStartKindClear.
+	clearCfg := cfg
+	clearCfg.SessionStartKind = plugin.SessionStartKindClear
+	newSess, err := NewSession(client, profile, env, clearCfg)
+	if err != nil {
+		t.Fatalf("NewSession (clear replacement): %v", err)
+	}
+	t.Cleanup(func() { newSess.Close() })
+
+	if got := newSess.State(); got != SessionIdle {
+		t.Fatalf("cleared-replacement state = %q, want %q", got, SessionIdle)
+	}
+	if got := newSess.askPendingCount(); got != 0 {
+		t.Fatalf("cleared-replacement askPendingCount = %d, want 0", got)
+	}
+
+	// The old session is a swap victim, not a mutation target: it still
+	// carries its awaiting state and pending question until serve.go's
+	// subsequent oldSess.Close() (t.Cleanup here) — clear does not reach in
+	// and reset it.
+	if got := oldSess.State(); got != SessionAwaiting {
+		t.Fatalf("old session state after replacement built = %q, want %q (clear must not mutate the old session)", got, SessionAwaiting)
+	}
+	if got := oldSess.askPendingCount(); got == 0 {
+		t.Fatal("old session askPendingCount after replacement built = 0, want > 0 (clear must not mutate the old session)")
 	}
 }
