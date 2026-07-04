@@ -187,3 +187,59 @@ func (m *Manager) Upgrade(ctx context.Context, plugin, marketplace string) (Inst
 	}
 	return prev, nil
 }
+
+func (m *Manager) mutateEntry(plugin, marketplace string, fn func(*InstallEntry)) error {
+	release, err := acquireLock(m.lockPath(), 30*time.Second)
+	if err != nil {
+		return err
+	}
+	defer release()
+	key := registryKey(plugin, marketplace)
+	reg, err := LoadRegistry(m.registryPath())
+	if err != nil {
+		return err
+	}
+	entries, ok := reg.Plugins[key]
+	if !ok || len(entries) == 0 {
+		return fmt.Errorf("%s is not installed", key)
+	}
+	e := entries[0]
+	fn(&e)
+	reg.Plugins[key] = []InstallEntry{e}
+	return SaveRegistry(m.registryPath(), reg)
+}
+
+func (m *Manager) SetEnabled(plugin, marketplace string, enabled bool) error {
+	return m.mutateEntry(plugin, marketplace, func(e *InstallEntry) { e.Enabled = enabled })
+}
+
+func (m *Manager) SetAutoUpgrade(plugin, marketplace string, on bool) error {
+	return m.mutateEntry(plugin, marketplace, func(e *InstallEntry) { e.AutoUpgrade = on })
+}
+
+// Remove deletes the registry entry and its cache dir. A plugin referenced in
+// place (directory-source marketplace) leaves the source untouched.
+func (m *Manager) Remove(plugin, marketplace string) error {
+	release, err := acquireLock(m.lockPath(), 30*time.Second)
+	if err != nil {
+		return err
+	}
+	defer release()
+	key := registryKey(plugin, marketplace)
+	reg, err := LoadRegistry(m.registryPath())
+	if err != nil {
+		return err
+	}
+	entries, ok := reg.Plugins[key]
+	if !ok {
+		return fmt.Errorf("%s is not installed", key)
+	}
+	if len(entries) > 0 {
+		p := entries[0].InstallPath
+		if strings.HasPrefix(p, m.cacheDir()+string(os.PathSeparator)) {
+			os.RemoveAll(p)
+		}
+	}
+	delete(reg.Plugins, key)
+	return SaveRegistry(m.registryPath(), reg)
+}
