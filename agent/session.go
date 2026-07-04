@@ -138,6 +138,7 @@ type Session struct {
 	modelResponses                int       // LLM round-trip count (for meta.json turn_count)
 	createdAt                     time.Time // stamped once at construction/restore; Meta() reads it rather than re-stamping "now" on every call
 	workMillis                    int64     // accumulated wall-clock work time across turns; seeded from SessionMeta on restore, mapped out via Meta()
+	turnStartedAt                 time.Time // wall-clock instant the current turn began (stamped at the processing-begin transition); zero when no turn is in flight. Guarded by mu, like workMillis.
 	history                       []schema.Turn
 	responsesContinuationDisabled map[responsesContinuationDisabledKey]bool
 

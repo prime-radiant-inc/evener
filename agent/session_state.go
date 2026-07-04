@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"time"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/schema"
@@ -184,18 +185,37 @@ func (s *Session) setStateIfOpenLocked(state SessionState) {
 
 func (s *Session) finishProcessingAtBoundary(ctx context.Context, state SessionState) {
 	transitioned := false
+	var turnMS int64
 	s.mu.Lock()
 	if s.state == SessionProcessing && !s.closingOrClosedLocked() {
 		s.state = state
+		turnMS = s.accumulateWorkLocked()
 		transitioned = true
 	}
 	s.mu.Unlock()
 	if transitioned {
+		s.emit(events.EventTurnEnded, events.TurnEndedData{TurnDurationMS: turnMS})
 		if err := s.drainPendingWatchSends(ctx); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: "watch send retry at processing boundary failed: " + err.Error()})
 		}
 		s.finishActiveProvenance()
 	}
+}
+
+// accumulateWorkLocked adds the just-ended turn's wall-clock to workMillis and
+// returns that turn's duration in ms. Caller holds s.mu; a zero turnStartedAt
+// (no turn was timed) contributes nothing.
+func (s *Session) accumulateWorkLocked() int64 {
+	if s.turnStartedAt.IsZero() {
+		return 0
+	}
+	ms := s.sclock().Now().Sub(s.turnStartedAt).Milliseconds()
+	if ms < 0 {
+		ms = 0
+	}
+	s.workMillis += ms
+	s.turnStartedAt = time.Time{}
+	return ms
 }
 
 func (s *Session) abortIfClosing(ctx context.Context) error {

@@ -81,6 +81,9 @@ func (s *Session) close(cleanupEnv bool) {
 		turns := s.modelResponses
 		emitEnd := !s.sessionEndEmitted
 		s.sessionEndEmitted = true
+		if s.state == SessionProcessing {
+			s.accumulateWorkLocked() // dying turn's work counts (Decision 4/L3)
+		}
 		s.closing = true
 		s.state = SessionClosed
 		// Mark closing BEFORE draining so a spawn or namer launch racing teardown
@@ -776,6 +779,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		return "", false, errors.New("session is closed")
 	}
 	s.setStateIfOpenLocked(SessionProcessing)
+	s.turnStartedAt = s.sclock().Now()
 	s.comm = communicateResult{}
 	// Pending asks resolve with this accepted turn (spec §5.2): clear here,
 	// beside comm's reset, under the lock already held (not via the
