@@ -2225,7 +2225,6 @@ package plugins
 import (
 	"context"
 	"os"
-	"sort"
 	"testing"
 )
 
@@ -2252,7 +2251,6 @@ func TestList_FlagsBroken(t *testing.T) {
 	if !items[0].Broken {
 		t.Fatal("List did not flag a missing install dir as broken")
 	}
-	_ = sort.Strings
 }
 ```
 
@@ -2390,9 +2388,10 @@ Expected: no issues. (If the repo's `make lint` is the canonical entrypoint, run
 - [ ] **Step 4: Commit any lint/vet fixups**
 
 ```bash
-git add -p
+git add -u internal/plugins/ && git add internal/plugins/
 git commit -m "plugins: lint/vet cleanup for internal/plugins"
 ```
+(If Steps 1–3 needed no changes — the expected outcome — there is nothing to stage or commit; skip this step.)
 
 ---
 
