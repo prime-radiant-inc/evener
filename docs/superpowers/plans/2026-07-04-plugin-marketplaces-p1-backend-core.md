@@ -429,8 +429,9 @@ func acquireLock(lockPath string, timeout time.Duration) (func(), error) {
 			return nil, fmt.Errorf("another serf plugin operation is in progress (locked: %s)", lockPath)
 		}
 		time.Sleep(backoff)
-		if backoff < 200*time.Millisecond {
-			backoff *= 2
+		backoff *= 2
+		if backoff > 200*time.Millisecond {
+			backoff = 200 * time.Millisecond
 		}
 	}
 }
