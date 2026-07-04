@@ -505,6 +505,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		LastInputTokens:   meta.LastInputTokens,
 		ContextWindowSize: profile.ContextWindowSize(),
 	}, promptSources)
+	// Recompute the settle decision now that history, goal restore, and (unless
+	// deferred for nested delegate reconstruction) notification/watch-send side
+	// effects are all in place: an agent-last transcript with no autonomy in
+	// flight resumes awaiting rather than idle (spec v5, round-3 A2).
+	if !restoreCfg.deferRestoreSideEffects {
+		s.recomputeRestoredState()
+	}
 	closeJobManagerOnError = false
 	return s, nil
 }

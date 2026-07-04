@@ -233,6 +233,50 @@ func settleTerminalState(hadOutput, goalKicked, notifsPending, queuePending, chi
 	return SessionAwaiting
 }
 
+// recomputeRestoredState reruns the settle decision for a restored session: if
+// the persisted transcript ends with the agent having moved last (the ball was
+// in the user's court when the daemon stopped) and no autonomy is in flight,
+// the session resumes awaiting rather than idle. Restored active goals are
+// deliberately not autonomy — they are not re-kicked on restore ("loaded but
+// idle"), so amber is what surfaces the stall (spec v5, round-3 A2).
+//
+// "Agent moved last" is decided by walking the history backward from the tail,
+// skipping bookkeeping turns (tool results, checkpoints, summaries, system)
+// that trail the true last conversational move, and reading the kind of the
+// first user/steering/assistant turn found. This matters because a clean
+// completion's last persisted turn is TOOL_RESULTS (the communicate call's
+// result), not ASSISTANT: the assistant turn precedes it in the same round.
+func (s *Session) recomputeRestoredState() {
+	s.mu.Lock()
+	agentLast := false
+	for i := len(s.history) - 1; i >= 0; i-- {
+		switch s.history[i].Kind {
+		case schema.TurnAssistant:
+			agentLast = true
+		case schema.TurnUserInput, schema.TurnSteering:
+			agentLast = false
+		default:
+			// Bookkeeping turn (tool results, checkpoint, summary, system, ...):
+			// keep walking backward past it.
+			continue
+		}
+		break
+	}
+	idle := s.state == SessionIdle && !s.closingOrClosedLocked()
+	s.mu.Unlock()
+	if !idle || !agentLast {
+		return
+	}
+	if s.autonomyInFlight() {
+		return
+	}
+	s.mu.Lock()
+	if s.state == SessionIdle && !s.closingOrClosedLocked() {
+		s.state = SessionAwaiting
+	}
+	s.mu.Unlock()
+}
+
 // armAwaitingAtSettle upgrades idle -> awaiting at the drain-loop settle when
 // settleTerminalState says the ball is in the user's court. It runs after
 // settleGoalOnIdle (so the goal kick is known) and before the EventSessionEnd

@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -171,5 +172,94 @@ func TestWireState_ChildrenInFlightReadsActive(t *testing.T) {
 	sess.enqueueJobNotification(jobNotification{})
 	if got := sess.WireState(); got != string(SessionProcessing) {
 		t.Fatalf("WireState with pending notification = %q, want %q", got, SessionProcessing)
+	}
+}
+
+// TestRestore_AgentLastTurnResumesAwaiting pins the resume-recompute contract
+// (spec v5, round-3 A2): a restored session whose persisted transcript ends
+// with the agent having moved last resumes `awaiting`, not `idle`. Queues and
+// notification buffers are never persisted and goals are deliberately not
+// re-kicked on restore ("loaded but idle"), so without this recompute a
+// restored mid-goal or post-reply session would silently read idle even
+// though the ball is in the user's court.
+func TestRestore_AgentLastTurnResumesAwaiting(t *testing.T) {
+	t.Parallel()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return finalResponse("answer") },
+	}})
+	dir := t.TempDir()
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "question", nil); err != nil {
+		t.Fatal(err)
+	}
+	id := sess.ID()
+	sess.Close()
+
+	meta, err := schema.LoadSessionMeta(dir, id)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+
+	c2 := llm.NewClient()
+	c2.Register(&fakeAdapter{name: "openai"})
+	restored, err := RestoreSessionFromMeta(c2, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+	if got := restored.State(); got != SessionAwaiting {
+		t.Fatalf("restored agent-last session state = %q, want awaiting", got)
+	}
+}
+
+// TestRestore_UserLastTurnStaysIdle is the companion negative case for
+// TestRestore_AgentLastTurnResumesAwaiting: a restored session whose persisted
+// transcript ends with the user's turn (the daemon stopped before the agent
+// replied — simulated here the same way TestProcessInput_InterruptStaysIdle
+// does, by cancelling before the adapter responds) must stay idle. Only an
+// agent-last transcript upgrades; this guards recomputeRestoredState's
+// backward-walk against over-triggering on a dangling user turn.
+func TestRestore_UserLastTurnStaysIdle(t *testing.T) {
+	t.Parallel()
+	c := llm.NewClient()
+	blocker := make(chan struct{})
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { <-blocker; return finalResponse("late") },
+	}})
+	dir := t.TempDir()
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _, _ = sess.ProcessInput(ctx, "dangling question", nil); close(done) }()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	close(blocker)
+	<-done
+	id := sess.ID()
+	sess.Close()
+
+	meta, err := schema.LoadSessionMeta(dir, id)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+
+	c2 := llm.NewClient()
+	c2.Register(&fakeAdapter{name: "openai"})
+	restored, err := RestoreSessionFromMeta(c2, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+	if got := restored.State(); got != SessionIdle {
+		t.Fatalf("restored user-last session state = %q, want idle", got)
 	}
 }
