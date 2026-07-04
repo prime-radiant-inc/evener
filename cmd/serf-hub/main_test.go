@@ -78,6 +78,12 @@ func TestResolveSerfBinaryPath(t *testing.T) {
 
 	t.Run("sibling resolution", func(t *testing.T) {
 		dir := t.TempDir()
+		// resolveSerfBinaryPath resolves symlinks in the executable's
+		// directory; on macOS t.TempDir() is under /var, a symlink to
+		// /private/var, so the expectation must use the resolved form.
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			dir = resolved
+		}
 		serfPath := filepath.Join(dir, "serf")
 		if err := os.WriteFile(serfPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatal(err)
