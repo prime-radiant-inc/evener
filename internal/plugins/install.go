@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -20,7 +21,7 @@ func (m *Manager) catalogPlugin(marketplace, plugin string) (MarketplaceRef, Cat
 	if !ok {
 		return MarketplaceRef{}, CatalogPlugin{}, fmt.Errorf("marketplace %q not found", marketplace)
 	}
-	cat, err := ParseCatalog(ref.InstallLocation)
+	cat, err := ParseCatalog(m.catalogRoot(ref))
 	if err != nil {
 		return MarketplaceRef{}, CatalogPlugin{}, err
 	}
@@ -48,7 +49,7 @@ func (m *Manager) materialize(ctx context.Context, marketplace, plugin string, r
 	// staging → sha → move to cache/<mkt>/<plugin>/<sha>/
 	staging := m.pluginCacheDir(marketplace, plugin, ".staging")
 	os.RemoveAll(staging)
-	sha, err = fetchPluginSource(ctx, cp.Source, ref.InstallLocation, staging)
+	sha, err = fetchPluginSource(ctx, cp.Source, m.catalogRoot(ref), staging)
 	if err != nil {
 		os.RemoveAll(staging)
 		return "", "", err
@@ -87,6 +88,9 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 		return InstallEntry{}, err
 	}
 	if err := validatePluginDir(dir); err != nil {
+		if strings.HasPrefix(dir, m.cacheDir()) {
+			os.RemoveAll(dir)
+		}
 		return InstallEntry{}, fmt.Errorf("installed plugin failed validation: %w", err)
 	}
 

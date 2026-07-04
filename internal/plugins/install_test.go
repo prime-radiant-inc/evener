@@ -47,3 +47,31 @@ func TestInstall_MaterializesAndRegisters(t *testing.T) {
 		t.Fatalf("registry missing widget@acme: %+v", reg.Plugins)
 	}
 }
+
+func TestInstall_FromGitSubdirMarketplace(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := filepath.Join(t.TempDir(), "monorepo")
+	if err := os.MkdirAll(filepath.Join(repo, "mkt", ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "mkt", ".claude-plugin", "marketplace.json"),
+		[]byte(`{"name":"acme","owner":{"name":"o"},"plugins":[{"name":"widget","source":"./plugins/widget"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writePlugin(t, filepath.Join(repo, "mkt", "plugins", "widget"), "widget", nil)
+	makeGitRepo(t, repo, "README.md", "root")
+
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceGitSubdir, URL: repo, Path: "mkt"}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	entry, err := m.Install(context.Background(), "widget", "acme")
+	if err != nil {
+		t.Fatalf("Install from git-subdir marketplace: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(entry.InstallPath, ".claude-plugin", "plugin.json")); err != nil {
+		t.Fatalf("materialized plugin.json missing: %v", err)
+	}
+}
