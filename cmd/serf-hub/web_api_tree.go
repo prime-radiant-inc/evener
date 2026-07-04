@@ -523,7 +523,7 @@ func (s *WebServer) apiTreeNodeTier(scope, projectKey, tier string, favs map[hub
 	out.Branch = n.Branch
 	out.ClusterCount = n.ClusterCount
 	out.Favorite = favs[hubcore.ArchiveKey{Kind: "session", ID: n.ID}]
-	out.Rename = s.rowRenameable(n.ID) // Task 18 wires rowRenameable; stub returns local-only
+	out.Rename = s.rowRenameable(n.ID)
 	return out
 }
 
@@ -543,7 +543,10 @@ func (s *WebServer) favoriteDecisions() map[hubcore.ArchiveKey]bool {
 	return f
 }
 
-// rowRenameable is a temporary stub; Task 18 wires the real rename gate.
+// rowRenameable reports whether a tree row exposes the rename menu item. Local
+// rows are always renameable (ended via the hub meta-edit path, live via the
+// daemon method); Codex-bridged rows are not. Derived from the ref's host, not
+// a per-thread probe.
 func (s *WebServer) rowRenameable(id string) bool { return isLocalRouteID(id) }
 
 func (s *WebServer) apiTreeNode(scope, projectKey string, n hubcore.TreeNode, live bool) hubapi.TreeNode {
@@ -640,6 +643,8 @@ func (s *WebServer) handleAPISession(w http.ResponseWriter, r *http.Request) {
 		s.handleAPIModel(w, r, routeID)
 	case "reasoning-effort":
 		s.handleAPIReasoningEffort(w, r, routeID)
+	case "rename":
+		s.handleAPIRename(w, r, routeID)
 	case "interrupt", "compact", "shutdown":
 		s.handleSessionAction(w, r, routeID, sub)
 	default:
