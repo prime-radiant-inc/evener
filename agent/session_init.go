@@ -1189,6 +1189,13 @@ func (s *Session) initMCP() error {
 	// into a pending warning and keep going. A session with zero healthy MCP
 	// servers still constructs successfully.
 	mgr, connectOutcomes := mcp.NewManager(ctx, configs, nil)
+	mgr.OnReconnect = func(name string) {
+		s.emitDiagnosticWarning(events.WarningData{
+			Source:  "mcp", // diagnostic.SourceMCP doesn't exist yet (Task 10); literal string until then
+			Title:   "MCP server reconnected",
+			Message: fmt.Sprintf("MCP server %q reconnected after a dropped connection", name),
+		})
+	}
 	regOutcomes := mgr.RegisterTools(s.reg)
 	for _, o := range append(connectOutcomes, regOutcomes...) {
 		s.pendingMCPWarnings = append(s.pendingMCPWarnings, events.WarningData{

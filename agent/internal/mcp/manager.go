@@ -23,12 +23,26 @@ import (
 // Manager manages connections to external MCP servers.
 type Manager struct {
 	conns []conn
+
+	// OnReconnect, if set, is called after a conn's lazy reconnect (Task 8)
+	// successfully swaps in a healed session, with that server's configured
+	// name. It is nil unless a caller wires it up (initMCP wires it to a
+	// recovery diagnostic); most tests never set it, so every call site
+	// guards it with a nil check. Exported (unlike conns) because it must be
+	// settable from outside the package — initMCP lives in package agent.
+	OnReconnect func(name string)
 }
 
 type conn struct {
-	name      string
-	cfg       mcpconfig.ServerConfig
-	dial      func(context.Context) (mcpsdk.Transport, error) // re-dials a fresh transport; set for every conn, even ones whose initial connect failed, so a later reconnect (Task 8) always has something to call
+	name string
+	cfg  mcpconfig.ServerConfig
+	dial func(context.Context) (mcpsdk.Transport, error) // re-dials a fresh transport; set for every conn, even ones whose initial connect failed, so a later reconnect (Task 8) always has something to call
+	// client is the shared *mcpsdk.Client used to Connect this conn's
+	// sessions — both the initial connect and any later reconnect (Task 8).
+	// It is only populated once a conn has actually reached "connected":
+	// a conn that never leaves "failed" never gets a registered exec
+	// closure, so it can never call reconnect and never needs one.
+	client    *mcpsdk.Client
 	session   *mcpsdk.ClientSession
 	tools     []llm.ToolDefinition // namespaced: servername__toolname
 	origNames map[string]string    // sanitized namespaced name → original MCP tool name
@@ -36,13 +50,20 @@ type conn struct {
 	lastErr   error
 	lastErrAt time.Time
 
-	// mu guards session, status, lastErr, lastErrAt, and closed against
-	// concurrent access between Close() and a future reconnect swap (Tasks
-	// 7-8). Because conn embeds a mutex, it must never be copied by value
-	// once it lives in Manager.conns — every access goes through a pointer
-	// (&mgr.conns[i]), never a `range mgr.conns` value copy.
+	// mu guards session, status, lastErr, lastErrAt, closed, and
+	// backoffUntil against concurrent access between Close(), a reconnect
+	// swap (Task 8), and Servers(). Because conn embeds a mutex, it must
+	// never be copied by value once it lives in Manager.conns — every access
+	// goes through a pointer (&mgr.conns[i]), never a `range mgr.conns` value
+	// copy.
 	mu     sync.Mutex
 	closed bool
+	// backoffUntil gates lazy reconnect attempts (Task 8): its zero value
+	// means "a reconnect may be attempted immediately" (every conn starts
+	// this way). reconnect resets it to time.Now().Add(reconnectBackoff)
+	// after every attempt it makes, success or failure, so a burst of calls
+	// against a still-flaky server doesn't redial on every single one.
+	backoffUntil time.Time
 }
 
 // ServerOutcome reports a per-server failure at one assembly stage. Stage is
@@ -160,6 +181,7 @@ func connectOne(ctx context.Context, client *mcpsdk.Client, cfg mcpconfig.Server
 		name:      cfg.Name,
 		cfg:       cfg,
 		dial:      dial,
+		client:    client,
 		session:   session,
 		tools:     tools,
 		origNames: origNames,
@@ -234,15 +256,36 @@ func (m *Manager) RegisterTools(reg *tool.Registry) []ServerOutcome {
 
 			// Look up the original MCP tool name for CallTool.
 			origName := c.origNames[td.Name]
-			sess := c.session
 
 			if err := reg.Register(tool.RegisteredTool{
 				Tool: llm.Tool{Definition: td},
 				Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-					result, err := sess.CallTool(ctx, &mcpsdk.CallToolParams{
-						Name:      origName,
-						Arguments: args,
-					})
+					call := func(sess *mcpsdk.ClientSession) (*mcpsdk.CallToolResult, error) {
+						return sess.CallTool(ctx, &mcpsdk.CallToolParams{
+							Name:      origName,
+							Arguments: args,
+						})
+					}
+
+					// c.lockedSession(), not a session captured once at
+					// RegisterTools time: Task 8 lets session change out from
+					// under a long-lived conn via a reconnect swap, so every
+					// call must read the CURRENT session under c.mu.
+					result, err := call(c.lockedSession())
+					if err != nil && errors.Is(err, mcpsdk.ErrConnectionClosed) {
+						// Channel A: the transport itself dropped (SDK taxonomy:
+						// ErrClientClosing/ErrServerClosing only — never a ctx
+						// cancellation, never a plain JSON-RPC error). Demote the
+						// conn and, if reconnect actually swaps in a healed
+						// session, retry this same call once against it.
+						c.markDegraded(err)
+						if newSess, ok := c.reconnect(ctx); ok {
+							if m.OnReconnect != nil {
+								m.OnReconnect(c.name)
+							}
+							result, err = call(newSess)
+						}
+					}
 					if err != nil {
 						return nil, err
 					}
@@ -327,6 +370,135 @@ func (m *Manager) Close() {
 			_ = sess.Close()
 		}
 	}
+}
+
+// lockedSession returns c's current session under c.mu, so a concurrent
+// reconnect swap or Close is never observed mid-update. The exec closure
+// calls this on every invocation — rather than capturing session once, at
+// RegisterTools time, the way it did before Task 8 — because a reconnect
+// swap can now change session out from under a long-lived conn.
+func (c *conn) lockedSession() *mcpsdk.ClientSession {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.session
+}
+
+// markDegraded records a dropped connection (mcpsdk.ErrConnectionClosed) on
+// c, demoting its status to "degraded". It does not touch session, dial, or
+// backoffUntil: a subsequent call to reconnect (gated by backoffUntil)
+// decides whether THIS call may trigger a redial.
+func (c *conn) markDegraded(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.status = "degraded"
+	c.lastErr = err
+	c.lastErrAt = time.Now()
+}
+
+const (
+	// reconnectDialTimeout bounds a lazy reconnect's redial (see reconnect),
+	// independent of the triggering call's own context — see reconnect's doc
+	// comment for why.
+	reconnectDialTimeout = 10 * time.Second
+	// reconnectBackoff is how long a conn waits before the NEXT lazy
+	// reconnect attempt, whether the attempt that set it succeeded or
+	// failed. On success, it stops a burst of calls against a
+	// freshly-reconnected server from redialing needlessly. On failure, it
+	// stops a burst of calls against a still-dead server from each
+	// re-paying the full dial timeout.
+	reconnectBackoff = 30 * time.Second
+)
+
+// reconnect attempts to heal c after one of its calls reported
+// mcpsdk.ErrConnectionClosed. It bails out immediately, without dialing, if c
+// is already closed or a previous reconnect attempt's backoff window hasn't
+// elapsed yet — backoffUntil's zero value means "try immediately", which is
+// what every conn starts with.
+//
+// The dial itself is bounded by its own reconnectDialTimeout, derived from
+// context.Background() rather than from ctx: a reconnect heals the conn for
+// every future caller, not just the one whose call happened to hit the drop,
+// so it deliberately does not inherit one triggering call's deadline or
+// cancellation — the discrimination tests establish that ctx expiry and a
+// dropped connection are independent signals in the first place, so there is
+// no correctness reason to couple them. ctx is accepted only because the exec
+// closure naturally has one to hand; it is otherwise unused here. (Flagged
+// for review: this is a judgment call, not something the plan spelled out.)
+//
+// c.mu is released for the dial (which can take up to reconnectDialTimeout)
+// so a concurrent Close() is never blocked behind a slow or hung server, then
+// re-acquired (via swap) to commit or discard the result. A dial that
+// completes after Close() has already run is discarded: its
+// freshly-connected session is closed immediately and reconnect reports
+// failure, exactly as if the dial had never happened — see swap.
+//
+// On success, reconnect returns the new session and true; the exec closure
+// retries the triggering call once against it. On any failure (bailed out,
+// dial/Connect error, or Close() won the race), it returns (nil, false) and
+// the exec closure surfaces the original triggering error.
+func (c *conn) reconnect(ctx context.Context) (*mcpsdk.ClientSession, bool) {
+	c.mu.Lock()
+	if c.closed || time.Now().Before(c.backoffUntil) {
+		c.mu.Unlock()
+		return nil, false
+	}
+	dial := c.dial
+	client := c.client
+	c.mu.Unlock()
+
+	dialCtx, cancel := context.WithTimeout(context.Background(), reconnectDialTimeout)
+	defer cancel()
+
+	transport, err := dial(dialCtx)
+	if err == nil {
+		var newSess *mcpsdk.ClientSession
+		newSess, err = client.Connect(dialCtx, transport, nil)
+		if err == nil {
+			old, committed := c.swap(newSess)
+			if !committed {
+				// Close() won the race while we were dialing: discard the
+				// freshly-connected session rather than leak or publish it.
+				_ = newSess.Close()
+				return nil, false
+			}
+			if old != nil {
+				_ = old.Close() // displaced session; closed outside the lock per swap's contract
+			}
+			return newSess, true
+		}
+	}
+
+	// The redial itself failed (dial or Connect error). Record the failure
+	// and apply the same backoff as a success, so a burst of calls against a
+	// still-dead server fails fast — returning the ORIGINAL triggering
+	// error — instead of each re-paying a fresh dial timeout.
+	c.mu.Lock()
+	if !c.closed {
+		c.lastErr = err
+		c.lastErrAt = time.Now()
+		c.backoffUntil = time.Now().Add(reconnectBackoff)
+	}
+	c.mu.Unlock()
+	return nil, false
+}
+
+// swap commits newSess as c's live session, unless c was closed while the
+// (unlocked) dial that produced newSess was in flight. On success, it
+// returns the displaced (old) session for the caller to Close() OUTSIDE any
+// lock, and resets backoffUntil so the next reconnect attempt waits
+// reconnectBackoff. On failure (c.closed is true), it returns (nil, false);
+// newSess is then the caller's responsibility to discard.
+func (c *conn) swap(newSess *mcpsdk.ClientSession) (old *mcpsdk.ClientSession, committed bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return nil, false
+	}
+	old = c.session
+	c.session = newSess
+	c.status = "connected"
+	c.backoffUntil = time.Now().Add(reconnectBackoff)
+	return old, true
 }
 
 // sanitizeToolName replaces characters invalid in LLM tool names (e.g. hyphens)
