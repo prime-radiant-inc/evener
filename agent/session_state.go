@@ -36,8 +36,14 @@ func (s *Session) State() SessionState {
 // except for one honest override: an idle session whose autonomy is still in
 // flight (live child subagents, undelivered job notifications, queued input)
 // reads as "active" — a delegating parent is working through its children,
-// not settled (spec v5, round-4 A6). awaiting never coexists with autonomy
-// (the settle suppressors guarantee it), so this only ever upgrades idle.
+// not settled (spec v5, round-4 A6).
+//
+// Precedence: the override upgrades idle ONLY. awaiting always projects as
+// awaiting, even with autonomy in flight — a session that asked its user
+// (ask-user-question design) cannot proceed without them, and masking the
+// question as "working" would deadlock: the wakes that could move the
+// session are gated behind the very answer the user was never told to give.
+// TestWireState_AwaitingOutranksAutonomy pins this.
 func (s *Session) WireState() string {
 	state := s.State()
 	if state == SessionIdle && s.autonomyInFlight() {

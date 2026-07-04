@@ -175,6 +175,41 @@ func TestWireState_ChildrenInFlightReadsActive(t *testing.T) {
 	}
 }
 
+// TestWireState_AwaitingOutranksAutonomy pins the projection precedence rule:
+// the autonomy-in-flight override upgrades idle ONLY — awaiting is never
+// masked as "active". Today the settle suppressors keep the two from
+// coexisting at the settle itself, but a notification can land after the
+// session has settled awaiting, and the ask-user-question design makes the
+// coexistence routine: an asking session rests awaiting while its children
+// run and their completion notifications queue behind the entry gate. If the
+// override ever outranked awaiting, the question would read as "working"
+// forever while the wakes that could clear it stay gated on the very answer
+// the user was never told to give.
+func TestWireState_AwaitingOutranksAutonomy(t *testing.T) {
+	t.Parallel()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return finalResponse("done") },
+	}})
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state after clean completion = %q, want %q", got, SessionAwaiting)
+	}
+	// A job notification lands after the session settled awaiting.
+	sess.enqueueJobNotification(jobNotification{})
+	if got := sess.WireState(); got != string(SessionAwaiting) {
+		t.Fatalf("WireState awaiting+pending notification = %q, want %q (awaiting outranks autonomy)", got, SessionAwaiting)
+	}
+}
+
 // TestRestore_AgentLastTurnResumesAwaiting pins the resume-recompute contract
 // (spec v5, round-3 A2): a restored session whose persisted transcript ends
 // with the agent having moved last resumes `awaiting`, not `idle`. Queues and
