@@ -46,6 +46,8 @@ type WebConfig struct {
 	Archive  *ArchiveStore  // archive decision store; nil when not configured (tree uses empty decisions)
 	Favorite *FavoriteStore // favorite decision store; nil when not configured
 
+	Inputs *InputsVersion // shared inputs-version counter; nil in tests (memo treats as version 0)
+
 	// PokeAttention nudges the hub's attention watcher to recompute
 	// immediately (e.g. after an archive decision changes tier eligibility)
 	// instead of waiting for its next tick. Nil when the watcher isn't wired

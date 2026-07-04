@@ -177,12 +177,18 @@ func main() {
 		}
 	}
 
+	// inputs is the shared inputs-version counter the /api/tree memo (TreeCache)
+	// keys on; bumped whenever an input to the tree changes so the next request
+	// recomputes instead of serving a stale memoized tree.
+	inputs := &hubcore.InputsVersion{}
+
 	// attentionPoke lets a web handler (e.g. an archive decision) nudge the
 	// attention watcher below to recompute immediately instead of waiting for
 	// its next tick. Buffered 1 + non-blocking send: a poke that arrives while
 	// one is already pending coalesces into the same recompute.
 	attentionPoke := make(chan struct{}, 1)
 	pokeAttention := func() {
+		inputs.Bump()
 		select {
 		case attentionPoke <- struct{}{}:
 		default:
@@ -211,6 +217,7 @@ func main() {
 		CodexLaunches:       cfg.CodexLaunches,
 		CodexLauncher:       codexLauncher,
 		PokeAttention:       pokeAttention,
+		Inputs:              inputs,
 	})
 
 	// Lifecycle

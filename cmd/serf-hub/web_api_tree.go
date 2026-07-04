@@ -38,8 +38,15 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	metas, live := s.navigationTreeInputs(r.Context())
 	decisions := s.archiveDecisions()
 	favs := s.favoriteDecisions()
-	tree := hubcore.BuildTree(metas, live, decisions)
-	_, attentionSummary := hubcore.DeriveAttention(metas, live, decisions)
+	var version uint64
+	if s.cfg.Inputs != nil {
+		version = s.cfg.Inputs.Load()
+	}
+	tree, attentionSummary := s.treeCache.Get(version, time.Now(), func() (hubcore.Tree, hubcore.AttentionSummary) {
+		t := hubcore.BuildTree(metas, live, decisions)
+		_, sum := hubcore.DeriveAttention(metas, live, decisions)
+		return t, sum
+	})
 	resp := hubapi.TreeResponse{
 		GeneratedAt:      time.Now().UTC(),
 		Sources:          s.apiTreeSources(),

@@ -47,6 +47,9 @@ type WebServer struct {
 	// liveModels caches raw live /models listings for this server; per-server
 	// so another WebServer (different provider config) never shares entries.
 	liveModels *modelsCache
+	// treeCache memoizes the /api/tree BuildTree+attention-summary computation
+	// by inputs-version + 30s time bucket (see hubcore.TreeCache).
+	treeCache *hubcore.TreeCache
 }
 
 // sidebarTemplateFuncs supplies small helpers the sidebar template needs:
@@ -116,6 +119,7 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 		resumeLocks:         map[string]*sync.Mutex{},
 		lastGoodThreads:     map[string][]appwire.Thread{},
 		liveModels:          &modelsCache{},
+		treeCache:           &hubcore.TreeCache{},
 	}
 	web.appRPC = newHubAppServer(cfg, sources)
 	return web
