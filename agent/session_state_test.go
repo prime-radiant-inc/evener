@@ -4,9 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/llm"
 )
 
 func TestSessionAwaitingStringIsWireAwaiting(t *testing.T) {
@@ -23,20 +21,8 @@ func TestSessionAwaitingStringIsWireAwaiting(t *testing.T) {
 // time Meta() is called. UpdatedAt, by contrast, is expected to keep tracking
 // the clock.
 func TestMeta_CreatedAtStableAcrossCalls(t *testing.T) {
-	dir := t.TempDir()
 	clk := agenttest.NewFakeClock()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{clock: clk})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
-	defer sess.Close()
+	sess := newSession(t, withConfig(SessionConfig{clock: clk}))
 
 	first := sess.Meta()
 
