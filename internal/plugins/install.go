@@ -20,7 +20,7 @@ func (m *Manager) catalogPlugin(marketplace, plugin string) (MarketplaceRef, Cat
 	}
 	ref, ok := mk[marketplace]
 	if !ok {
-		return MarketplaceRef{}, CatalogPlugin{}, fmt.Errorf("marketplace %q not found", marketplace)
+		return MarketplaceRef{}, CatalogPlugin{}, fmt.Errorf("marketplace %q: %w", marketplace, ErrMarketplaceNotFound)
 	}
 	cat, err := ParseCatalog(m.catalogRoot(ref))
 	if err != nil {
@@ -31,7 +31,7 @@ func (m *Manager) catalogPlugin(marketplace, plugin string) (MarketplaceRef, Cat
 			return ref, p, nil
 		}
 	}
-	return MarketplaceRef{}, CatalogPlugin{}, fmt.Errorf("plugin %q not found in marketplace %q", plugin, marketplace)
+	return MarketplaceRef{}, CatalogPlugin{}, fmt.Errorf("plugin %q in marketplace %q: %w", plugin, marketplace, ErrPluginNotFound)
 }
 
 // stagePlugin resolves a plugin's source. For a directory-marketplace it returns
@@ -85,6 +85,13 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 		return InstallEntry{}, err
 	}
 	defer release()
+
+	if err := validNameComponent("marketplace", marketplace); err != nil {
+		return InstallEntry{}, err
+	}
+	if err := validNameComponent("plugin", plugin); err != nil {
+		return InstallEntry{}, err
+	}
 
 	ref, cp, err := m.catalogPlugin(marketplace, plugin)
 	if err != nil {
@@ -142,6 +149,13 @@ func (m *Manager) Upgrade(ctx context.Context, plugin, marketplace string) (Inst
 	}
 	defer release()
 
+	if err := validNameComponent("marketplace", marketplace); err != nil {
+		return InstallEntry{}, err
+	}
+	if err := validNameComponent("plugin", plugin); err != nil {
+		return InstallEntry{}, err
+	}
+
 	key := registryKey(plugin, marketplace)
 	reg, err := LoadRegistry(m.registryPath())
 	if err != nil {
@@ -149,7 +163,7 @@ func (m *Manager) Upgrade(ctx context.Context, plugin, marketplace string) (Inst
 	}
 	entries, ok := reg.Plugins[key]
 	if !ok || len(entries) == 0 {
-		return InstallEntry{}, fmt.Errorf("%s is not installed", key)
+		return InstallEntry{}, fmt.Errorf("%s: %w", key, ErrNotInstalled)
 	}
 	prev := entries[0]
 
@@ -202,7 +216,7 @@ func (m *Manager) mutateEntry(plugin, marketplace string, fn func(*InstallEntry)
 	}
 	entries, ok := reg.Plugins[key]
 	if !ok || len(entries) == 0 {
-		return fmt.Errorf("%s is not installed", key)
+		return fmt.Errorf("%s: %w", key, ErrNotInstalled)
 	}
 	e := entries[0]
 	fn(&e)
@@ -233,7 +247,7 @@ func (m *Manager) Remove(plugin, marketplace string) error {
 	}
 	entries, ok := reg.Plugins[key]
 	if !ok {
-		return fmt.Errorf("%s is not installed", key)
+		return fmt.Errorf("%s: %w", key, ErrNotInstalled)
 	}
 	if len(entries) > 0 {
 		p := entries[0].InstallPath

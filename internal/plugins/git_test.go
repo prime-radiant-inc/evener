@@ -65,3 +65,18 @@ func TestGitClone_RejectsFlagLikeArgs(t *testing.T) {
 		t.Fatal("gitClone accepted a flag-like ref; want rejection")
 	}
 }
+
+func TestFetchPluginSource_RejectsExtTransport(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	marker := filepath.Join(t.TempDir(), "PWNED")
+	dst := filepath.Join(t.TempDir(), "out")
+	url := "ext::sh -c \"touch " + marker + "\""
+	if _, err := fetchPluginSource(context.Background(), Source{Kind: SourceURL, URL: url}, "", dst); err == nil {
+		t.Fatal("ext:: transport was allowed (should be blocked)")
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("ext:: command executed — RCE not blocked")
+	}
+}

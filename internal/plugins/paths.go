@@ -1,9 +1,11 @@
 package plugins
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"primeradiant.com/serf/envvars"
@@ -52,6 +54,18 @@ func (m *Manager) marketplaceDir(name string) string {
 
 func (m *Manager) pluginCacheDir(marketplace, plugin, sha string) string {
 	return filepath.Join(m.cacheDir(), marketplace, plugin, sha)
+}
+
+// validNameComponent rejects a marketplace/plugin name that is unsafe to use as
+// a filesystem path segment (traversal, absolute, separators, empty). Names come
+// from untrusted marketplace.json and caller input.
+func validNameComponent(kind, name string) error {
+	if name == "" || name == "." || name == ".." ||
+		strings.ContainsRune(name, '/') || strings.ContainsRune(name, '\\') ||
+		!filepath.IsLocal(name) {
+		return fmt.Errorf("invalid %s name %q: must be a single non-traversing path component", kind, name)
+	}
+	return nil
 }
 
 func (m *Manager) now() time.Time {

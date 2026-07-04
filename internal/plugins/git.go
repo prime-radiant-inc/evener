@@ -15,7 +15,10 @@ func gitAvailable() bool {
 }
 
 func git(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	// Disable git remote-helper transports that execute arbitrary commands
+	// (ext::/fd::), since URLs may come from untrusted marketplace manifests.
+	full := append([]string{"-c", "protocol.ext.allow=never", "-c", "protocol.fd.allow=never"}, args...)
+	cmd := exec.CommandContext(ctx, "git", full...)
 	if dir != "" {
 		cmd.Dir = dir
 	}

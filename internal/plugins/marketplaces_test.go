@@ -86,6 +86,27 @@ func TestAddMarketplace_GitSubdirBrowse(t *testing.T) {
 	}
 }
 
+func TestAddMarketplace_RejectsTraversalName(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := filepath.Join(t.TempDir(), "evilmkt")
+	if err := os.MkdirAll(filepath.Join(repo, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// marketplace.json whose name escapes the store
+	if err := os.WriteFile(filepath.Join(repo, ".claude-plugin", "marketplace.json"),
+		[]byte(`{"name":"../../evil","owner":{"name":"o"},"plugins":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	makeGitRepo(t, repo, "README.md", "x")
+
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo}); err == nil {
+		t.Fatal("AddMarketplace accepted a traversing marketplace name")
+	}
+}
+
 func TestRemoveMarketplace_DirectorySourceKeepsContents(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")

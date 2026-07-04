@@ -55,7 +55,7 @@ func (m *Manager) Browse(name string) (Catalog, error) {
 	}
 	ref, ok := mk[name]
 	if !ok {
-		return Catalog{}, fmt.Errorf("marketplace %q not found", name)
+		return Catalog{}, fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceNotFound)
 	}
 	return ParseCatalog(m.catalogRoot(ref))
 }

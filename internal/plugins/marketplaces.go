@@ -111,6 +111,10 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 		_ = os.RemoveAll(staging)
 		return MarketplaceRef{}, errors.New("marketplace has no name and none was given")
 	}
+	if err := validNameComponent("marketplace", name); err != nil {
+		_ = os.RemoveAll(staging)
+		return MarketplaceRef{}, err
+	}
 
 	installLoc := src.Path // directory source: in place
 	if src.Kind != SourceDirectory {
@@ -156,7 +160,7 @@ func (m *Manager) RemoveMarketplace(name string) error {
 	}
 	ref, ok := mk[name]
 	if !ok {
-		return fmt.Errorf("marketplace %q not found", name)
+		return fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceNotFound)
 	}
 	if ref.Source.Kind != SourceDirectory {
 		if err := os.RemoveAll(m.marketplaceDir(name)); err != nil {
@@ -179,7 +183,7 @@ func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 	}
 	ref, ok := mk[name]
 	if !ok {
-		return fmt.Errorf("marketplace %q not found", name)
+		return fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceNotFound)
 	}
 	if ref.Source.Kind != SourceDirectory {
 		if err := gitPull(ctx, ref.InstallLocation); err != nil {
