@@ -173,7 +173,193 @@ func sourceDescription(src plugins.Source) string {
 	}
 }
 
-// TODO(P2-T4): Task 4 replaces this stub with the full implementation.
+// splitPluginRef splits arg on the LAST "@" into plugin@marketplace.
+// Plugin names may contain "@", so we split on the last occurrence.
+func splitPluginRef(arg string) (plugin, marketplace string, err error) {
+	i := strings.LastIndex(arg, "@")
+	if i < 0 {
+		return "", "", errors.New("expected <plugin>@<marketplace>")
+	}
+	return arg[:i], arg[i+1:], nil
+}
+
+// renderPluginList renders a list of installed plugins as a human table or JSON.
+func renderPluginList(w io.Writer, items []plugins.ListItem, asJSON bool) error {
+	if asJSON {
+		return json.NewEncoder(w).Encode(items)
+	}
+
+	if len(items) == 0 {
+		_, _ = fmt.Fprintf(w, "No plugins installed.\n")
+		return nil
+	}
+
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintf(tw, "PLUGIN@MARKETPLACE\tVERSION\tENABLED\tAUTO-UPGRADE\tBROKEN\n")
+	for _, item := range items {
+		enabled := "no"
+		if item.Enabled {
+			enabled = "yes"
+		}
+		autoUpgrade := "no"
+		if item.AutoUpgrade {
+			autoUpgrade = "yes"
+		}
+		broken := "no"
+		if item.Broken {
+			broken = "yes"
+		}
+		ref := item.Plugin + "@" + item.Marketplace
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", ref, item.Version, enabled, autoUpgrade, broken)
+	}
+	_ = tw.Flush()
+	return nil
+}
+
 func runPluginLifecycle(verb string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	return fmt.Errorf("not implemented: %s", verb)
+	ctx := context.Background()
+	m := plugins.NewManager("")
+
+	switch verb {
+	case "list":
+		fs := flag.NewFlagSet("list", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		asJSON := fs.Bool("json", false, "emit JSON")
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		items, err := m.List()
+		if err != nil {
+			return err
+		}
+		return renderPluginList(stdout, items, *asJSON)
+
+	case "install":
+		fs := flag.NewFlagSet("install", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		yes := fs.Bool("yes", false, "skip the confirmation prompt")
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		if fs.NArg() < 1 {
+			return errors.New("usage: serf plugin install <plugin>@<marketplace> [--yes]")
+		}
+		plugin, marketplace, err := splitPluginRef(fs.Arg(0))
+		if err != nil {
+			return err
+		}
+		if !*yes {
+			_, _ = fmt.Fprintf(stderr, "Install plugin %s from %s? Plugins are arbitrary code.\nPass --yes to confirm.\n", plugin, marketplace)
+			return errors.New("confirmation required")
+		}
+		entry, err := m.Install(ctx, plugin, marketplace)
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(stdout, "Installed %s@%s version %s at %s\n", plugin, marketplace, entry.Version, entry.InstallPath)
+		return nil
+
+	case "remove":
+		fs := flag.NewFlagSet("remove", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		if fs.NArg() < 1 {
+			return errors.New("usage: serf plugin remove <plugin>@<marketplace>")
+		}
+		plugin, marketplace, err := splitPluginRef(fs.Arg(0))
+		if err != nil {
+			return err
+		}
+		if err := m.Remove(plugin, marketplace); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(stdout, "Removed %s@%s\n", plugin, marketplace)
+		return nil
+
+	case "enable":
+		fs := flag.NewFlagSet("enable", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		if fs.NArg() < 1 {
+			return errors.New("usage: serf plugin enable <plugin>@<marketplace>")
+		}
+		plugin, marketplace, err := splitPluginRef(fs.Arg(0))
+		if err != nil {
+			return err
+		}
+		if err := m.SetEnabled(plugin, marketplace, true); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(stdout, "Enabled %s@%s\n", plugin, marketplace)
+		return nil
+
+	case "disable":
+		fs := flag.NewFlagSet("disable", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		if fs.NArg() < 1 {
+			return errors.New("usage: serf plugin disable <plugin>@<marketplace>")
+		}
+		plugin, marketplace, err := splitPluginRef(fs.Arg(0))
+		if err != nil {
+			return err
+		}
+		if err := m.SetEnabled(plugin, marketplace, false); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(stdout, "Disabled %s@%s\n", plugin, marketplace)
+		return nil
+
+	case "upgrade":
+		fs := flag.NewFlagSet("upgrade", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		all := fs.Bool("all", false, "upgrade all installed plugins")
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+
+		if *all {
+			entries, err := m.UpdateAll(ctx)
+			if err != nil {
+				return err
+			}
+			if len(entries) == 0 {
+				_, _ = fmt.Fprintf(stdout, "No plugins to upgrade.\n")
+			} else {
+				_, _ = fmt.Fprintf(stdout, "Upgraded %d plugin(s).\n", len(entries))
+				for _, entry := range entries {
+					_, _ = fmt.Fprintf(stdout, "  %s\n", entry.Version)
+				}
+			}
+			return nil
+		}
+
+		if fs.NArg() < 1 {
+			return errors.New("usage: serf plugin upgrade <plugin>@<marketplace> | upgrade --all")
+		}
+		plugin, marketplace, err := splitPluginRef(fs.Arg(0))
+		if err != nil {
+			return err
+		}
+		entry, err := m.Upgrade(ctx, plugin, marketplace)
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(stdout, "Upgraded %s@%s to version %s\n", plugin, marketplace, entry.Version)
+		return nil
+
+	case "gc":
+		// TODO(P4): Implement garbage collection sweep
+		_, _ = fmt.Fprintf(stderr, "gc: not yet implemented (P4)\n")
+		return nil
+
+	default:
+		return fmt.Errorf("unknown plugin lifecycle command %q", verb)
+	}
 }

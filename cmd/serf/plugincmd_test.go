@@ -146,3 +146,33 @@ func TestPluginHelp(t *testing.T) {
 		t.Logf("Expected usage output, got: %q", usage)
 	}
 }
+
+func TestPluginList_JSONEmpty(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var out, errb bytes.Buffer
+	if err := runPlugin([]string{"list", "--json"}, nil, &out, &errb); err != nil {
+		t.Fatalf("plugin list --json: %v\n%s", err, errb.String())
+	}
+	if strings.TrimSpace(out.String()) == "" {
+		t.Fatal("expected JSON output for empty list")
+	}
+}
+
+func TestSplitPluginRef(t *testing.T) {
+	p, m, err := splitPluginRef("widget@acme")
+	if err != nil || p != "widget" || m != "acme" {
+		t.Fatalf("splitPluginRef = %q,%q,%v", p, m, err)
+	}
+	if _, _, err := splitPluginRef("noatsign"); err == nil {
+		t.Fatal("expected error for missing @")
+	}
+}
+
+func TestPluginInstall_RequiresConfirmation(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var out, errb bytes.Buffer
+	err := runPlugin([]string{"install", "widget@acme"}, nil, &out, &errb)
+	if err == nil {
+		t.Fatal("install without --yes should require confirmation")
+	}
+}
