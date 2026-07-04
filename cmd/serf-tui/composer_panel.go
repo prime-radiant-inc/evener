@@ -31,9 +31,14 @@ type composerPanel struct {
 	Attachments []*clipboard.PastedImage
 	// ChipContext provides metadata for the chip strip rendered above the textarea.
 	ChipContext composerContext
-	// AwaitingQuestion shows the "question waiting" chip whenever the
-	// session is awaiting (spec §6.2) — independent of ChipContext, which
-	// carries harness/model/branch metadata rather than transient state.
+	// AwaitingQuestion shows the "question waiting" chip whenever a question
+	// is genuinely pending — an unresolved ask_user call in the transcript,
+	// per pendingAskQuestions (spec §6.2) — independent of ChipContext,
+	// which carries harness/model/branch metadata rather than transient
+	// state. This is NOT simply "the session is awaiting": under
+	// attention-status-model v5 a session re-arms State=="awaiting" after
+	// any clean output-producing turn, including the reply that resolves
+	// an ask_user question, so an awaiting rest can have nothing pending.
 	AwaitingQuestion bool
 }
 
@@ -114,7 +119,7 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 		Width:            m.width,
 		QueuePreview:     m.sessionQueuePreview(),
 		Attachments:      m.pendingAttachments,
-		AwaitingQuestion: stateLabel(m.detail.State) == "awaiting",
+		AwaitingQuestion: len(pendingAskQuestions(m.session.messages)) > 0,
 		ChipContext: composerContext{
 			Harness:    m.detail.SourceLabel,
 			Model:      m.detail.Model,
@@ -205,10 +210,13 @@ func (p composerPanel) View() string {
 		b.WriteString("\n")
 	}
 
-	// Waiting chip (spec §6.2): shown whenever the session is awaiting,
-	// independent of the harness/model chip strip above. ctrl+q is the
-	// ONLY way to open the question overlay — this chip is discoverability
-	// chrome, not a button.
+	// Waiting chip (spec §6.2): shown whenever a question is genuinely
+	// pending (an unresolved ask_user call in the transcript), independent
+	// of the harness/model chip strip above — NOT merely whenever the
+	// session rests awaiting, since attention-status-model v5 can re-arm
+	// that rest state with nothing left pending. ctrl+q is the ONLY way to
+	// open the question overlay — this chip is discoverability chrome, not
+	// a button.
 	if p.AwaitingQuestion {
 		waitingStyle := lipgloss.NewStyle().Foreground(th.StateAwaiting).Bold(true)
 		b.WriteString(waitingStyle.Render("◆ question waiting — ctrl+q to answer"))
