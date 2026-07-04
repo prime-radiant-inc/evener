@@ -556,7 +556,16 @@ func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) []appw
 				items = project(raw, turnID, entryIndex)
 			}
 			if len(items) > 0 {
-				turns = append(turns, appwire.Turn{ID: turnID, Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted})
+				turn := appwire.Turn{ID: turnID, Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted}
+				// Stamp StartedAt from the entry's recorded timestamp; DurationMS
+				// stays nil because a message record captures a point in time, not
+				// a span (unlike the live projector's EventTurnEnded timing).
+				var entry transcript.Entry
+				if json.Unmarshal(raw, &entry) == nil && !entry.Turn.Timestamp.IsZero() {
+					startedAt := entry.Turn.Timestamp.Unix()
+					turn.StartedAt = &startedAt
+				}
+				turns = append(turns, turn)
 			}
 		}
 	}

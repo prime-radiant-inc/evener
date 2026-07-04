@@ -47,6 +47,17 @@ type AppEventProjector struct {
 
 	lastAssistantTurnID string
 	lastAssistantText   string
+
+	// pendingTurnID/pendingCompletedAtUnix/pendingDurationMS record the most
+	// recent EventTurnEnded's timing until the turn it names is actually
+	// completed by one of the existing completion sites (EventUserInput,
+	// EventGoalContinuation, EventError, EventSessionEnd). EventTurnEnded fires
+	// before those sites on some paths (interrupt/close) and after on others
+	// (a failed turn), so this is a stash, not a completion — see
+	// applyPendingTiming.
+	pendingTurnID          string
+	pendingCompletedAtUnix int64
+	pendingDurationMS      int64
 }
 
 func NewAppEventProjector(threadID, ref string) *AppEventProjector {
@@ -110,10 +121,12 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.toolItemsByKey = map[string]string{}
 			p.toolArgsByKey = map[string]string{}
 			p.suppressedTools = map[string]struct{}{}
+			turn := appwire.Turn{ID: turnID, Status: appwire.TurnStatusCompleted}
+			p.applyPendingTiming(turnID, &turn)
 			out = append(out, p.notification(appwire.NotifyTurnCompleted, map[string]any{
 				"threadId": p.threadID,
 				"ref":      p.ref,
-				"turn":     appwire.Turn{ID: turnID, Status: appwire.TurnStatusCompleted},
+				"turn":     turn,
 			}))
 		}
 		turnID := p.startTurn()
@@ -158,10 +171,12 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.toolItemsByKey = map[string]string{}
 			p.toolArgsByKey = map[string]string{}
 			p.suppressedTools = map[string]struct{}{}
+			turn := appwire.Turn{ID: turnID, Status: appwire.TurnStatusCompleted}
+			p.applyPendingTiming(turnID, &turn)
 			out = append(out, p.notification(appwire.NotifyTurnCompleted, map[string]any{
 				"threadId": p.threadID,
 				"ref":      p.ref,
-				"turn":     appwire.Turn{ID: turnID, Status: appwire.TurnStatusCompleted},
+				"turn":     turn,
 			}))
 		}
 		turnID := p.startTurn()
@@ -463,21 +478,27 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		p.assistantText = ""
 		p.toolItemsByKey = map[string]string{}
 		p.suppressedTools = map[string]struct{}{}
+		turn := appwire.Turn{
+			ID:     turnID,
+			Status: appwire.TurnStatusFailed,
+			Error: &appwire.TurnError{
+				Message: message,
+				Source:  string(info.Source),
+				Title:   info.Title,
+				Hint:    info.Hint,
+				Cause:   cause,
+			},
+		}
+		// EventTurnEnded runs after EventError on the failure path (see
+		// handleModelError), so no pending timing has been recorded yet here;
+		// this call is a no-op today but keeps the timing path uniform across
+		// all four completion sites.
+		p.applyPendingTiming(turnID, &turn)
 		return []AppNotification{
 			p.notification(appwire.NotifyTurnCompleted, map[string]any{
 				"threadId": p.threadID,
 				"ref":      p.ref,
-				"turn": appwire.Turn{
-					ID:     turnID,
-					Status: appwire.TurnStatusFailed,
-					Error: &appwire.TurnError{
-						Message: message,
-						Source:  string(info.Source),
-						Title:   info.Title,
-						Hint:    info.Hint,
-						Cause:   cause,
-					},
-				},
+				"turn":     turn,
 			}),
 		}
 	case events.EventSteeringInjected:
@@ -617,6 +638,15 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 				OriginItemID:     data.OriginItemID,
 			},
 		})}
+	case events.EventTurnEnded:
+		if p.activeTurnID == "" {
+			return nil // turn already completed (e.g. failed via EventError)
+		}
+		data := eventData[events.TurnEndedData](event.Data)
+		p.pendingTurnID = p.activeTurnID
+		p.pendingCompletedAtUnix = event.Timestamp.Unix()
+		p.pendingDurationMS = data.TurnDurationMS
+		return nil
 	case events.EventSessionEnd:
 		p.clearSkillCandidate()
 		data := eventData[events.SessionEndData](event.Data)
@@ -643,10 +673,12 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.toolItemsByKey = map[string]string{}
 			p.toolArgsByKey = map[string]string{}
 			p.suppressedTools = map[string]struct{}{}
+			turn := appwire.Turn{ID: turnID, Status: turnStatus}
+			p.applyPendingTiming(turnID, &turn)
 			out = append(out, p.notification(appwire.NotifyTurnCompleted, map[string]any{
 				"threadId": p.threadID,
 				"ref":      p.ref,
-				"turn":     appwire.Turn{ID: turnID, Status: turnStatus},
+				"turn":     turn,
 			}))
 		}
 		out = append(out, p.threadStatus(state))
@@ -707,6 +739,24 @@ func startedTurn(id string, startedAt time.Time) appwire.Turn {
 		turn.StartedAt = &unix
 	}
 	return turn
+}
+
+// applyPendingTiming stamps CompletedAt/DurationMS from the most recently
+// recorded EventTurnEnded onto turn, but only when that recorded turn is the
+// one now completing (turnID matches). A mismatch — or no pending timing at
+// all, as at the EventError site where EventTurnEnded has not run yet — leaves
+// turn untouched.
+func (p *AppEventProjector) applyPendingTiming(turnID string, turn *appwire.Turn) {
+	if p.pendingTurnID == "" || p.pendingTurnID != turnID {
+		return
+	}
+	c := p.pendingCompletedAtUnix
+	d := p.pendingDurationMS
+	turn.CompletedAt = &c
+	turn.DurationMS = &d
+	p.pendingTurnID = ""
+	p.pendingCompletedAtUnix = 0
+	p.pendingDurationMS = 0
 }
 
 func (p *AppEventProjector) systemAnnouncement(prefix, description, text string) []AppNotification {

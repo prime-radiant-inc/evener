@@ -487,6 +487,55 @@ func TestAppEventProjectorLetsInterruptedSessionEndCancelAfterContextCanceledErr
 	t.Fatalf("interrupted SessionEnd did not complete the active turn: %+v", sessionEnd)
 }
 
+// TestProjectorTurnEndedStampsTiming verifies that EventTurnEnded's recorded
+// duration and completion time land on the Turn built by the SessionEnd site
+// that later completes the active turn — EventTurnEnded itself only records
+// pending timing; it does not complete or clear the turn.
+func TestProjectorTurnEndedStampsTiming(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	ts := time.Unix(1_700_000_100, 0).UTC()
+	turnEnded := projector.Project(events.SessionEvent{Kind: events.EventTurnEnded, SessionID: "th_1", Timestamp: ts, Data: events.TurnEndedData{TurnDurationMS: 4200}})
+	if len(turnEnded) != 0 {
+		t.Fatalf("EventTurnEnded emitted notifications=%+v, want none", turnEnded)
+	}
+	sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}})
+
+	turn := notificationTurn(t, sessionEnd, appwire.NotifyTurnCompleted)
+	if turn.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("turn status=%s, want completed", turn.Status)
+	}
+	if turn.CompletedAt == nil || *turn.CompletedAt != ts.Unix() {
+		t.Fatalf("turn CompletedAt=%v, want %d", turn.CompletedAt, ts.Unix())
+	}
+	if turn.DurationMS == nil || *turn.DurationMS != 4200 {
+		t.Fatalf("turn DurationMS=%v, want 4200", turn.DurationMS)
+	}
+}
+
+// TestProjectorTurnEndedPreservesInterruptStatus verifies that when
+// EventTurnEnded is followed by an interrupted SessionEnd, the interrupt
+// status wins (the turn is reported interrupted, not completed) while the
+// recorded duration still attaches — timing and status are independent.
+func TestProjectorTurnEndedPreservesInterruptStatus(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventTurnEnded, SessionID: "th_1", Data: events.TurnEndedData{TurnDurationMS: 100}})
+	sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{
+		Reason:      "interrupted",
+		State:       "idle",
+		Interrupted: true,
+	}})
+
+	turn := notificationTurn(t, sessionEnd, appwire.NotifyTurnCompleted)
+	if turn.Status != appwire.TurnStatusInterrupted {
+		t.Fatalf("turn status=%s, want interrupted", turn.Status)
+	}
+	if turn.DurationMS == nil || *turn.DurationMS != 100 {
+		t.Fatalf("turn DurationMS=%v, want 100", turn.DurationMS)
+	}
+}
+
 func TestAppEventProjectorKeepsToolEventsInActiveTurnAfterAssistantText(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	started := projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
