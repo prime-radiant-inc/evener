@@ -894,7 +894,7 @@ func TestNormalizeState(t *testing.T) {
 		{"", "idle"},
 		{"awaiting", "awaiting"},
 		{"active", "active"},
-		{"systemError", "awaiting"},
+		{"systemError", "errored"},
 		{"warning", "warning"},
 		{"idle", "idle"},
 		{"closed", "ended"},
@@ -1047,5 +1047,49 @@ func TestOrderCreatedAt(t *testing.T) {
 	}
 	if got := OrderCreatedAt(time.Time{}, now); got != now {
 		t.Errorf("OrderCreatedAt(zero, updated) = %v, want updated", got)
+	}
+}
+
+func TestAttentionRanks_Errored(t *testing.T) {
+	if AttentionRank("errored") <= AttentionRank("awaiting") {
+		t.Fatal("errored must outrank awaiting")
+	}
+	if rollupRank("errored") <= rollupRank("awaiting") {
+		t.Fatal("rollupRank: errored must outrank awaiting")
+	}
+}
+
+func TestNeedsYou_AdmitsErroredAndWarning_RanksErroredFirst(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01AWAIT", UpdatedAt: now.Add(-1 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+		{ID: "01ERR", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+		{ID: "01WARN", UpdatedAt: now.Add(-2 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+	}
+	live := []LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01AWAIT", Status: appwire.ThreadStatusAwaiting},
+		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01ERR", Status: appwire.ThreadStatusSystemError},
+		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01WARN", Status: appwire.ThreadStatusWarning},
+	}
+	tree := buildTree(metas, live)
+	if len(tree.NeedsYou) != 3 {
+		t.Fatalf("NeedsYou len = %d, want 3", len(tree.NeedsYou))
+	}
+	if tree.NeedsYou[0].ID != "01ERR" || tree.NeedsYou[0].State != "errored" {
+		t.Fatalf("[0] = %s/%s, want 01ERR/errored (errors first, real state on node)", tree.NeedsYou[0].ID, tree.NeedsYou[0].State)
+	}
+	// Then oldest-first among the amber family: WARN (-2h) before AWAIT (-1h).
+	if tree.NeedsYou[1].ID != "01WARN" || tree.NeedsYou[2].ID != "01AWAIT" {
+		t.Fatalf("amber order = %s,%s want 01WARN,01AWAIT", tree.NeedsYou[1].ID, tree.NeedsYou[2].ID)
+	}
+}
+
+func TestNeedsYou_ArchivedLiveAwaitingExcluded(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{{ID: "01ARCH", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
+	live := []LiveEntry{{Entry: rendezvous.Entry{PID: 1}, SessionID: "01ARCH", Status: appwire.ThreadStatusAwaiting}}
+	tree := BuildTree(metas, live, map[ArchiveKey]bool{{Kind: "session", ID: "01ARCH"}: true})
+	if len(tree.NeedsYou) != 0 {
+		t.Fatalf("archived live awaiting session must not appear in NeedsYou; got %d", len(tree.NeedsYou))
 	}
 }

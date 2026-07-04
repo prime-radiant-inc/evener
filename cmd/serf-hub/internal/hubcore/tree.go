@@ -13,7 +13,8 @@ import (
 // Tree is the navigation data model.
 //
 //   - NeedsYou is the cross-project triage tier the sidebar renders at the top:
-//     every awaiting session, oldest-blocked first, hidden when empty.
+//     every awaiting/warning/errored session, errors first then oldest-blocked
+//     first, hidden when empty. Archived sessions are excluded even if live.
 //   - Projects is the flat, recency-ordered list of active projects (those with
 //     at least one non-archived session and not manually archived). Each
 //     project's sessions are split into Current / Recent / Archived tiers.
@@ -117,7 +118,7 @@ type TreeNode struct {
 	Title        string
 	Project      string
 	Branch       string // git branch at session start; empty when unknown
-	State        string // "awaiting" | "active" | "warning" | "idle" | "ended"
+	State        string // "errored" | "awaiting" | "active" | "warning" | "idle" | "ended"
 	Kind         string // "session" | "subagent" | "fork" | "cluster"
 	ClusterCount int    // for Kind=="cluster": number of folded same-titled runs
 	CreatedAt    time.Time
@@ -130,6 +131,8 @@ type TreeNode struct {
 // Higher rank = more attention needed. Sorted descending for live triage.
 func AttentionRank(state string) int {
 	switch state {
+	case "errored":
+		return 5
 	case "awaiting":
 		return 4
 	case "active":
@@ -146,13 +149,16 @@ func AttentionRank(state string) int {
 // rollupRank ranks states for a project's rollup dot. Per spec the dot
 // reflects the most-attention-needing live child:
 //
-//	awaiting > warning > active > idle
+//	errored > awaiting > warning > active > idle
 //
 // (warning beats processing here because a warning is something the user
 // likely needs to look at, while active is the daemon making progress
-// on its own.)
+// on its own. errored outranks everything — a red error is the most
+// urgent signal a rollup dot can carry.)
 func rollupRank(state string) int {
 	switch state {
+	case "errored":
+		return 5
 	case "awaiting":
 		return 4
 	case "warning":
@@ -245,7 +251,7 @@ func NormalizeState(s string) string {
 	case appwire.ThreadStatusActive:
 		return "active"
 	case appwire.ThreadStatusSystemError:
-		return "awaiting" // errored sessions need user attention; group with awaiting
+		return "errored" // first-class red error lane (spec v5) — no longer grouped with awaiting
 	case appwire.ThreadStatusWarning:
 		return "warning"
 	case appwire.ThreadStatusIdle:
@@ -461,7 +467,7 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 				rollup = s.State
 			}
 			switch s.State {
-			case "awaiting", "warning":
+			case "awaiting", "warning", "errored":
 				rollupAttn++
 			case "active":
 				rollupLive++
@@ -589,17 +595,26 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		return treeNodeLess(liveNodes[i], liveNodes[j], metaMap, liveMap)
 	})
 
-	// Build the NeedsYou triage tier: every top-level live session awaiting the
-	// user, flat across all projects, oldest-blocked first so the queue works
-	// top-down. Subagents and working/idle sessions are excluded — this tier is
-	// strictly "what needs me right now." When nothing awaits it is empty and
-	// the sidebar hides it entirely.
+	// Build the NeedsYou triage tier: every top-level live session in the
+	// awaiting|warning|errored family, flat across all projects, errors first
+	// and then oldest-blocked first so the queue works top-down. Subagents and
+	// working/idle sessions are excluded — this tier is strictly "what needs me
+	// right now." An archived session is suppressed even while live: archive is
+	// a clearing verb (spec v5, round-4 A4/B7), so an archived-but-still-awaiting
+	// session must not linger in the inbox. When nothing qualifies the tier is
+	// empty and the sidebar hides it entirely.
 	needsYou := make([]TreeNode, 0, len(live))
 	for _, le := range live {
 		if le.SessionID == "" {
 			continue
 		}
-		if stateFor(le.SessionID) != "awaiting" {
+		st := stateFor(le.SessionID)
+		if st != "awaiting" && st != "warning" && st != "errored" {
+			continue
+		}
+		// Archive suppression: an archived session is out of the inbox even
+		// while live — archive is a clearing verb (spec v5, round-4 A4/B7).
+		if d := decisionFor(decisions, le.SessionID); d != nil && *d {
 			continue
 		}
 		var meta *schema.SessionMeta
@@ -616,7 +631,7 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		}
 		node := TreeNode{
 			ID:    le.SessionID,
-			State: "awaiting",
+			State: st,
 			Kind:  "session",
 		}
 		if meta != nil {
@@ -634,8 +649,18 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		}
 		needsYou = append(needsYou, node)
 	}
-	// Oldest blocked first — the session that has waited longest is most urgent.
+	// Errors first, then oldest-waiting first within the amber (awaiting/warning)
+	// family (spec v5). NeedsYou only ever admits errored/awaiting/warning, and
+	// among those two amber states urgency is purely how long the user has been
+	// blocked — awaiting and warning are equally "look at this," so only a red
+	// error jumps the queue; full AttentionRank isn't used here because it would
+	// also rank awaiting strictly above warning, which would wrongly separate
+	// the amber family by state instead of by age.
 	sort.SliceStable(needsYou, func(i, j int) bool {
+		ie, je := needsYou[i].State == "errored", needsYou[j].State == "errored"
+		if ie != je {
+			return ie
+		}
 		return needsYou[i].UpdatedAt.Before(needsYou[j].UpdatedAt)
 	})
 
