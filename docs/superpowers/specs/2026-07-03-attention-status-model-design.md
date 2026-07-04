@@ -1,7 +1,7 @@
 # Attention & Status Model — Design (v5)
 
 Date: 2026-07-03 (v5 after four adversarial review rounds)
-Status: Approved pending Jesse's spec review
+Status: Implemented (attention-status-model branch, 1a4633095..b05a5d33f)
 Workstream: 1 of 6 from the 2026-07-03 web-UI UX diagnostic
 
 ## Problem
