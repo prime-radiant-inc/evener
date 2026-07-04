@@ -55,6 +55,14 @@ func (m *hubModel) returnToDashboard() {
 	m.launchSettingsPanel = nil
 	m.followupModal = nil
 	m.launchOverridesModal = nil
+	// ctrl+o must not leave a live focus trap armed for the next session
+	// entry (spec §6.2's keypress-only invariant): defer the overlay
+	// exactly like Esc does (question_overlay.go's updateQuestionKey/
+	// updateReviewKey set deferred=true) rather than leaving it non-nil and
+	// non-deferred. Answers are kept, matching esc-defer's rule.
+	if m.questionOverlay != nil {
+		m.questionOverlay.deferred = true
+	}
 	m.session.scrollMode = false
 	m.session.focusedToolIdx = -1
 	m.browseSelected = -1

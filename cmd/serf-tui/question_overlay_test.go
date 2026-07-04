@@ -428,3 +428,100 @@ func TestUpdateQuestionOverlayKey_StaleReadyToSubmitDoesNotResendAfterRollback(t
 		t.Fatalf("an unrelated keypress re-sent the answer after a rollback: %d user messages, want 0", got)
 	}
 }
+
+// ---- returnToDashboard: ctrl+o must defer, not abandon, a live overlay ----
+// (Task 14 review §6.2 finding; hub_browse.go's returnToDashboard tears down
+// every sibling overlay but, before the fix, left questionOverlay non-nil
+// and non-deferred).
+
+// TestReturnToDashboard_DefersLiveQuestionOverlay is the RED-first
+// regression: ctrl+o is handled in hub_keys.go before the focus trap's
+// overlay dispatch, so nothing else clears a live questionOverlay. Since
+// topmostOverlayName/sessionView both gate on "mode == session &&
+// !Deferred()", and returnToDashboard sets mode back to hubModeDashboard,
+// the overlay doesn't trap on the dashboard itself — but re-entering the
+// SAME still-awaiting session (mode flips back to hubModeSession with no
+// fresh ctrl+q) resurrects it: a live focus trap with no way to reach it.
+func TestReturnToDashboard_DefersLiveQuestionOverlay(t *testing.T) {
+	m := sampleSessionModel(80, sampleSessionDetails()["serf-idle"])
+	m.session.messages = []transcript.ChatMessage{askUserToolMsg("call_1", oneQuestionArgsJSON, true, "")}
+	overlay := newQuestionOverlay(m.detail.Ref, pendingAskQuestions(m.session.messages), 80)
+	overlay.questions[0].Resolution = &askResolution{Kind: askResolutionOption, Labels: []string{"Postgres"}}
+	m.questionOverlay = overlay
+
+	// Precondition: the overlay is live and trapping, matching a user who
+	// has opened it (ctrl+q) and answered at least one question.
+	if got := topmostOverlayName(m); got != "question-overlay" {
+		t.Fatalf("test setup invalid: topmostOverlayName = %q, want question-overlay", got)
+	}
+
+	m.returnToDashboard()
+	if m.mode != hubModeDashboard {
+		t.Fatalf("returnToDashboard left mode = %v, want hubModeDashboard", m.mode)
+	}
+
+	// Re-enter the SAME still-awaiting session with no fresh ctrl+q.
+	m.mode = hubModeSession
+
+	if got := topmostOverlayName(m); got == "question-overlay" {
+		t.Fatalf("questionOverlay re-trapped keys after ctrl+o + re-entering the session with no fresh ctrl+q")
+	}
+	// "question 1/1" is the overlay's own title text (questionView), unlike
+	// "Which datastore?" which also appears in the always-expanded in-
+	// transcript question card and so can't distinguish overlay-visible
+	// from overlay-deferred.
+	if strings.Contains(m.sessionView(), "question 1/1") {
+		t.Fatalf("questionOverlay rendered over the session re-entry with no fresh ctrl+q")
+	}
+
+	// Answers must be KEPT (esc-defer's rule: "closes overlay back to chip,
+	// answers kept"), not discarded.
+	if m.questionOverlay == nil {
+		t.Fatalf("returnToDashboard discarded questionOverlay outright; want deferred (kept), not cleared")
+	}
+	if !m.questionOverlay.Deferred() {
+		t.Fatalf("questionOverlay.Deferred() = false after returnToDashboard, want true")
+	}
+	if got := m.questionOverlay.questions[0].Resolution; got == nil || len(got.Labels) != 1 || got.Labels[0] != "Postgres" {
+		t.Fatalf("returnToDashboard discarded the in-progress answer: %#v", got)
+	}
+
+	// A fresh ctrl+q (toggleAskOverlay) must resume the same overlay,
+	// un-deferred, with the previous answer intact — the same "resume, not
+	// rebuild" behavior toggleAskOverlay already gives Esc-deferred overlays.
+	updated, _ := m.toggleAskOverlay()
+	m2 := updated.(hubModel)
+	if m2.questionOverlay == nil || m2.questionOverlay.Deferred() {
+		t.Fatalf("fresh ctrl+q did not resume the overlay un-deferred")
+	}
+	if got := m2.questionOverlay.questions[0].Resolution; got == nil || len(got.Labels) != 1 || got.Labels[0] != "Postgres" {
+		t.Fatalf("fresh ctrl+q resume lost the previous answer: %#v", got)
+	}
+}
+
+// TestReturnToDashboard_DeferredOverlayDoesNotHauntADifferentSession covers
+// the finding's aggravating cross-session variant: entering a DIFFERENT
+// session B while session A's overlay is still attached must not render or
+// trap over B. topmostOverlayName/sessionView have no per-session ref
+// check — Deferred() is the only thing standing between a stale overlay and
+// haunting whatever session is entered next, so this is really the same
+// invariant as the same-session case, just checked from the other side.
+func TestReturnToDashboard_DeferredOverlayDoesNotHauntADifferentSession(t *testing.T) {
+	m := sampleSessionModel(80, sampleSessionDetails()["serf-idle"])
+	m.session.messages = []transcript.ChatMessage{askUserToolMsg("call_1", oneQuestionArgsJSON, true, "")}
+	m.questionOverlay = newQuestionOverlay(m.detail.Ref, pendingAskQuestions(m.session.messages), 80)
+
+	m.returnToDashboard()
+
+	// Enter a DIFFERENT session B.
+	m.detail = sampleSessionDetails()["codex-readonly"]
+	m.session.messages = nil
+	m.mode = hubModeSession
+
+	if got := topmostOverlayName(m); got == "question-overlay" {
+		t.Fatalf("session A's overlay trapped keys over session B after returnToDashboard + switching sessions")
+	}
+	if strings.Contains(m.sessionView(), "question 1/1") {
+		t.Fatalf("session A's question rendered over session B")
+	}
+}
