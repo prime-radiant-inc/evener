@@ -3,6 +3,7 @@ package plugins
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -44,5 +45,37 @@ func TestRemoveEnableDisable(t *testing.T) {
 		if _, err := os.Stat(entry.InstallPath); !os.IsNotExist(err) {
 			t.Fatal("cache dir not deleted on remove")
 		}
+	}
+}
+
+func TestRemove_DirectorySourceKeepsContents(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".claude-plugin", "marketplace.json"),
+		[]byte(`{"name":"local","owner":{"name":"o"},"plugins":[{"name":"widget","source":"./plugins/widget"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writePlugin(t, filepath.Join(dir, "plugins", "widget"), "widget", nil)
+
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceDirectory, Path: dir}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	entry, err := m.Install(context.Background(), "widget", "local")
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	// The plugin must be referenced in place (under the marketplace dir, not the cache).
+	if !strings.HasPrefix(entry.InstallPath, dir) {
+		t.Fatalf("expected in-place install under %s, got %s", dir, entry.InstallPath)
+	}
+	if err := m.Remove("widget", "local"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	// Remove must NOT delete the directory-source plugin's own files.
+	if _, err := os.Stat(filepath.Join(dir, "plugins", "widget", ".claude-plugin", "plugin.json")); err != nil {
+		t.Fatalf("Remove deleted the in-place directory-source plugin: %v", err)
 	}
 }

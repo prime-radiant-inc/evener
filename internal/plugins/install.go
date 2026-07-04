@@ -101,7 +101,7 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 		dir = final
 	}
 	if err := validatePluginDir(dir); err != nil {
-		if strings.HasPrefix(dir, m.cacheDir()) {
+		if strings.HasPrefix(dir, m.cacheDir()+string(os.PathSeparator)) {
 			os.RemoveAll(dir)
 		}
 		return InstallEntry{}, fmt.Errorf("installed plugin failed validation: %w", err)
