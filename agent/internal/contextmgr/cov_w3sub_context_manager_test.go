@@ -100,6 +100,26 @@ func TestW3Sub_SummarizeSteered_NoRoutes(t *testing.T) {
 	}
 }
 
+// TestSetCumulativeUsage pins WS2 A3: SetCumulativeUsage seeds the running
+// total (used on restore to re-hydrate persisted per-session token counts),
+// and a subsequent AddUsage accumulates on top of the seed rather than
+// replacing it.
+func TestSetCumulativeUsage(t *testing.T) {
+	cm := NewManager(NewOpenAIProfile("gpt-5.2"), nil)
+
+	cm.SetCumulativeUsage(llm.Usage{InputTokens: 10, OutputTokens: 20})
+	got := cm.CumulativeUsage()
+	if got.InputTokens != 10 || got.OutputTokens != 20 {
+		t.Fatalf("CumulativeUsage after seed = %+v, want InputTokens=10 OutputTokens=20", got)
+	}
+
+	cm.AddUsage(llm.Usage{InputTokens: 5})
+	got = cm.CumulativeUsage()
+	if got.InputTokens != 15 {
+		t.Fatalf("CumulativeUsage after AddUsage = %+v, want InputTokens=15 (seed 10 + added 5)", got)
+	}
+}
+
 // formatCheckpoint sheds oldest conversation entries once working notes are
 // exhausted and the variable budget floors at its 1000-char minimum. A tiny
 // maxChars with more than three shell results and two oversized conversation

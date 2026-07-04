@@ -137,6 +137,7 @@ type Session struct {
 	turns                         int       // user input count (for MaxTurns enforcement)
 	modelResponses                int       // LLM round-trip count (for meta.json turn_count)
 	createdAt                     time.Time // stamped once at construction/restore; Meta() reads it rather than re-stamping "now" on every call
+	workMillis                    int64     // accumulated wall-clock work time across turns; seeded from SessionMeta on restore, mapped out via Meta()
 	history                       []schema.Turn
 	responsesContinuationDisabled map[responsesContinuationDisabledKey]bool
 

@@ -5,6 +5,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/llm"
 )
 
 // SessionState represents the current lifecycle state of a session.
@@ -73,6 +74,22 @@ func (s *Session) autonomyInFlight() bool {
 	return len(s.liveSubagentSessions()) > 0
 }
 
+// cumulativeUsageSnapshot converts the context manager's llm.Usage total to
+// the lossy schema.CumulativeUsage persisted in SessionMeta (nil pointers→0,
+// Raw dropped).
+func cumulativeUsageSnapshot(u llm.Usage) schema.CumulativeUsage {
+	cacheRead := int64(0)
+	if u.CacheReadTokens != nil {
+		cacheRead = int64(*u.CacheReadTokens)
+	}
+	return schema.CumulativeUsage{
+		InputTokens:     int64(u.InputTokens),
+		OutputTokens:    int64(u.OutputTokens),
+		CacheReadTokens: cacheRead,
+		TotalTokens:     int64(u.TotalTokens),
+	}
+}
+
 // Meta returns the current session metadata without the conversation history.
 func (s *Session) Meta() schema.SessionMeta {
 	originalPrompt := s.extractOriginalPrompt()
@@ -116,6 +133,8 @@ func (s *Session) Meta() schema.SessionMeta {
 		WorktreePath:        s.worktreeCurrentPath,
 		WorktreeManaged:     s.worktreeCurrentManaged,
 		WorktreeRestoreRoot: restoreRoot,
+		WorkMillis:          s.workMillis,
+		CumulativeUsage:     cumulativeUsageSnapshot(s.contextMgr.CumulativeUsage()),
 	}
 }
 

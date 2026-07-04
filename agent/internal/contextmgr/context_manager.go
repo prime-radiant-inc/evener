@@ -107,6 +107,14 @@ func (cm *Manager) CumulativeUsage() llm.Usage {
 	return cm.cumUsage
 }
 
+// SetCumulativeUsage seeds the running total, used on restore to re-hydrate
+// persisted per-session token counts before the first response is recorded.
+func (cm *Manager) SetCumulativeUsage(u llm.Usage) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.cumUsage = u
+}
+
 // RecordInputTokens stores the exact input token count from an API response,
 // along with the history length at that point. This enables accurate pressure
 // calculation for subsequent turns without relying on the char/4 heuristic.
