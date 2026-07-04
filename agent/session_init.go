@@ -1163,19 +1163,18 @@ func (s *Session) initMCP() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// TODO(Task 4): connect-stage and register-stage failures become non-fatal
-	// warnings; for now preserve the pre-Task-2 all-or-nothing fatal behavior
-	// by failing on the first reported outcome from either stage.
+	// A server that fails to connect or register is not fatal: fold its outcome
+	// into a pending warning and keep going. A session with zero healthy MCP
+	// servers still constructs successfully.
 	mgr, connectOutcomes := mcp.NewManager(ctx, configs, nil)
 	regOutcomes := mgr.RegisterTools(s.reg)
-	if len(connectOutcomes)+len(regOutcomes) > 0 {
-		mgr.Close()
-		all := make([]mcp.ServerOutcome, 0, len(connectOutcomes)+len(regOutcomes))
-		all = append(all, connectOutcomes...)
-		all = append(all, regOutcomes...)
-		return fmt.Errorf("MCP server %q %s: %w", all[0].Name, all[0].Stage, all[0].Err)
+	for _, o := range append(connectOutcomes, regOutcomes...) {
+		s.pendingMCPWarnings = append(s.pendingMCPWarnings, events.WarningData{
+			Source:  "mcp", // diagnostic.SourceMCP doesn't exist yet (Task 10); literal string until then
+			Title:   "MCP server unavailable",
+			Message: fmt.Sprintf("MCP server %q failed to %s: %v", o.Name, o.Stage, o.Err),
+		})
 	}
-
 	s.mcpMgr = mgr
 	s.mcpTools = mgr.ToolDefinitions()
 	return nil

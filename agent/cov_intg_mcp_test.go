@@ -128,36 +128,46 @@ func TestIntg_InitMCP_RegisterToolsError(t *testing.T) {
 
 	// A 60-char server name pushes the namespaced tool name ("<name>__echo")
 	// past the 64-char provider limit, so RegisterTools fails validation after a
-	// successful connect+discover — surfacing as a NewSession error.
+	// successful connect+discover. The server is demoted to failed and its tool
+	// dropped, but NewSession now survives instead of reporting the error.
 	longName := strings.Repeat("a", 60)
 	client := llm.NewClient()
 	cfg := SessionConfig{MCPInline: []string{longName + ":" + bin}}
-	_, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
-	if err == nil {
-		t.Fatal("expected NewSession to fail when an MCP tool name exceeds the length limit")
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+	if err != nil {
+		t.Fatalf("NewSession must survive an MCP tool name exceeding the length limit, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "MCP") {
-		t.Errorf("error %q does not mention MCP", err.Error())
+	defer sess.Close()
+	if len(sess.pendingMCPWarnings) == 0 {
+		t.Fatal("expected a pending MCP warning for the register failure")
+	}
+	if want := longName + "__echo"; sess.reg.Get(want) != nil {
+		t.Error("a failed server must contribute no callable tool")
 	}
 }
 
 func TestIntg_InitMCP_ConnectError(t *testing.T) {
 	t.Parallel()
 	// `true` exits immediately without speaking MCP, so its stdout closes before
-	// the initialize handshake completes: mcp.NewManager's Connect fails and
-	// initMCP returns that error, which NewSession reports.
+	// the initialize handshake completes: mcp.NewManager's Connect fails. initMCP
+	// now folds that failure into a pending warning instead of aborting the
+	// session, so NewSession succeeds with the dead server's tool absent.
 	truePath, err := exec.LookPath("true")
 	if err != nil {
 		t.Skipf("`true` not found: %v", err)
 	}
 	client := llm.NewClient()
 	cfg := SessionConfig{MCPInline: []string{"deadsvc:" + truePath}}
-	_, err = NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
-	if err == nil {
-		t.Fatal("expected NewSession to fail when the MCP server does not speak the protocol")
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+	if err != nil {
+		t.Fatalf("NewSession must survive a dead MCP server, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "MCP") {
-		t.Errorf("error %q does not mention MCP", err.Error())
+	defer sess.Close()
+	if len(sess.pendingMCPWarnings) == 0 {
+		t.Fatal("expected a pending MCP warning for the dead server")
+	}
+	if sess.reg.Get("deadsvc__echo") != nil {
+		t.Error("a failed server must contribute no callable tool")
 	}
 }
 
