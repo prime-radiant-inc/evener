@@ -195,9 +195,7 @@ func TestWorktreeList_DoesNotPrune(t *testing.T) {
 	// touched by manage_worktree), whose directory then goes missing —
 	// exactly the "sibling lane on an unmounted volume" case spec §5 list
 	// step 1 says list must never deregister.
-	siblingRoot := t.TempDir()
-	siblingPath := filepath.Join(siblingRoot, "sibling")
-	wtGit(t, r.mainRoot, "worktree", "add", "-b", "sibling-branch", siblingPath, r.head)
+	siblingPath := r.addSiblingWorktree(t, "sibling", "sibling-branch")
 	if err := os.RemoveAll(siblingPath); err != nil {
 		t.Fatalf("remove sibling dir: %v", err)
 	}
@@ -1195,9 +1193,7 @@ func TestWorktreePrune_Sweep3_RunsWhenAllPrunableManaged(t *testing.T) {
 
 func TestWorktreePrune_Sweep3_SkippedWhenNonManagedPrunable(t *testing.T) {
 	r := newWorktreeRepo(t)
-	siblingRoot := t.TempDir()
-	siblingPath := filepath.Join(siblingRoot, "sibling")
-	wtGit(t, r.mainRoot, "worktree", "add", "-b", "sibling-branch", siblingPath, r.head)
+	siblingPath := r.addSiblingWorktree(t, "sibling", "sibling-branch")
 	if err := os.RemoveAll(siblingPath); err != nil {
 		t.Fatalf("remove sibling dir: %v", err)
 	}

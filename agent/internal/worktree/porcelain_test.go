@@ -45,6 +45,13 @@ func buildPorcelainFixture(t *testing.T) (porcelain, repoRoot string) {
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatalf("mkdir repo: %v", err)
 	}
+	// git canonicalizes worktree paths when it registers them (macOS
+	// t.TempDir() lands under /var, a symlink to /private/var), so repo must
+	// already be resolved here for the porcelain entries parsed below to
+	// compare equal against it.
+	if resolved, err := filepath.EvalSymlinks(repo); err == nil {
+		repo = resolved
+	}
 	runGit(t, repo, "init", "-q", "-b", "main")
 	runGit(t, repo, "config", "user.email", "test@example.com")
 	runGit(t, repo, "config", "user.name", "Test")
@@ -174,6 +181,11 @@ func TestParsePorcelain_QuotedReasonWithEscapes(t *testing.T) {
 	repo := filepath.Join(base, "repo")
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+	}
+	// See buildPorcelainFixture: repo must be symlink-resolved to compare
+	// equal against git's own (canonicalized) porcelain path entries.
+	if resolved, err := filepath.EvalSymlinks(repo); err == nil {
+		repo = resolved
 	}
 	runGit(t, repo, "init", "-q", "-b", "main")
 	runGit(t, repo, "config", "user.email", "test@example.com")

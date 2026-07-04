@@ -114,8 +114,7 @@ func TestWorktreeMeta_ReflectsManagedOccupancyAfterCreate(t *testing.T) {
 // WorktreeManaged is false.
 func TestWorktreeMeta_PathEnteredNonManagedTracksPathButNotManaged(t *testing.T) {
 	r := newWorktreeRepo(t)
-	sibling := filepath.Join(t.TempDir(), "sibling")
-	wtGit(t, r.mainRoot, "worktree", "add", "-b", "sibling", sibling, r.head)
+	sibling := r.addSiblingWorktree(t, "sibling", "sibling")
 
 	out, err := r.switchOp(t, map[string]any{"path": sibling})
 	if err != nil {
@@ -238,8 +237,7 @@ func TestResumeWorktreeReentry_ManagedForeign_RestoresRootAndNotices(t *testing.
 
 func TestResumeWorktreeReentry_NonManagedPathEntered_ReentersNoLock(t *testing.T) {
 	r := newWorktreeRepo(t)
-	sibling := filepath.Join(t.TempDir(), "sibling")
-	wtGit(t, r.mainRoot, "worktree", "add", "-b", "sibling", sibling, r.head)
+	sibling := r.addSiblingWorktree(t, "sibling", "sibling")
 
 	meta := schema.SessionMeta{
 		ID:                  "01RESUMENONMANAGEDPATH001",

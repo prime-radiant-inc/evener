@@ -32,6 +32,24 @@ func (r *wtRepo) canonicalMain(t *testing.T) string {
 	return root
 }
 
+// addSiblingWorktree creates a non-managed sibling worktree (never touched by
+// manage_worktree) at a symlink-resolved temp path and returns its canonical
+// path. Git canonicalizes worktree paths when it registers them (macOS
+// t.TempDir() lands under /var, a symlink to /private/var), so the path must
+// already be resolved here for later comparisons against switch results,
+// WorkingDirectory(), or porcelain entries to line up — the same discipline
+// canonicalMain applies to the main repo root.
+func (r *wtRepo) addSiblingWorktree(t *testing.T, dirName, branch string) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks sibling root: %v", err)
+	}
+	path := filepath.Join(root, dirName)
+	wtGit(t, r.mainRoot, "worktree", "add", "-b", branch, path, r.head)
+	return path
+}
+
 // switchOp drives the switch operation through the registered tool surface.
 func (r *wtRepo) switchOp(t *testing.T, args map[string]any) (map[string]any, error) {
 	t.Helper()
@@ -398,9 +416,7 @@ func TestWorktreeSwitch_ByPathSkipsMomentarilyAbsentPorcelainEntry(t *testing.T)
 
 	// A second, real sibling that we actually switch to — the scan must not
 	// abort on the ghost entry before reaching this one.
-	siblingRoot := t.TempDir()
-	siblingPath := filepath.Join(siblingRoot, "sibling")
-	wtGit(t, r.mainRoot, "worktree", "add", "-b", "sibling-branch", siblingPath, r.head)
+	siblingPath := r.addSiblingWorktree(t, "sibling", "sibling-branch")
 
 	out, err := r.switchOp(t, map[string]any{"path": siblingPath})
 	if err != nil {
@@ -443,9 +459,7 @@ func TestWorktreeSwitch_ByPathSiblingManualWorktreeNoLockMutation(t *testing.T) 
 	r := newWorktreeRepo(t)
 	// A manually created worktree OUTSIDE the managed directory (as a human's
 	// hand-made sibling lane would be), never touched by manage_worktree.
-	siblingRoot := t.TempDir()
-	siblingPath := filepath.Join(siblingRoot, "sibling")
-	wtGit(t, r.mainRoot, "worktree", "add", "-b", "sibling-branch", siblingPath, r.head)
+	siblingPath := r.addSiblingWorktree(t, "sibling", "sibling-branch")
 
 	out, err := r.switchOp(t, map[string]any{"path": siblingPath})
 	if err != nil {
@@ -473,9 +487,7 @@ func TestWorktreeSwitch_ByPathToCurrentNonManagedUnlockedNoOps(t *testing.T) {
 	// switch back to it is a plain path-compare no-op, not a run through the
 	// EvEnterCurrent lock-state gate (that gate is for the managed by-name
 	// site, which does have a lock to protect).
-	siblingRoot := t.TempDir()
-	siblingPath := filepath.Join(siblingRoot, "sibling")
-	wtGit(t, r.mainRoot, "worktree", "add", "-b", "sibling-branch", siblingPath, r.head)
+	siblingPath := r.addSiblingWorktree(t, "sibling", "sibling-branch")
 
 	if _, err := r.switchOp(t, map[string]any{"path": siblingPath}); err != nil {
 		t.Fatalf("switch by path to sibling: %v", err)
