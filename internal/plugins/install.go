@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -242,4 +243,88 @@ func (m *Manager) Remove(plugin, marketplace string) error {
 	}
 	delete(reg.Plugins, key)
 	return SaveRegistry(m.registryPath(), reg)
+}
+
+type ListItem struct {
+	Plugin       string
+	Marketplace  string
+	Version      string
+	Enabled      bool
+	AutoUpgrade  bool
+	Broken       bool
+	InstallPath  string
+	GitCommitSha string
+	InstalledAt  time.Time
+	LastUpdated  time.Time
+}
+
+func splitKey(key string) (plugin, marketplace string) {
+	if i := strings.LastIndex(key, "@"); i >= 0 {
+		return key[:i], key[i+1:]
+	}
+	return key, ""
+}
+
+func (m *Manager) List() ([]ListItem, error) {
+	reg, err := LoadRegistry(m.registryPath())
+	if err != nil {
+		return nil, err
+	}
+	var out []ListItem
+	for key, entries := range reg.Plugins {
+		if len(entries) == 0 {
+			continue
+		}
+		e := entries[0]
+		plugin, marketplace := splitKey(key)
+		out = append(out, ListItem{
+			Plugin:       plugin,
+			Marketplace:  marketplace,
+			Version:      e.Version,
+			Enabled:      e.Enabled,
+			AutoUpgrade:  e.AutoUpgrade,
+			Broken:       validatePluginDir(e.InstallPath) != nil,
+			InstallPath:  e.InstallPath,
+			GitCommitSha: e.GitCommitSha,
+			InstalledAt:  e.InstalledAt,
+			LastUpdated:  e.LastUpdated,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Plugin < out[j].Plugin })
+	return out, nil
+}
+
+// UpdateAll upgrades every installed, git-backed plugin (directory/relative
+// sources are inherently current and skipped). Failures are collected but do
+// not stop the others.
+func (m *Manager) UpdateAll(ctx context.Context) ([]InstallEntry, error) {
+	reg, err := LoadRegistry(m.registryPath())
+	if err != nil {
+		return nil, err
+	}
+	var keys []string
+	for key := range reg.Plugins {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	var updated []InstallEntry
+	var errs []string
+	for _, key := range keys {
+		e := reg.Plugins[key][0]
+		if e.Source.Rel || e.Source.Kind == SourceDirectory {
+			continue
+		}
+		plugin, marketplace := splitKey(key)
+		entry, err := m.Upgrade(ctx, plugin, marketplace)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", key, err))
+			continue
+		}
+		updated = append(updated, entry)
+	}
+	if len(errs) > 0 {
+		return updated, fmt.Errorf("some upgrades failed:\n%s", strings.Join(errs, "\n"))
+	}
+	return updated, nil
 }
