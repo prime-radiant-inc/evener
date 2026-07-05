@@ -14,7 +14,7 @@ function change(input) {
   input.dispatchEvent(new input.ownerDocument.defaultView.Event("change", { bubbles: true }));
 }
 
-function makeWindow() {
+async function makeWindow() {
   const dom = new JSDOM(`<!DOCTYPE html><html><body>
     <dl class="settings-table" data-notif-form>
       <div class="row editable">
@@ -29,12 +29,23 @@ function makeWindow() {
   </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true, url: "https://test.local/settings/notifications" });
   const { window } = dom;
   window.SerfToast = { messages: [], show(message, kind) { this.messages.push({ message, kind }); } };
+  // Wait for jsdom's own asynchronous document-load completion to settle
+  // BEFORE returning — jsdom fires DOMContentLoaded internally shortly
+  // after construction regardless of whether the test triggers it, and if
+  // eval(SRC) (which registers a real DOMContentLoaded listener) ran
+  // before that settles, the settings-notifications.js restore listener
+  // can race the async Notification-permission flow under test. Waiting
+  // here means that one-time event has already passed harmlessly (no
+  // listener was registered to catch it yet) before any test code runs.
+  if (window.document.readyState !== "complete") {
+    await new Promise((resolve) => window.addEventListener("load", resolve, { once: true }));
+  }
   return window;
 }
 
 (async function main() {
   // --- simple (non-OS) toggle commits immediately ---
-  const window = makeWindow();
+  const window = await makeWindow();
   window.eval(SRC);
   const changedEvents = [];
   window.document.addEventListener("serf-hub:notifications-changed", (e) => changedEvents.push(e.detail));
@@ -48,7 +59,7 @@ function makeWindow() {
   assert(window.SerfToast.messages.some(m => m.kind === "success"), "committed toggle shows a success toast");
 
   // --- OS toggle: browser grants permission ---
-  const grant = makeWindow();
+  const grant = await makeWindow();
   grant.eval(SRC);
   grant.Notification = { permission: "default", requestPermission: () => Promise.resolve("granted") };
   const os = grant.document.querySelector('[data-notif="os"]');
@@ -60,7 +71,7 @@ function makeWindow() {
   assert(os.parentElement.querySelector(".state").textContent === "ON", "OS toggle label reflects the granted permission");
 
   // --- OS toggle: browser denies permission ---
-  const deny = makeWindow();
+  const deny = await makeWindow();
   deny.eval(SRC);
   deny.Notification = { permission: "default", requestPermission: () => Promise.resolve("denied") };
   const os2 = deny.document.querySelector('[data-notif="os"]');
@@ -73,7 +84,7 @@ function makeWindow() {
   assert(deny.SerfToast.messages.some(m => m.kind === "warning"), "denied OS permission shows a warning toast");
 
   // --- restore on (re)load ---
-  const restored = makeWindow();
+  const restored = await makeWindow();
   restored.localStorage.setItem("serf-hub.notifications", JSON.stringify({ title: true }));
   restored.eval(SRC);
   restored.document.dispatchEvent(new restored.Event("DOMContentLoaded", { bubbles: true }));
