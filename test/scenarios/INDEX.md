@@ -283,13 +283,40 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
 - `sidecar-quality-auditor-communicate.md` - quality auditor flags a
   TODO left in a deliverable draft.
 
+## Sidebar (rebuilt)
+
+Live end-to-end coverage for the rebuilt client-rendered sidebar
+(`cmd/serf-hub/assets/sidebar.js` + `/api/tree`): needs-you, favorites/Pinned,
+top-level active-project session rows, and the row menu. Each card was
+verified against a real hub + a real model turn (`openai/gpt-5.4-mini`).
+
+- `sidebar-expand-survives-live-resync.md` — a manually-expanded collapsed
+  project's session rows survive a `doResync()` triggered by live activity in
+  a different project; surfaced a real (non-blocking) bug where a collapsed
+  project's `aria-expanded` renders the literal string `"undefined"`.
+- `sidebar-favorite-pinned-across-reload.md` — `POST /api/favorite` is
+  reflected in `/api/tree`'s `favorites[]` and renders as a Pinned row that
+  survives a hard reload; confirms no `localStorage` favorite cache exists.
+- `sidebar-project-delete-full-cycle.md` — `POST /api/project/delete`'s full
+  state machine: path-mismatch 400, live-session 409 (files intact),
+  post-shutdown 200 (files removed), the open-workspace `/new` redirect, and
+  that a re-created project at the same working dir is not silently
+  archived.
+- `sidebar-rename-live-and-ended.md` — row-menu rename on a live session
+  survives its own post-POST resync and a subsequent real compaction turn
+  (namer suppression via `name_source:"user"`); rename on an ended session
+  edits the meta file directly with no rollback toast. Notes a possible
+  follow-up bug: `/api/sessions/<id>`'s detail `title` field doesn't reflect
+  a live session's rename the way `/api/tree` and the meta file do.
+
 ## Regression sweep (older surfaces)
 
 - `credentials-page-displays-sources.md` — `/credentials` shows
   correct effective source per provider with env/file shadow
   badges.
 - `index-sidebar-lists-projects.md` — hub home page sidebar
-  enumerates projects + sessions.
+  enumerates projects + sessions (pre-rebuild baseline; see the
+  "Sidebar (rebuilt)" section above for the rebuilt surface).
 - `search-finds-content-across-sessions.md` — `⌘K` overlay
   searches transcripts.
 
