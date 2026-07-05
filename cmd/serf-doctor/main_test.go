@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/internal/plugins"
 )
 
 // fixture writes a session state tree with a runaway-fuse drop, using raw JSONL.
@@ -120,7 +122,7 @@ func TestRun_Help(t *testing.T) {
 		t.Errorf("help exit = %d, want 0", code)
 	}
 	got := out.String()
-	for _, sub := range []string{"locate", "transcript", "apilog", "watches", "tree"} {
+	for _, sub := range []string{"locate", "transcript", "apilog", "watches", "tree", "plugins"} {
 		if !strings.Contains(got, sub) {
 			t.Errorf("help should list subcommand %q; got:\n%s", sub, got)
 		}
@@ -457,5 +459,103 @@ func TestRun_TreeNoSelector(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := run([]string{"tree", "--state-dir", base}, &out, &errb); code != 1 {
 		t.Errorf("no selector should exit 1, got %d", code)
+	}
+}
+
+// pluginsFixture writes a plugin store (installed_plugins.json only — the
+// registry format is a stable on-disk contract, §5.2 of the design spec) with
+// one healthy, in-place plugin and one orphaned registry entry (install path
+// never created), so cmdPlugins has both an OK and a FAIL to render.
+func pluginsFixture(t *testing.T) (root string) {
+	t.Helper()
+	root = t.TempDir()
+	dir := filepath.Join(t.TempDir(), "widget")
+	if err := os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".claude-plugin", "plugin.json"),
+		[]byte(`{"name":"widget","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg := plugins.Registry{Plugins: map[string][]plugins.InstallEntry{
+		"widget@acme": {{
+			InstallPath: dir, Version: "1.0.0", Enabled: true,
+			Source: plugins.Source{Kind: plugins.SourceDirectory, Path: dir},
+		}},
+		"broken@acme": {{
+			InstallPath: filepath.Join(root, "nonexistent"), Version: "1.0.0", Enabled: true,
+			Source: plugins.Source{Kind: plugins.SourceDirectory, Path: filepath.Join(root, "nonexistent")},
+		}},
+	}}
+	if err := plugins.SaveRegistry(filepath.Join(root, "installed_plugins.json"), reg); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func TestRun_PluginsHuman(t *testing.T) {
+	root := pluginsFixture(t)
+	var out, errb bytes.Buffer
+	if code := run([]string{"plugins", "--store-root", root}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, errb.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, "widget@acme") {
+		t.Errorf("plugins output missing healthy plugin:\n%s", got)
+	}
+	if !strings.Contains(got, "broken@acme") {
+		t.Errorf("plugins output missing orphaned entry:\n%s", got)
+	}
+	if !strings.Contains(got, "FAIL") {
+		t.Errorf("plugins output missing a FAIL marker:\n%s", got)
+	}
+}
+
+func TestRun_PluginsJSON(t *testing.T) {
+	root := pluginsFixture(t)
+	var out, errb bytes.Buffer
+	if code := run([]string{"plugins", "--json", "--store-root", root}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, errb.String())
+	}
+	var findings []plugins.DoctorFinding
+	if err := json.Unmarshal(out.Bytes(), &findings); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	foundFail, foundOK := false, false
+	for _, f := range findings {
+		switch f.Level {
+		case plugins.LevelFail:
+			foundFail = true
+		case plugins.LevelOK:
+			foundOK = true
+		}
+	}
+	if !foundFail {
+		t.Errorf("expected at least one FAIL finding; got %+v", findings)
+	}
+	if !foundOK {
+		t.Errorf("expected at least one OK finding; got %+v", findings)
+	}
+}
+
+func TestRun_PluginsUnwritableStoreRoot(t *testing.T) {
+	// A store root inside a nonexistent parent dir with no way to create it
+	// isn't representative on most CI, so this instead checks the flag wires
+	// through to a fresh, empty store rather than the real default root: an
+	// empty temp dir must produce only environment-category findings and no
+	// registry/marketplace/component findings at all.
+	root := t.TempDir()
+	var out, errb bytes.Buffer
+	if code := run([]string{"plugins", "--json", "--store-root", root}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, errb.String())
+	}
+	var findings []plugins.DoctorFinding
+	if err := json.Unmarshal(out.Bytes(), &findings); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	for _, f := range findings {
+		if f.Category != "environment" {
+			t.Errorf("empty store should only produce environment findings; got %+v", f)
+		}
 	}
 }
