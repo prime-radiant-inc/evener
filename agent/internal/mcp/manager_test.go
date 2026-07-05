@@ -15,6 +15,13 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// staticDial adapts an already-built transport into a one-shot dial factory,
+// for tests that don't care about redialing — the factory always returns the
+// same transport value.
+func staticDial(t mcpsdk.Transport) func(context.Context) (mcpsdk.Transport, error) {
+	return func(context.Context) (mcpsdk.Transport, error) { return t, nil }
+}
+
 // TestMCPManager_InMemory creates an in-process MCP server with a test tool,
 // connects via InMemoryTransport, and verifies tool discovery and invocation.
 func TestMCPManager_InMemory(t *testing.T) {
@@ -56,11 +63,11 @@ func TestMCPManager_InMemory(t *testing.T) {
 		t.Fatalf("server connect: %v", err)
 	}
 
-	mgr, err := NewManager(ctx, []mcpconfig.ServerConfig{
+	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "testserver", Type: "stdio"},
-	}, []mcpsdk.Transport{ct})
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
+	}, []func(context.Context) (mcpsdk.Transport, error){staticDial(ct)})
+	if len(outcomes) != 0 {
+		t.Fatalf("NewManager: %+v", outcomes)
 	}
 	defer mgr.Close()
 
@@ -143,7 +150,7 @@ func TestMCPManager_MultipleServers(t *testing.T) {
 	mgr, err := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "alpha", Type: "stdio"},
 		{Name: "beta", Type: "stdio"},
-	}, []mcpsdk.Transport{ct1, ct2})
+	}, []func(context.Context) (mcpsdk.Transport, error){staticDial(ct1), staticDial(ct2)})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -187,7 +194,8 @@ func TestMCPManager_MultipleServers(t *testing.T) {
 }
 
 // TestMCPManager_BuiltinCollision verifies that registering an MCP tool
-// that collides with a pre-existing tool returns an error.
+// that collides with a pre-existing tool produces a register-stage
+// ServerOutcome for that server, rather than failing the whole batch.
 func TestMCPManager_BuiltinCollision(t *testing.T) {
 	ctx := context.Background()
 
@@ -210,11 +218,11 @@ func TestMCPManager_BuiltinCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mgr, err := NewManager(ctx, []mcpconfig.ServerConfig{
+	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "s", Type: "stdio"},
-	}, []mcpsdk.Transport{ct})
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
+	}, []func(context.Context) (mcpsdk.Transport, error){staticDial(ct)})
+	if len(outcomes) != 0 {
+		t.Fatalf("NewManager: %+v", outcomes)
 	}
 	defer mgr.Close()
 
@@ -229,14 +237,15 @@ func TestMCPManager_BuiltinCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = mgr.RegisterTools(reg)
-	if err == nil {
-		t.Fatal("expected collision error, got nil")
+	outcomes = mgr.RegisterTools(reg)
+	if len(outcomes) != 1 || outcomes[0].Name != "s" || outcomes[0].Stage != "register" {
+		t.Fatalf("want one register outcome for server %q, got %+v", "s", outcomes)
 	}
 }
 
 // TestMCPManager_ToolNameTooLong verifies that an MCP tool whose namespaced
-// name exceeds 64 chars is reported as an error.
+// name exceeds 64 chars produces a register-stage ServerOutcome for that
+// server, rather than failing the whole batch.
 func TestMCPManager_ToolNameTooLong(t *testing.T) {
 	ctx := context.Background()
 
@@ -259,18 +268,18 @@ func TestMCPManager_ToolNameTooLong(t *testing.T) {
 	}
 
 	// "longservername__" (16) + 60 = 76 chars > 64 limit
-	mgr, err := NewManager(ctx, []mcpconfig.ServerConfig{
+	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "longservername", Type: "stdio"},
-	}, []mcpsdk.Transport{ct})
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
+	}, []func(context.Context) (mcpsdk.Transport, error){staticDial(ct)})
+	if len(outcomes) != 0 {
+		t.Fatalf("NewManager: %+v", outcomes)
 	}
 	defer mgr.Close()
 
 	reg := tool.NewRegistry()
-	err = mgr.RegisterTools(reg)
-	if err == nil {
-		t.Fatal("expected tool name too long error, got nil")
+	outcomes = mgr.RegisterTools(reg)
+	if len(outcomes) != 1 || outcomes[0].Name != "longservername" || outcomes[0].Stage != "register" {
+		t.Fatalf("want one register outcome for server %q, got %+v", "longservername", outcomes)
 	}
 }
 
@@ -357,7 +366,8 @@ func TestSanitizeToolName(t *testing.T) {
 }
 
 // TestMCPManager_Servers verifies that Servers() returns per-server info
-// with names and namespaced tool names.
+// with names, namespaced tool names, and — for a healthy server that has
+// never errored — Status "connected" with an empty Error.
 func TestMCPManager_Servers(t *testing.T) {
 	ctx := context.Background()
 
@@ -398,7 +408,7 @@ func TestMCPManager_Servers(t *testing.T) {
 	mgr, err := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "alpha", Type: "stdio"},
 		{Name: "beta", Type: "stdio"},
-	}, []mcpsdk.Transport{ct1, ct2})
+	}, []func(context.Context) (mcpsdk.Transport, error){staticDial(ct1), staticDial(ct2)})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -431,6 +441,12 @@ func TestMCPManager_Servers(t *testing.T) {
 	}
 	if !alphaTools["alpha__farewell"] {
 		t.Error("alpha tools missing alpha__farewell")
+	}
+	if alpha.Status != "connected" {
+		t.Errorf("alpha status = %q, want connected", alpha.Status)
+	}
+	if alpha.Error != "" {
+		t.Errorf("alpha error = %q, want empty for a healthy server", alpha.Error)
 	}
 
 	beta, ok := byName["beta"]

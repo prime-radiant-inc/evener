@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/internal/agenttest"
@@ -284,9 +285,12 @@ func TestDiscoverMCPConfigs_GlobalAndProject(t *testing.T) {
 	// Use a fake env that returns projDir as git root.
 	env := &agenttest.FakeEnv{WorkDir: projDir, GitRoot: projDir}
 
-	configs, err := Discover(env, nil, nil)
+	configs, warnings, err := Discover(env, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("expected 0 warnings for well-formed global+project configs, got %v", warnings)
 	}
 
 	byName := map[string]ServerConfig{}
@@ -321,9 +325,12 @@ func TestDiscoverMCPConfigs_CLIOverrides(t *testing.T) {
 
 	env := &agenttest.FakeEnv{WorkDir: dir, GitRoot: ""}
 
-	configs, err := Discover(env, []string{cliFile}, []string{"inline-tool:itool --flag"})
+	configs, warnings, err := Discover(env, []string{cliFile}, []string{"inline-tool:itool --flag"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("expected 0 warnings for well-formed CLI configs, got %v", warnings)
 	}
 
 	byName := map[string]ServerConfig{}
@@ -342,6 +349,92 @@ func TestDiscoverMCPConfigs_CLIOverrides(t *testing.T) {
 	}
 	if len(byName["inline-tool"].Args) != 1 || byName["inline-tool"].Args[0] != "--flag" {
 		t.Errorf("inline-tool.Args = %v, want [--flag]", byName["inline-tool"].Args)
+	}
+}
+
+// TestDiscoverWarn_GlobalMalformedJSON asserts that a global mcp.json that
+// fails to parse does not fail Discover: the layer is skipped and a warning
+// naming the file and the error is returned alongside the (empty) configs.
+func TestDiscoverWarn_GlobalMalformedJSON(t *testing.T) {
+	globalDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", globalDir)
+
+	serfDir := filepath.Join(globalDir, "serf")
+	if err := os.MkdirAll(serfDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	mcpPath := filepath.Join(serfDir, "mcp.json")
+	if err := os.WriteFile(mcpPath, []byte(`{invalid`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	configs, warnings, err := Discover(nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected fatal error: %v", err)
+	}
+	if len(configs) != 0 {
+		t.Errorf("expected 0 configs from a malformed global config, got %d: %v", len(configs), configs)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d: %v", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], mcpPath) {
+		t.Errorf("warning %q does not name the config path %q", warnings[0], mcpPath)
+	}
+}
+
+// TestDiscoverWarn_GlobalUnsetVar asserts that a global mcp.json referencing
+// an unset ${VAR} with no default does not fail Discover: the layer is
+// skipped and a warning naming the file and the expansion error is returned.
+func TestDiscoverWarn_GlobalUnsetVar(t *testing.T) {
+	globalDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", globalDir)
+
+	serfDir := filepath.Join(globalDir, "serf")
+	if err := os.MkdirAll(serfDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	mcpPath := filepath.Join(serfDir, "mcp.json")
+	if err := os.WriteFile(mcpPath, []byte(`{
+		"mcpServers": {
+			"broken": {"command": "${NOPE}"}
+		}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	configs, warnings, err := Discover(nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected fatal error: %v", err)
+	}
+	if len(configs) != 0 {
+		t.Errorf("expected 0 configs from a global config with an unset var, got %d: %v", len(configs), configs)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d: %v", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], mcpPath) {
+		t.Errorf("warning %q does not name the config path %q", warnings[0], mcpPath)
+	}
+}
+
+// TestDiscoverMissing_GlobalFile asserts that a missing global mcp.json
+// remains silent: no warning and no error, matching the pre-existing
+// missing-file behavior.
+func TestDiscoverMissing_GlobalFile(t *testing.T) {
+	globalDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", globalDir)
+	// Deliberately no serf/mcp.json written: the global file does not exist.
+
+	configs, warnings, err := Discover(nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected fatal error: %v", err)
+	}
+	if len(configs) != 0 {
+		t.Errorf("expected 0 configs, got %d: %v", len(configs), configs)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("expected 0 warnings for a missing global file, got %v", warnings)
 	}
 }
 

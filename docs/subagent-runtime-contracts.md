@@ -60,9 +60,19 @@ sequential `PreToolUse → execute → PostToolUse` path, not a frozen-policy to
 agent definition naming an **unknown MCP tool** yields a silently-absent tool (a forged
 call later gets unknown-tool) rather than a deterministic spawn-time error; and an agent
 definition naming an **unsupported provider feature** is resolved/overridden rather than
-rejected with a policy error. MCP *server* unavailability, by contrast, is fail-fast:
-any server that fails to connect or list its tools fails session init (`agent/session_init.go`
-`initMCP` → `agent/internal/mcp` `NewManager`); there is no partial-availability mode.
+rejected with a policy error. MCP *server* unavailability is now **non-fatal and
+parallel** (previously fail-fast): each server's transport build, connect, and
+tools/list run concurrently in its own goroutine; a failure there, or later during tool
+registration, is isolated to that server rather than aborting the batch, reported as a
+`ServerOutcome` (`agent/internal/mcp` `NewManager`/`RegisterTools`). Each outcome
+becomes a `pendingMCPWarnings` entry classified `SourceMCP`
+(`agent/internal/diagnostic`), flushed after `SESSION_START` (`agent/session_init.go`
+`initMCP` → `emitSessionStartEnvelope`) — the session constructs with whichever servers
+came up healthy, and zero healthy servers is still a healthy session. A connection
+dropped mid-session gets exactly one call-driven lazy reconnect attempt, gated on
+`errors.Is(err, mcpsdk.ErrConnectionClosed)` (`conn.reconnect`). CLI
+`--mcp-config`/`--mcp` config-parse errors (`agent/mcpconfig` `Discover`) are the one
+thing that still stays fatal, since they're explicit user input for this invocation.
 
 ## Plugin and agent loading
 
@@ -91,9 +101,12 @@ built): agent-name kebab validation, duplicate **agent**-name rejection within a
 (a later agent silently overwrites an earlier same-name one), manifest field-type
 validation, `agents`-override path-traversal/absolute-path rejection, `model`-value
 validation, empty-body warnings, unsupported-Claude-field rejection, and any
-`Validate*` Go API / `serf plugin validate` CLI. Two silent gaps worth knowing: a
-**malformed inline `mcpServers` block is swallowed** (yields zero servers, no error),
-and **`skills`/`tasks` entries are not value-validated** (empty strings/fields pass).
+`Validate*` Go API / `serf plugin validate` CLI. An inline `mcpServers` parse failure is
+no longer a silent gap: it now degrades to a **plugin-level MCP warning**
+(`Instance.MCPConfigWarnings`, `agent/plugin/plugin.go` `discoverPluginMCPConfigs`) — the
+plugin's MCP layer is skipped but its skills/agents/hooks still load; a malformed
+`.mcp.json` file and malformed inline JSON are warned the same way. One silent gap
+remains: **`skills`/`tasks` entries are not value-validated** (empty strings/fields pass).
 
 ## Lifecycle hooks (Claude-compatible subset)
 

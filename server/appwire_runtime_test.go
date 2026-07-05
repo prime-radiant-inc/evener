@@ -47,6 +47,26 @@ func TestAppCapabilities_SteerGatedOnActiveTurn(t *testing.T) {
 	}
 }
 
+func TestAppDiagnosticsFromDetailedStatus_MCPStatusError(t *testing.T) {
+	ds := DetailedStatus{
+		MCP: []MCPServerInfo{{Name: "test-server", Tools: []string{"tool1"}, Status: "degraded", Error: "boom"}},
+	}
+	got := appDiagnosticsFromDetailedStatus(ds)
+	if len(got.MCP) != 1 {
+		t.Fatalf("MCP = %v, want 1", got.MCP)
+	}
+	m := got.MCP[0]
+	if m.Name != "test-server" || len(m.Tools) != 1 || m.Tools[0] != "tool1" {
+		t.Errorf("MCP[0] = %+v, want Name:test-server Tools:[tool1]", m)
+	}
+	if m.Status != "degraded" {
+		t.Errorf("MCP[0].Status = %q, want degraded", m.Status)
+	}
+	if m.Error != "boom" {
+		t.Errorf("MCP[0].Error = %q, want boom", m.Error)
+	}
+}
+
 func TestAppTurnsFromNotificationsAccumulatesReasoningDeltas(t *testing.T) {
 	records := []appserver.SequencedNotification{
 		{Notification: appwire.Notification{Method: "turn/started", Params: []byte(`{"turnId":"turn_1"}`)}},

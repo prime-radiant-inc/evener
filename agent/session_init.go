@@ -159,6 +159,16 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		return nil, err
 	}
 
+	// initSessionState (via initMCP) may have set s.mcpMgr to a manager holding
+	// live server connections; every error return below this point must close
+	// it rather than orphan those connections.
+	closeMCPManagerOnError := true
+	defer func() {
+		if closeMCPManagerOnError && s.mcpMgr != nil {
+			s.mcpMgr.Close()
+		}
+	}()
+
 	// Populate default tasks from agent definition (non-interactive/eval mode only).
 	agentName := cfg.AgentName
 	if agentName == "" {
@@ -244,6 +254,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// session immediately (without waiting for the first completed turn).
 	s.maybeAutoSave()
 	closeJobManagerOnError = false
+	closeMCPManagerOnError = false
 	return s, nil
 }
 
@@ -434,6 +445,16 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		return nil, err
 	}
 
+	// initSessionState (via initMCP) may have set s.mcpMgr to a manager holding
+	// live server connections; every error return below this point must close
+	// it rather than orphan those connections.
+	closeMCPManagerOnError := true
+	defer func() {
+		if closeMCPManagerOnError && s.mcpMgr != nil {
+			s.mcpMgr.Close()
+		}
+	}()
+
 	// Seed context manager with the meta's token count.
 	if meta.LastInputTokens > 0 && s.contextMgr != nil {
 		s.contextMgr.RecordInputTokens(meta.LastInputTokens, len(s.history))
@@ -545,6 +566,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		s.recomputeRestoredState()
 	}
 	closeJobManagerOnError = false
+	closeMCPManagerOnError = false
 	return s, nil
 }
 
@@ -803,6 +825,11 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 		s.pendingHookWarnings = append(s.pendingHookWarnings, unsupportedHandlerTypeWarnings(p)...)
 
 		s.pluginMCPConfigs = append(s.pluginMCPConfigs, p.MCPConfigs...)
+		for _, w := range p.MCPConfigWarnings {
+			s.pendingMCPWarnings = append(s.pendingMCPWarnings, events.WarningData{
+				Source: "mcp", Title: "MCP server unavailable", Message: w, PluginName: p.Manifest.Name,
+			})
+		}
 
 		s.pendingPluginEvents = append(s.pendingPluginEvents, events.PluginLoadedData{
 			Name:           p.Manifest.Name,
@@ -1180,9 +1207,14 @@ func unsupportedHandlerTypeWarning(pluginName, event, handlerType string) string
 // initMCP discovers and connects to MCP servers if configured.
 // Uses a 30-second timeout since NewSession doesn't take a context.
 func (s *Session) initMCP() error {
-	configs, err := mcpconfig.Discover(s.currentEnv(), s.cfg.MCPConfigFiles, s.cfg.MCPInline)
+	configs, cfgWarnings, err := mcpconfig.Discover(s.currentEnv(), s.cfg.MCPConfigFiles, s.cfg.MCPInline)
 	if err != nil {
 		return err
+	}
+	for _, w := range cfgWarnings {
+		s.pendingMCPWarnings = append(s.pendingMCPWarnings, events.WarningData{
+			Source: "mcp", Title: "MCP config error", Message: w,
+		})
 	}
 	// Merge plugin MCP configs as a base layer (global/project/CLI can shadow them).
 	if len(s.pluginMCPConfigs) > 0 {
@@ -1195,16 +1227,25 @@ func (s *Session) initMCP() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	mgr, err := mcp.NewManager(ctx, configs, nil)
-	if err != nil {
-		return err
+	// A server that fails to connect or register is not fatal: fold its outcome
+	// into a pending warning and keep going. A session with zero healthy MCP
+	// servers still constructs successfully.
+	mgr, connectOutcomes := mcp.NewManager(ctx, configs, nil)
+	mgr.OnReconnect = func(name string) {
+		s.emitDiagnosticWarning(events.WarningData{
+			Source:  "mcp", // diagnostic.SourceMCP doesn't exist yet (Task 10); literal string until then
+			Title:   "MCP server reconnected",
+			Message: fmt.Sprintf("MCP server %q reconnected after a dropped connection", name),
+		})
 	}
-
-	if err := mgr.RegisterTools(s.reg); err != nil {
-		mgr.Close()
-		return err
+	regOutcomes := mgr.RegisterTools(s.reg)
+	for _, o := range append(connectOutcomes, regOutcomes...) {
+		s.pendingMCPWarnings = append(s.pendingMCPWarnings, events.WarningData{
+			Source:  "mcp", // diagnostic.SourceMCP doesn't exist yet (Task 10); literal string until then
+			Title:   "MCP server unavailable",
+			Message: fmt.Sprintf("MCP server %q failed to %s: %v", o.Name, o.Stage, o.Err),
+		})
 	}
-
 	s.mcpMgr = mgr
 	s.mcpTools = mgr.ToolDefinitions()
 	return nil

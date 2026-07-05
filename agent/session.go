@@ -240,6 +240,7 @@ type Session struct {
 	plugins             []plugin.Instance
 	pendingPluginEvents []events.PluginLoadedData
 	pendingHookWarnings []events.WarningData
+	pendingMCPWarnings  []events.WarningData
 	hookRunner          *hooks.Runner
 	// pendingSessionStartKind defers restore SessionStart hook output until the
 	// first accepted real user turn. Deferred delegate restore side effects may run

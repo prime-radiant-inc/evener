@@ -592,7 +592,7 @@ func TestAgentToServerDetailedStatus_Partial(t *testing.T) {
 	exitCode := 42
 	ds := agent.DetailedStatus{
 		Tools:   []agent.ToolInfo{{Name: "shell", Source: "core"}},
-		MCP:     []mcpconfig.ServerInfo{{Name: "test-server", Tools: []string{"tool1", "tool2"}}},
+		MCP:     []mcpconfig.ServerInfo{{Name: "test-server", Tools: []string{"tool1", "tool2"}, Status: "degraded", Error: "boom"}},
 		Skills:  []skill.SkillMeta{{Name: "test-skill", Description: "A test skill"}},
 		Plugins: []agent.PluginInfo{{Name: "test-plugin", Version: "1.0.0", SkillCount: 2, AgentCount: 3, HookCount: 4, MCPCount: 5}},
 		Hooks:   map[plugin.HookEvent]int{"PreToolUse": 1, "PostToolUse": 7},
@@ -616,6 +616,12 @@ func TestAgentToServerDetailedStatus_Partial(t *testing.T) {
 	}
 	if len(got.MCP[0].Tools) != 2 || got.MCP[0].Tools[0] != "tool1" || got.MCP[0].Tools[1] != "tool2" {
 		t.Errorf("MCP[0].Tools = %v, want [tool1 tool2]", got.MCP[0].Tools)
+	}
+	if got.MCP[0].Status != "degraded" {
+		t.Errorf("MCP[0].Status = %q, want degraded", got.MCP[0].Status)
+	}
+	if got.MCP[0].Error != "boom" {
+		t.Errorf("MCP[0].Error = %q, want boom", got.MCP[0].Error)
 	}
 
 	if len(got.Skills) != 1 {

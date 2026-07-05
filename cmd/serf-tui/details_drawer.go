@@ -135,6 +135,12 @@ func writeSerfDiagnostics(b *strings.Builder, diag *appwire.SerfDiagnostics) {
 	fmt.Fprintf(b, "\n\nMCP Servers (%d):", len(diag.MCP))
 	for _, srv := range diag.MCP {
 		fmt.Fprintf(b, "\n  %s (%d tools)", srv.Name, len(srv.Tools))
+		if srv.Status != "" {
+			fmt.Fprintf(b, " — %s", srv.Status)
+		}
+		if srv.Error != "" {
+			fmt.Fprintf(b, " — last error: %s", srv.Error)
+		}
 	}
 
 	fmt.Fprintf(b, "\n\nSkills (%d):", len(diag.Skills))

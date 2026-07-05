@@ -288,9 +288,9 @@ func TestLive_MCP_StdioServer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	mgr, err := mcp.NewManager(ctx, lp.MCPConfigs, nil)
-	if err != nil {
-		t.Fatalf("mcp.NewManager: %v", err)
+	mgr, outcomes := mcp.NewManager(ctx, lp.MCPConfigs, nil)
+	if len(outcomes) != 0 {
+		t.Fatalf("mcp.NewManager: %+v", outcomes)
 	}
 	defer mgr.Close()
 

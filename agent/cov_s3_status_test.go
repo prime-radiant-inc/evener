@@ -30,7 +30,10 @@ func TestS3Cov_DetailedStatus_MCPBranch(t *testing.T) {
 	if _, err := server.Connect(ctx, st, nil); err != nil {
 		t.Fatalf("server connect: %v", err)
 	}
-	mgr, err := mcp.NewManager(ctx, []mcpconfig.ServerConfig{{Name: "ext", Type: "stdio"}}, []mcpsdk.Transport{ct})
+	mgr, err := mcp.NewManager(ctx, []mcpconfig.ServerConfig{{Name: "ext", Type: "stdio"}},
+		[]func(context.Context) (mcpsdk.Transport, error){
+			func(context.Context) (mcpsdk.Transport, error) { return ct, nil },
+		})
 	if err != nil {
 		t.Fatalf("mcp.NewManager: %v", err)
 	}

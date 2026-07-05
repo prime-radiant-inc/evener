@@ -58,11 +58,13 @@ func TestMCPIntegration_ToolCallThroughSession(t *testing.T) {
 	}
 
 	// Create the mcp.Manager directly with the transport (bypassing config discovery).
-	mgr, err := mcp.NewManager(ctx, []mcpconfig.ServerConfig{
+	mgr, outcomes := mcp.NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "ext", Type: "stdio"},
-	}, []mcpsdk.Transport{ct})
-	if err != nil {
-		t.Fatalf("mcp.NewManager: %v", err)
+	}, []func(context.Context) (mcpsdk.Transport, error){
+		func(context.Context) (mcpsdk.Transport, error) { return ct, nil },
+	})
+	if len(outcomes) != 0 {
+		t.Fatalf("mcp.NewManager: %+v", outcomes)
 	}
 
 	// Create a fakeAdapter that calls the ext__greet tool, then returns a final text response.

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -22,20 +23,99 @@ import (
 // Manager manages connections to external MCP servers.
 type Manager struct {
 	conns []conn
+
+	// OnReconnect, if set, is called after a conn's lazy reconnect (Task 8)
+	// successfully swaps in a healed session, with that server's configured
+	// name. It is nil unless a caller wires it up (initMCP wires it to a
+	// recovery diagnostic); most tests never set it, so every call site
+	// guards it with a nil check. Exported (unlike conns) because it must be
+	// settable from outside the package — initMCP lives in package agent.
+	OnReconnect func(name string)
 }
 
 type conn struct {
-	name      string
+	name string
+	cfg  mcpconfig.ServerConfig
+	dial func(context.Context) (mcpsdk.Transport, error) // re-dials a fresh transport; set for every conn, even ones whose initial connect failed, so a later reconnect (Task 8) always has something to call
+	// client is the shared *mcpsdk.Client used to Connect this conn's
+	// sessions — both the initial connect and any later reconnect (Task 8).
+	// It is only populated once a conn has actually reached "connected":
+	// a conn that never leaves "failed" never gets a registered exec
+	// closure, so it can never call reconnect and never needs one.
+	client    *mcpsdk.Client
 	session   *mcpsdk.ClientSession
 	tools     []llm.ToolDefinition // namespaced: servername__toolname
 	origNames map[string]string    // sanitized namespaced name → original MCP tool name
+	status    string               // "connected" / "degraded" / "failed"
+	lastErr   error
+	lastErrAt time.Time
+
+	// mu guards session, status, lastErr, lastErrAt, closed, backoffUntil,
+	// and reconnecting against concurrent access between Close(), a
+	// reconnect swap (Task 8), and Servers(). Because conn embeds a mutex, it
+	// must never be copied by value once it lives in Manager.conns — every
+	// access goes through a pointer (&mgr.conns[i]), never a `range
+	// mgr.conns` value copy.
+	mu     sync.Mutex
+	closed bool
+	// backoffUntil gates lazy reconnect attempts (Task 8): its zero value
+	// means "a reconnect may be attempted immediately" (every conn starts
+	// this way). reconnect resets it to time.Now().Add(reconnectBackoff)
+	// after every attempt it makes, success or failure, so a burst of calls
+	// against a still-flaky server doesn't redial on every single one.
+	backoffUntil time.Time
+	// reconnecting marks that a dial is currently in flight for this conn. It
+	// is set under c.mu before the lock is released for the (lock-free) dial,
+	// and cleared under c.mu once that attempt completes, success or
+	// failure. Without it, two calls that hit ErrConnectionClosed at nearly
+	// the same moment can both pass the closed/backoffUntil gate —
+	// backoffUntil is only updated once a dial finishes, so a second
+	// concurrent caller sees the same gate state the first one did — and
+	// both dial and swap: the second commit then displaces and closes the
+	// first's freshly-committed session, silently invalidating a session the
+	// first caller was already told (ok=true) to retry against. reconnecting
+	// makes a second concurrent caller bail out immediately instead of
+	// racing its own redundant dial.
+	reconnecting bool
 }
 
-// NewManager connects to all configured MCP servers, discovers their tools,
-// and namespaces them. The transports parameter is optional: when nil, transports
-// are created from configs. When provided (for testing), each transport[i]
-// corresponds to configs[i].
-func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, transports []mcpsdk.Transport) (*Manager, error) {
+// ServerOutcome reports a per-server failure at one assembly stage. Stage is
+// "connect" (transport build, connect handshake, or tools/list) or "register".
+type ServerOutcome struct {
+	Name  string
+	Stage string
+	Err   error
+}
+
+// failedConn builds a conn recording a connect-stage failure for cfg. session,
+// tools, and origNames stay at their zero values: a failed conn has no live
+// session and contributes no tools to ToolDefinitions/RegisterTools. dial is
+// still stored so a later task could in principle retry the failed server.
+func failedConn(cfg mcpconfig.ServerConfig, dial func(context.Context) (mcpsdk.Transport, error), err error) conn {
+	return conn{name: cfg.Name, cfg: cfg, dial: dial, status: "failed", lastErr: err, lastErrAt: time.Now()}
+}
+
+// NewManager connects to all configured MCP servers concurrently and
+// discovers their tools, namespacing them. Each server's transport build,
+// connect, and tools/list run in their own goroutine under their own 10s
+// timeout (derived from ctx), so one slow or hung server cannot delay or
+// starve the others. It does not abort the batch when one server's transport
+// build, connect, or tools/list fails: a conn is retained for every config
+// (failed ones with status "failed" and no session), and each such failure is
+// reported in the returned []ServerOutcome with Stage "connect". The manager
+// is nil only when configs is empty. dials is optional: when nil, or when
+// dials[i] is absent, config i dials its transport via the production
+// closure (transportForConfig). When provided (for testing, or a hermetic
+// in-memory fake), dials[i] corresponds to configs[i]. Every conn stores the
+// dial closure it used — including a conn whose initial connect failed — so
+// a later reconnect (Task 8) can call it again.
+//
+// conns is preallocated to len(configs) and each goroutine writes exactly one
+// index (mgr.conns[i], matching configs[i]), so the result is always in
+// config order regardless of which server's connect finishes first — no
+// mutex is needed on conns itself, since every index has exactly one writer
+// and mgr.conns is only read after wg.Wait() establishes happens-before.
+func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, dials []func(context.Context) (mcpsdk.Transport, error)) (*Manager, []ServerOutcome) {
 	if len(configs) == 0 {
 		return nil, nil
 	}
@@ -45,141 +125,447 @@ func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, transport
 		Version: "v1",
 	}, nil)
 
-	mgr := &Manager{}
+	mgr := &Manager{conns: make([]conn, len(configs))}
+	var wg sync.WaitGroup
+	wg.Add(len(configs))
 	for i, cfg := range configs {
-		var transport mcpsdk.Transport
-		if transports != nil && i < len(transports) {
-			transport = transports[i]
-		} else {
-			var err error
-			transport, err = transportForConfig(cfg)
-			if err != nil {
-				mgr.Close()
-				return nil, fmt.Errorf("MCP server %q: %w", cfg.Name, err)
-			}
+		dial := productionDial(cfg)
+		if dials != nil && i < len(dials) {
+			dial = dials[i]
 		}
+		go func(i int, cfg mcpconfig.ServerConfig, dial func(context.Context) (mcpsdk.Transport, error)) {
+			defer wg.Done()
+			mgr.conns[i] = connectOne(ctx, client, cfg, dial)
+		}(i, cfg, dial)
+	}
+	wg.Wait()
 
-		session, err := client.Connect(ctx, transport, nil)
-		if err != nil {
-			mgr.Close()
-			return nil, fmt.Errorf("MCP server %q connect: %w", cfg.Name, err)
+	var outcomes []ServerOutcome
+	for i := range mgr.conns {
+		c := &mgr.conns[i]
+		if c.status != "connected" {
+			outcomes = append(outcomes, ServerOutcome{Name: c.name, Stage: "connect", Err: c.lastErr})
 		}
+	}
 
-		// Discover tools from the server.
-		result, err := session.ListTools(ctx, nil)
-		if err != nil {
-			_ = session.Close()
-			mgr.Close()
-			return nil, fmt.Errorf("MCP server %q list tools: %w", cfg.Name, err)
-		}
+	return mgr, outcomes
+}
 
-		var tools []llm.ToolDefinition
-		origNames := make(map[string]string, len(result.Tools))
-		for _, t := range result.Tools {
-			namespacedName := sanitizeToolName(cfg.Name + "__" + t.Name)
-			origNames[namespacedName] = t.Name
-			params := mcpSchemaToParams(t.InputSchema)
-			tools = append(tools, llm.ToolDefinition{
-				Name:        namespacedName,
-				Description: t.Description,
-				Parameters:  params,
-			})
-		}
+// connectOne dials a transport via dial, connects to a single MCP server, and
+// discovers its tools — all bounded by a 10s timeout derived from ctx. Any
+// failure dialing, connecting, or listing tools yields a "failed" conn
+// recording the error; NewManager turns that into a connect-stage
+// ServerOutcome. dial is stored on the returned conn regardless of outcome.
+func connectOne(ctx context.Context, client *mcpsdk.Client, cfg mcpconfig.ServerConfig, dial func(context.Context) (mcpsdk.Transport, error)) conn {
+	perServerCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 
-		mgr.conns = append(mgr.conns, conn{
-			name:      cfg.Name,
-			session:   session,
-			tools:     tools,
-			origNames: origNames,
+	transport, err := dial(perServerCtx)
+	if err != nil {
+		return failedConn(cfg, dial, err)
+	}
+
+	session, err := client.Connect(perServerCtx, transport, nil)
+	if err != nil {
+		return failedConn(cfg, dial, err)
+	}
+
+	// Discover tools from the server.
+	result, err := session.ListTools(perServerCtx, nil)
+	if err != nil {
+		_ = session.Close()
+		return failedConn(cfg, dial, err)
+	}
+
+	var tools []llm.ToolDefinition
+	origNames := make(map[string]string, len(result.Tools))
+	for _, t := range result.Tools {
+		namespacedName := sanitizeToolName(cfg.Name + "__" + t.Name)
+		origNames[namespacedName] = t.Name
+		params := mcpSchemaToParams(t.InputSchema)
+		tools = append(tools, llm.ToolDefinition{
+			Name:        namespacedName,
+			Description: t.Description,
+			Parameters:  params,
 		})
 	}
 
-	return mgr, nil
+	return conn{
+		name:      cfg.Name,
+		cfg:       cfg,
+		dial:      dial,
+		client:    client,
+		session:   session,
+		tools:     tools,
+		origNames: origNames,
+		status:    "connected",
+	}
 }
 
-// ToolDefinitions returns all namespaced tool definitions from all MCP servers.
+// productionDial returns the default dial factory for cfg: build a fresh
+// transport via transportForConfig on every call. NewManager uses this
+// whenever the caller doesn't supply an explicit dials[i] — i.e., real,
+// non-test use, and also real reconnects (Task 8), since transportForConfig
+// builds a brand-new transport each time it runs.
+func productionDial(cfg mcpconfig.ServerConfig) func(context.Context) (mcpsdk.Transport, error) {
+	return func(context.Context) (mcpsdk.Transport, error) { return transportForConfig(cfg) }
+}
+
+// ToolDefinitions returns namespaced tool definitions from servers whose
+// tools are actually registered and callable (status "connected"). A server
+// demoted to "failed" during RegisterTools contributes no definitions, so the
+// system-prompt-visible tool surface always matches the callable set.
 func (m *Manager) ToolDefinitions() []llm.ToolDefinition {
 	if m == nil {
 		return nil
 	}
 	var defs []llm.ToolDefinition
-	for _, c := range m.conns {
+	for i := range m.conns {
+		c := &m.conns[i]
+		if c.status != "connected" {
+			continue
+		}
 		defs = append(defs, c.tools...)
 	}
 	return defs
 }
 
-// RegisterTools registers execution closures for all MCP tools into the
-// given tool.Registry. Returns an error if any namespaced tool name collides
-// with an existing registration or fails validation.
-func (m *Manager) RegisterTools(reg *tool.Registry) error {
+// RegisterTools registers execution closures for all MCP tools from
+// connected servers into the given tool.Registry. It does not abort the
+// whole batch when one server's tools fail name validation or collide with
+// an existing registration: that server is demoted to status "failed" and
+// reported in the returned []ServerOutcome with Stage "register", and the
+// next server is attempted. Only the namespaced names THAT SERVER itself
+// successfully registered before the failure are rolled back — a name that
+// already belongs to an earlier winner (or a built-in tool) is never
+// touched, because it was never added to the failing server's own list.
+func (m *Manager) RegisterTools(reg *tool.Registry) []ServerOutcome {
 	if m == nil {
 		return nil
 	}
-	for _, conn := range m.conns {
-		for _, td := range conn.tools {
+	var outcomes []ServerOutcome
+	for i := range m.conns {
+		c := &m.conns[i]
+		if c.status != "connected" {
+			continue
+		}
+
+		var added []string
+		for _, td := range c.tools {
 			// Validate the namespaced name (length, charset).
 			if err := llm.ValidateToolName(td.Name); err != nil {
-				return fmt.Errorf("MCP tool %q: %w", td.Name, err)
+				outcomes = append(outcomes, failRegister(c, reg, added, fmt.Errorf("MCP tool %q: %w", td.Name, err)))
+				break
 			}
 
-			// Check for collision with existing tools. This is safe because
-			// RegisterTools is called only during single-threaded session init,
-			// after registerCoreTools has already completed.
+			// Check for collision with existing tools (built-ins, or an
+			// earlier server's tools within this same call). This is safe
+			// because RegisterTools is called only during single-threaded
+			// session init, after registerCoreTools has already completed.
 			if reg.Get(td.Name) != nil {
-				return fmt.Errorf("MCP tool %q collides with existing tool", td.Name)
+				outcomes = append(outcomes, failRegister(c, reg, added, fmt.Errorf("MCP tool %q collides with existing tool", td.Name)))
+				break
 			}
 
 			// Look up the original MCP tool name for CallTool.
-			origName := conn.origNames[td.Name]
-			sess := conn.session
+			origName := c.origNames[td.Name]
 
 			if err := reg.Register(tool.RegisteredTool{
 				Tool: llm.Tool{Definition: td},
 				Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-					result, err := sess.CallTool(ctx, &mcpsdk.CallToolParams{
-						Name:      origName,
-						Arguments: args,
-					})
+					call := func(sess *mcpsdk.ClientSession) (*mcpsdk.CallToolResult, error) {
+						return sess.CallTool(ctx, &mcpsdk.CallToolParams{
+							Name:      origName,
+							Arguments: args,
+						})
+					}
+
+					// c.lockedSession(), not a session captured once at
+					// RegisterTools time: Task 8 lets session change out from
+					// under a long-lived conn via a reconnect swap, so every
+					// call must read the CURRENT session under c.mu.
+					result, err := call(c.lockedSession())
+					if err != nil && errors.Is(err, mcpsdk.ErrConnectionClosed) {
+						// Channel A: the transport itself dropped (SDK taxonomy:
+						// ErrClientClosing/ErrServerClosing only — never a ctx
+						// cancellation, never a plain JSON-RPC error). Demote the
+						// conn and, if reconnect actually swaps in a healed
+						// session, retry this same call once against it.
+						c.markDegraded(err)
+						if newSess, ok := c.reconnect(ctx); ok {
+							if m.OnReconnect != nil {
+								m.OnReconnect(c.name)
+							}
+							result, err = call(newSess)
+						}
+					}
 					if err != nil {
+						// Final Channel-A error return: a ctx cancellation, a plain
+						// JSON-RPC error, or an ErrConnectionClosed that reconnect
+						// either didn't attempt or couldn't heal (in which case
+						// markDegraded already stamped lastErr above; recording it
+						// again here is harmless — it doesn't touch status).
+						c.recordError(err)
 						return nil, err
 					}
-					return mcpResultToString(result), nil
+					body := mcpResultToString(result)
+					if result != nil && result.IsError {
+						// Channel B: the server reported a tool-level error (e.g. an
+						// upstream 4xx). Return it through the error path so the tool
+						// result reaches the model as an error-typed tool_result and
+						// renders red, instead of a green success carrying the error text.
+						//
+						// Record the actual body text as lastErr — NOT the sentinel
+						// error returned below — so Servers() surfaces the real
+						// upstream message (e.g. "upstream 400") rather than the
+						// generic sentinel, which carries no diagnostic detail. status
+						// stays whatever it already was (typically "connected"): the
+						// server is reachable and responding, just reporting an
+						// application-level error for this call.
+						c.recordError(errors.New(body))
+						return body, errors.New("MCP tool reported an error")
+					}
+					return body, nil
 				},
 			}); err != nil {
-				return fmt.Errorf("registering MCP tool %q: %w", td.Name, err)
+				outcomes = append(outcomes, failRegister(c, reg, added, fmt.Errorf("registering MCP tool %q: %w", td.Name, err)))
+				break
 			}
+
+			added = append(added, td.Name)
 		}
 	}
-	return nil
+	return outcomes
 }
 
-// Servers returns per-server info including name and namespaced tool names.
+// failRegister rolls back exactly the names c itself added to reg (added)
+// before hitting err, demotes c to status "failed", and returns the
+// ServerOutcome to report. It must never be passed a name that belongs to a
+// different conn: added tracks only names the CALLER appended after its own
+// successful reg.Register calls, so a collision with an earlier winner's
+// name — which never entered this conn's added list — leaves that name alone.
+func failRegister(c *conn, reg *tool.Registry, added []string, err error) ServerOutcome {
+	for _, n := range added {
+		reg.Remove(n)
+	}
+	c.status = "failed"
+	c.lastErr = err
+	c.lastErrAt = time.Now()
+	return ServerOutcome{Name: c.name, Stage: "register", Err: err}
+}
+
+// Servers returns per-server info including name, namespaced tool names,
+// live status, and the last error of any kind (including a Channel-B
+// application error that does not change status). It reads each conn's live
+// state under its mutex rather than a construction-time snapshot, so a
+// status or error change from a concurrent Close(), reconnect swap (Task 8),
+// or exec closure (Task 13) is always reflected.
 func (m *Manager) Servers() []mcpconfig.ServerInfo {
 	if m == nil {
 		return nil
 	}
 	out := make([]mcpconfig.ServerInfo, len(m.conns))
-	for i, c := range m.conns {
+	for i := range m.conns {
+		c := &m.conns[i]
+		c.mu.Lock()
+		name := c.name
+		status := c.status
+		lastErr := c.lastErr
 		tools := make([]string, len(c.tools))
 		for j, td := range c.tools {
 			tools[j] = td.Name
 		}
-		out[i] = mcpconfig.ServerInfo{Name: c.name, Tools: tools}
+		c.mu.Unlock()
+		out[i] = mcpconfig.ServerInfo{Name: name, Tools: tools, Status: status, Error: errString(lastErr)}
 	}
 	return out
 }
 
-// Close shuts down all MCP server connections.
+// errString returns err's message, or "" if err is nil — a nil-safe
+// conversion so a healthy server (lastErr never set) reports Error=="".
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// Close shuts down all MCP server connections. Each conn's mutex serializes
+// Close with a future reconnect swap (Tasks 7-8): closed is set and the
+// session reference cleared under the lock, then the session itself is
+// closed outside the lock so a slow server shutdown cannot block other
+// conns' Close or a concurrent Servers() call.
 func (m *Manager) Close() {
 	if m == nil {
 		return
 	}
-	for _, c := range m.conns {
-		if c.session != nil {
-			_ = c.session.Close()
+	for i := range m.conns {
+		c := &m.conns[i]
+		c.mu.Lock()
+		c.closed = true
+		sess := c.session
+		c.session = nil
+		c.mu.Unlock()
+		if sess != nil {
+			_ = sess.Close()
 		}
 	}
+}
+
+// lockedSession returns c's current session under c.mu, so a concurrent
+// reconnect swap or Close is never observed mid-update. The exec closure
+// calls this on every invocation — rather than capturing session once, at
+// RegisterTools time, the way it did before Task 8 — because a reconnect
+// swap can now change session out from under a long-lived conn.
+func (c *conn) lockedSession() *mcpsdk.ClientSession {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.session
+}
+
+// markDegraded records a dropped connection (mcpsdk.ErrConnectionClosed) on
+// c, demoting its status to "degraded". It does not touch session, dial, or
+// backoffUntil: a subsequent call to reconnect (gated by backoffUntil)
+// decides whether THIS call may trigger a redial.
+func (c *conn) markDegraded(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.status = "degraded"
+	c.lastErr = err
+	c.lastErrAt = time.Now()
+}
+
+// recordError records the last error observed on c — a Channel-A transport
+// error or a Channel-B application error (the server itself reported a tool
+// result as an error) — WITHOUT changing status. Unlike markDegraded, a
+// Channel-B failure means the server is reachable and responding; it is only
+// this call's result that failed, so status must stay whatever it already
+// was (typically "connected"). Calling recordError after markDegraded already
+// ran for the same failed call is harmless: it just overwrites lastErr with
+// the same (or, after a failed retry, a newer) error.
+func (c *conn) recordError(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastErr = err
+	c.lastErrAt = time.Now()
+}
+
+const (
+	// reconnectDialTimeout bounds a lazy reconnect's redial (see reconnect),
+	// independent of the triggering call's own context — see reconnect's doc
+	// comment for why.
+	reconnectDialTimeout = 10 * time.Second
+	// reconnectBackoff is how long a conn waits before the NEXT lazy
+	// reconnect attempt, whether the attempt that set it succeeded or
+	// failed. On success, it stops a burst of calls against a
+	// freshly-reconnected server from redialing needlessly. On failure, it
+	// stops a burst of calls against a still-dead server from each
+	// re-paying the full dial timeout.
+	reconnectBackoff = 30 * time.Second
+)
+
+// reconnect attempts to heal c after one of its calls reported
+// mcpsdk.ErrConnectionClosed. It bails out immediately, without dialing, if c
+// is already closed, a reconnect is already in flight for c (reconnecting),
+// or a previous reconnect attempt's backoff window hasn't elapsed yet —
+// backoffUntil's zero value means "try immediately", which is what every conn
+// starts with. reconnecting is set under c.mu before the lock is released
+// for the dial, so a second concurrent caller sees it immediately upon
+// acquiring the lock, before doing any dialing of its own — see the field's
+// own doc comment for why this matters.
+//
+// The dial itself is bounded by its own reconnectDialTimeout, derived from
+// context.Background() rather than from ctx: a reconnect heals the conn for
+// every future caller, not just the one whose call happened to hit the drop,
+// so it deliberately does not inherit one triggering call's deadline or
+// cancellation — the discrimination tests establish that ctx expiry and a
+// dropped connection are independent signals in the first place, so there is
+// no correctness reason to couple them. ctx is accepted only because the exec
+// closure naturally has one to hand; it is otherwise unused here. (Flagged
+// for review: this is a judgment call, not something the plan spelled out.)
+//
+// c.mu is released for the dial (which can take up to reconnectDialTimeout)
+// so a concurrent Close() is never blocked behind a slow or hung server, then
+// re-acquired (via swap) to commit or discard the result. A dial that
+// completes after Close() has already run is discarded: its
+// freshly-connected session is closed immediately and reconnect reports
+// failure, exactly as if the dial had never happened — see swap.
+//
+// On success, reconnect returns the new session and true; the exec closure
+// retries the triggering call once against it. On any failure (bailed out,
+// dial/Connect error, or Close() won the race), it returns (nil, false) and
+// the exec closure surfaces the original triggering error.
+func (c *conn) reconnect(ctx context.Context) (*mcpsdk.ClientSession, bool) {
+	c.mu.Lock()
+	if c.closed || c.reconnecting || time.Now().Before(c.backoffUntil) {
+		c.mu.Unlock()
+		return nil, false
+	}
+	c.reconnecting = true
+	dial := c.dial
+	client := c.client
+	c.mu.Unlock()
+
+	dialCtx, cancel := context.WithTimeout(context.Background(), reconnectDialTimeout)
+	defer cancel()
+
+	transport, err := dial(dialCtx)
+	if err == nil {
+		var newSess *mcpsdk.ClientSession
+		newSess, err = client.Connect(dialCtx, transport, nil)
+		if err == nil {
+			old, committed := c.swap(newSess)
+			if !committed {
+				// Close() won the race while we were dialing: discard the
+				// freshly-connected session rather than leak or publish it.
+				_ = newSess.Close()
+				return nil, false
+			}
+			if old != nil {
+				_ = old.Close() // displaced session; closed outside the lock per swap's contract
+			}
+			return newSess, true
+		}
+	}
+
+	// The redial itself failed (dial or Connect error). Record the failure
+	// and apply the same backoff as a success, so a burst of calls against a
+	// still-dead server fails fast — returning the ORIGINAL triggering
+	// error — instead of each re-paying a fresh dial timeout. Clear
+	// reconnecting either way: this attempt is over, so a future call is
+	// once again free to try (subject to the backoff just set).
+	c.mu.Lock()
+	c.reconnecting = false
+	if !c.closed {
+		c.lastErr = err
+		c.lastErrAt = time.Now()
+		c.backoffUntil = time.Now().Add(reconnectBackoff)
+	}
+	c.mu.Unlock()
+	return nil, false
+}
+
+// swap commits newSess as c's live session, unless c was closed while the
+// (unlocked) dial that produced newSess was in flight. On success, it
+// returns the displaced (old) session for the caller to Close() OUTSIDE any
+// lock, and resets backoffUntil so the next reconnect attempt waits
+// reconnectBackoff. On failure (c.closed is true), it returns (nil, false);
+// newSess is then the caller's responsibility to discard. Either way, it
+// clears reconnecting: the in-flight attempt that called swap is now
+// complete, so a future caller (there cannot be a concurrent one right now —
+// reconnecting excluded it) is once again free to try.
+func (c *conn) swap(newSess *mcpsdk.ClientSession) (old *mcpsdk.ClientSession, committed bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reconnecting = false
+	if c.closed {
+		return nil, false
+	}
+	old = c.session
+	c.session = newSess
+	c.status = "connected"
+	c.backoffUntil = time.Now().Add(reconnectBackoff)
+	return old, true
 }
 
 // sanitizeToolName replaces characters invalid in LLM tool names (e.g. hyphens)

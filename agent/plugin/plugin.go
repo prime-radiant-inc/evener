@@ -85,6 +85,11 @@ type Instance struct {
 	Agents       map[string]Agent               // namespaced as "plugin-name:agent-name"
 	Hooks        map[HookEvent][]RegisteredHook // keyed by event type
 	MCPConfigs   []mcpconfig.ServerConfig       // namespaced as "plugin_<name>_<server>"
+	// MCPConfigWarnings names non-fatal MCP config problems discovered while
+	// loading this plugin (an unreadable/malformed .mcp.json file, malformed
+	// inline mcpServers JSON, or an inline entry that fails validation): the
+	// affected layer is skipped, but the plugin's skills/agents/hooks still load.
+	MCPConfigWarnings []string
 
 	// UnsupportedHooks is the set of Claude-recognized events declared by this
 	// plugin that serf does not currently fire (tier: reserved-placeholder).
@@ -113,32 +118,48 @@ func discoverPluginSkills(pluginDir, pluginName string) map[string]skill.SkillMe
 // discoverPluginMCPConfigs reads MCP server configs from a plugin's .mcp.json
 // file and/or inline manifest mcpServers field. Server names are prefixed with
 // "plugin_<pluginName>_" and ${CLAUDE_PLUGIN_ROOT} is expanded to pluginDir.
-func discoverPluginMCPConfigs(pluginDir string, manifestMCPServers json.RawMessage, pluginName string) ([]mcpconfig.ServerConfig, error) {
+//
+// Config-layer problems — an unreadable/malformed .mcp.json file, malformed
+// inline mcpServers JSON, or an inline entry that fails ParseServerMap
+// validation (empty name, unset ${VAR}) — degrade to an entry in the returned
+// warnings slice instead of aborting the plugin load; the affected layer is
+// simply skipped. The error return is reserved for failures none of these
+// config-parse paths produce.
+func discoverPluginMCPConfigs(pluginDir string, manifestMCPServers json.RawMessage, pluginName string) ([]mcpconfig.ServerConfig, []string, error) {
 	var layers [][]mcpconfig.ServerConfig
+	var warnings []string
 
 	// Layer 1: .mcp.json file in the plugin directory.
 	mcpPath := filepath.Join(pluginDir, ".mcp.json")
-	if fileConfigs, err := loadPluginMCPFile(mcpPath, pluginDir); err == nil {
+	fileConfigs, err := loadPluginMCPFile(mcpPath, pluginDir)
+	switch {
+	case err == nil:
 		layers = append(layers, fileConfigs)
+	case os.IsNotExist(err):
+		// Missing file is not an error.
+	default:
+		warnings = append(warnings, fmt.Sprintf("plugin %q: MCP config failed: %v", pluginName, err))
 	}
-	// Missing file is not an error.
 
 	// Layer 2: Inline mcpServers from the manifest.
 	if len(manifestMCPServers) > 0 {
 		expanded := expandPluginRoot(string(manifestMCPServers), pluginDir)
 		var servers map[string]json.RawMessage
-		if err := json.Unmarshal([]byte(expanded), &servers); err == nil && len(servers) > 0 {
+		if err := json.Unmarshal([]byte(expanded), &servers); err != nil {
+			warnings = append(warnings, fmt.Sprintf("plugin %q: MCP config failed: %v", pluginName, err))
+		} else if len(servers) > 0 {
 			inlineConfigs, err := mcpconfig.ParseServerMap(servers, "inline")
 			if err != nil {
-				return nil, err
+				warnings = append(warnings, fmt.Sprintf("plugin %q: MCP config failed: %v", pluginName, err))
+			} else {
+				layers = append(layers, inlineConfigs)
 			}
-			layers = append(layers, inlineConfigs)
 		}
 	}
 
 	merged := mcpconfig.Merge(layers...)
 	if len(merged) == 0 {
-		return nil, nil
+		return nil, warnings, nil
 	}
 
 	// Namespace server names.
@@ -146,7 +167,7 @@ func discoverPluginMCPConfigs(pluginDir string, manifestMCPServers json.RawMessa
 	for i := range merged {
 		merged[i].Name = prefix + merged[i].Name
 	}
-	return merged, nil
+	return merged, warnings, nil
 }
 
 // loadPluginMCPFile reads a plugin's .mcp.json file, expands
@@ -224,11 +245,12 @@ func Load(dir string) (Instance, error) {
 	lp.UnsupportedHooks = unsupportedHooks
 	lp.UnknownHooks = unknownHooks
 
-	mcpConfigs, err := discoverPluginMCPConfigs(resolved, manifest.MCPServers, manifest.Name)
+	mcpConfigs, mcpWarnings, err := discoverPluginMCPConfigs(resolved, manifest.MCPServers, manifest.Name)
 	if err != nil {
 		return Instance{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
 	}
 	lp.MCPConfigs = mcpConfigs
+	lp.MCPConfigWarnings = mcpWarnings
 
 	return lp, nil
 }
