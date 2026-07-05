@@ -8,6 +8,21 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 )
 
+// gitExecTimeout bounds every git subprocess exec this file runs for the
+// snapshot (both the context deadline and the equal timeoutMS each exec
+// passes to ExecCommand — ExecCommand arms its own timer from timeoutMS,
+// independent of the context, so both must derive from the same value for
+// the bound to hold). It is a package-level var rather than a const solely
+// so tests can widen it for the duration of a single test (via a
+// t.Cleanup-scoped reassignment) when scheduler contention would otherwise
+// starve a trivial git invocation past a fixed deadline unrelated to the
+// behavior under test — see execenv.gitExecTimeout for the sibling case this
+// mirrors. Production always runs with this 2s default.
+var gitExecTimeout = 2 * time.Second
+
+// gitExecTimeoutMS is gitExecTimeout in the milliseconds ExecCommand takes.
+func gitExecTimeoutMS() int { return int(gitExecTimeout / time.Millisecond) }
+
 // gitOriginURL returns the git remote origin URL for the repo at cwd,
 // or "" if not a git repo or no origin remote is configured.
 func gitOriginURL(env execenv.ExecutionEnvironment, cwd string) string {
@@ -18,9 +33,9 @@ func gitOriginURL(env execenv.ExecutionEnvironment, cwd string) string {
 	if cwd == "" {
 		cwd = env.WorkingDirectory()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), gitExecTimeout)
 	defer cancel()
-	res, err := env.ExecCommand(ctx, "git remote get-url origin", 2_000, cwd, nil)
+	res, err := env.ExecCommand(ctx, "git remote get-url origin", gitExecTimeoutMS(), cwd, nil)
 	if err != nil || res.ExitCode != 0 {
 		return ""
 	}
@@ -37,9 +52,9 @@ func snapshotGit(env execenv.ExecutionEnvironment, cwd string) (inRepo bool, bra
 	}
 
 	run := func(cmd string) (execenv.ExecResult, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), gitExecTimeout)
 		defer cancel()
-		return env.ExecCommand(ctx, cmd, 2_000, cwd, nil)
+		return env.ExecCommand(ctx, cmd, gitExecTimeoutMS(), cwd, nil)
 	}
 
 	inside, err := run("git rev-parse --is-inside-work-tree")

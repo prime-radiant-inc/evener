@@ -23,6 +23,17 @@ var gitExecTimeout = 2 * time.Second
 // gitExecTimeoutMS is gitExecTimeout in the milliseconds ExecCommand takes.
 func gitExecTimeoutMS() int { return int(gitExecTimeout / time.Millisecond) }
 
+// SetGitExecTimeoutForTesting overrides gitExecTimeout for the duration of a
+// test, returning a restore func. gitExecTimeout is unexported, so callers
+// outside this package (which cannot reassign it directly the way this
+// package's own tests do) use this to widen it — see gitExecTimeout's doc
+// comment for why a test would ever need to.
+func SetGitExecTimeoutForTesting(d time.Duration) (restore func()) {
+	orig := gitExecTimeout
+	gitExecTimeout = d
+	return func() { gitExecTimeout = orig }
+}
+
 // GitRootOrEmpty returns the absolute path of the git working-tree root
 // containing cwd, or "" if cwd is not inside a git repository (or git is
 // unavailable). It runs `git rev-parse --show-toplevel` in env with a short
