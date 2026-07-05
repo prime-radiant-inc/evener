@@ -76,7 +76,7 @@ test-install:
 # libraries. Under go.work, `./...` resolves per-module, so the gates must loop
 # over each module to cover the whole repo (root-only `./...` silently skips the
 # agent/llm/auth library test suites and lint).
-GO_MODULES := . agent llm auth fuzz invariant
+GO_MODULES := . agent llm auth envvars fuzz invariant
 
 # MEMCAP runs a recipe under a hard per-run memory ceiling (a systemd user scope)
 # so a leaky test or fuzz run is OOM-killed individually instead of firing the
