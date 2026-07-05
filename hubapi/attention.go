@@ -48,3 +48,33 @@ func RollupRank(state string) int {
 		return 0
 	}
 }
+
+// StateWord returns the unified display word for a normalized attention
+// state — one word, shared verbatim by the web (cmd/serf-hub's stateLabel)
+// and the TUI (displayWord) so the two surfaces can never independently
+// drift on vocabulary (Track A §1). askPending selects between the two
+// needs-you bands (Track A §2 ask-tiering) and is ignored for every other
+// state.
+func StateWord(state string, askPending bool) string {
+	switch state {
+	case "errored":
+		return "Error"
+	case "awaiting":
+		if askPending {
+			return "Question waiting"
+		}
+		return "Your move"
+	case "active":
+		return "Working"
+	case "warning":
+		return "Warning"
+	case "idle":
+		return "Idle"
+	case "ended", "closed":
+		return "Ended"
+	case "notLoaded":
+		return "Not loaded"
+	default:
+		return state
+	}
+}

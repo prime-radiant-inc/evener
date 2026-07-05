@@ -50,3 +50,27 @@ func TestAttentionRank_ErroredOutranksAwaiting(t *testing.T) {
 		t.Fatal("RollupRank: errored must outrank awaiting")
 	}
 }
+
+func TestStateWord(t *testing.T) {
+	cases := []struct {
+		state      string
+		askPending bool
+		want       string
+	}{
+		{"active", false, "Working"},
+		{"awaiting", true, "Question waiting"},
+		{"awaiting", false, "Your move"},
+		{"warning", false, "Warning"},
+		{"warning", true, "Warning"}, // askPending is meaningless outside "awaiting"
+		{"errored", false, "Error"},
+		{"idle", false, "Idle"},
+		{"ended", false, "Ended"},
+		{"closed", false, "Ended"},
+		{"notLoaded", false, "Not loaded"},
+	}
+	for _, c := range cases {
+		if got := StateWord(c.state, c.askPending); got != c.want {
+			t.Errorf("StateWord(%q, %v) = %q, want %q", c.state, c.askPending, got, c.want)
+		}
+	}
+}
