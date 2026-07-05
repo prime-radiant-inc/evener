@@ -5,7 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 )
 
 // advanceGitRepo commits a change to file in dir, advancing HEAD.
@@ -88,6 +90,26 @@ func TestUpdateAutoUpgrade_OnlyTouchesAutoUpgradeEnabled(t *testing.T) {
 	}
 	if _, err := os.Stat(first.InstallPath); err != nil {
 		t.Fatal("old sha-dir was deleted; UpdateAutoUpgrade must not GC")
+	}
+
+	// Opt back out — a plugin that WAS auto-upgrade-enabled must stop being
+	// touched the moment the flag flips back off, not just when it was never
+	// enabled in the first place.
+	if err := m.SetAutoUpgrade("widget", "acme", false); err != nil {
+		t.Fatalf("SetAutoUpgrade(false): %v", err)
+	}
+	advanceGitRepo(t, pluginRepo, "extra.txt", "v3")
+	beforeOptOut := updated[0].Entry.InstallPath
+	updated, err = m.UpdateAutoUpgrade(context.Background())
+	if err != nil {
+		t.Fatalf("UpdateAutoUpgrade after opt-out: %v", err)
+	}
+	if len(updated) != 0 {
+		t.Fatalf("UpdateAutoUpgrade touched a plugin after it opted back out: %+v", updated)
+	}
+	reg, _ = LoadRegistry(m.registryPath())
+	if reg.Plugins["widget@acme"][0].InstallPath != beforeOptOut {
+		t.Fatal("registry moved despite autoUpgrade having been turned back off")
 	}
 }
 
@@ -177,5 +199,94 @@ func TestUpdateAutoUpgrade_AggregatesFailuresButKeepsGoing(t *testing.T) {
 	}
 	if len(updated) != 0 {
 		t.Fatalf("updated = %+v, want none", updated)
+	}
+}
+
+// TestUpdateAutoUpgrade_ConcurrentSweepDoesNotDuplicateReport reproduces the
+// TOCTOU two overlapping sweeps can hit (the periodic tick racing a manual
+// serf/plugin/checkNow, or checkNow from two clients): sweep A completes the
+// real upgrade while sweep B is still holding a pre-upgrade view of the
+// plugin. B must not ALSO report the plugin as updated — its change
+// detection has to be computed fresh, at the moment it actually acts, not
+// from whatever it observed before A ran.
+//
+// The interleaving is forced deterministically rather than by luck: the test
+// takes the manager's lock itself before starting sweep B, so B's own
+// upgrade attempt (inside UpdateAutoUpgrade, gated on the same lock) cannot
+// possibly proceed until the test releases it — that part has no race
+// window. Sweep A is simulated with a direct, lock-holding upgradeLocked
+// call standing in for "some other sweep already got there first". The one
+// timing-sensitive detail is that B's unlocked "which plugins exist" read
+// should happen before sweep A's write for the interleaving to be
+// interesting; a short sleep biases the scheduler toward that (a plain file
+// read vs. a git clone). Confirmed by temporarily reintroducing the old
+// stale-snapshot comparison in UpdateAutoUpgrade: this test fails against
+// that code and passes against the fix.
+func TestUpdateAutoUpgrade_ConcurrentSweepDoesNotDuplicateReport(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	mktRepo, pluginRepo := makeGitBackedMarketplace(t, "widget")
+
+	root := t.TempDir()
+	m1 := NewManager(root)
+	m2 := NewManager(root) // a second "client" contending for the same lock file
+
+	if _, err := m1.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	first, err := m1.Install(context.Background(), "widget", "acme")
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if err := m1.SetAutoUpgrade("widget", "acme", true); err != nil {
+		t.Fatalf("SetAutoUpgrade: %v", err)
+	}
+	advanceGitRepo(t, pluginRepo, "extra.txt", "v2")
+
+	// Hold the lock ourselves so sweep B (started below) is guaranteed to
+	// block on its own upgrade attempt until we release it.
+	release, err := acquireLock(m1.lockPath(), 5*time.Second)
+	if err != nil {
+		t.Fatalf("acquireLock: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	var bUpdated []UpgradedPlugin
+	var bErr error
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		bUpdated, bErr = m2.UpdateAutoUpgrade(context.Background())
+	}()
+
+	// Bias the scheduler toward sweep B completing its cheap, unlocked "list
+	// installed plugins" read before we perform the real upgrade below. This
+	// cannot make the test flaky in the other direction: B's per-plugin work
+	// is gated on the lock we hold regardless of when this fires.
+	time.Sleep(20 * time.Millisecond)
+
+	// Simulate sweep A completing the real upgrade while B is blocked.
+	entry, changed, skipped, err := m1.upgradeLocked(context.Background(), "widget", "acme", false)
+	if err != nil || skipped || !changed {
+		t.Fatalf("setup: direct upgradeLocked changed=%v skipped=%v err=%v", changed, skipped, err)
+	}
+	if entry.InstallPath == first.InstallPath {
+		t.Fatal("setup: direct upgrade did not move to a new sha-dir")
+	}
+
+	release()
+	wg.Wait()
+
+	if bErr != nil {
+		t.Fatalf("UpdateAutoUpgrade (sweep B): %v", bErr)
+	}
+	if len(bUpdated) != 0 {
+		t.Fatalf("sweep B reported %+v as updated; sweep A already performed this exact upgrade — duplicate report", bUpdated)
+	}
+
+	reg, _ := LoadRegistry(m1.registryPath())
+	if reg.Plugins["widget@acme"][0].GitCommitSha != entry.GitCommitSha {
+		t.Fatal("registry not left at the sha sweep A upgraded to")
 	}
 }

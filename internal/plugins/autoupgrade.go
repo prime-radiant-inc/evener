@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 // UpgradedPlugin is one installed plugin whose sha actually changed during an
@@ -14,6 +15,20 @@ type UpgradedPlugin struct {
 	Plugin      string
 	Marketplace string
 	Entry       InstallEntry
+}
+
+// upgradeAuto acquires the manager lock and, while holding it, upgrades
+// plugin only if it is (still) eligible for unattended upgrade: AutoUpgrade
+// enabled, git-backed. See upgradeLocked for why the eligibility check and
+// the change-detection both happen fresh, under this same lock acquisition,
+// rather than against a snapshot taken before the lock was acquired.
+func (m *Manager) upgradeAuto(ctx context.Context, plugin, marketplace string) (entry InstallEntry, changed, skipped bool, err error) {
+	release, err := acquireLock(m.lockPath(), 30*time.Second)
+	if err != nil {
+		return InstallEntry{}, false, false, err
+	}
+	defer release()
+	return m.upgradeLocked(ctx, plugin, marketplace, true)
 }
 
 // UpdateAutoUpgrade upgrades every installed, git-backed plugin that has
@@ -27,6 +42,17 @@ type UpgradedPlugin struct {
 // doc §9.1), which must only touch plugins a user has opted into: enabling
 // autoUpgrade on an already-installed, git-backed plugin is the standing
 // consent for the daemon to act on it unattended.
+//
+// The initial registry read below only enumerates WHICH plugins exist; it is
+// deliberately not consulted for eligibility or change-detection. Each
+// plugin's AutoUpgrade flag is re-checked, and its sha comparison performed,
+// inside upgradeAuto's locked section at the moment that plugin is actually
+// processed. This matters because two overlapping calls to
+// UpdateAutoUpgrade (the periodic tick racing a manual
+// serf/plugin/checkNow, or checkNow from two clients) must not both observe
+// the same stale pre-sweep sha and both report the plugin as updated — and a
+// SetAutoUpgrade(false) landing mid-sweep must be honored for any plugin the
+// sweep hasn't reached yet.
 //
 // Failures are collected but do not stop the others (failure-isolated),
 // matching UpdateAll.
@@ -44,23 +70,16 @@ func (m *Manager) UpdateAutoUpgrade(ctx context.Context) ([]UpgradedPlugin, erro
 	var updated []UpgradedPlugin
 	var errs []string
 	for _, key := range keys {
-		entries := reg.Plugins[key]
-		if len(entries) == 0 {
-			continue
-		}
-		before := entries[0]
-		if !before.AutoUpgrade || before.Source.Rel || before.Source.Kind == SourceDirectory {
-			continue
-		}
 		plugin, marketplace := splitKey(key)
-		after, err := m.Upgrade(ctx, plugin, marketplace)
+		entry, changed, skipped, err := m.upgradeAuto(ctx, plugin, marketplace)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", key, err))
 			continue
 		}
-		if after.GitCommitSha != before.GitCommitSha {
-			updated = append(updated, UpgradedPlugin{Plugin: plugin, Marketplace: marketplace, Entry: after})
+		if skipped || !changed {
+			continue
 		}
+		updated = append(updated, UpgradedPlugin{Plugin: plugin, Marketplace: marketplace, Entry: entry})
 	}
 	if len(errs) > 0 {
 		return updated, fmt.Errorf("some auto-upgrades failed:\n%s", strings.Join(errs, "\n"))
