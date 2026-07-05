@@ -23,7 +23,7 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 	}
 	var body struct {
 		Key        string `json:"key"`
-		WorkingDir string `json:"workingDir"`
+		WorkingDir string `json:"working_dir"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeAPIError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())

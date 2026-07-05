@@ -19,9 +19,9 @@ up as a normal active project again, not stuck under Archived).
 1. **(a) Path-mismatch guard.** Spawn + let finish a session in project dir
    `$W`; read its project `key` and canonical `working_dir` back from
    `GET /api/tree` (see Sharp edges on symlink resolution).
-   `POST /api/project/delete {"key":"<key>","workingDir":"/tmp/some-other-dir"}`.
+   `POST /api/project/delete {"key":"<key>","working_dir":"/tmp/some-other-dir"}`.
 2. **(b) Live refusal.** Do **not** shut the session down. With it still
-   live, `POST /api/project/delete {"key":"<key>","workingDir":"<real $W>"}`.
+   live, `POST /api/project/delete {"key":"<key>","working_dir":"<real $W>"}`.
 3. **(c) Successful delete.** `POST /api/sessions/<id>/shutdown`, then repeat
    the exact same delete POST from step 2.
 4. **(e) Tree no longer lists it.** `GET /api/tree`; confirm `<key>` is gone

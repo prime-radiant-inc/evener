@@ -137,7 +137,7 @@
   function confirmDeleteProject(p) {
     var n = p.session_count || (p.sessions || []).length;
     if (!window.confirm("Delete project " + p.name + "? " + n + " session(s), " + (p.worktrees || 0) + " worktree(s). Worktrees are not touched.")) return;
-    window.fetch("/api/project/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: p.key, workingDir: p.working_dir }) })
+    window.fetch("/api/project/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: p.key, working_dir: p.working_dir }) })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (res) {
         if (res && res.deleted && onDeletedRedirect(res.deleted)) return;

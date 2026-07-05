@@ -49,7 +49,7 @@ func TestProjectDeleteRemovesFilesAndScrubs(t *testing.T) {
 	_ = archive.Set("session", "01A", true, time.Unix(1_700_000_000, 0))
 	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
 
-	body := `{"key":"` + hubcore.ProjectSlug("/w/proj") + `","workingDir":"/w/proj"}`
+	body := `{"key":"` + hubcore.ProjectSlug("/w/proj") + `","working_dir":"/w/proj"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -86,7 +86,7 @@ func TestProjectDeleteRejectsKeyWorkingDirMismatch(t *testing.T) {
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	_ = past.Rebuild()
 	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
-	body := `{"key":"` + hubcore.ProjectSlug("/w/proj") + `","workingDir":"/w/WRONG"}`
+	body := `{"key":"` + hubcore.ProjectSlug("/w/proj") + `","working_dir":"/w/WRONG"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -104,7 +104,7 @@ func TestProjectDeleteRefusesWhenLive(t *testing.T) {
 	_ = past.Rebuild()
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{SessionID: "01A", Status: "active"})
 	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster})
-	body := `{"key":"` + hubcore.ProjectSlug("/w/proj") + `","workingDir":"/w/proj"}`
+	body := `{"key":"` + hubcore.ProjectSlug("/w/proj") + `","working_dir":"/w/proj"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -148,7 +148,7 @@ func TestProjectDeleteSkipsOnRemoveFailure(t *testing.T) {
 		}
 	})
 
-	body := `{"key":"` + hubcore.ProjectSlug("/w/proj") + `","workingDir":"/w/proj"}`
+	body := `{"key":"` + hubcore.ProjectSlug("/w/proj") + `","working_dir":"/w/proj"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

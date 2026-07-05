@@ -23,15 +23,16 @@ type HealthCapabilities struct {
 
 // TreeResponse is returned by GET /api/tree.
 type TreeResponse struct {
-	GeneratedAt      time.Time        `json:"generated_at"`
-	Sources          []Source         `json:"sources"`
-	Live             []TreeNode       `json:"live"`
-	NeedsYou         []TreeNode       `json:"needs_you"`
-	Favorites        []TreeNode       `json:"favorites"`
-	Projects         []TreeProject    `json:"projects"`
-	ArchivedProjects []TreeProject    `json:"archived_projects"`
-	TestRuns         []TreeProject    `json:"test_runs"`
-	AttentionSummary AttentionSummary `json:"attentionSummary"` // serf:naming-ignore
+	GeneratedAt      time.Time     `json:"generated_at"`
+	Sources          []Source      `json:"sources"`
+	Live             []TreeNode    `json:"live"`
+	NeedsYou         []TreeNode    `json:"needs_you"`
+	Favorites        []TreeNode    `json:"favorites"`
+	Projects         []TreeProject `json:"projects"`
+	ArchivedProjects []TreeProject `json:"archived_projects"`
+	TestRuns         []TreeProject `json:"test_runs"`
+	// serf:naming-ignore
+	AttentionSummary AttentionSummary `json:"attentionSummary"` // camelCase: see AttentionSummary's doc
 }
 
 // AttentionSummary is the authoritative badge count set: how many live,
