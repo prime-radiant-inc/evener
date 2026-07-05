@@ -30,6 +30,65 @@ func TestLoadConfig_DefaultsWhenMissing(t *testing.T) {
 	if len(cfg.Providers) != 0 {
 		t.Errorf("expected no providers by default, got %d", len(cfg.Providers))
 	}
+	if !cfg.PluginAutoUpgrade {
+		t.Error("PluginAutoUpgrade default: got false, want true (per-plugin autoUpgrade opt-in is the real gate)")
+	}
+	if cfg.PluginAutoUpgradeInterval != 12*time.Hour {
+		t.Errorf("PluginAutoUpgradeInterval default: got %v, want 12h", cfg.PluginAutoUpgradeInterval)
+	}
+}
+
+func TestLoadConfig_PluginAutoUpgradeExplicitFalseSticks(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(path, []byte(`plugin_auto_upgrade = false`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.PluginAutoUpgrade {
+		t.Error("explicit plugin_auto_upgrade = false was overridden back to true")
+	}
+	// interval default still applies even though auto-upgrade is off.
+	if cfg.PluginAutoUpgradeInterval != 12*time.Hour {
+		t.Errorf("PluginAutoUpgradeInterval: got %v, want 12h", cfg.PluginAutoUpgradeInterval)
+	}
+}
+
+func TestLoadConfig_PluginAutoUpgradeIntervalOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(path, []byte(`plugin_auto_upgrade_interval = "1h"`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.PluginAutoUpgradeInterval != time.Hour {
+		t.Errorf("PluginAutoUpgradeInterval: got %v, want 1h", cfg.PluginAutoUpgradeInterval)
+	}
+	if !cfg.PluginAutoUpgrade {
+		t.Error("PluginAutoUpgrade should still default true when only the interval is overridden")
+	}
+}
+
+func TestLoadConfig_PluginAutoUpgradeIntervalZeroFallsBackToDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hub.toml")
+	// A literal zero would panic time.NewTicker; applyConfigDefaults must guard it.
+	if err := os.WriteFile(path, []byte(`plugin_auto_upgrade_interval = "0s"`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.PluginAutoUpgradeInterval != 12*time.Hour {
+		t.Errorf("PluginAutoUpgradeInterval: got %v, want fallback 12h", cfg.PluginAutoUpgradeInterval)
+	}
 }
 
 func TestLoadConfig_DefaultsHubStateRootWhenOmitted(t *testing.T) {

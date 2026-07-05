@@ -25,6 +25,7 @@ import (
 	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/internal/binresolve"
 	"primeradiant.com/serf/internal/credentials"
+	"primeradiant.com/serf/internal/plugins"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/rendezvous"
 
@@ -278,6 +279,22 @@ func main() {
 			}
 		}
 	}()
+
+	// Plugin auto-upgrade daemon (design doc §9.1): refreshes every known
+	// marketplace, then upgrades every installed, git-backed plugin with
+	// autoUpgrade enabled. Runs once immediately and then on
+	// cfg.PluginAutoUpgradeInterval; gated by cfg.PluginAutoUpgrade (on by
+	// default — see config.go). Never deletes; superseded dirs are reclaimed
+	// separately by `serf plugin gc` (also run once here, before any session
+	// exists, per §12).
+	if cfg.PluginAutoUpgrade {
+		go startPluginAutoUpgradeDaemon(ctx, plugins.NewManager(""), cfg.PluginAutoUpgradeInterval, web.appRPC)
+	}
+	if removed, err := plugins.NewManager("").Gc(); err != nil {
+		fmt.Fprintf(os.Stderr, "[hub] plugin gc: %v\n", err)
+	} else if len(removed) > 0 {
+		fmt.Fprintf(os.Stderr, "[hub] plugin gc: removed %d superseded cache dir(s)\n", len(removed))
+	}
 
 	srv := &http.Server{
 		Addr:    cfg.Addr,
