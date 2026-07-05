@@ -3,6 +3,31 @@
 <p class="settings-help">
   MCP servers serf spawns alongside each session. Stored in the global launch layer.
 </p>
+
+<section class="settings-collection">
+  <header class="settings-collection-head">
+    <h3>Discovered servers</h3>
+    <span class="settings-collection-count">{{len .Mcps}} {{if eq (len .Mcps) 1}}entry{{else}}entries{{end}}</span>
+  </header>
+  <p class="settings-help">Reachability, as probed from the hub.</p>
+  {{if .McpsError}}
+  <p class="settings-error">Failed to load: {{.McpsError}}</p>
+  {{else}}
+  <ul class="settings-collection-list" role="list">
+    {{if .Mcps}}
+    {{range .Mcps}}
+    <li class="settings-collection-row">
+      <div class="row-text">{{.Name}} &mdash; {{.Transport}} <span class="status-badge status-{{.Status}}">{{.Status}}</span></div>
+      {{if .Error}}<div class="row-meta">{{.Error}}</div>{{end}}
+    </li>
+    {{end}}
+    {{else}}
+    <li class="settings-collection-empty">No MCP servers configured.</li>
+    {{end}}
+  </ul>
+  {{end}}
+</section>
+
 <div id="mcps-form" data-loaded="false"><p class="settings-help">Loading…</p></div>
 <script>
   (async function () {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -11,12 +12,12 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/mcpconfig"
+	"primeradiant.com/serf/agent/mcpprobe"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmd/serf-hub/internal/editorurl"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubedge"
-	"primeradiant.com/serf/cmd/serf-hub/internal/mcpstatus"
 	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/frontmatter"
 )
@@ -102,7 +103,7 @@ func (s *WebServer) renderSettingsPartial(w http.ResponseWriter, r *http.Request
 	plugins, pluginsErr := s.discoverPluginsForSettings()
 	skills := skillsFromPlugins(plugins)
 	mcpPath := s.mcpConfigPathForSettings()
-	mcps, mcpsErr := s.discoverMCPsForSettings(mcpPath)
+	mcps, mcpsErr := s.discoverMCPsForSettings(r.Context(), mcpPath)
 
 	// Resolve canonical project cwd for the per-project settings page.
 	var projectCWD string
@@ -466,10 +467,11 @@ func (s *WebServer) mcpConfigPathForSettings() string {
 	return defaultMCPConfigPath()
 }
 
-// discoverMCPsForSettings reads the MCP config file at path and returns
-// rows for the MCP servers pane. A missing file is the empty state, not
-// an error. Parse errors return an inline error string.
-func (s *WebServer) discoverMCPsForSettings(path string) ([]mcpDisplay, error) {
+// discoverMCPsForSettings reads the MCP config file at path and probes each
+// configured server's reachability via mcpprobe, returning rows for the MCP
+// servers pane. A missing file is the empty state, not an error. Parse
+// errors return an inline error string.
+func (s *WebServer) discoverMCPsForSettings(ctx context.Context, path string) ([]mcpDisplay, error) {
 	if path == "" {
 		return nil, nil
 	}
@@ -480,20 +482,23 @@ func (s *WebServer) discoverMCPsForSettings(path string) ([]mcpDisplay, error) {
 	if err != nil {
 		return nil, err
 	}
+	results := mcpprobe.Probe(ctx, configs)
 	out := make([]mcpDisplay, 0, len(configs))
-	for _, c := range configs {
+	for i, c := range configs {
 		cmd := c.Command
 		if cmd == "" {
 			cmd = c.URL
 		}
 		out = append(out, mcpDisplay{
-			Name:     c.Name,
-			Command:  cmd,
-			Args:     c.Args,
-			Status:   mcpstatus.ProbeMCPStatus(c),
-			Tools:    0,
-			Agents:   nil,
-			EditPath: editorurl.EditorURL(path),
+			Name:      c.Name,
+			Command:   cmd,
+			Args:      c.Args,
+			Transport: results[i].Transport,
+			Status:    results[i].Status,
+			Error:     results[i].Error,
+			Tools:     0,
+			Agents:    nil,
+			EditPath:  editorurl.EditorURL(path),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

@@ -58,13 +58,15 @@ type skillDisplay struct {
 
 // mcpDisplay is one row in Settings → MCP servers.
 type mcpDisplay struct {
-	Name     string
-	Command  string
-	Args     []string
-	Status   string // "running" | "stopped" | "error" | "unknown"
-	Tools    int
-	Agents   []string
-	EditPath template.URL
+	Name      string
+	Command   string
+	Args      []string
+	Transport string // "stdio", "sse", or "http" — from mcpprobe.Result.Transport
+	Status    string // "available" | "unreachable" | "missing" — from mcpprobe.Result.Status
+	Error     string // populated whenever Status isn't "available"; empty otherwise
+	Tools     int
+	Agents    []string
+	EditPath  template.URL
 }
 
 // settingsData is the template data passed to all settings section templates.
