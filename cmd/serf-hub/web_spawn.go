@@ -226,10 +226,11 @@ func launchModelListErrorDiagnostic(err error) appwire.ModelListDiagnostic {
 }
 
 // datedSnapshotSuffix matches a trailing dated-snapshot suffix on a bare
-// model id (e.g. "-20251101"). Duplicated (not exported from llm) because
-// llm/model_catalog_embedded.go isn't owned by this track — see the plan's
-// Global Constraints.
-var datedSnapshotSuffix = regexp.MustCompile(`-\d{8}$`)
+// model id (e.g. "-20251101"), plus an optional trailing LiteLLM version tag
+// ("-v1") — mirrors llm/model_catalog_embedded.go's datedModelSuffix.
+// Duplicated (not exported from llm) because llm/model_catalog_embedded.go
+// isn't owned by this track — see the plan's Global Constraints.
+var datedSnapshotSuffix = regexp.MustCompile(`-\d{8}(-v\d+)?$`)
 
 // isDatedSnapshotModelID reports whether ref's model segment (the part after
 // the last "/", if any) carries a dated-snapshot suffix.

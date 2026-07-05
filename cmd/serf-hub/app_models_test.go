@@ -71,12 +71,13 @@ func TestAttachRecentModels_FiltersToAvailableModels(t *testing.T) {
 
 func TestPrettifyModelDisplayName(t *testing.T) {
 	cases := map[string]string{
-		"claude-opus-4-6":          "Claude Opus 4 6",
-		"claude-opus-4-6-20251101": "Claude Opus 4 6", // dated snapshot suffix stripped first
-		"gpt-5.1":                  "Gpt 5.1",
-		"o3-deep-research":         "O3 Deep Research",
-		"glm-5.2":                  "Glm 5.2",
-		"bare":                     "Bare",
+		"claude-opus-4-6":             "Claude Opus 4 6",
+		"claude-opus-4-6-20251101":    "Claude Opus 4 6", // dated snapshot suffix stripped first
+		"claude-opus-4-6-20251101-v1": "Claude Opus 4 6", // dated snapshot + LiteLLM version tag both stripped
+		"gpt-5.1":                     "Gpt 5.1",
+		"o3-deep-research":            "O3 Deep Research",
+		"glm-5.2":                     "Glm 5.2",
+		"bare":                        "Bare",
 	}
 	for id, want := range cases {
 		if got := prettifyModelDisplayName(id); got != want {
@@ -91,6 +92,9 @@ func TestIsDatedSnapshotModelID(t *testing.T) {
 	}
 	if !isDatedSnapshotModelID("anthropic/claude-opus-4-6-20251101") {
 		t.Error("dated snapshot suffix should be detected through a provider-qualified ref")
+	}
+	if !isDatedSnapshotModelID("claude-opus-4-6-20251101-v1") {
+		t.Error("dated snapshot suffix should still be detected with a trailing LiteLLM -v1 version tag")
 	}
 	if isDatedSnapshotModelID("claude-opus-4-6") {
 		t.Error("bare family id must not be treated as dated")
