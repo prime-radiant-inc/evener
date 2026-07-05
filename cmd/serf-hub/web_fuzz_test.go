@@ -87,7 +87,7 @@ func FuzzWebHandler(f *testing.F) {
 		{3, "../fuzz-secret.txt"}, // /doc/file traversal — must be refused
 		{3, "notes.txt"},          // /doc/file legitimate read
 		{4, ""},                   // /manifest.webmanifest
-		{5, ""},                   // /_partials/sidebar
+		{5, ""},                   // former server-rendered sidebar partial route; now 404s (fuzzroutes indices are append-only, see internal/fuzzroutes)
 		{6, ""},                   // /_partials/workspace/empty
 		{9, ""},                   // /_partials/settings (defaults to general)
 		{12, ""},                  // /api/tree

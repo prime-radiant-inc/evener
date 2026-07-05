@@ -9,7 +9,6 @@ const { JSDOM } = require("jsdom");
 
 const appHtml = fs.readFileSync(path.resolve(__dirname, "../templates/app.html"), "utf8");
 const workspaceHtml = fs.readFileSync(path.resolve(__dirname, "../templates/partials/workspace.html"), "utf8");
-const sidebarHtml = fs.readFileSync(path.resolve(__dirname, "../templates/partials/sidebar.html"), "utf8");
 const sidebarSrc = fs.readFileSync(path.resolve(__dirname, "../assets/sidebar.js"), "utf8");
 
 const failures = [];
@@ -21,10 +20,6 @@ pass(/class="app-nav-toggle"/.test(appHtml), "app shell must contain the persist
 pass(/app-nav-toggle[^>]*data-sidebar-toggle/.test(appHtml), ".app-nav-toggle must carry data-sidebar-toggle");
 pass(!/header-hamburger/.test(workspaceHtml),
   "workspace header must NOT carry its own hamburger (nav lives in the shell, so all pages have it)");
-// The drawer needs an in-panel close affordance on phone (the hamburger is
-// covered by the open drawer), wired to the same toggle mechanism.
-pass(/class="sidebar-close"[^>]*data-sidebar-toggle/.test(sidebarHtml),
-  "sidebar must offer a .sidebar-close button wired to data-sidebar-toggle");
 // Standalone / full-screen capability when added to the home screen.
 pass(/name="apple-mobile-web-app-capable"\s+content="yes"/.test(appHtml) &&
      /name="mobile-web-app-capable"\s+content="yes"/.test(appHtml),
@@ -55,6 +50,15 @@ pass(/viewport-fit=cover/.test(appHtml), "viewport must be viewport-fit=cover fo
 
   toggle.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
   pass(!window.document.body.hasAttribute("data-sidebar-open"), "clicking the toggle again closes the drawer");
+
+  // The rewritten sidebar dropped the old in-panel .sidebar-close button (the
+  // hamburger it duplicated is reachable via re-tap); the drawer's close
+  // affordance on phone is now tapping outside the panel, which sidebar.js
+  // arms only while the drawer is open (see onOutsideClick).
+  toggle.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  pass(window.document.body.hasAttribute("data-sidebar-open"), "reopen drawer for outside-click check");
+  window.document.getElementById("workspace").dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  pass(!window.document.body.hasAttribute("data-sidebar-open"), "clicking outside the open drawer closes it");
 
   if (failures.length === 0) {
     console.log("PASS: nav toggle — shell placement + drawer open/close");
