@@ -4,6 +4,11 @@
 // caller supplies a tool's JSON-Schema parameter object and the parsed args.
 package repair
 
+import (
+	"strconv"
+	"strings"
+)
+
 // ChangeKind names the category of a single repair.
 type ChangeKind string
 
@@ -45,6 +50,7 @@ func RepairArgs(params, args map[string]any) (map[string]any, []Change) {
 	}
 	var changes []Change
 	changes = append(changes, applyAliases(params, out)...)
+	changes = append(changes, applyCoercions(params, out)...)
 	return out, changes
 }
 
@@ -86,4 +92,52 @@ func isPropDeclared(params map[string]any, key string) bool {
 func additionalPropsFalse(params map[string]any) bool {
 	ap, ok := params["additionalProperties"].(bool)
 	return ok && !ap
+}
+
+// applyCoercions converts unambiguously-mistyped scalar args to the declared
+// type. Numbers become float64 (JSON's native map type). It never coerces an
+// ambiguous value (e.g. a non-numeric string against a number schema).
+func applyCoercions(params, args map[string]any) []Change {
+	props := schemaProps(params)
+	var changes []Change
+	for key, raw := range args {
+		p, ok := props[key].(map[string]any)
+		if !ok {
+			continue
+		}
+		typ, _ := p["type"].(string)
+		switch typ {
+		case "boolean":
+			s, ok := raw.(string)
+			if !ok {
+				continue
+			}
+			switch strings.ToLower(strings.TrimSpace(s)) {
+			case "true":
+				args[key] = true
+				changes = append(changes, Change{Kind: ChangeCoerceType, Field: key, Detail: `"` + s + `"→true`})
+			case "false":
+				args[key] = false
+				changes = append(changes, Change{Kind: ChangeCoerceType, Field: key, Detail: `"` + s + `"→false`})
+			}
+		case "integer", "number":
+			s, ok := raw.(string)
+			if !ok {
+				continue
+			}
+			f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+			if err != nil {
+				continue
+			}
+			args[key] = f
+			changes = append(changes, Change{Kind: ChangeCoerceType, Field: key, Detail: `"` + s + `"→` + s})
+		case "array":
+			if _, isArr := raw.([]any); isArr {
+				continue
+			}
+			args[key] = []any{raw}
+			changes = append(changes, Change{Kind: ChangeCoerceType, Field: key, Detail: "scalar→[scalar]"})
+		}
+	}
+	return changes
 }

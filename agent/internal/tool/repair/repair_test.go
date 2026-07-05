@@ -69,3 +69,53 @@ func TestRepairArgs_DoesNotMutateInput(t *testing.T) {
 		t.Fatal("input map was mutated")
 	}
 }
+
+func coerceParams() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"flag":  map[string]any{"type": "boolean"},
+			"count": map[string]any{"type": "integer"},
+			"tags":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"name":  map[string]any{"type": "string"},
+		},
+	}
+}
+
+func TestRepairArgs_Coerce_BoolFromString(t *testing.T) {
+	out, changes := RepairArgs(coerceParams(), map[string]any{"flag": "true"})
+	if out["flag"] != true {
+		t.Fatalf("flag = %#v", out["flag"])
+	}
+	if len(changes) != 1 || changes[0].Kind != ChangeCoerceType {
+		t.Fatalf("changes = %+v", changes)
+	}
+}
+
+func TestRepairArgs_Coerce_NumberIsFloat64(t *testing.T) {
+	out, _ := RepairArgs(coerceParams(), map[string]any{"count": "5"})
+	f, ok := out["count"].(float64) // MUST be float64, not int
+	if !ok || f != 5 {
+		t.Fatalf("count = %#v (want float64 5)", out["count"])
+	}
+}
+
+func TestRepairArgs_Coerce_ScalarToArray(t *testing.T) {
+	out, _ := RepairArgs(coerceParams(), map[string]any{"tags": "x"})
+	if !reflect.DeepEqual(out["tags"], []any{"x"}) {
+		t.Fatalf("tags = %#v", out["tags"])
+	}
+}
+
+func TestRepairArgs_Coerce_NonNumericStringUntouched(t *testing.T) {
+	out, changes := RepairArgs(coerceParams(), map[string]any{"count": "abc"})
+	if out["count"] != "abc" {
+		t.Fatalf("count = %#v", out["count"])
+	}
+	for _, c := range changes {
+		if c.Field == "count" {
+			t.Fatalf("unexpected coercion: %+v", c)
+		}
+	}
+}
