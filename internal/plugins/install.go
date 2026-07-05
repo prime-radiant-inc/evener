@@ -312,7 +312,10 @@ func (m *Manager) List() ([]ListItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	var out []ListItem
+	// Non-nil even when nothing is installed: callers (cmd/serf/plugincmd.go's
+	// `list --json`) JSON-encode this directly, and a nil slice would encode as
+	// `null` instead of `[]`.
+	out := []ListItem{}
 	for key, entries := range reg.Plugins {
 		if len(entries) == 0 {
 			continue

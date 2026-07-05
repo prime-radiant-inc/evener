@@ -147,14 +147,19 @@ func TestPluginHelp(t *testing.T) {
 	}
 }
 
+// TestPluginList_JSONEmpty pins the exact `[]` encoding for an empty store,
+// mirroring TestPluginGc_JSON: Manager.List() returning a nil slice would
+// json.Encode as `null`, which is a worse API for scripts to consume than an
+// empty array (null needs a nil check before ranging in most languages; `[]`
+// does not).
 func TestPluginList_JSONEmpty(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	var out, errb bytes.Buffer
 	if err := runPlugin([]string{"list", "--json"}, nil, &out, &errb); err != nil {
 		t.Fatalf("plugin list --json: %v\n%s", err, errb.String())
 	}
-	if strings.TrimSpace(out.String()) == "" {
-		t.Fatal("expected JSON output for empty list")
+	if got := strings.TrimSpace(out.String()); got != "[]" {
+		t.Fatalf("plugin list --json with nothing installed = %q, want []", got)
 	}
 }
 
