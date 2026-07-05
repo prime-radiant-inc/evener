@@ -768,6 +768,12 @@ type ModelListDiagnostic struct {
 type ModelListResponse struct {
 	Data        []ModelDescriptor     `json:"data"`
 	Diagnostics []ModelListDiagnostic `json:"diagnostics,omitempty"`
+	// Recent carries the model picker's "Recent" group: the last N distinct
+	// models across all sessions, globally by recency (not scoped to the
+	// currently selected harness/project), derived from the Past index. Empty
+	// on a fresh install with no session history. A struct field, not a new
+	// appwire method — no dual-router catalog change required.
+	Recent []ModelDescriptor `json:"recent,omitempty"`
 }
 
 type EmptyResponse struct{}
