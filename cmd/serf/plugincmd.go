@@ -15,8 +15,13 @@ import (
 )
 
 func runPlugin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	if _, err := plugins.NewManager("").SeedDefaultMarketplaces(); err != nil {
-		_, _ = fmt.Fprintf(stderr, "warning: seeding default marketplaces: %v\n", err)
+	// doctor is a read-only diagnostic (Manager.Doctor's contract: never
+	// mutates store state) and must not trigger first-run seeding the way
+	// every other verb does.
+	if len(args) == 0 || args[0] != "doctor" {
+		if _, err := plugins.NewManager("").SeedDefaultMarketplaces(); err != nil {
+			_, _ = fmt.Fprintf(stderr, "warning: seeding default marketplaces: %v\n", err)
+		}
 	}
 	if len(args) == 0 {
 		printPluginUsage(stderr)
@@ -29,6 +34,8 @@ func runPlugin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// lifecycle verbs added in Task 4:
 	case "install", "remove", "enable", "disable", "list", "upgrade", "gc":
 		return runPluginLifecycle(args[0], args[1:], stdin, stdout, stderr)
+	case "doctor":
+		return runPluginDoctor(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printPluginUsage(stderr)
 		return nil
@@ -141,6 +148,7 @@ func printPluginUsage(w io.Writer) {
 	_, _ = fmt.Fprintf(w, "  list          List installed plugins\n")
 	_, _ = fmt.Fprintf(w, "  upgrade       Upgrade installed plugins\n")
 	_, _ = fmt.Fprintf(w, "  gc            Garbage collect unused plugin cache\n")
+	_, _ = fmt.Fprintf(w, "  doctor        Run plugin-store health checks\n")
 }
 
 func renderMarketplaces(w io.Writer, mk plugins.Marketplaces, asJSON bool) error {
@@ -373,4 +381,25 @@ func runPluginLifecycle(verb string, args []string, stdin io.Reader, stdout, std
 	default:
 		return fmt.Errorf("unknown plugin lifecycle command %q", verb)
 	}
+}
+
+// runPluginDoctor is the `serf plugin doctor` alias for `serf-doctor plugins`
+// (design spec §13): the same read-only Manager.Doctor health check, rendered
+// or JSON-encoded the same way, reachable without a separate binary.
+func runPluginDoctor(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "emit JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	findings, err := plugins.NewManager("").Doctor()
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		return json.NewEncoder(stdout).Encode(findings)
+	}
+	_, err = fmt.Fprint(stdout, plugins.RenderDoctorFindings(findings))
+	return err
 }
