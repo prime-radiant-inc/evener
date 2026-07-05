@@ -243,6 +243,20 @@
       if (window.SerfToast) window.SerfToast.show(action + " failed: " + message, "error");
     }
 
+    // Disables btn for the duration of fn(), so a double-click can't fire a
+    // duplicate mutating RPC while the first is still in flight. Re-enabling
+    // in `finally` is safe even when fn() calls render() and replaces btn's
+    // whole subtree: re-enabling a detached node is a harmless no-op.
+    async function withBusy(btn, fn) {
+      if (!btn || btn.disabled) return;
+      btn.disabled = true;
+      try {
+        await fn();
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
     // ---- kind-field visibility in the add-marketplace form ----
 
     function updateAddMarketplaceKindFields(form) {
@@ -291,43 +305,49 @@
       }
 
       if (action === "install") {
-        try {
-          await pluginsAdmin.pluginInstall(btn.dataset.plugin, browseName);
-          await refreshInstalled();
-          render();
-          if (window.SerfToast) window.SerfToast.show("Installed " + btn.dataset.plugin, "success");
-        } catch (err) {
-          toastError("Install", err);
-        }
+        await withBusy(btn, async () => {
+          try {
+            await pluginsAdmin.pluginInstall(btn.dataset.plugin, browseName);
+            await refreshInstalled();
+            render();
+            if (window.SerfToast) window.SerfToast.show("Installed " + btn.dataset.plugin, "success");
+          } catch (err) {
+            toastError("Install", err);
+          }
+        });
         return;
       }
 
       const mktRow = btn.closest("[data-marketplace]");
       if (mktRow && action === "mkt-refresh") {
         const name = mktRow.dataset.marketplace;
-        try {
-          await pluginsAdmin.marketplaceRefresh(name);
-          await refreshMarketplaces();
-          if (name === browseName) await refreshBrowse();
-          render();
-          if (window.SerfToast) window.SerfToast.show("Refreshed " + name, "success");
-        } catch (err) {
-          toastError("Refresh", err);
-        }
+        await withBusy(btn, async () => {
+          try {
+            await pluginsAdmin.marketplaceRefresh(name);
+            await refreshMarketplaces();
+            if (name === browseName) await refreshBrowse();
+            render();
+            if (window.SerfToast) window.SerfToast.show("Refreshed " + name, "success");
+          } catch (err) {
+            toastError("Refresh", err);
+          }
+        });
         return;
       }
       if (mktRow && action === "mkt-remove") {
         const name = mktRow.dataset.marketplace;
         if (!confirm(`Remove marketplace "${name}"? Installed plugins from it are unaffected.`)) return;
-        try {
-          await pluginsAdmin.marketplaceRemove(name);
-          if (name === browseName) { browseName = ""; browseCatalog = null; }
-          await refreshMarketplaces();
-          render();
-          if (window.SerfToast) window.SerfToast.show("Removed marketplace " + name, "success");
-        } catch (err) {
-          toastError("Remove marketplace", err);
-        }
+        await withBusy(btn, async () => {
+          try {
+            await pluginsAdmin.marketplaceRemove(name);
+            if (name === browseName) { browseName = ""; browseCatalog = null; browseError = ""; }
+            await refreshMarketplaces();
+            render();
+            if (window.SerfToast) window.SerfToast.show("Removed marketplace " + name, "success");
+          } catch (err) {
+            toastError("Remove marketplace", err);
+          }
+        });
         return;
       }
 
@@ -338,41 +358,49 @@
       const current = installed.find(p => p.plugin === plugin && p.marketplace === marketplace);
 
       if (action === "toggle-enable") {
-        try {
-          if (current && current.enabled) await pluginsAdmin.pluginDisable(plugin, marketplace);
-          else await pluginsAdmin.pluginEnable(plugin, marketplace);
-          await refreshInstalled();
-          render();
-        } catch (err) {
-          toastError("Toggle enable", err);
-        }
+        await withBusy(btn, async () => {
+          try {
+            if (current && current.enabled) await pluginsAdmin.pluginDisable(plugin, marketplace);
+            else await pluginsAdmin.pluginEnable(plugin, marketplace);
+            await refreshInstalled();
+            render();
+          } catch (err) {
+            toastError("Toggle enable", err);
+          }
+        });
       } else if (action === "toggle-auto") {
-        try {
-          await pluginsAdmin.pluginSetAutoUpgrade(plugin, marketplace, !(current && current.autoUpgrade));
-          await refreshInstalled();
-          render();
-        } catch (err) {
-          toastError("Toggle auto-upgrade", err);
-        }
+        await withBusy(btn, async () => {
+          try {
+            await pluginsAdmin.pluginSetAutoUpgrade(plugin, marketplace, !(current && current.autoUpgrade));
+            await refreshInstalled();
+            render();
+          } catch (err) {
+            toastError("Toggle auto-upgrade", err);
+          }
+        });
       } else if (action === "upgrade") {
-        try {
-          await pluginsAdmin.pluginUpgrade(plugin, marketplace);
-          await refreshInstalled();
-          render();
-          if (window.SerfToast) window.SerfToast.show("Checked " + plugin + " for upgrades", "success");
-        } catch (err) {
-          toastError("Upgrade", err);
-        }
+        await withBusy(btn, async () => {
+          try {
+            await pluginsAdmin.pluginUpgrade(plugin, marketplace);
+            await refreshInstalled();
+            render();
+            if (window.SerfToast) window.SerfToast.show("Checked " + plugin + " for upgrades", "success");
+          } catch (err) {
+            toastError("Upgrade", err);
+          }
+        });
       } else if (action === "remove") {
         if (!confirm(`Remove plugin "${plugin}"?`)) return;
-        try {
-          await pluginsAdmin.pluginRemove(plugin, marketplace);
-          await refreshInstalled();
-          render();
-          if (window.SerfToast) window.SerfToast.show("Removed " + plugin, "success");
-        } catch (err) {
-          toastError("Remove", err);
-        }
+        await withBusy(btn, async () => {
+          try {
+            await pluginsAdmin.pluginRemove(plugin, marketplace);
+            await refreshInstalled();
+            render();
+            if (window.SerfToast) window.SerfToast.show("Removed " + plugin, "success");
+          } catch (err) {
+            toastError("Remove", err);
+          }
+        });
       }
     });
 
@@ -382,15 +410,17 @@
       ev.preventDefault();
       const source = marketplaceSourceFromForm(form);
       const name = form.querySelector("#mkt-name-input").value.trim();
-      try {
-        await pluginsAdmin.marketplaceAdd({ name, source });
-        addMarketplaceOpen = false;
-        await refreshMarketplaces();
-        render();
-        if (window.SerfToast) window.SerfToast.show("Added marketplace" + (name ? " " + name : ""), "success");
-      } catch (err) {
-        toastError("Add marketplace", err);
-      }
+      await withBusy(form.querySelector('button[type="submit"]'), async () => {
+        try {
+          await pluginsAdmin.marketplaceAdd({ name, source });
+          addMarketplaceOpen = false;
+          await refreshMarketplaces();
+          render();
+          if (window.SerfToast) window.SerfToast.show("Added marketplace" + (name ? " " + name : ""), "success");
+        } catch (err) {
+          toastError("Add marketplace", err);
+        }
+      });
     });
 
     try {
