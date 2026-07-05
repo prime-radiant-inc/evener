@@ -1002,7 +1002,8 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
    rest of the text-bearing chrome. */
 body.app[data-sidebar-rail] .tier-header,
 body.app[data-sidebar-rail] .project-age,
-body.app[data-sidebar-rail] .subagent-toggle { display: none; }
+body.app[data-sidebar-rail] .subagent-toggle,
+body.app[data-sidebar-rail] .sb-section { display: none; }
 body.app[data-sidebar-rail] .subagent-row .subagent-title { display: none; }
 body.app[data-sidebar-rail] .subagent-row-wrap > .open-beside-btn { display: none; }
 @container sidebar (max-width: 80px) {
