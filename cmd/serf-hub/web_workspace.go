@@ -296,6 +296,14 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 					data.WorkingDir = status.WorkingDir
 				}
 				data.TurnCount = status.Turns
+				data.WorkMillis = status.WorkMillis
+				data.Usage = status.Usage
+				data.ActiveTurnStartedAt = status.ActiveTurnStartedAt
+				// Populate the context gauge here too so the lean /state poll
+				// (B3) needs no separate turns fetch.
+				data.ContextPercent = int(status.ContextPressure * 100)
+				data.ContextWindow = status.ContextWindow
+				data.ContextNumbers = formatContextNumbers(status.ContextUsed, status.ContextWindow, status.ContextRemaining)
 			}
 			// Branch isn't on the rendezvous entry or daemon /status — fall
 			// back to the past index where the agent persists EnvInfo.
@@ -333,6 +341,10 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 				WorkingDir:   pe.Meta.EnvInfo.WorkingDir,
 				Branch:       pe.Meta.EnvInfo.GitBranch,
 				Capabilities: s.apiSessionCapabilities(id, false),
+				// ActiveTurnStartedAt stays 0: the session has ended, so no
+				// turn is in flight.
+				WorkMillis: pe.Meta.WorkMillis,
+				Usage:      serfUsageFromCumulative(pe.Meta.CumulativeUsage),
 			}
 			s.fillForkLineage(&data, pe.Meta)
 			s.fillSubagentLineage(&data, pe.Meta)
@@ -341,6 +353,24 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 		}
 	}
 	return WorkspaceData{}
+}
+
+// serfUsageFromCumulative maps a persisted SessionMeta.CumulativeUsage
+// (an ended session's WS2 token totals) to the wire appwire.SerfUsage shown
+// in its workspace data. Returns nil when every total (including
+// CacheReadTokens) is zero — a session that never accumulated usage, or a
+// meta written before WS2 — so the usage cluster hides rather than rendering
+// ↑0 ↓0 (mirrors serfUsageFromLLM in cmd/serf/serve.go).
+func serfUsageFromCumulative(u schema.CumulativeUsage) *appwire.SerfUsage {
+	if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.TotalTokens == 0 {
+		return nil
+	}
+	return &appwire.SerfUsage{
+		InputTokens:     u.InputTokens,
+		OutputTokens:    u.OutputTokens,
+		CacheReadTokens: u.CacheReadTokens,
+		TotalTokens:     u.TotalTokens,
+	}
 }
 
 func (s *WebServer) liveWorkspaceCapabilities(id string, fallback hubapi.SessionCapabilities) hubapi.SessionCapabilities {

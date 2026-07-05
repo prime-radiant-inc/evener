@@ -1,12 +1,14 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/serf/hubapi"
 )
 
 func TestArchiveDecisionsFlowIntoTree(t *testing.T) {
@@ -70,5 +72,55 @@ func TestArchiveDecisionsHelperWithStore(t *testing.T) {
 	got := s.archiveDecisions()
 	if !got[hubcore.ArchiveKey{Kind: "project", ID: "beta"}] {
 		t.Fatalf("archiveDecisions() missing expected decision; got %v", got)
+	}
+}
+
+// TestAPISessionDetailCarriesWorkMetricsForEndedSession asserts that an ended
+// (past-index-only, no live daemon) session's persisted WorkMillis and
+// CumulativeUsage flow through workspaceData into apiSessionDetail's
+// WorkMillis and flattened Usage fields (WS2 B2).
+func TestAPISessionDetailCarriesWorkMetricsForEndedSession(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID:             "01WORKMETRICS",
+		UpdatedAt:      time.Now(),
+		OriginalPrompt: "work metrics task",
+		Model:          "gpt-5",
+		ProfileID:      "openai",
+		TurnCount:      2,
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/projects/serf"},
+		WorkMillis:     7000,
+		CumulativeUsage: schema.CumulativeUsage{
+			InputTokens:     100,
+			OutputTokens:    50,
+			CacheReadTokens: 10,
+			TotalTokens:     150,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Past: idx})
+
+	detail, ok := web.apiSessionDetail("01WORKMETRICS")
+	if !ok {
+		t.Fatal("apiSessionDetail: session not found")
+	}
+	if detail.WorkMillis != 7000 {
+		t.Fatalf("WorkMillis=%d, want 7000", detail.WorkMillis)
+	}
+	want := &hubapi.Usage{InputTokens: 100, OutputTokens: 50, CacheReadTokens: 10, TotalTokens: 150}
+	if detail.Usage == nil {
+		t.Fatalf("Usage=nil, want %+v", want)
+	}
+	if *detail.Usage != *want {
+		t.Fatalf("Usage=%+v, want %+v", detail.Usage, want)
 	}
 }

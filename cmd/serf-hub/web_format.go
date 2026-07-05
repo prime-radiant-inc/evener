@@ -52,6 +52,11 @@ func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
 		Model:        thread.ModelProvider,
 		WorkingDir:   thread.CWD,
 		Capabilities: hubCapabilitiesFromAppwire(thread.Serf.Capabilities),
+		// WorkMillis/Usage/ActiveTurnStartedAt are WS2's working-state/token
+		// metrics, read on demand by the daemon rather than pushed per event.
+		WorkMillis:          thread.Serf.WorkMillis,
+		Usage:               thread.Serf.Usage,
+		ActiveTurnStartedAt: thread.Serf.ActiveTurnStartedAt,
 	}
 	if goal := thread.Serf.Goal; goal != nil {
 		data.GoalStatus = goal.Status
