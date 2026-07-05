@@ -1,7 +1,7 @@
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
 
-const SRC = fs.readFileSync("../assets/settings.js", "utf8");
+const SRC = fs.readFileSync("../assets/settings-transcript.js", "utf8");
 
 function assert(cond, msg) {
   if (!cond) {
