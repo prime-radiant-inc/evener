@@ -298,7 +298,7 @@ func TestRegistryNamesAndLookup(t *testing.T) {
 // import a primeradiant.com/serf package other than the fuzz module's own.
 func TestNoSerfImport(t *testing.T) {
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", nil, parser.ImportsOnly)
+	pkgs, err := parser.ParseDir(fset, ".", nil, parser.ImportsOnly) //nolint:staticcheck // parser.ParseDir is adequate here; build tags not relevant. go/packages migration tracked separately.
 	if err != nil {
 		t.Fatalf("parse package dir: %v", err)
 	}
