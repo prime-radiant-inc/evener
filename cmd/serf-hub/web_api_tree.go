@@ -106,7 +106,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		if idx, ok := projectIndexes[key]; ok {
 			p := &resp.Projects[idx]
 			p.Sessions = append(p.Sessions, apiNode)
-			if hubcore.AttentionRank(node.State) > hubcore.AttentionRank(p.RollupState) {
+			if hubapi.AttentionRank(node.State) > hubapi.AttentionRank(p.RollupState) {
 				p.RollupState = node.State
 			}
 			continue

@@ -146,12 +146,6 @@ type TreeNode struct {
 	Children     []TreeNode
 }
 
-// AttentionRank delegates to hubapi.AttentionRank. Kept as a thin exported
-// wrapper (rather than removed outright) because cmd/serf-hub/web_api_tree.go
-// still calls hubcore.AttentionRank; migrating that caller to hubapi directly
-// is out of scope here.
-func AttentionRank(state string) int { return hubapi.AttentionRank(state) }
-
 // AgeString formats a duration since t as a human-readable string.
 func AgeString(t time.Time) string {
 	if t.IsZero() {
