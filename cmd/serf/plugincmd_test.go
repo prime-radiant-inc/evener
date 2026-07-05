@@ -176,3 +176,29 @@ func TestPluginInstall_RequiresConfirmation(t *testing.T) {
 		t.Fatal("install without --yes should require confirmation")
 	}
 }
+
+func TestPluginDoctor_JSON(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var out, errb bytes.Buffer
+	if err := runPlugin([]string{"doctor", "--json"}, nil, &out, &errb); err != nil {
+		t.Fatalf("runPlugin doctor --json: %v\n%s", err, errb.String())
+	}
+	var findings []plugins.DoctorFinding
+	if err := json.Unmarshal(out.Bytes(), &findings); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if len(findings) == 0 {
+		t.Fatal("expected at least the environment findings on a fresh store")
+	}
+}
+
+func TestPluginDoctor_Human(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var out, errb bytes.Buffer
+	if err := runPlugin([]string{"doctor"}, nil, &out, &errb); err != nil {
+		t.Fatalf("runPlugin doctor: %v\n%s", err, errb.String())
+	}
+	if !strings.Contains(out.String(), "OK") {
+		t.Errorf("doctor human output should show the OK/WARN/FAIL summary:\n%s", out.String())
+	}
+}
