@@ -232,7 +232,7 @@
     d.setAttribute("data-row-id", "header:" + p.key);
     d.setAttribute("data-project-key", p.key);
     d.setAttribute("role", "button");
-    d.setAttribute("aria-expanded", String(model.expanded.has(p.key) || p.default_expanded));
+    d.setAttribute("aria-expanded", String(model.expanded.has(p.key) || p.default_expanded === true));
     d.innerHTML = '<span class="project-name"></span><span class="project-rollup"></span>';
     d.querySelector(".project-name").textContent = p.name;
     d.addEventListener("click", function () { toggleProject(p.key); });
@@ -250,7 +250,7 @@
     return d;
   }
   function patchProjectHeader(el, p) {
-    el.setAttribute("aria-expanded", String(model.expanded.has(p.key) || p.default_expanded));
+    el.setAttribute("aria-expanded", String(model.expanded.has(p.key) || p.default_expanded === true));
   }
 
   function toggleProject(key) {
