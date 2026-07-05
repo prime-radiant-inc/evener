@@ -5514,6 +5514,25 @@ func TestWeb_Settings_PluginsPane_EmptyState(t *testing.T) {
 	}
 }
 
+// TestWeb_Settings_PluginsManagerPane_RendersClientScaffolding asserts that
+// the plugins-manager tab (Marketplaces & Plugins) renders its client-side
+// container and RPC wrapper hooks rather than SSR content. The marketplace
+// and installed-plugin lists are populated by the browser over
+// serf/marketplace/* and serf/plugin/* RPCs.
+func TestWeb_Settings_PluginsManagerPane_RendersClientScaffolding(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
+	})
+	body := settingsRequest(t, web, "plugins-manager")
+	for _, want := range []string{"plugins-manager-root", "pluginsAdmin.marketplaceList", "pluginsAdmin.pluginList"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q: %q", want, body)
+		}
+	}
+}
+
 // TestWeb_Settings_SkillsPane_RendersClientScaffolding asserts that the
 // skills tab renders the client-side container and launchconfig script hook
 // rather than SSR content. The actual list is populated by the browser.
@@ -5636,7 +5655,7 @@ func TestWeb_Settings_NavPresentForAllSections(t *testing.T) {
 		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    hubcore.NewPastIndex(""),
 	})
-	for _, sec := range []string{"general", "plugins", "skills", "mcp", "theme", "transcript", "hub", "credentials"} {
+	for _, sec := range []string{"general", "plugins", "plugins-manager", "skills", "mcp", "theme", "transcript", "hub", "credentials"} {
 		body := settingsRequest(t, web, sec)
 		if !strings.Contains(body, "settings-nav") {
 			t.Errorf("section %q: settings-nav missing from full-shell response", sec)

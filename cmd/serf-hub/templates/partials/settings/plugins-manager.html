@@ -1,0 +1,404 @@
+{{define "settings-content"}}
+<h2 class="settings-h2">Marketplaces &amp; Plugins</h2>
+<p class="settings-help">
+  Marketplaces are catalogs of installable plugins. Register a marketplace,
+  browse its catalog, and install what you need — installed, enabled plugins
+  load into every new serf session.
+</p>
+<div id="plugins-manager-root" data-loaded="false">
+  <p class="settings-help">Loading…</p>
+</div>
+<script>
+  (async function () {
+    const root = document.getElementById("plugins-manager-root");
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+    }
+
+    function sourceLabel(source) {
+      if (!source) return "";
+      switch (source.kind) {
+        case "github": return "github: " + source.repo;
+        case "url": return source.url;
+        case "directory": return source.path;
+        case "git-subdir": return source.url + " (" + source.path + ")";
+        default: return source.kind || "";
+      }
+    }
+
+    // ---- state ----
+    let marketplaces = [];   // last serf/marketplace/list result
+    let installed = [];      // last serf/plugin/list result
+    let browseName = "";     // marketplace currently selected in Browse, "" = none
+    let browseCatalog = null; // last serf/marketplace/browse result for browseName
+    let browseError = "";
+    let addMarketplaceOpen = false;
+    let loadError = "";
+
+    function isInstalled(plugin, marketplace) {
+      return installed.some(p => p.plugin === plugin && p.marketplace === marketplace);
+    }
+
+    // ---- section renderers ----
+
+    function renderMarketplaceRow(m) {
+      return `
+        <li class="settings-collection-row" data-marketplace="${escapeHtml(m.name)}">
+          <div>
+            <div class="row-text">${escapeHtml(m.name)} <span class="dim">${escapeHtml(m.source.kind)}</span></div>
+            <div class="row-meta">${escapeHtml(sourceLabel(m.source))}</div>
+          </div>
+          <div class="row-actions">
+            <button type="button" class="btn btn-secondary" data-action="mkt-refresh">Refresh</button>
+            <button type="button" class="btn btn-danger" data-action="mkt-remove">Remove</button>
+          </div>
+        </li>`;
+    }
+
+    function renderAddMarketplaceForm() {
+      return `
+        <li class="settings-collection-row credentials-add-row">
+          <form class="credentials-editor surface-inset" data-editor="add-marketplace" id="add-marketplace-form">
+            <label class="credentials-editor-label">Add marketplace</label>
+            <div class="credentials-editor-field">
+              <span class="credentials-editor-field-label">Source</span>
+              <div class="val-radio-group">
+                <label class="val-radio"><input type="radio" name="mkt-kind" value="url" checked> Git URL</label>
+                <label class="val-radio"><input type="radio" name="mkt-kind" value="github"> owner/repo</label>
+                <label class="val-radio"><input type="radio" name="mkt-kind" value="directory"> Local path</label>
+              </div>
+            </div>
+            <div class="credentials-editor-field" data-kind-field="url">
+              <label class="credentials-editor-field-label" for="mkt-url-input">Git URL</label>
+              <input id="mkt-url-input" type="text" autocomplete="off" placeholder="https://github.com/owner/repo.git" class="val-input">
+            </div>
+            <div class="credentials-editor-field" data-kind-field="github" hidden>
+              <label class="credentials-editor-field-label" for="mkt-repo-input">owner/repo</label>
+              <input id="mkt-repo-input" type="text" autocomplete="off" placeholder="owner/repo" class="val-input">
+            </div>
+            <div class="credentials-editor-field" data-kind-field="directory" hidden>
+              <label class="credentials-editor-field-label" for="mkt-path-input">Local path</label>
+              <div class="sp-dir-wrap">
+                <input id="mkt-path-input" type="text" autocomplete="off" placeholder="/absolute/path" class="val-input" data-settings-dir-input>
+                <button type="button" class="btn btn-secondary" data-settings-dir-picker>Browse</button>
+              </div>
+            </div>
+            <div class="credentials-editor-field">
+              <label class="credentials-editor-field-label" for="mkt-name-input">Name (optional)</label>
+              <input id="mkt-name-input" type="text" autocomplete="off" placeholder="defaults to the marketplace's own name" class="val-input">
+            </div>
+            <div class="credentials-editor-actions">
+              <button type="submit" class="btn btn-primary">Add</button>
+              <button type="button" class="btn btn-ghost" data-action="cancel-add-marketplace">Cancel</button>
+            </div>
+          </form>
+        </li>`;
+    }
+
+    function renderMarketplacesSection() {
+      const rows = marketplaces.length
+        ? marketplaces.map(renderMarketplaceRow).join("")
+        : `<li class="settings-collection-empty">No marketplaces registered. Add one below.</li>`;
+      return `
+        <section class="settings-collection" id="marketplaces-section">
+          <header class="settings-collection-head">
+            <h3>Marketplaces</h3>
+            <span class="settings-collection-count">${marketplaces.length} ${marketplaces.length === 1 ? "entry" : "entries"}</span>
+          </header>
+          <ul class="settings-collection-list" role="list">
+            ${rows}
+            ${addMarketplaceOpen ? renderAddMarketplaceForm() : ""}
+          </ul>
+          ${addMarketplaceOpen ? "" : `<button type="button" class="btn btn-secondary" id="btn-add-marketplace">+ Add marketplace</button>`}
+        </section>`;
+    }
+
+    function renderBrowseRow(p, marketplace) {
+      const already = isInstalled(p.name, marketplace);
+      return `
+        <li class="settings-collection-row">
+          <div>
+            <div class="row-text">${escapeHtml(p.name)}</div>
+            <div class="row-meta">${escapeHtml(p.description || "")}${p.category ? " · " + escapeHtml(p.category) : ""}</div>
+          </div>
+          <div class="row-actions">
+            ${already
+              ? `<span class="status-badge" data-state="idle">Installed</span>`
+              : `<button type="button" class="btn btn-primary" data-action="install" data-plugin="${escapeHtml(p.name)}">Install</button>`}
+          </div>
+        </li>`;
+    }
+
+    function renderBrowseSection() {
+      const options = [`<option value="">Choose a marketplace…</option>`]
+        .concat(marketplaces.map(m => `<option value="${escapeHtml(m.name)}"${m.name === browseName ? " selected" : ""}>${escapeHtml(m.name)}</option>`))
+        .join("");
+      let body;
+      if (browseError) {
+        body = `<li class="settings-collection-empty">Failed to browse: ${escapeHtml(browseError)}</li>`;
+      } else if (!browseName) {
+        body = `<li class="settings-collection-empty">Choose a marketplace to browse its catalog.</li>`;
+      } else if (!browseCatalog || browseCatalog.plugins.length === 0) {
+        body = `<li class="settings-collection-empty">This marketplace has no plugins.</li>`;
+      } else {
+        body = browseCatalog.plugins.map(p => renderBrowseRow(p, browseName)).join("");
+      }
+      return `
+        <section class="settings-collection" id="browse-section">
+          <header class="settings-collection-head">
+            <h3>Browse</h3>
+          </header>
+          <div class="settings-collection-add">
+            <select id="browse-marketplace-select" class="val-select">${options}</select>
+          </div>
+          <ul class="settings-collection-list" role="list">${body}</ul>
+        </section>`;
+    }
+
+    function installedRow(p) {
+      const dotState = p.broken ? "warning" : (p.enabled ? "idle" : "ended");
+      const badges = [
+        p.broken ? `<span class="status-badge" data-state="warning">broken</span>` : "",
+        !p.enabled ? `<span class="status-badge" data-state="ended">disabled</span>` : "",
+        p.autoUpgrade ? `<span class="status-badge" data-state="idle">auto-upgrade</span>` : "",
+      ].join(" ");
+      return `
+        <li class="settings-collection-row" data-plugin="${escapeHtml(p.plugin)}" data-marketplace="${escapeHtml(p.marketplace)}">
+          <div>
+            <div class="row-text">
+              <span class="status-dot" data-state="${dotState}"></span>
+              ${escapeHtml(p.plugin)} <span class="dim">@ ${escapeHtml(p.marketplace)}</span>
+              ${badges}
+            </div>
+            <div class="row-meta">v${escapeHtml(p.version || "unknown")}</div>
+          </div>
+          <div class="row-actions">
+            <button type="button" class="btn btn-secondary" data-action="toggle-enable">${p.enabled ? "Disable" : "Enable"}</button>
+            <button type="button" class="btn btn-secondary" data-action="toggle-auto">${p.autoUpgrade ? "Auto-upgrade: on" : "Auto-upgrade: off"}</button>
+            <button type="button" class="btn btn-secondary" data-action="upgrade">Upgrade</button>
+            <button type="button" class="btn btn-danger" data-action="remove">Remove</button>
+          </div>
+        </li>`;
+    }
+
+    function renderInstalledSection() {
+      const rows = installed.length
+        ? installed.map(installedRow).join("")
+        : `<li class="settings-collection-empty">No plugins installed yet. Install one from Browse above.</li>`;
+      return `
+        <section class="settings-collection" id="installed-section">
+          <header class="settings-collection-head">
+            <h3>Installed</h3>
+            <span class="settings-collection-count">${installed.length} ${installed.length === 1 ? "entry" : "entries"}</span>
+          </header>
+          <ul class="settings-collection-list" role="list">${rows}</ul>
+        </section>`;
+    }
+
+    function render() {
+      if (loadError) {
+        root.innerHTML = `<p class="settings-error">Failed to load: ${escapeHtml(loadError)}</p>`;
+        return;
+      }
+      root.innerHTML = renderMarketplacesSection() + renderBrowseSection() + renderInstalledSection();
+      root.dataset.loaded = "true";
+      if (window.SettingsPickers) window.SettingsPickers.init(root);
+      if (addMarketplaceOpen) {
+        const nameInput = root.querySelector("#mkt-name-input");
+        if (nameInput) nameInput.focus();
+      }
+    }
+
+    // ---- data loading ----
+
+    async function refreshMarketplaces() {
+      const resp = await pluginsAdmin.marketplaceList();
+      marketplaces = resp.marketplaces || [];
+    }
+
+    async function refreshInstalled() {
+      const resp = await pluginsAdmin.pluginList();
+      installed = resp.plugins || [];
+    }
+
+    async function refreshAll() {
+      await Promise.all([refreshMarketplaces(), refreshInstalled()]);
+      render();
+    }
+
+    async function refreshBrowse() {
+      if (!browseName) { browseCatalog = null; browseError = ""; return; }
+      try {
+        browseCatalog = await pluginsAdmin.marketplaceBrowse(browseName);
+        browseError = "";
+      } catch (err) {
+        browseCatalog = null;
+        browseError = (err && err.message) ? err.message : String(err);
+      }
+    }
+
+    function toastError(action, err) {
+      const message = (err && err.message) ? err.message : String(err);
+      if (window.SerfToast) window.SerfToast.show(action + " failed: " + message, "error");
+    }
+
+    // ---- kind-field visibility in the add-marketplace form ----
+
+    function updateAddMarketplaceKindFields(form) {
+      const kind = form.querySelector('input[name="mkt-kind"]:checked').value;
+      form.querySelectorAll("[data-kind-field]").forEach(el => {
+        el.hidden = el.dataset.kindField !== kind;
+      });
+    }
+
+    function marketplaceSourceFromForm(form) {
+      const kind = form.querySelector('input[name="mkt-kind"]:checked').value;
+      if (kind === "github") return { kind: "github", repo: form.querySelector("#mkt-repo-input").value.trim() };
+      if (kind === "directory") return { kind: "directory", path: form.querySelector("#mkt-path-input").value.trim() };
+      return { kind: "url", url: form.querySelector("#mkt-url-input").value.trim() };
+    }
+
+    // ---- event delegation (attached once; render() only replaces innerHTML) ----
+
+    root.addEventListener("change", (ev) => {
+      if (ev.target && ev.target.id === "browse-marketplace-select") {
+        browseName = ev.target.value;
+        refreshBrowse().then(render);
+        return;
+      }
+      if (ev.target && ev.target.name === "mkt-kind") {
+        updateAddMarketplaceKindFields(ev.target.closest("form"));
+      }
+    });
+
+    root.addEventListener("click", async (ev) => {
+      const addBtn = ev.target.closest("#btn-add-marketplace");
+      if (addBtn) {
+        addMarketplaceOpen = true;
+        render();
+        return;
+      }
+
+      const btn = ev.target.closest("button[data-action]");
+      if (!btn) return;
+      const action = btn.dataset.action;
+
+      if (action === "cancel-add-marketplace") {
+        addMarketplaceOpen = false;
+        render();
+        return;
+      }
+
+      if (action === "install") {
+        try {
+          await pluginsAdmin.pluginInstall(btn.dataset.plugin, browseName);
+          await refreshInstalled();
+          render();
+          if (window.SerfToast) window.SerfToast.show("Installed " + btn.dataset.plugin, "success");
+        } catch (err) {
+          toastError("Install", err);
+        }
+        return;
+      }
+
+      const mktRow = btn.closest("[data-marketplace]");
+      if (mktRow && action === "mkt-refresh") {
+        const name = mktRow.dataset.marketplace;
+        try {
+          await pluginsAdmin.marketplaceRefresh(name);
+          await refreshMarketplaces();
+          if (name === browseName) await refreshBrowse();
+          render();
+          if (window.SerfToast) window.SerfToast.show("Refreshed " + name, "success");
+        } catch (err) {
+          toastError("Refresh", err);
+        }
+        return;
+      }
+      if (mktRow && action === "mkt-remove") {
+        const name = mktRow.dataset.marketplace;
+        if (!confirm(`Remove marketplace "${name}"? Installed plugins from it are unaffected.`)) return;
+        try {
+          await pluginsAdmin.marketplaceRemove(name);
+          if (name === browseName) { browseName = ""; browseCatalog = null; }
+          await refreshMarketplaces();
+          render();
+          if (window.SerfToast) window.SerfToast.show("Removed marketplace " + name, "success");
+        } catch (err) {
+          toastError("Remove marketplace", err);
+        }
+        return;
+      }
+
+      const pluginRow = btn.closest("[data-plugin]");
+      if (!pluginRow) return;
+      const plugin = pluginRow.dataset.plugin;
+      const marketplace = pluginRow.dataset.marketplace;
+      const current = installed.find(p => p.plugin === plugin && p.marketplace === marketplace);
+
+      if (action === "toggle-enable") {
+        try {
+          if (current && current.enabled) await pluginsAdmin.pluginDisable(plugin, marketplace);
+          else await pluginsAdmin.pluginEnable(plugin, marketplace);
+          await refreshInstalled();
+          render();
+        } catch (err) {
+          toastError("Toggle enable", err);
+        }
+      } else if (action === "toggle-auto") {
+        try {
+          await pluginsAdmin.pluginSetAutoUpgrade(plugin, marketplace, !(current && current.autoUpgrade));
+          await refreshInstalled();
+          render();
+        } catch (err) {
+          toastError("Toggle auto-upgrade", err);
+        }
+      } else if (action === "upgrade") {
+        try {
+          await pluginsAdmin.pluginUpgrade(plugin, marketplace);
+          await refreshInstalled();
+          render();
+          if (window.SerfToast) window.SerfToast.show("Checked " + plugin + " for upgrades", "success");
+        } catch (err) {
+          toastError("Upgrade", err);
+        }
+      } else if (action === "remove") {
+        if (!confirm(`Remove plugin "${plugin}"?`)) return;
+        try {
+          await pluginsAdmin.pluginRemove(plugin, marketplace);
+          await refreshInstalled();
+          render();
+          if (window.SerfToast) window.SerfToast.show("Removed " + plugin, "success");
+        } catch (err) {
+          toastError("Remove", err);
+        }
+      }
+    });
+
+    root.addEventListener("submit", async (ev) => {
+      const form = ev.target.closest("form[data-editor=\"add-marketplace\"]");
+      if (!form) return;
+      ev.preventDefault();
+      const source = marketplaceSourceFromForm(form);
+      const name = form.querySelector("#mkt-name-input").value.trim();
+      try {
+        await pluginsAdmin.marketplaceAdd({ name, source });
+        addMarketplaceOpen = false;
+        await refreshMarketplaces();
+        render();
+        if (window.SerfToast) window.SerfToast.show("Added marketplace" + (name ? " " + name : ""), "success");
+      } catch (err) {
+        toastError("Add marketplace", err);
+      }
+    });
+
+    try {
+      await refreshAll();
+    } catch (err) {
+      loadError = (err && err.message) ? err.message : String(err);
+      render();
+    }
+  })();
+</script>
+{{end}}
