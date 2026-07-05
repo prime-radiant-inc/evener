@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/hubapi"
 )
 
 // Tree is the navigation data model.
@@ -145,50 +146,11 @@ type TreeNode struct {
 	Children     []TreeNode
 }
 
-// AttentionRank maps a state string to a sort key.
-// Higher rank = more attention needed. Sorted descending for live triage.
-func AttentionRank(state string) int {
-	switch state {
-	case "errored":
-		return 5
-	case "awaiting":
-		return 4
-	case "active":
-		return 3
-	case "warning":
-		return 2
-	case "idle":
-		return 1
-	default: // "ended" and unknown
-		return 0
-	}
-}
-
-// rollupRank ranks states for a project's rollup dot. Per spec the dot
-// reflects the most-attention-needing live child:
-//
-//	errored > awaiting > warning > active > idle
-//
-// (warning beats processing here because a warning is something the user
-// likely needs to look at, while active is the daemon making progress
-// on its own. errored outranks everything — a red error is the most
-// urgent signal a rollup dot can carry.)
-func rollupRank(state string) int {
-	switch state {
-	case "errored":
-		return 5
-	case "awaiting":
-		return 4
-	case "warning":
-		return 3
-	case "active":
-		return 2
-	case "idle":
-		return 1
-	default: // "ended" and unknown
-		return 0
-	}
-}
+// AttentionRank delegates to hubapi.AttentionRank. Kept as a thin exported
+// wrapper (rather than removed outright) because cmd/serf-hub/web_api_tree.go
+// still calls hubcore.AttentionRank; migrating that caller to hubapi directly
+// is out of scope here.
+func AttentionRank(state string) int { return hubapi.AttentionRank(state) }
 
 // AgeString formats a duration since t as a human-readable string.
 func AgeString(t time.Time) string {
@@ -508,7 +470,7 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		rollup := ""
 		rollupLive, rollupAttn := 0, 0
 		for _, s := range sessions {
-			if rollupRank(s.State) > rollupRank(rollup) {
+			if hubapi.RollupRank(s.State) > hubapi.RollupRank(rollup) {
 				rollup = s.State
 			}
 			switch s.State {
@@ -640,7 +602,7 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		liveNodes = append(liveNodes, node)
 	}
 	sort.SliceStable(liveNodes, func(i, j int) bool {
-		ri, rj := AttentionRank(liveNodes[i].State), AttentionRank(liveNodes[j].State)
+		ri, rj := hubapi.AttentionRank(liveNodes[i].State), hubapi.AttentionRank(liveNodes[j].State)
 		if ri != rj {
 			return ri > rj
 		}
