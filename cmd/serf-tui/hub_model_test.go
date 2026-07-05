@@ -26,6 +26,19 @@ import (
 	"primeradiant.com/serf/internal/appserver"
 )
 
+// collapseViewWhitespace flattens a rendered Overlay/popup view (box-drawing
+// borders plus hard-wrapped content) into a single line of whitespace-
+// separated words. Model picker rows can carry a qualified ID, a catalog
+// Meta tail, and a disabled reason together; when that combination exceeds
+// the popup's fixed column width, the frame word-wraps the row across two
+// visual lines. Tests that need to assert a row's text content as one
+// contiguous string (rather than caring about exact line layout) should
+// search in the collapsed form so an incidental wrap point doesn't split an
+// otherwise-present, correct string in half.
+func collapseViewWhitespace(view string) string {
+	return strings.Join(strings.Fields(strings.ReplaceAll(view, "│", " ")), " ")
+}
+
 func TestHubModelInitialFetchRendersLiveAndRecentRows(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
@@ -1714,7 +1727,12 @@ func TestHubModelCodexSpawnOpensHarnessModelPicker(t *testing.T) {
 	if got.spawnModelPicker == nil {
 		t.Fatalf("codex harness did not open model picker:\n%s", got.spawnView())
 	}
-	if view := got.spawnModelPicker.View(); !strings.Contains(view, "codex-local/gpt-5.3-codex") || strings.Contains(view, "openai/gpt-5") {
+	// Display is now the prettified bare name ("Gpt 5.3 Codex") with the
+	// provider on its own group header line ("CODEX-LOCAL") rather than a
+	// "provider/model" string — verify both, plus that the stale openai
+	// item set on m.spawnModels above didn't leak into the freshly-fetched
+	// codex-only picker.
+	if view := got.spawnModelPicker.View(); !strings.Contains(view, "CODEX-LOCAL") || !strings.Contains(view, "Gpt 5.3 Codex") || strings.Contains(view, "openai/gpt-5") {
 		t.Fatalf("codex harness picker should show only codex models:\n%s", view)
 	}
 	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -1831,7 +1849,9 @@ func TestHubModelSpawnDefaultsToEnabledModelWhenAuthRequired(t *testing.T) {
 	if form.spawnModelPicker == nil {
 		t.Fatalf("model field did not open picker:\n%s", form.spawnView())
 	}
-	if view := form.spawnModelPicker.View(); !strings.Contains(view, "openai/gpt-5") || !strings.Contains(view, "disabled: Login required") || !strings.Contains(view, "ollama/llama3") {
+	view := form.spawnModelPicker.View()
+	unwrapped := collapseViewWhitespace(view)
+	if !strings.Contains(view, "openai/gpt-5") || !strings.Contains(unwrapped, "disabled: Login required") || !strings.Contains(view, "ollama/llama3") {
 		t.Fatalf("spawn picker missing disabled auth-required row:\n%s", view)
 	}
 }
@@ -2906,11 +2926,17 @@ func TestHubModelSessionModelPickerDisablesAuthRequiredModels(t *testing.T) {
 	if m.sessionModelPicker == nil {
 		t.Fatalf("expected session model picker:\n%s", m.View())
 	}
-	if view := m.View(); !strings.Contains(view, "openai/gpt-5") || !strings.Contains(view, "disabled: Login required") || !strings.Contains(view, "/auth openai") {
+	view := m.View()
+	unwrapped := collapseViewWhitespace(view)
+	if !strings.Contains(view, "openai/gpt-5") || !strings.Contains(unwrapped, "disabled: Login required") || !strings.Contains(view, "/auth openai") {
 		t.Fatalf("missing disabled auth-required model row:\n%s", view)
 	}
 
-	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// Group-sorted order (Task 11) puts the enabled "ollama" row first and
+	// the disabled "openai" row second (alphabetical by provider) — move
+	// down to reach the disabled row before verifying it can't be selected.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	updated, cmd = updated.(hubModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd != nil {
 		t.Fatal("disabled model selection returned unexpected command")
 	}
@@ -2922,7 +2948,7 @@ func TestHubModelSessionModelPickerDisablesAuthRequiredModels(t *testing.T) {
 		t.Fatal("disabled model selection should keep picker open")
 	}
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	updated, cmd = updated.(hubModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("enabled model selection should call thread/model/set")

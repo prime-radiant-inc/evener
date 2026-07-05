@@ -323,7 +323,10 @@ func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
 	app.SendKeys("Tab", "Enter")
 	app.WaitFor("Harness:  codex-local", "Model:    (harness default)")
 	app.SendKeys("Tab", "Enter")
-	app.WaitFor("Select codex-local model", "codex-local/gpt-5.3-codex")
+	// The picker groups by provider header ("CODEX-LOCAL") and shows the
+	// prettified bare display name ("Gpt 5.3 Codex"), not a "provider/model"
+	// string (Task 11).
+	app.WaitFor("Select codex-local model", "CODEX-LOCAL", "Gpt 5.3 Codex")
 	app.SendKeys("Enter")
 	app.WaitFor("Harness:  codex-local", "Model:    codex-local/gpt-5.3-codex")
 	app.SendKeys("Tab", "Tab")
@@ -735,9 +738,14 @@ func TestTUITmuxE2E_ModelPickerShowsAuthRequiredModels(t *testing.T) {
 	app.WaitFor("serf / session / live task", "initial question")
 
 	app.TypeLine("/model")
-	app.WaitFor("Select model", "openai/gpt-5", "disabled: Login required", "/auth openai")
+	// The row (qualified ID + catalog Meta tail + disabled reason) is long
+	// enough to word-wrap inside the popup, splitting "disabled: Login
+	// required" across two lines — check each half as its own WaitFor want
+	// (each is independently a substring.Contains check) instead of the
+	// contiguous phrase.
+	app.WaitFor("Select model", "openai/gpt-5", "disabled: Login", "OpenAI login required (run /auth openai)")
 	app.SendKeys("Enter")
-	app.WaitFor("Select model", "disabled: Login required")
+	app.WaitFor("Select model", "disabled: Login", "OpenAI login required (run /auth openai)")
 	if models := hub.Models(); len(models) != 0 {
 		t.Fatalf("auth-required model should not be selected: %+v", models)
 	}
