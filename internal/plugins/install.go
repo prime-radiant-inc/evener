@@ -288,16 +288,21 @@ func (m *Manager) Remove(plugin, marketplace string) error {
 }
 
 type ListItem struct {
-	Plugin       string    `json:"plugin"`
-	Marketplace  string    `json:"marketplace"`
-	Version      string    `json:"version"`
-	Enabled      bool      `json:"enabled"`
-	AutoUpgrade  bool      `json:"autoUpgrade"`
-	Broken       bool      `json:"broken"`
-	InstallPath  string    `json:"installPath"`
-	GitCommitSha string    `json:"gitCommitSha"`
-	InstalledAt  time.Time `json:"installedAt"`
-	LastUpdated  time.Time `json:"lastUpdated"`
+	Plugin      string `json:"plugin"`
+	Marketplace string `json:"marketplace"`
+	Version     string `json:"version"`
+	Enabled     bool   `json:"enabled"`
+	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
+	AutoUpgrade bool `json:"autoUpgrade"`
+	Broken      bool `json:"broken"`
+	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
+	InstallPath string `json:"installPath"`
+	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
+	GitCommitSha string `json:"gitCommitSha"`
+	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
+	InstalledAt time.Time `json:"installedAt"`
+	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
+	LastUpdated time.Time `json:"lastUpdated"`
 }
 
 func splitKey(key string) (plugin, marketplace string) {

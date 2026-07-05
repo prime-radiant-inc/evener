@@ -19,14 +19,19 @@ type Registry struct {
 
 // InstallEntry is one installed plugin.
 type InstallEntry struct {
-	InstallPath  string    `json:"installPath"`
-	Version      string    `json:"version"`
-	GitCommitSha string    `json:"gitCommitSha,omitempty"`
-	InstalledAt  time.Time `json:"installedAt"`
-	LastUpdated  time.Time `json:"lastUpdated"`
-	Enabled      bool      `json:"enabled"`
-	AutoUpgrade  bool      `json:"autoUpgrade"`
-	Source       Source    `json:"source"`
+	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
+	InstallPath string `json:"installPath"`
+	Version     string `json:"version"`
+	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
+	GitCommitSha string `json:"gitCommitSha,omitempty"`
+	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
+	InstalledAt time.Time `json:"installedAt"`
+	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
+	LastUpdated time.Time `json:"lastUpdated"`
+	Enabled     bool      `json:"enabled"`
+	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
+	AutoUpgrade bool   `json:"autoUpgrade"`
+	Source      Source `json:"source"`
 }
 
 // LoadRegistry reads installed_plugins.json. An absent file is not an error: it

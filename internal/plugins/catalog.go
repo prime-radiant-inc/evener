@@ -35,10 +35,12 @@ type Catalog struct {
 	// and were therefore dropped rather than failing the whole catalog. A
 	// skipped plugin is simply absent from Plugins (and so not installable);
 	// this field exists so Browse/CLI/callers can surface a warning about it.
+	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
 	SkippedPlugins []string `json:"skippedPlugins,omitempty"`
 }
 
 type catalogMetadata struct {
+	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
 	PluginRoot string `json:"pluginRoot,omitempty"`
 }
 
