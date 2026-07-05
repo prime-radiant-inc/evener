@@ -116,10 +116,15 @@
     ];
   }
   function projectMenuItems(p) {
+    // A project stamped __archived (by pushArchivedSection, below) renders
+    // inside the Archived section and offers Unarchive instead of Archive.
+    var archived = !!p.__archived;
     return [
       { label: "New session", run: function () { window.location.href = "/new?dir=" + encodeURIComponent(p.working_dir); } },
       { label: "Settings", run: function () { window.location.href = "/settings/project?cwd=" + encodeURIComponent(p.working_dir); } },
-      { label: "Archive", run: function () { window.fetch("/api/archive", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "project", id: p.working_dir, archived: true }) }).then(scheduleResync); } },
+      { label: archived ? "Unarchive" : "Archive", run: function () {
+          window.fetch("/api/archive", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "project", id: p.working_dir, archived: !archived }) }).then(scheduleResync);
+        } },
       { label: "Delete…", run: function () { confirmDeleteProject(p); } },
     ];
   }
@@ -202,15 +207,17 @@
   }
 
   // flatten emits one keyed element descriptor per rendered row/section in
-  // order: NeedsYou, Pinned, active projects, archived projects, test runs.
-  // For the core task, render session rows grouped under project section
-  // headers; expansion + lazy children are honored via model.expanded.
+  // order: NeedsYou, Pinned, active projects, Archived (N), test runs.
+  // Render session rows grouped under project section headers; expansion +
+  // lazy children are honored via model.expanded. R2 adds test_runs, reusing
+  // the same section machinery as Archived.
   function flatten(tree) {
     var out = [];
     (tree.needs_you || []).forEach(function (n) { if (!n.__drop) out.push(n); });
     (tree.favorites || []).forEach(function (n) { if (!n.__drop) out.push(n); });
     (tree.projects || []).forEach(function (p) { pushProject(out, p); });
-    // archived_projects + test_runs handled by Task 21/22 section wrappers.
+    pushArchivedSection(out, tree);
+    // test_runs: R2.
     return out;
   }
   function pushProject(out, p) {
@@ -220,8 +227,68 @@
     if (expanded) (p.sessions || []).forEach(function (n) { if (!n.__drop) { n.__projectKey = p.key; out.push(n); } });
   }
 
-  function buildRowOrSection(n) { return n.__project ? buildProjectHeader(n.__project) : buildRow(n); }
-  function patchRowOrSection(el, n) { if (n.__project) patchProjectHeader(el, n.__project); else patchRow(el, n); }
+  // --- Sections (collapsed-by-default groupings below the top-of-rail tiers) -
+  // A section is itself a keyed element (data-row-id="section:<key>"), built
+  // via the same reconcile dispatch as rows/project headers. Its content
+  // (projects + their sessions) is only emitted by flatten when expanded, and
+  // reuses pushProject/buildProjectHeader/buildRow verbatim — an archived
+  // project's own expansion, menu, and pending-overlay participation work
+  // exactly like an active project's.
+  var SECTION_ARCHIVED = "section:archived";
+  var SECTION_KEYS = [SECTION_ARCHIVED];
+
+  function pushArchivedSection(out, tree) {
+    var archived = tree.archived_projects || [];
+    if (!archived.length) return; // no chrome for an empty bucket
+    out.push({ row_id: SECTION_ARCHIVED, __section: true, key: SECTION_ARCHIVED, label: "Archived", count: archived.length });
+    if (model.expanded.has(SECTION_ARCHIVED)) {
+      archived.forEach(function (p) { p.__archived = true; pushProject(out, p); });
+    }
+  }
+
+  function buildRowOrSection(n) {
+    if (n.__section) return buildSectionHeader(n);
+    return n.__project ? buildProjectHeader(n.__project) : buildRow(n);
+  }
+  function patchRowOrSection(el, n) {
+    if (n.__section) { patchSectionHeader(el, n); return; }
+    if (n.__project) patchProjectHeader(el, n.__project); else patchRow(el, n);
+  }
+
+  function buildSectionHeader(sec) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "sb-section";
+    b.setAttribute("data-row-id", sec.row_id);
+    b.setAttribute("data-section-key", sec.key);
+    // role="button" is redundant on a real <button> but kept for parity with
+    // .project-header's div[role=button] — an explicit, unambiguous contract
+    // for anything (tests, assistive tech quirks) that greps for it.
+    b.setAttribute("role", "button");
+    b.setAttribute("aria-expanded", String(model.expanded.has(sec.key)));
+    b.innerHTML = '<span class="sb-section-label"></span>';
+    setSectionLabel(b, sec);
+    b.addEventListener("click", function () { toggleExpanded(sec.key); });
+    // .project-header's toggle is click-only today; this is new code, so it
+    // gets real keyboard support rather than inheriting that gap. A real
+    // <button> gives native Tab focus; the explicit Enter/Space handler
+    // below is the actual activation mechanism (not relied on implicitly),
+    // so behavior is identical across browsers/environments.
+    b.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      toggleExpanded(sec.key);
+    });
+    return b;
+  }
+  function patchSectionHeader(el, sec) {
+    el.setAttribute("aria-expanded", String(model.expanded.has(sec.key)));
+    setSectionLabel(el, sec);
+  }
+  function setSectionLabel(el, sec) {
+    var label = el.querySelector(".sb-section-label");
+    if (label) label.textContent = sec.label + " (" + sec.count + ")";
+  }
 
   function buildProjectHeader(p) {
     var d = document.createElement("div");
@@ -235,7 +302,7 @@
     d.setAttribute("aria-expanded", String(model.expanded.has(p.key) || p.default_expanded === true));
     d.innerHTML = '<span class="project-name"></span><span class="project-rollup"></span>';
     d.querySelector(".project-name").textContent = p.name;
-    d.addEventListener("click", function () { toggleProject(p.key); });
+    d.addEventListener("click", function () { toggleExpanded(p.key); });
     var menuBtn = document.createElement("button");
     menuBtn.type = "button";
     menuBtn.className = "sb-menu-btn btn-icon";
@@ -253,7 +320,10 @@
     el.setAttribute("aria-expanded", String(model.expanded.has(p.key) || p.default_expanded === true));
   }
 
-  function toggleProject(key) {
+  // Generic expand/collapse toggle, keyed either by a project key or a
+  // section key (e.g. SECTION_ARCHIVED) — both live in the same
+  // model.expanded Set and persist through the same localStorage mechanism.
+  function toggleExpanded(key) {
     if (model.expanded.has(key)) model.expanded.delete(key); else model.expanded.add(key);
     persistExpanded(key);
     if (model.tree) renderTree(model.tree);
@@ -268,6 +338,9 @@
     var all = (tree.projects || []).concat(tree.archived_projects || [], tree.test_runs || []);
     all.forEach(function (p) {
       try { if (window.localStorage.getItem(EXPAND_PREFIX + p.key) === "true") model.expanded.add(p.key); } catch (e) {}
+    });
+    SECTION_KEYS.forEach(function (key) {
+      try { if (window.localStorage.getItem(EXPAND_PREFIX + key) === "true") model.expanded.add(key); } catch (e) {}
     });
   }
 
