@@ -124,6 +124,39 @@ func TestIntg_InitMCP_PluginProvidedServerMerges(t *testing.T) {
 	}
 }
 
+// TestIntg_InitMCP_PluginBadInlineMCPServersSurvives covers Task 12: a plugin
+// whose inline mcpServers map has an entry that fails mcpconfig.ParseServerMap
+// (here, an empty server name) used to abort plugin.Load/LoadAll entirely,
+// taking the whole session down with it. It must now degrade to a
+// plugin-level warning: NewSession succeeds, the bad plugin contributes no
+// MCP server, and a WARNING event names the plugin.
+func TestIntg_InitMCP_PluginBadInlineMCPServersSurvives(t *testing.T) {
+	t.Parallel()
+	dir := makePluginDir(t, "badmcpplug")
+	metaDir := filepath.Join(dir, ".claude-plugin")
+	manifest := `{"name": "badmcpplug", "mcpServers": {"": {"command": "somecmd"}}}`
+	if err := os.WriteFile(filepath.Join(metaDir, "plugin.json"), []byte(manifest), 0644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	client := llm.NewClient()
+	cfg := SessionConfig{PluginDirs: []string{dir}}
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+	if err != nil {
+		t.Fatalf("NewSession must survive a plugin with a bad inline mcpServers entry, got: %v", err)
+	}
+
+	var sawWarning bool
+	for _, w := range drainWarnings(t, sess) {
+		if strings.Contains(w.Message, "badmcpplug") {
+			sawWarning = true
+		}
+	}
+	if !sawWarning {
+		t.Fatal("expected a WARNING event naming the plugin with the bad inline mcpServers entry")
+	}
+}
+
 func TestIntg_InitMCP_RegisterToolsError(t *testing.T) {
 	t.Parallel()
 	bin := intg_buildMCPServer(t)

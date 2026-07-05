@@ -793,6 +793,11 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 		s.pendingHookWarnings = append(s.pendingHookWarnings, unsupportedHandlerTypeWarnings(p)...)
 
 		s.pluginMCPConfigs = append(s.pluginMCPConfigs, p.MCPConfigs...)
+		for _, w := range p.MCPConfigWarnings {
+			s.pendingMCPWarnings = append(s.pendingMCPWarnings, events.WarningData{
+				Source: "mcp", Title: "MCP server unavailable", Message: w, PluginName: p.Manifest.Name,
+			})
+		}
 
 		s.pendingPluginEvents = append(s.pendingPluginEvents, events.PluginLoadedData{
 			Name:           p.Manifest.Name,

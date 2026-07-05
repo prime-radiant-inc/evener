@@ -534,7 +534,7 @@ func TestDiscoverPluginMCPConfigs_FromFile(t *testing.T) {
 	os.WriteFile(filepath.Join(pluginDir, ".mcp.json"),
 		[]byte(`{"mcpServers": {"my-server": {"command": "echo", "args": ["hello"]}}}`), 0644)
 
-	configs, err := discoverPluginMCPConfigs(pluginDir, nil, "test-plugin")
+	configs, _, err := discoverPluginMCPConfigs(pluginDir, nil, "test-plugin")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -558,7 +558,7 @@ func TestDiscoverPluginMCPConfigs_ExpandsRoot(t *testing.T) {
 	os.WriteFile(filepath.Join(pluginDir, ".mcp.json"),
 		[]byte(`{"mcpServers": {"srv": {"command": "${CLAUDE_PLUGIN_ROOT}/server"}}}`), 0644)
 
-	configs, err := discoverPluginMCPConfigs(pluginDir, nil, "p")
+	configs, _, err := discoverPluginMCPConfigs(pluginDir, nil, "p")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,7 +575,7 @@ func TestDiscoverPluginMCPConfigs_InlineManifest(t *testing.T) {
 	pluginDir, _ = filepath.EvalSymlinks(pluginDir)
 	inline := json.RawMessage(`{"inline-srv": {"command": "inline-cmd"}}`)
 
-	configs, err := discoverPluginMCPConfigs(pluginDir, inline, "myplugin")
+	configs, _, err := discoverPluginMCPConfigs(pluginDir, inline, "myplugin")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -592,7 +592,7 @@ func TestDiscoverPluginMCPConfigs_InlineManifest(t *testing.T) {
 
 func TestDiscoverPluginMCPConfigs_NoConfig(t *testing.T) {
 	pluginDir := t.TempDir()
-	configs, err := discoverPluginMCPConfigs(pluginDir, nil, "empty")
+	configs, _, err := discoverPluginMCPConfigs(pluginDir, nil, "empty")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -608,7 +608,7 @@ func TestDiscoverPluginMCPConfigs_FilePlusInline(t *testing.T) {
 		[]byte(`{"mcpServers": {"file-srv": {"command": "from-file"}}}`), 0644)
 	inline := json.RawMessage(`{"inline-srv": {"command": "from-inline"}}`)
 
-	configs, err := discoverPluginMCPConfigs(pluginDir, inline, "combo")
+	configs, _, err := discoverPluginMCPConfigs(pluginDir, inline, "combo")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -634,7 +634,7 @@ func TestDiscoverPluginMCPConfigs_InlineShadowsFile(t *testing.T) {
 		[]byte(`{"mcpServers": {"srv": {"command": "from-file"}}}`), 0644)
 	inline := json.RawMessage(`{"srv": {"command": "from-inline"}}`)
 
-	configs, err := discoverPluginMCPConfigs(pluginDir, inline, "shadow")
+	configs, _, err := discoverPluginMCPConfigs(pluginDir, inline, "shadow")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -683,5 +683,110 @@ func TestLoadPlugin_WithInlineMCPServers(t *testing.T) {
 	}
 	if plugin.MCPConfigs[0].Name != "plugin_inline-mcp_isrv" {
 		t.Errorf("Name = %q", plugin.MCPConfigs[0].Name)
+	}
+}
+
+// TestLoadPlugin_MCPConfigWarn_InlineParseServerMapFails covers the one fatal
+// plugin MCP path: a well-formed inline mcpServers object whose entry fails
+// mcpconfig.ParseServerMap validation (here, an empty server name) used to
+// abort Load entirely (plugin.go:131-134). It must now degrade to a
+// plugin-level warning: MCPConfigs stays empty for this plugin, but its
+// skills, agents, and hooks still load normally.
+func TestLoadPlugin_MCPConfigWarn_InlineParseServerMapFails(t *testing.T) {
+	dir := makePluginDir(t, "badmcp")
+	metaDir := filepath.Join(dir, ".claude-plugin")
+	manifest := `{
+		"name": "badmcp",
+		"mcpServers": {"": {"command": "somecmd"}},
+		"hooks": {"SessionStart": [{"matcher": "startup", "hooks": [{"type": "command", "command": "echo hi"}]}]}
+	}`
+	if err := os.WriteFile(filepath.Join(metaDir, "plugin.json"), []byte(manifest), 0644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	skillDir := filepath.Join(dir, "skills", "my-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"),
+		[]byte("---\nname: my-skill\ndescription: A test skill\n---\nSkill body"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	writeAgentFile(t, dir, "agents", "helper.md", "---\nname: helper\ndescription: helps\n---\nbody\n")
+
+	lp, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load must degrade a bad inline mcpServers entry to a warning, not fail: %v", err)
+	}
+	if len(lp.MCPConfigs) != 0 {
+		t.Errorf("MCPConfigs = %v, want empty (the failed inline layer must be skipped)", lp.MCPConfigs)
+	}
+	if len(lp.MCPConfigWarnings) != 1 {
+		t.Fatalf("MCPConfigWarnings = %v, want 1 entry", lp.MCPConfigWarnings)
+	}
+	if !strings.Contains(lp.MCPConfigWarnings[0], "badmcp") {
+		t.Errorf("warning %q must name the plugin", lp.MCPConfigWarnings[0])
+	}
+	// The rest of the plugin's contributions must still load.
+	if _, ok := lp.Skills["badmcp:my-skill"]; !ok {
+		t.Errorf("Skills missing badmcp:my-skill; skills must still load when MCP config fails: %v", keys(lp.Skills))
+	}
+	if _, ok := lp.Agents["badmcp:helper"]; !ok {
+		t.Errorf("Agents missing badmcp:helper; agents must still load when MCP config fails: %v", keys(lp.Agents))
+	}
+	if len(lp.Hooks[HookSessionStart]) != 1 {
+		t.Errorf("Hooks[SessionStart] = %v, want 1; hooks must still load when MCP config fails", lp.Hooks[HookSessionStart])
+	}
+}
+
+// TestLoadPlugin_MCPConfigWarn_FileParseError covers the previously-swallowed
+// .mcp.json file parse error (plugin.go:121): a malformed .mcp.json file must
+// now surface as a warning instead of being silently treated the same as a
+// missing file.
+func TestLoadPlugin_MCPConfigWarn_FileParseError(t *testing.T) {
+	dir := makePluginDir(t, "badfile")
+	if err := os.WriteFile(filepath.Join(dir, ".mcp.json"), []byte(`{invalid`), 0644); err != nil {
+		t.Fatalf("write .mcp.json: %v", err)
+	}
+
+	lp, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load must degrade a malformed .mcp.json file to a warning, not fail: %v", err)
+	}
+	if len(lp.MCPConfigs) != 0 {
+		t.Errorf("MCPConfigs = %v, want empty", lp.MCPConfigs)
+	}
+	if len(lp.MCPConfigWarnings) != 1 {
+		t.Fatalf("MCPConfigWarnings = %v, want 1 entry", lp.MCPConfigWarnings)
+	}
+	if !strings.Contains(lp.MCPConfigWarnings[0], "badfile") {
+		t.Errorf("warning %q must name the plugin", lp.MCPConfigWarnings[0])
+	}
+}
+
+// TestLoadPlugin_MCPConfigWarn_MalformedInlineJSON covers the previously-
+// swallowed malformed-inline-JSON case (plugin.go:130): the manifest's
+// mcpServers value is syntactically valid JSON but not an object (a string,
+// here), so unmarshaling it into the server map fails. That must now surface
+// as a warning instead of being silently ignored.
+func TestLoadPlugin_MCPConfigWarn_MalformedInlineJSON(t *testing.T) {
+	dir := makePluginDir(t, "badinline")
+	metaDir := filepath.Join(dir, ".claude-plugin")
+	manifest := `{"name": "badinline", "mcpServers": "not-an-object"}`
+	if err := os.WriteFile(filepath.Join(metaDir, "plugin.json"), []byte(manifest), 0644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	lp, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load must degrade malformed inline mcpServers JSON to a warning, not fail: %v", err)
+	}
+	if len(lp.MCPConfigs) != 0 {
+		t.Errorf("MCPConfigs = %v, want empty", lp.MCPConfigs)
+	}
+	if len(lp.MCPConfigWarnings) != 1 {
+		t.Fatalf("MCPConfigWarnings = %v, want 1 entry", lp.MCPConfigWarnings)
+	}
+	if !strings.Contains(lp.MCPConfigWarnings[0], "badinline") {
+		t.Errorf("warning %q must name the plugin", lp.MCPConfigWarnings[0])
 	}
 }
