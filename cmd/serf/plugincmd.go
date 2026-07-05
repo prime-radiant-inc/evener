@@ -34,6 +34,8 @@ func runPlugin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// lifecycle verbs added in Task 4:
 	case "install", "remove", "enable", "disable", "list", "upgrade", "gc", "auto-upgrade":
 		return runPluginLifecycle(args[0], args[1:], stdin, stdout, stderr)
+	case "check-now":
+		return runPluginCheckNow(args[1:], stdout, stderr)
 	case "doctor":
 		return runPluginDoctor(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -190,6 +192,7 @@ func printPluginUsage(w io.Writer) {
 	_, _ = fmt.Fprintf(w, "  list          List installed plugins\n")
 	_, _ = fmt.Fprintf(w, "  upgrade       Upgrade installed plugins\n")
 	_, _ = fmt.Fprintf(w, "  auto-upgrade  Toggle a plugin's auto-upgrade flag (--off to disable)\n")
+	_, _ = fmt.Fprintf(w, "  check-now     Run one auto-upgrade pass now for every opted-in plugin\n")
 	_, _ = fmt.Fprintf(w, "  gc            Garbage collect unused plugin cache\n")
 	_, _ = fmt.Fprintf(w, "  doctor        Run plugin-store health checks\n")
 }
@@ -489,4 +492,57 @@ func runPluginDoctor(args []string, stdout, stderr io.Writer) error {
 	}
 	_, err = fmt.Fprint(stdout, plugins.RenderDoctorFindings(findings))
 	return err
+}
+
+// checkNowResult is runPluginCheckNow's --json shape. It intentionally does
+// not reuse appwire.PluginCheckNowResponse: that type's Updated is a flat
+// "<plugin>@<marketplace>" ref list matching the hub RPC's wire contract,
+// which this CLI-only verb has no need to match.
+type checkNowResult struct {
+	Updated []string `json:"updated"`
+	Error   string   `json:"error,omitempty"`
+}
+
+// runPluginCheckNow is `serf plugin check-now` (design spec §9.1): manually
+// triggers one auto-upgrade pass — upgrading every installed, git-backed
+// plugin with autoUpgrade enabled — right now instead of waiting for the hub
+// daemon's timer. The hub already exposes this on demand via the
+// serf/plugin/checkNow RPC, but nothing reachable from the CLI did; a user
+// running serf without the hub (or wanting a scriptable check) had no way to
+// trigger it. Failures are reported alongside successes rather than aborting
+// the report, matching Manager.UpdateAutoUpgrade's own failure-isolation.
+func runPluginCheckNow(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("check-now", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "emit JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	updated, upgradeErr := plugins.NewManager("").UpdateAutoUpgrade(context.Background())
+	refs := make([]string, len(updated))
+	for i, u := range updated {
+		refs[i] = u.Plugin + "@" + u.Marketplace
+	}
+
+	if *asJSON {
+		result := checkNowResult{Updated: refs}
+		if upgradeErr != nil {
+			result.Error = upgradeErr.Error()
+		}
+		return json.NewEncoder(stdout).Encode(result)
+	}
+
+	if len(updated) == 0 {
+		_, _ = fmt.Fprintf(stdout, "No plugins upgraded.\n")
+	} else {
+		_, _ = fmt.Fprintf(stdout, "Upgraded %d plugin(s):\n", len(updated))
+		for _, u := range updated {
+			_, _ = fmt.Fprintf(stdout, "  %s@%s -> %s\n", u.Plugin, u.Marketplace, u.Entry.Version)
+		}
+	}
+	if upgradeErr != nil {
+		_, _ = fmt.Fprintf(stderr, "warning: %v\n", upgradeErr)
+	}
+	return nil
 }

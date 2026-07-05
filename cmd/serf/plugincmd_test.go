@@ -338,6 +338,60 @@ func TestPluginAutoUpgrade_RequiresRef(t *testing.T) {
 	}
 }
 
+// TestPluginCheckNow_FreshStoreReportsNothing covers the missing "manual
+// check now" surface (design spec §9.1): the hub daemon and its
+// serf/plugin/checkNow RPC exist, but nothing reachable from the CLI
+// triggered it.
+func TestPluginCheckNow_FreshStoreReportsNothing(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var out, errb bytes.Buffer
+	if err := runPlugin([]string{"check-now"}, nil, &out, &errb); err != nil {
+		t.Fatalf("runPlugin check-now: %v\n%s", err, errb.String())
+	}
+	if !strings.Contains(out.String(), "No plugins upgraded") {
+		t.Fatalf("expected 'No plugins upgraded', got %q", out.String())
+	}
+}
+
+func TestPluginCheckNow_JSON(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var out, errb bytes.Buffer
+	if err := runPlugin([]string{"check-now", "--json"}, nil, &out, &errb); err != nil {
+		t.Fatalf("runPlugin check-now --json: %v\n%s", err, errb.String())
+	}
+	var resp struct {
+		Updated []string `json:"updated"`
+		Error   string   `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if len(resp.Updated) != 0 || resp.Error != "" {
+		t.Fatalf("resp = %+v, want empty on a fresh store", resp)
+	}
+}
+
+// TestPluginCheckNow_SkipsDirectorySourcePlugin proves check-now actually
+// wires up Manager.UpdateAutoUpgrade rather than being a no-op stub: an
+// auto-upgrade-enabled but directory-sourced plugin is inherently current (no
+// sha to move), so the pass must run without error and report zero upgrades.
+func TestPluginCheckNow_SkipsDirectorySourcePlugin(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	installDirectoryPluginForTest(t, "widget", "local")
+	m := plugins.NewManager("")
+	if err := m.SetAutoUpgrade("widget", "local", true); err != nil {
+		t.Fatalf("SetAutoUpgrade: %v", err)
+	}
+
+	var out, errb bytes.Buffer
+	if err := runPlugin([]string{"check-now"}, nil, &out, &errb); err != nil {
+		t.Fatalf("runPlugin check-now: %v\n%s", err, errb.String())
+	}
+	if !strings.Contains(out.String(), "No plugins upgraded") {
+		t.Fatalf("expected a directory-source plugin to report no upgrades, got %q", out.String())
+	}
+}
+
 func TestPluginInstall_RequiresConfirmation(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	var out, errb bytes.Buffer
