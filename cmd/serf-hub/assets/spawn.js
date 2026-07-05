@@ -1750,6 +1750,7 @@
       .then(d => ({
         models: (d && Array.isArray(d.models)) ? d.models : (Array.isArray(d) ? d : []),
         diagnostics: (d && Array.isArray(d.diagnostics)) ? d.diagnostics : [],
+        recent: (d && Array.isArray(d.recent)) ? d.recent : [],
       }));
   }
 
