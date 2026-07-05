@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
@@ -213,6 +216,60 @@ func launchModelListErrorDiagnostic(err error) appwire.ModelListDiagnostic {
 	}
 }
 
+// datedSnapshotSuffix matches a trailing dated-snapshot suffix on a bare
+// model id (e.g. "-20251101"). Duplicated (not exported from llm) because
+// llm/model_catalog_embedded.go isn't owned by this track — see the plan's
+// Global Constraints.
+var datedSnapshotSuffix = regexp.MustCompile(`-\d{8}$`)
+
+// isDatedSnapshotModelID reports whether ref's model segment (the part after
+// the last "/", if any) carries a dated-snapshot suffix.
+func isDatedSnapshotModelID(ref string) bool {
+	if i := strings.LastIndex(ref, "/"); i >= 0 {
+		ref = ref[i+1:]
+	}
+	return datedSnapshotSuffix.MatchString(ref)
+}
+
+// prettifyModelDisplayName turns a raw model id into a human-readable label
+// with no hand-maintained per-model name table (Decision #8): it strips a
+// trailing dated-snapshot suffix, splits on '-', and capitalizes each
+// segment's first rune, leaving the rest (numbers, "4.5", "70b", ...)
+// untouched. Deliberately simple.
+func prettifyModelDisplayName(id string) string {
+	base := datedSnapshotSuffix.ReplaceAllString(id, "")
+	segments := strings.Split(base, "-")
+	for idx, seg := range segments {
+		if seg == "" {
+			continue
+		}
+		r := []rune(seg)
+		r[0] = unicode.ToUpper(r[0])
+		segments[idx] = string(r)
+	}
+	return strings.Join(segments, " ")
+}
+
+// sortModelEntriesDatedLast stable-sorts model entries by provider, then
+// pushes dated-snapshot ids to the end of their provider's group; order is
+// otherwise preserved (whatever order the source returned).
+func sortModelEntriesDatedLast(entries []map[string]any) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		pi, _ := entries[i]["provider"].(string)
+		pj, _ := entries[j]["provider"].(string)
+		if pi != pj {
+			return pi < pj
+		}
+		mi, _ := entries[i]["model"].(string)
+		mj, _ := entries[j]["model"].(string)
+		di, dj := isDatedSnapshotModelID(mi), isDatedSnapshotModelID(mj)
+		if di != dj {
+			return !di
+		}
+		return false
+	})
+}
+
 // modelDescriptorsToAPIModels builds the /api/models response entries. The
 // embedded catalog supplies default metadata (display name, context window,
 // cost, effort levels); when providerCfg carries a providers.toml instance
@@ -230,12 +287,12 @@ func modelDescriptorsToAPIModels(models []appwire.ModelDescriptor, providerCfg *
 			continue
 		}
 		entry := map[string]any{
-			"provider": m.Provider,
-			"model":    m.Model,
+			"provider":     m.Provider,
+			"model":        m.Model,
+			"display_name": prettifyModelDisplayName(m.Model),
 		}
 		if cat != nil {
 			if mi := catalogModelInfo(cat, behaviorTagFor(providerCfg, m.Provider), m.Model); mi != nil {
-				entry["display_name"] = mi.DisplayName
 				entry["context_window"] = mi.ContextWindow
 				entry["supports_tools"] = mi.SupportsTools
 				entry["supports_reasoning"] = mi.SupportsReasoning
@@ -249,6 +306,7 @@ func modelDescriptorsToAPIModels(models []appwire.ModelDescriptor, providerCfg *
 		applyInstanceModelOverride(entry, providerCfg, m.Provider, m.Model)
 		out = append(out, entry)
 	}
+	sortModelEntriesDatedLast(out)
 	return out
 }
 
