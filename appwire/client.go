@@ -426,3 +426,75 @@ func (c *Client) CommandList(ctx context.Context) (CommandListResponse, error) {
 	err := c.request(ctx, MethodSerfCommandList, EmptyParams{}, &out)
 	return out, err
 }
+
+func (c *Client) MarketplaceList(ctx context.Context) (MarketplaceListResponse, error) {
+	var out MarketplaceListResponse
+	err := c.request(ctx, MethodSerfMarketplaceList, EmptyParams{}, &out)
+	return out, err
+}
+
+func (c *Client) MarketplaceAdd(ctx context.Context, params MarketplaceAddParams) (MarketplaceListResponse, error) {
+	var out MarketplaceListResponse
+	err := c.request(ctx, MethodSerfMarketplaceAdd, params, &out)
+	return out, err
+}
+
+func (c *Client) MarketplaceRemove(ctx context.Context, params MarketplaceNameParams) (MarketplaceListResponse, error) {
+	var out MarketplaceListResponse
+	err := c.request(ctx, MethodSerfMarketplaceRemove, params, &out)
+	return out, err
+}
+
+func (c *Client) MarketplaceRefresh(ctx context.Context, params MarketplaceNameParams) (MarketplaceListResponse, error) {
+	var out MarketplaceListResponse
+	err := c.request(ctx, MethodSerfMarketplaceRefresh, params, &out)
+	return out, err
+}
+
+func (c *Client) MarketplaceBrowse(ctx context.Context, params MarketplaceBrowseParams) (MarketplaceBrowseResponse, error) {
+	var out MarketplaceBrowseResponse
+	err := c.request(ctx, MethodSerfMarketplaceBrowse, params, &out)
+	return out, err
+}
+
+func (c *Client) PluginList(ctx context.Context) (PluginListResponse, error) {
+	var out PluginListResponse
+	err := c.request(ctx, MethodSerfPluginList, EmptyParams{}, &out)
+	return out, err
+}
+
+func (c *Client) PluginInstall(ctx context.Context, params PluginRefParams) (PluginListResponse, error) {
+	var out PluginListResponse
+	err := c.request(ctx, MethodSerfPluginInstall, params, &out)
+	return out, err
+}
+
+func (c *Client) PluginUpgrade(ctx context.Context, params PluginRefParams) (PluginListResponse, error) {
+	var out PluginListResponse
+	err := c.request(ctx, MethodSerfPluginUpgrade, params, &out)
+	return out, err
+}
+
+func (c *Client) PluginRemove(ctx context.Context, params PluginRefParams) (PluginListResponse, error) {
+	var out PluginListResponse
+	err := c.request(ctx, MethodSerfPluginRemove, params, &out)
+	return out, err
+}
+
+func (c *Client) PluginEnable(ctx context.Context, params PluginRefParams) (PluginListResponse, error) {
+	var out PluginListResponse
+	err := c.request(ctx, MethodSerfPluginEnable, params, &out)
+	return out, err
+}
+
+func (c *Client) PluginDisable(ctx context.Context, params PluginRefParams) (PluginListResponse, error) {
+	var out PluginListResponse
+	err := c.request(ctx, MethodSerfPluginDisable, params, &out)
+	return out, err
+}
+
+func (c *Client) PluginSetAutoUpgrade(ctx context.Context, params PluginSetAutoUpgradeParams) (PluginListResponse, error) {
+	var out PluginListResponse
+	err := c.request(ctx, MethodSerfPluginSetAutoUpgrade, params, &out)
+	return out, err
+}
