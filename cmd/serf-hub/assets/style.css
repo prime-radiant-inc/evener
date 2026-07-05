@@ -1942,6 +1942,42 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .input-status .context-fill.context-warn { background: var(--state-awaiting); }
 .input-status .context-warn-glyph { color: var(--state-awaiting); font-size: var(--text-xs); }
 
+/* Work-time and token clusters (WS2): plain status-item styling — tabular
+   nums so the digits don't jitter in width as the client-side tick (a later
+   task) updates them. */
+.input-status .work-time,
+.input-status .tokens .status-value {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Liveness placeholder (mockup #13's inline status-row variant; populated
+   client-side in a later task): mirrors the standalone .liveness block's
+   quiet/concern color language below, scaled to a status-item. The ambient
+   .status-value color isn't muted by default the way .liveness's own base
+   style is, so the quiet band needs its own explicit rule here. */
+.input-status .liveness-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.input-status .liveness-inline[hidden] { display: none; }
+.input-status .liveness-inline::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+.input-status .liveness-inline[data-level="quiet"] { color: var(--text-muted); }
+.input-status .liveness-inline[data-level="concern"] { color: var(--state-awaiting); }
+.input-status .liveness-inline[data-level="concern"]::before { background: var(--state-awaiting); }
+.input-status .liveness-inline .liveness-glyph {
+  font-weight: 700;
+  color: var(--state-awaiting);
+  flex-shrink: 0;
+}
+
 /* Generic context/cost styling — kept for status_bar.html and other surfaces. */
 .context { display: inline-flex; align-items: center; gap: var(--space-3); }
 .context-bar { display: inline-block; width: 80px; height: 2px; background: var(--rule); vertical-align: middle; overflow: hidden; }

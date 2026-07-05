@@ -478,49 +478,37 @@ func (s *WebServer) fillObserverLink(data *WorkspaceData, m schema.SessionMeta) 
 }
 
 func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id string) {
-	// Seed from workspaceData so WorkingDir/Branch are populated for both
-	// live and past sessions, then refresh dynamic fields from /status when
-	// the daemon is reachable. Title/OOBTitle also ride along on this same
-	// poll: the response carries an out-of-band swap of the header's
-	// #workspace-session-title span, keeping it fresh as the session's
-	// generated name changes.
-	wd := s.workspaceData(id)
+	// apiSessionState seeds Title/State/TurnCount/WorkingDir/Branch/context/
+	// goal/work-time/token fields from workspaceData in a single call, plus
+	// (for a live session) one lean ReadThread — replacing the former
+	// workspaceData + apiSessionDetail pair, which called workspaceData
+	// twice and fetched the full transcript just to refresh this status row.
+	// Title/OOBTitle ride along on this same poll: the response carries an
+	// out-of-band swap of the header's #workspace-session-title span,
+	// keeping it fresh as the session's generated name changes.
+	detail, _ := s.apiSessionState(id)
 	data := map[string]any{
-		"SourceLabel":    wd.SourceLabel,
-		"Title":          wd.Title,
-		"OOBTitle":       true,
-		"Model":          wd.Model,
-		"WorkingDir":     wd.WorkingDir,
-		"Branch":         wd.Branch,
-		"ContextWindow":  0,
-		"ContextPercent": 0,
-		"ContextNumbers": "",
-		"Cost":           wd.Cost,
-		"State":          wd.State,
-		"StateLabel":     wd.StateLabel,
-		"TurnCount":      wd.TurnCount,
-		"RunningFor":     wd.RunningFor,
-		"GoalStatus":     "",
-		"GoalIterations": 0,
+		"SourceLabel":         sourceLabelFromRefText(appRefFromRouteID(id)),
+		"Title":               detail.Title,
+		"OOBTitle":            true,
+		"Model":               detail.Model,
+		"WorkingDir":          detail.WorkingDir,
+		"Branch":              detail.Branch,
+		"ContextPercent":      int(detail.ContextPressure * 100),
+		"ContextWindow":       detail.ContextWindow,
+		"ContextNumbers":      formatContextNumbers(detail.ContextUsed, detail.ContextWindow, detail.ContextRemaining),
+		"Cost":                "",
+		"State":               detail.State,
+		"StateLabel":          stateLabel(detail.State),
+		"TurnCount":           detail.TurnCount,
+		"GoalStatus":          detail.GoalStatus,
+		"GoalIterations":      detail.GoalIterations,
+		"WorkMillis":          detail.WorkMillis,
+		"Usage":               detail.Usage,
+		"ActiveTurnStartedAt": detail.ActiveTurnStartedAt,
 	}
 	if data["Model"] == "" {
 		data["Model"] = "—"
-	}
-	if detail, ok := s.apiSessionDetail(id); ok {
-		if detail.Model != "" {
-			data["Model"] = detail.Model
-		}
-		data["State"] = detail.State
-		data["StateLabel"] = stateLabel(detail.State)
-		data["TurnCount"] = detail.TurnCount
-		data["ContextPercent"] = int(detail.ContextPressure * 100)
-		data["ContextWindow"] = detail.ContextWindow
-		data["ContextNumbers"] = formatContextNumbers(detail.ContextUsed, detail.ContextWindow, detail.ContextRemaining)
-		if detail.WorkingDir != "" {
-			data["WorkingDir"] = detail.WorkingDir
-		}
-		data["GoalStatus"] = detail.GoalStatus
-		data["GoalIterations"] = detail.GoalIterations
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.inputStripTmpl.ExecuteTemplate(w, "input_status", data); err != nil {

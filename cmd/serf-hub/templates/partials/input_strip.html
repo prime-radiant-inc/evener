@@ -7,6 +7,9 @@
 {{if .WorkingDir}}<span class="status-item cwd" title="{{.WorkingDir}}"><span class="status-key">cwd</span> <span class="status-value">{{.WorkingDir}}</span></span>{{end}}
 {{if .Branch}}<span class="status-item branch"><span class="status-key">branch</span> <span class="status-value">{{.Branch}}</span></span>{{end}}
 {{if .ContextWindow}}<span class="status-item context{{if ge .ContextPercent 80}} context-warn{{end}}"><span class="status-key">ctx</span>{{if ge .ContextPercent 80}} <span class="context-warn-glyph" title="Near the context limit" aria-hidden="true">⚠</span>{{end}} <span class="status-value context-numbers">{{.ContextNumbers}}</span><span class="context-bar"><span class="context-fill{{if ge .ContextPercent 80}} context-warn{{end}}" style="width:{{.ContextPercent}}%"></span></span></span>{{end}}
+{{if or .WorkMillis .ActiveTurnStartedAt}}<span class="status-item work" data-work-millis="{{.WorkMillis}}" data-active-turn-started="{{.ActiveTurnStartedAt}}"><span class="status-key">work</span> <span class="status-value work-time">{{formatWorkMillis .WorkMillis}}</span></span>{{end}}
+{{if .Usage}}<span class="status-item tokens" title="uncached ↑{{.Usage.InputTokens}} ↓{{.Usage.OutputTokens}} · cache-read {{.Usage.CacheReadTokens}} · total {{.Usage.TotalTokens}}"><span class="status-key">tok</span> <span class="status-value">↑{{formatTokenCount .Usage.InputTokens}} ↓{{formatTokenCount .Usage.OutputTokens}}</span></span>{{end}}
+<span class="status-item liveness-inline" data-liveness hidden></span>
 {{if .Cost}}<span class="status-item cost"><span class="status-key">cost</span> <span class="status-value">{{.Cost}}</span></span>{{end}}
 {{if .GoalStatus}}<span class="status-item goal"><span class="status-key">goal</span> <span class="status-value">{{.GoalStatus}} · {{.GoalIterations}} turns</span></span>{{end}}
 {{end}}
