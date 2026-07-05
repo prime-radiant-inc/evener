@@ -308,6 +308,11 @@ verified against a real hub + a real model turn (`openai/gpt-5.4-mini`).
   edits the meta file directly with no rollback toast. Notes a possible
   follow-up bug: `/api/sessions/<id>`'s detail `title` field doesn't reflect
   a live session's rename the way `/api/tree` and the meta file do.
+- `sidebar-archived-testruns-reachability.md` — the collapsed-by-default
+  `Archived (N)` and `Test runs (N)` sections end to end: a project's full
+  archive→unarchive round-trip via the row menu, and a
+  `SERF_SESSION_ORIGIN=test` project's classification into Test runs through
+  to its Delete… action and on-disk removal.
 
 ## Regression sweep (older surfaces)
 
