@@ -13,12 +13,7 @@ const maxAvailableListed = 30
 // edit-distance threshold of min(2, ceil(len(requested)/3)), or "" if none.
 func SuggestToolName(requested string, available []string) string {
 	threshold := (len(requested) + 2) / 3 // ceil(len/3)
-	if threshold > 2 {
-		threshold = 2
-	}
-	if threshold < 1 {
-		threshold = 1
-	}
+	threshold = max(1, min(2, threshold))
 	best, bestDist := "", threshold+1
 	for _, name := range available {
 		d := levenshtein(requested, name)
@@ -62,20 +57,9 @@ func levenshtein(a, b string) int {
 			if ra[i-1] == rb[j-1] {
 				cost = 0
 			}
-			cur[j] = min3(cur[j-1]+1, prev[j]+1, prev[j-1]+cost)
+			cur[j] = min(cur[j-1]+1, prev[j]+1, prev[j-1]+cost)
 		}
 		prev = cur
 	}
 	return prev[len(rb)]
-}
-
-func min3(a, b, c int) int {
-	m := a
-	if b < m {
-		m = b
-	}
-	if c < m {
-		m = c
-	}
-	return m
 }
