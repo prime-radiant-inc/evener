@@ -937,8 +937,10 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   text-align: center;
   line-height: 1.2;
 }
-/* Glyph pairing (mockup #1): ⟳ green active, ◆ blue needs-you, ✕ red warning,
-   ✓ neutral done. Color is never the sole channel — the shape carries it too. */
+/* Icon pairing (mockup #1, palette v2): refresh-cw green working, speech-
+   bubble blue needs-you (? question-waiting / ! your-move), triangle-alert
+   amber warning, circle-x red error. Color is never the sole channel — the
+   shape carries it too (see the colorblind-safe status-dots block below). */
 .subagent-row[data-state="active"]   .subagent-glyph { color: var(--state-working); }
 .subagent-row[data-state="awaiting"] .subagent-glyph { color: var(--state-awaiting); }
 .subagent-row[data-state="warning"]  .subagent-glyph { color: var(--error); }
@@ -1047,10 +1049,12 @@ body.app[data-sidebar-rail] .subagent-row-wrap > .open-beside-btn { display: non
 }
 
 /* ============================================================
-   Colorblind-safe status dots (mockup #10)
+   Colorblind-safe status dots (mockup #10, palette v2)
    The session dot is shape-coded as well as color-coded so it
-   survives colorblindness: awaiting = blue DIAMOND, active =
-   green DISC, idle/ended = neutral SQUARE. Shape + color is the
+   survives colorblindness: working = green DISC, needs-you =
+   blue DIAMOND, warning = amber SQUIRCLE (its own shape now that
+   it is no longer amber-paired with needs-you), idle/ended =
+   neutral SQUARE, errored = red TRIANGLE. Shape + color is the
    double channel; renderer.js's [data-pulse] still drives the
    live breathing on the same element.
    ============================================================ */
@@ -1059,8 +1063,8 @@ body.app[data-sidebar-rail] .subagent-row-wrap > .open-beside-btn { display: non
   transform: rotate(45deg); /* diamond */
 }
 .status-dot[data-state="warning"] {
-  border-radius: 1px;
-  transform: rotate(45deg); /* diamond — also needs your eye */
+  border-radius: 30%; /* squircle — its own shape, distinct from the needs-you diamond */
+  transform: none;
 }
 .status-dot[data-state="active"] { border-radius: var(--radius-pill); } /* disc */
 .status-dot[data-state="idle"],
