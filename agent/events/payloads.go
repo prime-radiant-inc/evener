@@ -118,6 +118,14 @@ type ToolCallEndData struct {
 	ToolState json.RawMessage `json:"tool_state,omitempty"`
 }
 
+// ToolCallRepairedData reports the repairs applied to a tool call's arguments.
+// Each entry in Changes is encoded "kind:field:detail".
+type ToolCallRepairedData struct {
+	ToolName string   `json:"tool_name"`
+	CallID   string   `json:"call_id"`
+	Changes  []string `json:"changes"`
+}
+
 // SteeringInjectedData is the payload for an EventSteeringInjected event.
 type SteeringInjectedData struct {
 	Text   string           `json:"text"`

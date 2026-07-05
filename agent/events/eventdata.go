@@ -46,6 +46,7 @@ func (ReasoningSummaryDeltaData) eventKind() EventKind {
 func (ToolCallStartData) eventKind() EventKind       { return EventToolCallStart }
 func (ToolCallOutputDeltaData) eventKind() EventKind { return EventToolCallOutputDelta }
 func (ToolCallEndData) eventKind() EventKind         { return EventToolCallEnd }
+func (ToolCallRepairedData) eventKind() EventKind    { return EventToolCallRepaired }
 func (SteeringInjectedData) eventKind() EventKind    { return EventSteeringInjected }
 func (QueueChangedData) eventKind() EventKind        { return EventQueueChanged }
 func (TurnLimitData) eventKind() EventKind           { return EventTurnLimit }
@@ -81,6 +82,7 @@ var (
 	_ EventData = ToolCallStartData{}
 	_ EventData = ToolCallOutputDeltaData{}
 	_ EventData = ToolCallEndData{}
+	_ EventData = ToolCallRepairedData{}
 	_ EventData = SteeringInjectedData{}
 	_ EventData = QueueChangedData{}
 	_ EventData = TurnLimitData{}

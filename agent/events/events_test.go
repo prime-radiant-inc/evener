@@ -291,6 +291,17 @@ func TestToStreamEvent_WrongPayloadReturnsNil(t *testing.T) {
 	}
 }
 
+func TestToolCallRepairedData_Kind(t *testing.T) {
+	ev := events.New(events.ToolCallRepairedData{ToolName: "edit_file", CallID: "c1", Changes: []string{"alias:old_string:old_str→old_string"}})
+	if ev.Kind != events.EventToolCallRepaired {
+		t.Fatalf("kind = %s", ev.Kind)
+	}
+	d, ok := ev.Data.(events.ToolCallRepairedData)
+	if !ok || d.ToolName != "edit_file" || len(d.Changes) != 1 {
+		t.Fatalf("data = %+v", ev.Data)
+	}
+}
+
 func TestTurnEnded_KindAndPayload(t *testing.T) {
 	ev := events.New(events.TurnEndedData{TurnDurationMS: 1234})
 	if ev.Kind != events.EventTurnEnded {
