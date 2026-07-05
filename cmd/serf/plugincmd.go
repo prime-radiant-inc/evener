@@ -15,8 +15,13 @@ import (
 )
 
 func runPlugin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	if _, err := plugins.NewManager("").SeedDefaultMarketplaces(); err != nil {
-		_, _ = fmt.Fprintf(stderr, "warning: seeding default marketplaces: %v\n", err)
+	// doctor is a read-only diagnostic (Manager.Doctor's contract: never
+	// mutates store state) and must not trigger first-run seeding the way
+	// every other verb does.
+	if len(args) == 0 || args[0] != "doctor" {
+		if _, err := plugins.NewManager("").SeedDefaultMarketplaces(); err != nil {
+			_, _ = fmt.Fprintf(stderr, "warning: seeding default marketplaces: %v\n", err)
+		}
 	}
 	if len(args) == 0 {
 		printPluginUsage(stderr)

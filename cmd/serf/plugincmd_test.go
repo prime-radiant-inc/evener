@@ -202,3 +202,24 @@ func TestPluginDoctor_Human(t *testing.T) {
 		t.Errorf("doctor human output should show the OK/WARN/FAIL summary:\n%s", out.String())
 	}
 }
+
+// TestPluginDoctor_DoesNotSeedMarketplaces guards against Doctor being a
+// diagnostic-that-mutates: `serf plugin doctor` must never seed the default
+// marketplaces (or otherwise write to the store), unlike every other plugin
+// verb. Reproduces the Important finding where runPlugin unconditionally
+// seeded before dispatching, so "doctor" wrote known_marketplaces.json + a
+// .lock file on a fresh store.
+func TestPluginDoctor_DoesNotSeedMarketplaces(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+
+	var out, errb bytes.Buffer
+	if err := runPlugin([]string{"doctor"}, nil, &out, &errb); err != nil {
+		t.Fatalf("runPlugin doctor: %v\n%s", err, errb.String())
+	}
+
+	root := plugins.NewManager("").Root
+	if _, err := os.Stat(filepath.Join(root, "known_marketplaces.json")); !os.IsNotExist(err) {
+		t.Errorf("doctor should not write known_marketplaces.json (stat err = %v)", err)
+	}
+}

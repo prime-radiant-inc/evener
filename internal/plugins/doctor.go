@@ -119,10 +119,18 @@ func (m *Manager) doctorEntry(key string, e InstallEntry) []DoctorFinding {
 	var findings []DoctorFinding
 
 	if diskVer := pluginManifestVersion(e.InstallPath); diskVer != "" && diskVer != e.Version {
+		// A source that can never upgrade (install.go's stagePlugin/Upgrade
+		// short-circuit) would make "run upgrade" a permanent no-op, so it
+		// gets an honest alternative instead of a remediation that can never
+		// clear the warning.
+		remediation := fmt.Sprintf("run `serf plugin upgrade %s` to resync the registry", key)
+		if sourceCannotUpgrade(e.Source) {
+			remediation = fmt.Sprintf("%s's plugin.json was edited in place, which is expected for a directory source; run `serf plugin remove %s` then `serf plugin install %s` to resync the recorded version", key, key, key)
+		}
 		findings = append(findings, DoctorFinding{
 			Level: LevelWarn, Category: catRegistry,
 			Message:     fmt.Sprintf("%s: registry version %q does not match on-disk plugin.json version %q", key, e.Version, diskVer),
-			Remediation: fmt.Sprintf("run `serf plugin upgrade %s` to resync the registry", key),
+			Remediation: remediation,
 		})
 	}
 
@@ -285,34 +293,52 @@ func (m *Manager) doctorEnvironment() []DoctorFinding {
 		})
 	}
 
-	if err := m.checkStoreWritable(); err != nil {
+	switch exists, err := m.checkStoreWritable(); {
+	case err != nil:
 		findings = append(findings, DoctorFinding{
 			Level: LevelFail, Category: catEnvironment,
 			Message:     fmt.Sprintf("store root %s is not writable: %v", m.Root, err),
 			Remediation: "check ownership and permissions on " + m.Root,
 		})
-	} else {
+	case !exists:
+		findings = append(findings, DoctorFinding{
+			Level: LevelOK, Category: catEnvironment,
+			Message: fmt.Sprintf("store root %s does not exist yet (created on first plugin or marketplace operation)", m.Root),
+		})
+	default:
 		findings = append(findings, DoctorFinding{Level: LevelOK, Category: catEnvironment, Message: fmt.Sprintf("store root %s is writable", m.Root)})
 	}
 	return findings
 }
 
-// checkStoreWritable creates the store root if absent and probes writability
-// with a throwaway temp file, without disturbing any real state.
-func (m *Manager) checkStoreWritable() error {
-	if err := os.MkdirAll(m.Root, 0o755); err != nil {
-		return err
+// checkStoreWritable probes store-root writability WITHOUT creating it —
+// Doctor must never mutate store state. A root that does not exist yet (a
+// fresh machine, before any plugin/marketplace operation has run) is reported
+// via exists=false rather than treated as a failure. When the root does
+// exist, it is probed with a throwaway temp file, without disturbing any real
+// state.
+func (m *Manager) checkStoreWritable() (exists bool, err error) {
+	info, statErr := os.Stat(m.Root)
+	if statErr != nil {
+		if errors.Is(statErr, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, statErr
 	}
+	if !info.IsDir() {
+		return true, fmt.Errorf("%s is not a directory", m.Root)
+	}
+
 	f, err := os.CreateTemp(m.Root, ".doctor-write-test-*")
 	if err != nil {
-		return err
+		return true, err
 	}
 	name := f.Name()
 	if cerr := f.Close(); cerr != nil {
 		_ = os.Remove(name)
-		return cerr
+		return true, cerr
 	}
-	return os.Remove(name)
+	return true, os.Remove(name)
 }
 
 // RenderDoctorFindings renders findings as a human-readable report: an
