@@ -62,8 +62,8 @@ func runPluginAutoUpgradeTick(ctx context.Context, mgr *plugins.Manager, stderr 
 func startPluginAutoUpgradeDaemon(ctx context.Context, mgr *plugins.Manager, interval time.Duration, server *appserver.Server) {
 	tick := func() {
 		updated, _ := runPluginAutoUpgradeTick(ctx, mgr, os.Stderr)
-		for _, u := range updated {
-			notifyPluginUpdated(server, u)
+		if len(updated) > 0 {
+			notifyPluginUpdated(server)
 		}
 	}
 	tick()
@@ -79,16 +79,6 @@ func startPluginAutoUpgradeDaemon(ctx context.Context, mgr *plugins.Manager, int
 	}
 }
 
-// notifyPluginUpdated broadcasts a serf/plugin/updated notification to all
-// connected clients, mirroring notifyAuthUpdated/notifyLaunchUpdated.
-func notifyPluginUpdated(server *appserver.Server, p plugins.UpgradedPlugin) {
-	server.BroadcastAll(appwire.NotifySerfPluginUpdated, map[string]string{
-		"plugin":      p.Plugin,
-		"marketplace": p.Marketplace,
-		"version":     p.Entry.Version,
-	})
-}
-
 // registerPluginAutoUpgradeHandlers registers the serf/plugin/checkNow RPC
 // handler: it runs one daemon tick synchronously on demand and reports what
 // happened, so a user isn't stuck waiting up to the full interval to see an
@@ -101,7 +91,9 @@ func registerPluginAutoUpgradeHandlers(server *appserver.Server, mgr *plugins.Ma
 		refs := make([]string, len(updated))
 		for i, u := range updated {
 			refs[i] = u.Plugin + "@" + u.Marketplace
-			notifyPluginUpdated(server, u)
+		}
+		if len(updated) > 0 {
+			notifyPluginUpdated(server)
 		}
 		return appwire.PluginCheckNowResponse{Updated: refs, Errors: errs}, nil
 	})

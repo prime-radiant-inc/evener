@@ -77,7 +77,7 @@ var stringArraySchema = map[string]any{"type": "array", "items": map[string]any{
 
 // buildRegistry reflects the whole AppWire catalog into a serf-free typegen
 // Registry: a #params and #result entry for every method, and a #payload entry
-// for every typed notification (the 13 nil-payload notifications are skipped —
+// for every typed notification (the 14 nil-payload notifications are skipped —
 // no Go type to reflect). The returned typeFor maps a registry name back to its
 // concrete reflect.Type, the only serf↔registry coupling, crossing the boundary
 // as a stdlib reflect.Type.
@@ -199,7 +199,7 @@ func roundTrippable(typ reflect.Type) bool {
 
 // TestWireTypeRegistryCoverage is the acceptance check: every method exposes a
 // #params and #result generator, every typed notification a #payload generator,
-// and the 12 nil-payload notifications none.
+// and the 14 nil-payload notifications none.
 func TestWireTypeRegistryCoverage(t *testing.T) {
 	reg, typeFor := buildRegistry()
 
@@ -234,8 +234,8 @@ func TestWireTypeRegistryCoverage(t *testing.T) {
 	if typed != 7 {
 		t.Errorf("typed notifications = %d, want 7", typed)
 	}
-	if nilPayload != 13 {
-		t.Errorf("nil-payload notifications = %d, want 13", nilPayload)
+	if nilPayload != 14 {
+		t.Errorf("nil-payload notifications = %d, want 14", nilPayload)
 	}
 	if got, want := len(reg.Names()), 2*len(Methods)+typed; got != want {
 		t.Errorf("registry has %d names, want %d (2×%d methods + %d typed payloads)",

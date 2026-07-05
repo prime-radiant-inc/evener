@@ -132,6 +132,18 @@ no router (reserved).
 | `serf/instance/remove` | hub | `InstanceRemoveParams` | `InstanceListResponse` | Removes a provider instance; returns the updated list. |
 | `serf/instance/setDefault` | hub | `InstanceSetDefaultParams` | `InstanceListResponse` | Sets the default provider instance; returns the updated list. |
 | `serf/plugin/checkNow` | hub | `EmptyParams` | `PluginCheckNowResponse` | Runs one auto-upgrade daemon pass on demand; broadcasts serf/plugin/updated per plugin actually upgraded. |
+| `serf/marketplace/list` | hub | `EmptyParams` | `MarketplaceListResponse` | Lists registered plugin marketplaces. |
+| `serf/marketplace/add` | hub | `MarketplaceAddParams` | `MarketplaceListResponse` | Registers a plugin marketplace; returns the updated list. |
+| `serf/marketplace/remove` | hub | `MarketplaceNameParams` | `MarketplaceListResponse` | Unregisters a plugin marketplace; returns the updated list. |
+| `serf/marketplace/refresh` | hub | `MarketplaceNameParams` | `MarketplaceListResponse` | Pulls a marketplace's latest catalog; returns the updated list. |
+| `serf/marketplace/browse` | hub | `MarketplaceBrowseParams` | `MarketplaceBrowseResponse` | Lists a marketplace's plugin catalog for browsing/install. |
+| `serf/plugin/list` | hub | `EmptyParams` | `PluginListResponse` | Lists installed plugins. |
+| `serf/plugin/install` | hub | `PluginRefParams` | `PluginListResponse` | Installs a plugin from a marketplace; returns the updated list. |
+| `serf/plugin/upgrade` | hub | `PluginRefParams` | `PluginListResponse` | Upgrades an installed plugin to its marketplace's latest; returns the updated list. |
+| `serf/plugin/remove` | hub | `PluginRefParams` | `PluginListResponse` | Removes an installed plugin; returns the updated list. |
+| `serf/plugin/enable` | hub | `PluginRefParams` | `PluginListResponse` | Enables an installed plugin; returns the updated list. |
+| `serf/plugin/disable` | hub | `PluginRefParams` | `PluginListResponse` | Disables an installed plugin; returns the updated list. |
+| `serf/plugin/setAutoUpgrade` | hub | `PluginSetAutoUpgradeParams` | `PluginListResponse` | Sets an installed plugin's auto-upgrade flag; returns the updated list. |
 
 ## Notifications (server → client)
 
@@ -159,7 +171,8 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `serf/auth/updated` | `(inline)` | Broadcast after a successful auth mutation; inline {provider, activeSource}. Clients refresh auth state. |
 | `serf/launch/updated` | `(inline)` | Broadcast after a launch layer/trust mutation; inline {cwd, layer}. Clients refresh launch config. |
 | `serf/attention/changed` | `(inline)` | Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons. |
-| `serf/plugin/updated` | `(inline)` | Broadcast after the auto-upgrade daemon (or a manual check-now) actually upgrades a plugin; inline {plugin, marketplace, version}. Hub-originated. |
+| `serf/marketplace/updated` | `(inline)` | Broadcast after a marketplace mutation (add/remove/refresh); inline {}. Clients refresh the marketplace list. |
+| `serf/plugin/updated` | `(inline)` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); inline {}. Clients refresh the plugin list. |
 
 ## Type reference
 
@@ -513,6 +526,44 @@ _(no fields)_
 | `excluded` | `map[string]string` | yes |  |
 
 
+### `MarketplaceAddParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` | yes |  |
+| `source` | `appwire.MarketplaceSourceInput` |  |  |
+
+
+### `MarketplaceBrowseParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+
+
+### `MarketplaceBrowseResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+| `description` | `string` | yes |  |
+| `plugins` | `[]appwire.MarketplaceCatalogPlugin` |  |  |
+
+
+### `MarketplaceListResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `marketplaces` | `[]appwire.MarketplaceEntry` |  |  |
+
+
+### `MarketplaceNameParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+
+
 ### `ModelListParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -552,6 +603,30 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `updated` | `[]string` | yes |  |
 | `errors` | `[]string` | yes |  |
+
+
+### `PluginListResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `plugins` | `[]appwire.PluginEntry` |  |  |
+
+
+### `PluginRefParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `plugin` | `string` |  |  |
+| `marketplace` | `string` |  |  |
+
+
+### `PluginSetAutoUpgradeParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `plugin` | `string` |  |  |
+| `marketplace` | `string` |  |  |
+| `autoUpgrade` | `bool` |  |  |
 
 
 ### `ReasoningSummaryDeltaParams`
