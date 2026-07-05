@@ -151,8 +151,8 @@ prepare(call) -> (call, changes, prevalErr):
       return call, nil, unknownToolMessage(providerToolName(call.Name), visible)
 
   args := {}
-  if len(bytes.TrimSpace(call.Arguments)) > 0:         # mirror ExecuteCall's empty-args
-      if json.Unmarshal(call.Arguments, &args) != nil: #   handling (registry.go:462-470)
+  if len(call.Arguments) > 0:                          # raw len, NO TrimSpace — mirror
+      if json.Unmarshal(call.Arguments, &args) != nil: #   ExecuteCall exactly (registry.go:462-470)
           repaired, c := repair.RepairJSON(call.Arguments); changes += c
           if json.Unmarshal(repaired, &args) != nil:
               return call, changes, repair.ExplainJSONError(providerToolName(call.Name), t.Definition.Parameters, ...)
@@ -168,19 +168,25 @@ prepare(call) -> (call, changes, prevalErr):
   return call, changes, nil
 ```
 
-`execTool` then, at its existing sites: runs PreToolUse (on healed args); emits
-`EventToolCallStart`; emits `EventToolCallRepaired` when `changes` is non-empty;
-calls `ExecuteCall` **unless** `prevalErr` is set, in which case it builds the
-error `ExecResult` directly (skipping `ExecuteCall`); emits `EventToolCallEnd`;
-runs PostToolUse. Both the start and end events therefore carry the *healed* args
-(the raw call lives only in history + the `EventToolCallRepaired` diff — see Data
-flow).
+`execTool` then, at its existing sites: **emits `EventToolCallRepaired` as soon as
+`prepare` returns non-empty `changes`** — before the PreToolUse block, so the
+drift is recorded even when a policy hook then denies the call (the deny path
+returns at `session_tools.go:274-281`, ahead of the start-event block; putting the
+repaired-event after the start event would silently drop telemetry for the
+repaired∩denied intersection, which is high-signal drift). Then it runs PreToolUse
+(on healed args); emits `EventToolCallStart`; calls `ExecuteCall` **unless**
+`prevalErr` is set, in which case it builds the error `ExecResult` directly
+(skipping `ExecuteCall`); emits `EventToolCallEnd`; runs PostToolUse. Both the
+start and end events carry the *healed* args (the raw call lives only in history +
+the `EventToolCallRepaired` diff — see Data flow).
 
 **Empty arguments are common and valid:** streaming accumulators yield `[]byte("")`
 when no argument text arrives, and tools with no required properties (`list_dir`,
 `job_list`, the transcript tools) are legitimately called with none. `prepare`
-treats empty/whitespace `call.Arguments` as `{}` exactly as `ExecuteCall` does, so
-these calls validate and are never spuriously rejected.
+guards on raw `len(call.Arguments) > 0` — matching `ExecuteCall` exactly (no
+`TrimSpace`) — so truly-empty args validate as `{}` and are never spuriously
+rejected, while any non-empty-but-malformed bytes (including whitespace-only) flow
+through `RepairJSON` and, if still unparseable, the model-tuned JSON error.
 
 The happy path pays one extra `json.Unmarshal` + `Schema.Validate` to decide
 whether repair is needed (both cheap; the schema was compiled once at
@@ -189,9 +195,12 @@ registration). Valid calls skip repair entirely and are never mutated.
 `repair` is a new leaf package under `agent/internal/tool/repair`. It depends only
 on the standard library (and, for the fast-follow, `llm` for `ToolCallData`). It
 has no dependency on `Session`, `Registry`, or the event bus — pure functions
-over bytes and maps, unit-testable with zero agent scaffolding. There is no import
-cycle: `tool → repair` and `agent → repair` are acyclic, and `repair` needs no
-`tool` import.
+over bytes and maps, unit-testable with zero agent scaffolding. To keep it
+stdlib-only, the `santhosh-tekuri/jsonschema/v5` `*ValidationError` tree-walk that
+identifies the offending property is done by the caller (which already imports
+that package) and passed into `ExplainSchemaError` as a plain string — see
+Component 3. There is no import cycle: `tool → repair` and `agent → repair` are
+acyclic, and `repair` needs no `tool` import.
 
 ### Data flow: history fidelity and telemetry
 
@@ -297,10 +306,15 @@ is a declared property and is never dropped.)
 instead of being discarded; coerce before drop, so a coercible key is never
 dropped.
 
-**Scope limit:** `RepairArgs` normalizes top-level keys only. A few tools carry
-nested object/array schemas (`task_list.tasks[]`, `communicate.output`) whose item
-schemas do not set `additionalProperties:false`; off-distribution keys nested
-inside them are out of scope for this version.
+**Scope limit:** `RepairArgs` normalizes top-level keys only. Nested object/array
+schemas are out of scope this version — deliberately (YAGNI), with two distinct
+consequences worth stating accurately. `task_list.tasks[]` item schemas do **not**
+set `additionalProperties:false` (`definitions.go:522-540`), so an off-distribution
+nested key there passes validation unhealed and unnoticed. `communicate.output`
+**does** set `additionalProperties:false` (`definitions.go:476`), so a stray nested
+key there is hard-rejected by `ExecuteCall` and this top-level-only design does not
+heal it — a real, acknowledged gap on the every-turn result tool, deferred to a
+later iteration rather than papered over.
 
 ## Component 1 (cont.): JSON repair (`repair.RepairJSON`)
 
@@ -351,8 +365,10 @@ derived from `t.Definition.Parameters`, built in `execTool` so the tool name is
 the provider-visible form:
 
 ```go
-func ExplainSchemaError(toolName string, params map[string]any, args map[string]any, verr error) string
-func ExplainJSONError(toolName string, params map[string]any, parseErr error) string
+// offendingField is the property the caller extracted from the jsonschema
+// ValidationError tree (or "" when it could not be pinpointed).
+func ExplainSchemaError(toolName string, params map[string]any, args map[string]any, offendingField string) string
+func ExplainJSONError(toolName string, params map[string]any, parseErr string) string
 ```
 
 Schema-error output leads with the actionable statement, then a minimal example
@@ -367,9 +383,12 @@ Example: {"file_path": "...", "old_string": "...", "new_string": "..."}
 **Implementation note:** naming the specific offending property requires walking
 the `*jsonschema.ValidationError` tree from `santhosh-tekuri/jsonschema/v5`
 (`t.Schema.Validate` returns it), not string-matching the flattened `%v` text at
-`registry.go:473`. When the tree cannot pinpoint a single property, fall back to
-listing all required properties + the raw detail. This extraction is the main
-implementation risk in Component 3.
+`registry.go:473`. That tree-walk is done **in `execTool`** (the `agent` package
+already imports `jsonschema/v5`), which passes the resulting property name as the
+`offendingField` string — keeping `repair` stdlib-only. When the tree cannot
+pinpoint a single property, `execTool` passes `""` and `ExplainSchemaError` falls
+back to listing all required properties + the raw detail. This extraction is the
+main implementation risk in Component 3.
 
 ## Telemetry
 
@@ -417,14 +436,19 @@ event already flows to the projector path above.
 - **`additionalProperties:false` stays.** Drop-unknown handles invented-extra-key
   calls within the existing strict schema; no tool definition is relaxed and no
   `Strict` value is changed.
-- **Concurrency.** `prepare` calls `providerToolName`/`providerVisibleToolNames`,
-  which today read `s.profile` **unlocked** (`session_tools.go:228`), and
-  `execTool` runs read-only batches in parallel goroutines
-  (`session_tool_round.go:104-120`) while `SetModel` may swap `s.profile` under
-  `s.mu`. The implementation must route these through `currentProfile()` (which
-  locks, per its own contract at `session.go:433`) or snapshot the name-map once,
-  to avoid a data race the current unlocked readers only avoid by being on a
-  colder path.
+- **Concurrency (and the trap in the obvious fix).** `execTool` runs read-only
+  batches in parallel goroutines (`session_tool_round.go:104-120`) while
+  `SetModel` swaps `s.profile` under `s.mu` (`session.go:528-534`), so `prepare`
+  must not read `s.profile` unlocked when composing suggestions. **Do not "fix"
+  this by routing `providerToolName` through `currentProfile()`.** That would
+  self-deadlock: `SetModel` holds `s.mu` while calling `refreshSystemPromptCache`
+  (`session.go:542`) → … → `providerVisibleToolNames` → `providerToolName`
+  (`session_tools.go:238`), and `s.mu` is a non-reentrant `sync.Mutex`; that is
+  exactly why `providerToolName` reads `s.profile` directly today. Instead,
+  `prepare`/`execTool` — which run *outside* `s.mu` — snapshot the name-map once
+  via a single `currentProfile()` call and pass the snapshot into the
+  suggestion/available-list logic. Leave `providerToolName`'s direct read untouched
+  for its under-lock callers.
 
 ## Testing plan
 
@@ -447,6 +471,9 @@ captures and asserts the resulting event/message.
   - aliased arg runs; unknown key dropped and runs;
   - **hook sees healed args** (a PreToolUse hook asserts `file_path` present after
     an `path` alias) — the regression guard for the review's hook-ordering finding;
+  - **repaired-then-denied still emits `EventToolCallRepaired`** (a repaired call
+    that a PreToolUse hook denies still records the drift) — guard for the
+    telemetry-on-deny finding;
   - **empty/whitespace args to a no-required-args tool succeed** (`list_dir`
     with `""`) — guard for the empty-args regression;
   - **unrepairable and unknown-tool calls still emit `EventToolCallStart` +
@@ -493,10 +520,12 @@ names to avoid false positives from prose) is the piece that carries forward.
   exist and `ExecuteCall` stays as-is.
 - `agent/session_tools.go` — `prepare` step in `execTool` before PreToolUse hooks
   (returning healed args or a model-tuned error, never short-circuiting the
-  lifecycle); route the `prevalErr` result through the existing start/end/exec
-  path; unknown-tool did-you-mean and model-tuned errors using provider-visible
-  names; emit `EventToolCallRepaired`. Route `providerToolName` through a locked
-  read (concurrency note above).
+  lifecycle); emit `EventToolCallRepaired` immediately on non-empty `changes`
+  (before the PreToolUse/deny path); route the `prevalErr` result through the
+  existing start/end/exec path; unknown-tool did-you-mean and model-tuned errors
+  using provider-visible names; extract the `offendingField` from the
+  ValidationError tree here. Snapshot the name-map via `currentProfile()` inside
+  `execTool` (NOT by locking `providerToolName` — see concurrency note).
 - `agent/events/events.go` — `EventToolCallRepaired` + `ToolCallRepairedData`.
 - `internal/appprojector/appwire_projection.go`, `cmd/serf/run.go`,
   `tools/tool-fluency/…` — switch cases for the new event so it projects/renders
