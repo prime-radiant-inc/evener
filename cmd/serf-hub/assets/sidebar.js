@@ -450,6 +450,7 @@
     d.setAttribute("aria-expanded", String(model.expanded.has(p.key) || p.default_expanded === true));
     d.innerHTML = '<span class="project-name"></span><span class="project-rollup"></span>';
     d.querySelector(".project-name").textContent = p.name;
+    setProjectRollup(d, p);
     d.addEventListener("click", function () { toggleExpanded(p.key); });
     var menuBtn = document.createElement("button");
     menuBtn.type = "button";
@@ -466,6 +467,43 @@
   }
   function patchProjectHeader(el, p) {
     el.setAttribute("aria-expanded", String(model.expanded.has(p.key) || p.default_expanded === true));
+    setProjectRollup(el, p);
+  }
+
+  // Magnitude rollup badges (mockup #10 rec A): "⟳N · ◆M" says how many of a
+  // project's sessions are working vs. need you — the two counts the
+  // attention spec's rollup rules define (needs-you outranks active; never a
+  // third category). Shared by build + patch so the reconcile patch path
+  // updates counts/tint on the SAME .project-rollup node instead of
+  // rebuilding the header. data-state carries p.rollup_state (the
+  // server-computed, rank-ranked winning state) purely as a CSS/test hook —
+  // the badges' own rollup-live/rollup-attn classes already carry the
+  // blue/amber tint (style.css), reusing the existing status-dot palette.
+  function setProjectRollup(el, p) {
+    var r = el.querySelector(".project-rollup");
+    if (!r) return;
+    r.setAttribute("data-state", p.rollup_state || "");
+    r.textContent = ""; // clear prior badges/separator (not innerHTML)
+    var live = p.rollup_live || 0;
+    var attn = p.rollup_attn || 0;
+    if (live > 0) r.appendChild(buildRollupBadge("rollup-live", "⟳", live));
+    if (live > 0 && attn > 0) {
+      var sep = document.createElement("span");
+      sep.className = "rollup-sep";
+      sep.textContent = "·"; // "·"
+      r.appendChild(sep);
+    }
+    if (attn > 0) r.appendChild(buildRollupBadge("rollup-attn", "◆", attn)); // "◆"
+  }
+  function buildRollupBadge(cls, glyph, count) {
+    var b = document.createElement("span");
+    b.className = "rollup-badge " + cls;
+    var g = document.createElement("span");
+    g.className = "rollup-glyph";
+    g.textContent = glyph;
+    b.appendChild(g);
+    b.appendChild(document.createTextNode(String(count)));
+    return b;
   }
 
   // Generic expand/collapse toggle, keyed either by a project key or a
