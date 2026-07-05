@@ -5,10 +5,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
@@ -662,6 +664,48 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
 		return appwire.HarnessListResponse{Data: launchHarnessDescriptors(cfg)}, nil
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfCommandList, func(context.Context, appwire.EmptyParams) (appwire.CommandListResponse, error) {
+		return hubCommandList(cfg)
+	})
+}
+
+// hubCommandList answers serf/command/list by loading every plugin from the
+// hub's configured (or default) plugin dirs and flattening their discovered
+// slash commands into a catalog. This mirrors discoverPluginsForSettings's
+// display-only scan (web_settings.go) rather than internal/plugins' registry —
+// deliberately: P3 (slash-command execution, which owns this method) is
+// independent of P1 (the marketplace/registry backend) by design, so this
+// handler must not assume the registry exists. Once the registry is the
+// system of record on the hub side (P5), this should read
+// internal/plugins.Manager.EnabledPluginDirs instead so installed-but-not-
+// explicitly-configured plugins are included too.
+func hubCommandList(cfg hubcore.WebConfig) (appwire.CommandListResponse, error) {
+	dirs := pluginDirsFromConfig(cfg)
+	if len(dirs) == 0 {
+		return appwire.CommandListResponse{}, nil
+	}
+	loaded, err := plugin.LoadAll(dirs)
+	if err != nil {
+		return appwire.CommandListResponse{}, err
+	}
+	var commands []appwire.CommandDescriptor
+	for _, lp := range loaded {
+		for _, cmd := range lp.Commands {
+			commands = append(commands, appwire.CommandDescriptor{
+				Name:         cmd.Name,
+				PluginName:   cmd.PluginName,
+				Description:  cmd.Description,
+				ArgumentHint: cmd.ArgumentHint,
+			})
+		}
+	}
+	sort.Slice(commands, func(i, j int) bool {
+		if commands[i].Name != commands[j].Name {
+			return commands[i].Name < commands[j].Name
+		}
+		return commands[i].PluginName < commands[j].PluginName
+	})
+	return appwire.CommandListResponse{Commands: commands}, nil
 }
 
 // notifyAuthUpdated broadcasts a serf/auth/updated notification to all connected clients.

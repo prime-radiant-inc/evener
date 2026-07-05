@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmd/serf-hub/internal/editorurl"
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubedge"
 	"primeradiant.com/serf/cmd/serf-hub/internal/mcpstatus"
 	"primeradiant.com/serf/envvars"
@@ -326,8 +327,16 @@ func defaultMCPConfigPath() string {
 // the default plugins root into one entry per immediate subdirectory
 // containing a .claude-plugin/plugin.json manifest.
 func (s *WebServer) pluginsRootForSettings() []string {
-	if len(s.cfg.PluginDirs) > 0 {
-		return s.cfg.PluginDirs
+	return pluginDirsFromConfig(s.cfg)
+}
+
+// pluginDirsFromConfig is pluginsRootForSettings's config-only logic, factored
+// out so both the Settings → Plugins pane (via the WebServer method above) and
+// the serf/command/list RPC handler (app_rpc.go, which only has the config,
+// not a *WebServer) resolve plugin dirs identically.
+func pluginDirsFromConfig(cfg hubcore.WebConfig) []string {
+	if len(cfg.PluginDirs) > 0 {
+		return cfg.PluginDirs
 	}
 	root := defaultPluginsRoot()
 	if root == "" {
