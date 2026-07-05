@@ -47,7 +47,7 @@ func runPlugin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 
 func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: serf plugin marketplace add|remove|list|refresh")
+		return errors.New("usage: serf plugin marketplace add|remove|list|refresh|browse")
 	}
 	m := plugins.NewManager("")
 	switch args[0] {
@@ -117,9 +117,51 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 		}
 		_, _ = fmt.Fprintf(stdout, "Refreshed marketplace %q\n", name)
 		return nil
+	case "browse":
+		fs := flag.NewFlagSet("marketplace browse", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		asJSON := fs.Bool("json", false, "emit JSON")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() < 1 {
+			return errors.New("usage: serf plugin marketplace browse <name> [--json]")
+		}
+		name := fs.Arg(0)
+		cat, err := m.Browse(context.Background(), name)
+		if err != nil {
+			return err
+		}
+		return renderCatalog(stdout, cat, *asJSON)
 	default:
 		return fmt.Errorf("unknown marketplace command %q", args[0])
 	}
+}
+
+// renderCatalog renders a browsed marketplace's plugin catalog as a human
+// table or JSON. Plugins skipped during parsing (Fix for design spec §7 —
+// e.g. an unsupported/unknown source kind) are not silently dropped: they are
+// listed by name so the user knows the marketplace has more entries than what
+// installs.
+func renderCatalog(w io.Writer, cat plugins.Catalog, asJSON bool) error {
+	if asJSON {
+		return json.NewEncoder(w).Encode(cat)
+	}
+
+	if len(cat.Plugins) == 0 {
+		_, _ = fmt.Fprintf(w, "No installable plugins in marketplace %q.\n", cat.Name)
+	} else {
+		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		_, _ = fmt.Fprintf(tw, "PLUGIN\tDESCRIPTION\n")
+		for _, p := range cat.Plugins {
+			_, _ = fmt.Fprintf(tw, "%s\t%s\n", p.Name, p.Description)
+		}
+		_ = tw.Flush()
+	}
+	if len(cat.SkippedPlugins) > 0 {
+		_, _ = fmt.Fprintf(w, "\nSkipped (unsupported source): %s\n", strings.Join(cat.SkippedPlugins, ", "))
+	}
+	return nil
 }
 
 // parseMarketplaceSourceArg maps a CLI arg to a Source: "owner/repo" → github,
@@ -140,7 +182,7 @@ func printPluginUsage(w io.Writer) {
 	_, _ = fmt.Fprintf(w, "Usage: serf plugin <command> [flags]\n\n")
 	_, _ = fmt.Fprintf(w, "Manage plugins and plugin marketplaces.\n\n")
 	_, _ = fmt.Fprintf(w, "Commands:\n")
-	_, _ = fmt.Fprintf(w, "  marketplace   Manage plugin marketplaces (add, remove, list, refresh)\n")
+	_, _ = fmt.Fprintf(w, "  marketplace   Manage plugin marketplaces (add, remove, list, refresh, browse)\n")
 	_, _ = fmt.Fprintf(w, "  install       Install a plugin\n")
 	_, _ = fmt.Fprintf(w, "  remove        Remove an installed plugin\n")
 	_, _ = fmt.Fprintf(w, "  enable        Enable a plugin\n")

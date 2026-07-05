@@ -97,6 +97,86 @@ func TestPluginMarketplaceRemove(t *testing.T) {
 	}
 }
 
+// TestPluginMarketplaceBrowse_ListsPluginsAndNotesSkipped covers the missing
+// CLI capability the user explicitly asked for ("explore plugins in
+// marketplaces"): web and TUI already have Browse, the CLI didn't. It also
+// proves the browse output surfaces the Fix 1 skip-and-warn behavior (a
+// npm-source plugin dropped from the catalog) rather than hiding it.
+func TestPluginMarketplaceBrowse_ListsPluginsAndNotesSkipped(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	m := plugins.NewManager("")
+
+	tmpDir := t.TempDir()
+	metaDir := filepath.Join(tmpDir, ".claude-plugin")
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	mj := `{"name":"browse-mkt","owner":{"name":"o"},"plugins":[` +
+		`{"name":"widget","description":"a fine widget","source":"./plugins/widget"},` +
+		`{"name":"bad-npm","description":"unsupported","source":{"source":"npm","package":"x"}}` +
+		`]}`
+	if err := os.WriteFile(filepath.Join(metaDir, "marketplace.json"), []byte(mj), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	ctx := context.Background()
+	if _, err := m.AddMarketplace(ctx, "browse-mkt", plugins.Source{Kind: plugins.SourceDirectory, Path: tmpDir}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+
+	var out, errb bytes.Buffer
+	if err := runPlugin([]string{"marketplace", "browse", "browse-mkt"}, nil, &out, &errb); err != nil {
+		t.Fatalf("runPlugin marketplace browse: %v\n%s", err, errb.String())
+	}
+	output := out.String()
+	if !strings.Contains(output, "widget") || !strings.Contains(output, "a fine widget") {
+		t.Errorf("browse output missing plugin info: %q", output)
+	}
+	if !strings.Contains(output, "bad-npm") {
+		t.Errorf("browse output should note the skipped unsupported-source plugin, got: %q", output)
+	}
+}
+
+func TestPluginMarketplaceBrowse_JSON(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	m := plugins.NewManager("")
+
+	tmpDir := t.TempDir()
+	metaDir := filepath.Join(tmpDir, ".claude-plugin")
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	mj := `{"name":"browse-json","owner":{"name":"o"},"plugins":[{"name":"widget","source":"./plugins/widget"}]}`
+	if err := os.WriteFile(filepath.Join(metaDir, "marketplace.json"), []byte(mj), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	ctx := context.Background()
+	if _, err := m.AddMarketplace(ctx, "browse-json", plugins.Source{Kind: plugins.SourceDirectory, Path: tmpDir}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+
+	var out, errb bytes.Buffer
+	if err := runPlugin([]string{"marketplace", "browse", "--json", "browse-json"}, nil, &out, &errb); err != nil {
+		t.Fatalf("runPlugin marketplace browse --json: %v\n%s", err, errb.String())
+	}
+	var cat plugins.Catalog
+	if err := json.Unmarshal(out.Bytes(), &cat); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if len(cat.Plugins) != 1 || cat.Plugins[0].Name != "widget" {
+		t.Fatalf("catalog = %+v, want one plugin named widget", cat)
+	}
+}
+
+func TestPluginMarketplaceBrowse_RequiresName(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var out, errb bytes.Buffer
+	if err := runPlugin([]string{"marketplace", "browse"}, nil, &out, &errb); err == nil {
+		t.Fatal("browse without a marketplace name should error")
+	}
+}
+
 func TestPluginMarketplaceList_WithJSON(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	m := plugins.NewManager("")
