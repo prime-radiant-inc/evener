@@ -280,6 +280,16 @@ func main() {
 		}
 	}()
 
+	// Seed the bundled default marketplaces (best-effort, first-run-gated —
+	// see SeedDefaultMarketplaces). Every serf CLI path does this already
+	// (cmd/serf/run.go, serve.go, plugincmd.go); the hub was the one surface
+	// that never did, so a fresh install whose first interaction is the web
+	// UI (Settings → Marketplaces & Plugins) saw zero marketplaces until a
+	// session happened to spawn and seed them first.
+	if _, err := plugins.NewManager("").SeedDefaultMarketplaces(); err != nil {
+		fmt.Fprintf(os.Stderr, "[hub] warning: seeding default marketplaces: %v\n", err)
+	}
+
 	// Plugin auto-upgrade daemon (design doc §9.1): refreshes every known
 	// marketplace, then upgrades every installed, git-backed plugin with
 	// autoUpgrade enabled. Runs once immediately and then on
