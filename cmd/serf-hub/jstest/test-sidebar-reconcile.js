@@ -39,3 +39,4 @@ w.SerfSidebar.renderTree(tree);
 const projRow2 = w.document.querySelector('[data-row-id="project:p1:local:' + sid + '"]');
 if (!projRow2 || projRow2.__probe !== true) throw new Error("unchanged RowID must keep DOM node identity");
 console.log("ok reconcile keeps identity + cross-tier duplicates");
+process.exit(0); // sidebar.js's 60s idle-resync interval (Task 20) keeps the event loop alive otherwise
