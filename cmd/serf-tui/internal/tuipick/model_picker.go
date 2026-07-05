@@ -13,6 +13,14 @@ type ModelPickerItem struct {
 	ID             string
 	Display        string
 	DisabledReason string
+	// Group labels the item's section for a browsable, provider-grouped
+	// picker ("Recent", a provider name, ...); "" renders no header. Set only
+	// by the model-picker path (hub_commands.go); zero-value for
+	// NewTranscriptPicker/NewActionPicker leaves their rendering unchanged.
+	Group string
+	// Meta is a compact trailing tail (context window, price, capability
+	// flags) appended dim after the row. "" renders nothing extra.
+	Meta string
 }
 
 // ModelPicker is an inline Bubble Tea model for selecting from a filtered list.
@@ -160,6 +168,10 @@ func (m ModelPicker) renderBody() string {
 
 		for i := start; i < end; i++ {
 			item := filtered[i]
+			if item.Group != "" && (i == 0 || filtered[i-1].Group != item.Group) {
+				b.WriteString(tuitheme.MpDimStyle.Render(strings.ToUpper(item.Group)))
+				b.WriteString("\n")
+			}
 			cursor := "  "
 			style := tuitheme.MpNormalStyle
 			if i == m.cursor {
@@ -171,6 +183,9 @@ func (m ModelPicker) renderBody() string {
 			line := cursor + style.Render(item.Display)
 			if item.ID != item.Display && item.Display != "" {
 				line += "  " + tuitheme.MpDimStyle.Render(item.ID)
+			}
+			if item.Meta != "" {
+				line += "  " + tuitheme.MpDimStyle.Render(item.Meta)
 			}
 			if item.ID == m.active {
 				line += "  " + tuitheme.MpActiveTag.Render("(active)")
