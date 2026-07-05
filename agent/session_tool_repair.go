@@ -65,6 +65,34 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 	return res
 }
 
+// providerNameFromMap resolves a single canonical name to its provider-visible
+// form using a pre-snapshotted nameMap, passing through unmapped names as-is.
+// Pure over the snapshot so callers never need to lock (unlike providerToolName,
+// which some callers invoke while already holding s.mu).
+func providerNameFromMap(name string, nameMap map[string]string) string {
+	if v, ok := nameMap[name]; ok {
+		return v
+	}
+	return name
+}
+
+// providerVisibleFromMap maps each name to its provider-visible form via a
+// pre-snapshotted nameMap, dropping empties and duplicates while preserving
+// first-seen order.
+func providerVisibleFromMap(names []string, nameMap map[string]string) []string {
+	out := make([]string, 0, len(names))
+	seen := map[string]bool{}
+	for _, n := range names {
+		v := providerNameFromMap(n, nameMap)
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
+}
+
 // changeStrings encodes changes as "kind:field:detail" for the telemetry event.
 func changeStrings(changes []repair.Change) []string {
 	out := make([]string, 0, len(changes))
