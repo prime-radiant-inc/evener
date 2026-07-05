@@ -10,6 +10,23 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 )
 
+// recordingExecEnv wraps a real LocalExecutionEnvironment but records every
+// command handed to ExecCommand instead of ever running it, so a test can
+// assert a dangerous command was never executed rather than merely checking
+// the rendered text. Every other method (ReadFile, WorkingDirectory, ...) is
+// promoted unchanged from the embedded environment.
+type recordingExecEnv struct {
+	*execenv.LocalExecutionEnvironment
+	execCommands []string
+}
+
+func (r *recordingExecEnv) ExecCommand(_ context.Context, command string, _ int, _ string, _ map[string]string) (execenv.ExecResult, error) {
+	r.execCommands = append(r.execCommands, command)
+	return execenv.ExecResult{}, nil
+}
+
+var _ execenv.ExecutionEnvironment = (*recordingExecEnv)(nil)
+
 func TestExpand_Arguments(t *testing.T) {
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	got, err := Expand(context.Background(), "Hello $ARGUMENTS!", "world", env)
@@ -184,6 +201,48 @@ func TestExpand_AtFileMissing(t *testing.T) {
 	}
 }
 
+// TestExpand_AtFileEscapingWorkingDirectoryRefused locks in finding #2's
+// containment guard: @file expansion runs with no hook/permission visibility
+// (unlike the model's Read tool), so a directive whose path escapes the
+// working directory is refused rather than read, even though the template
+// itself authored the directive.
+func TestExpand_AtFileEscapingWorkingDirectoryRefused(t *testing.T) {
+	dir := t.TempDir()
+	env := execenv.NewLocalExecutionEnvironment(dir)
+	got, err := Expand(context.Background(), "@../../../../etc/passwd", "", env)
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	if strings.Contains(got, "root:") {
+		t.Fatalf("got %q, want /etc/passwd NOT to be read", got)
+	}
+	if !strings.Contains(got, "refusing") {
+		t.Errorf("got %q, want a refusal marker for a path escaping the working directory", got)
+	}
+}
+
+// TestExpand_AtFileBinaryDegradesGracefully proves a binary file inlined via
+// @file degrades to a descriptive marker instead of splicing raw (possibly
+// NUL-containing) bytes into the prompt.
+func TestExpand_AtFileBinaryDegradesGracefully(t *testing.T) {
+	dir := t.TempDir()
+	binary := []byte{0x89, 0x50, 0x4E, 0x47, 0x00, 0x01, 0x02, 0xFF, 0xFE, 0x00}
+	if err := os.WriteFile(filepath.Join(dir, "data.bin"), binary, 0644); err != nil {
+		t.Fatal(err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(dir)
+	got, err := Expand(context.Background(), "@data.bin", "", env)
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	if strings.ContainsRune(got, 0) {
+		t.Fatalf("got %q, want no raw NUL bytes spliced into the prompt", got)
+	}
+	if !strings.Contains(got, "data.bin") {
+		t.Errorf("got %q, want a marker naming the binary file", got)
+	}
+}
+
 func TestExpand_AtFileBounded(t *testing.T) {
 	dir := t.TempDir()
 	big := strings.Repeat("x", maxInlineBytes+1000)
@@ -203,7 +262,70 @@ func TestExpand_AtFileBounded(t *testing.T) {
 	}
 }
 
-func TestExpand_ArgumentsFlowIntoAtFile(t *testing.T) {
+// --- @file boundary and trailing-punctuation handling (finding #3) ---
+
+// TestExpand_AtFileEmailNotTreatedAsFile proves a mid-token "@" (the shape of
+// an email address) is left as inert literal text rather than being resolved
+// as a file lookup for "example.com".
+func TestExpand_AtFileEmailNotTreatedAsFile(t *testing.T) {
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	got, err := Expand(context.Background(), "contact foo@example.com", "", env)
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	if got != "contact foo@example.com" {
+		t.Errorf("got %q, want the email address left unchanged", got)
+	}
+}
+
+// TestExpand_AtFileParenthesizedResolvesWithoutTrailingParen proves a
+// parenthesized mention resolves the file path without swallowing the
+// closing paren into the lookup.
+func TestExpand_AtFileParenthesizedResolvesWithoutTrailingParen(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "docs"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "docs", "readme.md"), []byte("README BODY"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(dir)
+	got, err := Expand(context.Background(), "(see @docs/readme.md)", "", env)
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	if got != "(see README BODY)" {
+		t.Errorf("got %q, want %q", got, "(see README BODY)")
+	}
+}
+
+// TestExpand_AtFileTrailingPeriodResolvesWithoutPunctuation proves a
+// sentence-ending period after a mention resolves the file path without the
+// period, and the period survives in the output as literal text.
+func TestExpand_AtFileTrailingPeriodResolvesWithoutPunctuation(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("NOTES BODY"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(dir)
+	got, err := Expand(context.Background(), "per @notes.txt.", "", env)
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	if got != "per NOTES BODY." {
+		t.Errorf("got %q, want %q", got, "per NOTES BODY.")
+	}
+}
+
+// TestExpand_ArgumentsDoNotOpenAtFileDirective locks in the finding-#1 fix:
+// a directive's interior is resolved from the RAW template only, so argument
+// text substituted into a "@$1"-shaped template can never turn into a live
+// file read. (This used to be the intentional "@$1 reads the arg's path"
+// feature; it was greenfield and is dropped rather than hardened, per
+// review.) Since args never reach the directive interior, the literal digit
+// template "$1" is what gets looked up — which doesn't exist here — rather
+// than the caller-supplied "target.txt".
+func TestExpand_ArgumentsDoNotOpenAtFileDirective(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "target.txt"), []byte("target contents"), 0644); err != nil {
 		t.Fatal(err)
@@ -213,8 +335,55 @@ func TestExpand_ArgumentsFlowIntoAtFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expand: %v", err)
 	}
-	if got != "Review target contents" {
-		t.Errorf("got %q, want the argument-substituted path to be resolved and inlined", got)
+	if strings.Contains(got, "target contents") {
+		t.Errorf("got %q, want the argument NOT to open the @ directive (args are inert inside directive spans)", got)
+	}
+}
+
+// --- Injection safety property (finding #1, CRITICAL) ---
+//
+// argument text (from $ARGUMENTS/$1..$9) must never be able to open a NEW
+// !`cmd`/@file directive that the template author didn't write. Expand must
+// locate directive spans ONCE, over the raw pre-substitution template; an
+// argument can only ever land inside an already-resolved literal segment,
+// never inside a directive's interior.
+
+// TestExpand_ArgumentsCannotOpenBacktickDirective is the load-bearing RCE
+// regression test: a template with no backtick syntax of its own must not
+// execute a shell command just because the caller's argument text happens to
+// look like one. It proves this with a recording fake, not just by checking
+// the rendered text, so a "looks safe but still shelled out" regression
+// can't slip through.
+func TestExpand_ArgumentsCannotOpenBacktickDirective(t *testing.T) {
+	env := &recordingExecEnv{LocalExecutionEnvironment: execenv.NewLocalExecutionEnvironment(t.TempDir())}
+	got, err := Expand(context.Background(), "Hi $ARGUMENTS", "!`echo PWNED`", env)
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	if len(env.execCommands) != 0 {
+		t.Fatalf("ExecCommand was invoked with %v; argument text must never be executed", env.execCommands)
+	}
+	if got != "Hi !`echo PWNED`" {
+		t.Errorf("got %q, want the literal, unexecuted argument text %q", got, "Hi !`echo PWNED`")
+	}
+}
+
+// TestExpand_ArgumentsCannotOpenAtFileDirective is the file-exfiltration
+// counterpart: argument text shaped like an @file reference (absolute, or
+// path-traversing) must not be read, because the template itself
+// ("review $ARGUMENTS") never opened an @ directive at that position.
+func TestExpand_ArgumentsCannotOpenAtFileDirective(t *testing.T) {
+	dir := t.TempDir()
+	env := execenv.NewLocalExecutionEnvironment(dir)
+	for _, args := range []string{"@/etc/passwd", "@../../../../etc/passwd"} {
+		got, err := Expand(context.Background(), "review $ARGUMENTS", args, env)
+		if err != nil {
+			t.Fatalf("Expand(%q): %v", args, err)
+		}
+		want := "review " + args
+		if got != want {
+			t.Errorf("Expand(args=%q) = %q, want %q (argument text must stay literal, never open an @file read)", args, got, want)
+		}
 	}
 }
 

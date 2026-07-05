@@ -3954,6 +3954,35 @@ func TestHubModelUnrecognizedSlashCommandForwardsExactText(t *testing.T) {
 	}
 }
 
+// TestHubModelUnrecognizedSlashCommandForwardsExactText_NoArgs is the
+// arg-less companion to the test above (finding #5): an unrecognized command
+// typed with no arguments, e.g. "/wat", must forward as the bare "/wat" —
+// not "/wat " with a trailing space from unconditionally appending " "+args.
+func TestHubModelUnrecognizedSlashCommandForwardsExactText_NoArgs(t *testing.T) {
+	var got appwire.TurnStartParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+			got = params
+			return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.session.setInputValue("/wat")
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected a forwarding command")
+	}
+	msg, ok := cmd().(hubSendMsg)
+	if !ok || msg.err != nil {
+		t.Fatalf("cmd() = %#v, err=%v", msg, msg.err)
+	}
+	if len(got.Input) != 1 || got.Input[0].Text != "/wat" {
+		t.Fatalf("turn/start Input = %+v, want a single text item %q (no trailing space)", got.Input, "/wat")
+	}
+}
+
 func requireQuitCommand(t *testing.T, cmd tea.Cmd) {
 	t.Helper()
 	if cmd == nil {

@@ -831,35 +831,22 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 // edited, broken, or uninstalled since the session started, bypassing that
 // CLI-side gate entirely. plugin.LoadAll itself is fail-hard (aborts on the
 // first bad or duplicate-named dir) by design for direct/explicit callers, so
-// the fail-soft behavior lives here instead, mirroring LoadAll's own per-dir
-// loading and duplicate-name detection but skipping the offender with a
-// queued warning (delivered through the normal SESSION_START warning stream,
-// see emitSessionStartEnvelope) instead of aborting.
+// this instead calls the shared plugin.LoadAllFailSoft and turns each skip
+// into a queued warning (delivered through the normal SESSION_START warning
+// stream, see emitSessionStartEnvelope) instead of aborting.
 func (s *Session) loadPluginsFailSoft(dirs []string) []plugin.Instance {
-	plugins := make([]plugin.Instance, 0, len(dirs))
-	seen := make(map[string]string) // plugin name -> dir already loaded
-
-	for _, dir := range dirs {
-		lp, err := plugin.Load(dir)
-		if err != nil {
-			s.pendingHookWarnings = append(s.pendingHookWarnings, events.WarningData{
-				Source:  "plugin",
-				Title:   "broken plugin skipped",
-				Message: fmt.Sprintf("skipping broken plugin at %q: %v", dir, err),
-			})
-			continue
+	plugins, skipped := plugin.LoadAllFailSoft(dirs)
+	for _, sk := range skipped {
+		title := "broken plugin skipped"
+		if sk.Name != "" {
+			title = "duplicate plugin skipped"
 		}
-		if prevDir, ok := seen[lp.Manifest.Name]; ok {
-			s.pendingHookWarnings = append(s.pendingHookWarnings, events.WarningData{
-				Source:     "plugin",
-				Title:      "duplicate plugin skipped",
-				Message:    fmt.Sprintf("skipping duplicate plugin name %q at %q (already loaded from %q)", lp.Manifest.Name, lp.Dir, prevDir),
-				PluginName: lp.Manifest.Name,
-			})
-			continue
-		}
-		seen[lp.Manifest.Name] = lp.Dir
-		plugins = append(plugins, lp)
+		s.pendingHookWarnings = append(s.pendingHookWarnings, events.WarningData{
+			Source:     "plugin",
+			Title:      title,
+			Message:    sk.Reason,
+			PluginName: sk.Name,
+		})
 	}
 	return plugins
 }

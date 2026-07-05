@@ -400,7 +400,11 @@ func (m *hubModel) runHubSlashCommand(cmd, args string) tea.Cmd {
 			m.addSessionSystem("Session ref is invalid.")
 			return nil
 		}
-		return sendHubInput(m.client, ref, "/"+cmd+" "+args, "/"+cmd+" "+args, nil)
+		text := "/" + cmd
+		if args != "" {
+			text += " " + args
+		}
+		return sendHubInput(m.client, ref, text, text, nil)
 	}
 	if definition.Scopes&hubCommandSession == 0 {
 		m.addSessionSystem("Unknown command: /" + cmd + ". Type /help for available commands.")

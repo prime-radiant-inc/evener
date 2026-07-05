@@ -371,8 +371,8 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	// catalog isn't the TUI's to know, so an unrecognized word is always
 	// worth trying against the session's own expander.
 	app.TypeLine("/wat")
-	if sends := hub.WaitForSends(t, 2); sends[1] != "/wat " {
-		t.Fatalf("send text=%q, want the forwarded literal %q", sends[1], "/wat ")
+	if sends := hub.WaitForSends(t, 2); sends[1] != "/wat" {
+		t.Fatalf("send text=%q, want the forwarded literal %q (no trailing space for an arg-less command)", sends[1], "/wat")
 	}
 
 	// /project returns to the dashboard focused on this session's project.

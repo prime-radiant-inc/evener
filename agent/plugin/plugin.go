@@ -261,6 +261,51 @@ func LoadAll(dirs []string) ([]Instance, error) {
 	return plugins, nil
 }
 
+// SkippedPlugin describes a plugin directory LoadAllFailSoft skipped instead
+// of failing the whole batch, and why.
+type SkippedPlugin struct {
+	Dir    string // the directory that was skipped
+	Name   string // the manifest name, set only when the skip was a duplicate (empty when Load itself failed)
+	Reason string // human-readable reason, suitable for a user-facing warning
+}
+
+// LoadAllFailSoft loads each directory in dirs independently, the same way
+// LoadAll does, but never aborts the batch: a directory that fails to load or
+// duplicates an already-loaded plugin's name is recorded in the returned
+// skipped slice and passed over, instead of failing every other directory
+// too. Use this in batch contexts — session init, the hub's command catalog —
+// where one broken or duplicate directory must not brick everything else;
+// callers that want LoadAll's fail-hard, abort-on-first-error behavior (e.g.
+// an explicit single-plugin install/validate operation) should keep using
+// LoadAll.
+func LoadAllFailSoft(dirs []string) ([]Instance, []SkippedPlugin) {
+	plugins := make([]Instance, 0, len(dirs))
+	seen := make(map[string]string) // plugin name -> dir already loaded
+	var skipped []SkippedPlugin
+
+	for _, dir := range dirs {
+		lp, err := Load(dir)
+		if err != nil {
+			skipped = append(skipped, SkippedPlugin{
+				Dir:    dir,
+				Reason: fmt.Sprintf("skipping broken plugin at %q: %v", dir, err),
+			})
+			continue
+		}
+		if prevDir, ok := seen[lp.Manifest.Name]; ok {
+			skipped = append(skipped, SkippedPlugin{
+				Dir:    lp.Dir,
+				Name:   lp.Manifest.Name,
+				Reason: fmt.Sprintf("skipping duplicate plugin name %q at %q (already loaded from %q)", lp.Manifest.Name, lp.Dir, prevDir),
+			})
+			continue
+		}
+		seen[lp.Manifest.Name] = lp.Dir
+		plugins = append(plugins, lp)
+	}
+	return plugins, skipped
+}
+
 // resolveComponentDirs returns a list of absolute directory paths to scan for
 // a component type. It always includes <pluginDir>/<defaultName>/ if that
 // directory exists on disk. If override is a string, it is resolved relative to

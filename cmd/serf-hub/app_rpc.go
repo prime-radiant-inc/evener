@@ -679,15 +679,18 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 // system of record on the hub side (P5), this should read
 // internal/plugins.Manager.EnabledPluginDirs instead so installed-but-not-
 // explicitly-configured plugins are included too.
+//
+// Loading is fail-soft (plugin.LoadAllFailSoft), the same way session init
+// loads plugins: one broken or mid-edit plugin dir must not blank out the
+// whole command catalog, only its own commands. Skip reasons aren't
+// surfaced here — CommandListResponse has no warning channel — but a skipped
+// dir still shows up in a session's own SESSION_START warnings.
 func hubCommandList(cfg hubcore.WebConfig) (appwire.CommandListResponse, error) {
 	dirs := pluginDirsFromConfig(cfg)
 	if len(dirs) == 0 {
 		return appwire.CommandListResponse{}, nil
 	}
-	loaded, err := plugin.LoadAll(dirs)
-	if err != nil {
-		return appwire.CommandListResponse{}, err
-	}
+	loaded, _ := plugin.LoadAllFailSoft(dirs)
 	var commands []appwire.CommandDescriptor
 	for _, lp := range loaded {
 		for _, cmd := range lp.Commands {

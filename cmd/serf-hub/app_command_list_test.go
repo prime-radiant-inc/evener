@@ -109,6 +109,26 @@ func TestHubCommandList_MultiplePluginsSortedByName(t *testing.T) {
 	}
 }
 
+// TestHubCommandList_BrokenPluginDirDoesNotBrickCatalog proves hubCommandList
+// is fail-soft (finding #4): a broken/mid-edit plugin dir alongside a healthy
+// one must not abort the whole catalog with an error. This mirrors the
+// fail-soft loading session init already does for the exact same reason
+// (loadPluginsFailSoft in agent/session_init.go) — command/list must not
+// reintroduce the fragility that fix closed.
+func TestHubCommandList_BrokenPluginDirDoesNotBrickCatalog(t *testing.T) {
+	brokenDir := t.TempDir() // no .claude-plugin/plugin.json at all: Load fails.
+	healthyDir := t.TempDir()
+	writeCommandListTestPlugin(t, healthyDir, "greeter")
+
+	resp, err := hubCommandList(hubcore.WebConfig{PluginDirs: []string{brokenDir, healthyDir}})
+	if err != nil {
+		t.Fatalf("hubCommandList: %v, want the broken dir skipped rather than aborting the whole catalog", err)
+	}
+	if len(resp.Commands) != 1 || resp.Commands[0].Name != "greet" {
+		t.Fatalf("Commands = %+v, want the healthy plugin's %q command despite the broken dir", resp.Commands, "greet")
+	}
+}
+
 func TestHubCommandList_ViaTypedRPCClient(t *testing.T) {
 	pluginDir := t.TempDir()
 	writeCommandListTestPlugin(t, pluginDir, "greeter")
