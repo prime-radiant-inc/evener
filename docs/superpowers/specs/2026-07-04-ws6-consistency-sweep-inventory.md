@@ -49,6 +49,10 @@ part of this list.
   derives Hint from Source alone) — recovery notices read like failures.
 - `conn.reconnecting` clear uses explicit per-branch writes; a `defer` would be
   strictly safer at zero cost.
+- `TestReconnect_FailedReconnect_BackoffSuppressesImmediateRetry` is
+  load-sensitive: one observed failure ("dial factory called 1 times, want 2")
+  during a full-repo parallel gate run; 10/10 clean under `-race` in isolation.
+  Consider a fake clock or wider backoff window in the test.
 - Settings-pane stdio probe is command-presence-only (`exec.LookPath`): a
   present-but-not-MCP binary reads "available" (documented Task-17 limit).
 
