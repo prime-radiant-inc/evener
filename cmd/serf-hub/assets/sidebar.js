@@ -106,8 +106,8 @@
   // headers; expansion + lazy children are honored via model.expanded.
   function flatten(tree) {
     var out = [];
-    (tree.needs_you || []).forEach(function (n) { out.push(n); });
-    (tree.favorites || []).forEach(function (n) { out.push(n); });
+    (tree.needs_you || []).forEach(function (n) { if (!n.__drop) out.push(n); });
+    (tree.favorites || []).forEach(function (n) { if (!n.__drop) out.push(n); });
     (tree.projects || []).forEach(function (p) { pushProject(out, p); });
     // archived_projects + test_runs handled by Task 21/22 section wrappers.
     return out;
@@ -116,7 +116,7 @@
     // Project header is itself a keyed element (data-row-id="header:<key>").
     out.push({ row_id: "header:" + p.key, __project: p });
     var expanded = model.expanded.has(p.key) || p.default_expanded;
-    if (expanded) (p.sessions || []).forEach(function (n) { out.push(n); });
+    if (expanded) (p.sessions || []).forEach(function (n) { if (!n.__drop) out.push(n); });
   }
 
   function buildRowOrSection(n) { return n.__project ? buildProjectHeader(n.__project) : buildRow(n); }
@@ -153,7 +153,86 @@
     } catch (e) {}
   }
 
-  function applyPending(tree) { return tree; } // Task 20 replaces this.
+  // Pending overlay: every optimistic op is re-applied on top of every admitted
+  // resync until it completes. Per-op predicates (round-2 A3): mutation-type
+  // ops (favorite, rename) complete when a resync reflects the field;
+  // disappearance-type ops (archive, delete) complete on POST-2xx (absence is
+  // success). Eviction at 30s is a safety net only.
+  function applyPending(tree) {
+    if (!model.pending.size) return tree;
+    var clone = JSON.parse(JSON.stringify(tree));
+    model.pending.forEach(function (op) { op.apply(clone); });
+    return clone;
+  }
+
+  function forEachNode(tree, fn) {
+    var lists = [tree.needs_you, tree.favorites].concat(
+      (tree.projects || []).map(function (p) { return p.sessions; }),
+      (tree.archived_projects || []).map(function (p) { return p.sessions; }),
+      (tree.test_runs || []).map(function (p) { return p.sessions; }));
+    lists.forEach(function (l) { (l || []).forEach(fn); });
+  }
+
+  function nodeReflects(tree, ref, check) {
+    var ok = false;
+    forEachNode(tree, function (n) { if (n.ref === ref && check(n)) ok = true; });
+    return ok;
+  }
+
+  function addPending(op) {
+    op.at = Date.now();
+    model.pending.set(op.id, op);
+    if (model.tree) renderTree(model.tree);
+    setTimeout(function () {
+      var p = model.pending.get(op.id);
+      if (p && p === op) { model.pending.delete(op.id); if (op.onEvict) op.onEvict(); if (model.tree) renderTree(model.tree); }
+    }, 30000);
+  }
+
+  // Called by every admitted resync: drop mutation-type ops the payload now
+  // reflects.
+  function reconcilePending(tree) {
+    model.pending.forEach(function (op, id) {
+      if (op.confirm && op.confirm(tree)) model.pending.delete(id);
+    });
+  }
+
+  // --- Public mutation API ---------------------------------------------------
+  function favorite(ref, on) {
+    var sid = ref.replace(/^local:/, "");
+    addPending({
+      id: "fav:" + ref, apply: function (t) { forEachNode(t, function (n) { if (n.ref === ref) n.favorite = on; }); },
+      confirm: function (t) { return nodeReflects(t, ref, function (n) { return !!n.favorite === on; }); },
+    });
+    postJSON("/api/favorite", { kind: "session", id: sid, favorited: on });
+  }
+  function archive(ref, on) {
+    var sid = ref.replace(/^local:/, "");
+    var op = { id: "arch:" + ref, apply: function (t) { if (on) forEachNode(t, function (n) { if (n.ref === ref) n.__drop = true; }); } };
+    addPending(op);
+    postJSON("/api/archive", { kind: "session", id: sid, archived: on }).then(function () { model.pending.delete(op.id); scheduleResync(); });
+  }
+  function rename(ref, name) {
+    var sid = ref.replace(/^local:/, "");
+    addPending({
+      id: "name:" + ref, apply: function (t) { forEachNode(t, function (n) { if (n.ref === ref) n.title = name; }); },
+      confirm: function (t) { return nodeReflects(t, ref, function (n) { return n.title === name; }); },
+    });
+    postJSON("/api/sessions/" + encodeURIComponent(ref) + "/rename", { name: name }).catch(function () {});
+  }
+
+  function postJSON(url, body) {
+    return window.fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      .then(function (r) {
+        if (!r || !r.ok) { throw new Error("post failed"); }
+        scheduleResync(); // every mutation POST-2xx schedules a resync (round-3 H1)
+        return r;
+      })
+      .catch(function (e) {
+        if (window.SerfToast) window.SerfToast.show("Action failed", "error");
+        throw e;
+      });
+  }
 
   // --- Age formatting (client-side; server ages are up to one bucket stale) --
   function ageString(iso) {
@@ -193,6 +272,51 @@
   }
   function migrateExpansionKeys() {} // Task 22 replaces this.
 
+  // --- Coalesced resync + event wiring ---------------------------------------
+  var resyncTimer = null, lastResync = 0;
+  function scheduleResync() {
+    if (resyncTimer) return;
+    var wait = Math.max(0, 2000 - (Date.now() - lastResync)); // ≥2s spacing, trailing
+    resyncTimer = setTimeout(function () { resyncTimer = null; lastResync = Date.now(); doResync(); }, wait);
+  }
+  function doResync() {
+    var mySeq = ++model.seq;
+    window.fetch("/api/tree").then(function (r) { return r.json(); }).then(function (tree) {
+      if (mySeq !== model.seq) return; // sequence guard
+      reconcilePending(tree);
+      renderTree(tree);
+      // Re-request children for projects the user expanded (served from the memo).
+      model.expanded.forEach(function (key) { refetchProjectChildren(key); });
+    }).catch(function () {}); // resync failure keeps the last good model rendered
+  }
+  function refetchProjectChildren(key) {
+    window.fetch("/api/tree/project?key=" + encodeURIComponent(key)).then(function (r) { return r.ok ? r.json() : null; }).then(function (p) {
+      if (!p || !model.tree) return;
+      model.lazyCache.set(key, p);
+      var projects = (model.tree.projects || []).concat(model.tree.archived_projects || [], model.tree.test_runs || []);
+      for (var i = 0; i < projects.length; i++) { if (projects[i].key === key) { projects[i].sessions = p.sessions; } }
+      renderTree(model.tree);
+    }).catch(function () {});
+  }
+
+  var QUALIFYING = { "thread/started": 1, "thread/closed": 1, "thread/status/changed": 1, "serf/job/started": 1, "serf/job/finished": 1, "serf/attention/changed": 1 };
+  function onNotification(method, params) {
+    if (method === "serf/attention/changed") { applyAttentionInstant(params); scheduleResync(); return; }
+    if (QUALIFYING[method]) scheduleResync();
+  }
+  // Instant path: attention changed[] carries the coarse 4-value level and only
+  // fires on level transitions; adjust existing rows' tint + badge instantly.
+  function applyAttentionInstant(params) {
+    (params && params.changed || []).forEach(function (ch) {
+      var rows = document.querySelectorAll('#sidebar .sb-row[data-ref="local:' + ch.threadId + '"]');
+      for (var i = 0; i < rows.length; i++) rows[i].setAttribute("data-attention", ch.level);
+    });
+  }
+
+  if (window.SerfAppwire && window.SerfAppwire.onNotification) window.SerfAppwire.onNotification(onNotification);
+  if (window.SerfAppwire && window.SerfAppwire.onConnectionRestored) window.SerfAppwire.onConnectionRestored(scheduleResync);
+  setInterval(scheduleResync, 60000); // 60s idle resync
+
   paintSkeleton();
   fetchTree();
 
@@ -200,5 +324,5 @@
     if (e && e.target && e.target.id === "workspace") syncActiveRow();
   });
 
-  window.SerfSidebar = { renderTree: renderTree, refresh: fetchTree, close: function () {} };
+  window.SerfSidebar = { renderTree: renderTree, refresh: fetchTree, favorite: favorite, archive: archive, rename: rename, close: function () {} };
 })();
