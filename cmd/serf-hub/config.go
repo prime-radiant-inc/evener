@@ -140,8 +140,17 @@ func applyConfigDefaults(cfg *Config) {
 	if cfg.HubStateRoot == "" {
 		cfg.HubStateRoot = DefaultHubStateRoot()
 	}
-	if cfg.PluginAutoUpgradeInterval == 0 {
+	// time.NewTicker (app_plugin_autoupgrade.go) panics on d <= 0, and the
+	// daemon is launched with a bare `go` (no recover), so a bad interval
+	// would crash the whole hub. BurntSushi/toml happily parses a negative
+	// duration string ("-1h" -> -1h, no error) and a bare integer as a
+	// nanosecond count (12 -> 12ns, no error) — neither trips a `== 0` guard,
+	// so this must be <= 0, not == 0. A positive-but-tiny value (that bare
+	// `12`) would otherwise busy-loop the daemon, so it's also floored.
+	if cfg.PluginAutoUpgradeInterval <= 0 {
 		cfg.PluginAutoUpgradeInterval = 12 * time.Hour
+	} else if cfg.PluginAutoUpgradeInterval < time.Minute {
+		cfg.PluginAutoUpgradeInterval = time.Minute
 	}
 	// PluginAutoUpgrade is intentionally NOT defaulted here: it is a bool
 	// whose zero value (false) is a legitimate explicit choice (an operator
