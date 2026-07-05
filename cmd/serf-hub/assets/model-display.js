@@ -3,6 +3,11 @@
 // (e.g. "claude-haiku-4-5") while preserving the full ID in title for tooltip.
 // Uses data-full-model to anchor abbreviation to the original server value so
 // repeated swaps do not re-abbreviate an already-shortened string.
+//
+// Not settings-pane logic — it targets [data-model-display] chips in the
+// workspace header/composer (workspace.html), and lived in settings.js only
+// by historical accident. Moved here so settings.js could be split cleanly
+// into per-section files (2026-07 consistency sweep, Track 0).
 (function () {
   var modelAbbrevHandlerInstalled = false;
 
