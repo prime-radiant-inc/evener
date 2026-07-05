@@ -1215,7 +1215,7 @@ body.app[data-sidebar-rail] .test-date-header { display: none; }
    Session tiers: Current / Recent / (collapsed) Archived
    Labels read like the other quiet section labels (small, dim,
    consistent with .sidebar-section-header / .project-header
-   treatment). Archived content recedes — neutral, never amber
+   treatment). Archived content recedes — neutral, never blue
    or red (settled/put-away, not needs-you/error).
    ============================================================ */
 
@@ -1528,7 +1528,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 /* ── New-content pill ──────────────────────────────────────────────────────
    Floating "↓ N new" affordance shown when the transcript appends content
    while the reader is scrolled up. Anchored to the bottom of #workspace (above
-   the composer), it does not scroll with the transcript. Goes amber + "↓ needs
+   the composer), it does not scroll with the transcript. Goes blue + "↓ needs
    you" when the new content needs the user (.needs-you). */
 .new-content-pill {
   position: absolute;
@@ -1566,11 +1566,11 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 /* ─────────────────────────────────────────────────────────────────────── */
 
 /* ── Blocking needs-you: the agent question (mockup #16) ───────────────────
-   Amber owns the container (the scarce "this needs you" signal); the question
+   Blue owns the container (the scarce "this needs you" signal); the question
    text stays readable so it can't be mistaken for the agent thinking aloud.
    Glyph-paired (◆) for colourblind safety. The composer is the reply affordance
-   — clicking the frame focuses it. (Alt A: amber-framed container + glyph
-   header.) The ask_user card (below) shares this same amber frame — it is a
+   — clicking the frame focuses it. (Alt A: blue-framed container + glyph
+   header.) The ask_user card (below) shares this same blue frame — it is a
    form with its own controls rather than plain prose, so it opts out of the
    whole-frame "click anywhere focuses the composer" cursor. */
 .assistant-message.agent-question,
@@ -1595,7 +1595,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 .agent-question-glyph { color: var(--state-awaiting); }
 
 /* ── ask_user question card (spec §6.1, mockup #16 Alt D) ──────────────────
-   Sits inside the amber .agent-question frame above. Each question is its
+   Sits inside the blue .agent-question frame above. Each question is its
    own block: recommended-first option chips, then the mutually-exclusive
    "Something else… / You decide / do that / skip" row, then the low-contrast
    note control. One footer composes and sends every question in the card at
@@ -1726,7 +1726,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 /* ─────────────────────────────────────────────────────────────────────── */
 
 /* The docked needs-you bar (Alt C): the always-reachable copy. The moment a
-   blocking question is off-screen (or the session is awaiting) an amber bar
+   blocking question is off-screen (or the session is awaiting) a blue bar
    docks above the composer — where the hands and eyes already are — so the ask
    can never hang below the fold. It is the authoritative blocking indicator;
    the new-content pill defers to it. Clicking scrolls to the question and
@@ -2022,8 +2022,8 @@ button.composer-model-value .caret { color: var(--text-dim); }
   background: var(--state-working);
 }
 /* Near the context limit (>=80% of the window, mockup #17 Alt A): the whole
-   gauge changes register to amber and a ⚠ glyph pairs the color so it reads
-   without color (colorblind-safe). Amber = "needs your eye", not red — it is a
+   gauge changes register to blue and a ⚠ glyph pairs the color so it reads
+   without color (colorblind-safe). Blue = "needs your eye", not red — it is a
    real client-side threshold on real token numbers, not an "auto-compaction
    firing soon" signal (there is none). */
 .input-status .context.context-warn .status-key,
