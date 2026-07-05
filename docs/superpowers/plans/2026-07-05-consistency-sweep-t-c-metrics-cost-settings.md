@@ -95,19 +95,23 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
    settings system to gate it and no design ask for TUI `$`. TUI gap-fill (Phase T2) adds only the
    already-scoped work-time/token line (mirroring the shipped `hub_status.go` lines), no `$`. Flag
    for Jesse if TUI cost is wanted later — small follow-up, not in this plan.
-5. **Settings-file dependency on Track 0.** Per the design's Track 0 prep (settings-pane split)
-   and the handoff note for this track: font-size lands in an **appearance** section file and
-   Enter-to-send + Show-cost land in a **composer/input** section file, both created by Track 0.
-   As of this plan's research (base commit before Track 0 forks), the settings pane is *already*
-   partially split (`cmd/serf-hub/templates/partials/settings/{general,theme,transcript,
-   notifications,...}.html`, registered in the `settingsSections` slice at `cmd/serf-hub/web.go:83`
-   and the nav links in `templates/partials/settings.html`) but has **no** section literally named
-   "appearance" or "composer"/"input" yet — closest existing analogs are `theme.html` (color
-   theme, phone density, sidebar mode — client-side prefs, same pattern font-size needs) and
-   `transcript.html` (display toggles — same pattern Show-cost needs). Task V0 below is a real,
-   executable prerequisite-check task: locate Track 0's actual file names before writing V1-V3,
-   falling back to extending `theme.html`/creating the needed file if Track 0 didn't land it under
-   the expected name.
+5. **Settings-file dependency on Track 0 (grounded in Track 0's committed plan
+   `docs/superpowers/plans/2026-07-05-consistency-sweep-t0-settings-split.md`).** Track 0 lands
+   first (merge order: Track 0 → A → B/C → D) and splits the monolithic `assets/settings.js` into
+   per-section files, **deleting `assets/settings.js` entirely**. The HTML templates were already
+   per-section (`templates/partials/settings/*.html`); Track 0 mirrors that on the JS side and
+   **creates** `settings-appearance.js` (theme/phone-density/sidebar-mode — where font-size lands),
+   `settings-notifications.js`, `settings-transcript.js`, `settings-shell.js`, `model-display.js`.
+   It **reserves the name `settings-display.js` for this track but does NOT create it**, and does
+   NOT create a "Display" HTML section (an empty nav entry would break its byte-identical-rendering
+   rule). So this track: (a) font-size → Track 0's `theme.html` + `settings-appearance.js` (Task
+   W1); (b) Enter-to-send + Show-cost → a **new "Display" section this track creates** —
+   `templates/partials/settings/display.html` + `assets/settings-display.js` + a `settingsSections`
+   registration in `web.go` + a nav link + an `app.html` `<script>` tag (Task W0 builds the
+   scaffold; W2/W3 add the two controls). **No task in Phase W touches `assets/settings.js` — it
+   will not exist post-Track-0.** The three controls share the `serf-hub.composer` JSON-blob pref
+   (`{enterToSend, showCost}`) that W0's scaffold establishes, plus `serf-hub.appearance.fontSize`
+   for font-size.
 
 ---
 
@@ -136,14 +140,18 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
   block (line 12); no template change needed, only the Go-side value.
 - `cmd/serf-hub/assets/renderer.js` — stamp `turnId` on assistant-message elements; on
   `turn/completed`, attach/update the hover-reveal per-turn badge.
-- `cmd/serf-hub/assets/renderer-format.js` — `formatTurnMeta` display helper.
+- `cmd/serf-hub/assets/renderer-format.js` — `turnMetaParts`/`formatTurnMetaText` display helpers.
 - `cmd/serf-hub/assets/style.css` — `.assistant-message .turn-meta` hover/focus rules;
   `body[data-show-cost="false"]` gating rules; font-size preset `--text-*` overrides.
 - `cmd/serf-hub/jstest/test-turn-meta-badge.js` (new), `test-show-cost-gating.js` (new),
   `test-font-size-presets.js` (new), `test-composer-shortcuts.js` (extended).
-- `cmd/serf-hub/templates/partials/settings/<appearance-file>.html`,
-  `templates/partials/settings/<composer-file>.html` — Track 0's files (V0 confirms names).
-- `cmd/serf-hub/assets/settings.js` — font-size/Enter-to-send/Show-cost handlers.
+- `cmd/serf-hub/templates/partials/settings/theme.html` (Track 0's, font-size row),
+  `templates/partials/settings/display.html` (NEW "Display" section, W0 creates it).
+- `cmd/serf-hub/assets/settings-appearance.js` (Track 0's — font-size handler),
+  `cmd/serf-hub/assets/settings-display.js` (NEW — Enter-to-send + Show-cost handlers, W0 creates it).
+- `cmd/serf-hub/web.go` (register `"display"` in settingsSections),
+  `cmd/serf-hub/templates/partials/settings.html` (Display nav link),
+  `cmd/serf-hub/templates/app.html` (settings-display.js `<script>` tag) — W0.
 - `cmd/serf-tui/details_drawer.go` — Work/Tokens summary line.
 - `cmd/serf-tui/details_drawer_test.go` — new test.
 - `docs/web-ui/design-system.md` — font-size preset documentation.
@@ -404,6 +412,80 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
   all-zero rule). `golangci-lint run ./...` → green.
 - [ ] **Commit** — `git add cmd/serf/serve.go` →
   `refactor(serve): serfUsageFromLLM delegates to appwire.SerfUsageFromLLM (dedup)`.
+
+### Task Q3 — Pricing parity: cost path (GetPrice→LookupModelInfo) equals the picker's direct ModelInfo field reads
+
+Spec Testing §5 requires a parity check between this track's cost path and Track B's picker, which
+reads `ModelInfo.InputCostPerMillion`/`OutputCostPerMillion` directly (`web_spawn.go`'s
+`catalogModelInfo` → `ModelInfo` fields). This test pins that the two agree — including on the exact
+model-id shapes Task P1 found `GetPrice` had mishandled — so a future divergence (e.g. someone
+"optimizes" one path) fails loudly. It lives in `llm` so it can read `ModelInfo` fields directly
+(the way the picker does) without importing `cmd/serf-hub`.
+
+**Files:** Test-only: `llm/pricing_test.go`.
+
+**Interfaces:**
+- Consumes: `EmbeddedModelCatalog()`, `(*ModelCatalog).GetPrice` (P1), `(*ModelCatalog).LookupModelInfo`,
+  `EstimateCost` (P2), `ModelInfo.InputCostPerMillion`/`OutputCostPerMillion`/`CacheReadInputCostPerMillion`.
+
+- [ ] **Failing-then-green test** — in `llm/pricing_test.go`, add
+  `TestCostParity_GetPriceMatchesDirectModelInfoFieldReads`:
+  ```go
+  func TestCostParity_GetPriceMatchesDirectModelInfoFieldReads(t *testing.T) {
+  	cat := EmbeddedModelCatalog()
+  	// Representative ids INCLUDING the two shapes P1 fixed: a provider-qualified
+  	// ref and a "[1m]"-suffixed ref. These must resolve identically whether cost
+  	// comes from GetPrice (this track's path) or from a direct ModelInfo field
+  	// read (Track B's picker path).
+  	ids := []string{
+  		"claude-opus-4-5",
+  		"anthropic/claude-opus-4-5", // provider-qualified (P1)
+  		"claude-opus-4-5[1m]",       // 1M-context suffix (P1)
+  		"gpt-5-codex",
+  	}
+  	const inTok, cacheTok, outTok = int64(123_456), int64(0), int64(7_890)
+  	for _, id := range ids {
+  		t.Run(id, func(t *testing.T) {
+  			// This track's path.
+  			price, ok := cat.GetPrice(id)
+  			if !ok {
+  				t.Fatalf("GetPrice(%q) returned !ok — id should resolve after P1", id)
+  			}
+  			viaGetPrice := EstimateCost(inTok, cacheTok, outTok, price)
+
+  			// The picker's path: resolve ModelInfo the same way catalogModelInfo
+  			// does (LookupModelInfo), then read its cost fields directly.
+  			mi := cat.LookupModelInfo(id)
+  			if mi == nil || mi.InputCostPerMillion == nil || mi.OutputCostPerMillion == nil {
+  				t.Fatalf("LookupModelInfo(%q) missing base cost fields", id)
+  			}
+  			viaDirectFields := float64(inTok)*(*mi.InputCostPerMillion)/1e6 +
+  				float64(outTok)*(*mi.OutputCostPerMillion)/1e6
+  			// cacheTok is 0 here, so cache-rate differences don't enter — this
+  			// isolates the base-rate parity that both paths must agree on.
+
+  			if !approxF(viaGetPrice, viaDirectFields) {
+  				t.Errorf("cost parity mismatch for %q: GetPrice path=%v, direct-field path=%v", id, viaGetPrice, viaDirectFields)
+  			}
+  		})
+  	}
+  }
+  ```
+  This is a characterization/parity test: it should pass immediately once P1+P2 land (GetPrice and
+  the direct read both funnel through the same `ModelInfo` fields via `priceFromModelInfo`/
+  `LookupModelInfo`). Run: `cd llm && go test ./... -run 'TestCostParity' -count=1` → PASS. If it
+  FAILS, the two paths genuinely diverge (e.g. `GetPrice`'s longest-prefix fallback resolved a
+  *different* catalog entry than `LookupModelInfo` for one id) — that is a real bug this test exists
+  to catch; report it rather than loosening the assertion.
+  - **Note on the represented ids:** if a given id is absent from the embedded catalog at execution
+    time (catalog contents drift), the test's `t.Fatalf` will flag it — swap in a currently-present
+    id of the same shape (a real provider-qualified id and a real `[1m]`-capable id) rather than
+    deleting the case; the point is to keep at least one provider-qualified and one `[1m]` id under
+    parity coverage.
+- [ ] **Run** `cd llm && go test ./... -run 'TestCostParity|TestGetPrice|TestEstimateCost' -count=1` → green.
+  `golangci-lint run ./...` → green.
+- [ ] **Commit** — `git add llm/pricing_test.go` →
+  `test(llm): pin cost-path/picker pricing parity (incl. provider-qualified + [1m] ids)`.
 
 ---
 
@@ -961,37 +1043,122 @@ parent.
 
 ## Phase W — New web settings
 
-### Task W0 — Locate Track 0's section files (prerequisite check — do this FIRST, before W1-W3)
+### Task W0 — Create the "Display" settings section (Enter-to-send + Show-cost home) + confirm Track 0's contract
 
-**Files:** Read-only investigation; may create files if Track 0 did not land them.
+**Track 0 contract (from `docs/superpowers/plans/2026-07-05-consistency-sweep-t0-settings-split.md`,
+confirmed):** Track 0 lands first and **creates** `assets/settings-shell.js`,
+`assets/settings-appearance.js`, `assets/settings-notifications.js`,
+`assets/settings-transcript.js`, `assets/model-display.js`, and **DELETES**
+`assets/settings.js`. It **reserves the name `assets/settings-display.js` for this track but does
+NOT create it**, and does NOT create a "Display" HTML section either (creating an empty nav entry
+would violate its byte-identical-rendering rule). So:
+- **Font-size** (Task W1) lands in the existing **Theme** section — HTML in
+  `templates/partials/settings/theme.html`, behavior JS in `assets/settings-appearance.js`. Both
+  files exist after Track 0 merges.
+- **Enter-to-send + Show-cost** (Tasks W2/W3) form a **new "Display" section** this track creates:
+  `templates/partials/settings/display.html` + `assets/settings-display.js` + a `settingsSections`
+  registration + a nav link + an `app.html` `<script>` tag. This task creates the section scaffold
+  (empty controls) so W2/W3 only add controls into a section that already routes and renders.
 
-- [ ] **Check** — `grep -n 'settingsSections :=' cmd/serf-hub/web.go` and
-  `grep -n 'settings-nav-link' cmd/serf-hub/templates/partials/settings.html` and
-  `ls cmd/serf-hub/templates/partials/settings/`. Look for section names resembling "appearance"
-  (font-size home) and "composer"/"input" (Enter-to-send + Show-cost home).
-- [ ] **If both exist** (Track 0 landed as expected): note the exact file names/section keys here
-  and use them verbatim in Tasks W1-W3 below (replace every `<appearance>`/`<composer>` placeholder
-  in this plan with the real names before starting W1).
-- [ ] **If one or both are missing**: this is a real, executable fallback, not a blocker — create
-  the missing section(s) yourself, mirroring the exact mechanism `theme.html`/`transcript.html`
-  already use:
-  1. Add the section key to the `settingsSections` slice literal in `cmd/serf-hub/web.go` (~line 83).
-  2. Add a `<a class="settings-nav-link …">` entry to `cmd/serf-hub/templates/partials/settings.html`
-     (mirror an existing entry's `hx-get`/`hx-push-url` pattern exactly, e.g. line 14's `theme` entry).
-  3. Create `cmd/serf-hub/templates/partials/settings/<name>.html` with
-     `{{define "settings-content"}}...{{end}}` (mirror `theme.html`'s or `transcript.html`'s
-     structure — no server-side Go data needed for any of these three controls, all are pure
-     client-side `localStorage` prefs, so the template needs no new Go-side data plumbing beyond
-     what `renderSettingsPartial` already provides to every section).
-  4. Add a Go test asserting `GET /_partials/settings/<name>` returns 200 (mirror an existing
-     settings-route test in `web_settings_test.go` if one exists for another section, else add one).
-- [ ] **Commit** (only if you created files) — `git add cmd/serf-hub/web.go cmd/serf-hub/templates/partials/settings.html cmd/serf-hub/templates/partials/settings/<name>.html cmd/serf-hub/web_settings_test.go` →
-  `feat(hub-web): add the <name> settings section (Track 0 prerequisite not yet landed)`.
+**Files:** Create `cmd/serf-hub/templates/partials/settings/display.html`,
+`cmd/serf-hub/assets/settings-display.js`; modify `cmd/serf-hub/web.go`,
+`cmd/serf-hub/templates/partials/settings.html`, `cmd/serf-hub/templates/app.html`. Test:
+`cmd/serf-hub/web_settings_test.go`.
+
+- [ ] **Confirm Track 0 landed** — run `ls cmd/serf-hub/assets/settings-appearance.js cmd/serf-hub/assets/settings-display.js`
+  and `grep -n 'settingsSections' cmd/serf-hub/web.go`. Expect `settings-appearance.js` to EXIST
+  (Track 0 created it — W1's target) and `settings-display.js` to NOT exist (this track's to
+  create). If `settings-appearance.js` is missing, Track 0 has not merged into this worktree's base
+  yet — STOP and report BLOCKED (the whole Phase W depends on the split landing first); do not
+  re-derive Track 0's work here.
+- [ ] **Failing test** — in `cmd/serf-hub/web_settings_test.go`, add
+  `TestSettings_DisplaySectionRoutes`: `GET /_partials/settings/display` with the `HX-Request: true`
+  header; assert `rec.Code == http.StatusOK` and the body contains the section's `<h2>` heading
+  text (`"Display"`). (Mirror an existing settings-route test in this file for the exact
+  `NewWebServer`/`httptest` setup; if none tests a section route directly, model it on
+  `TestSettingsMCPStatus_PopulatedAndEmpty`'s server construction.) Run:
+  `go test ./cmd/serf-hub/... -run 'TestSettings_DisplaySectionRoutes' -count=1` → FAIL (404: the
+  `display` section isn't registered, so `settingsTmpls["display"]` is absent and `renderSettingsPartial`
+  returns `http.NotFound`).
+- [ ] **Implement — register the section** — in `cmd/serf-hub/web.go`, add `"display"` to the
+  `settingsSections := []string{...}` slice literal (~line 84 — re-grep for the exact line; place
+  `"display"` beside `"transcript"` so the display-toggle sections group together). The
+  `settingsTmpls` loop just below it needs no special-casing (`display` is neither `credentials`
+  nor `project`, so it takes the default `templates/partials/settings/display.html` branch).
+- [ ] **Implement — the section template** — create
+  `cmd/serf-hub/templates/partials/settings/display.html` (scaffold only; W2/W3 add the controls):
+  ```html
+  {{define "settings-content"}}
+  <h2 class="settings-h2">Display</h2>
+  <p class="settings-help">Composer and cost-display preferences. Saved per-browser.</p>
+  <dl class="settings-table" data-display-form>
+  </dl>
+  {{end}}
+  ```
+- [ ] **Implement — nav link** — in `cmd/serf-hub/templates/partials/settings.html`, add a
+  `<a class="settings-nav-link {{if eq .Active "display"}}active{{end}}" href="/settings/display" hx-get="/_partials/settings/display" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/display">Display</a>`
+  line immediately after the existing `transcript` nav link (line ~15 — re-grep to confirm),
+  matching that entry's attribute shape exactly.
+- [ ] **Implement — settings-display.js scaffold + app.html script tag** — create
+  `cmd/serf-hub/assets/settings-display.js` with the standard delegated-listener skeleton (W2/W3
+  fill in the handlers; the file must exist and load so their tests can `readFileSync` it):
+  ```js
+  // Settings page interactivity — Display section: Enter-to-send and Show-cost
+  // toggles. Uses event delegation on document.body so it works even when the
+  // settings partial is htmx-swapped in (inline scripts in swapped content
+  // don't reliably execute across all htmx versions). Mirrors the
+  // settings-appearance.js / settings-notifications.js shape (2026-07
+  // consistency sweep, Track C).
+  (function () {
+    "use strict";
+
+    function readComposerPrefs() {
+      let parsed = {};
+      try { parsed = JSON.parse(localStorage.getItem("serf-hub.composer") || "{}") || {}; }
+      catch (e) { parsed = {}; }
+      // showCost defaults ON; enterToSend defaults OFF.
+      return {
+        enterToSend: parsed.enterToSend === true,
+        showCost: parsed.showCost !== false,
+      };
+    }
+    function writeComposerPrefs(prefs) {
+      localStorage.setItem("serf-hub.composer", JSON.stringify(prefs));
+    }
+    function syncToggleState(input) {
+      const span = input.parentElement.querySelector(".state");
+      if (span) span.textContent = input.checked ? "ON" : "OFF";
+    }
+
+    // W2/W3 add: the change-listener branches for data-composer="enterToSend"
+    // and data-composer="showCost", the applyDisplayState() restore function,
+    // and the composer keybind-hint sync. Expose the pref helpers so those
+    // additions and the page-load IIFEs below share one source of truth.
+    window.SerfSettingsDisplay = { readComposerPrefs, writeComposerPrefs, syncToggleState };
+
+    // Show-cost applies to <body> on every page load so the CSS gate
+    // (body[data-show-cost="false"]) is correct before any settings pane opens.
+    (function () {
+      document.body.dataset.showCost = readComposerPrefs().showCost ? "true" : "false";
+    })();
+  })();
+  ```
+  In `cmd/serf-hub/templates/app.html`, add `  <script src="/assets/settings-display.js{{assetv}}"></script>`
+  immediately after the `settings-transcript.js` line (the by-then-current script block Track 0
+  established — re-grep for `settings-transcript.js` to place it).
+- [ ] **Run** `go test ./cmd/serf-hub/... -run 'TestSettings_DisplaySectionRoutes' -count=1` → pass.
+  Run `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` →
+  green (the scaffold JS is inert; no test regression). `go test ./cmd/serf-hub/... -count=1` →
+  green (app.html + the new template parse). `golangci-lint run ./...` → green.
+- [ ] **Commit** — `git add cmd/serf-hub/web.go cmd/serf-hub/templates/partials/settings.html cmd/serf-hub/templates/partials/settings/display.html cmd/serf-hub/assets/settings-display.js cmd/serf-hub/templates/app.html cmd/serf-hub/web_settings_test.go` →
+  `feat(hub-web): add the Display settings section (Enter-to-send + Show-cost home) with a scaffold + pref helpers`.
 
 ### Task W1 — Font-size presets (S/M/L/XL)
 
-**Files:** Modify `cmd/serf-hub/templates/partials/settings/<appearance>.html`,
-`cmd/serf-hub/assets/settings.js`, `cmd/serf-hub/assets/style.css`. Test:
+**Files:** Modify `cmd/serf-hub/templates/partials/settings/theme.html`,
+`cmd/serf-hub/assets/settings-appearance.js` (both created/owned by Track 0 — font-size is an
+appearance/type-scale concern, same family as the existing phone-density radio, so it lands in the
+Theme section per Track 0's contract), `cmd/serf-hub/assets/style.css`. Test:
 new `cmd/serf-hub/jstest/test-font-size-presets.js`.
 
 - [ ] **Failing test** — new `cmd/serf-hub/jstest/test-font-size-presets.js` (CSS-contract style,
@@ -1026,8 +1193,9 @@ new `cmd/serf-hub/jstest/test-font-size-presets.js`.
   }
   ```
 - [ ] **Implement — settings control** — in
-  `cmd/serf-hub/templates/partials/settings/<appearance>.html`, add (mirroring `theme.html`'s
-  radio-group markup exactly):
+  `cmd/serf-hub/templates/partials/settings/theme.html`, add a fourth `.row` (mirroring the
+  existing phone-density/sidebar-mode radio-group markup in that same file exactly, inside the
+  `<dl ... data-theme-form>`):
   ```html
   <div class="row">
     <dt>Font size</dt>
@@ -1042,9 +1210,11 @@ new `cmd/serf-hub/jstest/test-font-size-presets.js`.
     <p class="help">Scales all UI text. M is the default.</p>
   </div>
   ```
-- [ ] **Implement — JS** — in `cmd/serf-hub/assets/settings.js`:
-  - In the `document.body.addEventListener("change", ...)` handler, add a branch (beside the
-    `phone-density`/`sidebar-mode` branches):
+- [ ] **Implement — JS** — in `cmd/serf-hub/assets/settings-appearance.js` (Track 0's appearance
+  file — the same one that holds theme/phone-density/sidebar-mode; NOT `settings.js`, which Track 0
+  deleted):
+  - In its `document.body.addEventListener("change", ...)` handler, add a branch (beside the
+    existing `phone-density`/`sidebar-mode` branches):
     ```js
     if (target.matches('input[name="font-size"]')) {
       const v = target.value;
@@ -1053,7 +1223,8 @@ new `cmd/serf-hub/jstest/test-font-size-presets.js`.
       return;
     }
     ```
-  - In `applySettingsState()`, add:
+  - In its `applyAppearanceState()` restore function (Track 0's rename of the old
+    `applySettingsState`'s appearance slice), add:
     ```js
     const fontSizeRadios = document.querySelectorAll('input[name="font-size"]');
     if (fontSizeRadios.length) {
@@ -1061,7 +1232,8 @@ new `cmd/serf-hub/jstest/test-font-size-presets.js`.
       fontSizeRadios.forEach((r) => { r.checked = r.value === stored; });
     }
     ```
-  - Add a page-load IIFE mirroring the phone-density one (~line 154-159):
+  - Add a page-load IIFE mirroring the phone-density/sidebar-mode "apply stored value on load"
+    IIFEs already at the bottom of `settings-appearance.js`:
     ```js
     (function () {
       const KEY = "serf-hub.appearance.fontSize";
@@ -1071,14 +1243,18 @@ new `cmd/serf-hub/jstest/test-font-size-presets.js`.
 - [ ] **Run** `node cmd/serf-hub/jstest/test-font-size-presets.js` → pass. Run
   `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → green.
   `go test ./cmd/serf-hub/... -count=1` → green (templates still parse).
-- [ ] **Commit** — `git add cmd/serf-hub/templates/partials/settings/<appearance>.html cmd/serf-hub/assets/settings.js cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-font-size-presets.js` →
+- [ ] **Commit** — `git add cmd/serf-hub/templates/partials/settings/theme.html cmd/serf-hub/assets/settings-appearance.js cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-font-size-presets.js` →
   `feat(hub-web): font-size presets (S/M/L/XL) scaling all --text-* tokens`.
 
 ### Task W2 — Enter-to-send toggle (web-only)
 
-**Files:** Modify `cmd/serf-hub/templates/partials/settings/<composer>.html`,
-`cmd/serf-hub/assets/settings.js`, `cmd/serf-hub/assets/renderer.js`,
-`cmd/serf-hub/templates/partials/workspace.html`. Test: extend
+Lands in the **Display** section Task W0 created (`display.html` + `settings-display.js`) — NOT the
+Track-0-deleted `settings.js`. Uses the `serf-hub.composer` JSON-blob pref
+(`{enterToSend, showCost}`) and its `window.SerfSettingsDisplay.readComposerPrefs()` accessor that
+W0's scaffold established, so Enter-to-send and Show-cost share one pref object.
+
+**Files:** Modify `cmd/serf-hub/templates/partials/settings/display.html`,
+`cmd/serf-hub/assets/settings-display.js`, `cmd/serf-hub/assets/renderer.js`. Test: extend
 `cmd/serf-hub/jstest/test-composer-shortcuts.js`.
 
 **Flagged conflict (not in the design spec — found during verification):** Shift+Enter is
@@ -1091,7 +1267,8 @@ is called out explicitly so a reviewer doesn't think the collision was missed.
 
 - [ ] **Failing test** — extend `cmd/serf-hub/jstest/test-composer-shortcuts.js`: add
   `testEnterToSendModeSubmitsOnBareEnterAndNewlinesOnShiftEnter`: set
-  `window.localStorage.setItem("serf-hub.composer.enterToSend", "true")` before `makeDOM`; dispatch
+  `window.localStorage.setItem("serf-hub.composer", JSON.stringify({enterToSend: true}))` before
+  `makeDOM`; dispatch
   a bare `Enter` keydown (no modifiers) — assert `submitCount === 1`; dispatch a `Shift+Enter`
   keydown — assert `steerCount === 0` (steer did NOT fire) and that `preventDefault` was NOT called
   on that event (so the browser's native newline insertion still happens — assert via
@@ -1110,7 +1287,12 @@ is called out explicitly so a reviewer doesn't think the collision was missed.
         const ta = document.querySelector(".message-input");
         if (!ta) return;
         const suppressSubmitShortcuts = this.isInPane && this.isInPane();
-        const enterToSend = () => localStorage.getItem("serf-hub.composer.enterToSend") === "true";
+        // Reads the same serf-hub.composer JSON blob the Display settings write
+        // (via settings-display.js); enterToSend defaults OFF (absent/false).
+        const enterToSend = () => {
+          try { return (JSON.parse(localStorage.getItem("serf-hub.composer") || "{}") || {}).enterToSend === true; }
+          catch (e) { return false; }
+        };
         ta.addEventListener("keydown", (e) => {
           if (!suppressSubmitShortcuts && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
@@ -1145,31 +1327,47 @@ is called out explicitly so a reviewer doesn't think the collision was missed.
         });
       },
   ```
-- [ ] **Implement — kbd hint sync** — in `cmd/serf-hub/assets/settings.js`, add a function that
-  updates the composer's `<kbd>` hints to match the current mode, called on `DOMContentLoaded` +
-  `htmx:afterSwap` (mirroring the model-abbreviation IIFE's install pattern):
-  ```js
-  (function () {
+- [ ] **Implement — settings-display.js: change handler + restore + kbd hint sync** — in
+  `cmd/serf-hub/assets/settings-display.js` (the file W0 created), extend the IIFE:
+  - Add a `document.body.addEventListener("change", ...)` branch for the `enterToSend` checkbox
+    (following the `data-notif`/`data-transcript-status` commit pattern, but reading/writing the
+    shared `serf-hub.composer` blob via the `readComposerPrefs`/`writeComposerPrefs` helpers W0
+    defined):
+    ```js
+    document.body.addEventListener("change", (e) => {
+      const target = e.target;
+      if (!target || !target.matches) return;
+      if (target.matches('input[type=checkbox][data-composer="enterToSend"]')) {
+        const prefs = readComposerPrefs();
+        prefs.enterToSend = target.checked;
+        writeComposerPrefs(prefs);
+        syncToggleState(target);
+        applyComposerKeybindHints();
+        if (window.SerfToast) window.SerfToast.show("Settings saved", "success");
+        return;
+      }
+    });
+    ```
+  - Add an `applyDisplayState()` restore function (called on `DOMContentLoaded` + `htmx:afterSwap`,
+    mirroring `applyAppearanceState`) that checks the `enterToSend` box from
+    `readComposerPrefs().enterToSend` and calls `syncToggleState` on it.
+  - Add `applyComposerKeybindHints()` inside the same IIFE (updates the composer's `<kbd>` hints to
+    match the current mode), registered on `DOMContentLoaded` + `htmx:afterSwap`:
+    ```js
     function applyComposerKeybindHints() {
       const sendKbd = document.querySelector(".send-btn kbd");
       const steerBtn = document.querySelector("[data-steer-trigger]");
       const steerKbd = steerBtn && steerBtn.querySelector("kbd");
-      const on = localStorage.getItem("serf-hub.composer.enterToSend") === "true";
+      const on = readComposerPrefs().enterToSend;
       if (sendKbd) sendKbd.textContent = on ? "↵" : "⌘↵";
       if (steerKbd) steerKbd.textContent = on ? "" : "⇧↵";
     }
     document.addEventListener("DOMContentLoaded", applyComposerKeybindHints);
-    document.body && document.body.addEventListener("htmx:afterSwap", applyComposerKeybindHints);
-  })();
-  ```
-  Add the settings-panel radio/checkbox handler + `applySettingsState()` sync entries for
-  `enterToSend` (a checkbox, `data-composer="enterToSend"`, following the exact
-  `data-transcript-status`/`readTranscriptStatusPrefs` pattern — read/write a
-  `serf-hub.composer.enterToSend` boolean string, `"true"`/absent-or-`"false"`), and call
-  `applyComposerKeybindHints()` from inside that same change handler so the hint updates
-  immediately on toggle.
+    document.body.addEventListener("htmx:afterSwap", applyComposerKeybindHints);
+    ```
 - [ ] **Implement — settings control** — in
-  `cmd/serf-hub/templates/partials/settings/<composer>.html`:
+  `cmd/serf-hub/templates/partials/settings/display.html`, add a `.row` inside the
+  `<dl ... data-display-form>` W0 scaffolded:
   ```html
   <div class="row editable">
     <dt id="lbl-composer-enter-to-send">Enter sends</dt>
@@ -1185,13 +1383,18 @@ is called out explicitly so a reviewer doesn't think the collision was missed.
 - [ ] **Run** `node cmd/serf-hub/jstest/test-composer-shortcuts.js` → pass. Run
   `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → green.
   `go test ./cmd/serf-hub/... -count=1` → green.
-- [ ] **Commit** — `git add cmd/serf-hub/templates/partials/settings/<composer>.html cmd/serf-hub/assets/settings.js cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-composer-shortcuts.js` →
+- [ ] **Commit** — `git add cmd/serf-hub/templates/partials/settings/display.html cmd/serf-hub/assets/settings-display.js cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-composer-shortcuts.js` →
   `feat(hub-web): Enter-to-send toggle (default off), resolving the Shift+Enter/steer keybind collision`.
 
 ### Task W3 — Show-cost toggle + CSS gating across all three cost surfaces
 
-**Files:** Modify `cmd/serf-hub/templates/partials/settings/<composer>.html`,
-`cmd/serf-hub/assets/settings.js`, `cmd/serf-hub/assets/style.css`. Test: new
+Lands in the same **Display** section (`display.html` + `settings-display.js`) as W2, sharing the
+`serf-hub.composer` JSON blob and its `readComposerPrefs`/`writeComposerPrefs` helpers (W0). The
+page-load body-attribute apply (`body[data-show-cost]`) already lives in W0's scaffold; this task
+adds the toggle control and the CSS gate.
+
+**Files:** Modify `cmd/serf-hub/templates/partials/settings/display.html`,
+`cmd/serf-hub/assets/settings-display.js`, `cmd/serf-hub/assets/style.css`. Test: new
 `cmd/serf-hub/jstest/test-show-cost-gating.js`.
 
 - [ ] **Failing test** — new `cmd/serf-hub/jstest/test-show-cost-gating.js` (CSS-contract style):
@@ -1210,7 +1413,8 @@ is called out explicitly so a reviewer doesn't think the collision was missed.
   }
   ```
 - [ ] **Implement — settings control** — in
-  `cmd/serf-hub/templates/partials/settings/<composer>.html`:
+  `cmd/serf-hub/templates/partials/settings/display.html`, add a `.row` inside the
+  `<dl ... data-display-form>` (after the Enter-sends row from W2):
   ```html
   <div class="row editable">
     <dt id="lbl-composer-show-cost">Show estimated cost</dt>
@@ -1223,27 +1427,32 @@ is called out explicitly so a reviewer doesn't think the collision was missed.
     <p class="help">Default on. Shows an estimated ~$ cost next to token counts, from catalog pricing — an estimate, not a billing-exact figure.</p>
   </div>
   ```
-- [ ] **Implement — JS** — in `cmd/serf-hub/assets/settings.js`, follow the exact
-  `data-transcript-status` pattern for a new `serf-hub.composer.prefs` (or reuse the
-  `enterToSend` key's sibling object — pick ONE small JSON blob,
-  e.g. `serf-hub.composer` = `{"enterToSend": bool, "showCost": bool}`, read/written by a single
-  `readComposerPrefs`/`writeComposerPrefs` pair mirroring `readTranscriptStatusPrefs`, DEFAULT
-  `showCost: true` unlike `enterToSend`'s default `false` — get the default right, it's the
-  opposite polarity of the sibling setting). Add the page-load IIFE:
-  ```js
-  (function () {
-    const prefs = readComposerPrefs(); // showCost defaults true, enterToSend defaults false
-    document.body.dataset.showCost = prefs.showCost === false ? "false" : "true";
-  })();
-  ```
-  and the `change` handler branch + `applySettingsState()` sync entries for
-  `data-composer="showCost"`, mirroring the `data-notif`/`data-transcript-status` checkbox
-  handling exactly (including the `ON`/`OFF` label sync via `syncToggleState`).
+- [ ] **Implement — JS** — in `cmd/serf-hub/assets/settings-display.js` (the same file W0/W2 build;
+  `readComposerPrefs`/`writeComposerPrefs`/`syncToggleState` and the `body[data-show-cost]`
+  page-load apply already exist from W0's scaffold — `showCost` defaults ON there via
+  `parsed.showCost !== false`):
+  - Add a `change`-handler branch for the `showCost` checkbox (in the same delegated listener W2
+    added its `enterToSend` branch to), mirroring the `enterToSend` branch but toggling the CSS
+    gate live:
+    ```js
+    if (target.matches('input[type=checkbox][data-composer="showCost"]')) {
+      const prefs = readComposerPrefs();
+      prefs.showCost = target.checked;
+      writeComposerPrefs(prefs);
+      syncToggleState(target);
+      document.body.dataset.showCost = target.checked ? "true" : "false";
+      if (window.SerfToast) window.SerfToast.show("Settings saved", "success");
+      return;
+    }
+    ```
+  - In the `applyDisplayState()` restore function (added in W2), also check the `showCost` box from
+    `readComposerPrefs().showCost` and `syncToggleState` it (so its `ON`/`OFF` label is correct
+    when the Display pane is swapped in).
 - [ ] **Run** `node cmd/serf-hub/jstest/test-show-cost-gating.js` → pass. Run
   `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → green
-  (including the T1/T2 tests — confirm the `formatTurnMeta` HTML-escaping change didn't regress
-  the duration/token assertions there). `go test ./cmd/serf-hub/... -count=1` → green.
-- [ ] **Commit** — `git add cmd/serf-hub/templates/partials/settings/<composer>.html cmd/serf-hub/assets/settings.js cmd/serf-hub/assets/style.css cmd/serf-hub/assets/renderer-format.js cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-show-cost-gating.js` →
+  (including the T1/T2 tests — confirm the per-turn badge's `.cost` child span still renders and
+  the duration/token assertions still hold). `go test ./cmd/serf-hub/... -count=1` → green.
+- [ ] **Commit** — `git add cmd/serf-hub/templates/partials/settings/display.html cmd/serf-hub/assets/settings-display.js cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-show-cost-gating.js` →
   `feat(hub-web): Show-cost toggle (default on) gates ~$ display across the status row, details panel, and per-turn badge`.
 
 ---
@@ -1349,9 +1558,14 @@ stored model ids was found and fixed rather than assumed away.
 - "`llm/pricing.go` GetPrice, its first real caller" → confirmed zero non-test callers today;
   ALSO confirmed (not assumed) that its existing resolution would fail on real stored model ids
   (provider-qualified, `[1m]`-suffixed) — strengthened before adoption, not adopted as-is (P1).
-- Track 0's settings-pane split → confirmed **already substantially done** pre-Track-0 (per-section
-  files already exist for general/theme/transcript/notifications/etc.), but no "appearance" or
-  "composer"/"input" section yet — W0 is a real prerequisite-check task, not a rubber stamp.
+- Track 0's settings-pane split → grounded in Track 0's committed plan, not guessed: Track 0
+  **deletes `assets/settings.js`** and creates per-section JS files (`settings-appearance.js` etc.),
+  reserving `settings-display.js` for this track without creating it. W0 therefore CREATES the new
+  "Display" section (Enter-to-send + Show-cost home) and W1 targets Track 0's `theme.html` +
+  `settings-appearance.js` for font-size — no Phase-W task references the deleted `settings.js`.
+- Cost-path/picker pricing parity (spec Testing §5) → added as Task Q3, covering the exact
+  provider-qualified and `[1m]`-suffixed ids P1 fixed, asserting `GetPrice` cost equals a direct
+  `ModelInfo`-field read.
 
 **Type/name consistency:** `appwire.SerfUsage` (existing) reused for `Turn.Usage` (no new usage
 shape); `appwire.EstimateCost`/`llm.EstimateCost` (two layers: wire-level convenience wrapping the
