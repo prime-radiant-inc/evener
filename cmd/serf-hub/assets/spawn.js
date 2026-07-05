@@ -1385,6 +1385,7 @@
     modelsPromise.then(result => {
       const models = Array.isArray(result && result.models) ? result.models : [];
       const diagnostics = Array.isArray(result && result.diagnostics) ? result.diagnostics : [];
+      const recentModels = Array.isArray(result && result.recent) ? result.recent : [];
       if (models.length === 0 && diagnostics.length === 0 && !harnessUsesSerfModels(harness)) {
         openHarnessDefaultModelPicker(chip);
         return;
@@ -1502,6 +1503,19 @@
       function renderList(filter) {
         list.innerHTML = "";
         let shown = 0;
+        const recentMatches = recentModels.filter(m =>
+          !filter || (m.model + " " + (m.display_name || "")).toLowerCase().includes(filter)
+        );
+        if (recentMatches.length > 0) {
+          const header = document.createElement("div");
+          header.className = "chip-picker-group";
+          header.textContent = "Recent";
+          list.appendChild(header);
+          recentMatches.forEach(m => {
+            shown++;
+            list.appendChild(buildModelRow(m));
+          });
+        }
         providers.forEach(p => {
           const matches = byProvider[p].filter(m =>
             !filter || (m.model + " " + (m.display_name || "")).toLowerCase().includes(filter)
