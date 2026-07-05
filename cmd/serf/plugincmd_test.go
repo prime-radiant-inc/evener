@@ -253,6 +253,91 @@ func TestSplitPluginRef(t *testing.T) {
 	}
 }
 
+// installDirectoryPluginForTest registers a directory-source marketplace with
+// one plugin (a relative "./plugins/<name>" source) and installs it, giving
+// tests a real registry entry to act on (auto-upgrade toggling, check-now)
+// without depending on git.
+func installDirectoryPluginForTest(t *testing.T, name, marketplace string) {
+	t.Helper()
+	mktDir := t.TempDir()
+	metaDir := filepath.Join(mktDir, ".claude-plugin")
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	mj := `{"name":"` + marketplace + `","owner":{"name":"o"},"plugins":[{"name":"` + name + `","source":"./plugins/` + name + `"}]}`
+	if err := os.WriteFile(filepath.Join(metaDir, "marketplace.json"), []byte(mj), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	pluginMetaDir := filepath.Join(mktDir, "plugins", name, ".claude-plugin")
+	if err := os.MkdirAll(pluginMetaDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginMetaDir, "plugin.json"), []byte(`{"name":"`+name+`","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	m := plugins.NewManager("")
+	ctx := context.Background()
+	if _, err := m.AddMarketplace(ctx, marketplace, plugins.Source{Kind: plugins.SourceDirectory, Path: mktDir}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := m.Install(ctx, name, marketplace); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+}
+
+func listPluginsJSON(t *testing.T) []plugins.ListItem {
+	t.Helper()
+	var out, errb bytes.Buffer
+	if err := runPlugin([]string{"list", "--json"}, nil, &out, &errb); err != nil {
+		t.Fatalf("runPlugin list --json: %v\n%s", err, errb.String())
+	}
+	var items []plugins.ListItem
+	if err := json.Unmarshal(out.Bytes(), &items); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	return items
+}
+
+// TestPluginAutoUpgrade_RoundTripsInList covers the missing CLI capability
+// the user explicitly asked for ("auto-upgrade plugins"): web's
+// setAutoUpgrade and the TUI's 'a' key could already toggle it, the CLI
+// could only display the flag in `list`'s AUTO-UPGRADE column, not set it.
+func TestPluginAutoUpgrade_RoundTripsInList(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	installDirectoryPluginForTest(t, "widget", "local")
+
+	var out, errb bytes.Buffer
+	if err := runPlugin([]string{"auto-upgrade", "widget@local"}, nil, &out, &errb); err != nil {
+		t.Fatalf("runPlugin auto-upgrade: %v\n%s", err, errb.String())
+	}
+	if !strings.Contains(out.String(), "enabled") {
+		t.Errorf("expected confirmation output mentioning \"enabled\", got %q", out.String())
+	}
+	items := listPluginsJSON(t)
+	if len(items) != 1 || !items[0].AutoUpgrade {
+		t.Fatalf("list --json = %+v, want AutoUpgrade=true after enabling", items)
+	}
+
+	out.Reset()
+	errb.Reset()
+	if err := runPlugin([]string{"auto-upgrade", "--off", "widget@local"}, nil, &out, &errb); err != nil {
+		t.Fatalf("runPlugin auto-upgrade --off: %v\n%s", err, errb.String())
+	}
+	items = listPluginsJSON(t)
+	if len(items) != 1 || items[0].AutoUpgrade {
+		t.Fatalf("list --json = %+v, want AutoUpgrade=false after --off", items)
+	}
+}
+
+func TestPluginAutoUpgrade_RequiresRef(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var out, errb bytes.Buffer
+	if err := runPlugin([]string{"auto-upgrade"}, nil, &out, &errb); err == nil {
+		t.Fatal("auto-upgrade without a plugin ref should error")
+	}
+}
+
 func TestPluginInstall_RequiresConfirmation(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	var out, errb bytes.Buffer

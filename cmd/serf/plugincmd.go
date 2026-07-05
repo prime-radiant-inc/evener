@@ -32,7 +32,7 @@ func runPlugin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	case "marketplace":
 		return runPluginMarketplace(args[1:], stdout, stderr)
 	// lifecycle verbs added in Task 4:
-	case "install", "remove", "enable", "disable", "list", "upgrade", "gc":
+	case "install", "remove", "enable", "disable", "list", "upgrade", "gc", "auto-upgrade":
 		return runPluginLifecycle(args[0], args[1:], stdin, stdout, stderr)
 	case "doctor":
 		return runPluginDoctor(args[1:], stdout, stderr)
@@ -189,6 +189,7 @@ func printPluginUsage(w io.Writer) {
 	_, _ = fmt.Fprintf(w, "  disable       Disable a plugin\n")
 	_, _ = fmt.Fprintf(w, "  list          List installed plugins\n")
 	_, _ = fmt.Fprintf(w, "  upgrade       Upgrade installed plugins\n")
+	_, _ = fmt.Fprintf(w, "  auto-upgrade  Toggle a plugin's auto-upgrade flag (--off to disable)\n")
 	_, _ = fmt.Fprintf(w, "  gc            Garbage collect unused plugin cache\n")
 	_, _ = fmt.Fprintf(w, "  doctor        Run plugin-store health checks\n")
 }
@@ -413,6 +414,31 @@ func runPluginLifecycle(verb string, args []string, stdin io.Reader, stdout, std
 			return err
 		}
 		_, _ = fmt.Fprintf(stdout, "Upgraded %s@%s to version %s\n", plugin, marketplace, entry.Version)
+		return nil
+
+	case "auto-upgrade":
+		fs := flag.NewFlagSet("auto-upgrade", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		off := fs.Bool("off", false, "disable auto-upgrade instead of enabling it")
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		if fs.NArg() < 1 {
+			return errors.New("usage: serf plugin auto-upgrade <plugin>@<marketplace> [--off]")
+		}
+		plugin, marketplace, err := splitPluginRef(fs.Arg(0))
+		if err != nil {
+			return err
+		}
+		on := !*off
+		if err := m.SetAutoUpgrade(plugin, marketplace, on); err != nil {
+			return err
+		}
+		state := "enabled"
+		if !on {
+			state = "disabled"
+		}
+		_, _ = fmt.Fprintf(stdout, "Auto-upgrade %s for %s@%s\n", state, plugin, marketplace)
 		return nil
 
 	case "gc":
