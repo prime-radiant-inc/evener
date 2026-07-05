@@ -94,6 +94,16 @@ func (s *Session) close(cleanupEnv bool) {
 		subs := s.subagents.drainForClose()
 		s.mu.Unlock()
 		s.responseSideEffectsMu.Unlock()
+		// Flush the just-accumulated work time and usage now, before any
+		// teardown below (Decision 4/L3): Close is the terminal event for a
+		// turn that died mid-flight above, and also for a turn that was
+		// cooperatively interrupted earlier — whose accumulation happened in
+		// processInputKindWithProvenance's wrapper AFTER processOneInput's own
+		// deferred autosave had already fired with a stale, pre-accumulation
+		// value. Neither case has any other flush point once Close runs, so
+		// without this the in-memory WorkMillis/CumulativeUsage are correct
+		// but never reach meta.json, and a daemon restart silently loses them.
+		s.maybeAutoSave()
 		s.subagents.waitForReconstructions()
 		s.subagents.waitForReconstructionSideEffects()
 

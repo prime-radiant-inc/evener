@@ -177,6 +177,104 @@ func TestWorkMillis_CloseMidTurnCounts(t *testing.T) {
 	}
 }
 
+// TestWorkMillis_InterruptThenCloseFlushesToDisk pins the persistence half of
+// Decision 4/L3 that TestWorkMillis_InterruptedTurnCounts does not cover: an
+// interrupted turn's accumulated work is correct in memory immediately (proven
+// by that sibling test), but the accumulation happens in the interrupt-handling
+// wrapper (processInputKindWithProvenance), AFTER processOneInput's own
+// deferred autosave has already fired with a stale, pre-accumulation value.
+// Nothing autosaves again afterward, so if the session is later closed with no
+// further turn to trigger another deferred autosave, the correct in-memory
+// total never reaches meta.json. Live-reproduced via e2e testing: work_millis
+// was present and correct via the API but absent from the on-disk file both
+// right after the interrupt and after a subsequent clean shutdown.
+func TestWorkMillis_InterruptThenCloseFlushesToDisk(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	clk := agenttest.NewFakeClock()
+	blocked := make(chan struct{})
+	sess := newSession(t, withConfig(SessionConfig{clock: clk, StateDir: dir}),
+		withAdapter(&blockingAdapter{name: "openai", blocked: blocked}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := sess.ProcessInput(ctx, "hello", nil)
+		done <- err
+	}()
+
+	<-blocked // LLM call is in-flight.
+	const delta = 1500 * time.Millisecond
+	clk.Advance(delta)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("ProcessInput err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ProcessInput did not return after cancel")
+	}
+
+	// Sanity check matching TestWorkMillis_InterruptedTurnCounts: the interrupt
+	// is already correctly accounted for in memory before Close ever runs.
+	if got, want := sess.Meta().WorkMillis, delta.Milliseconds(); got != want {
+		t.Fatalf("in-memory WorkMillis after interrupt = %d, want %d", got, want)
+	}
+
+	sess.Close() // e.g. an explicit /shutdown with no further turn.
+
+	reloaded, err := schema.LoadSessionMeta(dir, sess.ID())
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	if got, want := reloaded.WorkMillis, delta.Milliseconds(); got != want {
+		t.Fatalf("on-disk WorkMillis after Close = %d, want %d (Close must autosave the already-accumulated total)", got, want)
+	}
+}
+
+// TestClose_MidTurnFlushesWorkAndUsageToDisk extends
+// TestWorkMillis_CloseMidTurnCounts (which pins only the in-memory L3
+// accumulation) to disk: Close must also autosave, or a session that dies
+// mid-turn loses both its dying turn's work time and its last recorded token
+// usage once the daemon restarts, since restore seeds strictly from the
+// persisted meta.json. WorkMillis and CumulativeUsage are both mapped through
+// the same Meta()/autosave route, so a turn's usage (recorded mid-round, before
+// the turn's own boundary) is exposed to the identical gap.
+func TestClose_MidTurnFlushesWorkAndUsageToDisk(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	clk := agenttest.NewFakeClock()
+	sess := newSession(t, withConfig(SessionConfig{clock: clk, StateDir: dir}))
+
+	sess.mu.Lock()
+	sess.state = SessionProcessing
+	sess.turnStartedAt = clk.Now()
+	sess.mu.Unlock()
+	// Simulate a round's usage already recorded mid-turn (recordResponseUsage),
+	// before the turn ever reaches a boundary that would otherwise autosave it.
+	sess.contextMgr.AddUsage(llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15})
+
+	const delta = 3 * time.Second
+	clk.Advance(delta)
+
+	sess.Close()
+
+	reloaded, err := schema.LoadSessionMeta(dir, sess.ID())
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	if got, want := reloaded.WorkMillis, delta.Milliseconds(); got != want {
+		t.Fatalf("on-disk WorkMillis after Close = %d, want %d (dying turn's elapsed must be flushed)", got, want)
+	}
+	wantUsage := schema.CumulativeUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}
+	if reloaded.CumulativeUsage != wantUsage {
+		t.Fatalf("on-disk CumulativeUsage after Close = %+v, want %+v (dying turn's usage must be flushed)", reloaded.CumulativeUsage, wantUsage)
+	}
+}
+
 // TestRestoreThenTurnAutosaveKeepsPriorTotals is the WS2 K2 integration test:
 // restoring a session from a meta carrying prior WorkMillis/CumulativeUsage,
 // then running one turn and autosaving, must persist prior-plus-turn totals —
