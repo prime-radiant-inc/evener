@@ -5514,6 +5514,31 @@ func TestWeb_Settings_PluginsPane_EmptyState(t *testing.T) {
 	}
 }
 
+// TestDiscoverPluginsForSettings_BrokenDirDoesNotBrickPane proves
+// discoverPluginsForSettings is fail-soft (plugin.LoadAllFailSoft), mirroring
+// hubCommandList's identical fix for the same underlying fragility
+// (TestHubCommandList_BrokenPluginDirDoesNotBrickCatalog): a broken/mid-edit
+// plugin dir alongside a healthy one must not abort the whole Settings ->
+// Plugins scan with an error, only omit itself.
+func TestDiscoverPluginsForSettings_BrokenDirDoesNotBrickPane(t *testing.T) {
+	brokenDir := t.TempDir() // no .claude-plugin/plugin.json at all: Load fails.
+	healthyDir := t.TempDir()
+	writeTestPluginManifest(t, healthyDir, "healthy-plugin")
+
+	web := NewWebServer(hubcore.WebConfig{
+		Roster:     hubcore.NewRoster(t.TempDir(), nil),
+		Past:       hubcore.NewPastIndex(""),
+		PluginDirs: []string{brokenDir, healthyDir},
+	})
+	plugins, err := web.discoverPluginsForSettings()
+	if err != nil {
+		t.Fatalf("discoverPluginsForSettings: %v, want the broken dir skipped rather than aborting the whole pane", err)
+	}
+	if len(plugins) != 1 || plugins[0].Name != "healthy-plugin" {
+		t.Fatalf("Plugins = %+v, want the healthy plugin despite the broken dir", plugins)
+	}
+}
+
 // TestWeb_Settings_PluginsManagerPane_RendersClientScaffolding asserts that
 // the plugins-manager tab (Marketplaces & Plugins) renders its client-side
 // container and RPC wrapper hooks rather than SSR content. The marketplace

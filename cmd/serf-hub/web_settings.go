@@ -362,17 +362,19 @@ func pluginDirsFromConfig(cfg hubcore.WebConfig) []string {
 }
 
 // discoverPluginsForSettings loads plugin manifests for the Settings →
-// Plugins pane. A discovery failure returns nil rows plus a non-nil error
-// that the template renders inline.
+// Plugins pane. Loading is fail-soft (plugin.LoadAllFailSoft), the same way
+// hubCommandList and session init load plugins: one broken or mid-edit
+// plugin dir must not blank out the whole pane, only its own row. Skip
+// reasons aren't surfaced here — the return type has no warning channel —
+// but a skipped dir still shows up in a session's own SESSION_START
+// warnings. The error return is kept for the caller's existing signature;
+// it is now always nil.
 func (s *WebServer) discoverPluginsForSettings() ([]pluginDisplay, error) {
 	dirs := s.pluginsRootForSettings()
 	if len(dirs) == 0 {
 		return nil, nil
 	}
-	loaded, err := plugin.LoadAll(dirs)
-	if err != nil {
-		return nil, err
-	}
+	loaded, _ := plugin.LoadAllFailSoft(dirs)
 	out := make([]pluginDisplay, 0, len(loaded))
 	for _, lp := range loaded {
 		out = append(out, pluginDisplay{
