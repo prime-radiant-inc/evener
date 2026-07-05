@@ -1,6 +1,7 @@
 package repair
 
 import (
+	"encoding/json"
 	"regexp"
 	"strconv"
 	"strings"
@@ -32,10 +33,18 @@ func RepairJSON(raw []byte) ([]byte, []Change) {
 	s = fixed
 	changes = append(changes, surr...)
 
-	if len(changes) == 0 {
+	// Only claim a repair when it actually produced valid JSON that differs
+	// from the input. RE2 has no lookbehind, so the broken-escape pass isn't
+	// escape-parity-aware and can either (a) leave adjacent broken escapes
+	// still invalid, or (b) corrupt a valid `\\u` (escaped backslash + u)
+	// sequence into invalid JSON. In either case, reporting a change would
+	// mislead a caller into treating a still-broken or newly-corrupted
+	// result as a successful repair.
+	candidate := []byte(s)
+	if len(changes) == 0 || !json.Valid(candidate) || string(candidate) == string(raw) {
 		return raw, nil
 	}
-	return []byte(s), changes
+	return candidate, changes
 }
 
 func fixLoneSurrogates(s string) (string, []Change) {
