@@ -43,6 +43,7 @@
     if (n.branch) meta.appendChild(metaSpan(n.branch));
     meta.appendChild(metaSpan(ageString(n.updated_at)));
     if (n.favorite) a.setAttribute("data-favorite", "");
+    if (n.children && n.children.length) a.appendChild(buildChildrenToggle(n));
     var menuBtn = document.createElement("button");
     menuBtn.type = "button";
     menuBtn.className = "sb-menu-btn btn-icon";
@@ -67,6 +68,58 @@
     var title = a.querySelector(".title");
     if (title && title.textContent !== n.title) title.textContent = n.title;
     if (n.favorite) a.setAttribute("data-favorite", ""); else a.removeAttribute("data-favorite");
+    patchChildrenToggle(a, n);
+  }
+
+  // --- Subagent children disclosure ------------------------------------------
+  // A session row whose node carries `children` (subagent threads spawned
+  // under it — hubapi.TreeNode.Children, capped at 50 server-side, Task 6)
+  // gains a small disclosure toggle inside the row: collapsed by default,
+  // expanding reveals the children as their own keyed rows (flatten's
+  // pushChildren, below). Expansion key is "children:<row_id>" — the
+  // "children:" prefix guarantees it can never collide with a project slug
+  // or a "section:*"/cluster row_id, all of which share the one
+  // model.expanded Set + localStorage namespace.
+  function childrenKey(n) { return "children:" + n.row_id; }
+  function buildChildrenToggle(n) {
+    var count = n.children.length;
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "subagent-toggle sb-children-toggle";
+    btn.setAttribute("aria-expanded", String(model.expanded.has(childrenKey(n))));
+    btn.innerHTML = '<span class="sb-children-chevron">›</span><span class="sb-children-count"></span>';
+    setChildrenToggleText(btn, count);
+    // Nested inside the row's own <a>, so a click must not also navigate it —
+    // same technique as the row's ⋯ menu button above.
+    btn.addEventListener("click", function (e) {
+      e.preventDefault(); e.stopPropagation();
+      toggleExpanded(childrenKey(n));
+    });
+    btn.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault(); e.stopPropagation();
+      toggleExpanded(childrenKey(n));
+    });
+    return btn;
+  }
+  function setChildrenToggleText(btn, count) {
+    btn.querySelector(".sb-children-count").textContent = String(count);
+    // Bare count, not "Completed (N)": children may still be running, so
+    // claiming "completed" would misrepresent live subagents.
+    btn.setAttribute("aria-label", count + (count === 1 ? " subagent" : " subagents"));
+  }
+  // Keeps the toggle's DOM node identity across reconcile — add/remove/update
+  // in place rather than rebuilding the row, mirroring how patchRow itself
+  // never recreates .title/.meta.
+  function patchChildrenToggle(a, n) {
+    var btn = a.querySelector(".sb-children-toggle");
+    var hasChildren = !!(n.children && n.children.length);
+    if (hasChildren && !btn) { a.insertBefore(buildChildrenToggle(n), a.querySelector(".sb-menu-btn")); return; }
+    if (!hasChildren && btn) { btn.remove(); return; }
+    if (btn) {
+      btn.setAttribute("aria-expanded", String(model.expanded.has(childrenKey(n))));
+      setChildrenToggleText(btn, n.children.length);
+    }
   }
 
   // --- Row menu (⋯ popover) ----------------------------------------------------
@@ -212,8 +265,8 @@
   // lazy children are honored via model.expanded.
   function flatten(tree) {
     var out = [];
-    (tree.needs_you || []).forEach(function (n) { if (!n.__drop) out.push(n); });
-    (tree.favorites || []).forEach(function (n) { if (!n.__drop) out.push(n); });
+    (tree.needs_you || []).forEach(function (n) { if (!n.__drop) { out.push(n); pushChildren(out, n); } });
+    (tree.favorites || []).forEach(function (n) { if (!n.__drop) { out.push(n); pushChildren(out, n); } });
     (tree.projects || []).forEach(function (p) { pushProject(out, p); });
     pushArchivedSection(out, tree);
     pushTestRunsSection(out, tree);
@@ -223,7 +276,48 @@
     // Project header is itself a keyed element (data-row-id="header:<key>").
     out.push({ row_id: "header:" + p.key, __project: p });
     var expanded = model.expanded.has(p.key) || p.default_expanded;
-    if (expanded) (p.sessions || []).forEach(function (n) { if (!n.__drop) { n.__projectKey = p.key; out.push(n); } });
+    if (!expanded) return;
+    (p.sessions || []).forEach(function (n) {
+      if (n.__drop) return;
+      n.__projectKey = p.key;
+      if (n.kind === "cluster") { pushCluster(out, n); return; }
+      out.push(n);
+      pushChildren(out, n);
+    });
+  }
+
+  // Subagent children: emitted right after their parent row, once the
+  // parent's own disclosure (childrenKey) is expanded. Any tier's node may
+  // carry children — apiTreeNode recurses the same way for NeedsYou/Pinned
+  // and project sessions alike — so this is called from every push site
+  // above, not just pushProject. Children render via buildRow itself
+  // (buildRowOrSection stamps the .subagent-row indent class from __child).
+  function pushChildren(out, n) {
+    if (!n.children || !n.children.length || !model.expanded.has(childrenKey(n))) return;
+    n.children.forEach(function (c) {
+      if (c.__drop) return;
+      c.__child = true;
+      c.__projectKey = n.__projectKey;
+      out.push(c);
+    });
+  }
+
+  // Cluster fold: a T5 synthetic kind:"cluster" node folding a run of
+  // same-titled sessions into one row (hubcore.clusterRepeatedTitles). The
+  // fold row itself is pushed like any other keyed element; its `children`
+  // (the folded members — always plain, childless sessions per
+  // hubcore.clusterable) are emitted only once the cluster's OWN row_id is
+  // in model.expanded. Members render as ordinary rows — no __child stamp —
+  // since they are real, independently navigable sessions, not de-weighted
+  // subagents.
+  function pushCluster(out, n) {
+    out.push(n);
+    if (!model.expanded.has(n.row_id)) return;
+    (n.children || []).forEach(function (m) {
+      if (m.__drop) return;
+      m.__projectKey = n.__projectKey;
+      out.push(m);
+    });
   }
 
   // --- Sections (collapsed-by-default groupings below the top-of-rail tiers) -
@@ -260,11 +354,53 @@
 
   function buildRowOrSection(n) {
     if (n.__section) return buildSectionHeader(n);
-    return n.__project ? buildProjectHeader(n.__project) : buildRow(n);
+    if (n.kind === "cluster") return buildClusterFold(n);
+    if (n.__project) return buildProjectHeader(n.__project);
+    var row = buildRow(n);
+    if (n.__child) row.classList.add("subagent-row");
+    return row;
   }
   function patchRowOrSection(el, n) {
     if (n.__section) { patchSectionHeader(el, n); return; }
+    if (n.kind === "cluster") { patchClusterFold(el, n); return; }
     if (n.__project) patchProjectHeader(el, n.__project); else patchRow(el, n);
+  }
+
+  // A cluster fold is a button-like row — NOT a session link, it has no
+  // real session of its own — so it carries none of buildRow's href/hx-*.
+  // Reuses the pre-rewrite .cluster-header/.cluster-chevron/.cluster-count
+  // classes (style.css) verbatim for visual consistency; only the expand
+  // mechanism (model.expanded + reconcile, keyed by the cluster's own
+  // row_id) is new.
+  function buildClusterFold(n) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "sb-row cluster-header";
+    b.setAttribute("data-row-id", n.row_id);
+    b.setAttribute("role", "button");
+    b.setAttribute("aria-expanded", String(model.expanded.has(n.row_id)));
+    b.innerHTML =
+      '<div class="dot-col"><span class="cluster-chevron">›</span></div>' +
+      '<div class="text-col"><span class="title"></span><span class="cluster-count"></span></div>';
+    b.querySelector(".title").textContent = n.title;
+    setClusterCount(b, n);
+    b.addEventListener("click", function () { toggleExpanded(n.row_id); });
+    b.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      toggleExpanded(n.row_id);
+    });
+    return b;
+  }
+  function patchClusterFold(el, n) {
+    el.setAttribute("aria-expanded", String(model.expanded.has(n.row_id)));
+    var title = el.querySelector(".title");
+    if (title && title.textContent !== n.title) title.textContent = n.title;
+    setClusterCount(el, n);
+  }
+  function setClusterCount(el, n) {
+    var el2 = el.querySelector(".cluster-count");
+    if (el2) el2.textContent = "×" + n.cluster_count; // "describe this image ×5" (mockup #10 rec C copy)
   }
 
   function buildSectionHeader(sec) {
@@ -368,12 +504,20 @@
     return clone;
   }
 
+  // Recurses into every node's .children — subagent children AND cluster
+  // members alike travel on the same wire field — so pending ops
+  // (favorite/rename/__drop) reach a child or cluster-member ref exactly as
+  // they would a top-level session.
   function forEachNode(tree, fn) {
     var lists = [tree.needs_you, tree.favorites].concat(
       (tree.projects || []).map(function (p) { return p.sessions; }),
       (tree.archived_projects || []).map(function (p) { return p.sessions; }),
       (tree.test_runs || []).map(function (p) { return p.sessions; }));
-    lists.forEach(function (l) { (l || []).forEach(fn); });
+    lists.forEach(function (l) { (l || []).forEach(function (n) { forEachNodeDeep(n, fn); }); });
+  }
+  function forEachNodeDeep(n, fn) {
+    fn(n);
+    (n.children || []).forEach(function (c) { forEachNodeDeep(c, fn); });
   }
 
   function nodeReflects(tree, ref, check) {
@@ -450,21 +594,87 @@
   }
 
   // --- Active row (driven off htmx:afterSwap on #workspace) -------------------
+  // Task 22: a deep-link whose session is rendered nowhere yet (collapsed
+  // behind a section/project/cluster/children disclosure) must still end up
+  // visible + marked data-active, not just silently fail to highlight.
+  // autoRevealedPath gates the search+expand+re-render side effect to at
+  // most once per distinct pathname — the mark-active pass below always
+  // runs, but the (potentially tree-wide) reveal search only runs when the
+  // pathname just changed, so a genuinely-absent session can't cause a
+  // render loop (each renderTree tail-calls syncActiveRow again; the second
+  // call sees the same pathname and skips straight past the guard).
+  var autoRevealedPath = null;
   function syncActiveRow() {
     var path = (window.location && window.location.pathname) || "";
     var clean = path.replace(/\/+$/, "");
+    var alreadyVisible = markActiveRows(clean);
+    if (clean === autoRevealedPath) return; // already attempted for this pathname
+    autoRevealedPath = clean;
+    if (alreadyVisible || !model.tree) return;
+    var m = /^\/s\/(.+)$/.exec(clean);
+    if (!m) return; // not a session deep-link
+    var chain = findRevealChain(model.tree, m[1]);
+    if (!chain || !chain.length) return; // not found anywhere, or needs no expansion
+    var changed = false;
+    chain.forEach(function (key) {
+      if (!model.expanded.has(key)) { model.expanded.add(key); persistExpanded(key); changed = true; }
+    });
+    if (changed) renderTree(model.tree); // tail-calls syncActiveRow; guard above short-circuits the re-entry
+  }
+  // Marks the row whose href matches `clean` data-active (clearing every
+  // other row) and reports whether a match was found, so callers can skip
+  // the (potentially expensive) reveal search when the row is already
+  // visible.
+  function markActiveRows(clean) {
     var rows = document.querySelectorAll("#sidebar .sb-row[href]");
+    var found = false;
     for (var i = 0; i < rows.length; i++) {
-      if (rows[i].getAttribute("href") === clean) {
-        rows[i].setAttribute("data-active", "");
-        var sec = rows[i].previousElementSibling;
-        // find the enclosing project header key and ensure expanded
-        var key = rows[i].getAttribute("data-project-key-of");
-        if (key && !model.expanded.has(key)) { model.expanded.add(key); persistExpanded(key); if (model.tree) renderTree(model.tree); }
-      } else {
-        rows[i].removeAttribute("data-active");
+      if (rows[i].getAttribute("href") === clean) { rows[i].setAttribute("data-active", ""); found = true; }
+      else rows[i].removeAttribute("data-active");
+    }
+    return found;
+  }
+  // Searches every tier of the tree (NeedsYou, Pinned, active/archived/
+  // test-run projects — including nested cluster members and subagent
+  // children) for the node whose session_id matches, and returns the list of
+  // model.expanded keys needed to make it visible: any enclosing
+  // section/project key, plus a cluster row_id or children:<row_id> key for
+  // each disclosure the match sits behind. Returns null if sessionId is
+  // nowhere in the tree.
+  function findRevealChain(tree, sessionId) {
+    return (
+      searchNodes(tree.needs_you, sessionId, []) ||
+      searchNodes(tree.favorites, sessionId, []) ||
+      searchProjects(tree.projects, sessionId, []) ||
+      searchProjects(tree.archived_projects, sessionId, [SECTION_ARCHIVED]) ||
+      searchProjects(tree.test_runs, sessionId, [SECTION_TEST_RUNS]) ||
+      null
+    );
+  }
+  function searchProjects(projects, sessionId, prefix) {
+    for (var i = 0; i < (projects || []).length; i++) {
+      var p = projects[i];
+      var found = searchNodes(p.sessions, sessionId, prefix.concat([p.key]));
+      if (found) return found;
+    }
+    return null;
+  }
+  // `chain` is the expansion keys needed to reach `nodes` itself; a match
+  // inside a cluster's members or a session's children extends the chain
+  // with that disclosure's own key before returning.
+  function searchNodes(nodes, sessionId, chain) {
+    for (var i = 0; i < (nodes || []).length; i++) {
+      var n = nodes[i];
+      if (n.session_id === sessionId) return chain;
+      if (n.kind === "cluster") {
+        var cm = searchNodes(n.children, sessionId, chain.concat([n.row_id]));
+        if (cm) return cm;
+      } else if (n.children && n.children.length) {
+        var cc = searchNodes(n.children, sessionId, chain.concat([childrenKey(n)]));
+        if (cc) return cc;
       }
     }
+    return null;
   }
 
   // --- Fetch + lifecycle -----------------------------------------------------

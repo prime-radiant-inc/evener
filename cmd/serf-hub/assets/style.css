@@ -998,11 +998,41 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 /* When expanded the label flips to "− hide" via JS textContent; no glyph
    prefix is added here so the "Completed (N)" text stands on its own. */
 
+/* Children disclosure toggle (Task R3): the successor to the "Completed (N)"
+   toggle above, but nested INSIDE a session row (next to the ⋯ menu button)
+   rather than rendered as its own full-width row, so it overrides
+   .subagent-toggle's block/indent layout down to a small inline control.
+   Shares .subagent-toggle's dim color + rail/container-collapse hiding
+   (below) for visual consistency; only sizing/placement differs. */
+.subagent-toggle.sb-children-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  min-width: 24px;
+  min-height: 24px;
+  margin-left: 0;
+  padding: 0 var(--space-1);
+  gap: 2px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-2xs);
+}
+.sb-children-chevron {
+  display: inline-block;
+  transition: transform var(--motion-fast);
+  transform: rotate(0deg);
+}
+.subagent-toggle.sb-children-toggle[aria-expanded="true"] .sb-children-chevron {
+  transform: rotate(90deg);
+}
+
 /* Rail mode: hide tier headers, age, and subagent rows along with the
    rest of the text-bearing chrome. */
 body.app[data-sidebar-rail] .tier-header,
 body.app[data-sidebar-rail] .project-age,
 body.app[data-sidebar-rail] .subagent-toggle,
+body.app[data-sidebar-rail] .cluster-header,
 body.app[data-sidebar-rail] .sb-section { display: none; }
 body.app[data-sidebar-rail] .subagent-row .subagent-title { display: none; }
 body.app[data-sidebar-rail] .subagent-row-wrap > .open-beside-btn { display: none; }
@@ -1010,6 +1040,7 @@ body.app[data-sidebar-rail] .subagent-row-wrap > .open-beside-btn { display: non
   .tier-header span,
   .project-age,
   .subagent-toggle,
+  .cluster-header,
   .subagent-row .subagent-title { display: none; }
   .subagent-row-wrap > .open-beside-btn { display: none; }
 }
@@ -1108,6 +1139,8 @@ body.app[data-sidebar-rail] .subagent-row-wrap > .open-beside-btn { display: non
   color: var(--text-dim);
   font-size: var(--text-2xs);
   user-select: none;
+  transition: transform var(--motion-fast);
+  transform: rotate(0deg);
 }
 .cluster-header .cluster-count {
   margin-left: var(--space-2);
@@ -1116,6 +1149,16 @@ body.app[data-sidebar-rail] .subagent-row-wrap > .open-beside-btn { display: non
   font-size: var(--text-2xs);
   color: var(--text-muted);
 }
+/* Fold row title: meta-tier — dim + a step smaller, matching
+   .cluster-member's own title treatment below (Task R3: the fold row reads
+   as de-emphasized, like the subagent rows it sits alongside). */
+.cluster-header .title { color: var(--text-muted); font-size: var(--text-sm); }
+/* Task R3's sidebar.js drives the fold via aria-expanded (keyed reconcile +
+   model.expanded), not the data-cluster-expanded/.cluster-members
+   show/hide-everything scheme below — that pre-rewrite pair is left in place
+   only for .cluster-member's shared typography; collapsed members are never
+   emitted into the DOM at all in the new architecture. */
+.cluster-header[aria-expanded="true"] .cluster-chevron { transform: rotate(90deg); }
 .cluster-members { display: none; }
 .session-cluster[data-cluster-expanded] .cluster-members { display: block; }
 .session-cluster[data-cluster-expanded] .cluster-chevron { transform: none; }
