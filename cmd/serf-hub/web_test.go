@@ -5603,6 +5603,38 @@ func TestModelDescriptorsToAPIModels_OneMillionContext(t *testing.T) {
 	}
 }
 
+// TestHandleApiModels_DiagnosticsEnvelopeIncludesRecent (kata model-picker
+// Recent) verifies /api/models?diagnostics=1 carries a "recent" array
+// resolved from the Past index, restricted to models the response actually
+// offers, in most-recent-first order; the bare-array default response is
+// unaffected. LiveModels is stubbed to keep the test hermetic (fetchLiveModels
+// would otherwise call cmdutil.LoadClient() and touch the real host config).
+func TestHandleApiModels_DiagnosticsEnvelopeIncludesRecent(t *testing.T) {
+	s := NewWebServer(hubcore.WebConfig{
+		HubAddr:    "127.0.0.1:9180",
+		LiveModels: func(context.Context) []map[string]any { return nil },
+	})
+	s.injectMetasForTest([]schema.SessionMeta{
+		{ID: "a", ProfileID: "local", Model: "test-model-one", UpdatedAt: time.Now()},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/models?diagnostics=1", nil)
+	rec := httptest.NewRecorder()
+	s.handleApiModels(rec, req)
+
+	var body struct {
+		Models      []map[string]any `json:"models"`
+		Diagnostics []map[string]any `json:"diagnostics"`
+		Recent      []map[string]any `json:"recent"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, rec.Body.String())
+	}
+	if body.Recent == nil {
+		t.Fatal("recent should be an empty array, not null, when the envelope is requested")
+	}
+}
+
 // The footer status row must show ONE live indicator. The legacy
 // running-indicator ("running") duplicated the status badge ("Working" for an
 // active session), so it was removed — an active session shows the StateLabel

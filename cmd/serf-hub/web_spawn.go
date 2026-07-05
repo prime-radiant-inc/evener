@@ -164,7 +164,8 @@ func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
 			writeAPIWireError(w, http.StatusBadGateway, err)
 			return
 		}
-		writeModelsResponse(w, modelDescriptorsToAPIModels(resp.Data, s.cfg.ProviderConfig), resp.Diagnostics, includeDiagnostics)
+		models := modelDescriptorsToAPIModels(resp.Data, s.cfg.ProviderConfig)
+		writeModelsResponse(w, models, resp.Diagnostics, recentModelEntriesFromDescriptors(models, resp.Recent), includeDiagnostics)
 		return
 	}
 
@@ -181,14 +182,18 @@ func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
 		}
 		models = liveModels(r.Context())
 	}
-	writeModelsResponse(w, models, launchResp.Diagnostics, includeDiagnostics)
+	var recentRefs []appwire.ModelDescriptor
+	if s.cfg.Past != nil {
+		recentRefs = s.cfg.Past.RecentModels(recentModelsLimit)
+	}
+	writeModelsResponse(w, models, launchResp.Diagnostics, recentModelEntriesFromDescriptors(models, recentRefs), includeDiagnostics)
 }
 
 // writeModelsResponse writes the model list as a bare JSON array by default, or
-// as {"models": [...], "diagnostics": [...]} when the caller opted into
-// diagnostics. Diagnostics serialize as an empty array (never null) so clients
-// can iterate unconditionally.
-func writeModelsResponse(w http.ResponseWriter, models []map[string]any, diagnostics []appwire.ModelListDiagnostic, includeDiagnostics bool) {
+// as {"models": [...], "diagnostics": [...], "recent": [...]} when the caller
+// opted into diagnostics. Diagnostics and recent serialize as empty arrays
+// (never null) so clients can iterate unconditionally.
+func writeModelsResponse(w http.ResponseWriter, models []map[string]any, diagnostics []appwire.ModelListDiagnostic, recent []map[string]any, includeDiagnostics bool) {
 	w.Header().Set("Content-Type", "application/json")
 	if !includeDiagnostics {
 		json.NewEncoder(w).Encode(models) //nolint:errcheck
@@ -200,9 +205,13 @@ func writeModelsResponse(w http.ResponseWriter, models []map[string]any, diagnos
 	if diagnostics == nil {
 		diagnostics = []appwire.ModelListDiagnostic{}
 	}
+	if recent == nil {
+		recent = []map[string]any{}
+	}
 	json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
 		"models":      models,
 		"diagnostics": diagnostics,
+		"recent":      recent,
 	})
 }
 
@@ -268,6 +277,29 @@ func sortModelEntriesDatedLast(entries []map[string]any) {
 		}
 		return false
 	})
+}
+
+// recentModelEntriesFromDescriptors resolves Recent model refs (Provider,
+// Model pairs, already deduped/limited/most-recent-first) against the
+// already-built, already-enriched models list, returning the matching
+// entries (same maps, so they carry the same badges) in refs' order. A ref
+// with no match in models is silently dropped.
+func recentModelEntriesFromDescriptors(models []map[string]any, refs []appwire.ModelDescriptor) []map[string]any {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(refs))
+	for _, ref := range refs {
+		for _, m := range models {
+			p, _ := m["provider"].(string)
+			mod, _ := m["model"].(string)
+			if p == ref.Provider && mod == ref.Model {
+				out = append(out, m)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // modelDescriptorsToAPIModels builds the /api/models response entries. The
