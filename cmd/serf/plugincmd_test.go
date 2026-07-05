@@ -188,13 +188,17 @@ func TestPluginGc_NothingToRemove(t *testing.T) {
 	}
 }
 
+// TestPluginGc_JSON pins the exact `[]` encoding for "nothing to remove":
+// Gc() returning a nil slice would json.Encode as `null`, which is a worse
+// API for scripts to consume than an empty array (null needs a nil check
+// before ranging in most languages; `[]` does not).
 func TestPluginGc_JSON(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	var out, errb bytes.Buffer
 	if err := runPlugin([]string{"gc", "--json"}, nil, &out, &errb); err != nil {
 		t.Fatalf("runPlugin gc --json: %v\n%s", err, errb.String())
 	}
-	if strings.TrimSpace(out.String()) == "" {
-		t.Fatal("expected JSON output for gc --json")
+	if got := strings.TrimSpace(out.String()); got != "[]" {
+		t.Fatalf("gc --json with nothing to remove = %q, want []", got)
 	}
 }

@@ -44,12 +44,15 @@ func (m *Manager) Gc() ([]string, error) {
 	marketplaceEntries, err := os.ReadDir(m.cacheDir())
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
+			return []string{}, nil
 		}
 		return nil, fmt.Errorf("reading %s: %w", m.cacheDir(), err)
 	}
 
-	var removed []string
+	// Non-nil even when nothing is swept: callers (cmd/serf/plugincmd.go's
+	// `gc --json`) JSON-encode this directly, and a nil slice would encode as
+	// `null` instead of `[]`.
+	removed := []string{}
 	for _, mktEnt := range marketplaceEntries {
 		if !mktEnt.IsDir() {
 			continue
