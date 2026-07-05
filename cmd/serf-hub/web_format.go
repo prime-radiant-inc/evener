@@ -52,6 +52,11 @@ func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
 		Model:        thread.ModelProvider,
 		WorkingDir:   thread.CWD,
 		Capabilities: hubCapabilitiesFromAppwire(thread.Serf.Capabilities),
+		// WorkMillis/Usage/ActiveTurnStartedAt are WS2's working-state/token
+		// metrics, read on demand by the daemon rather than pushed per event.
+		WorkMillis:          thread.Serf.WorkMillis,
+		Usage:               thread.Serf.Usage,
+		ActiveTurnStartedAt: thread.Serf.ActiveTurnStartedAt,
 	}
 	if goal := thread.Serf.Goal; goal != nil {
 		data.GoalStatus = goal.Status
@@ -85,6 +90,14 @@ func compactDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm", int(d.Minutes()))
 	}
 	return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
+}
+
+// formatWorkMillis renders a session's accumulated work time compactly
+// ("45s"/"3m"/"1h 4m"), mirroring compactDuration's convention so the status
+// row's work-time cluster reads the same way as the rest of the hub's
+// duration displays.
+func formatWorkMillis(millis int64) string {
+	return compactDuration(time.Duration(millis) * time.Millisecond)
 }
 
 func activeTurnIDFromAppwireThread(thread appwire.Thread) string {

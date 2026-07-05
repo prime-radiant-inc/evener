@@ -2047,6 +2047,10 @@ type scriptedAppSource struct {
 	thread        appwire.Thread
 	notifications []appwire.Notification
 	startTurn     func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error)
+	// readParams records every ReadThread call this source has served, so a
+	// test can assert on which IncludeTurns value a caller actually
+	// requested (e.g. a lean status fetch vs. a full-transcript fetch).
+	readParams []appwire.ThreadReadParams
 }
 
 func (s *scriptedAppSource) ID() string { return s.id }
@@ -2059,8 +2063,18 @@ func (s *scriptedAppSource) ListTurns(context.Context, appwire.ThreadTurnsListPa
 	return appwire.ThreadTurnsListResponse{}, nil
 }
 
-func (s *scriptedAppSource) ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-	return appwire.ThreadReadResponse{Thread: s.thread}, nil
+// ReadThread mimics a real source's handling of IncludeTurns: when a caller
+// asks for the lean view (IncludeTurns: false) the returned thread's Turns
+// are cleared, matching what a real daemon would omit. Every prior caller in
+// this test suite requests IncludeTurns: true, so this is additive — it only
+// changes behavior for a caller that explicitly asks for the lean view.
+func (s *scriptedAppSource) ReadThread(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	s.readParams = append(s.readParams, params)
+	thread := s.thread
+	if !params.IncludeTurns {
+		thread.Turns = nil
+	}
+	return appwire.ThreadReadResponse{Thread: thread}, nil
 }
 
 func (s *scriptedAppSource) StartThread(context.Context, appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
@@ -3079,9 +3093,6 @@ func TestWeb_WorkspacePartial_RendersWorkingDirInStatusRow(t *testing.T) {
 	if !strings.Contains(body, `class="status-value"`) {
 		t.Errorf("status row missing status-value span: %q", body)
 	}
-	if strings.Contains(body, `class="workspace-meta workspace-meta-poll"`) && strings.Contains(body, `>serf</span><span class="status-badge"`) {
-		t.Errorf("workspace header should not render source/status metadata: %q", body)
-	}
 	if !strings.Contains(body, `class="task-status-row"`) {
 		t.Errorf("workspace partial missing bottom task status row: %q", body)
 	}
@@ -3141,9 +3152,136 @@ func TestWeb_State_RendersInputStatusPartial(t *testing.T) {
 	if strings.Contains(body, `data-tasks-trigger`) {
 		t.Errorf("state partial should not duplicate task trigger; task status row lives above input: %q", body)
 	}
+	// This session has zero WorkMillis, no active turn, and nil usage (a
+	// fresh session predating WS2 accumulation) — both metrics clusters must
+	// hide entirely rather than render "0s" or "↑0 ↓0".
+	if strings.Contains(body, `class="status-item work"`) {
+		t.Errorf("state partial should not render a work-time cluster with zero WorkMillis and no active turn: %q", body)
+	}
+	if strings.Contains(body, `class="status-item tokens"`) {
+		t.Errorf("state partial should not render a token cluster with nil usage: %q", body)
+	}
 }
 
-func TestWeb_MetaPartialRefreshesGeneratedSessionTitle(t *testing.T) {
+// TestWeb_State_ShowsWorkTimeAndTokenClustersWithLeanFetch verifies the
+// consolidated status row's work-time and token clusters render from WS2's
+// WorkMillis/Usage, and that TurnCount comes from the daemon's /status
+// (StatusInfo.Turns) rather than a full transcript fetch — the L6 regression
+// the lean apiSessionState path must avoid. The scripted source's Turns
+// slice (3 completed) deliberately differs from /status's turns (12): if the
+// TurnCount override were missing, or if the request actually fetched the
+// full transcript instead of the lean view, the rendered count or the
+// recorded ReadThread params would betray it.
+func TestWeb_State_ShowsWorkTimeAndTokenClustersWithLeanFetch(t *testing.T) {
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session_id":  "01WORKTOK",
+			"state":       "active",
+			"turns":       12,
+			"model":       "gpt-5",
+			"working_dir": "/tmp/worktok",
+		})
+	}))
+	defer daemon.Close()
+
+	addr := strings.TrimPrefix(daemon.URL, "http://")
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:     rendezvous.Entry{Address: addr, SessionID: "01WORKTOK", Model: "gpt-5", WorkingDir: "/tmp/worktok"},
+		SessionID: "01WORKTOK",
+		Status:    "active",
+	})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: roster})
+	source := &scriptedAppSource{
+		id: "local",
+		thread: appwire.Thread{
+			ID:            "01WORKTOK",
+			SessionID:     "01WORKTOK",
+			Source:        "local",
+			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+			ModelProvider: "gpt-5",
+			CWD:           "/tmp/worktok",
+			Turns: []appwire.Turn{
+				{ID: "t1", Status: appwire.TurnStatusCompleted},
+				{ID: "t2", Status: appwire.TurnStatusCompleted},
+				{ID: "t3", Status: appwire.TurnStatusCompleted},
+			},
+			Serf: appwire.SerfThread{
+				Ref:          "local:01WORKTOK",
+				Capabilities: appwire.ThreadCapabilities{Send: true},
+				WorkMillis:   185000,
+				Usage: &appwire.SerfUsage{
+					InputTokens:     15000,
+					OutputTokens:    2400,
+					CacheReadTokens: 8000,
+					TotalTokens:     25400,
+				},
+				ActiveTurnStartedAt: 1700000000,
+			},
+		},
+	}
+	web.sources.Add(source)
+
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01WORKTOK/state", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `class="status-item turns"`) || !strings.Contains(body, `12 turns`) {
+		t.Errorf("state partial should show TurnCount 12 from /status, not the scripted thread's 3 completed turns: %q", body)
+	}
+	if strings.Contains(body, `3 turns`) {
+		t.Errorf("state partial rendered the full-turns-derived count (3) instead of /status's (12) — the lean fetch is being ignored or the TurnCount override is missing: %q", body)
+	}
+	if !strings.Contains(body, `class="status-item work"`) {
+		t.Errorf("state partial missing work-time cluster: %q", body)
+	}
+	if !strings.Contains(body, `data-work-millis="185000"`) {
+		t.Errorf("state partial missing data-work-millis=185000: %q", body)
+	}
+	if !strings.Contains(body, `data-active-turn-started="1700000000"`) {
+		t.Errorf("state partial missing data-active-turn-started=1700000000: %q", body)
+	}
+	if !strings.Contains(body, `class="status-value work-time">3m<`) {
+		t.Errorf("state partial should render formatted work time '3m' for 185000ms: %q", body)
+	}
+	if !strings.Contains(body, `class="status-item tokens"`) {
+		t.Errorf("state partial missing tokens cluster: %q", body)
+	}
+	if !strings.Contains(body, `↑15k ↓2k`) {
+		t.Errorf("state partial should show uncached token counts formatted as ↑15k ↓2k: %q", body)
+	}
+	if !strings.Contains(body, `title="uncached ↑15000 ↓2400 · cache-read 8000 · total 25400"`) {
+		t.Errorf("state partial missing hover breakdown with raw uncached/cache-read/total counts: %q", body)
+	}
+	if !strings.Contains(body, `class="status-item liveness-inline"`) || !strings.Contains(body, `data-liveness`) {
+		t.Errorf("state partial missing inert liveness placeholder span: %q", body)
+	}
+
+	sawLeanFetch := false
+	for _, p := range source.readParams {
+		if !p.IncludeTurns {
+			sawLeanFetch = true
+		}
+	}
+	if !sawLeanFetch {
+		t.Errorf("expected at least one ReadThread call with IncludeTurns=false (the lean /state fetch); calls=%+v", source.readParams)
+	}
+}
+
+// TestWeb_StatePartialRefreshesGeneratedSessionTitle verifies the polled
+// /state endpoint carries an out-of-band swap of the header's session-title
+// span, using the freshest generated Name rather than the long OriginalPrompt.
+func TestWeb_StatePartialRefreshesGeneratedSessionTitle(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	if err := os.MkdirAll(proj, 0o755); err != nil {
@@ -3159,13 +3297,13 @@ func TestWeb_MetaPartialRefreshesGeneratedSessionTitle(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Simulate the async title generator updating the meta file after the past
-	// index was built. The polled meta partial should pick up this fresh Name.
+	// index was built. The polled state partial should pick up this fresh Name.
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{ID: sessionID, UpdatedAt: time.Now(), OriginalPrompt: longPrompt, Name: "Fix web session title"}); err != nil {
 		t.Fatal(err)
 	}
 
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: idx})
-	req := httptest.NewRequest(http.MethodGet, "/_partials/s/"+sessionID+"/meta", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/"+sessionID+"/state", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -3176,13 +3314,13 @@ func TestWeb_MetaPartialRefreshesGeneratedSessionTitle(t *testing.T) {
 	}
 	body := rec.Body.String()
 	if !strings.Contains(body, `id="workspace-session-title"`) || !strings.Contains(body, `hx-swap-oob="true"`) {
-		t.Fatalf("meta partial should include an out-of-band title swap: %q", body)
+		t.Fatalf("state partial should include an out-of-band title swap: %q", body)
 	}
 	if !strings.Contains(body, "Fix web session title") {
-		t.Fatalf("meta partial should use fresh generated title: %q", body)
+		t.Fatalf("state partial should use fresh generated title: %q", body)
 	}
 	if strings.Contains(body, longPrompt) {
-		t.Fatalf("meta partial should not render full original prompt as title: %q", body)
+		t.Fatalf("state partial should not render full original prompt as title: %q", body)
 	}
 }
 
@@ -6031,6 +6169,63 @@ func TestWeb_APISessionDetailsLocalLiveUsesAppWireForkCapability(t *testing.T) {
 	}
 }
 
+// TestWeb_APISessionDetailKeepsFullTurnCountForLiveThread guards the L6
+// regression called out by the WS2 plan: apiSessionDetail is shared by
+// /api/sessions/<id>, /api/sessions/<id>/details, and
+// ensureSessionActionAvailable, and must keep fetching the full transcript
+// (IncludeTurns: true) rather than adopt apiSessionState's lean
+// IncludeTurns: false — naively dropping IncludeTurns from the shared
+// function would silently zero TurnCount for all of them. The roster's
+// daemon address is unreachable (no /status fake), so wd.TurnCount is 0 and
+// cannot mask a broken full-transcript fetch by coincidence; the only way
+// TurnCount comes out as 5 below is a correct IncludeTurns: true read of the
+// scripted thread's five completed turns.
+func TestWeb_APISessionDetailKeepsFullTurnCountForLiveThread(t *testing.T) {
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 71, Address: "127.0.0.1:4571", WorkingDir: "/projects/serf", Model: "gpt-5"})
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01FULLTURNS", status: appwire.ThreadStatusIdle})
+	r.Refresh()
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
+	web.sources.Add(&scriptedAppSource{
+		id: "local",
+		thread: appwire.Thread{
+			ID:        "01FULLTURNS",
+			SessionID: "01FULLTURNS",
+			Source:    "local",
+			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			CWD:       "/projects/serf",
+			Turns: []appwire.Turn{
+				{ID: "t1", Status: appwire.TurnStatusCompleted},
+				{ID: "t2", Status: appwire.TurnStatusCompleted},
+				{ID: "t3", Status: appwire.TurnStatusCompleted},
+				{ID: "t4", Status: appwire.TurnStatusCompleted},
+				{ID: "t5", Status: appwire.TurnStatusCompleted},
+			},
+			Serf: appwire.SerfThread{
+				Ref:          "local:01FULLTURNS",
+				Capabilities: appwire.ThreadCapabilities{Send: true},
+			},
+		},
+	})
+
+	for _, sub := range []string{"", "/details"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/sessions/local:01FULLTURNS"+sub, nil)
+		req.Host = "127.0.0.1:9180"
+		rec := httptest.NewRecorder()
+		web.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("sub=%q status=%d body=%q", sub, rec.Code, rec.Body.String())
+		}
+		var got hubapi.SessionDetail
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("sub=%q decode: %v", sub, err)
+		}
+		if got.TurnCount != 5 {
+			t.Errorf("sub=%q turn_count=%d, want 5 (from the full transcript's completed turns)", sub, got.TurnCount)
+		}
+	}
+}
+
 func TestWeb_ManagedCodexLiveWorkspaceCapabilitiesEnsureSource(t *testing.T) {
 	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
@@ -6236,7 +6431,7 @@ func TestModelDescriptorsToAPIModels_OneMillionContext(t *testing.T) {
 // active session), so it was removed — an active session shows the StateLabel
 // badge only, not a second "running" pill.
 func TestInputStatus_NoDuplicateRunningIndicator(t *testing.T) {
-	tmpl := template.Must(template.ParseFS(templatesFS, "templates/partials/input_strip.html"))
+	tmpl := template.Must(template.New("input_strip.html").Funcs(inputStripTemplateFuncs).ParseFS(templatesFS, "templates/partials/input_strip.html"))
 	data := map[string]any{
 		"ContextWindow": 272000, "ContextPercent": 10, "ContextNumbers": "23k / 272k tokens",
 		"State": "active", "StateLabel": "Working", "TurnCount": 2,
@@ -6259,7 +6454,7 @@ func TestInputStatus_NoDuplicateRunningIndicator(t *testing.T) {
 // using the real ContextPercent; below 80% no warn class / glyph appears, at or
 // above 80% the .context-fill carries .context-warn and a ⚠ glyph renders.
 func TestInputStatusGaugeAmberThreshold(t *testing.T) {
-	tmpl := template.Must(template.ParseFS(templatesFS, "templates/partials/input_strip.html"))
+	tmpl := template.Must(template.New("input_strip.html").Funcs(inputStripTemplateFuncs).ParseFS(templatesFS, "templates/partials/input_strip.html"))
 	render := func(percent int) string {
 		data := map[string]any{
 			"ContextWindow":  272000,

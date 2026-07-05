@@ -134,6 +134,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		sessionCtx:                    sessCtx,
 		cancelFunc:                    sessCancel,
 	}
+	s.createdAt = s.sclock().Now().UTC()
 	s.subagents = newSubagentManager(s.emit)
 	jm, err := newJobManager(s.stateDir, s.id, s.enqueueJobNotificationAndNotify)
 	if err != nil {
@@ -369,6 +370,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		events:              make(chan events.SessionEvent, 256),
 		history:             resumeHistory,
 		modelResponses:      meta.TurnCount,
+		createdAt:           meta.CreatedAt,
+		workMillis:          meta.WorkMillis,
 		fork: forkInfo{
 			parentID:   meta.ParentSessionID,
 			divergence: meta.DivergenceTurn,
@@ -458,6 +461,17 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// Seed context manager with the meta's token count.
 	if meta.LastInputTokens > 0 && s.contextMgr != nil {
 		s.contextMgr.RecordInputTokens(meta.LastInputTokens, len(s.history))
+	}
+
+	// Seed persisted cumulative token totals before the first autosave can
+	// overwrite them (WS2 K2 regression).
+	if s.contextMgr != nil {
+		s.contextMgr.SetCumulativeUsage(llm.Usage{
+			InputTokens:     int(meta.CumulativeUsage.InputTokens),
+			OutputTokens:    int(meta.CumulativeUsage.OutputTokens),
+			TotalTokens:     int(meta.CumulativeUsage.TotalTokens),
+			CacheReadTokens: cacheReadPtr(meta.CumulativeUsage.CacheReadTokens),
+		})
 	}
 
 	// Open or create transcript for appending.
@@ -568,6 +582,17 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	closeJobManagerOnError = false
 	closeMCPManagerOnError = false
 	return s, nil
+}
+
+// cacheReadPtr converts a persisted CumulativeUsage cache-read count back to
+// the llm.Usage optional-pointer form: zero means "the provider didn't report
+// a cache read" (nil), matching llm.Usage's own nil-means-unreported convention.
+func cacheReadPtr(n int64) *int {
+	if n == 0 {
+		return nil
+	}
+	v := int(n)
+	return &v
 }
 
 // initSessionState performs the shared initialization steps for both

@@ -13,7 +13,6 @@ Fragment routes:
 - `/_partials/workspace/spawn`
 - `/_partials/s/:ref/workspace`
 - `/_partials/s/:ref/state`
-- `/_partials/s/:ref/meta`
 - `/_partials/s/:ref/details`
 - `/_partials/s/:ref/tasks`
 - `/_partials/settings/:section`

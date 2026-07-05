@@ -2,9 +2,11 @@ package agent
 
 import (
 	"context"
+	"time"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/llm"
 )
 
 // SessionState represents the current lifecycle state of a session.
@@ -73,6 +75,22 @@ func (s *Session) autonomyInFlight() bool {
 	return len(s.liveSubagentSessions()) > 0
 }
 
+// cumulativeUsageSnapshot converts the context manager's llm.Usage total to
+// the lossy schema.CumulativeUsage persisted in SessionMeta (nil pointers→0,
+// Raw dropped).
+func cumulativeUsageSnapshot(u llm.Usage) schema.CumulativeUsage {
+	cacheRead := int64(0)
+	if u.CacheReadTokens != nil {
+		cacheRead = int64(*u.CacheReadTokens)
+	}
+	return schema.CumulativeUsage{
+		InputTokens:     int64(u.InputTokens),
+		OutputTokens:    int64(u.OutputTokens),
+		CacheReadTokens: cacheRead,
+		TotalTokens:     int64(u.TotalTokens),
+	}
+}
+
 // Meta returns the current session metadata without the conversation history.
 func (s *Session) Meta() schema.SessionMeta {
 	originalPrompt := s.extractOriginalPrompt()
@@ -99,7 +117,7 @@ func (s *Session) Meta() schema.SessionMeta {
 		CheapModel:          s.profile.CheapModelRefString(),
 		Config:              s.cfg.toSnapshot(),
 		EnvInfo:             s.envInfo,
-		CreatedAt:           now,
+		CreatedAt:           s.createdAt,
 		UpdatedAt:           now,
 		TurnCount:           s.modelResponses,
 		LastInputTokens:     s.contextMgr.LastInputTokens(),
@@ -116,6 +134,8 @@ func (s *Session) Meta() schema.SessionMeta {
 		WorktreePath:        s.worktreeCurrentPath,
 		WorktreeManaged:     s.worktreeCurrentManaged,
 		WorktreeRestoreRoot: restoreRoot,
+		WorkMillis:          s.workMillis,
+		CumulativeUsage:     cumulativeUsageSnapshot(s.contextMgr.CumulativeUsage()),
 	}
 }
 
@@ -165,18 +185,37 @@ func (s *Session) setStateIfOpenLocked(state SessionState) {
 
 func (s *Session) finishProcessingAtBoundary(ctx context.Context, state SessionState) {
 	transitioned := false
+	var turnMS int64
 	s.mu.Lock()
 	if s.state == SessionProcessing && !s.closingOrClosedLocked() {
 		s.state = state
+		turnMS = s.accumulateWorkLocked()
 		transitioned = true
 	}
 	s.mu.Unlock()
 	if transitioned {
+		s.emit(events.EventTurnEnded, events.TurnEndedData{TurnDurationMS: turnMS})
 		if err := s.drainPendingWatchSends(ctx); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: "watch send retry at processing boundary failed: " + err.Error()})
 		}
 		s.finishActiveProvenance()
 	}
+}
+
+// accumulateWorkLocked adds the just-ended turn's wall-clock to workMillis and
+// returns that turn's duration in ms. Caller holds s.mu; a zero turnStartedAt
+// (no turn was timed) contributes nothing.
+func (s *Session) accumulateWorkLocked() int64 {
+	if s.turnStartedAt.IsZero() {
+		return 0
+	}
+	ms := s.sclock().Now().Sub(s.turnStartedAt).Milliseconds()
+	if ms < 0 {
+		ms = 0
+	}
+	s.workMillis += ms
+	s.turnStartedAt = time.Time{}
+	return ms
 }
 
 func (s *Session) abortIfClosing(ctx context.Context) error {

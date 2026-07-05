@@ -99,17 +99,36 @@ type SessionDetail struct {
 	ContextUsed      int     `json:"context_used,omitempty"`
 	ContextWindow    int     `json:"context_window,omitempty"`
 	ContextRemaining int     `json:"context_remaining,omitempty"`
-	ParentSessionID  string  `json:"parent_session_id,omitempty"`
-	DivergenceTurn   int     `json:"divergence_turn,omitempty"`
-	ForkLabel        string  `json:"fork_label,omitempty"`
-	IsSubagent       bool    `json:"is_subagent"`
+	// WorkMillis is the session's accumulated wall-clock work time in
+	// milliseconds; ActiveTurnStartedAt is the unix-seconds timestamp the
+	// current in-flight turn began, 0 when idle/ended (WS2).
+	WorkMillis          int64  `json:"work_millis,omitempty"`
+	ActiveTurnStartedAt int64  `json:"active_turn_started_at,omitempty"`
+	ParentSessionID     string `json:"parent_session_id,omitempty"`
+	DivergenceTurn      int    `json:"divergence_turn,omitempty"`
+	ForkLabel           string `json:"fork_label,omitempty"`
+	IsSubagent          bool   `json:"is_subagent"`
 	// GoalStatus/GoalIterations mirror appwire.GoalState (status + continuation
 	// turn count) when a /goal is set on a live session, else empty/zero. Kept
 	// flattened so hubapi need not depend on appwire. There is no iteration cap,
 	// so only the status and turn count are surfaced.
-	GoalStatus     string              `json:"goal_status,omitempty"`
-	GoalIterations int                 `json:"goal_iterations,omitempty"`
-	Capabilities   SessionCapabilities `json:"capabilities"`
+	GoalStatus     string `json:"goal_status,omitempty"`
+	GoalIterations int    `json:"goal_iterations,omitempty"`
+	// Usage mirrors appwire.SerfUsage's cumulative self-only token totals
+	// (WS2), flattened into hubapi's own Usage type for the same reason as
+	// GoalStatus above — hubapi cannot depend on appwire. Nil when no token
+	// data is available.
+	Usage        *Usage              `json:"usage,omitempty"`
+	Capabilities SessionCapabilities `json:"capabilities"`
+}
+
+// Usage is hubapi's flattened mirror of appwire.SerfUsage — a session's
+// cumulative self-only token totals. See SessionDetail.Usage.
+type Usage struct {
+	InputTokens     int64 `json:"input_tokens,omitempty"`
+	OutputTokens    int64 `json:"output_tokens,omitempty"`
+	CacheReadTokens int64 `json:"cache_read_tokens,omitempty"`
+	TotalTokens     int64 `json:"total_tokens,omitempty"`
 }
 
 type SessionCapabilities struct {

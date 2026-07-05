@@ -87,3 +87,29 @@ func TestAppTurnsFromNotificationsAccumulatesReasoningDeltas(t *testing.T) {
 		t.Fatalf("reasoning item=%+v", items[0])
 	}
 }
+
+// TestAppTurnsFromNotificationsCarriesTurnTiming verifies that replaying a
+// turn/started carrying Turn.StartedAt and a turn/completed carrying
+// Turn.CompletedAt/Turn.DurationMS reconstructs a Turn with those three
+// timing fields set — today appTurnsFromNotifications only copies
+// ItemsView/Status off the wire Turn and silently drops the timing fields.
+func TestAppTurnsFromNotificationsCarriesTurnTiming(t *testing.T) {
+	records := []appserver.SequencedNotification{
+		{Notification: appwire.Notification{Method: "turn/started", Params: []byte(`{"turnId":"turn_1","turn":{"id":"turn_1","status":"inProgress","startedAt":1700000000}}`)}},
+		{Notification: appwire.Notification{Method: "turn/completed", Params: []byte(`{"turnId":"turn_1","turn":{"id":"turn_1","status":"completed","completedAt":1700000042,"durationMs":4200}}`)}},
+	}
+	turns := appTurnsFromNotifications(records)
+	if len(turns) != 1 {
+		t.Fatalf("expected 1 turn, got %d", len(turns))
+	}
+	turn := turns[0]
+	if turn.StartedAt == nil || *turn.StartedAt != 1700000000 {
+		t.Fatalf("turn StartedAt=%v, want 1700000000", turn.StartedAt)
+	}
+	if turn.CompletedAt == nil || *turn.CompletedAt != 1700000042 {
+		t.Fatalf("turn CompletedAt=%v, want 1700000042", turn.CompletedAt)
+	}
+	if turn.DurationMS == nil || *turn.DurationMS != 4200 {
+		t.Fatalf("turn DurationMS=%v, want 4200", turn.DurationMS)
+	}
+}

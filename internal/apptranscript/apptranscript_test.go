@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
@@ -105,6 +106,51 @@ func TestTurnsFromFileProjectsPreludeAndAPICallError(t *testing.T) {
 	}
 	if turns[1].Error.Source != "provider" {
 		t.Fatalf("error turn Source=%q, want %q", turns[1].Error.Source, "provider")
+	}
+}
+
+// TestTurnsFromFileStampsStartedAtFromEntryTimestamp verifies that a
+// reconstructed turn carries StartedAt from the transcript entry's recorded
+// timestamp, with DurationMS left nil — a message record has a point in time,
+// not a span, so only StartedAt can be honestly reconstructed from it.
+func TestTurnsFromFileStampsStartedAtFromEntryTimestamp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1"})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	ts := time.Unix(1_700_000_000, 0).UTC()
+	if err := w.Append(schema.Turn{
+		Kind:      schema.TurnUserInput,
+		Message:   llm.User("hello"),
+		Timestamp: ts,
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	project := func(raw json.RawMessage, turnID string, turnIndex int) []appwire.ThreadItem {
+		var entry transcript.Entry
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			return nil
+		}
+		return ProjectTurn(turnID, turnIndex, entry.Turn, map[string]string{}, nil)
+	}
+	turns := TurnsFromFile(path, 128<<20, project)
+	if len(turns) != 1 {
+		t.Fatalf("turns=%+v, want 1", turns)
+	}
+	turn := turns[0]
+	if turn.StartedAt == nil {
+		t.Fatalf("turn.StartedAt is nil, want %d", ts.Unix())
+	}
+	if *turn.StartedAt != ts.Unix() {
+		t.Fatalf("turn.StartedAt=%d, want %d", *turn.StartedAt, ts.Unix())
+	}
+	if turn.DurationMS != nil {
+		t.Fatalf("turn.DurationMS=%v, want nil (message records cannot span a duration)", *turn.DurationMS)
 	}
 }
 

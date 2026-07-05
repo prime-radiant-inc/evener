@@ -303,6 +303,21 @@ func hubCapabilitiesFromAppwire(caps appwire.ThreadCapabilities) hubapi.SessionC
 	}
 }
 
+// hubUsageFromAppwire maps appwire.SerfUsage to hubapi's flattened Usage type
+// so hubapi need not depend on appwire (mirrors the GoalStatus flattening
+// precedent on hubapi.SessionDetail). Returns nil when u is nil.
+func hubUsageFromAppwire(u *appwire.SerfUsage) *hubapi.Usage {
+	if u == nil {
+		return nil
+	}
+	return &hubapi.Usage{
+		InputTokens:     u.InputTokens,
+		OutputTokens:    u.OutputTokens,
+		CacheReadTokens: u.CacheReadTokens,
+		TotalTokens:     u.TotalTokens,
+	}
+}
+
 func hubDetailFromAppThread(thread appwire.Thread) hubapi.SessionDetail {
 	ref := hubRefFromAppThread(thread)
 	state := hubcore.NormalizeState(thread.Status.Type)
@@ -322,23 +337,26 @@ func hubDetailFromAppThread(thread appwire.Thread) hubapi.SessionDetail {
 	}
 	live := state != "ended" && state != "closed"
 	detail := hubapi.SessionDetail{
-		Ref:              ref.String(),
-		HostID:           ref.HostID,
-		SessionID:        ref.SessionID,
-		Title:            title,
-		State:            state,
-		Live:             live,
-		Project:          project,
-		WorkingDir:       thread.CWD,
-		Model:            thread.ModelProvider,
-		Profile:          thread.Serf.Profile,
-		TurnCount:        completedTurnCount(thread.Turns),
-		ActiveTurnID:     activeTurnIDFromAppwireThread(thread),
-		ContextPressure:  thread.Serf.ContextPressure,
-		ContextUsed:      thread.Serf.ContextUsed,
-		ContextWindow:    thread.Serf.ContextWindow,
-		ContextRemaining: thread.Serf.ContextRemaining,
-		Capabilities:     hubCapabilitiesFromAppwire(thread.Serf.Capabilities),
+		Ref:                 ref.String(),
+		HostID:              ref.HostID,
+		SessionID:           ref.SessionID,
+		Title:               title,
+		State:               state,
+		Live:                live,
+		Project:             project,
+		WorkingDir:          thread.CWD,
+		Model:               thread.ModelProvider,
+		Profile:             thread.Serf.Profile,
+		TurnCount:           completedTurnCount(thread.Turns),
+		ActiveTurnID:        activeTurnIDFromAppwireThread(thread),
+		ContextPressure:     thread.Serf.ContextPressure,
+		ContextUsed:         thread.Serf.ContextUsed,
+		ContextWindow:       thread.Serf.ContextWindow,
+		ContextRemaining:    thread.Serf.ContextRemaining,
+		Capabilities:        hubCapabilitiesFromAppwire(thread.Serf.Capabilities),
+		WorkMillis:          thread.Serf.WorkMillis,
+		Usage:               hubUsageFromAppwire(thread.Serf.Usage),
+		ActiveTurnStartedAt: thread.Serf.ActiveTurnStartedAt,
 	}
 	if detail.SessionID == "" {
 		detail.SessionID = thread.ID
@@ -504,6 +522,12 @@ func (s *WebServer) apiSessionDetail(id string) (hubapi.SessionDetail, bool) {
 		ForkLabel:      wd.ForkLabel,
 		DivergenceTurn: wd.DivergenceTurn,
 		Capabilities:   s.apiSessionCapabilities(id, live),
+		// Seeded from wd here so the ended path (no live source to override
+		// them below) still carries these; the live branch's hubDetailFromAppThread
+		// replacement keeps its own values from thread.Serf — no clobber.
+		WorkMillis:          wd.WorkMillis,
+		Usage:               hubUsageFromAppwire(wd.Usage),
+		ActiveTurnStartedAt: wd.ActiveTurnStartedAt,
 	}
 	if detail.Project == "" || detail.Project == "." {
 		detail.Project = "(no project)"
@@ -544,6 +568,86 @@ func (s *WebServer) apiSessionDetail(id string) (hubapi.SessionDetail, bool) {
 			detail.DivergenceTurn = pe.Meta.DivergenceTurn
 			detail.ForkLabel = pe.Meta.ForkLabel
 			detail.IsSubagent = pe.Meta.IsSubagent
+		}
+	}
+	return detail, true
+}
+
+// apiSessionState is a lean counterpart to apiSessionDetail for the polled
+// /state input-strip render. It calls workspaceData once — the polled render
+// previously called workspaceData directly AND again transitively through
+// apiSessionDetail — and, for a live session, refreshes context/goal/usage/
+// work-time fields via a ReadThread that skips the turns array (IncludeTurns:
+// false): the input strip never needs the transcript, only the SerfThread
+// status fields that ride alongside it regardless of IncludeTurns.
+// completedTurnCount(thread.Turns) is always 0 without turns, so TurnCount is
+// always taken from wd (which the roster path sets from daemonStatus.Turns,
+// and the ended path from the persisted SessionMeta) rather than from the
+// lean thread. Branch, ForkLabel, and DivergenceTurn are carried over from
+// the wd-seed across the live replacement too: hubDetailFromAppThread never
+// sets them from a thread, unlike Model/WorkingDir, which it does set and
+// which only fall back to the wd-seed when the live thread's value is empty.
+//
+// The shared apiSessionDetail (and its IncludeTurns: true) is untouched by
+// this function — its JSON-API/action callers keep fetching the full
+// transcript and so keep a correct TurnCount independent of this lean path.
+func (s *WebServer) apiSessionState(id string) (hubapi.SessionDetail, bool) {
+	wd := s.workspaceData(id)
+	if wd.ID == "" {
+		return hubapi.SessionDetail{}, false
+	}
+	ref, err := hubapi.ParseRef(appRefFromRouteID(id))
+	if err != nil {
+		ref = hubapi.LocalRef(id)
+	}
+	live := s.isLive(id)
+	detail := hubapi.SessionDetail{
+		Ref:            ref.String(),
+		HostID:         ref.HostID,
+		SessionID:      ref.SessionID,
+		Title:          wd.Title,
+		State:          wd.State,
+		Live:           live,
+		Project:        filepath.Base(wd.WorkingDir),
+		WorkingDir:     wd.WorkingDir,
+		Branch:         wd.Branch,
+		Model:          wd.Model,
+		TurnCount:      wd.TurnCount,
+		ForkLabel:      wd.ForkLabel,
+		DivergenceTurn: wd.DivergenceTurn,
+		Capabilities:   s.apiSessionCapabilities(id, live),
+		// Seeded from wd here so the ended path (no live source to override
+		// them below) still carries these; the live branch's
+		// hubDetailFromAppThread replacement keeps its own values from
+		// thread.Serf — no clobber.
+		WorkMillis:          wd.WorkMillis,
+		Usage:               hubUsageFromAppwire(wd.Usage),
+		ActiveTurnStartedAt: wd.ActiveTurnStartedAt,
+	}
+	if detail.Project == "" || detail.Project == "." {
+		detail.Project = "(no project)"
+	}
+	if live {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		appRef := appRefFromRouteID(id)
+		if source, err := sourceForThreadWithManagedLaunch(ctx, s.cfg, s.sources, appRef, ""); err == nil {
+			// Lean read: skip the turns array. completedTurnCount is always 0
+			// on an empty Turns slice, so TurnCount below always comes from wd.
+			if resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: appRef, IncludeTurns: false}); err == nil {
+				appDetail := hubDetailFromAppThread(resp.Thread)
+				appDetail.TurnCount = wd.TurnCount
+				appDetail.Branch = detail.Branch
+				appDetail.ForkLabel = detail.ForkLabel
+				appDetail.DivergenceTurn = detail.DivergenceTurn
+				if appDetail.Model == "" {
+					appDetail.Model = detail.Model
+				}
+				if appDetail.WorkingDir == "" {
+					appDetail.WorkingDir = detail.WorkingDir
+				}
+				detail = appDetail
+			}
 		}
 	}
 	return detail, true

@@ -1,10 +1,51 @@
 package schema
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/spf13/afero"
 )
+
+// TestSessionMeta_CumulativeUsageOmitzero proves CumulativeUsage and WorkMillis
+// marshal onto SessionMeta when set, and are both omitted (via omitzero) on a
+// zero-valued legacy SessionMeta, so old metas without these fields round-trip
+// unchanged (WS2 working-state-metrics).
+func TestSessionMeta_CumulativeUsageOmitzero(t *testing.T) {
+	meta := SessionMeta{
+		CumulativeUsage: CumulativeUsage{
+			InputTokens:     100,
+			OutputTokens:    200,
+			CacheReadTokens: 50,
+			TotalTokens:     300,
+		},
+		WorkMillis: 45000,
+	}
+	data, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	const wantUsage = `"cumulative_usage":{"input_tokens":100,"output_tokens":200,"cache_read_tokens":50,"total_tokens":300}`
+	if !strings.Contains(string(data), wantUsage) {
+		t.Errorf("marshal = %s, want substring %s", data, wantUsage)
+	}
+	const wantWorkMillis = `"work_millis":45000`
+	if !strings.Contains(string(data), wantWorkMillis) {
+		t.Errorf("marshal = %s, want substring %s", data, wantWorkMillis)
+	}
+
+	zeroData, err := json.Marshal(SessionMeta{})
+	if err != nil {
+		t.Fatalf("marshal zero: %v", err)
+	}
+	if strings.Contains(string(zeroData), "cumulative_usage") {
+		t.Errorf("zero-valued SessionMeta marshal = %s, want no cumulative_usage key", zeroData)
+	}
+	if strings.Contains(string(zeroData), "work_millis") {
+		t.Errorf("zero-valued SessionMeta marshal = %s, want no work_millis key", zeroData)
+	}
+}
 
 // saveSessionMetaFS round-trips through an in-memory fs and surfaces a mkdir
 // failure on a read-only fs.

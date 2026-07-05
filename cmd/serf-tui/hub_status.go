@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/appwire"
@@ -25,6 +26,15 @@ func renderHubSessionStatus(detail hubSessionDetail, tasks []taskpkg.Task, auth 
 	fmt.Fprintf(&b, "Turns:    %d\n", detail.TurnCount)
 	if detail.ContextPressure > 0 {
 		fmt.Fprintf(&b, "Context:  %.0f%% used\n", detail.ContextPressure*100)
+	}
+	if detail.WorkMillis > 0 {
+		fmt.Fprintf(&b, "Work:     %s\n", formatWorkMillis(detail.WorkMillis))
+	}
+	if detail.Usage != nil {
+		u := detail.Usage
+		fmt.Fprintf(&b, "Tokens:   ↑%s ↓%s · cache-read %s · total %s\n",
+			formatTokens(int(u.InputTokens)), formatTokens(int(u.OutputTokens)),
+			formatTokens(int(u.CacheReadTokens)), formatTokens(int(u.TotalTokens)))
 	}
 	if taskErr != nil {
 		fmt.Fprintf(&b, "Tasks:    unavailable: %s\n", taskErr)
@@ -83,6 +93,32 @@ func formatContextFragment(detail hubSessionDetail) string {
 		return fmt.Sprintf("%.0f%%", pressure*100)
 	}
 	return ""
+}
+
+// formatWorkMillis renders a session's accumulated work time compactly
+// ("45s"/"3m"/"1h 4m"), mirroring cmd/serf-hub's helper of the same name so
+// the TUI's work-time cluster reads the same way as the web status row.
+func formatWorkMillis(millis int64) string {
+	return compactDuration(time.Duration(millis) * time.Millisecond)
+}
+
+// compactDuration mirrors cmd/serf-hub's compactDuration so the TUI's
+// duration formatting matches the web UI's conventions.
+func compactDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	if d < time.Minute {
+		seconds := int(d.Seconds())
+		if seconds < 1 {
+			seconds = 1
+		}
+		return fmt.Sprintf("%ds", seconds)
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
 }
 
 // appendDiagnosticsSections writes the tool/MCP/skill/plugin/hook/job/agent

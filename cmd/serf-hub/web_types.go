@@ -160,24 +160,35 @@ const liveModelsTTL = 5 * time.Minute
 
 // WorkspaceData is the template data for the workspace partial.
 type WorkspaceData struct {
-	ID                 string
-	SourceLabel        string
-	Title              string
-	Branch             string
-	WorkingDir         string
-	HomeDir            string
-	State              string
-	StateLabel         string
-	TurnCount          int
-	Model              string
-	ContextWindow      int
-	ContextPercent     int
-	ContextNumbers     string
-	Cost               string
-	ActiveTurnID       string
-	RunningFor         string
-	ShowSidebarToggle  bool
-	ThreadDocumentMode bool
+	ID          string
+	SourceLabel string
+	Title       string
+	// OOBTitle, when true, makes the input_status partial also emit an
+	// out-of-band swap of the header's #workspace-session-title span. Only the
+	// polled /state response sets this true; the inline workspace render
+	// leaves it at its zero value so the title renders exactly once.
+	OOBTitle       bool
+	Branch         string
+	WorkingDir     string
+	HomeDir        string
+	State          string
+	StateLabel     string
+	TurnCount      int
+	Model          string
+	ContextWindow  int
+	ContextPercent int
+	ContextNumbers string
+	Cost           string
+	ActiveTurnID   string
+	RunningFor     string
+	// WorkMillis, Usage, and ActiveTurnStartedAt mirror appwire.SerfThread's
+	// working-state/token metrics (WS2). Usage is nil when no token data is
+	// available (fresh session, old daemon, or a Codex thread).
+	WorkMillis          int64
+	Usage               *appwire.SerfUsage
+	ActiveTurnStartedAt int64
+	ShowSidebarToggle   bool
+	ThreadDocumentMode  bool
 	// GoalStatus/GoalIterations mirror appwire.GoalState for the live goal
 	// status pill in the input strip. Empty/zero when no goal is set (e.g. past
 	// sessions). There is no iteration cap, so only status and turn count show.
@@ -265,4 +276,9 @@ type daemonStatus struct {
 	ContextUsed      int     `json:"context_used,omitempty"`
 	ContextWindow    int     `json:"context_window,omitempty"`
 	ContextRemaining int     `json:"context_remaining,omitempty"`
+	// Usage, WorkMillis, and ActiveTurnStartedAt mirror server.StatusInfo's
+	// WS2 working-state/token metrics fields.
+	WorkMillis          int64              `json:"work_millis,omitempty"`
+	Usage               *appwire.SerfUsage `json:"usage,omitempty"`
+	ActiveTurnStartedAt int64              `json:"active_turn_started_at,omitempty"`
 }

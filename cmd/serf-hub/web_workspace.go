@@ -46,8 +46,6 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 		}
 	case "state":
 		http.NotFound(w, r)
-	case "meta":
-		http.NotFound(w, r)
 	case "details":
 		http.NotFound(w, r)
 	case "tasks":
@@ -258,32 +256,6 @@ func (s *WebServer) renderSessionTasks(w http.ResponseWriter, r *http.Request, i
 	_, _ = w.Write([]byte("[]\n"))
 }
 
-// renderWorkspaceMeta returns the title-bar meta partial — status pill,
-// branch, turn count. Polled every 2s by the workspace header so live
-// state changes (idle → processing → ended) reflect promptly.
-func (s *WebServer) renderWorkspaceMeta(w http.ResponseWriter, r *http.Request, id string) {
-	data := s.workspaceData(id)
-	if data.ID == "" {
-		http.NotFound(w, r)
-		return
-	}
-	if detail, ok := s.apiSessionDetail(id); ok {
-		data.State = detail.State
-		data.StateLabel = stateLabel(detail.State)
-		data.TurnCount = detail.TurnCount
-		if detail.Model != "" {
-			data.Model = detail.Model
-		}
-		if detail.WorkingDir != "" {
-			data.WorkingDir = detail.WorkingDir
-		}
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.workspaceTmpl.ExecuteTemplate(w, "workspace_meta", data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
-}
-
 func (s *WebServer) workspaceData(id string) WorkspaceData {
 	if !isLocalRouteID(id) {
 		ref := appRefFromRouteID(id)
@@ -324,6 +296,14 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 					data.WorkingDir = status.WorkingDir
 				}
 				data.TurnCount = status.Turns
+				data.WorkMillis = status.WorkMillis
+				data.Usage = status.Usage
+				data.ActiveTurnStartedAt = status.ActiveTurnStartedAt
+				// Populate the context gauge here too so the lean /state poll
+				// (B3) needs no separate turns fetch.
+				data.ContextPercent = int(status.ContextPressure * 100)
+				data.ContextWindow = status.ContextWindow
+				data.ContextNumbers = formatContextNumbers(status.ContextUsed, status.ContextWindow, status.ContextRemaining)
 			}
 			// Branch isn't on the rendezvous entry or daemon /status — fall
 			// back to the past index where the agent persists EnvInfo.
@@ -361,6 +341,10 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 				WorkingDir:   pe.Meta.EnvInfo.WorkingDir,
 				Branch:       pe.Meta.EnvInfo.GitBranch,
 				Capabilities: s.apiSessionCapabilities(id, false),
+				// ActiveTurnStartedAt stays 0: the session has ended, so no
+				// turn is in flight.
+				WorkMillis: pe.Meta.WorkMillis,
+				Usage:      serfUsageFromCumulative(pe.Meta.CumulativeUsage),
 			}
 			s.fillForkLineage(&data, pe.Meta)
 			s.fillSubagentLineage(&data, pe.Meta)
@@ -369,6 +353,24 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 		}
 	}
 	return WorkspaceData{}
+}
+
+// serfUsageFromCumulative maps a persisted SessionMeta.CumulativeUsage
+// (an ended session's WS2 token totals) to the wire appwire.SerfUsage shown
+// in its workspace data. Returns nil when every total (including
+// CacheReadTokens) is zero — a session that never accumulated usage, or a
+// meta written before WS2 — so the usage cluster hides rather than rendering
+// ↑0 ↓0 (mirrors serfUsageFromLLM in cmd/serf/serve.go).
+func serfUsageFromCumulative(u schema.CumulativeUsage) *appwire.SerfUsage {
+	if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.TotalTokens == 0 {
+		return nil
+	}
+	return &appwire.SerfUsage{
+		InputTokens:     u.InputTokens,
+		OutputTokens:    u.OutputTokens,
+		CacheReadTokens: u.CacheReadTokens,
+		TotalTokens:     u.TotalTokens,
+	}
 }
 
 func (s *WebServer) liveWorkspaceCapabilities(id string, fallback hubapi.SessionCapabilities) hubapi.SessionCapabilities {
@@ -476,44 +478,37 @@ func (s *WebServer) fillObserverLink(data *WorkspaceData, m schema.SessionMeta) 
 }
 
 func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id string) {
-	// Seed from workspaceData so WorkingDir/Branch are populated for both
-	// live and past sessions, then refresh dynamic fields from /status when
-	// the daemon is reachable.
-	wd := s.workspaceData(id)
+	// apiSessionState seeds Title/State/TurnCount/WorkingDir/Branch/context/
+	// goal/work-time/token fields from workspaceData in a single call, plus
+	// (for a live session) one lean ReadThread — replacing the former
+	// workspaceData + apiSessionDetail pair, which called workspaceData
+	// twice and fetched the full transcript just to refresh this status row.
+	// Title/OOBTitle ride along on this same poll: the response carries an
+	// out-of-band swap of the header's #workspace-session-title span,
+	// keeping it fresh as the session's generated name changes.
+	detail, _ := s.apiSessionState(id)
 	data := map[string]any{
-		"SourceLabel":    wd.SourceLabel,
-		"Model":          wd.Model,
-		"WorkingDir":     wd.WorkingDir,
-		"Branch":         wd.Branch,
-		"ContextWindow":  0,
-		"ContextPercent": 0,
-		"ContextNumbers": "",
-		"Cost":           wd.Cost,
-		"State":          wd.State,
-		"StateLabel":     wd.StateLabel,
-		"TurnCount":      wd.TurnCount,
-		"RunningFor":     wd.RunningFor,
-		"GoalStatus":     "",
-		"GoalIterations": 0,
+		"SourceLabel":         sourceLabelFromRefText(appRefFromRouteID(id)),
+		"Title":               detail.Title,
+		"OOBTitle":            true,
+		"Model":               detail.Model,
+		"WorkingDir":          detail.WorkingDir,
+		"Branch":              detail.Branch,
+		"ContextPercent":      int(detail.ContextPressure * 100),
+		"ContextWindow":       detail.ContextWindow,
+		"ContextNumbers":      formatContextNumbers(detail.ContextUsed, detail.ContextWindow, detail.ContextRemaining),
+		"Cost":                "",
+		"State":               detail.State,
+		"StateLabel":          stateLabel(detail.State),
+		"TurnCount":           detail.TurnCount,
+		"GoalStatus":          detail.GoalStatus,
+		"GoalIterations":      detail.GoalIterations,
+		"WorkMillis":          detail.WorkMillis,
+		"Usage":               detail.Usage,
+		"ActiveTurnStartedAt": detail.ActiveTurnStartedAt,
 	}
 	if data["Model"] == "" {
 		data["Model"] = "—"
-	}
-	if detail, ok := s.apiSessionDetail(id); ok {
-		if detail.Model != "" {
-			data["Model"] = detail.Model
-		}
-		data["State"] = detail.State
-		data["StateLabel"] = stateLabel(detail.State)
-		data["TurnCount"] = detail.TurnCount
-		data["ContextPercent"] = int(detail.ContextPressure * 100)
-		data["ContextWindow"] = detail.ContextWindow
-		data["ContextNumbers"] = formatContextNumbers(detail.ContextUsed, detail.ContextWindow, detail.ContextRemaining)
-		if detail.WorkingDir != "" {
-			data["WorkingDir"] = detail.WorkingDir
-		}
-		data["GoalStatus"] = detail.GoalStatus
-		data["GoalIterations"] = detail.GoalIterations
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.inputStripTmpl.ExecuteTemplate(w, "input_status", data); err != nil {

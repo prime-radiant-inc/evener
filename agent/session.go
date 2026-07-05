@@ -134,8 +134,11 @@ type Session struct {
 	sendersWG                     sync.WaitGroup // detached event emitters (subagent runs, session namer); Add happens under mu gated on closing so it happens-before Close()'s join
 	state                         SessionState
 	closing                       bool
-	turns                         int // user input count (for MaxTurns enforcement)
-	modelResponses                int // LLM round-trip count (for meta.json turn_count)
+	turns                         int       // user input count (for MaxTurns enforcement)
+	modelResponses                int       // LLM round-trip count (for meta.json turn_count)
+	createdAt                     time.Time // stamped once at construction/restore; Meta() reads it rather than re-stamping "now" on every call
+	workMillis                    int64     // accumulated wall-clock work time across turns; seeded from SessionMeta on restore, mapped out via Meta()
+	turnStartedAt                 time.Time // wall-clock instant the current turn began (stamped at the processing-begin transition); zero when no turn is in flight. Guarded by mu, like workMillis.
 	history                       []schema.Turn
 	responsesContinuationDisabled map[responsesContinuationDisabledKey]bool
 

@@ -69,15 +69,24 @@ var sidebarTemplateFuncs = template.FuncMap{
 	},
 }
 
+// inputStripTemplateFuncs supplies the input-status partial's formatting
+// helpers: formatWorkMillis renders WS2's accumulated work time compactly;
+// formatTokenCount mirrors web_format.formatTokenCount but takes the int64
+// token counts carried on hubapi.Usage/appwire.SerfUsage.
+var inputStripTemplateFuncs = template.FuncMap{
+	"formatWorkMillis": formatWorkMillis,
+	"formatTokenCount": func(n int64) string { return formatTokenCount(int(n)) },
+}
+
 // NewWebServer constructs the web server. Templates are parsed from embed.FS.
 func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 	appTmpl := template.Must(template.New("app.html").Funcs(template.FuncMap{"assetv": assetVersionQuery}).ParseFS(templatesRoot(), "templates/app.html"))
 	sidebarTmpl := template.Must(template.New("sidebar.html").Funcs(sidebarTemplateFuncs).ParseFS(templatesRoot(), "templates/partials/sidebar.html"))
-	workspaceTmpl := template.Must(template.ParseFS(templatesRoot(),
+	workspaceTmpl := template.Must(template.New("workspace.html").Funcs(inputStripTemplateFuncs).ParseFS(templatesRoot(),
 		"templates/partials/workspace.html",
 		"templates/partials/input_strip.html",
 	))
-	threadTmpl := template.Must(template.ParseFS(templatesRoot(),
+	threadTmpl := template.Must(template.New("thread.html").Funcs(inputStripTemplateFuncs).ParseFS(templatesRoot(),
 		"templates/thread.html",
 		"templates/partials/workspace.html",
 		"templates/partials/input_strip.html",
@@ -85,7 +94,7 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 	spawnTmpl := template.Must(template.ParseFS(templatesRoot(),
 		"templates/partials/spawn.html",
 	))
-	inputStripTmpl := template.Must(template.ParseFS(templatesRoot(),
+	inputStripTmpl := template.Must(template.New("input_strip.html").Funcs(inputStripTemplateFuncs).ParseFS(templatesRoot(),
 		"templates/partials/input_strip.html",
 	))
 	projectSettingsTmpl := template.Must(template.ParseFS(templatesRoot(),
@@ -328,8 +337,6 @@ func (s *WebServer) handleSessionPartial(w http.ResponseWriter, r *http.Request)
 		s.renderWorkspacePartial(w, r, id)
 	case "state":
 		s.renderInputStrip(w, r, id)
-	case "meta":
-		s.renderWorkspaceMeta(w, r, id)
 	case "details":
 		s.renderDetailsPanel(w, r, id)
 	case "tasks":

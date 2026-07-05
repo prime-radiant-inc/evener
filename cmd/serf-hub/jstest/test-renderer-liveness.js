@@ -1,7 +1,9 @@
 // Honest liveness: while a session is actively working, a gap with no frames
 // surfaces "still working · no updates for Ns" and stops the reassuring status
 // dot pulse — so a hung agent never looks identical to a busy one. Frames
-// (incl. the model's reasoning) reset the clock.
+// (incl. the model's reasoning) reset the clock. The liveness line renders in
+// the status row's inline [data-liveness] span (WS2 B5), not a standalone
+// element beside the transcript.
 const { JSDOM } = require("jsdom");
 
 const dom = new JSDOM(`<!DOCTYPE html><html><body>
@@ -16,6 +18,9 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <form data-input-form data-session-id="01TEST">
     <textarea class="message-input"></textarea>
   </form>
+  <div id="input-status" class="input-status">
+    <span class="status-item liveness-inline" data-liveness hidden></span>
+  </div>
 </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
 
 const { window } = dom;
@@ -52,7 +57,7 @@ const dot = window.document.querySelector(".status-dot");
   conv.dataset.state = "active";
   R.lastFrameAt = Date.now() - 200000; // 200s of silence ≥ stall threshold
   R.refreshLiveness();
-  const live = conv.parentNode.querySelector(".liveness");
+  const live = window.document.querySelector("#input-status [data-liveness]");
   pass(live && !live.hidden, "a stalled working session shows a liveness notice");
   pass(live && /no updates for/.test(live.textContent), "the notice states the gap honestly");
   pass(conv.getAttribute("data-stalled") === "true", "stalled flag set on the conversation");
@@ -106,6 +111,48 @@ const dot = window.document.querySelector(".status-dot");
   pass(live.hidden, "a fresh frame clears the concern band");
   pass(!conv.hasAttribute("data-stalled"), "the stalled flag clears on recovery");
   pass(dot && dot.hasAttribute("data-pulse"), "the pulse resumes after recovery");
+
+  // ── afterSwap re-bind (WS2 B5) ───────────────────────────────────────────
+  // #input-status is an htmx innerHTML-swap target (task B4's status-row
+  // refresh): every swap detaches whatever [data-liveness] node livenessEl
+  // was pointing at and mounts a structurally-identical new one. The renderer
+  // must re-acquire a fresh handle on htmx:afterSwap rather than keep writing
+  // into the node htmx just orphaned, and must not throw or repaint a stale
+  // handle in the window before that listener fires.
+  const statusRow = window.document.getElementById("input-status");
+  const staleEl = R.livenessEl;
+  pass(staleEl === live, "livenessEl starts out pointing at the mounted inline span");
+
+  // Simulate htmx swapping the row's innerHTML: the current span is detached
+  // and a fresh, otherwise-identical span takes its place.
+  statusRow.innerHTML = '<span class="status-item liveness-inline" data-liveness hidden></span>';
+  pass(!staleEl.isConnected, "the pre-swap span is detached once the row's innerHTML is replaced");
+
+  // Before any afterSwap listener runs, refreshLiveness must no-op on the now-
+  // stale handle rather than throw or repaint a node no one can see.
+  R.livenessEl = staleEl;
+  R.state = "active";
+  R.lastFrameAt = Date.now() - 200000; // deep in the concern band
+  R.refreshLiveness();
+  pass(staleEl.hidden === true, "refreshLiveness does not write into a detached livenessEl");
+
+  // htmx:afterSwap targeting #input-status re-acquires the fresh span.
+  statusRow.dispatchEvent(new window.Event("htmx:afterSwap", { bubbles: true }));
+  const freshEl = window.document.querySelector("#input-status [data-liveness]");
+  pass(R.livenessEl === freshEl, "htmx:afterSwap on #input-status re-acquires the fresh span");
+  pass(R.livenessEl !== staleEl, "the re-acquired span is not the stale pre-swap node");
+
+  // The next tick writes into the freshly re-acquired node.
+  R.refreshLiveness();
+  pass(freshEl && !freshEl.hidden && /may be stalled/.test(freshEl.textContent),
+    "refreshLiveness writes into the freshly re-acquired span");
+
+  // An afterSwap on an unrelated target must not disturb the current handle
+  // (mirrors sidebar.js's e.target.id-scoped resync — only #input-status
+  // swaps trigger a re-acquire).
+  const handleBeforeUnrelatedSwap = R.livenessEl;
+  conv.dispatchEvent(new window.Event("htmx:afterSwap", { bubbles: true }));
+  pass(R.livenessEl === handleBeforeUnrelatedSwap, "an afterSwap on an unrelated target does not re-acquire livenessEl");
 
   if (failures.length > 0) {
     for (const f of failures) console.log(f);

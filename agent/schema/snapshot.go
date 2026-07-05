@@ -85,6 +85,25 @@ type SessionMeta struct {
 	// "env-restore model"). On resume, a foreign lock or a worktree that no
 	// longer exists lands the session here instead, with a notice.
 	WorktreeRestoreRoot string `json:"worktree_restore_root,omitempty"`
+	// CumulativeUsage carries the session's running self-only token totals so
+	// they survive restart/resume. omitzero: legacy metas without it round-trip
+	// unchanged (WS2 working-state-metrics).
+	CumulativeUsage CumulativeUsage `json:"cumulative_usage,omitzero"`
+	// WorkMillis is the accumulated wall-clock work time (sum of every turn's
+	// duration, interrupted and failed included), persisted so the total
+	// survives restart/resume. omitzero for legacy round-trip.
+	WorkMillis int64 `json:"work_millis,omitzero"`
+}
+
+// CumulativeUsage is a deliberately lossy snapshot of an llm.Usage kept in
+// SessionMeta so per-session token totals survive daemon restart and resume.
+// Conversion from llm.Usage drops Raw and the reasoning/cache-write pointers;
+// nil pointers map to 0. Tagged omitzero so legacy metas round-trip untouched.
+type CumulativeUsage struct {
+	InputTokens     int64 `json:"input_tokens,omitzero"`
+	OutputTokens    int64 `json:"output_tokens,omitzero"`
+	CacheReadTokens int64 `json:"cache_read_tokens,omitzero"`
+	TotalTokens     int64 `json:"total_tokens,omitzero"`
 }
 
 // GoalSnapshot is the wire form of a goal.Goal persisted inside SessionMeta.

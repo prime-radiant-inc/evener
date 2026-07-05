@@ -78,6 +78,9 @@ const (
 	EventPromptLoaded EventKind = "PROMPT_LOADED"
 	// EventRoundTimings carries round timing information.
 	EventRoundTimings EventKind = "ROUND_TIMINGS"
+	// EventTurnEnded marks a single turn reaching its terminal boundary, carrying
+	// the turn's wall-clock duration.
+	EventTurnEnded EventKind = "TURN_ENDED"
 	// EventGoalContinuation marks a system-framed continuation turn injected by
 	// the goal engine.
 	EventGoalContinuation EventKind = "GOAL_CONTINUATION"

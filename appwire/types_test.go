@@ -205,3 +205,56 @@ func TestDiagnosticCauseOmitEmpty(t *testing.T) {
 		t.Fatalf("marshal=%s missing kind", got)
 	}
 }
+
+// TestSerfThreadMetricsJSONRoundTrip (WS2 A7) verifies the wire shape of the
+// live working-state/token metrics on SerfThread: camelCase JSON tags and a
+// correct round trip for a populated set of values.
+func TestSerfThreadMetricsJSONRoundTrip(t *testing.T) {
+	in := SerfThread{
+		Usage:               &SerfUsage{InputTokens: 1},
+		WorkMillis:          2,
+		ActiveTurnStartedAt: 3,
+	}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(raw)
+	for _, want := range []string{
+		`"usage":{"inputTokens":1}`,
+		`"workMillis":2`,
+		`"activeTurnStartedAt":3`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("marshal=%s missing %s", got, want)
+		}
+	}
+	var out SerfThread
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Usage == nil || *out.Usage != *in.Usage {
+		t.Fatalf("roundtrip usage=%+v, want %+v", out.Usage, in.Usage)
+	}
+	if out.WorkMillis != in.WorkMillis || out.ActiveTurnStartedAt != in.ActiveTurnStartedAt {
+		t.Fatalf("roundtrip workMillis/activeTurnStartedAt=%d/%d, want %d/%d",
+			out.WorkMillis, out.ActiveTurnStartedAt, in.WorkMillis, in.ActiveTurnStartedAt)
+	}
+}
+
+// TestSerfThreadMetricsOmitEmpty (WS2 A7) verifies that a zero-value
+// SerfThread omits usage, workMillis, and activeTurnStartedAt entirely — a
+// nil Usage pointer (rather than a rendered zero SerfUsage) and the omitempty
+// scalars both drop out, so fresh/old-daemon/codex threads don't render ↑0 ↓0.
+func TestSerfThreadMetricsOmitEmpty(t *testing.T) {
+	raw, err := json.Marshal(SerfThread{})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(raw)
+	for _, banned := range []string{`"usage"`, `"workMillis"`, `"activeTurnStartedAt"`} {
+		if strings.Contains(got, banned) {
+			t.Fatalf("marshal=%s should have omitted %s", got, banned)
+		}
+	}
+}

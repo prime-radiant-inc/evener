@@ -57,6 +57,11 @@
   const LIVENESS_STALL_MS = 180000;
   const LIVENESS_TICK_MS = 3000;
 
+  // While a turn is actively running, nudge the status row this often so its
+  // work-time clock and context-gauge numbers stay fresh without waiting on
+  // the 30s hx-trigger fallback poll (WS2 task B4).
+  const ACTIVE_REFRESH_TICK_MS = 10000;
+
   // Lazy transcript loading: how many of the latest turns the cold load
   // hydrates, and how many older turns each scroll-up page fetches.
   const INITIAL_TURN_WINDOW = 40;
@@ -106,6 +111,10 @@
       if (this.livenessTimer) {
         clearInterval(this.livenessTimer);
         this.livenessTimer = null;
+      }
+      if (this.activeRefreshTimer) {
+        clearInterval(this.activeRefreshTimer);
+        this.activeRefreshTimer = null;
       }
 
       this.conversation = conversationEl;
@@ -328,6 +337,14 @@
       state = String(state || "").trim();
       if (!state) return;
       this.state = state;
+      // While a turn is actively running, tick the status row every 10s so
+      // the work-time clock and context-gauge numbers stay fresh without
+      // waiting on the 30s fallback poll; any other state stops the tick.
+      if (state === "active") {
+        this.startActiveRefreshTimer();
+      } else {
+        this.stopActiveRefreshTimer();
+      }
       if (this.conversation) this.conversation.dataset.state = state;
       // A turn that ends by asking the user (awaiting) often flips state in a
       // separate frame from the one that rendered the question. If the
@@ -906,6 +923,11 @@
             // for the thread that's actually open, rather than waiting for
             // the hub's next attention tick (up to 5s away).
             document.dispatchEvent(new CustomEvent("serf-hub:thread-status", { detail: { status: status } }));
+            // Nudge the status row (#input-status) to refresh now rather than
+            // waiting on its 30s fallback poll. htmx's `every ... from:body`
+            // trigger only ever sees htmx.trigger(), never a plain
+            // dispatchEvent(), so this is a separate call from the one above.
+            if (window.htmx) htmx.trigger(document.body, "serf-hub:status-refresh");
           }
           break;
         case "TURN_STARTED":
@@ -918,6 +940,9 @@
           // begins with no echo (e.g. a second tab), the welcome dissolves now.
           this.dissolveWelcome();
           this.showColdStartSkeleton();
+          // A turn starting is one of the moments the status row's work-time
+          // and token clusters need to catch up on — refresh now.
+          if (window.htmx) htmx.trigger(document.body, "serf-hub:status-refresh");
           break;
         case "TURN_COMPLETED":
           this.finalizeReasoning();
@@ -925,6 +950,9 @@
             this.setActiveTurnId("");
             if (this.turnAcceptsActions(this.state)) this.updateThreadState("idle");
           }
+          // A turn completing is one of the moments the status row's work-time
+          // and token clusters need to catch up on — refresh now.
+          if (window.htmx) htmx.trigger(document.body, "serf-hub:status-refresh");
           break;
         case "SESSION_START":
           this.statusUpdateSeq++;
@@ -2071,23 +2099,39 @@
       if (pv) pv.textContent = gist ? "— " + gist : "";
     },
 
-    // ensureLivenessEl keeps a single liveness line just below the transcript
-    // (a sibling of #conversation, so transcript appends never disturb it).
+    // ensureLivenessEl re-acquires the inline liveness span inside the status
+    // row. #input-status is an htmx innerHTML-swap target (task B4's status
+    // refresh), so any handle held across a swap is stale; this must be
+    // called again after every swap rather than cached once. May land on
+    // null when the row isn't mounted — refreshLiveness treats that the same
+    // as a detached node and no-ops.
     ensureLivenessEl() {
-      if (!this.conversation || !this.conversation.parentNode) { this.livenessEl = null; return; }
-      let el = this.conversation.parentNode.querySelector(".liveness");
-      if (!el) {
-        el = document.createElement("div");
-        el.className = "liveness";
-        el.hidden = true;
-        this.conversation.parentNode.insertBefore(el, this.conversation.nextSibling);
-      }
-      this.livenessEl = el;
+      this.livenessEl = document.querySelector("#input-status [data-liveness]");
     },
 
     startLivenessTimer() {
       if (this.livenessTimer) clearInterval(this.livenessTimer);
       this.livenessTimer = setInterval(() => this.refreshLiveness(), LIVENESS_TICK_MS);
+    },
+
+    // startActiveRefreshTimer/stopActiveRefreshTimer bracket the status row's
+    // 10s active-only freshness tick (task B4): while a turn is actively
+    // running, the work-time clock and context-gauge numbers would otherwise
+    // sit stale for up to the 30s fallback poll. updateThreadState starts
+    // this on entering "active" and stops it on leaving; init()'s teardown
+    // clears it too, mirroring the liveness timer's own lifecycle.
+    startActiveRefreshTimer() {
+      if (this.activeRefreshTimer) clearInterval(this.activeRefreshTimer);
+      this.activeRefreshTimer = setInterval(() => {
+        if (window.htmx) htmx.trigger(document.body, "serf-hub:status-refresh");
+      }, ACTIVE_REFRESH_TICK_MS);
+    },
+
+    stopActiveRefreshTimer() {
+      if (this.activeRefreshTimer) {
+        clearInterval(this.activeRefreshTimer);
+        this.activeRefreshTimer = null;
+      }
     },
 
     // refreshLiveness runs the honest calm→concern model (mockup #13) while an
@@ -2110,7 +2154,10 @@
         }
       }
       const el = this.livenessEl;
-      if (!el) return;
+      // The status row can be innerHTML-swapped out from under a cached
+      // handle at any time; a detached node must no-op rather than paint
+      // into a span no one can see.
+      if (!el || !el.isConnected) return;
       const gap = this.lastFrameAt ? (Date.now() - this.lastFrameAt) : 0;
       let level = "none";
       if (this.state === "active") {
@@ -5338,6 +5385,20 @@
   document.addEventListener("htmx:afterSwap", () => {
     if (window.SerfRenderer && window.SerfRenderer.applyStatusDotPulse) {
       window.SerfRenderer.applyStatusDotPulse(document);
+    }
+  });
+
+  // Re-acquire the inline liveness handle after the status row swaps: htmx
+  // replaces #input-status's innerHTML wholesale (task B4's status refresh),
+  // which detaches whatever span this.livenessEl was pointing at. Scoped to
+  // swaps whose target is #input-status itself, patterned on sidebar.js's
+  // e.target.id-scoped resync.
+  document.addEventListener("htmx:afterSwap", (e) => {
+    const target = e && e.target;
+    if (target && target.id === "input-status") {
+      if (window.SerfRenderer && window.SerfRenderer.ensureLivenessEl) {
+        window.SerfRenderer.ensureLivenessEl();
+      }
     }
   });
   // Also apply on initial load in case dots are already in the page.

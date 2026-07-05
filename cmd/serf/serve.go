@@ -350,6 +350,10 @@ func runServe(args []string) error {
 		metrics := getSession().ContextMetrics()
 		return server.ContextMetrics{Used: metrics.Used, Window: metrics.Window, Remaining: metrics.Remaining}
 	})
+	srv.SetWorkMetricsFunc(func() (int64, *appwire.SerfUsage, int64) {
+		sess := getSession()
+		return sess.WorkMillisSnapshot(), serfUsageFromLLM(sess.CumulativeUsageSnapshot()), sess.ActiveTurnStartedAtUnix()
+	})
 	srv.SetModelFunc(func(model string) { getSession().SetModel(model) })
 	srv.SetReasoningEffortFunc(func(effort string) { getSession().SetReasoningEffort(effort) })
 	srv.SetListModelsFunc(cmdutil.ListModelsFunc(client, profile.ID()))
@@ -589,6 +593,27 @@ func clientHasProvider(client *llm.Client, name string) bool {
 		}
 	}
 	return false
+}
+
+// serfUsageFromLLM maps a session's cumulative llm.Usage to the wire
+// appwire.SerfUsage shown in /status and thread/read. Returns nil when every
+// total (including CacheReadTokens) is zero — a fresh session, an old daemon
+// that never seeded usage, or a Codex thread — so the status row hides the
+// usage cluster rather than rendering ↑0 ↓0 (WS2 A7).
+func serfUsageFromLLM(u llm.Usage) *appwire.SerfUsage {
+	cacheRead := 0
+	if u.CacheReadTokens != nil {
+		cacheRead = *u.CacheReadTokens
+	}
+	if u.InputTokens == 0 && u.OutputTokens == 0 && cacheRead == 0 && u.TotalTokens == 0 {
+		return nil
+	}
+	return &appwire.SerfUsage{
+		InputTokens:     int64(u.InputTokens),
+		OutputTokens:    int64(u.OutputTokens),
+		CacheReadTokens: int64(cacheRead),
+		TotalTokens:     int64(u.TotalTokens),
+	}
 }
 
 func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus {

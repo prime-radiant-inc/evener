@@ -123,6 +123,9 @@ func appTurnsFromNotifications(records []appserver.SequencedNotification) []appw
 			if params.Turn.Status != "" {
 				turn.Status = params.Turn.Status
 			}
+			if params.Turn.StartedAt != nil {
+				turn.StartedAt = params.Turn.StartedAt
+			}
 		case appwire.NotifyItemStarted, appwire.NotifyItemCompleted:
 			var params struct {
 				TurnID string             `json:"turnId"`
@@ -187,6 +190,12 @@ func appTurnsFromNotifications(records []appserver.SequencedNotification) []appw
 			}
 			if params.Turn.Status != "" {
 				turn.Status = params.Turn.Status
+			}
+			if params.Turn.CompletedAt != nil {
+				turn.CompletedAt = params.Turn.CompletedAt
+			}
+			if params.Turn.DurationMS != nil {
+				turn.DurationMS = params.Turn.DurationMS
 			}
 			turn.Error = params.Turn.Error
 			for _, item := range params.Turn.Items {

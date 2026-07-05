@@ -92,6 +92,15 @@ type StatusInfo struct {
 	ContextRemaining int                `json:"context_remaining,omitempty"`
 	Detailed         *DetailedStatus    `json:"detailed,omitempty"`
 	Capabilities     ActionCapabilities `json:"capabilities"`
+	// Usage, WorkMillis, and ActiveTurnStartedAt are the daemon's live
+	// working-state/token metrics (WS2 A7), read from workMetricsFn on demand
+	// rather than pushed on every event. Usage is a pointer (unlike the other
+	// two scalars) because appwire.SerfUsage is a value struct whose
+	// omitempty would never omit — nil is how a fresh/unwired daemon signals
+	// "no token data" rather than rendering ↑0 ↓0.
+	Usage               *appwire.SerfUsage `json:"usage,omitempty"`
+	WorkMillis          int64              `json:"work_millis,omitempty"`
+	ActiveTurnStartedAt int64              `json:"active_turn_started_at,omitempty"`
 }
 
 // ContextMetrics describes the estimated size of the active session context.
@@ -150,6 +159,11 @@ type Server struct {
 	clearFunc           func(context.Context) error
 	pressureFn          func() float64
 	contextMetricsFn    func() ContextMetrics
+	// workMetricsFn returns the live working-state/token metrics (WS2 A7):
+	// accumulated wall-clock work time, cumulative token usage (nil when
+	// there is none to report), and the in-flight turn's start time (0 when
+	// idle). Read by both /status and the appwire appThread() projection.
+	workMetricsFn       func() (workMillis int64, usage *appwire.SerfUsage, activeTurnStartedAt int64)
 	detailedStatusFn    func() DetailedStatus
 	modelFunc           func(string)
 	reasoningEffortFunc func(string)
@@ -371,6 +385,17 @@ func (s *Server) SetQueuePreviewFunc(fn func() []string) {
 func (s *Server) SetContextPressureFunc(fn func() float64) {
 	s.mu.Lock()
 	s.pressureFn = fn
+	s.mu.Unlock()
+}
+
+// SetWorkMetricsFunc sets a callback to retrieve the live working-state/token
+// metrics (WS2 A7): accumulated wall-clock work time, cumulative token usage
+// (nil when there is none to report), and the in-flight turn's Unix start
+// time (0 when idle). Read by both /status (handleStatus) and the appwire
+// thread projection (appThread).
+func (s *Server) SetWorkMetricsFunc(fn func() (workMillis int64, usage *appwire.SerfUsage, activeTurnStartedAt int64)) {
+	s.mu.Lock()
+	s.workMetricsFn = fn
 	s.mu.Unlock()
 }
 

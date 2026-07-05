@@ -1942,6 +1942,41 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .input-status .context-fill.context-warn { background: var(--state-awaiting); }
 .input-status .context-warn-glyph { color: var(--state-awaiting); font-size: var(--text-xs); }
 
+/* Work-time and token clusters (WS2): plain status-item styling — tabular
+   nums so the digits don't jitter in width as the client-side tick (a later
+   task) updates them. */
+.input-status .work-time,
+.input-status .tokens .status-value {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Inline liveness (mockup #13's status-row variant): quiet/concern color
+   language for the honest calm→concern model, scaled to a status-item. The
+   ambient .status-value color isn't muted by default, so the quiet band
+   needs its own explicit rule here. */
+.input-status .liveness-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.input-status .liveness-inline[hidden] { display: none; }
+.input-status .liveness-inline::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+.input-status .liveness-inline[data-level="quiet"] { color: var(--text-muted); }
+.input-status .liveness-inline[data-level="concern"] { color: var(--state-awaiting); }
+.input-status .liveness-inline[data-level="concern"]::before { background: var(--state-awaiting); }
+.input-status .liveness-inline .liveness-glyph {
+  font-weight: 700;
+  color: var(--state-awaiting);
+  flex-shrink: 0;
+}
+
 /* Generic context/cost styling — kept for status_bar.html and other surfaces. */
 .context { display: inline-flex; align-items: center; gap: var(--space-3); }
 .context-bar { display: inline-block; width: 80px; height: 2px; background: var(--rule); vertical-align: middle; overflow: hidden; }
@@ -2130,39 +2165,6 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .think.think-tier-med { color: var(--text-muted); }
 .think.think-tier-short { color: var(--text-muted); }
 .think.think-tier-short .pv { color: var(--text-muted); }
-
-/* Honest liveness (mockup #13): shown only when an actively working session has
-   gone quiet. Two bands. The calm-quiet band (data-level="quiet") is NEUTRAL —
-   a coarse "quiet ~Nm" bucket with a recessive dot — because a short silence is
-   expected, not a stall. The concern band (data-level="concern") escalates to
-   amber with a glyph once silence crosses the stall threshold. */
-.liveness {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  max-width: 680px;
-  margin: var(--space-3) 0 var(--space-5) 0;
-  font-size: var(--text-sm);
-  color: var(--text-muted);
-}
-.liveness[hidden] { display: none; }
-.liveness::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: var(--radius-pill);
-  background: var(--text-muted);
-  flex-shrink: 0;
-}
-/* Concern: amber, glyph-paired (the "!" carries the meaning for colorblind
-   readers, the color reinforces it). The dot turns solid amber too. */
-.liveness[data-level="concern"] { color: var(--state-awaiting); }
-.liveness[data-level="concern"]::before { background: var(--state-awaiting); }
-.liveness .liveness-glyph {
-  font-weight: 700;
-  color: var(--state-awaiting);
-  flex-shrink: 0;
-}
 
 /* Annotation tier — tool calls, diffs, subagent references */
 .tool-call { margin: 0 0 var(--space-2) 0; font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-muted); display: flex; column-gap: var(--space-3); row-gap: var(--space-1); flex-wrap: wrap; align-items: baseline; }
@@ -4690,8 +4692,6 @@ body.has-connection-banner #workspace { height: calc(100vh - 32px); }
 /* Skeleton variants — header meta pills (workspace.html) and conversation
    lines (skeleton-turn). Sizes here keep all inline style attributes out
    of the template. */
-.skeleton-meta-pill { width: 80px; }
-.skeleton-meta-pill-short { width: 60px; }
 .skeleton-meta-pill-long  { width: 100px; }
 .skeleton-line { height: 14px; }
 .skeleton-line-60 { width: 60%; }

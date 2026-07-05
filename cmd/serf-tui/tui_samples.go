@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
@@ -204,6 +205,15 @@ func sampleSessionDetails() map[string]hubSessionDetail {
 			WorkingDir:  "/Users/jesse/Documents/GitHub/prime-radiant-inc/serf",
 			Project:     "serf",
 			Live:        true,
+			// WorkMillis/Usage exercise WS2's work-time + token chips (kata
+			// ws2-c1) in the design-system corpus's flagship "active" sample.
+			WorkMillis: 185000, // "3m"
+			Usage: &appwire.SerfUsage{
+				InputTokens:     46000,
+				OutputTokens:    12000,
+				CacheReadTokens: 100000,
+				TotalTokens:     158000,
+			},
 			Capabilities: hubSessionCapabilities{
 				Steer: true, Interrupt: true, Queue: true,
 			},
@@ -385,7 +395,7 @@ func sampleRenders() []tuiSampleRender {
 		{name: "dashboard-wide", width: 140, contains: []string{"SERF LIVE", "─", "┄", "Codex app-server smoke"}},
 		{name: "session-idle", width: 100, contains: []string{"SERF / SESSION", "IDLE", "draft stays visible"}},
 		{name: "session-streaming", width: 100, contains: []string{"SERF / SESSION", "The running agent harness", "all task steps completed"}},
-		{name: "session-busy-steer", width: 100, contains: []string{"SERF / SESSION", "queue", "ctrl+s", "steer", "Please also check"}},
+		{name: "session-busy-steer", width: 100, contains: []string{"SERF / SESSION", "queue", "ctrl+s", "steer", "Please also check", "work 3m", "tok ↑46k ↓12k"}},
 		{name: "session-busy-readonly", width: 100, contains: []string{"SERF / SESSION", "read-only", "source does not advertise queue"}},
 		{name: "session-browse", width: 100, contains: []string{"SERF / SESSION", "esc/i/q: compose", "f: fork"}},
 		{name: "session-fork", width: 100, contains: []string{"SERF / SESSION", "fork draft", "edited prompt"}},

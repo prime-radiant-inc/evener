@@ -10,6 +10,9 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
     <span class="status-dot" data-state="active"></span>
   </header>
   <div class="conversation" id="conversation" data-session-id="01TEST" data-state="active"></div>
+  <div id="input-status" class="input-status">
+    <span class="status-item liveness-inline" data-liveness hidden></span>
+  </div>
 </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
 
 const { window } = dom;
@@ -40,6 +43,10 @@ const R = window.SerfRenderer;
   R.sessionId = "01TEST";
   R.state = "active";
   conv.dataset.state = "active";
+
+  // The self-heal coupling below only means something if it's driven off the
+  // inline status-row span (WS2 B5) rather than the old standalone sibling.
+  pass(R.livenessEl && R.livenessEl.matches("[data-liveness]"), "refreshLiveness is driven off the inline status-row span");
 
   // Calm-quiet gap: no self-heal yet.
   R.lastFrameAt = Date.now() - 30000;

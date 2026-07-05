@@ -82,6 +82,14 @@ type hubSessionDetail struct {
 	// Goal mirrors thread.Serf.Goal so `/goal status` can read the cached
 	// snapshot without a fresh round-trip. Nil when no goal is set.
 	Goal *appwire.GoalState
+	// Usage, WorkMillis, and ActiveTurnStartedAt mirror thread.Serf's WS2
+	// working-state/token metrics so the session header chip strip and the
+	// /status details drawer can render them without a fresh round-trip.
+	// Usage is nil when the source reports no token data (old daemon, Codex
+	// thread, or zero usage).
+	Usage               *appwire.SerfUsage
+	WorkMillis          int64
+	ActiveTurnStartedAt int64
 }
 
 type hubRefResponse struct {
@@ -212,28 +220,31 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 		capabilities.Resume = true
 	}
 	return hubSessionDetail{
-		Ref:              node.Ref,
-		SessionID:        thread.SessionID,
-		SourceLabel:      node.SourceLabel,
-		Title:            node.Title,
-		State:            node.State,
-		Model:            thread.ModelProvider,
-		Profile:          thread.Serf.Profile,
-		WorkingDir:       thread.CWD,
-		Project:          node.Project,
-		Branch:           gitBranchFromThread(thread),
-		TurnCount:        len(thread.Turns),
-		ActiveTurnID:     activeTurnIDFromThread(thread),
-		ContextPressure:  thread.Serf.ContextPressure,
-		ContextUsed:      thread.Serf.ContextUsed,
-		ContextWindow:    thread.Serf.ContextWindow,
-		ContextRemaining: thread.Serf.ContextRemaining,
-		RecentErrors:     recentTurnErrors(thread),
-		Diagnostics:      thread.Serf.Diagnostics,
-		Live:             node.Live,
-		Capabilities:     capabilities,
-		Queue:            thread.Serf.Queue,
-		Goal:             thread.Serf.Goal,
+		Ref:                 node.Ref,
+		SessionID:           thread.SessionID,
+		SourceLabel:         node.SourceLabel,
+		Title:               node.Title,
+		State:               node.State,
+		Model:               thread.ModelProvider,
+		Profile:             thread.Serf.Profile,
+		WorkingDir:          thread.CWD,
+		Project:             node.Project,
+		Branch:              gitBranchFromThread(thread),
+		TurnCount:           len(thread.Turns),
+		ActiveTurnID:        activeTurnIDFromThread(thread),
+		ContextPressure:     thread.Serf.ContextPressure,
+		ContextUsed:         thread.Serf.ContextUsed,
+		ContextWindow:       thread.Serf.ContextWindow,
+		ContextRemaining:    thread.Serf.ContextRemaining,
+		RecentErrors:        recentTurnErrors(thread),
+		Diagnostics:         thread.Serf.Diagnostics,
+		Live:                node.Live,
+		Capabilities:        capabilities,
+		Queue:               thread.Serf.Queue,
+		Goal:                thread.Serf.Goal,
+		Usage:               thread.Serf.Usage,
+		WorkMillis:          thread.Serf.WorkMillis,
+		ActiveTurnStartedAt: thread.Serf.ActiveTurnStartedAt,
 	}
 }
 
