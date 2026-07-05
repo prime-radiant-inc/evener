@@ -28,6 +28,7 @@ type ServerInfo struct {
 	Name   string   `json:"name"`             // server name as configured
 	Tools  []string `json:"tools"`            // namespaced tool names
 	Status string   `json:"status,omitempty"` // "connected" / "degraded" / "failed"
+	Error  string   `json:"error,omitempty"`  // last failure of any kind, including a Channel-B application error on an otherwise "connected" server; empty when healthy
 }
 
 // mcpConfigFile is the JSON structure of an mcp.json file.

@@ -300,6 +300,12 @@ func (m *Manager) RegisterTools(reg *tool.Registry) []ServerOutcome {
 						}
 					}
 					if err != nil {
+						// Final Channel-A error return: a ctx cancellation, a plain
+						// JSON-RPC error, or an ErrConnectionClosed that reconnect
+						// either didn't attempt or couldn't heal (in which case
+						// markDegraded already stamped lastErr above; recording it
+						// again here is harmless — it doesn't touch status).
+						c.recordError(err)
 						return nil, err
 					}
 					body := mcpResultToString(result)
@@ -308,6 +314,15 @@ func (m *Manager) RegisterTools(reg *tool.Registry) []ServerOutcome {
 						// upstream 4xx). Return it through the error path so the tool
 						// result reaches the model as an error-typed tool_result and
 						// renders red, instead of a green success carrying the error text.
+						//
+						// Record the actual body text as lastErr — NOT the sentinel
+						// error returned below — so Servers() surfaces the real
+						// upstream message (e.g. "upstream 400") rather than the
+						// generic sentinel, which carries no diagnostic detail. status
+						// stays whatever it already was (typically "connected"): the
+						// server is reachable and responding, just reporting an
+						// application-level error for this call.
+						c.recordError(errors.New(body))
 						return body, errors.New("MCP tool reported an error")
 					}
 					return body, nil
@@ -339,10 +354,12 @@ func failRegister(c *conn, reg *tool.Registry, added []string, err error) Server
 	return ServerOutcome{Name: c.name, Stage: "register", Err: err}
 }
 
-// Servers returns per-server info including name and namespaced tool names.
-// It reads each conn's live state under its mutex rather than a
-// construction-time snapshot, so a status change from a concurrent Close()
-// or (in a later task) a reconnect swap is always reflected.
+// Servers returns per-server info including name, namespaced tool names,
+// live status, and the last error of any kind (including a Channel-B
+// application error that does not change status). It reads each conn's live
+// state under its mutex rather than a construction-time snapshot, so a
+// status or error change from a concurrent Close(), reconnect swap (Task 8),
+// or exec closure (Task 13) is always reflected.
 func (m *Manager) Servers() []mcpconfig.ServerInfo {
 	if m == nil {
 		return nil
@@ -353,14 +370,24 @@ func (m *Manager) Servers() []mcpconfig.ServerInfo {
 		c.mu.Lock()
 		name := c.name
 		status := c.status
+		lastErr := c.lastErr
 		tools := make([]string, len(c.tools))
 		for j, td := range c.tools {
 			tools[j] = td.Name
 		}
 		c.mu.Unlock()
-		out[i] = mcpconfig.ServerInfo{Name: name, Tools: tools, Status: status}
+		out[i] = mcpconfig.ServerInfo{Name: name, Tools: tools, Status: status, Error: errString(lastErr)}
 	}
 	return out
+}
+
+// errString returns err's message, or "" if err is nil — a nil-safe
+// conversion so a healthy server (lastErr never set) reports Error=="".
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // Close shuts down all MCP server connections. Each conn's mutex serializes
@@ -404,6 +431,21 @@ func (c *conn) markDegraded(err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.status = "degraded"
+	c.lastErr = err
+	c.lastErrAt = time.Now()
+}
+
+// recordError records the last error observed on c — a Channel-A transport
+// error or a Channel-B application error (the server itself reported a tool
+// result as an error) — WITHOUT changing status. Unlike markDegraded, a
+// Channel-B failure means the server is reachable and responding; it is only
+// this call's result that failed, so status must stay whatever it already
+// was (typically "connected"). Calling recordError after markDegraded already
+// ran for the same failed call is harmless: it just overwrites lastErr with
+// the same (or, after a failed retry, a newer) error.
+func (c *conn) recordError(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.lastErr = err
 	c.lastErrAt = time.Now()
 }

@@ -366,7 +366,8 @@ func TestSanitizeToolName(t *testing.T) {
 }
 
 // TestMCPManager_Servers verifies that Servers() returns per-server info
-// with names and namespaced tool names.
+// with names, namespaced tool names, and — for a healthy server that has
+// never errored — Status "connected" with an empty Error.
 func TestMCPManager_Servers(t *testing.T) {
 	ctx := context.Background()
 
@@ -440,6 +441,12 @@ func TestMCPManager_Servers(t *testing.T) {
 	}
 	if !alphaTools["alpha__farewell"] {
 		t.Error("alpha tools missing alpha__farewell")
+	}
+	if alpha.Status != "connected" {
+		t.Errorf("alpha status = %q, want connected", alpha.Status)
+	}
+	if alpha.Error != "" {
+		t.Errorf("alpha error = %q, want empty for a healthy server", alpha.Error)
 	}
 
 	beta, ok := byName["beta"]

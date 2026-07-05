@@ -53,4 +53,19 @@ func TestMCPManager_ChannelBError_IsErrorTypedResult(t *testing.T) {
 	if !strings.Contains(res.Output, "boom: upstream 400") {
 		t.Errorf("error body missing from result: %q", res.Output)
 	}
+
+	// Task 13: the conn's live Servers() snapshot must surface the
+	// Channel-B failure as Error text, without demoting Status — the
+	// server is still reachable and responding, just reporting an
+	// application-level error for this call.
+	servers := mgr.Servers()
+	if len(servers) != 1 {
+		t.Fatalf("expected 1 server, got %d", len(servers))
+	}
+	if servers[0].Status != "connected" {
+		t.Errorf("status = %q, want connected (Channel-B failure must not demote)", servers[0].Status)
+	}
+	if !strings.Contains(servers[0].Error, "upstream 400") {
+		t.Errorf("Error = %q, want it to contain %q", servers[0].Error, "upstream 400")
+	}
 }
