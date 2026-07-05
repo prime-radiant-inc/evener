@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"sort"
-	"sync"
 
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
@@ -13,14 +12,24 @@ import (
 // hubPluginsController manages marketplace and plugin lifecycle CRUD,
 // delegating all on-disk state to internal/plugins.Manager (reload -> mutate
 // -> atomic write, under the manager's own flock — the marketplace/plugin
-// analogue of hubInstancesController's providers.toml handling). mu mirrors
-// hubInstancesController's locking shape for the mutating methods; the
-// manager's own per-call flock is what actually serializes concurrent
-// mutations (including across processes), so mu only buys in-process
-// consistency for the read-modify-translate-to-wire-types sequence.
+// analogue of hubInstancesController's providers.toml handling).
+//
+// Unlike hubInstancesController, this controller holds no mutex of its own.
+// hubInstancesController's mu is load-bearing: providers.toml is read and
+// written with no OS-level lock, so an in-process mutex is the only thing
+// preventing a lost update between concurrent Create/Edit/Remove/SetDefault
+// calls. plugins.Manager is different: every mutating call (and Browse's
+// lazy-fetch) takes the manager's own flock on a single per-root lock file
+// (m.lockPath()) for the whole read-modify-atomic-write sequence, and flock
+// serializes by open-file-description rather than by process, so it
+// correctly serializes concurrent in-process goroutines too — Manager itself
+// holds no other mutable state a controller-level mutex could protect. A
+// controller mutex here would add nothing but contention: it would be held
+// across the manager's own blocking (up to 30s) lock acquisition, serializing
+// otherwise-independent mutations (e.g. two unrelated marketplaces) behind
+// whichever one is slowest.
 type hubPluginsController struct {
 	mgr *plugins.Manager
-	mu  sync.Mutex
 }
 
 // newHubPluginsController builds a controller rooted at root, or the default
@@ -55,9 +64,8 @@ func marketplaceSourceToWire(src plugins.Source) appwire.MarketplaceSourceInput 
 // Marketplaces
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ListMarketplaces returns every registered marketplace, sorted by name. Not
-// mutex-guarded: it is a single consistent read off the manager (matching
-// hubInstancesController.List, which is likewise unguarded).
+// ListMarketplaces returns every registered marketplace, sorted by name: a
+// single consistent read off the manager (matching hubInstancesController.List).
 func (c *hubPluginsController) ListMarketplaces() (appwire.MarketplaceListResponse, error) {
 	return c.listMarketplaces()
 }
@@ -87,8 +95,6 @@ func (c *hubPluginsController) listMarketplaces() (appwire.MarketplaceListRespon
 
 // AddMarketplace registers a new marketplace and returns the updated list.
 func (c *hubPluginsController) AddMarketplace(ctx context.Context, params appwire.MarketplaceAddParams) (appwire.MarketplaceListResponse, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if _, err := c.mgr.AddMarketplace(ctx, params.Name, marketplaceSourceFromWire(params.Source)); err != nil {
 		return appwire.MarketplaceListResponse{}, err
 	}
@@ -97,8 +103,6 @@ func (c *hubPluginsController) AddMarketplace(ctx context.Context, params appwir
 
 // RemoveMarketplace unregisters a marketplace and returns the updated list.
 func (c *hubPluginsController) RemoveMarketplace(params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if err := c.mgr.RemoveMarketplace(params.Name); err != nil {
 		return appwire.MarketplaceListResponse{}, err
 	}
@@ -108,18 +112,15 @@ func (c *hubPluginsController) RemoveMarketplace(params appwire.MarketplaceNameP
 // RefreshMarketplace pulls a marketplace's latest catalog and returns the
 // updated list.
 func (c *hubPluginsController) RefreshMarketplace(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if err := c.mgr.RefreshMarketplace(ctx, params.Name); err != nil {
 		return appwire.MarketplaceListResponse{}, err
 	}
 	return c.listMarketplaces()
 }
 
-// Browse returns a marketplace's plugin catalog. Not mutex-guarded: like
-// ListMarketplaces, it is a read (the manager may lazily fetch an
-// unfetched marketplace pointer, but that is serialized by the manager's own
-// flock, not this controller).
+// Browse returns a marketplace's plugin catalog. Like ListMarketplaces, this
+// is a read (the manager may lazily fetch an unfetched marketplace pointer,
+// but that is serialized by the manager's own flock).
 func (c *hubPluginsController) Browse(ctx context.Context, params appwire.MarketplaceBrowseParams) (appwire.MarketplaceBrowseResponse, error) {
 	cat, err := c.mgr.Browse(ctx, params.Name)
 	if err != nil {
@@ -142,8 +143,7 @@ func (c *hubPluginsController) Browse(ctx context.Context, params appwire.Market
 // Plugins
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ListPlugins returns every installed plugin. Not mutex-guarded (see
-// ListMarketplaces).
+// ListPlugins returns every installed plugin (see ListMarketplaces).
 func (c *hubPluginsController) ListPlugins() (appwire.PluginListResponse, error) {
 	return c.listPlugins()
 }
@@ -174,8 +174,6 @@ func (c *hubPluginsController) listPlugins() (appwire.PluginListResponse, error)
 // Install installs a plugin from a marketplace's catalog and returns the
 // updated list.
 func (c *hubPluginsController) Install(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if _, err := c.mgr.Install(ctx, params.Plugin, params.Marketplace); err != nil {
 		return appwire.PluginListResponse{}, err
 	}
@@ -185,8 +183,6 @@ func (c *hubPluginsController) Install(ctx context.Context, params appwire.Plugi
 // Upgrade re-resolves an installed plugin against its marketplace and returns
 // the updated list.
 func (c *hubPluginsController) Upgrade(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if _, err := c.mgr.Upgrade(ctx, params.Plugin, params.Marketplace); err != nil {
 		return appwire.PluginListResponse{}, err
 	}
@@ -196,8 +192,6 @@ func (c *hubPluginsController) Upgrade(ctx context.Context, params appwire.Plugi
 // Remove deletes an installed plugin's registry entry (and cache dir, if any)
 // and returns the updated list.
 func (c *hubPluginsController) Remove(params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if err := c.mgr.Remove(params.Plugin, params.Marketplace); err != nil {
 		return appwire.PluginListResponse{}, err
 	}
@@ -207,8 +201,6 @@ func (c *hubPluginsController) Remove(params appwire.PluginRefParams) (appwire.P
 // Enable flips an installed plugin's enabled flag on and returns the updated
 // list.
 func (c *hubPluginsController) Enable(params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if err := c.mgr.SetEnabled(params.Plugin, params.Marketplace, true); err != nil {
 		return appwire.PluginListResponse{}, err
 	}
@@ -218,8 +210,6 @@ func (c *hubPluginsController) Enable(params appwire.PluginRefParams) (appwire.P
 // Disable flips an installed plugin's enabled flag off and returns the
 // updated list.
 func (c *hubPluginsController) Disable(params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if err := c.mgr.SetEnabled(params.Plugin, params.Marketplace, false); err != nil {
 		return appwire.PluginListResponse{}, err
 	}
@@ -229,8 +219,6 @@ func (c *hubPluginsController) Disable(params appwire.PluginRefParams) (appwire.
 // SetAutoUpgrade flips an installed plugin's auto-upgrade flag and returns
 // the updated list.
 func (c *hubPluginsController) SetAutoUpgrade(params appwire.PluginSetAutoUpgradeParams) (appwire.PluginListResponse, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if err := c.mgr.SetAutoUpgrade(params.Plugin, params.Marketplace, params.AutoUpgrade); err != nil {
 		return appwire.PluginListResponse{}, err
 	}

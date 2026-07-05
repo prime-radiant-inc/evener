@@ -13,6 +13,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"primeradiant.com/serf/appwire"
@@ -40,18 +41,26 @@ func writeTestPluginManifest(t *testing.T, dir, name string) {
 	}
 }
 
+// writeTestMarketplaceManifest writes a minimal directory-source marketplace
+// manifest at dir under name, with the given raw JSON plugins-array body
+// (e.g. "[]" or a full catalog-plugin list).
+func writeTestMarketplaceManifest(t *testing.T, dir, name, pluginsJSON string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"name":"` + name + `","owner":{"name":"o"},"plugins":` + pluginsJSON + `}`
+	if err := os.WriteFile(filepath.Join(dir, ".claude-plugin", "marketplace.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // writeTestMarketplace writes a directory-source marketplace named "acme" at
 // dir, with one catalog plugin ("widget") referenced by a relative
 // "./plugins/widget" source.
 func writeTestMarketplace(t *testing.T, dir string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	manifest := `{"name":"acme","owner":{"name":"o"},"plugins":[{"name":"widget","description":"a widget","category":"tools","source":"./plugins/widget"}]}`
-	if err := os.WriteFile(filepath.Join(dir, ".claude-plugin", "marketplace.json"), []byte(manifest), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeTestMarketplaceManifest(t, dir, "acme", `[{"name":"widget","description":"a widget","category":"tools","source":"./plugins/widget"}]`)
 	writeTestPluginManifest(t, filepath.Join(dir, "plugins", "widget"), "widget")
 }
 
@@ -177,6 +186,56 @@ func TestPlugins_Marketplace_BrowseUnknown_Errors(t *testing.T) {
 	_, err := ctl.Browse(context.Background(), appwire.MarketplaceBrowseParams{Name: "nope"})
 	if err == nil {
 		t.Fatal("expected error browsing unknown marketplace, got nil")
+	}
+}
+
+// TestPlugins_ConcurrentAddMarketplace_NoLostUpdate exercises the claim
+// behind hubPluginsController holding no mutex of its own (see app_plugins.go's
+// doc comment): internal/plugins.Manager's single per-root flock — not an
+// in-process mutex — is what serializes concurrent mutations, in-process or
+// not. Two goroutines register distinct marketplaces on the same controller
+// concurrently; both must succeed and both must land in the registry. A lost
+// update (or a race flagged under -race) would mean the flock alone is not
+// sufficient and the removed controller-level mutex was load-bearing after
+// all.
+func TestPlugins_ConcurrentAddMarketplace_NoLostUpdate(t *testing.T) {
+	ctl := newTestPluginsController(t)
+	dirAcme, dirBeta := t.TempDir(), t.TempDir()
+	writeTestMarketplace(t, dirAcme)                       // registers as "acme"
+	writeTestMarketplaceManifest(t, dirBeta, "beta", "[]") // no catalog plugins needed
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, errs[0] = ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
+			Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: dirAcme},
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		_, errs[1] = ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
+			Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: dirBeta},
+		})
+	}()
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("AddMarketplace[%d]: %v", i, err)
+		}
+	}
+
+	resp, err := ctl.ListMarketplaces()
+	if err != nil {
+		t.Fatalf("ListMarketplaces: %v", err)
+	}
+	names := make(map[string]bool, len(resp.Marketplaces))
+	for _, m := range resp.Marketplaces {
+		names[m.Name] = true
+	}
+	if !names["acme"] || !names["beta"] {
+		t.Fatalf("ListMarketplaces = %+v, want both acme and beta", resp.Marketplaces)
 	}
 }
 
