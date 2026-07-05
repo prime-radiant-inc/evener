@@ -207,17 +207,16 @@
   }
 
   // flatten emits one keyed element descriptor per rendered row/section in
-  // order: NeedsYou, Pinned, active projects, Archived (N), test runs.
+  // order: NeedsYou, Pinned, active projects, Archived (N), Test runs (N).
   // Render session rows grouped under project section headers; expansion +
-  // lazy children are honored via model.expanded. R2 adds test_runs, reusing
-  // the same section machinery as Archived.
+  // lazy children are honored via model.expanded.
   function flatten(tree) {
     var out = [];
     (tree.needs_you || []).forEach(function (n) { if (!n.__drop) out.push(n); });
     (tree.favorites || []).forEach(function (n) { if (!n.__drop) out.push(n); });
     (tree.projects || []).forEach(function (p) { pushProject(out, p); });
     pushArchivedSection(out, tree);
-    // test_runs: R2.
+    pushTestRunsSection(out, tree);
     return out;
   }
   function pushProject(out, p) {
@@ -231,19 +230,32 @@
   // A section is itself a keyed element (data-row-id="section:<key>"), built
   // via the same reconcile dispatch as rows/project headers. Its content
   // (projects + their sessions) is only emitted by flatten when expanded, and
-  // reuses pushProject/buildProjectHeader/buildRow verbatim — an archived
+  // reuses pushProject/buildProjectHeader/buildRow verbatim — a section
   // project's own expansion, menu, and pending-overlay participation work
   // exactly like an active project's.
   var SECTION_ARCHIVED = "section:archived";
-  var SECTION_KEYS = [SECTION_ARCHIVED];
+  var SECTION_TEST_RUNS = "section:test-runs";
+  var SECTION_KEYS = [SECTION_ARCHIVED, SECTION_TEST_RUNS];
 
-  function pushArchivedSection(out, tree) {
-    var archived = tree.archived_projects || [];
-    if (!archived.length) return; // no chrome for an empty bucket
-    out.push({ row_id: SECTION_ARCHIVED, __section: true, key: SECTION_ARCHIVED, label: "Archived", count: archived.length });
-    if (model.expanded.has(SECTION_ARCHIVED)) {
-      archived.forEach(function (p) { p.__archived = true; pushProject(out, p); });
+  // pushSection appends a section header (if its bucket is non-empty) and,
+  // once expanded, its projects. markKey (e.g. "__archived") is stamped onto
+  // each project so projectMenuItems can offer Unarchive instead of Archive;
+  // pass null/undefined for buckets that don't need that (Test runs: a
+  // project there was never in the archived bucket, so it keeps plain
+  // Archive — precedence between the two buckets is decided server-side,
+  // never here).
+  function pushSection(out, list, key, label, markKey) {
+    if (!list.length) return; // no chrome for an empty bucket
+    out.push({ row_id: key, __section: true, key: key, label: label, count: list.length });
+    if (model.expanded.has(key)) {
+      list.forEach(function (p) { if (markKey) p[markKey] = true; pushProject(out, p); });
     }
+  }
+  function pushArchivedSection(out, tree) {
+    pushSection(out, tree.archived_projects || [], SECTION_ARCHIVED, "Archived", "__archived");
+  }
+  function pushTestRunsSection(out, tree) {
+    pushSection(out, tree.test_runs || [], SECTION_TEST_RUNS, "Test runs", null);
   }
 
   function buildRowOrSection(n) {
