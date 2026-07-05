@@ -567,7 +567,7 @@ func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus 
 		out.Tools = append(out.Tools, server.ToolInfo{Name: t.Name, Source: t.Source})
 	}
 	for _, m := range ds.MCP {
-		out.MCP = append(out.MCP, server.MCPServerInfo{Name: m.Name, Tools: m.Tools})
+		out.MCP = append(out.MCP, server.MCPServerInfo{Name: m.Name, Tools: m.Tools, Status: m.Status, Error: m.Error})
 	}
 	for _, s := range ds.Skills {
 		out.Skills = append(out.Skills, server.SkillInfo{Name: s.Name, Description: s.Description})

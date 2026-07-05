@@ -34,8 +34,10 @@ type ToolInfo struct {
 
 // MCPServerInfo describes a connected MCP server.
 type MCPServerInfo struct {
-	Name  string   `json:"name"`
-	Tools []string `json:"tools"`
+	Name   string   `json:"name"`
+	Tools  []string `json:"tools"`
+	Status string   `json:"status,omitempty"`
+	Error  string   `json:"error,omitempty"`
 }
 
 // SkillInfo describes a discovered skill.
