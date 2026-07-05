@@ -191,7 +191,7 @@ func (s *CheckpointPredStrategy) predictiveCheckpoint(ctx context.Context, histo
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 					content := fmt.Sprint(p.ToolResult.Content)
-					b.WriteString(fmt.Sprintf("Tool(%s): %s\n", p.ToolResult.Name, truncate(content, 200)))
+					fmt.Fprintf(&b, "Tool(%s): %s\n", p.ToolResult.Name, truncate(content, 200))
 				}
 			}
 		}

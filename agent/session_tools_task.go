@@ -233,7 +233,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				}
 
 				total, done := store.Progress()
-				msg.WriteString(fmt.Sprintf("Progress: %d/%d tasks complete.", done, total))
+				fmt.Fprintf(&msg, "Progress: %d/%d tasks complete.", done, total)
 				return tool.StateResult{Output: msg.String(), State: store.View()}, nil
 			default:
 				return nil, fmt.Errorf("unknown task_list action %q: use view, append, or update", action)

@@ -144,7 +144,7 @@ func (s *RecursiveDistillStrategy) microSummarize(ctx context.Context, client *l
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 					content := fmt.Sprint(p.ToolResult.Content)
-					b.WriteString(fmt.Sprintf("Tool(%s): %s\n", p.ToolResult.Name, truncate(content, 100)))
+					fmt.Fprintf(&b, "Tool(%s): %s\n", p.ToolResult.Name, truncate(content, 100))
 				}
 			}
 		}
@@ -178,7 +178,7 @@ Status update:`, b.String())
 func (s *RecursiveDistillStrategy) macroSummarize(ctx context.Context, client *llm.Client, micros []string) (string, error) {
 	var b strings.Builder
 	for i, m := range micros {
-		b.WriteString(fmt.Sprintf("%d. %s\n", i+1, m))
+		fmt.Fprintf(&b, "%d. %s\n", i+1, m)
 	}
 
 	prompt := fmt.Sprintf(`Consolidate these action summaries into a structured progress report (3-5 sentences). Preserve:

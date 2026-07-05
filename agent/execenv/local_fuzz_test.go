@@ -266,7 +266,7 @@ func referenceWindow(content string, offsetLine, limitLines *int) string {
 	}
 	var b strings.Builder
 	for i := start; i <= end; i++ {
-		b.WriteString(fmt.Sprintf("%4d\t%s\n", i, lines[i-1]))
+		fmt.Fprintf(&b, "%4d\t%s\n", i, lines[i-1])
 	}
 	return b.String()
 }

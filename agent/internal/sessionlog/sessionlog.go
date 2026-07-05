@@ -177,11 +177,11 @@ func (l *SessionLog) String() string {
 			sb.WriteString("\n")
 		}
 		// Format: "Turn 47 [edit_file] success: Modified auth middleware..."
-		sb.WriteString(fmt.Sprintf("Turn %d [%s] %s: %s",
+		fmt.Fprintf(&sb, "Turn %d [%s] %s: %s",
 			entry.Turn,
 			entry.Action,
 			entry.Outcome,
-			entry.Summary))
+			entry.Summary)
 		wrote = true
 	}
 

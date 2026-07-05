@@ -59,7 +59,7 @@ func buildSummarizePrompt(turns []schema.Turn) string {
 			b.WriteString("Assistant: " + truncate(t.Message.Text(), 500) + "\n")
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolCall && p.ToolCall != nil {
-					b.WriteString(fmt.Sprintf("  [tool_call: %s(%s)]\n", p.ToolCall.Name, truncate(string(p.ToolCall.Arguments), 200)))
+					fmt.Fprintf(&b, "  [tool_call: %s(%s)]\n", p.ToolCall.Name, truncate(string(p.ToolCall.Arguments), 200))
 				}
 			}
 		case schema.TurnTool, schema.TurnToolResults:
@@ -70,7 +70,7 @@ func buildSummarizePrompt(turns []schema.Turn) string {
 					if p.ToolResult.IsError {
 						errTag = " ERROR"
 					}
-					b.WriteString(fmt.Sprintf("Tool(%s)%s: %s\n", p.ToolResult.Name, errTag, truncate(content, 300)))
+					fmt.Fprintf(&b, "Tool(%s)%s: %s\n", p.ToolResult.Name, errTag, truncate(content, 300))
 				}
 			}
 		case schema.TurnSteering:
