@@ -46,7 +46,7 @@ func TestSupportedEnvVarsUseRegistryRows(t *testing.T) {
 		}
 		if entry.IsDir() {
 			switch entry.Name() {
-			case ".git", ".claude", ".worktrees", "docs", "envvars", "worktrees":
+			case ".git", ".claude", ".worktrees", "docs", "envvars", "inspo", "worktrees":
 				return filepath.SkipDir
 			}
 			return nil
