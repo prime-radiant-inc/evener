@@ -302,8 +302,8 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 	// provider name-map here (execTool runs outside s.mu) — never lock inside
 	// providerToolName, which has under-lock callers (SetModel).
 	nameMap := s.currentProfile().ToolNameMap()
-	visibleNames := providerVisibleFromMap(s.reg.Names(), nameMap)
-	requestedVisible := providerNameFromMap(call.Name, nameMap)
+	visibleNames := providerVisibleToolNames(s.reg.Names(), nameMap)
+	requestedVisible := providerToolName(call.Name, nameMap)
 	prep := prepareToolCall(call, s.reg.Get(call.Name), visibleNames, requestedVisible)
 	call = prep.Call
 	if len(prep.Changes) > 0 {
