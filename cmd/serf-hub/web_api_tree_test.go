@@ -1,6 +1,9 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +12,7 @@ import (
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/hubapi"
+	"primeradiant.com/serf/rendezvous"
 )
 
 func TestArchiveDecisionsFlowIntoTree(t *testing.T) {
@@ -122,5 +126,76 @@ func TestAPISessionDetailCarriesWorkMetricsForEndedSession(t *testing.T) {
 	}
 	if *detail.Usage != *want {
 		t.Fatalf("Usage=%+v, want %+v", detail.Usage, want)
+	}
+}
+
+func TestOrphanLiveGroupingUsesPathSlug(t *testing.T) {
+	roster := hubcore.NewRosterWithEntries(
+		hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "01L", WorkingDir: "/a/foo"}, SessionID: "01L", Status: "active"},
+	)
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), Roster: roster})
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	var resp hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Projects) != 1 || resp.Projects[0].Key != hubcore.ProjectSlug("/a/foo") {
+		t.Fatalf("orphan-live must use the path slug; got %+v", resp.Projects)
+	}
+}
+
+func TestTreeResponseProjectsCarryAdditiveFields(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		// 30h old: past the 24h "current" cutoff, well inside the 14-day "recent"
+		// window (see classifySession) — the plan's original "-time.Hour" fixture
+		// landed in "current", not "recent" as asserted below; see Task 4 deviation notes.
+		{ID: "01A", CreatedAt: now.Add(-30 * time.Hour), UpdatedAt: now.Add(-30 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/proj", GitBranch: "main"}},
+	}
+	past := hubcore.NewPastIndex("")
+	web := NewWebServer(hubcore.WebConfig{Past: past})
+	web.injectMetasForTest(metas) // helper: see step 3
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	var resp hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.TestRuns // field must exist and marshal (empty slice or null both acceptable)
+	if len(resp.Projects) != 1 {
+		t.Fatalf("want 1 project, got %d", len(resp.Projects))
+	}
+	p := resp.Projects[0]
+	if p.RollupLive != 0 || p.MoreCurrent != 0 || p.Worktrees != 0 {
+		t.Fatalf("additive project fields should be zero-valued here: %+v", p)
+	}
+	if len(p.Sessions) != 1 || p.Sessions[0].Branch != "main" || p.Sessions[0].Tier != "recent" {
+		t.Fatalf("node additive fields wrong: %+v", p.Sessions)
+	}
+}
+
+func TestAPITreeProjectServedFromTree(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01A", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/proj"}},
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	web.injectMetasForTest(metas)
+	key := hubcore.ProjectSlug("/w/proj")
+	req := httptest.NewRequest(http.MethodGet, "/api/tree/project?key="+key, nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var p hubapi.TreeProject
+	if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Key != key || len(p.Sessions) != 1 {
+		t.Fatalf("want the single project with its session, got %+v", p)
 	}
 }

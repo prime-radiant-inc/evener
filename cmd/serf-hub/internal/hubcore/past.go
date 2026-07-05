@@ -2,6 +2,8 @@ package hubcore
 
 import (
 	"database/sql"
+	"encoding/binary"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"sort"
@@ -48,6 +50,13 @@ type PastIndex struct {
 	// SessionMeta.ObservedBy stamp (empty on existing data). Like the metas, it is
 	// rebuilt once per cycle, so it is at most one rebuild interval stale.
 	observers map[string][]string
+
+	// onChange, when set via SetOnChange, is fired by Rebuild only when the
+	// indexed content's fingerprint actually changes.
+	onChange func()
+	// fingerprint is the content hash from the most recent Rebuild (see
+	// contentFingerprint), used to gate onChange against no-op rebuilds.
+	fingerprint uint64
 }
 
 // NewPastIndex returns a PastIndex configured to glob projectGlob.
@@ -84,6 +93,27 @@ func NewPastIndexWithDB(projectGlob, dbPath string) *PastIndex {
 // StateGlob returns the project glob the index scans.
 func (i *PastIndex) StateGlob() string {
 	return i.stateGlob
+}
+
+// SetOnChange registers a callback fired by Rebuild/UpdateMeta only when the
+// indexed content actually changes (a Find-miss rebuild with no delta does not
+// fire — round-3 G5). Nil disables the hook.
+func (i *PastIndex) SetOnChange(fn func()) { i.onChange = fn }
+
+// contentFingerprint hashes the (id, UpdatedAt) pairs of the sorted entries so
+// Rebuild can detect a genuine content delta without a deep compare.
+func contentFingerprint(all []PastEntry) uint64 {
+	h := fnv.New64a()
+	for _, e := range all {
+		_, _ = h.Write([]byte(e.ID))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(e.Meta.Name))
+		_, _ = h.Write([]byte{0})
+		var b [8]byte
+		binary.LittleEndian.PutUint64(b[:], uint64(e.Meta.UpdatedAt.UnixNano()))
+		_, _ = h.Write(b[:])
+	}
+	return h.Sum64()
 }
 
 // Rebuild scans every project under stateGlob and reloads the index.
@@ -127,7 +157,72 @@ func (i *PastIndex) Rebuild() error {
 			i.mu.Unlock()
 		}
 	}
+	fp := contentFingerprint(all)
+	i.mu.Lock()
+	changed := fp != i.fingerprint
+	i.fingerprint = fp
+	i.mu.Unlock()
+	if changed && i.onChange != nil {
+		i.onChange()
+	}
 	return nil
+}
+
+// UpdateMeta targets one existing entry: it replaces the meta, re-inserts the
+// entry at its new sorted position (the title is a sort-key component), and
+// re-numbers the FTS rows so search ordering stays correct — without a
+// synchronous disk Rebuild the rename response path cannot afford (round-2
+// A5/B1, round-3 H3). StateDir is preserved (rename never moves the files).
+// No-op when the id is not already indexed.
+//
+// The reordered index is built into a freshly-allocated slice and only then
+// swapped into i.all under the lock — mirroring Rebuild's own
+// allocate-then-swap discipline — rather than mutated in place. Rebuild
+// publishes i.all and then, after releasing the lock, keeps reading that same
+// slice's backing array (for rebuildFTS/contentFingerprint). An in-place
+// append/copy here would write into a backing array a concurrent, unlocked
+// Rebuild may still be reading, which is a data race.
+func (i *PastIndex) UpdateMeta(id string, meta schema.SessionMeta) {
+	i.mu.Lock()
+	old, ok := i.byID[id]
+	if !ok {
+		i.mu.Unlock()
+		return
+	}
+	pe := PastEntry{ID: id, Meta: meta, StateDir: old.StateDir}
+	i.byID[id] = pe
+	fresh := make([]PastEntry, 0, len(i.all))
+	removed := false
+	for _, e := range i.all {
+		if !removed && e.ID == id {
+			removed = true
+			continue
+		}
+		fresh = append(fresh, e)
+	}
+	pos := sort.Search(len(fresh), func(k int) bool { return !sessionMetaLess(fresh[k].Meta, meta) })
+	fresh = append(fresh, PastEntry{})
+	copy(fresh[pos+1:], fresh[pos:])
+	fresh[pos] = pe
+	i.all = fresh
+	all := append([]PastEntry(nil), i.all...)
+	i.mu.Unlock()
+
+	if i.dbPath != "" {
+		if err := i.rebuildFTS(all); err == nil {
+			i.mu.Lock()
+			i.fts = true
+			i.mu.Unlock()
+		}
+	}
+	fp := contentFingerprint(all)
+	i.mu.Lock()
+	changed := fp != i.fingerprint
+	i.fingerprint = fp
+	i.mu.Unlock()
+	if changed && i.onChange != nil {
+		i.onChange()
+	}
 }
 
 // All returns the full index sorted by the Hub session ordering contract.
@@ -356,6 +451,21 @@ func matches(e PastEntry, lowerQ string) bool {
 		return true
 	}
 	return false
+}
+
+// SeedForTest replaces the in-memory index with the given metas (StateDir left
+// blank). Test-only seam; production always goes through Rebuild.
+func (i *PastIndex) SeedForTest(metas []schema.SessionMeta) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.all = i.all[:0]
+	i.byID = map[string]PastEntry{}
+	for _, m := range metas {
+		pe := PastEntry{ID: m.ID, Meta: m}
+		i.all = append(i.all, pe)
+		i.byID[m.ID] = pe
+	}
+	sort.SliceStable(i.all, func(a, b int) bool { return sessionMetaLess(i.all[a].Meta, i.all[b].Meta) })
 }
 
 // AllMetas returns the full snapshot of indexed metas. Caller must not mutate.

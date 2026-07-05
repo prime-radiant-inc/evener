@@ -33,12 +33,7 @@
        can always reach the off-canvas sidebar. Hidden on desktop where the
        sidebar is always visible. -->
   <button type="button" class="app-nav-toggle" data-sidebar-toggle title="open sidebar" aria-label="open sidebar">☰</button>
-  <aside id="sidebar"
-         hx-get="/_partials/sidebar"
-         hx-trigger="load, sidebar:refresh from:body"
-         hx-swap="innerHTML">
-    <div class="sidebar-loading">loading…</div>
-  </aside>
+  <aside id="sidebar" aria-label="Sessions"></aside>
   <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-controls="sidebar" aria-label="resize sidebar"></div>
   <main id="workspace"
         hx-get="{{.WorkspaceURL}}"

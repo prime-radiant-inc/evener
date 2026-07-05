@@ -94,7 +94,12 @@ func TestArchiveEndpointProjectKind(t *testing.T) {
 	store := hubcore.NewArchiveStore(filepath.Join(dir, "index.db"))
 	web := NewWebServer(hubcore.WebConfig{Archive: store, Past: hubcore.NewPastIndex("")})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/archive", strings.NewReader(`{"kind":"project","id":"my-proj","archived":false}`))
+	// id is path-shaped (like a real project id — see projectArchivedDecision in
+	// tree.go, which always distinguishes a path row from its basename row) so
+	// it doesn't alias the handler's legacy-basename cleanup (web_api_archive.go
+	// handleAPIArchive: filepath.Base(body.ID)), which would otherwise delete
+	// the very row this test just set when the id itself has no path separator.
+	req := httptest.NewRequest(http.MethodPost, "/api/archive", strings.NewReader(`{"kind":"project","id":"/repo/my-proj","archived":false}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
@@ -106,10 +111,10 @@ func TestArchiveEndpointProjectKind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decisions() error: %v", err)
 	}
-	if _, ok := d[hubcore.ArchiveKey{Kind: "project", ID: "my-proj"}]; !ok {
+	if _, ok := d[hubcore.ArchiveKey{Kind: "project", ID: "/repo/my-proj"}]; !ok {
 		t.Fatalf("project decision not persisted; decisions=%v", d)
 	}
-	if d[hubcore.ArchiveKey{Kind: "project", ID: "my-proj"}] {
+	if d[hubcore.ArchiveKey{Kind: "project", ID: "/repo/my-proj"}] {
 		t.Fatalf("archived should be false; decisions=%v", d)
 	}
 }

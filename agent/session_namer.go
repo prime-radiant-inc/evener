@@ -20,6 +20,7 @@ import (
 const (
 	sessionNameSourcePrompt     = "prompt"
 	sessionNameSourceCompaction = "compaction"
+	sessionNameSourceUser       = "user"
 	sessionNameMaxRunes         = 60
 	sessionNameTimeout          = 15 * time.Second
 )

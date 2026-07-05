@@ -46,6 +46,12 @@ type Session struct {
 	clock      clock.Clock
 	stateDir   string
 	installID  string
+	// origin marks how the session was launched: "test" for agentic-testing
+	// runs (set from SERF_SESSION_ORIGIN on fresh create), empty for normal
+	// sessions. Preserved across resume from the persisted SessionMeta.Origin.
+	// Surfaced back out via Meta().Origin so the hub can classify an
+	// all-"test" project into the "Test runs" group.
+	origin string
 	// strictTranscriptMaxLineBytes caps a child transcript line during resumability
 	// checks. Zero means the production default (transcriptJSONLMaxLineBytes); tests
 	// set a small value on their own session to exercise the oversized-line path
@@ -660,6 +666,29 @@ func (s *Session) SetTimeout(timeoutMS int) {
 	// Flush meta.json so a daemon crash before the next happy-path turn
 	// boundary doesn't leave on-disk cfg stale. Kata wnfz. maybeAutoSave
 	// re-acquires s.mu via s.Meta(), so the lock must be released first.
+	s.maybeAutoSave()
+}
+
+// Rename sets a user-chosen session title. It records NameSource="user" so the
+// auto-namers (prompt + compaction) will never overwrite it — shouldApplySession
+// NameLocked and shouldNameFromCompaction both reject any source that is not
+// "prompt"/"compaction". Persists meta so the name survives a daemon crash.
+func (s *Session) Rename(name string) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return
+	}
+	s.naming.value = name
+	s.naming.source = sessionNameSourceUser
+	s.naming.updated = s.sclock().Now().UTC()
+	s.naming.set = true
+	s.mu.Unlock()
+	// maybeAutoSave re-acquires s.mu via s.Meta(); must not hold the lock here.
 	s.maybeAutoSave()
 }
 

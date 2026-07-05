@@ -93,3 +93,17 @@ func TestArchiveStoreMkdirAllError(t *testing.T) {
 		t.Fatalf("error = %q; want it to reference the blocking parent path %q", err, blocker)
 	}
 }
+
+func TestArchiveStoreDelete(t *testing.T) {
+	dir := t.TempDir()
+	store := NewArchiveStore(filepath.Join(dir, "index.db"))
+	now := time.Unix(1_700_000_000, 0)
+	_ = store.Set("project", "/a/foo", true, now)
+	if err := store.Delete("project", "/a/foo"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := store.Decisions()
+	if _, present := got[ArchiveKey{Kind: "project", ID: "/a/foo"}]; present {
+		t.Fatalf("archive row should be gone: %v", got)
+	}
+}

@@ -85,6 +85,8 @@ func threadActionAvailable(caps appwire.ThreadCapabilities, action string) bool 
 		return caps.Shutdown
 	case "model":
 		return caps.ChangeModel
+	case "rename":
+		return caps.Rename
 	case "queue":
 		return caps.Queue
 	case "goal":

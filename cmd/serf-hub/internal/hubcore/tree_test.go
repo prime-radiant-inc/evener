@@ -394,8 +394,8 @@ func TestBuildTreeSessionTiersAndProjectOrder(t *testing.T) {
 	if len(alpha.Current) != 1 || len(alpha.Archived) != 1 || len(alpha.Recent) != 0 {
 		t.Fatalf("alpha tiers: current=%d recent=%d archived=%d", len(alpha.Current), len(alpha.Recent), len(alpha.Archived))
 	}
-	// Projects ordered by most-recent session START desc: alpha's newest start is 2h ago,
-	// beta's is 50h ago -> alpha first.
+	// Projects ordered by last-activity desc: alpha's most recent touch was 1h
+	// ago, beta's was 48h ago -> alpha first.
 	if len(tree.Projects) < 2 || tree.Projects[0].Name != "alpha" {
 		t.Fatalf("project order wrong: %+v", projectNames(tree.Projects))
 	}
@@ -678,26 +678,55 @@ func TestBuildTree_KeepsSubagentStateWhenParentLive(t *testing.T) {
 	}
 }
 
-func TestBuildTree_OrdersProjectsByMostRecentStart(t *testing.T) {
-	// Active projects are emitted newest-first by their most-recent session START
-	// (max CreatedAt across the project's sessions).
+func TestBuildTree_OrdersProjectsByLastActivity(t *testing.T) {
+	// Active projects are emitted newest-first by their most recent
+	// last-activity (max last-activity across the project's sessions), not by
+	// when a session merely started.
 	now := time.Unix(1_700_000_000, 0)
-	mk := func(id, proj string, startedAgo time.Duration) schema.SessionMeta {
-		return schema.SessionMeta{ID: id, CreatedAt: now.Add(-startedAgo), UpdatedAt: now.Add(-startedAgo),
+	mk := func(id, proj string, createdAgo, updatedAgo time.Duration) schema.SessionMeta {
+		return schema.SessionMeta{ID: id, CreatedAt: now.Add(-createdAgo), UpdatedAt: now.Add(-updatedAgo),
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/" + proj}}
 	}
 	metas := []schema.SessionMeta{
-		mk("01R2", "started-older", 2*time.Hour),
-		mk("01R1", "started-newer", 10*time.Minute),
-		// started-older also has an even-newer session, which should lift it above
-		// started-newer because most-recent START wins.
-		mk("01R3", "started-older", 1*time.Minute),
+		// touched-older's sessions were both CREATED before touched-newer's only
+		// session, so max-CreatedAt ordering would rank touched-newer first. But
+		// one of touched-older's sessions was TOUCHED more recently than
+		// anything in touched-newer, which should lift touched-older to the top.
+		mk("01R2", "touched-older", 3*time.Hour, 3*time.Hour),
+		mk("01R3", "touched-older", 2*time.Hour, 1*time.Minute),
+		mk("01R1", "touched-newer", 10*time.Minute, 10*time.Minute),
 	}
 	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
 	got := projectNames(tree.Projects)
-	want := []string{"started-older", "started-newer"}
+	want := []string{"touched-older", "touched-newer"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("project order = %v, want %v", got, want)
+	}
+}
+
+func TestBuildTree_OrdersProjectsByLastActivityNotCreatedAt(t *testing.T) {
+	// A project's ordering key is last ACTIVITY, not session start: a project
+	// whose only session was created long ago but touched moments ago must
+	// outrank a project whose only session was created recently but has sat
+	// stale (untouched) since. Sorting by max CreatedAt (the pre-change
+	// behavior) gets this backwards — it ranks the freshly-started-but-stale
+	// project first.
+	now := time.Unix(1_700_000_000, 0)
+	mk := func(id, proj string, createdAgo, updatedAgo time.Duration) schema.SessionMeta {
+		return schema.SessionMeta{ID: id, CreatedAt: now.Add(-createdAgo), UpdatedAt: now.Add(-updatedAgo),
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/" + proj}}
+	}
+	metas := []schema.SessionMeta{
+		// old-but-touched: session started 30 days ago, touched 1 minute ago.
+		mk("01OLD", "old-but-touched", 30*24*time.Hour, 1*time.Minute),
+		// new-but-stale: session started 10 minutes ago, never touched since.
+		mk("01NEW", "new-but-stale", 10*time.Minute, 10*time.Minute),
+	}
+	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	got := projectNames(tree.Projects)
+	want := []string{"old-but-touched", "new-but-stale"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("project order = %v, want %v (must order by last activity, not session start)", got, want)
 	}
 }
 
@@ -1091,5 +1120,138 @@ func TestNeedsYou_ArchivedLiveAwaitingExcluded(t *testing.T) {
 	tree := BuildTree(metas, live, map[ArchiveKey]bool{{Kind: "session", ID: "01ARCH"}: true})
 	if len(tree.NeedsYou) != 0 {
 		t.Fatalf("archived live awaiting session must not appear in NeedsYou; got %d", len(tree.NeedsYou))
+	}
+}
+
+func TestCoBasenameProjectsAreDistinctNodes(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	metas := []schema.SessionMeta{
+		{ID: "01A", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/a/foo"}},
+		{ID: "01B", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/b/foo"}},
+	}
+	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	if len(tree.Projects) != 2 {
+		t.Fatalf("want 2 distinct projects for co-basename dirs, got %d: %+v", len(tree.Projects), tree.Projects)
+	}
+	keys := map[string]string{}
+	for _, p := range tree.Projects {
+		if p.Name != "foo" {
+			t.Fatalf("both projects display basename foo, got %q", p.Name)
+		}
+		keys[p.Key] = p.WorkingDir
+	}
+	if len(keys) != 2 {
+		t.Fatalf("want 2 distinct Keys, got %v", keys)
+	}
+	if keys["no-project"] != "" {
+		t.Fatalf("no session should land under no-project key: %v", keys)
+	}
+}
+
+func TestNoProjectKeyIsStable(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	metas := []schema.SessionMeta{{ID: "01A", CreatedAt: now, UpdatedAt: now}}
+	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	if len(tree.Projects) != 1 || tree.Projects[0].Key != "no-project" || tree.Projects[0].Name != "(no project)" {
+		t.Fatalf("want a single (no project)/no-project node, got %+v", tree.Projects)
+	}
+}
+
+func TestProjectArchiveDecisionPathKeyedWithLegacyFallback(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	mk := func(id, wd string) schema.SessionMeta {
+		return schema.SessionMeta{ID: id, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: wd}}
+	}
+	// Legacy basename row archives BOTH co-basename projects (read fallback).
+	legacy := map[ArchiveKey]bool{{Kind: "project", ID: "foo"}: true}
+	tree := BuildTreeAt([]schema.SessionMeta{mk("01A", "/a/foo"), mk("01B", "/b/foo")}, nil, legacy, now)
+	if len(tree.Projects) != 0 || len(tree.ArchivedProjects) != 2 {
+		t.Fatalf("legacy basename row should archive both; got projects=%d archived=%d", len(tree.Projects), len(tree.ArchivedProjects))
+	}
+	// A path-keyed row wins over the legacy row: /a/foo explicitly unarchived.
+	precedence := map[ArchiveKey]bool{{Kind: "project", ID: "foo"}: true, {Kind: "project", ID: "/a/foo"}: false}
+	tree = BuildTreeAt([]schema.SessionMeta{mk("01A", "/a/foo"), mk("01B", "/b/foo")}, nil, precedence, now)
+	if len(tree.Projects) != 1 || tree.Projects[0].WorkingDir != "/a/foo" {
+		t.Fatalf("path row false must win over legacy true; got %+v", tree.Projects)
+	}
+}
+
+func TestTwoClustersInOneProjectGetDistinctIDs(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	old := now.Add(-30 * 24 * time.Hour) // ended, clusterable
+	mk := func(id, title string) schema.SessionMeta {
+		return schema.SessionMeta{ID: id, Name: title, CreatedAt: old, UpdatedAt: old, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/p"}}
+	}
+	metas := []schema.SessionMeta{
+		mk("01A", "alpha"), mk("01B", "alpha"), mk("01C", "alpha"),
+		mk("01D", "beta"), mk("01E", "beta"), mk("01F", "beta"),
+	}
+	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	var clusters []TreeNode
+	for _, p := range tree.ArchivedProjects {
+		for _, n := range append(append([]TreeNode{}, p.Archived...), p.Recent...) {
+			if n.Kind == "cluster" {
+				clusters = append(clusters, n)
+			}
+		}
+	}
+	if len(clusters) != 2 {
+		t.Fatalf("want 2 clusters, got %d", len(clusters))
+	}
+	if clusters[0].ID == "" || clusters[1].ID == "" || clusters[0].ID == clusters[1].ID {
+		t.Fatalf("clusters need distinct non-empty IDs: %q vs %q", clusters[0].ID, clusters[1].ID)
+	}
+	for _, c := range clusters {
+		if !strings.HasPrefix(c.ID, "cluster:") {
+			t.Fatalf("cluster ID must be cluster:<hex>, got %q", c.ID)
+		}
+	}
+}
+
+func TestSubagentChildrenCappedPerTier(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	parent := schema.SessionMeta{ID: "01P", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/p"}}
+	metas := []schema.SessionMeta{parent}
+	for i := 0; i < 60; i++ {
+		metas = append(metas, schema.SessionMeta{
+			ID: fmt.Sprintf("01S%02d", i), IsSubagent: true, ParentSessionID: "01P",
+			CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/p"},
+		})
+	}
+	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	var subs int
+	for _, p := range tree.Projects {
+		for _, n := range p.Current {
+			if n.ID == "01P" {
+				subs = len(n.Children)
+			}
+		}
+	}
+	if subs != maxSidebarSessionsPerTier {
+		t.Fatalf("subagent children should cap at %d, got %d", maxSidebarSessionsPerTier, subs)
+	}
+}
+
+func TestAllTestSessionsClassifyAsTestRun(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	mk := func(id, origin string) schema.SessionMeta {
+		return schema.SessionMeta{ID: id, Origin: origin, CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/tp"}}
+	}
+	tree := BuildTreeAt([]schema.SessionMeta{mk("01A", "test"), mk("01B", "test")}, nil, map[ArchiveKey]bool{}, now)
+	var testRun *TreeProject
+	for i := range tree.Projects {
+		if tree.Projects[i].IsTestRun {
+			testRun = &tree.Projects[i]
+		}
+	}
+	if testRun == nil {
+		t.Fatalf("all-test project should be flagged IsTestRun; projects=%+v", tree.Projects)
+	}
+	// One unmarked session reclassifies the project (hiding real work is worse).
+	tree = BuildTreeAt([]schema.SessionMeta{mk("01A", "test"), mk("01B", "")}, nil, map[ArchiveKey]bool{}, now)
+	for _, p := range tree.Projects {
+		if p.IsTestRun {
+			t.Fatalf("a mixed project must not be IsTestRun")
+		}
 	}
 }

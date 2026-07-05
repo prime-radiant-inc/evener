@@ -106,6 +106,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "[hub] past index rebuild: %v\n", err)
 	}
 	archive := hubcore.NewArchiveStore(pastIndexDB)
+	favorite := hubcore.NewFavoriteStore(pastIndexDB)
 
 	// Spawner
 	hubToken, err := newHubToken()
@@ -177,17 +178,47 @@ func main() {
 		}
 	}
 
+	// inputs is the shared inputs-version counter the /api/tree memo (TreeCache)
+	// keys on; bumped whenever an input to the tree changes so the next request
+	// recomputes instead of serving a stale memoized tree.
+	inputs := &hubcore.InputsVersion{}
+
+	// Wire each input source's content-delta-gated onChange hook (Task 10) to
+	// the shared inputs-version counter, so only a real change to the past
+	// index, roster, or archive/favorite decisions busts the tree memo.
+	bump := inputs.Bump
+	past.SetOnChange(bump)
+	roster.SetOnChange(bump)
+	archive.SetOnChange(bump)
+	favorite.SetOnChange(bump)
+
 	// attentionPoke lets a web handler (e.g. an archive decision) nudge the
 	// attention watcher below to recompute immediately instead of waiting for
 	// its next tick. Buffered 1 + non-blocking send: a poke that arrives while
-	// one is already pending coalesces into the same recompute.
+	// one is already pending coalesces into the same recompute. remotePoke is
+	// a second, independently-buffered channel fed by the same pokeAttention
+	// call so the remote-thread-cache refresher (below) reacts to the same
+	// event without stealing pokes from the attention watcher — each has its
+	// own channel and drains only its own.
 	attentionPoke := make(chan struct{}, 1)
+	remotePoke := make(chan struct{}, 1)
 	pokeAttention := func() {
+		inputs.Bump()
 		select {
 		case attentionPoke <- struct{}{}:
 		default:
 		}
+		select {
+		case remotePoke <- struct{}{}:
+		default:
+		}
 	}
+
+	// remoteCache holds the last-refreshed remote-source thread list; the
+	// refresher goroutine below Stores into it on a ~30s ticker + poke, and
+	// the tree read path (remoteTreeThreads) reads it via WebConfig instead of
+	// performing a synchronous network walk per request.
+	remoteCache := &hubcore.RemoteThreadCache{}
 
 	// Web
 	web := NewWebServer(hubcore.WebConfig{
@@ -199,6 +230,7 @@ func main() {
 		Roster:              roster,
 		Past:                past,
 		Archive:             archive,
+		Favorite:            favorite,
 		Spawner:             spawner,
 		Models:              models,
 		PastPerPage:         cfg.PastResultsPerPage,
@@ -210,6 +242,8 @@ func main() {
 		CodexLaunches:       cfg.CodexLaunches,
 		CodexLauncher:       codexLauncher,
 		PokeAttention:       pokeAttention,
+		Inputs:              inputs,
+		RemoteThreadCache:   remoteCache,
 	})
 
 	// Lifecycle
@@ -305,6 +339,32 @@ func main() {
 	} else if len(removed) > 0 {
 		fmt.Fprintf(os.Stderr, "[hub] plugin gc: removed %d superseded cache dir(s)\n", len(removed))
 	}
+	// Remote-thread cache refresher: refreshRemoteThreads (web_api_tree.go)
+	// walks every configured remote source's ListThreads, a synchronous
+	// network hop that used to run inline on every /api/tree request. Move it
+	// to a ~30s ticker + poke so a tree render never blocks on it; the tree
+	// read path (remoteTreeThreads) reads remoteCache.Get() instead whenever
+	// RemoteThreadCache is configured.
+	go func() {
+		tick := time.NewTicker(30 * time.Second)
+		defer tick.Stop()
+		refresh := func() {
+			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			remoteCache.Store(web.refreshRemoteThreads(ctx))
+		}
+		refresh()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				refresh()
+			case <-remotePoke:
+				refresh()
+			}
+		}
+	}()
 
 	srv := &http.Server{
 		Addr:    cfg.Addr,

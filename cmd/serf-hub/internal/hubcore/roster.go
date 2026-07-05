@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"sort"
 	"sync"
@@ -60,6 +61,13 @@ type Roster struct {
 	// been registered on runDir. Nil in production; injected by tests to
 	// synchronize file-creation events without wall-clock sleeps.
 	watchReadyFn func()
+
+	// onChange, when set via SetOnChange, is fired by Refresh only when the
+	// live set's membership or per-session status actually changes.
+	onChange func()
+	// fingerprint is the live-set hash from the most recent Refresh (see
+	// rosterFingerprint), used to gate onChange against no-op refreshes.
+	fingerprint uint64
 }
 
 // NewRoster returns a Roster that scans runDir on demand.
@@ -110,6 +118,26 @@ func NewRosterWithEntries(entries ...LiveEntry) *Roster {
 		}
 	}
 	return r
+}
+
+// SetOnChange registers a callback fired by Refresh only when the live set's
+// membership or per-session status actually changes. Nil disables the hook.
+func (r *Roster) SetOnChange(fn func()) { r.onChange = fn }
+
+func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
+	ids := make([]string, 0, len(bySess))
+	for id := range bySess {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	h := fnv.New64a()
+	for _, id := range ids {
+		_, _ = h.Write([]byte(id))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(bySess[id].Status))
+		_, _ = h.Write([]byte{0})
+	}
+	return h.Sum64()
 }
 
 // Refresh re-scans the rendezvous dir and updates the in-memory roster.
@@ -184,6 +212,15 @@ func (r *Roster) Refresh() {
 	r.bySess = bySess
 	r.byPID = byPID
 	r.mu.Unlock()
+
+	fp := rosterFingerprint(bySess)
+	r.mu.Lock()
+	changed := fp != r.fingerprint
+	r.fingerprint = fp
+	r.mu.Unlock()
+	if changed && r.onChange != nil {
+		r.onChange()
+	}
 }
 
 // List returns all live entries.

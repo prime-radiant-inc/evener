@@ -166,6 +166,7 @@ type Server struct {
 	workMetricsFn       func() (workMillis int64, usage *appwire.SerfUsage, activeTurnStartedAt int64)
 	detailedStatusFn    func() DetailedStatus
 	modelFunc           func(string)
+	nameFunc            func(string)
 	reasoningEffortFunc func(string)
 	listModelsFunc      func(context.Context) ([]ModelsResponseItem, error)
 	tasksFn             func() any
@@ -431,6 +432,13 @@ func (s *Server) SetClearFunc(fn func(context.Context) error) {
 func (s *Server) SetModelFunc(fn func(string)) {
 	s.mu.Lock()
 	s.modelFunc = fn
+	s.mu.Unlock()
+}
+
+// SetNameFunc sets the function called by the rename appwire method.
+func (s *Server) SetNameFunc(fn func(string)) {
+	s.mu.Lock()
+	s.nameFunc = fn
 	s.mu.Unlock()
 }
 

@@ -23,6 +23,7 @@ type Source interface {
 	ShutdownThread(context.Context, appwire.ThreadShutdownParams) error
 	SetThreadModel(context.Context, appwire.ThreadModelSetParams) error
 	SetThreadReasoningEffort(context.Context, appwire.ThreadReasoningEffortSetParams) error
+	SetThreadName(context.Context, appwire.ThreadNameSetParams) error
 	GoalSet(context.Context, appwire.GoalSetParams) (appwire.GoalSetResponse, error)
 	ClearThread(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error)
 	ListModels(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error)

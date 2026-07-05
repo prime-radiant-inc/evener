@@ -91,6 +91,7 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodThreadShutdown, s.handleAppThreadShutdown)
 	appserver.HandleTyped(router, appwire.MethodThreadClear, s.handleAppThreadClear)
 	appserver.HandleTyped(router, appwire.MethodThreadModelSet, s.handleAppThreadModelSet)
+	appserver.HandleTyped(router, appwire.MethodSerfThreadNameSet, s.handleAppThreadNameSet)
 	appserver.HandleTyped(router, appwire.MethodThreadReasoningEffortSet, s.handleAppThreadReasoningEffortSet)
 	appserver.HandleTyped(router, appwire.MethodSerfTasksList, s.handleAppTasksList)
 	appserver.HandleTyped(router, appwire.MethodModelList, s.handleAppModelList)
@@ -374,6 +375,21 @@ func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.Threa
 	return appwire.EmptyResponse{}, nil
 }
 
+func (s *Server) handleAppThreadNameSet(_ context.Context, params appwire.ThreadNameSetParams) (appwire.EmptyResponse, error) {
+	name := strings.TrimSpace(params.Name)
+	if name == "" {
+		return appwire.EmptyResponse{}, appwire.InvalidParams("name is required")
+	}
+	s.mu.RLock()
+	fn := s.nameFunc
+	s.mu.RUnlock()
+	if fn == nil {
+		return appwire.EmptyResponse{}, appwire.Unavailable("rename not available")
+	}
+	fn(name)
+	return appwire.EmptyResponse{}, nil
+}
+
 func (s *Server) handleAppThreadReasoningEffortSet(_ context.Context, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
 	s.mu.RLock()
 	fn := s.reasoningEffortFunc
@@ -570,6 +586,7 @@ func (s *Server) appCapabilities(state string, processing bool) appwire.ThreadCa
 		ForkFromTurn: false,
 		Shutdown:     s.shutdownFunc != nil,
 		ChangeModel:  s.modelFunc != nil && !closed,
+		Rename:       s.nameFunc != nil && !closed,
 		// Queue mirrors Steer's "active turn" gate: only meaningful while
 		// a turn is in flight or reserved by turn/start (kata 111a).
 		Queue: s.queueFunc != nil && active && !closed,

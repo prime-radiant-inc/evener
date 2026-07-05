@@ -25,7 +25,6 @@ import (
 type WebServer struct {
 	cfg                 hubcore.WebConfig
 	appTmpl             *template.Template
-	sidebarTmpl         *template.Template
 	workspaceTmpl       *template.Template
 	threadTmpl          *template.Template
 	spawnTmpl           *template.Template
@@ -47,26 +46,9 @@ type WebServer struct {
 	// liveModels caches raw live /models listings for this server; per-server
 	// so another WebServer (different provider config) never shares entries.
 	liveModels *modelsCache
-}
-
-// sidebarTemplateFuncs supplies small helpers the sidebar template needs:
-// integer math plus the terminal-state test used to fold completed subagent
-// rows behind the "Completed (N)" disclosure.
-var sidebarTemplateFuncs = template.FuncMap{
-	"add": func(a, b int) int { return a + b },
-	"sub": func(a, b int) int { return a - b },
-	// subagentDone reports whether a subagent's display state is terminal — it
-	// has finished and no longer needs attention. Working states (running,
-	// awaiting input, warning) are not done. The sidebar folds done subagents
-	// behind a "Completed (N)" disclosure.
-	"subagentDone": func(state string) bool {
-		switch state {
-		case "active", "awaiting", "warning", "errored":
-			return false
-		default:
-			return true
-		}
-	},
+	// treeCache memoizes the /api/tree BuildTree+attention-summary computation
+	// by inputs-version + 30s time bucket (see hubcore.TreeCache).
+	treeCache *hubcore.TreeCache
 }
 
 // inputStripTemplateFuncs supplies the input-status partial's formatting
@@ -81,7 +63,6 @@ var inputStripTemplateFuncs = template.FuncMap{
 // NewWebServer constructs the web server. Templates are parsed from embed.FS.
 func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 	appTmpl := template.Must(template.New("app.html").Funcs(template.FuncMap{"assetv": assetVersionQuery}).ParseFS(templatesRoot(), "templates/app.html"))
-	sidebarTmpl := template.Must(template.New("sidebar.html").Funcs(sidebarTemplateFuncs).ParseFS(templatesRoot(), "templates/partials/sidebar.html"))
 	workspaceTmpl := template.Must(template.New("workspace.html").Funcs(inputStripTemplateFuncs).ParseFS(templatesRoot(),
 		"templates/partials/workspace.html",
 		"templates/partials/input_strip.html",
@@ -116,7 +97,7 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 		cfg.CodexLauncher = codexlaunch.NewCodexLauncher(cfg.CodexLaunches)
 	}
 	web := &WebServer{
-		cfg: cfg, appTmpl: appTmpl, sidebarTmpl: sidebarTmpl,
+		cfg: cfg, appTmpl: appTmpl,
 		workspaceTmpl: workspaceTmpl, threadTmpl: threadTmpl, spawnTmpl: spawnTmpl, inputStripTmpl: inputStripTmpl,
 		projectSettingsTmpl: projectSettingsTmpl,
 		settingsTmpls:       settingsTmpls,
@@ -125,6 +106,7 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 		resumeLocks:         map[string]*sync.Mutex{},
 		lastGoodThreads:     map[string][]appwire.Thread{},
 		liveModels:          &modelsCache{},
+		treeCache:           &hubcore.TreeCache{},
 	}
 	web.appRPC = newHubAppServer(cfg, sources)
 	return web
@@ -211,8 +193,11 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/api/health", s.handleAPIHealth)
 	mux.HandleFunc("/api/upgrade", s.handleAPIUpgrade)
 	mux.HandleFunc("/_api/subagent-preview", s.handleSubagentPreview)
+	mux.HandleFunc("/api/tree/project", s.handleAPITreeProject)
 	mux.HandleFunc("/api/tree", s.handleAPITree)
 	mux.HandleFunc("/api/archive", s.handleAPIArchive)
+	mux.HandleFunc("/api/favorite", s.handleAPIFavorite)
+	mux.HandleFunc("/api/project/delete", s.handleAPIProjectDelete)
 	mux.HandleFunc("/api/spawn-schema", s.handleAPISpawnSchema)
 	mux.HandleFunc("/api/sessions/", s.handleAPISession)
 
@@ -297,10 +282,6 @@ func (s *WebServer) handleInternalPartial(w http.ResponseWriter, r *http.Request
 	}
 
 	switch {
-	case r.URL.Path == "/_partials/sidebar/project":
-		s.handleSidebarProject(w, r)
-	case r.URL.Path == "/_partials/sidebar":
-		s.handleSidebar(w, r)
 	case r.URL.Path == "/_partials/workspace/empty":
 		s.handleWorkspaceEmpty(w, r)
 	case r.URL.Path == "/_partials/workspace/spawn":
@@ -346,13 +327,6 @@ func (s *WebServer) handleSessionPartial(w http.ResponseWriter, r *http.Request)
 	}
 }
 
-func projectKey(name string) string {
-	if name == "" {
-		return "project"
-	}
-	return strings.NewReplacer("/", "_", ":", "_", " ", "_").Replace(name)
-}
-
 func localAppRef(threadID string) string {
 	return appwire.Ref{SourceID: "local", ThreadID: threadID}.String()
 }
@@ -383,38 +357,6 @@ func splitProviderModel(raw string) (string, string) {
 		return "", strings.TrimSpace(raw)
 	}
 	return provider, model
-}
-
-func (s *WebServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
-	metas, live := s.navigationTreeInputs(r.Context())
-	tree := hubcore.BuildTree(metas, live, s.archiveDecisions())
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.sidebarTmpl.ExecuteTemplate(w, "sidebar", tree); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
-}
-
-// handleSidebarProject is the lazy-load endpoint for a single project's
-// children. The default sidebar payload omits collapsed projects' session rows;
-// sidebar.js fetches this fragment on first expand. It rebuilds just the named
-// project (?key=<project name>) and renders the shared sidebarProjectChildren
-// fragment. Auth + HX gating are inherited from handleInternalPartial.
-func (s *WebServer) handleSidebarProject(w http.ResponseWriter, r *http.Request) {
-	key := r.URL.Query().Get("key")
-	if key == "" {
-		http.NotFound(w, r)
-		return
-	}
-	metas, live := s.navigationTreeInputs(r.Context())
-	project, ok := hubcore.BuildProjectTree(metas, live, s.archiveDecisions(), key)
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.sidebarTmpl.ExecuteTemplate(w, "sidebarProjectChildren", project); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
 }
 
 func (s *WebServer) handleWorkspaceEmpty(w http.ResponseWriter, r *http.Request) {

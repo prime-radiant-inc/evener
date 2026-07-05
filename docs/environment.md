@@ -19,6 +19,7 @@ help text, and tests should refer to those rows instead of hard-coding names.
 | `SERF_PROVIDER` | Fallback provider for `llmcall` when `--provider` and `LLM_PROVIDER` are unset. |
 | `SERF_PROVIDERS_CONFIG` | Path to `providers.toml`. |
 | `SERF_REASONING_EFFORT` | Default reasoning effort: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `none`. |
+| `SERF_SESSION_ORIGIN` | Marks a session's launch origin (e.g. `test`) so the hub groups agentic-test runs. |
 | `SERF_STATE_DIR` | Overrides the Serf state root. |
 | `SERF_TUI_LOG_FILE` | Writes `serf-tui` startup diagnostics to this file. |
 | `LLM_MODEL` | Model for `llmcall` when `--model` is unset; checked before `SERF_MODEL`. |

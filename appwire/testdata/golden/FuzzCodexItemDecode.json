@@ -64,7 +64,8 @@
           "shutdown": false,
           "changeModel": false,
           "queue": false,
-          "goal": false
+          "goal": false,
+          "rename": false
         },
         "queue": {}
       }
@@ -168,7 +169,8 @@
           "shutdown": false,
           "changeModel": false,
           "queue": false,
-          "goal": false
+          "goal": false,
+          "rename": false
         },
         "queue": {}
       }

@@ -27,6 +27,7 @@ import (
 	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 )
 
@@ -154,6 +155,15 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	jm.clock = s.clock
 	jm.now = s.clock.Now
 	s.jobManager = jm
+
+	// Capture the launch origin from the environment before initSessionState
+	// runs. initSessionState is shared with RestoreSessionFromMetaWithConfig
+	// (which sets s.origin from the persisted meta first), so the read must
+	// happen here — a fresh-only site — rather than inside the shared
+	// function, or a resume would have its persisted origin clobbered by
+	// whatever SERF_SESSION_ORIGIN happens to be set in the ambient
+	// environment at restore time.
+	s.origin = envvars.SERFSessionOrigin.Getenv()
 
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, true)
 	if err != nil {
@@ -429,6 +439,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		s.getOrCreateGoalStore().Restore(g.Objective, g.Status, g.StopReason, g.Iterations, g.NoProgressStreak, g.MadeProgressOnce, g.CreatedAt, g.UpdatedAt)
 	}
 	s.pinnedNote = meta.PinnedNote
+	// Preserve the persisted launch origin across resume (so a "test"-origin
+	// session stays classified as a test run after restart), rather than
+	// re-reading SERF_SESSION_ORIGIN — the fresh-create path's env read
+	// happens once, at creation time, not on every resume.
+	s.origin = meta.Origin
 
 	// ask_user root-only gating (spec §7.1): a bare `serve --resume
 	// <delegate-id>` restores with an empty spawn carrier (spawn is json:"-",

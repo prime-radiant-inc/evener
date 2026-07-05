@@ -355,6 +355,7 @@ func runServe(args []string) error {
 		return sess.WorkMillisSnapshot(), serfUsageFromLLM(sess.CumulativeUsageSnapshot()), sess.ActiveTurnStartedAtUnix()
 	})
 	srv.SetModelFunc(func(model string) { getSession().SetModel(model) })
+	srv.SetNameFunc(func(name string) { getSession().Rename(name) })
 	srv.SetReasoningEffortFunc(func(effort string) { getSession().SetReasoningEffort(effort) })
 	srv.SetListModelsFunc(cmdutil.ListModelsFunc(client, profile.ID()))
 	srv.SetDetailedStatusFunc(func() server.DetailedStatus {

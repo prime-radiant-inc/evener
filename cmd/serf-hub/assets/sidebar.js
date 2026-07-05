@@ -1,415 +1,789 @@
-// Sidebar JS: project collapse, archive/unarchive controls, subagent fold,
-// cluster fold, mobile drawer, and rail mode.
-//
-// Project collapse: each project's state persists under
-// localStorage["serf-hub.sidebar.expanded.<key>"] as an explicit "true"/"false".
-// The collapse machinery (applyCollapseState, isCollapsed, setCollapsed) is kept
-// for localStorage-restore fidelity. Note: the current sidebar template no longer
-// emits .project-chevron or data-default-expanded, so projects default collapsed
-// (defaultExpanded always returns false). The infrastructure remains so that any
-// future template that re-introduces chevrons continues to work without changes here.
-//
-// Archive controls: .archive-btn[data-archive-kind][data-archive-id] triggers a
-// POST /api/archive with {kind, id, archived} then refreshes the sidebar tree via
-// the existing htmx sidebar:refresh path. Items inside an archived container
-// (.session-tier.archived or [data-tier=archived-projects]) send archived:false.
+// Sidebar: client-rendered navigation tree. Data (/api/tree) is the state; the
+// DOM is a keyed projection reconciled on the server's scope-qualified RowID, so
+// unchanged rows keep node identity (hover, scroll, open menus) across updates.
 (function () {
   "use strict";
 
-  var STORAGE_PREFIX = "serf-hub.sidebar.expanded.";
+  var EXPAND_PREFIX = "serf-hub.sidebar.expanded.";
+  var model = { tree: null, expanded: new Set(), lazyCache: new Map(), seq: 0, pending: new Map() };
+  window.SerfSidebarModel = model; // test/inspection surface
 
-  // defaultExpanded reads the tier hint baked into the section by the server.
-  function defaultExpanded(section) {
-    return section.getAttribute("data-default-expanded") === "true";
+  function sidebarEl() { return document.getElementById("sidebar"); }
+
+  // --- Skeleton first paint --------------------------------------------------
+  function paintSkeleton() {
+    var el = sidebarEl();
+    if (!el || el.querySelector(".sb-tree")) return;
+    var html = '<div class="sb-skeleton" aria-hidden="true">';
+    for (var i = 0; i < 6; i++) html += '<div class="sb-skeleton-row"></div>';
+    html += "</div>";
+    el.innerHTML = html;
   }
 
-  // isCollapsed resolves a project's collapsed state: an explicit stored
-  // value wins; otherwise the tier default decides.
-  function isCollapsed(key, section) {
-    var stored = null;
-    try {
-      stored = window.localStorage.getItem(STORAGE_PREFIX + key);
-    } catch (e) {
-      stored = null;
+  // --- Row + section builders ------------------------------------------------
+  function rowKey(n) { return n.row_id; }
+
+  function buildRow(n) {
+    var a = document.createElement("a");
+    a.className = "sb-row";
+    a.setAttribute("data-row-id", n.row_id);
+    a.setAttribute("data-state", n.state);
+    a.setAttribute("data-ref", n.ref);
+    if (n.__projectKey) a.setAttribute("data-project-key-of", n.__projectKey);
+    a.setAttribute("href", "/s/" + n.session_id);
+    a.setAttribute("hx-get", "/_partials/s/" + n.session_id + "/workspace");
+    a.setAttribute("hx-target", "#workspace");
+    a.setAttribute("hx-swap", "innerHTML");
+    a.setAttribute("hx-push-url", "/s/" + n.session_id);
+    a.innerHTML =
+      '<div class="dot-col"><span class="status-dot" data-state="' + n.state + '"></span></div>' +
+      '<div class="text-col"><div class="title"></div><div class="meta"></div></div>';
+    a.querySelector(".title").textContent = n.title;
+    var meta = a.querySelector(".meta");
+    if (n.branch) meta.appendChild(metaSpan(n.branch));
+    meta.appendChild(metaSpan(ageString(n.updated_at)));
+    if (n.favorite) a.setAttribute("data-favorite", "");
+    if (n.children && n.children.length) a.appendChild(buildChildrenToggle(n));
+    var menuBtn = document.createElement("button");
+    menuBtn.type = "button";
+    menuBtn.className = "sb-menu-btn btn-icon";
+    menuBtn.setAttribute("aria-label", "row menu");
+    menuBtn.setAttribute("aria-haspopup", "menu");
+    menuBtn.textContent = "⋯"; // ⋯
+    menuBtn.addEventListener("click", function (e) {
+      e.preventDefault(); e.stopPropagation();
+      openMenu(menuBtn, sessionMenuItems(n));
+    });
+    a.appendChild(menuBtn);
+    return a;
+  }
+  function metaSpan(text) { var s = document.createElement("span"); s.textContent = text; return s; }
+
+  function patchRow(a, n) {
+    if (a.getAttribute("data-state") !== n.state) {
+      a.setAttribute("data-state", n.state);
+      var dot = a.querySelector(".status-dot");
+      if (dot) dot.setAttribute("data-state", n.state);
     }
-    if (stored === "true") return false; // explicitly expanded
-    if (stored === "false") return true; // explicitly collapsed
-    return !defaultExpanded(section); // no explicit value → tier default
+    var title = a.querySelector(".title");
+    if (title && title.textContent !== n.title) title.textContent = n.title;
+    if (n.favorite) a.setAttribute("data-favorite", ""); else a.removeAttribute("data-favorite");
+    patchChildrenToggle(a, n);
   }
 
-  // setCollapsed persists the explicit state, but prunes the entry when the
-  // state matches the section's tier default — so storage only carries
-  // deviations from the default and a default-collapsed project the user
-  // collapses leaves no residue.
-  function setCollapsed(key, collapsed, section) {
-    var matchesDefault = collapsed === !defaultExpanded(section);
-    try {
-      if (matchesDefault) {
-        window.localStorage.removeItem(STORAGE_PREFIX + key);
-      } else {
-        window.localStorage.setItem(STORAGE_PREFIX + key, collapsed ? "false" : "true");
-      }
-    } catch (e) {
-      // localStorage may be disabled; collapse still works for this session.
+  // --- Subagent children disclosure ------------------------------------------
+  // A session row whose node carries `children` (subagent threads spawned
+  // under it — hubapi.TreeNode.Children, capped at 50 server-side, Task 6)
+  // gains a small disclosure toggle inside the row: collapsed by default,
+  // expanding reveals the children as their own keyed rows (flatten's
+  // pushChildren, below). Expansion key is "children:<row_id>" — the
+  // "children:" prefix guarantees it can never collide with a project slug
+  // or a "section:*"/cluster row_id, all of which share the one
+  // model.expanded Set + localStorage namespace.
+  function childrenKey(n) { return "children:" + n.row_id; }
+  function buildChildrenToggle(n) {
+    var count = n.children.length;
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "subagent-toggle sb-children-toggle";
+    btn.setAttribute("aria-expanded", String(model.expanded.has(childrenKey(n))));
+    btn.innerHTML = '<span class="sb-children-chevron">›</span><span class="sb-children-count"></span>';
+    setChildrenToggleText(btn, count);
+    // Nested inside the row's own <a>, so a click must not also navigate it —
+    // same technique as the row's ⋯ menu button above.
+    btn.addEventListener("click", function (e) {
+      e.preventDefault(); e.stopPropagation();
+      toggleExpanded(childrenKey(n));
+    });
+    btn.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault(); e.stopPropagation();
+      toggleExpanded(childrenKey(n));
+    });
+    return btn;
+  }
+  function setChildrenToggleText(btn, count) {
+    btn.querySelector(".sb-children-count").textContent = String(count);
+    // Bare count, not "Completed (N)": children may still be running, so
+    // claiming "completed" would misrepresent live subagents.
+    btn.setAttribute("aria-label", count + (count === 1 ? " subagent" : " subagents"));
+  }
+  // Keeps the toggle's DOM node identity across reconcile — add/remove/update
+  // in place rather than rebuilding the row, mirroring how patchRow itself
+  // never recreates .title/.meta.
+  function patchChildrenToggle(a, n) {
+    var btn = a.querySelector(".sb-children-toggle");
+    var hasChildren = !!(n.children && n.children.length);
+    if (hasChildren && !btn) { a.insertBefore(buildChildrenToggle(n), a.querySelector(".sb-menu-btn")); return; }
+    if (!hasChildren && btn) { btn.remove(); return; }
+    if (btn) {
+      btn.setAttribute("aria-expanded", String(model.expanded.has(childrenKey(n))));
+      setChildrenToggleText(btn, n.children.length);
     }
   }
 
-  function applyCollapseState(section) {
-    var key = section.getAttribute("data-project-key");
-    if (!key) return;
-    var collapsed = isCollapsed(key, section);
-    section.classList.toggle("collapsed", collapsed);
-    var chevron = section.querySelector(".project-chevron");
-    if (chevron) {
-      chevron.textContent = collapsed ? "▸" : "▾";
-      chevron.setAttribute("aria-expanded", collapsed ? "false" : "true");
-    }
+  // --- Row menu (⋯ popover) ----------------------------------------------------
+  var openMenuEl = null, menuAnchor = null;
+  function closeMenu() {
+    if (openMenuEl) { openMenuEl.remove(); openMenuEl = null; menuAnchor = null; document.removeEventListener("click", onDocClick, true); }
+  }
+  function onDocClick(e) { if (openMenuEl && !openMenuEl.contains(e.target) && e.target !== menuAnchor) closeMenu(); }
+  function openMenu(anchor, items) {
+    closeMenu();
+    var menu = document.createElement("div");
+    menu.className = "sb-menu";
+    menu.setAttribute("role", "menu");
+    items.forEach(function (it) {
+      if (it.hidden) return;
+      var b = document.createElement("button");
+      b.type = "button"; b.className = "sb-menu-item"; b.setAttribute("role", "menuitem"); b.textContent = it.label;
+      b.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); closeMenu(); it.run(); });
+      menu.appendChild(b);
+    });
+    document.body.appendChild(menu);
+    var r = anchor.getBoundingClientRect();
+    menu.style.position = "absolute";
+    menu.style.top = (r.bottom + window.scrollY + 2) + "px";
+    menu.style.left = (r.left + window.scrollX) + "px";
+    openMenuEl = menu; menuAnchor = anchor;
+    setTimeout(function () { document.addEventListener("click", onDocClick, true); }, 0);
+    document.addEventListener("keydown", onMenuKeydown);
+    var first = menu.querySelector(".sb-menu-item"); if (first) first.focus();
+  }
+  function onMenuKeydown(e) {
+    if (!openMenuEl) { document.removeEventListener("keydown", onMenuKeydown); return; }
+    var items = [].slice.call(openMenuEl.querySelectorAll(".sb-menu-item"));
+    var idx = items.indexOf(document.activeElement);
+    if (e.key === "Escape") { e.preventDefault(); var a = menuAnchor; closeMenu(); if (a) a.focus(); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); (items[idx + 1] || items[0]).focus(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); (items[idx - 1] || items[items.length - 1]).focus(); }
   }
 
-  function applyAll(root) {
-    var scope = root || document;
-    var sections = scope.querySelectorAll("[data-project-key]");
-    for (var i = 0; i < sections.length; i++) {
-      applyCollapseState(sections[i]);
-    }
-    // After applying localStorage-based state, expand the project containing
-    // the active session row so navigating to a session always reveals it.
-    var activeRow = scope.querySelector(".sb-row[data-active]");
-    if (!activeRow) {
-      // Fallback: match by current pathname if syncActiveRow hasn't run yet.
-      var path = (window.location && window.location.pathname) || "";
-      if (path && path.indexOf("/s/") === 0) {
-        var clean = path.replace(/\/+$/, "");
-        var rows = scope.querySelectorAll(".sb-row");
-        for (var j = 0; j < rows.length; j++) {
-          if ((rows[j].getAttribute("href") || "") === clean) {
-            activeRow = rows[j];
-            break;
-          }
-        }
-      }
-    }
-    if (activeRow) {
-      var activeSection = activeRow.closest("[data-project-key]");
-      if (activeSection && activeSection.classList.contains("collapsed")) {
-        var key = activeSection.getAttribute("data-project-key");
-        activeSection.classList.remove("collapsed");
-        var chevron = activeSection.querySelector(".project-chevron");
-        if (chevron) {
-          chevron.textContent = "▾";
-          chevron.setAttribute("aria-expanded", "true");
-        }
-        // Persist the expansion so it survives sidebar re-renders, and lazy-load
-        // the rows the collapsed payload omitted.
-        setCollapsed(key, false, activeSection);
-        loadProjectChildren(activeSection);
-      }
-    }
+  function sessionMenuItems(n) {
+    return [
+      { label: "Open", run: function () { window.location.href = "/s/" + n.session_id; } },
+      { label: "Open beside", run: function () { if (window.SerfPanes) window.SerfPanes.open("/thread/" + encodeURIComponent(n.ref), n.title); } },
+      { label: n.favorite ? "Unfavorite" : "Favorite", run: function () { window.SerfSidebar.favorite(n.ref, !n.favorite); } },
+      { label: "Rename", hidden: !n.rename, run: function () { startInlineRename(n); } },
+      { label: n.tier === "archived" ? "Unarchive" : "Archive", run: function () { window.SerfSidebar.archive(n.ref, n.tier !== "archived"); } },
+    ];
   }
-
-  // loadProjectChildren lazy-loads a collapsed project's session rows. The
-  // server omits collapsed projects' rows from the default sidebar payload (the
-  // scale fix), so the first expand fetches them from /_partials/sidebar/project
-  // and injects the fragment. A data-children-loaded marker prevents a refetch
-  // on re-expand. Projects that already have inline children (auto-expanded live
-  // ones) are left alone.
-  function loadProjectChildren(section) {
-    var key = section.getAttribute("data-project-key");
-    if (!key) return;
-    var children = section.querySelector(".project-children");
-    if (!children) return;
-    // Already loaded, or rendered inline by the server — nothing to fetch.
-    if (children.hasAttribute("data-children-loaded")) return;
-    if (children.children.length > 0) {
-      children.setAttribute("data-children-loaded", "");
-      return;
-    }
-    children.setAttribute("data-children-loaded", "");
-    window.fetch("/_partials/sidebar/project?key=" + encodeURIComponent(key), {
-      headers: { "HX-Request": "true" },
-    }).then(function (resp) {
-      if (!resp || !resp.ok) {
-        children.removeAttribute("data-children-loaded"); // allow retry
-        return;
-      }
-      return resp.text().then(function (html) {
-        children.innerHTML = html;
-        if (window.htmx && window.htmx.process) window.htmx.process(children);
+  function projectMenuItems(p) {
+    // A project stamped __archived (by pushArchivedSection, below) renders
+    // inside the Archived section and offers Unarchive instead of Archive.
+    var archived = !!p.__archived;
+    return [
+      { label: "New session", run: function () { window.location.href = "/new?dir=" + encodeURIComponent(p.working_dir); } },
+      { label: "Settings", run: function () { window.location.href = "/settings/project?cwd=" + encodeURIComponent(p.working_dir); } },
+      { label: archived ? "Unarchive" : "Archive", run: function () {
+          window.fetch("/api/archive", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "project", id: p.working_dir, archived: !archived }) }).then(scheduleResync);
+        } },
+      { label: "Delete…", run: function () { confirmDeleteProject(p); } },
+    ];
+  }
+  function startInlineRename(n) {
+    var row = document.querySelector('#sidebar .sb-row[data-row-id="' + cssEscape(n.row_id) + '"]');
+    if (!row) return;
+    var title = row.querySelector(".title");
+    var input = document.createElement("input");
+    input.className = "sb-rename-input"; input.value = n.title;
+    title.replaceWith(input); input.focus(); input.select();
+    function commit() { var v = input.value.trim(); if (v && v !== n.title) window.SerfSidebar.rename(n.ref, v); if (model.tree) renderTree(model.tree); }
+    input.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); commit(); } else if (e.key === "Escape") { e.preventDefault(); if (model.tree) renderTree(model.tree); } });
+    input.addEventListener("blur", commit);
+  }
+  function confirmDeleteProject(p) {
+    var n = p.session_count || (p.sessions || []).length;
+    if (!window.confirm("Delete project " + p.name + "? " + n + " session(s), " + (p.worktrees || 0) + " worktree(s). Worktrees are not touched.")) return;
+    window.fetch("/api/project/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: p.key, working_dir: p.working_dir }) })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (res) {
+        if (res && res.deleted && onDeletedRedirect(res.deleted)) return;
+        scheduleResync();
       });
-    }).catch(function () {
-      children.removeAttribute("data-children-loaded"); // allow retry
-    });
   }
-
-  function onChevronClick(e) {
-    var chevron = e.target.closest(".project-chevron");
-    if (!chevron) return;
-    var section = chevron.closest("[data-project-key]");
-    if (!section) return;
-    e.preventDefault();
-    e.stopPropagation();
-    var key = section.getAttribute("data-project-key");
-    var nextCollapsed = !section.classList.contains("collapsed");
-    section.classList.toggle("collapsed", nextCollapsed);
-    chevron.textContent = nextCollapsed ? "▸" : "▾";
-    chevron.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
-    setCollapsed(key, nextCollapsed, section);
-    if (!nextCollapsed) loadProjectChildren(section);
-  }
-
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", function () { applyAll(document); });
-  } else {
-    applyAll(document);
-  }
-
-  document.addEventListener("htmx:afterSwap", function (e) {
-    applyAll(e.target || document);
-  });
-
-  // First-paint stagger on the Live section. Sidebar.html re-renders every
-  // 5s (hx-trigger="every 5s"), but only the very first paint earns the
-  // choreography. After that, .stagger is removed and individual rows
-  // appear instantly.
-  var staggerApplied = false;
-  function applyLiveStagger(scope) {
-    if (staggerApplied) return;
-    var live = (scope || document).querySelector(".sidebar-live-section");
-    if (!live) return;
-    var rows = live.querySelectorAll(".sb-row");
-    if (!rows.length) return;
-    live.classList.add("stagger");
-    for (var i = 0; i < rows.length && i < 10; i++) {
-      rows[i].style.setProperty("--i", String(i));
-    }
-    staggerApplied = true;
-    // Strip the class after the longest animation finishes (10 rows × 30ms
-    // delay + 160ms duration = 460ms; round to 600ms for safety).
-    setTimeout(function () {
-      live.classList.remove("stagger");
-      for (var j = 0; j < rows.length; j++) {
-        rows[j].style.removeProperty("--i");
-      }
-    }, 600);
-  }
-
-  document.addEventListener("htmx:afterSwap", function (e) {
-    if (e && e.target && e.target.id === "sidebar") applyLiveStagger(e.target);
-  });
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", function () { applyLiveStagger(document); });
-  } else {
-    applyLiveStagger(document);
-  }
-
-  // --- Ephemeral disclosure preservation across sidebar swaps ----------------
-  // The sidebar re-renders by replacing #sidebar's innerHTML on every archive
-  // action and every notification-driven refresh. Native <details> and the
-  // JS-toggled cluster/subagent folds carry no server "open" marker, so they'd
-  // snap shut on each swap. Snapshot what's open just before the swap, reapply
-  // it just after. (Project collapse is preserved separately via localStorage.)
-  var disclosureSnapshot = null;
-
-  function projectKeyOf(el) {
-    var sec = el.closest("[data-project-key]");
-    return sec ? sec.getAttribute("data-project-key") : null;
-  }
-
-  function snapshotDisclosures(root) {
-    var snap = { archivedTiers: {}, subagents: {}, clusters: {}, archivedProjects: false };
-    var tiers = root.querySelectorAll("details.session-tier.archived");
-    for (var i = 0; i < tiers.length; i++) {
-      var tk = projectKeyOf(tiers[i]);
-      if (tk && tiers[i].open) snap.archivedTiers[tk] = true;
-    }
-    var subs = root.querySelectorAll(".project-children[data-subagents-expanded]");
-    for (var j = 0; j < subs.length; j++) {
-      var sk = projectKeyOf(subs[j]);
-      if (sk) snap.subagents[sk] = true;
-    }
-    var clusters = root.querySelectorAll(".session-cluster[data-cluster-expanded]");
-    for (var c = 0; c < clusters.length; c++) {
-      var ck = clusters[c].getAttribute("data-cluster-key");
-      if (ck) snap.clusters[ck] = true;
-    }
-    var ap = root.querySelector(".archived-projects details");
-    snap.archivedProjects = !!(ap && ap.open);
-    return snap;
-  }
-
-  function restoreDisclosures(root, snap) {
-    if (!snap) return;
-    var tiers = root.querySelectorAll("details.session-tier.archived");
-    for (var i = 0; i < tiers.length; i++) {
-      var tk = projectKeyOf(tiers[i]);
-      if (tk && snap.archivedTiers[tk]) tiers[i].open = true;
-    }
-    var subs = root.querySelectorAll(".project-children");
-    for (var j = 0; j < subs.length; j++) {
-      var sk = projectKeyOf(subs[j]);
-      if (sk && snap.subagents[sk]) setSubagentsExpanded(subs[j], true);
-    }
-    var clusters = root.querySelectorAll(".session-cluster");
-    for (var c = 0; c < clusters.length; c++) {
-      var ck = clusters[c].getAttribute("data-cluster-key");
-      if (ck && snap.clusters[ck]) setClusterExpanded(clusters[c], true);
-    }
-    if (snap.archivedProjects) {
-      var ap = root.querySelector(".archived-projects details");
-      if (ap) ap.open = true;
-    }
-  }
-
-  function isSidebarSwap(e) {
-    var t = e && e.target;
-    return !!(t && (t.id === "sidebar" || (t.closest && t.closest("#sidebar"))));
-  }
-
-  document.addEventListener("htmx:beforeSwap", function (e) {
-    if (isSidebarSwap(e)) disclosureSnapshot = snapshotDisclosures(e.target);
-  });
-  document.addEventListener("htmx:afterSwap", function (e) {
-    if (!isSidebarSwap(e)) return;
-    restoreDisclosures(e.target, disclosureSnapshot);
-    disclosureSnapshot = null;
-  });
-
-  var sidebarRefreshTimer = null;
-  function scheduleSidebarRefresh() {
-    if (!window.htmx || !document.body) return;
-    if (sidebarRefreshTimer) clearTimeout(sidebarRefreshTimer);
-    sidebarRefreshTimer = setTimeout(function () {
-      sidebarRefreshTimer = null;
-      window.htmx.trigger(document.body, "sidebar:refresh");
-    }, 50);
-  }
-
-  function notificationAffectsSidebar(method) {
-    switch (method) {
-      case "thread/started":
-      case "thread/closed":
-      case "thread/status/changed":
-      case "thread/queueChanged":
-      case "turn/started":
-      case "turn/completed":
-      case "item/started":
-      case "item/completed":
-      case "serf/job/started":
-      case "serf/job/finished":
-      case "serf/attention/changed":
-        return true;
-      default:
-        return false;
-    }
-  }
-
-  if (window.SerfAppwire && typeof window.SerfAppwire.onNotification === "function") {
-    window.SerfAppwire.onNotification(function (method) {
-      if (notificationAffectsSidebar(method)) scheduleSidebarRefresh();
-    });
-  }
-  if (window.SerfAppwire && typeof window.SerfAppwire.onConnectionRestored === "function") {
-    window.SerfAppwire.onConnectionRestored(scheduleSidebarRefresh);
-  }
-
-  document.addEventListener("click", onChevronClick);
-
-  // Archive/unarchive control — delegate clicks on .archive-btn, read
-  // data-archive-kind and data-archive-id, POST to /api/archive, then
-  // trigger the existing sidebar refresh path. Items already in an archived
-  // container (session-tier.archived or sidebar-tier[data-tier=archived-projects])
-  // send archived:false to unarchive; all others send archived:true.
-  function isInsideArchivedContainer(el) {
-    // Walk ancestors looking for either the session archived-tier
-    // (.session-tier.archived) or the archived-projects section tier
-    // ([data-tier=archived-projects]). Both classes are required on the
-    // session tier so an unrelated .archived class elsewhere can't flip
-    // the direction.
-    var node = el;
-    while (node) {
-      if (node.classList) {
-        if (node.classList.contains("session-tier") && node.classList.contains("archived")) return true;
-        if (node.getAttribute && node.getAttribute("data-tier") === "archived-projects") return true;
-      }
-      node = node.parentElement;
-    }
+  function onDeletedRedirect(deleted) {
+    var path = window.location.pathname || "";
+    for (var i = 0; i < deleted.length; i++) { if (path === "/s/" + deleted[i]) { window.location.href = "/new"; return true; } }
     return false;
   }
+  function cssEscape(s) { return (window.CSS && window.CSS.escape) ? window.CSS.escape(s) : s.replace(/["\\]/g, "\\$&"); }
 
-  function onArchiveBtnClick(e) {
-    var btn = e.target.closest(".archive-btn");
-    if (!btn) return;
-    e.preventDefault();
-    e.stopPropagation();
-    if (btn.disabled) return; // request already in flight — ignore repeat clicks
-    var kind = btn.getAttribute("data-archive-kind");
-    var id = btn.getAttribute("data-archive-id");
-    if (!kind || !id) return;
-    var archived = !isInsideArchivedContainer(btn);
-    // Optimistic feedback: dim the affected row/section and spin the button the
-    // instant it's clicked, so the action feels responsive across the two
-    // network hops (POST, then the full sidebar refresh) before the swap lands.
-    // The swap then replaces this DOM with server truth — restoring the row if
-    // the POST failed.
-    var target = kind === "project" ? btn.closest("[data-project-key]") : btn.closest(".sb-row-wrap");
-    if (target) {
-      target.classList.add("archiving");
-      target.setAttribute("aria-busy", "true");
+  // --- Keyed reconcile -------------------------------------------------------
+  // Patch children of `container` to match `nodes` (an array of TreeNodes),
+  // keyed by row_id. Existing keys are patched in place and reordered; missing
+  // keys are removed; new keys are created + htmx.process'd.
+  function reconcile(container, nodes, build, patch) {
+    var existing = {};
+    var kids = container.children;
+    for (var i = 0; i < kids.length; i++) {
+      var k = kids[i].getAttribute("data-row-id");
+      if (k) existing[k] = kids[i];
     }
-    btn.disabled = true;
-    btn.setAttribute("aria-busy", "true");
-    window.fetch("/api/archive", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: kind, id: id, archived: archived }),
-    }).then(function () {
-      scheduleSidebarRefresh();
-    }).catch(function () {
-      scheduleSidebarRefresh();
-    });
-  }
-  document.addEventListener("click", onArchiveBtnClick);
-
-  // "Completed (N)" disclosure — reveals/hides the completed subagent rows
-  // within a project. The toggle flips data-subagents-expanded on the
-  // .project-children container (CSS reveals .subagent-overflow rows) and swaps
-  // its own label between "Completed (N)" and "− hide". Not persisted: subagent
-  // rows are ephemeral and the parent project's collapse state already governs
-  // visibility across re-renders.
-  // setSubagentsExpanded flips a project-children container's subagent fold and
-  // syncs every "Completed (N)" toggle inside it: aria-expanded plus the label
-  // swap between "Completed (N)" (remembered in dataset.collapsedLabel) and
-  // "− hide". Shared by the click handler and the post-swap restore.
-  function setSubagentsExpanded(children, expanded) {
-    if (expanded) {
-      children.setAttribute("data-subagents-expanded", "");
-    } else {
-      children.removeAttribute("data-subagents-expanded");
+    var seen = {};
+    var prev = null;
+    for (var j = 0; j < nodes.length; j++) {
+      var n = nodes[j];
+      var key = rowKey(n);
+      seen[key] = true;
+      var el = existing[key];
+      if (el) { patch(el, n); } else { el = build(n); if (window.htmx && window.htmx.process) window.htmx.process(el); }
+      // Place el right after prev (stable order without destroying nodes).
+      var ref = prev ? prev.nextSibling : container.firstChild;
+      if (el !== ref) container.insertBefore(el, ref);
+      prev = el;
     }
-    var toggles = children.querySelectorAll(".subagent-toggle");
-    for (var i = 0; i < toggles.length; i++) {
-      var toggle = toggles[i];
-      if (expanded) {
-        if (!toggle.dataset.collapsedLabel) toggle.dataset.collapsedLabel = toggle.textContent;
-        toggle.setAttribute("aria-expanded", "true");
-        toggle.textContent = "− hide";
-      } else {
-        toggle.setAttribute("aria-expanded", "false");
-        if (toggle.dataset.collapsedLabel) toggle.textContent = toggle.dataset.collapsedLabel;
+    for (var m = container.children.length - 1; m >= 0; m--) {
+      var ck = container.children[m].getAttribute("data-row-id");
+      if (ck && !seen[ck]) {
+        if (menuAnchor && container.children[m].contains(menuAnchor)) {
+          var survivor = container.children[m].previousElementSibling || container.children[m].nextElementSibling;
+          closeMenu();
+          if (survivor && survivor.focus) survivor.focus();
+        }
+        container.removeChild(container.children[m]);
       }
     }
   }
 
-  function onSubagentToggle(e) {
-    var toggle = e.target.closest(".subagent-toggle");
-    if (!toggle) return;
-    e.preventDefault();
-    e.stopPropagation();
-    var children = toggle.closest(".project-children");
-    if (!children) return;
-    setSubagentsExpanded(children, !children.hasAttribute("data-subagents-expanded"));
+  // --- Full tree render ------------------------------------------------------
+  function renderTree(tree) {
+    model.tree = tree;
+    restoreExpanded(tree);
+    var el = sidebarEl();
+    if (!el) return;
+    var root = el.querySelector(".sb-tree");
+    if (!root) { el.innerHTML = '<nav class="sb-tree" aria-label="Sessions"></nav>'; root = el.querySelector(".sb-tree"); }
+    var flat = flatten(applyPending(tree)); // applyPending is Task 20; identity until then
+    reconcile(root, flat, buildRowOrSection, patchRowOrSection);
+    syncActiveRow();
   }
-  document.addEventListener("click", onSubagentToggle);
+
+  // flatten emits one keyed element descriptor per rendered row/section in
+  // order: NeedsYou, Pinned, active projects, Archived (N), Test runs (N).
+  // Render session rows grouped under project section headers; expansion +
+  // lazy children are honored via model.expanded.
+  function flatten(tree) {
+    var out = [];
+    (tree.needs_you || []).forEach(function (n) { if (!n.__drop) { out.push(n); pushChildren(out, n); } });
+    (tree.favorites || []).forEach(function (n) { if (!n.__drop) { out.push(n); pushChildren(out, n); } });
+    (tree.projects || []).forEach(function (p) { pushProject(out, p); });
+    pushArchivedSection(out, tree);
+    pushTestRunsSection(out, tree);
+    return out;
+  }
+  function pushProject(out, p) {
+    // Project header is itself a keyed element (data-row-id="header:<key>").
+    out.push({ row_id: "header:" + p.key, __project: p });
+    var expanded = model.expanded.has(p.key) || p.default_expanded;
+    if (!expanded) return;
+    (p.sessions || []).forEach(function (n) {
+      if (n.__drop) return;
+      n.__projectKey = p.key;
+      if (n.kind === "cluster") { pushCluster(out, n); return; }
+      out.push(n);
+      pushChildren(out, n);
+    });
+  }
+
+  // Subagent children: emitted right after their parent row, once the
+  // parent's own disclosure (childrenKey) is expanded. Any tier's node may
+  // carry children — apiTreeNode recurses the same way for NeedsYou/Pinned
+  // and project sessions alike — so this is called from every push site
+  // above, not just pushProject. Children render via buildRow itself
+  // (buildRowOrSection stamps the .subagent-row indent class from __child).
+  function pushChildren(out, n) {
+    if (!n.children || !n.children.length || !model.expanded.has(childrenKey(n))) return;
+    n.children.forEach(function (c) {
+      if (c.__drop) return;
+      c.__child = true;
+      c.__projectKey = n.__projectKey;
+      out.push(c);
+    });
+  }
+
+  // Cluster fold: a T5 synthetic kind:"cluster" node folding a run of
+  // same-titled sessions into one row (hubcore.clusterRepeatedTitles). The
+  // fold row itself is pushed like any other keyed element; its `children`
+  // (the folded members — always plain, childless sessions per
+  // hubcore.clusterable) are emitted only once the cluster's OWN row_id is
+  // in model.expanded. Members render as ordinary rows — no __child stamp —
+  // since they are real, independently navigable sessions, not de-weighted
+  // subagents.
+  function pushCluster(out, n) {
+    out.push(n);
+    if (!model.expanded.has(n.row_id)) return;
+    (n.children || []).forEach(function (m) {
+      if (m.__drop) return;
+      m.__projectKey = n.__projectKey;
+      out.push(m);
+    });
+  }
+
+  // --- Sections (collapsed-by-default groupings below the top-of-rail tiers) -
+  // A section is itself a keyed element (data-row-id="section:<key>"), built
+  // via the same reconcile dispatch as rows/project headers. Its content
+  // (projects + their sessions) is only emitted by flatten when expanded, and
+  // reuses pushProject/buildProjectHeader/buildRow verbatim — a section
+  // project's own expansion, menu, and pending-overlay participation work
+  // exactly like an active project's.
+  var SECTION_ARCHIVED = "section:archived";
+  var SECTION_TEST_RUNS = "section:test-runs";
+  var SECTION_KEYS = [SECTION_ARCHIVED, SECTION_TEST_RUNS];
+
+  // pushSection appends a section header (if its bucket is non-empty) and,
+  // once expanded, its projects. markKey (e.g. "__archived") is stamped onto
+  // each project so projectMenuItems can offer Unarchive instead of Archive;
+  // pass null/undefined for buckets that don't need that (Test runs: a
+  // project there was never in the archived bucket, so it keeps plain
+  // Archive — precedence between the two buckets is decided server-side,
+  // never here).
+  function pushSection(out, list, key, label, markKey) {
+    if (!list.length) return; // no chrome for an empty bucket
+    out.push({ row_id: key, __section: true, key: key, label: label, count: list.length });
+    if (model.expanded.has(key)) {
+      list.forEach(function (p) { if (markKey) p[markKey] = true; pushProject(out, p); });
+    }
+  }
+  function pushArchivedSection(out, tree) {
+    pushSection(out, tree.archived_projects || [], SECTION_ARCHIVED, "Archived", "__archived");
+  }
+  function pushTestRunsSection(out, tree) {
+    pushSection(out, tree.test_runs || [], SECTION_TEST_RUNS, "Test runs", null);
+  }
+
+  function buildRowOrSection(n) {
+    if (n.__section) return buildSectionHeader(n);
+    if (n.kind === "cluster") return buildClusterFold(n);
+    if (n.__project) return buildProjectHeader(n.__project);
+    var row = buildRow(n);
+    if (n.__child) row.classList.add("subagent-row");
+    return row;
+  }
+  function patchRowOrSection(el, n) {
+    if (n.__section) { patchSectionHeader(el, n); return; }
+    if (n.kind === "cluster") { patchClusterFold(el, n); return; }
+    if (n.__project) patchProjectHeader(el, n.__project); else patchRow(el, n);
+  }
+
+  // A cluster fold is a button-like row — NOT a session link, it has no
+  // real session of its own — so it carries none of buildRow's href/hx-*.
+  // Reuses the pre-rewrite .cluster-header/.cluster-chevron/.cluster-count
+  // classes (style.css) verbatim for visual consistency; only the expand
+  // mechanism (model.expanded + reconcile, keyed by the cluster's own
+  // row_id) is new.
+  function buildClusterFold(n) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "sb-row cluster-header";
+    b.setAttribute("data-row-id", n.row_id);
+    b.setAttribute("role", "button");
+    b.setAttribute("aria-expanded", String(model.expanded.has(n.row_id)));
+    b.innerHTML =
+      '<div class="dot-col"><span class="cluster-chevron">›</span></div>' +
+      '<div class="text-col"><span class="title"></span><span class="cluster-count"></span></div>';
+    b.querySelector(".title").textContent = n.title;
+    setClusterCount(b, n);
+    b.addEventListener("click", function () { toggleExpanded(n.row_id); });
+    b.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      toggleExpanded(n.row_id);
+    });
+    return b;
+  }
+  function patchClusterFold(el, n) {
+    el.setAttribute("aria-expanded", String(model.expanded.has(n.row_id)));
+    var title = el.querySelector(".title");
+    if (title && title.textContent !== n.title) title.textContent = n.title;
+    setClusterCount(el, n);
+  }
+  function setClusterCount(el, n) {
+    var el2 = el.querySelector(".cluster-count");
+    if (el2) el2.textContent = "×" + n.cluster_count; // "describe this image ×5" (mockup #10 rec C copy)
+  }
+
+  function buildSectionHeader(sec) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "sb-section";
+    b.setAttribute("data-row-id", sec.row_id);
+    b.setAttribute("data-section-key", sec.key);
+    // role="button" is redundant on a real <button> but kept for parity with
+    // .project-header's div[role=button] — an explicit, unambiguous contract
+    // for anything (tests, assistive tech quirks) that greps for it.
+    b.setAttribute("role", "button");
+    b.setAttribute("aria-expanded", String(model.expanded.has(sec.key)));
+    b.innerHTML = '<span class="sb-section-label"></span>';
+    setSectionLabel(b, sec);
+    b.addEventListener("click", function () { toggleExpanded(sec.key); });
+    // .project-header's toggle is click-only today; this is new code, so it
+    // gets real keyboard support rather than inheriting that gap. A real
+    // <button> gives native Tab focus; the explicit Enter/Space handler
+    // below is the actual activation mechanism (not relied on implicitly),
+    // so behavior is identical across browsers/environments.
+    b.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      toggleExpanded(sec.key);
+    });
+    return b;
+  }
+  function patchSectionHeader(el, sec) {
+    el.setAttribute("aria-expanded", String(model.expanded.has(sec.key)));
+    setSectionLabel(el, sec);
+  }
+  function setSectionLabel(el, sec) {
+    var label = el.querySelector(".sb-section-label");
+    if (label) label.textContent = sec.label + " (" + sec.count + ")";
+  }
+
+  function buildProjectHeader(p) {
+    var d = document.createElement("div");
+    // NOTE: intentionally NOT "sb-row" — a project header is not a session
+    // row, and the existing template/CSS (partials/sidebar.html, style.css)
+    // already style ".project-header" as its own standalone class.
+    d.className = "project-header";
+    d.setAttribute("data-row-id", "header:" + p.key);
+    d.setAttribute("data-project-key", p.key);
+    d.setAttribute("role", "button");
+    d.setAttribute("aria-expanded", String(model.expanded.has(p.key) || p.default_expanded === true));
+    d.innerHTML = '<span class="project-name"></span><span class="project-rollup"></span>';
+    d.querySelector(".project-name").textContent = p.name;
+    setProjectRollup(d, p);
+    d.addEventListener("click", function () { toggleExpanded(p.key); });
+    var menuBtn = document.createElement("button");
+    menuBtn.type = "button";
+    menuBtn.className = "sb-menu-btn btn-icon";
+    menuBtn.setAttribute("aria-label", "project menu");
+    menuBtn.setAttribute("aria-haspopup", "menu");
+    menuBtn.textContent = "⋯"; // ⋯
+    menuBtn.addEventListener("click", function (e) {
+      e.preventDefault(); e.stopPropagation();
+      openMenu(menuBtn, projectMenuItems(p));
+    });
+    d.appendChild(menuBtn);
+    return d;
+  }
+  function patchProjectHeader(el, p) {
+    el.setAttribute("aria-expanded", String(model.expanded.has(p.key) || p.default_expanded === true));
+    setProjectRollup(el, p);
+  }
+
+  // Magnitude rollup badges (mockup #10 rec A): "⟳N · ◆M" says how many of a
+  // project's sessions are working vs. need you — the two counts the
+  // attention spec's rollup rules define (needs-you outranks active; never a
+  // third category). Shared by build + patch so the reconcile patch path
+  // updates counts/tint on the SAME .project-rollup node instead of
+  // rebuilding the header. data-state carries p.rollup_state (the
+  // server-computed, rank-ranked winning state) purely as a CSS/test hook —
+  // the badges' own rollup-live/rollup-attn classes already carry the
+  // blue/amber tint (style.css), reusing the existing status-dot palette.
+  function setProjectRollup(el, p) {
+    var r = el.querySelector(".project-rollup");
+    if (!r) return;
+    r.setAttribute("data-state", p.rollup_state || "");
+    r.textContent = ""; // clear prior badges/separator (not innerHTML)
+    var live = p.rollup_live || 0;
+    var attn = p.rollup_attn || 0;
+    if (live > 0) r.appendChild(buildRollupBadge("rollup-live", "⟳", live));
+    if (live > 0 && attn > 0) {
+      var sep = document.createElement("span");
+      sep.className = "rollup-sep";
+      sep.textContent = "·"; // "·"
+      r.appendChild(sep);
+    }
+    if (attn > 0) r.appendChild(buildRollupBadge("rollup-attn", "◆", attn)); // "◆"
+  }
+  function buildRollupBadge(cls, glyph, count) {
+    var b = document.createElement("span");
+    b.className = "rollup-badge " + cls;
+    var g = document.createElement("span");
+    g.className = "rollup-glyph";
+    g.textContent = glyph;
+    b.appendChild(g);
+    b.appendChild(document.createTextNode(String(count)));
+    return b;
+  }
+
+  // Generic expand/collapse toggle, keyed either by a project key or a
+  // section key (e.g. SECTION_ARCHIVED) — both live in the same
+  // model.expanded Set and persist through the same localStorage mechanism.
+  function toggleExpanded(key) {
+    if (model.expanded.has(key)) model.expanded.delete(key); else model.expanded.add(key);
+    persistExpanded(key);
+    if (model.tree) renderTree(model.tree);
+  }
+  function persistExpanded(key) {
+    try {
+      if (model.expanded.has(key)) window.localStorage.setItem(EXPAND_PREFIX + key, "true");
+      else window.localStorage.removeItem(EXPAND_PREFIX + key);
+    } catch (e) {}
+  }
+  function restoreExpanded(tree) {
+    var all = (tree.projects || []).concat(tree.archived_projects || [], tree.test_runs || []);
+    all.forEach(function (p) {
+      try { if (window.localStorage.getItem(EXPAND_PREFIX + p.key) === "true") model.expanded.add(p.key); } catch (e) {}
+    });
+    SECTION_KEYS.forEach(function (key) {
+      try { if (window.localStorage.getItem(EXPAND_PREFIX + key) === "true") model.expanded.add(key); } catch (e) {}
+    });
+  }
+
+  // Pending overlay: every optimistic op is re-applied on top of every admitted
+  // resync until it completes. Per-op predicates (round-2 A3): mutation-type
+  // ops (favorite, rename) complete when a resync reflects the field;
+  // disappearance-type ops (archive, delete) complete on POST-2xx (absence is
+  // success). Eviction at 30s is a safety net only.
+  function applyPending(tree) {
+    if (!model.pending.size) return tree;
+    var clone = JSON.parse(JSON.stringify(tree));
+    model.pending.forEach(function (op) { op.apply(clone); });
+    return clone;
+  }
+
+  // Recurses into every node's .children — subagent children AND cluster
+  // members alike travel on the same wire field — so pending ops
+  // (favorite/rename/__drop) reach a child or cluster-member ref exactly as
+  // they would a top-level session.
+  function forEachNode(tree, fn) {
+    var lists = [tree.needs_you, tree.favorites].concat(
+      (tree.projects || []).map(function (p) { return p.sessions; }),
+      (tree.archived_projects || []).map(function (p) { return p.sessions; }),
+      (tree.test_runs || []).map(function (p) { return p.sessions; }));
+    lists.forEach(function (l) { (l || []).forEach(function (n) { forEachNodeDeep(n, fn); }); });
+  }
+  function forEachNodeDeep(n, fn) {
+    fn(n);
+    (n.children || []).forEach(function (c) { forEachNodeDeep(c, fn); });
+  }
+
+  function nodeReflects(tree, ref, check) {
+    var ok = false;
+    forEachNode(tree, function (n) { if (n.ref === ref && check(n)) ok = true; });
+    return ok;
+  }
+
+  function addPending(op) {
+    op.at = Date.now();
+    model.pending.set(op.id, op);
+    if (model.tree) renderTree(model.tree);
+    setTimeout(function () {
+      var p = model.pending.get(op.id);
+      if (p && p === op) { model.pending.delete(op.id); if (op.onEvict) op.onEvict(); if (model.tree) renderTree(model.tree); }
+    }, 30000);
+  }
+
+  // Called by every admitted resync: drop mutation-type ops the payload now
+  // reflects.
+  function reconcilePending(tree) {
+    model.pending.forEach(function (op, id) {
+      if (op.confirm && op.confirm(tree)) model.pending.delete(id);
+    });
+  }
+
+  // --- Public mutation API ---------------------------------------------------
+  function favorite(ref, on) {
+    var sid = ref.replace(/^local:/, "");
+    addPending({
+      id: "fav:" + ref, apply: function (t) { forEachNode(t, function (n) { if (n.ref === ref) n.favorite = on; }); },
+      confirm: function (t) { return nodeReflects(t, ref, function (n) { return !!n.favorite === on; }); },
+    });
+    postJSON("/api/favorite", { kind: "session", id: sid, favorited: on });
+  }
+  function archive(ref, on) {
+    var sid = ref.replace(/^local:/, "");
+    var op = { id: "arch:" + ref, apply: function (t) { if (on) forEachNode(t, function (n) { if (n.ref === ref) n.__drop = true; }); } };
+    addPending(op);
+    postJSON("/api/archive", { kind: "session", id: sid, archived: on }).then(function () { model.pending.delete(op.id); scheduleResync(); });
+  }
+  function rename(ref, name) {
+    var sid = ref.replace(/^local:/, "");
+    addPending({
+      id: "name:" + ref, apply: function (t) { forEachNode(t, function (n) { if (n.ref === ref) n.title = name; }); },
+      confirm: function (t) { return nodeReflects(t, ref, function (n) { return n.title === name; }); },
+    });
+    postJSON("/api/sessions/" + encodeURIComponent(ref) + "/rename", { name: name }).catch(function () {});
+  }
+
+  function postJSON(url, body) {
+    return window.fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      .then(function (r) {
+        if (!r || !r.ok) { throw new Error("post failed"); }
+        scheduleResync(); // every mutation POST-2xx schedules a resync (round-3 H1)
+        return r;
+      })
+      .catch(function (e) {
+        if (window.SerfToast) window.SerfToast.show("Action failed", "error");
+        throw e;
+      });
+  }
+
+  // --- Age formatting (client-side; server ages are up to one bucket stale) --
+  function ageString(iso) {
+    if (!iso) return "";
+    var t = Date.parse(iso);
+    if (isNaN(t)) return "";
+    var d = (Date.now() - t) / 1000;
+    if (d < 60) return "now";
+    if (d < 3600) return Math.floor(d / 60) + "m";
+    if (d < 86400) return Math.floor(d / 3600) + "h";
+    return Math.floor(d / 86400) + "d";
+  }
+
+  // --- Active row (driven off htmx:afterSwap on #workspace) -------------------
+  // Task 22: a deep-link whose session is rendered nowhere yet (collapsed
+  // behind a section/project/cluster/children disclosure) must still end up
+  // visible + marked data-active, not just silently fail to highlight.
+  // autoRevealedPath gates the search+expand+re-render side effect to at
+  // most once per distinct pathname — the mark-active pass below always
+  // runs, but the (potentially tree-wide) reveal search only runs when the
+  // pathname just changed, so a genuinely-absent session can't cause a
+  // render loop (each renderTree tail-calls syncActiveRow again; the second
+  // call sees the same pathname and skips straight past the guard).
+  var autoRevealedPath = null;
+  function syncActiveRow() {
+    var path = (window.location && window.location.pathname) || "";
+    var clean = path.replace(/\/+$/, "");
+    var alreadyVisible = markActiveRows(clean);
+    if (clean === autoRevealedPath) return; // already attempted for this pathname
+    autoRevealedPath = clean;
+    if (alreadyVisible || !model.tree) return;
+    var m = /^\/s\/(.+)$/.exec(clean);
+    if (!m) return; // not a session deep-link
+    var chain = findRevealChain(model.tree, m[1]);
+    if (!chain || !chain.length) return; // not found anywhere, or needs no expansion
+    var changed = false;
+    chain.forEach(function (key) {
+      if (!model.expanded.has(key)) { model.expanded.add(key); persistExpanded(key); changed = true; }
+    });
+    if (changed) renderTree(model.tree); // tail-calls syncActiveRow; guard above short-circuits the re-entry
+  }
+  // Marks the row whose href matches `clean` data-active (clearing every
+  // other row) and reports whether a match was found, so callers can skip
+  // the (potentially expensive) reveal search when the row is already
+  // visible.
+  function markActiveRows(clean) {
+    var rows = document.querySelectorAll("#sidebar .sb-row[href]");
+    var found = false;
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].getAttribute("href") === clean) { rows[i].setAttribute("data-active", ""); found = true; }
+      else rows[i].removeAttribute("data-active");
+    }
+    return found;
+  }
+  // Searches every tier of the tree (NeedsYou, Pinned, active/archived/
+  // test-run projects — including nested cluster members and subagent
+  // children) for the node whose session_id matches, and returns the list of
+  // model.expanded keys needed to make it visible: any enclosing
+  // section/project key, plus a cluster row_id or children:<row_id> key for
+  // each disclosure the match sits behind. Returns null if sessionId is
+  // nowhere in the tree.
+  function findRevealChain(tree, sessionId) {
+    return (
+      searchNodes(tree.needs_you, sessionId, []) ||
+      searchNodes(tree.favorites, sessionId, []) ||
+      searchProjects(tree.projects, sessionId, []) ||
+      searchProjects(tree.archived_projects, sessionId, [SECTION_ARCHIVED]) ||
+      searchProjects(tree.test_runs, sessionId, [SECTION_TEST_RUNS]) ||
+      null
+    );
+  }
+  function searchProjects(projects, sessionId, prefix) {
+    for (var i = 0; i < (projects || []).length; i++) {
+      var p = projects[i];
+      var found = searchNodes(p.sessions, sessionId, prefix.concat([p.key]));
+      if (found) return found;
+    }
+    return null;
+  }
+  // `chain` is the expansion keys needed to reach `nodes` itself; a match
+  // inside a cluster's members or a session's children extends the chain
+  // with that disclosure's own key before returning.
+  function searchNodes(nodes, sessionId, chain) {
+    for (var i = 0; i < (nodes || []).length; i++) {
+      var n = nodes[i];
+      if (n.session_id === sessionId) return chain;
+      if (n.kind === "cluster") {
+        var cm = searchNodes(n.children, sessionId, chain.concat([n.row_id]));
+        if (cm) return cm;
+      } else if (n.children && n.children.length) {
+        var cc = searchNodes(n.children, sessionId, chain.concat([childrenKey(n)]));
+        if (cc) return cc;
+      }
+    }
+    return null;
+  }
+
+  // --- Fetch + lifecycle -----------------------------------------------------
+  function fetchTree() {
+    var mySeq = ++model.seq;
+    return window.fetch("/api/tree").then(function (r) { return r.json(); }).then(function (tree) {
+      if (mySeq !== model.seq) return; // sequence guard: a newer fetch won
+      renderTree(tree);
+      migrateExpansionKeys(); // Task 22 (no-op until then)
+    }).catch(function () {});
+  }
+  // One-time migration of legacy basename-keyed expansion entries to the new
+  // path-slug keys. Runs after the first render (needs each project's key+name);
+  // co-basename collisions copy the old value to every matching new key.
+  var migratedExpansion = false;
+  function migrateExpansionKeys() {
+    if (migratedExpansion || !model.tree) return;
+    migratedExpansion = true;
+    var all = (model.tree.projects || []).concat(model.tree.archived_projects || [], model.tree.test_runs || []);
+    all.forEach(function (p) {
+      try {
+        var legacy = window.localStorage.getItem(EXPAND_PREFIX + p.name);
+        if (legacy === null) return;
+        if (window.localStorage.getItem(EXPAND_PREFIX + p.key) === null) window.localStorage.setItem(EXPAND_PREFIX + p.key, legacy);
+        if (legacy === "true") model.expanded.add(p.key);
+      } catch (e) {}
+    });
+  }
+
+  // --- Coalesced resync + event wiring ---------------------------------------
+  var resyncTimer = null, lastResync = 0;
+  function scheduleResync() {
+    if (resyncTimer) return;
+    var wait = Math.max(0, 2000 - (Date.now() - lastResync)); // ≥2s spacing, trailing
+    resyncTimer = setTimeout(function () { resyncTimer = null; lastResync = Date.now(); doResync(); }, wait);
+  }
+  function doResync() {
+    var mySeq = ++model.seq;
+    window.fetch("/api/tree").then(function (r) { return r.json(); }).then(function (tree) {
+      if (mySeq !== model.seq) return; // sequence guard
+      reconcilePending(tree);
+      renderTree(tree);
+      // Re-request children for projects the user expanded (served from the memo).
+      model.expanded.forEach(function (key) { refetchProjectChildren(key); });
+    }).catch(function () {}); // resync failure keeps the last good model rendered
+  }
+  function refetchProjectChildren(key) {
+    window.fetch("/api/tree/project?key=" + encodeURIComponent(key)).then(function (r) { return r.ok ? r.json() : null; }).then(function (p) {
+      if (!p || !model.tree) return;
+      model.lazyCache.set(key, p);
+      var projects = (model.tree.projects || []).concat(model.tree.archived_projects || [], model.tree.test_runs || []);
+      for (var i = 0; i < projects.length; i++) { if (projects[i].key === key) { projects[i].sessions = p.sessions; } }
+      renderTree(model.tree);
+    }).catch(function () {});
+  }
+
+  var QUALIFYING = { "thread/started": 1, "thread/closed": 1, "thread/status/changed": 1, "serf/job/started": 1, "serf/job/finished": 1, "serf/attention/changed": 1 };
+  function onNotification(method, params) {
+    if (method === "serf/attention/changed") { applyAttentionInstant(params); scheduleResync(); return; }
+    if (QUALIFYING[method]) scheduleResync();
+  }
+  // Instant path: attention changed[] carries the coarse 4-value level and only
+  // fires on level transitions; adjust existing rows' tint + badge instantly.
+  function applyAttentionInstant(params) {
+    (params && params.changed || []).forEach(function (ch) {
+      var rows = document.querySelectorAll('#sidebar .sb-row[data-ref="local:' + ch.threadId + '"]');
+      for (var i = 0; i < rows.length; i++) rows[i].setAttribute("data-attention", ch.level);
+    });
+  }
+
+  // --- Survivor behaviors carried verbatim from the pre-rewrite sidebar.js ---
 
   // Open-beside control on sidebar subagent rows — delegate clicks on
   // .subagent-row-wrap .open-beside-btn → window.SerfPanes.open("/thread/<ref>", title).
@@ -444,39 +818,6 @@
     btn.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
   }
   document.addEventListener("keydown", onSidebarOpenBesideKeydown);
-
-  // Repeated-title cluster fold toggle (mockup #10/#C) — the cluster header
-  // flips data-cluster-expanded on its .session-cluster (CSS reveals the member
-  // runs), swaps the chevron glyph, and updates aria-expanded. Not persisted:
-  // clusters are recomputed each render and the parent project's collapse state
-  // already governs visibility across re-renders.
-  // setClusterExpanded flips a repeated-title cluster's fold and syncs its
-  // header aria-expanded plus the chevron glyph. Shared by the click handler
-  // and the post-swap restore.
-  function setClusterExpanded(cluster, expanded) {
-    var header = cluster.querySelector(".cluster-header");
-    var chevron = cluster.querySelector(".cluster-chevron");
-    if (expanded) {
-      cluster.setAttribute("data-cluster-expanded", "");
-      if (header) header.setAttribute("aria-expanded", "true");
-      if (chevron) chevron.textContent = "▾";
-    } else {
-      cluster.removeAttribute("data-cluster-expanded");
-      if (header) header.setAttribute("aria-expanded", "false");
-      if (chevron) chevron.textContent = "▸";
-    }
-  }
-
-  function onClusterToggle(e) {
-    var header = e.target.closest(".cluster-header");
-    if (!header) return;
-    e.preventDefault();
-    e.stopPropagation();
-    var cluster = header.closest(".session-cluster");
-    if (!cluster) return;
-    setClusterExpanded(cluster, !cluster.hasAttribute("data-cluster-expanded"));
-  }
-  document.addEventListener("click", onClusterToggle);
 
   // Mobile hamburger: toggle a body[data-sidebar-open] flag that the
   // mobile media query reads to slide the sidebar in. Tapping a sidebar
@@ -643,57 +984,16 @@
   }
   document.addEventListener("htmx:afterSwap", syncRailToggleLabel);
 
-  // data-active marker — sync after every htmx swap into #workspace. The
-  // marker is the row whose href matches the current pathname exactly (e.g.,
-  // "/s/01ABC"). /new and /settings URLs don't match any sb-row, so all
-  // rows clear.
-  // Match by exact pathname: rows have href="/s/<id>" and window.location.pathname
-  // is "/s/<id>" (with any trailing slash stripped below).
-  function syncActiveRow() {
-    var path = window.location.pathname || "";
-    var rows = document.querySelectorAll(".sb-row");
-    var matched = null;
-    if (path && path.indexOf("/s/") === 0) {
-      // Strip trailing slash for exact match.
-      var clean = path.replace(/\/+$/, "");
-      for (var i = 0; i < rows.length; i++) {
-        var href = rows[i].getAttribute("href") || "";
-        if (href === clean) { matched = rows[i]; break; }
-      }
-    }
-    for (var j = 0; j < rows.length; j++) {
-      if (rows[j] === matched) {
-        rows[j].setAttribute("data-active", "");
-      } else {
-        rows[j].removeAttribute("data-active");
-      }
-    }
-  }
+  if (window.SerfAppwire && window.SerfAppwire.onNotification) window.SerfAppwire.onNotification(onNotification);
+  if (window.SerfAppwire && window.SerfAppwire.onConnectionRestored) window.SerfAppwire.onConnectionRestored(scheduleResync);
+  setInterval(scheduleResync, 60000); // 60s idle resync
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", syncActiveRow);
-  } else {
-    syncActiveRow();
-  }
-  document.addEventListener("htmx:afterSwap", function (e) {
-    // Only resync when the swap was into #workspace OR the sidebar itself.
-    // (Sidebar swaps re-render the rows; the marker has to be re-applied.)
-    var target = e && e.target;
-    if (!target) { syncActiveRow(); return; }
-    if (target.id === "workspace" || target.id === "sidebar" || (target.closest && target.closest("#sidebar"))) {
-      syncActiveRow();
-    }
-    // After a sidebar swap, update [data-pulse] on any status dots.
-    if (target.id === "sidebar" || (target.closest && target.closest("#sidebar"))) {
-      if (window.SerfRenderer && window.SerfRenderer.applyStatusDotPulse) {
-        window.SerfRenderer.applyStatusDotPulse(document.getElementById("sidebar") || document);
-      }
-    }
+  paintSkeleton();
+  fetchTree();
+
+  document.body && document.body.addEventListener("htmx:afterSwap", function (e) {
+    if (e && e.target && e.target.id === "workspace") syncActiveRow();
   });
 
-  // Expose close so other modules (e.g. search) can fully close the mobile
-  // sidebar drawer — deactivating its focus trap — before opening their own
-  // overlay. Using the internal setSidebarOpen(false) ensures the trap is
-  // properly torn down and the click-outside listener is removed.
-  window.SerfSidebar = { close: function () { setSidebarOpen(false); } };
+  window.SerfSidebar = { renderTree: renderTree, refresh: fetchTree, favorite: favorite, archive: archive, rename: rename, close: function () { setSidebarOpen(false); } };
 })();

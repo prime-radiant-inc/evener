@@ -72,6 +72,22 @@ func controlTag(t *testing.T, body, marker string) string {
 	return body[start : start+rel+1]
 }
 
+// injectMetasForTest replaces the past index with one holding the given metas.
+func (s *WebServer) injectMetasForTest(metas []schema.SessionMeta) {
+	idx := hubcore.NewPastIndex("")
+	idx.SeedForTest(metas)
+	s.cfg.Past = idx
+}
+
+// allTreeProjects returns every project in a TreeResponse regardless of
+// activity tier. Task 4 split active/archived projects into separate wire
+// arrays (Projects/ArchivedProjects); tests that only care whether a session
+// shows up somewhere in the tree — not which tier its project landed in —
+// scan both.
+func allTreeProjects(resp hubapi.TreeResponse) []hubapi.TreeProject {
+	return append(append([]hubapi.TreeProject(nil), resp.Projects...), resp.ArchivedProjects...)
+}
+
 func TestWeb_Landing_Renders(t *testing.T) {
 	r := hubcore.NewRoster(t.TempDir(), nil)
 	idx := hubcore.NewPastIndex("")
@@ -538,7 +554,7 @@ func TestWeb_APITreeIncludesConfiguredCodexSourceThreads(t *testing.T) {
 		t.Fatalf("codex live node lost source-qualified identity: %+v", got.Live[0])
 	}
 	var foundProject bool
-	for _, project := range got.Projects {
+	for _, project := range allTreeProjects(got) {
 		for _, session := range project.Sessions {
 			if session.Ref == "codex:th_codex" && session.Title == "Codex tree task" {
 				foundProject = true
@@ -592,7 +608,7 @@ func TestWeb_APITreeMarksConfiguredCodexEndedThreadsRecent(t *testing.T) {
 		t.Fatalf("ended codex thread appeared in live tree: %+v", got.Live)
 	}
 	var found *hubapi.TreeNode
-	for _, project := range got.Projects {
+	for _, project := range allTreeProjects(got) {
 		for i := range project.Sessions {
 			if project.Sessions[i].Ref == "codex:th_codex_ended" {
 				found = &project.Sessions[i]
@@ -604,51 +620,6 @@ func TestWeb_APITreeMarksConfiguredCodexEndedThreadsRecent(t *testing.T) {
 	}
 	if found.Live || found.State != "ended" {
 		t.Fatalf("ended codex thread live metadata = %+v, want live=false state=ended", *found)
-	}
-}
-
-func TestWeb_SidebarIncludesConfiguredCodexSourceThreads(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
-	appserver.HandleTyped(codex.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (map[string]any, error) {
-		return map[string]any{"data": []map[string]any{{
-			"id":            "th_codex",
-			"sessionId":     "th_codex",
-			"preview":       "Codex sidebar task",
-			"modelProvider": "openai",
-			"createdAt":     100,
-			"updatedAt":     200,
-			// Active so the project auto-expands and renders its rows inline.
-			"status":     map[string]any{"type": "active"},
-			"cwd":        "/work/codex",
-			"cliVersion": "codex-test",
-			"source":     "appServer",
-		}}}, nil
-	})
-	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
-	defer codexHTTP.Close()
-
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		Past:    hubcore.NewPastIndex(""),
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID:       "codex",
-			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
-		}},
-	})
-	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
-	req.Host = "127.0.0.1:9180"
-	req.Header.Set("HX-Request", "true")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `href="/s/codex:th_codex"`) || !strings.Contains(body, `hx-get="/_partials/s/codex:th_codex/workspace"`) {
-		t.Fatalf("sidebar missing source-qualified codex link:\n%s", body)
-	}
-	if !strings.Contains(body, "Codex sidebar task") {
-		t.Fatalf("sidebar missing codex title:\n%s", body)
 	}
 }
 
@@ -706,7 +677,7 @@ func TestWeb_APITreeIncludesManagedCodexLaunchThreads(t *testing.T) {
 			hasSource = true
 		}
 	}
-	for _, project := range got.Projects {
+	for _, project := range allTreeProjects(got) {
 		for _, session := range project.Sessions {
 			if session.Ref == "codex-managed:th_fake" && session.Title == "fake codex" {
 				hasThread = true
@@ -940,20 +911,14 @@ func TestWeb_AppShell_RendersSidebarAndWorkspaceMounts(t *testing.T) {
 		t.Fatalf("status: %d", rec.Code)
 	}
 	body := rec.Body.String()
+	// The sidebar is now an empty client-rendered mount point (sidebar.js owns
+	// its content via /api/tree, not an htmx-fetched partial), so only the
+	// mount points themselves are app-shell assertions worth pinning here.
 	if !strings.Contains(body, `id="sidebar"`) {
 		t.Errorf("missing #sidebar")
 	}
 	if !strings.Contains(body, `id="workspace"`) {
 		t.Errorf("missing #workspace")
-	}
-	if !strings.Contains(body, `hx-get="/_partials/sidebar"`) {
-		t.Errorf("missing sidebar hx-get")
-	}
-	if strings.Contains(body, `every 5s`) {
-		t.Errorf("sidebar should not poll on a fixed interval")
-	}
-	if !strings.Contains(body, `sidebar:refresh from:body`) {
-		t.Errorf("sidebar should refresh from explicit app events")
 	}
 	if !strings.Contains(body, `hx-get="/_partials/workspace/empty"`) {
 		t.Errorf("missing workspace partial hx-get")
@@ -977,151 +942,34 @@ func TestWeb_AppShellHasSidePaneRegion(t *testing.T) {
 	}
 }
 
-// newCodexSidebarServer builds a WebServer fed by a single fake codex source
-// thread in the given state, project (cwd basename), and id. Returns the server
-// and a cleanup func.
-func newCodexSidebarServer(t *testing.T, id, cwd, status string) (*WebServer, func()) {
-	t.Helper()
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
-	appserver.HandleTyped(codex.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (map[string]any, error) {
-		return map[string]any{"data": []map[string]any{{
-			"id":            id,
-			"sessionId":     id,
-			"preview":       "Idle codex task",
-			"modelProvider": "openai",
-			"createdAt":     100,
-			"updatedAt":     200,
-			"status":        map[string]any{"type": status},
-			"cwd":           cwd,
-			"cliVersion":    "codex-test",
-			"source":        "appServer",
-		}}}, nil
-	})
-	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		Past:    hubcore.NewPastIndex(""),
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID:       "codex",
-			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
-		}},
-	})
-	return web, codexHTTP.Close
-}
-
-func TestWeb_SidebarCollapsedProjectEmitsNoSessionRows(t *testing.T) {
-	// An idle project is not live, so it starts collapsed and its session rows
-	// are NOT in the default sidebar payload — the scale fix.
-	web, cleanup := newCodexSidebarServer(t, "th_idle", "/work/idleproj", "idle")
-	defer cleanup()
-
-	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
-	req.Host = "127.0.0.1:9180"
-	req.Header.Set("HX-Request", "true")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+// TestWeb_APITreeProjectUnknownKeyErrors is the /api/tree/project counterpart
+// of the deleted sidebar-project HTML-partial test: an empty key is a client
+// error (400, the handler's early-return validation) and an unrecognized key
+// is a 404 (the "not found in the memoized tree" branch) — distinct from the
+// old route, which 404'd on both.
+func TestWeb_APITreeProjectUnknownKeyErrors(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: hubcore.NewPastIndex("")})
+	cases := []struct {
+		key  string
+		want int
+	}{
+		{"", http.StatusBadRequest},
+		{"does-not-exist", http.StatusNotFound},
 	}
-	body := rec.Body.String()
-	// The project header is present...
-	if !strings.Contains(body, `data-project-key="idleproj"`) {
-		t.Fatalf("sidebar missing collapsed project header:\n%s", body)
-	}
-	// ...but the session link is NOT rendered inline (collapsed → empty children).
-	if strings.Contains(body, `href="/s/codex:th_idle"`) {
-		t.Fatalf("collapsed project should not emit its session rows inline:\n%s", body)
-	}
-	// The chevron disclosure must be present so the user can expand.
-	if !strings.Contains(body, "project-chevron") {
-		t.Fatalf("collapsed project missing chevron disclosure:\n%s", body)
-	}
-}
-
-func TestWeb_SidebarArchiveButtonUsesIconNotMenuGlyph(t *testing.T) {
-	// The ⋯ glyph reads as an overflow menu, not "archive". The archive control
-	// must render a clear archive icon instead.
-	web, cleanup := newCodexSidebarServer(t, "th_idle", "/work/idleproj", "idle")
-	defer cleanup()
-
-	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
-	req.Host = "127.0.0.1:9180"
-	req.Header.Set("HX-Request", "true")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "archive-btn") {
-		t.Fatalf("sidebar missing archive control:\n%s", body)
-	}
-	if strings.Contains(body, "⋯") {
-		t.Fatalf("archive control still uses the ⋯ menu glyph; expected an archive icon:\n%s", body)
-	}
-	if !strings.Contains(body, `class="archive-icon"`) {
-		t.Fatalf("archive control missing the archive icon:\n%s", body)
-	}
-}
-
-func TestWeb_SidebarProjectPartialRendersChildren(t *testing.T) {
-	web, cleanup := newCodexSidebarServer(t, "th_idle", "/work/idleproj", "idle")
-	defer cleanup()
-
-	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar/project?key="+url.QueryEscape("idleproj"), nil)
-	req.Host = "127.0.0.1:9180"
-	req.Header.Set("HX-Request", "true")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	body := rec.Body.String()
-	// The lazy endpoint returns the project's children fragment, including the
-	// session row that the collapsed sidebar omitted.
-	if !strings.Contains(body, `href="/s/codex:th_idle"`) {
-		t.Fatalf("project partial missing session row:\n%s", body)
-	}
-	// It is a fragment of tiers, not a whole project section.
-	if strings.Contains(body, `data-project-key=`) {
-		t.Fatalf("project partial should be a children fragment, not a full section:\n%s", body)
-	}
-}
-
-func TestWeb_SidebarProjectPartialUnknownKey404(t *testing.T) {
-	web, cleanup := newCodexSidebarServer(t, "th_idle", "/work/idleproj", "idle")
-	defer cleanup()
-
-	for _, key := range []string{"", "does-not-exist"} {
-		req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar/project?key="+url.QueryEscape(key), nil)
+	for _, c := range cases {
+		req := httptest.NewRequest(http.MethodGet, "/api/tree/project?key="+url.QueryEscape(c.key), nil)
 		req.Host = "127.0.0.1:9180"
-		req.Header.Set("HX-Request", "true")
 		rec := httptest.NewRecorder()
 		web.Handler().ServeHTTP(rec, req)
-		if rec.Code != http.StatusNotFound {
-			t.Fatalf("key=%q status=%d body=%q", key, rec.Code, rec.Body.String())
+		if rec.Code != c.want {
+			t.Fatalf("key=%q status=%d, want %d body=%q", c.key, rec.Code, c.want, rec.Body.String())
 		}
-	}
-}
-
-func TestWeb_SidebarProjectPartialRequiresHXRequest(t *testing.T) {
-	web, cleanup := newCodexSidebarServer(t, "th_idle", "/work/idleproj", "idle")
-	defer cleanup()
-
-	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar/project?key=idleproj", nil)
-	req.Host = "127.0.0.1:9180"
-	// No HX-Request header → direct nav is rejected.
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("direct nav status=%d body=%q", rec.Code, rec.Body.String())
 	}
 }
 
 func TestWeb_InternalPartialsRequireHXRequest(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: hubcore.NewPastIndex("")})
 	for _, path := range []string{
-		"/_partials/sidebar",
 		"/_partials/workspace/empty",
 		"/_partials/workspace/spawn",
 		"/_partials/settings/general",
@@ -1163,412 +1011,6 @@ func TestWeb_SettingsFullPageLoadsInternalPartial(t *testing.T) {
 	}
 }
 
-func TestWeb_Sidebar_RendersTreeWithLiveAndProjects(t *testing.T) {
-	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
-	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01PAST", UpdatedAt: time.Now(), OriginalPrompt: "fix bug",
-		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		// Live entry so the project auto-expands and renders its tiers inline.
-		Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{
-			Entry: rendezvous.Entry{PID: 1}, SessionID: "01PAST", Status: appwire.ThreadStatusActive,
-		}),
-		Past: idx,
-	})
-	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
-	req.Host = "127.0.0.1:9180"
-	req.Header.Set("HX-Request", "true")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d", rec.Code)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `data-project-key="serf-hub"`) {
-		t.Errorf("project section missing: %q", body)
-	}
-	// A freshly-touched session lands in the project's Current tier.
-	if !strings.Contains(body, `data-tier="current"`) {
-		t.Errorf("fresh session should render in the Current tier: %q", body)
-	}
-	if !strings.Contains(body, "fix bug") {
-		t.Errorf("missing title")
-	}
-	if !strings.Contains(body, "sb-row") {
-		t.Errorf("missing sb-row class")
-	}
-	if !strings.Contains(body, "/s/01PAST") {
-		t.Errorf("missing session URL")
-	}
-}
-
-func TestWeb_Sidebar_RendersProjectsWithSessionTiers(t *testing.T) {
-	// Sidebar IA v2: projects are flat (recency-ordered) and each project's
-	// sessions are split into Current / Recent / (collapsed) Archived tiers.
-	now := time.Now()
-	metas := []schema.SessionMeta{
-		// Live session, touched now -> Current tier.
-		{ID: "01LIVE", UpdatedAt: now, OriginalPrompt: "ship the feature",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/live-proj"}},
-		// Touched 8 days ago -> Recent tier of the same project.
-		{ID: "01REC", UpdatedAt: now.Add(-8 * 24 * time.Hour), OriginalPrompt: "earlier work",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/live-proj"}},
-		// Touched 30 days ago in another project, no recent sessions -> the whole
-		// project is archived and renders in the Archived projects group.
-		{ID: "01OLD", UpdatedAt: now.Add(-30 * 24 * time.Hour), OriginalPrompt: "ancient work",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/old-proj"}},
-	}
-	live := []hubcore.LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01LIVE", Status: appwire.ThreadStatusAwaiting},
-	}
-	tree := hubcore.BuildTree(metas, live, map[hubcore.ArchiveKey]bool{})
-
-	tmpl := template.Must(template.New("sidebar.html").Funcs(sidebarTemplateFuncs).ParseFS(templatesFS, "templates/partials/sidebar.html"))
-	var buf bytes.Buffer
-	if err := tmpl.ExecuteTemplate(&buf, "sidebar", tree); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	body := buf.String()
-
-	for _, want := range []string{
-		`data-project-key="live-proj"`,
-		`data-tier="current"`,                           // the live session's tier
-		`data-tier="recent"`,                            // the 8-day-old session's tier
-		`<div class="session-tier-label">Current</div>`, // tier label
-		`<span class="project-name">live-proj</span>`,
-		`data-tier="archived-projects"`, // the Archived projects group
-	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("sidebar missing %q:\n%s", want, body)
-		}
-	}
-
-	// The fully-archived project renders inside the Archived projects group.
-	if !strings.Contains(body, `data-project-key="old-proj"`) {
-		t.Fatalf("old-proj missing:\n%s", body)
-	}
-	apIdx := strings.Index(body, `data-tier="archived-projects"`)
-	oldIdx := strings.Index(body, `data-project-key="old-proj"`)
-	if apIdx < 0 || oldIdx < apIdx {
-		t.Errorf("old-proj should render inside the Archived projects group:\n%s", body)
-	}
-}
-
-// renderSidebar renders the sidebar partial for a built tree and returns the
-// whitespace-flattened HTML, the shape most sidebar assertions want.
-func renderSidebar(t *testing.T, tree hubcore.Tree) string {
-	t.Helper()
-	tmpl := template.Must(template.New("sidebar.html").Funcs(sidebarTemplateFuncs).ParseFS(templatesFS, "templates/partials/sidebar.html"))
-	var buf bytes.Buffer
-	if err := tmpl.ExecuteTemplate(&buf, "sidebar", tree); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	return buf.String()
-}
-
-// renderProjectChildren renders the sidebarProjectChildren fragment for the
-// project named in metas — the markup the lazy expand endpoint serves and that
-// renders inline when a project is expanded. Tests of the expanded children
-// (tiers, clusters, archived disclosure, subagent folds) use this so they
-// don't depend on a project happening to auto-expand.
-func renderProjectChildren(t *testing.T, metas []schema.SessionMeta, live []hubcore.LiveEntry, name string) string {
-	t.Helper()
-	project, ok := hubcore.BuildProjectTree(metas, live, map[hubcore.ArchiveKey]bool{}, name)
-	if !ok {
-		t.Fatalf("project %q not found", name)
-	}
-	tmpl := template.Must(template.New("sidebar.html").Funcs(sidebarTemplateFuncs).ParseFS(templatesFS, "templates/partials/sidebar.html"))
-	var buf bytes.Buffer
-	if err := tmpl.ExecuteTemplate(&buf, "sidebarProjectChildren", project); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	return buf.String()
-}
-
-func TestWeb_Sidebar_DropsDuplicateLiveRail(t *testing.T) {
-	// mockup #10 rec A: the flat top "Live" rail (which duplicated the active
-	// tier — the #1 wayfinding defect) is removed. The active tier is the single
-	// live home. The live session must appear exactly once: under its project.
-	now := time.Now()
-	metas := []schema.SessionMeta{
-		{ID: "01LIVE", Name: "Refactor auth cache", UpdatedAt: now, OriginalPrompt: "x",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-	}
-	live := []hubcore.LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01LIVE", Status: appwire.ThreadStatusActive},
-	}
-	body := renderSidebar(t, hubcore.BuildTree(metas, live, map[hubcore.ArchiveKey]bool{}))
-
-	if strings.Contains(body, "sidebar-live-section") {
-		t.Errorf("the flat Live rail must be gone; body=\n%s", body)
-	}
-	if strings.Contains(body, `data-tier="live"`) {
-		t.Errorf("no live tier should render; body=\n%s", body)
-	}
-	if n := strings.Count(body, `href="/s/01LIVE"`); n != 1 {
-		t.Errorf("live session should appear exactly once (under its project), got %d:\n%s", n, body)
-	}
-}
-
-func TestWeb_Sidebar_NeedsYouTier(t *testing.T) {
-	// mockup #11 rec A: a top "Needs you (N)" tier aggregates awaiting sessions
-	// across projects, oldest-blocked first.
-	now := time.Now()
-	metas := []schema.SessionMeta{
-		{ID: "01ASKNEW", Name: "Newer ask", UpdatedAt: now.Add(-time.Minute), OriginalPrompt: "x",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-		{ID: "01ASKOLD", Name: "Older ask", UpdatedAt: now.Add(-9 * time.Minute), OriginalPrompt: "x",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/prime-radiant"}},
-	}
-	live := []hubcore.LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01ASKNEW", Status: appwire.ThreadStatusAwaiting},
-		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01ASKOLD", Status: appwire.ThreadStatusAwaiting},
-	}
-	body := renderSidebar(t, hubcore.BuildTree(metas, live, map[hubcore.ArchiveKey]bool{}))
-
-	if !strings.Contains(body, `data-tier="needs-you"`) {
-		t.Errorf("needs-you tier missing; body=\n%s", body)
-	}
-	if !strings.Contains(body, `>Needs you<`) {
-		t.Errorf("needs-you label missing; body=\n%s", body)
-	}
-	// Oldest-blocked first: 01ASKOLD must render before 01ASKNEW.
-	oldIdx := strings.Index(body, "/s/01ASKOLD")
-	newIdx := strings.Index(body, "/s/01ASKNEW")
-	if oldIdx < 0 || newIdx < 0 || oldIdx > newIdx {
-		t.Errorf("needs-you should list oldest-blocked first (01ASKOLD before 01ASKNEW); body=\n%s", body)
-	}
-}
-
-func TestWeb_Sidebar_NeedsYouTierHiddenWhenEmpty(t *testing.T) {
-	now := time.Now()
-	metas := []schema.SessionMeta{
-		{ID: "01WORK", Name: "Working", UpdatedAt: now, OriginalPrompt: "x",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-	}
-	live := []hubcore.LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01WORK", Status: appwire.ThreadStatusActive},
-	}
-	body := renderSidebar(t, hubcore.BuildTree(metas, live, map[hubcore.ArchiveKey]bool{}))
-	if strings.Contains(body, `data-tier="needs-you"`) {
-		t.Errorf("needs-you tier should be hidden when nothing awaits; body=\n%s", body)
-	}
-}
-
-// TestWeb_Sidebar_NeedsYouRowErroredDataState verifies that a NeedsYou row for
-// an errored session carries data-state="errored" on both the row anchor and
-// its status dot — not the hard-coded "awaiting" the tier used before errored
-// became a first-class state — so the CSS state accents and dot shape can
-// distinguish an error from an awaiting row.
-func TestWeb_Sidebar_NeedsYouRowErroredDataState(t *testing.T) {
-	now := time.Now()
-	metas := []schema.SessionMeta{
-		{ID: "01ERR", Name: "Broke", UpdatedAt: now, OriginalPrompt: "x",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-	}
-	live := []hubcore.LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01ERR", Status: appwire.ThreadStatusSystemError},
-	}
-	body := renderSidebar(t, hubcore.BuildTree(metas, live, map[hubcore.ArchiveKey]bool{}))
-
-	if !strings.Contains(body, `data-tier="needs-you"`) {
-		t.Fatalf("needs-you tier missing for errored session; body=\n%s", body)
-	}
-	flat := strings.Join(strings.Fields(body), " ")
-	if !strings.Contains(flat, `<span class="status-dot" data-state="errored">`) {
-		t.Errorf("needs-you dot missing data-state=\"errored\": %q", body)
-	}
-	rowFound := false
-	for _, chunk := range strings.Split(flat, "<a ") {
-		if !strings.HasPrefix(chunk, `class="sb-row needs-you-row"`) {
-			continue
-		}
-		end := strings.Index(chunk, ">")
-		if end < 0 {
-			continue
-		}
-		if strings.Contains(chunk[:end], `data-state="errored"`) {
-			rowFound = true
-			break
-		}
-	}
-	if !rowFound {
-		t.Errorf("needs-you row for errored session missing data-state=\"errored\" on its <a>: %q", body)
-	}
-}
-
-func TestWeb_Sidebar_MagnitudeRollupBadges(t *testing.T) {
-	// mockup #10 rec A: the header shows "⟳N · ◆M" magnitude, not one dot.
-	now := time.Now()
-	metas := []schema.SessionMeta{
-		{ID: "01W1", Name: "work 1", UpdatedAt: now, OriginalPrompt: "x",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-		{ID: "01W2", Name: "work 2", UpdatedAt: now.Add(-time.Minute), OriginalPrompt: "x",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-		{ID: "01ASK", Name: "blocked", UpdatedAt: now.Add(-2 * time.Minute), OriginalPrompt: "x",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-	}
-	live := []hubcore.LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01W1", Status: appwire.ThreadStatusActive},
-		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01W2", Status: appwire.ThreadStatusActive},
-		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting},
-	}
-	flat := strings.Join(strings.Fields(renderSidebar(t, hubcore.BuildTree(metas, live, map[hubcore.ArchiveKey]bool{}))), " ")
-	if !strings.Contains(flat, `<span class="rollup-badge rollup-live"><span class="rollup-glyph">⟳</span>2</span>`) {
-		t.Errorf("missing ⟳2 live magnitude badge; body=\n%s", flat)
-	}
-	if !strings.Contains(flat, `<span class="rollup-badge rollup-attn"><span class="rollup-glyph">◆</span>1</span>`) {
-		t.Errorf("missing ◆1 needs-you magnitude badge; body=\n%s", flat)
-	}
-}
-
-func TestWeb_Sidebar_RendersRepeatedTitleCluster(t *testing.T) {
-	// mockup #10/#C: a run of >=3 same-titled idle sessions folds to one cluster.
-	now := time.Now()
-	metas := []schema.SessionMeta{}
-	for i := 0; i < 5; i++ {
-		metas = append(metas, schema.SessionMeta{
-			ID:        "01IMG" + string(rune('A'+i)),
-			Name:      "describe this image",
-			UpdatedAt: now.Add(-time.Duration(i+1) * time.Hour),
-			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/serf-docs"},
-		})
-	}
-	// All-idle sessions cluster inside the (expanded) project's children.
-	body := renderProjectChildren(t, metas, nil, "serf-docs")
-	if !strings.Contains(body, "session-cluster") {
-		t.Errorf("cluster container missing; body=\n%s", body)
-	}
-	if !strings.Contains(body, "×5") {
-		t.Errorf("cluster count ×5 missing; body=\n%s", body)
-	}
-	// All five member runs are present (inside the fold).
-	for i := 0; i < 5; i++ {
-		id := "/s/01IMG" + string(rune('A'+i))
-		if !strings.Contains(body, id) {
-			t.Errorf("cluster member %s missing; body=\n%s", id, body)
-		}
-	}
-	// The cluster header is not a navigable session link (no /s/ on it).
-	if strings.Contains(body, `class="sb-row cluster-header"`) && strings.Contains(body, `cluster-header" data-state`) {
-		t.Errorf("cluster header should not carry a session state/link")
-	}
-}
-
-func TestWeb_Sidebar_ArchivedSessionsInCollapsedDisclosure(t *testing.T) {
-	// Sidebar IA v2: a project's archived sessions (auto >2wk inactive) render in
-	// a collapsed <details> disclosure under the project, while its current
-	// session stays visible — so stale work recedes without disappearing.
-	now := time.Now()
-	metas := []schema.SessionMeta{
-		{ID: "01CUR", UpdatedAt: now.Add(-1 * time.Hour), OriginalPrompt: "current work",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-		{ID: "01ARC", UpdatedAt: now.Add(-20 * 24 * time.Hour), OriginalPrompt: "stale work",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-	}
-	// Assert on the project's (expanded) children fragment.
-	body := renderProjectChildren(t, metas, nil, "serf")
-	// The archived tier is a collapsed disclosure (a <details> without `open`).
-	archIdx := strings.Index(body, `<details class="session-tier archived"`)
-	if archIdx < 0 {
-		t.Fatalf("archived session disclosure missing; body=\n%s", body)
-	}
-	seg := body[archIdx:]
-	end := strings.Index(seg, ">")
-	if end >= 0 && strings.Contains(seg[:end], " open") {
-		t.Errorf("archived session disclosure should be collapsed by default; body=\n%s", body)
-	}
-	// Both sessions render; the current one is not buried in the disclosure.
-	if !strings.Contains(body, "/s/01CUR") || !strings.Contains(body, "/s/01ARC") {
-		t.Errorf("both current and archived sessions should render; body=\n%s", body)
-	}
-	if !strings.Contains(body, `data-tier="current"`) {
-		t.Errorf("current session should render in the Current tier; body=\n%s", body)
-	}
-}
-
-func TestWeb_Sidebar_HidesCompletedSubagents(t *testing.T) {
-	now := time.Now()
-	metas := []schema.SessionMeta{
-		{ID: "01PARENT", UpdatedAt: now, OriginalPrompt: "parent",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/p"}},
-	}
-	// Five subagents under the parent. Completed (terminal-state) subagents fold
-	// behind a "Completed (N)" disclosure; working ones stay visible regardless
-	// of count.
-	for i := 0; i < 5; i++ {
-		metas = append(metas, schema.SessionMeta{
-			ID:              "01SUB" + string(rune('A'+i)),
-			UpdatedAt:       now.Add(-time.Duration(i) * time.Minute),
-			OriginalPrompt:  "sub work",
-			IsSubagent:      true,
-			ParentSessionID: "01PARENT",
-			EnvInfo:         schema.EnvironmentInfo{WorkingDir: "/projects/p"},
-		})
-	}
-	// Parent plus the first two subagents are live/active; the remaining three
-	// have no live entry and resolve to the terminal "ended" state.
-	live := []hubcore.LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01PARENT", Status: appwire.ThreadStatusActive},
-		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01SUBA", Status: appwire.ThreadStatusActive},
-		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01SUBB", Status: appwire.ThreadStatusActive},
-	}
-	// Subagent fold lives in the (expanded) project's children.
-	body := renderProjectChildren(t, metas, live, "p")
-
-	// The three ended subagents fold; the two active ones do not.
-	if got := strings.Count(body, "subagent-overflow"); got != 3 {
-		t.Errorf("expected 3 completed subagents folded, got %d:\n%s", got, body)
-	}
-	if !strings.Contains(body, "Completed (3)") {
-		t.Errorf("expected 'Completed (3)' disclosure:\n%s", body)
-	}
-	if got := strings.Count(body, `class="sb-row sub subagent-row"`); got != 5 {
-		t.Errorf("expected 5 subagent rows total, got %d", got)
-	}
-	// No active subagent should carry the overflow (hidden) class.
-	for _, id := range []string{"01SUBA", "01SUBB"} {
-		idx := strings.Index(body, "/s/"+id)
-		if idx < 0 {
-			t.Fatalf("active subagent %s row missing:\n%s", id, body)
-		}
-		wrapStart := strings.LastIndex(body[:idx], "subagent-row-wrap")
-		if wrapStart < 0 {
-			t.Fatalf("could not locate wrapper for %s", id)
-		}
-		if strings.Contains(body[wrapStart:idx], "subagent-overflow") {
-			t.Errorf("active subagent %s must not be folded as completed:\n%s", id, body)
-		}
-	}
-}
-
-// TestSubagentDone_ErroredIsNotDone pins that an errored subagent is a working
-// state, not a terminal one — it must not fold into the sidebar's "Completed
-// (N)" disclosure alongside genuinely finished subagents.
-func TestSubagentDone_ErroredIsNotDone(t *testing.T) {
-	fn := sidebarTemplateFuncs["subagentDone"].(func(string) bool)
-	if fn("errored") {
-		t.Fatal("errored subagent must not fold into Completed(N)")
-	}
-	if !fn("ended") {
-		t.Fatal("ended stays done")
-	}
-}
-
 // TestStateLabel_ErroredAndNeedsYou pins the two label changes the errored
 // render lane requires: "awaiting" reads as "Needs you" (not the flat,
 // unlabeled "Awaiting"), and "errored" gets its own human label rather than
@@ -1579,53 +1021,6 @@ func TestStateLabel_ErroredAndNeedsYou(t *testing.T) {
 	}
 	if got := stateLabel("awaiting"); got != "Needs you" {
 		t.Fatalf("stateLabel(awaiting) = %q, want \"Needs you\"", got)
-	}
-}
-
-func TestWeb_Sidebar_ProjectLinksEscapeWorkingDir(t *testing.T) {
-	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "escaped")
-	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	workingDir := "/projects/a&b?c#d"
-	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01ESCAPED", UpdatedAt: time.Now(), OriginalPrompt: "escaped project",
-		EnvInfo: schema.EnvironmentInfo{WorkingDir: workingDir},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		Roster:  hubcore.NewRoster(t.TempDir(), nil),
-		Past:    idx,
-	})
-	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
-	req.Host = "127.0.0.1:9180"
-	req.Header.Set("HX-Request", "true")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d", rec.Code)
-	}
-	body := rec.Body.String()
-	escaped := url.QueryEscape(workingDir)
-	for _, want := range []string{
-		`href="/settings/project?cwd=` + escaped + `"`,
-		`hx-get="/_partials/settings/project?cwd=` + escaped + `"`,
-		`hx-push-url="/settings/project?cwd=` + escaped + `"`,
-		`href="/new?dir=` + escaped + `"`,
-		`hx-get="/_partials/workspace/spawn?dir=` + escaped + `"`,
-		`hx-push-url="/new?dir=` + escaped + `"`,
-	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("sidebar missing escaped URL %q:\n%s", want, body)
-		}
 	}
 }
 
@@ -2122,6 +1517,10 @@ func (s *scriptedAppSource) ShutdownThread(context.Context, appwire.ThreadShutdo
 
 func (s *scriptedAppSource) SetThreadModel(context.Context, appwire.ThreadModelSetParams) error {
 	return appwire.Unavailable("scripted source does not set models")
+}
+
+func (s *scriptedAppSource) SetThreadName(context.Context, appwire.ThreadNameSetParams) error {
+	return appwire.Unavailable("scripted source does not set names")
 }
 
 func (s *scriptedAppSource) SetThreadReasoningEffort(context.Context, appwire.ThreadReasoningEffortSetParams) error {
@@ -2687,7 +2086,6 @@ func TestWeb_ThreadDocument_DirectGet_ServesChromeLessThreadDocument(t *testing.
 		`id="sidebar"`,
 		`id="search-dialog"`,
 		`data-sidebar-toggle`,
-		`/_partials/sidebar`,
 		`settings-link`,
 	} {
 		if strings.Contains(body, forbidden) {
@@ -4882,110 +4280,6 @@ func TestWeb_Send_RejectsOversizeImage(t *testing.T) {
 	}
 }
 
-// TestWeb_Sidebar_LiveRowDataState verifies that a live entry in the sidebar
-// renders with data-state on the .sb-row anchor itself, so the CSS state
-// accents (left border + tinted background) can apply.
-func TestWeb_Sidebar_LiveRowDataState(t *testing.T) {
-	dir := t.TempDir()
-	writeRendezvous(t, dir, rendezvous.Entry{PID: 30, Address: "127.0.0.1:55570"})
-	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01LIVEACC", status: appwire.ThreadStatusAwaiting})
-	r.Refresh()
-
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		Roster:  r,
-		Past:    hubcore.NewPastIndex(""),
-	})
-	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
-	req.Host = "127.0.0.1:9180"
-	req.Header.Set("HX-Request", "true")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d", rec.Code)
-	}
-	body := rec.Body.String()
-	// The sb-row anchor in the Live section must carry data-state="awaiting"
-	// so the state-accent CSS rules match. The template line-wraps the anchor,
-	// so flatten whitespace before looking for the two attributes adjacent on
-	// the same element.
-	if !strings.Contains(body, "sb-row") {
-		t.Fatalf("body missing sb-row class: %q", body)
-	}
-	flat := strings.Join(strings.Fields(body), " ")
-	if !strings.Contains(flat, `sb-row`) || !strings.Contains(flat, `data-state="awaiting"`) {
-		t.Errorf("sb-row missing data-state=\"awaiting\": %q", body)
-	}
-	// And confirm they're on the same opening tag: find <a ... > containing both.
-	tagFound := false
-	for _, chunk := range strings.Split(flat, "<a ") {
-		// The first split chunk is everything before the first <a; subsequent
-		// chunks each begin with the anchor's attribute list.
-		if !strings.HasPrefix(chunk, `class="sb-row`) {
-			continue
-		}
-		end := strings.Index(chunk, ">")
-		if end < 0 {
-			continue
-		}
-		if strings.Contains(chunk[:end], `data-state="awaiting"`) {
-			tagFound = true
-			break
-		}
-	}
-	if !tagFound {
-		t.Errorf("data-state=\"awaiting\" not on the sb-row <a> element: %q", body)
-	}
-}
-
-// TestWeb_Sidebar_ProjectHeader_HasChevronAndName verifies that the project
-// header renders with the project name and the project-level archive control.
-func TestWeb_Sidebar_ProjectHeader_HasChevronAndName(t *testing.T) {
-	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
-	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01PROJHDR", UpdatedAt: time.Now(), OriginalPrompt: "x",
-		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/widgets"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		Roster:  hubcore.NewRoster(t.TempDir(), nil),
-		Past:    idx,
-	})
-	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
-	req.Host = "127.0.0.1:9180"
-	req.Header.Set("HX-Request", "true")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d", rec.Code)
-	}
-	body := rec.Body.String()
-	wants := []string{
-		`class="project-header"`,
-		`class="project-name"`,
-		`data-archive-kind="project"`, // the project-level archive control
-		`data-archive-id="widgets"`,
-	}
-	for _, w := range wants {
-		if !strings.Contains(body, w) {
-			t.Errorf("project-header missing %q: %q", w, body)
-		}
-	}
-}
-
 func TestWeb_WorkspacePartial_RosterEndedSessionKeepsResumeSendEnabled(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
@@ -5454,103 +4748,6 @@ func (p perAddrProber) Probe(entry rendezvous.Entry) (sessionID, status string, 
 	return v.SessionID, v.Status, true
 }
 
-// TestWeb_Sidebar_RollupState_AwaitingHasPriority confirms that when a
-// project has both an awaiting and an idle live child, the rollup dot
-// reflects "awaiting" — the most-attention-needing state per spec.
-func TestWeb_Sidebar_RollupState_AwaitingHasPriority(t *testing.T) {
-	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
-	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01AWAIT", UpdatedAt: time.Now(), OriginalPrompt: "needs reply",
-		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01IDLE", UpdatedAt: time.Now(), OriginalPrompt: "ticking over",
-		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-
-	rDir := t.TempDir()
-	if _, err := rendezvous.Write(rDir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:1001"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rendezvous.Write(rDir, rendezvous.Entry{PID: 1002, Address: "127.0.0.1:1002"}); err != nil {
-		t.Fatal(err)
-	}
-	prober := perAddrProber{byAddr: map[string]struct{ SessionID, Status string }{
-		"127.0.0.1:1001": {SessionID: "01AWAIT", Status: appwire.ThreadStatusAwaiting},
-		"127.0.0.1:1002": {SessionID: "01IDLE", Status: appwire.ThreadStatusIdle},
-	}}
-	r := hubcore.NewRoster(rDir, prober)
-	r.Refresh()
-
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
-	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
-	req.Host = "127.0.0.1:9180"
-	req.Header.Set("HX-Request", "true")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d", rec.Code)
-	}
-	body := rec.Body.String()
-	// One awaiting + one idle session → the magnitude rollup (mockup #10)
-	// surfaces the needs-you count "◆1" on the header (idle counts toward
-	// neither), replacing the single ambiguous dot.
-	flat := strings.Join(strings.Fields(body), " ")
-	if !strings.Contains(flat, `<span class="rollup-badge rollup-attn"><span class="rollup-glyph">◆</span>1</span>`) {
-		t.Errorf("project header should show the ◆1 needs-you magnitude badge; body=\n%s", body)
-	}
-}
-
-// TestWeb_Sidebar_RollupState_NoLiveChildrenHides confirms that a
-// past-only project omits the rollup dot entirely — the dot only renders
-// when something is live or needs attention.
-func TestWeb_Sidebar_RollupState_NoLiveChildrenHides(t *testing.T) {
-	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
-	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01PAST", UpdatedAt: time.Now(), OriginalPrompt: "done long ago",
-		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		Roster:  hubcore.NewRoster(t.TempDir(), nil),
-		Past:    idx,
-	})
-	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
-	req.Host = "127.0.0.1:9180"
-	req.Header.Set("HX-Request", "true")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d", rec.Code)
-	}
-	body := rec.Body.String()
-	if strings.Contains(body, `project-rollup-dot`) {
-		t.Errorf("past-only project should omit the rollup dot entirely; body=\n%s", body)
-	}
-}
-
 // settingsRequest is a small helper for the settings pane tests.
 func settingsRequest(t *testing.T, web *WebServer, section string) string {
 	t.Helper()
@@ -5984,26 +5181,6 @@ func TestWeb_APITreeSkipsLiveEntriesUntilSessionIDKnown(t *testing.T) {
 	}
 	if len(got.Live) != 0 || len(got.Projects) != 0 {
 		t.Fatalf("tree rendered undrillable live entry: %+v", got)
-	}
-}
-
-func TestWeb_SidebarSkipsLiveEntriesUntilSessionIDKnown(t *testing.T) {
-	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 53, Address: "127.0.0.1:4053", WorkingDir: "/projects/serf", Model: "gpt-5"})
-	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "", status: appwire.ThreadStatusIdle})
-	r.Refresh()
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
-
-	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
-	req.Host = "127.0.0.1:9180"
-	req.Header.Set("HX-Request", "true")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
-	}
-	if strings.Contains(rec.Body.String(), `href="/s/`) {
-		t.Fatalf("sidebar rendered undrillable session link:\n%s", rec.Body.String())
 	}
 }
 

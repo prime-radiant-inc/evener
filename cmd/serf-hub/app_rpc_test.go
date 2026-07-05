@@ -2097,6 +2097,10 @@ func (s *relayLifecycleSource) SetThreadModel(context.Context, appwire.ThreadMod
 	return appwire.Unavailable("relay lifecycle source does not set models")
 }
 
+func (s *relayLifecycleSource) SetThreadName(context.Context, appwire.ThreadNameSetParams) error {
+	return appwire.Unavailable("relay lifecycle source does not set names")
+}
+
 func (s *relayLifecycleSource) SetThreadReasoningEffort(context.Context, appwire.ThreadReasoningEffortSetParams) error {
 	return appwire.Unavailable("relay lifecycle source does not set reasoning effort")
 }

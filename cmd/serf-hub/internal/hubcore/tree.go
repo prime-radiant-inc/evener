@@ -1,9 +1,12 @@
 package hubcore
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"primeradiant.com/serf/agent/schema"
@@ -33,7 +36,12 @@ type Tree struct {
 // split into activity tiers (Current / Recent / Archived) computed from each
 // session's last activity and archive decision.
 type TreeProject struct {
-	Name       string
+	Name string
+	// Key is the stable, path-derived project identifier: a slug of the full
+	// working directory ("<basename>-<8-hex sha256(path)>", or "no-project" for
+	// pathless sessions). Readable and collision-resistant, not collision-free —
+	// every destructive use is path-validated. Name stays the basename for display.
+	Key        string
 	WorkingDir string // absolute path of the project's working directory; used to prefill the spawn form
 	// Sessions split by activity tier:
 	//   - Current  – last activity ≤ 24h, not archived.
@@ -45,10 +53,17 @@ type TreeProject struct {
 	// IsArchived is true when the project lives in the bottom Archived-projects
 	// group: manually archived, or no non-archived (Current/Recent) sessions.
 	IsArchived bool
-	// MostRecentStart is the newest session start (max CreatedAt) across the
-	// project's top-level sessions; active projects are ordered by it, desc.
-	MostRecentStart time.Time
-	RollupState     string // highest-attention state across this project's live sessions; "" if none
+	// IsTestRun is true when the project has at least one session and every
+	// session in it carries Origin=="test" (SERF_SESSION_ORIGIN=test): the
+	// whole project is agentic-testing output rather than real work. The hub
+	// routes such projects into a dedicated "Test runs" group, taking
+	// precedence over IsArchived.
+	IsTestRun bool
+	// LastActivity is the most recent last-touched moment (max last-activity,
+	// i.e. OrderUpdatedAt) across the project's top-level sessions; active
+	// projects are ordered by it, desc.
+	LastActivity time.Time
+	RollupState  string // highest-attention state across this project's live sessions; "" if none
 	// Magnitude rollup: how many of the project's live sessions are working
 	// (RollupLive) vs. awaiting input (RollupAttn). The header renders these as
 	// "⟳N · ◆M" so "how many need me" is legible without expanding — the single
@@ -66,7 +81,10 @@ type TreeProject struct {
 	MoreCurrent  int
 	MoreRecent   int
 	MoreArchived int
-	Age          string // pre-formatted relative age of MostRecentStart ("now", "2m", "3h", "5d")
+	Age          string // pre-formatted relative age of LastActivity ("now", "2m", "3h", "5d")
+	// Worktrees is the count of distinct non-empty WorktreePath values across
+	// the project's sessions, surfaced in the delete confirmation.
+	Worktrees int
 }
 
 const (
@@ -216,6 +234,22 @@ func projectName(m schema.SessionMeta) string {
 	return filepath.Base(wd)
 }
 
+// projectSlug is the stable path-derived project key: "<basename>-<8hex>" of
+// the full working directory, or "no-project" when the path is empty. The
+// basename is sanitized for use as a URL/query key.
+func projectSlug(path string) string {
+	if path == "" {
+		return "no-project"
+	}
+	sum := sha256.Sum256([]byte(path))
+	base := strings.NewReplacer("/", "_", ":", "_", " ", "_").Replace(filepath.Base(path))
+	return base + "-" + hex.EncodeToString(sum[:4])
+}
+
+// ProjectSlug is the exported path-derived project key used by the hub's
+// orphan-live grouping and project-key resolution. See projectSlug.
+func ProjectSlug(path string) string { return projectSlug(path) }
+
 // nodeTitle computes the display title for a tree node.
 //
 // Older sessions persisted before OriginalPrompt was captured fall back to a
@@ -318,12 +352,16 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 
 	// Group metas by project name.
 	type projectAccum struct {
+		name       string // basename for display
 		topLevel   []schema.SessionMeta
 		children   map[string][]schema.SessionMeta // parentID -> children
-		workingDir string                          // first non-empty WorkingDir seen in this project
+		workingDir string                          // the full grouping path ("" for no-project)
+		worktrees  map[string]bool                 // distinct WorktreePath set
+		count      int                             // number of sessions seen for this project
+		anyNonTest bool                            // true once any session's Origin != "test"
 	}
-	projects := make(map[string]*projectAccum)
-	projectOrder := []string{} // insertion order for stable output
+	projects := make(map[string]*projectAccum) // keyed by EffectiveWorkingDir path
+	projectOrder := []string{}                 // insertion order (paths) for stable output
 
 	// Build a reverse-lookup index: which session forked from each origin?
 	// Used to attach a "snapshotted original" (the parent meta with ForkLabel
@@ -338,18 +376,22 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 	}
 
 	for _, m := range metas {
-		pname := projectName(m)
-		if _, ok := projects[pname]; !ok {
-			projects[pname] = &projectAccum{
-				children: make(map[string][]schema.SessionMeta),
-			}
-			projectOrder = append(projectOrder, pname)
+		path := EffectiveWorkingDir(m)
+		acc := projects[path]
+		if acc == nil {
+			acc = &projectAccum{name: projectName(m), children: map[string][]schema.SessionMeta{}, worktrees: map[string]bool{}}
+			projects[path] = acc
+			projectOrder = append(projectOrder, path)
 		}
-		acc := projects[pname]
-		if acc.workingDir == "" {
-			if wd := EffectiveWorkingDir(m); wd != "" {
-				acc.workingDir = wd
-			}
+		if acc.workingDir == "" && path != "" {
+			acc.workingDir = path
+		}
+		if m.WorktreePath != "" {
+			acc.worktrees[m.WorktreePath] = true
+		}
+		acc.count++
+		if m.Origin != "test" {
+			acc.anyNonTest = true
 		}
 		switch {
 		case m.IsSubagent && m.ParentSessionID != "":
@@ -374,8 +416,8 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 
 	// Build the Projects slice.
 	treeProjects := make([]TreeProject, 0, len(projectOrder))
-	for _, pname := range projectOrder {
-		acc := projects[pname]
+	for _, path := range projectOrder {
+		acc := projects[path]
 
 		// Sort top-level sessions by the Hub session ordering contract.
 		sort.SliceStable(acc.topLevel, func(i, j int) bool {
@@ -388,7 +430,7 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 			node := TreeNode{
 				ID:        m.ID,
 				Title:     nodeTitle(m, kind),
-				Project:   pname,
+				Project:   acc.name,
 				Branch:    m.EnvInfo.GitBranch,
 				State:     stateFor(m.ID),
 				Kind:      kind,
@@ -414,6 +456,9 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 			sort.SliceStable(subagents, func(i, j int) bool {
 				return sessionMetaLess(subagents[i], subagents[j])
 			})
+			if len(subagents) > maxSidebarSessionsPerTier {
+				subagents = subagents[:maxSidebarSessionsPerTier]
+			}
 			sort.SliceStable(forks, func(i, j int) bool {
 				return sessionMetaLess(forks[i], forks[j])
 			})
@@ -432,7 +477,7 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 				node.Children = append(node.Children, TreeNode{
 					ID:        c.ID,
 					Title:     nodeTitle(c, "subagent"),
-					Project:   pname,
+					Project:   acc.name,
 					State:     childState,
 					Kind:      "subagent",
 					CreatedAt: OrderCreatedAt(c.CreatedAt, c.UpdatedAt),
@@ -444,7 +489,7 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 				node.Children = append(node.Children, TreeNode{
 					ID:        c.ID,
 					Title:     nodeTitle(c, "fork"),
-					Project:   pname,
+					Project:   acc.name,
 					State:     stateFor(c.ID),
 					Kind:      "fork",
 					CreatedAt: OrderCreatedAt(c.CreatedAt, c.UpdatedAt),
@@ -474,12 +519,16 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 			}
 		}
 
-		// MostRecentStart: the project's newest session START (max CreatedAt),
-		// used to order active projects newest-first.
-		var mostRecentStart time.Time
+		// lastActivity: the project's most recent last-touched moment (max
+		// last-activity across its top-level sessions). s.UpdatedAt is already
+		// the normalized last-activity value (OrderUpdatedAt(m.UpdatedAt,
+		// m.CreatedAt), applied when each node was built above), so this just
+		// takes the max of it. Used to order active projects by last activity,
+		// not by when a session merely started.
+		var lastActivity time.Time
 		for _, s := range sessions {
-			if s.CreatedAt.After(mostRecentStart) {
-				mostRecentStart = s.CreatedAt
+			if s.UpdatedAt.After(lastActivity) {
+				lastActivity = s.UpdatedAt
 			}
 		}
 
@@ -500,7 +549,7 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 
 		// Project placement: a project is archived when manually archived or when
 		// it has no non-archived (Current/Recent) sessions.
-		isArchived := decisions[ArchiveKey{Kind: "project", ID: pname}] ||
+		isArchived := projectArchivedDecision(decisions, path, acc.name) ||
 			(len(current) == 0 && len(recent) == 0)
 
 		// Cap each tier so a project with hundreds of runs can't bloat the
@@ -510,29 +559,32 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		archived, moreArchived := capTier(archived, maxSidebarSessionsPerTier)
 
 		treeProjects = append(treeProjects, TreeProject{
-			Name:            pname,
-			WorkingDir:      projects[pname].workingDir,
-			Current:         current,
-			Recent:          recent,
-			Archived:        archived,
-			IsArchived:      isArchived,
-			MostRecentStart: mostRecentStart,
-			RollupState:     rollup,
-			RollupLive:      rollupLive,
-			RollupAttn:      rollupAttn,
+			Name:         acc.name,
+			Key:          projectSlug(path),
+			WorkingDir:   acc.workingDir,
+			Worktrees:    len(acc.worktrees),
+			Current:      current,
+			Recent:       recent,
+			Archived:     archived,
+			IsArchived:   isArchived,
+			IsTestRun:    acc.count > 0 && !acc.anyNonTest,
+			LastActivity: lastActivity,
+			RollupState:  rollup,
+			RollupLive:   rollupLive,
+			RollupAttn:   rollupAttn,
 			// Auto-open only live projects (a working or awaiting session).
 			Expanded:     rollupLive > 0 || rollupAttn > 0,
 			MoreCurrent:  moreCurrent,
 			MoreRecent:   moreRecent,
 			MoreArchived: moreArchived,
-			Age:          AgeString(mostRecentStart),
+			Age:          AgeString(lastActivity),
 		})
 	}
 
 	// Split active projects from archived ones; order each newest-first by the
-	// project's most-recent session start. SliceStable keeps the insertion order
-	// (already recency-sorted via sessionMetaLess) as the tiebreak when starts
-	// are equal.
+	// project's last activity. SliceStable keeps the insertion order (already
+	// recency-sorted via sessionMetaLess) as the tiebreak when last-activity
+	// times are equal.
 	activeProjects := make([]TreeProject, 0, len(treeProjects))
 	archivedProjects := make([]TreeProject, 0)
 	for _, p := range treeProjects {
@@ -542,11 +594,11 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 			activeProjects = append(activeProjects, p)
 		}
 	}
-	byStartDesc := func(ps []TreeProject) func(i, j int) bool {
-		return func(i, j int) bool { return ps[i].MostRecentStart.After(ps[j].MostRecentStart) }
+	byLastActivityDesc := func(ps []TreeProject) func(i, j int) bool {
+		return func(i, j int) bool { return ps[i].LastActivity.After(ps[j].LastActivity) }
 	}
-	sort.SliceStable(activeProjects, byStartDesc(activeProjects))
-	sort.SliceStable(archivedProjects, byStartDesc(archivedProjects))
+	sort.SliceStable(activeProjects, byLastActivityDesc(activeProjects))
+	sort.SliceStable(archivedProjects, byLastActivityDesc(archivedProjects))
 
 	// Build the Live slice: every live session, flat, sorted by attention rank
 	// desc, then the Hub session ordering contract. The sidebar no longer
@@ -719,6 +771,20 @@ func decisionFor(decisions map[ArchiveKey]bool, id string) *bool {
 	return nil
 }
 
+// projectArchivedDecision resolves a project's manual archive decision. A
+// path-keyed row always wins; a legacy basename-keyed row is honored only when
+// no path-keyed row exists (round-2 B7 / round-3 G3 precedence). Returns false
+// when neither row is present.
+func projectArchivedDecision(decisions map[ArchiveKey]bool, path, basename string) bool {
+	if v, ok := decisions[ArchiveKey{Kind: "project", ID: path}]; ok {
+		return v
+	}
+	if v, ok := decisions[ArchiveKey{Kind: "project", ID: basename}]; ok {
+		return v
+	}
+	return false
+}
+
 // clusterRepeatedTitles folds same-titled idle/ended sessions into a single
 // "cluster" node so a project that ran the same one-shot prompt N times
 // ("describe this image ×5") collapses to one row. A cluster's members become
@@ -766,6 +832,7 @@ func clusterRepeatedTitles(sessions []TreeNode) []TreeNode {
 			}
 		}
 		out = append(out, TreeNode{
+			ID:           clusterID(s.Project, title),
 			Title:        title,
 			Project:      s.Project,
 			State:        "ended",
@@ -777,6 +844,15 @@ func clusterRepeatedTitles(sessions []TreeNode) []TreeNode {
 		})
 	}
 	return out
+}
+
+// clusterID is the stable synthetic id for a repeated-title cluster, scoped by
+// project so equal titles in different projects never collide, and never empty
+// (an empty id renders as an empty ref and collides all clusters in a project
+// at RowID "project:<key>:" — round-2 A7/B4).
+func clusterID(project, title string) string {
+	sum := sha256.Sum256([]byte(project + "\x00" + title))
+	return "cluster:" + hex.EncodeToString(sum[:4])
 }
 
 // clusterable reports whether a session row may be folded into a repeated-title
