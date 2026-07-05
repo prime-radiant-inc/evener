@@ -2952,7 +2952,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .steering > summary::before, .steering > summary::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
 .steering > summary:hover { color: var(--text); }
 /* Steering is the user's own mid-turn message: demoted and NEUTRAL (mockup #3,
-   design-system #2). Amber is reserved for when the agent needs you, not when
+   design-system #2). Blue is reserved for when the agent needs you, not when
    you spoke. Sans because it is a human label, not machine text. */
 .steering .steering-verb { color: var(--text-muted); font-family: var(--font-sans); }
 .steering .steering-detail { color: var(--text); }
@@ -4705,7 +4705,7 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
 }
 
 /* Transport reconnect banner (mockup #15 Alt A): docked workspace chrome for a
-   daemon/appwire drop. AMBER while reconnecting (recovering, not broken), RED
+   daemon/appwire drop. BLUE while reconnecting (recovering, not broken), RED
    once a reconnect attempt fails ("Connection lost"). Glyph-paired so it reads
    without color. Owned by the renderer (SerfRenderer.showConnectionBanner). */
 .connection-banner {
@@ -4726,7 +4726,7 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
 .connection-banner .connection-banner-glyph { font-family: var(--font-mono); flex: none; }
 .connection-banner .connection-banner-msg { font-weight: 600; }
 .connection-banner .connection-banner-sub { color: var(--text-muted); }
-/* reconnecting = AMBER (recovering, not broken) */
+/* reconnecting = BLUE (recovering, not broken) */
 .connection-banner.reconnecting {
   background: color-mix(in srgb, var(--state-awaiting) 12%, var(--bg-raised));
   border-bottom-color: color-mix(in srgb, var(--state-awaiting) 40%, transparent);
