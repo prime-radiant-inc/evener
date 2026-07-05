@@ -170,6 +170,138 @@ func TestFormatContextFragment(t *testing.T) {
 	}
 }
 
+// TestHubDetailFromThreadMapsWorkingStateFields asserts hubDetailFromThread
+// carries thread.Serf.{Usage,WorkMillis,ActiveTurnStartedAt} (WS2) onto
+// hubSessionDetail verbatim, mirroring how Queue/Goal are already mapped.
+func TestHubDetailFromThreadMapsWorkingStateFields(t *testing.T) {
+	usage := &appwire.SerfUsage{
+		InputTokens:     46000,
+		OutputTokens:    12000,
+		CacheReadTokens: 100000,
+		TotalTokens:     158000,
+	}
+	thread := appwire.Thread{
+		ID:        "th_1",
+		SessionID: "th_1",
+		Source:    "local",
+		Serf: appwire.SerfThread{
+			Ref:                 "local:th_1",
+			Usage:               usage,
+			WorkMillis:          185000,
+			ActiveTurnStartedAt: 1750000000,
+		},
+	}
+
+	detail := hubDetailFromThread(thread)
+
+	if detail.Usage != usage {
+		t.Fatalf("Usage=%p, want the same pointer as thread.Serf.Usage=%p", detail.Usage, usage)
+	}
+	if detail.WorkMillis != 185000 {
+		t.Fatalf("WorkMillis=%d, want 185000", detail.WorkMillis)
+	}
+	if detail.ActiveTurnStartedAt != 1750000000 {
+		t.Fatalf("ActiveTurnStartedAt=%d, want 1750000000", detail.ActiveTurnStartedAt)
+	}
+}
+
+// TestHubDetailFromThreadLeavesUsageNilWhenThreadHasNone guards the "no data"
+// path: an old daemon or Codex thread reports no usage, and the mapping must
+// not synthesize a zero-value struct (which would render ↑0 ↓0).
+func TestHubDetailFromThreadLeavesUsageNilWhenThreadHasNone(t *testing.T) {
+	detail := hubDetailFromThread(appwire.Thread{
+		ID:        "th_2",
+		SessionID: "th_2",
+		Source:    "local",
+		Serf:      appwire.SerfThread{Ref: "local:th_2"},
+	})
+	if detail.Usage != nil {
+		t.Fatalf("Usage=%+v, want nil", detail.Usage)
+	}
+	if detail.WorkMillis != 0 {
+		t.Fatalf("WorkMillis=%d, want 0", detail.WorkMillis)
+	}
+}
+
+// TestRenderHubSessionStatusShowsWorkAndTokenLines asserts the /status details
+// drawer renders a Work: line and a full Tokens: breakdown (incl. cache-read)
+// when the source reports WS2 metrics, and omits both when it doesn't.
+func TestRenderHubSessionStatusShowsWorkAndTokenLines(t *testing.T) {
+	withMetrics := hubSessionDetail{
+		SessionID:  "01ABC",
+		WorkMillis: 185000, // 3m5s -> "3m"
+		Usage: &appwire.SerfUsage{
+			InputTokens:     46000,
+			OutputTokens:    12000,
+			CacheReadTokens: 100000,
+			TotalTokens:     158000,
+		},
+	}
+	got := renderHubSessionStatus(withMetrics, nil, appwire.AuthStatusResponse{}, nil, nil, 80)
+	for _, want := range []string{
+		"Work:     3m",
+		"Tokens:   ↑46k ↓12k · cache-read 100k · total 158k",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("status with metrics missing %q:\n%s", want, got)
+		}
+	}
+
+	noMetrics := hubSessionDetail{SessionID: "01ABC"}
+	got = renderHubSessionStatus(noMetrics, nil, appwire.AuthStatusResponse{}, nil, nil, 80)
+	for _, unwanted := range []string{"Work:", "Tokens:"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("status without metrics should omit %q:\n%s", unwanted, got)
+		}
+	}
+}
+
+// TestSessionHeaderShowsWorkAndTokenChip asserts the in-session header meta
+// strip renders compact work-time + token chips (no cache-read — the chip
+// strip stays compact; the full breakdown lives in the /status drawer) when
+// the source supplies WorkMillis/Usage, and omits both when neither is set.
+func TestSessionHeaderShowsWorkAndTokenChip(t *testing.T) {
+	withMetrics := hubModel{
+		detail: hubSessionDetail{
+			Title:       "Metrics session",
+			SourceLabel: "serf",
+			Model:       "openai/gpt-5",
+			TurnCount:   3,
+			WorkMillis:  185000, // "3m"
+			Usage: &appwire.SerfUsage{
+				InputTokens:     46000,
+				OutputTokens:    12000,
+				CacheReadTokens: 100000,
+				TotalTokens:     158000,
+			},
+		},
+		width: 200,
+	}
+	got := strings.Join(withMetrics.sessionHeaderLines(), "\n")
+	for _, want := range []string{"work 3m", "tok ↑46k ↓12k"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("metrics chip missing %q from meta strip:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "cache-read") {
+		t.Errorf("chip strip should stay compact (no cache-read):\n%s", got)
+	}
+
+	noMetrics := hubModel{
+		detail: hubSessionDetail{
+			Title:       "Plain session",
+			SourceLabel: "serf",
+			Model:       "openai/gpt-5",
+			TurnCount:   1,
+		},
+		width: 200,
+	}
+	got = strings.Join(noMetrics.sessionHeaderLines(), "\n")
+	if strings.Contains(got, "work") || strings.Contains(got, "tok ") {
+		t.Errorf("plain session should omit work/token chips:\n%s", got)
+	}
+}
+
 // TestWriteWrappedStatusListWrapsAtWidth ensures the tool list helper wraps
 // across multiple rows when the items don't fit on one line.
 func TestWriteWrappedStatusListWrapsAtWidth(t *testing.T) {

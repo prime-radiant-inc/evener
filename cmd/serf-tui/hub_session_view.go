@@ -57,6 +57,12 @@ func (m hubModel) sessionHeaderLines() []string {
 	if ctx := formatContextFragment(m.detail); ctx != "" {
 		addPart("ctx", ctx)
 	}
+	if m.detail.WorkMillis > 0 {
+		addPart("work", formatWorkMillis(m.detail.WorkMillis))
+	}
+	if u := m.detail.Usage; u != nil {
+		addPart("tok", fmt.Sprintf("↑%s ↓%s", formatTokens(int(u.InputTokens)), formatTokens(int(u.OutputTokens))))
+	}
 	if m.detail.Goal != nil {
 		addPart("goal", fmt.Sprintf("%s %d", m.detail.Goal.Status, m.detail.Goal.Iterations))
 	}
