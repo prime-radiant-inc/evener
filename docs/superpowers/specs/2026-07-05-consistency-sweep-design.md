@@ -87,10 +87,15 @@ glyph→icon, recolor needs-you amber→blue, split warning out, and rename `pro
   composer question chip (composer_panel.go:222) adopt the icon vocabulary where the terminal can
   render it (unicode fallback where it can't); subagent tally (msgrender/tool_bodies.go:304,322).
 - **Glyph legend** (style.css:939-940) rewritten to the new icon set.
-- **Rank-function consolidation (opportunistic):** `AttentionRank` (tree.go:150-165) and
-  `rollupRank` are duplicated, and the TUI has a third (`attentionRankLabel`,
-  hub_dashboard_view.go:597-611). Fold toward one shared source **only where cheap and low-risk**;
-  do not let it block the vocabulary work.
+- **Rank-function consolidation (explicit task — Jesse):** `AttentionRank` (tree.go:150-165) and
+  `rollupRank` are duplicated in hubcore, and the TUI has a third (`attentionRankLabel`,
+  hub_dashboard_view.go:597-611). Consolidate all three into **one shared source of truth**, done
+  properly with tests. Cross-module caveat: hubcore (`cmd/serf-hub/internal/hubcore`) and the TUI
+  (`cmd/serf-tui`) are different modules, so the shared implementation lives in a small common
+  package both import (candidate: `hubapi`, or a new `attentionrank` package) — pick the lightest
+  home during the plan. The band function from §2 (errored → ask-pending → your-move) builds on
+  top of the consolidated rank, so sequence consolidation **before** the §2 band work within
+  Track A.
 - **Existing ask-question chips** adopt the same blue `?`-bubble language (one vocabulary for
   "respond to me").
 
@@ -258,9 +263,11 @@ Three new controls in the web settings pane:
 - **Stale comments** at session_init.go:1204/1212 claiming SourceMCP "doesn't exist yet (Task 10)"
   — it shipped; remove.
 - **`conn.reconnecting` clear** uses per-branch writes; a `defer` is strictly safer at zero cost.
-- **`serf/task/updated`** is defined but never emitted; and the task-status-row 5s poller is a
-  transport straggler — emit the event and retire the poller, or remove the dead topic. Adjudicate
-  during build against what the status row needs.
+- **`serf/task/updated`** is defined but never emitted; the task-status-row 5s poller is a
+  transport straggler. **Decision (Jesse):** emit the event on task-status change, subscribe the
+  status row to it, and retire the 5s poll — event-driven, no polling lag. Needs an emit site
+  (daemon/hub, wherever task status transitions) + client subscription; the appwire method/topic
+  already exists (no new catalog entry). Lands in Track D.
 - **`TestReconnect_FailedReconnect_BackoffSuppressesImmediateRetry`** is load-sensitive under
   full-suite parallelism (one observed "dial factory called 1 times, want 2"; 10/10 clean in
   isolation under `-race`). Introduce a fake clock or widen the backoff window in the test.
@@ -281,6 +288,12 @@ Both are e2e/observation tasks; any code they produce is small and folds into th
 Each track is a worktree off `consistency-sweep` with its own subagent-driven-development run.
 Boundaries chosen so tracks own **disjoint files**; the two coupling points are called out.
 
+**Track 0 — prep (on the base branch `consistency-sweep`, before A/B/C/D fork).** One decoupling
+refactor Jesse chose up front: **split the web settings pane into per-section files** so Track A
+(loud-scope) and Track C (font-size / Enter-to-send / Show-cost) own different files and never
+collide. Pure refactor — no behavior change, full gates, its own red-green (rendering unchanged).
+A, B, C fork from the resulting commit.
+
 - **Track A — Vocabulary/icons + ask-tiering (§1 + §2).** Tightly coupled: both rewrite attention
   rendering, needs-you icons, sidebar rows, TUI dashboard, notifications gating. Must be one
   track. Largest. Owns: sidebar.js, style.css state/glyph regions, renderer.js status regions,
@@ -298,16 +311,17 @@ Boundaries chosen so tracks own **disjoint files**; the two coupling points are 
   is partitioned so its files don't overlap A's open work.
 
 **Coupling points to coordinate:**
-1. **settings.js / notifications.js** — Track A adds the `loudScope` control; Track C adds
-   font-size/Enter-to-send/Show-cost. Both edit the settings pane. Assign the settings-pane file
-   to **one** track (A, since loud-scope is attention-coupled) and have C hand A its three
-   controls as a spec'd addition, OR sequence C's settings edits after A. Decide in the plan.
+1. **Settings pane — resolved by Track 0.** The per-section split lands on the base branch first,
+   so Track A's `loudScope` control and Track C's three settings edit **different section files**.
+   No parallel conflict remains. (`notifications.js` gating logic stays Track A's; the settings
+   *control* for loud-scope is a separate section file from C's.)
 2. **`~$` cost + model-picker pricing** — Track C routes cost through `llm/pricing.go`; Track B
    reads `ModelInfo` price fields directly. No file overlap, but both consume pricing — verify
    the numbers agree.
 
-Merge order: **A first** (it moves the most and everything else rebases onto its vocabulary), then
-B and C (independent, either order), then D last. `--no-ff` merges; full gates on merged main
+Merge order: **Track 0 prep first** (settings-pane split, lands on `consistency-sweep`); then
+**A** (it moves the most and everything else rebases onto its vocabulary); then B and C
+(independent, either order); then D last. `--no-ff` merges; full gates on merged main
 before push (repo sets `merge.ff=only`; explicit `--no-ff` overrides). After each conflict
 resolution: re-grep the whole repo for conflict markers and `go vet` the touched packages
 (`go build` does not compile test files).
@@ -373,12 +387,10 @@ Rough, in loc including tests, by track:
 Total ~2,850–4,050 loc across four tracks, dominated by breadth (many small edits) rather than
 depth.
 
-## Open items for the plan
+## Open items for the plan — resolved (Jesse, 2026-07-05)
 
-1. Settings-pane ownership (coupling point 1): assign to Track A, or sequence Track C's settings
-   edits after A. Recommend: Track A owns the settings-pane file; C's three controls land as a
-   defined addition within A's task list or immediately after A merges.
-2. Whether the rank-function consolidation (§1) is worth doing in this sweep or noted for later —
-   default: opportunistic, non-blocking.
-3. `serf/task/updated` (§8): emit + retire the 5s poller, vs remove the dead topic — decide from
-   what the status row actually needs.
+1. **Settings-pane ownership:** split the pane into per-section files first (Track 0 prep on the
+   base branch); A and C then own different files. See §Tracks.
+2. **Rank-function consolidation:** do it properly — explicit Track A task, one shared source in a
+   common package, tests, sequenced before the §2 band work. See §1.
+3. **`serf/task/updated`:** emit the event + retire the 5s poller (Track D). See §8.
