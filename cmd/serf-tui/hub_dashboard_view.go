@@ -71,6 +71,15 @@ func (m hubModel) dashboardView() string {
 			Height:  m.height,
 		}.View()
 	}
+	if m.pluginsPanel != nil {
+		return tuiprim.AppShell{
+			TopBar:  topBar,
+			Body:    b.String(),
+			Overlay: m.pluginsPanel.View(),
+			Footer:  "[←/→] tab  [↑/↓] select  [Enter] act  [Esc] close",
+			Height:  m.height,
+		}.View()
+	}
 	if m.dashboardFilterActive || strings.TrimSpace(m.dashboardFilter.Value()) != "" {
 		b.WriteString(m.dashboardFilter.View())
 		b.WriteString("\n\n")

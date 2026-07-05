@@ -69,6 +69,15 @@ func (m hubModel) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	}
+	if m.pluginsPanel != nil {
+		updated, cmd := m.pluginsPanel.Update(msg)
+		panel := updated.(launchconfig.PluginsPanel)
+		m.pluginsPanel = &panel
+		if panel.Done() {
+			m.pluginsPanel = nil
+		}
+		return m, cmd
+	}
 	if m.dashboardFilterActive {
 		return m.updateHubFilterKey(msg)
 	}

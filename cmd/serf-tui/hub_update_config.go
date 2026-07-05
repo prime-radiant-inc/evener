@@ -314,6 +314,120 @@ func (m hubModel) handleLaunchSetLayerResult(msg launchconfig.LaunchSetLayerResu
 	return m, nil
 }
 
+func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListResultMsg) (tea.Model, tea.Cmd) {
+	if m.pluginsPanel != nil {
+		updated, cmd := m.pluginsPanel.Update(msg)
+		panel := updated.(launchconfig.PluginsPanel)
+		m.pluginsPanel = &panel
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMutateResultMsg) (tea.Model, tea.Cmd) {
+	if msg.Err != nil {
+		m.err = msg.Err
+		return m, nil
+	}
+	m.err = nil
+	if m.pluginsPanel != nil {
+		updated, cmd := m.pluginsPanel.Update(launchconfig.MarketplaceListResultMsg{List: msg.List})
+		panel := updated.(launchconfig.PluginsPanel)
+		m.pluginsPanel = &panel
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m hubModel) handleMarketplaceBrowseResult(msg launchconfig.MarketplaceBrowseResultMsg) (tea.Model, tea.Cmd) {
+	if m.pluginsPanel != nil {
+		updated, cmd := m.pluginsPanel.Update(msg)
+		panel := updated.(launchconfig.PluginsPanel)
+		m.pluginsPanel = &panel
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m hubModel) handleMarketplaceAddSubmit(msg launchconfig.MarketplaceAddSubmitMsg) (tea.Model, tea.Cmd) {
+	if m.client != nil {
+		return m, launchconfig.CmdMarketplaceAdd(m.client, msg.Params)
+	}
+	return m, nil
+}
+
+func (m hubModel) handleMarketplaceRemove(msg launchconfig.MarketplaceRemoveMsg) (tea.Model, tea.Cmd) {
+	if m.client != nil {
+		return m, launchconfig.CmdMarketplaceRemove(m.client, msg.Name)
+	}
+	return m, nil
+}
+
+func (m hubModel) handleMarketplaceRefresh(msg launchconfig.MarketplaceRefreshMsg) (tea.Model, tea.Cmd) {
+	if m.client != nil {
+		return m, launchconfig.CmdMarketplaceRefresh(m.client, msg.Name)
+	}
+	return m, nil
+}
+
+func (m hubModel) handleMarketplaceBrowseRequest(msg launchconfig.MarketplaceBrowseRequestMsg) (tea.Model, tea.Cmd) {
+	if m.client != nil {
+		return m, launchconfig.CmdMarketplaceBrowse(m.client, msg.Name)
+	}
+	return m, nil
+}
+
+func (m hubModel) handlePluginListResult(msg launchconfig.PluginListResultMsg) (tea.Model, tea.Cmd) {
+	if m.pluginsPanel != nil {
+		updated, cmd := m.pluginsPanel.Update(msg)
+		panel := updated.(launchconfig.PluginsPanel)
+		m.pluginsPanel = &panel
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m hubModel) handlePluginMutateResult(msg launchconfig.PluginMutateResultMsg) (tea.Model, tea.Cmd) {
+	if msg.Err != nil {
+		m.err = msg.Err
+		return m, nil
+	}
+	m.err = nil
+	if m.pluginsPanel != nil {
+		updated, cmd := m.pluginsPanel.Update(launchconfig.PluginListResultMsg{List: msg.List})
+		panel := updated.(launchconfig.PluginsPanel)
+		m.pluginsPanel = &panel
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m hubModel) handlePluginAction(msg launchconfig.PluginActionMsg) (tea.Model, tea.Cmd) {
+	if m.client == nil {
+		return m, nil
+	}
+	switch msg.Action {
+	case "install":
+		return m, launchconfig.CmdPluginInstall(m.client, msg.Plugin, msg.Marketplace)
+	case "upgrade":
+		return m, launchconfig.CmdPluginUpgrade(m.client, msg.Plugin, msg.Marketplace)
+	case "remove":
+		return m, launchconfig.CmdPluginRemove(m.client, msg.Plugin, msg.Marketplace)
+	case "enable":
+		return m, launchconfig.CmdPluginEnable(m.client, msg.Plugin, msg.Marketplace)
+	case "disable":
+		return m, launchconfig.CmdPluginDisable(m.client, msg.Plugin, msg.Marketplace)
+	}
+	return m, nil
+}
+
+func (m hubModel) handlePluginSetAutoUpgrade(msg launchconfig.PluginSetAutoUpgradeMsg) (tea.Model, tea.Cmd) {
+	if m.client != nil {
+		return m, launchconfig.CmdPluginSetAutoUpgrade(m.client, msg.Plugin, msg.Marketplace, msg.AutoUpgrade)
+	}
+	return m, nil
+}
+
 // handleLaunchResult covers the launch layer/resolve/trust/schema result group,
 // which is dispatched as a single multi-type case, so it re-asserts the
 // concrete message type to route schema results to the overrides modal.

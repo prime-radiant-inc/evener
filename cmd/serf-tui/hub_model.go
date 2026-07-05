@@ -125,6 +125,7 @@ type hubModel struct {
 
 	credentialsPanel     *launchconfig.CredentialsPanel
 	launchSettingsPanel  *launchconfig.LaunchSettingsPanel
+	pluginsPanel         *launchconfig.PluginsPanel
 	followupModal        *tuipick.TextInputModal
 	launchOverridesModal *launchconfig.LaunchOverridesModal
 
