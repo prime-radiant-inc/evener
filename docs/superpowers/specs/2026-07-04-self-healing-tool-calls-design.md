@@ -21,16 +21,23 @@ forgiving harness that repairs the slop).
 this design.** Where serf lands on the prevent/absorb/reject spectrum depends
 entirely on the wire protocol:
 
-- **OpenAI Responses — already "prevent."** `toResponsesTools` defaults
-  `strict := true` for any tool whose `Strict` field is nil, then runs
-  `strictifyJSONSchema` to force `additionalProperties:false` and an
-  all-properties `required` list (`llm/providers/openai/responses.go:547-557`,
-  `:579-600`). The core tools this design targets — `read_file`, `write_file`,
-  `edit_file`, `shell`, `grep`, `glob` — set **no** `Strict` field
-  (`agent/internal/tool/definitions.go`), so on this path they ship with
-  constrained decoding. The model *cannot* emit `old_str`, `path`, or a stray
-  `matchCase` for them here. Serf already applies the article's own recommended
-  fix on this path.
+- **OpenAI Responses — "prevent" for the core work tools only.**
+  `toResponsesTools` defaults `strict := true` for any tool whose `Strict` field
+  is nil, then runs `strictifyJSONSchema` to force `additionalProperties:false`
+  and an all-properties `required` list
+  (`llm/providers/openai/responses.go:547-557`, `:579-600`). The core tools this
+  design targets — `read_file`, `write_file`, `edit_file`, `shell`, `grep`,
+  `glob` — set **no** `Strict` field (`agent/internal/tool/definitions.go`), so on
+  this path they ship with constrained decoding: the model *cannot* emit
+  `old_str`, `path`, or a stray `matchCase` for them here. **But nine tools do set
+  `Strict: &strictFalse`** — `delegate`, `job_watch`, `job_status`,
+  `job_read_output`, `job_list`, `communicate`, and the three transcript tools
+  (`definitions.go:121,192,231,248,273,460,589,611,633`). Those ship to Responses
+  *unstrict* (`responses.go:548-550` uses `*t.Strict`), so the model *can* drift
+  on them even here — and `communicate` is the result tool, called on every turn
+  under `ToolChoice: required` (`agent/session_model_call.go:622`). So Responses
+  is in the "prevent" quadrant for the six core tools and in the "reject" quadrant
+  for the nine non-strict tools.
 - **Anthropic and OpenAI chat-completions — "reject."** The Anthropic adapter
   sends no strict flag; the chat-completions adapter (`ToChatTools`) sets no
   strict flag either. On these paths there is no constrained decoding, so an
@@ -40,10 +47,12 @@ entirely on the wire protocol:
   `additionalProperties:false` plus a `required` list. This is the worst-case
   quadrant: strict enough to reject, with no constrained decoding to prevent.
 
-This design heals the **reject** quadrant — Anthropic and OpenAI
-chat-completions — which is exactly the provider family the article is about
-(Claude models). On the OpenAI Responses path the healing is a lazy no-op safety
-net: it never fires because valid calls never reach it.
+This design heals the **reject** quadrant: the whole tool surface on Anthropic
+and OpenAI chat-completions (the provider family the article is about), plus the
+nine non-strict tools on OpenAI Responses. On Responses the ladder is a lazy
+no-op *only for the six strict core tools* — valid calls never reach it there —
+but it is genuinely live for `communicate` and friends. The lazy trigger means
+zero cost wherever calls are already valid, regardless of provider.
 
 ### Gap analysis: Claude Code trick → serf on the non-strict (Anthropic / chat) paths
 
@@ -57,11 +66,11 @@ net: it never fires because valid calls never reach it.
 | Model-tuned error messages | Raw jsonschema error text passed through verbatim | Missing |
 
 A `RepairToolCall` seam exists in the low-level `llm.Generate` loop
-(`llm/generate.go:89`, honored at `:405`) but is **unwired**: it is only ever set
-in tests, and the one agent caller of that loop (session naming,
-`agent/session_namer.go:62`) uses `GenerateObject` with no tools, so it can never
-fire. The primary agent path has no equivalent. This design builds the
-equivalent on the primary path.
+(`llm/generate.go:89`, invoked inside the loop's tool-execution path) but is
+**unwired**: it is only ever set in tests, and the one agent caller of that loop
+(session naming, `agent/session_namer.go:62`) uses `GenerateObject` with no tools,
+so it can never fire. The primary agent path has no equivalent. This design builds
+the equivalent on the primary path.
 
 ## Decisions (settled during brainstorming, refined after review)
 
@@ -114,45 +123,68 @@ layer:
 3. **Telemetry.** `ExecuteCall` has no `s.emit`. `execTool` does.
 
 So repair moves up one layer. `ExecuteCall` is **unchanged** and remains the
-validating authority (belt-and-suspenders): after `execTool` heals the args,
-`ExecuteCall` validates again and — on the healthy and healed paths alike —
-passes.
+validating authority (belt-and-suspenders): a healed call passes its validation.
 
 ### The repair step in `execTool`
 
-Inserted at the top of `execTool`, after `abortIfClosing` (`session_tools.go:250`)
-and **before** the PreToolUse hook block (`:253`):
+The repair step is a pure-ish helper `prepare(call)` inserted at the top of
+`execTool`, after `abortIfClosing` (`session_tools.go:250`) and **before** the
+PreToolUse hook block (`:253`). Crucially it **does not return out of
+`execTool`** — it returns healed args (or a ready error string) so that the
+existing lifecycle (PreToolUse → `EventToolCallStart` → exec-or-error →
+`EventToolCallEnd` → PostToolUse) runs for *every* call, including unknown and
+unrepairable ones. Review round two found that an early return would drop the
+start/end events and PostToolUse for exactly the failing calls this design wants
+to make visible.
 
 ```
-prepare(call):
-  t, ok := reg.Lookup(call.Name)                 # new Registry accessor
-  if !ok:
-      visible := providerVisibleToolNames(reg.Names())
-      return errorResult(repair.SuggestToolName(providerToolName(call.Name), visible))
+prepare(call) -> (call, changes, prevalErr):
+  # prevalErr, when set, is a model-tuned error string; the call still runs the
+  # full hook + event lifecycle but skips ExecuteCall and returns prevalErr.
 
-  args, err := json.Unmarshal(call.Arguments)
-  if err != nil:
-      repaired, c := repair.RepairJSON(call.Arguments); changes += c
-      args, err = json.Unmarshal(repaired)
-      if err != nil:
-          return errorResult(repair.ExplainJSONError(providerToolName(call.Name), t.Definition.Parameters, err))
+  if call.ID == "":
+      call.ID = "call_" + shortHash(call.Arguments)   # stable ID BEFORE any rewrite
+                                                       # (matches ExecuteCall's scheme, registry.go:449)
+  t := reg.Get(call.Name)                              # EXISTING accessor (registry.go:390)
+  if t == nil:
+      visible := providerVisibleToolNames(reg.Names()) # Names() EXISTS (registry.go:429)
+      return call, nil, unknownToolMessage(providerToolName(call.Name), visible)
 
-  if err := t.Schema.Validate(args); err != nil:
+  args := {}
+  if len(bytes.TrimSpace(call.Arguments)) > 0:         # mirror ExecuteCall's empty-args
+      if json.Unmarshal(call.Arguments, &args) != nil: #   handling (registry.go:462-470)
+          repaired, c := repair.RepairJSON(call.Arguments); changes += c
+          if json.Unmarshal(repaired, &args) != nil:
+              return call, changes, repair.ExplainJSONError(providerToolName(call.Name), t.Definition.Parameters, ...)
+
+  if t.Schema.Validate(args) != nil:
       args2, c := repair.RepairArgs(t.Definition.Parameters, args)
       if t.Schema.Validate(args2) != nil:
-          return errorResult(repair.ExplainSchemaError(providerToolName(call.Name), t.Definition.Parameters, args2, err))
+          return call, changes, repair.ExplainSchemaError(providerToolName(call.Name), t.Definition.Parameters, args2, ...)
       args = args2; changes += c
 
   if len(changes) > 0:
-      call.Arguments = marshal(args)             # hooks + ExecuteCall + start-event now see healed args
-      emit(EventToolCallRepaired{...changes})
-
-  # fall through to existing PreToolUse hooks, then ExecuteCall (unchanged)
+      call.Arguments = marshal(args)   # PreToolUse + start-event + ExecuteCall now see healed args
+  return call, changes, nil
 ```
 
-The happy path pays one extra `Schema.Validate` (microseconds; the compiled
-schema is reused, `registry.go:298`) to decide whether repair is needed. Valid
-calls skip repair entirely and are never mutated.
+`execTool` then, at its existing sites: runs PreToolUse (on healed args); emits
+`EventToolCallStart`; emits `EventToolCallRepaired` when `changes` is non-empty;
+calls `ExecuteCall` **unless** `prevalErr` is set, in which case it builds the
+error `ExecResult` directly (skipping `ExecuteCall`); emits `EventToolCallEnd`;
+runs PostToolUse. Both the start and end events therefore carry the *healed* args
+(the raw call lives only in history + the `EventToolCallRepaired` diff — see Data
+flow).
+
+**Empty arguments are common and valid:** streaming accumulators yield `[]byte("")`
+when no argument text arrives, and tools with no required properties (`list_dir`,
+`job_list`, the transcript tools) are legitimately called with none. `prepare`
+treats empty/whitespace `call.Arguments` as `{}` exactly as `ExecuteCall` does, so
+these calls validate and are never spuriously rejected.
+
+The happy path pays one extra `json.Unmarshal` + `Schema.Validate` to decide
+whether repair is needed (both cheap; the schema was compiled once at
+registration). Valid calls skip repair entirely and are never mutated.
 
 `repair` is a new leaf package under `agent/internal/tool/repair`. It depends only
 on the standard library (and, for the fast-follow, `llm` for `ToolCallData`). It
@@ -296,18 +328,21 @@ Built in `execTool` (which has the name-map), replacing the reliance on the bare
 func SuggestToolName(requested string, available []string) string
 ```
 
-Levenshtein distance, threshold `min(2, ceil(len/3))`. `execTool` passes the
-**provider-visible** tool names (`s.providerVisibleToolNames` over the registry's
-names) and the provider form of the requested name, so both the suggestion and
-the capped available-tools list name tools the model can actually call:
+Levenshtein distance, threshold `min(2, ceil(len(requested)/3))` where `requested`
+is the model's tool name. `execTool` passes the **provider-visible** tool names
+(`s.providerVisibleToolNames` over the registry's names) and the provider form of
+the requested name, so both the suggestion and the capped available-tools list
+name tools the model can actually call:
 
 ```
 unknown tool: "reed_file". Did you mean "read_file"?
 Available tools: read_file, write_file, edit_file, shell, grep, list_dir, ...
 ```
 
-This requires a new `Registry.Names() []string` (or reuse of an existing
-enumerator) alongside the `Registry.Lookup` accessor.
+No new registry accessors are needed: `Registry.Get(name) *RegisteredTool`
+(`registry.go:390`, `RLock`-guarded, returns the tool's `Schema` + `Definition`)
+and `Registry.Names() []string` (`registry.go:429`) already exist. `prepare` uses
+both directly.
 
 ## Component 3: model-tuned error messages
 
@@ -348,34 +383,48 @@ This yields the metric the article implies we should want: how often, and in
 what way, models drift off serf's schema on the non-strict paths.
 
 **Consumer updates required** (not just the type definition): `EventData` is a
-sealed set and event kinds are switched on across projectors and bridges —
-`internal/appprojector/appwire_projection.go` (has a `default:` so it won't
-crash, but the event won't project to hub/TUI without a case) and
-`server/bridge.go`. These must gain cases or the telemetry is invisible to those
-consumers.
+sealed set and several consumers switch on event kinds with a `default:` that
+silently drops unknown kinds. To surface the repair event they need a case:
+`internal/appprojector/appwire_projection.go` (the hub/TUI projection; has a
+`default:` at `:533`, so no crash, but no bubble without a case), `cmd/serf/run.go`
+(the CLI renderer's tool-call switch), and `tools/tool-fluency/…` (the natural
+place to *measure* the drift metric). `server/bridge.go` needs **no** change: it
+records every event via `RecordAppEvent` before its state-only switch, so the
+event already flows to the projector path above.
 
 ## Error handling and edge cases
 
-- **No happy-path change.** Valid calls skip repair (one extra cheap validate)
-  and are never mutated; healthy behavior is unchanged.
-- **Repair strictly improves failures.** Worst case, repair fails and we surface
-  a better (model-tuned) error than today.
+- **No happy-path change.** Valid calls skip repair (one extra unmarshal +
+  validate) and are never mutated; healthy behavior is unchanged.
+- **Full lifecycle preserved.** Because `prepare` returns rather than short-
+  circuiting `execTool`, unknown-tool and unrepairable calls still emit
+  `EventToolCallStart`/`EventToolCallEnd` and run Pre/PostToolUse hooks exactly as
+  today — only the *message* they carry improves. This keeps them visible to the
+  UI projection and to `job_watch` `assistant.tool` error observers.
 - **Hooks see healed args.** Repair runs before PreToolUse, preserving the
   invariant that hooks inspect the arguments that will run.
-- **Ordering change for unrepairable calls.** Because the validate-and-repair
-  step now precedes the hooks, a call that cannot be made schema-valid returns
-  its (model-tuned) error before PreToolUse fires — whereas today the hook fires
-  before `ExecuteCall` rejects it. This is intentional: a malformed call that
-  cannot be healed is rejected without invoking policy hooks. Called out here so
-  the ordering change is explicit, not a surprise.
-- **History fidelity.** The model's original raw arguments remain on the
-  assistant turn; only the executed copy is repaired; the model never sees the
-  repair (silent-to-model).
+- **History fidelity vs telemetry args.** The model's original raw arguments
+  remain on the assistant turn (`execTool` takes `call` by value, so rewriting
+  `call.Arguments` cannot reach the appended turn); the model never sees the
+  repair. Note the *telemetry* side differs deliberately: `EventToolCallStart`/
+  `End` carry the healed args, and the raw call is reconstructable from history +
+  the `EventToolCallRepaired` diff. Consumers treating the start event as "what
+  the model literally emitted" must join against the repair event.
+- **Stable callID.** `prepare` assigns the synthesized `call.ID`
+  (`"call_"+shortHash`) *before* any argument rewrite, so start/end/tool_result
+  identities agree even for the rare empty-ID path (Anthropic/OpenAI always send
+  IDs; this covers the streaming-accumulator gap).
 - **`additionalProperties:false` stays.** Drop-unknown handles invented-extra-key
   calls within the existing strict schema; no tool definition is relaxed and no
   `Strict` value is changed.
-- **OpenAI Responses.** The ladder is lazy, so on the already-constrained path it
-  effectively never fires.
+- **Concurrency.** `prepare` calls `providerToolName`/`providerVisibleToolNames`,
+  which today read `s.profile` **unlocked** (`session_tools.go:228`), and
+  `execTool` runs read-only batches in parallel goroutines
+  (`session_tool_round.go:104-120`) while `SetModel` may swap `s.profile` under
+  `s.mu`. The implementation must route these through `currentProfile()` (which
+  locks, per its own contract at `session.go:433`) or snapshot the name-map once,
+  to avoid a data race the current unlocked readers only avoid by being on a
+  colder path.
 
 ## Testing plan
 
@@ -398,9 +447,13 @@ captures and asserts the resulting event/message.
   - aliased arg runs; unknown key dropped and runs;
   - **hook sees healed args** (a PreToolUse hook asserts `file_path` present after
     an `path` alias) — the regression guard for the review's hook-ordering finding;
-  - unrepairable → model-tuned error;
-  - unknown tool under a **name-mapping profile** → suggestion/list uses
-    provider-visible names (guard for the name-map finding).
+  - **empty/whitespace args to a no-required-args tool succeed** (`list_dir`
+    with `""`) — guard for the empty-args regression;
+  - **unrepairable and unknown-tool calls still emit `EventToolCallStart` +
+    `EventToolCallEnd`** and run PostToolUse — guard for the dropped-lifecycle
+    finding;
+  - unrepairable → model-tuned error; unknown tool under a **name-mapping
+    profile** → suggestion/list uses provider-visible names (name-map guard).
 
 ## Fast-follow (separate spec): leaked tool-call markup recovery
 
@@ -436,12 +489,16 @@ names to avoid false positives from prose) is the piece that carries forward.
 
 - **New:** `agent/internal/tool/repair/` (`repair.go`, `json.go`, `suggest.go`,
   `explain.go` + tests).
-- `agent/internal/tool/registry.go` — add `Lookup(name) (RegisteredTool, bool)`
-  and `Names() []string` accessors. `ExecuteCall` otherwise unchanged.
-- `agent/session_tools.go` — repair step in `execTool` before PreToolUse hooks;
-  unknown-tool did-you-mean and model-tuned errors using provider-visible names;
-  emit `EventToolCallRepaired`.
+- `agent/internal/tool/registry.go` — **no change**; `Get` and `Names` already
+  exist and `ExecuteCall` stays as-is.
+- `agent/session_tools.go` — `prepare` step in `execTool` before PreToolUse hooks
+  (returning healed args or a model-tuned error, never short-circuiting the
+  lifecycle); route the `prevalErr` result through the existing start/end/exec
+  path; unknown-tool did-you-mean and model-tuned errors using provider-visible
+  names; emit `EventToolCallRepaired`. Route `providerToolName` through a locked
+  read (concurrency note above).
 - `agent/events/events.go` — `EventToolCallRepaired` + `ToolCallRepairedData`.
-- `internal/appprojector/appwire_projection.go`, `server/bridge.go` — switch
-  cases for the new event so telemetry projects.
+- `internal/appprojector/appwire_projection.go`, `cmd/serf/run.go`,
+  `tools/tool-fluency/…` — switch cases for the new event so it projects/renders
+  and the drift metric is measurable. `server/bridge.go` needs no change.
 - Tests as above.
