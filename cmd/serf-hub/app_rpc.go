@@ -266,6 +266,8 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 	registerInstanceHandlers(server, instancesController)
 	launchController := newHubLaunchController(hubStateRoot)
 	registerLaunchHandlers(server, launchController)
+	pluginsController := newHubPluginsController("")
+	registerPluginHandlers(server, pluginsController)
 	registerMiscHandlers(server, cfg, sources)
 	return server
 }
@@ -633,6 +635,96 @@ func registerLaunchHandlers(server *appserver.Server, launchController *hubLaunc
 		}
 		return resp, err
 	})
+}
+
+// registerPluginHandlers registers the serf/marketplace/* and serf/plugin/*
+// RPC handlers, routed to the plugins controller. Mutations broadcast
+// serf/marketplace/updated or serf/plugin/updated.
+func registerPluginHandlers(server *appserver.Server, pluginsController *hubPluginsController) {
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfMarketplaceList, func(_ context.Context, _ appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+		return pluginsController.ListMarketplaces()
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfMarketplaceAdd, func(ctx context.Context, params appwire.MarketplaceAddParams) (appwire.MarketplaceListResponse, error) {
+		resp, err := pluginsController.AddMarketplace(ctx, params)
+		if err == nil {
+			notifyMarketplaceUpdated(server)
+		}
+		return resp, err
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfMarketplaceRemove, func(_ context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
+		resp, err := pluginsController.RemoveMarketplace(params)
+		if err == nil {
+			notifyMarketplaceUpdated(server)
+		}
+		return resp, err
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfMarketplaceRefresh, func(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
+		resp, err := pluginsController.RefreshMarketplace(ctx, params)
+		if err == nil {
+			notifyMarketplaceUpdated(server)
+		}
+		return resp, err
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfMarketplaceBrowse, func(ctx context.Context, params appwire.MarketplaceBrowseParams) (appwire.MarketplaceBrowseResponse, error) {
+		return pluginsController.Browse(ctx, params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfPluginList, func(_ context.Context, _ appwire.EmptyParams) (appwire.PluginListResponse, error) {
+		return pluginsController.ListPlugins()
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfPluginInstall, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+		resp, err := pluginsController.Install(ctx, params)
+		if err == nil {
+			notifyPluginUpdated(server)
+		}
+		return resp, err
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfPluginUpgrade, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+		resp, err := pluginsController.Upgrade(ctx, params)
+		if err == nil {
+			notifyPluginUpdated(server)
+		}
+		return resp, err
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfPluginRemove, func(_ context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+		resp, err := pluginsController.Remove(params)
+		if err == nil {
+			notifyPluginUpdated(server)
+		}
+		return resp, err
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfPluginEnable, func(_ context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+		resp, err := pluginsController.Enable(params)
+		if err == nil {
+			notifyPluginUpdated(server)
+		}
+		return resp, err
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfPluginDisable, func(_ context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+		resp, err := pluginsController.Disable(params)
+		if err == nil {
+			notifyPluginUpdated(server)
+		}
+		return resp, err
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfPluginSetAutoUpgrade, func(_ context.Context, params appwire.PluginSetAutoUpgradeParams) (appwire.PluginListResponse, error) {
+		resp, err := pluginsController.SetAutoUpgrade(params)
+		if err == nil {
+			notifyPluginUpdated(server)
+		}
+		return resp, err
+	})
+}
+
+// notifyMarketplaceUpdated broadcasts a serf/marketplace/updated notification
+// to all connected clients.
+func notifyMarketplaceUpdated(server *appserver.Server) {
+	server.BroadcastAll(appwire.NotifySerfMarketplaceUpdated, map[string]string{})
+}
+
+// notifyPluginUpdated broadcasts a serf/plugin/updated notification to all
+// connected clients.
+func notifyPluginUpdated(server *appserver.Server) {
+	server.BroadcastAll(appwire.NotifySerfPluginUpdated, map[string]string{})
 }
 
 // registerMiscHandlers registers the remaining hub RPC handlers: model list,

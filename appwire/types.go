@@ -52,30 +52,44 @@ const (
 	MethodSerfInstanceEdit          = "serf/instance/edit"
 	MethodSerfInstanceRemove        = "serf/instance/remove"
 	MethodSerfInstanceSetDefault    = "serf/instance/setDefault"
+	MethodSerfMarketplaceList       = "serf/marketplace/list"
+	MethodSerfMarketplaceAdd        = "serf/marketplace/add"
+	MethodSerfMarketplaceRemove     = "serf/marketplace/remove"
+	MethodSerfMarketplaceRefresh    = "serf/marketplace/refresh"
+	MethodSerfMarketplaceBrowse     = "serf/marketplace/browse"
+	MethodSerfPluginList            = "serf/plugin/list"
+	MethodSerfPluginInstall         = "serf/plugin/install"
+	MethodSerfPluginUpgrade         = "serf/plugin/upgrade"
+	MethodSerfPluginRemove          = "serf/plugin/remove"
+	MethodSerfPluginEnable          = "serf/plugin/enable"
+	MethodSerfPluginDisable         = "serf/plugin/disable"
+	MethodSerfPluginSetAutoUpgrade  = "serf/plugin/setAutoUpgrade"
 )
 
 const (
-	NotifyThreadStarted         = "thread/started"
-	NotifyThreadClosed          = "thread/closed"
-	NotifyThreadStatusChanged   = "thread/status/changed"
-	NotifyThreadQueueChanged    = "thread/queueChanged"
-	NotifyTurnStarted           = "turn/started"
-	NotifyTurnCompleted         = "turn/completed"
-	NotifyItemStarted           = "item/started"
-	NotifyItemCompleted         = "item/completed"
-	NotifyAgentMessageDelta     = "item/agentMessage/delta"
-	NotifyAgentMessageReset     = "item/agentMessage/reset"
-	NotifyReasoningSummaryDelta = "item/reasoning/summaryTextDelta"
-	NotifyToolOutputDelta       = "item/toolOutput/delta"
-	NotifyWarning               = "warning"
-	NotifySerfContextPressure   = "serf/thread/contextPressure/updated"
-	NotifySerfTaskUpdated       = "serf/task/updated"
-	NotifySerfSteeringInjected  = "serf/steering/injected"
-	NotifySerfJobStarted        = "serf/job/started"
-	NotifySerfJobFinished       = "serf/job/finished"
-	NotifySerfAuthUpdated       = "serf/auth/updated"
-	NotifySerfLaunchUpdated     = "serf/launch/updated"
-	NotifySerfAttentionChanged  = "serf/attention/changed"
+	NotifyThreadStarted          = "thread/started"
+	NotifyThreadClosed           = "thread/closed"
+	NotifyThreadStatusChanged    = "thread/status/changed"
+	NotifyThreadQueueChanged     = "thread/queueChanged"
+	NotifyTurnStarted            = "turn/started"
+	NotifyTurnCompleted          = "turn/completed"
+	NotifyItemStarted            = "item/started"
+	NotifyItemCompleted          = "item/completed"
+	NotifyAgentMessageDelta      = "item/agentMessage/delta"
+	NotifyAgentMessageReset      = "item/agentMessage/reset"
+	NotifyReasoningSummaryDelta  = "item/reasoning/summaryTextDelta"
+	NotifyToolOutputDelta        = "item/toolOutput/delta"
+	NotifyWarning                = "warning"
+	NotifySerfContextPressure    = "serf/thread/contextPressure/updated"
+	NotifySerfTaskUpdated        = "serf/task/updated"
+	NotifySerfSteeringInjected   = "serf/steering/injected"
+	NotifySerfJobStarted         = "serf/job/started"
+	NotifySerfJobFinished        = "serf/job/finished"
+	NotifySerfAuthUpdated        = "serf/auth/updated"
+	NotifySerfLaunchUpdated      = "serf/launch/updated"
+	NotifySerfAttentionChanged   = "serf/attention/changed"
+	NotifySerfMarketplaceUpdated = "serf/marketplace/updated"
+	NotifySerfPluginUpdated      = "serf/plugin/updated"
 )
 
 const (
@@ -1015,4 +1029,108 @@ type LaunchConfigSetLayerParams struct {
 type LaunchConfigTrustRepoParams struct {
 	CWD  string `json:"cwd"`
 	Hash string `json:"hash"`
+}
+
+// MarketplaceSourceInput is the wire shape of a marketplace source. Kind
+// selects which of Repo/URL/Path applies: "github" (Repo, e.g. "owner/repo"),
+// "url" (URL, a git remote), "directory" (Path, referenced in place, no
+// clone), or "git-subdir" (URL+Path, a sparse clone of one subdirectory).
+// Ref/Sha optionally pin a git-backed source to a branch/tag or commit.
+type MarketplaceSourceInput struct {
+	Kind string `json:"kind"`
+	Repo string `json:"repo,omitempty"`
+	URL  string `json:"url,omitempty"`
+	Path string `json:"path,omitempty"`
+	Ref  string `json:"ref,omitempty"`
+	Sha  string `json:"sha,omitempty"`
+}
+
+// MarketplaceEntry is the wire representation of one registered marketplace.
+type MarketplaceEntry struct {
+	Name            string                 `json:"name"`
+	Source          MarketplaceSourceInput `json:"source"`
+	InstallLocation string                 `json:"installLocation,omitempty"`
+	LastUpdated     int64                  `json:"lastUpdated"`
+}
+
+// MarketplaceListResponse is the result of serf/marketplace/list. Every
+// marketplace mutation (add/remove/refresh) also returns this, so a client
+// can re-render from the response without a separate list round-trip.
+type MarketplaceListResponse struct {
+	Marketplaces []MarketplaceEntry `json:"marketplaces"`
+}
+
+// MarketplaceAddParams is the params for serf/marketplace/add. Name is
+// optional; when empty, the marketplace manifest's own name is used.
+type MarketplaceAddParams struct {
+	Name   string                 `json:"name,omitempty"`
+	Source MarketplaceSourceInput `json:"source"`
+}
+
+// MarketplaceNameParams identifies one registered marketplace by name — the
+// params shape for serf/marketplace/remove and serf/marketplace/refresh.
+type MarketplaceNameParams struct {
+	Name string `json:"name"`
+}
+
+// MarketplaceCatalogPlugin is one plugin entry parsed from a marketplace's
+// catalog (.claude-plugin/marketplace.json), as returned by
+// serf/marketplace/browse.
+type MarketplaceCatalogPlugin struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Category    string `json:"category,omitempty"`
+	Homepage    string `json:"homepage,omitempty"`
+	Author      string `json:"author,omitempty"`
+}
+
+// MarketplaceBrowseParams is the params for serf/marketplace/browse.
+type MarketplaceBrowseParams struct {
+	Name string `json:"name"`
+}
+
+// MarketplaceBrowseResponse is the result of serf/marketplace/browse: the
+// marketplace's catalog metadata plus its plugin list.
+type MarketplaceBrowseResponse struct {
+	Name        string                     `json:"name"`
+	Description string                     `json:"description,omitempty"`
+	Plugins     []MarketplaceCatalogPlugin `json:"plugins"`
+}
+
+// PluginEntry is the wire representation of one installed plugin.
+type PluginEntry struct {
+	Plugin       string `json:"plugin"`
+	Marketplace  string `json:"marketplace"`
+	Version      string `json:"version"`
+	Enabled      bool   `json:"enabled"`
+	AutoUpgrade  bool   `json:"autoUpgrade"`
+	Broken       bool   `json:"broken"`
+	InstallPath  string `json:"installPath"`
+	GitCommitSha string `json:"gitCommitSha,omitempty"`
+	InstalledAt  int64  `json:"installedAt"`
+	LastUpdated  int64  `json:"lastUpdated"`
+}
+
+// PluginListResponse is the result of serf/plugin/list. Every plugin
+// mutation (install/upgrade/remove/enable/disable/setAutoUpgrade) also
+// returns this, so a client can re-render from the response without a
+// separate list round-trip.
+type PluginListResponse struct {
+	Plugins []PluginEntry `json:"plugins"`
+}
+
+// PluginRefParams identifies one plugin by its registry key (plugin name +
+// marketplace name) — the params shape for serf/plugin/install (naming the
+// catalog entry to install), and serf/plugin/{upgrade,remove,enable,disable}
+// (naming the already-installed entry to act on).
+type PluginRefParams struct {
+	Plugin      string `json:"plugin"`
+	Marketplace string `json:"marketplace"`
+}
+
+// PluginSetAutoUpgradeParams is the params for serf/plugin/setAutoUpgrade.
+type PluginSetAutoUpgradeParams struct {
+	Plugin      string `json:"plugin"`
+	Marketplace string `json:"marketplace"`
+	AutoUpgrade bool   `json:"autoUpgrade"`
 }
