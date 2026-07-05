@@ -131,6 +131,7 @@ no router (reserved).
 | `serf/instance/edit` | hub | `InstanceEditParams` | `InstanceListResponse` | Edits a provider instance; returns the updated list. |
 | `serf/instance/remove` | hub | `InstanceRemoveParams` | `InstanceListResponse` | Removes a provider instance; returns the updated list. |
 | `serf/instance/setDefault` | hub | `InstanceSetDefaultParams` | `InstanceListResponse` | Sets the default provider instance; returns the updated list. |
+| `serf/command/list` | hub | `EmptyParams` | `CommandListResponse` | Lists loaded plugin slash commands (name, plugin, description) for catalog/autocomplete display. |
 
 ## Notifications (server → client)
 
@@ -309,6 +310,13 @@ An embedded type contributes its own fields inline.
 | `needsRefresh` | `bool` | yes |  |
 | `needsLogin` | `bool` | yes |  |
 | `error` | `string` | yes |  |
+
+
+### `CommandListResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `commands` | `[]appwire.CommandDescriptor` |  |  |
 
 
 ### `DirsCompleteParams`

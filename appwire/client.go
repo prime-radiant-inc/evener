@@ -420,3 +420,9 @@ func (c *Client) ModelList(ctx context.Context, params ModelListParams) (ModelLi
 	err := c.request(ctx, MethodModelList, params, &out)
 	return out, err
 }
+
+func (c *Client) CommandList(ctx context.Context) (CommandListResponse, error) {
+	var out CommandListResponse
+	err := c.request(ctx, MethodSerfCommandList, EmptyParams{}, &out)
+	return out, err
+}

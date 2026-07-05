@@ -129,6 +129,7 @@ var Methods = []MethodSpec{
 	{MethodSerfInstanceEdit, InstanceEditParams{}, InstanceListResponse{}, ScopeHub, "Edits a provider instance; returns the updated list."},
 	{MethodSerfInstanceRemove, InstanceRemoveParams{}, InstanceListResponse{}, ScopeHub, "Removes a provider instance; returns the updated list."},
 	{MethodSerfInstanceSetDefault, InstanceSetDefaultParams{}, InstanceListResponse{}, ScopeHub, "Sets the default provider instance; returns the updated list."},
+	{MethodSerfCommandList, EmptyParams{}, CommandListResponse{}, ScopeHub, "Lists loaded plugin slash commands (name, plugin, description) for catalog/autocomplete display."},
 }
 
 // Notifications is the AppWire server→client notification catalog. A nil
