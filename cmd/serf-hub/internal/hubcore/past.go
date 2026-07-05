@@ -15,6 +15,7 @@ import (
 	_ "modernc.org/sqlite" // registers the "sqlite" driver for database/sql
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/appwire"
 )
 
 // PastEntry is one indexed past session.
@@ -475,6 +476,40 @@ func (i *PastIndex) AllMetas() []schema.SessionMeta {
 	out := make([]schema.SessionMeta, 0, len(i.all))
 	for _, e := range i.all {
 		out = append(out, e.Meta)
+	}
+	return out
+}
+
+// RecentModels returns up to limit distinct (provider, model) pairs for the
+// model picker's "Recent" group, ordered by global recency — the same
+// most-recently-updated-first order the rest of the index uses
+// (session_order.go's sessionMetaLess) — not scoped to any one project or
+// harness. ProfileID is the provider instance name (mirrors
+// appwire.ModelDescriptor.Provider); entries with a blank ProfileID or Model
+// are skipped. Deduped on the pair's first (most recent) occurrence.
+func (i *PastIndex) RecentModels(limit int) []appwire.ModelDescriptor {
+	if limit <= 0 {
+		return nil
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	seen := make(map[string]bool, limit)
+	var out []appwire.ModelDescriptor
+	for _, e := range i.all {
+		provider := strings.TrimSpace(e.Meta.ProfileID)
+		model := strings.TrimSpace(e.Meta.Model)
+		if provider == "" || model == "" {
+			continue
+		}
+		key := provider + "/" + model
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, appwire.ModelDescriptor{Provider: provider, Model: model})
+		if len(out) >= limit {
+			break
+		}
 	}
 	return out
 }
