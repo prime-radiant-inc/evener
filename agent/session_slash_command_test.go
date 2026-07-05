@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
@@ -93,6 +94,42 @@ func TestExpandSlashCommand_ExpandsKnownCommand(t *testing.T) {
 	}
 	if got != "Hi world" {
 		t.Errorf("got %q, want %q", got, "Hi world")
+	}
+}
+
+// TestExpandSlashCommand_ExpandErrorEmitsWarning proves an Expand failure is
+// surfaced to the user instead of being silently swallowed. command.Expand's
+// only error path is ctx already being done at entry (every per-token
+// failure — a failing !`cmd`, a missing @file — degrades to inline text
+// instead), so an already-canceled context is what reliably reproduces it
+// here. The command must still fall back to submitting the literal input
+// (ok=false) — "surface it" means "stop being silent about it", not "block
+// the input" — but now with a warning naming the failed command.
+func TestExpandSlashCommand_ExpandErrorEmitsWarning(t *testing.T) {
+	t.Parallel()
+	dir := writePluginCommand(t, "greeter", "greet", "---\nname: greet\ndescription: greet\n---\nHi $ARGUMENTS")
+	sess, _ := newTestSessionWithPlugins(t, dir)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	got, ok := sess.expandSlashCommand(ctx, "/greet world")
+	if ok {
+		t.Fatalf("expected ok=false when Expand errors, got expanded %q", got)
+	}
+	if got != "/greet world" {
+		t.Errorf("got %q, want the literal input preserved as fallback", got)
+	}
+
+	sess.Close()
+	var warned bool
+	for ev := range sess.Events() {
+		if w, isWarning := ev.Data.(events.WarningData); isWarning && strings.Contains(w.Message, "greet") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Fatal("expected an EventWarning naming the failed command when Expand errors")
 	}
 }
 
