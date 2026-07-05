@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -43,6 +44,34 @@ func makeGitBackedMarketplace(t *testing.T, plugin string) (mktRepo, pluginRepo 
 	}
 	makeGitRepo(t, mktRepo, "README.md", "x")
 	return mktRepo, pluginRepo
+}
+
+// makeGitBackedMarketplaceTwoPlugins is makeGitBackedMarketplace but with two
+// independently git-backed plugins in one marketplace, so a test can break
+// one while leaving the other upgradeable.
+func makeGitBackedMarketplaceTwoPlugins(t *testing.T, pluginA, pluginB string) (mktRepo, pluginARepo, pluginBRepo string) {
+	t.Helper()
+	pluginARepo = filepath.Join(t.TempDir(), pluginA+"repo")
+	writePlugin(t, pluginARepo, pluginA, nil)
+	makeGitRepo(t, pluginARepo, "extra.txt", "v1")
+
+	pluginBRepo = filepath.Join(t.TempDir(), pluginB+"repo")
+	writePlugin(t, pluginBRepo, pluginB, nil)
+	makeGitRepo(t, pluginBRepo, "extra.txt", "v1")
+
+	mktRepo = filepath.Join(t.TempDir(), "mkt")
+	if err := os.MkdirAll(filepath.Join(mktRepo, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mj := `{"name":"acme","owner":{"name":"o"},"plugins":[` +
+		`{"name":"` + pluginA + `","source":{"source":"url","url":"` + pluginARepo + `"}},` +
+		`{"name":"` + pluginB + `","source":{"source":"url","url":"` + pluginBRepo + `"}}` +
+		`]}`
+	if err := os.WriteFile(filepath.Join(mktRepo, ".claude-plugin", "marketplace.json"), []byte(mj), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	makeGitRepo(t, mktRepo, "README.md", "x")
+	return mktRepo, pluginARepo, pluginBRepo
 }
 
 func TestUpdateAutoUpgrade_OnlyTouchesAutoUpgradeEnabled(t *testing.T) {
@@ -168,37 +197,57 @@ func TestUpdateAutoUpgrade_SkipsRelativeAndDirectorySources(t *testing.T) {
 	}
 }
 
+// TestUpdateAutoUpgrade_AggregatesFailuresButKeepsGoing registers a broken
+// auto-upgrade plugin AND a healthy one, sorting before it ("broken" <
+// "healthy"), so the sweep hits the failure first. Asserting only "an error
+// came back" would also pass if the sweep aborted on the first failure
+// instead of continuing — the healthy plugin's actual upgrade is what proves
+// the per-plugin `continue` really continues.
 func TestUpdateAutoUpgrade_AggregatesFailuresButKeepsGoing(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
 	}
-	mktRepo, pluginRepo := makeGitBackedMarketplace(t, "widget")
+	mktRepo, brokenRepo, healthyRepo := makeGitBackedMarketplaceTwoPlugins(t, "broken", "healthy")
 
 	m := NewManager(t.TempDir())
 	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if _, err := m.Install(context.Background(), "widget", "acme"); err != nil {
-		t.Fatalf("Install: %v", err)
+	if _, err := m.Install(context.Background(), "broken", "acme"); err != nil {
+		t.Fatalf("Install broken: %v", err)
 	}
-	if err := m.SetAutoUpgrade("widget", "acme", true); err != nil {
-		t.Fatalf("SetAutoUpgrade: %v", err)
+	if err := m.SetAutoUpgrade("broken", "acme", true); err != nil {
+		t.Fatalf("SetAutoUpgrade broken: %v", err)
 	}
-	advanceGitRepo(t, pluginRepo, "extra.txt", "v2")
+	advanceGitRepo(t, brokenRepo, "extra.txt", "v2")
 
-	// Break the plugin's upstream repo so its upgrade fails; UpdateAutoUpgrade
-	// must still report the error without panicking, and (with only one
-	// registered plugin) simply return zero updates and a non-nil error.
-	if err := os.RemoveAll(pluginRepo); err != nil {
+	healthy, err := m.Install(context.Background(), "healthy", "acme")
+	if err != nil {
+		t.Fatalf("Install healthy: %v", err)
+	}
+	if err := m.SetAutoUpgrade("healthy", "acme", true); err != nil {
+		t.Fatalf("SetAutoUpgrade healthy: %v", err)
+	}
+	advanceGitRepo(t, healthyRepo, "extra.txt", "v2")
+
+	// Break "broken"'s upstream repo so its upgrade fails; UpdateAutoUpgrade
+	// must still report the error AND go on to upgrade "healthy".
+	if err := os.RemoveAll(brokenRepo); err != nil {
 		t.Fatal(err)
 	}
 
 	updated, err := m.UpdateAutoUpgrade(context.Background())
 	if err == nil {
-		t.Fatal("expected an aggregated error when the upstream repo vanished")
+		t.Fatal("expected an aggregated error when broken's upstream repo vanished")
 	}
-	if len(updated) != 0 {
-		t.Fatalf("updated = %+v, want none", updated)
+	if !strings.Contains(err.Error(), "broken@acme") {
+		t.Fatalf("error = %v, want it to mention broken@acme", err)
+	}
+	if len(updated) != 1 || updated[0].Plugin != "healthy" || updated[0].Marketplace != "acme" {
+		t.Fatalf("updated = %+v, want exactly healthy@acme upgraded despite broken's failure", updated)
+	}
+	if updated[0].Entry.InstallPath == healthy.InstallPath {
+		t.Fatal("healthy plugin was not actually upgraded to a new sha-dir")
 	}
 }
 
