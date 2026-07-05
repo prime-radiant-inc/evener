@@ -220,6 +220,10 @@ type Session struct {
 	pendingPluginEvents []events.PluginLoadedData
 	pendingHookWarnings []events.WarningData
 	hookRunner          *hooks.Runner
+	// pluginCommands is the union of every loaded plugin's slash commands,
+	// namespaced "plugin-name:command-name" like skills. Looked up by
+	// expandSlashCommand via plugin.ResolveCommand.
+	pluginCommands map[string]plugin.Command
 	// pendingSessionStartKind defers restore SessionStart hook output until the
 	// first accepted real user turn. Deferred delegate restore side effects may run
 	// the hook earlier for lifecycle effects; pendingSessionStartResult preserves
