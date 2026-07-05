@@ -26,13 +26,13 @@ func writePluginHooks(t *testing.T, name, hooksJSON string) string {
 	return dir
 }
 
-// sessionWarnings builds a session that loads the given plugin dir, closes it,
-// and returns every WarningData emitted on the session event stream.
-func sessionWarnings(t *testing.T, pluginDir string) []events.WarningData {
+// sessionWarnings builds a session that loads the given plugin dir(s), closes
+// it, and returns every WarningData emitted on the session event stream.
+func sessionWarnings(t *testing.T, pluginDirs ...string) []events.WarningData {
 	t.Helper()
 	client := llm.NewClient()
 	workDir := t.TempDir()
-	cfg := SessionConfig{PluginDirs: []string{pluginDir}}
+	cfg := SessionConfig{PluginDirs: pluginDirs}
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

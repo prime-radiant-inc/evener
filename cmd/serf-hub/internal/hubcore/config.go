@@ -36,6 +36,7 @@ type WebConfig struct {
 	StateDir            string              // root of the projects/<sha> state directory; needed for ForkSession
 	CredsStore          *credentials.Store  // credentials store; passed to auth controller
 	PluginDirs          []string            // explicit plugin dirs; when empty, default to ~/.config/serf/plugins/*
+	PluginRoot          string              // internal/plugins.Manager store root; "" → plugins.DefaultRoot() (~/.config/serf/plugins). Distinct from PluginDirs above: this is the marketplace/install registry root, not the explicit --plugin-dir scan list. Tests/sandboxes point this inside their own temp root so plugin/marketplace mutations never touch the real store.
 	MCPConfigPath       string              // MCP config file path; when empty, default to ~/.config/serf/mcp.json
 	ProviderConfig      *providercfg.Config // instance-to-tag mapping; nil when providers.toml absent (env path)
 	ProvidersConfigPath string              // path to providers.toml; forwarded to the auth controller

@@ -26,6 +26,7 @@ import (
 
 	"primeradiant.com/serf/agent/doctor"
 	"primeradiant.com/serf/envvars"
+	"primeradiant.com/serf/internal/plugins"
 )
 
 func main() {
@@ -49,6 +50,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdWatches(rest, stdout, stderr)
 	case "tree":
 		return cmdTree(rest, stdout, stderr)
+	case "plugins":
+		return cmdPlugins(rest, stdout, stderr)
 	case "-h", "--help", "help":
 		return usage(stdout)
 	default:
@@ -74,6 +77,7 @@ SUBCOMMANDS:
   apilog      API-call diagnostics: per-call tokens/latency, empties, errors, cache spikes
   watches     watch/delivery inspector: distinct deliveries, provenance, breaker telemetry (self-influence depth, runaway drops)
   tree        parent ↔ delegate/observer session tree across buckets
+  plugins     plugin-store health check: registry/disk drift, marketplace health, component validity, auto-upgrade sanity (no selector — see "serf-doctor plugins -h")
 
 SELECTOR:
   "" | current  (rejected — name a session)   local:<id>   proj:<hash>:<id>   <id>
@@ -273,4 +277,25 @@ func cmdTree(args []string, stdout, stderr io.Writer) int {
 		return emitJSON(stdout, res)
 	}
 	return writeText(stdout, doctor.RenderTree(res))
+}
+
+// cmdPlugins runs the plugin-store health check (internal/plugins.Doctor,
+// design spec §13). Unlike the other subcommands it is not session-scoped: it
+// takes no selector, just --json and an optional --store-root override.
+func cmdPlugins(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("plugins", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	storeRoot := fs.String("store-root", "", fmt.Sprintf("plugin store root (default: ~/.config/serf/plugins, honoring %s)", envvars.XDGConfigHome.Name))
+	asJSON := fs.Bool("json", false, "emit JSON instead of the human summary")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	findings, err := plugins.NewManager(*storeRoot).Doctor()
+	if err != nil {
+		return fail(stderr, "plugins", err)
+	}
+	if *asJSON {
+		return emitJSON(stdout, findings)
+	}
+	return writeText(stdout, plugins.RenderDoctorFindings(findings))
 }

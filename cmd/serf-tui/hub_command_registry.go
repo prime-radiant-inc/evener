@@ -368,6 +368,21 @@ var hubCommandRegistry = []hubCommandDefinition{
 		},
 	},
 	{
+		Name:          "plugins",
+		Summary:       "Manage plugin marketplaces and installed plugins",
+		PaletteLabel:  "/plugins",
+		PaletteDetail: "manage plugin marketplaces and installed plugins",
+		Scopes:        hubCommandDashboard,
+		Run: func(m *hubModel, _ string) tea.Cmd {
+			panel := launchconfig.NewPluginsPanel()
+			m.pluginsPanel = &panel
+			if m.client != nil {
+				return tea.Batch(launchconfig.CmdMarketplaceList(m.client), launchconfig.CmdPluginList(m.client))
+			}
+			return nil
+		},
+	},
+	{
 		Name:          "quit",
 		Summary:       "Exit serf-tui",
 		PaletteLabel:  "/quit",

@@ -30,6 +30,9 @@ func topmostOverlayName(m hubModel) string {
 	if m.launchSettingsPanel != nil {
 		return "launch-settings"
 	}
+	if m.pluginsPanel != nil {
+		return "plugins"
+	}
 	if m.sessionPanel != nil {
 		return "session-panel"
 	}
@@ -96,6 +99,15 @@ func (m hubModel) dispatchOverlayKey(name string, msg tea.KeyMsg) (tea.Model, te
 		m.launchSettingsPanel = &p
 		if p.Done() {
 			m.launchSettingsPanel = nil
+		}
+		return m, cmd
+
+	case "plugins":
+		updated, cmd := m.pluginsPanel.Update(msg)
+		panel := updated.(launchconfig.PluginsPanel)
+		m.pluginsPanel = &panel
+		if panel.Done() {
+			m.pluginsPanel = nil
 		}
 		return m, cmd
 

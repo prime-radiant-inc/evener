@@ -26,6 +26,7 @@ import (
 	"primeradiant.com/serf/cmd/serf/internal/rvreg"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/envvars"
+	"primeradiant.com/serf/internal/plugins"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
@@ -140,6 +141,9 @@ func runServe(args []string) error {
 	if err := cmdutil.EnsureUserConfigDirs(); err != nil {
 		return err
 	}
+	if _, err := plugins.NewManager("").SeedDefaultMarketplaces(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: seeding default marketplaces: %v\n", err)
+	}
 
 	// Resolve state directory.
 	// Priority: --state-dir flag > SERF_STATE_DIR env > XDG-computed default.
@@ -209,7 +213,7 @@ func runServe(args []string) error {
 		SkillsDirs:                  []string(skillsDirs),
 		MCPConfigFiles:              []string(mcpConfigs),
 		MCPInline:                   []string(mcpServers),
-		PluginDirs:                  []string(pluginDirs),
+		PluginDirs:                  plugins.NewManager("").EnabledPluginDirs([]string(pluginDirs)),
 		ContextStrategy:             *contextStrategy,
 		ExportATIFPath:              *exportATIF,
 		ExportATIFProviderHandles:   *exportATIFProviderHandles,

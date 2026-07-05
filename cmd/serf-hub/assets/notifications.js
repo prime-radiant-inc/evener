@@ -382,6 +382,22 @@
       if (path.startsWith("/settings/") && window.htmx && typeof htmx.ajax === "function") {
         htmx.ajax("GET", "/_partials" + path + window.location.search, "#settings-content");
       }
+    } else if (method === "serf/marketplace/updated" || method === "serf/plugin/updated") {
+      // Refresh the plugins-manager pane if it is the active settings pane, so
+      // a mutation from another tab (or another client entirely) doesn't
+      // leave this tab's marketplace/installed lists stale. That staleness is
+      // not just cosmetic: Browse's "Install" button is only hidden for
+      // already-installed plugins when the local installed list is current,
+      // and Manager.Install unconditionally resets AutoUpgrade to false on
+      // reinstall, so a stale tab could silently clobber another tab's
+      // auto-upgrade setting.
+      if (
+        window.location.pathname === "/settings/plugins-manager" &&
+        window.htmx &&
+        typeof htmx.ajax === "function"
+      ) {
+        htmx.ajax("GET", "/_partials/settings/plugins-manager", "#settings-content");
+      }
     }
   });
 })();

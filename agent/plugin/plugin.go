@@ -83,6 +83,7 @@ type Instance struct {
 	ManifestPath string
 	Skills       map[string]skill.SkillMeta     // namespaced as "plugin-name:skill-name"
 	Agents       map[string]Agent               // namespaced as "plugin-name:agent-name"
+	Commands     map[string]Command             // namespaced as "plugin-name:command-name"
 	Hooks        map[HookEvent][]RegisteredHook // keyed by event type
 	MCPConfigs   []mcpconfig.ServerConfig       // namespaced as "plugin_<name>_<server>"
 	// MCPConfigWarnings names non-fatal MCP config problems discovered while
@@ -237,6 +238,12 @@ func Load(dir string) (Instance, error) {
 	}
 	lp.Agents = agents
 
+	commands, err := discoverPluginCommands(resolved, manifest.Commands, manifest.Name)
+	if err != nil {
+		return Instance{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
+	}
+	lp.Commands = commands
+
 	hooks, unsupportedHooks, unknownHooks, err := discoverPluginHooksDiag(resolved, manifest.Hooks, manifest.Name)
 	if err != nil {
 		return Instance{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
@@ -274,6 +281,51 @@ func LoadAll(dirs []string) ([]Instance, error) {
 		plugins = append(plugins, lp)
 	}
 	return plugins, nil
+}
+
+// SkippedPlugin describes a plugin directory LoadAllFailSoft skipped instead
+// of failing the whole batch, and why.
+type SkippedPlugin struct {
+	Dir    string // the directory that was skipped
+	Name   string // the manifest name, set only when the skip was a duplicate (empty when Load itself failed)
+	Reason string // human-readable reason, suitable for a user-facing warning
+}
+
+// LoadAllFailSoft loads each directory in dirs independently, the same way
+// LoadAll does, but never aborts the batch: a directory that fails to load or
+// duplicates an already-loaded plugin's name is recorded in the returned
+// skipped slice and passed over, instead of failing every other directory
+// too. Use this in batch contexts — session init, the hub's command catalog —
+// where one broken or duplicate directory must not brick everything else;
+// callers that want LoadAll's fail-hard, abort-on-first-error behavior (e.g.
+// an explicit single-plugin install/validate operation) should keep using
+// LoadAll.
+func LoadAllFailSoft(dirs []string) ([]Instance, []SkippedPlugin) {
+	plugins := make([]Instance, 0, len(dirs))
+	seen := make(map[string]string) // plugin name -> dir already loaded
+	var skipped []SkippedPlugin
+
+	for _, dir := range dirs {
+		lp, err := Load(dir)
+		if err != nil {
+			skipped = append(skipped, SkippedPlugin{
+				Dir:    dir,
+				Reason: fmt.Sprintf("skipping broken plugin at %q: %v", dir, err),
+			})
+			continue
+		}
+		if prevDir, ok := seen[lp.Manifest.Name]; ok {
+			skipped = append(skipped, SkippedPlugin{
+				Dir:    lp.Dir,
+				Name:   lp.Manifest.Name,
+				Reason: fmt.Sprintf("skipping duplicate plugin name %q at %q (already loaded from %q)", lp.Manifest.Name, lp.Dir, prevDir),
+			})
+			continue
+		}
+		seen[lp.Manifest.Name] = lp.Dir
+		plugins = append(plugins, lp)
+	}
+	return plugins, skipped
 }
 
 // resolveComponentDirs returns a list of absolute directory paths to scan for

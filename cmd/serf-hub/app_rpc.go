@@ -5,15 +5,18 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/internal/appserver"
+	"primeradiant.com/serf/internal/plugins"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -266,7 +269,10 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 	registerInstanceHandlers(server, instancesController)
 	launchController := newHubLaunchController(hubStateRoot)
 	registerLaunchHandlers(server, launchController)
+	pluginsController := newHubPluginsController(cfg.PluginRoot)
+	registerPluginHandlers(server, pluginsController)
 	registerMiscHandlers(server, cfg, sources)
+	registerPluginAutoUpgradeHandlers(server, plugins.NewManager(cfg.PluginRoot))
 	return server
 }
 
@@ -635,6 +641,96 @@ func registerLaunchHandlers(server *appserver.Server, launchController *hubLaunc
 	})
 }
 
+// registerPluginHandlers registers the serf/marketplace/* and serf/plugin/*
+// RPC handlers, routed to the plugins controller. Mutations broadcast
+// serf/marketplace/updated or serf/plugin/updated.
+func registerPluginHandlers(server *appserver.Server, pluginsController *hubPluginsController) {
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfMarketplaceList, func(_ context.Context, _ appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+		return pluginsController.ListMarketplaces()
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfMarketplaceAdd, func(ctx context.Context, params appwire.MarketplaceAddParams) (appwire.MarketplaceListResponse, error) {
+		resp, err := pluginsController.AddMarketplace(ctx, params)
+		if err == nil {
+			notifyMarketplaceUpdated(server)
+		}
+		return resp, err
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfMarketplaceRemove, func(_ context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
+		resp, err := pluginsController.RemoveMarketplace(params)
+		if err == nil {
+			notifyMarketplaceUpdated(server)
+		}
+		return resp, err
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfMarketplaceRefresh, func(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
+		resp, err := pluginsController.RefreshMarketplace(ctx, params)
+		if err == nil {
+			notifyMarketplaceUpdated(server)
+		}
+		return resp, err
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfMarketplaceBrowse, func(ctx context.Context, params appwire.MarketplaceBrowseParams) (appwire.MarketplaceBrowseResponse, error) {
+		return pluginsController.Browse(ctx, params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfPluginList, func(_ context.Context, _ appwire.EmptyParams) (appwire.PluginListResponse, error) {
+		return pluginsController.ListPlugins()
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfPluginInstall, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+		resp, err := pluginsController.Install(ctx, params)
+		if err == nil {
+			notifyPluginUpdated(server)
+		}
+		return resp, err
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfPluginUpgrade, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+		resp, err := pluginsController.Upgrade(ctx, params)
+		if err == nil {
+			notifyPluginUpdated(server)
+		}
+		return resp, err
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfPluginRemove, func(_ context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+		resp, err := pluginsController.Remove(params)
+		if err == nil {
+			notifyPluginUpdated(server)
+		}
+		return resp, err
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfPluginEnable, func(_ context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+		resp, err := pluginsController.Enable(params)
+		if err == nil {
+			notifyPluginUpdated(server)
+		}
+		return resp, err
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfPluginDisable, func(_ context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+		resp, err := pluginsController.Disable(params)
+		if err == nil {
+			notifyPluginUpdated(server)
+		}
+		return resp, err
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfPluginSetAutoUpgrade, func(_ context.Context, params appwire.PluginSetAutoUpgradeParams) (appwire.PluginListResponse, error) {
+		resp, err := pluginsController.SetAutoUpgrade(params)
+		if err == nil {
+			notifyPluginUpdated(server)
+		}
+		return resp, err
+	})
+}
+
+// notifyMarketplaceUpdated broadcasts a serf/marketplace/updated notification
+// to all connected clients.
+func notifyMarketplaceUpdated(server *appserver.Server) {
+	server.BroadcastAll(appwire.NotifySerfMarketplaceUpdated, map[string]string{})
+}
+
+// notifyPluginUpdated broadcasts a serf/plugin/updated notification to all
+// connected clients.
+func notifyPluginUpdated(server *appserver.Server) {
+	server.BroadcastAll(appwire.NotifySerfPluginUpdated, map[string]string{})
+}
+
 // registerMiscHandlers registers the remaining hub RPC handlers: model list,
 // task list, transcript list, directory completion, path validation, and the
 // harness descriptor list.
@@ -662,6 +758,55 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
 		return appwire.HarnessListResponse{Data: launchHarnessDescriptors(cfg)}, nil
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfCommandList, func(context.Context, appwire.EmptyParams) (appwire.CommandListResponse, error) {
+		return hubCommandList(cfg)
+	})
+}
+
+// hubCommandList answers serf/command/list by loading every plugin a real
+// session would load — internal/plugins.Manager.EnabledPluginDirs (explicit
+// --plugin-dir-equivalent PluginDirs first, then every installed+enabled
+// registry entry) — and flattening their discovered slash commands into a
+// catalog. This used to mirror discoverPluginsForSettings's display-only scan
+// (web_settings.go, pluginDirsFromConfig: an immediate-subdirectory glob of
+// the plugin store) instead, which could never see a plugin installed via the
+// marketplace/registry system (living at cache/<marketplace>/<plugin>/<sha>,
+// not a direct child of the plugins root) — so a registry-installed plugin's
+// commands never appeared here even though a spawned session loaded them
+// fine. That was deliberate while P3 (slash-command execution, which owns
+// this method) needed to stay independent of P1 (the marketplace/registry
+// backend); now that the registry is the system of record on the hub side
+// (P5), this reads EnabledPluginDirs like session init does.
+//
+// Loading is fail-soft (plugin.LoadAllFailSoft), the same way session init
+// loads plugins: one broken or mid-edit plugin dir must not blank out the
+// whole command catalog, only its own commands. Skip reasons aren't
+// surfaced here — CommandListResponse has no warning channel — but a skipped
+// dir still shows up in a session's own SESSION_START warnings.
+func hubCommandList(cfg hubcore.WebConfig) (appwire.CommandListResponse, error) {
+	dirs := plugins.NewManager(cfg.PluginRoot).EnabledPluginDirs(cfg.PluginDirs)
+	if len(dirs) == 0 {
+		return appwire.CommandListResponse{}, nil
+	}
+	loaded, _ := plugin.LoadAllFailSoft(dirs)
+	var commands []appwire.CommandDescriptor
+	for _, lp := range loaded {
+		for _, cmd := range lp.Commands {
+			commands = append(commands, appwire.CommandDescriptor{
+				Name:         cmd.Name,
+				PluginName:   cmd.PluginName,
+				Description:  cmd.Description,
+				ArgumentHint: cmd.ArgumentHint,
+			})
+		}
+	}
+	sort.Slice(commands, func(i, j int) bool {
+		if commands[i].Name != commands[j].Name {
+			return commands[i].Name < commands[j].Name
+		}
+		return commands[i].PluginName < commands[j].PluginName
+	})
+	return appwire.CommandListResponse{Commands: commands}, nil
 }
 
 // notifyAuthUpdated broadcasts a serf/auth/updated notification to all connected clients.

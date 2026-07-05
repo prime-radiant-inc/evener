@@ -399,7 +399,25 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *hubModel) runHubSlashCommand(cmd, args string) tea.Cmd {
 	definition, ok := hubCommandByName(cmd)
-	if !ok || definition.Scopes&hubCommandSession == 0 {
+	if !ok {
+		// Not a built-in UI command (design §10): forward it to the session so
+		// the server-side expander (agent.expandSlashCommand) can resolve it
+		// against loaded plugin commands. Built-ins still win — this only
+		// runs when the static registry has no entry at all — and a plugin
+		// command that fails to resolve there just flows on as ordinary chat
+		// text instead of dead-ending here with "Unknown command".
+		ref, refOK := m.currentRef()
+		if !refOK {
+			m.addSessionSystem("Session ref is invalid.")
+			return nil
+		}
+		text := "/" + cmd
+		if args != "" {
+			text += " " + args
+		}
+		return sendHubInput(m.client, ref, text, text, nil)
+	}
+	if definition.Scopes&hubCommandSession == 0 {
 		m.addSessionSystem("Unknown command: /" + cmd + ". Type /help for available commands.")
 		return nil
 	}

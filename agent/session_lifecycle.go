@@ -759,6 +759,17 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		s.maybeAutoSave()
 	}()
 
+	// Slash-command interception (design §10, P3). Gated on EntryUserInput so
+	// only genuine user-typed text can invoke a plugin command: a queued
+	// follow-up is still EntryUserInput once the drain loop dequeues it (so it
+	// is expanded too), but a goal continuation/notification/watch-delivery's
+	// synthesized text never is.
+	if kind == EntryUserInput {
+		if expanded, ok := s.expandSlashCommand(ctx, input); ok {
+			input = expanded
+		}
+	}
+
 	// Derive a context that cancels when either the caller's ctx or the session ctx cancels.
 	ctx, cancel := context.WithCancel(ctx)
 	go func() {

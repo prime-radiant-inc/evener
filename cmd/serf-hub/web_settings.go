@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmd/serf-hub/internal/editorurl"
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubedge"
 	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/frontmatter"
@@ -327,8 +328,18 @@ func defaultMCPConfigPath() string {
 // the default plugins root into one entry per immediate subdirectory
 // containing a .claude-plugin/plugin.json manifest.
 func (s *WebServer) pluginsRootForSettings() []string {
-	if len(s.cfg.PluginDirs) > 0 {
-		return s.cfg.PluginDirs
+	return pluginDirsFromConfig(s.cfg)
+}
+
+// pluginDirsFromConfig is pluginsRootForSettings's config-only logic, factored
+// out of the WebServer method above so it can be unit-tested without
+// constructing a *WebServer. It backs only the Settings → Plugins pane's
+// display-only scan; serf/command/list (app_rpc.go's hubCommandList) instead
+// reads internal/plugins.Manager.EnabledPluginDirs, the same registry-aware
+// resolution a spawned session uses.
+func pluginDirsFromConfig(cfg hubcore.WebConfig) []string {
+	if len(cfg.PluginDirs) > 0 {
+		return cfg.PluginDirs
 	}
 	root := defaultPluginsRoot()
 	if root == "" {
@@ -354,17 +365,19 @@ func (s *WebServer) pluginsRootForSettings() []string {
 }
 
 // discoverPluginsForSettings loads plugin manifests for the Settings →
-// Plugins pane. A discovery failure returns nil rows plus a non-nil error
-// that the template renders inline.
+// Plugins pane. Loading is fail-soft (plugin.LoadAllFailSoft), the same way
+// hubCommandList and session init load plugins: one broken or mid-edit
+// plugin dir must not blank out the whole pane, only its own row. Skip
+// reasons aren't surfaced here — the return type has no warning channel —
+// but a skipped dir still shows up in a session's own SESSION_START
+// warnings. The error return is kept for the caller's existing signature;
+// it is now always nil.
 func (s *WebServer) discoverPluginsForSettings() ([]pluginDisplay, error) {
 	dirs := s.pluginsRootForSettings()
 	if len(dirs) == 0 {
 		return nil, nil
 	}
-	loaded, err := plugin.LoadAll(dirs)
-	if err != nil {
-		return nil, err
-	}
+	loaded, _ := plugin.LoadAllFailSoft(dirs)
 	out := make([]pluginDisplay, 0, len(loaded))
 	for _, lp := range loaded {
 		out = append(out, pluginDisplay{

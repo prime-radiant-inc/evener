@@ -30,6 +30,15 @@ func TestTopmostOverlayNameCredentials(t *testing.T) {
 	}
 }
 
+func TestTopmostOverlayNamePlugins(t *testing.T) {
+	m := newHubModel(nil, "")
+	panel := launchconfig.NewPluginsPanel()
+	m.pluginsPanel = &panel
+	if got := topmostOverlayName(m); got != "plugins" {
+		t.Errorf("expected plugins, got %q", got)
+	}
+}
+
 func TestTopmostOverlayNameFollowupTakesPrecedence(t *testing.T) {
 	m := newHubModel(nil, "")
 	m.credentialsPanel = newCredentialsPanelForTest()
@@ -102,5 +111,41 @@ func TestSlashRejectedWhenCredentialsOpen(t *testing.T) {
 	after := updated.(hubModel).commandPalette
 	if before == nil && after != nil {
 		t.Errorf("/ should be trapped while credentials panel open; command palette opened anyway")
+	}
+}
+
+func TestEscClosesPluginsOverlay(t *testing.T) {
+	m := newHubModel(nil, "")
+	panel := launchconfig.NewPluginsPanel()
+	m.pluginsPanel = &panel
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if updated.(hubModel).pluginsPanel != nil {
+		t.Errorf("esc should close the plugins panel")
+	}
+}
+
+func TestCtrlOEscapesPluginsOverlay(t *testing.T) {
+	m := newHubModel(nil, "")
+	panel := launchconfig.NewPluginsPanel()
+	m.pluginsPanel = &panel
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	finalM := updated.(hubModel)
+	if finalM.pluginsPanel != nil {
+		t.Errorf("ctrl+o should close the plugins panel")
+	}
+	if finalM.mode != hubModeDashboard {
+		t.Errorf("ctrl+o should return to dashboard; got mode %v", finalM.mode)
+	}
+}
+
+func TestCmdPRejectedWhenPluginsOpen(t *testing.T) {
+	m := newHubModel(nil, "")
+	panel := launchconfig.NewPluginsPanel()
+	m.pluginsPanel = &panel
+	before := m.commandPalette
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	after := updated.(hubModel).commandPalette
+	if before == nil && after != nil {
+		t.Errorf("ctrl+P should be trapped while plugins panel open; palette opened anyway")
 	}
 }

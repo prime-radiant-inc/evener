@@ -48,6 +48,7 @@ type runCLIFlags struct {
 	mcpServers                  stringSliceFlag
 	mcpConfigs                  stringSliceFlag
 	pluginDirs                  stringSliceFlag
+	noDefaultMarketplaces       *bool
 	systemPromptAsUser          *bool
 	openAIResponsesContinuation *string
 	cpuProfile                  *string
@@ -142,6 +143,7 @@ func main() {
 		mcpServers:                  []string(flags.mcpServers),
 		mcpConfigs:                  []string(flags.mcpConfigs),
 		pluginDirs:                  []string(flags.pluginDirs),
+		noDefaultMarketplaces:       *flags.noDefaultMarketplaces,
 		systemPromptAsUser:          *flags.systemPromptAsUser,
 		openAIResponsesContinuation: *flags.openAIResponsesContinuation,
 		stdout:                      os.Stdout,
@@ -188,6 +190,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	fs.Var(&flags.mcpServers, "mcp", "MCP server `spec` (repeatable, format: name:command args...)")
 	fs.Var(&flags.mcpConfigs, "mcp-config", "path to .mcp.json `file` (repeatable)")
 	fs.Var(&flags.pluginDirs, "plugin-dir", "plugin `directory` (repeatable)")
+	flags.noDefaultMarketplaces = fs.Bool("no-default-marketplaces", false, "do not seed the default plugin marketplaces on first run")
 	flags.systemPromptAsUser = fs.Bool("system-prompt-as-user", false, "deliver system prompt as first user message instead of system instructions")
 	flags.openAIResponsesContinuation = fs.String("openai-responses-continuation", "", "OpenAI Responses continuation `mode`: off|auto (default: off)")
 	flags.cpuProfile = fs.String("cpu-profile", "", "write CPU profile to this `file` path")
@@ -221,6 +224,7 @@ func printRunCommands(w io.Writer) {
 	_, _ = fmt.Fprintf(tw, "  serve\tRun the serf HTTP/RPC server\n")
 	_, _ = fmt.Fprintf(tw, "  launch-check\tValidate launch contract for a provider/model\n")
 	_, _ = fmt.Fprintf(tw, "  upgrade\tUpgrade installed Serf binaries\n")
+	_, _ = fmt.Fprintf(tw, "  plugin\tManage plugin marketplaces and plugins\n")
 	_ = tw.Flush()
 }
 
@@ -275,6 +279,8 @@ func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer
 		return true, "serf openai", runOpenAI(args[1:], stdin, stdout, stderr)
 	case "upgrade":
 		return true, "serf upgrade", runUpgrade(args[1:], stdout, stderr)
+	case "plugin":
+		return true, "serf plugin", runPlugin(args[1:], stdin, stdout, stderr)
 	default:
 		return false, "", nil
 	}

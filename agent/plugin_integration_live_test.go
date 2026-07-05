@@ -151,7 +151,9 @@ echo '{"decision":"approve"}'
 	}`, mcpServerPath)
 	writeFile(t, dir, ".mcp.json", mcpJSON)
 
-	// commands/greet.md (ignored by serf, but should not cause errors)
+	// commands/greet.md — a real Claude Code-shaped command file with no
+	// "name" field (the filename is authoritative; see agent/plugin/commands.go).
+	// Discovered as live-test:greet since P3; must not cause a load error.
 	mkdir(t, dir, "commands")
 	writeFile(t, dir, "commands/greet.md", `---
 description: Greets the user

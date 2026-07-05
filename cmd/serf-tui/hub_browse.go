@@ -53,6 +53,7 @@ func (m *hubModel) returnToDashboard() {
 	m.spawnModelPicker = nil
 	m.credentialsPanel = nil
 	m.launchSettingsPanel = nil
+	m.pluginsPanel = nil
 	m.followupModal = nil
 	m.launchOverridesModal = nil
 	// ctrl+o must not leave a live focus trap armed for the next session
