@@ -536,6 +536,12 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
   grid-template-columns: 10px 1fr;
   gap: var(--space-3);
   padding: 5px var(--space-4);
+  /* Density floor (Task 24 WS3): >=32px row height at desktop. The mobile
+     media query below (max-width: 767px) sets a bigger 52px min-height that
+     must keep winning on narrow viewports — same specificity, later in the
+     cascade, so this desktop default must stay merged into the base rule
+     rather than appended as a separate unconditional rule that would win. */
+  min-height: 32px;
   border-left: 2px solid transparent;
   color: var(--text);
   text-decoration: none;
@@ -549,7 +555,9 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
   font-family: var(--font-sans);
   font-size: var(--text-base);
   color: var(--text);
-  line-height: 1.35;
+  /* Density floor (Task 24 WS3): use the leading-tight token (1.3) instead
+     of a hardcoded 1.35. */
+  line-height: var(--leading-tight);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -559,7 +567,10 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
 .sb-row .meta {
   margin-top: 2px;
   font-family: var(--font-mono);
-  font-size: var(--text-2xs);
+  /* Density floor (Task 24 WS3): 11px minimum readable size — --text-2xs
+     (10px) was below the floor. Pairs with --text-muted below, which is
+     >=4.5:1 on the sidebar --bg in both themes (verified, see commit). */
+  font-size: var(--text-xs);
   color: var(--text-muted);
   letter-spacing: 0.02em;
   line-height: 1.2;
@@ -631,9 +642,14 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
 .status-dot.subagent { background: var(--state-subagent); }
 .status-dot.rollup { margin-left: auto; }
 
-/* Project header glyphs: chevron + folder. Click target is the chevron;
-   the count and rollup dot are passive (no toggle on click). */
-.project-header { cursor: default; }
+/* Project header: the whole row is the toggle target — sidebar.js wires
+   click on the header div itself, and its buttons (menu, etc.) call
+   stopPropagation so they don't also trigger the toggle. Density floor
+   (Task 24 WS3): >=32px row height, pointer cursor marks the click target.
+   Kept as a plain .project-header rule (not .sb-tree-scoped) so its
+   specificity matches the mobile media-query override below, which must
+   keep winning on narrow viewports (52px there). */
+.project-header { cursor: pointer; min-height: 32px; }
 .project-chevron {
   display: inline-block;
   width: 12px;
@@ -5040,3 +5056,16 @@ body.doc-page {
 .sb-menu-item { display: block; width: 100%; text-align: left; padding: var(--space-2) var(--space-3); background: transparent; border: none; color: var(--text); font-size: var(--text-sm); min-height: 24px; }
 .sb-menu-item:hover, .sb-menu-item:focus { background: var(--surface-secondary); }
 .sb-rename-input { width: 100%; font-size: var(--text-base); background: var(--bg); color: var(--text); border: 1px solid var(--accent); border-radius: var(--radius-md); }
+
+/* Sidebar readability floor (design diagnostic WS3, Task 24): row meta on
+   a >=4.5:1 pairing (--text-muted), never --text-dim below 12px; >=24px hit
+   boxes on subagent rows/toggle and desktop pointer controls. (The 11px
+   floor + row meta + project-header density/cursor rules for this same
+   pass are merged directly into the existing .sb-row / .sb-row .meta /
+   .project-header rules above, rather than duplicated here, since those
+   selectors already existed from Tasks 21/23.) */
+.sb-tree .project-header .sb-menu-btn, .sb-tree .project-header button { min-width: 24px; min-height: 24px; }
+.subagent-row, .subagent-toggle { min-height: 24px; }
+@media (min-width: 768px) {
+  .sb-row [role="button"], .sb-menu-btn { min-height: 24px; min-width: 24px; }
+}
