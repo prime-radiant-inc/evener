@@ -119,3 +119,55 @@ func TestRepairArgs_Coerce_NonNumericStringUntouched(t *testing.T) {
 		}
 	}
 }
+
+func openParams() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": true,
+		"properties":           map[string]any{"file_path": map[string]any{"type": "string"}},
+	}
+}
+
+func TestRepairArgs_DropUnknown_OnlyWhenClosed(t *testing.T) {
+	out, changes := RepairArgs(readFileParams(), map[string]any{"file_path": "/x", "matchCase": true})
+	if _, ok := out["matchCase"]; ok {
+		t.Fatalf("matchCase not dropped: %v", out)
+	}
+	if len(changes) != 1 || changes[0].Kind != ChangeDropUnknown || changes[0].Field != "matchCase" {
+		t.Fatalf("changes = %+v", changes)
+	}
+}
+
+func TestRepairArgs_DropUnknown_KeptWhenOpen(t *testing.T) {
+	out, changes := RepairArgs(openParams(), map[string]any{"file_path": "/x", "extra": 1})
+	if _, ok := out["extra"]; !ok {
+		t.Fatal("extra dropped despite additionalProperties:true")
+	}
+	for _, c := range changes {
+		if c.Kind == ChangeDropUnknown {
+			t.Fatalf("unexpected drop: %+v", c)
+		}
+	}
+}
+
+func TestRepairArgs_Order_AliasBeforeDrop(t *testing.T) {
+	// old_str should be aliased to old_string, NOT dropped as unknown.
+	editParams := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"file_path":  map[string]any{"type": "string"},
+			"old_string": map[string]any{"type": "string"},
+			"new_string": map[string]any{"type": "string"},
+		},
+	}
+	out, changes := RepairArgs(editParams, map[string]any{"file_path": "/x", "old_str": "a", "new_string": "b"})
+	if out["old_string"] != "a" {
+		t.Fatalf("old_str not aliased: %v", out)
+	}
+	for _, c := range changes {
+		if c.Kind == ChangeDropUnknown {
+			t.Fatalf("old_str was dropped instead of aliased: %+v", c)
+		}
+	}
+}

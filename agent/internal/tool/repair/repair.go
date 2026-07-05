@@ -51,6 +51,7 @@ func RepairArgs(params, args map[string]any) (map[string]any, []Change) {
 	var changes []Change
 	changes = append(changes, applyAliases(params, out)...)
 	changes = append(changes, applyCoercions(params, out)...)
+	changes = append(changes, dropUnknown(params, out)...)
 	return out, changes
 }
 
@@ -138,6 +139,24 @@ func applyCoercions(params, args map[string]any) []Change {
 			args[key] = []any{raw}
 			changes = append(changes, Change{Kind: ChangeCoerceType, Field: key, Detail: "scalar→[scalar]"})
 		}
+	}
+	return changes
+}
+
+// dropUnknown removes keys matching no declared property, but only when the
+// schema forbids extra properties. It runs last so aliased/coerced keys survive.
+func dropUnknown(params, args map[string]any) []Change {
+	if !additionalPropsFalse(params) {
+		return nil
+	}
+	props := schemaProps(params)
+	var changes []Change
+	for key := range args {
+		if _, ok := props[key]; ok {
+			continue
+		}
+		delete(args, key)
+		changes = append(changes, Change{Kind: ChangeDropUnknown, Field: key, Detail: "dropped " + key})
 	}
 	return changes
 }
