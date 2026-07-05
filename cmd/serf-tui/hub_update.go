@@ -557,6 +557,28 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleLaunchSetLayerResult(msg)
 	case launchconfig.LaunchLayerResultMsg, launchconfig.LaunchResolveResultMsg, launchconfig.LaunchTrustResultMsg, launchconfig.LaunchSchemaResultMsg:
 		return m.handleLaunchResult(msg)
+	case launchconfig.MarketplaceListResultMsg:
+		return m.handleMarketplaceListResult(msg)
+	case launchconfig.MarketplaceMutateResultMsg:
+		return m.handleMarketplaceMutateResult(msg)
+	case launchconfig.MarketplaceBrowseResultMsg:
+		return m.handleMarketplaceBrowseResult(msg)
+	case launchconfig.MarketplaceAddSubmitMsg:
+		return m.handleMarketplaceAddSubmit(msg)
+	case launchconfig.MarketplaceRemoveMsg:
+		return m.handleMarketplaceRemove(msg)
+	case launchconfig.MarketplaceRefreshMsg:
+		return m.handleMarketplaceRefresh(msg)
+	case launchconfig.MarketplaceBrowseRequestMsg:
+		return m.handleMarketplaceBrowseRequest(msg)
+	case launchconfig.PluginListResultMsg:
+		return m.handlePluginListResult(msg)
+	case launchconfig.PluginMutateResultMsg:
+		return m.handlePluginMutateResult(msg)
+	case launchconfig.PluginActionMsg:
+		return m.handlePluginAction(msg)
+	case launchconfig.PluginSetAutoUpgradeMsg:
+		return m.handlePluginSetAutoUpgrade(msg)
 	}
 	return m, nil
 }

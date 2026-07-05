@@ -25,6 +25,11 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			return m.launchSettingsPanel.InitialCmd()
 		}
 		return nil
+	case appwire.NotifySerfMarketplaceUpdated, appwire.NotifySerfPluginUpdated:
+		if m.pluginsPanel != nil && m.client != nil {
+			return m.refreshPluginsPanel()
+		}
+		return nil
 	}
 
 	if m.mode != hubModeSession {
@@ -204,6 +209,20 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		reconcilePendingFromNotification(m.pending, notification)
 	}
 	return cmd
+}
+
+// refreshPluginsPanel re-fetches the plugins panel's marketplace and plugin
+// lists — and, if a catalog is open, that marketplace's browse results — after
+// a serf/marketplace/updated or serf/plugin/updated notification. Either list
+// can affect the other's rendering (Browse's install badge only reflects
+// reality when the Installed list is current, and an auto-upgrade daemon pass
+// or another client's mutation can change either at any time).
+func (m *hubModel) refreshPluginsPanel() tea.Cmd {
+	cmds := []tea.Cmd{launchconfig.CmdMarketplaceList(m.client), launchconfig.CmdPluginList(m.client)}
+	if name := m.pluginsPanel.BrowseMarketplace(); name != "" {
+		cmds = append(cmds, launchconfig.CmdMarketplaceBrowse(m.client, name))
+	}
+	return tea.Batch(cmds...)
 }
 
 // reconcilePendingFromNotification translates an inbound daemon
