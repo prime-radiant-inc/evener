@@ -500,6 +500,63 @@ func TestRunPluginDirsPassthrough(t *testing.T) {
 	}
 }
 
+// TestRun_SlashCommandExpansion verifies headless `serf /name args` (design
+// §10's "the server-side expander also runs for headless serf /name args"):
+// a plugin command loaded via --plugin-dir is expanded before it reaches the
+// model, not sent to the model as the literal "/greet the-world" text. The
+// scripted step inspects the actual request it receives and only answers
+// PONG when it sees the expanded body, so a regression that drops the
+// interception (or a future change to processOneInput that reorders it after
+// something that consumes the raw input) fails this test rather than passing
+// vacuously.
+func TestRun_SlashCommandExpansion(t *testing.T) {
+	pluginDir := t.TempDir()
+	metaDir := filepath.Join(pluginDir, ".claude-plugin")
+	if err := os.MkdirAll(metaDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(metaDir, "plugin.json"), []byte(`{"name": "cmd-probe"}`), 0644); err != nil {
+		t.Fatalf("write plugin.json: %v", err)
+	}
+	commandsDir := filepath.Join(pluginDir, "commands")
+	if err := os.MkdirAll(commandsDir, 0755); err != nil {
+		t.Fatalf("mkdir commands: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(commandsDir, "greet.md"),
+		[]byte("---\ndescription: greet someone\n---\nSay hello to $ARGUMENTS"), 0644); err != nil {
+		t.Fatalf("write command: %v", err)
+	}
+
+	installRunScriptedProvider(t, &scriptedProvider{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				last := req.Messages[len(req.Messages)-1].Text()
+				if !strings.Contains(last, "Say hello to the-world") {
+					return scriptedCommunicate("FAIL: model saw " + last)
+				}
+				return scriptedCommunicate("PONG")
+			},
+		},
+	})
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), runConfig{
+		prompt:     "/greet the-world",
+		model:      "openai/gpt-test",
+		workDir:    t.TempDir(),
+		pluginDirs: []string{pluginDir},
+		stdout:     &stdout,
+		stderr:     &stderr,
+	})
+	if err != nil {
+		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "PONG") {
+		t.Fatalf("expected PONG (slash command expanded before reaching the model), got: %q\nstderr: %s", stdout.String(), stderr.String())
+	}
+}
+
 func TestDrainEventsHuman_PluginEvents(t *testing.T) {
 	ch := make(chan events.SessionEvent, 3)
 	ch <- events.SessionEvent{Kind: events.EventPluginLoaded, Data: events.PluginLoadedData{

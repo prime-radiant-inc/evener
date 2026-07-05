@@ -65,6 +65,7 @@ const (
 	MethodSerfPluginEnable          = "serf/plugin/enable"
 	MethodSerfPluginDisable         = "serf/plugin/disable"
 	MethodSerfPluginSetAutoUpgrade  = "serf/plugin/setAutoUpgrade"
+	MethodSerfCommandList           = "serf/command/list"
 )
 
 const (
@@ -921,6 +922,21 @@ type InstanceRemoveParams struct {
 // InstanceSetDefaultParams is the params for serf/instance/setDefault.
 type InstanceSetDefaultParams struct {
 	Name string `json:"name"`
+}
+
+// CommandDescriptor describes one plugin-provided slash command for catalog
+// display / autocomplete (serf/command/list). Name is unqualified; PluginName
+// disambiguates when more than one plugin defines the same command name.
+type CommandDescriptor struct {
+	Name         string `json:"name"`
+	PluginName   string `json:"pluginName"`
+	Description  string `json:"description,omitempty"`
+	ArgumentHint string `json:"argumentHint,omitempty"`
+}
+
+// CommandListResponse is the result of serf/command/list.
+type CommandListResponse struct {
+	Commands []CommandDescriptor `json:"commands"`
 }
 
 // LaunchConfigLayer is the wire-level partial layer (every field optional;

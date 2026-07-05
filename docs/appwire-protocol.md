@@ -144,6 +144,7 @@ no router (reserved).
 | `serf/plugin/enable` | hub | `PluginRefParams` | `PluginListResponse` | Enables an installed plugin; returns the updated list. |
 | `serf/plugin/disable` | hub | `PluginRefParams` | `PluginListResponse` | Disables an installed plugin; returns the updated list. |
 | `serf/plugin/setAutoUpgrade` | hub | `PluginSetAutoUpgradeParams` | `PluginListResponse` | Sets an installed plugin's auto-upgrade flag; returns the updated list. |
+| `serf/command/list` | hub | `EmptyParams` | `CommandListResponse` | Lists loaded plugin slash commands (name, plugin, description) for catalog/autocomplete display. |
 
 ## Notifications (server → client)
 
@@ -324,6 +325,13 @@ An embedded type contributes its own fields inline.
 | `needsRefresh` | `bool` | yes |  |
 | `needsLogin` | `bool` | yes |  |
 | `error` | `string` | yes |  |
+
+
+### `CommandListResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `commands` | `[]appwire.CommandDescriptor` |  |  |
 
 
 ### `DirsCompleteParams`

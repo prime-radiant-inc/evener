@@ -3656,31 +3656,25 @@ func TestHubModelDashboardPaletteCanSearchOtherSessions(t *testing.T) {
 	}
 }
 
-func TestHubModelSearchCommandIsNotASessionCommand(t *testing.T) {
+// TestHubModelDashboardOnlyCommandIsNotASessionCommand proves built-ins still
+// win (design §10): "/new" is a real registered command, but its scope is
+// dashboard-only, so typed in a session it must still dead-end with "Unknown
+// command" rather than being forwarded to the session as a plugin-command
+// candidate — only a name absent from hubCommandRegistry altogether forwards
+// (see TestHubModelUnrecognizedSlashCommandForwardsToSession).
+func TestHubModelDashboardOnlyCommandIsNotASessionCommand(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.detail.Project = "serf"
-	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
-		Key: "serf", Name: "serf",
-		Sessions: []hubTreeNode{
-			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live scoring", State: "idle", Project: "serf", Live: true},
-			{Ref: "local:01PAST", SessionID: "01PAST", Title: "past renderer", State: "ended", Project: "serf", Live: false},
-		},
-	}}}
-	m.rows = buildDashboardRows(m.tree)
 	m.session.setInputValue("keep this draft")
 
-	cmd := m.runHubSlashCommand("search", "")
+	cmd := m.runHubSlashCommand("new", "")
 	if cmd != nil {
-		t.Fatal("/search should not run an async session command")
-	}
-	if m.commandPalette != nil {
-		t.Fatal("/search should not open cross-session search from a session")
+		t.Fatal("/new should not run an async session command")
 	}
 	if got := m.session.input.Value(); got != "keep this draft" {
-		t.Fatalf("/search should not replace composer draft, got %q", got)
+		t.Fatalf("/new should not replace composer draft, got %q", got)
 	}
-	if got := m.sessionView(); !strings.Contains(got, "Unknown command: /search") {
-		t.Fatalf("/search should not be advertised as a session command:\n%s", got)
+	if got := m.sessionView(); !strings.Contains(got, "Unknown command: /new") {
+		t.Fatalf("/new should not be advertised as a session command:\n%s", got)
 	}
 }
 
@@ -3907,19 +3901,85 @@ func TestHubModelCtrlCQuitsOutsideSessionButArmsQuitInSession(t *testing.T) {
 	}
 }
 
-func TestHubModelUnknownSlashCommandIncludesHelpHint(t *testing.T) {
+// TestHubModelUnrecognizedSlashCommandForwardsToSession proves the design §10
+// dispatch change: a slash word absent from hubCommandRegistry altogether
+// (not a mistyped built-in, a genuinely unknown name — the shape of a
+// plugin-provided command name the static registry can't know about) is
+// forwarded to the session as turn input instead of dead-ending with "Unknown
+// command" client-side. The session-side expander decides whether it
+// actually resolves to a loaded plugin command; the TUI's only job is to stop
+// swallowing it.
+func TestHubModelUnrecognizedSlashCommandForwardsToSession(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.session.setInputValue("/wat")
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd != nil {
-		t.Fatal("unknown command should not need an async command")
+	if cmd == nil {
+		t.Fatal("an unrecognized command should forward to the session as turn input, not dead-end with nil")
 	}
 	got := updated.(hubModel).View()
-	for _, want := range []string{"Unknown command: /wat", "/help"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("unknown command output missing %q:\n%s", want, got)
-		}
+	if strings.Contains(got, "Unknown command: /wat") {
+		t.Fatalf("unrecognized command should no longer be advertised as unknown client-side:\n%s", got)
+	}
+}
+
+// TestHubModelUnrecognizedSlashCommandForwardsExactText pins the exact wire
+// call the forwarding path makes: turn/start with the literal "/name args"
+// text, against a real (fake-server) appwire client — not just "some command
+// was returned" (the test above), but that it is genuinely a turn/start
+// carrying "/greet world" verbatim, matching design §10's
+// sendHubInput(m.client, ref, "/"+cmd+" "+args, ...).
+func TestHubModelUnrecognizedSlashCommandForwardsExactText(t *testing.T) {
+	var got appwire.TurnStartParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+			got = params
+			return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.session.setInputValue("/greet world")
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected a forwarding command")
+	}
+	msg, ok := cmd().(hubSendMsg)
+	if !ok || msg.err != nil {
+		t.Fatalf("cmd() = %#v, err=%v", msg, msg.err)
+	}
+	if len(got.Input) != 1 || got.Input[0].Text != "/greet world" {
+		t.Fatalf("turn/start Input = %+v, want a single text item %q", got.Input, "/greet world")
+	}
+}
+
+// TestHubModelUnrecognizedSlashCommandForwardsExactText_NoArgs is the
+// arg-less companion to the test above (finding #5): an unrecognized command
+// typed with no arguments, e.g. "/wat", must forward as the bare "/wat" —
+// not "/wat " with a trailing space from unconditionally appending " "+args.
+func TestHubModelUnrecognizedSlashCommandForwardsExactText_NoArgs(t *testing.T) {
+	var got appwire.TurnStartParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+			got = params
+			return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.session.setInputValue("/wat")
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected a forwarding command")
+	}
+	msg, ok := cmd().(hubSendMsg)
+	if !ok || msg.err != nil {
+		t.Fatalf("cmd() = %#v, err=%v", msg, msg.err)
+	}
+	if len(got.Input) != 1 || got.Input[0].Text != "/wat" {
+		t.Fatalf("turn/start Input = %+v, want a single text item %q (no trailing space)", got.Input, "/wat")
 	}
 }
 

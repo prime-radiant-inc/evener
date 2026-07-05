@@ -142,6 +142,7 @@ var Methods = []MethodSpec{
 	{MethodSerfPluginEnable, PluginRefParams{}, PluginListResponse{}, ScopeHub, "Enables an installed plugin; returns the updated list."},
 	{MethodSerfPluginDisable, PluginRefParams{}, PluginListResponse{}, ScopeHub, "Disables an installed plugin; returns the updated list."},
 	{MethodSerfPluginSetAutoUpgrade, PluginSetAutoUpgradeParams{}, PluginListResponse{}, ScopeHub, "Sets an installed plugin's auto-upgrade flag; returns the updated list."},
+	{MethodSerfCommandList, EmptyParams{}, CommandListResponse{}, ScopeHub, "Lists loaded plugin slash commands (name, plugin, description) for catalog/autocomplete display."},
 }
 
 // Notifications is the AppWire server→client notification catalog. A nil

@@ -561,6 +561,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// Extract embedded skills to a temp dir as the base layer.
 	// Filesystem-discovered skills (project + extraDirs) shadow embedded ones.
 	s.skills = make(map[string]skill.SkillMeta)
+	s.pluginCommands = make(map[string]plugin.Command)
 	if dir, err := skill.ExtractEmbeddedSkills(); err == nil {
 		s.embeddedSkillsDir = dir
 		// Scan extracted dir directly (skill subdirs are immediate children).
@@ -701,10 +702,7 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 		return nil
 	}
 
-	plugins, err := plugin.LoadAll(s.cfg.PluginDirs)
-	if err != nil {
-		return err
-	}
+	plugins := s.loadPluginsFailSoft(s.cfg.PluginDirs)
 
 	s.plugins = plugins
 
@@ -718,6 +716,10 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 		for rawKey, agent := range p.Agents {
 			allAgents[exposedAgentCatalogKey(p, rawKey, agent)] = agent
 		}
+		for name, cmd := range p.Commands {
+			s.pluginCommands[name] = cmd
+		}
+		s.pendingHookWarnings = append(s.pendingHookWarnings, commandUnenforcedFieldWarnings(p)...)
 		for event, eventHooks := range p.Hooks {
 			runner.Add(event, eventHooks...)
 		}
@@ -818,6 +820,35 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 	}
 	s.runSessionStartHooks(sessionStartKind)
 	return nil
+}
+
+// loadPluginsFailSoft loads each plugin directory independently so one broken
+// or duplicate-named plugin cannot brick session initialization. This matters
+// beyond the CLI's own pre-validation (internal/plugins.Manager.
+// EnabledPluginDirs, which dry-run validates and dedups the registry-enabled
+// dirs before they ever reach here): resume replays a PluginDirs list
+// persisted in the session's ConfigSnapshot, which can name a plugin that was
+// edited, broken, or uninstalled since the session started, bypassing that
+// CLI-side gate entirely. plugin.LoadAll itself is fail-hard (aborts on the
+// first bad or duplicate-named dir) by design for direct/explicit callers, so
+// this instead calls the shared plugin.LoadAllFailSoft and turns each skip
+// into a queued warning (delivered through the normal SESSION_START warning
+// stream, see emitSessionStartEnvelope) instead of aborting.
+func (s *Session) loadPluginsFailSoft(dirs []string) []plugin.Instance {
+	plugins, skipped := plugin.LoadAllFailSoft(dirs)
+	for _, sk := range skipped {
+		title := "broken plugin skipped"
+		if sk.Name != "" {
+			title = "duplicate plugin skipped"
+		}
+		s.pendingHookWarnings = append(s.pendingHookWarnings, events.WarningData{
+			Source:     "plugin",
+			Title:      title,
+			Message:    sk.Reason,
+			PluginName: sk.Name,
+		})
+	}
+	return plugins
 }
 
 // Pending resume SessionStart hook state has two valid paths:
@@ -1143,6 +1174,42 @@ func unsupportedHandlerTypeWarning(pluginName, event, handlerType string) string
 	return fmt.Sprintf(
 		"plugin %q declares a %q-type handler for %s, which is a reserved/unsupported handler type (serf runs only \"command\" and \"prompt\"); this handler will not run",
 		pluginName, shown, event)
+}
+
+// commandUnenforcedFieldWarnings builds one diagnostic per plugin command that
+// declares a model or allowed-tools override in its frontmatter. Neither seam
+// exists yet (design §14): both fields are parsed and stored on plugin.Command,
+// but the expander does not enforce them, so a command naming them still runs
+// with the session's default model and full tool access. Warned once per
+// command at load time, not per invocation.
+func commandUnenforcedFieldWarnings(p plugin.Instance) []events.WarningData {
+	names := make([]string, 0, len(p.Commands))
+	for name := range p.Commands {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var out []events.WarningData
+	for _, name := range names {
+		cmd := p.Commands[name]
+		var fields []string
+		if cmd.Model != "" {
+			fields = append(fields, "a model override")
+		}
+		if len(cmd.AllowedTools) > 0 {
+			fields = append(fields, "an allowed-tools restriction")
+		}
+		if len(fields) == 0 {
+			continue
+		}
+		out = append(out, events.WarningData{
+			Source:     "plugin",
+			Title:      "unenforced command override",
+			Message:    fmt.Sprintf("plugin %q command %q declares %s, which serf does not yet enforce per-turn; it runs with the session's default model and tools", p.Manifest.Name, cmd.Name, strings.Join(fields, " and ")),
+			PluginName: p.Manifest.Name,
+		})
+	}
+	return out
 }
 
 // initMCP discovers and connects to MCP servers if configured.

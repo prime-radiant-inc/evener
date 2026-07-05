@@ -363,6 +363,51 @@ func TestLoadPlugins_Empty(t *testing.T) {
 	}
 }
 
+// --- LoadAllFailSoft (finding #4: a broken/duplicate dir must not brick the
+// whole batch for callers like session init and the hub's command catalog) ---
+
+func TestLoadAllFailSoft_BrokenDirSkippedAlongsideHealthy(t *testing.T) {
+	brokenDir := t.TempDir() // no .claude-plugin/plugin.json at all: Load fails.
+	healthyDir := makePluginDir(t, "healthy-plugin")
+
+	plugins, skipped := LoadAllFailSoft([]string{brokenDir, healthyDir})
+	if len(plugins) != 1 || plugins[0].Manifest.Name != "healthy-plugin" {
+		t.Fatalf("plugins = %+v, want only healthy-plugin loaded despite the broken dir", plugins)
+	}
+	if len(skipped) != 1 || skipped[0].Dir != brokenDir || skipped[0].Name != "" {
+		t.Fatalf("skipped = %+v, want one entry naming %q with no manifest name", skipped, brokenDir)
+	}
+	if !strings.Contains(skipped[0].Reason, brokenDir) {
+		t.Errorf("Reason = %q, want it to mention the broken dir", skipped[0].Reason)
+	}
+}
+
+func TestLoadAllFailSoft_DuplicateNameSkipped(t *testing.T) {
+	dir1 := makePluginDir(t, "same-name")
+	dir2 := makePluginDir(t, "same-name")
+
+	plugins, skipped := LoadAllFailSoft([]string{dir1, dir2})
+	if len(plugins) != 1 || plugins[0].Dir != dir1 {
+		t.Fatalf("plugins = %+v, want only the first same-name dir loaded", plugins)
+	}
+	if len(skipped) != 1 || skipped[0].Name != "same-name" || skipped[0].Dir != dir2 {
+		t.Fatalf("skipped = %+v, want the second dir skipped as a duplicate of %q", skipped, "same-name")
+	}
+}
+
+func TestLoadAllFailSoft_AllHealthyNoneSkipped(t *testing.T) {
+	dir1 := makePluginDir(t, "plugin-a")
+	dir2 := makePluginDir(t, "plugin-b")
+
+	plugins, skipped := LoadAllFailSoft([]string{dir1, dir2})
+	if len(plugins) != 2 {
+		t.Fatalf("got %d plugins, want 2", len(plugins))
+	}
+	if len(skipped) != 0 {
+		t.Fatalf("skipped = %+v, want none", skipped)
+	}
+}
+
 func TestResolveComponentDirs_DefaultOnly(t *testing.T) {
 	dir := t.TempDir()
 	dir, _ = filepath.EvalSymlinks(dir)
