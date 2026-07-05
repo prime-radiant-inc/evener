@@ -58,6 +58,8 @@ func TestRenderHubSessionStatusRendersDiagnosticsSections(t *testing.T) {
 			},
 			MCP: []appwire.SerfMCPServerInfo{
 				{Name: "linear", Tools: []string{"linear_create"}},
+				{Name: "slack", Tools: []string{"slack_post"}, Status: "connected"},
+				{Name: "github", Tools: []string{"repo_search"}, Status: "degraded", Error: "connection refused"},
 			},
 			Skills: []appwire.SerfSkillInfo{
 				{Name: "writing-plans", Description: "Build implementation plans"},
@@ -87,8 +89,11 @@ func TestRenderHubSessionStatusRendersDiagnosticsSections(t *testing.T) {
 		"linear_create",
 		"Custom:",
 		"custom_thing",
-		"MCP Servers (1):",
+		"MCP Servers (3):",
 		"linear (1 tools)",
+		"slack (1 tools) — connected",
+		"github (1 tools) — degraded",
+		"last error: connection refused",
 		"Skills (1):",
 		"writing-plans",
 		"Plugins (1):",
@@ -105,6 +110,11 @@ func TestRenderHubSessionStatusRendersDiagnosticsSections(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("rich status missing %q:\n%s", want, got)
 		}
+	}
+	// linear reports no Status (older-daemon shape): guard against a
+	// dangling em-dash suffix when Status is empty.
+	if strings.Contains(got, "linear (1 tools) —") {
+		t.Fatalf("status should omit dash suffix for server with empty Status:\n%s", got)
 	}
 }
 
