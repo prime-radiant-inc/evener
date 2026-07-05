@@ -89,7 +89,7 @@ func main() {
 // each exported package-level declaration that lacks a doc comment.
 func checkPackage(dir string) ([]violation, error) {
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, dir, func(fi os.FileInfo) bool {
+	pkgs, err := parser.ParseDir(fset, dir, func(fi os.FileInfo) bool { //nolint:staticcheck // parser.ParseDir is adequate for docscheck; build tags not relevant here. go/packages migration tracked separately.
 		return !strings.HasSuffix(fi.Name(), "_test.go")
 	}, parser.ParseComments)
 	if err != nil {

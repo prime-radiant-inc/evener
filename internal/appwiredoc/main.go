@@ -97,7 +97,7 @@ func build() docData {
 		if t == nil {
 			return "(inline)"
 		}
-		for t.Kind() == reflect.Ptr {
+		for t.Kind() == reflect.Pointer {
 			t = t.Elem()
 		}
 		name := t.Name()

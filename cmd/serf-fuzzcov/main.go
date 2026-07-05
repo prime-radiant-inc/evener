@@ -697,7 +697,7 @@ func writeFloors(p string, results []result, old map[string]float64) error {
 	sb.WriteString("# A target's focus-set coverage may never drop below its floor (serf-fuzzcov --check).\n")
 	sb.WriteString("# Raised upward only, by `make fuzz-coverage CHECK=1` with --bless; never edit downward.\n")
 	for _, n := range names {
-		sb.WriteString(fmt.Sprintf("%s %.1f\n", n, raised[n]))
+		fmt.Fprintf(&sb, "%s %.1f\n", n, raised[n])
 	}
 	return os.WriteFile(p, []byte(sb.String()), 0o644)
 }

@@ -28,7 +28,7 @@ func requestFullText(req llm.Request) string {
 				b.WriteByte('\n')
 			}
 			if p.ToolResult != nil {
-				b.WriteString(fmt.Sprint(p.ToolResult.Content))
+				fmt.Fprint(&b, p.ToolResult.Content)
 				b.WriteByte('\n')
 			}
 		}
