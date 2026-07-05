@@ -176,3 +176,25 @@ func TestPluginInstall_RequiresConfirmation(t *testing.T) {
 		t.Fatal("install without --yes should require confirmation")
 	}
 }
+
+func TestPluginGc_NothingToRemove(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var out, errb bytes.Buffer
+	if err := runPlugin([]string{"gc"}, nil, &out, &errb); err != nil {
+		t.Fatalf("runPlugin gc: %v\n%s", err, errb.String())
+	}
+	if !strings.Contains(out.String(), "Nothing to remove") {
+		t.Fatalf("expected 'Nothing to remove', got %q", out.String())
+	}
+}
+
+func TestPluginGc_JSON(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var out, errb bytes.Buffer
+	if err := runPlugin([]string{"gc", "--json"}, nil, &out, &errb); err != nil {
+		t.Fatalf("runPlugin gc --json: %v\n%s", err, errb.String())
+	}
+	if strings.TrimSpace(out.String()) == "" {
+		t.Fatal("expected JSON output for gc --json")
+	}
+}
