@@ -40,6 +40,9 @@ pass(/viewport-fit=cover/.test(appHtml), "viewport must be viewport-fit=cover fo
     <main id="workspace"></main>
   </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true, url: "http://localhost/" });
   const { window } = dom;
+  window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({ needs_you: [], favorites: [], projects: [], archived_projects: [], test_runs: [], attentionSummary: { needsYou: 0, error: 0, working: 0 } }) });
+  window.htmx = { process() {} };
+  window.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
   window.eval(sidebarSrc);
   window.document.dispatchEvent(new window.Event("DOMContentLoaded", { bubbles: true }));
   await wait();

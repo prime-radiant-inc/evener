@@ -29,6 +29,7 @@
     a.setAttribute("data-row-id", n.row_id);
     a.setAttribute("data-state", n.state);
     a.setAttribute("data-ref", n.ref);
+    if (n.__projectKey) a.setAttribute("data-project-key-of", n.__projectKey);
     a.setAttribute("href", "/s/" + n.session_id);
     a.setAttribute("hx-get", "/_partials/s/" + n.session_id + "/workspace");
     a.setAttribute("hx-target", "#workspace");
@@ -190,6 +191,7 @@
   // --- Full tree render ------------------------------------------------------
   function renderTree(tree) {
     model.tree = tree;
+    restoreExpanded(tree);
     var el = sidebarEl();
     if (!el) return;
     var root = el.querySelector(".sb-tree");
@@ -215,7 +217,7 @@
     // Project header is itself a keyed element (data-row-id="header:<key>").
     out.push({ row_id: "header:" + p.key, __project: p });
     var expanded = model.expanded.has(p.key) || p.default_expanded;
-    if (expanded) (p.sessions || []).forEach(function (n) { if (!n.__drop) out.push(n); });
+    if (expanded) (p.sessions || []).forEach(function (n) { if (!n.__drop) { n.__projectKey = p.key; out.push(n); } });
   }
 
   function buildRowOrSection(n) { return n.__project ? buildProjectHeader(n.__project) : buildRow(n); }
@@ -261,6 +263,12 @@
       if (model.expanded.has(key)) window.localStorage.setItem(EXPAND_PREFIX + key, "true");
       else window.localStorage.removeItem(EXPAND_PREFIX + key);
     } catch (e) {}
+  }
+  function restoreExpanded(tree) {
+    var all = (tree.projects || []).concat(tree.archived_projects || [], tree.test_runs || []);
+    all.forEach(function (p) {
+      try { if (window.localStorage.getItem(EXPAND_PREFIX + p.key) === "true") model.expanded.add(p.key); } catch (e) {}
+    });
   }
 
   // Pending overlay: every optimistic op is re-applied on top of every admitted
@@ -364,7 +372,10 @@
     for (var i = 0; i < rows.length; i++) {
       if (rows[i].getAttribute("href") === clean) {
         rows[i].setAttribute("data-active", "");
-        var hdr = rows[i].closest ? null : null; // project auto-expand: Task 22
+        var sec = rows[i].previousElementSibling;
+        // find the enclosing project header key and ensure expanded
+        var key = rows[i].getAttribute("data-project-key-of");
+        if (key && !model.expanded.has(key)) { model.expanded.add(key); persistExpanded(key); if (model.tree) renderTree(model.tree); }
       } else {
         rows[i].removeAttribute("data-active");
       }
@@ -380,7 +391,23 @@
       migrateExpansionKeys(); // Task 22 (no-op until then)
     }).catch(function () {});
   }
-  function migrateExpansionKeys() {} // Task 22 replaces this.
+  // One-time migration of legacy basename-keyed expansion entries to the new
+  // path-slug keys. Runs after the first render (needs each project's key+name);
+  // co-basename collisions copy the old value to every matching new key.
+  var migratedExpansion = false;
+  function migrateExpansionKeys() {
+    if (migratedExpansion || !model.tree) return;
+    migratedExpansion = true;
+    var all = (model.tree.projects || []).concat(model.tree.archived_projects || [], model.tree.test_runs || []);
+    all.forEach(function (p) {
+      try {
+        var legacy = window.localStorage.getItem(EXPAND_PREFIX + p.name);
+        if (legacy === null) return;
+        if (window.localStorage.getItem(EXPAND_PREFIX + p.key) === null) window.localStorage.setItem(EXPAND_PREFIX + p.key, legacy);
+        if (legacy === "true") model.expanded.add(p.key);
+      } catch (e) {}
+    });
+  }
 
   // --- Coalesced resync + event wiring ---------------------------------------
   var resyncTimer = null, lastResync = 0;
@@ -423,6 +450,207 @@
     });
   }
 
+  // --- Survivor behaviors carried verbatim from the pre-rewrite sidebar.js ---
+
+  // Open-beside control on sidebar subagent rows — delegate clicks on
+  // .subagent-row-wrap .open-beside-btn → window.SerfPanes.open("/thread/<ref>", title).
+  // Guards:
+  //   • preventDefault + stopPropagation so the sibling <a> row does not navigate.
+  //   • window.SerfPanes presence: absent when this sidebar runs inside a pane
+  //     iframe where panes must not nest.
+  function onSidebarOpenBeside(e) {
+    var btn = e.target.closest(".open-beside-btn");
+    if (!btn) return;
+    var wrap = btn.closest(".subagent-row-wrap");
+    if (!wrap) return; // only handle subagent-row-wrap open-beside here
+    e.preventDefault();
+    e.stopPropagation();
+    if (!window.SerfPanes) return;
+    var ref = wrap.getAttribute("data-ref") || "";
+    var title = wrap.getAttribute("data-title") || ref;
+    if (!ref) return;
+    var href = window.SerfPanes.threadHref ? window.SerfPanes.threadHref(ref) : ("/thread/" + encodeURIComponent(ref));
+    window.SerfPanes.open(href, title);
+  }
+  document.addEventListener("click", onSidebarOpenBeside);
+
+  // Keyboard: Enter/Space on .subagent-row-wrap .open-beside-btn.
+  function onSidebarOpenBesideKeydown(e) {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    var btn = e.target.closest(".open-beside-btn");
+    if (!btn) return;
+    if (!btn.closest(".subagent-row-wrap")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    btn.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  }
+  document.addEventListener("keydown", onSidebarOpenBesideKeydown);
+
+  // Mobile hamburger: toggle a body[data-sidebar-open] flag that the
+  // mobile media query reads to slide the sidebar in. Tapping a sidebar
+  // link also closes (via htmx:beforeRequest) so navigating to a session
+  // doesn't leave the drawer hanging. The close-on-outside handler is
+  // only armed while open — keeping it always-on caused double-fires
+  // under mobile emulation where the synthetic click stack toggled
+  // open then immediately closed.
+  var sidebarTrapHandle = null;
+
+  function setSidebarOpen(open) {
+    if (open) {
+      document.body.setAttribute("data-sidebar-open", "");
+      document.addEventListener("click", onOutsideClick, true);
+      // Only trap focus on phone — desktop sidebar isn't a drawer. Match
+      // the design-language breakpoint.
+      var isPhone = window.matchMedia && window.matchMedia("(max-width: 767px)").matches;
+      if (isPhone && window.SerfFocusTrap) {
+        var sidebar = document.getElementById("sidebar");
+        var trigger = document.querySelector("[data-sidebar-toggle]");
+        if (sidebar) {
+          sidebarTrapHandle = window.SerfFocusTrap.activate(sidebar, trigger);
+        }
+      }
+    } else {
+      document.body.removeAttribute("data-sidebar-open");
+      document.removeEventListener("click", onOutsideClick, true);
+      if (sidebarTrapHandle && window.SerfFocusTrap) {
+        window.SerfFocusTrap.deactivate(sidebarTrapHandle);
+        sidebarTrapHandle = null;
+      }
+    }
+  }
+
+  function isSidebarOpen() {
+    return document.body.hasAttribute("data-sidebar-open");
+  }
+
+  function onOutsideClick(e) {
+    var t = e.target;
+    if (!t) return;
+    if (t.closest && (t.closest("#sidebar") || t.closest("[data-sidebar-toggle]"))) {
+      return;
+    }
+    setSidebarOpen(false);
+  }
+
+  document.addEventListener("click", function (e) {
+    var t = e.target;
+    if (!t) return;
+    var trigger = t.closest && t.closest("[data-sidebar-toggle]");
+    if (trigger) {
+      e.preventDefault();
+      e.stopPropagation();
+      setSidebarOpen(!isSidebarOpen());
+    }
+  });
+
+  document.addEventListener("htmx:beforeRequest", function (e) {
+    var trigger = e.detail && e.detail.elt;
+    if (trigger && trigger.closest && trigger.closest("#sidebar")) {
+      setSidebarOpen(false);
+    }
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && isSidebarOpen()) {
+      // Do not close the mobile sidebar when the event originated inside the search dialog.
+      if (e.target && e.target.closest && e.target.closest("#search-dialog")) return;
+      var dlg = document.getElementById("search-dialog");
+      if (dlg && dlg.open) return;
+      setSidebarOpen(false);
+    }
+  });
+
+  // Sidebar rail mode — persisted to localStorage. The body[data-sidebar-rail]
+  // attribute is the single source of truth that CSS reads; the helper
+  // syncs that attribute to storage and back.
+  var RAIL_KEY = "serf-hub.sidebar.rail";
+
+  function isRailEnabled() {
+    try {
+      return window.localStorage.getItem(RAIL_KEY) === "true";
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function setRail(enabled) {
+    if (enabled) {
+      document.body.setAttribute("data-sidebar-rail", "");
+    } else {
+      document.body.removeAttribute("data-sidebar-rail");
+    }
+    try {
+      if (enabled) {
+        window.localStorage.setItem(RAIL_KEY, "true");
+      } else {
+        window.localStorage.removeItem(RAIL_KEY);
+      }
+    } catch (e) {
+      // localStorage may be disabled; flip still works for this session.
+    }
+    syncRailToggleLabel();
+  }
+
+  function toggleRail() {
+    setRail(!document.body.hasAttribute("data-sidebar-rail"));
+  }
+
+  // Apply persisted rail state ASAP — before first paint when possible.
+  if (isRailEnabled()) {
+    setRail(true);
+  }
+
+  document.addEventListener("click", function (e) {
+    var t = e.target;
+    if (!t || !t.closest) return;
+    var btn = t.closest("[data-sidebar-rail-toggle]");
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    toggleRail();
+  });
+
+  // ⌘B / Ctrl+B — toggle rail mode. Skip when the focus is on an editable
+  // surface (textarea, contenteditable, input) so the shortcut doesn't fire
+  // while the user is typing browser-native chords. Mobile (no
+  // matchMedia "(min-width: 768px)") ignores the shortcut because rail
+  // mode is a desktop affordance.
+  function isEditableTarget(el) {
+    if (!el) return false;
+    var tag = (el.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea" || tag === "select") return true;
+    if (el.isContentEditable) return true;
+    return false;
+  }
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "b" && e.key !== "B") return;
+    if (!(e.metaKey || e.ctrlKey)) return;
+    if (e.altKey || e.shiftKey) return;
+    if (isEditableTarget(e.target)) return;
+    // Desktop only — match the design-language breakpoint.
+    if (window.matchMedia && window.matchMedia("(max-width: 767px)").matches) return;
+    e.preventDefault();
+    toggleRail();
+  });
+
+  // Sync the rail-toggle button's aria-label so screen readers hear the
+  // correct direction after each flip. Runs on init + after each htmx
+  // swap (the sidebar partial re-renders frequently).
+  function syncRailToggleLabel() {
+    var btn = document.querySelector("[data-sidebar-rail-toggle]");
+    if (!btn) return;
+    var railed = document.body.hasAttribute("data-sidebar-rail");
+    btn.setAttribute("aria-label", railed ? "expand sidebar" : "collapse sidebar");
+    btn.setAttribute("title", railed ? "expand sidebar (⌘B)" : "collapse sidebar (⌘B)");
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", syncRailToggleLabel);
+  } else {
+    syncRailToggleLabel();
+  }
+  document.addEventListener("htmx:afterSwap", syncRailToggleLabel);
+
   if (window.SerfAppwire && window.SerfAppwire.onNotification) window.SerfAppwire.onNotification(onNotification);
   if (window.SerfAppwire && window.SerfAppwire.onConnectionRestored) window.SerfAppwire.onConnectionRestored(scheduleResync);
   setInterval(scheduleResync, 60000); // 60s idle resync
@@ -434,5 +662,5 @@
     if (e && e.target && e.target.id === "workspace") syncActiveRow();
   });
 
-  window.SerfSidebar = { renderTree: renderTree, refresh: fetchTree, favorite: favorite, archive: archive, rename: rename, close: function () {} };
+  window.SerfSidebar = { renderTree: renderTree, refresh: fetchTree, favorite: favorite, archive: archive, rename: rename, close: function () { setSidebarOpen(false); } };
 })();
