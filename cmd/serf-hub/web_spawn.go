@@ -295,6 +295,13 @@ func modelDescriptorsToAPIModels(models []appwire.ModelDescriptor, providerCfg *
 			if mi := catalogModelInfo(cat, behaviorTagFor(providerCfg, m.Provider), m.Model); mi != nil {
 				entry["context_window"] = mi.ContextWindow
 				entry["supports_tools"] = mi.SupportsTools
+				entry["supports_vision"] = mi.SupportsVision
+				if mi.MaxOutputTokens != nil {
+					entry["max_output_tokens"] = *mi.MaxOutputTokens
+				}
+				if mi.SupportsWebSearch != nil {
+					entry["supports_web_search"] = *mi.SupportsWebSearch
+				}
 				entry["supports_reasoning"] = mi.SupportsReasoning
 				entry["input_cost_per_million"] = mi.InputCostPerMillion
 				entry["output_cost_per_million"] = mi.OutputCostPerMillion
@@ -413,7 +420,7 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 			entry := map[string]any{
 				"provider":     prov,
 				"model":        m.ID,
-				"display_name": m.DisplayName,
+				"display_name": prettifyModelDisplayName(m.ID),
 			}
 			if m.ContextWindow > 0 {
 				entry["context_window"] = m.ContextWindow
@@ -443,6 +450,19 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 				if _, ok := entry["reasoning_effort_levels"]; !ok && len(mi.ReasoningEffortLevels) > 0 {
 					entry["reasoning_effort_levels"] = mi.ReasoningEffortLevels
 				}
+				if _, ok := entry["supports_vision"]; !ok {
+					entry["supports_vision"] = mi.SupportsVision
+				}
+				if mi.MaxOutputTokens != nil {
+					if _, ok := entry["max_output_tokens"]; !ok {
+						entry["max_output_tokens"] = *mi.MaxOutputTokens
+					}
+				}
+				if mi.SupportsWebSearch != nil {
+					if _, ok := entry["supports_web_search"]; !ok {
+						entry["supports_web_search"] = *mi.SupportsWebSearch
+					}
+				}
 			}
 			out = append(out, entry)
 		}
@@ -451,6 +471,7 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 	// The cache is per-WebServer (each server's provider set/config owns its
 	// own entries) and holds RAW live values; providers.toml overrides are
 	// applied per request on fresh copies (overlayLiveEntries).
+	sortModelEntriesDatedLast(out)
 	s.liveModels.mu.Lock()
 	s.liveModels.models = out
 	s.liveModels.expires = time.Now().Add(liveModelsTTL)

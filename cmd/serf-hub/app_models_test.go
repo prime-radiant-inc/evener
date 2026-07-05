@@ -125,3 +125,50 @@ func TestModelDescriptorsToAPIModels_UsesPrettifiedDisplayNameAndSortsDatedLast(
 		t.Errorf("anthropic model order = %v, want %v (dated snapshot last)", anthropicOrder, want)
 	}
 }
+
+func TestModelDescriptorsToAPIModels_IncludesCapabilityBadges(t *testing.T) {
+	models := modelDescriptorsToAPIModels([]appwire.ModelDescriptor{
+		{Provider: "anthropic", Model: "claude-opus-4-6"},
+	}, nil)
+	if len(models) != 1 {
+		t.Fatalf("got %d models, want 1", len(models))
+	}
+	m := models[0]
+	if got, _ := m["supports_vision"].(bool); !got {
+		t.Errorf("supports_vision = %v, want true", m["supports_vision"])
+	}
+	if got, _ := m["supports_web_search"].(bool); !got {
+		t.Errorf("supports_web_search = %v, want true", m["supports_web_search"])
+	}
+	if got, _ := m["max_output_tokens"].(int); got != 128000 {
+		t.Errorf("max_output_tokens = %v, want 128000", m["max_output_tokens"])
+	}
+	if got, _ := m["context_window"].(int); got != 1_000_000 {
+		t.Errorf("context_window = %v, want 1000000", m["context_window"])
+	}
+}
+
+// TestModelDescriptorsToAPIModels_UncataloguedModelStillRendersWithoutBadges
+// pins the graceful-degradation rule: a live model absent from the embedded
+// catalog (catalogModelInfo returns nil) must still render name+provider+id
+// — not be dropped — just without any badge fields.
+func TestModelDescriptorsToAPIModels_UncataloguedModelStillRendersWithoutBadges(t *testing.T) {
+	models := modelDescriptorsToAPIModels([]appwire.ModelDescriptor{
+		{Provider: "mycompany", Model: "totally-unknown-model-xyz"},
+	}, nil)
+	if len(models) != 1 {
+		t.Fatalf("uncatalogued model was dropped: got %d entries, want 1", len(models))
+	}
+	m := models[0]
+	if m["provider"] != "mycompany" || m["model"] != "totally-unknown-model-xyz" {
+		t.Fatalf("uncatalogued entry missing provider/model: %+v", m)
+	}
+	if m["display_name"] != "Totally Unknown Model Xyz" {
+		t.Errorf("display_name = %v, want prettified id even when uncatalogued", m["display_name"])
+	}
+	for _, badge := range []string{"supports_tools", "supports_vision", "supports_reasoning", "supports_web_search", "context_window", "max_output_tokens", "input_cost_per_million", "output_cost_per_million"} {
+		if _, ok := m[badge]; ok {
+			t.Errorf("uncatalogued entry should omit %q, got %v", badge, m[badge])
+		}
+	}
+}
