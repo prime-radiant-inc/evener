@@ -140,53 +140,83 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 // deleting the old dir (the gc sweep reclaims it) so live sessions keep working.
 // If the sha is unchanged (or the source is an in-place directory) it is a true
 // no-op: the staging clone is discarded and the live dir is never touched.
+//
+// Upgrade always upgrades once called, regardless of the plugin's AutoUpgrade
+// flag: it is the explicit-consent path (`serf plugin upgrade`, UpdateAll).
+// The auto-upgrade daemon uses upgradeAuto instead, which re-checks the flag
+// under the same lock immediately before acting — see upgradeLocked.
 func (m *Manager) Upgrade(ctx context.Context, plugin, marketplace string) (InstallEntry, error) {
 	release, err := acquireLock(m.lockPath(), 30*time.Second)
 	if err != nil {
 		return InstallEntry{}, err
 	}
 	defer release()
+	entry, _, _, err := m.upgradeLocked(ctx, plugin, marketplace, false)
+	return entry, err
+}
 
+// upgradeLocked contains the actual mechanics of Upgrade. The caller MUST
+// already hold m.lockPath() for the duration of this call (Upgrade and
+// upgradeAuto both acquire it before calling in).
+//
+// If requireAutoUpgrade is true, the plugin's CURRENT AutoUpgrade flag and
+// git-backed-ness are read fresh from the registry — under the lock the
+// caller is holding, immediately before any fetch — and the upgrade is
+// skipped (skipped=true, no error) if the plugin is no longer eligible. This
+// is what lets the auto-upgrade daemon honor a SetAutoUpgrade(false) (or a
+// switch to a directory/relative source) that lands after a sweep started
+// but before it reached this plugin's turn; requireAutoUpgrade=false (the
+// explicit-consent path) never skips on the flag.
+//
+// changed reports whether the sha actually moved, computed entirely from this
+// call's own fresh prev/after comparison — never from a caller-supplied
+// snapshot — so callers can trust it even when another sweep or an explicit
+// upgrade races this one.
+func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string, requireAutoUpgrade bool) (entry InstallEntry, changed, skipped bool, err error) {
 	if err := validNameComponent("marketplace", marketplace); err != nil {
-		return InstallEntry{}, err
+		return InstallEntry{}, false, false, err
 	}
 	if err := validNameComponent("plugin", plugin); err != nil {
-		return InstallEntry{}, err
+		return InstallEntry{}, false, false, err
 	}
 
 	key := registryKey(plugin, marketplace)
 	reg, err := LoadRegistry(m.registryPath())
 	if err != nil {
-		return InstallEntry{}, err
+		return InstallEntry{}, false, false, err
 	}
 	entries, ok := reg.Plugins[key]
 	if !ok || len(entries) == 0 {
-		return InstallEntry{}, fmt.Errorf("%s: %w", key, ErrNotInstalled)
+		return InstallEntry{}, false, false, fmt.Errorf("%s: %w", key, ErrNotInstalled)
 	}
 	prev := entries[0]
 
+	if requireAutoUpgrade && (!prev.AutoUpgrade || prev.Source.Rel || prev.Source.Kind == SourceDirectory) {
+		return prev, false, true, nil
+	}
+
 	ref, cp, err := m.catalogPlugin(ctx, marketplace, plugin)
 	if err != nil {
-		return InstallEntry{}, err
+		return InstallEntry{}, false, false, err
 	}
 	staging, sha, staged, err := m.stagePlugin(ctx, marketplace, plugin, ref, cp)
 	if err != nil {
-		return InstallEntry{}, err
+		return InstallEntry{}, false, false, err
 	}
 	if !staged || sha == prev.GitCommitSha {
 		if staged {
 			_ = os.RemoveAll(staging)
 		}
-		return prev, nil
+		return prev, false, false, nil
 	}
 
 	final, err := m.commitStaged(marketplace, plugin, staging, sha)
 	if err != nil {
-		return InstallEntry{}, err
+		return InstallEntry{}, false, false, err
 	}
 	if err := validatePluginDir(final); err != nil {
 		_ = os.RemoveAll(final)
-		return InstallEntry{}, fmt.Errorf("upgraded plugin failed validation: %w", err)
+		return InstallEntry{}, false, false, fmt.Errorf("upgraded plugin failed validation: %w", err)
 	}
 
 	prev.InstallPath = final
@@ -196,9 +226,9 @@ func (m *Manager) Upgrade(ctx context.Context, plugin, marketplace string) (Inst
 	prev.Source = cp.Source
 	reg.Plugins[key] = []InstallEntry{prev}
 	if err := SaveRegistry(m.registryPath(), reg); err != nil {
-		return InstallEntry{}, err
+		return InstallEntry{}, false, false, err
 	}
-	return prev, nil
+	return prev, true, false, nil
 }
 
 func (m *Manager) mutateEntry(plugin, marketplace string, fn func(*InstallEntry)) error {

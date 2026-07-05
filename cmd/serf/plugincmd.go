@@ -374,8 +374,27 @@ func runPluginLifecycle(verb string, args []string, stdin io.Reader, stdout, std
 		return nil
 
 	case "gc":
-		// TODO(P4): Implement garbage collection sweep
-		_, _ = fmt.Fprintf(stderr, "gc: not yet implemented (P4)\n")
+		fs := flag.NewFlagSet("gc", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		asJSON := fs.Bool("json", false, "emit JSON")
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		removed, err := m.Gc()
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			return json.NewEncoder(stdout).Encode(removed)
+		}
+		if len(removed) == 0 {
+			_, _ = fmt.Fprintf(stdout, "Nothing to remove.\n")
+		} else {
+			_, _ = fmt.Fprintf(stdout, "Removed %d cache dir(s):\n", len(removed))
+			for _, p := range removed {
+				_, _ = fmt.Fprintf(stdout, "  %s\n", p)
+			}
+		}
 		return nil
 
 	default:

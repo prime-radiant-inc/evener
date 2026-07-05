@@ -30,6 +30,86 @@ func TestLoadConfig_DefaultsWhenMissing(t *testing.T) {
 	if len(cfg.Providers) != 0 {
 		t.Errorf("expected no providers by default, got %d", len(cfg.Providers))
 	}
+	if !cfg.PluginAutoUpgrade {
+		t.Error("PluginAutoUpgrade default: got false, want true (per-plugin autoUpgrade opt-in is the real gate)")
+	}
+	if cfg.PluginAutoUpgradeInterval != 12*time.Hour {
+		t.Errorf("PluginAutoUpgradeInterval default: got %v, want 12h", cfg.PluginAutoUpgradeInterval)
+	}
+}
+
+func TestLoadConfig_PluginAutoUpgradeExplicitFalseSticks(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(path, []byte(`plugin_auto_upgrade = false`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.PluginAutoUpgrade {
+		t.Error("explicit plugin_auto_upgrade = false was overridden back to true")
+	}
+	// interval default still applies even though auto-upgrade is off.
+	if cfg.PluginAutoUpgradeInterval != 12*time.Hour {
+		t.Errorf("PluginAutoUpgradeInterval: got %v, want 12h", cfg.PluginAutoUpgradeInterval)
+	}
+}
+
+func TestLoadConfig_PluginAutoUpgradeIntervalOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(path, []byte(`plugin_auto_upgrade_interval = "1h"`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.PluginAutoUpgradeInterval != time.Hour {
+		t.Errorf("PluginAutoUpgradeInterval: got %v, want 1h", cfg.PluginAutoUpgradeInterval)
+	}
+	if !cfg.PluginAutoUpgrade {
+		t.Error("PluginAutoUpgrade should still default true when only the interval is overridden")
+	}
+}
+
+// TestLoadConfig_PluginAutoUpgradeIntervalGuardsAgainstBadValues covers
+// values time.NewTicker would panic or busy-loop on. BurntSushi/toml v1.6.0
+// parses a negative duration string ("-1h") and a bare integer ("12", read
+// as a nanosecond count) without error, so neither trips a naive `== 0`
+// guard: time.NewTicker(-1h) panics (d <= 0), and time.NewTicker(12ns) spins
+// the daemon in a busy loop. Both must be caught by applyConfigDefaults.
+func TestLoadConfig_PluginAutoUpgradeIntervalGuardsAgainstBadValues(t *testing.T) {
+	tests := []struct {
+		name string
+		toml string
+		want time.Duration
+	}{
+		{"zero falls back to default", `plugin_auto_upgrade_interval = "0s"`, 12 * time.Hour},
+		{"negative falls back to default", `plugin_auto_upgrade_interval = "-1h"`, 12 * time.Hour},
+		{"bare integer (units confusion) clamped to floor", `plugin_auto_upgrade_interval = 12`, time.Minute},
+		{"positive but sub-minute clamped to floor", `plugin_auto_upgrade_interval = "30s"`, time.Minute},
+		{"exactly the floor is left alone", `plugin_auto_upgrade_interval = "1m"`, time.Minute},
+		{"a normal value is left alone", `plugin_auto_upgrade_interval = "2h"`, 2 * time.Hour},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "hub.toml")
+			if err := os.WriteFile(path, []byte(tt.toml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadConfig(path)
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			if cfg.PluginAutoUpgradeInterval != tt.want {
+				t.Errorf("PluginAutoUpgradeInterval = %v, want %v", cfg.PluginAutoUpgradeInterval, tt.want)
+			}
+		})
+	}
 }
 
 func TestLoadConfig_DefaultsHubStateRootWhenOmitted(t *testing.T) {

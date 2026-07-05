@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/internal/appserver"
+	"primeradiant.com/serf/internal/plugins"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -267,6 +268,7 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 	launchController := newHubLaunchController(hubStateRoot)
 	registerLaunchHandlers(server, launchController)
 	registerMiscHandlers(server, cfg, sources)
+	registerPluginAutoUpgradeHandlers(server, plugins.NewManager(""))
 	return server
 }
 

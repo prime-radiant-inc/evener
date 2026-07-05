@@ -223,3 +223,29 @@ func TestPluginDoctor_DoesNotSeedMarketplaces(t *testing.T) {
 		t.Errorf("doctor should not write known_marketplaces.json (stat err = %v)", err)
 	}
 }
+
+func TestPluginGc_NothingToRemove(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var out, errb bytes.Buffer
+	if err := runPlugin([]string{"gc"}, nil, &out, &errb); err != nil {
+		t.Fatalf("runPlugin gc: %v\n%s", err, errb.String())
+	}
+	if !strings.Contains(out.String(), "Nothing to remove") {
+		t.Fatalf("expected 'Nothing to remove', got %q", out.String())
+	}
+}
+
+// TestPluginGc_JSON pins the exact `[]` encoding for "nothing to remove":
+// Gc() returning a nil slice would json.Encode as `null`, which is a worse
+// API for scripts to consume than an empty array (null needs a nil check
+// before ranging in most languages; `[]` does not).
+func TestPluginGc_JSON(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var out, errb bytes.Buffer
+	if err := runPlugin([]string{"gc", "--json"}, nil, &out, &errb); err != nil {
+		t.Fatalf("runPlugin gc --json: %v\n%s", err, errb.String())
+	}
+	if got := strings.TrimSpace(out.String()); got != "[]" {
+		t.Fatalf("gc --json with nothing to remove = %q, want []", got)
+	}
+}
