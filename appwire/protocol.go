@@ -129,6 +129,7 @@ var Methods = []MethodSpec{
 	{MethodSerfInstanceEdit, InstanceEditParams{}, InstanceListResponse{}, ScopeHub, "Edits a provider instance; returns the updated list."},
 	{MethodSerfInstanceRemove, InstanceRemoveParams{}, InstanceListResponse{}, ScopeHub, "Removes a provider instance; returns the updated list."},
 	{MethodSerfInstanceSetDefault, InstanceSetDefaultParams{}, InstanceListResponse{}, ScopeHub, "Sets the default provider instance; returns the updated list."},
+	{MethodSerfPluginCheckNow, EmptyParams{}, PluginCheckNowResponse{}, ScopeHub, "Runs one auto-upgrade daemon pass on demand; broadcasts serf/plugin/updated per plugin actually upgraded."},
 }
 
 // Notifications is the AppWire server→client notification catalog. A nil
@@ -157,4 +158,5 @@ var Notifications = []NotificationSpec{
 	{NotifySerfAuthUpdated, nil, "Broadcast after a successful auth mutation; inline {provider, activeSource}. Clients refresh auth state."},
 	{NotifySerfLaunchUpdated, nil, "Broadcast after a launch layer/trust mutation; inline {cwd, layer}. Clients refresh launch config."},
 	{NotifySerfAttentionChanged, nil, "Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons."},
+	{NotifySerfPluginUpdated, nil, "Broadcast after the auto-upgrade daemon (or a manual check-now) actually upgrades a plugin; inline {plugin, marketplace, version}. Hub-originated."},
 }

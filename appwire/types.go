@@ -52,6 +52,7 @@ const (
 	MethodSerfInstanceEdit          = "serf/instance/edit"
 	MethodSerfInstanceRemove        = "serf/instance/remove"
 	MethodSerfInstanceSetDefault    = "serf/instance/setDefault"
+	MethodSerfPluginCheckNow        = "serf/plugin/checkNow"
 )
 
 const (
@@ -76,6 +77,7 @@ const (
 	NotifySerfAuthUpdated       = "serf/auth/updated"
 	NotifySerfLaunchUpdated     = "serf/launch/updated"
 	NotifySerfAttentionChanged  = "serf/attention/changed"
+	NotifySerfPluginUpdated     = "serf/plugin/updated"
 )
 
 const (
@@ -1015,4 +1017,15 @@ type LaunchConfigSetLayerParams struct {
 type LaunchConfigTrustRepoParams struct {
 	CWD  string `json:"cwd"`
 	Hash string `json:"hash"`
+}
+
+// PluginCheckNowResponse is the result of serf/plugin/checkNow: it runs one
+// auto-upgrade daemon pass (refresh every marketplace, then upgrade every
+// autoUpgrade-enabled plugin) on demand and reports what happened. Updated
+// holds "<plugin>@<marketplace>" refs actually upgraded (no-ops omitted);
+// Errors holds any per-marketplace/per-plugin failures — failures are
+// isolated and never fail the request itself.
+type PluginCheckNowResponse struct {
+	Updated []string `json:"updated,omitempty"`
+	Errors  []string `json:"errors,omitempty"`
 }
