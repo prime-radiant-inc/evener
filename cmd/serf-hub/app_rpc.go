@@ -269,10 +269,10 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 	registerInstanceHandlers(server, instancesController)
 	launchController := newHubLaunchController(hubStateRoot)
 	registerLaunchHandlers(server, launchController)
-	pluginsController := newHubPluginsController("")
+	pluginsController := newHubPluginsController(cfg.PluginRoot)
 	registerPluginHandlers(server, pluginsController)
 	registerMiscHandlers(server, cfg, sources)
-	registerPluginAutoUpgradeHandlers(server, plugins.NewManager(""))
+	registerPluginAutoUpgradeHandlers(server, plugins.NewManager(cfg.PluginRoot))
 	return server
 }
 

@@ -187,3 +187,57 @@ func TestSandboxContainsInstanceRemove(t *testing.T) {
 		t.Fatalf("providers.toml missing from sandbox after remove: %v", err)
 	}
 }
+
+// TestSandboxContainsPluginStore proves the plugin/marketplace store
+// (internal/plugins.Manager, reached via hubPluginsController and the
+// auto-upgrade checkNow handler) is contained inside the sandbox root instead
+// of resolving to plugins.DefaultRoot() (~/.config/serf/plugins). Before the
+// fix, newHubAppServer hardcoded plugins.NewManager("") for both, so a
+// dispatched serf/marketplace/* or serf/plugin/* call mutated the real,
+// developer-machine plugin store — invisible to the fuzz harness's
+// network-only deny-transport oracle, since a directory-source add never
+// dials out at all (a git-backed one shells out to `git`, which the oracle
+// can't see either).
+//
+// XDG_CONFIG_HOME is pinned to a throwaway temp dir (never s.Root) so that
+// even a still-broken newHubAppServer can only escape into a harmless stand-in
+// "real" root here, never the developer's actual ~/.config/serf/plugins.
+func TestSandboxContainsPluginStore(t *testing.T) {
+	fakeRealHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", fakeRealHome)
+	installDenyTransport(t)
+	s := newSandbox(t)
+	router := s.Web.appRPC.Router()
+
+	// A directory-source marketplace add needs no network or git; the plugin
+	// store write it triggers (known_marketplaces.json under the manager's
+	// lock) is the containment probe.
+	mktDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(mktDir, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := []byte(`{"name":"sandbox-mkt","owner":{"name":"t"},"plugins":[]}`)
+	if err := os.WriteFile(filepath.Join(mktDir, ".claude-plugin", "marketplace.json"), manifest, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	params, err := json.Marshal(appwire.MarketplaceAddParams{
+		Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: mktDir},
+	})
+	if err != nil {
+		t.Fatalf("marshal add params: %v", err)
+	}
+	req := appwire.Request{ID: appwire.NewIntID(1), Method: appwire.MethodSerfMarketplaceAdd, Params: params}
+	if _, err := router.Dispatch(context.Background(), req); err != nil {
+		t.Fatalf("serf/marketplace/add: %v", err)
+	}
+
+	wantRegistry := filepath.Join(s.Root, "plugins", "known_marketplaces.json")
+	if _, err := os.Stat(wantRegistry); err != nil {
+		t.Fatalf("plugin store escaped the sandbox: %s not written (%v)", wantRegistry, err)
+	}
+	escapedRegistry := filepath.Join(fakeRealHome, "serf", "plugins", "known_marketplaces.json")
+	if _, err := os.Stat(escapedRegistry); err == nil {
+		t.Fatalf("plugin store escaped the sandbox: wrote to the default root %s instead", escapedRegistry)
+	}
+}
