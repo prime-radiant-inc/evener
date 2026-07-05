@@ -2099,18 +2099,14 @@
       if (pv) pv.textContent = gist ? "— " + gist : "";
     },
 
-    // ensureLivenessEl keeps a single liveness line just below the transcript
-    // (a sibling of #conversation, so transcript appends never disturb it).
+    // ensureLivenessEl re-acquires the inline liveness span inside the status
+    // row. #input-status is an htmx innerHTML-swap target (task B4's status
+    // refresh), so any handle held across a swap is stale; this must be
+    // called again after every swap rather than cached once. May land on
+    // null when the row isn't mounted — refreshLiveness treats that the same
+    // as a detached node and no-ops.
     ensureLivenessEl() {
-      if (!this.conversation || !this.conversation.parentNode) { this.livenessEl = null; return; }
-      let el = this.conversation.parentNode.querySelector(".liveness");
-      if (!el) {
-        el = document.createElement("div");
-        el.className = "liveness";
-        el.hidden = true;
-        this.conversation.parentNode.insertBefore(el, this.conversation.nextSibling);
-      }
-      this.livenessEl = el;
+      this.livenessEl = document.querySelector("#input-status [data-liveness]");
     },
 
     startLivenessTimer() {
@@ -2158,7 +2154,10 @@
         }
       }
       const el = this.livenessEl;
-      if (!el) return;
+      // The status row can be innerHTML-swapped out from under a cached
+      // handle at any time; a detached node must no-op rather than paint
+      // into a span no one can see.
+      if (!el || !el.isConnected) return;
       const gap = this.lastFrameAt ? (Date.now() - this.lastFrameAt) : 0;
       let level = "none";
       if (this.state === "active") {
@@ -5386,6 +5385,20 @@
   document.addEventListener("htmx:afterSwap", () => {
     if (window.SerfRenderer && window.SerfRenderer.applyStatusDotPulse) {
       window.SerfRenderer.applyStatusDotPulse(document);
+    }
+  });
+
+  // Re-acquire the inline liveness handle after the status row swaps: htmx
+  // replaces #input-status's innerHTML wholesale (task B4's status refresh),
+  // which detaches whatever span this.livenessEl was pointing at. Scoped to
+  // swaps whose target is #input-status itself, patterned on sidebar.js's
+  // e.target.id-scoped resync.
+  document.addEventListener("htmx:afterSwap", (e) => {
+    const target = e && e.target;
+    if (target && target.id === "input-status") {
+      if (window.SerfRenderer && window.SerfRenderer.ensureLivenessEl) {
+        window.SerfRenderer.ensureLivenessEl();
+      }
     }
   });
   // Also apply on initial load in case dots are already in the page.
