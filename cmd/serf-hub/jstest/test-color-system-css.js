@@ -34,8 +34,9 @@ const tokenVal = (name) => {
 };
 
 // ── Mockup #1 — four-meaning color system ────────────────────────────────
-// amber = needs-you / awaiting input (NOT red).
-pass(tokenVal("state-awaiting") === "#e2b06a", "--state-awaiting is amber #e2b06a (needs-you), got " + tokenVal("state-awaiting"));
+// blue = needs-you / awaiting input (NOT red). (palette v2: awaiting moved
+// from amber to blue; --state-warning now owns amber.)
+pass(tokenVal("state-awaiting") === "#7aa2f7", "--state-awaiting is blue #7aa2f7 (needs-you), got " + tokenVal("state-awaiting"));
 // red = error, its own token (not an alias of awaiting).
 pass(tokenVal("error") === "#f7768e", "--error is its own red #f7768e, got " + tokenVal("error"));
 pass(!/--error:\s*var\(--state-awaiting\)/.test(darkRoot), "--error must not alias --state-awaiting");
