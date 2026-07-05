@@ -5032,3 +5032,10 @@ body.doc-page {
     transition-duration: 0.01ms !important;
   }
 }
+/* Row menu (⋯ popover): reveal button + popover surface (Task 21). */
+.sb-menu-btn { min-width: 24px; min-height: 24px; opacity: 0; background: transparent; border: none; color: var(--text-muted); }
+.sb-row:hover .sb-menu-btn, .sb-row:focus-within .sb-menu-btn { opacity: 1; }
+.sb-menu { z-index: 60; background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-md); padding: var(--space-1); box-shadow: 0 4px 16px rgba(0,0,0,.35); min-width: 160px; }
+.sb-menu-item { display: block; width: 100%; text-align: left; padding: var(--space-2) var(--space-3); background: transparent; border: none; color: var(--text); font-size: var(--text-sm); min-height: 24px; }
+.sb-menu-item:hover, .sb-menu-item:focus { background: var(--surface-secondary); }
+.sb-rename-input { width: 100%; font-size: var(--text-base); background: var(--bg); color: var(--text); border: 1px solid var(--accent); border-radius: var(--radius-md); }
