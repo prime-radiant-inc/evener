@@ -20,7 +20,7 @@
   --state-warning: #e0af68;
   --state-idle: #7a7a86;
   --state-ended: #3a3a44;
-  /* Subagents carry no ambient hue: blue when active, neutral when done. */
+  /* Subagents carry no ambient hue: green when active, neutral when done. */
   --state-subagent: #7a7a86;
   --surface-secondary: #1c1c24;
   --accent-secondary: #7aa2f7;
@@ -937,7 +937,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   text-align: center;
   line-height: 1.2;
 }
-/* Glyph pairing (mockup #1): ⟳ blue active, ◆ amber needs-you, ✕ red warning,
+/* Glyph pairing (mockup #1): ⟳ green active, ◆ blue needs-you, ✕ red warning,
    ✓ neutral done. Color is never the sole channel — the shape carries it too. */
 .subagent-row[data-state="active"]   .subagent-glyph { color: var(--state-working); }
 .subagent-row[data-state="awaiting"] .subagent-glyph { color: var(--state-awaiting); }
@@ -1049,8 +1049,8 @@ body.app[data-sidebar-rail] .subagent-row-wrap > .open-beside-btn { display: non
 /* ============================================================
    Colorblind-safe status dots (mockup #10)
    The session dot is shape-coded as well as color-coded so it
-   survives colorblindness: awaiting = amber DIAMOND, active =
-   blue DISC, idle/ended = neutral SQUARE. Shape + color is the
+   survives colorblindness: awaiting = blue DIAMOND, active =
+   green DISC, idle/ended = neutral SQUARE. Shape + color is the
    double channel; renderer.js's [data-pulse] still drives the
    live breathing on the same element.
    ============================================================ */
@@ -1074,19 +1074,19 @@ body.app[data-sidebar-rail] .subagent-row-wrap > .open-beside-btn { display: non
 /* ============================================================
    Needs-you triage tier (mockup #11 rec A)
    A top tier aggregating every awaiting session across projects,
-   oldest-blocked first. Amber is reserved strictly for needs-you
+   oldest-blocked first. Blue is reserved strictly for needs-you
    and is always glyph-paired (◆). Hidden entirely when empty.
    ============================================================ */
 .needs-you-header { color: var(--state-awaiting); }
 .needs-you-header .needs-you-glyph { color: var(--state-awaiting); font-size: var(--text-xs); }
 .needs-you-header .count { color: var(--state-awaiting); }
-/* The tier rows reuse the awaiting state-accent (amber left border + tint)
+/* The tier rows reuse the awaiting state-accent (blue left border + tint)
    already defined on .sb-row[data-state="awaiting"]; no extra fill needed. */
 
 /* ============================================================
    Magnitude rollup badges (mockup #10 rec A)
    "⟳N · ◆M" on the project header answers "how many need me"
-   that the single dot couldn't. Live = blue, needs-you = amber;
+   that the single dot couldn't. Live = green, needs-you = blue;
    each badge is glyph-paired so color is never the only channel.
    ============================================================ */
 .project-rollup {
@@ -3094,7 +3094,7 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
 }
 .spawn-form .diagnostic { margin: 0; max-width: none; }
 /* Inline "create this directory?" confirmation shown above the spawn row when
-   the proposed working dir doesn't exist. An amber rail (needs-you), not red —
+   the proposed working dir doesn't exist. A blue rail (needs-you), not red —
    nothing has failed; the user just needs to decide. */
 .spawn-confirm {
   border: 1px solid var(--rule);
