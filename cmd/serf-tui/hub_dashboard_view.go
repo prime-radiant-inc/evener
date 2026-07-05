@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitext"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/serf/hubapi"
 )
 
 func (m hubModel) dashboardView() string {
@@ -594,19 +595,9 @@ func projectSummary(project hubRow, rows []hubRow) string {
 	return fmt.Sprintf("%d live · %s", liveCount, attention)
 }
 
+// attentionRankLabel normalizes state via stateLabel, then delegates to the
+// shared hubapi.AttentionRank table so the TUI and the hub can never drift
+// on ordering (Track A rank consolidation).
 func attentionRankLabel(state string) int {
-	switch stateLabel(state) {
-	case "errored":
-		return 5
-	case "awaiting":
-		return 4
-	case "active":
-		return 3
-	case "warning":
-		return 2
-	case "idle":
-		return 1
-	default:
-		return 0
-	}
+	return hubapi.AttentionRank(stateLabel(state))
 }
