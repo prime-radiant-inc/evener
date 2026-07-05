@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/serf/internal/plugins"
 )
 
 func writeCommandListTestPlugin(t *testing.T, dir, pluginName string) {
@@ -60,10 +61,12 @@ func TestHubCommandList_ReturnsLoadedPluginCommands(t *testing.T) {
 }
 
 func TestHubCommandList_NoPluginDirsReturnsEmpty(t *testing.T) {
-	// With no explicit PluginDirs, pluginDirsFromConfig falls back to scanning
-	// the XDG default plugins root. Point it at an empty temp dir so the
-	// result is deterministically empty regardless of what the machine
-	// running this test actually has installed under ~/.config/serf/plugins.
+	// With no explicit PluginDirs, hubCommandList falls back to
+	// plugins.Manager.EnabledPluginDirs, which reads the installed-plugin
+	// registry under the XDG default plugins root. Point it at an empty temp
+	// dir so the result is deterministically empty regardless of what the
+	// machine running this test actually has installed under
+	// ~/.config/serf/plugins.
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	resp, err := hubCommandList(hubcore.WebConfig{})
@@ -72,6 +75,46 @@ func TestHubCommandList_NoPluginDirsReturnsEmpty(t *testing.T) {
 	}
 	if len(resp.Commands) != 0 {
 		t.Fatalf("Commands = %v, want empty", resp.Commands)
+	}
+}
+
+// TestHubCommandList_IncludesRegistryEnabledPlugin proves hubCommandList
+// reflects what a real session actually loads (EnabledPluginDirs), not just
+// the display-only glob of the plugin store's immediate subdirectories
+// (pluginDirsFromConfig). Before this fix, a plugin installed and enabled
+// through the marketplace/registry system (living at
+// cache/<marketplace>/<plugin>/<sha>, not a direct child of the plugins
+// root) could never appear in serf/command/list, even though a spawned
+// session would load its commands just fine.
+func TestHubCommandList_IncludesRegistryEnabledPlugin(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	pluginRoot := t.TempDir()
+	mgr := plugins.NewManager(pluginRoot)
+
+	mktDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(mktDir, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mktDir, ".claude-plugin", "marketplace.json"),
+		[]byte(`{"name":"acme","owner":{"name":"o"},"plugins":[{"name":"greeter","source":"./plugins/greeter"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeCommandListTestPlugin(t, filepath.Join(mktDir, "plugins", "greeter"), "greeter")
+
+	ctx := context.Background()
+	if _, err := mgr.AddMarketplace(ctx, "acme", plugins.Source{Kind: plugins.SourceDirectory, Path: mktDir}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := mgr.Install(ctx, "greeter", "acme"); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	resp, err := hubCommandList(hubcore.WebConfig{PluginRoot: pluginRoot})
+	if err != nil {
+		t.Fatalf("hubCommandList: %v", err)
+	}
+	if len(resp.Commands) != 1 || resp.Commands[0].Name != "greet" {
+		t.Fatalf("Commands = %+v, want the registry-installed plugin's %q command", resp.Commands, "greet")
 	}
 }
 

@@ -763,16 +763,20 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	})
 }
 
-// hubCommandList answers serf/command/list by loading every plugin from the
-// hub's configured (or default) plugin dirs and flattening their discovered
-// slash commands into a catalog. This mirrors discoverPluginsForSettings's
-// display-only scan (web_settings.go) rather than internal/plugins' registry —
-// deliberately: P3 (slash-command execution, which owns this method) is
-// independent of P1 (the marketplace/registry backend) by design, so this
-// handler must not assume the registry exists. Once the registry is the
-// system of record on the hub side (P5), this should read
-// internal/plugins.Manager.EnabledPluginDirs instead so installed-but-not-
-// explicitly-configured plugins are included too.
+// hubCommandList answers serf/command/list by loading every plugin a real
+// session would load — internal/plugins.Manager.EnabledPluginDirs (explicit
+// --plugin-dir-equivalent PluginDirs first, then every installed+enabled
+// registry entry) — and flattening their discovered slash commands into a
+// catalog. This used to mirror discoverPluginsForSettings's display-only scan
+// (web_settings.go, pluginDirsFromConfig: an immediate-subdirectory glob of
+// the plugin store) instead, which could never see a plugin installed via the
+// marketplace/registry system (living at cache/<marketplace>/<plugin>/<sha>,
+// not a direct child of the plugins root) — so a registry-installed plugin's
+// commands never appeared here even though a spawned session loaded them
+// fine. That was deliberate while P3 (slash-command execution, which owns
+// this method) needed to stay independent of P1 (the marketplace/registry
+// backend); now that the registry is the system of record on the hub side
+// (P5), this reads EnabledPluginDirs like session init does.
 //
 // Loading is fail-soft (plugin.LoadAllFailSoft), the same way session init
 // loads plugins: one broken or mid-edit plugin dir must not blank out the
@@ -780,7 +784,7 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 // surfaced here — CommandListResponse has no warning channel — but a skipped
 // dir still shows up in a session's own SESSION_START warnings.
 func hubCommandList(cfg hubcore.WebConfig) (appwire.CommandListResponse, error) {
-	dirs := pluginDirsFromConfig(cfg)
+	dirs := plugins.NewManager(cfg.PluginRoot).EnabledPluginDirs(cfg.PluginDirs)
 	if len(dirs) == 0 {
 		return appwire.CommandListResponse{}, nil
 	}

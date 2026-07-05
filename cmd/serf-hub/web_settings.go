@@ -331,9 +331,11 @@ func (s *WebServer) pluginsRootForSettings() []string {
 }
 
 // pluginDirsFromConfig is pluginsRootForSettings's config-only logic, factored
-// out so both the Settings → Plugins pane (via the WebServer method above) and
-// the serf/command/list RPC handler (app_rpc.go, which only has the config,
-// not a *WebServer) resolve plugin dirs identically.
+// out of the WebServer method above so it can be unit-tested without
+// constructing a *WebServer. It backs only the Settings → Plugins pane's
+// display-only scan; serf/command/list (app_rpc.go's hubCommandList) instead
+// reads internal/plugins.Manager.EnabledPluginDirs, the same registry-aware
+// resolution a spawned session uses.
 func pluginDirsFromConfig(cfg hubcore.WebConfig) []string {
 	if len(cfg.PluginDirs) > 0 {
 		return cfg.PluginDirs
