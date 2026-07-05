@@ -83,6 +83,7 @@ type Instance struct {
 	ManifestPath string
 	Skills       map[string]skill.SkillMeta     // namespaced as "plugin-name:skill-name"
 	Agents       map[string]Agent               // namespaced as "plugin-name:agent-name"
+	Commands     map[string]Command             // namespaced as "plugin-name:command-name"
 	Hooks        map[HookEvent][]RegisteredHook // keyed by event type
 	MCPConfigs   []mcpconfig.ServerConfig       // namespaced as "plugin_<name>_<server>"
 
@@ -215,6 +216,12 @@ func Load(dir string) (Instance, error) {
 		return Instance{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
 	}
 	lp.Agents = agents
+
+	commands, err := discoverPluginCommands(resolved, manifest.Commands, manifest.Name)
+	if err != nil {
+		return Instance{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
+	}
+	lp.Commands = commands
 
 	hooks, unsupportedHooks, unknownHooks, err := discoverPluginHooksDiag(resolved, manifest.Hooks, manifest.Name)
 	if err != nil {
