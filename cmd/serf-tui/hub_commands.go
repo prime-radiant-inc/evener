@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/agent/task"
@@ -13,6 +16,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
+	"primeradiant.com/serf/llm"
 )
 
 type hubTreeMsg struct {
@@ -320,7 +324,80 @@ func logoutHubAuth(client *appwire.Client, provider string) tea.Cmd {
 	}
 }
 
+// datedSnapshotSuffix and prettifyModelDisplayName are duplicated from
+// cmd/serf-hub/web_spawn.go (a different binary/package; llm/model_catalog.go
+// isn't owned by this track — see the plan's Global Constraints).
+var datedSnapshotSuffix = regexp.MustCompile(`-\d{8}(-v\d+)?$`)
+
+func isDatedSnapshotModelID(ref string) bool {
+	if i := strings.LastIndex(ref, "/"); i >= 0 {
+		ref = ref[i+1:]
+	}
+	return datedSnapshotSuffix.MatchString(ref)
+}
+
+func prettifyModelDisplayName(id string) string {
+	base := datedSnapshotSuffix.ReplaceAllString(id, "")
+	segments := strings.Split(base, "-")
+	for idx, seg := range segments {
+		if seg == "" {
+			continue
+		}
+		r := []rune(seg)
+		r[0] = unicode.ToUpper(r[0])
+		segments[idx] = string(r)
+	}
+	return strings.Join(segments, " ")
+}
+
+// formatModelContextWindow renders a token count compactly ("1M", "128K").
+func formatModelContextWindow(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return strconv.Itoa(n/1_000_000) + "M"
+	case n >= 1000:
+		return strconv.Itoa(n/1000) + "K"
+	default:
+		return strconv.Itoa(n)
+	}
+}
+
+// modelInfoMetaTail builds the model picker row's compact caps/ctx/price
+// tail from a direct llm.EmbeddedModelCatalog() lookup. Unlike the web's
+// catalogModelInfo, this has no providers.toml/behaviorTag to resolve the
+// tag-qualified fallback — the TUI process has no such config — so it only
+// tries the canonicalized bare lookup (LookupModelInfo). A nil mi (model not
+// in the embedded catalog) yields "": the uncatalogued-model rule (still
+// render name+provider+id, no badges) applies.
+func modelInfoMetaTail(mi *llm.ModelInfo) string {
+	if mi == nil {
+		return ""
+	}
+	var parts []string
+	if mi.ContextWindow > 0 {
+		parts = append(parts, formatModelContextWindow(mi.ContextWindow)+" ctx")
+	}
+	if mi.InputCostPerMillion != nil && mi.OutputCostPerMillion != nil {
+		parts = append(parts, fmt.Sprintf("$%.2f/$%.2f", *mi.InputCostPerMillion, *mi.OutputCostPerMillion))
+	}
+	var caps []string
+	if mi.SupportsTools {
+		caps = append(caps, "tools")
+	}
+	if mi.SupportsVision {
+		caps = append(caps, "vision")
+	}
+	if mi.SupportsReasoning {
+		caps = append(caps, "reasoning")
+	}
+	if len(caps) > 0 {
+		parts = append(parts, strings.Join(caps, ","))
+	}
+	return strings.Join(parts, " · ")
+}
+
 func modelPickerItems(models []appwire.ModelDescriptor, rawModelID bool) []tuipick.ModelPickerItem {
+	cat := llm.EmbeddedModelCatalog()
 	items := make([]tuipick.ModelPickerItem, 0, len(models))
 	for _, option := range models {
 		model := strings.TrimSpace(option.Model)
@@ -328,16 +405,29 @@ func modelPickerItems(models []appwire.ModelDescriptor, rawModelID bool) []tuipi
 		if model == "" || (!rawModelID && provider == "") {
 			continue
 		}
-		display := model
-		if provider != "" {
-			display = provider + "/" + model
-		}
-		id := display
+		display := prettifyModelDisplayName(model)
+		id := provider + "/" + model
 		if rawModelID {
 			id = model
+		} else if provider == "" {
+			id = model
 		}
-		items = append(items, tuipick.ModelPickerItem{ID: id, Display: display})
+		var meta string
+		if cat != nil {
+			meta = modelInfoMetaTail(cat.LookupModelInfo(model))
+		}
+		items = append(items, tuipick.ModelPickerItem{ID: id, Display: display, Group: provider, Meta: meta})
 	}
+	sort.SliceStable(items, func(a, b int) bool {
+		if items[a].Group != items[b].Group {
+			return items[a].Group < items[b].Group
+		}
+		da, db := isDatedSnapshotModelID(items[a].ID), isDatedSnapshotModelID(items[b].ID)
+		if da != db {
+			return !da
+		}
+		return false
+	})
 	return items
 }
 
@@ -373,6 +463,9 @@ func modelPickerItemsFromResponse(resp appwire.ModelListResponse, rawModelID boo
 }
 
 func modelPickerItemProvider(item tuipick.ModelPickerItem) string {
+	if g := strings.TrimSpace(item.Group); g != "" {
+		return g
+	}
 	display := strings.TrimSpace(item.Display)
 	if display == "" {
 		display = strings.TrimSpace(item.ID)
