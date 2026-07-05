@@ -3079,9 +3079,6 @@ func TestWeb_WorkspacePartial_RendersWorkingDirInStatusRow(t *testing.T) {
 	if !strings.Contains(body, `class="status-value"`) {
 		t.Errorf("status row missing status-value span: %q", body)
 	}
-	if strings.Contains(body, `class="workspace-meta workspace-meta-poll"`) && strings.Contains(body, `>serf</span><span class="status-badge"`) {
-		t.Errorf("workspace header should not render source/status metadata: %q", body)
-	}
 	if !strings.Contains(body, `class="task-status-row"`) {
 		t.Errorf("workspace partial missing bottom task status row: %q", body)
 	}

@@ -4690,8 +4690,6 @@ body.has-connection-banner #workspace { height: calc(100vh - 32px); }
 /* Skeleton variants — header meta pills (workspace.html) and conversation
    lines (skeleton-turn). Sizes here keep all inline style attributes out
    of the template. */
-.skeleton-meta-pill { width: 80px; }
-.skeleton-meta-pill-short { width: 60px; }
 .skeleton-meta-pill-long  { width: 100px; }
 .skeleton-line { height: 14px; }
 .skeleton-line-60 { width: 60%; }
