@@ -69,6 +69,14 @@ type Roster struct {
 	// fingerprint is the live-set hash from the most recent Refresh (see
 	// rosterFingerprint), used to gate onChange against no-op refreshes.
 	fingerprint uint64
+
+	// onStatusChange, when set via SetOnStatusChange, is fired once per
+	// session id by Refresh whenever that session's Status differs from the
+	// prior snapshot (a session present in both snapshots with a changed
+	// Status). It exists so a status transition can drive a targeted
+	// past-index re-read (PastIndex.RefreshOne) instead of waiting for the
+	// next full rebuild.
+	onStatusChange func(sessionID string)
 }
 
 // NewRoster returns a Roster that scans runDir on demand.
@@ -125,6 +133,11 @@ func NewRosterWithEntries(entries ...LiveEntry) *Roster {
 // membership or per-session status actually changes. Nil disables the hook.
 func (r *Roster) SetOnChange(fn func()) { r.onChange = fn }
 
+// SetOnStatusChange registers a callback fired once per session id, by
+// Refresh, whenever that session's Status transitions between two
+// consecutive snapshots. Nil disables the hook.
+func (r *Roster) SetOnStatusChange(fn func(sessionID string)) { r.onStatusChange = fn }
+
 func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 	ids := make([]string, 0, len(bySess))
 	for id := range bySess {
@@ -159,11 +172,13 @@ func (r *Roster) Refresh() {
 		return
 	}
 
-	// Snapshot the previous PID map for the keep-alive fallback. Reading it
-	// under a brief lock (rather than holding the lock across the probes) keeps
-	// List() responsive while a slow probe pass runs.
+	// Snapshot the previous PID map for the keep-alive fallback, and the
+	// previous per-session map for the status-transition diff below. Reading
+	// them under a brief lock (rather than holding the lock across the
+	// probes) keeps List() responsive while a slow probe pass runs.
 	r.mu.RLock()
 	prevByPID := r.byPID
+	prevBySess := r.bySess
 	r.mu.RUnlock()
 
 	type probeResult struct {
@@ -218,6 +233,14 @@ func (r *Roster) Refresh() {
 	r.bySess = bySess
 	r.byPID = byPID
 	r.mu.Unlock()
+
+	if r.onStatusChange != nil {
+		for id, cur := range bySess {
+			if prev, had := prevBySess[id]; had && prev.Status != cur.Status {
+				r.onStatusChange(id)
+			}
+		}
+	}
 
 	fp := rosterFingerprint(bySess)
 	r.mu.Lock()

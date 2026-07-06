@@ -3,6 +3,7 @@ package hubcore
 import (
 	"database/sql"
 	"encoding/binary"
+	"fmt"
 	"hash/fnv"
 	"os"
 	"path/filepath"
@@ -224,6 +225,34 @@ func (i *PastIndex) UpdateMeta(id string, meta schema.SessionMeta) {
 	if changed && i.onChange != nil {
 		i.onChange()
 	}
+}
+
+// RefreshOne re-reads one already-indexed session's on-disk meta and folds it
+// into the index via UpdateMeta (the cheap reorder-without-rescan path),
+// without waiting for the next full Rebuild. It exists because a session's
+// meta.json can be rewritten out-of-process (the daemon's own periodic
+// autosave) between Rebuild ticks, leaving AllMetas stale for up to a full
+// rebuild interval.
+//
+// A no-op, not an error, in both edge cases a caller cannot prevent: an id
+// RefreshOne has never indexed (mirrors UpdateMeta's own untracked-ID no-op),
+// and a meta file that has been removed or renamed out from under an indexed
+// id (e.g. racing session cleanup) — LoadSessionMeta's failure is logged and
+// swallowed, leaving the existing entry untouched, rather than panicking or
+// erroring the caller.
+func (i *PastIndex) RefreshOne(id string) {
+	i.mu.RLock()
+	entry, ok := i.byID[id]
+	i.mu.RUnlock()
+	if !ok {
+		return
+	}
+	meta, err := schema.LoadSessionMeta(entry.StateDir, id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[hub] RefreshOne(%s): load meta: %v\n", id, err)
+		return
+	}
+	i.UpdateMeta(id, meta)
 }
 
 // All returns the full index sorted by the Hub session ordering contract.

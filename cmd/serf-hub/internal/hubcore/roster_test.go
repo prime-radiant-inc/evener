@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/rendezvous"
 )
@@ -391,6 +392,124 @@ func TestProcessAlive(t *testing.T) {
 	// Current process should be alive.
 	if !processAlive(os.Getpid()) {
 		t.Fatal("processAlive(current) should be true")
+	}
+}
+
+// statusProber returns a fixed session id and status for every entry probed;
+// swapping .status between Refresh calls simulates a daemon's state
+// transition (e.g. "working" -> "idle") for TestRoster_OnStatusChange tests.
+type statusProber struct {
+	sessionID string
+	status    string
+}
+
+func (p *statusProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, ok bool) {
+	return p.sessionID, p.status, false, true
+}
+
+// TestRoster_OnStatusChangeFiresForTransitioningSession is the regression
+// test for the tree-freshness fix: a session's Status changing between two
+// consecutive Refresh snapshots must fire the per-session hook with that
+// session's id, so the hub can re-read just that session's on-disk meta
+// instead of waiting for the next full past-index rebuild.
+func TestRoster_OnStatusChangeFiresForTransitioningSession(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:50001"})
+
+	prober := &statusProber{sessionID: "01SESS", status: "working"}
+	r := NewRoster(dir, prober)
+	r.Refresh() // seed: no prior snapshot, so no transition to report
+
+	var got []string
+	r.SetOnStatusChange(func(sessionID string) { got = append(got, sessionID) })
+
+	prober.status = "idle"
+	r.Refresh()
+
+	if len(got) != 1 || got[0] != "01SESS" {
+		t.Fatalf("expected onStatusChange(01SESS) once, got %v", got)
+	}
+}
+
+// TestRoster_OnStatusChangeNotFiredWhenStatusUnchanged pins the other half:
+// a Refresh whose per-session status set is identical to the prior snapshot
+// must not fire the hook, so a targeted re-read isn't triggered on every
+// roster poll (only genuine transitions).
+func TestRoster_OnStatusChangeNotFiredWhenStatusUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:50001"})
+
+	prober := &statusProber{sessionID: "01SESS", status: "working"}
+	r := NewRoster(dir, prober)
+	r.Refresh()
+
+	fired := false
+	r.SetOnStatusChange(func(sessionID string) { fired = true })
+
+	r.Refresh() // same status both times
+	if fired {
+		t.Fatal("onStatusChange fired for an unchanged status")
+	}
+}
+
+// TestRoster_StatusChangeDrivesPastIndexRefreshAndVersionBump exercises the
+// full tree-freshness fix end to end, mirroring how cmd/serf-hub/main.go
+// wires the pieces together: a session's status transition (as detected by
+// Roster.Refresh) drives PastIndex.RefreshOne, which re-reads the session's
+// on-disk meta and, on a genuine content delta, bumps the shared
+// InputsVersion counter the /api/tree memo keys on. Before this fix, that
+// bump only happened on PastIndex's own 60s Rebuild ticker.
+func TestRoster_StatusChangeDrivesPastIndexRefreshAndVersionBump(t *testing.T) {
+	stateRoot := t.TempDir()
+	proj := filepath.Join(stateRoot, "proj")
+	base := time.Unix(1_700_000_000, 0)
+	writeMeta(t, proj, schema.SessionMeta{
+		ID:        "01SESS",
+		UpdatedAt: base,
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/w"},
+	})
+
+	past := NewPastIndex(filepath.Join(stateRoot, "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	rendezvousDir := t.TempDir()
+	writeRendezvous(t, rendezvousDir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:50001"})
+	prober := &statusProber{sessionID: "01SESS", status: "working"}
+	roster := NewRoster(rendezvousDir, prober)
+
+	inputs := &InputsVersion{}
+	past.SetOnChange(inputs.Bump)
+	roster.SetOnChange(inputs.Bump)
+	roster.SetOnStatusChange(func(sessionID string) { past.RefreshOne(sessionID) })
+
+	roster.Refresh() // seed: membership change alone bumps the version once
+	seeded := inputs.Load()
+	if seeded == 0 {
+		t.Fatal("expected the seeding refresh to bump the version at least once")
+	}
+
+	// Out-of-process rewrite of the daemon's own meta.json, exactly like
+	// maybeAutoSave, paired with the daemon's status transitioning.
+	writeMeta(t, proj, schema.SessionMeta{
+		ID:        "01SESS",
+		UpdatedAt: base.Add(time.Minute),
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/w"},
+	})
+	prober.status = "idle"
+
+	roster.Refresh()
+
+	if got := inputs.Load(); got <= seeded {
+		t.Fatalf("expected version to bump again after the status transition, got %d (seeded=%d)", got, seeded)
+	}
+	entry, ok := past.Find("01SESS")
+	if !ok {
+		t.Fatal("expected 01SESS to remain indexed")
+	}
+	if !entry.Meta.UpdatedAt.Equal(base.Add(time.Minute)) {
+		t.Fatalf("expected the past index to reflect the re-read UpdatedAt, got %v", entry.Meta.UpdatedAt)
 	}
 }
 
