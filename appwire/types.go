@@ -220,6 +220,10 @@ type SerfThread struct {
 	Usage               *SerfUsage `json:"usage,omitempty"`
 	WorkMillis          int64      `json:"workMillis,omitempty"`
 	ActiveTurnStartedAt int64      `json:"activeTurnStartedAt,omitempty"`
+	// AskPending mirrors StatusInfo.PendingAsk (Track A §2 ask-tiering) —
+	// true while an ask_user question is unanswered. Additive: absent on old
+	// daemons and Codex threads, decoding as false.
+	AskPending bool `json:"askPending,omitempty"`
 }
 
 // GoalState is the wire representation of a session's /goal. Status is the
