@@ -206,9 +206,13 @@
     ];
   }
   function projectMenuItems(p) {
-    // A project stamped __archived (by pushArchivedSection, below) renders
-    // inside the Archived section and offers Unarchive instead of Archive.
-    var archived = !!p.__archived;
+    // The verb tracks the server-supplied is_archived flag, not which section
+    // stamped the row (WS3 R2): a project can be both test-run and archived,
+    // and TestRuns wins the bucket (web_api_tree.go), so __archived (stamped
+    // only inside pushArchivedSection, below) would wrongly read as "not
+    // archived" for it. Fall back to __archived only when the server omitted
+    // is_archived (older payload shape).
+    var archived = (typeof p.is_archived === "boolean") ? p.is_archived : !!p.__archived;
     return [
       { label: "New session", run: function () { window.location.href = "/new?dir=" + encodeURIComponent(p.working_dir); } },
       { label: "Settings", run: function () { window.location.href = "/settings/project?cwd=" + encodeURIComponent(p.working_dir); } },

@@ -72,6 +72,7 @@ type TreeProject struct {
 	MoreRecent      int        `json:"more_recent,omitempty"`
 	MoreArchived    int        `json:"more_archived,omitempty"`
 	Worktrees       int        `json:"worktrees,omitempty"`
+	IsArchived      bool       `json:"is_archived,omitempty"`
 	Sessions        []TreeNode `json:"sessions"`
 }
 

@@ -5,9 +5,11 @@
 // project that is both test-run and archived lands in — is decided
 // server-side (web_api_tree.go, round-2 B6: TestRuns wins). The client just
 // renders tree.test_runs and tree.archived_projects as two independent
-// buckets and must never re-derive or merge them itself. Unlike Archived, a
-// test-runs project keeps the plain "Archive" menu item (not "Unarchive")
-// since it was never placed in the archived bucket.
+// buckets and must never re-derive or merge them itself. The Archive/Unarchive
+// menu verb follows the server-supplied is_archived flag on the wire node, not
+// which bucket the client rendered it in (WS3 R2, see test-sidebar-menu.js for
+// the archived-test-run-project case) — a plain test-runs project (is_archived
+// absent/false, as below) still gets plain "Archive".
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
 const src = fs.readFileSync(__dirname + "/../assets/sidebar.js", "utf8");
@@ -127,9 +129,11 @@ if (JSON.stringify(order2) !== JSON.stringify(expected)) {
 }
 
 // 6. Menu: the expanded test-runs project's menu offers Delete… and Archive
-// (never Unarchive — it isn't in the archived bucket), and Delete… actually
-// works (posts /api/project/delete with the wire key/working_dir) — this
-// bucket exists specifically so the serf-e2e-* sprawl can be bulk-deleted.
+// (never Unarchive — this fixture's tpk1 carries no is_archived, i.e. it
+// genuinely isn't archived; see test-sidebar-menu.js for the is_archived:true
+// case, which must offer Unarchive from this very same bucket), and Delete…
+// actually works (posts /api/project/delete with the wire key/working_dir) —
+// this bucket exists specifically so the serf-e2e-* sprawl can be bulk-deleted.
 const menuBtn = projHeader.querySelector(".sb-menu-btn");
 if (!menuBtn) throw new Error("test-runs project header must carry a ⋯ menu button");
 menuBtn.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
