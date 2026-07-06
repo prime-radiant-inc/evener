@@ -176,6 +176,23 @@ func renderDetailsRow(w io.Writer, row detailsRow) {
 	_, _ = fmt.Fprintf(w, `<dt%s>%s</dt><dd%s>%s</dd>`, attr, htmlEscape(row.Label), attr, htmlEscape(row.Value))
 }
 
+// tokensAndCostRows returns the "tokens" and (when estimable) "cost" rows
+// for a session's usage, shared by the live-session and ended-session
+// branches of renderDetailsPanel so both stay in sync. Returns nil when
+// usage is nil.
+func tokensAndCostRows(model string, usage *appwire.SerfUsage) []detailsRow {
+	if usage == nil {
+		return nil
+	}
+	rows := []detailsRow{{Label: "tokens", Value: fmt.Sprintf("↑%s ↓%s · cache-read %s · total %s",
+		formatTokenCount(int(usage.InputTokens)), formatTokenCount(int(usage.OutputTokens)),
+		formatTokenCount(int(usage.CacheReadTokens)), formatTokenCount(int(usage.TotalTokens)))}}
+	if cost := appwire.EstimateCost(model, usage); cost != "" {
+		rows = append(rows, detailsRow{Label: "cost", Value: cost, DataRow: "cost"})
+	}
+	return rows
+}
+
 // renderDetailsPanel returns a side-panel with the session's verbose
 // metadata: full session id, working dir, branch + sha, model, turn count,
 // last input tokens, and (for forks) the parent session id and divergence
@@ -209,14 +226,7 @@ func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, i
 		if m.WorkMillis > 0 {
 			rows = append(rows, detailsRow{Label: "work time", Value: formatWorkMillis(m.WorkMillis)})
 		}
-		if usage := serfUsageFromCumulative(m.CumulativeUsage); usage != nil {
-			rows = append(rows, detailsRow{Label: "tokens", Value: fmt.Sprintf("↑%s ↓%s · cache-read %s · total %s",
-				formatTokenCount(int(usage.InputTokens)), formatTokenCount(int(usage.OutputTokens)),
-				formatTokenCount(int(usage.CacheReadTokens)), formatTokenCount(int(usage.TotalTokens)))})
-			if cost := appwire.EstimateCost(m.Model, usage); cost != "" {
-				rows = append(rows, detailsRow{Label: "cost", Value: cost, DataRow: "cost"})
-			}
-		}
+		rows = append(rows, tokensAndCostRows(m.Model, serfUsageFromCumulative(m.CumulativeUsage))...)
 		if m.ParentSessionID != "" {
 			rows = append(rows,
 				detailsRow{Label: "forked from", Value: m.ParentSessionID},
@@ -243,15 +253,7 @@ func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, i
 				if status.WorkMillis > 0 {
 					rows = append(rows, detailsRow{Label: "work time", Value: formatWorkMillis(status.WorkMillis)})
 				}
-				if status.Usage != nil {
-					u := status.Usage
-					rows = append(rows, detailsRow{Label: "tokens", Value: fmt.Sprintf("↑%s ↓%s · cache-read %s · total %s",
-						formatTokenCount(int(u.InputTokens)), formatTokenCount(int(u.OutputTokens)),
-						formatTokenCount(int(u.CacheReadTokens)), formatTokenCount(int(u.TotalTokens)))})
-				}
-				if cost := appwire.EstimateCost(status.Model, status.Usage); cost != "" {
-					rows = append(rows, detailsRow{Label: "cost", Value: cost, DataRow: "cost"})
-				}
+				rows = append(rows, tokensAndCostRows(status.Model, status.Usage)...)
 			}
 		}
 	}
