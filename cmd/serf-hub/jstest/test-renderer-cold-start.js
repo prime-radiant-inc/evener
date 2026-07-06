@@ -1,7 +1,7 @@
 // Cold-start / empty session (mockup #21: A optimistic echo + B skeleton +
 // C welcome pane). Uses ONLY real signals:
-//   - empty session (no messages) → crafted welcome pane w/ example prompts;
-//   - clicking an example prefills the composer;
+//   - empty session (no messages) → a bare welcome pane, no tagline or
+//     example-prompt clutter (sweep/sidebar-polish);
 //   - on send (appendLocalUserMessage) the welcome dissolves and a faint
 //     skeleton placeholder + calm "starting…" liveness stand in the gap;
 //   - ASSISTANT_TEXT_START (first real frame) removes the skeleton.
@@ -41,19 +41,15 @@ function feed(kind, data) {
 (async () => {
   await new Promise((r) => setTimeout(r, 40)); // let cold-load hydration drain
 
-  // ── C. Empty session renders a crafted welcome pane ──────────────────────
+  // ── C. Empty session renders a (now bare) welcome pane ───────────────────
   let welcome = conv.querySelector(".cold-start-welcome");
   pass(welcome, "an empty session renders the welcome pane (not a void)");
-  const examples = welcome ? welcome.querySelectorAll(".cold-start-example") : [];
-  pass(examples.length >= 2, "the welcome offers 2+ example-prompt buttons (got " + examples.length + ")");
-
-  // Clicking an example prefills the composer textarea.
-  if (examples.length) {
-    const expected = examples[0].dataset.prompt || examples[0].textContent.trim();
-    examples[0].click();
-    pass(ta.value === expected,
-      "clicking an example prefills the composer (got '" + ta.value + "')");
-  }
+  // The tagline + "Try" example-prompt suggestions were clutter (Jesse:
+  // "amateurish") and are gone — the empty state is just the compose
+  // affordance, nothing rendered above it.
+  pass(!conv.querySelector(".cold-start-intro"), "the welcome tagline must be removed");
+  pass(!conv.querySelector(".cold-start-try"), "the 'Try' label must be removed");
+  pass(!conv.querySelector(".cold-start-examples"), "the example-prompt suggestions must be removed");
 
   // ── A + skeleton wiring. On send, the welcome dissolves and a faint ──────
   // skeleton placeholder + calm "starting…" liveness stand in the gap.
