@@ -78,6 +78,22 @@ func priceFromModelInfo(mi *ModelInfo) (Price, bool) {
 	}, true
 }
 
+// EstimateCost returns the blended dollar cost of the given token counts at
+// price's rates. Cache-read tokens price at CacheReadPerM when the catalog
+// has one, else at the input rate (an accepted approximation, not a hard
+// guarantee). Cache-creation cost is not counted: no caller here tracks a
+// cache-creation token count (cache-read/write cost breakout is explicitly
+// out of scope for the consistency-sweep cost feature).
+func EstimateCost(inputTokens, cacheReadTokens, outputTokens int64, price Price) float64 {
+	cacheReadRate := price.InputPerM
+	if price.CacheReadPerM != nil {
+		cacheReadRate = *price.CacheReadPerM
+	}
+	return float64(inputTokens)*price.InputPerM/1e6 +
+		float64(cacheReadTokens)*cacheReadRate/1e6 +
+		float64(outputTokens)*price.OutputPerM/1e6
+}
+
 // DefaultPrice looks up pricing via the embedded LiteLLM catalog.
 // Equivalent to EmbeddedModelCatalog().GetPrice(modelID).
 func DefaultPrice(modelID string) (Price, bool) {

@@ -165,6 +165,23 @@ func TestDefaultPrice_DatedSnapshot(t *testing.T) {
 	}
 }
 
+func TestEstimateCost_BlendsCacheReadAtItsOwnRate(t *testing.T) {
+	price := Price{InputPerM: 5.0, OutputPerM: 25.0, CacheReadPerM: f64(0.5)}
+	got := EstimateCost(1_000_000, 1_000_000, 1_000_000, price)
+	want := 5.0 + 0.5 + 25.0 // one million tokens of each tier
+	if !approxF(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestEstimateCost_CacheReadFallsBackToInputRateWhenUncataloged(t *testing.T) {
+	price := Price{InputPerM: 5.0, OutputPerM: 25.0} // no CacheReadPerM
+	got := EstimateCost(0, 1_000_000, 0, price)
+	if !approxF(got, 5.0) {
+		t.Errorf("got %v, want 5.0 (cache-read priced at input rate)", got)
+	}
+}
+
 func approxF(a, b float64) bool {
 	diff := a - b
 	if diff < 0 {
