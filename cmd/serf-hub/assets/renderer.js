@@ -2544,10 +2544,10 @@
     },
 
     subagentGlyph(kind) {
-      if (kind === "done") return "✓";
-      if (kind === "failed") return "✕";
+      if (kind === "done") return window.SerfIcons.ended;
+      if (kind === "failed") return window.SerfIcons.error;
       if (kind === "unknown") return "?";
-      return "⟳";
+      return window.SerfIcons.working;
     },
 
     // Status kinds (running/done/failed/unknown) map to short glyph CSS classes
@@ -2616,7 +2616,7 @@
       row.className = "sub-r";
       const glyph = document.createElement("span");
       glyph.className = "g run";
-      glyph.textContent = "⟳";
+      glyph.innerHTML = window.SerfIcons.working;
       const name = document.createElement("span");
       name.className = "nm";
       const res = document.createElement("span");
@@ -2949,7 +2949,7 @@
       const glyph = row.querySelector(".g");
       if (glyph) {
         glyph.className = "g " + this.subagentGlyphClass(kind);
-        glyph.textContent = this.subagentGlyph(kind);
+        glyph.innerHTML = this.subagentGlyph(kind);
       }
       this.renderSubagentResult(row, data, kind);
       this.renderSubagentDuration(row, kind);
@@ -3165,15 +3165,15 @@
       if (tally) {
         tally.innerHTML = "";
         const parts = [];
-        if (failed) parts.push(["f", "✕ " + failed + " failed"]);
+        if (failed) parts.push(["f", window.SerfIcons.error + " " + failed + " failed"]);
         if (unknown) parts.push(["u", "? " + unknown + " unknown"]);
-        if (running) parts.push(["r", "⟳ " + running + " running"]);
-        if (done) parts.push(["o", "✓ " + done + " done"]);
+        if (running) parts.push(["r", window.SerfIcons.working + " " + running + " running"]);
+        if (done) parts.push(["o", window.SerfIcons.ended + " " + done + " done"]);
         parts.forEach(([cls, text], i) => {
           if (i > 0) tally.append(" · ");
           const span = document.createElement("span");
           span.className = cls;
-          span.textContent = text;
+          span.innerHTML = text;
           tally.appendChild(span);
         });
       }
@@ -3298,7 +3298,7 @@
         const glyph = row.querySelector(".g");
         if (glyph) {
           glyph.className = "g " + this.subagentGlyphClass("unknown");
-          glyph.textContent = this.subagentGlyph("unknown");
+          glyph.innerHTML = this.subagentGlyph("unknown");
         }
         this.renderSubagentResult(row, {}, "unknown");
         this.renderSubagentDuration(row, "unknown");
