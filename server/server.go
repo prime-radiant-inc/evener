@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/appprojector"
 	"primeradiant.com/serf/internal/appserver"
@@ -170,6 +171,7 @@ type Server struct {
 	// there is none to report), and the in-flight turn's start time (0 when
 	// idle). Read by both /status and the appwire appThread() projection.
 	workMetricsFn       func() (workMillis int64, usage *appwire.SerfUsage, activeTurnStartedAt int64)
+	sessionMetaFn       func() schema.SessionMeta
 	detailedStatusFn    func() DetailedStatus
 	modelFunc           func(string)
 	nameFunc            func(string)
@@ -412,6 +414,14 @@ func (s *Server) SetPendingAskFunc(fn func() bool) {
 func (s *Server) SetWorkMetricsFunc(fn func() (workMillis int64, usage *appwire.SerfUsage, activeTurnStartedAt int64)) {
 	s.mu.Lock()
 	s.workMetricsFn = fn
+	s.mu.Unlock()
+}
+
+// SetSessionMetaFunc sets a callback returning current session metadata for
+// appwire thread snapshots, including generated/user-chosen display titles.
+func (s *Server) SetSessionMetaFunc(fn func() schema.SessionMeta) {
+	s.mu.Lock()
+	s.sessionMetaFn = fn
 	s.mu.Unlock()
 }
 

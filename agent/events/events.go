@@ -53,6 +53,8 @@ const (
 	// EventTaskUpdated reports a change to the session's task-list progress
 	// (total/done), so subscribers can refresh a status row event-driven.
 	EventTaskUpdated EventKind = "TASK_UPDATED"
+	// EventSessionNameChanged reports that the session's display title changed.
+	EventSessionNameChanged EventKind = "SESSION_NAME_CHANGED"
 	// EventTurnLimit reports turn or tool-round limits.
 	EventTurnLimit EventKind = "TURN_LIMIT"
 	// EventLoopDetection reports detection of a loop.

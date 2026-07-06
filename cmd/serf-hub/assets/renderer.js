@@ -407,6 +407,16 @@
       }
     },
 
+    updateThreadTitle(title) {
+      title = String(title || "").trim();
+      if (!title) return;
+      const el = document.getElementById("workspace-session-title") || document.querySelector(".workspace-header .workspace-title .title");
+      if (!el) return;
+      el.textContent = title;
+      el.setAttribute("title", title);
+      document.dispatchEvent(new CustomEvent("serf-hub:thread-title", { detail: { title, sessionId: this.sessionId || "" } }));
+    },
+
     setActiveTurnId(turnId) {
       this.activeTurnId = turnId || "";
       if (this.conversation) this.conversation.dataset.activeTurnId = this.activeTurnId;
@@ -917,6 +927,9 @@
             // dispatchEvent(), so this is a separate call from the one above.
             if (window.htmx) htmx.trigger(document.body, "serf-hub:status-refresh");
           }
+          break;
+        case "THREAD_TITLE_CHANGED":
+          this.updateThreadTitle(data.name || "");
           break;
         case "TURN_STARTED":
           // A new turn supersedes any prior blocking question.

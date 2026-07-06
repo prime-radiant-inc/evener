@@ -628,6 +628,15 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Total:    data.Total,
 			Done:     data.Done,
 		})}
+	case events.EventSessionNameChanged:
+		p.clearSkillCandidate()
+		data := eventData[events.SessionNameChangedData](event.Data)
+		return []AppNotification{p.notification(appwire.NotifyThreadNameChanged, appwire.ThreadNameChangedParams{
+			ThreadID: p.threadID,
+			Ref:      p.ref,
+			Name:     data.Name,
+			Source:   data.Source,
+		})}
 	case events.EventJobStarted:
 		p.clearSkillCandidate()
 		data := eventData[events.JobStartedData](event.Data)

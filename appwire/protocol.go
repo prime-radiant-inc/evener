@@ -157,6 +157,7 @@ var Notifications = []NotificationSpec{
 	{NotifyThreadClosed, nil, "Session ended; inline {threadId, ref, reason}."},
 	{NotifyThreadStatusChanged, ThreadStatusChangedParams{}, "Thread status (type + active flags) changed."},
 	{NotifyThreadQueueChanged, ThreadQueueChangedParams{}, "The per-session input queue depth/preview changed."},
+	{NotifyThreadNameChanged, ThreadNameChangedParams{}, "The session title changed (generated or user-renamed)."},
 	{NotifyTurnStarted, nil, "A new turn began (inProgress); inline {threadId, ref, turn}."},
 	{NotifyTurnCompleted, TurnCompletedParams{}, "A turn reached a terminal state (completed/failed/interrupted)."},
 	{NotifyItemStarted, nil, "A thread item began streaming; inline {threadId, ref, turnId, item}."},
