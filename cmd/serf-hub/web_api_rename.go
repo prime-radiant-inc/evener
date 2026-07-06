@@ -55,13 +55,20 @@ func (s *WebServer) handleAPIRename(w http.ResponseWriter, r *http.Request, id s
 	if s.cfg.Roster != nil {
 		if _, live := s.cfg.Roster.Find(canonicalRouteID(id)); live {
 			source, err := sourceForThread(s.sources, ref, "")
-			if err == nil {
-				if err := source.SetThreadName(r.Context(), appwire.ThreadNameSetParams{Ref: ref, Name: name}); err == nil {
-					s.refreshRenamedMeta(id, name)
-					w.WriteHeader(http.StatusNoContent)
-					return
-				}
+			if err != nil {
+				writeAPIError(w, http.StatusNotFound, "session became live but its source is unavailable")
+				return
 			}
+			if err := source.SetThreadName(r.Context(), appwire.ThreadNameSetParams{Ref: ref, Name: name}); err != nil {
+				// The session raced back to live; editing the persisted meta now
+				// would be silently reverted by the live session's next autosave
+				// (T18). Fail loudly instead of writing a doomed meta edit.
+				writeAPIWireError(w, http.StatusBadGateway, err)
+				return
+			}
+			s.refreshRenamedMeta(id, name)
+			w.WriteHeader(http.StatusNoContent)
+			return
 		}
 	}
 	pe, ok := s.cfg.Past.Find(canonicalRouteID(id))
