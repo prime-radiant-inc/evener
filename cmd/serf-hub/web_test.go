@@ -6054,3 +6054,63 @@ func TestDetailsPanel_CostRowCarriesDataAttributeForGating(t *testing.T) {
 		t.Errorf("expected <dd data-row=\"cost\"> in output, got %q", got)
 	}
 }
+
+// TestDetailsPanel_LiveSessionShowsContextWorkTokensCost verifies a live
+// session's details panel gains context-pressure, work-time, tokens, and
+// cost rows sourced from the daemon's /status response, appended after the
+// existing daemon/pid rows (identity-then-runtime-then-metrics ordering).
+func TestDetailsPanel_LiveSessionShowsContextWorkTokensCost(t *testing.T) {
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session_id":        "01DETAILLIVE",
+			"state":             "active",
+			"model":             "claude-opus-4-5",
+			"context_pressure":  0.42,
+			"context_used":      42000,
+			"context_window":    100000,
+			"context_remaining": 58000,
+			"work_millis":       4200,
+			"usage": map[string]any{
+				"inputTokens":  100_000,
+				"outputTokens": 20_000,
+			},
+		})
+	}))
+	defer daemon.Close()
+
+	addr := strings.TrimPrefix(daemon.URL, "http://")
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:     rendezvous.Entry{Address: addr, SessionID: "01DETAILLIVE", Model: "claude-opus-4-5"},
+		SessionID: "01DETAILLIVE",
+		Status:    "active",
+	})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: roster})
+
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01DETAILLIVE/details", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+
+	if !strings.Contains(body, "42% used") || !strings.Contains(body, formatContextNumbers(42000, 100000, 58000)) {
+		t.Errorf("details panel missing context row: %q", body)
+	}
+	if !strings.Contains(body, formatWorkMillis(4200)) {
+		t.Errorf("details panel missing work-time row with formatted %q: %q", formatWorkMillis(4200), body)
+	}
+	if !strings.Contains(body, "↑100k") || !strings.Contains(body, "↓20k") {
+		t.Errorf("details panel missing tokens row: %q", body)
+	}
+	if !strings.Contains(body, `data-row="cost"`) || !strings.Contains(body, "~$1.00") {
+		t.Errorf("details panel missing cost row with data-row=\"cost\" and ~$1.00: %q", body)
+	}
+}

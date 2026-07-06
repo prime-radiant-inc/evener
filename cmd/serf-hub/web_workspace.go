@@ -223,6 +223,25 @@ func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, i
 				detailsRow{Label: "daemon", Value: le.Address},
 				detailsRow{Label: "pid", Value: strconv.Itoa(le.PID)},
 			)
+			if status := s.fetchStatus(le); status != nil {
+				if status.ContextWindow > 0 {
+					rows = append(rows, detailsRow{Label: "context", Value: fmt.Sprintf("%.0f%% used (%s)",
+						status.ContextPressure*100,
+						formatContextNumbers(status.ContextUsed, status.ContextWindow, status.ContextRemaining))})
+				}
+				if status.WorkMillis > 0 {
+					rows = append(rows, detailsRow{Label: "work time", Value: formatWorkMillis(status.WorkMillis)})
+				}
+				if status.Usage != nil {
+					u := status.Usage
+					rows = append(rows, detailsRow{Label: "tokens", Value: fmt.Sprintf("↑%s ↓%s · cache-read %s · total %s",
+						formatTokenCount(int(u.InputTokens)), formatTokenCount(int(u.OutputTokens)),
+						formatTokenCount(int(u.CacheReadTokens)), formatTokenCount(int(u.TotalTokens)))})
+				}
+				if cost := appwire.EstimateCost(status.Model, status.Usage); cost != "" {
+					rows = append(rows, detailsRow{Label: "cost", Value: cost, DataRow: "cost"})
+				}
+			}
 		}
 	}
 	if s.cfg.Past != nil {
