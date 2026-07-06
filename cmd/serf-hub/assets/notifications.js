@@ -28,11 +28,14 @@
   const PLAIN_FAVICON =
     "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%237aa2f7'/></svg>";
 
-  // Dot color by attention level. No "idle" entry: idle never sets a dot.
+  // Dot color by attention level, mirroring style.css's --state-working /
+  // --state-awaiting (dark-theme values — the favicon/badge always renders
+  // against the dark default regardless of the page's active theme).
+  // No "idle" entry: idle never sets a dot.
   const STATE_COLORS = {
     error: "#f7768e",
-    needs_you: "#e0af68",
-    working: "#7aa2f7",
+    needs_you: "#7aa2f7",
+    working: "#7dc98f",
   };
 
   // The authoritative badge summary, or null until the /api/tree baseline
