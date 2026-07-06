@@ -106,6 +106,12 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 		}
 		dir = final
 	}
+	if err := ensureManifestFallback(dir, staged, cp); err != nil {
+		if strings.HasPrefix(dir, m.cacheDir()+string(os.PathSeparator)) {
+			_ = os.RemoveAll(dir)
+		}
+		return InstallEntry{}, err
+	}
 	if err := validatePluginDir(dir); err != nil {
 		if strings.HasPrefix(dir, m.cacheDir()+string(os.PathSeparator)) {
 			_ = os.RemoveAll(dir)
