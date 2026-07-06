@@ -56,14 +56,17 @@
     a.setAttribute("hx-target", "#workspace");
     a.setAttribute("hx-swap", "innerHTML");
     a.setAttribute("hx-push-url", "/s/" + n.session_id);
-    // Single-line row: title, meta, and the ⋯ menu are direct grid children
-    // of .sb-row (no .text-col wrapper stacking them onto a second line) —
-    // see .sb-row's 4-track grid in style.css.
+    // Single-line row: title, meta, and the row-end slot are direct grid
+    // children of .sb-row (no .text-col wrapper stacking them onto a second
+    // line) — see .sb-row's 4-track grid in style.css. The row-end slot
+    // pins the age flush to the row's right edge; on hover/focus-within the
+    // age fades out and the ⋯ menu fades in over the SAME spot (age-slot
+    // stacks both via grid-area overlap, so nothing shifts).
     a.innerHTML =
-      '<div class="dot-col"><span class="status-dot" data-state="' + n.state + '"></span>' +
-      '<span class="status-icon" data-state="' + n.state + '"></span></div>' +
+      '<div class="dot-col"><span class="status-icon" data-state="' + n.state + '"></span></div>' +
       '<div class="title"></div>' +
-      '<div class="meta"></div>';
+      '<div class="meta"></div>' +
+      '<div class="row-end"><div class="age-slot"><span class="age"></span></div></div>';
     var title = a.querySelector(".title");
     title.textContent = n.title;
     title.setAttribute("title", n.title); // hover tooltip: CSS ellipsizes the visible text
@@ -72,10 +75,11 @@
     icon.setAttribute("title", stateWord(n.state, n.ask_pending));
     var meta = a.querySelector(".meta");
     if (n.branch) meta.appendChild(metaSpan(n.branch));
-    meta.appendChild(metaSpan(ageString(n.updated_at)));
+    a.querySelector(".age").textContent = ageString(n.updated_at);
     if (n.favorite) a.setAttribute("data-favorite", "");
     if (n.ask_pending) a.setAttribute("data-ask", "true");
-    if (n.children && n.children.length) a.appendChild(buildChildrenToggle(n));
+    var rowEnd = a.querySelector(".row-end");
+    if (n.children && n.children.length) rowEnd.insertBefore(buildChildrenToggle(n), rowEnd.firstChild);
     var menuBtn = document.createElement("button");
     menuBtn.type = "button";
     menuBtn.className = "sb-menu-btn btn-icon";
@@ -86,7 +90,7 @@
       e.preventDefault(); e.stopPropagation();
       openMenu(menuBtn, sessionMenuItems(n));
     });
-    a.appendChild(menuBtn);
+    a.querySelector(".age-slot").appendChild(menuBtn);
     return a;
   }
   function metaSpan(text) { var s = document.createElement("span"); s.textContent = text; return s; }
@@ -94,8 +98,6 @@
   function patchRow(a, n) {
     if (a.getAttribute("data-state") !== n.state) {
       a.setAttribute("data-state", n.state);
-      var dot = a.querySelector(".status-dot");
-      if (dot) dot.setAttribute("data-state", n.state);
     }
     var icon = a.querySelector(".status-icon");
     if (icon) {
@@ -157,7 +159,11 @@
   function patchChildrenToggle(a, n) {
     var btn = a.querySelector(".sb-children-toggle");
     var hasChildren = !!(n.children && n.children.length);
-    if (hasChildren && !btn) { a.insertBefore(buildChildrenToggle(n), a.querySelector(".sb-menu-btn")); return; }
+    if (hasChildren && !btn) {
+      var rowEnd = a.querySelector(".row-end");
+      rowEnd.insertBefore(buildChildrenToggle(n), rowEnd.firstChild);
+      return;
+    }
     if (!hasChildren && btn) { btn.remove(); return; }
     if (btn) {
       btn.setAttribute("aria-expanded", String(model.expanded.has(childrenKey(n))));

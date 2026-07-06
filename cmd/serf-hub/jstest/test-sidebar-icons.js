@@ -1,5 +1,6 @@
-// buildRow must render an icon (svg) inside .status-dot's sibling container and
-// set a title attribute carrying the unified word as the hover tooltip.
+// buildRow must render an icon (svg) inside .status-icon and set a title
+// attribute carrying the unified word as the hover tooltip. The row no
+// longer also renders a redundant .status-dot (sweep/sidebar-polish v2).
 "use strict";
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
@@ -29,6 +30,7 @@ const iconWrap = row.querySelector(".status-icon");
 assert.ok(iconWrap, "row must render a .status-icon element");
 assert.ok(iconWrap.querySelector("svg"), "status-icon must contain an svg icon");
 assert.strictEqual(iconWrap.getAttribute("title"), "Working", "status-icon title must be the unified word (hover tooltip)");
+assert.ok(!row.querySelector(".status-dot"), "row must not also render a redundant .status-dot");
 
 const askNode = Object.assign({}, node, { state: "awaiting", ask_pending: true });
 const askRow = w.SerfSidebarInternal.buildRow(askNode);

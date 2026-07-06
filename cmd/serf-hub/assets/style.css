@@ -229,20 +229,13 @@ body[data-font-size="xl"] {
   --tool: var(--state-warning);
   --user: var(--text-muted);
 }
-[data-theme="light"] .sb-row[data-state="awaiting"] { background: color-mix(in srgb, var(--state-awaiting) 12%, transparent); }
-[data-theme="light"] .sb-row[data-state="active"]   { background: color-mix(in srgb, var(--state-working) 12%, transparent); }
-[data-theme="light"] .sb-row[data-state="warning"]  { background: color-mix(in srgb, var(--state-warning) 12%, transparent); }
 [data-theme="light"] .sb-row[data-active]            { background: color-mix(in srgb, var(--accent) 16%, transparent); }
-[data-theme="light"] .sb-row[data-state="errored"]   { background: color-mix(in srgb, var(--error) 12%, transparent); }
 /* Light-mode: --text is dark so the 2% text-mix reads as a noticeable grey.
    Switch to an accent-based tint that reads the same in both themes. */
 [data-theme="light"] .settings-table .row.editable:hover {
   background: color-mix(in srgb, var(--accent) 3%, transparent);
 }
 @media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) .sb-row[data-state="awaiting"] { background: color-mix(in srgb, var(--state-awaiting) 12%, transparent); }
-  :root:not([data-theme="dark"]) .sb-row[data-state="active"]   { background: color-mix(in srgb, var(--state-working) 12%, transparent); }
-  :root:not([data-theme="dark"]) .sb-row[data-state="warning"]  { background: color-mix(in srgb, var(--state-warning) 12%, transparent); }
   :root:not([data-theme="dark"]) .sb-row[data-active]           { background: color-mix(in srgb, var(--accent) 16%, transparent); }
   :root:not([data-theme="dark"]) .settings-table .row.editable:hover {
     background: color-mix(in srgb, var(--accent) 3%, transparent);
@@ -551,10 +544,10 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
 .sidebar-section-header .count,
 .project-header .count { margin-left: auto; font-family: var(--font-mono); color: var(--text-muted); }
 /* Sidebar row — grid: icon column, title (grows + single-line ellipsis),
-   meta (right-pinned, e.g. "main · 3h"), actions (⋯ menu, + an optional
-   children-disclosure toggle sharing the same trailing column). Single
-   line — the full title is still available via the title="" hover tooltip
-   set in sidebar.js. */
+   meta (branch, right-pinned before the row-end slot), row-end (age flush
+   to the row's right edge; an optional children-disclosure toggle sits to
+   its left). Single line — the full title is still available via the
+   title="" hover tooltip set in sidebar.js. */
 .sb-row {
   display: grid;
   /* The meta column is capped at a fixed max (not "auto"): an "auto" track
@@ -564,7 +557,7 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
      screenshot verification, not a hypothetical. Capping the track forces
      the branch span's own overflow-ellipsis (below) to do the truncating
      instead, and gives minmax(0,1fr) the leftover for the title. */
-  grid-template-columns: auto minmax(0, 1fr) minmax(0, 96px) auto;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 88px) auto;
   align-items: center;
   gap: var(--space-2);
   padding: 4px var(--space-4);
@@ -604,62 +597,62 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
   line-height: 1.2;
   display: flex;
   align-items: baseline;
-  gap: var(--space-2);
   white-space: nowrap;
-  min-width: 0; /* let the grid's 96px track cap win over the flex row's own content-driven min size */
+  min-width: 0; /* let the grid's 88px track cap win over the flex row's own content-driven min size */
 }
-/* Dot separator between adjacent meta spans (project · age, branch · age,
-   subagent · age, fork · age). The mockup uses an explicit · glyph; we
-   reintroduce it via ::before on span+span pairs so the template stays
-   clean. Hidden when only one meta span is rendered. */
-.sb-row .meta > span + span::before {
-  content: "·";
-  color: var(--text-dim);
-  margin-right: var(--space-2);
-}
-/* Only the leading span (branch/project — the one that can run long)
-   truncates; a trailing age span (e.g. "·" then "3h") always stays whole
-   and visible, flex-shrink:0 below. */
-.sb-row .meta > span:first-child {
+/* Only span in .meta now (branch) — truncate instead of pushing the row-end
+   slot around. */
+.sb-row .meta > span {
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
 }
-.sb-row .meta > span + span {
-  flex-shrink: 0;
+/* row-end: the age is pinned flush to the row's right edge (no trailing
+   column after it). age-slot stacks the age span and the ⋯ menu button in
+   the SAME grid cell (grid-area overlap keeps the cell's intrinsic size
+   constant — both are always present, just opacity-swapped), so hovering
+   the row swaps age -> ⋯ in place with zero layout shift. An optional
+   children-disclosure toggle sits to the left of age-slot, inside row-end,
+   so it never claims its own grid column. */
+.sb-row .row-end {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  min-width: 0;
 }
+.sb-row .age-slot {
+  display: grid;
+  align-items: center;
+  justify-items: end;
+}
+.sb-row .age-slot > * { grid-area: 1 / 1; }
+.sb-row .age {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  transition: opacity var(--motion-fast);
+}
+.sb-row:hover .age, .sb-row:focus-within .age { opacity: 0; pointer-events: none; }
+/* age-slot's row-menu button pointer-events toggle lives alongside its
+   other rules, below (search "Row menu (⋯ popover)"). */
 
-/* State accents — left border + 5% tinted background. Dark theme reads
-   fine at 5%; light-theme bump lives in the per-theme override block. */
-.sb-row[data-state="awaiting"] {
-  background: color-mix(in srgb, var(--state-awaiting) 5%, transparent);
-  border-left-color: var(--state-awaiting);
-}
-.sb-row[data-state="active"] {
-  background: color-mix(in srgb, var(--state-working) 5%, transparent);
-  border-left-color: var(--state-working);
-}
-.sb-row[data-state="warning"] {
-  background: color-mix(in srgb, var(--state-warning) 5%, transparent);
-  border-left-color: var(--state-warning);
-}
-.sb-row[data-state="errored"] {
-  background: color-mix(in srgb, var(--error) 5%, transparent);
-  border-left-color: var(--error);
-}
+/* State accent — left border only. The status icon is the sole state
+   indicator; rows stay neutral-background so state doesn't compete with
+   the selected/hover treatment below. */
+.sb-row[data-state="awaiting"] { border-left-color: var(--state-awaiting); }
+.sb-row[data-state="active"]   { border-left-color: var(--state-working); }
+.sb-row[data-state="warning"]  { border-left-color: var(--state-warning); }
+.sb-row[data-state="errored"]  { border-left-color: var(--error); }
 
 /* Active session marker — JS sets [data-active] on the row whose href
-   matches the currently-rendered workspace URL. */
+   matches the currently-rendered workspace URL. Neutral accent tint (not
+   a state color) so the open row stays distinguishable regardless of state. */
 .sb-row[data-active] {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   border-left-color: var(--accent);
-}
-/* On active rows the accent-tinted background can swallow the state dot
-   (especially --state-ended which is a dim grey). Add a thin outline ring
-   so the dot is always distinguishable regardless of its colour. */
-.sb-row[data-active] .status-dot {
-  outline: 1.5px solid color-mix(in srgb, var(--text) 30%, transparent);
-  outline-offset: 1px;
 }
 
 /* Subagent + fork variants — indent + dim. */
@@ -903,7 +896,8 @@ body.app[data-sidebar-rail] .project-new-btn { display: none; }
 body.app[data-sidebar-rail] .sb-row { grid-template-columns: 1fr; padding: var(--space-2); justify-content: center; }
 body.app[data-sidebar-rail] .sb-row .text-col,
 body.app[data-sidebar-rail] .sb-row .title,
-body.app[data-sidebar-rail] .sb-row .meta { display: none; }
+body.app[data-sidebar-rail] .sb-row .meta,
+body.app[data-sidebar-rail] .sb-row .row-end { display: none; }
 
 /* Container query — the same collapse triggered structurally if a parent
    ever shrinks the sidebar below 80px independent of the rail attribute. */
@@ -912,6 +906,7 @@ body.app[data-sidebar-rail] .sb-row .meta { display: none; }
   .sb-row .text-col,
   .sb-row .title,
   .sb-row .meta,
+  .sb-row .row-end,
   .sidebar-section-header .count,
   .project-header .project-name,
   .project-header .count,
@@ -3876,9 +3871,6 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
      a tap and make the sidebar look gray/washed-out when re-opened. */
   @media (hover: none) {
     .sb-row:hover { background: transparent; }
-    .sb-row[data-state="awaiting"]:hover { background: color-mix(in srgb, var(--state-awaiting) 5%, transparent); }
-    .sb-row[data-state="active"]:hover   { background: color-mix(in srgb, var(--state-working) 5%, transparent); }
-    .sb-row[data-state="warning"]:hover  { background: color-mix(in srgb, var(--state-warning) 5%, transparent); }
   }
   body.app[data-sidebar-open] #sidebar { transform: translateX(0); }
 
@@ -3968,7 +3960,7 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
   .sb-section { min-height: 52px; align-items: center; }
   .sb-row { padding: var(--space-3) var(--space-5); min-height: 52px; align-items: center; }
   .sb-row .title { font-size: var(--text-lg); line-height: 1.4; }
-  .sb-row .sub, .sb-row .meta, .sb-sub { font-size: var(--text-base); }
+  .sb-row .sub, .sb-row .meta, .sb-row .age, .sb-sub { font-size: var(--text-base); }
 
   /* Disclosure + status icons — the small chrome the bump above missed. The
      chevrons are the main expand affordance, so size them clearly; status dots
@@ -5168,12 +5160,15 @@ body.doc-page {
 .sb-menu-btn:hover { color: var(--text); background: var(--surface-secondary); }
 .sb-row:hover .sb-menu-btn, .sb-row:focus-within .sb-menu-btn { opacity: 1; }
 .project-header:hover .sb-menu-btn, .project-header:focus-within .sb-menu-btn { opacity: 1; }
-/* Rail mode (56px icon rail): the row's hover reveal must not leak the ⋯
-   menu out past the collapsed width — icon only. */
-body.app[data-sidebar-rail] .sb-row .sb-menu-btn { display: none; }
-@container sidebar (max-width: 80px) {
-  .sb-row .sb-menu-btn { display: none; }
-}
+/* age-slot (row-end) stacks the age span and this button in the same grid
+   cell (see .sb-row .age-slot above) — pointer-events keeps whichever one
+   is opacity:0 from intercepting clicks meant for the other. */
+.sb-row .age-slot .sb-menu-btn { pointer-events: none; }
+.sb-row:hover .age-slot .sb-menu-btn, .sb-row:focus-within .age-slot .sb-menu-btn { pointer-events: auto; }
+/* Rail mode (56px icon rail): session rows already hide their whole
+   .row-end (age + ⋯ menu) above — nothing session-row-specific needed
+   here. Project headers have no row-end equivalent, so they still need
+   their own hide, but they have none in rail mode today (unchanged). */
 .sb-menu { z-index: 60; background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-md); padding: var(--space-1); box-shadow: 0 4px 16px rgba(0,0,0,.35); min-width: 160px; }
 .sb-menu-item { display: block; width: 100%; text-align: left; padding: var(--space-2) var(--space-3); background: transparent; border: none; color: var(--text); font-size: var(--text-sm); min-height: 24px; }
 .sb-menu-item:hover, .sb-menu-item:focus { background: var(--surface-secondary); }
