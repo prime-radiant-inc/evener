@@ -25,11 +25,47 @@
     if (span) span.textContent = input.checked ? "ON" : "OFF";
   }
 
-  // W2/W3 add: the change-listener branches for data-composer="enterToSend"
-  // and data-composer="showCost", the applyDisplayState() restore function,
-  // and the composer keybind-hint sync. Expose the pref helpers so those
-  // additions and the page-load IIFEs below share one source of truth.
   window.SerfSettingsDisplay = { readComposerPrefs, writeComposerPrefs, syncToggleState };
+
+  document.body.addEventListener("change", (e) => {
+    const target = e.target;
+    if (!target || !target.matches) return;
+    if (target.matches('input[type=checkbox][data-composer="enterToSend"]')) {
+      const prefs = readComposerPrefs();
+      prefs.enterToSend = target.checked;
+      writeComposerPrefs(prefs);
+      syncToggleState(target);
+      applyComposerKeybindHints();
+      if (window.SerfToast) window.SerfToast.show("Settings saved", "success");
+      return;
+    }
+  });
+
+  // applyDisplayState reflects current composer prefs whenever a settings
+  // pane is swapped in. htmx:afterSwap fires for the workspace swap; we
+  // detect the panel's controls and set their checked/label state.
+  function applyDisplayState() {
+    const prefs = readComposerPrefs();
+    const enterToSendBox = document.querySelector('input[type=checkbox][data-composer="enterToSend"]');
+    if (enterToSendBox) {
+      enterToSendBox.checked = prefs.enterToSend;
+      syncToggleState(enterToSendBox);
+    }
+  }
+
+  function applyComposerKeybindHints() {
+    const sendKbd = document.querySelector(".send-btn kbd");
+    const steerBtn = document.querySelector("[data-steer-trigger]");
+    const steerKbd = steerBtn && steerBtn.querySelector("kbd");
+    const on = readComposerPrefs().enterToSend;
+    if (sendKbd) sendKbd.textContent = on ? "↵" : "⌘↵";
+    if (steerKbd) steerKbd.textContent = on ? "" : "⇧↵";
+  }
+
+  document.addEventListener("DOMContentLoaded", applyDisplayState);
+  document.body.addEventListener("htmx:afterSwap", applyDisplayState);
+  document.addEventListener("DOMContentLoaded", applyComposerKeybindHints);
+  document.body.addEventListener("htmx:afterSwap", applyComposerKeybindHints);
 
   // Show-cost applies to <body> on every page load so the CSS gate
   // (body[data-show-cost="false"]) is correct before any settings pane opens.

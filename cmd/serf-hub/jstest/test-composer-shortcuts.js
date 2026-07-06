@@ -13,7 +13,7 @@ function makeDOM(isPane) {
       <button type="button" data-steer-trigger data-capability-steer="true">steer <kbd>⇧↵</kbd></button>
       <button type="submit" class="send-btn" data-capability-send="true" data-capability-queue="true">send <kbd>⌘↵</kbd></button>
     </form>
-  </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
+  </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true, url: "http://localhost/" });
   const { window } = dom;
   window.marked = { parse: (t) => t };
   window.fetch = () => Promise.resolve({ ok: true, status: 202, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
@@ -40,6 +40,47 @@ function makeDOM(isPane) {
 
   ta.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true }));
   pass(steerCount === 1, "main workspace Shift+Enter should click steer, got " + steerCount);
+})();
+
+(function testEnterToSendModeOffPreservesExistingBehavior() {
+  const dom = makeDOM(false);
+  const { window } = dom;
+  window.localStorage.setItem("serf-hub.composer", JSON.stringify({ enterToSend: false }));
+  const ta = window.document.querySelector(".message-input");
+  const form = window.document.querySelector("form[data-input-form]");
+  const steer = window.document.querySelector("[data-steer-trigger]");
+  let submitCount = 0;
+  let steerCount = 0;
+  form.requestSubmit = () => { submitCount++; };
+  steer.addEventListener("click", () => { steerCount++; });
+
+  ta.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true }));
+  pass(submitCount === 1, "enter-to-send off: Cmd+Enter should request submit, got " + submitCount);
+
+  ta.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true }));
+  pass(steerCount === 1, "enter-to-send off: Shift+Enter should click steer, got " + steerCount);
+})();
+
+(function testEnterToSendModeSubmitsOnBareEnterAndNewlinesOnShiftEnter() {
+  const dom = makeDOM(false);
+  const { window } = dom;
+  window.localStorage.setItem("serf-hub.composer", JSON.stringify({ enterToSend: true }));
+  const ta = window.document.querySelector(".message-input");
+  const form = window.document.querySelector("form[data-input-form]");
+  const steer = window.document.querySelector("[data-steer-trigger]");
+  let submitCount = 0;
+  let steerCount = 0;
+  form.requestSubmit = () => { submitCount++; };
+  steer.addEventListener("click", () => { steerCount++; });
+
+  const bareEnter = new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+  ta.dispatchEvent(bareEnter);
+  pass(submitCount === 1, "enter-to-send on: bare Enter should request submit, got " + submitCount);
+
+  const shiftEnter = new window.KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true });
+  ta.dispatchEvent(shiftEnter);
+  pass(steerCount === 0, "enter-to-send on: Shift+Enter should NOT click steer, got " + steerCount);
+  pass(shiftEnter.defaultPrevented === false, "enter-to-send on: Shift+Enter should leave the default (newline insertion) unprevented");
 })();
 
 (function testPaneIframeShortcutsAreIgnored() {

@@ -2,5 +2,15 @@
 <h2 class="settings-h2">Display</h2>
 <p class="settings-help">Composer and cost-display preferences. Saved per-browser.</p>
 <dl class="settings-table" data-display-form>
+  <div class="row editable">
+    <dt id="lbl-composer-enter-to-send">Enter sends</dt>
+    <dd>
+      <label class="val-toggle">
+        <input type="checkbox" data-composer="enterToSend" aria-labelledby="lbl-composer-enter-to-send">
+        <span class="state" aria-hidden="true">OFF</span>
+      </label>
+    </dd>
+    <p class="help">Default off: ⌘/Ctrl-Enter sends, Enter inserts a newline. On: Enter sends, Shift-Enter inserts a newline (the steer keyboard shortcut is unavailable in this mode — the steer button still works).</p>
+  </div>
 </dl>
 {{end}}

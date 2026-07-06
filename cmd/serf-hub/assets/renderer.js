@@ -5254,6 +5254,12 @@
       const ta = document.querySelector(".message-input");
       if (!ta) return;
       const suppressSubmitShortcuts = this.isInPane && this.isInPane();
+      // Reads the same serf-hub.composer JSON blob the Display settings write
+      // (via settings-display.js); enterToSend defaults OFF (absent/false).
+      const enterToSend = () => {
+        try { return (JSON.parse(localStorage.getItem("serf-hub.composer") || "{}") || {}).enterToSend === true; }
+        catch (e) { return false; }
+      };
       ta.addEventListener("keydown", (e) => {
         if (!suppressSubmitShortcuts && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
           e.preventDefault();
@@ -5261,11 +5267,17 @@
           if (form) form.requestSubmit();
           return;
         }
-        // Shift+Enter is the keybind equivalent of the "steer"
-        // button (kata 0bq1): drain whatever's queued (plus anything in
-        // the textarea) as a single STEERING injection. Pre-existing
-        // browser default (newline insertion) is suppressed.
-        if (!suppressSubmitShortcuts && e.key === "Enter" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (!suppressSubmitShortcuts && enterToSend() && e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+          e.preventDefault();
+          const form = ta.closest("form");
+          if (form) form.requestSubmit();
+          return;
+        }
+        // Shift+Enter is the keybind equivalent of the "steer" button (kata
+        // 0bq1) EXCEPT when Enter-to-send is on, where Shift+Enter must
+        // revert to plain newline (Enter itself now sends) — the steer
+        // BUTTON remains clickable either way, only this keybind changes.
+        if (!suppressSubmitShortcuts && !enterToSend() && e.key === "Enter" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
           const steer = document.querySelector("[data-steer-trigger]");
           if (steer && !steer.disabled) {
             e.preventDefault();
