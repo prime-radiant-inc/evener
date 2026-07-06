@@ -955,17 +955,21 @@
                   meta.className = "turn-meta";
                   el.appendChild(meta);
                 }
+                const costVisible = document.body.dataset.showCost !== "false";
                 meta.textContent = "";
                 const segs = [parts.duration, parts.tokens].filter(Boolean);
                 if (segs.length) meta.appendChild(document.createTextNode(segs.join(" · ")));
                 if (parts.cost) {
-                  if (segs.length) meta.appendChild(document.createTextNode(" · "));
+                  // The .cost span always exists so the CSS gate has something
+                  // to hide, but the leading separator only belongs in the DOM
+                  // when the cost is actually visible — otherwise it dangles.
+                  if (segs.length && costVisible) meta.appendChild(document.createTextNode(" · "));
                   const costEl = document.createElement("span");
                   costEl.className = "cost";
                   costEl.textContent = parts.cost;
                   meta.appendChild(costEl);
                 }
-                meta.title = formatTurnMetaText(turn);
+                meta.title = [parts.duration, parts.tokens, costVisible ? parts.cost : ""].filter(Boolean).join(" · ");
               }
             }
           }
