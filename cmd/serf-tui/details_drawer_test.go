@@ -54,3 +54,45 @@ func TestDetailsDrawerShowsMCPServerStatusAndError(t *testing.T) {
 		t.Errorf("details drawer should omit dash suffix when status is empty:\n%s", plain)
 	}
 }
+
+// TestDetailsDrawerShowsWorkTimeAndTokens verifies the details drawer renders
+// a Work: line and a Tokens: line when the session detail carries WS2
+// work-time/usage metrics — mirroring hub_status.go's status-bar formatting.
+func TestDetailsDrawerShowsWorkTimeAndTokens(t *testing.T) {
+	withTestColorProfile(t)
+	d := detailsDrawer{Detail: hubSessionDetail{
+		WorkMillis: 4200,
+		Usage: &appwire.SerfUsage{
+			InputTokens:     100,
+			OutputTokens:    50,
+			CacheReadTokens: 10,
+			TotalTokens:     160,
+		},
+	}}
+	got := d.View()
+	plain := ansiPattern.ReplaceAllString(got, "")
+
+	if !strings.Contains(plain, "Work:") {
+		t.Errorf("details drawer missing Work: line:\n%s", plain)
+	}
+	if !strings.Contains(plain, "↑100") || !strings.Contains(plain, "↓50") {
+		t.Errorf("details drawer missing token line with ↑100/↓50:\n%s", plain)
+	}
+}
+
+// TestDetailsDrawerHidesWorkTimeAndTokensWhenAbsent verifies the drawer omits
+// the Work: and Tokens: lines entirely when the session carries no WS2
+// metrics (old daemon, Codex thread, or a session with zero usage).
+func TestDetailsDrawerHidesWorkTimeAndTokensWhenAbsent(t *testing.T) {
+	withTestColorProfile(t)
+	d := detailsDrawer{Detail: hubSessionDetail{}}
+	got := d.View()
+	plain := ansiPattern.ReplaceAllString(got, "")
+
+	if strings.Contains(plain, "Work:") {
+		t.Errorf("details drawer should omit Work: line when absent:\n%s", plain)
+	}
+	if strings.Contains(plain, "Tokens:") {
+		t.Errorf("details drawer should omit Tokens: line when absent:\n%s", plain)
+	}
+}
