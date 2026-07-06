@@ -3,10 +3,13 @@
 // ask-produced `SessionAwaiting` normalizes to attention level "needs_you"
 // (hubcore's NormalizeState) exactly like any other awaiting/warning
 // producer before it ever reaches the browser as a "serf/attention/changed"
-// broadcast — there is no ask-specific wiring in notifications.js, and there
-// should not be (it keys on the transition, not the producer). This mirrors
-// the boot() harness in test-notifications-attention.js; see that file for
-// the broader baseline/title/favicon/prefs coverage this one does not repeat.
+// broadcast. hubcore's DeriveAttention sets askPending from the live
+// session's PendingAsk, so a genuine ask carries askPending: true on the
+// wire; the loudScope default ("asks", Track A §2) relies on that flag
+// rather than any ask-specific branch in notifications.js itself — it keys
+// on the transition plus askPending, not the producer. This mirrors the
+// boot() harness in test-notifications-attention.js; see that file for the
+// broader baseline/title/favicon/prefs coverage this one does not repeat.
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
 
@@ -46,7 +49,7 @@ function boot(opts) {
   const a = boot({ summary: { needsYou: 0, error: 0, working: 1 } });
   await new Promise((r) => setTimeout(r, 20));
   a.fireNotif("serf/attention/changed", {
-    changed: [{ threadId: "01ASK", title: "which db?", project: "p", level: "needs_you", prevLevel: "working" }],
+    changed: [{ threadId: "01ASK", title: "which db?", project: "p", level: "needs_you", prevLevel: "working", askPending: true }],
     summary: { needsYou: 1, error: 0, working: 0 },
   });
   await new Promise((r) => setTimeout(r, 5));
@@ -63,7 +66,7 @@ function boot(opts) {
   // re-fire: only a genuine into-transition alerts, not every broadcast
   // that merely reports the session is still needs_you.
   a.fireNotif("serf/attention/changed", {
-    changed: [{ threadId: "01ASK", title: "which db?", project: "p", level: "needs_you", prevLevel: "needs_you" }],
+    changed: [{ threadId: "01ASK", title: "which db?", project: "p", level: "needs_you", prevLevel: "needs_you", askPending: true }],
     summary: { needsYou: 1, error: 0, working: 0 },
   });
   await new Promise((r) => setTimeout(r, 5));

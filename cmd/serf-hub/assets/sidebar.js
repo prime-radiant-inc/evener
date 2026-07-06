@@ -7,6 +7,7 @@
   var EXPAND_PREFIX = "serf-hub.sidebar.expanded.";
   var model = { tree: null, expanded: new Set(), lazyCache: new Map(), seq: 0, pending: new Map() };
   window.SerfSidebarModel = model; // test/inspection surface
+  window.SerfSidebarInternal = { buildRow: buildRow, stateIconKey: stateIconKey, stateWord: stateWord, buildRollupBadge: buildRollupBadge }; // test/inspection surface
 
   function sidebarEl() { return document.getElementById("sidebar"); }
 
@@ -23,6 +24,26 @@
   // --- Row + section builders ------------------------------------------------
   function rowKey(n) { return n.row_id; }
 
+  // stateIconKey maps a tree-node state (+ optional ask_pending) to the
+  // SerfIcons key and the hubapi.StateWord-equivalent tooltip text. Mirrors
+  // hubapi.StateWord verbatim so the web tooltip and the TUI word agree.
+  var STATE_WORDS = {
+    active: "Working", warning: "Warning", errored: "Error",
+    idle: "Idle", ended: "Ended", closed: "Ended", notLoaded: "Not loaded",
+  };
+  function stateIconKey(state, askPending) {
+    if (state === "awaiting") return askPending ? "questionWaiting" : "yourMove";
+    if (state === "active") return "working";
+    if (state === "warning") return "warning";
+    if (state === "errored") return "error";
+    if (state === "idle") return "idle";
+    return "ended";
+  }
+  function stateWord(state, askPending) {
+    if (state === "awaiting") return askPending ? "Question waiting" : "Your move";
+    return STATE_WORDS[state] || state;
+  }
+
   function buildRow(n) {
     var a = document.createElement("a");
     a.className = "sb-row";
@@ -36,13 +57,18 @@
     a.setAttribute("hx-swap", "innerHTML");
     a.setAttribute("hx-push-url", "/s/" + n.session_id);
     a.innerHTML =
-      '<div class="dot-col"><span class="status-dot" data-state="' + n.state + '"></span></div>' +
+      '<div class="dot-col"><span class="status-dot" data-state="' + n.state + '"></span>' +
+      '<span class="status-icon" data-state="' + n.state + '"></span></div>' +
       '<div class="text-col"><div class="title"></div><div class="meta"></div></div>';
     a.querySelector(".title").textContent = n.title;
+    var icon = a.querySelector(".status-icon");
+    icon.innerHTML = window.SerfIcons[stateIconKey(n.state, n.ask_pending)];
+    icon.setAttribute("title", stateWord(n.state, n.ask_pending));
     var meta = a.querySelector(".meta");
     if (n.branch) meta.appendChild(metaSpan(n.branch));
     meta.appendChild(metaSpan(ageString(n.updated_at)));
     if (n.favorite) a.setAttribute("data-favorite", "");
+    if (n.ask_pending) a.setAttribute("data-ask", "true");
     if (n.children && n.children.length) a.appendChild(buildChildrenToggle(n));
     var menuBtn = document.createElement("button");
     menuBtn.type = "button";
@@ -65,9 +91,20 @@
       var dot = a.querySelector(".status-dot");
       if (dot) dot.setAttribute("data-state", n.state);
     }
+    var icon = a.querySelector(".status-icon");
+    if (icon) {
+      var key = stateIconKey(n.state, n.ask_pending);
+      var word = stateWord(n.state, n.ask_pending);
+      if (icon.getAttribute("title") !== word) {
+        icon.setAttribute("data-state", n.state);
+        icon.innerHTML = window.SerfIcons[key];
+        icon.setAttribute("title", word);
+      }
+    }
     var title = a.querySelector(".title");
     if (title && title.textContent !== n.title) title.textContent = n.title;
     if (n.favorite) a.setAttribute("data-favorite", ""); else a.removeAttribute("data-favorite");
+    if (n.ask_pending) a.setAttribute("data-ask", "true"); else a.removeAttribute("data-ask");
     patchChildrenToggle(a, n);
   }
 
@@ -486,21 +523,21 @@
     r.textContent = ""; // clear prior badges/separator (not innerHTML)
     var live = p.rollup_live || 0;
     var attn = p.rollup_attn || 0;
-    if (live > 0) r.appendChild(buildRollupBadge("rollup-live", "⟳", live));
+    if (live > 0) r.appendChild(buildRollupBadge("rollup-live", "working", live));
     if (live > 0 && attn > 0) {
       var sep = document.createElement("span");
       sep.className = "rollup-sep";
       sep.textContent = "·"; // "·"
       r.appendChild(sep);
     }
-    if (attn > 0) r.appendChild(buildRollupBadge("rollup-attn", "◆", attn)); // "◆"
+    if (attn > 0) r.appendChild(buildRollupBadge("rollup-attn", "yourMove", attn));
   }
-  function buildRollupBadge(cls, glyph, count) {
+  function buildRollupBadge(cls, iconKey, count) {
     var b = document.createElement("span");
     b.className = "rollup-badge " + cls;
     var g = document.createElement("span");
     g.className = "rollup-glyph";
-    g.textContent = glyph;
+    g.innerHTML = window.SerfIcons[iconKey];
     b.appendChild(g);
     b.appendChild(document.createTextNode(String(count)));
     return b;

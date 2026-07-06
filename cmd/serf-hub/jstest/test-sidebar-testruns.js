@@ -11,6 +11,7 @@
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
 const src = fs.readFileSync(__dirname + "/../assets/sidebar.js", "utf8");
+const iconsSrc = fs.readFileSync(__dirname + "/../assets/icons.js", "utf8");
 
 function boot() {
   const dom = new JSDOM(`<!DOCTYPE html><html><body><aside id="sidebar"></aside></body></html>`, {
@@ -25,6 +26,7 @@ function boot() {
   w.htmx = { process() {} };
   w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
   w.confirm = () => true; // confirmDeleteProject's window.confirm gate
+  w.eval(iconsSrc);
   w.eval(src);
   return { w, posts };
 }

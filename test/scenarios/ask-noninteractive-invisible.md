@@ -30,27 +30,35 @@ available to turn it off).
    SID1=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$body" "$HUB/api/spawn" | jq -r '.session_id')
    for i in $(seq 1 60); do
      st=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID1" | jq -r '.state // ""')
-     [ "$st" = "idle" ] && break
+     [ "$st" = "awaiting" ] && break
      sleep 1
    done
    echo "SID1=$SID1 state=$st"
    ```
 2. **One-shot CLI.** No hub involved; a fresh, uniquely-named workdir doubles as the lookup
-   key afterward, since a plain one-shot run never prints its session ID:
+   key afterward, since a plain one-shot run never prints its session ID. Match on the
+   workdir's unique basename rather than its full path — on macOS a mktemp path's parent
+   (`/tmp` or `$TMPDIR`) is itself a symlink into `/private/...`, and whether a given code
+   path records the raw or the resolved form of `working_dir` is inconsistent (confirmed
+   live: the one-shot daemon records the raw, unresolved path; a hub-spawned daemon records
+   the resolved `/private/...` form), so anchoring on the full path is fragile in either
+   direction while the mktemp-generated basename is unaffected by symlink resolution either
+   way:
    ```bash
    tmpdir2=$(mktemp -d -t serf-e2e-ask-ni-oneshot-XXXXX)
    /tmp/serf-ask --model openai/gpt-5.5 --dir "$tmpdir2" \
      "Call the tool named ask_user right now, asking header \"Confirm\" question \"Should we proceed?\" with options Yes and No. If no such tool exists in your tool list, say so plainly and proceed on your own best judgment instead."
-   TFILE2=$(grep -l "\"working_dir\":\"$tmpdir2\"" ~/.local/state/serf/projects/*/sessions/*.transcript.jsonl)
+   TFILE2=$(grep -l "\"working_dir\":\"[^\"]*$(basename "$tmpdir2")\"" ~/.local/state/serf/projects/*/sessions/*.transcript.jsonl)
    SID2=$(basename "$TFILE2" .transcript.jsonl)
    echo "SID2=$SID2 (via $TFILE2)"
    ```
 3. For **both** sessions, confirm `ask_user` never appeared in any request sent to the
    provider (the `request.tool_names`/`request.tools[]` fields the transcript's sanitized
    `api_call` log records — `llm.APILogRequest`), and check the non-interactive prompt
-   section landed instead of the ask-user guidance:
+   section landed instead of the ask-user guidance. Session 1's transcript is looked up by
+   session ID directly (known from the spawn response — no working_dir grep needed):
    ```bash
-   TFILE1=$(grep -l "\"working_dir\":\"$tmpdir1\"" ~/.local/state/serf/projects/*/sessions/*.transcript.jsonl)
+   TFILE1=$(ls ~/.local/state/serf/projects/*/sessions/"$SID1".transcript.jsonl)
    go run ./cmd/serf-doctor transcript "$SID1" --count ask_user
    go run ./cmd/serf-doctor transcript "$SID2" --count ask_user
    grep -c "Non-interactive mode — CRITICAL" "$TFILE1"

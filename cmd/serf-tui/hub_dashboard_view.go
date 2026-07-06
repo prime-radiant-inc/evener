@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitext"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/serf/hubapi"
 )
 
 func (m hubModel) dashboardView() string {
@@ -305,7 +306,7 @@ func stateColor(state string) lipgloss.Color {
 	case "awaiting":
 		return th.StateAwaiting
 	case "active":
-		return th.StateProcessing
+		return th.StateWorking
 	case "warning":
 		return th.StateWarning
 	case "idle":
@@ -326,9 +327,19 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 	// SurfaceSecondary bg highlight is the selection indicator;
 	// the marker stays one cell wide for column stability.
 	marker := tuiprim.StateBar(stateColor(row.state))
+	// Per-row ask-pending marker: same ◆ glyph/color the header's
+	// needsYouBadge and the composer's question chip use for "question
+	// waiting" (one vocabulary, folded-in spec §6). Joined in here (rather
+	// than appended after ansi.Truncate below) so it naturally participates
+	// in truncation and the selected-row ANSI-strip.
+	askMarker := ""
+	if row.askPending {
+		askMarker = lipgloss.NewStyle().Foreground(tuitheme.ActiveTheme().StateAwaiting).Render("◆")
+	}
 	styles := tuitheme.DefaultTUIStyles()
 	line := strings.Join(tuitext.NonEmptyStrings([]string{
 		marker,
+		askMarker,
 		statusDot(row.state),
 		stateLabel(row.state),
 		dashboardCell(row.sourceLabel),
@@ -577,36 +588,37 @@ func stateLabel(state string) string {
 	}
 }
 
+// displayWord returns the unified display word (Track A §1/§2) for a raw
+// wire state, normalizing via stateLabel first and then delegating to
+// hubapi.StateWord — the same table cmd/serf-hub's stateLabel uses, so the
+// TUI and the web can never independently drift on vocabulary.
+func displayWord(state string, askPending bool) string {
+	return hubapi.StateWord(stateLabel(state), askPending)
+}
+
 func projectSummary(project hubRow, rows []hubRow) string {
 	liveCount, recentCount := projectSessionCounts(project, rows)
-	attention := stateLabel(project.state)
+	worstState := project.state
+	worstAsk := project.askPending
 	for _, row := range rows {
 		if row.kind != hubRowSession || row.projectKey != project.projectKey {
 			continue
 		}
-		if attentionRankLabel(row.state) > attentionRankLabel(attention) {
-			attention = stateLabel(row.state)
+		if attentionRankLabel(row.state) > attentionRankLabel(worstState) {
+			worstState = row.state
+			worstAsk = row.askPending
 		}
 	}
+	attention := displayWord(worstState, worstAsk)
 	if recentCount > 0 {
 		return fmt.Sprintf("%d live · %d recent · %s", liveCount, recentCount, attention)
 	}
 	return fmt.Sprintf("%d live · %s", liveCount, attention)
 }
 
+// attentionRankLabel normalizes state via stateLabel, then delegates to the
+// shared hubapi.AttentionRank table so the TUI and the hub can never drift
+// on ordering (Track A rank consolidation).
 func attentionRankLabel(state string) int {
-	switch stateLabel(state) {
-	case "errored":
-		return 5
-	case "awaiting":
-		return 4
-	case "active":
-		return 3
-	case "warning":
-		return 2
-	case "idle":
-		return 1
-	default:
-		return 0
-	}
+	return hubapi.AttentionRank(stateLabel(state))
 }

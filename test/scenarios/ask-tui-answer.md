@@ -172,3 +172,12 @@ rm -rf "$tmpdir" /tmp/serf-ask /tmp/serf-hub-ask /tmp/serf-tui-ask
 - The chip is driven by `composerPanel.AwaitingQuestion`, independent of whether the overlay
   is open, deferred, or was never opened — it tracks "is this session awaiting with a
   pending question," not overlay visibility.
+- **tmux `capture-pane` can round-trip an em-dash (`—`) as a different byte sequence**
+  depending on terminal/locale encoding (e.g. `—` re-emerging as a `?`/mojibake substitution
+  or a differently-normalized Unicode form). Step 8's typed reply contains one; a byte-exact
+  string match on a captured pane line containing `—` is fragile for that reason alone. The
+  outline check in step 9 reads the transcript via `serf-doctor` (plain UTF-8 JSON), not
+  `capture-pane`, so it is not affected — but if a future check ever needs to confirm the
+  em-dash chip/composer text via `capture-pane`, match on a substring that excludes the
+  em-dash (e.g. `"let's go with descriptive"` / `"clearer for new hires"`) or normalize
+  encoding before comparing, rather than asserting the em-dash byte-for-byte.

@@ -117,7 +117,7 @@ const settle = () => new Promise((r) => setTimeout(r, 350));
   pass(pillEl() && /↓/.test(pillEl().textContent), "plain count is glyph-paired with ↓ (got " + (pillEl() && pillEl().textContent) + ")");
   pass(pillEl() && /↓ 1 new/.test(pillEl().textContent), "plain count reads '↓ N new' (got " + (pillEl() && pillEl().textContent) + ")");
 
-  // ── Error anchor below the fold → red "✕ error" pill ─────────────────────
+  // ── Error anchor below the fold → red error-icon pill ────────────────────
   // Place an errored tool row well below the viewport bottom.
   R.scrollToBottom();
   R.updateThreadState("active");
@@ -130,7 +130,7 @@ const settle = () => new Promise((r) => setTimeout(r, 350));
   conv.scrollTop = 100; // viewport bottom = 100 + 400 = 500; error at 900 is below
   R.handleData("ASSISTANT_TEXT_START", {});
   R.handleData("ASSISTANT_TEXT_END", { text: "patching" });
-  pass(pillEl() && /✕/.test(pillEl().textContent), "error below the fold gives a ✕-glyph pill (got " + (pillEl() && pillEl().textContent) + ")");
+  pass(pillEl() && pillEl().innerHTML.includes("<svg"), "error below the fold gives an icon pill, not ✕ (got " + (pillEl() && pillEl().innerHTML) + ")");
   pass(pillEl() && /error/.test(pillEl().textContent), "error pill reads 'error' (got " + (pillEl() && pillEl().textContent) + ")");
   pass(pillEl() && pillEl().classList.contains("error"), "error pill carries the error class");
   pass(pillEl() && /↓/.test(pillEl().textContent), "arrow points ↓ to an error below the viewport (got " + (pillEl() && pillEl().textContent) + ")");
@@ -145,7 +145,7 @@ const settle = () => new Promise((r) => setTimeout(r, 350));
   R.handleData("ASSISTANT_TEXT_START", {});
   R.handleData("ASSISTANT_TEXT_END", { text: "more output" });
   pass(pillEl() && /↑/.test(pillEl().textContent), "arrow flips to ↑ when the error is above the viewport (got " + (pillEl() && pillEl().textContent) + ")");
-  pass(pillEl() && /✕/.test(pillEl().textContent), "error pill stays ✕ when scrolled past it (got " + (pillEl() && pillEl().textContent) + ")");
+  pass(pillEl() && pillEl().innerHTML.includes("<svg"), "error pill stays icon-paired when scrolled past it, not ✕ (got " + (pillEl() && pillEl().innerHTML) + ")");
 
   // restore the original scrollHeight and clear the error anchor for later cases
   Object.defineProperty(conv, "scrollHeight", { configurable: true, get: () => 1000 });
@@ -163,7 +163,7 @@ const settle = () => new Promise((r) => setTimeout(r, 350));
   conv.scrollTop = 100;
   R.handleData("ASSISTANT_TEXT_START", {});
   R.handleData("ASSISTANT_TEXT_END", { text: "a reply" });
-  pass(pillEl() && /✕/.test(pillEl().textContent), "error outranks needs-you (got " + (pillEl() && pillEl().textContent) + ")");
+  pass(pillEl() && pillEl().innerHTML.includes("<svg"), "error outranks needs-you and renders an icon, not ✕ (got " + (pillEl() && pillEl().innerHTML) + ")");
   pass(pillEl() && pillEl().classList.contains("error") && !pillEl().classList.contains("needs-you"),
     "priority pill is error, not needs-you");
   errPri.remove();

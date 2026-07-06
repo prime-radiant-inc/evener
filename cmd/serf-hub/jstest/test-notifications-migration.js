@@ -22,7 +22,7 @@ const freshPrefs = JSON.parse(fresh.localStorage.getItem("serf-hub.notifications
 if (freshPrefs.title !== true || freshPrefs.favicon !== true || freshPrefs.os !== false || freshPrefs.sound !== false) {
   throw new Error("fresh defaults wrong: " + JSON.stringify(freshPrefs));
 }
-if (fresh.localStorage.getItem("serf-hub.notifications.v") !== "2") throw new Error("version stamp missing");
+if (fresh.localStorage.getItem("serf-hub.notifications.v") !== "3") throw new Error("version stamp missing");
 
 const legacy = boot({ os: true });
 const legacyPrefs = JSON.parse(legacy.localStorage.getItem("serf-hub.notifications"));

@@ -199,3 +199,26 @@ func TestAPITreeProjectServedFromTree(t *testing.T) {
 		t.Fatalf("want the single project with its session, got %+v", p)
 	}
 }
+
+func TestAPITree_NeedsYouCarriesAskPending(t *testing.T) {
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry: rendezvous.Entry{SessionID: "01A", PID: 1}, SessionID: "01A", Status: "awaiting", PendingAsk: true,
+	})
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), Roster: roster})
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	var resp hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, n := range resp.NeedsYou {
+		if n.SessionID == "01A" && n.AskPending {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected NeedsYou[?].AskPending=true for 01A, got %+v", resp.NeedsYou)
+	}
+}

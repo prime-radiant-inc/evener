@@ -4,6 +4,7 @@
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
 const src = fs.readFileSync(__dirname + "/../assets/sidebar.js", "utf8");
+const iconsSrc = fs.readFileSync(__dirname + "/../assets/icons.js", "utf8");
 
 function tree(renameable) {
   return { needs_you: [], favorites: [], archived_projects: [], test_runs: [],
@@ -16,6 +17,7 @@ const w = dom.window;
 w.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(tree(true)) });
 w.htmx = { process() {} };
 w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
+w.eval(iconsSrc);
 w.eval(src);
 setTimeout(() => {
   const row = w.document.querySelector('[data-row-id="project:p1:local:01A"]');

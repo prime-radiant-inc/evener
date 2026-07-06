@@ -106,7 +106,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		if idx, ok := projectIndexes[key]; ok {
 			p := &resp.Projects[idx]
 			p.Sessions = append(p.Sessions, apiNode)
-			if hubcore.AttentionRank(node.State) > hubcore.AttentionRank(p.RollupState) {
+			if hubapi.AttentionRank(node.State) > hubapi.AttentionRank(p.RollupState) {
 				p.RollupState = node.State
 			}
 			continue
@@ -575,17 +575,18 @@ func (s *WebServer) apiTreeNode(scope, projectKey string, n hubcore.TreeNode, li
 		rowID = scope + ":" + projectKey + ":" + refText
 	}
 	out := hubapi.TreeNode{
-		RowID:     rowID,
-		Ref:       refText,
-		HostID:    ref.HostID,
-		SessionID: ref.SessionID,
-		Title:     n.Title,
-		Project:   n.Project,
-		State:     n.State,
-		Kind:      n.Kind,
-		Live:      live,
-		UpdatedAt: n.UpdatedAt,
-		Age:       n.Age,
+		RowID:      rowID,
+		Ref:        refText,
+		HostID:     ref.HostID,
+		SessionID:  ref.SessionID,
+		Title:      n.Title,
+		Project:    n.Project,
+		State:      n.State,
+		Kind:       n.Kind,
+		Live:       live,
+		UpdatedAt:  n.UpdatedAt,
+		Age:        n.Age,
+		AskPending: n.AskPending,
 	}
 	if le, ok := s.liveEntry(n.ID); ok {
 		out.Model = le.Model

@@ -28,6 +28,7 @@ type hubTreeNode struct {
 	Title       string
 	Project     string
 	State       string
+	AskPending  bool
 	Model       string
 	Age         string
 	RowID       string
@@ -59,6 +60,7 @@ type hubSessionDetail struct {
 	SourceLabel      string
 	Title            string
 	State            string
+	AskPending       bool
 	Model            string
 	Profile          string
 	WorkingDir       string
@@ -176,6 +178,7 @@ func hubNodeFromThread(thread appwire.Thread) hubTreeNode {
 		Title:       title,
 		Project:     project,
 		State:       thread.Status.Type,
+		AskPending:  thread.Serf.AskPending,
 		Model:       hubThreadModelLabel(thread),
 		RowID:       "project:" + hubProjectKey(project) + ":" + ref,
 		CreatedAt:   thread.CreatedAt,
@@ -225,6 +228,7 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 		SourceLabel:         node.SourceLabel,
 		Title:               node.Title,
 		State:               node.State,
+		AskPending:          thread.Serf.AskPending,
 		Model:               thread.ModelProvider,
 		Profile:             thread.Serf.Profile,
 		WorkingDir:          thread.CWD,

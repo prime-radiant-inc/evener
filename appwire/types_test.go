@@ -296,3 +296,14 @@ func TestModelListResponseRecentOmitEmpty(t *testing.T) {
 		t.Fatalf("marshal=%s should have omitted recent", raw)
 	}
 }
+
+func TestSerfThread_AskPendingRoundTrips(t *testing.T) {
+	th := SerfThread{Ref: "local:01A", AskPending: true}
+	data, err := json.Marshal(th)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"askPending":true`) {
+		t.Fatalf("expected askPending:true in wire JSON, got %s", data)
+	}
+}

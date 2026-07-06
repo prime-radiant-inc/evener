@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/hubapi"
 )
 
 // Tree is the navigation data model.
@@ -137,57 +138,13 @@ type TreeNode struct {
 	Project      string
 	Branch       string // git branch at session start; empty when unknown
 	State        string // "errored" | "awaiting" | "active" | "warning" | "idle" | "ended"
+	AskPending   bool   // true while the daemon reports an unanswered ask_user question
 	Kind         string // "session" | "subagent" | "fork" | "cluster"
 	ClusterCount int    // for Kind=="cluster": number of folded same-titled runs
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 	Age          string // pre-formatted "now", "2m", "3h", "5d"
 	Children     []TreeNode
-}
-
-// AttentionRank maps a state string to a sort key.
-// Higher rank = more attention needed. Sorted descending for live triage.
-func AttentionRank(state string) int {
-	switch state {
-	case "errored":
-		return 5
-	case "awaiting":
-		return 4
-	case "active":
-		return 3
-	case "warning":
-		return 2
-	case "idle":
-		return 1
-	default: // "ended" and unknown
-		return 0
-	}
-}
-
-// rollupRank ranks states for a project's rollup dot. Per spec the dot
-// reflects the most-attention-needing live child:
-//
-//	errored > awaiting > warning > active > idle
-//
-// (warning beats processing here because a warning is something the user
-// likely needs to look at, while active is the daemon making progress
-// on its own. errored outranks everything — a red error is the most
-// urgent signal a rollup dot can carry.)
-func rollupRank(state string) int {
-	switch state {
-	case "errored":
-		return 5
-	case "awaiting":
-		return 4
-	case "warning":
-		return 3
-	case "active":
-		return 2
-	case "idle":
-		return 1
-	default: // "ended" and unknown
-		return 0
-	}
 }
 
 // AgeString formats a duration since t as a human-readable string.
@@ -350,6 +307,14 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		return "ended"
 	}
 
+	// askPendingFor resolves the ask-pending marker for a session ID from the
+	// same live map stateFor reads — every TreeNode builder below must set
+	// AskPending from this, not just the NeedsYou triage tier, or a session
+	// rendered elsewhere in the sidebar disagrees with its own NeedsYou tile.
+	askPendingFor := func(id string) bool {
+		return liveMap[id].PendingAsk
+	}
+
 	// Group metas by project name.
 	type projectAccum struct {
 		name       string // basename for display
@@ -428,15 +393,16 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		for _, m := range acc.topLevel {
 			kind := nodeKind(m)
 			node := TreeNode{
-				ID:        m.ID,
-				Title:     nodeTitle(m, kind),
-				Project:   acc.name,
-				Branch:    m.EnvInfo.GitBranch,
-				State:     stateFor(m.ID),
-				Kind:      kind,
-				CreatedAt: OrderCreatedAt(m.CreatedAt, m.UpdatedAt),
-				UpdatedAt: OrderUpdatedAt(m.UpdatedAt, m.CreatedAt),
-				Age:       AgeString(OrderUpdatedAt(m.UpdatedAt, m.CreatedAt)),
+				ID:         m.ID,
+				Title:      nodeTitle(m, kind),
+				Project:    acc.name,
+				Branch:     m.EnvInfo.GitBranch,
+				State:      stateFor(m.ID),
+				AskPending: askPendingFor(m.ID),
+				Kind:       kind,
+				CreatedAt:  OrderCreatedAt(m.CreatedAt, m.UpdatedAt),
+				UpdatedAt:  OrderUpdatedAt(m.UpdatedAt, m.CreatedAt),
+				Age:        AgeString(OrderUpdatedAt(m.UpdatedAt, m.CreatedAt)),
 			}
 
 			// Build children: subagents first, then forks, each sorted by UpdatedAt desc.
@@ -471,30 +437,34 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 			parentDead := node.State == "ended"
 			for _, c := range subagents {
 				childState := stateFor(c.ID)
+				childAskPending := askPendingFor(c.ID)
 				if parentDead {
 					childState = "ended"
+					childAskPending = false
 				}
 				node.Children = append(node.Children, TreeNode{
-					ID:        c.ID,
-					Title:     nodeTitle(c, "subagent"),
-					Project:   acc.name,
-					State:     childState,
-					Kind:      "subagent",
-					CreatedAt: OrderCreatedAt(c.CreatedAt, c.UpdatedAt),
-					UpdatedAt: OrderUpdatedAt(c.UpdatedAt, c.CreatedAt),
-					Age:       AgeString(OrderUpdatedAt(c.UpdatedAt, c.CreatedAt)),
+					ID:         c.ID,
+					Title:      nodeTitle(c, "subagent"),
+					Project:    acc.name,
+					State:      childState,
+					AskPending: childAskPending,
+					Kind:       "subagent",
+					CreatedAt:  OrderCreatedAt(c.CreatedAt, c.UpdatedAt),
+					UpdatedAt:  OrderUpdatedAt(c.UpdatedAt, c.CreatedAt),
+					Age:        AgeString(OrderUpdatedAt(c.UpdatedAt, c.CreatedAt)),
 				})
 			}
 			for _, c := range forks {
 				node.Children = append(node.Children, TreeNode{
-					ID:        c.ID,
-					Title:     nodeTitle(c, "fork"),
-					Project:   acc.name,
-					State:     stateFor(c.ID),
-					Kind:      "fork",
-					CreatedAt: OrderCreatedAt(c.CreatedAt, c.UpdatedAt),
-					UpdatedAt: OrderUpdatedAt(c.UpdatedAt, c.CreatedAt),
-					Age:       AgeString(OrderUpdatedAt(c.UpdatedAt, c.CreatedAt)),
+					ID:         c.ID,
+					Title:      nodeTitle(c, "fork"),
+					Project:    acc.name,
+					State:      stateFor(c.ID),
+					AskPending: askPendingFor(c.ID),
+					Kind:       "fork",
+					CreatedAt:  OrderCreatedAt(c.CreatedAt, c.UpdatedAt),
+					UpdatedAt:  OrderUpdatedAt(c.UpdatedAt, c.CreatedAt),
+					Age:        AgeString(OrderUpdatedAt(c.UpdatedAt, c.CreatedAt)),
 				})
 			}
 
@@ -508,7 +478,7 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		rollup := ""
 		rollupLive, rollupAttn := 0, 0
 		for _, s := range sessions {
-			if rollupRank(s.State) > rollupRank(rollup) {
+			if hubapi.RollupRank(s.State) > hubapi.RollupRank(rollup) {
 				rollup = s.State
 			}
 			switch s.State {
@@ -619,9 +589,10 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		}
 		state := stateFor(le.SessionID)
 		node := TreeNode{
-			ID:    le.SessionID,
-			State: state,
-			Kind:  "session",
+			ID:         le.SessionID,
+			State:      state,
+			AskPending: askPendingFor(le.SessionID),
+			Kind:       "session",
 		}
 		if meta != nil {
 			kind := nodeKind(*meta)
@@ -640,7 +611,7 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		liveNodes = append(liveNodes, node)
 	}
 	sort.SliceStable(liveNodes, func(i, j int) bool {
-		ri, rj := AttentionRank(liveNodes[i].State), AttentionRank(liveNodes[j].State)
+		ri, rj := hubapi.AttentionRank(liveNodes[i].State), hubapi.AttentionRank(liveNodes[j].State)
 		if ri != rj {
 			return ri > rj
 		}
@@ -682,9 +653,10 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 			continue
 		}
 		node := TreeNode{
-			ID:    le.SessionID,
-			State: st,
-			Kind:  "session",
+			ID:         le.SessionID,
+			State:      st,
+			Kind:       "session",
+			AskPending: le.PendingAsk,
 		}
 		if meta != nil {
 			node.Title = nodeTitle(*meta, nodeKind(*meta))
@@ -701,17 +673,15 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		}
 		needsYou = append(needsYou, node)
 	}
-	// Errors first, then oldest-waiting first within the amber (awaiting/warning)
-	// family (spec v5). NeedsYou only ever admits errored/awaiting/warning, and
-	// among those two amber states urgency is purely how long the user has been
-	// blocked — awaiting and warning are equally "look at this," so only a red
-	// error jumps the queue; full AttentionRank isn't used here because it would
-	// also rank awaiting strictly above warning, which would wrongly separate
-	// the amber family by state instead of by age.
+	// Three bands, oldest-first inside each band (Track A §2 ask-tiering):
+	// errored (broken beats blocked) > ask-pending (blocked beats your-move) >
+	// your-move (a generic amber settle). AttentionRank isn't used here — it
+	// would also separate plain awaiting from warning, which both belong in
+	// the your-move band unless ask-pending.
 	sort.SliceStable(needsYou, func(i, j int) bool {
-		ie, je := needsYou[i].State == "errored", needsYou[j].State == "errored"
-		if ie != je {
-			return ie
+		bi, bj := hubapi.NeedsYouBand(needsYou[i].State, needsYou[i].AskPending), hubapi.NeedsYouBand(needsYou[j].State, needsYou[j].AskPending)
+		if bi != bj {
+			return bi > bj
 		}
 		return needsYou[i].UpdatedAt.Before(needsYou[j].UpdatedAt)
 	})

@@ -1331,7 +1331,7 @@ func TestHubModelSessionHeaderShowsCodexMetadata(t *testing.T) {
 	for _, want := range []string{
 		"codex task",
 		"src codex-local",
-		"ACTIVE",
+		"WORKING",
 		"model gpt-5.3-codex",
 		"dir /tmp/serf",
 		"2 turns",

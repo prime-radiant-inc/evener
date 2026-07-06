@@ -42,5 +42,15 @@
     </dd>
     <p class="help">Short tone on the same transitions.</p>
   </div>
+  <div class="row editable">
+    <dt id="lbl-notif-loudscope">Loud for</dt>
+    <dd>
+      <div class="val-radio-group">
+        <label class="val-radio"><input type="radio" name="loud-scope" data-notif-radio="loudScope" value="asks" aria-labelledby="lbl-notif-loudscope"> Questions &amp; errors</label>
+        <label class="val-radio"><input type="radio" name="loud-scope" data-notif-radio="loudScope" value="all" aria-labelledby="lbl-notif-loudscope"> Everything needing me</label>
+      </div>
+    </dd>
+    <p class="help">OS notification and sound fire for this scope only; the title/favicon count always reflects everything needing you.</p>
+  </div>
 </dl>
 {{end}}

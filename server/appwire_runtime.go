@@ -450,6 +450,7 @@ func (s *Server) appThread() appwire.Thread {
 	qdfn := s.queueDepthFn
 	gsfn := s.goalStatusFn
 	wmfn := s.workMetricsFn
+	pafn := s.pendingAskFn
 	activeTurnID := s.appActiveTurnID
 	s.mu.RUnlock()
 
@@ -502,6 +503,10 @@ func (s *Server) appThread() appwire.Thread {
 	if wmfn != nil {
 		workMillis, usage, activeTurnStartedAt = wmfn()
 	}
+	askPending := status.PendingAsk
+	if pafn != nil {
+		askPending = pafn()
+	}
 	return appwire.Thread{
 		ID:            threadID,
 		SessionID:     status.SessionID,
@@ -526,6 +531,7 @@ func (s *Server) appThread() appwire.Thread {
 			Usage:               usage,
 			WorkMillis:          workMillis,
 			ActiveTurnStartedAt: activeTurnStartedAt,
+			AskPending:          askPending,
 		},
 	}
 }

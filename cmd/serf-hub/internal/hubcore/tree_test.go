@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/hubapi"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -943,16 +944,11 @@ func TestAttentionRank(t *testing.T) {
 		in   string
 		want int
 	}{
-		{"awaiting", 4},
-		{"active", 3},
-		{"warning", 2},
-		{"idle", 1},
-		{"ended", 0},
-		{"unknown", 0},
+		{"awaiting", 4}, {"active", 3}, {"warning", 2}, {"idle", 1}, {"ended", 0}, {"unknown", 0},
 	}
 	for _, c := range cases {
-		if got := AttentionRank(c.in); got != c.want {
-			t.Errorf("AttentionRank(%q) = %d, want %d", c.in, got, c.want)
+		if got := hubapi.AttentionRank(c.in); got != c.want {
+			t.Errorf("hubapi.AttentionRank(%q) = %d, want %d", c.in, got, c.want)
 		}
 	}
 }
@@ -962,16 +958,11 @@ func TestRollupRank(t *testing.T) {
 		in   string
 		want int
 	}{
-		{"awaiting", 4},
-		{"warning", 3},
-		{"active", 2},
-		{"idle", 1},
-		{"ended", 0},
-		{"unknown", 0},
+		{"awaiting", 4}, {"warning", 3}, {"active", 2}, {"idle", 1}, {"ended", 0}, {"unknown", 0},
 	}
 	for _, c := range cases {
-		if got := rollupRank(c.in); got != c.want {
-			t.Errorf("rollupRank(%q) = %d, want %d", c.in, got, c.want)
+		if got := hubapi.RollupRank(c.in); got != c.want {
+			t.Errorf("hubapi.RollupRank(%q) = %d, want %d", c.in, got, c.want)
 		}
 	}
 }
@@ -1080,11 +1071,11 @@ func TestOrderCreatedAt(t *testing.T) {
 }
 
 func TestAttentionRanks_Errored(t *testing.T) {
-	if AttentionRank("errored") <= AttentionRank("awaiting") {
+	if hubapi.AttentionRank("errored") <= hubapi.AttentionRank("awaiting") {
 		t.Fatal("errored must outrank awaiting")
 	}
-	if rollupRank("errored") <= rollupRank("awaiting") {
-		t.Fatal("rollupRank: errored must outrank awaiting")
+	if hubapi.RollupRank("errored") <= hubapi.RollupRank("awaiting") {
+		t.Fatal("RollupRank: errored must outrank awaiting")
 	}
 }
 
@@ -1252,6 +1243,76 @@ func TestAllTestSessionsClassifyAsTestRun(t *testing.T) {
 	for _, p := range tree.Projects {
 		if p.IsTestRun {
 			t.Fatalf("a mixed project must not be IsTestRun")
+		}
+	}
+}
+
+func TestNeedsYou_CarriesAskPendingFromLiveEntry(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{{ID: "01A", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
+	live := []LiveEntry{{Entry: rendezvous.Entry{PID: 1}, SessionID: "01A", Status: appwire.ThreadStatusAwaiting, PendingAsk: true}}
+	tree := buildTree(metas, live)
+	if len(tree.NeedsYou) != 1 || !tree.NeedsYou[0].AskPending {
+		t.Fatalf("NeedsYou node must carry AskPending=true, got %+v", tree.NeedsYou)
+	}
+}
+
+// TestLiveTier_CarriesAskPendingFromLiveEntry guards against the live-tier
+// TreeNode builder silently dropping AskPending: a session that's ask-pending
+// in NeedsYou must show the same marker in the flat Live rail, or the sidebar
+// disagrees with itself about the same session.
+func TestLiveTier_CarriesAskPendingFromLiveEntry(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{{ID: "01A", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
+	live := []LiveEntry{{Entry: rendezvous.Entry{PID: 1}, SessionID: "01A", Status: appwire.ThreadStatusAwaiting, PendingAsk: true}}
+	tree := buildTree(metas, live)
+	if len(tree.Live) != 1 || !tree.Live[0].AskPending {
+		t.Fatalf("Live node must carry AskPending=true, got %+v", tree.Live)
+	}
+}
+
+// TestProjectTier_CarriesAskPendingFromLiveEntry guards against the
+// per-project TreeNode builder silently dropping AskPending: the same
+// ask-pending session rendered under its project (Current tier) must carry
+// the marker too, or the project row disagrees with its NeedsYou tile.
+func TestProjectTier_CarriesAskPendingFromLiveEntry(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{{ID: "01A", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
+	live := []LiveEntry{{Entry: rendezvous.Entry{PID: 1}, SessionID: "01A", Status: appwire.ThreadStatusAwaiting, PendingAsk: true}}
+	tree := buildTree(metas, live)
+	if len(tree.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d: %+v", len(tree.Projects), tree.Projects)
+	}
+	sessions := allSessions(tree.Projects[0])
+	if len(sessions) != 1 || !sessions[0].AskPending {
+		t.Fatalf("project session node must carry AskPending=true, got %+v", sessions)
+	}
+}
+
+func TestNeedsYou_AskPendingBandsBetweenErroredAndYourMove(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01OLD_YOURMOVE", UpdatedAt: now.Add(-3 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+		{ID: "01ASK", UpdatedAt: now.Add(-1 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+		{ID: "01ERR", UpdatedAt: now.Add(-2 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+	}
+	live := []LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01OLD_YOURMOVE", Status: appwire.ThreadStatusAwaiting, PendingAsk: false},
+		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
+		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01ERR", Status: appwire.ThreadStatusSystemError},
+	}
+	tree := buildTree(metas, live)
+	if len(tree.NeedsYou) != 3 {
+		t.Fatalf("NeedsYou len = %d, want 3", len(tree.NeedsYou))
+	}
+	// errored first, then ask-pending (even though it is newer than the
+	// your-move row), then your-move last — despite 01OLD_YOURMOVE being the
+	// oldest-updated of all three.
+	got := []string{tree.NeedsYou[0].ID, tree.NeedsYou[1].ID, tree.NeedsYou[2].ID}
+	want := []string{"01ERR", "01ASK", "01OLD_YOURMOVE"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("band order = %v, want %v", got, want)
 		}
 	}
 }

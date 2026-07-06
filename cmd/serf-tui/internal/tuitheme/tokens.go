@@ -20,12 +20,12 @@ type Theme struct {
 	Text, TextMuted, TextDim, TextGhost lipgloss.Color
 
 	Accent, AccentSecondary lipgloss.Color
-	StateAwaiting, StateProcessing,
+	StateAwaiting, StateWorking,
 	StateWarning, StateIdle, StateEnded,
 	StateSubagent, StateError lipgloss.Color
 	BtnPrimaryText lipgloss.Color
 
-	StateAwaitingTint, StateProcessingTint,
+	StateAwaitingTint, StateWorkingTint,
 	StateWarningTint, StateIdleTint,
 	AccentTint lipgloss.Color
 
@@ -113,28 +113,30 @@ var darkTheme = Theme{
 	// neon, no candy.
 	Accent:          lipgloss.Color("#6b9ec8"),
 	AccentSecondary: lipgloss.Color("#a8927a"),
-	// Calm state palette: terracotta / slate / muted gold / muted sage.
-	StateAwaiting:   lipgloss.Color("#c47878"),
-	StateProcessing: lipgloss.Color("#6b9ec8"),
-	StateWarning:    lipgloss.Color("#c4a06a"),
-	StateIdle:       lipgloss.Color("#88a878"),
-	StateEnded:      lipgloss.Color("#5e5e64"),
-	StateSubagent:   lipgloss.Color("#a8927a"),
-	StateError:      lipgloss.Color("#d16969"),
-	BtnPrimaryText:  lipgloss.Color("#0f0f11"),
+	// Calm state palette (palette v2): needs-you moves onto the old
+	// processing slate-blue; working moves onto the old idle sage-green;
+	// idle gets a fresh neutral gray. Warning/ended/error/subagent unchanged.
+	StateAwaiting:  lipgloss.Color("#6b9ec8"),
+	StateWorking:   lipgloss.Color("#88a878"),
+	StateWarning:   lipgloss.Color("#c4a06a"),
+	StateIdle:      lipgloss.Color("#767c82"),
+	StateEnded:     lipgloss.Color("#5e5e64"),
+	StateSubagent:  lipgloss.Color("#a8927a"),
+	StateError:     lipgloss.Color("#d16969"),
+	BtnPrimaryText: lipgloss.Color("#0f0f11"),
 	// Tints — faint elevated darks, used as backgrounds on tinted rows.
-	StateAwaitingTint:   lipgloss.Color("#1d1516"),
-	StateProcessingTint: lipgloss.Color("#13181f"),
-	StateWarningTint:    lipgloss.Color("#1d1a14"),
-	StateIdleTint:       lipgloss.Color("#161c14"),
-	AccentTint:          lipgloss.Color("#13181f"),
-	IndentToolBody:      4,
-	IndentSubagent:      2,
-	GapTurn:             1,
-	GapSection:          2,
-	ColumnDur:           8,
-	LeftBarGlyph:        "▍",
-	RuleGlyph:           "┄",
+	StateAwaitingTint: lipgloss.Color("#13181f"),
+	StateWorkingTint:  lipgloss.Color("#161c14"),
+	StateWarningTint:  lipgloss.Color("#1d1a14"),
+	StateIdleTint:     lipgloss.Color("#1a1c1e"),
+	AccentTint:        lipgloss.Color("#13181f"),
+	IndentToolBody:    4,
+	IndentSubagent:    2,
+	GapTurn:           1,
+	GapSection:        2,
+	ColumnDur:         8,
+	LeftBarGlyph:      "▍",
+	RuleGlyph:         "┄",
 }
 
 var lightTheme = Theme{
@@ -156,26 +158,25 @@ var lightTheme = Theme{
 	// theme but deeper for contrast against light paper.
 	Accent:          lipgloss.Color("#3d6790"),
 	AccentSecondary: lipgloss.Color("#7a6850"),
-	// Calm states: deep terracotta / slate / amber / forest.
-	StateAwaiting:   lipgloss.Color("#9a3c3c"),
-	StateProcessing: lipgloss.Color("#3d6790"),
+	StateAwaiting:   lipgloss.Color("#3d6790"),
+	StateWorking:    lipgloss.Color("#4a6a35"),
 	StateWarning:    lipgloss.Color("#8a6420"),
-	StateIdle:       lipgloss.Color("#4a6a35"),
+	StateIdle:       lipgloss.Color("#8a8f94"),
 	StateEnded:      lipgloss.Color("#76746e"),
 	StateSubagent:   lipgloss.Color("#7a6850"),
 	StateError:      lipgloss.Color("#8a2a2a"),
 	BtnPrimaryText:  lipgloss.Color("#f8f7f3"),
 	// Tints — barely-perceptible washes.
-	StateAwaitingTint:   lipgloss.Color("#ede0e0"),
-	StateProcessingTint: lipgloss.Color("#dfe5ec"),
-	StateWarningTint:    lipgloss.Color("#ebe5d3"),
-	StateIdleTint:       lipgloss.Color("#e1e6d6"),
-	AccentTint:          lipgloss.Color("#dfe5ec"),
-	IndentToolBody:      4,
-	IndentSubagent:      2,
-	GapTurn:             1,
-	GapSection:          2,
-	ColumnDur:           8,
-	LeftBarGlyph:        "▍",
-	RuleGlyph:           "┄",
+	StateAwaitingTint: lipgloss.Color("#dfe5ec"),
+	StateWorkingTint:  lipgloss.Color("#e1e6d6"),
+	StateWarningTint:  lipgloss.Color("#ebe5d3"),
+	StateIdleTint:     lipgloss.Color("#e8e9ea"),
+	AccentTint:        lipgloss.Color("#dfe5ec"),
+	IndentToolBody:    4,
+	IndentSubagent:    2,
+	GapTurn:           1,
+	GapSection:        2,
+	ColumnDur:         8,
+	LeftBarGlyph:      "▍",
+	RuleGlyph:         "┄",
 }

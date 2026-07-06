@@ -74,3 +74,23 @@ func TestHubUsageFromAppwire(t *testing.T) {
 		t.Fatalf("hubUsageFromAppwire = %+v, want %+v", got, want)
 	}
 }
+
+func TestStateLabel_UnifiedVocabulary(t *testing.T) {
+	cases := []struct {
+		state      string
+		askPending bool
+		want       string
+	}{
+		{"active", false, "Working"},
+		{"awaiting", false, "Your move"},
+		{"awaiting", true, "Question waiting"},
+		{"warning", false, "Warning"},
+		{"errored", false, "Error"},
+		{"idle", false, "Idle"},
+	}
+	for _, c := range cases {
+		if got := stateLabel(c.state, c.askPending); got != c.want {
+			t.Errorf("stateLabel(%q, %v) = %q, want %q", c.state, c.askPending, got, c.want)
+		}
+	}
+}

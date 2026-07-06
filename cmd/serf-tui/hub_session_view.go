@@ -26,7 +26,7 @@ func (m hubModel) sessionHeaderLines() []string {
 	// Line 2: title + state badge (truncate title if needed to fit width)
 	// Use stateLabel to normalize raw states (e.g. "closed" → "ended").
 	normalizedState := stateLabel(state)
-	badge := tuiprim.StatusBadge(stateColor(normalizedState), normalizedState)
+	badge := tuiprim.StatusBadge(stateColor(normalizedState), displayWord(state, m.detail.AskPending))
 	badgeW := lipgloss.Width(badge)
 	maxTitleW := m.sessionHeaderWidth() - 2 - 3 - badgeW // 2-space indent + 3-space gap
 	if maxTitleW < 4 {

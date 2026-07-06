@@ -1,8 +1,9 @@
 // Project rollup badges (R4): the project-header's dead .project-rollup span
-// (buildProjectHeader) is wired to the server-computed magnitude counts —
-// "⟳N · ◆M" (mockup #10 rec A) — via a shared setProjectRollup(el, p) used by
-// both buildProjectHeader and patchProjectHeader, so the reconcile patch path
-// updates counts/tint in place instead of rebuilding the header node.
+// (buildProjectHeader) is wired to the server-computed magnitude counts — a
+// working-icon badge and a needs-you-icon badge (mockup #10 rec A) — via a
+// shared setProjectRollup(el, p) used by both buildProjectHeader and
+// patchProjectHeader, so the reconcile patch path updates counts/tint in
+// place instead of rebuilding the header node.
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
 const src = fs.readFileSync(__dirname + "/../assets/sidebar.js", "utf8");
@@ -15,6 +16,7 @@ function boot() {
   w.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(emptyTree()) });
   w.htmx = { process() {} };
   w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
+  w.eval(fs.readFileSync(__dirname + "/../assets/icons.js", "utf8"));
   w.eval(src);
   return w;
 }
@@ -49,7 +51,7 @@ function headerRollup(w) {
   const rollup = headerRollup(w);
   const attn = rollup.querySelector(".rollup-badge.rollup-attn");
   if (!attn) throw new Error("attn-only project must show the needs-you badge");
-  if (attn.textContent !== "◆2") throw new Error('expected needs-you badge text "◆2", got ' + JSON.stringify(attn.textContent));
+  if (attn.textContent !== "2") throw new Error('expected needs-you badge count text "2", got ' + JSON.stringify(attn.textContent));
   if (rollup.querySelector(".rollup-badge.rollup-live")) throw new Error("attn-only project must NOT show the live badge");
   if (rollup.getAttribute("data-state") !== "awaiting") throw new Error('data-state must reflect rollup_state, got ' + JSON.stringify(rollup.getAttribute("data-state")));
   console.log("ok attn-only shows the needs-you badge only");
@@ -62,7 +64,7 @@ function headerRollup(w) {
   const rollup = headerRollup(w);
   const live = rollup.querySelector(".rollup-badge.rollup-live");
   if (!live) throw new Error("live-only project must show the working badge");
-  if (live.textContent !== "⟳3") throw new Error('expected working badge text "⟳3", got ' + JSON.stringify(live.textContent));
+  if (live.textContent !== "3") throw new Error('expected working badge count text "3", got ' + JSON.stringify(live.textContent));
   if (rollup.querySelector(".rollup-badge.rollup-attn")) throw new Error("live-only project must NOT show the needs-you badge");
   console.log("ok live-only shows the working badge only");
 }
@@ -76,11 +78,11 @@ function headerRollup(w) {
   const rollup = headerRollup(w);
   const badges = rollup.querySelectorAll(".rollup-badge");
   if (badges.length !== 2) throw new Error("expected exactly 2 badges (never a third), got " + badges.length);
-  if (!badges[0].classList.contains("rollup-live") || badges[0].textContent !== "⟳2") {
-    throw new Error("expected the live badge (⟳2) first, got " + JSON.stringify(badges[0].outerHTML));
+  if (!badges[0].classList.contains("rollup-live") || badges[0].textContent !== "2") {
+    throw new Error("expected the live badge (count 2) first, got " + JSON.stringify(badges[0].outerHTML));
   }
-  if (!badges[1].classList.contains("rollup-attn") || badges[1].textContent !== "◆1") {
-    throw new Error("expected the needs-you badge (◆1) second, got " + JSON.stringify(badges[1].outerHTML));
+  if (!badges[1].classList.contains("rollup-attn") || badges[1].textContent !== "1") {
+    throw new Error("expected the needs-you badge (count 1) second, got " + JSON.stringify(badges[1].outerHTML));
   }
   if (!rollup.querySelector(".rollup-sep")) throw new Error("both-nonzero rollup must render a separator between segments");
   if (rollup.getAttribute("data-state") !== "awaiting") {
@@ -116,8 +118,8 @@ function headerRollup(w) {
   const rollup2 = header2.querySelector(".project-rollup");
   const live2 = rollup2.querySelector(".rollup-badge.rollup-live");
   const attn2 = rollup2.querySelector(".rollup-badge.rollup-attn");
-  if (!live2 || live2.textContent !== "⟳5") throw new Error("patched live badge must update to ⟳5, got " + (live2 && live2.textContent));
-  if (!attn2 || attn2.textContent !== "◆2") throw new Error("patched attn badge must update to ◆2, got " + (attn2 && attn2.textContent));
+  if (!live2 || live2.textContent !== "5") throw new Error("patched live badge must update to count 5, got " + (live2 && live2.textContent));
+  if (!attn2 || attn2.textContent !== "2") throw new Error("patched attn badge must update to count 2, got " + (attn2 && attn2.textContent));
   if (rollup2.getAttribute("data-state") !== "awaiting") throw new Error("patched data-state must update to awaiting");
   console.log("ok patch path updates rollup counts/tint on the same DOM node");
 }

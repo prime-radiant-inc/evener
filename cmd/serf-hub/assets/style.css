@@ -10,16 +10,17 @@
   --rule: #1a1a20;
   --rule-soft: color-mix(in srgb, var(--rule) 50%, transparent);
   --accent: #7aa2f7;
-  /* Four meanings, each exactly one (design-system §3):
-     blue=live/active, amber=needs-you/awaiting, red=error, neutral=done/settled.
-     --state-awaiting is AMBER (needs your eye), --error is its own RED
-     (failed-to-run), --state-idle is NEUTRAL (done recedes — absence of color). */
-  --state-awaiting: #e2b06a;
-  --state-processing: #7aa2f7;
+  /* Four meanings, each exactly one (design-system §3, palette v2):
+     green=working, blue=needs-you, amber=warning, red=error, neutral=done/settled.
+     --state-awaiting is BLUE (needs your eye, no longer amber — accepted churn),
+     --state-working is GREEN, --state-warning keeps its own AMBER identity
+     (no longer folded into needs-you), --state-idle is NEUTRAL. */
+  --state-awaiting: #7aa2f7;
+  --state-working: #7dc98f;
   --state-warning: #e0af68;
   --state-idle: #7a7a86;
   --state-ended: #3a3a44;
-  /* Subagents carry no ambient hue: blue when active, neutral when done. */
+  /* Subagents carry no ambient hue: green when active, neutral when done. */
   --state-subagent: #7a7a86;
   --surface-secondary: #1c1c24;
   --accent-secondary: #7aa2f7;
@@ -40,7 +41,7 @@
   --diff-del-bg: rgba(176,128,142,.075); /* faint del tint */
   --diagnostic-provider: var(--error);
   --diagnostic-serf: var(--state-warning);
-  --diagnostic-hub: var(--state-processing);
+  --diagnostic-hub: var(--state-working);
   --diagnostic-ui: var(--accent-secondary);
 
   /* Legacy aliases for the existing rule set; remove these once the rest
@@ -130,8 +131,8 @@
     --rule: #dadadc;
     --rule-soft: color-mix(in srgb, var(--rule) 50%, transparent);
     --accent: #2e58b8;
-    --state-awaiting: #8a5a14;
-    --state-processing: #2e58b8;
+    --state-awaiting: #2e58b8;
+    --state-working: #2e7d4f;
     --state-warning: #8a5a14;
     --state-idle: #5e5e6a;
     --state-ended: #7a7a82;
@@ -161,8 +162,8 @@
   --rule: #1a1a20;
   --rule-soft: color-mix(in srgb, var(--rule) 50%, transparent);
   --accent: #7aa2f7;
-  --state-awaiting: #e2b06a;
-  --state-processing: #7aa2f7;
+  --state-awaiting: #7aa2f7;
+  --state-working: #7dc98f;
   --state-warning: #e0af68;
   --state-idle: #7a7a86;
   --state-ended: #3a3a44;
@@ -190,8 +191,8 @@
   --rule: #dadadc;
   --rule-soft: color-mix(in srgb, var(--rule) 50%, transparent);
   --accent: #2e58b8;
-  --state-awaiting: #8a5a14;
-  --state-processing: #2e58b8;
+  --state-awaiting: #2e58b8;
+  --state-working: #2e7d4f;
   --state-warning: #8a5a14;
   --state-idle: #5e5e6a;
   --state-ended: #7a7a82;
@@ -209,7 +210,7 @@
   --user: var(--text-muted);
 }
 [data-theme="light"] .sb-row[data-state="awaiting"] { background: color-mix(in srgb, var(--state-awaiting) 12%, transparent); }
-[data-theme="light"] .sb-row[data-state="active"]   { background: color-mix(in srgb, var(--state-processing) 12%, transparent); }
+[data-theme="light"] .sb-row[data-state="active"]   { background: color-mix(in srgb, var(--state-working) 12%, transparent); }
 [data-theme="light"] .sb-row[data-state="warning"]  { background: color-mix(in srgb, var(--state-warning) 12%, transparent); }
 [data-theme="light"] .sb-row[data-active]            { background: color-mix(in srgb, var(--accent) 16%, transparent); }
 /* Light-mode: --text is dark so the 2% text-mix reads as a noticeable grey.
@@ -219,7 +220,7 @@
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) .sb-row[data-state="awaiting"] { background: color-mix(in srgb, var(--state-awaiting) 12%, transparent); }
-  :root:not([data-theme="dark"]) .sb-row[data-state="active"]   { background: color-mix(in srgb, var(--state-processing) 12%, transparent); }
+  :root:not([data-theme="dark"]) .sb-row[data-state="active"]   { background: color-mix(in srgb, var(--state-working) 12%, transparent); }
   :root:not([data-theme="dark"]) .sb-row[data-state="warning"]  { background: color-mix(in srgb, var(--state-warning) 12%, transparent); }
   :root:not([data-theme="dark"]) .sb-row[data-active]           { background: color-mix(in srgb, var(--accent) 16%, transparent); }
   :root:not([data-theme="dark"]) .settings-table .row.editable:hover {
@@ -595,8 +596,8 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
   border-left-color: var(--state-awaiting);
 }
 .sb-row[data-state="active"] {
-  background: color-mix(in srgb, var(--state-processing) 5%, transparent);
-  border-left-color: var(--state-processing);
+  background: color-mix(in srgb, var(--state-working) 5%, transparent);
+  border-left-color: var(--state-working);
 }
 .sb-row[data-state="warning"] {
   background: color-mix(in srgb, var(--state-warning) 5%, transparent);
@@ -629,18 +630,25 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
 
 /* Fork glyph colour follows row data-state. */
 .sb-row.fork .fork-glyph { color: var(--state-ended); }
-.sb-row.fork[data-state="active"]   .fork-glyph { color: var(--state-processing); }
+.sb-row.fork[data-state="active"]   .fork-glyph { color: var(--state-working); }
 .sb-row.fork[data-state="awaiting"] .fork-glyph { color: var(--state-awaiting); }
 .sb-row.fork[data-state="warning"]  .fork-glyph { color: var(--state-warning); }
 .sb-row.fork[data-state="idle"]     .fork-glyph { color: var(--state-idle); }
 
 .status-dot { display: inline-block; width: 6px; height: 6px; border-radius: var(--radius-pill); background: var(--state-ended); flex-shrink: 0; }
-.status-dot[data-state="active"] { background: var(--state-processing); }
+.status-dot[data-state="active"] { background: var(--state-working); }
 .status-dot[data-state="awaiting"] { background: var(--state-awaiting); }
 .status-dot[data-state="warning"] { background: var(--state-warning); }
 .status-dot[data-state="idle"] { background: var(--state-idle); }
 .status-dot.subagent { background: var(--state-subagent); }
 .status-dot.rollup { margin-left: auto; }
+
+.status-icon { display: inline-flex; width: 12px; height: 12px; font-size: 12px; color: var(--state-ended); flex-shrink: 0; }
+.status-icon[data-state="active"] { color: var(--state-working); }
+.status-icon[data-state="awaiting"] { color: var(--state-awaiting); }
+.status-icon[data-state="warning"] { color: var(--state-warning); }
+.status-icon[data-state="idle"] { color: var(--state-idle); }
+.status-icon[data-state="errored"] { color: var(--error); }
 
 /* Project header: the whole row is the toggle target — sidebar.js wires
    click on the header div itself, and its buttons (menu, etc.) call
@@ -685,7 +693,7 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
 .project-rollup-dot[data-state=""]           { display: none; }
 .project-rollup-dot[data-state="ended"]      { display: none; }
 .project-rollup-dot[data-state="awaiting"]   { background: var(--state-awaiting); }
-.project-rollup-dot[data-state="active"] { background: var(--state-processing); }
+.project-rollup-dot[data-state="active"] { background: var(--state-working); }
 .project-rollup-dot[data-state="warning"]    { background: var(--state-warning); }
 .project-rollup-dot[data-state="idle"]       { background: var(--state-idle); }
 .project-rollup-dot[data-state="errored"]  { background: var(--error); }
@@ -936,9 +944,11 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   text-align: center;
   line-height: 1.2;
 }
-/* Glyph pairing (mockup #1): ⟳ blue active, ◆ amber needs-you, ✕ red warning,
-   ✓ neutral done. Color is never the sole channel — the shape carries it too. */
-.subagent-row[data-state="active"]   .subagent-glyph { color: var(--state-processing); }
+/* Icon pairing (mockup #1, palette v2): refresh-cw green working, speech-
+   bubble blue needs-you (? question-waiting / ! your-move), triangle-alert
+   amber warning, circle-x red error. Color is never the sole channel — the
+   shape carries it too (see the colorblind-safe status-dots block below). */
+.subagent-row[data-state="active"]   .subagent-glyph { color: var(--state-working); }
 .subagent-row[data-state="awaiting"] .subagent-glyph { color: var(--state-awaiting); }
 .subagent-row[data-state="warning"]  .subagent-glyph { color: var(--error); }
 .subagent-row[data-state="errored"]  .subagent-glyph { color: var(--error); }
@@ -1046,10 +1056,12 @@ body.app[data-sidebar-rail] .subagent-row-wrap > .open-beside-btn { display: non
 }
 
 /* ============================================================
-   Colorblind-safe status dots (mockup #10)
+   Colorblind-safe status dots (mockup #10, palette v2)
    The session dot is shape-coded as well as color-coded so it
-   survives colorblindness: awaiting = amber DIAMOND, active =
-   blue DISC, idle/ended = neutral SQUARE. Shape + color is the
+   survives colorblindness: working = green DISC, needs-you =
+   blue DIAMOND, warning = amber SQUIRCLE (its own shape now that
+   it is no longer amber-paired with needs-you), idle/ended =
+   neutral SQUARE, errored = red TRIANGLE. Shape + color is the
    double channel; renderer.js's [data-pulse] still drives the
    live breathing on the same element.
    ============================================================ */
@@ -1058,8 +1070,8 @@ body.app[data-sidebar-rail] .subagent-row-wrap > .open-beside-btn { display: non
   transform: rotate(45deg); /* diamond */
 }
 .status-dot[data-state="warning"] {
-  border-radius: 1px;
-  transform: rotate(45deg); /* diamond — also needs your eye */
+  border-radius: 30%; /* squircle — its own shape, distinct from the needs-you diamond */
+  transform: none;
 }
 .status-dot[data-state="active"] { border-radius: var(--radius-pill); } /* disc */
 .status-dot[data-state="idle"],
@@ -1073,19 +1085,19 @@ body.app[data-sidebar-rail] .subagent-row-wrap > .open-beside-btn { display: non
 /* ============================================================
    Needs-you triage tier (mockup #11 rec A)
    A top tier aggregating every awaiting session across projects,
-   oldest-blocked first. Amber is reserved strictly for needs-you
+   oldest-blocked first. Blue is reserved strictly for needs-you
    and is always glyph-paired (◆). Hidden entirely when empty.
    ============================================================ */
 .needs-you-header { color: var(--state-awaiting); }
 .needs-you-header .needs-you-glyph { color: var(--state-awaiting); font-size: var(--text-xs); }
 .needs-you-header .count { color: var(--state-awaiting); }
-/* The tier rows reuse the awaiting state-accent (amber left border + tint)
+/* The tier rows reuse the awaiting state-accent (blue left border + tint)
    already defined on .sb-row[data-state="awaiting"]; no extra fill needed. */
 
 /* ============================================================
    Magnitude rollup badges (mockup #10 rec A)
    "⟳N · ◆M" on the project header answers "how many need me"
-   that the single dot couldn't. Live = blue, needs-you = amber;
+   that the single dot couldn't. Live = green, needs-you = blue;
    each badge is glyph-paired so color is never the only channel.
    ============================================================ */
 .project-rollup {
@@ -1107,11 +1119,11 @@ body.app[data-sidebar-rail] .subagent-row-wrap > .open-beside-btn { display: non
   padding: 2px 5px;
   border-radius: var(--radius-pill);
 }
-.rollup-badge .rollup-glyph { font-family: var(--font-mono); font-size: 9px; }
+.rollup-badge .rollup-glyph { display: inline-flex; width: 9px; height: 9px; font-size: 9px; }
 .project-rollup .rollup-sep { color: var(--text-dim); font-size: var(--text-2xs); }
 .rollup-live {
-  color: var(--state-processing);
-  background: color-mix(in srgb, var(--state-processing) 14%, transparent);
+  color: var(--state-working);
+  background: color-mix(in srgb, var(--state-working) 14%, transparent);
 }
 .rollup-attn {
   color: var(--state-awaiting);
@@ -1214,7 +1226,7 @@ body.app[data-sidebar-rail] .test-date-header { display: none; }
    Session tiers: Current / Recent / (collapsed) Archived
    Labels read like the other quiet section labels (small, dim,
    consistent with .sidebar-section-header / .project-header
-   treatment). Archived content recedes — neutral, never amber
+   treatment). Archived content recedes — neutral, never blue
    or red (settled/put-away, not needs-you/error).
    ============================================================ */
 
@@ -1491,7 +1503,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
   font-weight: 600;
   color: var(--text-muted);
 }
-.status-badge[data-state="active"]    { color: var(--state-processing); }
+.status-badge[data-state="active"]    { color: var(--state-working); }
 .status-badge[data-state="awaiting"]  { color: var(--state-awaiting); }
 .status-badge[data-state="errored"]   { color: var(--error); }
 .status-badge[data-state="warning"]   { color: var(--state-warning); }
@@ -1527,7 +1539,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 /* ── New-content pill ──────────────────────────────────────────────────────
    Floating "↓ N new" affordance shown when the transcript appends content
    while the reader is scrolled up. Anchored to the bottom of #workspace (above
-   the composer), it does not scroll with the transcript. Goes amber + "↓ needs
+   the composer), it does not scroll with the transcript. Goes blue + "↓ needs
    you" when the new content needs the user (.needs-you). */
 .new-content-pill {
   position: absolute;
@@ -1565,11 +1577,11 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 /* ─────────────────────────────────────────────────────────────────────── */
 
 /* ── Blocking needs-you: the agent question (mockup #16) ───────────────────
-   Amber owns the container (the scarce "this needs you" signal); the question
+   Blue owns the container (the scarce "this needs you" signal); the question
    text stays readable so it can't be mistaken for the agent thinking aloud.
    Glyph-paired (◆) for colourblind safety. The composer is the reply affordance
-   — clicking the frame focuses it. (Alt A: amber-framed container + glyph
-   header.) The ask_user card (below) shares this same amber frame — it is a
+   — clicking the frame focuses it. (Alt A: blue-framed container + glyph
+   header.) The ask_user card (below) shares this same blue frame — it is a
    form with its own controls rather than plain prose, so it opts out of the
    whole-frame "click anywhere focuses the composer" cursor. */
 .assistant-message.agent-question,
@@ -1594,7 +1606,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 .agent-question-glyph { color: var(--state-awaiting); }
 
 /* ── ask_user question card (spec §6.1, mockup #16 Alt D) ──────────────────
-   Sits inside the amber .agent-question frame above. Each question is its
+   Sits inside the blue .agent-question frame above. Each question is its
    own block: recommended-first option chips, then the mutually-exclusive
    "Something else… / You decide / do that / skip" row, then the low-contrast
    note control. One footer composes and sends every question in the card at
@@ -1725,7 +1737,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 /* ─────────────────────────────────────────────────────────────────────── */
 
 /* The docked needs-you bar (Alt C): the always-reachable copy. The moment a
-   blocking question is off-screen (or the session is awaiting) an amber bar
+   blocking question is off-screen (or the session is awaiting) a blue bar
    docks above the composer — where the hands and eyes already are — so the ask
    can never hang below the fold. It is the authoritative blocking indicator;
    the new-content pill defers to it. Clicking scrolls to the question and
@@ -1869,7 +1881,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
    keeps its border style; the dashed outline cues "drop here" without
    recoloring the whole composer. */
 .input-card.drop-active,
-.spawn-input-wrap.drop-active { outline: 2px dashed var(--accent, var(--state-processing)); outline-offset: -2px; }
+.spawn-input-wrap.drop-active { outline: 2px dashed var(--accent, var(--state-working)); outline-offset: -2px; }
 .composer-attachment-error { color: var(--error); font-size: var(--text-xs); padding: var(--space-2) 0; }
 .composer-attachment-error:empty,
 .composer-attachment-error[hidden] { display: none; }
@@ -2018,11 +2030,11 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .input-status .context-fill {
   display: block;
   height: 100%;
-  background: var(--state-processing);
+  background: var(--state-working);
 }
 /* Near the context limit (>=80% of the window, mockup #17 Alt A): the whole
-   gauge changes register to amber and a ⚠ glyph pairs the color so it reads
-   without color (colorblind-safe). Amber = "needs your eye", not red — it is a
+   gauge changes register to blue and a ⚠ glyph pairs the color so it reads
+   without color (colorblind-safe). Blue = "needs your eye", not red — it is a
    real client-side threshold on real token numbers, not an "auto-compaction
    firing soon" signal (there is none). */
 .input-status .context.context-warn .status-key,
@@ -2118,7 +2130,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .user-message-images { display: flex; gap: var(--space-3); flex-wrap: wrap; margin-bottom: var(--space-3); }
 .user-message-images:empty { display: none; }
 .user-image-card { display: inline-flex; flex-direction: column; align-items: stretch; gap: var(--space-2); padding: 0; background: transparent; border: 1px solid var(--rule); border-radius: var(--radius-md); cursor: pointer; overflow: hidden; max-width: 220px; }
-.user-image-card:hover { border-color: var(--state-processing); }
+.user-image-card:hover { border-color: var(--state-working); }
 .user-image-thumb { display: block; max-width: 220px; max-height: 220px; object-fit: cover; }
 .user-image-name { display: block; padding: var(--space-2) var(--space-3); font-size: var(--text-xs); color: var(--text-muted); font-family: var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; text-align: left; }
 .user-message-attachments { display: flex; gap: var(--space-3); flex-wrap: wrap; margin-bottom: var(--space-3); }
@@ -2137,7 +2149,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .user-image-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
 .user-image-cell { display: flex; flex-direction: column; gap: var(--space-2); padding: 0; background: transparent; border: none; cursor: pointer; text-align: left; min-width: 0; }
 .user-image-cell .user-image-thumb { width: 100%; max-width: none; max-height: 220px; aspect-ratio: 16 / 10; object-fit: cover; border-radius: var(--radius-md); border: 1px solid var(--rule); }
-.user-image-cell:hover .user-image-thumb { border-color: var(--state-processing); }
+.user-image-cell:hover .user-image-thumb { border-color: var(--state-working); }
 .user-image-caption { display: flex; align-items: baseline; gap: var(--space-2); font-size: var(--text-xs); color: var(--text-muted); min-width: 0; }
 .user-image-filename { font-family: var(--font-mono); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .user-image-cap-sep { color: var(--text-dim); }
@@ -2528,7 +2540,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
    ONE aggregated "Subagents (N)" box per fan-out cluster. The box is the
    single containment device (no inner gridlines); rows are separated by
    spacing. Status uses the four-color system, each paired with a glyph so it
-   is colorblind-safe: running=blue (--state-processing), done=neutral
+   is colorblind-safe: running=green (--state-working), done=neutral
    (--text-muted, recedes), failed=red (--error). A child failure
    surfaces at the module level — it is never folded into a "N done" count.
    ============================================================ */
@@ -2562,7 +2574,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
-.subs-h .tally .r { color: var(--state-processing); }
+.subs-h .tally .r { color: var(--state-working); }
 .subs-h .tally .o { color: var(--text-muted); }
 .subs-h .tally .f { color: var(--error); }
 .subs-h .tally .u { color: var(--text-muted); }
@@ -2585,7 +2597,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
 }
 .sub-r[hidden] { display: none; }
 .sub-r .g { order: 1; font-size: var(--text-xs); width: 12px; flex: none; }
-.sub-r .g.run  { color: var(--state-processing); }
+.sub-r .g.run  { color: var(--state-working); }
 .sub-r .g.done { color: var(--text-muted); }
 .sub-r .g.err  { color: var(--error); }
 /* Terminal-unknown: neutral, NOT alarming, NOT live (mockup #8). */
@@ -2951,7 +2963,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .steering > summary::before, .steering > summary::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
 .steering > summary:hover { color: var(--text); }
 /* Steering is the user's own mid-turn message: demoted and NEUTRAL (mockup #3,
-   design-system #2). Amber is reserved for when the agent needs you, not when
+   design-system #2). Blue is reserved for when the agent needs you, not when
    you spoke. Sans because it is a human label, not machine text. */
 .steering .steering-verb { color: var(--text-muted); font-family: var(--font-sans); }
 .steering .steering-detail { color: var(--text); }
@@ -3093,7 +3105,7 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
 }
 .spawn-form .diagnostic { margin: 0; max-width: none; }
 /* Inline "create this directory?" confirmation shown above the spawn row when
-   the proposed working dir doesn't exist. An amber rail (needs-you), not red —
+   the proposed working dir doesn't exist. A blue rail (needs-you), not red —
    nothing has failed; the user just needs to decide. */
 .spawn-confirm {
   border: 1px solid var(--rule);
@@ -3809,7 +3821,7 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
   @media (hover: none) {
     .sb-row:hover { background: transparent; }
     .sb-row[data-state="awaiting"]:hover { background: color-mix(in srgb, var(--state-awaiting) 5%, transparent); }
-    .sb-row[data-state="active"]:hover   { background: color-mix(in srgb, var(--state-processing) 5%, transparent); }
+    .sb-row[data-state="active"]:hover   { background: color-mix(in srgb, var(--state-working) 5%, transparent); }
     .sb-row[data-state="warning"]:hover  { background: color-mix(in srgb, var(--state-warning) 5%, transparent); }
   }
   body.app[data-sidebar-open] #sidebar { transform: translateX(0); }
@@ -4548,7 +4560,7 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
    / .status-missing / .status-unreachable / .status-unknown markers
    onto the same color logic so settings/providers.html's
    "status-${activeSource}" form keeps working. */
-.status-badge.status-running   { color: var(--state-processing); }
+.status-badge.status-running   { color: var(--state-working); }
 .status-badge.status-available { color: var(--success); }
 .status-badge.status-error,
 .status-badge.status-missing   { color: var(--error); }
@@ -4707,7 +4719,7 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
 }
 
 /* Transport reconnect banner (mockup #15 Alt A): docked workspace chrome for a
-   daemon/appwire drop. AMBER while reconnecting (recovering, not broken), RED
+   daemon/appwire drop. BLUE while reconnecting (recovering, not broken), RED
    once a reconnect attempt fails ("Connection lost"). Glyph-paired so it reads
    without color. Owned by the renderer (SerfRenderer.showConnectionBanner). */
 .connection-banner {
@@ -4726,9 +4738,10 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
   background: var(--bg-raised);
 }
 .connection-banner .connection-banner-glyph { font-family: var(--font-mono); flex: none; }
+.connection-banner-glyph svg { width: 1.1em; height: 1.1em; vertical-align: -0.15em; }
 .connection-banner .connection-banner-msg { font-weight: 600; }
 .connection-banner .connection-banner-sub { color: var(--text-muted); }
-/* reconnecting = AMBER (recovering, not broken) */
+/* reconnecting = BLUE (recovering, not broken) */
 .connection-banner.reconnecting {
   background: color-mix(in srgb, var(--state-awaiting) 12%, var(--bg-raised));
   border-bottom-color: color-mix(in srgb, var(--state-awaiting) 40%, transparent);
@@ -4862,7 +4875,7 @@ body.has-connection-banner #workspace { height: calc(100vh - 32px); }
   cursor: pointer;
 }
 .cold-start-example:hover {
-  border-color: var(--state-processing);
+  border-color: var(--state-working);
   color: var(--text);
 }
 .cold-start-example-arrow { color: var(--text-dim); flex: none; }

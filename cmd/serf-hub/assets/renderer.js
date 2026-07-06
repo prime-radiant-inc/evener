@@ -811,12 +811,12 @@
       banner.classList.remove("reconnecting", "lost");
       if (level === "lost") {
         banner.classList.add("lost");
-        banner.innerHTML = '<span class="connection-banner-glyph" aria-hidden="true">⚠</span>' +
+        banner.innerHTML = '<span class="connection-banner-glyph" aria-hidden="true">' + window.SerfIcons.warning + '</span>' +
           '<span class="connection-banner-msg">Connection lost</span>' +
           '<span class="connection-banner-sub">retrying… — the agent keeps running on the daemon</span>';
       } else {
         banner.classList.add("reconnecting");
-        banner.innerHTML = '<span class="connection-banner-glyph" aria-hidden="true">⟳</span>' +
+        banner.innerHTML = '<span class="connection-banner-glyph" aria-hidden="true">' + window.SerfIcons.working + '</span>' +
           '<span class="connection-banner-msg">Reconnecting…</span>' +
           '<span class="connection-banner-sub">the agent keeps running on the daemon</span>';
       }
@@ -2008,7 +2008,7 @@
         head.setAttribute("data-agent-question-head", "");
         const glyph = document.createElement("span");
         glyph.className = "agent-question-glyph";
-        glyph.textContent = "◆";
+        glyph.innerHTML = window.SerfIcons.questionWaiting;
         const label = document.createElement("span");
         label.className = "agent-question-label";
         label.textContent = "Needs you";
@@ -2544,10 +2544,10 @@
     },
 
     subagentGlyph(kind) {
-      if (kind === "done") return "✓";
-      if (kind === "failed") return "✕";
+      if (kind === "done") return window.SerfIcons.ended;
+      if (kind === "failed") return window.SerfIcons.error;
       if (kind === "unknown") return "?";
-      return "⟳";
+      return window.SerfIcons.working;
     },
 
     // Status kinds (running/done/failed/unknown) map to short glyph CSS classes
@@ -2616,7 +2616,7 @@
       row.className = "sub-r";
       const glyph = document.createElement("span");
       glyph.className = "g run";
-      glyph.textContent = "⟳";
+      glyph.innerHTML = window.SerfIcons.working;
       const name = document.createElement("span");
       name.className = "nm";
       const res = document.createElement("span");
@@ -2949,7 +2949,7 @@
       const glyph = row.querySelector(".g");
       if (glyph) {
         glyph.className = "g " + this.subagentGlyphClass(kind);
-        glyph.textContent = this.subagentGlyph(kind);
+        glyph.innerHTML = this.subagentGlyph(kind);
       }
       this.renderSubagentResult(row, data, kind);
       this.renderSubagentDuration(row, kind);
@@ -3165,15 +3165,15 @@
       if (tally) {
         tally.innerHTML = "";
         const parts = [];
-        if (failed) parts.push(["f", "✕ " + failed + " failed"]);
+        if (failed) parts.push(["f", window.SerfIcons.error + " " + failed + " failed"]);
         if (unknown) parts.push(["u", "? " + unknown + " unknown"]);
-        if (running) parts.push(["r", "⟳ " + running + " running"]);
-        if (done) parts.push(["o", "✓ " + done + " done"]);
+        if (running) parts.push(["r", window.SerfIcons.working + " " + running + " running"]);
+        if (done) parts.push(["o", window.SerfIcons.ended + " " + done + " done"]);
         parts.forEach(([cls, text], i) => {
           if (i > 0) tally.append(" · ");
           const span = document.createElement("span");
           span.className = cls;
-          span.textContent = text;
+          span.innerHTML = text;
           tally.appendChild(span);
         });
       }
@@ -3298,7 +3298,7 @@
         const glyph = row.querySelector(".g");
         if (glyph) {
           glyph.className = "g " + this.subagentGlyphClass("unknown");
-          glyph.textContent = this.subagentGlyph("unknown");
+          glyph.innerHTML = this.subagentGlyph("unknown");
         }
         this.renderSubagentResult(row, {}, "unknown");
         this.renderSubagentDuration(row, "unknown");
@@ -4206,11 +4206,11 @@
       if (urgent && urgent.kind === "error") {
         this.newContentJumpTarget = urgent.el;
         pill.classList.add("error");
-        pill.textContent = (urgent.dir === "up" ? "↑" : "↓") + " ✕ error";
+        pill.innerHTML = (urgent.dir === "up" ? "↑ " : "↓ ") + window.SerfIcons.error + " error";
       } else if (urgent && urgent.kind === "needs-you") {
         this.newContentJumpTarget = null;
         pill.classList.add("needs-you");
-        pill.textContent = "↓ ◆ needs you";
+        pill.innerHTML = "↓ " + window.SerfIcons.yourMove + " needs you";
       } else {
         this.newContentJumpTarget = null;
         // The plain count is the only churning value, so it is debounced: a
@@ -4318,7 +4318,7 @@
         return;
       }
       dock.hidden = false;
-      dock.textContent = "◆ The agent is waiting on your answer — jump to it";
+      dock.innerHTML = window.SerfIcons.questionWaiting + " The agent is waiting on your answer — jump to it";
       // Authoritative signal: drop any duplicate needs-you treatment on the pill.
       const pill = this.newContentPillEl();
       if (pill && pill.classList.contains("needs-you")) this.renderNewContentPill();
@@ -4448,7 +4448,7 @@
       chip.className = "ask-collapsed-chip";
       chip.setAttribute("data-ask-collapsed-chip", "");
       chip.hidden = true;
-      chip.textContent = "◆ question waiting";
+      chip.innerHTML = window.SerfIcons.questionWaiting + " question waiting";
       chip.addEventListener("click", () => this.expandAskCard());
       el.appendChild(chip);
 
@@ -4784,7 +4784,13 @@
       const echo = clip(String(replyText || "").replace(/\s+/g, " ").trim(), 160);
       const line = document.createElement("div");
       line.className = "system-line ask-settled-line";
-      line.textContent = "◆ asked " + askedSummary + (echo ? " — answered: " + echo : " — answered");
+      // askedSummary (question headers) and echo (the raw reply) are not
+      // HTML-escaped — build the icon and text as separate nodes rather than
+      // string-concatenating into innerHTML, to avoid an XSS regression.
+      const iconSpan = document.createElement("span");
+      iconSpan.innerHTML = window.SerfIcons.questionWaiting;
+      line.appendChild(iconSpan);
+      line.appendChild(document.createTextNode(" asked " + askedSummary + (echo ? " — answered: " + echo : " — answered")));
       pa.el.parentNode.replaceChild(line, pa.el);
     },
 

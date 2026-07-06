@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
+	"primeradiant.com/serf/hubapi"
 )
 
 // Pure presentation/data-mapping helpers for the workspace partials. These are
@@ -45,7 +46,7 @@ func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
 		SourceLabel:  sourceLabelFromRefText(ref),
 		Title:        title,
 		State:        state,
-		StateLabel:   stateLabel(state),
+		StateLabel:   stateLabel(state, false),
 		TurnCount:    completedTurnCount(thread.Turns),
 		ActiveTurnID: activeTurnIDFromAppwireThread(thread),
 		RunningFor:   activeTurnRunningFor(thread),
@@ -188,25 +189,12 @@ func searchPastTitle(pe hubcore.PastEntry) string {
 	return hubcore.ShortID(pe.Meta.ID)
 }
 
-func stateLabel(state string) string {
-	// Sentence-case sans status labels (mockup #2): the status badge no longer
-	// shouts in ALL-CAPS mono, so the display text carries the capitalization.
-	// "active" reads as "Working" — the human word for a live, running session.
-	switch state {
-	case "errored":
-		return "Error"
-	case "awaiting":
-		return "Needs you"
-	case "active":
-		return "Working"
-	case "warning":
-		return "Warning"
-	case "idle":
-		return "Idle"
-	case "notLoaded":
-		return "Not loaded"
-	}
-	return state
+// stateLabel returns the unified display word (Track A §1) for a normalized
+// state. Delegates to hubapi.StateWord so the web and the TUI can never
+// independently drift on vocabulary. askPending selects the needs-you band
+// (Track A §2); pass false where the caller has no ask-pending information.
+func stateLabel(state string, askPending bool) string {
+	return hubapi.StateWord(state, askPending)
 }
 
 func formatContextNumbers(used, window, remaining int) string {

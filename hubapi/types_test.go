@@ -39,3 +39,21 @@ func TestSpawnRequestMarshalCanEmitLegacyTaskField(t *testing.T) {
 		t.Fatalf("missing legacy task field: %s", got)
 	}
 }
+
+func TestTreeNode_AskPendingRoundTrips(t *testing.T) {
+	n := TreeNode{SessionID: "01A", State: "awaiting", AskPending: true}
+	data, err := json.Marshal(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"ask_pending":true`) {
+		t.Fatalf("expected ask_pending:true in wire JSON, got %s", data)
+	}
+	var got TreeNode
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.AskPending {
+		t.Fatal("round-trip must preserve AskPending")
+	}
+}

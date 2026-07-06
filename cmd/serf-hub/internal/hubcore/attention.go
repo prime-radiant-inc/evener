@@ -20,6 +20,8 @@ type AttentionEntry struct {
 	Title   string `json:"title"`
 	Project string `json:"project"`
 	Level   string `json:"level"`
+	// serf:naming-ignore
+	AskPending bool `json:"askPending,omitempty"`
 }
 
 // AttentionSummary is the authoritative badge count set, computed over the
@@ -92,7 +94,7 @@ func DeriveAttention(metas []schema.SessionMeta, live []LiveEntry, decisions map
 			continue
 		}
 		level := attentionLevel(NormalizeState(le.Status))
-		e := AttentionEntry{ID: le.SessionID, Level: level}
+		e := AttentionEntry{ID: le.SessionID, Level: level, AskPending: le.PendingAsk}
 		if meta != nil {
 			e.Title = nodeTitle(*meta, nodeKind(*meta))
 			e.Project = projectName(*meta)
@@ -138,7 +140,7 @@ func (w *AttentionWatcher) Tick(cur map[string]AttentionEntry, sum AttentionSumm
 	var changed []AttentionChanged
 	for id, e := range cur {
 		prev, had := w.prev[id]
-		if !had || prev.Level != e.Level {
+		if !had || prev.Level != e.Level || prev.AskPending != e.AskPending {
 			pl := "idle"
 			if had {
 				pl = prev.Level
@@ -150,6 +152,7 @@ func (w *AttentionWatcher) Tick(cur map[string]AttentionEntry, sum AttentionSumm
 		if _, still := cur[id]; !still {
 			gone := prev
 			gone.Level = "idle"
+			gone.AskPending = false
 			changed = append(changed, AttentionChanged{AttentionEntry: gone, PrevLevel: prev.Level})
 		}
 	}

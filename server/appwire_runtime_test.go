@@ -113,3 +113,13 @@ func TestAppTurnsFromNotificationsCarriesTurnTiming(t *testing.T) {
 		t.Fatalf("turn DurationMS=%v, want 4200", turn.DurationMS)
 	}
 }
+
+func TestAppThread_OverlaysPendingAskFunc(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetStatus(StatusInfo{SessionID: "s1", State: "awaiting"})
+	srv.SetPendingAskFunc(func() bool { return true })
+	thread := srv.appThread()
+	if !thread.Serf.AskPending {
+		t.Fatal("expected appThread().Serf.AskPending=true")
+	}
+}

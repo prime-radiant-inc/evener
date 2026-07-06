@@ -23,8 +23,11 @@ function boot(opts) {
   w.fetch = (url) => Promise.resolve({
     json: () => Promise.resolve({ attentionSummary: (opts && opts.summary) || { needsYou: 0, error: 0, working: 0 } }),
   });
-  w.localStorage.setItem("serf-hub.notifications", JSON.stringify({ title: true, favicon: true, os: true, sound: false }));
-  w.localStorage.setItem("serf-hub.notifications.v", "2");
+  // loudScope: "all" so this file's generic (non-askPending) transitions
+  // keep firing OS/sound exactly as before — the asks-vs-all distinction
+  // itself is covered by test-notifications-loudscope.js, not here.
+  w.localStorage.setItem("serf-hub.notifications", JSON.stringify({ title: true, favicon: true, os: true, sound: false, loudScope: "all" }));
+  w.localStorage.setItem("serf-hub.notifications.v", "3");
   w.eval(src);
   return { w, fireNotif: (m, p) => notifHandler && notifHandler(m, p), fired };
 }
@@ -77,7 +80,7 @@ function boot(opts) {
     this.destination = {};
     this.close = () => {};
   };
-  d.w.localStorage.setItem("serf-hub.notifications", JSON.stringify({ title: true, favicon: true, os: false, sound: true }));
+  d.w.localStorage.setItem("serf-hub.notifications", JSON.stringify({ title: true, favicon: true, os: false, sound: true, loudScope: "all" }));
   d.fireNotif("serf/attention/changed", {
     changed: [{ threadId: "01W", title: "W", project: "p", level: "needs_you", prevLevel: "working" }],
     summary: { needsYou: 1, error: 0, working: 0 },

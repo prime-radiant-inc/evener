@@ -148,7 +148,7 @@ func (s *WebServer) renderThreadDocument(w http.ResponseWriter, r *http.Request,
 			SourceLabel:  sourceLabelFromRefText(appRefFromRouteID(id)),
 			Title:        id,
 			State:        "idle",
-			StateLabel:   stateLabel("idle"),
+			StateLabel:   stateLabel("idle", false),
 			Capabilities: s.apiSessionCapabilities(id, false),
 		}
 	}
@@ -279,7 +279,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 				SourceLabel:  "serf",
 				Title:        liveTitle(id, le, s.cfg.Past),
 				State:        state,
-				StateLabel:   stateLabel(state),
+				StateLabel:   stateLabel(state, false),
 				Model:        le.Model,
 				WorkingDir:   le.WorkingDir,
 				Capabilities: s.apiSessionCapabilities(id, true),
@@ -287,7 +287,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 			if status := s.fetchStatus(le); status != nil {
 				if status.State != "" {
 					data.State = hubcore.NormalizeState(status.State)
-					data.StateLabel = stateLabel(data.State)
+					data.StateLabel = stateLabel(data.State, false)
 				}
 				if status.Model != "" {
 					data.Model = status.Model
@@ -335,7 +335,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 				SourceLabel:  "serf",
 				Title:        pastTitle(pe),
 				State:        "ended",
-				StateLabel:   stateLabel("ended"),
+				StateLabel:   stateLabel("ended", false),
 				TurnCount:    pe.Meta.TurnCount,
 				Model:        pe.Meta.Model,
 				WorkingDir:   pe.Meta.EnvInfo.WorkingDir,
@@ -499,7 +499,7 @@ func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id 
 		"ContextNumbers":      formatContextNumbers(detail.ContextUsed, detail.ContextWindow, detail.ContextRemaining),
 		"Cost":                "",
 		"State":               detail.State,
-		"StateLabel":          stateLabel(detail.State),
+		"StateLabel":          stateLabel(detail.State, false),
 		"TurnCount":           detail.TurnCount,
 		"GoalStatus":          detail.GoalStatus,
 		"GoalIterations":      detail.GoalIterations,

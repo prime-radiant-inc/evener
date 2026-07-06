@@ -481,13 +481,16 @@
     }
   }
 
-  // planGlyphForStatus returns the glyph-paired status marker for a plan item.
-  // Glyph and color are dual-channel so the state reads even without color.
+  // planGlyphForStatus returns the glyph-paired status marker for a plan
+  // item. cancelled maps to the error icon (a plan item that will not
+  // happen reads the same as a failure, distinct from the neutral pending
+  // circle); "pending" is not a unified-vocabulary state and keeps its
+  // neutral literal circle.
   function planGlyphForStatus(status) {
     switch (status) {
-      case "done": return "✓";
-      case "in_progress": return "⟳";
-      case "cancelled": return "✕";
+      case "done": return window.SerfIcons.ended;
+      case "in_progress": return window.SerfIcons.working;
+      case "cancelled": return window.SerfIcons.error;
       default: return "○";
     }
   }
@@ -514,7 +517,7 @@
     row.className = "task-row-line plan-item " + planStateClass(task.status);
     const glyph = document.createElement("span");
     glyph.className = "plan-glyph";
-    glyph.textContent = planGlyphForStatus(task.status);
+    glyph.innerHTML = planGlyphForStatus(task.status);
     const step = document.createElement("span");
     step.className = "plan-step";
     step.textContent = task.description || task.title || ("#" + task.id);

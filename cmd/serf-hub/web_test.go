@@ -1012,15 +1012,15 @@ func TestWeb_SettingsFullPageLoadsInternalPartial(t *testing.T) {
 }
 
 // TestStateLabel_ErroredAndNeedsYou pins the two label changes the errored
-// render lane requires: "awaiting" reads as "Needs you" (not the flat,
+// render lane requires: "awaiting" reads as "Your move" (not the flat,
 // unlabeled "Awaiting"), and "errored" gets its own human label rather than
 // echoing the raw lowercase state string.
 func TestStateLabel_ErroredAndNeedsYou(t *testing.T) {
-	if got := stateLabel("errored"); got != "Error" {
+	if got := stateLabel("errored", false); got != "Error" {
 		t.Fatalf("stateLabel(errored) = %q, want Error", got)
 	}
-	if got := stateLabel("awaiting"); got != "Needs you" {
-		t.Fatalf("stateLabel(awaiting) = %q, want \"Needs you\"", got)
+	if got := stateLabel("awaiting", false); got != "Your move" {
+		t.Fatalf("stateLabel(awaiting) = %q, want \"Your move\"", got)
 	}
 }
 
@@ -2541,7 +2541,7 @@ func TestWeb_State_RendersInputStatusPartial(t *testing.T) {
 	if !strings.Contains(body, `class="status-item source"`) || !strings.Contains(body, `>serf</span>`) {
 		t.Errorf("state partial missing bottom source label: %q", body)
 	}
-	if !strings.Contains(body, `class="status-badge" data-state="ended"`) || !strings.Contains(body, `>ended</span>`) {
+	if !strings.Contains(body, `class="status-badge" data-state="ended"`) || !strings.Contains(body, `>Ended</span>`) {
 		t.Errorf("state partial missing bottom state badge: %q", body)
 	}
 	if !strings.Contains(body, `class="status-item turns"`) || !strings.Contains(body, `0 turns`) {
@@ -4740,12 +4740,12 @@ type perAddrProber struct {
 	byAddr map[string]struct{ SessionID, Status string }
 }
 
-func (p perAddrProber) Probe(entry rendezvous.Entry) (sessionID, status string, ok bool) {
+func (p perAddrProber) Probe(entry rendezvous.Entry) (sessionID, status string, pendingAsk, ok bool) {
 	v, present := p.byAddr[entry.Address]
 	if !present {
-		return "", "", false
+		return "", "", false, false
 	}
-	return v.SessionID, v.Status, true
+	return v.SessionID, v.Status, false, true
 }
 
 // settingsRequest is a small helper for the settings pane tests.

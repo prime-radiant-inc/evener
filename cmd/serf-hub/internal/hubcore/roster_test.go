@@ -221,14 +221,30 @@ func TestRoster_Watch_PicksUpNewFile(t *testing.T) {
 type fakeProber struct {
 	sessionID  string
 	status     string
+	pendingAsk bool
 	shouldFail bool
 }
 
-func (p fakeProber) Probe(rendezvous.Entry) (sessionID, status string, ok bool) {
+func (p fakeProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, ok bool) {
 	if p.shouldFail {
-		return "", "", false
+		return "", "", false, false
 	}
-	return p.sessionID, p.status, true
+	return p.sessionID, p.status, p.pendingAsk, true
+}
+
+func TestRoster_CarriesPendingAskFromProber(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{
+		PID:     1001,
+		Address: "127.0.0.1:50001",
+	})
+	prober := fakeProber{sessionID: "01A", status: "awaiting", pendingAsk: true}
+	r := NewRoster(dir, prober)
+	r.Refresh()
+	entries := r.List()
+	if len(entries) != 1 || !entries[0].PendingAsk {
+		t.Fatalf("expected one live entry with PendingAsk=true, got %+v", entries)
+	}
 }
 
 // gateProber blocks each probe on a channel, so a test can hold a Refresh in
@@ -239,13 +255,13 @@ type gateProber struct {
 	started   chan struct{}
 }
 
-func (p *gateProber) Probe(rendezvous.Entry) (sessionID, status string, ok bool) {
+func (p *gateProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, ok bool) {
 	select {
 	case p.started <- struct{}{}:
 	default:
 	}
 	<-p.gate
-	return p.sessionID, "", true
+	return p.sessionID, "", false, true
 }
 
 // TestRoster_ListStaysResponsiveDuringSlowProbe is the regression test for the
@@ -293,11 +309,11 @@ type flakyProber struct {
 	fail      bool
 }
 
-func (p *flakyProber) Probe(rendezvous.Entry) (sessionID, status string, ok bool) {
+func (p *flakyProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, ok bool) {
 	if p.fail {
-		return "", "", false
+		return "", "", false, false
 	}
-	return p.sessionID, p.status, true
+	return p.sessionID, p.status, false, true
 }
 
 func TestPreferLiveEntry(t *testing.T) {

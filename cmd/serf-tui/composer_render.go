@@ -71,7 +71,7 @@ func renderComposerChipStrip(ctx composerContext) string {
 		modeColor := th.Accent
 		switch {
 		case strings.HasPrefix(ctx.Mode, "QUEUE"):
-			modeColor = th.StateProcessing
+			modeColor = th.StateWorking
 		case strings.HasPrefix(ctx.Mode, "FORK"):
 			modeColor = th.StateWarning
 		case strings.HasPrefix(ctx.Mode, "AWAITING"):

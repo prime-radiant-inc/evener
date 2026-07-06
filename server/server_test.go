@@ -1437,3 +1437,35 @@ func TestServerAppWireModelList(t *testing.T) {
 		t.Errorf("provider: got %q, want empty (no profile set)", out.Data[0].Provider)
 	}
 }
+
+func TestHandleStatus_PendingAskOverlaysLiveFunc(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetStatus(StatusInfo{SessionID: "s1", State: "awaiting"})
+	pending := true
+	srv.SetPendingAskFunc(func() bool { return pending })
+
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	rec := httptest.NewRecorder()
+	srv.handleStatus(rec, req)
+	var got StatusInfo
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.PendingAsk {
+		t.Fatal("expected pending_ask=true while pendingAskFn returns true")
+	}
+
+	pending = false
+	rec = httptest.NewRecorder()
+	srv.handleStatus(rec, req)
+	// PendingAsk has omitempty (false -> absent from JSON), so a fresh
+	// decode target is required here: reusing `got` from above would leave
+	// the stale true in place since the field key is simply absent.
+	got = StatusInfo{}
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.PendingAsk {
+		t.Fatal("expected pending_ask=false once pendingAskFn flips false")
+	}
+}

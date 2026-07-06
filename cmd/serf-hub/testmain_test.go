@@ -70,12 +70,13 @@ func writeRendezvous(t *testing.T, dir string, e rendezvous.Entry) {
 type fakeProber struct {
 	sessionID  string
 	status     string
+	pendingAsk bool
 	shouldFail bool
 }
 
-func (p fakeProber) Probe(rendezvous.Entry) (sessionID, status string, ok bool) {
+func (p fakeProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, ok bool) {
 	if p.shouldFail {
-		return "", "", false
+		return "", "", false, false
 	}
-	return p.sessionID, p.status, true
+	return p.sessionID, p.status, p.pendingAsk, true
 }

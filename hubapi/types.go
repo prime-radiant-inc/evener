@@ -90,6 +90,7 @@ type TreeNode struct {
 	Favorite     bool       `json:"favorite,omitempty"`
 	Rename       bool       `json:"rename,omitempty"`
 	Live         bool       `json:"live"`
+	AskPending   bool       `json:"ask_pending,omitempty"`
 	UpdatedAt    time.Time  `json:"updated_at,omitempty"`
 	Age          string     `json:"age,omitempty"`
 	Model        string     `json:"model,omitempty"`

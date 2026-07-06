@@ -19,20 +19,27 @@
 // re-applies title/favicon) without a reload. Prefs are versioned
 // (serf-hub.notifications.v) so the title/favicon-on-by-default migration
 // (v2) runs once and never overrides a preference the user already set.
+// v3 adds loudScope ("asks" | "all", Track A §2 ask-tiering): under the
+// "asks" default, OS/sound only fire for an askPending or error transition,
+// not every generic needs_you settle, so a noisy inbox of your-move rows
+// doesn't compete for the user's attention with an actual question.
 (function () {
   "use strict";
 
   const PREFS_KEY = "serf-hub.notifications";
   const PREFS_VERSION_KEY = "serf-hub.notifications.v";
-  const DEFAULT_PREFS = { title: true, favicon: true, os: false, sound: false };
+  const DEFAULT_PREFS = { title: true, favicon: true, os: false, sound: false, loudScope: "asks" };
   const PLAIN_FAVICON =
     "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%237aa2f7'/></svg>";
 
-  // Dot color by attention level. No "idle" entry: idle never sets a dot.
+  // Dot color by attention level, mirroring style.css's --state-working /
+  // --state-awaiting (dark-theme values — the favicon/badge always renders
+  // against the dark default regardless of the page's active theme).
+  // No "idle" entry: idle never sets a dot.
   const STATE_COLORS = {
     error: "#f7768e",
-    needs_you: "#e0af68",
-    working: "#7aa2f7",
+    needs_you: "#7aa2f7",
+    working: "#7dc98f",
   };
 
   // The authoritative badge summary, or null until the /api/tree baseline
@@ -55,13 +62,16 @@
     localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
   }
 
-  // Versioned migration to the v2 defaults (title+favicon ON, os+sound
-  // opt-in). A fresh install gets the new defaults outright. An existing
-  // blob had every never-touched key implicitly OFF under the old
-  // all-off defaults; backfill that explicitly so the new ON defaults
-  // don't silently flip behavior the user never chose (round-4 A4).
+  // Versioned migration. v2 set the title+favicon ON, os+sound opt-in
+  // defaults; a fresh install still gets those (plus loudScope) via
+  // DEFAULT_PREFS. An existing blob had every never-touched boolean key
+  // implicitly OFF under the old all-off defaults; backfill that explicitly
+  // so the new ON defaults don't silently flip behavior the user never
+  // chose (round-4 A4). v3 adds loudScope: backfill existing users to the
+  // "asks" default rather than leaving it unset, since unset would read as
+  // falsy and the gating below treats only "all" as the loud case.
   function migratePrefs() {
-    if (localStorage.getItem(PREFS_VERSION_KEY) === "2") return;
+    if (localStorage.getItem(PREFS_VERSION_KEY) === "3") return;
     const raw = localStorage.getItem(PREFS_KEY);
     if (!raw) {
       writePrefs(Object.assign({}, DEFAULT_PREFS));
@@ -71,9 +81,10 @@
       for (const k of ["title", "favicon", "os", "sound"]) {
         if (typeof cur[k] !== "boolean") cur[k] = false;
       }
+      if (cur.loudScope !== "asks" && cur.loudScope !== "all") cur.loudScope = "asks";
       writePrefs(cur);
     }
-    localStorage.setItem(PREFS_VERSION_KEY, "2");
+    localStorage.setItem(PREFS_VERSION_KEY, "3");
   }
 
   // Shared section-label map. Exposed as window.SerfSectionLabels so
@@ -234,7 +245,11 @@
   // Handles "serf/attention/changed": update the summary-driven counts
   // unconditionally, then fire OS/sound only for entries that just
   // transitioned into needs_you/error, only once a baseline exists, only
-  // when this tab is unfocused, and only on the leader tab.
+  // when this tab is unfocused, and only on the leader tab. Within those
+  // transitions, loudScope narrows further: "asks" (the default) only
+  // alerts for an askPending transition or an error, holding back a
+  // generic needs_you settle; "all" alerts for every qualifying
+  // transition, as before.
   function onAttentionChanged(params) {
     const prefs = readPrefs();
     const hadBaseline = summary !== null;
@@ -247,8 +262,11 @@
       const into = ch.level === "needs_you" || ch.level === "error";
       const was = ch.prevLevel === "needs_you" || ch.prevLevel === "error";
       if (into && !was) {
-        if (prefs.os) fireOsNotification(ch);
-        if (prefs.sound) playTone();
+        const loud = prefs.loudScope === "all" || ch.askPending || ch.level === "error";
+        if (loud) {
+          if (prefs.os) fireOsNotification(ch);
+          if (prefs.sound) playTone();
+        }
       }
     }
   }
@@ -342,11 +360,23 @@
   // means no attention broadcast during page load is missed.
   init();
 
-  // Expose a tiny test/control surface.
-  window.serfHubNotifications = {
+  // Expose a tiny test/control surface. setTestHooks overrides the
+  // fireOsNotification/playTone bindings so jstest can count edge-fires
+  // without touching the real Notification/AudioContext APIs;
+  // setLeaderForTest/setBaselineForTest seed the leader-tab and
+  // baseline-summary gates onAttentionChanged otherwise requires before it
+  // will fire at all.
+  window.SerfNotificationsInternal = {
     init: init,
+    migratePrefs: migratePrefs,
+    onAttentionChanged: onAttentionChanged,
     _readPrefs: readPrefs,
-    _onAttentionChanged: onAttentionChanged,
+    setTestHooks: function (hooks) {
+      if (hooks.fireOsNotification) fireOsNotification = hooks.fireOsNotification;
+      if (hooks.playTone) playTone = hooks.playTone;
+    },
+    setLeaderForTest: function (v) { leader = v; },
+    setBaselineForTest: function (s) { summary = s; },
   };
 })();
 
