@@ -711,6 +711,106 @@ func TestPastIndex_RecentModels_DedupesGlobalRecencyLastN(t *testing.T) {
 	}
 }
 
+// TestPastIndex_RefreshOneRereadsChangedMetaAndReorders is the regression test
+// for the sidebar-ordering-freshness bug: a session's on-disk meta.json can be
+// rewritten out-of-process (the daemon's own maybeAutoSave) between the
+// index's 60s Rebuild ticks. RefreshOne re-reads just that one session's meta
+// and feeds it through the existing UpdateMeta reorder path, without waiting
+// for the next full Rebuild.
+func TestPastIndex_RefreshOneRereadsChangedMetaAndReorders(t *testing.T) {
+	dir := t.TempDir()
+	proj := filepath.Join(dir, "proj")
+	base := time.Unix(1_700_000_000, 0)
+	writeMeta(t, proj, schema.SessionMeta{ID: "01A", Name: "01A", UpdatedAt: base, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+	writeMeta(t, proj, schema.SessionMeta{ID: "01B", Name: "01B", UpdatedAt: base.Add(time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+
+	idx := NewPastIndex(filepath.Join(dir, "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	if all := idx.All(); len(all) != 2 || all[0].ID != "01B" {
+		t.Fatalf("expected 01B first before refresh, got %+v", all)
+	}
+
+	// Out-of-process rewrite: 01A's UpdatedAt jumps ahead of 01B, exactly like a
+	// daemon's maybeAutoSave touching its own meta.json.
+	writeMeta(t, proj, schema.SessionMeta{ID: "01A", Name: "01A", UpdatedAt: base.Add(2 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+
+	idx.RefreshOne("01A")
+
+	all := idx.All()
+	if len(all) != 2 || all[0].ID != "01A" {
+		t.Fatalf("expected 01A to sort first after RefreshOne, got %+v", all)
+	}
+	if !all[0].Meta.UpdatedAt.Equal(base.Add(2 * time.Minute)) {
+		t.Fatalf("expected RefreshOne to pick up the new UpdatedAt, got %v", all[0].Meta.UpdatedAt)
+	}
+}
+
+// TestPastIndex_RefreshOneOnChangeFires pins that RefreshOne's UpdateMeta call
+// still fires the content-delta onChange hook (the version-bump path the tree
+// memo depends on), same as a direct UpdateMeta call.
+func TestPastIndex_RefreshOneOnChangeFires(t *testing.T) {
+	dir := t.TempDir()
+	proj := filepath.Join(dir, "proj")
+	writeMeta(t, proj, schema.SessionMeta{ID: "01A", UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+
+	idx := NewPastIndex(filepath.Join(dir, "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	fired := 0
+	idx.SetOnChange(func() { fired++ })
+
+	writeMeta(t, proj, schema.SessionMeta{ID: "01A", UpdatedAt: time.Unix(1_700_000_100, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+	idx.RefreshOne("01A")
+	if fired != 1 {
+		t.Fatalf("expected RefreshOne to fire onChange once for a genuine delta, got %d", fired)
+	}
+}
+
+// TestPastIndex_RefreshOneNoOpsOnUntrackedID mirrors UpdateMeta's own
+// untracked-ID no-op: an id RefreshOne has never indexed (e.g. a stale roster
+// entry racing a rename) must not panic or mutate the index.
+func TestPastIndex_RefreshOneNoOpsOnUntrackedID(t *testing.T) {
+	idx := NewPastIndex(filepath.Join(t.TempDir(), "*"))
+	idx.RefreshOne("nonexistent")
+	if all := idx.All(); len(all) != 0 {
+		t.Fatalf("expected no-op on untracked id, got %+v", all)
+	}
+}
+
+// TestPastIndex_RefreshOneNoOpsOnMissingMetaFile covers the on-disk-renamed
+// case: the id is indexed but its .meta.json is gone (renamed session dir,
+// race with cleanup). LoadSessionMeta fails; RefreshOne must log and return,
+// never panic or corrupt the existing entry.
+func TestPastIndex_RefreshOneNoOpsOnMissingMetaFile(t *testing.T) {
+	dir := t.TempDir()
+	proj := filepath.Join(dir, "proj")
+	writeMeta(t, proj, schema.SessionMeta{ID: "01A", UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+
+	idx := NewPastIndex(filepath.Join(dir, "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := idx.Find("01A")
+
+	// Remove the underlying meta file out from under the index.
+	if err := os.Remove(filepath.Join(proj, "sessions", "01A.meta.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	idx.RefreshOne("01A") // must not panic
+
+	after, ok := idx.Find("01A")
+	if !ok {
+		t.Fatal("expected the stale entry to remain indexed after a failed RefreshOne")
+	}
+	if !after.Meta.UpdatedAt.Equal(before.Meta.UpdatedAt) {
+		t.Fatalf("expected entry to be unchanged after a failed RefreshOne: before=%v after=%v", before.Meta.UpdatedAt, after.Meta.UpdatedAt)
+	}
+}
+
 func TestPastIndex_RecentModels_EmptyIndexReturnsNil(t *testing.T) {
 	idx := NewPastIndex("")
 	if got := idx.RecentModels(5); got != nil {
