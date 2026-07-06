@@ -169,7 +169,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	if !ok {
 		t.Fatalf("function_call_output.output = %#v, want string", errorOutput["output"])
 	}
-	if !strings.Contains(output, `"is_error":true`) || !strings.Contains(output, "invalid tool arguments JSON") {
+	if !strings.Contains(output, `"is_error":true`) || !strings.Contains(output, "arguments were not valid JSON") {
 		t.Fatalf("function_call_output.output = %q, want wrapped error content", output)
 	}
 }
