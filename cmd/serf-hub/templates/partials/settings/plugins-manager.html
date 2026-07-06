@@ -59,14 +59,18 @@
     }
 
     // marketplaceUnresolvedForFilter reports whether a marketplace's filter
-    // match status can't be determined yet: its catalog is still loading or
-    // failed to load. Such marketplaces stay visible while filtering (see
+    // match status can't be determined yet: it has no catalog cache entry at
+    // all, or its catalog is still loading, or it failed to load. A missing
+    // cache entry counts as unresolved because mkt-refresh clears a
+    // marketplace's cache without repopulating it when the node isn't
+    // expanded, leaving it in the same "no cache" state as before the first
+    // load. Such marketplaces stay visible while filtering (see
     // renderBrowseSection) so their existing loading/error rendering inside
     // renderMarketplaceNode — unaffected by this task — remains reachable,
     // instead of vanishing behind the filter.
     function marketplaceUnresolvedForFilter(m) {
       const cache = browseCatalogs[m.name];
-      return !!(cache && (cache.loading || cache.error));
+      return !cache || !!cache.loading || !!cache.error;
     }
 
     // applyFilter auto-expands every marketplace with a match in its

@@ -174,9 +174,69 @@ async function testErroredMarketplaceStaysVisible() {
     "broken still shows 'Failed to browse:' once re-expanded while filtering");
 }
 
+// mkt-refresh (the Marketplaces section's "Refresh" button) clears a
+// marketplace's browseCatalogs entry outright, and only repopulates it
+// immediately (with a {loading:true} placeholder) when that marketplace's
+// Browse-tree node happens to be expanded. When the node is collapsed —
+// exactly the state a non-matching marketplace is left in while filtering —
+// the refresh leaves browseCatalogs[name] undefined and re-renders right
+// away. marketplaceUnresolvedForFilter must treat that "no cache entry"
+// state as unresolved (same as loading/error), or the marketplace vanishes
+// from the Browse tree with no way to reach it until the filter text
+// changes again (the same defect class as the errored-marketplace case
+// above, reached via refresh instead of the initial lazy-load).
+async function testRefreshOfCollapsedMarketplaceStaysVisible() {
+  const dom = makeDom();
+  dom.window.pluginsAdmin = {
+    marketplaceList: async () => ({
+      marketplaces: [
+        { name: "broken", source: { kind: "url", url: "https://example.com/broken.git" }, lastUpdated: 0 },
+        { name: "quiet", source: { kind: "url", url: "https://example.com/quiet.git" }, lastUpdated: 0 },
+      ],
+    }),
+    pluginList: async () => ({ plugins: [] }),
+    marketplaceBrowse: async (name) => {
+      if (name === "broken") throw new Error("connection refused");
+      return { name: "quiet", plugins: [{ name: "sample-plugin", description: "Nothing relevant here" }] };
+    },
+    marketplaceRefresh: async () => ({}),
+  };
+  dom.window.eval(src);
+  await waitLoaded(dom);
+  const doc = dom.window.document;
+
+  // Preload both catalogs so browseCatalogs["broken"] holds {error: ...}
+  // before filtering, same setup as testErroredMarketplaceStaysVisible.
+  doc.querySelector('.browse-marketplace-toggle[data-marketplace="broken"]').click();
+  doc.querySelector('.browse-marketplace-toggle[data-marketplace="quiet"]').click();
+  await tick(dom, 20);
+
+  // Filter on a query nothing matches: broken (errored, unresolved) stays
+  // visible but auto-collapses, same as testErroredMarketplaceStaysVisible.
+  typeInFilter(doc, dom, "zzz-nothing-matches");
+  await tick(dom, 170);
+  pass(doc.querySelector('.browse-marketplace-node[data-marketplace-node="broken"]') !== null,
+    "broken is visible (collapsed, unresolved) before refresh");
+  pass(doc.querySelector('.browse-marketplace-toggle[data-marketplace="broken"]').getAttribute("aria-expanded") === "false",
+    "broken's Browse-tree node is collapsed going into the refresh");
+
+  // Click "Refresh" on broken in the Marketplaces section, not the Browse
+  // tree. Its node is collapsed, so the mkt-refresh handler clears
+  // browseCatalogs["broken"] and calls render() without ever setting
+  // {loading: true} or repopulating the cache first.
+  const refreshBtn = doc.querySelector('#marketplaces-section li[data-marketplace="broken"] button[data-action="mkt-refresh"]');
+  pass(refreshBtn !== null, "found broken's Refresh button in the Marketplaces section");
+  refreshBtn.click();
+  await tick(dom, 20);
+
+  pass(doc.querySelector('.browse-marketplace-node[data-marketplace-node="broken"]') !== null,
+    "broken's Browse-tree node is still present after refresh clears its cache, even though the filter still matches nothing");
+}
+
 (async function main() {
   await testMatchingAndCollapsing();
   await testErroredMarketplaceStaysVisible();
+  await testRefreshOfCollapsedMarketplaceStaysVisible();
 
   if (failures.length === 0) {
     console.log("PASS: plugins-manager browse filter");
