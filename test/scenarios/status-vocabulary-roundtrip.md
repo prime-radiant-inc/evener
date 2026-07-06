@@ -74,23 +74,35 @@ Idle/Ended).
 - **The TUI's `StatusBadge` uppercases whatever word it's given** (`tuiprim.StatusBadge`); the
   web never uppercases — this is expected surface-specific styling, not a vocabulary mismatch.
 - **The TUI dashboard's per-row list does NOT currently show a distinguishable ask-pending
-  marker, and its per-row word is the raw wire state, not `hubapi.StateWord`.**
-  `renderDashboardSessionRow` (`cmd/serf-tui/hub_dashboard_view.go`) prints `stateLabel(row.state)`
-  (e.g. literal `awaiting`) for the row word, and only paints the `◆` `askMarker` glyph when
-  `row.askPending` is true — but `row.askPending` is populated from `hubTreeNode.AskPending`
-  fed by the `/api/tree` `live`/`projects` tiers (`cmd/serf-tui/hub_dashboard.go`), and the hub
-  only ever sets `AskPending` on the **`needs_you`** tier's node copies
-  (`cmd/serf-hub/internal/hubcore/tree.go:645`) — the `live` tier's node builder
-  (same file, ~line 578) and the per-project node builder (~line 387) never set it, and the
-  TUI's `hubTreeResponse` struct (`cmd/serf-tui/hub_types.go:11`) doesn't even decode a
-  `NeedsYou`/`needs_you` field. Confirmed live: a session with a real pending `ask_user`
-  question showed `awaiting` with no `◆` on its dashboard row, while its project-rollup line
-  correctly read `1 live · Your move`/`Question waiting` via `displayWord`. This is a real,
-  pre-existing gap (Task 29's per-row marker is reachable only via the sidebar's/tree's
-  needs-you copies, never via the TUI dashboard's live/project listing) — filed as a finding,
-  not fixed by this card. The TUI's *session header badge* (step 3) is unaffected and correct,
-  since it reads `m.detail.AskPending` from the single-session detail fetch, a different code
-  path entirely.
+  marker, and its per-row word is the raw wire state, not `hubapi.StateWord`.** The TUI
+  dashboard never consumes `/api/tree` at all — it builds its tree from the appwire JSON-RPC
+  `thread.list` call (`fetchHubTree` in `cmd/serf-tui/hub_commands.go:149` calls
+  `client.ThreadList`, then `hubTreeFromThreads(resp.Data)` at line 153), and
+  `hubNodeFromThread` (`cmd/serf-tui/hub_types.go:181`) populates `hubTreeNode.AskPending`
+  straight from `thread.Serf.AskPending` — not from any `/api/tree` node. The direct-daemon
+  appwire path for a single-thread read is fully wired: `cmd/serf/serve.go:357` registers
+  `srv.SetPendingAskFunc(...)`, and `appThread()` (`server/appwire_runtime.go:440`) overlays
+  that live bit into `SerfThread.AskPending` — which is exactly why the TUI's session-header
+  badge (step 3) correctly shows "Question waiting"/"Your move". But this card's actual setup
+  attaches the TUI *through the hub*, not directly to a daemon, and the hub's
+  `LocalDaemonSource.ListThreads` (`cmd/serf-hub/internal/appsource/local_daemon.go:57`) does
+  not proxy the daemon's `appThread()` output for the dashboard-list call — it reconstructs
+  each thread from its roster entry via `threadFromEntry` (same file, line 531), which
+  assembles `Serf: appwire.SerfThread{Ref, Capabilities}` (lines 549-550) with no `AskPending`
+  set at all. `LocalDaemonEntry` (line 26) doesn't even carry a pending-ask bit yet, so a real
+  fix requires plumbing a pending-ask signal from the roster through `LocalDaemonEntry` and
+  `threadFromEntry` into `SerfThread.AskPending`, not editing `/api/tree` or
+  `hubTreeResponse`. Confirmed live: a session with a real pending `ask_user` question showed
+  `awaiting` with no `◆` on its dashboard row, while its project-rollup line correctly read
+  `1 live · Your move`/`Question waiting` via `displayWord`. This is a real, pre-existing gap
+  (Task 29's per-row marker is reachable only via the sidebar's/tree's needs-you copies, never
+  via the TUI dashboard's hub-proxied live/project listing) — filed as a finding, not fixed by
+  this card. The TUI's *session header badge* (step 3) is unaffected and correct even through
+  the hub, because the single-thread read path differs from the list path: the hub's
+  `LocalDaemonSource.ReadThread` (same file, line 68) proxies straight through to the daemon's
+  own `client.ThreadRead` call instead of reconstructing the thread locally, so it still returns
+  the daemon's fully-wired `appThread()` output with `AskPending` correctly set — only
+  `ListThreads` takes the local-reconstruction shortcut that drops it.
 - **The web sidebar renders a live needs-you-band session twice** — once under the NeedsYou
   cluster (`row_id` prefixed `needsyou:`), once under its project group (`row_id` prefixed
   `project:...`) — and only the NeedsYou copy carries `ask_pending`/the correct tooltip; the
