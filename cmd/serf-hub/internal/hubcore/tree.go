@@ -659,17 +659,15 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		}
 		needsYou = append(needsYou, node)
 	}
-	// Errors first, then oldest-waiting first within the amber (awaiting/warning)
-	// family (spec v5). NeedsYou only ever admits errored/awaiting/warning, and
-	// among those two amber states urgency is purely how long the user has been
-	// blocked — awaiting and warning are equally "look at this," so only a red
-	// error jumps the queue; full AttentionRank isn't used here because it would
-	// also rank awaiting strictly above warning, which would wrongly separate
-	// the amber family by state instead of by age.
+	// Three bands, oldest-first inside each band (Track A §2 ask-tiering):
+	// errored (broken beats blocked) > ask-pending (blocked beats your-move) >
+	// your-move (a generic amber settle). AttentionRank isn't used here — it
+	// would also separate plain awaiting from warning, which both belong in
+	// the your-move band unless ask-pending.
 	sort.SliceStable(needsYou, func(i, j int) bool {
-		ie, je := needsYou[i].State == "errored", needsYou[j].State == "errored"
-		if ie != je {
-			return ie
+		bi, bj := hubapi.NeedsYouBand(needsYou[i].State, needsYou[i].AskPending), hubapi.NeedsYouBand(needsYou[j].State, needsYou[j].AskPending)
+		if bi != bj {
+			return bi > bj
 		}
 		return needsYou[i].UpdatedAt.Before(needsYou[j].UpdatedAt)
 	})

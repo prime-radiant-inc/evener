@@ -1256,3 +1256,31 @@ func TestNeedsYou_CarriesAskPendingFromLiveEntry(t *testing.T) {
 		t.Fatalf("NeedsYou node must carry AskPending=true, got %+v", tree.NeedsYou)
 	}
 }
+
+func TestNeedsYou_AskPendingBandsBetweenErroredAndYourMove(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01OLD_YOURMOVE", UpdatedAt: now.Add(-3 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+		{ID: "01ASK", UpdatedAt: now.Add(-1 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+		{ID: "01ERR", UpdatedAt: now.Add(-2 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+	}
+	live := []LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01OLD_YOURMOVE", Status: appwire.ThreadStatusAwaiting, PendingAsk: false},
+		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
+		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01ERR", Status: appwire.ThreadStatusSystemError},
+	}
+	tree := buildTree(metas, live)
+	if len(tree.NeedsYou) != 3 {
+		t.Fatalf("NeedsYou len = %d, want 3", len(tree.NeedsYou))
+	}
+	// errored first, then ask-pending (even though it is newer than the
+	// your-move row), then your-move last — despite 01OLD_YOURMOVE being the
+	// oldest-updated of all three.
+	got := []string{tree.NeedsYou[0].ID, tree.NeedsYou[1].ID, tree.NeedsYou[2].ID}
+	want := []string{"01ERR", "01ASK", "01OLD_YOURMOVE"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("band order = %v, want %v", got, want)
+		}
+	}
+}
