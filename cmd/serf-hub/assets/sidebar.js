@@ -511,10 +511,10 @@
     setProjectRollup(el, p);
   }
 
-  // Magnitude rollup badges (mockup #10 rec A): "⟳N · ◆M" says how many of a
-  // project's sessions are working vs. need you — the two counts the
-  // attention spec's rollup rules define (needs-you outranks active; never a
-  // third category). Shared by build + patch so the reconcile patch path
+  // Magnitude rollup badges (mockup #10 rec A): an icon+count badge for each
+  // of a project's sessions that are working vs. need you — the two counts
+  // the attention spec's rollup rules define (needs-you outranks active;
+  // never a third category). Shared by build + patch so the reconcile patch path
   // updates counts/tint on the SAME .project-rollup node instead of
   // rebuilding the header. data-state carries p.rollup_state (the
   // server-computed, rank-ranked winning state) purely as a CSS/test hook —
