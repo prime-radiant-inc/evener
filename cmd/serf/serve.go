@@ -603,19 +603,7 @@ func clientHasProvider(client *llm.Client, name string) bool {
 // that never seeded usage, or a Codex thread — so the status row hides the
 // usage cluster rather than rendering ↑0 ↓0 (WS2 A7).
 func serfUsageFromLLM(u llm.Usage) *appwire.SerfUsage {
-	cacheRead := 0
-	if u.CacheReadTokens != nil {
-		cacheRead = *u.CacheReadTokens
-	}
-	if u.InputTokens == 0 && u.OutputTokens == 0 && cacheRead == 0 && u.TotalTokens == 0 {
-		return nil
-	}
-	return &appwire.SerfUsage{
-		InputTokens:     int64(u.InputTokens),
-		OutputTokens:    int64(u.OutputTokens),
-		CacheReadTokens: int64(cacheRead),
-		TotalTokens:     int64(u.TotalTokens),
-	}
+	return appwire.SerfUsageFromLLM(u)
 }
 
 func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus {
