@@ -160,6 +160,9 @@ func pastEntryThread(entry hubcore.PastEntry, includeTurns bool) appwire.Thread 
 				Goal:         true,
 				Rename:       true,
 			},
+			WorkMillis: entry.Meta.WorkMillis,
+			Usage:      serfUsageFromCumulative(entry.Meta.CumulativeUsage),
+			// ActiveTurnStartedAt stays 0 — an ended session has no turn in flight.
 		},
 	}
 	if includeTurns {

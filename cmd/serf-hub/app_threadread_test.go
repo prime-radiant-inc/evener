@@ -241,6 +241,34 @@ func TestPastEntryTurns_StampsCostFromSessionModel(t *testing.T) {
 	}
 }
 
+func TestPastEntryThread_CarriesWorkMetrics(t *testing.T) {
+	entry := hubcore.PastEntry{
+		Meta: schema.SessionMeta{
+			WorkMillis: 5000,
+			CumulativeUsage: schema.CumulativeUsage{
+				InputTokens:  100,
+				OutputTokens: 50,
+				TotalTokens:  150,
+			},
+		},
+	}
+
+	thread := pastEntryThread(entry, false)
+
+	if thread.Serf.WorkMillis != 5000 {
+		t.Fatalf("thread.Serf.WorkMillis = %d, want 5000", thread.Serf.WorkMillis)
+	}
+	if thread.Serf.Usage == nil {
+		t.Fatalf("thread.Serf.Usage = nil, want non-nil")
+	}
+	if thread.Serf.Usage.InputTokens != 100 || thread.Serf.Usage.OutputTokens != 50 || thread.Serf.Usage.TotalTokens != 150 {
+		t.Fatalf("thread.Serf.Usage = %+v, want InputTokens=100 OutputTokens=50 TotalTokens=150", thread.Serf.Usage)
+	}
+	if thread.Serf.ActiveTurnStartedAt != 0 {
+		t.Fatalf("thread.Serf.ActiveTurnStartedAt = %d, want 0 (ended session)", thread.Serf.ActiveTurnStartedAt)
+	}
+}
+
 func writeHistoricalJobLog(t *testing.T, path string, ts time.Time, jobID string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
