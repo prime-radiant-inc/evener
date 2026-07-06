@@ -1,12 +1,26 @@
-// Light theme tints .sb-row[data-state="awaiting|active|warning"] with an
-// explicit [data-theme="light"] override, but the errored row had none — it
-// fell through to the base 5% error-mix, which reads too faint against the
-// light background. Assert the parallel light-theme errored override exists.
+// Sidebar rows used to tint their background per-state (awaiting/active/
+// warning/errored), with a parallel [data-theme="light"] override. That
+// wash was removed (sweep/sidebar-polish v2): the status icon is now the
+// sole state indicator, and rows only carry a thin left-border accent.
+// Assert the background washes are gone and the border-left accent remains
+// for the errored state, in both themes.
 const fs = require("fs");
 const css = fs.readFileSync(__dirname + "/../assets/style.css", "utf8");
-if (!/\[data-theme="light"\]\s+\.sb-row\[data-state="errored"\]/.test(css)) {
-  console.log("FAIL: light theme needs an explicit errored sidebar-row tint (parallel to awaiting/active/warning)");
+const fails = [];
+
+if (/\.sb-row\[data-state="errored"\]\s*\{[^}]*background:/.test(css)) {
+  fails.push("base .sb-row[data-state=\"errored\"] must not set a background");
+}
+if (/\[data-theme="light"\]\s+\.sb-row\[data-state="errored"\]/.test(css)) {
+  fails.push("light-theme errored background override should have been removed");
+}
+if (!/\.sb-row\[data-state="errored"\]\s*\{\s*border-left-color:\s*var\(--error\);\s*\}/.test(css)) {
+  fails.push("base .sb-row[data-state=\"errored\"] must still set border-left-color");
+}
+
+if (fails.length) {
+  fails.forEach((f) => console.log("FAIL: " + f));
   process.exit(1);
 }
-console.log("PASS: light-theme errored tint present");
+console.log("PASS: state background washes removed, border-left accent remains");
 process.exit(0);
