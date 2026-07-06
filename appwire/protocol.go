@@ -148,10 +148,10 @@ var Methods = []MethodSpec{
 
 // Notifications is the AppWire server→client notification catalog. A nil
 // Payload marks a notification emitted as an inline object at the projector
-// (no dedicated Go type); its shape is given in the summary. The constants
-// NotifySerfContextPressure and NotifySerfTaskUpdated are intentionally absent
-// — they are defined but emitted by nothing (context pressure rides on the
-// Thread snapshot instead).
+// (no dedicated Go type); its shape is given in the summary. The constant
+// NotifySerfContextPressure is intentionally absent — it is defined but
+// emitted by nothing (context pressure rides on the Thread snapshot
+// instead).
 var Notifications = []NotificationSpec{
 	{NotifyThreadStarted, nil, "Session started; inline {threadId, ref, thread} carrying the initial Thread snapshot."},
 	{NotifyThreadClosed, nil, "Session ended; inline {threadId, ref, reason}."},
@@ -174,4 +174,5 @@ var Notifications = []NotificationSpec{
 	{NotifySerfAttentionChanged, nil, "Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons."},
 	{NotifySerfMarketplaceUpdated, nil, "Broadcast after a marketplace mutation (add/remove/refresh); inline {}. Clients refresh the marketplace list."},
 	{NotifySerfPluginUpdated, nil, "Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); inline {}. Clients refresh the plugin list."},
+	{NotifySerfTaskUpdated, TaskUpdatedParams{}, "The session's task-list progress (total/done) changed."},
 }

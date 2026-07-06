@@ -233,6 +233,7 @@ body[data-font-size="xl"] {
 [data-theme="light"] .sb-row[data-state="active"]   { background: color-mix(in srgb, var(--state-working) 12%, transparent); }
 [data-theme="light"] .sb-row[data-state="warning"]  { background: color-mix(in srgb, var(--state-warning) 12%, transparent); }
 [data-theme="light"] .sb-row[data-active]            { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+[data-theme="light"] .sb-row[data-state="errored"]   { background: color-mix(in srgb, var(--error) 12%, transparent); }
 /* Light-mode: --text is dark so the 2% text-mix reads as a noticeable grey.
    Switch to an accent-based tint that reads the same in both themes. */
 [data-theme="light"] .settings-table .row.editable:hover {
@@ -3167,7 +3168,7 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
 .spawn-actions { display: flex; align-items: center; }
 .spawn-recent { margin-top: var(--space-7); }
 .spawn-recent-header { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-2xs); font-weight: 500; text-transform: uppercase; letter-spacing: 0.16em; margin-bottom: var(--space-3); }
-.spawn-recent-row { display: block; padding: var(--space-3) var(--space-4); border-radius: var(--radius-md); color: var(--text); cursor: pointer; font-size: var(--text-sm); text-decoration: none; }
+.spawn-recent-row { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; padding: var(--space-3) var(--space-4); border-radius: var(--radius-md); color: var(--text); cursor: pointer; font-size: var(--text-sm); text-decoration: none; }
 .spawn-recent-row:hover { background: var(--bg-raised); }
 
 /* ── Model picker (two-pane) ─────────────────────────────────────────────── */
@@ -4163,13 +4164,6 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
   /* Attach + spawn: full touch height; let them wrap rather than crush. */
   .spawn-attach-row { flex-wrap: wrap; gap: var(--space-3); }
   .spawn-attach-btn, .spawn-btn { min-height: var(--tap-min); }
-  /* Recent prompts are long; clamp each to two lines so the list stays scannable. */
-  .spawn-recent-row {
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
 
   /* ── Chip selectors (model / path / etc.) as a bottom sheet on phone ──────
      The desktop pickers are fixed 480–520px panels anchored under a chip — far

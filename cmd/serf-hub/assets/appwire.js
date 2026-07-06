@@ -835,6 +835,12 @@
         preview: Array.isArray(q.preview) ? q.preview.slice() : [],
       }]];
     }
+    if (method === "serf/task/updated") {
+      return [["TASKS_CHANGED", {
+        total: typeof params.total === "number" ? params.total : 0,
+        done: typeof params.done === "number" ? params.done : 0,
+      }]];
+    }
     if (method === "turn/started") {
       const turn = params.turn || {};
       return [["TURN_STARTED", { turnId: firstNonEmpty(params.turnId, turn.id) }]];

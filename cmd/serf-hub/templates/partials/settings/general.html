@@ -9,7 +9,7 @@
   <div class="row">
     <dt>Bearer token</dt>
     <dd>•••••••••••• {{if .BearerTokenAge}}<span class="val-text"><span class="dim">{{.BearerTokenAge}}</span></span>{{end}}</dd>
-    <p class="help">Rotated daily; copy when authenticating the TUI or a remote browser. The hub regenerates the token on each daemon restart.</p>
+    <p class="help">Long-lived; copy when authenticating the TUI or a remote browser. Persisted at <code>auth-token</code> in the hub state dir and reused across restarts; delete that file to invalidate existing sessions.</p>
   </div>
   <div class="row">
     <dt>Run dir</dt>

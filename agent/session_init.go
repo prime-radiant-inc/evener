@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/contextmgr"
+	"primeradiant.com/serf/agent/internal/diagnostic"
 	"primeradiant.com/serf/agent/internal/goal"
 	"primeradiant.com/serf/agent/internal/hooks"
 	"primeradiant.com/serf/agent/internal/installid"
@@ -1320,7 +1321,7 @@ func (s *Session) initMCP() error {
 	}
 	for _, w := range cfgWarnings {
 		s.pendingMCPWarnings = append(s.pendingMCPWarnings, events.WarningData{
-			Source: "mcp", Title: "MCP config error", Message: w,
+			Source: string(diagnostic.SourceMCP), Title: "MCP config error", Message: w,
 		})
 	}
 	// Merge plugin MCP configs as a base layer (global/project/CLI can shadow them).
@@ -1339,16 +1340,12 @@ func (s *Session) initMCP() error {
 	// servers still constructs successfully.
 	mgr, connectOutcomes := mcp.NewManager(ctx, configs, nil)
 	mgr.OnReconnect = func(name string) {
-		s.emitDiagnosticWarning(events.WarningData{
-			Source:  "mcp", // diagnostic.SourceMCP doesn't exist yet (Task 10); literal string until then
-			Title:   "MCP server reconnected",
-			Message: fmt.Sprintf("MCP server %q reconnected after a dropped connection", name),
-		})
+		s.emitDiagnosticWarning(reconnectRecoveryWarning(name))
 	}
 	regOutcomes := mgr.RegisterTools(s.reg)
 	for _, o := range append(connectOutcomes, regOutcomes...) {
 		s.pendingMCPWarnings = append(s.pendingMCPWarnings, events.WarningData{
-			Source:  "mcp", // diagnostic.SourceMCP doesn't exist yet (Task 10); literal string until then
+			Source:  string(diagnostic.SourceMCP),
 			Title:   "MCP server unavailable",
 			Message: fmt.Sprintf("MCP server %q failed to %s: %v", o.Name, o.Stage, o.Err),
 		})
@@ -1356,4 +1353,17 @@ func (s *Session) initMCP() error {
 	s.mcpMgr = mgr
 	s.mcpTools = mgr.ToolDefinitions()
 	return nil
+}
+
+// reconnectRecoveryWarning builds the good-news diagnostic emitted when a
+// dropped MCP connection heals itself. It carries its OWN hint so the
+// Source-derived classifier (which would otherwise stamp the MCP-FAILURE hint
+// on any Source:"mcp" warning) does not make a recovery read like a failure.
+func reconnectRecoveryWarning(name string) events.WarningData {
+	return events.WarningData{
+		Source:  string(diagnostic.SourceMCP),
+		Title:   "MCP server reconnected",
+		Hint:    "The connection dropped and was automatically re-established; the in-flight tool call was retried. No action needed.",
+		Message: fmt.Sprintf("MCP server %q reconnected after a dropped connection", name),
+	}
 }

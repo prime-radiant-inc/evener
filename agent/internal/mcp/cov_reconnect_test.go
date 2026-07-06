@@ -702,8 +702,19 @@ func TestReconnect_FailedReconnect_BackoffSuppressesImmediateRetry(t *testing.T)
 		return nil, dialErr
 	}
 
-	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{{Name: "s", Type: "stdio"}},
-		[]func(context.Context) (mcpsdk.Transport, error){dial})
+	// A fixed, non-advancing fake clock: the failure branch sets
+	// backoffUntil = fakeNow + reconnectBackoff, and since fakeNow never
+	// moves, a subsequent clock() read is ALWAYS strictly before that
+	// deadline — deterministic regardless of real elapsed wall-clock time
+	// under parallel test load. Replaces the previous reliance on real
+	// wall-clock time staying well inside the 30s backoff window between
+	// calls, which occasionally eroded under heavy CI/test parallelism
+	// (see docs/superpowers/agent-handoff-notes.md).
+	fakeNow := time.Unix(0, 0)
+	clock := func() time.Time { return fakeNow }
+
+	mgr, outcomes := NewManagerWithClock(ctx, []mcpconfig.ServerConfig{{Name: "s", Type: "stdio"}},
+		[]func(context.Context) (mcpsdk.Transport, error){dial}, clock)
 	if len(outcomes) != 0 {
 		t.Fatalf("NewManager: %+v", outcomes)
 	}
@@ -741,5 +752,27 @@ func TestReconnect_FailedReconnect_BackoffSuppressesImmediateRetry(t *testing.T)
 	}
 	if got := mgr.conns[0].status; got != "degraded" {
 		t.Errorf("conn.status = %q, want degraded", got)
+	}
+}
+
+// TestReconnect_ClearsReconnectingFlagOnFailure pins that a failed reconnect
+// attempt (dial error) always leaves c.reconnecting cleared, so a future call
+// is free to try again instead of wedging the conn forever. This is a
+// regression pin, not a red test: both of today's two manual clear sites
+// (the failure branch in reconnect, and swap) already cover it; Correctness
+// T8 consolidates them into a single deferred clear, and this test must keep
+// passing unchanged through that refactor.
+func TestReconnect_ClearsReconnectingFlagOnFailure(t *testing.T) {
+	c := &conn{status: "connected", client: nil}
+	c.dial = func(context.Context) (mcpsdk.Transport, error) { return nil, errors.New("dial refused") }
+	_, ok := c.reconnect(context.Background())
+	if ok {
+		t.Fatal("reconnect should fail when dial fails")
+	}
+	c.mu.Lock()
+	stuck := c.reconnecting
+	c.mu.Unlock()
+	if stuck {
+		t.Fatal("reconnecting flag left set after a failed reconnect — a future call would wedge")
 	}
 }

@@ -33,5 +33,27 @@ setTimeout(() => {
   [].find.call(menu.querySelectorAll(".sb-menu-item"), (e) => /Favorite/.test(e.textContent)).dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
   if (!favCalled || favCalled[0] !== "local:01A") throw new Error("Favorite item must call SerfSidebar.favorite");
   console.log("ok menu open + rename gating + favorite action");
+
+  // A project routed into Test runs but genuinely archived (is_archived) must
+  // still offer "Unarchive" — the verb tracks the server's archived state, not
+  // which section stamped the row (WS3 R2).
+  const trTree = { needs_you: [], favorites: [], projects: [], archived_projects: [],
+    test_runs: [{ key: "tr1", name: "e2e", working_dir: "/t/e2e", is_archived: true, default_expanded: true,
+      sessions: [{ row_id: "project:tr1:local:0X", ref: "local:0X", session_id: "0X", title: "run", state: "ended", kind: "session", tier: "archived" }] }],
+    attentionSummary: { needsYou: 0, error: 0, working: 0 } };
+  w.SerfSidebar.renderTree(trTree);
+  const secHeader = w.document.querySelector('[data-row-id="section:test-runs"]');
+  if (!secHeader) throw new Error("test-runs section header must render");
+  secHeader.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
+  const trProjHeader = w.document.querySelector('[data-row-id="header:tr1"]');
+  if (!trProjHeader) throw new Error("test-runs project header must render once its section is expanded");
+  const trMenuBtn = trProjHeader.querySelector(".sb-menu-btn");
+  if (!trMenuBtn) throw new Error("test-runs project header must carry a ⋯ menu button");
+  trMenuBtn.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
+  const trMenu = w.document.querySelector(".sb-menu");
+  if (!trMenu) throw new Error("clicking ⋯ must open a menu");
+  const trItems = [].map.call(trMenu.querySelectorAll(".sb-menu-item"), (e) => e.textContent);
+  if (!trItems.some((t) => /^Unarchive$/.test(t))) throw new Error("archived test-run project must offer Unarchive, got " + JSON.stringify(trItems));
+  console.log("ok archived test-run project menu offers Unarchive");
   process.exit(0);
 }, 20);

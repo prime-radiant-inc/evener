@@ -175,6 +175,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `serf/attention/changed` | `(inline)` | Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons. |
 | `serf/marketplace/updated` | `(inline)` | Broadcast after a marketplace mutation (add/remove/refresh); inline {}. Clients refresh the marketplace list. |
 | `serf/plugin/updated` | `(inline)` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); inline {}. Clients refresh the plugin list. |
+| `serf/task/updated` | `TaskUpdatedParams` | The session's task-list progress (total/done) changed. |
 
 ## Type reference
 
@@ -680,6 +681,16 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `data` | `interface {}` |  |  |
+
+
+### `TaskUpdatedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` | yes |  |
+| `ref` | `string` | yes |  |
+| `total` | `int` |  |  |
+| `done` | `int` |  |  |
 
 
 ### `ThreadClearParams`

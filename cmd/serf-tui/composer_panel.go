@@ -59,7 +59,7 @@ func (m hubModel) sessionComposerMode() hubComposerMode {
 	if m.forkDraft != nil {
 		return hubComposerModeFork
 	}
-	if m.sessionTurnActionState() {
+	if m.sessionTurnRunning() {
 		if m.detail.Capabilities.Queue {
 			return hubComposerModeQueue
 		}
@@ -99,6 +99,19 @@ func (m hubModel) sessionCanStartTurn() bool {
 func (m hubModel) sessionTurnActionState() bool {
 	switch stateLabel(m.detail.State) {
 	case "active", "awaiting":
+		return true
+	}
+	return m.session.processing
+}
+
+// sessionTurnRunning reports a genuinely in-flight turn (the composer should
+// offer Stop/steer/queue). A rested "awaiting" session — re-armed "your move"
+// with nothing running — is NOT running: it drops to plain Send. This is
+// narrower than sessionTurnActionState (which stays true for awaiting so the
+// status line's "busy" affordances and the !processing send-gating are
+// unchanged); it governs only the presented composer affordance.
+func (m hubModel) sessionTurnRunning() bool {
+	if stateLabel(m.detail.State) == "active" {
 		return true
 	}
 	return m.session.processing

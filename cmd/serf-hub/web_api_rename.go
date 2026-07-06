@@ -52,16 +52,31 @@ func (s *WebServer) handleAPIRename(w http.ResponseWriter, r *http.Request, id s
 
 	// Ended path: edit meta behind a pre-write Roster.Find re-check; if it turns
 	// live, route through the daemon instead (round-2 A2 / round-3 G1).
+	//
+	// NOTE: the hard-fail below (T18) is unreachable via a real HTTP request
+	// today — the dispatcher (handleAPISession) strips the "local:" prefix
+	// before calling handleAPIRename, so this recheck keys off the identical
+	// string as the top-level isLive(id) check above and can never diverge
+	// from it. Kept as defense-in-depth against future dispatch changes,
+	// router-bypassing callers, or a Roster that starts tracking non-local
+	// sessions.
 	if s.cfg.Roster != nil {
 		if _, live := s.cfg.Roster.Find(canonicalRouteID(id)); live {
 			source, err := sourceForThread(s.sources, ref, "")
-			if err == nil {
-				if err := source.SetThreadName(r.Context(), appwire.ThreadNameSetParams{Ref: ref, Name: name}); err == nil {
-					s.refreshRenamedMeta(id, name)
-					w.WriteHeader(http.StatusNoContent)
-					return
-				}
+			if err != nil {
+				writeAPIError(w, http.StatusNotFound, "session became live but its source is unavailable")
+				return
 			}
+			if err := source.SetThreadName(r.Context(), appwire.ThreadNameSetParams{Ref: ref, Name: name}); err != nil {
+				// The session raced back to live; editing the persisted meta now
+				// would be silently reverted by the live session's next autosave
+				// (T18). Fail loudly instead of writing a doomed meta edit.
+				writeAPIWireError(w, http.StatusBadGateway, err)
+				return
+			}
+			s.refreshRenamedMeta(id, name)
+			w.WriteHeader(http.StatusNoContent)
+			return
 		}
 	}
 	pe, ok := s.cfg.Past.Find(canonicalRouteID(id))

@@ -132,6 +132,14 @@ type QueueChangedData struct {
 	Preview []string `json:"preview,omitempty"`
 }
 
+// TaskUpdatedData is the payload for an EventTaskUpdated event: the current
+// task-list progress after an append or status change, so subscribers refresh
+// the task-status row without re-polling.
+type TaskUpdatedData struct {
+	Total int `json:"total"`
+	Done  int `json:"done"`
+}
+
 // TurnLimitData is the payload for an EventTurnLimit event.
 type TurnLimitData struct {
 	MaxTurns              int `json:"max_turns,omitempty"`

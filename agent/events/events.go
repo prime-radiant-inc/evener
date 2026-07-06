@@ -46,6 +46,9 @@ const (
 	EventSteeringInjected EventKind = "STEERING_INJECTED"
 	// EventQueueChanged reports a change to the session's input queue.
 	EventQueueChanged EventKind = "QUEUE_CHANGED"
+	// EventTaskUpdated reports a change to the session's task-list progress
+	// (total/done), so subscribers can refresh a status row event-driven.
+	EventTaskUpdated EventKind = "TASK_UPDATED"
 	// EventTurnLimit reports turn or tool-round limits.
 	EventTurnLimit EventKind = "TURN_LIMIT"
 	// EventLoopDetection reports detection of a loop.

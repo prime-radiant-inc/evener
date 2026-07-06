@@ -240,7 +240,6 @@
         // once nothing has rendered, so resumed/active sessions never see it.
         this.maybeShowWelcome();
       });
-      this.startTaskBadgePoller();
       this.autoOpenObservers(conversationEl);
     },
 
@@ -416,12 +415,12 @@
 
     syncTurnActionControls() {
       const hasActiveTurn = !!this.activeTurnId;
-      const turnAcceptsActions = this.turnAcceptsActions(this.state);
+      const turnIsRunning = this.turnIsRunning(this.state);
       const interrupt = document.querySelector('[data-action-trigger="interrupt"]');
       if (interrupt) {
         const canInterrupt = typeof this.liveInterruptCap === "boolean" ? this.liveInterruptCap : interrupt.getAttribute("data-capability-interrupt") !== "false";
         interrupt.setAttribute("data-capability-interrupt", canInterrupt ? "true" : "false");
-        interrupt.disabled = !canInterrupt || !hasActiveTurn || !turnAcceptsActions;
+        interrupt.disabled = !canInterrupt || !hasActiveTurn || !turnIsRunning;
       }
       const steer = document.querySelector("[data-steer-trigger]");
       if (steer) {
@@ -431,12 +430,21 @@
         // with just textarea text falls back to the classic steer path.
         const canSteer = typeof this.liveSteerCap === "boolean" ? this.liveSteerCap : steer.getAttribute("data-capability-steer") !== "false";
         steer.setAttribute("data-capability-steer", canSteer ? "true" : "false");
-        steer.disabled = !canSteer || !hasActiveTurn || !turnAcceptsActions;
+        steer.disabled = !canSteer || !hasActiveTurn || !turnIsRunning;
       }
     },
 
     turnAcceptsActions(state) {
+      // A turn "accepts actions" (send path stays open) while active OR
+      // awaiting — awaiting sessions can still receive a fresh message.
       return state === "active" || state === "awaiting";
+    },
+
+    turnIsRunning(state) {
+      // Only a genuinely in-flight turn (active) offers Stop/steer and routes
+      // Enter into Queue. A rested "awaiting" is your-move, not running: it
+      // shows plain Send.
+      return state === "active";
     },
 
     hydrateDescriptions() {
@@ -460,28 +468,6 @@
       }
       const done = tasks.filter(t => t.status === "done").length;
       updateTasksBadge(done, tasks.length, currentTaskSummary(tasks));
-    },
-
-    // Periodically pull /tasks to keep the workspace tasks-button badge
-    // (e.g. "3/7") fresh when the panel is closed and to seed the
-    // taskDescriptions cache so system-line transitions can name tasks.
-    startTaskBadgePoller() {
-      if (this.taskBadgeTimer) clearInterval(this.taskBadgeTimer);
-      const tick = () => {
-        if (!this.sessionId) return;
-        if (window.SerfAppwire) {
-          window.SerfAppwire.tasks(this.sessionId)
-            .then(tasks => this.applyTasks(tasks))
-            .catch(() => {});
-          return;
-        }
-        partialFetch(sessionPartialPath(this.sessionId, "tasks"))
-          .then(r => r.ok ? r.json() : [])
-          .then(tasks => this.applyTasks(tasks))
-          .catch(() => {});
-      };
-      tick();
-      this.taskBadgeTimer = setInterval(tick, 5000);
     },
 
     // ensureLiveStream wires up the appwire stream for the current session
@@ -1039,6 +1025,16 @@
             preview: Array.isArray(data.preview) ? data.preview.slice() : [],
           };
           this.renderQueuePreview();
+          break;
+        case "TASKS_CHANGED":
+          // Event-driven task-status row: the daemon pushes total/done on
+          // every task mutation; update the badge immediately from the
+          // pushed counts, then refetch the full list once to refresh the
+          // panel's per-row detail. This replaces the old 5s poll.
+          updateTasksBadge(data.done, data.total, "");
+          if (window.SerfAppwire) {
+            window.SerfAppwire.tasks(this.sessionId).then(tasks => this.applyTasks(tasks)).catch(() => {});
+          }
           break;
         case "USER_INPUT":
           // A user message answers any pending blocking question; tear down the

@@ -517,6 +517,7 @@ func (s *WebServer) apiTreeProject(scope string, favs map[hubcore.ArchiveKey]boo
 		MoreRecent:      p.MoreRecent,
 		MoreArchived:    p.MoreArchived,
 		Worktrees:       p.Worktrees,
+		IsArchived:      p.IsArchived,
 	}
 	for _, n := range p.Current {
 		ap.Sessions = append(ap.Sessions, s.apiTreeNodeTier(scope, p.Key, "current", favs, n))
@@ -721,6 +722,18 @@ func (s *WebServer) apiSessionDetail(id string) (hubapi.SessionDetail, bool) {
 				appDetail.ForkLabel = detail.ForkLabel
 				appDetail.IsSubagent = detail.IsSubagent
 				detail = appDetail
+			}
+		}
+		// A live rename lands in the persisted meta before the daemon thread
+		// reports the new Name; if the live thread carried no name (detail.Title
+		// fell back to the session id), prefer the resolved meta name so the
+		// session-detail endpoint agrees with /api/tree (WS3 T25 Bug 2).
+		if detail.Title == "" || detail.Title == detail.SessionID {
+			if s.cfg.Roster != nil {
+				le, _ := s.cfg.Roster.Find(canonicalRouteID(id))
+				if resolved := liveTitle(id, le, s.cfg.Past); resolved != "" {
+					detail.Title = resolved
+				}
 			}
 		}
 	}

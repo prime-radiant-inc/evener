@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
 	taskpkg "primeradiant.com/serf/agent/task"
@@ -121,6 +122,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				// message when the agent actually transitions one to
 				// in_progress, either manually or via auto-advance.
 				total, done := store.Progress()
+				deps.emit(events.EventTaskUpdated, events.TaskUpdatedData{Total: total, Done: done})
 				return tool.StateResult{
 					Output: fmt.Sprintf("Added %d task(s). Progress: %d/%d tasks complete.", len(added), done, total),
 					State:  store.View(),
@@ -233,6 +235,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				}
 
 				total, done := store.Progress()
+				deps.emit(events.EventTaskUpdated, events.TaskUpdatedData{Total: total, Done: done})
 				fmt.Fprintf(&msg, "Progress: %d/%d tasks complete.", done, total)
 				return tool.StateResult{Output: msg.String(), State: store.View()}, nil
 			default:
