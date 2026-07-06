@@ -7,7 +7,7 @@
   var EXPAND_PREFIX = "serf-hub.sidebar.expanded.";
   var model = { tree: null, expanded: new Set(), lazyCache: new Map(), seq: 0, pending: new Map() };
   window.SerfSidebarModel = model; // test/inspection surface
-  window.SerfSidebarInternal = { buildRow: buildRow, stateIconKey: stateIconKey, stateWord: stateWord }; // test/inspection surface
+  window.SerfSidebarInternal = { buildRow: buildRow, stateIconKey: stateIconKey, stateWord: stateWord, buildRollupBadge: buildRollupBadge }; // test/inspection surface
 
   function sidebarEl() { return document.getElementById("sidebar"); }
 
@@ -521,21 +521,21 @@
     r.textContent = ""; // clear prior badges/separator (not innerHTML)
     var live = p.rollup_live || 0;
     var attn = p.rollup_attn || 0;
-    if (live > 0) r.appendChild(buildRollupBadge("rollup-live", "⟳", live));
+    if (live > 0) r.appendChild(buildRollupBadge("rollup-live", "working", live));
     if (live > 0 && attn > 0) {
       var sep = document.createElement("span");
       sep.className = "rollup-sep";
       sep.textContent = "·"; // "·"
       r.appendChild(sep);
     }
-    if (attn > 0) r.appendChild(buildRollupBadge("rollup-attn", "◆", attn)); // "◆"
+    if (attn > 0) r.appendChild(buildRollupBadge("rollup-attn", "yourMove", attn));
   }
-  function buildRollupBadge(cls, glyph, count) {
+  function buildRollupBadge(cls, iconKey, count) {
     var b = document.createElement("span");
     b.className = "rollup-badge " + cls;
     var g = document.createElement("span");
     g.className = "rollup-glyph";
-    g.textContent = glyph;
+    g.innerHTML = window.SerfIcons[iconKey];
     b.appendChild(g);
     b.appendChild(document.createTextNode(String(count)));
     return b;

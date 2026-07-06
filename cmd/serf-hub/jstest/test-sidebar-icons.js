@@ -38,5 +38,9 @@ const moveNode = Object.assign({}, node, { state: "awaiting", ask_pending: false
 const moveRow = w.SerfSidebarInternal.buildRow(moveNode);
 assert.strictEqual(moveRow.querySelector(".status-icon").getAttribute("title"), "Your move");
 
+const badge = w.SerfSidebarInternal.buildRollupBadge("rollup-live", "working", 3);
+assert.ok(badge.querySelector("svg"), "rollup badge must render an svg icon, not a text glyph");
+assert.strictEqual(badge.textContent.trim(), "3", "rollup badge count text must still read as a plain number");
+
 console.log("test-sidebar-icons.js: OK");
 process.exit(0); // sidebar.js's 60s idle-resync interval keeps the event loop alive otherwise

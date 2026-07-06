@@ -1119,7 +1119,7 @@ body.app[data-sidebar-rail] .subagent-row-wrap > .open-beside-btn { display: non
   padding: 2px 5px;
   border-radius: var(--radius-pill);
 }
-.rollup-badge .rollup-glyph { font-family: var(--font-mono); font-size: 9px; }
+.rollup-badge .rollup-glyph { display: inline-flex; width: 9px; height: 9px; font-size: 9px; }
 .project-rollup .rollup-sep { color: var(--text-dim); font-size: var(--text-2xs); }
 .rollup-live {
   color: var(--state-working);
