@@ -182,6 +182,46 @@ func TestEstimateCost_CacheReadFallsBackToInputRateWhenUncataloged(t *testing.T)
 	}
 }
 
+func TestCostParity_GetPriceMatchesDirectModelInfoFieldReads(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+	// Representative ids INCLUDING the two shapes P1 fixed: a provider-qualified
+	// ref and a "[1m]"-suffixed ref. These must resolve identically whether cost
+	// comes from GetPrice (this track's path) or from a direct ModelInfo field
+	// read (Track B's picker path).
+	ids := []string{
+		"claude-opus-4-5",
+		"anthropic/claude-opus-4-5", // provider-qualified (P1)
+		"claude-opus-4-5[1m]",       // 1M-context suffix (P1)
+		"gpt-5-codex",
+	}
+	const inTok, cacheTok, outTok = int64(123_456), int64(0), int64(7_890)
+	for _, id := range ids {
+		t.Run(id, func(t *testing.T) {
+			// This track's path.
+			price, ok := cat.GetPrice(id)
+			if !ok {
+				t.Fatalf("GetPrice(%q) returned !ok — id should resolve after P1", id)
+			}
+			viaGetPrice := EstimateCost(inTok, cacheTok, outTok, price)
+
+			// The picker's path: resolve ModelInfo the same way catalogModelInfo
+			// does (LookupModelInfo), then read its cost fields directly.
+			mi := cat.LookupModelInfo(id)
+			if mi == nil || mi.InputCostPerMillion == nil || mi.OutputCostPerMillion == nil {
+				t.Fatalf("LookupModelInfo(%q) missing base cost fields", id)
+			}
+			viaDirectFields := float64(inTok)*(*mi.InputCostPerMillion)/1e6 +
+				float64(outTok)*(*mi.OutputCostPerMillion)/1e6
+			// cacheTok is 0 here, so cache-rate differences don't enter — this
+			// isolates the base-rate parity that both paths must agree on.
+
+			if !approxF(viaGetPrice, viaDirectFields) {
+				t.Errorf("cost parity mismatch for %q: GetPrice path=%v, direct-field path=%v", id, viaGetPrice, viaDirectFields)
+			}
+		})
+	}
+}
+
 func approxF(a, b float64) bool {
 	diff := a - b
 	if diff < 0 {
