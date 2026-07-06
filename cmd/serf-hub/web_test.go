@@ -1072,6 +1072,25 @@ func TestWeb_SettingsFullPageLoadsInternalPartial(t *testing.T) {
 	}
 }
 
+func TestWeb_SettingsGeneralBearerTokenCopyIsAccurate(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Past: hubcore.NewPastIndex("")})
+	req := httptest.NewRequest(http.MethodGet, "/_partials/settings/general", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "Rotated daily") {
+		t.Fatalf("bearer-token help still claims daily rotation (it is generated once and persisted):\n%s", body)
+	}
+	if strings.Contains(body, "regenerates the token on each daemon restart") {
+		t.Fatalf("bearer-token help still claims per-restart regeneration (the token persists):\n%s", body)
+	}
+}
+
 // TestStateLabel_ErroredAndNeedsYou pins the two label changes the errored
 // render lane requires: "awaiting" reads as "Your move" (not the flat,
 // unlabeled "Awaiting"), and "errored" gets its own human label rather than
