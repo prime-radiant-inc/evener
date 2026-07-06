@@ -453,6 +453,27 @@ func TestWeb_WorkspaceAwaitingRestDisablesStopAndSteer(t *testing.T) {
 	}
 }
 
+func TestWeb_WorkspaceTaskStatusInitialIsNeutral(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Past: hubcore.NewPastIndex("")})
+	web.sources.Add(&scriptedAppSource{
+		id: "codex",
+		thread: appwire.Thread{
+			ID: "th_tasks", SessionID: "th_tasks", Source: "codex",
+			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			Serf:   appwire.SerfThread{Ref: "codex:th_tasks", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/"+url.PathEscape("codex:th_tasks")+"/workspace", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	body := rec.Body.String()
+	if strings.Contains(body, `data-task-status-text>loading…`) {
+		t.Fatalf("task-status must not hard-code the spinning 'loading…' placeholder:\n%s", body)
+	}
+}
+
 // Icon-only controls must carry an aria-label. A bare title= attribute is not a
 // reliable accessible name for screen readers, so glyph-only buttons (the copy
 // session-id "⧉" and the attach "＋") need an explicit aria-label.
@@ -2534,8 +2555,8 @@ func TestWeb_WorkspacePartial_RendersWorkingDirInStatusRow(t *testing.T) {
 	if !strings.Contains(body, `class="task-status-row"`) {
 		t.Errorf("workspace partial missing bottom task status row: %q", body)
 	}
-	if !strings.Contains(body, `data-task-status-text>loading…</span>`) {
-		t.Errorf("workspace partial missing bottom task loading placeholder: %q", body)
+	if !strings.Contains(body, `data-task-status-text>—</span>`) {
+		t.Errorf("workspace partial missing bottom task neutral placeholder: %q", body)
 	}
 	if strings.Contains(body, `data-task-status-text>tasks</span>`) {
 		t.Errorf("workspace partial should not render duplicated tasks label: %q", body)
