@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { JSDOM } = require("jsdom");
 
+const iconsSrc = fs.readFileSync(path.resolve(__dirname, "../assets/icons.js"), "utf8");
 const dirPickerSrc = fs.readFileSync(path.resolve(__dirname, "../assets/dir-picker.js"), "utf8");
 const spawnSrc = fs.readFileSync(path.resolve(__dirname, "../assets/spawn.js"), "utf8");
 const spawnTemplateSrc = fs.readFileSync(path.resolve(__dirname, "../templates/partials/spawn.html"), "utf8");
@@ -363,6 +364,7 @@ diagModelDom.window.fetch = () => Promise.resolve({
     diagnostics: [{ provider: "kimi", message: "list models: HTTP 401", hint: "check credentials" }],
   }),
 });
+diagModelDom.window.eval(iconsSrc);
 diagModelDom.window.eval(dirPickerSrc);
 diagModelDom.window.eval(spawnSrc);
 diagModelDom.window.document.dispatchEvent(new diagModelDom.window.Event("DOMContentLoaded", { bubbles: true }));
@@ -372,6 +374,9 @@ const diagRows = Array.from(diagModelDom.window.document.querySelectorAll(".chip
 assert(diagRows.length === 1, "picker should render one diagnostic row, got " + diagRows.length);
 assert(diagRows[0].includes("kimi") && diagRows[0].includes("list models: HTTP 401"),
   "diagnostic row should name the unavailable provider and its reason, got " + JSON.stringify(diagRows[0]));
+const diagRowEls = Array.from(diagModelDom.window.document.querySelectorAll(".chip-picker-diagnostic"));
+assert(diagRowEls[0].querySelector("svg"), "diagnostic row should show an svg warning icon");
+assert(!diagRowEls[0].textContent.includes("⚠"), "diagnostic row should not use the literal ⚠ glyph");
 assert(diagModelDom.window.document.querySelector(".chip-picker-model-name"),
   "picker should still render available models alongside diagnostics");
 

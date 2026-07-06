@@ -2396,7 +2396,8 @@
       if (m.statusEl) {
         // Success is the expected state and recedes — no ✓ down every row. Only
         // a failure (✕, red) is worth the eye. The slot stays so content aligns.
-        m.statusEl.textContent = ok ? "" : "✕";
+        if (ok) m.statusEl.textContent = "";
+        else m.statusEl.innerHTML = window.SerfIcons.error;
         m.statusEl.className = "tool-status " + (ok ? "tool-status-good" : "tool-status-bad");
       }
       // Mark an errored row as a queryable attention anchor so the new-content
@@ -3268,7 +3269,7 @@
       chip.hidden = false;
       if (failed) {
         chip.classList.add("bad");
-        chip.textContent = "✕ " + failed + (failed === 1 ? " child failed" : " children failed");
+        chip.innerHTML = window.SerfIcons.error + " " + failed + (failed === 1 ? " child failed" : " children failed");
       } else {
         chip.classList.remove("bad");
         chip.textContent = "? " + unknown + (unknown === 1 ? " child unknown" : " children unknown");
@@ -3502,9 +3503,9 @@
     notificationGlyph(n) {
       if (n.type === "watch" || n.type === "watch-send") return "◌";
       if (n.type === "observer-callback") return "↩";
-      if (n.tone === "error") return "✕";
-      if (n.tone === "warning") return "⚠";
-      return "✓";
+      if (n.tone === "error") return window.SerfIcons.error;
+      if (n.tone === "warning") return window.SerfIcons.warning;
+      return window.SerfIcons.ended;
     },
 
     // The quiet secondary line: a couple of plain-language bits (the job kind,
@@ -3624,7 +3625,7 @@
       const glyph = document.createElement("span");
       glyph.className = "notification-card-glyph";
       glyph.setAttribute("aria-hidden", "true");
-      glyph.textContent = this.notificationGlyph(n);
+      glyph.innerHTML = this.notificationGlyph(n);
       header.appendChild(glyph);
       const title = document.createElement("span");
       title.className = "notification-card-title";

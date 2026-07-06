@@ -140,9 +140,10 @@ ${delegateEnvelope}
     if (card.querySelector(".notification-card-chip") || card.querySelector(".notification-card-meta")) {
       return { ok: false, detail: "chip wall should be removed" };
     }
-    // Done recedes: a neutral ✓ glyph, not a coloured/filled dot.
+    // Done recedes: a neutral done icon, not a coloured/filled dot.
     const glyph = card.querySelector(".notification-card-glyph");
-    if (!glyph || glyph.textContent !== "✓") return { ok: false, detail: "completed job should show a neutral ✓ glyph, got " + (glyph && glyph.textContent) };
+    if (!glyph || !glyph.querySelector("svg")) return { ok: false, detail: "completed job should show a neutral done icon, got " + (glyph && glyph.innerHTML) };
+    if (glyph.textContent.includes("✓")) return { ok: false, detail: "completed job should not use the literal ✓ glyph" };
     // The job kind is demoted to a quiet secondary; the raw id is not echoed as boilerplate prose.
     const sub = card.querySelector(".notification-card-sub");
     if (!sub || !expectText(sub, "delegate")) return { ok: false, detail: "job kind should appear on the demoted secondary" };
