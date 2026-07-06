@@ -4740,12 +4740,12 @@ type perAddrProber struct {
 	byAddr map[string]struct{ SessionID, Status string }
 }
 
-func (p perAddrProber) Probe(entry rendezvous.Entry) (sessionID, status string, ok bool) {
+func (p perAddrProber) Probe(entry rendezvous.Entry) (sessionID, status string, pendingAsk, ok bool) {
 	v, present := p.byAddr[entry.Address]
 	if !present {
-		return "", "", false
+		return "", "", false, false
 	}
-	return v.SessionID, v.Status, true
+	return v.SessionID, v.Status, false, true
 }
 
 // settingsRequest is a small helper for the settings pane tests.

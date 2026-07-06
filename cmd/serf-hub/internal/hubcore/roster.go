@@ -22,8 +22,9 @@ import (
 // rendezvous-file metadata with the dynamic SessionID resolved via /status.
 type LiveEntry struct {
 	rendezvous.Entry
-	SessionID string
-	Status    string // most-recent daemon state ("active", "idle", "awaiting", etc.)
+	SessionID  string
+	Status     string // most-recent daemon state ("active", "idle", "awaiting", etc.)
+	PendingAsk bool   // true while the daemon reports an unanswered ask_user question
 }
 
 // Prober is implemented by liveness-checking strategies.
@@ -32,7 +33,7 @@ type LiveEntry struct {
 // session_id (which may have changed under POST /clear since the
 // rendezvous file was written) and the daemon's current state.
 type Prober interface {
-	Probe(entry rendezvous.Entry) (sessionID, status string, ok bool)
+	Probe(entry rendezvous.Entry) (sessionID, status string, pendingAsk, ok bool)
 }
 
 // Roster maintains the live-daemon set on the host. Reads of the underlying
@@ -136,6 +137,10 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		_, _ = h.Write([]byte{0})
 		_, _ = h.Write([]byte(bySess[id].Status))
 		_, _ = h.Write([]byte{0})
+		if bySess[id].PendingAsk {
+			_, _ = h.Write([]byte{1})
+		}
+		_, _ = h.Write([]byte{0})
 	}
 	return h.Sum64()
 }
@@ -162,10 +167,11 @@ func (r *Roster) Refresh() {
 	r.mu.RUnlock()
 
 	type probeResult struct {
-		entry  rendezvous.Entry
-		sessID string
-		status string
-		ok     bool
+		entry      rendezvous.Entry
+		sessID     string
+		status     string
+		pendingAsk bool
+		ok         bool
 	}
 	results := make([]probeResult, len(entries))
 	var wg sync.WaitGroup
@@ -177,8 +183,8 @@ func (r *Roster) Refresh() {
 		wg.Add(1)
 		go func(i int, e rendezvous.Entry) {
 			defer wg.Done()
-			sessID, status, ok := r.prober.Probe(e)
-			results[i] = probeResult{entry: e, sessID: sessID, status: status, ok: ok}
+			sessID, status, pendingAsk, ok := r.prober.Probe(e)
+			results[i] = probeResult{entry: e, sessID: sessID, status: status, pendingAsk: pendingAsk, ok: ok}
 		}(i, e)
 	}
 	wg.Wait()
@@ -199,7 +205,7 @@ func (r *Roster) Refresh() {
 			}
 			continue
 		}
-		live := LiveEntry{Entry: e, SessionID: res.sessID, Status: res.status}
+		live := LiveEntry{Entry: e, SessionID: res.sessID, Status: res.status, PendingAsk: res.pendingAsk}
 		if res.sessID != "" {
 			if prev, ok := bySess[res.sessID]; !ok || preferLiveEntry(live, prev) {
 				bySess[res.sessID] = live
