@@ -81,9 +81,19 @@ func TestGetPrice_OneMillionContextSuffix(t *testing.T) {
 	// The "[1m]" suffix (agent/provider/profile.go:743,
 	// llm/providers/anthropic/models.go:90) selects the 1M-context beta but
 	// carries no separate pricing entry — it must resolve to the base model.
-	p, ok := cat.GetPrice("claude-opus-4-5[1m]")
+	//
+	// A bare "claude-opus-4-5[1m]" id would also resolve via GetPrice's
+	// longest-prefix fallback loop (strings.HasPrefix treats "[1m]" as an
+	// unmatched-but-tolerated suffix), so it wouldn't actually pin down the
+	// LookupModelInfo path this test is named for. Pairing the suffix with a
+	// provider-qualified prefix (agent/provider/profile.go:505-528 keeps the
+	// namespace for meta-provider upstreams like openrouter/minimax) defeats
+	// that fallback — HasPrefix("anthropic/claude-opus-4-5[1m]",
+	// "claude-opus-4-5") is false — so only LookupModelInfo's suffix-trim +
+	// provider-qualified retry can resolve it.
+	p, ok := cat.GetPrice("anthropic/claude-opus-4-5[1m]")
 	if !ok {
-		t.Fatal("expected [1m]-suffixed ref to resolve via LookupModelInfo")
+		t.Fatal("expected provider-qualified [1m]-suffixed ref to resolve via LookupModelInfo")
 	}
 	if p.InputPerM != 5.0 {
 		t.Errorf("got in=%v, want 5.0", p.InputPerM)
