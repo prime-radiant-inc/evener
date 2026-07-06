@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 )
@@ -116,5 +117,29 @@ func TestArchiveEndpointProjectKind(t *testing.T) {
 	}
 	if d[hubcore.ArchiveKey{Kind: "project", ID: "/repo/my-proj"}] {
 		t.Fatalf("archived should be false; decisions=%v", d)
+	}
+}
+
+func TestArchiveUnarchiveSkipsRedundantLegacyDeleteForBasenameID(t *testing.T) {
+	dir := t.TempDir()
+	store := hubcore.NewArchiveStore(filepath.Join(dir, "index.db"))
+	web := NewWebServer(hubcore.WebConfig{Archive: store, Past: hubcore.NewPastIndex("")})
+	// Pre-archive a basename-shaped project id (no path separator).
+	if err := store.Set("project", "proj", true, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/archive", strings.NewReader(`{"kind":"project","id":"proj","archived":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	d, err := store.Decisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d[hubcore.ArchiveKey{Kind: "project", ID: "proj"}] {
+		t.Fatalf("un-archive must clear the row; decisions=%v", d)
 	}
 }

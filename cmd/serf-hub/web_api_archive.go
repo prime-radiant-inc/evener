@@ -43,8 +43,12 @@ func (s *WebServer) handleAPIArchive(w http.ResponseWriter, r *http.Request) {
 	if body.Kind == "project" && !body.Archived {
 		// Visible-wins: dropping the path row's archive also drops any legacy
 		// basename row that could re-hide this (or a co-basename) project
-		// (round-3 G3). filepath.Base of a path id yields the legacy key.
-		_ = s.cfg.Archive.Delete("project", filepath.Base(body.ID))
+		// (round-3 G3). Only meaningful when the id is a real path — a
+		// basename-shaped id equals its own filepath.Base, so Set above already
+		// cleared it and a Delete on the same key would be a no-op (T8).
+		if base := filepath.Base(body.ID); base != body.ID {
+			_ = s.cfg.Archive.Delete("project", base)
+		}
 	}
 	// An archive decision can move a session in or out of tier eligibility;
 	// nudge the attention watcher so the badge/notification state doesn't lag
