@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/hubapi"
 	"primeradiant.com/serf/rendezvous"
@@ -220,5 +221,45 @@ func TestAPITree_NeedsYouCarriesAskPending(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected NeedsYou[?].AskPending=true for 01A, got %+v", resp.NeedsYou)
+	}
+}
+
+func TestAPISessionDetailHonorsRenamedMetaForLiveThread(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: "01RENAMED", UpdatedAt: time.Now(),
+		Name: "my chosen name", NameSource: "user",
+		Model: "gpt-5", EnvInfo: schema.EnvironmentInfo{WorkingDir: proj},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 88, Address: "127.0.0.1:4588", WorkingDir: proj, Model: "gpt-5"})
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01RENAMED", status: appwire.ThreadStatusIdle})
+	r.Refresh()
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
+	// Live daemon thread reports NO name (the rename lives only in meta).
+	web.sources.Add(&scriptedAppSource{
+		id: "local",
+		thread: appwire.Thread{
+			ID: "01RENAMED", SessionID: "01RENAMED", Source: "local",
+			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}, CWD: proj,
+			Serf: appwire.SerfThread{Ref: "local:01RENAMED", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+	})
+	detail, ok := web.apiSessionDetail("01RENAMED")
+	if !ok {
+		t.Fatal("apiSessionDetail: not found")
+	}
+	if detail.Title != "my chosen name" {
+		t.Fatalf("Title=%q, want the renamed meta name (not the raw id)", detail.Title)
 	}
 }
