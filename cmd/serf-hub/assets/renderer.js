@@ -2008,7 +2008,7 @@
         head.setAttribute("data-agent-question-head", "");
         const glyph = document.createElement("span");
         glyph.className = "agent-question-glyph";
-        glyph.textContent = "◆";
+        glyph.innerHTML = window.SerfIcons.questionWaiting;
         const label = document.createElement("span");
         label.className = "agent-question-label";
         label.textContent = "Needs you";
@@ -4206,11 +4206,11 @@
       if (urgent && urgent.kind === "error") {
         this.newContentJumpTarget = urgent.el;
         pill.classList.add("error");
-        pill.textContent = (urgent.dir === "up" ? "↑" : "↓") + " ✕ error";
+        pill.innerHTML = (urgent.dir === "up" ? "↑ " : "↓ ") + window.SerfIcons.error + " error";
       } else if (urgent && urgent.kind === "needs-you") {
         this.newContentJumpTarget = null;
         pill.classList.add("needs-you");
-        pill.textContent = "↓ ◆ needs you";
+        pill.innerHTML = "↓ " + window.SerfIcons.yourMove + " needs you";
       } else {
         this.newContentJumpTarget = null;
         // The plain count is the only churning value, so it is debounced: a
@@ -4318,7 +4318,7 @@
         return;
       }
       dock.hidden = false;
-      dock.textContent = "◆ The agent is waiting on your answer — jump to it";
+      dock.innerHTML = window.SerfIcons.questionWaiting + " The agent is waiting on your answer — jump to it";
       // Authoritative signal: drop any duplicate needs-you treatment on the pill.
       const pill = this.newContentPillEl();
       if (pill && pill.classList.contains("needs-you")) this.renderNewContentPill();
@@ -4448,7 +4448,7 @@
       chip.className = "ask-collapsed-chip";
       chip.setAttribute("data-ask-collapsed-chip", "");
       chip.hidden = true;
-      chip.textContent = "◆ question waiting";
+      chip.innerHTML = window.SerfIcons.questionWaiting + " question waiting";
       chip.addEventListener("click", () => this.expandAskCard());
       el.appendChild(chip);
 
@@ -4784,7 +4784,13 @@
       const echo = clip(String(replyText || "").replace(/\s+/g, " ").trim(), 160);
       const line = document.createElement("div");
       line.className = "system-line ask-settled-line";
-      line.textContent = "◆ asked " + askedSummary + (echo ? " — answered: " + echo : " — answered");
+      // askedSummary (question headers) and echo (the raw reply) are not
+      // HTML-escaped — build the icon and text as separate nodes rather than
+      // string-concatenating into innerHTML, to avoid an XSS regression.
+      const iconSpan = document.createElement("span");
+      iconSpan.innerHTML = window.SerfIcons.questionWaiting;
+      line.appendChild(iconSpan);
+      line.appendChild(document.createTextNode(" asked " + askedSummary + (echo ? " — answered: " + echo : " — answered")));
       pa.el.parentNode.replaceChild(line, pa.el);
     },
 
