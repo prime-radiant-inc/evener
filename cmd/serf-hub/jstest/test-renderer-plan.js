@@ -119,11 +119,11 @@ await scenario("living plan card leads with progress + active task, collapsed by
   if (!prog || !/3\s*\/\s*7/.test(prog.textContent)) return { ok: false, detail: "progress should be 3 / 7, got " + (prog && prog.textContent) };
   if (!card.querySelector(".task-card-meter-fill")) return { ok: false, detail: "missing progress meter" };
 
-  // The active task is the frontier: visible, current (blue, breathing ⟳).
+  // The active task is the frontier: visible, current (blue, breathing working icon).
   const active = card.querySelector(".task-card-active");
   if (!active) return { ok: false, detail: "missing active task row" };
   if (!active.classList.contains("current")) return { ok: false, detail: "active row should carry the .current plan state" };
-  if (active.querySelector(".plan-glyph").textContent !== "⟳") return { ok: false, detail: "active glyph should be ⟳" };
+  if (!active.querySelector(".plan-glyph").innerHTML.includes("<svg")) return { ok: false, detail: "active glyph should be the working svg icon" };
   if (!active.textContent.includes("Port the charge and refund paths")) return { ok: false, detail: "wrong active task text" };
 
   // Collapsed: the done pile + what's left fold into one quiet summary line; the
