@@ -1651,10 +1651,12 @@
       return false;
     },
 
-    // maybeShowWelcome renders the crafted empty-session welcome (mockup #21
-    // Alt C) when a hydrated session has no transcript content: a one-line
-    // orientation plus a few example prompts that prefill the composer on
-    // click. It dissolves on first send and never lingers for active sessions.
+    // maybeShowWelcome marks a hydrated session with no transcript content as
+    // cold-start (mockup #21 Alt C): an empty pane with no tagline or example
+    // prompts (removed — Jesse: amateurish clutter over an empty session),
+    // just the compose affordance below it. The pane still exists as a DOM
+    // marker so conversationHasContent()/dissolveWelcome() have something to
+    // find; it dissolves on first send and never lingers for active sessions.
     maybeShowWelcome() {
       if (!this.conversation) return;
       if (this.conversationHasContent()) return;
@@ -1662,52 +1664,7 @@
 
       const pane = document.createElement("div");
       pane.className = "cold-start-welcome";
-
-      const intro = document.createElement("div");
-      intro.className = "cold-start-intro";
-      intro.textContent = "Describe a task and the agent gets to work — you'll watch it think, run tools, and spawn subagents in real time.";
-      pane.appendChild(intro);
-
-      const tryLabel = document.createElement("div");
-      tryLabel.className = "cold-start-try";
-      tryLabel.textContent = "Try";
-      pane.appendChild(tryLabel);
-
-      const list = document.createElement("div");
-      list.className = "cold-start-examples";
-      // Example-prompt copy is UI text we author (not a fabricated signal).
-      const examples = [
-        "Find and fix the root cause of a flaky test",
-        "Audit error handling across this package",
-        "Explain how a request flows from router to handler",
-      ];
-      for (const prompt of examples) {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "cold-start-example";
-        btn.dataset.prompt = prompt;
-        const arr = document.createElement("span");
-        arr.className = "cold-start-example-arrow";
-        arr.textContent = "→";
-        const txt = document.createElement("span");
-        txt.textContent = prompt;
-        btn.append(arr, txt);
-        btn.addEventListener("click", () => this.prefillComposer(prompt));
-        list.appendChild(btn);
-      }
-      pane.appendChild(list);
       this.conversation.appendChild(pane);
-    },
-
-    // prefillComposer drops example-prompt text into the composer and focuses
-    // it, so the user can edit before sending.
-    prefillComposer(text) {
-      const ta = document.querySelector("form[data-input-form] .message-input")
-        || document.querySelector(".message-input");
-      if (!ta) return;
-      ta.value = text;
-      ta.dispatchEvent(new Event("input", { bubbles: true }));
-      ta.focus();
     },
 
     // dissolveWelcome removes the welcome pane the instant a turn begins, so it

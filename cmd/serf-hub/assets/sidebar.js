@@ -56,11 +56,17 @@
     a.setAttribute("hx-target", "#workspace");
     a.setAttribute("hx-swap", "innerHTML");
     a.setAttribute("hx-push-url", "/s/" + n.session_id);
+    // Single-line row: title, meta, and the ⋯ menu are direct grid children
+    // of .sb-row (no .text-col wrapper stacking them onto a second line) —
+    // see .sb-row's 4-track grid in style.css.
     a.innerHTML =
       '<div class="dot-col"><span class="status-dot" data-state="' + n.state + '"></span>' +
       '<span class="status-icon" data-state="' + n.state + '"></span></div>' +
-      '<div class="text-col"><div class="title"></div><div class="meta"></div></div>';
-    a.querySelector(".title").textContent = n.title;
+      '<div class="title"></div>' +
+      '<div class="meta"></div>';
+    var title = a.querySelector(".title");
+    title.textContent = n.title;
+    title.setAttribute("title", n.title); // hover tooltip: CSS ellipsizes the visible text
     var icon = a.querySelector(".status-icon");
     icon.innerHTML = window.SerfIcons[stateIconKey(n.state, n.ask_pending)];
     icon.setAttribute("title", stateWord(n.state, n.ask_pending));
@@ -102,7 +108,7 @@
       }
     }
     var title = a.querySelector(".title");
-    if (title && title.textContent !== n.title) title.textContent = n.title;
+    if (title && title.textContent !== n.title) { title.textContent = n.title; title.setAttribute("title", n.title); }
     if (n.favorite) a.setAttribute("data-favorite", ""); else a.removeAttribute("data-favorite");
     if (n.ask_pending) a.setAttribute("data-ask", "true"); else a.removeAttribute("data-ask");
     patchChildrenToggle(a, n);
