@@ -29,8 +29,8 @@ func TestStateColorForToolDone(t *testing.T) {
 	if got := stateColorForToolDone(true, ""); got != th.StateIdle {
 		t.Fatalf("done color = %v, want StateIdle", got)
 	}
-	if got := stateColorForToolDone(false, ""); got != th.StateProcessing {
-		t.Fatalf("in-progress color = %v, want StateProcessing", got)
+	if got := stateColorForToolDone(false, ""); got != th.StateWorking {
+		t.Fatalf("in-progress color = %v, want StateWorking", got)
 	}
 }
 

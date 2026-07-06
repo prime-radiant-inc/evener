@@ -13,34 +13,34 @@ import (
 // Theme. DefaultTUIStyles() rebuilds this from ActiveTheme() on each call so
 // runtime theme switches take effect immediately.
 type TUIStyles struct {
-	Title      lipgloss.Style
-	Section    lipgloss.Style
-	Muted      lipgloss.Style
-	Selected   lipgloss.Style
-	Pane       lipgloss.Style
-	Modal      lipgloss.Style
-	Error      lipgloss.Style
-	Idle       lipgloss.Style
-	Processing lipgloss.Style
-	Waiting    lipgloss.Style
-	Ended      lipgloss.Style
+	Title    lipgloss.Style
+	Section  lipgloss.Style
+	Muted    lipgloss.Style
+	Selected lipgloss.Style
+	Pane     lipgloss.Style
+	Modal    lipgloss.Style
+	Error    lipgloss.Style
+	Idle     lipgloss.Style
+	Working  lipgloss.Style
+	Waiting  lipgloss.Style
+	Ended    lipgloss.Style
 }
 
 // DefaultTUIStyles builds a TUIStyles from the currently active Theme.
 func DefaultTUIStyles() TUIStyles {
 	th := ActiveTheme()
 	return TUIStyles{
-		Title:      lipgloss.NewStyle().Bold(true).Foreground(th.Text).Background(th.BgRaised),
-		Section:    lipgloss.NewStyle().Bold(true).Foreground(th.Accent),
-		Muted:      lipgloss.NewStyle().Foreground(th.TextDim),
-		Selected:   lipgloss.NewStyle().Foreground(th.Text).Background(th.SurfaceSecondary).Bold(true),
-		Pane:       lipgloss.NewStyle().Foreground(th.Text).Background(th.BgRaised).PaddingLeft(2).PaddingRight(1),
-		Modal:      lipgloss.NewStyle().Foreground(th.Text).Background(th.BgRaised).Border(lipgloss.RoundedBorder()).BorderForeground(th.Rule).PaddingLeft(2).PaddingRight(2),
-		Error:      lipgloss.NewStyle().Foreground(th.StateAwaiting).Bold(true),
-		Idle:       lipgloss.NewStyle().Foreground(th.StateIdle),
-		Processing: lipgloss.NewStyle().Foreground(th.StateProcessing),
-		Waiting:    lipgloss.NewStyle().Foreground(th.StateWarning),
-		Ended:      lipgloss.NewStyle().Foreground(th.StateEnded),
+		Title:    lipgloss.NewStyle().Bold(true).Foreground(th.Text).Background(th.BgRaised),
+		Section:  lipgloss.NewStyle().Bold(true).Foreground(th.Accent),
+		Muted:    lipgloss.NewStyle().Foreground(th.TextDim),
+		Selected: lipgloss.NewStyle().Foreground(th.Text).Background(th.SurfaceSecondary).Bold(true),
+		Pane:     lipgloss.NewStyle().Foreground(th.Text).Background(th.BgRaised).PaddingLeft(2).PaddingRight(1),
+		Modal:    lipgloss.NewStyle().Foreground(th.Text).Background(th.BgRaised).Border(lipgloss.RoundedBorder()).BorderForeground(th.Rule).PaddingLeft(2).PaddingRight(2),
+		Error:    lipgloss.NewStyle().Foreground(th.StateAwaiting).Bold(true),
+		Idle:     lipgloss.NewStyle().Foreground(th.StateIdle),
+		Working:  lipgloss.NewStyle().Foreground(th.StateWorking),
+		Waiting:  lipgloss.NewStyle().Foreground(th.StateWarning),
+		Ended:    lipgloss.NewStyle().Foreground(th.StateEnded),
 	}
 }
 

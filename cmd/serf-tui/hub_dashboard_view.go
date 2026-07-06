@@ -306,7 +306,7 @@ func stateColor(state string) lipgloss.Color {
 	case "awaiting":
 		return th.StateAwaiting
 	case "active":
-		return th.StateProcessing
+		return th.StateWorking
 	case "warning":
 		return th.StateWarning
 	case "idle":

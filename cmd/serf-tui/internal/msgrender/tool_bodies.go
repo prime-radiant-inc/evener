@@ -179,7 +179,7 @@ func taskListBody(_ ToolArgs, output string, width int) string {
 			clr = th.StateIdle
 		case "in_progress":
 			glyph = "[⠋]"
-			clr = th.StateProcessing
+			clr = th.StateWorking
 		default:
 			glyph = "[ ]"
 			clr = th.TextDim

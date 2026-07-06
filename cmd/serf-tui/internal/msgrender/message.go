@@ -197,7 +197,7 @@ func RenderMessage(msg transcript.ChatMessage, width int, focused bool) string {
 			return ""
 		}
 		th := tuitheme.ActiveTheme()
-		bar := tuiprim.StateBar(th.StateProcessing)
+		bar := tuiprim.StateBar(th.StateWorking)
 		barW := lipgloss.Width(bar)
 		rendered := tuitheme.ThinkingStyle.Width(max(1, messageWidth-barW-1)).Render(renderMarkdown(text, max(1, messageWidth-barW-1)))
 		return bar + " " + RenderSelectedMessage(rendered, focused)
@@ -358,7 +358,7 @@ func stateColorForToolDone(done bool, errStr string) lipgloss.Color {
 	if done {
 		return th.StateIdle
 	}
-	return th.StateProcessing
+	return th.StateWorking
 }
 
 func checkmarkFor(done bool, errStr string) string {
