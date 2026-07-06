@@ -133,3 +133,11 @@ func TestHubDetailFromThread_CarriesAskPending(t *testing.T) {
 		t.Fatal("expected hubSessionDetail.AskPending=true from thread.Serf.AskPending")
 	}
 }
+
+func TestDashboardSessionRow_AskPendingMarker(t *testing.T) {
+	row := hubRow{kind: hubRowSession, state: "awaiting", askPending: true, title: "x"}
+	rendered := renderDashboardSessionRow(row, false, 80, false, "")
+	if !strings.Contains(rendered, "◆") {
+		t.Fatalf("an ask-pending row must show the ◆ question-waiting marker, got %q", rendered)
+	}
+}

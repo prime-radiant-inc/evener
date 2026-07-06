@@ -327,9 +327,19 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 	// SurfaceSecondary bg highlight is the selection indicator;
 	// the marker stays one cell wide for column stability.
 	marker := tuiprim.StateBar(stateColor(row.state))
+	// Per-row ask-pending marker: same ◆ glyph/color the header's
+	// needsYouBadge and the composer's question chip use for "question
+	// waiting" (one vocabulary, folded-in spec §6). Joined in here (rather
+	// than appended after ansi.Truncate below) so it naturally participates
+	// in truncation and the selected-row ANSI-strip.
+	askMarker := ""
+	if row.askPending {
+		askMarker = lipgloss.NewStyle().Foreground(tuitheme.ActiveTheme().StateAwaiting).Render("◆")
+	}
 	styles := tuitheme.DefaultTUIStyles()
 	line := strings.Join(tuitext.NonEmptyStrings([]string{
 		marker,
+		askMarker,
 		statusDot(row.state),
 		stateLabel(row.state),
 		dashboardCell(row.sourceLabel),
