@@ -136,6 +136,20 @@ pass(
   "desktop tool timing metadata should not depend on hover/focus reveal rules"
 );
 
+// Per-turn duration/tokens/cost badge mirrors the tool-meta pattern above:
+// readable by default, no hover/focus reveal.
+pass(
+  ruleContains(".assistant-message .turn-meta", /color:\s*var\(--text-muted\)/) &&
+    !ruleContains(".assistant-message .turn-meta", /opacity:\s*0\b/) &&
+    !ruleContains(".assistant-message .turn-meta", /visibility:\s*hidden\b/),
+  "turn-meta badge should be readable by default without opacity:0 or visibility:hidden"
+);
+pass(
+  !ruleContains(".assistant-message:hover .turn-meta", /opacity:\s*1\b/) &&
+    !ruleContains(".turn-meta:focus", /opacity:\s*1\b/),
+  "turn-meta badge should not depend on hover/focus reveal rules"
+);
+
 // Job notification communicate output is already HTML rendered from markdown.
 // Preserving parser-inserted whitespace on that HTML turns marked's formatting
 // newlines into visible blank rows between every block/list item. Raw excerpts
