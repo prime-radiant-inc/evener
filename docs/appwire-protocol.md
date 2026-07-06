@@ -587,6 +587,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `data` | `[]appwire.ModelDescriptor` |  |  |
 | `diagnostics` | `[]appwire.ModelListDiagnostic` | yes |  |
+| `recent` | `[]appwire.ModelDescriptor` | yes |  |
 
 
 ### `PathValidateParams`
