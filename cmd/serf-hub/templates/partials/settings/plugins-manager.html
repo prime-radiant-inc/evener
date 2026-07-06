@@ -37,6 +37,7 @@
     let expandedMarketplaces = new Set();
     let browseCatalogs = {}; // marketplace name -> {loading:true} | {error} | {plugins}
     let filterQuery = ""; // Browse tree filter box's current value
+    let filterLoading = false; // true while the filter's first-keystroke lazy-load is in flight
     let addMarketplaceOpen = false;
     let loadError = "";
 
@@ -79,6 +80,25 @@
       render();
     }
 
+    // ensureAllCatalogsLoadedForFilter fetches every marketplace the filter
+    // hasn't cached yet, once, in parallel. A ref no longer needed (query
+    // cleared or changed again) mid-flight is not cancelled — the fetch
+    // still completes and populates the cache, which is harmless and simpler
+    // than a cancellation token (not required by the design doc).
+    async function ensureAllCatalogsLoadedForFilter() {
+      const missing = marketplaces.filter(m => !browseCatalogs[m.name]).map(m => m.name);
+      if (missing.length === 0) return;
+      filterLoading = true;
+      render();
+      await Promise.all(missing.map(name =>
+        pluginsAdmin.marketplaceBrowse(name).then(
+          resp => { browseCatalogs[name] = { plugins: resp.plugins || [] }; },
+          err => { browseCatalogs[name] = { error: (err && err.message) ? err.message : String(err) }; },
+        )
+      ));
+      filterLoading = false;
+    }
+
     // debounce mirrors search.js's helper (private to that file's IIFE, so
     // duplicated here rather than imported — the same small, deliberate
     // duplication search.js/spawn.js already use for their own shared bits).
@@ -86,7 +106,12 @@
       let t;
       return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
     }
-    const debouncedApplyFilter = debounce(() => { applyFilter(); }, 150);
+    const debouncedApplyFilter = debounce(async () => {
+      const q = filterQuery.trim();
+      if (!q) { applyFilter(); return; } // applyFilter() itself handles the clear-restores-collapsed case
+      await ensureAllCatalogsLoadedForFilter();
+      applyFilter();
+    }, 150);
 
     // ---- section renderers ----
 
@@ -214,6 +239,8 @@
       let treeBody;
       if (marketplaces.length === 0) {
         treeBody = `<li class="settings-collection-empty">No marketplaces registered. Add one above to browse plugins.</li>`;
+      } else if (q && filterLoading) {
+        treeBody = `<li class="settings-collection-empty">Loading marketplaces…</li>`;
       } else if (q && !anyPluginsMatch(q)) {
         treeBody = `<li class="settings-collection-empty">No plugins match "${escapeHtml(q)}".</li>`;
       } else {
