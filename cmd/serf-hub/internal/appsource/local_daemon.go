@@ -27,6 +27,11 @@ type LocalDaemonEntry struct {
 	Entry     rendezvous.Entry
 	SessionID string
 	Status    string
+	// PendingAsk mirrors hubcore.LiveEntry.PendingAsk — true while the daemon
+	// reports an unanswered ask_user question. threadFromEntry carries it into
+	// appwire.SerfThread.AskPending so the TUI's per-row ask marker (Task 29)
+	// sees it when attaching through the hub.
+	PendingAsk bool
 }
 
 func NewLocalDaemonSource(sourceID string, entries func() []rendezvous.Entry, client *http.Client) *LocalDaemonSource {
@@ -562,6 +567,7 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 				Goal:         true,
 				Rename:       true,
 			},
+			AskPending: item.PendingAsk,
 		},
 		Status: appwire.ThreadStatus{Type: status},
 	}

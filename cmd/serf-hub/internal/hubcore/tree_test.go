@@ -1257,6 +1257,38 @@ func TestNeedsYou_CarriesAskPendingFromLiveEntry(t *testing.T) {
 	}
 }
 
+// TestLiveTier_CarriesAskPendingFromLiveEntry guards against the live-tier
+// TreeNode builder silently dropping AskPending: a session that's ask-pending
+// in NeedsYou must show the same marker in the flat Live rail, or the sidebar
+// disagrees with itself about the same session.
+func TestLiveTier_CarriesAskPendingFromLiveEntry(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{{ID: "01A", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
+	live := []LiveEntry{{Entry: rendezvous.Entry{PID: 1}, SessionID: "01A", Status: appwire.ThreadStatusAwaiting, PendingAsk: true}}
+	tree := buildTree(metas, live)
+	if len(tree.Live) != 1 || !tree.Live[0].AskPending {
+		t.Fatalf("Live node must carry AskPending=true, got %+v", tree.Live)
+	}
+}
+
+// TestProjectTier_CarriesAskPendingFromLiveEntry guards against the
+// per-project TreeNode builder silently dropping AskPending: the same
+// ask-pending session rendered under its project (Current tier) must carry
+// the marker too, or the project row disagrees with its NeedsYou tile.
+func TestProjectTier_CarriesAskPendingFromLiveEntry(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{{ID: "01A", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
+	live := []LiveEntry{{Entry: rendezvous.Entry{PID: 1}, SessionID: "01A", Status: appwire.ThreadStatusAwaiting, PendingAsk: true}}
+	tree := buildTree(metas, live)
+	if len(tree.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d: %+v", len(tree.Projects), tree.Projects)
+	}
+	sessions := allSessions(tree.Projects[0])
+	if len(sessions) != 1 || !sessions[0].AskPending {
+		t.Fatalf("project session node must carry AskPending=true, got %+v", sessions)
+	}
+}
+
 func TestNeedsYou_AskPendingBandsBetweenErroredAndYourMove(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{

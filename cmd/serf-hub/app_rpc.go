@@ -28,9 +28,10 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 			entries := make([]appsource.LocalDaemonEntry, 0, len(live))
 			for _, item := range live {
 				entries = append(entries, appsource.LocalDaemonEntry{
-					Entry:     item.Entry,
-					SessionID: item.SessionID,
-					Status:    item.Status,
+					Entry:      item.Entry,
+					SessionID:  item.SessionID,
+					Status:     item.Status,
+					PendingAsk: item.PendingAsk,
 				})
 			}
 			return entries

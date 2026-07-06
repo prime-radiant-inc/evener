@@ -465,6 +465,35 @@ func TestLocalDaemonSourceListQueuesOnlyProcessingThreads(t *testing.T) {
 	}
 }
 
+// TestLocalDaemonSourceListCarriesAskPending guards the TUI attach path (Task
+// 29's per-row ask marker): when the hub's entries() feed reports PendingAsk
+// on a LocalDaemonEntry, threadFromEntry must carry it through to
+// appwire.SerfThread.AskPending, since that's the field the TUI dashboard
+// reads (cmd/serf-tui/hub_types.go).
+func TestLocalDaemonSourceListCarriesAskPending(t *testing.T) {
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/ask", ThreadID: "th_ask", SessionID: "sess_ask"}, Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/idle", ThreadID: "th_idle", SessionID: "sess_idle"}, Status: "idle", PendingAsk: false},
+		}
+	}, nil)
+
+	resp, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	askByID := map[string]bool{}
+	for _, thread := range resp.Data {
+		askByID[thread.ID] = thread.Serf.AskPending
+	}
+	if !askByID["th_ask"] {
+		t.Fatalf("ask-pending thread must carry Serf.AskPending=true: %+v", resp.Data)
+	}
+	if askByID["th_idle"] {
+		t.Fatalf("non-ask-pending thread must carry Serf.AskPending=false: %+v", resp.Data)
+	}
+}
+
 func TestLocalDaemonSourceSubscribeThreadRequestsSubscription(t *testing.T) {
 	gotSubscribe := make(chan bool, 1)
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})

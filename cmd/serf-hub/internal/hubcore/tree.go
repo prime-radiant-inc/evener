@@ -307,6 +307,14 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		return "ended"
 	}
 
+	// askPendingFor resolves the ask-pending marker for a session ID from the
+	// same live map stateFor reads — every TreeNode builder below must set
+	// AskPending from this, not just the NeedsYou triage tier, or a session
+	// rendered elsewhere in the sidebar disagrees with its own NeedsYou tile.
+	askPendingFor := func(id string) bool {
+		return liveMap[id].PendingAsk
+	}
+
 	// Group metas by project name.
 	type projectAccum struct {
 		name       string // basename for display
@@ -385,15 +393,16 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		for _, m := range acc.topLevel {
 			kind := nodeKind(m)
 			node := TreeNode{
-				ID:        m.ID,
-				Title:     nodeTitle(m, kind),
-				Project:   acc.name,
-				Branch:    m.EnvInfo.GitBranch,
-				State:     stateFor(m.ID),
-				Kind:      kind,
-				CreatedAt: OrderCreatedAt(m.CreatedAt, m.UpdatedAt),
-				UpdatedAt: OrderUpdatedAt(m.UpdatedAt, m.CreatedAt),
-				Age:       AgeString(OrderUpdatedAt(m.UpdatedAt, m.CreatedAt)),
+				ID:         m.ID,
+				Title:      nodeTitle(m, kind),
+				Project:    acc.name,
+				Branch:     m.EnvInfo.GitBranch,
+				State:      stateFor(m.ID),
+				AskPending: askPendingFor(m.ID),
+				Kind:       kind,
+				CreatedAt:  OrderCreatedAt(m.CreatedAt, m.UpdatedAt),
+				UpdatedAt:  OrderUpdatedAt(m.UpdatedAt, m.CreatedAt),
+				Age:        AgeString(OrderUpdatedAt(m.UpdatedAt, m.CreatedAt)),
 			}
 
 			// Build children: subagents first, then forks, each sorted by UpdatedAt desc.
@@ -428,30 +437,34 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 			parentDead := node.State == "ended"
 			for _, c := range subagents {
 				childState := stateFor(c.ID)
+				childAskPending := askPendingFor(c.ID)
 				if parentDead {
 					childState = "ended"
+					childAskPending = false
 				}
 				node.Children = append(node.Children, TreeNode{
-					ID:        c.ID,
-					Title:     nodeTitle(c, "subagent"),
-					Project:   acc.name,
-					State:     childState,
-					Kind:      "subagent",
-					CreatedAt: OrderCreatedAt(c.CreatedAt, c.UpdatedAt),
-					UpdatedAt: OrderUpdatedAt(c.UpdatedAt, c.CreatedAt),
-					Age:       AgeString(OrderUpdatedAt(c.UpdatedAt, c.CreatedAt)),
+					ID:         c.ID,
+					Title:      nodeTitle(c, "subagent"),
+					Project:    acc.name,
+					State:      childState,
+					AskPending: childAskPending,
+					Kind:       "subagent",
+					CreatedAt:  OrderCreatedAt(c.CreatedAt, c.UpdatedAt),
+					UpdatedAt:  OrderUpdatedAt(c.UpdatedAt, c.CreatedAt),
+					Age:        AgeString(OrderUpdatedAt(c.UpdatedAt, c.CreatedAt)),
 				})
 			}
 			for _, c := range forks {
 				node.Children = append(node.Children, TreeNode{
-					ID:        c.ID,
-					Title:     nodeTitle(c, "fork"),
-					Project:   acc.name,
-					State:     stateFor(c.ID),
-					Kind:      "fork",
-					CreatedAt: OrderCreatedAt(c.CreatedAt, c.UpdatedAt),
-					UpdatedAt: OrderUpdatedAt(c.UpdatedAt, c.CreatedAt),
-					Age:       AgeString(OrderUpdatedAt(c.UpdatedAt, c.CreatedAt)),
+					ID:         c.ID,
+					Title:      nodeTitle(c, "fork"),
+					Project:    acc.name,
+					State:      stateFor(c.ID),
+					AskPending: askPendingFor(c.ID),
+					Kind:       "fork",
+					CreatedAt:  OrderCreatedAt(c.CreatedAt, c.UpdatedAt),
+					UpdatedAt:  OrderUpdatedAt(c.UpdatedAt, c.CreatedAt),
+					Age:        AgeString(OrderUpdatedAt(c.UpdatedAt, c.CreatedAt)),
 				})
 			}
 
@@ -576,9 +589,10 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		}
 		state := stateFor(le.SessionID)
 		node := TreeNode{
-			ID:    le.SessionID,
-			State: state,
-			Kind:  "session",
+			ID:         le.SessionID,
+			State:      state,
+			AskPending: askPendingFor(le.SessionID),
+			Kind:       "session",
 		}
 		if meta != nil {
 			kind := nodeKind(*meta)
