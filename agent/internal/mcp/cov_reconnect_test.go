@@ -702,8 +702,19 @@ func TestReconnect_FailedReconnect_BackoffSuppressesImmediateRetry(t *testing.T)
 		return nil, dialErr
 	}
 
-	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{{Name: "s", Type: "stdio"}},
-		[]func(context.Context) (mcpsdk.Transport, error){dial})
+	// A fixed, non-advancing fake clock: the failure branch sets
+	// backoffUntil = fakeNow + reconnectBackoff, and since fakeNow never
+	// moves, a subsequent clock() read is ALWAYS strictly before that
+	// deadline — deterministic regardless of real elapsed wall-clock time
+	// under parallel test load. Replaces the previous reliance on real
+	// wall-clock time staying well inside the 30s backoff window between
+	// calls, which occasionally eroded under heavy CI/test parallelism
+	// (see docs/superpowers/agent-handoff-notes.md).
+	fakeNow := time.Unix(0, 0)
+	clock := func() time.Time { return fakeNow }
+
+	mgr, outcomes := NewManagerWithClock(ctx, []mcpconfig.ServerConfig{{Name: "s", Type: "stdio"}},
+		[]func(context.Context) (mcpsdk.Transport, error){dial}, clock)
 	if len(outcomes) != 0 {
 		t.Fatalf("NewManager: %+v", outcomes)
 	}

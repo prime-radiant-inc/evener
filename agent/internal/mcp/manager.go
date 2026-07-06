@@ -77,6 +77,22 @@ type conn struct {
 	// makes a second concurrent caller bail out immediately instead of
 	// racing its own redundant dial.
 	reconnecting bool
+
+	// now, when set, overrides time.Now() for backoff-window comparisons —
+	// a test seam only (see NewManagerWithClock). Production conns never set
+	// it; clock() falls back to time.Now() so every existing conn literal
+	// (including test fixtures that construct conn{} directly) keeps working
+	// unchanged.
+	now func() time.Time
+}
+
+// clock returns c.now() if the test seam is set, else time.Now(). Reads
+// under c.mu are unaffected — clock() takes no lock of its own.
+func (c *conn) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
 }
 
 // ServerOutcome reports a per-server failure at one assembly stage. Stage is
@@ -148,6 +164,24 @@ func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, dials []f
 		}
 	}
 
+	return mgr, outcomes
+}
+
+// NewManagerWithClock is NewManager's test seam: it builds the manager
+// exactly as NewManager does, then overrides every conn's clock with now,
+// so a test can make reconnect's backoff-window comparison deterministic
+// under a fake, non-advancing clock instead of racing real wall-clock time
+// (see TestReconnect_FailedReconnect_BackoffSuppressesImmediateRetry).
+// Production code always calls NewManager, whose conns keep the nil now →
+// time.Now() default.
+func NewManagerWithClock(ctx context.Context, configs []mcpconfig.ServerConfig, dials []func(context.Context) (mcpsdk.Transport, error), now func() time.Time) (*Manager, []ServerOutcome) {
+	mgr, outcomes := NewManager(ctx, configs, dials)
+	if mgr == nil {
+		return nil, outcomes
+	}
+	for i := range mgr.conns {
+		mgr.conns[i].now = now
+	}
 	return mgr, outcomes
 }
 
@@ -497,7 +531,7 @@ const (
 // the exec closure surfaces the original triggering error.
 func (c *conn) reconnect(ctx context.Context) (*mcpsdk.ClientSession, bool) {
 	c.mu.Lock()
-	if c.closed || c.reconnecting || time.Now().Before(c.backoffUntil) {
+	if c.closed || c.reconnecting || c.clock().Before(c.backoffUntil) {
 		c.mu.Unlock()
 		return nil, false
 	}
@@ -541,8 +575,8 @@ func (c *conn) reconnect(ctx context.Context) (*mcpsdk.ClientSession, bool) {
 	c.mu.Lock()
 	if !c.closed {
 		c.lastErr = err
-		c.lastErrAt = time.Now()
-		c.backoffUntil = time.Now().Add(reconnectBackoff)
+		c.lastErrAt = c.clock()
+		c.backoffUntil = c.clock().Add(reconnectBackoff)
 	}
 	c.mu.Unlock()
 	return nil, false
