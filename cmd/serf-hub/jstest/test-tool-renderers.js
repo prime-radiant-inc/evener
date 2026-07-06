@@ -630,7 +630,8 @@ await scenario("failed shell shows error output", [
   const card = conv.querySelector(".tool-call.shell");
   if (!card) return { ok: false, detail: "no shell card" };
   const sbad = card.querySelector(".tool-status-bad");
-  if (!sbad || sbad.textContent.trim() !== "✕") return { ok: false, detail: "a failed row must show the ✕ glyph, got " + (sbad && JSON.stringify(sbad.textContent)) };
+  if (!sbad || !sbad.querySelector("svg")) return { ok: false, detail: "a failed row must show an svg error icon, got " + (sbad && JSON.stringify(sbad.innerHTML)) };
+  if (sbad.textContent.includes("✕")) return { ok: false, detail: "failed row should not use the literal ✕ glyph" };
   const body = conv.querySelector(".shell-body");
   if (!body) return { ok: false, detail: "no failed shell body" };
   const pre = body.querySelector(".shell-output");
@@ -832,6 +833,8 @@ await scenario("server-truncated job output shows an honest drop note, not a fak
   if (!drop) return { ok: false, detail: "truncated output should carry a drop note" };
   if (!/truncated at the source/.test(drop.textContent)) return { ok: false, detail: "drop note wrong: " + drop.textContent };
   if (!/128 bytes/.test(drop.textContent)) return { ok: false, detail: "drop note should state kept bytes: " + drop.textContent };
+  if (!drop.querySelector("svg")) return { ok: false, detail: "drop note should show an svg warning icon" };
+  if (drop.textContent.includes("⚠")) return { ok: false, detail: "drop note should not use the literal ⚠ glyph" };
   return { ok: true };
 });
 

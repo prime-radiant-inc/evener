@@ -81,6 +81,40 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
     pass(!!costEl, "badge should contain a nested .cost child span (a later phase's CSS gating depends on it)");
     pass(!!costEl && costEl.textContent === "~$0.01", "the .cost child span should hold the cost text, got: " + (costEl && costEl.textContent));
 
+    // Show-cost off: the CSS gate only hides the .cost span itself, so the
+    // separator and the tooltip must be built to not leak the cost figure.
+    window.document.body.dataset.showCost = "false";
+    send("TURN_STARTED", { turnId: "turn_2" });
+    send("ASSISTANT_TEXT_START", {});
+    send("ASSISTANT_TEXT_DELTA", { delta: "another answer" });
+    send("ASSISTANT_TEXT_END", { text: "another answer" });
+    send("TURN_COMPLETED", {
+      turnId: "turn_2",
+      turn: {
+        id: "turn_2",
+        status: "completed",
+        durationMs: 4200,
+        usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
+        cost: "~$0.01",
+      },
+    });
+
+    const msgs = conv.querySelectorAll(".assistant-message");
+    const msg2 = msgs[msgs.length - 1];
+    const meta2 = msg2 && msg2.querySelector(".turn-meta");
+    pass(!!meta2, "second assistant message should gain a .turn-meta badge after turn/completed");
+    pass(!!meta2 && !meta2.title.includes("$"), "badge title should not leak the cost figure when Show-cost is off, got: " + (meta2 && meta2.title));
+    const costEl2 = meta2 && meta2.querySelector(".cost");
+    pass(!!costEl2, "badge should still contain a .cost child span when Show-cost is off (CSS still gates its display)");
+    // jsdom doesn't apply the CSS display:none gate, so textContent alone
+    // can't reveal a dangling separator — check the DOM structure directly:
+    // no "· " text node should precede .cost when cost is hidden.
+    const prevNode = costEl2 && costEl2.previousSibling;
+    pass(
+      !(prevNode && prevNode.nodeType === 3 && prevNode.textContent === " · "),
+      "no leading '· ' separator text node should precede .cost when Show-cost is off, got prev node text: " + JSON.stringify(prevNode && prevNode.textContent)
+    );
+
     if (failures.length) {
       for (const f of failures) console.error(f);
       process.exit(1);

@@ -121,7 +121,8 @@
   function dropNote(label) {
     const note = document.createElement("div");
     note.className = "tool-output-dropped";
-    note.textContent = "⚠ " + label;
+    note.innerHTML = window.SerfIcons.warning + " ";
+    note.appendChild(document.createTextNode(label));
     return note;
   }
 

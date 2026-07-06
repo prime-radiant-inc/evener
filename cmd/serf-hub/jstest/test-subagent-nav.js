@@ -108,6 +108,8 @@ await scenario("a failed direct child reddens the breadcrumb worst-state rollup 
   if (chip.hidden) return { ok: false, detail: "chip should be visible when a child failed" };
   if (!chip.classList.contains("bad")) return { ok: false, detail: "chip should be reddened (.bad) on a failure" };
   if (!/failed/.test(chip.textContent)) return { ok: false, detail: "chip should say failed: " + chip.textContent };
+  if (!chip.querySelector("svg")) return { ok: false, detail: "failed rollup chip should show an svg error icon" };
+  if (chip.textContent.includes("✕")) return { ok: false, detail: "rollup chip should not use the literal ✕ glyph" };
   return { ok: true };
 });
 

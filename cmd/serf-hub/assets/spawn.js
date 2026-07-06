@@ -1425,7 +1425,8 @@
           row.className = "chip-picker-diagnostic";
           const prov = (d && d.provider) ? String(d.provider) : "provider";
           const msg = (d && d.message) ? String(d.message) : "unknown error";
-          row.textContent = "⚠ " + prov + " unavailable: " + msg;
+          row.innerHTML = window.SerfIcons.warning + " ";
+          row.appendChild(document.createTextNode(prov + " unavailable: " + msg));
           if (d && d.hint) row.title = String(d.hint);
           diagBox.appendChild(row);
         });

@@ -947,7 +947,8 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .project-header .project-count { margin-left: var(--space-1); }
 
 /* De-weighted single-line subagent row. Indented under its parent, dim,
-   one line with a terminal-state glyph (✓ done / ⟳ running / ✕ needs-you).
+   one line with a terminal-state icon (done / running / needs-you, from the
+   shared SerfIcons/status-icon set — see sidebar.js buildRow).
    Replaces the 2-column .sb-row.sub treatment for subagents specifically;
    forks keep the full row. */
 .subagent-row {
@@ -1106,8 +1107,8 @@ body.app[data-sidebar-rail] .subagent-row-wrap > .open-beside-btn { display: non
 /* ============================================================
    Needs-you triage tier (mockup #11 rec A)
    A top tier aggregating every awaiting session across projects,
-   oldest-blocked first. Blue is reserved strictly for needs-you
-   and is always glyph-paired (◆). Hidden entirely when empty.
+   oldest-blocked first. Blue is reserved strictly for needs-you.
+   Hidden entirely when empty.
    ============================================================ */
 .needs-you-header { color: var(--state-awaiting); }
 .needs-you-header .needs-you-glyph { color: var(--state-awaiting); font-size: var(--text-xs); }
@@ -1117,9 +1118,10 @@ body.app[data-sidebar-rail] .subagent-row-wrap > .open-beside-btn { display: non
 
 /* ============================================================
    Magnitude rollup badges (mockup #10 rec A)
-   "⟳N · ◆M" on the project header answers "how many need me"
-   that the single dot couldn't. Live = green, needs-you = blue;
-   each badge is glyph-paired so color is never the only channel.
+   An icon+count badge per state on the project header answers "how
+   many need me" that the single dot couldn't. Live = green, needs-you
+   = blue; each badge pairs an icon with its count so color is never
+   the only channel.
    ============================================================ */
 .project-rollup {
   margin-left: var(--space-2);
@@ -1600,11 +1602,12 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 /* ── Blocking needs-you: the agent question (mockup #16) ───────────────────
    Blue owns the container (the scarce "this needs you" signal); the question
    text stays readable so it can't be mistaken for the agent thinking aloud.
-   Glyph-paired (◆) for colourblind safety. The composer is the reply affordance
-   — clicking the frame focuses it. (Alt A: blue-framed container + glyph
-   header.) The ask_user card (below) shares this same blue frame — it is a
-   form with its own controls rather than plain prose, so it opts out of the
-   whole-frame "click anywhere focuses the composer" cursor. */
+   Icon-paired (the shared SerfIcons "questionWaiting" icon) for colourblind
+   safety. The composer is the reply affordance — clicking the frame focuses
+   it. (Alt A: blue-framed container + icon header.) The ask_user card (below)
+   shares this same blue frame — it is a form with its own controls rather
+   than plain prose, so it opts out of the whole-frame "click anywhere
+   focuses the composer" cursor. */
 .assistant-message.agent-question,
 .ask-card.agent-question {
   border: 1px solid color-mix(in srgb, var(--state-awaiting) 30%, transparent);

@@ -955,17 +955,21 @@
                   meta.className = "turn-meta";
                   el.appendChild(meta);
                 }
+                const costVisible = document.body.dataset.showCost !== "false";
                 meta.textContent = "";
                 const segs = [parts.duration, parts.tokens].filter(Boolean);
                 if (segs.length) meta.appendChild(document.createTextNode(segs.join(" · ")));
                 if (parts.cost) {
-                  if (segs.length) meta.appendChild(document.createTextNode(" · "));
+                  // The .cost span always exists so the CSS gate has something
+                  // to hide, but the leading separator only belongs in the DOM
+                  // when the cost is actually visible — otherwise it dangles.
+                  if (segs.length && costVisible) meta.appendChild(document.createTextNode(" · "));
                   const costEl = document.createElement("span");
                   costEl.className = "cost";
                   costEl.textContent = parts.cost;
                   meta.appendChild(costEl);
                 }
-                meta.title = formatTurnMetaText(turn);
+                meta.title = [parts.duration, parts.tokens, costVisible ? parts.cost : ""].filter(Boolean).join(" · ");
               }
             }
           }
@@ -2392,7 +2396,8 @@
       if (m.statusEl) {
         // Success is the expected state and recedes — no ✓ down every row. Only
         // a failure (✕, red) is worth the eye. The slot stays so content aligns.
-        m.statusEl.textContent = ok ? "" : "✕";
+        if (ok) m.statusEl.textContent = "";
+        else m.statusEl.innerHTML = window.SerfIcons.error;
         m.statusEl.className = "tool-status " + (ok ? "tool-status-good" : "tool-status-bad");
       }
       // Mark an errored row as a queryable attention anchor so the new-content
@@ -3228,7 +3233,7 @@
       if (more) {
         if (doneRows.length > 0) {
           more.hidden = false;
-          more.textContent = expanded ? "collapse ▴" : ("✓ " + doneRows.length + " done ▾");
+          more.innerHTML = expanded ? "collapse ▴" : (window.SerfIcons.ended + " " + doneRows.length + " done ▾");
         } else {
           more.hidden = true;
         }
@@ -3264,7 +3269,7 @@
       chip.hidden = false;
       if (failed) {
         chip.classList.add("bad");
-        chip.textContent = "✕ " + failed + (failed === 1 ? " child failed" : " children failed");
+        chip.innerHTML = window.SerfIcons.error + " " + failed + (failed === 1 ? " child failed" : " children failed");
       } else {
         chip.classList.remove("bad");
         chip.textContent = "? " + unknown + (unknown === 1 ? " child unknown" : " children unknown");
@@ -3498,9 +3503,9 @@
     notificationGlyph(n) {
       if (n.type === "watch" || n.type === "watch-send") return "◌";
       if (n.type === "observer-callback") return "↩";
-      if (n.tone === "error") return "✕";
-      if (n.tone === "warning") return "⚠";
-      return "✓";
+      if (n.tone === "error") return window.SerfIcons.error;
+      if (n.tone === "warning") return window.SerfIcons.warning;
+      return window.SerfIcons.ended;
     },
 
     // The quiet secondary line: a couple of plain-language bits (the job kind,
@@ -3620,7 +3625,7 @@
       const glyph = document.createElement("span");
       glyph.className = "notification-card-glyph";
       glyph.setAttribute("aria-hidden", "true");
-      glyph.textContent = this.notificationGlyph(n);
+      glyph.innerHTML = this.notificationGlyph(n);
       header.appendChild(glyph);
       const title = document.createElement("span");
       title.className = "notification-card-title";
