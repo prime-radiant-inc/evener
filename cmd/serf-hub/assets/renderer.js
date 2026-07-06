@@ -37,6 +37,8 @@
     reasoningGist,
     reasoningTier,
     bindDisclosureToggle,
+    turnMetaParts,
+    formatTurnMetaText,
   } = window.SerfRendererInternal;
 
   // Tool-output renderers live in renderer-tools.js (loaded after format).
@@ -953,6 +955,34 @@
           // A turn completing is one of the moments the status row's work-time
           // and token clusters need to catch up on — refresh now.
           if (window.htmx) htmx.trigger(document.body, "serf-hub:status-refresh");
+          {
+            const turn = data && data.turn;
+            if (turn && turn.id) {
+              const escId = (window.CSS && window.CSS.escape) ? window.CSS.escape(turn.id) : String(turn.id).replace(/["\\]/g, "\\$&");
+              const els = this.conversation.querySelectorAll('.assistant-message[data-turn-id="' + escId + '"]');
+              const el = els.length ? els[els.length - 1] : null;
+              const parts = turnMetaParts(turn);
+              if (el && (parts.duration || parts.tokens || parts.cost)) {
+                let meta = el.querySelector(".turn-meta");
+                if (!meta) {
+                  meta = document.createElement("span");
+                  meta.className = "turn-meta";
+                  el.appendChild(meta);
+                }
+                meta.textContent = "";
+                const segs = [parts.duration, parts.tokens].filter(Boolean);
+                if (segs.length) meta.appendChild(document.createTextNode(segs.join(" · ")));
+                if (parts.cost) {
+                  if (segs.length) meta.appendChild(document.createTextNode(" · "));
+                  const costEl = document.createElement("span");
+                  costEl.className = "cost";
+                  costEl.textContent = parts.cost;
+                  meta.appendChild(costEl);
+                }
+                meta.title = formatTurnMetaText(turn);
+              }
+            }
+          }
           break;
         case "SESSION_START":
           this.statusUpdateSeq++;
@@ -1916,6 +1946,7 @@
       this.currentMessageId = id;
       const el = document.createElement("div");
       el.className = "assistant-message";
+      el.dataset.turnId = this.activeTurnId || "";
       this.conversation.appendChild(el);
       this.activeMessages.set(id, { el, textBuf: "" });
     },
@@ -1929,6 +1960,7 @@
       this.closeSubagentModule();
       const el = document.createElement("div");
       el.className = "assistant-message";
+      el.dataset.turnId = this.activeTurnId || "";
       try { el.innerHTML = window.marked.parse(text); }
       catch (e) { el.textContent = text; }
       this.conversation.appendChild(el);

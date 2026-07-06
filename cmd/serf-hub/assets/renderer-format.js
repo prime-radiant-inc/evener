@@ -621,6 +621,27 @@
     return s.length > n ? s.slice(0, n) + "…" : s;
   }
 
+  // turnMetaParts distills a completed turn's Usage/Cost/durationMs into the
+  // individual display parts the per-turn badge renders as separate DOM nodes
+  // (the cost gets its own child span for later Show-cost CSS gating).
+  function turnMetaParts(turn) {
+    const parts = { duration: "", tokens: "", cost: "" };
+    if (turn && typeof turn.durationMs === "number") parts.duration = formatToolDuration(turn.durationMs);
+    if (turn && turn.usage) {
+      const u = turn.usage;
+      parts.tokens = "↑" + (u.inputTokens || 0) + " ↓" + (u.outputTokens || 0);
+    }
+    if (turn && turn.cost) parts.cost = turn.cost;
+    return parts;
+  }
+
+  // formatTurnMetaText renders turnMetaParts as a single plain-text summary,
+  // used for the badge's title= tooltip.
+  function formatTurnMetaText(turn) {
+    const p = turnMetaParts(turn);
+    return [p.duration, p.tokens, p.cost].filter(Boolean).join(" · ");
+  }
+
   // reasoningGist distills a collapsed thought into a short noun-phrase gist
   // (mockup #5 alt D). The model usually states its conclusion in the last
   // sentence, so we prefer the final clause; we strip leading conversational
@@ -703,5 +724,7 @@
     clip,
     reasoningGist,
     reasoningTier,
+    turnMetaParts,
+    formatTurnMetaText,
   });
 })();
