@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
@@ -114,5 +115,21 @@ func TestDisplayWord_UnifiedVocabulary(t *testing.T) {
 		if got := displayWord(c.state, c.askPending); got != c.want {
 			t.Errorf("displayWord(%q, %v) = %q, want %q", c.state, c.askPending, got, c.want)
 		}
+	}
+}
+
+func TestHubNodeFromThread_CarriesAskPending(t *testing.T) {
+	thread := appwire.Thread{SessionID: "01A", Serf: appwire.SerfThread{AskPending: true}}
+	node := hubNodeFromThread(thread)
+	if !node.AskPending {
+		t.Fatal("expected hubTreeNode.AskPending=true from thread.Serf.AskPending")
+	}
+}
+
+func TestHubDetailFromThread_CarriesAskPending(t *testing.T) {
+	thread := appwire.Thread{SessionID: "01A", Serf: appwire.SerfThread{AskPending: true}}
+	detail := hubDetailFromThread(thread)
+	if !detail.AskPending {
+		t.Fatal("expected hubSessionDetail.AskPending=true from thread.Serf.AskPending")
 	}
 }

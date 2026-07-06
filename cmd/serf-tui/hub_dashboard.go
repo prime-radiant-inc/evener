@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/hubapi"
 )
 
 func (m hubModel) selectedDashboardRow() (hubRow, bool) {
@@ -122,6 +123,7 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 			project:     project,
 			projectKey:  key,
 			state:       n.State,
+			askPending:  n.AskPending,
 			live:        n.Live,
 			model:       n.Model,
 			age:         n.Age,
@@ -222,6 +224,10 @@ func dashboardRowLess(a, b hubRow) bool {
 	ar, br := attentionRankLabel(a.state), attentionRankLabel(b.state)
 	if ar != br {
 		return ar > br
+	}
+	aBand, bBand := hubapi.NeedsYouBand(stateLabel(a.state), a.askPending), hubapi.NeedsYouBand(stateLabel(b.state), b.askPending)
+	if aBand != bBand {
+		return aBand > bBand
 	}
 	au, bu := rowRecency(a), rowRecency(b)
 	if au != bu {

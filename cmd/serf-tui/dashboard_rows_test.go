@@ -46,3 +46,11 @@ func TestSessionRowsHaveNoTreeConnectors(t *testing.T) {
 		}
 	}
 }
+
+func TestDashboardRowLess_AskPendingBandsAboveYourMove(t *testing.T) {
+	yourMove := hubRow{kind: hubRowSession, state: "awaiting", askPending: false, updatedAt: 3000}
+	askPending := hubRow{kind: hubRowSession, state: "awaiting", askPending: true, updatedAt: 1000}
+	if !dashboardRowLess(askPending, yourMove) {
+		t.Fatal("an ask-pending row must sort above a your-move row even though it is older")
+	}
+}
