@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -96,5 +97,80 @@ func TestBrowse_SkipsUnsupportedSourceAndReturnsTheRest(t *testing.T) {
 	}
 	if len(cat.SkippedPlugins) != 1 || cat.SkippedPlugins[0] != "bad-npm" {
 		t.Fatalf("SkippedPlugins = %v, want [bad-npm]", cat.SkippedPlugins)
+	}
+}
+
+func TestCatalogPlugin_ParsesMarketplaceEntryManifestFields(t *testing.T) {
+	root := t.TempDir()
+	mj := `{
+	  "name":"acme","owner":{"name":"o"},
+	  "plugins":[
+	    {
+	      "name":"private-journal-mcp",
+	      "description":"Journal MCP server",
+	      "source":{"source":"url","url":"https://example.com/x.git"},
+	      "strict": false,
+	      "mcpServers": {
+	        "private-journal": {"command":"npx","args":["-y","private-journal-mcp"]}
+	      },
+	      "commands": ["./commands/"],
+	      "agents": ["./agents/reviewer.md"],
+	      "hooks": {"PostToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"echo hi"}]}]},
+	      "skills": ["./extra-skills/"]
+	    }
+	  ]}`
+	os.MkdirAll(filepath.Join(root, ".claude-plugin"), 0o755)
+	os.WriteFile(filepath.Join(root, ".claude-plugin", "marketplace.json"), []byte(mj), 0o644)
+
+	cat, err := ParseCatalog(root)
+	if err != nil {
+		t.Fatalf("ParseCatalog: %v", err)
+	}
+	if len(cat.Plugins) != 1 {
+		t.Fatalf("Plugins = %+v, want 1", cat.Plugins)
+	}
+	p := cat.Plugins[0]
+	if p.Strict == nil || *p.Strict != false {
+		t.Errorf("Strict = %v, want a pointer to false", p.Strict)
+	}
+	var mcp map[string]json.RawMessage
+	if err := json.Unmarshal(p.MCPServers, &mcp); err != nil || len(mcp) != 1 {
+		t.Fatalf("MCPServers = %s, err %v", p.MCPServers, err)
+	}
+	if _, ok := mcp["private-journal"]; !ok {
+		t.Errorf("MCPServers missing private-journal entry: %s", p.MCPServers)
+	}
+	var commands []string
+	if err := json.Unmarshal(p.Commands, &commands); err != nil || len(commands) != 1 {
+		t.Fatalf("Commands = %s, err %v", p.Commands, err)
+	}
+	var agents []string
+	if err := json.Unmarshal(p.Agents, &agents); err != nil || len(agents) != 1 {
+		t.Fatalf("Agents = %s, err %v", p.Agents, err)
+	}
+	if len(p.Hooks) == 0 {
+		t.Errorf("Hooks not captured")
+	}
+	if len(p.Skills) == 0 {
+		t.Errorf("Skills not captured")
+	}
+}
+
+// TestCatalogPlugin_ManifestFieldsOmittedWhenAbsent guards an ordinary plugin
+// entry (the common case, a plugin with its own plugin.json): none of the
+// new fallback fields should be populated just because the struct has them.
+func TestCatalogPlugin_ManifestFieldsOmittedWhenAbsent(t *testing.T) {
+	root := t.TempDir()
+	mj := `{"name":"acme","owner":{"name":"o"},"plugins":[{"name":"widget","source":"./plugins/widget"}]}`
+	os.MkdirAll(filepath.Join(root, ".claude-plugin"), 0o755)
+	os.WriteFile(filepath.Join(root, ".claude-plugin", "marketplace.json"), []byte(mj), 0o644)
+
+	cat, err := ParseCatalog(root)
+	if err != nil {
+		t.Fatalf("ParseCatalog: %v", err)
+	}
+	p := cat.Plugins[0]
+	if p.Strict != nil || p.Commands != nil || p.Agents != nil || p.Hooks != nil || p.MCPServers != nil || p.Skills != nil {
+		t.Errorf("expected all manifest-fallback fields nil/absent, got %+v", p)
 	}
 }

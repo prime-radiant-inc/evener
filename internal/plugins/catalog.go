@@ -21,6 +21,35 @@ type CatalogPlugin struct {
 	Homepage    string       `json:"homepage,omitempty"`
 	Author      CatalogOwner `json:"author,omitempty"`
 	Source      Source       `json:"source"`
+
+	// The following mirror Claude Code's marketplace-entry manifest fields
+	// (https://code.claude.com/docs/en/plugin-marketplaces#plugin-entries):
+	// same names and JSON shapes as agent/plugin.Manifest's same-named
+	// fields, so an entry can be dropped straight into a Manifest value (see
+	// ensureManifestFallback, manifest_fallback.go). They are used only as a
+	// fallback when the plugin's own source has no plugin.json; a plugin
+	// that ships its own manifest is unchanged and these are ignored.
+	Commands   json.RawMessage `json:"commands,omitempty"`
+	Agents     json.RawMessage `json:"agents,omitempty"`
+	Hooks      json.RawMessage `json:"hooks,omitempty"`
+	MCPServers json.RawMessage `json:"mcpServers,omitempty"`
+	// Skills is parsed for schema completeness but NOT currently honored:
+	// agent/plugin.Manifest has no Skills override field (a plugin's
+	// skills/ directory is always scanned by default, manifest or not), so
+	// a marketplace entry's custom skill paths are not applied by the v1
+	// fallback — only the plugin's own default skills/ directory, if it has
+	// one, is picked up. See the plan's Global Constraints for why.
+	Skills json.RawMessage `json:"skills,omitempty"`
+	// Strict mirrors Claude Code's `strict` marketplace-entry field
+	// (https://code.claude.com/docs/en/plugin-marketplaces#strict-mode):
+	// default true means plugin.json is the authority and the entry only
+	// supplements it; false means the entry is the plugin's entire
+	// definition (and a co-existing plugin.json's components would
+	// conflict). v1's fallback triggers purely on "no plugin.json exists"
+	// and does not read Strict — see the plan's Global Constraints for the
+	// full rationale. Captured here for round-trip and future
+	// strict:false-conflict/merge work.
+	Strict *bool `json:"strict,omitempty"`
 }
 
 type Catalog struct {
