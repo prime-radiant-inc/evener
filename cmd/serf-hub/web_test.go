@@ -6035,3 +6035,22 @@ func TestWeb_WorkspaceData_UnionsStampAndGrantHistory(t *testing.T) {
 		t.Fatalf("ObserverRouteIDs = %v, want STAMPED+GRANTED once each", wd.ObserverRouteIDs)
 	}
 }
+
+// TestDetailsPanel_CostRowCarriesDataAttributeForGating verifies detailsRow's
+// optional DataRow field renders as a data-row="..." attribute on both the
+// <dt> and <dd> elements, so Phase W3's CSS can gate a "show cost" toggle on
+// rows carrying data-row="cost" without touching every other details row.
+// Exercises the extracted renderDetailsRow helper directly rather than a full
+// HTTP round trip, since no visible details row uses DataRow yet — that
+// lands in Tasks V2/V3.
+func TestDetailsPanel_CostRowCarriesDataAttributeForGating(t *testing.T) {
+	var buf bytes.Buffer
+	renderDetailsRow(&buf, detailsRow{Label: "cost", Value: "~$1.00", DataRow: "cost"})
+	got := buf.String()
+	if !strings.Contains(got, `<dt data-row="cost">cost</dt>`) {
+		t.Errorf("expected <dt data-row=\"cost\"> in output, got %q", got)
+	}
+	if !strings.Contains(got, `<dd data-row="cost">~$1.00</dd>`) {
+		t.Errorf("expected <dd data-row=\"cost\"> in output, got %q", got)
+	}
+}

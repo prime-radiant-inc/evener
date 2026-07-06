@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -160,53 +161,67 @@ func (s *WebServer) renderThreadDocument(w http.ResponseWriter, r *http.Request,
 	}
 }
 
+// detailsRow is one <dt>/<dd> pair in the details panel. DataRow, when
+// non-empty, renders as a data-row="..." attribute on both elements so CSS
+// can gate specific rows (e.g. a "show cost" toggle) without touching every
+// other row.
+type detailsRow struct{ Label, Value, DataRow string }
+
+// renderDetailsRow writes a single detailsRow's <dt>/<dd> pair to w.
+func renderDetailsRow(w io.Writer, row detailsRow) {
+	attr := ""
+	if row.DataRow != "" {
+		attr = ` data-row="` + htmlEscape(row.DataRow) + `"`
+	}
+	_, _ = fmt.Fprintf(w, `<dt%s>%s</dt><dd%s>%s</dd>`, attr, htmlEscape(row.Label), attr, htmlEscape(row.Value))
+}
+
 // renderDetailsPanel returns a side-panel with the session's verbose
 // metadata: full session id, working dir, branch + sha, model, turn count,
 // last input tokens, and (for forks) the parent session id and divergence
 // turn. Triggered by clicking the "details" link in the workspace header.
 func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, id string) {
-	type detailsRow struct{ Label, Value string }
 	var rows []detailsRow
 	rows = append(rows,
-		detailsRow{"source", sourceLabelFromRefText(appRefFromRouteID(id))},
-		detailsRow{"session id", id},
+		detailsRow{Label: "source", Value: sourceLabelFromRefText(appRefFromRouteID(id))},
+		detailsRow{Label: "session id", Value: id},
 	)
 
 	addMeta := func(m schema.SessionMeta) {
 		if m.OriginalPrompt != "" {
-			rows = append(rows, detailsRow{"prompt", m.OriginalPrompt})
+			rows = append(rows, detailsRow{Label: "prompt", Value: m.OriginalPrompt})
 		}
 		if m.EnvInfo.WorkingDir != "" {
-			rows = append(rows, detailsRow{"working dir", m.EnvInfo.WorkingDir})
+			rows = append(rows, detailsRow{Label: "working dir", Value: m.EnvInfo.WorkingDir})
 		}
 		if m.EnvInfo.GitBranch != "" {
-			rows = append(rows, detailsRow{"branch", m.EnvInfo.GitBranch})
+			rows = append(rows, detailsRow{Label: "branch", Value: m.EnvInfo.GitBranch})
 		}
 		if m.Model != "" {
-			rows = append(rows, detailsRow{"model", m.ProfileID + " · " + m.Model})
+			rows = append(rows, detailsRow{Label: "model", Value: m.ProfileID + " · " + m.Model})
 		}
 		if m.TurnCount > 0 {
-			rows = append(rows, detailsRow{"turns", strconv.Itoa(m.TurnCount)})
+			rows = append(rows, detailsRow{Label: "turns", Value: strconv.Itoa(m.TurnCount)})
 		}
 		if m.LastInputTokens > 0 {
-			rows = append(rows, detailsRow{"last input tokens", strconv.Itoa(m.LastInputTokens)})
+			rows = append(rows, detailsRow{Label: "last input tokens", Value: strconv.Itoa(m.LastInputTokens)})
 		}
 		if m.ParentSessionID != "" {
 			rows = append(rows,
-				detailsRow{"forked from", m.ParentSessionID},
-				detailsRow{"divergence turn", strconv.Itoa(m.DivergenceTurn)},
+				detailsRow{Label: "forked from", Value: m.ParentSessionID},
+				detailsRow{Label: "divergence turn", Value: strconv.Itoa(m.DivergenceTurn)},
 			)
 		}
 		if m.IsSubagent {
-			rows = append(rows, detailsRow{"kind", "subagent"})
+			rows = append(rows, detailsRow{Label: "kind", Value: "subagent"})
 		}
 	}
 
 	if s.cfg.Roster != nil {
 		if le, ok := s.cfg.Roster.Find(id); ok {
 			rows = append(rows,
-				detailsRow{"daemon", le.Address},
-				detailsRow{"pid", strconv.Itoa(le.PID)},
+				detailsRow{Label: "daemon", Value: le.Address},
+				detailsRow{Label: "pid", Value: strconv.Itoa(le.PID)},
 			)
 		}
 	}
@@ -220,7 +235,7 @@ func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, i
 	_, _ = fmt.Fprintln(w, `<header class="details-panel-header"><span>details</span><button class="details-panel-close" aria-label="close panel" onclick="document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))">✕</button></header>`)
 	_, _ = fmt.Fprintln(w, `<dl class="details-list">`)
 	for _, row := range rows {
-		_, _ = fmt.Fprintf(w, `<dt>%s</dt><dd>%s</dd>`, htmlEscape(row.Label), htmlEscape(row.Value))
+		renderDetailsRow(w, row)
 	}
 	_, _ = fmt.Fprintln(w, `</dl>`)
 }
