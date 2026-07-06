@@ -323,6 +323,10 @@ func drainEventsHuman(eventCh <-chan events.SessionEvent, w io.Writer) <-chan st
 						fmt.Fprintf(w, "[tool] %s: done\n", d.ToolName) //nolint:errcheck
 					}
 				}
+			case events.EventToolCallRepaired:
+				if d, ok := ev.Data.(events.ToolCallRepairedData); ok {
+					fmt.Fprintf(w, "[tool] ↻ repaired %s: %s\n", d.ToolName, strings.Join(d.Changes, ", ")) //nolint:errcheck
+				}
 			case events.EventCommunicate:
 				if d, ok := ev.Data.(events.CommunicateData); ok {
 					if d.EndTurn {

@@ -1153,6 +1153,16 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 			description: "Round timings",
 			contains:    []string{"Round 2", "total=1.5s", "llm=1.2s", "context=25ms", "tools=40ms"},
 		},
+		{
+			name: "tool call repaired",
+			event: events.SessionEvent{Kind: events.EventToolCallRepaired, SessionID: "th_1", Data: events.ToolCallRepairedData{
+				ToolName: "edit_file",
+				CallID:   "c1",
+				Changes:  []string{"alias:old_string:old_str→old_string"},
+			}},
+			description: "Tool call repaired",
+			contains:    []string{"edit_file", "alias:old_string:old_str→old_string"},
+		},
 	}
 
 	for _, tt := range tests {

@@ -33,7 +33,15 @@
        can always reach the off-canvas sidebar. Hidden on desktop where the
        sidebar is always visible. -->
   <button type="button" class="app-nav-toggle" data-sidebar-toggle title="open sidebar" aria-label="open sidebar">☰</button>
-  <aside id="sidebar" aria-label="Sessions"></aside>
+  <aside id="sidebar" aria-label="Sessions">
+    <div class="sidebar-header">
+      <button type="button" class="sidebar-rail-toggle" data-sidebar-rail-toggle title="collapse sidebar (⌘B)" aria-label="collapse sidebar">⇤</button>
+      <button type="button" class="sidebar-close" data-sidebar-toggle aria-label="close sidebar">✕</button>
+      <a class="sidebar-action sidebar-action-new" href="/new" hx-get="/_partials/workspace/spawn" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/new"><span class="sidebar-action-icon">＋</span> new</a>
+      <a class="sidebar-action sidebar-action-search" href="#" data-search-trigger><span class="sidebar-action-icon">🔍</span> search <kbd>⌘K</kbd></a>
+      <a class="sidebar-action settings-link" href="/settings" hx-get="/_partials/settings/general" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/settings"><span class="sidebar-action-icon">⚙</span> settings</a>
+    </div>
+  </aside>
   <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-controls="sidebar" aria-label="resize sidebar"></div>
   <main id="workspace"
         hx-get="{{.WorkspaceURL}}"

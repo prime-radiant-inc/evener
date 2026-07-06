@@ -87,13 +87,21 @@ func TestSwapEnvAndRefresh_UpdatesEnvInfoAndPromptCache(t *testing.T) {
 	}
 }
 
-// gitShimScript is a PATH-shim `git` that marks a file present for the
-// duration of every invocation (with an added delay to widen the window) and
-// otherwise delegates to the real git binary. It lets the test below observe
-// whether s.mu is held while a git subprocess is actually running.
+// gitShimScript is a PATH-shim `git` that, for every invocation, touches a
+// marker file and then blocks until the test harness creates a companion
+// ack file (bounded so a harness bug can't hang the test forever), before
+// delegating to the real git binary. The block turns "the subprocess is
+// running" into a rendezvous: the harness knows the subprocess is paused
+// right there, so it can sample s.mu's state at that exact instant instead
+// of racing a background poller against a fixed-duration sleep.
 const gitShimScript = `#!/bin/sh
 touch "$SWAP_TEST_MARKER"
-sleep 0.05
+i=0
+while [ ! -e "$SWAP_TEST_MARKER.ack" ] && [ "$i" -lt 2000 ]; do
+    sleep 0.005
+    i=$((i + 1))
+done
+rm -f "$SWAP_TEST_MARKER.ack"
 "$SWAP_TEST_REAL_GIT" "$@"
 rc=$?
 rm -f "$SWAP_TEST_MARKER"
@@ -106,15 +114,30 @@ exit $rc
 // holding s.mu across a subprocess would stall every event emit, Meta()
 // autosave, and hub poll.
 //
-// Mechanism: a PATH-shim `git` touches a marker file for the duration of
-// every invocation it makes (sleeping briefly to widen the window). A
-// watcher goroutine polls the marker file and repeatedly TryLocks s.mu for
-// as long as this test runs, including the swap's first post-swap prompt
-// render. For each marker-present window it records whether s.mu was ever
-// observed unlocked during that window. If any window never saw s.mu
-// unlocked, s.mu was plausibly held for that git subprocess's entire
-// duration — exactly the bug this test exists to catch.
+// Mechanism: a PATH-shim `git` touches a marker file on every invocation and
+// then blocks, mid-fork, until the watcher goroutine acks it. That rendezvous
+// lets the watcher TryLock s.mu at the exact instant each subprocess is
+// running — a deterministic sample, not a poll racing a fixed-duration sleep
+// (a fixed sleep plus a background poller is inherently flaky: under
+// scheduler contention, such as -race or a loaded CI runner, the poller can
+// go unscheduled long enough to miss the entire window). For each
+// marker-present invocation it records whether s.mu was unlocked at that
+// instant. Any invocation where it wasn't means s.mu was held while a git
+// subprocess forked — exactly the bug this test exists to catch.
 func TestSwapEnvAndRefresh_NoGitForkWhileLocked(t *testing.T) {
+	// This test asserts s.mu's lock state at fork time, not latency, so its
+	// correctness must not depend on machine load. The rendezvous below holds
+	// each shimmed git invocation open until the watcher acks it; under heavy
+	// scheduler contention (e.g. the -race gate on a loaded CI runner) that
+	// ack can occasionally take longer than the production 2s git-exec
+	// deadline, which would starve the shim for a reason unrelated to the
+	// locking behavior under test. Widen both packages' deadlines for this
+	// test only — mirrors execenv's TestResolveMainRepoRoot_SeparateCacheSlots.
+	origAgentTimeout := gitExecTimeout
+	gitExecTimeout = 30 * time.Second
+	t.Cleanup(func() { gitExecTimeout = origAgentTimeout })
+	t.Cleanup(execenv.SetGitExecTimeoutForTesting(30 * time.Second))
+
 	sess := newSession(t)
 
 	realGit, err := exec.LookPath("git")
@@ -151,43 +174,49 @@ func TestSwapEnvAndRefresh_NoGitForkWhileLocked(t *testing.T) {
 	}
 	next := base.WithWorkingDirectory(repoDir)
 
+	ackPath := markerPath + ".ack"
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	var totalWindows, badWindows, freeSamples int
 	go func() {
 		defer close(done)
-		windowOpen := false
-		freeSeenThisWindow := false
 		for {
 			select {
 			case <-stop:
-				if windowOpen && !freeSeenThisWindow {
-					badWindows++
-				}
 				return
 			default:
 			}
-			_, statErr := os.Stat(markerPath)
-			exists := statErr == nil
-			if exists && !windowOpen {
-				windowOpen = true
-				freeSeenThisWindow = false
+			if _, err := os.Stat(markerPath); err == nil {
+				// Rendezvous: the shim is blocked waiting for ackPath right
+				// now, so this TryLock reflects s.mu's state at the exact
+				// moment the git subprocess is running, not a racy sample.
 				totalWindows++
-			}
-			if !exists && windowOpen {
-				if !freeSeenThisWindow {
+				if sess.mu.TryLock() {
+					sess.mu.Unlock()
+					freeSamples++
+				} else {
 					badWindows++
 				}
-				windowOpen = false
-			}
-			if sess.mu.TryLock() {
-				sess.mu.Unlock()
-				freeSamples++
-				if exists {
-					freeSeenThisWindow = true
+				if f, err := os.Create(ackPath); err == nil {
+					f.Close()
 				}
+				// Wait for the shim to consume the ack and clear the marker
+				// before looking for the next invocation, so the same
+				// window is never counted twice.
+				for {
+					if _, err := os.Stat(markerPath); os.IsNotExist(err) {
+						break
+					}
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					time.Sleep(time.Millisecond)
+				}
+				continue
 			}
-			time.Sleep(200 * time.Microsecond)
+			time.Sleep(time.Millisecond)
 		}
 	}()
 
@@ -204,7 +233,7 @@ func TestSwapEnvAndRefresh_NoGitForkWhileLocked(t *testing.T) {
 		t.Fatalf("watcher never observed s.mu unlocked at all; watcher is not functioning")
 	}
 	if badWindows > 0 {
-		t.Fatalf("s.mu was held for the ENTIRE duration of %d/%d git subprocess invocation(s) — the git snapshot (or a git-forking render) ran while s.mu was locked, violating spec §7's outside-s.mu requirement", badWindows, totalWindows)
+		t.Fatalf("s.mu was locked at the moment %d/%d git subprocess invocation(s) ran — the git snapshot (or a git-forking render) ran while s.mu was locked, violating spec §7's outside-s.mu requirement", badWindows, totalWindows)
 	}
 }
 

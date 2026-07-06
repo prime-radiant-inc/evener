@@ -439,6 +439,15 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			"turnId":   p.activeTurnID,
 			"item":     item,
 		})}
+	case events.EventToolCallRepaired:
+		// This fires before EventToolCallStart creates the CallID-keyed tool
+		// item (repair runs before PreToolUse hooks, which run before the
+		// start event), so there is no item yet to annotate. Render it as a
+		// standalone system announcement instead, the same way other
+		// out-of-band, no-item-state events (hook end, plugin loaded, ...)
+		// are surfaced.
+		data := eventData[events.ToolCallRepairedData](event.Data)
+		return p.systemAnnouncement("tool_repair", "Tool call repaired", toolCallRepairedAnnouncement(data))
 	case events.EventWarning:
 		p.clearSkillCandidate()
 		data := eventData[events.WarningData](event.Data)
@@ -963,6 +972,14 @@ func hookEndAnnouncement(data events.HookEndData) string {
 	}
 	parts = append(parts, fmt.Sprintf("exit %d", data.ExitCode))
 	return strings.Join(parts, " ")
+}
+
+func toolCallRepairedAnnouncement(data events.ToolCallRepairedData) string {
+	name := fallbackLabel(data.ToolName, "tool call")
+	if len(data.Changes) == 0 {
+		return fmt.Sprintf("Repaired %s", name)
+	}
+	return fmt.Sprintf("Repaired %s: %s", name, strings.Join(data.Changes, ", "))
 }
 
 func forkSummaryAnnouncement(data events.ForkSummaryData) string {

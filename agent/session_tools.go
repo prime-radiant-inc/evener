@@ -297,6 +297,23 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 	if err := s.abortIfClosing(ctx); err != nil {
 		return skippedToolResult(call, err)
 	}
+
+	// Self-heal off-distribution tool calls before hooks/dispatch. Snapshot the
+	// provider name-map here (execTool runs outside s.mu) — never lock inside
+	// providerToolName, which has under-lock callers (SetModel).
+	nameMap := s.currentProfile().ToolNameMap()
+	visibleNames := providerVisibleToolNames(s.reg.Names(), nameMap)
+	requestedVisible := providerToolName(call.Name, nameMap)
+	prep := prepareToolCall(call, s.reg.Get(call.Name), visibleNames, requestedVisible)
+	call = prep.Call
+	if len(prep.Changes) > 0 {
+		s.emit(events.EventToolCallRepaired, events.ToolCallRepairedData{
+			ToolName: call.Name,
+			CallID:   call.ID,
+			Changes:  changeStrings(prep.Changes),
+		})
+	}
+
 	// PreToolUse hooks
 	if s.hookRunner != nil {
 		hi := s.hookInput(plugin.HookPreToolUse)
@@ -401,7 +418,18 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 		emitCanceledEnd(err)
 		return skippedToolResult(call, err)
 	}
-	res := s.reg.ExecuteCall(ctx, s.currentEnv(), call)
+	var res tool.ExecResult
+	if prep.PrevalErr != "" {
+		res = tool.ExecResult{
+			ToolName:   call.Name,
+			CallID:     call.ID,
+			Output:     prep.PrevalErr,
+			FullOutput: prep.PrevalErr,
+			IsError:    true,
+		}
+	} else {
+		res = s.reg.ExecuteCall(ctx, s.currentEnv(), call)
+	}
 	res.DurationMS = time.Since(toolStart).Milliseconds()
 	if err := s.errIfClosing(); err != nil {
 		emitCanceledEnd(err)

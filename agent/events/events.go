@@ -42,6 +42,10 @@ const (
 	EventToolCallOutputDelta EventKind = "TOOL_CALL_OUTPUT_DELTA"
 	// EventToolCallEnd marks the end of a tool call.
 	EventToolCallEnd EventKind = "TOOL_CALL_END"
+	// EventToolCallRepaired reports that a tool call's arguments were healed
+	// before dispatch (aliasing, coercion, JSON/unicode repair, drop-unknown).
+	// Silent to the model; emitted for drift telemetry.
+	EventToolCallRepaired EventKind = "TOOL_CALL_REPAIRED"
 	// EventSteeringInjected marks steering input injected into the session.
 	EventSteeringInjected EventKind = "STEERING_INJECTED"
 	// EventQueueChanged reports a change to the session's input queue.
