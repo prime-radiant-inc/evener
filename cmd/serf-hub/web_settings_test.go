@@ -134,3 +134,17 @@ func TestSettingsMCPStatus_PopulatedAndEmpty(t *testing.T) {
 		}
 	})
 }
+
+// TestSettings_DisplaySectionRoutes confirms the "display" settings section
+// (Enter-to-send + Show-cost home) is registered and renders its heading.
+func TestSettings_DisplaySectionRoutes(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
+	})
+	body := settingsRequest(t, web, "display")
+	if !strings.Contains(body, "Display") {
+		t.Errorf("display settings body missing the %q heading", "Display")
+	}
+}
