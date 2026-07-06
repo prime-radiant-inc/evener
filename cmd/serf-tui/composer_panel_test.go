@@ -52,3 +52,28 @@ func TestHubModelSessionComposerAwaitingQuestionKeyedOnPendingSet(t *testing.T) 
 		})
 	}
 }
+
+func awaitingSendModel() hubModel {
+	m := hubModel{}
+	m.detail.State = "awaiting"
+	m.detail.Capabilities.Queue = true
+	m.detail.Capabilities.Send = true
+	m.session.processing = false
+	return m
+}
+
+func TestSessionComposerMode_RestedAwaitingShowsSend(t *testing.T) {
+	m := awaitingSendModel()
+	if got := m.sessionComposerMode(); got != hubComposerModeSend {
+		t.Fatalf("rested awaiting composer mode = %v, want hubComposerModeSend (plain Send, no queue)", got)
+	}
+}
+
+func TestSessionComposerMode_ActiveStillQueues(t *testing.T) {
+	m := awaitingSendModel()
+	m.detail.State = "active"
+	m.session.processing = true
+	if got := m.sessionComposerMode(); got != hubComposerModeQueue {
+		t.Fatalf("active composer mode = %v, want hubComposerModeQueue (unchanged)", got)
+	}
+}
