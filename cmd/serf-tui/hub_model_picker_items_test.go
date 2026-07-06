@@ -81,3 +81,42 @@ func TestModelPickerItemProvider_ReadsGroupNotDisplay(t *testing.T) {
 		t.Fatalf("modelPickerItemProvider = %q, want %q (from Group, not the prettified Display)", got, "anthropic")
 	}
 }
+
+func TestModelPickerItemsFromResponse_PrependsRecentGroup(t *testing.T) {
+	resp := appwire.ModelListResponse{
+		Data: []appwire.ModelDescriptor{
+			{Provider: "anthropic", Model: "claude-opus-4-6"},
+			{Provider: "openai", Model: "gpt-5.2"},
+		},
+		Recent: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.2"}},
+	}
+	items := modelPickerItemsFromResponse(resp, false)
+	if len(items) != 3 {
+		t.Fatalf("got %d items, want 3 (1 recent + 2 catalog, recent duplicated per design)", len(items))
+	}
+	if items[0].Group != "Recent" || items[0].ID != "openai/gpt-5.2" {
+		t.Fatalf("items[0] = %+v, want the Recent-grouped gpt-5.2 first", items[0])
+	}
+	// The catalog copy of gpt-5.2 (under its provider group) still exists —
+	// Recent is a shortcut, not a removal from the browsable catalog.
+	var providerCopyFound bool
+	for _, it := range items[1:] {
+		if it.ID == "openai/gpt-5.2" && it.Group == "openai" {
+			providerCopyFound = true
+		}
+	}
+	if !providerCopyFound {
+		t.Fatal("gpt-5.2 should still appear under its provider group, not just under Recent")
+	}
+}
+
+func TestModelPickerItemsFromResponse_NoRecentOmitsGroup(t *testing.T) {
+	resp := appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.2"}}}
+	items := modelPickerItemsFromResponse(resp, false)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1 (fresh install, no Recent)", len(items))
+	}
+	if items[0].Group == "Recent" {
+		t.Fatal("no Recent group should render when resp.Recent is empty")
+	}
+}

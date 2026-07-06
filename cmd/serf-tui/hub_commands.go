@@ -433,33 +433,38 @@ func modelPickerItems(models []appwire.ModelDescriptor, rawModelID bool) []tuipi
 
 func modelPickerItemsFromResponse(resp appwire.ModelListResponse, rawModelID bool) []tuipick.ModelPickerItem {
 	items := modelPickerItems(resp.Data, rawModelID)
-	if len(resp.Diagnostics) == 0 {
+	if len(resp.Diagnostics) > 0 {
+		reasons := map[string]string{}
+		for _, diagnostic := range resp.Diagnostics {
+			provider := strings.TrimSpace(diagnostic.Provider)
+			if provider == "" {
+				continue
+			}
+			if _, exists := reasons[provider]; exists {
+				continue
+			}
+			reasons[provider] = modelDiagnosticDisabledReason(diagnostic)
+		}
+		if len(reasons) > 0 {
+			for i := range items {
+				provider := modelPickerItemProvider(items[i])
+				if provider == "" {
+					continue
+				}
+				if reason := reasons[provider]; reason != "" {
+					items[i].DisabledReason = reason
+				}
+			}
+		}
+	}
+	if len(resp.Recent) == 0 {
 		return items
 	}
-	reasons := map[string]string{}
-	for _, diagnostic := range resp.Diagnostics {
-		provider := strings.TrimSpace(diagnostic.Provider)
-		if provider == "" {
-			continue
-		}
-		if _, exists := reasons[provider]; exists {
-			continue
-		}
-		reasons[provider] = modelDiagnosticDisabledReason(diagnostic)
+	recentItems := modelPickerItems(resp.Recent, rawModelID)
+	for i := range recentItems {
+		recentItems[i].Group = "Recent"
 	}
-	if len(reasons) == 0 {
-		return items
-	}
-	for i := range items {
-		provider := modelPickerItemProvider(items[i])
-		if provider == "" {
-			continue
-		}
-		if reason := reasons[provider]; reason != "" {
-			items[i].DisabledReason = reason
-		}
-	}
-	return items
+	return append(recentItems, items...)
 }
 
 func modelPickerItemProvider(item tuipick.ModelPickerItem) string {
