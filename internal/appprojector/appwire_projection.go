@@ -610,6 +610,15 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Ref:      p.ref,
 			Queue:    appwire.QueueState{Depth: data.Depth, Preview: append([]string(nil), data.Preview...)},
 		})}
+	case events.EventTaskUpdated:
+		p.clearSkillCandidate()
+		data := eventData[events.TaskUpdatedData](event.Data)
+		return []AppNotification{p.notification(appwire.NotifySerfTaskUpdated, appwire.TaskUpdatedParams{
+			ThreadID: p.threadID,
+			Ref:      p.ref,
+			Total:    data.Total,
+			Done:     data.Done,
+		})}
 	case events.EventJobStarted:
 		p.clearSkillCandidate()
 		data := eventData[events.JobStartedData](event.Data)

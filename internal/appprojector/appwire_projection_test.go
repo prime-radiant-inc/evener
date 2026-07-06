@@ -43,6 +43,21 @@ func TestAppEventProjectorCarriesUserInputTranscriptEntryIndex(t *testing.T) {
 	}
 }
 
+func TestProject_TaskUpdated(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{
+		Kind: events.EventTaskUpdated,
+		Data: events.TaskUpdatedData{Total: 3, Done: 1},
+	})
+	if len(out) != 1 || out[0].Method != appwire.NotifySerfTaskUpdated {
+		t.Fatalf("want one serf/task/updated notification, got %+v", out)
+	}
+	params, ok := out[0].Params.(appwire.TaskUpdatedParams)
+	if !ok || params.Total != 3 || params.Done != 1 {
+		t.Fatalf("params = %+v, want Total=3 Done=1", out[0].Params)
+	}
+}
+
 func TestAppEventProjectorTurnStartedCarriesStartedAt(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	ts := time.Unix(1_700_000_000, 0).UTC()

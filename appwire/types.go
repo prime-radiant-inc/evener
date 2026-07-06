@@ -264,6 +264,16 @@ type ThreadQueueChangedParams struct {
 	Queue    QueueState `json:"queue"`
 }
 
+// TaskUpdatedParams is the params shape for serf/task/updated: the session's
+// task-list progress after a change, so a client refreshes the status row
+// event-driven instead of polling serf/tasks/list.
+type TaskUpdatedParams struct {
+	ThreadID string `json:"threadId,omitempty"`
+	Ref      string `json:"ref,omitempty"`
+	Total    int    `json:"total"`
+	Done     int    `json:"done"`
+}
+
 // TurnCompletedParams is the payload of a turn/completed notification: the
 // completed turn and its ID.
 type TurnCompletedParams struct {

@@ -231,8 +231,8 @@ func TestWireTypeRegistryCoverage(t *testing.T) {
 			}
 		}
 	}
-	if typed != 7 {
-		t.Errorf("typed notifications = %d, want 7", typed)
+	if typed != 8 {
+		t.Errorf("typed notifications = %d, want 8", typed)
 	}
 	if nilPayload != 14 {
 		t.Errorf("nil-payload notifications = %d, want 14", nilPayload)

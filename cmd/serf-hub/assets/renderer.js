@@ -1049,6 +1049,17 @@
           };
           this.renderQueuePreview();
           break;
+        case "TASKS_CHANGED":
+          // Event-driven task-status row (Copy T3, later, retires the 5s
+          // poll once this lands — do not remove startTaskBadgePoller here).
+          // The daemon pushes total/done on every task mutation; update the
+          // badge immediately from the pushed counts, then refetch the full
+          // list once to refresh the panel's per-row detail.
+          updateTasksBadge(data.done, data.total, "");
+          if (window.SerfAppwire) {
+            window.SerfAppwire.tasks(this.sessionId).then(tasks => this.applyTasks(tasks)).catch(() => {});
+          }
+          break;
         case "USER_INPUT":
           // A user message answers any pending blocking question; tear down the
           // live "awaiting your answer" affordances (the in-flow frame stays).
