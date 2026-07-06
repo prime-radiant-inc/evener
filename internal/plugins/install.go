@@ -220,6 +220,10 @@ func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string,
 	if err != nil {
 		return InstallEntry{}, false, false, err
 	}
+	if err := ensureManifestFallback(final, true, cp); err != nil {
+		_ = os.RemoveAll(final)
+		return InstallEntry{}, false, false, err
+	}
 	if err := validatePluginDir(final); err != nil {
 		_ = os.RemoveAll(final)
 		return InstallEntry{}, false, false, fmt.Errorf("upgraded plugin failed validation: %w", err)
