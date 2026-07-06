@@ -268,6 +268,9 @@ func parseLiteLLMCatalog(data []byte) (*ModelCatalog, error) {
 				}
 			}
 		}
+		if len(effortLevels) == 0 {
+			effortLevels = synthesizeReasoningEffortLevels(v)
+		}
 
 		models = append(models, ModelInfo{
 			ID:                            id,
@@ -298,6 +301,60 @@ func parseLiteLLMCatalog(data []byte) (*ModelCatalog, error) {
 		return models[i].ID < models[j].ID
 	})
 	return &ModelCatalog{Models: models}, nil
+}
+
+func synthesizeReasoningEffortLevels(v map[string]any) []string {
+	flag := func(name string) (bool, bool) {
+		raw, ok := v[name]
+		if !ok {
+			return false, false
+		}
+		switch x := raw.(type) {
+		case bool:
+			return x, true
+		case string:
+			b, err := strconv.ParseBool(strings.TrimSpace(x))
+			if err != nil {
+				return false, false
+			}
+			return b, true
+		default:
+			return false, false
+		}
+	}
+
+	_, hasMinimal := flag("supports_minimal_reasoning_effort")
+	_, hasLow := flag("supports_low_reasoning_effort")
+	_, hasMedium := flag("supports_medium_reasoning_effort")
+	_, hasHigh := flag("supports_high_reasoning_effort")
+	xhigh, hasXHigh := flag("supports_xhigh_reasoning_effort")
+	maxEffort, hasMax := flag("supports_max_reasoning_effort")
+	if !hasMinimal && !hasLow && !hasMedium && !hasHigh && !hasXHigh && !hasMax {
+		return nil
+	}
+
+	levels := make([]string, 0, 5)
+	if minimal, ok := flag("supports_minimal_reasoning_effort"); ok && minimal {
+		levels = append(levels, "minimal")
+	}
+	for _, spec := range []struct {
+		name  string
+		level string
+	}{
+		{"supports_low_reasoning_effort", "low"},
+		{"supports_medium_reasoning_effort", "medium"},
+		{"supports_high_reasoning_effort", "high"},
+	} {
+		if supported, ok := flag(spec.name); !ok || supported {
+			levels = append(levels, spec.level)
+		}
+	}
+	if xhigh {
+		levels = append(levels, "xhigh")
+	} else if maxEffort {
+		levels = append(levels, "max")
+	}
+	return levels
 }
 
 func normalizeCatalogProvider(p string) string {

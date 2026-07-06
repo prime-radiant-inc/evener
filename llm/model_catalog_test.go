@@ -3,6 +3,7 @@ package llm
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -492,6 +493,30 @@ func TestParseLiteLLMCatalog_ReasoningEffortFields(t *testing.T) {
 	}
 	if sonnet45.SupportsEffortParameter {
 		t.Fatal("sonnet-4-5 SupportsEffortParameter should default to false")
+	}
+}
+
+func TestParseLiteLLMCatalog_SynthesizesXHighEffortLevelFromFlags(t *testing.T) {
+	body := `{
+  "gpt-5.5": {
+    "litellm_provider":"openai","mode":"chat",
+    "supports_reasoning":true,
+    "supports_none_reasoning_effort":true,
+    "supports_minimal_reasoning_effort":false,
+    "supports_xhigh_reasoning_effort":true
+  }
+}`
+	cat, err := parseLiteLLMCatalog([]byte(body))
+	if err != nil {
+		t.Fatalf("parseLiteLLMCatalog: %v", err)
+	}
+	mi := cat.GetModelInfo("gpt-5.5")
+	if mi == nil {
+		t.Fatal("gpt-5.5 not found")
+	}
+	want := []string{"low", "medium", "high", "xhigh"}
+	if !reflect.DeepEqual(mi.ReasoningEffortLevels, want) {
+		t.Fatalf("ReasoningEffortLevels = %v, want %v (supports_xhigh_reasoning_effort should reach the launch picker)", mi.ReasoningEffortLevels, want)
 	}
 }
 
