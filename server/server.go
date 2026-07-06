@@ -101,6 +101,11 @@ type StatusInfo struct {
 	Usage               *appwire.SerfUsage `json:"usage,omitempty"`
 	WorkMillis          int64              `json:"work_millis,omitempty"`
 	ActiveTurnStartedAt int64              `json:"active_turn_started_at,omitempty"`
+	// PendingAsk mirrors the session's HasPendingAsk() — true while an
+	// ask_user question is unanswered (Track A §2 ask-tiering). Additive,
+	// daemon-truth: Codex-sourced threads and old daemons never set it, so
+	// absence decodes as false everywhere downstream.
+	PendingAsk bool `json:"pending_ask,omitempty"`
 }
 
 // ContextMetrics describes the estimated size of the active session context.
@@ -158,6 +163,7 @@ type Server struct {
 	compactFunc         func(context.Context) error
 	clearFunc           func(context.Context) error
 	pressureFn          func() float64
+	pendingAskFn        func() bool
 	contextMetricsFn    func() ContextMetrics
 	// workMetricsFn returns the live working-state/token metrics (WS2 A7):
 	// accumulated wall-clock work time, cumulative token usage (nil when
@@ -386,6 +392,15 @@ func (s *Server) SetQueuePreviewFunc(fn func() []string) {
 func (s *Server) SetContextPressureFunc(fn func() float64) {
 	s.mu.Lock()
 	s.pressureFn = fn
+	s.mu.Unlock()
+}
+
+// SetPendingAskFunc sets a callback to retrieve the live pending-ask bit
+// (Track A §2). Read by both /status (handleStatus) and the appwire thread
+// projection (appThread).
+func (s *Server) SetPendingAskFunc(fn func() bool) {
+	s.mu.Lock()
+	s.pendingAskFn = fn
 	s.mu.Unlock()
 }
 

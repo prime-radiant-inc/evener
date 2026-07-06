@@ -354,6 +354,7 @@ func runServe(args []string) error {
 		sess := getSession()
 		return sess.WorkMillisSnapshot(), serfUsageFromLLM(sess.CumulativeUsageSnapshot()), sess.ActiveTurnStartedAtUnix()
 	})
+	srv.SetPendingAskFunc(func() bool { return getSession().HasPendingAsk() })
 	srv.SetModelFunc(func(model string) { getSession().SetModel(model) })
 	srv.SetNameFunc(func(name string) { getSession().Rename(name) })
 	srv.SetReasoningEffortFunc(func(effort string) { getSession().SetReasoningEffort(effort) })
