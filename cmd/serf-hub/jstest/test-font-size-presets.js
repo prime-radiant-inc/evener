@@ -1,7 +1,9 @@
 // CSS/layout contract test for the font-size presets (S/M/L/XL): each preset
-// must redefine all 8 --text-* tokens, and within each preset the values must
+// must redefine all 8 --text-* tokens, within each preset the values must
 // stay in strictly ascending order (matching the base :root token block's
-// order), so a later manual tuning pass can't silently invert the scale.
+// order), and each token's value must strictly increase across the four
+// presets in S < M < L < XL order (the actual "presets scale up" behavior),
+// so a later manual tuning pass can't silently invert either scale.
 const fs = require("fs");
 const path = require("path");
 
@@ -54,6 +56,11 @@ function findBlock(selector) {
 const TOKENS = ["--text-2xs", "--text-xs", "--text-sm", "--text-base", "--text-md", "--text-lg", "--text-xl", "--text-2xl"];
 const PRESETS = ["s", "m", "l", "xl"];
 
+// valuesByPreset[preset][token] = px number, populated below so the
+// cross-preset check after the loop can compare a given token across all
+// four presets.
+const valuesByPreset = {};
+
 for (const preset of PRESETS) {
   const selector = 'body[data-font-size="' + preset + '"]';
   const block = findBlock(selector);
@@ -61,12 +68,17 @@ for (const preset of PRESETS) {
   if (!block) continue;
 
   const values = [];
+  const byToken = {};
   for (const token of TOKENS) {
     const re = new RegExp(token.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&") + ":\\s*(\\d+)px");
     const m = block.body.match(re);
     pass(!!m, selector + " should define " + token);
-    if (m) values.push(Number(m[1]));
+    if (m) {
+      values.push(Number(m[1]));
+      byToken[token] = Number(m[1]);
+    }
   }
+  valuesByPreset[preset] = byToken;
 
   if (values.length === TOKENS.length) {
     let ascending = true;
@@ -75,6 +87,20 @@ for (const preset of PRESETS) {
     }
     pass(ascending, selector + " token values should be strictly ascending in " + TOKENS.join(", ") + " order (got " + values.join(", ") + ")");
   }
+}
+
+// Cross-preset check: for each token, its value must strictly increase
+// across the four presets in S < M < L < XL order — this is the "presets
+// scale text up" behavior the scenario card and design-system doc describe,
+// as distinct from the per-preset internal ordering checked above.
+for (const token of TOKENS) {
+  const seq = PRESETS.map((preset) => valuesByPreset[preset] && valuesByPreset[preset][token]);
+  if (seq.some((v) => v === undefined)) continue; // already reported missing above
+  let ascending = true;
+  for (let i = 1; i < seq.length; i++) {
+    if (!(seq[i] > seq[i - 1])) ascending = false;
+  }
+  pass(ascending, token + " should strictly increase across presets in " + PRESETS.join(", ") + " order (got " + seq.join(", ") + ")");
 }
 
 if (failures.length > 0) {

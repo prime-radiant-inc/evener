@@ -52,10 +52,15 @@ set via Settings → Appearance and persisted to `localStorage` key
     the visual change was verified directly (not simulated), just not
     rendered through an actual browser paint. This test passed as part of
     the `make lint` jstest gate.
-  - `cmd/serf-hub/jstest/test-settings-appearance.js` covers the Settings →
-    Appearance section's preset-switching UI logic (button state,
-    `localStorage` write, `data-font-size` attribute write) against the real
-    `settings-appearance.js`, also passing.
+  - The preset-switching UI logic itself (button click →
+    `localStorage.setItem("serf-hub.appearance.fontSize", ...)` →
+    `document.body.dataset.fontSize = ...`, in
+    `cmd/serf-hub/assets/settings-appearance.js`) has **no direct jstest
+    coverage** — `cmd/serf-hub/jstest/test-settings-appearance.js` covers a
+    different part of the Appearance section and contains no reference to
+    font size at all. This bullet's claim was verified only by reading
+    `settings-appearance.js` directly, not by an automated test; that's a
+    real gap, not a false one.
   - `docs/web-ui/design-system.md`'s "Font-size presets" subsection
     (added in Phase X, task X1) documents the four presets' scale factors
     (~90%/100%/~115%/~130%) consistently with the CSS.

@@ -19,7 +19,8 @@ panel's ended-session branch (`cmd/serf-hub/web_workspace.go`
 
 1. Spawn a session against a live model, send a short prompt, poll
    `/api/sessions/local:<id>` until `state` is no longer `active`
-   (`awaiting` in the current state model — see Sharp edges).
+   (`idle` in the current state model for the common no-ask case — see
+   Sharp edges).
 2. `POST /s/<id>/shutdown`; confirm the daemon process exits and
    `/api/sessions/local:<id>` subsequently reports `state:"ended"`,
    `live:false`.
@@ -52,12 +53,17 @@ panel's ended-session branch (`cmd/serf-hub/web_workspace.go`
 ## Sharp edges
 
 - **State vocabulary**: the current normalized-state model
-  (`hubapi/attention.go`) uses `awaiting` (display word "Your move") as the
-  terminal "turn complete, waiting on you" state for a still-live session —
-  there is no separate `idle` state in current builds. Older scenario cards
-  in this repo that poll for `state=idle` are describing pre-Track-A
-  vocabulary; poll for anything that isn't `active`/`processing` instead, or
-  specifically `awaiting` for the common case.
+  (`hubapi/attention.go`) still defines both `idle` (display word "Idle")
+  and `awaiting` (display word "Your move") as distinct terminal states for
+  a still-live session. `idle` is the common case: per
+  `agent/session_tool_round.go`'s `deliverIfCommunicated`, a completed turn
+  with no question/ask pending lands on `SessionIdle`, and
+  `cmd/serf-hub/internal/hubcore/tree.go`'s `NormalizeState` maps that
+  straight through to the `"idle"` string in `/api/sessions/*`. `awaiting`
+  is reserved for the less common case where a question/ask is actually
+  pending on the session (`boundaryState = SessionAwaiting` only when
+  `askedThisRound`). Poll for anything that isn't `active`/`processing`, or
+  specifically `idle` for this card's no-ask scenario.
 - **This run's actual coverage — fully live, no fallback needed for either
   surface**:
   - Spawned `01KWVAVAB2AZ4T1ETP40ARTA3V` against `openai/gpt-5.5` (real
