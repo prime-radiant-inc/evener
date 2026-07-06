@@ -192,6 +192,16 @@ func main() {
 	archive.SetOnChange(bump)
 	favorite.SetOnChange(bump)
 
+	// A session's Status transitioning (detected per-id by roster.Refresh)
+	// means its daemon likely just rewrote its own meta.json out-of-process
+	// (agent/session.go's periodic autosave); re-read just that session
+	// instead of waiting for the past index's next 60s Rebuild tick, so the
+	// sidebar order (which is keyed off UpdatedAt) doesn't lag behind a
+	// completed turn.
+	roster.SetOnStatusChange(func(sessionID string) {
+		past.RefreshOne(sessionID)
+	})
+
 	// attentionPoke lets a web handler (e.g. an archive decision) nudge the
 	// attention watcher below to recompute immediately instead of waiting for
 	// its next tick. Buffered 1 + non-blocking send: a poke that arrives while
