@@ -561,9 +561,14 @@ func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) []appw
 				// stays nil because a message record captures a point in time, not
 				// a span (unlike the live projector's EventTurnEnded timing).
 				var entry transcript.Entry
-				if json.Unmarshal(raw, &entry) == nil && !entry.Turn.Timestamp.IsZero() {
-					startedAt := entry.Turn.Timestamp.Unix()
-					turn.StartedAt = &startedAt
+				if json.Unmarshal(raw, &entry) == nil {
+					if !entry.Turn.Timestamp.IsZero() {
+						startedAt := entry.Turn.Timestamp.Unix()
+						turn.StartedAt = &startedAt
+					}
+					if usage := appwire.SerfUsageFromLLM(entry.Turn.Usage); usage != nil {
+						turn.Usage = usage
+					}
 				}
 				turns = append(turns, turn)
 			}

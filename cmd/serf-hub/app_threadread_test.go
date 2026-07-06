@@ -188,6 +188,87 @@ func TestPastThreadReadProjectsThinkingFromTranscript(t *testing.T) {
 	}
 }
 
+// TestPastEntryTurns_StampsCostFromSessionModel verifies pastEntryTurns
+// estimates each turn's Cost from the session's own recorded Model — usage
+// alone (from the transcript) isn't enough to price a turn, since
+// appwire.EstimateCost needs a model to look up catalog rates.
+func TestPastEntryTurns_StampsCostFromSessionModel(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "repo")
+	sessionID := "01COST"
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 0).UTC()
+	w, err := transcript.NewWriter(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"), transcript.Header{
+		SessionID: sessionID,
+		CreatedAt: now,
+		ProfileID: "anthropic",
+		Model:     "claude-opus-4-5",
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := w.Append(schema.Turn{
+		Kind:    schema.TurnAssistant,
+		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "Here is the answer."}}},
+		Usage:   llm.Usage{InputTokens: 100, OutputTokens: 50},
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	entry := hubcore.PastEntry{
+		ID:       sessionID,
+		Meta:     schema.SessionMeta{ID: sessionID, Model: "claude-opus-4-5"},
+		StateDir: stateDir,
+	}
+	turns := pastEntryTurns(entry)
+	var found bool
+	for _, turn := range turns {
+		if turn.Usage == nil {
+			continue
+		}
+		found = true
+		if !strings.HasPrefix(turn.Cost, "~$") {
+			t.Fatalf("turn.Cost=%q, want ~$ prefix", turn.Cost)
+		}
+	}
+	if !found {
+		t.Fatalf("no turn with usage found: %+v", turns)
+	}
+}
+
+func TestPastEntryThread_CarriesWorkMetrics(t *testing.T) {
+	entry := hubcore.PastEntry{
+		Meta: schema.SessionMeta{
+			WorkMillis: 5000,
+			CumulativeUsage: schema.CumulativeUsage{
+				InputTokens:  100,
+				OutputTokens: 50,
+				TotalTokens:  150,
+			},
+		},
+	}
+
+	thread := pastEntryThread(entry, false)
+
+	if thread.Serf.WorkMillis != 5000 {
+		t.Fatalf("thread.Serf.WorkMillis = %d, want 5000", thread.Serf.WorkMillis)
+	}
+	if thread.Serf.Usage == nil {
+		t.Fatalf("thread.Serf.Usage = nil, want non-nil")
+	}
+	if thread.Serf.Usage.InputTokens != 100 || thread.Serf.Usage.OutputTokens != 50 || thread.Serf.Usage.TotalTokens != 150 {
+		t.Fatalf("thread.Serf.Usage = %+v, want InputTokens=100 OutputTokens=50 TotalTokens=150", thread.Serf.Usage)
+	}
+	if thread.Serf.ActiveTurnStartedAt != 0 {
+		t.Fatalf("thread.Serf.ActiveTurnStartedAt = %d, want 0 (ended session)", thread.Serf.ActiveTurnStartedAt)
+	}
+}
+
 func writeHistoricalJobLog(t *testing.T, path string, ts time.Time, jobID string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

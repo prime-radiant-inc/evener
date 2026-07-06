@@ -314,6 +314,35 @@ verified against a real hub + a real model turn (`openai/gpt-5.4-mini`).
   `SERF_SESSION_ORIGIN=test` project's classification into Test runs through
   to its Delete… action and on-disk removal.
 
+## Cost display & Display settings (Track C)
+
+Coverage for the consistency-sweep Track C additions: LLM pricing
+(`llm/pricing.go`), session/turn cost display (`~$` in the status row,
+details panel, and the always-visible per-turn `.turn-meta` badge), the TUI
+details-drawer gap-fill, and the Display settings section (Enter-to-send,
+Show-cost). `ended-session-metrics-tui-and-web.md` was verified fully live
+against a real isolated hub + a real `openai/gpt-5.5` turn; the other four
+cards' browser-only assertions were substituted with real server-rendered
+HTML fragments (curl), direct CSS/JS source inspection, and the jstest suite
+(loads production `renderer.js`/`style.css`, not mocks) because the
+`claude-in-chrome` browser tool was unavailable in that session — see each
+card's Sharp edges for the exact substitution and what a future live rerun
+should replace it with.
+
+- `cost-estimate-display-and-gating.md` — `~$` cost estimate on the status
+  row and details panel from a real completed turn; the Show-cost toggle
+  CSS-gates all three cost surfaces with no reload.
+- `turn-meta-badge-always-visible.md` — the per-turn duration/tokens/cost
+  badge (`.turn-meta`) is always-visible in the rendered transcript, NOT
+  hover/focus-reveal (plan correction, commit `09ead1c4`).
+- `ended-session-metrics-tui-and-web.md` — an ended session's work
+  time/tokens/cost surface via both the TUI `/details` drawer and the web
+  details panel (the WS2 gap-fill).
+- `enter-to-send-toggle-composer.md` — the Enter-to-send Settings toggle
+  live-swaps Enter/Shift+Enter between newline-insertion and send/steer.
+- `font-size-presets-visible.md` — cycling S/M/L/XL visibly changes text
+  size across the sidebar, transcript, and Settings pane itself.
+
 ## Regression sweep (older surfaces)
 
 - `credentials-page-displays-sources.md` — `/credentials` shows

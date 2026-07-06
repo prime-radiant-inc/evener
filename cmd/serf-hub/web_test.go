@@ -2559,6 +2559,49 @@ func TestWeb_State_RendersInputStatusPartial(t *testing.T) {
 	if strings.Contains(body, `class="status-item tokens"`) {
 		t.Errorf("state partial should not render a token cluster with nil usage: %q", body)
 	}
+	if strings.Contains(body, `class="status-item cost"`) {
+		t.Errorf("state partial should not render a cost cluster with nil usage: %q", body)
+	}
+}
+
+// TestWeb_State_RendersCostEstimate verifies the polled /state endpoint
+// renders a cost cluster computed from the session's Model + CumulativeUsage
+// via appwire.EstimateCost, once both are non-zero.
+func TestWeb_State_RendersCostEstimate(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+	_ = schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: "01STATECOST", UpdatedAt: time.Now(),
+		Model: "claude-opus-4-5",
+		CumulativeUsage: schema.CumulativeUsage{
+			InputTokens:  100_000,
+			OutputTokens: 20_000,
+		},
+	})
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01STATECOST/state", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `class="status-item cost"`) || !strings.Contains(body, `~$1.00`) {
+		t.Errorf("state partial missing cost cluster with ~$1.00: %q", body)
+	}
 }
 
 // TestWeb_State_ShowsWorkTimeAndTokenClustersWithLeanFetch verifies the
@@ -2793,6 +2836,102 @@ func TestWorkspaceDataUsesDaemonStatusTurnCountForLiveLocalSession(t *testing.T)
 	got := web.workspaceData("01TURNCOUNT")
 	if got.TurnCount != 37 {
 		t.Fatalf("TurnCount = %d, want daemon /status turns 37", got.TurnCount)
+	}
+}
+
+// TestWorkspaceData_LiveSessionCarriesCostEstimate verifies the roster-live
+// branch of workspaceData computes Cost from the daemon-reported Model and
+// Usage via appwire.EstimateCost, once both are finalized.
+func TestWorkspaceData_LiveSessionCarriesCostEstimate(t *testing.T) {
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session_id":  "01COSTLIVE",
+			"state":       "active",
+			"turns":       1,
+			"model":       "claude-opus-4-5",
+			"working_dir": "/tmp/costlive",
+			"usage": map[string]any{
+				"inputTokens":  100_000,
+				"outputTokens": 20_000,
+			},
+		})
+	}))
+	defer daemon.Close()
+
+	addr := strings.TrimPrefix(daemon.URL, "http://")
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:     rendezvous.Entry{Address: addr, SessionID: "01COSTLIVE", Model: "claude-opus-4-5", WorkingDir: "/tmp/costlive"},
+		SessionID: "01COSTLIVE",
+		Status:    "active",
+	})
+	web := NewWebServer(hubcore.WebConfig{Roster: roster})
+
+	got := web.workspaceData("01COSTLIVE")
+	if got.Cost != "~$1.00" {
+		t.Fatalf("Cost = %q, want ~$1.00", got.Cost)
+	}
+}
+
+// TestWorkspaceData_PastSessionCarriesCostEstimate verifies the past-meta
+// branch of workspaceData computes Cost from the persisted Model and
+// CumulativeUsage.
+func TestWorkspaceData_PastSessionCarriesCostEstimate(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const sessionID = "01COSTPAST"
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID:    sessionID,
+		Model: "claude-opus-4-5",
+		CumulativeUsage: schema.CumulativeUsage{
+			InputTokens:  100_000,
+			OutputTokens: 20_000,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRoster(t.TempDir(), nil), Past: idx})
+	got := web.workspaceData(sessionID)
+	if got.Cost != "~$1.00" {
+		t.Fatalf("Cost = %q, want ~$1.00", got.Cost)
+	}
+}
+
+// TestWorkspaceData_NoCostWhenUsageNil verifies a past session with zero
+// CumulativeUsage renders no Cost, rather than a misleading "~$0.00".
+func TestWorkspaceData_NoCostWhenUsageNil(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const sessionID = "01COSTNONE"
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID:    sessionID,
+		Model: "claude-opus-4-5",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRoster(t.TempDir(), nil), Past: idx})
+	got := web.workspaceData(sessionID)
+	if got.Cost != "" {
+		t.Fatalf("Cost = %q, want empty for zero usage", got.Cost)
 	}
 }
 
@@ -5894,5 +6033,139 @@ func TestWeb_WorkspaceData_UnionsStampAndGrantHistory(t *testing.T) {
 	}
 	if len(wd.ObserverRouteIDs) != 2 || seen["STAMPED"] != 1 || seen["GRANTED"] != 1 {
 		t.Fatalf("ObserverRouteIDs = %v, want STAMPED+GRANTED once each", wd.ObserverRouteIDs)
+	}
+}
+
+// TestDetailsPanel_CostRowCarriesDataAttributeForGating verifies detailsRow's
+// optional DataRow field renders as a data-row="..." attribute on both the
+// <dt> and <dd> elements, so Phase W3's CSS can gate a "show cost" toggle on
+// rows carrying data-row="cost" without touching every other details row.
+// Exercises the extracted renderDetailsRow helper directly rather than a full
+// HTTP round trip, since no visible details row uses DataRow yet — that
+// lands in Tasks V2/V3.
+func TestDetailsPanel_CostRowCarriesDataAttributeForGating(t *testing.T) {
+	var buf bytes.Buffer
+	renderDetailsRow(&buf, detailsRow{Label: "cost", Value: "~$1.00", DataRow: "cost"})
+	got := buf.String()
+	if !strings.Contains(got, `<dt data-row="cost">cost</dt>`) {
+		t.Errorf("expected <dt data-row=\"cost\"> in output, got %q", got)
+	}
+	if !strings.Contains(got, `<dd data-row="cost">~$1.00</dd>`) {
+		t.Errorf("expected <dd data-row=\"cost\"> in output, got %q", got)
+	}
+}
+
+// TestDetailsPanel_LiveSessionShowsContextWorkTokensCost verifies a live
+// session's details panel gains context-pressure, work-time, tokens, and
+// cost rows sourced from the daemon's /status response, appended after the
+// existing daemon/pid rows (identity-then-runtime-then-metrics ordering).
+func TestDetailsPanel_LiveSessionShowsContextWorkTokensCost(t *testing.T) {
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session_id":        "01DETAILLIVE",
+			"state":             "active",
+			"model":             "claude-opus-4-5",
+			"context_pressure":  0.42,
+			"context_used":      42000,
+			"context_window":    100000,
+			"context_remaining": 58000,
+			"work_millis":       4200,
+			"usage": map[string]any{
+				"inputTokens":  100_000,
+				"outputTokens": 20_000,
+			},
+		})
+	}))
+	defer daemon.Close()
+
+	addr := strings.TrimPrefix(daemon.URL, "http://")
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:     rendezvous.Entry{Address: addr, SessionID: "01DETAILLIVE", Model: "claude-opus-4-5"},
+		SessionID: "01DETAILLIVE",
+		Status:    "active",
+	})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: roster})
+
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01DETAILLIVE/details", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+
+	if !strings.Contains(body, "42% used") || !strings.Contains(body, formatContextNumbers(42000, 100000, 58000)) {
+		t.Errorf("details panel missing context row: %q", body)
+	}
+	if !strings.Contains(body, formatWorkMillis(4200)) {
+		t.Errorf("details panel missing work-time row with formatted %q: %q", formatWorkMillis(4200), body)
+	}
+	if !strings.Contains(body, "↑100k") || !strings.Contains(body, "↓20k") {
+		t.Errorf("details panel missing tokens row: %q", body)
+	}
+	if !strings.Contains(body, `data-row="cost"`) || !strings.Contains(body, "~$1.00") {
+		t.Errorf("details panel missing cost row with data-row=\"cost\" and ~$1.00: %q", body)
+	}
+}
+
+// TestDetailsPanel_EndedSessionShowsWorkTokensCostNoContext verifies an ended
+// session's details panel gains work-time/tokens/cost rows sourced from the
+// persisted SessionMeta, but no context row — ended sessions have no live
+// context pressure (pastEntryThread never sets it, mirroring the TUI
+// drawer's ContextPressure > 0 guard).
+func TestDetailsPanel_EndedSessionShowsWorkTokensCostNoContext(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: "01DETAILENDED", UpdatedAt: time.Now(),
+		Model:      "claude-opus-4-5",
+		WorkMillis: 4200,
+		CumulativeUsage: schema.CumulativeUsage{
+			InputTokens:  100_000,
+			OutputTokens: 20_000,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01DETAILENDED/details", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+
+	if !strings.Contains(body, formatWorkMillis(4200)) {
+		t.Errorf("details panel missing work-time row with formatted %q: %q", formatWorkMillis(4200), body)
+	}
+	if !strings.Contains(body, "↑100k") || !strings.Contains(body, "↓20k") {
+		t.Errorf("details panel missing tokens row: %q", body)
+	}
+	if !strings.Contains(body, `data-row="cost"`) || !strings.Contains(body, "~$1.00") {
+		t.Errorf("details panel missing cost row with data-row=\"cost\" and ~$1.00: %q", body)
+	}
+	if strings.Contains(body, "<dt>context</dt>") {
+		t.Errorf("ended session details panel should not show a context row: %q", body)
 	}
 }

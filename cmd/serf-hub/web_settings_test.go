@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -133,4 +135,31 @@ func TestSettingsMCPStatus_PopulatedAndEmpty(t *testing.T) {
 			t.Errorf("empty mcp settings body missing the empty-state copy")
 		}
 	})
+}
+
+// TestSettings_DisplaySectionRoutes confirms the "display" settings section
+// (Enter-to-send + Show-cost home) is registered and renders its heading. It
+// requests just the settings-content partial (HX-Target: settings-content)
+// so the assertion is on display.html's own heading, not on the settings
+// shell's nav — which also contains the literal word "Display" for its link.
+func TestSettings_DisplaySectionRoutes(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/_partials/settings/display", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	req.Header.Set("HX-Target", "settings-content")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	const want = `<h2 class="settings-h2">Display</h2>`
+	if !strings.Contains(body, want) {
+		t.Errorf("display settings partial missing %q heading:\n%s", want, body)
+	}
 }

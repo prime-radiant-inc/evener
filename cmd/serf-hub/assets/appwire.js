@@ -905,7 +905,7 @@
     }
     if (method === "turn/completed" && params.turn) {
       const turnId = firstNonEmpty(params.turnId, params.turn.id);
-      const out = [["TURN_COMPLETED", { turnId }]];
+      const out = [["TURN_COMPLETED", { turnId, turn: params.turn }]];
       for (const item of params.turn.items || []) {
         out.push.apply(out, eventsFromCompletedTurnItem(params, item));
         deleteLiveItem(params, item);

@@ -76,6 +76,23 @@ Neutral ramp: `--bg #0e0f13`, `--surface #16181d`, `--surface-2 #1c1f26`, rules 
 - Scale: `--fs-xs 11` / `--fs-sm 12` / `--fs-base 13` / `--fs-md 15` (hero prose) / `--fs-lg 18`.
 - Numbers (durations, counts, relative times) are sans with `font-variant-numeric: tabular-nums`.
 
+### Font-size presets
+
+Four user-selectable presets scale every `--text-*` token (base values: `--text-2xs 10` /
+`--text-xs 11` / `--text-sm 12` / `--text-base 13` / `--text-md 14` / `--text-lg 16` /
+`--text-xl 18` / `--text-2xl 22`, all px) via `body[data-font-size]`:
+
+| Preset | Scale | Setting |
+|---|---|---|
+| S | ~90% | Settings → Appearance → Font size |
+| M | 100% (default) | " |
+| L | ~115% | " |
+| XL | ~130% | " |
+
+Persisted per-browser in `localStorage` (`serf-hub.appearance.fontSize`), applied via a
+`body[data-font-size="…"]` attribute redefining the `--text-*` custom properties (they cascade
+to every descendant) — no per-element JS resize logic.
+
 ### Spacing, radius, motion
 
 - Spacing scale: `--s1 4` / `--s2 8` / `--s3 12` / `--s4 16` / `--s5 24` / `--s6 32`. Snap to it.

@@ -649,6 +649,37 @@ func TestTurnsFromFile(t *testing.T) {
 	}
 }
 
+// TestTurnsFromFile_StampsUsageFromEntry verifies an ended session's
+// per-round usage (persisted on schema.Turn.Usage) is surfaced on the
+// projected appwire.Turn, so the ended-session view can show the same
+// per-turn token totals the live projector stamps as the turn happens.
+func TestTurnsFromFile_StampsUsageFromEntry(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	content := `{"kind":"header","system_prompt":"You are Serf."}
+{"kind":"entry","turn":{"usage":{"input_tokens":100,"output_tokens":50}}}
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	project := func(raw json.RawMessage, turnID string, turnIndex int) []appwire.ThreadItem {
+		return []appwire.ThreadItem{{Type: "agentMessage", Text: "hi"}}
+	}
+	turns := TurnsFromFile(path, 1<<20, project)
+	if len(turns) != 2 {
+		t.Fatalf("expected 2 turns, got %d: %+v", len(turns), turns)
+	}
+	turn := turns[1]
+	if turn.Usage == nil {
+		t.Fatalf("turn.Usage=nil, want stamped usage")
+	}
+	if turn.Usage.InputTokens != 100 || turn.Usage.OutputTokens != 50 {
+		t.Fatalf("turn.Usage=%+v, want InputTokens=100 OutputTokens=50", turn.Usage)
+	}
+}
+
 // TestProjectTurnDedupsCommunicateEcho pins that an assistant turn emitting text
 // AND a communicate tool_call carrying the SAME message renders the message once
 // (mirroring the live projector's matchesLastAssistantMessage dedup), so a

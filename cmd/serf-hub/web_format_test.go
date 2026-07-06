@@ -39,6 +39,25 @@ func TestWorkspaceDataFromAppThreadCarriesWorkMetrics(t *testing.T) {
 	}
 }
 
+// TestWorkspaceDataFromAppThread_CarriesCostEstimate verifies the
+// remote/appwire workspace path computes Cost from thread.ModelProvider and
+// thread.Serf.Usage via appwire.EstimateCost.
+func TestWorkspaceDataFromAppThread_CarriesCostEstimate(t *testing.T) {
+	wd := workspaceDataFromAppThread(appwire.Thread{
+		ID:            "th_cost",
+		Source:        "local",
+		Status:        appwire.ThreadStatus{Type: "idle"},
+		ModelProvider: "claude-opus-4-5",
+		Serf: appwire.SerfThread{
+			Ref:   "local:th_cost",
+			Usage: &appwire.SerfUsage{InputTokens: 100_000, OutputTokens: 20_000},
+		},
+	})
+	if wd.Cost != "~$1.00" {
+		t.Fatalf("Cost = %q, want ~$1.00", wd.Cost)
+	}
+}
+
 // TestSerfUsageFromCumulative pins the nil-when-zero convention (mirrors
 // serfUsageFromLLM in cmd/serf/serve.go): an all-zero CumulativeUsage — a
 // fresh session or a meta written before WS2 — must map to a nil
@@ -72,6 +91,21 @@ func TestHubUsageFromAppwire(t *testing.T) {
 	want := &hubapi.Usage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, TotalTokens: 6}
 	if got == nil || *got != *want {
 		t.Fatalf("hubUsageFromAppwire = %+v, want %+v", got, want)
+	}
+}
+
+// TestAppwireUsageFromHub pins appwireUsageFromHub's nil-safety (no hubapi
+// usage carries through as nil) and its field-for-field mapping — the
+// inverse of hubUsageFromAppwire above — back into appwire's wire type.
+func TestAppwireUsageFromHub(t *testing.T) {
+	if got := appwireUsageFromHub(nil); got != nil {
+		t.Fatalf("appwireUsageFromHub(nil) = %+v, want nil", got)
+	}
+
+	got := appwireUsageFromHub(&hubapi.Usage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, TotalTokens: 6})
+	want := &appwire.SerfUsage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, TotalTokens: 6}
+	if got == nil || *got != *want {
+		t.Fatalf("appwireUsageFromHub = %+v, want %+v", got, want)
 	}
 }
 

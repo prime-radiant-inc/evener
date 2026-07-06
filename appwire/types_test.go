@@ -307,3 +307,37 @@ func TestSerfThread_AskPendingRoundTrips(t *testing.T) {
 		t.Fatalf("expected askPending:true in wire JSON, got %s", data)
 	}
 }
+
+// TestTurnUsageCostJSONRoundTrip verifies Turn.Usage/Turn.Cost are per-turn
+// (not cumulative-session) fields that round-trip on the wire in camelCase,
+// matching appwire's own JSON convention.
+func TestTurnUsageCostJSONRoundTrip(t *testing.T) {
+	in := Turn{Usage: &SerfUsage{InputTokens: 1}, Cost: "~$0.01"}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(raw)
+	if !strings.Contains(got, `"usage":{"inputTokens":1}`) {
+		t.Fatalf("marshal=%s missing usage", got)
+	}
+	if !strings.Contains(got, `"cost":"~$0.01"`) {
+		t.Fatalf("marshal=%s missing cost", got)
+	}
+}
+
+// TestTurnUsageCostOmitEmpty verifies a zero-value Turn omits usage and cost
+// entirely (mirrors TestSerfThreadMetricsOmitEmpty's pattern) — a turn with
+// no computable usage/cost shouldn't render an empty cluster.
+func TestTurnUsageCostOmitEmpty(t *testing.T) {
+	raw, err := json.Marshal(Turn{})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(raw)
+	for _, banned := range []string{`"usage"`, `"cost"`} {
+		if strings.Contains(got, banned) {
+			t.Fatalf("marshal=%s should have omitted %s", got, banned)
+		}
+	}
+}

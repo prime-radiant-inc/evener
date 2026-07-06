@@ -160,6 +160,9 @@ func pastEntryThread(entry hubcore.PastEntry, includeTurns bool) appwire.Thread 
 				Goal:         true,
 				Rename:       true,
 			},
+			WorkMillis: entry.Meta.WorkMillis,
+			Usage:      serfUsageFromCumulative(entry.Meta.CumulativeUsage),
+			// ActiveTurnStartedAt stays 0 — an ended session has no turn in flight.
 		},
 	}
 	if includeTurns {
@@ -189,13 +192,22 @@ var pastTranscriptCache = apptranscript.NewTurnCache()
 func pastEntryTurns(entry hubcore.PastEntry) []appwire.Turn {
 	transcriptPath := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
 	toolNames := map[string]string{}
-	return pastTranscriptCache.TurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(raw json.RawMessage, turnID string, entryIndex int) []appwire.ThreadItem {
+	turns := pastTranscriptCache.TurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(raw json.RawMessage, turnID string, entryIndex int) []appwire.ThreadItem {
 		var entryRec hubcore.ReplayEntry
 		if err := json.Unmarshal(raw, &entryRec); err != nil {
 			return nil
 		}
 		return appItemsFromReplayTurn(turnID, entryIndex, entryRec.Turn, toolNames)
 	})
+	// TurnsFromFile only has the per-round usage persisted in the transcript;
+	// it doesn't know the session's model, so the cost estimate is stamped
+	// here as a post-pass against entry.Meta.Model.
+	for i := range turns {
+		if turns[i].Usage != nil {
+			turns[i].Cost = appwire.EstimateCost(entry.Meta.Model, turns[i].Usage)
+		}
+	}
+	return turns
 }
 
 func appItemsFromReplayTurn(turnID string, turnIndex int, turn hubcore.ReplayTurn, toolNames map[string]string) []appwire.ThreadItem {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -160,54 +161,100 @@ func (s *WebServer) renderThreadDocument(w http.ResponseWriter, r *http.Request,
 	}
 }
 
+// detailsRow is one <dt>/<dd> pair in the details panel. DataRow, when
+// non-empty, renders as a data-row="..." attribute on both elements so CSS
+// can gate specific rows (e.g. a "show cost" toggle) without touching every
+// other row.
+type detailsRow struct{ Label, Value, DataRow string }
+
+// renderDetailsRow writes a single detailsRow's <dt>/<dd> pair to w.
+func renderDetailsRow(w io.Writer, row detailsRow) {
+	attr := ""
+	if row.DataRow != "" {
+		attr = ` data-row="` + htmlEscape(row.DataRow) + `"`
+	}
+	_, _ = fmt.Fprintf(w, `<dt%s>%s</dt><dd%s>%s</dd>`, attr, htmlEscape(row.Label), attr, htmlEscape(row.Value))
+}
+
+// tokensAndCostRows returns the "tokens" and (when estimable) "cost" rows
+// for a session's usage, shared by the live-session and ended-session
+// branches of renderDetailsPanel so both stay in sync. Returns nil when
+// usage is nil.
+func tokensAndCostRows(model string, usage *appwire.SerfUsage) []detailsRow {
+	if usage == nil {
+		return nil
+	}
+	rows := []detailsRow{{Label: "tokens", Value: fmt.Sprintf("↑%s ↓%s · cache-read %s · total %s",
+		formatTokenCount(int(usage.InputTokens)), formatTokenCount(int(usage.OutputTokens)),
+		formatTokenCount(int(usage.CacheReadTokens)), formatTokenCount(int(usage.TotalTokens)))}}
+	if cost := appwire.EstimateCost(model, usage); cost != "" {
+		rows = append(rows, detailsRow{Label: "cost", Value: cost, DataRow: "cost"})
+	}
+	return rows
+}
+
 // renderDetailsPanel returns a side-panel with the session's verbose
 // metadata: full session id, working dir, branch + sha, model, turn count,
 // last input tokens, and (for forks) the parent session id and divergence
 // turn. Triggered by clicking the "details" link in the workspace header.
 func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, id string) {
-	type detailsRow struct{ Label, Value string }
 	var rows []detailsRow
 	rows = append(rows,
-		detailsRow{"source", sourceLabelFromRefText(appRefFromRouteID(id))},
-		detailsRow{"session id", id},
+		detailsRow{Label: "source", Value: sourceLabelFromRefText(appRefFromRouteID(id))},
+		detailsRow{Label: "session id", Value: id},
 	)
 
 	addMeta := func(m schema.SessionMeta) {
 		if m.OriginalPrompt != "" {
-			rows = append(rows, detailsRow{"prompt", m.OriginalPrompt})
+			rows = append(rows, detailsRow{Label: "prompt", Value: m.OriginalPrompt})
 		}
 		if m.EnvInfo.WorkingDir != "" {
-			rows = append(rows, detailsRow{"working dir", m.EnvInfo.WorkingDir})
+			rows = append(rows, detailsRow{Label: "working dir", Value: m.EnvInfo.WorkingDir})
 		}
 		if m.EnvInfo.GitBranch != "" {
-			rows = append(rows, detailsRow{"branch", m.EnvInfo.GitBranch})
+			rows = append(rows, detailsRow{Label: "branch", Value: m.EnvInfo.GitBranch})
 		}
 		if m.Model != "" {
-			rows = append(rows, detailsRow{"model", m.ProfileID + " · " + m.Model})
+			rows = append(rows, detailsRow{Label: "model", Value: m.ProfileID + " · " + m.Model})
 		}
 		if m.TurnCount > 0 {
-			rows = append(rows, detailsRow{"turns", strconv.Itoa(m.TurnCount)})
+			rows = append(rows, detailsRow{Label: "turns", Value: strconv.Itoa(m.TurnCount)})
 		}
 		if m.LastInputTokens > 0 {
-			rows = append(rows, detailsRow{"last input tokens", strconv.Itoa(m.LastInputTokens)})
+			rows = append(rows, detailsRow{Label: "last input tokens", Value: strconv.Itoa(m.LastInputTokens)})
 		}
+		if m.WorkMillis > 0 {
+			rows = append(rows, detailsRow{Label: "work time", Value: formatWorkMillis(m.WorkMillis)})
+		}
+		rows = append(rows, tokensAndCostRows(m.Model, serfUsageFromCumulative(m.CumulativeUsage))...)
 		if m.ParentSessionID != "" {
 			rows = append(rows,
-				detailsRow{"forked from", m.ParentSessionID},
-				detailsRow{"divergence turn", strconv.Itoa(m.DivergenceTurn)},
+				detailsRow{Label: "forked from", Value: m.ParentSessionID},
+				detailsRow{Label: "divergence turn", Value: strconv.Itoa(m.DivergenceTurn)},
 			)
 		}
 		if m.IsSubagent {
-			rows = append(rows, detailsRow{"kind", "subagent"})
+			rows = append(rows, detailsRow{Label: "kind", Value: "subagent"})
 		}
 	}
 
 	if s.cfg.Roster != nil {
 		if le, ok := s.cfg.Roster.Find(id); ok {
 			rows = append(rows,
-				detailsRow{"daemon", le.Address},
-				detailsRow{"pid", strconv.Itoa(le.PID)},
+				detailsRow{Label: "daemon", Value: le.Address},
+				detailsRow{Label: "pid", Value: strconv.Itoa(le.PID)},
 			)
+			if status := s.fetchStatus(le); status != nil {
+				if status.ContextWindow > 0 {
+					rows = append(rows, detailsRow{Label: "context", Value: fmt.Sprintf("%.0f%% used (%s)",
+						status.ContextPressure*100,
+						formatContextNumbers(status.ContextUsed, status.ContextWindow, status.ContextRemaining))})
+				}
+				if status.WorkMillis > 0 {
+					rows = append(rows, detailsRow{Label: "work time", Value: formatWorkMillis(status.WorkMillis)})
+				}
+				rows = append(rows, tokensAndCostRows(status.Model, status.Usage)...)
+			}
 		}
 	}
 	if s.cfg.Past != nil {
@@ -220,7 +267,7 @@ func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, i
 	_, _ = fmt.Fprintln(w, `<header class="details-panel-header"><span>details</span><button class="details-panel-close" aria-label="close panel" onclick="document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))">✕</button></header>`)
 	_, _ = fmt.Fprintln(w, `<dl class="details-list">`)
 	for _, row := range rows {
-		_, _ = fmt.Fprintf(w, `<dt>%s</dt><dd>%s</dd>`, htmlEscape(row.Label), htmlEscape(row.Value))
+		renderDetailsRow(w, row)
 	}
 	_, _ = fmt.Fprintln(w, `</dl>`)
 }
@@ -299,6 +346,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 				data.WorkMillis = status.WorkMillis
 				data.Usage = status.Usage
 				data.ActiveTurnStartedAt = status.ActiveTurnStartedAt
+				data.Cost = appwire.EstimateCost(data.Model, data.Usage)
 				// Populate the context gauge here too so the lean /state poll
 				// (B3) needs no separate turns fetch.
 				data.ContextPercent = int(status.ContextPressure * 100)
@@ -346,6 +394,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 				WorkMillis: pe.Meta.WorkMillis,
 				Usage:      serfUsageFromCumulative(pe.Meta.CumulativeUsage),
 			}
+			data.Cost = appwire.EstimateCost(data.Model, data.Usage)
 			s.fillForkLineage(&data, pe.Meta)
 			s.fillSubagentLineage(&data, pe.Meta)
 			s.fillObserverLink(&data, pe.Meta)
@@ -363,6 +412,23 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 // ↑0 ↓0 (mirrors serfUsageFromLLM in cmd/serf/serve.go).
 func serfUsageFromCumulative(u schema.CumulativeUsage) *appwire.SerfUsage {
 	if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.TotalTokens == 0 {
+		return nil
+	}
+	return &appwire.SerfUsage{
+		InputTokens:     u.InputTokens,
+		OutputTokens:    u.OutputTokens,
+		CacheReadTokens: u.CacheReadTokens,
+		TotalTokens:     u.TotalTokens,
+	}
+}
+
+// appwireUsageFromHub maps hubapi's flattened Usage type back to
+// appwire.SerfUsage — the inverse of hubUsageFromAppwire — so
+// appwire.EstimateCost (which only knows the appwire wire type) can be
+// called from the hubapi.SessionDetail data renderInputStrip already has.
+// Returns nil when u is nil.
+func appwireUsageFromHub(u *hubapi.Usage) *appwire.SerfUsage {
+	if u == nil {
 		return nil
 	}
 	return &appwire.SerfUsage{
@@ -497,7 +563,7 @@ func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id 
 		"ContextPercent":      int(detail.ContextPressure * 100),
 		"ContextWindow":       detail.ContextWindow,
 		"ContextNumbers":      formatContextNumbers(detail.ContextUsed, detail.ContextWindow, detail.ContextRemaining),
-		"Cost":                "",
+		"Cost":                appwire.EstimateCost(detail.Model, appwireUsageFromHub(detail.Usage)),
 		"State":               detail.State,
 		"StateLabel":          stateLabel(detail.State, false),
 		"TurnCount":           detail.TurnCount,

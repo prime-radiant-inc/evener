@@ -37,6 +37,8 @@
     reasoningGist,
     reasoningTier,
     bindDisclosureToggle,
+    turnMetaParts,
+    formatTurnMetaText,
   } = window.SerfRendererInternal;
 
   // Tool-output renderers live in renderer-tools.js (loaded after format).
@@ -953,6 +955,34 @@
           // A turn completing is one of the moments the status row's work-time
           // and token clusters need to catch up on — refresh now.
           if (window.htmx) htmx.trigger(document.body, "serf-hub:status-refresh");
+          {
+            const turn = data && data.turn;
+            if (turn && turn.id) {
+              const escId = (window.CSS && window.CSS.escape) ? window.CSS.escape(turn.id) : String(turn.id).replace(/["\\]/g, "\\$&");
+              const els = this.conversation.querySelectorAll('.assistant-message[data-turn-id="' + escId + '"]');
+              const el = els.length ? els[els.length - 1] : null;
+              const parts = turnMetaParts(turn);
+              if (el && (parts.duration || parts.tokens || parts.cost)) {
+                let meta = el.querySelector(".turn-meta");
+                if (!meta) {
+                  meta = document.createElement("span");
+                  meta.className = "turn-meta";
+                  el.appendChild(meta);
+                }
+                meta.textContent = "";
+                const segs = [parts.duration, parts.tokens].filter(Boolean);
+                if (segs.length) meta.appendChild(document.createTextNode(segs.join(" · ")));
+                if (parts.cost) {
+                  if (segs.length) meta.appendChild(document.createTextNode(" · "));
+                  const costEl = document.createElement("span");
+                  costEl.className = "cost";
+                  costEl.textContent = parts.cost;
+                  meta.appendChild(costEl);
+                }
+                meta.title = formatTurnMetaText(turn);
+              }
+            }
+          }
           break;
         case "SESSION_START":
           this.statusUpdateSeq++;
@@ -1916,6 +1946,7 @@
       this.currentMessageId = id;
       const el = document.createElement("div");
       el.className = "assistant-message";
+      el.dataset.turnId = this.activeTurnId || "";
       this.conversation.appendChild(el);
       this.activeMessages.set(id, { el, textBuf: "" });
     },
@@ -1929,6 +1960,7 @@
       this.closeSubagentModule();
       const el = document.createElement("div");
       el.className = "assistant-message";
+      el.dataset.turnId = this.activeTurnId || "";
       try { el.innerHTML = window.marked.parse(text); }
       catch (e) { el.textContent = text; }
       this.conversation.appendChild(el);
@@ -5222,6 +5254,12 @@
       const ta = document.querySelector(".message-input");
       if (!ta) return;
       const suppressSubmitShortcuts = this.isInPane && this.isInPane();
+      // Reads the same serf-hub.composer JSON blob the Display settings write
+      // (via settings-display.js); enterToSend defaults OFF (absent/false).
+      const enterToSend = () => {
+        try { return (JSON.parse(localStorage.getItem("serf-hub.composer") || "{}") || {}).enterToSend === true; }
+        catch (e) { return false; }
+      };
       ta.addEventListener("keydown", (e) => {
         if (!suppressSubmitShortcuts && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
           e.preventDefault();
@@ -5229,11 +5267,17 @@
           if (form) form.requestSubmit();
           return;
         }
-        // Shift+Enter is the keybind equivalent of the "steer"
-        // button (kata 0bq1): drain whatever's queued (plus anything in
-        // the textarea) as a single STEERING injection. Pre-existing
-        // browser default (newline insertion) is suppressed.
-        if (!suppressSubmitShortcuts && e.key === "Enter" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (!suppressSubmitShortcuts && enterToSend() && e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+          e.preventDefault();
+          const form = ta.closest("form");
+          if (form) form.requestSubmit();
+          return;
+        }
+        // Shift+Enter is the keybind equivalent of the "steer" button (kata
+        // 0bq1) EXCEPT when Enter-to-send is on, where Shift+Enter must
+        // revert to plain newline (Enter itself now sends) — the steer
+        // BUTTON remains clickable either way, only this keybind changes.
+        if (!suppressSubmitShortcuts && !enterToSend() && e.key === "Enter" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
           const steer = document.querySelector("[data-steer-trigger]");
           if (steer && !steer.disabled) {
             e.preventDefault();

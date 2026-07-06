@@ -61,6 +61,15 @@ func (d detailsDrawer) View() string {
 	if detail.ContextPressure > 0 {
 		fmt.Fprintf(&b, "Context:  %s\n", ghostText(fmt.Sprintf("%.0f%% used", detail.ContextPressure*100)))
 	}
+	if detail.WorkMillis > 0 {
+		fmt.Fprintf(&b, "Work:     %s\n", ghostText(formatWorkMillis(detail.WorkMillis)))
+	}
+	if detail.Usage != nil {
+		u := detail.Usage
+		fmt.Fprintf(&b, "Tokens:   %s\n", ghostText(fmt.Sprintf("↑%s ↓%s · cache-read %s · total %s",
+			formatTokens(int(u.InputTokens)), formatTokens(int(u.OutputTokens)),
+			formatTokens(int(u.CacheReadTokens)), formatTokens(int(u.TotalTokens)))))
+	}
 	if d.HubURL != "" && detail.Ref != "" {
 		base := strings.TrimRight(d.HubURL, "/")
 		escaped := url.PathEscape(detail.Ref)
