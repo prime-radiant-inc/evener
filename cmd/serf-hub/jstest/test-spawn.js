@@ -115,22 +115,30 @@ formDom.window.SerfAppwire = {
       },
     };
   },
-  listModelsWithDiagnostics(params) {
-    listModelsCalls++;
-    listModelsParams = params || {};
-    return {
-      then(resolve) {
-        resolve({ models: modelsForHarness((params || {}).harness), diagnostics: [] });
-        return { catch() {} };
-      },
-    };
-  },
   completeDirs(prefix) {
     dirCompletionPrefixes.push(prefix);
     return Promise.resolve({
       results: [{ path: "/tmp/project-with-oauth", is_git: true }],
     });
   },
+};
+// The model PICKER (not the prefill-validation listModels() call above) goes
+// through listModelsWithDiagnosticsForHarness, which always fetches the REST
+// /api/models endpoint — the appwire RPC ModelList response has no
+// display_name/badge fields to enrich the picker with. Mock window.fetch
+// (not SerfAppwire.listModelsWithDiagnostics) so this exercises the real
+// code path, and keep tallying listModelsCalls/listModelsParams so the
+// existing "picker fetches the right harness/cwd" assertions still hold.
+formDom.window.fetch = (url) => {
+  const u = new URL(String(url), "http://127.0.0.1:9180");
+  const harness = u.searchParams.get("harness") || "";
+  const cwd = u.searchParams.get("cwd") || "";
+  listModelsCalls++;
+  listModelsParams = { harness, cwd };
+  return Promise.resolve({
+    ok: true,
+    json: () => Promise.resolve({ models: modelsForHarness(harness), diagnostics: [] }),
+  });
 };
 formDom.window.localStorage.setItem("serf-hub.spawn-defaults.global.model", "openai/gpt-5.2");
 
@@ -272,6 +280,10 @@ listModelsParams = null;
 formDom.window.document.querySelector('button[data-chip="model"]').click();
 assert(listModelsCalls === 1, "serf model picker should fetch launch-scoped model list");
 assert(listModelsParams.cwd === "/tmp/project-with-oauth", "serf model picker should pass selected working directory");
+// fetch() (unlike the old fake-thenable SerfAppwire stub) resolves on a real
+// microtask — let the picker's .then() callback build the DOM before
+// inspecting it.
+await new Promise((r) => setTimeout(r, 0));
 // Flat, grouped list — not the old provider/model master-detail (which caused
 // a provider tap to false-dismiss the picker).
 const mp = formDom.window.document.querySelector(".chip-picker");
@@ -299,6 +311,7 @@ formDom.window.document.querySelector('button[data-chip="model"]').click();
 assert(listModelsCalls === 2, "codex model picker should fetch harness-scoped model list");
 assert(listModelsParams.harness === "codex", "codex model picker should pass selected harness");
 assert(listModelsParams.cwd === "/tmp/project-with-oauth", "codex model picker should pass selected working directory");
+await new Promise((r) => setTimeout(r, 0));
 assert(
   Array.from(formDom.window.document.querySelectorAll(".chip-picker-model-name")).map(el => el.textContent.trim()).join(",") === "gpt-5.3-codex",
   "codex model picker should offer codex source models",
@@ -340,22 +353,21 @@ diagModelDom.window.SerfAppwire = {
   listModels() {
     return { then(resolve) { resolve([{ provider: "openai", model: "gpt-5.5" }]); return { catch() {} }; } };
   },
-  listModelsWithDiagnostics() {
-    return {
-      then(resolve) {
-        resolve({
-          models: [{ provider: "openai", model: "gpt-5.5" }],
-          diagnostics: [{ provider: "kimi", message: "list models: HTTP 401", hint: "check credentials" }],
-        });
-        return { catch() {} };
-      },
-    };
-  },
 };
+// See the formDom fetch mock above: the picker always fetches REST
+// /api/models, never SerfAppwire.listModelsWithDiagnostics.
+diagModelDom.window.fetch = () => Promise.resolve({
+  ok: true,
+  json: () => Promise.resolve({
+    models: [{ provider: "openai", model: "gpt-5.5" }],
+    diagnostics: [{ provider: "kimi", message: "list models: HTTP 401", hint: "check credentials" }],
+  }),
+});
 diagModelDom.window.eval(dirPickerSrc);
 diagModelDom.window.eval(spawnSrc);
 diagModelDom.window.document.dispatchEvent(new diagModelDom.window.Event("DOMContentLoaded", { bubbles: true }));
 diagModelDom.window.document.querySelector('button[data-chip="model"]').click();
+await new Promise((r) => setTimeout(r, 0));
 const diagRows = Array.from(diagModelDom.window.document.querySelectorAll(".chip-picker-diagnostic")).map(el => el.textContent);
 assert(diagRows.length === 1, "picker should render one diagnostic row, got " + diagRows.length);
 assert(diagRows[0].includes("kimi") && diagRows[0].includes("list models: HTTP 401"),

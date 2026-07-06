@@ -1,9 +1,11 @@
-// Model picker Recent group must also render via the raw-fetch fallback path
-// (listModelsWithDiagnosticsForHarness's fetch("/api/models?...") branch, used
-// when window.SerfAppwire isn't defined). This exercises the real fallback
-// code, unlike test-spawn-model-picker-recent.js which mocks
-// window.SerfAppwire.listModelsWithDiagnostics directly and so never touches
-// this code path.
+// Model picker Recent group renders via listModelsWithDiagnosticsForHarness's
+// fetch("/api/models?...") call — its sole data source (the appwire RPC
+// ModelList response has no display_name/badge fields to enrich the picker
+// with, so this function always goes through the REST endpoint instead; see
+// spawn.js's comment on that function). Overlaps with
+// test-spawn-model-picker-recent.js's coverage now that both mock
+// window.fetch; kept separate as it predates that test's fix and exercises
+// the same real code path independently.
 const fs = require("fs");
 const path = require("path");
 const { JSDOM } = require("jsdom");

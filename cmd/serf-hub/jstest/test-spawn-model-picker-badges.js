@@ -1,8 +1,12 @@
 // Model picker: prettified display name + raw id secondary line + capability
-// badges (kata model-picker-badges). Loads spawn.js in JSDOM, stubs
-// SerfAppwire.listModelsWithDiagnostics to return one catalogued and one
-// uncatalogued model, opens the model chip picker, asserts on the rendered
-// DOM.
+// badges (kata model-picker-badges). Loads spawn.js in JSDOM, mocks
+// window.fetch("/api/models?...") — the picker's sole data source — to
+// return one catalogued and one uncatalogued model, opens the model chip
+// picker, asserts on the rendered DOM. (Not a window.SerfAppwire stub: the
+// appwire RPC ModelList response carries only bare {provider, model} — no
+// display_name/badge fields — so listModelsWithDiagnosticsForHarness always
+// goes through this REST endpoint instead; see spawn.js's comment on that
+// function.)
 const fs = require("fs");
 const path = require("path");
 const { JSDOM } = require("jsdom");
@@ -37,36 +41,26 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
   });
   const { window } = dom;
 
-  window.SerfAppwire = {
-    listModels(params) {
+  const cataloguedModel = {
+    provider: "anthropic", model: "claude-opus-4-6", display_name: "Claude Opus 4 6",
+    supports_tools: true, supports_vision: true, supports_reasoning: true,
+    reasoning_effort_levels: ["low", "medium", "high", "max"], supports_web_search: true,
+    context_window: 1000000, max_output_tokens: 128000,
+    input_cost_per_million: 5, output_cost_per_million: 25,
+  };
+  const uncataloguedModel = { provider: "mycompany", model: "unknown-model", display_name: "Unknown Model" };
+  window.fetch = (url) => {
+    if (String(url).indexOf("/api/models") === 0) {
       return Promise.resolve({
-        models: [
-          {
-            provider: "anthropic", model: "claude-opus-4-6", display_name: "Claude Opus 4 6",
-            supports_tools: true, supports_vision: true, supports_reasoning: true,
-            reasoning_effort_levels: ["low", "medium", "high", "max"], supports_web_search: true,
-            context_window: 1000000, max_output_tokens: 128000,
-            input_cost_per_million: 5, output_cost_per_million: 25,
-          },
-          { provider: "mycompany", model: "unknown-model", display_name: "Unknown Model" },
-        ],
+        ok: true,
+        json: () => Promise.resolve({
+          models: [cataloguedModel, uncataloguedModel],
+          diagnostics: [],
+          recent: [],
+        }),
       });
-    },
-    listModelsWithDiagnostics(params) {
-      return Promise.resolve({
-        models: [
-          {
-            provider: "anthropic", model: "claude-opus-4-6", display_name: "Claude Opus 4 6",
-            supports_tools: true, supports_vision: true, supports_reasoning: true,
-            reasoning_effort_levels: ["low", "medium", "high", "max"], supports_web_search: true,
-            context_window: 1000000, max_output_tokens: 128000,
-            input_cost_per_million: 5, output_cost_per_million: 25,
-          },
-          { provider: "mycompany", model: "unknown-model", display_name: "Unknown Model" },
-        ],
-        diagnostics: [],
-      });
-    },
+    }
+    return Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
   };
 
   window.eval(spawnSrc);

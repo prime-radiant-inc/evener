@@ -1730,18 +1730,23 @@
     return fetch("/api/models" + suffix).then(r => r.json());
   }
 
-  // listModelsWithDiagnosticsForHarness resolves to {models, diagnostics} so the
-  // picker can report configured providers whose listing failed instead of
-  // dropping them silently. Falls back gracefully if the server or appwire path
-  // only returns a bare model array.
+  // listModelsWithDiagnosticsForHarness resolves to {models, diagnostics, recent}
+  // so the picker can report configured providers whose listing failed instead
+  // of dropping them silently. Always goes through the REST /api/models
+  // endpoint (like fetchEnrichedModelsForHarness/openEffortPicker and
+  // settings-pickers.js) rather than window.SerfAppwire.listModelsWithDiagnostics:
+  // the appwire RPC's ModelList response carries only appwire.ModelDescriptor's
+  // bare {provider, model} — the picker's prettified display_name and
+  // capability badges are REST-only enrichment (modelDescriptorsToAPIModels in
+  // web_spawn.go) that the wire type has no fields to carry. Preferring the
+  // appwire path here used to silently render every row with no display name
+  // and no badges whenever window.SerfAppwire was loaded — which is
+  // unconditional in the app shell (app.html), so it always won.
   function listModelsWithDiagnosticsForHarness(harness) {
     const params = {};
     if (!harnessUsesSerfModels(harness)) params.harness = harness;
     const cwd = currentWorkingDir();
     if (cwd) params.cwd = cwd;
-    if (window.SerfAppwire && typeof window.SerfAppwire.listModelsWithDiagnostics === "function") {
-      return window.SerfAppwire.listModelsWithDiagnostics(params);
-    }
     const query = new URLSearchParams();
     Object.keys(params).forEach(k => query.set(k, params[k]));
     query.set("diagnostics", "1");
