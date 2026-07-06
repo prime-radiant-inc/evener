@@ -1,6 +1,7 @@
 package repair
 
 import (
+	"bytes"
 	"encoding/json"
 	"regexp"
 	"strconv"
@@ -41,7 +42,7 @@ func RepairJSON(raw []byte) ([]byte, []Change) {
 	// mislead a caller into treating a still-broken or newly-corrupted
 	// result as a successful repair.
 	candidate := []byte(s)
-	if len(changes) == 0 || !json.Valid(candidate) || string(candidate) == string(raw) {
+	if len(changes) == 0 || !json.Valid(candidate) || bytes.Equal(candidate, raw) {
 		return raw, nil
 	}
 	return candidate, changes

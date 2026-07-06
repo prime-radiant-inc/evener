@@ -1,6 +1,7 @@
 package repair
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 )
@@ -8,7 +9,7 @@ import (
 func TestRepairJSON_NoOpOnValid(t *testing.T) {
 	in := []byte(`{"a":"b"}`)
 	out, changes := RepairJSON(in)
-	if string(out) != string(in) || changes != nil {
+	if !bytes.Equal(out, in) || changes != nil {
 		t.Fatalf("out=%s changes=%+v", out, changes)
 	}
 }
@@ -34,7 +35,7 @@ func TestRepairJSON_ValidSurrogatePairUntouched(t *testing.T) {
 	if changes != nil {
 		t.Fatalf("valid pair altered: %+v", changes)
 	}
-	if string(out) != string(in) {
+	if !bytes.Equal(out, in) {
 		t.Fatalf("out=%s", out)
 	}
 }
@@ -64,7 +65,7 @@ func TestRepairJSON_AdjacentBrokenEscapes_NoFalseSuccess(t *testing.T) {
 	if changes != nil {
 		t.Fatalf("expected no changes (false success), got %+v (out=%s)", changes, out)
 	}
-	if string(out) != string(in) {
+	if !bytes.Equal(out, in) {
 		t.Fatalf("expected raw input returned unchanged, got %s", out)
 	}
 }
@@ -83,7 +84,7 @@ func TestRepairJSON_EscapedBackslashU_NotCorrupted(t *testing.T) {
 	if changes != nil {
 		t.Fatalf("expected no changes for already-valid input, got %+v (out=%s)", changes, out)
 	}
-	if string(out) != string(in) {
+	if !bytes.Equal(out, in) {
 		t.Fatalf("expected input returned unchanged, got %s", out)
 	}
 }
