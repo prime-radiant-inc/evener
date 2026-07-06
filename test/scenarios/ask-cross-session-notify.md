@@ -19,14 +19,16 @@ per that spec's §11 reconciliation with this one).
 
 ## Steps
 
-1. Spawn Session B first — trivial, no question — and wait for it to go idle:
+1. Spawn Session B first — trivial, no question — and wait for it to settle `awaiting`
+   (your-move — a plain completed turn with nothing pending now rests `awaiting`, not
+   `idle`; see `status-vocabulary-roundtrip.md`):
    ```bash
    tmpdir_b=$(mktemp -d -t serf-e2e-ask-notify-b-XXXXX)
    bodyB=$(jq -n --arg wd "$tmpdir_b" '{prompt:"Say hello and stop.", model:"openai/gpt-5.5", working_dir:$wd, harness:"serf", branch:"", access_mode:"full", agent:"default", launch_overrides:{}}')
    SIDB=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$bodyB" "$HUB/api/spawn" | jq -r '.session_id')
    for i in $(seq 1 60); do
      st=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SIDB" | jq -r '.state // ""')
-     [ "$st" = "idle" ] && break
+     [ "$st" = "awaiting" ] && break
      sleep 1
    done
    echo "SIDB=$SIDB"
@@ -99,15 +101,38 @@ per that spec's §11 reconciliation with this one).
 5. The sidebar now DOES join the broadcast: `serf/attention/changed` is on `sidebar.js`'s
    refresh-trigger allowlist, so an already-open tab's sidebar should self-refresh on the
    same broadcast step 4 waited on. Fetch a fresh copy explicitly anyway, for a
-   deterministic assertion independent of that client-side timing:
+   deterministic assertion independent of that client-side timing — the sidebar is
+   client-rendered from `GET /api/tree` JSON post-WS3 (there is no more
+   `/_partials/sidebar` route or server-rendered partial to `DOMParser`), and `/api/tree`
+   is a plain JSON API route, not an htmx partial, so no `HX-Request` header is needed:
    ```javascript
-   fetch('/_partials/sidebar').then(r => r.text()).then(html => {
-     const doc = new DOMParser().parseFromString(html, 'text/html');
-     const tier = doc.querySelector('[data-tier="needs-you"]');
-     const rows = tier ? [...tier.querySelectorAll('.needs-you-row')].map(r => r.textContent.trim()) : [];
-     window.__sidebarCheck = { present: !!tier, count: tier ? tier.querySelector('.count').textContent : null, rows };
+   fetch('/api/tree', { headers: { Authorization: 'Bearer ' + '<TOKEN>' } }).then(r => r.json()).then(tree => {
+     const row = tree.needs_you.find(n => n.session_id === '<SIDA>');
+     window.__sidebarCheck = { present: !!row, count: tree.needs_you.length, askPending: row ? row.ask_pending : null };
      return window.__sidebarCheck;
    })
+   ```
+6. **`loudScope` default: a generic your-move settle stays quiet.** Re-arm the stub from step
+   2 (fresh `window.__asked = []`, baseline already landed), then spawn a **third**, throwaway
+   session with a trivial no-ask prompt (e.g. "Say hello and stop.") and wait for it to settle
+   `awaiting`. This is a generic your-move transition — no `ask_user` call, no error — under
+   the default `loudScope: "asks"` preference (`notifications.js`'s default when
+   `serf-hub.notifications.loudScope` is unset in `localStorage`):
+   ```bash
+   tmpdir_c=$(mktemp -d -t serf-e2e-ask-notify-c-XXXXX)
+   bodyC=$(jq -n --arg wd "$tmpdir_c" '{prompt:"Say hello and stop.", model:"openai/gpt-5.5", working_dir:$wd, harness:"serf", branch:"", access_mode:"full", agent:"default", launch_overrides:{}}')
+   SIDC=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$bodyC" "$HUB/api/spawn" | jq -r '.session_id')
+   for i in $(seq 1 60); do
+     st=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SIDC" | jq -r '.state // ""')
+     [ "$st" = "awaiting" ] && break
+     sleep 1
+   done
+   echo "SIDC=$SIDC state=$st"
+   ```
+   Wait for the watcher's next broadcast (as in step 4), then read the stub from Session B's
+   tab:
+   ```javascript
+   window.__asked
    ```
 
 ## Expected
@@ -117,19 +142,29 @@ per that spec's §11 reconciliation with this one).
   `captured` contains one entry whose `title` includes Session A's id or title
   (`fireOsNotification` fired — Session A's entry in the broadcast's `changed[]` transitioned
   `level: "needs_you"` from a `prevLevel` that was neither `needs_you` nor `error`).
-- Step 5: `present` is `true`; `rows` includes an entry referencing Session A; `count` is at
-  least `"1"`.
+- Step 5: `present` is `true`; `askPending` is `true` (Session A asked a question — this is the
+  band-ordering wire bit this track adds, Task 21); `count` is at least `1` and the found
+  `row` is Session A's (assert on presence/identity, not a hardcoded population count — the
+  live NeedsYou tier can otherwise include Session B or C depending on what's still resting
+  `awaiting` when this step runs).
+- Step 6: `window.__asked` gained **no** new entry for Session C's generic your-move
+  transition (still just the one entry from Session A's ask, already asserted in step 4) —
+  under the default `loudScope: "asks"`, a plain your-move settle stays quiet while an
+  ask-pending transition fires, demonstrating the default scope distinguishes the two.
 - Falsification: if a pending ask does not surface the session in the NeedsYou tier and
   raise the OS notification from a *different* session's viewport (the roster path), the
-  needs-you chain is broken.
+  needs-you chain is broken. Falsification (loudScope): if a generic your-move settle also
+  fires an OS notification under the default `"asks"` scope, or if Session A's ask-pending
+  entry does NOT fire one, the loud-scope gate is not distinguishing tiers.
 
 ## Cleanup
 
 ```bash
 curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d '{}' "$HUB/s/$SIDA/shutdown" >/dev/null
 curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d '{}' "$HUB/s/$SIDB/shutdown" >/dev/null
+curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d '{}' "$HUB/s/$SIDC/shutdown" >/dev/null
 pkill -f serf-hub-ask
-rm -rf "$tmpdir_a" "$tmpdir_b" /tmp/serf-ask /tmp/serf-hub-ask
+rm -rf "$tmpdir_a" "$tmpdir_b" "$tmpdir_c" /tmp/serf-ask /tmp/serf-hub-ask
 ```
 
 ## Sharp edges
@@ -157,14 +192,23 @@ rm -rf "$tmpdir_a" "$tmpdir_b" /tmp/serf-ask /tmp/serf-hub-ask
   immediately) but there is no "into-transition" left to observe, so the OS notification for
   *that* ask is missed — not a bug, the documented invariant. Always open the watching tab
   and let its baseline land *before* triggering the ask (step 2).
-- **The sidebar tier now CAN live-update, but step 5 doesn't lean on it.** The sidebar
-  partial (`cmd/serf-hub/templates/partials/sidebar.html`) re-renders on
-  `hx-trigger="load, sidebar:refresh from:body"`, and `sidebar.js` now dispatches that
-  refresh on `serf/attention/changed` too — so a real user's already-open tab should pick
-  up Session A's row without a reload. Step 5 still fetches `/_partials/sidebar` directly
-  rather than asserting on the already-open tab's DOM, so the check doesn't depend on
-  client-side refresh timing (or on Session B's tab having `sidebar.js` wired to a visible
-  sidebar element at all).
+- **The sidebar tier now CAN live-update, but step 5 doesn't lean on it.** Post-WS3, the
+  sidebar is client-rendered by `cmd/serf-hub/assets/sidebar.js` from `GET /api/tree` JSON —
+  there is no more server-rendered `templates/partials/sidebar.html` or `/_partials/sidebar`
+  route. `sidebar.js` refetches `/api/tree` (`fetchTree`) and reconciles the DOM via keyed
+  `RowID`s (not a full re-render) whenever it receives `thread/started`, `thread/closed`,
+  `thread/status/changed`, `serf/job/started`, `serf/job/finished`, or `serf/attention/changed`
+  (its `QUALIFYING` event map) — so a real user's already-open tab should pick up Session A's
+  row without a reload. Step 5 still fetches `/api/tree` directly rather than asserting on the
+  already-open tab's DOM, so the check doesn't depend on client-side refresh timing (or on
+  Session B's tab having `sidebar.js` wired to a visible sidebar element at all).
 - If `Notification` gets stubbed on the wrong `window` (e.g. a stale tab reference after a
   navigation), `window.__asked` stays empty even though the code path fired — re-run the
   arm-and-stub eval (step 2) immediately before the wait if you re-navigate.
+- **Step 4's `(1) …` title-count is illustrative, not a hard count to match.** Since the
+  unified vocabulary lands (Tasks 1-30 of this track), *every* `awaiting` session — Session
+  B's own plain your-move rest included, not just Session A's ask — counts toward the
+  NeedsYou tier and its title badge. Live in this run the count read `(3)` (Session A, B, and
+  a third throwaway session already in flight for step 6's prep) with Session A still the
+  transitioning entry that fired the notification; assert the *transition into needs_you*
+  (`captured` gaining Session A's entry) rather than a specific digit in `title`.
