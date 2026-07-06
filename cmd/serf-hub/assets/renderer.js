@@ -3232,7 +3232,7 @@
       if (more) {
         if (doneRows.length > 0) {
           more.hidden = false;
-          more.textContent = expanded ? "collapse ▴" : ("✓ " + doneRows.length + " done ▾");
+          more.innerHTML = expanded ? "collapse ▴" : (window.SerfIcons.ended + " " + doneRows.length + " done ▾");
         } else {
           more.hidden = true;
         }

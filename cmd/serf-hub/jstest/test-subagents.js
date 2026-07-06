@@ -390,6 +390,7 @@ await scenario("done subagents fold behind a count; running stay visible", [
   }
   const more = mod.querySelector(".subs-more");
   if (!more || !/5 done/.test(more.textContent)) return { ok: false, detail: "done should fold behind a '✓ 5 done' count: " + (more && more.textContent) };
+  if (!more.innerHTML.includes("<svg") || more.innerHTML.includes("✓")) return { ok: false, detail: "the fold button's done glyph should be a SerfIcons svg, not a literal '✓': " + more.innerHTML };
   if (mod.dataset.expanded === "true") return { ok: false, detail: "module should start collapsed" };
   // Expanding reveals the done rows too.
   more.click();
