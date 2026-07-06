@@ -1,8 +1,9 @@
 // Settings page interactivity — notification toggles (title bar count,
-// favicon dot, OS notification, sound). Uses event delegation on
-// document.body so it works even when the settings partial is
-// htmx-swapped in (inline scripts in swapped content don't reliably
-// execute across all htmx versions).
+// favicon dot, OS notification, sound) and the loudScope radio (which
+// transitions OS/sound alert for: questions & errors only, or everything
+// needing you). Uses event delegation on document.body so it works even
+// when the settings partial is htmx-swapped in (inline scripts in swapped
+// content don't reliably execute across all htmx versions).
 //
 // Not to be confused with assets/notifications.js, which drives the
 // runtime title/favicon/OS/sound alerting itself and reads the same
@@ -59,6 +60,19 @@
       commit();
       return;
     }
+
+    if (target.matches("input[type=radio][data-notif-radio]")) {
+      const key = target.dataset.notifRadio;
+      const desired = target.value;
+      const cur = readNotifPrefs();
+      cur[key] = desired;
+      writeNotifPrefs(cur);
+      document.dispatchEvent(new CustomEvent("serf-hub:notifications-changed", {
+        detail: { key, value: desired },
+      }));
+      if (window.SerfToast) window.SerfToast.show("Settings saved", "success");
+      return;
+    }
   });
 
   // Reflect current notification prefs whenever a settings pane is swapped
@@ -69,6 +83,11 @@
     if (notifBoxes.length) {
       const prefs = readNotifPrefs();
       notifBoxes.forEach((b) => { b.checked = !!prefs[b.dataset.notif]; syncToggleState(b); });
+    }
+    const loudScopeRadios = document.querySelectorAll('input[type=radio][data-notif-radio="loudScope"]');
+    if (loudScopeRadios.length) {
+      const stored = readNotifPrefs().loudScope || "asks";
+      loudScopeRadios.forEach((r) => { r.checked = r.value === stored; });
     }
   }
 
