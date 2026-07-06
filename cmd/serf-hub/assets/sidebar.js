@@ -68,6 +68,7 @@
     if (n.branch) meta.appendChild(metaSpan(n.branch));
     meta.appendChild(metaSpan(ageString(n.updated_at)));
     if (n.favorite) a.setAttribute("data-favorite", "");
+    if (n.ask_pending) a.setAttribute("data-ask", "true");
     if (n.children && n.children.length) a.appendChild(buildChildrenToggle(n));
     var menuBtn = document.createElement("button");
     menuBtn.type = "button";
@@ -103,6 +104,7 @@
     var title = a.querySelector(".title");
     if (title && title.textContent !== n.title) title.textContent = n.title;
     if (n.favorite) a.setAttribute("data-favorite", ""); else a.removeAttribute("data-favorite");
+    if (n.ask_pending) a.setAttribute("data-ask", "true"); else a.removeAttribute("data-ask");
     patchChildrenToggle(a, n);
   }
 

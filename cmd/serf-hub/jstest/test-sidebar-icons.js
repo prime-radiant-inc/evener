@@ -42,5 +42,11 @@ const badge = w.SerfSidebarInternal.buildRollupBadge("rollup-live", "working", 3
 assert.ok(badge.querySelector("svg"), "rollup badge must render an svg icon, not a text glyph");
 assert.strictEqual(badge.textContent.trim(), "3", "rollup badge count text must still read as a plain number");
 
+const askOnRow = w.SerfSidebarInternal.buildRow({ row_id: "x", ref: "local:01A", state: "awaiting", ask_pending: true, title: "t", session_id: "01A" });
+assert.strictEqual(askOnRow.getAttribute("data-ask"), "true", "an ask-pending row must carry data-ask=true");
+
+const askOffRow = w.SerfSidebarInternal.buildRow({ row_id: "y", ref: "local:01B", state: "awaiting", ask_pending: false, title: "t", session_id: "01B" });
+assert.ok(!askOffRow.hasAttribute("data-ask"), "a your-move row must not carry data-ask");
+
 console.log("test-sidebar-icons.js: OK");
 process.exit(0); // sidebar.js's 60s idle-resync interval keeps the event loop alive otherwise
