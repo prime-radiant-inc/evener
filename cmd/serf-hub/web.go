@@ -363,8 +363,7 @@ func (s *WebServer) handleWorkspaceEmpty(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = fmt.Fprint(w, `<div class="empty-state empty-state-workspace">
   <div class="welcome-wordmark">serf<span class="welcome-dot">.</span></div>
-  <p class="empty-state-title">Watch your agents work.</p>
-  <p class="empty-state-body">Spawn a session, or pick one from the sidebar. Every session stays live — jump back in any time.</p>
+  <p class="empty-state-body">Spawn a session, or pick one from the sidebar.</p>
   <div class="empty-state-actions">
     <a class="btn btn-primary" href="/new" hx-get="/_partials/workspace/spawn" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/new">＋ New session</a>
     <button class="btn btn-ghost" type="button" data-search-trigger>Search <kbd>⌘K</kbd></button>
