@@ -3,6 +3,7 @@
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
 const src = fs.readFileSync(__dirname + "/../assets/sidebar.js", "utf8");
+const iconsSrc = fs.readFileSync(__dirname + "/../assets/icons.js", "utf8");
 
 const dom = new JSDOM(`<!DOCTYPE html><html><body><aside id="sidebar"></aside><main id="workspace"></main></body></html>`, {
   runScripts: "outside-only", pretendToBeVisual: true, url: "http://localhost/s/01A",
@@ -16,6 +17,7 @@ const tree = { needs_you: [], favorites: [], archived_projects: [], test_runs: [
     sessions: [{ row_id: "project:p1:local:01A", ref: "local:01A", session_id: "01A", title: "hi", state: "idle", kind: "session", tier: "current", live: false }] }],
   attentionSummary: { needsYou: 0, error: 0, working: 0 } };
 w.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(tree) });
+w.eval(iconsSrc);
 w.eval(src);
 
 // Skeleton painted synchronously on eval, before fetch resolves.

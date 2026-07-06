@@ -643,6 +643,13 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
 .status-dot.subagent { background: var(--state-subagent); }
 .status-dot.rollup { margin-left: auto; }
 
+.status-icon { display: inline-flex; width: 12px; height: 12px; font-size: 12px; color: var(--state-ended); flex-shrink: 0; }
+.status-icon[data-state="active"] { color: var(--state-working); }
+.status-icon[data-state="awaiting"] { color: var(--state-awaiting); }
+.status-icon[data-state="warning"] { color: var(--state-warning); }
+.status-icon[data-state="idle"] { color: var(--state-idle); }
+.status-icon[data-state="errored"] { color: var(--error); }
+
 /* Project header: the whole row is the toggle target — sidebar.js wires
    click on the header div itself, and its buttons (menu, etc.) call
    stopPropagation so they don't also trigger the toggle. Density floor
