@@ -54,6 +54,42 @@ func TestGetPrice_LongestPrefix(t *testing.T) {
 	}
 }
 
+func TestGetPrice_ProviderQualifiedRef(t *testing.T) {
+	cat := &ModelCatalog{
+		Models: []ModelInfo{
+			{ID: "claude-opus-4-5", InputCostPerMillion: f64(5.0), OutputCostPerMillion: f64(25.0)},
+		},
+	}
+	// Real stored session model ids can carry a provider namespace the
+	// catalog's bare key never sees (agent/provider/profile.go:505-528 keeps
+	// the namespace for meta-provider upstreams like openrouter/minimax).
+	p, ok := cat.GetPrice("anthropic/claude-opus-4-5")
+	if !ok {
+		t.Fatal("expected provider-qualified ref to resolve via LookupModelInfo")
+	}
+	if p.InputPerM != 5.0 || p.OutputPerM != 25.0 {
+		t.Errorf("got in=%v out=%v, want 5/25", p.InputPerM, p.OutputPerM)
+	}
+}
+
+func TestGetPrice_OneMillionContextSuffix(t *testing.T) {
+	cat := &ModelCatalog{
+		Models: []ModelInfo{
+			{ID: "claude-opus-4-5", InputCostPerMillion: f64(5.0), OutputCostPerMillion: f64(25.0)},
+		},
+	}
+	// The "[1m]" suffix (agent/provider/profile.go:743,
+	// llm/providers/anthropic/models.go:90) selects the 1M-context beta but
+	// carries no separate pricing entry — it must resolve to the base model.
+	p, ok := cat.GetPrice("claude-opus-4-5[1m]")
+	if !ok {
+		t.Fatal("expected [1m]-suffixed ref to resolve via LookupModelInfo")
+	}
+	if p.InputPerM != 5.0 {
+		t.Errorf("got in=%v, want 5.0", p.InputPerM)
+	}
+}
+
 func TestGetPrice_UnknownModel(t *testing.T) {
 	cat := &ModelCatalog{
 		Models: []ModelInfo{

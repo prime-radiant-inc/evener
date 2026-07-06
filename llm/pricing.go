@@ -23,7 +23,9 @@ type Price struct {
 // and models missing base rates return (Price{}, false).
 //
 // Lookup order:
-//  1. Exact match on ID or alias (via GetModelInfo).
+//  1. Resolve via LookupModelInfo, which handles exact/alias matches plus
+//     provider-qualified refs (e.g. "anthropic/claude-opus-4-5") and
+//     "[1m]"-suffixed refs.
 //  2. Longest-prefix match over all model IDs. This handles date-stamped
 //     snapshots like "claude-opus-4-5-20260101" resolving to the
 //     "claude-opus-4-5" family when only the family entry has pricing.
@@ -35,7 +37,7 @@ func (c *ModelCatalog) GetPrice(modelID string) (Price, bool) {
 	if id == "" {
 		return Price{}, false
 	}
-	if mi := c.GetModelInfo(id); mi != nil {
+	if mi := c.LookupModelInfo(id); mi != nil {
 		if p, ok := priceFromModelInfo(mi); ok {
 			return p, true
 		}
