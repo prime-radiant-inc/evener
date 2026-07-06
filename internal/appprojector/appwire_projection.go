@@ -977,7 +977,7 @@ func hookEndAnnouncement(data events.HookEndData) string {
 func toolCallRepairedAnnouncement(data events.ToolCallRepairedData) string {
 	name := fallbackLabel(data.ToolName, "tool call")
 	if len(data.Changes) == 0 {
-		return fmt.Sprintf("Repaired %s", name)
+		return "Repaired " + name
 	}
 	return fmt.Sprintf("Repaired %s: %s", name, strings.Join(data.Changes, ", "))
 }

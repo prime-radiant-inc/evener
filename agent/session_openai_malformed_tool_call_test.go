@@ -133,8 +133,8 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	if !result.IsError {
 		t.Fatalf("tool result IsError = false, want true: %+v", result)
 	}
-	if !strings.Contains(fmt.Sprint(result.Content), "invalid tool arguments JSON") {
-		t.Fatalf("tool result content = %q, want invalid JSON diagnostic", fmt.Sprint(result.Content))
+	if !strings.Contains(fmt.Sprint(result.Content), "arguments were not valid JSON") {
+		t.Fatalf("tool result content = %q, want invalid-JSON repair diagnostic", fmt.Sprint(result.Content))
 	}
 
 	mu.Lock()
