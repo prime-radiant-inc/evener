@@ -413,6 +413,46 @@ func TestWeb_WorkspaceRendersBottomStopForActiveSession(t *testing.T) {
 	}
 }
 
+// TestWeb_WorkspaceAwaitingRestDisablesStopAndSteer covers a rested awaiting
+// session where ActiveTurnID is still populated — the daemon can flip State
+// to "awaiting" before clearing the turn id, and the inline disabled-gate
+// must key off State alone (not ActiveTurnID emptiness) to keep Stop/steer
+// disabled at first paint. Composer T1/T2 narrow the same predicate on the
+// TUI and JS surfaces; this is the server-rendered inline-markup analogue.
+func TestWeb_WorkspaceAwaitingRestDisablesStopAndSteer(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Past: hubcore.NewPastIndex("")})
+	web.sources.Add(&scriptedAppSource{
+		id: "codex",
+		thread: appwire.Thread{
+			ID: "th_await", SessionID: "th_await", Source: "codex",
+			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusAwaiting},
+			ModelProvider: "gpt-5",
+			Serf: appwire.SerfThread{
+				Ref:          "codex:th_await",
+				ActiveTurnID: "turn_awaiting_1",
+				Capabilities: appwire.ThreadCapabilities{Send: true, Steer: true, Interrupt: true, Queue: true},
+			},
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/"+url.PathEscape("codex:th_await")+"/workspace", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	stop := controlTag(t, body, `data-action-trigger="interrupt"`)
+	if !strings.Contains(stop, "disabled") {
+		t.Fatalf("rested awaiting Stop must be disabled at first paint: %s", stop)
+	}
+	steer := controlTag(t, body, `data-steer-trigger`)
+	if !strings.Contains(steer, "disabled") {
+		t.Fatalf("rested awaiting steer must be disabled at first paint: %s", steer)
+	}
+}
+
 // Icon-only controls must carry an aria-label. A bare title= attribute is not a
 // reliable accessible name for screen readers, so glyph-only buttons (the copy
 // session-id "⧉" and the attach "＋") need an explicit aria-label.

@@ -85,10 +85,10 @@
       </div>
       <div class="controls-right">
         {{if and (ne .State "ended") (ne .State "closed") (or .Capabilities.Interrupt .Capabilities.Steer .Capabilities.Send .Capabilities.Queue)}}
-        <button type="button" class="btn btn-danger stop-btn composer-icon-btn" data-action-trigger="interrupt" data-capability-interrupt="{{.Capabilities.Interrupt}}" title="stop the in-flight turn"{{if or (not .Capabilities.Interrupt) (eq .ActiveTurnID "") (and (ne .State "awaiting") (ne .State "active"))}} disabled{{end}}><span class="composer-glyph" aria-hidden="true">■</span><span class="btn-label">Stop</span></button>
+        <button type="button" class="btn btn-danger stop-btn composer-icon-btn" data-action-trigger="interrupt" data-capability-interrupt="{{.Capabilities.Interrupt}}" title="stop the in-flight turn"{{if or (not .Capabilities.Interrupt) (eq .ActiveTurnID "") (ne .State "active")}} disabled{{end}}><span class="composer-glyph" aria-hidden="true">■</span><span class="btn-label">Stop</span></button>
         {{end}}
         {{if or .Capabilities.Steer .Capabilities.Send .Capabilities.Queue}}
-        <button type="button" class="btn btn-ghost steer-btn" data-steer-trigger data-capability-steer="{{.Capabilities.Steer}}" title="drain the queue as a steering message — or steer with the textarea text when the queue is empty"{{if or (not .Capabilities.Steer) (eq .ActiveTurnID "") (and (ne .State "awaiting") (ne .State "active"))}} disabled{{end}}><span class="btn-label">steer</span> <kbd>⇧↵</kbd></button>
+        <button type="button" class="btn btn-ghost steer-btn" data-steer-trigger data-capability-steer="{{.Capabilities.Steer}}" title="drain the queue as a steering message — or steer with the textarea text when the queue is empty"{{if or (not .Capabilities.Steer) (eq .ActiveTurnID "") (ne .State "active")}} disabled{{end}}><span class="btn-label">steer</span> <kbd>⇧↵</kbd></button>
         {{end}}
         <button type="submit" class="btn btn-primary send-btn composer-icon-btn" data-capability-send="{{.Capabilities.Send}}" data-capability-queue="{{.Capabilities.Queue}}"{{if and (not .Capabilities.Send) (not .Capabilities.Queue)}} disabled title="send unavailable"{{end}}><span class="composer-glyph" aria-hidden="true">↑</span><span class="btn-label">send</span> <kbd>⌘↵</kbd></button>
       </div>
