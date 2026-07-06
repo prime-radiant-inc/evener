@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/llm"
 )
 
 func TestAppEventProjectorProjectsAssistantDelta(t *testing.T) {
@@ -533,6 +534,64 @@ func TestProjectorTurnEndedPreservesInterruptStatus(t *testing.T) {
 	}
 	if turn.DurationMS == nil || *turn.DurationMS != 100 {
 		t.Fatalf("turn DurationMS=%v, want 100", turn.DurationMS)
+	}
+}
+
+// TestProjectorAccumulatesPerTurnUsageAcrossRounds verifies the completed
+// Turn's Usage is the turn's own total across every round (not a
+// cumulative-session figure) — each EventAssistantTextEnd's usage is summed
+// until the turn itself completes, and Cost is estimated from the model seen
+// on those rounds.
+func TestProjectorAccumulatesPerTurnUsageAcrossRounds(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextStart, SessionID: "th_1", Data: events.AssistantTextStartData{Model: "claude-opus-4-5"}})
+	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{
+		Text:  "first round",
+		Usage: llm.Usage{InputTokens: 100, OutputTokens: 50},
+		Model: "claude-opus-4-5",
+	}})
+	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextStart, SessionID: "th_1", Data: events.AssistantTextStartData{Model: "claude-opus-4-5"}})
+	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{
+		Text:  "second round",
+		Usage: llm.Usage{InputTokens: 20, OutputTokens: 10},
+		Model: "claude-opus-4-5",
+	}})
+	sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}})
+
+	turn := notificationTurn(t, sessionEnd, appwire.NotifyTurnCompleted)
+	if turn.Usage == nil {
+		t.Fatalf("turn.Usage=nil, want accumulated usage")
+	}
+	if turn.Usage.InputTokens != 120 {
+		t.Fatalf("turn.Usage.InputTokens=%d, want 120", turn.Usage.InputTokens)
+	}
+	if turn.Usage.OutputTokens != 60 {
+		t.Fatalf("turn.Usage.OutputTokens=%d, want 60", turn.Usage.OutputTokens)
+	}
+	if !strings.HasPrefix(turn.Cost, "~$") {
+		t.Fatalf("turn.Cost=%q, want ~$ prefix", turn.Cost)
+	}
+}
+
+// TestProjectorNewTurnResetsUsageAccumulator verifies the per-turn usage
+// accumulator resets in startTurn() rather than leaking a prior turn's usage
+// onto a turn that recorded no EventAssistantTextEnd of its own.
+func TestProjectorNewTurnResetsUsageAccumulator(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{
+		Text:  "first turn",
+		Usage: llm.Usage{InputTokens: 100, OutputTokens: 50},
+		Model: "claude-opus-4-5",
+	}})
+	// Second turn: no EventAssistantTextEnd at all before it completes.
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello again"}})
+	sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}})
+
+	turn := notificationTurn(t, sessionEnd, appwire.NotifyTurnCompleted)
+	if turn.Usage != nil {
+		t.Fatalf("turn.Usage=%+v, want nil (accumulator should have reset)", turn.Usage)
 	}
 }
 

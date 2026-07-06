@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/serf/internal/apptranscript"
 	"primeradiant.com/serf/internal/diagnostic"
 	"primeradiant.com/serf/invariant"
+	"primeradiant.com/serf/llm"
 )
 
 type AppNotification struct {
@@ -58,6 +59,15 @@ type AppEventProjector struct {
 	pendingTurnID          string
 	pendingCompletedAtUnix int64
 	pendingDurationMS      int64
+
+	// activeTurnUsage/activeTurnModel accumulate the current turn's own
+	// (not cumulative-session) usage across every EventAssistantTextEnd
+	// since startTurn(), stamped onto the completing Turn at each of the
+	// four completion sites. Unlike pendingTurnID/pendingDurationMS, no
+	// stash-vs-completion-ordering race exists here: EventAssistantTextEnd
+	// always fires chronologically before the turn's own completion event.
+	activeTurnUsage llm.Usage
+	activeTurnModel string
 }
 
 func NewAppEventProjector(threadID, ref string) *AppEventProjector {
@@ -123,6 +133,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.suppressedTools = map[string]struct{}{}
 			turn := appwire.Turn{ID: turnID, Status: appwire.TurnStatusCompleted}
 			p.applyPendingTiming(turnID, &turn)
+			p.stampTurnUsage(&turn)
 			out = append(out, p.notification(appwire.NotifyTurnCompleted, map[string]any{
 				"threadId": p.threadID,
 				"ref":      p.ref,
@@ -173,6 +184,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.suppressedTools = map[string]struct{}{}
 			turn := appwire.Turn{ID: turnID, Status: appwire.TurnStatusCompleted}
 			p.applyPendingTiming(turnID, &turn)
+			p.stampTurnUsage(&turn)
 			out = append(out, p.notification(appwire.NotifyTurnCompleted, map[string]any{
 				"threadId": p.threadID,
 				"ref":      p.ref,
@@ -262,6 +274,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		p.skillCandidate = skillActivationCandidate{}
 		p.ensureAssistantItem()
 		data := eventData[events.AssistantTextEndData](event.Data)
+		p.activeTurnUsage = p.activeTurnUsage.Add(data.Usage)
+		if data.Model != "" {
+			p.activeTurnModel = data.Model
+		}
 		text := data.Text
 		if text == "" {
 			text = p.assistantText
@@ -494,6 +510,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// this call is a no-op today but keeps the timing path uniform across
 		// all four completion sites.
 		p.applyPendingTiming(turnID, &turn)
+		p.stampTurnUsage(&turn)
 		return []AppNotification{
 			p.notification(appwire.NotifyTurnCompleted, map[string]any{
 				"threadId": p.threadID,
@@ -675,6 +692,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.suppressedTools = map[string]struct{}{}
 			turn := appwire.Turn{ID: turnID, Status: turnStatus}
 			p.applyPendingTiming(turnID, &turn)
+			p.stampTurnUsage(&turn)
 			out = append(out, p.notification(appwire.NotifyTurnCompleted, map[string]any{
 				"threadId": p.threadID,
 				"ref":      p.ref,
@@ -757,6 +775,21 @@ func (p *AppEventProjector) applyPendingTiming(turnID string, turn *appwire.Turn
 	p.pendingTurnID = ""
 	p.pendingCompletedAtUnix = 0
 	p.pendingDurationMS = 0
+}
+
+// stampTurnUsage sets turn.Usage/Cost from the projector's per-turn
+// accumulator (see activeTurnUsage doc). No turnID match is needed — by
+// construction the accumulator always holds the completing turn's own
+// totals at the moment each of the four completion sites reads it (the
+// accumulator resets only in startTurn(), which the wrap-up sites call
+// AFTER building the completing Turn).
+func (p *AppEventProjector) stampTurnUsage(turn *appwire.Turn) {
+	usage := appwire.SerfUsageFromLLM(p.activeTurnUsage)
+	if usage == nil {
+		return
+	}
+	turn.Usage = usage
+	turn.Cost = appwire.EstimateCost(p.activeTurnModel, usage)
 }
 
 func (p *AppEventProjector) systemAnnouncement(prefix, description, text string) []AppNotification {
@@ -973,6 +1006,8 @@ func (p *AppEventProjector) startTurn() string {
 	}
 	p.assistantItem = ""
 	p.assistantText = ""
+	p.activeTurnUsage = llm.Usage{}
+	p.activeTurnModel = ""
 	// startTurn always yields a usable turn id (a promoted reservation or a
 	// freshly minted turn_N); the item-emitting paths rely on activeTurnID being
 	// non-empty after this returns.
