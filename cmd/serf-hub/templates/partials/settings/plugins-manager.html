@@ -50,20 +50,25 @@
       return p.name.toLowerCase().includes(q) || (p.description || "").toLowerCase().includes(q);
     }
 
+    // marketplaceHasMatch reports whether a marketplace's already-loaded
+    // catalog has at least one plugin matching query; false for a
+    // not-yet-loaded catalog.
+    function marketplaceHasMatch(m, query) {
+      const cache = browseCatalogs[m.name];
+      return !!(cache && cache.plugins && cache.plugins.some(p => pluginMatchesFilter(p, query)));
+    }
+
     // anyPluginsMatch reports whether any already-loaded catalog has a match,
     // independent of expandedMarketplaces bookkeeping — used only to decide
     // whether to show the global "No plugins match" message.
     function anyPluginsMatch(query) {
-      return marketplaces.some(m => {
-        const cache = browseCatalogs[m.name];
-        return !!(cache && cache.plugins && cache.plugins.some(p => pluginMatchesFilter(p, query)));
-      });
+      return marketplaces.some(m => marketplaceHasMatch(m, query));
     }
 
     // applyFilter auto-expands every marketplace with a match in its
     // already-loaded catalog and collapses every marketplace without one.
-    // Marketplaces not yet loaded are left collapsed here (Task 3 adds
-    // lazy-loading them on the first filter keystroke).
+    // Marketplaces not yet loaded are left collapsed here (Task 3 lazy-loads
+    // them on the first filter keystroke, before this runs).
     function applyFilter() {
       const q = filterQuery.trim();
       if (!q) {
@@ -72,9 +77,7 @@
         return;
       }
       marketplaces.forEach(m => {
-        const cache = browseCatalogs[m.name];
-        const matches = !!(cache && cache.plugins && cache.plugins.some(p => pluginMatchesFilter(p, q)));
-        if (matches) expandedMarketplaces.add(m.name);
+        if (marketplaceHasMatch(m, q)) expandedMarketplaces.add(m.name);
         else expandedMarketplaces.delete(m.name);
       });
       render();
@@ -203,7 +206,7 @@
         </li>`;
     }
 
-    function renderMarketplaceNode(m) {
+    function renderMarketplaceNode(m, query) {
       const name = m.name;
       const expanded = expandedMarketplaces.has(name);
       const cache = browseCatalogs[name];
@@ -216,8 +219,12 @@
         } else if (cache && cache.error) {
           body = `<li class="settings-collection-empty">Failed to browse: ${escapeHtml(cache.error)}</li>`;
         } else if (cache && cache.plugins) {
-          body = cache.plugins.length
-            ? cache.plugins.map(p => renderBrowseRow(p, name)).join("")
+          // While filtering, a matching marketplace shows only its matching
+          // rows — non-matching siblings are hidden, not merely the
+          // marketplace's own collapse state.
+          const rows = query ? cache.plugins.filter(p => pluginMatchesFilter(p, query)) : cache.plugins;
+          body = rows.length
+            ? rows.map(p => renderBrowseRow(p, name)).join("")
             : `<li class="settings-collection-empty">This marketplace has no plugins.</li>`;
         } else {
           body = `<li class="settings-collection-empty">Loading…</li>`;
@@ -244,7 +251,11 @@
       } else if (q && !anyPluginsMatch(q)) {
         treeBody = `<li class="settings-collection-empty">No plugins match "${escapeHtml(q)}".</li>`;
       } else {
-        treeBody = marketplaces.map(renderMarketplaceNode).join("");
+        // While filtering, marketplaces with zero matches are hidden
+        // entirely (not merely collapsed) — only matching marketplaces
+        // render, and each renders only its matching plugin rows (above).
+        const visible = q ? marketplaces.filter(m => marketplaceHasMatch(m, q)) : marketplaces;
+        treeBody = visible.map(m => renderMarketplaceNode(m, q)).join("");
       }
       return `
         <section class="settings-collection" id="browse-section">

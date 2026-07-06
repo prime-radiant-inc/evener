@@ -57,7 +57,10 @@ function typeInFilter(doc, dom, value) {
     }),
     pluginList: async () => ({ plugins: [] }),
     marketplaceBrowse: async (name) => name === "alpha"
-      ? { name: "alpha", plugins: [{ name: "elements-of-style", description: "Strunk's writing rules" }] }
+      ? { name: "alpha", plugins: [
+          { name: "elements-of-style", description: "Strunk's writing rules" },
+          { name: "sample-other", description: "Unrelated plugin" },
+        ] }
       : { name: "beta", plugins: [{ name: "private-journal-mcp", description: "Journal MCP server" }] },
   };
   dom.window.eval(src);
@@ -75,19 +78,21 @@ function typeInFilter(doc, dom, value) {
   await tick(dom, 170); // past the 150ms debounce
   pass(doc.querySelector('.browse-marketplace-toggle[data-marketplace="alpha"]').getAttribute("aria-expanded") === "true",
     "alpha (has a match) stays/auto-expands");
-  pass(doc.querySelector('.browse-marketplace-toggle[data-marketplace="beta"]').getAttribute("aria-expanded") === "false",
-    "beta (no match) collapses");
+  pass(doc.querySelector('.browse-marketplace-node[data-marketplace-node="beta"]') === null,
+    "beta (no match) is hidden entirely, not just collapsed");
   let alphaRows = doc.querySelectorAll('.browse-marketplace-node[data-marketplace-node="alpha"] .settings-collection-row');
   pass(alphaRows.length === 1 && alphaRows[0].textContent.includes("elements-of-style"),
     "alpha shows only the matching row");
+  pass(!doc.querySelector('.browse-marketplace-node[data-marketplace-node="alpha"]').textContent.includes("sample-other"),
+    "alpha's non-matching sibling plugin is hidden");
 
   // A description match also auto-expands.
   typeInFilter(doc, dom, "journal");
   await tick(dom, 170);
   pass(doc.querySelector('.browse-marketplace-toggle[data-marketplace="beta"]').getAttribute("aria-expanded") === "true",
     "a description match auto-expands beta");
-  pass(doc.querySelector('.browse-marketplace-toggle[data-marketplace="alpha"]').getAttribute("aria-expanded") === "false",
-    "alpha (no longer matching) collapses");
+  pass(doc.querySelector('.browse-marketplace-node[data-marketplace-node="alpha"]') === null,
+    "alpha (no longer matching) is hidden entirely");
 
   // No matches anywhere: the global empty-result message, no tree nodes.
   typeInFilter(doc, dom, "zzz-nothing-matches");
