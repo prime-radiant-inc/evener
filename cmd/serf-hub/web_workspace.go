@@ -299,6 +299,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 				data.WorkMillis = status.WorkMillis
 				data.Usage = status.Usage
 				data.ActiveTurnStartedAt = status.ActiveTurnStartedAt
+				data.Cost = appwire.EstimateCost(data.Model, data.Usage)
 				// Populate the context gauge here too so the lean /state poll
 				// (B3) needs no separate turns fetch.
 				data.ContextPercent = int(status.ContextPressure * 100)
@@ -346,6 +347,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 				WorkMillis: pe.Meta.WorkMillis,
 				Usage:      serfUsageFromCumulative(pe.Meta.CumulativeUsage),
 			}
+			data.Cost = appwire.EstimateCost(data.Model, data.Usage)
 			s.fillForkLineage(&data, pe.Meta)
 			s.fillSubagentLineage(&data, pe.Meta)
 			s.fillObserverLink(&data, pe.Meta)

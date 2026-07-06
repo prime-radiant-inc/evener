@@ -2796,6 +2796,102 @@ func TestWorkspaceDataUsesDaemonStatusTurnCountForLiveLocalSession(t *testing.T)
 	}
 }
 
+// TestWorkspaceData_LiveSessionCarriesCostEstimate verifies the roster-live
+// branch of workspaceData computes Cost from the daemon-reported Model and
+// Usage via appwire.EstimateCost, once both are finalized.
+func TestWorkspaceData_LiveSessionCarriesCostEstimate(t *testing.T) {
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session_id":  "01COSTLIVE",
+			"state":       "active",
+			"turns":       1,
+			"model":       "claude-opus-4-5",
+			"working_dir": "/tmp/costlive",
+			"usage": map[string]any{
+				"inputTokens":  100_000,
+				"outputTokens": 20_000,
+			},
+		})
+	}))
+	defer daemon.Close()
+
+	addr := strings.TrimPrefix(daemon.URL, "http://")
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:     rendezvous.Entry{Address: addr, SessionID: "01COSTLIVE", Model: "claude-opus-4-5", WorkingDir: "/tmp/costlive"},
+		SessionID: "01COSTLIVE",
+		Status:    "active",
+	})
+	web := NewWebServer(hubcore.WebConfig{Roster: roster})
+
+	got := web.workspaceData("01COSTLIVE")
+	if got.Cost != "~$1.00" {
+		t.Fatalf("Cost = %q, want ~$1.00", got.Cost)
+	}
+}
+
+// TestWorkspaceData_PastSessionCarriesCostEstimate verifies the past-meta
+// branch of workspaceData computes Cost from the persisted Model and
+// CumulativeUsage.
+func TestWorkspaceData_PastSessionCarriesCostEstimate(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const sessionID = "01COSTPAST"
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID:    sessionID,
+		Model: "claude-opus-4-5",
+		CumulativeUsage: schema.CumulativeUsage{
+			InputTokens:  100_000,
+			OutputTokens: 20_000,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRoster(t.TempDir(), nil), Past: idx})
+	got := web.workspaceData(sessionID)
+	if got.Cost != "~$1.00" {
+		t.Fatalf("Cost = %q, want ~$1.00", got.Cost)
+	}
+}
+
+// TestWorkspaceData_NoCostWhenUsageNil verifies a past session with zero
+// CumulativeUsage renders no Cost, rather than a misleading "~$0.00".
+func TestWorkspaceData_NoCostWhenUsageNil(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const sessionID = "01COSTNONE"
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID:    sessionID,
+		Model: "claude-opus-4-5",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRoster(t.TempDir(), nil), Past: idx})
+	got := web.workspaceData(sessionID)
+	if got.Cost != "" {
+		t.Fatalf("Cost = %q, want empty for zero usage", got.Cost)
+	}
+}
+
 // TestWeb_Send_ClosedSessionRequiresSpawner verifies that POSTing to /s/<id>/send
 // when the session is not live and no spawner is configured returns 503.
 func TestWeb_Send_ClosedSessionRequiresSpawner(t *testing.T) {
