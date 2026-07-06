@@ -11,13 +11,16 @@
   function sidebarEl() { return document.getElementById("sidebar"); }
 
   // --- Skeleton first paint --------------------------------------------------
+  // Appends (never replaces #sidebar's innerHTML) so the static .sidebar-header
+  // rendered by app.html survives — #sidebar is a shared container, not one
+  // this script owns exclusively.
   function paintSkeleton() {
     var el = sidebarEl();
-    if (!el || el.querySelector(".sb-tree")) return;
+    if (!el || el.querySelector(".sb-tree") || el.querySelector(".sb-skeleton")) return;
     var html = '<div class="sb-skeleton" aria-hidden="true">';
     for (var i = 0; i < 6; i++) html += '<div class="sb-skeleton-row"></div>';
     html += "</div>";
-    el.innerHTML = html;
+    el.insertAdjacentHTML("beforeend", html);
   }
 
   // --- Row + section builders ------------------------------------------------
@@ -253,7 +256,14 @@
     var el = sidebarEl();
     if (!el) return;
     var root = el.querySelector(".sb-tree");
-    if (!root) { el.innerHTML = '<nav class="sb-tree" aria-label="Sessions"></nav>'; root = el.querySelector(".sb-tree"); }
+    if (!root) {
+      // Drop the skeleton (if any) but leave any other sibling — namely
+      // .sidebar-header, which app.html renders statically — untouched.
+      var skeleton = el.querySelector(".sb-skeleton");
+      if (skeleton) skeleton.remove();
+      el.insertAdjacentHTML("beforeend", '<nav class="sb-tree" aria-label="Sessions"></nav>');
+      root = el.querySelector(".sb-tree");
+    }
     var flat = flatten(applyPending(tree)); // applyPending is Task 20; identity until then
     reconcile(root, flat, buildRowOrSection, patchRowOrSection);
     syncActiveRow();
