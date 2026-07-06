@@ -396,7 +396,13 @@ func modelInfoMetaTail(mi *llm.ModelInfo) string {
 	return strings.Join(parts, " · ")
 }
 
-func modelPickerItems(models []appwire.ModelDescriptor, rawModelID bool) []tuipick.ModelPickerItem {
+// buildModelPickerItems enriches raw model descriptors into picker items
+// (display name, ID, catalog meta, provider group) without reordering them.
+// Callers that need the provider-grouped, dated-snapshot-last presentation
+// order should use modelPickerItems instead; callers that must preserve the
+// input order (e.g. the server's recency-ordered Recent list) should call
+// this directly.
+func buildModelPickerItems(models []appwire.ModelDescriptor, rawModelID bool) []tuipick.ModelPickerItem {
 	cat := llm.EmbeddedModelCatalog()
 	items := make([]tuipick.ModelPickerItem, 0, len(models))
 	for _, option := range models {
@@ -418,6 +424,11 @@ func modelPickerItems(models []appwire.ModelDescriptor, rawModelID bool) []tuipi
 		}
 		items = append(items, tuipick.ModelPickerItem{ID: id, Display: display, Group: provider, Meta: meta})
 	}
+	return items
+}
+
+func modelPickerItems(models []appwire.ModelDescriptor, rawModelID bool) []tuipick.ModelPickerItem {
+	items := buildModelPickerItems(models, rawModelID)
 	sort.SliceStable(items, func(a, b int) bool {
 		if items[a].Group != items[b].Group {
 			return items[a].Group < items[b].Group
@@ -460,7 +471,7 @@ func modelPickerItemsFromResponse(resp appwire.ModelListResponse, rawModelID boo
 	if len(resp.Recent) == 0 {
 		return items
 	}
-	recentItems := modelPickerItems(resp.Recent, rawModelID)
+	recentItems := buildModelPickerItems(resp.Recent, rawModelID)
 	for i := range recentItems {
 		recentItems[i].Group = "Recent"
 	}

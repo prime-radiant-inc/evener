@@ -110,6 +110,23 @@ func TestModelPickerItemsFromResponse_PrependsRecentGroup(t *testing.T) {
 	}
 }
 
+func TestModelPickerItemsFromResponse_RecentPreservesServerRecencyOrderAcrossProviders(t *testing.T) {
+	resp := appwire.ModelListResponse{
+		Data: []appwire.ModelDescriptor{
+			{Provider: "anthropic", Model: "claude-opus-4-6"},
+			{Provider: "openai", Model: "gpt-5.5"},
+		},
+		Recent: []appwire.ModelDescriptor{
+			{Provider: "openai", Model: "gpt-5.5"},
+			{Provider: "anthropic", Model: "claude-opus-4-6"},
+		},
+	}
+	items := modelPickerItemsFromResponse(resp, false)
+	if len(items) < 2 || items[0].ID != "openai/gpt-5.5" || items[1].ID != "anthropic/claude-opus-4-6" {
+		t.Fatalf("Recent group order = %+v, want server recency order (openai first) preserved, not provider-alphabetical", items[:2])
+	}
+}
+
 func TestModelPickerItemsFromResponse_NoRecentOmitsGroup(t *testing.T) {
 	resp := appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.2"}}}
 	items := modelPickerItemsFromResponse(resp, false)
