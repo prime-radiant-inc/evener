@@ -1246,3 +1246,13 @@ func TestAllTestSessionsClassifyAsTestRun(t *testing.T) {
 		}
 	}
 }
+
+func TestNeedsYou_CarriesAskPendingFromLiveEntry(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{{ID: "01A", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
+	live := []LiveEntry{{Entry: rendezvous.Entry{PID: 1}, SessionID: "01A", Status: appwire.ThreadStatusAwaiting, PendingAsk: true}}
+	tree := buildTree(metas, live)
+	if len(tree.NeedsYou) != 1 || !tree.NeedsYou[0].AskPending {
+		t.Fatalf("NeedsYou node must carry AskPending=true, got %+v", tree.NeedsYou)
+	}
+}

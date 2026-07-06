@@ -138,6 +138,7 @@ type TreeNode struct {
 	Project      string
 	Branch       string // git branch at session start; empty when unknown
 	State        string // "errored" | "awaiting" | "active" | "warning" | "idle" | "ended"
+	AskPending   bool   // true while the daemon reports an unanswered ask_user question
 	Kind         string // "session" | "subagent" | "fork" | "cluster"
 	ClusterCount int    // for Kind=="cluster": number of folded same-titled runs
 	CreatedAt    time.Time
@@ -638,9 +639,10 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 			continue
 		}
 		node := TreeNode{
-			ID:    le.SessionID,
-			State: st,
-			Kind:  "session",
+			ID:         le.SessionID,
+			State:      st,
+			Kind:       "session",
+			AskPending: le.PendingAsk,
 		}
 		if meta != nil {
 			node.Title = nodeTitle(*meta, nodeKind(*meta))
