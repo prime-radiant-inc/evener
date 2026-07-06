@@ -811,12 +811,12 @@
       banner.classList.remove("reconnecting", "lost");
       if (level === "lost") {
         banner.classList.add("lost");
-        banner.innerHTML = '<span class="connection-banner-glyph" aria-hidden="true">⚠</span>' +
+        banner.innerHTML = '<span class="connection-banner-glyph" aria-hidden="true">' + window.SerfIcons.warning + '</span>' +
           '<span class="connection-banner-msg">Connection lost</span>' +
           '<span class="connection-banner-sub">retrying… — the agent keeps running on the daemon</span>';
       } else {
         banner.classList.add("reconnecting");
-        banner.innerHTML = '<span class="connection-banner-glyph" aria-hidden="true">⟳</span>' +
+        banner.innerHTML = '<span class="connection-banner-glyph" aria-hidden="true">' + window.SerfIcons.working + '</span>' +
           '<span class="connection-banner-msg">Reconnecting…</span>' +
           '<span class="connection-banner-sub">the agent keeps running on the daemon</span>';
       }

@@ -69,7 +69,8 @@ const transcriptErrors = (w) =>
   pass(!!b && /reconnect/i.test(b.textContent), "the banner reads 'Reconnecting…' while the socket is down");
   pass(!!b && b.classList.contains("reconnecting"), "the banner is in the amber 'reconnecting' state");
   pass(!!b && !b.classList.contains("lost"), "the banner is NOT in the red 'lost' state while still reconnecting");
-  pass(/[⟳↻⤬✕⚠◐]/.test((b && b.textContent) || ""), "the banner is glyph-paired (colorblind-safe)");
+  const glyphEl = b && b.querySelector(".connection-banner-glyph");
+  pass(!!glyphEl && !!glyphEl.querySelector("svg"), "reconnecting banner must render the working icon, not a text glyph");
   pass(transcriptErrors(w).length === 0, "transport drop does NOT pollute the transcript with an error row (got " + transcriptErrors(w).length + ")");
 
   // Send is disabled while disconnected (we disable rather than fake a queue).

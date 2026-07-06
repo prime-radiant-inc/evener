@@ -4735,6 +4735,7 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
   background: var(--bg-raised);
 }
 .connection-banner .connection-banner-glyph { font-family: var(--font-mono); flex: none; }
+.connection-banner-glyph svg { width: 1.1em; height: 1.1em; vertical-align: -0.15em; }
 .connection-banner .connection-banner-msg { font-weight: 600; }
 .connection-banner .connection-banner-sub { color: var(--text-muted); }
 /* reconnecting = BLUE (recovering, not broken) */
