@@ -97,3 +97,28 @@ func TestAttentionWatcher_DiffEmitsOncePerChangeAndSeedsSilently(t *testing.T) {
 		t.Fatalf("disappearance emit = %+v", emitted)
 	}
 }
+
+func TestDeriveAttention_CarriesAskPending(t *testing.T) {
+	metas := []schema.SessionMeta{{ID: "01A", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
+	live := []LiveEntry{{SessionID: "01A", Status: "awaiting", PendingAsk: true}}
+	entries, _ := DeriveAttention(metas, live, nil)
+	if !entries["01A"].AskPending {
+		t.Fatalf("expected AttentionEntry.AskPending=true, got %+v", entries["01A"])
+	}
+}
+
+func TestAttentionWatcher_TicksOnAskOnlyFlip(t *testing.T) {
+	var got []AttentionChangedPayload
+	w := NewAttentionWatcher(func(p AttentionChangedPayload) { got = append(got, p) })
+	base := map[string]AttentionEntry{"01A": {ID: "01A", Level: "needs_you", AskPending: false}}
+	w.Tick(base, AttentionSummary{}) // seed, silent
+
+	flipped := map[string]AttentionEntry{"01A": {ID: "01A", Level: "needs_you", AskPending: true}}
+	w.Tick(flipped, AttentionSummary{})
+	if len(got) != 1 {
+		t.Fatalf("expected one emitted payload for an ask-only flip (Level unchanged), got %d", len(got))
+	}
+	if !got[0].Changed[0].AskPending {
+		t.Fatalf("changed entry must carry the new AskPending=true, got %+v", got[0].Changed[0])
+	}
+}
