@@ -394,6 +394,63 @@ func TestProcessAlive(t *testing.T) {
 	}
 }
 
+// statusProber returns a fixed session id and status for every entry probed;
+// swapping .status between Refresh calls simulates a daemon's state
+// transition (e.g. "working" -> "idle") for TestRoster_OnStatusChange tests.
+type statusProber struct {
+	sessionID string
+	status    string
+}
+
+func (p *statusProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, ok bool) {
+	return p.sessionID, p.status, false, true
+}
+
+// TestRoster_OnStatusChangeFiresForTransitioningSession is the regression
+// test for the tree-freshness fix: a session's Status changing between two
+// consecutive Refresh snapshots must fire the per-session hook with that
+// session's id, so the hub can re-read just that session's on-disk meta
+// instead of waiting for the next full past-index rebuild.
+func TestRoster_OnStatusChangeFiresForTransitioningSession(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:50001"})
+
+	prober := &statusProber{sessionID: "01SESS", status: "working"}
+	r := NewRoster(dir, prober)
+	r.Refresh() // seed: no prior snapshot, so no transition to report
+
+	var got []string
+	r.SetOnStatusChange(func(sessionID string) { got = append(got, sessionID) })
+
+	prober.status = "idle"
+	r.Refresh()
+
+	if len(got) != 1 || got[0] != "01SESS" {
+		t.Fatalf("expected onStatusChange(01SESS) once, got %v", got)
+	}
+}
+
+// TestRoster_OnStatusChangeNotFiredWhenStatusUnchanged pins the other half:
+// a Refresh whose per-session status set is identical to the prior snapshot
+// must not fire the hook, so a targeted re-read isn't triggered on every
+// roster poll (only genuine transitions).
+func TestRoster_OnStatusChangeNotFiredWhenStatusUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:50001"})
+
+	prober := &statusProber{sessionID: "01SESS", status: "working"}
+	r := NewRoster(dir, prober)
+	r.Refresh()
+
+	fired := false
+	r.SetOnStatusChange(func(sessionID string) { fired = true })
+
+	r.Refresh() // same status both times
+	if fired {
+		t.Fatal("onStatusChange fired for an unchanged status")
+	}
+}
+
 func TestNewRosterWithEntries(t *testing.T) {
 	r := NewRosterWithEntries(
 		LiveEntry{Entry: rendezvous.Entry{PID: 1, Address: "127.0.0.1:1"}, SessionID: "01A"},
