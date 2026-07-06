@@ -47,6 +47,7 @@ type hubRow struct {
 	project     string
 	projectKey  string
 	state       string
+	askPending  bool
 	live        bool
 	model       string
 	age         string

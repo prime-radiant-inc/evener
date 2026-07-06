@@ -757,7 +757,7 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 	openLiveSession(t, app)
 	app.WaitFor(
 		"serf / session / live task",
-		"● ACTIVE",
+		"● WORKING",
 		"src serf",
 		"model gpt-5",
 		"dir "+tuiE2EProjectDir,
@@ -811,7 +811,7 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 	app.SendKeys("Down")
 	app.WaitFor("Session:  01PAST")
 	app.SendKeys("Enter")
-	screen = app.WaitFor("serf / session / ended maintenance", "● NOTLOADED", "send: ready")
+	screen = app.WaitFor("serf / session / ended maintenance", "● NOT LOADED", "send: ready")
 	if strings.Contains(screen, "read-only") || strings.Contains(screen, "source does not support send") {
 		t.Fatalf("ended resumable session should not render read-only:\n%s", screen)
 	}

@@ -578,17 +578,28 @@ func stateLabel(state string) string {
 	}
 }
 
+// displayWord returns the unified display word (Track A §1/§2) for a raw
+// wire state, normalizing via stateLabel first and then delegating to
+// hubapi.StateWord — the same table cmd/serf-hub's stateLabel uses, so the
+// TUI and the web can never independently drift on vocabulary.
+func displayWord(state string, askPending bool) string {
+	return hubapi.StateWord(stateLabel(state), askPending)
+}
+
 func projectSummary(project hubRow, rows []hubRow) string {
 	liveCount, recentCount := projectSessionCounts(project, rows)
-	attention := stateLabel(project.state)
+	worstState := project.state
+	worstAsk := project.askPending
 	for _, row := range rows {
 		if row.kind != hubRowSession || row.projectKey != project.projectKey {
 			continue
 		}
-		if attentionRankLabel(row.state) > attentionRankLabel(attention) {
-			attention = stateLabel(row.state)
+		if attentionRankLabel(row.state) > attentionRankLabel(worstState) {
+			worstState = row.state
+			worstAsk = row.askPending
 		}
 	}
+	attention := displayWord(worstState, worstAsk)
 	if recentCount > 0 {
 		return fmt.Sprintf("%d live · %d recent · %s", liveCount, recentCount, attention)
 	}

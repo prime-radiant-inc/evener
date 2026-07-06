@@ -95,3 +95,24 @@ func TestDashboardHeaderBadgeKeepsExactWidth(t *testing.T) {
 		t.Fatalf("zero-badge header changed:\ngot  %q\nwant %q", gotZero, want)
 	}
 }
+
+func TestDisplayWord_UnifiedVocabulary(t *testing.T) {
+	cases := []struct {
+		state      string
+		askPending bool
+		want       string
+	}{
+		{"active", false, "Working"},
+		{"awaiting", false, "Your move"},
+		{"awaiting", true, "Question waiting"},
+		{"warning", false, "Warning"},
+		{"systemerror", false, "Error"},
+		{"idle", false, "Idle"},
+		{"closed", false, "Ended"},
+	}
+	for _, c := range cases {
+		if got := displayWord(c.state, c.askPending); got != c.want {
+			t.Errorf("displayWord(%q, %v) = %q, want %q", c.state, c.askPending, got, c.want)
+		}
+	}
+}

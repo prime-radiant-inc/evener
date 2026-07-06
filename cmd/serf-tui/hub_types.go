@@ -59,6 +59,7 @@ type hubSessionDetail struct {
 	SourceLabel      string
 	Title            string
 	State            string
+	AskPending       bool
 	Model            string
 	Profile          string
 	WorkingDir       string
@@ -225,6 +226,7 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 		SourceLabel:         node.SourceLabel,
 		Title:               node.Title,
 		State:               node.State,
+		AskPending:          false, // Phase 4 Task 26 wires the real bit
 		Model:               thread.ModelProvider,
 		Profile:             thread.Serf.Profile,
 		WorkingDir:          thread.CWD,
