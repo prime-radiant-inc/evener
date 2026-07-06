@@ -101,7 +101,7 @@ an ordinary next user message.
    ```bash
    for i in $(seq 1 90); do
      state=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" | jq -r '.state // ""')
-     [ "$state" = "idle" ] && break
+     [ "$state" != "awaiting" ] && break
      sleep 1
    done
    echo "final state=$state"
@@ -154,3 +154,15 @@ rm -rf "$tmpdir" /tmp/serf-ask /tmp/serf-hub-ask
 - Answering from any client is an ordinary `turn/start`; nothing about the daemon changes
   because the reply happened to come from a browser rather than a CLI `send`. See
   `ask-two-clients.md` for what happens when two clients race to answer the same question.
+- **Step 7's poll checks for leaving `awaiting`, not for reaching `idle`.** Post-merge, an
+  answered ask-then-settle session rests `awaiting` again (your-move), not `idle` — the same
+  unified-rest-state behavior `status-vocabulary-roundtrip.md` pins. Polling for
+  `state = "idle"` would never match (the session is already `awaiting` the instant this loop
+  starts, from the pending question itself) and either hang for the full timeout or, worse,
+  falsely appear to "work" via timeout exhaustion. `state != "awaiting"` catches the real
+  transition (through `active` while the reply's turn runs) regardless of which settled value
+  it lands on afterward — though on a fast round trip the 1s poll granularity can miss the
+  brief `active` window entirely and exhaust the loop still reading `awaiting` (observed live:
+  the reply settled back to `awaiting` between two consecutive polls). That is not itself a
+  failure; step 8's outline read is the actual proof the round trip completed, independent of
+  whether this loop happened to observe the transition.

@@ -24,9 +24,9 @@ delegation-only tools for a coordinator.
      model: "openai/gpt-5.5", working_dir: $wd, harness: "serf", branch: "", access_mode: "full", agent: "default", launch_overrides: {}
    }')
    SID=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$body" "$HUB/api/spawn" | jq -r '.session_id')
-   for i in $(seq 1 90); do
+   for i in $(seq 1 240); do
      st=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" | jq -r '.state // ""')
-     [ "$st" = "idle" ] && break
+     [ "$st" = "awaiting" ] && break
      sleep 1
    done
    echo "SID=$SID state=$st"
@@ -42,10 +42,23 @@ delegation-only tools for a coordinator.
    ```bash
    go run ./cmd/serf-doctor transcript "$DELEGATE_SID" --count ask_user
    ```
-4. Read the delegate's final message via the parent's own transcript (the parent already
-   captured it through the blocking `delegate` call):
+4. Read the delegate's own final `communicate` tool-call argument directly from its own
+   transcript, rather than the parent's paraphrase of it — the parent's transcript shares a
+   window with the original task text, which itself contains both marker strings
+   (`ASK_USER_UNAVAILABLE` and `ASK_USER_SUCCEEDED`), so a text-based check against the
+   parent's outline can't distinguish "the delegate reported X" from "the prompt instructed
+   the delegate to report X" (same pattern as `tui-paste-image-from-clipboard.md`'s
+   transcript cross-check):
    ```bash
-   go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:6
+   DFILE=$(find ~/.local/state/serf/projects -name "$DELEGATE_SID.transcript.jsonl")
+   python3 - <<EOF
+   import json
+   for line in open("$DFILE"):
+       j = json.loads(line)
+       for c in j.get("turn", {}).get("message", {}).get("content", []):
+           if c.get("kind") == "tool_call" and c.get("tool_call", {}).get("name") == "communicate":
+               print(c["tool_call"]["arguments"].get("message", ""))
+   EOF
    ```
 5. **`grant_tools` rejection — deterministic-only, not live-reachable today.** Do **not**
    attempt to drive this through a live `delegate` call: the shipped `delegate` tool schema
@@ -70,7 +83,7 @@ delegation-only tools for a coordinator.
 - Step 3: `ask_user: 0 calls` with no mention suffix — the delegate's own tool list never
   contained `ask_user`, no matter what its task instructed it to attempt (mirrors the
   invariant used in `ask-noninteractive-invisible.md`).
-- Step 4: the parent's transcript shows the delegate's reported message is
+- Step 4: the delegate's own `communicate` argument printed is exactly
   `ASK_USER_UNAVAILABLE` (the expected, overwhelmingly likely outcome — the delegate can't
   even construct a call the provider will accept for an undeclared tool). If it is instead
   `ASK_USER_SUCCEEDED`, that is an active regression: stop and file a kata immediately
@@ -89,6 +102,19 @@ rm -rf "$tmpdir" /tmp/serf-ask /tmp/serf-hub-ask
 
 ## Sharp edges
 
+- **The parent legitimately rests `active` while the delegate child session lingers as live
+  autonomy — this is expected, not a bug to falsify on.** `Session.WireState()` upgrades an
+  otherwise-settled parent back to `active` for as long as `autonomyInFlight()` sees a live
+  child subagent (`agent/session_state.go`), independent of whether the delegate's own turn
+  has long since finished with a clean `communicate(end_turn=true)`. Confirmed live in this
+  run: a root session whose transcript already showed a completed `delegate` round-trip and
+  final `communicate` result (and whose delegate's own status read `idle` via
+  `serf-doctor tree --json`) still reported `state: "active"` at both the hub's
+  `/api/sessions` and the daemon's own `/status` for several minutes, purely because the
+  delegate's daemon process hadn't exited yet. Step 1's poll target (`awaiting`) is still the
+  correct end state to wait for, but budget a generous timeout — settling can take
+  meaningfully longer than the 90s in this card's loop while the delegate winds down, and
+  that wait is not itself a regression signal.
 - **This card documents a real gap between the live tool surface and a spec-listed
   guarantee** (§8: "grant guard: `grant_tools: [\"ask_user\"]` on a delegate is rejected").
   That guarantee holds at the Go API level (verified by the tests in step 5) but has no live
