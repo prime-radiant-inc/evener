@@ -30,15 +30,99 @@
     // ---- state ----
     let marketplaces = [];   // last serf/marketplace/list result
     let installed = [];      // last serf/plugin/list result
-    let browseName = "";     // marketplace currently selected in Browse, "" = none
-    let browseCatalog = null; // last serf/marketplace/browse result for browseName
-    let browseError = "";
+    // Browse is a tree: every registered marketplace is a node, expanded
+    // on demand. expandedMarketplaces tracks which nodes are open;
+    // browseCatalogs caches each marketplace's serf/marketplace/browse
+    // result (or its loading/error state) so re-expanding never re-fetches.
+    let expandedMarketplaces = new Set();
+    let browseCatalogs = {}; // marketplace name -> {loading:true} | {error} | {plugins}
+    let filterQuery = ""; // Browse tree filter box's current value
+    let filterLoading = false; // true while the filter's first-keystroke lazy-load is in flight
     let addMarketplaceOpen = false;
     let loadError = "";
 
     function isInstalled(plugin, marketplace) {
       return installed.some(p => p.plugin === plugin && p.marketplace === marketplace);
     }
+
+    function pluginMatchesFilter(p, query) {
+      const q = query.toLowerCase();
+      return p.name.toLowerCase().includes(q) || (p.description || "").toLowerCase().includes(q);
+    }
+
+    // marketplaceHasMatch reports whether a marketplace's already-loaded
+    // catalog has at least one plugin matching query; false for a
+    // not-yet-loaded catalog.
+    function marketplaceHasMatch(m, query) {
+      const cache = browseCatalogs[m.name];
+      return !!(cache && cache.plugins && cache.plugins.some(p => pluginMatchesFilter(p, query)));
+    }
+
+    // marketplaceUnresolvedForFilter reports whether a marketplace's filter
+    // match status can't be determined yet: it has no catalog cache entry at
+    // all, or its catalog is still loading, or it failed to load. A missing
+    // cache entry counts as unresolved because mkt-refresh clears a
+    // marketplace's cache without repopulating it when the node isn't
+    // expanded, leaving it in the same "no cache" state as before the first
+    // load. Such marketplaces stay visible while filtering (see
+    // renderBrowseSection) so their existing loading/error rendering inside
+    // renderMarketplaceNode — unaffected by this task — remains reachable,
+    // instead of vanishing behind the filter.
+    function marketplaceUnresolvedForFilter(m) {
+      const cache = browseCatalogs[m.name];
+      return !cache || !!cache.loading || !!cache.error;
+    }
+
+    // applyFilter auto-expands every marketplace with a match in its
+    // already-loaded catalog and collapses every marketplace without one.
+    // Marketplaces not yet loaded are left collapsed here (Task 3 lazy-loads
+    // them on the first filter keystroke, before this runs).
+    function applyFilter() {
+      const q = filterQuery.trim();
+      if (!q) {
+        expandedMarketplaces = new Set();
+        render();
+        return;
+      }
+      marketplaces.forEach(m => {
+        if (marketplaceHasMatch(m, q)) expandedMarketplaces.add(m.name);
+        else expandedMarketplaces.delete(m.name);
+      });
+      render();
+    }
+
+    // ensureAllCatalogsLoadedForFilter fetches every marketplace the filter
+    // hasn't cached yet, once, in parallel. A ref no longer needed (query
+    // cleared or changed again) mid-flight is not cancelled — the fetch
+    // still completes and populates the cache, which is harmless and simpler
+    // than a cancellation token (not required by the design doc).
+    async function ensureAllCatalogsLoadedForFilter() {
+      const missing = marketplaces.filter(m => !browseCatalogs[m.name]).map(m => m.name);
+      if (missing.length === 0) return;
+      filterLoading = true;
+      render();
+      await Promise.all(missing.map(name =>
+        pluginsAdmin.marketplaceBrowse(name).then(
+          resp => { browseCatalogs[name] = { plugins: resp.plugins || [] }; },
+          err => { browseCatalogs[name] = { error: (err && err.message) ? err.message : String(err) }; },
+        )
+      ));
+      filterLoading = false;
+    }
+
+    // debounce mirrors search.js's helper (private to that file's IIFE, so
+    // duplicated here rather than imported — the same small, deliberate
+    // duplication search.js/spawn.js already use for their own shared bits).
+    function debounce(fn, ms) {
+      let t;
+      return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+    }
+    const debouncedApplyFilter = debounce(async () => {
+      const q = filterQuery.trim();
+      if (!q) { applyFilter(); return; } // applyFilter() itself handles the clear-restores-collapsed case
+      await ensureAllCatalogsLoadedForFilter();
+      applyFilter();
+    }, 150);
 
     // ---- section renderers ----
 
@@ -117,7 +201,7 @@
     function renderBrowseRow(p, marketplace) {
       const already = isInstalled(p.name, marketplace);
       return `
-        <li class="settings-collection-row">
+        <li class="settings-collection-row" data-plugin="${escapeHtml(p.name)}" data-marketplace="${escapeHtml(marketplace)}">
           <div>
             <div class="row-text">${escapeHtml(p.name)}</div>
             <div class="row-meta">${escapeHtml(p.description || "")}${p.category ? " · " + escapeHtml(p.category) : ""}</div>
@@ -125,34 +209,76 @@
           <div class="row-actions">
             ${already
               ? `<span class="status-badge" data-state="idle">Installed</span>`
-              : `<button type="button" class="btn btn-primary" data-action="install" data-plugin="${escapeHtml(p.name)}">Install</button>`}
+              : `<button type="button" class="btn btn-primary" data-action="install">Install</button>`}
           </div>
         </li>`;
     }
 
+    function renderMarketplaceNode(m, query) {
+      const name = m.name;
+      const expanded = expandedMarketplaces.has(name);
+      const cache = browseCatalogs[name];
+      const countLabel = (cache && cache.plugins) ? ` <span class="browse-marketplace-count">(${cache.plugins.length})</span>` : "";
+      let childrenHtml = "";
+      if (expanded) {
+        let body;
+        if (cache && cache.loading) {
+          body = `<li class="settings-collection-empty">Loading…</li>`;
+        } else if (cache && cache.error) {
+          body = `<li class="settings-collection-empty">Failed to browse: ${escapeHtml(cache.error)}</li>`;
+        } else if (cache && cache.plugins) {
+          // While filtering, a matching marketplace shows only its matching
+          // rows — non-matching siblings are hidden, not merely the
+          // marketplace's own collapse state.
+          const rows = query ? cache.plugins.filter(p => pluginMatchesFilter(p, query)) : cache.plugins;
+          body = rows.length
+            ? rows.map(p => renderBrowseRow(p, name)).join("")
+            : `<li class="settings-collection-empty">This marketplace has no plugins.</li>`;
+        } else {
+          body = `<li class="settings-collection-empty">Loading…</li>`;
+        }
+        childrenHtml = `<ul class="settings-collection-list browse-marketplace-plugins" role="list">${body}</ul>`;
+      }
+      return `
+        <li class="browse-marketplace-node" data-marketplace-node="${escapeHtml(name)}">
+          <button type="button" class="browse-marketplace-toggle" data-action="toggle-browse-marketplace"
+            data-marketplace="${escapeHtml(name)}" aria-expanded="${expanded}">
+            <span class="browse-marketplace-chevron" aria-hidden="true">›</span>${escapeHtml(name)}${countLabel}
+          </button>
+          ${childrenHtml}
+        </li>`;
+    }
+
     function renderBrowseSection() {
-      const options = [`<option value="">Choose a marketplace…</option>`]
-        .concat(marketplaces.map(m => `<option value="${escapeHtml(m.name)}"${m.name === browseName ? " selected" : ""}>${escapeHtml(m.name)}</option>`))
-        .join("");
-      let body;
-      if (browseError) {
-        body = `<li class="settings-collection-empty">Failed to browse: ${escapeHtml(browseError)}</li>`;
-      } else if (!browseName) {
-        body = `<li class="settings-collection-empty">Choose a marketplace to browse its catalog.</li>`;
-      } else if (!browseCatalog || browseCatalog.plugins.length === 0) {
-        body = `<li class="settings-collection-empty">This marketplace has no plugins.</li>`;
+      const q = filterQuery.trim();
+      let treeBody;
+      if (marketplaces.length === 0) {
+        treeBody = `<li class="settings-collection-empty">No marketplaces registered. Add one above to browse plugins.</li>`;
+      } else if (q && filterLoading) {
+        treeBody = `<li class="settings-collection-empty">Loading marketplaces…</li>`;
       } else {
-        body = browseCatalog.plugins.map(p => renderBrowseRow(p, browseName)).join("");
+        // While filtering, a marketplace with a successfully-loaded catalog
+        // and zero matches is hidden entirely (not merely collapsed) — only
+        // matching marketplaces render, and each renders only its matching
+        // plugin rows (above). A marketplace still loading or that failed to
+        // load stays visible instead, since its match status can't be
+        // determined yet (marketplaceUnresolvedForFilter).
+        const visible = q
+          ? marketplaces.filter(m => marketplaceUnresolvedForFilter(m) || marketplaceHasMatch(m, q))
+          : marketplaces;
+        treeBody = (q && visible.length === 0)
+          ? `<li class="settings-collection-empty">No plugins match "${escapeHtml(q)}".</li>`
+          : visible.map(m => renderMarketplaceNode(m, q)).join("");
       }
       return `
         <section class="settings-collection" id="browse-section">
           <header class="settings-collection-head">
             <h3>Browse</h3>
           </header>
-          <div class="settings-collection-add">
-            <select id="browse-marketplace-select" class="val-select">${options}</select>
+          <div class="settings-collection-add browse-filter">
+            <input type="text" id="browse-filter-input" class="val-input" placeholder="Filter plugins…" value="${escapeHtml(filterQuery)}">
           </div>
-          <ul class="settings-collection-list" role="list">${body}</ul>
+          <ul class="settings-collection-list browse-tree" role="list">${treeBody}</ul>
         </section>`;
     }
 
@@ -201,12 +327,23 @@
         root.innerHTML = `<p class="settings-error">Failed to load: ${escapeHtml(loadError)}</p>`;
         return;
       }
+      const filterHadFocus = document.activeElement && document.activeElement.id === "browse-filter-input";
+      const priorFilterInput = root.querySelector("#browse-filter-input");
+      const selStart = priorFilterInput ? priorFilterInput.selectionStart : null;
+      const selEnd = priorFilterInput ? priorFilterInput.selectionEnd : null;
       root.innerHTML = renderMarketplacesSection() + renderBrowseSection() + renderInstalledSection();
       root.dataset.loaded = "true";
       if (window.SettingsPickers) window.SettingsPickers.init(root);
       if (addMarketplaceOpen) {
         const nameInput = root.querySelector("#mkt-name-input");
         if (nameInput) nameInput.focus();
+      }
+      if (filterHadFocus) {
+        const newFilterInput = root.querySelector("#browse-filter-input");
+        if (newFilterInput) {
+          newFilterInput.focus();
+          if (selStart != null) newFilterInput.setSelectionRange(selStart, selEnd);
+        }
       }
     }
 
@@ -227,15 +364,31 @@
       render();
     }
 
-    async function refreshBrowse() {
-      if (!browseName) { browseCatalog = null; browseError = ""; return; }
+    // Fetches one marketplace's catalog and caches the result (or the error),
+    // then re-renders. Callers that need the fetch to have settled before
+    // continuing (e.g. a refresh of a currently-expanded node) should await it.
+    async function loadMarketplaceCatalog(name) {
       try {
-        browseCatalog = await pluginsAdmin.marketplaceBrowse(browseName);
-        browseError = "";
+        const resp = await pluginsAdmin.marketplaceBrowse(name);
+        browseCatalogs[name] = { plugins: resp.plugins || [] };
       } catch (err) {
-        browseCatalog = null;
-        browseError = (err && err.message) ? err.message : String(err);
+        browseCatalogs[name] = { error: (err && err.message) ? err.message : String(err) };
       }
+      render();
+    }
+
+    function toggleMarketplaceExpanded(name) {
+      if (expandedMarketplaces.has(name)) {
+        expandedMarketplaces.delete(name);
+        render();
+        return;
+      }
+      expandedMarketplaces.add(name);
+      if (!browseCatalogs[name]) {
+        browseCatalogs[name] = { loading: true };
+        loadMarketplaceCatalog(name);
+      }
+      render();
     }
 
     function toastError(action, err) {
@@ -275,12 +428,14 @@
 
     // ---- event delegation (attached once; render() only replaces innerHTML) ----
 
-    root.addEventListener("change", (ev) => {
-      if (ev.target && ev.target.id === "browse-marketplace-select") {
-        browseName = ev.target.value;
-        refreshBrowse().then(render);
-        return;
+    root.addEventListener("input", (ev) => {
+      if (ev.target && ev.target.id === "browse-filter-input") {
+        filterQuery = ev.target.value;
+        debouncedApplyFilter();
       }
+    });
+
+    root.addEventListener("change", (ev) => {
       if (ev.target && ev.target.name === "mkt-kind") {
         updateAddMarketplaceKindFields(ev.target.closest("form"));
       }
@@ -298,6 +453,11 @@
       if (!btn) return;
       const action = btn.dataset.action;
 
+      if (action === "toggle-browse-marketplace") {
+        toggleMarketplaceExpanded(btn.dataset.marketplace);
+        return;
+      }
+
       if (action === "cancel-add-marketplace") {
         addMarketplaceOpen = false;
         render();
@@ -305,12 +465,15 @@
       }
 
       if (action === "install") {
+        const row = btn.closest("[data-plugin]");
+        const plugin = row.dataset.plugin;
+        const marketplace = row.dataset.marketplace;
         await withBusy(btn, async () => {
           try {
-            await pluginsAdmin.pluginInstall(btn.dataset.plugin, browseName);
+            await pluginsAdmin.pluginInstall(plugin, marketplace);
             await refreshInstalled();
             render();
-            if (window.SerfToast) window.SerfToast.show("Installed " + btn.dataset.plugin, "success");
+            if (window.SerfToast) window.SerfToast.show("Installed " + plugin, "success");
           } catch (err) {
             toastError("Install", err);
           }
@@ -325,8 +488,13 @@
           try {
             await pluginsAdmin.marketplaceRefresh(name);
             await refreshMarketplaces();
-            if (name === browseName) await refreshBrowse();
-            render();
+            delete browseCatalogs[name];
+            if (expandedMarketplaces.has(name)) {
+              browseCatalogs[name] = { loading: true };
+              await loadMarketplaceCatalog(name);
+            } else {
+              render();
+            }
             if (window.SerfToast) window.SerfToast.show("Refreshed " + name, "success");
           } catch (err) {
             toastError("Refresh", err);
@@ -340,7 +508,8 @@
         await withBusy(btn, async () => {
           try {
             await pluginsAdmin.marketplaceRemove(name);
-            if (name === browseName) { browseName = ""; browseCatalog = null; browseError = ""; }
+            delete browseCatalogs[name];
+            expandedMarketplaces.delete(name);
             await refreshMarketplaces();
             render();
             if (window.SerfToast) window.SerfToast.show("Removed marketplace " + name, "success");

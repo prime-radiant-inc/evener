@@ -3669,6 +3669,31 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
 }
 .settings-collection-add .row-error[hidden] { display: none; }
 
+/* ── Browse tree (marketplace → plugin, plugin-marketplace-improvements Part 1) ── */
+.browse-marketplace-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  background: none;
+  border: none;
+  padding: var(--space-3) 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.browse-marketplace-chevron {
+  display: inline-block;
+  transition: transform 0.1s ease;
+  color: var(--text-muted);
+}
+.browse-marketplace-toggle[aria-expanded="true"] .browse-marketplace-chevron { transform: rotate(90deg); }
+.browse-marketplace-count { color: var(--text-muted); font-size: var(--text-xs); }
+.browse-marketplace-plugins { padding-left: var(--space-5); }
+.browse-filter { border-top: none; padding-top: 0; }
+
 .settings-form { display: flex; flex-direction: column; gap: var(--space-4); max-width: 480px; }
 .settings-radio,
 .settings-toggle { display: flex; align-items: center; gap: var(--space-4); color: var(--text); font-size: var(--text-base); cursor: pointer; }
