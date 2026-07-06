@@ -416,12 +416,12 @@
 
     syncTurnActionControls() {
       const hasActiveTurn = !!this.activeTurnId;
-      const turnAcceptsActions = this.turnAcceptsActions(this.state);
+      const turnIsRunning = this.turnIsRunning(this.state);
       const interrupt = document.querySelector('[data-action-trigger="interrupt"]');
       if (interrupt) {
         const canInterrupt = typeof this.liveInterruptCap === "boolean" ? this.liveInterruptCap : interrupt.getAttribute("data-capability-interrupt") !== "false";
         interrupt.setAttribute("data-capability-interrupt", canInterrupt ? "true" : "false");
-        interrupt.disabled = !canInterrupt || !hasActiveTurn || !turnAcceptsActions;
+        interrupt.disabled = !canInterrupt || !hasActiveTurn || !turnIsRunning;
       }
       const steer = document.querySelector("[data-steer-trigger]");
       if (steer) {
@@ -431,12 +431,21 @@
         // with just textarea text falls back to the classic steer path.
         const canSteer = typeof this.liveSteerCap === "boolean" ? this.liveSteerCap : steer.getAttribute("data-capability-steer") !== "false";
         steer.setAttribute("data-capability-steer", canSteer ? "true" : "false");
-        steer.disabled = !canSteer || !hasActiveTurn || !turnAcceptsActions;
+        steer.disabled = !canSteer || !hasActiveTurn || !turnIsRunning;
       }
     },
 
     turnAcceptsActions(state) {
+      // A turn "accepts actions" (send path stays open) while active OR
+      // awaiting — awaiting sessions can still receive a fresh message.
       return state === "active" || state === "awaiting";
+    },
+
+    turnIsRunning(state) {
+      // Only a genuinely in-flight turn (active) offers Stop/steer and routes
+      // Enter into Queue. A rested "awaiting" is your-move, not running: it
+      // shows plain Send.
+      return state === "active";
     },
 
     hydrateDescriptions() {

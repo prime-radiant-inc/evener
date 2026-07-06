@@ -124,6 +124,47 @@ appwireCalls.length = 0;
 disabledBtn.click();
 pass(appwireCalls.length === 0, "disabled action button must NOT fire SerfAppwire.action");
 
+// ── Composer-at-rest: a rested "awaiting" session shows plain Send ──────────
+// updateThreadState("awaiting") must disable the Stop/steer controls even
+// when activeTurnId is still populated (the daemon can flip state to
+// "awaiting" before the turn id is cleared) — awaiting is a rest, not a
+// running turn, so Stop/steer must never be live for it.
+// syncTurnActionControls() reads document.querySelector('[data-action-trigger="interrupt"]')
+// unscoped, so it always resolves to the pre-existing interruptBtn declared
+// above (the first match in the fixture) — reuse it here rather than
+// inserting a second interrupt button that the renderer would never see.
+const R = window.SerfRenderer;
+if (R && typeof R.updateThreadState === "function") {
+  R.sessionId = "01ACT001";
+  R.conversation = window.document.getElementById("conversation");
+  window.document.body.insertAdjacentHTML("beforeend",
+    '<form data-input-form>' +
+    '<button class="send-btn" data-capability-send="true" data-capability-queue="false"></button>' +
+    '</form>' +
+    '<button data-steer-trigger id="rest-steer-btn" data-capability-steer="true"></button>');
+  const restSteer = window.document.getElementById("rest-steer-btn");
+  interruptBtn.removeAttribute("disabled");
+  interruptBtn.setAttribute("data-capability-interrupt", "true");
+
+  // A lingering activeTurnId (not yet cleared) is exactly the case that must
+  // still resolve to disabled Stop/steer once the state is "awaiting".
+  R.activeTurnId = "turn_awaiting_1";
+  R.updateThreadState("awaiting");
+  pass(interruptBtn.disabled === true, "awaiting rest must disable Stop even with a lingering active turn id");
+  pass(restSteer.disabled === true, "awaiting rest must disable steer even with a lingering active turn id");
+  const sendBtn = window.document.querySelector("form[data-input-form] .send-btn");
+  pass(sendBtn.getAttribute("data-capability-queue") !== "true", "awaiting rest must NOT put the send button in queue mode");
+
+  // Genuinely active turn: Stop/steer stay enabled (unchanged).
+  R.activeTurnId = "turn_active_1";
+  R.updateThreadState("active");
+  pass(interruptBtn.disabled === false, "an active turn must still show an enabled Stop (unchanged)");
+  pass(restSteer.disabled === false, "an active turn must still show an enabled steer (unchanged)");
+
+  restSteer.remove();
+  R.conversation.dataset.state = "active";
+}
+
 if (failures.length === 0) {
   console.log("PASS: workspace action buttons (interrupt/compact/shutdown) wired correctly");
   process.exit(0);
