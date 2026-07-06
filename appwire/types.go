@@ -357,6 +357,14 @@ type Turn struct {
 	StartedAt   *int64       `json:"startedAt,omitempty"`
 	CompletedAt *int64       `json:"completedAt,omitempty"`
 	DurationMS  *int64       `json:"durationMs,omitempty"`
+	// Usage and Cost are the turn's own (not cumulative-session) token totals
+	// and estimated dollar cost — nil/empty when not computable (no usage
+	// data for this turn, or an uncataloged model). Populated live by
+	// summing EventAssistantTextEnd's per-round usage across the turn
+	// (internal/appprojector), and for ended sessions by reading the
+	// persisted per-round schema.Turn.Usage (internal/apptranscript).
+	Usage *SerfUsage `json:"usage,omitempty"`
+	Cost  string     `json:"cost,omitempty"`
 }
 
 type TurnError struct {
