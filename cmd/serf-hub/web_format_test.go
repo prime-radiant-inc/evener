@@ -94,6 +94,21 @@ func TestHubUsageFromAppwire(t *testing.T) {
 	}
 }
 
+// TestAppwireUsageFromHub pins appwireUsageFromHub's nil-safety (no hubapi
+// usage carries through as nil) and its field-for-field mapping — the
+// inverse of hubUsageFromAppwire above — back into appwire's wire type.
+func TestAppwireUsageFromHub(t *testing.T) {
+	if got := appwireUsageFromHub(nil); got != nil {
+		t.Fatalf("appwireUsageFromHub(nil) = %+v, want nil", got)
+	}
+
+	got := appwireUsageFromHub(&hubapi.Usage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, TotalTokens: 6})
+	want := &appwire.SerfUsage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, TotalTokens: 6}
+	if got == nil || *got != *want {
+		t.Fatalf("appwireUsageFromHub = %+v, want %+v", got, want)
+	}
+}
+
 func TestStateLabel_UnifiedVocabulary(t *testing.T) {
 	cases := []struct {
 		state      string
