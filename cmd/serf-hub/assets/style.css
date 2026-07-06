@@ -121,6 +121,26 @@
   --font-mono: 'JetBrains Mono', ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
 }
 
+/* Font-size presets (S/M/L/XL) — Display settings. M matches the base
+   :root type scale above; values are a first-pass computed scale (90/100/
+   115/130% of base, rounded to the nearest px, kept strictly ascending). */
+body[data-font-size="s"] {
+  --text-2xs: 9px; --text-xs: 10px; --text-sm: 11px; --text-base: 12px;
+  --text-md: 13px; --text-lg: 14px; --text-xl: 16px; --text-2xl: 20px;
+}
+body[data-font-size="m"] {
+  --text-2xs: 10px; --text-xs: 11px; --text-sm: 12px; --text-base: 13px;
+  --text-md: 14px; --text-lg: 16px; --text-xl: 18px; --text-2xl: 22px;
+}
+body[data-font-size="l"] {
+  --text-2xs: 12px; --text-xs: 13px; --text-sm: 14px; --text-base: 15px;
+  --text-md: 16px; --text-lg: 18px; --text-xl: 21px; --text-2xl: 25px;
+}
+body[data-font-size="xl"] {
+  --text-2xs: 13px; --text-xs: 14px; --text-sm: 16px; --text-base: 17px;
+  --text-md: 18px; --text-lg: 21px; --text-xl: 23px; --text-2xl: 29px;
+}
+
 @media (prefers-color-scheme: light) {
   :root {
     --bg: #fafafa;

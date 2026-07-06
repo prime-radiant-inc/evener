@@ -30,6 +30,13 @@
       else delete document.body.dataset.sidebarRail;
       return;
     }
+
+    if (target.matches('input[name="font-size"]')) {
+      const v = target.value;
+      localStorage.setItem("serf-hub.appearance.fontSize", v);
+      document.body.dataset.fontSize = v;
+      return;
+    }
   });
 
   // Reflect current theme/density/sidebar-mode prefs whenever a settings
@@ -51,6 +58,11 @@
       const stored = localStorage.getItem("serf-hub.sidebar.rail") === "true" ? "rail" : "pane";
       sidebarModeRadios.forEach((r) => { r.checked = r.value === stored; });
     }
+    const fontSizeRadios = document.querySelectorAll('input[name="font-size"]');
+    if (fontSizeRadios.length) {
+      const stored = localStorage.getItem("serf-hub.appearance.fontSize") || "m";
+      fontSizeRadios.forEach((r) => { r.checked = r.value === stored; });
+    }
   }
 
   document.addEventListener("DOMContentLoaded", applyAppearanceState);
@@ -70,4 +82,10 @@
   const rail = localStorage.getItem(KEY) === "true";
   if (rail) document.body.dataset.sidebarRail = "";
   else delete document.body.dataset.sidebarRail;
+})();
+
+// Font size — apply stored value to body on every page load.
+(function () {
+  const KEY = "serf-hub.appearance.fontSize";
+  document.body.dataset.fontSize = localStorage.getItem(KEY) || "m";
 })();
