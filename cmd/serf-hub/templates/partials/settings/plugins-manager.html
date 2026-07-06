@@ -58,11 +58,15 @@
       return !!(cache && cache.plugins && cache.plugins.some(p => pluginMatchesFilter(p, query)));
     }
 
-    // anyPluginsMatch reports whether any already-loaded catalog has a match,
-    // independent of expandedMarketplaces bookkeeping — used only to decide
-    // whether to show the global "No plugins match" message.
-    function anyPluginsMatch(query) {
-      return marketplaces.some(m => marketplaceHasMatch(m, query));
+    // marketplaceUnresolvedForFilter reports whether a marketplace's filter
+    // match status can't be determined yet: its catalog is still loading or
+    // failed to load. Such marketplaces stay visible while filtering (see
+    // renderBrowseSection) so their existing loading/error rendering inside
+    // renderMarketplaceNode — unaffected by this task — remains reachable,
+    // instead of vanishing behind the filter.
+    function marketplaceUnresolvedForFilter(m) {
+      const cache = browseCatalogs[m.name];
+      return !!(cache && (cache.loading || cache.error));
     }
 
     // applyFilter auto-expands every marketplace with a match in its
@@ -248,14 +252,19 @@
         treeBody = `<li class="settings-collection-empty">No marketplaces registered. Add one above to browse plugins.</li>`;
       } else if (q && filterLoading) {
         treeBody = `<li class="settings-collection-empty">Loading marketplaces…</li>`;
-      } else if (q && !anyPluginsMatch(q)) {
-        treeBody = `<li class="settings-collection-empty">No plugins match "${escapeHtml(q)}".</li>`;
       } else {
-        // While filtering, marketplaces with zero matches are hidden
-        // entirely (not merely collapsed) — only matching marketplaces
-        // render, and each renders only its matching plugin rows (above).
-        const visible = q ? marketplaces.filter(m => marketplaceHasMatch(m, q)) : marketplaces;
-        treeBody = visible.map(m => renderMarketplaceNode(m, q)).join("");
+        // While filtering, a marketplace with a successfully-loaded catalog
+        // and zero matches is hidden entirely (not merely collapsed) — only
+        // matching marketplaces render, and each renders only its matching
+        // plugin rows (above). A marketplace still loading or that failed to
+        // load stays visible instead, since its match status can't be
+        // determined yet (marketplaceUnresolvedForFilter).
+        const visible = q
+          ? marketplaces.filter(m => marketplaceUnresolvedForFilter(m) || marketplaceHasMatch(m, q))
+          : marketplaces;
+        treeBody = (q && visible.length === 0)
+          ? `<li class="settings-collection-empty">No plugins match "${escapeHtml(q)}".</li>`
+          : visible.map(m => renderMarketplaceNode(m, q)).join("");
       }
       return `
         <section class="settings-collection" id="browse-section">

@@ -46,7 +46,7 @@ function typeInFilter(doc, dom, value) {
   input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
 }
 
-(async function main() {
+async function testMatchingAndCollapsing() {
   const dom = makeDom();
   dom.window.pluginsAdmin = {
     marketplaceList: async () => ({
@@ -117,6 +117,66 @@ function typeInFilter(doc, dom, value) {
   const liveInput = doc.getElementById("browse-filter-input");
   pass(doc.activeElement === liveInput, "the filter input keeps focus after the debounced re-render");
   pass(liveInput.selectionStart === 3 && liveInput.selectionEnd === 3, "cursor stays at the end of the typed text");
+}
+
+// A marketplace whose catalog failed to load must stay visible in the
+// Browse tree while a filter query is active — even when no other
+// marketplace's catalog matches the query — so its existing "Failed to
+// browse: …" rendering (unchanged by this task) stays reachable instead of
+// vanishing behind the filter (regression guard for the errored-marketplace
+// case the initial per-row-filter implementation missed).
+async function testErroredMarketplaceStaysVisible() {
+  const dom = makeDom();
+  dom.window.pluginsAdmin = {
+    marketplaceList: async () => ({
+      marketplaces: [
+        { name: "broken", source: { kind: "url", url: "https://example.com/broken.git" }, lastUpdated: 0 },
+        { name: "quiet", source: { kind: "url", url: "https://example.com/quiet.git" }, lastUpdated: 0 },
+      ],
+    }),
+    pluginList: async () => ({ plugins: [] }),
+    marketplaceBrowse: async (name) => {
+      if (name === "broken") throw new Error("connection refused");
+      return { name: "quiet", plugins: [{ name: "sample-plugin", description: "Nothing relevant here" }] };
+    },
+  };
+  dom.window.eval(src);
+  await waitLoaded(dom);
+  const doc = dom.window.document;
+
+  // Preload both catalogs, same as testMatchingAndCollapsing: expand each
+  // node once so browseCatalogs["broken"] holds {error: ...} before filtering.
+  doc.querySelector('.browse-marketplace-toggle[data-marketplace="broken"]').click();
+  doc.querySelector('.browse-marketplace-toggle[data-marketplace="quiet"]').click();
+  await tick(dom, 20);
+  pass(/Failed to browse: connection refused/.test(
+    doc.querySelector('.browse-marketplace-node[data-marketplace-node="broken"]').textContent),
+    "broken shows its error message before any filter is applied");
+
+  // Filter on a query that matches nothing in quiet's (successfully-loaded)
+  // catalog. broken's catalog already errored, so its match status can never
+  // be resolved — it must stay visible rather than disappear behind the
+  // filter or a false "No plugins match" message.
+  typeInFilter(doc, dom, "zzz-nothing-matches");
+  await tick(dom, 170);
+  pass(doc.querySelector('.browse-marketplace-node[data-marketplace-node="broken"]') !== null,
+    "broken (errored catalog) stays visible while filtering, even though nothing else matches");
+  pass(doc.querySelector('.browse-marketplace-node[data-marketplace-node="quiet"]') === null,
+    "quiet (successfully-loaded, no match) is still hidden entirely");
+
+  // broken was collapsed by applyFilter's auto-collapse (it's not a
+  // confirmed match), but it must still be expandable to reveal the error.
+  const brokenToggle = doc.querySelector('.browse-marketplace-toggle[data-marketplace="broken"]');
+  pass(brokenToggle.getAttribute("aria-expanded") === "false", "broken auto-collapses while filtering, like any non-match");
+  brokenToggle.click();
+  pass(/Failed to browse: connection refused/.test(
+    doc.querySelector('.browse-marketplace-node[data-marketplace-node="broken"]').textContent),
+    "broken still shows 'Failed to browse:' once re-expanded while filtering");
+}
+
+(async function main() {
+  await testMatchingAndCollapsing();
+  await testErroredMarketplaceStaysVisible();
 
   if (failures.length === 0) {
     console.log("PASS: plugins-manager browse filter");
