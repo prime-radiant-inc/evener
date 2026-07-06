@@ -174,3 +174,26 @@ func TestCatalogPlugin_ManifestFieldsOmittedWhenAbsent(t *testing.T) {
 		t.Errorf("expected all manifest-fallback fields nil/absent, got %+v", p)
 	}
 }
+
+func TestCatalogPlugin_HasManifestFields(t *testing.T) {
+	cases := []struct {
+		name string
+		cp   CatalogPlugin
+		want bool
+	}{
+		{"nothing set", CatalogPlugin{Name: "x"}, false},
+		{"only skills set (excluded — see plan)", CatalogPlugin{Name: "x", Skills: json.RawMessage(`["./s"]`)}, false},
+		{"only strict set", CatalogPlugin{Name: "x", Strict: boolPtr(false)}, false},
+		{"mcpServers set", CatalogPlugin{Name: "x", MCPServers: json.RawMessage(`{}`)}, true},
+		{"commands set", CatalogPlugin{Name: "x", Commands: json.RawMessage(`[]`)}, true},
+		{"agents set", CatalogPlugin{Name: "x", Agents: json.RawMessage(`[]`)}, true},
+		{"hooks set", CatalogPlugin{Name: "x", Hooks: json.RawMessage(`{}`)}, true},
+	}
+	for _, c := range cases {
+		if got := c.cp.HasManifestFields(); got != c.want {
+			t.Errorf("%s: HasManifestFields() = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }

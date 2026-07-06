@@ -52,6 +52,16 @@ type CatalogPlugin struct {
 	Strict *bool `json:"strict,omitempty"`
 }
 
+// HasManifestFields reports whether the marketplace entry declares at least
+// one manifest-fallback component (commands/agents/hooks/mcpServers) —
+// ensureManifestFallback's signal for whether a manifest-less plugin has
+// anything usable to synthesize a plugin.json from. Skills is deliberately
+// excluded: the fallback does not honor it (see the Skills field's doc), so
+// a skills-only entry has nothing this mechanism can act on.
+func (cp CatalogPlugin) HasManifestFields() bool {
+	return len(cp.Commands) > 0 || len(cp.Agents) > 0 || len(cp.Hooks) > 0 || len(cp.MCPServers) > 0
+}
+
 type Catalog struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
