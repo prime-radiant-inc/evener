@@ -1,9 +1,9 @@
 // serf/task/updated: (1) appwire.js maps the wire notification to a
 // TASKS_CHANGED client event, and (2) the renderer's handleData subscribes
 // to that event and updates the task-status row immediately from the pushed
-// total/done, without waiting for the next 5s poll. Copy T3 (later, not this
-// task) retires startTaskBadgePoller once this event-driven path has landed
-// — this test does not assert its absence.
+// total/done, without waiting for a poll. Copy T3 retired the 5s
+// startTaskBadgePoller now that this event-driven path has landed — part 3
+// below guards that no 5s interval is armed after attach.
 const fs = require("fs");
 const path = require("path");
 const assert = require("assert");
@@ -77,17 +77,26 @@ const { JSDOM } = require("jsdom");
 
   require("./load-renderer").evalRenderer(window);
 
+  // --- 3. Guard: attach must not arm a 5s task-badge poll interval ----------
+  // Copy T3 retires startTaskBadgePoller now that TASKS_CHANGED (above) keeps
+  // the badge fresh. Stub setInterval to record every interval armed by
+  // init() and assert none of them is the old 5000ms poll.
+  const intervals = [];
+  window.setInterval = (fn, ms) => { intervals.push(ms); return 0; };
+
   const conv = window.document.getElementById("conversation");
   window.SerfRenderer.init(conv);
   await new Promise((resolve) => setTimeout(resolve, 30));
 
   assert.ok(notify, "renderer did not subscribe to AppWire notifications");
+  assert.ok(!intervals.includes(5000),
+    "task badge must be event-driven — no 5s poll interval after attach, got intervals " + JSON.stringify(intervals));
 
   // Assert synchronously, in the same tick as notify(): handleData's
   // TASKS_CHANGED case updates the badge immediately (synchronously) and
   // only THEN kicks off the tasks() refetch as a microtask. Our tasks()
   // stub resolves to [], which (correctly) blanks the badge back to "no
-  // tasks" once that microtask runs — awaiting here would race exactly
+  // tasks yet" once that microtask runs — awaiting here would race exactly
   // that harmless-but-overwriting refetch, so the assertion must happen
   // before it, not after.
   notify("serf/task/updated", { threadId: "01S", total: 3, done: 1 });

@@ -240,7 +240,6 @@
         // once nothing has rendered, so resumed/active sessions never see it.
         this.maybeShowWelcome();
       });
-      this.startTaskBadgePoller();
       this.autoOpenObservers(conversationEl);
     },
 
@@ -469,28 +468,6 @@
       }
       const done = tasks.filter(t => t.status === "done").length;
       updateTasksBadge(done, tasks.length, currentTaskSummary(tasks));
-    },
-
-    // Periodically pull /tasks to keep the workspace tasks-button badge
-    // (e.g. "3/7") fresh when the panel is closed and to seed the
-    // taskDescriptions cache so system-line transitions can name tasks.
-    startTaskBadgePoller() {
-      if (this.taskBadgeTimer) clearInterval(this.taskBadgeTimer);
-      const tick = () => {
-        if (!this.sessionId) return;
-        if (window.SerfAppwire) {
-          window.SerfAppwire.tasks(this.sessionId)
-            .then(tasks => this.applyTasks(tasks))
-            .catch(() => {});
-          return;
-        }
-        partialFetch(sessionPartialPath(this.sessionId, "tasks"))
-          .then(r => r.ok ? r.json() : [])
-          .then(tasks => this.applyTasks(tasks))
-          .catch(() => {});
-      };
-      tick();
-      this.taskBadgeTimer = setInterval(tick, 5000);
     },
 
     // ensureLiveStream wires up the appwire stream for the current session
@@ -1050,11 +1027,10 @@
           this.renderQueuePreview();
           break;
         case "TASKS_CHANGED":
-          // Event-driven task-status row (Copy T3, later, retires the 5s
-          // poll once this lands — do not remove startTaskBadgePoller here).
-          // The daemon pushes total/done on every task mutation; update the
-          // badge immediately from the pushed counts, then refetch the full
-          // list once to refresh the panel's per-row detail.
+          // Event-driven task-status row: the daemon pushes total/done on
+          // every task mutation; update the badge immediately from the
+          // pushed counts, then refetch the full list once to refresh the
+          // panel's per-row detail. This replaces the old 5s poll.
           updateTasksBadge(data.done, data.total, "");
           if (window.SerfAppwire) {
             window.SerfAppwire.tasks(this.sessionId).then(tasks => this.applyTasks(tasks)).catch(() => {});
