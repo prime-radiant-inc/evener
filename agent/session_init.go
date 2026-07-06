@@ -1339,11 +1339,7 @@ func (s *Session) initMCP() error {
 	// servers still constructs successfully.
 	mgr, connectOutcomes := mcp.NewManager(ctx, configs, nil)
 	mgr.OnReconnect = func(name string) {
-		s.emitDiagnosticWarning(events.WarningData{
-			Source:  "mcp", // diagnostic.SourceMCP doesn't exist yet (Task 10); literal string until then
-			Title:   "MCP server reconnected",
-			Message: fmt.Sprintf("MCP server %q reconnected after a dropped connection", name),
-		})
+		s.emitDiagnosticWarning(reconnectRecoveryWarning(name))
 	}
 	regOutcomes := mgr.RegisterTools(s.reg)
 	for _, o := range append(connectOutcomes, regOutcomes...) {
@@ -1356,4 +1352,17 @@ func (s *Session) initMCP() error {
 	s.mcpMgr = mgr
 	s.mcpTools = mgr.ToolDefinitions()
 	return nil
+}
+
+// reconnectRecoveryWarning builds the good-news diagnostic emitted when a
+// dropped MCP connection heals itself. It carries its OWN hint so the
+// Source-derived classifier (which would otherwise stamp the MCP-FAILURE hint
+// on any Source:"mcp" warning) does not make a recovery read like a failure.
+func reconnectRecoveryWarning(name string) events.WarningData {
+	return events.WarningData{
+		Source:  "mcp",
+		Title:   "MCP server reconnected",
+		Hint:    "The connection dropped and was automatically re-established; the in-flight tool call was retried. No action needed.",
+		Message: fmt.Sprintf("MCP server %q reconnected after a dropped connection", name),
+	}
 }
