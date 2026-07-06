@@ -2559,6 +2559,49 @@ func TestWeb_State_RendersInputStatusPartial(t *testing.T) {
 	if strings.Contains(body, `class="status-item tokens"`) {
 		t.Errorf("state partial should not render a token cluster with nil usage: %q", body)
 	}
+	if strings.Contains(body, `class="status-item cost"`) {
+		t.Errorf("state partial should not render a cost cluster with nil usage: %q", body)
+	}
+}
+
+// TestWeb_State_RendersCostEstimate verifies the polled /state endpoint
+// renders a cost cluster computed from the session's Model + CumulativeUsage
+// via appwire.EstimateCost, once both are non-zero.
+func TestWeb_State_RendersCostEstimate(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+	_ = schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: "01STATECOST", UpdatedAt: time.Now(),
+		Model: "claude-opus-4-5",
+		CumulativeUsage: schema.CumulativeUsage{
+			InputTokens:  100_000,
+			OutputTokens: 20_000,
+		},
+	})
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01STATECOST/state", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `class="status-item cost"`) || !strings.Contains(body, `~$1.00`) {
+		t.Errorf("state partial missing cost cluster with ~$1.00: %q", body)
+	}
 }
 
 // TestWeb_State_ShowsWorkTimeAndTokenClustersWithLeanFetch verifies the

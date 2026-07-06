@@ -375,6 +375,23 @@ func serfUsageFromCumulative(u schema.CumulativeUsage) *appwire.SerfUsage {
 	}
 }
 
+// appwireUsageFromHub maps hubapi's flattened Usage type back to
+// appwire.SerfUsage — the inverse of hubUsageFromAppwire — so
+// appwire.EstimateCost (which only knows the appwire wire type) can be
+// called from the hubapi.SessionDetail data renderInputStrip already has.
+// Returns nil when u is nil.
+func appwireUsageFromHub(u *hubapi.Usage) *appwire.SerfUsage {
+	if u == nil {
+		return nil
+	}
+	return &appwire.SerfUsage{
+		InputTokens:     u.InputTokens,
+		OutputTokens:    u.OutputTokens,
+		CacheReadTokens: u.CacheReadTokens,
+		TotalTokens:     u.TotalTokens,
+	}
+}
+
 func (s *WebServer) liveWorkspaceCapabilities(id string, fallback hubapi.SessionCapabilities) hubapi.SessionCapabilities {
 	caps, _ := s.liveWorkspaceSnapshot(id, fallback)
 	return caps
@@ -499,7 +516,7 @@ func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id 
 		"ContextPercent":      int(detail.ContextPressure * 100),
 		"ContextWindow":       detail.ContextWindow,
 		"ContextNumbers":      formatContextNumbers(detail.ContextUsed, detail.ContextWindow, detail.ContextRemaining),
-		"Cost":                "",
+		"Cost":                appwire.EstimateCost(detail.Model, appwireUsageFromHub(detail.Usage)),
 		"State":               detail.State,
 		"StateLabel":          stateLabel(detail.State, false),
 		"TurnCount":           detail.TurnCount,

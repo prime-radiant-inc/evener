@@ -59,6 +59,7 @@ func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
 		Usage:               thread.Serf.Usage,
 		ActiveTurnStartedAt: thread.Serf.ActiveTurnStartedAt,
 	}
+	data.Cost = appwire.EstimateCost(data.Model, data.Usage)
 	if goal := thread.Serf.Goal; goal != nil {
 		data.GoalStatus = goal.Status
 		data.GoalIterations = goal.Iterations
