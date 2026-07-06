@@ -505,6 +505,11 @@ func (c *conn) reconnect(ctx context.Context) (*mcpsdk.ClientSession, bool) {
 	dial := c.dial
 	client := c.client
 	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.reconnecting = false
+		c.mu.Unlock()
+	}()
 
 	dialCtx, cancel := context.WithTimeout(context.Background(), reconnectDialTimeout)
 	defer cancel()
@@ -531,11 +536,9 @@ func (c *conn) reconnect(ctx context.Context) (*mcpsdk.ClientSession, bool) {
 	// The redial itself failed (dial or Connect error). Record the failure
 	// and apply the same backoff as a success, so a burst of calls against a
 	// still-dead server fails fast — returning the ORIGINAL triggering
-	// error — instead of each re-paying a fresh dial timeout. Clear
-	// reconnecting either way: this attempt is over, so a future call is
-	// once again free to try (subject to the backoff just set).
+	// error — instead of each re-paying a fresh dial timeout. The deferred
+	// clear above handles reconnecting for this (and every other) exit path.
 	c.mu.Lock()
-	c.reconnecting = false
 	if !c.closed {
 		c.lastErr = err
 		c.lastErrAt = time.Now()
@@ -550,14 +553,12 @@ func (c *conn) reconnect(ctx context.Context) (*mcpsdk.ClientSession, bool) {
 // returns the displaced (old) session for the caller to Close() OUTSIDE any
 // lock, and resets backoffUntil so the next reconnect attempt waits
 // reconnectBackoff. On failure (c.closed is true), it returns (nil, false);
-// newSess is then the caller's responsibility to discard. Either way, it
-// clears reconnecting: the in-flight attempt that called swap is now
-// complete, so a future caller (there cannot be a concurrent one right now —
-// reconnecting excluded it) is once again free to try.
+// newSess is then the caller's responsibility to discard. swap no longer
+// touches reconnecting — reconnect's own deferred clear owns that for every
+// exit path, including swap's.
 func (c *conn) swap(newSess *mcpsdk.ClientSession) (old *mcpsdk.ClientSession, committed bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.reconnecting = false
 	if c.closed {
 		return nil, false
 	}

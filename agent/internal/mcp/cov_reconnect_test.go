@@ -743,3 +743,25 @@ func TestReconnect_FailedReconnect_BackoffSuppressesImmediateRetry(t *testing.T)
 		t.Errorf("conn.status = %q, want degraded", got)
 	}
 }
+
+// TestReconnect_ClearsReconnectingFlagOnFailure pins that a failed reconnect
+// attempt (dial error) always leaves c.reconnecting cleared, so a future call
+// is free to try again instead of wedging the conn forever. This is a
+// regression pin, not a red test: both of today's two manual clear sites
+// (the failure branch in reconnect, and swap) already cover it; Correctness
+// T8 consolidates them into a single deferred clear, and this test must keep
+// passing unchanged through that refactor.
+func TestReconnect_ClearsReconnectingFlagOnFailure(t *testing.T) {
+	c := &conn{status: "connected", client: nil}
+	c.dial = func(context.Context) (mcpsdk.Transport, error) { return nil, errors.New("dial refused") }
+	_, ok := c.reconnect(context.Background())
+	if ok {
+		t.Fatal("reconnect should fail when dial fails")
+	}
+	c.mu.Lock()
+	stuck := c.reconnecting
+	c.mu.Unlock()
+	if stuck {
+		t.Fatal("reconnecting flag left set after a failed reconnect — a future call would wedge")
+	}
+}
