@@ -210,3 +210,65 @@ func TestModelPickerUsesOverlayBorder(t *testing.T) {
 		t.Errorf("title should be in border: %q", plain)
 	}
 }
+
+func TestModelPicker_RendersGroupHeadersOnTransition(t *testing.T) {
+	withTestColorProfile(t)
+	items := []ModelPickerItem{
+		{ID: "anthropic/claude-opus-4-6", Display: "Claude Opus 4 6", Group: "Recent"},
+		{ID: "anthropic/claude-opus-4-6", Display: "Claude Opus 4 6", Group: "anthropic"},
+		{ID: "openai/gpt-5.2", Display: "Gpt 5.2", Group: "openai"},
+	}
+	p := NewModelPicker(items, "", 80)
+	plain := ansiPattern.ReplaceAllString(p.View(), "")
+	lines := strings.Split(plain, "\n")
+
+	recentIdx, anthropicIdx, openaiIdx := -1, -1, -1
+	for i, line := range lines {
+		// Overlay borders every body line with "│"; strip that framing before
+		// comparing bare header text.
+		trimmed := strings.TrimSpace(strings.Trim(strings.TrimSpace(line), "│"))
+		if trimmed == "RECENT" {
+			recentIdx = i
+		}
+		if trimmed == "ANTHROPIC" {
+			anthropicIdx = i
+		}
+		if trimmed == "OPENAI" {
+			openaiIdx = i
+		}
+	}
+	if recentIdx == -1 || anthropicIdx == -1 || openaiIdx == -1 {
+		t.Fatalf("expected RECENT, ANTHROPIC, and OPENAI group headers, view:\n%s", plain)
+	}
+	if recentIdx >= anthropicIdx || anthropicIdx >= openaiIdx {
+		t.Fatalf("group headers out of order: recent=%d anthropic=%d openai=%d", recentIdx, anthropicIdx, openaiIdx)
+	}
+}
+
+func TestModelPicker_RendersMetaTail(t *testing.T) {
+	withTestColorProfile(t)
+	items := []ModelPickerItem{
+		{ID: "anthropic/claude-opus-4-6", Display: "Claude Opus 4 6", Meta: "1M ctx · $5.00/$25.00 · tools,vision"},
+	}
+	// Wide enough (clamped to the Overlay's 96-col max) that the row isn't
+	// word-wrapped across lines by the popup frame.
+	p := NewModelPicker(items, "", 96)
+	plain := ansiPattern.ReplaceAllString(p.View(), "")
+	if !strings.Contains(plain, "1M ctx · $5.00/$25.00 · tools,vision") {
+		t.Fatalf("expected meta tail in view:\n%s", plain)
+	}
+}
+
+func TestModelPicker_ZeroValueGroupMetaUnchangedForActionPicker(t *testing.T) {
+	// NewActionPicker/NewTranscriptPicker items never set Group/Meta; their
+	// rendering must be byte-for-byte unaffected by this change.
+	items := []ModelPickerItem{{ID: "restart", Display: "Restart session"}}
+	p := NewActionPicker("Actions", "enter select", items, 80)
+	plain := ansiPattern.ReplaceAllString(p.View(), "")
+	if strings.Contains(plain, "\n\n\n") {
+		t.Fatalf("zero-value Group must not introduce a spurious blank header line:\n%s", plain)
+	}
+	if !strings.Contains(plain, "Restart session") {
+		t.Fatalf("action item should still render:\n%s", plain)
+	}
+}

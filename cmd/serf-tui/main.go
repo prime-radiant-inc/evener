@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/hubstart"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 	"primeradiant.com/serf/cmdutil"
+	"primeradiant.com/serf/llm"
 )
 
 func main() {
@@ -37,6 +38,11 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "serf-tui: %v\n", err)
 		return 1
 	}
+
+	// Warm the embedded model catalog (a sync.Once-memoized ~1.58MB JSON parse)
+	// concurrently with the hub-connect round trip below, so the model picker's
+	// first fetch never pays that cost on the critical path to user input.
+	go llm.EmbeddedModelCatalog()
 
 	ctx := context.Background()
 	runtime, err := hubstart.StartHubClient(ctx, hubstart.HubStartConfig{

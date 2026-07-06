@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
@@ -161,7 +164,8 @@ func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
 			writeAPIWireError(w, http.StatusBadGateway, err)
 			return
 		}
-		writeModelsResponse(w, modelDescriptorsToAPIModels(resp.Data, s.cfg.ProviderConfig), resp.Diagnostics, includeDiagnostics)
+		models := modelDescriptorsToAPIModels(resp.Data, s.cfg.ProviderConfig)
+		writeModelsResponse(w, models, resp.Diagnostics, recentModelEntriesFromDescriptors(models, resp.Recent), includeDiagnostics)
 		return
 	}
 
@@ -178,14 +182,18 @@ func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
 		}
 		models = liveModels(r.Context())
 	}
-	writeModelsResponse(w, models, launchResp.Diagnostics, includeDiagnostics)
+	var recentRefs []appwire.ModelDescriptor
+	if s.cfg.Past != nil {
+		recentRefs = s.cfg.Past.RecentModels(recentModelsLimit)
+	}
+	writeModelsResponse(w, models, launchResp.Diagnostics, recentModelEntriesFromDescriptors(models, recentRefs), includeDiagnostics)
 }
 
 // writeModelsResponse writes the model list as a bare JSON array by default, or
-// as {"models": [...], "diagnostics": [...]} when the caller opted into
-// diagnostics. Diagnostics serialize as an empty array (never null) so clients
-// can iterate unconditionally.
-func writeModelsResponse(w http.ResponseWriter, models []map[string]any, diagnostics []appwire.ModelListDiagnostic, includeDiagnostics bool) {
+// as {"models": [...], "diagnostics": [...], "recent": [...]} when the caller
+// opted into diagnostics. Diagnostics and recent serialize as empty arrays
+// (never null) so clients can iterate unconditionally.
+func writeModelsResponse(w http.ResponseWriter, models []map[string]any, diagnostics []appwire.ModelListDiagnostic, recent []map[string]any, includeDiagnostics bool) {
 	w.Header().Set("Content-Type", "application/json")
 	if !includeDiagnostics {
 		json.NewEncoder(w).Encode(models) //nolint:errcheck
@@ -197,9 +205,13 @@ func writeModelsResponse(w http.ResponseWriter, models []map[string]any, diagnos
 	if diagnostics == nil {
 		diagnostics = []appwire.ModelListDiagnostic{}
 	}
+	if recent == nil {
+		recent = []map[string]any{}
+	}
 	json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
 		"models":      models,
 		"diagnostics": diagnostics,
+		"recent":      recent,
 	})
 }
 
@@ -211,6 +223,84 @@ func launchModelListErrorDiagnostic(err error) appwire.ModelListDiagnostic {
 		Message: err.Error(),
 		Hint:    info.Hint,
 	}
+}
+
+// datedSnapshotSuffix matches a trailing dated-snapshot suffix on a bare
+// model id (e.g. "-20251101"), plus an optional trailing LiteLLM version tag
+// ("-v1") — mirrors llm/model_catalog_embedded.go's datedModelSuffix.
+// Duplicated (not exported from llm) because llm/model_catalog_embedded.go
+// isn't owned by this track — see the plan's Global Constraints.
+var datedSnapshotSuffix = regexp.MustCompile(`-\d{8}(-v\d+)?$`)
+
+// isDatedSnapshotModelID reports whether ref's model segment (the part after
+// the last "/", if any) carries a dated-snapshot suffix.
+func isDatedSnapshotModelID(ref string) bool {
+	if i := strings.LastIndex(ref, "/"); i >= 0 {
+		ref = ref[i+1:]
+	}
+	return datedSnapshotSuffix.MatchString(ref)
+}
+
+// prettifyModelDisplayName turns a raw model id into a human-readable label
+// with no hand-maintained per-model name table (Decision #8): it strips a
+// trailing dated-snapshot suffix, splits on '-', and capitalizes each
+// segment's first rune, leaving the rest (numbers, "4.5", "70b", ...)
+// untouched. Deliberately simple.
+func prettifyModelDisplayName(id string) string {
+	base := datedSnapshotSuffix.ReplaceAllString(id, "")
+	segments := strings.Split(base, "-")
+	for idx, seg := range segments {
+		if seg == "" {
+			continue
+		}
+		r := []rune(seg)
+		r[0] = unicode.ToUpper(r[0])
+		segments[idx] = string(r)
+	}
+	return strings.Join(segments, " ")
+}
+
+// sortModelEntriesDatedLast stable-sorts model entries by provider, then
+// pushes dated-snapshot ids to the end of their provider's group; order is
+// otherwise preserved (whatever order the source returned).
+func sortModelEntriesDatedLast(entries []map[string]any) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		pi, _ := entries[i]["provider"].(string)
+		pj, _ := entries[j]["provider"].(string)
+		if pi != pj {
+			return pi < pj
+		}
+		mi, _ := entries[i]["model"].(string)
+		mj, _ := entries[j]["model"].(string)
+		di, dj := isDatedSnapshotModelID(mi), isDatedSnapshotModelID(mj)
+		if di != dj {
+			return !di
+		}
+		return false
+	})
+}
+
+// recentModelEntriesFromDescriptors resolves Recent model refs (Provider,
+// Model pairs, already deduped/limited/most-recent-first) against the
+// already-built, already-enriched models list, returning the matching
+// entries (same maps, so they carry the same badges) in refs' order. A ref
+// with no match in models is silently dropped.
+func recentModelEntriesFromDescriptors(models []map[string]any, refs []appwire.ModelDescriptor) []map[string]any {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(refs))
+	for _, ref := range refs {
+		for _, m := range models {
+			p, _ := m["provider"].(string)
+			mod, _ := m["model"].(string)
+			if p == ref.Provider && mod == ref.Model {
+				out = append(out, m)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // modelDescriptorsToAPIModels builds the /api/models response entries. The
@@ -230,14 +320,21 @@ func modelDescriptorsToAPIModels(models []appwire.ModelDescriptor, providerCfg *
 			continue
 		}
 		entry := map[string]any{
-			"provider": m.Provider,
-			"model":    m.Model,
+			"provider":     m.Provider,
+			"model":        m.Model,
+			"display_name": prettifyModelDisplayName(m.Model),
 		}
 		if cat != nil {
 			if mi := catalogModelInfo(cat, behaviorTagFor(providerCfg, m.Provider), m.Model); mi != nil {
-				entry["display_name"] = mi.DisplayName
 				entry["context_window"] = mi.ContextWindow
 				entry["supports_tools"] = mi.SupportsTools
+				entry["supports_vision"] = mi.SupportsVision
+				if mi.MaxOutputTokens != nil {
+					entry["max_output_tokens"] = *mi.MaxOutputTokens
+				}
+				if mi.SupportsWebSearch != nil {
+					entry["supports_web_search"] = *mi.SupportsWebSearch
+				}
 				entry["supports_reasoning"] = mi.SupportsReasoning
 				entry["input_cost_per_million"] = mi.InputCostPerMillion
 				entry["output_cost_per_million"] = mi.OutputCostPerMillion
@@ -249,6 +346,7 @@ func modelDescriptorsToAPIModels(models []appwire.ModelDescriptor, providerCfg *
 		applyInstanceModelOverride(entry, providerCfg, m.Provider, m.Model)
 		out = append(out, entry)
 	}
+	sortModelEntriesDatedLast(out)
 	return out
 }
 
@@ -355,7 +453,7 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 			entry := map[string]any{
 				"provider":     prov,
 				"model":        m.ID,
-				"display_name": m.DisplayName,
+				"display_name": prettifyModelDisplayName(m.ID),
 			}
 			if m.ContextWindow > 0 {
 				entry["context_window"] = m.ContextWindow
@@ -385,6 +483,19 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 				if _, ok := entry["reasoning_effort_levels"]; !ok && len(mi.ReasoningEffortLevels) > 0 {
 					entry["reasoning_effort_levels"] = mi.ReasoningEffortLevels
 				}
+				if _, ok := entry["supports_vision"]; !ok {
+					entry["supports_vision"] = mi.SupportsVision
+				}
+				if mi.MaxOutputTokens != nil {
+					if _, ok := entry["max_output_tokens"]; !ok {
+						entry["max_output_tokens"] = *mi.MaxOutputTokens
+					}
+				}
+				if mi.SupportsWebSearch != nil {
+					if _, ok := entry["supports_web_search"]; !ok {
+						entry["supports_web_search"] = *mi.SupportsWebSearch
+					}
+				}
 			}
 			out = append(out, entry)
 		}
@@ -393,6 +504,7 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 	// The cache is per-WebServer (each server's provider set/config owns its
 	// own entries) and holds RAW live values; providers.toml overrides are
 	// applied per request on fresh copies (overlayLiveEntries).
+	sortModelEntriesDatedLast(out)
 	s.liveModels.mu.Lock()
 	s.liveModels.models = out
 	s.liveModels.expires = time.Now().Add(liveModelsTTL)

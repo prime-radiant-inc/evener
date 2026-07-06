@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/appwire"
 )
 
 func writeMeta(t *testing.T, dir string, meta schema.SessionMeta) {
@@ -682,4 +684,50 @@ func TestUpdateMetaConcurrentWithRebuildIsRaceFree(t *testing.T) {
 		}
 	}()
 	wg.Wait()
+}
+
+func TestPastIndex_RecentModels_DedupesGlobalRecencyLastN(t *testing.T) {
+	idx := NewPastIndex("")
+	now := time.Now().UTC()
+	idx.SeedForTest([]schema.SessionMeta{
+		{ID: "a", ProfileID: "anthropic", Model: "claude-opus-4-6", UpdatedAt: now.Add(-1 * time.Minute)},
+		{ID: "b", ProfileID: "openai", Model: "gpt-5.2", UpdatedAt: now.Add(-2 * time.Minute)},
+		{ID: "c", ProfileID: "anthropic", Model: "claude-opus-4-6", UpdatedAt: now.Add(-3 * time.Minute)}, // dup of a, older — dropped
+		{ID: "d", ProfileID: "openai", Model: "gpt-5-mini", UpdatedAt: now.Add(-4 * time.Minute)},
+		{ID: "e", ProfileID: "google", Model: "gemini-3-pro", UpdatedAt: now.Add(-5 * time.Minute)},
+		{ID: "f", ProfileID: "zai", Model: "glm-5.2", UpdatedAt: now.Add(-6 * time.Minute)},
+		{ID: "g", ProfileID: "mistral", Model: "mistral-large", UpdatedAt: now.Add(-7 * time.Minute)}, // 6th distinct — excluded by limit=5
+	})
+	got := idx.RecentModels(5)
+	want := []appwire.ModelDescriptor{
+		{Provider: "anthropic", Model: "claude-opus-4-6"},
+		{Provider: "openai", Model: "gpt-5.2"},
+		{Provider: "openai", Model: "gpt-5-mini"},
+		{Provider: "google", Model: "gemini-3-pro"},
+		{Provider: "zai", Model: "glm-5.2"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("RecentModels(5) = %+v, want %+v", got, want)
+	}
+}
+
+func TestPastIndex_RecentModels_EmptyIndexReturnsNil(t *testing.T) {
+	idx := NewPastIndex("")
+	if got := idx.RecentModels(5); got != nil {
+		t.Fatalf("RecentModels on empty index = %+v, want nil", got)
+	}
+}
+
+func TestPastIndex_RecentModels_SkipsBlankProviderOrModel(t *testing.T) {
+	idx := NewPastIndex("")
+	idx.SeedForTest([]schema.SessionMeta{
+		{ID: "a", ProfileID: "", Model: "gpt-5.2", UpdatedAt: time.Now()},
+		{ID: "b", ProfileID: "openai", Model: "", UpdatedAt: time.Now()},
+		{ID: "c", ProfileID: "openai", Model: "gpt-5.2", UpdatedAt: time.Now()},
+	})
+	got := idx.RecentModels(5)
+	want := []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.2"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("RecentModels = %+v, want %+v (blank provider/model entries skipped)", got, want)
+	}
 }

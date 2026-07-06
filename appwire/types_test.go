@@ -258,3 +258,41 @@ func TestSerfThreadMetricsOmitEmpty(t *testing.T) {
 		}
 	}
 }
+
+// TestModelListResponseRecentJSONRoundTrip verifies the model picker's
+// Recent group rides ModelListResponse as an ordinary struct field (no new
+// appwire method), snake_case on the wire, and round-trips.
+func TestModelListResponseRecentJSONRoundTrip(t *testing.T) {
+	in := ModelListResponse{
+		Data:   []ModelDescriptor{{Provider: "anthropic", Model: "claude-opus-4-6"}},
+		Recent: []ModelDescriptor{{Provider: "openai", Model: "gpt-5.2"}},
+	}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(raw)
+	if !strings.Contains(got, `"recent":[{"provider":"openai","model":"gpt-5.2"}]`) {
+		t.Fatalf("marshal=%s missing recent", got)
+	}
+	var out ModelListResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(out.Recent) != 1 || out.Recent[0] != in.Recent[0] {
+		t.Fatalf("roundtrip recent=%+v, want %+v", out.Recent, in.Recent)
+	}
+}
+
+// TestModelListResponseRecentOmitEmpty verifies a response with no recent
+// models (fresh install, no history) omits the field entirely rather than
+// rendering an empty array.
+func TestModelListResponseRecentOmitEmpty(t *testing.T) {
+	raw, err := json.Marshal(ModelListResponse{Data: []ModelDescriptor{{Provider: "a", Model: "b"}}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), `"recent"`) {
+		t.Fatalf("marshal=%s should have omitted recent", raw)
+	}
+}

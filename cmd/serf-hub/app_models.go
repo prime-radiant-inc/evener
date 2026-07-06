@@ -11,7 +11,51 @@ import (
 	"primeradiant.com/serf/llm/providercfg"
 )
 
+// hubModelList is the single server-side entry point for every ModelList
+// RPC — the appwire dispatch (app_rpc.go) routes every harness's call here,
+// which is also the path the TUI's client.ModelList() hits. It always
+// attaches Recent (the model picker's global-recency group), regardless of
+// which harness was requested: Recent is harness-independent by design (the
+// picker shows the same top-5 list no matter which harness tab is active).
 func hubModelList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
+	resp, err := hubModelListInner(ctx, cfg, sources, params)
+	if err != nil {
+		return resp, err
+	}
+	return attachRecentModels(cfg, resp), nil
+}
+
+// recentModelsLimit is the model picker's Recent group size (Decision #8:
+// "the last 5 distinct models").
+const recentModelsLimit = 5
+
+// attachRecentModels resolves cfg.Past's globally-recent model refs and
+// filters them to ones actually present in resp.Data — a recent model the
+// current config no longer offers (retired, provider reconfigured) is
+// dropped rather than rendered as an unselectable entry.
+func attachRecentModels(cfg hubcore.WebConfig, resp appwire.ModelListResponse) appwire.ModelListResponse {
+	if cfg.Past == nil {
+		return resp
+	}
+	refs := cfg.Past.RecentModels(recentModelsLimit)
+	if len(refs) == 0 {
+		return resp
+	}
+	available := make(map[string]bool, len(resp.Data))
+	for _, d := range resp.Data {
+		available[d.Provider+"/"+d.Model] = true
+	}
+	var recent []appwire.ModelDescriptor
+	for _, ref := range refs {
+		if available[ref.Provider+"/"+ref.Model] {
+			recent = append(recent, ref)
+		}
+	}
+	resp.Recent = recent
+	return resp
+}
+
+func hubModelListInner(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
 	harness := strings.TrimSpace(params.Harness)
 	if harness != "" && harness != "serf" && harness != "local" {
 		source, err := sourceForModelHarness(ctx, cfg, sources, harness)

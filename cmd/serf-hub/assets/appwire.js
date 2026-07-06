@@ -331,6 +331,7 @@
     return request(METHOD.modelList, params || {}).then((resp) => ({
       models: resp.data || [],
       diagnostics: resp.diagnostics || [],
+      recent: resp.recent || [],
     }));
   }
 

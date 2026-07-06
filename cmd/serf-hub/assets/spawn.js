@@ -1385,6 +1385,7 @@
     modelsPromise.then(result => {
       const models = Array.isArray(result && result.models) ? result.models : [];
       const diagnostics = Array.isArray(result && result.diagnostics) ? result.diagnostics : [];
+      const recentModels = Array.isArray(result && result.recent) ? result.recent : [];
       if (models.length === 0 && diagnostics.length === 0 && !harnessUsesSerfModels(harness)) {
         openHarnessDefaultModelPicker(chip);
         return;
@@ -1437,6 +1438,59 @@
         return String(n);
       }
 
+      function modelBadges(m) {
+        const badges = [];
+        if (m.supports_tools) badges.push("tools");
+        if (m.supports_vision) badges.push("vision");
+        if (m.supports_reasoning) {
+          const levels = m.reasoning_effort_levels;
+          badges.push(Array.isArray(levels) && levels.length ? "reasoning (" + levels.join("/") + ")" : "reasoning");
+        }
+        if (m.supports_web_search) badges.push("web search");
+        return badges;
+      }
+
+      function buildModelRow(m) {
+        const el = document.createElement("button");
+        el.type = "button";
+        el.className = "chip-picker-model";
+        const name = document.createElement("div");
+        name.className = "chip-picker-model-name";
+        name.textContent = m.display_name || m.model;
+        el.appendChild(name);
+        if (m.display_name && m.display_name !== m.model) {
+          const idLine = document.createElement("div");
+          idLine.className = "chip-picker-model-id";
+          idLine.textContent = m.model;
+          el.appendChild(idLine);
+        }
+        const badges = modelBadges(m);
+        if (badges.length) {
+          const badgeRow = document.createElement("div");
+          badgeRow.className = "chip-picker-model-badges";
+          badges.forEach(b => {
+            const span = document.createElement("span");
+            span.className = "chip-picker-badge";
+            span.textContent = b;
+            badgeRow.appendChild(span);
+          });
+          el.appendChild(badgeRow);
+        }
+        const meta = document.createElement("div");
+        meta.className = "chip-picker-model-meta";
+        const parts = [];
+        if (m.context_window) parts.push(formatCtx(m.context_window) + " ctx");
+        if (m.max_output_tokens) parts.push(formatCtx(m.max_output_tokens) + " out");
+        if (m.input_cost_per_million != null) parts.push("$" + m.input_cost_per_million.toFixed(2) + "/M in");
+        if (m.output_cost_per_million != null) parts.push("$" + m.output_cost_per_million.toFixed(2) + "/M out");
+        if (parts.length) {
+          meta.textContent = parts.join(" · ");
+          el.appendChild(meta);
+        }
+        el.addEventListener("click", () => selectModel(m));
+        return el;
+      }
+
       function selectModel(m) {
         if (harnessUsesSerfModels(harness)) {
           setChipValue("model", m.provider + "/" + m.model);
@@ -1449,6 +1503,19 @@
       function renderList(filter) {
         list.innerHTML = "";
         let shown = 0;
+        const recentMatches = recentModels.filter(m =>
+          !filter || (m.model + " " + (m.display_name || "")).toLowerCase().includes(filter)
+        );
+        if (recentMatches.length > 0) {
+          const header = document.createElement("div");
+          header.className = "chip-picker-group";
+          header.textContent = "Recent";
+          list.appendChild(header);
+          recentMatches.forEach(m => {
+            shown++;
+            list.appendChild(buildModelRow(m));
+          });
+        }
         providers.forEach(p => {
           const matches = byProvider[p].filter(m =>
             !filter || (m.model + " " + (m.display_name || "")).toLowerCase().includes(filter)
@@ -1460,23 +1527,7 @@
           list.appendChild(header);
           matches.forEach(m => {
             shown++;
-            const el = document.createElement("button");
-            el.type = "button";
-            el.className = "chip-picker-model";
-            const name = document.createElement("div");
-            name.className = "chip-picker-model-name";
-            name.textContent = m.model;
-            const meta = document.createElement("div");
-            meta.className = "chip-picker-model-meta";
-            const parts = [];
-            if (m.context_window) parts.push(formatCtx(m.context_window) + " ctx");
-            if (m.input_cost_per_million != null) parts.push("$" + m.input_cost_per_million.toFixed(2) + "/M in");
-            if (m.output_cost_per_million != null) parts.push("$" + m.output_cost_per_million.toFixed(2) + "/M out");
-            meta.textContent = parts.join(" · ");
-            el.appendChild(name);
-            if (parts.length) el.appendChild(meta);
-            el.addEventListener("click", () => selectModel(m));
-            list.appendChild(el);
+            list.appendChild(buildModelRow(m));
           });
         });
         if (shown === 0) {
@@ -1679,18 +1730,23 @@
     return fetch("/api/models" + suffix).then(r => r.json());
   }
 
-  // listModelsWithDiagnosticsForHarness resolves to {models, diagnostics} so the
-  // picker can report configured providers whose listing failed instead of
-  // dropping them silently. Falls back gracefully if the server or appwire path
-  // only returns a bare model array.
+  // listModelsWithDiagnosticsForHarness resolves to {models, diagnostics, recent}
+  // so the picker can report configured providers whose listing failed instead
+  // of dropping them silently. Always goes through the REST /api/models
+  // endpoint (like fetchEnrichedModelsForHarness/openEffortPicker and
+  // settings-pickers.js) rather than window.SerfAppwire.listModelsWithDiagnostics:
+  // the appwire RPC's ModelList response carries only appwire.ModelDescriptor's
+  // bare {provider, model} — the picker's prettified display_name and
+  // capability badges are REST-only enrichment (modelDescriptorsToAPIModels in
+  // web_spawn.go) that the wire type has no fields to carry. Preferring the
+  // appwire path here used to silently render every row with no display name
+  // and no badges whenever window.SerfAppwire was loaded — which is
+  // unconditional in the app shell (app.html), so it always won.
   function listModelsWithDiagnosticsForHarness(harness) {
     const params = {};
     if (!harnessUsesSerfModels(harness)) params.harness = harness;
     const cwd = currentWorkingDir();
     if (cwd) params.cwd = cwd;
-    if (window.SerfAppwire && typeof window.SerfAppwire.listModelsWithDiagnostics === "function") {
-      return window.SerfAppwire.listModelsWithDiagnostics(params);
-    }
     const query = new URLSearchParams();
     Object.keys(params).forEach(k => query.set(k, params[k]));
     query.set("diagnostics", "1");
@@ -1699,6 +1755,7 @@
       .then(d => ({
         models: (d && Array.isArray(d.models)) ? d.models : (Array.isArray(d) ? d : []),
         diagnostics: (d && Array.isArray(d.diagnostics)) ? d.diagnostics : [],
+        recent: (d && Array.isArray(d.recent)) ? d.recent : [],
       }));
   }
 

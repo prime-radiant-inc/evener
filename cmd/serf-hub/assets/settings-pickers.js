@@ -11,9 +11,9 @@
 
   function fetchModels() {
     if (_modelsCache) return _modelsCache;
-    _modelsCache = fetch("/api/models", { credentials: "same-origin" })
-      .then(r => r.ok ? r.json() : [])
-      .catch(() => []);
+    _modelsCache = fetch("/api/models?diagnostics=1", { credentials: "same-origin" })
+      .then(r => r.ok ? r.json() : { models: [], diagnostics: [], recent: [] })
+      .catch(() => ({ models: [], diagnostics: [], recent: [] }));
     return _modelsCache;
   }
 
@@ -21,16 +21,19 @@
     const existing = document.querySelector(".sp-picker");
     if (existing) { existing.remove(); return; }
 
-    fetchModels().then(models => {
-      if (!Array.isArray(models)) models = [];
+    fetchModels().then(result => {
+      const models = Array.isArray(result && result.models) ? result.models : [];
+      const recent = Array.isArray(result && result.recent) ? result.recent : [];
 
-      // Group by provider
+      // Group by provider; "Recent" is a pinned-first pseudo-provider.
       const byProvider = {};
+      if (recent.length > 0) byProvider["Recent"] = recent;
       models.forEach(m => {
         if (!byProvider[m.provider]) byProvider[m.provider] = [];
         byProvider[m.provider].push(m);
       });
-      const providers = Object.keys(byProvider).sort();
+      const providers = Object.keys(byProvider).filter(p => p !== "Recent").sort();
+      if (byProvider["Recent"]) providers.unshift("Recent");
 
       const picker = document.createElement("div");
       picker.className = "sp-picker chip-picker chip-picker-wide";
@@ -59,6 +62,18 @@
         if (n >= 1000000) return (n / 1000000).toFixed(1).replace(".0", "") + "M";
         if (n >= 1000) return (n / 1000).toFixed(0) + "K";
         return String(n);
+      }
+
+      function modelBadges(m) {
+        const badges = [];
+        if (m.supports_tools) badges.push("tools");
+        if (m.supports_vision) badges.push("vision");
+        if (m.supports_reasoning) {
+          const levels = m.reasoning_effort_levels;
+          badges.push(Array.isArray(levels) && levels.length ? "reasoning (" + levels.join("/") + ")" : "reasoning");
+        }
+        if (m.supports_web_search) badges.push("web search");
+        return badges;
       }
 
       function renderProviders(filter) {
@@ -94,14 +109,26 @@
           el.className = "chip-picker-model";
           const name = document.createElement("div");
           name.className = "chip-picker-model-name";
-          name.textContent = m.model;
+          name.textContent = m.display_name || m.model;
+          el.appendChild(name);
+          const badges = modelBadges(m);
+          if (badges.length) {
+            const badgeRow = document.createElement("div");
+            badgeRow.className = "chip-picker-model-badges";
+            badges.forEach(b => {
+              const span = document.createElement("span");
+              span.className = "chip-picker-badge";
+              span.textContent = b;
+              badgeRow.appendChild(span);
+            });
+            el.appendChild(badgeRow);
+          }
           const meta = document.createElement("div");
           meta.className = "chip-picker-model-meta";
           const parts = [];
           if (m.context_window) parts.push(formatCtx(m.context_window) + " ctx");
           if (m.input_cost_per_million != null) parts.push("$" + m.input_cost_per_million.toFixed(2) + "/M in");
           meta.textContent = parts.join(" · ");
-          el.appendChild(name);
           el.appendChild(meta);
           el.addEventListener("click", () => {
             const val = m.provider + "/" + m.model;
