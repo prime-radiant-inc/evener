@@ -141,9 +141,17 @@ marketplace entry's manifest fields (`mcpServers`, `commands`, `agents`, `hooks`
 
 - Honor only the component kinds serf already supports (mcpServers/commands/agents/hooks/skills as
   they map to the existing `agent/plugin` `Manifest`). Do not invent new component types.
-- `strict:false` (entry supplements a present `plugin.json`) is a documented Claude Code nuance;
-  for v1, only implement the `strict:true`/manifest-absent → entry-is-authority path (the actual
-  failing case). Note `strict:false` merge as out of scope unless trivial.
+- **`strict` semantics (corrected — verified against code.claude.com/docs/en/plugin-marketplaces):**
+  `strict: true` (the default) means the source's `plugin.json` is the authority (entry only
+  supplements); `strict: false` means the marketplace entry is the whole definition (no `plugin.json`
+  needed). The earlier draft had this backwards. **The fallback here triggers purely on "the source
+  has no `plugin.json`," independent of `Strict`'s value** — that's the actual failing condition.
+  `Strict` is parsed and round-tripped for future `strict:false`-merge work, which is out of scope.
+- **Reality check on the motivating example:** the live `superpowers-marketplace` entry for
+  `private-journal-mcp` is `strict: true` with **no embedded manifest fields** — so there is nothing
+  to synthesize from. This fix therefore turns its crash into the honest "no manifest, no usable
+  entry components" error (§Change #3), and makes *other* manifest-less-with-embedded-fields plugins
+  install and work. Auto-wrapping a bare npm/MCP package is explicitly out of scope.
 
 ---
 
