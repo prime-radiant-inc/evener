@@ -1,5 +1,9 @@
 // Regression tests for composer textarea shortcuts in normal workspaces vs side-pane iframes.
+const fs = require("fs");
+const path = require("path");
 const { JSDOM } = require("jsdom");
+
+const SETTINGS_DISPLAY_SRC = fs.readFileSync(path.resolve(__dirname, "../assets/settings-display.js"), "utf8");
 
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
@@ -100,6 +104,29 @@ function makeDOM(isPane) {
 
   pass(submitCount === 0, "pane iframe Enter shortcuts should not submit, got " + submitCount);
   pass(steerCount === 0, "pane iframe Shift+Enter should not steer, got " + steerCount);
+})();
+
+(function testComposerKeybindHintsReflectEnterToSendMode() {
+  const dom = makeDOM(false);
+  const { window } = dom;
+  window.eval(SETTINGS_DISPLAY_SRC);
+  const sendKbd = window.document.querySelector(".send-btn kbd");
+  const steerKbd = window.document.querySelector("[data-steer-trigger] kbd");
+
+  // enterToSend OFF (default, absent from localStorage): steer keeps Shift+Enter,
+  // send keeps Cmd+Enter.
+  sendKbd.textContent = "";
+  steerKbd.textContent = "";
+  window.SerfSettingsDisplay.applyComposerKeybindHints();
+  pass(sendKbd.textContent === "⌘↵", "enter-to-send off: send-btn kbd should show ⌘↵, got " + JSON.stringify(sendKbd.textContent));
+  pass(steerKbd.textContent === "⇧↵", "enter-to-send off: steer kbd should show ⇧↵, got " + JSON.stringify(steerKbd.textContent));
+
+  // enterToSend ON: bare Enter sends, so the steer kbd hint is hidden and the
+  // send kbd hint collapses to a bare ↵.
+  window.localStorage.setItem("serf-hub.composer", JSON.stringify({ enterToSend: true }));
+  window.SerfSettingsDisplay.applyComposerKeybindHints();
+  pass(sendKbd.textContent === "↵", "enter-to-send on: send-btn kbd should show ↵, got " + JSON.stringify(sendKbd.textContent));
+  pass(steerKbd.textContent === "", "enter-to-send on: steer kbd should be hidden, got " + JSON.stringify(steerKbd.textContent));
 })();
 
 if (failures.length > 0) {

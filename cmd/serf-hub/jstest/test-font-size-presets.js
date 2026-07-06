@@ -42,15 +42,6 @@ function parseTopLevelBlocks(cssText) {
   return blocks;
 }
 
-function ruleContains(selector, pattern) {
-  for (const block of parseTopLevelBlocks(css)) {
-    if (block.selector.startsWith("@")) continue;
-    const selectors = block.selector.split(",").map((s) => s.trim());
-    if (selectors.includes(selector) && pattern.test(block.body)) return true;
-  }
-  return false;
-}
-
 function findBlock(selector) {
   for (const block of parseTopLevelBlocks(css)) {
     if (block.selector.startsWith("@")) continue;

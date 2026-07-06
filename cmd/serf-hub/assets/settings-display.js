@@ -25,7 +25,7 @@
     if (span) span.textContent = input.checked ? "ON" : "OFF";
   }
 
-  window.SerfSettingsDisplay = { readComposerPrefs, writeComposerPrefs, syncToggleState };
+  window.SerfSettingsDisplay = { readComposerPrefs, writeComposerPrefs, syncToggleState, applyComposerKeybindHints };
 
   document.body.addEventListener("change", (e) => {
     const target = e.target;
