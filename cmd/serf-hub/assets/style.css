@@ -233,6 +233,7 @@ body[data-font-size="xl"] {
 [data-theme="light"] .sb-row[data-state="active"]   { background: color-mix(in srgb, var(--state-working) 12%, transparent); }
 [data-theme="light"] .sb-row[data-state="warning"]  { background: color-mix(in srgb, var(--state-warning) 12%, transparent); }
 [data-theme="light"] .sb-row[data-active]            { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+[data-theme="light"] .sb-row[data-state="errored"]   { background: color-mix(in srgb, var(--error) 12%, transparent); }
 /* Light-mode: --text is dark so the 2% text-mix reads as a noticeable grey.
    Switch to an accent-based tint that reads the same in both themes. */
 [data-theme="light"] .settings-table .row.editable:hover {
