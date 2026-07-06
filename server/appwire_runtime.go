@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/appprojector"
 	"primeradiant.com/serf/internal/appserver"
@@ -450,6 +451,7 @@ func (s *Server) appThread() appwire.Thread {
 	qdfn := s.queueDepthFn
 	gsfn := s.goalStatusFn
 	wmfn := s.workMetricsFn
+	metafn := s.sessionMetaFn
 	pafn := s.pendingAskFn
 	activeTurnID := s.appActiveTurnID
 	s.mu.RUnlock()
@@ -507,10 +509,20 @@ func (s *Server) appThread() appwire.Thread {
 	if pafn != nil {
 		askPending = pafn()
 	}
+	var meta schema.SessionMeta
+	if metafn != nil {
+		meta = metafn()
+	}
+	threadName := strings.TrimSpace(meta.Name)
+	threadPreview := strings.TrimSpace(schema.SessionDisplayName(meta))
+	if threadPreview == "" {
+		threadPreview = status.SessionID
+	}
 	return appwire.Thread{
 		ID:            threadID,
 		SessionID:     status.SessionID,
-		Preview:       status.SessionID,
+		Name:          threadName,
+		Preview:       threadPreview,
 		ModelProvider: status.Model,
 		Status:        appwire.ThreadStatus{Type: appStatus(status.State, processing)},
 		CWD:           status.WorkingDir,

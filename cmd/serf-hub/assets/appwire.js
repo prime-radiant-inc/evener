@@ -828,6 +828,14 @@
     if (method === "thread/status/changed") {
       return [["THREAD_STATUS_CHANGED", { status: canonicalThreadStatus(params.status && params.status.type || "") }]];
     }
+    if (method === "serf/thread/name/changed") {
+      return [["THREAD_TITLE_CHANGED", {
+        threadId: firstNonEmpty(params.threadId, params.threadID),
+        ref: params.ref || "",
+        name: params.name || "",
+        source: params.source || "",
+      }]];
+    }
     if (method === "thread/queueChanged") {
       const q = params.queue || {};
       return [["QUEUE_CHANGED", {
@@ -943,6 +951,7 @@
   window.SerfAppwire = {
     request,
     onNotification,
+    _testNotificationHandlers: notificationHandlers,
     onConnectionLost,
     onConnectionRestored,
     refForSession,

@@ -688,6 +688,7 @@ func (s *Session) Rename(name string) {
 	s.naming.updated = s.sclock().Now().UTC()
 	s.naming.set = true
 	s.mu.Unlock()
+	s.emit(events.EventSessionNameChanged, events.SessionNameChangedData{Name: name, Source: sessionNameSourceUser})
 	// maybeAutoSave re-acquires s.mu via s.Meta(); must not hold the lock here.
 	s.maybeAutoSave()
 }

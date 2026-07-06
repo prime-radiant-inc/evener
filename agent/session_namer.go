@@ -341,6 +341,7 @@ func (s *Session) nameSessionFromText(ctx context.Context, source, text string) 
 	s.naming.updated = s.sclock().Now().UTC()
 	s.naming.set = true
 	s.mu.Unlock()
+	s.emit(events.EventSessionNameChanged, events.SessionNameChangedData{Name: result.Name, Source: result.Source})
 
 	s.appendSessionNamerLog(sessionlog.SessionLogEntry{
 		Kind:    "advisory",

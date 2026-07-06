@@ -3,6 +3,7 @@ package server
 import (
 	"testing"
 
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/appserver"
 )
@@ -121,5 +122,30 @@ func TestAppThread_OverlaysPendingAskFunc(t *testing.T) {
 	thread := srv.appThread()
 	if !thread.Serf.AskPending {
 		t.Fatal("expected appThread().Serf.AskPending=true")
+	}
+}
+
+func TestAppThread_UsesGeneratedSessionNameFromMeta(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetStatus(StatusInfo{
+		SessionID:  "01TITLE",
+		State:      "idle",
+		WorkingDir: "/tmp/project",
+	})
+	srv.SetSessionMetaFunc(func() schema.SessionMeta {
+		return schema.SessionMeta{
+			ID:             "01TITLE",
+			Name:           "Fix appwire titles",
+			NameSource:     "prompt",
+			OriginalPrompt: "please fix the appwire title plumbing because the sidebar uses this whole prompt",
+		}
+	})
+
+	thread := srv.appThread()
+	if thread.Name != "Fix appwire titles" {
+		t.Fatalf("thread.Name = %q, want generated session name", thread.Name)
+	}
+	if thread.Preview == thread.SessionID || thread.Preview == "" {
+		t.Fatalf("thread.Preview = %q, want human preview rather than session id", thread.Preview)
 	}
 }

@@ -832,7 +832,7 @@
     }).catch(function () {});
   }
 
-  var QUALIFYING = { "thread/started": 1, "thread/closed": 1, "thread/status/changed": 1, "serf/job/started": 1, "serf/job/finished": 1, "serf/attention/changed": 1 };
+  var QUALIFYING = { "thread/started": 1, "thread/closed": 1, "thread/status/changed": 1, "serf/thread/name/changed": 1, "serf/job/started": 1, "serf/job/finished": 1, "serf/attention/changed": 1 };
   function onNotification(method, params) {
     if (method === "serf/attention/changed") { applyAttentionInstant(params); scheduleResync(); return; }
     if (QUALIFYING[method]) scheduleResync();

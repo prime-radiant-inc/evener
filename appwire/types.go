@@ -74,6 +74,7 @@ const (
 	NotifyThreadClosed           = "thread/closed"
 	NotifyThreadStatusChanged    = "thread/status/changed"
 	NotifyThreadQueueChanged     = "thread/queueChanged"
+	NotifyThreadNameChanged      = "serf/thread/name/changed"
 	NotifyTurnStarted            = "turn/started"
 	NotifyTurnCompleted          = "turn/completed"
 	NotifyItemStarted            = "item/started"
@@ -648,6 +649,15 @@ type ThreadModelSetParams struct {
 type ThreadNameSetParams struct {
 	Ref  string `json:"ref"`
 	Name string `json:"name"`
+}
+
+// ThreadNameChangedParams reports a thread title update. Source records the
+// title provenance when known ("prompt", "compaction", or "user").
+type ThreadNameChangedParams struct {
+	ThreadID string `json:"threadId"`
+	Ref      string `json:"ref"`
+	Name     string `json:"name"`
+	Source   string `json:"source,omitempty"`
 }
 
 // ThreadReasoningEffortSetParams sets the reasoning effort on a running session.

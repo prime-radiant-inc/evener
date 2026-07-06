@@ -50,6 +50,7 @@ func (ToolCallRepairedData) eventKind() EventKind    { return EventToolCallRepai
 func (SteeringInjectedData) eventKind() EventKind    { return EventSteeringInjected }
 func (QueueChangedData) eventKind() EventKind        { return EventQueueChanged }
 func (TaskUpdatedData) eventKind() EventKind         { return EventTaskUpdated }
+func (SessionNameChangedData) eventKind() EventKind  { return EventSessionNameChanged }
 func (TurnLimitData) eventKind() EventKind           { return EventTurnLimit }
 func (LoopDetectionData) eventKind() EventKind       { return EventLoopDetection }
 func (CommunicateData) eventKind() EventKind         { return EventCommunicate }
@@ -87,6 +88,7 @@ var (
 	_ EventData = SteeringInjectedData{}
 	_ EventData = QueueChangedData{}
 	_ EventData = TaskUpdatedData{}
+	_ EventData = SessionNameChangedData{}
 	_ EventData = TurnLimitData{}
 	_ EventData = LoopDetectionData{}
 	_ EventData = CommunicateData{}

@@ -148,6 +148,12 @@ type TaskUpdatedData struct {
 	Done  int `json:"done"`
 }
 
+// SessionNameChangedData is the payload for an EventSessionNameChanged event.
+type SessionNameChangedData struct {
+	Name   string `json:"name"`
+	Source string `json:"source,omitempty"`
+}
+
 // TurnLimitData is the payload for an EventTurnLimit event.
 type TurnLimitData struct {
 	MaxTurns              int `json:"max_turns,omitempty"`
