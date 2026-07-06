@@ -52,6 +52,14 @@ func (s *WebServer) handleAPIRename(w http.ResponseWriter, r *http.Request, id s
 
 	// Ended path: edit meta behind a pre-write Roster.Find re-check; if it turns
 	// live, route through the daemon instead (round-2 A2 / round-3 G1).
+	//
+	// NOTE: the hard-fail below (T18) is unreachable via a real HTTP request
+	// today — the dispatcher (handleAPISession) strips the "local:" prefix
+	// before calling handleAPIRename, so this recheck keys off the identical
+	// string as the top-level isLive(id) check above and can never diverge
+	// from it. Kept as defense-in-depth against future dispatch changes,
+	// router-bypassing callers, or a Roster that starts tracking non-local
+	// sessions.
 	if s.cfg.Roster != nil {
 		if _, live := s.cfg.Roster.Find(canonicalRouteID(id)); live {
 			source, err := sourceForThread(s.sources, ref, "")
