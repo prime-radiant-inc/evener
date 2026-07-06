@@ -36,12 +36,57 @@
     // result (or its loading/error state) so re-expanding never re-fetches.
     let expandedMarketplaces = new Set();
     let browseCatalogs = {}; // marketplace name -> {loading:true} | {error} | {plugins}
+    let filterQuery = ""; // Browse tree filter box's current value
     let addMarketplaceOpen = false;
     let loadError = "";
 
     function isInstalled(plugin, marketplace) {
       return installed.some(p => p.plugin === plugin && p.marketplace === marketplace);
     }
+
+    function pluginMatchesFilter(p, query) {
+      const q = query.toLowerCase();
+      return p.name.toLowerCase().includes(q) || (p.description || "").toLowerCase().includes(q);
+    }
+
+    // anyPluginsMatch reports whether any already-loaded catalog has a match,
+    // independent of expandedMarketplaces bookkeeping — used only to decide
+    // whether to show the global "No plugins match" message.
+    function anyPluginsMatch(query) {
+      return marketplaces.some(m => {
+        const cache = browseCatalogs[m.name];
+        return !!(cache && cache.plugins && cache.plugins.some(p => pluginMatchesFilter(p, query)));
+      });
+    }
+
+    // applyFilter auto-expands every marketplace with a match in its
+    // already-loaded catalog and collapses every marketplace without one.
+    // Marketplaces not yet loaded are left collapsed here (Task 3 adds
+    // lazy-loading them on the first filter keystroke).
+    function applyFilter() {
+      const q = filterQuery.trim();
+      if (!q) {
+        expandedMarketplaces = new Set();
+        render();
+        return;
+      }
+      marketplaces.forEach(m => {
+        const cache = browseCatalogs[m.name];
+        const matches = !!(cache && cache.plugins && cache.plugins.some(p => pluginMatchesFilter(p, q)));
+        if (matches) expandedMarketplaces.add(m.name);
+        else expandedMarketplaces.delete(m.name);
+      });
+      render();
+    }
+
+    // debounce mirrors search.js's helper (private to that file's IIFE, so
+    // duplicated here rather than imported — the same small, deliberate
+    // duplication search.js/spawn.js already use for their own shared bits).
+    function debounce(fn, ms) {
+      let t;
+      return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+    }
+    const debouncedApplyFilter = debounce(() => { applyFilter(); }, 150);
 
     // ---- section renderers ----
 
@@ -165,14 +210,23 @@
     }
 
     function renderBrowseSection() {
-      const treeBody = marketplaces.length === 0
-        ? `<li class="settings-collection-empty">No marketplaces registered. Add one above to browse plugins.</li>`
-        : marketplaces.map(renderMarketplaceNode).join("");
+      const q = filterQuery.trim();
+      let treeBody;
+      if (marketplaces.length === 0) {
+        treeBody = `<li class="settings-collection-empty">No marketplaces registered. Add one above to browse plugins.</li>`;
+      } else if (q && !anyPluginsMatch(q)) {
+        treeBody = `<li class="settings-collection-empty">No plugins match "${escapeHtml(q)}".</li>`;
+      } else {
+        treeBody = marketplaces.map(renderMarketplaceNode).join("");
+      }
       return `
         <section class="settings-collection" id="browse-section">
           <header class="settings-collection-head">
             <h3>Browse</h3>
           </header>
+          <div class="settings-collection-add browse-filter">
+            <input type="text" id="browse-filter-input" class="val-input" placeholder="Filter plugins…" value="${escapeHtml(filterQuery)}">
+          </div>
           <ul class="settings-collection-list browse-tree" role="list">${treeBody}</ul>
         </section>`;
     }
@@ -222,12 +276,23 @@
         root.innerHTML = `<p class="settings-error">Failed to load: ${escapeHtml(loadError)}</p>`;
         return;
       }
+      const filterHadFocus = document.activeElement && document.activeElement.id === "browse-filter-input";
+      const priorFilterInput = root.querySelector("#browse-filter-input");
+      const selStart = priorFilterInput ? priorFilterInput.selectionStart : null;
+      const selEnd = priorFilterInput ? priorFilterInput.selectionEnd : null;
       root.innerHTML = renderMarketplacesSection() + renderBrowseSection() + renderInstalledSection();
       root.dataset.loaded = "true";
       if (window.SettingsPickers) window.SettingsPickers.init(root);
       if (addMarketplaceOpen) {
         const nameInput = root.querySelector("#mkt-name-input");
         if (nameInput) nameInput.focus();
+      }
+      if (filterHadFocus) {
+        const newFilterInput = root.querySelector("#browse-filter-input");
+        if (newFilterInput) {
+          newFilterInput.focus();
+          if (selStart != null) newFilterInput.setSelectionRange(selStart, selEnd);
+        }
       }
     }
 
@@ -311,6 +376,13 @@
     }
 
     // ---- event delegation (attached once; render() only replaces innerHTML) ----
+
+    root.addEventListener("input", (ev) => {
+      if (ev.target && ev.target.id === "browse-filter-input") {
+        filterQuery = ev.target.value;
+        debouncedApplyFilter();
+      }
+    });
 
     root.addEventListener("change", (ev) => {
       if (ev.target && ev.target.name === "mkt-kind") {

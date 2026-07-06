@@ -3692,6 +3692,7 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
 .browse-marketplace-toggle[aria-expanded="true"] .browse-marketplace-chevron { transform: rotate(90deg); }
 .browse-marketplace-count { color: var(--text-muted); font-size: var(--text-xs); }
 .browse-marketplace-plugins { padding-left: var(--space-5); }
+.browse-filter { border-top: none; padding-top: 0; }
 
 .settings-form { display: flex; flex-direction: column; gap: var(--space-4); max-width: 480px; }
 .settings-radio,
