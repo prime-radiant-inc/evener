@@ -39,6 +39,15 @@
       if (window.SerfToast) window.SerfToast.show("Settings saved", "success");
       return;
     }
+    if (target.matches('input[type=checkbox][data-composer="showCost"]')) {
+      const prefs = readComposerPrefs();
+      prefs.showCost = target.checked;
+      writeComposerPrefs(prefs);
+      syncToggleState(target);
+      document.body.dataset.showCost = target.checked ? "true" : "false";
+      if (window.SerfToast) window.SerfToast.show("Settings saved", "success");
+      return;
+    }
   });
 
   // applyDisplayState reflects current composer prefs whenever a settings
@@ -50,6 +59,11 @@
     if (enterToSendBox) {
       enterToSendBox.checked = prefs.enterToSend;
       syncToggleState(enterToSendBox);
+    }
+    const showCostBox = document.querySelector('input[type=checkbox][data-composer="showCost"]');
+    if (showCostBox) {
+      showCostBox.checked = prefs.showCost;
+      syncToggleState(showCostBox);
     }
   }
 

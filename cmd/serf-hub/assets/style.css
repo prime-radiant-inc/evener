@@ -5192,3 +5192,12 @@ body.doc-page {
 @media (min-width: 768px) {
   .sb-row [role="button"], .sb-menu-btn { min-height: 24px; min-width: 24px; }
 }
+
+/* Show-cost toggle (Display settings) — hides the estimated ~$ cost across
+   all three surfaces it appears on: the input strip, the details panel, and
+   the per-turn badge. Show-cost defaults ON. */
+body[data-show-cost="false"] .status-item.cost,
+body[data-show-cost="false"] [data-row="cost"],
+body[data-show-cost="false"] .turn-meta .cost {
+  display: none;
+}

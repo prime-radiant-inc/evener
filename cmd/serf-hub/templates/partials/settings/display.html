@@ -12,5 +12,15 @@
     </dd>
     <p class="help">Default off: ⌘/Ctrl-Enter sends, Enter inserts a newline. On: Enter sends, Shift-Enter inserts a newline (the steer keyboard shortcut is unavailable in this mode — the steer button still works).</p>
   </div>
+  <div class="row editable">
+    <dt id="lbl-composer-show-cost">Show estimated cost</dt>
+    <dd>
+      <label class="val-toggle">
+        <input type="checkbox" data-composer="showCost" aria-labelledby="lbl-composer-show-cost">
+        <span class="state" aria-hidden="true">ON</span>
+      </label>
+    </dd>
+    <p class="help">Default on. Shows an estimated ~$ cost next to token counts, from catalog pricing — an estimate, not a billing-exact figure.</p>
+  </div>
 </dl>
 {{end}}
