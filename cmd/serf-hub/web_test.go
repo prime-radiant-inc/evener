@@ -6114,3 +6114,58 @@ func TestDetailsPanel_LiveSessionShowsContextWorkTokensCost(t *testing.T) {
 		t.Errorf("details panel missing cost row with data-row=\"cost\" and ~$1.00: %q", body)
 	}
 }
+
+// TestDetailsPanel_EndedSessionShowsWorkTokensCostNoContext verifies an ended
+// session's details panel gains work-time/tokens/cost rows sourced from the
+// persisted SessionMeta, but no context row — ended sessions have no live
+// context pressure (pastEntryThread never sets it, mirroring the TUI
+// drawer's ContextPressure > 0 guard).
+func TestDetailsPanel_EndedSessionShowsWorkTokensCostNoContext(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: "01DETAILENDED", UpdatedAt: time.Now(),
+		Model:      "claude-opus-4-5",
+		WorkMillis: 4200,
+		CumulativeUsage: schema.CumulativeUsage{
+			InputTokens:  100_000,
+			OutputTokens: 20_000,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01DETAILENDED/details", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+
+	if !strings.Contains(body, formatWorkMillis(4200)) {
+		t.Errorf("details panel missing work-time row with formatted %q: %q", formatWorkMillis(4200), body)
+	}
+	if !strings.Contains(body, "↑100k") || !strings.Contains(body, "↓20k") {
+		t.Errorf("details panel missing tokens row: %q", body)
+	}
+	if !strings.Contains(body, `data-row="cost"`) || !strings.Contains(body, "~$1.00") {
+		t.Errorf("details panel missing cost row with data-row=\"cost\" and ~$1.00: %q", body)
+	}
+	if strings.Contains(body, "<dt>context</dt>") {
+		t.Errorf("ended session details panel should not show a context row: %q", body)
+	}
+}

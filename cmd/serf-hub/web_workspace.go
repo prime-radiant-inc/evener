@@ -206,6 +206,17 @@ func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, i
 		if m.LastInputTokens > 0 {
 			rows = append(rows, detailsRow{Label: "last input tokens", Value: strconv.Itoa(m.LastInputTokens)})
 		}
+		if m.WorkMillis > 0 {
+			rows = append(rows, detailsRow{Label: "work time", Value: formatWorkMillis(m.WorkMillis)})
+		}
+		if usage := serfUsageFromCumulative(m.CumulativeUsage); usage != nil {
+			rows = append(rows, detailsRow{Label: "tokens", Value: fmt.Sprintf("↑%s ↓%s · cache-read %s · total %s",
+				formatTokenCount(int(usage.InputTokens)), formatTokenCount(int(usage.OutputTokens)),
+				formatTokenCount(int(usage.CacheReadTokens)), formatTokenCount(int(usage.TotalTokens)))})
+			if cost := appwire.EstimateCost(m.Model, usage); cost != "" {
+				rows = append(rows, detailsRow{Label: "cost", Value: cost, DataRow: "cost"})
+			}
+		}
 		if m.ParentSessionID != "" {
 			rows = append(rows,
 				detailsRow{Label: "forked from", Value: m.ParentSessionID},
