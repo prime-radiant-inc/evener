@@ -106,6 +106,12 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 		}
 		dir = final
 	}
+	if err := ensureManifestFallback(dir, staged, cp); err != nil {
+		if strings.HasPrefix(dir, m.cacheDir()+string(os.PathSeparator)) {
+			_ = os.RemoveAll(dir)
+		}
+		return InstallEntry{}, err
+	}
 	if err := validatePluginDir(dir); err != nil {
 		if strings.HasPrefix(dir, m.cacheDir()+string(os.PathSeparator)) {
 			_ = os.RemoveAll(dir)
@@ -212,6 +218,10 @@ func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string,
 
 	final, err := m.commitStaged(marketplace, plugin, staging, sha)
 	if err != nil {
+		return InstallEntry{}, false, false, err
+	}
+	if err := ensureManifestFallback(final, true, cp); err != nil {
+		_ = os.RemoveAll(final)
 		return InstallEntry{}, false, false, err
 	}
 	if err := validatePluginDir(final); err != nil {

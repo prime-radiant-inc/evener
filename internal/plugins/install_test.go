@@ -4,7 +4,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	agentplugin "primeradiant.com/serf/agent/plugin"
 )
 
 // makeInstallableMarketplace builds a git marketplace whose one plugin's source
@@ -102,5 +105,115 @@ func TestInstall_FromGitSubdirMarketplace(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(entry.InstallPath, ".claude-plugin", "plugin.json")); err != nil {
 		t.Fatalf("materialized plugin.json missing: %v", err)
+	}
+}
+
+func TestInstall_ManifestLessPlugin_MCPServerRegisters(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	// A plugin repo with NO .claude-plugin (or .codex-plugin) manifest at all
+	// — the private-journal-mcp shape: a bare package, no plugin.json.
+	pluginRepo := filepath.Join(t.TempDir(), "pluginrepo")
+	makeGitRepo(t, pluginRepo, "README.md", "bare mcp server, no manifest")
+
+	mktRepo := filepath.Join(t.TempDir(), "mkt")
+	os.MkdirAll(filepath.Join(mktRepo, ".claude-plugin"), 0o755)
+	mj := `{"name":"acme","owner":{"name":"o"},"plugins":[{
+	  "name":"bare-mcp",
+	  "source":{"source":"url","url":"` + pluginRepo + `"},
+	  "mcpServers": {"bare": {"command":"echo","args":["hi"]}}
+	}]}`
+	os.WriteFile(filepath.Join(mktRepo, ".claude-plugin", "marketplace.json"), []byte(mj), 0o644)
+	makeGitRepo(t, mktRepo, "README.md", "x")
+
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	entry, err := m.Install(context.Background(), "bare-mcp", "acme")
+	if err != nil {
+		t.Fatalf("Install of a manifest-less plugin with an mcpServers entry: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(entry.InstallPath, ".claude-plugin", "plugin.json")); err != nil {
+		t.Fatalf("synthesized plugin.json missing: %v", err)
+	}
+	inst, err := agentplugin.Load(entry.InstallPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(inst.MCPConfigs) != 1 || inst.MCPConfigs[0].Name != "plugin_bare-mcp_bare" {
+		t.Fatalf("MCPConfigs = %+v, want one entry named plugin_bare-mcp_bare", inst.MCPConfigs)
+	}
+}
+
+func TestInstall_ManifestLessPlugin_NoUsableFields_ClearError(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	pluginRepo := filepath.Join(t.TempDir(), "pluginrepo")
+	makeGitRepo(t, pluginRepo, "README.md", "bare, undeclared")
+
+	mktRepo := filepath.Join(t.TempDir(), "mkt")
+	os.MkdirAll(filepath.Join(mktRepo, ".claude-plugin"), 0o755)
+	mj := `{"name":"acme","owner":{"name":"o"},"plugins":[{
+	  "name":"bare-nothing",
+	  "source":{"source":"url","url":"` + pluginRepo + `"}
+	}]}`
+	os.WriteFile(filepath.Join(mktRepo, ".claude-plugin", "marketplace.json"), []byte(mj), 0o644)
+	makeGitRepo(t, mktRepo, "README.md", "x")
+
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	_, err := m.Install(context.Background(), "bare-nothing", "acme")
+	if err == nil {
+		t.Fatal("expected Install to fail for a manifest-less plugin with no usable entry fields")
+	}
+	if strings.Contains(err.Error(), ".codex-plugin") {
+		t.Errorf("error must not name the misleading .codex-plugin path: %v", err)
+	}
+	reg, _ := LoadRegistry(m.registryPath())
+	if _, ok := reg.Plugins["bare-nothing@acme"]; ok {
+		t.Fatal("a failed install must not leave a registry entry")
+	}
+}
+
+// TestInstall_PluginWithOwnManifest_EntryIgnored is the required regression:
+// a plugin that ships its own plugin.json is completely unchanged by Part 2,
+// even when its marketplace entry ALSO declares components.
+func TestInstall_PluginWithOwnManifest_EntryIgnored(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	pluginRepo := filepath.Join(t.TempDir(), "pluginrepo")
+	writePlugin(t, pluginRepo, "widget", nil) // has its own plugin.json, no mcpServers
+	makeGitRepo(t, pluginRepo, "extra.txt", "v1")
+
+	mktRepo := filepath.Join(t.TempDir(), "mkt")
+	os.MkdirAll(filepath.Join(mktRepo, ".claude-plugin"), 0o755)
+	mj := `{"name":"acme","owner":{"name":"o"},"plugins":[{
+	  "name":"widget",
+	  "source":{"source":"url","url":"` + pluginRepo + `"},
+	  "mcpServers": {"should-be-ignored": {"command":"echo"}}
+	}]}`
+	os.WriteFile(filepath.Join(mktRepo, ".claude-plugin", "marketplace.json"), []byte(mj), 0o644)
+	makeGitRepo(t, mktRepo, "README.md", "x")
+
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	entry, err := m.Install(context.Background(), "widget", "acme")
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	inst, err := agentplugin.Load(entry.InstallPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(inst.MCPConfigs) != 0 {
+		t.Fatalf("MCPConfigs = %+v, want none — entry's mcpServers must be ignored when plugin.json exists", inst.MCPConfigs)
 	}
 }
