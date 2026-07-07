@@ -93,6 +93,7 @@ TARGETS=(
 	"native:agent:./internal/hooks:FuzzParseHookOutput::hooks.go#parseHookOutput"
 	"native:agent:./internal/mcp:FuzzMCPSchemaToParams::manager.go#mcpSchemaToParams"
 	"native:agent:./internal/frontmatter:FuzzFrontmatterParse::frontmatter.go"
+	"native:agent:./internal/worktree:FuzzParsePorcelain::porcelain.go#ParsePorcelain"
 	# Lane A2 (root module: protocol/server/hub-internal)
 	"native:.:./frontmatter:FuzzParse::frontmatter.go"
 	"native:.:./hubapi:FuzzParseRef::refs.go"
@@ -104,6 +105,8 @@ TARGETS=(
 	"native:.:./cmd/serf-hub/internal/appsource:FuzzMapCodexTurn::codex_mapping.go#mapCodexTurn"
 	"native:.:./cmd/serf-hub/internal/codexlaunch:FuzzParseCodexEndpoint::codex_launch.go#ParseCodexEndpoint"
 	"native:.:./cmd/serf-hub/internal/hubcore:FuzzBuildTree::tree.go#BuildTreeAt"
+	"native:.:./internal/gitpath:FuzzParseGitdirPointer::gitpath.go#ParseGitdirPointer"
+	"native:.:./internal/plugins:FuzzSourceUnmarshalJSON::source.go#UnmarshalJSON"
 	# Lane A3 (root module: CLI/TUI glue)
 	"native:.:./cmd/serf:FuzzRunFlagParse::main.go#newRunFlagSet"
 	"native:.:./cmd/llmcall:FuzzLLMCallParsers::main.go#parseMetadata"
