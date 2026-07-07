@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -319,12 +321,13 @@ func (m *Manager) RegisterTools(reg *tool.Registry) []ServerOutcome {
 					// under a long-lived conn via a reconnect swap, so every
 					// call must read the CURRENT session under c.mu.
 					result, err := call(c.lockedSession())
-					if err != nil && errors.Is(err, mcpsdk.ErrConnectionClosed) {
-						// Channel A: the transport itself dropped (SDK taxonomy:
-						// ErrClientClosing/ErrServerClosing only — never a ctx
-						// cancellation, never a plain JSON-RPC error). Demote the
-						// conn and, if reconnect actually swaps in a healed
-						// session, retry this same call once against it.
+					if err != nil && isDroppedConn(err) {
+						// Channel A: the transport itself dropped — the SDK's
+						// ErrConnectionClosed, or the raw transport error a call
+						// racing the teardown surfaces first (see isDroppedConn);
+						// never a ctx cancellation, never a plain JSON-RPC error.
+						// Demote the conn and, if reconnect actually swaps in a
+						// healed session, retry this same call once against it.
 						c.markDegraded(err)
 						if newSess, ok := c.reconnect(ctx); ok {
 							if m.OnReconnect != nil {
@@ -457,8 +460,40 @@ func (c *conn) lockedSession() *mcpsdk.ClientSession {
 	return c.session
 }
 
-// markDegraded records a dropped connection (mcpsdk.ErrConnectionClosed) on
-// c, demoting its status to "degraded". It does not touch session, dial, or
+// isDroppedConn reports whether err means the transport itself dropped and a
+// lazy reconnect should be attempted. The SDK normally surfaces a dropped
+// session as mcpsdk.ErrConnectionClosed, but a call that races the transport
+// teardown can surface the underlying transport error first — before the SDK
+// marks the session closed and wraps it. The two ends of the transport fail
+// differently: the WRITE side yields io.ErrClosedPipe (in-memory/stdio pipe),
+// os.ErrClosed (a real subprocess pipe), or net.ErrClosed (an sse/http
+// socket); the READ side yields io.EOF (the stream ended cleanly after the
+// peer hung up) or io.ErrUnexpectedEOF (it ended mid-message). All of them
+// mean the same thing — the peer is gone, so redial. A live CallTool never
+// returns EOF, so an EOF here is unambiguously a drop. A ctx cancellation or a
+// plain JSON-RPC application error is none of these, so it is not treated as a
+// drop (see the discrimination cases in cov_reconnect_test.go — a handler's
+// application error comes back as a result with IsError set, with a nil call
+// error, so it never reaches this predicate at all).
+func isDroppedConn(err error) bool {
+	// A ctx cancellation is never a drop, even when the SDK joins it with an
+	// underlying transport error: the mcp transport's cancellation path returns
+	// errors.Join(ctx.Err(), ...), so that join can carry an io.EOF the checks
+	// below would otherwise match. Excluding it first keeps a cancelled call
+	// from being reclassified as a drop.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	return errors.Is(err, mcpsdk.ErrConnectionClosed) ||
+		errors.Is(err, io.ErrClosedPipe) ||
+		errors.Is(err, os.ErrClosed) ||
+		errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF)
+}
+
+// markDegraded records a dropped connection (see isDroppedConn) on c, demoting
+// its status to "degraded". It does not touch session, dial, or
 // backoffUntil: a subsequent call to reconnect (gated by backoffUntil)
 // decides whether THIS call may trigger a redial.
 func (c *conn) markDegraded(err error) {
