@@ -9,6 +9,56 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 )
 
+type snapshotCountingEnv struct {
+	root      string
+	execCalls int
+}
+
+func (e *snapshotCountingEnv) Initialize() error        { return nil }
+func (e *snapshotCountingEnv) Cleanup()                 {}
+func (e *snapshotCountingEnv) WorkingDirectory() string { return e.root }
+func (e *snapshotCountingEnv) Platform() string         { return "linux" }
+func (e *snapshotCountingEnv) OSVersion() string        { return "test" }
+func (e *snapshotCountingEnv) ReadFile(string, *int, *int) (string, error) {
+	return "", nil
+}
+func (e *snapshotCountingEnv) WriteFile(string, string) (string, error) {
+	return "", nil
+}
+func (e *snapshotCountingEnv) EditFile(string, string, string, bool) (string, error) {
+	return "", nil
+}
+func (e *snapshotCountingEnv) FileExists(string) bool { return false }
+func (e *snapshotCountingEnv) Glob(string, string) ([]string, error) {
+	return nil, nil
+}
+func (e *snapshotCountingEnv) Grep(string, string, string, bool, int, string) (string, error) {
+	return "", nil
+}
+func (e *snapshotCountingEnv) ListDirectory(string, int) ([]execenv.DirEntry, error) {
+	return nil, nil
+}
+func (e *snapshotCountingEnv) ExecCommand(context.Context, string, int, string, map[string]string) (execenv.ExecResult, error) {
+	e.execCalls++
+	return execenv.ExecResult{ExitCode: 1}, nil
+}
+
+func TestSnapshotGit_NonRepoDoesNotShellOut(t *testing.T) {
+	dir := t.TempDir()
+	env := &snapshotCountingEnv{root: dir}
+
+	inRepo, branch, modified, untracked, commits := snapshotGit(env, dir)
+	if inRepo {
+		t.Fatal("expected inRepo=false for non-git directory")
+	}
+	if branch != "" || modified != 0 || untracked != 0 || len(commits) != 0 {
+		t.Fatalf("snapshotGit returned repository data for non-git directory: branch=%q modified=%d untracked=%d commits=%v", branch, modified, untracked, commits)
+	}
+	if env.execCalls != 0 {
+		t.Fatalf("ExecCommand calls = %d, want 0 for non-git directory", env.execCalls)
+	}
+}
+
 func TestGitOriginURL_ReturnsOrigin(t *testing.T) {
 	dir := t.TempDir()
 
