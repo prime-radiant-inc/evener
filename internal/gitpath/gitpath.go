@@ -31,6 +31,28 @@ func ResolveMainRepoRootLocal(cwd string) string {
 	return gitBinaryMainRootLocal(cwd)
 }
 
+// HasGitAncestor reports whether cwd, or any ancestor directory, contains a
+// ".git" entry (a directory for a main checkout, or a pointer file for a linked
+// worktree/submodule). It walks up using only os.Stat and never forks git, so a
+// caller can cheaply skip a `git rev-parse` subprocess for a directory that is
+// clearly not inside a repository — the common case for session working dirs
+// outside a repo (and every test temp dir). When it returns true a real git
+// invocation is still needed to resolve the precise root; false means git would
+// fail anyway.
+func HasGitAncestor(cwd string) bool {
+	dir := filepath.Clean(cwd)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false // reached the filesystem root without a .git entry
+		}
+		dir = parent
+	}
+}
+
 // StructuralMainRoot resolves the main repo root using only direct os calls,
 // walking up from cwd to the nearest ".git" entry. It handles main checkouts
 // (".git" directory) and standard linked worktrees (".git" pointer file)

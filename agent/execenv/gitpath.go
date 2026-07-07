@@ -49,6 +49,15 @@ func GitRootOrEmpty(env ExecutionEnvironment, cwd string) string {
 }
 
 func gitRootUncached(env ExecutionEnvironment, cwd string) string {
+	// Skip the git subprocess when cwd clearly isn't inside a repository: with
+	// no ".git" ancestor, `git rev-parse --show-toplevel` would fail and return
+	// "" anyway. This avoids a fork per session for working dirs outside a repo
+	// — every test's temp dir, and production sessions run outside a checkout.
+	// Only for a local env, where the real filesystem is the source of truth; a
+	// non-local (fake/remote) env may report a different reality, so let it run.
+	if _, ok := env.(*LocalExecutionEnvironment); ok && !gitpath.HasGitAncestor(cwd) {
+		return ""
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), gitExecTimeout)
 	defer cancel()
 

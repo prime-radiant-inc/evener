@@ -336,3 +336,38 @@ func TestGitEntryResolvesToCommon_PointerFileMismatches(t *testing.T) {
 		t.Fatalf("candidate/.git pointer NOT matching common: resolved=true, want false")
 	}
 }
+
+func TestHasGitAncestor(t *testing.T) {
+	// A plain dir with no .git anywhere above it.
+	plain := t.TempDir()
+	if HasGitAncestor(plain) {
+		t.Errorf("HasGitAncestor(%q) = true, want false for a non-repo dir", plain)
+	}
+
+	// A dir containing a .git directory (main checkout).
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !HasGitAncestor(repo) {
+		t.Errorf("HasGitAncestor(%q) = false, want true when .git is a dir", repo)
+	}
+
+	// A subdirectory of that repo (walks up to find .git).
+	sub := filepath.Join(repo, "a", "b")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !HasGitAncestor(sub) {
+		t.Errorf("HasGitAncestor(%q) = false, want true for a repo subdir", sub)
+	}
+
+	// A dir containing a .git FILE (linked-worktree/submodule pointer shape).
+	wt := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: /somewhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !HasGitAncestor(wt) {
+		t.Errorf("HasGitAncestor(%q) = false, want true when .git is a pointer file", wt)
+	}
+}
