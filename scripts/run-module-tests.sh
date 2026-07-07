@@ -43,6 +43,11 @@ WAVE2=${WAVE2:-"agent llm auth fuzz invariant"}
 # the -race gate sets this to avoid oversubscribing few-core CI, which starves
 # real per-test work past its timeouts.
 AGENT_PARALLEL=${AGENT_PARALLEL-32}
+# Keep rapid.Check surfaces as deterministic smoke coverage in the default module
+# gate. scripts/run-fuzz.sh owns the full rapid campaign unless RAPID_CHECKS is
+# explicitly overridden by the caller.
+RAPID_CHECKS=${RAPID_CHECKS:-1}
+export RAPID_CHECKS
 flags="$*"
 logdir="$(mktemp -d -t serf-module-tests.XXXXXX)"
 fail=0

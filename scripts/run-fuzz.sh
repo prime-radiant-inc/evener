@@ -407,13 +407,15 @@ for t in "${TARGETS[@]}"; do
 			# sequentially, so a per-target cap is the tightest safe bound.
 			( cd "$repo_root/$module" && "$repo_root/scripts/run-capped.sh" go test -tags serffuzz -run '^$' -fuzz "^${name}\$" -fuzztime "$duration" "$pkg" ) || fail=1
 			;;
-		rapid)
-			# rapid surfaces are property checks driven by `go test -run`; the
-			# search depth is governed by -rapid.checks, not -fuzztime, so the
-			# --time budget does not apply to them.
-			echo "=== rapid $module:$name ==="
-			( cd "$repo_root/$module" && "$repo_root/scripts/run-capped.sh" go test -tags serffuzz -run "^${name}\$" -count=1 "$pkg" ) || fail=1
-			;;
+			rapid)
+				# rapid surfaces are property checks driven by `go test -run`; the
+				# search depth is governed by -rapid.checks, not -fuzztime, so the
+				# --time budget does not apply to them. Keep the campaign depth at
+				# rapid's historical default unless the caller intentionally narrows it.
+				echo "=== rapid $module:$name ==="
+				( cd "$repo_root/$module" && RAPID_CHECKS="${RAPID_CHECKS:-100}" "$repo_root/scripts/run-capped.sh" go test -tags serffuzz -run "^${name}\$" -count=1 "$pkg" ) || fail=1
+				;;
+
 		*)
 			echo "run-fuzz: unknown tag '$tag' in entry '$t'" >&2; fail=1
 			;;
