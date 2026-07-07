@@ -154,7 +154,7 @@ func (s *Session) DrainJobTree(ctx context.Context) (string, error) {
 	})
 	defer s.SetNotifyFunc(nil)
 
-	ticker := time.NewTicker(drainRecheckInterval)
+	ticker := s.clock.NewTicker(drainRecheckInterval)
 	defer ticker.Stop()
 
 	lastResult := ""
@@ -197,7 +197,7 @@ func (s *Session) DrainJobTree(ctx context.Context) (string, error) {
 		// fires, or the caller's context is cancelled; the next iteration re-kicks.
 		select {
 		case <-wake:
-		case <-ticker.C:
+		case <-ticker.C():
 		case <-ctx.Done():
 			return lastResult, ctx.Err()
 		}
