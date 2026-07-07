@@ -158,3 +158,27 @@ func TestExtractEmbeddedSkills(t *testing.T) {
 		t.Errorf("expected at least one embedded skill under %s", dir)
 	}
 }
+
+// EmbeddedSkillsDir extracts the immutable bundled skills exactly once per
+// process and hands every caller the same shared, read-only directory. The
+// embedded content is identical for every session, so re-extracting it per
+// session (temp dir + file writes + teardown) is pure overhead.
+func TestEmbeddedSkillsDir_CachesAcrossCalls(t *testing.T) {
+	first, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir: %v", err)
+	}
+	second, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir (second): %v", err)
+	}
+	if first != second {
+		t.Fatalf("expected the same cached dir, got %q then %q", first, second)
+	}
+
+	out := map[string]SkillMeta{}
+	ScanSkillsDir(first, out)
+	if len(out) == 0 {
+		t.Errorf("expected at least one embedded skill under cached dir %s", first)
+	}
+}

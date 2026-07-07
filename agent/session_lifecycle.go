@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -185,10 +184,6 @@ func (s *Session) close(cleanupEnv bool) {
 			}
 		}
 
-		if s.embeddedSkillsDir != "" {
-			_ = os.RemoveAll(s.embeddedSkillsDir) // best-effort temp-dir cleanup during shutdown
-		}
-
 		// 8. Reassert closed in case an in-flight turn reached a late state transition.
 		s.mu.Lock()
 		s.state = SessionClosed
@@ -234,9 +229,6 @@ func (s *Session) discardRestoredCandidate() {
 		}
 		if s.transcript != nil {
 			_ = s.transcript.Close()
-		}
-		if s.embeddedSkillsDir != "" {
-			_ = os.RemoveAll(s.embeddedSkillsDir)
 		}
 		s.mu.Lock()
 		s.state = SessionClosed

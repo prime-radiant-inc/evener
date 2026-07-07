@@ -5,9 +5,29 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"primeradiant.com/serf/internal/bundled"
 )
+
+var (
+	embeddedSkillsOnce sync.Once
+	embeddedSkillsDir  string
+	errEmbeddedSkills  error
+)
+
+// EmbeddedSkillsDir returns a directory containing the embedded skills,
+// extracting them exactly once per process. The embedded content is immutable
+// and identical for every caller, so the extracted tree is shared and lives for
+// the process lifetime — callers MUST treat it as read-only and MUST NOT remove
+// it. Use this instead of ExtractEmbeddedSkills on hot paths (e.g. per-session
+// initialization) where re-materializing the same files is pure overhead.
+func EmbeddedSkillsDir() (string, error) {
+	embeddedSkillsOnce.Do(func() {
+		embeddedSkillsDir, errEmbeddedSkills = ExtractEmbeddedSkills()
+	})
+	return embeddedSkillsDir, errEmbeddedSkills
+}
 
 // ExtractEmbeddedSkills writes the embedded skills to a temporary directory
 // and returns the path. The caller is responsible for cleanup (os.RemoveAll).

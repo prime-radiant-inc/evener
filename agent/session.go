@@ -238,8 +238,7 @@ type Session struct {
 	strategy   contextmgr.Strategy
 
 	// skills discovered at session startup
-	skills            map[string]skill.SkillMeta
-	embeddedSkillsDir string // temp dir for extracted embedded skills; cleaned up in Close
+	skills map[string]skill.SkillMeta
 
 	// MCP server connections
 	mcpMgr   *mcp.Manager

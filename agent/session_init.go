@@ -653,12 +653,11 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		s.systemPromptOverride = string(b)
 	}
 
-	// Extract embedded skills to a temp dir as the base layer.
+	// Use the process-shared embedded-skills dir as the base layer.
 	// Filesystem-discovered skills (project + extraDirs) shadow embedded ones.
 	s.skills = make(map[string]skill.SkillMeta)
 	s.pluginCommands = make(map[string]plugin.Command)
-	if dir, err := skill.ExtractEmbeddedSkills(); err == nil {
-		s.embeddedSkillsDir = dir
+	if dir, err := skill.EmbeddedSkillsDir(); err == nil {
 		// Scan extracted dir directly (skill subdirs are immediate children).
 		skill.ScanSkillsDir(dir, s.skills)
 	}
