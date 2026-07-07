@@ -620,13 +620,15 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	env := s.currentEnv()
 	ei := envInfoFromEnv(env, s.sclock())
 	ei.KnowledgeCutoff = s.profile.KnowledgeCutoff()
-	if inRepo, branch, mod, untracked, commits := snapshotGit(env, ei.WorkingDir); inRepo {
-		ei.IsGitRepo = true
-		ei.GitBranch = branch
-		ei.GitModifiedFiles = mod
-		ei.GitUntrackedFiles = untracked
-		ei.GitRecentCommitTitles = commits
-		ei.GitOriginURL = gitOriginURL(env, ei.WorkingDir)
+	if !s.cfg.testOnly.skipGitSnapshot {
+		if inRepo, branch, mod, untracked, commits := snapshotGit(env, ei.WorkingDir); inRepo {
+			ei.IsGitRepo = true
+			ei.GitBranch = branch
+			ei.GitModifiedFiles = mod
+			ei.GitUntrackedFiles = untracked
+			ei.GitRecentCommitTitles = commits
+			ei.GitOriginURL = gitOriginURL(env, ei.WorkingDir)
+		}
 	}
 	s.envInfo = ei
 

@@ -7,11 +7,14 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/llm"
 )
 
 type snapshotCountingEnv struct {
-	root      string
-	execCalls int
+	root             string
+	execCalls        int
+	gitSnapshotCalls int
+	commands         []string
 }
 
 func (e *snapshotCountingEnv) Initialize() error        { return nil }
@@ -38,9 +41,26 @@ func (e *snapshotCountingEnv) Grep(string, string, string, bool, int, string) (s
 func (e *snapshotCountingEnv) ListDirectory(string, int) ([]execenv.DirEntry, error) {
 	return nil, nil
 }
-func (e *snapshotCountingEnv) ExecCommand(context.Context, string, int, string, map[string]string) (execenv.ExecResult, error) {
+func (e *snapshotCountingEnv) ExecCommand(_ context.Context, command string, _ int, _ string, _ map[string]string) (execenv.ExecResult, error) {
 	e.execCalls++
+	e.commands = append(e.commands, command)
+	if isGitSnapshotCommand(command) {
+		e.gitSnapshotCalls++
+	}
 	return execenv.ExecResult{ExitCode: 1}, nil
+}
+
+func isGitSnapshotCommand(command string) bool {
+	switch command {
+	case "git rev-parse --is-inside-work-tree",
+		"git rev-parse --abbrev-ref HEAD",
+		"git status --porcelain",
+		"git log -n 5 --pretty=format:%h%x20%s",
+		"git remote get-url origin":
+		return true
+	default:
+		return false
+	}
 }
 
 func TestSnapshotGit_NonRepoDoesNotShellOut(t *testing.T) {
@@ -56,6 +76,31 @@ func TestSnapshotGit_NonRepoDoesNotShellOut(t *testing.T) {
 	}
 	if env.execCalls != 0 {
 		t.Fatalf("ExecCommand calls = %d, want 0 for non-git directory", env.execCalls)
+	}
+}
+
+func TestNewSession_TestConfigCanSkipGitSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	env := &snapshotCountingEnv{root: dir}
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+		testOnly: testConfig{skipGitSnapshot: true},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+
+	if env.gitSnapshotCalls != 0 {
+		t.Fatalf("git snapshot calls = %d, want 0 when git snapshot is skipped; commands=%v", env.gitSnapshotCalls, env.commands)
+	}
+	if sess.envInfo.IsGitRepo {
+		t.Fatal("envInfo.IsGitRepo = true, want false when git snapshot is skipped")
 	}
 }
 

@@ -37,7 +37,7 @@ import (
 // --- Row 1: not in a git repo -> create errors with a clear message ---
 
 func TestWorktreeErrors_NotInGitRepo(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	dir := t.TempDir() // no `git init`
 	s := newSession(t, withDir(dir))
 
@@ -101,6 +101,7 @@ func TestWorktreeErrors_BadBaseRefBeforeWorktreeAdd(t *testing.T) {
 // --- Row 4: name already exists as a branch or worktree -> create errors; suggest switch only when managed ---
 
 func TestWorktreeErrors_NameExistsSuggestsSwitchOnlyWhenManaged(t *testing.T) {
+	t.Parallel()
 	t.Run("unmanaged branch: no switch suggestion", func(t *testing.T) {
 		r := newWorktreeRepo(t)
 		wtGit(t, r.mainRoot, "branch", "plain", r.head)
@@ -138,6 +139,7 @@ func TestWorktreeErrors_NameExistsSuggestsSwitchOnlyWhenManaged(t *testing.T) {
 // --- Row 5: switch/remove to a nonexistent worktree -> error ---
 
 func TestWorktreeErrors_SwitchToNonexistentWorktree(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	_, err := r.switchOp(t, map[string]any{"name": "never-created"})
 	if err == nil {
@@ -149,6 +151,7 @@ func TestWorktreeErrors_SwitchToNonexistentWorktree(t *testing.T) {
 }
 
 func TestWorktreeErrors_RemoveNonexistentWorktree(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	_, err := r.removeOp(t, map[string]any{"name": "never-created"})
 	if err == nil {
@@ -168,6 +171,7 @@ func TestWorktreeErrors_RemoveNonexistentWorktree(t *testing.T) {
 // mirroring TestWorktreeCreate_RejectsInvalidName's empty-name case for
 // create but for remove's own case arm.
 func TestWorktreeErrors_RemoveDispatchRequiresName(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	_, err := r.removeOp(t, map[string]any{"name": ""})
 	if err == nil || !strings.Contains(err.Error(), "name is required") {
@@ -178,6 +182,7 @@ func TestWorktreeErrors_RemoveDispatchRequiresName(t *testing.T) {
 // --- Row 6: switch by path to a path not in `git worktree list` -> error ---
 
 func TestWorktreeErrors_SwitchByPathUnregistered(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	stray := t.TempDir()
 
@@ -195,6 +200,7 @@ func TestWorktreeErrors_SwitchByPathUnregistered(t *testing.T) {
 // lock is adopted/released, never a raw git fatal ---
 
 func TestWorktreeErrors_SwitchForeignSessionLockNamesReason(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -217,6 +223,7 @@ func TestWorktreeErrors_SwitchForeignSessionLockNamesReason(t *testing.T) {
 }
 
 func TestWorktreeErrors_SwitchForeignDelegateLockNamesReason(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -239,6 +246,7 @@ func TestWorktreeErrors_SwitchForeignDelegateLockNamesReason(t *testing.T) {
 }
 
 func TestWorktreeErrors_RemoveForeignLockRefusesForceDoesNotOverride(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -264,6 +272,7 @@ func TestWorktreeErrors_RemoveForeignLockRefusesForceDoesNotOverride(t *testing.
 }
 
 func TestWorktreeErrors_RemoveOwnMarkerCrashResidueNeverARawGitFatal(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -291,6 +300,7 @@ func TestWorktreeErrors_RemoveOwnMarkerCrashResidueNeverARawGitFatal(t *testing.
 // --- Row 9: remove target resolves outside the managed worktree directory -> error ---
 
 func TestWorktreeErrors_RemoveTargetResolvesOutsideManagedDir(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	canonicalMain := r.canonicalMain(t)
 	target := r.managedPath(canonicalMain, "escape")
@@ -314,6 +324,7 @@ func TestWorktreeErrors_RemoveTargetResolvesOutsideManagedDir(t *testing.T) {
 // --- Row 10: exit when not in a worktree -> clear, non-destructive error ---
 
 func TestWorktreeErrors_ExitNotInWorktree(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	before := r.s.currentEnv().WorkingDirectory()
 
@@ -336,6 +347,7 @@ func TestWorktreeErrors_ExitNotInWorktree(t *testing.T) {
 // dirty files, without changing the session env ---
 
 func TestWorktreeErrors_RemoveDirtyWithoutForceListsFilesEnvUnchanged(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -463,6 +475,7 @@ func TestWorktreeErrors_GitTooOldPreflightNamesRequiredVersionNoDegradedMode(t *
 // under the target -> error (live work guard) ---
 
 func TestWorktreeErrors_RemoveLiveWorkGuard(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -502,6 +515,7 @@ func TestWorktreeErrors_RemoveLiveWorkGuard(t *testing.T) {
 // row's inversion — no error surfaces here. ---
 
 func TestWorktreeErrors_RemoveCrossCreatorUnlockedNoLongerErrors(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "shared"})
 	if err != nil {
@@ -524,6 +538,7 @@ func TestWorktreeErrors_RemoveCrossCreatorUnlockedNoLongerErrors(t *testing.T) {
 // --- Row 16: remove of the active worktree with no safe restore env -> error ---
 
 func TestWorktreeErrors_RemoveCurrentNoSafeRestoreEnv(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	canonicalMain := r.canonicalMain(t)
 	launchPath := r.managedPath(canonicalMain, "launch")
@@ -565,6 +580,7 @@ func TestWorktreeErrors_RemoveCurrentNoSafeRestoreEnv(t *testing.T) {
 // --- Row 17: prune never errors on skips; reports per-entry skip reasons ---
 
 func TestWorktreeErrors_PruneNeverErrorsReportsPerEntrySkipReasons(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 
 	// A locked entry (session stays inside it).
@@ -612,6 +628,7 @@ func TestWorktreeErrors_PruneNeverErrorsReportsPerEntrySkipReasons(t *testing.T)
 // --- Row 18: non-local execution environment -> manage_worktree errors clearly ---
 
 func TestWorktreeErrors_NonLocalExecutionEnvironment(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	r.s.mu.Lock()
 	r.s.env = &timeoutEnv{wd: r.mainRoot}
@@ -656,6 +673,7 @@ func TestWorktreeErrors_NonLocalExecutionEnvironment(t *testing.T) {
 // branch at all is the non-local-execution-environment guard, driven through
 // rt.Exec exactly as the model would invoke it.
 func TestWorktreeErrors_PruneDispatchPropagatesNonLocalEnvError(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	r.s.mu.Lock()
 	r.s.env = &timeoutEnv{wd: r.mainRoot}
@@ -724,6 +742,7 @@ func mkToolCall(id, name string, args map[string]any) llm.ToolCallData {
 }
 
 func TestWorktreeOrdering_ReadBeforeSeesOldEnvReadAfterSeesNewEnv(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 
 	// Pre-create "lane" with distinguishing content, then exit back to

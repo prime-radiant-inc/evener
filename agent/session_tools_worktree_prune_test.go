@@ -134,6 +134,7 @@ func ageSidecar(t *testing.T, metaDir, name string, age time.Duration) {
 // TestWorktreeList_NotInGitRepo covers worktreeList's own "not in a git
 // repository" guard.
 func TestWorktreeList_NotInGitRepo(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir() // not a git repo at all
 	s := newSession(t, withDir(dir))
 	_, err := s.worktreeList(context.Background())
@@ -158,6 +159,7 @@ func TestWorktreeList_ListWorktreesErrorsWhenGitUnavailable(t *testing.T) {
 // TestWorktreePrune_NotInGitRepo covers worktreePrune's own "not in a git
 // repository" guard.
 func TestWorktreePrune_NotInGitRepo(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir() // not a git repo at all
 	s := newSession(t, withDir(dir))
 	_, err := s.worktreePrune(context.Background())
@@ -189,6 +191,7 @@ func TestWorktreePrune_Sweep1ErrorPropagatesWhenGitUnavailable(t *testing.T) {
 }
 
 func TestWorktreeList_DoesNotPrune(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 
 	// A non-managed sibling worktree, created directly with git (never
@@ -231,6 +234,7 @@ func TestWorktreeList_DoesNotPrune(t *testing.T) {
 }
 
 func TestWorktreeList_StalenessFieldsThreeWorktreeFixture(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 
 	// 1: unchanged — created, never touched.
@@ -327,6 +331,7 @@ func TestWorktreeList_StalenessFieldsThreeWorktreeFixture(t *testing.T) {
 }
 
 func TestWorktreeList_PrefixCollisionFiltering(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	if _, err := r.create(t, map[string]any{"name": "real-lane"}); err != nil {
 		t.Fatalf("create: %v", err)
@@ -361,6 +366,7 @@ func TestWorktreeList_PrefixCollisionFiltering(t *testing.T) {
 }
 
 func TestWorktreeList_SymlinkedWorktreeRootCanonicalization(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	realStateDir := r.stateDir
 	linkParent := t.TempDir()
@@ -498,6 +504,7 @@ func TestWorktreePrune_Sweep1_BranchDeleteFailsDuringCollect(t *testing.T) {
 // worktree EVER created has no .meta directory at all, and prune must not
 // treat that as an error.
 func TestWorktreePruneSweep2_NoMetaDirReturnsCleanly(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	out, err := r.pruneOp(t)
 	if err != nil {
@@ -549,6 +556,7 @@ func TestWorktreePrune_Sweep2_RevParseVerifyFails(t *testing.T) {
 // worktree, no branch" arm: the metadata directory is read-only, so
 // removing the sidecar file fails with a genuine permission error.
 func TestWorktreePrune_Sweep2_DeleteStaleSidecarFailsOnPermissionDenied(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -571,6 +579,7 @@ func TestWorktreePrune_Sweep2_DeleteStaleSidecarFailsOnPermissionDenied(t *testi
 }
 
 func TestWorktreePrune_Sweep1_CollectsUnchanged(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "unchanged"})
 	if err != nil {
@@ -606,6 +615,7 @@ func TestWorktreePrune_Sweep1_CollectsUnchanged(t *testing.T) {
 }
 
 func TestWorktreePrune_Sweep1_CollectsMergedAncestry(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "anc-lane"})
 	if err != nil {
@@ -635,6 +645,7 @@ func TestWorktreePrune_Sweep1_CollectsMergedAncestry(t *testing.T) {
 }
 
 func TestWorktreePrune_Sweep1_CollectsMergedCherry(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "squash-lane"})
 	if err != nil {
@@ -664,6 +675,7 @@ func TestWorktreePrune_Sweep1_CollectsMergedCherry(t *testing.T) {
 }
 
 func TestWorktreePrune_Sweep1_SkipsLocked(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -690,6 +702,7 @@ func TestWorktreePrune_Sweep1_SkipsLocked(t *testing.T) {
 }
 
 func TestWorktreePrune_Sweep1_SkipsDirty(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "dirty-lane"})
 	if err != nil {
@@ -721,6 +734,7 @@ func TestWorktreePrune_Sweep1_SkipsDirty(t *testing.T) {
 }
 
 func TestWorktreePrune_Sweep1_SkipsLiveViaStub(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "live-lane"})
 	if err != nil {
@@ -765,6 +779,7 @@ func TestWorktreePrune_Sweep1_SkipsLiveViaStub(t *testing.T) {
 }
 
 func TestWorktreePrune_Sweep1_SkipsSidecarLess(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	canonicalMain := r.canonicalMain(t)
 	path := r.managedPath(canonicalMain, "unmanaged-lane")
@@ -792,6 +807,7 @@ func TestWorktreePrune_Sweep1_SkipsSidecarLess(t *testing.T) {
 }
 
 func TestWorktreePrune_Sweep1_SkipsUnmerged(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "unmerged-lane"})
 	if err != nil {
@@ -824,6 +840,7 @@ func TestWorktreePrune_Sweep1_SkipsUnmerged(t *testing.T) {
 }
 
 func TestWorktreePrune_Sweep1_SkipsMergeTargetUnknown(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "orphan-target-lane"})
 	if err != nil {
@@ -867,6 +884,7 @@ func TestWorktreePrune_Sweep1_SkipsMergeTargetUnknown(t *testing.T) {
 // ============================================================
 
 func TestWorktreePrune_Sweep2_StaleSidecarDeletedPostGrace(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	canonicalMain := r.canonicalMain(t)
 	metaDir := r.metaDir(canonicalMain)
@@ -901,6 +919,7 @@ func TestWorktreePrune_Sweep2_StaleSidecarDeletedPostGrace(t *testing.T) {
 }
 
 func TestWorktreePrune_Sweep2_FreshSidecarSurvivesGrace(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	canonicalMain := r.canonicalMain(t)
 	metaDir := r.metaDir(canonicalMain)
@@ -935,6 +954,7 @@ func TestWorktreePrune_Sweep2_FreshSidecarSurvivesGrace(t *testing.T) {
 }
 
 func TestWorktreePrune_Sweep2_AdoptedBranchSidecarDroppedBranchKept(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "adopt-lane"})
 	if err != nil {
@@ -991,6 +1011,7 @@ func TestWorktreePrune_Sweep2_AdoptedBranchSidecarDroppedBranchKept(t *testing.T
 }
 
 func TestWorktreePrune_Sweep2_ResetToBaseCollected(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "reset-lane"})
 	if err != nil {
@@ -1033,6 +1054,7 @@ func TestWorktreePrune_Sweep2_ResetToBaseCollected(t *testing.T) {
 }
 
 func TestWorktreePrune_Sweep2_CheckedOutBranchSkipped(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "checkedout-lane"})
 	if err != nil {
@@ -1077,6 +1099,7 @@ func TestWorktreePrune_Sweep2_CheckedOutBranchSkipped(t *testing.T) {
 }
 
 func TestWorktreePrune_Sweep2_UnmergedResidueKept(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "residue-lane"})
 	if err != nil {
@@ -1160,6 +1183,7 @@ func TestWorktreePrune_Sweep3_GitWorktreePruneCommandFails(t *testing.T) {
 }
 
 func TestWorktreePrune_Sweep3_RunsWhenAllPrunableManaged(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "vanished-lane"})
 	if err != nil {
@@ -1192,6 +1216,7 @@ func TestWorktreePrune_Sweep3_RunsWhenAllPrunableManaged(t *testing.T) {
 }
 
 func TestWorktreePrune_Sweep3_SkippedWhenNonManagedPrunable(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	siblingPath := r.addSiblingWorktree(t, "sibling", "sibling-branch")
 	if err := os.RemoveAll(siblingPath); err != nil {

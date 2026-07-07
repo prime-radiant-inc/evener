@@ -230,6 +230,10 @@ type testConfig struct {
 	// so only the in-memory goroutine + decode + naming-state mutation run. False
 	// in production: the StateDir gate is unchanged.
 	forceSessionNamer bool
+
+	// skipGitSnapshot suppresses launch-time git metadata collection for tests
+	// whose contract is below the session prompt/environment snapshot layer.
+	skipGitSnapshot bool
 }
 
 // spawnConfig holds the SessionConfig fields that only spawnAgent (plus the

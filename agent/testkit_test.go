@@ -24,13 +24,14 @@ import (
 // --- session construction ---
 
 type sessionOpts struct {
-	client   *llm.Client
-	adapters []llm.ProviderAdapter
-	steps    []func(req llm.Request) llm.Response
-	profile  *provider.Profile
-	dir      string
-	cfg      SessionConfig
-	cfgSet   bool
+	client          *llm.Client
+	adapters        []llm.ProviderAdapter
+	steps           []func(req llm.Request) llm.Response
+	profile         *provider.Profile
+	dir             string
+	cfg             SessionConfig
+	cfgSet          bool
+	skipGitSnapshot bool
 }
 
 type sessionOpt func(*sessionOpts)
@@ -56,6 +57,7 @@ func withDir(dir string) sessionOpt              { return func(o *sessionOpts) {
 func withConfig(cfg SessionConfig) sessionOpt {
 	return func(o *sessionOpts) { o.cfg = cfg; o.cfgSet = true }
 }
+func withoutGitSnapshot() sessionOpt { return func(o *sessionOpts) { o.skipGitSnapshot = true } }
 
 // newSession builds a *Session for tests. The zero-option form yields the
 // canonical default: a single scripted "openai" fake adapter, a gpt-5.2 profile,
@@ -86,6 +88,9 @@ func newSession(t *testing.T, opts ...sessionOpt) *Session {
 	cfg := o.cfg
 	if !o.cfgSet {
 		cfg = SessionConfig{MaxSubagentDepth: 1}
+	}
+	if o.skipGitSnapshot {
+		cfg.testOnly.skipGitSnapshot = true
 	}
 	sess, err := NewSession(o.client, profile, execenv.NewLocalExecutionEnvironment(o.dir), cfg)
 	if err != nil {

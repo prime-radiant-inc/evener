@@ -43,7 +43,7 @@ func (r *wtRepo) removeOp(t *testing.T, args map[string]any) (map[string]any, er
 // guard tests.
 func (r *wtRepo) secondSession(t *testing.T) *wtRepo {
 	t.Helper()
-	s2 := newSession(t, withDir(r.mainRoot))
+	s2 := newSession(t, withDir(r.mainRoot), withoutGitSnapshot())
 	s2.stateDir = r.stateDir
 	return &wtRepo{s: s2, mainRoot: r.mainRoot, stateDir: r.stateDir, head: r.head}
 }
@@ -74,6 +74,7 @@ func gitArgvRecordingShim(t *testing.T) (logPath string) {
 // TestWorktreeRemove_NotInGitRepo covers worktreeRemove's own "not in a git
 // repository" guard.
 func TestWorktreeRemove_NotInGitRepo(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir() // not a git repo at all
 	s := newSession(t, withDir(dir))
 	_, err := s.worktreeRemove(context.Background(), "x", false, false, false)
@@ -108,6 +109,7 @@ func TestWorktreeRemove_TargetLockInspectionErrorsWhenGitUnavailable(t *testing.
 // to ActUnlockProceed — but the unlock command itself fails because its
 // internal .git/worktrees/<id> directory is read-only.
 func TestWorktreeRemove_CrashResidueUnlockFailsOnPermissionDenied(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -188,6 +190,7 @@ func TestWorktreeRemove_DirtyCheckErrorsWhenStatusFails(t *testing.T) {
 }
 
 func TestWorktreeRemove_CleanRemove(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -237,6 +240,7 @@ func TestWorktreeRemove_CleanRemove(t *testing.T) {
 // --- 2: dirty without force ---
 
 func TestWorktreeRemove_DirtyWithoutForceErrorsListsFilesEnvUnchanged(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -266,6 +270,7 @@ func TestWorktreeRemove_DirtyWithoutForceErrorsListsFilesEnvUnchanged(t *testing
 // --- 3: force_dirty removes dirty (force alone does not — F3) ---
 
 func TestWorktreeRemove_ForceDirtyRemovesDirty(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -287,6 +292,7 @@ func TestWorktreeRemove_ForceDirtyRemovesDirty(t *testing.T) {
 // --- 4: delete_branch on a merged branch deletes with -D after the gate ---
 
 func TestWorktreeRemove_DeleteBranchMergedDeletesAfterGate(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -363,6 +369,7 @@ func TestWorktreeRemove_DeleteBranchTipLookupErrorsKeepsBranch(t *testing.T) {
 // merge_target branch no longer exists anywhere (deleted after the lane was
 // created), so Merged cannot judge it at all.
 func TestWorktreeRemove_DeleteBranchMergeTargetUnknownRefusesWithEvidence(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	wtGit(t, r.mainRoot, "checkout", "-q", "-b", "feature")
 	res, err := r.create(t, map[string]any{"name": "lane"})
@@ -416,6 +423,7 @@ func TestWorktreeRemove_DeleteBranchMergeTargetUnknownRefusesWithEvidence(t *tes
 // so the branch itself deletes cleanly but removing its now-orphaned
 // sidecar file fails with a genuine permission error.
 func TestWorktreeRemove_DeleteSidecarFailsOnPermissionDenied(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -454,6 +462,7 @@ func TestWorktreeRemove_DeleteSidecarFailsOnPermissionDenied(t *testing.T) {
 // the sidecar FILE itself (not its directory) is made read-only, so
 // UpdateSidecar's read succeeds but its truncating write fails.
 func TestWorktreeRemove_MarkSidecarRemovedFailsOnPermissionDenied(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -489,6 +498,7 @@ func TestWorktreeRemove_MarkSidecarRemovedFailsOnPermissionDenied(t *testing.T) 
 // --- 5: delete_branch on an unmerged branch refuses with evidence, keeps the branch and sidecar ---
 
 func TestWorktreeRemove_DeleteBranchUnmergedRefusesEvidenceSidecarKept(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -606,6 +616,7 @@ func TestWorktreeRemove_DetachedHeadReviewRefusesNeverInvokesLowercaseD(t *testi
 // --- 7: branch checked out elsewhere surfaces the checkout location ---
 
 func TestWorktreeRemove_BranchCheckedOutElsewhereSurfacesLocation(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
 		t.Fatalf("create: %v", err)
@@ -640,6 +651,7 @@ func TestWorktreeRemove_BranchCheckedOutElsewhereSurfacesLocation(t *testing.T) 
 // --- 8: foreign lock refuses regardless of force ---
 
 func TestWorktreeRemove_ForeignLockRefusesRegardlessOfForce(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -672,6 +684,7 @@ func TestWorktreeRemove_ForeignLockRefusesRegardlessOfForce(t *testing.T) {
 // --- 9: own-marker crash residue auto-unlocks and proceeds ---
 
 func TestWorktreeRemove_OwnMarkerCrashResidueAutoUnlocksAndProceeds(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -703,6 +716,7 @@ func TestWorktreeRemove_OwnMarkerCrashResidueAutoUnlocksAndProceeds(t *testing.T
 // (EvRemoveCurrent -> ActUnlock), but the internal .git/worktrees/<id>
 // directory backing the target has been made read-only.
 func TestWorktreeRemove_RemoveCurrentUnlockBeforeRestoreFailsOnPermissionDenied(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -766,6 +780,7 @@ func TestWorktreeRemove_GitWorktreeRemoveCommandFails(t *testing.T) {
 }
 
 func TestWorktreeRemove_RemoveCurrentRestoresAndRelocks(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	s2, r2, launchPath, pathWork := wtLaunchSession(t, r)
 
@@ -807,6 +822,7 @@ func TestWorktreeRemove_RemoveCurrentRestoresAndRelocks(t *testing.T) {
 // --- 11: remove-current with no safe restore env refuses ---
 
 func TestWorktreeRemove_RemoveCurrentNoSafeRestoreEnvRefuses(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	canonicalMain := r.canonicalMain(t)
 	launchPath := r.managedPath(canonicalMain, "launch")
@@ -865,6 +881,7 @@ func TestWorktreeRemove_RemoveCurrentNoSafeRestoreEnvRefuses(t *testing.T) {
 // the directory the session is actually rooted in, out from under it, with no
 // safe-restore-env refusal and no warning.
 func TestWorktreeRemove_RemoveCurrentNoSafeRestoreEnvRefusesThroughSymlinkedLaunch(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	canonicalMain := r.canonicalMain(t)
 	launchPath := r.managedPath(canonicalMain, "launch")
@@ -923,6 +940,7 @@ func TestWorktreeRemove_RemoveCurrentNoSafeRestoreEnvRefusesThroughSymlinkedLaun
 // --- 12: live-work guard, via the test-only stub seam ---
 
 func TestWorktreeRemove_LiveWorkGuardRefusesViaStub(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -971,6 +989,7 @@ func TestWorktreeRemove_LiveWorkGuardRefusesViaStub(t *testing.T) {
 // committed work is still protected by the merge gate; uncommitted work by
 // force_dirty.) This inverts the pre-F1 cross-creator refusal.
 func TestWorktreeRemove_CrossCreatorUnlockedLaneProceeds(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "shared"})
 	if err != nil {
@@ -999,6 +1018,7 @@ func TestWorktreeRemove_CrossCreatorUnlockedLaneProceeds(t *testing.T) {
 // still refused (needs force_dirty), so forcing past a provenance refusal
 // cannot silently discard an edit. The live S5 eval caught exactly this loss.
 func TestWorktreeRemove_ForceDoesNotDiscardUncommitted(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	if _, err := r.create(t, map[string]any{"name": "dirtylane"}); err != nil {
 		t.Fatalf("create: %v", err)
@@ -1033,6 +1053,7 @@ func TestWorktreeRemove_ForceDoesNotDiscardUncommitted(t *testing.T) {
 // own dispatch-layer warning plumbing rather than exit's) ---
 
 func TestWorktreeRemove_RemoveCurrentForeignLockedRestoreWarns(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	s2, r2, launchPath, pathWork := wtLaunchSession(t, r)
 
