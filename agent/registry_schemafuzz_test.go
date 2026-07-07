@@ -19,6 +19,14 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// schemaValidator is the tool-argument schema behavior both this suite and the
+// tagged tool_args fuzz harness depend on: validating a decoded argument map.
+// It lives here (untagged) so the plain `go test` unit gate keeps compiling
+// after the fuzz harnesses moved behind the serffuzz build tag.
+type schemaValidator interface {
+	Validate(v interface{}) error
+}
+
 // TestToolArgsSchemaFuzz is Phase-1 target #5: schema-AWARE tool-argument
 // fuzzing. For every registered tool it feeds that tool's own JSON Schema
 // (Definition.Parameters) into schemagen and drives the real compiled validator

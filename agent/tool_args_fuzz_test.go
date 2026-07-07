@@ -1,3 +1,5 @@
+//go:build serffuzz
+
 package agent
 
 import (
@@ -159,10 +161,4 @@ func coreToolSchemas(f *testing.F) ([]string, []schemaValidator) {
 		schemas[i] = rt.Schema
 	}
 	return names, schemas
-}
-
-// schemaValidator is the slice of *jsonschema.Schema the harness depends on:
-// validating a decoded argument map.
-type schemaValidator interface {
-	Validate(v interface{}) error
 }

@@ -1,3 +1,5 @@
+//go:build serffuzz
+
 package agent
 
 import (
