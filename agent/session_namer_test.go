@@ -44,7 +44,7 @@ func TestNameSession_UsesCheapModelAndStructuredOutput(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	got, err := nameSession(context.Background(), client, profile, sessionNameSourcePrompt, "fix the flaky test in agent/session_test.go")
+	got, err := nameSession(context.Background(), client, profile, sessionNameSourcePrompt, "fix the flaky test in agent/session_test.go", noNamerSleep)
 	if err != nil {
 		t.Fatalf("nameSession: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestNameSession_RoutesToCheapProvider(t *testing.T) {
 	client.Register(mainAdapter)
 	client.Register(cheapAdapter)
 
-	got, err := nameSession(context.Background(), client, profile, sessionNameSourcePrompt, "name this session")
+	got, err := nameSession(context.Background(), client, profile, sessionNameSourcePrompt, "name this session", noNamerSleep)
 	if err != nil {
 		t.Fatalf("nameSession: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestNameSession_FallsBackToActiveModel(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	got, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourcePrompt, "review the system prompt")
+	got, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourcePrompt, "review the system prompt", noNamerSleep)
 	if err != nil {
 		t.Fatalf("nameSession: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestNameSession_SanitizesGeneratedName(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	got, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourceCompaction, "[CONTEXT SUMMARY] parser failures")
+	got, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourceCompaction, "[CONTEXT SUMMARY] parser failures", noNamerSleep)
 	if err != nil {
 		t.Fatalf("nameSession: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestNameSession_RejectsEmptySourceText(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
-	_, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourcePrompt, "   ")
+	_, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourcePrompt, "   ", noNamerSleep)
 	if err == nil || !strings.Contains(err.Error(), "source text is empty") {
 		t.Fatalf("err = %v, want source text error", err)
 	}

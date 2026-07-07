@@ -36,7 +36,12 @@ type sessionNameResult struct {
 }
 
 // nameSession derives a short human-readable session title using a single cheap-model LLM call.
-func nameSession(ctx context.Context, client *llm.Client, profile *provider.Profile, source, text string) (sessionNameResult, error) {
+// nameSession generates a session title via a cheap LLM call. sleep is the
+// backoff function used between the GenerateObject retries; production passes
+// s.cfg.LLMSleep (nil, so GenerateObject uses the real DefaultSleep), while
+// tests inject a no-op so a retryable provider error doesn't burn the full
+// 1+2+4+8s backoff as real wall time.
+func nameSession(ctx context.Context, client *llm.Client, profile *provider.Profile, source, text string, sleep llm.SleepFunc) (sessionNameResult, error) {
 	if client == nil {
 		return sessionNameResult{}, errors.New("session namer: llm client is nil")
 	}
@@ -69,6 +74,7 @@ func nameSession(ctx context.Context, client *llm.Client, profile *provider.Prof
 			Prompt:      ptrString(sessionNamerUserPrompt(source, text)),
 			Temperature: &temp,
 			MaxTokens:   &maxTokens,
+			Sleep:       sleep,
 		},
 		Schema: sessionNameSchema(),
 	})
@@ -315,7 +321,7 @@ func (s *Session) nameSessionFromText(ctx context.Context, source, text string) 
 	if s.cfg.testOnly.namerClient != nil {
 		namerClient = s.cfg.testOnly.namerClient
 	}
-	result, err := nameSession(ctx, namerClient, s.currentProfile(), source, text)
+	result, err := nameSession(ctx, namerClient, s.currentProfile(), source, text, s.cfg.LLMSleep)
 	if err != nil {
 		s.appendSessionNamerLog(sessionlog.SessionLogEntry{
 			Kind:     "advisory",
