@@ -106,9 +106,9 @@ before editing — they will drift as milestones land):
 
 ## Status ledger (update as milestones land)
 
-- [x] M1 — policy core + contract tests (merged `4ff14d37`; gates green; roborev in progress)
-- [ ] M2 — file-tool race-safe in-process layer
-- [ ] M3 — Linux kernel layer (flag inert)
+- [x] M1 — policy core + contract tests (merged `4ff14d37` + fixes; roborev 2 rounds clean)
+- [x] M2 — file-tool race-safe in-process layer (merged `b19ae7cc`; roborev+fix; go test green)
+- [x] M3 — Linux kernel layer, flag inert (merged `42b09c1f`+fix; roborev found+fixed 3 Highs; go test green)
 - [ ] M4 — subagent/worktree scoping
 - [ ] M5 — flag goes live on Linux (GATE: Jesse review)
 - [ ] M6 — macOS Seatbelt (paradise-park)
