@@ -40,15 +40,16 @@ else
 	WAVE2=${WAVE2:-}
 fi
 
-# Extra -parallel for the agent wave. An explicit empty value means "don't pass
-# -parallel" so go test uses GOMAXPROCS; the -race gate sets this to avoid
-# oversubscribing few-core CI.
+# Extra package/test parallelism controls for the agent wave. Explicit empty
+# values mean "don't pass the flag" so go test uses its defaults; the -race gate
+# sets AGENT_PARALLEL empty to avoid oversubscribing few-core CI.
 AGENT_PARALLEL=${AGENT_PARALLEL-32}
+AGENT_P=${AGENT_P-4}
 
 # Fuzz-designated Test* functions are not part of the regular gate. Native Fuzz*
 # targets are already excluded by -run; these names cover rapid/sequence fuzz
 # tests and structured-generator reachability proofs that remain under make fuzz.
-fuzz_test_skip='(SeqFuzz|SchemaFuzz|Structured.*Reach)'
+fuzz_test_skip='(SeqFuzz|SchemaFuzz|Structured.*Reach|LifecycleAdapter|ToolArgsAdapter|TurnPagingEquivalenceSanity|WireTypeRegistryCoverage|LineWindowExtractorsSanity|TranscriptReadersAgreeSanity|WriteListRoundTrip|LaunchConfigThreeStateRoundTrip|DifferentialSanity|StreamVsNonStreamSanity)'
 
 flags="$*"
 logdir="$(mktemp -d -t serf-module-tests.XXXXXX)"
@@ -87,7 +88,8 @@ run_wave() {
 }
 
 agentExtra=""
-[ -n "$AGENT_PARALLEL" ] && agentExtra="-parallel $AGENT_PARALLEL"
+[ -n "$AGENT_P" ] && agentExtra="$agentExtra -p $AGENT_P"
+[ -n "$AGENT_PARALLEL" ] && agentExtra="$agentExtra -parallel $AGENT_PARALLEL"
 run_wave "" $WAVE1
 run_wave "$agentExtra" $WAVE2
 
