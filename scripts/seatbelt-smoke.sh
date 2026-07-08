@@ -30,12 +30,14 @@ echo "== stage 1: raw sandbox-exec deny-default enforcement =="
 # A minimal deny-default policy that allows exec/fork + reading a param root but
 # NOT writing it. Proves the kernel honors (deny default) and (param ...).
 ROOT="$(mktemp -d)"
+# macOS mktemp returns /var/folders/... but /var is a symlink to /private/var, so
+# canonicalize: the -D W=$ROOT/allowed param must carry the kernel's real path or
+# the writable-param write below is denied and the smoke test false-FAILs.
+ROOT="$(cd "$ROOT" && pwd -P)"
 trap 'rm -rf "$ROOT"' EXIT
 echo hello >"$ROOT/readme"
 
-read_policy='(version 1)(deny default)(allow process-exec)(allow process-fork)(allow file-read* (subpath (param "R")))(allow file-read-metadata (subpath "/"))(import "/System/Library/Sandbox/Profiles/bsd.sb")'
-# bsd.sb import can be unavailable on some macOS versions; fall back to a
-# self-contained policy that at least exercises read-allow / write-deny.
+# A self-contained deny-default policy that exercises read-allow / write-deny.
 selfcontained='(version 1)(deny default)(allow process*)(allow file-read* file-read-metadata)(allow file-write* (subpath (param "W")))'
 
 # 1a: a write OUTSIDE the single writable param must be denied.
