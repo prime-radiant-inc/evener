@@ -121,6 +121,19 @@ func (e *LocalExecutionEnvironment) sandbox() *sandboxFS {
 	return e.sbfs
 }
 
+// invalidateSandboxFS closes and drops the cached fd-anchored enforcement layer so
+// the next file tool rebuilds it from the current policy. It MUST run whenever
+// e.Sandbox is replaced (EnableSandbox, UseControlPolicy); a stale sbfs captured
+// the OLD policy's root fds and would keep enforcing the OLD roots.
+func (e *LocalExecutionEnvironment) invalidateSandboxFS() {
+	e.sbMu.Lock()
+	defer e.sbMu.Unlock()
+	if e.sbfs != nil {
+		e.sbfs.close()
+		e.sbfs = nil
+	}
+}
+
 // gitRootCache memoizes git-root lookups per working dir. A session resolves the
 // git root ~4 times at init (skills, project docs, mcp config, system prompt);
 // without this each forks `git rev-parse`, which is roughly half of session
@@ -182,8 +195,15 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 	// EnableSandbox establishes the COMPLETE sandbox state, so it always resets any
 	// stale re-root error and, on the off path, any policy/wrapper a prior
 	// WithWorkingDirectory re-rooted onto this env — a delegate's box must be a pure
-	// function of ITS OWN policy, never a parent's leaked one.
+	// function of ITS OWN policy, never a parent's leaked one. The policy is being
+	// replaced, so drop the cached fd layer, and dispose any tmp a prior call owned
+	// so a second EnableSandbox never leaks the first's dir.
 	e.sandboxReRootErr = nil
+	e.invalidateSandboxFS()
+	if e.ownedSessionTmp != nil {
+		_ = e.ownedSessionTmp.Cleanup()
+		e.ownedSessionTmp = nil
+	}
 	if policy == nil || !policy.Enforced() {
 		e.Sandbox = policy
 		e.Wrapper = nil
@@ -191,12 +211,18 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 	}
 	tmp, err := sandbox.NewSessionTmp("")
 	if err != nil {
+		// Leave the env unsandboxed: a half-wired sandbox must never run, and the
+		// prior policy/wrapper (torn down above) must not silently persist.
+		e.Sandbox = nil
+		e.Wrapper = nil
 		return err
 	}
 	if policy.Backend == sandbox.BackendBwrap {
 		w, werr := sandbox.NewWrapper(*policy, policy.HostBwrapPath(), tmp.Dir)
 		if werr != nil {
 			_ = tmp.Cleanup()
+			e.Sandbox = nil
+			e.Wrapper = nil
 			return werr
 		}
 		e.Wrapper = w
@@ -253,6 +279,14 @@ func (e *LocalExecutionEnvironment) WithWorkingDirectory(dir string) *LocalExecu
 			child.Wrapper = rerooted
 		}
 	}
+	// Fail closed as a UNIT: if either re-root failed, nil BOTH so the child is
+	// never left half-confined (a re-rooted Sandbox alongside a nil Wrapper, or the
+	// reverse) — the sticky error is what the caller surfaces. Structurally enforced
+	// here rather than relying on both re-roots failing identically.
+	if child.sandboxReRootErr != nil {
+		child.Sandbox = nil
+		child.Wrapper = nil
+	}
 	return child
 }
 
@@ -281,6 +315,8 @@ func (e *LocalExecutionEnvironment) UseControlPolicy(mainRepoRoot string) error 
 		return err
 	}
 	e.Sandbox = ctrl
+	// The policy was replaced, so drop the cached fd layer built from the old one.
+	e.invalidateSandboxFS()
 	if e.Wrapper != nil && ctrl != nil {
 		w, werr := e.Wrapper.WithPolicy(*ctrl)
 		if werr != nil {
@@ -328,11 +364,15 @@ func (e *LocalExecutionEnvironment) Cleanup() {
 	e.sbMu.Unlock()
 
 	// Dispose the per-session/per-lane scratch dir this env owns (provisioned by
-	// EnableSandbox). Re-rooted clones never own one, so a clone's Cleanup never
-	// removes the owner's tmp out from under it.
-	if e.ownedSessionTmp != nil {
-		_ = e.ownedSessionTmp.Cleanup()
+	// EnableSandbox) only AFTER the SIGTERM/grace/SIGKILL sequence below: the tracked
+	// children's TMPDIR/GOCACHE/npm/cargo caches (via ApplyEnvFloor) point into this
+	// dir, so removing it before a graceful shutdown would pull it out from under
+	// them. defer runs last on every return path, including the no-children early
+	// return, so the dir is never leaked. Re-rooted clones never own one, so a
+	// clone's Cleanup never removes the owner's tmp.
+	if tmp := e.ownedSessionTmp; tmp != nil {
 		e.ownedSessionTmp = nil
+		defer func() { _ = tmp.Cleanup() }()
 	}
 
 	// Collect running PIDs and send SIGTERM.
