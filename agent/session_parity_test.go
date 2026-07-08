@@ -74,6 +74,7 @@ func TestParity_SimpleFileCreation(t *testing.T) {
 	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			steps := []func(llm.Request) llm.Response{
 				func(req llm.Request) llm.Response {
 					return llm.Response{
@@ -132,6 +133,7 @@ func TestParity_ReadFileThenEdit(t *testing.T) {
 			t.Parallel()
 			for _, pc := range providerCases {
 				t.Run(pc.name, func(t *testing.T) {
+					t.Parallel()
 					steps := []func(llm.Request) llm.Response{
 						func(req llm.Request) llm.Response {
 							return llm.Response{
@@ -190,6 +192,7 @@ func TestParity_ShellCommandExecution(t *testing.T) {
 	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			steps := []func(llm.Request) llm.Response{
 				func(req llm.Request) llm.Response {
 					return llm.Response{
@@ -241,6 +244,7 @@ func TestParity_ShellBackgroundLaunch(t *testing.T) {
 	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			steps := []func(llm.Request) llm.Response{
 				func(req llm.Request) llm.Response {
 					return llm.Response{
@@ -296,6 +300,7 @@ func TestParity_GrepAndGlob(t *testing.T) {
 	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			steps := []func(llm.Request) llm.Response{
 				func(req llm.Request) llm.Response {
 					return llm.Response{
@@ -384,6 +389,7 @@ func TestParity_ParallelToolCalls(t *testing.T) {
 	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			steps := []func(llm.Request) llm.Response{
 				func(req llm.Request) llm.Response {
 					return llm.Response{
@@ -440,6 +446,7 @@ func TestParity_ErrorRecovery(t *testing.T) {
 	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			step := 0
 			steps := []func(llm.Request) llm.Response{
 				// First call: read a nonexistent file (will error).
@@ -557,6 +564,7 @@ func TestParity_SteeringMidTask(t *testing.T) {
 	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			started := make(chan struct{}, 1)
 			release := make(chan struct{})
 
@@ -624,6 +632,7 @@ func TestParity_MultiFileEdit(t *testing.T) {
 	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			steps := []func(llm.Request) llm.Response{
 				// Round 1: Read both files.
 				func(req llm.Request) llm.Response {
@@ -700,6 +709,7 @@ func TestParity_ToolOutputTruncation(t *testing.T) {
 	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			steps := []func(llm.Request) llm.Response{
 				func(req llm.Request) llm.Response {
 					return llm.Response{Message: llm.Message{
@@ -759,6 +769,7 @@ func TestParity_ReasoningEffort(t *testing.T) {
 	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			steps := []func(llm.Request) llm.Response{
 				func(req llm.Request) llm.Response {
 					return finalResponse("first")
@@ -833,6 +844,7 @@ func TestParity_WorkingDirRemovedFromSchema(t *testing.T) {
 	// working_dir is not model-configurable; delegated jobs always use the parent's working dir.
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			found := false
 			for _, td := range pc.profile("test-model").ToolDefinitions() {
 				if td.Name == "delegate" {

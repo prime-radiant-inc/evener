@@ -2133,7 +2133,9 @@ func TestReconstructDelegateRuntimeMissingRequiredToolsFailsBeforeTracking(t *te
 		},
 	}
 	for _, tc := range cases {
+		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			adapter := &fakeAdapter{name: "openai"}
 			c := llm.NewClient()
 			c.Register(adapter)
@@ -3647,6 +3649,7 @@ func TestCoordinatorTypeDelegateResumes(t *testing.T) {
 	t.Parallel()
 	// Part A-positive: allowance > 0, FrozenToolNames includes "delegate" → must pass.
 	t.Run("allowance>0 coordinator resumes with delegate in frozen tools", func(t *testing.T) {
+		t.Parallel()
 		c := llm.NewClient()
 		c.Register(&fakeAdapter{name: "openai"})
 		s := newDelegateRestorePreflightSession(t, c)
@@ -3673,6 +3676,7 @@ func TestCoordinatorTypeDelegateResumes(t *testing.T) {
 	// fail (preserves today's leaf semantics: a leaf cannot have delegate in its
 	// frozen tool requirements, because the parent's validation set has it stripped).
 	t.Run("allowance==0 leaf with delegate in frozen tools fails validation", func(t *testing.T) {
+		t.Parallel()
 		c := llm.NewClient()
 		c.Register(&fakeAdapter{name: "openai"})
 		s := newDelegateRestorePreflightSession(t, c)
@@ -3694,6 +3698,7 @@ func TestCoordinatorTypeDelegateResumes(t *testing.T) {
 
 	// Part A-zero-frozen: allowance > 0 but no frozen tool requirements → must pass.
 	t.Run("allowance>0 no frozen tool requirements passes", func(t *testing.T) {
+		t.Parallel()
 		c := llm.NewClient()
 		c.Register(&fakeAdapter{name: "openai"})
 		s := newDelegateRestorePreflightSession(t, c)

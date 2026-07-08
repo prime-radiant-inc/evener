@@ -1052,7 +1052,9 @@ func TestWatchSendRestoreDropsHardFailureTargetsOnce(t *testing.T) {
 			wantText: "target_not_resumable",
 		},
 	} {
+		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			stateDir := t.TempDir()
 			sessionID := "S1"
 			now := time.Unix(1000, 0).UTC()
