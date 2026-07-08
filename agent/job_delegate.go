@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/serf/agent/internal/worktree"
 	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/provider"
+	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 )
@@ -43,6 +44,7 @@ const (
 	notResumableProfileUnavailable            = "profile_unavailable"
 	notResumableWorktreeDisposed              = "isolation_worktree_disposed"
 	notResumableWorkingDirMissing             = "working_dir_missing"
+	notResumableSandboxUnsatisfiable          = "sandbox_unsatisfiable"
 )
 
 type delegateResumability struct {
@@ -651,6 +653,9 @@ func validateDelegateRestoreState(rec *jobstore.JobRecord, parentSessionID strin
 	if !hasValidDelegateRestoreWorkingDir(desc) {
 		return notResumableParentLinkageUnavailable
 	}
+	if !hasValidDelegateRestoreSandbox(desc) {
+		return notResumableSandboxUnsatisfiable
+	}
 	if _, err := restoreFrozenSkillBodies(desc.FrozenSkillNames, desc.FrozenSkillBodies); err != nil {
 		return notResumableCorruptChildSessionMeta
 	}
@@ -730,6 +735,13 @@ func (s *Session) assessDelegateResumability(rec *jobstore.JobRecord, mode deleg
 	profile, err := s.resolveDelegateRestoreProfile(meta, desc)
 	if err != nil {
 		return delegateResumability{Reason: notResumableProfileUnavailable}
+	}
+	// A sandboxed delegate is resumable only if its persisted policy still resolves
+	// on this host against its lane — a host that lost the backend (or a mode it can
+	// no longer enforce) refuses rather than resuming unscoped. Uses the WorkingDir
+	// already stat-verified above.
+	if _, reason := s.resolveRestoredDelegateSandbox(desc, strings.TrimSpace(desc.WorkingDir)); reason != "" {
+		return delegateResumability{Reason: reason}
 	}
 	result := delegateResumability{Resumable: true}
 	if mode == delegateResumabilityPreflight {
@@ -959,6 +971,19 @@ func (s *Session) restoreDelegateChildEnvironment(desc *jobstore.DelegateRestore
 	if le, ok := env.(*execenv.LocalExecutionEnvironment); ok {
 		clone := le.WithWorkingDirectory(workDir)
 		clone.EnvPolicy = policy
+		// Re-apply the delegate's OWN persisted sandbox by RE-RESOLVING its inputs
+		// against the restored lane + freshly-probed host facts (immutable across
+		// restart: the parent's current config never widens it). This overrides any
+		// policy WithWorkingDirectory re-rooted from the parent; a fresh per-lane
+		// session tmp is provisioned via EnableSandbox. An off delegate leaves the
+		// clone unsandboxed.
+		if rp, reason := s.resolveRestoredDelegateSandbox(desc, workDir); reason != "" {
+			return nil, fmt.Errorf("delegate restore: %s", reason)
+		} else if rp != nil {
+			if err := clone.EnableSandbox(rp); err != nil {
+				return nil, fmt.Errorf("delegate restore: %s: %w", notResumableSandboxUnsatisfiable, err)
+			}
+		}
 		childEnv = clone
 	} else if workDir != env.WorkingDirectory() {
 		return nil, errors.New("execution environment does not support restored working_dir")
@@ -1040,6 +1065,53 @@ func delegateRestoreWorkingDir(desc *jobstore.DelegateRestoreDescriptor) (string
 		return "", false
 	}
 	return workDir, true
+}
+
+// hasValidDelegateRestoreSandbox reports whether the descriptor's persisted
+// sandbox snapshot is usable: absent (an off delegate) is valid; a present
+// snapshot must parse to a known mode. It is a pure precondition mirroring
+// hasValidDelegateRestoreLocalEnvPolicy — a corrupt/hand-edited sandbox policy
+// makes the delegate not-resumable rather than resumed with a guessed box.
+func hasValidDelegateRestoreSandbox(desc *jobstore.DelegateRestoreDescriptor) bool {
+	if desc == nil || desc.Sandbox == nil {
+		return true
+	}
+	_, ok := sandboxPolicyFromSnapshot(desc.Sandbox)
+	return ok
+}
+
+// sandboxHostFacts returns the host facts used to RE-RESOLVE a resumed delegate's
+// sandbox policy: the injected test prober when present, else a fresh probe of the
+// live host. Re-probing (rather than trusting persisted resolved roots) is what
+// honors the immutable-across-restart guarantee — a config that loosened between
+// serf runs cannot widen a live delegate's confinement, and a host that can no
+// longer enforce the mode refuses instead of resuming unscoped.
+func (s *Session) sandboxHostFacts() sandbox.HostFacts {
+	if s != nil && s.cfg.testOnly.sandboxProber != nil {
+		return s.cfg.testOnly.sandboxProber.Probe()
+	}
+	return sandbox.RealProber{}.Probe()
+}
+
+// resolveRestoredDelegateSandbox re-resolves a delegate's persisted sandbox policy
+// INPUTS against its restored lane + freshly-probed host facts. It returns the
+// resolved policy (nil for an off delegate) and a not-resumable reason ("" on
+// success). Re-resolving from the inputs — never replaying stored roots — anchors
+// the box at the delegate's OWN lane and fails closed (notResumableSandboxUnsatisfiable)
+// when the mode is corrupt or the host can no longer enforce it.
+func (s *Session) resolveRestoredDelegateSandbox(desc *jobstore.DelegateRestoreDescriptor, workDir string) (*sandbox.ResolvedPolicy, string) {
+	if desc == nil || desc.Sandbox == nil {
+		return nil, ""
+	}
+	pol, ok := sandboxPolicyFromSnapshot(desc.Sandbox)
+	if !ok {
+		return nil, notResumableSandboxUnsatisfiable
+	}
+	rp, err := sandbox.Resolve(pol, s.sandboxHostFacts(), workDir)
+	if err != nil {
+		return nil, notResumableSandboxUnsatisfiable
+	}
+	return &rp, ""
 }
 
 func restoredDelegateAllowedTools(desc *jobstore.DelegateRestoreDescriptor) []string {
@@ -1800,6 +1872,7 @@ func (s *Session) delegateRestoreDescriptor(jobID, childID, task, transcriptRef 
 	desc.FrozenSkillBodies = append([]string(nil), prepared.frozenSkillBodies...)
 	desc.WorkingDir = prepared.workingDir
 	desc.LocalEnvPolicy = prepared.localEnvPolicy
+	desc.Sandbox = prepared.sandboxSnapshot
 	desc.Isolation = prepared.isolation
 	desc.ExplicitToolGrants = append([]string(nil), prepared.explicitToolGrants...)
 	if prepared.resultSchema != nil {
@@ -1845,6 +1918,7 @@ func (s *Session) resumedDelegateRestoreDescriptor(jobID, childID, transcriptRef
 		FrozenSkillBodies:   append([]string(nil), previous.FrozenSkillBodies...),
 		WorkingDir:          previous.WorkingDir,
 		LocalEnvPolicy:      previous.LocalEnvPolicy,
+		Sandbox:             cloneSandboxSnapshot(previous.Sandbox),
 		ResultSchema:        cloneDelegateResultSchema(previous.ResultSchema),
 		ExplicitToolGrants:  append([]string(nil), previous.ExplicitToolGrants...),
 		DelegationAllowance: previous.DelegationAllowance,

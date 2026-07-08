@@ -66,6 +66,35 @@ func TestWithWorkingDirectoryReRootsPolicy(t *testing.T) {
 	}
 }
 
+// TestWithWorkingDirectoryReRootDepthInheritance: the policy must survive TWO
+// re-root hops (a depth-2 grandchild delegate) and anchor at the deepest lane —
+// proving the retained inputs propagate through each re-root rather than a
+// re-root freezing after the first hop.
+func TestWithWorkingDirectoryReRootDepthInheritance(t *testing.T) {
+	laneA, laneB, home := twoLanes(t)
+	// A third lane sharing the same main repo for the grandchild.
+	base := filepath.Dir(laneA)
+	main := filepath.Join(base, "main")
+	laneC := filepath.Join(base, "c")
+	runGit(t, main, "worktree", "add", "-q", laneC, "-b", "fc")
+	laneC = evalSym(t, laneC)
+
+	env := NewLocalExecutionEnvironment(laneA)
+	env.Sandbox = resolvedAt(t, home, laneA, sandbox.ModeWorkspaceWrite)
+
+	child := env.WithWorkingDirectory(laneB)
+	grandchild := child.WithWorkingDirectory(laneC)
+	if err := grandchild.SandboxReRootError(); err != nil {
+		t.Fatalf("second re-root hop must succeed, got %v", err)
+	}
+	if grandchild.Sandbox == nil || grandchild.Sandbox.Git.WorktreeRoot != laneC {
+		t.Errorf("grandchild must be re-rooted at lane C %q, got %+v", laneC, grandchild.Sandbox)
+	}
+	if !slices.Contains(grandchild.Sandbox.FileTool.WriteRoots, laneC) || slices.Contains(grandchild.Sandbox.FileTool.WriteRoots, laneB) {
+		t.Errorf("grandchild write roots must be lane C only: %v", grandchild.Sandbox.FileTool.WriteRoots)
+	}
+}
+
 // TestWithWorkingDirectoryReRootsWrapper: the kernel wrapper's policy must also
 // re-anchor to the target lane, so a delegate's spawned processes are confined to
 // ITS worktree.
