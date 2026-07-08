@@ -84,6 +84,27 @@ func TestEnvFloorDropsExternalKubeconfigKeepsInternal(t *testing.T) {
 	}
 }
 
+// A colon-separated KUBECONFIG (kubectl merges every entry) must be dropped when
+// ANY absolute entry lands outside the granted roots: keeping the var would leave
+// the external cluster config merged into the sandboxed session's kubeconfig.
+func TestEnvFloorDropsKubeconfigListWithExternalEntry(t *testing.T) {
+	policy := ResolvedPolicy{
+		Mode: ModeWorkspaceWrite, CacheStrategy: CacheNone,
+		Git: GitLayout{WorktreeRoot: "/work/proj"},
+	}
+	// One in-worktree entry, one external entry: the external one must poison the
+	// whole var, so the floor drops it.
+	mixed := ApplyEnvFloor([]string{"KUBECONFIG=/work/proj/kc:/home/u/.kube/config"}, policy, "")
+	if _, ok := envValue(mixed, "KUBECONFIG"); ok {
+		t.Errorf("floor must drop a KUBECONFIG list containing an external entry: %v", mixed)
+	}
+	// All entries in-worktree: the var survives.
+	internal := ApplyEnvFloor([]string{"KUBECONFIG=/work/proj/a:/work/proj/b"}, policy, "")
+	if v, ok := envValue(internal, "KUBECONFIG"); !ok || v != "/work/proj/a:/work/proj/b" {
+		t.Errorf("floor must keep a KUBECONFIG list whose entries are all in-worktree: %v", internal)
+	}
+}
+
 func TestEnvFloorReturnsFreshSlice(t *testing.T) {
 	in := []string{"PATH=/usr/bin", "SSH_AUTH_SOCK=/x"}
 	before := slices.Clone(in)
