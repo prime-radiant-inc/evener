@@ -23,7 +23,7 @@ import (
 func newDelegateTestSession(t *testing.T, c *llm.Client) *Session {
 	t.Helper()
 	return newSession(t, withClient(c), withConfig(SessionConfig{
-		StateDir:         t.TempDir(),
+		StateDir:         packageFixtureTempDir(t, "delegate-state-*"),
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
@@ -33,7 +33,7 @@ func newDelegateTestSession(t *testing.T, c *llm.Client) *Session {
 func newDelegateRestorePreflightSession(t *testing.T, c *llm.Client) *Session {
 	t.Helper()
 	return newSession(t, withClient(c), withConfig(SessionConfig{
-		StateDir:         t.TempDir(),
+		StateDir:         packageFixtureTempDir(t, "delegate-state-*"),
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
 		testOnly:         testConfig{minimalSystemPrompt: true, noSyncJobStore: true},
@@ -450,7 +450,7 @@ func newPersistentTestSession(t *testing.T) *Session {
 	return newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
-		StateDir:         t.TempDir(),
+		StateDir:         packageFixtureTempDir(t, "delegate-state-*"),
 	}))
 }
 
