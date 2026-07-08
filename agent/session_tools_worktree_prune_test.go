@@ -146,8 +146,9 @@ func TestWorktreeList_NotInGitRepo(t *testing.T) {
 // TestWorktreeList_ListWorktreesErrorsWhenGitUnavailable covers step 1's
 // own `git worktree list --porcelain` error branch.
 func TestWorktreeList_ListWorktreesErrorsWhenGitUnavailable(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
-	restore := hideGitEntirely(t)
+	restore := hideGitInRepo(t, r.mainRoot)
 	defer restore()
 
 	_, err := r.listOp(t)
@@ -174,6 +175,7 @@ func TestWorktreePrune_NotInGitRepo(t *testing.T) {
 // --porcelain` call fails and worktreePrune must surface that error rather
 // than continuing to sweep 2/3.
 func TestWorktreePrune_Sweep1ErrorPropagatesWhenGitUnavailable(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
 		t.Fatalf("create: %v", err)
@@ -181,7 +183,7 @@ func TestWorktreePrune_Sweep1ErrorPropagatesWhenGitUnavailable(t *testing.T) {
 	if _, err := r.exitOp(t); err != nil {
 		t.Fatalf("exit: %v", err)
 	}
-	restore := hideGitEntirely(t)
+	restore := hideGitInRepo(t, r.mainRoot)
 	defer restore()
 
 	_, err := r.pruneOp(t)
@@ -417,6 +419,7 @@ func TestWorktreeList_SymlinkedWorktreeRootCanonicalization(t *testing.T) {
 // fails — reported as a skip, never as a hard error (spec §5 sweep 1: a
 // per-entry git-query failure is a soft skip).
 func TestWorktreePrune_Sweep1_RevParseHeadFails(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -427,7 +430,7 @@ func TestWorktreePrune_Sweep1_RevParseHeadFails(t *testing.T) {
 		t.Fatalf("exit: %v", err)
 	}
 
-	gitFailOnArgsShim(t, "-C", path, "rev-parse", "HEAD")
+	gitFailOnArgsRepoShim(t, r.mainRoot, "-C", path, "rev-parse", "HEAD")
 
 	out, err := r.pruneOp(t)
 	if err != nil {
@@ -451,6 +454,7 @@ func TestWorktreePrune_Sweep1_RevParseHeadFails(t *testing.T) {
 // unchanged), so disposableReason must call worktree.Merged, and the
 // for-each-ref call that makes fails.
 func TestWorktreePrune_Sweep1_MergeCheckFails(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -462,7 +466,7 @@ func TestWorktreePrune_Sweep1_MergeCheckFails(t *testing.T) {
 		t.Fatalf("exit: %v", err)
 	}
 
-	gitFailOnArgsShim(t, "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes/*/main")
+	gitFailOnArgsRepoShim(t, r.mainRoot, "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes/*/main")
 
 	out, err := r.pruneOp(t)
 	if err != nil {
@@ -483,6 +487,7 @@ func TestWorktreePrune_Sweep1_MergeCheckFails(t *testing.T) {
 // removes cleanly (a hard error would have aborted before this point), but
 // deleting its now-orphaned branch fails.
 func TestWorktreePrune_Sweep1_BranchDeleteFailsDuringCollect(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
 		t.Fatalf("create: %v", err)
@@ -491,7 +496,7 @@ func TestWorktreePrune_Sweep1_BranchDeleteFailsDuringCollect(t *testing.T) {
 		t.Fatalf("exit: %v", err)
 	}
 
-	gitFailOnArgsShim(t, "branch", "-D", "lane")
+	gitFailOnArgsRepoShim(t, r.mainRoot, "branch", "-D", "lane")
 
 	_, err := r.pruneOp(t)
 	if err == nil || !strings.Contains(err.Error(), "deleting branch") {
@@ -520,6 +525,7 @@ func TestWorktreePruneSweep2_NoMetaDirReturnsCleanly(t *testing.T) {
 // branch genuinely exists (branchExists passed) per the fixture, but the
 // verify call itself fails.
 func TestWorktreePrune_Sweep2_RevParseVerifyFails(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -535,7 +541,7 @@ func TestWorktreePrune_Sweep2_RevParseVerifyFails(t *testing.T) {
 	wtGit(t, r.mainRoot, "worktree", "remove", "--", path)
 	ageSidecar(t, r.metaDir(r.canonicalMain(t)), "lane", worktree.ReconcileGrace+time.Minute)
 
-	gitFailOnArgsShim(t, "rev-parse", "--verify", "refs/heads/lane")
+	gitFailOnArgsRepoShim(t, r.mainRoot, "rev-parse", "--verify", "refs/heads/lane")
 
 	out, err := r.pruneOp(t)
 	if err != nil {
@@ -1148,8 +1154,9 @@ func TestWorktreePrune_Sweep2_UnmergedResidueKept(t *testing.T) {
 // one such call themselves (both must still succeed for real); the shim
 // fails only the 3rd, which is sweep 3's own.
 func TestWorktreePrune_Sweep3_ListWorktreesErrorsOnThirdPorcelainCall(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
-	gitFailOnNthMatchingCallShim(t, "worktree list --porcelain", 3)
+	gitFailOnNthMatchingCallRepoShim(t, r.mainRoot, "worktree list --porcelain", 3)
 
 	_, err := r.pruneOp(t)
 	if err == nil || !strings.Contains(err.Error(), "listing worktrees") {
@@ -1161,6 +1168,7 @@ func TestWorktreePrune_Sweep3_ListWorktreesErrorsOnThirdPorcelainCall(t *testing
 // `git worktree prune` failure branch: every prunable entry is managed (so
 // sweep 3 decides to run), but the prune command itself fails.
 func TestWorktreePrune_Sweep3_GitWorktreePruneCommandFails(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "vanished-lane"})
 	if err != nil {
@@ -1174,7 +1182,7 @@ func TestWorktreePrune_Sweep3_GitWorktreePruneCommandFails(t *testing.T) {
 		t.Fatalf("remove dir out of band: %v", err)
 	}
 
-	gitFailOnArgsShim(t, "worktree", "prune")
+	gitFailOnArgsRepoShim(t, r.mainRoot, "worktree", "prune")
 
 	_, err = r.pruneOp(t)
 	if err == nil || !strings.Contains(err.Error(), "git worktree prune") {

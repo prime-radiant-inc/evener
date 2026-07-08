@@ -53,8 +53,9 @@ func TestWorktreeErrors_NotInGitRepo(t *testing.T) {
 // --- Row 2: name fails validation -> error before any git call ---
 
 func TestWorktreeErrors_NameFailsValidationBeforeAnyGitCall(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
-	logPath := gitArgvRecordingShim(t)
+	logPath := gitArgvRecordingRepoShim(t, r.mainRoot)
 
 	_, err := r.create(t, map[string]any{"name": "has space"})
 	if err == nil {
@@ -81,8 +82,9 @@ func TestWorktreeErrors_BadBaseRefBeforeWorktreeAdd(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			r := newWorktreeRepo(t)
-			logPath := gitArgvRecordingShim(t)
+			logPath := gitArgvRecordingRepoShim(t, r.mainRoot)
 
 			_, err := r.create(t, map[string]any{"name": c.name, "base_ref": c.ref})
 			if err == nil {
@@ -382,6 +384,7 @@ func TestWorktreeErrors_RemoveDirtyWithoutForceListsFilesEnvUnchanged(t *testing
 // branch-residue record ---
 
 func TestWorktreeErrors_RemoveDeleteBranchUnmergedRefusesEvidenceSidecarKept(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -401,7 +404,7 @@ func TestWorktreeErrors_RemoveDeleteBranchUnmergedRefusesEvidenceSidecarKept(t *
 	}
 	// main is never advanced: lane is never merged.
 
-	logPath := gitArgvRecordingShim(t)
+	logPath := gitArgvRecordingRepoShim(t, r.mainRoot)
 
 	out, err := r.removeOp(t, map[string]any{"name": "lane", "delete_branch": true})
 	if err != nil {
@@ -451,16 +454,13 @@ func TestWorktreeErrors_RemoveDeleteBranchUnmergedRefusesEvidenceSidecarKept(t *
 // preflight error naming the required version; no degraded mode ---
 
 func TestWorktreeErrors_GitTooOldPreflightNamesRequiredVersionNoDegradedMode(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 
-	shimDir := t.TempDir()
 	shim := "#!/bin/sh\n" +
 		"if [ \"$1\" = \"version\" ]; then echo \"git version 2.20.0\"; exit 0; fi\n" +
 		"echo \"shim: unexpected git $*\" >&2; exit 1\n"
-	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(shim), 0o755); err != nil {
-		t.Fatalf("write shim: %v", err)
-	}
-	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeRepoGitShim(t, r.mainRoot, shim)
 
 	_, err := r.create(t, map[string]any{"name": "x"})
 	if err == nil {

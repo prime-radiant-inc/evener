@@ -447,6 +447,7 @@ func TestWorktreeSwitch_ByPathSkipsMomentarilyAbsentPorcelainEntry(t *testing.T)
 // lockStateOf call makes a SECOND `worktree list --porcelain` call to
 // inspect the worktree being left — the shim fails only that second call.
 func TestWorktreeSwitch_ByPathLeaveCurrentErrorsOnSecondPorcelainCall(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	if _, err := r.create(t, map[string]any{"name": "A"}); err != nil {
 		t.Fatalf("create A: %v", err)
@@ -455,7 +456,7 @@ func TestWorktreeSwitch_ByPathLeaveCurrentErrorsOnSecondPorcelainCall(t *testing
 	siblingPath := filepath.Join(siblingRoot, "sibling")
 	wtGit(t, r.mainRoot, "worktree", "add", "-b", "sibling-branch", siblingPath, r.head)
 
-	gitFailOnNthMatchingCallShim(t, "worktree list --porcelain", 2)
+	gitFailOnNthMatchingCallRepoShim(t, r.mainRoot, "worktree list --porcelain", 2)
 
 	_, err := r.switchOp(t, map[string]any{"path": siblingPath})
 	if err == nil {
@@ -607,11 +608,12 @@ func TestWorktreeSwitch_ByPathInsideManagedDirGetsFullChoreographyLocked(t *test
 // of the callee itself): hiding git entirely fails the VERY FIRST git call
 // exit makes, so the error surfaces from this call site specifically.
 func TestWorktreeExit_LeaveCurrentErrorsWhenGitUnavailable(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
 		t.Fatalf("create lane: %v", err)
 	}
-	restore := hideGitEntirely(t)
+	restore := hideGitInRepo(t, r.mainRoot)
 	defer restore()
 
 	_, err := r.exitOp(t)
@@ -626,10 +628,11 @@ func TestWorktreeExit_LeaveCurrentErrorsWhenGitUnavailable(t *testing.T) {
 // must succeed, but relockRestoreTarget's later inspection of the restore
 // root (the 2nd) fails.
 func TestWorktreeExit_RelockLockStateErrorsOnSecondPorcelainCall(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	_, r2, _, _ := wtLaunchSession(t, r)
 
-	gitFailOnNthMatchingCallShim(t, "worktree list --porcelain", 2)
+	gitFailOnNthMatchingCallRepoShim(t, r.mainRoot, "worktree list --porcelain", 2)
 
 	_, err := r2.exitOp(t)
 	if err == nil || !strings.Contains(err.Error(), "inspecting the restore target lock") {

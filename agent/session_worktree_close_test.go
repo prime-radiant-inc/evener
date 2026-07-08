@@ -157,74 +157,6 @@ func chmodReadOnly(t *testing.T, dir string) {
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
 }
 
-// gitFailOnArgsShim installs a PATH-shimmed `git` that fails with a
-// synthetic error whenever its argv exactly matches failArgs, forwarding
-// every other invocation to the real git binary. Lets a test fail one
-// specific git subcommand deep inside a lifecycle op while every other call
-// on the same path (including earlier ones in the same call) still runs for
-// real.
-func gitFailOnArgsShim(t *testing.T, failArgs ...string) {
-	t.Helper()
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Skip("git not available")
-	}
-	shimDir := t.TempDir()
-	match := strings.Join(failArgs, " ")
-	script := "#!/bin/sh\n" +
-		"if [ \"$*\" = '" + match + "' ]; then echo 'shim: forced failure' >&2; exit 1; fi\n" +
-		"exec '" + realGit + "' \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(script), 0o755); err != nil {
-		t.Fatalf("write shim: %v", err)
-	}
-	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
-
-// gitFailOnNthMatchingCallShim installs a PATH-shimmed `git` that fails only
-// the n-th invocation (1-indexed) whose argv exactly matches matchArgs,
-// forwarding every other invocation — including earlier matches — to the
-// real git binary. Used when the identical git subcommand runs more than
-// once in a single code path and only a later call must fail.
-func gitFailOnNthMatchingCallShim(t *testing.T, matchArgs string, n int) {
-	t.Helper()
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Skip("git not available")
-	}
-	shimDir := t.TempDir()
-	counter := filepath.Join(shimDir, "count")
-	script := "#!/bin/sh\n" +
-		"if [ \"$*\" = '" + matchArgs + "' ]; then\n" +
-		"  c=$(cat '" + counter + "' 2>/dev/null || echo 0)\n" +
-		"  c=$((c+1))\n" +
-		"  echo \"$c\" > '" + counter + "'\n" +
-		"  if [ \"$c\" -ge " + strconv.Itoa(n) + " ]; then\n" +
-		"    echo 'shim: forced failure' >&2\n" +
-		"    exit 1\n" +
-		"  fi\n" +
-		"fi\n" +
-		"exec '" + realGit + "' \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(script), 0o755); err != nil {
-		t.Fatalf("write shim: %v", err)
-	}
-	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
-
-// hideGitEntirely removes git from PATH for the rest of the test (proving
-// there really is no git binary reachable, mirroring
-// TestWorktreeErrors_GitUnavailableLifecycleOpsErrorClearly), and returns a
-// restore func a caller must invoke before any post-call assertion that
-// itself shells out to git (e.g. through wtGit/laneLocked/branchExists).
-func hideGitEntirely(t *testing.T) (restore func()) {
-	t.Helper()
-	orig := os.Getenv("PATH")
-	t.Setenv("PATH", t.TempDir())
-	if _, err := exec.LookPath("git"); err == nil {
-		t.Skip("git still resolvable after PATH override; cannot prove the no-git path")
-	}
-	return func() { t.Setenv("PATH", orig) }
-}
-
 func writeRepoGitShim(t *testing.T, repoRoot, script string) func() {
 	t.Helper()
 	shimDir := filepath.Join(repoRoot, ".venv", "bin")
@@ -247,6 +179,27 @@ func gitFailOnArgsRepoShim(t *testing.T, repoRoot string, failArgs ...string) {
 	match := strings.Join(failArgs, " ")
 	script := "#!/bin/sh\n" +
 		"if [ \"$*\" = '" + match + "' ]; then echo 'shim: forced failure' >&2; exit 1; fi\n" +
+		"exec '" + realGit + "' \"$@\"\n"
+	writeRepoGitShim(t, repoRoot, script)
+}
+
+func gitFailOnNthMatchingCallRepoShim(t *testing.T, repoRoot, matchArgs string, n int) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available")
+	}
+	counter := filepath.Join(t.TempDir(), "count")
+	script := "#!/bin/sh\n" +
+		"if [ \"$*\" = '" + matchArgs + "' ]; then\n" +
+		"  c=$(cat '" + counter + "' 2>/dev/null || echo 0)\n" +
+		"  c=$((c+1))\n" +
+		"  echo \"$c\" > '" + counter + "'\n" +
+		"  if [ \"$c\" -ge " + strconv.Itoa(n) + " ]; then\n" +
+		"    echo 'shim: forced failure' >&2\n" +
+		"    exit 1\n" +
+		"  fi\n" +
+		"fi\n" +
 		"exec '" + realGit + "' \"$@\"\n"
 	writeRepoGitShim(t, repoRoot, script)
 }

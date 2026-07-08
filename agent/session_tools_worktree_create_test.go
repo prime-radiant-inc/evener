@@ -547,19 +547,16 @@ func TestWorktreeCreate_NonLocalEnvErrors(t *testing.T) {
 }
 
 func TestWorktreeCreate_TooOldGitPreflightErrors(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 
-	// PATH-shim a `git` that reports an ancient version. The main repo root
+	// Repo-shim a `git` that reports an ancient version. The main repo root
 	// resolves structurally (no git needed), so the shim is only hit by the
 	// version preflight, which must refuse before any lifecycle git call.
-	shimDir := t.TempDir()
 	shim := "#!/bin/sh\n" +
 		"if [ \"$1\" = \"version\" ]; then echo \"git version 2.20.0\"; exit 0; fi\n" +
 		"echo \"shim: unexpected git $*\" >&2; exit 1\n"
-	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(shim), 0o755); err != nil {
-		t.Fatalf("write shim: %v", err)
-	}
-	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeRepoGitShim(t, r.mainRoot, shim)
 
 	_, err := r.create(t, map[string]any{"name": "x"})
 	if err == nil || !strings.Contains(err.Error(), "too old") {

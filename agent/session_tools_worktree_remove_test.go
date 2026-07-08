@@ -52,24 +52,15 @@ func (r *wtRepo) secondSession(t *testing.T) *wtRepo {
 	return &wtRepo{s: s2, mainRoot: r.mainRoot, stateDir: r.stateDir, head: r.head}
 }
 
-// gitArgvRecordingShim installs a PATH-shimmed `git` that appends its full
-// argument line to a log file before forwarding to the real git, so a test
-// can assert exactly which git subcommands ran (spec §5 remove step 9: `-d`
-// must never be invoked). It sets PATH for the duration of the test via
-// t.Setenv, so it must be installed before the code under test runs.
-func gitArgvRecordingShim(t *testing.T) (logPath string) {
+func gitArgvRecordingRepoShim(t *testing.T, repoRoot string) (logPath string) {
 	t.Helper()
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Skip("git not available")
 	}
-	shimDir := t.TempDir()
-	logPath = filepath.Join(shimDir, "argv.log")
+	logPath = filepath.Join(t.TempDir(), "argv.log")
 	script := "#!/bin/sh\necho \"$*\" >> '" + logPath + "'\nexec '" + realGit + "' \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(script), 0o755); err != nil {
-		t.Fatalf("write shim: %v", err)
-	}
-	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeRepoGitShim(t, repoRoot, script)
 	return logPath
 }
 
@@ -90,6 +81,7 @@ func TestWorktreeRemove_NotInGitRepo(t *testing.T) {
 // TestWorktreeRemove_TargetLockInspectionErrorsWhenGitUnavailable covers
 // step 3's lockStateOf error branch for a non-current target.
 func TestWorktreeRemove_TargetLockInspectionErrorsWhenGitUnavailable(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
 		t.Fatalf("create: %v", err)
@@ -97,7 +89,7 @@ func TestWorktreeRemove_TargetLockInspectionErrorsWhenGitUnavailable(t *testing.
 	if _, err := r.exitOp(t); err != nil {
 		t.Fatalf("exit: %v", err)
 	}
-	restore := hideGitEntirely(t)
+	restore := hideGitInRepo(t, r.mainRoot)
 	defer restore()
 
 	_, err := r.removeOp(t, map[string]any{"name": "lane"})
@@ -176,6 +168,7 @@ func TestWorktreeRemove_SidecarGarbageJSONErrors(t *testing.T) {
 // status --porcelain=v1 --untracked-files=all` call CleanTree makes must
 // fail.
 func TestWorktreeRemove_DirtyCheckErrorsWhenStatusFails(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -186,7 +179,7 @@ func TestWorktreeRemove_DirtyCheckErrorsWhenStatusFails(t *testing.T) {
 		t.Fatalf("exit: %v", err)
 	}
 
-	gitFailOnArgsShim(t, "-C", path, "status", "--porcelain=v1", "--untracked-files=all")
+	gitFailOnArgsRepoShim(t, r.mainRoot, "-C", path, "status", "--porcelain=v1", "--untracked-files=all")
 
 	_, err = r.removeOp(t, map[string]any{"name": "lane"})
 	if err == nil || !strings.Contains(err.Error(), "checking for uncommitted changes") {
@@ -340,6 +333,7 @@ func TestWorktreeRemove_DeleteBranchMergedDeletesAfterGate(t *testing.T) {
 // "branch not found" BranchKeptReason rather than aborting the whole call
 // (the worktree is already removed by step 8 at this point).
 func TestWorktreeRemove_DeleteBranchTipLookupErrorsKeepsBranch(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
 		t.Fatalf("create: %v", err)
@@ -348,7 +342,7 @@ func TestWorktreeRemove_DeleteBranchTipLookupErrorsKeepsBranch(t *testing.T) {
 		t.Fatalf("exit: %v", err)
 	}
 
-	gitFailOnArgsShim(t, "rev-parse", "--verify", "refs/heads/lane")
+	gitFailOnArgsRepoShim(t, r.mainRoot, "rev-parse", "--verify", "refs/heads/lane")
 
 	out, err := r.removeOp(t, map[string]any{"name": "lane", "delete_branch": true})
 	if err != nil {
@@ -561,6 +555,7 @@ func TestWorktreeRemove_DeleteBranchUnmergedRefusesEvidenceSidecarKept(t *testin
 // --- 6: detached-HEAD-review fixture — serf's own gate refuses where `-d` would succeed ---
 
 func TestWorktreeRemove_DetachedHeadReviewRefusesNeverInvokesLowercaseD(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "feature"})
 	if err != nil {
@@ -587,7 +582,7 @@ func TestWorktreeRemove_DetachedHeadReviewRefusesNeverInvokesLowercaseD(t *testi
 	// consults HEAD) must refuse.
 	wtGit(t, r.mainRoot, "checkout", "--detach", featureTip)
 
-	logPath := gitArgvRecordingShim(t)
+	logPath := gitArgvRecordingRepoShim(t, r.mainRoot)
 
 	out, err := r.removeOp(t, map[string]any{"name": "feature", "delete_branch": true})
 	if err != nil {
@@ -747,10 +742,11 @@ func TestWorktreeRemove_RemoveCurrentUnlockBeforeRestoreFailsOnPermissionDenied(
 // lockStateOf call must run and fail — the 1st `worktree list --porcelain`
 // (step 3, inspecting the "work" target being removed) must still succeed.
 func TestWorktreeRemove_RemoveCurrentApplyRestoreLandRelockErrorsOnSecondPorcelainCall(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	_, r2, _, _ := wtLaunchSession(t, r)
 
-	gitFailOnNthMatchingCallShim(t, "worktree list --porcelain", 2)
+	gitFailOnNthMatchingCallRepoShim(t, r.mainRoot, "worktree list --porcelain", 2)
 
 	_, err := r2.removeOp(t, map[string]any{"name": "work"})
 	if err == nil || !strings.Contains(err.Error(), "inspecting the restore target lock") {
@@ -763,6 +759,7 @@ func TestWorktreeRemove_RemoveCurrentApplyRestoreLandRelockErrorsOnSecondPorcela
 // work, sidecar ownership, dirtiness) passes, but the removal command itself
 // fails.
 func TestWorktreeRemove_GitWorktreeRemoveCommandFails(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -773,7 +770,7 @@ func TestWorktreeRemove_GitWorktreeRemoveCommandFails(t *testing.T) {
 		t.Fatalf("exit: %v", err)
 	}
 
-	gitFailOnArgsShim(t, "worktree", "remove", "--", path)
+	gitFailOnArgsRepoShim(t, r.mainRoot, "worktree", "remove", "--", path)
 
 	_, err = r.removeOp(t, map[string]any{"name": "lane"})
 	if err == nil || !strings.Contains(err.Error(), "git worktree remove failed") {

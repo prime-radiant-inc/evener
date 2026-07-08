@@ -389,6 +389,7 @@ func TestResumeWorktreeReentry_NonLocalEnvNoOp(t *testing.T) {
 // (corrupted content, git unavailable for the binary fallback) — re-entry
 // notices and lands at the restore root instead of guessing.
 func TestResumeWorktreeReentry_UnresolvableMainRootNoticesAndRestoresRoot(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -398,7 +399,7 @@ func TestResumeWorktreeReentry_UnresolvableMainRootNoticesAndRestoresRoot(t *tes
 	if err := os.WriteFile(filepath.Join(path, ".git"), []byte("not a gitdir pointer\n"), 0o644); err != nil {
 		t.Fatalf("corrupt .git pointer: %v", err)
 	}
-	restore := hideGitEntirely(t)
+	restore := hideGitInRepo(t, r.mainRoot)
 
 	meta := schema.SessionMeta{WorktreePath: path, WorktreeManaged: true, WorktreeRestoreRoot: r.mainRoot}
 	r.s.resumeWorktreeReentry(meta)
@@ -418,13 +419,14 @@ func TestResumeWorktreeReentry_UnresolvableMainRootNoticesAndRestoresRoot(t *tes
 // the `worktree list --porcelain` verification call itself fails (git
 // unavailable) — re-entry notices and lands at the restore root.
 func TestResumeWorktreeReentry_WorktreeListFailsNoticesAndRestoresRoot(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
-	restore := hideGitEntirely(t)
+	restore := hideGitInRepo(t, r.mainRoot)
 
 	meta := schema.SessionMeta{WorktreePath: path, WorktreeManaged: true, WorktreeRestoreRoot: r.mainRoot}
 	r.s.resumeWorktreeReentry(meta)
@@ -477,13 +479,14 @@ func TestResumeWorktreeReentry_NotRegisteredAtPathNoticesAndRestoresRoot(t *test
 // lock check) fails — re-entry notices and lands at the restore root rather
 // than guessing the lock state.
 func TestResumeWorktreeReentry_ManagedLockStateUnverifiableNoticesAndRestoresRoot(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
-	gitFailOnNthMatchingCallShim(t, "worktree list --porcelain", 2)
+	gitFailOnNthMatchingCallRepoShim(t, r.mainRoot, "worktree list --porcelain", 2)
 
 	meta := schema.SessionMeta{WorktreePath: path, WorktreeManaged: true, WorktreeRestoreRoot: r.mainRoot}
 	r.s.resumeWorktreeReentry(meta)
@@ -593,6 +596,7 @@ func TestInitInside_UnresolvableMainRootNoOp(t *testing.T) {
 // occupancy check itself fails (git unavailable) — the session warns and
 // does NOT track occupancy, rather than guessing the lock state.
 func TestInitInside_LockStateUnverifiableWarns(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -606,7 +610,7 @@ func TestInitInside_LockStateUnverifiableWarns(t *testing.T) {
 	local := sess.env.(*execenv.LocalExecutionEnvironment)
 	sess.env = local.WithWorkingDirectory(path)
 	sess.mu.Unlock()
-	restore := hideGitEntirely(t)
+	restore := hideGitInRepo(t, r.mainRoot)
 
 	sess.applyInitInsideWorktreeLock(true)
 
