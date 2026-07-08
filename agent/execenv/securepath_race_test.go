@@ -194,3 +194,64 @@ func TestWriteVsSymlinkSwap(t *testing.T) {
 		t.Fatalf("a write escaped the writable root into the out-of-root dir: %v", ents)
 	}
 }
+
+// TestRenameVsSymlinkSwap drives the RENAME path (apply_patch's Move) against a
+// concurrent swap of the DESTINATION parent. "d" alternates atomically between a
+// real in-root directory and a symlink to an out-of-root directory while
+// rename(src -> d/moved.txt) loops. Every rename must either succeed (landing in
+// the real in-root dir) or be a typed denial; nothing may ever land outside.
+func TestRenameVsSymlinkSwap(t *testing.T) {
+	s, home, worktree := newSB(t, sandbox.ModeWorkspaceWrite)
+
+	outside := filepath.Join(home, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(worktree, "d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(worktree, "spare")); err != nil {
+		t.Fatal(err)
+	}
+
+	wfd, err := unix.Open(worktree, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(wfd)
+
+	src := filepath.Join(worktree, "src.txt")
+	dest := filepath.Join(worktree, "d", "moved.txt")
+
+	var stop atomic.Bool
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go swapper(t, wfd, "d", "spare", &stop, &wg)
+
+	for i := 0; i < 3000; i++ {
+		// rename consumes src on success; (re)create it each iteration.
+		if err := os.WriteFile(src, []byte("payload"), 0o644); err != nil {
+			stop.Store(true)
+			wg.Wait()
+			t.Fatal(err)
+		}
+		rerr := s.rename("apply_patch", src, dest)
+		if rerr == nil {
+			continue
+		}
+		var denied *sandbox.DeniedError
+		if !asDenied(rerr, &denied) {
+			stop.Store(true)
+			wg.Wait()
+			t.Fatalf("rename #%d failed with a non-denial error %T: %v", i, rerr, rerr)
+		}
+	}
+	stop.Store(true)
+	wg.Wait()
+
+	if ents, err := os.ReadDir(outside); err != nil {
+		t.Fatalf("read outside dir: %v", err)
+	} else if len(ents) != 0 {
+		t.Fatalf("a rename escaped the writable root into the out-of-root dir: %v", ents)
+	}
+}

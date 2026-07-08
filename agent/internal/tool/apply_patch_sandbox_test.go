@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
@@ -116,8 +117,37 @@ func TestApplyPatchSandbox_EscapesDenied(t *testing.T) {
 	}
 }
 
+// TestApplyPatchSandbox_DenylistReadDirect: an Update naming a DIRECT (non-symlink)
+// absolute path inside a denylisted directory is refused by the masked-path check
+// — the genuine "denylist read via apply_patch" case (a resolver that unmasked
+// ~/.ssh would fail this, unlike the symlink-refusal case below).
+func TestApplyPatchSandbox_DenylistReadDirect(t *testing.T) {
+	env, home, _ := sandboxedApplyEnv(t, sandbox.ModeWorkspaceWrite)
+	ssh := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(ssh, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(ssh, "id_rsa")
+	if err := os.WriteFile(key, []byte("KEY\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	patch := "*** Begin Patch\n*** Update File: " + key + "\n@@\n-KEY\n+PWNED\n*** End Patch\n"
+	_, err := ApplyPatch(env, patch)
+	var denied *sandbox.DeniedError
+	if !errors.As(err, &denied) {
+		t.Fatalf("Update of a denylisted path: want *sandbox.DeniedError, got %T: %v", err, err)
+	}
+	if !strings.Contains(denied.Reason, "masked") {
+		t.Errorf("want a MASKED denial (not e.g. symlink), got reason %q", denied.Reason)
+	}
+	if got, _ := os.ReadFile(key); string(got) != "KEY\n" {
+		t.Errorf("denylisted key was modified: %q", got)
+	}
+}
+
 // TestApplyPatchSandbox_DenylistViaSymlink: an Update that reads through a symlink
-// into a denylisted directory is refused (denylist read via apply_patch).
+// into a denylisted directory is refused (the symlink-refusal path, distinct from
+// the direct masked-path check above).
 func TestApplyPatchSandbox_DenylistViaSymlink(t *testing.T) {
 	env, home, worktree := sandboxedApplyEnv(t, sandbox.ModeWorkspaceWrite)
 	ssh := filepath.Join(home, ".ssh")
