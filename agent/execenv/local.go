@@ -710,20 +710,14 @@ func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter
 	dir := resolveGrepDir(path, e.RootDir)
 
 	if sfs := e.sandbox(); sfs != nil {
-		// Policy-check the base directory race-safely. NOTE (M2 scope): only the
-		// base is policy-checked here — the ripgrep subprocess itself is still
-		// UNCONFINED; its kernel wrapping (so it can't follow a symlink out) is M3
-		// (tool-surface inventory: "in-process base resolution; rg subprocess
-		// kernel-wrapped"). The native fallback below IS confined (denylist-skipping,
-		// symlink-refusing walk).
-		canonical, cerr := sfs.checkReadBase("grep", dir)
-		if cerr != nil {
-			return "", cerr
-		}
-		if _, lookErr := execLookPath("rg"); lookErr != nil {
-			return sfs.grepNative(pattern, canonical, globFilter, caseInsensitive, maxResults, outputMode)
-		}
-		dir = canonical
+		// Sandboxed sessions always use the denylist-aware, symlink-refusing native
+		// walk, EVEN when ripgrep is present. The rg subprocess is still UNCONFINED
+		// in M2 — only its base is policy-checked, so it would read masked/denylisted
+		// descendants under an allowed base (e.g. ~/.ssh when the base is $HOME in
+		// read-only). Its kernel wrapping is M3 defense-in-depth, not something to
+		// rely on here: correctness over speed for a sandboxed session. grepNative
+		// policy-checks the base itself and skips masked subtrees.
+		return sfs.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults, outputMode)
 	}
 
 	rg, err := execLookPath("rg")

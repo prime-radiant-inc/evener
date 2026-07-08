@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -606,6 +607,49 @@ func TestGrepNativeSkipsDenylist(t *testing.T) {
 	}
 	if !strings.Contains(out, "visible.txt") {
 		t.Errorf("native grep should still match non-denylisted files:\n%s", out)
+	}
+}
+
+// TestGrepSandboxedIgnoresRipgrep: a sandboxed grep must not surface matches from a
+// denylisted descendant under an allowed base, EVEN when ripgrep is present. The rg
+// subprocess is unconfined in M2 (its kernel wrapping is M3), so a sandboxed session
+// always uses the denylist-aware native walk. Contrast TestGrepNativeSkipsDenylist,
+// which forces rg absent; this proves the confinement holds with rg present too.
+func TestGrepSandboxedIgnoresRipgrep(t *testing.T) {
+	// Mutates the package execLookPath seam; not parallel.
+	realRg, err := exec.LookPath("rg")
+	if err != nil {
+		t.Skip("ripgrep not installed; cannot exercise the rg-present path")
+	}
+	// Force rg "present" at the real binary so a regression that runs the unconfined
+	// subprocess would actually read (and leak) the denylisted descendant.
+	orig := execLookPath
+	execLookPath = func(string) (string, error) { return realRg, nil }
+	t.Cleanup(func() { execLookPath = orig })
+
+	const vault = "vault" // non-hidden, denylisted descendant under home
+	env, home, worktree := sandboxedEnvWithDenylist(t, sandbox.ModeReadOnly, filepath.Join("~", vault))
+	vaultDir := filepath.Join(home, vault)
+	if err := os.MkdirAll(vaultDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const pat = "NEEDLE_TOKEN"
+	if err := os.WriteFile(filepath.Join(vaultDir, "secret.txt"), []byte(pat+" in vault\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "visible.txt"), []byte(pat+" in worktree\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := env.Grep(pat, home, "", false, 100, "content")
+	if err != nil {
+		t.Fatalf("sandboxed grep: %v", err)
+	}
+	if strings.Contains(out, "vault") {
+		t.Errorf("sandboxed grep leaked a denylisted match despite rg being present:\n%s", out)
+	}
+	if !strings.Contains(out, "visible.txt") {
+		t.Errorf("sandboxed grep should still match non-denylisted files:\n%s", out)
 	}
 }
 

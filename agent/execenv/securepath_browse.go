@@ -38,18 +38,6 @@ func (s *sandboxFS) checkWritable(tool, abs string) error {
 	return nil
 }
 
-// checkReadBase validates that base is a readable directory under the policy and
-// returns its canonical path. Used by grep's ripgrep arm, which then runs the
-// (still-unconfined in M2) rg subprocess against that base.
-func (s *sandboxFS) checkReadBase(tool, base string) (string, error) {
-	fd, canonical, err := s.openReadBaseFd(tool, base)
-	if err != nil {
-		return "", err
-	}
-	_ = unix.Close(fd)
-	return canonical, nil
-}
-
 // secureDirFS is an fs.FS rooted at a base directory fd that refuses symlink
 // traversal and cannot escape the base: every Open/ReadDir/Stat resolves beneath
 // baseFd with the same symlink-refusing primitive the file tools use. It backs
