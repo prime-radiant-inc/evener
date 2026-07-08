@@ -139,6 +139,7 @@ func TestWorktreeMeta_PathEnteredNonManagedTracksPathButNotManaged(t *testing.T)
 // --- resumeWorktreeReentry (spec §7) ---
 
 func TestResumeWorktreeReentry_ManagedUnlocked_LocksAndRootsEnv(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -174,6 +175,7 @@ func TestResumeWorktreeReentry_ManagedUnlocked_LocksAndRootsEnv(t *testing.T) {
 }
 
 func TestResumeWorktreeReentry_ManagedOwnMarkerStale_Adopts(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -289,6 +291,7 @@ func TestResumeWorktreeReentry_WorktreeGone_RestoresRootAndNotices(t *testing.T)
 // --- init-inside occupancy lock (spec §5) ---
 
 func TestInitInside_ManagedUnlocked_LocksAtSessionStart(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -316,6 +319,7 @@ func TestInitInside_ManagedUnlocked_LocksAtSessionStart(t *testing.T) {
 }
 
 func TestInitInside_ManagedForeign_WarnsAndContinuesCoOccupying(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -668,6 +672,7 @@ func TestInitInside_ForeignBareLockUnknownOwnerWarns(t *testing.T) {
 // spellings of one worktree must not hash to two different keys and escape
 // the occupancy lock's mutual exclusion.
 func TestInitInside_SymlinkSpelledCwdCanonicalizesStoredPathAndLockKey(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {

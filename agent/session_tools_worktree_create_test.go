@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -26,9 +27,26 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	for _, key := range []string{"GOCACHE", "GOPATH", "GOMODCACHE"} {
+		if out, err := exec.Command("go", "env", key).Output(); err == nil {
+			if v := strings.TrimSpace(string(out)); v != "" {
+				_ = os.Setenv(key, v)
+			}
+		}
+	}
+
+	testHome, err := os.MkdirTemp("", "serf-agent-home-*")
+	if err == nil {
+		_ = os.Setenv("HOME", testHome)
+		_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(testHome, ".config"))
+	}
+
 	code := m.Run()
 	if wtBaseRepoPath != "" {
 		_ = os.RemoveAll(wtBaseRepoPath)
+	}
+	if testHome != "" {
+		_ = os.RemoveAll(testHome)
 	}
 	os.Exit(code)
 }
@@ -53,16 +71,17 @@ func gitTestEnv() map[string]string {
 }
 
 func runWorktreeGit(dir string, args ...string) (string, error) {
-	env := execenv.NewLocalExecutionEnvironment(dir)
-	cmd := "git " + execenv.ShellEscapeArgs(args...)
-	res, err := env.ExecCommand(context.Background(), cmd, 30_000, dir, gitTestEnv())
-	if err != nil && res.ExitCode == 0 {
-		return "", err
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = os.Environ()
+	for k, v := range gitTestEnv() {
+		cmd.Env = append(cmd.Env, k+"="+v)
 	}
-	if res.ExitCode != 0 {
-		return "", fmt.Errorf("exit %d: %s%s", res.ExitCode, res.Stdout, res.Stderr)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
-	return res.Stdout, nil
+	return string(out), nil
 }
 
 func wtGit(t *testing.T, dir string, args ...string) string {
@@ -675,8 +694,11 @@ func TestWorktreeCreate_WorktreeParentMkdirFailsWhenPathComponentIsAFile(t *test
 // root, via a throwaway git invocation (separate from the tool's own check).
 func branchExistsInRepo(t *testing.T, root, name string) bool {
 	t.Helper()
-	env := execenv.NewLocalExecutionEnvironment(root)
-	cmd := "git " + execenv.ShellEscapeArgs("show-ref", "--verify", "--quiet", "refs/heads/"+name)
-	res, _ := env.ExecCommand(context.Background(), cmd, 10_000, root, nil)
-	return res.ExitCode == 0
+	cmd := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+name)
+	cmd.Dir = root
+	cmd.Env = os.Environ()
+	for k, v := range gitTestEnv() {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	return cmd.Run() == nil
 }

@@ -140,6 +140,7 @@ func TestWorktreeRemove_CrashResidueUnlockFailsOnPermissionDenied(t *testing.T) 
 // os.IsNotExist, so remove must surface it as a distinct "reading metadata"
 // error rather than the "no metadata sidecar" unmanaged-provenance message.
 func TestWorktreeRemove_SidecarGarbageJSONErrors(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {

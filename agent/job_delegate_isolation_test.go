@@ -33,7 +33,6 @@ type wtDlgRepo struct {
 
 func newWtDlgRepo(t *testing.T, c *llm.Client) *wtDlgRepo {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
 
 	root := t.TempDir()
 	root, err := filepath.EvalSymlinks(root)
@@ -106,6 +105,7 @@ func delegateTestClient(step func(req llm.Request) llm.Response) *llm.Client {
 // --- Spawn: managed worktree, sidecar, lock, child env rooting, restore descriptor ---
 
 func TestDelegateIsolation_SpawnCreatesLockedManagedWorktree(t *testing.T) {
+	t.Parallel()
 	c := delegateTestClient(func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
 	r := newWtDlgRepo(t, c)
 
@@ -155,6 +155,7 @@ func TestDelegateIsolation_SpawnCreatesLockedManagedWorktree(t *testing.T) {
 }
 
 func TestDelegateIsolation_ChildEnvRootedAtLaneAndRestoreDescriptorFields(t *testing.T) {
+	t.Parallel()
 	c := delegateTestClient(func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
 	r := newWtDlgRepo(t, c)
 
@@ -197,6 +198,7 @@ func TestDelegateIsolation_ChildEnvRootedAtLaneAndRestoreDescriptorFields(t *tes
 }
 
 func TestDelegateIsolation_NonLocalEnvironmentErrorsClearly(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	s := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 1}))
@@ -219,6 +221,7 @@ func TestDelegateIsolation_NonLocalEnvironmentErrorsClearly(t *testing.T) {
 }
 
 func TestDelegateIsolation_UnsupportedValueRejected(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	s := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 1}))
@@ -233,6 +236,7 @@ func TestDelegateIsolation_UnsupportedValueRejected(t *testing.T) {
 }
 
 func TestDelegateIsolation_SpawnFailureAfterWorktreeCreateRollsBackLane(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	r := newWtDlgRepo(t, c)
@@ -270,6 +274,7 @@ func TestDelegateIsolation_SpawnFailureAfterWorktreeCreateRollsBackLane(t *testi
 // file cannot be created (the jobs dir is made read-only). The lane must
 // still be rolled back.
 func TestDelegateIsolation_AttachFailureAfterWorktreeCreateRollsBackLane(t *testing.T) {
+	t.Parallel()
 	if os.Getuid() == 0 {
 		t.Skip("running as root: directory permissions do not restrict writes")
 	}
@@ -317,6 +322,7 @@ func TestDelegateIsolation_AttachFailureAfterWorktreeCreateRollsBackLane(t *test
 // --- manage_worktree deny: spawn, all-tools agent type, and after restore ---
 
 func TestDelegateIsolation_ManageWorktreeDeniedAtSpawn(t *testing.T) {
+	t.Parallel()
 	c := delegateTestClient(func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
 	r := newWtDlgRepo(t, c)
 
@@ -347,6 +353,7 @@ func TestDelegateIsolation_ManageWorktreeDeniedAtSpawn(t *testing.T) {
 }
 
 func TestDelegateIsolation_ManageWorktreeDeniedForAllToolsAgentType(t *testing.T) {
+	t.Parallel()
 	c := delegateTestClient(func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
 	r := newWtDlgRepo(t, c)
 	r.s.pluginAgents["dlg_alltools"] = plugin.Agent{Name: "dlg_alltools", AllTools: true, PluginName: "test"}
@@ -381,6 +388,7 @@ func TestDelegateIsolation_ManageWorktreeDeniedForAllToolsAgentType(t *testing.T
 }
 
 func TestDelegateIsolation_ManageWorktreeDeniedAfterRestoreAllTools(t *testing.T) {
+	t.Parallel()
 	var request llm.Request
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
@@ -458,6 +466,7 @@ func TestDelegateIsolation_ManageWorktreeDeniedAfterRestoreAllTools(t *testing.T
 // --- Second job in the same lane; per-job worktree report ---
 
 func TestDelegateIsolation_SecondJobViaDelegateSendRunsInSameLaneAndReportsWorktree(t *testing.T) {
+	t.Parallel()
 	c := delegateTestClient(func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
 	r := newWtDlgRepo(t, c)
 
@@ -521,6 +530,7 @@ func TestDelegateIsolation_SecondJobViaDelegateSendRunsInSameLaneAndReportsWorkt
 // Spec §9 step 3 requires that notification to carry path/branch/ahead/dirty
 // so the parent can merge the lane between jobs.
 func TestDelegateIsolation_BackgroundCompletionNotificationCarriesWorktreeReport(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
 	}}
@@ -564,6 +574,7 @@ func TestDelegateIsolation_BackgroundCompletionNotificationCarriesWorktreeReport
 // real git state, without needing a scripted tool call inside the fake LLM
 // turn.
 func TestDelegateIsolation_WorktreeReportDetectsAheadAndDirty(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	r := newWtDlgRepo(t, c)
@@ -612,6 +623,7 @@ func TestDelegateIsolation_WorktreeReportDetectsAheadAndDirty(t *testing.T) {
 // --- §7 revival re-lock: kept (unlocked) re-locks; foreign-locked refuses ---
 
 func TestDelegateIsolation_RevivalOnKeptUnlockedLaneReLocks(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
@@ -684,6 +696,7 @@ func TestDelegateIsolation_RevivalOnKeptUnlockedLaneReLocks(t *testing.T) {
 }
 
 func TestDelegateIsolation_RevivalOnForeignLockedLaneRefuses(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
@@ -750,6 +763,7 @@ func TestDelegateIsolation_RevivalOnForeignLockedLaneRefuses(t *testing.T) {
 // --- §4 step 2 / §9 Guards: parent switch into a live isolated lane is refused ---
 
 func TestDelegateIsolation_ParentSwitchIntoLiveLaneRefused(t *testing.T) {
+	t.Parallel()
 	c := delegateTestClient(func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
 	r := newWtDlgRepo(t, c)
 
