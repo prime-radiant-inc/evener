@@ -111,6 +111,7 @@ func autoUpgradeFixture(t *testing.T) (mgr *plugins.Manager, pluginRepo string, 
 // one tick (no ticker, no goroutine) must refresh the marketplace, upgrade the
 // autoUpgrade-enabled plugin to the new sha, and report it as updated.
 func TestRunPluginAutoUpgradeTick_UpgradesAutoUpgradeEnabledPlugin(t *testing.T) {
+	t.Parallel()
 	mgr, pluginRepo, firstInstallPath := autoUpgradeFixture(t)
 
 	hubTestAdvanceGitRepo(t, pluginRepo, "extra.txt", "v2")
@@ -143,6 +144,7 @@ func TestRunPluginAutoUpgradeTick_UpgradesAutoUpgradeEnabledPlugin(t *testing.T)
 // nothing new upstream reports zero updates (the daemon must not broadcast
 // serf/plugin/updated on a no-op check).
 func TestRunPluginAutoUpgradeTick_NoOpWhenUpstreamUnchanged(t *testing.T) {
+	t.Parallel()
 	mgr, _, _ := autoUpgradeFixture(t)
 
 	var stderr bytes.Buffer
@@ -174,6 +176,7 @@ func TestRunPluginAutoUpgradeTick_NoMarketplacesIsNoOp(t *testing.T) {
 // transport) against an isolated Manager, verifying the RPC wiring runs the
 // same tick logic and reports the upgraded ref.
 func TestRegisterPluginAutoUpgradeHandlers_CheckNowRunsOneTick(t *testing.T) {
+	t.Parallel()
 	mgr, pluginRepo, _ := autoUpgradeFixture(t)
 	hubTestAdvanceGitRepo(t, pluginRepo, "extra.txt", "v2")
 

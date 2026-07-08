@@ -2952,6 +2952,7 @@ func TestHubRPCModelListDoesNotUseLocalDaemonWhenLaunchContractHasOnlyDiagnostic
 }
 
 func TestHubRPCModelListReportsSerfLaunchDiagnostics(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "fake-serf")
 	script := `#!/bin/sh
@@ -5481,6 +5482,7 @@ func newHubRPCTestServer(t *testing.T, cfg hubcore.WebConfig) *httptest.Server {
 // guards the constructor decomposition (registerThreadHandlers / Auth /
 // Instance / Launch / Misc) against accidentally dropping a registration.
 func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "providers.toml")
 	provCfg := providercfg.Config{

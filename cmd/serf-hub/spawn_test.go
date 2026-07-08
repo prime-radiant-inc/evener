@@ -379,6 +379,7 @@ func TestWaitForRendezvous_IgnoresStaleEntryFromBeforeStart(t *testing.T) {
 }
 
 func TestSpawnDaemonReturnsWhenProcessExitsBeforeRendezvous(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "fake-serf")
 	script := `#!/bin/sh
@@ -592,6 +593,7 @@ func argValue(args []string, flag string) string {
 }
 
 func TestHubSpawnerListsModelsFromSerfLaunchContract(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	runDir := filepath.Join(dir, "run")
 	bin := filepath.Join(dir, "fake-serf")
@@ -761,6 +763,7 @@ func TestProviderCredentialPreflightAcceptsOllama(t *testing.T) {
 }
 
 func TestValidateSerfLaunchContractRejectsUnsupportedProvider(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "fake-serf")
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho 'unknown provider: openrouter' >&2\nexit 2\n"), 0o755); err != nil {
@@ -782,6 +785,7 @@ func TestValidateSerfLaunchContractMissingBinaryReturnsStructuredDiagnostic(t *t
 }
 
 func TestValidateSerfLaunchContractRedactsSecretsFromDiagnostics(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "fake-serf")
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho \"$OPENROUTER_API_KEY\" >&2\nexit 2\n"), 0o755); err != nil {
