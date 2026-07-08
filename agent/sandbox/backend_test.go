@@ -5,20 +5,26 @@ import (
 	"testing"
 )
 
-func TestNewWrapperRejectsNonBwrapBackend(t *testing.T) {
-	for _, b := range []Backend{BackendNone, BackendSeatbelt} {
-		if _, err := NewWrapper(ResolvedPolicy{Backend: b}, "/usr/bin/bwrap", "/tmp/s"); err == nil {
-			t.Errorf("backend %v: expected NewWrapper to refuse a non-bwrap backend", b)
-		}
+func TestNewWrapperRejectsNonEnforcingBackend(t *testing.T) {
+	if _, err := NewWrapper(ResolvedPolicy{Backend: BackendNone}, "/usr/bin/bwrap", "/tmp/s"); err == nil {
+		t.Error("expected NewWrapper to refuse the non-enforcing BackendNone")
 	}
 }
 
-func TestNewWrapperRejectsRelativeBwrapPath(t *testing.T) {
-	if _, err := NewWrapper(ResolvedPolicy{Backend: BackendBwrap}, "bwrap", "/tmp/s"); err == nil {
-		t.Fatal("expected NewWrapper to refuse a cwd-relative bwrap path (PATH-injection defense)")
+func TestNewWrapperAcceptsSeatbeltBackend(t *testing.T) {
+	if _, err := NewWrapper(ResolvedPolicy{Backend: BackendSeatbelt}, "/usr/bin/sandbox-exec", "/tmp/s"); err != nil {
+		t.Errorf("NewWrapper must accept the seatbelt backend: %v", err)
 	}
-	if _, err := NewWrapper(ResolvedPolicy{Backend: BackendBwrap}, "./bin/bwrap", "/tmp/s"); err == nil {
-		t.Fatal("expected NewWrapper to refuse a cwd-relative bwrap path (PATH-injection defense)")
+}
+
+func TestNewWrapperRejectsRelativeBinaryPath(t *testing.T) {
+	for _, b := range []Backend{BackendBwrap, BackendSeatbelt} {
+		if _, err := NewWrapper(ResolvedPolicy{Backend: b}, "bwrap", "/tmp/s"); err == nil {
+			t.Fatalf("backend %v: expected NewWrapper to refuse a cwd-relative binary path (PATH-injection defense)", b)
+		}
+		if _, err := NewWrapper(ResolvedPolicy{Backend: b}, "./bin/sandbox-exec", "/tmp/s"); err == nil {
+			t.Fatalf("backend %v: expected NewWrapper to refuse a cwd-relative binary path (PATH-injection defense)", b)
+		}
 	}
 }
 
