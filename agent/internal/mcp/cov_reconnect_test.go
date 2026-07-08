@@ -132,6 +132,7 @@ func TestReconnectDroppedConnectionClassification(t *testing.T) {
 	}{
 		{name: "sdk sentinel", err: mcpsdk.ErrConnectionClosed, want: true},
 		{name: "wrapped closed pipe", err: fmt.Errorf("calling %q: %w", "tools/call", io.ErrClosedPipe), want: true},
+		{name: "wrapped EOF", err: fmt.Errorf("calling %q: %w", "tools/call", io.EOF), want: true},
 		{name: "context cancellation", err: context.Canceled, want: false},
 		{name: "application error", err: errors.New("boom: rpc-level failure"), want: false},
 	}
