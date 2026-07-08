@@ -77,6 +77,38 @@ func TestMCPStdioServerConfined(t *testing.T) {
 	}
 }
 
+// A confined stdio MCP server must not inherit serf's own ambient credentials
+// (its provider API key et al.) from the parent environment, but a secret the
+// server config sets explicitly is deliberate configuration and must survive.
+func TestMCPStdioServerScrubsAmbientSecrets(t *testing.T) {
+	t.Setenv("SERF_AMBIENT_API_KEY", "sk-ambient-leak")
+	cfg := mcpconfig.ServerConfig{
+		Name:    "s",
+		Type:    "stdio",
+		Command: "my-mcp-server",
+		Env:     map[string]string{"MCP_SERVER_TOKEN": "configured-keep", "EXTRA": "1"},
+	}
+	dial := productionDial(cfg, testWrapper(t))
+	tr, err := dial(context.Background())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	ct := tr.(*mcpsdk.CommandTransport)
+	joined := strings.Join(ct.Command.Env, "\n")
+
+	if strings.Contains(joined, "SERF_AMBIENT_API_KEY=") {
+		t.Errorf("an ambient API key must be scrubbed from a confined MCP server: %v", ct.Command.Env)
+	}
+	// A cfg.Env var whose NAME looks secret is explicit configuration, not an
+	// ambient leak, so it must survive the scrub.
+	if !slices.Contains(ct.Command.Env, "MCP_SERVER_TOKEN=configured-keep") {
+		t.Errorf("a configured cfg.Env secret must survive the scrub: %v", ct.Command.Env)
+	}
+	if !slices.Contains(ct.Command.Env, "EXTRA=1") {
+		t.Errorf("ordinary configured MCP env must survive: %v", ct.Command.Env)
+	}
+}
+
 func testWrapperNetOff(t *testing.T) *sandbox.Wrapper {
 	t.Helper()
 	home := t.TempDir()
