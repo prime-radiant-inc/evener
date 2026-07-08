@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strings"
 )
 
 // Backend names the concrete enforcement mechanism the resolver chose for a
@@ -16,8 +17,11 @@ const (
 	BackendNone Backend = iota
 	// BackendBwrap: Linux bubblewrap. Serves the full mode matrix and net=off.
 	BackendBwrap
-	// BackendLandlock: Linux Landlock (allowlist-only). Serves exactly restricted
-	// in a linked worktree with net=on.
+	// BackendLandlock: Linux Landlock (allowlist-only). Still probed and reported
+	// via HostFacts.LandlockAvailable(), but it is never SELECTED: it cannot
+	// subtract paths within a granted root (e.g. a worktree's in-worktree .git
+	// pointer), so it cannot enforce our contract and always refuses in favor of
+	// bwrap. Kept as an enum value for reporting and a possible future revisit.
 	BackendLandlock
 	// BackendSeatbelt: macOS sandbox-exec. Deny-capable — serves the full mode
 	// matrix; cache is always session-private (no overlay on macOS).
@@ -180,6 +184,11 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		return ResolvedPolicy{Mode: ModeOff, Network: true, Backend: BackendNone}, nil
 	}
 
+	// Network defaults ON when sandboxed: a nil policy.Network is the unset default,
+	// a non-nil value an explicit choice. Collapse to a concrete bool exactly once
+	// here so the zero value can never silently disable egress.
+	netOn := policy.Network == nil || *policy.Network
+
 	// A sandboxed session needs an absolute home to anchor the credential denylist.
 	// Without one (e.g. the home-directory env var is unset in a bare service),
 	// joining home-relative secrets yields RELATIVE paths the enforcement layers
@@ -188,8 +197,39 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 	if !filepath.IsAbs(host.Home) {
 		return ResolvedPolicy{}, &RefusalError{
 			Mode:   policy.Mode,
-			Net:    policy.Network,
+			Net:    netOn,
 			Reason: "cannot anchor the credential denylist: the session's home directory is not an absolute path; sandboxing without a resolvable home would silently unmask credential directories",
+		}
+	}
+
+	// A relative cwd would flow through into relative grant roots, but
+	// ResolvedPolicy documents absolute roots and the enforcement layers compare
+	// absolute paths — a relative root would silently never match. Absolutize
+	// fail-closed (filepath.Abs only errors if the process working directory is
+	// unresolvable).
+	absCwd, err := filepath.Abs(cwd)
+	if err != nil {
+		return ResolvedPolicy{}, &RefusalError{
+			Mode:   policy.Mode,
+			Net:    netOn,
+			Reason: fmt.Sprintf("could not resolve an absolute path for the session working directory %q: %v", cwd, err),
+		}
+	}
+	cwd = absCwd
+
+	// Extra roots are folded verbatim into the resolved grants, so a relative
+	// entry would emit a relative grant root (same non-matching hazard as a
+	// relative cwd). Refuse rather than resolve a leaky policy.
+	for _, r := range slices.Concat(policy.ExtraReadRoots, policy.ExtraWritableRoots) {
+		if strings.TrimSpace(r) == "" {
+			continue
+		}
+		if !filepath.IsAbs(r) {
+			return ResolvedPolicy{}, &RefusalError{
+				Mode:   policy.Mode,
+				Net:    netOn,
+				Reason: fmt.Sprintf("extra sandbox root %q must be an absolute path", r),
+			}
 		}
 	}
 
@@ -197,12 +237,12 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 	if err != nil {
 		return ResolvedPolicy{}, &RefusalError{
 			Mode:   policy.Mode,
-			Net:    policy.Network,
+			Net:    netOn,
 			Reason: fmt.Sprintf("could not resolve the git layout of %s: %v", cwd, err),
 		}
 	}
 
-	backend, refusal := chooseBackend(policy, host, layout.Kind)
+	backend, refusal := chooseBackend(policy, host, layout.Kind, netOn)
 	if refusal != nil {
 		return ResolvedPolicy{}, refusal
 	}
@@ -212,7 +252,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 
 	rp := ResolvedPolicy{
 		Mode:          policy.Mode,
-		Network:       policy.Network,
+		Network:       netOn,
 		Backend:       backend,
 		CacheStrategy: cacheStrategyFor(policy.Mode, backend, host),
 		SessionTmp:    true,
@@ -232,23 +272,28 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 // chooseBackend applies the fail-closed floor: it returns the backend that will
 // enforce this (mode, net) on this host, or a *RefusalError naming the backend
 // that would.
-func chooseBackend(policy SandboxPolicy, host HostFacts, kind WorkspaceKind) (Backend, *RefusalError) {
+func chooseBackend(policy SandboxPolicy, host HostFacts, kind WorkspaceKind, net bool) (Backend, *RefusalError) {
 	switch host.OS {
 	case "linux":
 		switch {
 		case host.BwrapCapable:
 			return BackendBwrap, nil // full matrix + net on/off
 		case host.LandlockAvailable():
-			if policy.Mode == ModeRestricted && policy.Network && kind == LinkedWorktree {
-				return BackendLandlock, nil
-			}
+			// Landlock is allowlist-only: it can grant a root but cannot SUBTRACT a
+			// path within it. A linked worktree's in-worktree ".git" pointer file
+			// sits inside the granted worktree root and must be write-denied, but
+			// Landlock cannot carve it out — the model could repoint gitdir into the
+			// writable worktree, plant hooks, and a later unsandboxed git fires them.
+			// So Landlock cannot fully enforce our contract in ANY mode and always
+			// refuses; a Landlock-only host gets only --sandbox off. (A future
+			// milestone could revisit with a per-entry grant model.)
 			return 0, &RefusalError{
-				Mode: policy.Mode, Net: policy.Network, RequiredBackend: "bwrap",
-				Reason: landlockRefusalReason(policy, kind),
+				Mode: policy.Mode, Net: net, RequiredBackend: "bwrap",
+				Reason: landlockRefusalReason(policy, kind, net),
 			}
 		default:
 			return 0, &RefusalError{
-				Mode: policy.Mode, Net: policy.Network, RequiredBackend: "",
+				Mode: policy.Mode, Net: net, RequiredBackend: "",
 				Reason: "no sandbox backend is available (neither bubblewrap nor Landlock); only --sandbox off is supported on this host",
 			}
 		}
@@ -257,27 +302,32 @@ func chooseBackend(policy SandboxPolicy, host HostFacts, kind WorkspaceKind) (Ba
 			return BackendSeatbelt, nil // deny-capable: full matrix + net on/off
 		}
 		return 0, &RefusalError{
-			Mode: policy.Mode, Net: policy.Network, RequiredBackend: "sandbox-exec",
+			Mode: policy.Mode, Net: net, RequiredBackend: "sandbox-exec",
 			Reason: "macOS sandboxing requires /usr/bin/sandbox-exec, which was not found",
 		}
 	default:
 		return 0, &RefusalError{
-			Mode: policy.Mode, Net: policy.Network, RequiredBackend: "",
+			Mode: policy.Mode, Net: net, RequiredBackend: "",
 			Reason: fmt.Sprintf("sandboxing is not supported on %s; only --sandbox off is available", host.OS),
 		}
 	}
 }
 
 // landlockRefusalReason explains precisely why the Landlock-only host cannot
-// serve this request (Landlock serves exactly restricted, net=on, linked worktree).
-func landlockRefusalReason(policy SandboxPolicy, kind WorkspaceKind) string {
+// serve this request. Landlock is allowlist-only and can serve NO sandboxed mode
+// (see chooseBackend): net=off needs UDP/DNS isolation, the subtractive modes
+// need a denylist, and even restricted in a linked worktree needs the in-worktree
+// .git pointer carved out of an allowlisted root — none of which Landlock can do.
+func landlockRefusalReason(policy SandboxPolicy, kind WorkspaceKind, net bool) string {
 	switch {
-	case !policy.Network:
+	case !net:
 		return "network isolation (--sandbox-net off) requires bubblewrap; this host has only Landlock, which cannot isolate UDP/DNS"
 	case policy.Mode != ModeRestricted:
-		return fmt.Sprintf("--sandbox %s requires bubblewrap; this host has only Landlock, which serves only --sandbox restricted (allowlist-only, cannot express a subtractive denylist)", policy.Mode)
-	default: // restricted but not a linked worktree
-		return "--sandbox restricted requires bubblewrap here; this host has only Landlock, which can serve restricted only in a linked git worktree (a main checkout's .git needs subtractive protection Landlock cannot express)"
+		return fmt.Sprintf("--sandbox %s requires bubblewrap; this host has only Landlock, which is allowlist-only and cannot express a subtractive denylist", policy.Mode)
+	case kind == LinkedWorktree:
+		return "--sandbox restricted requires bubblewrap; Landlock is allowlist-only and cannot protect the in-worktree .git pointer inside an allowlisted worktree root (a future milestone could revisit with a per-entry grant model)"
+	default: // restricted on a main checkout (or non-git cwd)
+		return "--sandbox restricted requires bubblewrap here; this host has only Landlock, which cannot subtract a main checkout's .git config/hook surfaces from an allowlisted root"
 	}
 }
 

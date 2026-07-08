@@ -132,9 +132,13 @@ type SandboxPolicy struct {
 	// Mode is the enforcement mode. The zero value (ModeOff) is today's behavior.
 	Mode Mode
 
-	// Network reports whether egress is allowed (--sandbox-net on). Defaults on
-	// when sandboxed; only meaningful for a non-off Mode.
-	Network bool
+	// Network reports whether egress is allowed (--sandbox-net on). It is a
+	// tri-state: nil means the unset default (ON when sandboxed), a non-nil value
+	// is an explicit choice. A plain bool zero value would silently mean OFF, so a
+	// SandboxPolicy{Mode: ModeRestricted} would disable network by accident;
+	// Resolve collapses nil to on. Only meaningful for a non-off Mode. Mirrors
+	// SessionConfig.SandboxNet, which uses the same nil-means-default convention.
+	Network *bool
 
 	// DenylistAdd extends the default masked set. Entries may be absolute
 	// ("/opt/secret"), home-relative ("~/.foo"), or bare-relative (".foo",

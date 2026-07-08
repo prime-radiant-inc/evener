@@ -71,7 +71,11 @@ func TestContractCoverage(t *testing.T) {
 		backends[c.WantBackend] = true
 	}
 
-	for _, b := range []Backend{BackendNone, BackendBwrap, BackendLandlock, BackendSeatbelt} {
+	// BackendLandlock is intentionally NOT required among resolving cases: Landlock
+	// is allowlist-only and cannot enforce our contract, so it never resolves — it
+	// is always a refusal naming bwrap (finding #2). It remains a probed/reported
+	// enum value; only selection changed.
+	for _, b := range []Backend{BackendNone, BackendBwrap, BackendSeatbelt} {
 		if !backends[b] {
 			t.Errorf("golden table has no resolving case with backend %v", b)
 		}
