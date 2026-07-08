@@ -243,6 +243,9 @@ func TestSwapEnvAndRefresh_NoGitForkWhileLocked(t *testing.T) {
 // locked cache rebuild on the same s.cachedToolDefs/s.cachedSystemPrompt
 // fields. Run under -race, this hammers both concurrently.
 func TestSession_RegisterTool_NoRaceWithConcurrentEnvSwap(t *testing.T) {
+	if !raceDetectorEnabled {
+		t.Skip("race-detector stress test; run with -race")
+	}
 	t.Parallel()
 	sess := newSession(t)
 

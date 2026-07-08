@@ -20,6 +20,9 @@ import (
 // The primary correctness signal is the -race detector and test completion
 // (no panic, no deadlock); see the post-hammer drain assertion for details.
 func TestGoal_NoRaceSetClearVsGate(t *testing.T) {
+	if !raceDetectorEnabled {
+		t.Skip("race-detector stress test; run with -race")
+	}
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
