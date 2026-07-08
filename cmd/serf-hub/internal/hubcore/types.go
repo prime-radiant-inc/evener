@@ -74,6 +74,9 @@ type ReplayToolResult struct {
 	Content    any             `json:"content,omitempty"`
 	IsError    bool            `json:"is_error,omitempty"`
 	ToolState  json.RawMessage `json:"tool_state,omitempty"`
+
+	ImageData      []byte `json:"image_data,omitempty"`
+	ImageMediaType string `json:"image_media_type,omitempty"`
 }
 
 // Per-request limits for image attachments. Match the browser-side cap so

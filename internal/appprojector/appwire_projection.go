@@ -403,15 +403,16 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			raw = skillActivationRaw(p.skillCandidate.activationName)
 		}
 		item := appwire.ThreadItem{
-			Type:     "commandExecution",
-			ID:       p.toolItemID(data.CallID),
-			TurnID:   p.activeTurnID,
-			ToolName: data.ToolName,
-			CallID:   data.CallID,
-			Output:   data.Output,
-			Error:    data.Error,
-			Status:   "completed",
-			Raw:      raw,
+			Type:         "commandExecution",
+			ID:           p.toolItemID(data.CallID),
+			TurnID:       p.activeTurnID,
+			ToolName:     data.ToolName,
+			CallID:       data.CallID,
+			Output:       data.Output,
+			Error:        data.Error,
+			OutputImages: projectOutputImages(data.OutputImages),
+			Status:       "completed",
+			Raw:          raw,
 		}
 		argsJSON := p.toolArgsByKey[data.CallID]
 		if data.ToolName == "use_skill" && data.Error == "" {
@@ -890,6 +891,28 @@ func projectUserInputImages(images []events.UserInputImage) []appwire.InputItem 
 			MediaType: img.MediaType,
 			Data:      append([]byte(nil), img.Data...),
 			Name:      img.Name,
+		})
+	}
+	return out
+}
+
+func projectOutputImages(images []events.OutputImage) []appwire.OutputImage {
+	if len(images) == 0 {
+		return nil
+	}
+	out := make([]appwire.OutputImage, 0, len(images))
+	for _, img := range images {
+		if img.URL == "" && img.SHA == "" {
+			continue
+		}
+		out = append(out, appwire.OutputImage{
+			Source:    img.Source,
+			Name:      img.Name,
+			MediaType: img.MediaType,
+			Size:      img.Size,
+			URL:       img.URL,
+			SHA:       img.SHA,
+			Path:      img.Path,
 		})
 	}
 	return out

@@ -136,7 +136,7 @@ func TestTurnsFromFileStampsStartedAtFromEntryTimestamp(t *testing.T) {
 		if err := json.Unmarshal(raw, &entry); err != nil {
 			return nil
 		}
-		return ProjectTurn(turnID, turnIndex, entry.Turn, map[string]string{}, nil)
+		return ProjectTurn(turnID, turnIndex, entry.Turn, map[string]string{}, nil, nil)
 	}
 	turns := TurnsFromFile(path, 128<<20, project)
 	if len(turns) != 1 {
@@ -166,7 +166,7 @@ func TestProjectTurnMapsToolCallsAndResults(t *testing.T) {
 				Arguments: []byte(`{"path":"README.md","purpose":"inspect docs"}`),
 			},
 		}}},
-	}, toolNames, nil)
+	}, toolNames, nil, nil)
 
 	if len(start) != 1 || start[0].Type != "commandExecution" || start[0].Description != "inspect docs" {
 		t.Fatalf("tool start=%+v", start)
@@ -181,13 +181,50 @@ func TestProjectTurnMapsToolCallsAndResults(t *testing.T) {
 				ToolState:  json.RawMessage(`{"job_id":"job_1"}`),
 			},
 		}}},
-	}, toolNames, nil)
+	}, toolNames, nil, nil)
 
 	if len(done) != 1 || done[0].ToolName != "read_file" || done[0].Output != "ok" {
 		t.Fatalf("tool result=%+v", done)
 	}
 	if string(done[0].Raw) != `{"job_id":"job_1"}` {
 		t.Fatalf("tool result Raw = %s, want tool_state", done[0].Raw)
+	}
+}
+
+func TestProjectTurnProjectsToolResultOutputImages(t *testing.T) {
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	turn := schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID:     "call_img",
+				Name:           "screenshot",
+				Content:        "captured image",
+				ImageData:      png,
+				ImageMediaType: "image/png",
+			},
+		}}},
+	}
+
+	items := ProjectTurn("turn_1", 1, turn, map[string]string{}, nil, func(result *llm.ToolResultData) []appwire.OutputImage {
+		if result == nil || len(result.ImageData) == 0 {
+			return nil
+		}
+		return []appwire.OutputImage{{
+			Source:    "tool-result",
+			Name:      result.Name,
+			MediaType: result.ImageMediaType,
+			Size:      int64(len(result.ImageData)),
+			SHA:       "sha-img",
+			URL:       "/s/01IMG/images/sha-img",
+		}}
+	})
+	if len(items) != 1 || items[0].Type != "commandExecution" {
+		t.Fatalf("items=%+v", items)
+	}
+	if len(items[0].OutputImages) != 1 || items[0].OutputImages[0].SHA != "sha-img" || items[0].OutputImages[0].URL != "/s/01IMG/images/sha-img" {
+		t.Fatalf("OutputImages=%+v", items[0].OutputImages)
 	}
 }
 
@@ -205,7 +242,7 @@ func TestProjectTurnPreservesDelegateToolStateForColdReconciliation(t *testing.T
 		}}},
 	}
 
-	items := ProjectTurn("turn_1", 1, turn, map[string]string{"call_delegate": "delegate"}, nil)
+	items := ProjectTurn("turn_1", 1, turn, map[string]string{"call_delegate": "delegate"}, nil, nil)
 	if len(items) != 1 || items[0].Type != "commandExecution" || items[0].CallID != "call_delegate" {
 		t.Fatalf("items=%+v", items)
 	}
@@ -222,7 +259,7 @@ func TestProjectTurnMapsThinkingContent(t *testing.T) {
 			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "Let me plan this out."}},
 			{Kind: llm.ContentText, Text: "The answer is 42."},
 		}},
-	}, toolNames, nil)
+	}, toolNames, nil, nil)
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items, got %+v", items)
 	}
@@ -242,7 +279,7 @@ func TestProjectTurnMapsRedactedThinkingContent(t *testing.T) {
 			{Kind: llm.ContentRedThinking, Thinking: &llm.ThinkingData{Redacted: true}},
 			{Kind: llm.ContentText, Text: "The answer is 42."},
 		}},
-	}, toolNames, nil)
+	}, toolNames, nil, nil)
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items, got %+v", items)
 	}
@@ -263,7 +300,7 @@ func TestProjectTurnProjectsWebSearchCall(t *testing.T) {
 				Raw:   json.RawMessage(`{"type":"web_search_call","status":"completed"}`),
 			}},
 		}},
-	}, map[string]string{}, nil)
+	}, map[string]string{}, nil, nil)
 	if len(items) != 1 {
 		t.Fatalf("expected 1 web_search item, got %+v", items)
 	}
@@ -286,7 +323,7 @@ func TestProjectTurnProjectsWebSearchResultsFromRaw(t *testing.T) {
 			{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Raw: json.RawMessage(
 				`{"type":"web_search_tool_result","content":[{"type":"web_search_result","url":"https://go.dev/blog/err","title":"Error Handling"},{"type":"web_search_result","url":"https://go.dev/ctx","title":"Context"}]}`)}},
 		}},
-	}, map[string]string{}, nil)
+	}, map[string]string{}, nil, nil)
 	if len(anthropic) != 1 || anthropic[0].Output == "" {
 		t.Fatalf("anthropic web_search results=%+v", anthropic)
 	}
@@ -302,7 +339,7 @@ func TestProjectTurnProjectsWebSearchResultsFromRaw(t *testing.T) {
 			{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Raw: json.RawMessage(
 				`{"webSearchQueries":["golang generics"],"groundingChunks":[{"web":{"uri":"https://go.dev/generics","title":"Generics"}}]}`)}},
 		}},
-	}, map[string]string{}, nil)
+	}, map[string]string{}, nil, nil)
 	if len(gemini) != 1 {
 		t.Fatalf("gemini web_search=%+v", gemini)
 	}
@@ -322,7 +359,7 @@ func TestProjectTurnProjectsAudioAndDocumentAttachments(t *testing.T) {
 			{Kind: llm.ContentDocument, Document: &llm.DocumentData{FileName: "report.pdf", MediaType: "application/pdf"}},
 			{Kind: llm.ContentAudio, Audio: &llm.AudioData{MediaType: "audio/wav"}},
 		}},
-	}, map[string]string{}, nil)
+	}, map[string]string{}, nil, nil)
 	if len(items) != 1 || items[0].Type != "userMessage" {
 		t.Fatalf("expected 1 userMessage, got %+v", items)
 	}
@@ -713,12 +750,12 @@ func TestProjectTurnDedupsCommunicateEcho(t *testing.T) {
 		return out
 	}
 
-	echo := agentMsgs(ProjectTurn("t1", 0, mkTurn("Done.", "Done."), nil, nil))
+	echo := agentMsgs(ProjectTurn("t1", 0, mkTurn("Done.", "Done."), nil, nil, nil))
 	if len(echo) != 1 || echo[0] != "Done." {
 		t.Fatalf("echoed communicate: got agentMessages %q, want exactly [\"Done.\"]", echo)
 	}
 
-	distinct := agentMsgs(ProjectTurn("t2", 0, mkTurn("Working...", "All set."), nil, nil))
+	distinct := agentMsgs(ProjectTurn("t2", 0, mkTurn("Working...", "All set."), nil, nil, nil))
 	if len(distinct) != 2 || distinct[0] != "Working..." || distinct[1] != "All set." {
 		t.Fatalf("distinct communicate: got agentMessages %q, want [\"Working...\" \"All set.\"]", distinct)
 	}

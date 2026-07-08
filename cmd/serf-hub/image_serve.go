@@ -82,16 +82,26 @@ func findImageInTranscript(path, wantSha string) ([]byte, string, bool) {
 		if err := json.Unmarshal(line, &rec); err != nil {
 			continue
 		}
-		if rec.Turn.Kind != "USER_INPUT" {
-			continue
-		}
 		for _, p := range rec.Turn.Message.Content {
-			if p.Kind != "image" || p.Image == nil || len(p.Image.Data) == 0 {
+			switch p.Kind {
+			case "image":
+				if p.Image == nil || len(p.Image.Data) == 0 {
+					continue
+				}
+				h := sha256.Sum256(p.Image.Data)
+				if hex.EncodeToString(h[:]) == wantSha {
+					return p.Image.Data, p.Image.MediaType, true
+				}
+			case "tool_result":
+				if p.ToolResult == nil || len(p.ToolResult.ImageData) == 0 {
+					continue
+				}
+				h := sha256.Sum256(p.ToolResult.ImageData)
+				if hex.EncodeToString(h[:]) == wantSha {
+					return p.ToolResult.ImageData, p.ToolResult.ImageMediaType, true
+				}
+			default:
 				continue
-			}
-			h := sha256.Sum256(p.Image.Data)
-			if hex.EncodeToString(h[:]) == wantSha {
-				return p.Image.Data, p.Image.MediaType, true
 			}
 		}
 	}

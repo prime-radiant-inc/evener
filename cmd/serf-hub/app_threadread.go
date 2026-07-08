@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -197,7 +198,7 @@ func pastEntryTurns(entry hubcore.PastEntry) []appwire.Turn {
 		if err := json.Unmarshal(raw, &entryRec); err != nil {
 			return nil
 		}
-		return appItemsFromReplayTurn(turnID, entryIndex, entryRec.Turn, toolNames)
+		return appItemsFromReplayTurn(entry.Meta.ID, turnID, entryIndex, entryRec.Turn, toolNames)
 	})
 	// TurnsFromFile only has the per-round usage persisted in the transcript;
 	// it doesn't know the session's model, so the cost estimate is stamped
@@ -210,7 +211,7 @@ func pastEntryTurns(entry hubcore.PastEntry) []appwire.Turn {
 	return turns
 }
 
-func appItemsFromReplayTurn(turnID string, turnIndex int, turn hubcore.ReplayTurn, toolNames map[string]string) []appwire.ThreadItem {
+func appItemsFromReplayTurn(sessionID, turnID string, turnIndex int, turn hubcore.ReplayTurn, toolNames map[string]string) []appwire.ThreadItem {
 	agentTurn, imageNames := replayTurnToAgentTurn(turn)
 	return apptranscript.ProjectTurn(turnID, turnIndex, agentTurn, toolNames, func(image llm.ImageData) appwire.InputItem {
 		item := apptranscript.DefaultImageProjector(image)
@@ -224,6 +225,23 @@ func appItemsFromReplayTurn(turnID string, turnIndex int, turn hubcore.ReplayTur
 			"size": strconv.Itoa(len(image.Data)),
 		}
 		return item
+	}, func(result *llm.ToolResultData) []appwire.OutputImage {
+		if result == nil || len(result.ImageData) == 0 {
+			return nil
+		}
+		sha := imageSha(result.ImageData)
+		mediaType := result.ImageMediaType
+		if mediaType == "" {
+			mediaType = "image/png"
+		}
+		return []appwire.OutputImage{{
+			Source:    "tool-result",
+			Name:      result.Name,
+			MediaType: mediaType,
+			Size:      int64(len(result.ImageData)),
+			SHA:       sha,
+			URL:       "/s/" + url.PathEscape(sessionID) + "/images/" + sha,
+		}}
 	})
 }
 
@@ -298,11 +316,13 @@ func replayTurnToAgentTurn(turn hubcore.ReplayTurn) (schema.Turn, map[string]str
 			content = append(content, llm.ContentPart{
 				Kind: llm.ContentToolResult,
 				ToolResult: &llm.ToolResultData{
-					ToolCallID: part.ToolResult.ToolCallID,
-					Name:       part.ToolResult.Name,
-					Content:    part.ToolResult.Content,
-					IsError:    part.ToolResult.IsError,
-					ToolState:  part.ToolResult.ToolState,
+					ToolCallID:     part.ToolResult.ToolCallID,
+					Name:           part.ToolResult.Name,
+					Content:        part.ToolResult.Content,
+					IsError:        part.ToolResult.IsError,
+					ToolState:      part.ToolResult.ToolState,
+					ImageData:      part.ToolResult.ImageData,
+					ImageMediaType: part.ToolResult.ImageMediaType,
 				},
 			})
 		}
