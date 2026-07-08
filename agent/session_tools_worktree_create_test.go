@@ -25,6 +25,8 @@ var (
 	wtBaseRepoPath string
 	wtBaseRepoHead string
 	wtBaseRepoErr  error
+
+	sharedSessionWorkspace string
 )
 
 func TestMain(m *testing.M) {
@@ -41,6 +43,11 @@ func TestMain(m *testing.M) {
 		_ = os.Setenv("HOME", testHome)
 		_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(testHome, ".config"))
 	}
+	sharedWorkspace, err := os.MkdirTemp("", "serf-agent-workspace-*")
+	if err == nil {
+		_ = os.Chmod(sharedWorkspace, 0o555)
+		sharedSessionWorkspace = sharedWorkspace
+	}
 
 	code := m.Run()
 	if wtBaseRepoPath != "" {
@@ -48,6 +55,10 @@ func TestMain(m *testing.M) {
 	}
 	if testHome != "" {
 		_ = os.RemoveAll(testHome)
+	}
+	if sharedWorkspace != "" {
+		_ = os.Chmod(sharedWorkspace, 0o755)
+		_ = os.RemoveAll(sharedWorkspace)
 	}
 	os.Exit(code)
 }

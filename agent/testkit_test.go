@@ -79,7 +79,10 @@ func newSession(t *testing.T, opts ...sessionOpt) *Session {
 		o.client.Register(a)
 	}
 	if o.dir == "" {
-		o.dir = t.TempDir()
+		o.dir = sharedSessionWorkspace
+		if o.dir == "" {
+			o.dir = t.TempDir()
+		}
 	}
 	profile := o.profile
 	if profile == nil {
