@@ -163,7 +163,24 @@ disagrees, this section wins.
    (honors the immutable-across-restart guarantee vs config drift). This is why
    M1 keeps `SandboxPolicy` (serializable inputs) distinct from `ResolvedPolicy`.
 
-7. **M1 additions (sent to the M1 build agent 2026-07-08):** (a) a feature gate
+8. **Jesse decisions (2026-07-08, later rounds):**
+   - **Cache**: accept the cold session-private fallback on hosts whose bwrap
+     lacks `--overlay` (do NOT hard-require overlay for workspace-write). Overlay
+     is a perf optimization; the no-poisoning floor holds either way.
+   - **Landlock: DROP ENTIRELY** — bwrap (Linux) + Seatbelt (macOS) only. Runtime
+     behavior is already correct (Landlock refuses since the M1 fix); the enum/
+     probe/`probe_landlock_*.go`/contract-tier removal is a single cleanup pass
+     AFTER M2 merges. M4/M6/M7 must NOT add or reference a Landlock backend.
+   - **Daemon-socket masking**: keep the TARGETED denylist (docker/podman/
+     containerd/dbus, `policy.go:100`) — do NOT expand to comprehensive `/run`
+     masking in v1 (would break DNS/daemons). Documented residual: an exotic/
+     custom daemon socket under `/run` not on the list can leak (a host-escape
+     even under net=off). Leave the code comment's "broader /run deferred" note.
+   - **Secret-scan**: the pre-existing red (fake fixtures in `agent/redact_test.go`
+     + `agent/subagent_output_test.go`, not sandbox-caused) is fixed by path-
+     allowlisting those two files in `.gitleaks.toml`.
+
+9. **M1 additions (sent to the M1 build agent 2026-07-08):** (a) a feature gate
    — non-off `--sandbox` refuses at the flag boundary with "in development" until
    M5, so no half-enforced mode is user-reachable during M1–M4; (b) a
    darwin/Seatbelt-capable floor row (all modes enforceable, cache session-

@@ -43,6 +43,13 @@ regexes = [
 # example keys (e.g. the package path "internal/hubapi" the generic rule trips on).
 paths = [
   '''docs/superpowers/.*''',
+  # The subagent-output redaction tests exist to PROVE the redactor strips
+  # secrets: every "secret" in them is a deliberately-fake fixture (hunter2isweak,
+  # ghp_ABCDEF…, a fake JWT, sk-EnvDump…) by construction. Path-allowlisted like
+  # the design docs above rather than chasing a value-regex per fixture, since the
+  # test suite grows new fixture shapes over time.
+  '''agent/redact_test\.go''',
+  '''agent/subagent_output_test\.go''',
   # inspo/ holds untracked vendored reference source (Pi, codex) whose test
   # fixtures carry deliberately-planted fake keys; it is gitignored and never
   # committed, but `make secret-scan` walks the whole working tree. .env is
