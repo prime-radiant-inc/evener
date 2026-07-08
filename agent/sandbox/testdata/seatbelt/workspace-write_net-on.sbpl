@@ -1,0 +1,171 @@
+(version 1)
+
+; Serf Seatbelt base policy. Trimmed from Codex's seatbelt_base_policy.sbpl,
+; which is itself derived from Chromium's macOS sandbox. This static base is the
+; deny-default floor plus the platform-service allowances any spawned process
+; needs to exec, dyld-load, and run a shell. It grants NO filesystem read/write
+; beyond a minimal /dev floor and NO network — those are layered on top by the
+; generated read/write/network sections. Because it grants only platform
+; services (mach-lookups, sysctls, pty), being generous here never widens
+; filesystem or network reach.
+
+; Closed by default: every allowance below is additive on top of this line, and
+; the ABSENCE of a network-allow section is exactly the net=off enforcement.
+(deny default)
+
+; Child processes inherit the parent's policy (an npm postinstall is as confined
+; as its shell). Signals and process introspection are confined to same-sandbox
+; processes: the macOS analog of Linux's private PID namespace + /proc — a
+; sandboxed process cannot enumerate or inspect host processes.
+(allow process-exec)
+(allow process-fork)
+(allow signal (target same-sandbox))
+(allow process-info* (target same-sandbox))
+
+; Minimal /dev floor — the macOS analog of bwrap's minimal --dev, always present
+; regardless of mode. The standard character devices plus the process's OWN file
+; descriptors via /dev/fd. On macOS /dev/fd exposes only the calling process's fd
+; table (serf's fds never leak in: ExtraFiles is emptied and serf's fds are
+; O_CLOEXEC), so it is safe and is needed for shell process substitution
+; (`<(cmd)` / `>(cmd)`). /dev/mem is deliberately NOT granted.
+(allow file-write-data
+  (require-all
+    (path "/dev/null")
+    (vnode-type CHARACTER-DEVICE)))
+(allow file-read* file-write* (literal "/dev/null"))
+(allow file-read* file-write* (literal "/dev/zero"))
+(allow file-read* (literal "/dev/random"))
+(allow file-read* (literal "/dev/urandom"))
+(allow file-read* file-write* (literal "/dev/tty"))
+(allow file-read* file-write* (subpath "/dev/fd"))
+(allow file-read-metadata (literal "/dev"))
+
+; openpty() and slave-tty ioctls so interactive shells detect a TTY and remain
+; functional. A pty created before entering the sandbox may lack the extension;
+; allow ioctl on those slave ttys too.
+(allow pseudo-tty)
+(allow file-read* file-write* file-ioctl (literal "/dev/ptmx"))
+(allow file-read* file-write*
+  (require-all
+    (regex #"^/dev/ttys[0-9]+")
+    (extension "com.apple.sandbox.pty")))
+(allow file-ioctl (regex #"^/dev/ttys[0-9]+"))
+
+; sysctls a typical runtime reads to size itself (CPU/memory topology, OS
+; version). Deliberately EXCLUDES kern.proc.* and net.routetable.* — process and
+; network-route enumeration — so a sandboxed process cannot list other processes
+; or the host's routing table. net.routetable is granted only by the network
+; section when net=on.
+(allow sysctl-read
+  (sysctl-name "hw.activecpu")
+  (sysctl-name "hw.busfrequency_compat")
+  (sysctl-name "hw.byteorder")
+  (sysctl-name "hw.cacheconfig")
+  (sysctl-name "hw.cachelinesize_compat")
+  (sysctl-name "hw.cpufamily")
+  (sysctl-name "hw.cpufrequency_compat")
+  (sysctl-name "hw.cputype")
+  (sysctl-name "hw.l1dcachesize_compat")
+  (sysctl-name "hw.l1icachesize_compat")
+  (sysctl-name "hw.l2cachesize_compat")
+  (sysctl-name "hw.l3cachesize_compat")
+  (sysctl-name "hw.logicalcpu")
+  (sysctl-name "hw.logicalcpu_max")
+  (sysctl-name "hw.machine")
+  (sysctl-name "hw.memsize")
+  (sysctl-name "hw.model")
+  (sysctl-name "hw.ncpu")
+  (sysctl-name "hw.nperflevels")
+  (sysctl-name "hw.pagesize")
+  (sysctl-name "hw.pagesize_compat")
+  (sysctl-name "hw.physicalcpu")
+  (sysctl-name "hw.physicalcpu_max")
+  (sysctl-name "hw.packages")
+  (sysctl-name-prefix "hw.optional.")
+  (sysctl-name-prefix "hw.perflevel")
+  (sysctl-name "machdep.cpu.brand_string")
+  (sysctl-name "kern.argmax")
+  (sysctl-name "kern.hostname")
+  (sysctl-name "kern.maxfilesperproc")
+  (sysctl-name "kern.maxproc")
+  (sysctl-name "kern.osproductversion")
+  (sysctl-name "kern.osrelease")
+  (sysctl-name "kern.ostype")
+  (sysctl-name "kern.osvariant_status")
+  (sysctl-name "kern.osversion")
+  (sysctl-name "kern.secure_kernel")
+  (sysctl-name "kern.usrstack64")
+  (sysctl-name "kern.version")
+  (sysctl-name "sysctl.proc_cputype")
+  (sysctl-name "vm.loadavg"))
+
+; Java reads some CPU info through a sysctl the kernel misclassifies as a write.
+(allow sysctl-write
+  (sysctl-name "kern.grade_cputype"))
+
+; Look up user/group info (getpwuid, etc.) — many shells and tools need this.
+(allow mach-lookup
+  (global-name "com.apple.system.opendirectoryd.libinfo"))
+
+; POSIX semaphores — Python multiprocessing's SemLock.
+(allow ipc-posix-sem)
+
+; Read-only user preferences (cfprefsd): tools read preferences at startup.
+(allow mach-lookup
+  (global-name "com.apple.cfprefsd.daemon")
+  (global-name "com.apple.cfprefsd.agent")
+  (local-name "com.apple.cfprefsd.agent"))
+(allow user-preference-read)
+
+; read grants
+(allow file-read*
+  (require-all (subpath (param "READABLE_ROOT_0")) (require-not (literal (param "READABLE_ROOT_0_EXCLUDED_0"))) (require-not (subpath (param "READABLE_ROOT_0_EXCLUDED_0"))) (require-not (literal (param "READABLE_ROOT_0_EXCLUDED_1"))) (require-not (subpath (param "READABLE_ROOT_0_EXCLUDED_1"))) (require-not (literal (param "READABLE_ROOT_0_EXCLUDED_2"))) (require-not (subpath (param "READABLE_ROOT_0_EXCLUDED_2"))) (require-not (literal (param "READABLE_ROOT_0_EXCLUDED_3"))) (require-not (subpath (param "READABLE_ROOT_0_EXCLUDED_3"))) (require-not (literal (param "READABLE_ROOT_0_EXCLUDED_4"))) (require-not (subpath (param "READABLE_ROOT_0_EXCLUDED_4"))) (require-not (literal (param "READABLE_ROOT_0_EXCLUDED_5"))) (require-not (subpath (param "READABLE_ROOT_0_EXCLUDED_5"))) (require-not (literal (param "READABLE_ROOT_0_EXCLUDED_6"))) (require-not (subpath (param "READABLE_ROOT_0_EXCLUDED_6"))) (require-not (literal (param "READABLE_ROOT_0_EXCLUDED_7"))) (require-not (subpath (param "READABLE_ROOT_0_EXCLUDED_7"))) (require-not (literal (param "READABLE_ROOT_0_EXCLUDED_8"))) (require-not (subpath (param "READABLE_ROOT_0_EXCLUDED_8"))) (require-not (literal (param "READABLE_ROOT_0_EXCLUDED_9"))) (require-not (subpath (param "READABLE_ROOT_0_EXCLUDED_9"))) (require-not (literal (param "READABLE_ROOT_0_EXCLUDED_10"))) (require-not (subpath (param "READABLE_ROOT_0_EXCLUDED_10"))) (require-not (literal (param "READABLE_ROOT_0_EXCLUDED_11"))) (require-not (subpath (param "READABLE_ROOT_0_EXCLUDED_11"))) (require-not (literal (param "READABLE_ROOT_0_EXCLUDED_12"))) (require-not (subpath (param "READABLE_ROOT_0_EXCLUDED_12"))) (require-not (literal (param "READABLE_ROOT_0_EXCLUDED_13"))) (require-not (subpath (param "READABLE_ROOT_0_EXCLUDED_13"))) (require-not (literal (param "READABLE_ROOT_0_EXCLUDED_14"))) (require-not (subpath (param "READABLE_ROOT_0_EXCLUDED_14"))) (require-not (literal (param "READABLE_ROOT_0_EXCLUDED_15"))) (require-not (subpath (param "READABLE_ROOT_0_EXCLUDED_15"))) (require-not (literal (param "READABLE_ROOT_0_EXCLUDED_16"))) (require-not (subpath (param "READABLE_ROOT_0_EXCLUDED_16"))) (require-not (literal (param "READABLE_ROOT_0_EXCLUDED_17"))) (require-not (subpath (param "READABLE_ROOT_0_EXCLUDED_17"))) (require-not (literal (param "READABLE_ROOT_0_EXCLUDED_18"))) (require-not (subpath (param "READABLE_ROOT_0_EXCLUDED_18"))))
+)
+; write grants
+(allow file-write*
+  (require-all (subpath (param "WRITABLE_ROOT_0")) (require-not (literal (param "WRITABLE_ROOT_0_EXCLUDED_0"))) (require-not (subpath (param "WRITABLE_ROOT_0_EXCLUDED_0"))) (require-not (literal (param "WRITABLE_ROOT_0_EXCLUDED_1"))) (require-not (subpath (param "WRITABLE_ROOT_0_EXCLUDED_1"))) (require-not (literal (param "WRITABLE_ROOT_0_EXCLUDED_2"))) (require-not (subpath (param "WRITABLE_ROOT_0_EXCLUDED_2"))))
+  (subpath (param "WRITABLE_ROOT_1"))
+  (subpath (param "WRITABLE_ROOT_2"))
+  (subpath (param "WRITABLE_ROOT_3"))
+  (subpath (param "WRITABLE_ROOT_4"))
+  (subpath (param "WRITABLE_ROOT_5"))
+  (subpath (param "WRITABLE_ROOT_6"))
+)
+; network
+(allow network-outbound)
+(allow network-inbound)
+; Serf Seatbelt network policy. Appended (after the base) ONLY when the resolved
+; network decision is on. net=off is the ABSENCE of this section — the base's
+; (deny default) blocks all TCP/UDP/DNS/AF_UNIX outbound with no explicit deny
+; needed (fail-closed by construction). Derived from Codex's
+; seatbelt_network_policy.sbpl (itself from Chromium's network.sb). The blanket
+; (allow network-outbound)/(allow network-inbound) that precede this block are
+; emitted by the generator; this block adds the platform service lookups a
+; process needs to actually resolve names and validate TLS.
+
+; Safe AF_SYSTEM sockets used for local platform network services.
+(allow system-socket
+  (require-all
+    (socket-domain AF_SYSTEM)
+    (socket-protocol 2)))
+
+(allow mach-lookup
+  ; Resolve user directory locations.
+  (global-name "com.apple.bsd.dirhelper")
+  (global-name "com.apple.system.opendirectoryd.membership")
+
+  ; Security server / TLS certificate validation.
+  (global-name "com.apple.SecurityServer")
+  (global-name "com.apple.networkd")
+  (global-name "com.apple.ocspd")
+  (global-name "com.apple.trustd")
+  (global-name "com.apple.trustd.agent")
+
+  ; DNS + network configuration.
+  (global-name "com.apple.SystemConfiguration.DNSConfiguration")
+  (global-name "com.apple.SystemConfiguration.configd")
+  (global-name "com.apple.nsurlsessiond"))
+
+; The routing table, needed to pick an interface for outbound connections.
+(allow sysctl-read
+  (sysctl-name-regex #"^net.routetable"))
