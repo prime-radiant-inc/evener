@@ -125,6 +125,46 @@ func ageSidecar(t *testing.T, metaDir, name string, age time.Duration) {
 	}
 }
 
+func (r *wtRepo) seedRemovedSidecar(t *testing.T, name, tipAtRemoval string) string {
+	t.Helper()
+	canonicalMain := r.canonicalMain(t)
+	metaDir := r.metaDir(canonicalMain)
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatalf("mkdir metaDir: %v", err)
+	}
+	sc := worktree.Sidecar{
+		Name:            name,
+		Branch:          name,
+		BaseSHA:         r.head,
+		MergeTarget:     "main",
+		OriginalRoot:    canonicalMain,
+		CreatorSession:  r.s.id,
+		WorktreeRemoved: true,
+		TipSHAAtRemoval: tipAtRemoval,
+		CreatedAt:       time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := worktree.WriteSidecarExcl(metaDir, name, sc); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	return metaDir
+}
+
+func (r *wtRepo) commitInMainCheckout(t *testing.T, branch, name, content, msg string) string {
+	t.Helper()
+	if branchExistsInRepo(t, r.mainRoot, branch) {
+		wtGit(t, r.mainRoot, "checkout", branch)
+	} else {
+		wtGit(t, r.mainRoot, "checkout", "-b", branch, r.head)
+	}
+	defer wtGit(t, r.mainRoot, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(r.mainRoot, name), []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+	wtGit(t, r.mainRoot, "add", name)
+	wtGit(t, r.mainRoot, "commit", "-m", msg)
+	return strings.TrimSpace(wtGit(t, r.mainRoot, "rev-parse", "HEAD"))
+}
+
 // ============================================================
 // list
 // ============================================================
@@ -848,22 +888,16 @@ func TestWorktreePrune_Sweep2_FreshSidecarSurvivesGrace(t *testing.T) {
 func TestWorktreePrune_Sweep2_AdoptedBranchSidecarDroppedBranchKept(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	path := r.addManagedWorktreeFixture(t, "adopt-lane")
-	laneTip := commitInWorktree(t, path, "a.txt", "a\n", "advance adopt-lane")
-
-	if _, err := r.removeOp(t, map[string]any{"name": "adopt-lane"}); err != nil {
-		t.Fatalf("remove (branch kept): %v", err)
-	}
+	laneTip := r.commitInMainCheckout(t, "adopt-lane", "a.txt", "a\n", "advance adopt-lane")
+	metaDir := r.seedRemovedSidecar(t, "adopt-lane", laneTip)
 
 	// The user builds on the kept branch after removal: a new commit whose
 	// tip is neither base_sha nor the recorded tip_sha_at_removal.
-	adoptedTip := commitOnBranch(t, r.mainRoot, "adopt-lane", "b.txt", "b\n", "user adopted this branch")
+	adoptedTip := r.commitInMainCheckout(t, "adopt-lane", "b.txt", "b\n", "user adopted this branch")
 	if adoptedTip == laneTip {
 		t.Fatal("adoptedTip did not advance")
 	}
 
-	canonicalMain := r.canonicalMain(t)
-	metaDir := r.metaDir(canonicalMain)
 	ageSidecar(t, metaDir, "adopt-lane", worktree.ReconcileGrace+time.Minute)
 
 	out, err := r.pruneOp(t)
@@ -898,18 +932,13 @@ func TestWorktreePrune_Sweep2_AdoptedBranchSidecarDroppedBranchKept(t *testing.T
 func TestWorktreePrune_Sweep2_ResetToBaseCollected(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	path := r.addManagedWorktreeFixture(t, "reset-lane")
-	commitInWorktree(t, path, "a.txt", "a\n", "advance reset-lane")
-	if _, err := r.removeOp(t, map[string]any{"name": "reset-lane"}); err != nil {
-		t.Fatalf("remove (branch kept): %v", err)
-	}
+	laneTip := r.commitInMainCheckout(t, "reset-lane", "a.txt", "a\n", "advance reset-lane")
+	metaDir := r.seedRemovedSidecar(t, "reset-lane", laneTip)
 
 	// Branch reset back to base_sha: NOT adopted (spec §5's two-SHA rule) —
 	// collectible via the unchanged arm exactly as if nothing was committed.
 	wtGit(t, r.mainRoot, "update-ref", "refs/heads/reset-lane", r.head)
 
-	canonicalMain := r.canonicalMain(t)
-	metaDir := r.metaDir(canonicalMain)
 	ageSidecar(t, metaDir, "reset-lane", worktree.ReconcileGrace+time.Minute)
 
 	out, err := r.pruneOp(t)
@@ -934,19 +963,13 @@ func TestWorktreePrune_Sweep2_ResetToBaseCollected(t *testing.T) {
 func TestWorktreePrune_Sweep2_CheckedOutBranchSkipped(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	path := r.addManagedWorktreeFixture(t, "checkedout-lane")
-	commitInWorktree(t, path, "a.txt", "a\n", "advance checkedout-lane")
+	laneTip := r.commitInMainCheckout(t, "checkedout-lane", "a.txt", "a\n", "advance checkedout-lane")
+	metaDir := r.seedRemovedSidecar(t, "checkedout-lane", laneTip)
 	wtGit(t, r.mainRoot, "merge", "--ff-only", "checkedout-lane")
-
-	if _, err := r.removeOp(t, map[string]any{"name": "checkedout-lane"}); err != nil {
-		t.Fatalf("remove (branch kept): %v", err)
-	}
 
 	otherPath := filepath.Join(t.TempDir(), "other-checkout")
 	wtGit(t, r.mainRoot, "worktree", "add", "--force", otherPath, "checkedout-lane")
 
-	canonicalMain := r.canonicalMain(t)
-	metaDir := r.metaDir(canonicalMain)
 	ageSidecar(t, metaDir, "checkedout-lane", worktree.ReconcileGrace+time.Minute)
 
 	out, err := r.pruneOp(t)
@@ -972,15 +995,9 @@ func TestWorktreePrune_Sweep2_CheckedOutBranchSkipped(t *testing.T) {
 func TestWorktreePrune_Sweep2_UnmergedResidueKept(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	path := r.addManagedWorktreeFixture(t, "residue-lane")
-	commitInWorktree(t, path, "a.txt", "a\n", "advance residue-lane")
+	laneTip := r.commitInMainCheckout(t, "residue-lane", "a.txt", "a\n", "advance residue-lane")
+	metaDir := r.seedRemovedSidecar(t, "residue-lane", laneTip)
 	// main is NOT advanced/merged.
-	if _, err := r.removeOp(t, map[string]any{"name": "residue-lane"}); err != nil {
-		t.Fatalf("remove (branch kept): %v", err)
-	}
-
-	canonicalMain := r.canonicalMain(t)
-	metaDir := r.metaDir(canonicalMain)
 	ageSidecar(t, metaDir, "residue-lane", worktree.ReconcileGrace+time.Minute)
 
 	out, err := r.pruneOp(t)
@@ -1097,17 +1114,4 @@ func TestWorktreePrune_Sweep3_SkippedWhenNonManagedPrunable(t *testing.T) {
 	if !found {
 		t.Error("non-managed prunable sibling was deregistered; sweep 3 must have skipped")
 	}
-}
-
-// commitOnBranch checks out branch in a throwaway worktree, commits
-// name/content on it, and returns the new tip SHA — used to simulate a user
-// building on a branch after its managed worktree was removed (no worktree
-// remains locally checked out on it).
-func commitOnBranch(t *testing.T, root, branch, name, content, msg string) string {
-	t.Helper()
-	tmp := filepath.Join(t.TempDir(), "adopt-scratch")
-	wtGit(t, root, "worktree", "add", tmp, branch)
-	tip := commitInWorktree(t, tmp, name, content, msg)
-	wtGit(t, root, "worktree", "remove", "--force", tmp)
-	return tip
 }
