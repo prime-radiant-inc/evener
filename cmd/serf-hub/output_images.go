@@ -38,7 +38,7 @@ func shellOutputImageCandidates(output string) []string {
 			}
 		}
 		lower := strings.ToLower(cand)
-		if cand == "" || strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		if cand == "" || strings.Contains(lower, "://") {
 			continue
 		}
 		if _, ok := seen[cand]; ok {

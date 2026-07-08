@@ -90,14 +90,14 @@ func TestDocImageRejectsTraversalAndSVG(t *testing.T) {
 	if err := os.WriteFile(secret, []byte{0x89, 0x50, 0x4e, 0x47}, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if rec := docImageRequest(t, web, session, "../"+filepath.Base(secret)); rec.Code == http.StatusOK {
-		t.Fatalf("traversal image request got 200")
+	if rec := docImageRequest(t, web, session, "../"+filepath.Base(secret)); rec.Code != http.StatusForbidden {
+		t.Fatalf("traversal image request status=%d, want 403", rec.Code)
 	}
 	if err := os.WriteFile(filepath.Join(cwd, "x.svg"), []byte(`<svg></svg>`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if rec := docImageRequest(t, web, session, "x.svg"); rec.Code == http.StatusOK {
-		t.Fatalf("svg image request got 200")
+	if rec := docImageRequest(t, web, session, "x.svg"); rec.Code != http.StatusNotFound {
+		t.Fatalf("svg image request status=%d, want 404", rec.Code)
 	}
 }
 
