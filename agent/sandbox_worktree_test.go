@@ -121,6 +121,51 @@ func TestEnterExitWorktreeReRootsAndRestores(t *testing.T) {
 	}
 }
 
+// TestEnterWorktreeRefusesUnsatisfiableReRoot: a switch/create into a target whose
+// sandbox policy the host cannot re-anchor is REFUSED — enterWorktree returns the
+// re-root error and leaves the session in its prior confined env, never running
+// unconfined in the new worktree (the cardinal fail-open).
+func TestEnterWorktreeRefusesUnsatisfiableReRoot(t *testing.T) {
+	_, laneA, laneB, _ := sbxMainAndLanes(t)
+
+	s := sbxWorktreeSession(t)
+	laneAEnv := execenv.NewLocalExecutionEnvironment(laneA)
+	// An ENFORCED policy that retained no resolve inputs (a hand-built literal)
+	// cannot be re-rooted, so WithWorkingDirectory to any target fails closed — a
+	// deterministic stand-in for a target the host cannot classify/enforce.
+	laneAEnv.Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeRestricted, Backend: sandbox.BackendBwrap}
+	s.swapEnvAndRefresh(laneAEnv)
+
+	if err := s.enterWorktree(laneB, true); err == nil {
+		t.Fatal("enterWorktree into an unsatisfiable re-root target must be refused")
+	}
+
+	cur, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("session env must still be a LocalExecutionEnvironment")
+	}
+	if cur != laneAEnv {
+		t.Error("a refused switch must leave the session in its prior env pointer")
+	}
+	if cur.Sandbox == nil {
+		t.Error("the prior env must stay confined (Sandbox non-nil) after a refused switch")
+	}
+	if cur.RootDir != laneA {
+		t.Errorf("session must stay rooted at the prior worktree %q, got %q", laneA, cur.RootDir)
+	}
+
+	s.mu.Lock()
+	gotPath := s.worktreeCurrentPath
+	gotRestore := s.worktreeRestoreEnv
+	s.mu.Unlock()
+	if gotPath == laneB {
+		t.Error("worktreeCurrentPath must not advance to the refused target")
+	}
+	if gotRestore != nil {
+		t.Error("a refused switch must not save a restore env")
+	}
+}
+
 // rootGrantsAny reports whether any root equals or is an ancestor of target.
 func rootGrantsAny(roots []string, target string) bool {
 	for _, r := range roots {

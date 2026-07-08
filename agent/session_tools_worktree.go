@@ -163,8 +163,10 @@ type worktreeGuard struct {
 	// enterWorktree swaps the session env into path, saving the prior env the
 	// first time (spec §7 enterWorktree()). managed records whether path is a
 	// serf-managed worktree, persisted via SessionMeta.WorktreeManaged (spec §7
-	// "Persistence and resume").
-	enterWorktree func(path string, managed bool)
+	// "Persistence and resume"). It returns an error when the sandbox policy
+	// cannot be re-anchored to path, in which case the session stays in its prior
+	// (confined) env rather than running unconfined in the new worktree.
+	enterWorktree func(path string, managed bool) error
 	// exitWorktree restores the saved pre-worktree env and clears it, returning
 	// the restored root and ok=false when no restore env was saved (spec §7
 	// exitWorktree()).
@@ -498,17 +500,26 @@ func (s *Session) worktreeRootFor(env execenv.ExecutionEnvironment, stateDir, ma
 // correctness"). The env swap + refresh runs outside s.mu (swapEnvAndRefresh
 // forks git for the snapshot); manage_worktree is serialized in the tool
 // stream, so nothing else swaps the env concurrently.
-func (s *Session) enterWorktree(path string, managed bool) {
+func (s *Session) enterWorktree(path string, managed bool) error {
 	s.mu.Lock()
 	local, ok := s.env.(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		s.mu.Unlock()
-		return
+		return nil
 	}
 	saveRestore := s.worktreeRestoreEnv == nil
 	prior := local
 	next := local.WithWorkingDirectory(path)
 	s.mu.Unlock()
+
+	// Fail closed: when the sandbox policy could not be re-anchored to the new
+	// worktree (a mode+net the host cannot satisfy at this target), next carries a
+	// nil Sandbox/Wrapper plus the sticky refusal — refuse the switch and leave the
+	// session in its prior (confined) env rather than running unconfined in the new
+	// worktree. ReRoot's contract is that a worktree switch is refused here.
+	if err := next.SandboxReRootError(); err != nil {
+		return err
+	}
 
 	s.swapEnvAndRefresh(next)
 
@@ -519,6 +530,7 @@ func (s *Session) enterWorktree(path string, managed bool) {
 	s.worktreeCurrentPath = path
 	s.worktreeCurrentManaged = managed
 	s.mu.Unlock()
+	return nil
 }
 
 // exitWorktree implements worktreeGuard.exitWorktree() (spec §7): restore the
@@ -798,7 +810,11 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 	}
 
 	// Step 8: enter the new worktree (env swap + refresh, saving the prior env).
-	s.enterWorktree(res.Path, true)
+	// A sandbox re-root the host cannot satisfy fails closed here rather than
+	// entering the new worktree unconfined.
+	if err := s.enterWorktree(res.Path, true); err != nil {
+		return WorktreeResult{}, err
+	}
 
 	// Step 9: report the path, branch, base SHA, and main repo root.
 	return WorktreeResult{
@@ -1156,8 +1172,11 @@ func (s *Session) worktreeEnterManagedWithPorcelain(st worktreeState, run worktr
 	}
 
 	// Steps 4-5: swap the env directly to the target (no intermediate
-	// restore step) and refresh envInfo + the prompt cache.
-	s.enterWorktree(target, true)
+	// restore step) and refresh envInfo + the prompt cache. A sandbox re-root the
+	// host cannot satisfy fails closed rather than switching in unconfined.
+	if err := s.enterWorktree(target, true); err != nil {
+		return WorktreeSwitchResult{}, err
+	}
 
 	// Step 6: report the path and branch.
 	return WorktreeSwitchResult{Path: target, Branch: branchAtRoot(run, target)}, nil
@@ -1253,7 +1272,9 @@ func (s *Session) worktreeSwitchByPath(ctx context.Context, rawPath string) (Wor
 	if err := s.leaveCurrentWorktreeFromPorcelain(run, porcelain); err != nil {
 		return WorktreeSwitchResult{}, err
 	}
-	s.enterWorktree(matchedPath, false)
+	if err := s.enterWorktree(matchedPath, false); err != nil {
+		return WorktreeSwitchResult{}, err
+	}
 	return WorktreeSwitchResult{Path: matchedPath, Branch: matchedBranch}, nil
 }
 
