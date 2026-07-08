@@ -25,6 +25,7 @@ func newDelegateTestSession(t *testing.T, c *llm.Client) *Session {
 	return newSession(t, withClient(c), withConfig(SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
 	}))
 }
 
