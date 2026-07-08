@@ -27,6 +27,7 @@ var (
 	wtBaseRepoErr  error
 
 	sharedSessionWorkspace string
+	intgMCPServerDir       string
 )
 
 func TestMain(m *testing.M) {
@@ -59,6 +60,9 @@ func TestMain(m *testing.M) {
 	if sharedWorkspace != "" {
 		_ = os.Chmod(sharedWorkspace, 0o755)
 		_ = os.RemoveAll(sharedWorkspace)
+	}
+	if intgMCPServerDir != "" {
+		_ = os.RemoveAll(intgMCPServerDir)
 	}
 	os.Exit(code)
 }
