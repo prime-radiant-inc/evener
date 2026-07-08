@@ -684,20 +684,17 @@ func TestWorktreePrune_Sweep1_SkipsProtectedMatrix(t *testing.T) {
 			var path string
 			if tc.manualCreate != nil {
 				path = tc.manualCreate(t, r)
-			} else {
+			} else if tc.leaveLocked {
 				res, err := r.create(t, map[string]any{"name": tc.lane})
 				if err != nil {
 					t.Fatalf("create %s: %v", tc.lane, err)
 				}
 				path = res["path"].(string)
-				if tc.configure != nil {
-					tc.configure(t, r, path)
-				}
-				if !tc.leaveLocked {
-					if _, err := r.exitOp(t); err != nil {
-						t.Fatalf("exit after %s: %v", tc.lane, err)
-					}
-				}
+			} else {
+				path = r.addManagedWorktreeFixture(t, tc.lane)
+			}
+			if tc.configure != nil {
+				tc.configure(t, r, path)
 			}
 
 			out, err := r.pruneOp(t)
