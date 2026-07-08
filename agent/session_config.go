@@ -163,6 +163,15 @@ type SessionConfig struct {
 	// endpoint support and continuation eligibility.
 	OpenAIResponsesContinuation string `json:"openai_responses_continuation,omitempty"`
 
+	// Sandbox is the sandbox mode name (off|read-only|workspace-write|restricted)
+	// requested at session start. Empty means off — today's behavior. Carried so a
+	// resumed session (M4) re-applies its policy; INERT in M1 (nothing enforces).
+	Sandbox string `json:"sandbox,omitempty"`
+
+	// SandboxNet is the network decision (--sandbox-net): nil means the default
+	// (on when sandboxed). Only meaningful for a non-off Sandbox. Carried inert in M1.
+	SandboxNet *bool `json:"sandbox_net,omitempty"`
+
 	// ResolveProfile, when non-nil, maps a "provider/model" ref to the
 	// corresponding *provider.Profile. Injected by cmd/serf so that
 	// Session.SetModel can perform cross-provider switches without
@@ -416,6 +425,8 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		ModelFallbacks:              c.ModelFallbacks,
 		SystemPromptAsUser:          c.SystemPromptAsUser,
 		OpenAIResponsesContinuation: c.OpenAIResponsesContinuation,
+		Sandbox:                     c.Sandbox,
+		SandboxNet:                  c.SandboxNet,
 	}
 }
 
@@ -451,5 +462,7 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		ModelFallbacks:              s.ModelFallbacks,
 		SystemPromptAsUser:          s.SystemPromptAsUser,
 		OpenAIResponsesContinuation: s.OpenAIResponsesContinuation,
+		Sandbox:                     s.Sandbox,
+		SandboxNet:                  s.SandboxNet,
 	}
 }

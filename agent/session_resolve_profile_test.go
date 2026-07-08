@@ -89,7 +89,6 @@ func TestSetModel_CrossProvider_SwapsProfileAndPreservesOverride(t *testing.T) {
 	var communicateDef *llm.ToolDefinition
 	for _, td := range sess.profile.ToolDefinitions() {
 		if td.Name == "communicate" {
-			td := td
 			communicateDef = &td
 			break
 		}

@@ -34,4 +34,6 @@ type ConfigSnapshot struct {
 	ModelFallbacks              []string                   `json:"model_fallbacks,omitempty"`               // provider/model chain tried on permanent errors
 	SystemPromptAsUser          bool                       `json:"system_prompt_as_user,omitempty"`         // fold the system prompt into the first user message
 	OpenAIResponsesContinuation string                     `json:"openai_responses_continuation,omitempty"` // OpenAI Responses continuation mode: off|auto
+	Sandbox                     string                     `json:"sandbox,omitempty"`                       // sandbox mode name (off|read-only|workspace-write|restricted); empty = off
+	SandboxNet                  *bool                      `json:"sandbox_net,omitempty"`                   // sandbox network decision; nil = default (on when sandboxed)
 }

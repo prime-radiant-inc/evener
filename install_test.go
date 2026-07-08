@@ -148,7 +148,6 @@ func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
 			asset:    "serf_darwin_arm64.tar.gz",
 		},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			home := t.TempDir()

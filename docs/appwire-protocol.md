@@ -158,6 +158,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `thread/closed` | `(inline)` | Session ended; inline {threadId, ref, reason}. |
 | `thread/status/changed` | `ThreadStatusChangedParams` | Thread status (type + active flags) changed. |
 | `thread/queueChanged` | `ThreadQueueChangedParams` | The per-session input queue depth/preview changed. |
+| `serf/thread/name/changed` | `ThreadNameChangedParams` | The session title changed (generated or user-renamed). |
 | `turn/started` | `(inline)` | A new turn began (inProgress); inline {threadId, ref, turn}. |
 | `turn/completed` | `TurnCompletedParams` | A turn reached a terminal state (completed/failed/interrupted). |
 | `item/started` | `(inline)` | A thread item began streaming; inline {threadId, ref, turnId, item}. |
@@ -764,6 +765,16 @@ _(no fields)_
 | `ref` | `string` |  |  |
 | `modelProvider` | `string` |  |  |
 | `model` | `string` |  |  |
+
+
+### `ThreadNameChangedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `name` | `string` |  |  |
+| `source` | `string` | yes |  |
 
 
 ### `ThreadNameSetParams`

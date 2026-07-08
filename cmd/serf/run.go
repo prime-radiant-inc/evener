@@ -60,6 +60,8 @@ type runConfig struct {
 	noDefaultMarketplaces       bool     // --no-default-marketplaces
 	systemPromptAsUser          bool     // --system-prompt-as-user
 	openAIResponsesContinuation string   // --openai-responses-continuation
+	sandboxMode                 string   // --sandbox mode name (default "off")
+	sandboxNet                  string   // --sandbox-net on|off
 
 	// Resume options.
 	resume       string // session ID to resume
@@ -203,6 +205,9 @@ func run(ctx context.Context, cfg runConfig) error {
 	}
 	if effort.Set {
 		baseSessionCfg.ReasoningEffort = effort.Value
+	}
+	if err := configureSandbox(&baseSessionCfg, cfg.sandboxMode, cfg.sandboxNet); err != nil {
+		return err
 	}
 	if meta != nil {
 		sess, err = agent.RestoreSessionFromMetaWithConfig(client, profile, env, *meta, agent.RestoreSessionConfig{

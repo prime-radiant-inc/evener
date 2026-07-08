@@ -328,7 +328,6 @@ func TestPluginLoadedData_PopulatedByInitPlugins(t *testing.T) {
 	var got *events.PluginLoadedData
 	for ev := range sess.Events() {
 		if d, ok := ev.Data.(events.PluginLoadedData); ok && d.Name == "count-plugin" {
-			d := d
 			got = &d
 		}
 	}
