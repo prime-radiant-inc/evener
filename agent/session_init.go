@@ -692,14 +692,17 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	s.contextMgr = contextmgr.NewManager(s.profile, s.client)
 	s.contextMgr.ResultToolName = s.resultToolName()
 
-	reg := newProfileToolRegistry(s.profile)
+	var reg *tool.Registry
 	if s.cfg.testOnly.minimalWorktreeToolRegistry {
 		reg = tool.NewRegistry()
 		if err := registerMinimalWorktreeTools(reg, s); err != nil {
 			return nil, err
 		}
-	} else if err := registerCoreTools(reg, s); err != nil {
-		return nil, err
+	} else {
+		reg = newProfileToolRegistry(s.profile)
+		if err := registerCoreTools(reg, s); err != nil {
+			return nil, err
+		}
 	}
 	reg.OverrideLimits(s.cfg.ToolOutputLimits)
 	enforceShellToolJSONLimit(reg)
