@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -39,8 +40,8 @@ var excludedDirs = map[string]bool{
 func ScanWorkspace(root string) schema.WorkspaceInfo {
 	var ws schema.WorkspaceInfo
 
-	entries, truncated := walkTree(root)
-	ws.Tree = formatTree(root, entries, truncated)
+	entries, truncated := walkTree(root, maxEntries)
+	ws.Tree = formatTree(root, entries, truncated, maxEntries)
 	ws.BuildInfo = detectBuildSystem(root)
 
 	return ws
@@ -54,8 +55,8 @@ type treeEntry struct {
 	Depth   int
 }
 
-// walkTree collects directory entries up to maxDepth and maxEntries.
-func walkTree(root string) ([]treeEntry, bool) {
+// walkTree collects directory entries up to maxDepth and entryLimit.
+func walkTree(root string, entryLimit int) ([]treeEntry, bool) {
 	info, err := os.Stat(root)
 	if err != nil || !info.IsDir() {
 		return nil, false
@@ -69,7 +70,7 @@ func walkTree(root string) ([]treeEntry, bool) {
 		if depth > maxDirDepth {
 			return
 		}
-		if len(entries) >= maxEntries {
+		if len(entries) >= entryLimit {
 			truncated = true
 			return
 		}
@@ -89,7 +90,7 @@ func walkTree(root string) ([]treeEntry, bool) {
 		})
 
 		for _, de := range dirEntries {
-			if len(entries) >= maxEntries {
+			if len(entries) >= entryLimit {
 				truncated = true
 				return
 			}
@@ -135,7 +136,7 @@ func walkTree(root string) ([]treeEntry, bool) {
 
 // formatTree renders entries as a compact indented tree. Directories get their
 // own lines; files within a directory are grouped on one comma-separated line.
-func formatTree(root string, entries []treeEntry, truncated bool) string {
+func formatTree(root string, entries []treeEntry, truncated bool, entryLimit int) string {
 	if len(entries) == 0 {
 		return ""
 	}
@@ -171,7 +172,7 @@ func formatTree(root string, entries []treeEntry, truncated bool) string {
 	flushFiles()
 
 	if truncated {
-		b.WriteString("  ... (truncated, >200 entries)\n")
+		b.WriteString(fmt.Sprintf("  ... (truncated, >%d entries)\n", entryLimit))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
