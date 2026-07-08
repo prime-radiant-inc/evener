@@ -103,6 +103,7 @@ func TestWorktreeErrors_BadBaseRefBeforeWorktreeAdd(t *testing.T) {
 func TestWorktreeErrors_NameExistsSuggestsSwitchOnlyWhenManaged(t *testing.T) {
 	t.Parallel()
 	t.Run("unmanaged branch: no switch suggestion", func(t *testing.T) {
+		t.Parallel()
 		r := newWorktreeRepo(t)
 		wtGit(t, r.mainRoot, "branch", "plain", r.head)
 
@@ -119,6 +120,7 @@ func TestWorktreeErrors_NameExistsSuggestsSwitchOnlyWhenManaged(t *testing.T) {
 	})
 
 	t.Run("managed worktree: switch suggested", func(t *testing.T) {
+		t.Parallel()
 		r := newWorktreeRepo(t)
 		if _, err := r.create(t, map[string]any{"name": "dup"}); err != nil {
 			t.Fatalf("first create: %v", err)

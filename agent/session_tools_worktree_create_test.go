@@ -473,7 +473,9 @@ func TestWorktreeCreate_RejectsBadBaseRefs(t *testing.T) {
 		{"nonexistent", "no-such-ref", "unresolvable"},
 	}
 	for _, c := range cases {
+		c := c
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			r := newWorktreeRepo(t)
 			_, err := r.create(t, map[string]any{"name": c.name, "base_ref": c.ref})
 			if err == nil {
@@ -491,6 +493,7 @@ func TestWorktreeCreate_BranchExistsSuggestsSwitchOnlyWhenManaged(t *testing.T) 
 	t.Parallel()
 	// (a) A plain branch with no managed worktree: error, NO switch suggestion.
 	t.Run("unmanaged branch", func(t *testing.T) {
+		t.Parallel()
 		r := newWorktreeRepo(t)
 		wtGit(t, r.mainRoot, "branch", "plain", r.head)
 		_, err := r.create(t, map[string]any{"name": "plain"})
@@ -504,6 +507,7 @@ func TestWorktreeCreate_BranchExistsSuggestsSwitchOnlyWhenManaged(t *testing.T) 
 
 	// (b) A managed worktree already exists: error DOES suggest switch.
 	t.Run("managed worktree", func(t *testing.T) {
+		t.Parallel()
 		r := newWorktreeRepo(t)
 		if _, err := r.create(t, map[string]any{"name": "dup"}); err != nil {
 			t.Fatalf("first create: %v", err)

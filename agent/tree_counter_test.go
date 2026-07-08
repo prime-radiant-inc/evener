@@ -130,6 +130,7 @@ func TestTreeCounterSharedAcrossTree(t *testing.T) {
 func TestCounterReservesOnSpawnResumeDrive(t *testing.T) {
 	t.Parallel()
 	t.Run("spawn reserves and terminal finalize releases", func(t *testing.T) {
+		t.Parallel()
 		release := make(chan struct{})
 		var releaseOnce sync.Once
 		c := llm.NewClient()
@@ -162,6 +163,7 @@ func TestCounterReservesOnSpawnResumeDrive(t *testing.T) {
 	})
 
 	t.Run("resume reserves and abandon releases", func(t *testing.T) {
+		t.Parallel()
 		adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
 		c := llm.NewClient()
 		c.Register(adapter)
@@ -202,6 +204,7 @@ func TestCounterReservesOnSpawnResumeDrive(t *testing.T) {
 	})
 
 	t.Run("drive reserves and turn end releases", func(t *testing.T) {
+		t.Parallel()
 		release := make(chan struct{})
 		var releaseOnce sync.Once
 		c := llm.NewClient()

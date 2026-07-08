@@ -837,7 +837,9 @@ func TestWatchSendRestoreDropsDynamicallyNonResumableTerminalDelegate(t *testing
 		{status: jobstore.StatusFailed, reason: "failed"},
 	}
 	for _, tc := range cases {
+		tc := tc
 		t.Run(string(tc.status), func(t *testing.T) {
+			t.Parallel()
 			adapter := &fakeAdapter{
 				name: "openai",
 				steps: []func(req llm.Request) llm.Response{
@@ -2540,7 +2542,9 @@ func TestWatchSendTeardownRejectsInFlightFailedDeliveryDuringDroppedAppend(t *te
 			},
 		},
 	} {
+		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			jm := newTestJM(t)
 			seedCommonWatchSendTargets(t, jm)
 			send := func(context.Context, sendMessageArgs) sendMessageResult {
