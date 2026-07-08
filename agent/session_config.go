@@ -239,6 +239,10 @@ type testConfig struct {
 	// whose contract is below prompt content. Tool definitions still rebuild.
 	minimalSystemPrompt bool
 
+	// minimalWorktreeToolRegistry registers only file tools, the terminal/result
+	// tool, and manage_worktree for worktree-focused tests.
+	minimalWorktreeToolRegistry bool
+
 	// noSyncJobStore skips jobstore fsyncs for tests whose contract is not crash
 	// durability. The event bytes and append/load behavior stay the same.
 	noSyncJobStore bool

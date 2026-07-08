@@ -267,6 +267,16 @@ func newProfileToolRegistry(p *provider.Profile) *tool.Registry {
 	return reg
 }
 
+func registerMinimalWorktreeTools(reg *tool.Registry, s *Session) error {
+	deps := newToolDeps(s)
+	if err := registerFileTools(reg, deps); err != nil {
+		return err
+	}
+	registerWorktreeTool(reg, deps)
+	registerCommunicateTool(reg, deps)
+	return nil
+}
+
 func registerCoreTools(reg *tool.Registry, s *Session) error {
 	deps := newToolDeps(s)
 	if err := registerFileTools(reg, deps); err != nil {
