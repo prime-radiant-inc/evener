@@ -6,7 +6,6 @@ import (
 	"errors"
 	"flag"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -224,13 +223,12 @@ func TestOpenAISubcommandHelpReturnsErrHelp(t *testing.T) {
 }
 
 func TestTopLevelHelpShowsReasoningEffort(t *testing.T) {
-	cmd := exec.Command("go", "run", ".", "--help")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("serf --help failed: %v\n%s", err, out)
-	}
-	if !strings.Contains(string(out), "--reasoning-effort") {
-		t.Fatalf("serf --help missing --reasoning-effort:\n%s", out)
+	var stderr bytes.Buffer
+	fs, _ := newRunFlagSet(&stderr)
+	fs.Usage()
+	usage := stderr.String()
+	if !strings.Contains(usage, "--reasoning-effort") {
+		t.Fatalf("serf --help missing --reasoning-effort:\n%s", usage)
 	}
 }
 
