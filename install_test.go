@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -475,6 +476,15 @@ func writeInstallReleaseArchive(t *testing.T, path, root string) {
 func writeExecutable(t *testing.T, path, content string) {
 	t.Helper()
 
+	// A freshly written executable can fail execve with ETXTBSY: os.WriteFile
+	// holds the file open for writing, and a sibling parallel test that forks for
+	// its own os/exec in that window leaves the child holding the write fd until it
+	// execs. syscall.ForkLock is the standard guard — fork/exec takes it for
+	// writing, so holding it for reading across the write excludes any concurrent
+	// fork. See Go issue #22315. (These tests are -short-skipped, but the full
+	// integration suite runs them in parallel.)
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
 	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
 		t.Fatalf("write executable %s: %v", path, err)
 	}
