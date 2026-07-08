@@ -181,14 +181,15 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 	}
 
 	// A sandboxed session needs an absolute home to anchor the credential denylist.
-	// Without one (e.g. $HOME unset in a bare service), joining home-relative
-	// secrets yields RELATIVE paths the enforcement layers never match — a silent
-	// unmask of ~/.ssh, ~/.aws, etc. Fail closed rather than resolve a leaky policy.
+	// Without one (e.g. the home-directory env var is unset in a bare service),
+	// joining home-relative secrets yields RELATIVE paths the enforcement layers
+	// never match — a silent unmask of ~/.ssh, ~/.aws, etc. Fail closed rather than
+	// resolve a leaky policy.
 	if !filepath.IsAbs(host.Home) {
 		return ResolvedPolicy{}, &RefusalError{
 			Mode:   policy.Mode,
 			Net:    policy.Network,
-			Reason: "cannot anchor the credential denylist: no absolute home directory is set ($HOME); sandboxing a session without a resolvable home would silently unmask credential directories",
+			Reason: "cannot anchor the credential denylist: the session's home directory is not an absolute path; sandboxing without a resolvable home would silently unmask credential directories",
 		}
 	}
 

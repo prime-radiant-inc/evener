@@ -21,6 +21,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/spf13/afero"
+	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/envvars"
 )
 
@@ -64,6 +65,14 @@ type LocalExecutionEnvironment struct {
 	gitRoots    *gitRootCache // active working-tree root per cwd (GitRootOrEmpty)
 	mainRoots   *gitRootCache // stable main repo root per cwd (ResolveMainRepoRoot)
 	fs          afero.Fs      // filesystem backing ReadFile/WriteFile/EditFile; defaults to the OS
+
+	// Sandbox is the resolved sandbox policy for this environment, or nil for the
+	// default (off) — exactly today's behavior. INERT in M1: no method here
+	// (resolve/resolveWrite/shellCommand/ExecCommand/StreamCommand) consults it
+	// yet. It rides WithWorkingDirectory like EnvPolicy so a re-rooted child
+	// (subagent worktree) inherits it. Enforcement is wired in M2 (file tools)
+	// and M3 (kernel wrapper); until then this is a carried-but-unread field.
+	Sandbox *sandbox.ResolvedPolicy
 }
 
 // gitRootCache memoizes git-root lookups per working dir. A session resolves the
@@ -128,6 +137,7 @@ func (e *LocalExecutionEnvironment) WithWorkingDirectory(dir string) *LocalExecu
 		gitRoots:    &gitRootCache{m: map[string]string{}},
 		mainRoots:   &gitRootCache{m: map[string]string{}},
 		fs:          e.fs,
+		Sandbox:     e.Sandbox, // inherited by re-rooted children like EnvPolicy (M1: inert)
 	}
 }
 

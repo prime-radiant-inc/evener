@@ -99,6 +99,8 @@ func runServe(args []string) error {
 	var modelFallbacks cmdutil.StringSliceFlag
 	fs.Var(&modelFallbacks, "model-fallback", "fallback model (provider/model) tried on permanent provider errors (repeatable)")
 	openAIResponsesContinuation := fs.String("openai-responses-continuation", "", "OpenAI Responses continuation mode: off|auto (default: off)")
+	sandboxMode := fs.String("sandbox", "off", "sandbox mode: off (default); other modes are in development and not yet enabled")
+	sandboxNet := fs.String("sandbox-net", "on", "sandbox network egress on|off (only meaningful with a sandbox mode)")
 	cpuProfile := fs.String("cpu-profile", "", "write CPU profile to file")
 	traceFile := fs.String("trace", "", "write execution trace to file")
 
@@ -228,6 +230,9 @@ func runServe(args []string) error {
 	}
 	if effort.Set {
 		sessionCfg.ReasoningEffort = effort.Value
+	}
+	if err := configureSandbox(&sessionCfg, *sandboxMode, *sandboxNet); err != nil {
+		return err
 	}
 
 	var sess *agent.Session
