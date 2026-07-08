@@ -352,6 +352,33 @@ func TestResolveNetworkDefaultsOnWhenUnset(t *testing.T) {
 	}
 }
 
+// TestResolveRefusesUnresolvableConfigInclude is the git-config include fix's
+// fail-closed arm: an include path that cannot be resolved to a concrete file
+// (a glob) yet could land inside a writable root must refuse the whole session,
+// not silently leave a potential writable-root include unprotected.
+func TestResolveRefusesUnresolvableConfigInclude(t *testing.T) {
+	t.Parallel()
+	root := mainRepo(t)
+	// A glob include path relative to .git → resolves under the worktree, cannot
+	// be enumerated. Resolve must fail closed with a *RefusalError.
+	appendFile(t, filepath.Join(root, ".git", "config"), "\n[include]\n\tpath = ../*.cfg\n")
+	mustRefuse(t, SandboxPolicy{Mode: ModeWorkspaceWrite, Network: netPtr(true)}, bwrapHost(), root, "")
+}
+
+// TestResolveConfigIncludeOutsideWorktreeResolves: an include of a file OUTSIDE
+// any writable root (an absolute path under /etc) is a legitimate read git
+// performs and must not refuse or over-protect — only writable-root includes are
+// the persistence vector.
+func TestResolveConfigIncludeOutsideWorktreeResolves(t *testing.T) {
+	t.Parallel()
+	root := mainRepo(t)
+	appendFile(t, filepath.Join(root, ".git", "config"), "\n[include]\n\tpath = /etc/nonexistent-gitconfig\n")
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeWorkspaceWrite, Network: netPtr(true)}, bwrapHost(), root)
+	if slices.Contains(rp.Git.ProtectedPaths, "/etc/nonexistent-gitconfig") {
+		t.Errorf("an include outside every writable root should not be added to ProtectedPaths: %v", rp.Git.ProtectedPaths)
+	}
+}
+
 func assertMaskedContainsDefaults(t *testing.T, rp ResolvedPolicy, home string) {
 	t.Helper()
 	for _, want := range []string{"/proc", "/sys", filepath.Join(home, ".ssh"), filepath.Join(home, ".aws")} {
