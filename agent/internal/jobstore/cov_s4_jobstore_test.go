@@ -408,8 +408,8 @@ func planFaultAt(idx ...int) *fault.Schedule {
 }
 
 // faultStore opens a Store on a fresh MemMapFs wrapped in the given fault
-// schedule. A fresh (nonexistent) log consumes fs ops 0..3 during open
-// (OpenFile, Stat, Open, scan-read), so faults scheduled at op index >= 4 land
+// schedule. A fresh (nonexistent) log consumes scheduled fs op 0 during open
+// (OpenFile; Stat is not scheduled), so faults scheduled at op index >= 1 land
 // on the first append instead of the open.
 func faultStore(t *testing.T, s *fault.Schedule) *Store {
 	t.Helper()
@@ -430,9 +430,9 @@ func TestStoreAppendSurfacesFilesystemFaults(t *testing.T) {
 		op   int
 		want string
 	}{
-		{name: "seek", op: 4, want: "seek append start"},
-		{name: "write", op: 5, want: "write event"},
-		{name: "sync", op: 6, want: "sync event"},
+		{name: "seek", op: 1, want: "seek append start"},
+		{name: "write", op: 2, want: "write event"},
+		{name: "sync", op: 3, want: "sync event"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := faultStore(t, planFaultAt(tc.op))
@@ -456,13 +456,13 @@ func TestStoreAppendRollbackFailure(t *testing.T) {
 		rollbackOp int
 		want       string
 	}{
-		{name: "truncate", rollbackOp: 6, want: "rollback failed: truncate to 0"},
-		{name: "seek", rollbackOp: 7, want: "rollback failed: seek eof"},
-		{name: "sync", rollbackOp: 8, want: "rollback failed: sync rollback truncate"},
+		{name: "truncate", rollbackOp: 3, want: "rollback failed: truncate to 0"},
+		{name: "seek", rollbackOp: 4, want: "rollback failed: seek eof"},
+		{name: "sync", rollbackOp: 5, want: "rollback failed: sync rollback truncate"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// op 5 is the append write (fails), the rollback op then also faults.
-			s := faultStore(t, planFaultAt(5, tc.rollbackOp))
+			// op 2 is the append write (fails), the rollback op then also faults.
+			s := faultStore(t, planFaultAt(2, tc.rollbackOp))
 			err := s.Append(Event{Kind: EventJobStarted, JobID: "job_A"})
 			if err == nil || !strings.Contains(err.Error(), "write event") || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("rollback-failure error = %v, want write event + %q", err, tc.want)
@@ -479,9 +479,9 @@ func TestStoreAppendBatchSurfacesFilesystemFaults(t *testing.T) {
 		op   int
 		want string
 	}{
-		{name: "seek", op: 4, want: "seek append start"},
-		{name: "write", op: 5, want: "write event"},
-		{name: "sync", op: 7, want: "sync event"},
+		{name: "seek", op: 1, want: "seek append start"},
+		{name: "write", op: 2, want: "write event"},
+		{name: "sync", op: 4, want: "sync event"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := faultStore(t, planFaultAt(tc.op))

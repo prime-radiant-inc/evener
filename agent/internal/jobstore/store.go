@@ -63,6 +63,14 @@ func openFs(fs afero.Fs, path string) (*Store, error) {
 		return nil, fmt.Errorf("jobstore: open %s: %w", path, err)
 	}
 	s := &Store{path: path, fs: fs, f: f}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("jobstore: stat %s: %w", path, err)
+	}
+	if info.Size() == 0 {
+		return s, nil
+	}
 	existing, err := s.readAllLocked()
 	if err != nil {
 		_ = f.Close()
