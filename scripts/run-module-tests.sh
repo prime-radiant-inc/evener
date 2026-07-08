@@ -31,7 +31,7 @@ SERF_TEST_MODE=${SERF_TEST_MODE:-fast}
 case "$SERF_TEST_MODE" in
 	fast)
 		WAVE1=${WAVE1:-"agent"}
-		WAVE2=${WAVE2:-". llm auth envvars invariant"}
+		WAVE2=${WAVE2-". llm auth envvars invariant"}
 		;;
 	exhaustive)
 		WAVE1=${WAVE1:-"."}
