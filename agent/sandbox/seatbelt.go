@@ -3,6 +3,7 @@ package sandbox
 import (
 	_ "embed"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 )
@@ -53,6 +54,29 @@ type Canonicalizer func(string) string
 // identityCanon returns paths unchanged — the unit-test canonicalizer, which
 // keeps golden SBPL output independent of the host's real symlink layout.
 func identityCanon(p string) string { return p }
+
+// canonicalizeLongestPrefix resolves p to the canonical path Seatbelt matches on
+// even when trailing components do not exist yet: it resolves the longest
+// existing ancestor via eval (an EvalSymlinks-shaped resolver) and re-appends the
+// non-existent tail. A not-yet-created protected surface (e.g.
+// .git/config.worktree) therefore still inherits the canonical prefix
+// (/tmp -> /private/tmp, /var -> /private/var) its existing parent has. This is
+// load-bearing: Seatbelt matches a -D param string against the kernel's CANONICAL
+// path, so an exclusion left in the conventional spelling while its granting root
+// was canonicalized would silently miss and re-expose the protected surface. The
+// darwin canonicalizer is realCanonicalizer (eval = filepath.EvalSymlinks); unit
+// tests inject a fake so the walk is exercised on Linux.
+func canonicalizeLongestPrefix(p string, eval func(string) (string, error)) string {
+	p = filepath.Clean(p)
+	if resolved, err := eval(p); err == nil {
+		return resolved
+	}
+	dir := filepath.Dir(p)
+	if dir == p {
+		return p // reached the filesystem root with nothing resolvable
+	}
+	return filepath.Join(canonicalizeLongestPrefix(dir, eval), filepath.Base(p))
+}
 
 // SeatbeltPolicy turns a ResolvedPolicy's SPAWNED-process layer into an SBPL
 // policy and its -D dir params. Seatbelt confines spawned commands (the shell,

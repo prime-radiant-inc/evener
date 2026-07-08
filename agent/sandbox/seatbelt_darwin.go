@@ -10,17 +10,17 @@ import "path/filepath"
 // itself is tampered with, the attacker already has root.
 const pathToSeatbelt = "/usr/bin/sandbox-exec"
 
-// realCanonicalizer resolves a root to its canonical macOS path (following
-// symlinks and firmlinks: /tmp -> /private/tmp, $HOME under /Users), which is
-// what Seatbelt matches on. A path that cannot be resolved (does not exist yet,
-// or a broken link) is returned unchanged rather than dropped — a dropped write
-// root would silently lose a grant and a dropped exclusion would silently widen
-// the policy.
+// realCanonicalizer resolves a root or exclusion to the canonical macOS path
+// Seatbelt matches on (following symlinks and firmlinks: /tmp -> /private/tmp,
+// /var -> /private/var). It resolves the longest existing prefix and re-appends
+// any not-yet-existing tail, so a protected surface that does not exist yet
+// (e.g. .git/config.worktree) still carries the same canonical prefix as its
+// granting root — otherwise its require-not exclusion would silently miss and
+// leave the surface writable. A path with no resolvable ancestor is returned
+// cleaned, never dropped (a dropped write root loses a grant; a dropped exclusion
+// widens the policy).
 func realCanonicalizer(p string) string {
-	if resolved, err := filepath.EvalSymlinks(p); err == nil {
-		return resolved
-	}
-	return p
+	return canonicalizeLongestPrefix(p, filepath.EvalSymlinks)
 }
 
 // seatbeltWrap prepends the sandbox-exec invocation to argv so the command — and

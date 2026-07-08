@@ -302,6 +302,41 @@ func TestSeatbeltLinkedWorktreeReadNotWrite(t *testing.T) {
 	}
 }
 
+func TestCanonicalizeLongestPrefix(t *testing.T) {
+	t.Parallel()
+	// Fake resolver: /var (and its existing descendants) firmlink to /private/var;
+	// only paths up to the .git dir "exist".
+	resolved := map[string]string{
+		"/var":                 "/private/var",
+		"/var/wt":              "/private/var/wt",
+		"/var/wt/.git":         "/private/var/wt/.git",
+		"/private/var":         "/private/var",
+		"/private/var/wt":      "/private/var/wt",
+		"/private/var/wt/.git": "/private/var/wt/.git",
+	}
+	eval := func(p string) (string, error) {
+		if r, ok := resolved[p]; ok {
+			return r, nil
+		}
+		return "", os.ErrNotExist
+	}
+
+	// A not-yet-existing protected surface under a /var worktree must still get the
+	// /private/var canonical prefix its existing parent has — otherwise the
+	// require-not exclusion would miss the kernel's canonical write path.
+	if got := canonicalizeLongestPrefix("/var/wt/.git/config.worktree", eval); got != "/private/var/wt/.git/config.worktree" {
+		t.Errorf("nonexistent tail: got %q, want /private/var/wt/.git/config.worktree", got)
+	}
+	// A wholly-existing path resolves directly.
+	if got := canonicalizeLongestPrefix("/var/wt", eval); got != "/private/var/wt" {
+		t.Errorf("existing path: got %q, want /private/var/wt", got)
+	}
+	// A path with no resolvable ancestor is returned cleaned, never dropped.
+	if got := canonicalizeLongestPrefix("/nonexistent/./a/b", eval); got != "/nonexistent/a/b" {
+		t.Errorf("unresolvable path: got %q, want /nonexistent/a/b", got)
+	}
+}
+
 func TestSeatbeltCanonicalizeRoots(t *testing.T) {
 	t.Parallel()
 	// A canonicalizer mapping /tmp -> /private/tmp (the macOS firmlink) must make
