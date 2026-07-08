@@ -73,7 +73,7 @@ func (r *wtRepo) restoreWorktreeSession(t *testing.T, meta schema.SessionMeta, l
 	sess, err := RestoreSessionFromMetaWithConfig(
 		w3init_restoreClient(), NewOpenAIProfile("gpt-5.2"),
 		execenv.NewLocalExecutionEnvironment(launchDir), meta,
-		RestoreSessionConfig{StateDir: r.stateDir, testOnly: testConfig{skipGitSnapshot: true}},
+		RestoreSessionConfig{StateDir: r.stateDir, testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true}},
 	)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)

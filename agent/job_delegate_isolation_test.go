@@ -422,6 +422,7 @@ func TestDelegateIsolation_ManageWorktreeDeniedAfterRestoreAllTools(t *testing.T
 	restoredParentEnv := execenv.NewLocalExecutionEnvironment(r.mainRoot)
 	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), restoredParentEnv, parentMeta, RestoreSessionConfig{
 		StateDir: stateDir,
+		testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	})
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
@@ -659,6 +660,7 @@ func TestDelegateIsolation_RevivalOnKeptUnlockedLaneReLocks(t *testing.T) {
 	restoredParentEnv := execenv.NewLocalExecutionEnvironment(r.mainRoot)
 	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), restoredParentEnv, parentMeta, RestoreSessionConfig{
 		StateDir: stateDir,
+		testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	})
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
@@ -724,6 +726,7 @@ func TestDelegateIsolation_RevivalOnForeignLockedLaneRefuses(t *testing.T) {
 	restoredParentEnv := execenv.NewLocalExecutionEnvironment(r.mainRoot)
 	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), restoredParentEnv, parentMeta, RestoreSessionConfig{
 		StateDir: stateDir,
+		testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	})
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
