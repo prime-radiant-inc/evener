@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -59,24 +60,71 @@ func (e *gitRunError) ExitCode() int {
 	return -1
 }
 
+var predicateRepoTemplate struct {
+	sync.Once
+	root string
+	sha  string
+	err  error
+}
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if predicateRepoTemplate.root != "" {
+		_ = os.RemoveAll(filepath.Dir(predicateRepoTemplate.root))
+	}
+	os.Exit(code)
+}
+
 // initRepo creates a fresh git repo at <tmp>/repo with an initial commit on
 // "main" and returns its root path plus the initial commit's SHA.
 func initRepo(t *testing.T) (root, initialSHA string) {
 	t.Helper()
+	predicateRepoTemplate.Once.Do(func() {
+		predicateRepoTemplate.root, predicateRepoTemplate.sha, predicateRepoTemplate.err = buildPredicateRepoTemplate()
+	})
+	if predicateRepoTemplate.err != nil {
+		t.Fatalf("build repo template: %v", predicateRepoTemplate.err)
+	}
+
 	root = filepath.Join(t.TempDir(), "repo")
+	if err := os.CopyFS(root, os.DirFS(predicateRepoTemplate.root)); err != nil {
+		t.Fatalf("copy repo template: %v", err)
+	}
+	return root, predicateRepoTemplate.sha
+}
+
+func buildPredicateRepoTemplate() (root, initialSHA string, err error) {
+	base, err := os.MkdirTemp("", "serf-worktree-predicate-template-*")
+	if err != nil {
+		return "", "", err
+	}
+	root = filepath.Join(base, "repo")
 	if err := os.MkdirAll(root, 0o755); err != nil {
-		t.Fatalf("mkdir repo: %v", err)
+		return "", "", err
 	}
-	runGit(t, root, "init", "-q", "-b", "main")
-	runGit(t, root, "config", "user.email", "test@example.com")
-	runGit(t, root, "config", "user.name", "Test")
+	if _, err := runGitRaw(root, "init", "-q", "-b", "main"); err != nil {
+		return "", "", err
+	}
+	if _, err := runGitRaw(root, "config", "user.email", "test@example.com"); err != nil {
+		return "", "", err
+	}
+	if _, err := runGitRaw(root, "config", "user.name", "Test"); err != nil {
+		return "", "", err
+	}
 	if err := os.WriteFile(filepath.Join(root, "f.txt"), []byte("hi\n"), 0o644); err != nil {
-		t.Fatalf("write f.txt: %v", err)
+		return "", "", err
 	}
-	runGit(t, root, "add", "f.txt")
-	runGit(t, root, "commit", "-q", "-m", "init")
-	sha := strings.TrimSpace(runGit(t, root, "rev-parse", "HEAD"))
-	return root, sha
+	if _, err := runGitRaw(root, "add", "f.txt"); err != nil {
+		return "", "", err
+	}
+	if _, err := runGitRaw(root, "commit", "-q", "-m", "init"); err != nil {
+		return "", "", err
+	}
+	out, err := runGitRaw(root, "rev-parse", "HEAD")
+	if err != nil {
+		return "", "", err
+	}
+	return root, strings.TrimSpace(out), nil
 }
 
 // addWorktree adds a worktree at <root>/<name> on a new branch <name>
