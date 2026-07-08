@@ -105,7 +105,7 @@ func executeCommandHook(ctx context.Context, hook plugin.RegisteredHook, input I
 	// tools already apply — so a hook saw serf's provider API key regardless of
 	// sandboxing. Scrub it here so hook commands get the same secret hygiene as
 	// every other spawned command (reconciliation #5).
-	env := scrubSecretEnv(os.Environ())
+	env := sandbox.ScrubSecretEnv(os.Environ())
 	env = append(env,
 		"CLAUDE_PLUGIN_ROOT="+hook.PluginDir,
 		"PLUGIN_ROOT="+hook.PluginDir,
@@ -162,32 +162,6 @@ func executeCommandHook(ctx context.Context, hook plugin.RegisteredHook, input I
 	}
 
 	return result, nil
-}
-
-// scrubSecretEnv drops environment entries whose NAME marks them as a credential,
-// mirroring the deny predicate execenv applies to shell tools
-// (*API_KEY*/*SECRET*/*TOKEN*/*PASSWORD*/*CREDENTIAL*, case-insensitive). Hook
-// commands are spawned outside execenv, so without this they would inherit the
-// provider API key that every other spawned command has scrubbed. It returns a
-// fresh slice and never mutates its input.
-func scrubSecretEnv(env []string) []string {
-	deny := func(name string) bool {
-		u := strings.ToUpper(name)
-		return strings.Contains(u, "API_KEY") ||
-			strings.Contains(u, "SECRET") ||
-			strings.Contains(u, "TOKEN") ||
-			strings.Contains(u, "PASSWORD") ||
-			strings.Contains(u, "CREDENTIAL")
-	}
-	out := make([]string, 0, len(env))
-	for _, kv := range env {
-		name, _, ok := strings.Cut(kv, "=")
-		if ok && deny(name) {
-			continue
-		}
-		out = append(out, kv)
-	}
-	return out
 }
 
 // promptHookClient is the interface for LLM calls used by prompt hooks.
