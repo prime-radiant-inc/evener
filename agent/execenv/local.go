@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -285,7 +284,16 @@ func resolveOSVersion() string {
 // normalized to LF.
 func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limitLines *int) (string, error) {
 	abs := e.resolve(path)
-	b, err := afero.ReadFile(e.filesystem(), abs)
+	var b []byte
+	var err error
+	if sfs := e.sandbox(); sfs != nil {
+		// Sandboxed: race-safe fd read (symlink-refusing, root/denylist-checked).
+		// The image/PDF/binary/line-numbering contract below is applied identically
+		// to the returned bytes, so the output is unchanged from the off path.
+		b, err = sfs.readFile("read_file", abs)
+	} else {
+		b, err = afero.ReadFile(e.filesystem(), abs)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -332,6 +340,15 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 // directories. The path must resolve to a location under RootDir. It returns a
 // human-readable summary of the bytes written.
 func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (string, error) {
+	if sfs := e.sandbox(); sfs != nil {
+		// Sandboxed: atomic temp+renameat beneath a writable-root fd (creating any
+		// missing parents beneath the same root); read-only mode / out-of-root /
+		// masked / git-protected targets return a typed denial.
+		if err := sfs.writeFile("write_file", e.resolve(path), []byte(content), 0o644); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
+	}
 	abs, err := e.resolveWrite(path)
 	if err != nil {
 		return "", err
@@ -351,11 +368,26 @@ func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (stri
 // replaceAll is true, oldString must match exactly once. It returns a summary
 // of the number of replacements made.
 func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newString string, replaceAll bool) (string, error) {
-	abs, err := e.resolveWrite(path)
-	if err != nil {
-		return "", err
+	sfs := e.sandbox()
+	var abs string
+	var b []byte
+	var err error
+	if sfs != nil {
+		abs = e.resolve(path)
+		// Deny an edit in a non-writable location up front (read-only mode, outside
+		// the writable roots, or a masked/git-protected surface) before reading, so
+		// the model gets a clean write denial rather than a match/not-found result.
+		if derr := sfs.checkWritable("edit_file", abs); derr != nil {
+			return "", derr
+		}
+		b, err = sfs.readFile("edit_file", abs)
+	} else {
+		abs, err = e.resolveWrite(path)
+		if err != nil {
+			return "", err
+		}
+		b, err = afero.ReadFile(e.filesystem(), abs)
 	}
-	b, err := afero.ReadFile(e.filesystem(), abs)
 	if err != nil {
 		return "", err
 	}
@@ -383,8 +415,12 @@ func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newS
 		s = strings.Replace(s, oldString, newString, 1)
 		n = 1
 	}
-	if err := afero.WriteFile(e.filesystem(), abs, []byte(s), 0o644); err != nil {
-		return "", err
+	if sfs != nil {
+		if werr := sfs.writeFile("edit_file", abs, []byte(s), 0o644); werr != nil {
+			return "", werr
+		}
+	} else if werr := afero.WriteFile(e.filesystem(), abs, []byte(s), 0o644); werr != nil {
+		return "", werr
 	}
 	plural := "s"
 	if n == 1 {
@@ -533,6 +569,9 @@ func detectDocumentFormat(path string, data []byte) string {
 // FileExists reports whether a file or directory exists at path (resolved
 // relative to RootDir).
 func (e *LocalExecutionEnvironment) FileExists(path string) bool {
+	if sfs := e.sandbox(); sfs != nil {
+		return sfs.exists("file_exists", e.resolve(path))
+	}
 	_, err := os.Stat(e.resolve(path))
 	return err == nil
 }
@@ -544,6 +583,11 @@ func (e *LocalExecutionEnvironment) FileExists(path string) bool {
 func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]DirEntry, error) {
 	if depth <= 0 {
 		depth = 1
+	}
+	if sfs := e.sandbox(); sfs != nil {
+		// Sandboxed: fd-anchored recursive walk (each subdir re-opened beneath its
+		// parent fd with O_NOFOLLOW; masked entries skipped; symlinks not followed).
+		return sfs.listDir("list_dir", e.resolve(path), depth)
 	}
 	root := e.resolve(path)
 
@@ -601,6 +645,11 @@ func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string) ([]str
 	if !filepath.IsAbs(base) {
 		base = filepath.Join(e.RootDir, base)
 	}
+	if sfs := e.sandbox(); sfs != nil {
+		// Sandboxed: the base is policy-checked and the walk refuses symlink
+		// traversal (no out-of-root match) and drops masked matches.
+		return sfs.glob("glob", base, pattern)
+	}
 	matches, err := doublestar.Glob(os.DirFS(base), pattern)
 	if err != nil {
 		return nil, err
@@ -609,17 +658,7 @@ func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string) ([]str
 	for _, m := range matches {
 		abs = append(abs, filepath.Join(base, m))
 	}
-	sort.SliceStable(abs, func(i, j int) bool {
-		fi, _ := os.Stat(abs[i])
-		fj, _ := os.Stat(abs[j])
-		if fi == nil || fj == nil {
-			return abs[i] < abs[j]
-		}
-		if fi.ModTime() != fj.ModTime() {
-			return fi.ModTime().After(fj.ModTime())
-		}
-		return abs[i] < abs[j]
-	})
+	sortPathsByMtimeDesc(abs)
 	return abs, nil
 }
 
@@ -668,12 +707,30 @@ func buildRipgrepArgs(outputMode string, caseInsensitive bool, globFilter, patte
 }
 
 func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
+	dir := resolveGrepDir(path, e.RootDir)
+
+	if sfs := e.sandbox(); sfs != nil {
+		// Policy-check the base directory race-safely. NOTE (M2 scope): only the
+		// base is policy-checked here — the ripgrep subprocess itself is still
+		// UNCONFINED; its kernel wrapping (so it can't follow a symlink out) is M3
+		// (tool-surface inventory: "in-process base resolution; rg subprocess
+		// kernel-wrapped"). The native fallback below IS confined (denylist-skipping,
+		// symlink-refusing walk).
+		canonical, cerr := sfs.checkReadBase("grep", dir)
+		if cerr != nil {
+			return "", cerr
+		}
+		if _, lookErr := execLookPath("rg"); lookErr != nil {
+			return sfs.grepNative(pattern, canonical, globFilter, caseInsensitive, maxResults, outputMode)
+		}
+		dir = canonical
+	}
+
 	rg, err := execLookPath("rg")
 	if err != nil {
 		// Fallback to native Go regex search when ripgrep is absent
-		return e.grepNative(pattern, resolveGrepDir(path, e.RootDir), globFilter, caseInsensitive, maxResults, outputMode)
+		return e.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults, outputMode)
 	}
-	dir := resolveGrepDir(path, e.RootDir)
 
 	args := buildRipgrepArgs(outputMode, caseInsensitive, globFilter, pattern, dir)
 
@@ -698,23 +755,10 @@ func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter
 }
 
 func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
-	flags := ""
-	if caseInsensitive {
-		flags = "(?i)"
-	}
-	re, err := regexp.Compile(flags + pattern)
+	a, err := newGrepAccum(pattern, caseInsensitive, maxResults, outputMode)
 	if err != nil {
-		return "", fmt.Errorf("invalid regex: %w", err)
+		return "", err
 	}
-
-	if maxResults <= 0 {
-		maxResults = 100
-	}
-
-	var results []string
-	fileCounts := map[string]int{}     // for "count" mode
-	filesSeen := map[string]struct{}{} // for "files_with_matches" mode
-	totalResults := 0
 
 	err = filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -745,48 +789,15 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 			return nil
 		}
 		relPath, _ := filepath.Rel(path, p)
-		lines := strings.Split(string(data), "\n")
-		for i, line := range lines {
-			if re.MatchString(line) {
-				switch outputMode {
-				case "files_with_matches":
-					if _, seen := filesSeen[relPath]; !seen {
-						filesSeen[relPath] = struct{}{}
-						results = append(results, relPath)
-						totalResults++
-						if totalResults >= maxResults {
-							return filepath.SkipAll
-						}
-					}
-					// Once we've recorded this file, skip to next file
-					return nil
-				case "count":
-					fileCounts[relPath]++
-				default: // "content" or ""
-					results = append(results, fmt.Sprintf("%s:%d:%s", relPath, i+1, line))
-					totalResults++
-					if totalResults >= maxResults {
-						return filepath.SkipAll
-					}
-				}
-			}
+		if a.feed(relPath, data) {
+			return filepath.SkipAll
 		}
 		return nil
 	})
 	if err != nil {
 		return "", err
 	}
-
-	if outputMode == "count" {
-		// Build sorted output from fileCounts
-		var countResults []string
-		for file, cnt := range fileCounts {
-			countResults = append(countResults, fmt.Sprintf("%s:%d", file, cnt))
-		}
-		sort.Strings(countResults)
-		return strings.Join(countResults, "\n"), nil
-	}
-	return strings.Join(results, "\n"), nil
+	return a.finish(), nil
 }
 
 // ExecCommand runs command through the platform shell in its own process group,
