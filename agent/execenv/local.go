@@ -1286,10 +1286,7 @@ func filteredEnvWithPolicy(policy EnvVarPolicy, extra map[string]string) []strin
 }
 
 func filteredEnv(extra map[string]string) []string {
-	deny := func(k string) bool {
-		uk := strings.ToUpper(k)
-		return strings.Contains(uk, "API_KEY") || strings.Contains(uk, "SECRET") || strings.Contains(uk, "TOKEN") || strings.Contains(uk, "PASSWORD") || strings.Contains(uk, "CREDENTIAL")
-	}
+	deny := sandbox.IsSecretEnvName
 	out := []string{}
 	for _, kv := range os.Environ() {
 		k, _, ok := strings.Cut(kv, "=")

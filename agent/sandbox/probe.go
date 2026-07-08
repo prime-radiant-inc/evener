@@ -139,11 +139,25 @@ func (RealProber) Probe() HostFacts {
 func bwrapUsernsWorks(path string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), probeCommandTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, path,
-		"--unshare-user", "--unshare-pid", "--die-with-parent",
-		"--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev",
-		"--", "true")
+	args := bwrapProbeArgs(path)
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	return cmd.Run() == nil
+}
+
+// bwrapProbeArgs is the full argv (binary included) the capability probe runs. It
+// mirrors the exact flag set Wrap emits — including the version-gated --new-session
+// (hardening base) and --argv0 (bwrap 0.9.0+) — so a host whose bwrap predates
+// those flags fails the probe here rather than passing it and then aborting every
+// real spawn with "unknown option". --argv0 takes an argument, placed (like Wrap)
+// immediately before the "--" that precedes the real command.
+func bwrapProbeArgs(path string) []string {
+	return []string{
+		path,
+		"--unshare-user", "--unshare-pid", "--die-with-parent", "--new-session",
+		"--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev",
+		"--argv0", "true",
+		"--", "true",
+	}
 }
 
 // bwrapSupportsOverlay reports whether this bwrap build was compiled with overlay

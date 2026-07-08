@@ -281,7 +281,7 @@ func productionDial(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper) func(c
 		}
 		if wrapper != nil {
 			if ct, ok := t.(*mcpsdk.CommandTransport); ok && ct.Command != nil {
-				confineCommandUnderSandbox(ct.Command, wrapper)
+				confineCommandUnderSandbox(ct.Command, cfg.Env, wrapper)
 			}
 		}
 		return t, nil
@@ -290,14 +290,17 @@ func productionDial(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper) func(c
 
 // confineCommandUnderSandbox rewrites a stdio MCP server's *exec.Cmd so it runs
 // inside the session sandbox: the bwrap invocation is prepended to the argv, the
-// env is passed through the sandbox floor (dropping the ssh-agent handle and
-// cloud creds — a stdio server should not inherit them), and ExtraFiles is
+// env is rebuilt with secret hygiene + the sandbox floor, and ExtraFiles is
 // emptied so the server inherits no serf fds beyond stdio.
-func confineCommandUnderSandbox(cmd *exec.Cmd, w *sandbox.Wrapper) {
-	base := cmd.Env
-	if base == nil {
-		base = os.Environ()
-	}
+//
+// The parent environment is scrubbed of credential-named vars (serf's own
+// provider key et al.) BEFORE the server's configured cfg.Env is layered on top,
+// so an ambient secret never reaches the confined server while an explicitly
+// configured cfg.Env var — even a secret-named one, which is deliberate server
+// configuration — survives. The floor (ssh-agent handle, cloud creds, TMPDIR,
+// cache redirect) is applied last.
+func confineCommandUnderSandbox(cmd *exec.Cmd, cfgEnv map[string]string, w *sandbox.Wrapper) {
+	base := mergeEnvInto(sandbox.ScrubSecretEnv(os.Environ()), cfgEnv)
 	cmd.Env = sandbox.ApplyEnvFloor(base, w.Policy(), w.SessionTmp())
 	argv := w.Wrap(cmd.Args, w.Policy().Git.WorktreeRoot)
 	cmd.Path = argv[0]
@@ -807,24 +810,26 @@ func transportForConfig(cfg mcpconfig.ServerConfig) (mcpsdk.Transport, error) {
 // mergeEnv creates a combined environment from os.Environ() with extra vars
 // merged in. Existing keys are replaced rather than duplicated.
 func mergeEnv(extra map[string]string) []string {
-	env := os.Environ()
+	return mergeEnvInto(os.Environ(), extra)
+}
 
-	// Build a set of extra keys for quick lookup.
+// mergeEnvInto layers extra over the base env slice: base entries whose key is
+// overridden by extra are dropped, then every extra pair is appended. It never
+// mutates base.
+func mergeEnvInto(base []string, extra map[string]string) []string {
 	overrides := make(map[string]bool, len(extra))
 	for k := range extra {
 		overrides[k] = true
 	}
 
-	// Filter out existing entries that will be overridden.
-	filtered := make([]string, 0, len(env)+len(extra))
-	for _, e := range env {
+	filtered := make([]string, 0, len(base)+len(extra))
+	for _, e := range base {
 		key, _, _ := strings.Cut(e, "=")
 		if !overrides[key] {
 			filtered = append(filtered, e)
 		}
 	}
 
-	// Append the overrides.
 	for k, v := range extra {
 		filtered = append(filtered, k+"="+v)
 	}

@@ -593,10 +593,16 @@ func (s *Session) resolveProfileForRef(base *provider.Profile, ref string) (*pro
 func (s *Session) reapplyProviderSpecificTools(oldTag, newTag string) {
 	switch {
 	case newTag == "google" && oldTag != "google":
-		// Switching to Gemini: wire the real web_search executor.
+		// Switching to Gemini: wire the real web_search executor. It must apply
+		// the same net=off egress gate as the statically-registered web tools
+		// (registerWebTools) — a mid-session provider switch must not make web
+		// egress reachable in a sandboxed session whose network is off.
 		_ = s.reg.Register(tool.RegisteredTool{
 			Tool: llm.Tool{Definition: tool.DefWebSearch()},
 			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+				if err := egressDeniedByNet(env, "web_search"); err != nil {
+					return nil, err
+				}
 				query := fmt.Sprint(args["query"])
 				return s.webSearch(ctx, query)
 			},

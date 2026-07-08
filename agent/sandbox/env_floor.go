@@ -101,25 +101,28 @@ func isRedirectedCacheVar(name string) bool {
 	return name == "GOCACHE" || name == "npm_config_cache" || name == envvars.CargoHome.Name
 }
 
-// kubeconfigIsExternal reports whether an absolute KUBECONFIG value points outside
-// every granted root (the worktree, its read/write roots). A worktree-relative or
-// in-worktree kubeconfig is kept; an out-of-tree one is dropped so the sandboxed
-// session cannot reach a cluster it was not granted.
+// kubeconfigIsExternal reports whether a KUBECONFIG value points outside every
+// granted root (the worktree, its read/write roots). KUBECONFIG is a
+// ListSeparator-joined list that kubectl merges entry-by-entry, so it is split
+// and the var is treated as external when ANY absolute entry lands outside the
+// granted roots — otherwise an in-worktree entry could smuggle an out-of-tree
+// cluster config through alongside it. Empty and relative entries are ignored: a
+// relative kubeconfig resolves within the worktree cwd, not an external cluster.
 func kubeconfigIsExternal(val string, policy ResolvedPolicy) bool {
-	val = strings.TrimSpace(val)
-	if val == "" || !filepath.IsAbs(val) {
-		return false
-	}
 	roots := make([]string, 0, 8)
 	roots = append(roots, policy.Git.WorktreeRoot)
 	roots = append(roots, policy.FileTool.ReadRoots...)
 	roots = append(roots, policy.FileTool.WriteRoots...)
 	roots = append(roots, policy.Spawned.ReadRoots...)
 	roots = append(roots, policy.Spawned.WriteRoots...)
-	for _, r := range roots {
-		if r != "" && (val == r || pathUnder(val, r)) {
-			return false
+	for _, entry := range filepath.SplitList(val) {
+		entry = strings.TrimSpace(entry)
+		if entry == "" || !filepath.IsAbs(entry) {
+			continue
+		}
+		if !isUnderAnyRoot(entry, roots) {
+			return true
 		}
 	}
-	return true
+	return false
 }

@@ -21,6 +21,43 @@ func hasSeq(args []string, seq ...string) bool {
 	return false
 }
 
+// seqIndex returns the start index of the first contiguous occurrence of seq in
+// args, or -1 if absent.
+func seqIndex(args []string, seq ...string) int {
+	for i := 0; i+len(seq) <= len(args); i++ {
+		if slices.Equal(args[i:i+len(seq)], seq) {
+			return i
+		}
+	}
+	return -1
+}
+
+// A read-only session whose worktree lives under /tmp: the /tmp tmpfs shadows the
+// cwd, so without a re-bind --chdir aborts the sandbox. Read-only mode grants no
+// write root to save the cwd, so it must be re-bound read-only AFTER the tmpfs.
+func TestBuildBwrapArgvReadOnlyRebindsTmpCwd(t *testing.T) {
+	home := t.TempDir()
+	cwd := MaterializeWorkspace(t, MainCheckout) // t.TempDir()-based, under /tmp
+	if !pathUnder(cwd, "/tmp") {
+		t.Skipf("test needs a /tmp-based cwd; TempDir gave %q", cwd)
+	}
+	net := true
+	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: &net}, bwrapFacts(home), cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	args := buildBwrapArgv(rp, "/tmp/serf-session", cwd)
+
+	tmpfsIdx := seqIndex(args, "--tmpfs", "/tmp")
+	rebindIdx := seqIndex(args, "--ro-bind", cwd, cwd)
+	if rebindIdx < 0 {
+		t.Fatalf("read-only cwd under /tmp must be re-bound read-only: %v", args)
+	}
+	if tmpfsIdx < 0 || rebindIdx < tmpfsIdx {
+		t.Errorf("cwd re-bind (idx %d) must come after the /tmp tmpfs (idx %d): %v", rebindIdx, tmpfsIdx, args)
+	}
+}
+
 // bwrapFacts is a bwrap-capable host anchored at a fake home so masked paths land
 // under a directory the test controls.
 func bwrapFacts(home string) HostFacts {

@@ -92,6 +92,30 @@ func TestBwrapLinkedWorktreeStarts(t *testing.T) {
 	}
 }
 
+// TestBwrapReadOnlyTmpWorktreeStarts covers MED finding #5 end-to-end: a
+// read-only session whose worktree lives under /tmp must still start. Read-only
+// mode grants no write root, so without re-binding the cwd read-only after the
+// /tmp tmpfs, --chdir into the shadowed worktree aborts the sandbox.
+func TestBwrapReadOnlyTmpWorktreeStarts(t *testing.T) {
+	facts := requireRealBwrap(t)
+	facts.Home = t.TempDir()
+	cwd := MaterializeWorkspace(t, MainCheckout) // t.TempDir()-based, under /tmp
+	if !pathUnder(cwd, "/tmp") {
+		t.Skipf("test needs a /tmp-based cwd; TempDir gave %q", cwd)
+	}
+	out, err := runWrapped(t, facts, ModeReadOnly, true, cwd, t.TempDir(),
+		`echo RO-OK; pwd`)
+	if err != nil {
+		t.Fatalf("read-only /tmp worktree sandbox failed to start: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "RO-OK") {
+		t.Errorf("sandbox did not run the command:\n%s", out)
+	}
+	if !strings.Contains(out, cwd) {
+		t.Errorf("pwd inside the sandbox must be the re-bound /tmp worktree %q:\n%s", cwd, out)
+	}
+}
+
 func TestBwrapConfinesAndMasks(t *testing.T) {
 	facts := requireRealBwrap(t)
 
