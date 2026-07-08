@@ -27,6 +27,7 @@ var (
 	wtBaseRepoErr  error
 
 	sharedSessionWorkspace string
+	sharedAgentTempRoot    string
 	intgMCPServerDir       string
 )
 
@@ -49,8 +50,13 @@ func TestMain(m *testing.M) {
 		_ = os.Chmod(sharedWorkspace, 0o555)
 		sharedSessionWorkspace = sharedWorkspace
 	}
+	sharedTempRoot, err := os.MkdirTemp("", "serf-agent-fixtures-*")
+	if err == nil {
+		sharedAgentTempRoot = sharedTempRoot
+	}
 
 	code := m.Run()
+
 	if wtBaseRepoPath != "" {
 		_ = os.RemoveAll(wtBaseRepoPath)
 	}
@@ -61,10 +67,25 @@ func TestMain(m *testing.M) {
 		_ = os.Chmod(sharedWorkspace, 0o755)
 		_ = os.RemoveAll(sharedWorkspace)
 	}
+	if sharedAgentTempRoot != "" {
+		_ = os.RemoveAll(sharedAgentTempRoot)
+	}
 	if intgMCPServerDir != "" {
 		_ = os.RemoveAll(intgMCPServerDir)
 	}
 	os.Exit(code)
+}
+
+func packageFixtureTempDir(t *testing.T, pattern string) string {
+	t.Helper()
+	if sharedAgentTempRoot == "" {
+		return t.TempDir()
+	}
+	dir, err := os.MkdirTemp(sharedAgentTempRoot, pattern)
+	if err != nil {
+		t.Fatalf("MkdirTemp %s: %v", pattern, err)
+	}
+	return dir
 }
 
 // wtRepo is a real git repo plus a session rooted at it, with the managed
@@ -253,7 +274,7 @@ func newWorktreeRepo(t *testing.T) *wtRepo {
 
 func newWorktreeRepoWithConfig(t *testing.T, cfg SessionConfig) *wtRepo {
 	t.Helper()
-	root := t.TempDir()
+	root := packageFixtureTempDir(t, "worktree-repo-*")
 	root, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		t.Fatalf("EvalSymlinks: %v", err)
@@ -262,7 +283,7 @@ func newWorktreeRepoWithConfig(t *testing.T, cfg SessionConfig) *wtRepo {
 	_, head := worktreeBaseRepo(t)
 
 	s := newSession(t, withDir(root), withConfig(cfg))
-	stateDir, err := filepath.EvalSymlinks(t.TempDir())
+	stateDir, err := filepath.EvalSymlinks(packageFixtureTempDir(t, "worktree-state-*"))
 	if err != nil {
 		t.Fatalf("EvalSymlinks state: %v", err)
 	}

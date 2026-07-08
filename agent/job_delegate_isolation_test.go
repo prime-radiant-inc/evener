@@ -34,14 +34,14 @@ type wtDlgRepo struct {
 func newWtDlgRepo(t *testing.T, c *llm.Client) *wtDlgRepo {
 	t.Helper()
 
-	root := t.TempDir()
+	root := packageFixtureTempDir(t, "delegate-repo-*")
 	root, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		t.Fatalf("EvalSymlinks: %v", err)
 	}
 	copyWorktreeBaseRepo(t, root)
 
-	stateDir, err := filepath.EvalSymlinks(t.TempDir())
+	stateDir, err := filepath.EvalSymlinks(packageFixtureTempDir(t, "delegate-state-*"))
 	if err != nil {
 		t.Fatalf("EvalSymlinks state: %v", err)
 	}
