@@ -179,8 +179,14 @@ func (e *LocalExecutionEnvironment) SetFs(fs afero.Fs) *LocalExecutionEnvironmen
 // here (its wrapper is M6's). On any failure the provisioned tmp is disposed and
 // the env is left unsandboxed so a half-wired sandbox never runs.
 func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy) error {
+	// EnableSandbox establishes the COMPLETE sandbox state, so it always resets any
+	// stale re-root error and, on the off path, any policy/wrapper a prior
+	// WithWorkingDirectory re-rooted onto this env — a delegate's box must be a pure
+	// function of ITS OWN policy, never a parent's leaked one.
+	e.sandboxReRootErr = nil
 	if policy == nil || !policy.Enforced() {
 		e.Sandbox = policy
+		e.Wrapper = nil
 		return nil
 	}
 	tmp, err := sandbox.NewSessionTmp("")
@@ -194,6 +200,8 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 			return werr
 		}
 		e.Wrapper = w
+	} else {
+		e.Wrapper = nil
 	}
 	e.Sandbox = policy
 	e.ownedSessionTmp = tmp

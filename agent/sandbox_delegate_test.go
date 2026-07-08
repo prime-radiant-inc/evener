@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -73,29 +74,44 @@ func sbxResolve(t *testing.T, facts sandbox.HostFacts, cwd string, mode sandbox.
 func TestSandboxSnapshotRoundTrip(t *testing.T) {
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
-	env := execenv.NewLocalExecutionEnvironment(lane)
-	env.Sandbox = sbxResolve(t, facts, lane, sandbox.ModeRestricted, "/opt/tight-secret")
 
-	snap := sandboxSnapshotFromEnv(env)
+	// Exercise every input field, including the security-sensitive DenylistRemove
+	// (un-masks a credential dir) and the extra roots, so a silently dropped field
+	// is caught.
+	net := true
+	inputs := sandbox.SandboxPolicy{
+		Mode:               sandbox.ModeRestricted,
+		Network:            &net,
+		DenylistAdd:        []string{"/opt/tight-secret"},
+		DenylistRemove:     []string{"/home/x/.kube"},
+		ExtraWritableRoots: []string{"/srv/build"},
+		ExtraReadRoots:     []string{"/srv/ro"},
+	}
+	snap := sandboxSnapshotFromInputs(inputs)
 	if snap == nil {
-		t.Fatal("a sandboxed env must yield a snapshot")
+		t.Fatal("a sandboxed policy must yield a snapshot")
 	}
-	if snap.Mode != "restricted" {
-		t.Errorf("snapshot mode = %q, want restricted", snap.Mode)
-	}
-	if snap.Network == nil || !*snap.Network {
-		t.Errorf("snapshot must carry net=on")
-	}
-	if !slices.Contains(snap.DenylistAdd, "/opt/tight-secret") {
-		t.Errorf("snapshot must carry the denylist delta: %v", snap.DenylistAdd)
+	if snap.Mode != "restricted" || snap.Network == nil || !*snap.Network {
+		t.Errorf("snapshot lost mode/net: %+v", snap)
 	}
 
 	pol, ok := sandboxPolicyFromSnapshot(snap)
 	if !ok {
 		t.Fatal("snapshot must round-trip to a policy request")
 	}
-	if pol.Mode != sandbox.ModeRestricted || !slices.Contains(pol.DenylistAdd, "/opt/tight-secret") {
+	if pol.Mode != sandbox.ModeRestricted ||
+		!slices.Contains(pol.DenylistAdd, "/opt/tight-secret") ||
+		!slices.Contains(pol.DenylistRemove, "/home/x/.kube") ||
+		!slices.Contains(pol.ExtraWritableRoots, "/srv/build") ||
+		!slices.Contains(pol.ExtraReadRoots, "/srv/ro") {
 		t.Errorf("round-tripped policy lost inputs: %+v", pol)
+	}
+
+	// The env-capture path also reflects the enforced policy's inputs.
+	env := execenv.NewLocalExecutionEnvironment(lane)
+	env.Sandbox = sbxResolve(t, facts, lane, sandbox.ModeRestricted, "/opt/tight-secret")
+	if envSnap := sandboxSnapshotFromEnv(env); envSnap == nil || !slices.Contains(envSnap.DenylistAdd, "/opt/tight-secret") {
+		t.Errorf("env capture lost the denylist delta: %+v", envSnap)
 	}
 }
 
@@ -245,6 +261,89 @@ func TestBothDescriptorBuildersCarrySandbox(t *testing.T) {
 	}
 	if resumed.Sandbox.Mode != "restricted" || !slices.Contains(resumed.Sandbox.DenylistAdd, "/opt/x") {
 		t.Errorf("resume builder lost snapshot content: %+v", resumed.Sandbox)
+	}
+}
+
+// sbxSandboxedParent sets the session's currentEnv() to a SANDBOXED local env
+// (workspace-write with an out-of-lane extra writable root + a kernel wrapper), so
+// a restore test can prove the delegate's box is its OWN policy, never the parent's
+// re-rooted one. Returns the extra root that must NOT leak onto the delegate.
+func sbxSandboxedParent(t *testing.T, s *Session, facts sandbox.HostFacts, cwd string) string {
+	t.Helper()
+	extra := filepath.Join(facts.Home, "parent-extra")
+	if err := os.MkdirAll(extra, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	net := true
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{
+		Mode:               sandbox.ModeWorkspaceWrite,
+		Network:            &net,
+		ExtraWritableRoots: []string{extra},
+	}, facts, cwd)
+	if err != nil {
+		t.Fatalf("resolve parent: %v", err)
+	}
+	w, err := sandbox.NewWrapper(rp, facts.BwrapPath, t.TempDir())
+	if err != nil {
+		t.Fatalf("parent wrapper: %v", err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(cwd)
+	env.Sandbox = &rp
+	env.Wrapper = w
+	s.mu.Lock()
+	s.env = env
+	s.mu.Unlock()
+	return extra
+}
+
+// TestDelegateRestoreOverridesSandboxedParentPolicy: a sandboxed delegate whose own
+// persisted snapshot is TIGHTER (restricted) than a LOOSER sandboxed parent
+// (workspace-write + extra root) resumes with its OWN tighter box — the parent's
+// re-rooted policy must not merge in.
+func TestDelegateRestoreOverridesSandboxedParentPolicy(t *testing.T) {
+	lane, home := sbxLane(t)
+	facts := sbxBwrapFacts(home)
+	s := sbxDelegateSession(t, facts)
+	parentExtra := sbxSandboxedParent(t, s, facts, lane)
+
+	snap := sandboxSnapshotFromInputs(sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted})
+	desc := &jobstore.DelegateRestoreDescriptor{WorkingDir: lane, LocalEnvPolicy: "default", Sandbox: snap}
+
+	childEnv, err := s.restoreDelegateChildEnvironment(desc, "dlg_override")
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	le := childEnv.(*execenv.LocalExecutionEnvironment)
+	if le.Sandbox == nil || le.Sandbox.Mode != sandbox.ModeRestricted {
+		t.Fatalf("restored delegate must carry its OWN restricted policy, got %+v", le.Sandbox)
+	}
+	if slices.Contains(le.Sandbox.FileTool.WriteRoots, parentExtra) || slices.Contains(le.Sandbox.Spawned.WriteRoots, parentExtra) {
+		t.Errorf("delegate box leaked the parent's extra writable root %q: file=%v spawned=%v", parentExtra, le.Sandbox.FileTool.WriteRoots, le.Sandbox.Spawned.WriteRoots)
+	}
+}
+
+// TestDelegateRestoreOffUnderSandboxedParentStaysOff: an OFF delegate (no snapshot)
+// resuming under a now-SANDBOXED parent must stay off — it must NOT inherit the
+// parent's re-rooted policy or wrapper (the immutability hole the verifier caught).
+func TestDelegateRestoreOffUnderSandboxedParentStaysOff(t *testing.T) {
+	lane, home := sbxLane(t)
+	facts := sbxBwrapFacts(home)
+	s := sbxDelegateSession(t, facts)
+	sbxSandboxedParent(t, s, facts, lane)
+
+	// desc.Sandbox nil == an off delegate spawned before the parent was sandboxed.
+	desc := &jobstore.DelegateRestoreDescriptor{WorkingDir: lane, LocalEnvPolicy: "default"}
+
+	childEnv, err := s.restoreDelegateChildEnvironment(desc, "dlg_off")
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	le := childEnv.(*execenv.LocalExecutionEnvironment)
+	if le.Sandbox != nil {
+		t.Errorf("off delegate must resume off, not under the parent's policy: %+v", le.Sandbox)
+	}
+	if le.Wrapper != nil {
+		t.Errorf("off delegate must not inherit the parent's kernel wrapper")
 	}
 }
 

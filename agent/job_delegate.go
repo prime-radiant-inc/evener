@@ -973,16 +973,18 @@ func (s *Session) restoreDelegateChildEnvironment(desc *jobstore.DelegateRestore
 		clone.EnvPolicy = policy
 		// Re-apply the delegate's OWN persisted sandbox by RE-RESOLVING its inputs
 		// against the restored lane + freshly-probed host facts (immutable across
-		// restart: the parent's current config never widens it). This overrides any
-		// policy WithWorkingDirectory re-rooted from the parent; a fresh per-lane
-		// session tmp is provisioned via EnableSandbox. An off delegate leaves the
-		// clone unsandboxed.
-		if rp, reason := s.resolveRestoredDelegateSandbox(desc, workDir); reason != "" {
+		// restart: the parent's current config never widens it). EnableSandbox is
+		// called UNCONDITIONALLY — including for an off delegate (rp == nil) — so it
+		// fully OVERRIDES whatever policy WithWorkingDirectory re-rooted from the
+		// parent env onto the clone; an off delegate resumes off, not under a
+		// now-sandboxed parent's policy. A sandboxed delegate gets a fresh per-lane
+		// session tmp.
+		rp, reason := s.resolveRestoredDelegateSandbox(desc, workDir)
+		if reason != "" {
 			return nil, fmt.Errorf("delegate restore: %s", reason)
-		} else if rp != nil {
-			if err := clone.EnableSandbox(rp); err != nil {
-				return nil, fmt.Errorf("delegate restore: %s: %w", notResumableSandboxUnsatisfiable, err)
-			}
+		}
+		if err := clone.EnableSandbox(rp); err != nil {
+			return nil, fmt.Errorf("delegate restore: %s: %w", notResumableSandboxUnsatisfiable, err)
 		}
 		childEnv = clone
 	} else if workDir != env.WorkingDirectory() {
