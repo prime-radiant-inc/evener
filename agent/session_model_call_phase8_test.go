@@ -1,12 +1,13 @@
 package agent
 
 import (
-	"bytes"
 	"context"
+	"encoding/json"
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -230,34 +231,59 @@ func phase8DeltaRequest() llm.Request {
 	}
 }
 
-func TestExpandHistory_ImageToolResultPreservesImageData(t *testing.T) {
+func TestSession_PersistsImageToolResultFromExecResult(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		AgentName: "explorer", // skip vision side-channel; this test only covers tool-result persistence.
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	const toolName = "image_fixture"
 	imageBytes := []byte("fake-png-bytes")
-	history := []schema.Turn{
-		schema.NewTurn(schema.TurnToolResults, llm.Message{
-			Role: llm.RoleTool,
-			Content: []llm.ContentPart{{
-				Kind: llm.ContentToolResult,
-				ToolResult: &llm.ToolResultData{
-					ToolCallID:     "call_img",
-					Name:           "read_file",
-					Content:        "read image",
-					ImageData:      imageBytes,
-					ImageMediaType: "image/png",
-				},
-			}},
-		}),
+	if err := sess.reg.Register(tool.RegisteredTool{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{
+			Name:        toolName,
+			Description: "returns deterministic image bytes",
+			Parameters:  map[string]any{"type": "object"},
+		}},
+		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+			return tool.ImageResult{Text: "read image", Data: imageBytes, MediaType: "image/png"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register image fixture tool: %v", err)
 	}
 
-	messages := expandHistory(history)
-	if len(messages) != 1 {
-		t.Fatalf("expandHistory returned %d messages, want 1", len(messages))
+	call := llm.ToolCallData{
+		ID:        "call_img",
+		Name:      toolName,
+		Arguments: json.RawMessage(`{}`),
+		Type:      "function",
 	}
-	parts := messages[0].Content
-	if len(parts) != 1 || parts[0].Kind != llm.ContentToolResult || parts[0].ToolResult == nil {
-		t.Fatalf("expanded message parts=%+v, want one tool result", parts)
+	res := sess.execTool(context.Background(), call)
+	if len(res.ImageData) == 0 || res.ImageMediaType != "image/png" {
+		t.Fatalf("execTool image data/media=%q/%q, want image/png with bytes", res.ImageMediaType, res.ImageData)
 	}
-	got := parts[0].ToolResult
-	if got.ImageMediaType != "image/png" || !bytes.Equal(got.ImageData, imageBytes) {
-		t.Fatalf("expanded image data/media=%q/%q, want image/png with bytes", got.ImageMediaType, got.ImageData)
+	if err := sess.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tool.ExecResult{res}); err != nil {
+		t.Fatalf("persistToolResults: %v", err)
+	}
+
+	sess.mu.Lock()
+	history := append([]schema.Turn(nil), sess.history...)
+	sess.mu.Unlock()
+	got, ok := findToolResultInHistory(history, "call_img")
+	if !ok {
+		t.Fatalf("persisted history missing tool result for call_img: %s", turnKinds(history))
+	}
+	if got.ImageMediaType != "image/png" || len(got.ImageData) == 0 {
+		t.Fatalf("persisted image data/media=%q/%q, want image/png with bytes", got.ImageMediaType, got.ImageData)
 	}
 }

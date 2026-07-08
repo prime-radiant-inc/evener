@@ -36,7 +36,8 @@ func TestThreadItemOutputImagesJSONRoundTrip(t *testing.T) {
 		t.Fatalf("OutputImages length=%d, want 1", len(got.OutputImages))
 	}
 	img := got.OutputImages[0]
-	if img.Source != "shell-path" || img.Name != "out.png" || img.MediaType != "image/png" || img.URL == "" || img.Path != "out.png" || img.Size != 67 {
+	if img.Source != "shell-path" || img.Name != "out.png" || img.MediaType != "image/png" || img.Size != 67 ||
+		img.URL != "/doc/image?session=01ABC&path=out.png" || img.SHA != "abc123" || img.Path != "out.png" {
 		t.Fatalf("OutputImages[0]=%+v", img)
 	}
 }
