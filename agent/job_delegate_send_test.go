@@ -535,7 +535,7 @@ func TestSendDelegateMessageTerminalDelegateForegroundResumeTimeoutLeavesChildRu
 		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
-		BlockTimeoutMS: 1000,
+		BlockTimeoutMS: 50,
 	})
 	if res.Err != nil {
 		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
