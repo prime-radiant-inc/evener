@@ -231,6 +231,7 @@ func hideGitEntirely(t *testing.T) (restore func()) {
 // removed (worktree + branch + sidecar + lock all gone) and the descriptor is
 // marked disposed.
 func TestDisposeUnchangedLane_RemovedAndMarked(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	metaDir := r.metaDir(r.canonicalMain(t))
@@ -274,6 +275,7 @@ func TestDisposeUnchangedLane_RemovedAndMarked(t *testing.T) {
 // line-count over `rev-list --count`'s single-line integer output, which
 // always yields 1 for any positive count).
 func TestDisposeChangedLane_UnlockedKept(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	// Add TWO commits in the lane so it is CHANGED, and so the ahead count is
@@ -324,6 +326,7 @@ func TestDisposeChangedLane_UnlockedKept(t *testing.T) {
 // TestDisposeDirtyLane_Kept: a lane killed mid-job with uncommitted changes is
 // dirty → changed → kept.
 func TestDisposeDirtyLane_Kept(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	// Uncommitted (dirty) change only — no commits beyond base.
@@ -347,6 +350,7 @@ func TestDisposeDirtyLane_Kept(t *testing.T) {
 // TestDisposeRacingDirtyWrite_DowngradesToKeep: the non-force remove refuses
 // because a write raced the clean check → downgrade to keep + re-lock.
 func TestDisposeRacingDirtyWrite_DowngradesToKeep(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	// Seam: dirty the lane immediately before the non-force remove so git
@@ -378,6 +382,7 @@ func TestDisposeRacingDirtyWrite_DowngradesToKeep(t *testing.T) {
 // TestClose_UnlocksOwnManagedWorktree: a clean close unlocks the session's own
 // occupied managed worktree on disk (spec §5 close-unlock).
 func TestClose_UnlocksOwnManagedWorktree(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "mylane"})
 	if err != nil {
@@ -399,6 +404,7 @@ func TestClose_UnlocksOwnManagedWorktree(t *testing.T) {
 // lane and the disposed mark is durably present in the store afterward, proving
 // disposal ran while the store was still open (before closeStoreOnly).
 func TestClose_DisposalRunsBeforeStoreClose(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 
@@ -417,6 +423,7 @@ func TestClose_DisposalRunsBeforeStoreClose(t *testing.T) {
 // TestResumability_RefusesDisposedDelegate: the disposed flag makes
 // assessDelegateResumability refuse, and delegate_send surfaces a clear message.
 func TestResumability_RefusesDisposedDelegate(t *testing.T) {
+	t.Parallel()
 	s := newDelegateRestorePreflightSession(t, nil)
 	rec := seedStoppedDelegateRestoreRecord(t, s)
 	markStoredDelegateResumable(t, s, rec)
@@ -448,6 +455,7 @@ func TestResumability_RefusesDisposedDelegate(t *testing.T) {
 // (crash net) refuses restoration into a deleted directory, covering the crash
 // window between remove and mark.
 func TestResumability_RefusesMissingWorkingDir(t *testing.T) {
+	t.Parallel()
 	s := newDelegateRestorePreflightSession(t, nil)
 	rec := seedStoppedDelegateRestoreRecord(t, s)
 	markStoredDelegateResumable(t, s, rec)
@@ -473,6 +481,7 @@ func TestResumability_RefusesMissingWorkingDir(t *testing.T) {
 // copy of a descendant's own delegate, or simply another session's lane)
 // must never be enumerated as a lane this session created and may dispose.
 func TestOwnedIsolationLanes_SkipsForeignParentSessionID(t *testing.T) {
+	t.Parallel()
 	recs := map[string]*jobstore.JobRecord{
 		"job1": {
 			DelegateID: "dlg1",
@@ -495,6 +504,7 @@ func TestOwnedIsolationLanes_SkipsForeignParentSessionID(t *testing.T) {
 // recorded base SHA is unknown, so the lane's provenance cannot be judged —
 // disposal must leave it entirely untouched (still locked, still resumable).
 func TestDisposeOneDelegateLane_MissingSidecarLeavesLane(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	metaDir := r.metaDir(r.canonicalMain(t))
@@ -590,6 +600,7 @@ func TestDisposeOneDelegateLane_UnchangedCheckFailsKeepsAndUnlocks(t *testing.T)
 // switched into it) is declined — left completely untouched, not unlocked
 // and not reported as kept.
 func TestDisposeOneDelegateLane_ChangedForeignLockDeclinedNotTouched(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	if err := os.WriteFile(filepath.Join(lanePath, "work.txt"), []byte("wip\n"), 0o644); err != nil {
@@ -624,6 +635,7 @@ func TestDisposeOneDelegateLane_ChangedForeignLockDeclinedNotTouched(t *testing.
 // itself fails (permission denied writing the internal marker file) — the
 // lane is left locked and resumable, not silently downgraded.
 func TestDisposeOneDelegateLane_ChangedLaneUnlockFailsLeavesLocked(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	if err := os.WriteFile(filepath.Join(lanePath, "work.txt"), []byte("wip\n"), 0o644); err != nil {
@@ -655,6 +667,7 @@ func TestDisposeOneDelegateLane_ChangedLaneUnlockFailsLeavesLocked(t *testing.T)
 // lane's own `worktree unlock` (the EvDisposeUnchanged ActUnlock step, before
 // remove is even attempted) fails — the lane is left locked and NOT removed.
 func TestDisposeOneDelegateLane_UnchangedUnlockFailsLeavesLocked(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	internalDir := worktreeInternalDir(t, r.canonicalMain(t), lanePath)
@@ -686,6 +699,7 @@ func TestDisposeOneDelegateLane_UnchangedUnlockFailsLeavesLocked(t *testing.T) {
 // still proceeds with branch + sidecar cleanup (best-effort) and surfaces a
 // warning naming the failure.
 func TestDisposeOneDelegateLane_DisposedMarkAppendFailureWarnsButStillRemoves(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	metaDir := r.metaDir(r.canonicalMain(t))
@@ -752,6 +766,7 @@ func TestDisposeOneDelegateLane_BranchDeleteFailureWarnsButLaneStillGone(t *test
 // local-execution-environment-only feature; a non-local env leaves the
 // worktree exactly as it was (still locked).
 func TestUnlockOwnManagedWorktreeAtClose_NonLocalEnvNoOp(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
 		t.Fatalf("create: %v", err)
