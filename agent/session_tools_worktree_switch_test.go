@@ -446,35 +446,6 @@ func TestWorktreeSwitch_ByPathSkipsMomentarilyAbsentPorcelainEntry(t *testing.T)
 	}
 }
 
-// TestWorktreeSwitch_ByPathLeaveCurrentErrorsOnSecondPorcelainCall covers
-// step 3's leaveCurrentWorktree error branch for the NON-managed by-path arm
-// (distinct from the managed by-name arm's own coverage of the same
-// underlying function): switching away from a currently-occupied managed
-// worktree into a non-managed sibling first lists the registry successfully
-// (step 1, to validate the target), then leaveCurrentWorktree's own
-// lockStateOf call makes a SECOND `worktree list --porcelain` call to
-// inspect the worktree being left — the shim fails only that second call.
-func TestWorktreeSwitch_ByPathLeaveCurrentErrorsOnSecondPorcelainCall(t *testing.T) {
-	t.Parallel()
-	r := newWorktreeRepo(t)
-	if _, err := r.create(t, map[string]any{"name": "A"}); err != nil {
-		t.Fatalf("create A: %v", err)
-	}
-	siblingRoot := t.TempDir()
-	siblingPath := filepath.Join(siblingRoot, "sibling")
-	wtGit(t, r.mainRoot, "worktree", "add", "-b", "sibling-branch", siblingPath, r.head)
-
-	gitFailOnNthMatchingCallRepoShim(t, r.mainRoot, "worktree list --porcelain", 2)
-
-	_, err := r.switchOp(t, map[string]any{"path": siblingPath})
-	if err == nil {
-		t.Fatal("expected switch by path to fail when leaveCurrentWorktree's porcelain call fails")
-	}
-	if !strings.Contains(err.Error(), "inspecting the current worktree lock") {
-		t.Fatalf("switch by path with the 2nd porcelain call failing: err = %v, want the current-worktree-lock-inspection error", err)
-	}
-}
-
 func TestWorktreeSwitch_ByPathSiblingManualWorktreeNoLockMutation(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
