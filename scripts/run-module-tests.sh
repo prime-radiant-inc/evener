@@ -3,7 +3,8 @@
 #
 # The repo is a go.work workspace of independent modules. `go test ./...` does
 # not span modules, so the suites must be invoked per module. The regular gate
-# intentionally runs only Test/Example entry points; native Fuzz targets, saved
+# intentionally runs only non-fuzz Test/Example entry points; native Fuzz
+# targets, rapid/sequence fuzz tests, structured fuzz reachability checks, saved
 # fuzz corpus replay, and the fuzz toolkit module are owned by `make fuzz`.
 #
 # The default wave split gives the root module's timing-sensitive TUI tests the
@@ -44,11 +45,10 @@ fi
 # oversubscribing few-core CI.
 AGENT_PARALLEL=${AGENT_PARALLEL-32}
 
-# Keep rapid.Check surfaces as deterministic smoke coverage in the default
-# module gate. scripts/run-fuzz.sh owns the full rapid campaign unless
-# RAPID_CHECKS is explicitly overridden by the caller.
-RAPID_CHECKS=${RAPID_CHECKS:-1}
-export RAPID_CHECKS
+# Fuzz-designated Test* functions are not part of the regular gate. Native Fuzz*
+# targets are already excluded by -run; these names cover rapid/sequence fuzz
+# tests and structured-generator reachability proofs that remain under make fuzz.
+fuzz_test_skip='(SeqFuzz|SchemaFuzz|Structured.*Reach)'
 
 flags="$*"
 logdir="$(mktemp -d -t serf-module-tests.XXXXXX)"
@@ -60,7 +60,7 @@ run_module() {
 	local m="$1" extra="$2"
 	# Word-split flags and extra intentionally so callers can pass multiple flags.
 	# shellcheck disable=SC2086
-	/usr/bin/time -p go test $flags $extra -run '^(Test|Example)' ./...
+		/usr/bin/time -p go test $flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" ./...
 }
 
 # run_wave <extra-flags> <module...> — run the modules concurrently, wait, and
