@@ -1254,8 +1254,9 @@ func TestSendDelegateMessageStoppedDelegateRestorePreflightNotResumable(t *testi
 			c := llm.NewClient()
 			adapter := &fakeAdapter{name: "openai"}
 			c.Register(adapter)
-			s := newDelegateRestorePreflightSession(t, c)
+			s := newLeanDelegateRestorePreflightSession(t, c)
 			rec := seedStoppedDelegateRestoreRecord(t, s)
+
 			tc.breakState(t, s, rec)
 			beforeEvents := len(loadJobStoreEvents(t, s.jobManager))
 			beforeJobs := len(s.jobManager.list(listFilter{Type: jobstore.JobDelegate}))

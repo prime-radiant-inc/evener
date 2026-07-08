@@ -37,6 +37,24 @@ func newDelegateRestorePreflightSession(t *testing.T, c *llm.Client) *Session {
 	}))
 }
 
+func newLeanDelegateRestorePreflightSession(t *testing.T, c *llm.Client) *Session {
+	t.Helper()
+	stateDir := t.TempDir()
+	sessionID := ulid.Make().String()
+	jm, err := newJobManager(stateDir, sessionID, func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new job manager: %v", err)
+	}
+	t.Cleanup(func() { _ = jm.close() })
+	return &Session{
+		id:         sessionID,
+		stateDir:   stateDir,
+		jobManager: jm,
+		subagents:  newSubagentManager(nil),
+		profile:    NewOpenAIProfile("gpt-5.2"),
+	}
+}
+
 func seedStoppedDelegateRestoreRecord(t *testing.T, s *Session) *jobstore.JobRecord {
 	t.Helper()
 	childID, childWorkDir := seedRetainedChildSessionWithWorkingDir(t, s)

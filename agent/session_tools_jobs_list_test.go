@@ -1216,8 +1216,9 @@ func TestJobListStoppedDelegateResumableAssessmentIsDynamicAndPure(t *testing.T)
 			t.Parallel()
 			c := llm.NewClient()
 			c.Register(&fakeAdapter{name: "openai"})
-			s := newDelegateRestorePreflightSession(t, c)
+			s := newLeanDelegateRestorePreflightSession(t, c)
 			rec := seedStoppedDelegateRestoreRecord(t, s)
+
 			if tc.breakState != nil {
 				tc.breakState(t, s, rec)
 			}
