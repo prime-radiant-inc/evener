@@ -5,10 +5,10 @@
 # not span modules, so the suites must be invoked per module.
 #
 # SERF_TEST_MODE=fast is the default gate used by `make test`: it runs the root
-# module's package-level smoke tests plus agent subpackages in one wave. The
-# exhaustive agent root package, root subpackage sweep, provider/library modules,
-# and fuzz seed corpora stay available through SERF_TEST_MODE=exhaustive and the
-# explicit fuzz targets.
+# module's package-level smoke tests, agent subpackages, and selected lightweight
+# library modules in one wave. The exhaustive agent root package, llm and fuzz
+# module sweeps, and fuzz seed corpora stay available through
+# SERF_TEST_MODE=exhaustive and the explicit fuzz targets.
 #
 # SERF_TEST_MODE=exhaustive preserves the old two-wave workspace sweep. It is
 # intentionally not the default: running every package/test/fuzz seed in the
@@ -30,7 +30,7 @@ set -uo pipefail
 SERF_TEST_MODE=${SERF_TEST_MODE:-fast}
 case "$SERF_TEST_MODE" in
 	fast)
-		WAVE1=${WAVE1:-". agent"}
+		WAVE1=${WAVE1:-". agent auth envvars invariant"}
 		WAVE2=${WAVE2-}
 		;;
 	exhaustive)
