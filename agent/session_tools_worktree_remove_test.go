@@ -641,24 +641,6 @@ func TestWorktreeRemove_RemoveCurrentUnlockBeforeRestoreFailsOnPermissionDenied(
 	}
 }
 
-// TestWorktreeRemove_RemoveCurrentApplyRestoreLandRelockErrorsOnSecondPorcelainCall
-// covers step 7's applyRestoreLandRelock error branch for remove-current:
-// the restore root (launch) is itself managed, so relockRestoreTarget's own
-// lockStateOf call must run and fail — the 1st `worktree list --porcelain`
-// (step 3, inspecting the "work" target being removed) must still succeed.
-func TestWorktreeRemove_RemoveCurrentApplyRestoreLandRelockErrorsOnSecondPorcelainCall(t *testing.T) {
-	t.Parallel()
-	r := newWorktreeRepo(t)
-	_, r2, _, _ := wtLaunchSession(t, r)
-
-	gitFailOnNthMatchingCallRepoShim(t, r.mainRoot, "worktree list --porcelain", 2)
-
-	_, err := r2.removeOp(t, map[string]any{"name": "work"})
-	if err == nil || !strings.Contains(err.Error(), "inspecting the restore target lock") {
-		t.Fatalf("remove-current with the 2nd porcelain call failing: err = %v, want the restore-target-lock-inspection error", err)
-	}
-}
-
 // TestWorktreeRemove_GitWorktreeRemoveCommandFails covers step 8's own
 // `git worktree remove` failure branch: every earlier check (lock, live
 // work, sidecar ownership, dirtiness) passes, but the removal command itself

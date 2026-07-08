@@ -1240,17 +1240,13 @@ func (s *Session) worktreeSwitchByPath(ctx context.Context, rawPath string) (Wor
 	return WorktreeSwitchResult{Path: matchedPath, Branch: matchedBranch}, nil
 }
 
-// relockRestoreTarget applies the idempotent EvRestoreLand lock rule to a
-// restore target that resolves inside the managed directory (spec §4 exit
-// step 4; §5 "Restores follow the same rule"): lock if unlocked, adopt our
-// own marker as a no-op, or warn and co-occupy on a foreign lock — a restore
-// can never be refused, since the session has to land somewhere. Returns a
-// non-empty warning string only for the co-occupy case.
-func (s *Session) relockRestoreTarget(run worktree.GitRunner, path string) (string, error) {
-	locked, reason, err := lockStateOf(run, path)
-	if err != nil {
-		return "", fmt.Errorf("manage_worktree exit: inspecting the restore target lock: %w", err)
-	}
+// relockRestoreTargetWithLockState applies the idempotent EvRestoreLand lock
+// rule to a restore target that resolves inside the managed directory (spec §4
+// exit step 4; §5 "Restores follow the same rule"): lock if unlocked, adopt our
+// own marker as a no-op, or warn and co-occupy on a foreign lock. A restore can
+// never be refused, since the session has to land somewhere. Returns a non-empty
+// warning string only for the co-occupy case.
+func (s *Session) relockRestoreTargetWithLockState(run worktree.GitRunner, path string, locked bool, reason string) (string, error) {
 	st := worktree.Unlocked
 	if locked {
 		st = worktree.ClassifyReason(reason, s.id, "")
@@ -1292,16 +1288,21 @@ func (s *Session) worktreeExit(ctx context.Context) (WorktreeExitResult, error) 
 	leftPath := st.currentWorktree
 
 	var run worktree.GitRunner
+	var porcelain []worktree.PorcelainEntry
 	if st.mainRepoRoot != "" {
 		r, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
 		if err != nil {
 			return WorktreeExitResult{}, err
 		}
 		run = r
+		porcelain, err = readWorktreePorcelain(run)
+		if err != nil {
+			return WorktreeExitResult{}, fmt.Errorf("manage_worktree: inspecting the current worktree lock: %w", err)
+		}
 		// Step 2: unlock the worktree being left, if managed and locked with
 		// this session's own marker (same EvLeave rule as switch-away /
 		// create-away).
-		if err := s.leaveCurrentWorktree(run); err != nil {
+		if err := s.leaveCurrentWorktreeFromPorcelain(run, porcelain); err != nil {
 			return WorktreeExitResult{}, err
 		}
 	}
@@ -1319,7 +1320,7 @@ func (s *Session) worktreeExit(ctx context.Context) (WorktreeExitResult, error) 
 	// lock rule to it.
 	if run != nil {
 		projectDir := filepath.Join(st.worktreeRoot, worktree.ProjectID(st.mainRepoRoot))
-		warning, err := s.applyRestoreLandRelock(run, restoredRoot, projectDir)
+		warning, err := s.applyRestoreLandRelockFromPorcelain(run, restoredRoot, projectDir, porcelain)
 		if err != nil {
 			return WorktreeExitResult{}, err
 		}
@@ -1329,17 +1330,15 @@ func (s *Session) worktreeExit(ctx context.Context) (WorktreeExitResult, error) 
 	return result, nil
 }
 
-// applyRestoreLandRelock applies the idempotent EvRestoreLand lock rule when
-// restoredRoot resolves inside the managed directory rooted at projectDir
-// (spec §5 "Restores follow the same rule"): exit's restore root (§4 exit
-// step 4) and remove-current's restore (§5 remove step 7) share this exact
-// choreography — lock if unlocked, adopt our own marker as a no-op, or warn
-// and co-occupy on a foreign lock. It is a no-op (empty warning, nil error)
-// when restoredRoot is not under the managed directory. When the rule fires,
-// it also records the session's occupancy (worktreeCurrentPath) so a later
-// create/switch/close leaves it correctly (spec §3 step 7; §5 clean-close
-// unlock).
-func (s *Session) applyRestoreLandRelock(run worktree.GitRunner, restoredRoot, projectDir string) (string, error) {
+// applyRestoreLandRelockFromPorcelain applies the idempotent EvRestoreLand lock
+// rule when restoredRoot resolves inside the managed directory rooted at
+// projectDir (spec §5 "Restores follow the same rule"): exit's restore root (§4
+// exit step 4) and remove-current's restore (§5 remove step 7) share this exact
+// choreography. It is a no-op (empty warning, nil error) when restoredRoot is
+// not under the managed directory. When the rule fires, it also records the
+// session's occupancy (worktreeCurrentPath) so a later create/switch/close
+// leaves it correctly (spec §3 step 7; §5 clean-close unlock).
+func (s *Session) applyRestoreLandRelockFromPorcelain(run worktree.GitRunner, restoredRoot, projectDir string, porcelain []worktree.PorcelainEntry) (string, error) {
 	canonicalRestored := filepath.Clean(restoredRoot)
 	if resolved, evErr := filepath.EvalSymlinks(restoredRoot); evErr == nil {
 		canonicalRestored = filepath.Clean(resolved)
@@ -1347,7 +1346,8 @@ func (s *Session) applyRestoreLandRelock(run worktree.GitRunner, restoredRoot, p
 	if !isUnderManagedDir(canonicalRestored, projectDir) {
 		return "", nil
 	}
-	warning, err := s.relockRestoreTarget(run, restoredRoot)
+	locked, reason := lockStateFromPorcelain(porcelain, restoredRoot)
+	warning, err := s.relockRestoreTargetWithLockState(run, restoredRoot, locked, reason)
 	if err != nil {
 		return "", err
 	}
@@ -1417,10 +1417,11 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	// ordinary occupancy and the unlock (if any) happens at the restore, step
 	// 7 below — not here (EvRemoveCurrent's own-marker row: "unlock at the
 	// restore step").
-	locked, reason, err := lockStateOf(run, target)
+	porcelain, err := readWorktreePorcelain(run)
 	if err != nil {
 		return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: inspecting the target lock: %w", err)
 	}
+	locked, reason := lockStateFromPorcelain(porcelain, target)
 	lockSt := worktree.Unlocked
 	if locked {
 		lockSt = worktree.ClassifyReason(reason, s.id, "")
@@ -1529,7 +1530,7 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 			// trusting it silently forever.
 			return WorktreeRemoveResult{}, errors.New("manage_worktree remove: not in a worktree")
 		}
-		warning, err := s.applyRestoreLandRelock(run, restoredRoot, projectDir)
+		warning, err := s.applyRestoreLandRelockFromPorcelain(run, restoredRoot, projectDir, porcelain)
 		if err != nil {
 			return WorktreeRemoveResult{}, err
 		}

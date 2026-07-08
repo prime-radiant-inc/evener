@@ -601,24 +601,6 @@ func TestWorktreeExit_LeaveCurrentErrorsWhenGitUnavailable(t *testing.T) {
 	}
 }
 
-// TestWorktreeExit_RelockLockStateErrorsOnSecondPorcelainCall covers step
-// 4's relockRestoreTarget->lockStateOf error branch specifically: exit's own
-// step-2 leaveCurrentWorktree call (the 1st `worktree list --porcelain`)
-// must succeed, but relockRestoreTarget's later inspection of the restore
-// root (the 2nd) fails.
-func TestWorktreeExit_RelockLockStateErrorsOnSecondPorcelainCall(t *testing.T) {
-	t.Parallel()
-	r := newWorktreeRepo(t)
-	_, r2, _, _ := wtLaunchSession(t, r)
-
-	gitFailOnNthMatchingCallRepoShim(t, r.mainRoot, "worktree list --porcelain", 2)
-
-	_, err := r2.exitOp(t)
-	if err == nil || !strings.Contains(err.Error(), "inspecting the restore target lock") {
-		t.Fatalf("exit with the 2nd porcelain call failing: err = %v, want the restore-target-lock-inspection error", err)
-	}
-}
-
 // TestWorktreeExit_RelockLockCommandFailsOnPermissionDenied covers step 4's
 // relockRestoreTarget->ActLock `git worktree lock` failure branch: the
 // restore root (launch) is genuinely unlocked, so Decide resolves to
