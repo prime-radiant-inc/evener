@@ -167,10 +167,10 @@ disagrees, this section wins.
    - **Cache**: accept the cold session-private fallback on hosts whose bwrap
      lacks `--overlay` (do NOT hard-require overlay for workspace-write). Overlay
      is a perf optimization; the no-poisoning floor holds either way.
-   - **Landlock: DROP ENTIRELY** — bwrap (Linux) + Seatbelt (macOS) only. Runtime
-     behavior is already correct (Landlock refuses since the M1 fix); the enum/
-     probe/`probe_landlock_*.go`/contract-tier removal is a single cleanup pass
-     AFTER M2 merges. M4/M6/M7 must NOT add or reference a Landlock backend.
+   - **Landlock: DROPPED ENTIRELY — DONE (merged `2f66c227`)** — bwrap (Linux) +
+     Seatbelt (macOS) only. Enum/probe/`probe_landlock_*.go`/contract-tier all
+     removed; `grep -rin landlock agent/` is clean. A non-bwrap Linux host refuses
+     every non-off mode. M4/M6/M7 must NOT add or reference a Landlock backend.
    - **Daemon-socket masking**: keep the TARGETED denylist (docker/podman/
      containerd/dbus, `policy.go:100`) — do NOT expand to comprehensive `/run`
      masking in v1 (would break DNS/daemons). Documented residual: an exotic/
