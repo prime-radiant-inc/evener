@@ -143,29 +143,11 @@ func worktreeBaseRepo(t *testing.T) (string, string) {
 func copyWorktreeBaseRepo(t *testing.T, dst string) {
 	t.Helper()
 	base, _ := worktreeBaseRepo(t)
-	if err := filepath.WalkDir(base, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		rel, err := filepath.Rel(base, path)
-		if err != nil || rel == "." {
-			return err
-		}
-		target := filepath.Join(dst, rel)
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return os.MkdirAll(target, info.Mode().Perm())
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(target, data, info.Mode().Perm())
-	}); err != nil {
-		t.Fatalf("copy worktree base repo: %v", err)
+	if _, err := runWorktreeGit("", "clone", "--shared", "-c", "user.email=test@example.com", "-c", "user.name=Test", base, dst); err != nil {
+		t.Fatalf("clone worktree base repo: %v", err)
+	}
+	if _, err := runWorktreeGit(dst, "remote", "remove", "origin"); err != nil {
+		t.Fatalf("remove cloned origin remote: %v", err)
 	}
 }
 
