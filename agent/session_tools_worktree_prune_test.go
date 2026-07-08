@@ -106,8 +106,6 @@ func findPruneEntry(t *testing.T, entries []map[string]any, name string) map[str
 // the new HEAD SHA.
 func commitInWorktree(t *testing.T, dir, name, content, msg string) string {
 	t.Helper()
-	wtGit(t, dir, "config", "user.email", "test@example.com")
-	wtGit(t, dir, "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", name, err)
 	}
