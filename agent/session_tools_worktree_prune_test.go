@@ -234,92 +234,8 @@ func TestWorktreeList_DoesNotPrune(t *testing.T) {
 }
 
 func TestWorktreeList_StalenessFieldsThreeWorktreeFixture(t *testing.T) {
-	t.Parallel()
-	r := newWorktreeRepo(t)
-
-	// 1: unchanged — created, never touched.
-	if _, err := r.create(t, map[string]any{"name": "unchanged"}); err != nil {
-		t.Fatalf("create unchanged: %v", err)
-	}
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
-
-	// 2: dirty + ahead — one commit, plus an uncommitted file.
-	resDirty, err := r.create(t, map[string]any{"name": "dirty-ahead"})
-	if err != nil {
-		t.Fatalf("create dirty-ahead: %v", err)
-	}
-	pathDirty := resDirty["path"].(string)
-	commitInWorktree(t, pathDirty, "a.txt", "a\n", "advance dirty-ahead")
-	if err := os.WriteFile(filepath.Join(pathDirty, "b.txt"), []byte("uncommitted\n"), 0o644); err != nil {
-		t.Fatalf("write b.txt: %v", err)
-	}
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
-
-	// 3: merged — one commit, ff-merged to main.
-	resMerged, err := r.create(t, map[string]any{"name": "merged-lane"})
-	if err != nil {
-		t.Fatalf("create merged-lane: %v", err)
-	}
-	pathMerged := resMerged["path"].(string)
-	commitInWorktree(t, pathMerged, "m.txt", "m\n", "advance merged-lane")
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
-	wtGit(t, r.mainRoot, "merge", "--ff-only", "merged-lane")
-
-	out, err := r.listOp(t)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	entries := listEntries(t, out)
-	if len(entries) != 3 {
-		t.Fatalf("got %d entries, want 3: %+v", len(entries), entries)
-	}
-
-	eUnchanged := findEntry(t, entries, "unchanged")
-	if eUnchanged["dirty"] != false {
-		t.Errorf("unchanged.dirty = %v, want false", eUnchanged["dirty"])
-	}
-	if eUnchanged["ahead_commits"] != 0 {
-		t.Errorf("unchanged.ahead_commits = %v, want 0", eUnchanged["ahead_commits"])
-	}
-	if eUnchanged["creator_session"] != r.s.id {
-		t.Errorf("unchanged.creator_session = %v, want %s", eUnchanged["creator_session"], r.s.id)
-	}
-	if eUnchanged["locked"] != false {
-		t.Errorf("unchanged.locked = %v, want false (exited)", eUnchanged["locked"])
-	}
-
-	eDirty := findEntry(t, entries, "dirty-ahead")
-	if eDirty["dirty"] != true {
-		t.Errorf("dirty-ahead.dirty = %v, want true", eDirty["dirty"])
-	}
-	if eDirty["ahead_commits"] != 1 {
-		t.Errorf("dirty-ahead.ahead_commits = %v, want 1", eDirty["ahead_commits"])
-	}
-	if eDirty["merged"] != false {
-		t.Errorf("dirty-ahead.merged = %v, want false (main never advanced)", eDirty["merged"])
-	}
-
-	eMerged := findEntry(t, entries, "merged-lane")
-	if eMerged["dirty"] != false {
-		t.Errorf("merged-lane.dirty = %v, want false", eMerged["dirty"])
-	}
-	if eMerged["ahead_commits"] != 1 {
-		t.Errorf("merged-lane.ahead_commits = %v, want 1", eMerged["ahead_commits"])
-	}
-	if eMerged["merged"] != true {
-		t.Errorf("merged-lane.merged = %v, want true", eMerged["merged"])
-	}
-	if eMerged["merged_arm"] != "ancestry" {
-		t.Errorf("merged-lane.merged_arm = %v, want ancestry", eMerged["merged_arm"])
-	}
-
-	for _, e := range entries {
+	assertFreshMetadata := func(t *testing.T, e map[string]any) {
+		t.Helper()
 		age, ok := e["age_seconds"].(float64)
 		if !ok || age < 0 || age > 60 {
 			t.Errorf("%v.age_seconds = %v, want a small non-negative number", e["name"], e["age_seconds"])
@@ -328,6 +244,107 @@ func TestWorktreeList_StalenessFieldsThreeWorktreeFixture(t *testing.T) {
 			t.Errorf("%v.has_metadata = %v, want true", e["name"], e["has_metadata"])
 		}
 	}
+
+	t.Run("unchanged", func(t *testing.T) {
+		t.Parallel()
+		r := newWorktreeRepo(t)
+		if _, err := r.create(t, map[string]any{"name": "unchanged"}); err != nil {
+			t.Fatalf("create unchanged: %v", err)
+		}
+		if _, err := r.exitOp(t); err != nil {
+			t.Fatalf("exit: %v", err)
+		}
+
+		out, err := r.listOp(t)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		entries := listEntries(t, out)
+		if len(entries) != 1 {
+			t.Fatalf("got %d entries, want 1: %+v", len(entries), entries)
+		}
+		e := findEntry(t, entries, "unchanged")
+		if e["dirty"] != false {
+			t.Errorf("unchanged.dirty = %v, want false", e["dirty"])
+		}
+		if e["ahead_commits"] != 0 {
+			t.Errorf("unchanged.ahead_commits = %v, want 0", e["ahead_commits"])
+		}
+		if e["creator_session"] != r.s.id {
+			t.Errorf("unchanged.creator_session = %v, want %s", e["creator_session"], r.s.id)
+		}
+		if e["locked"] != false {
+			t.Errorf("unchanged.locked = %v, want false (exited)", e["locked"])
+		}
+		assertFreshMetadata(t, e)
+	})
+
+	t.Run("dirty ahead", func(t *testing.T) {
+		t.Parallel()
+		r := newWorktreeRepo(t)
+		res, err := r.create(t, map[string]any{"name": "dirty-ahead"})
+		if err != nil {
+			t.Fatalf("create dirty-ahead: %v", err)
+		}
+		path := res["path"].(string)
+		commitInWorktree(t, path, "a.txt", "a\n", "advance dirty-ahead")
+		if err := os.WriteFile(filepath.Join(path, "b.txt"), []byte("uncommitted\n"), 0o644); err != nil {
+			t.Fatalf("write b.txt: %v", err)
+		}
+		if _, err := r.exitOp(t); err != nil {
+			t.Fatalf("exit: %v", err)
+		}
+
+		out, err := r.listOp(t)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		e := findEntry(t, listEntries(t, out), "dirty-ahead")
+		if e["dirty"] != true {
+			t.Errorf("dirty-ahead.dirty = %v, want true", e["dirty"])
+		}
+		if e["ahead_commits"] != 1 {
+			t.Errorf("dirty-ahead.ahead_commits = %v, want 1", e["ahead_commits"])
+		}
+		if e["merged"] != false {
+			t.Errorf("dirty-ahead.merged = %v, want false (main never advanced)", e["merged"])
+		}
+		assertFreshMetadata(t, e)
+	})
+
+	t.Run("merged", func(t *testing.T) {
+		t.Parallel()
+		r := newWorktreeRepo(t)
+		res, err := r.create(t, map[string]any{"name": "merged-lane"})
+		if err != nil {
+			t.Fatalf("create merged-lane: %v", err)
+		}
+		path := res["path"].(string)
+		commitInWorktree(t, path, "m.txt", "m\n", "advance merged-lane")
+		if _, err := r.exitOp(t); err != nil {
+			t.Fatalf("exit: %v", err)
+		}
+		wtGit(t, r.mainRoot, "merge", "--ff-only", "merged-lane")
+
+		out, err := r.listOp(t)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		e := findEntry(t, listEntries(t, out), "merged-lane")
+		if e["dirty"] != false {
+			t.Errorf("merged-lane.dirty = %v, want false", e["dirty"])
+		}
+		if e["ahead_commits"] != 1 {
+			t.Errorf("merged-lane.ahead_commits = %v, want 1", e["ahead_commits"])
+		}
+		if e["merged"] != true {
+			t.Errorf("merged-lane.merged = %v, want true", e["merged"])
+		}
+		if e["merged_arm"] != "ancestry" {
+			t.Errorf("merged-lane.merged_arm = %v, want ancestry", e["merged_arm"])
+		}
+		assertFreshMetadata(t, e)
+	})
 }
 
 func TestWorktreeList_PrefixCollisionFiltering(t *testing.T) {
