@@ -2387,6 +2387,7 @@
       if (duration != null) m.durationMs = duration;
       this.renderToolMeta(m, endedAt);
       if (m.renderer.bodyEnd) m.renderer.bodyEnd(m, data, out);
+      this.renderToolOutputImages(m, data.output_images || data.outputImages || []);
       // Silent success / no "expand reveals nothing" (mockup #6 alt D, #7 alt C):
       // a tool that returned no displayable body keeps just its "✓ verb target"
       // line — drop the caret so it never promises an expand over empty content.
@@ -2428,6 +2429,28 @@
         if (b.querySelector("img, svg, .tool-output-dropped")) return false;
       }
       return true;
+    },
+
+    renderToolOutputImages(state, images) {
+      if (!state || !state.el || !Array.isArray(images) || images.length === 0) return;
+      const resolved = [];
+      for (const img of images) {
+        if (!img) continue;
+        const src = img.url || img.URL || "";
+        if (!src || src.charAt(0) !== "/") continue;
+        resolved.push({ src, name: img.name || img.path || "image" });
+      }
+      if (resolved.length === 0) return;
+      let wrap = state.el.querySelector(".tool-output-images");
+      if (wrap) wrap.remove();
+      wrap = document.createElement("div");
+      wrap.className = "tool-output-images tool-body";
+      if (resolved.length === 1) {
+        wrap.appendChild(this.buildSingleImageCard(resolved, 0));
+      } else {
+        wrap.appendChild(this.buildImageSheet(resolved));
+      }
+      state.el.appendChild(wrap);
     },
 
     // endCheapCluster finalizes the active recon cluster once it is behind us
