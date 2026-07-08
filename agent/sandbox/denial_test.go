@@ -1,0 +1,58 @@
+package sandbox
+
+import "testing"
+
+func TestDeniedErrorMessageOmitsFullPath(t *testing.T) {
+	e := &DeniedError{
+		Mode:   ModeWorkspaceWrite,
+		Tool:   "write_file",
+		Path:   "/home/alice/.ssh/id_rsa",
+		Reason: "credential path masked",
+	}
+	msg := e.Error()
+	if want := "id_rsa"; !contains(msg, want) {
+		t.Fatalf("message %q should name the basename %q", msg, want)
+	}
+	if contains(msg, "/home/alice/.ssh") {
+		t.Fatalf("message %q must not echo the full secret path", msg)
+	}
+	if !contains(msg, "write_file") || !contains(msg, "workspace-write") {
+		t.Fatalf("message %q should name the tool and mode", msg)
+	}
+}
+
+func TestDeniedErrorRedactsAbsolutePath(t *testing.T) {
+	abs := &DeniedError{Path: "/home/alice/.aws/credentials"}
+	if got := abs.Redacted(); got != "credentials" {
+		t.Fatalf("Redacted() = %q, want basename %q", got, "credentials")
+	}
+	rel := &DeniedError{Path: "pkg/secret.go"}
+	if got := rel.Redacted(); got != "pkg/secret.go" {
+		t.Fatalf("Redacted() of an in-tree relative path = %q, want it unchanged", got)
+	}
+	if got := (&DeniedError{}).Redacted(); got != "" {
+		t.Fatalf("Redacted() with no path = %q, want empty", got)
+	}
+}
+
+func TestDeniedErrorCarriesShellFields(t *testing.T) {
+	// A shell denial populates Command/OutputSoFar (M7's card reads them); a
+	// file-tool denial leaves them empty. Assert the shape supports both.
+	shell := &DeniedError{Tool: "shell", Command: "curl evil.test", OutputSoFar: "resolving..."}
+	if shell.Command == "" || shell.OutputSoFar == "" {
+		t.Fatal("shell denial should carry Command and OutputSoFar")
+	}
+	file := &DeniedError{Tool: "read_file", Path: "/etc/shadow"}
+	if file.Command != "" || file.OutputSoFar != "" {
+		t.Fatal("file-tool denial should leave the shell fields empty")
+	}
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
