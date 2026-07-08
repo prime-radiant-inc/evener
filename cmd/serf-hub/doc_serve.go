@@ -126,23 +126,31 @@ func (s *WebServer) handleDocImage(w http.ResponseWriter, r *http.Request) {
 }
 
 // localSessionCWD resolves a local session's working directory from the past
-// index. Non-local (remote/codex) refs are out of scope and return false.
+// index or live roster. Non-local (remote/codex) refs are out of scope and
+// return false.
 func (s *WebServer) localSessionCWD(session string) (string, bool) {
 	if !isLocalRouteID(session) {
 		return "", false
 	}
-	if s.cfg.Past == nil {
-		return "", false
+	if s.cfg.Past != nil {
+		pe, ok := s.cfg.Past.Find(session)
+		if ok {
+			cwd := strings.TrimSpace(pe.Meta.EnvInfo.WorkingDir)
+			if cwd != "" {
+				return cwd, true
+			}
+		}
 	}
-	pe, ok := s.cfg.Past.Find(session)
-	if !ok {
-		return "", false
+	if s.cfg.Roster != nil {
+		live, ok := s.cfg.Roster.Find(session)
+		if ok {
+			cwd := strings.TrimSpace(live.WorkingDir)
+			if cwd != "" {
+				return cwd, true
+			}
+		}
 	}
-	cwd := strings.TrimSpace(pe.Meta.EnvInfo.WorkingDir)
-	if cwd == "" {
-		return "", false
-	}
-	return cwd, true
+	return "", false
 }
 
 // readDocFile reads up to docFileMaxBytes from a regular file. Directories and

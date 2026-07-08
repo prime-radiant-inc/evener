@@ -1532,6 +1532,93 @@ func TestHubRPCThreadReadRelaysDaemonNotifications(t *testing.T) {
 	}
 }
 
+func TestHubRPCThreadReadRelaysEnrichedOutputImageNotification(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 'p', 'a', 'y'}
+	if err := os.WriteFile(filepath.Join(cwd, "plot.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "01RELAYIMG"
+	source := &relayBroadcastSource{
+		id: "local",
+		thread: appwire.Thread{
+			ID:        "th_img",
+			SessionID: sessionID,
+			CWD:       cwd,
+			Source:    "local",
+			Serf:      appwire.SerfThread{Ref: "local:th_img", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_img"}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	expectRelaySubscription(t, source.subscribed)
+
+	source.notifications <- *appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
+		"turnId": "turn_1",
+		"item": appwire.ThreadItem{
+			Type:          "commandExecution",
+			ID:            "item_write",
+			ToolName:      "write_file",
+			CallID:        "call_write",
+			ArgumentsJSON: `{"file_path":"plot.png"}`,
+			Status:        appwire.TurnStatusInProgress,
+		},
+	}).Notification
+	source.notifications <- *appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
+		"turnId": "turn_1",
+		"item": appwire.ThreadItem{
+			Type:     "commandExecution",
+			ID:       "item_write",
+			ToolName: "write_file",
+			CallID:   "call_write",
+			Output:   "wrote",
+			Status:   appwire.TurnStatusCompleted,
+		},
+	}).Notification
+
+	var completed appwire.Notification
+	for i := 0; i < 2; i++ {
+		select {
+		case got := <-client.Notifications():
+			if got.Method == appwire.NotifyItemCompleted {
+				completed = got
+				i = 2
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for relayed completed notification")
+		}
+	}
+	if completed.Method == "" {
+		t.Fatal("completed notification was not relayed")
+	}
+	var params struct {
+		Item appwire.ThreadItem `json:"item"`
+	}
+	if err := json.Unmarshal(completed.Params, &params); err != nil {
+		t.Fatalf("unmarshal completed params: %v", err)
+	}
+	imgs := params.Item.OutputImages
+	if len(imgs) != 1 || imgs[0].Source != "written-file" || imgs[0].Path != "plot.png" || imgs[0].URL != "/doc/image?session="+sessionID+"&path=plot.png" {
+		t.Fatalf("OutputImages=%+v, want written-file plot.png /doc/image descriptor", imgs)
+	}
+}
+
 func TestHubRPCThreadReadRelaysNotificationsBySourceQualifiedThread(t *testing.T) {
 	threadID := "shared_thread"
 	sourceA := &relayBroadcastSource{

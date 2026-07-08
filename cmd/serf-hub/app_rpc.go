@@ -337,6 +337,9 @@ func registerThreadHandlers(
 			live, liveErr = source.ListTurns(ctx, params)
 			if liveErr == nil && len(live.Data) > 0 {
 				if meta, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: false}); err == nil {
+					// File-backed output-image enrichment is intentionally page-local
+					// here: args can only be correlated from command-call items present
+					// in this returned page (or on the completed item itself).
 					thread := enrichThreadFileBackedOutputImages(appwire.Thread{
 						ID:        meta.Thread.ID,
 						SessionID: meta.Thread.SessionID,

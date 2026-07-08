@@ -126,6 +126,121 @@ func TestOutputImagesForToolCallStructuredWriteFile(t *testing.T) {
 	}
 }
 
+func TestOutputImagesForToolCallEditFileStructuredWrite(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(cwd, "edited.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	imgs := outputImagesForToolCall("01DOC", cwd, "edit_file", `{"file_path":"edited.png"}`, "updated")
+	if len(imgs) != 1 || imgs[0].Source != "written-file" || imgs[0].Path != "edited.png" || imgs[0].URL == "" {
+		t.Fatalf("outputImagesForToolCall edit_file=%+v, want one written-file edited.png descriptor", imgs)
+	}
+}
+
+func TestOutputImagesForToolCallApplyPatchOutputPath(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(cwd, "patch.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	imgs := outputImagesForToolCall("01DOC", cwd, "apply_patch", `{}`, "created patch.png")
+	if len(imgs) != 1 || imgs[0].Source != "written-file" || imgs[0].Path != "patch.png" || imgs[0].URL == "" {
+		t.Fatalf("outputImagesForToolCall apply_patch=%+v, want one written-file patch.png descriptor", imgs)
+	}
+}
+
+func TestOutputImagesForToolCallDedupesDuplicateCandidates(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(cwd, "dup.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	imgs := outputImagesForToolCall("01DOC", cwd, "shell", `{}`, "created dup.png\nopened ./dup.png\n")
+	if len(imgs) != 1 || imgs[0].Path != "dup.png" {
+		t.Fatalf("outputImagesForToolCall duplicate shell paths=%+v, want one dup.png descriptor", imgs)
+	}
+}
+
+func TestEnrichThreadFileBackedOutputImagesIsIdempotent(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(cwd, "dup.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	thread := appwire.Thread{
+		ID:        "01DOC",
+		SessionID: "01DOC",
+		CWD:       cwd,
+		Turns: []appwire.Turn{{Items: []appwire.ThreadItem{{
+			Type:     "commandExecution",
+			ToolName: "shell",
+			Output:   "created dup.png",
+			Status:   appwire.TurnStatusCompleted,
+		}}}},
+	}
+
+	once := enrichThreadFileBackedOutputImages(thread)
+	twice := enrichThreadFileBackedOutputImages(once)
+	imgs := twice.Turns[0].Items[0].OutputImages
+	if len(imgs) != 1 || imgs[0].Path != "dup.png" {
+		t.Fatalf("OutputImages after repeated enrichment=%+v, want one dup.png descriptor", imgs)
+	}
+}
+
+func TestOutputImagesForToolCallRejectsUnsafeAbsoluteOutsidePath(t *testing.T) {
+	cwd := t.TempDir()
+	outside := filepath.Join(filepath.Dir(cwd), "outside.png")
+	if err := os.WriteFile(outside, []byte{0x89, 0x50, 0x4e, 0x47}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	imgs := outputImagesForToolCall("01DOC", cwd, "write_file", `{"file_path":`+strconv.Quote(outside)+`}`, "wrote")
+	if len(imgs) != 0 {
+		t.Fatalf("outputImagesForToolCall accepted unsafe absolute outside path: %+v", imgs)
+	}
+}
+
+func TestOutputImagesForToolCallOmitsMissingAndNonImageCandidates(t *testing.T) {
+	cwd := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cwd, "notes.png"), []byte("not an image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	imgs := outputImagesForToolCall("01DOC", cwd, "shell", `{}`, "created missing.png\ncreated notes.png\n")
+	if len(imgs) != 0 {
+		t.Fatalf("outputImagesForToolCall returned invalid candidates: %+v", imgs)
+	}
+}
+
+func TestEnrichThreadFileBackedOutputImagesIsPageLocalForArguments(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(cwd, "plot.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	thread := appwire.Thread{
+		ID:        "01DOC",
+		SessionID: "01DOC",
+		CWD:       cwd,
+		Turns: []appwire.Turn{{Items: []appwire.ThreadItem{{
+			Type:     "commandExecution",
+			ToolName: "write_file",
+			CallID:   "call_write",
+			Output:   "wrote file",
+			Status:   appwire.TurnStatusCompleted,
+		}}}},
+	}
+
+	got := enrichThreadFileBackedOutputImages(thread)
+	if imgs := got.Turns[0].Items[0].OutputImages; len(imgs) != 0 {
+		t.Fatalf("page without write_file arguments produced descriptors: %+v", imgs)
+	}
+}
+
 func TestOutputImagesForToolCallRejectsInvalidStructuredWriteCandidates(t *testing.T) {
 	cwd := t.TempDir()
 	outside := filepath.Join(filepath.Dir(cwd), "outside.png")

@@ -18,7 +18,9 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/serf/rendezvous"
 )
 
 // docServeTestServer seeds a past session whose cwd is a real temp directory,
@@ -75,6 +77,43 @@ func TestDocImageServesPNG(t *testing.T) {
 	rec := docImageRequest(t, web, session, "out.png")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/png" {
+		t.Fatalf("Content-Type=%q, want image/png", ct)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), png) {
+		t.Fatalf("body=%x, want %x", rec.Body.Bytes(), png)
+	}
+}
+
+func TestDocImageServesLiveDescriptorURLWithoutPast(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(cwd, "plot.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "01LIVEIMG"
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry: rendezvous.Entry{
+			PID:        91,
+			Protocol:   appwire.ProtocolVersion,
+			Endpoint:   "ws://127.0.0.1:1/rpc",
+			ThreadID:   sessionID,
+			SessionID:  sessionID,
+			WorkingDir: cwd,
+		},
+		SessionID: sessionID,
+		Status:    appwire.ThreadStatusIdle,
+	})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: roster})
+
+	imgs := outputImagesForToolCall(sessionID, cwd, "shell", `{}`, "created plot.png")
+	if len(imgs) != 1 || imgs[0].URL == "" || imgs[0].Path != "plot.png" {
+		t.Fatalf("descriptor=%+v, want one live /doc/image plot.png descriptor", imgs)
+	}
+	rec := docImageRequest(t, web, sessionID, imgs[0].Path)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s status=%d body=%q", imgs[0].URL, rec.Code, rec.Body.String())
 	}
 	if ct := rec.Header().Get("Content-Type"); ct != "image/png" {
 		t.Fatalf("Content-Type=%q, want image/png", ct)
