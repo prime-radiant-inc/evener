@@ -106,7 +106,7 @@ before editing — they will drift as milestones land):
 
 ## Status ledger (update as milestones land)
 
-- [ ] M1 — policy core + contract tests
+- [x] M1 — policy core + contract tests (merged `4ff14d37`; gates green; roborev in progress)
 - [ ] M2 — file-tool race-safe in-process layer
 - [ ] M3 — Linux kernel layer (flag inert)
 - [ ] M4 — subagent/worktree scoping
@@ -119,15 +119,15 @@ before editing — they will drift as milestones land):
 These bind decisions/interfaces that span milestones. Where a per-milestone plan
 disagrees, this section wins.
 
-1. **One shared denial-error type.** M2 (file-tool denials), M3 (shell/kernel
-   denials), and M7 (consumer) build against a single typed error — call it
-   `sandbox.DeniedError` — in the `agent/sandbox` package (M1 may stub it; M2
-   fills the file-tool fields; M3 adds the shell fields). Fields:
-   `{Mode, Tool, Path (redacted per the audit-redaction contract), Reason}` for
-   every denial, plus `{Command, OutputSoFar}` populated **only** for
-   shell/kernel denials. M7's shell approval card reads `Command`+`OutputSoFar`;
-   its file card reads `Path`. M2 must define the type with the shell fields
-   present-but-empty so M3/M7 don't have to widen it later.
+1. **One shared denial-error type — ALREADY LANDED.** `sandbox.DeniedError`
+   exists in `agent/sandbox/denial.go` (added on the integration branch right
+   after the M1 merge, commit `8534430a`) so M2 and M3 can build in parallel
+   without either declaring or widening it. Fields:
+   `{Mode, Tool, Path, Reason}` for every denial, plus `{Command, OutputSoFar}`
+   populated **only** for shell/kernel denials; `Error()` returns a model-safe
+   message (path by basename only) and `Redacted()` gives the audit-log form. M2
+   populates it at file-tool denial sites; M3 fills `Command`/`OutputSoFar` at
+   shell/kernel denials; M7's approval card reads them. Do NOT redefine it.
 
 2. **macOS validation ownership.** M2 *implements* the darwin
    `openat(O_NOFOLLOW|O_DIRECTORY)` fd-walk and gates it with
