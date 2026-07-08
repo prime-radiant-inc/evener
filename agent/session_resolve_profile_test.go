@@ -59,6 +59,7 @@ func TestSetModel_CrossProvider_SwapsProfileAndPreservesOverride(t *testing.T) {
 	sess, err := NewSession(c, startProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolver,
+		testOnly:         testConfig{skipGitSnapshot: true},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -117,6 +118,7 @@ func TestSetModel_CrossProvider_WithoutResolver_NoSwap(t *testing.T) {
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
+		testOnly:         testConfig{skipGitSnapshot: true},
 		// No ResolveProfile — cross-provider switch must NOT happen.
 	})
 	if err != nil {
@@ -265,6 +267,7 @@ func TestSetModel_SameProvider_WithResolver_UsesWithModel(t *testing.T) {
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   resolver,
+		testOnly:         testConfig{skipGitSnapshot: true},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -297,6 +300,7 @@ func TestSetModel_CrossProvider_SwitchToGoogle_RegistersWebSearch(t *testing.T) 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolver,
+		testOnly:         testConfig{skipGitSnapshot: true},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -328,6 +332,7 @@ func TestSetModel_CrossProvider_SwitchAwayFromGoogle_RemovesWebSearch(t *testing
 	sess, err := NewSession(c, newGeminiProfile("gemini-2.5-pro"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolver,
+		testOnly:         testConfig{skipGitSnapshot: true},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -361,6 +366,7 @@ func TestValidateModelFallbacks_CrossTag_Errors(t *testing.T) {
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolver,
 		ModelFallbacks:   []string{"anthropic/claude-opus-4-6"},
+		testOnly:         testConfig{skipGitSnapshot: true},
 	})
 	if err == nil {
 		t.Fatal("NewSession succeeded with cross-tag fallback (with resolver), want error")
@@ -383,6 +389,7 @@ func TestValidateModelFallbacks_SameTag_Allowed(t *testing.T) {
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolver,
 		ModelFallbacks:   []string{"openai/gpt-4.1-mini"},
+		testOnly:         testConfig{skipGitSnapshot: true},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err) // must succeed for same-tag fallback
@@ -533,6 +540,7 @@ func TestSetModel_CrossProvider_ToOllama_WithCatalog(t *testing.T) {
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolverFull,
+		testOnly:         testConfig{skipGitSnapshot: true},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -562,6 +570,7 @@ func TestSetModel_CrossProvider_ToOpenRouter_PreservesSlashModel(t *testing.T) {
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolverFull,
+		testOnly:         testConfig{skipGitSnapshot: true},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
