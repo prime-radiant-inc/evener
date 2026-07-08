@@ -381,12 +381,17 @@ func scopesFor(policy SandboxPolicy, layout GitLayout, worktree string) (fileToo
 	return fileTool, spawned
 }
 
-// dedupeRoots cleans, drops empties, and de-duplicates a root list, preserving
-// first-seen order.
+// dedupeRoots cleans, drops empty/whitespace-only entries, and de-duplicates a
+// root list, preserving first-seen order. A whitespace-only entry ("   ") is
+// dropped rather than emitted: filepath.Clean does not trim whitespace, so an
+// un-dropped "   " would become a relative grant root the absolute-path
+// enforcement layers never match (a silent grant). The extra-root validation
+// already refuses a non-absolute non-empty entry; a whitespace-only entry is
+// treated as empty here.
 func dedupeRoots(roots []string) []string {
 	out := make([]string, 0, len(roots))
 	for _, r := range roots {
-		if r == "" {
+		if strings.TrimSpace(r) == "" {
 			continue
 		}
 		c := filepath.Clean(r)

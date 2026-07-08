@@ -306,6 +306,30 @@ func TestResolveRefusesRelativeExtraRoots(t *testing.T) {
 	mustResolve(t, SandboxPolicy{Mode: ModeRestricted, Network: netPtr(true), ExtraReadRoots: []string{"/opt/extra"}}, bwrapHost(), main)
 }
 
+// TestResolveSkipsWhitespaceOnlyExtraRoots pins the whitespace-only extra-root
+// fix: a "   " entry passes the absolute-path check (it trims to empty and is
+// skipped there) but must NOT flow into the resolved grants as a relative root —
+// filepath.Clean does not trim whitespace, so an un-skipped "   " would become a
+// relative grant root the enforcement layers never match. It is treated as
+// empty/skipped, not emitted, and never triggers a refusal.
+func TestResolveSkipsWhitespaceOnlyExtraRoots(t *testing.T) {
+	t.Parallel()
+	main := mainRepo(t)
+	rp := mustResolve(t, SandboxPolicy{
+		Mode: ModeRestricted, Network: netPtr(true),
+		ExtraReadRoots:     []string{"   "},
+		ExtraWritableRoots: []string{"\t"},
+	}, bwrapHost(), main)
+	for _, r := range slices.Concat(rp.FileTool.ReadRoots, rp.FileTool.WriteRoots, rp.Spawned.ReadRoots, rp.Spawned.WriteRoots) {
+		if strings.TrimSpace(r) == "" {
+			t.Errorf("whitespace-only extra root leaked into grants as %q", r)
+		}
+		if !filepath.IsAbs(r) {
+			t.Errorf("whitespace-only extra root produced a non-absolute grant root %q", r)
+		}
+	}
+}
+
 // TestResolveNetworkDefaultsOnWhenUnset is the finding-#5 regression: the network
 // decision is documented as defaulting ON when sandboxed, but a bool zero value
 // silently meant OFF, so SandboxPolicy{Mode: ModeRestricted} disabled network.
