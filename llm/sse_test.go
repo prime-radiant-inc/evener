@@ -77,14 +77,14 @@ func TestParseSSE_ContextCancellation_WithTimeout(t *testing.T) {
 		// Stall forever.
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
 	var events []SSEEvent
 	err := ParseSSE(ctx, pr, func(ev SSEEvent) error {
 		events = append(events, ev)
 		return nil
-	}, WithStreamReadTimeout(5*time.Second))
+	}, WithStreamReadTimeout(time.Second))
 	// Context fires before the stream-read timeout.
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("expected context.DeadlineExceeded, got: %v", err)
@@ -102,14 +102,14 @@ func TestParseSSE_StreamReadTimeout_FiresOnStall(t *testing.T) {
 		// Stall forever (don't write anything else, don't close).
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	var events []SSEEvent
 	err := ParseSSE(ctx, pr, func(ev SSEEvent) error {
 		events = append(events, ev)
 		return nil
-	}, WithStreamReadTimeout(500*time.Millisecond))
+	}, WithStreamReadTimeout(50*time.Millisecond))
 
 	if err == nil {
 		t.Fatal("expected error from stream read timeout, got nil")
@@ -127,24 +127,24 @@ func TestParseSSE_StreamReadTimeout_ResetsOnData(t *testing.T) {
 	// Verify that the timeout resets after each line of data, not just events.
 	pr, pw := io.Pipe()
 	go func() {
-		// Write lines slowly but well within the timeout window (10× margin).
+		// Write lines slowly but well within the timeout window (10x margin).
 		_, _ = pw.Write([]byte("data: first\n\n"))
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 		_, _ = pw.Write([]byte("data: second\n\n"))
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 		_, _ = pw.Write([]byte("data: third\n\n"))
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 		_ = pw.Close()
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	var events []SSEEvent
 	err := ParseSSE(ctx, pr, func(ev SSEEvent) error {
 		events = append(events, ev)
 		return nil
-	}, WithStreamReadTimeout(2*time.Second))
+	}, WithStreamReadTimeout(200*time.Millisecond))
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
