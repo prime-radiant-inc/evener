@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/llm"
@@ -89,5 +91,27 @@ func TestBuildModelRequest_NetOffDisablesProviderWebSearch(t *testing.T) {
 	plain := &Session{env: execenv.NewLocalExecutionEnvironment(t.TempDir())}
 	if !plain.buildModelRequest(profile, "sys", msgs, nil, "").WebSearch {
 		t.Errorf("an unsandboxed session must pass the profile web-search capability through unchanged")
+	}
+}
+
+// A mid-session cross-provider switch to a google-tag profile dynamically
+// re-registers the web_search function tool. That executor must still honor
+// net=off egress denial — otherwise a SetModel makes serf's Gemini web search
+// reachable in a session whose network egress the user turned off.
+func TestReapplyProviderTools_GoogleWebSearchEgressDeniedUnderNetOff(t *testing.T) {
+	s := &Session{env: netEnv(t, false), reg: tool.NewRegistry()}
+	s.reapplyProviderSpecificTools("openai", "google")
+
+	rt := s.reg.Get("web_search")
+	if rt == nil {
+		t.Fatal("web_search must be registered after switching to a google-tag profile")
+	}
+	_, err := rt.Exec(context.Background(), s.env, map[string]any{"query": "x"})
+	var de *sandbox.DeniedError
+	if !errors.As(err, &de) {
+		t.Fatalf("google web_search under net=off must be egress-denied, got %v", err)
+	}
+	if de.Tool != "web_search" {
+		t.Errorf("denial Tool = %q, want web_search", de.Tool)
 	}
 }
