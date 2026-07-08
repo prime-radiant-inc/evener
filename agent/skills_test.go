@@ -38,7 +38,7 @@ func writeSkillMD(t *testing.T, dir, name, content string) {
 func TestDiscoverSkills_FindsSkillsDir(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nHello instructions.\n")
 
@@ -63,7 +63,7 @@ func TestDiscoverSkills_FindsSkillsDir(t *testing.T) {
 func TestDiscoverSkills_DeeperShadows(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 
 	// Skill at root level.
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Root greeting\"\n---\nRoot.\n")
@@ -91,7 +91,7 @@ func TestDiscoverSkills_DeeperShadows(t *testing.T) {
 func TestDiscoverSkills_NoSkillsDir(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 
 	env := execenv.NewLocalExecutionEnvironment(root)
 	skills := skill.DiscoverSkills(env)
@@ -123,7 +123,7 @@ func TestDiscoverSkills_MissingRequiredField(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
-			initGitRepo(t, root)
+			markGitRoot(t, root)
 
 			// SKILL.md missing a required field — should be skipped.
 			writeSkillMD(t, root, "bad", c.content)
@@ -141,7 +141,7 @@ func TestDiscoverSkills_MissingRequiredField(t *testing.T) {
 func TestLoadSkillBody_ReturnsBody(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nHello instructions.\n")
 
@@ -165,7 +165,7 @@ func TestLoadSkillBody_ReturnsBody(t *testing.T) {
 func TestDiscoverSkills_AllowedTools(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 
 	writeSkillMD(t, root, "deploy", "---\nname: deploy\ndescription: \"Deploy skill\"\nallowed-tools:\n  - shell\n  - read_file\n---\nDeploy instructions.\n")
 
@@ -187,7 +187,7 @@ func TestDiscoverSkills_AllowedTools(t *testing.T) {
 func TestDiscoverSkills_ExtraDirs(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 
 	// No skills in the project itself. Extra dir points directly at a
 	// directory whose subdirectories contain SKILL.md files.
@@ -208,7 +208,7 @@ func TestDiscoverSkills_ExtraDirs(t *testing.T) {
 func TestDiscoverSkills_ExtraDirShadows(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Project greeting\"\n---\nProject.\n")
 
@@ -230,7 +230,7 @@ func TestDiscoverSkills_ExtraDirShadows(t *testing.T) {
 func TestDiscoverSkills_ExtraDirMissing(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting\"\n---\nGreet.\n")
 
@@ -249,7 +249,7 @@ func TestDiscoverSkills_ExtraDirMissing(t *testing.T) {
 func TestDiscoverSkills_MultipleSkills(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting\"\n---\nGreet.\n")
 	writeSkillMD(t, root, "deploy", "---\nname: deploy\ndescription: \"Deploy\"\n---\nDeploy.\n")

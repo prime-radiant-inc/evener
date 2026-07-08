@@ -61,7 +61,7 @@ func TestExtractEmbeddedSkills_DiscoverableByDiscoverSkills(t *testing.T) {
 
 	// The extracted dir should work as an extraDirs argument to DiscoverSkills.
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 
 	env := execenv.NewLocalExecutionEnvironment(root)
 	skills := skill.DiscoverSkills(env, dir)
@@ -80,7 +80,7 @@ func TestExtractEmbeddedSkills_FilesystemShadowsEmbedded(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 	writeSkillMD(t, root, embeddedDoctoringSkill,
 		"---\nname: doctoring-serf\ndescription: \"Project doctoring override\"\n---\nCustom doctoring.\n")
 
@@ -100,7 +100,7 @@ func TestExtractEmbeddedSkills_FilesystemShadowsEmbedded(t *testing.T) {
 func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 
 	c := llm.NewClient()
 	comm := communicateCall("c1", "done")
@@ -140,7 +140,7 @@ func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
 func TestOpenAI_SkillsWithUseSkillInSystemPrompt(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 
 	// Create a project skill so the skill catalog is populated.
 	writeSkillMD(t, root, "my-skill",
@@ -186,7 +186,7 @@ func TestOpenAI_SkillsWithUseSkillInSystemPrompt(t *testing.T) {
 func TestEmbeddedSkills_ProjectShadowsEmbedded(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 
 	// Project has a custom doctoring skill that should shadow the embedded one.
 	writeSkillMD(t, root, embeddedDoctoringSkill,
@@ -227,7 +227,7 @@ func TestEmbeddedSkills_ProjectShadowsEmbedded(t *testing.T) {
 func TestEmbeddedSkills_UseSkillWithProjectSkill(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 
 	// Create a project skill to test use_skill with.
 	writeSkillMD(t, root, "my-skill",
@@ -281,7 +281,7 @@ func TestEmbeddedSkills_UseSkillWithProjectSkill(t *testing.T) {
 func TestEmbeddedSkills_UseSkillUnknownReturnsError(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 
 	c := llm.NewClient()
 
@@ -354,7 +354,7 @@ func TestEmbeddedSkills_AllSkillsLoadable(t *testing.T) {
 func TestNonInteractive_SystemPromptContainsGuidance(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 
 	c := llm.NewClient()
 	comm := communicateCall("c1", "done")
@@ -395,7 +395,7 @@ func TestNonInteractive_SystemPromptContainsGuidance(t *testing.T) {
 func TestNonInteractive_NotPresentWhenFalse(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 
 	c := llm.NewClient()
 	comm := communicateCall("c1", "done")

@@ -31,7 +31,7 @@ func useSkillCall(id, skillName string) llm.ToolCallData {
 func TestUseSkill_ReturnsBody(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nGreet people warmly.\n")
 
 	c := llm.NewClient()
@@ -88,7 +88,7 @@ func TestUseSkill_ReturnsBody(t *testing.T) {
 func TestUseSkill_NotFound_ReturnsError(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 	// No skills directory — use_skill("nonexistent") should return error.
 
 	c := llm.NewClient()
@@ -112,7 +112,7 @@ func TestUseSkill_NotFound_ReturnsError(t *testing.T) {
 func TestUseSkill_EmitsEvent(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 	writeSkillMD(t, root, "deploy", "---\nname: deploy\ndescription: \"Deploy skill\"\n---\nDeploy instructions.\n")
 
 	c := llm.NewClient()
@@ -168,7 +168,7 @@ func TestUseSkill_EmitsEvent(t *testing.T) {
 func TestUseSkill_SystemPromptContainsSkillList(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nBody.\n")
 
 	c := llm.NewClient()
@@ -209,7 +209,7 @@ func TestUseSkill_SystemPromptContainsSkillList(t *testing.T) {
 func TestOpenAI_SkillsSectionUsesUseSkill(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nBody.\n")
 
 	c := llm.NewClient()
@@ -255,7 +255,7 @@ func TestOpenAI_SkillsSectionUsesUseSkill(t *testing.T) {
 func TestOpenAI_PluginSkillCatalogUsesNamespacedName(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 
 	pluginDir := makePluginDir(t, "skill-plugin")
 	skillDir := filepath.Join(pluginDir, "skills", "my-skill")
@@ -314,7 +314,7 @@ func TestOpenAI_IncludesUseSkillTool(t *testing.T) {
 func TestOpenAIUseSkillToolExecutes(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nUse greeting style.\n")
 
 	c := llm.NewClient()
@@ -348,7 +348,7 @@ func TestOpenAIUseSkillToolExecutes(t *testing.T) {
 func TestDiscoverSkills_PopulatedOnSession(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nBody.\n")
 
 	// Verify DiscoverSkills actually works at the filesystem level — the session
