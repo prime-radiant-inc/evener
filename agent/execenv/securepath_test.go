@@ -24,7 +24,7 @@ func asDenied(err error, target **sandbox.DeniedError) bool {
 func sbTestHost(home string) sandbox.HostFacts {
 	return sandbox.HostFacts{
 		OS: "linux", Home: home,
-		BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, LandlockABI: 4,
+		BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true,
 	}
 }
 

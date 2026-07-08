@@ -4,7 +4,7 @@
 // git-surface resolution, and the resolver that turns a (mode, network, host,
 // cwd) request into an exact ResolvedPolicy — the grants, denials, network
 // decision, cache strategy, and enforcing backend that every backend (bwrap,
-// Landlock, Seatbelt) is later held to via the exported contract harness.
+// Seatbelt) is later held to via the exported contract harness.
 //
 // M1 carries the policy but enforces nothing: no file tool or spawned command
 // consults a ResolvedPolicy yet. Enforcement arrives in M2 (in-process file

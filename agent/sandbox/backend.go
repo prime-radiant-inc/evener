@@ -13,9 +13,7 @@ import (
 // flow through execenv). A nil *Wrapper means no kernel confinement — exactly
 // today's behavior, so a non-sandboxed spawn is byte-identical to before.
 //
-// bwrap is the only Linux backend: M1's floor makes Landlock always refuse (it
-// cannot subtract the in-worktree .git pointer from an allowlisted root), so the
-// resolver never selects it. NewWrapper therefore accepts only BackendBwrap.
+// bwrap is the only Linux backend, so NewWrapper accepts only BackendBwrap.
 type Wrapper struct {
 	policy     ResolvedPolicy
 	bwrapPath  string // absolute bubblewrap binary, resolved outside cwd (PATH-injection defense)

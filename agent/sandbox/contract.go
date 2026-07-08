@@ -60,9 +60,8 @@ type ContractCase struct {
 // cases directly.
 func ContractCases() []ContractCase {
 	const home = "/home/contract"
-	bwrap := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, LandlockABI: 4}
+	bwrap := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
 	bwrapNoOverlay := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: false}
-	landlock := HostFacts{OS: "linux", Home: home, LandlockABI: 3}
 	bare := HostFacts{OS: "linux", Home: home}
 	windows := HostFacts{OS: "windows", Home: `C:\Users\contract`}
 	seatbelt := HostFacts{OS: "darwin", Home: "/Users/contract", SandboxExecPath: "/usr/bin/sandbox-exec"}
@@ -71,7 +70,7 @@ func ContractCases() []ContractCase {
 	var cases []ContractCase
 
 	// --- off: resolves on every host, no backend, no containment. ---
-	for _, h := range []HostFacts{bwrap, landlock, bare, windows, seatbelt, darwinBare} {
+	for _, h := range []HostFacts{bwrap, bare, windows, seatbelt, darwinBare} {
 		cases = append(cases, ContractCase{
 			Name: "off/" + h.OS + backendTag(h), Mode: ModeOff, Net: true, Host: h, Workspace: MainCheckout,
 			WantBackend: BackendNone, WantNetwork: true, WantCache: CacheNone,
@@ -95,16 +94,12 @@ func ContractCases() []ContractCase {
 	// --- refusal tiers: every sandboxed mode × net cell refuses, so no refusal
 	// cell (esp. net=off) can be silently dropped and let a backend resolve it. ---
 
-	// landlock-only: Landlock is allowlist-only and cannot subtract the in-worktree
-	// .git pointer inside a granted root, so it serves NO sandboxed mode — every
-	// cell refuses naming bwrap (finding #2). Its signature workspace is the linked
-	// worktree; a MainCheckout cell is added so both git shapes are exercised.
-	cases = append(cases, refuseTier("landlock", landlock, LinkedWorktree, "bwrap")...)
-	cases = append(cases, refuseCase("landlock/restricted-main", ModeRestricted, true, landlock, MainCheckout, "bwrap"))
-
-	// neither (bare linux) + windows: no backend at all → every cell refuses with
-	// no backend that would satisfy it.
+	// non-bwrap linux + windows: no usable backend at all → every sandboxed cell
+	// refuses with no backend that would satisfy it. The Linux tier exercises both
+	// git shapes: the full mode × net product on a main checkout, plus a linked
+	// worktree cell so both layouts are covered.
 	cases = append(cases, refuseTier("no-backend/linux", bare, MainCheckout, "")...)
+	cases = append(cases, refuseCase("no-backend/linux/restricted-linked", ModeRestricted, true, bare, LinkedWorktree, ""))
 	cases = append(cases, refuseTier("no-backend/windows", windows, MainCheckout, "")...)
 
 	// --- darwin + Seatbelt: deny-capable, full matrix; cache always session-private. ---
@@ -137,8 +132,6 @@ func backendTag(h HostFacts) string {
 	switch {
 	case h.BwrapCapable:
 		return "-bwrap"
-	case h.LandlockAvailable():
-		return "-landlock"
 	case h.SeatbeltAvailable():
 		return "-seatbelt"
 	default:

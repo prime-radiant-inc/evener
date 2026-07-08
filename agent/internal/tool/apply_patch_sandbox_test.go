@@ -26,7 +26,7 @@ func sandboxedApplyEnv(t *testing.T, mode sandbox.Mode) (env *execenv.LocalExecu
 	}
 	host := sandbox.HostFacts{
 		OS: "linux", Home: home,
-		BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, LandlockABI: 4,
+		BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true,
 	}
 	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: mode}, host, worktree)
 	if err != nil {
@@ -178,7 +178,7 @@ func TestApplyPatchSandbox_GitHookProtected(t *testing.T) {
 	worktree := t.TempDir()
 	// A real git repo so the resolved policy carries Git.ProtectedPaths.
 	initGitRepo(t, worktree)
-	host := sandbox.HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, LandlockABI: 4}
+	host := sandbox.HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
 	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, host, worktree)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)

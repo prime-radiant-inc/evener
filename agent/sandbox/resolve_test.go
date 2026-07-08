@@ -25,13 +25,10 @@ func netStr(n *bool) string {
 }
 
 func bwrapHost() HostFacts {
-	return HostFacts{OS: "linux", Home: testHome, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, LandlockABI: 4}
+	return HostFacts{OS: "linux", Home: testHome, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
 }
 func bwrapHostNoOverlay() HostFacts {
 	return HostFacts{OS: "linux", Home: testHome, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: false}
-}
-func landlockHost() HostFacts {
-	return HostFacts{OS: "linux", Home: testHome, LandlockABI: 3}
 }
 func bareLinuxHost() HostFacts { return HostFacts{OS: "linux", Home: testHome} }
 func windowsHost() HostFacts   { return HostFacts{OS: "windows", Home: `C:\Users\tester`} }
@@ -92,7 +89,7 @@ func mustRefuse(t *testing.T, pol SandboxPolicy, host HostFacts, cwd, wantBacken
 func TestResolveOffIsUnconstrained(t *testing.T) {
 	t.Parallel()
 	dir := clean(t.TempDir())
-	for _, host := range []HostFacts{bwrapHost(), landlockHost(), bareLinuxHost(), windowsHost(), darwinBareHost()} {
+	for _, host := range []HostFacts{bwrapHost(), bareLinuxHost(), windowsHost(), darwinBareHost()} {
 		rp := mustResolve(t, SandboxPolicy{Mode: ModeOff}, host, dir)
 		if rp.Mode != ModeOff || rp.Backend != BackendNone {
 			t.Errorf("off on %s: Mode=%v Backend=%v, want off/none", host.OS, rp.Mode, rp.Backend)
@@ -207,30 +204,21 @@ func TestResolveRestrictedLinkedReadLayerSplit(t *testing.T) {
 	}
 }
 
-// TestResolveLandlockFloor is the finding-#2 disposition: Landlock is allowlist-
-// only and cannot subtract the in-worktree .git pointer inside an allowlisted
-// root, so it can no longer serve ANY sandboxed mode — not even the restricted +
-// net=on + linked-worktree cell it used to. Every sandboxed request on a
-// Landlock-only host refuses naming bwrap; such hosts get only --sandbox off.
-func TestResolveLandlockFloor(t *testing.T) {
+// TestResolveNonBwrapLinuxRefusesAllModes: bwrap is the only Linux backend, so a
+// Linux host that is not bwrap-capable can enforce no sandboxed mode — every mode,
+// with net on or off and in any git layout, refuses with no backend that would
+// satisfy it (RequiredBackend ""). Such hosts get only --sandbox off.
+func TestResolveNonBwrapLinuxRefusesAllModes(t *testing.T) {
 	t.Parallel()
 	linked := linkedWorktreeRepo(t)
 	main := mainRepo(t)
 
-	// The cell Landlock used to serve now refuses: the reason must cite the
-	// in-worktree .git pointer that allowlist-only Landlock cannot protect.
-	ref := mustRefuse(t, SandboxPolicy{Mode: ModeRestricted, Network: netPtr(true)}, landlockHost(), linked, "bwrap")
-	if !strings.Contains(ref.Reason, ".git pointer") {
-		t.Errorf("restricted+linked refusal reason should cite the in-worktree .git pointer, got: %s", ref.Reason)
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		for _, net := range []bool{true, false} {
+			mustRefuse(t, SandboxPolicy{Mode: mode, Network: netPtr(net)}, bareLinuxHost(), linked, "")
+			mustRefuse(t, SandboxPolicy{Mode: mode, Network: netPtr(net)}, bareLinuxHost(), main, "")
+		}
 	}
-
-	// restricted on a MAIN checkout needs subtraction → refuse naming bwrap.
-	mustRefuse(t, SandboxPolicy{Mode: ModeRestricted, Network: netPtr(true)}, landlockHost(), main, "bwrap")
-	// restricted + net=off (Landlock can't isolate UDP/DNS) → refuse.
-	mustRefuse(t, SandboxPolicy{Mode: ModeRestricted, Network: netPtr(false)}, landlockHost(), linked, "bwrap")
-	// subtractive modes → refuse.
-	mustRefuse(t, SandboxPolicy{Mode: ModeReadOnly, Network: netPtr(true)}, landlockHost(), linked, "bwrap")
-	mustRefuse(t, SandboxPolicy{Mode: ModeWorkspaceWrite, Network: netPtr(true)}, landlockHost(), linked, "bwrap")
 }
 
 // TestResolveNeitherAndWindowsRefuseAllSandboxed: with no backend, every
