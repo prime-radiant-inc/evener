@@ -33,6 +33,21 @@ When a test needs a model, name that as the behavior under test and keep it out
 of the default suite. When the model is only a way to drive Serf, replace it with
 a scripted `llm.ProviderAdapter` response and assert the Serf side effects.
 
+## MCP Server E2E
+
+The MCP manager has opt-in live tests against `npx -y
+@modelcontextprotocol/server-everything`. They are intentionally not part of the
+default suite because they depend on an ambient Node/npm toolchain and may fetch
+or use cached packages outside the repository.
+
+Run:
+
+```sh
+SERF_MCP_E2E=1 GOCACHE=/tmp/serf-gocache go test ./agent/internal/mcp -run 'TestRealMCP_' -count=1 -v
+```
+
+`SERF_LIVE_TESTS=1` also enables these tests with the other live test suites.
+
 ## Environment Variable Tests
 
 Supported runtime environment variables are defined in the `envvars` package
