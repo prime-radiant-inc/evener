@@ -50,7 +50,7 @@ AGENT_P=${AGENT_P-4}
 # Fuzz-designated Test* functions are not part of the regular gate. Native Fuzz*
 # targets are already excluded by -run; these names cover rapid/sequence fuzz
 # tests and structured-generator reachability proofs that remain under make fuzz.
-fuzz_test_skip='(SeqFuzz|SchemaFuzz|Structured.*Reach|LifecycleAdapter|ToolArgsAdapter|TurnPagingEquivalenceSanity|WireTypeRegistryCoverage|LineWindowExtractorsSanity|TranscriptReadersAgreeSanity|WriteListRoundTrip|LaunchConfigThreeStateRoundTrip|DifferentialSanity|StreamVsNonStreamSanity)'
+fuzz_test_skip='(SeqFuzz|SchemaFuzz|Structured.*Reach|LifecycleAdapter|ToolArgsAdapter|SeqAdapter|TurnPagingEquivalenceSanity|WireTypeRegistryCoverage|LineWindowExtractorsSanity|TranscriptReadersAgreeSanity|WriteListRoundTrip|LaunchConfigThreeStateRoundTrip|DifferentialSanity|StreamVsNonStreamSanity|FuzzBuildEnforces)'
 
 flags="$*"
 logdir="$(mktemp -d -t serf-module-tests.XXXXXX)"
@@ -62,7 +62,21 @@ run_module() {
 	local m="$1" extra="$2"
 	# Word-split flags and extra intentionally so callers can pass multiple flags.
 	# shellcheck disable=SC2086
-		/usr/bin/time -p go test $flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" ./...
+	if [ "$m" = "." ]; then
+		local -a packages=()
+		local pkg
+		while IFS= read -r pkg; do
+			case "$pkg" in
+				primeradiant.com/serf/cmd/serf-fuzzcov|primeradiant.com/serf/cmd/serf-fuzz-harvest)
+					continue
+					;;
+			esac
+			packages+=("$pkg")
+		done < <(go list ./...)
+		/usr/bin/time -p go test $flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" "${packages[@]}"
+		return
+	fi
+	/usr/bin/time -p go test $flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" ./...
 }
 
 # run_wave <module...> — run the modules concurrently, wait, and report each

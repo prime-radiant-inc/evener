@@ -123,6 +123,7 @@ vet:
 fuzz:
 	@$(MEMCAP) sh -c 'cd invariant && go test -tags serffuzz ./...'
 	@$(MEMCAP) sh -c 'cd fuzz && go test -tags serffuzz ./...'
+	@$(MEMCAP) sh -c 'go test ./cmd/serf-fuzzcov ./cmd/serf-fuzz-harvest'
 	@for m in $(FUZZ_GO_MODULES); do ($(MEMCAP) sh -c "cd $$m && go test -run '^Fuzz' -tags serffuzz ./...") || exit 1; done
 	@$(MEMCAP) sh -c "go test -run '^Test.*Golden\$$' ./appwire"
 
