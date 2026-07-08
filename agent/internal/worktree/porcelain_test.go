@@ -77,6 +77,7 @@ func buildPorcelainFixture(t *testing.T) (porcelain, repoRoot string) {
 }
 
 func TestParsePorcelain_RealGitFixture(t *testing.T) {
+	t.Parallel()
 	out, repo := buildPorcelainFixture(t)
 	entries := ParsePorcelain(out)
 
@@ -159,6 +160,7 @@ func TestParsePorcelain_RealGitFixture(t *testing.T) {
 }
 
 func TestParsePorcelain_BareRepo(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	repo := filepath.Join(base, "bare.git")
 	if err := os.MkdirAll(repo, 0o755); err != nil {
@@ -177,6 +179,7 @@ func TestParsePorcelain_BareRepo(t *testing.T) {
 }
 
 func TestParsePorcelain_QuotedReasonWithEscapes(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	repo := filepath.Join(base, "repo")
 	if err := os.MkdirAll(repo, 0o755); err != nil {

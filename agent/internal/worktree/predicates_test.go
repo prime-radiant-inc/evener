@@ -102,6 +102,7 @@ func commitFile(t *testing.T, dir, name, content, msg string) string {
 // --- CleanTree ---
 
 func TestCleanTree_Clean(t *testing.T) {
+	t.Parallel()
 	root, _ := initRepo(t)
 	run := makeGitRunner(t, root)
 
@@ -118,6 +119,7 @@ func TestCleanTree_Clean(t *testing.T) {
 }
 
 func TestCleanTree_DirtyModified(t *testing.T) {
+	t.Parallel()
 	root, _ := initRepo(t)
 	run := makeGitRunner(t, root)
 
@@ -138,6 +140,7 @@ func TestCleanTree_DirtyModified(t *testing.T) {
 }
 
 func TestCleanTree_DirtyUntracked(t *testing.T) {
+	t.Parallel()
 	root, _ := initRepo(t)
 	run := makeGitRunner(t, root)
 
@@ -160,6 +163,7 @@ func TestCleanTree_DirtyUntracked(t *testing.T) {
 // --- Unchanged ---
 
 func TestUnchanged_CleanAndTipEqualsBase(t *testing.T) {
+	t.Parallel()
 	root, base := initRepo(t)
 	wt := addWorktree(t, root, "lane", base)
 	run := makeGitRunner(t, root)
@@ -174,6 +178,7 @@ func TestUnchanged_CleanAndTipEqualsBase(t *testing.T) {
 }
 
 func TestUnchanged_CleanButTipMoved(t *testing.T) {
+	t.Parallel()
 	root, base := initRepo(t)
 	wt := addWorktree(t, root, "lane", base)
 	commitFile(t, wt, "lane.txt", "lane work\n", "lane commit")
@@ -189,6 +194,7 @@ func TestUnchanged_CleanButTipMoved(t *testing.T) {
 }
 
 func TestUnchanged_DirtyButTipEqualsBase(t *testing.T) {
+	t.Parallel()
 	root, base := initRepo(t)
 	wt := addWorktree(t, root, "lane", base)
 	if err := os.WriteFile(filepath.Join(wt, "scratch.txt"), []byte("dirty\n"), 0o644); err != nil {
@@ -208,6 +214,7 @@ func TestUnchanged_DirtyButTipEqualsBase(t *testing.T) {
 // --- Merged: fixture 1, true merge (merge commit) → ancestry arm ---
 
 func TestMerged_TrueMerge_AncestryArm(t *testing.T) {
+	t.Parallel()
 	root, base := initRepo(t)
 	wt := addWorktree(t, root, "lane", base)
 	tip := commitFile(t, wt, "lane.txt", "lane work\n", "lane commit")
@@ -234,6 +241,7 @@ func TestMerged_TrueMerge_AncestryArm(t *testing.T) {
 // --- Merged: fixture 2, fast-forward merge → ancestry arm ---
 
 func TestMerged_FastForward_AncestryArm(t *testing.T) {
+	t.Parallel()
 	root, base := initRepo(t)
 	wt := addWorktree(t, root, "lane", base)
 	tip := commitFile(t, wt, "lane.txt", "lane work\n", "lane commit")
@@ -254,6 +262,7 @@ func TestMerged_FastForward_AncestryArm(t *testing.T) {
 // --- Merged: fixture 3, rebase-merge → cherry arm ---
 
 func TestMerged_RebaseMerge_CherryArm(t *testing.T) {
+	t.Parallel()
 	root, base := initRepo(t)
 	wt := addWorktree(t, root, "lane", base)
 	tip := commitFile(t, wt, "lane.txt", "lane work\n", "lane commit")
@@ -284,6 +293,7 @@ func TestMerged_RebaseMerge_CherryArm(t *testing.T) {
 // --- Merged: fixture 4, single-commit squash merge → cherry arm ---
 
 func TestMerged_SingleCommitSquash_CherryArm(t *testing.T) {
+	t.Parallel()
 	root, base := initRepo(t)
 	wt := addWorktree(t, root, "lane", base)
 	tip := commitFile(t, wt, "lane.txt", "lane work\n", "lane commit")
@@ -310,6 +320,7 @@ func TestMerged_SingleCommitSquash_CherryArm(t *testing.T) {
 // undetectable case per spec §5/§11) ---
 
 func TestMerged_MultiCommitSquash_NotDetected(t *testing.T) {
+	t.Parallel()
 	root, base := initRepo(t)
 	wt := addWorktree(t, root, "lane", base)
 	commitFile(t, wt, "a.txt", "a\n", "lane commit A")
@@ -335,6 +346,7 @@ func TestMerged_MultiCommitSquash_NotDetected(t *testing.T) {
 // merged (rev-6 destruction case: HEAD must never be consulted) ---
 
 func TestMerged_DetachedHEADReviewingTip_NotMerged(t *testing.T) {
+	t.Parallel()
 	root, base := initRepo(t)
 	wt := addWorktree(t, root, "lane", base)
 	tip := commitFile(t, wt, "lane.txt", "lane work\n", "lane commit")
@@ -359,6 +371,7 @@ func TestMerged_DetachedHEADReviewingTip_NotMerged(t *testing.T) {
 // remote-tracking tip ---
 
 func TestMerged_RemoteTrackingTipAheadOfLocal(t *testing.T) {
+	t.Parallel()
 	root, base := initRepo(t)
 	wt := addWorktree(t, root, "lane", base)
 	tip := commitFile(t, wt, "lane.txt", "lane work\n", "lane commit")
@@ -417,6 +430,7 @@ func TestMerged_RemoteTrackingTipAheadOfLocal(t *testing.T) {
 // --- Merged: fixture 8, target branch deleted entirely → TargetUnknown ---
 
 func TestMerged_TargetBranchDeleted_TargetUnknown(t *testing.T) {
+	t.Parallel()
 	root, base := initRepo(t)
 	wt := addWorktree(t, root, "lane", base)
 	tip := commitFile(t, wt, "lane.txt", "lane work\n", "lane commit")
@@ -435,6 +449,7 @@ func TestMerged_TargetBranchDeleted_TargetUnknown(t *testing.T) {
 }
 
 func TestMerged_EmptyMergeTarget_TargetUnknown(t *testing.T) {
+	t.Parallel()
 	root, base := initRepo(t)
 	wt := addWorktree(t, root, "lane", base)
 	tip := commitFile(t, wt, "lane.txt", "lane work\n", "lane commit")
@@ -455,6 +470,7 @@ func TestMerged_EmptyMergeTarget_TargetUnknown(t *testing.T) {
 // --- CleanTree / Unchanged: real git error paths ---
 
 func TestCleanTree_ErrorOnNonexistentPath(t *testing.T) {
+	t.Parallel()
 	root, _ := initRepo(t)
 	run := makeGitRunner(t, root)
 
@@ -465,6 +481,7 @@ func TestCleanTree_ErrorOnNonexistentPath(t *testing.T) {
 }
 
 func TestUnchanged_PropagatesCleanTreeError(t *testing.T) {
+	t.Parallel()
 	root, _ := initRepo(t)
 	run := makeGitRunner(t, root)
 
@@ -479,6 +496,7 @@ func TestUnchanged_PropagatesCleanTreeError(t *testing.T) {
 // has an unborn HEAD, so `status --porcelain` still succeeds (empty tree,
 // clean) but `rev-parse HEAD` genuinely fails.
 func TestUnchanged_ErrorOnUnbornHEAD(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(t.TempDir(), "unborn")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -497,6 +515,7 @@ func TestUnchanged_ErrorOnUnbornHEAD(t *testing.T) {
 // edge branches that Merged's fixtures above don't reach on their own. ---
 
 func TestIsAncestor_GenuineFailureNotExitOne(t *testing.T) {
+	t.Parallel()
 	root, base := initRepo(t)
 	run := makeGitRunner(t, root)
 
@@ -510,6 +529,7 @@ func TestIsAncestor_GenuineFailureNotExitOne(t *testing.T) {
 }
 
 func TestIsBehind_EqualSHAs(t *testing.T) {
+	t.Parallel()
 	root, base := initRepo(t)
 	run := makeGitRunner(t, root)
 
@@ -523,6 +543,7 @@ func TestIsBehind_EqualSHAs(t *testing.T) {
 }
 
 func TestCherryEquivalent_ErrorOnBadRef(t *testing.T) {
+	t.Parallel()
 	root, base := initRepo(t)
 	run := makeGitRunner(t, root)
 
@@ -537,6 +558,7 @@ func TestCherryEquivalent_ErrorOnBadRef(t *testing.T) {
 // doc comment this must NOT be treated as cherry-merged (that's Unchanged's
 // case) — false, not true.
 func TestCherryEquivalent_ZeroCommitsSinceBase(t *testing.T) {
+	t.Parallel()
 	root, base := initRepo(t)
 	run := makeGitRunner(t, root)
 
@@ -550,6 +572,7 @@ func TestCherryEquivalent_ZeroCommitsSinceBase(t *testing.T) {
 }
 
 func TestCheckMerged_PropagatesIsAncestorError(t *testing.T) {
+	t.Parallel()
 	root, base := initRepo(t)
 	run := makeGitRunner(t, root)
 
@@ -560,6 +583,7 @@ func TestCheckMerged_PropagatesIsAncestorError(t *testing.T) {
 }
 
 func TestCheckMerged_PropagatesCherryEquivalentError(t *testing.T) {
+	t.Parallel()
 	root, base := initRepo(t)
 	wt := addWorktree(t, root, "lane", base)
 	tip := commitFile(t, wt, "lane.txt", "lane work\n", "lane commit")
@@ -584,6 +608,7 @@ func TestCheckMerged_PropagatesCherryEquivalentError(t *testing.T) {
 // --- remoteTrackingTips: error and parsing edge cases ---
 
 func TestRemoteTrackingTips_ErrorOutsideRepo(t *testing.T) {
+	t.Parallel()
 	notARepo := t.TempDir()
 	run := makeGitRunner(t, notARepo)
 
@@ -618,6 +643,7 @@ func TestRemoteTrackingTips_SkipsMalformedLine(t *testing.T) {
 // exists (the !localExists append arm) ---
 
 func TestMerged_LocalTargetMissingRemoteTrackingOnly(t *testing.T) {
+	t.Parallel()
 	root, base := initRepo(t)
 	wt := addWorktree(t, root, "lane", base)
 	tip := commitFile(t, wt, "lane.txt", "lane work\n", "lane commit")
