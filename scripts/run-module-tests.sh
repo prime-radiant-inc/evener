@@ -5,10 +5,10 @@
 # not span modules, so the suites must be invoked per module.
 #
 # SERF_TEST_MODE=fast is the default gate used by `make test`: it runs the root
-# module's package-level smoke tests plus agent subpackages. The exhaustive
-# agent root package, root subpackage sweep, provider/library modules, and fuzz
-# seed corpora stay available through SERF_TEST_MODE=exhaustive and the explicit
-# fuzz targets.
+# module's package-level smoke tests plus agent subpackages in one wave. The
+# exhaustive agent root package, root subpackage sweep, provider/library modules,
+# and fuzz seed corpora stay available through SERF_TEST_MODE=exhaustive and the
+# explicit fuzz targets.
 #
 # SERF_TEST_MODE=exhaustive preserves the old two-wave workspace sweep. It is
 # intentionally not the default: running every package/test/fuzz seed in the
@@ -30,8 +30,8 @@ set -uo pipefail
 SERF_TEST_MODE=${SERF_TEST_MODE:-fast}
 case "$SERF_TEST_MODE" in
 	fast)
-		WAVE1=${WAVE1:-"."}
-		WAVE2=${WAVE2:-"agent"}
+		WAVE1=${WAVE1:-". agent"}
+		WAVE2=${WAVE2-}
 		;;
 	exhaustive)
 		WAVE1=${WAVE1:-"."}
@@ -42,7 +42,7 @@ case "$SERF_TEST_MODE" in
 		exit 2
 		;;
 esac
-# Extra -parallel for the agent wave. Exhaustive mode keeps the old 32 default
+# Extra -parallel for the agent module. Exhaustive mode keeps the old 32 default
 # to overlap long timer waits. Fast mode defaults to Go's package default because
 # the remaining subpackage gate is process-heavy and -parallel 32 adds enough
 # scheduler/syscall contention to push the wall clock over the budget.
