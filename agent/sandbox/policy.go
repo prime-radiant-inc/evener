@@ -15,7 +15,6 @@ package sandbox
 import (
 	"fmt"
 	"path/filepath"
-	"slices"
 	"strings"
 )
 
@@ -169,29 +168,39 @@ func resolveHomePath(entry, home string) string {
 }
 
 // EffectiveDenylist returns the absolute masked set for this policy resolved
-// against home: the default denylist, extended by DenylistAdd and with
-// DenylistRemove entries removed. It is a pure function of the policy value and
-// returns a fresh slice; it never mutates the policy or the shared defaults.
+// against home: the pseudo-filesystem floor (always present), plus the credential
+// set extended by DenylistAdd and reduced by DenylistRemove. It is a pure function
+// of the policy value and returns a fresh slice; it never mutates the policy or
+// the shared defaults.
+//
+// The pseudo-fs floor (/proc, /sys, …) is NON-REMOVABLE: DenylistRemove applies
+// only to the credential/user-added set. Masking /proc is load-bearing — it stops
+// a read of /proc/<serf-pid>/environ from leaking serf's own provider API key —
+// so a stray or malicious DenylistRemove of /proc can never re-open that path.
+// Only the credential dirs (and user additions) are user-removable.
 func (p SandboxPolicy) EffectiveDenylist(home string) []string {
-	set := DefaultDenylist(home)
+	// Non-removable floor first.
+	out := make([]string, 0, len(defaultPseudoFSPaths)+len(defaultSecretHomePaths)+len(p.DenylistAdd))
+	out = append(out, defaultPseudoFSPaths...)
 
+	// Removable set: default credentials + user additions.
+	var removable []string
+	for _, rel := range defaultSecretHomePaths {
+		removable = appendUnique(removable, filepath.Join(home, rel))
+	}
 	for _, add := range p.DenylistAdd {
-		if abs := resolveHomePath(add, home); abs != "" && !slices.Contains(set, abs) {
-			set = append(set, abs)
+		if abs := resolveHomePath(add, home); abs != "" {
+			removable = appendUnique(removable, abs)
 		}
 	}
 
-	if len(p.DenylistRemove) == 0 {
-		return set
-	}
 	remove := make(map[string]struct{}, len(p.DenylistRemove))
 	for _, r := range p.DenylistRemove {
 		if abs := resolveHomePath(r, home); abs != "" {
 			remove[abs] = struct{}{}
 		}
 	}
-	out := set[:0:0] // fresh backing array; never alias the input
-	for _, entry := range set {
+	for _, entry := range removable {
 		if _, drop := remove[entry]; !drop {
 			out = append(out, entry)
 		}

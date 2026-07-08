@@ -20,6 +20,12 @@ type HostFacts struct {
 	// OS refuses any sandboxed mode.
 	OS string
 
+	// Home is the user's home directory (absolute), the anchor the resolver joins
+	// the credential denylist against (~/.ssh, ~/.aws, …). It is a host/session
+	// fact rather than a capability, but the resolver needs it and threading it
+	// through HostFacts keeps Resolve a pure function of its inputs (no env reads).
+	Home string
+
 	// BwrapPath is the resolved bubblewrap binary path, or "" if not found.
 	BwrapPath string
 
@@ -99,6 +105,9 @@ func (RealProber) Probe() HostFacts {
 		OS:            runtime.GOOS,
 		LandlockABI:   probeLandlockABI(),
 		KernelVersion: probeKernelVersion(),
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		facts.Home = home
 	}
 
 	if path, err := exec.LookPath("bwrap"); err == nil {

@@ -136,9 +136,11 @@ func TestPolicyDenylistAddRemove(t *testing.T) {
 	home := "/home/tester"
 
 	pol := SandboxPolicy{
-		Mode:           ModeRestricted,
-		DenylistAdd:    []string{"/opt/secret-vault", ".myapp/creds"},
-		DenylistRemove: []string{".config/serf"}, // punch a hole in a default entry
+		Mode:        ModeRestricted,
+		DenylistAdd: []string{"/opt/secret-vault", ".myapp/creds"},
+		// Punch a hole in a removable credential entry, and ATTEMPT to remove a
+		// pseudo-fs floor entry (which must be ignored — see below).
+		DenylistRemove: []string{".config/serf", "/proc"},
 	}
 
 	eff := pol.EffectiveDenylist(home)
@@ -155,9 +157,16 @@ func TestPolicyDenylistAddRemove(t *testing.T) {
 	if slices.Contains(eff, removed) {
 		t.Errorf("user-removed path %q still present in effective denylist: %v", removed, eff)
 	}
-	// A non-removed default (pseudo-fs) survives.
+	// The pseudo-fs floor is NON-REMOVABLE: even an explicit DenylistRemove of
+	// /proc must be ignored (masking /proc guards serf's own API key in
+	// /proc/<pid>/environ — a user must not be able to punch that hole open).
 	if !slices.Contains(eff, "/proc") {
-		t.Errorf("effective denylist dropped /proc: %v", eff)
+		t.Errorf("DenylistRemove punched the non-removable /proc floor: %v", eff)
+	}
+	for _, floor := range []string{"/sys", "/dev/fd", "/dev/mem", "/run/user"} {
+		if !slices.Contains(eff, floor) {
+			t.Errorf("effective denylist dropped pseudo-fs floor entry %q: %v", floor, eff)
+		}
 	}
 
 	// Purity: resolving twice yields equal results and does not mutate the policy.
@@ -165,7 +174,7 @@ func TestPolicyDenylistAddRemove(t *testing.T) {
 	if !slices.Equal(eff, eff2) {
 		t.Errorf("EffectiveDenylist is not deterministic:\n first: %v\nsecond: %v", eff, eff2)
 	}
-	if len(pol.DenylistAdd) != 2 || len(pol.DenylistRemove) != 1 {
+	if len(pol.DenylistAdd) != 2 || len(pol.DenylistRemove) != 2 {
 		t.Errorf("EffectiveDenylist mutated the policy value: %+v", pol)
 	}
 }
