@@ -40,9 +40,10 @@ else
 	WAVE2=${WAVE2:-}
 fi
 
-# Extra package/test parallelism controls for the agent wave. Explicit empty
+# Package/test parallelism controls for heavyweight modules. Explicit empty
 # values mean "don't pass the flag" so go test uses its defaults; the -race gate
 # sets AGENT_PARALLEL empty to avoid oversubscribing few-core CI.
+ROOT_P=${ROOT_P-12}
 AGENT_PARALLEL=${AGENT_PARALLEL-32}
 AGENT_P=${AGENT_P-4}
 
@@ -64,15 +65,34 @@ run_module() {
 		/usr/bin/time -p go test $flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" ./...
 }
 
-# run_wave <extra-flags> <module...> — run the modules concurrently, wait, and
-# report each one's result; records failures in the global $fail.
+# run_wave <module...> — run the modules concurrently, wait, and report each
+# one's result; records failures in the global $fail.
+module_extra() {
+	case "$1" in
+		.)
+			local extra=""
+			[ -n "$ROOT_P" ] && extra="$extra -p $ROOT_P"
+			printf '%s' "$extra"
+			;;
+		agent)
+			local extra=""
+			[ -n "$AGENT_P" ] && extra="$extra -p $AGENT_P"
+			[ -n "$AGENT_PARALLEL" ] && extra="$extra -parallel $AGENT_PARALLEL"
+			printf '%s' "$extra"
+			;;
+		*)
+			printf ''
+			;;
+	esac
+}
+
 run_wave() {
-	local extra="$1"; shift
 	[ "$#" -eq 0 ] && return 0
 	local -a names=() pids=()
-	local m log
+	local m log extra
 	for m in "$@"; do
 		log="$(logpath "$m")"
+		extra="$(module_extra "$m")"
 		( cd "$m" && run_module "$m" "$extra" ) >"$log" 2>&1 &
 		pids+=("$!"); names+=("$m")
 	done
@@ -87,11 +107,8 @@ run_wave() {
 	done
 }
 
-agentExtra=""
-[ -n "$AGENT_P" ] && agentExtra="$agentExtra -p $AGENT_P"
-[ -n "$AGENT_PARALLEL" ] && agentExtra="$agentExtra -parallel $AGENT_PARALLEL"
-run_wave "" $WAVE1
-run_wave "$agentExtra" $WAVE2
+run_wave $WAVE1
+run_wave $WAVE2
 
 if [ "$fail" -ne 0 ]; then
 	echo
