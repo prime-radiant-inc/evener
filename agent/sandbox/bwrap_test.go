@@ -159,6 +159,44 @@ func TestBuildBwrapArgvNetwork(t *testing.T) {
 	}
 }
 
+func TestBuildBwrapArgvCacheOverlay(t *testing.T) {
+	// Overlay is a pure-argv concern here (no bwrap run), so this validates the
+	// overlay branch even though this host's bwrap lacks overlay support.
+	home := t.TempDir()
+	for _, d := range []string{".cache", ".cargo"} {
+		if err := os.MkdirAll(filepath.Join(home, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	facts := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
+	net := true
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: &net}, facts, cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if rp.CacheStrategy != CacheOverlay {
+		t.Fatalf("workspace-write on an overlay-capable host must use overlay, got %v", rp.CacheStrategy)
+	}
+	args := buildBwrapArgv(rp, "/tmp/s", cwd)
+	cache := filepath.Join(home, ".cache")
+	if !hasSeq(args, "--overlay-src", cache, "--tmp-overlay", cache) {
+		t.Errorf("expected a read-real/write-private overlay for %q: %v", cache, args)
+	}
+}
+
+func TestBuildBwrapArgvNoOverlayWhenSessionPrivate(t *testing.T) {
+	// The default fixture host lacks overlay → session-private cache → no overlay
+	// mounts in the argv (the env floor redirects the cache vars instead).
+	rp, cwd, _ := resolveFixture(t, ModeWorkspaceWrite, true)
+	if rp.CacheStrategy != CacheSessionPrivate {
+		t.Fatalf("no-overlay host must use session-private cache, got %v", rp.CacheStrategy)
+	}
+	if slices.Contains(buildBwrapArgv(rp, "/tmp/s", cwd), "--overlay-src") {
+		t.Errorf("session-private cache must not emit overlay mounts")
+	}
+}
+
 func TestBuildBwrapArgvSessionTmp(t *testing.T) {
 	rp, cwd, _ := resolveFixture(t, ModeWorkspaceWrite, true)
 	tmp := t.TempDir()

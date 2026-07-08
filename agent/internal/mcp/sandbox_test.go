@@ -77,6 +77,43 @@ func TestMCPStdioServerConfined(t *testing.T) {
 	}
 }
 
+func testWrapperNetOff(t *testing.T) *sandbox.Wrapper {
+	t.Helper()
+	home := t.TempDir()
+	cwd := sandbox.MaterializeWorkspace(t, sandbox.MainCheckout)
+	off := false
+	rp, err := sandbox.Resolve(
+		sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, Network: &off},
+		sandbox.HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true},
+		cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	w, err := sandbox.NewWrapper(rp, "/usr/bin/bwrap", t.TempDir())
+	if err != nil {
+		t.Fatalf("NewWrapper: %v", err)
+	}
+	return w
+}
+
+func TestRemoteMCPRefusedUnderNetOff(t *testing.T) {
+	w := testWrapperNetOff(t)
+	for _, typ := range []string{"sse", "http"} {
+		dial := productionDial(mcpconfig.ServerConfig{Name: "remote", Type: typ, URL: "https://example.com/mcp"}, w)
+		if _, err := dial(context.Background()); err == nil {
+			t.Errorf("%s MCP server must be refused under net=off", typ)
+		} else if !strings.Contains(err.Error(), "net off") && !strings.Contains(err.Error(), "sandbox-net off") {
+			t.Errorf("%s refusal must be legible about net=off, got %v", typ, err)
+		}
+	}
+	// A stdio server stays available under net=off (its network is severed by
+	// --unshare-net; it is not tool-plane egress).
+	dial := productionDial(stdioCfg(), w)
+	if _, err := dial(context.Background()); err != nil {
+		t.Errorf("stdio MCP server must remain available under net=off, got %v", err)
+	}
+}
+
 func TestMCPStdioServerUnsandboxedUnchanged(t *testing.T) {
 	dial := productionDial(stdioCfg(), nil)
 	tr, err := dial(context.Background())

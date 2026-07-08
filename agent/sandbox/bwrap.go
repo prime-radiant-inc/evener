@@ -80,6 +80,20 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 		}
 	}
 
+	// Cache roots served read-real / write-private via overlay: warm reads from
+	// the real cache, writes land in a per-mount tmpfs upper discarded at session
+	// end, so a sandboxed build can never poison a cache a later build consumes.
+	// Only on an overlay-capable host (this dev box's bubblewrap lacks overlay, so
+	// CacheStrategy is CacheSessionPrivate here and the env floor redirects the
+	// cache vars into the session tmp instead — same no-poisoning floor, cold).
+	if rp.CacheStrategy == CacheOverlay {
+		for _, c := range rp.CacheRoots {
+			if pathExists(c) {
+				add("--overlay-src", c, "--tmp-overlay", c)
+			}
+		}
+	}
+
 	// Re-protect git config + hook surfaces read-only. They sit INSIDE the
 	// writable worktree/gitdir, so without this a writable-root bind would make
 	// .git/config and .git/hooks writable and a planted hook would fire later,

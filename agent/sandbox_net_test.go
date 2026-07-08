@@ -1,0 +1,63 @@
+package agent
+
+import (
+	"errors"
+	"testing"
+
+	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/sandbox"
+)
+
+func netEnv(t *testing.T, netOn bool) *execenv.LocalExecutionEnvironment {
+	t.Helper()
+	home := t.TempDir()
+	cwd := sandbox.MaterializeWorkspace(t, sandbox.MainCheckout)
+	net := netOn
+	rp, err := sandbox.Resolve(
+		sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, Network: &net},
+		sandbox.HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true},
+		cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	w, err := sandbox.NewWrapper(rp, "/usr/bin/bwrap", t.TempDir())
+	if err != nil {
+		t.Fatalf("NewWrapper: %v", err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(cwd)
+	env.Sandbox = &rp
+	env.Wrapper = w
+	return env
+}
+
+func TestNetOffDisablesToolEgress(t *testing.T) {
+	off := netEnv(t, false)
+	for _, tool := range []string{"web_fetch", "web_search"} {
+		err := egressDeniedByNet(off, tool)
+		if err == nil {
+			t.Errorf("%s must be denied under net=off", tool)
+			continue
+		}
+		var de *sandbox.DeniedError
+		if !errors.As(err, &de) {
+			t.Errorf("%s denial must be a *sandbox.DeniedError, got %T", tool, err)
+		} else if de.Tool != tool {
+			t.Errorf("denial Tool = %q, want %q", de.Tool, tool)
+		}
+	}
+}
+
+func TestNetOnAllowsToolEgress(t *testing.T) {
+	on := netEnv(t, true)
+	if err := egressDeniedByNet(on, "web_fetch"); err != nil {
+		t.Errorf("net=on must allow tool egress, got %v", err)
+	}
+}
+
+func TestUnsandboxedAllowsToolEgress(t *testing.T) {
+	// A plain (non-sandboxed) env must never gate egress — byte-identical behavior.
+	plain := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	if err := egressDeniedByNet(plain, "web_fetch"); err != nil {
+		t.Errorf("an unsandboxed env must not gate egress, got %v", err)
+	}
+}

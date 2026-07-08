@@ -269,6 +269,12 @@ func WithSandboxWrapper(w *sandbox.Wrapper) Option {
 // transport hands it to the SDK.
 func productionDial(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper) func(context.Context) (mcpsdk.Transport, error) {
 	return func(context.Context) (mcpsdk.Transport, error) {
+		// A remote (sse/http) MCP server is tool-plane egress: refuse it with a
+		// legible error under net=off, before dialing. A stdio server is local and
+		// stays available (its own network is severed by --unshare-net).
+		if wrapper != nil && !wrapper.Policy().Network && (cfg.Type == "sse" || cfg.Type == "http") {
+			return nil, fmt.Errorf("remote MCP server %q (%s) is unavailable: network egress is disabled for this sandboxed session (--sandbox-net off)", cfg.Name, cfg.Type)
+		}
 		t, err := transportForConfig(cfg)
 		if err != nil {
 			return nil, err
