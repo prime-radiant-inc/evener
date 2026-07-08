@@ -25,6 +25,7 @@ import (
 	"primeradiant.com/serf/agent/mcpconfig"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provider"
+	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/agent/task"
@@ -327,6 +328,20 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	if env == nil {
 		return nil, errors.New("execution environment is nil")
+	}
+	// Apply the pre-M5 sandbox feature gate to the persisted mode — the SAME gate
+	// session start applies at the flag layer (cmd/serf.configureSandbox). Without
+	// it, a persisted or hand-edited ConfigSnapshot carrying a non-off "sandbox"
+	// would resume claiming sandboxing with nothing enforced (M2/M3 wire the
+	// enforcement; the flag goes live in M5). An empty/off mode restores unchanged.
+	if name := strings.TrimSpace(cfg.Sandbox); name != "" {
+		mode, perr := sandbox.ParseMode(name)
+		if perr != nil {
+			return nil, perr
+		}
+		if gerr := sandbox.FeatureGate(mode); gerr != nil {
+			return nil, gerr
+		}
 	}
 	if err := env.Initialize(); err != nil {
 		return nil, fmt.Errorf("env initialize: %w", err)
