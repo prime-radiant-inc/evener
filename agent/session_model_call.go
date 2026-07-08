@@ -997,12 +997,23 @@ func expandHistory(historyTurns []schema.Turn) []llm.Message {
 			// Expand aggregated tool results into individual messages.
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
-					history = append(history, llm.ToolResultNamed(
-						p.ToolResult.ToolCallID,
-						p.ToolResult.Name,
-						p.ToolResult.Content,
-						p.ToolResult.IsError,
-					))
+					history = append(history, llm.Message{
+						Role:       llm.RoleTool,
+						ToolCallID: p.ToolResult.ToolCallID,
+						Content: []llm.ContentPart{{
+							Kind: llm.ContentToolResult,
+							ToolResult: &llm.ToolResultData{
+								ToolCallID:     p.ToolResult.ToolCallID,
+								Name:           p.ToolResult.Name,
+								Content:        p.ToolResult.Content,
+								IsError:        p.ToolResult.IsError,
+								DurationMS:     p.ToolResult.DurationMS,
+								ToolState:      p.ToolResult.ToolState,
+								ImageData:      p.ToolResult.ImageData,
+								ImageMediaType: p.ToolResult.ImageMediaType,
+							},
+						}},
+					})
 				}
 			}
 			continue

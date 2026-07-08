@@ -1,11 +1,13 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -225,5 +227,37 @@ func phase8DeltaRequest() llm.Request {
 			llm.User("PHASE8_FULL_HISTORY_MARKER"),
 			llm.Assistant("prior assistant"),
 		},
+	}
+}
+
+func TestExpandHistory_ImageToolResultPreservesImageData(t *testing.T) {
+	imageBytes := []byte("fake-png-bytes")
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnToolResults, llm.Message{
+			Role: llm.RoleTool,
+			Content: []llm.ContentPart{{
+				Kind: llm.ContentToolResult,
+				ToolResult: &llm.ToolResultData{
+					ToolCallID:     "call_img",
+					Name:           "read_file",
+					Content:        "read image",
+					ImageData:      imageBytes,
+					ImageMediaType: "image/png",
+				},
+			}},
+		}),
+	}
+
+	messages := expandHistory(history)
+	if len(messages) != 1 {
+		t.Fatalf("expandHistory returned %d messages, want 1", len(messages))
+	}
+	parts := messages[0].Content
+	if len(parts) != 1 || parts[0].Kind != llm.ContentToolResult || parts[0].ToolResult == nil {
+		t.Fatalf("expanded message parts=%+v, want one tool result", parts)
+	}
+	got := parts[0].ToolResult
+	if got.ImageMediaType != "image/png" || !bytes.Equal(got.ImageData, imageBytes) {
+		t.Fatalf("expanded image data/media=%q/%q, want image/png with bytes", got.ImageMediaType, got.ImageData)
 	}
 }

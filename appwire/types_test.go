@@ -6,6 +6,41 @@ import (
 	"testing"
 )
 
+func TestThreadItemOutputImagesJSONRoundTrip(t *testing.T) {
+	item := ThreadItem{
+		Type:     "commandExecution",
+		ID:       "item_tool_1",
+		ToolName: "shell",
+		OutputImages: []OutputImage{{
+			Source:    "shell-path",
+			Name:      "out.png",
+			MediaType: "image/png",
+			Size:      67,
+			URL:       "/doc/image?session=01ABC&path=out.png",
+			SHA:       "abc123",
+			Path:      "out.png",
+		}},
+	}
+	data, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"outputImages"`) {
+		t.Fatalf("encoded item missing outputImages: %s", data)
+	}
+	var got ThreadItem
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(got.OutputImages) != 1 {
+		t.Fatalf("OutputImages length=%d, want 1", len(got.OutputImages))
+	}
+	img := got.OutputImages[0]
+	if img.Source != "shell-path" || img.Name != "out.png" || img.MediaType != "image/png" || img.URL == "" || img.Path != "out.png" || img.Size != 67 {
+		t.Fatalf("OutputImages[0]=%+v", img)
+	}
+}
+
 // TestDiagnosticCauseJSONRoundTrip (kata cmfz) verifies the wire shape of
 // DiagnosticCause: camelCase JSON tags (per the appwire camelCase
 // carve-out) and omitempty on all optional fields so a nil provider

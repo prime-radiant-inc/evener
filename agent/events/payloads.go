@@ -103,13 +103,27 @@ type ToolCallOutputDeltaData struct {
 	Delta    string `json:"delta"`
 }
 
+// OutputImage is a lightweight descriptor for an image produced by a tool. It
+// carries placement and fetch metadata for dashboards; it never carries image
+// bytes.
+type OutputImage struct {
+	Source    string `json:"source"`
+	Name      string `json:"name,omitempty"`
+	MediaType string `json:"mediaType,omitempty"`
+	Size      int64  `json:"size,omitempty"`
+	URL       string `json:"url,omitempty"`
+	SHA       string `json:"sha,omitempty"`
+	Path      string `json:"path,omitempty"`
+}
+
 // ToolCallEndData is the payload for an EventToolCallEnd event.
 type ToolCallEndData struct {
-	ToolName      string `json:"tool_name"`
-	CallID        string `json:"call_id"`
-	ArgumentsJSON string `json:"arguments_json,omitempty"`
-	Output        string `json:"output,omitempty"`
-	Error         string `json:"error,omitempty"`
+	ToolName      string        `json:"tool_name"`
+	CallID        string        `json:"call_id"`
+	ArgumentsJSON string        `json:"arguments_json,omitempty"`
+	Output        string        `json:"output,omitempty"`
+	Error         string        `json:"error,omitempty"`
+	OutputImages  []OutputImage `json:"output_images,omitempty"`
 
 	// ToolState is an optional JSON snapshot produced by the tool
 	// executor. Dashboards and other consumers render from this directly
