@@ -10,13 +10,15 @@ import (
 	"primeradiant.com/serf/internal/gitpath"
 )
 
-// WorkspaceKind classifies cwd's git layout. The distinction is load-bearing for
-// the resolver's backend choice: Landlock (allowlist-only) can serve the
-// restricted mode ONLY in a LinkedWorktree, because there the git config/hook
-// surfaces live OUTSIDE the granted worktree root and can simply be left
-// un-granted (purely additive). In a MainCheckout the .git directory sits inside
-// the worktree, so protecting config/hooks requires SUBTRACTING them from a
-// granted root — which only bwrap/Seatbelt can express.
+// WorkspaceKind classifies cwd's git layout. The distinction drives gitdir
+// resolution (linked-worktree/submodule git dirs live outside the worktree and
+// need a read grant + external config/hook protection; a MainCheckout's .git sits
+// inside it) and the resolver's refusal reasoning. It once also let Landlock serve
+// restricted in a LinkedWorktree (config/hooks outside the granted root, purely
+// additive), but the resolver now never selects Landlock: even in a linked
+// worktree the in-worktree .git pointer must be subtracted from the granted root,
+// which allowlist-only Landlock cannot express. Landlock is still probed and
+// reported, never selected; bwrap is required on Linux (see resolve.go).
 type WorkspaceKind int
 
 const (

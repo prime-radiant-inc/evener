@@ -48,8 +48,10 @@ type HostFacts struct {
 	OverlaySupported bool
 
 	// LandlockABI is the Landlock LSM ABI version available (0 = unavailable).
-	// Landlock is the allowlist-only fallback that serves exactly restricted in a
-	// linked worktree with net=on.
+	// Landlock is allowlist-only: it is probed and reported here but the resolver
+	// never SELECTS it (it cannot subtract a path within a granted root, so it
+	// cannot enforce our contract in any mode). bwrap is required on Linux; a
+	// Landlock-only host gets only --sandbox off. See resolve.go's chooseBackend.
 	LandlockABI int
 
 	// SandboxExecPath is the resolved /usr/bin/sandbox-exec path on darwin
