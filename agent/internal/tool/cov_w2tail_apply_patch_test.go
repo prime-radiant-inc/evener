@@ -87,7 +87,7 @@ func TestW2Tail_mismatchLineForMissingSequence_Fallbacks(t *testing.T) {
 func TestW2Tail_ApplyPatch_UpdateMissingFile(t *testing.T) {
 	dir := t.TempDir()
 	patch := "*** Begin Patch\n*** Update File: nope.txt\n@@\n one\n-two\n+TWO\n three\n*** End Patch\n"
-	if _, err := ApplyPatch(dir, patch); err == nil {
+	if _, err := ApplyPatch(testMutator(dir), patch); err == nil {
 		t.Fatalf("expected error updating a missing file")
 	}
 }
@@ -97,12 +97,12 @@ func TestW2Tail_ApplyPatch_UpdateMissingFile(t *testing.T) {
 func TestW2Tail_ApplyPatch_DeleteTraversalRejected(t *testing.T) {
 	dir := t.TempDir()
 	patch := "*** Begin Patch\n*** Delete File: ../escape.txt\n*** End Patch\n"
-	if _, err := ApplyPatch(dir, patch); err == nil {
+	if _, err := ApplyPatch(testMutator(dir), patch); err == nil {
 		t.Fatalf("expected traversal delete to be rejected")
 	}
 	// Sanity: a normal delete of an existing file succeeds.
 	_ = os.WriteFile(filepath.Join(dir, "gone.txt"), []byte("x\n"), 0o644)
-	if _, err := ApplyPatch(dir, "*** Begin Patch\n*** Delete File: gone.txt\n*** End Patch\n"); err != nil {
+	if _, err := ApplyPatch(testMutator(dir), "*** Begin Patch\n*** Delete File: gone.txt\n*** End Patch\n"); err != nil {
 		t.Fatalf("normal delete failed: %v", err)
 	}
 }

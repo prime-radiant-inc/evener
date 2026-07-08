@@ -19,7 +19,7 @@ func TestW3Sub_ApplyPatch_AddFile_MkdirAllError(t *testing.T) {
 		t.Fatalf("seed blocker file: %v", err)
 	}
 	patch := "*** Begin Patch\n*** Add File: blocker/child.txt\n+hello\n*** End Patch\n"
-	if _, err := ApplyPatch(dir, patch); err == nil {
+	if _, err := ApplyPatch(testMutator(dir), patch); err == nil {
 		t.Fatalf("expected MkdirAll error when parent path is a regular file")
 	}
 }
@@ -32,7 +32,7 @@ func TestW3Sub_ApplyPatch_AddFile_WriteFileError(t *testing.T) {
 		t.Fatalf("seed dir: %v", err)
 	}
 	patch := "*** Begin Patch\n*** Add File: adir\n+hello\n*** End Patch\n"
-	if _, err := ApplyPatch(dir, patch); err == nil {
+	if _, err := ApplyPatch(testMutator(dir), patch); err == nil {
 		t.Fatalf("expected WriteFile error when target path is a directory")
 	}
 }
@@ -42,7 +42,7 @@ func TestW3Sub_ApplyPatch_AddFile_WriteFileError(t *testing.T) {
 func TestW3Sub_ApplyPatch_UpdateTraversalRejected(t *testing.T) {
 	dir := t.TempDir()
 	patch := "*** Begin Patch\n*** Update File: ../escape.txt\n@@\n-one\n+ONE\n*** End Patch\n"
-	if _, err := ApplyPatch(dir, patch); err == nil {
+	if _, err := ApplyPatch(testMutator(dir), patch); err == nil {
 		t.Fatalf("expected traversal update to be rejected")
 	}
 }
@@ -57,7 +57,7 @@ func TestW3Sub_ApplyPatch_UpdateHintFallback(t *testing.T) {
 		t.Fatalf("seed file: %v", err)
 	}
 	patch := "*** Begin Patch\n*** Update File: f.txt\n@@ HINT\n-apple\n+APPLE\n*** End Patch\n"
-	if _, err := ApplyPatch(dir, patch); err != nil {
+	if _, err := ApplyPatch(testMutator(dir), patch); err != nil {
 		t.Fatalf("hint-fallback update failed: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(dir, "f.txt"))
@@ -81,7 +81,7 @@ func TestW3Sub_ApplyPatch_UpdateWriteFileError(t *testing.T) {
 		t.Fatalf("seed read-only file: %v", err)
 	}
 	patch := "*** Begin Patch\n*** Update File: ro.txt\n@@\n-apple\n+APPLE\n*** End Patch\n"
-	if _, err := ApplyPatch(dir, patch); err == nil {
+	if _, err := ApplyPatch(testMutator(dir), patch); err == nil {
 		t.Fatalf("expected WriteFile error on a read-only file")
 	}
 }
@@ -94,7 +94,7 @@ func TestW3Sub_ApplyPatch_MoveToTraversalRejected(t *testing.T) {
 		t.Fatalf("seed src: %v", err)
 	}
 	patch := "*** Begin Patch\n*** Update File: src.txt\n*** Move to: ../escape.txt\n@@\n-apple\n+APPLE\n*** End Patch\n"
-	if _, err := ApplyPatch(dir, patch); err == nil {
+	if _, err := ApplyPatch(testMutator(dir), patch); err == nil {
 		t.Fatalf("expected Move-to traversal to be rejected")
 	}
 }
@@ -110,7 +110,7 @@ func TestW3Sub_ApplyPatch_MoveToMkdirAllError(t *testing.T) {
 		t.Fatalf("seed blocker: %v", err)
 	}
 	patch := "*** Begin Patch\n*** Update File: src.txt\n*** Move to: blocker/dst.txt\n@@\n-apple\n+APPLE\n*** End Patch\n"
-	if _, err := ApplyPatch(dir, patch); err == nil {
+	if _, err := ApplyPatch(testMutator(dir), patch); err == nil {
 		t.Fatalf("expected Move-to MkdirAll error when parent is a regular file")
 	}
 }
@@ -130,7 +130,7 @@ func TestW3Sub_ApplyPatch_MoveToRenameError(t *testing.T) {
 		t.Fatalf("seed dst dir child: %v", err)
 	}
 	patch := "*** Begin Patch\n*** Update File: src.txt\n*** Move to: dst\n@@\n-apple\n+APPLE\n*** End Patch\n"
-	if _, err := ApplyPatch(dir, patch); err == nil {
+	if _, err := ApplyPatch(testMutator(dir), patch); err == nil {
 		t.Fatalf("expected Rename error onto a non-empty directory")
 	}
 }

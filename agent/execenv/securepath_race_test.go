@@ -134,3 +134,63 @@ func TestResolveVsSymlinkSwap(t *testing.T) {
 		t.Log("note: never observed a symlink-refusal denial (swapper may have starved)")
 	}
 }
+
+// TestWriteVsSymlinkSwap drives the WRITE path (the one apply_patch uses) against
+// a concurrent component swap. "d" alternates atomically between a real in-root
+// directory and a symlink to an out-of-root directory while writeFile("d/f.txt")
+// loops. Every write must either succeed (landing in the real in-root dir) or be a
+// typed denial (the symlink was refused). A write must NEVER land outside the
+// writable root — asserted by proving nothing ever appears in the out-of-root dir.
+func TestWriteVsSymlinkSwap(t *testing.T) {
+	s, home, worktree := newSB(t, sandbox.ModeWorkspaceWrite)
+
+	const marker = "IN_ROOT_WRITE"
+	outside := filepath.Join(home, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	realDir := filepath.Join(worktree, "d")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(worktree, "spare")); err != nil {
+		t.Fatal(err)
+	}
+
+	wfd, err := unix.Open(worktree, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(wfd)
+
+	target := filepath.Join(worktree, "d", "f.txt")
+	var stop atomic.Bool
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go swapper(t, wfd, "d", "spare", &stop, &wg)
+
+	for i := 0; i < 4000; i++ {
+		werr := s.writeFile("write_file", target, []byte(marker), 0o644)
+		if werr == nil {
+			continue
+		}
+		var denied *sandbox.DeniedError
+		if !asDenied(werr, &denied) {
+			stop.Store(true)
+			wg.Wait()
+			t.Fatalf("write #%d failed with a non-denial error %T: %v", i, werr, werr)
+		}
+	}
+	stop.Store(true)
+	wg.Wait()
+
+	// The load-bearing assertion: no write ever escaped into the out-of-root dir,
+	// regardless of how the swap interleaved with the temp-create + renameat.
+	ents, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatalf("read outside dir: %v", err)
+	}
+	if len(ents) != 0 {
+		t.Fatalf("a write escaped the writable root into the out-of-root dir: %v", ents)
+	}
+}

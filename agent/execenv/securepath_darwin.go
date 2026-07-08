@@ -91,9 +91,10 @@ func walkComponents(startFd int, comps []string, flags int, mode uint32) (int, e
 			next, err = unix.Openat(cur, comp, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		}
 		if err != nil {
-			// A symlinked component (ELOOP, or ENOTDIR with O_DIRECTORY) is
-			// classified into the shared symlink sentinel for a legible denial.
-			if isSymlinkAt(cur, comp) {
+			// A symlinked component (ELOOP) or a non-directory component (ENOTDIR
+			// with O_DIRECTORY) is a traversal refusal; classify it into the shared
+			// sentinel for a legible denial without a second, race-prone lstat.
+			if isTraversalRefusal(err) {
 				err = errSymlinkComponent
 			}
 			closeCur()

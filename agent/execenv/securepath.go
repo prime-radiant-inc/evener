@@ -62,7 +62,7 @@ const (
 	denyReasonOutsideRead  = "outside the sandbox's readable roots"
 	denyReasonOutsideWrite = "outside the sandbox's writable roots"
 	denyReasonWriteDenied  = "writes are denied in this sandbox mode"
-	denyReasonSymlink      = "refuses to traverse a symlink under sandbox"
+	denyReasonSymlink      = "refuses to traverse a symlinked or non-directory path component"
 	denyReasonEscape       = "path resolves outside the sandbox root"
 	denyReasonRootTarget   = "cannot operate on a sandbox root itself"
 )
@@ -73,12 +73,22 @@ const (
 // error mapper agree on it.
 var errEscapesRoot = errors.New("path escapes sandbox root")
 
-// errSymlinkComponent is the sentinel a component walk returns when it refused a
-// symlinked component. A symlinked directory opened with O_DIRECTORY|O_NOFOLLOW
-// surfaces as either ELOOP or ENOTDIR depending on kernel check order, so the
-// walks classify it explicitly (via isSymlinkAt) into this one sentinel rather
-// than leaking a raw, mode-dependent errno.
-var errSymlinkComponent = errors.New("sandbox: refused symlinked path component")
+// errSymlinkComponent is the sentinel a component walk returns when it refused to
+// traverse a component: a symlinked directory opened with O_DIRECTORY|O_NOFOLLOW
+// surfaces as either ELOOP or ENOTDIR depending on kernel check order (and a real
+// swap during a race can flip which), so the walks map BOTH to this one sentinel
+// without a second, race-prone lstat — the open already refused to follow, and
+// this only classifies the resulting error into a legible typed denial.
+var errSymlinkComponent = errors.New("sandbox: refused non-traversable path component")
+
+// isTraversalRefusal reports whether an open error from a component walk means the
+// component could not be traversed as a real directory beneath the root (a symlink
+// → ELOOP, or a non-directory → ENOTDIR). Both are sandbox refusals, not genuine
+// I/O errors, and are classified without a second syscall so a concurrent swap
+// cannot change the classification after the fact.
+func isTraversalRefusal(err error) bool {
+	return errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR)
+}
 
 // deny builds a typed *sandbox.DeniedError for a file-tool denial and emits one
 // redacted audit line. Command/OutputSoFar are left empty — those belong to the
@@ -100,18 +110,6 @@ func (s *sandboxFS) mapOpenErr(tool, p string, err error) error {
 	default:
 		return err
 	}
-}
-
-// isSymlinkAt reports whether name within dirFd is a symbolic link (without
-// following it). It is used only to CLASSIFY an open failure into a legible
-// symlink denial — the security guarantee (never following the link) is provided
-// by O_NOFOLLOW / RESOLVE_NO_SYMLINKS on the open itself, not by this check.
-func isSymlinkAt(dirFd int, name string) bool {
-	var st unix.Stat_t
-	if err := unix.Fstatat(dirFd, name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
-		return false
-	}
-	return st.Mode&unix.S_IFMT == unix.S_IFLNK
 }
 
 // rootFd returns the cached O_DIRECTORY fd for a canonical allowed root, opening
@@ -577,7 +575,7 @@ func ensureDirsBeneath(rootFd int, relDir string) error {
 		}
 		next, err := unix.Openat(cur, comp, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		if err != nil {
-			if isSymlinkAt(cur, comp) {
+			if isTraversalRefusal(err) {
 				err = errSymlinkComponent
 			}
 			closeCur()

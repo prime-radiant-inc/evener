@@ -3,6 +3,7 @@ package execenv
 import (
 	"context"
 	"io"
+	"os"
 )
 
 // ExecResult holds the outcome of a command executed in an ExecutionEnvironment.
@@ -29,6 +30,29 @@ type DirEntry struct {
 // fakes) are unaffected; the job runtime type-asserts for it.
 type StreamingExecutor interface {
 	StreamCommand(ctx context.Context, command, workingDir string, envVars map[string]string, out io.Writer) (*StreamHandle, error)
+}
+
+// FileMutator is an optional execution-environment capability: raw,
+// policy-checked file mutations used by apply_patch, which needs to read, write,
+// remove, and rename files directly rather than through the formatted read/write
+// tools. Like StreamingExecutor it is separate from ExecutionEnvironment so other
+// implementers are unaffected; apply_patch type-asserts for it.
+//
+// When the environment carries an ENFORCED sandbox policy, each method resolves
+// its path through the race-safe fd-anchored layer (symlink-refusing,
+// root/denylist-checked; writes are atomic temp+renameat). Otherwise it confines
+// to the working root exactly as the other off-mode file tools do. Paths may be
+// relative to the working directory or absolute under it.
+type FileMutator interface {
+	// ReadFileRaw returns the raw bytes of path.
+	ReadFileRaw(path string) ([]byte, error)
+	// WriteFileRaw writes data to path, creating any missing parent directories.
+	WriteFileRaw(path string, data []byte, perm os.FileMode) error
+	// RemovePath deletes path (best-effort: a missing target is not an error; an
+	// out-of-policy target is a denial).
+	RemovePath(path string) error
+	// RenamePath moves oldPath to newPath, creating newPath's parents.
+	RenamePath(oldPath, newPath string) error
 }
 
 // StreamHandle is a running streamed process. Wait blocks until exit and returns
