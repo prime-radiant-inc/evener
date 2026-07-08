@@ -34,11 +34,19 @@ var providerCases = []providerCase{
 // newParitySession creates a session with the given provider and fakeAdapter steps.
 func newParitySession(t *testing.T, pc providerCase, steps []func(llm.Request) llm.Response) (*Session, *fakeAdapter) {
 	t.Helper()
+	return newParitySessionWithConfig(t, pc, steps, SessionConfig{NoProjectPrompts: true})
+}
+
+func newParitySessionWithConfig(t *testing.T, pc providerCase, steps []func(llm.Request) llm.Response, cfg SessionConfig) (*Session, *fakeAdapter) {
+	t.Helper()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: pc.adapterName, steps: steps}
 	c.Register(f)
-	sess, err := NewSession(c, pc.profile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if !cfg.NoProjectPrompts {
+		cfg.NoProjectPrompts = true
+	}
+	sess, err := NewSession(c, pc.profile("test-model"), execenv.NewLocalExecutionEnvironment(dir), cfg)
 	if err != nil {
 		t.Fatalf("NewSession(%s): %v", pc.name, err)
 	}
@@ -505,9 +513,10 @@ func TestParity_LoopDetectionWarning(t *testing.T) {
 					}
 				},
 			}
-			// Extend the steps to repeat many times for loop detection.
+			// Use a small loop window here: parity needs to prove provider-mapped
+			// tool calls reach loop detection, not re-test the default window size.
 			base := steps[0]
-			for i := 0; i < 19; i++ {
+			for i := 0; i < 2; i++ {
 				steps = append(steps, base)
 			}
 			// Final response to end the session.
@@ -515,7 +524,8 @@ func TestParity_LoopDetectionWarning(t *testing.T) {
 				return finalResponse("done")
 			})
 
-			sess, _ := newParitySession(t, pc, steps)
+			sess, _ := newParitySessionWithConfig(t, pc, steps, SessionConfig{NoProjectPrompts: true, LoopDetectionWindow: 3, MaxToolRoundsPerInput: 8})
+
 			defer sess.Close()
 
 			eventsPtr, mu, doneCh := collectEvents(sess)
