@@ -172,6 +172,15 @@ func copyWorktreeBaseRepo(t *testing.T, dst string) {
 // newWorktreeRepo builds a real one-commit git repo and a session rooted at it.
 func newWorktreeRepo(t *testing.T) *wtRepo {
 	t.Helper()
+	return newWorktreeRepoWithConfig(t, SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly:         testConfig{skipGitSnapshot: true},
+	})
+}
+
+func newWorktreeRepoWithConfig(t *testing.T, cfg SessionConfig) *wtRepo {
+	t.Helper()
 	root := t.TempDir()
 	root, err := filepath.EvalSymlinks(root)
 	if err != nil {
@@ -180,11 +189,7 @@ func newWorktreeRepo(t *testing.T) *wtRepo {
 	copyWorktreeBaseRepo(t, root)
 	_, head := worktreeBaseRepo(t)
 
-	s := newSession(t,
-		withDir(root),
-		withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true}),
-		withoutGitSnapshot(),
-	)
+	s := newSession(t, withDir(root), withConfig(cfg))
 	stateDir, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatalf("EvalSymlinks state: %v", err)

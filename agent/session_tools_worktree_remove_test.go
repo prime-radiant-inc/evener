@@ -43,7 +43,11 @@ func (r *wtRepo) removeOp(t *testing.T, args map[string]any) (map[string]any, er
 // guard tests.
 func (r *wtRepo) secondSession(t *testing.T) *wtRepo {
 	t.Helper()
-	s2 := newSession(t, withDir(r.mainRoot), withoutGitSnapshot())
+	s2 := newSession(t, withDir(r.mainRoot), withConfig(SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly:         testConfig{skipGitSnapshot: true},
+	}))
 	s2.stateDir = r.stateDir
 	return &wtRepo{s: s2, mainRoot: r.mainRoot, stateDir: r.stateDir, head: r.head}
 }
