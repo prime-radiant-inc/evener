@@ -171,7 +171,8 @@ func AssertResolve(t TestingT, resolve ResolveFunc) {
 		if host.Home == "" {
 			host.Home = "/home/contract"
 		}
-		rp, err := resolve(SandboxPolicy{Mode: tc.Mode, Network: tc.Net}, host, cwd)
+		net := tc.Net
+		rp, err := resolve(SandboxPolicy{Mode: tc.Mode, Network: &net}, host, cwd)
 
 		if tc.WantRefusal {
 			assertRefusal(t, tc, err)

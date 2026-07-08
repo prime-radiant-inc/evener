@@ -40,7 +40,7 @@ func FuzzResolve(f *testing.F) {
 		mode := Mode(((modeSel % len(AllModes())) + len(AllModes())) % len(AllModes()))
 		policy := SandboxPolicy{
 			Mode:               mode,
-			Network:            network,
+			Network:            &network,
 			DenylistAdd:        []string{"/extra/secret", "~/.custom"},
 			DenylistRemove:     []string{denyRemove, "/proc"},  // /proc removal must be ignored (floor)
 			ExtraWritableRoots: []string{"/proc", "/work/sub"}, // absolute (relative entries are refused); /proc must be filtered back out
