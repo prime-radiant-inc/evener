@@ -238,6 +238,10 @@ type testConfig struct {
 	// minimalSystemPrompt avoids rendering the large prompt template for tests
 	// whose contract is below prompt content. Tool definitions still rebuild.
 	minimalSystemPrompt bool
+
+	// noSyncJobStore skips jobstore fsyncs for tests whose contract is not crash
+	// durability. The event bytes and append/load behavior stay the same.
+	noSyncJobStore bool
 }
 
 // spawnConfig holds the SessionConfig fields that only spawnAgent (plus the

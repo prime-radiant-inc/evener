@@ -364,7 +364,17 @@ func jobsDir(stateDir, sessionID string) string {
 	return filepath.Join(stateDir, "sessions", sessionID)
 }
 
+type jobStoreOpener func(string) (*jobstore.Store, error)
+
 func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*jobManager, error) {
+	return newJobManagerWithStoreOpen(stateDir, sessionID, enqueue, jobstore.Open)
+}
+
+func newJobManagerNoSync(stateDir, sessionID string, enqueue func(jobNotification)) (*jobManager, error) {
+	return newJobManagerWithStoreOpen(stateDir, sessionID, enqueue, jobstore.OpenNoSync)
+}
+
+func newJobManagerWithStoreOpen(stateDir, sessionID string, enqueue func(jobNotification), openStore jobStoreOpener) (*jobManager, error) {
 	dir := jobsDir(stateDir, sessionID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
@@ -372,7 +382,7 @@ func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*
 	if err := os.MkdirAll(filepath.Join(dir, "jobs"), 0o755); err != nil {
 		return nil, err
 	}
-	store, err := jobstore.Open(filepath.Join(dir, "jobs.jsonl"))
+	store, err := openStore(filepath.Join(dir, "jobs.jsonl"))
 	if err != nil {
 		return nil, err
 	}

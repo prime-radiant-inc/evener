@@ -97,7 +97,7 @@ func TestWorktreeSwitch_BetweenTwoManagedWorktrees(t *testing.T) {
 	r := newWorktreeRepoWithConfig(t, SessionConfig{
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
-		testOnly:         testConfig{minimalSystemPrompt: true},
+		testOnly:         testConfig{minimalSystemPrompt: true, noSyncJobStore: true},
 	})
 	resA, err := r.create(t, map[string]any{"name": "A"})
 	if err != nil {

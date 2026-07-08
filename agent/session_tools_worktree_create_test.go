@@ -226,7 +226,7 @@ func worktreeTestSessionConfig() SessionConfig {
 	return SessionConfig{
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
-		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true},
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}
 }
 

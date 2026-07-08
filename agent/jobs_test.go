@@ -27,7 +27,7 @@ func init() {
 
 func newTestJM(t *testing.T) *jobManager {
 	t.Helper()
-	jm, err := newJobManager(t.TempDir(), "S1", func(jobNotification) {})
+	jm, err := newJobManagerNoSync(t.TempDir(), "S1", func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("newJobManager: %v", err)
 	}

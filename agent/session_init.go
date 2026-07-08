@@ -138,7 +138,11 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	}
 	s.createdAt = s.sclock().Now().UTC()
 	s.subagents = newSubagentManager(s.emit)
-	jm, err := newJobManager(s.stateDir, s.id, s.enqueueJobNotificationAndNotify)
+	newJM := newJobManager
+	if cfg.testOnly.noSyncJobStore {
+		newJM = newJobManagerNoSync
+	}
+	jm, err := newJM(s.stateDir, s.id, s.enqueueJobNotificationAndNotify)
 	if err != nil {
 		return nil, fmt.Errorf("job manager: %w", err)
 	}
@@ -401,7 +405,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		cancelFunc: sessCancel,
 	}
 	s.subagents = newSubagentManager(s.emit)
-	jm, err := newJobManager(s.stateDir, s.id, nil)
+	newJM := newJobManager
+	if cfg.testOnly.noSyncJobStore {
+		newJM = newJobManagerNoSync
+	}
+	jm, err := newJM(s.stateDir, s.id, nil)
 	if err != nil {
 		return nil, fmt.Errorf("job manager: %w", err)
 	}
