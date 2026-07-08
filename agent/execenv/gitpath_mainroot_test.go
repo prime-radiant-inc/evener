@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // fakeExecEnv is a minimal, fully scripted ExecutionEnvironment: every
@@ -232,21 +231,9 @@ func gitCountingShim(t *testing.T, toplevel string) (string, func() int) {
 
 // Cache: for one cwd inside a linked worktree, GitRootOrEmpty (worktree root)
 // and ResolveMainRepoRoot (main root) return different answers and each caches
-// in its own slot. The counting shim proves ResolveMainRepoRoot resolves
-// structurally (0 git forks) while GitRootOrEmpty forks exactly once and is
-// then served from cache.
+// in its own slot. Both local roots resolve structurally, so the counting shim
+// should not be invoked.
 func TestResolveMainRepoRoot_SeparateCacheSlots(t *testing.T) {
-	// This test asserts fork COUNTS (structural caching behavior), not
-	// latency, so its correctness must not depend on machine load. Widen the
-	// production 2s git-exec deadline for this test only: under heavy
-	// parallel load from sibling packages' tests, even forking the trivial
-	// counting shim below can occasionally exceed 2s on a contended machine,
-	// which would starve the shim before it wrote its counter byte and make
-	// this test flake for a reason unrelated to the caching logic it checks.
-	orig := gitExecTimeout
-	gitExecTimeout = 30 * time.Second
-	t.Cleanup(func() { gitExecTimeout = orig })
-
 	main, wt := newLinkedWorktree(t)
 	wantMain := evalSym(t, main)
 	wantWt := evalSym(t, wt)
@@ -261,15 +248,15 @@ func TestResolveMainRepoRoot_SeparateCacheSlots(t *testing.T) {
 		t.Fatalf("ResolveMainRepoRoot forked git %d times, want 0 (structural)", n)
 	}
 	w1 := GitRootOrEmpty(env, wt)
-	if n := count(); n != 1 {
-		t.Fatalf("GitRootOrEmpty forked git %d times, want 1", n)
+	if n := count(); n != 0 {
+		t.Fatalf("GitRootOrEmpty forked git %d times, want 0 (structural)", n)
 	}
 	w2 := GitRootOrEmpty(env, wt)
-	if n := count(); n != 1 {
-		t.Fatalf("GitRootOrEmpty second call forked git (count=%d), want cached (1)", n)
+	if n := count(); n != 0 {
+		t.Fatalf("GitRootOrEmpty second call forked git (count=%d), want cached/structural", n)
 	}
 	r2 := ResolveMainRepoRoot(env, wt)
-	if n := count(); n != 1 {
+	if n := count(); n != 0 {
 		t.Fatalf("ResolveMainRepoRoot second call forked git (count=%d), want cached/structural", n)
 	}
 

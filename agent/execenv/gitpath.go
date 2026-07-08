@@ -36,9 +36,10 @@ func SetGitExecTimeoutForTesting(d time.Duration) (restore func()) {
 
 // GitRootOrEmpty returns the absolute path of the git working-tree root
 // containing cwd, or "" if cwd is not inside a git repository (or git is
-// unavailable). It runs `git rev-parse --show-toplevel` in env with a short
-// timeout, resolves symlinks, and sanity-checks that the reported root is a
-// prefix of cwd.
+// unavailable). For local environments it resolves ordinary working trees
+// structurally before falling back to `git rev-parse --show-toplevel` in env
+// with a short timeout. The fallback resolves symlinks and sanity-checks that
+// the reported root is a prefix of cwd.
 func GitRootOrEmpty(env ExecutionEnvironment, cwd string) string {
 	// Memoize per environment: a session resolves the git root several times at
 	// init, all on the same env and cwd, so fork `git rev-parse` once.
@@ -49,15 +50,15 @@ func GitRootOrEmpty(env ExecutionEnvironment, cwd string) string {
 }
 
 func gitRootUncached(env ExecutionEnvironment, cwd string) string {
-	// Skip the git subprocess when cwd clearly isn't inside a repository: with
-	// no ".git" ancestor, `git rev-parse --show-toplevel` would fail and return
-	// "" anyway. This avoids a fork per session for working dirs outside a repo
-	// — every test's temp dir, and production sessions run outside a checkout.
-	// Only for a local env, where the real filesystem is the source of truth; a
-	// non-local (fake/remote) env may report a different reality, so let it run.
-	if _, ok := env.(*LocalExecutionEnvironment); ok && !gitpath.HasGitAncestor(cwd) {
-		return ""
+	if _, ok := env.(*LocalExecutionEnvironment); ok {
+		if root, ok := gitpath.StructuralWorktreeRoot(cwd); ok {
+			return root
+		}
+		if !gitpath.HasGitEntryAncestor(cwd) {
+			return ""
+		}
 	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), gitExecTimeout)
 	defer cancel()
 

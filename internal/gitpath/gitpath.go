@@ -85,6 +85,51 @@ func StructuralMainRoot(cwd string) (string, bool) {
 	}
 }
 
+// StructuralWorktreeRoot resolves the active working-tree root using only
+// direct os calls, walking up from cwd to the nearest ".git" entry. Unlike
+// StructuralMainRoot, linked worktrees and submodules resolve to the active
+// checkout directory, not the shared main checkout.
+func StructuralWorktreeRoot(cwd string) (string, bool) {
+	dir := filepath.Clean(cwd)
+	for {
+		gitPath := filepath.Join(dir, ".git")
+		info, err := os.Stat(gitPath)
+		if err == nil {
+			if info.IsDir() {
+				return ResolveClean(dir), true
+			}
+			if content, rerr := os.ReadFile(gitPath); rerr == nil {
+				if _, ok := ParseGitdirPointer(string(content)); ok {
+					return ResolveClean(dir), true
+				}
+			}
+			return "", false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
+// HasGitEntryAncestor reports whether cwd or one of its ancestors has a .git
+// entry. It lets local callers distinguish a definite non-repo from an unusual
+// .git shape that should still fall back to the git binary.
+func HasGitEntryAncestor(cwd string) bool {
+	dir := filepath.Clean(cwd)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+}
+
 // MainRootFromGitdirPointer parses a linked worktree's ".git" pointer file
 // content ("gitdir: <path>") and returns the main repository root iff the
 // pointer resolves to the ".git/worktrees/<id>" shape. Relative pointer paths

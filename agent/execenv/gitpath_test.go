@@ -75,3 +75,16 @@ func TestGitRootOrEmptyCacheKeyedByCwd(t *testing.T) {
 		t.Fatalf("repo cwd after non-repo lookup = %q, want %q", got, resolvedRepo)
 	}
 }
+
+func TestGitRootOrEmptyLocalNonRepoDoesNotForkGit(t *testing.T) {
+	nonRepo := t.TempDir()
+	shimDir, count := gitCountingShim(t, "/should/not/be/used")
+	t.Setenv("PATH", shimDir)
+
+	if got := GitRootOrEmpty(NewLocalExecutionEnvironment(nonRepo), nonRepo); got != "" {
+		t.Fatalf("non-repo cwd = %q, want empty", got)
+	}
+	if n := count(); n != 0 {
+		t.Fatalf("GitRootOrEmpty forked git %d times for a local non-repo, want 0", n)
+	}
+}
