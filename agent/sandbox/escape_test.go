@@ -162,22 +162,41 @@ func TestEscapeHookPersist(t *testing.T) {
 	}
 }
 
-// TestEscapeCachePoisonIsolation: a write into the cache root cannot reach the
-// real cache a later build consumes. On this host (no overlay) the real cache is
-// read-only and the cache vars are redirected to the session tmp; a build's
-// writes land there, discarded at session end.
-func TestEscapeCachePoisonIsolation(t *testing.T) {
-	facts, home, cwd, sessionTmp, _, _ := escapeHome(t)
+const pristineCacheEntry = "PRISTINE-CACHE-ENTRY"
 
+// plantCacheMarker creates a real go-build cache with a pristine marker under
+// home and returns the marker path.
+func plantCacheMarker(t *testing.T, home string) string {
+	t.Helper()
 	realCache := filepath.Join(home, ".cache", "go-build")
 	if err := os.MkdirAll(realCache, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	const pristine = "PRISTINE-CACHE-ENTRY"
 	marker := filepath.Join(realCache, "marker")
-	if err := os.WriteFile(marker, []byte(pristine), 0o644); err != nil {
+	if err := os.WriteFile(marker, []byte(pristineCacheEntry), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	return marker
+}
+
+// assertRealCachePristine fails if the on-disk real cache entry was modified —
+// the universal no-poisoning invariant that must hold under every cache strategy.
+func assertRealCachePristine(t *testing.T, marker string) {
+	t.Helper()
+	got, err := os.ReadFile(marker)
+	if err != nil || string(got) != pristineCacheEntry {
+		t.Errorf("CACHE-POISON ESCAPE: real cache entry was modified: got %q err %v", string(got), err)
+	}
+}
+
+// TestEscapeCachePoisonIsolationSessionPrivate: with overlay forced off, the real
+// cache is read-only and the cache vars are redirected to the session tmp; a
+// build's writes land there, discarded at session end. Overlay is pinned off so
+// the assertions hold regardless of the host bwrap's overlay support.
+func TestEscapeCachePoisonIsolationSessionPrivate(t *testing.T) {
+	facts, home, cwd, sessionTmp, _, _ := escapeHome(t)
+	facts.OverlaySupported = false // pin the session-private branch, host-independent
+	marker := plantCacheMarker(t, home)
 
 	script := strings.Join([]string{
 		`(echo POISON > ` + marker + `) 2>&1; echo "real=$?"`,
@@ -189,17 +208,43 @@ func TestEscapeCachePoisonIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("command failed: %v\n%s", err, out)
 	}
-	// The real cache write must have failed...
+	// The real cache write must have failed (the real cache is read-only)...
 	if strings.Contains(out, "real=0") {
 		t.Errorf("CACHE-POISON ESCAPE: the real cache was writable:\n%s", out)
 	}
-	// ...and the on-disk real cache entry is still pristine.
-	got, err := os.ReadFile(marker)
-	if err != nil || string(got) != pristine {
-		t.Errorf("CACHE-POISON ESCAPE: real cache entry was modified: got %q err %v", string(got), err)
-	}
+	assertRealCachePristine(t, marker)
 	// The redirected cache write landed in the session tmp, not the real cache.
 	if !strings.Contains(out, "gocache="+sessionTmp) {
 		t.Errorf("GOCACHE must be redirected into the session tmp under session-private cache:\n%s", out)
 	}
+}
+
+// TestEscapeCachePoisonIsolationOverlay: on an overlay-capable host, cache roots
+// are served read-real / write-private. A write into the real-cache PATH may
+// SUCCEED inside the sandbox (it lands in the private tmpfs upper) but must never
+// reach the real cache a later build consumes. Gated on the resolved strategy, so
+// it runs its assertions only where the overlay path is actually exercised.
+func TestEscapeCachePoisonIsolationOverlay(t *testing.T) {
+	facts, home, cwd, sessionTmp, _, _ := escapeHome(t)
+	net := true
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: &net}, facts, cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if rp.CacheStrategy != CacheOverlay {
+		t.Skip("host bwrap lacks overlay support; the overlay cache path is not exercised here")
+	}
+	marker := plantCacheMarker(t, home)
+
+	// Write straight into the real-cache PATH; under overlay the write lands in the
+	// private upper, so it may succeed in-sandbox — the poisoning test is the host.
+	script := `(echo POISON > ` + marker + `) 2>&1; echo "wrote=$?"; cat ` + marker
+
+	out, err := runWrapped(t, facts, ModeWorkspaceWrite, true, cwd, sessionTmp, script)
+	if err != nil {
+		t.Fatalf("command failed: %v\n%s", err, out)
+	}
+	// The in-sandbox view may show the write (private upper), but the host's real
+	// cache entry must remain pristine — no poisoning under the overlay path.
+	assertRealCachePristine(t, marker)
 }
