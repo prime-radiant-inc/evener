@@ -49,7 +49,7 @@ func TestContractCoverage(t *testing.T) {
 	modes := map[Mode]bool{}
 	var refusals, resolutions int
 	sawNetOff := false
-	sawRequiredBwrap, sawRequiredSeatbelt := false, false
+	sawNoBackendRefusal, sawRequiredSeatbelt := false, false
 
 	for _, c := range cases {
 		oses[c.Host.OS] = true
@@ -60,8 +60,8 @@ func TestContractCoverage(t *testing.T) {
 		if c.WantRefusal {
 			refusals++
 			switch c.WantRequiredBackend {
-			case "bwrap":
-				sawRequiredBwrap = true
+			case "":
+				sawNoBackendRefusal = true
 			case "sandbox-exec":
 				sawRequiredSeatbelt = true
 			}
@@ -71,10 +71,8 @@ func TestContractCoverage(t *testing.T) {
 		backends[c.WantBackend] = true
 	}
 
-	// BackendLandlock is intentionally NOT required among resolving cases: Landlock
-	// is allowlist-only and cannot enforce our contract, so it never resolves — it
-	// is always a refusal naming bwrap (finding #2). It remains a probed/reported
-	// enum value; only selection changed.
+	// The Linux tier has exactly one backend (bwrap); a non-bwrap Linux host never
+	// resolves, it refuses with no backend that would satisfy it.
 	for _, b := range []Backend{BackendNone, BackendBwrap, BackendSeatbelt} {
 		if !backends[b] {
 			t.Errorf("golden table has no resolving case with backend %v", b)
@@ -96,8 +94,8 @@ func TestContractCoverage(t *testing.T) {
 	if refusals == 0 || resolutions == 0 {
 		t.Errorf("golden table lacks refusals (%d) or resolutions (%d)", refusals, resolutions)
 	}
-	if !sawRequiredBwrap {
-		t.Error("golden table has no refusal that names bwrap as the required backend")
+	if !sawNoBackendRefusal {
+		t.Error("golden table has no refusal with no backend that would satisfy it (RequiredBackend \"\")")
 	}
 	if !sawRequiredSeatbelt {
 		t.Error("golden table has no refusal that names sandbox-exec as the required backend")
@@ -126,7 +124,7 @@ func TestContractRefusalTiersAreComplete(t *testing.T) {
 		tiers[tier][cell{c.Mode, c.Net}] = true
 	}
 
-	for _, tier := range []string{"landlock", "bare-linux", "windows", "darwin-bare"} {
+	for _, tier := range []string{"bare-linux", "windows", "darwin-bare"} {
 		cells := tiers[tier]
 		if cells == nil {
 			t.Errorf("no refusal cases for tier %q", tier)
@@ -150,9 +148,7 @@ func refusalTierLabel(h HostFacts) string {
 		return "windows"
 	case h.OS == "darwin" && !h.SeatbeltAvailable():
 		return "darwin-bare"
-	case h.OS == "linux" && !h.BwrapCapable && h.LandlockAvailable():
-		return "landlock"
-	case h.OS == "linux" && !h.BwrapCapable && !h.LandlockAvailable():
+	case h.OS == "linux" && !h.BwrapCapable:
 		return "bare-linux"
 	default:
 		return "enforcing/" + h.OS

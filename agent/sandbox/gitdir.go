@@ -11,14 +11,9 @@ import (
 )
 
 // WorkspaceKind classifies cwd's git layout. The distinction drives gitdir
-// resolution (linked-worktree/submodule git dirs live outside the worktree and
-// need a read grant + external config/hook protection; a MainCheckout's .git sits
-// inside it) and the resolver's refusal reasoning. It once also let Landlock serve
-// restricted in a LinkedWorktree (config/hooks outside the granted root, purely
-// additive), but the resolver now never selects Landlock: even in a linked
-// worktree the in-worktree .git pointer must be subtracted from the granted root,
-// which allowlist-only Landlock cannot express. Landlock is still probed and
-// reported, never selected; bwrap is required on Linux (see resolve.go).
+// resolution: linked-worktree/submodule git dirs live outside the worktree and
+// need a read grant + external config/hook protection, while a MainCheckout's
+// .git sits inside it.
 type WorkspaceKind int
 
 const (

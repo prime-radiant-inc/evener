@@ -12,13 +12,13 @@ import (
 // HostFacts are the backend-relevant capabilities of the host, gathered once at
 // session start. They are plain data so the resolver stays a pure function of
 // (policy, facts, cwd): the real prober fills them by probing the kernel/binaries;
-// unit tests inject a FakeProber and never touch the host. The four fields that
-// matter to the fail-closed floor are OS, BwrapCapable, LandlockABI, and (macOS)
+// unit tests inject a FakeProber and never touch the host. The three fields that
+// matter to the fail-closed floor are OS, BwrapCapable, and (macOS)
 // SandboxExecPath.
 type HostFacts struct {
 	// OS is runtime.GOOS: "linux", "darwin", "windows", …. Sandboxing is only
-	// expressible on linux (bwrap/Landlock) and darwin (Seatbelt); every other
-	// OS refuses any sandboxed mode.
+	// expressible on linux (bwrap) and darwin (Seatbelt); every other OS refuses
+	// any sandboxed mode.
 	OS string
 
 	// Home is the user's home directory (absolute), the anchor the resolver joins
@@ -47,13 +47,6 @@ type HostFacts struct {
 	// persistent-writable).
 	OverlaySupported bool
 
-	// LandlockABI is the Landlock LSM ABI version available (0 = unavailable).
-	// Landlock is allowlist-only: it is probed and reported here but the resolver
-	// never SELECTS it (it cannot subtract a path within a granted root, so it
-	// cannot enforce our contract in any mode). bwrap is required on Linux; a
-	// Landlock-only host gets only --sandbox off. See resolve.go's chooseBackend.
-	LandlockABI int
-
 	// SandboxExecPath is the resolved /usr/bin/sandbox-exec path on darwin
 	// (Seatbelt), or "" if unavailable. Seatbelt is deny-capable and serves the
 	// full mode matrix (cache always session-private — no overlay on macOS).
@@ -63,9 +56,6 @@ type HostFacts struct {
 	// (surfaced in the startup enforcement line, not used for decisions).
 	KernelVersion string
 }
-
-// LandlockAvailable reports whether the Landlock LSM is usable on this host.
-func (h HostFacts) LandlockAvailable() bool { return h.LandlockABI > 0 }
 
 // SeatbeltAvailable reports whether the macOS Seatbelt backend is usable: it
 // requires darwin AND a resolved sandbox-exec binary. Presence of sandbox-exec
@@ -81,7 +71,7 @@ type Prober interface {
 }
 
 // FakeProber returns fixed HostFacts. It is the only prober used on the unit
-// path, so no unit test ever shells out to bwrap or issues a landlock syscall.
+// path, so no unit test ever shells out to bwrap.
 type FakeProber struct {
 	Facts HostFacts
 }
@@ -100,12 +90,10 @@ var probeCommandTimeout = 3 * time.Second
 // Probe gathers host capabilities. The bwrap capability and overlay probes are
 // intentionally conservative here (presence + version); M3 hardens BwrapCapable
 // into a real unprivileged-userns execution probe and adds true overlay
-// detection. The Landlock ABI probe is exact (a direct landlock_create_ruleset
-// version query, no side effects) and the Seatbelt/OS facts are exact.
+// detection. The Seatbelt/OS facts are exact.
 func (RealProber) Probe() HostFacts {
 	facts := HostFacts{
 		OS:            runtime.GOOS,
-		LandlockABI:   probeLandlockABI(),
 		KernelVersion: probeKernelVersion(),
 	}
 	if home, err := os.UserHomeDir(); err == nil {

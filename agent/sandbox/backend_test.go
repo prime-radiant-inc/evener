@@ -6,7 +6,7 @@ import (
 )
 
 func TestNewWrapperRejectsNonBwrapBackend(t *testing.T) {
-	for _, b := range []Backend{BackendNone, BackendLandlock, BackendSeatbelt} {
+	for _, b := range []Backend{BackendNone, BackendSeatbelt} {
 		if _, err := NewWrapper(ResolvedPolicy{Backend: b}, "/usr/bin/bwrap", "/tmp/s"); err == nil {
 			t.Errorf("backend %v: expected NewWrapper to refuse a non-bwrap backend", b)
 		}

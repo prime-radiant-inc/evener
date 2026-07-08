@@ -22,20 +22,20 @@ import (
 func FuzzResolve(f *testing.F) {
 	// Seeds spanning the floor matrix: each host tier × representative modes. The
 	// trailing string is a fuzzed DenylistRemove entry.
-	f.Add(0, true, "linux", "/home/u", true, true, 4, "", "/work", "")                          // off, bwrap
-	f.Add(1, true, "linux", "/home/u", true, false, 0, "", "/work", ".aws")                     // read-only, bwrap; remove a credential
-	f.Add(2, false, "linux", "/home/u", true, true, 4, "", "/work", "/proc")                    // workspace-write net=off; try to remove /proc
-	f.Add(3, true, "linux", "/home/u", false, false, 3, "", "/work", "")                        // restricted, landlock-only
-	f.Add(3, false, "linux", "/home/u", false, false, 0, "", "/work", "")                       // restricted net=off, bare linux
-	f.Add(2, true, "windows", "C:/u", false, false, 0, "", "C:/work", "")                       // workspace-write, windows
-	f.Add(1, true, "darwin", "/Users/u", false, false, 0, "/usr/bin/sandbox-exec", "/work", "") // read-only, seatbelt
-	f.Add(3, true, "darwin", "/Users/u", false, false, 0, "", "/work", "")                      // restricted, darwin bare
-	f.Add(2, true, "relative/home", "linux", true, true, 4, "", "/work", "")                    // bwrap, NON-absolute home → must refuse
-	f.Add(2, true, "", "", false, false, -5, "", "", "")                                        // degenerate: empty everything
+	f.Add(0, true, "linux", "/home/u", true, true, "", "/work", "")                          // off, bwrap
+	f.Add(1, true, "linux", "/home/u", true, false, "", "/work", ".aws")                     // read-only, bwrap; remove a credential
+	f.Add(2, false, "linux", "/home/u", true, true, "", "/work", "/proc")                    // workspace-write net=off; try to remove /proc
+	f.Add(3, true, "linux", "/home/u", false, false, "", "/work", "")                        // restricted, non-bwrap linux
+	f.Add(3, false, "linux", "/home/u", false, false, "", "/work", "")                       // restricted net=off, non-bwrap linux
+	f.Add(2, true, "windows", "C:/u", false, false, "", "C:/work", "")                       // workspace-write, windows
+	f.Add(1, true, "darwin", "/Users/u", false, false, "/usr/bin/sandbox-exec", "/work", "") // read-only, seatbelt
+	f.Add(3, true, "darwin", "/Users/u", false, false, "", "/work", "")                      // restricted, darwin bare
+	f.Add(2, true, "relative/home", "linux", true, true, "", "/work", "")                    // bwrap, NON-absolute home → must refuse
+	f.Add(2, true, "", "", false, false, "", "", "")                                         // degenerate: empty everything
 
 	f.Fuzz(func(t *testing.T,
 		modeSel int, network bool, home, os string,
-		bwrapCapable, overlay bool, landlockABI int, sandboxExec, cwd, denyRemove string,
+		bwrapCapable, overlay bool, sandboxExec, cwd, denyRemove string,
 	) {
 		mode := Mode(((modeSel % len(AllModes())) + len(AllModes())) % len(AllModes()))
 		policy := SandboxPolicy{
@@ -48,7 +48,7 @@ func FuzzResolve(f *testing.F) {
 		}
 		host := HostFacts{
 			OS: os, Home: home, BwrapCapable: bwrapCapable,
-			OverlaySupported: overlay, LandlockABI: landlockABI, SandboxExecPath: sandboxExec,
+			OverlaySupported: overlay, SandboxExecPath: sandboxExec,
 		}
 
 		rp, err := Resolve(policy, host, cwd)
