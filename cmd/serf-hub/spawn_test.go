@@ -304,7 +304,7 @@ func TestWaitForRendezvous_AppearsInTime(t *testing.T) {
 	dir := t.TempDir()
 
 	go func() {
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 		_, _ = rendezvous.Write(dir, rendezvous.Entry{
 			PID:     12345,
 			Address: "127.0.0.1:50000",
@@ -324,7 +324,7 @@ func TestWaitForRendezvous_AppearsInTime(t *testing.T) {
 
 func TestWaitForRendezvous_TimesOut(t *testing.T) {
 	dir := t.TempDir()
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	_, err := WaitForRendezvous(ctx, dir, 99999)
 	if err == nil {
@@ -336,7 +336,7 @@ func TestWaitForRendezvous_WrongPID(t *testing.T) {
 	dir := t.TempDir()
 	_, _ = rendezvous.Write(dir, rendezvous.Entry{PID: 11111, Address: "x"})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	if _, err := WaitForRendezvous(ctx, dir, 22222); err == nil {
 		t.Fatal("expected timeout for wrong PID")
@@ -359,7 +359,7 @@ func TestWaitForRendezvous_IgnoresStaleEntryFromBeforeStart(t *testing.T) {
 	startedAfter := time.Now()
 
 	go func() {
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 		_, _ = rendezvous.Write(dir, rendezvous.Entry{
 			PID:       55555,
 			Address:   "127.0.0.1:22222",
