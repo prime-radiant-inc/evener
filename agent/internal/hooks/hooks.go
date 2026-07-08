@@ -131,7 +131,14 @@ func executeCommandHook(ctx context.Context, hook plugin.RegisteredHook, input I
 	// creds), and empty ExtraFiles so the hook inherits no serf fds beyond stdio.
 	if sbx != nil {
 		env = sandbox.ApplyEnvFloor(env, sbx.Policy(), sbx.SessionTmp())
-		argv := sbx.Wrap(cmd.Args, sbx.Policy().Git.WorktreeRoot)
+		dir := sbx.Policy().Git.WorktreeRoot
+		// bwrap encodes the working directory in its argv (--chdir); sandbox-exec
+		// has no chdir flag, so set the confined hook's cwd to the worktree for
+		// macOS parity with Linux (otherwise it inherits serf's process cwd).
+		if dir != "" && sbx.Policy().Backend == sandbox.BackendSeatbelt {
+			cmd.Dir = dir
+		}
+		argv := sbx.Wrap(cmd.Args, dir)
 		cmd.Path = argv[0]
 		cmd.Args = argv
 		cmd.ExtraFiles = nil

@@ -99,12 +99,11 @@
 (allow file-read* file-test-existence file-write-data file-ioctl
   (literal "/dev/dtracehelper"))
 
-; Scratch space so tools can create temp files (the session TMPDIR is granted
-; separately as a writable root; these cover the conventional macOS temp dirs).
-(allow file-read* file-test-existence file-write* (subpath "/tmp"))
-(allow file-read* file-write* (subpath "/private/tmp"))
-(allow file-read* file-write* (subpath "/var/tmp"))
-(allow file-read* file-write* (subpath "/private/var/tmp"))
+; NOTE: serf deliberately does NOT grant broad read/write of /tmp, /private/tmp,
+; /var/tmp here (codex's defaults do). Those grants are additive allows that would
+; re-expose a worktree, secret, or git config surface placed under a temp dir,
+; defeating restricted-mode confinement. The per-session TMPDIR is granted
+; separately as an explicit writable root, so scratch space still works.
 
 ; Standard config directories.
 (allow file-read* (subpath "/etc"))
@@ -144,8 +143,10 @@
   (global-name "com.apple.trustd.agent")
   (local-name "com.apple.cfprefsd.agent"))
 
-; The syslog socket for logging.
-(allow network-outbound (literal "/private/var/run/syslog"))
+; NOTE: serf deliberately omits codex's (allow network-outbound (literal
+; "/private/var/run/syslog")) here. net=off must be the ABSENCE of every network
+; allow (fail-closed), and this is the only mode (restricted) that includes the
+; platform defaults; a stray local-socket egress allow would break that invariant.
 
 ; Notifications.
 (allow ipc-posix-shm-read*

@@ -102,9 +102,10 @@ func SeatbeltPolicy(rp ResolvedPolicy, sessionTmp string, canon Canonicalizer) (
 	}
 	ps := &paramSet{canon: canon}
 
-	read := buildAllowRule("file-read*", readGrants(rp, sessionTmp, ps))
-	write := buildAllowRule("file-write*", writeGrants(rp, sessionTmp, ps))
+	read := buildAllowRule("file-read*", readRootKeys(rp, sessionTmp, ps))
+	write := buildAllowRule("file-write*", writeRootKeys(rp, sessionTmp, ps))
 	network := networkSection(rp)
+	denials := denySection(rp, ps)
 
 	sections := []string{seatbeltBasePolicy}
 	if read != "" {
@@ -119,6 +120,16 @@ func SeatbeltPolicy(rp ResolvedPolicy, sessionTmp string, canon Canonicalizer) (
 	// The macOS system read-roots a worktree-only process needs to exec/dyld-load.
 	if rp.Mode == ModeRestricted {
 		sections = append(sections, seatbeltPlatformDefaults)
+	}
+	// Authoritative denials come LAST so they override every allow above —
+	// including the static platform-defaults' broad system grants. Under Seatbelt
+	// the last matching rule wins, so an explicit (deny ...) is the only way to
+	// carve a masked/protected path out of a broad allow; a require-not inside one
+	// allow would leave a later allow (e.g. platform-defaults' /tmp) free to
+	// re-grant it. (This mirrors Codex's own trailing (deny file-read* ...) for
+	// unreadable globs.)
+	if denials != "" {
+		sections = append(sections, "; authoritative denials (override every allow above)\n"+denials)
 	}
 
 	return strings.Join(sections, "\n"), ps.params
@@ -139,97 +150,100 @@ func (ps *paramSet) define(key, path string) string {
 	return key
 }
 
-// accessGrant is one component of an (allow file-read*/file-write* ...) rule: a
-// subpath grant on a root param, with optional require-not exclusions (protected
-// git surfaces or denylisted subpaths), each also a param.
-type accessGrant struct {
-	rootKey      string
-	excludedKeys []string
-}
-
-// readGrants builds the read allow's grants from the spawned layer. ReadAnywhere
-// (read-only, workspace-write) grants "/" minus every masked path; worktree-only
-// (restricted) grants each read root minus the masked paths that fall beneath
-// it, plus the session tmp.
-func readGrants(rp ResolvedPolicy, sessionTmp string, ps *paramSet) []accessGrant {
+// readRootKeys allocates the read allow's root params. ReadAnywhere (read-only,
+// workspace-write) grants "/" — reads are "anywhere minus the denylist", with the
+// denylist subtracted authoritatively by denySection. Worktree-only (restricted)
+// grants each read root plus the session tmp.
+func readRootKeys(rp ResolvedPolicy, sessionTmp string, ps *paramSet) []string {
 	if rp.Spawned.Read == ReadAnywhere {
-		g := accessGrant{rootKey: ps.define("READABLE_ROOT_0", "/")}
-		for i, m := range rp.MaskedPaths {
-			g.excludedKeys = append(g.excludedKeys,
-				ps.define(fmt.Sprintf("READABLE_ROOT_0_EXCLUDED_%d", i), m))
-		}
-		return []accessGrant{g}
+		return []string{ps.define("READABLE_ROOT_0", "/")}
 	}
-
 	roots := dedupeRoots(appendNonEmpty(slices.Clone(rp.Spawned.ReadRoots), sessionTmp))
-	grants := make([]accessGrant, 0, len(roots))
+	keys := make([]string, 0, len(roots))
 	for i, root := range roots {
-		g := accessGrant{rootKey: ps.define(fmt.Sprintf("READABLE_ROOT_%d", i), root)}
-		ei := 0
-		for _, m := range rp.MaskedPaths {
-			if pathUnder(m, root) {
-				g.excludedKeys = append(g.excludedKeys,
-					ps.define(fmt.Sprintf("READABLE_ROOT_%d_EXCLUDED_%d", i, ei), m))
-				ei++
-			}
-		}
-		grants = append(grants, g)
+		keys = append(keys, ps.define(fmt.Sprintf("READABLE_ROOT_%d", i), root))
 	}
-	return grants
+	return keys
 }
 
-// writeGrants builds the write allow's grants: each spawned write root plus the
-// session tmp, with the git config/hook surfaces that fall beneath a root
-// excluded as require-not guards. The worktree root's grant thus covers all of
-// its .git (objects, refs, index, logs, HEAD, COMMIT_EDITMSG, …) EXCEPT the
-// protected config/hook surfaces — the same shape the bwrap backend produces
-// (whole-worktree writable, config/hooks re-protected read-only), so a commit
-// works while a core.hooksPath redirect cannot be persisted. A linked
-// worktree's external git-metadata roots are separate write roots; the main
-// repo's config, being under no write root, is write-denied by default while
-// remaining readable.
-func writeGrants(rp ResolvedPolicy, sessionTmp string, ps *paramSet) []accessGrant {
+// writeRootKeys allocates the write allow's root params: each spawned write root
+// plus the session tmp. The worktree root grants all of its .git (objects, refs,
+// index, logs, HEAD, COMMIT_EDITMSG, …) — matching the bwrap backend, which binds
+// the whole worktree writable — and denySection then subtracts the protected
+// config/hook surfaces, so a commit works while a core.hooksPath redirect cannot
+// be persisted. A linked worktree's external git-metadata roots are separate
+// write roots; the main repo's config is under no write root (write-denied) yet
+// stays readable.
+func writeRootKeys(rp ResolvedPolicy, sessionTmp string, ps *paramSet) []string {
 	roots := dedupeRoots(appendNonEmpty(slices.Clone(rp.Spawned.WriteRoots), sessionTmp))
-	grants := make([]accessGrant, 0, len(roots))
+	keys := make([]string, 0, len(roots))
 	for i, root := range roots {
-		g := accessGrant{rootKey: ps.define(fmt.Sprintf("WRITABLE_ROOT_%d", i), root)}
-		ei := 0
-		for _, p := range rp.Git.ProtectedPaths {
-			if pathUnder(p, root) {
-				g.excludedKeys = append(g.excludedKeys,
-					ps.define(fmt.Sprintf("WRITABLE_ROOT_%d_EXCLUDED_%d", i, ei), p))
-				ei++
-			}
-		}
-		grants = append(grants, g)
+		keys = append(keys, ps.define(fmt.Sprintf("WRITABLE_ROOT_%d", i), root))
 	}
-	return grants
+	return keys
 }
 
-// buildAllowRule renders an (allow <action> ...) rule over grants, or "" when
-// there are none. Each grant is a (subpath (param KEY)); a grant with exclusions
-// is wrapped in a (require-all ...) that subtracts each excluded param as BOTH a
-// (literal ...) and a (subpath ...) — the two-form guard from Codex that also
-// denies first-time creation of the protected path itself, not just writes
-// beneath it.
-func buildAllowRule(action string, grants []accessGrant) string {
-	if len(grants) == 0 {
-		return ""
-	}
-	comps := make([]string, 0, len(grants))
-	for _, g := range grants {
-		if len(g.excludedKeys) == 0 {
-			comps = append(comps, subpathParam(g.rootKey))
+// denySection emits the authoritative trailing denials, each path a -D param
+// referenced as BOTH a (literal ...) (the path itself, denying first-time
+// creation) and a (subpath ...) (everything beneath it):
+//
+//   - Every masked path (secrets + pseudo-fs denylist) is denied for read AND
+//     write, so no allow — the "/" read grant, a granted read root, or the
+//     platform-defaults' broad system reads — can re-expose it. /dev/fd is the one
+//     exception: it is process-local on macOS (the child's own fd table; serf's
+//     fds never leak in) and is needed for shell process substitution, so the base
+//     grants it and it is NOT re-denied here — the same treatment bwrap gives it
+//     via its minimal --dev. The resolver still lists /dev/fd in MaskedPaths; the
+//     backend realizes it safely rather than by denial.
+//   - Every protected git surface (config, config.worktree, hooks, the .git
+//     pointer, submodule configs, resolved config includes) is denied for WRITE
+//     only (reads are allowed — git must read config), so a write to it is denied
+//     even when it falls under a broad allow (e.g. a worktree placed under /tmp,
+//     which platform-defaults would otherwise make writable).
+func denySection(rp ResolvedPolicy, ps *paramSet) string {
+	var rules []string
+	mi := 0
+	for _, m := range rp.MaskedPaths {
+		if isDeviceFloorException(m) {
 			continue
 		}
-		parts := make([]string, 0, 1+2*len(g.excludedKeys))
-		parts = append(parts, subpathParam(g.rootKey))
-		for _, ek := range g.excludedKeys {
-			parts = append(parts,
-				"(require-not (literal (param "+quoteParam(ek)+")))",
-				"(require-not (subpath (param "+quoteParam(ek)+")))")
-		}
-		comps = append(comps, "(require-all "+strings.Join(parts, " ")+")")
+		k := ps.define(fmt.Sprintf("MASKED_%d", mi), m)
+		mi++
+		rules = append(rules, "(deny file-read* file-write* "+literalAndSubpath(k)+")")
+	}
+	pi := 0
+	for _, p := range rp.Git.ProtectedPaths {
+		k := ps.define(fmt.Sprintf("PROTECTED_%d", pi), p)
+		pi++
+		rules = append(rules, "(deny file-write* "+literalAndSubpath(k)+")")
+	}
+	return strings.Join(rules, "\n")
+}
+
+// isDeviceFloorException reports whether a masked path is one the base policy
+// intentionally grants and must not be re-denied: /dev/fd (process-local, needed
+// for stdio/process-substitution).
+func isDeviceFloorException(path string) bool {
+	return path == "/dev/fd"
+}
+
+// literalAndSubpath renders the two filters that together deny a path itself and
+// everything beneath it: (literal (param K)) (subpath (param K)).
+func literalAndSubpath(key string) string {
+	return "(literal (param " + quoteParam(key) + ")) (subpath (param " + quoteParam(key) + "))"
+}
+
+// buildAllowRule renders an (allow <action> (subpath (param KEY)) ...) rule over
+// the given root param keys, or "" when there are none. Masked/protected paths
+// that fall under a root are NOT carved out here; denySection subtracts them
+// authoritatively after every allow.
+func buildAllowRule(action string, rootKeys []string) string {
+	if len(rootKeys) == 0 {
+		return ""
+	}
+	comps := make([]string, 0, len(rootKeys))
+	for _, k := range rootKeys {
+		comps = append(comps, subpathParam(k))
 	}
 	return "(allow " + action + "\n  " + strings.Join(comps, "\n  ") + "\n)"
 }

@@ -235,44 +235,38 @@ func TestSeatbeltGitProtection(t *testing.T) {
 		t.Fatalf("WRITABLE_ROOT_0 = %+v, want worktree %q", wt, cwd)
 	}
 
-	// Every protected config/hook surface under the worktree is excluded from the
-	// write allow as BOTH a literal and a subpath require-not (the two-form guard).
+	// Every protected config/hook surface is denied for WRITE authoritatively (as
+	// a PROTECTED_n param), as BOTH a literal (deny first-time creation) and a
+	// subpath, in a trailing (deny file-write* ...) that overrides every allow.
 	for _, protected := range rp.Git.ProtectedPaths {
-		if !pathUnder(protected, cwd) {
-			continue
-		}
 		key := paramKeyForPath(params, protected)
-		if key == "" {
-			t.Errorf("protected surface %q has no exclusion param", protected)
+		if key == "" || !strings.HasPrefix(key, "PROTECTED_") {
+			t.Errorf("protected surface %q has no PROTECTED_ deny param (key %q)", protected, key)
 			continue
 		}
-		if !strings.Contains(text, "(require-not (literal (param "+`"`+key+`"`+")))") {
-			t.Errorf("protected %q (%s) missing literal require-not", protected, key)
-		}
-		if !strings.Contains(text, "(require-not (subpath (param "+`"`+key+`"`+")))") {
-			t.Errorf("protected %q (%s) missing subpath require-not", protected, key)
+		want := "(deny file-write* (literal (param " + `"` + key + `"` + ")) (subpath (param " + `"` + key + `"` + ")))"
+		if !strings.Contains(text, want) {
+			t.Errorf("protected %q (%s) missing authoritative write-deny %q", protected, key, want)
 		}
 	}
 
-	// .git/objects stays writable: it is covered by the worktree write root and is
-	// NOT one of the excluded surfaces.
+	// .git/objects stays writable: it is a write root and is NOT denied.
 	objects := filepath.Join(cwd, ".git", "objects")
 	for _, p := range params {
-		if p.Path == objects && strings.Contains(p.Key, "EXCLUDED") {
-			t.Errorf(".git/objects must remain writable, but is an exclusion param %q", p.Key)
+		if p.Path == objects && (strings.HasPrefix(p.Key, "PROTECTED_") || strings.HasPrefix(p.Key, "MASKED_")) {
+			t.Errorf(".git/objects must remain writable, but is a deny param %q", p.Key)
 		}
 	}
 
-	// Secrets are excluded from READ, not from WRITE: a masked secret must not
-	// appear as a WRITABLE_ROOT exclusion.
+	// Secrets are denied for read AND write (a MASKED_ param), not merely a
+	// write-only protection.
 	secret := filepath.Join(seatbeltHost().Home, ".ssh")
-	for _, p := range params {
-		if p.Path == secret && strings.HasPrefix(p.Key, "WRITABLE_ROOT_") {
-			t.Errorf("secret %q must not be a writable-root exclusion (belongs to read exclusions): %q", secret, p.Key)
-		}
+	key := paramKeyForPath(params, secret)
+	if key == "" || !strings.HasPrefix(key, "MASKED_") {
+		t.Fatalf("secret %q must be a MASKED_ deny param; got key %q", secret, key)
 	}
-	if k := paramKeyForPath(params, secret); k == "" || !strings.HasPrefix(k, "READABLE_ROOT_0_EXCLUDED_") {
-		t.Errorf("secret %q must be a read exclusion under the full-disk read root; got key %q", secret, k)
+	if !strings.Contains(text, "(deny file-read* file-write* (literal (param "+`"`+key+`"`+")) (subpath (param "+`"`+key+`"`+")))") {
+		t.Errorf("secret %q (%s) missing authoritative read+write deny", secret, key)
 	}
 }
 
@@ -397,13 +391,14 @@ func FuzzSeatbeltPolicyNoInterpolation(f *testing.F) {
 // TestSeatbeltContractParity re-runs M1's exported contract suite through a
 // resolver-equivalent that also generates the SBPL for every resolving darwin
 // cell, holding the seatbelt backend to the same contract as bwrap. Beyond
-// AssertResolve's own invariants it asserts the generator never panics and, for
-// every enforced seatbelt cell, that no GRANTED root (readable or writable, not
-// an exclusion) is itself a masked path and that every masked path that falls
-// under a granted read/write root is emitted as an exclusion param. (The
-// no-path-interpolation invariant is proven separately by
-// FuzzSeatbeltPolicyNoInterpolation, which correctly distinguishes generated
-// text from the static embeds.)
+// AssertResolve's own invariants it asserts, for every enforced seatbelt cell,
+// that the generator never panics; no GRANTED root is itself a masked path; every
+// masked path (except the intentional /dev/fd exemption) is emitted as an
+// authoritative MASKED_ read+write deny; and every protected git surface is
+// emitted as a PROTECTED_ write deny. Because the denials are trailing and
+// unconditional (no per-root gating), a masked path is denied regardless of which
+// allow — including the static platform-defaults — might otherwise re-grant it.
+// (No-path-interpolation is proven separately by FuzzSeatbeltPolicyNoInterpolation.)
 func TestSeatbeltContractParity(t *testing.T) {
 	t.Parallel()
 	AssertResolve(t, func(p SandboxPolicy, h HostFacts, cwd string) (ResolvedPolicy, error) {
@@ -414,11 +409,14 @@ func TestSeatbeltContractParity(t *testing.T) {
 		_, params := SeatbeltPolicy(rp, "/serf-session-tmp", identityCanon)
 
 		grantedRoots := map[string]bool{}
-		excluded := map[string]bool{}
+		maskedDenied := map[string]bool{}
+		protectedDenied := map[string]bool{}
 		for _, pr := range params {
 			switch {
-			case strings.Contains(pr.Key, "EXCLUDED"):
-				excluded[pr.Path] = true
+			case strings.HasPrefix(pr.Key, "MASKED_"):
+				maskedDenied[pr.Path] = true
+			case strings.HasPrefix(pr.Key, "PROTECTED_"):
+				protectedDenied[pr.Path] = true
 			case strings.HasPrefix(pr.Key, "WRITABLE_ROOT_"), strings.HasPrefix(pr.Key, "READABLE_ROOT_"):
 				grantedRoots[pr.Path] = true
 			}
@@ -429,16 +427,19 @@ func TestSeatbeltContractParity(t *testing.T) {
 				t.Errorf("case %v/net=%v: masked path %q is a granted root", rp.Mode, rp.Network, m)
 			}
 		}
-		// A masked path that falls under a granted root must be excluded (otherwise
-		// the root grant would re-expose it).
-		for root := range grantedRoots {
-			if root == "/serf-session-tmp" {
+		// Every masked path is authoritatively denied (except the /dev/fd exemption).
+		for _, m := range rp.MaskedPaths {
+			if isDeviceFloorException(m) {
 				continue
 			}
-			for _, m := range rp.MaskedPaths {
-				if pathUnder(m, root) && !excluded[m] {
-					t.Errorf("case %v/net=%v: masked path %q under granted root %q is not excluded", rp.Mode, rp.Network, m, root)
-				}
+			if !maskedDenied[m] {
+				t.Errorf("case %v/net=%v: masked path %q is not authoritatively denied", rp.Mode, rp.Network, m)
+			}
+		}
+		// Every protected git surface is authoritatively write-denied.
+		for _, pp := range rp.Git.ProtectedPaths {
+			if !protectedDenied[pp] {
+				t.Errorf("case %v/net=%v: protected surface %q is not write-denied", rp.Mode, rp.Network, pp)
 			}
 		}
 		return rp, err
