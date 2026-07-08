@@ -70,6 +70,28 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 		add("--bind", sessionTmp, sessionTmp)
 	}
 
+	// A read-granted root that falls under /tmp was just shadowed by the /tmp
+	// tmpfs. Re-bind such roots read-only (mirroring the writable re-bind below) so
+	// a read-only worktree or read grant under /tmp survives — otherwise --chdir
+	// into a /tmp cwd aborts the sandbox. Write roots under /tmp are re-bound
+	// writable below and win (later mounts win), so a root that is both read- and
+	// write-granted ends up writable. The session tmp (already bound writable) and
+	// the /tmp tmpfs root itself are left untouched.
+	reboundRO := make(map[string]bool)
+	for _, r := range append([]string{cwd}, sp.ReadRoots...) {
+		if r == "" || r == "/tmp" || !pathUnder(r, "/tmp") {
+			continue
+		}
+		if r == sessionTmp || (sessionTmp != "" && pathUnder(r, sessionTmp)) {
+			continue
+		}
+		if reboundRO[r] || !pathExists(r) {
+			continue
+		}
+		reboundRO[r] = true
+		add("--ro-bind", r, r)
+	}
+
 	// Writable roots (worktree, git-metadata write subset, extra roots). Bound
 	// after the read baseline so they win; a non-existent root is skipped (bwrap
 	// requires bind targets to exist — the parent writable root already covers
