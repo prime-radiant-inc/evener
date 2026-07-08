@@ -350,6 +350,34 @@ func (r *wtRepo) metaDir(canonicalMain string) string {
 	return filepath.Join(r.stateDir, "worktrees", worktree.ProjectID(canonicalMain), ".meta")
 }
 
+func (r *wtRepo) addManagedWorktreeFixture(t *testing.T, name string) string {
+	t.Helper()
+	canonicalMain := r.canonicalMain(t)
+	path := r.managedPath(canonicalMain, name)
+	metaDir := r.metaDir(canonicalMain)
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatalf("mkdir metaDir: %v", err)
+	}
+	mergeTarget := strings.TrimSpace(wtGit(t, r.mainRoot, "branch", "--show-current"))
+	sc := worktree.Sidecar{
+		Name:           name,
+		Branch:         name,
+		BaseSHA:        r.head,
+		MergeTarget:    mergeTarget,
+		OriginalRoot:   canonicalMain,
+		CreatorSession: r.s.id,
+		CreatedAt:      "2026-01-01T00:00:00Z",
+	}
+	if err := worktree.WriteSidecarExcl(metaDir, name, sc); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir worktree parent: %v", err)
+	}
+	wtGit(t, r.mainRoot, "worktree", "add", "-b", name, "--", path, r.head)
+	return path
+}
+
 // --- Tests ---
 
 func TestWorktreeCreate_CreatesWorktreeWithGitPointer(t *testing.T) {

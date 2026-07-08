@@ -83,12 +83,7 @@ func TestWorktreeRemove_NotInGitRepo(t *testing.T) {
 func TestWorktreeRemove_TargetLockInspectionErrorsWhenGitUnavailable(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
+	r.addManagedWorktreeFixture(t, "lane")
 	restore := hideGitInRepo(t, r.mainRoot)
 	defer restore()
 
@@ -107,14 +102,7 @@ func TestWorktreeRemove_TargetLockInspectionErrorsWhenGitUnavailable(t *testing.
 func TestWorktreeRemove_CrashResidueUnlockFailsOnPermissionDenied(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
+	path := r.addManagedWorktreeFixture(t, "lane")
 	// Simulate a crash that left this session's own lock behind on a
 	// worktree it is not currently in (mirrors
 	// TestWorktreeRemove_OwnMarkerCrashResidueAutoUnlocksAndProceeds' setup).
@@ -124,7 +112,7 @@ func TestWorktreeRemove_CrashResidueUnlockFailsOnPermissionDenied(t *testing.T) 
 	internalDir := worktreeInternalDir(t, r.mainRoot, path)
 	chmodReadOnly(t, internalDir)
 
-	_, err = r.removeOp(t, map[string]any{"name": "lane"})
+	_, err := r.removeOp(t, map[string]any{"name": "lane"})
 	if err == nil || !strings.Contains(err.Error(), "unlocking crash-residue lock") {
 		t.Fatalf("remove with the crash-residue unlock failing: err = %v, want the unlocking-crash-residue-lock error", err)
 	}
@@ -138,14 +126,7 @@ func TestWorktreeRemove_CrashResidueUnlockFailsOnPermissionDenied(t *testing.T) 
 func TestWorktreeRemove_SidecarGarbageJSONErrors(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
+	path := r.addManagedWorktreeFixture(t, "lane")
 	canonicalMain := r.canonicalMain(t)
 	metaDir := r.metaDir(canonicalMain)
 	sidecarPath := filepath.Join(metaDir, worktree.EncodeSidecarName("lane")+".json")
@@ -153,7 +134,7 @@ func TestWorktreeRemove_SidecarGarbageJSONErrors(t *testing.T) {
 		t.Fatalf("corrupt sidecar: %v", err)
 	}
 
-	_, err = r.removeOp(t, map[string]any{"name": "lane", "force": true})
+	_, err := r.removeOp(t, map[string]any{"name": "lane", "force": true})
 	if err == nil || !strings.Contains(err.Error(), "reading metadata") {
 		t.Fatalf("remove with a corrupt sidecar: err = %v, want the reading-metadata error", err)
 	}
@@ -170,18 +151,11 @@ func TestWorktreeRemove_SidecarGarbageJSONErrors(t *testing.T) {
 func TestWorktreeRemove_DirtyCheckErrorsWhenStatusFails(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
+	path := r.addManagedWorktreeFixture(t, "lane")
 
 	gitFailOnArgsRepoShim(t, r.mainRoot, "-C", path, "status", "--porcelain=v1", "--untracked-files=all")
 
-	_, err = r.removeOp(t, map[string]any{"name": "lane"})
+	_, err := r.removeOp(t, map[string]any{"name": "lane"})
 	if err == nil || !strings.Contains(err.Error(), "checking for uncommitted changes") {
 		t.Fatalf("remove with the dirtiness-check status call failing: err = %v, want the checking-for-uncommitted-changes error", err)
 	}
@@ -290,20 +264,13 @@ func TestWorktreeRemove_BasicDispositionMatrix(t *testing.T) {
 func TestWorktreeRemove_DeleteBranchMergedDeletesAfterGate(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
+	path := r.addManagedWorktreeFixture(t, "lane")
 	if err := os.WriteFile(filepath.Join(path, "a.txt"), []byte("a\n"), 0o644); err != nil {
 		t.Fatalf("write a.txt: %v", err)
 	}
 	wtGit(t, path, "add", "a.txt")
 	wtGit(t, path, "commit", "-m", "advance lane")
 
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
 	// Fast-forward main to lane's tip so the ancestry arm holds.
 	wtGit(t, r.mainRoot, "merge", "--ff-only", "lane")
 
@@ -331,12 +298,7 @@ func TestWorktreeRemove_DeleteBranchMergedDeletesAfterGate(t *testing.T) {
 func TestWorktreeRemove_DeleteBranchTipLookupErrorsKeepsBranch(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
+	r.addManagedWorktreeFixture(t, "lane")
 
 	gitFailOnArgsRepoShim(t, r.mainRoot, "rev-parse", "--verify", "refs/heads/lane")
 
@@ -367,19 +329,12 @@ func TestWorktreeRemove_DeleteBranchMergeTargetUnknownRefusesWithEvidence(t *tes
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	wtGit(t, r.mainRoot, "checkout", "-q", "-b", "feature")
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
+	path := r.addManagedWorktreeFixture(t, "lane")
 	if err := os.WriteFile(filepath.Join(path, "a.txt"), []byte("a\n"), 0o644); err != nil {
 		t.Fatalf("write a.txt: %v", err)
 	}
 	wtGit(t, path, "add", "a.txt")
 	wtGit(t, path, "commit", "-m", "advance lane")
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
 	// The recorded merge_target ("feature") is gone: the lane's sidecar still
 	// names it, but no local or remote-tracking ref by that name exists.
 	wtGit(t, r.mainRoot, "checkout", "-q", "main")
@@ -418,26 +373,19 @@ func TestWorktreeRemove_DeleteBranchMergeTargetUnknownRefusesWithEvidence(t *tes
 func TestWorktreeRemove_DeleteSidecarFailsOnPermissionDenied(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
+	path := r.addManagedWorktreeFixture(t, "lane")
 	if err := os.WriteFile(filepath.Join(path, "a.txt"), []byte("a\n"), 0o644); err != nil {
 		t.Fatalf("write a.txt: %v", err)
 	}
 	wtGit(t, path, "add", "a.txt")
 	wtGit(t, path, "commit", "-m", "advance lane")
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
 	wtGit(t, r.mainRoot, "merge", "--ff-only", "lane")
 
 	canonicalMain := r.canonicalMain(t)
 	metaDir := r.metaDir(canonicalMain)
 	chmodReadOnly(t, metaDir)
 
-	_, err = r.removeOp(t, map[string]any{"name": "lane", "delete_branch": true})
+	_, err := r.removeOp(t, map[string]any{"name": "lane", "delete_branch": true})
 	if err == nil || !strings.Contains(err.Error(), "deleting sidecar") {
 		t.Fatalf("remove with a read-only metaDir: err = %v, want the deleting-sidecar error", err)
 	}
@@ -455,14 +403,7 @@ func TestWorktreeRemove_DeleteSidecarFailsOnPermissionDenied(t *testing.T) {
 func TestWorktreeRemove_MarkSidecarRemovedFailsOnPermissionDenied(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
+	path := r.addManagedWorktreeFixture(t, "lane")
 
 	canonicalMain := r.canonicalMain(t)
 	metaDir := r.metaDir(canonicalMain)
@@ -477,7 +418,7 @@ func TestWorktreeRemove_MarkSidecarRemovedFailsOnPermissionDenied(t *testing.T) 
 
 	// No delete_branch: the worktree itself is removed cleanly (step 8), but
 	// marking the surviving sidecar worktree_removed (step 10) fails.
-	_, err = r.removeOp(t, map[string]any{"name": "lane"})
+	_, err := r.removeOp(t, map[string]any{"name": "lane"})
 	if err == nil || !strings.Contains(err.Error(), "marking sidecar removed") {
 		t.Fatalf("remove with a read-only sidecar file: err = %v, want the marking-sidecar-removed error", err)
 	}
@@ -491,11 +432,7 @@ func TestWorktreeRemove_MarkSidecarRemovedFailsOnPermissionDenied(t *testing.T) 
 func TestWorktreeRemove_DeleteBranchUnmergedRefusesEvidenceSidecarKept(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
+	path := r.addManagedWorktreeFixture(t, "lane")
 	if err := os.WriteFile(filepath.Join(path, "a.txt"), []byte("a\n"), 0o644); err != nil {
 		t.Fatalf("write a.txt: %v", err)
 	}
@@ -503,9 +440,6 @@ func TestWorktreeRemove_DeleteBranchUnmergedRefusesEvidenceSidecarKept(t *testin
 	wtGit(t, path, "commit", "-m", "advance lane")
 	laneTip := strings.TrimSpace(wtGit(t, path, "rev-parse", "HEAD"))
 
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
 	// main is NOT advanced: lane is never merged.
 	logPath := gitArgvRecordingRepoShim(t, r.mainRoot)
 
@@ -556,11 +490,7 @@ func TestWorktreeRemove_DeleteBranchUnmergedRefusesEvidenceSidecarKept(t *testin
 func TestWorktreeRemove_DetachedHeadReviewRefusesNeverInvokesLowercaseD(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "feature"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
+	path := r.addManagedWorktreeFixture(t, "feature")
 	if err := os.WriteFile(filepath.Join(path, "f.txt"), []byte("f\n"), 0o644); err != nil {
 		t.Fatalf("write f.txt: %v", err)
 	}
@@ -568,9 +498,6 @@ func TestWorktreeRemove_DetachedHeadReviewRefusesNeverInvokesLowercaseD(t *testi
 	wtGit(t, path, "commit", "-m", "advance feature")
 	featureTip := strings.TrimSpace(wtGit(t, path, "rev-parse", "HEAD"))
 
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
 	// Detach the main checkout's HEAD directly at feature's tip. Under a
 	// review-of-the-tip workflow this is exactly the scenario rev-6 review
 	// caught: `git branch -d feature` run from here would see feature as
@@ -615,12 +542,7 @@ func TestWorktreeRemove_DetachedHeadReviewRefusesNeverInvokesLowercaseD(t *testi
 func TestWorktreeRemove_BranchCheckedOutElsewhereSurfacesLocation(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
+	r.addManagedWorktreeFixture(t, "lane")
 
 	// A second, non-managed checkout of the SAME branch (--force bypasses
 	// git's normal one-checkout-per-branch rule) — lane is unchanged, so
@@ -650,19 +572,12 @@ func TestWorktreeRemove_BranchCheckedOutElsewhereSurfacesLocation(t *testing.T) 
 func TestWorktreeRemove_ForeignLockRefusesRegardlessOfForce(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
+	path := r.addManagedWorktreeFixture(t, "lane")
 
 	foreignReason := worktree.FormatSessionMarker("01FOREIGNSESSIONID0000003")
 	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", foreignReason, path)
 
-	_, err = r.removeOp(t, map[string]any{"name": "lane", "force": true})
+	_, err := r.removeOp(t, map[string]any{"name": "lane", "force": true})
 	if err == nil {
 		t.Fatal("expected remove of a foreign-locked target to be refused even with force")
 	}
@@ -683,14 +598,7 @@ func TestWorktreeRemove_ForeignLockRefusesRegardlessOfForce(t *testing.T) {
 func TestWorktreeRemove_OwnMarkerCrashResidueAutoUnlocksAndProceeds(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
+	path := r.addManagedWorktreeFixture(t, "lane")
 
 	// Simulate a crash that left this session's own lock behind on a
 	// worktree it is not currently in.
@@ -758,18 +666,11 @@ func TestWorktreeRemove_RemoveCurrentApplyRestoreLandRelockErrorsOnSecondPorcela
 func TestWorktreeRemove_GitWorktreeRemoveCommandFails(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
+	path := r.addManagedWorktreeFixture(t, "lane")
 
 	gitFailOnArgsRepoShim(t, r.mainRoot, "worktree", "remove", "--", path)
 
-	_, err = r.removeOp(t, map[string]any{"name": "lane"})
+	_, err := r.removeOp(t, map[string]any{"name": "lane"})
 	if err == nil || !strings.Contains(err.Error(), "git worktree remove failed") {
 		t.Fatalf("remove with the git worktree remove command failing: err = %v, want the git-worktree-remove-failed error", err)
 	}
@@ -941,14 +842,7 @@ func TestWorktreeRemove_RemoveCurrentNoSafeRestoreEnvRefusesThroughSymlinkedLaun
 func TestWorktreeRemove_LiveWorkGuardRefusesViaStub(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
+	path := r.addManagedWorktreeFixture(t, "lane")
 
 	// worktreeLiveWorkStub stands in for Task 20's background-shell-job
 	// launch-workdir field (spec §5 remove step 4's "New plumbing"); this
@@ -961,7 +855,7 @@ func TestWorktreeRemove_LiveWorkGuardRefusesViaStub(t *testing.T) {
 		return nil
 	}
 
-	_, err = r.removeOp(t, map[string]any{"name": "lane", "force": true})
+	_, err := r.removeOp(t, map[string]any{"name": "lane", "force": true})
 	if err == nil {
 		t.Fatal("expected remove to be refused by the live-work guard")
 	}
@@ -990,14 +884,7 @@ func TestWorktreeRemove_LiveWorkGuardRefusesViaStub(t *testing.T) {
 func TestWorktreeRemove_CrossCreatorUnlockedLaneProceeds(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "shared"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	if _, err := r.exitOp(t); err != nil { // exit unlocks the lane
-		t.Fatalf("exit: %v", err)
-	}
+	path := r.addManagedWorktreeFixture(t, "shared")
 
 	r2 := r.secondSession(t)
 	if r2.s.id == r.s.id {
@@ -1019,15 +906,10 @@ func TestWorktreeRemove_CrossCreatorUnlockedLaneProceeds(t *testing.T) {
 func TestWorktreeRemove_ForceDoesNotDiscardUncommitted(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	if _, err := r.create(t, map[string]any{"name": "dirtylane"}); err != nil {
-		t.Fatalf("create: %v", err)
-	}
+	path := r.addManagedWorktreeFixture(t, "dirtylane")
 	// dirty the lane's checkout (uncommitted edit)
-	if err := os.WriteFile(filepath.Join(r.s.currentEnv().WorkingDirectory(), "main.go"), []byte("package main // dirty\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(path, "main.go"), []byte("package main // dirty\n"), 0o644); err != nil {
 		t.Fatalf("dirty write: %v", err)
-	}
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
 	}
 
 	// force:true (no force_dirty) must still refuse and preserve the edit.
