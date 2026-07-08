@@ -116,6 +116,9 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 
 func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
 	t.Parallel()
+	if testing.Short() {
+		t.Skip("release archive install integration test")
+	}
 	if runtime.GOOS == "windows" {
 		t.Skip("install.sh requires a Unix shell")
 	}

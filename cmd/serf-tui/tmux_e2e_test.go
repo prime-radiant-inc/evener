@@ -950,6 +950,9 @@ func openEndedSession(t *testing.T, app *tmuxTUI) {
 
 func requireTmux(t *testing.T) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("tmux E2E test")
+	}
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux is required for TUI E2E tests")
 	}
