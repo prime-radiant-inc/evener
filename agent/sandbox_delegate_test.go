@@ -205,6 +205,33 @@ func TestDelegateRestoreFailsClosedOnUnsatisfiableHost(t *testing.T) {
 	}
 }
 
+// TestSandboxHostFactsProbedOncePerSession: re-resolving a resumed delegate's
+// sandbox is what a jobs listing / watch does per delegate record; the host probe
+// (RealProber forks ~3 subprocesses) must be gathered ONCE per session and shared,
+// not re-forked per record — a fork storm on the resume path.
+func TestSandboxHostFactsProbedOncePerSession(t *testing.T) {
+	lane, home := sbxLane(t)
+	prober := &countingProber{facts: sbxBwrapFacts(home)}
+	s := sbxDelegateSessionWithProber(t, prober)
+
+	snap := sandboxSnapshotFromInputs(sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted})
+	desc := &jobstore.DelegateRestoreDescriptor{WorkingDir: lane, LocalEnvPolicy: "default", Sandbox: snap}
+
+	const n = 5
+	for i := 0; i < n; i++ {
+		rp, reason := s.resolveRestoredDelegateSandbox(desc, lane)
+		if reason != "" {
+			t.Fatalf("assessment %d: unexpected not-resumable reason %q", i, reason)
+		}
+		if rp == nil || !rp.Enforced() {
+			t.Fatalf("assessment %d: expected an enforced re-resolved policy", i)
+		}
+	}
+	if prober.calls != 1 {
+		t.Errorf("%d resume assessments must probe the host ONCE, got %d probes", n, prober.calls)
+	}
+}
+
 // TestDelegateDescriptorJSONRoundTripSnapshot: the snapshot survives a descriptor
 // marshal/unmarshal with snake_case keys.
 func TestDelegateDescriptorJSONRoundTripSnapshot(t *testing.T) {
@@ -358,6 +385,13 @@ func maskedOf(rp *sandbox.ResolvedPolicy) []string {
 // sandbox re-resolution uses an injected FakeProber (never the live host).
 func sbxDelegateSession(t *testing.T, facts sandbox.HostFacts) *Session {
 	t.Helper()
+	return sbxDelegateSessionWithProber(t, sandbox.FakeProber{Facts: facts})
+}
+
+// sbxDelegateSessionWithProber is sbxDelegateSession with a caller-supplied prober,
+// so a test can observe how often the host is probed across resume assessments.
+func sbxDelegateSessionWithProber(t *testing.T, prober sandbox.Prober) *Session {
+	t.Helper()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	return newSession(t, withClient(c), withConfig(SessionConfig{
@@ -368,7 +402,18 @@ func sbxDelegateSession(t *testing.T, facts sandbox.HostFacts) *Session {
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
 			noSyncJobStore:      true,
-			sandboxProber:       sandbox.FakeProber{Facts: facts},
+			sandboxProber:       prober,
 		},
 	}))
+}
+
+// countingProber records how many times the host is probed, returning fixed facts.
+type countingProber struct {
+	facts sandbox.HostFacts
+	calls int
+}
+
+func (c *countingProber) Probe() sandbox.HostFacts {
+	c.calls++
+	return c.facts
 }

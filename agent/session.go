@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/provider"
+	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/agent/task"
@@ -309,6 +310,15 @@ type Session struct {
 	// goal store (lazy-init)
 	goalStore     *goal.Store
 	goalStoreOnce sync.Once
+
+	// sandboxHostFacts memoizes the host-capability probe that backs re-resolving a
+	// resumed delegate's sandbox policy. RealProber.Probe forks ~3 subprocesses
+	// (bwrap userns probe, bwrap --help, uname -r); a jobs listing / watch re-
+	// assesses every delegate record, so an un-memoized probe forks ~3N subprocesses
+	// per listing (worse when a wedged bwrap eats each 3s timeout). Host facts are
+	// constant for the process, so the probe runs once per session and is shared.
+	sandboxHostFactsOnce  sync.Once
+	sandboxHostFactsValue sandbox.HostFacts
 
 	// goalInTurn is true while ProcessInputKind is running an input through to
 	// completion. It is guarded by s.mu and exists to close the §7 idle-kick

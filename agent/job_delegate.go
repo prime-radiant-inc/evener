@@ -1094,11 +1094,25 @@ func hasValidDelegateRestoreSandbox(desc *jobstore.DelegateRestoreDescriptor) bo
 // honors the immutable-across-restart guarantee — a config that loosened between
 // serf runs cannot widen a live delegate's confinement, and a host that can no
 // longer enforce the mode refuses instead of resuming unscoped.
+//
+// Host facts are constant for the process, so the probe is memoized per session:
+// a jobs listing / watch re-assesses every delegate record, and an un-memoized
+// RealProber.Probe would fork ~3 subprocesses per record (bwrap userns probe,
+// bwrap --help, uname -r) — a fork storm on the resume path. The injected test
+// prober is memoized the same way, so its facts are unchanged and it too is
+// consulted once per session.
 func (s *Session) sandboxHostFacts() sandbox.HostFacts {
-	if s != nil && s.cfg.testOnly.sandboxProber != nil {
-		return s.cfg.testOnly.sandboxProber.Probe()
+	if s == nil {
+		return sandbox.RealProber{}.Probe()
 	}
-	return sandbox.RealProber{}.Probe()
+	s.sandboxHostFactsOnce.Do(func() {
+		if s.cfg.testOnly.sandboxProber != nil {
+			s.sandboxHostFactsValue = s.cfg.testOnly.sandboxProber.Probe()
+			return
+		}
+		s.sandboxHostFactsValue = sandbox.RealProber{}.Probe()
+	})
+	return s.sandboxHostFactsValue
 }
 
 // resolveRestoredDelegateSandbox re-resolves a delegate's persisted sandbox policy
