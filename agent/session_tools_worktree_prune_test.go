@@ -582,11 +582,73 @@ func TestWorktreePrune_Sweep2_DeleteStaleSidecarFailsOnPermissionDenied(t *testi
 	}
 }
 
-func TestWorktreePrune_Sweep1_DispositionMatrix(t *testing.T) {
+func TestWorktreePrune_Sweep1_RemovesDisposableMatrix(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	canonicalMain := r.canonicalMain(t)
 	metaDir := r.metaDir(canonicalMain)
+	paths := map[string]string{}
+
+	createAndExit := func(name string) string {
+		t.Helper()
+		res, err := r.create(t, map[string]any{"name": name})
+		if err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+		path := res["path"].(string)
+		paths[name] = path
+		if _, err := r.exitOp(t); err != nil {
+			t.Fatalf("exit after %s: %v", name, err)
+		}
+		return path
+	}
+
+	createAndExit("unchanged")
+
+	ancPath := createAndExit("anc-lane")
+	commitInWorktree(t, ancPath, "a.txt", "a\n", "advance anc-lane")
+	wtGit(t, r.mainRoot, "merge", "--ff-only", "anc-lane")
+
+	squashPath := createAndExit("squash-lane")
+	commitInWorktree(t, squashPath, "s.txt", "s\n", "advance squash-lane")
+	// Squash-merge: content lands on main as a NEW commit, so ancestry
+	// cannot recognize it; only patch-equivalence (`git cherry`) can.
+	wtGit(t, r.mainRoot, "merge", "--squash", "squash-lane")
+	wtGit(t, r.mainRoot, "commit", "-m", "squash squash-lane")
+
+	out, err := r.pruneOp(t)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	removed := pruneEntries(t, out, "removed")
+	assertRemoved := func(name, reason string) {
+		t.Helper()
+		e := findPruneEntry(t, removed, name)
+		if e == nil {
+			t.Fatalf("%s not in removed: %+v", name, removed)
+		}
+		if e["reason"] != reason {
+			t.Errorf("%s reason = %v, want %s", name, e["reason"], reason)
+		}
+		if _, statErr := os.Stat(paths[name]); !os.IsNotExist(statErr) {
+			t.Errorf("%s worktree dir survived prune: err=%v", name, statErr)
+		}
+		if branchExistsInRepo(t, r.mainRoot, name) {
+			t.Errorf("%s branch survived prune", name)
+		}
+		if _, scErr := worktree.ReadSidecar(metaDir, name); !os.IsNotExist(scErr) {
+			t.Errorf("%s sidecar survived: err=%v", name, scErr)
+		}
+	}
+	assertRemoved("unchanged", "unchanged")
+	assertRemoved("anc-lane", "merged (ancestry)")
+	assertRemoved("squash-lane", "merged (cherry)")
+}
+
+func TestWorktreePrune_Sweep1_SkipsProtectedMatrix(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	canonicalMain := r.canonicalMain(t)
 	paths := map[string]string{}
 
 	create := func(name string) string {
@@ -605,22 +667,6 @@ func TestWorktreePrune_Sweep1_DispositionMatrix(t *testing.T) {
 			t.Fatalf("exit after %s: %v", name, err)
 		}
 	}
-
-	create("unchanged")
-	exit("unchanged")
-
-	ancPath := create("anc-lane")
-	commitInWorktree(t, ancPath, "a.txt", "a\n", "advance anc-lane")
-	exit("anc-lane")
-	wtGit(t, r.mainRoot, "merge", "--ff-only", "anc-lane")
-
-	squashPath := create("squash-lane")
-	commitInWorktree(t, squashPath, "s.txt", "s\n", "advance squash-lane")
-	exit("squash-lane")
-	// Squash-merge: content lands on main as a NEW commit, so ancestry
-	// cannot recognize it; only patch-equivalence (`git cherry`) can.
-	wtGit(t, r.mainRoot, "merge", "--squash", "squash-lane")
-	wtGit(t, r.mainRoot, "commit", "-m", "squash squash-lane")
 
 	dirtyPath := create("dirty-lane")
 	if err := os.WriteFile(filepath.Join(dirtyPath, "d.txt"), []byte("uncommitted\n"), 0o644); err != nil {
@@ -656,28 +702,7 @@ func TestWorktreePrune_Sweep1_DispositionMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prune: %v", err)
 	}
-	removed := pruneEntries(t, out, "removed")
 	skipped := pruneEntries(t, out, "skipped")
-
-	assertRemoved := func(name, reason string) {
-		t.Helper()
-		e := findPruneEntry(t, removed, name)
-		if e == nil {
-			t.Fatalf("%s not in removed: %+v", name, removed)
-		}
-		if e["reason"] != reason {
-			t.Errorf("%s reason = %v, want %s", name, e["reason"], reason)
-		}
-		if _, statErr := os.Stat(paths[name]); !os.IsNotExist(statErr) {
-			t.Errorf("%s worktree dir survived prune: err=%v", name, statErr)
-		}
-		if branchExistsInRepo(t, r.mainRoot, name) {
-			t.Errorf("%s branch survived prune", name)
-		}
-		if _, scErr := worktree.ReadSidecar(metaDir, name); !os.IsNotExist(scErr) {
-			t.Errorf("%s sidecar survived: err=%v", name, scErr)
-		}
-	}
 	assertSkippedContains := func(name, want string) {
 		t.Helper()
 		e := findPruneEntry(t, skipped, name)
@@ -706,9 +731,6 @@ func TestWorktreePrune_Sweep1_DispositionMatrix(t *testing.T) {
 		}
 	}
 
-	assertRemoved("unchanged", "unchanged")
-	assertRemoved("anc-lane", "merged (ancestry)")
-	assertRemoved("squash-lane", "merged (cherry)")
 	assertSkippedContains("locked-lane", "locked")
 	assertSkippedContains("dirty-lane", "dirty")
 	assertSkippedContains("live-lane", "job_live999")
