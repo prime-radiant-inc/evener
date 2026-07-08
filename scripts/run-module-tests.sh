@@ -1,61 +1,55 @@
 #!/usr/bin/env bash
-# run-module-tests.sh — run the Go module test suites with wave scheduling.
+# run-module-tests.sh — run the non-fuzz Go module test suites with wave scheduling.
 #
 # The repo is a go.work workspace of independent modules. `go test ./...` does
-# not span modules, so the suites must be invoked per module.
+# not span modules, so the suites must be invoked per module. The regular gate
+# intentionally runs only Test/Example entry points; native Fuzz targets, saved
+# fuzz corpus replay, and the fuzz toolkit module are owned by `make fuzz`.
 #
-# SERF_TEST_MODE=fast is the default gate used by `make test`: it runs the root
-# agent subpackages first, then root package smoke tests, core llm tests, and
-# selected lightweight library modules in a second wave. The exhaustive agent root
-# package, llm provider sweep, fuzz module sweep, and fuzz seed corpora stay
-# available through SERF_TEST_MODE=exhaustive and the explicit fuzz targets.
-#
-# SERF_TEST_MODE=exhaustive preserves the old two-wave workspace sweep. It is
-# intentionally not the default: running every package/test/fuzz seed in the
-# workspace now takes far longer than the local fast-gate budget and starves the
-# timing-sensitive TUI tests when overlapped with CPU/process-heavy packages.
+# The default wave split gives the root module's timing-sensitive TUI tests the
+# machine to themselves, then runs the remaining modules concurrently. Override
+# MODULES, WAVE1, WAVE2, or AGENT_PARALLEL when a caller needs a different local
+# schedule without changing the coverage boundary.
 #
 # Usage:
 #   scripts/run-module-tests.sh <go-test-flags...>
 #     scripts/run-module-tests.sh -short -count=1
-#     SERF_TEST_MODE=exhaustive scripts/run-module-tests.sh -count=1
 #     scripts/run-module-tests.sh -race -short -count=1
 #
 # Output: one PASS/FAIL line per module (with wall time) as each finishes; a
 # failing module's full output is printed at the end. Exits non-zero on any
-# failure. Override WAVE1/WAVE2 to change the schedule, AGENT_PARALLEL to tune
-# the agent wave's -parallel.
+# failure.
 set -uo pipefail
 
-SERF_TEST_MODE=${SERF_TEST_MODE:-fast}
-case "$SERF_TEST_MODE" in
-	fast)
-		WAVE1=${WAVE1:-"agent"}
-		WAVE2=${WAVE2-". llm auth envvars invariant"}
-		;;
-	exhaustive)
-		WAVE1=${WAVE1:-"."}
-		WAVE2=${WAVE2:-"agent llm auth envvars fuzz invariant"}
-		;;
-	*)
-		echo "run-module-tests: unknown SERF_TEST_MODE '$SERF_TEST_MODE'" >&2
-		exit 2
-		;;
-esac
-# Extra -parallel for the agent module. Exhaustive mode keeps the old 32 default
-# to overlap long timer waits. Fast mode defaults to Go's package default because
-# the remaining subpackage gate is process-heavy and -parallel 32 adds enough
-# scheduler/syscall contention to push the wall clock over the budget.
-if [ "$SERF_TEST_MODE" = "fast" ]; then
-	AGENT_PARALLEL=${AGENT_PARALLEL-}
+MODULES=${MODULES:-". agent llm auth envvars invariant"}
+if [ -z "${WAVE1+x}" ] && [ -z "${WAVE2+x}" ]; then
+	WAVE1=""
+	WAVE2=""
+	for m in $MODULES; do
+		if [ "$m" = "." ]; then
+			WAVE1="$WAVE1 $m"
+		else
+			WAVE2="$WAVE2 $m"
+		fi
+	done
+	WAVE1=${WAVE1# }
+	WAVE2=${WAVE2# }
 else
-	AGENT_PARALLEL=${AGENT_PARALLEL-32}
+	WAVE1=${WAVE1:-}
+	WAVE2=${WAVE2:-}
 fi
-# Keep rapid.Check surfaces as deterministic smoke coverage in the default module
-# gate. scripts/run-fuzz.sh owns the full rapid campaign unless RAPID_CHECKS is
-# explicitly overridden by the caller.
+
+# Extra -parallel for the agent wave. An explicit empty value means "don't pass
+# -parallel" so go test uses GOMAXPROCS; the -race gate sets this to avoid
+# oversubscribing few-core CI.
+AGENT_PARALLEL=${AGENT_PARALLEL-32}
+
+# Keep rapid.Check surfaces as deterministic smoke coverage in the default
+# module gate. scripts/run-fuzz.sh owns the full rapid campaign unless
+# RAPID_CHECKS is explicitly overridden by the caller.
 RAPID_CHECKS=${RAPID_CHECKS:-1}
 export RAPID_CHECKS
+
 flags="$*"
 logdir="$(mktemp -d -t serf-module-tests.XXXXXX)"
 fail=0
@@ -64,41 +58,16 @@ logpath() { printf '%s/%s.log' "$logdir" "$(printf '%s' "$1" | tr '/.' '__')"; }
 
 run_module() {
 	local m="$1" extra="$2"
-	case "$SERF_TEST_MODE:$m" in
-		fast:.)
-			# Word-split flags intentionally so callers can pass multiple flags.
-			# shellcheck disable=SC2086
-			/usr/bin/time -p go test $flags -run '^(Test|Example)' .
-			;;
-		fast:agent)
-			local -a pkgs=()
-			local pkg
-			while IFS= read -r pkg; do
-				pkgs+=("$pkg")
-			done < <(go list ./... | grep -v '^primeradiant.com/serf/agent$')
-			[ "${#pkgs[@]}" -eq 0 ] && return 0
-			# Word-split flags and extra intentionally so callers can pass multiple flags.
-			# shellcheck disable=SC2086
-			/usr/bin/time -p go test $flags $extra -run '^(Test|Example)' "${pkgs[@]}"
-			;;
-		fast:llm)
-			# Provider subpackages are covered by the exhaustive sweep; the fast gate keeps
-			# core llm behavior in budget.
-			# shellcheck disable=SC2086
-			/usr/bin/time -p go test $flags $extra -run '^(Test|Example)' .
-			;;
-		*)
-			# Word-split flags intentionally so callers can pass multiple flags.
-			# shellcheck disable=SC2086
-			/usr/bin/time -p go test $flags $extra ./...
-			;;
-	esac
+	# Word-split flags and extra intentionally so callers can pass multiple flags.
+	# shellcheck disable=SC2086
+	/usr/bin/time -p go test $flags $extra -run '^(Test|Example)' ./...
 }
 
 # run_wave <extra-flags> <module...> — run the modules concurrently, wait, and
 # report each one's result; records failures in the global $fail.
 run_wave() {
 	local extra="$1"; shift
+	[ "$#" -eq 0 ] && return 0
 	local -a names=() pids=()
 	local m log
 	for m in "$@"; do
