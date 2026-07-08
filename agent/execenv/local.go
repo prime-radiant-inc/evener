@@ -67,12 +67,36 @@ type LocalExecutionEnvironment struct {
 	fs          afero.Fs      // filesystem backing ReadFile/WriteFile/EditFile; defaults to the OS
 
 	// Sandbox is the resolved sandbox policy for this environment, or nil for the
-	// default (off) — exactly today's behavior. INERT in M1: no method here
-	// (resolve/resolveWrite/shellCommand/ExecCommand/StreamCommand) consults it
-	// yet. It rides WithWorkingDirectory like EnvPolicy so a re-rooted child
-	// (subagent worktree) inherits it. Enforcement is wired in M2 (file tools)
-	// and M3 (kernel wrapper); until then this is a carried-but-unread field.
+	// default (off) — exactly today's behavior. M2 consults it in the FILE tools
+	// (read/write/edit/apply_patch/glob/grep/list_dir) via e.sandbox(); the shell
+	// (ExecCommand/StreamCommand) kernel wrapper is still M3, so those keep using
+	// the string-based ensureUnderRoot working-dir check. It rides
+	// WithWorkingDirectory like EnvPolicy so a re-rooted child (subagent worktree)
+	// inherits it.
 	Sandbox *sandbox.ResolvedPolicy
+
+	// sbMu guards the lazily-built sandboxFS. sbfs is the fd-anchored enforcement
+	// layer, built on first file-tool use from an ENFORCED Sandbox policy and cached
+	// for the environment's lifetime (its root fds are captured once so a later root
+	// swap cannot redirect resolution). It stays nil for off / a nil policy.
+	sbMu sync.Mutex
+	sbfs *sandboxFS
+}
+
+// sandbox returns the environment's fd-anchored enforcement layer, or nil when
+// the environment is unsandboxed (a nil policy or off mode) — in which case every
+// file tool keeps its byte-identical afero/os path. The sandboxFS is built once
+// and cached; it is only ever constructed for an enforced policy.
+func (e *LocalExecutionEnvironment) sandbox() *sandboxFS {
+	if e.Sandbox == nil || !e.Sandbox.Enforced() {
+		return nil
+	}
+	e.sbMu.Lock()
+	defer e.sbMu.Unlock()
+	if e.sbfs == nil {
+		e.sbfs = newSandboxFS(e.Sandbox)
+	}
+	return e.sbfs
 }
 
 // gitRootCache memoizes git-root lookups per working dir. A session resolves the
@@ -168,6 +192,15 @@ var terminateGrace = 2 * time.Second
 // group, waiting two seconds for graceful shutdown, then sending SIGKILL to
 // every tracked process group (a no-op for those that already exited).
 func (e *LocalExecutionEnvironment) Cleanup() {
+	// Release any cached sandbox root fds captured by the file-tool enforcement
+	// layer. Independent of the process teardown below.
+	e.sbMu.Lock()
+	if e.sbfs != nil {
+		e.sbfs.close()
+		e.sbfs = nil
+	}
+	e.sbMu.Unlock()
+
 	// Collect running PIDs and send SIGTERM.
 	var pids []int
 	e.runningPIDs.Range(func(key, _ any) bool {
