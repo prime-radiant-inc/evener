@@ -113,3 +113,58 @@ before editing — they will drift as milestones land):
 - [ ] M5 — flag goes live on Linux (GATE: Jesse review)
 - [ ] M6 — macOS Seatbelt (paradise-park)
 - [ ] M7 — in-UI escalation
+
+## Cross-milestone reconciliation (added 2026-07-08 after the M2–M7 plan drafts)
+
+These bind decisions/interfaces that span milestones. Where a per-milestone plan
+disagrees, this section wins.
+
+1. **One shared denial-error type.** M2 (file-tool denials), M3 (shell/kernel
+   denials), and M7 (consumer) build against a single typed error — call it
+   `sandbox.DeniedError` — in the `agent/sandbox` package (M1 may stub it; M2
+   fills the file-tool fields; M3 adds the shell fields). Fields:
+   `{Mode, Tool, Path (redacted per the audit-redaction contract), Reason}` for
+   every denial, plus `{Command, OutputSoFar}` populated **only** for
+   shell/kernel denials. M7's shell approval card reads `Command`+`OutputSoFar`;
+   its file card reads `Path`. M2 must define the type with the shell fields
+   present-but-empty so M3/M7 don't have to widen it later.
+
+2. **macOS validation ownership.** M2 *implements* the darwin
+   `openat(O_NOFOLLOW|O_DIRECTORY)` fd-walk and gates it with
+   `GOOS=darwin go build/vet` (Linux-side, cheap). **Live** darwin race +
+   acceptance validation runs in **M6** on paradise-park (which already re-runs
+   the M1 contract suite there). No Mac is needed in M2's loop.
+
+3. **Zero-subscriber escalation → deny-immediately.** An interactive session
+   with no live AppWire subscribers (`SubscriberCount==0`) does NOT block waiting
+   for a human on a sandbox denial — it denies immediately (typed error to the
+   model), same as non-interactive. Avoids hangs. (M7 default.)
+
+4. **Cache overlay fallback is sanctioned.** On a host whose `bwrap` lacks
+   `--overlay`/`--tmp-overlay` (this dev box's bubblewrap 0.9.0 is one),
+   `workspace-write` cache degrades to session-private cold redirect — never to
+   persistent-writable. The overlay is a perf optimization, not a security
+   dependency. **Jesse's optional override:** hard-require overlay for
+   `workspace-write` (would make that mode refuse on overlay-less hosts). Default
+   = accept the cold fallback.
+
+5. **Hook env secret-leak is a real pre-existing gap (M3c fixes it).** Hook
+   commands build their env from `os.Environ()` directly (`hooks.go:95`),
+   bypassing even today's `*KEY*/*SECRET*` scrub — a hook currently sees the
+   provider API key regardless of sandboxing. M3c routes hook-command env through
+   the sandbox env floor; this also closes the standalone leak.
+
+6. **Two descriptor builders, and persist inputs not resolved roots (M4).** The
+   sandbox policy must be added to BOTH delegate-descriptor builders
+   (`restoreDelegateChildEnvironment` path and `resumedDelegateRestoreDescriptor`
+   `:1818`) or it silently drops on resumed turns. Persist the policy **inputs**
+   (`SandboxPolicy`: mode/net/denylist-deltas/extra-roots), not the resolved
+   roots — M4 re-resolves per child lane + freshly-probed host facts on restore
+   (honors the immutable-across-restart guarantee vs config drift). This is why
+   M1 keeps `SandboxPolicy` (serializable inputs) distinct from `ResolvedPolicy`.
+
+7. **M1 additions (sent to the M1 build agent 2026-07-08):** (a) a feature gate
+   — non-off `--sandbox` refuses at the flag boundary with "in development" until
+   M5, so no half-enforced mode is user-reachable during M1–M4; (b) a
+   darwin/Seatbelt-capable floor row (all modes enforceable, cache session-
+   private) so M6 satisfies the contract suite without retrofitting the resolver.
