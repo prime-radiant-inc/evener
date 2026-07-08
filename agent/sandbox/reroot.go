@@ -109,6 +109,17 @@ func (rp ResolvedPolicy) Inputs() SandboxPolicy { return rp.resolveInputs }
 // kernel wrapper from a resolved policy without separately threading host facts.
 func (rp ResolvedPolicy) HostBwrapPath() string { return rp.resolveHost.BwrapPath }
 
+// WithPolicy returns a copy of the wrapper enforcing rp instead of its current
+// policy, keeping the same probed bwrap binary and per-session tmp. It is how the
+// manage_worktree control env swaps in the ControlPolicy variant without
+// re-provisioning the session tmp. A nil receiver returns nil.
+func (w *Wrapper) WithPolicy(rp ResolvedPolicy) (*Wrapper, error) {
+	if w == nil {
+		return nil, nil
+	}
+	return NewWrapper(rp, w.bwrapPath, w.sessionTmp)
+}
+
 // ReRoot re-roots the kernel wrapper to cwd: it re-resolves the wrapper's policy
 // against cwd (fresh gitdir resolution for the target lane) and rebuilds the
 // bwrap invocation from that, keeping the same probed bwrap binary and per-

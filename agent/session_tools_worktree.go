@@ -436,7 +436,18 @@ func (s *Session) worktreeControlEnv(mainRepoRoot string) (execenv.ExecutionEnvi
 	if !ok {
 		return nil, errors.New("manage_worktree requires a local execution environment")
 	}
-	return local.WithWorkingDirectory(mainRepoRoot), nil
+	control := local.WithWorkingDirectory(mainRepoRoot)
+	// Carry the CONTROL sandbox policy (main repo + .git/worktrees registry
+	// writable; config/hooks denied) rather than the current worktree's tool
+	// policy, so lifecycle git can manage the registry. Fail closed if the host
+	// cannot satisfy it — the lifecycle op is refused, not run unscoped.
+	if err := control.SandboxReRootError(); err != nil {
+		return nil, err
+	}
+	if err := control.UseControlPolicy(mainRepoRoot); err != nil {
+		return nil, err
+	}
+	return control, nil
 }
 
 // worktreeStateSnapshot implements worktreeGuard.state() (spec §7). It reads the
@@ -840,6 +851,12 @@ func (s *Session) rollbackFreshDelegateWorktree(delegateID, lanePath string) {
 		return
 	}
 	controlEnv := active.WithWorkingDirectory(mainRoot)
+	if controlEnv.SandboxReRootError() != nil {
+		return // best-effort: cannot build a confined control env for this lane
+	}
+	if err := controlEnv.UseControlPolicy(mainRoot); err != nil {
+		return // best-effort: skip when the control policy is unsatisfiable
+	}
 	run := gitRunner(context.Background(), controlEnv)
 	_, _ = run("worktree", "unlock", lanePath)
 	_, _ = run("worktree", "remove", "--force", "--", lanePath)

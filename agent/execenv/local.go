@@ -255,6 +255,34 @@ func (e *LocalExecutionEnvironment) WithWorkingDirectory(dir string) *LocalExecu
 // silently unconfined child.
 func (e *LocalExecutionEnvironment) SandboxReRootError() error { return e.sandboxReRootErr }
 
+// UseControlPolicy replaces this env's sandbox policy (and kernel wrapper) with the
+// manage_worktree CONTROL variant anchored at mainRepoRoot — the main repo +
+// worktree registry writable, .git/config and hooks write-denied — so a worktree
+// lifecycle op (create/switch/remove/lock) manages the registry without carrying
+// the current worktree's tool policy. It is meant to run on an env freshly
+// produced by WithWorkingDirectory(mainRepoRoot): the re-root establishes the base,
+// this narrows it to the control grants. A nil policy (off) is a no-op; a control
+// policy the host cannot satisfy is returned as an error so the lifecycle op is
+// refused (fail closed) rather than run with the wrong scope.
+func (e *LocalExecutionEnvironment) UseControlPolicy(mainRepoRoot string) error {
+	if e.Sandbox == nil {
+		return nil
+	}
+	ctrl, err := e.Sandbox.ControlPolicy(mainRepoRoot)
+	if err != nil {
+		return err
+	}
+	e.Sandbox = ctrl
+	if e.Wrapper != nil && ctrl != nil {
+		w, werr := e.Wrapper.WithPolicy(*ctrl)
+		if werr != nil {
+			return werr
+		}
+		e.Wrapper = w
+	}
+	return nil
+}
+
 // Initialize prepares the environment for use.
 func (e *LocalExecutionEnvironment) Initialize() error {
 	if e.runningPIDs == nil {

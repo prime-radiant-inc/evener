@@ -1012,6 +1012,12 @@ func (s *Session) reacquireDelegateWorktreeLock(lanePath, delegateID string) err
 		return fmt.Errorf("delegate isolation worktree %s is no longer part of a git repository", lanePath)
 	}
 	controlEnv := local.WithWorkingDirectory(mainRoot)
+	if err := controlEnv.SandboxReRootError(); err != nil {
+		return err
+	}
+	if err := controlEnv.UseControlPolicy(mainRoot); err != nil {
+		return err
+	}
 	run := gitRunner(context.Background(), controlEnv)
 	locked, reason, lsErr := lockStateOf(run, lanePath)
 	if lsErr != nil {
@@ -2246,6 +2252,12 @@ func (s *Session) isolatedDelegateWorktreeReport(desc *jobstore.DelegateRestoreD
 		return nil
 	}
 	controlEnv := local.WithWorkingDirectory(mainRoot)
+	if controlEnv.SandboxReRootError() != nil {
+		return nil // best-effort: cannot build a confined control env for this lane
+	}
+	if err := controlEnv.UseControlPolicy(mainRoot); err != nil {
+		return nil // best-effort: skip when the control policy is unsatisfiable
+	}
 	run := gitRunner(context.Background(), controlEnv)
 
 	// The sidecar (written at lane creation, see createDelegateWorktree) is
