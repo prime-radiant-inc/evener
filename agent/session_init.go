@@ -283,6 +283,7 @@ type RestoreSessionConfig struct {
 	spawn                       spawnConfig
 	resumeHistory               []schema.Turn
 	deferRestoreSideEffects     bool
+	testOnly                    testConfig
 }
 
 // RestoreSessionFromMeta creates a Session from a SessionMeta, recovering
@@ -309,6 +310,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	cfg.LLMRetryPolicy = restoreCfg.LLMRetryPolicy
 	cfg.LLMSleep = restoreCfg.LLMSleep
+	cfg.testOnly = restoreCfg.testOnly
 	cfg.SessionStartKind = plugin.SessionStartKindResume
 	cfg.applyDefaults()
 
