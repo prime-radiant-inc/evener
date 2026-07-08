@@ -88,6 +88,20 @@ var defaultPseudoFSPaths = []string{
 	"/dev/fd",
 	"/dev/mem",
 	"/run/user",
+	// Privileged daemon control sockets. A read-only bind of / (read-only and
+	// workspace-write modes) still exposes these, and a read-only bind mount does
+	// NOT block connect() to a unix socket, nor does --unshare-net affect AF_UNIX.
+	// So a session on a host where the invoking user can reach the docker/podman/
+	// containerd/dbus socket could drive the daemon (e.g. `docker run -v /:/host`)
+	// straight to host root, even with net=off. Masking the socket paths turns
+	// connect() into ECONNREFUSED. (A broader /run policy is deferred: masking all
+	// of /run would also hide legitimate runtime state; these are the well-known
+	// escalation vectors.)
+	"/run/docker.sock",
+	"/var/run/docker.sock",
+	"/run/podman/podman.sock",
+	"/run/containerd/containerd.sock",
+	"/run/dbus/system_bus_socket",
 }
 
 // defaultSecretHomePaths are the credential directories/files masked in every

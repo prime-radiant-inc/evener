@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/toolname"
 	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/llm"
 )
 
@@ -65,7 +66,14 @@ type hookResult struct {
 // shell interpretation (hook.Shell is ignored). Shell form: when hook.Args is empty,
 // the command is run via the selected shell — "" or "bash" → bash -c <command>;
 // "powershell" → reserved, returns an error; any other value → error.
-func executeCommandHook(ctx context.Context, hook plugin.RegisteredHook, input Input) (hookResult, error) {
+// executeCommandHook runs a command hook. The optional wrapper (at most one; the
+// variadic keeps the many existing test callers intact) kernel-confines the hook
+// to the session sandbox when set.
+func executeCommandHook(ctx context.Context, hook plugin.RegisteredHook, input Input, wrapper ...*sandbox.Wrapper) (hookResult, error) {
+	var sbx *sandbox.Wrapper
+	if len(wrapper) > 0 {
+		sbx = wrapper[0]
+	}
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
 		return hookResult{}, fmt.Errorf("marshaling hook input: %w", err)
@@ -92,7 +100,13 @@ func executeCommandHook(ctx context.Context, hook plugin.RegisteredHook, input I
 	}
 
 	cmd.Stdin = bytes.NewReader(inputJSON)
-	env := append(os.Environ(),
+	// Hook commands historically built their env straight from os.Environ(),
+	// bypassing the *KEY*/*SECRET*/*TOKEN*/*PASSWORD*/*CREDENTIAL* scrub that shell
+	// tools already apply — so a hook saw serf's provider API key regardless of
+	// sandboxing. Scrub it here so hook commands get the same secret hygiene as
+	// every other spawned command (reconciliation #5).
+	env := scrubSecretEnv(os.Environ())
+	env = append(env,
 		"CLAUDE_PLUGIN_ROOT="+hook.PluginDir,
 		"PLUGIN_ROOT="+hook.PluginDir,
 		"CLAUDE_PROJECT_DIR="+input.CWD,
@@ -109,6 +123,18 @@ func executeCommandHook(ctx context.Context, hook plugin.RegisteredHook, input I
 	})
 	if input.Effort != "" {
 		env = append(env, "CLAUDE_EFFORT="+input.Effort)
+	}
+
+	// In a sandboxed session, kernel-confine the hook and its descendants to the
+	// session policy (a hook is arbitrary model-adjacent code), raise the sandbox
+	// env floor on top of the secret scrub (drop the ssh-agent handle + cloud
+	// creds), and empty ExtraFiles so the hook inherits no serf fds beyond stdio.
+	if sbx != nil {
+		env = sandbox.ApplyEnvFloor(env, sbx.Policy(), sbx.SessionTmp())
+		argv := sbx.Wrap(cmd.Args, sbx.Policy().Git.WorktreeRoot)
+		cmd.Path = argv[0]
+		cmd.Args = argv
+		cmd.ExtraFiles = nil
 	}
 	cmd.Env = env
 
@@ -136,6 +162,32 @@ func executeCommandHook(ctx context.Context, hook plugin.RegisteredHook, input I
 	}
 
 	return result, nil
+}
+
+// scrubSecretEnv drops environment entries whose NAME marks them as a credential,
+// mirroring the deny predicate execenv applies to shell tools
+// (*API_KEY*/*SECRET*/*TOKEN*/*PASSWORD*/*CREDENTIAL*, case-insensitive). Hook
+// commands are spawned outside execenv, so without this they would inherit the
+// provider API key that every other spawned command has scrubbed. It returns a
+// fresh slice and never mutates its input.
+func scrubSecretEnv(env []string) []string {
+	deny := func(name string) bool {
+		u := strings.ToUpper(name)
+		return strings.Contains(u, "API_KEY") ||
+			strings.Contains(u, "SECRET") ||
+			strings.Contains(u, "TOKEN") ||
+			strings.Contains(u, "PASSWORD") ||
+			strings.Contains(u, "CREDENTIAL")
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		name, _, ok := strings.Cut(kv, "=")
+		if ok && deny(name) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 // promptHookClient is the interface for LLM calls used by prompt hooks.
@@ -217,12 +269,24 @@ type Runner struct {
 	client  promptHookClient
 	model   string
 	onEvent func(events.EventKind, events.EventData) // optional event callback
+
+	// sandboxWrapper, when non-nil, kernel-confines every command hook this runner
+	// spawns to the session's sandbox policy (and raises the env floor). Nil means
+	// no confinement — hooks run exactly as before.
+	sandboxWrapper *sandbox.Wrapper
 }
 
 // SetEventCallback sets an optional callback that is invoked for hook
 // lifecycle events (HookStart, HookEnd).
 func (r *Runner) SetEventCallback(fn func(events.EventKind, events.EventData)) {
 	r.onEvent = fn
+}
+
+// SetSandboxWrapper confines every command hook this runner spawns to the
+// session's sandbox policy. A nil wrapper leaves hooks unconfined (today's
+// behavior); the secret scrub on hook env still applies regardless.
+func (r *Runner) SetSandboxWrapper(w *sandbox.Wrapper) {
+	r.sandboxWrapper = w
 }
 
 // NewRunner creates a Runner that dispatches plugin hooks. Prompt hooks call
@@ -531,7 +595,7 @@ func (r *Runner) runHook(ctx context.Context, hook plugin.RegisteredHook, event 
 
 	switch hook.Type {
 	case "command":
-		hr, err = executeCommandHook(ctx, hook, input)
+		hr, err = executeCommandHook(ctx, hook, input, r.sandboxWrapper)
 	case "prompt":
 		if r.client == nil {
 			return parsedHookOutput{Continue: true, SystemMessage: "prompt hook skipped: no LLM client"}

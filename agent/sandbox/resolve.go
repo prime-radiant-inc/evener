@@ -127,6 +127,13 @@ type ResolvedPolicy struct {
 	CacheStrategy CacheStrategy // how cache roots are served (never persistent-writable)
 	SessionTmp    bool          // a per-session writable tmp (TMPDIR) is provisioned
 
+	// CacheRoots are the absolute language cache directories (~/.cache, ~/go/pkg,
+	// ~/.npm, ~/.cargo) served under the cache strategy: overlaid read-real/
+	// write-private when CacheStrategy is CacheOverlay, or redirected via env to
+	// the session tmp when CacheSessionPrivate. Empty when no cache handling is
+	// needed (off, read-only). Populated for the writable modes.
+	CacheRoots []string
+
 	// FileTool is the in-process file-tool layer's grants (M2 satisfies).
 	FileTool AccessScope
 	// Spawned is the kernel-wrapped process layer's grants (M3/M6 satisfy).
@@ -255,6 +262,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		Network:       netOn,
 		Backend:       backend,
 		CacheStrategy: cacheStrategyFor(policy.Mode, backend, host),
+		CacheRoots:    cacheRootsFor(policy.Mode, host.Home),
 		SessionTmp:    true,
 		MaskedPaths:   masked,
 		Git:           layout,
@@ -328,6 +336,25 @@ func landlockRefusalReason(policy SandboxPolicy, kind WorkspaceKind, net bool) s
 		return "--sandbox restricted requires bubblewrap; Landlock is allowlist-only and cannot protect the in-worktree .git pointer inside an allowlisted worktree root (a future milestone could revisit with a per-entry grant model)"
 	default: // restricted on a main checkout (or non-git cwd)
 		return "--sandbox restricted requires bubblewrap here; this host has only Landlock, which cannot subtract a main checkout's .git config/hook surfaces from an allowlisted root"
+	}
+}
+
+// defaultCacheRoots are the language cache directories served under the cache
+// strategy, expressed relative to $HOME.
+var defaultCacheRoots = []string{".cache", "go/pkg", ".npm", ".cargo"}
+
+// cacheRootsFor returns the absolute cache roots for a mode: the writable modes
+// serve caches (overlaid or redirected), off/read-only need none.
+func cacheRootsFor(mode Mode, home string) []string {
+	switch mode {
+	case ModeWorkspaceWrite, ModeRestricted:
+		out := make([]string, 0, len(defaultCacheRoots))
+		for _, rel := range defaultCacheRoots {
+			out = append(out, filepath.Join(home, rel))
+		}
+		return out
+	default:
+		return nil
 	}
 }
 

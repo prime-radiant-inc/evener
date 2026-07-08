@@ -67,12 +67,20 @@ type LocalExecutionEnvironment struct {
 	fs          afero.Fs      // filesystem backing ReadFile/WriteFile/EditFile; defaults to the OS
 
 	// Sandbox is the resolved sandbox policy for this environment, or nil for the
-	// default (off) — exactly today's behavior. INERT in M1: no method here
-	// (resolve/resolveWrite/shellCommand/ExecCommand/StreamCommand) consults it
-	// yet. It rides WithWorkingDirectory like EnvPolicy so a re-rooted child
-	// (subagent worktree) inherits it. Enforcement is wired in M2 (file tools)
-	// and M3 (kernel wrapper); until then this is a carried-but-unread field.
+	// default (off) — exactly today's behavior. The in-process file-tool layer
+	// (M2) reads it; the kernel-wrapped spawn layer reads Wrapper. It rides
+	// WithWorkingDirectory like EnvPolicy so a re-rooted child (subagent worktree)
+	// inherits it.
 	Sandbox *sandbox.ResolvedPolicy
+
+	// Wrapper, when non-nil, kernel-confines every command this environment spawns
+	// (shell jobs, rg, and — threaded from here — stdio MCP servers and hook
+	// commands): execPreparedCommand and StreamCommand prepend its bwrap invocation
+	// to the argv and raise the sandbox env floor. Nil means no kernel confinement,
+	// so a non-sandboxed spawn is byte-identical to before. M3 attaches it only in
+	// tests/integration (the --sandbox flag stays gated off until M5); it rides
+	// WithWorkingDirectory alongside Sandbox.
+	Wrapper *sandbox.Wrapper
 }
 
 // gitRootCache memoizes git-root lookups per working dir. A session resolves the
@@ -137,7 +145,8 @@ func (e *LocalExecutionEnvironment) WithWorkingDirectory(dir string) *LocalExecu
 		gitRoots:    &gitRootCache{m: map[string]string{}},
 		mainRoots:   &gitRootCache{m: map[string]string{}},
 		fs:          e.fs,
-		Sandbox:     e.Sandbox, // inherited by re-rooted children like EnvPolicy (M1: inert)
+		Sandbox:     e.Sandbox, // inherited by re-rooted children like EnvPolicy
+		Wrapper:     e.Wrapper, // M3: fixed to the session worktree; M4 re-roots per child lane
 	}
 }
 
@@ -801,6 +810,7 @@ func (e *LocalExecutionEnvironment) execPreparedCommand(ctx context.Context, cmd
 			cmd.Err = nil
 		}
 	}
+	e.wrapForSandbox(cmd, dir)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -903,6 +913,7 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 	cmd.Env = injectLocalVenvPath(cmd.Env, []string{dir, e.RootDir})
 	cmd.Stdout = out
 	cmd.Stderr = out
+	e.wrapForSandbox(cmd, dir)
 
 	if err := cmd.Start(); err != nil {
 		return nil, err
@@ -1126,6 +1137,29 @@ func shellCommand(command string) *exec.Cmd {
 		shell = "/bin/sh"
 	}
 	return exec.Command(shell, "-c", command) //nolint:noctx // lifecycle managed by ExecCommand's process-group kill
+}
+
+// KernelWrapper returns the sandbox kernel wrapper for this environment, or nil
+// when the session is not sandboxed. Spawn sites that do not flow through this
+// environment (the stdio MCP manager, the hook runner) read it to confine their
+// own child processes under the same policy.
+func (e *LocalExecutionEnvironment) KernelWrapper() *sandbox.Wrapper { return e.Wrapper }
+
+// wrapForSandbox applies kernel confinement to cmd when this environment is
+// sandboxed and always empties ExtraFiles so a spawned process inherits no serf
+// fds beyond stdio — not the live LLM-API connection, not a credential fd, not an
+// agent socket. dir is the resolved working directory, used as the sandbox chdir.
+// When Wrapper is nil it does nothing beyond the (already-default) fd hygiene, so
+// a non-sandboxed spawn stays byte-identical to before.
+func (e *LocalExecutionEnvironment) wrapForSandbox(cmd *exec.Cmd, dir string) {
+	cmd.ExtraFiles = nil
+	if e.Wrapper == nil {
+		return
+	}
+	cmd.Env = sandbox.ApplyEnvFloor(cmd.Env, e.Wrapper.Policy(), e.Wrapper.SessionTmp())
+	argv := e.Wrapper.Wrap(cmd.Args, dir)
+	cmd.Path = argv[0]
+	cmd.Args = argv
 }
 
 func (e *LocalExecutionEnvironment) resolve(path string) string {
