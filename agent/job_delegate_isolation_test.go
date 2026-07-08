@@ -147,23 +147,6 @@ func TestDelegateIsolation_SpawnCreatesLockedManagedWorktree(t *testing.T) {
 	if entry.LockReason != wantReason {
 		t.Errorf("lock reason = %q, want %q", entry.LockReason, wantReason)
 	}
-}
-
-func TestDelegateIsolation_ChildEnvRootedAtLaneAndRestoreDescriptorFields(t *testing.T) {
-	t.Parallel()
-	c := delegateTestClient(func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
-	r := newWtDlgRepo(t, c)
-
-	res := r.s.createDelegate(context.Background(), delegateArgs{
-		Task:           "do isolated work",
-		Isolation:      "worktree",
-		Background:     false,
-		BlockTimeoutMS: 5000,
-	})
-	if res.Err != nil {
-		t.Fatalf("createDelegate: %v", res.Err)
-	}
-	lane := r.lanePath(res.DelegateID)
 
 	_, childID, err := decodeRef(res.TranscriptRef)
 	if err != nil {
