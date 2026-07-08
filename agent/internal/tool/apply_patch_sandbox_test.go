@@ -3,6 +3,7 @@ package tool
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -133,6 +134,45 @@ func TestApplyPatchSandbox_DenylistViaSymlink(t *testing.T) {
 	// The key is unchanged.
 	if got, _ := os.ReadFile(filepath.Join(ssh, "id_rsa")); string(got) != "KEY\n" {
 		t.Errorf("denylisted key was modified: %q", got)
+	}
+}
+
+// TestApplyPatchSandbox_GitHookProtected: apply_patch cannot plant a git hook or
+// rewrite git config — those surfaces are write-protected by the resolved policy
+// (from M1's gitdir classification) even inside the writable worktree.
+func TestApplyPatchSandbox_GitHookProtected(t *testing.T) {
+	if _, err := os.Stat("/dev/null"); err != nil {
+		t.Skip("needs a unix host")
+	}
+	home := t.TempDir()
+	worktree := t.TempDir()
+	// A real git repo so the resolved policy carries Git.ProtectedPaths.
+	initGitRepo(t, worktree)
+	host := sandbox.HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, LandlockABI: 4}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, host, worktree)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(worktree)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+
+	applyDenied(t, env, "*** Begin Patch\n*** Add File: .git/hooks/post-checkout\n+#!/bin/sh\n+echo pwned\n*** End Patch\n", "apply_patch plant a git hook")
+	if _, err := os.Stat(filepath.Join(worktree, ".git", "hooks", "post-checkout")); err == nil {
+		t.Error("a hook was planted despite the protected denial")
+	}
+}
+
+func initGitRepo(t *testing.T, dir string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+	cmd := exec.Command("git", "init", "-q")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
 	}
 }
 

@@ -330,13 +330,23 @@ func (s *sandboxFS) writeFile(tool, abs string, data []byte, perm os.FileMode) e
 		return err
 	}
 	defer unix.Close(parentFd)
-	// Preserve an existing regular file's mode: the off path rewrites in place
-	// (O_TRUNC keeps the mode), but the atomic temp+rename creates a fresh inode,
-	// so without this an edit would silently strip a script's executable bit or
-	// loosen a restrictive mode. A fresh file keeps the caller's perm.
 	var st unix.Stat_t
-	if serr := unix.Fstatat(parentFd, leaf, &st, unix.AT_SYMLINK_NOFOLLOW); serr == nil && st.Mode&unix.S_IFMT == unix.S_IFREG {
-		perm = os.FileMode(st.Mode & 0o777)
+	if serr := unix.Fstatat(parentFd, leaf, &st, unix.AT_SYMLINK_NOFOLLOW); serr == nil {
+		switch st.Mode & unix.S_IFMT {
+		case unix.S_IFLNK:
+			// The leaf is a symlink. Refuse rather than replace it: the off path
+			// (O_TRUNC) would follow it and write to its (possibly out-of-tree)
+			// target, and silently clobbering it with a fresh in-tree file would be
+			// a surprising, ambiguous result. A symlink leaf is a denial.
+			return s.deny(tool, abs, denyReasonSymlink)
+		case unix.S_IFREG:
+			// Preserve an existing regular file's mode: the off path rewrites in
+			// place (O_TRUNC keeps the mode), but the atomic temp+rename creates a
+			// fresh inode, so without this an edit would silently strip a script's
+			// executable bit or loosen a restrictive mode. A fresh file keeps the
+			// caller's perm.
+			perm = os.FileMode(st.Mode & 0o777)
+		}
 	}
 	return atomicWriteAt(parentFd, leaf, data, perm)
 }
