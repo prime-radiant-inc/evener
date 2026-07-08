@@ -552,7 +552,7 @@ func TestWorktreeErrors_RemoveCurrentNoSafeRestoreEnv(t *testing.T) {
 
 	// A session launched directly inside a managed worktree (never entering
 	// via create/switch) has no saved restore env.
-	s2 := newSession(t, withDir(launchPath))
+	s2 := newSession(t, withDir(launchPath), withConfig(worktreeTestSessionConfig()))
 	s2.stateDir = r.stateDir
 	r2 := &wtRepo{s: s2, mainRoot: r.mainRoot, stateDir: r.stateDir, head: r.head}
 	metaDir := r2.metaDir(canonicalMain)

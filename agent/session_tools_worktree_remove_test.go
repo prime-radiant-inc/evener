@@ -838,7 +838,7 @@ func TestWorktreeRemove_RemoveCurrentNoSafeRestoreEnvRefuses(t *testing.T) {
 	// real sidecar (as a genuine prior `create` would have) so the isolated
 	// behavior under test is step 7's no-safe-restore-env refusal, not step
 	// 5's unmanaged-provenance refusal.
-	s2 := newSession(t, withDir(launchPath))
+	s2 := newSession(t, withDir(launchPath), withConfig(worktreeTestSessionConfig()))
 	s2.stateDir = r.stateDir
 	r2 := &wtRepo{s: s2, mainRoot: r.mainRoot, stateDir: r.stateDir, head: r.head}
 	metaDir := r2.metaDir(canonicalMain)
@@ -905,7 +905,7 @@ func TestWorktreeRemove_RemoveCurrentNoSafeRestoreEnvRefusesThroughSymlinkedLaun
 	// ever saved. Give it a real sidecar (as a genuine prior `create` would
 	// have) so the isolated behavior under test is step 7's
 	// no-safe-restore-env refusal, not step 5's unmanaged-provenance refusal.
-	s2 := newSession(t, withDir(aliasPath))
+	s2 := newSession(t, withDir(aliasPath), withConfig(worktreeTestSessionConfig()))
 	s2.stateDir = r.stateDir
 	r2 := &wtRepo{s: s2, mainRoot: r.mainRoot, stateDir: r.stateDir, head: r.head}
 	metaDir := r2.metaDir(canonicalMain)

@@ -199,14 +199,18 @@ func copyWorktreeFixtureFile(src, dst string, mode os.FileMode) error {
 	return closeErr
 }
 
-// newWorktreeRepo builds a real one-commit git repo and a session rooted at it.
-func newWorktreeRepo(t *testing.T) *wtRepo {
-	t.Helper()
-	return newWorktreeRepoWithConfig(t, SessionConfig{
+func worktreeTestSessionConfig() SessionConfig {
+	return SessionConfig{
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
 		testOnly:         testConfig{skipGitSnapshot: true},
-	})
+	}
+}
+
+// newWorktreeRepo builds a real one-commit git repo and a session rooted at it.
+func newWorktreeRepo(t *testing.T) *wtRepo {
+	t.Helper()
+	return newWorktreeRepoWithConfig(t, worktreeTestSessionConfig())
 }
 
 func newWorktreeRepoWithConfig(t *testing.T, cfg SessionConfig) *wtRepo {

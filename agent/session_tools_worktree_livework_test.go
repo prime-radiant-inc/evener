@@ -131,7 +131,7 @@ func TestWorktreeRemove_LiveWorkGuardRefusesLiveSubagentEnv(t *testing.T) {
 	// reports the live CHILD SESSION's id (child.id), the identifier that
 	// actually appears in job records and tool-visible ids, not an arbitrary
 	// subagent-local label.
-	child := newSession(t, withDir(nested))
+	child := newSession(t, withDir(nested), withConfig(worktreeTestSessionConfig()))
 	sub := &subagent{id: child.id, sess: child}
 	r.s.subagents.track(sub)
 
@@ -307,7 +307,7 @@ func TestWorktreeLiveWorkUnder_SkipsSubagentEmptyWorkingDirectory(t *testing.T) 
 		t.Fatalf("exit: %v", err)
 	}
 
-	emptyWDChild := newSession(t, withDir(r.mainRoot))
+	emptyWDChild := newSession(t, withDir(r.mainRoot), withConfig(worktreeTestSessionConfig()))
 	emptyWDChild.mu.Lock()
 	emptyWDChild.env = &timeoutEnv{wd: ""}
 	emptyWDChild.mu.Unlock()
@@ -320,7 +320,7 @@ func TestWorktreeLiveWorkUnder_SkipsSubagentEmptyWorkingDirectory(t *testing.T) 
 		emptyWDChild.mu.Unlock()
 	})
 
-	liveChild := newSession(t, withDir(nested))
+	liveChild := newSession(t, withDir(nested), withConfig(worktreeTestSessionConfig()))
 	r.s.subagents.track(&subagent{id: liveChild.id, sess: liveChild})
 	t.Cleanup(func() { r.s.subagents.remove(liveChild.id) })
 

@@ -785,7 +785,7 @@ func wtLaunchSession(t *testing.T, r *wtRepo) (s2 *Session, r2 *wtRepo, launchPa
 	}
 	wtGit(t, r.mainRoot, "worktree", "add", "-b", "launch", launchPath, r.head)
 
-	s2 = newSession(t, withDir(launchPath))
+	s2 = newSession(t, withDir(launchPath), withConfig(worktreeTestSessionConfig()))
 	s2.stateDir = r.stateDir
 	r2 = &wtRepo{s: s2, mainRoot: r.mainRoot, stateDir: r.stateDir, head: r.head}
 
