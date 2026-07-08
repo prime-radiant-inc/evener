@@ -29,7 +29,12 @@ import (
 // off mode / a nil policy never builds one, so those paths keep today's
 // afero/os behavior byte-for-byte. It caches an O_DIRECTORY fd for each allowed
 // root the first time that root is used, so a later swap of the root directory
-// itself cannot redirect resolution. All methods are safe for concurrent use.
+// itself cannot redirect resolution.
+//
+// The file-operation methods are safe for concurrent use with each other. close()
+// is NOT — it releases the cached root fds and must run only at environment
+// teardown (Cleanup), after all file tools for the environment have returned; the
+// session lifecycle guarantees this ordering.
 type sandboxFS struct {
 	policy *sandbox.ResolvedPolicy
 
@@ -134,6 +139,23 @@ func (s *sandboxFS) rootFd(root string) (int, error) {
 func (s *sandboxFS) underMasked(abs string) bool {
 	for _, m := range s.policy.MaskedPaths {
 		if abs == m || pathUnder(abs, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// isGrantedRoot reports whether abs is exactly one of the policy's granted roots
+// (file-tool read or write roots). Such a root exists by construction even when
+// its parent lies outside the policy.
+func (s *sandboxFS) isGrantedRoot(abs string) bool {
+	for _, r := range s.policy.FileTool.ReadRoots {
+		if abs == r {
+			return true
+		}
+	}
+	for _, r := range s.policy.FileTool.WriteRoots {
+		if abs == r {
 			return true
 		}
 	}
@@ -308,6 +330,14 @@ func (s *sandboxFS) writeFile(tool, abs string, data []byte, perm os.FileMode) e
 		return err
 	}
 	defer unix.Close(parentFd)
+	// Preserve an existing regular file's mode: the off path rewrites in place
+	// (O_TRUNC keeps the mode), but the atomic temp+rename creates a fresh inode,
+	// so without this an edit would silently strip a script's executable bit or
+	// loosen a restrictive mode. A fresh file keeps the caller's perm.
+	var st unix.Stat_t
+	if serr := unix.Fstatat(parentFd, leaf, &st, unix.AT_SYMLINK_NOFOLLOW); serr == nil && st.Mode&unix.S_IFMT == unix.S_IFREG {
+		perm = os.FileMode(st.Mode & 0o777)
+	}
 	return atomicWriteAt(parentFd, leaf, data, perm)
 }
 
@@ -379,6 +409,11 @@ func (s *sandboxFS) exists(tool, abs string) bool {
 	abs = filepath.Clean(abs)
 	if s.underMasked(abs) {
 		return false
+	}
+	// A granted root itself exists even though its parent may be outside policy
+	// (under restricted, the worktree root's parent is not a read root).
+	if s.isGrantedRoot(abs) {
+		return true
 	}
 	// Resolve the parent for reading, then Fstatat the leaf without following a
 	// final symlink. A symlinked leaf reports false (sandbox refuses symlinks).

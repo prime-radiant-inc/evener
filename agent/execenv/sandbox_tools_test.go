@@ -411,6 +411,92 @@ func TestGlobSymlinkNoEscape(t *testing.T) {
 	}
 }
 
+// TestGlobSkipsMaskedMatches: a glob over an allowed base that contains a masked
+// subtree never returns a match from the masked subtree (the load-bearing
+// post-filter), while still returning non-masked matches.
+func TestGlobSkipsMaskedMatches(t *testing.T) {
+	t.Parallel()
+	env, home, _ := sandboxedEnvWithDenylist(t, sandbox.ModeReadOnly, filepath.Join("~", "vault"))
+	vault := filepath.Join(home, "vault")
+	if err := os.MkdirAll(vault, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vault, "secret.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "visible.txt"), []byte("y"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	matches, err := env.Glob("**/*.txt", home)
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	sawVisible := false
+	for _, m := range matches {
+		if strings.Contains(m, "vault") {
+			t.Errorf("glob returned a masked match: %q", m)
+		}
+		if strings.HasSuffix(m, "visible.txt") {
+			sawVisible = true
+		}
+	}
+	if !sawVisible {
+		t.Error("glob should still return non-masked matches")
+	}
+}
+
+// TestSandboxWritePreservesMode: a sandboxed write over an existing file keeps its
+// mode (the atomic temp+rename must not silently strip an executable bit), while a
+// fresh file gets the default mode.
+func TestSandboxWritePreservesMode(t *testing.T) {
+	t.Parallel()
+	env, _, worktree := sandboxedEnv(t, sandbox.ModeWorkspaceWrite)
+
+	script := filepath.Join(worktree, "run.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho hi\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.EditFile(script, "echo hi", "echo bye", false); err != nil {
+		t.Fatalf("edit_file: %v", err)
+	}
+	if info, err := os.Stat(script); err != nil {
+		t.Fatal(err)
+	} else if info.Mode().Perm() != 0o755 {
+		t.Errorf("edit_file stripped the mode: got %o, want 0755", info.Mode().Perm())
+	}
+
+	// write_file over the same file also preserves the mode.
+	if _, err := env.WriteFile(script, "#!/bin/sh\ntrue\n"); err != nil {
+		t.Fatalf("write_file: %v", err)
+	}
+	if info, err := os.Stat(script); err != nil {
+		t.Fatal(err)
+	} else if info.Mode().Perm() != 0o755 {
+		t.Errorf("write_file over existing file changed the mode: got %o, want 0755", info.Mode().Perm())
+	}
+
+	// A fresh file gets the default 0644.
+	fresh := filepath.Join(worktree, "new.txt")
+	if _, err := env.WriteFile(fresh, "hello"); err != nil {
+		t.Fatalf("write_file new: %v", err)
+	}
+	if info, err := os.Stat(fresh); err != nil {
+		t.Fatal(err)
+	} else if info.Mode().Perm() != 0o644 {
+		t.Errorf("fresh write mode: got %o, want 0644", info.Mode().Perm())
+	}
+}
+
+// TestFileExistsGrantedRoot: file_exists on the worktree root itself is true even
+// under restricted (its parent is outside the read roots).
+func TestFileExistsGrantedRoot(t *testing.T) {
+	t.Parallel()
+	env, _, worktree := sandboxedEnv(t, sandbox.ModeRestricted)
+	if !env.FileExists(worktree) {
+		t.Error("file_exists on the worktree root must be true under restricted")
+	}
+}
+
 // TestGrepDenylistedBaseRefused: a grep whose base is a denylisted dir (/proc) is
 // refused, in every mode.
 func TestGrepDenylistedBaseRefused(t *testing.T) {
