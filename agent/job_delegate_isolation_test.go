@@ -147,6 +147,11 @@ func TestDelegateIsolation_SpawnCreatesLockedManagedWorktree(t *testing.T) {
 	if entry.LockReason != wantReason {
 		t.Errorf("lock reason = %q, want %q", entry.LockReason, wantReason)
 	}
+	if _, err := r.s.worktreeSwitchByName(context.Background(), res.DelegateID); err == nil {
+		t.Fatal("expected parent switch into a live isolated delegate lane to be refused")
+	} else if !strings.Contains(err.Error(), wantReason) {
+		t.Errorf("switch refusal error = %q, want it to name the delegate lock reason %q", err.Error(), wantReason)
+	}
 
 	_, childID, err := decodeRef(res.TranscriptRef)
 	if err != nil {
@@ -630,32 +635,7 @@ func TestDelegateIsolation_RevivalOnForeignLockedLaneRefuses(t *testing.T) {
 	}
 }
 
-// --- §4 step 2 / §9 Guards: parent switch into a live isolated lane is refused ---
-
-func TestDelegateIsolation_ParentSwitchIntoLiveLaneRefused(t *testing.T) {
-	t.Parallel()
-	c := delegateTestClient(func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
-	r := newWtDlgRepo(t, c)
-
-	res := r.s.createDelegate(context.Background(), delegateArgs{
-		Task:           "do isolated work",
-		Isolation:      "worktree",
-		Background:     false,
-		BlockTimeoutMS: 5000,
-	})
-	if res.Err != nil {
-		t.Fatalf("createDelegate: %v", res.Err)
-	}
-
-	_, err := r.s.worktreeSwitchByName(context.Background(), res.DelegateID)
-	if err == nil {
-		t.Fatal("expected switch into a live isolated delegate's lane to be refused")
-	}
-	wantReason := worktree.FormatDelegateMarker(res.DelegateID, r.s.id)
-	if !strings.Contains(err.Error(), wantReason) {
-		t.Errorf("error = %q, want it to name the delegate lock reason %q", err.Error(), wantReason)
-	}
-}
+// --- §9 Guards: direct not-resumable error messages ---
 
 // TestNotResumableSendError_WorkingDirMissingMessage covers
 // notResumableSendError's notResumableWorkingDirMissing arm directly (the
