@@ -34,6 +34,14 @@ func (s *Session) refreshSystemPromptCache(env execenv.ExecutionEnvironment) {
 	s.cachedSystemPrompt = s.renderSystemPrompt(env)
 }
 
+func promptSectionDirExists(dir string) bool {
+	if dir == "" {
+		return false
+	}
+	info, err := os.Stat(dir)
+	return err == nil && info.IsDir()
+}
+
 // buildPromptData assembles a promptData from session state for template rendering.
 func (s *Session) buildPromptData() promptData {
 	agentName := s.cfg.AgentName
@@ -164,15 +172,20 @@ func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) string {
 		globalSections = filepath.Join(gd, "sections")
 	}
 
+	sectionSources := make([]sectionSource, 0, 3)
+	if promptSectionDirExists(projSections) {
+		sectionSources = append(sectionSources, diskSource{dir: projSections})
+	}
+	if promptSectionDirExists(globalSections) {
+		sectionSources = append(sectionSources, diskSource{dir: globalSections})
+	}
+	sectionSources = append(sectionSources, embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"})
+
 	resolver := &sectionResolver{
 		provider: s.profile.BehaviorTag(),
 		agent:    s.cfg.AgentName,
 		agentFS:  bundled.Agents(),
-		sources: []sectionSource{
-			diskSource{dir: projSections},
-			diskSource{dir: globalSections},
-			embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"},
-		},
+		sources:  sectionSources,
 	}
 	if resolver.agent == "" {
 		resolver.agent = defaultAgentName
