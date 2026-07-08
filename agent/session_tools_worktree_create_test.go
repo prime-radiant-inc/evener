@@ -543,27 +543,49 @@ func TestWorktreeCreate_CreateAwayUnlocksOldWorktree(t *testing.T) {
 }
 
 func TestWorktreeCreate_ExplicitBaseRefs(t *testing.T) {
-	t.Parallel()
-	r := newWorktreeRepo(t)
-	// A tag, a branch, and a remote-tracking ref all pointing at HEAD.
-	wtGit(t, r.mainRoot, "tag", "v1", r.head)
-	wtGit(t, r.mainRoot, "branch", "side", r.head)
-	wtGit(t, r.mainRoot, "update-ref", "refs/remotes/origin/main", r.head)
-
-	cases := []struct{ name, ref string }{
-		{"from-sha", r.head},
-		{"from-tag", "v1"},
-		{"from-branch", "side"},
-		{"from-remote", "origin/main"},
+	cases := []struct {
+		name  string
+		ref   func(*wtRepo) string
+		setup func(*testing.T, *wtRepo)
+	}{
+		{name: "from-sha", ref: func(r *wtRepo) string { return r.head }},
+		{
+			name: "from-tag",
+			ref:  func(*wtRepo) string { return "v1" },
+			setup: func(t *testing.T, r *wtRepo) {
+				wtGit(t, r.mainRoot, "tag", "v1", r.head)
+			},
+		},
+		{
+			name: "from-branch",
+			ref:  func(*wtRepo) string { return "side" },
+			setup: func(t *testing.T, r *wtRepo) {
+				wtGit(t, r.mainRoot, "branch", "side", r.head)
+			},
+		},
+		{
+			name: "from-remote",
+			ref:  func(*wtRepo) string { return "origin/main" },
+			setup: func(t *testing.T, r *wtRepo) {
+				wtGit(t, r.mainRoot, "update-ref", "refs/remotes/origin/main", r.head)
+			},
+		},
 	}
 	for _, c := range cases {
+		c := c
 		t.Run(c.name, func(t *testing.T) {
-			res, err := r.create(t, map[string]any{"name": c.name, "base_ref": c.ref})
+			t.Parallel()
+			r := newWorktreeRepo(t)
+			if c.setup != nil {
+				c.setup(t, r)
+			}
+			ref := c.ref(r)
+			res, err := r.create(t, map[string]any{"name": c.name, "base_ref": ref})
 			if err != nil {
-				t.Fatalf("create base_ref=%q: %v", c.ref, err)
+				t.Fatalf("create base_ref=%q: %v", ref, err)
 			}
 			if got := res["base_sha"]; got != r.head {
-				t.Errorf("base_sha = %v, want %s (base_ref %q)", got, r.head, c.ref)
+				t.Errorf("base_sha = %v, want %s (base_ref %q)", got, r.head, ref)
 			}
 		})
 	}
