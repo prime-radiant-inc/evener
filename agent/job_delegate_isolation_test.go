@@ -394,6 +394,15 @@ func TestDelegateIsolation_ManageWorktreeDeniedAfterRestoreAllTools(t *testing.T
 	if sub.sess.reg.Get("shell") == nil {
 		t.Error("all-tools child should still have shell after restore")
 	}
+
+	entry := r.porcelainEntryFor(t, r.lanePath(res.DelegateID))
+	wantReason := worktree.FormatDelegateMarker(res.DelegateID, restored.id)
+	if !entry.Locked {
+		t.Fatal("revival must re-lock a kept changed lane")
+	}
+	if entry.LockReason != wantReason {
+		t.Errorf("lock reason after revival = %q, want %q", entry.LockReason, wantReason)
+	}
 }
 
 // --- Second job in the same lane; per-job worktree report ---
@@ -554,80 +563,6 @@ func TestDelegateIsolation_WorktreeReportDetectsAheadAndDirty(t *testing.T) {
 }
 
 // --- §7 revival re-lock: kept (unlocked) re-locks; foreign-locked refuses ---
-
-func TestDelegateIsolation_RevivalOnKeptUnlockedLaneReLocks(t *testing.T) {
-	t.Parallel()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
-		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("revived") },
-	}})
-	r := newWtDlgRepo(t, c)
-
-	res := r.s.createDelegate(context.Background(), delegateArgs{
-		Task:           "first job",
-		Isolation:      "worktree",
-		Background:     false,
-		BlockTimeoutMS: 5000,
-	})
-	if res.Err != nil {
-		t.Fatalf("createDelegate: %v", res.Err)
-	}
-	lane := r.lanePath(res.DelegateID)
-	_, childID, err := decodeRef(res.TranscriptRef)
-	if err != nil {
-		t.Fatalf("decodeRef: %v", err)
-	}
-
-	// A CHANGED lane (real commits) is what close-time disposal (spec §9
-	// step 4) keeps — it unlocks and preserves it, leaving it resumable. Give
-	// the lane genuine work, then close the parent: disposal keeps + unlocks it,
-	// reaching exactly the kept-unlocked state a revival must re-lock.
-	r.commitWorkInLane(t, lane)
-
-	parentMeta := r.s.Meta()
-	stateDir := r.s.stateDir
-	r.s.Close()
-
-	// Disposal kept the changed lane unlocked.
-	if r.porcelainEntryFor(t, lane).Locked {
-		t.Fatal("disposal must leave a kept changed lane unlocked")
-	}
-
-	restoredParentEnv := execenv.NewLocalExecutionEnvironment(r.mainRoot)
-	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), restoredParentEnv, parentMeta, RestoreSessionConfig{
-		StateDir: stateDir,
-		testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
-	})
-	if err != nil {
-		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
-	}
-	t.Cleanup(func() { restored.Close() })
-
-	sendRes := restored.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:         res.DelegateID,
-		Message:        "revive",
-		OnIdle:         "start",
-		Background:     false,
-		BackgroundSet:  true,
-		BlockTimeoutMS: 5000,
-	})
-	if sendRes.Err != nil {
-		t.Fatalf("sendDelegateMessage on a kept unlocked lane: %v", sendRes.Err)
-	}
-	if restored.subagents.get(childID) == nil {
-		t.Fatal("no reconstructed child runtime after revival")
-	}
-
-	entry := r.porcelainEntryFor(t, lane)
-	if !entry.Locked {
-		t.Fatal("revival must re-lock the lane")
-	}
-	wantReason := worktree.FormatDelegateMarker(res.DelegateID, restored.id)
-	if entry.LockReason != wantReason {
-		t.Errorf("lock reason after revival = %q, want %q", entry.LockReason, wantReason)
-	}
-}
 
 func TestDelegateIsolation_RevivalOnForeignLockedLaneRefuses(t *testing.T) {
 	t.Parallel()
