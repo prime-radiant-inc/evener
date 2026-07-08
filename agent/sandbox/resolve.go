@@ -239,9 +239,14 @@ func chooseBackend(policy SandboxPolicy, host HostFacts, kind WorkspaceKind) (Ba
 		case host.BwrapCapable:
 			return BackendBwrap, nil // full matrix + net on/off
 		case host.LandlockAvailable():
-			if policy.Mode == ModeRestricted && policy.Network && kind == LinkedWorktree {
-				return BackendLandlock, nil
-			}
+			// Landlock is allowlist-only: it can grant a root but cannot SUBTRACT a
+			// path within it. A linked worktree's in-worktree ".git" pointer file
+			// sits inside the granted worktree root and must be write-denied, but
+			// Landlock cannot carve it out — the model could repoint gitdir into the
+			// writable worktree, plant hooks, and a later unsandboxed git fires them.
+			// So Landlock cannot fully enforce our contract in ANY mode and always
+			// refuses; a Landlock-only host gets only --sandbox off. (A future
+			// milestone could revisit with a per-entry grant model.)
 			return 0, &RefusalError{
 				Mode: policy.Mode, Net: policy.Network, RequiredBackend: "bwrap",
 				Reason: landlockRefusalReason(policy, kind),
@@ -269,15 +274,20 @@ func chooseBackend(policy SandboxPolicy, host HostFacts, kind WorkspaceKind) (Ba
 }
 
 // landlockRefusalReason explains precisely why the Landlock-only host cannot
-// serve this request (Landlock serves exactly restricted, net=on, linked worktree).
+// serve this request. Landlock is allowlist-only and can serve NO sandboxed mode
+// (see chooseBackend): net=off needs UDP/DNS isolation, the subtractive modes
+// need a denylist, and even restricted in a linked worktree needs the in-worktree
+// .git pointer carved out of an allowlisted root — none of which Landlock can do.
 func landlockRefusalReason(policy SandboxPolicy, kind WorkspaceKind) string {
 	switch {
 	case !policy.Network:
 		return "network isolation (--sandbox-net off) requires bubblewrap; this host has only Landlock, which cannot isolate UDP/DNS"
 	case policy.Mode != ModeRestricted:
-		return fmt.Sprintf("--sandbox %s requires bubblewrap; this host has only Landlock, which serves only --sandbox restricted (allowlist-only, cannot express a subtractive denylist)", policy.Mode)
-	default: // restricted but not a linked worktree
-		return "--sandbox restricted requires bubblewrap here; this host has only Landlock, which can serve restricted only in a linked git worktree (a main checkout's .git needs subtractive protection Landlock cannot express)"
+		return fmt.Sprintf("--sandbox %s requires bubblewrap; this host has only Landlock, which is allowlist-only and cannot express a subtractive denylist", policy.Mode)
+	case kind == LinkedWorktree:
+		return "--sandbox restricted requires bubblewrap; Landlock is allowlist-only and cannot protect the in-worktree .git pointer inside an allowlisted worktree root (a future milestone could revisit with a per-entry grant model)"
+	default: // restricted on a main checkout (or non-git cwd)
+		return "--sandbox restricted requires bubblewrap here; this host has only Landlock, which cannot subtract a main checkout's .git config/hook surfaces from an allowlisted root"
 	}
 }
 

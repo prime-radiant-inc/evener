@@ -91,8 +91,10 @@ func ContractCases() []ContractCase {
 		// workspace-write on a bwrap host WITHOUT overlay support → session-private cache.
 		modeCase("workspace-write-no-overlay", ModeWorkspaceWrite, true, bwrapNoOverlay, MainCheckout, BackendBwrap, CacheSessionPrivate, ReadAnywhere, ReadAnywhere, true),
 
-		// --- landlock-only tier: exactly restricted+net=on+linked-worktree runs. ---
-		modeCase("landlock/restricted-linked", ModeRestricted, true, landlock, LinkedWorktree, BackendLandlock, CacheSessionPrivate, ReadWorktreeOnly, ReadWorktreeOnly, true),
+		// --- landlock-only tier: Landlock is allowlist-only and cannot subtract the
+		// in-worktree .git pointer inside a granted root, so it serves NO sandboxed
+		// mode — every sandboxed request refuses naming bwrap (finding #2). ---
+		refuseCase("landlock/restricted-linked", ModeRestricted, true, landlock, LinkedWorktree, "bwrap"),
 		refuseCase("landlock/restricted-main", ModeRestricted, true, landlock, MainCheckout, "bwrap"),
 		refuseCase("landlock/restricted-linked-netoff", ModeRestricted, false, landlock, LinkedWorktree, "bwrap"),
 		refuseCase("landlock/read-only", ModeReadOnly, true, landlock, LinkedWorktree, "bwrap"),

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -192,20 +193,21 @@ func TestResolveRestrictedLinkedReadLayerSplit(t *testing.T) {
 	}
 }
 
-// TestResolveLandlockFloor: the Landlock-only tier serves exactly restricted in a
-// linked worktree with net=on; everything else refuses naming bwrap.
+// TestResolveLandlockFloor is the finding-#2 disposition: Landlock is allowlist-
+// only and cannot subtract the in-worktree .git pointer inside an allowlisted
+// root, so it can no longer serve ANY sandboxed mode — not even the restricted +
+// net=on + linked-worktree cell it used to. Every sandboxed request on a
+// Landlock-only host refuses naming bwrap; such hosts get only --sandbox off.
 func TestResolveLandlockFloor(t *testing.T) {
 	t.Parallel()
 	linked := linkedWorktreeRepo(t)
 	main := mainRepo(t)
 
-	// The one cell that runs.
-	rp := mustResolve(t, SandboxPolicy{Mode: ModeRestricted, Network: true}, landlockHost(), linked)
-	if rp.Backend != BackendLandlock {
-		t.Errorf("restricted+linked+net=on on landlock host: Backend=%v, want landlock", rp.Backend)
-	}
-	if rp.CacheStrategy != CacheSessionPrivate {
-		t.Errorf("landlock cache = %v, want session-private (no overlay)", rp.CacheStrategy)
+	// The cell Landlock used to serve now refuses: the reason must cite the
+	// in-worktree .git pointer that allowlist-only Landlock cannot protect.
+	ref := mustRefuse(t, SandboxPolicy{Mode: ModeRestricted, Network: true}, landlockHost(), linked, "bwrap")
+	if !strings.Contains(ref.Reason, ".git pointer") {
+		t.Errorf("restricted+linked refusal reason should cite the in-worktree .git pointer, got: %s", ref.Reason)
 	}
 
 	// restricted on a MAIN checkout needs subtraction → refuse naming bwrap.
