@@ -239,7 +239,6 @@ func TestJobWatchRejectsRemovedPublicShapes(t *testing.T) {
 		{name: "legacy target rejected", args: `{"operation":"create","target":"caller","events":["job.notification"]}`, want: "additionalProperties 'target' not allowed"},
 		{name: "legacy send rejected", args: `{"operation":"create","source":"self","events":["job.notification"],"send":{"to":"job_observer","message":"observe"}}`, want: "additionalProperties 'send' not allowed"},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			s := newTestSession(t)
@@ -283,7 +282,6 @@ func TestJobWatchValidationGuidesObserversToParentSource(t *testing.T) {
 			want: `source="parent"`,
 		},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			s := newTestSession(t)
@@ -690,7 +688,6 @@ func TestJobWatchSendToRequired(t *testing.T) {
 		{name: "message without target", send: `{"message":"observe"}`},
 		{name: "excerpt without target", send: `{"to":"   ","include_excerpt":true}`},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			s := newTestSession(t)

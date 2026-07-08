@@ -25,7 +25,7 @@ var (
 	wtBaseRepoOnce sync.Once
 	wtBaseRepoPath string
 	wtBaseRepoHead string
-	wtBaseRepoErr  error
+	errWtBaseRepo  error
 
 	sharedSessionWorkspace string
 	sharedAgentTempRoot    string
@@ -136,44 +136,44 @@ func worktreeBaseRepo(t *testing.T) (string, string) {
 	wtBaseRepoOnce.Do(func() {
 		dir, err := os.MkdirTemp("", "serf-worktree-base-*")
 		if err != nil {
-			wtBaseRepoErr = err
+			errWtBaseRepo = err
 			return
 		}
 		wtBaseRepoPath = dir
 
 		if _, err := runWorktreeGit(dir, "init", "-b", "main"); err != nil {
-			wtBaseRepoErr = fmt.Errorf("git init: %w", err)
+			errWtBaseRepo = fmt.Errorf("git init: %w", err)
 			return
 		}
 		if _, err := runWorktreeGit(dir, "config", "user.email", "test@example.com"); err != nil {
-			wtBaseRepoErr = fmt.Errorf("git config user.email: %w", err)
+			errWtBaseRepo = fmt.Errorf("git config user.email: %w", err)
 			return
 		}
 		if _, err := runWorktreeGit(dir, "config", "user.name", "Test"); err != nil {
-			wtBaseRepoErr = fmt.Errorf("git config user.name: %w", err)
+			errWtBaseRepo = fmt.Errorf("git config user.name: %w", err)
 			return
 		}
 		if err := os.WriteFile(filepath.Join(dir, "README"), []byte("main-checkout\n"), 0o644); err != nil {
-			wtBaseRepoErr = fmt.Errorf("write README: %w", err)
+			errWtBaseRepo = fmt.Errorf("write README: %w", err)
 			return
 		}
 		if _, err := runWorktreeGit(dir, "add", "README"); err != nil {
-			wtBaseRepoErr = fmt.Errorf("git add README: %w", err)
+			errWtBaseRepo = fmt.Errorf("git add README: %w", err)
 			return
 		}
 		if _, err := runWorktreeGit(dir, "commit", "-m", "initial"); err != nil {
-			wtBaseRepoErr = fmt.Errorf("git commit: %w", err)
+			errWtBaseRepo = fmt.Errorf("git commit: %w", err)
 			return
 		}
 		head, err := runWorktreeGit(dir, "rev-parse", "HEAD")
 		if err != nil {
-			wtBaseRepoErr = fmt.Errorf("git rev-parse HEAD: %w", err)
+			errWtBaseRepo = fmt.Errorf("git rev-parse HEAD: %w", err)
 			return
 		}
 		wtBaseRepoHead = strings.TrimSpace(head)
 	})
-	if wtBaseRepoErr != nil {
-		t.Fatalf("worktree base repo: %v", wtBaseRepoErr)
+	if errWtBaseRepo != nil {
+		t.Fatalf("worktree base repo: %v", errWtBaseRepo)
 	}
 	return wtBaseRepoPath, wtBaseRepoHead
 }
@@ -604,7 +604,6 @@ func TestWorktreeCreate_ExplicitBaseRefs(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			r := newWorktreeRepo(t)
@@ -631,7 +630,6 @@ func TestWorktreeCreate_RejectsBadBaseRefs(t *testing.T) {
 		{"nonexistent", "no-such-ref", "unresolvable"},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			r := newWorktreeRepo(t)

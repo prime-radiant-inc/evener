@@ -2133,7 +2133,6 @@ func TestReconstructDelegateRuntimeMissingRequiredToolsFailsBeforeTracking(t *te
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			adapter := &fakeAdapter{name: "openai"}
@@ -3151,7 +3150,6 @@ func TestTerminalDelegateRestoreRequiresStrictPreflightBeforeReconstruction(t *t
 		{status: jobstore.StatusFailed, reason: "failed"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(string(tc.status), func(t *testing.T) {
 			t.Parallel()
 			adapter := &fakeAdapter{name: "openai"}

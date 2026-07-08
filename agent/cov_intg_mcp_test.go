@@ -29,7 +29,7 @@ import (
 var (
 	intgMCPServerOnce sync.Once
 	intgMCPServerPath string
-	intgMCPServerErr  error
+	errIntgMCPServer  error
 )
 
 // intg_buildMCPServer compiles the testdata stdio MCP server once per package
@@ -38,19 +38,19 @@ var (
 func intg_buildMCPServer(t *testing.T) string {
 	t.Helper()
 	intgMCPServerOnce.Do(func() {
-		intgMCPServerDir, intgMCPServerErr = os.MkdirTemp("", "serf-intgmcpserver-*")
-		if intgMCPServerErr != nil {
+		intgMCPServerDir, errIntgMCPServer = os.MkdirTemp("", "serf-intgmcpserver-*")
+		if errIntgMCPServer != nil {
 			return
 		}
 		intgMCPServerPath = filepath.Join(intgMCPServerDir, "intgmcpserver")
 		cmd := exec.Command("go", "build", "-o", intgMCPServerPath, "./testdata/intgmcpserver")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			intgMCPServerErr = fmt.Errorf("building test MCP server: %w\n%s", err, out)
+			errIntgMCPServer = fmt.Errorf("building test MCP server: %w\n%s", err, out)
 		}
 	})
-	if intgMCPServerErr != nil {
-		t.Fatal(intgMCPServerErr)
+	if errIntgMCPServer != nil {
+		t.Fatal(errIntgMCPServer)
 	}
 	return intgMCPServerPath
 }
