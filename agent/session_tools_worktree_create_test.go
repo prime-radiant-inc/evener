@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -143,12 +144,59 @@ func worktreeBaseRepo(t *testing.T) (string, string) {
 func copyWorktreeBaseRepo(t *testing.T, dst string) {
 	t.Helper()
 	base, _ := worktreeBaseRepo(t)
-	if _, err := runWorktreeGit("", "clone", "--shared", "-c", "user.email=test@example.com", "-c", "user.name=Test", base, dst); err != nil {
-		t.Fatalf("clone worktree base repo: %v", err)
+	if err := copyWorktreeFixtureTree(base, dst); err != nil {
+		t.Fatalf("copy worktree base repo: %v", err)
 	}
-	if _, err := runWorktreeGit(dst, "remote", "remove", "origin"); err != nil {
-		t.Fatalf("remove cloned origin remote: %v", err)
+}
+
+func copyWorktreeFixtureTree(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		target := filepath.Join(dst, rel)
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			link, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(link, target)
+		}
+		if d.IsDir() {
+			return os.Mkdir(target, info.Mode().Perm())
+		}
+		return copyWorktreeFixtureFile(path, target, info.Mode().Perm())
+	})
+}
+
+func copyWorktreeFixtureFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
 	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
 }
 
 // newWorktreeRepo builds a real one-commit git repo and a session rooted at it.
