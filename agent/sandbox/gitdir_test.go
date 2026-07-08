@@ -168,6 +168,46 @@ func TestClassifySubmodule(t *testing.T) {
 	assertNoWritableProtected(t, got)
 }
 
+// TestClassifyNestedSubmodule is the finding-#3 regression: a submodule whose
+// path in the superproject contains a directory (added at "libs/foo") has its
+// git dir at "<super>/.git/modules/libs/foo", whose IMMEDIATE parent is "libs",
+// not "modules". Detection must recognize the ".git/modules" segment anywhere in
+// the resolved git dir, not only when it is the immediate parent, or the whole
+// layout is rejected and the session refuses to start in a valid repo.
+func TestClassifyNestedSubmodule(t *testing.T) {
+	t.Parallel()
+	requireGit(t)
+	base := clean(t.TempDir())
+	upstream := filepath.Join(base, "upstream")
+	super := filepath.Join(base, "super")
+	runGit(t, base, "init", "-q", "upstream")
+	runGit(t, upstream, "commit", "-q", "--allow-empty", "-m", "init")
+	runGit(t, base, "init", "-q", "super")
+	runGit(t, super, "commit", "-q", "--allow-empty", "-m", "init")
+	// A submodule at a subdirectory path → git dir ".git/modules/libs/foo".
+	runGit(t, super, "-c", "protocol.file.allow=always", "submodule", "add", "-q", upstream, "libs/foo")
+
+	subWT := clean(filepath.Join(super, "libs", "foo"))
+	got, err := ClassifyWorkspace(subWT)
+	if err != nil {
+		t.Fatalf("ClassifyWorkspace: %v", err)
+	}
+	if got.Kind != Submodule {
+		t.Fatalf("Kind = %v, want Submodule", got.Kind)
+	}
+	if got.WorktreeRoot != subWT {
+		t.Errorf("WorktreeRoot = %q, want %q", got.WorktreeRoot, subWT)
+	}
+	// The git dir lives under a ".git/modules/" segment even though its immediate
+	// parent is "libs".
+	if filepath.Base(filepath.Dir(got.GitDir)) == "modules" {
+		t.Errorf("test does not exercise the nested case: GitDir %q has immediate parent 'modules'", got.GitDir)
+	}
+	mustContain(t, got.ProtectedPaths, filepath.Join(got.GitDir, "config"), "ProtectedPaths")
+	mustContain(t, got.ProtectedPaths, filepath.Join(got.GitDir, "hooks"), "ProtectedPaths")
+	assertNoWritableProtected(t, got)
+}
+
 // TestClassifyMainCheckoutWithSubmoduleProtectsModuleConfig: when classifying
 // the SUPERPROJECT (a main checkout that has submodules), the .git/modules/<name>/config
 // surfaces must also be write-protected — otherwise a sandboxed session could

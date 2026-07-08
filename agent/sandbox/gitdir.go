@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"primeradiant.com/serf/internal/gitpath"
 )
@@ -129,13 +130,17 @@ func ClassifyWorkspace(cwd string) (GitLayout, error) {
 	gitDir := resolveCleanPath(pointer)
 
 	var layout GitLayout
-	switch filepath.Base(filepath.Dir(gitDir)) {
-	case "worktrees":
+	switch {
+	case filepath.Base(filepath.Dir(gitDir)) == "worktrees":
 		// <main>/.git/worktrees/<id> → common dir is <main>/.git.
 		commonDir := filepath.Dir(filepath.Dir(gitDir))
 		layout = newLayout(LinkedWorktree, holder, gitDir, commonDir)
-	case "modules":
-		// <super>/.git/modules/<name> → the submodule's git dir is its own common dir.
+	case gitDirUnderModules(gitDir):
+		// <super>/.git/modules/<name> → the submodule's git dir is its own common
+		// dir. The <name> segment is the submodule's path in the superproject and
+		// can itself contain directories (a submodule added at "libs/foo" →
+		// ".git/modules/libs/foo"), so the immediate parent of the git dir is not
+		// necessarily "modules"; detect the ".git/modules" segment anywhere.
 		layout = newLayout(Submodule, holder, gitDir, gitDir)
 	default:
 		return GitLayout{}, fmt.Errorf("unrecognized .git pointer shape %q at %s", gitDir, holder)
@@ -144,6 +149,23 @@ func ClassifyWorkspace(cwd string) (GitLayout, error) {
 	// it ("gitdir: ./evil") redirects git to an attacker-planted dir. Protect it.
 	layout.ProtectedPaths = appendUnique(layout.ProtectedPaths, entry)
 	return layout, nil
+}
+
+// gitDirUnderModules reports whether gitDir lies under a ".git/modules" segment
+// — i.e. it is a submodule's git dir. A submodule at superproject path "libs/foo"
+// resolves to "<super>/.git/modules/libs/foo", and a submodule-of-a-submodule to
+// "<super>/.git/modules/<outer>/modules/<inner>", so the immediate parent of the
+// git dir is not reliably "modules"; the ".git" + "modules" component pair may
+// appear at any depth. Detect that pair anywhere rather than checking only the
+// immediate parent.
+func gitDirUnderModules(gitDir string) bool {
+	parts := strings.Split(gitDir, string(filepath.Separator))
+	for i := 0; i+1 < len(parts); i++ {
+		if parts[i] == ".git" && parts[i+1] == "modules" {
+			return true
+		}
+	}
+	return false
 }
 
 // isSymlink reports whether path is a symbolic link (without following it).
