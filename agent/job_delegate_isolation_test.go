@@ -159,6 +159,13 @@ func TestDelegateIsolation_SpawnCreatesLockedManagedWorktree(t *testing.T) {
 	if got := sub.sess.currentEnv().WorkingDirectory(); got != lane {
 		t.Errorf("child env working directory = %q, want lane %q", got, lane)
 	}
+	if sub.sess.reg.Get("manage_worktree") != nil {
+		t.Error("manage_worktree must be denied to an isolation delegate child")
+	}
+	// A plain, non-worktree tool must still be present: the deny is specific.
+	if sub.sess.reg.Get("shell") == nil {
+		t.Error("shell must still be available to the child")
+	}
 
 	rec, err := findJobRecord(r.s.jobManager, res.StartedJobID)
 	if err != nil {
@@ -298,37 +305,6 @@ func TestDelegateIsolation_AttachFailureAfterWorktreeCreateRollsBackLane(t *test
 }
 
 // --- manage_worktree deny: spawn, all-tools agent type, and after restore ---
-
-func TestDelegateIsolation_ManageWorktreeDeniedAtSpawn(t *testing.T) {
-	t.Parallel()
-	c := delegateTestClient(func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
-	r := newWtDlgRepo(t, c)
-
-	res := r.s.createDelegate(context.Background(), delegateArgs{
-		Task:           "do isolated work",
-		Isolation:      "worktree",
-		Background:     false,
-		BlockTimeoutMS: 5000,
-	})
-	if res.Err != nil {
-		t.Fatalf("createDelegate: %v", res.Err)
-	}
-	_, childID, err := decodeRef(res.TranscriptRef)
-	if err != nil {
-		t.Fatalf("decodeRef: %v", err)
-	}
-	sub := r.s.subagents.get(childID)
-	if sub == nil || sub.sess == nil {
-		t.Fatal("no retained child runtime")
-	}
-	if sub.sess.reg.Get("manage_worktree") != nil {
-		t.Error("manage_worktree must be denied to an isolation delegate child")
-	}
-	// A plain, non-worktree tool must still be present — the deny is specific.
-	if sub.sess.reg.Get("shell") == nil {
-		t.Error("shell must still be available to the child")
-	}
-}
 
 func TestDelegateIsolation_ManageWorktreeDeniedAfterRestoreAllTools(t *testing.T) {
 	t.Parallel()
