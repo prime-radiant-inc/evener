@@ -74,10 +74,12 @@ type jobManager struct {
 	closing           bool
 	appendEvent       func(jobstore.Event) error
 	appendEvents      func([]jobstore.Event) error
+	openOutput        outputStoreOpener
 	emit              func(events.EventKind, events.EventData, *provenance.Causal)
-	forward           func(jobstore.Event) error
-	parentJobID       string
-	enqueue           func(jobNotification)
+
+	forward     func(jobstore.Event) error
+	parentJobID string
+	enqueue     func(jobNotification)
 	// currentProvenance reports the owning session's active causal provenance at
 	// call time. A job records this at creation so its detached lifecycle events
 	// and terminal notification carry the origin of whatever input launched it.
@@ -365,16 +367,17 @@ func jobsDir(stateDir, sessionID string) string {
 }
 
 type jobStoreOpener func(string) (*jobstore.Store, error)
+type outputStoreOpener func(string, int64) (*jobstore.OutputStore, error)
 
 func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*jobManager, error) {
-	return newJobManagerWithStoreOpen(stateDir, sessionID, enqueue, jobstore.Open)
+	return newJobManagerWithStoreOpen(stateDir, sessionID, enqueue, jobstore.Open, jobstore.OpenOutput)
 }
 
 func newJobManagerNoSync(stateDir, sessionID string, enqueue func(jobNotification)) (*jobManager, error) {
-	return newJobManagerWithStoreOpen(stateDir, sessionID, enqueue, jobstore.OpenNoSync)
+	return newJobManagerWithStoreOpen(stateDir, sessionID, enqueue, jobstore.OpenNoSync, jobstore.OpenOutputNoSync)
 }
 
-func newJobManagerWithStoreOpen(stateDir, sessionID string, enqueue func(jobNotification), openStore jobStoreOpener) (*jobManager, error) {
+func newJobManagerWithStoreOpen(stateDir, sessionID string, enqueue func(jobNotification), openStore jobStoreOpener, openOutput outputStoreOpener) (*jobManager, error) {
 	dir := jobsDir(stateDir, sessionID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
@@ -399,6 +402,7 @@ func newJobManagerWithStoreOpen(stateDir, sessionID string, enqueue func(jobNoti
 		watchLineage:          make(map[watchKey][]string),
 		appendEvent:           store.Append,
 		appendEvents:          store.AppendBatch,
+		openOutput:            openOutput,
 		enqueue:               enqueue,
 		now:                   time.Now,
 		clock:                 clock.Real(),
@@ -594,7 +598,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		OutputPath:       outputPath,
 		Provenance:       provenance.Clone(jobProvenance),
 	}
-	output, err := jobstore.OpenOutput(outputPath, maxJobOutputRetentionBytes)
+	output, err := jm.openOutput(outputPath, maxJobOutputRetentionBytes)
 	if err != nil {
 		return nil, err
 	}
