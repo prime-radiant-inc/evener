@@ -1,4 +1,4 @@
-.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-drive fuzz-drive-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
+.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-exhaustive test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-drive fuzz-drive-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -87,16 +87,19 @@ GO_MODULES := . agent llm auth envvars fuzz invariant
 MEMCAP := scripts/run-capped.sh
 
 test:
-	@MODULES="$(GO_MODULES)" $(MEMCAP) scripts/run-module-tests.sh -count=1
+	@SERF_TEST_MODE=fast MODULES="$(GO_MODULES)" $(MEMCAP) scripts/run-module-tests.sh -short -count=1
 
 test-short:
-	@MODULES="$(GO_MODULES)" $(MEMCAP) scripts/run-module-tests.sh -short -count=1
+	@$(MAKE) test
+
+test-exhaustive:
+	@SERF_TEST_MODE=exhaustive RAPID_CHECKS=$${RAPID_CHECKS:-100} MODULES="$(GO_MODULES)" $(MEMCAP) scripts/run-module-tests.sh -count=1
 
 # The permanent -race gate (CI), across every module. AGENT_PARALLEL= leaves the
 # agent wave at GOMAXPROCS: under -race (~10x slower) extra parallelism just
 # oversubscribes few-core CI and starves real per-test work past its timeouts.
 test-race:
-	@MODULES="$(GO_MODULES)" AGENT_PARALLEL= $(MEMCAP) scripts/run-module-tests.sh -race -short -count=1
+	@SERF_TEST_MODE=exhaustive MODULES="$(GO_MODULES)" AGENT_PARALLEL= $(MEMCAP) scripts/run-module-tests.sh -race -short -count=1
 
 # e2e-cover measures END-TO-END coverage of the real serf/serf-tui binaries via
 # `go build -cover` + GOCOVERDIR — the main()/CLI/dispatch/serve paths unit tests

@@ -2,26 +2,23 @@
 # run-module-tests.sh — run the Go module test suites with wave scheduling.
 #
 # The repo is a go.work workspace of independent modules. `go test ./...` does
-# not span modules, so the suites must be invoked per module. Running them
-# sequentially serializes four independent suites; running ALL of them at once
-# oversubscribes the CPU and starves the latency-sensitive tmux/TUI end-to-end
-# tests in the root module (they render in real time and time out when the
-# CPU-heavy agent suite hogs the cores).
+# not span modules, so the suites must be invoked per module.
 #
-# The compromise is two waves:
-#   WAVE1 — the root module ALONE. Its tmux/TUI tests are so timing-sensitive
-#           that even the small llm/auth suites running alongside can starve a
-#           session enough to fail; it gets the machine to itself.
-#   WAVE2 — the agent module (CPU-heavy, extra in-package parallelism via
-#           AGENT_PARALLEL) plus the small llm/auth modules in its shadow.
-# Waves run one after another; modules WITHIN a wave run concurrently. This keeps
-# the tmux suite from fighting any other suite for cores, so the run is both fast
-# and flake-free.
+# SERF_TEST_MODE=fast is the default gate used by `make test`: it runs the root
+# module's package-level smoke tests plus agent subpackages. The exhaustive
+# agent root package, root subpackage sweep, provider/library modules, and fuzz
+# seed corpora stay available through SERF_TEST_MODE=exhaustive and the explicit
+# fuzz targets.
+#
+# SERF_TEST_MODE=exhaustive preserves the old two-wave workspace sweep. It is
+# intentionally not the default: running every package/test/fuzz seed in the
+# workspace now takes far longer than the local fast-gate budget and starves the
+# timing-sensitive TUI tests when overlapped with CPU/process-heavy packages.
 #
 # Usage:
 #   scripts/run-module-tests.sh <go-test-flags...>
-#     scripts/run-module-tests.sh -count=1
 #     scripts/run-module-tests.sh -short -count=1
+#     SERF_TEST_MODE=exhaustive scripts/run-module-tests.sh -count=1
 #     scripts/run-module-tests.sh -race -short -count=1
 #
 # Output: one PASS/FAIL line per module (with wall time) as each finishes; a
@@ -30,19 +27,30 @@
 # the agent wave's -parallel.
 set -uo pipefail
 
-WAVE1=${WAVE1:-"."}
-# fuzz is the serf-agnostic toolkit module (promoter/schemagen) and invariant is
-# the zero-dependency assertion module: both are CPU-only unit tests with no
-# tmux/TUI timing sensitivity, so they ride WAVE2 alongside the other library
-# modules. Listed here (not just in the Makefile's GO_MODULES, which this script
-# does not read) so their tests are actually gated.
-WAVE2=${WAVE2:-"agent llm auth fuzz invariant"}
-# Extra -parallel for the agent wave. Defaults to 32 (helps overlap the few
-# remaining timer waits on multi-core dev machines). An explicit empty value
-# (note: -, not :-) means "don't pass -parallel" so go test uses GOMAXPROCS —
-# the -race gate sets this to avoid oversubscribing few-core CI, which starves
-# real per-test work past its timeouts.
-AGENT_PARALLEL=${AGENT_PARALLEL-32}
+SERF_TEST_MODE=${SERF_TEST_MODE:-fast}
+case "$SERF_TEST_MODE" in
+	fast)
+		WAVE1=${WAVE1:-"."}
+		WAVE2=${WAVE2:-"agent"}
+		;;
+	exhaustive)
+		WAVE1=${WAVE1:-"."}
+		WAVE2=${WAVE2:-"agent llm auth envvars fuzz invariant"}
+		;;
+	*)
+		echo "run-module-tests: unknown SERF_TEST_MODE '$SERF_TEST_MODE'" >&2
+		exit 2
+		;;
+esac
+# Extra -parallel for the agent wave. Exhaustive mode keeps the old 32 default
+# to overlap long timer waits. Fast mode defaults to Go's package default because
+# the remaining subpackage gate is process-heavy and -parallel 32 adds enough
+# scheduler/syscall contention to push the wall clock over the budget.
+if [ "$SERF_TEST_MODE" = "fast" ]; then
+	AGENT_PARALLEL=${AGENT_PARALLEL-}
+else
+	AGENT_PARALLEL=${AGENT_PARALLEL-32}
+fi
 # Keep rapid.Check surfaces as deterministic smoke coverage in the default module
 # gate. scripts/run-fuzz.sh owns the full rapid campaign unless RAPID_CHECKS is
 # explicitly overridden by the caller.
@@ -54,6 +62,33 @@ fail=0
 
 logpath() { printf '%s/%s.log' "$logdir" "$(printf '%s' "$1" | tr '/.' '__')"; }
 
+run_module() {
+	local m="$1" extra="$2"
+	case "$SERF_TEST_MODE:$m" in
+		fast:.)
+			# Word-split flags intentionally so callers can pass multiple flags.
+			# shellcheck disable=SC2086
+			/usr/bin/time -p go test $flags -run '^(Test|Example)' .
+			;;
+		fast:agent)
+			local -a pkgs=()
+			local pkg
+			while IFS= read -r pkg; do
+				pkgs+=("$pkg")
+			done < <(go list ./... | grep -v '^primeradiant.com/serf/agent$')
+			[ "${#pkgs[@]}" -eq 0 ] && return 0
+			# Word-split flags and extra intentionally so callers can pass multiple flags.
+			# shellcheck disable=SC2086
+			/usr/bin/time -p go test $flags $extra -run '^(Test|Example)' "${pkgs[@]}"
+			;;
+		*)
+			# Word-split flags intentionally so callers can pass multiple flags.
+			# shellcheck disable=SC2086
+			/usr/bin/time -p go test $flags $extra ./...
+			;;
+	esac
+}
+
 # run_wave <extra-flags> <module...> — run the modules concurrently, wait, and
 # report each one's result; records failures in the global $fail.
 run_wave() {
@@ -62,9 +97,7 @@ run_wave() {
 	local m log
 	for m in "$@"; do
 		log="$(logpath "$m")"
-		# Word-split flags intentionally so callers can pass multiple flags.
-		# shellcheck disable=SC2086
-		( cd "$m" && /usr/bin/time -p go test $flags $extra ./... ) >"$log" 2>&1 &
+		( cd "$m" && run_module "$m" "$extra" ) >"$log" 2>&1 &
 		pids+=("$!"); names+=("$m")
 	done
 	local i
