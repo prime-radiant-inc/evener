@@ -238,11 +238,14 @@ func assertResolution(t TestingT, tc ContractCase, rp ResolvedPolicy, cwd, home 
 
 	// Write scope — the read-only vs writable distinction ("read-only cannot
 	// commit"): the worktree is a writable root in BOTH layers iff WantWorktreeWrite.
-	// Without this a resolver that grants writes in read-only mode passes the table.
-	if got := slices.Contains(rp.FileTool.WriteRoots, cwd); got != tc.WantWorktreeWrite {
+	// The grant test is ancestor-aware (a root grants a target when it equals OR is
+	// an ancestor of it, matching how the enforcement layers apply a root); an
+	// exact-match check would let an over-broad ancestor grant — e.g. a read-only
+	// resolver returning WriteRoots ["/"] — pass unnoticed.
+	if got := rootGrants(rp.FileTool.WriteRoots, cwd); got != tc.WantWorktreeWrite {
 		t.Errorf("case %s: FileTool worktree-writable = %v, want %v (roots: %v)", tc.Name, got, tc.WantWorktreeWrite, rp.FileTool.WriteRoots)
 	}
-	if got := slices.Contains(rp.Spawned.WriteRoots, cwd); got != tc.WantWorktreeWrite {
+	if got := rootGrants(rp.Spawned.WriteRoots, cwd); got != tc.WantWorktreeWrite {
 		t.Errorf("case %s: Spawned worktree-writable = %v, want %v (roots: %v)", tc.Name, got, tc.WantWorktreeWrite, rp.Spawned.WriteRoots)
 	}
 	if !rp.SessionTmp {
@@ -271,6 +274,14 @@ func assertResolution(t TestingT, tc ContractCase, rp ResolvedPolicy, cwd, home 
 		if slices.Contains(rp.FileTool.ReadRoots, "/usr") {
 			t.Errorf("case %s: restricted FileTool.ReadRoots must NOT include system roots: %v", tc.Name, rp.FileTool.ReadRoots)
 		}
+		// A restricted file-tool read must not be granted an over-broad ancestor of
+		// the worktree (the model browses only the worktree, never "/" or a parent).
+		// An exact-root check would miss a resolver returning ReadRoots ["/"].
+		for _, r := range rp.FileTool.ReadRoots {
+			if r != cwd && pathUnder(cwd, r) {
+				t.Errorf("case %s: restricted FileTool.ReadRoots contains over-broad parent %q of worktree %q: %v", tc.Name, r, cwd, rp.FileTool.ReadRoots)
+			}
+		}
 	}
 
 	roots := slices.Concat(rp.FileTool.ReadRoots, rp.FileTool.WriteRoots, rp.Spawned.ReadRoots, rp.Spawned.WriteRoots)
@@ -281,6 +292,19 @@ func assertResolution(t TestingT, tc ContractCase, rp ResolvedPolicy, cwd, home 
 			}
 		}
 	}
+}
+
+// rootGrants reports whether any root equals or is an ancestor of target — the
+// access model the enforcement layers apply (a grant on a root covers everything
+// beneath it). Used instead of an exact-match check so an over-broad ancestor
+// grant (e.g. WriteRoots ["/"]) is detected rather than passing unnoticed.
+func rootGrants(roots []string, target string) bool {
+	for _, r := range roots {
+		if r == target || pathUnder(target, r) {
+			return true
+		}
+	}
+	return false
 }
 
 // MaterializeWorkspace creates a real git workspace of the requested kind under a

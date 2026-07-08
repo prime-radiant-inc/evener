@@ -159,6 +159,50 @@ func refusalTierLabel(h HostFacts) string {
 	}
 }
 
+// recordingT is a sandbox.TestingT that records Errorf/Fatalf calls instead of
+// failing, so a test can assert that AssertResolve REJECTS a bad resolver. It
+// borrows a real *testing.T for TempDir/Helper and delegates Skipf (git-missing
+// skips the whole test).
+type recordingT struct {
+	*testing.T
+	errors int
+}
+
+func (r *recordingT) Errorf(string, ...any) { r.errors++ }
+func (r *recordingT) Fatalf(string, ...any) { r.errors++ }
+
+// TestAssertResolveRejectsOverBroadGrants proves the strengthened oracle: a
+// resolver that grants an over-broad ancestor ("/" as a write root, or as a
+// restricted file-tool read root) must FAIL AssertResolve. Exact-root checks let
+// such grants slip through; ancestor-aware checks catch them.
+func TestAssertResolveRejectsOverBroadGrants(t *testing.T) {
+	t.Parallel()
+	overBroad := func(p SandboxPolicy, h HostFacts, cwd string) (ResolvedPolicy, error) {
+		rp, err := Resolve(p, h, cwd)
+		if err != nil {
+			return rp, err
+		}
+		if rp.Enforced() {
+			// "/" is an ancestor of every worktree yet equals no worktree, so an
+			// exact-match oracle would never flag it.
+			rp.FileTool.WriteRoots = append(rp.FileTool.WriteRoots, "/")
+			rp.FileTool.ReadRoots = append(rp.FileTool.ReadRoots, "/")
+			rp.Spawned.WriteRoots = append(rp.Spawned.WriteRoots, "/")
+		}
+		return rp, nil
+	}
+	rec := &recordingT{T: t}
+	AssertResolve(rec, overBroad)
+	if rec.errors == 0 {
+		t.Fatal("AssertResolve accepted an over-broad-granting resolver; the oracle must reject over-broad ancestor grants")
+	}
+
+	// Sanity: the real resolver still passes the strengthened oracle.
+	if rec2 := (&recordingT{T: t}); func() int { AssertResolve(rec2, Resolve); return rec2.errors }() != 0 {
+		t.Fatalf("real Resolve failed the strengthened oracle with %d errors", rec2.errors)
+	}
+}
+
 // TestContractCasesAreDataOnly proves ContractCases() is a pure data function
 // (safe for backends to import and iterate): it returns an equal table on every
 // call and never shares mutable backing state between calls.
