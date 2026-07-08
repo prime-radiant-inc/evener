@@ -90,23 +90,22 @@ func ContractCases() []ContractCase {
 	cases = append(cases,
 		// workspace-write on a bwrap host WITHOUT overlay support → session-private cache.
 		modeCase("workspace-write-no-overlay", ModeWorkspaceWrite, true, bwrapNoOverlay, MainCheckout, BackendBwrap, CacheSessionPrivate, ReadAnywhere, ReadAnywhere, true),
-
-		// --- landlock-only tier: Landlock is allowlist-only and cannot subtract the
-		// in-worktree .git pointer inside a granted root, so it serves NO sandboxed
-		// mode — every sandboxed request refuses naming bwrap (finding #2). ---
-		refuseCase("landlock/restricted-linked", ModeRestricted, true, landlock, LinkedWorktree, "bwrap"),
-		refuseCase("landlock/restricted-main", ModeRestricted, true, landlock, MainCheckout, "bwrap"),
-		refuseCase("landlock/restricted-linked-netoff", ModeRestricted, false, landlock, LinkedWorktree, "bwrap"),
-		refuseCase("landlock/read-only", ModeReadOnly, true, landlock, LinkedWorktree, "bwrap"),
-		refuseCase("landlock/workspace-write", ModeWorkspaceWrite, true, landlock, LinkedWorktree, "bwrap"),
 	)
 
-	// --- neither (bare linux) + windows: every sandboxed mode refuses. ---
-	for _, h := range []HostFacts{bare, windows} {
-		for _, m := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
-			cases = append(cases, refuseCase("no-backend/"+h.OS+"/"+m.String(), m, true, h, MainCheckout, ""))
-		}
-	}
+	// --- refusal tiers: every sandboxed mode × net cell refuses, so no refusal
+	// cell (esp. net=off) can be silently dropped and let a backend resolve it. ---
+
+	// landlock-only: Landlock is allowlist-only and cannot subtract the in-worktree
+	// .git pointer inside a granted root, so it serves NO sandboxed mode — every
+	// cell refuses naming bwrap (finding #2). Its signature workspace is the linked
+	// worktree; a MainCheckout cell is added so both git shapes are exercised.
+	cases = append(cases, refuseTier("landlock", landlock, LinkedWorktree, "bwrap")...)
+	cases = append(cases, refuseCase("landlock/restricted-main", ModeRestricted, true, landlock, MainCheckout, "bwrap"))
+
+	// neither (bare linux) + windows: no backend at all → every cell refuses with
+	// no backend that would satisfy it.
+	cases = append(cases, refuseTier("no-backend/linux", bare, MainCheckout, "")...)
+	cases = append(cases, refuseTier("no-backend/windows", windows, MainCheckout, "")...)
 
 	// --- darwin + Seatbelt: deny-capable, full matrix; cache always session-private. ---
 	for _, net := range []bool{true, false} {
@@ -116,10 +115,22 @@ func ContractCases() []ContractCase {
 			modeCase("seatbelt/restricted", ModeRestricted, net, seatbelt, MainCheckout, BackendSeatbelt, CacheSessionPrivate, ReadWorktreeOnly, ReadWorktreeOnly, true),
 		)
 	}
-	// darwin without sandbox-exec refuses, naming sandbox-exec.
-	cases = append(cases, refuseCase("darwin-bare/restricted", ModeRestricted, true, darwinBare, MainCheckout, "sandbox-exec"))
+	// darwin without sandbox-exec: every cell refuses naming sandbox-exec.
+	cases = append(cases, refuseTier("darwin-bare", darwinBare, MainCheckout, "sandbox-exec")...)
 
 	return cases
+}
+
+// refuseTier generates the full sandboxed mode × net refusal product for a host
+// tier that cannot enforce any sandboxed mode, so every refusal cell is asserted.
+func refuseTier(namePrefix string, host HostFacts, ws WorkspaceKind, requiredBackend string) []ContractCase {
+	var out []ContractCase
+	for _, m := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		for _, net := range []bool{true, false} {
+			out = append(out, refuseCase(namePrefix+"/"+m.String(), m, net, host, ws, requiredBackend))
+		}
+	}
+	return out
 }
 
 func backendTag(h HostFacts) string {
@@ -227,11 +238,14 @@ func assertResolution(t TestingT, tc ContractCase, rp ResolvedPolicy, cwd, home 
 
 	// Write scope — the read-only vs writable distinction ("read-only cannot
 	// commit"): the worktree is a writable root in BOTH layers iff WantWorktreeWrite.
-	// Without this a resolver that grants writes in read-only mode passes the table.
-	if got := slices.Contains(rp.FileTool.WriteRoots, cwd); got != tc.WantWorktreeWrite {
+	// The grant test is ancestor-aware (a root grants a target when it equals OR is
+	// an ancestor of it, matching how the enforcement layers apply a root); an
+	// exact-match check would let an over-broad ancestor grant — e.g. a read-only
+	// resolver returning WriteRoots ["/"] — pass unnoticed.
+	if got := rootGrants(rp.FileTool.WriteRoots, cwd); got != tc.WantWorktreeWrite {
 		t.Errorf("case %s: FileTool worktree-writable = %v, want %v (roots: %v)", tc.Name, got, tc.WantWorktreeWrite, rp.FileTool.WriteRoots)
 	}
-	if got := slices.Contains(rp.Spawned.WriteRoots, cwd); got != tc.WantWorktreeWrite {
+	if got := rootGrants(rp.Spawned.WriteRoots, cwd); got != tc.WantWorktreeWrite {
 		t.Errorf("case %s: Spawned worktree-writable = %v, want %v (roots: %v)", tc.Name, got, tc.WantWorktreeWrite, rp.Spawned.WriteRoots)
 	}
 	if !rp.SessionTmp {
@@ -260,6 +274,14 @@ func assertResolution(t TestingT, tc ContractCase, rp ResolvedPolicy, cwd, home 
 		if slices.Contains(rp.FileTool.ReadRoots, "/usr") {
 			t.Errorf("case %s: restricted FileTool.ReadRoots must NOT include system roots: %v", tc.Name, rp.FileTool.ReadRoots)
 		}
+		// A restricted file-tool read must not be granted an over-broad ancestor of
+		// the worktree (the model browses only the worktree, never "/" or a parent).
+		// An exact-root check would miss a resolver returning ReadRoots ["/"].
+		for _, r := range rp.FileTool.ReadRoots {
+			if r != cwd && pathUnder(cwd, r) {
+				t.Errorf("case %s: restricted FileTool.ReadRoots contains over-broad parent %q of worktree %q: %v", tc.Name, r, cwd, rp.FileTool.ReadRoots)
+			}
+		}
 	}
 
 	roots := slices.Concat(rp.FileTool.ReadRoots, rp.FileTool.WriteRoots, rp.Spawned.ReadRoots, rp.Spawned.WriteRoots)
@@ -270,6 +292,19 @@ func assertResolution(t TestingT, tc ContractCase, rp ResolvedPolicy, cwd, home 
 			}
 		}
 	}
+}
+
+// rootGrants reports whether any root equals or is an ancestor of target — the
+// access model the enforcement layers apply (a grant on a root covers everything
+// beneath it). Used instead of an exact-match check so an over-broad ancestor
+// grant (e.g. WriteRoots ["/"]) is detected rather than passing unnoticed.
+func rootGrants(roots []string, target string) bool {
+	for _, r := range roots {
+		if r == target || pathUnder(target, r) {
+			return true
+		}
+	}
+	return false
 }
 
 // MaterializeWorkspace creates a real git workspace of the requested kind under a

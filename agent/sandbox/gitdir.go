@@ -10,13 +10,15 @@ import (
 	"primeradiant.com/serf/internal/gitpath"
 )
 
-// WorkspaceKind classifies cwd's git layout. The distinction is load-bearing for
-// the resolver's backend choice: Landlock (allowlist-only) can serve the
-// restricted mode ONLY in a LinkedWorktree, because there the git config/hook
-// surfaces live OUTSIDE the granted worktree root and can simply be left
-// un-granted (purely additive). In a MainCheckout the .git directory sits inside
-// the worktree, so protecting config/hooks requires SUBTRACTING them from a
-// granted root — which only bwrap/Seatbelt can express.
+// WorkspaceKind classifies cwd's git layout. The distinction drives gitdir
+// resolution (linked-worktree/submodule git dirs live outside the worktree and
+// need a read grant + external config/hook protection; a MainCheckout's .git sits
+// inside it) and the resolver's refusal reasoning. It once also let Landlock serve
+// restricted in a LinkedWorktree (config/hooks outside the granted root, purely
+// additive), but the resolver now never selects Landlock: even in a linked
+// worktree the in-worktree .git pointer must be subtracted from the granted root,
+// which allowlist-only Landlock cannot express. Landlock is still probed and
+// reported, never selected; bwrap is required on Linux (see resolve.go).
 type WorkspaceKind int
 
 const (
@@ -112,7 +114,7 @@ func ClassifyWorkspace(cwd string) (GitLayout, error) {
 		if isSymlink(entry) {
 			layout.ProtectedPaths = appendUnique(layout.ProtectedPaths, entry)
 		}
-		return layout, nil
+		return withIncludeProtections(layout)
 	}
 
 	// .git is a pointer file: "gitdir: <path>".
@@ -148,7 +150,7 @@ func ClassifyWorkspace(cwd string) (GitLayout, error) {
 	// The .git pointer file itself lives inside the writable worktree; rewriting
 	// it ("gitdir: ./evil") redirects git to an attacker-planted dir. Protect it.
 	layout.ProtectedPaths = appendUnique(layout.ProtectedPaths, entry)
-	return layout, nil
+	return withIncludeProtections(layout)
 }
 
 // gitDirUnderModules reports whether gitDir lies under a ".git/modules" segment
@@ -306,6 +308,205 @@ func moduleConfigProtections(commonDir string) []string {
 		return nil
 	})
 	return out
+}
+
+// gitConfigIncludeMaxDepth bounds recursion through chained config includes so a
+// cyclic or pathological include graph cannot loop forever. Ten levels is far
+// beyond any real git config's include nesting.
+const gitConfigIncludeMaxDepth = 10
+
+// withIncludeProtections closes the git-config include bypass. A protected config
+// file (write-denied) can `include.path` / `includeIf.*.path` another file, and
+// git reads that included file's directives too — so if it lives inside a writable
+// root the model could write core.hooksPath into it and persist a hook past the
+// sandbox. This reads each protected config surface, resolves its include targets
+// (recursively, bounded), and write-protects any target that lands within a
+// writable region (the worktree content root or the writable git-metadata paths).
+// An include whose target cannot be resolved to a concrete file yet could reach a
+// writable region (a glob path) fails closed with an error the resolver turns into
+// a *RefusalError. Residual: `~`-anchored includes resolve into a home directory,
+// which is never a writable root, so they are not followed.
+func withIncludeProtections(l GitLayout) (GitLayout, error) {
+	writable := append([]string{l.WorktreeRoot}, l.WritablePaths...)
+	seen := map[string]bool{}
+	var extra []string
+	for _, p := range l.ProtectedPaths {
+		if base := filepath.Base(p); base != "config" && base != "config.worktree" {
+			continue // only config files carry include directives (skip hooks dir, .git pointer)
+		}
+		found, err := scanConfigIncludes(p, writable, seen, 0)
+		if err != nil {
+			return GitLayout{}, err
+		}
+		extra = append(extra, found...)
+	}
+	for _, e := range extra {
+		l.ProtectedPaths = appendUnique(l.ProtectedPaths, e)
+	}
+	// Adding include targets can, in pathological cases, overlap a writable git-
+	// metadata path; keep the two sets disjoint.
+	l.WritablePaths = removeProtectedFromWritable(l.WritablePaths, l.ProtectedPaths)
+	return l, nil
+}
+
+// scanConfigIncludes reads one git config file, resolves its include targets,
+// returns those that land within a writable region, and recurses into every
+// resolvable target (a non-writable include can itself include a writable file).
+// A missing/unreadable file has no includes to follow. A glob include path that
+// could reach a writable region is unresolvable → error (fail closed).
+func scanConfigIncludes(configFile string, writable []string, seen map[string]bool, depth int) ([]string, error) {
+	if depth > gitConfigIncludeMaxDepth {
+		return nil, fmt.Errorf("git config include chain exceeds depth %d at %s", gitConfigIncludeMaxDepth, configFile)
+	}
+	if seen[configFile] {
+		return nil, nil
+	}
+	seen[configFile] = true
+
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return nil, nil //nolint:nilerr // a not-yet-created/unreadable config has no includes to follow
+	}
+	configDir := filepath.Dir(configFile)
+
+	var out []string
+	for _, v := range parseIncludePaths(string(data)) {
+		if strings.HasPrefix(v, "~") {
+			continue // home-relative; a home directory is never a writable root
+		}
+		if strings.ContainsAny(v, "*?[") {
+			if globCouldReachWritable(v, configDir, writable) {
+				return nil, fmt.Errorf("git config %s has include path %q that could resolve into a writable root and cannot be evaluated safely", configFile, v)
+			}
+			continue // glob confined to a non-writable area
+		}
+		target := v
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(configDir, target)
+		}
+		target = filepath.Clean(target)
+		if underAnyRoot(target, writable) {
+			out = append(out, target)
+		}
+		sub, err := scanConfigIncludes(target, writable, seen, depth+1)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sub...)
+	}
+	return out, nil
+}
+
+// parseIncludePaths extracts the `path` values of [include] and [includeIf "..."]
+// sections from git config text. It ignores the includeIf CONDITION — we treat
+// every include as active (fail closed) rather than trying to evaluate it — and
+// returns only the raw, quote-trimmed path values. It is a deliberately small
+// git-config reader: enough to find include directives, handling both the
+// canonical multi-line form and a same-line "[include] path = x".
+func parseIncludePaths(text string) []string {
+	var out []string
+	inInclude := false
+	for _, raw := range strings.Split(text, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") {
+			end := strings.Index(line, "]")
+			if end < 0 {
+				inInclude = isIncludeSectionHeader(line)
+				continue
+			}
+			inInclude = isIncludeSectionHeader(line[:end+1])
+			if rest := strings.TrimSpace(line[end+1:]); inInclude && rest != "" {
+				if p := includePathValue(rest); p != "" {
+					out = append(out, p)
+				}
+			}
+			continue
+		}
+		if !inInclude {
+			continue
+		}
+		if p := includePathValue(line); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// isIncludeSectionHeader reports whether a "[section ...]" header names the
+// include or includeIf section (case-insensitive, matching git).
+func isIncludeSectionHeader(header string) bool {
+	h := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(header), "["), "]")
+	h = strings.TrimSpace(h)
+	if i := strings.IndexAny(h, " \t\""); i >= 0 {
+		h = h[:i]
+	}
+	return strings.EqualFold(h, "include") || strings.EqualFold(h, "includeIf")
+}
+
+// includePathValue returns the path value of a "path = <value>" config line
+// (empty if the line is not a path key). It strips surrounding double quotes and,
+// for an unquoted value, an inline # or ; comment.
+func includePathValue(line string) string {
+	i := strings.Index(line, "=")
+	if i < 0 {
+		return ""
+	}
+	if !strings.EqualFold(strings.TrimSpace(line[:i]), "path") {
+		return ""
+	}
+	val := strings.TrimSpace(line[i+1:])
+	if len(val) >= 2 && val[0] == '"' {
+		if end := strings.Index(val[1:], `"`); end >= 0 {
+			return strings.ReplaceAll(val[1:1+end], `\"`, `"`)
+		}
+	}
+	if c := strings.IndexAny(val, "#;"); c >= 0 {
+		val = strings.TrimSpace(val[:c])
+	}
+	return val
+}
+
+// globCouldReachWritable reports whether a glob include path might match a file
+// inside a writable region. It resolves the literal directory prefix before the
+// first glob metacharacter and refuses (returns true) when that base directory
+// is under a writable region OR a writable region is under it — either way a
+// match could land somewhere writable. A glob confined to a clearly non-writable
+// area (e.g. /etc/gitconfig.d/*.conf) returns false.
+func globCouldReachWritable(v, configDir string, writable []string) bool {
+	prefix := v
+	if i := strings.IndexAny(v, "*?["); i >= 0 {
+		prefix = v[:i]
+	}
+	dir := prefix
+	if !strings.HasSuffix(prefix, "/") {
+		dir = filepath.Dir(prefix)
+	}
+	switch {
+	case dir == "" || dir == ".":
+		dir = configDir
+	case !filepath.IsAbs(dir):
+		dir = filepath.Join(configDir, dir)
+	}
+	dir = filepath.Clean(dir)
+	for _, w := range writable {
+		if dir == w || pathUnder(dir, w) || pathUnder(w, dir) {
+			return true
+		}
+	}
+	return false
+}
+
+// underAnyRoot reports whether p is at or beneath any of roots.
+func underAnyRoot(p string, roots []string) bool {
+	for _, r := range roots {
+		if p == r || pathUnder(p, r) {
+			return true
+		}
+	}
+	return false
 }
 
 func appendUnique(s []string, v string) []string {

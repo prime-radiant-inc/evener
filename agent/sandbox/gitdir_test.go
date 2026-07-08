@@ -320,6 +320,65 @@ func TestClassifyLinkedWorktreeProtectsGitPointer(t *testing.T) {
 	assertNoWritableProtected(t, got)
 }
 
+// appendFile appends text to the file at path, creating it if needed.
+func appendFile(t *testing.T, path, text string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(text); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// TestClassifyProtectsConfigIncludeUnderWorktree closes the git-config include
+// bypass: a protected .git/config can include.path a worktree-local file, and
+// that included file could set core.hooksPath and persist a hook past the box.
+// The classifier must resolve include targets and write-protect any that land
+// inside a writable root (here, ../included.cfg → a worktree-local file).
+func TestClassifyProtectsConfigIncludeUnderWorktree(t *testing.T) {
+	t.Parallel()
+	requireGit(t)
+	root := clean(t.TempDir())
+	runGit(t, root, "init", "-q")
+	// The .git/config (protected) includes a worktree-local file. configDir is
+	// <root>/.git, so ../included.cfg resolves to <root>/included.cfg — writable.
+	appendFile(t, filepath.Join(root, ".git", "config"), "\n[include]\n\tpath = ../included.cfg\n")
+
+	got, err := ClassifyWorkspace(root)
+	if err != nil {
+		t.Fatalf("ClassifyWorkspace: %v", err)
+	}
+	included := filepath.Join(root, "included.cfg")
+	mustContain(t, got.ProtectedPaths, included, "ProtectedPaths (config include under worktree)")
+	assertNoWritableProtected(t, got)
+}
+
+// TestClassifyFollowsChainedConfigIncludes: an include chain (config → a
+// non-writable file → a worktree-local file) must be walked so the deepest
+// writable-root link is still protected. git reads the whole chain; so must the
+// classifier.
+func TestClassifyFollowsChainedConfigIncludes(t *testing.T) {
+	t.Parallel()
+	requireGit(t)
+	root := clean(t.TempDir())
+	runGit(t, root, "init", "-q")
+	// .git/config includes a worktree-local middle file, which itself includes a
+	// second worktree-local file. Both worktree-local links must be protected.
+	appendFile(t, filepath.Join(root, ".git", "config"), "\n[include]\n\tpath = ../mid.cfg\n")
+	appendFile(t, filepath.Join(root, "mid.cfg"), "[include]\n\tpath = deep.cfg\n")
+
+	got, err := ClassifyWorkspace(root)
+	if err != nil {
+		t.Fatalf("ClassifyWorkspace: %v", err)
+	}
+	mustContain(t, got.ProtectedPaths, filepath.Join(root, "mid.cfg"), "ProtectedPaths (chained include mid)")
+	mustContain(t, got.ProtectedPaths, filepath.Join(root, "deep.cfg"), "ProtectedPaths (chained include deep)")
+	assertNoWritableProtected(t, got)
+}
+
 // TestClassifyNonGit: a directory outside any repository classifies as NonGit
 // with no git surfaces — Resolve treats "worktree" as cwd itself.
 func TestClassifyNonGit(t *testing.T) {

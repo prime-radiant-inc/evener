@@ -35,6 +35,41 @@ func TestDeniedErrorRedactsAbsolutePath(t *testing.T) {
 	}
 }
 
+func TestDeniedErrorSensitiveNeverEchoesBasename(t *testing.T) {
+	// A denylist/credential/pseudo-fs denial sets Sensitive: neither Error() nor
+	// Redacted() may leak even the basename (id_rsa/credentials would otherwise
+	// reveal which secret was hit, in the message and in the audit log).
+	e := &DeniedError{
+		Mode:      ModeReadOnly,
+		Tool:      "read_file",
+		Path:      "/home/alice/.ssh/id_rsa",
+		Reason:    "credential path masked",
+		Sensitive: true,
+	}
+	msg := e.Error()
+	if contains(msg, "id_rsa") || contains(msg, ".ssh") {
+		t.Fatalf("sensitive denial message %q must not echo the credential path or basename", msg)
+	}
+	if !contains(msg, "read_file") || !contains(msg, "read-only") {
+		t.Fatalf("sensitive denial message %q should still name the tool and mode", msg)
+	}
+	if got := e.Redacted(); got != "<denied>" {
+		t.Fatalf("sensitive Redacted() = %q, want %q", got, "<denied>")
+	}
+}
+
+func TestDeniedErrorNonSensitiveKeepsBasename(t *testing.T) {
+	// The zero value (Sensitive false) is the existing behavior — basename shown —
+	// so the additive field does not break existing callers.
+	e := &DeniedError{Tool: "write_file", Path: "/home/alice/notes/todo.txt"}
+	if got := e.Redacted(); got != "todo.txt" {
+		t.Fatalf("non-sensitive Redacted() = %q, want basename %q", got, "todo.txt")
+	}
+	if !contains(e.Error(), "todo.txt") {
+		t.Fatalf("non-sensitive Error() %q should include the basename", e.Error())
+	}
+}
+
 func TestDeniedErrorCarriesShellFields(t *testing.T) {
 	// A shell denial populates Command/OutputSoFar (M7's card reads them); a
 	// file-tool denial leaves them empty. Assert the shape supports both.

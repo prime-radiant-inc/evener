@@ -306,6 +306,30 @@ func TestResolveRefusesRelativeExtraRoots(t *testing.T) {
 	mustResolve(t, SandboxPolicy{Mode: ModeRestricted, Network: netPtr(true), ExtraReadRoots: []string{"/opt/extra"}}, bwrapHost(), main)
 }
 
+// TestResolveSkipsWhitespaceOnlyExtraRoots pins the whitespace-only extra-root
+// fix: a "   " entry passes the absolute-path check (it trims to empty and is
+// skipped there) but must NOT flow into the resolved grants as a relative root —
+// filepath.Clean does not trim whitespace, so an un-skipped "   " would become a
+// relative grant root the enforcement layers never match. It is treated as
+// empty/skipped, not emitted, and never triggers a refusal.
+func TestResolveSkipsWhitespaceOnlyExtraRoots(t *testing.T) {
+	t.Parallel()
+	main := mainRepo(t)
+	rp := mustResolve(t, SandboxPolicy{
+		Mode: ModeRestricted, Network: netPtr(true),
+		ExtraReadRoots:     []string{"   "},
+		ExtraWritableRoots: []string{"\t"},
+	}, bwrapHost(), main)
+	for _, r := range slices.Concat(rp.FileTool.ReadRoots, rp.FileTool.WriteRoots, rp.Spawned.ReadRoots, rp.Spawned.WriteRoots) {
+		if strings.TrimSpace(r) == "" {
+			t.Errorf("whitespace-only extra root leaked into grants as %q", r)
+		}
+		if !filepath.IsAbs(r) {
+			t.Errorf("whitespace-only extra root produced a non-absolute grant root %q", r)
+		}
+	}
+}
+
 // TestResolveNetworkDefaultsOnWhenUnset is the finding-#5 regression: the network
 // decision is documented as defaulting ON when sandboxed, but a bool zero value
 // silently meant OFF, so SandboxPolicy{Mode: ModeRestricted} disabled network.
@@ -325,6 +349,33 @@ func TestResolveNetworkDefaultsOnWhenUnset(t *testing.T) {
 	// Explicit on.
 	if rp := mustResolve(t, SandboxPolicy{Mode: ModeRestricted, Network: netPtr(true)}, bwrapHost(), main); !rp.Network {
 		t.Errorf("explicit network=on must resolve to on, got %v", rp.Network)
+	}
+}
+
+// TestResolveRefusesUnresolvableConfigInclude is the git-config include fix's
+// fail-closed arm: an include path that cannot be resolved to a concrete file
+// (a glob) yet could land inside a writable root must refuse the whole session,
+// not silently leave a potential writable-root include unprotected.
+func TestResolveRefusesUnresolvableConfigInclude(t *testing.T) {
+	t.Parallel()
+	root := mainRepo(t)
+	// A glob include path relative to .git → resolves under the worktree, cannot
+	// be enumerated. Resolve must fail closed with a *RefusalError.
+	appendFile(t, filepath.Join(root, ".git", "config"), "\n[include]\n\tpath = ../*.cfg\n")
+	mustRefuse(t, SandboxPolicy{Mode: ModeWorkspaceWrite, Network: netPtr(true)}, bwrapHost(), root, "")
+}
+
+// TestResolveConfigIncludeOutsideWorktreeResolves: an include of a file OUTSIDE
+// any writable root (an absolute path under /etc) is a legitimate read git
+// performs and must not refuse or over-protect — only writable-root includes are
+// the persistence vector.
+func TestResolveConfigIncludeOutsideWorktreeResolves(t *testing.T) {
+	t.Parallel()
+	root := mainRepo(t)
+	appendFile(t, filepath.Join(root, ".git", "config"), "\n[include]\n\tpath = /etc/nonexistent-gitconfig\n")
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeWorkspaceWrite, Network: netPtr(true)}, bwrapHost(), root)
+	if slices.Contains(rp.Git.ProtectedPaths, "/etc/nonexistent-gitconfig") {
+		t.Errorf("an include outside every writable root should not be added to ProtectedPaths: %v", rp.Git.ProtectedPaths)
 	}
 }
 

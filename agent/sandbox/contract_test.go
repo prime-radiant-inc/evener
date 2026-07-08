@@ -104,6 +104,105 @@ func TestContractCoverage(t *testing.T) {
 	}
 }
 
+// TestContractRefusalTiersAreComplete guards that every refusal tier asserts the
+// FULL sandboxed mode × net product, not just net=on for one mode. A dropped
+// refusal cell (e.g. no net=off, or only restricted for darwin-bare) would let a
+// backend that silently resolves that (mode, net) escape the contract.
+func TestContractRefusalTiersAreComplete(t *testing.T) {
+	t.Parallel()
+	type cell struct {
+		mode Mode
+		net  bool
+	}
+	tiers := map[string]map[cell]bool{}
+	for _, c := range ContractCases() {
+		if !c.WantRefusal {
+			continue
+		}
+		tier := refusalTierLabel(c.Host)
+		if tiers[tier] == nil {
+			tiers[tier] = map[cell]bool{}
+		}
+		tiers[tier][cell{c.Mode, c.Net}] = true
+	}
+
+	for _, tier := range []string{"landlock", "bare-linux", "windows", "darwin-bare"} {
+		cells := tiers[tier]
+		if cells == nil {
+			t.Errorf("no refusal cases for tier %q", tier)
+			continue
+		}
+		for _, m := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+			for _, net := range []bool{true, false} {
+				if !cells[cell{m, net}] {
+					t.Errorf("refusal tier %q missing cell (mode=%v net=%v)", tier, m, net)
+				}
+			}
+		}
+	}
+}
+
+// refusalTierLabel classifies a HostFacts into the refusal tier it belongs to
+// (the tiers that cannot enforce any sandboxed mode).
+func refusalTierLabel(h HostFacts) string {
+	switch {
+	case h.OS == "windows":
+		return "windows"
+	case h.OS == "darwin" && !h.SeatbeltAvailable():
+		return "darwin-bare"
+	case h.OS == "linux" && !h.BwrapCapable && h.LandlockAvailable():
+		return "landlock"
+	case h.OS == "linux" && !h.BwrapCapable && !h.LandlockAvailable():
+		return "bare-linux"
+	default:
+		return "enforcing/" + h.OS
+	}
+}
+
+// recordingT is a sandbox.TestingT that records Errorf/Fatalf calls instead of
+// failing, so a test can assert that AssertResolve REJECTS a bad resolver. It
+// borrows a real *testing.T for TempDir/Helper and delegates Skipf (git-missing
+// skips the whole test).
+type recordingT struct {
+	*testing.T
+	errors int
+}
+
+func (r *recordingT) Errorf(string, ...any) { r.errors++ }
+func (r *recordingT) Fatalf(string, ...any) { r.errors++ }
+
+// TestAssertResolveRejectsOverBroadGrants proves the strengthened oracle: a
+// resolver that grants an over-broad ancestor ("/" as a write root, or as a
+// restricted file-tool read root) must FAIL AssertResolve. Exact-root checks let
+// such grants slip through; ancestor-aware checks catch them.
+func TestAssertResolveRejectsOverBroadGrants(t *testing.T) {
+	t.Parallel()
+	overBroad := func(p SandboxPolicy, h HostFacts, cwd string) (ResolvedPolicy, error) {
+		rp, err := Resolve(p, h, cwd)
+		if err != nil {
+			return rp, err
+		}
+		if rp.Enforced() {
+			// "/" is an ancestor of every worktree yet equals no worktree, so an
+			// exact-match oracle would never flag it.
+			rp.FileTool.WriteRoots = append(rp.FileTool.WriteRoots, "/")
+			rp.FileTool.ReadRoots = append(rp.FileTool.ReadRoots, "/")
+			rp.Spawned.WriteRoots = append(rp.Spawned.WriteRoots, "/")
+		}
+		return rp, nil
+	}
+	rec := &recordingT{T: t}
+	AssertResolve(rec, overBroad)
+	if rec.errors == 0 {
+		t.Fatal("AssertResolve accepted an over-broad-granting resolver; the oracle must reject over-broad ancestor grants")
+	}
+
+	// Sanity: the real resolver still passes the strengthened oracle.
+	if rec2 := (&recordingT{T: t}); func() int { AssertResolve(rec2, Resolve); return rec2.errors }() != 0 {
+		t.Fatalf("real Resolve failed the strengthened oracle with %d errors", rec2.errors)
+	}
+}
+
 // TestContractCasesAreDataOnly proves ContractCases() is a pure data function
 // (safe for backends to import and iterate): it returns an equal table on every
 // call and never shares mutable backing state between calls.

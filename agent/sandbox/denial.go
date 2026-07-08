@@ -27,6 +27,15 @@ type DeniedError struct {
 	// "credential path masked", …).
 	Reason string
 
+	// Sensitive marks a denial whose PATH must never be echoed — even by basename —
+	// in the message or the audit log. Callers set it for denylist / credential /
+	// pseudo-fs denials, where the basename itself (id_rsa, credentials, environ)
+	// leaks which secret was probed. The zero value (false) keeps the basename-
+	// showing behavior, so existing callers are unaffected. When true, Error()
+	// omits the offending path and Redacted() returns the "<denied>" token.
+	// M2/M3 set Sensitive=true at their denylist/credential/pseudo-fs denial sites.
+	Sensitive bool
+
 	// Command is the full shell command, set ONLY for shell/kernel denials (empty
 	// for file-tool denials). M7's shell approval card renders it.
 	Command string
@@ -38,7 +47,9 @@ type DeniedError struct {
 
 // Error implements error with a message safe to return to the model: it names
 // the mode, the tool, and the reason, and includes the path only by basename so
-// a denylisted absolute path is not echoed back in full.
+// a denylisted absolute path is not echoed back in full. A Sensitive denial
+// omits the path entirely (not even the basename), showing the "<denied>" token
+// so the message still signals that a path was refused.
 func (e *DeniedError) Error() string {
 	var b strings.Builder
 	b.WriteString("sandbox: ")
@@ -48,7 +59,11 @@ func (e *DeniedError) Error() string {
 	}
 	b.WriteString("denied")
 	if e.Path != "" {
-		fmt.Fprintf(&b, " (%s)", filepath.Base(e.Path))
+		if e.Sensitive {
+			b.WriteString(" (<denied>)")
+		} else {
+			fmt.Fprintf(&b, " (%s)", filepath.Base(e.Path))
+		}
 	}
 	if e.Reason != "" {
 		b.WriteString(": ")
@@ -63,10 +78,15 @@ func (e *DeniedError) Error() string {
 // Redacted returns the path with sensitive components elided for audit logging:
 // a home-anchored or otherwise absolute path is reduced to its basename so the
 // audit trail records that a denial happened without persisting the full secret
-// path. An in-tree relative path is returned as-is.
+// path. An in-tree relative path is returned as-is. A Sensitive denial returns
+// the "<denied>" token instead — even the basename (id_rsa, credentials) would
+// leak which secret was probed into the audit log.
 func (e *DeniedError) Redacted() string {
 	if e.Path == "" {
 		return ""
+	}
+	if e.Sensitive {
+		return "<denied>"
 	}
 	if filepath.IsAbs(e.Path) {
 		return filepath.Base(e.Path)
