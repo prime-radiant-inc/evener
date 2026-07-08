@@ -34,6 +34,7 @@ const tuiE2EWaitTimeout = 60 * time.Second
 // so render-driven round-trips aren't rounded up; capture-pane is ~2.6ms so
 // this does not oversubscribe CPU under the 6-way session cap.
 var tuiE2EPollInterval = 10 * time.Millisecond
+var tuiE2EDeadCheckInterval = 100 * time.Millisecond
 
 // tmuxSessionCounter makes tmux session names unique even when parallel tests
 // start within the same nanosecond.
@@ -1114,10 +1115,15 @@ func (a *tmuxTUI) Resize(width, height int) {
 func (a *tmuxTUI) WaitFor(wants ...string) string {
 	a.t.Helper()
 	deadline := time.Now().Add(tuiE2EWaitTimeout)
+	nextDeadCheck := time.Now()
 	var screen string
 	for time.Now().Before(deadline) {
-		if status, dead := a.PaneDeadStatus(); dead {
-			a.t.Fatalf("serf-tui exited before %q (status %s)\nvisible pane:\n%s\nrecent history:\n%s", wants, status, a.Capture(), a.CaptureHistory())
+		now := time.Now()
+		if !now.Before(nextDeadCheck) {
+			if status, dead := a.PaneDeadStatus(); dead {
+				a.t.Fatalf("serf-tui exited before %q (status %s)\nvisible pane:\n%s\nrecent history:\n%s", wants, status, a.Capture(), a.CaptureHistory())
+			}
+			nextDeadCheck = now.Add(tuiE2EDeadCheckInterval)
 		}
 		screen = a.Capture()
 		ok := true
@@ -1171,10 +1177,15 @@ func (a *tmuxTUI) WaitForHistory(wants ...string) string {
 func (a *tmuxTUI) WaitUntil(desc string, check func(screen string) bool) string {
 	a.t.Helper()
 	deadline := time.Now().Add(tuiE2EWaitTimeout)
+	nextDeadCheck := time.Now()
 	var screen string
 	for time.Now().Before(deadline) {
-		if status, dead := a.PaneDeadStatus(); dead {
-			a.t.Fatalf("serf-tui exited before %s (status %s)\nvisible pane:\n%s\nrecent history:\n%s", desc, status, a.Capture(), a.CaptureHistory())
+		now := time.Now()
+		if !now.Before(nextDeadCheck) {
+			if status, dead := a.PaneDeadStatus(); dead {
+				a.t.Fatalf("serf-tui exited before %s (status %s)\nvisible pane:\n%s\nrecent history:\n%s", desc, status, a.Capture(), a.CaptureHistory())
+			}
+			nextDeadCheck = now.Add(tuiE2EDeadCheckInterval)
 		}
 		screen = a.Capture()
 		if check(screen) {
