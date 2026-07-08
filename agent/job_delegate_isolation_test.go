@@ -39,14 +39,7 @@ func newWtDlgRepo(t *testing.T, c *llm.Client) *wtDlgRepo {
 	if err != nil {
 		t.Fatalf("EvalSymlinks: %v", err)
 	}
-	wtGit(t, root, "init", "-b", "main")
-	wtGit(t, root, "config", "user.email", "test@example.com")
-	wtGit(t, root, "config", "user.name", "Test")
-	if err := os.WriteFile(filepath.Join(root, "README"), []byte("main-checkout\n"), 0o644); err != nil {
-		t.Fatalf("write README: %v", err)
-	}
-	wtGit(t, root, "add", "README")
-	wtGit(t, root, "commit", "-m", "initial")
+	copyWorktreeBaseRepo(t, root)
 
 	stateDir, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
