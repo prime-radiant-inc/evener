@@ -144,40 +144,63 @@ func worktreeBaseRepo(t *testing.T) (string, string) {
 func copyWorktreeBaseRepo(t *testing.T, dst string) {
 	t.Helper()
 	base, _ := worktreeBaseRepo(t)
-	if err := copyWorktreeFixtureTree(base, dst); err != nil {
-		t.Fatalf("copy worktree base repo: %v", err)
+	for _, rel := range []string{
+		"README",
+		filepath.Join(".git", "HEAD"),
+		filepath.Join(".git", "config"),
+		filepath.Join(".git", "index"),
+		filepath.Join(".git", "refs", "heads", "main"),
+	} {
+		copyWorktreeFixtureRelFile(t, base, dst, rel)
+	}
+	objectsDir := filepath.Join(base, ".git", "objects")
+	if err := filepath.WalkDir(objectsDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(base, path)
+		if err != nil {
+			return err
+		}
+		return linkWorktreeFixtureRelFileNoTest(base, dst, rel)
+	}); err != nil {
+		t.Fatalf("copy worktree base repo objects: %v", err)
 	}
 }
 
-func copyWorktreeFixtureTree(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		if rel == "." {
-			return nil
-		}
-		target := filepath.Join(dst, rel)
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			link, err := os.Readlink(path)
-			if err != nil {
-				return err
-			}
-			return os.Symlink(link, target)
-		}
-		if d.IsDir() {
-			return os.Mkdir(target, info.Mode().Perm())
-		}
-		return copyWorktreeFixtureFile(path, target, info.Mode().Perm())
-	})
+func copyWorktreeFixtureRelFile(t *testing.T, srcRoot, dstRoot, rel string) {
+	t.Helper()
+	if err := copyWorktreeFixtureRelFileNoTest(srcRoot, dstRoot, rel); err != nil {
+		t.Fatalf("copy worktree base repo %s: %v", rel, err)
+	}
+}
+
+func copyWorktreeFixtureRelFileNoTest(srcRoot, dstRoot, rel string) error {
+	src := filepath.Join(srcRoot, rel)
+	dst := filepath.Join(dstRoot, rel)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	return copyWorktreeFixtureFile(src, dst, info.Mode().Perm())
+}
+
+func linkWorktreeFixtureRelFileNoTest(srcRoot, dstRoot, rel string) error {
+	src := filepath.Join(srcRoot, rel)
+	dst := filepath.Join(dstRoot, rel)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	if err := os.Link(src, dst); err == nil {
+		return nil
+	}
+	return copyWorktreeFixtureRelFileNoTest(srcRoot, dstRoot, rel)
 }
 
 func copyWorktreeFixtureFile(src, dst string, mode os.FileMode) error {
@@ -203,7 +226,7 @@ func worktreeTestSessionConfig() SessionConfig {
 	return SessionConfig{
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
-		testOnly:         testConfig{skipGitSnapshot: true},
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true},
 	}
 }
 

@@ -94,7 +94,11 @@ func (r *wtRepo) exitOp(t *testing.T) (map[string]any, error) {
 
 func TestWorktreeSwitch_BetweenTwoManagedWorktrees(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepoWithConfig(t, SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true})
+	r := newWorktreeRepoWithConfig(t, SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly:         testConfig{minimalSystemPrompt: true},
+	})
 	resA, err := r.create(t, map[string]any{"name": "A"})
 	if err != nil {
 		t.Fatalf("create A: %v", err)

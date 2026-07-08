@@ -234,6 +234,10 @@ type testConfig struct {
 	// skipGitSnapshot suppresses launch-time git metadata collection for tests
 	// whose contract is below the session prompt/environment snapshot layer.
 	skipGitSnapshot bool
+
+	// minimalSystemPrompt avoids rendering the large prompt template for tests
+	// whose contract is below prompt content. Tool definitions still rebuild.
+	minimalSystemPrompt bool
 }
 
 // spawnConfig holds the SessionConfig fields that only spawnAgent (plus the

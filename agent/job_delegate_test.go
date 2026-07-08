@@ -26,7 +26,7 @@ func newDelegateTestSession(t *testing.T, c *llm.Client) *Session {
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
-		testOnly:         testConfig{skipGitSnapshot: true},
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true},
 	}))
 }
 
@@ -36,6 +36,7 @@ func newDelegateRestorePreflightSession(t *testing.T, c *llm.Client) *Session {
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
+		testOnly:         testConfig{minimalSystemPrompt: true},
 	}))
 }
 

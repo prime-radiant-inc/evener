@@ -23,7 +23,7 @@ func newTestSession(t *testing.T) *Session {
 	return newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
-		testOnly:         testConfig{skipGitSnapshot: true},
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true},
 	}))
 }
 

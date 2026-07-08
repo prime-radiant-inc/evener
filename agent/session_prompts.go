@@ -31,6 +31,11 @@ func prependSystemPromptToUserMessage(systemPrompt string, user llm.Message) llm
 // call currentEnv() itself since it is invoked from both locked and unlocked
 // contexts and s.mu is not reentrant.
 func (s *Session) refreshSystemPromptCache(env execenv.ExecutionEnvironment) {
+	if s.cfg.testOnly.minimalSystemPrompt {
+		s.cachedSystemPrompt = "test system prompt"
+		s.promptSourceLog = nil
+		return
+	}
 	s.cachedSystemPrompt = s.renderSystemPrompt(env)
 }
 
