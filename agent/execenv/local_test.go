@@ -793,6 +793,34 @@ func TestExecArgv_PreservesArgvAndExitSemantics(t *testing.T) {
 	}
 }
 
+func TestExecArgv_UsesInjectedLocalVenvPath(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("script argv fixture uses POSIX sh")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, ".venv", "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(bin, "serf-execargv-venv-fixture")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf 'venv:<%s>\\n' \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := NewLocalExecutionEnvironment(dir)
+
+	res, err := env.ExecArgv(context.Background(), "serf-execargv-venv-fixture", []string{"value"}, 5000, "", nil)
+	if err != nil {
+		t.Fatalf("ExecArgv: %v (res=%+v)", err, res)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (res=%+v)", res.ExitCode, res)
+	}
+	if res.Stdout != "venv:<value>\n" {
+		t.Fatalf("stdout = %q, want local venv executable output", res.Stdout)
+	}
+}
+
 func TestShellCommand_ReturnsValidCmd(t *testing.T) {
 	cmd := shellCommand("echo test")
 	if cmd == nil {
