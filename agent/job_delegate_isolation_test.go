@@ -347,41 +347,6 @@ func TestDelegateIsolation_ManageWorktreeDeniedAtSpawn(t *testing.T) {
 	}
 }
 
-func TestDelegateIsolation_ManageWorktreeDeniedForAllToolsAgentType(t *testing.T) {
-	t.Parallel()
-	c := delegateTestClient(func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
-	r := newWtDlgRepo(t, c)
-	r.s.pluginAgents["dlg_alltools"] = plugin.Agent{Name: "dlg_alltools", AllTools: true, PluginName: "test"}
-
-	res := r.s.createDelegate(context.Background(), delegateArgs{
-		Task:           "do isolated work",
-		AgentType:      "dlg_alltools",
-		Isolation:      "worktree",
-		Background:     false,
-		BlockTimeoutMS: 5000,
-	})
-	if res.Err != nil {
-		t.Fatalf("createDelegate: %v", res.Err)
-	}
-	_, childID, err := decodeRef(res.TranscriptRef)
-	if err != nil {
-		t.Fatalf("decodeRef: %v", err)
-	}
-	sub := r.s.subagents.get(childID)
-	if sub == nil || sub.sess == nil {
-		t.Fatal("no retained child runtime")
-	}
-	if sub.sess.reg.Get("manage_worktree") != nil {
-		t.Error("manage_worktree must be denied even to an all-tools isolation delegate child")
-	}
-	// AllTools otherwise means everything: prove the base policy really was
-	// all-tools, so the deny is doing real work rather than an accident of a
-	// restrictive base policy.
-	if sub.sess.reg.Get("shell") == nil {
-		t.Error("all-tools child should still have shell")
-	}
-}
-
 func TestDelegateIsolation_ManageWorktreeDeniedAfterRestoreAllTools(t *testing.T) {
 	t.Parallel()
 	var request llm.Request
@@ -409,6 +374,19 @@ func TestDelegateIsolation_ManageWorktreeDeniedAfterRestoreAllTools(t *testing.T
 	_, childID, err := decodeRef(res.TranscriptRef)
 	if err != nil {
 		t.Fatalf("decodeRef: %v", err)
+	}
+	spawnedSub := r.s.subagents.get(childID)
+	if spawnedSub == nil || spawnedSub.sess == nil {
+		t.Fatal("no retained child runtime after spawn")
+	}
+	if spawnedSub.sess.reg.Get("manage_worktree") != nil {
+		t.Error("manage_worktree must be denied even to an all-tools isolation delegate child at spawn")
+	}
+	// AllTools otherwise means everything: prove the base policy really was
+	// all-tools, so the deny is doing real work rather than an accident of a
+	// restrictive base policy.
+	if spawnedSub.sess.reg.Get("shell") == nil {
+		t.Error("all-tools child should still have shell at spawn")
 	}
 
 	// Give the lane genuine work so close-time disposal (spec §9 step 4) keeps
