@@ -247,8 +247,8 @@ func TestBufferedShellHonorsMaxRuntime(t *testing.T) {
 func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 	t.Parallel()
 	s := newShellToolTestSession(t, SessionConfig{
-		DefaultCommandTimeoutMS: 1000,
-		MaxCommandTimeoutMS:     1000,
+		DefaultCommandTimeoutMS: 100,
+		MaxCommandTimeoutMS:     100,
 	})
 
 	for _, tc := range []struct {

@@ -352,7 +352,7 @@ func waitForJobManagerClosing(t *testing.T, jm *jobManager) {
 func TestRunShellPromotesOnTimeout(t *testing.T) {
 	t.Parallel()
 	jm, se := newShellTestRig(t)
-	res := runShell(context.Background(), jm, se, shellArgs{Command: "sleep 30", BlockTimeoutMS: 1000})
+	res := runShell(context.Background(), jm, se, shellArgs{Command: "sleep 30", BlockTimeoutMS: 100})
 	if res.JobID == "" {
 		t.Fatal("promoted job must have a job_id")
 	}
