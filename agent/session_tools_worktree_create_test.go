@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/worktree"
@@ -366,7 +367,7 @@ func (r *wtRepo) addManagedWorktreeFixture(t *testing.T, name string) string {
 		MergeTarget:    mergeTarget,
 		OriginalRoot:   canonicalMain,
 		CreatorSession: r.s.id,
-		CreatedAt:      "2026-01-01T00:00:00Z",
+		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := worktree.WriteSidecarExcl(metaDir, name, sc); err != nil {
 		t.Fatalf("write sidecar: %v", err)
