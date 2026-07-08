@@ -187,103 +187,85 @@ func TestWorktreeRemove_DirtyCheckErrorsWhenStatusFails(t *testing.T) {
 	}
 }
 
-func TestWorktreeRemove_CleanRemove(t *testing.T) {
+func TestWorktreeRemove_BasicDispositionMatrix(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
+	canonicalMain := r.canonicalMain(t)
+	metaDir := r.metaDir(canonicalMain)
 
-	out, err := r.removeOp(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("remove: %v", err)
+	create := func(name string) string {
+		t.Helper()
+		res, err := r.create(t, map[string]any{"name": name})
+		if err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+		return res["path"].(string)
 	}
-	if out["path"] != path {
-		t.Errorf("remove path = %v, want %s", out["path"], path)
+
+	cleanPath := create("clean-lane")
+	out, err := r.removeOp(t, map[string]any{"name": "clean-lane"})
+	if err != nil {
+		t.Fatalf("clean remove: %v", err)
+	}
+	if out["path"] != cleanPath {
+		t.Errorf("clean remove path = %v, want %s", out["path"], cleanPath)
 	}
 	if out["branch_deleted"] != false {
-		t.Errorf("branch_deleted = %v, want false (delete_branch not requested)", out["branch_deleted"])
+		t.Errorf("clean branch_deleted = %v, want false (delete_branch not requested)", out["branch_deleted"])
 	}
-
-	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
-		t.Errorf("worktree dir survived remove: err=%v", statErr)
+	if _, statErr := os.Stat(cleanPath); !os.IsNotExist(statErr) {
+		t.Errorf("clean-lane worktree dir survived remove: err=%v", statErr)
 	}
 	out2 := wtGit(t, r.mainRoot, "worktree", "list", "--porcelain")
 	for _, e := range worktree.ParsePorcelain(out2) {
-		if filepath.Clean(e.Path) == filepath.Clean(path) {
-			t.Errorf("git worktree list still shows removed worktree: %+v", e)
+		if filepath.Clean(e.Path) == filepath.Clean(cleanPath) {
+			t.Errorf("git worktree list still shows removed clean-lane: %+v", e)
 		}
 	}
-
 	// delete_branch was not requested: the branch survives, and the sidecar
 	// stays (marked worktree_removed) per spec §5 remove step 10.
-	if !branchExistsInRepo(t, r.mainRoot, "lane") {
-		t.Error("branch removed despite delete_branch not being requested")
+	if !branchExistsInRepo(t, r.mainRoot, "clean-lane") {
+		t.Error("clean-lane branch removed despite delete_branch not being requested")
 	}
-	canonicalMain := r.canonicalMain(t)
-	sc, scErr := worktree.ReadSidecar(r.metaDir(canonicalMain), "lane")
+	sc, scErr := worktree.ReadSidecar(metaDir, "clean-lane")
 	if scErr != nil {
-		t.Fatalf("read sidecar: %v", scErr)
+		t.Fatalf("read clean-lane sidecar: %v", scErr)
 	}
 	if !sc.WorktreeRemoved {
-		t.Error("sidecar worktree_removed not marked true")
+		t.Error("clean-lane sidecar worktree_removed not marked true")
 	}
 	if sc.TipSHAAtRemoval != r.head {
-		t.Errorf("sidecar tip_sha_at_removal = %q, want %q (lane never advanced)", sc.TipSHAAtRemoval, r.head)
-	}
-}
-
-// --- 2: dirty without force ---
-
-func TestWorktreeRemove_DirtyWithoutForceErrorsListsFilesEnvUnchanged(t *testing.T) {
-	t.Parallel()
-	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	if err := os.WriteFile(filepath.Join(path, "dirty.txt"), []byte("uncommitted\n"), 0o644); err != nil {
-		t.Fatalf("write dirty file: %v", err)
+		t.Errorf("clean-lane sidecar tip_sha_at_removal = %q, want %q", sc.TipSHAAtRemoval, r.head)
 	}
 
+	dirtyPath := create("dirty-lane")
+	if err := os.WriteFile(filepath.Join(dirtyPath, "dirty.txt"), []byte("uncommitted\n"), 0o644); err != nil {
+		t.Fatalf("write dirty-lane dirty file: %v", err)
+	}
 	before := r.s.currentEnv().WorkingDirectory()
-	_, err = r.removeOp(t, map[string]any{"name": "lane"})
+	_, err = r.removeOp(t, map[string]any{"name": "dirty-lane"})
 	if err == nil {
-		t.Fatal("expected remove of a dirty worktree without force to error")
+		t.Fatal("expected remove of dirty-lane without force to error")
 	}
 	if !strings.Contains(err.Error(), "dirty.txt") {
-		t.Errorf("error must list the offending file, got: %v", err)
+		t.Errorf("dirty-lane error must list the offending file, got: %v", err)
 	}
 	if got := r.s.currentEnv().WorkingDirectory(); got != before {
-		t.Errorf("env changed on a refused remove: got %q, want unchanged %q", got, before)
+		t.Errorf("env changed on a refused dirty-lane remove: got %q, want unchanged %q", got, before)
 	}
-	if _, statErr := os.Stat(path); statErr != nil {
-		t.Errorf("worktree removed despite the refusal: %v", statErr)
-	}
-}
-
-// --- 3: force_dirty removes dirty (force alone does not — F3) ---
-
-func TestWorktreeRemove_ForceDirtyRemovesDirty(t *testing.T) {
-	t.Parallel()
-	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	if err := os.WriteFile(filepath.Join(path, "dirty.txt"), []byte("uncommitted\n"), 0o644); err != nil {
-		t.Fatalf("write dirty file: %v", err)
+	if _, statErr := os.Stat(dirtyPath); statErr != nil {
+		t.Errorf("dirty-lane removed despite the refusal: %v", statErr)
 	}
 
-	if _, err := r.removeOp(t, map[string]any{"name": "lane", "force_dirty": true}); err != nil {
+	forcePath := create("force-dirty-lane")
+	if err := os.WriteFile(filepath.Join(forcePath, "dirty.txt"), []byte("uncommitted\n"), 0o644); err != nil {
+		t.Fatalf("write force-dirty-lane dirty file: %v", err)
+	}
+	if _, err := r.removeOp(t, map[string]any{"name": "force-dirty-lane", "force_dirty": true}); err != nil {
 		t.Fatalf("force_dirty remove: %v", err)
 	}
-	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
-		t.Errorf("worktree dir survived a force_dirty remove: err=%v", statErr)
+	if _, statErr := os.Stat(forcePath); !os.IsNotExist(statErr) {
+		t.Errorf("force-dirty-lane worktree dir survived remove: err=%v", statErr)
 	}
 }
 
