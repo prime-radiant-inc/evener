@@ -49,7 +49,6 @@ func isDeniedErr(err error) bool {
 func TestEscape_SymlinkOutDeniedEveryTool(t *testing.T) {
 	t.Parallel()
 	for _, mode := range sandboxedModes {
-		mode := mode
 		t.Run(mode.String(), func(t *testing.T) {
 			t.Parallel()
 			env, home, worktree := sandboxedEnv(t, mode)
@@ -92,7 +91,6 @@ func TestEscape_ProcReadDeniedEveryMode(t *testing.T) {
 		"/proc/1/root/etc/passwd",
 	}
 	for _, mode := range sandboxedModes {
-		mode := mode
 		t.Run(mode.String(), func(t *testing.T) {
 			t.Parallel()
 			env, _, _ := sandboxedEnv(t, mode)
@@ -113,7 +111,6 @@ func TestEscape_ProcReadDeniedEveryMode(t *testing.T) {
 func TestEscape_DenylistReadEveryTool(t *testing.T) {
 	t.Parallel()
 	for _, mode := range sandboxedModes {
-		mode := mode
 		t.Run(mode.String(), func(t *testing.T) {
 			t.Parallel()
 			env, home, worktree := sandboxedEnv(t, mode)
@@ -152,7 +149,6 @@ func TestEscape_DenylistReadEveryTool(t *testing.T) {
 func TestEscape_HomeConfigWriteDenied(t *testing.T) {
 	t.Parallel()
 	for _, mode := range sandboxedModes {
-		mode := mode
 		t.Run(mode.String(), func(t *testing.T) {
 			t.Parallel()
 			env, home, _ := sandboxedEnv(t, mode)
@@ -187,7 +183,6 @@ func TestEscape_GitConfigHookWriteDenied(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 	for _, mode := range []sandbox.Mode{sandbox.ModeWorkspaceWrite, sandbox.ModeRestricted} {
-		mode := mode
 		t.Run(mode.String(), func(t *testing.T) {
 			t.Parallel()
 			home := t.TempDir()
@@ -218,7 +213,6 @@ func TestEscape_GitConfigHookWriteDenied(t *testing.T) {
 func TestEscape_ReadWriteShapeMatchesContract(t *testing.T) {
 	t.Parallel()
 	for _, mode := range sandboxedModes {
-		mode := mode
 		t.Run(mode.String(), func(t *testing.T) {
 			t.Parallel()
 			oracle := oracleFor(t, mode)
@@ -267,7 +261,7 @@ func TestEscape_PreExistingHardlinkResidual(t *testing.T) {
 		t.Skipf("hardlink unsupported here: %v", err)
 	}
 
-	// Residual: the hardlinked secret is readable (documented gap).
+	// Residual: the hard-linked secret is readable (documented gap).
 	out, err := env.ReadFile(hard, nil, nil)
 	if err != nil {
 		t.Fatalf("pre-existing hardlink read unexpectedly failed (residual expects success): %v", err)

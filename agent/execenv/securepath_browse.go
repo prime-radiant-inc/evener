@@ -79,7 +79,7 @@ func (f *secureDirFS) ReadDir(name string) ([]fs.DirEntry, error) {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: toFsErr(err)}
 	}
 	df := os.NewFile(uintptr(fd), name)
-	defer df.Close()
+	defer func() { _ = df.Close() }()
 	return df.ReadDir(-1)
 }
 
@@ -89,7 +89,7 @@ func (f *secureDirFS) Stat(name string) (fs.FileInfo, error) {
 		return nil, &fs.PathError{Op: "stat", Path: name, Err: toFsErr(err)}
 	}
 	df := os.NewFile(uintptr(fd), name)
-	defer df.Close()
+	defer func() { _ = df.Close() }()
 	return df.Stat()
 }
 
@@ -115,7 +115,7 @@ func (s *sandboxFS) glob(tool, base, pattern string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer unix.Close(baseFd)
+	defer func() { _ = unix.Close(baseFd) }()
 
 	fsys := &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s}
 	matches, err := doublestar.Glob(fsys, pattern)
@@ -143,7 +143,7 @@ func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive
 	if err != nil {
 		return "", err
 	}
-	defer unix.Close(baseFd)
+	defer func() { _ = unix.Close(baseFd) }()
 
 	a, err := newGrepAccum(pattern, caseInsensitive, maxResults, outputMode)
 	if err != nil {

@@ -72,7 +72,6 @@ func mustDenied(t *testing.T, err error, whatf string, args ...any) {
 func TestReadFileRefusesProcEnviron(t *testing.T) {
 	t.Parallel()
 	for _, mode := range sandboxedModes {
-		mode := mode
 		t.Run(mode.String(), func(t *testing.T) {
 			t.Parallel()
 			env, _, _ := sandboxedEnv(t, mode)
@@ -94,7 +93,6 @@ func TestReadFileRefusesProcEnviron(t *testing.T) {
 func TestRestrictedConfinesReads(t *testing.T) {
 	t.Parallel()
 	for _, mode := range sandboxedModes {
-		mode := mode
 		t.Run(mode.String(), func(t *testing.T) {
 			t.Parallel()
 			env, home, _ := sandboxedEnv(t, mode)
@@ -122,7 +120,6 @@ func TestRestrictedConfinesReads(t *testing.T) {
 func TestReadFileSymlinkOutRefused(t *testing.T) {
 	t.Parallel()
 	for _, mode := range sandboxedModes {
-		mode := mode
 		t.Run(mode.String(), func(t *testing.T) {
 			t.Parallel()
 			env, home, worktree := sandboxedEnv(t, mode)
@@ -218,11 +215,11 @@ func TestFileExistsDenylistedFalse(t *testing.T) {
 	}
 
 	// A real in-worktree file still reports true.
-	real := filepath.Join(worktree, "here.txt")
-	if err := os.WriteFile(real, []byte("y"), 0o644); err != nil {
+	realFile := filepath.Join(worktree, "here.txt")
+	if err := os.WriteFile(realFile, []byte("y"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if !env.FileExists(real) {
+	if !env.FileExists(realFile) {
 		t.Error("file_exists must return true for a real in-worktree file")
 	}
 }
@@ -296,7 +293,6 @@ func TestReadOnlyDeniesWrites(t *testing.T) {
 func TestWriteConfinedToWritableRoots(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []sandbox.Mode{sandbox.ModeWorkspaceWrite, sandbox.ModeRestricted} {
-		mode := mode
 		t.Run(mode.String(), func(t *testing.T) {
 			t.Parallel()
 			env, home, worktree := sandboxedEnv(t, mode)

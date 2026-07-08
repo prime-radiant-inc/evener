@@ -232,7 +232,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			patch := fmt.Sprint(args["patch"])
 			fm, ok := env.(execenv.FileMutator)
 			if !ok {
-				return "", fmt.Errorf("apply_patch: execution environment does not support file mutation")
+				return "", errors.New("apply_patch: execution environment does not support file mutation")
 			}
 			return tool.ApplyPatch(fm, patch)
 		},

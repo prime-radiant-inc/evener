@@ -315,7 +315,7 @@ func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
 		return nil, err
 	}
 	f := os.NewFile(uintptr(fd), abs) // takes ownership of fd; f.Close closes it
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return io.ReadAll(f)
 }
 
@@ -329,7 +329,7 @@ func (s *sandboxFS) writeFile(tool, abs string, data []byte, perm os.FileMode) e
 	if err != nil {
 		return err
 	}
-	defer unix.Close(parentFd)
+	defer func() { _ = unix.Close(parentFd) }()
 	var st unix.Stat_t
 	if serr := unix.Fstatat(parentFd, leaf, &st, unix.AT_SYMLINK_NOFOLLOW); serr == nil {
 		switch st.Mode & unix.S_IFMT {
@@ -360,7 +360,7 @@ func (s *sandboxFS) remove(tool, abs string) error {
 	if err != nil {
 		return err
 	}
-	defer unix.Close(parentFd)
+	defer func() { _ = unix.Close(parentFd) }()
 	if uerr := unix.Unlinkat(parentFd, leaf, 0); uerr != nil {
 		if errors.Is(uerr, unix.EISDIR) {
 			_ = unix.Unlinkat(parentFd, leaf, unix.AT_REMOVEDIR)
@@ -377,12 +377,12 @@ func (s *sandboxFS) rename(tool, oldAbs, newAbs string) error {
 	if err != nil {
 		return err
 	}
-	defer unix.Close(oldParent)
+	defer func() { _ = unix.Close(oldParent) }()
 	newParent, newLeaf, err := s.openWriteParent(tool, newAbs, true)
 	if err != nil {
 		return err
 	}
-	defer unix.Close(newParent)
+	defer func() { _ = unix.Close(newParent) }()
 	return unix.Renameat(oldParent, oldLeaf, newParent, newLeaf)
 }
 
@@ -433,7 +433,7 @@ func (s *sandboxFS) exists(tool, abs string) bool {
 	if err != nil {
 		return false
 	}
-	defer unix.Close(fd)
+	defer func() { _ = unix.Close(fd) }()
 	var st unix.Stat_t
 	if err := unix.Fstatat(fd, leaf, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		return false
@@ -467,7 +467,7 @@ func (s *sandboxFS) listDir(tool, abs string, depth int) ([]DirEntry, error) {
 // dirFd. relPrefix is the path prefix reported to the caller; baseAbs is the real
 // absolute path of dirFd, used only to skip masked entries.
 func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, out *[]DirEntry) error {
-	defer unix.Close(dirFd)
+	defer func() { _ = unix.Close(dirFd) }()
 	ents, err := readDirEntries(dirFd)
 	if err != nil {
 		return err
@@ -589,7 +589,7 @@ func readDirEntries(dirFd int) ([]os.DirEntry, error) {
 		return nil, err
 	}
 	f := os.NewFile(uintptr(dup), "")
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return f.ReadDir(-1)
 }
 

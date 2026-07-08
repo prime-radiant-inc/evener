@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -72,7 +73,7 @@ func TestConfinedResolvesUnderRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readFile beneath root: %v", err)
 	}
-	if string(got) != string(want) {
+	if !bytes.Equal(got, want) {
 		t.Errorf("readFile = %q, want %q", got, want)
 	}
 }
