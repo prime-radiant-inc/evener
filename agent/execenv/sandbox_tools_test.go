@@ -432,6 +432,37 @@ func TestWriteOffModeIdentical(t *testing.T) {
 	}
 }
 
+// TestRemoveMissingParentIsNoop: a sandboxed apply_patch delete of a target whose
+// PARENT directory does not exist is a no-op success, matching off-mode's
+// best-effort delete — a raw ENOENT/ENOTDIR must not fail the whole apply_patch.
+// A genuine policy denial (outside the writable root) is still surfaced.
+func TestRemoveMissingParentIsNoop(t *testing.T) {
+	t.Parallel()
+	env, home, worktree := sandboxedEnv(t, sandbox.ModeWorkspaceWrite)
+
+	// Parent directory absent → target already gone → no error.
+	if err := env.RemovePath(filepath.Join(worktree, "no", "such", "dir", "file.txt")); err != nil {
+		t.Errorf("delete with an absent parent dir should be a no-op: %v", err)
+	}
+	// Target absent but parent present → also a no-op.
+	if err := env.RemovePath(filepath.Join(worktree, "gone.txt")); err != nil {
+		t.Errorf("delete of an absent target should be a no-op: %v", err)
+	}
+	// An existing in-root file is actually removed.
+	f := filepath.Join(worktree, "real.txt")
+	if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.RemovePath(f); err != nil {
+		t.Fatalf("delete of an existing in-root file: %v", err)
+	}
+	if _, err := os.Stat(f); !os.IsNotExist(err) {
+		t.Errorf("delete did not remove the file: stat err=%v", err)
+	}
+	// Outside the writable root → genuine denial, never a swallowed no-op.
+	mustDenied(t, env.RemovePath(filepath.Join(home, "outside.txt")), "delete outside the writable root")
+}
+
 // ---- Task 4: browse surface (glob, grep) ----
 
 // TestGlobRestrictedOutsideRefused: under restricted, a glob base outside the

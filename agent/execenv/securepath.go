@@ -380,6 +380,15 @@ func (s *sandboxFS) writeFile(tool, abs string, data []byte, perm os.FileMode) e
 func (s *sandboxFS) remove(tool, abs string) error {
 	parentFd, leaf, err := s.openWriteParent(tool, abs, false)
 	if err != nil {
+		// Best-effort delete, matching off-mode RemovePath (which swallows a missing
+		// target): when the target's parent directory is simply absent, the target is
+		// already gone, so a missing-parent ENOENT/ENOTDIR is a no-op success rather
+		// than a failed apply_patch. Genuine policy denials (outside a writable root,
+		// masked, git-protected, a refused symlink component) still propagate.
+		var denied *sandbox.DeniedError
+		if !errors.As(err, &denied) && (errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENOTDIR)) {
+			return nil
+		}
 		return err
 	}
 	defer func() { _ = unix.Close(parentFd) }()
