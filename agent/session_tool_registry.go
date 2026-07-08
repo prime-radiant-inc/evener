@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"sync"
 	"time"
 
 	"primeradiant.com/serf/agent/events"
@@ -245,17 +247,47 @@ func newToolDeps(s *Session) *toolDeps {
 	}
 }
 
+var (
+	profileToolRegistryCacheMu sync.Mutex
+	profileToolRegistryCache   = map[string]*tool.Registry{}
+)
+
 // newProfileToolRegistry builds a tool registry seeded with the profile's
 // canonical tool definitions and placeholder executors; registerCoreTools wires
 // the real executors afterward. The registry is keyed by canonical tool names —
 // provider-specific renaming is applied only when advertising tools to the
 // model (see rebuildToolDefsCache).
 func newProfileToolRegistry(p *provider.Profile) *tool.Registry {
-	reg := tool.NewRegistry()
 	if p == nil {
-		return reg
+		return tool.NewRegistry()
 	}
-	for _, td := range p.ToolDefinitions() {
+	defs := p.ToolDefinitions()
+	key, cacheable := profileToolRegistryCacheKey(defs)
+	if !cacheable {
+		return buildProfileToolRegistry(defs)
+	}
+
+	profileToolRegistryCacheMu.Lock()
+	defer profileToolRegistryCacheMu.Unlock()
+	if cached := profileToolRegistryCache[key]; cached != nil {
+		return cached.Clone()
+	}
+	reg := buildProfileToolRegistry(defs)
+	profileToolRegistryCache[key] = reg.Clone()
+	return reg
+}
+
+func profileToolRegistryCacheKey(defs []llm.ToolDefinition) (string, bool) {
+	b, err := json.Marshal(defs)
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
+}
+
+func buildProfileToolRegistry(defs []llm.ToolDefinition) *tool.Registry {
+	reg := tool.NewRegistry()
+	for _, td := range defs {
 		_ = reg.Register(tool.RegisteredTool{
 			Tool:        llm.Tool{Definition: td},
 			OmitPurpose: td.Name == "communicate",
