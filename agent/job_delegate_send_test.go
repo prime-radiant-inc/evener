@@ -930,7 +930,7 @@ func TestSendDelegateMessageTerminalResumeWaitsForDelegateJobAttachment(t *testi
 	select {
 	case res := <-secondResumeDone:
 		t.Fatalf("second terminal resume returned before delegate job attached: %+v", res)
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(25 * time.Millisecond):
 	}
 
 	close(releaseAttach)
@@ -2638,7 +2638,7 @@ func TestDelegateReconstructionRacingParentCloseDoesNotTrackOrRunSideEffects(t *
 	select {
 	case <-closeDone:
 		t.Fatal("parent Close returned before paused reconstruction reached tracking")
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(25 * time.Millisecond):
 	}
 	close(release)
 	select {
@@ -2718,7 +2718,7 @@ func TestParentCloseWaitsForInFlightDelegateReconstructionClaim(t *testing.T) {
 	select {
 	case <-closeDone:
 		closeReturnedBeforeRelease = true
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(25 * time.Millisecond):
 	}
 	close(release)
 	select {

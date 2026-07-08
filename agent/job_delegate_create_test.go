@@ -534,7 +534,7 @@ func TestCreateDelegateDescriptorDurableBeforeFirstModelRequest(t *testing.T) {
 	sess.jobManager.appendEvents = func(events []jobstore.Event) error {
 		for _, event := range events {
 			if event.Kind == jobstore.EventJobStarted && event.Type == jobstore.JobDelegate {
-				time.Sleep(250 * time.Millisecond)
+				time.Sleep(25 * time.Millisecond)
 				break
 			}
 		}
