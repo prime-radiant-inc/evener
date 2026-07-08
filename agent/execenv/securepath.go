@@ -174,11 +174,15 @@ func (s *sandboxFS) underProtected(abs string) bool {
 }
 
 // openRead opens abs for reading per the policy's file-tool read shape, returning
-// an fd (caller closes) or a typed denial. Two shapes:
-//   - ReadWorktreeOnly (restricted): abs must resolve beneath one of ReadRoots via
-//     openBeneathRoot (RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS on Linux).
-//   - ReadAnywhere (read-only/workspace-write): abs is refused if under a masked
-//     path, otherwise opened with RESOLVE_NO_SYMLINKS so no symlink is traversed.
+// an fd (caller closes) or a typed denial. A read that lands within a granted root
+// is resolved the SAME way writes are — anchored at the cached root fd, walking
+// only the in-root relative tail (RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS on Linux; an
+// O_NOFOLLOW tail walk on darwin) — so a symlinked ANCESTOR of the root is
+// tolerated while a symlink COMPONENT inside the root is still refused. The two
+// shapes differ only in what falls outside every granted root:
+//   - ReadWorktreeOnly (restricted): an out-of-root target is denied.
+//   - ReadAnywhere (read-only/workspace-write): an out-of-root target is opened with
+//     RESOLVE_NO_SYMLINKS from "/" (refused if masked), never following any symlink.
 func (s *sandboxFS) openRead(tool, abs string, flags int) (int, error) {
 	abs = filepath.Clean(abs)
 	if s.policy.FileTool.Read == sandbox.ReadWorktreeOnly {
@@ -186,29 +190,47 @@ func (s *sandboxFS) openRead(tool, abs string, flags int) (int, error) {
 		if !ok {
 			return -1, s.deny(tool, abs, denyReasonOutsideRead)
 		}
-		if s.underMasked(abs) {
-			return -1, s.deny(tool, abs, denyReasonMasked)
-		}
-		rootFd, err := s.rootFd(root)
-		if err != nil {
-			return -1, err
-		}
-		fd, err := openBeneathRoot(rootFd, rel, flags, 0)
-		if err != nil {
-			return -1, s.mapOpenErr(tool, abs, err)
-		}
-		if rerr := s.recheckMaskedFd(tool, abs, fd); rerr != nil {
-			_ = unix.Close(fd)
-			return -1, rerr
-		}
-		return fd, nil
+		return s.openInRoot(tool, abs, root, rel, flags)
 	}
 
-	// ReadAnywhere.
+	// ReadAnywhere: anchor an in-root read at its granted root exactly like a write,
+	// so a symlinked ancestor of the root does not make an in-root file unreadable.
+	// The granted roots are the writable roots (the worktree and any extra writable
+	// roots); read-only mode has none, so all its reads take the out-of-root path.
+	if root, rel, ok := containingRoot(s.policy.FileTool.WriteRoots, abs); ok {
+		return s.openInRoot(tool, abs, root, rel, flags)
+	}
+
+	// A target outside every granted root: allowed anywhere minus masked, resolved
+	// from "/" refusing every symlink so the textual denylist check stays authoritative.
 	if s.underMasked(abs) {
 		return -1, s.deny(tool, abs, denyReasonMasked)
 	}
 	fd, err := openAbsNoSymlinks(abs, flags, 0)
+	if err != nil {
+		return -1, s.mapOpenErr(tool, abs, err)
+	}
+	if rerr := s.recheckMaskedFd(tool, abs, fd); rerr != nil {
+		_ = unix.Close(fd)
+		return -1, rerr
+	}
+	return fd, nil
+}
+
+// openInRoot opens rel (a cleaned, "..-free" slash-relative tail) beneath the
+// cached fd for a granted root, the shared root-fd-anchored path both read shapes
+// and every write use. It refuses a symlink component inside the root while
+// tolerating a symlinked ancestor of the root itself, and enforces the masked
+// denylist both textually before the open and against the fd's canonical path after.
+func (s *sandboxFS) openInRoot(tool, abs, root, rel string, flags int) (int, error) {
+	if s.underMasked(abs) {
+		return -1, s.deny(tool, abs, denyReasonMasked)
+	}
+	rootFd, err := s.rootFd(root)
+	if err != nil {
+		return -1, err
+	}
+	fd, err := openBeneathRoot(rootFd, rel, flags, 0)
 	if err != nil {
 		return -1, s.mapOpenErr(tool, abs, err)
 	}

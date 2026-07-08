@@ -137,6 +137,74 @@ func TestReadFileSymlinkOutRefused(t *testing.T) {
 	}
 }
 
+// TestReadToleratesSymlinkedAncestor: when a granted root sits under a SYMLINKED
+// ancestor (macOS /var → /private/var, a symlinked $HOME or project parent), an
+// in-root file must be BOTH readable and writable. Reads anchor at the cached root
+// fd the same way writes do — tolerating a symlinked ANCESTOR of the root while
+// still refusing a symlink COMPONENT inside the root (the escape vector). This
+// guards the read/write asymmetry where the from-"/" no-symlink walk refused any
+// symlinked ancestor of a read target, leaving in-root files writable but not
+// readable.
+func TestReadToleratesSymlinkedAncestor(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []sandbox.Mode{sandbox.ModeWorkspaceWrite, sandbox.ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			t.Parallel()
+			base := t.TempDir()
+			realParent := filepath.Join(base, "real")
+			worktreeReal := filepath.Join(realParent, "project")
+			if err := os.MkdirAll(worktreeReal, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			// link → realParent, so link/project reaches the real worktree through a
+			// symlinked path component (the ancestor).
+			if err := os.Symlink(realParent, filepath.Join(base, "link")); err != nil {
+				t.Fatal(err)
+			}
+			worktree := filepath.Join(base, "link", "project")
+
+			// The granted root retains the symlinked ancestor, as it does when the
+			// session cwd is itself a symlinked path (openRootDir follows the symlink
+			// once to open the root; enforcement anchors there).
+			fileTool := sandbox.AccessScope{Read: sandbox.ReadAnywhere, WriteRoots: []string{worktree}}
+			if mode == sandbox.ModeRestricted {
+				fileTool = sandbox.AccessScope{
+					Read:       sandbox.ReadWorktreeOnly,
+					ReadRoots:  []string{worktree},
+					WriteRoots: []string{worktree},
+				}
+			}
+			env := NewLocalExecutionEnvironment(worktree)
+			env.Sandbox = &sandbox.ResolvedPolicy{Mode: mode, Backend: sandbox.BackendBwrap, FileTool: fileTool}
+			t.Cleanup(env.Cleanup)
+
+			target := filepath.Join(worktree, "note.txt")
+			if _, err := env.WriteFile(target, "under a symlinked ancestor\n"); err != nil {
+				t.Fatalf("%v: in-root write under a symlinked ancestor should succeed: %v", mode, err)
+			}
+			out, err := env.ReadFile(target, nil, nil)
+			if err != nil {
+				t.Fatalf("%v: in-root read under a symlinked ancestor should succeed: %v", mode, err)
+			}
+			if !strings.Contains(out, "under a symlinked ancestor") {
+				t.Errorf("%v: read returned %q", mode, out)
+			}
+
+			// A symlink COMPONENT inside the root is still refused: tolerance is for
+			// ancestors of the root, never for a symlink within it.
+			secret := filepath.Join(base, "secret.txt")
+			if err := os.WriteFile(secret, []byte("SECRET"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(secret, filepath.Join(worktreeReal, "escape.txt")); err != nil {
+				t.Fatal(err)
+			}
+			_, eerr := env.ReadFile(filepath.Join(worktree, "escape.txt"), nil, nil)
+			mustDenied(t, eerr, "%v read through a symlink component inside the root", mode)
+		})
+	}
+}
+
 // TestListDirRestrictedAndDenylist: list_dir cannot escape the worktree under
 // restricted, and cannot enumerate a denylisted directory in any mode.
 func TestListDirRestrictedAndDenylist(t *testing.T) {
