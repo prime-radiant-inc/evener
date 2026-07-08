@@ -247,6 +247,9 @@ func TestWorktreeRemove_BasicDispositionMatrix(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected remove of dirty-lane without force to error")
 	}
+	if !strings.Contains(err.Error(), "has uncommitted changes") {
+		t.Errorf("dirty-lane error = %q, want it to explain uncommitted changes", err.Error())
+	}
 	if !strings.Contains(err.Error(), "dirty.txt") {
 		t.Errorf("dirty-lane error must list the offending file, got: %v", err)
 	}
@@ -499,6 +502,7 @@ func TestWorktreeRemove_DeleteBranchUnmergedRefusesEvidenceSidecarKept(t *testin
 		t.Fatalf("exit: %v", err)
 	}
 	// main is NOT advanced: lane is never merged.
+	logPath := gitArgvRecordingRepoShim(t, r.mainRoot)
 
 	out, err := r.removeOp(t, map[string]any{"name": "lane", "delete_branch": true})
 	if err != nil {
@@ -511,8 +515,16 @@ func TestWorktreeRemove_DeleteBranchUnmergedRefusesEvidenceSidecarKept(t *testin
 	if reason == "" {
 		t.Fatal("expected branch_kept_reason evidence for an unmerged refusal")
 	}
-	if !strings.Contains(reason, "not merged") {
-		t.Errorf("branch_kept_reason = %q, want it to say the branch is not merged", reason)
+	if !strings.Contains(reason, `branch "lane" is not merged into`) {
+		t.Errorf("branch_kept_reason = %q, want it to say the branch is not merged into the target", reason)
+	}
+	if b, readErr := os.ReadFile(logPath); readErr == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && fields[0] == "branch" && fields[1] == "-d" {
+				t.Fatalf("git branch -d was invoked despite serf's merge gate: %q", line)
+			}
+		}
 	}
 	if !branchExistsInRepo(t, r.mainRoot, "lane") {
 		t.Error("branch was deleted despite being unmerged")
