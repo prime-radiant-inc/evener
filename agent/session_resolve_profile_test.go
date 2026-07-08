@@ -506,6 +506,7 @@ func TestSetModel_CrossProvider(t *testing.T) {
 				withConfig(SessionConfig{
 					NoProjectPrompts: true,
 					ResolveProfile:   testResolverFull,
+					testOnly:         testConfig{skipGitSnapshot: true},
 				}),
 			)
 
