@@ -336,6 +336,7 @@ func (m *Manager) RegisterTools(reg *tool.Registry) []ServerOutcome {
 							result, err = call(newSess)
 						}
 					}
+
 					if err != nil {
 						// Final Channel-A error return: a ctx cancellation, a plain
 						// JSON-RPC error, or an ErrConnectionClosed that reconnect
