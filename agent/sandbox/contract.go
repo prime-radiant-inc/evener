@@ -90,23 +90,22 @@ func ContractCases() []ContractCase {
 	cases = append(cases,
 		// workspace-write on a bwrap host WITHOUT overlay support → session-private cache.
 		modeCase("workspace-write-no-overlay", ModeWorkspaceWrite, true, bwrapNoOverlay, MainCheckout, BackendBwrap, CacheSessionPrivate, ReadAnywhere, ReadAnywhere, true),
-
-		// --- landlock-only tier: Landlock is allowlist-only and cannot subtract the
-		// in-worktree .git pointer inside a granted root, so it serves NO sandboxed
-		// mode — every sandboxed request refuses naming bwrap (finding #2). ---
-		refuseCase("landlock/restricted-linked", ModeRestricted, true, landlock, LinkedWorktree, "bwrap"),
-		refuseCase("landlock/restricted-main", ModeRestricted, true, landlock, MainCheckout, "bwrap"),
-		refuseCase("landlock/restricted-linked-netoff", ModeRestricted, false, landlock, LinkedWorktree, "bwrap"),
-		refuseCase("landlock/read-only", ModeReadOnly, true, landlock, LinkedWorktree, "bwrap"),
-		refuseCase("landlock/workspace-write", ModeWorkspaceWrite, true, landlock, LinkedWorktree, "bwrap"),
 	)
 
-	// --- neither (bare linux) + windows: every sandboxed mode refuses. ---
-	for _, h := range []HostFacts{bare, windows} {
-		for _, m := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
-			cases = append(cases, refuseCase("no-backend/"+h.OS+"/"+m.String(), m, true, h, MainCheckout, ""))
-		}
-	}
+	// --- refusal tiers: every sandboxed mode × net cell refuses, so no refusal
+	// cell (esp. net=off) can be silently dropped and let a backend resolve it. ---
+
+	// landlock-only: Landlock is allowlist-only and cannot subtract the in-worktree
+	// .git pointer inside a granted root, so it serves NO sandboxed mode — every
+	// cell refuses naming bwrap (finding #2). Its signature workspace is the linked
+	// worktree; a MainCheckout cell is added so both git shapes are exercised.
+	cases = append(cases, refuseTier("landlock", landlock, LinkedWorktree, "bwrap")...)
+	cases = append(cases, refuseCase("landlock/restricted-main", ModeRestricted, true, landlock, MainCheckout, "bwrap"))
+
+	// neither (bare linux) + windows: no backend at all → every cell refuses with
+	// no backend that would satisfy it.
+	cases = append(cases, refuseTier("no-backend/linux", bare, MainCheckout, "")...)
+	cases = append(cases, refuseTier("no-backend/windows", windows, MainCheckout, "")...)
 
 	// --- darwin + Seatbelt: deny-capable, full matrix; cache always session-private. ---
 	for _, net := range []bool{true, false} {
@@ -116,10 +115,22 @@ func ContractCases() []ContractCase {
 			modeCase("seatbelt/restricted", ModeRestricted, net, seatbelt, MainCheckout, BackendSeatbelt, CacheSessionPrivate, ReadWorktreeOnly, ReadWorktreeOnly, true),
 		)
 	}
-	// darwin without sandbox-exec refuses, naming sandbox-exec.
-	cases = append(cases, refuseCase("darwin-bare/restricted", ModeRestricted, true, darwinBare, MainCheckout, "sandbox-exec"))
+	// darwin without sandbox-exec: every cell refuses naming sandbox-exec.
+	cases = append(cases, refuseTier("darwin-bare", darwinBare, MainCheckout, "sandbox-exec")...)
 
 	return cases
+}
+
+// refuseTier generates the full sandboxed mode × net refusal product for a host
+// tier that cannot enforce any sandboxed mode, so every refusal cell is asserted.
+func refuseTier(namePrefix string, host HostFacts, ws WorkspaceKind, requiredBackend string) []ContractCase {
+	var out []ContractCase
+	for _, m := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		for _, net := range []bool{true, false} {
+			out = append(out, refuseCase(namePrefix+"/"+m.String(), m, net, host, ws, requiredBackend))
+		}
+	}
+	return out
 }
 
 func backendTag(h HostFacts) string {

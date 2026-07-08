@@ -104,6 +104,61 @@ func TestContractCoverage(t *testing.T) {
 	}
 }
 
+// TestContractRefusalTiersAreComplete guards that every refusal tier asserts the
+// FULL sandboxed mode × net product, not just net=on for one mode. A dropped
+// refusal cell (e.g. no net=off, or only restricted for darwin-bare) would let a
+// backend that silently resolves that (mode, net) escape the contract.
+func TestContractRefusalTiersAreComplete(t *testing.T) {
+	t.Parallel()
+	type cell struct {
+		mode Mode
+		net  bool
+	}
+	tiers := map[string]map[cell]bool{}
+	for _, c := range ContractCases() {
+		if !c.WantRefusal {
+			continue
+		}
+		tier := refusalTierLabel(c.Host)
+		if tiers[tier] == nil {
+			tiers[tier] = map[cell]bool{}
+		}
+		tiers[tier][cell{c.Mode, c.Net}] = true
+	}
+
+	for _, tier := range []string{"landlock", "bare-linux", "windows", "darwin-bare"} {
+		cells := tiers[tier]
+		if cells == nil {
+			t.Errorf("no refusal cases for tier %q", tier)
+			continue
+		}
+		for _, m := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+			for _, net := range []bool{true, false} {
+				if !cells[cell{m, net}] {
+					t.Errorf("refusal tier %q missing cell (mode=%v net=%v)", tier, m, net)
+				}
+			}
+		}
+	}
+}
+
+// refusalTierLabel classifies a HostFacts into the refusal tier it belongs to
+// (the tiers that cannot enforce any sandboxed mode).
+func refusalTierLabel(h HostFacts) string {
+	switch {
+	case h.OS == "windows":
+		return "windows"
+	case h.OS == "darwin" && !h.SeatbeltAvailable():
+		return "darwin-bare"
+	case h.OS == "linux" && !h.BwrapCapable && h.LandlockAvailable():
+		return "landlock"
+	case h.OS == "linux" && !h.BwrapCapable && !h.LandlockAvailable():
+		return "bare-linux"
+	default:
+		return "enforcing/" + h.OS
+	}
+}
+
 // TestContractCasesAreDataOnly proves ContractCases() is a pure data function
 // (safe for backends to import and iterate): it returns an equal table on every
 // call and never shares mutable backing state between calls.
