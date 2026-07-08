@@ -42,9 +42,9 @@ func FuzzResolve(f *testing.F) {
 			Mode:               mode,
 			Network:            network,
 			DenylistAdd:        []string{"/extra/secret", "~/.custom"},
-			DenylistRemove:     []string{denyRemove, "/proc"},   // /proc removal must be ignored (floor)
-			ExtraWritableRoots: []string{"/proc", cwd + "/sub"}, // /proc must be filtered back out
-			ExtraReadRoots:     []string{"/sys/kernel"},         // under a masked pseudo-fs; must be filtered
+			DenylistRemove:     []string{denyRemove, "/proc"},  // /proc removal must be ignored (floor)
+			ExtraWritableRoots: []string{"/proc", "/work/sub"}, // absolute (relative entries are refused); /proc must be filtered back out
+			ExtraReadRoots:     []string{"/sys/kernel"},        // under a masked pseudo-fs; must be filtered
 		}
 		host := HostFacts{
 			OS: os, Home: home, BwrapCapable: bwrapCapable,

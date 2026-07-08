@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -249,6 +250,47 @@ func TestResolveDarwinSeatbeltServesAllModes(t *testing.T) {
 	}
 	// darwin without sandbox-exec refuses sandboxed modes naming sandbox-exec.
 	mustRefuse(t, SandboxPolicy{Mode: ModeRestricted, Network: true}, darwinBareHost(), main, "sandbox-exec")
+}
+
+// TestResolveAbsolutizesRelativeCwd is part of the finding-#4 fix: a relative cwd
+// must be absolutized so the resolved grant roots are absolute. ResolvedPolicy
+// documents absolute roots, and the enforcement layers compare absolute paths — a
+// relative root would silently never match.
+func TestResolveAbsolutizesRelativeCwd(t *testing.T) {
+	t.Parallel()
+	abs := clean(t.TempDir())
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	rel, err := filepath.Rel(wd, abs)
+	if err != nil {
+		t.Skipf("cannot compute a relative path to the temp dir: %v", err)
+	}
+	if filepath.IsAbs(rel) {
+		t.Skipf("relative path %q is unexpectedly absolute", rel)
+	}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeRestricted, Network: true}, bwrapHost(), rel)
+	if !filepath.IsAbs(rp.Git.WorktreeRoot) {
+		t.Errorf("relative cwd produced a relative worktree root %q", rp.Git.WorktreeRoot)
+	}
+	for _, r := range slices.Concat(rp.FileTool.ReadRoots, rp.FileTool.WriteRoots, rp.Spawned.ReadRoots, rp.Spawned.WriteRoots) {
+		if !filepath.IsAbs(r) {
+			t.Errorf("relative cwd produced a relative grant root %q", r)
+		}
+	}
+}
+
+// TestResolveRefusesRelativeExtraRoots is part of the finding-#4 fix: extra roots
+// are folded verbatim into the grants, so a relative entry would emit a relative
+// grant root. Resolve refuses fail-closed rather than resolve a leaky policy.
+func TestResolveRefusesRelativeExtraRoots(t *testing.T) {
+	t.Parallel()
+	main := mainRepo(t)
+	mustRefuse(t, SandboxPolicy{Mode: ModeRestricted, Network: true, ExtraReadRoots: []string{"rel/read/root"}}, bwrapHost(), main, "")
+	mustRefuse(t, SandboxPolicy{Mode: ModeWorkspaceWrite, Network: true, ExtraWritableRoots: []string{"rel/write/root"}}, bwrapHost(), main, "")
+	// An absolute extra root still resolves — the refusal is specific to relative entries.
+	mustResolve(t, SandboxPolicy{Mode: ModeRestricted, Network: true, ExtraReadRoots: []string{"/opt/extra"}}, bwrapHost(), main)
 }
 
 func assertMaskedContainsDefaults(t *testing.T, rp ResolvedPolicy, home string) {

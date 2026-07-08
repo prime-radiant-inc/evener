@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strings"
 )
 
 // Backend names the concrete enforcement mechanism the resolver chose for a
@@ -190,6 +191,37 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 			Mode:   policy.Mode,
 			Net:    policy.Network,
 			Reason: "cannot anchor the credential denylist: the session's home directory is not an absolute path; sandboxing without a resolvable home would silently unmask credential directories",
+		}
+	}
+
+	// A relative cwd would flow through into relative grant roots, but
+	// ResolvedPolicy documents absolute roots and the enforcement layers compare
+	// absolute paths — a relative root would silently never match. Absolutize
+	// fail-closed (filepath.Abs only errors if the process working directory is
+	// unresolvable).
+	absCwd, err := filepath.Abs(cwd)
+	if err != nil {
+		return ResolvedPolicy{}, &RefusalError{
+			Mode:   policy.Mode,
+			Net:    policy.Network,
+			Reason: fmt.Sprintf("could not resolve an absolute path for the session working directory %q: %v", cwd, err),
+		}
+	}
+	cwd = absCwd
+
+	// Extra roots are folded verbatim into the resolved grants, so a relative
+	// entry would emit a relative grant root (same non-matching hazard as a
+	// relative cwd). Refuse rather than resolve a leaky policy.
+	for _, r := range slices.Concat(policy.ExtraReadRoots, policy.ExtraWritableRoots) {
+		if strings.TrimSpace(r) == "" {
+			continue
+		}
+		if !filepath.IsAbs(r) {
+			return ResolvedPolicy{}, &RefusalError{
+				Mode:   policy.Mode,
+				Net:    policy.Network,
+				Reason: fmt.Sprintf("extra sandbox root %q must be an absolute path", r),
+			}
 		}
 	}
 
