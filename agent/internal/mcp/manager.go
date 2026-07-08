@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/mcpconfig"
+	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/llm"
 )
 
@@ -133,9 +134,14 @@ func failedConn(cfg mcpconfig.ServerConfig, dial func(context.Context) (mcpsdk.T
 // config order regardless of which server's connect finishes first — no
 // mutex is needed on conns itself, since every index has exactly one writer
 // and mgr.conns is only read after wg.Wait() establishes happens-before.
-func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, dials []func(context.Context) (mcpsdk.Transport, error)) (*Manager, []ServerOutcome) {
+func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, dials []func(context.Context) (mcpsdk.Transport, error), opts ...Option) (*Manager, []ServerOutcome) {
 	if len(configs) == 0 {
 		return nil, nil
+	}
+
+	var o managerOptions
+	for _, apply := range opts {
+		apply(&o)
 	}
 
 	client := mcpsdk.NewClient(&mcpsdk.Implementation{
@@ -147,7 +153,7 @@ func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, dials []f
 	var wg sync.WaitGroup
 	wg.Add(len(configs))
 	for i, cfg := range configs {
-		dial := productionDial(cfg)
+		dial := productionDial(cfg, o.wrapper)
 		if dials != nil && i < len(dials) {
 			dial = dials[i]
 		}
@@ -176,8 +182,8 @@ func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, dials []f
 // (see TestReconnect_FailedReconnect_BackoffSuppressesImmediateRetry).
 // Production code always calls NewManager, whose conns keep the nil now →
 // time.Now() default.
-func NewManagerWithClock(ctx context.Context, configs []mcpconfig.ServerConfig, dials []func(context.Context) (mcpsdk.Transport, error), now func() time.Time) (*Manager, []ServerOutcome) {
-	mgr, outcomes := NewManager(ctx, configs, dials)
+func NewManagerWithClock(ctx context.Context, configs []mcpconfig.ServerConfig, dials []func(context.Context) (mcpsdk.Transport, error), now func() time.Time, opts ...Option) (*Manager, []ServerOutcome) {
+	mgr, outcomes := NewManager(ctx, configs, dials, opts...)
 	if mgr == nil {
 		return nil, outcomes
 	}
@@ -238,13 +244,59 @@ func connectOne(ctx context.Context, client *mcpsdk.Client, cfg mcpconfig.Server
 	}
 }
 
+// Option configures NewManager. It is the non-breaking seam for threading a
+// sandbox kernel wrapper into the stdio-transport spawn without disturbing the
+// manager's existing callers.
+type Option func(*managerOptions)
+
+type managerOptions struct {
+	wrapper *sandbox.Wrapper
+}
+
+// WithSandboxWrapper confines every stdio MCP server this manager spawns to the
+// session's sandbox policy (kernel wrap + env floor + fd hygiene). A nil wrapper
+// is a no-op, so a non-sandboxed session behaves exactly as before.
+func WithSandboxWrapper(w *sandbox.Wrapper) Option {
+	return func(o *managerOptions) { o.wrapper = w }
+}
+
 // productionDial returns the default dial factory for cfg: build a fresh
 // transport via transportForConfig on every call. NewManager uses this
 // whenever the caller doesn't supply an explicit dials[i] — i.e., real,
 // non-test use, and also real reconnects (Task 8), since transportForConfig
-// builds a brand-new transport each time it runs.
-func productionDial(cfg mcpconfig.ServerConfig) func(context.Context) (mcpsdk.Transport, error) {
-	return func(context.Context) (mcpsdk.Transport, error) { return transportForConfig(cfg) }
+// builds a brand-new transport each time it runs. When wrapper is non-nil, a
+// stdio server's command is kernel-confined to the session sandbox before the
+// transport hands it to the SDK.
+func productionDial(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper) func(context.Context) (mcpsdk.Transport, error) {
+	return func(context.Context) (mcpsdk.Transport, error) {
+		t, err := transportForConfig(cfg)
+		if err != nil {
+			return nil, err
+		}
+		if wrapper != nil {
+			if ct, ok := t.(*mcpsdk.CommandTransport); ok && ct.Command != nil {
+				confineCommandUnderSandbox(ct.Command, wrapper)
+			}
+		}
+		return t, nil
+	}
+}
+
+// confineCommandUnderSandbox rewrites a stdio MCP server's *exec.Cmd so it runs
+// inside the session sandbox: the bwrap invocation is prepended to the argv, the
+// env is passed through the sandbox floor (dropping the ssh-agent handle and
+// cloud creds — a stdio server should not inherit them), and ExtraFiles is
+// emptied so the server inherits no serf fds beyond stdio.
+func confineCommandUnderSandbox(cmd *exec.Cmd, w *sandbox.Wrapper) {
+	base := cmd.Env
+	if base == nil {
+		base = os.Environ()
+	}
+	cmd.Env = sandbox.ApplyEnvFloor(base, w.Policy(), w.SessionTmp())
+	argv := w.Wrap(cmd.Args, w.Policy().Git.WorktreeRoot)
+	cmd.Path = argv[0]
+	cmd.Args = argv
+	cmd.ExtraFiles = nil
 }
 
 // ToolDefinitions returns namespaced tool definitions from servers whose
