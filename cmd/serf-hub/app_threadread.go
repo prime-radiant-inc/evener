@@ -171,6 +171,7 @@ func pastEntryThread(entry hubcore.PastEntry, includeTurns bool) appwire.Thread 
 		if jobsByID, err := agent.LoadSessionHistoricalJobRecords(entry.StateDir, entry.Meta.ID); err == nil {
 			thread = reconcileDelegateThreadItems(thread, jobsByID)
 		}
+		thread = enrichThreadFileBackedOutputImages(thread)
 	}
 	return thread
 }
@@ -243,6 +244,82 @@ func appItemsFromReplayTurn(sessionID, turnID string, turnIndex int, turn hubcor
 			URL:       "/s/" + url.PathEscape(sessionID) + "/images/" + sha,
 		}}
 	})
+}
+
+func enrichThreadFileBackedOutputImages(thread appwire.Thread) appwire.Thread {
+	sessionID := strings.TrimSpace(thread.SessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(thread.ID)
+	}
+	cwd := strings.TrimSpace(thread.CWD)
+	if sessionID == "" || cwd == "" || len(thread.Turns) == 0 {
+		return thread
+	}
+	argsByCallID := map[string]string{}
+	for ti := range thread.Turns {
+		for ii := range thread.Turns[ti].Items {
+			item := thread.Turns[ti].Items[ii]
+			if item.Type != "commandExecution" {
+				continue
+			}
+			if item.CallID != "" && item.ArgumentsJSON != "" {
+				argsByCallID[item.CallID] = item.ArgumentsJSON
+			}
+			if item.Status != appwire.TurnStatusCompleted {
+				continue
+			}
+			argsJSON := item.ArgumentsJSON
+			if argsJSON == "" && item.CallID != "" {
+				argsJSON = argsByCallID[item.CallID]
+			}
+			fileBacked := outputImagesForToolCall(sessionID, cwd, item.ToolName, argsJSON, item.Output)
+			if len(fileBacked) == 0 {
+				continue
+			}
+			item.OutputImages = appendOutputImagesUnique(item.OutputImages, fileBacked)
+			thread.Turns[ti].Items[ii] = item
+		}
+	}
+	return thread
+}
+
+func appendOutputImagesUnique(existing, extra []appwire.OutputImage) []appwire.OutputImage {
+	if len(extra) == 0 {
+		return existing
+	}
+	seen := make(map[string]struct{}, len(existing)+len(extra))
+	for _, img := range existing {
+		key := outputImageDescriptorKey(img)
+		if key == "" {
+			continue
+		}
+		seen[key] = struct{}{}
+	}
+	out := existing
+	for _, img := range extra {
+		key := outputImageDescriptorKey(img)
+		if key != "" {
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+		}
+		out = append(out, img)
+	}
+	return out
+}
+
+func outputImageDescriptorKey(img appwire.OutputImage) string {
+	if img.URL != "" {
+		return img.URL
+	}
+	if img.SHA != "" {
+		return "sha:" + img.SHA
+	}
+	if img.Path != "" {
+		return "path:" + img.Path
+	}
+	return ""
 }
 
 func replayTurnToAgentTurn(turn hubcore.ReplayTurn) (schema.Turn, map[string]string) {

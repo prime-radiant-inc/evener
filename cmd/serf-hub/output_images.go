@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,6 +21,100 @@ const outputImageMaxRendered = 8
 const outputImageMaxBytes = 8 * 1024 * 1024
 
 var outputImageExtRegexp = regexp.MustCompile(`(?i)(?:"([^"]+\.(?:png|jpe?g|gif|webp))"|'([^']+\.(?:png|jpe?g|gif|webp))'|([^\s"']+\.(?:png|jpe?g|gif|webp)))`)
+
+func outputImagesForToolCall(sessionID, cwd, toolName, argumentsJSON, output string) []appwire.OutputImage {
+	type candidate struct {
+		path   string
+		source string
+	}
+	var candidates []candidate
+	var args map[string]any
+	_ = json.Unmarshal([]byte(argumentsJSON), &args)
+	addArgPath := func(key string) {
+		if v, ok := args[key].(string); ok && strings.TrimSpace(v) != "" {
+			candidates = append(candidates, candidate{path: v, source: "written-file"})
+		}
+	}
+	switch toolName {
+	case "write_file", "edit_file":
+		addArgPath("file_path")
+		addArgPath("path")
+	case "apply_patch":
+		for _, p := range shellOutputImageCandidates(output) {
+			candidates = append(candidates, candidate{path: p, source: "written-file"})
+		}
+	case "shell", "exec_command":
+		for _, p := range shellOutputImageCandidates(output) {
+			candidates = append(candidates, candidate{path: p, source: "shell-path"})
+		}
+	}
+	out := make([]appwire.OutputImage, 0, min(len(candidates), outputImageMaxRendered))
+	seen := map[string]struct{}{}
+	for _, c := range candidates {
+		img, ok := resolveOutputImageFile(sessionID, cwd, c.path, c.source)
+		if !ok || img.URL == "" {
+			continue
+		}
+		if _, exists := seen[img.URL]; exists {
+			continue
+		}
+		seen[img.URL] = struct{}{}
+		out = append(out, img)
+		if len(out) >= outputImageMaxRendered {
+			break
+		}
+	}
+	return out
+}
+
+func enrichOutputImageNotification(sessionID, cwd string, argsByCallID map[string]string, notification appwire.Notification) appwire.Notification {
+	if argsByCallID == nil || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(cwd) == "" {
+		return notification
+	}
+	if notification.Method != appwire.NotifyItemStarted && notification.Method != appwire.NotifyItemCompleted {
+		return notification
+	}
+	var params map[string]json.RawMessage
+	if len(notification.Params) == 0 || json.Unmarshal(notification.Params, &params) != nil {
+		return notification
+	}
+	var item appwire.ThreadItem
+	if raw := params["item"]; len(raw) == 0 || json.Unmarshal(raw, &item) != nil {
+		return notification
+	}
+	if item.Type != "commandExecution" {
+		return notification
+	}
+	if item.CallID != "" && item.ArgumentsJSON != "" {
+		argsByCallID[item.CallID] = item.ArgumentsJSON
+	}
+	if notification.Method != appwire.NotifyItemCompleted {
+		return notification
+	}
+	argsJSON := item.ArgumentsJSON
+	if argsJSON == "" && item.CallID != "" {
+		argsJSON = argsByCallID[item.CallID]
+	}
+	fileBacked := outputImagesForToolCall(sessionID, cwd, item.ToolName, argsJSON, item.Output)
+	if item.CallID != "" {
+		delete(argsByCallID, item.CallID)
+	}
+	if len(fileBacked) == 0 {
+		return notification
+	}
+	item.OutputImages = appendOutputImagesUnique(item.OutputImages, fileBacked)
+	itemData, err := json.Marshal(item)
+	if err != nil {
+		return notification
+	}
+	params["item"] = itemData
+	data, err := json.Marshal(params)
+	if err != nil {
+		return notification
+	}
+	notification.Params = data
+	return notification
+}
 
 func shellOutputImageCandidates(output string) []string {
 	matches := outputImageExtRegexp.FindAllStringSubmatch(output, -1)

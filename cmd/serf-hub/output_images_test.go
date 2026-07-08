@@ -3,11 +3,14 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
 	"testing"
+
+	"primeradiant.com/serf/appwire"
 )
 
 func TestShellOutputImageCandidatesConservative(t *testing.T) {
@@ -107,5 +110,110 @@ func TestResolveOutputImageFileRejectsInvalidCandidates(t *testing.T) {
 	}
 	if _, ok := resolveOutputImageFile("01DOC", cwd, "notes.txt", "shell-path"); ok {
 		t.Fatalf("resolveOutputImageFile accepted non-image candidate")
+	}
+}
+
+func TestOutputImagesForToolCallStructuredWriteFile(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(cwd, "out.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	imgs := outputImagesForToolCall("01DOC", cwd, "write_file", `{"file_path":"out.png"}`, "wrote")
+	if len(imgs) != 1 || imgs[0].Source != "written-file" || imgs[0].URL == "" || imgs[0].Path != "out.png" {
+		t.Fatalf("outputImagesForToolCall write_file=%+v, want one written-file out.png descriptor", imgs)
+	}
+}
+
+func TestOutputImagesForToolCallRejectsInvalidStructuredWriteCandidates(t *testing.T) {
+	cwd := t.TempDir()
+	outside := filepath.Join(filepath.Dir(cwd), "outside.png")
+	if err := os.WriteFile(outside, []byte{0x89, 0x50, 0x4e, 0x47}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cwd, "out.svg"), []byte(`<svg xmlns="http://www.w3.org/2000/svg"></svg>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if imgs := outputImagesForToolCall("01DOC", cwd, "write_file", `{"file_path":"../outside.png"}`, "wrote"); len(imgs) != 0 {
+		t.Fatalf("outputImagesForToolCall accepted outside path: %+v", imgs)
+	}
+	if imgs := outputImagesForToolCall("01DOC", cwd, "write_file", `{"file_path":"out.svg"}`, "wrote"); len(imgs) != 0 {
+		t.Fatalf("outputImagesForToolCall accepted SVG: %+v", imgs)
+	}
+}
+
+func TestOutputImagesForToolCallShellOutput(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(cwd, "plot.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	imgs := outputImagesForToolCall("01DOC", cwd, "shell", `{}`, "created ./plot.png\n")
+	if len(imgs) != 1 || imgs[0].Source != "shell-path" || imgs[0].Path != "plot.png" || imgs[0].URL == "" {
+		t.Fatalf("outputImagesForToolCall shell=%+v, want one shell-path plot.png descriptor", imgs)
+	}
+}
+
+func TestOutputImagesForToolCallCapsRenderedShellImages(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	var output string
+	for i := 0; i < outputImageMaxRendered+3; i++ {
+		name := "plot" + strconv.Itoa(i) + ".png"
+		if err := os.WriteFile(filepath.Join(cwd, name), png, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		output += "created " + name + "\n"
+	}
+
+	imgs := outputImagesForToolCall("01DOC", cwd, "exec_command", `{}`, output)
+	if len(imgs) != outputImageMaxRendered {
+		t.Fatalf("outputImagesForToolCall returned %d images, want cap %d: %+v", len(imgs), outputImageMaxRendered, imgs)
+	}
+}
+
+func TestEnrichOutputImageNotificationUsesStartedArgumentsForCompletedItem(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(cwd, "plot.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	argsByCallID := map[string]string{}
+	started := appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
+		"turnId": "turn_1",
+		"item": appwire.ThreadItem{
+			Type:          "commandExecution",
+			ID:            "item_write",
+			ToolName:      "write_file",
+			CallID:        "call_write",
+			ArgumentsJSON: `{"file_path":"plot.png"}`,
+			Status:        appwire.TurnStatusInProgress,
+		},
+	}).Notification
+	_ = enrichOutputImageNotification("01DOC", cwd, argsByCallID, *started)
+	completed := appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
+		"turnId": "turn_1",
+		"item": appwire.ThreadItem{
+			Type:     "commandExecution",
+			ID:       "item_write",
+			ToolName: "write_file",
+			CallID:   "call_write",
+			Output:   "wrote",
+			Status:   appwire.TurnStatusCompleted,
+		},
+	}).Notification
+
+	got := enrichOutputImageNotification("01DOC", cwd, argsByCallID, *completed)
+	var params struct {
+		Item appwire.ThreadItem `json:"item"`
+	}
+	if err := json.Unmarshal(got.Params, &params); err != nil {
+		t.Fatal(err)
+	}
+	if len(params.Item.OutputImages) != 1 || params.Item.OutputImages[0].Source != "written-file" || params.Item.OutputImages[0].Path != "plot.png" {
+		t.Fatalf("OutputImages=%+v, want written-file plot.png descriptor", params.Item.OutputImages)
 	}
 }

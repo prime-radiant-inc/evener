@@ -191,6 +191,7 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 			}
 			defer ticker.Stop()
 			defer cleanupRelay()
+			argsByCallID := map[string]string{}
 			for {
 				select {
 				case <-relayCtx.Done():
@@ -217,6 +218,9 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 				case notification, ok := <-notifications:
 					if !ok {
 						return
+					}
+					if source.ID() == "local" {
+						notification = enrichOutputImageNotification(thread.SessionID, thread.CWD, argsByCallID, notification)
 					}
 					server.Broadcast(relayKey, notification.Method, notification.Params)
 				}
@@ -309,6 +313,7 @@ func registerThreadHandlers(
 		}
 		resp.Thread = mergePastThreadForRead(cfg, params, resp.Thread)
 		resp.Thread = sanitizeStaleProcessingStatus(cfg, resp.Thread)
+		resp.Thread = enrichThreadFileBackedOutputImages(resp.Thread)
 		// Window any turns the source itself didn't (Codex thread/read and the
 		// past-merge return the full transcript); a daemon read already set
 		// OlderCursor, so this is a no-op there.
@@ -331,6 +336,15 @@ func registerThreadHandlers(
 		if srcErr == nil {
 			live, liveErr = source.ListTurns(ctx, params)
 			if liveErr == nil && len(live.Data) > 0 {
+				if meta, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: false}); err == nil {
+					thread := enrichThreadFileBackedOutputImages(appwire.Thread{
+						ID:        meta.Thread.ID,
+						SessionID: meta.Thread.SessionID,
+						CWD:       meta.Thread.CWD,
+						Turns:     live.Data,
+					})
+					live.Data = thread.Turns
+				}
 				return live, nil
 			}
 		}

@@ -845,6 +845,172 @@ func TestHubRPCThreadReadReturnsPastTranscript(t *testing.T) {
 	}
 }
 
+func TestHubRPCThreadReadEnrichesReplayToolOutputImagesFromFiles(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "images")
+	cwd := filepath.Join(root, "work")
+	sessionID := "01FILEIMG00000000000001"
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 'p', 'a', 'y'}
+	if err := os.WriteFile(filepath.Join(cwd, "plot.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 0).UTC()
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID:        sessionID,
+		ProfileID: "openai",
+		Model:     "gpt-5",
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: cwd},
+		CreatedAt: now,
+		UpdatedAt: now,
+		TurnCount: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := transcript.NewWriter(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"), transcript.Header{
+		SessionID:  sessionID,
+		CreatedAt:  now,
+		ProfileID:  "openai",
+		Model:      "gpt-5",
+		WorkingDir: cwd,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Append(schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:        "call_plot",
+				Name:      "shell",
+				Arguments: json.RawMessage(`{"command":"python plot.py"}`),
+			},
+		}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	toolPNG := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 't', 'o', 'o', 'l'}
+	if err := writer.Append(schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Role: llm.RoleTool, ToolCallID: "call_plot", Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID:     "call_plot",
+				Name:           "shell",
+				Content:        "created plot.png",
+				ImageData:      toolPNG,
+				ImageMediaType: "image/png",
+			},
+		}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, ItemsView: "full"})
+	if err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if len(resp.Thread.Turns) != 2 || len(resp.Thread.Turns[1].Items) != 1 {
+		t.Fatalf("turns=%+v", resp.Thread.Turns)
+	}
+	item := resp.Thread.Turns[1].Items[0]
+	if len(item.OutputImages) != 2 {
+		t.Fatalf("OutputImages=%+v, want tool-result then file-backed descriptors", item.OutputImages)
+	}
+	if item.OutputImages[0].Source != "tool-result" || item.OutputImages[0].URL == "" {
+		t.Fatalf("first output image=%+v, want existing tool-result descriptor first", item.OutputImages[0])
+	}
+	if item.OutputImages[1].Source != "shell-path" || item.OutputImages[1].Path != "plot.png" || item.OutputImages[1].URL != "/doc/image?session="+sessionID+"&path=plot.png" {
+		t.Fatalf("second output image=%+v, want shell-path plot.png descriptor", item.OutputImages[1])
+	}
+}
+
+func TestHubRPCThreadReadEnrichesLiveToolOutputImagesFromFiles(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 'p', 'a', 'y'}
+	if err := os.WriteFile(filepath.Join(cwd, "plot.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "01LIVEFILEIMG"
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			CWD:       cwd,
+			Source:    "local",
+			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			Serf:      appwire.SerfThread{Ref: params.Ref},
+			Turns: []appwire.Turn{{
+				ID: "turn_1",
+				Items: []appwire.ThreadItem{{
+					Type:          "commandExecution",
+					ID:            "item_shell",
+					TurnID:        "turn_1",
+					ToolName:      "shell",
+					CallID:        "call_shell",
+					ArgumentsJSON: `{}`,
+					Output:        "created plot.png",
+					Status:        appwire.TurnStatusCompleted,
+				}},
+				Status: appwire.TurnStatusCompleted,
+			}},
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       17 * 1000,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  sessionID,
+		SessionID: sessionID,
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, ItemsView: "full"})
+	if err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if len(resp.Thread.Turns) != 1 || len(resp.Thread.Turns[0].Items) != 1 {
+		t.Fatalf("turns=%+v", resp.Thread.Turns)
+	}
+	imgs := resp.Thread.Turns[0].Items[0].OutputImages
+	if len(imgs) != 1 || imgs[0].Source != "shell-path" || imgs[0].Path != "plot.png" || imgs[0].URL != "/doc/image?session="+sessionID+"&path=plot.png" {
+		t.Fatalf("OutputImages=%+v, want live shell-path plot.png descriptor", imgs)
+	}
+}
+
 func TestHubRPCThreadReadIncludesTranscriptPrelude(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "prelude")
