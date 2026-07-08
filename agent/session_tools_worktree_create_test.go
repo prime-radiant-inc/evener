@@ -177,8 +177,19 @@ func newWorktreeRepoWithConfig(t *testing.T, cfg SessionConfig) *wtRepo {
 		t.Fatalf("EvalSymlinks state: %v", err)
 	}
 	s.stateDir = stateDir
+	s.mu.Lock()
+	// Most worktree fixture tests cover lifecycle behavior, not the git-version
+	// preflight. The old-git tests reset this flag to exercise that path.
+	s.worktreeGitVersionOK = true
+	s.mu.Unlock()
 
 	return &wtRepo{s: s, mainRoot: root, stateDir: stateDir, head: head}
+}
+
+func (r *wtRepo) requireGitVersionPreflight() {
+	r.s.mu.Lock()
+	r.s.worktreeGitVersionOK = false
+	r.s.mu.Unlock()
 }
 
 // create drives the create operation through the registered tool surface,
@@ -531,6 +542,7 @@ func TestWorktreeCreate_NonLocalEnvErrors(t *testing.T) {
 func TestWorktreeCreate_TooOldGitPreflightErrors(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
+	r.requireGitVersionPreflight()
 
 	// Repo-shim a `git` that reports an ancient version. The main repo root
 	// resolves structurally (no git needed), so the shim is only hit by the

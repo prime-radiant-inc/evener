@@ -456,6 +456,7 @@ func TestWorktreeErrors_RemoveDeleteBranchUnmergedRefusesEvidenceSidecarKept(t *
 func TestWorktreeErrors_GitTooOldPreflightNamesRequiredVersionNoDegradedMode(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
+	r.requireGitVersionPreflight()
 
 	shim := "#!/bin/sh\n" +
 		"if [ \"$1\" = \"version\" ]; then echo \"git version 2.20.0\"; exit 0; fi\n" +
