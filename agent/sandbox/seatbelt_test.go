@@ -270,6 +270,48 @@ func TestSeatbeltGitProtection(t *testing.T) {
 	}
 }
 
+// TestSeatbeltFirmlinkAliasDenies pins the firmlink-alias masked-path defense.
+// macOS firmlinks give a data-volume file a SECOND real spelling that
+// filepath.EvalSymlinks does NOT collapse: $HOME/.ssh is also reachable as
+// /System/Volumes/Data$HOME/.ssh. Under the read-only / workspace-write "/" read
+// grant, a deny emitted for only the /Users spelling lets `cat
+// /System/Volumes/Data/Users/x/.ssh/id_rsa` slip through and leak the secret.
+// Every masked path and protected git surface must be denied for BOTH spellings.
+func TestSeatbeltFirmlinkAliasDenies(t *testing.T) {
+	t.Parallel()
+	rp, _ := seatbeltResolve(t, ModeWorkspaceWrite, true, MainCheckout)
+	text, params := SeatbeltPolicy(rp, "/serf-session-tmp", identityCanon)
+
+	// A masked secret is denied for read+write under BOTH spellings.
+	secret := filepath.Join(seatbeltHost().Home, ".ssh") // /Users/tester/.ssh
+	assertDeniedBothSpellings(t, text, params, secret, "MASKED_", "(deny file-read* file-write* ")
+
+	// A protected git surface is write-denied under BOTH spellings.
+	if len(rp.Git.ProtectedPaths) == 0 {
+		t.Fatal("expected protected git paths for a main checkout")
+	}
+	assertDeniedBothSpellings(t, text, params, rp.Git.ProtectedPaths[0], "PROTECTED_", "(deny file-write* ")
+}
+
+// assertDeniedBothSpellings asserts base and its /System/Volumes/Data firmlink
+// alias are each a deny param (with the given key prefix) referenced by an
+// authoritative deny rule (with the given action prefix).
+func assertDeniedBothSpellings(t *testing.T, text string, params []DirParam, base, keyPrefix, denyPrefix string) {
+	t.Helper()
+	alias := "/System/Volumes/Data" + base
+	for _, path := range []string{base, alias} {
+		key := paramKeyForPath(params, path)
+		if !strings.HasPrefix(key, keyPrefix) {
+			t.Errorf("path %q has no %s deny param (key %q); firmlink alias bypass is open", path, keyPrefix, key)
+			continue
+		}
+		want := denyPrefix + literalAndSubpath(key) + ")"
+		if !strings.Contains(text, want) {
+			t.Errorf("missing authoritative deny for %q (%s):\n%s", path, key, want)
+		}
+	}
+}
+
 func TestSeatbeltLinkedWorktreeReadNotWrite(t *testing.T) {
 	t.Parallel()
 	rp, _ := seatbeltResolve(t, ModeRestricted, true, LinkedWorktree)

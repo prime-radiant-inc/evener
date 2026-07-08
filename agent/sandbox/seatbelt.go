@@ -200,6 +200,10 @@ func writeRootKeys(rp ResolvedPolicy, sessionTmp string, ps *paramSet) []string 
 //     only (reads are allowed — git must read config), so a write to it is denied
 //     even when it falls under a broad allow (e.g. a worktree placed under /tmp,
 //     which platform-defaults would otherwise make writable).
+//
+// Each deny is emitted for BOTH firmlink spellings of its path (see defineDeny):
+// macOS firmlinks give a data-volume file a second real path that EvalSymlinks
+// does not collapse, so a deny for one spelling alone is bypassable via the other.
 func denySection(rp ResolvedPolicy, ps *paramSet) string {
 	var rules []string
 	mi := 0
@@ -207,17 +211,57 @@ func denySection(rp ResolvedPolicy, ps *paramSet) string {
 		if isDeviceFloorException(m) {
 			continue
 		}
-		k := ps.define(fmt.Sprintf("MASKED_%d", mi), m)
+		for _, k := range ps.defineDeny(fmt.Sprintf("MASKED_%d", mi), m) {
+			rules = append(rules, "(deny file-read* file-write* "+literalAndSubpath(k)+")")
+		}
 		mi++
-		rules = append(rules, "(deny file-read* file-write* "+literalAndSubpath(k)+")")
 	}
 	pi := 0
 	for _, p := range rp.Git.ProtectedPaths {
-		k := ps.define(fmt.Sprintf("PROTECTED_%d", pi), p)
+		for _, k := range ps.defineDeny(fmt.Sprintf("PROTECTED_%d", pi), p) {
+			rules = append(rules, "(deny file-write* "+literalAndSubpath(k)+")")
+		}
 		pi++
-		rules = append(rules, "(deny file-write* "+literalAndSubpath(k)+")")
 	}
 	return strings.Join(rules, "\n")
+}
+
+// dataVolumePrefix is the APFS data-volume mount point macOS firmlinks a file's
+// root-level spelling onto: /Users/x and /System/Volumes/Data/Users/x are the
+// same inode. filepath.EvalSymlinks does not collapse a firmlink, so both
+// spellings reach the kernel unresolved and each must be denied independently.
+const dataVolumePrefix = "/System/Volumes/Data"
+
+// firmlinkAlias returns the OTHER firmlink spelling of an already-canonical macOS
+// path: the stripped root spelling for a path already under the data volume, or
+// the data-volume alias for any other path. It returns path unchanged only for
+// the data-volume mount point itself, which has no distinct alias.
+func firmlinkAlias(path string) string {
+	if path == dataVolumePrefix {
+		return path
+	}
+	if rest := strings.TrimPrefix(path, dataVolumePrefix+"/"); rest != path {
+		return "/" + rest
+	}
+	return dataVolumePrefix + path
+}
+
+// defineDeny records a deny-param KEY=canon(path) plus, when the canonical path
+// has a distinct firmlink spelling, a second KEY_ALIAS param for that spelling,
+// and returns the key(s) to reference in the deny rule. Emitting a deny for both
+// spellings closes the firmlink-alias bypass (see firmlinkAlias). It is used only
+// by the Seatbelt policy generator, so the alias transform — which is macOS
+// specific — never reaches the bwrap backend, which builds its own denials.
+func (ps *paramSet) defineDeny(key, path string) []string {
+	canonical := ps.canon(path)
+	ps.params = append(ps.params, DirParam{Key: key, Path: canonical})
+	keys := []string{key}
+	if alias := firmlinkAlias(canonical); alias != canonical {
+		aliasKey := key + "_ALIAS"
+		ps.params = append(ps.params, DirParam{Key: aliasKey, Path: alias})
+		keys = append(keys, aliasKey)
+	}
+	return keys
 }
 
 // isDeviceFloorException reports whether a masked path is one the base policy

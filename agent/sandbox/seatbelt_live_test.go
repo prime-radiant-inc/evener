@@ -155,6 +155,38 @@ func TestSeatbeltLiveSecretDenied(t *testing.T) {
 	}
 }
 
+// TestSeatbeltLiveFirmlinkAliasDenied proves the firmlink-alias defense against the
+// real kernel: a denylisted path stays unreadable when reached via its
+// /System/Volumes/Data firmlink spelling, not just its plain spelling. macOS
+// firmlinks give a data-volume file two real paths EvalSymlinks does not collapse,
+// so without the alias deny the data-volume spelling slips past the plain deny
+// under the full-disk read grant. The alias is the /System/Volumes/Data-prefixed
+// canonical path — exactly what denySection now denies.
+func TestSeatbeltLiveFirmlinkAliasDenied(t *testing.T) {
+	requireLiveSeatbelt(t)
+	secretDir := t.TempDir()
+	secret := filepath.Join(secretDir, "token")
+	const sentinel = "SERF-LIVE-FIRMLINK-42"
+	if err := os.WriteFile(secret, []byte(sentinel), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rp, cwd := liveResolve(t, ModeReadOnly, true, func(p *SandboxPolicy) {
+		p.DenylistAdd = append(p.DenylistAdd, secretDir)
+	})
+	// Reach the same secret via its data-volume firmlink alias. Resolve the plain
+	// path to its canonical form first (t.TempDir() is under a firmlinked root),
+	// then prepend the data-volume prefix — the second real spelling of the file.
+	canonical, err := filepath.EvalSymlinks(secret)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", secret, err)
+	}
+	aliasPath := dataVolumePrefix + canonical
+	out, _ := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c", "cat "+aliasPath+" 2>&1 || true")
+	if strings.Contains(out, sentinel) {
+		t.Errorf("denylisted secret leaked through its firmlink alias %q:\n%s", aliasPath, out)
+	}
+}
+
 // TestSeatbeltLiveGitConfigProtected: git object writes work (commit succeeds)
 // but a .git/config write is denied — the persistence-vector protection.
 func TestSeatbeltLiveGitConfigProtected(t *testing.T) {
