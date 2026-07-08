@@ -2437,7 +2437,7 @@
       for (const img of images) {
         if (!img) continue;
         const src = img.url || img.URL || "";
-        if (!src || src.charAt(0) !== "/") continue;
+        if (!src || src.charAt(0) !== "/" || src.charAt(1) === "/") continue;
         resolved.push({ src, name: img.name || img.path || "image" });
       }
       if (resolved.length === 0) return;

@@ -34,6 +34,11 @@ const events = [
   ["TOOL_CALL_START", { call_id: "call_img", tool_name: "shell", arguments_json: "{}" }],
   ["TOOL_CALL_END", { call_id: "call_img", tool_name: "shell", output: "created out.png", output_images: [
     { source: "shell-path", name: "out.png", mediaType: "image/png", url: "/doc/image?session=01TEST&path=out.png", path: "out.png" },
+    { source: "shell-path", name: "external.png", mediaType: "image/png", url: "//external.example/image.png", path: "external.png" },
+  ]}],
+  ["TOOL_CALL_START", { call_id: "call_external", tool_name: "shell", arguments_json: "{}" }],
+  ["TOOL_CALL_END", { call_id: "call_external", tool_name: "shell", output: "created external.png", output_images: [
+    { source: "shell-path", name: "external-only.png", mediaType: "image/png", url: "//external.example/image.png", path: "external-only.png" },
   ]}],
 ];
 
@@ -50,12 +55,22 @@ function runAssertions() {
   const failures = [];
   const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
-  const tool = conv.querySelector(".tool-call.shell");
+  const tools = conv.querySelectorAll(".tool-call.shell");
+  pass(tools.length === 2, "shell tool rows rendered");
+  const tool = tools[0];
   pass(!!tool, "shell tool row rendered");
   const wrap = tool && tool.querySelector(".tool-output-images");
   pass(!!wrap, "tool output image wrapper rendered");
-  const img = wrap && wrap.querySelector("img.user-image-thumb");
+  const thumbs = wrap ? Array.from(wrap.querySelectorAll("img.user-image-thumb")) : [];
+  pass(thumbs.length === 1, "invalid mixed descriptor should be omitted");
+  const img = thumbs[0];
   pass(img && img.getAttribute("src") === "/doc/image?session=01TEST&path=out.png", "tool image src wrong");
+  pass(!thumbs.some((thumb) => (thumb.getAttribute("src") || "").startsWith("//")), "protocol-relative tool image omitted");
+
+  const externalTool = tools[1];
+  pass(!!externalTool, "external-only shell tool row rendered");
+  const externalWrap = externalTool && externalTool.querySelector(".tool-output-images");
+  pass(!externalWrap, "external-only protocol-relative descriptor omitted");
 
   const card = wrap && wrap.querySelector(".user-image-card");
   if (card) {
