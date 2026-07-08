@@ -72,10 +72,10 @@ install-system: install
 test-install:
 	go test -count=1 -run '^TestInstallHomeGeneratedHome$$' .
 
-# Every Go module in the workspace: the app (.) plus the three published
-# libraries. Under go.work, `./...` resolves per-module, so the gates must loop
-# over each module to cover the whole repo (root-only `./...` silently skips the
-# agent/llm/auth library test suites and lint).
+# Every Go module in the workspace. Under go.work, `./...` resolves per-module,
+# so exhaustive gates and lint must loop modules explicitly. The default test
+# target is a curated fast gate; test-exhaustive preserves the full workspace
+# sweep, and fuzz targets own fuzz corpus execution.
 GO_MODULES := . agent llm auth envvars fuzz invariant
 
 # MEMCAP runs a recipe under a hard per-run memory ceiling (a systemd user scope)
