@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -325,15 +326,13 @@ func TestSeatbeltLinkedWorktreeReadNotWrite(t *testing.T) {
 	if k := paramKeyForPath(params, common); !strings.HasPrefix(k, "READABLE_ROOT_") {
 		t.Errorf("linked-worktree common dir %q must be a readable root; got key %q", common, k)
 	}
-	// The main repo's config is never a writable root (write-denied).
+	// The main repo's config is never a writable root (write-denied). A write root
+	// that is the main config, the common dir, or any ancestor of the main config
+	// would make it writable — report EVERY such match, not only the common-dir one.
 	mainConfig := filepath.Join(common, "config")
 	for _, p := range params {
 		if strings.HasPrefix(p.Key, "WRITABLE_ROOT_") && (p.Path == mainConfig || p.Path == common || pathUnder(mainConfig, p.Path)) {
-			// A write root that is the common dir or an ancestor of the main config
-			// would make it writable.
-			if p.Path == common {
-				t.Errorf("linked-worktree main common dir %q must not be a writable root (%q)", common, p.Key)
-			}
+			t.Errorf("linked-worktree write root %q=%q would make the main repo config writable (common=%q)", p.Key, p.Path, common)
 		}
 	}
 }
@@ -501,20 +500,8 @@ func firstDiff(want, got string) string {
 			g = gl[i]
 		}
 		if w != g {
-			return "first diff at line " + itoa(i+1) + ":\n  want: " + w + "\n   got: " + g
+			return "first diff at line " + strconv.Itoa(i+1) + ":\n  want: " + w + "\n   got: " + g
 		}
 	}
 	return "(no line diff; trailing bytes differ)"
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b []byte
-	for n > 0 {
-		b = append([]byte{byte('0' + n%10)}, b...)
-		n /= 10
-	}
-	return string(b)
 }
