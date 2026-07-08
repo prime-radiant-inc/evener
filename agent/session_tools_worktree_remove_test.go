@@ -295,8 +295,6 @@ func TestWorktreeRemove_DeleteBranchMergedDeletesAfterGate(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
-	wtGit(t, path, "config", "user.email", "test@example.com")
-	wtGit(t, path, "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(path, "a.txt"), []byte("a\n"), 0o644); err != nil {
 		t.Fatalf("write a.txt: %v", err)
 	}
@@ -374,8 +372,6 @@ func TestWorktreeRemove_DeleteBranchMergeTargetUnknownRefusesWithEvidence(t *tes
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
-	wtGit(t, path, "config", "user.email", "test@example.com")
-	wtGit(t, path, "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(path, "a.txt"), []byte("a\n"), 0o644); err != nil {
 		t.Fatalf("write a.txt: %v", err)
 	}
@@ -427,8 +423,6 @@ func TestWorktreeRemove_DeleteSidecarFailsOnPermissionDenied(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
-	wtGit(t, path, "config", "user.email", "test@example.com")
-	wtGit(t, path, "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(path, "a.txt"), []byte("a\n"), 0o644); err != nil {
 		t.Fatalf("write a.txt: %v", err)
 	}
@@ -502,8 +496,6 @@ func TestWorktreeRemove_DeleteBranchUnmergedRefusesEvidenceSidecarKept(t *testin
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
-	wtGit(t, path, "config", "user.email", "test@example.com")
-	wtGit(t, path, "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(path, "a.txt"), []byte("a\n"), 0o644); err != nil {
 		t.Fatalf("write a.txt: %v", err)
 	}
@@ -569,8 +561,6 @@ func TestWorktreeRemove_DetachedHeadReviewRefusesNeverInvokesLowercaseD(t *testi
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
-	wtGit(t, path, "config", "user.email", "test@example.com")
-	wtGit(t, path, "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(path, "f.txt"), []byte("f\n"), 0o644); err != nil {
 		t.Fatalf("write f.txt: %v", err)
 	}

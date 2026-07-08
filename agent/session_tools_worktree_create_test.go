@@ -496,8 +496,6 @@ func TestWorktreeCreate_BaseIsActiveWorktreeHead(t *testing.T) {
 		t.Fatalf("create A: %v", err)
 	}
 	pathA := resA["path"].(string)
-	wtGit(t, pathA, "config", "user.email", "test@example.com")
-	wtGit(t, pathA, "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(pathA, "a.txt"), []byte("a\n"), 0o644); err != nil {
 		t.Fatalf("write a.txt: %v", err)
 	}
