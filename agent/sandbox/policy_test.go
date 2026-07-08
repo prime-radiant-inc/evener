@@ -67,7 +67,11 @@ func TestDefaultDenylistIncludesPseudoFS(t *testing.T) {
 	home := "/home/tester"
 	got := DefaultDenylist(home)
 
-	wantPseudoFS := []string{"/proc", "/sys", "/dev/fd", "/dev/mem", "/run/user"}
+	wantPseudoFS := []string{
+		"/proc", "/sys", "/dev/fd", "/dev/mem", "/run/user",
+		"/run/docker.sock", "/var/run/docker.sock", "/run/podman/podman.sock",
+		"/run/containerd/containerd.sock", "/run/dbus/system_bus_socket",
+	}
 	for _, p := range wantPseudoFS {
 		if !slices.Contains(got, p) {
 			t.Errorf("default denylist missing pseudo-fs path %q; got %v", p, got)

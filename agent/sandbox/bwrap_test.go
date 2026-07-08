@@ -159,6 +159,75 @@ func TestBuildBwrapArgvNetwork(t *testing.T) {
 	}
 }
 
+// TestBuildBwrapArgvLinkedWorktreeNoDeadPin covers verifier finding F2: a linked
+// worktree's common .git lives OUTSIDE the worktree and is only read-granted, so a
+// missing protected surface there (config.worktree) must NOT be pinned — pinning
+// it makes bwrap try to create a mountpoint under the read-only common dir (EROFS)
+// and abort the whole sandbox, which would break serf's primary workflow.
+func TestBuildBwrapArgvLinkedWorktreeNoDeadPin(t *testing.T) {
+	requireGitHarness(t)
+	home := t.TempDir()
+	cwd := MaterializeWorkspace(t, LinkedWorktree)
+	net := true
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: &net}, bwrapFacts(home), cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	args := buildBwrapArgv(rp, "/tmp/s", cwd)
+
+	// No protected surface may be pinned via /dev/null under the read-only common
+	// dir. Concretely: the common dir is not a spawned write root, so any missing
+	// config.worktree/config there must be skipped, not pinned.
+	commonDir := rp.Git.CommonDir
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--ro-bind" && args[i+1] == "/dev/null" {
+			target := args[i+2]
+			if pathUnder(target, commonDir) && !isUnderAnyRoot(target, rp.Spawned.WriteRoots) {
+				t.Errorf("dead pin under read-only common dir would EROFS-abort the sandbox: %q", target)
+			}
+		}
+	}
+}
+
+func TestBuildBwrapArgvMasksDaemonSockets(t *testing.T) {
+	if !pathExists("/run/docker.sock") {
+		t.Skip("no /run/docker.sock on this host to mask")
+	}
+	rp, cwd, _ := resolveFixture(t, ModeWorkspaceWrite, true)
+	args := buildBwrapArgv(rp, "", cwd)
+	if !hasSeq(args, "--ro-bind", "/dev/null", "/run/docker.sock") {
+		t.Errorf("the docker daemon socket must be masked (connect() escape vector): %v", args)
+	}
+}
+
+func TestBuildBwrapArgvMasksSymlinkedSecret(t *testing.T) {
+	// Verifier finding F3: a symlinked credential dir must be masked at its real
+	// target (as a directory), not misclassified and aborted.
+	home := t.TempDir()
+	realSSH := filepath.Join(home, "real-ssh")
+	if err := os.MkdirAll(realSSH, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realSSH, filepath.Join(home, ".ssh")); err != nil {
+		t.Fatal(err)
+	}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	net := true
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: &net}, bwrapFacts(home), cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	args := buildBwrapArgv(rp, "", cwd)
+	// The mask lands on the resolved real dir with a tmpfs (dir), never a
+	// /dev/null file-bind over the symlink (which bwrap refuses).
+	if !hasSeq(args, "--tmpfs", realSSH) {
+		t.Errorf("symlinked ~/.ssh must be masked at its real target with a tmpfs: %v", args)
+	}
+	if hasSeq(args, "--ro-bind", "/dev/null", filepath.Join(home, ".ssh")) {
+		t.Errorf("a symlinked secret dir must not be file-bound (bwrap aborts): %v", args)
+	}
+}
+
 func TestBuildBwrapArgvCacheOverlay(t *testing.T) {
 	// Overlay is a pure-argv concern here (no bwrap run), so this validates the
 	// overlay branch even though this host's bwrap lacks overlay support.

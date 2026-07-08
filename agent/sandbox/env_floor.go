@@ -3,6 +3,8 @@ package sandbox
 import (
 	"path/filepath"
 	"strings"
+
+	"primeradiant.com/serf/envvars"
 )
 
 // floorExactDrops are environment variables removed from every spawned process in
@@ -11,6 +13,11 @@ import (
 // so its handle must not survive into a spawned command.
 var floorExactDrops = []string{
 	"SSH_AUTH_SOCK",
+	// GNUPGHOME would redirect gpg to a home outside the masked ~/.gnupg.
+	"GNUPGHOME",
+	// DOCKER_HOST points the docker client at a daemon endpoint (pairs with the
+	// masked docker sockets): a set DOCKER_HOST could name a reachable daemon.
+	"DOCKER_HOST",
 }
 
 // floorPrefixDrops are environment-variable name prefixes removed from every
@@ -51,7 +58,7 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionTmp string) []str
 		if name == "KUBECONFIG" && kubeconfigIsExternal(val, policy) {
 			continue
 		}
-		if sessionTmp != "" && name == "TMPDIR" {
+		if sessionTmp != "" && name == envvars.TmpDir.Name {
 			continue // re-added below, pointing at the session tmp
 		}
 		if policy.CacheStrategy == CacheSessionPrivate && isRedirectedCacheVar(name) {
@@ -61,12 +68,12 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionTmp string) []str
 	}
 
 	if sessionTmp != "" {
-		out = append(out, "TMPDIR="+sessionTmp)
+		out = append(out, envvars.TmpDir.Assignment(sessionTmp))
 		if policy.CacheStrategy == CacheSessionPrivate {
 			out = append(out,
 				"GOCACHE="+filepath.Join(sessionTmp, "gocache"),
 				"npm_config_cache="+filepath.Join(sessionTmp, "npm"),
-				"CARGO_HOME="+filepath.Join(sessionTmp, "cargo"),
+				envvars.CargoHome.Assignment(filepath.Join(sessionTmp, "cargo")),
 			)
 		}
 	}
@@ -91,12 +98,7 @@ func floorDrops(name string) bool {
 // isRedirectedCacheVar reports whether name is a language cache var the floor
 // redirects into the session tmp under a session-private cache strategy.
 func isRedirectedCacheVar(name string) bool {
-	switch name {
-	case "GOCACHE", "npm_config_cache", "CARGO_HOME":
-		return true
-	default:
-		return false
-	}
+	return name == "GOCACHE" || name == "npm_config_cache" || name == envvars.CargoHome.Name
 }
 
 // kubeconfigIsExternal reports whether an absolute KUBECONFIG value points outside

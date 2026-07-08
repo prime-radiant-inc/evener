@@ -102,7 +102,7 @@ func TestNoInheritedFDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close() //nolint:errcheck
+	defer f.Close()                  //nolint:errcheck
 	cmd := exec.Command("/bin/true") //nolint:noctx // test seam
 	cmd.ExtraFiles = []*os.File{f}   // deliberately try to leak a high fd
 

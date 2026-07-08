@@ -24,11 +24,12 @@ func TestEnvFloorDropsAgentAndCloudVars(t *testing.T) {
 		"GOOGLE_APPLICATION_CREDENTIALS=/x/creds.json",
 		"GCLOUD_PROJECT=p",
 		"VAULT_TOKEN=v",
+		"GNUPGHOME=/home/u/.gnupg-alt",
+		"DOCKER_HOST=unix:///run/docker.sock",
 		"HOME=/home/u",
 	}
 	out := ApplyEnvFloor(in, ResolvedPolicy{Mode: ModeRestricted, CacheStrategy: CacheNone}, "")
-
-	for _, dropped := range []string{"SSH_AUTH_SOCK", "AWS_ACCESS_KEY_ID", "AWS_SESSION_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS", "GCLOUD_PROJECT", "VAULT_TOKEN"} {
+	for _, dropped := range []string{"SSH_AUTH_SOCK", "AWS_ACCESS_KEY_ID", "AWS_SESSION_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS", "GCLOUD_PROJECT", "VAULT_TOKEN", "GNUPGHOME", "DOCKER_HOST"} {
 		if _, ok := envValue(out, dropped); ok {
 			t.Errorf("floor must drop %q: %v", dropped, out)
 		}

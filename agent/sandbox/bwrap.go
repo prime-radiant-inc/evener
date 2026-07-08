@@ -99,7 +99,7 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// .git/config and .git/hooks writable and a planted hook would fire later,
 	// unsandboxed. Applied after the writable binds so the protection wins.
 	for _, p := range rp.Git.ProtectedPaths {
-		maskReadOnly(&a, p)
+		maskReadOnly(&a, p, sp.WriteRoots)
 	}
 
 	// Mask the secrets + pseudo-fs denylist last so masks win over every bind.
@@ -108,11 +108,14 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// --dev (host /dev/mem is absent, /dev/fd is a safe symlink to the sandbox's
 	// own /proc/self/fd). Re-masking them would clobber those mounts (bwrap cannot
 	// bind over the /dev symlink). /sys and /run/user still need explicit masks.
+	// masked tracks resolved mask targets so aliases of the same path (e.g.
+	// /var/run/docker.sock -> /run/docker.sock) are not double-mounted.
+	masked := make(map[string]bool)
 	for _, m := range rp.MaskedPaths {
 		if maskHandledByNamespace(m) {
 			continue
 		}
-		maskInvisible(&a, m)
+		maskInvisible(&a, masked, m)
 	}
 
 	// Enter the working directory (bound above) so relative paths resolve.
@@ -124,29 +127,49 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 
 // maskInvisible appends the flags that make path unreadable inside the sandbox:
 // an empty tmpfs over a directory (its contents vanish) or a read-only /dev/null
-// bind over a file. A path that does not exist on the host needs no mask — there
-// is nothing to hide, and the enclosing read baseline never exposed it.
-func maskInvisible(a *[]string, path string) {
-	fi, err := os.Lstat(path)
+// bind over a file. It masks the SYMLINK-RESOLVED real target, not the literal
+// path, for two reasons: (1) a symlinked credential dir (~/.ssh -> real dir,
+// common with dotfile managers) or a symlinked path component (/var/run -> /run)
+// would otherwise make bwrap refuse to mount through the symlink and abort the
+// whole sandbox; (2) masking the real inode hides the secret through every alias
+// that reaches it. A path that does not exist (or a broken symlink) needs no mask
+// — there is nothing to hide. seen dedups masks that resolve to the same target.
+func maskInvisible(a *[]string, seen map[string]bool, path string) {
+	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return
 	}
-	if fi.IsDir() {
-		*a = append(*a, "--tmpfs", path)
+	if seen[resolved] {
 		return
 	}
-	*a = append(*a, "--ro-bind", "/dev/null", path)
+	fi, err := os.Stat(resolved)
+	if err != nil {
+		return
+	}
+	seen[resolved] = true
+	if fi.IsDir() {
+		*a = append(*a, "--tmpfs", resolved)
+		return
+	}
+	*a = append(*a, "--ro-bind", "/dev/null", resolved)
 }
 
 // maskReadOnly appends the flags that make a git config/hook surface readable but
 // write-denied. An existing path is re-bound read-only (writes fail EROFS, and
 // the mountpoint cannot be unlinked). A missing path is pinned so it cannot be
-// CREATED under the writable parent: a directory surface (hooks) as a read-only
-// empty tmpfs, a file surface (config, config.worktree, the gitdir pointer) as a
-// read-only /dev/null bind.
-func maskReadOnly(a *[]string, path string) {
+// CREATED — but ONLY when it sits under a writable root: a missing surface whose
+// parent is read-only (e.g. a linked worktree's common .git, which is read-granted
+// but never writable) can never be created anyway, and trying to pin it makes
+// bwrap fail to create the mountpoint under the read-only parent (EROFS) and abort
+// the sandbox. A directory surface (hooks) is pinned as a read-only empty tmpfs, a
+// file surface (config, config.worktree, the gitdir pointer) as a read-only
+// /dev/null bind.
+func maskReadOnly(a *[]string, path string, writeRoots []string) {
 	if pathExists(path) {
 		*a = append(*a, "--ro-bind", path, path)
+		return
+	}
+	if !isUnderAnyRoot(path, writeRoots) {
 		return
 	}
 	if filepath.Base(path) == "hooks" {
@@ -154,6 +177,16 @@ func maskReadOnly(a *[]string, path string) {
 		return
 	}
 	*a = append(*a, "--ro-bind", "/dev/null", path)
+}
+
+// isUnderAnyRoot reports whether path is at or beneath any of roots.
+func isUnderAnyRoot(path string, roots []string) bool {
+	for _, r := range roots {
+		if r != "" && (path == r || pathUnder(path, r)) {
+			return true
+		}
+	}
+	return false
 }
 
 // maskHandledByNamespace reports whether a masked path is already isolated by a

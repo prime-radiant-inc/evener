@@ -51,6 +51,47 @@ func runWrapped(t *testing.T, facts HostFacts, mode Mode, netOn bool, cwd, sessi
 	return string(out), err
 }
 
+// TestBwrapLinkedWorktreeStarts covers verifier finding F2 end-to-end: a linked
+// worktree's common .git is outside the worktree and read-only, so the sandbox
+// must not try to pin a missing protected surface there (which would EROFS-abort).
+// The fixture lives OUTSIDE /tmp because the sandbox mounts a fresh tmpfs over
+// /tmp — a /tmp fixture's common dir would be shadowed and hide the bug.
+func TestBwrapLinkedWorktreeStarts(t *testing.T) {
+	facts := requireRealBwrap(t)
+
+	// A base under the package dir (not /tmp), removed at test end.
+	pkgDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := os.MkdirTemp(pkgDir, "sbxlwt-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+
+	main := filepath.Join(base, "main")
+	if err := os.MkdirAll(main, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitHarness(t, main, "init", "-q")
+	gitHarness(t, main, "commit", "-q", "--allow-empty", "-m", "init")
+	wt := filepath.Join(base, "wt")
+	gitHarness(t, main, "worktree", "add", "-q", wt)
+	cwd := resolveCleanPath(wt)
+
+	facts.Home = t.TempDir()
+	// If the sandbox aborts (EROFS on a dead pin), the command fails to start.
+	out, err := runWrapped(t, facts, ModeWorkspaceWrite, true, cwd, t.TempDir(),
+		`echo LWT-OK; git status --porcelain >/dev/null 2>&1; echo "git=$?"`)
+	if err != nil {
+		t.Fatalf("linked-worktree sandbox failed to start/run: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "LWT-OK") {
+		t.Errorf("linked-worktree sandbox did not run the command:\n%s", out)
+	}
+}
+
 func TestBwrapConfinesAndMasks(t *testing.T) {
 	facts := requireRealBwrap(t)
 
