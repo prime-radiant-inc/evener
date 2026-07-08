@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -18,6 +19,27 @@ import (
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/rendezvous"
 )
+
+// writeFakeSerf writes an executable fake-serf stub that the test then runs
+// through the hub spawner / launch-check.
+//
+// A freshly written executable can fail execve with ETXTBSY ("text file busy"):
+// os.WriteFile holds the file open for writing, and if any sibling parallel test
+// forks for its own os/exec during that window, the forked child inherits the
+// still-open write fd. Until that child execs, the kernel refuses to execute
+// this file. syscall.ForkLock is the standard guard: fork/exec takes it for
+// writing (forkExec -> acquireForkLock), so holding it for reading across the
+// whole write excludes any concurrent fork; once the fd is closed no child can
+// inherit it. This keeps these tests parallel while removing the race at its
+// source. See Go issue #22315.
+func writeFakeSerf(t *testing.T, path, script string) {
+	t.Helper()
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake-serf: %v", err)
+	}
+}
 
 func TestBuildSpawnArgs(t *testing.T) {
 	ssering := 4096
@@ -141,9 +163,7 @@ EOF
 fi
 exit 2
 `
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeFakeSerf(t, bin, script)
 
 	cfg := DefaultConfig()
 	cfg.SpawnTimeout = 2 * time.Second
@@ -386,9 +406,7 @@ func TestSpawnDaemonReturnsWhenProcessExitsBeforeRendezvous(t *testing.T) {
 echo 'serf serve: session creation: plugin initialization: resolving plugin dir "/Users/jesse/git/superpowers/superpowers": lstat /Users: no such file or directory' >&2
 exit 42
 `
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeFakeSerf(t, bin, script)
 	start := time.Now()
 	_, err := SpawnDaemon(context.Background(), bin, filepath.Join(dir, "run"), hubcore.SpawnRequest{
 		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5.2"}},
@@ -484,9 +502,7 @@ EOF
 fi
 exit 2
 `
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeFakeSerf(t, bin, script)
 
 	cfg := DefaultConfig()
 	cfg.SpawnTimeout = 2 * time.Second
@@ -542,9 +558,7 @@ EOF
 fi
 exit 2
 `
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeFakeSerf(t, bin, script)
 
 	cfg := DefaultConfig()
 	cfg.SpawnTimeout = 2 * time.Second
@@ -604,9 +618,7 @@ if [ "$1" = "launch-check" ]; then
 fi
 exit 2
 `
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeFakeSerf(t, bin, script)
 
 	spawner := HubSpawner{Cfg: DefaultConfig(), SerfBinary: bin, RunDir: runDir, HubToken: "generated-token"}
 
@@ -766,9 +778,7 @@ func TestValidateSerfLaunchContractRejectsUnsupportedProvider(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "fake-serf")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho 'unknown provider: openrouter' >&2\nexit 2\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeFakeSerf(t, bin, "#!/bin/sh\necho 'unknown provider: openrouter' >&2\nexit 2\n")
 	err := validateSerfLaunchContract(context.Background(), bin, "openrouter/free", envFromMap(map[string]string{}))
 	assertHubLaunchError(t, err)
 	if !strings.Contains(err.Error(), "serf launch-check") {
@@ -788,9 +798,7 @@ func TestValidateSerfLaunchContractRedactsSecretsFromDiagnostics(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "fake-serf")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho \"$OPENROUTER_API_KEY\" >&2\nexit 2\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeFakeSerf(t, bin, "#!/bin/sh\necho \"$OPENROUTER_API_KEY\" >&2\nexit 2\n")
 	err := validateSerfLaunchContract(context.Background(), bin, "openrouter/free", envFromMap(map[string]string{
 		"OPENROUTER_API_KEY": "super-secret-key",
 	}))

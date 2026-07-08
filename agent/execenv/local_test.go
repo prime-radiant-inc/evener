@@ -9,9 +9,30 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
+
+// writeExecFixture writes an executable that a parallel test then runs through
+// this package's exec path.
+//
+// A freshly written executable can fail execve with ETXTBSY ("text file busy"):
+// os.WriteFile holds the file open for writing, and if any sibling parallel test
+// forks for its own os/exec during that window, the forked child inherits the
+// still-open write fd. Until that child execs, the kernel refuses to run this
+// file. syscall.ForkLock is the standard guard: fork/exec takes it for writing
+// (forkExec -> acquireForkLock), so holding it for reading across the whole
+// write excludes any concurrent fork; once the fd is closed no child can inherit
+// it. See Go issue #22315.
+func writeExecFixture(t *testing.T, path, script string) {
+	t.Helper()
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestLocalExecutionEnvironment_ExecCommand_TimesOutAndKillsProcessGroup(t *testing.T) {
 	env := NewLocalExecutionEnvironment(t.TempDir())
@@ -773,9 +794,7 @@ func TestExecArgv_PreservesArgvAndExitSemantics(t *testing.T) {
 	}
 	dir := t.TempDir()
 	script := filepath.Join(dir, "argv-fixture")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '<%s>\\n' \"$1\"\nprintf 'err:<%s>\\n' \"$2\" >&2\nexit 7\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeExecFixture(t, script, "#!/bin/sh\nprintf '<%s>\\n' \"$1\"\nprintf 'err:<%s>\\n' \"$2\" >&2\nexit 7\n")
 	env := NewLocalExecutionEnvironment(dir)
 
 	res, err := env.ExecArgv(context.Background(), script, []string{"one two; echo nope", "stderr value"}, 5000, "", nil)
@@ -804,9 +823,7 @@ func TestExecArgv_UsesInjectedLocalVenvPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := filepath.Join(bin, "serf-execargv-venv-fixture")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf 'venv:<%s>\\n' \"$1\"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeExecFixture(t, script, "#!/bin/sh\nprintf 'venv:<%s>\\n' \"$1\"\n")
 	env := NewLocalExecutionEnvironment(dir)
 
 	res, err := env.ExecArgv(context.Background(), "serf-execargv-venv-fixture", []string{"value"}, 5000, "", nil)

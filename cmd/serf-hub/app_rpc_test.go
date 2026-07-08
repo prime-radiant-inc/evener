@@ -2962,9 +2962,7 @@ if [ "$1" = "launch-check" ]; then
 fi
 exit 2
 `
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeFakeSerf(t, bin, script)
 
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		RunDir:  t.TempDir(),
