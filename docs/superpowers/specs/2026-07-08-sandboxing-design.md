@@ -1,168 +1,196 @@
-# Serf Sandboxing — Design (v3)
+# Serf Sandboxing — Design (v4)
 
-Date: 2026-07-08 — lineage: v1 from-scratch recon; v2 addressed roborev job 2319
-(Landlock allowlist-only → bwrap-preferred; fail-closed floor); v3 addresses
-roborev job 2321 (apply_patch execenv bypass, hardlink aliasing, git-config
-persistence surfaces, `/proc` host-PID leak, subagent rollout ordering) + the
-env-exposure / provider-web / cache-warning missing-considerations.
-Status: Draft — awaiting re-review
+Date: 2026-07-08 — lineage: v1 recon; v2 (job 2319: Landlock allowlist-only →
+bwrap-preferred, fail-closed floor); v3 (job 2321: apply_patch bypass, git-config
+persistence, `/proc` PID-ns, rollout ordering); v4 (job 2323: in-process `/proc`
+read via file tools, TOCTOU path race, cache poisoning containment, fd hygiene,
+provider-web registry).
+Status: Draft — implementation-ready pending Jesse's sign-off. See "Review
+stopping point" at end.
 Author: Bot. Prior session's spec was never found; this lineage starts at zero.
 
 ## Goal
 
 Stop a poorly-behaved model — accidental or deliberate — from reading, writing,
-or executing outside a boundary the user opted into at session start. Primary
-threat: a *running-amok* agent (`rm -rf` outside the workspace, reading
-`~/.ssh`, `curl | sh`, phoning secrets home, planting something that runs later
-outside the sandbox). Opt-in per session; **immutable for the session's
-lifetime** — no tool call can relax it.
+or executing outside a boundary the user opted into at session start, **and**
+from planting anything that runs later outside the sandbox. Opt-in per session;
+**immutable for the session's lifetime** — no tool call can relax it.
 
 Non-goals for v1: rich per-tool approval/allowlist engine (orthogonal,
 deferred); domain-allowlist egress (network is all-or-nothing); confining serf's
 own long-lived process; Windows (fail closed).
 
-## Threat model — two layers
+## Threat model — two layers, one adversary
 
-1. **Spawned processes run arbitrary, model-composed input** → **kernel
-   enforcement** (bwrap namespaces + mounts). String/path denylists are
-   bypassable (Ona incident: `/proc/self/root` aliasing, `ld-linux.so` indirect
-   exec, self-disable attempts). Kernel policy is inode/namespace based and
-   inherited by all descendants — an `npm install` postinstall is exactly as
-   confined as the shell that launched it.
-2. **Serf's own file tools run trusted serf code** → **in-process,
-   fully-symlink-resolved path checks**. The model's only input is a path
-   string; the code between it and the syscall is ours. Resolution is strict,
-   not best-effort (a model can `ln -s` inside the worktree via shell, then
-   `read_file` through it — checks run on the fully resolved path).
+The model is treated as an **adversarial reasoner that can spawn concurrent
+processes**, not a fuzzer. Both layers must hold against deliberate evasion.
 
-**Denylist enforcement is by masking, not string-refusal, wherever possible.**
-Spawned procs: denied dirs are made **invisible** (bwrap tmpfs/`/dev/null`
-over-mounts), so a process cannot even reference them — this is what defeats
-symlink, `/proc/pid/root`, and hardlink *creation* against secrets (you can't
-`ln` a source you can't see). File tools: denied paths refused after strict
-resolution. Residual (documented, not claimed-closed): a **pre-existing
-hardlink** to a secret already sitting inside a readable root is reachable via
-file tools — a hardlink shares the inode with no backlink to resolve, so
-path-based checks can't see its origin. Out of the running-amok threat model
-(requires a pre-planted link); closing it would need an inode-preflight scan,
-deferred.
+1. **Spawned processes run arbitrary model-composed input** → **kernel
+   enforcement** (bwrap namespaces+mounts / Seatbelt). String denylists are
+   bypassable (Ona: `/proc/self/root` aliasing, `ld-linux.so` indirect exec).
+   Kernel policy is inode/namespace based, inherited by all descendants (an
+   `npm install` postinstall is as confined as its shell), and includes a fresh
+   PID namespace + private `/proc` so host process state is invisible.
+2. **Serf's own file tools run in the unsandboxed serf process** → **in-process
+   enforcement that is both path-correct and race-safe** (see below). This is
+   the *privileged* path — a file tool that follows an attacker-planted symlink
+   writes with serf's full authority. It gets the most scrutiny.
 
-### Persistence is part of the threat (and mostly closed by write-confinement)
+### Race-safe path enforcement (v4 — the load-bearing in-process requirement)
 
-A sandboxed write to something that executes *later, unsandboxed* is an escape.
-In every sandboxed mode the writable set is **only** worktree + session tmp
-(+ caches + gitdir in `workspace-write`). `$HOME` is never writable — so
-`~/.bashrc`, `~/.profile`, `~/.gitconfig`, `~/.config/autostart`, user systemd
-units, etc. are already write-denied. The one execute-later surface *inside* the
-writable set is git: see git-metadata protection below.
+Resolve-then-open is a TOCTOU hole: a model-spawned background job can swap a
+path component for an out-of-worktree symlink between serf's check and its
+`open`/`write`/`rename`. Requirements:
+
+- **Linux**: `openat2(2)` with `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` (via
+  `golang.org/x/sys/unix.Openat2`), anchored at a base fd for the allowed root;
+  all reads/writes operate on the returned fd, never re-opening by path.
+- **macOS** (no `openat2`): open each path component with
+  `openat(O_NOFOLLOW | O_DIRECTORY)` walking beneath a base-root fd, then operate
+  on the final fd. (This is the fd-walk that path-string secure-join can't
+  provide.)
+- Writes are atomic temp-file-plus-`renameat` beneath the checked fd; never a
+  path-based re-open after checking.
+- **Implementation note**: `LocalExecutionEnvironment` currently uses an `afero`
+  path-based fs. The race-safe path needs real fds, so sandboxed file ops bypass
+  afero's path API for OS-backed fd operations (afero stays for `off` mode and
+  tests). Flagged because it's non-trivial refactor weight in M2.
+- Race tests: concurrent symlink/component replacement during read, write,
+  rename, apply_patch.
+
+### Denylist by masking; pseudo-filesystems included (v4)
+
+- **Spawned procs**: denied dirs made **invisible** (bwrap tmpfs/`/dev/null`
+  over-mounts) + fresh PID-ns `/proc` — defeats symlink, `/proc/pid/root`, and
+  hardlink *creation* against secrets (can't `ln`/read a source you can't see).
+- **File tools**: after race-safe resolution, denied paths refused. The
+  in-process denylist **must include host pseudo-filesystems**, not just
+  credential dirs: `/proc`, `/sys`, `/dev/fd`, `/dev/mem`, `/run/user/*` (agent
+  sockets). Rationale (v4 High): file-tool reads are "anywhere − denylist," and
+  `read_file("/proc/<serf-pid>/environ")` would otherwise read **serf's own
+  environment — including the provider API key**. The spawned-proc `/proc` fix
+  does not cover the file-tool path; this does.
+- **Residuals, documented not claimed-closed**: a *pre-existing* hardlink to a
+  secret (read) or to an outside file (write-through) already sitting inside a
+  readable/writable root — a hardlink shares an inode with no backlink to
+  resolve. Masking closes the *create-then-use* path (can't reference an
+  invisible source); pre-planted links need inode-preflight scanning, deferred.
+  Out of the running-amok threat model.
+
+### Persistence — closed on all known in-writable-set surfaces
+
+A sandboxed write that executes *later, unsandboxed* is an escape. Coverage:
+
+- `$HOME` is never writable → `~/.bashrc`, `~/.profile`, `~/.gitconfig`,
+  `~/.config/autostart`, user systemd units already write-denied.
+- git: all config + hook surfaces read-only (below) → `core.hooksPath` redirect
+  can't be *persisted*, planted hooks stay inert.
+- caches: contained (read-real/write-private or session-private) → **no cache
+  poisoning in any sandboxed mode** (v4, below).
 
 ## Modes
 
-`--sandbox <mode>`, set once. Network is an independent flag (below). All
-sandboxed modes share: per-session tmp (writable, exported as `TMPDIR`), secrets
-denylist (masked), git-metadata protection, `--unshare-pid` + fresh `--proc`
-(so `/proc` shows only sandbox PIDs — no host `/proc/<pid>/root` aliasing or
-`environ` leak), minimal `/dev` (`null`, `zero`, `full`, `random`, `urandom`,
-`tty`), env floor (below).
+`--sandbox <mode>`, set once. Network is an independent flag. All sandboxed modes
+share: per-session tmp (writable, `TMPDIR`), secrets+pseudo-fs denylist (masked),
+git-metadata protection, `--unshare-pid`+fresh `--proc`, minimal `/dev`, env
+floor, no inherited serf fds/sockets, race-safe file-tool enforcement.
 
 | Mode | file-tool reads | file-tool writes | spawned reads | spawned writes |
 |---|---|---|---|---|
 | `off` (default) | anywhere | root-confined (today) | anywhere | anywhere |
 | `read-only` | anywhere − denylist | **denied** (tmp only) | anywhere − denylist | tmp only |
-| `workspace-write` | anywhere − denylist | worktree + tmp + caches | anywhere − denylist | worktree + tmp + caches + gitdir(−config/hooks) |
+| `workspace-write` | anywhere − denylist | worktree + tmp + caches* | anywhere − denylist | worktree + tmp + caches* + gitdir(−config/hooks) |
 | `restricted` | **worktree only** | worktree + tmp | worktree + system read roots + tmp | worktree + tmp + gitdir(−config/hooks) |
 
+\* caches = read-real/write-private overlay (below), not persistent-writable.
+
 - **`off` is exactly today's behavior** — no new code path; strict superset.
-- **`read-only` cannot commit** (no worktree or `.git` writes); session-tmp
-  writes allowed so ordinary commands have scratch space.
+- **`read-only` cannot commit**; session-tmp writes allowed for scratch.
 - **System read roots** (`restricted` spawned procs): `/usr`, `/bin`, `/lib*`,
-  `/etc`, `/opt`, `/nix/store`, toolchain roots — read-only, so binaries can
-  exec. File tools stay worktree-only; the asymmetry is intentional (tools =
-  what the *model* may browse; kernel policy = what a *process* needs to run).
-- **Secrets denylist** (all sandboxed modes, both layers, masked): `~/.ssh`,
-  `~/.aws`, `~/.config/gcloud`, `~/.netrc`, `~/.config/serf`, `~/.gnupg`,
-  `~/.docker/config.json`, `~/.kube`, `~/.git-credentials`. User-extensible both
-  directions via config (add / punch holes); never model-changeable mid-session.
-- **Git-metadata protection (v3 — complete, not just `.git/hooks`).** Objects,
-  refs, index, logs, packed-refs are **writable** (so `git commit`/`add`/
-  `checkout` work). Read-only in every writable mode: **all config surfaces and
-  hook surfaces** — `.git/config`, per-worktree config (`config.worktree` +
-  `extensions.worktreeConfig`), submodule configs (`.git/modules/*/config`), and
-  `.git/hooks`, resolved through `gitdir:` for linked worktrees. Rationale: hook
-  poisoning executes later, unsandboxed. A raw `git config core.hooksPath
-  <writable-dir>` redirect is neutralized because **every config file git would
-  read for this repo is read-only and `$HOME`-level configs aren't writable** —
-  so the redirect can't be *persisted*, and a hook file dropped in the worktree
-  stays inert. Cost: `git config --local ...` fails in a sandboxed session
-  (legible denial); accepted — persisting repo config is exactly the vector.
-- **Linked-worktree gitdir.** A worktree session's git writes land *outside* the
-  worktree in `<main>/.git/worktrees/<id>/`, `objects/`, `refs/`, `logs/`,
-  `packed-refs`. Policy resolves the `gitdir:` pointer and grants those (minus
-  config/hooks). Without this, subagent worktree lanes can't commit.
-- **Cache roots.** `workspace-write` grants writes to `~/.cache`, `~/go/pkg`,
-  `~/.npm`, `~/.cargo` (user-extensible) — else `go build`/`npm`/`cargo` fail on
-  the first sandboxed session. **A startup warning states cache roots are
-  writable and that a sandboxed session can poison a cache a later unsandboxed
-  build consumes** (mitigation is user awareness in v1). `restricted` grants no
-  cache roots; it redirects redirectable caches into session tmp via env
-  (`GOCACHE`, `npm_config_cache`, `CARGO_HOME`) and eats cold-cache cost.
-- **Session tmp**: per-session (not shared `/tmp`), `TMPDIR`, cleaned on session
-  end; crashed-session dirs age-swept at next serf start.
+  `/etc`, `/opt`, `/nix/store`, toolchain roots — read-only, excludes `/proc`.
+  File tools stay worktree-only (tools = what the *model* may browse; kernel =
+  what a *process* needs to run).
+- **Secrets denylist** (masked, both layers): `~/.ssh`, `~/.aws`,
+  `~/.config/gcloud`, `~/.netrc`, `~/.config/serf`, `~/.gnupg`,
+  `~/.docker/config.json`, `~/.kube`, `~/.git-credentials`, **+ pseudo-fs
+  (`/proc`, `/sys`, `/dev/fd`, `/dev/mem`, `/run/user/*`)**. User-extensible both
+  directions; never model-changeable mid-session.
+- **Git-metadata protection (complete).** Writable: objects, refs, index, logs,
+  packed-refs (so commit/add/checkout work). Read-only in every writable mode:
+  **all config + hook surfaces** — `.git/config`, per-worktree config
+  (`config.worktree` + `extensions.worktreeConfig`), submodule configs
+  (`.git/modules/*/config`), `.git/hooks` — resolved through `gitdir:`. Because
+  every config file git reads for the repo is read-only **and** `$HOME` configs
+  are unwritable, a `core.hooksPath` redirect can't persist. Cost: `git config
+  --local` fails in-sandbox (legible denial) — that write is exactly the vector.
+- **Linked-worktree gitdir.** git writes land in `<main>/.git/worktrees/<id>/`,
+  `objects/`, `refs/`, `logs/`, `packed-refs` (granted, minus config/hooks). The
+  **main repo's `.git/config` and common config are read-granted (write-denied)**
+  — git must *read* common config even from a linked worktree (v4 fix: not
+  "never granted", which would break linked-worktree git).
+- **Cache roots (v4 — contained, not just warned).** Invariant: **a sandboxed
+  session can never poison a cache a later build consumes.** `workspace-write`
+  serves cache roots (`~/.cache`, `~/go/pkg`, `~/.npm`, `~/.cargo`,
+  user-extensible) as **read-only-lower + private-upper overlay** (`bwrap
+  --overlay-src <cache> --tmp-overlay`): warm reads from the real cache, writes
+  land in a per-session tmpfs discarded at session end. Where overlay is
+  unavailable (Seatbelt/macOS, bwrap < 0.5): **degrade to session-private
+  redirect** (`GOCACHE`/`npm_config_cache`/`CARGO_HOME` → session tmp; cold) —
+  never to persistent-writable. `restricted`: session-private redirect always.
+  The overlay is a *performance* optimization; the security floor (no poisoning)
+  holds regardless of backend.
+- **Session tmp**: per-session (not shared `/tmp`), `TMPDIR`, cleaned on end;
+  crashed-session dirs age-swept at next serf start.
 
-## Environment floor (v3)
+## Environment & descriptor floor
 
-Serf already drops `*KEY*/*SECRET*/*TOKEN*/*PASSWORD*/*CREDENTIAL*` env by
-default. Sandboxed sessions raise a **floor on top of** the user's `EnvPolicy`
-(composes, doesn't replace — env-scrubbing stays an independent knob):
-additionally drop `SSH_AUTH_SOCK` (ssh-agent access is credential access without
-touching `~/.ssh`), and cloud credential-agent vars (`AWS_*`, `GOOGLE_*`,
-`GCLOUD_*`, `VAULT_*`, `KUBECONFIG` pointing outside the worktree). The
-ssh-agent / gpg-agent Unix sockets are **not** bind-mounted into the sandbox.
-Stated because otherwise net-off + FS-masking would still leave a live agent
-socket as an exfil/sign-anything channel.
+- Serf already drops `*KEY*/*SECRET*/*TOKEN*/*PASSWORD*/*CREDENTIAL*` env.
+  Sandbox raises a floor **on top of** the user's `EnvPolicy` (composes; scrub
+  stays an independent knob): also drop `SSH_AUTH_SOCK`, cloud cred-agent vars
+  (`AWS_*`, `GOOGLE_*`, `GCLOUD_*`, `VAULT_*`, worktree-external `KUBECONFIG`).
+- ssh-agent / gpg-agent Unix sockets are **not** bind-mounted in (a live agent
+  socket is sign-anything/exfil even with `~/.ssh` masked).
+- **Spawned commands inherit no serf fds/sockets** beyond stdio: `exec.Cmd`
+  runs with empty `ExtraFiles`, serf's fds are `O_CLOEXEC`, and bwrap passes no
+  extra fds. Prevents inheriting serf's live LLM-API connection or credential
+  fds.
 
 ## Network — one flag, honest semantics
 
 `--sandbox-net=on|off`, default **on** when sandboxed (FS containment is
-load-bearing; egress denial is the opt-in extra — deliberately diverges from
-Codex/Claude Code default-deny).
+load-bearing; egress denial is opt-in — deliberately diverges from
+Codex/Claude-Code default-deny).
 
 `network=off` governs the **tool plane**: spawned procs (`--unshare-net`: no
-interfaces — no TCP/UDP/DNS) and serf-process tool egress —
-`web_fetch`/`web_search` and remote (HTTP/SSE) MCP servers disabled with a
-legible error. **Provider-native egress is also disabled (v3):** any
-provider-side web-search / server-tool feature that fetches on the model's
-behalf is turned off for the turn under net=off — otherwise "network off" is a
-lie told through the provider. **LLM provider *inference* traffic is
-unaffected** — the agent still talks to its model; net=off never promised
-otherwise, and now says so explicitly.
+interfaces — no TCP/UDP/DNS); serf-process tool egress (`web_fetch`/`web_search`,
+remote HTTP/SSE MCP servers) disabled with a legible error; and **provider-native
+egress** (server-side web-search / fetch the provider runs for the model) — see
+the provider-capability registry (M-task) which **fails closed for unknown
+provider capabilities**, so `net=off` can't be silently false through a path the
+user can't inspect. **LLM provider inference traffic is unaffected** — the agent
+still talks to its model; net=off never promised otherwise.
 
-`network=off` requires bwrap (no Landlock TCP-only variant — TCP-only leaves
-UDP/DNS exfiltration open, a silently weaker contract).
+`network=off` requires bwrap (no Landlock TCP-only variant — leaves UDP/DNS
+open).
 
 ## Backends and the enforcement floor
 
-**Linux: bwrap-preferred.** Probe once at session start (capability check,
-binary resolved outside cwd). bwrap expresses the full model: writable-root
-binds, subtractive masking (denylist/config/hooks hidden via tmpfs/`--ro-bind`),
-`--unshare-net`, `--unshare-pid` + fresh `--proc`, minimal `/dev`. One startup
-line always states backend + the exact enforcement set.
+**Linux: bwrap-preferred.** Probe once at start (capability check, binary
+resolved outside cwd; overlay support probed separately for the cache path).
+bwrap expresses the full model: writable binds, subtractive masking,
+`--unshare-net`, `--unshare-pid`+`--proc`, minimal `/dev`, `--overlay`. One
+startup line states backend + exact enforcement set (incl. warm-overlay vs
+cold-cache).
 
-**Landlock fallback** (`landlock-lsm/go-landlock`, no userns dependency — immune
-to Ubuntu 24.04 `apparmor_restrict_unprivileged_userns`). Landlock is
-**allowlist-only — cannot express subtraction**. Under the fail-closed floor it
-therefore serves exactly one contract it can fully express: **`restricted` in a
-linked worktree, net=on** (pure additive grants; config/hooks live in the main
-`.git` and are simply never granted; no `/proc` PID-ns, so it also cannot
-deliver the `/proc` guarantee → this is folded into the "cannot serve" set
-unless the worktree-restricted grant set excludes `/proc` entirely, which it
-does — `restricted` grants only worktree + system read roots, and system read
-roots exclude `/proc`). It cannot serve `workspace-write`, `read-only`
-(subtractive denylist), `restricted` on a main checkout, or `net=off`.
+**Landlock fallback** (`go-landlock`, no userns dep — immune to Ubuntu 24.04
+`apparmor_restrict_unprivileged_userns`). Allowlist-only, can't subtract → under
+fail-closed it serves exactly **`restricted` in a linked worktree, net=on**
+(pure additive grants: worktree + system read roots + tmp + gitdir rw-subset;
+main `.git/config` read-granted; config/hooks never granted; `/proc` never
+granted). It cannot serve `workspace-write`, `read-only` (subtractive denylist),
+`restricted` on a main checkout, or `net=off`.
 
-**Floor: full contract or refuse — no override flag.** If the host can't fully
-enforce the requested mode+net, the session **fails to start** with an error
-naming the missing capability and fix.
+**Floor: full contract or refuse — no override flag.**
 
 | Host capability | runs | refuses |
 |---|---|---|
@@ -170,35 +198,33 @@ naming the missing capability and fix.
 | Landlock only | `restricted` in a linked worktree, net=on | everything else |
 | neither / Windows / other OS | `off` only | any sandboxed mode |
 
-No `BestEffort()` degradation, no `--sandbox-allow-degraded`.
+No `BestEffort()`, no `--sandbox-allow-degraded`.
 
 **Not used:** seccomp-bpf as primary; Codex's ~2700-line bwrap mount-ordering
-machinery (nested overlays, ripgrep glob-deny) — flat roots + fixed
-protected-subpath/denylist sets.
+machinery — flat roots + fixed protected-subpath/denylist sets.
 
 ## Backend (macOS)
 
-`sandbox-exec` (Seatbelt) — deprecated a decade, still the only headless option;
-used by Codex and Claude Code. SBPL from the same policy model (Seatbelt is
-deny-capable → all modes expressible), invoked `/usr/bin/sandbox-exec -p
-<policy> -- <cmd>` with the path hard-coded (PATH-injection defense, from Codex).
-Validated on **paradise-park** (ssh).
+`sandbox-exec` (Seatbelt) — deprecated a decade, only headless option; used by
+Codex + Claude Code. SBPL from the same policy model (deny-capable → all modes
+expressible), `/usr/bin/sandbox-exec -p <policy> -- <cmd>`, path hard-coded
+(PATH-injection defense). Cache path degrades to session-private (no overlay).
+**Explicit parity tests** (v4): network denial, pseudo-fs/process exposure, and
+path-race behavior must match the Linux contract. Validated on **paradise-park**.
 
 ## Tool-surface inventory
-
-Every model-reachable route to filesystem/network and its coverage:
 
 | Surface | Coverage |
 |---|---|
 | `shell` (fg + background jobs, `StreamCommand`) | kernel wrapper |
-| `read_file`/`write_file`/`edit_file` | in-process checks |
-| **`apply_patch`** | **in-process — but does NOT flow through execenv today** (`session_tools_shell.go:233` → `tool.ApplyPatch(env.WorkingDirectory(), patch)` → `os.ReadFile/WriteFile/Remove/Rename` directly, `apply_patch.go`). **M2 must route every op through policy-aware execenv methods, or disable `apply_patch` in sandboxed modes until refactored.** Explicit tests: `read-only`, protected `.git/config`+`hooks`, symlink escape. |
-| `glob`/`grep`/`list_dir` | in-process base resolution; `rg` subprocess also kernel-wrapped |
-| `manage_worktree` (main-repo control env) | control policy: main repo + `.git/worktrees` registry writes allowed; config/hooks denied |
+| `read_file`/`write_file`/`edit_file` | in-process, race-safe (openat2/fd-walk) |
+| **`apply_patch`** | in-process — **does NOT flow through execenv today** (`session_tools_shell.go:233` → `tool.ApplyPatch(env.WorkingDirectory(),patch)` → `os.ReadFile/WriteFile/Remove/Rename`, `apply_patch.go`). **Decision (v4): must be refactored to route through the race-safe execenv layer before `--sandbox` ships — NOT disabled.** Disabling a core edit tool to pass a milestone is rejected. |
+| `glob`/`grep`/`list_dir` | in-process base resolution; `rg` subprocess kernel-wrapped |
+| `manage_worktree` (main-repo control env) | control policy: main repo + `.git/worktrees` registry writes; config/hooks denied |
 | stdio MCP servers | spawned under session sandbox |
-| remote MCP servers | net=on only; disabled net=off |
-| hook commands (PreToolUse etc.) | spawned under session sandbox; hooks needing broader access are incompatible with sandboxed sessions (documented) |
-| `web_fetch`/`web_search` + provider-native web | net=on only; disabled net=off |
+| remote MCP servers | net=on only |
+| hook commands (PreToolUse etc.) | spawned under session sandbox; broader-access hooks incompatible with sandboxed sessions (documented) |
+| `web_fetch`/`web_search` + provider-native web | net=on only; registry fails closed on unknown provider capabilities |
 | delegate/subagent sessions | inherit policy re-rooted to their worktree |
 | `compact_context`, `ask_user`, job-control | no fs/network surface |
 
@@ -207,100 +233,102 @@ Every model-reachable route to filesystem/network and its coverage:
 Everything flows through `execenv.ExecutionEnvironment` →
 `LocalExecutionEnvironment` (`agent/execenv/local.go:60`).
 
-1. **Policy carrier**: `SandboxPolicy` (mode, resolved roots, denylist, net,
-   backend, env-floor) on `LocalExecutionEnvironment`; constructed at
-   `cmd/serf/run.go:177` / `serve.go:203`.
+1. **Policy carrier**: `SandboxPolicy` (mode, resolved roots, denylist incl.
+   pseudo-fs, net, backend, env-floor, cache-strategy) on
+   `LocalExecutionEnvironment`; constructed at `cmd/serf/run.go:177` /
+   `serve.go:203`.
 2. **Config/flags**: `Sandbox`+`SandboxNet` on `SessionConfig`
-   (`session_config.go:20`); `--sandbox`, `--sandbox-net`; denylist/root
-   extensions in config, human-only, resolved before session start.
+   (`session_config.go:20`); `--sandbox`/`--sandbox-net`; denylist/root
+   extensions in config, human-only, resolved before start.
 3. **Kernel wrap**: prefix backend argv in `shellCommand`/`execPreparedCommand`
-   (`local.go:768`) + `StreamCommand` (`local.go:866`); same wrapper at MCP
-   stdio-spawn and hook-command-spawn sites.
-4. **In-process**: extend `resolve` (`local.go:1121`) with the strict read-side
-   check mirroring `resolveWrite`→`ensureUnderRoot` (`local.go:1136`/`:1158`);
-   `Glob`/`Grep`/`ListDirectory` share it; **`apply_patch` refactored to route
-   through the same checks** (see inventory).
+   (`local.go:768`) + `StreamCommand` (`local.go:866`); same at MCP-stdio + hook
+   spawn sites; empty `ExtraFiles` + `O_CLOEXEC`.
+4. **In-process race-safe layer**: replace `resolve`/`resolveWrite`
+   (`local.go:1121`/`:1136`) path-string checks with openat2/fd-walk beneath a
+   base-root fd; `Glob`/`Grep`/`ListDirectory` and the **refactored
+   `apply_patch`** route through it; pseudo-fs denylist enforced here.
 5. **Subagents/worktrees**: policy rides `WithWorkingDirectory` (`local.go:123`)
    like `EnvPolicy`, re-rooted to the child worktree with fresh gitdir
    resolution; persisted in the delegate descriptor beside `LocalEnvPolicy`;
    resumed delegates re-apply. Novel surface — explicit tests.
-6. **Denials**: typed, legible tool error. In-process denials know the path;
-   kernel denials attributed best-effort (exit + stderr), never silently
-   retried. Every denial audit-logged to the session log (mode, tool,
-   path/command). Non-interactive: final.
+6. **Denials**: typed, legible tool error; in-process denials know the path,
+   kernel denials attributed best-effort, never silently retried. Every denial
+   audit-logged with a **redaction contract** (v4): log mode + tool + a
+   redacted path (basename or `<denied>` token for denylisted/secret paths) +
+   truncated command; never the file *contents* or full secret path.
+   Non-interactive: final.
 
-## Milestones (v3 — no half-enforced mode ever user-visible; subagent inheritance ships WITH the flag)
+## Milestones (v4 — M1 sliced; flag ships only after subagent inheritance holds)
 
-- **M1 — Policy core + cross-backend contract tests.** `SandboxPolicy` model,
-  mode/flag/config parsing, backend probe, gitdir resolution (incl. worktree +
-  submodule config surfaces), denylist/root/env-floor computation. A
-  backend-agnostic contract suite (mode + host facts → exact grants / denials /
-  refusals) every backend must satisfy — written first, so macOS lands against
-  the same contract. No user-visible flag.
-- **M2 — File-tool in-process layer.** Read-side containment + strict symlink
-  resolution; denylist; `read-only` write denial; **`apply_patch` refactored (or
-  disabled) — per-tool checklist: `read_file`, `write_file`, `edit_file`,
-  `apply_patch`, `glob`, `grep`, `list_dir`, each with acceptance tests**;
-  denial errors + audit log.
-- **M3 — Linux kernel layer (internal slices, flag NOT yet live).**
-  M3a bwrap FS confinement for `shell` (+ `--unshare-pid`/`--proc`, `/dev`);
-  M3b Landlock worktree-restricted fallback; M3c jobs/`rg`/MCP-stdio/hook-spawn
-  wrapping; M3d session tmp + caches + env floor; M3e net=off + floor refusals +
-  startup line. Each slice reviewed against the M1 contract suite.
+- **M1 — Policy core + contract tests** (sliced):
+  M1a policy/config/flag parsing; M1b root + gitdir/submodule/config-surface
+  resolution; M1c backend + overlay capability probing; M1d backend-agnostic
+  contract-test harness (mode + host facts → exact grants/denials/refusals),
+  which every backend must satisfy. No user-visible flag.
+- **M2 — File-tool race-safe in-process layer.** openat2/fd-walk; strict
+  resolution; secrets+pseudo-fs denylist; `read-only` write denial;
+  **`apply_patch` refactored** (per-tool checklist: `read_file`, `write_file`,
+  `edit_file`, `apply_patch`, `glob`, `grep`, `list_dir`, each with acceptance +
+  race tests); denial errors + redacted audit log.
+- **M3 — Linux kernel layer** (internal slices, flag NOT live): M3a bwrap FS +
+  `--unshare-pid`/`--proc`/`/dev`; M3b Landlock worktree-restricted fallback;
+  M3c jobs/`rg`/MCP-stdio/hook wrapping + fd hygiene; M3d session tmp + cache
+  overlay/redirect + env floor; M3e net=off + provider registry + floor refusals
+  + startup line. Each slice vs. the M1 contract suite.
 - **M4 — Subagent/worktree scoping.** Re-rooting, descriptor persistence,
-  resume, depth inheritance, cross-lane isolation tests.
-- **M5 — `--sandbox` goes live on Linux.** The flag ships only once **M3 *and*
-  M4** pass end-to-end together — a sandboxed session can delegate the instant
-  it's user-visible, so subagent inheritance must already hold. (Fixes the v2
-  ordering gap where the flag preceded inheritance.)
-- **M6 — macOS Seatbelt** against the M1 contract suite; live on paradise-park;
-  flag goes live on macOS.
+  resume, depth inheritance, cross-lane isolation.
+- **M5 — `--sandbox` goes live on Linux** — ships only once **M3 *and* M4** pass
+  e2e together (a sandboxed session can delegate the instant it's visible).
+- **M6 — macOS Seatbelt** vs. the M1 contract suite + parity tests; live on
+  paradise-park; flag live on macOS.
 - **M7 — In-UI escalation** (below), after M1–M6 validated e2e.
 
 ## M7 — In-UI escalation (specced now, built last)
 
-Serf has no harness-level approval prompt (PreToolUse can only deny; `ask_user`
-is model-initiated — wrong trust direction). New human-gated primitive over
-AppWire, interactive sessions only:
+Serf has no harness approval prompt (PreToolUse only denies; `ask_user` is
+model-initiated — wrong trust direction). New human-gated AppWire primitive,
+interactive only:
 
-- **File-tool denials** (precise path, no partial side effects): "Agent tried to
-  write /etc/hosts — allow this one action?" Approve → re-run that single
-  invocation with that path added *for that invocation only* (gemini-cli model).
-  Deny → typed error to model.
-- **Shell denials**: denied path is heuristic and the command may have
-  **partially executed**. The card shows the full command, output so far, and a
-  "already partially ran; approving re-runs start-to-finish" caveat. Approve →
-  re-run whole command with the expanded grant for that invocation.
-- Model cannot trigger, approve, observe, or replay approvals. No session-wide
-  relaxation, no persistent allowlist (that's the deferred policy engine — this
-  primitive is what it would sit on).
+- **File-tool denials** (precise path, no partial effects): approve → re-run that
+  single invocation with that path added *for that invocation only*
+  (gemini-cli model). Deny → typed error to model.
+- **Shell denials**: denied path heuristic; command may have **partially
+  executed**. Card shows command + output-so-far + "already partially ran;
+  approving re-runs start-to-finish" caveat. Approve → re-run whole command with
+  the expanded grant for that invocation.
+- Model cannot trigger/approve/observe/replay approvals. No session-wide
+  relaxation, no persistent allowlist (the deferred policy engine sits here
+  later).
 - Non-interactive: unchanged (denial final).
 
 ## Validation
 
-- **Adversarial escape suite** (named deliverable, extends the containment
-  invariant of `cmd/serf-hub/sandbox_test.go`): symlink-out (file tools + shell),
-  `/proc/1/root` + `/proc/<pid>/root` aliasing, `/proc/<pid>/environ` read,
-  fd/root aliasing, `ld-linux.so <denied-binary>`, `.git/hooks` write,
-  `core.hooksPath` redirect + `git config` persist attempt, `config.worktree` /
-  submodule-config tamper, `~/.bashrc`/`~/.gitconfig` write (expect denied by
-  write-confinement), denylist read via **every** file tool incl. `apply_patch`,
-  hardlink-create-then-read against a masked secret (expect blocked by masking),
-  pre-existing-hardlink read (documented residual — asserted, not claimed
-  closed), `SSH_AUTH_SOCK`/agent-socket egress, net=off egress (TCP + UDP/DNS),
-  worktree-lane cross-reads.
-- Per-milestone unit + e2e; live feel-testing of denial UX (no model retry
-  loops); bwrap and Landlock paths each e2e'd; M1 contract suite runs against
-  both Linux backends and Seatbelt.
+- **Adversarial escape suite** (named deliverable, extends
+  `cmd/serf-hub/sandbox_test.go`'s containment invariant): symlink-out (file
+  tools + shell), **TOCTOU symlink-swap race during read/write/rename/apply_patch
+  (concurrent job)**, **`read_file("/proc/<serf-pid>/environ")` + `/proc/1/root`
+  + `/proc/<pid>/root` aliasing** (expect denied both layers), fd/root aliasing,
+  `ld-linux.so <denied-binary>`, `.git/hooks` write + `core.hooksPath` redirect
+  persist attempt, `config.worktree`/submodule-config tamper,
+  `~/.bashrc`/`~/.gitconfig` write (expect write-confinement denial),
+  denylist read via every file tool incl. `apply_patch`,
+  hardlink-create-then-use vs. masked secret (blocked by masking) +
+  pre-existing-hardlink read/write-through (documented residual, asserted),
+  inherited-fd/agent-socket egress, cache-poison-then-consume (expect
+  overlay/private isolation), net=off egress (TCP + UDP/DNS + provider-native).
+- Per-milestone unit + e2e; live denial-UX feel-testing (no model retry loops);
+  bwrap + Landlock paths each e2e'd; M1 contract suite runs against both Linux
+  backends and Seatbelt (parity).
 - Edge cases pinned: nested worktrees, submodules, resumed sessions re-applying
-  policy, deleted-then-recreated roots, delegate resume after serf restart.
+  policy, deleted-then-recreated roots, delegate resume after serf restart,
+  overlay-unavailable degradation.
 
 ## Resolved decisions (Jesse, 2026-07-08)
 
-1. Secrets denylist: default set above; user-extensible both directions; never
-   model-changeable.
-2. `web_fetch`/`web_search`, remote MCP, and provider-native web disabled under
-   net=off.
+1. Secrets denylist: default set (+ pseudo-fs); user-extensible both directions;
+   never model-changeable.
+2. `web_fetch`/`web_search`, remote MCP, provider-native web disabled under
+   net=off (registry fails closed).
 3. `read-only` kept; cannot commit; session-tmp writes allowed.
 4. Backend: bwrap-preferred, Landlock fallback (worktree-restricted only);
    per-host enforcement stated loudly at startup.
@@ -308,25 +336,21 @@ AppWire, interactive sessions only:
 6. Network default on when sandboxed; single independent flag.
 7. Floor: fail closed, no override — full contract or refuse; Windows/unknown
    refuse all sandboxed modes.
+8. Cache: read-real/write-private overlay where supported, else session-private;
+   never persistent-writable — **no cache poisoning in any sandboxed mode**.
+9. `apply_patch`: refactored through the race-safe execenv layer, not disabled.
 
-## Round-2 findings dispositioned (roborev job 2321)
+## Review stopping point
 
-- apply_patch execenv bypass → **fixed** (M2 refactor/disable + tests; inventory
-  now states the bypass explicitly).
-- hardlink aliasing → **narrowed honestly**: masking closes create-then-read for
-  spawned procs; pre-existing-hardlink-to-secret is a documented residual, not a
-  claimed guarantee.
-- git persistence (`core.hooksPath`, `config.worktree`, submodule configs) →
-  **fixed** by protecting all config surfaces (persist-blocked; `$HOME` configs
-  already unwritable).
-- `/proc` host-PID leak → **fixed**: `--unshare-pid` + fresh `--proc` required.
-- M-ordering (flag before subagent inheritance) → **fixed**: flag goes live (M5)
-  only after subagent scoping (M4).
-- M3 too broad → **fixed**: split into internal slices M3a–e.
-- env/credential exposure (`SSH_AUTH_SOCK`, agent sockets) → **added** (env
-  floor).
-- cache poisoning → **startup warning added**.
+Three design-review rounds hardened this from "solid split, wrong primary
+mechanism" (v1) to implementation-ready (v4). Round 3 found two genuine
+containment holes (in-process `/proc` read; TOCTOU race) — worth the round.
+Beyond v4 the expected findings are judgment calls or diminishing returns; a
+security design asymptotes and never earns a clean "Pass." **Recommendation:
+treat v4 as buildable and let each milestone's own code review (esp. M2's
+race-safety and M3's bwrap policy) catch implementation-level issues, rather than
+iterating the design doc further.** M1 is the next action.
 
 ## Open questions
 
-None — ready for re-review.
+None — awaiting Jesse's go/no-go on starting M1.
