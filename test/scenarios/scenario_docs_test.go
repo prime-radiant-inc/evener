@@ -32,3 +32,22 @@ func TestScenarioDocsUseCanonicalActiveState(t *testing.T) {
 		}
 	}
 }
+
+func TestInlineOutputImageScenarioCardsExist(t *testing.T) {
+	for _, id := range []string{
+		"read-image-tool-result-inline",
+		"written-image-inline-after-reload",
+		"shell-generated-image-path-inline",
+		"unsafe-image-path-ignored",
+		"output-image-lightbox-and-pane",
+	} {
+		path := id + ".md"
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("required scenario card %q missing at %s: %v", id, path, err)
+		}
+		if !strings.HasPrefix(string(body), "# "+id+":") {
+			t.Fatalf("%s must start with canonical scenario heading %q", path, "# "+id+":")
+		}
+	}
+}

@@ -168,6 +168,25 @@ assistant references the image content.
   on-disk PNG path; `handleBracketedPaste` attaches instead of
   inserting text. Verified live 2026-05-18.
 
+## Inline output images
+
+End-to-end scenario-card coverage for output images produced by tools in the
+web UI. These cards are deterministic: use local temp files plus scripted
+provider/tool behavior, not live provider credentials or network access.
+
+- `read-image-tool-result-inline.md` — an image-byte tool result projects an
+  output-image descriptor and renders a thumbnail under the producing tool row.
+- `written-image-inline-after-reload.md` — a structured file-writing tool writes
+  an image under session cwd; live and replay/reload both keep the preview under
+  the same row.
+- `shell-generated-image-path-inline.md` — a shell row that creates an image
+  under cwd and prints the relative path receives a conservative server-validated
+  `/doc/image` preview.
+- `unsafe-image-path-ignored.md` — out-of-cwd, traversal, external, missing,
+  non-image, and SVG candidates do not render previews and do not fail the row.
+- `output-image-lightbox-and-pane.md` — an output-image thumbnail opens the
+  shared lightbox and, for valid same-origin stable URLs, offers open-beside.
+
 ## Transcript / debug
 
 - `transcript-endpoint-url.md` — api_call entries record
