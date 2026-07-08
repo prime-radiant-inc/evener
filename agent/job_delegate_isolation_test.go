@@ -55,6 +55,8 @@ func newWtDlgRepo(t *testing.T, c *llm.Client) *wtDlgRepo {
 	s := newSession(t, withClient(c), withDir(root), withConfig(SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly:         testConfig{skipGitSnapshot: true},
 	}))
 	return &wtDlgRepo{s: s, mainRoot: root, stateDir: stateDir}
 }

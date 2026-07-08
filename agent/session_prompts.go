@@ -149,10 +149,10 @@ func (s *Session) canPromptDelegation() bool {
 // renderSystemPrompt renders the system prompt using the template resolver.
 // See refreshSystemPromptCache for the env-locking contract.
 func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) string {
-	gitRoot := execenv.GitRootOrEmpty(env, s.envInfo.WorkingDir)
-	projDir := promptpath.ProjectPromptsDir(gitRoot)
-	if s.cfg.NoProjectPrompts {
-		projDir = ""
+	projDir := ""
+	if !s.cfg.NoProjectPrompts {
+		gitRoot := execenv.GitRootOrEmpty(env, s.envInfo.WorkingDir)
+		projDir = promptpath.ProjectPromptsDir(gitRoot)
 	}
 
 	projSections := ""

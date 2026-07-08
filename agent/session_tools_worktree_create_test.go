@@ -180,7 +180,11 @@ func newWorktreeRepo(t *testing.T) *wtRepo {
 	copyWorktreeBaseRepo(t, root)
 	_, head := worktreeBaseRepo(t)
 
-	s := newSession(t, withDir(root), withoutGitSnapshot())
+	s := newSession(t,
+		withDir(root),
+		withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withoutGitSnapshot(),
+	)
 	stateDir, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatalf("EvalSymlinks state: %v", err)
