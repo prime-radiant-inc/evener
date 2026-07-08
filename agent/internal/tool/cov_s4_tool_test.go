@@ -43,7 +43,7 @@ func TestApplyPatch_MismatchReportsNearbyMatchesAndPotentialLocations(t *testing
 	}
 
 	patch := "*** Begin Patch\n*** Update File: f.go\n@@\n \tmodel := \"openai/gpt-5\"\n \tconfig := loadConfig()\n \tMISSING_LINE()\n+\tadded()\n*** End Patch\n"
-	_, err := ApplyPatch(dir, patch)
+	_, err := ApplyPatch(testMutator(dir), patch)
 	if err == nil {
 		t.Fatal("expected patch mismatch")
 	}
@@ -138,51 +138,6 @@ func TestIndexOfLine(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := indexOfLine(tc.lines, tc.want, tc.start); got != tc.exp {
 				t.Fatalf("indexOfLine = %d, want %d", got, tc.exp)
-			}
-		})
-	}
-}
-
-func TestSafeJoin(t *testing.T) {
-	root := t.TempDir()
-
-	// Success: relative path under root.
-	got, err := safeJoin(root, "a/b.txt")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != filepath.Join(root, "a", "b.txt") {
-		t.Fatalf("safeJoin = %q, want %q", got, filepath.Join(root, "a", "b.txt"))
-	}
-
-	// Success: absolute path under root is stripped to a relative join.
-	abs := filepath.Join(root, "sub", "c.txt")
-	got, err = safeJoin(root, abs)
-	if err != nil {
-		t.Fatalf("unexpected error for abs-under-root: %v", err)
-	}
-	if got != abs {
-		t.Fatalf("safeJoin abs = %q, want %q", got, abs)
-	}
-
-	errCases := []struct {
-		name    string
-		rel     string
-		wantSub string
-	}{
-		{name: "empty path", rel: "   ", wantSub: "empty path"},
-		{name: "absolute outside root", rel: "/etc/shadow", wantSub: "absolute path outside working directory"},
-		{name: "path is rootDir itself", rel: root, wantSub: "path is rootDir itself"},
-		{name: "parent traversal", rel: "../escape.txt", wantSub: "path traversal not allowed"},
-	}
-	for _, tc := range errCases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := safeJoin(root, tc.rel)
-			if err == nil {
-				t.Fatalf("expected error for %q", tc.rel)
-			}
-			if !strings.Contains(err.Error(), tc.wantSub) {
-				t.Fatalf("error %q missing %q", err.Error(), tc.wantSub)
 			}
 		})
 	}

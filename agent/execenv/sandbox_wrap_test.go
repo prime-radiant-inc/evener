@@ -12,9 +12,9 @@ import (
 	"primeradiant.com/serf/agent/sandbox"
 )
 
-// sandboxedEnv resolves mode against bwrap facts anchored at home and attaches a
+// kernelWrappedEnv resolves mode against bwrap facts anchored at home and attaches a
 // live kernel wrapper (rooted at cwd) to a fresh execution environment.
-func sandboxedEnv(t *testing.T, bwrapPath, home, cwd, sessionTmp string, mode sandbox.Mode, netOn bool) *LocalExecutionEnvironment {
+func kernelWrappedEnv(t *testing.T, bwrapPath, home, cwd, sessionTmp string, mode sandbox.Mode, netOn bool) *LocalExecutionEnvironment {
 	t.Helper()
 	net := netOn
 	facts := sandbox.HostFacts{OS: "linux", Home: home, BwrapPath: bwrapPath, BwrapCapable: true}
@@ -68,7 +68,7 @@ func TestWrapForSandboxRewritesArgvAndRaisesEnvFloor(t *testing.T) {
 	home := t.TempDir()
 	cwd := sandbox.MaterializeWorkspace(t, sandbox.MainCheckout)
 	sessionTmp := t.TempDir()
-	env := sandboxedEnv(t, "/usr/bin/bwrap", home, cwd, sessionTmp, sandbox.ModeWorkspaceWrite, true)
+	env := kernelWrappedEnv(t, "/usr/bin/bwrap", home, cwd, sessionTmp, sandbox.ModeWorkspaceWrite, true)
 
 	cmd := exec.Command("/bin/bash", "-c", "echo hi") //nolint:noctx // test seam
 	cmd.Env = []string{"SSH_AUTH_SOCK=/run/agent.sock", "PATH=/usr/bin", "AWS_SECRET_ACCESS_KEY=x"}
@@ -96,7 +96,7 @@ func TestWrapForSandboxRewritesArgvAndRaisesEnvFloor(t *testing.T) {
 
 func TestNoInheritedFDs(t *testing.T) {
 	t.Parallel()
-	env := sandboxedEnv(t, "/usr/bin/bwrap", t.TempDir(), sandbox.MaterializeWorkspace(t, sandbox.MainCheckout), t.TempDir(), sandbox.ModeWorkspaceWrite, true)
+	env := kernelWrappedEnv(t, "/usr/bin/bwrap", t.TempDir(), sandbox.MaterializeWorkspace(t, sandbox.MainCheckout), t.TempDir(), sandbox.ModeWorkspaceWrite, true)
 
 	f, err := os.CreateTemp(t.TempDir(), "leak")
 	if err != nil {
@@ -124,7 +124,7 @@ func TestExecWrappedConfinesSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	cwd := sandbox.MaterializeWorkspace(t, sandbox.MainCheckout)
-	env := sandboxedEnv(t, bwrapPath, home, cwd, t.TempDir(), sandbox.ModeWorkspaceWrite, true)
+	env := kernelWrappedEnv(t, bwrapPath, home, cwd, t.TempDir(), sandbox.ModeWorkspaceWrite, true)
 
 	res, err := env.ExecCommand(context.Background(), "cat "+filepath.Join(home, ".ssh", "id")+" 2>&1 || true", 15000, cwd, nil)
 	if err != nil {
@@ -146,7 +146,7 @@ func TestStreamWrappedConfinesSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	cwd := sandbox.MaterializeWorkspace(t, sandbox.MainCheckout)
-	env := sandboxedEnv(t, bwrapPath, home, cwd, t.TempDir(), sandbox.ModeWorkspaceWrite, true)
+	env := kernelWrappedEnv(t, bwrapPath, home, cwd, t.TempDir(), sandbox.ModeWorkspaceWrite, true)
 
 	var buf strings.Builder
 	h, err := env.StreamCommand(context.Background(), "cat "+filepath.Join(home, ".ssh", "id")+" 2>&1 || true", cwd, nil, &buf)
