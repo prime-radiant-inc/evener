@@ -2,10 +2,15 @@ package agent
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/worktree"
@@ -15,6 +20,74 @@ import (
 // (spec §3). They init a throwaway repo under t.TempDir(), drive create through
 // the session tool surface and the worktreeCreate handler directly, and assert
 // against actual git state (porcelain, refs, checked-out files).
+
+var (
+	wtBaseRepoOnce sync.Once
+	wtBaseRepoPath string
+	wtBaseRepoHead string
+	wtBaseRepoErr  error
+
+	sharedSessionWorkspace string
+	sharedAgentTempRoot    string
+	intgMCPServerDir       string
+)
+
+func TestMain(m *testing.M) {
+	for _, key := range []string{"GOCACHE", "GOPATH", "GOMODCACHE"} {
+		if out, err := exec.Command("go", "env", key).Output(); err == nil {
+			if v := strings.TrimSpace(string(out)); v != "" {
+				_ = os.Setenv(key, v)
+			}
+		}
+	}
+
+	testHome, err := os.MkdirTemp("", "serf-agent-home-*")
+	if err == nil {
+		_ = os.Setenv("HOME", testHome)
+		_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(testHome, ".config"))
+	}
+	sharedWorkspace, err := os.MkdirTemp("", "serf-agent-workspace-*")
+	if err == nil {
+		_ = os.Chmod(sharedWorkspace, 0o555)
+		sharedSessionWorkspace = sharedWorkspace
+	}
+	sharedTempRoot, err := os.MkdirTemp("", "serf-agent-fixtures-*")
+	if err == nil {
+		sharedAgentTempRoot = sharedTempRoot
+	}
+
+	code := m.Run()
+
+	if wtBaseRepoPath != "" {
+		_ = os.RemoveAll(wtBaseRepoPath)
+	}
+	if testHome != "" {
+		_ = os.RemoveAll(testHome)
+	}
+	if sharedWorkspace != "" {
+		_ = os.Chmod(sharedWorkspace, 0o755)
+		_ = os.RemoveAll(sharedWorkspace)
+	}
+	if sharedAgentTempRoot != "" {
+		_ = os.RemoveAll(sharedAgentTempRoot)
+	}
+	if intgMCPServerDir != "" {
+		_ = os.RemoveAll(intgMCPServerDir)
+	}
+	os.Exit(code)
+}
+
+func packageFixtureTempDir(t *testing.T, pattern string) string {
+	t.Helper()
+	if sharedAgentTempRoot == "" {
+		return t.TempDir()
+	}
+	dir, err := os.MkdirTemp(sharedAgentTempRoot, pattern)
+	if err != nil {
+		t.Fatalf("MkdirTemp %s: %v", pattern, err)
+	}
+	return dir
+}
 
 // wtRepo is a real git repo plus a session rooted at it, with the managed
 // worktree root pointed at an isolated temp state dir so tests never touch the
@@ -28,49 +101,212 @@ type wtRepo struct {
 
 // wtGit runs a git command in dir through a throwaway local env, failing the
 // test on any non-zero exit.
+func gitTestEnv() map[string]string {
+	return map[string]string{
+		"GIT_CONFIG_GLOBAL":   os.DevNull,
+		"GIT_CONFIG_NOSYSTEM": "1",
+	}
+}
+
+func runWorktreeGit(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = os.Environ()
+	for k, v := range gitTestEnv() {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
+}
+
 func wtGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	env := execenv.NewLocalExecutionEnvironment(dir)
-	cmd := "git " + execenv.ShellEscapeArgs(args...)
-	res, err := env.ExecCommand(context.Background(), cmd, 30_000, dir, nil)
-	if err != nil && res.ExitCode == 0 {
+	out, err := runWorktreeGit(dir, args...)
+	if err != nil {
 		t.Fatalf("git %s: %v", strings.Join(args, " "), err)
 	}
-	if res.ExitCode != 0 {
-		t.Fatalf("git %s: exit %d: %s%s", strings.Join(args, " "), res.ExitCode, res.Stdout, res.Stderr)
+	return out
+}
+
+func worktreeBaseRepo(t *testing.T) (string, string) {
+	t.Helper()
+	wtBaseRepoOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "serf-worktree-base-*")
+		if err != nil {
+			wtBaseRepoErr = err
+			return
+		}
+		wtBaseRepoPath = dir
+
+		if _, err := runWorktreeGit(dir, "init", "-b", "main"); err != nil {
+			wtBaseRepoErr = fmt.Errorf("git init: %w", err)
+			return
+		}
+		if _, err := runWorktreeGit(dir, "config", "user.email", "test@example.com"); err != nil {
+			wtBaseRepoErr = fmt.Errorf("git config user.email: %w", err)
+			return
+		}
+		if _, err := runWorktreeGit(dir, "config", "user.name", "Test"); err != nil {
+			wtBaseRepoErr = fmt.Errorf("git config user.name: %w", err)
+			return
+		}
+		if err := os.WriteFile(filepath.Join(dir, "README"), []byte("main-checkout\n"), 0o644); err != nil {
+			wtBaseRepoErr = fmt.Errorf("write README: %w", err)
+			return
+		}
+		if _, err := runWorktreeGit(dir, "add", "README"); err != nil {
+			wtBaseRepoErr = fmt.Errorf("git add README: %w", err)
+			return
+		}
+		if _, err := runWorktreeGit(dir, "commit", "-m", "initial"); err != nil {
+			wtBaseRepoErr = fmt.Errorf("git commit: %w", err)
+			return
+		}
+		head, err := runWorktreeGit(dir, "rev-parse", "HEAD")
+		if err != nil {
+			wtBaseRepoErr = fmt.Errorf("git rev-parse HEAD: %w", err)
+			return
+		}
+		wtBaseRepoHead = strings.TrimSpace(head)
+	})
+	if wtBaseRepoErr != nil {
+		t.Fatalf("worktree base repo: %v", wtBaseRepoErr)
 	}
-	return res.Stdout
+	return wtBaseRepoPath, wtBaseRepoHead
+}
+
+func copyWorktreeBaseRepo(t *testing.T, dst string) {
+	t.Helper()
+	base, _ := worktreeBaseRepo(t)
+	for _, rel := range []string{
+		"README",
+		filepath.Join(".git", "HEAD"),
+		filepath.Join(".git", "config"),
+		filepath.Join(".git", "index"),
+		filepath.Join(".git", "refs", "heads", "main"),
+	} {
+		copyWorktreeFixtureRelFile(t, base, dst, rel)
+	}
+	objectsDir := filepath.Join(base, ".git", "objects")
+	if err := filepath.WalkDir(objectsDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(base, path)
+		if err != nil {
+			return err
+		}
+		return linkWorktreeFixtureRelFileNoTest(base, dst, rel)
+	}); err != nil {
+		t.Fatalf("copy worktree base repo objects: %v", err)
+	}
+}
+
+func copyWorktreeFixtureRelFile(t *testing.T, srcRoot, dstRoot, rel string) {
+	t.Helper()
+	if err := copyWorktreeFixtureRelFileNoTest(srcRoot, dstRoot, rel); err != nil {
+		t.Fatalf("copy worktree base repo %s: %v", rel, err)
+	}
+}
+
+func copyWorktreeFixtureRelFileNoTest(srcRoot, dstRoot, rel string) error {
+	src := filepath.Join(srcRoot, rel)
+	dst := filepath.Join(dstRoot, rel)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	return copyWorktreeFixtureFile(src, dst, info.Mode().Perm())
+}
+
+func linkWorktreeFixtureRelFileNoTest(srcRoot, dstRoot, rel string) error {
+	src := filepath.Join(srcRoot, rel)
+	dst := filepath.Join(dstRoot, rel)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	if err := os.Link(src, dst); err == nil {
+		return nil
+	}
+	return copyWorktreeFixtureRelFileNoTest(srcRoot, dstRoot, rel)
+}
+
+func copyWorktreeFixtureFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
+}
+
+func worktreeTestSessionConfig() SessionConfig {
+	return SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly: testConfig{
+			skipGitSnapshot:             true,
+			minimalSystemPrompt:         true,
+			minimalWorktreeToolRegistry: true,
+			noSyncJobStore:              true,
+		},
+	}
 }
 
 // newWorktreeRepo builds a real one-commit git repo and a session rooted at it.
 func newWorktreeRepo(t *testing.T) *wtRepo {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
+	return newWorktreeRepoWithConfig(t, worktreeTestSessionConfig())
+}
 
-	root := t.TempDir()
+func newWorktreeRepoWithConfig(t *testing.T, cfg SessionConfig) *wtRepo {
+	t.Helper()
+	root := packageFixtureTempDir(t, "worktree-repo-*")
 	root, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		t.Fatalf("EvalSymlinks: %v", err)
 	}
+	copyWorktreeBaseRepo(t, root)
+	_, head := worktreeBaseRepo(t)
 
-	wtGit(t, root, "init", "-b", "main")
-	wtGit(t, root, "config", "user.email", "test@example.com")
-	wtGit(t, root, "config", "user.name", "Test")
-	if err := os.WriteFile(filepath.Join(root, "README"), []byte("main-checkout\n"), 0o644); err != nil {
-		t.Fatalf("write README: %v", err)
-	}
-	wtGit(t, root, "add", "README")
-	wtGit(t, root, "commit", "-m", "initial")
-	head := strings.TrimSpace(wtGit(t, root, "rev-parse", "HEAD"))
-
-	s := newSession(t, withDir(root))
-	stateDir, err := filepath.EvalSymlinks(t.TempDir())
+	s := newSession(t, withDir(root), withConfig(cfg))
+	stateDir, err := filepath.EvalSymlinks(packageFixtureTempDir(t, "worktree-state-*"))
 	if err != nil {
 		t.Fatalf("EvalSymlinks state: %v", err)
 	}
 	s.stateDir = stateDir
+	s.mu.Lock()
+	// Most worktree fixture tests cover lifecycle behavior, not the git-version
+	// preflight. The old-git tests reset this flag to exercise that path.
+	s.worktreeGitVersionOK = true
+	s.mu.Unlock()
 
 	return &wtRepo{s: s, mainRoot: root, stateDir: stateDir, head: head}
+}
+
+func (r *wtRepo) requireGitVersionPreflight() {
+	r.s.mu.Lock()
+	r.s.worktreeGitVersionOK = false
+	r.s.mu.Unlock()
 }
 
 // create drives the create operation through the registered tool surface,
@@ -115,9 +351,38 @@ func (r *wtRepo) metaDir(canonicalMain string) string {
 	return filepath.Join(r.stateDir, "worktrees", worktree.ProjectID(canonicalMain), ".meta")
 }
 
+func (r *wtRepo) addManagedWorktreeFixture(t *testing.T, name string) string {
+	t.Helper()
+	canonicalMain := r.canonicalMain(t)
+	path := r.managedPath(canonicalMain, name)
+	metaDir := r.metaDir(canonicalMain)
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatalf("mkdir metaDir: %v", err)
+	}
+	mergeTarget := strings.TrimSpace(wtGit(t, r.mainRoot, "branch", "--show-current"))
+	sc := worktree.Sidecar{
+		Name:           name,
+		Branch:         name,
+		BaseSHA:        r.head,
+		MergeTarget:    mergeTarget,
+		OriginalRoot:   canonicalMain,
+		CreatorSession: r.s.id,
+		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := worktree.WriteSidecarExcl(metaDir, name, sc); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir worktree parent: %v", err)
+	}
+	wtGit(t, r.mainRoot, "worktree", "add", "-b", name, "--", path, r.head)
+	return path
+}
+
 // --- Tests ---
 
 func TestWorktreeCreate_CreatesWorktreeWithGitPointer(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "feature-a"})
 	if err != nil {
@@ -144,6 +409,7 @@ func TestWorktreeCreate_CreatesWorktreeWithGitPointer(t *testing.T) {
 }
 
 func TestWorktreeCreate_SwapsEnvIntoWorktree(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -177,6 +443,7 @@ func TestWorktreeCreate_SwapsEnvIntoWorktree(t *testing.T) {
 }
 
 func TestWorktreeCreate_AtomicLockWithOwnMarker(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "locked-lane"})
 	if err != nil {
@@ -193,6 +460,7 @@ func TestWorktreeCreate_AtomicLockWithOwnMarker(t *testing.T) {
 }
 
 func TestWorktreeCreate_WritesSidecarProvenance(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "prov"})
 	if err != nil {
@@ -221,6 +489,7 @@ func TestWorktreeCreate_WritesSidecarProvenance(t *testing.T) {
 }
 
 func TestWorktreeCreate_AddFailureCleansSidecarSameCall(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	// A branch "feature" makes "feature/foo" a directory/file ref conflict: the
 	// name passes every earlier check but `git worktree add -b feature/foo`
@@ -248,6 +517,7 @@ func TestWorktreeCreate_AddFailureCleansSidecarSameCall(t *testing.T) {
 }
 
 func TestWorktreeCreate_BaseIsActiveWorktreeHead(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	// Create A off main's HEAD, then advance A with a new commit.
 	resA, err := r.create(t, map[string]any{"name": "A"})
@@ -255,8 +525,6 @@ func TestWorktreeCreate_BaseIsActiveWorktreeHead(t *testing.T) {
 		t.Fatalf("create A: %v", err)
 	}
 	pathA := resA["path"].(string)
-	wtGit(t, pathA, "config", "user.email", "test@example.com")
-	wtGit(t, pathA, "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(pathA, "a.txt"), []byte("a\n"), 0o644); err != nil {
 		t.Fatalf("write a.txt: %v", err)
 	}
@@ -279,6 +547,7 @@ func TestWorktreeCreate_BaseIsActiveWorktreeHead(t *testing.T) {
 }
 
 func TestWorktreeCreate_CreateAwayUnlocksOldWorktree(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	resA, err := r.create(t, map[string]any{"name": "A"})
 	if err != nil {
@@ -306,39 +575,65 @@ func TestWorktreeCreate_CreateAwayUnlocksOldWorktree(t *testing.T) {
 }
 
 func TestWorktreeCreate_ExplicitBaseRefs(t *testing.T) {
-	r := newWorktreeRepo(t)
-	// A tag, a branch, and a remote-tracking ref all pointing at HEAD.
-	wtGit(t, r.mainRoot, "tag", "v1", r.head)
-	wtGit(t, r.mainRoot, "branch", "side", r.head)
-	wtGit(t, r.mainRoot, "update-ref", "refs/remotes/origin/main", r.head)
-
-	cases := []struct{ name, ref string }{
-		{"from-sha", r.head},
-		{"from-tag", "v1"},
-		{"from-branch", "side"},
-		{"from-remote", "origin/main"},
+	cases := []struct {
+		name  string
+		ref   func(*wtRepo) string
+		setup func(*testing.T, *wtRepo)
+	}{
+		{name: "from-sha", ref: func(r *wtRepo) string { return r.head }},
+		{
+			name: "from-tag",
+			ref:  func(*wtRepo) string { return "v1" },
+			setup: func(t *testing.T, r *wtRepo) {
+				wtGit(t, r.mainRoot, "tag", "v1", r.head)
+			},
+		},
+		{
+			name: "from-branch",
+			ref:  func(*wtRepo) string { return "side" },
+			setup: func(t *testing.T, r *wtRepo) {
+				wtGit(t, r.mainRoot, "branch", "side", r.head)
+			},
+		},
+		{
+			name: "from-remote",
+			ref:  func(*wtRepo) string { return "origin/main" },
+			setup: func(t *testing.T, r *wtRepo) {
+				wtGit(t, r.mainRoot, "update-ref", "refs/remotes/origin/main", r.head)
+			},
+		},
 	}
 	for _, c := range cases {
+		c := c
 		t.Run(c.name, func(t *testing.T) {
-			res, err := r.create(t, map[string]any{"name": c.name, "base_ref": c.ref})
+			t.Parallel()
+			r := newWorktreeRepo(t)
+			if c.setup != nil {
+				c.setup(t, r)
+			}
+			ref := c.ref(r)
+			res, err := r.create(t, map[string]any{"name": c.name, "base_ref": ref})
 			if err != nil {
-				t.Fatalf("create base_ref=%q: %v", c.ref, err)
+				t.Fatalf("create base_ref=%q: %v", ref, err)
 			}
 			if got := res["base_sha"]; got != r.head {
-				t.Errorf("base_sha = %v, want %s (base_ref %q)", got, r.head, c.ref)
+				t.Errorf("base_sha = %v, want %s (base_ref %q)", got, r.head, ref)
 			}
 		})
 	}
 }
 
 func TestWorktreeCreate_RejectsBadBaseRefs(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ name, ref, why string }{
 		{"leading-dash", "-x", "option-like"},
 		{"internal-space", "a b", "whitespace"},
 		{"nonexistent", "no-such-ref", "unresolvable"},
 	}
 	for _, c := range cases {
+		c := c
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			r := newWorktreeRepo(t)
 			_, err := r.create(t, map[string]any{"name": c.name, "base_ref": c.ref})
 			if err == nil {
@@ -353,8 +648,10 @@ func TestWorktreeCreate_RejectsBadBaseRefs(t *testing.T) {
 }
 
 func TestWorktreeCreate_BranchExistsSuggestsSwitchOnlyWhenManaged(t *testing.T) {
+	t.Parallel()
 	// (a) A plain branch with no managed worktree: error, NO switch suggestion.
 	t.Run("unmanaged branch", func(t *testing.T) {
+		t.Parallel()
 		r := newWorktreeRepo(t)
 		wtGit(t, r.mainRoot, "branch", "plain", r.head)
 		_, err := r.create(t, map[string]any{"name": "plain"})
@@ -368,6 +665,7 @@ func TestWorktreeCreate_BranchExistsSuggestsSwitchOnlyWhenManaged(t *testing.T) 
 
 	// (b) A managed worktree already exists: error DOES suggest switch.
 	t.Run("managed worktree", func(t *testing.T) {
+		t.Parallel()
 		r := newWorktreeRepo(t)
 		if _, err := r.create(t, map[string]any{"name": "dup"}); err != nil {
 			t.Fatalf("first create: %v", err)
@@ -383,6 +681,7 @@ func TestWorktreeCreate_BranchExistsSuggestsSwitchOnlyWhenManaged(t *testing.T) 
 }
 
 func TestWorktreeCreate_RejectsInvalidName(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	for _, bad := range []string{"", "-lead", "has space", "a..b", "trailing/"} {
 		if _, err := r.create(t, map[string]any{"name": bad}); err == nil {
@@ -392,6 +691,7 @@ func TestWorktreeCreate_RejectsInvalidName(t *testing.T) {
 }
 
 func TestWorktreeCreate_NonLocalEnvErrors(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	// Swap the session env to a non-local one; create must refuse clearly.
 	r.s.mu.Lock()
@@ -405,19 +705,17 @@ func TestWorktreeCreate_NonLocalEnvErrors(t *testing.T) {
 }
 
 func TestWorktreeCreate_TooOldGitPreflightErrors(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
+	r.requireGitVersionPreflight()
 
-	// PATH-shim a `git` that reports an ancient version. The main repo root
+	// Repo-shim a `git` that reports an ancient version. The main repo root
 	// resolves structurally (no git needed), so the shim is only hit by the
 	// version preflight, which must refuse before any lifecycle git call.
-	shimDir := t.TempDir()
 	shim := "#!/bin/sh\n" +
 		"if [ \"$1\" = \"version\" ]; then echo \"git version 2.20.0\"; exit 0; fi\n" +
 		"echo \"shim: unexpected git $*\" >&2; exit 1\n"
-	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(shim), 0o755); err != nil {
-		t.Fatalf("write shim: %v", err)
-	}
-	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeRepoGitShim(t, r.mainRoot, shim)
 
 	_, err := r.create(t, map[string]any{"name": "x"})
 	if err == nil || !strings.Contains(err.Error(), "too old") {
@@ -435,6 +733,7 @@ func TestWorktreeCreate_TooOldGitPreflightErrors(t *testing.T) {
 // direct unit test, exactly as done here) can make the second lookup see a
 // non-local env even though `active` itself is a perfectly valid local one.
 func TestWorktreeCreateCore_ControlEnvNonLocalEnvErrors(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	active := r.s.currentEnv().(*execenv.LocalExecutionEnvironment)
 
@@ -456,6 +755,7 @@ func TestWorktreeCreateCore_ControlEnvNonLocalEnvErrors(t *testing.T) {
 // (no dots, no leading dash, no path components), but git's own
 // `check-ref-format --branch` rejects it as a reserved name.
 func TestWorktreeCreate_RejectsGitReservedNameHEAD(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	if err := worktree.ValidateName("HEAD"); err != nil {
 		t.Fatalf("fixture invalid: ValidateName(HEAD) = %v, want nil (must pass ValidateName to reach check-ref-format)", err)
@@ -471,6 +771,7 @@ func TestWorktreeCreate_RejectsGitReservedNameHEAD(t *testing.T) {
 // managed worktree's project directory would live at makes MkdirAll fail
 // with ENOTDIR, before any sidecar write or git call.
 func TestWorktreeCreate_MetaDirMkdirFailsWhenProjectDirIsAFile(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	canonicalMain := r.canonicalMain(t)
 	projectDir := filepath.Dir(r.managedPath(canonicalMain, "x"))
@@ -494,6 +795,7 @@ func TestWorktreeCreate_MetaDirMkdirFailsWhenProjectDirIsAFile(t *testing.T) {
 // distinct "already being created" message rather than a generic write
 // error.
 func TestWorktreeCreate_SidecarAlreadyExistsRace(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	canonicalMain := r.canonicalMain(t)
 	metaDir := r.metaDir(canonicalMain)
@@ -534,6 +836,7 @@ func TestWorktreeCreate_SidecarAlreadyExistsRace(t *testing.T) {
 // sidecar has already been written — so the failure path must also clean up
 // the just-written sidecar (proven here, not just the error text).
 func TestWorktreeCreate_WorktreeParentMkdirFailsWhenPathComponentIsAFile(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	canonicalMain := r.canonicalMain(t)
 	// name "blocked/nested" needs a parent dir at managedPath(.., "blocked");
@@ -560,8 +863,11 @@ func TestWorktreeCreate_WorktreeParentMkdirFailsWhenPathComponentIsAFile(t *test
 // root, via a throwaway git invocation (separate from the tool's own check).
 func branchExistsInRepo(t *testing.T, root, name string) bool {
 	t.Helper()
-	env := execenv.NewLocalExecutionEnvironment(root)
-	cmd := "git " + execenv.ShellEscapeArgs("show-ref", "--verify", "--quiet", "refs/heads/"+name)
-	res, _ := env.ExecCommand(context.Background(), cmd, 10_000, root, nil)
-	return res.ExitCode == 0
+	cmd := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+name)
+	cmd.Dir = root
+	cmd.Env = os.Environ()
+	for k, v := range gitTestEnv() {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	return cmd.Run() == nil
 }

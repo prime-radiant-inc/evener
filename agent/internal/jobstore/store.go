@@ -28,10 +28,9 @@ type Store struct {
 	seq    int64
 	closed bool
 
-	// disableSync, when set, skips the per-append fsync. It exists ONLY for the
-	// coverage-guided fuzzer (openNoSync), whose search is otherwise fsync-bound;
-	// production opens via Open, which leaves this false, so the durable write
-	// path is unchanged. The on-disk bytes are identical either way.
+	// disableSync, when set, skips the per-append fsync. Production opens via
+	// Open, which leaves this false, so the durable write path is unchanged. The
+	// on-disk bytes are identical either way.
 	disableSync bool
 }
 
@@ -39,6 +38,18 @@ type Store struct {
 // sequence number from any existing content.
 func Open(path string) (*Store, error) {
 	return openFs(afero.NewOsFs(), path)
+}
+
+// OpenNoSync opens a store with per-append fsync disabled for deterministic
+// tests and fuzzers whose contract is append/load semantics, not crash
+// durability. Production callers must use Open.
+func OpenNoSync(path string) (*Store, error) {
+	s, err := Open(path)
+	if err != nil {
+		return nil, err
+	}
+	s.disableSync = true
+	return s, nil
 }
 
 // openFs opens the store on the given filesystem. Open delegates here with
@@ -52,6 +63,14 @@ func openFs(fs afero.Fs, path string) (*Store, error) {
 		return nil, fmt.Errorf("jobstore: open %s: %w", path, err)
 	}
 	s := &Store{path: path, fs: fs, f: f}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("jobstore: stat %s: %w", path, err)
+	}
+	if info.Size() == 0 {
+		return s, nil
+	}
 	existing, err := s.readAllLocked()
 	if err != nil {
 		_ = f.Close()

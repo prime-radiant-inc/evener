@@ -20,7 +20,11 @@ import (
 // Close is registered via t.Cleanup.
 func newTestSession(t *testing.T) *Session {
 	t.Helper()
-	return newSession(t)
+	return newSession(t, withConfig(SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}))
 }
 
 func TestSubagentFollowUpProvenanceUnionsLaunchActiveAndCompleted(t *testing.T) {

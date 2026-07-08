@@ -1623,7 +1623,7 @@ func (s *Session) attachDelegateJobWithRestoreAndDelegate(jm *jobManager, childI
 	startedAt := jm.now()
 	transcriptRef := encodeRef("", childID)
 	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
-	output, err := jobstore.OpenOutput(outputPath, maxJobOutputRetentionBytes)
+	output, err := jm.openOutput(outputPath, maxJobOutputRetentionBytes)
 	if err != nil {
 		treeSlot.release()
 		return nil, err

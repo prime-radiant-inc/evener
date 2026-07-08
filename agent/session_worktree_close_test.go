@@ -157,42 +157,39 @@ func chmodReadOnly(t *testing.T, dir string) {
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
 }
 
-// gitFailOnArgsShim installs a PATH-shimmed `git` that fails with a
-// synthetic error whenever its argv exactly matches failArgs, forwarding
-// every other invocation to the real git binary. Lets a test fail one
-// specific git subcommand deep inside a lifecycle op while every other call
-// on the same path (including earlier ones in the same call) still runs for
-// real.
-func gitFailOnArgsShim(t *testing.T, failArgs ...string) {
+func writeRepoGitShim(t *testing.T, repoRoot, script string) func() {
+	t.Helper()
+	shimDir := filepath.Join(repoRoot, ".venv", "bin")
+	if err := os.MkdirAll(shimDir, 0o755); err != nil {
+		t.Fatalf("mkdir repo git shim dir: %v", err)
+	}
+	shim := filepath.Join(shimDir, "git")
+	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
+		t.Fatalf("write repo git shim: %v", err)
+	}
+	return func() { _ = os.Remove(shim) }
+}
+
+func gitFailOnArgsRepoShim(t *testing.T, repoRoot string, failArgs ...string) {
 	t.Helper()
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Skip("git not available")
 	}
-	shimDir := t.TempDir()
 	match := strings.Join(failArgs, " ")
 	script := "#!/bin/sh\n" +
 		"if [ \"$*\" = '" + match + "' ]; then echo 'shim: forced failure' >&2; exit 1; fi\n" +
 		"exec '" + realGit + "' \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(script), 0o755); err != nil {
-		t.Fatalf("write shim: %v", err)
-	}
-	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeRepoGitShim(t, repoRoot, script)
 }
 
-// gitFailOnNthMatchingCallShim installs a PATH-shimmed `git` that fails only
-// the n-th invocation (1-indexed) whose argv exactly matches matchArgs,
-// forwarding every other invocation — including earlier matches — to the
-// real git binary. Used when the identical git subcommand runs more than
-// once in a single code path and only a later call must fail.
-func gitFailOnNthMatchingCallShim(t *testing.T, matchArgs string, n int) {
+func gitFailOnNthMatchingCallRepoShim(t *testing.T, repoRoot, matchArgs string, n int) {
 	t.Helper()
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Skip("git not available")
 	}
-	shimDir := t.TempDir()
-	counter := filepath.Join(shimDir, "count")
+	counter := filepath.Join(t.TempDir(), "count")
 	script := "#!/bin/sh\n" +
 		"if [ \"$*\" = '" + matchArgs + "' ]; then\n" +
 		"  c=$(cat '" + counter + "' 2>/dev/null || echo 0)\n" +
@@ -204,25 +201,13 @@ func gitFailOnNthMatchingCallShim(t *testing.T, matchArgs string, n int) {
 		"  fi\n" +
 		"fi\n" +
 		"exec '" + realGit + "' \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(script), 0o755); err != nil {
-		t.Fatalf("write shim: %v", err)
-	}
-	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeRepoGitShim(t, repoRoot, script)
 }
 
-// hideGitEntirely removes git from PATH for the rest of the test (proving
-// there really is no git binary reachable, mirroring
-// TestWorktreeErrors_GitUnavailableLifecycleOpsErrorClearly), and returns a
-// restore func a caller must invoke before any post-call assertion that
-// itself shells out to git (e.g. through wtGit/laneLocked/branchExists).
-func hideGitEntirely(t *testing.T) (restore func()) {
+func hideGitInRepo(t *testing.T, repoRoot string) func() {
 	t.Helper()
-	orig := os.Getenv("PATH")
-	t.Setenv("PATH", t.TempDir())
-	if _, err := exec.LookPath("git"); err == nil {
-		t.Skip("git still resolvable after PATH override; cannot prove the no-git path")
-	}
-	return func() { t.Setenv("PATH", orig) }
+	script := "#!/bin/sh\necho 'shim: git hidden' >&2\nexit 127\n"
+	return writeRepoGitShim(t, repoRoot, script)
 }
 
 // --- Step 4: disposal ---
@@ -231,6 +216,7 @@ func hideGitEntirely(t *testing.T) (restore func()) {
 // removed (worktree + branch + sidecar + lock all gone) and the descriptor is
 // marked disposed.
 func TestDisposeUnchangedLane_RemovedAndMarked(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	metaDir := r.metaDir(r.canonicalMain(t))
@@ -274,6 +260,7 @@ func TestDisposeUnchangedLane_RemovedAndMarked(t *testing.T) {
 // line-count over `rev-list --count`'s single-line integer output, which
 // always yields 1 for any positive count).
 func TestDisposeChangedLane_UnlockedKept(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	// Add TWO commits in the lane so it is CHANGED, and so the ahead count is
@@ -324,6 +311,7 @@ func TestDisposeChangedLane_UnlockedKept(t *testing.T) {
 // TestDisposeDirtyLane_Kept: a lane killed mid-job with uncommitted changes is
 // dirty → changed → kept.
 func TestDisposeDirtyLane_Kept(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	// Uncommitted (dirty) change only — no commits beyond base.
@@ -347,6 +335,7 @@ func TestDisposeDirtyLane_Kept(t *testing.T) {
 // TestDisposeRacingDirtyWrite_DowngradesToKeep: the non-force remove refuses
 // because a write raced the clean check → downgrade to keep + re-lock.
 func TestDisposeRacingDirtyWrite_DowngradesToKeep(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	// Seam: dirty the lane immediately before the non-force remove so git
@@ -378,6 +367,7 @@ func TestDisposeRacingDirtyWrite_DowngradesToKeep(t *testing.T) {
 // TestClose_UnlocksOwnManagedWorktree: a clean close unlocks the session's own
 // occupied managed worktree on disk (spec §5 close-unlock).
 func TestClose_UnlocksOwnManagedWorktree(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "mylane"})
 	if err != nil {
@@ -399,6 +389,7 @@ func TestClose_UnlocksOwnManagedWorktree(t *testing.T) {
 // lane and the disposed mark is durably present in the store afterward, proving
 // disposal ran while the store was still open (before closeStoreOnly).
 func TestClose_DisposalRunsBeforeStoreClose(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 
@@ -417,6 +408,7 @@ func TestClose_DisposalRunsBeforeStoreClose(t *testing.T) {
 // TestResumability_RefusesDisposedDelegate: the disposed flag makes
 // assessDelegateResumability refuse, and delegate_send surfaces a clear message.
 func TestResumability_RefusesDisposedDelegate(t *testing.T) {
+	t.Parallel()
 	s := newDelegateRestorePreflightSession(t, nil)
 	rec := seedStoppedDelegateRestoreRecord(t, s)
 	markStoredDelegateResumable(t, s, rec)
@@ -448,6 +440,7 @@ func TestResumability_RefusesDisposedDelegate(t *testing.T) {
 // (crash net) refuses restoration into a deleted directory, covering the crash
 // window between remove and mark.
 func TestResumability_RefusesMissingWorkingDir(t *testing.T) {
+	t.Parallel()
 	s := newDelegateRestorePreflightSession(t, nil)
 	rec := seedStoppedDelegateRestoreRecord(t, s)
 	markStoredDelegateResumable(t, s, rec)
@@ -473,6 +466,7 @@ func TestResumability_RefusesMissingWorkingDir(t *testing.T) {
 // copy of a descendant's own delegate, or simply another session's lane)
 // must never be enumerated as a lane this session created and may dispose.
 func TestOwnedIsolationLanes_SkipsForeignParentSessionID(t *testing.T) {
+	t.Parallel()
 	recs := map[string]*jobstore.JobRecord{
 		"job1": {
 			DelegateID: "dlg1",
@@ -495,6 +489,7 @@ func TestOwnedIsolationLanes_SkipsForeignParentSessionID(t *testing.T) {
 // recorded base SHA is unknown, so the lane's provenance cannot be judged —
 // disposal must leave it entirely untouched (still locked, still resumable).
 func TestDisposeOneDelegateLane_MissingSidecarLeavesLane(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	metaDir := r.metaDir(r.canonicalMain(t))
@@ -523,9 +518,10 @@ func TestDisposeOneDelegateLane_MissingSidecarLeavesLane(t *testing.T) {
 // call lockStateOf needs (`worktree list --porcelain`) itself fails, the lane
 // is left entirely alone rather than guessed at.
 func TestDisposeOneDelegateLane_LockStateUnverifiableLeavesLane(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
-	restore := hideGitEntirely(t)
+	restore := hideGitInRepo(t, r.mainRoot)
 
 	r.s.disposeDelegateLanesAtClose()
 
@@ -543,12 +539,13 @@ func TestDisposeOneDelegateLane_LockStateUnverifiableLeavesLane(t *testing.T) {
 // with git unavailable for the binary fallback) is left alone rather than
 // guessed at.
 func TestDisposeOneDelegateLane_UnresolvableMainRootLeavesLane(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	if err := os.WriteFile(filepath.Join(lanePath, ".git"), []byte("not a gitdir pointer\n"), 0o644); err != nil {
 		t.Fatalf("corrupt .git pointer: %v", err)
 	}
-	restore := hideGitEntirely(t)
+	restore := hideGitInRepo(t, r.mainRoot)
 
 	r.s.disposeDelegateLanesAtClose()
 
@@ -567,9 +564,10 @@ func TestDisposeOneDelegateLane_UnresolvableMainRootLeavesLane(t *testing.T) {
 // while the rest of the lifecycle git calls succeed), disposal fails safe
 // toward preservation: unlock our own lock and keep the lane resumable.
 func TestDisposeOneDelegateLane_UnchangedCheckFailsKeepsAndUnlocks(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
-	gitFailOnArgsShim(t, "-C", lanePath, "status", "--porcelain=v1", "--untracked-files=all")
+	gitFailOnArgsRepoShim(t, r.mainRoot, "-C", lanePath, "status", "--porcelain=v1", "--untracked-files=all")
 
 	r.s.disposeDelegateLanesAtClose()
 
@@ -590,6 +588,7 @@ func TestDisposeOneDelegateLane_UnchangedCheckFailsKeepsAndUnlocks(t *testing.T)
 // switched into it) is declined — left completely untouched, not unlocked
 // and not reported as kept.
 func TestDisposeOneDelegateLane_ChangedForeignLockDeclinedNotTouched(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	if err := os.WriteFile(filepath.Join(lanePath, "work.txt"), []byte("wip\n"), 0o644); err != nil {
@@ -624,6 +623,7 @@ func TestDisposeOneDelegateLane_ChangedForeignLockDeclinedNotTouched(t *testing.
 // itself fails (permission denied writing the internal marker file) — the
 // lane is left locked and resumable, not silently downgraded.
 func TestDisposeOneDelegateLane_ChangedLaneUnlockFailsLeavesLocked(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	if err := os.WriteFile(filepath.Join(lanePath, "work.txt"), []byte("wip\n"), 0o644); err != nil {
@@ -655,6 +655,7 @@ func TestDisposeOneDelegateLane_ChangedLaneUnlockFailsLeavesLocked(t *testing.T)
 // lane's own `worktree unlock` (the EvDisposeUnchanged ActUnlock step, before
 // remove is even attempted) fails — the lane is left locked and NOT removed.
 func TestDisposeOneDelegateLane_UnchangedUnlockFailsLeavesLocked(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	internalDir := worktreeInternalDir(t, r.canonicalMain(t), lanePath)
@@ -686,6 +687,7 @@ func TestDisposeOneDelegateLane_UnchangedUnlockFailsLeavesLocked(t *testing.T) {
 // still proceeds with branch + sidecar cleanup (best-effort) and surfaces a
 // warning naming the failure.
 func TestDisposeOneDelegateLane_DisposedMarkAppendFailureWarnsButStillRemoves(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	metaDir := r.metaDir(r.canonicalMain(t))
@@ -721,10 +723,11 @@ func TestDisposeOneDelegateLane_DisposedMarkAppendFailureWarnsButStillRemoves(t 
 // lane is still gone (unrevivable) and the sidecar is still cleaned up
 // (best-effort); a warning names the leaked branch.
 func TestDisposeOneDelegateLane_BranchDeleteFailureWarnsButLaneStillGone(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	metaDir := r.metaDir(r.canonicalMain(t))
-	gitFailOnArgsShim(t, "branch", "-D", delegateID)
+	gitFailOnArgsRepoShim(t, r.mainRoot, "branch", "-D", delegateID)
 
 	r.s.disposeDelegateLanesAtClose()
 
@@ -752,6 +755,7 @@ func TestDisposeOneDelegateLane_BranchDeleteFailureWarnsButLaneStillGone(t *test
 // local-execution-environment-only feature; a non-local env leaves the
 // worktree exactly as it was (still locked).
 func TestUnlockOwnManagedWorktreeAtClose_NonLocalEnvNoOp(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
 		t.Fatalf("create: %v", err)
@@ -773,6 +777,7 @@ func TestUnlockOwnManagedWorktreeAtClose_NonLocalEnvNoOp(t *testing.T) {
 // ".git" pointer, git unavailable for the binary fallback) — close-unlock
 // leaves it alone rather than guessing.
 func TestUnlockOwnManagedWorktreeAtClose_UnresolvableMainRootNoOp(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -782,7 +787,7 @@ func TestUnlockOwnManagedWorktreeAtClose_UnresolvableMainRootNoOp(t *testing.T) 
 	if err := os.WriteFile(filepath.Join(path, ".git"), []byte("not a gitdir pointer\n"), 0o644); err != nil {
 		t.Fatalf("corrupt .git pointer: %v", err)
 	}
-	restore := hideGitEntirely(t)
+	restore := hideGitInRepo(t, r.mainRoot)
 
 	r.s.unlockOwnManagedWorktreeAtClose()
 
@@ -796,13 +801,14 @@ func TestUnlockOwnManagedWorktreeAtClose_UnresolvableMainRootNoOp(t *testing.T) 
 // own git call fails (git unavailable) — the worktree stays locked and a
 // warning names the failure, rather than the failure being swallowed.
 func TestUnlockOwnManagedWorktreeAtClose_LeaveFailsWarns(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
-	restore := hideGitEntirely(t)
+	restore := hideGitInRepo(t, r.mainRoot)
 
 	r.s.unlockOwnManagedWorktreeAtClose()
 

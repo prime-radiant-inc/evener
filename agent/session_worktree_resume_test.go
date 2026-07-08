@@ -69,10 +69,11 @@ func (r *wtRepo) restoreWorktreeSession(t *testing.T, meta schema.SessionMeta, l
 	if meta.Model == "" {
 		meta.Model = "gpt-5.2"
 	}
+	meta.Config.NoProjectPrompts = true
 	sess, err := RestoreSessionFromMetaWithConfig(
 		w3init_restoreClient(), NewOpenAIProfile("gpt-5.2"),
 		execenv.NewLocalExecutionEnvironment(launchDir), meta,
-		RestoreSessionConfig{StateDir: r.stateDir},
+		RestoreSessionConfig{StateDir: r.stateDir, testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true}},
 	)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
@@ -88,6 +89,7 @@ func (r *wtRepo) restoreWorktreeSession(t *testing.T, meta schema.SessionMeta, l
 // the managed flag, and the restore root recorded by the first enterWorktree
 // (spec §7 "Persistence and resume").
 func TestWorktreeMeta_ReflectsManagedOccupancyAfterCreate(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -113,6 +115,7 @@ func TestWorktreeMeta_ReflectsManagedOccupancyAfterCreate(t *testing.T) {
 // "both switch modes swap the env, so both must survive resume") but
 // WorktreeManaged is false.
 func TestWorktreeMeta_PathEnteredNonManagedTracksPathButNotManaged(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	sibling := r.addSiblingWorktree(t, "sibling", "sibling")
 
@@ -139,6 +142,7 @@ func TestWorktreeMeta_PathEnteredNonManagedTracksPathButNotManaged(t *testing.T)
 // --- resumeWorktreeReentry (spec §7) ---
 
 func TestResumeWorktreeReentry_ManagedUnlocked_LocksAndRootsEnv(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -174,6 +178,7 @@ func TestResumeWorktreeReentry_ManagedUnlocked_LocksAndRootsEnv(t *testing.T) {
 }
 
 func TestResumeWorktreeReentry_ManagedOwnMarkerStale_Adopts(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -201,6 +206,7 @@ func TestResumeWorktreeReentry_ManagedOwnMarkerStale_Adopts(t *testing.T) {
 }
 
 func TestResumeWorktreeReentry_ManagedForeign_RestoresRootAndNotices(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -236,6 +242,7 @@ func TestResumeWorktreeReentry_ManagedForeign_RestoresRootAndNotices(t *testing.
 }
 
 func TestResumeWorktreeReentry_NonManagedPathEntered_ReentersNoLock(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	sibling := r.addSiblingWorktree(t, "sibling", "sibling")
 
@@ -263,6 +270,7 @@ func TestResumeWorktreeReentry_NonManagedPathEntered_ReentersNoLock(t *testing.T
 }
 
 func TestResumeWorktreeReentry_WorktreeGone_RestoresRootAndNotices(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	ghost := filepath.Join(r.stateDir, "worktrees", "ghost-project", "ghost-lane")
 
@@ -289,6 +297,7 @@ func TestResumeWorktreeReentry_WorktreeGone_RestoresRootAndNotices(t *testing.T)
 // --- init-inside occupancy lock (spec §5) ---
 
 func TestInitInside_ManagedUnlocked_LocksAtSessionStart(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -316,6 +325,7 @@ func TestInitInside_ManagedUnlocked_LocksAtSessionStart(t *testing.T) {
 }
 
 func TestInitInside_ManagedForeign_WarnsAndContinuesCoOccupying(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -344,6 +354,7 @@ func TestInitInside_ManagedForeign_WarnsAndContinuesCoOccupying(t *testing.T) {
 }
 
 func TestInitInside_NotInWorktree_NoOp(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	sess := newSession(t, withDir(r.mainRoot), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
 	if got := sess.Meta().WorktreePath; got != "" {
@@ -357,6 +368,7 @@ func TestInitInside_NotInWorktree_NoOp(t *testing.T) {
 // local-execution-environment-only feature; a non-local env is left
 // completely untouched.
 func TestResumeWorktreeReentry_NonLocalEnvNoOp(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	r.s.mu.Lock()
 	r.s.env = &timeoutEnv{wd: r.mainRoot}
@@ -378,6 +390,7 @@ func TestResumeWorktreeReentry_NonLocalEnvNoOp(t *testing.T) {
 // (corrupted content, git unavailable for the binary fallback) — re-entry
 // notices and lands at the restore root instead of guessing.
 func TestResumeWorktreeReentry_UnresolvableMainRootNoticesAndRestoresRoot(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -387,7 +400,7 @@ func TestResumeWorktreeReentry_UnresolvableMainRootNoticesAndRestoresRoot(t *tes
 	if err := os.WriteFile(filepath.Join(path, ".git"), []byte("not a gitdir pointer\n"), 0o644); err != nil {
 		t.Fatalf("corrupt .git pointer: %v", err)
 	}
-	restore := hideGitEntirely(t)
+	restore := hideGitInRepo(t, r.mainRoot)
 
 	meta := schema.SessionMeta{WorktreePath: path, WorktreeManaged: true, WorktreeRestoreRoot: r.mainRoot}
 	r.s.resumeWorktreeReentry(meta)
@@ -407,13 +420,14 @@ func TestResumeWorktreeReentry_UnresolvableMainRootNoticesAndRestoresRoot(t *tes
 // the `worktree list --porcelain` verification call itself fails (git
 // unavailable) — re-entry notices and lands at the restore root.
 func TestResumeWorktreeReentry_WorktreeListFailsNoticesAndRestoresRoot(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
-	restore := hideGitEntirely(t)
+	restore := hideGitInRepo(t, r.mainRoot)
 
 	meta := schema.SessionMeta{WorktreePath: path, WorktreeManaged: true, WorktreeRestoreRoot: r.mainRoot}
 	r.s.resumeWorktreeReentry(meta)
@@ -435,6 +449,7 @@ func TestResumeWorktreeReentry_WorktreeListFailsNoticesAndRestoresRoot(t *testin
 // "registered" at the persisted location, so re-entry notices and lands at
 // the restore root.
 func TestResumeWorktreeReentry_NotRegisteredAtPathNoticesAndRestoresRoot(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -465,13 +480,14 @@ func TestResumeWorktreeReentry_NotRegisteredAtPathNoticesAndRestoresRoot(t *test
 // lock check) fails — re-entry notices and lands at the restore root rather
 // than guessing the lock state.
 func TestResumeWorktreeReentry_ManagedLockStateUnverifiableNoticesAndRestoresRoot(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
-	gitFailOnNthMatchingCallShim(t, "worktree list --porcelain", 2)
+	gitFailOnNthMatchingCallRepoShim(t, r.mainRoot, "worktree list --porcelain", 2)
 
 	meta := schema.SessionMeta{WorktreePath: path, WorktreeManaged: true, WorktreeRestoreRoot: r.mainRoot}
 	r.s.resumeWorktreeReentry(meta)
@@ -491,6 +507,7 @@ func TestResumeWorktreeReentry_ManagedLockStateUnverifiableNoticesAndRestoresRoo
 // re-entry notices and lands at the restore root rather than re-entering an
 // unprotected tree.
 func TestResumeWorktreeReentry_ManagedRelockFailsNoticesAndRestoresRoot(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -518,6 +535,7 @@ func TestResumeWorktreeReentry_ManagedRelockFailsNoticesAndRestoresRoot(t *testi
 // Foreign with an empty reason — so the notice must fall back to naming "an
 // unknown owner" rather than printing an empty occupant.
 func TestResumeWorktreeReentry_ManagedForeignBareLockUnknownOwnerNotice(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -545,6 +563,7 @@ func TestResumeWorktreeReentry_ManagedForeignBareLockUnknownOwnerNotice(t *testi
 // local-execution-environment-only feature; a non-local env leaves occupancy
 // untracked.
 func TestInitInside_NonLocalEnvNoOp(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	r.s.mu.Lock()
 	r.s.env = &timeoutEnv{wd: r.mainRoot}
@@ -562,6 +581,7 @@ func TestInitInside_NonLocalEnvNoOp(t *testing.T) {
 // genuinely is not part of any repository, ResolveMainRepoRoot legitimately
 // returns "" and the function must no-op rather than panic or guess.
 func TestInitInside_UnresolvableMainRootNoOp(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	notARepo := t.TempDir()
 	sess := newSession(t, withDir(notARepo), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
@@ -577,6 +597,7 @@ func TestInitInside_UnresolvableMainRootNoOp(t *testing.T) {
 // occupancy check itself fails (git unavailable) — the session warns and
 // does NOT track occupancy, rather than guessing the lock state.
 func TestInitInside_LockStateUnverifiableWarns(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -590,7 +611,7 @@ func TestInitInside_LockStateUnverifiableWarns(t *testing.T) {
 	local := sess.env.(*execenv.LocalExecutionEnvironment)
 	sess.env = local.WithWorkingDirectory(path)
 	sess.mu.Unlock()
-	restore := hideGitEntirely(t)
+	restore := hideGitInRepo(t, r.mainRoot)
 
 	sess.applyInitInsideWorktreeLock(true)
 
@@ -609,6 +630,7 @@ func TestInitInside_LockStateUnverifiableWarns(t *testing.T) {
 // file) — the session warns and does NOT track occupancy over an
 // unprotected lane.
 func TestInitInside_RelockFailsWarns(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -641,6 +663,7 @@ func TestInitInside_RelockFailsWarns(t *testing.T) {
 // reason — so the co-occupying warning must fall back to "an unknown owner"
 // rather than naming an empty occupant.
 func TestInitInside_ForeignBareLockUnknownOwnerWarns(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -668,6 +691,7 @@ func TestInitInside_ForeignBareLockUnknownOwnerWarns(t *testing.T) {
 // spellings of one worktree must not hash to two different keys and escape
 // the occupancy lock's mutual exclusion.
 func TestInitInside_SymlinkSpelledCwdCanonicalizesStoredPathAndLockKey(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {

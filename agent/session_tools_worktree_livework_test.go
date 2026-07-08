@@ -53,6 +53,7 @@ func TestPathEqualOrUnder(t *testing.T) {
 // started with a working dir under a worktree while the parent has already
 // switched elsewhere").
 func TestWorktreeRemove_LiveWorkGuardRefusesRealBackgroundShellJob(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -111,6 +112,7 @@ func TestWorktreeRemove_LiveWorkGuardRefusesRealBackgroundShellJob(t *testing.T)
 // worktree still refuses removal, and it does so via the child's CURRENT
 // env, not a launch-time snapshot.
 func TestWorktreeRemove_LiveWorkGuardRefusesLiveSubagentEnv(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -129,7 +131,7 @@ func TestWorktreeRemove_LiveWorkGuardRefusesLiveSubagentEnv(t *testing.T) {
 	// reports the live CHILD SESSION's id (child.id), the identifier that
 	// actually appears in job records and tool-visible ids, not an arbitrary
 	// subagent-local label.
-	child := newSession(t, withDir(nested))
+	child := newSession(t, withDir(nested), withConfig(worktreeTestSessionConfig()))
 	sub := &subagent{id: child.id, sess: child}
 	r.s.subagents.track(sub)
 
@@ -158,6 +160,7 @@ func TestWorktreeRemove_LiveWorkGuardRefusesLiveSubagentEnv(t *testing.T) {
 // subagent tracked for it — the job-record source is independent of the
 // subagent-env source.
 func TestWorktreeRemove_LiveWorkGuardRefusesLiveDelegateJobRecord(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -211,6 +214,7 @@ func TestWorktreeRemove_LiveWorkGuardRefusesLiveDelegateJobRecord(t *testing.T) 
 // projectid), plus a delegate record with no recorded working dir at all,
 // neither block removing the target lane.
 func TestWorktreeRemove_LiveWorkGuardIgnoresUnrelatedWork(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	target, err := r.create(t, map[string]any{"name": "target-lane"})
 	if err != nil {
@@ -288,6 +292,7 @@ func TestWorktreeRemove_LiveWorkGuardIgnoresUnrelatedWork(t *testing.T) {
 // real *Session can safely reach — see the doc comment on that branch in
 // liveWorkUnder itself.
 func TestWorktreeLiveWorkUnder_SkipsSubagentEmptyWorkingDirectory(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -302,7 +307,7 @@ func TestWorktreeLiveWorkUnder_SkipsSubagentEmptyWorkingDirectory(t *testing.T) 
 		t.Fatalf("exit: %v", err)
 	}
 
-	emptyWDChild := newSession(t, withDir(r.mainRoot))
+	emptyWDChild := newSession(t, withDir(r.mainRoot), withConfig(worktreeTestSessionConfig()))
 	emptyWDChild.mu.Lock()
 	emptyWDChild.env = &timeoutEnv{wd: ""}
 	emptyWDChild.mu.Unlock()
@@ -315,7 +320,7 @@ func TestWorktreeLiveWorkUnder_SkipsSubagentEmptyWorkingDirectory(t *testing.T) 
 		emptyWDChild.mu.Unlock()
 	})
 
-	liveChild := newSession(t, withDir(nested))
+	liveChild := newSession(t, withDir(nested), withConfig(worktreeTestSessionConfig()))
 	r.s.subagents.track(&subagent{id: liveChild.id, sess: liveChild})
 	t.Cleanup(func() { r.s.subagents.remove(liveChild.id) })
 
@@ -342,6 +347,7 @@ func TestWorktreeLiveWorkUnder_SkipsSubagentEmptyWorkingDirectory(t *testing.T) 
 // prune's call site (session_tools_worktree.go's sweep 1) sees the real
 // plumbing too, not just the stub seam.
 func TestWorktreePrune_Sweep1_SkipsLiveRealBackgroundShellJob(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "live-lane"})
 	if err != nil {

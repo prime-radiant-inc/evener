@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -144,10 +145,33 @@ func waitForFileContent(path string, timeout time.Duration) (string, bool) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		data, err := os.ReadFile(path)
-		if err == nil {
+		if err == nil && len(data) > 0 {
 			return string(data), true
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
 	return "", false
+}
+
+func TestWaitForFileContentWaitsForNonEmptyContent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gate.txt")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("write empty gate file: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(50 * time.Millisecond)
+		_ = os.WriteFile(path, []byte("ready"), 0o644)
+	}()
+	t.Cleanup(func() { <-done })
+
+	got, ok := waitForFileContent(path, time.Second)
+	if !ok {
+		t.Fatal("waitForFileContent timed out")
+	}
+	if got != "ready" {
+		t.Fatalf("content = %q, want %q", got, "ready")
+	}
 }

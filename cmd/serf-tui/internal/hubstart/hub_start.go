@@ -300,7 +300,11 @@ func StartHubClient(ctx context.Context, cfg HubStartConfig) (HubRuntime, error)
 		cfg.CheckHubEnvironment = checkHubEnvironment
 	}
 	httpClient := hubHTTPClientWithResolvedAuth(cfg.HTTPClient, cfg.AuthToken, cfg.StateDir)
-	client, err := waitForHubHealth(ctx, addr, httpClient, 500*time.Millisecond, cfg.DialHub)
+	initialHealthTimeout := 500 * time.Millisecond
+	if cfg.HealthTimeout < initialHealthTimeout {
+		initialHealthTimeout = cfg.HealthTimeout
+	}
+	client, err := waitForHubHealth(ctx, addr, httpClient, initialHealthTimeout, cfg.DialHub)
 	if err == nil {
 		if err := cfg.CheckHubEnvironment(ctx, addr, httpClient, cfg.StateDir); err != nil {
 			return fail(err)
@@ -371,13 +375,18 @@ func waitForHubHealth(ctx context.Context, addr HubAddress, httpClient *http.Cli
 			return nil, err
 		}
 		lastErr = err
-		if time.Now().After(deadline) {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
 			return nil, lastErr
+		}
+		pollInterval := 100 * time.Millisecond
+		if remaining < pollInterval {
+			pollInterval = remaining
 		}
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(100 * time.Millisecond):
+		case <-time.After(pollInterval):
 		}
 	}
 }

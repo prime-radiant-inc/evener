@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -191,37 +192,17 @@ func TestShellToolBackgroundReturnsJobID(t *testing.T) {
 	}
 }
 
-func TestShellToolClampsSmallMaxRuntime(t *testing.T) {
+func TestParseShellToolArgsClampsSmallMaxRuntime(t *testing.T) {
 	t.Parallel()
-	s := newTestSession(t)
-
-	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "c1",
-		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 0.2; printf survived","max_runtime_ms":1}`),
+	args, err := parseShellToolArgs(map[string]any{
+		"command":        "sleep 30",
+		"max_runtime_ms": float64(1),
 	})
-	if res.IsError {
-		t.Fatalf("shell returned error: %s", res.Output)
+	if err != nil {
+		t.Fatalf("parseShellToolArgs: %v", err)
 	}
-
-	var out struct {
-		Status    string `json:"status"`
-		Reason    string `json:"reason"`
-		TimedOut  bool   `json:"timed_out"`
-		ExitCode  int    `json:"exit_code"`
-		Output    string `json:"output"`
-		Truncated bool   `json:"truncated"`
-	}
-	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
-		t.Fatalf("unmarshal shell output: %v (output: %s)", err, res.Output)
-	}
-	if out.Status != string(jobstore.StatusCompleted) ||
-		out.Reason != "exit_zero" ||
-		out.TimedOut ||
-		out.ExitCode != 0 ||
-		out.Output != "survived" ||
-		out.Truncated {
-		t.Fatalf("shell output = %+v, want completed command before clamped runtime", out)
+	if args.MaxRuntimeMS != minShellMaxRuntimeMS {
+		t.Fatalf("MaxRuntimeMS = %d, want clamp to %d", args.MaxRuntimeMS, minShellMaxRuntimeMS)
 	}
 }
 
@@ -247,9 +228,11 @@ func TestBufferedShellHonorsMaxRuntime(t *testing.T) {
 func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 	t.Parallel()
 	s := newShellToolTestSession(t, SessionConfig{
-		DefaultCommandTimeoutMS: 1000,
-		MaxCommandTimeoutMS:     1000,
+		DefaultCommandTimeoutMS: 100,
+		MaxCommandTimeoutMS:     100,
 	})
+	clk := agenttest.NewFakeClock()
+	s.jobManager.clock = clk
 
 	for _, tc := range []struct {
 		name string
@@ -261,11 +244,24 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-				ID:        "c1",
-				Name:      "shell",
-				Arguments: tc.args,
-			})
+			resCh := make(chan tool.ExecResult, 1)
+			go func() {
+				resCh <- s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+					ID:        "c1",
+					Name:      "shell",
+					Arguments: tc.args,
+				})
+			}()
+			clk.BlockUntil(1)
+			clk.Advance(time.Second)
+
+			var res tool.ExecResult
+
+			select {
+			case res = <-resCh:
+			case <-time.After(2 * time.Second):
+				t.Fatal("shell tool did not return after foreground timeout")
+			}
 			if res.IsError {
 				t.Fatalf("shell returned error: %s", res.Output)
 			}

@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,14 @@ import (
 // confusing downstream assertion failure.
 func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
+	out, err := runGitRaw(dir, args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func runGitRaw(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(cmd.Env,
@@ -22,9 +31,9 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		return string(out), fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, out)
 	}
-	return string(out)
+	return string(out), nil
 }
 
 // buildPorcelainFixture spins up a real git repo (git 2.43, the version this
@@ -77,6 +86,7 @@ func buildPorcelainFixture(t *testing.T) (porcelain, repoRoot string) {
 }
 
 func TestParsePorcelain_RealGitFixture(t *testing.T) {
+	t.Parallel()
 	out, repo := buildPorcelainFixture(t)
 	entries := ParsePorcelain(out)
 
@@ -159,6 +169,7 @@ func TestParsePorcelain_RealGitFixture(t *testing.T) {
 }
 
 func TestParsePorcelain_BareRepo(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	repo := filepath.Join(base, "bare.git")
 	if err := os.MkdirAll(repo, 0o755); err != nil {
@@ -177,6 +188,7 @@ func TestParsePorcelain_BareRepo(t *testing.T) {
 }
 
 func TestParsePorcelain_QuotedReasonWithEscapes(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	repo := filepath.Join(base, "repo")
 	if err := os.MkdirAll(repo, 0o755); err != nil {

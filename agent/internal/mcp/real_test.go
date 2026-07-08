@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -22,17 +23,14 @@ func init() {
 	commandTerminateDuration = 200 * time.Millisecond
 }
 
-// requireNpx gates every real-MCP test: they spawn `npx -y
-// @modelcontextprotocol/server-everything`, which needs npx on PATH and
-// downloads the package from the npm registry on first run. That network
-// fetch is slow and unreliable under CI's `-short -race` gate (it times out
-// with "context deadline exceeded"), so these tests skip under -short — the
-// hermetic in-memory tests carry the manager's race coverage there. A full
-// local `go test ./...` (no -short) still runs them.
-func requireNpx(t *testing.T) {
+// requireRealMCPServer gates every real-MCP test: they spawn `npx -y
+// @modelcontextprotocol/server-everything`, which needs npx on PATH and may
+// download the package from the npm registry. Default tests must be hermetic,
+// so these only run when explicitly requested.
+func requireRealMCPServer(t *testing.T) {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("skipping real MCP server test in -short mode (needs npx + network)")
+	if os.Getenv("SERF_MCP_E2E") != "1" && os.Getenv("SERF_LIVE_TESTS") != "1" {
+		t.Skip("set SERF_MCP_E2E=1 or SERF_LIVE_TESTS=1 to run real MCP server tests")
 	}
 	if _, err := exec.LookPath("npx"); err != nil {
 		t.Skip("npx not found, skipping real MCP server test")
@@ -41,7 +39,7 @@ func requireNpx(t *testing.T) {
 
 func newEverythingManager(t *testing.T) *Manager {
 	t.Helper()
-	requireNpx(t)
+	requireRealMCPServer(t)
 	// 60s instead of 30s: npx startup is fork+exec heavy and load-sensitive.
 	// These are correctness tests, not perf budgets — give them headroom so
 	// they don't flake under parallel `go test ./... -count=1`.
@@ -183,7 +181,7 @@ func TestRealMCP_ImageContent(t *testing.T) {
 
 func TestRealMCP_EnvPassing(t *testing.T) {
 	t.Parallel()
-	requireNpx(t)
+	requireRealMCPServer(t)
 	// 60s instead of 30s: npx startup is fork+exec heavy and load-sensitive.
 	// These are correctness tests, not perf budgets — give them headroom so
 	// they don't flake under parallel `go test ./... -count=1`.

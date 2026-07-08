@@ -14,9 +14,15 @@ import (
 func TestS2Cov_SelectStrategy_AllNamedStrategies(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{"", "compact", "recall", "session-log", "ooda", "obs-mask", "checkpoint-pred", "memory-crystals", "recursive-distill"} {
+		name := name
 		t.Run("strategy="+name, func(t *testing.T) {
 			t.Parallel()
-			sess := newSession(t, withConfig(SessionConfig{MaxSubagentDepth: 1, ContextStrategy: name}))
+			sess := newSession(t, withConfig(SessionConfig{
+				MaxSubagentDepth: 1,
+				ContextStrategy:  name,
+				NoProjectPrompts: true,
+				testOnly:         testConfig{skipGitSnapshot: true},
+			}))
 			if sess == nil {
 				t.Fatalf("nil session for strategy %q", name)
 			}
@@ -28,7 +34,12 @@ func TestS2Cov_SelectStrategy_UnknownStrategyFails(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
-	_, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{MaxSubagentDepth: 1, ContextStrategy: "no-such-strategy"})
+	_, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+		MaxSubagentDepth: 1,
+		ContextStrategy:  "no-such-strategy",
+		NoProjectPrompts: true,
+		testOnly:         testConfig{skipGitSnapshot: true},
+	})
 	if err == nil || !strings.Contains(err.Error(), "unknown context strategy") {
 		t.Fatalf("err = %v, want unknown context strategy error", err)
 	}

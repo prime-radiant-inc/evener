@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -50,6 +52,9 @@ func snapshotGit(env execenv.ExecutionEnvironment, cwd string) (inRepo bool, bra
 	if cwd == "" {
 		cwd = env.WorkingDirectory()
 	}
+	if !hasGitMetadataAncestor(cwd) {
+		return false, "", 0, 0, nil
+	}
 
 	run := func(cmd string) (execenv.ExecResult, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), gitExecTimeout)
@@ -93,4 +98,22 @@ func snapshotGit(env execenv.ExecutionEnvironment, cwd string) (inRepo bool, bra
 	}
 
 	return inRepo, branch, modifiedFiles, untrackedFiles, recentCommitTitles
+}
+
+func hasGitMetadataAncestor(cwd string) bool {
+	dir := strings.TrimSpace(cwd)
+	if dir == "" || !filepath.IsAbs(dir) {
+		return true
+	}
+	dir = filepath.Clean(dir)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
 }

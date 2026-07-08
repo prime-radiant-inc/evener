@@ -226,7 +226,7 @@ func TestSession_NaturalCompletion_LoadsOnlyProfileDocs(t *testing.T) {
 func TestSession_NaturalCompletion_LoadsOnlyProfileDocs_Anthropic(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	initGitRepo(t, dir)
+	markGitRoot(t, dir)
 	_ = os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("AGENTS\n"), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("CLAUDE\n"), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, "GEMINI.md"), []byte("GEMINI\n"), 0o644)
@@ -311,7 +311,7 @@ func TestSession_TrackReadFile_Concurrent(t *testing.T) {
 func TestSession_NaturalCompletion_LoadsOnlyProfileDocs_Gemini(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	initGitRepo(t, dir)
+	markGitRoot(t, dir)
 	_ = os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("AGENTS\n"), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("CLAUDE\n"), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, "GEMINI.md"), []byte("GEMINI\n"), 0o644)

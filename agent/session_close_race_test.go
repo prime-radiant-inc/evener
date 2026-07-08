@@ -18,6 +18,9 @@ import (
 // excluded by eventsMu, so the send never races the close and recover() is gone.
 // This hammers emit() directly (the mechanism under test) for a reliable repro.
 func TestSession_Close_NoRaceWithConcurrentEmit(t *testing.T) {
+	if !raceDetectorEnabled {
+		t.Skip("race-detector stress test; run with -race")
+	}
 	t.Parallel()
 	for i := 0; i < 20; i++ {
 		dir := t.TempDir()

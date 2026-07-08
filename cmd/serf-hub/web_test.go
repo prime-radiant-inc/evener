@@ -2026,6 +2026,7 @@ func TestWeb_ApiSpawn_503WhenNoSpawner(t *testing.T) {
 }
 
 func TestWeb_ApiSpawn_RejectsOversizeRequest(t *testing.T) {
+	t.Parallel()
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  hubcore.NewRoster(t.TempDir(), nil),

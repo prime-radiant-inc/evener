@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
 
@@ -24,6 +25,14 @@ func newShellTestRig(t *testing.T) (*jobManager, execenv.StreamingExecutor) {
 		t.Fatal(err)
 	}
 	return jm, env
+}
+
+func newFakeClockShellTestRig(t *testing.T) (*jobManager, execenv.StreamingExecutor, *agenttest.FakeClock) {
+	t.Helper()
+	jm, env := newShellTestRig(t)
+	clk := agenttest.NewFakeClock()
+	jm.clock = clk
+	return jm, env, clk
 }
 
 func waitForShellDone(t *testing.T, jm *jobManager, jobID string) {
@@ -174,6 +183,25 @@ func (e *delayedExitStreamingExecutor) StreamCommand(_ context.Context, _ string
 		Signal: func() {
 			e.signals.Add(1)
 		},
+	}, nil
+}
+
+type delayedSuccessStreamingExecutor struct {
+	release chan struct{}
+}
+
+func newDelayedSuccessStreamingExecutor() *delayedSuccessStreamingExecutor {
+	return &delayedSuccessStreamingExecutor{release: make(chan struct{})}
+}
+
+func (e *delayedSuccessStreamingExecutor) StreamCommand(_ context.Context, _ string, _ string, _ map[string]string, out io.Writer) (*execenv.StreamHandle, error) {
+	return &execenv.StreamHandle{
+		Wait: func() (int, error) {
+			<-e.release
+			_, _ = out.Write([]byte("survived"))
+			return 0, nil
+		},
+		Signal: func() {},
 	}, nil
 }
 
@@ -351,8 +379,20 @@ func waitForJobManagerClosing(t *testing.T, jm *jobManager) {
 
 func TestRunShellPromotesOnTimeout(t *testing.T) {
 	t.Parallel()
-	jm, se := newShellTestRig(t)
-	res := runShell(context.Background(), jm, se, shellArgs{Command: "sleep 30", BlockTimeoutMS: 1000})
+	jm, se, clk := newFakeClockShellTestRig(t)
+	resCh := make(chan shellResult, 1)
+	go func() {
+		resCh <- runShell(context.Background(), jm, se, shellArgs{Command: "sleep 30", BlockTimeoutMS: 100})
+	}()
+	clk.BlockUntil(1)
+	clk.Advance(time.Second)
+
+	var res shellResult
+	select {
+	case res = <-resCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runShell did not return after foreground timeout")
+	}
 	if res.JobID == "" {
 		t.Fatal("promoted job must have a job_id")
 	}
@@ -372,15 +412,26 @@ func TestRunShellPromotesOnTimeout(t *testing.T) {
 
 func TestRunShellForegroundMaxRuntimeCreatesDurableStoppedJob(t *testing.T) {
 	t.Parallel()
-	jm, se := newShellTestRig(t)
-	start := time.Now()
-	res := runShell(context.Background(), jm, se, shellArgs{
-		Command:        "printf timeout-output; sleep 30",
-		BlockTimeoutMS: 5000,
-		MaxRuntimeMS:   500,
-	})
-	if time.Since(start) > 3*time.Second {
-		t.Error("max runtime must return before block timeout")
+	jm := newTestJM(t)
+	clk := agenttest.NewFakeClock()
+	jm.clock = clk
+	se := newSignalCompletesStreamingExecutor()
+	resCh := make(chan shellResult, 1)
+	go func() {
+		resCh <- runShell(context.Background(), jm, se, shellArgs{
+			Command:        "fake long-running command",
+			BlockTimeoutMS: 5000,
+			MaxRuntimeMS:   500,
+		})
+	}()
+	clk.BlockUntil(2)
+	clk.Advance(500 * time.Millisecond)
+
+	var res shellResult
+	select {
+	case res = <-resCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runShell did not return after max runtime")
 	}
 	if res.JobID == "" {
 		t.Fatal("max runtime timeout must return a durable job_id")
@@ -400,7 +451,7 @@ func TestRunShellForegroundMaxRuntimeCreatesDurableStoppedJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readOutput: %v", err)
 	}
-	if output != "timeout-output" {
+	if output != "running" {
 		t.Fatalf("output = %q, want preserved runtime log", output)
 	}
 }
@@ -516,6 +567,8 @@ func TestRunShellBackgroundRecordsLaunchWorkingDirForLiveWorkGuard(t *testing.T)
 func TestRunShellBackgroundStopWinsOverLaterRuntimeTimeout(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
+	clk := agenttest.NewFakeClock()
+	jm.clock = clk
 	se := newDelayedExitStreamingExecutor()
 	res := runShell(context.Background(), jm, se, shellArgs{
 		Command:      "sleep 30",
@@ -525,10 +578,12 @@ func TestRunShellBackgroundStopWinsOverLaterRuntimeTimeout(t *testing.T) {
 	if res.JobID == "" || !res.RunningInBackground {
 		t.Fatalf("res = %+v, want background job", res)
 	}
+	clk.BlockUntil(1)
 
 	if _, err := jm.stop(res.JobID); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
+	clk.Advance(50 * time.Millisecond)
 	waitForSignalCount(t, se, 2)
 	close(se.release)
 
@@ -561,14 +616,16 @@ func waitForSignalCount(t *testing.T, se *delayedExitStreamingExecutor, want int
 
 func TestRunShellBackgroundSurvivesToolContextCancellation(t *testing.T) {
 	t.Parallel()
-	jm, se := newShellTestRig(t)
+	jm := newTestJM(t)
+	se := newDelayedSuccessStreamingExecutor()
 	ctx, cancel := context.WithCancel(context.Background())
-	res := runShell(ctx, jm, se, shellArgs{Command: "sleep 1; printf survived", Background: true})
+	res := runShell(ctx, jm, se, shellArgs{Command: "delayed success", Background: true})
 	cancel()
 	if res.JobID == "" || !res.RunningInBackground {
 		t.Fatalf("res = %+v, want background job", res)
 	}
 
+	close(se.release)
 	waitForShellDone(t, jm, res.JobID)
 	rec := loadShellRecord(t, jm, res.JobID)
 	if rec.Status != jobstore.StatusCompleted || rec.Reason != "exit_zero" {

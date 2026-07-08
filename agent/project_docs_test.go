@@ -13,7 +13,7 @@ import (
 func TestLoadProjectDocs_WalksFromGitRootToWorkingDir_InDepthOrder(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 
 	// Working directory is nested inside the repo.
 	nested := filepath.Join(root, "a", "b")
@@ -48,7 +48,7 @@ func TestLoadProjectDocs_WalksFromGitRootToWorkingDir_InDepthOrder(t *testing.T)
 func TestLoadProjectDocs_TruncatesTo32KBAndAddsMarker(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	initGitRepo(t, root)
+	markGitRoot(t, root)
 
 	huge := strings.Repeat("x", projectDocByteBudget+4096)
 	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(huge), 0o644); err != nil {
@@ -65,6 +65,13 @@ func TestLoadProjectDocs_TruncatesTo32KBAndAddsMarker(t *testing.T) {
 	}
 	if !strings.Contains(docs[0].Content, projectDocTruncMark) {
 		t.Fatalf("expected truncation marker, got:\n%s", docs[0].Content)
+	}
+}
+
+func markGitRoot(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatalf("Mkdir .git: %v", err)
 	}
 }
 

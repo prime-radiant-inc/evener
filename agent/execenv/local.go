@@ -754,6 +754,18 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 // to SIGKILL. It returns an ExecResult capturing stdout, stderr, exit code,
 // timeout status, and duration.
 func (e *LocalExecutionEnvironment) ExecCommand(ctx context.Context, command string, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error) {
+	return e.execPreparedCommand(ctx, shellCommand(command), timeoutMS, workingDir, envVars)
+}
+
+// ExecArgv runs a command directly, without a shell, while preserving the same
+// working-directory, environment, process-group, timeout, and result semantics
+// as ExecCommand. Use it when the caller already has structured argv.
+func (e *LocalExecutionEnvironment) ExecArgv(ctx context.Context, name string, args []string, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error) {
+	cmd := execCommandContext(ctx, name, args...)
+	return e.execPreparedCommand(ctx, cmd, timeoutMS, workingDir, envVars)
+}
+
+func (e *LocalExecutionEnvironment) execPreparedCommand(ctx context.Context, cmd *exec.Cmd, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error) {
 	if timeoutMS <= 0 {
 		timeoutMS = 10_000
 	}
@@ -769,11 +781,16 @@ func (e *LocalExecutionEnvironment) ExecCommand(ctx context.Context, command str
 	}
 
 	start := time.Now()
-	cmd := shellCommand(command)
 	cmd.Dir = dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Env = filteredEnvWithPolicy(e.EnvPolicy, envVars)
 	cmd.Env = injectLocalVenvPath(cmd.Env, []string{dir, e.RootDir})
+	if len(cmd.Args) > 0 {
+		if resolved, ok := lookPathInEnv(cmd.Args[0], cmd.Env); ok {
+			cmd.Path = resolved
+			cmd.Err = nil
+		}
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -950,6 +967,39 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 		Wait:   wait,
 		Signal: signal,
 	}, nil
+}
+
+func lookPathInEnv(name string, env []string) (string, bool) {
+	if name == "" || strings.ContainsAny(name, `/\\`) {
+		return "", false
+	}
+
+	pathPrefix := envvars.Path.Name + "="
+	pathValue := ""
+	for i := len(env) - 1; i >= 0; i-- {
+		if strings.HasPrefix(env[i], pathPrefix) {
+			pathValue = strings.TrimPrefix(env[i], pathPrefix)
+			break
+		}
+	}
+	if pathValue == "" {
+		return "", false
+	}
+
+	for _, dir := range filepath.SplitList(pathValue) {
+		if dir == "" {
+			dir = "."
+		}
+		candidate := filepath.Join(dir, name)
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		if runtime.GOOS == "windows" || info.Mode().Perm()&0o111 != 0 {
+			return candidate, true
+		}
+	}
+	return "", false
 }
 
 func injectLocalVenvPath(env []string, roots []string) []string {

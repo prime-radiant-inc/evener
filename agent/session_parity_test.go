@@ -34,11 +34,19 @@ var providerCases = []providerCase{
 // newParitySession creates a session with the given provider and fakeAdapter steps.
 func newParitySession(t *testing.T, pc providerCase, steps []func(llm.Request) llm.Response) (*Session, *fakeAdapter) {
 	t.Helper()
+	return newParitySessionWithConfig(t, pc, steps, SessionConfig{NoProjectPrompts: true})
+}
+
+func newParitySessionWithConfig(t *testing.T, pc providerCase, steps []func(llm.Request) llm.Response, cfg SessionConfig) (*Session, *fakeAdapter) {
+	t.Helper()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: pc.adapterName, steps: steps}
 	c.Register(f)
-	sess, err := NewSession(c, pc.profile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if !cfg.NoProjectPrompts {
+		cfg.NoProjectPrompts = true
+	}
+	sess, err := NewSession(c, pc.profile("test-model"), execenv.NewLocalExecutionEnvironment(dir), cfg)
 	if err != nil {
 		t.Fatalf("NewSession(%s): %v", pc.name, err)
 	}
@@ -66,6 +74,7 @@ func TestParity_SimpleFileCreation(t *testing.T) {
 	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			steps := []func(llm.Request) llm.Response{
 				func(req llm.Request) llm.Response {
 					return llm.Response{
@@ -124,6 +133,7 @@ func TestParity_ReadFileThenEdit(t *testing.T) {
 			t.Parallel()
 			for _, pc := range providerCases {
 				t.Run(pc.name, func(t *testing.T) {
+					t.Parallel()
 					steps := []func(llm.Request) llm.Response{
 						func(req llm.Request) llm.Response {
 							return llm.Response{
@@ -182,6 +192,7 @@ func TestParity_ShellCommandExecution(t *testing.T) {
 	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			steps := []func(llm.Request) llm.Response{
 				func(req llm.Request) llm.Response {
 					return llm.Response{
@@ -233,6 +244,7 @@ func TestParity_ShellBackgroundLaunch(t *testing.T) {
 	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			steps := []func(llm.Request) llm.Response{
 				func(req llm.Request) llm.Response {
 					return llm.Response{
@@ -288,6 +300,7 @@ func TestParity_GrepAndGlob(t *testing.T) {
 	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			steps := []func(llm.Request) llm.Response{
 				func(req llm.Request) llm.Response {
 					return llm.Response{
@@ -376,6 +389,7 @@ func TestParity_ParallelToolCalls(t *testing.T) {
 	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			steps := []func(llm.Request) llm.Response{
 				func(req llm.Request) llm.Response {
 					return llm.Response{
@@ -432,6 +446,7 @@ func TestParity_ErrorRecovery(t *testing.T) {
 	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			step := 0
 			steps := []func(llm.Request) llm.Response{
 				// First call: read a nonexistent file (will error).
@@ -505,9 +520,10 @@ func TestParity_LoopDetectionWarning(t *testing.T) {
 					}
 				},
 			}
-			// Extend the steps to repeat many times for loop detection.
+			// Use a small loop window here: parity needs to prove provider-mapped
+			// tool calls reach loop detection, not re-test the default window size.
 			base := steps[0]
-			for i := 0; i < 19; i++ {
+			for i := 0; i < 2; i++ {
 				steps = append(steps, base)
 			}
 			// Final response to end the session.
@@ -515,7 +531,8 @@ func TestParity_LoopDetectionWarning(t *testing.T) {
 				return finalResponse("done")
 			})
 
-			sess, _ := newParitySession(t, pc, steps)
+			sess, _ := newParitySessionWithConfig(t, pc, steps, SessionConfig{NoProjectPrompts: true, LoopDetectionWindow: 3, MaxToolRoundsPerInput: 8})
+
 			defer sess.Close()
 
 			eventsPtr, mu, doneCh := collectEvents(sess)
@@ -547,6 +564,7 @@ func TestParity_SteeringMidTask(t *testing.T) {
 	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			started := make(chan struct{}, 1)
 			release := make(chan struct{})
 
@@ -614,6 +632,7 @@ func TestParity_MultiFileEdit(t *testing.T) {
 	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			steps := []func(llm.Request) llm.Response{
 				// Round 1: Read both files.
 				func(req llm.Request) llm.Response {
@@ -690,6 +709,7 @@ func TestParity_ToolOutputTruncation(t *testing.T) {
 	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			steps := []func(llm.Request) llm.Response{
 				func(req llm.Request) llm.Response {
 					return llm.Response{Message: llm.Message{
@@ -749,6 +769,7 @@ func TestParity_ReasoningEffort(t *testing.T) {
 	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			steps := []func(llm.Request) llm.Response{
 				func(req llm.Request) llm.Response {
 					return finalResponse("first")
@@ -823,6 +844,7 @@ func TestParity_WorkingDirRemovedFromSchema(t *testing.T) {
 	// working_dir is not model-configurable; delegated jobs always use the parent's working dir.
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			found := false
 			for _, td := range pc.profile("test-model").ToolDefinitions() {
 				if td.Name == "delegate" {

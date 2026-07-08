@@ -738,7 +738,10 @@ func (s *Session) rebuildToolDefsCache() {
 			if td.Name == "job_watch" {
 				td = tool.DefJobWatch(availableEventKindNames())
 			}
-			wire := wireToolDef(td, nameMap, s.resultToolName())
+			wire := td
+			if mapped, ok := nameMap[td.Name]; ok {
+				wire.Name = mapped
+			}
 			defs = append(defs, wire)
 			included[td.Name] = true // canonical
 			// Also track the provider-mapped name so loop 3 (registry tools)

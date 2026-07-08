@@ -53,6 +53,9 @@ func hammerSetters(t *testing.T, sess *Session) {
 // reads them (PRI-1958 A2/A4). Run under -race: RED before the per-round snapshot
 // fix, GREEN after.
 func TestSession_ProcessInput_NoRaceWithSetters(t *testing.T) {
+	if !raceDetectorEnabled {
+		t.Skip("race-detector stress test; run with -race")
+	}
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -71,6 +74,9 @@ func TestSession_ProcessInput_NoRaceWithSetters(t *testing.T) {
 // the non-streaming test misses (s.profile read inside canonicalToolName during
 // the stream). RED before the currentProfile() accessor fix, GREEN after.
 func TestSession_ProcessInputStreaming_NoRaceWithSetters(t *testing.T) {
+	if !raceDetectorEnabled {
+		t.Skip("race-detector stress test; run with -race")
+	}
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -104,6 +110,9 @@ func TestSession_ProcessInputStreaming_NoRaceWithSetters(t *testing.T) {
 // (PRI-1958): spawnAgent copies s.cfg during a turn while SetReasoningEffort writes
 // s.cfg.ReasoningEffort under s.mu. RED before snapshotting the copy under s.mu.
 func TestSpawnAgent_NoRaceWithSetReasoningEffort(t *testing.T) {
+	if !raceDetectorEnabled {
+		t.Skip("race-detector stress test; run with -race")
+	}
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()

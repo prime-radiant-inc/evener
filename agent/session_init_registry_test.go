@@ -18,6 +18,7 @@ import (
 func TestChildRegistryKeepsDelegateWithAllowance(t *testing.T) {
 	t.Parallel()
 	t.Run("allowance>0 retains delegate and job_watch", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		c := llm.NewClient()
 		c.Register(&fakeAdapter{name: "openai"})
@@ -44,6 +45,7 @@ func TestChildRegistryKeepsDelegateWithAllowance(t *testing.T) {
 	})
 
 	t.Run("allowance==0 strips delegate and job_watch", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		c := llm.NewClient()
 		c.Register(&fakeAdapter{name: "openai"})

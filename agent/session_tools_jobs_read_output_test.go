@@ -422,8 +422,8 @@ func TestJobReadOutputBlockGrepTimesOutWithoutMatch(t *testing.T) {
 	rec := newManualRunningJob(t, s)
 	appendManualJobOutput(s.jobManager, rec.JobID, "no signal here\n")
 
-	out, elapsed := blockingGrepRead(t, s, rec.JobID, "ready", 1000)
-	if elapsed < 800*time.Millisecond {
+	out, elapsed := blockingGrepRead(t, s, rec.JobID, "ready", 100)
+	if elapsed < 80*time.Millisecond {
 		t.Fatalf("job_read_output returned after %s, want block until timeout without match", elapsed)
 	}
 	if elapsed >= 5*time.Second {

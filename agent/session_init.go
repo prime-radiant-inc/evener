@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/agent/internal/mcp"
 	"primeradiant.com/serf/agent/internal/sessionlog"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/mcpconfig"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provider"
@@ -138,7 +139,11 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	}
 	s.createdAt = s.sclock().Now().UTC()
 	s.subagents = newSubagentManager(s.emit)
-	jm, err := newJobManager(s.stateDir, s.id, s.enqueueJobNotificationAndNotify)
+	newJM := newJobManager
+	if cfg.testOnly.noSyncJobStore {
+		newJM = newJobManagerNoSync
+	}
+	jm, err := newJM(s.stateDir, s.id, s.enqueueJobNotificationAndNotify)
 	if err != nil {
 		return nil, fmt.Errorf("job manager: %w", err)
 	}
@@ -283,6 +288,7 @@ type RestoreSessionConfig struct {
 	spawn                       spawnConfig
 	resumeHistory               []schema.Turn
 	deferRestoreSideEffects     bool
+	testOnly                    testConfig
 }
 
 // RestoreSessionFromMeta creates a Session from a SessionMeta, recovering
@@ -309,6 +315,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	cfg.LLMRetryPolicy = restoreCfg.LLMRetryPolicy
 	cfg.LLMSleep = restoreCfg.LLMSleep
+	cfg.testOnly = restoreCfg.testOnly
 	cfg.SessionStartKind = plugin.SessionStartKindResume
 	cfg.applyDefaults()
 
@@ -399,7 +406,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		cancelFunc: sessCancel,
 	}
 	s.subagents = newSubagentManager(s.emit)
-	jm, err := newJobManager(s.stateDir, s.id, nil)
+	newJM := newJobManager
+	if cfg.testOnly.noSyncJobStore {
+		newJM = newJobManagerNoSync
+	}
+	jm, err := newJM(s.stateDir, s.id, nil)
 	if err != nil {
 		return nil, fmt.Errorf("job manager: %w", err)
 	}
@@ -620,13 +631,15 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	env := s.currentEnv()
 	ei := envInfoFromEnv(env, s.sclock())
 	ei.KnowledgeCutoff = s.profile.KnowledgeCutoff()
-	if inRepo, branch, mod, untracked, commits := snapshotGit(env, ei.WorkingDir); inRepo {
-		ei.IsGitRepo = true
-		ei.GitBranch = branch
-		ei.GitModifiedFiles = mod
-		ei.GitUntrackedFiles = untracked
-		ei.GitRecentCommitTitles = commits
-		ei.GitOriginURL = gitOriginURL(env, ei.WorkingDir)
+	if !s.cfg.testOnly.skipGitSnapshot {
+		if inRepo, branch, mod, untracked, commits := snapshotGit(env, ei.WorkingDir); inRepo {
+			ei.IsGitRepo = true
+			ei.GitBranch = branch
+			ei.GitModifiedFiles = mod
+			ei.GitUntrackedFiles = untracked
+			ei.GitRecentCommitTitles = commits
+			ei.GitOriginURL = gitOriginURL(env, ei.WorkingDir)
+		}
 	}
 	s.envInfo = ei
 
@@ -653,13 +666,14 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		s.systemPromptOverride = string(b)
 	}
 
-	// Use the process-shared embedded-skills dir as the base layer.
-	// Filesystem-discovered skills (project + extraDirs) shadow embedded ones.
+	// Embedded skills form the base layer. Filesystem-discovered skills
+	// (project + extraDirs) shadow embedded ones.
 	s.skills = make(map[string]skill.SkillMeta)
 	s.pluginCommands = make(map[string]plugin.Command)
-	if dir, err := skill.EmbeddedSkillsDir(); err == nil {
-		// Scan extracted dir directly (skill subdirs are immediate children).
-		skill.ScanSkillsDir(dir, s.skills)
+	if embedded, err := skill.EmbeddedSkills(); err == nil {
+		for name, meta := range embedded {
+			s.skills[name] = meta
+		}
 	}
 	for name, meta := range skill.DiscoverSkills(s.currentEnv(), s.cfg.SkillsDirs...) {
 		s.skills[name] = meta // filesystem shadows embedded
@@ -678,9 +692,17 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	s.contextMgr = contextmgr.NewManager(s.profile, s.client)
 	s.contextMgr.ResultToolName = s.resultToolName()
 
-	reg := newProfileToolRegistry(s.profile)
-	if err := registerCoreTools(reg, s); err != nil {
-		return nil, err
+	var reg *tool.Registry
+	if s.cfg.testOnly.minimalWorktreeToolRegistry {
+		reg = tool.NewRegistry()
+		if err := registerMinimalWorktreeTools(reg, s); err != nil {
+			return nil, err
+		}
+	} else {
+		reg = newProfileToolRegistry(s.profile)
+		if err := registerCoreTools(reg, s); err != nil {
+			return nil, err
+		}
 	}
 	reg.OverrideLimits(s.cfg.ToolOutputLimits)
 	enforceShellToolJSONLimit(reg)

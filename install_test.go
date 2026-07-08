@@ -115,6 +115,10 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 }
 
 func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("release archive install integration test")
+	}
 	if runtime.GOOS == "windows" {
 		t.Skip("install.sh requires a Unix shell")
 	}
@@ -144,7 +148,9 @@ func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
 			asset:    "serf_darwin_arm64.tar.gz",
 		},
 	} {
+		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			home := t.TempDir()
 			fixtures := t.TempDir()
 			archive := filepath.Join(fixtures, tc.asset)

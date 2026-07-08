@@ -87,6 +87,62 @@ func TestSwapEnvAndRefresh_UpdatesEnvInfoAndPromptCache(t *testing.T) {
 	}
 }
 
+const gitCountingShimScript = `#!/bin/sh
+printf '%s\n' "$*" >> "$SWAP_TEST_LOG"
+"$SWAP_TEST_REAL_GIT" "$@"
+`
+
+func TestSwapEnvAndRefresh_TestConfigSkipsGitDiscovery(t *testing.T) {
+	sess := newSession(t,
+		withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withoutGitSnapshot(),
+	)
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git not found on PATH: %v", err)
+	}
+
+	repoDir := t.TempDir()
+	runGitCmd(t, repoDir, "init")
+
+	shimDir := t.TempDir()
+	shimPath := filepath.Join(shimDir, "git")
+	if err := os.WriteFile(shimPath, []byte(gitCountingShimScript), 0o755); err != nil {
+		t.Fatalf("write git shim: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "git.log")
+
+	origPath := os.Getenv("PATH")
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+origPath)
+	t.Setenv("SWAP_TEST_REAL_GIT", realGit)
+	t.Setenv("SWAP_TEST_LOG", logPath)
+
+	base, ok := sess.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("session env is not *execenv.LocalExecutionEnvironment: %T", sess.currentEnv())
+	}
+	next := base.WithWorkingDirectory(repoDir)
+
+	sess.swapEnvAndRefresh(next)
+
+	sess.mu.Lock()
+	ei := sess.envInfo
+	sess.mu.Unlock()
+
+	if ei.WorkingDir != repoDir {
+		t.Errorf("envInfo.WorkingDir = %q, want %q", ei.WorkingDir, repoDir)
+	}
+	if ei.IsGitRepo {
+		t.Error("envInfo.IsGitRepo = true, want false when git snapshot is skipped")
+	}
+	if data, err := os.ReadFile(logPath); err == nil && strings.TrimSpace(string(data)) != "" {
+		t.Fatalf("swapEnvAndRefresh called git despite skipGitSnapshot+NoProjectPrompts; commands:\n%s", data)
+	} else if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read git log: %v", err)
+	}
+}
+
 // gitShimScript is a PATH-shim `git` that, for every invocation, touches a
 // marker file and then blocks until the test harness creates a companion
 // ack file (bounded so a harness bug can't hang the test forever), before
@@ -243,6 +299,9 @@ func TestSwapEnvAndRefresh_NoGitForkWhileLocked(t *testing.T) {
 // locked cache rebuild on the same s.cachedToolDefs/s.cachedSystemPrompt
 // fields. Run under -race, this hammers both concurrently.
 func TestSession_RegisterTool_NoRaceWithConcurrentEnvSwap(t *testing.T) {
+	if !raceDetectorEnabled {
+		t.Skip("race-detector stress test; run with -race")
+	}
 	t.Parallel()
 	sess := newSession(t)
 

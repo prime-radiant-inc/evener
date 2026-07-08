@@ -1152,6 +1152,7 @@ func TestMaxWaitMSDecoders(t *testing.T) {
 	const wantNegErr = "invalid_request: max_wait_ms must be non-negative"
 
 	t.Run("delegate_negative", func(t *testing.T) {
+		t.Parallel()
 		s := newDelegateTestSession(t, llm.NewClient())
 		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 			ID:        "d",
@@ -1167,6 +1168,7 @@ func TestMaxWaitMSDecoders(t *testing.T) {
 	})
 
 	t.Run("delegate_zero_is_unset", func(t *testing.T) {
+		t.Parallel()
 		adapter := &fakeAdapter{
 			name: "openai",
 			steps: []func(req llm.Request) llm.Response{
@@ -1201,6 +1203,7 @@ func TestMaxWaitMSDecoders(t *testing.T) {
 	})
 
 	t.Run("delegate_send_negative", func(t *testing.T) {
+		t.Parallel()
 		adapter := &fakeAdapter{
 			name: "openai",
 			steps: []func(req llm.Request) llm.Response{
@@ -1231,6 +1234,7 @@ func TestMaxWaitMSDecoders(t *testing.T) {
 	})
 
 	t.Run("job_read_output_negative", func(t *testing.T) {
+		t.Parallel()
 		s := newTestSession(t)
 		// Use internal API to create a running job (avoids shell decoder chicken-and-egg).
 		rec := newManualRunningJob(t, s)
@@ -1248,6 +1252,7 @@ func TestMaxWaitMSDecoders(t *testing.T) {
 	})
 
 	t.Run("job_read_output_zero_is_snapshot", func(t *testing.T) {
+		t.Parallel()
 		s := newTestSession(t)
 		// Use internal API to create a running job.
 		rec := newManualRunningJob(t, s)
@@ -1267,6 +1272,7 @@ func TestMaxWaitMSDecoders(t *testing.T) {
 	})
 
 	t.Run("job_stop_negative", func(t *testing.T) {
+		t.Parallel()
 		s := newTestSession(t)
 		rec := newManualRunningJob(t, s)
 		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -1283,6 +1289,7 @@ func TestMaxWaitMSDecoders(t *testing.T) {
 	})
 
 	t.Run("job_stop_zero_is_return_now", func(t *testing.T) {
+		t.Parallel()
 		s := newTestSession(t)
 		rec := newManualRunningJob(t, s)
 		// max_wait_ms=0: request stop and return without waiting.

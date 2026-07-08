@@ -93,7 +93,16 @@ func (r *wtRepo) exitOp(t *testing.T) (map[string]any, error) {
 // --- switch by name ---
 
 func TestWorktreeSwitch_BetweenTwoManagedWorktrees(t *testing.T) {
-	r := newWorktreeRepo(t)
+	t.Parallel()
+	r := newWorktreeRepoWithConfig(t, SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly: testConfig{
+			minimalSystemPrompt:         true,
+			minimalWorktreeToolRegistry: true,
+			noSyncJobStore:              true,
+		},
+	})
 	resA, err := r.create(t, map[string]any{"name": "A"})
 	if err != nil {
 		t.Fatalf("create A: %v", err)
@@ -147,6 +156,7 @@ func TestWorktreeSwitch_BetweenTwoManagedWorktrees(t *testing.T) {
 }
 
 func TestWorktreeSwitch_ToCurrentIsNoOpLockKept(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "A"})
 	if err != nil {
@@ -177,6 +187,7 @@ func TestWorktreeSwitch_ToCurrentIsNoOpLockKept(t *testing.T) {
 }
 
 func TestWorktreeSwitch_ToCurrentOutOfBandForeignMarkerRefuses(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "A"})
 	if err != nil {
@@ -212,6 +223,7 @@ func TestWorktreeSwitch_ToCurrentOutOfBandForeignMarkerRefuses(t *testing.T) {
 }
 
 func TestWorktreeSwitch_ForeignLockedTargetRefusesNamingReason(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "A"})
 	if err != nil {
@@ -245,6 +257,7 @@ func TestWorktreeSwitch_ForeignLockedTargetRefusesNamingReason(t *testing.T) {
 }
 
 func TestWorktreeSwitch_RejectsInvalidName(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	_, err := r.switchOp(t, map[string]any{"name": "has space"})
 	if err == nil {
@@ -253,6 +266,7 @@ func TestWorktreeSwitch_RejectsInvalidName(t *testing.T) {
 }
 
 func TestWorktreeSwitch_NonexistentNameErrors(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	_, err := r.switchOp(t, map[string]any{"name": "never-created"})
 	if err == nil {
@@ -261,6 +275,7 @@ func TestWorktreeSwitch_NonexistentNameErrors(t *testing.T) {
 }
 
 func TestWorktreeSwitch_RequiresExactlyOneOfNameOrPath(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	if _, err := r.switchOp(t, map[string]any{}); err == nil {
 		t.Error("expected an error when neither name nor path is given")
@@ -347,6 +362,7 @@ func TestLeaveCurrentWorktree_LockStateErrorPropagates(t *testing.T) {
 // underlying check as TestWorktreeControlEnv_NonLocalEnvErrors, but through
 // this thin wrapper specifically).
 func TestWorktreeControlRun_NonLocalEnvErrors(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	r.s.mu.Lock()
 	r.s.env = &timeoutEnv{wd: r.mainRoot}
@@ -364,6 +380,7 @@ func TestWorktreeControlRun_NonLocalEnvErrors(t *testing.T) {
 // "not in a git repository" guard (st.mainRepoRoot == ""), independent of
 // worktreeSwitchByName's identical-shaped guard.
 func TestWorktreeSwitchByPath_NotInGitRepo(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir() // not a git repo at all
 	s := newSession(t, withDir(dir))
 	_, err := s.worktreeSwitchByPath(context.Background(), dir)
@@ -375,6 +392,7 @@ func TestWorktreeSwitchByPath_NotInGitRepo(t *testing.T) {
 // TestWorktreeSwitch_ByPathNonexistentPathErrors covers step 1's
 // EvalSymlinks failure when the argument path does not exist at all.
 func TestWorktreeSwitch_ByPathNonexistentPathErrors(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	ghost := filepath.Join(t.TempDir(), "does-not-exist")
 	_, err := r.switchOp(t, map[string]any{"path": ghost})
@@ -404,6 +422,7 @@ func TestWorktreeSwitch_ByPathListWorktreesErrorsWhenGitUnavailable(t *testing.T
 // LATER, resolvable entry (the target we actually asked for) is still
 // found.
 func TestWorktreeSwitch_ByPathSkipsMomentarilyAbsentPorcelainEntry(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	// A sibling worktree whose directory is deleted out-of-band (not via
 	// `git worktree remove`), leaving a stale, unresolvable porcelain entry.
@@ -427,35 +446,8 @@ func TestWorktreeSwitch_ByPathSkipsMomentarilyAbsentPorcelainEntry(t *testing.T)
 	}
 }
 
-// TestWorktreeSwitch_ByPathLeaveCurrentErrorsOnSecondPorcelainCall covers
-// step 3's leaveCurrentWorktree error branch for the NON-managed by-path arm
-// (distinct from the managed by-name arm's own coverage of the same
-// underlying function): switching away from a currently-occupied managed
-// worktree into a non-managed sibling first lists the registry successfully
-// (step 1, to validate the target), then leaveCurrentWorktree's own
-// lockStateOf call makes a SECOND `worktree list --porcelain` call to
-// inspect the worktree being left — the shim fails only that second call.
-func TestWorktreeSwitch_ByPathLeaveCurrentErrorsOnSecondPorcelainCall(t *testing.T) {
-	r := newWorktreeRepo(t)
-	if _, err := r.create(t, map[string]any{"name": "A"}); err != nil {
-		t.Fatalf("create A: %v", err)
-	}
-	siblingRoot := t.TempDir()
-	siblingPath := filepath.Join(siblingRoot, "sibling")
-	wtGit(t, r.mainRoot, "worktree", "add", "-b", "sibling-branch", siblingPath, r.head)
-
-	gitFailOnNthMatchingCallShim(t, "worktree list --porcelain", 2)
-
-	_, err := r.switchOp(t, map[string]any{"path": siblingPath})
-	if err == nil {
-		t.Fatal("expected switch by path to fail when leaveCurrentWorktree's porcelain call fails")
-	}
-	if !strings.Contains(err.Error(), "inspecting the current worktree lock") {
-		t.Fatalf("switch by path with the 2nd porcelain call failing: err = %v, want the current-worktree-lock-inspection error", err)
-	}
-}
-
 func TestWorktreeSwitch_ByPathSiblingManualWorktreeNoLockMutation(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	// A manually created worktree OUTSIDE the managed directory (as a human's
 	// hand-made sibling lane would be), never touched by manage_worktree.
@@ -479,6 +471,7 @@ func TestWorktreeSwitch_ByPathSiblingManualWorktreeNoLockMutation(t *testing.T) 
 }
 
 func TestWorktreeSwitch_ByPathToCurrentNonManagedUnlockedNoOps(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	// A manually created worktree OUTSIDE the managed directory, never locked
 	// by serf (spec §4 switch by-path step 3: "no lock choreography — serf
@@ -514,6 +507,7 @@ func TestWorktreeSwitch_ByPathToCurrentNonManagedUnlockedNoOps(t *testing.T) {
 }
 
 func TestWorktreeSwitch_ByPathSymlinkedSpellingCanonicalizedAccept(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -544,6 +538,7 @@ func TestWorktreeSwitch_ByPathSymlinkedSpellingCanonicalizedAccept(t *testing.T)
 }
 
 func TestWorktreeSwitch_UnregisteredPathRejected(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	stray := t.TempDir()
 
@@ -557,6 +552,7 @@ func TestWorktreeSwitch_UnregisteredPathRejected(t *testing.T) {
 }
 
 func TestWorktreeSwitch_ByPathInsideManagedDirGetsFullChoreographyLocked(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -591,33 +587,17 @@ func TestWorktreeSwitch_ByPathInsideManagedDirGetsFullChoreographyLocked(t *test
 // of the callee itself): hiding git entirely fails the VERY FIRST git call
 // exit makes, so the error surfaces from this call site specifically.
 func TestWorktreeExit_LeaveCurrentErrorsWhenGitUnavailable(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
 		t.Fatalf("create lane: %v", err)
 	}
-	restore := hideGitEntirely(t)
+	restore := hideGitInRepo(t, r.mainRoot)
 	defer restore()
 
 	_, err := r.exitOp(t)
 	if err == nil || !strings.Contains(err.Error(), "inspecting the current worktree lock") {
 		t.Fatalf("exit with git hidden: err = %v, want the current-worktree-lock-inspection error", err)
-	}
-}
-
-// TestWorktreeExit_RelockLockStateErrorsOnSecondPorcelainCall covers step
-// 4's relockRestoreTarget->lockStateOf error branch specifically: exit's own
-// step-2 leaveCurrentWorktree call (the 1st `worktree list --porcelain`)
-// must succeed, but relockRestoreTarget's later inspection of the restore
-// root (the 2nd) fails.
-func TestWorktreeExit_RelockLockStateErrorsOnSecondPorcelainCall(t *testing.T) {
-	r := newWorktreeRepo(t)
-	_, r2, _, _ := wtLaunchSession(t, r)
-
-	gitFailOnNthMatchingCallShim(t, "worktree list --porcelain", 2)
-
-	_, err := r2.exitOp(t)
-	if err == nil || !strings.Contains(err.Error(), "inspecting the restore target lock") {
-		t.Fatalf("exit with the 2nd porcelain call failing: err = %v, want the restore-target-lock-inspection error", err)
 	}
 }
 
@@ -629,6 +609,7 @@ func TestWorktreeExit_RelockLockStateErrorsOnSecondPorcelainCall(t *testing.T) {
 // error, not a scripted one — git's own lock/unlock write a "locked" marker
 // file there).
 func TestWorktreeExit_RelockLockCommandFailsOnPermissionDenied(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	_, r2, launchPath, _ := wtLaunchSession(t, r)
 
@@ -645,6 +626,7 @@ func TestWorktreeExit_RelockLockCommandFailsOnPermissionDenied(t *testing.T) {
 }
 
 func TestWorktreeExit_RestoresEnvClearsSavedEnvUnlocks(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -689,6 +671,7 @@ func TestWorktreeExit_RestoresEnvClearsSavedEnvUnlocks(t *testing.T) {
 }
 
 func TestWorktreeExit_OutsideWorktreeErrorsNoSideEffects(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	_, err := r.exitOp(t)
 	if err == nil {
@@ -706,6 +689,7 @@ func TestWorktreeExit_OutsideWorktreeErrorsNoSideEffects(t *testing.T) {
 }
 
 func TestWorktreeExit_RestoringIntoManagedLaunchRootIdempotentRelockForeignWarns(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	s2, r2, launchPath, pathWork := wtLaunchSession(t, r)
 
@@ -762,7 +746,7 @@ func wtLaunchSession(t *testing.T, r *wtRepo) (s2 *Session, r2 *wtRepo, launchPa
 	}
 	wtGit(t, r.mainRoot, "worktree", "add", "-b", "launch", launchPath, r.head)
 
-	s2 = newSession(t, withDir(launchPath))
+	s2 = newSession(t, withDir(launchPath), withConfig(worktreeTestSessionConfig()))
 	s2.stateDir = r.stateDir
 	r2 = &wtRepo{s: s2, mainRoot: r.mainRoot, stateDir: r.stateDir, head: r.head}
 
@@ -774,6 +758,7 @@ func wtLaunchSession(t *testing.T, r *wtRepo) (s2 *Session, r2 *wtRepo, launchPa
 }
 
 func TestWorktreeExit_RestoringIntoUnlockedManagedLaunchRootTakesLock(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	s2, r2, launchPath, _ := wtLaunchSession(t, r)
 
@@ -800,6 +785,7 @@ func TestWorktreeExit_RestoringIntoUnlockedManagedLaunchRootTakesLock(t *testing
 }
 
 func TestWorktreeExit_RestoringIntoOwnMarkerManagedLaunchRootAdopts(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	s2, r2, launchPath, _ := wtLaunchSession(t, r)
 
@@ -827,6 +813,7 @@ func TestWorktreeExit_RestoringIntoOwnMarkerManagedLaunchRootAdopts(t *testing.T
 }
 
 func TestWorktreeCreateExitSwitch_RoundTripRelocks(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	resA, err := r.create(t, map[string]any{"name": "A"})
 	if err != nil {

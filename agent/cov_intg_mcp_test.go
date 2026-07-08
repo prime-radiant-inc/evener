@@ -5,10 +5,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,19 +26,33 @@ import (
 // merge plugin-provided MCP configs. The server exits on stdin EOF, so the
 // session's Close tears it down deterministically without a terminate timeout.
 
-// intg_buildMCPServer compiles the testdata stdio MCP server into a fresh temp
-// dir and returns the binary path. The Go build cache makes repeated builds
-// (e.g. under -count) cheap, and the path has no spaces so it survives the
+var (
+	intgMCPServerOnce sync.Once
+	intgMCPServerPath string
+	intgMCPServerErr  error
+)
+
+// intg_buildMCPServer compiles the testdata stdio MCP server once per package
+// run and returns the binary path. The path has no spaces so it survives the
 // whitespace-split of an inline MCP spec.
 func intg_buildMCPServer(t *testing.T) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "intgmcpserver")
-	cmd := exec.Command("go", "build", "-o", bin, "./testdata/intgmcpserver")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("building test MCP server: %v\n%s", err, out)
+	intgMCPServerOnce.Do(func() {
+		intgMCPServerDir, intgMCPServerErr = os.MkdirTemp("", "serf-intgmcpserver-*")
+		if intgMCPServerErr != nil {
+			return
+		}
+		intgMCPServerPath = filepath.Join(intgMCPServerDir, "intgmcpserver")
+		cmd := exec.Command("go", "build", "-o", intgMCPServerPath, "./testdata/intgmcpserver")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			intgMCPServerErr = fmt.Errorf("building test MCP server: %w\n%s", err, out)
+		}
+	})
+	if intgMCPServerErr != nil {
+		t.Fatal(intgMCPServerErr)
 	}
-	return bin
+	return intgMCPServerPath
 }
 
 // intg_mcpEcho drives the named registered tool with a message and returns its

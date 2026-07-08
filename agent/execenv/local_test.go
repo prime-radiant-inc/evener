@@ -766,6 +766,61 @@ func TestExecCommand_ShellSelection(t *testing.T) {
 	}
 }
 
+func TestExecArgv_PreservesArgvAndExitSemantics(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("script argv fixture uses POSIX sh")
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "argv-fixture")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '<%s>\\n' \"$1\"\nprintf 'err:<%s>\\n' \"$2\" >&2\nexit 7\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := NewLocalExecutionEnvironment(dir)
+
+	res, err := env.ExecArgv(context.Background(), script, []string{"one two; echo nope", "stderr value"}, 5000, "", nil)
+	if err == nil {
+		t.Fatal("ExecArgv returned nil error for exit 7")
+	}
+	if res.ExitCode != 7 {
+		t.Fatalf("exit code = %d, want 7 (res=%+v, err=%v)", res.ExitCode, res, err)
+	}
+	if res.Stdout != "<one two; echo nope>\n" {
+		t.Fatalf("stdout = %q, want exact argv preservation", res.Stdout)
+	}
+	if res.Stderr != "err:<stderr value>\n" {
+		t.Fatalf("stderr = %q, want fixture stderr", res.Stderr)
+	}
+}
+
+func TestExecArgv_UsesInjectedLocalVenvPath(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("script argv fixture uses POSIX sh")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, ".venv", "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(bin, "serf-execargv-venv-fixture")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf 'venv:<%s>\\n' \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := NewLocalExecutionEnvironment(dir)
+
+	res, err := env.ExecArgv(context.Background(), "serf-execargv-venv-fixture", []string{"value"}, 5000, "", nil)
+	if err != nil {
+		t.Fatalf("ExecArgv: %v (res=%+v)", err, res)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (res=%+v)", res.ExitCode, res)
+	}
+	if res.Stdout != "venv:<value>\n" {
+		t.Fatalf("stdout = %q, want local venv executable output", res.Stdout)
+	}
+}
+
 func TestShellCommand_ReturnsValidCmd(t *testing.T) {
 	cmd := shellCommand("echo test")
 	if cmd == nil {

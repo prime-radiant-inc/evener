@@ -188,7 +188,7 @@ func TestFinalizeDelegateRetriesOutputAppendWithoutClosingDone(t *testing.T) {
 		t.Fatalf("finalizeDelegate returned before output was writable: %v", err)
 	case <-run.done:
 		t.Fatal("delegate done closed before output append was durable")
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(25 * time.Millisecond):
 	}
 
 	reopened, err := jobstore.OpenOutput(run.rec.OutputPath, 0)
@@ -466,7 +466,7 @@ func TestCreateDelegateForegroundOutputAppendFailureReturns(t *testing.T) {
 	select {
 	case res := <-done:
 		t.Fatalf("createDelegate returned before output append recovered: %+v", res)
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(25 * time.Millisecond):
 	}
 
 	reopened, err := jobstore.OpenOutput(run.rec.OutputPath, 0)

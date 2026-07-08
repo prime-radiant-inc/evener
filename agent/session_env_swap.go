@@ -27,15 +27,20 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment) {
 	// `git rev-parse --show-toplevel` while holding s.mu.
 	newWD := next.WorkingDirectory()
 	ei := envInfoFromEnv(next, s.sclock())
-	if inRepo, branch, mod, untracked, commits := snapshotGit(next, newWD); inRepo {
-		ei.IsGitRepo = true
-		ei.GitBranch = branch
-		ei.GitModifiedFiles = mod
-		ei.GitUntrackedFiles = untracked
-		ei.GitRecentCommitTitles = commits
-		ei.GitOriginURL = gitOriginURL(next, newWD)
+	if !s.cfg.testOnly.skipGitSnapshot {
+		if inRepo, branch, mod, untracked, commits := snapshotGit(next, newWD); inRepo {
+			ei.IsGitRepo = true
+			ei.GitBranch = branch
+			ei.GitModifiedFiles = mod
+			ei.GitUntrackedFiles = untracked
+			ei.GitRecentCommitTitles = commits
+			ei.GitOriginURL = gitOriginURL(next, newWD)
+		}
 	}
-	_ = execenv.GitRootOrEmpty(next, newWD) // pre-warm next's git-root cache; see comment above
+	if !s.cfg.NoProjectPrompts {
+		// Pre-warm next's git-root cache; see the lock-order comment above.
+		_ = execenv.GitRootOrEmpty(next, newWD)
+	}
 
 	// Step 2 — under s.mu: atomically install env+envInfo (so the two are
 	// never observed in a torn intermediate state) and rebuild the caches that

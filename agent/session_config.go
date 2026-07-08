@@ -230,6 +230,22 @@ type testConfig struct {
 	// so only the in-memory goroutine + decode + naming-state mutation run. False
 	// in production: the StateDir gate is unchanged.
 	forceSessionNamer bool
+
+	// skipGitSnapshot suppresses launch-time git metadata collection for tests
+	// whose contract is below the session prompt/environment snapshot layer.
+	skipGitSnapshot bool
+
+	// minimalSystemPrompt avoids rendering the large prompt template for tests
+	// whose contract is below prompt content. Tool definitions still rebuild.
+	minimalSystemPrompt bool
+
+	// minimalWorktreeToolRegistry registers only file tools, the terminal/result
+	// tool, and manage_worktree for worktree-focused tests.
+	minimalWorktreeToolRegistry bool
+
+	// noSyncJobStore skips jobstore fsyncs for tests whose contract is not crash
+	// durability. The event bytes and append/load behavior stay the same.
+	noSyncJobStore bool
 }
 
 // spawnConfig holds the SessionConfig fields that only spawnAgent (plus the

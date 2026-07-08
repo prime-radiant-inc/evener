@@ -1,65 +1,113 @@
 #!/usr/bin/env bash
-# run-module-tests.sh — run the Go module test suites with wave scheduling.
+# run-module-tests.sh — run the non-fuzz Go module test suites with wave scheduling.
 #
 # The repo is a go.work workspace of independent modules. `go test ./...` does
-# not span modules, so the suites must be invoked per module. Running them
-# sequentially serializes four independent suites; running ALL of them at once
-# oversubscribes the CPU and starves the latency-sensitive tmux/TUI end-to-end
-# tests in the root module (they render in real time and time out when the
-# CPU-heavy agent suite hogs the cores).
+# not span modules, so the suites must be invoked per module. The regular gate
+# intentionally runs only non-fuzz Test/Example entry points; native Fuzz
+# targets, rapid/sequence fuzz tests, structured fuzz reachability checks, saved
+# fuzz corpus replay, and the fuzz toolkit module are owned by `make fuzz`.
 #
-# The compromise is two waves:
-#   WAVE1 — the root module ALONE. Its tmux/TUI tests are so timing-sensitive
-#           that even the small llm/auth suites running alongside can starve a
-#           session enough to fail; it gets the machine to itself.
-#   WAVE2 — the agent module (CPU-heavy, extra in-package parallelism via
-#           AGENT_PARALLEL) plus the small llm/auth modules in its shadow.
-# Waves run one after another; modules WITHIN a wave run concurrently. This keeps
-# the tmux suite from fighting any other suite for cores, so the run is both fast
-# and flake-free.
+# The default wave split gives the root module's timing-sensitive TUI tests the
+# machine to themselves, then runs the remaining modules concurrently. Override
+# MODULES, WAVE1, WAVE2, or AGENT_PARALLEL when a caller needs a different local
+# schedule without changing the coverage boundary.
 #
 # Usage:
 #   scripts/run-module-tests.sh <go-test-flags...>
-#     scripts/run-module-tests.sh -count=1
 #     scripts/run-module-tests.sh -short -count=1
 #     scripts/run-module-tests.sh -race -short -count=1
 #
 # Output: one PASS/FAIL line per module (with wall time) as each finishes; a
 # failing module's full output is printed at the end. Exits non-zero on any
-# failure. Override WAVE1/WAVE2 to change the schedule, AGENT_PARALLEL to tune
-# the agent wave's -parallel.
+# failure.
 set -uo pipefail
 
-WAVE1=${WAVE1:-"."}
-# fuzz is the serf-agnostic toolkit module (promoter/schemagen) and invariant is
-# the zero-dependency assertion module: both are CPU-only unit tests with no
-# tmux/TUI timing sensitivity, so they ride WAVE2 alongside the other library
-# modules. Listed here (not just in the Makefile's GO_MODULES, which this script
-# does not read) so their tests are actually gated.
-WAVE2=${WAVE2:-"agent llm auth fuzz invariant"}
-# Extra -parallel for the agent wave. Defaults to 32 (helps overlap the few
-# remaining timer waits on multi-core dev machines). An explicit empty value
-# (note: -, not :-) means "don't pass -parallel" so go test uses GOMAXPROCS —
-# the -race gate sets this to avoid oversubscribing few-core CI, which starves
-# real per-test work past its timeouts.
+MODULES=${MODULES:-". agent llm auth envvars invariant"}
+if [ -z "${WAVE1+x}" ] && [ -z "${WAVE2+x}" ]; then
+	WAVE1=""
+	WAVE2=""
+	for m in $MODULES; do
+		if [ "$m" = "." ]; then
+			WAVE1="$WAVE1 $m"
+		else
+			WAVE2="$WAVE2 $m"
+		fi
+	done
+	WAVE1=${WAVE1# }
+	WAVE2=${WAVE2# }
+else
+	WAVE1=${WAVE1:-}
+	WAVE2=${WAVE2:-}
+fi
+
+# Package/test parallelism controls for heavyweight modules. Explicit empty
+# values mean "don't pass the flag" so go test uses its defaults; the -race gate
+# sets AGENT_PARALLEL empty to avoid oversubscribing few-core CI.
+ROOT_P=${ROOT_P-6}
 AGENT_PARALLEL=${AGENT_PARALLEL-32}
+AGENT_P=${AGENT_P-4}
+
+# Fuzz-designated Test* functions are not part of the regular gate. Native Fuzz*
+# targets are already excluded by -run; these names cover rapid/sequence fuzz
+# tests and structured-generator reachability proofs that remain under make fuzz.
+fuzz_test_skip='(SeqFuzz|SchemaFuzz|Structured.*Reach|LifecycleAdapter|ToolArgsAdapter|SeqAdapter|TurnPagingEquivalenceSanity|WireTypeRegistryCoverage|LineWindowExtractorsSanity|TranscriptReadersAgreeSanity|WriteListRoundTrip|LaunchConfigThreeStateRoundTrip|DifferentialSanity|StreamVsNonStreamSanity|FuzzBuildEnforces)'
+
 flags="$*"
 logdir="$(mktemp -d -t serf-module-tests.XXXXXX)"
 fail=0
 
 logpath() { printf '%s/%s.log' "$logdir" "$(printf '%s' "$1" | tr '/.' '__')"; }
 
-# run_wave <extra-flags> <module...> — run the modules concurrently, wait, and
-# report each one's result; records failures in the global $fail.
+run_module() {
+	local m="$1" extra="$2"
+	# Word-split flags and extra intentionally so callers can pass multiple flags.
+	# shellcheck disable=SC2086
+	if [ "$m" = "." ]; then
+		local -a packages=()
+		local pkg
+		while IFS= read -r pkg; do
+			case "$pkg" in
+				primeradiant.com/serf/cmd/serf-fuzzcov|primeradiant.com/serf/cmd/serf-fuzz-harvest)
+					continue
+					;;
+			esac
+			packages+=("$pkg")
+		done < <(go list ./...)
+		/usr/bin/time -p go test $flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" "${packages[@]}"
+		return
+	fi
+	/usr/bin/time -p go test $flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" ./...
+}
+
+# run_wave <module...> — run the modules concurrently, wait, and report each
+# one's result; records failures in the global $fail.
+module_extra() {
+	case "$1" in
+		.)
+			local extra=""
+			[ -n "$ROOT_P" ] && extra="$extra -p $ROOT_P"
+			printf '%s' "$extra"
+			;;
+		agent)
+			local extra=""
+			[ -n "$AGENT_P" ] && extra="$extra -p $AGENT_P"
+			[ -n "$AGENT_PARALLEL" ] && extra="$extra -parallel $AGENT_PARALLEL"
+			printf '%s' "$extra"
+			;;
+		*)
+			printf ''
+			;;
+	esac
+}
+
 run_wave() {
-	local extra="$1"; shift
+	[ "$#" -eq 0 ] && return 0
 	local -a names=() pids=()
-	local m log
+	local m log extra
 	for m in "$@"; do
 		log="$(logpath "$m")"
-		# Word-split flags intentionally so callers can pass multiple flags.
-		# shellcheck disable=SC2086
-		( cd "$m" && /usr/bin/time -p go test $flags $extra ./... ) >"$log" 2>&1 &
+		extra="$(module_extra "$m")"
+		( cd "$m" && run_module "$m" "$extra" ) >"$log" 2>&1 &
 		pids+=("$!"); names+=("$m")
 	done
 	local i
@@ -73,10 +121,8 @@ run_wave() {
 	done
 }
 
-agentExtra=""
-[ -n "$AGENT_PARALLEL" ] && agentExtra="-parallel $AGENT_PARALLEL"
-run_wave "" $WAVE1
-run_wave "$agentExtra" $WAVE2
+run_wave $WAVE1
+run_wave $WAVE2
 
 if [ "$fail" -ne 0 ]; then
 	echo

@@ -33,29 +33,23 @@ type wtDlgRepo struct {
 
 func newWtDlgRepo(t *testing.T, c *llm.Client) *wtDlgRepo {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
 
-	root := t.TempDir()
+	root := packageFixtureTempDir(t, "delegate-repo-*")
 	root, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		t.Fatalf("EvalSymlinks: %v", err)
 	}
-	wtGit(t, root, "init", "-b", "main")
-	wtGit(t, root, "config", "user.email", "test@example.com")
-	wtGit(t, root, "config", "user.name", "Test")
-	if err := os.WriteFile(filepath.Join(root, "README"), []byte("main-checkout\n"), 0o644); err != nil {
-		t.Fatalf("write README: %v", err)
-	}
-	wtGit(t, root, "add", "README")
-	wtGit(t, root, "commit", "-m", "initial")
+	copyWorktreeBaseRepo(t, root)
 
-	stateDir, err := filepath.EvalSymlinks(t.TempDir())
+	stateDir, err := filepath.EvalSymlinks(packageFixtureTempDir(t, "delegate-state-*"))
 	if err != nil {
 		t.Fatalf("EvalSymlinks state: %v", err)
 	}
 	s := newSession(t, withClient(c), withDir(root), withConfig(SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
 	return &wtDlgRepo{s: s, mainRoot: root, stateDir: stateDir}
 }
@@ -106,6 +100,7 @@ func delegateTestClient(step func(req llm.Request) llm.Response) *llm.Client {
 // --- Spawn: managed worktree, sidecar, lock, child env rooting, restore descriptor ---
 
 func TestDelegateIsolation_SpawnCreatesLockedManagedWorktree(t *testing.T) {
+	t.Parallel()
 	c := delegateTestClient(func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
 	r := newWtDlgRepo(t, c)
 
@@ -152,22 +147,11 @@ func TestDelegateIsolation_SpawnCreatesLockedManagedWorktree(t *testing.T) {
 	if entry.LockReason != wantReason {
 		t.Errorf("lock reason = %q, want %q", entry.LockReason, wantReason)
 	}
-}
-
-func TestDelegateIsolation_ChildEnvRootedAtLaneAndRestoreDescriptorFields(t *testing.T) {
-	c := delegateTestClient(func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
-	r := newWtDlgRepo(t, c)
-
-	res := r.s.createDelegate(context.Background(), delegateArgs{
-		Task:           "do isolated work",
-		Isolation:      "worktree",
-		Background:     false,
-		BlockTimeoutMS: 5000,
-	})
-	if res.Err != nil {
-		t.Fatalf("createDelegate: %v", res.Err)
+	if _, err := r.s.worktreeSwitchByName(context.Background(), res.DelegateID); err == nil {
+		t.Fatal("expected parent switch into a live isolated delegate lane to be refused")
+	} else if !strings.Contains(err.Error(), wantReason) {
+		t.Errorf("switch refusal error = %q, want it to name the delegate lock reason %q", err.Error(), wantReason)
 	}
-	lane := r.lanePath(res.DelegateID)
 
 	_, childID, err := decodeRef(res.TranscriptRef)
 	if err != nil {
@@ -179,6 +163,13 @@ func TestDelegateIsolation_ChildEnvRootedAtLaneAndRestoreDescriptorFields(t *tes
 	}
 	if got := sub.sess.currentEnv().WorkingDirectory(); got != lane {
 		t.Errorf("child env working directory = %q, want lane %q", got, lane)
+	}
+	if sub.sess.reg.Get("manage_worktree") != nil {
+		t.Error("manage_worktree must be denied to an isolation delegate child")
+	}
+	// A plain, non-worktree tool must still be present: the deny is specific.
+	if sub.sess.reg.Get("shell") == nil {
+		t.Error("shell must still be available to the child")
 	}
 
 	rec, err := findJobRecord(r.s.jobManager, res.StartedJobID)
@@ -197,6 +188,7 @@ func TestDelegateIsolation_ChildEnvRootedAtLaneAndRestoreDescriptorFields(t *tes
 }
 
 func TestDelegateIsolation_NonLocalEnvironmentErrorsClearly(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	s := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 1}))
@@ -219,6 +211,7 @@ func TestDelegateIsolation_NonLocalEnvironmentErrorsClearly(t *testing.T) {
 }
 
 func TestDelegateIsolation_UnsupportedValueRejected(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	s := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 1}))
@@ -233,6 +226,7 @@ func TestDelegateIsolation_UnsupportedValueRejected(t *testing.T) {
 }
 
 func TestDelegateIsolation_SpawnFailureAfterWorktreeCreateRollsBackLane(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	r := newWtDlgRepo(t, c)
@@ -270,6 +264,7 @@ func TestDelegateIsolation_SpawnFailureAfterWorktreeCreateRollsBackLane(t *testi
 // file cannot be created (the jobs dir is made read-only). The lane must
 // still be rolled back.
 func TestDelegateIsolation_AttachFailureAfterWorktreeCreateRollsBackLane(t *testing.T) {
+	t.Parallel()
 	if os.Getuid() == 0 {
 		t.Skip("running as root: directory permissions do not restrict writes")
 	}
@@ -316,71 +311,8 @@ func TestDelegateIsolation_AttachFailureAfterWorktreeCreateRollsBackLane(t *test
 
 // --- manage_worktree deny: spawn, all-tools agent type, and after restore ---
 
-func TestDelegateIsolation_ManageWorktreeDeniedAtSpawn(t *testing.T) {
-	c := delegateTestClient(func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
-	r := newWtDlgRepo(t, c)
-
-	res := r.s.createDelegate(context.Background(), delegateArgs{
-		Task:           "do isolated work",
-		Isolation:      "worktree",
-		Background:     false,
-		BlockTimeoutMS: 5000,
-	})
-	if res.Err != nil {
-		t.Fatalf("createDelegate: %v", res.Err)
-	}
-	_, childID, err := decodeRef(res.TranscriptRef)
-	if err != nil {
-		t.Fatalf("decodeRef: %v", err)
-	}
-	sub := r.s.subagents.get(childID)
-	if sub == nil || sub.sess == nil {
-		t.Fatal("no retained child runtime")
-	}
-	if sub.sess.reg.Get("manage_worktree") != nil {
-		t.Error("manage_worktree must be denied to an isolation delegate child")
-	}
-	// A plain, non-worktree tool must still be present — the deny is specific.
-	if sub.sess.reg.Get("shell") == nil {
-		t.Error("shell must still be available to the child")
-	}
-}
-
-func TestDelegateIsolation_ManageWorktreeDeniedForAllToolsAgentType(t *testing.T) {
-	c := delegateTestClient(func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
-	r := newWtDlgRepo(t, c)
-	r.s.pluginAgents["dlg_alltools"] = plugin.Agent{Name: "dlg_alltools", AllTools: true, PluginName: "test"}
-
-	res := r.s.createDelegate(context.Background(), delegateArgs{
-		Task:           "do isolated work",
-		AgentType:      "dlg_alltools",
-		Isolation:      "worktree",
-		Background:     false,
-		BlockTimeoutMS: 5000,
-	})
-	if res.Err != nil {
-		t.Fatalf("createDelegate: %v", res.Err)
-	}
-	_, childID, err := decodeRef(res.TranscriptRef)
-	if err != nil {
-		t.Fatalf("decodeRef: %v", err)
-	}
-	sub := r.s.subagents.get(childID)
-	if sub == nil || sub.sess == nil {
-		t.Fatal("no retained child runtime")
-	}
-	if sub.sess.reg.Get("manage_worktree") != nil {
-		t.Error("manage_worktree must be denied even to an all-tools isolation delegate child")
-	}
-	// AllTools otherwise means everything: prove the base policy really was
-	// all-tools, so the deny is doing real work rather than an accident of a
-	// restrictive base policy.
-	if sub.sess.reg.Get("shell") == nil {
-		t.Error("all-tools child should still have shell")
-	}
-}
-
 func TestDelegateIsolation_ManageWorktreeDeniedAfterRestoreAllTools(t *testing.T) {
+	t.Parallel()
 	var request llm.Request
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
@@ -407,6 +339,19 @@ func TestDelegateIsolation_ManageWorktreeDeniedAfterRestoreAllTools(t *testing.T
 	if err != nil {
 		t.Fatalf("decodeRef: %v", err)
 	}
+	spawnedSub := r.s.subagents.get(childID)
+	if spawnedSub == nil || spawnedSub.sess == nil {
+		t.Fatal("no retained child runtime after spawn")
+	}
+	if spawnedSub.sess.reg.Get("manage_worktree") != nil {
+		t.Error("manage_worktree must be denied even to an all-tools isolation delegate child at spawn")
+	}
+	// AllTools otherwise means everything: prove the base policy really was
+	// all-tools, so the deny is doing real work rather than an accident of a
+	// restrictive base policy.
+	if spawnedSub.sess.reg.Get("shell") == nil {
+		t.Error("all-tools child should still have shell at spawn")
+	}
 
 	// Give the lane genuine work so close-time disposal (spec §9 step 4) keeps
 	// it — an unchanged lane is removed at close and cannot be revived.
@@ -419,6 +364,7 @@ func TestDelegateIsolation_ManageWorktreeDeniedAfterRestoreAllTools(t *testing.T
 	restoredParentEnv := execenv.NewLocalExecutionEnvironment(r.mainRoot)
 	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), restoredParentEnv, parentMeta, RestoreSessionConfig{
 		StateDir: stateDir,
+		testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	})
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
@@ -453,11 +399,21 @@ func TestDelegateIsolation_ManageWorktreeDeniedAfterRestoreAllTools(t *testing.T
 	if sub.sess.reg.Get("shell") == nil {
 		t.Error("all-tools child should still have shell after restore")
 	}
+
+	entry := r.porcelainEntryFor(t, r.lanePath(res.DelegateID))
+	wantReason := worktree.FormatDelegateMarker(res.DelegateID, restored.id)
+	if !entry.Locked {
+		t.Fatal("revival must re-lock a kept changed lane")
+	}
+	if entry.LockReason != wantReason {
+		t.Errorf("lock reason after revival = %q, want %q", entry.LockReason, wantReason)
+	}
 }
 
 // --- Second job in the same lane; per-job worktree report ---
 
 func TestDelegateIsolation_SecondJobViaDelegateSendRunsInSameLaneAndReportsWorktree(t *testing.T) {
+	t.Parallel()
 	c := delegateTestClient(func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
 	r := newWtDlgRepo(t, c)
 
@@ -521,6 +477,7 @@ func TestDelegateIsolation_SecondJobViaDelegateSendRunsInSameLaneAndReportsWorkt
 // Spec §9 step 3 requires that notification to carry path/branch/ahead/dirty
 // so the parent can merge the lane between jobs.
 func TestDelegateIsolation_BackgroundCompletionNotificationCarriesWorktreeReport(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
 	}}
@@ -564,6 +521,7 @@ func TestDelegateIsolation_BackgroundCompletionNotificationCarriesWorktreeReport
 // real git state, without needing a scripted tool call inside the fake LLM
 // turn.
 func TestDelegateIsolation_WorktreeReportDetectsAheadAndDirty(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	r := newWtDlgRepo(t, c)
@@ -611,79 +569,8 @@ func TestDelegateIsolation_WorktreeReportDetectsAheadAndDirty(t *testing.T) {
 
 // --- §7 revival re-lock: kept (unlocked) re-locks; foreign-locked refuses ---
 
-func TestDelegateIsolation_RevivalOnKeptUnlockedLaneReLocks(t *testing.T) {
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
-		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("revived") },
-	}})
-	r := newWtDlgRepo(t, c)
-
-	res := r.s.createDelegate(context.Background(), delegateArgs{
-		Task:           "first job",
-		Isolation:      "worktree",
-		Background:     false,
-		BlockTimeoutMS: 5000,
-	})
-	if res.Err != nil {
-		t.Fatalf("createDelegate: %v", res.Err)
-	}
-	lane := r.lanePath(res.DelegateID)
-	_, childID, err := decodeRef(res.TranscriptRef)
-	if err != nil {
-		t.Fatalf("decodeRef: %v", err)
-	}
-
-	// A CHANGED lane (real commits) is what close-time disposal (spec §9
-	// step 4) keeps — it unlocks and preserves it, leaving it resumable. Give
-	// the lane genuine work, then close the parent: disposal keeps + unlocks it,
-	// reaching exactly the kept-unlocked state a revival must re-lock.
-	r.commitWorkInLane(t, lane)
-
-	parentMeta := r.s.Meta()
-	stateDir := r.s.stateDir
-	r.s.Close()
-
-	// Disposal kept the changed lane unlocked.
-	if r.porcelainEntryFor(t, lane).Locked {
-		t.Fatal("disposal must leave a kept changed lane unlocked")
-	}
-
-	restoredParentEnv := execenv.NewLocalExecutionEnvironment(r.mainRoot)
-	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), restoredParentEnv, parentMeta, RestoreSessionConfig{
-		StateDir: stateDir,
-	})
-	if err != nil {
-		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
-	}
-	t.Cleanup(func() { restored.Close() })
-
-	sendRes := restored.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:         res.DelegateID,
-		Message:        "revive",
-		OnIdle:         "start",
-		Background:     false,
-		BackgroundSet:  true,
-		BlockTimeoutMS: 5000,
-	})
-	if sendRes.Err != nil {
-		t.Fatalf("sendDelegateMessage on a kept unlocked lane: %v", sendRes.Err)
-	}
-	if restored.subagents.get(childID) == nil {
-		t.Fatal("no reconstructed child runtime after revival")
-	}
-
-	entry := r.porcelainEntryFor(t, lane)
-	if !entry.Locked {
-		t.Fatal("revival must re-lock the lane")
-	}
-	wantReason := worktree.FormatDelegateMarker(res.DelegateID, restored.id)
-	if entry.LockReason != wantReason {
-		t.Errorf("lock reason after revival = %q, want %q", entry.LockReason, wantReason)
-	}
-}
-
 func TestDelegateIsolation_RevivalOnForeignLockedLaneRefuses(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
@@ -716,6 +603,7 @@ func TestDelegateIsolation_RevivalOnForeignLockedLaneRefuses(t *testing.T) {
 	restoredParentEnv := execenv.NewLocalExecutionEnvironment(r.mainRoot)
 	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), restoredParentEnv, parentMeta, RestoreSessionConfig{
 		StateDir: stateDir,
+		testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	})
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
@@ -747,31 +635,7 @@ func TestDelegateIsolation_RevivalOnForeignLockedLaneRefuses(t *testing.T) {
 	}
 }
 
-// --- §4 step 2 / §9 Guards: parent switch into a live isolated lane is refused ---
-
-func TestDelegateIsolation_ParentSwitchIntoLiveLaneRefused(t *testing.T) {
-	c := delegateTestClient(func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
-	r := newWtDlgRepo(t, c)
-
-	res := r.s.createDelegate(context.Background(), delegateArgs{
-		Task:           "do isolated work",
-		Isolation:      "worktree",
-		Background:     false,
-		BlockTimeoutMS: 5000,
-	})
-	if res.Err != nil {
-		t.Fatalf("createDelegate: %v", res.Err)
-	}
-
-	_, err := r.s.worktreeSwitchByName(context.Background(), res.DelegateID)
-	if err == nil {
-		t.Fatal("expected switch into a live isolated delegate's lane to be refused")
-	}
-	wantReason := worktree.FormatDelegateMarker(res.DelegateID, r.s.id)
-	if !strings.Contains(err.Error(), wantReason) {
-		t.Errorf("error = %q, want it to name the delegate lock reason %q", err.Error(), wantReason)
-	}
-}
+// --- §9 Guards: direct not-resumable error messages ---
 
 // TestNotResumableSendError_WorkingDirMissingMessage covers
 // notResumableSendError's notResumableWorkingDirMissing arm directly (the

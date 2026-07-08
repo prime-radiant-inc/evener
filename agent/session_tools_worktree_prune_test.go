@@ -106,8 +106,6 @@ func findPruneEntry(t *testing.T, entries []map[string]any, name string) map[str
 // the new HEAD SHA.
 func commitInWorktree(t *testing.T, dir, name, content, msg string) string {
 	t.Helper()
-	wtGit(t, dir, "config", "user.email", "test@example.com")
-	wtGit(t, dir, "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", name, err)
 	}
@@ -127,6 +125,46 @@ func ageSidecar(t *testing.T, metaDir, name string, age time.Duration) {
 	}
 }
 
+func (r *wtRepo) seedRemovedSidecar(t *testing.T, name, tipAtRemoval string) string {
+	t.Helper()
+	canonicalMain := r.canonicalMain(t)
+	metaDir := r.metaDir(canonicalMain)
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatalf("mkdir metaDir: %v", err)
+	}
+	sc := worktree.Sidecar{
+		Name:            name,
+		Branch:          name,
+		BaseSHA:         r.head,
+		MergeTarget:     "main",
+		OriginalRoot:    canonicalMain,
+		CreatorSession:  r.s.id,
+		WorktreeRemoved: true,
+		TipSHAAtRemoval: tipAtRemoval,
+		CreatedAt:       time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := worktree.WriteSidecarExcl(metaDir, name, sc); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	return metaDir
+}
+
+func (r *wtRepo) commitInMainCheckout(t *testing.T, branch, name, content, msg string) string {
+	t.Helper()
+	if branchExistsInRepo(t, r.mainRoot, branch) {
+		wtGit(t, r.mainRoot, "checkout", branch)
+	} else {
+		wtGit(t, r.mainRoot, "checkout", "-b", branch, r.head)
+	}
+	defer wtGit(t, r.mainRoot, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(r.mainRoot, name), []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+	wtGit(t, r.mainRoot, "add", name)
+	wtGit(t, r.mainRoot, "commit", "-m", msg)
+	return strings.TrimSpace(wtGit(t, r.mainRoot, "rev-parse", "HEAD"))
+}
+
 // ============================================================
 // list
 // ============================================================
@@ -134,6 +172,7 @@ func ageSidecar(t *testing.T, metaDir, name string, age time.Duration) {
 // TestWorktreeList_NotInGitRepo covers worktreeList's own "not in a git
 // repository" guard.
 func TestWorktreeList_NotInGitRepo(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir() // not a git repo at all
 	s := newSession(t, withDir(dir))
 	_, err := s.worktreeList(context.Background())
@@ -145,8 +184,9 @@ func TestWorktreeList_NotInGitRepo(t *testing.T) {
 // TestWorktreeList_ListWorktreesErrorsWhenGitUnavailable covers step 1's
 // own `git worktree list --porcelain` error branch.
 func TestWorktreeList_ListWorktreesErrorsWhenGitUnavailable(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
-	restore := hideGitEntirely(t)
+	restore := hideGitInRepo(t, r.mainRoot)
 	defer restore()
 
 	_, err := r.listOp(t)
@@ -158,6 +198,7 @@ func TestWorktreeList_ListWorktreesErrorsWhenGitUnavailable(t *testing.T) {
 // TestWorktreePrune_NotInGitRepo covers worktreePrune's own "not in a git
 // repository" guard.
 func TestWorktreePrune_NotInGitRepo(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir() // not a git repo at all
 	s := newSession(t, withDir(dir))
 	_, err := s.worktreePrune(context.Background())
@@ -172,14 +213,10 @@ func TestWorktreePrune_NotInGitRepo(t *testing.T) {
 // --porcelain` call fails and worktreePrune must surface that error rather
 // than continuing to sweep 2/3.
 func TestWorktreePrune_Sweep1ErrorPropagatesWhenGitUnavailable(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
-	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
-	restore := hideGitEntirely(t)
+	r.addManagedWorktreeFixture(t, "lane")
+	restore := hideGitInRepo(t, r.mainRoot)
 	defer restore()
 
 	_, err := r.pruneOp(t)
@@ -189,6 +226,7 @@ func TestWorktreePrune_Sweep1ErrorPropagatesWhenGitUnavailable(t *testing.T) {
 }
 
 func TestWorktreeList_DoesNotPrune(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 
 	// A non-managed sibling worktree, created directly with git (never
@@ -231,91 +269,8 @@ func TestWorktreeList_DoesNotPrune(t *testing.T) {
 }
 
 func TestWorktreeList_StalenessFieldsThreeWorktreeFixture(t *testing.T) {
-	r := newWorktreeRepo(t)
-
-	// 1: unchanged — created, never touched.
-	if _, err := r.create(t, map[string]any{"name": "unchanged"}); err != nil {
-		t.Fatalf("create unchanged: %v", err)
-	}
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
-
-	// 2: dirty + ahead — one commit, plus an uncommitted file.
-	resDirty, err := r.create(t, map[string]any{"name": "dirty-ahead"})
-	if err != nil {
-		t.Fatalf("create dirty-ahead: %v", err)
-	}
-	pathDirty := resDirty["path"].(string)
-	commitInWorktree(t, pathDirty, "a.txt", "a\n", "advance dirty-ahead")
-	if err := os.WriteFile(filepath.Join(pathDirty, "b.txt"), []byte("uncommitted\n"), 0o644); err != nil {
-		t.Fatalf("write b.txt: %v", err)
-	}
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
-
-	// 3: merged — one commit, ff-merged to main.
-	resMerged, err := r.create(t, map[string]any{"name": "merged-lane"})
-	if err != nil {
-		t.Fatalf("create merged-lane: %v", err)
-	}
-	pathMerged := resMerged["path"].(string)
-	commitInWorktree(t, pathMerged, "m.txt", "m\n", "advance merged-lane")
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
-	wtGit(t, r.mainRoot, "merge", "--ff-only", "merged-lane")
-
-	out, err := r.listOp(t)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	entries := listEntries(t, out)
-	if len(entries) != 3 {
-		t.Fatalf("got %d entries, want 3: %+v", len(entries), entries)
-	}
-
-	eUnchanged := findEntry(t, entries, "unchanged")
-	if eUnchanged["dirty"] != false {
-		t.Errorf("unchanged.dirty = %v, want false", eUnchanged["dirty"])
-	}
-	if eUnchanged["ahead_commits"] != 0 {
-		t.Errorf("unchanged.ahead_commits = %v, want 0", eUnchanged["ahead_commits"])
-	}
-	if eUnchanged["creator_session"] != r.s.id {
-		t.Errorf("unchanged.creator_session = %v, want %s", eUnchanged["creator_session"], r.s.id)
-	}
-	if eUnchanged["locked"] != false {
-		t.Errorf("unchanged.locked = %v, want false (exited)", eUnchanged["locked"])
-	}
-
-	eDirty := findEntry(t, entries, "dirty-ahead")
-	if eDirty["dirty"] != true {
-		t.Errorf("dirty-ahead.dirty = %v, want true", eDirty["dirty"])
-	}
-	if eDirty["ahead_commits"] != 1 {
-		t.Errorf("dirty-ahead.ahead_commits = %v, want 1", eDirty["ahead_commits"])
-	}
-	if eDirty["merged"] != false {
-		t.Errorf("dirty-ahead.merged = %v, want false (main never advanced)", eDirty["merged"])
-	}
-
-	eMerged := findEntry(t, entries, "merged-lane")
-	if eMerged["dirty"] != false {
-		t.Errorf("merged-lane.dirty = %v, want false", eMerged["dirty"])
-	}
-	if eMerged["ahead_commits"] != 1 {
-		t.Errorf("merged-lane.ahead_commits = %v, want 1", eMerged["ahead_commits"])
-	}
-	if eMerged["merged"] != true {
-		t.Errorf("merged-lane.merged = %v, want true", eMerged["merged"])
-	}
-	if eMerged["merged_arm"] != "ancestry" {
-		t.Errorf("merged-lane.merged_arm = %v, want ancestry", eMerged["merged_arm"])
-	}
-
-	for _, e := range entries {
+	assertFreshMetadata := func(t *testing.T, e map[string]any) {
+		t.Helper()
 		age, ok := e["age_seconds"].(float64)
 		if !ok || age < 0 || age > 60 {
 			t.Errorf("%v.age_seconds = %v, want a small non-negative number", e["name"], e["age_seconds"])
@@ -324,16 +279,94 @@ func TestWorktreeList_StalenessFieldsThreeWorktreeFixture(t *testing.T) {
 			t.Errorf("%v.has_metadata = %v, want true", e["name"], e["has_metadata"])
 		}
 	}
+
+	t.Run("unchanged", func(t *testing.T) {
+		t.Parallel()
+		r := newWorktreeRepo(t)
+		r.addManagedWorktreeFixture(t, "unchanged")
+
+		out, err := r.listOp(t)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		entries := listEntries(t, out)
+		if len(entries) != 1 {
+			t.Fatalf("got %d entries, want 1: %+v", len(entries), entries)
+		}
+		e := findEntry(t, entries, "unchanged")
+		if e["dirty"] != false {
+			t.Errorf("unchanged.dirty = %v, want false", e["dirty"])
+		}
+		if e["ahead_commits"] != 0 {
+			t.Errorf("unchanged.ahead_commits = %v, want 0", e["ahead_commits"])
+		}
+		if e["creator_session"] != r.s.id {
+			t.Errorf("unchanged.creator_session = %v, want %s", e["creator_session"], r.s.id)
+		}
+		if e["locked"] != false {
+			t.Errorf("unchanged.locked = %v, want false (exited)", e["locked"])
+		}
+		assertFreshMetadata(t, e)
+	})
+
+	t.Run("dirty ahead", func(t *testing.T) {
+		t.Parallel()
+		r := newWorktreeRepo(t)
+		path := r.addManagedWorktreeFixture(t, "dirty-ahead")
+		commitInWorktree(t, path, "a.txt", "a\n", "advance dirty-ahead")
+		if err := os.WriteFile(filepath.Join(path, "b.txt"), []byte("uncommitted\n"), 0o644); err != nil {
+			t.Fatalf("write b.txt: %v", err)
+		}
+
+		out, err := r.listOp(t)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		e := findEntry(t, listEntries(t, out), "dirty-ahead")
+		if e["dirty"] != true {
+			t.Errorf("dirty-ahead.dirty = %v, want true", e["dirty"])
+		}
+		if e["ahead_commits"] != 1 {
+			t.Errorf("dirty-ahead.ahead_commits = %v, want 1", e["ahead_commits"])
+		}
+		if e["merged"] != false {
+			t.Errorf("dirty-ahead.merged = %v, want false (main never advanced)", e["merged"])
+		}
+		assertFreshMetadata(t, e)
+	})
+
+	t.Run("merged", func(t *testing.T) {
+		t.Parallel()
+		r := newWorktreeRepo(t)
+		path := r.addManagedWorktreeFixture(t, "merged-lane")
+		commitInWorktree(t, path, "m.txt", "m\n", "advance merged-lane")
+		wtGit(t, r.mainRoot, "merge", "--ff-only", "merged-lane")
+
+		out, err := r.listOp(t)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		e := findEntry(t, listEntries(t, out), "merged-lane")
+		if e["dirty"] != false {
+			t.Errorf("merged-lane.dirty = %v, want false", e["dirty"])
+		}
+		if e["ahead_commits"] != 1 {
+			t.Errorf("merged-lane.ahead_commits = %v, want 1", e["ahead_commits"])
+		}
+		if e["merged"] != true {
+			t.Errorf("merged-lane.merged = %v, want true", e["merged"])
+		}
+		if e["merged_arm"] != "ancestry" {
+			t.Errorf("merged-lane.merged_arm = %v, want ancestry", e["merged_arm"])
+		}
+		assertFreshMetadata(t, e)
+	})
 }
 
 func TestWorktreeList_PrefixCollisionFiltering(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
-	if _, err := r.create(t, map[string]any{"name": "real-lane"}); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
+	r.addManagedWorktreeFixture(t, "real-lane")
 
 	canonicalMain := r.canonicalMain(t)
 	realProjectDir := filepath.Join(r.stateDir, "worktrees", worktree.ProjectID(canonicalMain))
@@ -361,6 +394,7 @@ func TestWorktreeList_PrefixCollisionFiltering(t *testing.T) {
 }
 
 func TestWorktreeList_SymlinkedWorktreeRootCanonicalization(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	realStateDir := r.stateDir
 	linkParent := t.TempDir()
@@ -370,13 +404,7 @@ func TestWorktreeList_SymlinkedWorktreeRootCanonicalization(t *testing.T) {
 	}
 	r.s.stateDir = symlinkedStateDir
 
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
+	path := r.addManagedWorktreeFixture(t, "lane")
 
 	out, err := r.listOp(t)
 	if err != nil {
@@ -387,7 +415,7 @@ func TestWorktreeList_SymlinkedWorktreeRootCanonicalization(t *testing.T) {
 		t.Fatalf("got %d entries, want 1: %+v", len(entries), entries)
 	}
 	e := findEntry(t, entries, "lane")
-	canonicalPath, evErr := filepath.EvalSymlinks(res["path"].(string))
+	canonicalPath, evErr := filepath.EvalSymlinks(path)
 	if evErr != nil {
 		t.Fatalf("EvalSymlinks result path: %v", evErr)
 	}
@@ -411,17 +439,11 @@ func TestWorktreeList_SymlinkedWorktreeRootCanonicalization(t *testing.T) {
 // fails — reported as a skip, never as a hard error (spec §5 sweep 1: a
 // per-entry git-query failure is a soft skip).
 func TestWorktreePrune_Sweep1_RevParseHeadFails(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
+	path := r.addManagedWorktreeFixture(t, "lane")
 
-	gitFailOnArgsShim(t, "-C", path, "rev-parse", "HEAD")
+	gitFailOnArgsRepoShim(t, r.mainRoot, "-C", path, "rev-parse", "HEAD")
 
 	out, err := r.pruneOp(t)
 	if err != nil {
@@ -445,18 +467,12 @@ func TestWorktreePrune_Sweep1_RevParseHeadFails(t *testing.T) {
 // unchanged), so disposableReason must call worktree.Merged, and the
 // for-each-ref call that makes fails.
 func TestWorktreePrune_Sweep1_MergeCheckFails(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
+	path := r.addManagedWorktreeFixture(t, "lane")
 	commitInWorktree(t, path, "a.txt", "a\n", "advance lane")
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
 
-	gitFailOnArgsShim(t, "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes/*/main")
+	gitFailOnArgsRepoShim(t, r.mainRoot, "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes/*/main")
 
 	out, err := r.pruneOp(t)
 	if err != nil {
@@ -477,15 +493,11 @@ func TestWorktreePrune_Sweep1_MergeCheckFails(t *testing.T) {
 // removes cleanly (a hard error would have aborted before this point), but
 // deleting its now-orphaned branch fails.
 func TestWorktreePrune_Sweep1_BranchDeleteFailsDuringCollect(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
-	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
+	r.addManagedWorktreeFixture(t, "lane")
 
-	gitFailOnArgsShim(t, "branch", "-D", "lane")
+	gitFailOnArgsRepoShim(t, r.mainRoot, "branch", "-D", "lane")
 
 	_, err := r.pruneOp(t)
 	if err == nil || !strings.Contains(err.Error(), "deleting branch") {
@@ -498,6 +510,7 @@ func TestWorktreePrune_Sweep1_BranchDeleteFailsDuringCollect(t *testing.T) {
 // worktree EVER created has no .meta directory at all, and prune must not
 // treat that as an error.
 func TestWorktreePruneSweep2_NoMetaDirReturnsCleanly(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	out, err := r.pruneOp(t)
 	if err != nil {
@@ -513,22 +526,16 @@ func TestWorktreePruneSweep2_NoMetaDirReturnsCleanly(t *testing.T) {
 // branch genuinely exists (branchExists passed) per the fixture, but the
 // verify call itself fails.
 func TestWorktreePrune_Sweep2_RevParseVerifyFails(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
+	path := r.addManagedWorktreeFixture(t, "lane")
 	// Remove the worktree WITHOUT going through manage_worktree, leaving a
 	// sidecar with no matching registered worktree (sweep 2's own target
 	// shape) while the branch itself still exists.
 	wtGit(t, r.mainRoot, "worktree", "remove", "--", path)
 	ageSidecar(t, r.metaDir(r.canonicalMain(t)), "lane", worktree.ReconcileGrace+time.Minute)
 
-	gitFailOnArgsShim(t, "rev-parse", "--verify", "refs/heads/lane")
+	gitFailOnArgsRepoShim(t, r.mainRoot, "rev-parse", "--verify", "refs/heads/lane")
 
 	out, err := r.pruneOp(t)
 	if err != nil {
@@ -549,293 +556,235 @@ func TestWorktreePrune_Sweep2_RevParseVerifyFails(t *testing.T) {
 // worktree, no branch" arm: the metadata directory is read-only, so
 // removing the sidecar file fails with a genuine permission error.
 func TestWorktreePrune_Sweep2_DeleteStaleSidecarFailsOnPermissionDenied(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
+	path := r.addManagedWorktreeFixture(t, "lane")
 	wtGit(t, r.mainRoot, "worktree", "remove", "--", path)
 	wtGit(t, r.mainRoot, "branch", "-D", "lane")
 	metaDir := r.metaDir(r.canonicalMain(t))
 	ageSidecar(t, metaDir, "lane", worktree.ReconcileGrace+time.Minute)
 	chmodReadOnly(t, metaDir)
 
-	_, err = r.pruneOp(t)
+	_, err := r.pruneOp(t)
 	if err == nil || !strings.Contains(err.Error(), "deleting stale sidecar") {
 		t.Fatalf("prune with a read-only metaDir: err = %v, want the deleting-stale-sidecar error", err)
 	}
 }
 
-func TestWorktreePrune_Sweep1_CollectsUnchanged(t *testing.T) {
-	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "unchanged"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
+func TestWorktreePrune_Sweep1_RemovesDisposableMatrix(t *testing.T) {
+	cases := []struct {
+		name      string
+		lane      string
+		reason    string
+		configure func(t *testing.T, r *wtRepo, path string)
+	}{
+		{
+			name:   "unchanged",
+			lane:   "unchanged",
+			reason: "unchanged",
+		},
+		{
+			name:   "merged ancestry",
+			lane:   "anc-lane",
+			reason: "merged (ancestry)",
+			configure: func(t *testing.T, r *wtRepo, path string) {
+				commitInWorktree(t, path, "a.txt", "a\n", "advance anc-lane")
+				wtGit(t, r.mainRoot, "merge", "--ff-only", "anc-lane")
+			},
+		},
+		{
+			name:   "merged cherry",
+			lane:   "squash-lane",
+			reason: "merged (cherry)",
+			configure: func(t *testing.T, r *wtRepo, path string) {
+				commitInWorktree(t, path, "s.txt", "s\n", "advance squash-lane")
+				// Squash-merge: content lands on main as a NEW commit, so ancestry
+				// cannot recognize it; only patch-equivalence (`git cherry`) can.
+				wtGit(t, r.mainRoot, "merge", "--squash", "squash-lane")
+				wtGit(t, r.mainRoot, "commit", "-m", "squash squash-lane")
+			},
+		},
 	}
 
-	out, err := r.pruneOp(t)
-	if err != nil {
-		t.Fatalf("prune: %v", err)
-	}
-	removed := pruneEntries(t, out, "removed")
-	e := findPruneEntry(t, removed, "unchanged")
-	if e == nil {
-		t.Fatalf("unchanged not in removed: %+v", removed)
-	}
-	if e["reason"] != "unchanged" {
-		t.Errorf("reason = %v, want unchanged", e["reason"])
-	}
-	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
-		t.Errorf("worktree dir survived prune: err=%v", statErr)
-	}
-	if branchExistsInRepo(t, r.mainRoot, "unchanged") {
-		t.Error("branch survived prune of an unchanged lane")
-	}
-	canonicalMain := r.canonicalMain(t)
-	if _, scErr := worktree.ReadSidecar(r.metaDir(canonicalMain), "unchanged"); !os.IsNotExist(scErr) {
-		t.Errorf("sidecar survived: err=%v", scErr)
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newWorktreeRepo(t)
+			canonicalMain := r.canonicalMain(t)
+			metaDir := r.metaDir(canonicalMain)
+
+			path := r.addManagedWorktreeFixture(t, tc.lane)
+			if tc.configure != nil {
+				tc.configure(t, r, path)
+			}
+
+			out, err := r.pruneOp(t)
+			if err != nil {
+				t.Fatalf("prune: %v", err)
+			}
+			removed := pruneEntries(t, out, "removed")
+			e := findPruneEntry(t, removed, tc.lane)
+			if e == nil {
+				t.Fatalf("%s not in removed: %+v", tc.lane, removed)
+			}
+			if e["reason"] != tc.reason {
+				t.Errorf("%s reason = %v, want %s", tc.lane, e["reason"], tc.reason)
+			}
+			if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+				t.Errorf("%s worktree dir survived prune: err=%v", tc.lane, statErr)
+			}
+			if branchExistsInRepo(t, r.mainRoot, tc.lane) {
+				t.Errorf("%s branch survived prune", tc.lane)
+			}
+			if _, scErr := worktree.ReadSidecar(metaDir, tc.lane); !os.IsNotExist(scErr) {
+				t.Errorf("%s sidecar survived: err=%v", tc.lane, scErr)
+			}
+		})
 	}
 }
 
-func TestWorktreePrune_Sweep1_CollectsMergedAncestry(t *testing.T) {
-	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "anc-lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	commitInWorktree(t, path, "a.txt", "a\n", "advance anc-lane")
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
-	wtGit(t, r.mainRoot, "merge", "--ff-only", "anc-lane")
-
-	out, err := r.pruneOp(t)
-	if err != nil {
-		t.Fatalf("prune: %v", err)
-	}
-	e := findPruneEntry(t, pruneEntries(t, out, "removed"), "anc-lane")
-	if e == nil {
-		t.Fatal("anc-lane not removed")
-	}
-	if e["reason"] != "merged (ancestry)" {
-		t.Errorf("reason = %v, want merged (ancestry)", e["reason"])
-	}
-	if branchExistsInRepo(t, r.mainRoot, "anc-lane") {
-		t.Error("branch survived")
-	}
-}
-
-func TestWorktreePrune_Sweep1_CollectsMergedCherry(t *testing.T) {
-	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "squash-lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	commitInWorktree(t, path, "s.txt", "s\n", "advance squash-lane")
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
-	// Squash-merge: content lands on main as a NEW commit, so ancestry
-	// cannot recognize it; only patch-equivalence (`git cherry`) can.
-	wtGit(t, r.mainRoot, "merge", "--squash", "squash-lane")
-	wtGit(t, r.mainRoot, "commit", "-m", "squash squash-lane")
-
-	out, err := r.pruneOp(t)
-	if err != nil {
-		t.Fatalf("prune: %v", err)
-	}
-	e := findPruneEntry(t, pruneEntries(t, out, "removed"), "squash-lane")
-	if e == nil {
-		t.Fatal("squash-lane not removed")
-	}
-	if e["reason"] != "merged (cherry)" {
-		t.Errorf("reason = %v, want merged (cherry)", e["reason"])
-	}
-}
-
-func TestWorktreePrune_Sweep1_SkipsLocked(t *testing.T) {
-	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	// Session stays INSIDE lane: it is locked with the session's own marker.
-
-	out, err := r.pruneOp(t)
-	if err != nil {
-		t.Fatalf("prune: %v", err)
-	}
-	e := findPruneEntry(t, pruneEntries(t, out, "skipped"), "lane")
-	if e == nil {
-		t.Fatal("lane not reported skipped")
-	}
-	reason, _ := e["reason"].(string)
-	if !strings.Contains(reason, "locked") {
-		t.Errorf("reason = %q, want it to mention locked", reason)
-	}
-	if _, statErr := os.Stat(path); statErr != nil {
-		t.Errorf("locked worktree removed by prune: %v", statErr)
-	}
-}
-
-func TestWorktreePrune_Sweep1_SkipsDirty(t *testing.T) {
-	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "dirty-lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	if err := os.WriteFile(filepath.Join(path, "d.txt"), []byte("uncommitted\n"), 0o644); err != nil {
-		t.Fatalf("write d.txt: %v", err)
-	}
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
+func TestWorktreePrune_Sweep1_SkipsProtectedMatrix(t *testing.T) {
+	cases := []struct {
+		name         string
+		lane         string
+		reason       string
+		contains     bool
+		configure    func(t *testing.T, r *wtRepo, path string)
+		clearLive    bool
+		manualCreate func(t *testing.T, r *wtRepo) string
+		branchKept   bool
+		leaveLocked  bool
+	}{
+		{
+			name:     "dirty",
+			lane:     "dirty-lane",
+			reason:   "dirty",
+			contains: true,
+			configure: func(t *testing.T, r *wtRepo, path string) {
+				if err := os.WriteFile(filepath.Join(path, "d.txt"), []byte("uncommitted\n"), 0o644); err != nil {
+					t.Fatalf("write dirty-lane d.txt: %v", err)
+				}
+			},
+		},
+		{
+			name:      "live work",
+			lane:      "live-lane",
+			reason:    "job_live999",
+			contains:  true,
+			clearLive: true,
+			configure: func(t *testing.T, r *wtRepo, path string) {
+				r.s.worktreeLiveWorkStub = func(p string) []string {
+					if p == filepath.Clean(path) {
+						return []string{"job_live999 (shell, running)"}
+					}
+					return nil
+				}
+			},
+		},
+		{
+			name:   "sidecar-less",
+			lane:   "unmanaged-lane",
+			reason: "sidecar-less",
+			manualCreate: func(t *testing.T, r *wtRepo) string {
+				canonicalMain := r.canonicalMain(t)
+				path := r.managedPath(canonicalMain, "unmanaged-lane")
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatalf("mkdir unmanaged parent: %v", err)
+				}
+				// A worktree placed directly under the managed dir by hand (no sidecar) —
+				// provenance unknown, not serf's to judge.
+				wtGit(t, r.mainRoot, "worktree", "add", "-b", "unmanaged-lane", path, r.head)
+				return path
+			},
+		},
+		{
+			name:       "unmerged",
+			lane:       "unmerged-lane",
+			reason:     "unmerged",
+			branchKept: true,
+			configure: func(t *testing.T, r *wtRepo, path string) {
+				commitInWorktree(t, path, "u.txt", "u\n", "advance unmerged-lane")
+			},
+		},
+		{
+			name:        "locked",
+			lane:        "locked-lane",
+			reason:      "locked",
+			contains:    true,
+			leaveLocked: true,
+		},
 	}
 
-	out, err := r.pruneOp(t)
-	if err != nil {
-		t.Fatalf("prune: %v", err)
-	}
-	e := findPruneEntry(t, pruneEntries(t, out, "skipped"), "dirty-lane")
-	if e == nil {
-		t.Fatal("dirty-lane not reported skipped")
-	}
-	reason, _ := e["reason"].(string)
-	if !strings.Contains(reason, "dirty") {
-		t.Errorf("reason = %q, want it to mention dirty", reason)
-	}
-	if _, statErr := os.Stat(path); statErr != nil {
-		t.Errorf("dirty worktree removed by prune: %v", statErr)
-	}
-}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newWorktreeRepo(t)
+			var path string
+			if tc.manualCreate != nil {
+				path = tc.manualCreate(t, r)
+			} else if tc.leaveLocked {
+				res, err := r.create(t, map[string]any{"name": tc.lane})
+				if err != nil {
+					t.Fatalf("create %s: %v", tc.lane, err)
+				}
+				path = res["path"].(string)
+			} else {
+				path = r.addManagedWorktreeFixture(t, tc.lane)
+			}
+			if tc.configure != nil {
+				tc.configure(t, r, path)
+			}
 
-func TestWorktreePrune_Sweep1_SkipsLiveViaStub(t *testing.T) {
-	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "live-lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
+			out, err := r.pruneOp(t)
+			if err != nil {
+				t.Fatalf("prune: %v", err)
+			}
+			skipped := pruneEntries(t, out, "skipped")
+			e := findPruneEntry(t, skipped, tc.lane)
+			if e == nil {
+				t.Fatalf("%s not in skipped: %+v", tc.lane, skipped)
+			}
+			reason, _ := e["reason"].(string)
+			if tc.contains {
+				if !strings.Contains(reason, tc.reason) {
+					t.Errorf("%s reason = %q, want it to contain %q", tc.lane, reason, tc.reason)
+				}
+			} else if e["reason"] != tc.reason {
+				t.Errorf("%s reason = %v, want %s", tc.lane, e["reason"], tc.reason)
+			}
+			if _, statErr := os.Stat(path); statErr != nil {
+				t.Errorf("%s worktree removed by prune: %v", tc.lane, statErr)
+			}
+			if tc.branchKept && !branchExistsInRepo(t, r.mainRoot, tc.lane) {
+				t.Error("unmerged-lane branch removed despite being unmerged")
+			}
 
-	r.s.worktreeLiveWorkStub = func(p string) []string {
-		if p == filepath.Clean(path) {
-			return []string{"job_live999 (shell, running)"}
-		}
-		return nil
-	}
-
-	out, err := r.pruneOp(t)
-	if err != nil {
-		t.Fatalf("prune: %v", err)
-	}
-	e := findPruneEntry(t, pruneEntries(t, out, "skipped"), "live-lane")
-	if e == nil {
-		t.Fatal("live-lane not reported skipped")
-	}
-	reason, _ := e["reason"].(string)
-	if !strings.Contains(reason, "job_live999") {
-		t.Errorf("reason = %q, want it to surface the live-work evidence", reason)
-	}
-	if _, statErr := os.Stat(path); statErr != nil {
-		t.Errorf("live-work worktree removed by prune: %v", statErr)
-	}
-
-	r.s.worktreeLiveWorkStub = nil
-	out2, err := r.pruneOp(t)
-	if err != nil {
-		t.Fatalf("prune after clearing stub: %v", err)
-	}
-	if findPruneEntry(t, pruneEntries(t, out2, "removed"), "live-lane") == nil {
-		t.Fatal("live-lane not collected once live-work stub cleared")
-	}
-}
-
-func TestWorktreePrune_Sweep1_SkipsSidecarLess(t *testing.T) {
-	r := newWorktreeRepo(t)
-	canonicalMain := r.canonicalMain(t)
-	path := r.managedPath(canonicalMain, "unmanaged-lane")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir parent: %v", err)
-	}
-	// A worktree placed directly under the managed dir by hand (no sidecar) —
-	// provenance unknown, not serf's to judge.
-	wtGit(t, r.mainRoot, "worktree", "add", "-b", "unmanaged-lane", path, r.head)
-
-	out, err := r.pruneOp(t)
-	if err != nil {
-		t.Fatalf("prune: %v", err)
-	}
-	e := findPruneEntry(t, pruneEntries(t, out, "skipped"), "unmanaged-lane")
-	if e == nil {
-		t.Fatal("unmanaged-lane not reported skipped")
-	}
-	if e["reason"] != "sidecar-less" {
-		t.Errorf("reason = %v, want sidecar-less", e["reason"])
-	}
-	if _, statErr := os.Stat(path); statErr != nil {
-		t.Errorf("sidecar-less worktree removed by prune: %v", statErr)
-	}
-}
-
-func TestWorktreePrune_Sweep1_SkipsUnmerged(t *testing.T) {
-	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "unmerged-lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	commitInWorktree(t, path, "u.txt", "u\n", "advance unmerged-lane")
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
-	// main is NOT advanced: unmerged-lane is never merged.
-
-	out, err := r.pruneOp(t)
-	if err != nil {
-		t.Fatalf("prune: %v", err)
-	}
-	e := findPruneEntry(t, pruneEntries(t, out, "skipped"), "unmerged-lane")
-	if e == nil {
-		t.Fatal("unmerged-lane not reported skipped")
-	}
-	if e["reason"] != "unmerged" {
-		t.Errorf("reason = %v, want unmerged", e["reason"])
-	}
-	if _, statErr := os.Stat(path); statErr != nil {
-		t.Errorf("unmerged worktree removed by prune: %v", statErr)
-	}
-	if !branchExistsInRepo(t, r.mainRoot, "unmerged-lane") {
-		t.Error("branch removed despite being unmerged")
+			if tc.clearLive {
+				r.s.worktreeLiveWorkStub = nil
+				out2, err := r.pruneOp(t)
+				if err != nil {
+					t.Fatalf("prune after clearing live stub: %v", err)
+				}
+				if findPruneEntry(t, pruneEntries(t, out2, "removed"), tc.lane) == nil {
+					t.Fatal("live-lane not collected once live-work stub cleared")
+				}
+				if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+					t.Errorf("live-lane worktree survived second prune: err=%v", statErr)
+				}
+			}
+		})
 	}
 }
 
 func TestWorktreePrune_Sweep1_SkipsMergeTargetUnknown(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "orphan-target-lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
+	path := r.addManagedWorktreeFixture(t, "orphan-target-lane")
 	// Advance the tip so it differs from base_sha: disposableReason must reach
 	// the merge check rather than short-circuiting on the unchanged arm.
 	commitInWorktree(t, path, "o.txt", "o\n", "advance orphan-target-lane")
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
 
 	// The sidecar recorded merge_target="main" (the branch checked out at the
 	// active root when the lane was created). Rename it away so that, at
@@ -867,6 +816,7 @@ func TestWorktreePrune_Sweep1_SkipsMergeTargetUnknown(t *testing.T) {
 // ============================================================
 
 func TestWorktreePrune_Sweep2_StaleSidecarDeletedPostGrace(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	canonicalMain := r.canonicalMain(t)
 	metaDir := r.metaDir(canonicalMain)
@@ -901,6 +851,7 @@ func TestWorktreePrune_Sweep2_StaleSidecarDeletedPostGrace(t *testing.T) {
 }
 
 func TestWorktreePrune_Sweep2_FreshSidecarSurvivesGrace(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	canonicalMain := r.canonicalMain(t)
 	metaDir := r.metaDir(canonicalMain)
@@ -935,30 +886,18 @@ func TestWorktreePrune_Sweep2_FreshSidecarSurvivesGrace(t *testing.T) {
 }
 
 func TestWorktreePrune_Sweep2_AdoptedBranchSidecarDroppedBranchKept(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "adopt-lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	laneTip := commitInWorktree(t, path, "a.txt", "a\n", "advance adopt-lane")
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
-
-	if _, err := r.removeOp(t, map[string]any{"name": "adopt-lane"}); err != nil {
-		t.Fatalf("remove (branch kept): %v", err)
-	}
+	laneTip := r.commitInMainCheckout(t, "adopt-lane", "a.txt", "a\n", "advance adopt-lane")
+	metaDir := r.seedRemovedSidecar(t, "adopt-lane", laneTip)
 
 	// The user builds on the kept branch after removal: a new commit whose
 	// tip is neither base_sha nor the recorded tip_sha_at_removal.
-	adoptedTip := commitOnBranch(t, r.mainRoot, "adopt-lane", "b.txt", "b\n", "user adopted this branch")
+	adoptedTip := r.commitInMainCheckout(t, "adopt-lane", "b.txt", "b\n", "user adopted this branch")
 	if adoptedTip == laneTip {
 		t.Fatal("adoptedTip did not advance")
 	}
 
-	canonicalMain := r.canonicalMain(t)
-	metaDir := r.metaDir(canonicalMain)
 	ageSidecar(t, metaDir, "adopt-lane", worktree.ReconcileGrace+time.Minute)
 
 	out, err := r.pruneOp(t)
@@ -991,26 +930,15 @@ func TestWorktreePrune_Sweep2_AdoptedBranchSidecarDroppedBranchKept(t *testing.T
 }
 
 func TestWorktreePrune_Sweep2_ResetToBaseCollected(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "reset-lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	commitInWorktree(t, path, "a.txt", "a\n", "advance reset-lane")
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
-	if _, err := r.removeOp(t, map[string]any{"name": "reset-lane"}); err != nil {
-		t.Fatalf("remove (branch kept): %v", err)
-	}
+	laneTip := r.commitInMainCheckout(t, "reset-lane", "a.txt", "a\n", "advance reset-lane")
+	metaDir := r.seedRemovedSidecar(t, "reset-lane", laneTip)
 
 	// Branch reset back to base_sha: NOT adopted (spec §5's two-SHA rule) —
 	// collectible via the unchanged arm exactly as if nothing was committed.
 	wtGit(t, r.mainRoot, "update-ref", "refs/heads/reset-lane", r.head)
 
-	canonicalMain := r.canonicalMain(t)
-	metaDir := r.metaDir(canonicalMain)
 	ageSidecar(t, metaDir, "reset-lane", worktree.ReconcileGrace+time.Minute)
 
 	out, err := r.pruneOp(t)
@@ -1033,27 +961,15 @@ func TestWorktreePrune_Sweep2_ResetToBaseCollected(t *testing.T) {
 }
 
 func TestWorktreePrune_Sweep2_CheckedOutBranchSkipped(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "checkedout-lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	commitInWorktree(t, path, "a.txt", "a\n", "advance checkedout-lane")
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
+	laneTip := r.commitInMainCheckout(t, "checkedout-lane", "a.txt", "a\n", "advance checkedout-lane")
+	metaDir := r.seedRemovedSidecar(t, "checkedout-lane", laneTip)
 	wtGit(t, r.mainRoot, "merge", "--ff-only", "checkedout-lane")
-
-	if _, err := r.removeOp(t, map[string]any{"name": "checkedout-lane"}); err != nil {
-		t.Fatalf("remove (branch kept): %v", err)
-	}
 
 	otherPath := filepath.Join(t.TempDir(), "other-checkout")
 	wtGit(t, r.mainRoot, "worktree", "add", "--force", otherPath, "checkedout-lane")
 
-	canonicalMain := r.canonicalMain(t)
-	metaDir := r.metaDir(canonicalMain)
 	ageSidecar(t, metaDir, "checkedout-lane", worktree.ReconcileGrace+time.Minute)
 
 	out, err := r.pruneOp(t)
@@ -1077,23 +993,11 @@ func TestWorktreePrune_Sweep2_CheckedOutBranchSkipped(t *testing.T) {
 }
 
 func TestWorktreePrune_Sweep2_UnmergedResidueKept(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "residue-lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	commitInWorktree(t, path, "a.txt", "a\n", "advance residue-lane")
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
+	laneTip := r.commitInMainCheckout(t, "residue-lane", "a.txt", "a\n", "advance residue-lane")
+	metaDir := r.seedRemovedSidecar(t, "residue-lane", laneTip)
 	// main is NOT advanced/merged.
-	if _, err := r.removeOp(t, map[string]any{"name": "residue-lane"}); err != nil {
-		t.Fatalf("remove (branch kept): %v", err)
-	}
-
-	canonicalMain := r.canonicalMain(t)
-	metaDir := r.metaDir(canonicalMain)
 	ageSidecar(t, metaDir, "residue-lane", worktree.ReconcileGrace+time.Minute)
 
 	out, err := r.pruneOp(t)
@@ -1119,14 +1023,14 @@ func TestWorktreePrune_Sweep2_UnmergedResidueKept(t *testing.T) {
 // prune — sweep 3 (git registry hygiene)
 // ============================================================
 
-// TestWorktreePrune_Sweep3_ListWorktreesErrorsOnThirdPorcelainCall covers
-// worktreePruneSweep3's own `worktree list --porcelain` error branch. On an
-// empty repo (nothing managed at all), sweep 1 and sweep 2 each make exactly
-// one such call themselves (both must still succeed for real); the shim
-// fails only the 3rd, which is sweep 3's own.
-func TestWorktreePrune_Sweep3_ListWorktreesErrorsOnThirdPorcelainCall(t *testing.T) {
+// TestWorktreePrune_Sweep3_ListWorktreesErrorsOnSecondPorcelainCall covers
+// worktreePruneSweep3's own `worktree list --porcelain` error branch. The
+// initial prune scan must succeed; the shim fails only the next porcelain call,
+// which is sweep 3's fresh registry-hygiene scan.
+func TestWorktreePrune_Sweep3_ListWorktreesErrorsOnSecondPorcelainCall(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
-	gitFailOnNthMatchingCallShim(t, "worktree list --porcelain", 3)
+	gitFailOnNthMatchingCallRepoShim(t, r.mainRoot, "worktree list --porcelain", 2)
 
 	_, err := r.pruneOp(t)
 	if err == nil || !strings.Contains(err.Error(), "listing worktrees") {
@@ -1138,37 +1042,25 @@ func TestWorktreePrune_Sweep3_ListWorktreesErrorsOnThirdPorcelainCall(t *testing
 // `git worktree prune` failure branch: every prunable entry is managed (so
 // sweep 3 decides to run), but the prune command itself fails.
 func TestWorktreePrune_Sweep3_GitWorktreePruneCommandFails(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "vanished-lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
+	path := r.addManagedWorktreeFixture(t, "vanished-lane")
 	if err := os.RemoveAll(path); err != nil {
 		t.Fatalf("remove dir out of band: %v", err)
 	}
 
-	gitFailOnArgsShim(t, "worktree", "prune")
+	gitFailOnArgsRepoShim(t, r.mainRoot, "worktree", "prune")
 
-	_, err = r.pruneOp(t)
+	_, err := r.pruneOp(t)
 	if err == nil || !strings.Contains(err.Error(), "git worktree prune") {
 		t.Fatalf("prune with the git worktree prune command failing: err = %v, want the git-worktree-prune error", err)
 	}
 }
 
 func TestWorktreePrune_Sweep3_RunsWhenAllPrunableManaged(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "vanished-lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
+	path := r.addManagedWorktreeFixture(t, "vanished-lane")
 	// Out-of-band directory deletion (never went through `remove`): git still
 	// has the worktree registered and flags it prunable.
 	if err := os.RemoveAll(path); err != nil {
@@ -1192,6 +1084,7 @@ func TestWorktreePrune_Sweep3_RunsWhenAllPrunableManaged(t *testing.T) {
 }
 
 func TestWorktreePrune_Sweep3_SkippedWhenNonManagedPrunable(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	siblingPath := r.addSiblingWorktree(t, "sibling", "sibling-branch")
 	if err := os.RemoveAll(siblingPath); err != nil {
@@ -1220,17 +1113,4 @@ func TestWorktreePrune_Sweep3_SkippedWhenNonManagedPrunable(t *testing.T) {
 	if !found {
 		t.Error("non-managed prunable sibling was deregistered; sweep 3 must have skipped")
 	}
-}
-
-// commitOnBranch checks out branch in a throwaway worktree, commits
-// name/content on it, and returns the new tip SHA — used to simulate a user
-// building on a branch after its managed worktree was removed (no worktree
-// remains locally checked out on it).
-func commitOnBranch(t *testing.T, root, branch, name, content, msg string) string {
-	t.Helper()
-	tmp := filepath.Join(t.TempDir(), "adopt-scratch")
-	wtGit(t, root, "worktree", "add", tmp, branch)
-	tip := commitInWorktree(t, tmp, name, content, msg)
-	wtGit(t, root, "worktree", "remove", "--force", tmp)
-	return tip
 }

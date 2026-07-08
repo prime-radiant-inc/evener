@@ -7,7 +7,102 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/llm"
 )
+
+type snapshotCountingEnv struct {
+	root             string
+	execCalls        int
+	gitSnapshotCalls int
+	commands         []string
+}
+
+func (e *snapshotCountingEnv) Initialize() error        { return nil }
+func (e *snapshotCountingEnv) Cleanup()                 {}
+func (e *snapshotCountingEnv) WorkingDirectory() string { return e.root }
+func (e *snapshotCountingEnv) Platform() string         { return "linux" }
+func (e *snapshotCountingEnv) OSVersion() string        { return "test" }
+func (e *snapshotCountingEnv) ReadFile(string, *int, *int) (string, error) {
+	return "", nil
+}
+func (e *snapshotCountingEnv) WriteFile(string, string) (string, error) {
+	return "", nil
+}
+func (e *snapshotCountingEnv) EditFile(string, string, string, bool) (string, error) {
+	return "", nil
+}
+func (e *snapshotCountingEnv) FileExists(string) bool { return false }
+func (e *snapshotCountingEnv) Glob(string, string) ([]string, error) {
+	return nil, nil
+}
+func (e *snapshotCountingEnv) Grep(string, string, string, bool, int, string) (string, error) {
+	return "", nil
+}
+func (e *snapshotCountingEnv) ListDirectory(string, int) ([]execenv.DirEntry, error) {
+	return nil, nil
+}
+func (e *snapshotCountingEnv) ExecCommand(_ context.Context, command string, _ int, _ string, _ map[string]string) (execenv.ExecResult, error) {
+	e.execCalls++
+	e.commands = append(e.commands, command)
+	if isGitSnapshotCommand(command) {
+		e.gitSnapshotCalls++
+	}
+	return execenv.ExecResult{ExitCode: 1}, nil
+}
+
+func isGitSnapshotCommand(command string) bool {
+	switch command {
+	case "git rev-parse --is-inside-work-tree",
+		"git rev-parse --abbrev-ref HEAD",
+		"git status --porcelain",
+		"git log -n 5 --pretty=format:%h%x20%s",
+		"git remote get-url origin":
+		return true
+	default:
+		return false
+	}
+}
+
+func TestSnapshotGit_NonRepoDoesNotShellOut(t *testing.T) {
+	dir := t.TempDir()
+	env := &snapshotCountingEnv{root: dir}
+
+	inRepo, branch, modified, untracked, commits := snapshotGit(env, dir)
+	if inRepo {
+		t.Fatal("expected inRepo=false for non-git directory")
+	}
+	if branch != "" || modified != 0 || untracked != 0 || len(commits) != 0 {
+		t.Fatalf("snapshotGit returned repository data for non-git directory: branch=%q modified=%d untracked=%d commits=%v", branch, modified, untracked, commits)
+	}
+	if env.execCalls != 0 {
+		t.Fatalf("ExecCommand calls = %d, want 0 for non-git directory", env.execCalls)
+	}
+}
+
+func TestNewSession_TestConfigCanSkipGitSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	env := &snapshotCountingEnv{root: dir}
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+		testOnly: testConfig{skipGitSnapshot: true},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+
+	if env.gitSnapshotCalls != 0 {
+		t.Fatalf("git snapshot calls = %d, want 0 when git snapshot is skipped; commands=%v", env.gitSnapshotCalls, env.commands)
+	}
+	if sess.envInfo.IsGitRepo {
+		t.Fatal("envInfo.IsGitRepo = true, want false when git snapshot is skipped")
+	}
+}
 
 func TestGitOriginURL_ReturnsOrigin(t *testing.T) {
 	dir := t.TempDir()

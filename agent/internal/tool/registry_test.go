@@ -147,6 +147,47 @@ func TestToolRegistry_OmitPurposeLeavesSchemaStrict(t *testing.T) {
 	}
 }
 
+func TestToolRegistry_CloneCopiesToolsWithoutSharingMap(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(RegisteredTool{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{
+			Name:        "echo",
+			Description: "echo args",
+			Parameters: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"value": map[string]any{"type": "string"},
+				},
+			},
+		}},
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = ctx
+			_ = env
+			return args["value"], nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	clone := r.Clone()
+	orig := r.Get("echo")
+	copied := clone.Get("echo")
+	if orig == nil || copied == nil {
+		t.Fatal("clone missing registered tool")
+	}
+	if orig.Schema == nil || copied.Schema == nil || orig.Schema != copied.Schema {
+		t.Fatal("clone should preserve compiled schema pointer")
+	}
+	clone.Remove("echo")
+	if clone.Get("echo") != nil {
+		t.Fatal("clone Remove did not update clone")
+	}
+	if r.Get("echo") == nil {
+		t.Fatal("clone Remove mutated original registry")
+	}
+}
+
 func TestToolRegistry_UnknownTool_ReturnsErrorResult(t *testing.T) {
 	r := NewRegistry()
 	// No tools registered.

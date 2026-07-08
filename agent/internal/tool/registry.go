@@ -259,6 +259,27 @@ func NewRegistry() *Registry {
 	return &Registry{tools: map[string]RegisteredTool{}}
 }
 
+// Clone returns an independent registry with the same registered tools and
+// middleware. Compiled schemas are immutable after registration, so clones share
+// schema pointers while keeping their tool maps isolated.
+func (r *Registry) Clone() *Registry {
+	out := NewRegistry()
+	if r == nil {
+		return out
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.tools) > 0 {
+		out.tools = make(map[string]RegisteredTool, len(r.tools))
+		for name, rt := range r.tools {
+			out.tools[name] = rt
+		}
+	}
+	out.middleware = append([]toolMiddleware(nil), r.middleware...)
+	return out
+}
+
 // Use appends a middleware to the tool execution pipeline.
 // Middleware runs after argument validation but before tool execution.
 func (r *Registry) Use(mw toolMiddleware) {

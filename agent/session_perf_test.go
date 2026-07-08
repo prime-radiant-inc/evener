@@ -214,7 +214,9 @@ func TestToolDefs_WebSearchExcludedForNonGemini(t *testing.T) {
 		{"openai", NewOpenAIProfile("gpt-test"), "openai", false},
 		{"gemini", newGeminiProfile("gemini-test"), "gemini", true},
 	} {
+		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			dir := t.TempDir()
 			c := llm.NewClient()
 			c.Register(&fakeAdapter{name: tc.adapter})
@@ -257,7 +259,9 @@ func TestToolDefs_NoDuplicateNames(t *testing.T) {
 		{"openai", NewOpenAIProfile("gpt-test"), "openai"},
 		{"gemini", newGeminiProfile("gemini-test"), "gemini"},
 	} {
+		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			dir := t.TempDir()
 			c := llm.NewClient()
 			c.Register(&fakeAdapter{name: tc.adapter})

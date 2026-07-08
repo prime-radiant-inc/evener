@@ -29,6 +29,9 @@ func (s *Session) testSwapEnv(env execenv.ExecutionEnvironment) {
 // conversion, every one of these was an unguarded `s.env` field read racing
 // the swap under `-race`.
 func TestSession_CurrentEnv_NoRaceWithConcurrentSwap(t *testing.T) {
+	if !raceDetectorEnabled {
+		t.Skip("race-detector stress test; run with -race")
+	}
 	t.Parallel()
 	sess := newSession(t)
 

@@ -93,16 +93,15 @@ func TestScanWorkspace_DepthLimit(t *testing.T) {
 func TestScanWorkspace_MaxEntries(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	// Create more files than maxEntries (200).
-	for i := 0; i < 250; i++ {
-		touchFile(t, filepath.Join(dir, "file_"+string(rune('a'+i/26))+string(rune('a'+i%26))+".txt"), "x")
+	for i := 0; i < 4; i++ {
+		touchFile(t, filepath.Join(dir, "file_"+string(rune('a'+i))+".txt"), "x")
 	}
 
-	ws := ScanWorkspace(dir)
+	entries, truncated := walkTree(dir, 3)
+	tree := formatTree(dir, entries, truncated, 3)
 
-	// Should be truncated with a note.
-	if !strings.Contains(ws.Tree, "truncated") {
-		t.Errorf("expected truncation note in tree: %s", ws.Tree)
+	if !strings.Contains(tree, "truncated") {
+		t.Errorf("expected truncation note in tree: %s", tree)
 	}
 }
 

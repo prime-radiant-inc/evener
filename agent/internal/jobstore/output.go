@@ -42,6 +42,7 @@ type OutputStore struct {
 	capBytes      int64
 	total         int64
 	retainedStart int64
+	disableSync   bool
 }
 
 type outputMeta struct {
@@ -57,12 +58,26 @@ func OpenOutput(path string, capBytes int64) (*OutputStore, error) {
 	return openOutputFs(afero.NewOsFs(), path, capBytes)
 }
 
+// OpenOutputNoSync opens an output store with durability fsyncs disabled. It is
+// for tests whose contract is output behavior, not crash persistence.
+func OpenOutputNoSync(path string, capBytes int64) (*OutputStore, error) {
+	return openOutputFsNoSync(afero.NewOsFs(), path, capBytes)
+}
+
 // openOutputFs opens the output store on the given filesystem. OpenOutput
 // delegates here with afero.NewOsFs(), which forwards every call straight to the
 // os package, so production behavior is byte-identical to direct os calls. Tests
 // and fuzzers inject an in-memory or fault-injecting filesystem to drive the
 // prune/persist error arms off real disk.
 func openOutputFs(fs afero.Fs, path string, capBytes int64) (*OutputStore, error) {
+	return openOutputFsWithSync(fs, path, capBytes, false)
+}
+
+func openOutputFsNoSync(fs afero.Fs, path string, capBytes int64) (*OutputStore, error) {
+	return openOutputFsWithSync(fs, path, capBytes, true)
+}
+
+func openOutputFsWithSync(fs afero.Fs, path string, capBytes int64, disableSync bool) (*OutputStore, error) {
 	f, err := fs.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("jobstore: open output %s: %w", path, err)
@@ -78,7 +93,7 @@ func openOutputFs(fs afero.Fs, path string, capBytes int64) (*OutputStore, error
 		_ = f.Close()
 		return nil, err
 	}
-	o := &OutputStore{path: path, metaPath: metaPath, fs: fs, f: f, capBytes: capBytes, total: total, retainedStart: retainedStart}
+	o := &OutputStore{path: path, metaPath: metaPath, fs: fs, f: f, capBytes: capBytes, total: total, retainedStart: retainedStart, disableSync: disableSync}
 	if err := o.pruneLocked(); err != nil {
 		_ = f.Close()
 		return nil, err
@@ -341,11 +356,11 @@ func (o *OutputStore) pruneLocked() error {
 		return fmt.Errorf("jobstore: read output prune tail: %w", err)
 	}
 	retainedStart := o.total - keep
-	if err := writeOutputMetaFileFs(o.fs, outputPendingMetaPath(o.metaPath), outputMeta{
+	if err := writeOutputMetaFileFsSync(o.fs, outputPendingMetaPath(o.metaPath), outputMeta{
 		TotalBytes:     o.total,
 		RetainedStart:  retainedStart,
 		RetainedSHA256: outputBytesSHA256(tail),
-	}); err != nil {
+	}, !o.disableSync); err != nil {
 		return err
 	}
 	if err := o.f.Truncate(0); err != nil {
@@ -373,8 +388,10 @@ func (o *OutputStore) persistMetaLocked() error {
 	if o.metaPath == "" {
 		return nil
 	}
-	if err := o.f.Sync(); err != nil {
-		return fmt.Errorf("jobstore: sync output before metadata: %w", err)
+	if !o.disableSync {
+		if err := o.f.Sync(); err != nil {
+			return fmt.Errorf("jobstore: sync output before metadata: %w", err)
+		}
 	}
 	meta := outputMeta{
 		TotalBytes:    o.total,
@@ -385,7 +402,7 @@ func (o *OutputStore) persistMetaLocked() error {
 		return err
 	}
 	meta.RetainedSHA256 = hash
-	if err := writeOutputMetaFileFs(o.fs, o.metaPath, meta); err != nil {
+	if err := writeOutputMetaFileFsSync(o.fs, o.metaPath, meta, !o.disableSync); err != nil {
 		return err
 	}
 	if err := o.fs.Remove(outputPendingMetaPath(o.metaPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -402,6 +419,10 @@ func writeOutputMetaFile(path string, meta outputMeta) error {
 }
 
 func writeOutputMetaFileFs(fs afero.Fs, path string, meta outputMeta) error {
+	return writeOutputMetaFileFsSync(fs, path, meta, true)
+}
+
+func writeOutputMetaFileFsSync(fs afero.Fs, path string, meta outputMeta, syncWrites bool) error {
 	if path == "" {
 		return nil
 	}
@@ -424,10 +445,12 @@ func writeOutputMetaFileFs(fs afero.Fs, path string, meta outputMeta) error {
 		_ = fs.Remove(tmp)
 		return fmt.Errorf("jobstore: write output metadata: %w", io.ErrShortWrite)
 	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		_ = fs.Remove(tmp)
-		return fmt.Errorf("jobstore: sync output metadata: %w", err)
+	if syncWrites {
+		if err := f.Sync(); err != nil {
+			_ = f.Close()
+			_ = fs.Remove(tmp)
+			return fmt.Errorf("jobstore: sync output metadata: %w", err)
+		}
 	}
 	if err := f.Close(); err != nil {
 		_ = fs.Remove(tmp)
@@ -437,8 +460,10 @@ func writeOutputMetaFileFs(fs afero.Fs, path string, meta outputMeta) error {
 		_ = fs.Remove(tmp)
 		return fmt.Errorf("jobstore: replace output metadata: %w", err)
 	}
-	if err := syncParentDir(fs, path); err != nil {
-		return err
+	if syncWrites {
+		if err := syncParentDir(fs, path); err != nil {
+			return err
+		}
 	}
 	return nil
 }

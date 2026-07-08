@@ -162,7 +162,7 @@ func TestExtractEmbeddedSkills(t *testing.T) {
 // EmbeddedSkillsDir extracts the immutable bundled skills exactly once per
 // process and hands every caller the same shared, read-only directory. The
 // embedded content is identical for every session, so re-extracting it per
-// session (temp dir + file writes + teardown) is pure overhead.
+// session is pure overhead.
 func TestEmbeddedSkillsDir_CachesAcrossCalls(t *testing.T) {
 	first, err := EmbeddedSkillsDir()
 	if err != nil {
@@ -180,5 +180,43 @@ func TestEmbeddedSkillsDir_CachesAcrossCalls(t *testing.T) {
 	ScanSkillsDir(first, out)
 	if len(out) == 0 {
 		t.Errorf("expected at least one embedded skill under cached dir %s", first)
+	}
+}
+
+func TestEmbeddedSkills_CachesFilesystemBackedMetadata(t *testing.T) {
+	first, err := EmbeddedSkills()
+	if err != nil {
+		t.Fatalf("EmbeddedSkills: %v", err)
+	}
+	if len(first) == 0 {
+		t.Fatal("expected at least one embedded skill")
+	}
+
+	var name string
+	var meta SkillMeta
+	for name, meta = range first {
+		break
+	}
+	if meta.Dir == "" || meta.SkillFile == "" {
+		t.Fatalf("embedded skill %q missing filesystem locations: %+v", name, meta)
+	}
+	if _, err := os.Stat(meta.SkillFile); err != nil {
+		t.Fatalf("embedded skill %q file path is not readable: %v", name, err)
+	}
+	body, err := LoadSkillBody(meta)
+	if err != nil {
+		t.Fatalf("LoadSkillBody(%s): %v", name, err)
+	}
+	if strings.TrimSpace(body) == "" {
+		t.Fatalf("embedded skill %q has empty body", name)
+	}
+
+	delete(first, name)
+	second, err := EmbeddedSkills()
+	if err != nil {
+		t.Fatalf("EmbeddedSkills second call: %v", err)
+	}
+	if _, ok := second[name]; !ok {
+		t.Fatalf("mutating returned map removed %q from cached embedded skills", name)
 	}
 }

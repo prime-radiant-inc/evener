@@ -534,7 +534,7 @@ func TestCreateDelegateDescriptorDurableBeforeFirstModelRequest(t *testing.T) {
 	sess.jobManager.appendEvents = func(events []jobstore.Event) error {
 		for _, event := range events {
 			if event.Kind == jobstore.EventJobStarted && event.Type == jobstore.JobDelegate {
-				time.Sleep(250 * time.Millisecond)
+				time.Sleep(25 * time.Millisecond)
 				break
 			}
 		}
@@ -705,10 +705,11 @@ func TestCreateDelegateForegroundTimeoutLeavesChildRunning(t *testing.T) {
 	var releaseOnce sync.Once
 	// started is closed by the adapter the first time it is called, allowing the
 	// test to confirm the child has reached the LLM call (and is therefore in
-	// running state) before asserting state invariants.  Without this
-	// synchronisation the 1-second BlockTimeoutMS window could fire before child
-	// setup completes on a slow host, leaving running=false at the assertion.
+	// running state) before asserting state invariants. Without this
+	// synchronisation the foreground timeout window could fire before child setup
+	// completes on a slow host, leaving running=false at the assertion.
 	started := make(chan struct{})
+
 	var startedOnce sync.Once
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -733,8 +734,9 @@ func TestCreateDelegateForegroundTimeoutLeavesChildRunning(t *testing.T) {
 		resultCh <- sess.createDelegate(context.Background(), delegateArgs{
 			Task:           "wait past foreground timeout",
 			Background:     false,
-			BlockTimeoutMS: 1000,
+			BlockTimeoutMS: 50,
 			ResultSchema: map[string]any{
+
 				"type": "object",
 				"properties": map[string]any{
 					"message": map[string]any{"type": "string"},

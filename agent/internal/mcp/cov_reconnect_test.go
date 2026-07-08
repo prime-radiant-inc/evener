@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -120,6 +122,27 @@ func execTool(ctx context.Context, reg *tool.Registry, t *testing.T, name string
 func execProbe(ctx context.Context, reg *tool.Registry, t *testing.T) (string, bool) {
 	t.Helper()
 	return execTool(ctx, reg, t, "s__probe")
+}
+
+func TestReconnectDroppedConnectionClassification(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "sdk sentinel", err: mcpsdk.ErrConnectionClosed, want: true},
+		{name: "wrapped closed pipe", err: fmt.Errorf("calling %q: %w", "tools/call", io.ErrClosedPipe), want: true},
+		{name: "wrapped EOF", err: fmt.Errorf("calling %q: %w", "tools/call", io.EOF), want: true},
+		{name: "context cancellation", err: context.Canceled, want: false},
+		{name: "application error", err: errors.New("boom: rpc-level failure"), want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isDroppedConn(tc.err); got != tc.want {
+				t.Fatalf("isDroppedConn(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
 }
 
 // TestReconnect_ClosureReachesNewSession_ZeroInitBackoff is the primary

@@ -276,9 +276,15 @@ TARGETS=(
 	# 8.2b cross-provider differential — one canonical logical response encoded to
 	# each provider's wire format, decoded via the real adapters, asserted
 	# equivalent. coverpkg spans the 4 real decoders it exercises; no single focus.
-	"native:llm:./providers/difftest:FuzzCrossProviderDifferential:./providers/anthropic,./providers/google,./providers/openai,./providers/openaicompat:"
-	"native:llm:./providers/difftest:FuzzStreamVsNonStreamDifferential:./providers/anthropic,./providers/google,./providers/openai,./providers/openaicompat:"
-	"rapid:agent:.:TestToolArgsSchemaFuzz"
+		"native:llm:./providers/difftest:FuzzCrossProviderDifferential:./providers/anthropic,./providers/google,./providers/openai,./providers/openaicompat:"
+		"native:llm:./providers/difftest:FuzzStreamVsNonStreamDifferential:./providers/anthropic,./providers/google,./providers/openai,./providers/openaicompat:"
+		"test:.:./appwire:TestStructuredFrameReachesDecoder"
+		"test:agent:.:TestStructuredTranscriptReachesDeeper"
+		"test:llm:./providers/anthropic:TestStructuredAnthropicReachesDeeper"
+		"test:llm:./providers/google:TestStructuredGeminiReachesDeeper"
+		"test:llm:./providers/openai:TestStructuredResponsesReachesDeeper"
+		"test:llm:./providers/openaicompat:TestStructuredOpenAICompatReachesDeeper"
+		"rapid:agent:.:TestToolArgsSchemaFuzz"
 	"rapid:agent:.:TestLifecycleSeqFuzz"
 	"rapid:agent:.:TestWatchSeqFuzz"
 	"rapid:agent:.:TestDelegateSeqFuzz"
@@ -407,14 +413,21 @@ for t in "${TARGETS[@]}"; do
 			# sequentially, so a per-target cap is the tightest safe bound.
 			( cd "$repo_root/$module" && "$repo_root/scripts/run-capped.sh" go test -tags serffuzz -run '^$' -fuzz "^${name}\$" -fuzztime "$duration" "$pkg" ) || fail=1
 			;;
-		rapid)
-			# rapid surfaces are property checks driven by `go test -run`; the
-			# search depth is governed by -rapid.checks, not -fuzztime, so the
-			# --time budget does not apply to them.
-			echo "=== rapid $module:$name ==="
-			( cd "$repo_root/$module" && "$repo_root/scripts/run-capped.sh" go test -tags serffuzz -run "^${name}\$" -count=1 "$pkg" ) || fail=1
-			;;
-		*)
+			test)
+				echo "=== fuzz-test $module:$name ==="
+				( cd "$repo_root/$module" && "$repo_root/scripts/run-capped.sh" go test -tags serffuzz -run "^${name}\$" -count=1 "$pkg" ) || fail=1
+				;;
+
+			rapid)
+				# rapid surfaces are property checks driven by `go test -run`; the
+				# search depth is governed by -rapid.checks, not -fuzztime, so the
+				# --time budget does not apply to them. Keep the campaign depth at
+				# rapid's historical default unless the caller intentionally narrows it.
+				echo "=== rapid $module:$name ==="
+				( cd "$repo_root/$module" && RAPID_CHECKS="${RAPID_CHECKS:-100}" "$repo_root/scripts/run-capped.sh" go test -tags serffuzz -run "^${name}\$" -count=1 "$pkg" ) || fail=1
+				;;
+
+			*)
 			echo "run-fuzz: unknown tag '$tag' in entry '$t'" >&2; fail=1
 			;;
 	esac

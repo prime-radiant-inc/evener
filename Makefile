@@ -72,11 +72,12 @@ install-system: install
 test-install:
 	go test -count=1 -run '^TestInstallHomeGeneratedHome$$' .
 
-# Every Go module in the workspace: the app (.) plus the three published
-# libraries. Under go.work, `./...` resolves per-module, so the gates must loop
-# over each module to cover the whole repo (root-only `./...` silently skips the
-# agent/llm/auth library test suites and lint).
-GO_MODULES := . agent llm auth envvars fuzz invariant
+# Every non-fuzz Go module in the workspace. Under go.work, `./...` resolves
+# per-module, so gates and lint must loop modules explicitly. Fuzz targets and
+# the fuzz toolkit module run through the explicit fuzz targets below, not the
+# regular test gate.
+GO_MODULES := . agent llm auth envvars invariant
+FUZZ_GO_MODULES := $(GO_MODULES) fuzz
 
 # MEMCAP runs a recipe under a hard per-run memory ceiling (a systemd user scope)
 # so a leaky test or fuzz run is OOM-killed individually instead of firing the
@@ -87,14 +88,15 @@ GO_MODULES := . agent llm auth envvars fuzz invariant
 MEMCAP := scripts/run-capped.sh
 
 test:
-	@MODULES="$(GO_MODULES)" $(MEMCAP) scripts/run-module-tests.sh -count=1
-
-test-short:
 	@MODULES="$(GO_MODULES)" $(MEMCAP) scripts/run-module-tests.sh -short -count=1
 
-# The permanent -race gate (CI), across every module. AGENT_PARALLEL= leaves the
-# agent wave at GOMAXPROCS: under -race (~10x slower) extra parallelism just
-# oversubscribes few-core CI and starves real per-test work past its timeouts.
+test-short:
+	@$(MAKE) test
+
+# The permanent -race gate (CI), across every non-fuzz module. AGENT_PARALLEL=
+# leaves the agent wave at GOMAXPROCS: under -race (~10x slower) extra
+# parallelism just oversubscribes few-core CI and starves real per-test work past
+# its timeouts.
 test-race:
 	@MODULES="$(GO_MODULES)" AGENT_PARALLEL= $(MEMCAP) scripts/run-module-tests.sh -race -short -count=1
 
@@ -111,9 +113,8 @@ vet:
 
 # fuzz runs every FuzzXxx target's SEED CORPUS plus any saved testdata/fuzz
 # crashers as ordinary deterministic tests — `go test -run '^Fuzz'` with no
-# -fuzz does NOT random-search, so it is fast and safe for the gate. `make test`
-# already executes these seeds (go test runs Fuzz seed corpora as subtests); this
-# target is the explicit entry point and the one used to verify saved crashers.
+# -fuzz does NOT random-search. It is still fuzz coverage, so it stays out of
+# the regular test gate and runs through this explicit entry point.
 #
 # Everything here builds with -tags serffuzz so the internal/invariant assertions
 # (primeradiant.com/serf/invariant) are live: a tripped invariant panics and the
@@ -121,7 +122,9 @@ vet:
 # fires under the tag; production builds and `make test` stay tag-free.
 fuzz:
 	@$(MEMCAP) sh -c 'cd invariant && go test -tags serffuzz ./...'
-	@for m in $(GO_MODULES); do ($(MEMCAP) sh -c "cd $$m && go test -run '^Fuzz' -tags serffuzz ./...") || exit 1; done
+	@$(MEMCAP) sh -c 'cd fuzz && go test -tags serffuzz ./...'
+	@$(MEMCAP) sh -c 'go test ./cmd/serf-fuzzcov ./cmd/serf-fuzz-harvest'
+	@for m in $(FUZZ_GO_MODULES); do ($(MEMCAP) sh -c "cd $$m && go test -run '^Fuzz' -tags serffuzz ./...") || exit 1; done
 	@$(MEMCAP) sh -c "go test -run '^Test.*Golden\$$' ./appwire"
 
 # fuzz-goldens regenerates the decode SNAPSHOT goldens — serf's differential

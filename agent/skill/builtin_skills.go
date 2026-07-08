@@ -69,3 +69,41 @@ func ExtractEmbeddedSkills() (string, error) {
 
 	return dir, nil
 }
+
+var embeddedSkillsCache struct {
+	mu     sync.Mutex
+	dir    string
+	skills map[string]SkillMeta
+}
+
+// EmbeddedSkills returns the bundled skills as filesystem-backed metadata.
+// The materialized tree is shared within the process so session creation does
+// not repeatedly extract the same embedded files.
+func EmbeddedSkills() (map[string]SkillMeta, error) {
+	embeddedSkillsCache.mu.Lock()
+	defer embeddedSkillsCache.mu.Unlock()
+
+	if embeddedSkillsCache.dir != "" {
+		if _, err := os.Stat(embeddedSkillsCache.dir); err == nil {
+			return cloneSkillMetaMap(embeddedSkillsCache.skills), nil
+		}
+	}
+
+	dir, err := ExtractEmbeddedSkills()
+	if err != nil {
+		return nil, err
+	}
+	skills := make(map[string]SkillMeta)
+	ScanSkillsDir(dir, skills)
+	embeddedSkillsCache.dir = dir
+	embeddedSkillsCache.skills = skills
+	return cloneSkillMetaMap(skills), nil
+}
+
+func cloneSkillMetaMap(in map[string]SkillMeta) map[string]SkillMeta {
+	out := make(map[string]SkillMeta, len(in))
+	for name, meta := range in {
+		out[name] = meta
+	}
+	return out
+}

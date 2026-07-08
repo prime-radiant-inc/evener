@@ -535,7 +535,7 @@ func TestSendDelegateMessageTerminalDelegateForegroundResumeTimeoutLeavesChildRu
 		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
-		BlockTimeoutMS: 1000,
+		BlockTimeoutMS: 50,
 	})
 	if res.Err != nil {
 		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
@@ -930,7 +930,7 @@ func TestSendDelegateMessageTerminalResumeWaitsForDelegateJobAttachment(t *testi
 	select {
 	case res := <-secondResumeDone:
 		t.Fatalf("second terminal resume returned before delegate job attached: %+v", res)
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(25 * time.Millisecond):
 	}
 
 	close(releaseAttach)
@@ -1254,8 +1254,9 @@ func TestSendDelegateMessageStoppedDelegateRestorePreflightNotResumable(t *testi
 			c := llm.NewClient()
 			adapter := &fakeAdapter{name: "openai"}
 			c.Register(adapter)
-			s := newDelegateRestorePreflightSession(t, c)
+			s := newLeanDelegateRestorePreflightSession(t, c)
 			rec := seedStoppedDelegateRestoreRecord(t, s)
+
 			tc.breakState(t, s, rec)
 			beforeEvents := len(loadJobStoreEvents(t, s.jobManager))
 			beforeJobs := len(s.jobManager.list(listFilter{Type: jobstore.JobDelegate}))
@@ -2132,7 +2133,9 @@ func TestReconstructDelegateRuntimeMissingRequiredToolsFailsBeforeTracking(t *te
 		},
 	}
 	for _, tc := range cases {
+		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			adapter := &fakeAdapter{name: "openai"}
 			c := llm.NewClient()
 			c.Register(adapter)
@@ -2635,7 +2638,7 @@ func TestDelegateReconstructionRacingParentCloseDoesNotTrackOrRunSideEffects(t *
 	select {
 	case <-closeDone:
 		t.Fatal("parent Close returned before paused reconstruction reached tracking")
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(25 * time.Millisecond):
 	}
 	close(release)
 	select {
@@ -2715,7 +2718,7 @@ func TestParentCloseWaitsForInFlightDelegateReconstructionClaim(t *testing.T) {
 	select {
 	case <-closeDone:
 		closeReturnedBeforeRelease = true
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(25 * time.Millisecond):
 	}
 	close(release)
 	select {
@@ -3148,7 +3151,9 @@ func TestTerminalDelegateRestoreRequiresStrictPreflightBeforeReconstruction(t *t
 		{status: jobstore.StatusFailed, reason: "failed"},
 	}
 	for _, tc := range cases {
+		tc := tc
 		t.Run(string(tc.status), func(t *testing.T) {
+			t.Parallel()
 			adapter := &fakeAdapter{name: "openai"}
 			c := llm.NewClient()
 			c.Register(adapter)
@@ -3644,6 +3649,7 @@ func TestCoordinatorTypeDelegateResumes(t *testing.T) {
 	t.Parallel()
 	// Part A-positive: allowance > 0, FrozenToolNames includes "delegate" → must pass.
 	t.Run("allowance>0 coordinator resumes with delegate in frozen tools", func(t *testing.T) {
+		t.Parallel()
 		c := llm.NewClient()
 		c.Register(&fakeAdapter{name: "openai"})
 		s := newDelegateRestorePreflightSession(t, c)
@@ -3670,6 +3676,7 @@ func TestCoordinatorTypeDelegateResumes(t *testing.T) {
 	// fail (preserves today's leaf semantics: a leaf cannot have delegate in its
 	// frozen tool requirements, because the parent's validation set has it stripped).
 	t.Run("allowance==0 leaf with delegate in frozen tools fails validation", func(t *testing.T) {
+		t.Parallel()
 		c := llm.NewClient()
 		c.Register(&fakeAdapter{name: "openai"})
 		s := newDelegateRestorePreflightSession(t, c)
@@ -3691,6 +3698,7 @@ func TestCoordinatorTypeDelegateResumes(t *testing.T) {
 
 	// Part A-zero-frozen: allowance > 0 but no frozen tool requirements → must pass.
 	t.Run("allowance>0 no frozen tool requirements passes", func(t *testing.T) {
+		t.Parallel()
 		c := llm.NewClient()
 		c.Register(&fakeAdapter{name: "openai"})
 		s := newDelegateRestorePreflightSession(t, c)

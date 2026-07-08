@@ -1610,6 +1610,21 @@ func TestProviderProfile_NewToolRegistry_PlaceholderExecReturnsError(t *testing.
 	}
 }
 
+func TestProviderProfile_NewToolRegistry_CacheReturnsIndependentRegistry(t *testing.T) {
+	t.Parallel()
+	p := newAnthropicProfile("claude-test")
+	first := newProfileToolRegistry(p)
+	first.Remove("read_file")
+	if first.Get("read_file") != nil {
+		t.Fatal("read_file survived removal from first registry")
+	}
+
+	second := newProfileToolRegistry(p)
+	if second.Get("read_file") == nil {
+		t.Fatal("cached profile registry shared mutable tool map with caller")
+	}
+}
+
 func assertToolListExact(t *testing.T, p *provider.Profile, want []string) {
 	t.Helper()
 	got := make([]string, 0, len(p.ToolDefinitions()))

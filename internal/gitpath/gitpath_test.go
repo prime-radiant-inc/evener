@@ -63,6 +63,38 @@ func newLinkedWorktree(t *testing.T) (main, wt string) {
 	return main, wt
 }
 
+func TestStructuralWorktreeRoot_MainRepoAndSubdir(t *testing.T) {
+	repo := t.TempDir()
+	gitInit(t, repo)
+	sub := filepath.Join(repo, "pkg", "inner")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, cwd := range []string{repo, sub} {
+		got, ok := StructuralWorktreeRoot(cwd)
+		if !ok {
+			t.Fatalf("StructuralWorktreeRoot(%q) ok=false, want true", cwd)
+		}
+		if want := evalSym(t, repo); got != want {
+			t.Fatalf("StructuralWorktreeRoot(%q) = %q, want %q", cwd, got, want)
+		}
+	}
+}
+
+func TestStructuralWorktreeRoot_LinkedWorktree(t *testing.T) {
+	main, wt := newLinkedWorktree(t)
+	got, ok := StructuralWorktreeRoot(filepath.Join(wt, "nested"))
+	if !ok {
+		t.Fatal("StructuralWorktreeRoot(linked worktree) ok=false, want true")
+	}
+	if want := evalSym(t, wt); got != want {
+		t.Fatalf("StructuralWorktreeRoot(linked worktree) = %q, want worktree %q", got, want)
+	}
+	if got == evalSym(t, main) {
+		t.Fatalf("StructuralWorktreeRoot returned main root %q, want active worktree", got)
+	}
+}
+
 // (a) A main checkout resolves to its own root.
 func TestResolveMainRepoRootLocal_MainRepo(t *testing.T) {
 	repo := t.TempDir()

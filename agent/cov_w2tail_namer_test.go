@@ -2,7 +2,7 @@ package agent
 
 import (
 	"context"
-	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,7 +20,7 @@ type erroringAdapter struct{ name string }
 
 func (a *erroringAdapter) Name() string { return a.name }
 func (a *erroringAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
-	return llm.Response{}, errors.New("provider boom")
+	return llm.Response{}, llm.ErrorFromHTTPStatus(req.Provider, 400, "provider boom", nil, nil)
 }
 func (a *erroringAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	return nil, llm.ErrStreamUnsupported
@@ -43,6 +43,9 @@ func TestW2Tail_nameSession_LLMErrorWrapped(t *testing.T) {
 	_, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourcePrompt, "do a thing", noNamerSleep)
 	if err == nil {
 		t.Fatalf("expected wrapped LLM error")
+	}
+	if !strings.Contains(err.Error(), "session namer:") || !strings.Contains(err.Error(), "provider boom") {
+		t.Fatalf("nameSession error = %q, want wrapped provider error", err.Error())
 	}
 }
 

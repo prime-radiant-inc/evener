@@ -31,6 +31,9 @@ import (
 // Gated behind -short: it is a nightly/-race stress run, not a fast-gate test, and
 // being inherently nondeterministic it must never gate a PR.
 func TestSession_ConcurrencyStress(t *testing.T) {
+	if !raceDetectorEnabled {
+		t.Skip("race-detector stress test; run with -race")
+	}
 	if testing.Short() {
 		t.Skip("concurrency stress is a nightly/-race run; skipped under -short")
 	}

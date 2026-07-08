@@ -62,20 +62,25 @@ func TestDelegateRelinkSynchronizesNestedShellParent(t *testing.T) {
 	})
 	child := &Session{id: "CHILD", jobManager: childJM}
 
+	iterations := 8
+	if raceDetectorEnabled || !testing.Short() {
+		iterations = 64
+	}
+
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		<-start
-		for i := 0; i < 64; i++ {
+		for i := 0; i < iterations; i++ {
 			relinkDelegateChildToJob(child, fmt.Sprintf("job_PARENT_%d", i))
 		}
 	}()
 	go func() {
 		defer wg.Done()
 		<-start
-		for i := 0; i < 64; i++ {
+		for i := 0; i < iterations; i++ {
 			run, err := childJM.newDelayedShell(shellArgs{Command: "true"})
 			if err != nil {
 				t.Errorf("newDelayedShell: %v", err)
