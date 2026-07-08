@@ -1815,11 +1815,17 @@ func (s *Session) worktreePrune(ctx context.Context) (WorktreePruneResult, error
 	projectDir := filepath.Join(st.worktreeRoot, worktree.ProjectID(st.mainRepoRoot))
 	metaDir := metaDirForProject(projectDir)
 
-	removed1, skipped1, err := s.worktreePruneSweep1(run, projectDir, metaDir)
+	out, err := run("worktree", "list", "--porcelain")
+	if err != nil {
+		return WorktreePruneResult{}, fmt.Errorf("manage_worktree prune: listing worktrees: %w", err)
+	}
+	managed := managedPorcelainEntries(worktree.ParsePorcelain(out), projectDir)
+
+	removed1, skipped1, err := s.worktreePruneSweep1(run, managed, metaDir)
 	if err != nil {
 		return WorktreePruneResult{}, err
 	}
-	removed2, skipped2, err := s.worktreePruneSweep2(run, projectDir, metaDir)
+	removed2, skipped2, err := s.worktreePruneSweep2(run, managed, metaDir)
 	if err != nil {
 		return WorktreePruneResult{}, err
 	}
@@ -1847,13 +1853,7 @@ func (s *Session) worktreePrune(ctx context.Context) (WorktreePruneResult, error
 // any per-entry git query failure is treated as a soft skip rather than
 // aborting the whole sweep, so one bad entry cannot block every other
 // collectible worktree.
-func (s *Session) worktreePruneSweep1(run worktree.GitRunner, projectDir, metaDir string) (removed, skipped []WorktreePruneEntry, err error) {
-	out, err := run("worktree", "list", "--porcelain")
-	if err != nil {
-		return nil, nil, fmt.Errorf("manage_worktree prune: listing worktrees: %w", err)
-	}
-	managed := managedPorcelainEntries(worktree.ParsePorcelain(out), projectDir)
-
+func (s *Session) worktreePruneSweep1(run worktree.GitRunner, managed []managedEntry, metaDir string) (removed, skipped []WorktreePruneEntry, err error) {
 	for _, e := range managed {
 		// Not locked: the occupancy rule, owner-independent (spec §5 sweep 1;
 		// EvPruneCandidate skips any locked state regardless of whose marker).
@@ -1966,13 +1966,9 @@ func disposableReason(run worktree.GitRunner, tip, baseSHA, mergeTarget string) 
 // current state (gone → stale, adopted → sidecar dropped, disposable →
 // branch+sidecar deleted, checked out elsewhere → skipped, unmerged →
 // kept as residue).
-func (s *Session) worktreePruneSweep2(run worktree.GitRunner, projectDir, metaDir string) (removed, skipped []WorktreePruneEntry, err error) {
-	out, err := run("worktree", "list", "--porcelain")
-	if err != nil {
-		return nil, nil, fmt.Errorf("manage_worktree prune: listing worktrees: %w", err)
-	}
+func (s *Session) worktreePruneSweep2(run worktree.GitRunner, managed []managedEntry, metaDir string) (removed, skipped []WorktreePruneEntry, err error) {
 	registered := make(map[string]bool)
-	for _, e := range managedPorcelainEntries(worktree.ParsePorcelain(out), projectDir) {
+	for _, e := range managed {
 		registered[e.Name] = true
 	}
 
