@@ -2,8 +2,24 @@ package sandbox
 
 import (
 	"os"
+	"slices"
 	"testing"
 )
+
+// The capability probe must exercise the exact version-gated flags Wrap emits,
+// so an older bwrap that lacks --argv0 / --new-session (Ubuntu 22.04 = 0.6.1,
+// Debian 12 = 0.8.0) fails the probe and is reported not-capable — rather than
+// probing "capable" and then failing every real spawn with "unknown option
+// --argv0" per the fail-closed floor.
+func TestBwrapProbeExercisesWrapFlags(t *testing.T) {
+	t.Parallel()
+	args := bwrapProbeArgs("/usr/bin/bwrap")
+	for _, want := range []string{"--argv0", "--new-session", "--unshare-user", "--unshare-pid", "--proc", "--dev"} {
+		if !slices.Contains(args, want) {
+			t.Errorf("probe argv must exercise %q (Wrap emits it), got %v", want, args)
+		}
+	}
+}
 
 // TestFakeProberRepresentsFloorRows proves every host tier of the spec's
 // fail-closed floor matrix is representable as HostFacts and that the derived
