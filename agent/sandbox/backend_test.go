@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"os/exec"
 	"slices"
 	"testing"
 )
@@ -64,5 +65,43 @@ func TestWrapNilIsIdentity(t *testing.T) {
 	argv := []string{"/bin/echo", "hi"}
 	if got := w.Wrap(argv, "/somewhere"); !slices.Equal(got, argv) {
 		t.Errorf("nil wrapper must be identity, got %v", got)
+	}
+}
+
+// TestConfineWrapsBwrapAndLeavesDir pins that Confine rewrites the command's argv
+// with the backend invocation but does NOT touch cmd.Dir for bwrap — bwrap carries
+// the working directory in its own argv (--chdir), so the caller's cmd.Dir is left
+// as-is. (The Seatbelt cmd.Dir path is exercised on darwin by TestConfineSetsSeatbeltDir.)
+func TestConfineWrapsBwrapAndLeavesDir(t *testing.T) {
+	rp, cwd, _ := resolveFixture(t, ModeWorkspaceWrite, true)
+	w, err := NewWrapper(rp, "/usr/bin/bwrap", "/tmp/serf-session")
+	if err != nil {
+		t.Fatalf("NewWrapper: %v", err)
+	}
+	cmd := exec.Command("/bin/bash", "-c", "echo hi") //nolint:noctx // test-only cmd, never run
+	orig := slices.Clone(cmd.Args)
+	w.Confine(cmd, cwd)
+
+	if cmd.Args[0] != "/usr/bin/bwrap" || cmd.Path != "/usr/bin/bwrap" {
+		t.Errorf("Confine must prepend the bwrap binary: args[0]=%q path=%q", cmd.Args[0], cmd.Path)
+	}
+	sep := slices.Index(cmd.Args, "--")
+	if sep < 0 || !slices.Equal(cmd.Args[sep+1:], orig) {
+		t.Errorf("original command must survive after --: %v", cmd.Args)
+	}
+	if cmd.Dir != "" {
+		t.Errorf("Confine must not set cmd.Dir for bwrap (uses --chdir), got %q", cmd.Dir)
+	}
+}
+
+// TestConfineNilIsIdentity pins that a nil wrapper leaves the command untouched,
+// so an unsandboxed spawn is byte-identical to before.
+func TestConfineNilIsIdentity(t *testing.T) {
+	var w *Wrapper
+	cmd := exec.Command("/bin/echo", "hi") //nolint:noctx // test-only cmd, never run
+	want := slices.Clone(cmd.Args)
+	w.Confine(cmd, "/somewhere")
+	if !slices.Equal(cmd.Args, want) || cmd.Dir != "" {
+		t.Errorf("nil wrapper must be identity, got args=%v dir=%q", cmd.Args, cmd.Dir)
 	}
 }

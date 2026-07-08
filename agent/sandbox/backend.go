@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"fmt"
+	"os/exec"
 	"path/filepath"
 )
 
@@ -50,12 +51,36 @@ func (w *Wrapper) Policy() ResolvedPolicy { return w.policy }
 // SessionTmp returns the per-session writable tmp directory (the child's TMPDIR).
 func (w *Wrapper) SessionTmp() string { return w.sessionTmp }
 
+// Confine rewrites cmd to run under the wrapper's backend confinement: it prepends
+// the backend invocation to cmd.Args (updating cmd.Path via Wrap) and, for the
+// Seatbelt backend, sets cmd.Dir to dir. sandbox-exec has no chdir flag (unlike
+// bwrap's --chdir, which Wrap encodes in the argv), so without this the confined
+// child would inherit serf's process cwd instead of the worktree. It is the single
+// spawn-site helper every kernel-wrapped command routes through (execenv, hooks,
+// mcp) so the Seatbelt cwd handling lives in one place rather than being duplicated
+// at each site. A nil wrapper leaves cmd unchanged (byte-identical to an
+// unsandboxed spawn); an empty dir leaves cmd.Dir as the caller set it.
+func (w *Wrapper) Confine(cmd *exec.Cmd, dir string) {
+	if w == nil {
+		return
+	}
+	if w.policy.Backend == BackendSeatbelt && dir != "" {
+		cmd.Dir = dir
+	}
+	argv := w.Wrap(cmd.Args, dir)
+	cmd.Path = argv[0]
+	cmd.Args = argv
+}
+
 // Wrap prepends the backend invocation to argv so the command runs confined to
-// the wrapper's policy with cwd as its working directory inside the sandbox. For
-// bwrap the returned slice is [bwrap, <flags...>, --argv0, argv[0], --, argv...];
-// for Seatbelt it is [/usr/bin/sandbox-exec, -p, <policy>, -DKEY=path..., --,
-// argv...]. Either is ready to hand to exec.Command / syscall.Exec. A nil wrapper
-// returns argv unchanged so callers can wrap unconditionally.
+// the wrapper's policy. For bwrap the returned slice is
+// [bwrap, <flags...>, --argv0, argv[0], --, argv...] and cwd becomes the sandbox
+// working directory via a --chdir flag. For Seatbelt it is
+// [/usr/bin/sandbox-exec, -p, <policy>, -DKEY=path..., --, argv...] and cwd is
+// IGNORED — sandbox-exec has no chdir flag, so the caller must set the spawned
+// command's cmd.Dir itself (use Confine, which does this). Either is ready to hand
+// to exec.Command / syscall.Exec. A nil wrapper returns argv unchanged so callers
+// can wrap unconditionally.
 func (w *Wrapper) Wrap(argv []string, cwd string) []string {
 	if w == nil {
 		return argv

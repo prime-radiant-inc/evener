@@ -1195,9 +1195,7 @@ func (e *LocalExecutionEnvironment) wrapForSandbox(cmd *exec.Cmd, dir string) {
 		return
 	}
 	cmd.Env = sandbox.ApplyEnvFloor(cmd.Env, e.Wrapper.Policy(), e.Wrapper.SessionTmp())
-	argv := e.Wrapper.Wrap(cmd.Args, dir)
-	cmd.Path = argv[0]
-	cmd.Args = argv
+	e.Wrapper.Confine(cmd, dir)
 }
 
 func (e *LocalExecutionEnvironment) resolve(path string) string {
