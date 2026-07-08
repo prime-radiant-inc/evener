@@ -77,6 +77,54 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 	writeDocPage(w, name, `<pre class="doc-pre">`+htmlEscape(text)+`</pre>`)
 }
 
+// handleDocImage serves a validated image file inside a LOCAL session's working
+// directory. It mirrors /doc/file's containment boundary, but only streams v1
+// supported image media types for inline output-image previews.
+func (s *WebServer) handleDocImage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
+	}
+	session := canonicalRouteID(r.URL.Query().Get("session"))
+	rel := r.URL.Query().Get("path")
+	if session == "" || rel == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	cwd, ok := s.localSessionCWD(session)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	abs, err := fspaths.ResolveInRoot(cwd, rel)
+	if err != nil {
+		if errors.Is(err, fspaths.ErrPathEscapesRoot) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		http.NotFound(w, r)
+		return
+	}
+
+	data, _, ok := readOutputImageFile(abs)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	mediaType, ok := supportedOutputImageMedia(data, filepath.Base(abs))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Content-Type", mediaType)
+	w.Header().Set("Cache-Control", "private, max-age=60")
+	w.Header().Set("ETag", `"`+outputImageSHA(data)+`"`)
+	_, _ = w.Write(data)
+}
+
 // localSessionCWD resolves a local session's working directory from the past
 // index. Non-local (remote/codex) refs are out of scope and return false.
 func (s *WebServer) localSessionCWD(session string) (string, bool) {

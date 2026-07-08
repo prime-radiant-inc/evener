@@ -8,6 +8,7 @@ package main
 // never served.
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -53,6 +54,51 @@ func docRequest(t *testing.T, web *WebServer, session, path string) *httptest.Re
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 	return rec
+}
+
+func docImageRequest(t *testing.T, web *WebServer, session, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	u := "/doc/image?session=" + session + "&path=" + path
+	req := httptest.NewRequest(http.MethodGet, u, nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+func TestDocImageServesPNG(t *testing.T) {
+	web, cwd, session := docServeTestServer(t)
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(cwd, "out.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := docImageRequest(t, web, session, "out.png")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/png" {
+		t.Fatalf("Content-Type=%q, want image/png", ct)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), png) {
+		t.Fatalf("body=%x, want %x", rec.Body.Bytes(), png)
+	}
+}
+
+func TestDocImageRejectsTraversalAndSVG(t *testing.T) {
+	web, cwd, session := docServeTestServer(t)
+	secret := filepath.Join(filepath.Dir(cwd), "secret.png")
+	if err := os.WriteFile(secret, []byte{0x89, 0x50, 0x4e, 0x47}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if rec := docImageRequest(t, web, session, "../"+filepath.Base(secret)); rec.Code == http.StatusOK {
+		t.Fatalf("traversal image request got 200")
+	}
+	if err := os.WriteFile(filepath.Join(cwd, "x.svg"), []byte(`<svg></svg>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if rec := docImageRequest(t, web, session, "x.svg"); rec.Code == http.StatusOK {
+		t.Fatalf("svg image request got 200")
+	}
 }
 
 func TestDocFile_ServesTextFileEscaped(t *testing.T) {
