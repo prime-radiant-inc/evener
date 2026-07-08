@@ -398,6 +398,18 @@ func (e *gitCmdError) ExitCode() int { return e.code }
 // worktree name or path can never inject shell syntax (spec §2). A non-zero
 // exit is reported as a *gitCmdError carrying the code and stderr.
 func gitRunner(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+	if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
+		return func(args ...string) (string, error) {
+			res, err := local.ExecArgv(ctx, "git", args, worktreeGitTimeoutMS, "", nil)
+			if res.ExitCode != 0 {
+				return res.Stdout, &gitCmdError{code: res.ExitCode, args: args, stderr: strings.TrimSpace(res.Stderr)}
+			}
+			if err != nil {
+				return res.Stdout, err
+			}
+			return res.Stdout, nil
+		}
+	}
 	return func(args ...string) (string, error) {
 		cmd := "git " + execenv.ShellEscapeArgs(args...)
 		res, err := env.ExecCommand(ctx, cmd, worktreeGitTimeoutMS, "", nil)
