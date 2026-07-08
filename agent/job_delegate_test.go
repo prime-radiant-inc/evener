@@ -11,8 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/oklog/ulid/v2"
+
 	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
@@ -142,25 +143,53 @@ func requireDelegateRestorePreflight(t *testing.T, s *Session, rec *jobstore.Job
 func seedRetainedChildSessionWithWorkingDir(t *testing.T, parent *Session) (string, string) {
 	t.Helper()
 	workDir := t.TempDir()
+	childID := ulid.Make().String()
+	now := time.Now().UTC()
 	cfg := SessionConfig{
 		StateDir:         parent.stateDir,
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
 	}
-	cfg.spawn.depth = parent.depth + 1
-	cfg.spawn.parentSessionID = parent.ID()
-	child, err := NewSession(parent.client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), cfg)
+	meta := schema.SessionMeta{
+		ID:         childID,
+		ProfileID:  "openai",
+		Model:      "gpt-5.2",
+		Config:     cfg.toSnapshot(),
+		EnvInfo:    schema.EnvironmentInfo{WorkingDir: workDir},
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		IsSubagent: true,
+	}
+	if err := schema.SaveSessionMeta(parent.stateDir, meta); err != nil {
+		t.Fatalf("save child meta: %v", err)
+	}
+
+	tpath := filepath.Join(parent.stateDir, sessionsSubdir, childID+".transcript.jsonl")
+	tw, err := transcript.NewWriter(tpath, transcript.Header{
+		SessionID:       childID,
+		ParentSessionID: parent.ID(),
+		Task:            "retained delegate",
+		CreatedAt:       now,
+		ProfileID:       "openai",
+		Model:           "gpt-5.2",
+		WorkingDir:      workDir,
+		Depth:           parent.depth + 1,
+		BuildVersion:    BuildVersion,
+	})
 	if err != nil {
-		t.Fatalf("NewSession child: %v", err)
+		t.Fatalf("create child transcript: %v", err)
 	}
-	if child.transcript != nil {
-		if err := child.transcript.Close(); err != nil {
-			t.Fatalf("close child transcript: %v", err)
-		}
-		child.transcript = nil
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close child transcript: %v", err)
 	}
-	t.Cleanup(func() { child.Close() })
-	return child.ID(), workDir
+	childJobs, err := newJobManager(parent.stateDir, childID, func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("create child job store: %v", err)
+	}
+	if err := childJobs.closeStoreOnly(); err != nil {
+		t.Fatalf("close child job store: %v", err)
+	}
+	return childID, workDir
 }
 
 func replaceStoredDelegateRecord(t *testing.T, s *Session, rec *jobstore.JobRecord) {
