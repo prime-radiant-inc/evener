@@ -43,6 +43,9 @@ func runWrapped(t *testing.T, facts HostFacts, mode Mode, netOn bool, cwd, sessi
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	// Mirror the real spawn sites: raise the sandbox env floor (TMPDIR + cache
+	// redirect + secret drops) and inherit no extra fds.
+	cmd.Env = ApplyEnvFloor(os.Environ(), rp, sessionTmp)
 	cmd.ExtraFiles = nil
 	out, err := cmd.CombinedOutput()
 	return string(out), err
