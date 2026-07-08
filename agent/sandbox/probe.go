@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -33,12 +34,11 @@ type HostFacts struct {
 	// namespaces it needs (unprivileged user namespaces work). bwrap serves the
 	// full mode matrix and net=off, so this being true is what lets every mode run.
 	//
-	// M1 caveat: RealProber currently sets this from a bwrap-presence + `--version`
-	// check only — it does NOT yet confirm unprivileged userns actually works (a
-	// host with apparmor_restrict_unprivileged_userns would still `--version` fine).
-	// M3 upgrades RealProber to a real userns-execution probe before any enforcement
-	// path consumes this field. Until then, treat a true value as "bwrap present",
-	// not "userns proven". Tests set it directly via FakeProber.
+	// RealProber sets this from a real userns-execution probe (M3): it runs a
+	// trivial fully namespaced sandbox and reports true only if it exits 0, so a
+	// host with apparmor_restrict_unprivileged_userns=1 (which `--version` fine but
+	// cannot namespace) reports false and the floor refuses. Tests set it directly
+	// via FakeProber.
 	BwrapCapable bool
 
 	// OverlaySupported reports that bwrap can mount a read-real/write-private
@@ -112,7 +112,8 @@ func (RealProber) Probe() HostFacts {
 
 	if path, err := exec.LookPath("bwrap"); err == nil {
 		facts.BwrapPath = path
-		facts.BwrapCapable = bwrapExecutable(path)
+		facts.BwrapCapable = bwrapUsernsWorks(path)
+		facts.OverlaySupported = bwrapSupportsOverlay(path)
 	}
 
 	if runtime.GOOS == "darwin" {
@@ -125,14 +126,36 @@ func (RealProber) Probe() HostFacts {
 	return facts
 }
 
-// bwrapExecutable reports whether the resolved bwrap binary runs at all
-// (`bwrap --version` exits 0). This is a presence-and-executability check, not a
-// namespace-capability check — M3 replaces it with a trivial sandboxed execution
-// that proves unprivileged user namespaces actually work on this host.
-func bwrapExecutable(path string) bool {
+// bwrapUsernsWorks reports whether the resolved bwrap binary can actually create
+// the namespaces our confinement needs on THIS host. Presence + `--version` is
+// not enough: a host with apparmor_restrict_unprivileged_userns=1 (Ubuntu 24.04)
+// ships a runnable bwrap that cannot create an unprivileged user namespace, so it
+// would `--version` fine yet fail every real sandbox. This runs a trivial fully
+// namespaced sandbox (`true`) and reports success only if it exits 0 — the exact
+// capability the kernel wrapper relies on. Fail-closed: any error is "not
+// capable" so the floor refuses rather than half-enforcing.
+func bwrapUsernsWorks(path string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), probeCommandTimeout)
 	defer cancel()
-	return exec.CommandContext(ctx, path, "--version").Run() == nil
+	cmd := exec.CommandContext(ctx, path,
+		"--unshare-user", "--unshare-pid", "--die-with-parent",
+		"--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev",
+		"--", "true")
+	return cmd.Run() == nil
+}
+
+// bwrapSupportsOverlay reports whether this bwrap build was compiled with overlay
+// support (`--overlay-src`/`--tmp-overlay`). Only affects cache strategy: when
+// false, cache roots degrade to the session-private redirect (never persistent-
+// writable). bubblewrap 0.9.0 built without overlay omits the option from --help.
+func bwrapSupportsOverlay(path string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), probeCommandTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, path, "--help").CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), "--overlay-src")
 }
 
 // probeKernelVersion returns `uname -r` best-effort, or "" if unavailable.
