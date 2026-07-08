@@ -43,7 +43,7 @@ fi
 # Package/test parallelism controls for heavyweight modules. Explicit empty
 # values mean "don't pass the flag" so go test uses its defaults; the -race gate
 # sets AGENT_PARALLEL empty to avoid oversubscribing few-core CI.
-ROOT_P=${ROOT_P-12}
+ROOT_P=${ROOT_P-6}
 AGENT_PARALLEL=${AGENT_PARALLEL-32}
 AGENT_P=${AGENT_P-4}
 
