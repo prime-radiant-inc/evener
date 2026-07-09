@@ -107,6 +107,12 @@ type StatusInfo struct {
 	// daemon-truth: Codex-sourced threads and old daemons never set it, so
 	// absence decodes as false everywhere downstream.
 	PendingAsk bool `json:"pending_ask,omitempty"`
+	// PendingEscalation mirrors the session's HasPendingEscalations() — true while a
+	// sandbox-exemption escalation (M7) is blocked awaiting a human. The hub's
+	// prober polls it so the owning session lights up cross-session (needs-you
+	// badge) even mid-turn (an escalation blocks WHILE the status is "active").
+	// Additive/daemon-truth, absent-decodes-false like PendingAsk.
+	PendingEscalation bool `json:"pending_escalation,omitempty"`
 }
 
 // ContextMetrics describes the estimated size of the active session context.
@@ -165,6 +171,7 @@ type Server struct {
 	clearFunc           func(context.Context) error
 	pressureFn          func() float64
 	pendingAskFn        func() bool
+	pendingEscalationFn func() bool
 	contextMetricsFn    func() ContextMetrics
 	// workMetricsFn returns the live working-state/token metrics (WS2 A7):
 	// accumulated wall-clock work time, cumulative token usage (nil when
@@ -416,6 +423,15 @@ func (s *Server) SetContextPressureFunc(fn func() float64) {
 func (s *Server) SetPendingAskFunc(fn func() bool) {
 	s.mu.Lock()
 	s.pendingAskFn = fn
+	s.mu.Unlock()
+}
+
+// SetPendingEscalationFunc sets a callback to retrieve the live pending-escalation
+// bit (M7): true while a sandbox-exemption escalation is blocked awaiting a human.
+// Read by /status so the hub's prober can raise the owning session's needs-you badge.
+func (s *Server) SetPendingEscalationFunc(fn func() bool) {
+	s.mu.Lock()
+	s.pendingEscalationFn = fn
 	s.mu.Unlock()
 }
 

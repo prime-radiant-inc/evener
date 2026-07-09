@@ -226,11 +226,11 @@ type fakeProber struct {
 	shouldFail bool
 }
 
-func (p fakeProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, ok bool) {
+func (p fakeProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, pendingEscalation, ok bool) {
 	if p.shouldFail {
-		return "", "", false, false
+		return "", "", false, false, false
 	}
-	return p.sessionID, p.status, p.pendingAsk, true
+	return p.sessionID, p.status, p.pendingAsk, false, true
 }
 
 func TestRoster_CarriesPendingAskFromProber(t *testing.T) {
@@ -256,13 +256,13 @@ type gateProber struct {
 	started   chan struct{}
 }
 
-func (p *gateProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, ok bool) {
+func (p *gateProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, pendingEscalation, ok bool) {
 	select {
 	case p.started <- struct{}{}:
 	default:
 	}
 	<-p.gate
-	return p.sessionID, "", false, true
+	return p.sessionID, "", false, false, true
 }
 
 // TestRoster_ListStaysResponsiveDuringSlowProbe is the regression test for the
@@ -310,11 +310,11 @@ type flakyProber struct {
 	fail      bool
 }
 
-func (p *flakyProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, ok bool) {
+func (p *flakyProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, pendingEscalation, ok bool) {
 	if p.fail {
-		return "", "", false, false
+		return "", "", false, false, false
 	}
-	return p.sessionID, p.status, false, true
+	return p.sessionID, p.status, false, false, true
 }
 
 func TestPreferLiveEntry(t *testing.T) {
@@ -403,8 +403,8 @@ type statusProber struct {
 	status    string
 }
 
-func (p *statusProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, ok bool) {
-	return p.sessionID, p.status, false, true
+func (p *statusProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, pendingEscalation, ok bool) {
+	return p.sessionID, p.status, false, false, true
 }
 
 // TestRoster_OnStatusChangeFiresForTransitioningSession is the regression

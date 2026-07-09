@@ -391,6 +391,7 @@ func runServe(args []string) error {
 	})
 	srv.SetSessionMetaFunc(func() schema.SessionMeta { return getSession().Meta() })
 	srv.SetPendingAskFunc(func() bool { return getSession().HasPendingAsk() })
+	srv.SetPendingEscalationFunc(func() bool { return getSession().HasPendingEscalations() })
 	srv.SetModelFunc(func(model string) { getSession().SetModel(model) })
 	srv.SetNameFunc(func(name string) { getSession().Rename(name) })
 	srv.SetReasoningEffortFunc(func(effort string) { getSession().SetReasoningEffort(effort) })

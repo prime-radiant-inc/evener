@@ -94,6 +94,13 @@ func DeriveAttention(metas []schema.SessionMeta, live []LiveEntry, decisions map
 			continue
 		}
 		level := attentionLevel(NormalizeState(le.Status))
+		// A blocked sandbox-exemption escalation (M7) needs the human NOW, but it
+		// blocks mid-turn so the daemon status is still "active" (level "working").
+		// Promote to needs_you so the owning session lights up cross-session — additive
+		// to any other reason, and it never downgrades an "error" state.
+		if le.PendingEscalation && level != "error" {
+			level = "needs_you"
+		}
 		e := AttentionEntry{ID: le.SessionID, Level: level, AskPending: le.PendingAsk}
 		if meta != nil {
 			e.Title = nodeTitle(*meta, nodeKind(*meta))
