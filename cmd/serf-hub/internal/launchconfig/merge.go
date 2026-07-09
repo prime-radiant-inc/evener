@@ -78,6 +78,17 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 			prov["openai_responses_continuation"] = name
 			nonEmpty = true
 		}
+		if l.Sandbox != "" {
+			eff.Sandbox = l.Sandbox
+			prov["sandbox"] = name
+			nonEmpty = true
+		}
+		if l.SandboxNet != nil {
+			v := *l.SandboxNet
+			eff.SandboxNet = &v
+			prov["sandbox_net"] = name
+			nonEmpty = true
+		}
 		if l.MaxRounds != nil {
 			v := *l.MaxRounds
 			eff.MaxRounds = &v

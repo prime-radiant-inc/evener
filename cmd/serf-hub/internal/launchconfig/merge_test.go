@@ -43,6 +43,45 @@ func TestMerge_ScalarPrecedence(t *testing.T) {
 	}
 }
 
+// TestMerge_Sandbox: a global sandbox default is inherited when the launch layer
+// leaves it unset, but an explicit launch value overrides it — including overriding
+// a global restricted back to off. SandboxNet follows the non-nil-wins pointer rule.
+func TestMerge_Sandbox(t *testing.T) {
+	// Global restricted + launch unset → inherit restricted.
+	got, _ := mergeLayers(map[LayerName]Layer{
+		LayerGlobal: {Sandbox: "restricted", SandboxNet: ptrBool(true)},
+		LayerLaunch: {},
+	})
+	if got.Effective.Sandbox != "restricted" {
+		t.Errorf("Sandbox = %q, want restricted (inherited from global)", got.Effective.Sandbox)
+	}
+	if got.Provenance["sandbox"] != LayerGlobal {
+		t.Errorf("Provenance[sandbox] = %q, want global", got.Provenance["sandbox"])
+	}
+	if got.Effective.SandboxNet == nil || !*got.Effective.SandboxNet {
+		t.Errorf("SandboxNet = %v, want inherited true", got.Effective.SandboxNet)
+	}
+
+	// Global restricted + launch explicit off → override to off (a launch layer
+	// must be able to turn a global default back off).
+	got, _ = mergeLayers(map[LayerName]Layer{
+		LayerGlobal: {Sandbox: "restricted", SandboxNet: ptrBool(true)},
+		LayerLaunch: {Sandbox: "off", SandboxNet: ptrBool(false)},
+	})
+	if got.Effective.Sandbox != "off" {
+		t.Errorf("Sandbox = %q, want off (launch override)", got.Effective.Sandbox)
+	}
+	if got.Provenance["sandbox"] != LayerLaunch {
+		t.Errorf("Provenance[sandbox] = %q, want launch", got.Provenance["sandbox"])
+	}
+	if got.Effective.SandboxNet == nil || *got.Effective.SandboxNet {
+		t.Errorf("SandboxNet = %v, want explicit launch false", got.Effective.SandboxNet)
+	}
+	if got.Provenance["sandbox_net"] != LayerLaunch {
+		t.Errorf("Provenance[sandbox_net] = %q, want launch", got.Provenance["sandbox_net"])
+	}
+}
+
 func TestMerge_ScalarPointerSemantics(t *testing.T) {
 	g := Layer{MaxRounds: ptrInt(200), NonInteractive: ptrBool(true), RawHTTPLogging: ptrBool(true)}
 	l := Layer{NonInteractive: ptrBool(false), RawHTTPLogging: ptrBool(false)}

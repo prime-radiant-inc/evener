@@ -19,6 +19,7 @@ func TestLaunchOptionSchema_FieldCoverage(t *testing.T) {
 		"system_prompt_append_mode", "system_prompt_append_file", "system_prompt_append_text",
 		"skills_dirs", "plugin_dirs", "mcp_configs", "mcps",
 		"model_fallbacks", "env",
+		"sandbox", "sandbox_net",
 		"verbose", "raw_http_logging", "trace_file", "cpu_profile", "export_atif_path", "export_atif_provider_handles",
 	}
 	wantSet := map[string]bool{}
@@ -100,6 +101,50 @@ func TestLaunchOptionSchema_ExportATIFProviderHandles(t *testing.T) {
 		if opt.Choices[i].Value != want {
 			t.Fatalf("Choices = %+v, want values %v", opt.Choices, wantChoices)
 		}
+	}
+}
+
+func TestLaunchOptionSchema_Sandbox(t *testing.T) {
+	opts := LaunchOptionSchema()
+
+	sb := indexOption(opts, "sandbox")
+	if sb < 0 {
+		t.Fatal("schema missing sandbox")
+	}
+	if opts[sb].WireField != "sandbox" {
+		t.Errorf("sandbox WireField = %q, want sandbox", opts[sb].WireField)
+	}
+	if opts[sb].Group != LaunchGroupSandbox {
+		t.Errorf("sandbox Group = %q, want %q", opts[sb].Group, LaunchGroupSandbox)
+	}
+	if opts[sb].Kind != LaunchControlSelect {
+		t.Errorf("sandbox Kind = %q, want %q", opts[sb].Kind, LaunchControlSelect)
+	}
+	if !opts[sb].PerLaunch || opts[sb].DebugOnly {
+		t.Errorf("sandbox PerLaunch/DebugOnly = %v/%v, want true/false", opts[sb].PerLaunch, opts[sb].DebugOnly)
+	}
+	wantChoices := []string{"", "off", "read-only", "workspace-write", "restricted"}
+	if len(opts[sb].Choices) != len(wantChoices) {
+		t.Fatalf("sandbox Choices = %+v, want values %v", opts[sb].Choices, wantChoices)
+	}
+	for i, want := range wantChoices {
+		if opts[sb].Choices[i].Value != want {
+			t.Fatalf("sandbox Choices = %+v, want values %v", opts[sb].Choices, wantChoices)
+		}
+	}
+
+	sn := indexOption(opts, "sandbox_net")
+	if sn < 0 {
+		t.Fatal("schema missing sandbox_net")
+	}
+	if opts[sn].WireField != "sandboxNet" {
+		t.Errorf("sandbox_net WireField = %q, want sandboxNet", opts[sn].WireField)
+	}
+	if opts[sn].Group != LaunchGroupSandbox {
+		t.Errorf("sandbox_net Group = %q, want %q", opts[sn].Group, LaunchGroupSandbox)
+	}
+	if opts[sn].Kind != LaunchControlBoolean {
+		t.Errorf("sandbox_net Kind = %q, want %q", opts[sn].Kind, LaunchControlBoolean)
 	}
 }
 

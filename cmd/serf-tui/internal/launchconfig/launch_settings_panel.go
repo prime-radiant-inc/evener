@@ -335,6 +335,8 @@ func applyEdit(layer appwire.LaunchConfigLayer, field, value string) (appwire.La
 		layer.ContextStrategy = strings.TrimSpace(value)
 	case "openai_responses_continuation":
 		layer.OpenAIResponsesContinuation = strings.TrimSpace(value)
+	case "sandbox":
+		layer.Sandbox = strings.TrimSpace(value)
 	case "export_atif_provider_handles":
 		layer.ExportATIFProviderHandles = strings.TrimSpace(value)
 	case "max_rounds":
@@ -361,6 +363,12 @@ func applyEdit(layer appwire.LaunchConfigLayer, field, value string) (appwire.La
 			return layer, err
 		}
 		layer.NoProjectPrompts = v
+	case "sandbox_net":
+		v, err := parseOptionalBool(value)
+		if err != nil {
+			return layer, err
+		}
+		layer.SandboxNet = v
 	case "verbose":
 		v, err := parseOptionalBool(value)
 		if err != nil {
