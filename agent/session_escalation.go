@@ -41,6 +41,15 @@ type sandboxGranter interface {
 //     session has no pending escalation; the interrupted call reads as an IsError
 //     orphan-repair placeholder, exactly like an interrupted ask_user.
 
+// escalationWaiter is one blocked, unresolved escalation: the buffered channel its
+// tool-exec goroutine parks on, plus the redacted card payload the daemon
+// snapshots onto thread/read and reports on /status. The payload is the same
+// human-facing event data emitted on the stream — never anything the model sees.
+type escalationWaiter struct {
+	ch   chan sandbox.EscalationDecision
+	data events.SandboxEscalationRequestedData
+}
+
 // ctxEscalationGrantKey carries a single granted absolute path on the context of
 // one approved re-dispatch. It is a per-invocation grant: it lives only on that
 // one call's context, never on the session and never on the resolved policy, so it
@@ -153,6 +162,8 @@ func (s *Session) escalateOnSandboxDenial(ctx context.Context, callName string, 
 
 	id := newEscalationID()
 	ch := make(chan sandbox.EscalationDecision, 1)
+	req := sandbox.NewEscalationRequest(id, denied)
+	data := escalationRequestedData(req)
 
 	s.mu.Lock()
 	if s.closing {
@@ -160,9 +171,9 @@ func (s *Session) escalateOnSandboxDenial(ctx context.Context, callName string, 
 		return res // a session already tearing down denies rather than blocks
 	}
 	if s.pendingEscalations == nil {
-		s.pendingEscalations = map[string]chan sandbox.EscalationDecision{}
+		s.pendingEscalations = map[string]*escalationWaiter{}
 	}
-	s.pendingEscalations[id] = ch
+	s.pendingEscalations[id] = &escalationWaiter{ch: ch, data: data}
 	s.mu.Unlock()
 
 	// Remove the waiter on every exit path (resolve, interrupt, close). Idempotent
@@ -177,8 +188,7 @@ func (s *Session) escalateOnSandboxDenial(ctx context.Context, callName string, 
 	// human, then the goroutine waits. The payload carries the FULL denied path for
 	// informed consent (only non-sensitive, grant-curable denials reach here; a
 	// sensitive path would degrade to "<denied>") — never file contents.
-	req := sandbox.NewEscalationRequest(id, denied)
-	s.emit(events.EventSandboxEscalationRequested, escalationRequestedData(req))
+	s.emit(events.EventSandboxEscalationRequested, data)
 
 	select {
 	case d := <-ch:
@@ -197,7 +207,7 @@ func (s *Session) escalateOnSandboxDenial(ctx context.Context, callName string, 
 // (no panic, no block), so a double-click or a stale card cannot double-approve.
 func (s *Session) ResolveSandboxEscalation(id string, approve bool) error {
 	s.mu.Lock()
-	ch, ok := s.pendingEscalations[id]
+	w, ok := s.pendingEscalations[id]
 	if ok {
 		delete(s.pendingEscalations, id)
 	}
@@ -205,8 +215,35 @@ func (s *Session) ResolveSandboxEscalation(id string, approve bool) error {
 	if !ok {
 		return fmt.Errorf("sandbox escalation %q is not pending (unknown or already resolved)", id)
 	}
-	ch <- sandbox.EscalationDecision{Approve: approve} // buffered(1); exactly one send
+	w.ch <- sandbox.EscalationDecision{Approve: approve} // buffered(1); exactly one send
 	return nil
+}
+
+// HasPendingEscalations reports whether any sandbox-exemption escalation is
+// currently blocked awaiting a human. The daemon surfaces it on /status as an
+// attention flag so the owning session lights up cross-session (the hub's
+// needs-you badge) — it is a HUMAN-CLIENT signal, never shown to the model.
+func (s *Session) HasPendingEscalations() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.pendingEscalations) > 0
+}
+
+// PendingEscalations returns the redacted card payloads of the currently-blocked
+// escalations, for the thread/read snapshot so a fresh / other client surfaces the
+// card on entry. HUMAN-CLIENT data only — it is never appended to history or any
+// model-visible projection.
+func (s *Session) PendingEscalations() []events.SandboxEscalationRequestedData {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.pendingEscalations) == 0 {
+		return nil
+	}
+	out := make([]events.SandboxEscalationRequestedData, 0, len(s.pendingEscalations))
+	for _, w := range s.pendingEscalations {
+		out = append(out, w.data)
+	}
+	return out
 }
 
 // cancelAllEscalations denies every pending escalation. Called from Close so a
@@ -218,8 +255,8 @@ func (s *Session) cancelAllEscalations() {
 	pending := s.pendingEscalations
 	s.pendingEscalations = nil
 	s.mu.Unlock()
-	for _, ch := range pending {
-		ch <- sandbox.EscalationDecision{Approve: false}
+	for _, w := range pending {
+		w.ch <- sandbox.EscalationDecision{Approve: false}
 	}
 }
 

@@ -185,6 +185,33 @@ func TestEscalation_OnlyCurableContainmentDenialsEscalate(t *testing.T) {
 	}
 }
 
+func TestEscalation_HasAndListPending(t *testing.T) {
+	s := escalatableSession(t)
+	if s.HasPendingEscalations() {
+		t.Fatal("no escalation should be pending initially")
+	}
+	res, _ := deniedResult("/etc/hosts")
+	done := make(chan tool.ExecResult, 1)
+	go func() {
+		done <- s.escalateOnSandboxDenial(context.Background(), "read_file", res, func(context.Context) tool.ExecResult { return succeededResult() })
+	}()
+	ids := awaitPending(t, s, 1)
+	if !s.HasPendingEscalations() {
+		t.Fatal("HasPendingEscalations must be true while blocked (drives the cross-session attention flag)")
+	}
+	list := s.PendingEscalations()
+	if len(list) != 1 || list[0].EscalationID != ids[0] || list[0].DeniedPath != "/etc/hosts" {
+		t.Fatalf("PendingEscalations must expose the redacted card payload for the snapshot: %+v", list)
+	}
+	if err := s.ResolveSandboxEscalation(ids[0], false); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	<-done
+	if s.HasPendingEscalations() || len(s.PendingEscalations()) != 0 {
+		t.Fatal("pending escalation state must clear after resolve")
+	}
+}
+
 func TestEscalation_NonSandboxErrorUntouched(t *testing.T) {
 	s := escalatableSession(t)
 	res := tool.ExecResult{ToolName: "shell", CallID: "c", IsError: true, FullOutput: "boom", Err: context.DeadlineExceeded}
