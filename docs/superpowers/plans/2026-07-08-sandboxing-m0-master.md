@@ -109,16 +109,13 @@ before editing — they will drift as milestones land):
 - [x] M1 — policy core + contract tests (merged `4ff14d37` + fixes; roborev 2 rounds clean)
 - [x] M2 — file-tool race-safe in-process layer (merged `b19ae7cc`; roborev+fix; go test green)
 - [x] M3 — Linux kernel layer, flag inert (merged `42b09c1f`+fix; roborev found+fixed 3 Highs; go test green)
-- [ ] M4 — subagent/worktree scoping
-- [ ] M5 — flag goes live on Linux (GATE: Jesse review)
-- [~] M6 — macOS Seatbelt: BUILT on `wip/sandbox-m6` (SBPL generator + backend
-  wiring + golden/fuzz tests + gated live suite `scripts/seatbelt-smoke.sh`).
-  Linux `go test ./agent/...`, `make vet`, golangci, `GOOS=darwin` build+vet all
-  green; 2 adversarial reviewers → both HIGHs fixed (platform-defaults override →
-  authoritative trailing denies; MCP/hook cwd parity). NOT merged. paradise-park
-  live validation PENDING (dev host is Linux + no non-interactive ssh) — run
-  `SERF_SEATBELT_LIVE=1 go test ./agent/sandbox/ -run TestSeatbeltLive` +
-  `scripts/seatbelt-smoke.sh` on the Mac.
+- [x] M4 — subagent/worktree scoping (merged `fe0dff29`; roborev fixed fail-open
+  worktree-switch High + probe fork-storm + cleanup ordering; go test green)
+- [ ] M5 — flag goes live on Linux (GATE: Jesse review) — NEXT
+- [x] M6 — macOS Seatbelt (merged `a76d330e`; roborev fixed firmlink-alias High +
+  Confine/cwd; Linux+`GOOS=darwin` build/vet green). ⚠️ paradise-park LIVE
+  validation PENDING (Jesse): `SERF_SEATBELT_LIVE=1 go test ./agent/sandbox/ -run
+  TestSeatbeltLive` + `scripts/seatbelt-smoke.sh` on the Mac.
 - [ ] M7 — in-UI escalation
 
 ## Cross-milestone reconciliation (added 2026-07-08 after the M2–M7 plan drafts)
