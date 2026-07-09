@@ -88,6 +88,21 @@ type LocalExecutionEnvironment struct {
 	// swap cannot redirect resolution). It stays nil for off / a nil policy.
 	sbMu sync.Mutex
 	sbfs *sandboxFS
+
+	// sandboxReRootErr records a fail-closed re-root refusal from the
+	// WithWorkingDirectory that produced this env: when re-anchoring Sandbox/Wrapper
+	// to the new worktree failed (a mode+net the host cannot satisfy at that target),
+	// Sandbox and Wrapper are left nil and this holds the typed refusal so the caller
+	// (a delegate/subagent spawn, a worktree switch) can surface it rather than
+	// silently running the child unconfined. nil on every successful or off re-root.
+	sandboxReRootErr error
+
+	// ownedSessionTmp, when non-nil, is a per-session/per-lane scratch dir this env
+	// OWNS: Cleanup() disposes it at session/lane end. It is provisioned at sandbox
+	// construction (EnableSandbox) and deliberately NOT copied by WithWorkingDirectory
+	// — a re-rooted clone shares the wrapper's tmp path but must never dispose the
+	// owner's dir out from under it. nil for off and for re-rooted clones.
+	ownedSessionTmp *sandbox.SessionTmp
 }
 
 // sandbox returns the environment's fd-anchored enforcement layer, or nil when
@@ -104,6 +119,19 @@ func (e *LocalExecutionEnvironment) sandbox() *sandboxFS {
 		e.sbfs = newSandboxFS(e.Sandbox)
 	}
 	return e.sbfs
+}
+
+// invalidateSandboxFS closes and drops the cached fd-anchored enforcement layer so
+// the next file tool rebuilds it from the current policy. It MUST run whenever
+// e.Sandbox is replaced (EnableSandbox, UseControlPolicy); a stale sbfs captured
+// the OLD policy's root fds and would keep enforcing the OLD roots.
+func (e *LocalExecutionEnvironment) invalidateSandboxFS() {
+	e.sbMu.Lock()
+	defer e.sbMu.Unlock()
+	if e.sbfs != nil {
+		e.sbfs.close()
+		e.sbfs = nil
+	}
 }
 
 // gitRootCache memoizes git-root lookups per working dir. A session resolves the
@@ -149,6 +177,63 @@ func (e *LocalExecutionEnvironment) SetFs(fs afero.Fs) *LocalExecutionEnvironmen
 	return e
 }
 
+// EnableSandbox provisions this env for a sandboxed session from an already-
+// resolved policy: it creates a fresh per-session tmp (NewSessionTmp) that the env
+// OWNS and disposes at Cleanup, attaches the policy, and — on the bwrap backend —
+// builds the kernel wrapper from the policy, the probed bwrap binary, and that
+// tmp. It is the single "provision at env construction, clean at session end"
+// wiring point the live flag path (M5) and M4's own tests call; the --sandbox flag
+// stays feature-gated, so production does not reach it yet.
+//
+// A nil or non-enforced (off) policy is a no-op beyond carrying the pointer: no
+// tmp is provisioned and no wrapper is built, so an off env stays byte-identical
+// to today. A non-bwrap enforced backend (Seatbelt, M6) attaches the policy and
+// session tmp for the in-process file-tool layer but leaves the kernel wrapper nil
+// here (its wrapper is M6's). On any failure the provisioned tmp is disposed and
+// the env is left unsandboxed so a half-wired sandbox never runs.
+func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy) error {
+	// EnableSandbox establishes the COMPLETE sandbox state, so it always resets any
+	// stale re-root error and, on the off path, any policy/wrapper a prior
+	// WithWorkingDirectory re-rooted onto this env — a delegate's box must be a pure
+	// function of ITS OWN policy, never a parent's leaked one. The policy is being
+	// replaced, so drop the cached fd layer, and dispose any tmp a prior call owned
+	// so a second EnableSandbox never leaks the first's dir.
+	e.sandboxReRootErr = nil
+	e.invalidateSandboxFS()
+	if e.ownedSessionTmp != nil {
+		_ = e.ownedSessionTmp.Cleanup()
+		e.ownedSessionTmp = nil
+	}
+	if policy == nil || !policy.Enforced() {
+		e.Sandbox = policy
+		e.Wrapper = nil
+		return nil
+	}
+	tmp, err := sandbox.NewSessionTmp("")
+	if err != nil {
+		// Leave the env unsandboxed: a half-wired sandbox must never run, and the
+		// prior policy/wrapper (torn down above) must not silently persist.
+		e.Sandbox = nil
+		e.Wrapper = nil
+		return err
+	}
+	if policy.Backend == sandbox.BackendBwrap {
+		w, werr := sandbox.NewWrapper(*policy, policy.HostBwrapPath(), tmp.Dir)
+		if werr != nil {
+			_ = tmp.Cleanup()
+			e.Sandbox = nil
+			e.Wrapper = nil
+			return werr
+		}
+		e.Wrapper = w
+	} else {
+		e.Wrapper = nil
+	}
+	e.Sandbox = policy
+	e.ownedSessionTmp = tmp
+	return nil
+}
+
 // filesystem returns the environment's filesystem, defaulting to the OS
 // filesystem when one was never injected (e.g. a zero-value environment).
 func (e *LocalExecutionEnvironment) filesystem() afero.Fs {
@@ -160,17 +245,86 @@ func (e *LocalExecutionEnvironment) filesystem() afero.Fs {
 
 // WithWorkingDirectory returns a new LocalExecutionEnvironment that uses the
 // given directory as its root but shares PID tracking with the parent.
+//
+// The sandbox policy and kernel wrapper are RE-ROOTED to dir, not copied: their
+// resolved roots are anchored at this env's worktree, so a plain pointer-copy to a
+// child at a different worktree (a delegate isolation lane) would confine the
+// child to the PARENT's lane — a containment hole. ReRoot re-runs the root+gitdir
+// resolution against dir from the policy's retained inputs, so the child is
+// confined to ITS worktree with fresh gitdir resolution. A nil policy re-roots to
+// nil (off stays byte-identical to before). A re-root the host cannot satisfy is
+// captured in sandboxReRootErr (Sandbox/Wrapper left nil) and surfaced via
+// SandboxReRootError() — the infallible signature is preserved for the wide caller
+// set. The owned session tmp is NOT copied: only the constructing env disposes it.
 func (e *LocalExecutionEnvironment) WithWorkingDirectory(dir string) *LocalExecutionEnvironment {
-	return &LocalExecutionEnvironment{
+	child := &LocalExecutionEnvironment{
 		RootDir:     dir,
 		EnvPolicy:   e.EnvPolicy,
 		runningPIDs: e.runningPIDs,
 		gitRoots:    &gitRootCache{m: map[string]string{}},
 		mainRoots:   &gitRootCache{m: map[string]string{}},
 		fs:          e.fs,
-		Sandbox:     e.Sandbox, // inherited by re-rooted children like EnvPolicy
-		Wrapper:     e.Wrapper, // M3: fixed to the session worktree; M4 re-roots per child lane
 	}
+	if e.Sandbox != nil {
+		if rerooted, err := e.Sandbox.ReRoot(dir); err != nil {
+			child.sandboxReRootErr = err
+		} else {
+			child.Sandbox = rerooted
+		}
+	}
+	if e.Wrapper != nil {
+		if rerooted, err := e.Wrapper.ReRoot(dir); err != nil {
+			child.sandboxReRootErr = err
+		} else {
+			child.Wrapper = rerooted
+		}
+	}
+	// Fail closed as a UNIT: if either re-root failed, nil BOTH so the child is
+	// never left half-confined (a re-rooted Sandbox alongside a nil Wrapper, or the
+	// reverse) — the sticky error is what the caller surfaces. Structurally enforced
+	// here rather than relying on both re-roots failing identically.
+	if child.sandboxReRootErr != nil {
+		child.Sandbox = nil
+		child.Wrapper = nil
+	}
+	return child
+}
+
+// SandboxReRootError returns the fail-closed refusal from the WithWorkingDirectory
+// that built this env, or nil when the re-root succeeded (or the env is off). A
+// delegate/subagent spawn and a managed-worktree switch check it so a policy the
+// host cannot re-anchor to the target worktree surfaces as an error rather than a
+// silently unconfined child.
+func (e *LocalExecutionEnvironment) SandboxReRootError() error { return e.sandboxReRootErr }
+
+// UseControlPolicy replaces this env's sandbox policy (and kernel wrapper) with the
+// manage_worktree CONTROL variant anchored at mainRepoRoot — the main repo +
+// worktree registry writable, .git/config and hooks write-denied — so a worktree
+// lifecycle op (create/switch/remove/lock) manages the registry without carrying
+// the current worktree's tool policy. It is meant to run on an env freshly
+// produced by WithWorkingDirectory(mainRepoRoot): the re-root establishes the base,
+// this narrows it to the control grants. A nil policy (off) is a no-op; a control
+// policy the host cannot satisfy is returned as an error so the lifecycle op is
+// refused (fail closed) rather than run with the wrong scope.
+func (e *LocalExecutionEnvironment) UseControlPolicy(mainRepoRoot string) error {
+	if e.Sandbox == nil {
+		return nil
+	}
+	ctrl, err := e.Sandbox.ControlPolicy(mainRepoRoot)
+	if err != nil {
+		return err
+	}
+	e.Sandbox = ctrl
+	// The policy was replaced, so drop the cached fd layer built from the old one.
+	e.invalidateSandboxFS()
+	if e.Wrapper != nil && ctrl != nil {
+		w, werr := e.Wrapper.WithPolicy(*ctrl)
+		if werr != nil {
+			return werr
+		}
+		e.Wrapper = w
+	}
+	return nil
 }
 
 // Initialize prepares the environment for use.
@@ -208,6 +362,18 @@ func (e *LocalExecutionEnvironment) Cleanup() {
 		e.sbfs = nil
 	}
 	e.sbMu.Unlock()
+
+	// Dispose the per-session/per-lane scratch dir this env owns (provisioned by
+	// EnableSandbox) only AFTER the SIGTERM/grace/SIGKILL sequence below: the tracked
+	// children's TMPDIR/GOCACHE/npm/cargo caches (via ApplyEnvFloor) point into this
+	// dir, so removing it before a graceful shutdown would pull it out from under
+	// them. defer runs last on every return path, including the no-children early
+	// return, so the dir is never leaked. Re-rooted clones never own one, so a
+	// clone's Cleanup never removes the owner's tmp.
+	if tmp := e.ownedSessionTmp; tmp != nil {
+		e.ownedSessionTmp = nil
+		defer func() { _ = tmp.Cleanup() }()
+	}
 
 	// Collect running PIDs and send SIGTERM.
 	var pids []int

@@ -96,6 +96,28 @@ type DelegateRestoreDescriptor struct {
 	// manage_worktree deny off this field; empty for an ordinary delegate.
 	Isolation  string             `json:"isolation,omitempty"`
 	Provenance *provenance.Causal `json:"provenance,omitempty"`
+	// Sandbox is the delegate's sandbox policy INPUTS (mode/net/denylist-deltas/
+	// extra-roots), captured at spawn and persisted so a resumed delegate can
+	// RE-RESOLVE its confinement against its own worktree lane plus freshly-probed
+	// host facts on restore — never the worktree-anchored resolved roots (a config
+	// that loosened between serf runs must not widen a live delegate's box). nil for
+	// an unsandboxed (off) delegate, so its descriptor is byte-identical to today.
+	Sandbox *SandboxSnapshot `json:"sandbox,omitempty"`
+}
+
+// SandboxSnapshot is the durable, live-type-decoupled mirror of a delegate's
+// sandbox policy INPUTS (the WatchConfigSnapshot house pattern): the mode name,
+// the network tri-state, and the user denylist/root extensions. It carries
+// serializable inputs, NOT resolved roots — restore re-resolves it against the
+// delegate's lane and re-probed host facts, honoring the immutable-across-restart
+// guarantee. An off delegate persists no snapshot.
+type SandboxSnapshot struct {
+	Mode               string   `json:"mode"`
+	Network            *bool    `json:"network,omitempty"`
+	DenylistAdd        []string `json:"denylist_add,omitempty"`
+	DenylistRemove     []string `json:"denylist_remove,omitempty"`
+	ExtraWritableRoots []string `json:"extra_writable_roots,omitempty"`
+	ExtraReadRoots     []string `json:"extra_read_roots,omitempty"`
 }
 
 // DelegateRecord is the folded durable state for a delegate handle.

@@ -7,6 +7,7 @@ import (
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/provider"
+	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
@@ -255,6 +256,12 @@ type testConfig struct {
 	// noSyncJobStore skips jobstore fsyncs for tests whose contract is not crash
 	// durability. The event bytes and append/load behavior stay the same.
 	noSyncJobStore bool
+
+	// sandboxProber, when non-nil, supplies the host facts used to RE-RESOLVE a
+	// resumed delegate's persisted sandbox policy against its lane. Production
+	// leaves it nil and probes the live host (sandbox.RealProber); tests inject a
+	// sandbox.FakeProber so the resume path never shells out to bwrap.
+	sandboxProber sandbox.Prober
 }
 
 // spawnConfig holds the SessionConfig fields that only spawnAgent (plus the

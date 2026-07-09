@@ -300,6 +300,116 @@ func rootGrants(roots []string, target string) bool {
 	return false
 }
 
+// ReRootCase is one cell of the re-root contract: a (mode, network, host)
+// request whose resolved policy is re-rooted from one lane to a sibling lane of
+// the same main repo. AssertReRoot materializes the lanes and asserts the
+// re-rooted policy re-anchors to the TARGET lane (never the source's), so every
+// backend (bwrap now, Seatbelt in M6) is held to the same "same policy, different
+// worktree" semantics. Data-only, like ContractCase.
+type ReRootCase struct {
+	Name string
+	Mode Mode
+	Net  bool
+	Host HostFacts
+	// WantWorktreeWrite mirrors ContractCase: whether the worktree is a writable
+	// root (false only for read-only). Encodes the spec's mode semantics, not the
+	// resolver's output.
+	WantWorktreeWrite bool
+}
+
+// ReRootCases returns the golden re-root table: each enforceable (mode × backend
+// tier) cell, so a backend's re-root path is pinned to the same re-anchoring
+// semantics M4 established. Data-only (no ReRoot call).
+func ReRootCases() []ReRootCase {
+	const home = "/home/contract"
+	bwrap := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
+	seatbelt := HostFacts{OS: "darwin", Home: "/Users/contract", SandboxExecPath: "/usr/bin/sandbox-exec"}
+	var cases []ReRootCase
+	for _, h := range []HostFacts{bwrap, seatbelt} {
+		cases = append(cases,
+			ReRootCase{Name: "read-only" + backendTag(h), Mode: ModeReadOnly, Net: true, Host: h, WantWorktreeWrite: false},
+			ReRootCase{Name: "workspace-write" + backendTag(h), Mode: ModeWorkspaceWrite, Net: true, Host: h, WantWorktreeWrite: true},
+			ReRootCase{Name: "restricted" + backendTag(h), Mode: ModeRestricted, Net: true, Host: h, WantWorktreeWrite: true},
+		)
+	}
+	return cases
+}
+
+// AssertReRoot holds ReRoot to its contract: for each case it resolves a policy
+// at lane A of a shared main repo and re-roots it to a sibling lane B, asserting
+// the re-rooted policy anchors its grants at B and NOT at A (the containment the
+// whole milestone rests on). It materializes a real main checkout and two linked
+// worktrees (no mocks; skips when git is unavailable). M6 reuses it so Seatbelt
+// satisfies the same re-root semantics.
+func AssertReRoot(t TestingT, cases []ReRootCase) {
+	t.Helper()
+	requireGitHarness(t)
+	main := resolveCleanPath(t.TempDir())
+	gitHarness(t, main, "init", "-q")
+	gitHarness(t, main, "commit", "-q", "--allow-empty", "-m", "init")
+	laneA := main + "-a"
+	laneB := main + "-b"
+	gitHarness(t, main, "worktree", "add", "-q", laneA)
+	gitHarness(t, main, "worktree", "add", "-q", laneB)
+	laneA = resolveCleanPath(laneA)
+	laneB = resolveCleanPath(laneB)
+
+	for _, tc := range cases {
+		host := tc.Host
+		if host.Home == "" {
+			host.Home = "/home/contract"
+		}
+		net := tc.Net
+		rp, err := Resolve(SandboxPolicy{Mode: tc.Mode, Network: &net}, host, laneA)
+		if err != nil {
+			t.Errorf("case %s: resolve at lane A: %v", tc.Name, err)
+			continue
+		}
+		rerooted, err := rp.ReRoot(laneB)
+		if err != nil {
+			t.Errorf("case %s: re-root to lane B: %v", tc.Name, err)
+			continue
+		}
+		if rerooted == nil {
+			t.Errorf("case %s: re-root returned a nil policy", tc.Name)
+			continue
+		}
+		if !rerooted.Enforced() {
+			t.Errorf("case %s: re-root must stay enforced, got off", tc.Name)
+			continue
+		}
+		if !slices.Contains(rerooted.MaskedPaths, "/proc") {
+			t.Errorf("case %s: re-rooted policy must keep the pseudo-fs floor masked: %v", tc.Name, rerooted.MaskedPaths)
+		}
+		// The shared main repo (parent of neither sibling lane) must never leak as a
+		// write root — a check the lane-vs-lane assertions below cannot see, since
+		// `main` is not an ancestor of either sibling lane.
+		if rootGrants(rerooted.FileTool.WriteRoots, main) || rootGrants(rerooted.Spawned.WriteRoots, main) {
+			t.Errorf("case %s: re-root leaked the shared main repo %q as a write root: file=%v spawned=%v", tc.Name, main, rerooted.FileTool.WriteRoots, rerooted.Spawned.WriteRoots)
+		}
+		if !tc.WantWorktreeWrite {
+			// read-only: no worktree write in either lane.
+			if rootGrants(rerooted.FileTool.WriteRoots, laneB) || rootGrants(rerooted.Spawned.WriteRoots, laneB) {
+				t.Errorf("case %s: read-only re-root granted a write to lane B: file=%v spawned=%v", tc.Name, rerooted.FileTool.WriteRoots, rerooted.Spawned.WriteRoots)
+			}
+			continue
+		}
+		// The write grant must re-anchor to lane B and must NOT still cover lane A.
+		if !rootGrants(rerooted.FileTool.WriteRoots, laneB) {
+			t.Errorf("case %s: re-rooted FileTool must grant writes to target lane %q: %v", tc.Name, laneB, rerooted.FileTool.WriteRoots)
+		}
+		if rootGrants(rerooted.FileTool.WriteRoots, laneA) {
+			t.Errorf("case %s: re-rooted FileTool must NOT still grant the source lane %q (leaked roots): %v", tc.Name, laneA, rerooted.FileTool.WriteRoots)
+		}
+		if !rootGrants(rerooted.Spawned.WriteRoots, laneB) {
+			t.Errorf("case %s: re-rooted Spawned must grant writes to target lane %q: %v", tc.Name, laneB, rerooted.Spawned.WriteRoots)
+		}
+		if rootGrants(rerooted.Spawned.WriteRoots, laneA) {
+			t.Errorf("case %s: re-rooted Spawned must NOT still grant the source lane %q (leaked roots): %v", tc.Name, laneA, rerooted.Spawned.WriteRoots)
+		}
+	}
+}
+
 // MaterializeWorkspace creates a real git workspace of the requested kind under a
 // temp dir and returns its cwd. It uses the real git binary (no mocks); when git
 // is unavailable it skips. NonGit returns a bare temp dir.

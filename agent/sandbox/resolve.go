@@ -139,6 +139,18 @@ type ResolvedPolicy struct {
 	// Git is the resolved git-surface map: writable metadata, write-protected
 	// config/hook surfaces, and outside-worktree read grants. Zero for off.
 	Git GitLayout
+
+	// resolveInputs and resolveHost are the request this policy was resolved
+	// FROM, retained so ReRoot / ControlPolicy can re-run the root + gitdir
+	// resolution against a DIFFERENT worktree (a child delegate lane, a managed
+	// worktree, the manage_worktree main-repo control env) using the same
+	// mode/net/denylist-deltas/extra-roots and host facts — never by copying this
+	// policy's worktree-anchored roots, which would confine the child to the
+	// parent's lane (a containment hole). Set by Resolve on every success path; a
+	// hand-built literal leaves them zero and is not re-rootable (ReRoot passes
+	// such a policy through unchanged — the M1 inert-carrier semantics).
+	resolveInputs SandboxPolicy
+	resolveHost   HostFacts
 }
 
 // Enforced reports whether this policy imposes any containment. False for off.
@@ -180,7 +192,7 @@ var defaultSystemReadRoots = []string{
 // (including Windows) — it is today's behavior with no containment.
 func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, error) {
 	if policy.Mode == ModeOff {
-		return ResolvedPolicy{Mode: ModeOff, Network: true, Backend: BackendNone}, nil
+		return ResolvedPolicy{Mode: ModeOff, Network: true, Backend: BackendNone, resolveInputs: policy, resolveHost: host}, nil
 	}
 
 	// Network defaults ON when sandboxed: a nil policy.Network is the unset default,
@@ -258,6 +270,8 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		SessionTmp:    true,
 		MaskedPaths:   masked,
 		Git:           layout,
+		resolveInputs: policy,
+		resolveHost:   host,
 	}
 	rp.FileTool, rp.Spawned = scopesFor(policy, layout, worktree)
 

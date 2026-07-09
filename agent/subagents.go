@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/provider"
@@ -118,6 +119,7 @@ type preparedSubagentRun struct {
 	frozenSkillBodies  []string
 	workingDir         string
 	localEnvPolicy     string
+	sandboxSnapshot    *jobstore.SandboxSnapshot
 	isolation          string
 	resultSchema       map[string]any
 	explicitToolGrants []string
@@ -527,11 +529,18 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 
 	subEnv := s.currentEnv()
 	if workingDir = strings.TrimSpace(workingDir); workingDir != "" {
-		if le, ok := subEnv.(*execenv.LocalExecutionEnvironment); ok {
-			subEnv = le.WithWorkingDirectory(workingDir)
-		} else {
+		le, ok := subEnv.(*execenv.LocalExecutionEnvironment)
+		if !ok {
 			return nil, errors.New("execution environment does not support working_dir override")
 		}
+		rerooted := le.WithWorkingDirectory(workingDir)
+		// Fail closed: if the sandbox policy cannot be re-anchored to the child's
+		// worktree lane, refuse the spawn rather than launch a child that would run
+		// with the parent's roots or none (a containment hole).
+		if err := rerooted.SandboxReRootError(); err != nil {
+			return nil, fmt.Errorf("sandbox cannot confine the subagent to %s: %w", workingDir, err)
+		}
+		subEnv = rerooted
 	}
 
 	if schema := subCfg.spawn.communicateOutputSchema; len(schema) > 0 {
@@ -656,6 +665,7 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		frozenSkillBodies:  append([]string(nil), activatedSkillBodies...),
 		workingDir:         subEnv.WorkingDirectory(),
 		localEnvPolicy:     localEnvPolicyName(subEnv),
+		sandboxSnapshot:    sandboxSnapshotFromEnv(subEnv),
 		isolation:          subCfg.spawn.isolation,
 		resultSchema:       cloneMap(subCfg.spawn.communicateOutputSchema),
 		explicitToolGrants: append([]string(nil), canonicalGrantTools...),
