@@ -97,6 +97,12 @@ type subagent struct {
 	closed          bool               // session torn down; record retained as terminal history
 	closeTimedOut   bool               // session-close wait exceeded its bound; close not confirmed
 	driving         bool               // a drive-down notification turn (§3) is in flight on this idle child
+	// ownsEnv is true when prepareSubagentRun built the child a FRESH execution env
+	// (a working-dir re-root and/or a per-delegate sandbox) rather than sharing the
+	// parent's. Such an env may own a sandbox scratch dir + file-tool fds that the
+	// parent's env cleanup does not reach, so the parent disposes it at child
+	// teardown. False for a child that shares the parent env (nothing to dispose).
+	ownsEnv bool
 }
 
 type preparedSubagentRun struct {
@@ -661,6 +667,9 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		agentType:    agentType,
 		createdAt:    now,
 		startedAt:    now,
+		// The child owns a fresh env iff we re-rooted to a lane and/or enforced a
+		// per-delegate sandbox; otherwise subEnv is the shared parent env.
+		ownsEnv: workingDir != "" || reqSandbox != nil,
 	}
 
 	// Drive-down wake (spec §3): a child's notify must reach its parent, which

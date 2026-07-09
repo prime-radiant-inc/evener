@@ -200,6 +200,52 @@ func TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnSpawnFailure(t *tes
 	}
 }
 
+// TestParentClose_DisposesRetainedPerDelegateSandboxScratch: a completed+retained
+// per-delegate-sandbox delegate owns a FRESH env whose EnableSandbox provisioned a
+// scratch dir. At PARENT close, retained children are torn down via close(false),
+// which skips env cleanup (children historically shared the parent env), so the
+// sandboxed child's scratch would leak. The parent teardown must dispose owned child
+// scratches. Not parallel: isolates TMPDIR to observe the scratch base.
+func TestParentClose_DisposesRetainedPerDelegateSandboxScratch(t *testing.T) {
+	isolated := t.TempDir()
+	t.Setenv("TMPDIR", isolated)
+
+	lane, home := sbxLane(t)
+	facts := sbxBwrapFacts(home)
+	c := delegateTestClient(func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
+	s := newSession(t, withClient(c), withDir(lane), withConfig(SessionConfig{
+		StateDir:         packageFixtureTempDir(t, "sbx-close-*"),
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+			sandboxProber:       sandbox.FakeProber{Facts: facts},
+		},
+	}))
+
+	res := s.createDelegate(context.Background(), delegateArgs{
+		Task:           "do sandboxed work",
+		Sandbox:        "restricted",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v", res.Err)
+	}
+	// The sandboxed child provisioned a scratch dir.
+	if got := sandboxScratchDirs(t, isolated); len(got) == 0 {
+		t.Fatalf("expected a per-delegate sandbox scratch dir after spawn, found none in %s", isolated)
+	}
+
+	// Closing the parent must dispose the retained child's owned scratch.
+	s.Close()
+	if left := sandboxScratchDirs(t, isolated); len(left) != 0 {
+		t.Errorf("retained per-delegate-sandbox scratch leaked at parent close: %v", left)
+	}
+}
+
 // TestPrepareSubagentRun_PerDelegateSandboxWithoutIsolationDoesNotMutateParent: a
 // delegate may request its own box WITHOUT isolation="worktree" (empty workingDir),
 // which shares the parent's working dir. The per-delegate EnableSandbox mutates its
