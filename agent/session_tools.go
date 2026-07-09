@@ -431,6 +431,25 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 		res = s.reg.ExecuteCall(ctx, s.currentEnv(), call)
 	}
 	res.DurationMS = time.Since(toolStart).Milliseconds()
+	// M7: on a sandbox denial in an interactive root session, raise a human approval
+	// card and block HERE — between dispatch and the TOOL_CALL_END emit, so the tool
+	// item stays "in progress" while the human decides. On approve, re-dispatch this
+	// one call through a grant-scoped env clone (the granted leaf threaded on ctx);
+	// on deny/interrupt/close, the typed denial flows on to the model unchanged. A
+	// non-sandbox error, a non-interactive/subagent session, or an ineligible denial
+	// all pass through untouched (escalateOnSandboxDenial is a no-op for them).
+	res = s.escalateOnSandboxDenial(ctx, call.Name, res, func(grantCtx context.Context) tool.ExecResult {
+		env := s.currentEnv()
+		if grantPath, ok := invocationGrant(grantCtx); ok {
+			if g, gok := env.(sandboxGranter); gok {
+				env = g.WithSandboxInvocationGrant(grantPath)
+			}
+		}
+		rerunStart := s.sclock().Now()
+		rr := s.reg.ExecuteCall(grantCtx, env, call)
+		rr.DurationMS = s.sclock().Now().Sub(rerunStart).Milliseconds()
+		return rr
+	})
 	if err := s.errIfClosing(); err != nil {
 		emitCanceledEnd(err)
 		return skippedToolResult(call, err)

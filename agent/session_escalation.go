@@ -8,9 +8,18 @@ import (
 	"sync/atomic"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/sandbox"
 )
+
+// sandboxGranter is the execution environment's ability to produce a short-lived
+// clone that permits EXACTLY one extra path for a single re-dispatch (the M7 grant).
+// Only the real LocalExecutionEnvironment implements it; a test/other env that does
+// not simply re-runs unchanged (and re-denies — safe).
+type sandboxGranter interface {
+	WithSandboxInvocationGrant(path string) execenv.ExecutionEnvironment
+}
 
 // M7 — in-UI sandbox-exemption escalation.
 //
@@ -73,17 +82,42 @@ func (s *Session) subscriberCount() int {
 	return f()
 }
 
+// escalatableTools is the ALLOWLIST of tools whose denial may be escalated: the
+// single-FILE tools, each of which touches exactly one leaf per call, so a
+// single-leaf per-invocation grant is well-defined. Everything else stays final:
+//   - apply_patch touches MANY files in one call, so one grant could not cover the
+//     rest (re-running would just re-hit the next denial);
+//   - the browse tools (glob/grep/list_dir) resolve a base DIRECTORY and walk its
+//     subtree, so granting the base would widen a whole subtree, not one leaf;
+//   - shell/kernel denials produce no re-runnable grant (see the M7 spec on why
+//     bwrap masking makes shell escalation unbuildable).
+// An allowlist (rather than a denylist) fails closed: a new tool is non-escalatable
+// until it is explicitly, deliberately added here.
+var escalatableTools = map[string]bool{
+	"read_file":  true,
+	"write_file": true,
+	"edit_file":  true,
+}
+
 // escalationAllowed reports whether a denial is eligible for human escalation. It
 // mirrors ask_user's root-only interactive gate (NonInteractive || subagent), adds
-// the reconciliation zero-subscriber rule, and refuses to escalate a SENSITIVE
-// denial: a masked credential/denylist path can never be granted (that would relax
-// the immutable secrets floor), and its path cannot even be shown by basename, so a
-// human could not meaningfully approve it. Such denials stay final.
-func (s *Session) escalationAllowed(denied *sandbox.DeniedError) bool {
+// the reconciliation zero-subscriber rule, restricts escalation to the single-file
+// tools (escalatableTools), and refuses a SENSITIVE denial (a masked
+// credential/denylist path): granting it would relax the immutable secrets floor,
+// and its path must never be shown, so a human could not meaningfully approve it.
+//
+// callName is the tool the MODEL invoked (apply_patch's underlying writes carry
+// Tool=="write_file" on the denial, so the allowlist keys on the call, not the
+// denial's Tool). Everything excluded stays final, exactly as a non-interactive
+// session.
+func (s *Session) escalationAllowed(callName string, denied *sandbox.DeniedError) bool {
 	if s.cfg.NonInteractive || s.isSubagentSession() {
 		return false
 	}
 	if denied.Sensitive {
+		return false
+	}
+	if !escalatableTools[callName] {
 		return false
 	}
 	if s.subscriberCount() == 0 {
@@ -105,9 +139,9 @@ func (s *Session) escalationAllowed(denied *sandbox.DeniedError) bool {
 // grant is per-invocation and consumed by the execenv layer). On deny / interrupt /
 // close it returns the original typed denial, exactly as a non-interactive session
 // already does. It NEVER touches s.history.
-func (s *Session) escalateOnSandboxDenial(ctx context.Context, res tool.ExecResult, rerun func(context.Context) tool.ExecResult) tool.ExecResult {
+func (s *Session) escalateOnSandboxDenial(ctx context.Context, callName string, res tool.ExecResult, rerun func(context.Context) tool.ExecResult) tool.ExecResult {
 	denied, ok := sandbox.AsDenied(res.Err)
-	if !ok || !s.escalationAllowed(denied) {
+	if !ok || !s.escalationAllowed(callName, denied) {
 		return res
 	}
 

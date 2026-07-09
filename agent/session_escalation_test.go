@@ -103,7 +103,7 @@ func TestEscalation_GateMatrix(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newSession(t)
 			tc.mutate(s)
-			got := s.escalateOnSandboxDenial(context.Background(), res, noRerun(t))
+			got := s.escalateOnSandboxDenial(context.Background(), "write_file", res, noRerun(t))
 			if !got.IsError || got.Err == nil {
 				t.Fatalf("non-escalating denial must return the original typed error, got %+v", got)
 			}
@@ -118,16 +118,35 @@ func TestEscalation_SensitiveDenialNeverEscalates(t *testing.T) {
 	s := escalatableSession(t)
 	d := &sandbox.DeniedError{Mode: sandbox.ModeReadOnly, Tool: "read_file", Path: "/home/u/.ssh/id_rsa", Reason: "credential path masked", Sensitive: true}
 	res := tool.ExecResult{ToolName: "read_file", CallID: "c", IsError: true, Err: d, FullOutput: d.Error()}
-	got := s.escalateOnSandboxDenial(context.Background(), res, noRerun(t))
+	got := s.escalateOnSandboxDenial(context.Background(), "write_file", res, noRerun(t))
 	if !errors.Is(got.Err, d) {
 		t.Fatal("a sensitive (masked-secret) denial must stay final, never escalate")
+	}
+}
+
+func TestEscalation_OnlySingleFileToolsEscalate(t *testing.T) {
+	// Only the single-file tools escalate; multi-file (apply_patch) and the browse
+	// tools (which walk a directory subtree) stay final, so one grant can never
+	// widen more than one leaf. Their underlying denials carry Tool=="write_file"
+	// or a read tool, but the allowlist keys on the invoking call name.
+	d := &sandbox.DeniedError{Mode: sandbox.ModeReadOnly, Tool: "write_file", Path: "/wt/f", Reason: "writes are denied in this sandbox mode"}
+	res := tool.ExecResult{ToolName: "x", CallID: "c", IsError: true, Err: d, FullOutput: d.Error()}
+	for _, callName := range []string{"apply_patch", "glob", "grep", "list_dir", "shell", "read_file_all"} {
+		s := escalatableSession(t)
+		got := s.escalateOnSandboxDenial(context.Background(), callName, res, noRerun(t))
+		if !errors.Is(got.Err, d) {
+			t.Fatalf("%s denial must stay final (not a single-file tool)", callName)
+		}
+		if len(pendingIDs(s)) != 0 {
+			t.Fatalf("%s must not register a pending escalation", callName)
+		}
 	}
 }
 
 func TestEscalation_NonSandboxErrorUntouched(t *testing.T) {
 	s := escalatableSession(t)
 	res := tool.ExecResult{ToolName: "shell", CallID: "c", IsError: true, FullOutput: "boom", Err: context.DeadlineExceeded}
-	got := s.escalateOnSandboxDenial(context.Background(), res, noRerun(t))
+	got := s.escalateOnSandboxDenial(context.Background(), "write_file", res, noRerun(t))
 	if got.FullOutput != "boom" {
 		t.Fatal("a non-sandbox error must pass through untouched")
 	}
@@ -145,7 +164,7 @@ func TestEscalation_ApproveThreadsInvocationGrant(t *testing.T) {
 	}
 
 	done := make(chan tool.ExecResult, 1)
-	go func() { done <- s.escalateOnSandboxDenial(context.Background(), res, rerun) }()
+	go func() { done <- s.escalateOnSandboxDenial(context.Background(), "write_file", res, rerun) }()
 
 	ids := awaitPending(t, s, 1)
 	if err := s.ResolveSandboxEscalation(ids[0], true); err != nil {
@@ -170,7 +189,7 @@ func TestEscalation_DenyReturnsTypedError(t *testing.T) {
 	res, denied := deniedResult("/etc/hosts")
 
 	done := make(chan tool.ExecResult, 1)
-	go func() { done <- s.escalateOnSandboxDenial(context.Background(), res, noRerun(t)) }()
+	go func() { done <- s.escalateOnSandboxDenial(context.Background(), "write_file", res, noRerun(t)) }()
 
 	ids := awaitPending(t, s, 1)
 	if err := s.ResolveSandboxEscalation(ids[0], false); err != nil {
@@ -188,7 +207,7 @@ func TestEscalation_ContextCancelDenies(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan tool.ExecResult, 1)
-	go func() { done <- s.escalateOnSandboxDenial(ctx, res, noRerun(t)) }()
+	go func() { done <- s.escalateOnSandboxDenial(ctx, "write_file", res, noRerun(t)) }()
 
 	awaitPending(t, s, 1)
 	cancel() // turn interrupt
@@ -206,7 +225,7 @@ func TestEscalation_CloseCancels(t *testing.T) {
 	res, _ := deniedResult("/etc/hosts")
 
 	done := make(chan tool.ExecResult, 1)
-	go func() { done <- s.escalateOnSandboxDenial(context.Background(), res, noRerun(t)) }()
+	go func() { done <- s.escalateOnSandboxDenial(context.Background(), "write_file", res, noRerun(t)) }()
 
 	awaitPending(t, s, 1)
 	s.Close()
@@ -232,7 +251,7 @@ func TestEscalation_DoubleResolveSecondIsError(t *testing.T) {
 	res, _ := deniedResult("/etc/hosts")
 	done := make(chan tool.ExecResult, 1)
 	go func() {
-		done <- s.escalateOnSandboxDenial(context.Background(), res, func(context.Context) tool.ExecResult { return succeededResult() })
+		done <- s.escalateOnSandboxDenial(context.Background(), "write_file", res, func(context.Context) tool.ExecResult { return succeededResult() })
 	}()
 	ids := awaitPending(t, s, 1)
 	if err := s.ResolveSandboxEscalation(ids[0], true); err != nil {
@@ -252,12 +271,12 @@ func TestEscalation_ConcurrentDenialsDistinctWaiters(t *testing.T) {
 	outA := make(chan tool.ExecResult, 1)
 	outB := make(chan tool.ExecResult, 1)
 	go func() {
-		outA <- s.escalateOnSandboxDenial(context.Background(), resA, func(context.Context) tool.ExecResult {
+		outA <- s.escalateOnSandboxDenial(context.Background(), "write_file", resA, func(context.Context) tool.ExecResult {
 			return tool.ExecResult{FullOutput: "approved"}
 		})
 	}()
 	go func() {
-		outB <- s.escalateOnSandboxDenial(context.Background(), resB, func(context.Context) tool.ExecResult {
+		outB <- s.escalateOnSandboxDenial(context.Background(), "write_file", resB, func(context.Context) tool.ExecResult {
 			return tool.ExecResult{FullOutput: "approved"}
 		})
 	}()
@@ -298,12 +317,11 @@ func TestEscalation_EmitsRedactedRequestedEvent(t *testing.T) {
 		}
 	}()
 
-	// A sensitive denial is never escalated, so use a non-sensitive one and assert
-	// the event carries the (basename-redacted) path, never file contents.
+	// A non-sensitive denial carries the full literal path for informed consent.
 	res, _ := deniedResult("/etc/hosts")
 	done := make(chan tool.ExecResult, 1)
 	go func() {
-		done <- s.escalateOnSandboxDenial(context.Background(), res, func(context.Context) tool.ExecResult { return succeededResult() })
+		done <- s.escalateOnSandboxDenial(context.Background(), "write_file", res, func(context.Context) tool.ExecResult { return succeededResult() })
 	}()
 	ids := awaitPending(t, s, 1)
 	_ = s.ResolveSandboxEscalation(ids[0], true)
@@ -324,8 +342,8 @@ func TestEscalation_EmitsRedactedRequestedEvent(t *testing.T) {
 	if found == nil {
 		t.Fatal("escalateOnSandboxDenial must emit EventSandboxEscalationRequested before blocking")
 	}
-	if found.DeniedPath != "hosts" {
-		t.Fatalf("event must carry the redacted (basename) path, got %q", found.DeniedPath)
+	if found.DeniedPath != "/etc/hosts" {
+		t.Fatalf("event must carry the full path for informed consent, got %q", found.DeniedPath)
 	}
 	if found.Kind != string(sandbox.EscalationFileTool) {
 		t.Fatalf("a file-tool denial must project the file_tool kind, got %q", found.Kind)
@@ -338,7 +356,7 @@ func TestEscalation_NeverAppendsHistory(t *testing.T) {
 	res, _ := deniedResult("/etc/hosts")
 	done := make(chan tool.ExecResult, 1)
 	go func() {
-		done <- s.escalateOnSandboxDenial(context.Background(), res, func(context.Context) tool.ExecResult { return succeededResult() })
+		done <- s.escalateOnSandboxDenial(context.Background(), "write_file", res, func(context.Context) tool.ExecResult { return succeededResult() })
 	}()
 	ids := awaitPending(t, s, 1)
 	_ = s.ResolveSandboxEscalation(ids[0], true)
