@@ -87,6 +87,8 @@ type delegateArgs struct {
 	DelegationAllowance int
 	WatchParent         bool
 	Isolation           string
+	Sandbox             string
+	SandboxNet          *bool
 	ResultSchema        map[string]any
 }
 
@@ -100,6 +102,28 @@ type delegateWorktreeReport struct {
 	Branch string
 	Ahead  int
 	Dirty  bool
+}
+
+// delegateSandboxReport is the delegate's enforced sandbox box (mode + network),
+// echoed back in the delegate result so the parent can verify the child's actual
+// confinement. nil when the delegate is unsandboxed (off). The box is fixed for the
+// delegate's lifetime, so it is a plain value snapshot, unlike the worktree report.
+type delegateSandboxReport struct {
+	Mode    string
+	Network bool
+}
+
+// delegateSandboxReportForSession reads a delegate session's enforced sandbox box,
+// or nil when the session is unsandboxed / not a local env.
+func delegateSandboxReportForSession(sess *Session) *delegateSandboxReport {
+	if sess == nil {
+		return nil
+	}
+	le, ok := sess.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok || le.Sandbox == nil || !le.Sandbox.Enforced() {
+		return nil
+	}
+	return &delegateSandboxReport{Mode: le.Sandbox.Mode.String(), Network: le.Sandbox.Network}
 }
 
 type delegateResult struct {
@@ -122,6 +146,7 @@ type delegateResult struct {
 	Watching                 bool
 	Watches                  []watchListEntry
 	Worktree                 *delegateWorktreeReport
+	Sandbox                  *delegateSandboxReport
 	Err                      error
 }
 
@@ -182,6 +207,19 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	if isolation != "" && isolation != "worktree" {
 		return delegateStartFailed(fmt.Errorf("invalid_request: isolation %q is not supported (expected \"worktree\")", isolation))
 	}
+	// Per-delegate sandbox no-escalation floor (security invariant): validated EARLY
+	// — before minting any IDs or creating a worktree — so a request for a looser box
+	// than the parent's is refused with a legible invalid_request error and never
+	// mints durable state. An absent sandbox leaves the inherit path untouched.
+	var requestedSandbox *sandbox.SandboxPolicy
+	if strings.TrimSpace(args.Sandbox) != "" || args.SandboxNet != nil {
+		parentMode, parentNet := s.parentSandboxModeNet()
+		pol, floorErr := resolveDelegateSandboxRequest(args.Sandbox, args.SandboxNet, parentMode, parentNet)
+		if floorErr != nil {
+			return delegateStartFailed(floorErr)
+		}
+		requestedSandbox = pol
+	}
 	jm, err := sessionJobManager(s)
 	if err != nil {
 		return delegateStartFailed(err)
@@ -226,6 +264,9 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 		workingDir = lanePath
 		ctx = context.WithValue(ctx, ctxIsolation, isolation)
 	}
+	if requestedSandbox != nil {
+		ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, requestedSandbox)
+	}
 	prepared, err := s.prepareSubagentRun(ctx, task, args.Model, workingDir, 0, args.AgentType, args.ReasoningEffort, nil, nil)
 	if err != nil {
 		if workingDir != "" {
@@ -235,6 +276,9 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	}
 	childID := prepared.sub.id
 	sub := prepared.sub
+	// The delegate's enforced box is fixed at spawn; snapshot it once to echo in
+	// every result path so the parent can verify the child's actual confinement.
+	sandboxReport := delegateSandboxReportForSession(sub.sess)
 	run, err := s.attachDelegateJobWithPreparedAndDelegate(jm, childID, task, sub, jobID, delegateID, delegateGeneration, args.AgentType, args.ResultSchema, false, prepared)
 	if err != nil {
 		prepared.runCancel()
@@ -275,6 +319,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 			Status:              jobstore.StatusRunning,
 			RunningInBackground: true,
 			TranscriptRef:       run.rec.TranscriptRef,
+			Sandbox:             sandboxReport,
 		}
 	}
 
@@ -284,7 +329,9 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	select {
 	case <-done:
 		finalizeErr := s.bridgeDelegateFinalizationWithDone(run.rec.JobID, childID, sub, done, false)
-		return waitForDelegateFinalization(ctx, s, jm, run, finalizeErr)
+		res := waitForDelegateFinalization(ctx, s, jm, run, finalizeErr)
+		res.Sandbox = sandboxReport
+		return res
 	case <-timer.C():
 		s.bridgeDelegateFinalizationWithDone(run.rec.JobID, childID, sub, done, true)
 		output, _, truncated, readErr := tailOutput(run.output, shellInlineOutputBytes)
@@ -301,6 +348,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 			TranscriptRef:       run.rec.TranscriptRef,
 			Output:              output,
 			Truncated:           truncated,
+			Sandbox:             sandboxReport,
 			Err:                 readErr,
 		}
 		return res
@@ -1127,6 +1175,31 @@ func (s *Session) resolveRestoredDelegateSandbox(desc *jobstore.DelegateRestoreD
 	}
 	pol, ok := sandboxPolicyFromSnapshot(desc.Sandbox)
 	if !ok {
+		return nil, notResumableSandboxUnsatisfiable
+	}
+	// A persisted snapshot with a denylist delta or extra roots was not produced by
+	// any serf create path — all create paths originate mode+net only (see
+	// buildDelegateSandboxPolicy). Such a descriptor is tampered or foreign, so fail
+	// closed rather than resume a box serf never granted: a hand-added
+	// DenylistRemove could un-mask ~/.ssh, an ExtraReadRoot could re-open the whole
+	// filesystem. When a denylist/extra-root config surface is ever added, THIS check
+	// and the create floor (buildDelegateSandboxPolicy) must both be extended.
+	if len(pol.DenylistAdd) > 0 || len(pol.DenylistRemove) > 0 ||
+		len(pol.ExtraReadRoots) > 0 || len(pol.ExtraWritableRoots) > 0 {
+		return nil, notResumableSandboxUnsatisfiable
+	}
+	// Re-apply the no-escalation floor against the CURRENT parent. The floor is
+	// enforced at CREATE, but a persisted snapshot could be tampered to a looser box,
+	// so re-check on every resume. A legitimate delegate was at-least-as-confining as
+	// its parent at create, and both boxes are immutable across restart, so
+	// delegate <= parent still holds (a looser resume-time parent still passes); only
+	// a looser-than-parent descriptor fails.
+	parentMode, parentNet := s.parentSandboxModeNet()
+	if !pol.Mode.AtLeastAsConfining(parentMode) {
+		return nil, notResumableSandboxUnsatisfiable
+	}
+	resumedNet := pol.Network == nil || *pol.Network
+	if resumedNet && !parentNet {
 		return nil, notResumableSandboxUnsatisfiable
 	}
 	rp, err := sandbox.Resolve(pol, s.sandboxHostFacts(), workDir)

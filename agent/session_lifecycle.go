@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provenance"
@@ -126,6 +127,17 @@ func (s *Session) close(cleanupEnv bool) {
 		// parent owns cleanup of the shared env, so child closes skip env cleanup.
 		for _, sub := range subs {
 			sub.sess.close(false)
+			// A child that owns a FRESH env (a per-delegate sandbox and/or a lane
+			// re-root) may hold a sandbox scratch dir + file-tool fds that close(false)
+			// deliberately skips (child env cleanup is the parent's job because children
+			// historically SHARED the parent env). Dispose that OWNED scratch here so it
+			// is not leaked. Guarded on ownsEnv: a child sharing the parent env is never
+			// disposed — the parent owns and cleans that env below.
+			if sub.ownsEnv {
+				if le, ok := sub.sess.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
+					le.DisposeSandboxScratch()
+				}
+			}
 		}
 
 		// Native worktree tools spec §9 step 4 + §5 close-unlock: dispose the

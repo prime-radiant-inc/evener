@@ -7,6 +7,7 @@
 <form id="launch-form" class="settings-launch-form" data-loaded="false" data-launch-settings-root data-launch-settings-layer="global">
   <div data-launch-schema-loading class="settings-help">Loading launch settings…</div>
   <dl class="settings-table" data-launch-settings-groups></dl>
+  <div id="launch-diagnostics" class="settings-diagnostics" role="status" aria-live="polite" hidden></div>
   <div class="form-actions">
     <button type="submit" class="btn btn-primary">Save launch defaults</button>
     <p id="launch-form-status" class="settings-form-status" aria-live="polite"></p>
@@ -17,7 +18,30 @@
     const form = document.getElementById("launch-form");
     const status = document.getElementById("launch-form-status");
     const loading = form.querySelector("[data-launch-schema-loading]");
+    const diagnosticsEl = document.getElementById("launch-diagnostics");
     let statusClearTimer = 0;
+
+    // Surface the resolver's non-fatal diagnostics (unknown sandbox mode, sandbox_net
+    // with no mode, duplicate MCP names, …) as a visible warning list. These
+    // otherwise appear only in the raw resolved-config JSON, where no user looks —
+    // and the sandbox_net-no-op case has no other signal.
+    function renderDiagnostics(resolved) {
+      const diags = (resolved && resolved.diagnostics) || [];
+      diagnosticsEl.textContent = "";
+      if (!diags.length) { diagnosticsEl.hidden = true; return; }
+      diagnosticsEl.hidden = false;
+      const heading = document.createElement("p");
+      heading.className = "settings-diagnostics-heading";
+      heading.textContent = "Warnings";
+      diagnosticsEl.appendChild(heading);
+      const ul = document.createElement("ul");
+      diags.forEach((d) => {
+        const li = document.createElement("li");
+        li.textContent = (d && d.field ? d.field + ": " : "") + ((d && d.message) || "");
+        ul.appendChild(li);
+      });
+      diagnosticsEl.appendChild(ul);
+    }
 
     function setStatus(text) {
       if (statusClearTimer) {
@@ -47,11 +71,15 @@
       if (loading) loading.hidden = true;
       form.dataset.loaded = "true";
 
+      // Show any diagnostics for the already-saved config on load.
+      try { renderDiagnostics(await launchconfig.resolve("/")); } catch (_) { /* non-fatal */ }
+
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
         if (!(await window.LaunchConfigControls.validate(form))) return;
         try {
-          await launchconfig.setLayer("/", "global", window.LaunchConfigControls.collect(form));
+          const resolved = await launchconfig.setLayer("/", "global", window.LaunchConfigControls.collect(form));
+          renderDiagnostics(resolved);
           setStatus("Saved at " + new Date().toLocaleTimeString());
           if (window.SerfToast) window.SerfToast.show("Launch defaults saved", "success");
         } catch (err) {

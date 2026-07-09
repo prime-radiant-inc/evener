@@ -137,6 +137,34 @@ func TestSettingsMCPStatus_PopulatedAndEmpty(t *testing.T) {
 	})
 }
 
+// TestSettings_LaunchSerfRendersDiagnostics confirms the launch-serf settings
+// section ships the diagnostics render wiring — the container plus the function
+// that consumes resolved.diagnostics — so the resolver's warnings (unknown sandbox
+// mode, sandbox_net with no mode) surface to the user instead of hiding in the raw
+// resolved-config JSON.
+func TestSettings_LaunchSerfRendersDiagnostics(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/_partials/settings/launch-serf", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	req.Header.Set("HX-Target", "settings-content")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`id="launch-diagnostics"`, "function renderDiagnostics", "resolved.diagnostics"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("launch-serf settings partial missing diagnostics render wiring %q", want)
+		}
+	}
+}
+
 // TestSettings_DisplaySectionRoutes confirms the "display" settings section
 // (Enter-to-send + Show-cost home) is registered and renders its heading. It
 // requests just the settings-content partial (HX-Target: settings-content)

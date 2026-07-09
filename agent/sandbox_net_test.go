@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
@@ -45,8 +46,18 @@ func TestNetOffDisablesToolEgress(t *testing.T) {
 		var de *sandbox.DeniedError
 		if !errors.As(err, &de) {
 			t.Errorf("%s denial must be a *sandbox.DeniedError, got %T", tool, err)
-		} else if de.Tool != tool {
+			continue
+		}
+		if de.Tool != tool {
 			t.Errorf("denial Tool = %q, want %q", de.Tool, tool)
+		}
+		// The reason names no CLI flag (a per-delegate box never set one) and tells
+		// the model the box is fixed so it stops retrying.
+		if strings.Contains(de.Reason, "--sandbox-net") {
+			t.Errorf("%s denial must not name a CLI flag, got reason %q", tool, de.Reason)
+		}
+		if !strings.Contains(de.Reason, "fixed for the session") {
+			t.Errorf("%s denial must announce the fixed policy, got reason %q", tool, de.Reason)
 		}
 	}
 }

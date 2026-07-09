@@ -93,6 +93,38 @@ func TestToArgs_SkipsUnset(t *testing.T) {
 	}
 }
 
+// TestToArgs_Sandbox: a launch-config sandbox choice must reach the spawned
+// `serf serve`. An explicit mode emits `--sandbox <mode>` (including off, so a
+// launch layer can override a global default back to off); an unset mode emits
+// nothing. sandbox_net is a tri-state: true/false emit `--sandbox-net on|off`,
+// nil emits nothing.
+func TestToArgs_Sandbox(t *testing.T) {
+	cases := []struct {
+		name  string
+		layer Layer
+		want  []string
+	}{
+		{"unset", Layer{}, nil},
+		{"restricted", Layer{Sandbox: "restricted"}, []string{"--sandbox", "restricted"}},
+		{"explicit off", Layer{Sandbox: "off"}, []string{"--sandbox", "off"}},
+		// sandbox_net without a non-off mode is suppressed: serf ignores the flag
+		// without a sandbox, so passing it alone would be a silent no-op.
+		{"net on, no mode", Layer{SandboxNet: ptrBool(true)}, nil},
+		{"net off, no mode", Layer{SandboxNet: ptrBool(false)}, nil},
+		{"net with off mode", Layer{Sandbox: "off", SandboxNet: ptrBool(false)}, []string{"--sandbox", "off"}},
+		{"mode and net", Layer{Sandbox: "workspace-write", SandboxNet: ptrBool(false)}, []string{"--sandbox", "workspace-write", "--sandbox-net", "off"}},
+		{"restricted and net on", Layer{Sandbox: "restricted", SandboxNet: ptrBool(true)}, []string{"--sandbox", "restricted", "--sandbox-net", "on"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ToArgs(Resolved{Effective: tc.layer})
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("ToArgs = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestToArgs_BoolFalseDoesNotEmitFlag(t *testing.T) {
 	got := ToArgs(Resolved{Effective: Layer{NoProjectPrompts: ptrBool(false), NonInteractive: ptrBool(false)}})
 	for _, a := range got {

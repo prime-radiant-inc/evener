@@ -273,7 +273,7 @@ func productionDial(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper) func(c
 		// legible error under net=off, before dialing. A stdio server is local and
 		// stays available (its own network is severed by --unshare-net).
 		if wrapper != nil && !wrapper.Policy().Network && (cfg.Type == "sse" || cfg.Type == "http") {
-			return nil, fmt.Errorf("remote MCP server %q (%s) is unavailable: network egress is disabled for this sandboxed session (--sandbox-net off)", cfg.Name, cfg.Type)
+			return nil, fmt.Errorf("remote MCP server %q (%s) is unavailable: network egress is disabled in this sandbox; this sandbox policy is fixed for the session", cfg.Name, cfg.Type)
 		}
 		t, err := transportForConfig(cfg)
 		if err != nil {

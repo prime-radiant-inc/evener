@@ -248,6 +248,28 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 	return nil
 }
 
+// DisposeSandboxScratch releases the per-session/per-lane scratch dir and cached
+// file-tool fds this env provisioned via EnableSandbox, WITHOUT the process
+// teardown Cleanup performs. A spawn path that EnableSandbox'd a FRESH env (a
+// re-rooted or cloned one) and then failed before a session adopts it calls this so
+// the scratch dir is not leaked — the failed env is never handed to a session that
+// would Cleanup it. It must run only on such a freshly-provisioned env, never on the
+// shared parent env, whose live children's caches point into ITS scratch dir; a
+// re-rooted clone never owns the parent's tmp (WithWorkingDirectory does not copy
+// it), so disposing a clone's OWN scratch cannot touch the parent's.
+func (e *LocalExecutionEnvironment) DisposeSandboxScratch() {
+	e.sbMu.Lock()
+	if e.sbfs != nil {
+		e.sbfs.close()
+		e.sbfs = nil
+	}
+	e.sbMu.Unlock()
+	if tmp := e.ownedSessionTmp; tmp != nil {
+		e.ownedSessionTmp = nil
+		_ = tmp.Cleanup()
+	}
+}
+
 // filesystem returns the environment's filesystem, defaulting to the OS
 // filesystem when one was never injected (e.g. a zero-value environment).
 func (e *LocalExecutionEnvironment) filesystem() afero.Fs {

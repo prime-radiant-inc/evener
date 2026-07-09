@@ -70,6 +70,23 @@ func TestDeniedErrorNonSensitiveKeepsBasename(t *testing.T) {
 	}
 }
 
+// TestDeniedErrorTagsModeNotFlag: the box tag names the mode, not a CLI flag — a
+// per-delegate box never set --sandbox, so "[--sandbox X]" would be a lie. An off
+// denial carries no tag.
+func TestDeniedErrorTagsModeNotFlag(t *testing.T) {
+	e := &DeniedError{Mode: ModeRestricted, Tool: "read_file", Path: "/x/y.txt", Reason: "outside the sandbox's readable roots"}
+	msg := e.Error()
+	if !contains(msg, "[sandbox mode: restricted]") {
+		t.Fatalf("message %q must tag the box as [sandbox mode: restricted]", msg)
+	}
+	if contains(msg, "--sandbox") {
+		t.Fatalf("message %q must not name a CLI flag (a per-delegate box never set one)", msg)
+	}
+	if off := (&DeniedError{Mode: ModeOff, Tool: "read_file", Reason: "x"}).Error(); contains(off, "sandbox mode:") {
+		t.Fatalf("an off denial must carry no mode tag, got %q", off)
+	}
+}
+
 func TestDeniedErrorCarriesShellFields(t *testing.T) {
 	// A shell denial populates Command/OutputSoFar (M7's card reads them); a
 	// file-tool denial leaves them empty. Assert the shape supports both.

@@ -177,6 +177,9 @@ func (m hubModel) handleLaunchSettingsEditRequest(msg launchconfig.LaunchSetting
 		if msg.Field == "mcps" {
 			prompt = fmt.Sprintf("Edit %s as JSON array, or name:command args... (current: %s):", msg.Field, msg.CurrentValue)
 		}
+		if msg.Field == "sandbox" {
+			prompt = fmt.Sprintf("Edit %s (off, read-only, workspace-write, restricted, or blank to inherit) (current: %s):", msg.Field, msg.CurrentValue)
+		}
 		tag := "launch-override:" + msg.Field
 		var modal tuipick.TextInputModal
 		if msg.PathCompletion || launchconfig.LaunchSettingsFieldUsesPathCompletion(msg.Field) {
@@ -190,6 +193,9 @@ func (m hubModel) handleLaunchSettingsEditRequest(msg launchconfig.LaunchSetting
 	prompt := fmt.Sprintf("Edit %s.%s (current: %s):", msg.Layer, msg.Field, msg.CurrentValue)
 	if msg.Field == "mcps" {
 		prompt = fmt.Sprintf("Edit %s.%s as JSON array, or name:command args... (current: %s):", msg.Layer, msg.Field, msg.CurrentValue)
+	}
+	if msg.Field == "sandbox" {
+		prompt = fmt.Sprintf("Edit %s.%s (off, read-only, workspace-write, restricted, or blank to inherit) (current: %s):", msg.Layer, msg.Field, msg.CurrentValue)
 	}
 	tag := fmt.Sprintf("settings-edit:%s:%s", msg.Layer, msg.Field)
 	var modal tuipick.TextInputModal

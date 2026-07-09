@@ -32,16 +32,22 @@ Both flags are available on `serf` and `serf serve`. `--sandbox-net` is meaningf
 only when a non-off `--sandbox` mode is set; with `--sandbox off` it is ignored.
 
 When a session starts sandboxed, serf prints one line to stderr stating exactly
-what is enforced on this host — the backend, the mode, the network decision, and
-how caches are served — for example:
+what is enforced on this host — the backend, the mode, the network decision, that
+credential/secret paths are masked, and how the language caches are served — for
+example:
 
 ```
-sandbox: bwrap enforcing --sandbox restricted (network on, cache cold session-private)
+sandbox: bwrap enforcing restricted (network on, secrets masked, cache private)
+sandbox: bwrap enforcing workspace-write (network on, secrets masked, cache shared-read/private-write)
 ```
 
-This line is read from the *resolved* policy, so it never overstates: if a mode
-degraded (e.g. the cache fell back from a warm overlay to a cold session-private
-redirect because the host's bubblewrap lacks overlay support), the line says so.
+This line is read from the *resolved* policy, so it never overstates. The `cache`
+field is plain words for how the language caches (Go, npm, cargo) are served:
+`shared-read/private-write` reads the real host caches but keeps writes in a
+private overlay; `private` redirects the caches into a fully private per-session
+directory (the fallback when the host's bubblewrap lacks overlay support); `none`
+when the mode never writes caches (read-only). A degraded resolution (e.g. overlay
+unavailable → `private`) is reflected honestly in the line.
 
 ## Modes
 

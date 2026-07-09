@@ -159,28 +159,56 @@ func TestDelegateRestoreReResolvesSandboxAtLane(t *testing.T) {
 	}
 }
 
-// TestDelegateRestoreImmutableAcrossConfigDrift: restore uses the persisted
-// snapshot's (tighter) denylist, NOT the parent session's current (looser) config
-// — a config that loosened between serf runs cannot widen a live delegate's box.
-func TestDelegateRestoreImmutableAcrossConfigDrift(t *testing.T) {
+// TestDelegateRestoreRejectsNonOriginatableAxes: a persisted snapshot carrying a
+// denylist delta or extra roots could not have come from any serf create path (all
+// originate mode+net only), so it is a tampered/foreign descriptor and restore fails
+// closed rather than resuming a box serf never granted. Covers the dangerous
+// un-masking case (DenylistRemove of a credential dir) and the loosening extra-root
+// case.
+func TestDelegateRestoreRejectsNonOriginatableAxes(t *testing.T) {
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
-	s := sbxDelegateSession(t, facts) // parent env is off — the "loosened" config
+	s := sbxDelegateSession(t, facts)
 
-	tight := filepath.Join(home, "extra-secret")
-	snap := sandboxSnapshotFromInputs(sandbox.SandboxPolicy{
-		Mode:        sandbox.ModeWorkspaceWrite,
-		DenylistAdd: []string{tight},
-	})
+	cases := map[string]sandbox.SandboxPolicy{
+		"denylist_remove_unmasks_ssh": {Mode: sandbox.ModeWorkspaceWrite, DenylistRemove: []string{".ssh"}},
+		"denylist_add":                {Mode: sandbox.ModeWorkspaceWrite, DenylistAdd: []string{filepath.Join(home, "extra-secret")}},
+		"extra_read_root_reopens_fs":  {Mode: sandbox.ModeRestricted, ExtraReadRoots: []string{"/"}},
+		"extra_writable_root":         {Mode: sandbox.ModeRestricted, ExtraWritableRoots: []string{"/opt"}},
+	}
+	for name, pol := range cases {
+		t.Run(name, func(t *testing.T) {
+			desc := &jobstore.DelegateRestoreDescriptor{WorkingDir: lane, LocalEnvPolicy: "default", Sandbox: sandboxSnapshotFromInputs(pol)}
+			_, err := s.restoreDelegateChildEnvironment(desc, "dlg_tamper")
+			if err == nil {
+				t.Fatal("a snapshot with non-originatable axes must not be resumable")
+			}
+			if !strings.Contains(err.Error(), notResumableSandboxUnsatisfiable) {
+				t.Errorf("rejection must name %q, got %v", notResumableSandboxUnsatisfiable, err)
+			}
+		})
+	}
+}
+
+// TestDelegateRestoreReappliesModeFloor: the no-escalation floor is re-checked on
+// resume against the CURRENT parent. A snapshot tampered to a LOOSER mode than the
+// resume-time parent (workspace-write child under a restricted parent — a box the
+// create floor would never have granted) is refused.
+func TestDelegateRestoreReappliesModeFloor(t *testing.T) {
+	lane, home := sbxLane(t)
+	facts := sbxBwrapFacts(home)
+	s := sbxDelegateSession(t, facts)
+	sbxSetParentMode(t, s, facts, lane, sandbox.ModeRestricted) // tighter parent
+
+	snap := sandboxSnapshotFromInputs(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite})
 	desc := &jobstore.DelegateRestoreDescriptor{WorkingDir: lane, LocalEnvPolicy: "default", Sandbox: snap}
 
-	childEnv, err := s.restoreDelegateChildEnvironment(desc, "dlg_drift")
-	if err != nil {
-		t.Fatalf("restore: %v", err)
+	_, err := s.restoreDelegateChildEnvironment(desc, "dlg_looser")
+	if err == nil {
+		t.Fatal("a delegate box looser than the resume-time parent must be refused")
 	}
-	le := childEnv.(*execenv.LocalExecutionEnvironment)
-	if le.Sandbox == nil || !slices.Contains(le.Sandbox.MaskedPaths, filepath.Clean(tight)) {
-		t.Errorf("restored box must keep the persisted tight denylist %q: %v", tight, maskedOf(le.Sandbox))
+	if !strings.Contains(err.Error(), notResumableSandboxUnsatisfiable) {
+		t.Errorf("rejection must name %q, got %v", notResumableSandboxUnsatisfiable, err)
 	}
 }
 
@@ -372,13 +400,6 @@ func TestDelegateRestoreOffUnderSandboxedParentStaysOff(t *testing.T) {
 	if le.Wrapper != nil {
 		t.Errorf("off delegate must not inherit the parent's kernel wrapper")
 	}
-}
-
-func maskedOf(rp *sandbox.ResolvedPolicy) []string {
-	if rp == nil {
-		return nil
-	}
-	return rp.MaskedPaths
 }
 
 // sbxDelegateSession builds a delegate-capable session whose resumed-delegate

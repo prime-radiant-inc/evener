@@ -105,12 +105,20 @@ func (s *sandboxFS) deny(tool, denyPath, reason string) *sandbox.DeniedError {
 	// environ would reveal which secret was probed). Other reasons — outside a
 	// root, a read-only git surface, a symlink component — carry an informative
 	// non-secret path, so they keep the basename.
+	sensitive := reason == denyReasonMasked
+	modelReason := reason
+	if !sensitive {
+		// Tell the model the box is immutable — a per-session policy no tool call can
+		// relax — so it stops retrying the same denied path. Mode-agnostic and
+		// accurate for every mode; the audit record above keeps the terse reason.
+		modelReason = reason + "; this sandbox policy is fixed for the session"
+	}
 	return &sandbox.DeniedError{
 		Mode:      s.policy.Mode,
 		Tool:      tool,
 		Path:      denyPath,
-		Reason:    reason,
-		Sensitive: reason == denyReasonMasked,
+		Reason:    modelReason,
+		Sensitive: sensitive,
 	}
 }
 

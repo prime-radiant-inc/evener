@@ -111,6 +111,10 @@ func launchOptionValue(opt appwire.LaunchOption, l appwire.LaunchConfigLayer) (s
 		return defaultString(l.ContextStrategy), l.ContextStrategy
 	case "openai_responses_continuation":
 		return defaultString(l.OpenAIResponsesContinuation), l.OpenAIResponsesContinuation
+	case "sandbox":
+		return defaultString(l.Sandbox), l.Sandbox
+	case "sandbox_net":
+		return ptrBoolStr(l.SandboxNet), ptrBoolStr(l.SandboxNet)
 	case "max_rounds":
 		return ptrIntStr(l.MaxRounds), ptrIntStr(l.MaxRounds)
 	case "max_subagent_depth":

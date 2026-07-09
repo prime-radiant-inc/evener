@@ -74,6 +74,49 @@ func ModeIsOff(name string) bool {
 	return n == "" || n == modeNames[ModeOff]
 }
 
+// readConfinement and writeConfinement place each mode on the two confinement
+// axes the lattice is ordered by; a LOWER value is MORE confined. Reads:
+// off sees everything (2), the denylisted modes see anywhere-minus-denylist (1),
+// restricted sees only the worktree (0). Writes: read-only writes nothing but tmp
+// (0), workspace-write and restricted write only the working tree (1), off applies
+// no write confinement and writes anywhere (2). Together they make the modes a
+// partial (not total) order — read-only and restricted are incomparable — which is
+// exactly what AtLeastAsConfining encodes for the delegate no-escalation floor.
+func (m Mode) readConfinement() int {
+	switch m {
+	case ModeOff:
+		return 2
+	case ModeRestricted:
+		return 0
+	default: // read-only, workspace-write
+		return 1
+	}
+}
+
+func (m Mode) writeConfinement() int {
+	switch m {
+	case ModeReadOnly:
+		return 0
+	case ModeOff:
+		return 2
+	default: // workspace-write, restricted
+		return 1
+	}
+}
+
+// AtLeastAsConfining reports whether this mode confines at least as much as other
+// on BOTH the read and write axes — the security predicate the per-delegate
+// sandbox floor enforces: a delegate may request a box only if it is no looser
+// than its parent's. Because the axes are independent, the modes form a partial
+// order: read-only and restricted are incomparable (read-only reads outside the
+// worktree restricted forbids; restricted writes the worktree read-only forbids),
+// so AtLeastAsConfining is false between them in BOTH directions. Every mode is at
+// least as confining as itself and as an off parent (off is loosest on both axes).
+func (m Mode) AtLeastAsConfining(other Mode) bool {
+	return m.readConfinement() <= other.readConfinement() &&
+		m.writeConfinement() <= other.writeConfinement()
+}
+
 // ParseMode maps a mode name to its Mode, tolerating surrounding whitespace and
 // case. An unknown name is a typed error rather than a silent default so a
 // mistyped --sandbox value fails loudly instead of quietly disabling the box.

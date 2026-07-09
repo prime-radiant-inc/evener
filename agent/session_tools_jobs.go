@@ -333,7 +333,12 @@ func watchInspectFound(inspect jobWatchInspectToolResult) bool {
 	return inspect.Watching || inspect.Source != "" || inspect.EndReason != ""
 }
 
-func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (string, error) {
+// decodeDelegateArgs decodes the delegate tool's raw params into delegateArgs,
+// returning an invalid_request error for a malformed wait/allowance value. It is
+// pure over the args map (no session state), so the decode — including the
+// tri-state sandbox_net (nil = inherit, never a silent false) — is unit-testable
+// without minting a delegate.
+func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 	a := delegateArgs{
 		Task:            stringArg(args, "task"),
 		AgentType:       stringArg(args, "agent_type"),
@@ -341,13 +346,28 @@ func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars
 		ReasoningEffort: stringArg(args, "reasoning_effort"),
 		WatchParent:     shellBoolArg(args, "watch_parent"),
 		Isolation:       stringArg(args, "isolation"),
+		Sandbox:         stringArg(args, "sandbox"),
 		Background:      true, // default: no wait, return job_id immediately
+	}
+	// sandbox_net is a tri-state: absent stays nil so the delegate INHERITS the
+	// parent's network; present carries the explicit choice. A missing key must not
+	// read as false — that would silently force network off. A present-but-non-boolean
+	// value (e.g. the string "false" from a non-strict provider) is refused rather
+	// than silently decoded as inherit — the same silent no-op this surface refuses
+	// elsewhere (net-without-mode, net-with-off).
+	switch v := args["sandbox_net"].(type) {
+	case nil:
+		// omitted → inherit
+	case bool:
+		a.SandboxNet = &v
+	default:
+		return delegateArgs{}, errors.New("invalid_request: sandbox_net must be a JSON boolean (true or false, not a quoted string)")
 	}
 	// max_wait_ms: 0/absent = no wait (background); positive = wait inline up to N;
 	// negative = invalid_request. Zero reads as unset (strict-provider safe).
 	if n, ok := shellIntArg(args, "max_wait_ms"); ok && n != 0 {
 		if n < 0 {
-			return "", errors.New("invalid_request: max_wait_ms must be non-negative")
+			return delegateArgs{}, errors.New("invalid_request: max_wait_ms must be non-negative")
 		}
 		clamped := n
 		if clamped < minJobBlockTimeoutMS {
@@ -364,14 +384,21 @@ func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars
 	// createDelegate enforces the grant rule (strictly less than own allowance).
 	if n, ok := shellIntArg(args, "delegation_allowance"); ok && n != 0 {
 		if n < 0 {
-			return "", errors.New("invalid_request: delegation_allowance must be non-negative")
+			return delegateArgs{}, errors.New("invalid_request: delegation_allowance must be non-negative")
 		}
 		a.DelegationAllowance = n
 	}
 	if resultSchema, ok := args["result_schema"].(map[string]any); ok {
 		a.ResultSchema = resultSchema
 	}
+	return a, nil
+}
 
+func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (string, error) {
+	a, err := decodeDelegateArgs(args)
+	if err != nil {
+		return "", err
+	}
 	res := s.createDelegate(ctx, a)
 	if res.Err != nil {
 		return "", res.Err
@@ -1371,6 +1398,9 @@ type delegateToolResult struct {
 	// an isolated delegate's terminal job (native worktree tools spec §9
 	// lifecycle step 3); nil for a non-isolated delegate.
 	Worktree *delegateWorktreeToolResult `json:"worktree,omitempty"`
+	// Sandbox echoes the delegate's enforced box (mode + network) so the parent can
+	// verify the child's actual confinement; nil for an unsandboxed (off) delegate.
+	Sandbox *delegateSandboxToolResult `json:"sandbox,omitempty"`
 }
 
 // delegateWorktreeToolResult is the tool-facing shape of delegateWorktreeReport
@@ -1387,6 +1417,18 @@ func delegateWorktreeToolResultFrom(wt *delegateWorktreeReport) *delegateWorktre
 		return nil
 	}
 	return &delegateWorktreeToolResult{Path: wt.Path, Branch: wt.Branch, Ahead: wt.Ahead, Dirty: wt.Dirty}
+}
+
+type delegateSandboxToolResult struct {
+	Mode    string `json:"mode"`
+	Network bool   `json:"network"`
+}
+
+func delegateSandboxToolResultFrom(sb *delegateSandboxReport) *delegateSandboxToolResult {
+	if sb == nil {
+		return nil
+	}
+	return &delegateSandboxToolResult{Mode: sb.Mode, Network: sb.Network}
 }
 
 func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error) {
@@ -1663,6 +1705,7 @@ func marshalDelegateResult(res delegateResult, maxChars int) (string, error) {
 		Watching:            res.Watching,
 		Watches:             res.Watches,
 		Worktree:            delegateWorktreeToolResultFrom(res.Worktree),
+		Sandbox:             delegateSandboxToolResultFrom(res.Sandbox),
 	}
 	if !res.RunningInBackground || res.TimedOut {
 		out.Output = &res.Output

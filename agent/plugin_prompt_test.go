@@ -56,7 +56,7 @@ func renderAvailableAgentsSectionWithAllowanceAndTools(t *testing.T, agents map[
 			embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"},
 		},
 	}
-	return resolver.Section("available-agents", sess.buildPromptData())
+	return resolver.Section("available-agents", sess.buildPromptData(sess.currentEnv()))
 }
 
 // renderSubagentPromptWithAllowance builds a depth-1 child session with the

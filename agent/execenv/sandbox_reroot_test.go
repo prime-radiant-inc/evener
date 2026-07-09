@@ -202,6 +202,41 @@ func TestEnableSandboxProvisionsAndCleansSessionTmp(t *testing.T) {
 	}
 }
 
+// TestDisposeSandboxScratch: the narrow scratch dispose removes the env's OWN
+// session tmp (the leak-avoidance path for a spawn that EnableSandbox'd a fresh env
+// and then failed) and never disturbs a different env's independent scratch.
+func TestDisposeSandboxScratch(t *testing.T) {
+	laneA, laneB, home := twoLanes(t)
+	owner := NewLocalExecutionEnvironment(laneA)
+	if err := owner.EnableSandbox(resolvedAt(t, home, laneA, sandbox.ModeWorkspaceWrite)); err != nil {
+		t.Fatalf("owner EnableSandbox: %v", err)
+	}
+	ownerTmp := owner.Wrapper.SessionTmp()
+	if _, err := os.Stat(ownerTmp); err != nil {
+		t.Fatalf("owner session tmp must exist after EnableSandbox: %v", err)
+	}
+
+	// A distinct env provisioning its own box has its OWN scratch.
+	fresh := NewLocalExecutionEnvironment(laneB)
+	if err := fresh.EnableSandbox(resolvedAt(t, home, laneB, sandbox.ModeWorkspaceWrite)); err != nil {
+		t.Fatalf("fresh EnableSandbox: %v", err)
+	}
+	freshTmp := fresh.Wrapper.SessionTmp()
+
+	fresh.DisposeSandboxScratch()
+	if _, err := os.Stat(freshTmp); !os.IsNotExist(err) {
+		t.Fatalf("DisposeSandboxScratch must remove the env's own scratch, stat err = %v", err)
+	}
+	if fresh.ownedSessionTmp != nil {
+		t.Error("DisposeSandboxScratch must clear ownedSessionTmp")
+	}
+	if _, err := os.Stat(ownerTmp); err != nil {
+		t.Fatalf("disposing one env's scratch must NOT remove another's: %v", err)
+	}
+
+	owner.Cleanup()
+}
+
 // TestEnableSandboxOffIsNoOp: an off/nil policy provisions no tmp and no wrapper.
 func TestEnableSandboxOffIsNoOp(t *testing.T) {
 	env := NewLocalExecutionEnvironment(t.TempDir())

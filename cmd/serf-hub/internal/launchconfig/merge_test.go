@@ -43,6 +43,125 @@ func TestMerge_ScalarPrecedence(t *testing.T) {
 	}
 }
 
+// TestMerge_Sandbox: a global sandbox default is inherited when the launch layer
+// leaves it unset, but an explicit launch value overrides it — including overriding
+// a global restricted back to off. SandboxNet follows the non-nil-wins pointer rule.
+func TestMerge_Sandbox(t *testing.T) {
+	// Global restricted + launch unset → inherit restricted.
+	got, _ := mergeLayers(map[LayerName]Layer{
+		LayerGlobal: {Sandbox: "restricted", SandboxNet: ptrBool(true)},
+		LayerLaunch: {},
+	})
+	if got.Effective.Sandbox != "restricted" {
+		t.Errorf("Sandbox = %q, want restricted (inherited from global)", got.Effective.Sandbox)
+	}
+	if got.Provenance["sandbox"] != LayerGlobal {
+		t.Errorf("Provenance[sandbox] = %q, want global", got.Provenance["sandbox"])
+	}
+	if got.Effective.SandboxNet == nil || !*got.Effective.SandboxNet {
+		t.Errorf("SandboxNet = %v, want inherited true", got.Effective.SandboxNet)
+	}
+
+	// Global restricted + launch explicit off → override to off (a launch layer
+	// must be able to turn a global default back off).
+	got, _ = mergeLayers(map[LayerName]Layer{
+		LayerGlobal: {Sandbox: "restricted", SandboxNet: ptrBool(true)},
+		LayerLaunch: {Sandbox: "off", SandboxNet: ptrBool(false)},
+	})
+	if got.Effective.Sandbox != "off" {
+		t.Errorf("Sandbox = %q, want off (launch override)", got.Effective.Sandbox)
+	}
+	if got.Provenance["sandbox"] != LayerLaunch {
+		t.Errorf("Provenance[sandbox] = %q, want launch", got.Provenance["sandbox"])
+	}
+	if got.Effective.SandboxNet == nil || *got.Effective.SandboxNet {
+		t.Errorf("SandboxNet = %v, want explicit launch false", got.Effective.SandboxNet)
+	}
+	if got.Provenance["sandbox_net"] != LayerLaunch {
+		t.Errorf("Provenance[sandbox_net] = %q, want launch", got.Provenance["sandbox_net"])
+	}
+}
+
+// TestMerge_SandboxNetWithoutModeDiagnostic: an effective sandbox_net with no
+// (or off) sandbox mode is a silent no-op at serf serve, so mergeLayers emits a
+// diagnostic. A non-off mode (from ANY layer) suppresses the warning.
+func TestMerge_SandboxNetWithoutModeDiagnostic(t *testing.T) {
+	hasNetDiag := func(diags []Diagnostic) bool {
+		for _, d := range diags {
+			if d.Field == "sandbox_net" && strings.Contains(d.Message, "no effect") {
+				return true
+			}
+		}
+		return false
+	}
+
+	// net set, no mode → diagnostic (attributed to the layer that set net).
+	got, diags := mergeLayers(map[LayerName]Layer{LayerGlobal: {SandboxNet: ptrBool(false)}})
+	if !hasNetDiag(diags) {
+		t.Errorf("sandbox_net with no mode must warn, diags=%v", diags)
+	}
+	if !hasNetDiag(got.Diagnostics) {
+		t.Error("diagnostic must also be carried on Resolved.Diagnostics")
+	}
+
+	// net set + explicit off mode → diagnostic.
+	_, diags = mergeLayers(map[LayerName]Layer{LayerGlobal: {Sandbox: "off", SandboxNet: ptrBool(true)}})
+	if !hasNetDiag(diags) {
+		t.Errorf("sandbox_net with an off mode must warn, diags=%v", diags)
+	}
+
+	// net set + non-off mode → NO diagnostic.
+	_, diags = mergeLayers(map[LayerName]Layer{LayerGlobal: {Sandbox: "restricted", SandboxNet: ptrBool(true)}})
+	if hasNetDiag(diags) {
+		t.Errorf("sandbox_net with a non-off mode must not warn, diags=%v", diags)
+	}
+
+	// mode in one layer, net in another (the cross-layer case per-layer validation
+	// would miss) → NO diagnostic, because the effective config has both.
+	_, diags = mergeLayers(map[LayerName]Layer{
+		LayerGlobal: {Sandbox: "workspace-write"},
+		LayerLaunch: {SandboxNet: ptrBool(false)},
+	})
+	if hasNetDiag(diags) {
+		t.Errorf("cross-layer mode+net must not warn, diags=%v", diags)
+	}
+}
+
+// TestMerge_UnknownSandboxModeDiagnostic: a typo'd sandbox mode merges cleanly and
+// would only fail at spawn (serf's ParseMode) with no launch-config pointer at the
+// typo. mergeLayers emits a diagnostic naming the bad value; the four real modes
+// (case/space-insensitive) and an unset value do not warn.
+func TestMerge_UnknownSandboxModeDiagnostic(t *testing.T) {
+	hasModeDiag := func(diags []Diagnostic) bool {
+		for _, d := range diags {
+			if d.Field == "sandbox" && strings.Contains(d.Message, "unknown sandbox mode") {
+				return true
+			}
+		}
+		return false
+	}
+
+	got, diags := mergeLayers(map[LayerName]Layer{LayerGlobal: {Sandbox: "restrcted"}})
+	if !hasModeDiag(diags) {
+		t.Errorf("a typo'd sandbox mode must warn, diags=%v", diags)
+	}
+	if !hasModeDiag(got.Diagnostics) {
+		t.Error("diagnostic must also be carried on Resolved.Diagnostics")
+	}
+
+	for _, mode := range []string{"off", "read-only", "workspace-write", "restricted", "  Restricted "} {
+		_, diags := mergeLayers(map[LayerName]Layer{LayerGlobal: {Sandbox: mode}})
+		if hasModeDiag(diags) {
+			t.Errorf("valid mode %q must not warn, diags=%v", mode, diags)
+		}
+	}
+
+	_, diags = mergeLayers(map[LayerName]Layer{LayerGlobal: {}})
+	if hasModeDiag(diags) {
+		t.Errorf("unset sandbox must not warn, diags=%v", diags)
+	}
+}
+
 func TestMerge_ScalarPointerSemantics(t *testing.T) {
 	g := Layer{MaxRounds: ptrInt(200), NonInteractive: ptrBool(true), RawHTTPLogging: ptrBool(true)}
 	l := Layer{NonInteractive: ptrBool(false), RawHTTPLogging: ptrBool(false)}

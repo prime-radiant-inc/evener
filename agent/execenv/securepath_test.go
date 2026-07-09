@@ -324,6 +324,38 @@ func TestAuditSinkRedaction(t *testing.T) {
 	}
 }
 
+// TestDenyReasonAnnouncesImmutablePolicy: a NON-sensitive denial appends a clause
+// telling the model the box is fixed for the session (so it stops retrying); a
+// SENSITIVE (credential) denial stays terse — no clause, no path hint.
+func TestDenyReasonAnnouncesImmutablePolicy(t *testing.T) {
+	t.Parallel()
+	s, home, worktree := newSB(t, sandbox.ModeReadOnly)
+
+	err := s.writeFile("write_file", filepath.Join(worktree, "note.txt"), []byte("x"), 0o644)
+	var de *sandbox.DeniedError
+	if !asDenied(err, &de) {
+		t.Fatalf("write in read-only must be a *sandbox.DeniedError, got %T: %v", err, err)
+	}
+	if de.Sensitive {
+		t.Fatal("a write-denied error must not be Sensitive")
+	}
+	if !strings.Contains(de.Reason, "fixed for the session") {
+		t.Errorf("non-sensitive denial must announce the fixed policy, got reason %q", de.Reason)
+	}
+
+	_, err = s.readFile("read_file", filepath.Join(home, ".ssh", "id_rsa"))
+	var mde *sandbox.DeniedError
+	if !asDenied(err, &mde) {
+		t.Fatalf("masked read must be a *sandbox.DeniedError, got %T: %v", err, err)
+	}
+	if !mde.Sensitive {
+		t.Fatal("a masked credential denial must be Sensitive")
+	}
+	if strings.Contains(mde.Reason, "fixed for the session") {
+		t.Errorf("sensitive denial must stay terse, got reason %q", mde.Reason)
+	}
+}
+
 func TestOffModeUnused(t *testing.T) {
 	t.Parallel()
 	// A nil policy and an explicit off policy both leave the environment on the

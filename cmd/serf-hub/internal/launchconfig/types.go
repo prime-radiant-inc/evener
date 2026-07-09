@@ -17,6 +17,8 @@ type Layer struct {
 	ReasoningEffort             string            `toml:"reasoning_effort,omitempty"`
 	ContextStrategy             string            `toml:"context_strategy,omitempty"`
 	OpenAIResponsesContinuation string            `toml:"openai_responses_continuation,omitempty"`
+	Sandbox                     string            `toml:"sandbox,omitempty"`
+	SandboxNet                  *bool             `toml:"sandbox_net,omitempty"`
 	MaxRounds                   *int              `toml:"max_rounds,omitempty"`
 	MaxSubagentDepth            *int              `toml:"max_subagent_depth,omitempty"`
 	NoProjectPrompts            *bool             `toml:"no_project_prompts,omitempty"`

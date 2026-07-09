@@ -1,12 +1,126 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/sandbox"
 )
+
+// parentSandboxModeNet reports the session's effective sandbox (mode, network) —
+// the parent side of the per-delegate no-escalation floor. An unsandboxed session
+// (nil/non-enforced policy, or a non-local env) is off with unrestricted network,
+// so a delegate under an off parent may request any box.
+func (s *Session) parentSandboxModeNet() (sandbox.Mode, bool) {
+	if le, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok && le.Sandbox != nil && le.Sandbox.Enforced() {
+		return le.Sandbox.Mode, le.Sandbox.Network
+	}
+	return sandbox.ModeOff, true
+}
+
+// resolveDelegateSandboxRequest turns a delegate's (sandbox, sandbox_net) request
+// plus the parent's effective (mode, network) into the policy to enforce, or an
+// invalid_request error. It returns (nil, nil) when NEITHER arg is set — the
+// inherit path. An explicit sandbox_net WITHOUT a mode inherits the parent's mode
+// (a net-only tightening): under a sandboxed parent that yields the parent's mode
+// with the requested network; under an unsandboxed (off) parent it is an error,
+// because network confinement is meaningless without a sandbox and silently
+// dropping the flag would be a surprising no-op. The floor is then applied by
+// buildDelegateSandboxPolicy. Pure, so the whole decision is table-testable.
+func resolveDelegateSandboxRequest(sandboxMode string, sandboxNet *bool, parentMode sandbox.Mode, parentNet bool) (*sandbox.SandboxPolicy, error) {
+	mode := strings.TrimSpace(sandboxMode)
+	if mode == "" && sandboxNet == nil {
+		return nil, nil
+	}
+	if mode == "" {
+		if parentMode == sandbox.ModeOff {
+			return nil, errors.New("invalid_request: sandbox_net requires a sandbox mode; your session is not sandboxed, so pass sandbox=... as well")
+		}
+		mode = parentMode.String()
+	}
+	return buildDelegateSandboxPolicy(mode, sandboxNet, parentMode, parentNet)
+}
+
+// allowedDelegateModes lists, in AllModes order, the sandbox modes a delegate may
+// request under a parent in the given mode — those at least as confining as the
+// parent on BOTH axes — as a comma-joined string for the floor error's recoverable-
+// set hint. Pure.
+func allowedDelegateModes(parentMode sandbox.Mode) string {
+	var names []string
+	for _, m := range sandbox.AllModes() {
+		if m.AtLeastAsConfining(parentMode) {
+			names = append(names, m.String())
+		}
+	}
+	return strings.Join(names, ", ")
+}
+
+// buildDelegateSandboxPolicy validates an explicit per-delegate sandbox request
+// against the parent session's effective (mode, network) and returns the policy to
+// enforce for the delegate, or an invalid_request error when the request would
+// grant MORE access than the parent has — the no-escalation floor (security
+// invariant). The mode must be at least as confining as the parent's on both axes;
+// the network may be turned off (tighter) but never on. An omitted sandbox_net
+// inherits the parent's effective network, so a delegate under a net-off parent
+// stays net-off. The parent's effective network is passed by the caller (off/
+// unsandboxed parents are net-on, i.e. unrestricted). It is pure so the floor is
+// exhaustively table-testable without minting a delegate.
+func buildDelegateSandboxPolicy(sandboxMode string, sandboxNet *bool, parentMode sandbox.Mode, parentNet bool) (*sandbox.SandboxPolicy, error) {
+	requested, err := sandbox.ParseMode(sandboxMode)
+	if err != nil {
+		return nil, fmt.Errorf("invalid_request: %w", err)
+	}
+	// The modes are a PARTIAL order (read-only and restricted are incomparable), so a
+	// refusal must not read as "looser" — a read-only parent refusing a restricted
+	// child is really a WRITE-axis mismatch, not "restricted grants more access".
+	// Name the confinement failure and list the recoverable set, mirroring the
+	// delegation-allowance error's "valid grants" house style.
+	if !requested.AtLeastAsConfining(parentMode) {
+		return nil, fmt.Errorf("invalid_request: sandbox %q allows access on an axis your %s sandbox forbids (it is not at least as confining on both reads and writes); modes allowed under your %s sandbox: %s", requested, parentMode, parentMode, allowedDelegateModes(parentMode))
+	}
+	// off applies NO network confinement — Resolve hard-codes net on for ModeOff and
+	// EnableSandbox treats a non-enforced policy as a no-op — so an explicit
+	// sandbox_net alongside sandbox="off" would silently run with full network while
+	// the caller believes egress is off. Refuse the contradiction (BEFORE the
+	// inherit short-circuit below) rather than drop the flag.
+	if requested == sandbox.ModeOff && sandboxNet != nil {
+		return nil, errors.New(`invalid_request: sandbox_net has no effect with sandbox="off" (off applies no network confinement); pass a non-off sandbox mode or omit sandbox_net`)
+	}
+	// An explicit sandbox="off" that passes the floor (only under an off parent) is
+	// exactly the inherit path: returning nil lets createDelegate skip the clone +
+	// EnableSandbox(off) round-trip and just inherit the (off) parent env.
+	if requested == sandbox.ModeOff {
+		return nil, nil
+	}
+	net := parentNet
+	if sandboxNet != nil {
+		net = *sandboxNet
+	}
+	if net && !parentNet {
+		return nil, errors.New("invalid_request: sandbox_net on grants more network access than your own sandbox (network off); a delegate cannot be less restricted than you; omit sandbox_net or pass sandbox_net=false")
+	}
+	// The floor compares MODE and NETWORK only, and the returned policy carries only
+	// those two axes — deliberately. SandboxPolicy also has denylist deltas
+	// (DenylistAdd/DenylistRemove) and extra roots (ExtraRead/WritableRoots), but NO
+	// production path originates a non-empty value for them today: they are only ever
+	// round-tripped through snapshots (sandboxSnapshotFromInputs / cloneSandboxSnapshot
+	// / sandboxPolicyFromSnapshot below), and both origination surfaces — the CLI
+	// (sandbox.ResolveNamed) and the launch-config path — are mode+net only. So a
+	// same-mode delegate cannot be looser on those axes than its parent: parity holds
+	// trivially because the parent's values are empty too.
+	//
+	// IF a config surface for those axes is ever added (e.g. a launch-config
+	// `denylist_add`, or per-session extra read roots), THIS FLOOR MUST BE EXTENDED to
+	// carry the parent's TIGHTENING axes (DenylistAdd, and the read/write root
+	// scoping) into the child's policy — otherwise a same-mode delegate could read a
+	// path its parent masks (a DenylistRemove or an ExtraReadRoot the parent lacks),
+	// re-opening the escalation this floor exists to prevent. Do not add speculative
+	// propagation now; add it WITH the surface that first needs it.
+	return &sandbox.SandboxPolicy{Mode: requested, Network: &net}, nil
+}
 
 // provisionRestoredSandbox engages enforcement on a RESUMED root session's env from
 // its PERSISTED mode, the resume-path counterpart to cmd/serf.provisionSandbox for a

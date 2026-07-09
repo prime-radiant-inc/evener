@@ -34,13 +34,17 @@ func TestEnforcementLine(t *testing.T) {
 	}
 	rp := ResolvedPolicy{Mode: ModeWorkspaceWrite, Network: false, Backend: BackendBwrap, CacheStrategy: CacheSessionPrivate}
 	line := EnforcementLine(rp)
-	for _, want := range []string{"bwrap", "workspace-write", "network off", "cold session-private"} {
+	for _, want := range []string{"bwrap", "enforcing workspace-write", "network off", "secrets masked", "cache private"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("enforcement line %q must mention %q", line, want)
 		}
 	}
+	// The old CLI-flag/cache-jargon must be gone: plain words only.
+	if strings.Contains(line, "--sandbox") || strings.Contains(line, "session-private") || strings.Contains(line, "overlay") {
+		t.Errorf("enforcement line %q must not use flag/cache jargon", line)
+	}
 	overlay := EnforcementLine(ResolvedPolicy{Mode: ModeWorkspaceWrite, Network: true, Backend: BackendBwrap, CacheStrategy: CacheOverlay})
-	if !strings.Contains(overlay, "network on") || !strings.Contains(overlay, "warm-overlay") {
-		t.Errorf("enforcement line %q must reflect net on + warm overlay", overlay)
+	if !strings.Contains(overlay, "network on") || !strings.Contains(overlay, "secrets masked") || !strings.Contains(overlay, "cache shared-read/private-write") {
+		t.Errorf("enforcement line %q must reflect net on + secrets masked + shared-read/private-write cache", overlay)
 	}
 }
