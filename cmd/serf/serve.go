@@ -346,9 +346,17 @@ func runServe(args []string) error {
 		// populated; this callback feeds a text-less EntryNotification kick
 		// into the serve loop so the parent drains it on the next turn.
 		s.SetNotifyFunc(func() { srv.SubmitNotification() })
+		// The M7 sandbox-escalation gate blocks a denied tool call only when a human
+		// is actually watching this thread; the probe reads the live AppWire
+		// subscriber count. Set per-session (like the kick/notify wakes) so it tracks
+		// the current session's id across /clear.
+		s.SetSubscriberCountFunc(func() int { return srv.AppServer().SubscriberCount(s.ID()) })
 		go server.BridgeWithObserver(srv, s.Events(), eventObserver)
 	}
 
+	srv.SetSandboxEscalationResolveFunc(func(id string, approve bool) error {
+		return getSession().ResolveSandboxEscalation(id, approve)
+	})
 	srv.SetCompactFunc(func(ctx context.Context) error { return getSession().Compact(ctx) })
 	srv.SetSteerFunc(func(text string) { getSession().Steer(text) })
 	srv.SetSteerWithImagesFunc(func(text string, images []server.ImageAttachment) {
@@ -383,6 +391,18 @@ func runServe(args []string) error {
 	})
 	srv.SetSessionMetaFunc(func() schema.SessionMeta { return getSession().Meta() })
 	srv.SetPendingAskFunc(func() bool { return getSession().HasPendingAsk() })
+	srv.SetPendingEscalationFunc(func() bool { return getSession().HasPendingEscalations() })
+	srv.SetPendingEscalationsSnapshotFunc(func() []appwire.SandboxEscalationRequested {
+		data := getSession().PendingEscalations()
+		out := make([]appwire.SandboxEscalationRequested, 0, len(data))
+		for _, d := range data {
+			out = append(out, appwire.SandboxEscalationRequested{
+				EscalationID: d.EscalationID, Mode: d.Mode, Tool: d.Tool, Kind: d.Kind,
+				DeniedPath: d.DeniedPath, Command: d.Command, OutputSoFar: d.OutputSoFar, PartiallyRan: d.PartiallyRan,
+			})
+		}
+		return out
+	})
 	srv.SetModelFunc(func(model string) { getSession().SetModel(model) })
 	srv.SetNameFunc(func(name string) { getSession().Rename(name) })
 	srv.SetReasoningEffortFunc(func(effort string) { getSession().SetReasoningEffort(effort) })

@@ -32,6 +32,9 @@ func (f fakeSource) StartTurn(context.Context, appwire.TurnStartParams) (appwire
 	return appwire.TurnStartResponse{}, nil
 }
 func (f fakeSource) SteerTurn(context.Context, appwire.TurnSteerParams) error { return nil }
+func (f fakeSource) ResolveSandboxEscalation(context.Context, appwire.SandboxEscalationResolveParams) error {
+	return nil
+}
 func (f fakeSource) InterruptTurn(context.Context, appwire.TurnInterruptParams) error {
 	return nil
 }

@@ -94,6 +94,11 @@ func (s *Session) close(cleanupEnv bool) {
 		subs := s.subagents.drainForClose()
 		s.mu.Unlock()
 		s.responseSideEffectsMu.Unlock()
+		// Deny every in-flight sandbox escalation so a tool-exec goroutine blocked on
+		// a human decision unblocks (typed denial) rather than leaking. Safe after
+		// the unlock: closing was set above under the lock, so escalateOnSandboxDenial
+		// refuses to register any new escalation past this point.
+		s.cancelAllEscalations()
 		// Flush the just-accumulated work time and usage now, before any
 		// teardown below (Decision 4/L3): Close is the terminal event for a
 		// turn that died mid-flight above, and also for a turn that was

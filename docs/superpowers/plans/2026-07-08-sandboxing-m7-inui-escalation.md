@@ -27,6 +27,23 @@ tool-approval/allowlist engine would sit on, but **that rich policy engine is
 explicitly out of scope** (spec Non-goals; §M7 "the deferred policy engine sits
 here later").
 
+> **IMPLEMENTATION NOTE (built 2026-07-09; decisions confirmed with Jesse).**
+> M7 v1 is **FILE-TOOL ONLY**. **Task 7 (shell escalation) is DESCOPED** — it is
+> architecturally unbuildable on the bwrap backend: bwrap masks denied paths
+> (tmpfs/`/dev/null` binds) rather than refusing them with an attributable signal,
+> so a shell denial surfaces as an empty read (exit 0), an ENOENT
+> indistinguishable from a missing file, or an EROFS — nothing to build an honest
+> card on. `DeniedError.Command`/`OutputSoFar` stay **reserved** for a future
+> seccomp-notify backend; the wire type + card keep the shell shape dormant.
+> Confirmed grant design: a **precise single-leaf** grant opened from `/` with
+> every symlink refused (never anchored on the parent dir — that was a real escape
+> caught by the adversarial pass); escalation **allowlisted** to
+> `read_file`/`write_file`/`edit_file` (`apply_patch` + browse tools stay final);
+> Sensitive (masked-credential) denials never escalate; the card shows the **full**
+> path for informed consent. Wire keys are **camelCase** (the appwire tree speaks
+> the codex/appwire protocol, enforced by `serf-namingcheck` — the plan's
+> "snake_case" predates that gate).
+
 **Architecture:** Three planes, one round-trip.
 
 1. **Session plane (`agent/`)** owns the primitive. After `execTool` dispatches a

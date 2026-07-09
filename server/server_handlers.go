@@ -269,6 +269,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	dfn := s.detailedStatusFn
 	wmfn := s.workMetricsFn
 	pafn := s.pendingAskFn
+	pefn := s.pendingEscalationFn
 	processing := s.processing
 	closed := appStatus(status.State, processing) == appwire.ThreadStatusClosed
 	steerAvailable := s.steerFunc != nil || s.steerWithImagesFunc != nil
@@ -305,6 +306,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if pafn != nil {
 		status.PendingAsk = pafn()
+	}
+	if pefn != nil {
+		status.PendingEscalation = pefn()
 	}
 	status.Capabilities = capabilities
 

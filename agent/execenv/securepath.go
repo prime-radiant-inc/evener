@@ -38,8 +38,25 @@ import (
 type sandboxFS struct {
 	policy *sandbox.ResolvedPolicy
 
+	// grant, when non-empty, is a single per-invocation granted absolute path (M7
+	// escalation approve). It widens ONLY root-containment for EXACTLY this one
+	// path: a read/write of grant resolves as if grant's parent were an allowed
+	// root, through a "/"-anchored open that refuses EVERY symlink in the path
+	// (parent and leaf), so the grant widens containment only — never symlink
+	// resolution, and never anchors on an unvetted parent directory. It never
+	// overrides masking or git-protection, and never widens a sibling or a subtree.
+	// It is set only on a short-lived clone (WithSandboxInvocationGrant) used for one
+	// tool re-dispatch, never on a durable env, so it cannot outlive the invocation.
+	grant string
+
 	mu      sync.Mutex
 	rootFds map[string]int // canonical root path → cached O_DIRECTORY fd
+}
+
+// isGranted reports whether abs is exactly this fs's single per-invocation granted
+// path (never a sibling, never a subtree — precisely one leaf).
+func (s *sandboxFS) isGranted(abs string) bool {
+	return s.grant != "" && abs == s.grant
 }
 
 // newSandboxFS builds a sandboxFS for an enforced resolved policy. The caller
@@ -114,11 +131,38 @@ func (s *sandboxFS) deny(tool, denyPath, reason string) *sandbox.DeniedError {
 		modelReason = reason + "; this sandbox policy is fixed for the session"
 	}
 	return &sandbox.DeniedError{
-		Mode:      s.policy.Mode,
-		Tool:      tool,
-		Path:      denyPath,
-		Reason:    modelReason,
-		Sensitive: sensitive,
+		Mode:       s.policy.Mode,
+		Tool:       tool,
+		Path:       denyPath,
+		Reason:     modelReason,
+		Sensitive:  sensitive,
+		ReasonKind: denialReasonKind(reason),
+	}
+}
+
+// denialReasonKind maps a display-text reason to its typed classification, so the
+// two never diverge from one place (deny() is the single construction site). M7's
+// escalation eligibility keys on the typed kind, never on this text.
+func denialReasonKind(reason string) sandbox.DenialReason {
+	switch reason {
+	case denyReasonOutsideRead:
+		return sandbox.DenialOutsideReadRoots
+	case denyReasonOutsideWrite:
+		return sandbox.DenialOutsideWriteRoots
+	case denyReasonWriteDenied:
+		return sandbox.DenialWritesDisabled
+	case denyReasonMasked:
+		return sandbox.DenialMasked
+	case denyReasonProtected:
+		return sandbox.DenialGitProtected
+	case denyReasonSymlink:
+		return sandbox.DenialSymlink
+	case denyReasonEscape:
+		return sandbox.DenialEscape
+	case denyReasonRootTarget:
+		return sandbox.DenialRootTarget
+	default:
+		return sandbox.DenialUnspecified
 	}
 }
 
@@ -204,6 +248,14 @@ func (s *sandboxFS) underProtected(abs string) bool {
 //     RESOLVE_NO_SYMLINKS from "/" (refused if masked), never following any symlink.
 func (s *sandboxFS) openRead(tool, abs string, flags int) (int, error) {
 	abs = filepath.Clean(abs)
+	// A per-invocation grant permits EXACTLY this one leaf, resolved from "/" with
+	// every symlink refused (parent and leaf) — the same anywhere-minus-denylist
+	// shape an out-of-root read uses, restricted to the one path. It never anchors
+	// on an unvetted parent directory, so a symlinked parent cannot redirect the
+	// grant off the approved path; masking still applies.
+	if s.isGranted(abs) {
+		return s.openAnywhereMinusMasked(tool, abs, flags)
+	}
 	if s.policy.FileTool.Read == sandbox.ReadWorktreeOnly {
 		root, rel, ok := containingRoot(s.policy.FileTool.ReadRoots, abs)
 		if !ok {
@@ -220,8 +272,16 @@ func (s *sandboxFS) openRead(tool, abs string, flags int) (int, error) {
 		return s.openInRoot(tool, abs, root, rel, flags)
 	}
 
-	// A target outside every granted root: allowed anywhere minus masked, resolved
-	// from "/" refusing every symlink so the textual denylist check stays authoritative.
+	// A target outside every granted root: allowed anywhere minus masked.
+	return s.openAnywhereMinusMasked(tool, abs, flags)
+}
+
+// openAnywhereMinusMasked opens abs from "/" refusing EVERY symlink
+// (RESOLVE_NO_SYMLINKS), so the cleaned textual denylist check is authoritative and
+// no symlink anywhere in the path is followed. Shared by the ReadAnywhere
+// out-of-root read shape and the per-invocation grant — both must open a path that
+// lies outside every anchored root without ever trusting a symlinked component.
+func (s *sandboxFS) openAnywhereMinusMasked(tool, abs string, flags int) (int, error) {
 	if s.underMasked(abs) {
 		return -1, s.deny(tool, abs, denyReasonMasked)
 	}
@@ -312,6 +372,14 @@ func (s *sandboxFS) recheckWriteTargetFd(tool, orig string, parentFd int, leaf s
 // O_NOFOLLOW so a symlinked component is refused, never followed).
 func (s *sandboxFS) openWriteParent(tool, abs string, create bool) (int, string, error) {
 	abs = filepath.Clean(abs)
+	// A per-invocation grant permits EXACTLY this one leaf, even in read-only mode
+	// (empty WriteRoots): resolve its parent from "/" with every symlink refused, so
+	// a symlinked parent cannot redirect the write off the approved path, and no
+	// out-of-policy intermediate directory is created. Masking, git-protection, and
+	// the leaf's symlink refusal still apply.
+	if s.isGranted(abs) {
+		return s.grantedWriteParent(tool, abs)
+	}
 	if len(s.policy.FileTool.WriteRoots) == 0 {
 		return -1, "", s.deny(tool, abs, denyReasonWriteDenied)
 	}
@@ -339,6 +407,36 @@ func (s *sandboxFS) openWriteParent(tool, abs string, create bool) (int, string,
 		}
 	}
 	parentFd, err := openBeneathRoot(rootFd, dirOrDot(dir), unix.O_RDONLY|unix.O_DIRECTORY, 0)
+	if err != nil {
+		return -1, "", s.mapOpenErr(tool, abs, err)
+	}
+	if rerr := s.recheckWriteTargetFd(tool, abs, parentFd, leaf); rerr != nil {
+		_ = unix.Close(parentFd)
+		return -1, "", rerr
+	}
+	return parentFd, leaf, nil
+}
+
+// grantedWriteParent resolves the parent directory of the single granted leaf
+// WITHOUT following any symlink: openAbsNoSymlinks refuses every symlink in the
+// parent path (a symlinked parent → ELOOP → typed denial), so the grant can never
+// redirect the write off the approved path. It does NOT create missing intermediate
+// directories — an out-of-policy path's parents are not the grant's to create — and
+// still enforces masking and git-protection (the grant widens containment only).
+// The leaf's own symlink refusal is enforced by writeFile's AT_SYMLINK_NOFOLLOW
+// Fstatat, exactly as for an in-root write.
+func (s *sandboxFS) grantedWriteParent(tool, abs string) (int, string, error) {
+	if s.underMasked(abs) {
+		return -1, "", s.deny(tool, abs, denyReasonMasked)
+	}
+	if s.underProtected(abs) {
+		return -1, "", s.deny(tool, abs, denyReasonProtected)
+	}
+	leaf := filepath.Base(abs)
+	if leaf == "" || leaf == "." || leaf == string(filepath.Separator) {
+		return -1, "", s.deny(tool, abs, denyReasonRootTarget)
+	}
+	parentFd, err := openAbsNoSymlinks(filepath.Dir(abs), unix.O_RDONLY|unix.O_DIRECTORY, 0)
 	if err != nil {
 		return -1, "", s.mapOpenErr(tool, abs, err)
 	}

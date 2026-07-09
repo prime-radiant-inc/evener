@@ -28,7 +28,7 @@ func TestStatusProber_Success(t *testing.T) {
 
 	addr := srv.Listener.Addr().String()
 	p := &StatusProber{Timeout: 500 * time.Millisecond}
-	gotSess, gotStatus, _, ok := p.Probe(rendezvous.Entry{Address: addr})
+	gotSess, gotStatus, _, _, ok := p.Probe(rendezvous.Entry{Address: addr})
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -42,7 +42,7 @@ func TestStatusProber_Success(t *testing.T) {
 
 func TestStatusProber_NetworkFailure(t *testing.T) {
 	p := &StatusProber{Timeout: 100 * time.Millisecond}
-	_, _, _, ok := p.Probe(rendezvous.Entry{Address: "127.0.0.1:1"}) // port 1 not listening
+	_, _, _, _, ok := p.Probe(rendezvous.Entry{Address: "127.0.0.1:1"}) // port 1 not listening
 	if ok {
 		t.Fatal("expected ok=false on closed port")
 	}
@@ -54,7 +54,7 @@ func TestStatusProber_BadJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 	p := &StatusProber{Timeout: 100 * time.Millisecond}
-	_, _, _, ok := p.Probe(rendezvous.Entry{Address: srv.Listener.Addr().String()})
+	_, _, _, _, ok := p.Probe(rendezvous.Entry{Address: srv.Listener.Addr().String()})
 	if ok {
 		t.Fatal("expected ok=false on bad JSON")
 	}
@@ -69,7 +69,7 @@ func TestStatusProberSendsHubTokenBearer(t *testing.T) {
 	defer srv.Close()
 
 	p := &StatusProber{Timeout: 500 * time.Millisecond}
-	_, _, _, ok := p.Probe(rendezvous.Entry{Address: srv.Listener.Addr().String(), HubToken: "secret-token"})
+	_, _, _, _, ok := p.Probe(rendezvous.Entry{Address: srv.Listener.Addr().String(), HubToken: "secret-token"})
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -92,7 +92,7 @@ func TestStatusProber_NonOKStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 	p := &StatusProber{Timeout: 100 * time.Millisecond}
-	gotSess, gotStatus, _, ok := p.Probe(rendezvous.Entry{Address: srv.Listener.Addr().String()})
+	gotSess, gotStatus, _, _, ok := p.Probe(rendezvous.Entry{Address: srv.Listener.Addr().String()})
 	if ok {
 		t.Fatal("expected ok=false on non-200 status")
 	}
@@ -111,9 +111,22 @@ func TestStatusProber_DecodesPendingAsk(t *testing.T) {
 	defer srv.Close()
 	p := &StatusProber{}
 	entry := rendezvous.Entry{Address: strings.TrimPrefix(srv.URL, "http://")}
-	sessID, status, pendingAsk, ok := p.Probe(entry)
+	sessID, status, pendingAsk, _, ok := p.Probe(entry)
 	if !ok || sessID != "01A" || status != "awaiting" || !pendingAsk {
 		t.Fatalf("Probe() = %q, %q, %v, %v; want 01A, awaiting, true, true", sessID, status, pendingAsk, ok)
+	}
+}
+
+func TestStatusProber_DecodesPendingEscalation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"session_id": "01A", "state": "active", "pending_escalation": true})
+	}))
+	defer srv.Close()
+	p := &StatusProber{}
+	entry := rendezvous.Entry{Address: strings.TrimPrefix(srv.URL, "http://")}
+	sessID, status, _, pendingEscalation, ok := p.Probe(entry)
+	if !ok || sessID != "01A" || status != "active" || !pendingEscalation {
+		t.Fatalf("Probe() pendingEscalation path = %q, %q, %v, %v; want 01A, active, true, true", sessID, status, pendingEscalation, ok)
 	}
 }
 
@@ -124,7 +137,7 @@ func TestStatusProber_AbsentPendingAskDecodesFalse(t *testing.T) {
 	defer srv.Close()
 	p := &StatusProber{}
 	entry := rendezvous.Entry{Address: strings.TrimPrefix(srv.URL, "http://")}
-	_, _, pendingAsk, _ := p.Probe(entry)
+	_, _, pendingAsk, _, _ := p.Probe(entry)
 	if pendingAsk {
 		t.Fatal("absent pending_ask (old daemon / Codex thread) must decode as false")
 	}

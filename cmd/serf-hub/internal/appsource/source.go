@@ -16,6 +16,7 @@ type Source interface {
 	ForkThread(context.Context, appwire.ThreadForkParams) (appwire.ThreadForkResponse, error)
 	StartTurn(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error)
 	SteerTurn(context.Context, appwire.TurnSteerParams) error
+	ResolveSandboxEscalation(context.Context, appwire.SandboxEscalationResolveParams) error
 	InterruptTurn(context.Context, appwire.TurnInterruptParams) error
 	QueueTurn(context.Context, appwire.TurnQueueParams) error
 	DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) error

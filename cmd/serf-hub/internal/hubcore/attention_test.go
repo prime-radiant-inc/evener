@@ -107,6 +107,37 @@ func TestDeriveAttention_CarriesAskPending(t *testing.T) {
 	}
 }
 
+func TestDeriveAttention_PendingEscalationPromotesToNeedsYou(t *testing.T) {
+	metas := []schema.SessionMeta{{ID: "01A", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
+	// A sandbox escalation blocks MID-TURN, so the daemon status is still "active"
+	// (level "working"). The pending-escalation flag must promote it to needs_you so
+	// the owning session lights up cross-session.
+	live := []LiveEntry{{SessionID: "01A", Status: "active", PendingEscalation: true}}
+	entries, sum := DeriveAttention(metas, live, nil)
+	if entries["01A"].Level != "needs_you" {
+		t.Fatalf("a pending escalation must promote an active session to needs_you, got %+v", entries["01A"])
+	}
+	if sum.NeedsYou != 1 || sum.Working != 0 {
+		t.Fatalf("summary must count it as needs_you, got %+v", sum)
+	}
+
+	// Clearing the escalation returns it to working (no residual attention).
+	live = []LiveEntry{{SessionID: "01A", Status: "active", PendingEscalation: false}}
+	entries, sum = DeriveAttention(metas, live, nil)
+	if entries["01A"].Level != "working" || sum.NeedsYou != 0 {
+		t.Fatalf("clearing the escalation must return the session to working, got %+v / %+v", entries["01A"], sum)
+	}
+}
+
+func TestDeriveAttention_PendingEscalationNeverDowngradesError(t *testing.T) {
+	metas := []schema.SessionMeta{{ID: "01A", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
+	live := []LiveEntry{{SessionID: "01A", Status: appwire.ThreadStatusSystemError, PendingEscalation: true}}
+	entries, _ := DeriveAttention(metas, live, nil)
+	if entries["01A"].Level != "error" {
+		t.Fatalf("a pending escalation must not downgrade an error state, got %+v", entries["01A"])
+	}
+}
+
 func TestAttentionWatcher_TicksOnAskOnlyFlip(t *testing.T) {
 	var got []AttentionChangedPayload
 	w := NewAttentionWatcher(func(p AttentionChangedPayload) { got = append(got, p) })

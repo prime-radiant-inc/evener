@@ -202,6 +202,28 @@ type Session struct {
 	// part of persisted SessionMeta.
 	askPending []askQuestion
 
+	// pendingEscalations holds one waiter per in-flight sandbox-exemption escalation
+	// (M7), keyed by its opaque id — the channel its tool-exec goroutine parks on
+	// plus the redacted card payload. The tool-exec goroutine registers a waiter,
+	// emits the human-facing approval card, and blocks; the UI's resolve request
+	// (via ResolveSandboxEscalation) sends the decision to exactly that channel and
+	// removes it. Cancel-all on turn interrupt and Close drains it to deny. The
+	// payload lets the daemon snapshot pending escalations onto thread/read (so a
+	// fresh/other client surfaces the card on entry) and report an attention flag on
+	// /status (so the owning session lights up cross-session) — both HUMAN-CLIENT
+	// surfaces, never the model's. Guarded by s.mu. Deliberately NOT persisted: an
+	// escalation is invisible to the model and never replayed, so a crash leaves an
+	// interrupted tool call for orphan-repair, not a pending escalation.
+	pendingEscalations map[string]*escalationWaiter
+
+	// subscriberCountFn probes whether a human is actually watching this thread
+	// over AppWire (the daemon injects it via SetSubscriberCountFunc). A denial in
+	// an interactive session with zero live subscribers is treated as final rather
+	// than blocking a card no one can answer (reconciliation: zero-subscriber →
+	// deny-immediately). Nil means "no probe wired" — treated as zero, so a session
+	// with no server attached never blocks. Guarded by s.mu.
+	subscriberCountFn func() int
+
 	// subagents
 	depth                            int
 	delegationAllowance              int          // mu-guarded; allowance to grant further sub-agent delegation levels

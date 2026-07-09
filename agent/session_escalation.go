@@ -1,0 +1,302 @@
+package agent
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"sort"
+	"sync/atomic"
+
+	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/sandbox"
+)
+
+// sandboxGranter is the execution environment's ability to produce a short-lived
+// clone that permits EXACTLY one extra path for a single re-dispatch (the M7 grant).
+// Only the real LocalExecutionEnvironment implements it; a test/other env that does
+// not simply re-runs unchanged (and re-denies — safe).
+type sandboxGranter interface {
+	WithSandboxInvocationGrant(path string) execenv.ExecutionEnvironment
+}
+
+// M7 — in-UI sandbox-exemption escalation.
+//
+// This is a NEW human-gated approval primitive, the inverse of ask_user on every
+// axis. ask_user is model-initiated, ends the turn, is visible in the transcript,
+// and is answered by the user's next input. An escalation is HARNESS-initiated (a
+// reaction to a typed sandbox denial, no tool call), BLOCKS mid-tool, is INVISIBLE
+// to the model (never a schema.Turn), and is answered by a NEW resolve request that
+// unblocks the specific waiting tool-exec goroutine.
+//
+// The four walls, each defended here:
+//   - Not triggerable: only escalateOnSandboxDenial raises one, off a typed denial.
+//     No tool exposes it to the model.
+//   - Not approvable by the model: the only resolver is ResolveSandboxEscalation,
+//     driven by the UI's out-of-band request; it is never advertised as a tool.
+//   - Not observable: escalateOnSandboxDenial never appends to s.history — only the
+//     final tool result (approved re-run OR typed denial) enters the model context.
+//   - Not replayable: the pending map is never persisted, so a crashed/resumed
+//     session has no pending escalation; the interrupted call reads as an IsError
+//     orphan-repair placeholder, exactly like an interrupted ask_user.
+
+// escalationWaiter is one blocked, unresolved escalation: the buffered channel its
+// tool-exec goroutine parks on, plus the redacted card payload the daemon
+// snapshots onto thread/read and reports on /status. The payload is the same
+// human-facing event data emitted on the stream — never anything the model sees.
+type escalationWaiter struct {
+	ch   chan sandbox.EscalationDecision
+	data events.SandboxEscalationRequestedData
+	// seq is the monotonic raise order (from escalationSeq), so the snapshot can be
+	// returned in a STABLE, raise-order FIFO — matching what a client that saw the
+	// escalations live already tracks — instead of Go's random map order.
+	seq uint64
+}
+
+// ctxEscalationGrantKey carries a single granted absolute path on the context of
+// one approved re-dispatch. It is a per-invocation grant: it lives only on that
+// one call's context, never on the session and never on the resolved policy, so it
+// cannot leak to any later call.
+type ctxEscalationGrantKey struct{}
+
+// withInvocationGrant returns ctx carrying a single granted path for one tool
+// re-dispatch. The execenv layer consults it for exactly that call.
+func withInvocationGrant(ctx context.Context, path string) context.Context {
+	return context.WithValue(ctx, ctxEscalationGrantKey{}, path)
+}
+
+// invocationGrant returns the path granted on ctx for the current re-dispatch, if
+// any. A grant is present only inside an approved re-run.
+func invocationGrant(ctx context.Context) (string, bool) {
+	p, ok := ctx.Value(ctxEscalationGrantKey{}).(string)
+	return p, ok && p != ""
+}
+
+// SetSubscriberCountFunc injects the "is a human actually watching this thread"
+// probe. The daemon wires it to appserver.SubscriberCount(threadID); a session with
+// no server attached leaves it nil, which reads as zero (never blocks a card no one
+// can answer).
+func (s *Session) SetSubscriberCountFunc(f func() int) {
+	s.mu.Lock()
+	s.subscriberCountFn = f
+	s.mu.Unlock()
+}
+
+// subscriberCount reports the live AppWire subscriber count, or 0 when no probe is
+// wired.
+func (s *Session) subscriberCount() int {
+	s.mu.Lock()
+	f := s.subscriberCountFn
+	s.mu.Unlock()
+	if f == nil {
+		return 0
+	}
+	return f()
+}
+
+// escalatableTools is the ALLOWLIST of tools whose denial may be escalated: the
+// single-FILE tools, each of which touches exactly one leaf per call, so a
+// single-leaf per-invocation grant is well-defined. Everything else stays final:
+//   - apply_patch touches MANY files in one call, so one grant could not cover the
+//     rest (re-running would just re-hit the next denial);
+//   - the browse tools (glob/grep/list_dir) resolve a base DIRECTORY and walk its
+//     subtree, so granting the base would widen a whole subtree, not one leaf;
+//   - shell/kernel denials produce no re-runnable grant (see the M7 spec on why
+//     bwrap masking makes shell escalation unbuildable).
+//
+// An allowlist (rather than a denylist) fails closed: a new tool is non-escalatable
+// until it is explicitly, deliberately added here.
+var escalatableTools = map[string]bool{
+	"read_file":  true,
+	"write_file": true,
+	"edit_file":  true,
+}
+
+// escalationAllowed reports whether a denial is eligible for human escalation. It
+// mirrors ask_user's root-only interactive gate (NonInteractive || subagent), adds
+// the reconciliation zero-subscriber rule, restricts escalation to the single-file
+// tools (escalatableTools), and — critically — only raises a card for a denial a
+// per-invocation single-leaf grant could actually CURE: a CONTAINMENT denial
+// (outside the roots). A masked/git-protected/symlinked/escape denial re-denies
+// deterministically on re-run, so escalating it would show the human "Allowed once"
+// while the model still gets a denial; those stay final. The reason is a TYPED kind
+// (denied.ReasonKind.Curable()), never a match on display text, and it fails closed
+// for an unclassified kind. Curable() excludes DenialMasked, so it subsumes the old
+// Sensitive check.
+//
+// callName is the tool the MODEL invoked (apply_patch's underlying writes carry
+// Tool=="write_file" on the denial, so the allowlist keys on the call, not the
+// denial's Tool). Everything excluded stays final, exactly as a non-interactive
+// session.
+func (s *Session) escalationAllowed(callName string, denied *sandbox.DeniedError) bool {
+	if s.cfg.NonInteractive || s.isSubagentSession() {
+		return false
+	}
+	if !escalatableTools[callName] {
+		return false
+	}
+	if !denied.ReasonKind.Curable() {
+		return false
+	}
+	if s.subscriberCount() == 0 {
+		return false
+	}
+	return true
+}
+
+// escalateOnSandboxDenial is the primitive's chokepoint. Given a tool result that
+// MAY carry a typed sandbox denial and a rerun closure that re-dispatches the same
+// invocation, it decides:
+//
+//   - not a sandbox denial, or not escalatable → return res unchanged (final);
+//   - escalatable → register a pending escalation, emit the human-facing approval
+//     card, and BLOCK the tool-exec goroutine until a human resolves it or the turn
+//     is interrupted / the session closes.
+//
+// On approve it calls rerun with the granted path threaded on the context (the
+// grant is per-invocation and consumed by the execenv layer). On deny / interrupt /
+// close it returns the original typed denial, exactly as a non-interactive session
+// already does. It NEVER touches s.history.
+func (s *Session) escalateOnSandboxDenial(ctx context.Context, callName string, res tool.ExecResult, rerun func(context.Context) tool.ExecResult) tool.ExecResult {
+	denied, ok := sandbox.AsDenied(res.Err)
+	if !ok || !s.escalationAllowed(callName, denied) {
+		return res
+	}
+
+	id, seq := newEscalationID()
+	ch := make(chan sandbox.EscalationDecision, 1)
+	req := sandbox.NewEscalationRequest(id, denied)
+	data := escalationRequestedData(req)
+
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return res // a session already tearing down denies rather than blocks
+	}
+	if s.pendingEscalations == nil {
+		s.pendingEscalations = map[string]*escalationWaiter{}
+	}
+	s.pendingEscalations[id] = &escalationWaiter{ch: ch, data: data, seq: seq}
+	s.mu.Unlock()
+
+	// Remove the waiter on every exit path (resolve, interrupt, close). Idempotent
+	// with ResolveSandboxEscalation's delete and cancelAllEscalations's clear.
+	defer func() {
+		s.mu.Lock()
+		delete(s.pendingEscalations, id)
+		s.mu.Unlock()
+	}()
+
+	// Emit the card BEFORE blocking so RecordAppEvent → Broadcast pushes it to the
+	// human, then the goroutine waits. The payload carries the FULL denied path for
+	// informed consent (only non-sensitive, grant-curable denials reach here; a
+	// sensitive path would degrade to "<denied>") — never file contents.
+	s.emit(events.EventSandboxEscalationRequested, data)
+
+	select {
+	case d := <-ch:
+		if d.Approve {
+			return rerun(withInvocationGrant(ctx, denied.Path))
+		}
+		return res
+	case <-ctx.Done():
+		return res
+	}
+}
+
+// ResolveSandboxEscalation delivers a human decision to the blocked tool-exec
+// goroutine for id. It is the ONLY resolver — the daemon's UI resolve handler calls
+// it, never the model. Resolving an unknown or already-resolved id is a clean error
+// (no panic, no block), so a double-click or a stale card cannot double-approve.
+func (s *Session) ResolveSandboxEscalation(id string, approve bool) error {
+	s.mu.Lock()
+	w, ok := s.pendingEscalations[id]
+	if ok {
+		delete(s.pendingEscalations, id)
+	}
+	s.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("sandbox escalation %q is not pending (unknown or already resolved)", id)
+	}
+	w.ch <- sandbox.EscalationDecision{Approve: approve} // buffered(1); exactly one send
+	return nil
+}
+
+// HasPendingEscalations reports whether any sandbox-exemption escalation is
+// currently blocked awaiting a human. The daemon surfaces it on /status as an
+// attention flag so the owning session lights up cross-session (the hub's
+// needs-you badge) — it is a HUMAN-CLIENT signal, never shown to the model.
+func (s *Session) HasPendingEscalations() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.pendingEscalations) > 0
+}
+
+// PendingEscalations returns the redacted card payloads of the currently-blocked
+// escalations, for the thread/read snapshot so a fresh / other client surfaces the
+// card on entry. HUMAN-CLIENT data only — it is never appended to history or any
+// model-visible projection.
+func (s *Session) PendingEscalations() []events.SandboxEscalationRequestedData {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.pendingEscalations) == 0 {
+		return nil
+	}
+	waiters := make([]*escalationWaiter, 0, len(s.pendingEscalations))
+	for _, w := range s.pendingEscalations {
+		waiters = append(waiters, w)
+	}
+	// Stable raise-order (not Go's random map order), so a fresh-entry client queues
+	// and answers escalations in the same FIFO a client that saw them live does.
+	sort.Slice(waiters, func(i, j int) bool { return waiters[i].seq < waiters[j].seq })
+	out := make([]events.SandboxEscalationRequestedData, 0, len(waiters))
+	for _, w := range waiters {
+		out = append(out, w.data)
+	}
+	return out
+}
+
+// cancelAllEscalations denies every pending escalation. Called from Close so a
+// blocked tool-exec goroutine unblocks (returning the typed denial) rather than
+// leaking. Turn-interrupt cancellation is handled by the ctx.Done() arm of the
+// select; this covers teardown, where the ctx may outlive the decision to stop.
+func (s *Session) cancelAllEscalations() {
+	s.mu.Lock()
+	pending := s.pendingEscalations
+	s.pendingEscalations = nil
+	s.mu.Unlock()
+	for _, w := range pending {
+		w.ch <- sandbox.EscalationDecision{Approve: false}
+	}
+}
+
+// escalationRequestedData maps the wire-agnostic request to the event payload the
+// projector reads.
+func escalationRequestedData(req sandbox.EscalationRequest) events.SandboxEscalationRequestedData {
+	return events.SandboxEscalationRequestedData{
+		EscalationID: req.ID,
+		Mode:         req.Mode.String(),
+		Tool:         req.Tool,
+		Kind:         string(req.Kind),
+		DeniedPath:   req.DeniedPath,
+		Command:      req.Command,
+		OutputSoFar:  req.OutputSoFar,
+		PartiallyRan: req.PartiallyRan,
+	}
+}
+
+// escalationSeq guarantees id uniqueness by construction: a process-monotonic
+// counter, so two ids can never collide even in the (Linux-impossible) event that
+// crypto/rand degenerates. The random suffix keeps the id unguessable.
+var escalationSeq atomic.Uint64
+
+// newEscalationID mints a unique, unguessable opaque handle for one escalation and
+// returns its monotonic raise sequence (used to order the snapshot stably).
+func newEscalationID() (id string, seq uint64) {
+	seq = escalationSeq.Add(1)
+	var b [12]byte
+	_, _ = rand.Read(b[:])
+	return fmt.Sprintf("esc_%d_%s", seq, hex.EncodeToString(b[:])), seq
+}

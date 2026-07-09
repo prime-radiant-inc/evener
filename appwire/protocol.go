@@ -144,6 +144,7 @@ var Methods = []MethodSpec{
 	{MethodSerfPluginDisable, PluginRefParams{}, PluginListResponse{}, ScopeHub, "Disables an installed plugin; returns the updated list."},
 	{MethodSerfPluginSetAutoUpgrade, PluginSetAutoUpgradeParams{}, PluginListResponse{}, ScopeHub, "Sets an installed plugin's auto-upgrade flag; returns the updated list."},
 	{MethodSerfCommandList, EmptyParams{}, CommandListResponse{}, ScopeHub, "Lists loaded plugin slash commands (name, plugin, description) for catalog/autocomplete display."},
+	{MethodSerfSandboxEscalationResolve, SandboxEscalationResolveParams{}, EmptyResponse{}, ScopeBoth, "Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays."},
 }
 
 // Notifications is the AppWire server→client notification catalog. A nil
@@ -176,4 +177,5 @@ var Notifications = []NotificationSpec{
 	{NotifySerfMarketplaceUpdated, nil, "Broadcast after a marketplace mutation (add/remove/refresh); inline {}. Clients refresh the marketplace list."},
 	{NotifySerfPluginUpdated, nil, "Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); inline {}. Clients refresh the plugin list."},
 	{NotifySerfTaskUpdated, TaskUpdatedParams{}, "The session's task-list progress (total/done) changed."},
+	{NotifySerfSandboxEscalationRequested, SandboxEscalationRequested{}, "A harness-raised, human-gated sandbox-exemption approval card (M7); the tool-exec goroutine blocks until answered via serf/sandbox/escalation/resolve."},
 }

@@ -41,6 +41,13 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.questionOverlay != nil && !m.questionOverlay.Deferred() {
 		return m.updateQuestionOverlayKey(msg)
 	}
+	// A pending M7 sandbox-escalation for the viewed session answers only to a
+	// DELIBERATE chord (ctrl+y allow / ctrl+g deny) — both verified NOT bound by the
+	// composer textarea, so a bare key never answers and a multi-line draft is never
+	// stolen (the round-1 ctrl+n collided with the textarea's LineNext).
+	if cmd, handled := m.handleEscalationKey(msg); handled {
+		return m, cmd
+	}
 	if m.followupModal != nil && m.launchOverridesModal != nil {
 		// followupModal is open for a launch-override edit — route to it
 		updated, cmd := m.followupModal.Update(msg)

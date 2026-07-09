@@ -103,6 +103,14 @@ type LocalExecutionEnvironment struct {
 	// — a re-rooted clone shares the wrapper's tmp path but must never dispose the
 	// owner's dir out from under it. nil for off and for re-rooted clones.
 	ownedSessionTmp *sandbox.SessionTmp
+
+	// sandboxGrant, when non-empty, is a single per-invocation granted path (M7
+	// escalation approve), threaded onto a short-lived clone by
+	// WithSandboxInvocationGrant. The clone's lazily-built sandboxFS widens
+	// root-containment for EXACTLY this one path; masking, git-protection, and
+	// symlink refusal are unaffected. It is never set on a durable env and never
+	// copied by WithWorkingDirectory, so the grant cannot outlive the one re-dispatch.
+	sandboxGrant string
 }
 
 // sandbox returns the environment's fd-anchored enforcement layer, or nil when
@@ -117,8 +125,35 @@ func (e *LocalExecutionEnvironment) sandbox() *sandboxFS {
 	defer e.sbMu.Unlock()
 	if e.sbfs == nil {
 		e.sbfs = newSandboxFS(e.Sandbox)
+		e.sbfs.grant = e.sandboxGrant
 	}
 	return e.sbfs
+}
+
+// WithSandboxInvocationGrant returns a short-lived clone of this env whose file-tool
+// enforcement layer additionally permits EXACTLY the one path — the M7 escalation
+// approve path re-dispatches a single denied tool call through it. The clone shares
+// this env's resolved policy, roots, and working directory unchanged; it only widens
+// root-containment for that one leaf (masking, git-protection, and symlink refusal
+// still apply). It is discarded after the one re-dispatch, so the grant cannot leak
+// to any later call. On an off / non-enforced env the grant is meaningless and the
+// env is returned unchanged. The clone never owns the session tmp, so it never
+// disposes it.
+func (e *LocalExecutionEnvironment) WithSandboxInvocationGrant(path string) ExecutionEnvironment {
+	if e.Sandbox == nil || !e.Sandbox.Enforced() || strings.TrimSpace(path) == "" {
+		return e
+	}
+	return &LocalExecutionEnvironment{
+		RootDir:      e.RootDir,
+		EnvPolicy:    e.EnvPolicy,
+		runningPIDs:  e.runningPIDs,
+		gitRoots:     e.gitRoots,
+		mainRoots:    e.mainRoots,
+		fs:           e.fs,
+		Sandbox:      e.Sandbox,
+		Wrapper:      e.Wrapper,
+		sandboxGrant: filepath.Clean(path),
+	}
 }
 
 // invalidateSandboxFS closes and drops the cached fd-anchored enforcement layer so

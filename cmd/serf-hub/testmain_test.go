@@ -74,9 +74,9 @@ type fakeProber struct {
 	shouldFail bool
 }
 
-func (p fakeProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, ok bool) {
+func (p fakeProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, pendingEscalation, ok bool) {
 	if p.shouldFail {
-		return "", "", false, false
+		return "", "", false, false, false
 	}
-	return p.sessionID, p.status, p.pendingAsk, true
+	return p.sessionID, p.status, p.pendingAsk, false, true
 }

@@ -291,15 +291,30 @@ interactive only:
 
 - **File-tool denials** (precise path, no partial effects): approve → re-run that
   single invocation with that path added *for that invocation only*
-  (gemini-cli model). Deny → typed error to model.
-- **Shell denials**: denied path heuristic; command may have **partially
-  executed**. Card shows command + output-so-far + "already partially ran;
-  approving re-runs start-to-finish" caveat. Approve → re-run whole command with
-  the expanded grant for that invocation.
+  (gemini-cli model). Deny → typed error to model. **This is what v1 ships** —
+  escalation is allowlisted to the single-file tools (`read_file`/`write_file`/
+  `edit_file`); `apply_patch` (multi-file) and the browse tools
+  (`glob`/`grep`/`list_dir`, which walk a directory subtree) stay final, so one
+  grant can never widen more than one leaf. The grant opens the one path from `/`
+  with **every symlink refused** (parent and leaf), so it widens root-containment
+  only — never symlink resolution, masking, or git-protection.
+- **Shell denials — OUT OF SCOPE (v1), architecturally unbuildable on the current
+  backend.** bwrap confines by **masking** (a tmpfs / `/dev/null` bind over denied
+  paths) and **not-mounting**, not by an attributable syscall refusal. A sandboxed
+  shell command that hits a denied path therefore either reads *empty content with
+  exit 0* (a masked secret — no error at all), gets *ENOENT indistinguishable from
+  a genuinely missing file*, or *EROFS on a write*. There is **no signal** to
+  attribute a denied path to, so no honest escalation card can be built: it would
+  never fire for the common (masked-read) case and would false-positive on every
+  ordinary missing-file error. `DeniedError.Command`/`OutputSoFar` are therefore
+  **reserved** (never populated by any current path) for a future seccomp-notify
+  design that could intercept and attribute the syscall; the card and the wire
+  type keep the shell shape dormant so it is a drop-in when such a backend exists.
 - Model cannot trigger/approve/observe/replay approvals. No session-wide
   relaxation, no persistent allowlist (the deferred policy engine sits here
   later).
-- Non-interactive: unchanged (denial final).
+- Non-interactive: unchanged (denial final). Zero live subscribers → deny
+  immediately (do not block a card no one can answer).
 
 ## Validation
 

@@ -67,6 +67,11 @@ const (
 	MethodSerfPluginDisable         = "serf/plugin/disable"
 	MethodSerfPluginSetAutoUpgrade  = "serf/plugin/setAutoUpgrade"
 	MethodSerfCommandList           = "serf/command/list"
+	// MethodSerfSandboxEscalationResolve delivers a human's approve/deny decision
+	// for a pending sandbox-exemption escalation (M7). Client→server; ScopeBoth
+	// (daemon serves it; hub relays). It is a UI-only request, never advertised to
+	// the model.
+	MethodSerfSandboxEscalationResolve = "serf/sandbox/escalation/resolve"
 )
 
 const (
@@ -94,6 +99,10 @@ const (
 	NotifySerfAttentionChanged   = "serf/attention/changed"
 	NotifySerfMarketplaceUpdated = "serf/marketplace/updated"
 	NotifySerfPluginUpdated      = "serf/plugin/updated"
+	// NotifySerfSandboxEscalationRequested pushes a harness-raised, human-gated
+	// sandbox-exemption approval card to the client (M7). The tool-exec goroutine
+	// blocks until the client answers with MethodSerfSandboxEscalationResolve.
+	NotifySerfSandboxEscalationRequested = "serf/sandbox/escalation/requested"
 )
 
 const (
@@ -225,6 +234,13 @@ type SerfThread struct {
 	// true while an ask_user question is unanswered. Additive: absent on old
 	// daemons and Codex threads, decoding as false.
 	AskPending bool `json:"askPending,omitempty"`
+	// PendingEscalations is the M7 surface-on-entry snapshot: the redacted approval
+	// cards for any sandbox-exemption escalations currently blocked on this session,
+	// so a client entering / reconnecting to / not-having-seen-live this session
+	// surfaces the card(s). It is a HUMAN-CLIENT field only — it is never part of the
+	// model's transcript or any model-visible projection. Absent on old daemons /
+	// Codex threads.
+	PendingEscalations []SandboxEscalationRequested `json:"pendingEscalations,omitempty"`
 }
 
 // GoalState is the wire representation of a session's /goal. Status is the
@@ -280,6 +296,44 @@ type TaskUpdatedParams struct {
 type TurnCompletedParams struct {
 	TurnID string `json:"turnId"`
 	Turn   Turn   `json:"turn"`
+}
+
+// SandboxEscalationRequested is the payload of a
+// serf/sandbox/escalation/requested notification (M7): a harness-raised approval
+// card for a single sandbox denial. It carries only what the human needs to decide
+// — never file contents. DeniedPath is the FULL literal path for informed consent
+// (only non-sensitive containment denials escalate, so the full path is safe; a
+// sensitive path, which never escalates, degrades to "<denied>" as a defensive
+// floor). Kind selects the card shape; the shell fields (Command/OutputSoFar/
+// PartiallyRan) are reserved and empty in v1 (file-tool escalation only — see the
+// M7 spec on why bwrap masking makes shell escalation unbuildable). It is never
+// appended to the model's transcript.
+type SandboxEscalationRequested struct {
+	// ThreadID/Ref identify the SESSION this escalation belongs to, so a client can
+	// route it by session (enqueue for a non-viewed session, answer the right one)
+	// rather than assuming the currently-viewed session — like every other
+	// thread-scoped notification.
+	ThreadID     string `json:"threadId,omitempty"`
+	Ref          string `json:"ref,omitempty"`
+	EscalationID string `json:"escalationId"`
+	Mode         string `json:"mode"`
+	Tool         string `json:"tool"`
+	Kind         string `json:"kind"`
+	DeniedPath   string `json:"deniedPath"`
+	Command      string `json:"command,omitempty"`
+	OutputSoFar  string `json:"outputSoFar,omitempty"`
+	PartiallyRan bool   `json:"partiallyRan,omitempty"`
+}
+
+// SandboxEscalationResolveParams is the request shape for
+// serf/sandbox/escalation/resolve (M7): the human's approve/deny decision for a
+// pending escalation. Approve re-runs the single denied invocation with the one
+// path granted; deny returns the typed error to the model.
+type SandboxEscalationResolveParams struct {
+	ThreadID     string `json:"threadId,omitempty"`
+	Ref          string `json:"ref,omitempty"`
+	EscalationID string `json:"escalationId"`
+	Approve      bool   `json:"approve"`
 }
 
 type ThreadCapabilities struct {
