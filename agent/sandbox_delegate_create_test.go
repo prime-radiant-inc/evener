@@ -135,6 +135,26 @@ func TestCreateDelegate_SandboxFloorRefusedEarly(t *testing.T) {
 	}
 }
 
+// TestCreateDelegate_SandboxNetWithoutModeRefusedEarly: setting sandbox_net alone
+// under an unsandboxed parent is refused with a legible error (not silently
+// dropped), before any IDs are minted.
+func TestCreateDelegate_SandboxNetWithoutModeRefusedEarly(t *testing.T) {
+	_, home := sbxLane(t)
+	facts := sbxBwrapFacts(home)
+	s := sbxDelegateSession(t, facts) // parent env is off
+
+	res := s.createDelegate(context.Background(), delegateArgs{Task: "do work", SandboxNet: boolPtr(false)})
+	if res.Err == nil {
+		t.Fatal("sandbox_net without a mode under an unsandboxed parent must be refused")
+	}
+	if !strings.Contains(res.Err.Error(), "invalid_request:") || !strings.Contains(res.Err.Error(), "requires a sandbox mode") {
+		t.Errorf("refusal must explain sandbox_net requires a sandbox mode, got %v", res.Err)
+	}
+	if res.DelegateID != "" {
+		t.Errorf("refusal must not mint a delegate id, got %q", res.DelegateID)
+	}
+}
+
 // TestPerDelegateSandbox_CreateResumeRoundTrip: a delegate created with its own
 // explicit box (restricted, net off) persists that box, and on RESTORE re-resolves
 // the SAME box against its lane — independent of the parent, which by resume time is

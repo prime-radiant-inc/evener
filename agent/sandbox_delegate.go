@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
@@ -18,6 +19,29 @@ func (s *Session) parentSandboxModeNet() (sandbox.Mode, bool) {
 		return le.Sandbox.Mode, le.Sandbox.Network
 	}
 	return sandbox.ModeOff, true
+}
+
+// resolveDelegateSandboxRequest turns a delegate's (sandbox, sandbox_net) request
+// plus the parent's effective (mode, network) into the policy to enforce, or an
+// invalid_request error. It returns (nil, nil) when NEITHER arg is set — the
+// inherit path. An explicit sandbox_net WITHOUT a mode inherits the parent's mode
+// (a net-only tightening): under a sandboxed parent that yields the parent's mode
+// with the requested network; under an unsandboxed (off) parent it is an error,
+// because network confinement is meaningless without a sandbox and silently
+// dropping the flag would be a surprising no-op. The floor is then applied by
+// buildDelegateSandboxPolicy. Pure, so the whole decision is table-testable.
+func resolveDelegateSandboxRequest(sandboxMode string, sandboxNet *bool, parentMode sandbox.Mode, parentNet bool) (*sandbox.SandboxPolicy, error) {
+	mode := strings.TrimSpace(sandboxMode)
+	if mode == "" && sandboxNet == nil {
+		return nil, nil
+	}
+	if mode == "" {
+		if parentMode == sandbox.ModeOff {
+			return nil, errors.New("invalid_request: sandbox_net requires a sandbox mode; your session is not sandboxed, so pass sandbox=... as well")
+		}
+		mode = parentMode.String()
+	}
+	return buildDelegateSandboxPolicy(mode, sandboxNet, parentMode, parentNet)
 }
 
 // buildDelegateSandboxPolicy validates an explicit per-delegate sandbox request

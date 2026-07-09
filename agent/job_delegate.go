@@ -189,9 +189,9 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	// than the parent's is refused with a legible invalid_request error and never
 	// mints durable state. An absent sandbox leaves the inherit path untouched.
 	var requestedSandbox *sandbox.SandboxPolicy
-	if strings.TrimSpace(args.Sandbox) != "" {
+	if strings.TrimSpace(args.Sandbox) != "" || args.SandboxNet != nil {
 		parentMode, parentNet := s.parentSandboxModeNet()
-		pol, floorErr := buildDelegateSandboxPolicy(args.Sandbox, args.SandboxNet, parentMode, parentNet)
+		pol, floorErr := resolveDelegateSandboxRequest(args.Sandbox, args.SandboxNet, parentMode, parentNet)
 		if floorErr != nil {
 			return delegateStartFailed(floorErr)
 		}
