@@ -99,8 +99,8 @@ func runServe(args []string) error {
 	var modelFallbacks cmdutil.StringSliceFlag
 	fs.Var(&modelFallbacks, "model-fallback", "fallback model (provider/model) tried on permanent provider errors (repeatable)")
 	openAIResponsesContinuation := fs.String("openai-responses-continuation", "", "OpenAI Responses continuation mode: off|auto (default: off)")
-	sandboxMode := fs.String("sandbox", "off", "sandbox mode: off (default); other modes are in development and not yet enabled")
-	sandboxNet := fs.String("sandbox-net", "on", "sandbox network egress on|off (only meaningful with a sandbox mode)")
+	sandboxMode := fs.String("sandbox", "off", "sandbox mode: off (default), read-only, workspace-write, or restricted")
+	sandboxNet := fs.String("sandbox-net", "on", "sandbox network egress on|off (default on; only applies with a non-off --sandbox mode)")
 	cpuProfile := fs.String("cpu-profile", "", "write CPU profile to file")
 	traceFile := fs.String("trace", "", "write execution trace to file")
 
@@ -234,6 +234,15 @@ func runServe(args []string) error {
 	if err := configureSandbox(&sessionCfg, *sandboxMode, *sandboxNet); err != nil {
 		return err
 	}
+	// Engage enforcement for a FRESH session from the flag-set mode. A resume
+	// re-provisions the env from the PERSISTED mode inside
+	// RestoreSessionFromMetaWithConfig (immutable across restart), so the flag
+	// governs only new sessions here.
+	if !resuming {
+		if err := provisionSandbox(env, &sessionCfg, env.WorkingDirectory()); err != nil {
+			return err
+		}
+	}
 
 	var sess *agent.Session
 	if resuming {
@@ -261,6 +270,13 @@ func runServe(args []string) error {
 		}
 	}
 
+	// One startup line, loudly, states exactly what this host enforces (read from
+	// the env's resolved policy so it never overstates). Empty for an unsandboxed
+	// session — nothing to announce.
+	if line := sandboxEnforcementLine(env); line != "" {
+		fmt.Fprintln(os.Stderr, line)
+	}
+
 	// Signal handling.
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -283,6 +299,11 @@ func runServe(args []string) error {
 
 	var currentMu sync.RWMutex
 	currentSess := sess
+	// currentEnv tracks the CURRENT session's execution environment (each session
+	// owns its own). /clear reads it to inherit the live sandbox and swaps it
+	// alongside currentSess, so a cleared session's sandbox reflects what the running
+	// session actually enforces (on resume the persisted mode, not the launch flag).
+	currentEnv := env
 	getSession := func() *agent.Session {
 		currentMu.RLock()
 		defer currentMu.RUnlock()
@@ -294,9 +315,10 @@ func runServe(args []string) error {
 		}
 		return ""
 	})
-	setSession := func(next *agent.Session) {
+	setSession := func(next *agent.Session, nextEnv *execenv.LocalExecutionEnvironment) {
 		currentMu.Lock()
 		currentSess = next
+		currentEnv = nextEnv
 		currentMu.Unlock()
 	}
 
@@ -371,21 +393,38 @@ func runServe(args []string) error {
 	srv.SetTasksFunc(func() any { return getSession().Tasks() })
 	srv.SetClearFunc(func(ctx context.Context) error {
 		oldSess := getSession()
+		currentMu.RLock()
+		oldEnv := currentEnv
+		currentMu.RUnlock()
 		clearCfg := sessionCfg
 		clearCfg.SessionStartKind = plugin.SessionStartKindClear
-		newSess, err := agent.NewSession(client, profile, env, clearCfg)
+		// The cleared session inherits the CURRENT session's ACTUAL sandbox (on resume
+		// the persisted mode, not the launch flag), so its persisted config matches what
+		// it runs under. Reconcile from the live env before building the new session.
+		reconcileClearSandbox(&clearCfg, oldEnv)
+		// Build and provision a FRESH env for the cleared session BEFORE any destructive
+		// change. If provisioning fails, /clear aborts with oldSess still current rather
+		// than leaving a live session running unconfined while persisting a sandbox mode
+		// (a fail-open). Each session owns its own env + session tmp, disposed on Close,
+		// so oldSess.Close() no longer pulls the tmp out from under the new session.
+		clearEnv := execenv.NewLocalExecutionEnvironment(wd)
+		if err := provisionSandbox(clearEnv, &clearCfg, wd); err != nil {
+			return fmt.Errorf("clear sandbox: %w", err)
+		}
+		newSess, err := agent.NewSession(client, profile, clearEnv, clearCfg)
 		if err != nil {
+			clearEnv.Cleanup()
 			return fmt.Errorf("new session: %w", err)
 		}
-		setSession(newSess)
+		setSession(newSess, clearEnv)
 		srv.SetAppIdentity("local", newSess.ID())
 		if err := rvRegistration.UpdateSessionID(newSess.ID()); err != nil {
-			setSession(oldSess)
+			setSession(oldSess, oldEnv)
 			srv.SetAppIdentity("local", oldSess.ID())
-			newSess.Close()
+			newSess.Close() // disposes clearEnv
 			return fmt.Errorf("rendezvous update: %w", err)
 		}
-		oldSess.Close()
+		oldSess.Close() // disposes oldEnv
 		bridgeSession(newSess)
 		return nil
 	})

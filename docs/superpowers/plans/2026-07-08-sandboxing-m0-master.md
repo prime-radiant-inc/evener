@@ -111,7 +111,14 @@ before editing — they will drift as milestones land):
 - [x] M3 — Linux kernel layer, flag inert (merged `42b09c1f`+fix; roborev found+fixed 3 Highs; go test green)
 - [x] M4 — subagent/worktree scoping (merged `fe0dff29`; roborev fixed fail-open
   worktree-switch High + probe fork-storm + cleanup ordering; go test green)
-- [ ] M5 — flag goes live on Linux (GATE: Jesse review) — NEXT
+- [x] M5 — flag goes live on Linux (branch `wip/sandbox-m5`): FeatureGate deleted;
+  --sandbox provisions an enforced env at construction (fresh: cmd/serf run/serve;
+  resume: RestoreSessionFromMetaWithConfig re-resolves the persisted mode, fail-closed
+  reachable); EnforcementLine emitted from the resolved policy; flags surfaced in
+  help; serve /clear re-provisions the shared env; escape suite green on this host
+  (bwrap 0.9.0, kernel 6.8; overlay cache path skips — no overlay support); flag-path
+  proof TestSandboxFlagRestrictedEnforces. docs/sandboxing.md added. GATE: Jesse
+  review + live feel-test (main agent) before push to main.
 - [x] M6 — macOS Seatbelt (merged `a76d330e`; roborev fixed firmlink-alias High +
   Confine/cwd; Linux+`GOOS=darwin` build/vet green). ⚠️ paradise-park LIVE
   validation PENDING (Jesse): `SERF_SEATBELT_LIVE=1 go test ./agent/sandbox/ -run
