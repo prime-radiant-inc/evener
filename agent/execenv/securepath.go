@@ -677,7 +677,20 @@ func ensureDirsBeneath(rootFd int, relDir string) error {
 
 // containingRoot returns the first root that contains abs, the slash-relative
 // path from that root to abs (".": abs is the root itself), and ok.
+//
+// It first tries a direct lexical match — the common case where a root and abs
+// share a spelling — which needs no syscalls. When every root misses lexically it
+// retries tolerating an ANCESTOR-spelling difference: the resolver canonicalizes a
+// granted root to its real path (e.g. macOS /var → /private/var, or a symlinked
+// project/home parent) while the env still spells the target through the symlinked
+// ancestor, so `/private/var/…/wt` and `/var/…/wt/file` name the same worktree yet
+// mismatch textually. relUnderRealAncestor resolves that mismatch by the roots'
+// real paths while keeping the in-root tail LITERAL, so a symlinked ancestor of the
+// root is tolerated but a symlink COMPONENT inside the root stays in the tail for
+// the fd walk to refuse. A genuinely out-of-root path matches no root's real
+// ancestor and stays denied (containment is not weakened).
 func containingRoot(roots []string, abs string) (root, rel string, ok bool) {
+	abs = filepath.Clean(abs)
 	for _, r := range roots {
 		if abs == r {
 			return r, ".", true
@@ -690,7 +703,49 @@ func containingRoot(roots []string, abs string) (root, rel string, ok bool) {
 			return r, filepath.ToSlash(rl), true
 		}
 	}
+	for _, r := range roots {
+		if rel, ok := relUnderRealAncestor(r, abs); ok {
+			return r, rel, true
+		}
+	}
 	return "", "", false
+}
+
+// relUnderRealAncestor reports whether abs lies under root when only their ANCESTOR
+// spelling differs (a symlinked ancestor of the root), returning the slash-relative
+// tail from root to abs. It resolves root to its real path, then walks up abs's
+// ancestors for the SHALLOWEST one whose real path equals it — shallowest so the
+// tail keeps the most components literal, so an in-root symlink that resolves back
+// under the root is left in the tail (the fd walk refuses it) rather than silently
+// collapsed. The tail is built by lexical string splitting of abs, never from a
+// symlink-resolved path, so no in-root component is ever followed here. A root that
+// cannot be resolved (does not exist) contains nothing by real path.
+func relUnderRealAncestor(root, abs string) (rel string, ok bool) {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", false
+	}
+	cur := abs
+	var tail []string
+	found := false
+	rel = ""
+	for {
+		if curReal, rerr := filepath.EvalSymlinks(cur); rerr == nil && curReal == realRoot {
+			found = true
+			if len(tail) == 0 {
+				rel = "."
+			} else {
+				rel = strings.Join(tail, "/")
+			}
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			break
+		}
+		tail = append([]string{filepath.Base(cur)}, tail...)
+		cur = parent
+	}
+	return rel, found
 }
 
 // splitLeaf splits a slash-relative path into its parent directory and leaf. The

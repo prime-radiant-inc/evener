@@ -1,3 +1,11 @@
+//go:build linux
+
+// buildBwrapArgv is only ever driven on Linux (bubblewrap is the Linux backend),
+// and these tests assert exact bind paths against t.TempDir(). On macOS TempDir
+// lives under /var, a symlink the kernel canonicalizes to /private/var, so the
+// argv builder correctly emits the canonical spelling while the byte-exact
+// assertions expect the /var spelling — a spurious failure for a Linux-only code
+// path. Constrain the file to linux so it neither compiles nor runs on darwin.
 package sandbox
 
 import (
@@ -6,20 +14,6 @@ import (
 	"slices"
 	"testing"
 )
-
-// hasSeq reports whether args contains seq as a contiguous subsequence — the way
-// bwrap flags come in ordered (flag, value…) groups.
-func hasSeq(args []string, seq ...string) bool {
-	if len(seq) == 0 {
-		return true
-	}
-	for i := 0; i+len(seq) <= len(args); i++ {
-		if slices.Equal(args[i:i+len(seq)], seq) {
-			return true
-		}
-	}
-	return false
-}
 
 // seqIndex returns the start index of the first contiguous occurrence of seq in
 // args, or -1 if absent.
@@ -56,33 +50,6 @@ func TestBuildBwrapArgvReadOnlyRebindsTmpCwd(t *testing.T) {
 	if tmpfsIdx < 0 || rebindIdx < tmpfsIdx {
 		t.Errorf("cwd re-bind (idx %d) must come after the /tmp tmpfs (idx %d): %v", rebindIdx, tmpfsIdx, args)
 	}
-}
-
-// bwrapFacts is a bwrap-capable host anchored at a fake home so masked paths land
-// under a directory the test controls.
-func bwrapFacts(home string) HostFacts {
-	return HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: false}
-}
-
-// resolveFixture materializes a main-checkout git repo, plants ~/.ssh and
-// ~/.git-credentials in a fake home so the mask flags have real targets to stat,
-// and resolves the requested mode against a bwrap host.
-func resolveFixture(t *testing.T, mode Mode, netOn bool) (ResolvedPolicy, string, string) {
-	t.Helper()
-	home := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
-		t.Fatalf("mkdir .ssh: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(home, ".git-credentials"), []byte("x"), 0o600); err != nil {
-		t.Fatalf("write .git-credentials: %v", err)
-	}
-	cwd := MaterializeWorkspace(t, MainCheckout)
-	net := netOn
-	rp, err := Resolve(SandboxPolicy{Mode: mode, Network: &net}, bwrapFacts(home), cwd)
-	if err != nil {
-		t.Fatalf("Resolve(%v): %v", mode, err)
-	}
-	return rp, cwd, home
 }
 
 func TestBuildBwrapArgvBaseHardening(t *testing.T) {
