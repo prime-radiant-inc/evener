@@ -104,6 +104,28 @@ type delegateWorktreeReport struct {
 	Dirty  bool
 }
 
+// delegateSandboxReport is the delegate's enforced sandbox box (mode + network),
+// echoed back in the delegate result so the parent can verify the child's actual
+// confinement. nil when the delegate is unsandboxed (off). The box is fixed for the
+// delegate's lifetime, so it is a plain value snapshot, unlike the worktree report.
+type delegateSandboxReport struct {
+	Mode    string
+	Network bool
+}
+
+// delegateSandboxReportForSession reads a delegate session's enforced sandbox box,
+// or nil when the session is unsandboxed / not a local env.
+func delegateSandboxReportForSession(sess *Session) *delegateSandboxReport {
+	if sess == nil {
+		return nil
+	}
+	le, ok := sess.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok || le.Sandbox == nil || !le.Sandbox.Enforced() {
+		return nil
+	}
+	return &delegateSandboxReport{Mode: le.Sandbox.Mode.String(), Network: le.Sandbox.Network}
+}
+
 type delegateResult struct {
 	DelegateID               string
 	StartedJobID             string
@@ -124,6 +146,7 @@ type delegateResult struct {
 	Watching                 bool
 	Watches                  []watchListEntry
 	Worktree                 *delegateWorktreeReport
+	Sandbox                  *delegateSandboxReport
 	Err                      error
 }
 
@@ -253,6 +276,9 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	}
 	childID := prepared.sub.id
 	sub := prepared.sub
+	// The delegate's enforced box is fixed at spawn; snapshot it once to echo in
+	// every result path so the parent can verify the child's actual confinement.
+	sandboxReport := delegateSandboxReportForSession(sub.sess)
 	run, err := s.attachDelegateJobWithPreparedAndDelegate(jm, childID, task, sub, jobID, delegateID, delegateGeneration, args.AgentType, args.ResultSchema, false, prepared)
 	if err != nil {
 		prepared.runCancel()
@@ -293,6 +319,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 			Status:              jobstore.StatusRunning,
 			RunningInBackground: true,
 			TranscriptRef:       run.rec.TranscriptRef,
+			Sandbox:             sandboxReport,
 		}
 	}
 
@@ -302,7 +329,9 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	select {
 	case <-done:
 		finalizeErr := s.bridgeDelegateFinalizationWithDone(run.rec.JobID, childID, sub, done, false)
-		return waitForDelegateFinalization(ctx, s, jm, run, finalizeErr)
+		res := waitForDelegateFinalization(ctx, s, jm, run, finalizeErr)
+		res.Sandbox = sandboxReport
+		return res
 	case <-timer.C():
 		s.bridgeDelegateFinalizationWithDone(run.rec.JobID, childID, sub, done, true)
 		output, _, truncated, readErr := tailOutput(run.output, shellInlineOutputBytes)
@@ -319,6 +348,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 			TranscriptRef:       run.rec.TranscriptRef,
 			Output:              output,
 			Truncated:           truncated,
+			Sandbox:             sandboxReport,
 			Err:                 readErr,
 		}
 		return res

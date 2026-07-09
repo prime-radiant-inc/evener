@@ -246,6 +246,58 @@ func TestParentClose_DisposesRetainedPerDelegateSandboxScratch(t *testing.T) {
 	}
 }
 
+// TestCreateDelegate_ResultEchoesSandboxBox: an enforced delegate echoes its box
+// (mode + network) in the delegate result so the parent can verify the child's
+// actual confinement; an unsandboxed delegate omits the key.
+func TestCreateDelegate_ResultEchoesSandboxBox(t *testing.T) {
+	lane, home := sbxLane(t)
+	facts := sbxBwrapFacts(home)
+	c := delegateTestClient(func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
+	s := newSession(t, withClient(c), withDir(lane), withConfig(SessionConfig{
+		StateDir:         packageFixtureTempDir(t, "sbx-echo-*"),
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+			sandboxProber:       sandbox.FakeProber{Facts: facts},
+		},
+	}))
+
+	res := s.createDelegate(context.Background(), delegateArgs{
+		Task:           "do sandboxed work",
+		Sandbox:        "restricted",
+		SandboxNet:     boolPtr(false),
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v", res.Err)
+	}
+	if res.Sandbox == nil || res.Sandbox.Mode != "restricted" || res.Sandbox.Network {
+		t.Fatalf("result must echo the enforced box {restricted, net off}, got %+v", res.Sandbox)
+	}
+
+	out, err := marshalDelegateResult(res, 30000)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(out, `"sandbox":{"mode":"restricted","network":false}`) {
+		t.Errorf("marshaled result must include the sandbox object, got %s", out)
+	}
+
+	// An unsandboxed result omits the key entirely.
+	res.Sandbox = nil
+	out, err = marshalDelegateResult(res, 30000)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(out, `"sandbox"`) {
+		t.Errorf("unsandboxed delegate must omit the sandbox key, got %s", out)
+	}
+}
+
 // TestPrepareSubagentRun_PerDelegateSandboxWithoutIsolationDoesNotMutateParent: a
 // delegate may request its own box WITHOUT isolation="worktree" (empty workingDir),
 // which shares the parent's working dir. The per-delegate EnableSandbox mutates its

@@ -361,7 +361,7 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 	case bool:
 		a.SandboxNet = &v
 	default:
-		return delegateArgs{}, errors.New("invalid_request: sandbox_net must be a boolean")
+		return delegateArgs{}, errors.New("invalid_request: sandbox_net must be a JSON boolean (true or false, not a quoted string)")
 	}
 	// max_wait_ms: 0/absent = no wait (background); positive = wait inline up to N;
 	// negative = invalid_request. Zero reads as unset (strict-provider safe).
@@ -1398,6 +1398,9 @@ type delegateToolResult struct {
 	// an isolated delegate's terminal job (native worktree tools spec §9
 	// lifecycle step 3); nil for a non-isolated delegate.
 	Worktree *delegateWorktreeToolResult `json:"worktree,omitempty"`
+	// Sandbox echoes the delegate's enforced box (mode + network) so the parent can
+	// verify the child's actual confinement; nil for an unsandboxed (off) delegate.
+	Sandbox *delegateSandboxToolResult `json:"sandbox,omitempty"`
 }
 
 // delegateWorktreeToolResult is the tool-facing shape of delegateWorktreeReport
@@ -1414,6 +1417,18 @@ func delegateWorktreeToolResultFrom(wt *delegateWorktreeReport) *delegateWorktre
 		return nil
 	}
 	return &delegateWorktreeToolResult{Path: wt.Path, Branch: wt.Branch, Ahead: wt.Ahead, Dirty: wt.Dirty}
+}
+
+type delegateSandboxToolResult struct {
+	Mode    string `json:"mode"`
+	Network bool   `json:"network"`
+}
+
+func delegateSandboxToolResultFrom(sb *delegateSandboxReport) *delegateSandboxToolResult {
+	if sb == nil {
+		return nil
+	}
+	return &delegateSandboxToolResult{Mode: sb.Mode, Network: sb.Network}
 }
 
 func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error) {
@@ -1690,6 +1705,7 @@ func marshalDelegateResult(res delegateResult, maxChars int) (string, error) {
 		Watching:            res.Watching,
 		Watches:             res.Watches,
 		Worktree:            delegateWorktreeToolResultFrom(res.Worktree),
+		Sandbox:             delegateSandboxToolResultFrom(res.Sandbox),
 	}
 	if !res.RunningInBackground || res.TimedOut {
 		out.Output = &res.Output

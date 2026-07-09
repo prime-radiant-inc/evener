@@ -51,7 +51,7 @@ func TestDecodeDelegateArgs_SandboxNetMalformed(t *testing.T) {
 	t.Parallel()
 	if _, err := decodeDelegateArgs(map[string]any{"task": "t", "sandbox_net": "false"}); err == nil {
 		t.Fatal("a string sandbox_net must be refused, not decoded as inherit")
-	} else if !strings.Contains(err.Error(), "invalid_request:") || !strings.Contains(err.Error(), "sandbox_net must be a boolean") {
+	} else if !strings.Contains(err.Error(), "invalid_request:") || !strings.Contains(err.Error(), "sandbox_net must be a JSON boolean") {
 		t.Errorf("refusal must name the boolean requirement, got %v", err)
 	}
 }
