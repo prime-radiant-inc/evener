@@ -91,6 +91,7 @@ func (s *Session) subscriberCount() int {
 //     subtree, so granting the base would widen a whole subtree, not one leaf;
 //   - shell/kernel denials produce no re-runnable grant (see the M7 spec on why
 //     bwrap masking makes shell escalation unbuildable).
+//
 // An allowlist (rather than a denylist) fails closed: a new tool is non-escalatable
 // until it is explicitly, deliberately added here.
 var escalatableTools = map[string]bool{

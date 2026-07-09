@@ -3,6 +3,7 @@
 package execenv
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -36,7 +37,7 @@ func TestGrant_ReadsExactLeafOutsideReadRoots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("granted read: %v", err)
 	}
-	if string(got) != string(want) {
+	if !bytes.Equal(got, want) {
 		t.Fatalf("read %q, want %q", got, want)
 	}
 
@@ -82,12 +83,12 @@ func TestGrant_RefusesSymlinkedLeaf(t *testing.T) {
 	t.Parallel()
 	s, _, _ := newSB(t, sandbox.ModeRestricted)
 	outDir := t.TempDir()
-	real := filepath.Join(outDir, "real.txt")
-	if err := os.WriteFile(real, []byte("secret via symlink"), 0o644); err != nil {
+	realFile := filepath.Join(outDir, "real.txt")
+	if err := os.WriteFile(realFile, []byte("secret via symlink"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	link := filepath.Join(outDir, "link.txt")
-	if err := os.Symlink(real, link); err != nil {
+	if err := os.Symlink(realFile, link); err != nil {
 		t.Fatal(err)
 	}
 

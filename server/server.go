@@ -184,10 +184,10 @@ type Server struct {
 	// pending sandbox-exemption escalation (M7) to the session, unblocking the
 	// waiting tool-exec goroutine. nil when no session is attached.
 	sandboxEscalationResolveFunc func(escalationID string, approve bool) error
-	processing          bool
-	inputCh             chan InputMessage
-	hubToken            string
-	sameOrigin          httpguard.SameOriginPolicy
+	processing                   bool
+	inputCh                      chan InputMessage
+	hubToken                     string
+	sameOrigin                   httpguard.SameOriginPolicy
 }
 
 // NewServer creates a new Server.
