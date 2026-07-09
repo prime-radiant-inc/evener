@@ -2850,6 +2850,37 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .banner.warning { color: var(--state-warning);  border-left: 2px solid var(--state-warning);  padding-left: var(--space-3); }
 .banner.note    { color: var(--text-muted);     border-left: 2px solid var(--rule);           padding-left: var(--space-3); }
 
+/* Sandbox-escalation approval card (M7): a HARNESS-initiated prompt, styled
+ * distinctly from any model message (a solid warning-toned border + an explicit
+ * "requested by serf, not the agent" label) so a human cannot be socially
+ * engineered by model text into the Allow button. */
+.sandbox-escalation {
+  margin: 0 0 var(--space-4) calc(var(--tool-indent) - var(--space-3));
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  border: 1px solid var(--state-warning);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--state-warning) 8%, transparent);
+}
+.sandbox-escalation-label {
+  font-weight: 600;
+  color: var(--state-warning);
+  margin-bottom: var(--space-2);
+}
+.sandbox-escalation-body { color: var(--text); }
+.sandbox-escalation-command,
+.sandbox-escalation-output {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2);
+  overflow-x: auto;
+  background: var(--surface-sunken, rgba(127,127,127,0.08));
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs);
+}
+.sandbox-escalation-caveat { margin-top: var(--space-2); color: var(--text-muted); font-style: italic; }
+.sandbox-escalation-actions { display: flex; gap: var(--space-2); margin-top: var(--space-3); }
+.sandbox-escalation-settled { margin-top: var(--space-3); color: var(--text-muted); }
+
 /* System-line: short prose narration between user and agent — used for compact
  * system events (hook exits, round timings). Reads as a quiet aside, not a tool
  * log. Task_list changes render as a .task-card, not a system-line. */

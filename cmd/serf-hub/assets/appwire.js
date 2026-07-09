@@ -19,6 +19,7 @@
     turnQueue: "turn/queue",
     turnDrainAsSteer: "turn/drainAsSteer",
     tasksList: "serf/tasks/list",
+    sandboxEscalationResolve: "serf/sandbox/escalation/resolve",
     dirsComplete: "serf/dirs/complete",
     pathValidate: "serf/path/validate",
     serfUpgrade: "serf/upgrade",
@@ -390,6 +391,17 @@
 
   function tasks(sessionId) {
     return request(METHOD.tasksList, { ref: refForSession(sessionId) }).then((resp) => resp.data || []);
+  }
+
+  // resolveSandboxEscalation delivers the human's approve/deny decision for a
+  // pending sandbox-exemption escalation (M7). The daemon unblocks the waiting
+  // tool-exec goroutine; the hub relays.
+  function resolveSandboxEscalation(sessionId, escalationId, approve) {
+    return request(METHOD.sandboxEscalationResolve, {
+      ref: refForSession(sessionId),
+      escalationId: escalationId,
+      approve: !!approve,
+    });
   }
 
   // arrayBufferToBase64 encodes raw image bytes (ArrayBuffer or Uint8Array)
@@ -849,6 +861,18 @@
         done: typeof params.done === "number" ? params.done : 0,
       }]];
     }
+    if (method === "serf/sandbox/escalation/requested") {
+      return [["SANDBOX_ESCALATION_REQUESTED", {
+        escalationId: params.escalationId || "",
+        mode: params.mode || "",
+        tool: params.tool || "",
+        kind: params.kind || "file_tool",
+        deniedPath: params.deniedPath || "",
+        command: params.command || "",
+        outputSoFar: params.outputSoFar || "",
+        partiallyRan: !!params.partiallyRan,
+      }]];
+    }
     if (method === "turn/started") {
       const turn = params.turn || {};
       return [["TURN_STARTED", { turnId: firstNonEmpty(params.turnId, turn.id) }]];
@@ -966,6 +990,7 @@
     readThread,
     listTurns,
     tasks,
+    resolveSandboxEscalation,
     startTurn,
     steer,
     queueTurn,

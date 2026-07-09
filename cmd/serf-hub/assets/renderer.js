@@ -1053,6 +1053,9 @@
             window.SerfAppwire.tasks(this.sessionId).then(tasks => this.applyTasks(tasks)).catch(() => {});
           }
           break;
+        case "SANDBOX_ESCALATION_REQUESTED":
+          this.appendSandboxEscalation(data);
+          break;
         case "USER_INPUT":
           // A user message answers any pending blocking question; tear down the
           // live "awaiting your answer" affordances (the in-flow frame stays).
@@ -3364,6 +3367,95 @@
       el.className = "banner " + kind;
       el.textContent = "[" + kind + "] " + text;
       this.conversation.appendChild(el);
+    },
+
+    // appendSandboxEscalation renders the M7 human-gated approval card for a single
+    // sandbox denial. It is deliberately styled and labelled as a HARNESS prompt —
+    // never a model message — so a human cannot be socially-engineered by model text
+    // into the Allow button: the model can neither emit nor influence this card. The
+    // tool-exec goroutine on the daemon is BLOCKED until Allow/Deny posts the resolve
+    // request; the card then settles in place (it is never a transcript turn and is
+    // never replayed). Approve re-runs the single invocation with the one path
+    // granted; deny returns the typed error to the model.
+    appendSandboxEscalation(data) {
+      this.endCheapCluster();
+      this.closeSubagentModule();
+      const escalationId = data.escalationId || "";
+      const isShell = data.kind === "shell";
+
+      const card = document.createElement("div");
+      card.className = "sandbox-escalation harness-prompt";
+      card.setAttribute("role", "group");
+      card.dataset.escalationId = escalationId;
+
+      const label = document.createElement("div");
+      label.className = "sandbox-escalation-label";
+      label.textContent = "Sandbox approval — requested by serf, not the agent";
+      card.appendChild(label);
+
+      const body = document.createElement("div");
+      body.className = "sandbox-escalation-body";
+      const tool = data.tool || "a tool";
+      const path = data.deniedPath || "";
+      body.textContent = "The sandbox blocked " + tool + " from accessing " + path +
+        " [--sandbox " + (data.mode || "") + "]. Allow this one action?";
+      card.appendChild(body);
+
+      if (isShell) {
+        // Shell escalation is not produced in v1 (see the M7 spec); the shape is
+        // kept for a future seccomp-notify design. When present, the command may
+        // have PARTIALLY executed, so approving re-runs it start-to-finish.
+        if (data.command) {
+          const cmd = document.createElement("pre");
+          cmd.className = "sandbox-escalation-command";
+          cmd.textContent = data.command;
+          card.appendChild(cmd);
+        }
+        if (data.outputSoFar) {
+          const out = document.createElement("pre");
+          out.className = "sandbox-escalation-output";
+          out.textContent = data.outputSoFar;
+          card.appendChild(out);
+        }
+        const caveat = document.createElement("div");
+        caveat.className = "sandbox-escalation-caveat";
+        caveat.textContent = "This command already partially ran; approving re-runs it start-to-finish.";
+        card.appendChild(caveat);
+      }
+
+      const actions = document.createElement("div");
+      actions.className = "sandbox-escalation-actions";
+      const settle = (verb) => {
+        actions.remove();
+        const settled = document.createElement("div");
+        settled.className = "sandbox-escalation-settled";
+        settled.textContent = verb;
+        card.appendChild(settled);
+      };
+      const send = (approve, verb) => {
+        settle(verb);
+        if (window.SerfAppwire && window.SerfAppwire.resolveSandboxEscalation) {
+          window.SerfAppwire.resolveSandboxEscalation(this.sessionId, escalationId, approve).catch(() => {});
+        }
+      };
+      const allow = document.createElement("button");
+      allow.type = "button";
+      allow.className = "sandbox-escalation-allow";
+      allow.textContent = "Allow once";
+      allow.addEventListener("click", () => send(true, "Allowed once"));
+      const deny = document.createElement("button");
+      deny.type = "button";
+      deny.className = "sandbox-escalation-deny";
+      deny.textContent = "Deny";
+      // Deny (or dismissing) must send approve:false — never silently drop, which
+      // would leave the daemon blocked forever.
+      deny.addEventListener("click", () => send(false, "Denied"));
+      actions.appendChild(allow);
+      actions.appendChild(deny);
+      card.appendChild(actions);
+
+      this.conversation.appendChild(card);
+      if (typeof this.scrollToBottomIfPinned === "function") this.scrollToBottomIfPinned();
     },
 
     // buildDiagnosticActions returns an array of action descriptors for the

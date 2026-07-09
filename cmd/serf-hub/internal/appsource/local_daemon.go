@@ -134,6 +134,16 @@ func (s *LocalDaemonSource) SteerTurn(ctx context.Context, params appwire.TurnSt
 	})
 }
 
+func (s *LocalDaemonSource) ResolveSandboxEscalation(ctx context.Context, params appwire.SandboxEscalationResolveParams) error {
+	entry, err := s.entryForRef(params.Ref, params.ThreadID)
+	if err != nil {
+		return err
+	}
+	return s.withClient(ctx, entry, func(client *appwire.Client) error {
+		return client.Request(ctx, appwire.MethodSerfSandboxEscalationResolve, params, nil)
+	})
+}
+
 func (s *LocalDaemonSource) InterruptTurn(ctx context.Context, params appwire.TurnInterruptParams) error {
 	entry, err := s.entryForRef(params.Ref, params.ThreadID)
 	if err != nil {

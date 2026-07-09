@@ -67,6 +67,11 @@ const (
 	MethodSerfPluginDisable         = "serf/plugin/disable"
 	MethodSerfPluginSetAutoUpgrade  = "serf/plugin/setAutoUpgrade"
 	MethodSerfCommandList           = "serf/command/list"
+	// MethodSerfSandboxEscalationResolve delivers a human's approve/deny decision
+	// for a pending sandbox-exemption escalation (M7). Client→server; ScopeBoth
+	// (daemon serves it; hub relays). It is a UI-only request, never advertised to
+	// the model.
+	MethodSerfSandboxEscalationResolve = "serf/sandbox/escalation/resolve"
 )
 
 const (
@@ -94,6 +99,10 @@ const (
 	NotifySerfAttentionChanged   = "serf/attention/changed"
 	NotifySerfMarketplaceUpdated = "serf/marketplace/updated"
 	NotifySerfPluginUpdated      = "serf/plugin/updated"
+	// NotifySerfSandboxEscalationRequested pushes a harness-raised, human-gated
+	// sandbox-exemption approval card to the client (M7). The tool-exec goroutine
+	// blocks until the client answers with MethodSerfSandboxEscalationResolve.
+	NotifySerfSandboxEscalationRequested = "serf/sandbox/escalation/requested"
 )
 
 const (
@@ -280,6 +289,36 @@ type TaskUpdatedParams struct {
 type TurnCompletedParams struct {
 	TurnID string `json:"turnId"`
 	Turn   Turn   `json:"turn"`
+}
+
+// SandboxEscalationRequested is the payload of a
+// serf/sandbox/escalation/requested notification (M7): a harness-raised approval
+// card for a single sandbox denial. It carries only what the human needs to decide
+// — never file contents, and DeniedPath is already redacted (a basename, or
+// "<denied>" for a sensitive path). Kind selects the card shape; the shell fields
+// (Command/OutputSoFar/PartiallyRan) are reserved and empty in v1 (file-tool
+// escalation only — see the M7 spec on why bwrap masking makes shell escalation
+// unbuildable). It is never appended to the model's transcript.
+type SandboxEscalationRequested struct {
+	EscalationID string `json:"escalationId"`
+	Mode         string `json:"mode"`
+	Tool         string `json:"tool"`
+	Kind         string `json:"kind"`
+	DeniedPath   string `json:"deniedPath"`
+	Command      string `json:"command,omitempty"`
+	OutputSoFar  string `json:"outputSoFar,omitempty"`
+	PartiallyRan bool   `json:"partiallyRan,omitempty"`
+}
+
+// SandboxEscalationResolveParams is the request shape for
+// serf/sandbox/escalation/resolve (M7): the human's approve/deny decision for a
+// pending escalation. Approve re-runs the single denied invocation with the one
+// path granted; deny returns the typed error to the model.
+type SandboxEscalationResolveParams struct {
+	ThreadID     string `json:"threadId,omitempty"`
+	Ref          string `json:"ref,omitempty"`
+	EscalationID string `json:"escalationId"`
+	Approve      bool   `json:"approve"`
 }
 
 type ThreadCapabilities struct {

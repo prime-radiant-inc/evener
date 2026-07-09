@@ -84,6 +84,7 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodThreadRead, s.handleAppThreadRead)
 	appserver.HandleTyped(router, appwire.MethodTurnStart, s.handleAppTurnStart)
 	appserver.HandleTyped(router, appwire.MethodTurnSteer, s.handleAppTurnSteer)
+	appserver.HandleTyped(router, appwire.MethodSerfSandboxEscalationResolve, s.handleAppSandboxEscalationResolve)
 	appserver.HandleTyped(router, appwire.MethodTurnInterrupt, s.handleAppTurnInterrupt)
 	appserver.HandleTyped(router, appwire.MethodTurnQueue, s.handleAppTurnQueue)
 	appserver.HandleTyped(router, appwire.MethodTurnDrainAsSteer, s.handleAppTurnDrainAsSteer)
@@ -198,6 +199,26 @@ func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerP
 		imgFn(text, images)
 	} else {
 		fn(text)
+	}
+	return appwire.EmptyResponse{}, nil
+}
+
+func (s *Server) handleAppSandboxEscalationResolve(_ context.Context, params appwire.SandboxEscalationResolveParams) (appwire.EmptyResponse, error) {
+	escalationID := strings.TrimSpace(params.EscalationID)
+	if escalationID == "" {
+		return appwire.EmptyResponse{}, appwire.InvalidParams("escalationId is required")
+	}
+	s.mu.RLock()
+	fn := s.sandboxEscalationResolveFunc
+	s.mu.RUnlock()
+	if fn == nil {
+		return appwire.EmptyResponse{}, appwire.Unavailable("sandbox escalation resolve not available")
+	}
+	if err := fn(escalationID, params.Approve); err != nil {
+		// The escalation is unknown or already resolved (a stale card, a double
+		// click, or a race with turn-interrupt/close). Surface it as a conflict so
+		// the client can drop the card rather than retry.
+		return appwire.EmptyResponse{}, appwire.Conflict(err.Error())
 	}
 	return appwire.EmptyResponse{}, nil
 }

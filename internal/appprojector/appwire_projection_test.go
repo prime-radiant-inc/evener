@@ -58,6 +58,47 @@ func TestProject_TaskUpdated(t *testing.T) {
 	}
 }
 
+func TestProject_SandboxEscalationRequested(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{
+		Kind: events.EventSandboxEscalationRequested,
+		Data: events.SandboxEscalationRequestedData{
+			EscalationID: "esc_1",
+			Mode:         "read-only",
+			Tool:         "write_file",
+			Kind:         "file_tool",
+			DeniedPath:   "/etc/hosts", // full path for informed consent (set at the session)
+		},
+	})
+	if len(out) != 1 || out[0].Method != appwire.NotifySerfSandboxEscalationRequested {
+		t.Fatalf("want one serf/sandbox/escalation/requested notification, got %+v", out)
+	}
+	params, ok := out[0].Params.(appwire.SandboxEscalationRequested)
+	if !ok {
+		t.Fatalf("params type = %T, want appwire.SandboxEscalationRequested", out[0].Params)
+	}
+	if params.EscalationID != "esc_1" || params.Kind != "file_tool" || params.DeniedPath != "/etc/hosts" {
+		t.Fatalf("params = %+v", params)
+	}
+}
+
+func TestProject_SandboxEscalationNotInTranscript(t *testing.T) {
+	// The escalation rides the event stream only. It is never a transcript turn:
+	// the projector emits exactly the notification and touches no turn/item state,
+	// so the model can neither observe nor replay it.
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{
+		Kind: events.EventSandboxEscalationRequested,
+		Data: events.SandboxEscalationRequestedData{EscalationID: "esc_1", Mode: "read-only", Tool: "write_file", Kind: "file_tool", DeniedPath: "hosts"},
+	})
+	for _, n := range out {
+		switch n.Method {
+		case appwire.NotifyItemStarted, appwire.NotifyItemCompleted, appwire.NotifyTurnStarted, appwire.NotifyTurnCompleted:
+			t.Fatalf("escalation must not project a turn/item (transcript) notification, got %s", n.Method)
+		}
+	}
+}
+
 func TestAppEventProjectorTurnStartedCarriesStartedAt(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	ts := time.Unix(1_700_000_000, 0).UTC()

@@ -628,6 +628,23 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Total:    data.Total,
 			Done:     data.Done,
 		})}
+	case events.EventSandboxEscalationRequested:
+		// A harness-raised sandbox-exemption approval card (M7). It rides the event
+		// stream ONLY — it is never appended to the transcript, so the model can
+		// neither observe nor replay it. DeniedPath is already redacted at the
+		// session (a basename, or "<denied>" for a sensitive path); file contents
+		// never appear. The shell fields are reserved and empty in v1.
+		data := eventData[events.SandboxEscalationRequestedData](event.Data)
+		return []AppNotification{p.notification(appwire.NotifySerfSandboxEscalationRequested, appwire.SandboxEscalationRequested{
+			EscalationID: data.EscalationID,
+			Mode:         data.Mode,
+			Tool:         data.Tool,
+			Kind:         data.Kind,
+			DeniedPath:   data.DeniedPath,
+			Command:      data.Command,
+			OutputSoFar:  data.OutputSoFar,
+			PartiallyRan: data.PartiallyRan,
+		})}
 	case events.EventSessionNameChanged:
 		p.clearSkillCandidate()
 		data := eventData[events.SessionNameChangedData](event.Data)

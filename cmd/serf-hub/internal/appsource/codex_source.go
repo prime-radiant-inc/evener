@@ -347,6 +347,10 @@ func (s *CodexSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerPara
 	return appwire.Unavailable("codex source does not support turn/drainAsSteer")
 }
 
+func (s *CodexSource) ResolveSandboxEscalation(context.Context, appwire.SandboxEscalationResolveParams) error {
+	return appwire.Unavailable("codex source does not support serf/sandbox/escalation/resolve")
+}
+
 func (s *CodexSource) SetThreadModel(context.Context, appwire.ThreadModelSetParams) error {
 	return appwire.Unavailable("codex source does not support thread/model/set")
 }

@@ -41,6 +41,11 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.questionOverlay != nil && !m.questionOverlay.Deferred() {
 		return m.updateQuestionOverlayKey(msg)
 	}
+	// A pending M7 sandbox-escalation answers to y/n (deny on esc) when the composer
+	// is empty, before the keystroke reaches the composer.
+	if cmd, handled := m.handleEscalationKey(msg); handled {
+		return m, cmd
+	}
 	if m.followupModal != nil && m.launchOverridesModal != nil {
 		// followupModal is open for a launch-override edit — route to it
 		updated, cmd := m.followupModal.Update(msg)

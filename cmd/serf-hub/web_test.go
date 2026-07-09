@@ -1575,6 +1575,10 @@ func (s *scriptedAppSource) SteerTurn(context.Context, appwire.TurnSteerParams) 
 	return appwire.Unavailable("scripted source does not steer turns")
 }
 
+func (s *scriptedAppSource) ResolveSandboxEscalation(context.Context, appwire.SandboxEscalationResolveParams) error {
+	return appwire.Unavailable("scripted source does not resolve escalations")
+}
+
 func (s *scriptedAppSource) InterruptTurn(context.Context, appwire.TurnInterruptParams) error {
 	return appwire.Unavailable("scripted source does not interrupt turns")
 }

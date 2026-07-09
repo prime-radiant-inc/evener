@@ -180,6 +180,10 @@ type Server struct {
 	tasksFn             func() any
 	shutdownFunc        func()
 	transcriptPathFn    func() string
+	// sandboxEscalationResolveFunc delivers a human's approve/deny decision for a
+	// pending sandbox-exemption escalation (M7) to the session, unblocking the
+	// waiting tool-exec goroutine. nil when no session is attached.
+	sandboxEscalationResolveFunc func(escalationID string, approve bool) error
 	processing          bool
 	inputCh             chan InputMessage
 	hubToken            string
@@ -296,6 +300,15 @@ func (s *Server) IncrementTurns() {
 func (s *Server) SetCancelFunc(cancel context.CancelFunc) {
 	s.mu.Lock()
 	s.cancelFunc = cancel
+	s.mu.Unlock()
+}
+
+// SetSandboxEscalationResolveFunc sets the callback that delivers a human's
+// approve/deny decision for a pending sandbox-exemption escalation (M7) to the
+// session. It is invoked by the serf/sandbox/escalation/resolve daemon handler.
+func (s *Server) SetSandboxEscalationResolveFunc(fn func(escalationID string, approve bool) error) {
+	s.mu.Lock()
+	s.sandboxEscalationResolveFunc = fn
 	s.mu.Unlock()
 }
 

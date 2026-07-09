@@ -2073,6 +2073,10 @@ func (s *relayLifecycleSource) SteerTurn(context.Context, appwire.TurnSteerParam
 	return appwire.Unavailable("relay lifecycle source does not steer turns")
 }
 
+func (s *relayLifecycleSource) ResolveSandboxEscalation(context.Context, appwire.SandboxEscalationResolveParams) error {
+	return appwire.Unavailable("relay lifecycle source does not resolve escalations")
+}
+
 func (s *relayLifecycleSource) InterruptTurn(context.Context, appwire.TurnInterruptParams) error {
 	return appwire.Unavailable("relay lifecycle source does not interrupt turns")
 }

@@ -346,9 +346,17 @@ func runServe(args []string) error {
 		// populated; this callback feeds a text-less EntryNotification kick
 		// into the serve loop so the parent drains it on the next turn.
 		s.SetNotifyFunc(func() { srv.SubmitNotification() })
+		// The M7 sandbox-escalation gate blocks a denied tool call only when a human
+		// is actually watching this thread; the probe reads the live AppWire
+		// subscriber count. Set per-session (like the kick/notify wakes) so it tracks
+		// the current session's id across /clear.
+		s.SetSubscriberCountFunc(func() int { return srv.AppServer().SubscriberCount(s.ID()) })
 		go server.BridgeWithObserver(srv, s.Events(), eventObserver)
 	}
 
+	srv.SetSandboxEscalationResolveFunc(func(id string, approve bool) error {
+		return getSession().ResolveSandboxEscalation(id, approve)
+	})
 	srv.SetCompactFunc(func(ctx context.Context) error { return getSession().Compact(ctx) })
 	srv.SetSteerFunc(func(text string) { getSession().Steer(text) })
 	srv.SetSteerWithImagesFunc(func(text string, images []server.ImageAttachment) {

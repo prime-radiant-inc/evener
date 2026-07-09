@@ -146,6 +146,7 @@ no router (reserved).
 | `serf/plugin/disable` | hub | `PluginRefParams` | `PluginListResponse` | Disables an installed plugin; returns the updated list. |
 | `serf/plugin/setAutoUpgrade` | hub | `PluginSetAutoUpgradeParams` | `PluginListResponse` | Sets an installed plugin's auto-upgrade flag; returns the updated list. |
 | `serf/command/list` | hub | `EmptyParams` | `CommandListResponse` | Lists loaded plugin slash commands (name, plugin, description) for catalog/autocomplete display. |
+| `serf/sandbox/escalation/resolve` | both | `SandboxEscalationResolveParams` | `EmptyResponse` | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
 
 ## Notifications (server → client)
 
@@ -177,6 +178,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `serf/marketplace/updated` | `(inline)` | Broadcast after a marketplace mutation (add/remove/refresh); inline {}. Clients refresh the marketplace list. |
 | `serf/plugin/updated` | `(inline)` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); inline {}. Clients refresh the plugin list. |
 | `serf/task/updated` | `TaskUpdatedParams` | The session's task-list progress (total/done) changed. |
+| `serf/sandbox/escalation/requested` | `SandboxEscalationRequested` | A harness-raised, human-gated sandbox-exemption approval card (M7); the tool-exec goroutine blocks until answered via serf/sandbox/escalation/resolve. |
 
 ## Type reference
 
@@ -651,6 +653,30 @@ _(no fields)_
 | `itemId` | `string` |  |  |
 | `summaryIndex` | `int` |  |  |
 | `delta` | `string` |  |  |
+
+
+### `SandboxEscalationRequested`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `escalationId` | `string` |  |  |
+| `mode` | `string` |  |  |
+| `tool` | `string` |  |  |
+| `kind` | `string` |  |  |
+| `deniedPath` | `string` |  |  |
+| `command` | `string` | yes |  |
+| `outputSoFar` | `string` | yes |  |
+| `partiallyRan` | `bool` | yes |  |
+
+
+### `SandboxEscalationResolveParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` | yes |  |
+| `ref` | `string` | yes |  |
+| `escalationId` | `string` |  |  |
+| `approve` | `bool` |  |  |
 
 
 ### `SerfSubagentPreviewParams`

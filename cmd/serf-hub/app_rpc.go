@@ -446,6 +446,13 @@ func registerThreadHandlers(
 		}
 		return appwire.EmptyResponse{}, source.InterruptTurn(ctx, params)
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfSandboxEscalationResolve, func(ctx context.Context, params appwire.SandboxEscalationResolveParams) (appwire.EmptyResponse, error) {
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
+		if err != nil {
+			return appwire.EmptyResponse{}, err
+		}
+		return appwire.EmptyResponse{}, source.ResolveSandboxEscalation(ctx, params)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnQueue, func(ctx context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
 		if err := validateAppWireInputItems(params.Input); err != nil {
 			return appwire.EmptyResponse{}, appwire.InvalidParams(err.Error())

@@ -173,6 +173,11 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 				}
 			}
 		}
+	case appwire.NotifySerfSandboxEscalationRequested:
+		var params appwire.SandboxEscalationRequested
+		if json.Unmarshal(notification.Params, &params) == nil && params.EscalationID != "" {
+			m.applySandboxEscalation(params, strings.TrimSpace(m.detail.Ref))
+		}
 	case appwire.NotifyWarning:
 		// Cause is decoded as a pointer so its absence (legacy payloads)
 		// stays distinguishable from kind=="" (kata 5q3p). When present,
