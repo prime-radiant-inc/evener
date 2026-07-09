@@ -29,9 +29,14 @@ line, or denial legibility regresses, this card catches it.
 The on-disk `$OUT/escape.txt` must be absent (authoritative, not the model's claim).
 The read denial text is the literal `sandbox.DeniedError.Error()` string.
 
-## Result (2026-07-09, both PASS)
-- Write: blocked; host file never created. Enforcement line truthful.
-- Read: typed denial `sandbox: read_file denied (hostname): outside the sandbox's readable roots [--sandbox restricted]`; model ended cleanly, no loop.
+## Result (2026-07-09, re-run vs deferred-UX branch, both PASS)
+- Write: blocked; host `$OUT/escape.txt` never created. Enforcement line printed
+  verbatim: `sandbox: bwrap enforcing restricted (network on, secrets masked, cache private)`.
+  (The out-of-worktree `/tmp` target surfaces as a shell error —
+  `/bin/bash: line 1: <path>: No such file or directory` — the `/tmp` tmpfs hides
+  the dir inside the sandbox, per Sharp edges; the ground-truth host file stays
+  absent, which is the authoritative check.)
+- Read: typed denial `sandbox: read_file denied (hostname): outside the sandbox's readable roots; this sandbox policy is fixed for the session [sandbox mode: restricted]`; model ended cleanly, no loop.
 
 ## Cleanup
 `mktemp` dirs under `/tmp` (self-expiring); remove `/tmp/serf-e2e` binary if desired.

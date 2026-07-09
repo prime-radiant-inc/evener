@@ -14,8 +14,11 @@ drive the surface without looping, this card catches it.
 
 Three scenarios live-validated PASS on `wip/sandbox-config-delegate`
 (2026-07-09; re-run after the consolidated review-fix pass that changed the floor
-error string, added the delegate-result box echo, and added the environment prompt
-sandbox line). Companion cards: `2026-07-09-sandbox-flag-live-e2e.md` (the root
+error string + added the delegate-result box echo + the environment prompt sandbox
+line, AND the deferred-UX pass (commit `2959de2d`) that dropped the `--sandbox`
+prefix from the enforcement line / added `secrets masked` + de-jargoned the cache,
+and re-worded the denial tag to `[sandbox mode: X]` with a "fixed for the session"
+clause). Companion cards: `2026-07-09-sandbox-flag-live-e2e.md` (the root
 `--sandbox` path), `2026-07-09-sandbox-launch-config-default.md` (Workstream A),
 `2026-07-09-sandbox-delegate-edge-cases.md` (the unit-backed refusal matrix).
 
@@ -63,8 +66,8 @@ worktree, so a refusal must leave NO delegate lane behind:
 `git -C $WORK worktree list` shows only the primary checkout; `$WORK/.worktrees`
 does not exist.
 
-### Result (2026-07-09, re-run vs current branch, PASS)
-- Enforcement line printed verbatim: `sandbox: bwrap enforcing --sandbox restricted (network on, cache cold session-private)`.
+### Result (2026-07-09, re-run vs deferred-UX branch, PASS)
+- Enforcement line printed verbatim: `sandbox: bwrap enforcing restricted (network on, secrets masked, cache private)`.
 - Single `[tool] delegate {"task":"run echo hi","isolation":"worktree","sandbox":"off"}` → `[tool] delegate: error`. No second delegate call.
 - Model reported the delegate error verbatim:
   `invalid_request: sandbox "off" allows access on an axis your restricted sandbox forbids (it is not at least as confining on both reads and writes); modes allowed under your restricted sandbox: restricted`.
@@ -108,11 +111,11 @@ lane; the lane auto-disposes on completion when left unchanged, so a POST-run
 `git worktree list` shows only the primary checkout — the proof of confinement is
 the typed denial (readable roots = the lane, not `/etc`), not a persisted lane.
 
-### Result (2026-07-09, re-run vs current branch, PASS)
+### Result (2026-07-09, re-run vs deferred-UX branch, PASS)
 - No enforcement line (parent off) — correct.
 - `[tool] delegate {"task":"Use your read_file tool ... /etc/hostname",...,"isolation":"worktree","sandbox":"restricted",...}` → `[tool] delegate: done`.
 - Delegate reported verbatim (relayed by parent):
-  `sandbox: read_file denied (hostname): outside the sandbox's readable roots [--sandbox restricted]`.
+  `sandbox: read_file denied (hostname): outside the sandbox's readable roots; this sandbox policy is fixed for the session [sandbox mode: restricted]`.
 - Ground truth: host hostname is `magic-kingdom`; the delegate never saw it — it
   got the typed denial. Post-run `git worktree list` = primary checkout only (the
   unchanged lane auto-disposed). Delegate confined under an off parent: PASS.
@@ -146,11 +149,11 @@ out-of-lane write. The out-of-lane effect must never reach the host.
 `$ESCAPE` (`$WORK/escape.txt`) must be absent on the host after the run — the
 authoritative check, not the model's claim.
 
-### Result (2026-07-09, re-run vs current branch, PASS)
-- Enforcement line printed: `sandbox: bwrap enforcing --sandbox restricted (network on, cache cold session-private)`.
-- `[tool] delegate {"task":"Use your write_file tool to write the text PWNED to the absolute path /tmp/serf-deleg-A2.../escape.txt",...,"isolation":"worktree","sandbox":"restricted",...}` → `[tool] delegate: done`.
+### Result (2026-07-09, re-run vs deferred-UX branch, PASS)
+- Enforcement line printed: `sandbox: bwrap enforcing restricted (network on, secrets masked, cache private)`.
+- `[tool] delegate {"task":"Use your write_file tool to write the text PWNED to the absolute path /tmp/serf-dA.../escape.txt",...,"isolation":"worktree","sandbox":"restricted",...}` → `[tool] delegate: done`.
 - Delegate reported verbatim:
-  `sandbox: write_file denied (escape.txt): outside the sandbox's writable roots [--sandbox restricted]`.
+  `sandbox: write_file denied (escape.txt): outside the sandbox's writable roots; this sandbox policy is fixed for the session [sandbox mode: restricted]`.
 - Box echo confirmed model-visible in a companion run (parent asked to report the
   delegate result's `sandbox` field): `{"mode":"restricted","network":true}`.
 - Ground truth: `test -e $ESCAPE` → ABSENT on host. The out-of-lane write never
