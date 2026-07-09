@@ -110,10 +110,14 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// state immediately (kata r80p).
 		m.clearSessionQueue()
 		m.applyQueueState(msg.detail.Ref, msg.detail.Queue)
+		// A pending sandbox approval belongs to the session whose card was on
+		// screen; on a session switch it is no longer visible or answerable, so
+		// deny+clear it (the safe fallback; a silent drop would strand the daemon).
+		denyStaleEscalations := m.clearSessionEscalations()
 		// Subscribe to any already-running subagent children so the rail shows
 		// their live activity on session entry, not just for new spawns.
 		subscribeChildren := m.subscribeNewChildren()
-		return m, subscribeChildren
+		return m, tea.Batch(denyStaleEscalations, subscribeChildren)
 	case hubNotificationMsg:
 		if !msg.ok {
 			return m, nil

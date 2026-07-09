@@ -41,8 +41,9 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.questionOverlay != nil && !m.questionOverlay.Deferred() {
 		return m.updateQuestionOverlayKey(msg)
 	}
-	// A pending M7 sandbox-escalation answers to y/n (deny on esc) when the composer
-	// is empty, before the keystroke reaches the composer.
+	// A pending M7 sandbox-escalation answers only to a DELIBERATE chord (ctrl+y /
+	// ctrl+n) — a security consent must never be a one-keystroke accident, so a bare
+	// key falls through to the composer as normal text.
 	if cmd, handled := m.handleEscalationKey(msg); handled {
 		return m, cmd
 	}

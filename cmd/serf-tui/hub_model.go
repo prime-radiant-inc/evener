@@ -137,10 +137,12 @@ type hubModel struct {
 	// rather than clearing it; see questionOverlay.deferred.
 	questionOverlay *questionOverlay
 
-	// pendingEscalation is the in-UI M7 sandbox-exemption approval awaiting the
-	// human's y/n decision. Non-nil only while the daemon's tool-exec goroutine is
-	// blocked on it; answered via handleEscalationKey. Never persisted.
-	pendingEscalation *hubEscalation
+	// pendingEscalations is the FIFO queue of in-UI M7 sandbox-exemption approvals
+	// awaiting the human's decision (concurrent escalations from one session are
+	// supported, so this is a queue, not a single slot — never overwrite/strand).
+	// Answered head-first via handleEscalationKey (a deliberate ctrl+y/ctrl+n chord)
+	// and denied+cleared when the viewed session changes. Never persisted.
+	pendingEscalations []*hubEscalation
 
 	spawnLaunchOverrides *appwire.LaunchConfigLayer
 
