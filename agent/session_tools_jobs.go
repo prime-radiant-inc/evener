@@ -351,9 +351,17 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 	}
 	// sandbox_net is a tri-state: absent stays nil so the delegate INHERITS the
 	// parent's network; present carries the explicit choice. A missing key must not
-	// read as false — that would silently force network off.
-	if v, ok := args["sandbox_net"].(bool); ok {
+	// read as false — that would silently force network off. A present-but-non-boolean
+	// value (e.g. the string "false" from a non-strict provider) is refused rather
+	// than silently decoded as inherit — the same silent no-op this surface refuses
+	// elsewhere (net-without-mode, net-with-off).
+	switch v := args["sandbox_net"].(type) {
+	case nil:
+		// omitted → inherit
+	case bool:
 		a.SandboxNet = &v
+	default:
+		return delegateArgs{}, errors.New("invalid_request: sandbox_net must be a boolean")
 	}
 	// max_wait_ms: 0/absent = no wait (background); positive = wait inline up to N;
 	// negative = invalid_request. Zero reads as unset (strict-provider safe).
