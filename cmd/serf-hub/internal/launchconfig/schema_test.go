@@ -143,11 +143,18 @@ func TestLaunchOptionSchema_Sandbox(t *testing.T) {
 	if strings.Contains(desc, "reads outside the sandbox are denied") {
 		t.Errorf("sandbox description repeats the false universal read claim: %q", desc)
 	}
-	if !strings.Contains(desc, "read-only denies all writes") {
-		t.Errorf("sandbox description must state read-only denies all writes, got %q", desc)
+	if strings.Contains(desc, "never escape") {
+		t.Errorf("sandbox description repeats the false 'writes never escape the working tree' claim (temp is outside): %q", desc)
 	}
-	if !strings.Contains(desc, "credential") {
-		t.Errorf("sandbox description must state credential/secret paths are read-denied, got %q", desc)
+	for _, want := range []string{"no writes", "working tree", "credential", "shell", "separate toggle"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("sandbox description must accurately gloss the modes (missing %q), got %q", want, desc)
+		}
+	}
+
+	// The empty choice is inherit, not "default: off" (false at project/launch).
+	if opts[sb].Choices[0].Value != "" || opts[sb].Choices[0].Label != "(inherit)" {
+		t.Errorf("first sandbox choice must be inherit, got %+v", opts[sb].Choices[0])
 	}
 
 	sn := indexOption(opts, "sandbox_net")
