@@ -23,7 +23,7 @@ The work is intentionally a presentation pass. It must not alter transcript tran
 - Changing lazy transcript loading, streaming, tool grouping, completion states, or error handling.
 - Adding settings or changing defaults.
 - Hiding existing content behind new disclosures.
-- Redesigning the Hub’s overall layout, sidebar, or composer.
+- Redesigning desktop Hub layout, sidebar behavior, or composer behavior outside short landscape viewports.
 
 ## Existing implementation boundaries
 
@@ -108,6 +108,18 @@ The explanation that **Hook exits (all)** includes normal exits remains visible 
 - Human prose continues to wrap at narrow widths; only machine payloads may scroll horizontally.
 - Font-size settings and light/dark theme tokens apply to all adjusted styles without per-component overrides.
 
+### 6. Short landscape workspace mode
+
+The screenshot review identified a distinct short-landscape problem: a permanently visible desktop-width sidebar and tall composer/status chrome leave too little vertical and horizontal room for transcript reading.
+
+Apply a CSS-only workspace mode at `@media (max-width: 900px) and (max-height: 560px)`. Desktop and portrait layouts remain unchanged.
+
+- The sidebar is off-canvas/default hidden in this mode so `#workspace` receives the full shell width. Its resizer, side panes, and pane splitter are hidden.
+- The existing app navigation control remains the entry point for opening the sidebar; no new viewport JavaScript, persisted layout state, or navigation behavior is introduced.
+- The workspace header, composer, task status, queue preview, and input-status strip use reduced token-based spacing. The textarea is constrained to a compact composing height while retaining attachment, model, stop, steer, and send controls.
+- The input-status strip keeps source, state, and turn count visible. CWD, branch, context, work time, tokens, liveness, cost, and goal are visually demoted in this mode so they cannot consume multiple tall rows. Full session details remain available through the existing Details surface.
+- `.conversation` continues to flex and scroll within `#workspace`, taking the reclaimed short-viewport height. Transcript data, loading, streaming, and interactions do not change.
+
 ## Data flow
 
 No new data flow is introduced:
@@ -126,6 +138,7 @@ No new data flow is introduced:
 - **Markdown:** ordinary paragraphs and lists are sans; inline/fenced code remains mono.
 - **Long machine tokens:** prevent layout overflow through current `pre` scrolling behavior rather than forcing human prose into `white-space: pre`.
 - **Compact panes:** preserve a legible summary-first order without changing side-pane data loading or navigation.
+- **Short landscape:** the sidebar must not remain a desktop-width column; long operational status fields must not displace the conversation into a shallow reading area; primary composer controls and source/state/turn information remain accessible.
 
 ## Acceptance criteria
 
@@ -136,11 +149,14 @@ No new data flow is introduced:
 5. Transcript settings retain all four controls, their accessible label associations, preference key, persistence, event emission, and saved-toast behavior.
 6. Existing lazy loading, output expansion, error auto-expansion, binary/truncation notices, theme selection, font-size selection, and keyboard/focus behavior are unchanged.
 7. Default tests remain deterministic and do not require provider credentials, network access, or a live browser.
+8. At `max-width: 900px` and `max-height: 560px`, the sidebar and pane chrome are not persistently visible; the conversation gets full workspace width and retains the available reading height after compact workspace chrome.
+9. In that short-landscape mode, source, state, turn count, attachment, model, stop, steer, and send remain accessible; long operational status fields are demoted without changing the underlying status payload or Details access.
 
 ## Verification plan
 
 1. Update deterministic Hub JavaScript tests around renderer/tool DOM output to verify prose/summary versus machine-output class/element boundaries and preserve tool disclosure behavior.
 2. Retain and extend the Go settings-render test only if markup hooks/classes change; assert all four controls and their accessible labels remain present.
 3. Run the relevant Hub Go tests and the affected `cmd/serf-hub/jstest` tests.
-4. Inspect the static WebUI golden and hard-case examples against the shared typography and spacing tokens as a manual UI review; this is a design check, not a network-dependent CI test.
-5. Verify the working tree and staged diff contain only focused transcript/settings styling, rendering, and corresponding deterministic tests when implementation begins.
+4. Add deterministic CSS/markup contract coverage for `@media (max-width: 900px) and (max-height: 560px)`, verifying the off-canvas sidebar/pane rules, compact workspace chrome, primary control retention, and status-field demotion without requiring a live viewport.
+5. Inspect the static WebUI golden and hard-case examples against the shared typography, spacing, and short-landscape selectors as a manual UI review; this is a design check, not a network-dependent CI test.
+6. Verify the working tree and staged diff contain only focused transcript/settings/short-landscape styling, rendering, and corresponding deterministic tests when implementation begins.
