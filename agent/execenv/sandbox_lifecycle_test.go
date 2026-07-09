@@ -2,6 +2,7 @@ package execenv
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -11,6 +12,40 @@ import (
 
 	"primeradiant.com/serf/agent/sandbox"
 )
+
+// TestEnableSandboxRefusesNonBwrapBackend: EnableSandbox provisions only the bwrap
+// kernel wrapper, so an enforced policy on any other backend (Seatbelt) must FAIL
+// CLOSED rather than attach the policy with a nil wrapper (a half-enforced env whose
+// spawned processes would run unconfined). The darwin-resolved policy is built purely
+// (no Mac needed) so the guard is exercised on the Linux test host.
+func TestEnableSandboxRefusesNonBwrapBackend(t *testing.T) {
+	home := t.TempDir()
+	worktree := filepath.Join(home, "project")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	darwin := sandbox.HostFacts{OS: "darwin", Home: home, SandboxExecPath: "/usr/bin/sandbox-exec"}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted}, darwin, worktree)
+	if err != nil {
+		t.Fatalf("Resolve(darwin): %v", err)
+	}
+	if rp.Backend != sandbox.BackendSeatbelt {
+		t.Fatalf("expected a seatbelt backend to exercise the guard, got %v", rp.Backend)
+	}
+	env := NewLocalExecutionEnvironment(worktree)
+	t.Cleanup(env.Cleanup)
+	err = env.EnableSandbox(&rp)
+	if err == nil {
+		t.Fatal("EnableSandbox on a non-bwrap backend must fail closed, not half-enforce")
+	}
+	var ref *sandbox.RefusalError
+	if !errors.As(err, &ref) {
+		t.Errorf("want a *sandbox.RefusalError, got %T: %v", err, err)
+	}
+	if env.Sandbox != nil || env.Wrapper != nil {
+		t.Errorf("a refused EnableSandbox must leave the env unsandboxed, got Sandbox=%v Wrapper=%v", env.Sandbox, env.Wrapper)
+	}
+}
 
 // TestWithWorkingDirectoryReRootDivergentFailureNilsBoth: when the Sandbox re-root
 // succeeds but the Wrapper re-root fails (or vice versa), the child must NOT be

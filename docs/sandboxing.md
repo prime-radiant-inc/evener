@@ -10,8 +10,9 @@ Status: Evergreen guide to the `--sandbox` flag and what each mode enforces.
 sandboxed session's boundary is enforced by two cooperating layers — an
 in-process, race-safe layer for the file tools (`read_file`, `write_file`,
 `edit_file`, `apply_patch`, `glob`, `grep`, `list_dir`) and a kernel layer
-(bubblewrap on Linux, Seatbelt on macOS) for every spawned process (shell jobs,
-`rg`, stdio MCP servers, hook commands) and its descendants.
+(bubblewrap on Linux) for every spawned process (shell jobs, `rg`, stdio MCP
+servers, hook commands) and its descendants. The flag is currently live on Linux;
+the macOS backend (Seatbelt) is being finalized — see [macOS notes](#macos-notes).
 
 The policy is fixed for the life of the session. Nothing the model does mid-session
 can relax it — the mode, the network decision, and the denylist are set from the
@@ -80,8 +81,11 @@ sandbox mode it cannot actually enforce.
 | Host capability | Modes that run | Otherwise |
 |---|---|---|
 | Linux with a working bubblewrap (unprivileged user namespaces usable) | all modes, `--sandbox-net` on or off | — |
-| macOS with `/usr/bin/sandbox-exec` | all modes, `--sandbox-net` on or off (caches always session-private) | — |
-| Linux without a usable bubblewrap, Windows, any other OS | `off` only | any non-off mode refuses to start |
+| Linux without a usable bubblewrap, Windows, macOS (for now), any other OS | `off` only | any non-off mode refuses to start |
+
+macOS enforcement (Seatbelt) is designed and implemented but not yet live in this
+release, so a non-off mode currently refuses to start on macOS with the same
+fail-closed message; see [macOS notes](#macos-notes).
 
 On Linux, "bubblewrap usable" means more than the binary being present: serf runs a
 real unprivileged-user-namespace probe at startup, so a host that ships `bwrap` but
@@ -250,11 +254,15 @@ Two boundary edges are deliberately documented as open rather than claimed close
 
 ## macOS notes
 
-On macOS the kernel layer is Seatbelt (`/usr/bin/sandbox-exec`), driven from the
-same policy model, so all modes are expressible. Caches are always served
-session-private (there is no overlay on macOS). The `sandbox-exec` path is
-hard-coded as a PATH-injection defense. A macOS host without `/usr/bin/sandbox-exec`
-refuses any sandboxed mode.
+macOS enforcement is **not yet live in this release**: a non-off `--sandbox` mode
+currently refuses to start on macOS (the fail-closed floor), because the kernel-layer
+wiring is finalized on Linux first. Turn the flag on only on Linux for now.
+
+The macOS backend is Seatbelt (`/usr/bin/sandbox-exec`), driven from the same policy
+model so all modes are expressible; caches are always served session-private (there
+is no overlay on macOS), and the `sandbox-exec` path is hard-coded as a
+PATH-injection defense. When macOS goes live, a host without `/usr/bin/sandbox-exec`
+will still refuse any sandboxed mode.
 
 ## Related
 

@@ -389,6 +389,11 @@ func runServe(args []string) error {
 		oldSess := getSession()
 		clearCfg := sessionCfg
 		clearCfg.SessionStartKind = plugin.SessionStartKindClear
+		// The cleared session reuses this env, so it must inherit the env's ACTUAL
+		// sandbox (on resume the persisted mode, not the launch flag) rather than the
+		// flag-derived sessionCfg — otherwise its persisted config and runtime env
+		// diverge. Reconcile BEFORE NewSession so the mode it persists matches.
+		reconcileClearSandbox(&clearCfg, env)
 		newSess, err := agent.NewSession(client, profile, env, clearCfg)
 		if err != nil {
 			return fmt.Errorf("new session: %w", err)
@@ -402,6 +407,13 @@ func runServe(args []string) error {
 			return fmt.Errorf("rendezvous update: %w", err)
 		}
 		oldSess.Close()
+		// oldSess.Close() ran env.Cleanup(), which disposed the per-session sandbox
+		// tmp the SHARED env owned. Re-provision from the reconciled config so the
+		// cleared session gets a fresh, valid tmp + kernel wrapper (each session owns
+		// its own tmp). A no-op for an off session, so unsandboxed /clear is unchanged.
+		if err := provisionSandbox(env, &clearCfg, wd); err != nil {
+			return fmt.Errorf("re-provision sandbox after clear: %w", err)
+		}
 		bridgeSession(newSess)
 		return nil
 	})

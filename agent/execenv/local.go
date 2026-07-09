@@ -187,10 +187,13 @@ func (e *LocalExecutionEnvironment) SetFs(fs afero.Fs) *LocalExecutionEnvironmen
 //
 // A nil or non-enforced (off) policy is a no-op beyond carrying the pointer: no
 // tmp is provisioned and no wrapper is built, so an off env stays byte-identical
-// to today. A non-bwrap enforced backend (Seatbelt, M6) attaches the policy and
-// session tmp for the in-process file-tool layer but leaves the kernel wrapper nil
-// here (its wrapper is M6's). On any failure the provisioned tmp is disposed and
-// the env is left unsandboxed so a half-wired sandbox never runs.
+// to today. This live provisioning path builds only the bwrap kernel wrapper; an
+// enforced policy on any other backend (Seatbelt) would attach the file-tool layer
+// with NO kernel confinement — a half-enforced env whose spawned processes run
+// unconfined and whose enforcement line would overstate — so it FAILS CLOSED here
+// (the flag is live on Linux/bwrap; the Seatbelt wrapper + macOS validation are
+// M6's). On any failure the provisioned tmp is disposed and the env is left
+// unsandboxed so a half-wired sandbox never runs.
 func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy) error {
 	// EnableSandbox establishes the COMPLETE sandbox state, so it always resets any
 	// stale re-root error and, on the off path, any policy/wrapper a prior
@@ -217,18 +220,26 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 		e.Wrapper = nil
 		return err
 	}
-	if policy.Backend == sandbox.BackendBwrap {
-		w, werr := sandbox.NewWrapper(*policy, policy.HostBwrapPath(), tmp.Dir)
-		if werr != nil {
-			_ = tmp.Cleanup()
-			e.Sandbox = nil
-			e.Wrapper = nil
-			return werr
-		}
-		e.Wrapper = w
-	} else {
+	if policy.Backend != sandbox.BackendBwrap {
+		// Fail closed: a non-bwrap enforced backend has no kernel wrapper provisioned
+		// here, so attaching the policy would half-enforce (unconfined spawns) and the
+		// enforcement line would overstate. Refuse rather than run half-wired.
+		_ = tmp.Cleanup()
+		e.Sandbox = nil
 		e.Wrapper = nil
+		return &sandbox.RefusalError{
+			Mode: policy.Mode, Net: policy.Network, RequiredBackend: policy.Backend.String(),
+			Reason: fmt.Sprintf("--sandbox is not yet live on this host: the %s backend's kernel confinement is not provisioned in this release (Linux/bubblewrap only)", policy.Backend),
+		}
 	}
+	w, werr := sandbox.NewWrapper(*policy, policy.HostBwrapPath(), tmp.Dir)
+	if werr != nil {
+		_ = tmp.Cleanup()
+		e.Sandbox = nil
+		e.Wrapper = nil
+		return werr
+	}
+	e.Wrapper = w
 	e.Sandbox = policy
 	e.ownedSessionTmp = tmp
 	return nil

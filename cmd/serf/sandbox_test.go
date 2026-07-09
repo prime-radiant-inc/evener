@@ -165,6 +165,116 @@ func TestSandboxFlagRestrictedEnforces(t *testing.T) {
 	}
 }
 
+// TestSandboxReprovisionAfterCleanup covers the serve /clear path, where the new
+// session reuses the SAME env the old one just Close()d: env.Cleanup() disposes the
+// per-session sandbox tmp, so the env must be re-provisioned to give the cleared
+// session a fresh, valid enforced env rather than one pointing at a disposed tmp.
+// Gated on a real bwrap host and skipped under -short.
+func TestSandboxReprovisionAfterCleanup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-bwrap sandbox re-provision skipped under -short")
+	}
+	facts := sandbox.RealProber{}.Probe()
+	if facts.OS != "linux" || !facts.BwrapCapable || facts.BwrapPath == "" {
+		t.Skip("bwrap not capable on this host")
+	}
+	home := t.TempDir()
+	facts.Home = home
+	worktree := filepath.Join(home, "project")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := agent.SessionConfig{}
+	if err := configureSandbox(&cfg, "workspace-write", "on"); err != nil {
+		t.Fatalf("configureSandbox: %v", err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(worktree)
+	t.Cleanup(env.Cleanup)
+	if err := provisionSandboxWithHost(env, &cfg, worktree, facts); err != nil {
+		t.Fatalf("first provision: %v", err)
+	}
+	if env.Wrapper == nil {
+		t.Fatal("first provision must attach a wrapper")
+	}
+	tmp1 := env.Wrapper.SessionTmp()
+	if _, err := os.Stat(tmp1); err != nil {
+		t.Fatalf("first session tmp must exist: %v", err)
+	}
+
+	// The old session's Close() disposes the SHARED env (the /clear scenario).
+	env.Cleanup()
+	if _, err := os.Stat(tmp1); err == nil {
+		t.Error("Cleanup must dispose the first session tmp")
+	}
+
+	// The /clear fix: re-provisioning rebuilds an enforced env with a FRESH tmp.
+	if err := provisionSandboxWithHost(env, &cfg, worktree, facts); err != nil {
+		t.Fatalf("re-provision after cleanup: %v", err)
+	}
+	if env.Sandbox == nil || !env.Sandbox.Enforced() || env.Wrapper == nil {
+		t.Fatal("re-provision must rebuild an enforced env")
+	}
+	tmp2 := env.Wrapper.SessionTmp()
+	if tmp2 == tmp1 {
+		t.Error("re-provision must mint a fresh tmp, not reuse the disposed one")
+	}
+	if _, err := os.Stat(tmp2); err != nil {
+		t.Errorf("re-provisioned session tmp must exist: %v", err)
+	}
+	// A spawn under the re-provisioned env runs (the cleared session is usable).
+	res, err := env.ExecCommand(context.Background(), "echo REPROVISION-OK", 15000, worktree, nil)
+	if err != nil {
+		t.Fatalf("spawn after re-provision failed: %v", err)
+	}
+	if !strings.Contains(res.Stdout, "REPROVISION-OK") {
+		t.Errorf("spawn after re-provision did not run: %q %q", res.Stdout, res.Stderr)
+	}
+}
+
+// TestReconcileClearSandbox: serve's /clear reuses the env, so the cleared session's
+// config must inherit the env's ACTUAL sandbox (which on resume is the persisted
+// mode, not the launch flag). An enforced env stamps its mode+net onto the cleared
+// config; an off env clears the carrier so a launch flag can't make a cleared session
+// persist a sandbox it isn't running. Hermetic: reconcile reads only the resolved
+// policy inputs, so env.Sandbox is set directly (no bwrap needed).
+func TestReconcileClearSandbox(t *testing.T) {
+	home := t.TempDir()
+	worktree := filepath.Join(home, "project")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	host := sandbox.HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true}
+	net := false
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: &net}, host, worktree)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	// Enforced env (restricted, net off) but the launch flag was off: the cleared
+	// config must inherit the env's mode + net so persisted and runtime agree.
+	env := execenv.NewLocalExecutionEnvironment(worktree)
+	env.Sandbox = &rp
+	cfg := agent.SessionConfig{}
+	reconcileClearSandbox(&cfg, env)
+	if cfg.Sandbox != "restricted" {
+		t.Errorf("cleared config must inherit the env mode, got %q", cfg.Sandbox)
+	}
+	if cfg.SandboxNet == nil || *cfg.SandboxNet {
+		t.Errorf("cleared config must inherit net=off from the env, got %v", cfg.SandboxNet)
+	}
+
+	// Off env: the carrier is cleared even if the launch flag set a mode, so a
+	// cleared session never persists a sandbox its env isn't enforcing.
+	offEnv := execenv.NewLocalExecutionEnvironment(worktree)
+	yes := true
+	offCfg := agent.SessionConfig{Sandbox: "restricted", SandboxNet: &yes}
+	reconcileClearSandbox(&offCfg, offEnv)
+	if offCfg.Sandbox != "" || offCfg.SandboxNet != nil {
+		t.Errorf("off env must clear the carrier, got Sandbox=%q Net=%v", offCfg.Sandbox, offCfg.SandboxNet)
+	}
+}
+
 // TestParseSandboxNet: on/off/empty map correctly (case- and space-insensitive);
 // anything else errors.
 func TestParseSandboxNet(t *testing.T) {

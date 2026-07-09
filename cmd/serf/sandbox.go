@@ -73,6 +73,26 @@ func provisionSandboxWithHost(env *execenv.LocalExecutionEnvironment, cfg *agent
 	return env.EnableSandbox(rp)
 }
 
+// reconcileClearSandbox makes a cleared serve session's config agree with the
+// environment it reuses. serve's /clear starts a fresh session on the SAME env, so
+// the cleared session inherits the env's ACTUAL sandbox — which on resume is the
+// persisted mode, not the launch flag. Setting the config's mode + network from the
+// env's resolved policy inputs keeps what the session persists identical to what its
+// env enforces; an off (unsandboxed) env clears the carrier so the cleared session
+// is off too. Without this, a session resumed sandboxed but cleared under an off
+// flag would persist off while running enforced (or the reverse), and the sandbox
+// could silently evaporate on the next resume.
+func reconcileClearSandbox(cfg *agent.SessionConfig, env *execenv.LocalExecutionEnvironment) {
+	if env == nil || env.Sandbox == nil || !env.Sandbox.Enforced() {
+		cfg.Sandbox = ""
+		cfg.SandboxNet = nil
+		return
+	}
+	in := env.Sandbox.Inputs()
+	cfg.Sandbox = in.Mode.String()
+	cfg.SandboxNet = in.Network
+}
+
 // sandboxEnforcementLine returns the single startup line describing what a
 // sandboxed session enforces on this host (backend + mode + network + cache
 // strategy), read from the environment's ACTUAL resolved policy so it can never
