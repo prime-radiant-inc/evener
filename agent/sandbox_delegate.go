@@ -77,6 +77,23 @@ func buildDelegateSandboxPolicy(sandboxMode string, sandboxNet *bool, parentMode
 	if net && !parentNet {
 		return nil, errors.New("invalid_request: sandbox_net on grants more network access than your own sandbox (network off); a delegate cannot be less restricted than you")
 	}
+	// The floor compares MODE and NETWORK only, and the returned policy carries only
+	// those two axes — deliberately. SandboxPolicy also has denylist deltas
+	// (DenylistAdd/DenylistRemove) and extra roots (ExtraRead/WritableRoots), but NO
+	// production path originates a non-empty value for them today: they are only ever
+	// round-tripped through snapshots (sandboxSnapshotFromInputs / cloneSandboxSnapshot
+	// / sandboxPolicyFromSnapshot below), and both origination surfaces — the CLI
+	// (sandbox.ResolveNamed) and the launch-config path — are mode+net only. So a
+	// same-mode delegate cannot be looser on those axes than its parent: parity holds
+	// trivially because the parent's values are empty too.
+	//
+	// IF a config surface for those axes is ever added (e.g. a launch-config
+	// `denylist_add`, or per-session extra read roots), THIS FLOOR MUST BE EXTENDED to
+	// carry the parent's TIGHTENING axes (DenylistAdd, and the read/write root
+	// scoping) into the child's policy — otherwise a same-mode delegate could read a
+	// path its parent masks (a DenylistRemove or an ExtraReadRoot the parent lacks),
+	// re-opening the escalation this floor exists to prevent. Do not add speculative
+	// propagation now; add it WITH the surface that first needs it.
 	return &sandbox.SandboxPolicy{Mode: requested, Network: &net}, nil
 }
 
