@@ -15,10 +15,10 @@ package tool
 //     tree (ApplyPatch is a pure function of (rootDir contents, patch text), so
 //     any divergence is a real nondeterminism bug).
 //
-// apply_patch.go reaches the filesystem through the os package directly (not an
-// afero/execenv seam), so fuzz/fault cannot inject FS faults here; the honest
-// sandbox is a real t.TempDir, which fully contains every os.* call because
-// safeJoin rejects absolute paths and ".." traversal outside rootDir.
+// apply_patch reaches the filesystem through an execenv.FileMutator (here an
+// off-mode LocalExecutionEnvironment rooted at a real t.TempDir), which confines
+// every mutation to that root — rejecting absolute paths and ".." traversal
+// outside it — so fuzzed patches cannot escape the sandbox.
 
 import (
 	"os"
@@ -140,7 +140,7 @@ func apatch_runOnce(t *testing.T, patch, base string) (apatch_applyResult, map[s
 	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte(base), 0o644); err != nil {
 		t.Fatalf("seed file.txt: %v", err)
 	}
-	out, err := ApplyPatch(root, patch)
+	out, err := ApplyPatch(testMutator(root), patch)
 	errText := ""
 	if err != nil {
 		// Error messages can embed the absolute sandbox path (each run gets a

@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/provider"
+	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
@@ -682,6 +683,25 @@ func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, 
 	})
 }
 
+// providerWebSearchEnabled reports whether provider-native web search — the
+// server-side web egress the provider runs for the model — may be requested for
+// this profile. It starts from the profile's own capability and, when the session
+// is sandboxed with network egress off, additionally requires that the provider's
+// web egress is allowed under net=off. That decision comes from the
+// provider-capability registry, which fails closed for unknown providers, so
+// net=off can never be silently false through provider-native web (a path the user
+// cannot inspect). A non-sandboxed session (wrapper nil) passes the profile
+// capability through unchanged — byte-identical to before the flag exists.
+func (s *Session) providerWebSearchEnabled(profile *provider.Profile) bool {
+	if !profile.SupportsWebSearch() {
+		return false
+	}
+	if w := s.sandboxWrapper(); w != nil && !w.Policy().Network {
+		return sandbox.ProviderWebAllowedUnderNetOff(profile.BehaviorTag())
+	}
+	return true
+}
+
 // buildModelRequest assembles the llm.Request for one round: it lays out the
 // system prompt + history into messages (honoring SystemPromptAsUser), then
 // applies tools, provider options, reasoning effort, and model metadata.
@@ -708,7 +728,7 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 		Messages:   messages,
 		Tools:      toolDefs,
 		ToolChoice: &llm.ToolChoice{Mode: "required"},
-		WebSearch:  profile.SupportsWebSearch(),
+		WebSearch:  s.providerWebSearchEnabled(profile),
 		AdapterTimeout: &llm.AdapterTimeout{
 			Connect:    10 * time.Second,
 			Request:    10 * time.Minute,
@@ -820,7 +840,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			} else {
 				fbReq.ReasoningEffort = nil
 			}
-			fbReq.WebSearch = fbProfile.SupportsWebSearch()
+			fbReq.WebSearch = s.providerWebSearchEnabled(fbProfile)
 			fbReq.ProviderOptions = fbProfile.ProviderOptions()
 			fbReq.PromptCacheKey = ""
 			fbReq.PromptCacheRetention = ""

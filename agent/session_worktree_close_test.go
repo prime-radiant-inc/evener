@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -164,10 +165,34 @@ func writeRepoGitShim(t *testing.T, repoRoot, script string) func() {
 		t.Fatalf("mkdir repo git shim dir: %v", err)
 	}
 	shim := filepath.Join(shimDir, "git")
-	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
-		t.Fatalf("write repo git shim: %v", err)
-	}
+	writeExecUnderForkLock(t, shim, script)
 	return func() { _ = os.Remove(shim) }
+}
+
+// writeExecUnderForkLock writes an executable that this package then runs, in a
+// way that is safe under the parallel test suite's constant fork/exec traffic.
+//
+// A freshly written executable can fail execve with ETXTBSY ("text file busy"):
+// os.WriteFile holds the file open for writing, and if any sibling parallel test
+// forks for its own os/exec during that window, the forked child inherits the
+// still-open write fd. Until that child execs, the kernel sees this file as open
+// for writing and refuses to execute it. On Linux, ExecArgv surfaces the failed
+// cmd.Start() as a bare exit 127 (the underlying "text file busy" is discarded),
+// which is how this manifests in the worktree git-shim tests. See Go issue
+// #22315.
+//
+// syscall.ForkLock is the standard guard for exactly this: fork/exec takes it
+// for writing (forkExec -> acquireForkLock), so holding it for reading across
+// the whole write excludes any concurrent fork. Once the write completes and the
+// fd is closed, forks resume and no child can inherit it. This keeps every test
+// parallel while removing the race at its source.
+func writeExecUnderForkLock(t *testing.T, path, script string) {
+	t.Helper()
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write executable %s: %v", path, err)
+	}
 }
 
 func gitFailOnArgsRepoShim(t *testing.T, repoRoot string, failArgs ...string) {

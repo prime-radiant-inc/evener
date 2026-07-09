@@ -96,6 +96,12 @@ const (
 	// EventGoalEnded reports that the goal engine stopped, carrying the terminal
 	// status and reason.
 	EventGoalEnded EventKind = "GOAL_ENDED"
+	// EventSandboxEscalationRequested marks a harness-raised, human-gated
+	// sandbox-exemption approval request (M7). It rides the event stream ONLY — it
+	// is never appended to the model's transcript, so the model can neither observe
+	// nor replay it. The projector maps it to the AppWire escalation-requested
+	// notification.
+	EventSandboxEscalationRequested EventKind = "SANDBOX_ESCALATION_REQUESTED"
 )
 
 // SessionEvent is a single timestamped event on a session's event stream,

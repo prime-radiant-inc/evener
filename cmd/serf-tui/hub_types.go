@@ -55,27 +55,32 @@ type hubSessionCapabilities struct {
 }
 
 type hubSessionDetail struct {
-	Ref              string
-	SessionID        string
-	SourceLabel      string
-	Title            string
-	State            string
-	AskPending       bool
-	Model            string
-	Profile          string
-	WorkingDir       string
-	Project          string
-	Branch           string
-	TurnCount        int
-	ContextPressure  float64
-	ContextUsed      int
-	ContextWindow    int
-	ContextRemaining int
-	ActiveTurnID     string
-	RecentErrors     []string
-	Diagnostics      *appwire.SerfDiagnostics
-	Live             bool
-	Capabilities     hubSessionCapabilities
+	Ref         string
+	SessionID   string
+	SourceLabel string
+	Title       string
+	State       string
+	AskPending  bool
+	// PendingEscalations is the M7 surface-on-entry snapshot from
+	// thread.Serf.PendingEscalations — the redacted approval cards for escalations
+	// blocked on this session. Merged into hubModel.escalationsByRef (de-duped by
+	// id) on entry so a fresh/other/reconnecting client surfaces the card.
+	PendingEscalations []appwire.SandboxEscalationRequested
+	Model              string
+	Profile            string
+	WorkingDir         string
+	Project            string
+	Branch             string
+	TurnCount          int
+	ContextPressure    float64
+	ContextUsed        int
+	ContextWindow      int
+	ContextRemaining   int
+	ActiveTurnID       string
+	RecentErrors       []string
+	Diagnostics        *appwire.SerfDiagnostics
+	Live               bool
+	Capabilities       hubSessionCapabilities
 	// Queue carries the authoritative queue snapshot from
 	// thread.Serf.Queue (kata r80p). hubModel mirrors this into
 	// sessionQueue when entering/refreshing a session so the composer
@@ -229,6 +234,7 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 		Title:               node.Title,
 		State:               node.State,
 		AskPending:          thread.Serf.AskPending,
+		PendingEscalations:  thread.Serf.PendingEscalations,
 		Model:               thread.ModelProvider,
 		Profile:             thread.Serf.Profile,
 		WorkingDir:          thread.CWD,

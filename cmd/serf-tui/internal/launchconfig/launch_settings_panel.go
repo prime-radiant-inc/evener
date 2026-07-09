@@ -61,6 +61,25 @@ func (p LaunchSettingsPanel) InitialCmd() tea.Cmd {
 
 func (p LaunchSettingsPanel) Init() tea.Cmd { return nil }
 
+// launchDiagnosticsStatus renders a resolve's non-fatal diagnostics (unknown
+// sandbox mode, sandbox_net with no mode, duplicate MCP, …) as a single warning
+// line for the settings panel status. Empty when there are none. These otherwise
+// surface only in the raw resolved-config JSON, where a user never looks.
+func launchDiagnosticsStatus(r appwire.LaunchConfigResolved) string {
+	if len(r.Diagnostics) == 0 {
+		return ""
+	}
+	msgs := make([]string, 0, len(r.Diagnostics))
+	for _, d := range r.Diagnostics {
+		if d.Field != "" {
+			msgs = append(msgs, d.Field+": "+d.Message)
+		} else {
+			msgs = append(msgs, d.Message)
+		}
+	}
+	return "⚠ " + strings.Join(msgs, "; ")
+}
+
 func (p LaunchSettingsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
 	case LaunchLayerResultMsg:
@@ -85,6 +104,8 @@ func (p LaunchSettingsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.loadingResolve = false
 		if m.Err != nil {
 			p.statusMessage = "resolve error: " + m.Err.Error()
+		} else {
+			p.statusMessage = launchDiagnosticsStatus(m.Resolved)
 		}
 	case LaunchSetLayerResultMsg:
 		if m.Err != nil {
@@ -92,6 +113,9 @@ func (p LaunchSettingsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			p.statusMessage = "saved " + m.Layer
 			p.resolved = m.Resolved
+			if d := launchDiagnosticsStatus(m.Resolved); d != "" {
+				p.statusMessage += " — " + d
+			}
 		}
 	case LaunchTrustResultMsg:
 		if m.Err != nil {
@@ -99,6 +123,11 @@ func (p LaunchSettingsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			p.resolved = m.Resolved
 			p.statusMessage = "trust recorded"
+			// Trusting an in-repo file is exactly when a repo-layer diagnostic
+			// (e.g. sandbox_net with no mode in the trusted file) first takes effect.
+			if d := launchDiagnosticsStatus(m.Resolved); d != "" {
+				p.statusMessage += " — " + d
+			}
 		}
 	case tea.KeyMsg:
 		switch m.Type {
@@ -321,6 +350,13 @@ func (p LaunchSettingsPanel) ApplyEdit(field, value string) (LaunchSettingsPanel
 	return p, updated, nil
 }
 
+// validLaunchSandboxModes are the sandbox mode values the launch schema offers
+// (mirrors cmd/serf-hub/internal/launchconfig sandboxChoices); a blank value
+// inherits the lower layer, so the sandbox edit is a select, not free text.
+var validLaunchSandboxModes = map[string]bool{
+	"off": true, "read-only": true, "workspace-write": true, "restricted": true,
+}
+
 func applyEdit(layer appwire.LaunchConfigLayer, field, value string) (appwire.LaunchConfigLayer, error) {
 	switch field {
 	case "model":
@@ -335,6 +371,12 @@ func applyEdit(layer appwire.LaunchConfigLayer, field, value string) (appwire.La
 		layer.ContextStrategy = strings.TrimSpace(value)
 	case "openai_responses_continuation":
 		layer.OpenAIResponsesContinuation = strings.TrimSpace(value)
+	case "sandbox":
+		v := strings.TrimSpace(value)
+		if v != "" && !validLaunchSandboxModes[v] {
+			return layer, fmt.Errorf("invalid sandbox mode %q (want off, read-only, workspace-write, or restricted, or blank to inherit)", v)
+		}
+		layer.Sandbox = v
 	case "export_atif_provider_handles":
 		layer.ExportATIFProviderHandles = strings.TrimSpace(value)
 	case "max_rounds":
@@ -361,6 +403,12 @@ func applyEdit(layer appwire.LaunchConfigLayer, field, value string) (appwire.La
 			return layer, err
 		}
 		layer.NoProjectPrompts = v
+	case "sandbox_net":
+		v, err := parseOptionalBool(value)
+		if err != nil {
+			return layer, err
+		}
+		layer.SandboxNet = v
 	case "verbose":
 		v, err := parseOptionalBool(value)
 		if err != nil {

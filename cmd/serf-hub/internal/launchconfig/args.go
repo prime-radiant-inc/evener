@@ -69,6 +69,16 @@ func ToArgs(r Resolved) []string {
 	if e.ExportATIFProviderHandles != "" {
 		add("--export-atif-provider-handles", e.ExportATIFProviderHandles)
 	}
+	// An explicit off mode is emitted so a launch layer can override a global
+	// default back to off; an unset mode emits nothing (serf's own default).
+	if e.Sandbox != "" {
+		add("--sandbox", e.Sandbox)
+	}
+	// Emit --sandbox-net only alongside a non-off mode: serf ignores the flag without
+	// a sandbox, so passing it alone would be a silent no-op.
+	if e.SandboxNet != nil && !sandboxModeIsOff(e.Sandbox) {
+		add("--sandbox-net", onOff(*e.SandboxNet))
+	}
 	for _, d := range e.SkillsDirs {
 		add("--skills-dir", d)
 	}
@@ -94,4 +104,12 @@ func ToArgs(r Resolved) []string {
 		add("--mcp", spec)
 	}
 	return out
+}
+
+// onOff renders a boolean as the on|off token serf's --sandbox-net flag accepts.
+func onOff(v bool) string {
+	if v {
+		return "on"
+	}
+	return "off"
 }

@@ -214,7 +214,6 @@ func TestToolDefs_WebSearchExcludedForNonGemini(t *testing.T) {
 		{"openai", NewOpenAIProfile("gpt-test"), "openai", false},
 		{"gemini", newGeminiProfile("gemini-test"), "gemini", true},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
@@ -259,7 +258,6 @@ func TestToolDefs_NoDuplicateNames(t *testing.T) {
 		{"openai", NewOpenAIProfile("gpt-test"), "openai"},
 		{"gemini", newGeminiProfile("gemini-test"), "gemini"},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
@@ -481,7 +479,7 @@ func TestCachedSystemPromptComponents_SkillList(t *testing.T) {
 	}
 	defer sess.Close()
 
-	if got := len(sess.buildPromptData().Skills); got != len(sess.skills) {
+	if got := len(sess.buildPromptData(sess.currentEnv()).Skills); got != len(sess.skills) {
 		t.Errorf("buildPromptData skills length %d != discovered %d", got, len(sess.skills))
 	}
 }

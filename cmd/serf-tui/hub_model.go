@@ -137,6 +137,16 @@ type hubModel struct {
 	// rather than clearing it; see questionOverlay.deferred.
 	questionOverlay *questionOverlay
 
+	// escalationsByRef holds in-UI M7 sandbox-exemption approvals keyed by their
+	// SESSION ref — a FIFO queue per session (concurrent escalations from one session
+	// are supported). It is NOT tied to the viewed session: an escalation for a
+	// non-viewed session is still enqueued (never dropped) and surfaced when the user
+	// enters that session. The answerable one is the head for the currently-viewed
+	// session, answered via a deliberate ctrl+y/ctrl+g chord. Switching away does NOT
+	// deny — the queue persists (the daemon's turn-interrupt/close path denies any
+	// never-answered one). Never persisted.
+	escalationsByRef map[string][]*hubEscalation
+
 	spawnLaunchOverrides *appwire.LaunchConfigLayer
 
 	lastCtrlC       time.Time

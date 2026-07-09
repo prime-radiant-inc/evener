@@ -14,7 +14,6 @@ import (
 func TestS2Cov_SelectStrategy_AllNamedStrategies(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{"", "compact", "recall", "session-log", "ooda", "obs-mask", "checkpoint-pred", "memory-crystals", "recursive-distill"} {
-		name := name
 		t.Run("strategy="+name, func(t *testing.T) {
 			t.Parallel()
 			sess := newSession(t, withConfig(SessionConfig{

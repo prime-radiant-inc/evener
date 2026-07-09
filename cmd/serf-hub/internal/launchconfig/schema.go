@@ -37,6 +37,7 @@ const (
 	LaunchGroupSystemPrompt LaunchGroup = "System Prompt"
 	LaunchGroupResources    LaunchGroup = "Resources"
 	LaunchGroupEnvironment  LaunchGroup = "Environment"
+	LaunchGroupSandbox      LaunchGroup = "Sandbox"
 	LaunchGroupDebugLogging LaunchGroup = "Debug Logging"
 )
 
@@ -103,6 +104,8 @@ func LaunchOptionSchema() []LaunchOption {
 		{Field: "mcps", WireField: "mcps", Label: "MCP servers", Description: "Inline MCP server definitions. Each entry specifies a name, command, and optional arguments.", Group: LaunchGroupResources, Kind: LaunchControlMCPList, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
 		{Field: "model_fallbacks", WireField: "modelFallbacks", Label: "Model fallbacks", Description: "Ordered list of alternative models serf tries when the primary model is unavailable or rate-limited.", Group: LaunchGroupResources, Kind: LaunchControlModelList, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
 		{Field: "env", WireField: "env", Label: "Environment variables", Description: "Extra environment variables injected into the serf process. Do not store credentials here; use the Providers page instead.", Group: LaunchGroupEnvironment, Kind: LaunchControlEnvMap, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
+		{Field: "sandbox", WireField: "sandbox", Label: "Sandbox", Description: "Confine the session to a sandbox mode. off = no confinement; read-only = reads anywhere but secret paths, no writes (a private temp dir only); workspace-write = reads anywhere but secret paths, writes the working tree; restricted = reads and writes only the working tree. All sandboxed modes mask credential and secret paths, give a private temp dir, and confine spawned shell commands too. Network egress is a separate toggle (Sandbox network egress). Default off.", Group: LaunchGroupSandbox, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, Choices: sandboxChoices(), DriverSupport: serfOnly},
+		{Field: "sandbox_net", WireField: "sandboxNet", Label: "Sandbox network egress", Description: "Allow network egress when sandboxed. Default on. Has no effect unless a sandbox mode is set.", Group: LaunchGroupSandbox, Kind: LaunchControlBoolean, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
 		{Field: "verbose", WireField: "verbose", Label: "Verbose event log", Description: "Emit all internal events to the debug log. Useful for diagnosing unexpected behaviour.", Group: LaunchGroupDebugLogging, Kind: LaunchControlBoolean, DefaultableLayers: allLayers, PerLaunch: true, DebugOnly: true, DriverSupport: serfOnly},
 		{Field: "raw_http_logging", WireField: "rawHTTPLogging", Label: "Raw HTTP logging", Description: "Write raw provider HTTP request and response bodies to api-raw.jsonl for new serf sessions.", Group: LaunchGroupDebugLogging, Kind: LaunchControlBoolean, DefaultableLayers: allLayers, PerLaunch: true, DebugOnly: true, EnvFallback: &LaunchOptionEnvFallback{Name: envvars.SERFLogRawHTTP.Name}, DriverSupport: serfOnly},
 		{Field: "trace_file", WireField: "traceFile", Label: "Trace file", Description: "Write a structured execution trace to this file. Suitable for post-mortem analysis with serf trace tooling.", Group: LaunchGroupDebugLogging, Kind: LaunchControlPath, PathKind: LaunchPathOutputFile, DefaultableLayers: allLayers, PerLaunch: true, DebugOnly: true, DriverSupport: serfOnly},
@@ -126,6 +129,13 @@ func contextChoices() []LaunchOptionChoice {
 
 func openAIResponsesContinuationChoices() []LaunchOptionChoice {
 	return []LaunchOptionChoice{{Value: "", Label: "(default: off)"}, {Value: "off", Label: "off"}, {Value: "auto", Label: "auto"}}
+}
+
+func sandboxChoices() []LaunchOptionChoice {
+	// The empty value is "inherit the lower layer" (only the system-default global
+	// layer treats absent as off); the explicit "off" entry is how a project/launch
+	// layer clears a global default.
+	return []LaunchOptionChoice{{Value: "", Label: "(inherit)"}, {Value: "off", Label: "off"}, {Value: "read-only", Label: "read-only"}, {Value: "workspace-write", Label: "workspace-write"}, {Value: "restricted", Label: "restricted"}}
 }
 
 func atifProviderHandleChoices() []LaunchOptionChoice {

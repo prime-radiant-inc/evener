@@ -135,6 +135,15 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 					"enum":        []string{"worktree"},
 					"description": "Absent (default): the delegate runs in your current directory. \"worktree\": give the delegate its own managed git worktree lane (branched from your current HEAD), isolated from your checkout and every other lane; only valid when you are in a local git checkout. The delegate cannot use manage_worktree itself.",
 				},
+				"sandbox": map[string]any{
+					"type":        "string",
+					"enum":        []string{"off", "read-only", "workspace-write", "restricted"},
+					"description": "Run this delegate under its own sandbox, independent of your session. Modes: off = no confinement; read-only = reads anywhere but secret paths, no writes (a private temp dir only); workspace-write = reads anywhere but secret paths, writes the working tree; restricted = reads and writes only the working tree. All sandboxed modes mask credential/secret paths, give a private temp dir, and confine spawned shell commands too; network is a separate toggle (sandbox_net). Most useful with isolation=\"worktree\". The modes are a partial order: you may only pick a box at least as confining as your own on BOTH reads and writes — you cannot grant a delegate more access than you have. Omit to inherit your session's sandbox.",
+				},
+				"sandbox_net": map[string]any{
+					"type":        "boolean",
+					"description": "Whether the sandboxed delegate may use the network. Omit to inherit your session's setting. You cannot enable network for a delegate if your own session has it off.",
+				},
 				"result_schema": map[string]any{
 					"type":                 "object",
 					"description":          "JSON-Schema-like object for structured delegate results. Serf validates it for initial and resumed turns, surfaces structured_result when valid, and reports structured_result_reason when invalid.",

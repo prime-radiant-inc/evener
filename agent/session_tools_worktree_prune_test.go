@@ -607,7 +607,6 @@ func TestWorktreePrune_Sweep1_RemovesDisposableMatrix(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			r := newWorktreeRepo(t)
@@ -717,7 +716,6 @@ func TestWorktreePrune_Sweep1_SkipsProtectedMatrix(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			r := newWorktreeRepo(t)

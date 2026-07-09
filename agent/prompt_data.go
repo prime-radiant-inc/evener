@@ -26,6 +26,10 @@ type promptData struct {
 	Today           string
 	Model           string // from profile, not EnvironmentInfo
 	KnowledgeCutoff string
+	// Sandbox is the pre-rendered environment-section sandbox line for a sandboxed
+	// session ("<mode> (network on|off) — fixed for this session"); empty when the
+	// session is unsandboxed, so the line is omitted (byte-identical to today).
+	Sandbox string
 
 	// Git
 	GitModifiedFiles      int

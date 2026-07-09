@@ -148,6 +148,13 @@ type ExecResult struct {
 	// side channel for dashboards and other consumers that would otherwise
 	// have to reconstruct state by replaying the whole event stream.
 	ToolState json.RawMessage
+
+	// Err is the raw error the tool executor returned, preserved verbatim so a
+	// caller can type-inspect it after FullOutput has already been rendered —
+	// M7's escalation seam recovers the typed sandbox.DeniedError via
+	// sandbox.AsDenied(res.Err). Nil on success. Never serialized (it rides only
+	// in-process, between ExecuteCall and its immediate caller).
+	Err error `json:"-"`
 }
 
 // StateResult is returned by tool executors that want to emit a
@@ -516,7 +523,9 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 		if strings.TrimSpace(full) == "" {
 			full = fmt.Sprintf("%v", err)
 		}
-		return truncateResult(name, callID, full, true, t.Limit)
+		res := truncateResult(name, callID, full, true, t.Limit)
+		res.Err = err // preserved verbatim for typed inspection (sandbox.AsDenied)
+		return res
 	}
 
 	// ImageResult carries both text and raw image bytes.

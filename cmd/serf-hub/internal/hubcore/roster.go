@@ -22,9 +22,10 @@ import (
 // rendezvous-file metadata with the dynamic SessionID resolved via /status.
 type LiveEntry struct {
 	rendezvous.Entry
-	SessionID  string
-	Status     string // most-recent daemon state ("active", "idle", "awaiting", etc.)
-	PendingAsk bool   // true while the daemon reports an unanswered ask_user question
+	SessionID         string
+	Status            string // most-recent daemon state ("active", "idle", "awaiting", etc.)
+	PendingAsk        bool   // true while the daemon reports an unanswered ask_user question
+	PendingEscalation bool   // true while the daemon reports a blocked sandbox-exemption escalation (M7)
 }
 
 // Prober is implemented by liveness-checking strategies.
@@ -33,7 +34,7 @@ type LiveEntry struct {
 // session_id (which may have changed under POST /clear since the
 // rendezvous file was written) and the daemon's current state.
 type Prober interface {
-	Probe(entry rendezvous.Entry) (sessionID, status string, pendingAsk, ok bool)
+	Probe(entry rendezvous.Entry) (sessionID, status string, pendingAsk, pendingEscalation, ok bool)
 }
 
 // Roster maintains the live-daemon set on the host. Reads of the underlying
@@ -182,11 +183,12 @@ func (r *Roster) Refresh() {
 	r.mu.RUnlock()
 
 	type probeResult struct {
-		entry      rendezvous.Entry
-		sessID     string
-		status     string
-		pendingAsk bool
-		ok         bool
+		entry             rendezvous.Entry
+		sessID            string
+		status            string
+		pendingAsk        bool
+		pendingEscalation bool
+		ok                bool
 	}
 	results := make([]probeResult, len(entries))
 	var wg sync.WaitGroup
@@ -198,8 +200,8 @@ func (r *Roster) Refresh() {
 		wg.Add(1)
 		go func(i int, e rendezvous.Entry) {
 			defer wg.Done()
-			sessID, status, pendingAsk, ok := r.prober.Probe(e)
-			results[i] = probeResult{entry: e, sessID: sessID, status: status, pendingAsk: pendingAsk, ok: ok}
+			sessID, status, pendingAsk, pendingEscalation, ok := r.prober.Probe(e)
+			results[i] = probeResult{entry: e, sessID: sessID, status: status, pendingAsk: pendingAsk, pendingEscalation: pendingEscalation, ok: ok}
 		}(i, e)
 	}
 	wg.Wait()
@@ -220,7 +222,7 @@ func (r *Roster) Refresh() {
 			}
 			continue
 		}
-		live := LiveEntry{Entry: e, SessionID: res.sessID, Status: res.status, PendingAsk: res.pendingAsk}
+		live := LiveEntry{Entry: e, SessionID: res.sessID, Status: res.status, PendingAsk: res.pendingAsk, PendingEscalation: res.pendingEscalation}
 		if res.sessID != "" {
 			if prev, ok := bySess[res.sessID]; !ok || preferLiveEntry(live, prev) {
 				bySess[res.sessID] = live

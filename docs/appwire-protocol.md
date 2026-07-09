@@ -146,6 +146,7 @@ no router (reserved).
 | `serf/plugin/disable` | hub | `PluginRefParams` | `PluginListResponse` | Disables an installed plugin; returns the updated list. |
 | `serf/plugin/setAutoUpgrade` | hub | `PluginSetAutoUpgradeParams` | `PluginListResponse` | Sets an installed plugin's auto-upgrade flag; returns the updated list. |
 | `serf/command/list` | hub | `EmptyParams` | `CommandListResponse` | Lists loaded plugin slash commands (name, plugin, description) for catalog/autocomplete display. |
+| `serf/sandbox/escalation/resolve` | both | `SandboxEscalationResolveParams` | `EmptyResponse` | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
 
 ## Notifications (server → client)
 
@@ -158,6 +159,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `thread/closed` | `(inline)` | Session ended; inline {threadId, ref, reason}. |
 | `thread/status/changed` | `ThreadStatusChangedParams` | Thread status (type + active flags) changed. |
 | `thread/queueChanged` | `ThreadQueueChangedParams` | The per-session input queue depth/preview changed. |
+| `serf/thread/name/changed` | `ThreadNameChangedParams` | The session title changed (generated or user-renamed). |
 | `turn/started` | `(inline)` | A new turn began (inProgress); inline {threadId, ref, turn}. |
 | `turn/completed` | `TurnCompletedParams` | A turn reached a terminal state (completed/failed/interrupted). |
 | `item/started` | `(inline)` | A thread item began streaming; inline {threadId, ref, turnId, item}. |
@@ -176,6 +178,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `serf/marketplace/updated` | `(inline)` | Broadcast after a marketplace mutation (add/remove/refresh); inline {}. Clients refresh the marketplace list. |
 | `serf/plugin/updated` | `(inline)` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); inline {}. Clients refresh the plugin list. |
 | `serf/task/updated` | `TaskUpdatedParams` | The session's task-list progress (total/done) changed. |
+| `serf/sandbox/escalation/requested` | `SandboxEscalationRequested` | A harness-raised, human-gated sandbox-exemption approval card (M7); the tool-exec goroutine blocks until answered via serf/sandbox/escalation/resolve. |
 
 ## Type reference
 
@@ -466,6 +469,8 @@ _(no fields)_
 | `reasoningEffort` | `string` | yes |  |
 | `contextStrategy` | `string` | yes |  |
 | `openAIResponsesContinuation` | `string` | yes |  |
+| `sandbox` | `string` | yes |  |
+| `sandboxNet` | `*bool` | yes |  |
 | `maxRounds` | `*int` | yes |  |
 | `maxSubagentDepth` | `*int` | yes |  |
 | `noProjectPrompts` | `*bool` | yes |  |
@@ -652,6 +657,32 @@ _(no fields)_
 | `delta` | `string` |  |  |
 
 
+### `SandboxEscalationRequested`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` | yes |  |
+| `ref` | `string` | yes |  |
+| `escalationId` | `string` |  |  |
+| `mode` | `string` |  |  |
+| `tool` | `string` |  |  |
+| `kind` | `string` |  |  |
+| `deniedPath` | `string` |  |  |
+| `command` | `string` | yes |  |
+| `outputSoFar` | `string` | yes |  |
+| `partiallyRan` | `bool` | yes |  |
+
+
+### `SandboxEscalationResolveParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` | yes |  |
+| `ref` | `string` | yes |  |
+| `escalationId` | `string` |  |  |
+| `approve` | `bool` |  |  |
+
+
 ### `SerfSubagentPreviewParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -764,6 +795,16 @@ _(no fields)_
 | `ref` | `string` |  |  |
 | `modelProvider` | `string` |  |  |
 | `model` | `string` |  |  |
+
+
+### `ThreadNameChangedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `name` | `string` |  |  |
+| `source` | `string` | yes |  |
 
 
 ### `ThreadNameSetParams`

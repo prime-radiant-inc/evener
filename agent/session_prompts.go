@@ -48,7 +48,10 @@ func promptSectionDirExists(dir string) bool {
 }
 
 // buildPromptData assembles a promptData from session state for template rendering.
-func (s *Session) buildPromptData() promptData {
+// env is the ALREADY-RESOLVED execution environment (passed by renderSystemPrompt,
+// which runs under a held s.mu): it must not be re-fetched via s.currentEnv(), which
+// would re-lock the non-reentrant s.mu and deadlock.
+func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
 	agentName := s.cfg.AgentName
 	if agentName == "" {
 		agentName = defaultAgentName
@@ -68,6 +71,7 @@ func (s *Session) buildPromptData() promptData {
 		Today:                    s.envInfo.Today,
 		Model:                    s.profile.Model(),
 		KnowledgeCutoff:          s.envInfo.KnowledgeCutoff,
+		Sandbox:                  sandboxPromptLine(env),
 		GitModifiedFiles:         s.envInfo.GitModifiedFiles,
 		GitUntrackedFiles:        s.envInfo.GitUntrackedFiles,
 		GitRecentCommitTitles:    s.envInfo.GitRecentCommitTitles,
@@ -159,6 +163,23 @@ func (s *Session) canPromptDelegation() bool {
 	return true
 }
 
+// sandboxPromptLine renders the environment-section sandbox line for a sandboxed
+// env ("<mode> (network on|off) — fixed for this session"), so the model knows the
+// immutable box it runs under. Empty for an unsandboxed env so the line is omitted
+// entirely (byte-identical prompt to today). Takes the resolved env directly — the
+// prompt-render path holds s.mu, so it must not re-fetch via s.currentEnv().
+func sandboxPromptLine(env execenv.ExecutionEnvironment) string {
+	le, ok := env.(*execenv.LocalExecutionEnvironment)
+	if !ok || le.Sandbox == nil || !le.Sandbox.Enforced() {
+		return ""
+	}
+	netStr := "on"
+	if !le.Sandbox.Network {
+		netStr = "off"
+	}
+	return fmt.Sprintf("%s (network %s) — fixed for this session", le.Sandbox.Mode, netStr)
+}
+
 // renderSystemPrompt renders the system prompt using the template resolver.
 // See refreshSystemPromptCache for the env-locking contract.
 func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) string {
@@ -196,7 +217,7 @@ func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) string {
 		resolver.agent = defaultAgentName
 	}
 
-	data := s.buildPromptData()
+	data := s.buildPromptData(env)
 
 	templateName := "system"
 	if s.depth > 0 {

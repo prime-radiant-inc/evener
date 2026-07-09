@@ -11,9 +11,11 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/provider"
+	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/agent/skill"
 	taskpkg "primeradiant.com/serf/agent/task"
 )
@@ -95,6 +97,12 @@ type subagent struct {
 	closed          bool               // session torn down; record retained as terminal history
 	closeTimedOut   bool               // session-close wait exceeded its bound; close not confirmed
 	driving         bool               // a drive-down notification turn (§3) is in flight on this idle child
+	// ownsEnv is true when prepareSubagentRun built the child a FRESH execution env
+	// (a working-dir re-root and/or a per-delegate sandbox) rather than sharing the
+	// parent's. Such an env may own a sandbox scratch dir + file-tool fds that the
+	// parent's env cleanup does not reach, so the parent disposes it at child
+	// teardown. False for a child that shares the parent env (nothing to dispose).
+	ownsEnv bool
 }
 
 type preparedSubagentRun struct {
@@ -118,6 +126,7 @@ type preparedSubagentRun struct {
 	frozenSkillBodies  []string
 	workingDir         string
 	localEnvPolicy     string
+	sandboxSnapshot    *jobstore.SandboxSnapshot
 	isolation          string
 	resultSchema       map[string]any
 	explicitToolGrants []string
@@ -526,12 +535,46 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	}
 
 	subEnv := s.currentEnv()
+	var reqSandbox *sandbox.SandboxPolicy
+	if v, ok := ctx.Value(ctxDelegateSandboxPolicy).(*sandbox.SandboxPolicy); ok {
+		reqSandbox = v
+	}
 	if workingDir = strings.TrimSpace(workingDir); workingDir != "" {
-		if le, ok := subEnv.(*execenv.LocalExecutionEnvironment); ok {
-			subEnv = le.WithWorkingDirectory(workingDir)
-		} else {
+		le, ok := subEnv.(*execenv.LocalExecutionEnvironment)
+		if !ok {
 			return nil, errors.New("execution environment does not support working_dir override")
 		}
+		rerooted := le.WithWorkingDirectory(workingDir)
+		// Fail closed: if the sandbox policy cannot be re-anchored to the child's
+		// worktree lane, refuse the spawn rather than launch a child that would run
+		// with the parent's roots or none (a containment hole).
+		if err := rerooted.SandboxReRootError(); err != nil {
+			return nil, fmt.Errorf("sandbox cannot confine the subagent to %s: %w", workingDir, err)
+		}
+		subEnv = rerooted
+	}
+	// An explicit per-delegate sandbox (already floor-checked in createDelegate)
+	// OVERRIDES whatever box the working-dir re-root inherited from the parent:
+	// re-resolve the requested policy against the child's own working dir + the
+	// session's memoized host facts, then EnableSandbox so the child's box is a pure
+	// function of ITS OWN policy. The env is mutated in place, so clone the shared
+	// parent env first when there was no working-dir re-root to clone it for us.
+	if reqSandbox != nil {
+		le, ok := subEnv.(*execenv.LocalExecutionEnvironment)
+		if !ok {
+			return nil, errors.New("execution environment does not support a per-delegate sandbox")
+		}
+		if workingDir == "" {
+			le = le.WithWorkingDirectory(le.WorkingDirectory())
+		}
+		rp, err := sandbox.Resolve(*reqSandbox, s.sandboxHostFacts(), le.WorkingDirectory())
+		if err != nil {
+			return nil, fmt.Errorf("per-delegate sandbox: %w", err)
+		}
+		if err := le.EnableSandbox(&rp); err != nil {
+			return nil, fmt.Errorf("per-delegate sandbox: %w", err)
+		}
+		subEnv = le
 	}
 
 	if schema := subCfg.spawn.communicateOutputSchema; len(schema) > 0 {
@@ -547,6 +590,17 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	}
 	subSess, err := NewSession(childClient, subProfile, subEnv, subCfg)
 	if err != nil {
+		// A per-delegate sandbox EnableSandbox'd a FRESH env (re-rooted or cloned) and
+		// provisioned a scratch dir it owns; this failed spawn never hands subEnv to a
+		// session that would Cleanup it, so dispose that scratch here. Guarded on
+		// reqSandbox: only that path builds a fresh, sandbox-provisioned env — the
+		// reqSandbox==nil / workingDir=="" path may leave subEnv == the shared parent
+		// env, which must never be disposed here.
+		if reqSandbox != nil {
+			if le, ok := subEnv.(*execenv.LocalExecutionEnvironment); ok {
+				le.DisposeSandboxScratch()
+			}
+		}
 		return nil, err
 	}
 	if len(canonicalGrantTools) > 0 {
@@ -613,6 +667,9 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		agentType:    agentType,
 		createdAt:    now,
 		startedAt:    now,
+		// The child owns a fresh env iff we re-rooted to a lane and/or enforced a
+		// per-delegate sandbox; otherwise subEnv is the shared parent env.
+		ownsEnv: workingDir != "" || reqSandbox != nil,
 	}
 
 	// Drive-down wake (spec §3): a child's notify must reach its parent, which
@@ -656,6 +713,7 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		frozenSkillBodies:  append([]string(nil), activatedSkillBodies...),
 		workingDir:         subEnv.WorkingDirectory(),
 		localEnvPolicy:     localEnvPolicyName(subEnv),
+		sandboxSnapshot:    sandboxSnapshotFromEnv(subEnv),
 		isolation:          subCfg.spawn.isolation,
 		resultSchema:       cloneMap(subCfg.spawn.communicateOutputSchema),
 		explicitToolGrants: append([]string(nil), canonicalGrantTools...),

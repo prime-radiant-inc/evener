@@ -837,7 +837,6 @@ func TestWatchSendRestoreDropsDynamicallyNonResumableTerminalDelegate(t *testing
 		{status: jobstore.StatusFailed, reason: "failed"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(string(tc.status), func(t *testing.T) {
 			t.Parallel()
 			adapter := &fakeAdapter{
@@ -1052,7 +1051,6 @@ func TestWatchSendRestoreDropsHardFailureTargetsOnce(t *testing.T) {
 			wantText: "target_not_resumable",
 		},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			stateDir := t.TempDir()
@@ -2544,7 +2542,6 @@ func TestWatchSendTeardownRejectsInFlightFailedDeliveryDuringDroppedAppend(t *te
 			},
 		},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			jm := newTestJM(t)

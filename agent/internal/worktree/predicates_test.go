@@ -79,7 +79,7 @@ func TestMain(m *testing.M) {
 // "main" and returns its root path plus the initial commit's SHA.
 func initRepo(t *testing.T) (root, initialSHA string) {
 	t.Helper()
-	predicateRepoTemplate.Once.Do(func() {
+	predicateRepoTemplate.Do(func() {
 		predicateRepoTemplate.root, predicateRepoTemplate.sha, predicateRepoTemplate.err = buildPredicateRepoTemplate()
 	})
 	if predicateRepoTemplate.err != nil {

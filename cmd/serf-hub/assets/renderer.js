@@ -206,6 +206,10 @@
       // (USER_INPUT) — the same incremental path drives cold and live attach,
       // since both replay through handle().
       this.pendingAsk = null;
+      // M7: ids of sandbox escalations already surfaced in this session view, so the
+      // thread/read snapshot (surface-on-entry / reconnect) and the live
+      // SANDBOX_ESCALATION_REQUESTED notification never double-render the same card.
+      this.shownEscalationIds = new Set();
 
       this.conversation.innerHTML = "";
 
@@ -738,6 +742,9 @@
           for (const [kind, data] of window.SerfAppwire.eventsFromThread(thread)) {
             this.handleData(kind, data);
           }
+          // Surface any sandbox escalation blocked on this session (M7 surface-on-
+          // entry / reconnect), de-duped against live ones.
+          this.surfaceSnapshotEscalations(thread);
           this.appwireHydrated = true;
           // The stream is live again: a reconnect succeeded, so retire any
           // chrome reconnect banner and re-enable the composer.
@@ -839,6 +846,12 @@
       this.pendingTaskCalls.clear();
       this.pendingAskCalls.clear();
       this.pendingAsk = null;
+      // Clearing the DOM destroyed any rendered sandbox-escalation card, so the
+      // de-dupe set must reset too — otherwise a re-hydration after reconnect would
+      // suppress re-rendering a STILL-pending escalation and the card would vanish
+      // until a full reload. A settled escalation won't reappear (absent from the
+      // fresh snapshot); a still-pending one correctly re-renders.
+      this.shownEscalationIds.clear();
       this.currentMessageId = null;
       this.userTurnIndex = 0;
       this.entryIndex = 0;
@@ -881,6 +894,7 @@
           for (const [kind, data] of window.SerfAppwire.eventsFromThread(thread)) {
             this.handleData(kind, data);
           }
+          this.surfaceSnapshotEscalations(thread);
           this.appwireHydrated = true;
         })
         .catch(() => {});
@@ -1052,6 +1066,9 @@
           if (window.SerfAppwire) {
             window.SerfAppwire.tasks(this.sessionId).then(tasks => this.applyTasks(tasks)).catch(() => {});
           }
+          break;
+        case "SANDBOX_ESCALATION_REQUESTED":
+          this.appendSandboxEscalation(data);
           break;
         case "USER_INPUT":
           // A user message answers any pending blocking question; tear down the
@@ -3364,6 +3381,143 @@
       el.className = "banner " + kind;
       el.textContent = "[" + kind + "] " + text;
       this.conversation.appendChild(el);
+    },
+
+    // surfaceSnapshotEscalations renders any escalations carried on the thread/read
+    // snapshot (thread.serf.pendingEscalations) — the surface-on-entry / reconnect /
+    // other-client-raised path. De-dupe by id (in appendSandboxEscalation) keeps it
+    // from double-rendering one the live notification already showed.
+    surfaceSnapshotEscalations(thread) {
+      const pending = thread && thread.serf && thread.serf.pendingEscalations;
+      if (!Array.isArray(pending)) return;
+      for (const data of pending) {
+        this.appendSandboxEscalation(data);
+      }
+    },
+
+    // appendSandboxEscalation renders the M7 human-gated approval card for a single
+    // sandbox denial. It is deliberately styled and labelled as a HARNESS prompt —
+    // never a model message — so a human cannot be socially-engineered by model text
+    // into the Allow button: the model can neither emit nor influence this card. The
+    // tool-exec goroutine on the daemon is BLOCKED until Allow/Deny posts the resolve
+    // request; the card then settles in place (it is never a transcript turn and is
+    // never replayed). Approve re-runs the single invocation with the one path
+    // granted; deny returns the typed error to the model.
+    appendSandboxEscalation(data) {
+      const escalationId = data.escalationId || "";
+      // De-dupe: a card already shown live must not be re-rendered by the entry/
+      // reconnect snapshot (and vice versa).
+      if (escalationId) {
+        if (this.shownEscalationIds.has(escalationId)) return;
+        this.shownEscalationIds.add(escalationId);
+      }
+      this.endCheapCluster();
+      this.closeSubagentModule();
+      const isShell = data.kind === "shell";
+
+      const card = document.createElement("div");
+      card.className = "sandbox-escalation harness-prompt";
+      card.setAttribute("role", "group");
+      card.dataset.escalationId = escalationId;
+
+      const label = document.createElement("div");
+      label.className = "sandbox-escalation-label";
+      label.textContent = "Sandbox approval — requested by serf, not the agent";
+      card.appendChild(label);
+
+      const body = document.createElement("div");
+      body.className = "sandbox-escalation-body";
+      const tool = data.tool || "a tool";
+      const path = data.deniedPath || "";
+      body.textContent = "The sandbox blocked " + tool + " from accessing " + path +
+        " [--sandbox " + (data.mode || "") + "]. Allow this one action?";
+      card.appendChild(body);
+
+      if (isShell) {
+        // Shell escalation is not produced in v1 (see the M7 spec); the shape is
+        // kept for a future seccomp-notify design. When present, the command may
+        // have PARTIALLY executed, so approving re-runs it start-to-finish.
+        if (data.command) {
+          const cmd = document.createElement("pre");
+          cmd.className = "sandbox-escalation-command";
+          cmd.textContent = data.command;
+          card.appendChild(cmd);
+        }
+        if (data.outputSoFar) {
+          const out = document.createElement("pre");
+          out.className = "sandbox-escalation-output";
+          out.textContent = data.outputSoFar;
+          card.appendChild(out);
+        }
+        const caveat = document.createElement("div");
+        caveat.className = "sandbox-escalation-caveat";
+        caveat.textContent = "This command already partially ran; approving re-runs it start-to-finish.";
+        card.appendChild(caveat);
+      }
+
+      const actions = document.createElement("div");
+      actions.className = "sandbox-escalation-actions";
+      const settle = (verb, cls) => {
+        actions.remove();
+        const settled = document.createElement("div");
+        settled.className = "sandbox-escalation-settled" + (cls ? " " + cls : "");
+        settled.textContent = verb;
+        card.appendChild(settled);
+      };
+      const clearNote = () => {
+        const existing = card.querySelector(".sandbox-escalation-note");
+        if (existing) existing.remove();
+      };
+      // Settle the card on the resolve request's OUTCOME, not optimistically: only
+      // show the decision once the daemon has actually accepted it. Buttons are
+      // disabled while the request is in flight (no double-submit). A rejection is
+      // split by CAUSE, not merely by whether it carried a code (a hub-relayed
+      // "daemon unavailable" also carries a code): ONLY a genuine conflict
+      // (serfErrorInfo === "conflict" — already resolved elsewhere / not pending) is
+      // TERMINAL and settles to "expired". Everything else — a transport error OR a
+      // transient daemon-unavailable — leaves the escalation still pending (its
+      // tool-exec goroutine is still blocked), so the buttons re-enable for a retry.
+      const send = (approve, verb) => {
+        allow.disabled = true;
+        deny.disabled = true;
+        clearNote();
+        if (!(window.SerfAppwire && window.SerfAppwire.resolveSandboxEscalation)) {
+          settle(verb);
+          return;
+        }
+        window.SerfAppwire.resolveSandboxEscalation(this.sessionId, escalationId, approve)
+          .then(() => settle(verb))
+          .catch((err) => {
+            if (err && err.serfErrorInfo === "conflict") {
+              settle("Escalation expired (already resolved)", "sandbox-escalation-expired");
+            } else {
+              allow.disabled = false;
+              deny.disabled = false;
+              const note = document.createElement("div");
+              note.className = "sandbox-escalation-note";
+              note.textContent = "Couldn't reach the agent — check your connection and try again.";
+              card.insertBefore(note, actions);
+            }
+          });
+      };
+      const allow = document.createElement("button");
+      allow.type = "button";
+      allow.className = "sandbox-escalation-allow";
+      allow.textContent = "Allow once";
+      allow.addEventListener("click", () => send(true, "Allowed once"));
+      const deny = document.createElement("button");
+      deny.type = "button";
+      deny.className = "sandbox-escalation-deny";
+      deny.textContent = "Deny";
+      // Deny (or dismissing) must send approve:false — never silently drop, which
+      // would leave the daemon blocked forever.
+      deny.addEventListener("click", () => send(false, "Denied"));
+      actions.appendChild(allow);
+      actions.appendChild(deny);
+      card.appendChild(actions);
+
+      this.conversation.appendChild(card);
+      if (typeof this.scrollToBottomIfPinned === "function") this.scrollToBottomIfPinned();
     },
 
     // buildDiagnosticActions returns an array of action descriptors for the

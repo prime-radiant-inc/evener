@@ -54,6 +54,8 @@ type runCLIFlags struct {
 	cpuProfile                  *string
 	traceFile                   *string
 	systemPromptAppend          stringSliceFlag
+	sandbox                     *string
+	sandboxNet                  *string
 }
 
 func main() {
@@ -146,6 +148,8 @@ func main() {
 		noDefaultMarketplaces:       *flags.noDefaultMarketplaces,
 		systemPromptAsUser:          *flags.systemPromptAsUser,
 		openAIResponsesContinuation: *flags.openAIResponsesContinuation,
+		sandboxMode:                 *flags.sandbox,
+		sandboxNet:                  *flags.sandboxNet,
 		stdout:                      os.Stdout,
 		stderr:                      os.Stderr,
 		resume:                      *flags.resume,
@@ -196,6 +200,8 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	flags.cpuProfile = fs.String("cpu-profile", "", "write CPU profile to this `file` path")
 	flags.traceFile = fs.String("trace", "", "write execution trace to this `file` path")
 	fs.Var(&flags.systemPromptAppend, "system-prompt-append", "path to append to system prompt `file` (repeatable)")
+	flags.sandbox = fs.String("sandbox", "off", "sandbox `mode`: off (default), read-only, workspace-write, or restricted")
+	flags.sandboxNet = fs.String("sandbox-net", "on", "sandbox network egress `on|off` (default on; only applies with a non-off --sandbox mode)")
 
 	fs.Usage = func() {
 		printRunUsage(stderr, fs)

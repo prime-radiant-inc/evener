@@ -242,7 +242,6 @@ func TestProviderInstance_CrossInstanceSwitch_PreservesOverrideAndIdentity(t *te
 	var communicateDef *llm.ToolDefinition
 	for _, td := range sess.profile.ToolDefinitions() {
 		if td.Name == "communicate" {
-			td := td
 			communicateDef = &td
 			break
 		}

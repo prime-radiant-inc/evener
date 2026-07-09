@@ -136,6 +136,57 @@ func TestApplyEdit_FastCheapModel(t *testing.T) {
 	}
 }
 
+// TestPanel_SurfacesResolveDiagnostics: a resolve's non-fatal diagnostics (e.g.
+// sandbox_net with no mode) reach the panel status and its rendered view, instead
+// of hiding in the raw resolved-config JSON.
+func TestPanel_SurfacesResolveDiagnostics(t *testing.T) {
+	resolved := appwire.LaunchConfigResolved{
+		Diagnostics: []appwire.LaunchConfigDiagnostic{
+			{Layer: "global", Field: "sandbox_net", Message: "sandbox_net has no effect without a non-off sandbox mode"},
+		},
+	}
+	var p LaunchSettingsPanel
+	updated, _ := p.Update(LaunchResolveResultMsg{Resolved: resolved})
+	panel := updated.(LaunchSettingsPanel)
+	if !strings.Contains(panel.statusMessage, "sandbox_net has no effect") {
+		t.Errorf("resolve diagnostics must surface in the status, got %q", panel.statusMessage)
+	}
+	if !strings.Contains(panel.View(), "sandbox_net has no effect") {
+		t.Errorf("panel view must render the diagnostic warning, got:\n%s", panel.View())
+	}
+
+	// A clean resolve leaves no warning.
+	clean, _ := p.Update(LaunchResolveResultMsg{Resolved: appwire.LaunchConfigResolved{}})
+	if got := clean.(LaunchSettingsPanel).statusMessage; got != "" {
+		t.Errorf("a clean resolve must leave no warning, got %q", got)
+	}
+
+	// Trusting an in-repo file is when a repo-layer diagnostic first takes effect —
+	// it must surface on the trust path too, alongside "trust recorded".
+	trusted, _ := p.Update(LaunchTrustResultMsg{Resolved: resolved})
+	tp := trusted.(LaunchSettingsPanel)
+	if !strings.Contains(tp.statusMessage, "trust recorded") || !strings.Contains(tp.statusMessage, "sandbox_net has no effect") {
+		t.Errorf("trust path must surface diagnostics alongside the confirmation, got %q", tp.statusMessage)
+	}
+}
+
+// TestApplyEdit_SandboxValidatesMode: the sandbox field is a select, not blind
+// free text. A valid mode is accepted, blank clears (inherit), and a typo is
+// rejected rather than silently written and only failing at spawn.
+func TestApplyEdit_SandboxValidatesMode(t *testing.T) {
+	got, err := applyEdit(appwire.LaunchConfigLayer{}, "sandbox", " restricted ")
+	if err != nil || got.Sandbox != "restricted" {
+		t.Fatalf("valid mode: got %q, %v", got.Sandbox, err)
+	}
+	got, err = applyEdit(appwire.LaunchConfigLayer{Sandbox: "off"}, "sandbox", "")
+	if err != nil || got.Sandbox != "" {
+		t.Fatalf("blank must clear to inherit: got %q, %v", got.Sandbox, err)
+	}
+	if _, err := applyEdit(appwire.LaunchConfigLayer{}, "sandbox", "restrcted"); err == nil {
+		t.Error("a typo'd sandbox mode must be rejected")
+	}
+}
+
 func TestLayerRows_ListFieldsExposeEditableValues(t *testing.T) {
 	rows := layerRows(appwire.LaunchConfigLayer{SkillsDirs: []string{"/one", "/two"}})
 	for _, row := range rows {

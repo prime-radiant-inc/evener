@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -21,6 +20,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/spf13/afero"
+	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/envvars"
 )
 
@@ -64,6 +64,109 @@ type LocalExecutionEnvironment struct {
 	gitRoots    *gitRootCache // active working-tree root per cwd (GitRootOrEmpty)
 	mainRoots   *gitRootCache // stable main repo root per cwd (ResolveMainRepoRoot)
 	fs          afero.Fs      // filesystem backing ReadFile/WriteFile/EditFile; defaults to the OS
+
+	// Sandbox is the resolved sandbox policy for this environment, or nil for the
+	// default (off) — exactly today's behavior. M2 consults it in the FILE tools
+	// (read/write/edit/apply_patch/glob/grep/list_dir) via e.sandbox(); the shell
+	// spawn layer (execPreparedCommand/StreamCommand) reads Wrapper for kernel
+	// confinement. It rides WithWorkingDirectory like EnvPolicy so a re-rooted
+	// child (subagent worktree) inherits it.
+	Sandbox *sandbox.ResolvedPolicy
+
+	// Wrapper, when non-nil, kernel-confines every command this environment spawns
+	// (shell jobs, rg, and — threaded from here — stdio MCP servers and hook
+	// commands): execPreparedCommand and StreamCommand prepend its bwrap invocation
+	// to the argv and raise the sandbox env floor. Nil means no kernel confinement,
+	// so a non-sandboxed spawn is byte-identical to before. M3 attaches it only in
+	// tests/integration (the --sandbox flag stays gated off until M5); it rides
+	// WithWorkingDirectory alongside Sandbox.
+	Wrapper *sandbox.Wrapper
+
+	// sbMu guards the lazily-built sandboxFS. sbfs is the fd-anchored enforcement
+	// layer, built on first file-tool use from an ENFORCED Sandbox policy and cached
+	// for the environment's lifetime (its root fds are captured once so a later root
+	// swap cannot redirect resolution). It stays nil for off / a nil policy.
+	sbMu sync.Mutex
+	sbfs *sandboxFS
+
+	// sandboxReRootErr records a fail-closed re-root refusal from the
+	// WithWorkingDirectory that produced this env: when re-anchoring Sandbox/Wrapper
+	// to the new worktree failed (a mode+net the host cannot satisfy at that target),
+	// Sandbox and Wrapper are left nil and this holds the typed refusal so the caller
+	// (a delegate/subagent spawn, a worktree switch) can surface it rather than
+	// silently running the child unconfined. nil on every successful or off re-root.
+	sandboxReRootErr error
+
+	// ownedSessionTmp, when non-nil, is a per-session/per-lane scratch dir this env
+	// OWNS: Cleanup() disposes it at session/lane end. It is provisioned at sandbox
+	// construction (EnableSandbox) and deliberately NOT copied by WithWorkingDirectory
+	// — a re-rooted clone shares the wrapper's tmp path but must never dispose the
+	// owner's dir out from under it. nil for off and for re-rooted clones.
+	ownedSessionTmp *sandbox.SessionTmp
+
+	// sandboxGrant, when non-empty, is a single per-invocation granted path (M7
+	// escalation approve), threaded onto a short-lived clone by
+	// WithSandboxInvocationGrant. The clone's lazily-built sandboxFS widens
+	// root-containment for EXACTLY this one path; masking, git-protection, and
+	// symlink refusal are unaffected. It is never set on a durable env and never
+	// copied by WithWorkingDirectory, so the grant cannot outlive the one re-dispatch.
+	sandboxGrant string
+}
+
+// sandbox returns the environment's fd-anchored enforcement layer, or nil when
+// the environment is unsandboxed (a nil policy or off mode) — in which case every
+// file tool keeps its byte-identical afero/os path. The sandboxFS is built once
+// and cached; it is only ever constructed for an enforced policy.
+func (e *LocalExecutionEnvironment) sandbox() *sandboxFS {
+	if e.Sandbox == nil || !e.Sandbox.Enforced() {
+		return nil
+	}
+	e.sbMu.Lock()
+	defer e.sbMu.Unlock()
+	if e.sbfs == nil {
+		e.sbfs = newSandboxFS(e.Sandbox)
+		e.sbfs.grant = e.sandboxGrant
+	}
+	return e.sbfs
+}
+
+// WithSandboxInvocationGrant returns a short-lived clone of this env whose file-tool
+// enforcement layer additionally permits EXACTLY the one path — the M7 escalation
+// approve path re-dispatches a single denied tool call through it. The clone shares
+// this env's resolved policy, roots, and working directory unchanged; it only widens
+// root-containment for that one leaf (masking, git-protection, and symlink refusal
+// still apply). It is discarded after the one re-dispatch, so the grant cannot leak
+// to any later call. On an off / non-enforced env the grant is meaningless and the
+// env is returned unchanged. The clone never owns the session tmp, so it never
+// disposes it.
+func (e *LocalExecutionEnvironment) WithSandboxInvocationGrant(path string) ExecutionEnvironment {
+	if e.Sandbox == nil || !e.Sandbox.Enforced() || strings.TrimSpace(path) == "" {
+		return e
+	}
+	return &LocalExecutionEnvironment{
+		RootDir:      e.RootDir,
+		EnvPolicy:    e.EnvPolicy,
+		runningPIDs:  e.runningPIDs,
+		gitRoots:     e.gitRoots,
+		mainRoots:    e.mainRoots,
+		fs:           e.fs,
+		Sandbox:      e.Sandbox,
+		Wrapper:      e.Wrapper,
+		sandboxGrant: filepath.Clean(path),
+	}
+}
+
+// invalidateSandboxFS closes and drops the cached fd-anchored enforcement layer so
+// the next file tool rebuilds it from the current policy. It MUST run whenever
+// e.Sandbox is replaced (EnableSandbox, UseControlPolicy); a stale sbfs captured
+// the OLD policy's root fds and would keep enforcing the OLD roots.
+func (e *LocalExecutionEnvironment) invalidateSandboxFS() {
+	e.sbMu.Lock()
+	defer e.sbMu.Unlock()
+	if e.sbfs != nil {
+		e.sbfs.close()
+		e.sbfs = nil
+	}
 }
 
 // gitRootCache memoizes git-root lookups per working dir. A session resolves the
@@ -109,6 +212,99 @@ func (e *LocalExecutionEnvironment) SetFs(fs afero.Fs) *LocalExecutionEnvironmen
 	return e
 }
 
+// EnableSandbox provisions this env for a sandboxed session from an already-
+// resolved policy: it creates a fresh per-session tmp (NewSessionTmp) that the env
+// OWNS and disposes at Cleanup, attaches the policy, and — on the bwrap backend —
+// builds the kernel wrapper from the policy, the probed bwrap binary, and that
+// tmp. It is the single "provision at env construction, clean at session end"
+// wiring point the live flag path (M5) and M4's own tests call; the --sandbox flag
+// stays feature-gated, so production does not reach it yet.
+//
+// A nil or non-enforced (off) policy is a no-op beyond carrying the pointer: no
+// tmp is provisioned and no wrapper is built, so an off env stays byte-identical
+// to today. This live provisioning path builds only the bwrap kernel wrapper; an
+// enforced policy on any other backend (Seatbelt) would attach the file-tool layer
+// with NO kernel confinement — a half-enforced env whose spawned processes run
+// unconfined and whose enforcement line would overstate — so it FAILS CLOSED here
+// (the flag is live on Linux/bwrap; the Seatbelt wrapper + macOS validation are
+// M6's). On any failure the provisioned tmp is disposed and the env is left
+// unsandboxed so a half-wired sandbox never runs.
+func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy) error {
+	// EnableSandbox establishes the COMPLETE sandbox state, so it always resets any
+	// stale re-root error and, on the off path, any policy/wrapper a prior
+	// WithWorkingDirectory re-rooted onto this env — a delegate's box must be a pure
+	// function of ITS OWN policy, never a parent's leaked one. The policy is being
+	// replaced, so drop the cached fd layer, and dispose any tmp a prior call owned
+	// so a second EnableSandbox never leaks the first's dir.
+	e.sandboxReRootErr = nil
+	e.invalidateSandboxFS()
+	if e.ownedSessionTmp != nil {
+		_ = e.ownedSessionTmp.Cleanup()
+		e.ownedSessionTmp = nil
+	}
+	if policy == nil || !policy.Enforced() {
+		e.Sandbox = policy
+		e.Wrapper = nil
+		return nil
+	}
+	tmp, err := sandbox.NewSessionTmp("")
+	if err != nil {
+		// Leave the env unsandboxed: a half-wired sandbox must never run, and the
+		// prior policy/wrapper (torn down above) must not silently persist.
+		e.Sandbox = nil
+		e.Wrapper = nil
+		return err
+	}
+	// Provision the kernel wrapper for whichever backend resolved — bubblewrap on
+	// Linux, sandbox-exec (Seatbelt) on macOS. An enforced policy always resolves to
+	// a real backend; one with no usable backend binary fails closed (unconfined
+	// spawns would half-enforce and the enforcement line would overstate) rather
+	// than run half-wired.
+	binPath := policy.HostBinaryPath()
+	if binPath == "" {
+		_ = tmp.Cleanup()
+		e.Sandbox = nil
+		e.Wrapper = nil
+		return &sandbox.RefusalError{
+			Mode: policy.Mode, Net: policy.Network, RequiredBackend: policy.Backend.String(),
+			Reason: fmt.Sprintf("--sandbox %s: no %s backend binary is available to provision kernel confinement", policy.Mode, policy.Backend),
+		}
+	}
+	w, werr := sandbox.NewWrapper(*policy, binPath, tmp.Dir)
+	if werr != nil {
+		_ = tmp.Cleanup()
+		e.Sandbox = nil
+		e.Wrapper = nil
+		return werr
+	}
+	e.Wrapper = w
+	e.Sandbox = policy
+	e.ownedSessionTmp = tmp
+	return nil
+}
+
+// DisposeSandboxScratch releases the per-session/per-lane scratch dir and cached
+// file-tool fds this env provisioned via EnableSandbox, WITHOUT the process
+// teardown Cleanup performs. A spawn path that EnableSandbox'd a FRESH env (a
+// re-rooted or cloned one) and then failed before a session adopts it calls this so
+// the scratch dir is not leaked — the failed env is never handed to a session that
+// would Cleanup it. It must run only on such a freshly-provisioned env, never on the
+// shared parent env, whose live children's caches point into ITS scratch dir; a
+// re-rooted clone never owns the parent's tmp (WithWorkingDirectory does not copy
+// it), so disposing a clone's OWN scratch cannot touch the parent's.
+func (e *LocalExecutionEnvironment) DisposeSandboxScratch() {
+	e.sbMu.Lock()
+	if e.sbfs != nil {
+		e.sbfs.close()
+		e.sbfs = nil
+	}
+	e.sbMu.Unlock()
+	if tmp := e.ownedSessionTmp; tmp != nil {
+		e.ownedSessionTmp = nil
+		_ = tmp.Cleanup()
+	}
+}
+
 // filesystem returns the environment's filesystem, defaulting to the OS
 // filesystem when one was never injected (e.g. a zero-value environment).
 func (e *LocalExecutionEnvironment) filesystem() afero.Fs {
@@ -120,8 +316,19 @@ func (e *LocalExecutionEnvironment) filesystem() afero.Fs {
 
 // WithWorkingDirectory returns a new LocalExecutionEnvironment that uses the
 // given directory as its root but shares PID tracking with the parent.
+//
+// The sandbox policy and kernel wrapper are RE-ROOTED to dir, not copied: their
+// resolved roots are anchored at this env's worktree, so a plain pointer-copy to a
+// child at a different worktree (a delegate isolation lane) would confine the
+// child to the PARENT's lane — a containment hole. ReRoot re-runs the root+gitdir
+// resolution against dir from the policy's retained inputs, so the child is
+// confined to ITS worktree with fresh gitdir resolution. A nil policy re-roots to
+// nil (off stays byte-identical to before). A re-root the host cannot satisfy is
+// captured in sandboxReRootErr (Sandbox/Wrapper left nil) and surfaced via
+// SandboxReRootError() — the infallible signature is preserved for the wide caller
+// set. The owned session tmp is NOT copied: only the constructing env disposes it.
 func (e *LocalExecutionEnvironment) WithWorkingDirectory(dir string) *LocalExecutionEnvironment {
-	return &LocalExecutionEnvironment{
+	child := &LocalExecutionEnvironment{
 		RootDir:     dir,
 		EnvPolicy:   e.EnvPolicy,
 		runningPIDs: e.runningPIDs,
@@ -129,6 +336,66 @@ func (e *LocalExecutionEnvironment) WithWorkingDirectory(dir string) *LocalExecu
 		mainRoots:   &gitRootCache{m: map[string]string{}},
 		fs:          e.fs,
 	}
+	if e.Sandbox != nil {
+		if rerooted, err := e.Sandbox.ReRoot(dir); err != nil {
+			child.sandboxReRootErr = err
+		} else {
+			child.Sandbox = rerooted
+		}
+	}
+	if e.Wrapper != nil {
+		if rerooted, err := e.Wrapper.ReRoot(dir); err != nil {
+			child.sandboxReRootErr = err
+		} else {
+			child.Wrapper = rerooted
+		}
+	}
+	// Fail closed as a UNIT: if either re-root failed, nil BOTH so the child is
+	// never left half-confined (a re-rooted Sandbox alongside a nil Wrapper, or the
+	// reverse) — the sticky error is what the caller surfaces. Structurally enforced
+	// here rather than relying on both re-roots failing identically.
+	if child.sandboxReRootErr != nil {
+		child.Sandbox = nil
+		child.Wrapper = nil
+	}
+	return child
+}
+
+// SandboxReRootError returns the fail-closed refusal from the WithWorkingDirectory
+// that built this env, or nil when the re-root succeeded (or the env is off). A
+// delegate/subagent spawn and a managed-worktree switch check it so a policy the
+// host cannot re-anchor to the target worktree surfaces as an error rather than a
+// silently unconfined child.
+func (e *LocalExecutionEnvironment) SandboxReRootError() error { return e.sandboxReRootErr }
+
+// UseControlPolicy replaces this env's sandbox policy (and kernel wrapper) with the
+// manage_worktree CONTROL variant anchored at mainRepoRoot — the main repo +
+// worktree registry writable, .git/config and hooks write-denied — so a worktree
+// lifecycle op (create/switch/remove/lock) manages the registry without carrying
+// the current worktree's tool policy. It is meant to run on an env freshly
+// produced by WithWorkingDirectory(mainRepoRoot): the re-root establishes the base,
+// this narrows it to the control grants. A nil policy (off) is a no-op; a control
+// policy the host cannot satisfy is returned as an error so the lifecycle op is
+// refused (fail closed) rather than run with the wrong scope.
+func (e *LocalExecutionEnvironment) UseControlPolicy(mainRepoRoot string) error {
+	if e.Sandbox == nil {
+		return nil
+	}
+	ctrl, err := e.Sandbox.ControlPolicy(mainRepoRoot)
+	if err != nil {
+		return err
+	}
+	e.Sandbox = ctrl
+	// The policy was replaced, so drop the cached fd layer built from the old one.
+	e.invalidateSandboxFS()
+	if e.Wrapper != nil && ctrl != nil {
+		w, werr := e.Wrapper.WithPolicy(*ctrl)
+		if werr != nil {
+			return werr
+		}
+		e.Wrapper = w
+	}
+	return nil
 }
 
 // Initialize prepares the environment for use.
@@ -158,6 +425,27 @@ var terminateGrace = 2 * time.Second
 // group, waiting two seconds for graceful shutdown, then sending SIGKILL to
 // every tracked process group (a no-op for those that already exited).
 func (e *LocalExecutionEnvironment) Cleanup() {
+	// Release any cached sandbox root fds captured by the file-tool enforcement
+	// layer. Independent of the process teardown below.
+	e.sbMu.Lock()
+	if e.sbfs != nil {
+		e.sbfs.close()
+		e.sbfs = nil
+	}
+	e.sbMu.Unlock()
+
+	// Dispose the per-session/per-lane scratch dir this env owns (provisioned by
+	// EnableSandbox) only AFTER the SIGTERM/grace/SIGKILL sequence below: the tracked
+	// children's TMPDIR/GOCACHE/npm/cargo caches (via ApplyEnvFloor) point into this
+	// dir, so removing it before a graceful shutdown would pull it out from under
+	// them. defer runs last on every return path, including the no-children early
+	// return, so the dir is never leaked. Re-rooted clones never own one, so a
+	// clone's Cleanup never removes the owner's tmp.
+	if tmp := e.ownedSessionTmp; tmp != nil {
+		e.ownedSessionTmp = nil
+		defer func() { _ = tmp.Cleanup() }()
+	}
+
 	// Collect running PIDs and send SIGTERM.
 	var pids []int
 	e.runningPIDs.Range(func(key, _ any) bool {
@@ -242,7 +530,16 @@ func resolveOSVersion() string {
 // normalized to LF.
 func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limitLines *int) (string, error) {
 	abs := e.resolve(path)
-	b, err := afero.ReadFile(e.filesystem(), abs)
+	var b []byte
+	var err error
+	if sfs := e.sandbox(); sfs != nil {
+		// Sandboxed: race-safe fd read (symlink-refusing, root/denylist-checked).
+		// The image/PDF/binary/line-numbering contract below is applied identically
+		// to the returned bytes, so the output is unchanged from the off path.
+		b, err = sfs.readFile("read_file", abs)
+	} else {
+		b, err = afero.ReadFile(e.filesystem(), abs)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -289,6 +586,15 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 // directories. The path must resolve to a location under RootDir. It returns a
 // human-readable summary of the bytes written.
 func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (string, error) {
+	if sfs := e.sandbox(); sfs != nil {
+		// Sandboxed: atomic temp+renameat beneath a writable-root fd (creating any
+		// missing parents beneath the same root); read-only mode / out-of-root /
+		// masked / git-protected targets return a typed denial.
+		if err := sfs.writeFile("write_file", e.resolve(path), []byte(content), 0o644); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
+	}
 	abs, err := e.resolveWrite(path)
 	if err != nil {
 		return "", err
@@ -308,11 +614,26 @@ func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (stri
 // replaceAll is true, oldString must match exactly once. It returns a summary
 // of the number of replacements made.
 func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newString string, replaceAll bool) (string, error) {
-	abs, err := e.resolveWrite(path)
-	if err != nil {
-		return "", err
+	sfs := e.sandbox()
+	var abs string
+	var b []byte
+	var err error
+	if sfs != nil {
+		abs = e.resolve(path)
+		// Deny an edit in a non-writable location up front (read-only mode, outside
+		// the writable roots, or a masked/git-protected surface) before reading, so
+		// the model gets a clean write denial rather than a match/not-found result.
+		if derr := sfs.checkWritable("edit_file", abs); derr != nil {
+			return "", derr
+		}
+		b, err = sfs.readFile("edit_file", abs)
+	} else {
+		abs, err = e.resolveWrite(path)
+		if err != nil {
+			return "", err
+		}
+		b, err = afero.ReadFile(e.filesystem(), abs)
 	}
-	b, err := afero.ReadFile(e.filesystem(), abs)
 	if err != nil {
 		return "", err
 	}
@@ -340,8 +661,12 @@ func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newS
 		s = strings.Replace(s, oldString, newString, 1)
 		n = 1
 	}
-	if err := afero.WriteFile(e.filesystem(), abs, []byte(s), 0o644); err != nil {
-		return "", err
+	if sfs != nil {
+		if werr := sfs.writeFile("edit_file", abs, []byte(s), 0o644); werr != nil {
+			return "", werr
+		}
+	} else if werr := afero.WriteFile(e.filesystem(), abs, []byte(s), 0o644); werr != nil {
+		return "", werr
 	}
 	plural := "s"
 	if n == 1 {
@@ -490,6 +815,9 @@ func detectDocumentFormat(path string, data []byte) string {
 // FileExists reports whether a file or directory exists at path (resolved
 // relative to RootDir).
 func (e *LocalExecutionEnvironment) FileExists(path string) bool {
+	if sfs := e.sandbox(); sfs != nil {
+		return sfs.exists("file_exists", e.resolve(path))
+	}
 	_, err := os.Stat(e.resolve(path))
 	return err == nil
 }
@@ -501,6 +829,11 @@ func (e *LocalExecutionEnvironment) FileExists(path string) bool {
 func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]DirEntry, error) {
 	if depth <= 0 {
 		depth = 1
+	}
+	if sfs := e.sandbox(); sfs != nil {
+		// Sandboxed: fd-anchored recursive walk (each subdir re-opened beneath its
+		// parent fd with O_NOFOLLOW; masked entries skipped; symlinks not followed).
+		return sfs.listDir("list_dir", e.resolve(path), depth)
 	}
 	root := e.resolve(path)
 
@@ -558,6 +891,11 @@ func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string) ([]str
 	if !filepath.IsAbs(base) {
 		base = filepath.Join(e.RootDir, base)
 	}
+	if sfs := e.sandbox(); sfs != nil {
+		// Sandboxed: the base is policy-checked and the walk refuses symlink
+		// traversal (no out-of-root match) and drops masked matches.
+		return sfs.glob("glob", base, pattern)
+	}
 	matches, err := doublestar.Glob(os.DirFS(base), pattern)
 	if err != nil {
 		return nil, err
@@ -566,17 +904,7 @@ func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string) ([]str
 	for _, m := range matches {
 		abs = append(abs, filepath.Join(base, m))
 	}
-	sort.SliceStable(abs, func(i, j int) bool {
-		fi, _ := os.Stat(abs[i])
-		fj, _ := os.Stat(abs[j])
-		if fi == nil || fj == nil {
-			return abs[i] < abs[j]
-		}
-		if fi.ModTime() != fj.ModTime() {
-			return fi.ModTime().After(fj.ModTime())
-		}
-		return abs[i] < abs[j]
-	})
+	sortPathsByMtimeDesc(abs)
 	return abs, nil
 }
 
@@ -625,12 +953,24 @@ func buildRipgrepArgs(outputMode string, caseInsensitive bool, globFilter, patte
 }
 
 func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
+	dir := resolveGrepDir(path, e.RootDir)
+
+	if sfs := e.sandbox(); sfs != nil {
+		// Sandboxed sessions always use the denylist-aware, symlink-refusing native
+		// walk, EVEN when ripgrep is present. The rg subprocess is still UNCONFINED
+		// in M2 — only its base is policy-checked, so it would read masked/denylisted
+		// descendants under an allowed base (e.g. ~/.ssh when the base is $HOME in
+		// read-only). Its kernel wrapping is M3 defense-in-depth, not something to
+		// rely on here: correctness over speed for a sandboxed session. grepNative
+		// policy-checks the base itself and skips masked subtrees.
+		return sfs.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults, outputMode)
+	}
+
 	rg, err := execLookPath("rg")
 	if err != nil {
 		// Fallback to native Go regex search when ripgrep is absent
-		return e.grepNative(pattern, resolveGrepDir(path, e.RootDir), globFilter, caseInsensitive, maxResults, outputMode)
+		return e.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults, outputMode)
 	}
-	dir := resolveGrepDir(path, e.RootDir)
 
 	args := buildRipgrepArgs(outputMode, caseInsensitive, globFilter, pattern, dir)
 
@@ -655,23 +995,10 @@ func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter
 }
 
 func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
-	flags := ""
-	if caseInsensitive {
-		flags = "(?i)"
-	}
-	re, err := regexp.Compile(flags + pattern)
+	a, err := newGrepAccum(pattern, caseInsensitive, maxResults, outputMode)
 	if err != nil {
-		return "", fmt.Errorf("invalid regex: %w", err)
+		return "", err
 	}
-
-	if maxResults <= 0 {
-		maxResults = 100
-	}
-
-	var results []string
-	fileCounts := map[string]int{}     // for "count" mode
-	filesSeen := map[string]struct{}{} // for "files_with_matches" mode
-	totalResults := 0
 
 	err = filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -702,48 +1029,15 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 			return nil
 		}
 		relPath, _ := filepath.Rel(path, p)
-		lines := strings.Split(string(data), "\n")
-		for i, line := range lines {
-			if re.MatchString(line) {
-				switch outputMode {
-				case "files_with_matches":
-					if _, seen := filesSeen[relPath]; !seen {
-						filesSeen[relPath] = struct{}{}
-						results = append(results, relPath)
-						totalResults++
-						if totalResults >= maxResults {
-							return filepath.SkipAll
-						}
-					}
-					// Once we've recorded this file, skip to next file
-					return nil
-				case "count":
-					fileCounts[relPath]++
-				default: // "content" or ""
-					results = append(results, fmt.Sprintf("%s:%d:%s", relPath, i+1, line))
-					totalResults++
-					if totalResults >= maxResults {
-						return filepath.SkipAll
-					}
-				}
-			}
+		if a.feed(relPath, data) {
+			return filepath.SkipAll
 		}
 		return nil
 	})
 	if err != nil {
 		return "", err
 	}
-
-	if outputMode == "count" {
-		// Build sorted output from fileCounts
-		var countResults []string
-		for file, cnt := range fileCounts {
-			countResults = append(countResults, fmt.Sprintf("%s:%d", file, cnt))
-		}
-		sort.Strings(countResults)
-		return strings.Join(countResults, "\n"), nil
-	}
-	return strings.Join(results, "\n"), nil
+	return a.finish(), nil
 }
 
 // ExecCommand runs command through the platform shell in its own process group,
@@ -791,6 +1085,7 @@ func (e *LocalExecutionEnvironment) execPreparedCommand(ctx context.Context, cmd
 			cmd.Err = nil
 		}
 	}
+	e.wrapForSandbox(cmd, dir)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -893,6 +1188,7 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 	cmd.Env = injectLocalVenvPath(cmd.Env, []string{dir, e.RootDir})
 	cmd.Stdout = out
 	cmd.Stderr = out
+	e.wrapForSandbox(cmd, dir)
 
 	if err := cmd.Start(); err != nil {
 		return nil, err
@@ -1118,6 +1414,27 @@ func shellCommand(command string) *exec.Cmd {
 	return exec.Command(shell, "-c", command) //nolint:noctx // lifecycle managed by ExecCommand's process-group kill
 }
 
+// KernelWrapper returns the sandbox kernel wrapper for this environment, or nil
+// when the session is not sandboxed. Spawn sites that do not flow through this
+// environment (the stdio MCP manager, the hook runner) read it to confine their
+// own child processes under the same policy.
+func (e *LocalExecutionEnvironment) KernelWrapper() *sandbox.Wrapper { return e.Wrapper }
+
+// wrapForSandbox applies kernel confinement to cmd when this environment is
+// sandboxed and always empties ExtraFiles so a spawned process inherits no serf
+// fds beyond stdio — not the live LLM-API connection, not a credential fd, not an
+// agent socket. dir is the resolved working directory, used as the sandbox chdir.
+// When Wrapper is nil it does nothing beyond the (already-default) fd hygiene, so
+// a non-sandboxed spawn stays byte-identical to before.
+func (e *LocalExecutionEnvironment) wrapForSandbox(cmd *exec.Cmd, dir string) {
+	cmd.ExtraFiles = nil
+	if e.Wrapper == nil {
+		return
+	}
+	cmd.Env = sandbox.ApplyEnvFloor(cmd.Env, e.Wrapper.Policy(), e.Wrapper.SessionTmp())
+	e.Wrapper.Confine(cmd, dir)
+}
+
 func (e *LocalExecutionEnvironment) resolve(path string) string {
 	p := strings.TrimSpace(path)
 	if p == "" {
@@ -1242,10 +1559,7 @@ func filteredEnvWithPolicy(policy EnvVarPolicy, extra map[string]string) []strin
 }
 
 func filteredEnv(extra map[string]string) []string {
-	deny := func(k string) bool {
-		uk := strings.ToUpper(k)
-		return strings.Contains(uk, "API_KEY") || strings.Contains(uk, "SECRET") || strings.Contains(uk, "TOKEN") || strings.Contains(uk, "PASSWORD") || strings.Contains(uk, "CREDENTIAL")
-	}
+	deny := sandbox.IsSecretEnvName
 	out := []string{}
 	for _, kv := range os.Environ() {
 		k, _, ok := strings.Cut(kv, "=")

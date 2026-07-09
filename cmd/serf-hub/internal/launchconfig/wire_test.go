@@ -140,6 +140,35 @@ func TestWire_SystemPromptAndDebugFieldsRoundTrip(t *testing.T) {
 	}
 }
 
+// TestWire_SandboxRoundTrips: Sandbox (plain string) and SandboxNet (tri-state
+// *bool) survive FromWire∘ToWire for all three SandboxNet states — nil (unset),
+// explicit false, and explicit true must stay distinct across the wire.
+func TestWire_SandboxRoundTrips(t *testing.T) {
+	for _, net := range []*bool{nil, ptrBool(false), ptrBool(true)} {
+		in := Layer{Sandbox: "restricted", SandboxNet: net}
+		got := FromWire(ToWire(in))
+		if got.Sandbox != "restricted" {
+			t.Errorf("Sandbox round trip = %q, want restricted", got.Sandbox)
+		}
+		if !boolPtrEq(got.SandboxNet, net) {
+			t.Errorf("SandboxNet round trip = %v, want %v", got.SandboxNet, net)
+		}
+	}
+
+	// An unset sandbox stays empty/nil (not a silent default).
+	got := FromWire(ToWire(Layer{}))
+	if got.Sandbox != "" || got.SandboxNet != nil {
+		t.Errorf("unset sandbox round trip = %q/%v, want empty/nil", got.Sandbox, got.SandboxNet)
+	}
+}
+
+func boolPtrEq(a, b *bool) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
 func TestWireOmitsUnsetModelFallbacks(t *testing.T) {
 	raw, err := json.Marshal(appwire.LaunchConfigLayer{})
 	if err != nil {

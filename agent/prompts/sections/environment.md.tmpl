@@ -5,4 +5,7 @@ OS version: {{ .OSVersion }}
 Today's date: {{ .Today }}
 Model: {{ .Model }}
 Knowledge cutoff: {{ .KnowledgeCutoff }}
+{{- if .Sandbox }}
+Sandbox: {{ .Sandbox }}
+{{- end }}
 </environment>

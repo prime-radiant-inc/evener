@@ -2073,6 +2073,10 @@ func (s *relayLifecycleSource) SteerTurn(context.Context, appwire.TurnSteerParam
 	return appwire.Unavailable("relay lifecycle source does not steer turns")
 }
 
+func (s *relayLifecycleSource) ResolveSandboxEscalation(context.Context, appwire.SandboxEscalationResolveParams) error {
+	return appwire.Unavailable("relay lifecycle source does not resolve escalations")
+}
+
 func (s *relayLifecycleSource) InterruptTurn(context.Context, appwire.TurnInterruptParams) error {
 	return appwire.Unavailable("relay lifecycle source does not interrupt turns")
 }
@@ -2962,9 +2966,7 @@ if [ "$1" = "launch-check" ]; then
 fi
 exit 2
 `
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeFakeSerf(t, bin, script)
 
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		RunDir:  t.TempDir(),

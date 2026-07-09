@@ -25,6 +25,7 @@ import (
 	"primeradiant.com/serf/agent/mcpconfig"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provider"
+	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/agent/task"
@@ -327,6 +328,16 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	if env == nil {
 		return nil, errors.New("execution environment is nil")
+	}
+	// Engage enforcement for the RESUMED session from its PERSISTED mode. The flag
+	// layer governs only a fresh session; on resume the persisted request is
+	// authoritative (immutable across restart) and is RE-RESOLVED against
+	// freshly-probed host facts against the restored cwd — so a host that can no
+	// longer enforce the mode fails closed here (a *sandbox.RefusalError) rather
+	// than resuming unconfined, and config drift can never widen an old session's
+	// box. An off/empty mode skips the probe and restores byte-identically.
+	if err := provisionRestoredSandbox(cfg, env); err != nil {
+		return nil, err
 	}
 	if err := env.Initialize(); err != nil {
 		return nil, fmt.Errorf("env initialize: %w", err)
@@ -811,6 +822,20 @@ func (s *Session) applyAgentRolePromptOverride() {
 	}
 }
 
+// sandboxWrapper returns the session's kernel sandbox wrapper when its execution
+// environment is sandboxed, else nil. The stdio MCP manager and the hook runner
+// bypass execenv when they spawn, so they read the wrapper here to confine their
+// own children under the same session policy. Nil (the non-sandboxed case, and
+// every session until the flag goes live in M5) leaves those spawns unconfined.
+func (s *Session) sandboxWrapper() *sandbox.Wrapper {
+	if p, ok := s.env.(interface {
+		KernelWrapper() *sandbox.Wrapper
+	}); ok {
+		return p.KernelWrapper()
+	}
+	return nil
+}
+
 // initPlugins loads configured plugin directories, merging their skills,
 // agents, and hooks into the session. Fires SessionStart hooks after setup when requested.
 func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessionStartHooks bool) error {
@@ -823,6 +848,7 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 	s.plugins = plugins
 
 	runner := hooks.NewRunner(s.client, s.profile.Model())
+	runner.SetSandboxWrapper(s.sandboxWrapper())
 	allAgents := map[string]plugin.Agent{}
 
 	for _, p := range plugins {
@@ -1359,7 +1385,7 @@ func (s *Session) initMCP() error {
 	// A server that fails to connect or register is not fatal: fold its outcome
 	// into a pending warning and keep going. A session with zero healthy MCP
 	// servers still constructs successfully.
-	mgr, connectOutcomes := mcp.NewManager(ctx, configs, nil)
+	mgr, connectOutcomes := mcp.NewManager(ctx, configs, nil, mcp.WithSandboxWrapper(s.sandboxWrapper()))
 	mgr.OnReconnect = func(name string) {
 		s.emitDiagnosticWarning(reconnectRecoveryWarning(name))
 	}

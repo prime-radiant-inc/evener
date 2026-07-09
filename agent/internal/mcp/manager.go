@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/mcpconfig"
+	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/llm"
 )
 
@@ -133,9 +134,14 @@ func failedConn(cfg mcpconfig.ServerConfig, dial func(context.Context) (mcpsdk.T
 // config order regardless of which server's connect finishes first — no
 // mutex is needed on conns itself, since every index has exactly one writer
 // and mgr.conns is only read after wg.Wait() establishes happens-before.
-func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, dials []func(context.Context) (mcpsdk.Transport, error)) (*Manager, []ServerOutcome) {
+func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, dials []func(context.Context) (mcpsdk.Transport, error), opts ...Option) (*Manager, []ServerOutcome) {
 	if len(configs) == 0 {
 		return nil, nil
+	}
+
+	var o managerOptions
+	for _, apply := range opts {
+		apply(&o)
 	}
 
 	client := mcpsdk.NewClient(&mcpsdk.Implementation{
@@ -147,7 +153,7 @@ func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, dials []f
 	var wg sync.WaitGroup
 	wg.Add(len(configs))
 	for i, cfg := range configs {
-		dial := productionDial(cfg)
+		dial := productionDial(cfg, o.wrapper)
 		if dials != nil && i < len(dials) {
 			dial = dials[i]
 		}
@@ -176,8 +182,8 @@ func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, dials []f
 // (see TestReconnect_FailedReconnect_BackoffSuppressesImmediateRetry).
 // Production code always calls NewManager, whose conns keep the nil now →
 // time.Now() default.
-func NewManagerWithClock(ctx context.Context, configs []mcpconfig.ServerConfig, dials []func(context.Context) (mcpsdk.Transport, error), now func() time.Time) (*Manager, []ServerOutcome) {
-	mgr, outcomes := NewManager(ctx, configs, dials)
+func NewManagerWithClock(ctx context.Context, configs []mcpconfig.ServerConfig, dials []func(context.Context) (mcpsdk.Transport, error), now func() time.Time, opts ...Option) (*Manager, []ServerOutcome) {
+	mgr, outcomes := NewManager(ctx, configs, dials, opts...)
 	if mgr == nil {
 		return nil, outcomes
 	}
@@ -238,13 +244,69 @@ func connectOne(ctx context.Context, client *mcpsdk.Client, cfg mcpconfig.Server
 	}
 }
 
+// Option configures NewManager. It is the non-breaking seam for threading a
+// sandbox kernel wrapper into the stdio-transport spawn without disturbing the
+// manager's existing callers.
+type Option func(*managerOptions)
+
+type managerOptions struct {
+	wrapper *sandbox.Wrapper
+}
+
+// WithSandboxWrapper confines every stdio MCP server this manager spawns to the
+// session's sandbox policy (kernel wrap + env floor + fd hygiene). A nil wrapper
+// is a no-op, so a non-sandboxed session behaves exactly as before.
+func WithSandboxWrapper(w *sandbox.Wrapper) Option {
+	return func(o *managerOptions) { o.wrapper = w }
+}
+
 // productionDial returns the default dial factory for cfg: build a fresh
 // transport via transportForConfig on every call. NewManager uses this
 // whenever the caller doesn't supply an explicit dials[i] — i.e., real,
 // non-test use, and also real reconnects (Task 8), since transportForConfig
-// builds a brand-new transport each time it runs.
-func productionDial(cfg mcpconfig.ServerConfig) func(context.Context) (mcpsdk.Transport, error) {
-	return func(context.Context) (mcpsdk.Transport, error) { return transportForConfig(cfg) }
+// builds a brand-new transport each time it runs. When wrapper is non-nil, a
+// stdio server's command is kernel-confined to the session sandbox before the
+// transport hands it to the SDK.
+func productionDial(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper) func(context.Context) (mcpsdk.Transport, error) {
+	return func(context.Context) (mcpsdk.Transport, error) {
+		// A remote (sse/http) MCP server is tool-plane egress: refuse it with a
+		// legible error under net=off, before dialing. A stdio server is local and
+		// stays available (its own network is severed by --unshare-net).
+		if wrapper != nil && !wrapper.Policy().Network && (cfg.Type == "sse" || cfg.Type == "http") {
+			return nil, fmt.Errorf("remote MCP server %q (%s) is unavailable: network egress is disabled in this sandbox; this sandbox policy is fixed for the session", cfg.Name, cfg.Type)
+		}
+		t, err := transportForConfig(cfg)
+		if err != nil {
+			return nil, err
+		}
+		if wrapper != nil {
+			if ct, ok := t.(*mcpsdk.CommandTransport); ok && ct.Command != nil {
+				confineCommandUnderSandbox(ct.Command, cfg.Env, wrapper)
+			}
+		}
+		return t, nil
+	}
+}
+
+// confineCommandUnderSandbox rewrites a stdio MCP server's *exec.Cmd so it runs
+// inside the session sandbox: the bwrap invocation is prepended to the argv, the
+// env is rebuilt with secret hygiene + the sandbox floor, and ExtraFiles is
+// emptied so the server inherits no serf fds beyond stdio.
+//
+// The parent environment is scrubbed of credential-named vars (serf's own
+// provider key et al.) BEFORE the server's configured cfg.Env is layered on top,
+// so an ambient secret never reaches the confined server while an explicitly
+// configured cfg.Env var — even a secret-named one, which is deliberate server
+// configuration — survives. The floor (ssh-agent handle, cloud creds, TMPDIR,
+// cache redirect) is applied last.
+func confineCommandUnderSandbox(cmd *exec.Cmd, cfgEnv map[string]string, w *sandbox.Wrapper) {
+	base := mergeEnvInto(sandbox.ScrubSecretEnv(os.Environ()), cfgEnv)
+	cmd.Env = sandbox.ApplyEnvFloor(base, w.Policy(), w.SessionTmp())
+	// Confine wraps the argv and, for Seatbelt, sets cmd.Dir to the worktree so a
+	// macOS MCP server starts in the same directory a Linux (bwrap, via --chdir)
+	// one does — sandbox-exec has no chdir flag.
+	w.Confine(cmd, w.Policy().Git.WorktreeRoot)
+	cmd.ExtraFiles = nil
 }
 
 // ToolDefinitions returns namespaced tool definitions from servers whose
@@ -749,24 +811,26 @@ func transportForConfig(cfg mcpconfig.ServerConfig) (mcpsdk.Transport, error) {
 // mergeEnv creates a combined environment from os.Environ() with extra vars
 // merged in. Existing keys are replaced rather than duplicated.
 func mergeEnv(extra map[string]string) []string {
-	env := os.Environ()
+	return mergeEnvInto(os.Environ(), extra)
+}
 
-	// Build a set of extra keys for quick lookup.
+// mergeEnvInto layers extra over the base env slice: base entries whose key is
+// overridden by extra are dropped, then every extra pair is appended. It never
+// mutates base.
+func mergeEnvInto(base []string, extra map[string]string) []string {
 	overrides := make(map[string]bool, len(extra))
 	for k := range extra {
 		overrides[k] = true
 	}
 
-	// Filter out existing entries that will be overridden.
-	filtered := make([]string, 0, len(env)+len(extra))
-	for _, e := range env {
+	filtered := make([]string, 0, len(base)+len(extra))
+	for _, e := range base {
 		key, _, _ := strings.Cut(e, "=")
 		if !overrides[key] {
 			filtered = append(filtered, e)
 		}
 	}
 
-	// Append the overrides.
 	for k, v := range extra {
 		filtered = append(filtered, k+"="+v)
 	}

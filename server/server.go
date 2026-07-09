@@ -107,6 +107,12 @@ type StatusInfo struct {
 	// daemon-truth: Codex-sourced threads and old daemons never set it, so
 	// absence decodes as false everywhere downstream.
 	PendingAsk bool `json:"pending_ask,omitempty"`
+	// PendingEscalation mirrors the session's HasPendingEscalations() — true while a
+	// sandbox-exemption escalation (M7) is blocked awaiting a human. The hub's
+	// prober polls it so the owning session lights up cross-session (needs-you
+	// badge) even mid-turn (an escalation blocks WHILE the status is "active").
+	// Additive/daemon-truth, absent-decodes-false like PendingAsk.
+	PendingEscalation bool `json:"pending_escalation,omitempty"`
 }
 
 // ContextMetrics describes the estimated size of the active session context.
@@ -143,29 +149,31 @@ type Server struct {
 	appServer   *appserver.Server
 	appNotifier *appserver.Notifier
 
-	mu                  sync.RWMutex
-	status              StatusInfo
-	appSourceID         string
-	appThreadID         string
-	appProjector        *appprojector.AppEventProjector
-	appActiveTurnID     string
-	appReservedTurnID   string
-	cancelFunc          context.CancelFunc
-	steerFunc           func(string)
-	steerWithImagesFunc func(string, []ImageAttachment)
-	queueFunc           func(string) error
-	queueWithImagesFunc func(string, []ImageAttachment) error
-	goalFunc            func(objective string) (bool, error)
-	goalStatusFn        func() (status string, iterations int, ok bool)
-	drainSteerFunc      func() error
-	drainSteerInputFunc func(string, []ImageAttachment) error
-	queueDepthFn        func() int
-	queuePreviewFn      func() []string
-	compactFunc         func(context.Context) error
-	clearFunc           func(context.Context) error
-	pressureFn          func() float64
-	pendingAskFn        func() bool
-	contextMetricsFn    func() ContextMetrics
+	mu                           sync.RWMutex
+	status                       StatusInfo
+	appSourceID                  string
+	appThreadID                  string
+	appProjector                 *appprojector.AppEventProjector
+	appActiveTurnID              string
+	appReservedTurnID            string
+	cancelFunc                   context.CancelFunc
+	steerFunc                    func(string)
+	steerWithImagesFunc          func(string, []ImageAttachment)
+	queueFunc                    func(string) error
+	queueWithImagesFunc          func(string, []ImageAttachment) error
+	goalFunc                     func(objective string) (bool, error)
+	goalStatusFn                 func() (status string, iterations int, ok bool)
+	drainSteerFunc               func() error
+	drainSteerInputFunc          func(string, []ImageAttachment) error
+	queueDepthFn                 func() int
+	queuePreviewFn               func() []string
+	compactFunc                  func(context.Context) error
+	clearFunc                    func(context.Context) error
+	pressureFn                   func() float64
+	pendingAskFn                 func() bool
+	pendingEscalationFn          func() bool
+	pendingEscalationsSnapshotFn func() []appwire.SandboxEscalationRequested
+	contextMetricsFn             func() ContextMetrics
 	// workMetricsFn returns the live working-state/token metrics (WS2 A7):
 	// accumulated wall-clock work time, cumulative token usage (nil when
 	// there is none to report), and the in-flight turn's start time (0 when
@@ -180,10 +188,14 @@ type Server struct {
 	tasksFn             func() any
 	shutdownFunc        func()
 	transcriptPathFn    func() string
-	processing          bool
-	inputCh             chan InputMessage
-	hubToken            string
-	sameOrigin          httpguard.SameOriginPolicy
+	// sandboxEscalationResolveFunc delivers a human's approve/deny decision for a
+	// pending sandbox-exemption escalation (M7) to the session, unblocking the
+	// waiting tool-exec goroutine. nil when no session is attached.
+	sandboxEscalationResolveFunc func(escalationID string, approve bool) error
+	processing                   bool
+	inputCh                      chan InputMessage
+	hubToken                     string
+	sameOrigin                   httpguard.SameOriginPolicy
 }
 
 // NewServer creates a new Server.
@@ -299,6 +311,15 @@ func (s *Server) SetCancelFunc(cancel context.CancelFunc) {
 	s.mu.Unlock()
 }
 
+// SetSandboxEscalationResolveFunc sets the callback that delivers a human's
+// approve/deny decision for a pending sandbox-exemption escalation (M7) to the
+// session. It is invoked by the serf/sandbox/escalation/resolve daemon handler.
+func (s *Server) SetSandboxEscalationResolveFunc(fn func(escalationID string, approve bool) error) {
+	s.mu.Lock()
+	s.sandboxEscalationResolveFunc = fn
+	s.mu.Unlock()
+}
+
 // SetSteerFunc sets the function called by POST /steer. It is invoked
 // regardless of whether the session is currently processing.
 func (s *Server) SetSteerFunc(fn func(string)) {
@@ -403,6 +424,25 @@ func (s *Server) SetContextPressureFunc(fn func() float64) {
 func (s *Server) SetPendingAskFunc(fn func() bool) {
 	s.mu.Lock()
 	s.pendingAskFn = fn
+	s.mu.Unlock()
+}
+
+// SetPendingEscalationFunc sets a callback to retrieve the live pending-escalation
+// bit (M7): true while a sandbox-exemption escalation is blocked awaiting a human.
+// Read by /status so the hub's prober can raise the owning session's needs-you badge.
+func (s *Server) SetPendingEscalationFunc(fn func() bool) {
+	s.mu.Lock()
+	s.pendingEscalationFn = fn
+	s.mu.Unlock()
+}
+
+// SetPendingEscalationsSnapshotFunc sets a callback returning the redacted approval
+// cards for the session's currently-blocked sandbox escalations (M7). appThread()
+// puts them on thread/read so a client surfaces the card(s) on entry/reconnect. A
+// HUMAN-CLIENT field only — never entering the model's transcript.
+func (s *Server) SetPendingEscalationsSnapshotFunc(fn func() []appwire.SandboxEscalationRequested) {
+	s.mu.Lock()
+	s.pendingEscalationsSnapshotFn = fn
 	s.mu.Unlock()
 }
 

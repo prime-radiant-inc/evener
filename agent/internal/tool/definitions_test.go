@@ -233,6 +233,57 @@ func TestDefDelegateHasWatchParent(t *testing.T) {
 	}
 }
 
+// TestDefDelegateHasSandboxParams pins the per-delegate sandbox input surface:
+// a `sandbox` string enumerating the four modes and a `sandbox_net` boolean, both
+// documenting the no-escalation floor (you may only pick a box at least as
+// restrictive as your own) so the model self-selects a legal request.
+func TestDefDelegateHasSandboxParams(t *testing.T) {
+	props := DefDelegate(nil).Parameters["properties"].(map[string]any)
+
+	sb, ok := props["sandbox"].(map[string]any)
+	if !ok {
+		t.Fatal("DefDelegate missing sandbox param")
+	}
+	if typ, _ := sb["type"].(string); typ != "string" {
+		t.Errorf("sandbox type = %q, want string", sb["type"])
+	}
+	enum, ok := sb["enum"].([]string)
+	if !ok {
+		t.Fatalf("sandbox enum = %T, want []string", sb["enum"])
+	}
+	wantEnum := []string{"off", "read-only", "workspace-write", "restricted"}
+	if !reflect.DeepEqual(enum, wantEnum) {
+		t.Errorf("sandbox enum = %v, want %v", enum, wantEnum)
+	}
+	sbDesc, _ := sb["description"].(string)
+	if !strings.Contains(sbDesc, "at least as confining") {
+		t.Errorf("sandbox description must explain the no-escalation floor, got %q", sbDesc)
+	}
+	// The modes must be glossed, not merely enumerated.
+	for _, want := range []string{"read-only", "workspace-write", "restricted", "no writes", "working tree", "network is a separate toggle"} {
+		if !strings.Contains(sbDesc, want) {
+			t.Errorf("sandbox description must define the modes (missing %q), got %q", want, sbDesc)
+		}
+	}
+
+	sn, ok := props["sandbox_net"].(map[string]any)
+	if !ok {
+		t.Fatal("DefDelegate missing sandbox_net param")
+	}
+	if typ, _ := sn["type"].(string); typ != "boolean" {
+		t.Errorf("sandbox_net type = %q, want boolean", sn["type"])
+	}
+	// Pin the load-bearing sentences (matching the sandbox param's pinning strength):
+	// the inherit-on-omit behavior and the network no-escalation floor.
+	snDesc, _ := sn["description"].(string)
+	if !strings.Contains(snDesc, "Omit to inherit") {
+		t.Errorf("sandbox_net must document inherit-on-omit with the exact contract phrase, got %q", snDesc)
+	}
+	if !strings.Contains(snDesc, "cannot enable network") {
+		t.Errorf("sandbox_net must document the network no-escalation floor, got %q", snDesc)
+	}
+}
+
 func TestDefDelegateNoEnumWhenNoTypes(t *testing.T) {
 	def := DefDelegate(nil)
 	props := def.Parameters["properties"].(map[string]any)

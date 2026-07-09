@@ -7,6 +7,7 @@ import (
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/provider"
+	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
@@ -163,6 +164,15 @@ type SessionConfig struct {
 	// endpoint support and continuation eligibility.
 	OpenAIResponsesContinuation string `json:"openai_responses_continuation,omitempty"`
 
+	// Sandbox is the sandbox mode name (off|read-only|workspace-write|restricted)
+	// requested at session start. Empty means off — today's behavior. Carried so a
+	// resumed session (M4) re-applies its policy; INERT in M1 (nothing enforces).
+	Sandbox string `json:"sandbox,omitempty"`
+
+	// SandboxNet is the network decision (--sandbox-net): nil means the default
+	// (on when sandboxed). Only meaningful for a non-off Sandbox. Carried inert in M1.
+	SandboxNet *bool `json:"sandbox_net,omitempty"`
+
 	// ResolveProfile, when non-nil, maps a "provider/model" ref to the
 	// corresponding *provider.Profile. Injected by cmd/serf so that
 	// Session.SetModel can perform cross-provider switches without
@@ -246,6 +256,12 @@ type testConfig struct {
 	// noSyncJobStore skips jobstore fsyncs for tests whose contract is not crash
 	// durability. The event bytes and append/load behavior stay the same.
 	noSyncJobStore bool
+
+	// sandboxProber, when non-nil, supplies the host facts used to RE-RESOLVE a
+	// resumed delegate's persisted sandbox policy against its lane. Production
+	// leaves it nil and probes the live host (sandbox.RealProber); tests inject a
+	// sandbox.FakeProber so the resume path never shells out to bwrap.
+	sandboxProber sandbox.Prober
 }
 
 // spawnConfig holds the SessionConfig fields that only spawnAgent (plus the
@@ -416,6 +432,8 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		ModelFallbacks:              c.ModelFallbacks,
 		SystemPromptAsUser:          c.SystemPromptAsUser,
 		OpenAIResponsesContinuation: c.OpenAIResponsesContinuation,
+		Sandbox:                     c.Sandbox,
+		SandboxNet:                  c.SandboxNet,
 	}
 }
 
@@ -451,5 +469,7 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		ModelFallbacks:              s.ModelFallbacks,
 		SystemPromptAsUser:          s.SystemPromptAsUser,
 		OpenAIResponsesContinuation: s.OpenAIResponsesContinuation,
+		Sandbox:                     s.Sandbox,
+		SandboxNet:                  s.SandboxNet,
 	}
 }

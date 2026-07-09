@@ -60,6 +60,8 @@ type runConfig struct {
 	noDefaultMarketplaces       bool     // --no-default-marketplaces
 	systemPromptAsUser          bool     // --system-prompt-as-user
 	openAIResponsesContinuation string   // --openai-responses-continuation
+	sandboxMode                 string   // --sandbox mode name (default "off")
+	sandboxNet                  string   // --sandbox-net on|off
 
 	// Resume options.
 	resume       string // session ID to resume
@@ -204,6 +206,18 @@ func run(ctx context.Context, cfg runConfig) error {
 	if effort.Set {
 		baseSessionCfg.ReasoningEffort = effort.Value
 	}
+	if err := configureSandbox(&baseSessionCfg, cfg.sandboxMode, cfg.sandboxNet); err != nil {
+		return err
+	}
+	// Engage enforcement for a FRESH session from the flag-set mode. A resume
+	// re-provisions the env from the PERSISTED mode inside
+	// RestoreSessionFromMetaWithConfig (the immutable-across-restart guarantee), so
+	// the flag governs only new sessions here.
+	if meta == nil {
+		if err := provisionSandbox(env, &baseSessionCfg, env.WorkingDirectory()); err != nil {
+			return err
+		}
+	}
 	if meta != nil {
 		sess, err = agent.RestoreSessionFromMetaWithConfig(client, profile, env, *meta, agent.RestoreSessionConfig{
 			StateDir:                    stateDir,
@@ -228,6 +242,13 @@ func run(ctx context.Context, cfg runConfig) error {
 		}
 	}
 	defer sess.Close()
+
+	// One startup line, loudly, states exactly what this host enforces (read from
+	// the env's resolved policy so it never overstates). Empty for an unsandboxed
+	// session — nothing to announce.
+	if line := sandboxEnforcementLine(env); line != "" {
+		fmt.Fprintln(cfg.stderr, line) //nolint:errcheck
+	}
 
 	var done <-chan struct{}
 	if cfg.verbose {

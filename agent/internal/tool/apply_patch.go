@@ -3,23 +3,25 @@ package tool
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+
+	"primeradiant.com/serf/agent/execenv"
 )
 
-// ApplyPatch applies a codex-rs-style apply_patch v4a patch to files under rootDir.
-// This is a best-effort implementation intended for local agent loops.
-func ApplyPatch(rootDir string, patch string) (string, error) {
+// ApplyPatch applies a codex-rs-style apply_patch v4a patch through fm, an
+// execenv.FileMutator that owns path containment (and, under a sandbox policy,
+// race-safe fd-anchored enforcement). This is a best-effort implementation
+// intended for local agent loops.
+func ApplyPatch(fm execenv.FileMutator, patch string) (string, error) {
 	ops, err := parseV4APatch(patch)
 	if err != nil {
 		return "", err
 	}
 	var touched []string
 	for _, op := range ops {
-		paths, err := op.apply(rootDir)
+		paths, err := op.apply(fm)
 		if err != nil {
 			return "", err
 		}
@@ -32,7 +34,7 @@ func ApplyPatch(rootDir string, patch string) (string, error) {
 }
 
 type patchOp interface {
-	apply(rootDir string) ([]string, error)
+	apply(fm execenv.FileMutator) ([]string, error)
 }
 
 type addFileOp struct {
@@ -40,19 +42,12 @@ type addFileOp struct {
 	lines []string
 }
 
-func (o addFileOp) apply(rootDir string) ([]string, error) {
-	p, err := safeJoin(rootDir, o.path)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return nil, err
-	}
+func (o addFileOp) apply(fm execenv.FileMutator) ([]string, error) {
 	content := strings.Join(o.lines, "\n")
 	if !strings.HasSuffix(content, "\n") {
 		content += "\n"
 	}
-	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+	if err := fm.WriteFileRaw(o.path, []byte(content), 0o644); err != nil {
 		return nil, err
 	}
 	return []string{o.path}, nil
@@ -62,12 +57,10 @@ type deleteFileOp struct {
 	path string
 }
 
-func (o deleteFileOp) apply(rootDir string) ([]string, error) {
-	p, err := safeJoin(rootDir, o.path)
-	if err != nil {
+func (o deleteFileOp) apply(fm execenv.FileMutator) ([]string, error) {
+	if err := fm.RemovePath(o.path); err != nil {
 		return nil, err
 	}
-	_ = os.Remove(p)
 	return []string{o.path}, nil
 }
 
@@ -77,12 +70,8 @@ type updateFileOp struct {
 	hunks  [][]string // diff lines per hunk (may include leading @@ hint line)
 }
 
-func (o updateFileOp) apply(rootDir string) ([]string, error) {
-	p, err := safeJoin(rootDir, o.path)
-	if err != nil {
-		return nil, err
-	}
-	origBytes, err := os.ReadFile(p)
+func (o updateFileOp) apply(fm execenv.FileMutator) ([]string, error) {
+	origBytes, err := fm.ReadFileRaw(o.path)
 	if err != nil {
 		return nil, err
 	}
@@ -136,19 +125,12 @@ func (o updateFileOp) apply(rootDir string) ([]string, error) {
 	if hasFinalNL {
 		newText += "\n"
 	}
-	if err := os.WriteFile(p, []byte(newText), 0o644); err != nil {
+	if err := fm.WriteFileRaw(o.path, []byte(newText), 0o644); err != nil {
 		return nil, err
 	}
 	paths := []string{o.path}
 	if strings.TrimSpace(o.moveTo) != "" && o.moveTo != o.path {
-		dst, err := safeJoin(rootDir, o.moveTo)
-		if err != nil {
-			return nil, err
-		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return nil, err
-		}
-		if err := os.Rename(p, dst); err != nil {
+		if err := fm.RenamePath(o.path, o.moveTo); err != nil {
 			return nil, err
 		}
 		paths = append(paths, o.moveTo)
@@ -232,30 +214,6 @@ func parseV4APatchLines(lines []string) ([]patchOp, error) {
 		}
 	}
 	return nil, errors.New("apply_patch: missing '*** End Patch'")
-}
-
-func safeJoin(rootDir, rel string) (string, error) {
-	r := strings.TrimSpace(rel)
-	if r == "" {
-		return "", errors.New("empty path")
-	}
-	// Allow absolute paths that fall under rootDir by stripping the prefix.
-	if filepath.IsAbs(r) {
-		cleanRoot := filepath.Clean(rootDir) + string(filepath.Separator)
-		cleanR := filepath.Clean(r)
-		if strings.HasPrefix(cleanR, cleanRoot) {
-			r = cleanR[len(cleanRoot):]
-		} else if cleanR == filepath.Clean(rootDir) {
-			return "", fmt.Errorf("path is rootDir itself: %s", rel)
-		} else {
-			return "", fmt.Errorf("absolute path outside working directory: %s", rel)
-		}
-	}
-	clean := filepath.Clean(r)
-	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path traversal not allowed: %s", rel)
-	}
-	return filepath.Join(rootDir, clean), nil
 }
 
 // hintFromHunk extracts the positioning hint text after @@ in a hunk.

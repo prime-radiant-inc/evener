@@ -233,8 +233,8 @@ func TestWireTypeRegistryCoverage(t *testing.T) {
 	}
 	// Keep the exact typed/nil split intentional: adding a notification should
 	// update both the protocol registry and this acceptance check.
-	if typed != 9 {
-		t.Errorf("typed notifications = %d, want 9", typed)
+	if typed != 10 {
+		t.Errorf("typed notifications = %d, want 10", typed)
 	}
 	if nilPayload != 14 {
 		t.Errorf("nil-payload notifications = %d, want 14", nilPayload)
