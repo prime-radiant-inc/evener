@@ -25,9 +25,11 @@ script.
    surfaces at once (`schema.go` `LaunchOptionSchema()`).
 2. Under the **Sandbox** group (`LaunchGroupSandbox`), set **Sandbox** to
    `restricted` on the **global** layer (the system default) — a
-   `LaunchControlSelect` with choices `(default: off)`, `off`, `read-only`,
-   `workspace-write`, `restricted`. Optionally set **Sandbox network egress**
-   (`sandbox_net`, a `LaunchControlBoolean`, default on).
+   `LaunchControlSelect` with choices `(inherit)` (empty value), `off`,
+   `read-only`, `workspace-write`, `restricted`. The empty value inherits the lower
+   layer (only the global layer treats absent as off); the explicit `off` entry is
+   how a project/launch layer clears a global default. Optionally set **Sandbox
+   network egress** (`sandbox_net`, a `LaunchControlBoolean`, default on).
    - Global layer file: `<stateRoot>/launch.toml` (e.g. `~/.serf/launch.toml`),
      `[global] sandbox = "restricted"`. The sandbox options are `DefaultableLayers
      = {global, project}` and `PerLaunch: true`, so a per-launch pick can override

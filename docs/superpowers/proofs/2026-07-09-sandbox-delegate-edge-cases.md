@@ -47,7 +47,7 @@ Scenario B).
   a non-strict provider) is refused rather than silently decoded as inherit — the
   same silent no-op this surface refuses elsewhere. An ABSENT key stays nil
   (inherit); it is NOT read as false.
-- **String**: `invalid_request: sandbox_net must be a boolean`
+- **String**: `invalid_request: sandbox_net must be a JSON boolean (true or false, not a quoted string)`
 - **Test**: `agent/job_delegate_decode_test.go` `TestDecodeDelegateArgs_SandboxNetMalformed` (+ `TestDecodeDelegateArgs_Sandbox` for the nil-stays-nil / bool-carries cases).
 
 ### 4. Unknown `sandbox` mode on the delegate tool
@@ -57,8 +57,8 @@ Scenario B).
 - **Test**: `agent/sandbox_delegate_floor_test.go` `TestBuildDelegateSandboxPolicy_UnknownMode`.
 
 ### 5. Mode floor — a delegate looser than its parent (the security invariant)
-- **String** (e.g. `off` under a `restricted` parent): `invalid_request: sandbox "off" grants more access than your own sandbox (restricted); a delegate cannot be less restricted than you`
-- **Network floor** (net-on under a net-off parent): `invalid_request: sandbox_net on grants more network access than your own sandbox (network off); a delegate cannot be less restricted than you`
+- **String** (e.g. `off` under a `restricted` parent): `invalid_request: sandbox "off" allows access on an axis your restricted sandbox forbids (it is not at least as confining on both reads and writes); modes allowed under your restricted sandbox: restricted` (partial-order-aware: names the failing axis and lists the recoverable modes — the modes at least as confining as the parent, in `AllModes` order)
+- **Network floor** (net-on under a net-off parent): `invalid_request: sandbox_net on grants more network access than your own sandbox (network off); a delegate cannot be less restricted than you; omit sandbox_net or pass sandbox_net=false`
 - **Tests**: `agent/sandbox/policy_test.go` (`AtLeastAsConfining`, the full 16-cell
   matrix incl. the incomparable `read-only`∥`restricted` refused BOTH directions);
   `agent/sandbox_delegate_floor_test.go` `TestBuildDelegateSandboxPolicy_ModeFloor`
@@ -95,3 +95,12 @@ Scenario B).
   decode-level and a live model adds no coverage over the exact-string assertions
   here. The one refusal worth a live run — the model actually reading a floor error
   and adapting without looping — is covered by the live Scenario B.
+- Explicit `sandbox="off"` is NOT a distinct off-box: when it passes the floor (only
+  under an off parent) `buildDelegateSandboxPolicy` returns `(nil, nil)`, i.e. the
+  inherit path — the child inherits the (off) parent env rather than provisioning a
+  separate EnableSandbox(off) round-trip. So `off` under an off parent is allowed and
+  outcome-identical to omitting `sandbox` entirely.
+- Strings re-verified against the branch after the consolidated review-fix pass
+  (2026-07-09): the non-boolean `sandbox_net` message and the network-floor message
+  both gained more directive phrasing (recorded above); the floor message became
+  partial-order-aware (case 5). All cited tests re-run green.
