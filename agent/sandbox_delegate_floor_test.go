@@ -54,6 +54,33 @@ func TestBuildDelegateSandboxPolicy_ModeFloor(t *testing.T) {
 	}
 }
 
+// TestBuildDelegateSandboxPolicy_OffWithNetRefused: sandbox="off" applies no
+// network confinement (Resolve hard-codes net on for ModeOff and EnableSandbox
+// treats an off policy as a no-op), so pairing it with an explicit sandbox_net is a
+// contradiction that would run the delegate with full network while the caller
+// believes egress is off. It must be refused loudly, not silently accepted.
+func TestBuildDelegateSandboxPolicy_OffWithNetRefused(t *testing.T) {
+	t.Parallel()
+	for _, net := range []*bool{boolPtr(false), boolPtr(true)} {
+		if _, err := buildDelegateSandboxPolicy("off", net, sandbox.ModeOff, true); err == nil {
+			t.Errorf("sandbox=off with an explicit sandbox_net (%v) must be refused", *net)
+		} else if !strings.Contains(err.Error(), "invalid_request:") || !strings.Contains(err.Error(), `no effect with sandbox="off"`) {
+			t.Errorf("refusal must explain off applies no network confinement, got %v", err)
+		}
+	}
+	// off with NO explicit net is still fine (an off delegate under an off parent).
+	if _, err := buildDelegateSandboxPolicy("off", nil, sandbox.ModeOff, true); err != nil {
+		t.Errorf("sandbox=off with no net must be allowed, got %v", err)
+	}
+	// resolveDelegateSandboxRequest routes an explicit off+net through the same
+	// refusal (the mode is present, so it does not hit the mode-absent guard).
+	if _, err := resolveDelegateSandboxRequest("off", boolPtr(false), sandbox.ModeOff, true); err == nil {
+		t.Error("resolveDelegateSandboxRequest must refuse an explicit sandbox=off + sandbox_net")
+	} else if !strings.Contains(err.Error(), `no effect with sandbox="off"`) {
+		t.Errorf("refusal must name the off+net contradiction, got %v", err)
+	}
+}
+
 // TestBuildDelegateSandboxPolicy_NetworkFloor: a delegate may turn the network OFF
 // (tighter) but never ON. An omitted net inherits the parent's effective net; an
 // explicit net-on under a net-off parent is refused.

@@ -62,6 +62,14 @@ func buildDelegateSandboxPolicy(sandboxMode string, sandboxNet *bool, parentMode
 	if !requested.AtLeastAsConfining(parentMode) {
 		return nil, fmt.Errorf("invalid_request: sandbox %q grants more access than your own sandbox (%s); a delegate cannot be less restricted than you", requested, parentMode)
 	}
+	// off applies NO network confinement — Resolve hard-codes net on for ModeOff and
+	// EnableSandbox treats a non-enforced policy as a no-op — so an explicit
+	// sandbox_net alongside sandbox="off" would silently run with full network while
+	// the caller believes egress is off. Refuse the contradiction rather than drop
+	// the flag.
+	if requested == sandbox.ModeOff && sandboxNet != nil {
+		return nil, errors.New(`invalid_request: sandbox_net has no effect with sandbox="off" (off applies no network confinement); pass a non-off sandbox mode or omit sandbox_net`)
+	}
 	net := parentNet
 	if sandboxNet != nil {
 		net = *sandboxNet
