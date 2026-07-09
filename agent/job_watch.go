@@ -720,6 +720,20 @@ func validateWatchEventArgs(a watchArgs) error {
 			return fmt.Errorf("invalid_request: unknown event kind %q", name)
 		}
 	}
+	// Session-event kinds other than job.notification observe the watching
+	// session's own activity (their payloads carry no job identity, and a child
+	// session's events never reach this evaluator), so a concrete-job-targeted
+	// watch on them can only echo the watcher's own calls back at it labeled as
+	// job activity. Refuse the trigger rather than ack one that cannot fire as
+	// asked.
+	if len(a.Events) > 0 && !isWatchSessionTarget(a.Target) {
+		for _, name := range a.Events {
+			if name == "job.notification" {
+				continue
+			}
+			return fmt.Errorf(`invalid_request: events %q watch the watching session's own activity and cannot be scoped to a concrete job; a finished job delivers its completion notification (with result excerpt) automatically — to trigger on the job's output use output_match, or watch events ["job.notification"]`, name)
+		}
+	}
 	if a.Every > 0 {
 		if len(a.Events) != 1 {
 			return errors.New("invalid_request: every requires exactly one watched event kind")
@@ -2427,7 +2441,13 @@ func watchEventMatchesTarget(target string, data events.EventData) bool {
 	case events.JobFinishedData:
 		return d.JobID == target
 	default:
-		return true
+		// Only job lifecycle payloads carry a job identity. Everything else on
+		// the stream is the watching session's OWN activity — a child session's
+		// events never reach this evaluator — so matching it against a concrete
+		// job target would echo the watcher back at itself labeled as job
+		// activity. Fail closed: an event that cannot prove it belongs to the
+		// target does not fire a job-targeted watch.
+		return false
 	}
 }
 
