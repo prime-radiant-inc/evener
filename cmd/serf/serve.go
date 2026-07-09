@@ -299,6 +299,11 @@ func runServe(args []string) error {
 
 	var currentMu sync.RWMutex
 	currentSess := sess
+	// currentEnv tracks the CURRENT session's execution environment (each session
+	// owns its own). /clear reads it to inherit the live sandbox and swaps it
+	// alongside currentSess, so a cleared session's sandbox reflects what the running
+	// session actually enforces (on resume the persisted mode, not the launch flag).
+	currentEnv := env
 	getSession := func() *agent.Session {
 		currentMu.RLock()
 		defer currentMu.RUnlock()
@@ -310,9 +315,10 @@ func runServe(args []string) error {
 		}
 		return ""
 	})
-	setSession := func(next *agent.Session) {
+	setSession := func(next *agent.Session, nextEnv *execenv.LocalExecutionEnvironment) {
 		currentMu.Lock()
 		currentSess = next
+		currentEnv = nextEnv
 		currentMu.Unlock()
 	}
 
@@ -387,33 +393,38 @@ func runServe(args []string) error {
 	srv.SetTasksFunc(func() any { return getSession().Tasks() })
 	srv.SetClearFunc(func(ctx context.Context) error {
 		oldSess := getSession()
+		currentMu.RLock()
+		oldEnv := currentEnv
+		currentMu.RUnlock()
 		clearCfg := sessionCfg
 		clearCfg.SessionStartKind = plugin.SessionStartKindClear
-		// The cleared session reuses this env, so it must inherit the env's ACTUAL
-		// sandbox (on resume the persisted mode, not the launch flag) rather than the
-		// flag-derived sessionCfg — otherwise its persisted config and runtime env
-		// diverge. Reconcile BEFORE NewSession so the mode it persists matches.
-		reconcileClearSandbox(&clearCfg, env)
-		newSess, err := agent.NewSession(client, profile, env, clearCfg)
+		// The cleared session inherits the CURRENT session's ACTUAL sandbox (on resume
+		// the persisted mode, not the launch flag), so its persisted config matches what
+		// it runs under. Reconcile from the live env before building the new session.
+		reconcileClearSandbox(&clearCfg, oldEnv)
+		// Build and provision a FRESH env for the cleared session BEFORE any destructive
+		// change. If provisioning fails, /clear aborts with oldSess still current rather
+		// than leaving a live session running unconfined while persisting a sandbox mode
+		// (a fail-open). Each session owns its own env + session tmp, disposed on Close,
+		// so oldSess.Close() no longer pulls the tmp out from under the new session.
+		clearEnv := execenv.NewLocalExecutionEnvironment(wd)
+		if err := provisionSandbox(clearEnv, &clearCfg, wd); err != nil {
+			return fmt.Errorf("clear sandbox: %w", err)
+		}
+		newSess, err := agent.NewSession(client, profile, clearEnv, clearCfg)
 		if err != nil {
+			clearEnv.Cleanup()
 			return fmt.Errorf("new session: %w", err)
 		}
-		setSession(newSess)
+		setSession(newSess, clearEnv)
 		srv.SetAppIdentity("local", newSess.ID())
 		if err := rvRegistration.UpdateSessionID(newSess.ID()); err != nil {
-			setSession(oldSess)
+			setSession(oldSess, oldEnv)
 			srv.SetAppIdentity("local", oldSess.ID())
-			newSess.Close()
+			newSess.Close() // disposes clearEnv
 			return fmt.Errorf("rendezvous update: %w", err)
 		}
-		oldSess.Close()
-		// oldSess.Close() ran env.Cleanup(), which disposed the per-session sandbox
-		// tmp the SHARED env owned. Re-provision from the reconciled config so the
-		// cleared session gets a fresh, valid tmp + kernel wrapper (each session owns
-		// its own tmp). A no-op for an off session, so unsandboxed /clear is unchanged.
-		if err := provisionSandbox(env, &clearCfg, wd); err != nil {
-			return fmt.Errorf("re-provision sandbox after clear: %w", err)
-		}
+		oldSess.Close() // disposes oldEnv
 		bridgeSession(newSess)
 		return nil
 	})

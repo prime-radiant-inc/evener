@@ -165,11 +165,12 @@ func TestSandboxFlagRestrictedEnforces(t *testing.T) {
 	}
 }
 
-// TestSandboxReprovisionAfterCleanup covers the serve /clear path, where the new
-// session reuses the SAME env the old one just Close()d: env.Cleanup() disposes the
-// per-session sandbox tmp, so the env must be re-provisioned to give the cleared
-// session a fresh, valid enforced env rather than one pointing at a disposed tmp.
-// Gated on a real bwrap host and skipped under -short.
+// TestSandboxReprovisionAfterCleanup proves EnableSandbox is re-entrant after a
+// Cleanup: provisioning, disposing the env, and provisioning again must mint a FRESH
+// session tmp and a usable enforced env rather than leaving a stale one pointing at a
+// disposed tmp. This property backs any path that re-provisions an env (e.g. a
+// delegate re-rooting/resuming onto a cleaned env). Gated on a real bwrap host and
+// skipped under -short.
 func TestSandboxReprovisionAfterCleanup(t *testing.T) {
 	if testing.Short() {
 		t.Skip("real-bwrap sandbox re-provision skipped under -short")
