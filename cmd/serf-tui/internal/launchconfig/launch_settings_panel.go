@@ -61,6 +61,25 @@ func (p LaunchSettingsPanel) InitialCmd() tea.Cmd {
 
 func (p LaunchSettingsPanel) Init() tea.Cmd { return nil }
 
+// launchDiagnosticsStatus renders a resolve's non-fatal diagnostics (unknown
+// sandbox mode, sandbox_net with no mode, duplicate MCP, …) as a single warning
+// line for the settings panel status. Empty when there are none. These otherwise
+// surface only in the raw resolved-config JSON, where a user never looks.
+func launchDiagnosticsStatus(r appwire.LaunchConfigResolved) string {
+	if len(r.Diagnostics) == 0 {
+		return ""
+	}
+	msgs := make([]string, 0, len(r.Diagnostics))
+	for _, d := range r.Diagnostics {
+		if d.Field != "" {
+			msgs = append(msgs, d.Field+": "+d.Message)
+		} else {
+			msgs = append(msgs, d.Message)
+		}
+	}
+	return "⚠ " + strings.Join(msgs, "; ")
+}
+
 func (p LaunchSettingsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
 	case LaunchLayerResultMsg:
@@ -85,6 +104,8 @@ func (p LaunchSettingsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.loadingResolve = false
 		if m.Err != nil {
 			p.statusMessage = "resolve error: " + m.Err.Error()
+		} else {
+			p.statusMessage = launchDiagnosticsStatus(m.Resolved)
 		}
 	case LaunchSetLayerResultMsg:
 		if m.Err != nil {
@@ -92,6 +113,9 @@ func (p LaunchSettingsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			p.statusMessage = "saved " + m.Layer
 			p.resolved = m.Resolved
+			if d := launchDiagnosticsStatus(m.Resolved); d != "" {
+				p.statusMessage += " — " + d
+			}
 		}
 	case LaunchTrustResultMsg:
 		if m.Err != nil {

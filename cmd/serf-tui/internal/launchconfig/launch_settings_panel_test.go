@@ -136,6 +136,32 @@ func TestApplyEdit_FastCheapModel(t *testing.T) {
 	}
 }
 
+// TestPanel_SurfacesResolveDiagnostics: a resolve's non-fatal diagnostics (e.g.
+// sandbox_net with no mode) reach the panel status and its rendered view, instead
+// of hiding in the raw resolved-config JSON.
+func TestPanel_SurfacesResolveDiagnostics(t *testing.T) {
+	resolved := appwire.LaunchConfigResolved{
+		Diagnostics: []appwire.LaunchConfigDiagnostic{
+			{Layer: "global", Field: "sandbox_net", Message: "sandbox_net has no effect without a non-off sandbox mode"},
+		},
+	}
+	var p LaunchSettingsPanel
+	updated, _ := p.Update(LaunchResolveResultMsg{Resolved: resolved})
+	panel := updated.(LaunchSettingsPanel)
+	if !strings.Contains(panel.statusMessage, "sandbox_net has no effect") {
+		t.Errorf("resolve diagnostics must surface in the status, got %q", panel.statusMessage)
+	}
+	if !strings.Contains(panel.View(), "sandbox_net has no effect") {
+		t.Errorf("panel view must render the diagnostic warning, got:\n%s", panel.View())
+	}
+
+	// A clean resolve leaves no warning.
+	clean, _ := p.Update(LaunchResolveResultMsg{Resolved: appwire.LaunchConfigResolved{}})
+	if got := clean.(LaunchSettingsPanel).statusMessage; got != "" {
+		t.Errorf("a clean resolve must leave no warning, got %q", got)
+	}
+}
+
 // TestApplyEdit_SandboxValidatesMode: the sandbox field is a select, not blind
 // free text. A valid mode is accepted, blank clears (inherit), and a typo is
 // rejected rather than silently written and only failing at spawn.
