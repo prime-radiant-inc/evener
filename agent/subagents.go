@@ -584,6 +584,17 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	}
 	subSess, err := NewSession(childClient, subProfile, subEnv, subCfg)
 	if err != nil {
+		// A per-delegate sandbox EnableSandbox'd a FRESH env (re-rooted or cloned) and
+		// provisioned a scratch dir it owns; this failed spawn never hands subEnv to a
+		// session that would Cleanup it, so dispose that scratch here. Guarded on
+		// reqSandbox: only that path builds a fresh, sandbox-provisioned env — the
+		// reqSandbox==nil / workingDir=="" path may leave subEnv == the shared parent
+		// env, which must never be disposed here.
+		if reqSandbox != nil {
+			if le, ok := subEnv.(*execenv.LocalExecutionEnvironment); ok {
+				le.DisposeSandboxScratch()
+			}
+		}
 		return nil, err
 	}
 	if len(canonicalGrantTools) > 0 {

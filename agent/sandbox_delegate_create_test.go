@@ -2,13 +2,33 @@ package agent
 
 import (
 	"context"
+	"os"
 	"slices"
 	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/serf/llm"
 )
+
+// sandboxScratchDirs lists the per-session sandbox scratch dirs (serf-sandbox-*)
+// directly under base — the leak surface for a per-delegate sandbox whose spawn
+// fails after EnableSandbox provisioned one.
+func sandboxScratchDirs(t *testing.T, base string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		t.Fatalf("read tmp base %q: %v", base, err)
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(e.Name(), "serf-sandbox-") {
+			out = append(out, e.Name())
+		}
+	}
+	return out
+}
 
 // sbxSetParentMode sets the session's currentEnv() to a resolved sandbox policy of
 // the given mode (no kernel wrapper — the floor path only reads mode/network), so a
@@ -132,6 +152,51 @@ func TestCreateDelegate_SandboxFloorRefusedEarly(t *testing.T) {
 	}
 	if res.DelegateID != "" {
 		t.Errorf("floor refusal must not mint a delegate id, got %q", res.DelegateID)
+	}
+}
+
+// TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnSpawnFailure: when a
+// per-delegate sandbox EnableSandbox's a fresh env and the spawn then fails at
+// NewSession, the provisioned scratch dir must be disposed, not leaked. A nil child
+// client (via childClientFactory) forces NewSession to fail AFTER EnableSandbox. Not
+// parallel: it isolates TMPDIR to observe the sandbox scratch base.
+func TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnSpawnFailure(t *testing.T) {
+	isolated := t.TempDir()
+	t.Setenv("TMPDIR", isolated)
+
+	lane, home := sbxLane(t)
+	facts := sbxBwrapFacts(home)
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	s := newSession(t, withClient(c), withConfig(SessionConfig{
+		StateDir:         packageFixtureTempDir(t, "sbx-leak-*"),
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+			sandboxProber:       sandbox.FakeProber{Facts: facts},
+			childClientFactory:  func() *llm.Client { return nil },
+		},
+	}))
+
+	if before := sandboxScratchDirs(t, isolated); len(before) != 0 {
+		t.Fatalf("isolated tmp base must start free of sandbox scratch, got %v", before)
+	}
+
+	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 0)
+	ctx = context.WithValue(ctx, ctxParentJobID, "job_leak")
+	ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: boolPtr(true)})
+
+	prepared, err := s.prepareSubagentRun(ctx, "child task", "", lane, 0, "", "", nil, nil)
+	if err == nil {
+		releasePreparedTreeSlot(prepared)
+		prepared.sub.sess.Close()
+		t.Fatal("expected NewSession to fail with a nil child client")
+	}
+	if left := sandboxScratchDirs(t, isolated); len(left) != 0 {
+		t.Errorf("per-delegate sandbox scratch leaked on spawn failure: %v", left)
 	}
 }
 
