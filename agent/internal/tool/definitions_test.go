@@ -269,8 +269,8 @@ func TestDefDelegateHasSandboxParams(t *testing.T) {
 	// Pin the load-bearing sentences (matching the sandbox param's pinning strength):
 	// the inherit-on-omit behavior and the network no-escalation floor.
 	snDesc, _ := sn["description"].(string)
-	if !strings.Contains(snDesc, "inherit") {
-		t.Errorf("sandbox_net must document inherit-on-omit, got %q", snDesc)
+	if !strings.Contains(snDesc, "Omit to inherit") {
+		t.Errorf("sandbox_net must document inherit-on-omit with the exact contract phrase, got %q", snDesc)
 	}
 	if !strings.Contains(snDesc, "cannot enable network") {
 		t.Errorf("sandbox_net must document the network no-escalation floor, got %q", snDesc)
