@@ -2196,6 +2196,21 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .user-image-cap-sep { color: var(--text-dim); }
 .user-image-dims { font-variant-numeric: tabular-nums; flex: none; }
 
+.tool-output-images {
+  width: 100%;
+  margin-top: var(--space-2);
+  padding: var(--space-2) 0 0 calc(var(--space-5));
+  background: transparent;
+  border: 0;
+}
+.tool-output-images .user-image-card,
+.tool-output-images .user-image-sheet {
+  max-width: min(520px, 100%);
+}
+.tool-output-images .user-image-sheet {
+  margin-bottom: 0;
+}
+
 /* Image lightbox: full-screen overlay shown when a user-image card is clicked.
    With a set it pages one image at a time via prev/next + ←/→ (Esc closes). */
 .image-lightbox { position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; flex-direction: column; gap: var(--space-4); z-index: var(--z-drawer); cursor: zoom-out; padding: var(--space-7); }

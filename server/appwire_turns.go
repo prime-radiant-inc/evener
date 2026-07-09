@@ -35,7 +35,7 @@ func appTurnsFromTranscriptFile(path string) []appwire.Turn {
 		if err := json.Unmarshal(raw, &entry); err != nil {
 			return nil
 		}
-		return apptranscript.ProjectTurn(turnID, entryIndex, entry.Turn, toolNames, nil)
+		return apptranscript.ProjectTurn(turnID, entryIndex, entry.Turn, toolNames, nil, nil)
 	})
 }
 

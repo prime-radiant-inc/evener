@@ -654,7 +654,7 @@
       const out = [["TOOL_CALL_START", Object.assign({ call_id: callID, item_id: itemID, tool_name: item.toolName || "", arguments_json: item.argumentsJson || "", description: item.description || "" }, toolTimingPayload(item))]];
       if (item.output) out.push(["TOOL_CALL_OUTPUT_DELTA", { call_id: callID, item_id: itemID, delta: item.output }]);
       if (!completed) return out;
-      out.push(["TOOL_CALL_END", Object.assign({ call_id: callID, item_id: itemID, tool_name: item.toolName || "", arguments_json: item.argumentsJson || "", description: item.description || "", output: item.output || "", error: item.error || "", tool_state: item.raw || "" }, toolTimingPayload(item))]);
+      out.push(["TOOL_CALL_END", Object.assign({ call_id: callID, item_id: itemID, tool_name: item.toolName || "", arguments_json: item.argumentsJson || "", description: item.description || "", output: item.output || "", error: item.error || "", tool_state: item.raw || "", output_images: item.outputImages || item.output_images || [] }, toolTimingPayload(item))]);
       return out;
     }
     if (type === "reasoning") {
@@ -734,6 +734,7 @@
         output: item.output || "",
         error: item.error || "",
         tool_state: item.raw || "",
+        output_images: item.outputImages || item.output_images || [],
       }, toolTimingPayload(item))]);
       return out;
     }
@@ -785,6 +786,7 @@
               output: item.output || "",
               error: item.error || "",
               tool_state: item.raw || "",
+              output_images: item.outputImages || item.output_images || [],
             }, toolTimingPayload(item))]);
             activeToolCalls.delete(callID);
             continue;
@@ -917,6 +919,7 @@
         output: item.output || "",
         error: item.error || "",
         tool_state: item.raw || "",
+        output_images: item.outputImages || item.output_images || [],
       }, toolTimingPayload(item))]];
       if (type === "agentMessage") return [["ASSISTANT_TEXT_END", agentMessageEndPayload(item)]];
       return eventsFromItem(item);
