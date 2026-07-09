@@ -1459,6 +1459,72 @@ func TestWeb_SessionImage_ServesShaReferencedInputImage(t *testing.T) {
 	}
 }
 
+func TestWeb_SessionImage_ServesShaReferencedToolResultImage(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "toolimg")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: "01TOOLIMG", UpdatedAt: time.Now(), OriginalPrompt: "tool image demo",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	imgBytes := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 't', 'o', 'o', 'l'}
+	wantSha := imageSha(imgBytes)
+
+	tpath := filepath.Join(proj, "sessions", "01TOOLIMG.transcript.jsonl")
+	tw, err := transcript.NewWriter(tpath, transcript.Header{
+		SessionID: "01TOOLIMG", ProfileID: "openai", Model: "gpt-5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Append(schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Role: llm.RoleTool, ToolCallID: "call_img", Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID:     "call_img",
+				Name:           "screenshot",
+				Content:        "captured image",
+				ImageData:      imgBytes,
+				ImageMediaType: "image/png",
+			},
+		}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+
+	imgReq := httptest.NewRequest(http.MethodGet, "/s/01TOOLIMG/images/"+wantSha, nil)
+	imgReq.Host = "127.0.0.1:9180"
+	imgRec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(imgRec, imgReq)
+	if imgRec.Code != http.StatusOK {
+		t.Fatalf("image status=%d, body=%q", imgRec.Code, imgRec.Body.String())
+	}
+	if !bytes.Equal(imgRec.Body.Bytes(), imgBytes) {
+		t.Errorf("image bytes mismatch: got %d bytes, want %d", imgRec.Body.Len(), len(imgBytes))
+	}
+	if ct := imgRec.Header().Get("Content-Type"); ct != "image/png" {
+		t.Errorf("Content-Type=%q, want image/png", ct)
+	}
+}
+
 // TestWeb_SessionImage_BadSha verifies that non-hex sha paths get 400.
 func TestWeb_SessionImage_BadSha(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{

@@ -415,10 +415,21 @@ type ThreadItem struct {
 	Description          string          `json:"description,omitempty"`
 	Output               string          `json:"output,omitempty"`
 	Error                string          `json:"error,omitempty"`
+	OutputImages         []OutputImage   `json:"outputImages,omitempty"`
 	Status               string          `json:"status,omitempty"`
 	StartedAt            *int64          `json:"startedAt,omitempty"`
 	CompletedAt          *int64          `json:"completedAt,omitempty"`
 	Raw                  json.RawMessage `json:"raw,omitempty"`
+}
+
+type OutputImage struct {
+	Source    string `json:"source"`
+	Name      string `json:"name,omitempty"`
+	MediaType string `json:"mediaType,omitempty"`
+	Size      int64  `json:"size,omitempty"`
+	URL       string `json:"url,omitempty"`
+	SHA       string `json:"sha,omitempty"`
+	Path      string `json:"path,omitempty"`
 }
 
 type InputItem struct {

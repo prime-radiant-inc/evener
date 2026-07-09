@@ -34,7 +34,7 @@ func FuzzProjectTurn(f *testing.F) {
 			return // rejected input
 		}
 		toolNames := map[string]string{}
-		items := ProjectTurn("turn_1", 1, turn, toolNames, nil)
+		items := ProjectTurn("turn_1", 1, turn, toolNames, nil, nil)
 		for _, item := range items {
 			if _, err := json.Marshal(item); err != nil {
 				t.Fatalf("projected item failed to marshal: %v\n raw=%q\n item=%#v", err, raw, item)

@@ -21,6 +21,10 @@ type EntryProjector func(raw json.RawMessage, turnID string, turnIndex int) []ap
 // ImageProjector converts transcript image content into an AppWire image item.
 type ImageProjector func(image llm.ImageData) appwire.InputItem
 
+// OutputImageProjector converts a transcript tool result into AppWire output
+// image descriptors. The descriptors carry fetch metadata only, not image bytes.
+type OutputImageProjector func(result *llm.ToolResultData) []appwire.OutputImage
+
 // ScanPrelude reads the transcript header and first API call, if present.
 func ScanPrelude(path string, maxLineBytes int) (transcript.Header, *transcript.APICall) {
 	f, err := os.Open(path)
@@ -188,7 +192,7 @@ func DefaultImageProjector(image llm.ImageData) appwire.InputItem {
 }
 
 // ProjectTurn maps a typed transcript turn into AppWire transcript items.
-func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string, imageProjector ImageProjector) (out []appwire.ThreadItem) {
+func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string, imageProjector ImageProjector, outputImageProjector OutputImageProjector) (out []appwire.ThreadItem) {
 	if imageProjector == nil {
 		imageProjector = DefaultImageProjector
 	}
@@ -367,6 +371,9 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 				item.Error = StringifyToolContent(part.ToolResult.Content)
 			} else {
 				item.Output = StringifyToolContent(part.ToolResult.Content)
+			}
+			if outputImageProjector != nil {
+				item.OutputImages = outputImageProjector(part.ToolResult)
 			}
 			items = append(items, item)
 		}

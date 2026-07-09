@@ -188,6 +188,75 @@ func TestPastThreadReadProjectsThinkingFromTranscript(t *testing.T) {
 	}
 }
 
+func TestPastThreadReadProjectsToolResultOutputImages(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "repo")
+	sessionID := "01TOOLIMG"
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 0).UTC()
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID:        sessionID,
+		ProfileID: "openai",
+		Model:     "gpt-5",
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/tmp/project"},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w, err := transcript.NewWriter(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"), transcript.Header{
+		SessionID: sessionID,
+		CreatedAt: now,
+		ProfileID: "openai",
+		Model:     "gpt-5",
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 'p', 'a', 'y'}
+	if err := w.Append(schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Role: llm.RoleTool, ToolCallID: "call_img", Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID:     "call_img",
+				Name:           "screenshot",
+				Content:        "captured",
+				ImageData:      png,
+				ImageMediaType: "image/png",
+			},
+		}}},
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	thread, ok := pastThreadForRead(hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true})
+	if !ok {
+		t.Fatal("past thread not found")
+	}
+	if len(thread.Turns) != 1 || len(thread.Turns[0].Items) != 1 {
+		t.Fatalf("turns=%+v", thread.Turns)
+	}
+	item := thread.Turns[0].Items[0]
+	wantSHA := imageSha(png)
+	if len(item.OutputImages) != 1 {
+		t.Fatalf("OutputImages=%+v, want one", item.OutputImages)
+	}
+	img := item.OutputImages[0]
+	if img.Source != "tool-result" || img.Name != "screenshot" || img.MediaType != "image/png" || img.Size != int64(len(png)) || img.SHA != wantSHA || img.URL != "/s/"+sessionID+"/images/"+wantSHA {
+		t.Fatalf("OutputImages[0]=%+v", img)
+	}
+}
+
 // TestPastEntryTurns_StampsCostFromSessionModel verifies pastEntryTurns
 // estimates each turn's Cost from the session's own recorded Model — usage
 // alone (from the transcript) isn't enough to price a turn, since

@@ -187,6 +187,27 @@ func TestAppEventProjectorCarriesUserInputImages(t *testing.T) {
 	}
 }
 
+func TestAppEventProjectorCarriesToolCallOutputImages(t *testing.T) {
+	p := NewAppEventProjector("th_1", "local:th_1")
+	p.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
+		ToolName: "shell",
+		CallID:   "call_img",
+	}})
+	end := events.New(events.ToolCallEndData{
+		ToolName: "shell",
+		CallID:   "call_img",
+		Output:   "wrote out.png",
+		OutputImages: []events.OutputImage{{
+			Source: "shell-path", Name: "out.png", MediaType: "image/png", URL: "/doc/image?session=01&path=out.png", Path: "out.png",
+		}},
+	})
+	notes := p.Project(end)
+	item := notificationThreadItem(t, notes, appwire.NotifyItemCompleted)
+	if len(item.OutputImages) != 1 || item.OutputImages[0].Name != "out.png" {
+		t.Fatalf("OutputImages=%+v", item.OutputImages)
+	}
+}
+
 func TestAppEventProjectorCompletesActiveTurnBeforeQueuedUserInput(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	first := projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "first"}})

@@ -108,7 +108,7 @@ func FuzzHubReplayCarryThrough(f *testing.F) {
 // projectIsolated projects a turn through ProjectTurn with a fresh toolNames map
 // (ProjectTurn mutates and deletes from it) and the default image projector.
 func projectIsolated(turn schema.Turn) []appwire.ThreadItem {
-	return apptranscript.ProjectTurn("turn_1", 1, turn, map[string]string{}, nil)
+	return apptranscript.ProjectTurn("turn_1", 1, turn, map[string]string{}, nil, nil)
 }
 
 // stripSyntheticIDs zeroes the index-derived ID and the constant TurnID so the
@@ -182,7 +182,7 @@ func checkLiveVsReload(t *testing.T, raw []byte) {
 		t.Fatalf("decode ReplayEntry: %v", err)
 	}
 	reconstructed, _ := replayTurnToAgentTurn(re.Turn)
-	reload := normalizeMetamorphic(apptranscript.ProjectTurn("turn_1", 1, reconstructed, map[string]string{}, nil))
+	reload := normalizeMetamorphic(apptranscript.ProjectTurn("turn_1", 1, reconstructed, map[string]string{}, nil, nil))
 
 	if eq, a, b := jsonEqItems(t, live, reload); !eq {
 		t.Fatalf("live-vs-reload metamorphic diverged:\n live  =%s\n reload=%s\n entry=%s", a, b, canonBytes)
