@@ -27,18 +27,17 @@ func TestBuildDelegateSandboxPolicy_ModeFloor(t *testing.T) {
 		if !strings.Contains(err.Error(), "invalid_request:") {
 			t.Errorf("delegate %q refusal must be an invalid_request error, got %v", mode, err)
 		}
-		if !strings.Contains(err.Error(), "grants more access than your own sandbox") {
-			t.Errorf("delegate %q refusal must explain the escalation, got %v", mode, err)
+		if !strings.Contains(err.Error(), "not at least as confining") {
+			t.Errorf("delegate %q refusal must explain the confinement failure, got %v", mode, err)
 		}
 	}
 	if _, err := buildDelegateSandboxPolicy("restricted", nil, sandbox.ModeRestricted, true); err != nil {
 		t.Errorf("restricted delegate under a restricted parent must be allowed, got %v", err)
 	}
 
-	// Off parent: every mode is allowed and the returned policy carries the
-	// requested mode.
+	// Off parent: every NON-OFF mode is allowed and carries the requested mode; an
+	// explicit off with no net is treated as inherit (nil policy — no needless clone).
 	for name, mode := range map[string]sandbox.Mode{
-		"off":             sandbox.ModeOff,
 		"read-only":       sandbox.ModeReadOnly,
 		"workspace-write": sandbox.ModeWorkspaceWrite,
 		"restricted":      sandbox.ModeRestricted,
@@ -51,6 +50,33 @@ func TestBuildDelegateSandboxPolicy_ModeFloor(t *testing.T) {
 		if pol == nil || pol.Mode != mode {
 			t.Errorf("delegate %q under an off parent = %+v, want mode %v", name, pol, mode)
 		}
+	}
+	if pol, err := buildDelegateSandboxPolicy("off", nil, sandbox.ModeOff, true); err != nil || pol != nil {
+		t.Errorf("explicit off under an off parent must be inherit (nil), got %+v, %v", pol, err)
+	}
+}
+
+// TestBuildDelegateSandboxPolicy_FloorErrorNamesAxisAndAllowedSet: the floor refusal
+// must not read as false for the incomparable pair (a read-only parent refusing a
+// restricted child — restricted is intuitively tighter; the real reason is the WRITE
+// axis). It names the confinement failure and lists the recoverable set, mirroring
+// the delegation-allowance error's "valid grants" style.
+func TestBuildDelegateSandboxPolicy_FloorErrorNamesAxisAndAllowedSet(t *testing.T) {
+	t.Parallel()
+	_, err := buildDelegateSandboxPolicy("restricted", nil, sandbox.ModeReadOnly, true)
+	if err == nil {
+		t.Fatal("restricted under a read-only parent must be refused (write-axis mismatch)")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "write") {
+		t.Errorf("refusal must name the write axis, got %q", msg)
+	}
+	// The only mode at least as confining as read-only is read-only itself.
+	if !strings.Contains(msg, "read-only") {
+		t.Errorf("refusal must list the allowed set (read-only), got %q", msg)
+	}
+	if strings.Contains(msg, "workspace-write") || strings.Contains(msg, "restricted sandbox") {
+		t.Errorf("allowed set must not include modes looser than read-only, got %q", msg)
 	}
 }
 

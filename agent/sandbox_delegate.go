@@ -44,6 +44,20 @@ func resolveDelegateSandboxRequest(sandboxMode string, sandboxNet *bool, parentM
 	return buildDelegateSandboxPolicy(mode, sandboxNet, parentMode, parentNet)
 }
 
+// allowedDelegateModes lists, in AllModes order, the sandbox modes a delegate may
+// request under a parent in the given mode — those at least as confining as the
+// parent on BOTH axes — as a comma-joined string for the floor error's recoverable-
+// set hint. Pure.
+func allowedDelegateModes(parentMode sandbox.Mode) string {
+	var names []string
+	for _, m := range sandbox.AllModes() {
+		if m.AtLeastAsConfining(parentMode) {
+			names = append(names, m.String())
+		}
+	}
+	return strings.Join(names, ", ")
+}
+
 // buildDelegateSandboxPolicy validates an explicit per-delegate sandbox request
 // against the parent session's effective (mode, network) and returns the policy to
 // enforce for the delegate, or an invalid_request error when the request would
@@ -59,23 +73,34 @@ func buildDelegateSandboxPolicy(sandboxMode string, sandboxNet *bool, parentMode
 	if err != nil {
 		return nil, fmt.Errorf("invalid_request: %w", err)
 	}
+	// The modes are a PARTIAL order (read-only and restricted are incomparable), so a
+	// refusal must not read as "looser" — a read-only parent refusing a restricted
+	// child is really a WRITE-axis mismatch, not "restricted grants more access".
+	// Name the confinement failure and list the recoverable set, mirroring the
+	// delegation-allowance error's "valid grants" house style.
 	if !requested.AtLeastAsConfining(parentMode) {
-		return nil, fmt.Errorf("invalid_request: sandbox %q grants more access than your own sandbox (%s); a delegate cannot be less restricted than you", requested, parentMode)
+		return nil, fmt.Errorf("invalid_request: sandbox %q allows access on an axis your %s sandbox forbids (it is not at least as confining on both reads and writes); modes allowed under your %s sandbox: %s", requested, parentMode, parentMode, allowedDelegateModes(parentMode))
 	}
 	// off applies NO network confinement — Resolve hard-codes net on for ModeOff and
 	// EnableSandbox treats a non-enforced policy as a no-op — so an explicit
 	// sandbox_net alongside sandbox="off" would silently run with full network while
-	// the caller believes egress is off. Refuse the contradiction rather than drop
-	// the flag.
+	// the caller believes egress is off. Refuse the contradiction (BEFORE the
+	// inherit short-circuit below) rather than drop the flag.
 	if requested == sandbox.ModeOff && sandboxNet != nil {
 		return nil, errors.New(`invalid_request: sandbox_net has no effect with sandbox="off" (off applies no network confinement); pass a non-off sandbox mode or omit sandbox_net`)
+	}
+	// An explicit sandbox="off" that passes the floor (only under an off parent) is
+	// exactly the inherit path: returning nil lets createDelegate skip the clone +
+	// EnableSandbox(off) round-trip and just inherit the (off) parent env.
+	if requested == sandbox.ModeOff {
+		return nil, nil
 	}
 	net := parentNet
 	if sandboxNet != nil {
 		net = *sandboxNet
 	}
 	if net && !parentNet {
-		return nil, errors.New("invalid_request: sandbox_net on grants more network access than your own sandbox (network off); a delegate cannot be less restricted than you")
+		return nil, errors.New("invalid_request: sandbox_net on grants more network access than your own sandbox (network off); a delegate cannot be less restricted than you; omit sandbox_net or pass sandbox_net=false")
 	}
 	// The floor compares MODE and NETWORK only, and the returned policy carries only
 	// those two axes — deliberately. SandboxPolicy also has denylist deltas

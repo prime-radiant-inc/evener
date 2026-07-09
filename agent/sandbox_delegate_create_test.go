@@ -140,15 +140,15 @@ func TestCreateDelegate_SandboxFloorRefusedEarly(t *testing.T) {
 	s := sbxDelegateSession(t, facts)
 	sbxSetParentMode(t, s, facts, lane, sandbox.ModeRestricted) // parent restricted
 
-	res := s.createDelegate(context.Background(), delegateArgs{Task: "do work", Sandbox: "off"})
+	res := s.createDelegate(context.Background(), delegateArgs{Task: "do work", Sandbox: "workspace-write"})
 	if res.Err == nil {
 		t.Fatal("a looser delegate box under a restricted parent must be refused")
 	}
 	if !strings.Contains(res.Err.Error(), "invalid_request:") {
 		t.Errorf("refusal must be an invalid_request error, got %v", res.Err)
 	}
-	if !strings.Contains(res.Err.Error(), "grants more access than your own sandbox") {
-		t.Errorf("refusal must explain the escalation, got %v", res.Err)
+	if !strings.Contains(res.Err.Error(), "not at least as confining") {
+		t.Errorf("refusal must explain the confinement failure, got %v", res.Err)
 	}
 	if res.DelegateID != "" {
 		t.Errorf("floor refusal must not mint a delegate id, got %q", res.DelegateID)
