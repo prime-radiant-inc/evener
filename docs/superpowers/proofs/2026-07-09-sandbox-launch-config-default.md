@@ -42,11 +42,11 @@ script.
 
 ## Expected + Falsification (live, when a hub is stood up)
 - **Enforcement line** in the spawned session's startup output:
-  `sandbox: bwrap enforcing --sandbox restricted (network on, cache cold session-private)`
+  `sandbox: bwrap enforcing restricted (network on, secrets masked, cache private)`
   (Linux/bwrap host) — the same line proven live in
   `2026-07-09-sandbox-flag-live-e2e.md`.
 - **A blocked op**: an out-of-worktree `read_file /etc/hostname` returns
-  `sandbox: read_file denied (hostname): outside the sandbox's readable roots [--sandbox restricted]`.
+  `sandbox: read_file denied (hostname): outside the sandbox's readable roots; this sandbox policy is fixed for the session [sandbox mode: restricted]`.
 - **Falsify**: if the spawned session prints NO enforcement line (ran unsandboxed)
   or the out-of-worktree read SUCCEEDS, the launch-config default did not reach the
   session — FAIL. If a global `restricted` + per-launch `off` still enforces

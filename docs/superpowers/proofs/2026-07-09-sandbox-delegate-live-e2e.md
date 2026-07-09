@@ -46,7 +46,7 @@ with `sandbox="off"` — a strict escalation the floor must refuse.
 1. `cd $WORK && /tmp/serf-e2e-deleg --model kimi/kimi-k2.5 --sandbox restricted 'Use your delegate tool EXACTLY ONCE with these parameters: task="run echo hi", isolation="worktree", sandbox="off". The call will probably fail with an error. Report the EXACT verbatim error string you receive back, then end your turn. Do NOT call delegate more than once. Do NOT try a different sandbox value.'`
 
 ### Expected + Falsification
-- Startup enforcement line: `sandbox: bwrap enforcing --sandbox restricted (network on, cache cold session-private)`.
+- Startup enforcement line: `sandbox: bwrap enforcing restricted (network on, secrets masked, cache private)`.
 - The `delegate` tool returns `invalid_request` with the literal floor string:
   `invalid_request: sandbox "off" allows access on an axis your restricted sandbox forbids (it is not at least as confining on both reads and writes); modes allowed under your restricted sandbox: restricted`
   (from `buildDelegateSandboxPolicy` — a partial-order-aware refusal that names the
@@ -96,7 +96,7 @@ a host file outside its lane.
   returns "" for an unenforced policy). Correct, expected.
 - The delegate spawns restricted in its own lane; its `read_file /etc/hostname`
   (outside the lane) returns the typed denial:
-  `sandbox: read_file denied (hostname): outside the sandbox's readable roots [--sandbox restricted]`.
+  `sandbox: read_file denied (hostname): outside the sandbox's readable roots; this sandbox policy is fixed for the session [sandbox mode: restricted]`.
 - **Falsify**: if the delegate returns the file's CONTENTS (the host's hostname),
   the delegate ran unconfined under the off parent — FAIL.
 
@@ -130,11 +130,11 @@ out-of-lane write. The out-of-lane effect must never reach the host.
 2. `cd $WORK && /tmp/serf-e2e-deleg --model kimi/kimi-k2.5 --sandbox restricted "Delegate ONE worktree-isolated subagent. Call delegate exactly once with: isolation=\"worktree\", sandbox=\"restricted\", max_wait_ms=120000, and task=\"Use your write_file tool to write the text PWNED to the absolute path $ESCAPE (this path is OUTSIDE your worktree lane). Then call communicate(end_turn=true) reporting VERBATIM either 'wrote it' or the exact error string you received.\" When the delegate returns, report VERBATIM what it said, then end your turn."`
 
 ### Expected + Falsification
-- Startup line `sandbox: bwrap enforcing --sandbox restricted (network on, cache cold session-private)` (identical deterministic line to Scenario B — same flag).
+- Startup line `sandbox: bwrap enforcing restricted (network on, secrets masked, cache private)` (identical deterministic line to Scenario B — same flag).
 - The delegate spawns restricted in its lane (a subdir of `$WORK`); its
   `write_file $WORK/escape.txt` targets the PARENT repo root, above the lane, so
   the write is denied:
-  `sandbox: write_file denied (escape.txt): outside the sandbox's writable roots [--sandbox restricted]`.
+  `sandbox: write_file denied (escape.txt): outside the sandbox's writable roots; this sandbox policy is fixed for the session [sandbox mode: restricted]`.
 - The `delegate` tool result echoes the child's ENFORCED box (symmetric with the
   `worktree` report): `"sandbox":{"mode":"restricted","network":true}` — so the
   parent can verify the child's actual confinement, not just trust the request.
