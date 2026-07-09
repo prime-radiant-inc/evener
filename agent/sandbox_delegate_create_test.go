@@ -200,6 +200,76 @@ func TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnSpawnFailure(t *tes
 	}
 }
 
+// TestPrepareSubagentRun_PerDelegateSandboxWithoutIsolationDoesNotMutateParent: a
+// delegate may request its own box WITHOUT isolation="worktree" (empty workingDir),
+// which shares the parent's working dir. The per-delegate EnableSandbox mutates its
+// env IN PLACE, so the clone-before-mutate guard is containment-critical: without it
+// EnableSandbox would sandbox (or re-box) the SHARED parent env mid-session. Assert
+// the child gets the requested box AND the parent env is untouched.
+func TestPrepareSubagentRun_PerDelegateSandboxWithoutIsolationDoesNotMutateParent(t *testing.T) {
+	lane, home := sbxLane(t)
+	facts := sbxBwrapFacts(home)
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	// Root the OFF parent session at a real worktree so the child's restricted box
+	// (resolved at the shared working dir, since workingDir=="") anchors there.
+	s := newSession(t, withClient(c), withDir(lane), withConfig(SessionConfig{
+		StateDir:         packageFixtureTempDir(t, "sbx-noiso-*"),
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+			sandboxProber:       sandbox.FakeProber{Facts: facts},
+		},
+	}))
+
+	parentEnv := s.currentEnv()
+	parentLocal, ok := parentEnv.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("parent env must be a LocalExecutionEnvironment")
+	}
+	if parentLocal.Sandbox != nil || parentLocal.Wrapper != nil {
+		t.Fatal("parent must start unsandboxed (off)")
+	}
+
+	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 0)
+	ctx = context.WithValue(ctx, ctxParentJobID, "job_noiso")
+	ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: boolPtr(true)})
+
+	// workingDir == "" : a per-delegate sandbox WITHOUT an isolation lane.
+	prepared, err := s.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("prepareSubagentRun: %v", err)
+	}
+	t.Cleanup(func() {
+		releasePreparedTreeSlot(prepared)
+		prepared.sub.sess.Close()
+	})
+
+	// (a) The child env is enforced with the REQUESTED box.
+	childLocal, ok := prepared.sub.sess.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("child env must be a LocalExecutionEnvironment")
+	}
+	if childLocal.Sandbox == nil || !childLocal.Sandbox.Enforced() || childLocal.Sandbox.Mode != sandbox.ModeRestricted {
+		t.Fatalf("child env must be enforced restricted, got %+v", childLocal.Sandbox)
+	}
+
+	// (b) The SHARED parent env is UNCHANGED — same instance, still unsandboxed.
+	if s.currentEnv() != parentEnv {
+		t.Error("parent env identity changed after a no-isolation per-delegate sandbox spawn")
+	}
+	if parentLocal.Sandbox != nil || parentLocal.Wrapper != nil {
+		t.Errorf("per-delegate sandbox mutated the shared parent env: Sandbox=%v Wrapper=%v", parentLocal.Sandbox, parentLocal.Wrapper)
+	}
+	// The child must be a distinct env instance (clone-before-mutate), not the parent.
+	if childLocal == parentLocal {
+		t.Error("child env must be a clone of the parent, not the shared parent instance")
+	}
+}
+
 // TestCreateDelegate_SandboxNetWithoutModeRefusedEarly: setting sandbox_net alone
 // under an unsandboxed parent is refused with a legible error (not silently
 // dropped), before any IDs are minted.
