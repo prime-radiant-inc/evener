@@ -123,6 +123,11 @@ func (p LaunchSettingsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			p.resolved = m.Resolved
 			p.statusMessage = "trust recorded"
+			// Trusting an in-repo file is exactly when a repo-layer diagnostic
+			// (e.g. sandbox_net with no mode in the trusted file) first takes effect.
+			if d := launchDiagnosticsStatus(m.Resolved); d != "" {
+				p.statusMessage += " — " + d
+			}
 		}
 	case tea.KeyMsg:
 		switch m.Type {

@@ -160,6 +160,14 @@ func TestPanel_SurfacesResolveDiagnostics(t *testing.T) {
 	if got := clean.(LaunchSettingsPanel).statusMessage; got != "" {
 		t.Errorf("a clean resolve must leave no warning, got %q", got)
 	}
+
+	// Trusting an in-repo file is when a repo-layer diagnostic first takes effect —
+	// it must surface on the trust path too, alongside "trust recorded".
+	trusted, _ := p.Update(LaunchTrustResultMsg{Resolved: resolved})
+	tp := trusted.(LaunchSettingsPanel)
+	if !strings.Contains(tp.statusMessage, "trust recorded") || !strings.Contains(tp.statusMessage, "sandbox_net has no effect") {
+		t.Errorf("trust path must surface diagnostics alongside the confirmation, got %q", tp.statusMessage)
+	}
 }
 
 // TestApplyEdit_SandboxValidatesMode: the sandbox field is a select, not blind
