@@ -149,31 +149,31 @@ type Server struct {
 	appServer   *appserver.Server
 	appNotifier *appserver.Notifier
 
-	mu                  sync.RWMutex
-	status              StatusInfo
-	appSourceID         string
-	appThreadID         string
-	appProjector        *appprojector.AppEventProjector
-	appActiveTurnID     string
-	appReservedTurnID   string
-	cancelFunc          context.CancelFunc
-	steerFunc           func(string)
-	steerWithImagesFunc func(string, []ImageAttachment)
-	queueFunc           func(string) error
-	queueWithImagesFunc func(string, []ImageAttachment) error
-	goalFunc            func(objective string) (bool, error)
-	goalStatusFn        func() (status string, iterations int, ok bool)
-	drainSteerFunc      func() error
-	drainSteerInputFunc func(string, []ImageAttachment) error
-	queueDepthFn        func() int
-	queuePreviewFn      func() []string
-	compactFunc         func(context.Context) error
-	clearFunc           func(context.Context) error
-	pressureFn          func() float64
+	mu                           sync.RWMutex
+	status                       StatusInfo
+	appSourceID                  string
+	appThreadID                  string
+	appProjector                 *appprojector.AppEventProjector
+	appActiveTurnID              string
+	appReservedTurnID            string
+	cancelFunc                   context.CancelFunc
+	steerFunc                    func(string)
+	steerWithImagesFunc          func(string, []ImageAttachment)
+	queueFunc                    func(string) error
+	queueWithImagesFunc          func(string, []ImageAttachment) error
+	goalFunc                     func(objective string) (bool, error)
+	goalStatusFn                 func() (status string, iterations int, ok bool)
+	drainSteerFunc               func() error
+	drainSteerInputFunc          func(string, []ImageAttachment) error
+	queueDepthFn                 func() int
+	queuePreviewFn               func() []string
+	compactFunc                  func(context.Context) error
+	clearFunc                    func(context.Context) error
+	pressureFn                   func() float64
 	pendingAskFn                 func() bool
 	pendingEscalationFn          func() bool
 	pendingEscalationsSnapshotFn func() []appwire.SandboxEscalationRequested
-	contextMetricsFn    func() ContextMetrics
+	contextMetricsFn             func() ContextMetrics
 	// workMetricsFn returns the live working-state/token metrics (WS2 A7):
 	// accumulated wall-clock work time, cumulative token usage (nil when
 	// there is none to report), and the in-flight turn's start time (0 when
