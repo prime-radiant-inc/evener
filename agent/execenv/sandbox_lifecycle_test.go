@@ -2,7 +2,6 @@ package execenv
 
 import (
 	"context"
-	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -13,12 +12,13 @@ import (
 	"primeradiant.com/serf/agent/sandbox"
 )
 
-// TestEnableSandboxRefusesNonBwrapBackend: EnableSandbox provisions only the bwrap
-// kernel wrapper, so an enforced policy on any other backend (Seatbelt) must FAIL
-// CLOSED rather than attach the policy with a nil wrapper (a half-enforced env whose
-// spawned processes would run unconfined). The darwin-resolved policy is built purely
-// (no Mac needed) so the guard is exercised on the Linux test host.
-func TestEnableSandboxRefusesNonBwrapBackend(t *testing.T) {
+// TestEnableSandboxProvisionsSeatbeltBackend: EnableSandbox provisions the kernel
+// wrapper for whichever backend resolved — bubblewrap on Linux, sandbox-exec
+// (Seatbelt) on macOS — so a darwin-resolved Seatbelt policy attaches a real
+// (non-nil) wrapper rather than failing closed. The darwin-resolved policy is
+// built purely (no Mac needed) so the wiring is exercised on the Linux test host;
+// the wrapper's actual sandbox-exec enforcement is validated live on paradise-park.
+func TestEnableSandboxProvisionsSeatbeltBackend(t *testing.T) {
 	home := t.TempDir()
 	worktree := filepath.Join(home, "project")
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
@@ -30,20 +30,15 @@ func TestEnableSandboxRefusesNonBwrapBackend(t *testing.T) {
 		t.Fatalf("Resolve(darwin): %v", err)
 	}
 	if rp.Backend != sandbox.BackendSeatbelt {
-		t.Fatalf("expected a seatbelt backend to exercise the guard, got %v", rp.Backend)
+		t.Fatalf("expected a seatbelt backend, got %v", rp.Backend)
 	}
 	env := NewLocalExecutionEnvironment(worktree)
 	t.Cleanup(env.Cleanup)
-	err = env.EnableSandbox(&rp)
-	if err == nil {
-		t.Fatal("EnableSandbox on a non-bwrap backend must fail closed, not half-enforce")
+	if err := env.EnableSandbox(&rp); err != nil {
+		t.Fatalf("EnableSandbox on a seatbelt backend must provision, not refuse: %v", err)
 	}
-	var ref *sandbox.RefusalError
-	if !errors.As(err, &ref) {
-		t.Errorf("want a *sandbox.RefusalError, got %T: %v", err, err)
-	}
-	if env.Sandbox != nil || env.Wrapper != nil {
-		t.Errorf("a refused EnableSandbox must leave the env unsandboxed, got Sandbox=%v Wrapper=%v", env.Sandbox, env.Wrapper)
+	if env.Sandbox == nil || env.Wrapper == nil {
+		t.Errorf("a provisioned seatbelt env must have both Sandbox and Wrapper set, got Sandbox=%v Wrapper=%v", env.Sandbox, env.Wrapper)
 	}
 }
 

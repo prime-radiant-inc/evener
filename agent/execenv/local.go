@@ -220,19 +220,22 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 		e.Wrapper = nil
 		return err
 	}
-	if policy.Backend != sandbox.BackendBwrap {
-		// Fail closed: a non-bwrap enforced backend has no kernel wrapper provisioned
-		// here, so attaching the policy would half-enforce (unconfined spawns) and the
-		// enforcement line would overstate. Refuse rather than run half-wired.
+	// Provision the kernel wrapper for whichever backend resolved — bubblewrap on
+	// Linux, sandbox-exec (Seatbelt) on macOS. An enforced policy always resolves to
+	// a real backend; one with no usable backend binary fails closed (unconfined
+	// spawns would half-enforce and the enforcement line would overstate) rather
+	// than run half-wired.
+	binPath := policy.HostBinaryPath()
+	if binPath == "" {
 		_ = tmp.Cleanup()
 		e.Sandbox = nil
 		e.Wrapper = nil
 		return &sandbox.RefusalError{
 			Mode: policy.Mode, Net: policy.Network, RequiredBackend: policy.Backend.String(),
-			Reason: fmt.Sprintf("--sandbox is not yet live on this host: the %s backend's kernel confinement is not provisioned in this release (Linux/bubblewrap only)", policy.Backend),
+			Reason: fmt.Sprintf("--sandbox %s: no %s backend binary is available to provision kernel confinement", policy.Mode, policy.Backend),
 		}
 	}
-	w, werr := sandbox.NewWrapper(*policy, policy.HostBwrapPath(), tmp.Dir)
+	w, werr := sandbox.NewWrapper(*policy, binPath, tmp.Dir)
 	if werr != nil {
 		_ = tmp.Cleanup()
 		e.Sandbox = nil

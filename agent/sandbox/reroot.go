@@ -109,6 +109,22 @@ func (rp ResolvedPolicy) Inputs() SandboxPolicy { return rp.resolveInputs }
 // kernel wrapper from a resolved policy without separately threading host facts.
 func (rp ResolvedPolicy) HostBwrapPath() string { return rp.resolveHost.BwrapPath }
 
+// HostBinaryPath returns the probed backend-binary path the policy was resolved
+// against, matching its Backend: bubblewrap on Linux, /usr/bin/sandbox-exec on
+// macOS. Empty for off / a non-enforcing policy or a backend with no binary, so
+// the env layer can provision the wrapper for whichever backend resolved without
+// re-threading host facts.
+func (rp ResolvedPolicy) HostBinaryPath() string {
+	switch rp.Backend {
+	case BackendBwrap:
+		return rp.resolveHost.BwrapPath
+	case BackendSeatbelt:
+		return rp.resolveHost.SandboxExecPath
+	default:
+		return ""
+	}
+}
+
 // WithPolicy returns a copy of the wrapper enforcing rp instead of its current
 // policy, keeping the same probed bwrap binary and per-session tmp. It is how the
 // manage_worktree control env swaps in the ControlPolicy variant without
