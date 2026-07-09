@@ -479,7 +479,7 @@ func TestCachedSystemPromptComponents_SkillList(t *testing.T) {
 	}
 	defer sess.Close()
 
-	if got := len(sess.buildPromptData().Skills); got != len(sess.skills) {
+	if got := len(sess.buildPromptData(sess.currentEnv()).Skills); got != len(sess.skills) {
 		t.Errorf("buildPromptData skills length %d != discovered %d", got, len(sess.skills))
 	}
 }

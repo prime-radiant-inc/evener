@@ -246,19 +246,19 @@ func TestParentClose_DisposesRetainedPerDelegateSandboxScratch(t *testing.T) {
 	}
 }
 
-// TestSessionSandboxPromptLine: an unsandboxed session sources no environment
-// sandbox line; a sandboxed session sources the mode + network line.
-func TestSessionSandboxPromptLine(t *testing.T) {
-	if line := newSession(t).sessionSandboxPromptLine(); line != "" {
-		t.Errorf("an unsandboxed session must have no sandbox line, got %q", line)
+// TestSandboxPromptLine: an unsandboxed env sources no environment sandbox line; a
+// sandboxed env sources the mode + network line.
+func TestSandboxPromptLine(t *testing.T) {
+	if line := sandboxPromptLine(newSession(t).currentEnv()); line != "" {
+		t.Errorf("an unsandboxed env must have no sandbox line, got %q", line)
 	}
 
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
 	s := sbxDelegateSession(t, facts)
 	sbxSetParentMode(t, s, facts, lane, sandbox.ModeRestricted) // net on
-	if got, want := s.sessionSandboxPromptLine(), "restricted (network on) — fixed for this session"; got != want {
-		t.Errorf("sandboxed session line = %q, want %q", got, want)
+	if got, want := sandboxPromptLine(s.currentEnv()), "restricted (network on) — fixed for this session"; got != want {
+		t.Errorf("sandboxed env line = %q, want %q", got, want)
 	}
 }
 
