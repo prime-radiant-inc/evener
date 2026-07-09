@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 
 	"primeradiant.com/serf/agent/execenv"
@@ -42,7 +43,7 @@ func buildDelegateSandboxPolicy(sandboxMode string, sandboxNet *bool, parentMode
 		net = *sandboxNet
 	}
 	if net && !parentNet {
-		return nil, fmt.Errorf("invalid_request: sandbox_net on grants more network access than your own sandbox (network off); a delegate cannot be less restricted than you")
+		return nil, errors.New("invalid_request: sandbox_net on grants more network access than your own sandbox (network off); a delegate cannot be less restricted than you")
 	}
 	return &sandbox.SandboxPolicy{Mode: requested, Network: &net}, nil
 }
