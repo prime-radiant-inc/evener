@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"sync/atomic"
 
 	"primeradiant.com/serf/agent/events"
@@ -48,6 +49,10 @@ type sandboxGranter interface {
 type escalationWaiter struct {
 	ch   chan sandbox.EscalationDecision
 	data events.SandboxEscalationRequestedData
+	// seq is the monotonic raise order (from escalationSeq), so the snapshot can be
+	// returned in a STABLE, raise-order FIFO — matching what a client that saw the
+	// escalations live already tracks — instead of Go's random map order.
+	seq uint64
 }
 
 // ctxEscalationGrantKey carries a single granted absolute path on the context of
@@ -160,7 +165,7 @@ func (s *Session) escalateOnSandboxDenial(ctx context.Context, callName string, 
 		return res
 	}
 
-	id := newEscalationID()
+	id, seq := newEscalationID()
 	ch := make(chan sandbox.EscalationDecision, 1)
 	req := sandbox.NewEscalationRequest(id, denied)
 	data := escalationRequestedData(req)
@@ -173,7 +178,7 @@ func (s *Session) escalateOnSandboxDenial(ctx context.Context, callName string, 
 	if s.pendingEscalations == nil {
 		s.pendingEscalations = map[string]*escalationWaiter{}
 	}
-	s.pendingEscalations[id] = &escalationWaiter{ch: ch, data: data}
+	s.pendingEscalations[id] = &escalationWaiter{ch: ch, data: data, seq: seq}
 	s.mu.Unlock()
 
 	// Remove the waiter on every exit path (resolve, interrupt, close). Idempotent
@@ -239,8 +244,15 @@ func (s *Session) PendingEscalations() []events.SandboxEscalationRequestedData {
 	if len(s.pendingEscalations) == 0 {
 		return nil
 	}
-	out := make([]events.SandboxEscalationRequestedData, 0, len(s.pendingEscalations))
+	waiters := make([]*escalationWaiter, 0, len(s.pendingEscalations))
 	for _, w := range s.pendingEscalations {
+		waiters = append(waiters, w)
+	}
+	// Stable raise-order (not Go's random map order), so a fresh-entry client queues
+	// and answers escalations in the same FIFO a client that saw them live does.
+	sort.Slice(waiters, func(i, j int) bool { return waiters[i].seq < waiters[j].seq })
+	out := make([]events.SandboxEscalationRequestedData, 0, len(waiters))
+	for _, w := range waiters {
 		out = append(out, w.data)
 	}
 	return out
@@ -280,9 +292,11 @@ func escalationRequestedData(req sandbox.EscalationRequest) events.SandboxEscala
 // crypto/rand degenerates. The random suffix keeps the id unguessable.
 var escalationSeq atomic.Uint64
 
-// newEscalationID mints a unique, unguessable opaque handle for one escalation.
-func newEscalationID() string {
+// newEscalationID mints a unique, unguessable opaque handle for one escalation and
+// returns its monotonic raise sequence (used to order the snapshot stably).
+func newEscalationID() (id string, seq uint64) {
+	seq = escalationSeq.Add(1)
 	var b [12]byte
 	_, _ = rand.Read(b[:])
-	return fmt.Sprintf("esc_%d_%s", escalationSeq.Add(1), hex.EncodeToString(b[:]))
+	return fmt.Sprintf("esc_%d_%s", seq, hex.EncodeToString(b[:])), seq
 }

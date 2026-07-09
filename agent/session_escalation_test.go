@@ -212,6 +212,43 @@ func TestEscalation_HasAndListPending(t *testing.T) {
 	}
 }
 
+func TestEscalation_SnapshotIsInStableRaiseOrder(t *testing.T) {
+	s := escalatableSession(t)
+	// Raise three escalations in a known order; the snapshot must come back in that
+	// raise order every time (not Go's random map order), so a fresh-entry client
+	// answers them in the same FIFO as a client that saw them live.
+	paths := []string{"/a/first", "/b/second", "/c/third"}
+	dones := make([]chan tool.ExecResult, len(paths))
+	for i, p := range paths {
+		res, _ := deniedResult(p)
+		done := make(chan tool.ExecResult, 1)
+		dones[i] = done
+		go func() {
+			done <- s.escalateOnSandboxDenial(context.Background(), "read_file", res, func(context.Context) tool.ExecResult { return succeededResult() })
+		}()
+		awaitPending(t, s, i+1) // ensure this one registered before raising the next
+	}
+
+	for attempt := 0; attempt < 5; attempt++ {
+		snap := s.PendingEscalations()
+		if len(snap) != len(paths) {
+			t.Fatalf("expected %d pending, got %d", len(paths), len(snap))
+		}
+		for i, p := range paths {
+			if snap[i].DeniedPath != p {
+				t.Fatalf("snapshot must be in raise order; index %d = %q, want %q (%+v)", i, snap[i].DeniedPath, p, snap)
+			}
+		}
+	}
+
+	for _, id := range pendingIDs(s) {
+		_ = s.ResolveSandboxEscalation(id, false)
+	}
+	for _, d := range dones {
+		<-d
+	}
+}
+
 func TestEscalation_NonSandboxErrorUntouched(t *testing.T) {
 	s := escalatableSession(t)
 	res := tool.ExecResult{ToolName: "shell", CallID: "c", IsError: true, FullOutput: "boom", Err: context.DeadlineExceeded}
