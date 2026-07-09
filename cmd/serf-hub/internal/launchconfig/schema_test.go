@@ -1,6 +1,7 @@
 package launchconfig
 
 import (
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/envvars"
@@ -131,6 +132,22 @@ func TestLaunchOptionSchema_Sandbox(t *testing.T) {
 		if opts[sb].Choices[i].Value != want {
 			t.Fatalf("sandbox Choices = %+v, want values %v", opts[sb].Choices, wantChoices)
 		}
+	}
+
+	// The description must be accurate per policy.go mode semantics: read-only and
+	// workspace-write read anywhere-minus-denylist (NOT worktree-only), and read-only
+	// denies ALL worktree writes. The old universal "reads outside the sandbox are
+	// denied and writes are confined to the working tree" is false and must not
+	// return.
+	desc := opts[sb].Description
+	if strings.Contains(desc, "reads outside the sandbox are denied") {
+		t.Errorf("sandbox description repeats the false universal read claim: %q", desc)
+	}
+	if !strings.Contains(desc, "read-only denies all writes") {
+		t.Errorf("sandbox description must state read-only denies all writes, got %q", desc)
+	}
+	if !strings.Contains(desc, "credential") {
+		t.Errorf("sandbox description must state credential/secret paths are read-denied, got %q", desc)
 	}
 
 	sn := indexOption(opts, "sandbox_net")
