@@ -42,7 +42,7 @@ Full expected matrix (child rows × parent cols → allowed?):
 | off             | yes | no        | no              | no         |
 | read-only       | yes | yes       | yes             | no         |
 | workspace-write | yes | no        | yes             | no         |
-| restricted      | yes | yes       | yes             | yes        |
+| restricted      | yes | no        | yes             | yes        |
 
 Note the incomparable pair: `read-only` vs `restricted` is refused **both**
 directions (read-only reads outside the worktree restricted forbids; restricted
