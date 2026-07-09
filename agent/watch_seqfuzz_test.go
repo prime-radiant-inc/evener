@@ -375,7 +375,7 @@ func (h *ws_harness) applyEmit(op ws_op) ws_opOutcome {
 	predicted := 0
 	h.jm.mu.Lock()
 	for _, cfg := range h.jm.watches {
-		dec := evaluateWatchEvent(cfg.eventSnapshot(isActiveWatchTargetLocked(h.jm, cfg.target)), ev)
+		dec := evaluateWatchEvent(cfg.eventSnapshot(isActiveWatchTargetLocked(h.jm, cfg.target), h.jm.targetChildSessionIDLocked(cfg.target)), ev)
 		if dec.matched && !dec.send {
 			predicted++
 		}

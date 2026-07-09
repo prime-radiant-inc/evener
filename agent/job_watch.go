@@ -97,6 +97,13 @@ func watchBudgetClearedMessage(target string) string {
 	)
 }
 
+func watchRunawayClearedMessage(target string) string {
+	return fmt.Sprintf(
+		"watch cleared: frames on %s were repeatedly triggered by your own responses to this watch (runaway self-influence); do not re-arm it — rely on the automatic completion notification, or use output_match",
+		target,
+	)
+}
+
 type watchKey struct {
 	VisibleSessionID   string
 	Target             string
@@ -718,20 +725,6 @@ func validateWatchEventArgs(a watchArgs) error {
 		}
 		if _, ok := modelEventKinds[name]; !ok {
 			return fmt.Errorf("invalid_request: unknown event kind %q", name)
-		}
-	}
-	// Session-event kinds other than job.notification observe the watching
-	// session's own activity (their payloads carry no job identity, and a child
-	// session's events never reach this evaluator), so a concrete-job-targeted
-	// watch on them can only echo the watcher's own calls back at it labeled as
-	// job activity. Refuse the trigger rather than ack one that cannot fire as
-	// asked.
-	if len(a.Events) > 0 && !isWatchSessionTarget(a.Target) {
-		for _, name := range a.Events {
-			if name == "job.notification" {
-				continue
-			}
-			return fmt.Errorf(`invalid_request: events %q watch the watching session's own activity and cannot be scoped to a concrete job; a finished job delivers its completion notification (with result excerpt) automatically — to trigger on the job's output use output_match, or watch events ["job.notification"]`, name)
 		}
 	}
 	if a.Every > 0 {
@@ -1542,6 +1535,13 @@ func watchKeyForConfigLocked(jm *jobManager, cfg *watchConfig) (watchKey, bool) 
 // cfg is detached, a later in-flight settle that increments past the budget
 // finds no live key and returns without re-notifying.
 func (jm *jobManager) autoClearWatchOverBudget(cfg *watchConfig) {
+	jm.autoClearWatch(cfg, "budget_exhausted", watchBudgetClearedMessage(cfg.target))
+}
+
+// autoClearWatch tears a watch down as a circuit-breaker action, with the
+// given durable end reason and model-facing message (budget exhaustion or a
+// runaway self-influence chain on the notification path).
+func (jm *jobManager) autoClearWatch(cfg *watchConfig, endReason, message string) {
 	jm.mu.Lock()
 	key, ok := watchKeyForConfigLocked(jm, cfg)
 	if !ok {
@@ -1552,7 +1552,7 @@ func (jm *jobManager) autoClearWatchOverBudget(cfg *watchConfig) {
 		key:       key,
 		cfg:       cfg,
 		terminal:  watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
-		endReason: "budget_exhausted",
+		endReason: endReason,
 	}}
 	markWatchConfigSnapshotsRejectingLocked(targets)
 	jm.mu.Unlock()
@@ -1566,7 +1566,7 @@ func (jm *jobManager) autoClearWatchOverBudget(cfg *watchConfig) {
 	jm.removeWatchSendTerminalSnapshots(dropped)
 
 	jm.enqueueWatchNotifications([]jobNotification{
-		jm.watchNotificationFromWatch(cfg, "", watchBudgetClearedMessage(cfg.target), nil),
+		jm.watchNotificationFromWatch(cfg, "", message, nil),
 	})
 	jm.kick()
 }
@@ -2149,10 +2149,11 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
 	var overBudget []*watchConfig
+	var runaway []*watchConfig
 
 	jm.mu.Lock()
 	for _, cfg := range jm.watches {
-		dec := evaluateWatchEvent(cfg.eventSnapshot(isActiveWatchTargetLocked(jm, cfg.target)), ev)
+		dec := evaluateWatchEvent(cfg.eventSnapshot(isActiveWatchTargetLocked(jm, cfg.target), jm.targetChildSessionIDLocked(cfg.target)), ev)
 		cfg.eventCount = dec.eventCount
 		if !dec.matched {
 			continue
@@ -2160,7 +2161,20 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 		if dec.send {
 			deliveries = append(deliveries, jm.watchSendSnapshot(cfg, dec.watchedIdentity, fmt.Sprintf("event: %s", kind), ev).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, ev.Provenance)))
 		} else {
-			notifications = append(notifications, jm.watchNotificationFromWatch(cfg, dec.notifyJobID, fmt.Sprintf("event: %s", kind), ev.Provenance))
+			// Watcher notifications run the same inform+breaker policy as watch
+			// sends: a self-influenced echo is delivered with the disengage
+			// notice, and the runaway fuse drops it once the delivered-prior
+			// chain is deep enough (the watch auto-clears like an over-budget
+			// one). Without this, the no-send path — the only shape job_watch's
+			// public arguments can express — delivers unclassified echoes.
+			influence := jm.classifySelfInfluenceLocked(cfg, ev.Provenance)
+			if influence.fuseDepth >= runawaySelfInfluenceDepth {
+				runaway = append(runaway, cfg)
+				continue
+			}
+			n := jm.watchNotificationFromWatch(cfg, dec.notifyJobID, fmt.Sprintf("event: %s", kind), ev.Provenance)
+			n.Notice = selfInfluenceNotice(influence.self, influence.gradientDepth, influence.truncated)
+			notifications = append(notifications, n)
 			if jm.recordWatchDeliveryLocked(cfg) {
 				overBudget = append(overBudget, cfg)
 			}
@@ -2173,6 +2187,9 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 	jm.enqueueWatchNotifications(notifications)
 	jm.recordWatchSendsAndKick(deliveries)
 	jm.autoClearOverBudgetWatches(overBudget)
+	for _, cfg := range runaway {
+		jm.autoClearWatch(cfg, "runaway_self_influence", watchRunawayClearedMessage(cfg.target))
+	}
 }
 
 // watchEventSnapshot is a read-only copy of the per-watch fields that decide
@@ -2192,20 +2209,26 @@ type watchEventSnapshot struct {
 	eventCount     int
 	hasSend        bool
 	sendTo         string
+	// targetSessionID is the watched job's child session id (delegates only;
+	// empty for shells and session targets). Non-lifecycle events match a
+	// concrete-job target only when their envelope originates from this
+	// session — see watchEventMatchesTarget.
+	targetSessionID string
 }
 
-func (cfg *watchConfig) eventSnapshot(targetActive bool) watchEventSnapshot {
+func (cfg *watchConfig) eventSnapshot(targetActive bool, targetSessionID string) watchEventSnapshot {
 	snap := watchEventSnapshot{
-		target:         cfg.target,
-		targetActive:   targetActive,
-		wildcardEvents: cfg.wildcardEvents,
-		eventKinds:     cfg.eventKinds,
-		eventFilter:    cfg.eventFilter,
-		watchID:        cfg.watchID,
-		generation:     cfg.generation,
-		triggerKind:    cfg.triggerKind,
-		triggerEvery:   cfg.triggerEvery,
-		eventCount:     cfg.eventCount,
+		target:          cfg.target,
+		targetActive:    targetActive,
+		targetSessionID: targetSessionID,
+		wildcardEvents:  cfg.wildcardEvents,
+		eventKinds:      cfg.eventKinds,
+		eventFilter:     cfg.eventFilter,
+		watchID:         cfg.watchID,
+		generation:      cfg.generation,
+		triggerKind:     cfg.triggerKind,
+		triggerEvery:    cfg.triggerEvery,
+		eventCount:      cfg.eventCount,
 	}
 	if cfg.send != nil {
 		snap.hasSend = true
@@ -2249,7 +2272,7 @@ func evaluateWatchEvent(snap watchEventSnapshot, ev events.SessionEvent) watchEv
 	} else if !snap.eventKinds[kind] {
 		return miss
 	}
-	if !watchEventMatchesTarget(snap.target, data) {
+	if !watchEventMatchesTarget(snap.target, snap.targetSessionID, ev) {
 		return miss
 	}
 	if !watchEventFilterMatches(snap.eventFilter, ev) {
@@ -2431,23 +2454,25 @@ func watchEventWatchedIdentity(target string, data events.EventData) string {
 	}
 }
 
-func watchEventMatchesTarget(target string, data events.EventData) bool {
+// watchEventMatchesTarget decides whether an event belongs to a watch's target.
+// Session targets observe their own stream, so every event matches. A concrete
+// job target observes THAT job (spec: "a concrete job's output/progress/events"):
+// lifecycle payloads name their job, and every other kind is scoped by the
+// envelope's originating session against the watched job's child session.
+// Watcher-origin events (ev.SessionID == the watcher's session, which stamps its
+// own emissions) therefore never fire a job-targeted watch — matching them would
+// echo the watcher back at itself labeled as job activity.
+func watchEventMatchesTarget(target, targetSessionID string, ev events.SessionEvent) bool {
 	if isWatchSessionTarget(target) {
 		return true
 	}
-	switch d := data.(type) {
+	switch d := ev.Data.(type) {
 	case events.JobStartedData:
 		return d.JobID == target
 	case events.JobFinishedData:
 		return d.JobID == target
 	default:
-		// Only job lifecycle payloads carry a job identity. Everything else on
-		// the stream is the watching session's OWN activity — a child session's
-		// events never reach this evaluator — so matching it against a concrete
-		// job target would echo the watcher back at itself labeled as job
-		// activity. Fail closed: an event that cannot prove it belongs to the
-		// target does not fire a job-targeted watch.
-		return false
+		return ev.SessionID != "" && ev.SessionID == targetSessionID
 	}
 }
 
@@ -2456,6 +2481,21 @@ func isActiveWatchTargetLocked(jm *jobManager, target string) bool {
 		return true
 	}
 	return isWatchableConcreteJobLocked(jm.running[target])
+}
+
+// targetChildSessionIDLocked resolves a concrete watch target to the watched
+// job's child session id — the identity non-lifecycle events must carry to
+// match it (watchEventMatchesTarget). Empty for session targets, shells, and
+// jobs without a child session. Caller holds jm.mu.
+func (jm *jobManager) targetChildSessionIDLocked(target string) string {
+	if isWatchSessionTarget(target) {
+		return ""
+	}
+	run := jm.running[target]
+	if run == nil || run.rec == nil || run.rec.DelegateRestore == nil {
+		return ""
+	}
+	return run.rec.DelegateRestore.ChildSessionID
 }
 
 // feedJobOutput level-triggers output_match watches on a freshly produced
