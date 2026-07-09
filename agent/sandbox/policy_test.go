@@ -58,6 +58,59 @@ func TestModeRoundTrip(t *testing.T) {
 	}
 }
 
+// TestAtLeastAsConfiningMatrix pins the full mode-confinement lattice used by the
+// per-delegate sandbox no-escalation floor: child.AtLeastAsConfining(parent) is
+// true iff the child is no looser than the parent on BOTH the read and write axes.
+// Modes are NOT a total order — read-only and restricted are incomparable and must
+// be refused BOTH directions — so the whole 4x4 matrix is pinned cell-by-cell. A
+// single wrong cell is a containment hole (a delegate less confined than its
+// parent) or a false refusal.
+func TestAtLeastAsConfiningMatrix(t *testing.T) {
+	t.Parallel()
+	// rows = child, cols = parent; want[child][parent] per the spec's matrix.
+	want := map[Mode]map[Mode]bool{
+		ModeOff: {
+			ModeOff: true, ModeReadOnly: false, ModeWorkspaceWrite: false, ModeRestricted: false,
+		},
+		ModeReadOnly: {
+			ModeOff: true, ModeReadOnly: true, ModeWorkspaceWrite: true, ModeRestricted: false,
+		},
+		ModeWorkspaceWrite: {
+			ModeOff: true, ModeReadOnly: false, ModeWorkspaceWrite: true, ModeRestricted: false,
+		},
+		ModeRestricted: {
+			ModeOff: true, ModeReadOnly: false, ModeWorkspaceWrite: true, ModeRestricted: true,
+		},
+	}
+	for _, child := range AllModes() {
+		for _, parent := range AllModes() {
+			if got := child.AtLeastAsConfining(parent); got != want[child][parent] {
+				t.Errorf("%s.AtLeastAsConfining(%s) = %v, want %v", child, parent, got, want[child][parent])
+			}
+		}
+	}
+
+	// The incomparable pair is refused BOTH directions — the property the plan
+	// calls out explicitly, restated so a regression names it.
+	if ModeReadOnly.AtLeastAsConfining(ModeRestricted) {
+		t.Error("read-only must NOT be at least as confining as restricted (incomparable: read-only reads outside the worktree)")
+	}
+	if ModeRestricted.AtLeastAsConfining(ModeReadOnly) {
+		t.Error("restricted must NOT be at least as confining as read-only (incomparable: restricted writes the worktree)")
+	}
+
+	// Every mode is at least as confining as itself (reflexive), and every mode is
+	// allowed under an off parent (off is loosest on both axes).
+	for _, m := range AllModes() {
+		if !m.AtLeastAsConfining(m) {
+			t.Errorf("%s must be at least as confining as itself", m)
+		}
+		if !m.AtLeastAsConfining(ModeOff) {
+			t.Errorf("%s must be allowed under an off parent", m)
+		}
+	}
+}
+
 // TestDefaultDenylistIncludesPseudoFS pins the spec's secrets+pseudo-fs denylist
 // exactly: the pseudo-filesystem masks (so read_file("/proc/<serf-pid>/environ")
 // can't read serf's own API key) and every credential directory. A dropped entry
