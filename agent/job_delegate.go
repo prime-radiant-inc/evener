@@ -1147,6 +1147,31 @@ func (s *Session) resolveRestoredDelegateSandbox(desc *jobstore.DelegateRestoreD
 	if !ok {
 		return nil, notResumableSandboxUnsatisfiable
 	}
+	// A persisted snapshot with a denylist delta or extra roots was not produced by
+	// any serf create path — all create paths originate mode+net only (see
+	// buildDelegateSandboxPolicy). Such a descriptor is tampered or foreign, so fail
+	// closed rather than resume a box serf never granted: a hand-added
+	// DenylistRemove could un-mask ~/.ssh, an ExtraReadRoot could re-open the whole
+	// filesystem. When a denylist/extra-root config surface is ever added, THIS check
+	// and the create floor (buildDelegateSandboxPolicy) must both be extended.
+	if len(pol.DenylistAdd) > 0 || len(pol.DenylistRemove) > 0 ||
+		len(pol.ExtraReadRoots) > 0 || len(pol.ExtraWritableRoots) > 0 {
+		return nil, notResumableSandboxUnsatisfiable
+	}
+	// Re-apply the no-escalation floor against the CURRENT parent. The floor is
+	// enforced at CREATE, but a persisted snapshot could be tampered to a looser box,
+	// so re-check on every resume. A legitimate delegate was at-least-as-confining as
+	// its parent at create, and both boxes are immutable across restart, so
+	// delegate <= parent still holds (a looser resume-time parent still passes); only
+	// a looser-than-parent descriptor fails.
+	parentMode, parentNet := s.parentSandboxModeNet()
+	if !pol.Mode.AtLeastAsConfining(parentMode) {
+		return nil, notResumableSandboxUnsatisfiable
+	}
+	resumedNet := pol.Network == nil || *pol.Network
+	if resumedNet && !parentNet {
+		return nil, notResumableSandboxUnsatisfiable
+	}
 	rp, err := sandbox.Resolve(pol, s.sandboxHostFacts(), workDir)
 	if err != nil {
 		return nil, notResumableSandboxUnsatisfiable
