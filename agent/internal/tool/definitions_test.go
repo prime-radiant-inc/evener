@@ -255,8 +255,15 @@ func TestDefDelegateHasSandboxParams(t *testing.T) {
 	if !reflect.DeepEqual(enum, wantEnum) {
 		t.Errorf("sandbox enum = %v, want %v", enum, wantEnum)
 	}
-	if desc, _ := sb["description"].(string); !strings.Contains(desc, "at least as restrictive") {
-		t.Errorf("sandbox description must explain the no-escalation floor, got %q", desc)
+	sbDesc, _ := sb["description"].(string)
+	if !strings.Contains(sbDesc, "at least as confining") {
+		t.Errorf("sandbox description must explain the no-escalation floor, got %q", sbDesc)
+	}
+	// The modes must be glossed, not merely enumerated.
+	for _, want := range []string{"read-only", "workspace-write", "restricted", "no writes", "working tree", "network is a separate toggle"} {
+		if !strings.Contains(sbDesc, want) {
+			t.Errorf("sandbox description must define the modes (missing %q), got %q", want, sbDesc)
+		}
 	}
 
 	sn, ok := props["sandbox_net"].(map[string]any)

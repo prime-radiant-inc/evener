@@ -138,7 +138,7 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 				"sandbox": map[string]any{
 					"type":        "string",
 					"enum":        []string{"off", "read-only", "workspace-write", "restricted"},
-					"description": "Run this delegate under its own sandbox, independent of your session. Most useful with isolation=\"worktree\" (confines the delegate's writes to its lane). You may only pick a box at least as restrictive as your own — you cannot grant a delegate more access than you have. Omit to inherit your session's sandbox.",
+					"description": "Run this delegate under its own sandbox, independent of your session. Modes: off = no confinement; read-only = reads anywhere but secret paths, no writes (a private temp dir only); workspace-write = reads anywhere but secret paths, writes the working tree; restricted = reads and writes only the working tree. All sandboxed modes mask credential/secret paths, give a private temp dir, and confine spawned shell commands too; network is a separate toggle (sandbox_net). Most useful with isolation=\"worktree\". The modes are a partial order: you may only pick a box at least as confining as your own on BOTH reads and writes — you cannot grant a delegate more access than you have. Omit to inherit your session's sandbox.",
 				},
 				"sandbox_net": map[string]any{
 					"type":        "boolean",
