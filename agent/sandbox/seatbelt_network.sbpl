@@ -1,0 +1,35 @@
+; Serf Seatbelt network policy. Appended (after the base) ONLY when the resolved
+; network decision is on. net=off is the ABSENCE of this section — the base's
+; (deny default) blocks all TCP/UDP/DNS/AF_UNIX outbound with no explicit deny
+; needed (fail-closed by construction). Derived from Codex's
+; seatbelt_network_policy.sbpl (itself from Chromium's network.sb). The blanket
+; (allow network-outbound)/(allow network-inbound) that precede this block are
+; emitted by the generator; this block adds the platform service lookups a
+; process needs to actually resolve names and validate TLS.
+
+; Safe AF_SYSTEM sockets used for local platform network services.
+(allow system-socket
+  (require-all
+    (socket-domain AF_SYSTEM)
+    (socket-protocol 2)))
+
+(allow mach-lookup
+  ; Resolve user directory locations.
+  (global-name "com.apple.bsd.dirhelper")
+  (global-name "com.apple.system.opendirectoryd.membership")
+
+  ; Security server / TLS certificate validation.
+  (global-name "com.apple.SecurityServer")
+  (global-name "com.apple.networkd")
+  (global-name "com.apple.ocspd")
+  (global-name "com.apple.trustd")
+  (global-name "com.apple.trustd.agent")
+
+  ; DNS + network configuration.
+  (global-name "com.apple.SystemConfiguration.DNSConfiguration")
+  (global-name "com.apple.SystemConfiguration.configd")
+  (global-name "com.apple.nsurlsessiond"))
+
+; The routing table, needed to pick an interface for outbound connections.
+(allow sysctl-read
+  (sysctl-name-regex #"^net.routetable"))

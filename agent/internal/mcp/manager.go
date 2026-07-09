@@ -302,9 +302,10 @@ func productionDial(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper) func(c
 func confineCommandUnderSandbox(cmd *exec.Cmd, cfgEnv map[string]string, w *sandbox.Wrapper) {
 	base := mergeEnvInto(sandbox.ScrubSecretEnv(os.Environ()), cfgEnv)
 	cmd.Env = sandbox.ApplyEnvFloor(base, w.Policy(), w.SessionTmp())
-	argv := w.Wrap(cmd.Args, w.Policy().Git.WorktreeRoot)
-	cmd.Path = argv[0]
-	cmd.Args = argv
+	// Confine wraps the argv and, for Seatbelt, sets cmd.Dir to the worktree so a
+	// macOS MCP server starts in the same directory a Linux (bwrap, via --chdir)
+	// one does — sandbox-exec has no chdir flag.
+	w.Confine(cmd, w.Policy().Git.WorktreeRoot)
 	cmd.ExtraFiles = nil
 }
 

@@ -1,0 +1,371 @@
+(version 1)
+
+; Serf Seatbelt base policy. Trimmed from Codex's seatbelt_base_policy.sbpl,
+; which is itself derived from Chromium's macOS sandbox. This static base is the
+; deny-default floor plus the platform-service allowances any spawned process
+; needs to exec, dyld-load, and run a shell. It grants NO filesystem read/write
+; beyond a minimal /dev floor and NO network — those are layered on top by the
+; generated read/write/network sections. Because it grants only platform
+; services (mach-lookups, sysctls, pty), being generous here never widens
+; filesystem or network reach.
+
+; Closed by default: every allowance below is additive on top of this line, and
+; the ABSENCE of a network-allow section is exactly the net=off enforcement.
+(deny default)
+
+; Child processes inherit the parent's policy (an npm postinstall is as confined
+; as its shell). Signals and process introspection are confined to same-sandbox
+; processes: the macOS analog of Linux's private PID namespace + /proc — a
+; sandboxed process cannot enumerate or inspect host processes.
+(allow process-exec)
+(allow process-fork)
+(allow signal (target same-sandbox))
+(allow process-info* (target same-sandbox))
+
+; Minimal /dev floor — the macOS analog of bwrap's minimal --dev, always present
+; regardless of mode. The standard character devices plus the process's OWN file
+; descriptors via /dev/fd. On macOS /dev/fd exposes only the calling process's fd
+; table (serf's fds never leak in: ExtraFiles is emptied and serf's fds are
+; O_CLOEXEC), so it is safe and is needed for shell process substitution
+; (`<(cmd)` / `>(cmd)`). /dev/mem is deliberately NOT granted.
+(allow file-write-data
+  (require-all
+    (path "/dev/null")
+    (vnode-type CHARACTER-DEVICE)))
+(allow file-read* file-write* (literal "/dev/null"))
+(allow file-read* file-write* (literal "/dev/zero"))
+(allow file-read* (literal "/dev/random"))
+(allow file-read* (literal "/dev/urandom"))
+(allow file-read* file-write* (literal "/dev/tty"))
+(allow file-read* file-write* (subpath "/dev/fd"))
+(allow file-read-metadata (literal "/dev"))
+
+; openpty() and slave-tty ioctls so interactive shells detect a TTY and remain
+; functional. A pty created before entering the sandbox may lack the extension;
+; allow ioctl on those slave ttys too.
+(allow pseudo-tty)
+(allow file-read* file-write* file-ioctl (literal "/dev/ptmx"))
+(allow file-read* file-write*
+  (require-all
+    (regex #"^/dev/ttys[0-9]+")
+    (extension "com.apple.sandbox.pty")))
+(allow file-ioctl (regex #"^/dev/ttys[0-9]+"))
+
+; sysctls a typical runtime reads to size itself (CPU/memory topology, OS
+; version). Deliberately EXCLUDES kern.proc.* and net.routetable.* — process and
+; network-route enumeration — so a sandboxed process cannot list other processes
+; or the host's routing table. net.routetable is granted only by the network
+; section when net=on.
+(allow sysctl-read
+  (sysctl-name "hw.activecpu")
+  (sysctl-name "hw.busfrequency_compat")
+  (sysctl-name "hw.byteorder")
+  (sysctl-name "hw.cacheconfig")
+  (sysctl-name "hw.cachelinesize_compat")
+  (sysctl-name "hw.cpufamily")
+  (sysctl-name "hw.cpufrequency_compat")
+  (sysctl-name "hw.cputype")
+  (sysctl-name "hw.l1dcachesize_compat")
+  (sysctl-name "hw.l1icachesize_compat")
+  (sysctl-name "hw.l2cachesize_compat")
+  (sysctl-name "hw.l3cachesize_compat")
+  (sysctl-name "hw.logicalcpu")
+  (sysctl-name "hw.logicalcpu_max")
+  (sysctl-name "hw.machine")
+  (sysctl-name "hw.memsize")
+  (sysctl-name "hw.model")
+  (sysctl-name "hw.ncpu")
+  (sysctl-name "hw.nperflevels")
+  (sysctl-name "hw.pagesize")
+  (sysctl-name "hw.pagesize_compat")
+  (sysctl-name "hw.physicalcpu")
+  (sysctl-name "hw.physicalcpu_max")
+  (sysctl-name "hw.packages")
+  (sysctl-name-prefix "hw.optional.")
+  (sysctl-name-prefix "hw.perflevel")
+  (sysctl-name "machdep.cpu.brand_string")
+  (sysctl-name "kern.argmax")
+  (sysctl-name "kern.hostname")
+  (sysctl-name "kern.maxfilesperproc")
+  (sysctl-name "kern.maxproc")
+  (sysctl-name "kern.osproductversion")
+  (sysctl-name "kern.osrelease")
+  (sysctl-name "kern.ostype")
+  (sysctl-name "kern.osvariant_status")
+  (sysctl-name "kern.osversion")
+  (sysctl-name "kern.secure_kernel")
+  (sysctl-name "kern.usrstack64")
+  (sysctl-name "kern.version")
+  (sysctl-name "sysctl.proc_cputype")
+  (sysctl-name "vm.loadavg"))
+
+; Java reads some CPU info through a sysctl the kernel misclassifies as a write.
+(allow sysctl-write
+  (sysctl-name "kern.grade_cputype"))
+
+; Look up user/group info (getpwuid, etc.) — many shells and tools need this.
+(allow mach-lookup
+  (global-name "com.apple.system.opendirectoryd.libinfo"))
+
+; POSIX semaphores — Python multiprocessing's SemLock.
+(allow ipc-posix-sem)
+
+; Read-only user preferences (cfprefsd): tools read preferences at startup.
+(allow mach-lookup
+  (global-name "com.apple.cfprefsd.daemon")
+  (global-name "com.apple.cfprefsd.agent")
+  (local-name "com.apple.cfprefsd.agent"))
+(allow user-preference-read)
+
+; read grants
+(allow file-read*
+  (subpath (param "READABLE_ROOT_0"))
+  (subpath (param "READABLE_ROOT_1"))
+  (subpath (param "READABLE_ROOT_2"))
+  (subpath (param "READABLE_ROOT_3"))
+  (subpath (param "READABLE_ROOT_4"))
+  (subpath (param "READABLE_ROOT_5"))
+  (subpath (param "READABLE_ROOT_6"))
+  (subpath (param "READABLE_ROOT_7"))
+  (subpath (param "READABLE_ROOT_8"))
+  (subpath (param "READABLE_ROOT_9"))
+)
+; write grants
+(allow file-write*
+  (subpath (param "WRITABLE_ROOT_0"))
+  (subpath (param "WRITABLE_ROOT_1"))
+  (subpath (param "WRITABLE_ROOT_2"))
+  (subpath (param "WRITABLE_ROOT_3"))
+  (subpath (param "WRITABLE_ROOT_4"))
+  (subpath (param "WRITABLE_ROOT_5"))
+  (subpath (param "WRITABLE_ROOT_6"))
+)
+; Serf Seatbelt platform defaults — the macOS system read-roots a spawned
+; process needs to exec and dyld-load when it is NOT granted full-disk read.
+; Appended (after the base and the generated sections) ONLY for `restricted`
+; mode, whose spawned layer reads the worktree only; read-only and
+; workspace-write read the whole disk (minus the denylist) and never include
+; this. This is the macOS realization of the spec's "system read roots" — the
+; frameworks, dyld cache, and standard binaries every process links against.
+; Distilled from Codex's restricted_read_only_platform_defaults.sbpl. It grants
+; system READS + scratch /tmp only; it never grants the worktree, credentials,
+; or network.
+
+; Read access to standard system paths.
+(allow file-read* file-test-existence
+  (subpath "/Library/Apple")
+  (subpath "/Library/Filesystems/NetFSPlugins")
+  (subpath "/Library/Preferences/Logging")
+  (subpath "/private/var/db/DarwinDirectory/local/recordStore.data")
+  (subpath "/private/var/db/timezone")
+  (subpath "/usr/lib")
+  (subpath "/usr/share")
+  (subpath "/Library/Preferences")
+  (subpath "/var/db")
+  (subpath "/private/var/db"))
+
+; Map system frameworks + dylibs for the loader.
+(allow file-map-executable
+  (subpath "/Library/Apple/System/Library/Frameworks")
+  (subpath "/Library/Apple/System/Library/PrivateFrameworks")
+  (subpath "/Library/Apple/usr/lib")
+  (subpath "/System/Library/Extensions")
+  (subpath "/System/Library/Frameworks")
+  (subpath "/System/Library/PrivateFrameworks")
+  (subpath "/System/Library/SubFrameworks")
+  (subpath "/System/iOSSupport/System/Library/Frameworks")
+  (subpath "/System/iOSSupport/System/Library/PrivateFrameworks")
+  (subpath "/System/iOSSupport/System/Library/SubFrameworks")
+  (subpath "/usr/lib"))
+
+; System framework resources.
+(allow file-read* file-test-existence
+  (subpath "/Library/Apple/System/Library/Frameworks")
+  (subpath "/Library/Apple/System/Library/PrivateFrameworks")
+  (subpath "/Library/Apple/usr/lib")
+  (subpath "/System/Library/Frameworks")
+  (subpath "/System/Library/PrivateFrameworks")
+  (subpath "/System/Library/SubFrameworks")
+  (subpath "/System/iOSSupport/System/Library/Frameworks")
+  (subpath "/System/iOSSupport/System/Library/PrivateFrameworks")
+  (subpath "/System/iOSSupport/System/Library/SubFrameworks")
+  (subpath "/usr/lib"))
+
+; Guarded vnodes.
+(allow system-mac-syscall (mac-policy-name "vnguard"))
+
+; Determine whether a container is expected.
+(allow system-mac-syscall
+  (require-all
+    (mac-policy-name "Sandbox")
+    (mac-syscall-number 67)))
+
+; Resolution of standard system symlinks.
+(allow file-read-metadata file-test-existence
+  (literal "/etc")
+  (literal "/tmp")
+  (literal "/var")
+  (literal "/private/etc/localtime"))
+
+; Stat firmlink parent path components.
+(allow file-read-metadata file-test-existence
+  (path-ancestors "/System/Volumes/Data/private"))
+
+; A process getting its current working directory.
+(allow file-read* file-test-existence
+  (literal "/"))
+
+; FSIOC_CAS_BSDFLAGS as an alternate chflags.
+(allow system-fsctl (fsctl-command FSIOC_CAS_BSDFLAGS))
+
+; Standard special files.
+(allow file-read* file-test-existence
+  (literal "/dev/autofs_nowait")
+  (literal "/dev/random")
+  (literal "/dev/urandom")
+  (literal "/private/etc/master.passwd")
+  (literal "/private/etc/passwd")
+  (literal "/private/etc/protocols")
+  (literal "/private/etc/services"))
+
+; null/zero read/write.
+(allow file-read* file-test-existence file-write-data
+  (literal "/dev/null")
+  (literal "/dev/zero"))
+
+; File descriptors.
+(allow file-read-data file-test-existence file-write-data
+  (subpath "/dev/fd"))
+
+; Debugger helpers.
+(allow file-read* file-test-existence file-write-data file-ioctl
+  (literal "/dev/dtracehelper"))
+
+; NOTE: serf deliberately does NOT grant broad read/write of /tmp, /private/tmp,
+; /var/tmp here (codex's defaults do). Those grants are additive allows that would
+; re-expose a worktree, secret, or git config surface placed under a temp dir,
+; defeating restricted-mode confinement. The per-session TMPDIR is granted
+; separately as an explicit writable root, so scratch space still works.
+
+; Standard config directories.
+(allow file-read* (subpath "/etc"))
+(allow file-read* (subpath "/private/etc"))
+
+(allow file-read* file-test-existence
+  (literal "/System/Library/CoreServices")
+  (literal "/System/Library/CoreServices/.SystemVersionPlatform.plist")
+  (literal "/System/Library/CoreServices/SystemVersion.plist"))
+
+; Some processes read /var metadata during startup.
+(allow file-read-metadata (subpath "/var"))
+(allow file-read-metadata (subpath "/private/var"))
+
+; IOKit root-domain services.
+(allow iokit-open
+  (iokit-registry-entry-class "RootDomainUserClient"))
+
+; The standard library queries opendirectoryd at startup.
+(allow mach-lookup (global-name "com.apple.system.opendirectoryd.libinfo"))
+
+; IPC to logging, trust, and other system agents needed at process startup.
+(allow mach-lookup
+  (global-name "com.apple.analyticsd")
+  (global-name "com.apple.bsd.dirhelper")
+  (global-name "com.apple.cfprefsd.agent")
+  (global-name "com.apple.cfprefsd.daemon")
+  (global-name "com.apple.diagnosticd")
+  (global-name "com.apple.logd")
+  (global-name "com.apple.logd.events")
+  (global-name "com.apple.secinitd")
+  (global-name "com.apple.system.DirectoryService.libinfo_v1")
+  (global-name "com.apple.system.logger")
+  (global-name "com.apple.system.notification_center")
+  (global-name "com.apple.system.opendirectoryd.membership")
+  (global-name "com.apple.trustd")
+  (global-name "com.apple.trustd.agent")
+  (local-name "com.apple.cfprefsd.agent"))
+
+; NOTE: serf deliberately omits codex's (allow network-outbound (literal
+; "/private/var/run/syslog")) here. net=off must be the ABSENCE of every network
+; allow (fail-closed), and this is the only mode (restricted) that includes the
+; platform defaults; a stray local-socket egress allow would break that invariant.
+
+; Notifications.
+(allow ipc-posix-shm-read*
+  (ipc-posix-name "apple.shm.notification_center"))
+
+; Minimum system runtime so exec works.
+(allow file-read-data (subpath "/bin"))
+(allow file-read-metadata (subpath "/bin"))
+(allow file-read-data (subpath "/sbin"))
+(allow file-read-metadata (subpath "/sbin"))
+(allow file-read-data (subpath "/usr/bin"))
+(allow file-read-metadata (subpath "/usr/bin"))
+(allow file-read-data (subpath "/usr/sbin"))
+(allow file-read-metadata (subpath "/usr/sbin"))
+(allow file-read-data (subpath "/usr/libexec"))
+(allow file-read-metadata (subpath "/usr/libexec"))
+
+(allow file-read* (subpath "/Library/Preferences"))
+(allow file-read* (subpath "/opt/homebrew/lib"))
+(allow file-read* (subpath "/usr/local/lib"))
+
+; Terminal basics and device handles.
+(allow file-read* (regex "^/dev/fd/(0|1|2)$"))
+(allow file-write* (regex "^/dev/fd/(1|2)$"))
+(allow file-read* file-write* (literal "/dev/null"))
+(allow file-read* file-write* (literal "/dev/tty"))
+(allow file-read-metadata (literal "/dev"))
+(allow file-read-metadata (regex "^/dev/.*$"))
+(allow file-read* file-write* (regex "^/dev/ttys[0-9]+$"))
+(allow file-read* file-write* (literal "/dev/ptmx"))
+(allow file-ioctl (regex "^/dev/ttys[0-9]+$"))
+
+; Metadata traversal for firmlink parents.
+(allow file-read-metadata (literal "/System/Volumes") (vnode-type DIRECTORY))
+(allow file-read-metadata (literal "/System/Volumes/Data") (vnode-type DIRECTORY))
+(allow file-read-metadata (literal "/System/Volumes/Data/Users") (vnode-type DIRECTORY))
+
+; authoritative denials (override every allow above)
+(deny file-read* file-write* (literal (param "MASKED_0")) (subpath (param "MASKED_0")))
+(deny file-read* file-write* (literal (param "MASKED_0_ALIAS")) (subpath (param "MASKED_0_ALIAS")))
+(deny file-read* file-write* (literal (param "MASKED_1")) (subpath (param "MASKED_1")))
+(deny file-read* file-write* (literal (param "MASKED_1_ALIAS")) (subpath (param "MASKED_1_ALIAS")))
+(deny file-read* file-write* (literal (param "MASKED_2")) (subpath (param "MASKED_2")))
+(deny file-read* file-write* (literal (param "MASKED_2_ALIAS")) (subpath (param "MASKED_2_ALIAS")))
+(deny file-read* file-write* (literal (param "MASKED_3")) (subpath (param "MASKED_3")))
+(deny file-read* file-write* (literal (param "MASKED_3_ALIAS")) (subpath (param "MASKED_3_ALIAS")))
+(deny file-read* file-write* (literal (param "MASKED_4")) (subpath (param "MASKED_4")))
+(deny file-read* file-write* (literal (param "MASKED_4_ALIAS")) (subpath (param "MASKED_4_ALIAS")))
+(deny file-read* file-write* (literal (param "MASKED_5")) (subpath (param "MASKED_5")))
+(deny file-read* file-write* (literal (param "MASKED_5_ALIAS")) (subpath (param "MASKED_5_ALIAS")))
+(deny file-read* file-write* (literal (param "MASKED_6")) (subpath (param "MASKED_6")))
+(deny file-read* file-write* (literal (param "MASKED_6_ALIAS")) (subpath (param "MASKED_6_ALIAS")))
+(deny file-read* file-write* (literal (param "MASKED_7")) (subpath (param "MASKED_7")))
+(deny file-read* file-write* (literal (param "MASKED_7_ALIAS")) (subpath (param "MASKED_7_ALIAS")))
+(deny file-read* file-write* (literal (param "MASKED_8")) (subpath (param "MASKED_8")))
+(deny file-read* file-write* (literal (param "MASKED_8_ALIAS")) (subpath (param "MASKED_8_ALIAS")))
+(deny file-read* file-write* (literal (param "MASKED_9")) (subpath (param "MASKED_9")))
+(deny file-read* file-write* (literal (param "MASKED_9_ALIAS")) (subpath (param "MASKED_9_ALIAS")))
+(deny file-read* file-write* (literal (param "MASKED_10")) (subpath (param "MASKED_10")))
+(deny file-read* file-write* (literal (param "MASKED_10_ALIAS")) (subpath (param "MASKED_10_ALIAS")))
+(deny file-read* file-write* (literal (param "MASKED_11")) (subpath (param "MASKED_11")))
+(deny file-read* file-write* (literal (param "MASKED_11_ALIAS")) (subpath (param "MASKED_11_ALIAS")))
+(deny file-read* file-write* (literal (param "MASKED_12")) (subpath (param "MASKED_12")))
+(deny file-read* file-write* (literal (param "MASKED_12_ALIAS")) (subpath (param "MASKED_12_ALIAS")))
+(deny file-read* file-write* (literal (param "MASKED_13")) (subpath (param "MASKED_13")))
+(deny file-read* file-write* (literal (param "MASKED_13_ALIAS")) (subpath (param "MASKED_13_ALIAS")))
+(deny file-read* file-write* (literal (param "MASKED_14")) (subpath (param "MASKED_14")))
+(deny file-read* file-write* (literal (param "MASKED_14_ALIAS")) (subpath (param "MASKED_14_ALIAS")))
+(deny file-read* file-write* (literal (param "MASKED_15")) (subpath (param "MASKED_15")))
+(deny file-read* file-write* (literal (param "MASKED_15_ALIAS")) (subpath (param "MASKED_15_ALIAS")))
+(deny file-read* file-write* (literal (param "MASKED_16")) (subpath (param "MASKED_16")))
+(deny file-read* file-write* (literal (param "MASKED_16_ALIAS")) (subpath (param "MASKED_16_ALIAS")))
+(deny file-read* file-write* (literal (param "MASKED_17")) (subpath (param "MASKED_17")))
+(deny file-read* file-write* (literal (param "MASKED_17_ALIAS")) (subpath (param "MASKED_17_ALIAS")))
+(deny file-write* (literal (param "PROTECTED_0")) (subpath (param "PROTECTED_0")))
+(deny file-write* (literal (param "PROTECTED_0_ALIAS")) (subpath (param "PROTECTED_0_ALIAS")))
+(deny file-write* (literal (param "PROTECTED_1")) (subpath (param "PROTECTED_1")))
+(deny file-write* (literal (param "PROTECTED_1_ALIAS")) (subpath (param "PROTECTED_1_ALIAS")))
+(deny file-write* (literal (param "PROTECTED_2")) (subpath (param "PROTECTED_2")))
+(deny file-write* (literal (param "PROTECTED_2_ALIAS")) (subpath (param "PROTECTED_2_ALIAS")))
