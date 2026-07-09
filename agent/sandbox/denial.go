@@ -1,10 +1,23 @@
 package sandbox
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 )
+
+// AsDenied reports whether err (or anything it wraps) is a sandbox DeniedError,
+// returning the typed value so callers — notably M7's escalation seam — never
+// type-switch on the concrete type. It is the single predicate the session layer
+// uses to recognize a sandbox denial in a tool result.
+func AsDenied(err error) (*DeniedError, bool) {
+	var d *DeniedError
+	if errors.As(err, &d) {
+		return d, true
+	}
+	return nil, false
+}
 
 // DeniedError is the single typed error every sandbox denial surfaces to the
 // model, across both enforcement layers. M2's in-process file tools and M3/M6's

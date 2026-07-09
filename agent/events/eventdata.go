@@ -70,6 +70,9 @@ func (RoundTimings) eventKind() EventKind            { return EventRoundTimings 
 func (TurnEndedData) eventKind() EventKind           { return EventTurnEnded }
 func (GoalContinuationData) eventKind() EventKind    { return EventGoalContinuation }
 func (GoalEndedData) eventKind() EventKind           { return EventGoalEnded }
+func (SandboxEscalationRequestedData) eventKind() EventKind {
+	return EventSandboxEscalationRequested
+}
 
 // Compile-time assertions that every payload satisfies EventData. A new payload
 // added without a marker fails to build here.
@@ -108,4 +111,5 @@ var (
 	_ EventData = TurnEndedData{}
 	_ EventData = GoalContinuationData{}
 	_ EventData = GoalEndedData{}
+	_ EventData = SandboxEscalationRequestedData{}
 )
