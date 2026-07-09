@@ -76,6 +76,61 @@ func TestApplyPatchSandbox_InWorktreeWorks(t *testing.T) {
 	}
 }
 
+// TestApplyPatchSandbox_SymlinkedAncestor reproduces the macOS failure class on
+// Linux: when the worktree sits under a SYMLINKED ancestor, sandbox.Resolve
+// canonicalizes the writable roots (via ClassifyWorkspace's EvalSymlinks — e.g.
+// macOS /var → /private/var, or here `link` → `realdir`) while the env spells the
+// write target through the symlinked ancestor. An in-worktree write must still
+// SUCCEED (containment tolerates the ancestor-spelling difference), and an
+// out-of-worktree write must still be DENIED (containment is not weakened).
+func TestApplyPatchSandbox_SymlinkedAncestor(t *testing.T) {
+	base := t.TempDir()
+	realParent := filepath.Join(base, "realdir")
+	home := filepath.Join(base, "home")
+	for _, d := range []string{realParent, home} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// link → realdir, so the worktree spelled through `link` reaches the real dir
+	// through a symlinked ancestor component (the /var → /private/var analogue).
+	if err := os.Symlink(realParent, filepath.Join(base, "link")); err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(base, "link", "wt")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	host := sandbox.HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, host, worktree)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	// The resolver's writable root is canonical (under realdir) while the env's root
+	// is the symlinked spelling (under link) — the exact mismatch that denied every
+	// in-worktree write on macOS.
+	if !strings.Contains(rp.FileTool.WriteRoots[0], "realdir") {
+		t.Fatalf("expected a canonicalized (realdir) write root, got %v", rp.FileTool.WriteRoots)
+	}
+	env := execenv.NewLocalExecutionEnvironment(worktree)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+
+	// (a) An in-worktree write SUCCEEDS despite the symlinked-ancestor spelling.
+	if _, err := ApplyPatch(env, "*** Begin Patch\n*** Add File: sub/b.txt\n+hello\n+world\n*** End Patch\n"); err != nil {
+		t.Fatalf("in-worktree apply_patch under a symlinked ancestor: %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(worktree, "sub", "b.txt")); string(got) != "hello\nworld\n" {
+		t.Errorf("b.txt = %q", got)
+	}
+
+	// (b) An out-of-worktree write is still DENIED (containment stays strict).
+	applyDenied(t, env, "*** Begin Patch\n*** Add File: "+filepath.Join(home, "evil.txt")+"\n+x\n*** End Patch\n", "out-of-worktree Add under a symlinked ancestor")
+	if _, err := os.Stat(filepath.Join(home, "evil.txt")); err == nil {
+		t.Error("a denied out-of-worktree write leaked a file")
+	}
+}
+
 // TestApplyPatchSandbox_EscapesDenied: every op targeting outside the worktree —
 // via ../, an absolute out-of-root path, or a symlinked component — is denied and
 // creates/leaks nothing outside.

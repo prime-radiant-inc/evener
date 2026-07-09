@@ -62,6 +62,7 @@ func TestConfineSetsSeatbeltDir(t *testing.T) {
 	rp := ResolvedPolicy{
 		Mode:    ModeWorkspaceWrite,
 		Network: true,
+		Backend: BackendSeatbelt,
 		Spawned: AccessScope{Read: ReadAnywhere, WriteRoots: []string{"/work/tree"}},
 		Git:     GitLayout{WorktreeRoot: "/work/tree"},
 	}

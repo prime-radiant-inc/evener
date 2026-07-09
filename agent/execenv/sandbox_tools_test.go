@@ -206,6 +206,71 @@ func TestReadToleratesSymlinkedAncestor(t *testing.T) {
 	}
 }
 
+// TestResolvedPolicyToleratesSymlinkedAncestor guards the macOS write-denial fix
+// at the layer it lives: unlike TestReadToleratesSymlinkedAncestor (which hand-
+// builds a policy whose roots retain the symlinked spelling), this resolves the
+// policy through sandbox.Resolve, so ClassifyWorkspace CANONICALIZES the writable
+// root (link → realdir, the /var → /private/var analogue) while the env still
+// spells targets through the symlinked ancestor. In-root reads and writes must
+// succeed, an out-of-worktree write must be denied, and an in-root symlink
+// component must still be refused.
+func TestResolvedPolicyToleratesSymlinkedAncestor(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []sandbox.Mode{sandbox.ModeWorkspaceWrite, sandbox.ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			t.Parallel()
+			base := t.TempDir()
+			realParent := filepath.Join(base, "realdir")
+			home := filepath.Join(base, "home")
+			for _, d := range []string{realParent, home} {
+				if err := os.MkdirAll(d, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Symlink(realParent, filepath.Join(base, "link")); err != nil {
+				t.Fatal(err)
+			}
+			worktree := filepath.Join(base, "link", "wt")
+			if err := os.MkdirAll(worktree, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: mode}, sbTestHost(home), worktree)
+			if err != nil {
+				t.Fatalf("Resolve(%v): %v", mode, err)
+			}
+			if !strings.Contains(rp.FileTool.WriteRoots[0], "realdir") {
+				t.Fatalf("expected a canonicalized write root, got %v", rp.FileTool.WriteRoots)
+			}
+			env := NewLocalExecutionEnvironment(worktree)
+			env.Sandbox = &rp
+			t.Cleanup(env.Cleanup)
+
+			target := filepath.Join(worktree, "note.txt")
+			if _, err := env.WriteFile(target, "hi\n"); err != nil {
+				t.Fatalf("%v: in-root write under a symlinked ancestor should succeed: %v", mode, err)
+			}
+			if out, err := env.ReadFile(target, nil, nil); err != nil || !strings.Contains(out, "hi") {
+				t.Fatalf("%v: in-root read should succeed: out=%q err=%v", mode, out, err)
+			}
+
+			// Out-of-worktree write stays denied (containment not weakened).
+			_, werr := env.WriteFile(filepath.Join(home, "evil.txt"), "x")
+			mustDenied(t, werr, "%v out-of-worktree write under a symlinked ancestor", mode)
+
+			// A symlink COMPONENT inside the root is still refused.
+			secret := filepath.Join(base, "secret.txt")
+			if err := os.WriteFile(secret, []byte("SECRET"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(secret, filepath.Join(realParent, "wt", "escape.txt")); err != nil {
+				t.Fatal(err)
+			}
+			_, eerr := env.ReadFile(filepath.Join(worktree, "escape.txt"), nil, nil)
+			mustDenied(t, eerr, "%v read through an in-root symlink component", mode)
+		})
+	}
+}
+
 // TestListDirRestrictedAndDenylist: list_dir cannot escape the worktree under
 // restricted, and cannot enumerate a denylisted directory in any mode.
 func TestListDirRestrictedAndDenylist(t *testing.T) {
