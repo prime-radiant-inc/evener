@@ -637,6 +637,8 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// appear. The shell fields are reserved and empty in v1.
 		data := eventData[events.SandboxEscalationRequestedData](event.Data)
 		return []AppNotification{p.notification(appwire.NotifySerfSandboxEscalationRequested, appwire.SandboxEscalationRequested{
+			ThreadID:     p.threadID,
+			Ref:          p.ref,
 			EscalationID: data.EscalationID,
 			Mode:         data.Mode,
 			Tool:         data.Tool,

@@ -80,6 +80,11 @@ func TestProject_SandboxEscalationRequested(t *testing.T) {
 	if params.EscalationID != "esc_1" || params.Kind != "file_tool" || params.DeniedPath != "/etc/hosts" {
 		t.Fatalf("params = %+v", params)
 	}
+	// The notification must carry its session ref/threadId so a client can route it
+	// by session (answer the right one, enqueue a non-viewed one).
+	if params.ThreadID != "th1" || params.Ref != "local:th1" {
+		t.Fatalf("escalation notification must carry threadId/ref, got %+v", params)
+	}
 }
 
 func TestProject_SandboxEscalationNotInTranscript(t *testing.T) {

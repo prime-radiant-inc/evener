@@ -8,31 +8,35 @@ import (
 	"primeradiant.com/serf/appwire"
 )
 
-func TestHubModelSandboxEscalation_NotificationSurfacesPrompt(t *testing.T) {
+func escalationNotif(ref, id, tool, path string) hubNotificationMsg {
+	return hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifySerfSandboxEscalationRequested, map[string]any{
+			"ref":          ref,
+			"threadId":     strings.TrimPrefix(ref, "local:"),
+			"escalationId": id,
+			"mode":         "read-only",
+			"tool":         tool,
+			"kind":         "file_tool",
+			"deniedPath":   path,
+		}).Notification,
+	}
+}
+
+func TestHubModelSandboxEscalation_NotificationSurfacesPromptForViewed(t *testing.T) {
 	m := newHubModel(nil, "")
 	m.mode = hubModeSession
 	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
 
-	updated, _ := m.Update(hubNotificationMsg{
-		ok: true,
-		notification: *appwire.NotificationMessage(appwire.NotifySerfSandboxEscalationRequested, map[string]any{
-			"ref":          "local:th_1",
-			"escalationId": "esc_1",
-			"mode":         "read-only",
-			"tool":         "read_file",
-			"kind":         "file_tool",
-			"deniedPath":   "/etc/hosts",
-		}).Notification,
-	})
+	updated, _ := m.Update(escalationNotif("local:th_1", "esc_1", "read_file", "/etc/hosts"))
 	got := updated.(hubModel)
-	if len(got.pendingEscalations) != 1 || got.pendingEscalations[0].id != "esc_1" {
-		t.Fatalf("escalation not enqueued: %+v", got.pendingEscalations)
+	if len(got.escalationsByRef["local:th_1"]) != 1 {
+		t.Fatalf("escalation not enqueued under its ref: %+v", got.escalationsByRef)
 	}
-	// The prompt must read as a HARNESS message (not the agent), carry the full
-	// path, and require a deliberate ctrl+y/ctrl+n chord.
 	found := false
 	for _, msg := range got.session.messages {
-		if strings.Contains(msg.Text, "/etc/hosts") && strings.Contains(msg.Text, "requested by serf") && strings.Contains(msg.Text, "ctrl+y") {
+		if strings.Contains(msg.Text, "/etc/hosts") && strings.Contains(msg.Text, "requested by serf") &&
+			strings.Contains(msg.Text, "ctrl+y") && strings.Contains(msg.Text, "ctrl+g") {
 			found = true
 		}
 	}
@@ -41,26 +45,31 @@ func TestHubModelSandboxEscalation_NotificationSurfacesPrompt(t *testing.T) {
 	}
 }
 
-func TestHubModelSandboxEscalation_BareKeyDoesNotApprove(t *testing.T) {
+func TestHubModelSandboxEscalation_BareAndComposerKeysDoNotAnswer(t *testing.T) {
 	m := newHubModel(nil, "")
 	m.mode = hubModeSession
-	m.pendingEscalations = []*hubEscalation{{id: "esc_1", ref: "local:th_1"}}
+	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
+	m.escalationsByRef = map[string][]*hubEscalation{"local:th_1": {{id: "esc_1", ref: "local:th_1"}}}
 
-	// A single unmodified 'y' (or 'n') must NOT be intercepted — a filesystem-access
-	// consent must never be a one-keystroke accident.
-	for _, k := range []string{"y", "Y", "n", "N"} {
-		if _, handled := m.handleEscalationKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}); handled {
-			t.Fatalf("bare %q must not answer an escalation", k)
+	// A bare y/n must NOT answer; ctrl+n (the composer's LineNext binding) must NOT
+	// answer either — a security consent must be un-accidentable and collision-free.
+	for _, k := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune("y")},
+		{Type: tea.KeyRunes, Runes: []rune("n")},
+		{Type: tea.KeyCtrlN},
+	} {
+		if _, handled := m.handleEscalationKey(k); handled {
+			t.Fatalf("key %q must not answer an escalation", k.String())
 		}
 	}
-	if len(m.pendingEscalations) != 1 {
-		t.Fatal("the escalation must remain pending after bare keys")
+	if len(m.escalationsByRef["local:th_1"]) != 1 {
+		t.Fatal("the escalation must remain pending after bare/composer keys")
 	}
 
-	// The deliberate chord DOES answer it.
+	// The deliberate ctrl+y chord DOES answer it.
 	updated, _ := m.updateSessionKey(tea.KeyMsg{Type: tea.KeyCtrlY})
 	got := updated.(hubModel)
-	if len(got.pendingEscalations) != 0 {
+	if len(got.escalationsByRef["local:th_1"]) != 0 {
 		t.Fatal("ctrl+y must resolve the head escalation")
 	}
 	if !containsMsg(got, "Allowed once") {
@@ -71,15 +80,65 @@ func TestHubModelSandboxEscalation_BareKeyDoesNotApprove(t *testing.T) {
 func TestHubModelSandboxEscalation_ChordDenies(t *testing.T) {
 	m := newHubModel(nil, "")
 	m.mode = hubModeSession
-	m.pendingEscalations = []*hubEscalation{{id: "esc_1", ref: "local:th_1"}}
+	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
+	m.escalationsByRef = map[string][]*hubEscalation{"local:th_1": {{id: "esc_1", ref: "local:th_1"}}}
 
-	updated, _ := m.updateSessionKey(tea.KeyMsg{Type: tea.KeyCtrlN})
+	updated, _ := m.updateSessionKey(tea.KeyMsg{Type: tea.KeyCtrlG})
 	got := updated.(hubModel)
-	if len(got.pendingEscalations) != 0 {
-		t.Fatal("ctrl+n must resolve the head escalation")
+	if len(got.escalationsByRef["local:th_1"]) != 0 {
+		t.Fatal("ctrl+g must resolve the head escalation")
 	}
 	if !containsMsg(got, "Denied") {
-		t.Fatalf("ctrl+n must echo the deny decision: %+v", got.session.messages)
+		t.Fatalf("ctrl+g must echo the deny decision: %+v", got.session.messages)
+	}
+}
+
+func TestHubModelSandboxEscalation_NonViewedEnqueuedAndSurfacedOnEntry(t *testing.T) {
+	m := newHubModel(nil, "")
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
+
+	// An escalation for a DIFFERENT (non-viewed) session must be enqueued by its
+	// own ref, never dropped, and NOT surfaced in the current session.
+	updated, _ := m.Update(escalationNotif("local:th_2", "esc_2", "write_file", "/b"))
+	m1 := updated.(hubModel)
+	if len(m1.escalationsByRef["local:th_2"]) != 1 {
+		t.Fatalf("non-viewed escalation must still be enqueued, got %+v", m1.escalationsByRef)
+	}
+	if containsMsg(m1, "/b") {
+		t.Fatal("a non-viewed escalation must not be surfaced in the current session")
+	}
+
+	// Entering that session surfaces it and makes it answerable.
+	updated2, _ := m1.Update(hubSessionMsg{detail: hubSessionDetail{Ref: "local:th_2", SessionID: "sess_2", State: appwire.ThreadStatusIdle}, ref: "local:th_2"})
+	m2 := updated2.(hubModel)
+	if !containsMsg(m2, "/b") || !containsMsg(m2, "requested by serf") {
+		t.Fatalf("entering the session must surface its queued escalation: %+v", m2.session.messages)
+	}
+	if m2.headEscalation() == nil {
+		t.Fatal("the entered session's escalation must be answerable")
+	}
+}
+
+func TestHubModelSandboxEscalation_ReEntryDoesNotAutoDeny(t *testing.T) {
+	m := newHubModel(nil, "")
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
+	m.escalationsByRef = map[string][]*hubEscalation{"local:th_1": {{id: "esc_1", ref: "local:th_1"}}}
+
+	// Switch away to another session — the escalation for th_1 must NOT be denied
+	// or cleared (no auto-deny on a glance-away).
+	updated, _ := m.Update(hubSessionMsg{detail: hubSessionDetail{Ref: "local:th_2", SessionID: "sess_2", State: appwire.ThreadStatusIdle}, ref: "local:th_2"})
+	m1 := updated.(hubModel)
+	if len(m1.escalationsByRef["local:th_1"]) != 1 {
+		t.Fatalf("switching away must NOT clear/deny the escalation, got %+v", m1.escalationsByRef)
+	}
+
+	// Return to th_1 — still pending and re-surfaced.
+	updated2, _ := m1.Update(hubSessionMsg{detail: hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1", State: appwire.ThreadStatusIdle}, ref: "local:th_1"})
+	m2 := updated2.(hubModel)
+	if m2.headEscalation() == nil {
+		t.Fatal("re-entering must find the escalation still pending (not auto-denied)")
 	}
 }
 
@@ -89,39 +148,19 @@ func TestHubModelSandboxEscalation_ConcurrentQueueBothAnswerable(t *testing.T) {
 	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
 	m.applySandboxEscalation(appwire.SandboxEscalationRequested{EscalationID: "esc_1", Tool: "read_file", DeniedPath: "/a"}, "local:th_1")
 	m.applySandboxEscalation(appwire.SandboxEscalationRequested{EscalationID: "esc_2", Tool: "write_file", DeniedPath: "/b"}, "local:th_1")
-	if len(m.pendingEscalations) != 2 {
-		t.Fatalf("both concurrent escalations must be queued, got %d", len(m.pendingEscalations))
+	if len(m.escalationsByRef["local:th_1"]) != 2 {
+		t.Fatalf("both concurrent escalations must be queued, got %d", len(m.escalationsByRef["local:th_1"]))
 	}
 
-	// Answer them in order — neither is stranded.
 	updated, _ := m.updateSessionKey(tea.KeyMsg{Type: tea.KeyCtrlY})
 	m1 := updated.(hubModel)
-	if len(m1.pendingEscalations) != 1 || m1.pendingEscalations[0].id != "esc_2" {
-		t.Fatalf("head answered → esc_2 must remain, got %+v", m1.pendingEscalations)
+	if len(m1.escalationsByRef["local:th_1"]) != 1 || m1.escalationsByRef["local:th_1"][0].id != "esc_2" {
+		t.Fatalf("head answered → esc_2 must remain, got %+v", m1.escalationsByRef["local:th_1"])
 	}
-	updated2, _ := m1.updateSessionKey(tea.KeyMsg{Type: tea.KeyCtrlN})
+	updated2, _ := m1.updateSessionKey(tea.KeyMsg{Type: tea.KeyCtrlG})
 	m2 := updated2.(hubModel)
-	if len(m2.pendingEscalations) != 0 {
-		t.Fatalf("both escalations must be answered, got %+v", m2.pendingEscalations)
-	}
-}
-
-func TestHubModelSandboxEscalation_SessionSwitchClears(t *testing.T) {
-	m := newHubModel(nil, "")
-	m.mode = hubModeSession
-	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
-	m.pendingEscalations = []*hubEscalation{{id: "esc_1", ref: "local:th_1"}}
-
-	// Switching to another session denies+clears the stale escalation (it is no
-	// longer on screen, so the chord must not answer it — and it must not strand).
-	updated, _ := m.Update(hubSessionMsg{
-		detail:   hubSessionDetail{Ref: "local:th_2", SessionID: "sess_2", State: appwire.ThreadStatusIdle},
-		messages: nil,
-		ref:      "local:th_2",
-	})
-	got := updated.(hubModel)
-	if len(got.pendingEscalations) != 0 {
-		t.Fatalf("a session switch must clear pending escalations, got %+v", got.pendingEscalations)
+	if len(m2.escalationsByRef["local:th_1"]) != 0 {
+		t.Fatalf("both escalations must be answered, got %+v", m2.escalationsByRef["local:th_1"])
 	}
 }
 

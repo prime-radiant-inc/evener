@@ -30,6 +30,16 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			return m.refreshPluginsPanel()
 		}
 		return nil
+	case appwire.NotifySerfSandboxEscalationRequested:
+		// Handled ABOVE the mode/session filters so an escalation for a NON-viewed
+		// session (or one that arrives while on the dashboard) is enqueued by its own
+		// ref, never silently dropped; it is surfaced when the user enters that
+		// session. The daemon's tool-exec goroutine is blocked until it is answered.
+		var params appwire.SandboxEscalationRequested
+		if json.Unmarshal(notification.Params, &params) == nil && params.EscalationID != "" {
+			m.applySandboxEscalation(params, notificationPendingRef(notification))
+		}
+		return nil
 	}
 
 	if m.mode != hubModeSession {
@@ -172,11 +182,6 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 					}
 				}
 			}
-		}
-	case appwire.NotifySerfSandboxEscalationRequested:
-		var params appwire.SandboxEscalationRequested
-		if json.Unmarshal(notification.Params, &params) == nil && params.EscalationID != "" {
-			m.applySandboxEscalation(params, strings.TrimSpace(m.detail.Ref))
 		}
 	case appwire.NotifyWarning:
 		// Cause is decoded as a pointer so its absence (legacy payloads)

@@ -3,14 +3,27 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/appwire"
 )
 
-// hubEscalation is one pending M7 sandbox-exemption approval awaiting the human's
-// decision. While any are pending the daemon's tool-exec goroutine(s) are BLOCKED;
-// answering sends serf/sandbox/escalation/resolve, which unblocks that call.
+// M7 in-UI sandbox-exemption escalation for the TUI hub. Escalations are held in a
+// FIFO queue PER SESSION REF (escalationsByRef), independent of the viewed session,
+// so one for a non-viewed session is enqueued (never dropped) and surfaced on entry.
+// The answerable escalation is the head for the currently-viewed session. Consent is
+// a DELIBERATE, composer-collision-free chord: ctrl+y allows, ctrl+g denies. Both are
+// verified NOT bound by the bubbles v1.0.0 textarea (which binds ctrl+n=LineNext —
+// the round-1 collision — but not ctrl+y/ctrl+g) nor by any hub session key, so
+// intercepting them steals no composer function and a bare key never answers.
+
+// escalationChordAllow / escalationChordDeny are the verified-free consent chords.
+const (
+	escalationChordAllow = "ctrl+y"
+	escalationChordDeny  = "ctrl+g"
+)
+
 type hubEscalation struct {
 	id   string
 	tool string
@@ -19,70 +32,98 @@ type hubEscalation struct {
 	ref  string
 }
 
-// applySandboxEscalation ENQUEUES an escalation. Concurrent escalations from one
-// session are supported (each is a distinct blocked daemon goroutine), so they are
-// kept in a FIFO queue and answered in arrival order — never overwritten, which
-// would strand the displaced one's goroutine until interrupt/close. It surfaces a
-// HARNESS-framed prompt for the head (or a "queued" note when one is already shown).
+// applySandboxEscalation enqueues an escalation under its OWN session ref (from the
+// notification), regardless of which session is currently viewed, then surfaces the
+// prompt only if that session is the one on screen.
 func (m *hubModel) applySandboxEscalation(params appwire.SandboxEscalationRequested, ref string) {
-	m.pendingEscalations = append(m.pendingEscalations, &hubEscalation{
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return
+	}
+	if m.escalationsByRef == nil {
+		m.escalationsByRef = map[string][]*hubEscalation{}
+	}
+	m.escalationsByRef[ref] = append(m.escalationsByRef[ref], &hubEscalation{
 		id:   params.EscalationID,
 		tool: params.Tool,
 		path: params.DeniedPath,
 		mode: params.Mode,
 		ref:  ref,
 	})
-	if len(m.pendingEscalations) == 1 {
+	if ref == strings.TrimSpace(m.detail.Ref) && len(m.escalationsByRef[ref]) == 1 {
 		m.promptHeadEscalation()
-	} else {
-		m.addSessionSystem(fmt.Sprintf("Sandbox approval queued (%d now waiting).", len(m.pendingEscalations)))
+	} else if ref == strings.TrimSpace(m.detail.Ref) {
+		m.addSessionSystem(fmt.Sprintf("Sandbox approval queued (%d now waiting).", len(m.escalationsByRef[ref])))
 	}
 }
 
-// promptHeadEscalation surfaces the approval prompt for the front-of-queue
-// escalation, explicitly framed as a HARNESS request (not the agent) so a human is
-// never socially-engineered into approving, and carrying the FULL path for informed
-// consent. The consent chord is DELIBERATE (ctrl+y / ctrl+n) — never a bare key.
+// headEscalation returns the front-of-queue escalation for the CURRENTLY-VIEWED
+// session, or nil when none is answerable here.
+func (m *hubModel) headEscalation() *hubEscalation {
+	q := m.escalationsByRef[strings.TrimSpace(m.detail.Ref)]
+	if len(q) == 0 {
+		return nil
+	}
+	return q[0]
+}
+
+// surfaceEscalationsOnEntry re-surfaces the viewed session's head escalation prompt
+// when the user enters/re-enters that session. It NEVER denies — re-entering must
+// not auto-resolve; the escalation simply becomes visible and answerable again.
+func (m *hubModel) surfaceEscalationsOnEntry() {
+	if m.headEscalation() != nil {
+		m.promptHeadEscalation()
+	}
+}
+
+// promptHeadEscalation surfaces the approval prompt for the viewed session's head
+// escalation — explicitly a HARNESS request (not the agent), carrying the FULL path
+// for informed consent, and naming the deliberate consent chords.
 func (m *hubModel) promptHeadEscalation() {
-	if len(m.pendingEscalations) == 0 {
+	e := m.headEscalation()
+	if e == nil {
 		return
 	}
-	e := m.pendingEscalations[0]
 	more := ""
-	if n := len(m.pendingEscalations) - 1; n > 0 {
+	if n := len(m.escalationsByRef[e.ref]) - 1; n > 0 {
 		more = fmt.Sprintf(" (%d more queued)", n)
 	}
 	m.addSessionSystem(fmt.Sprintf(
-		"Sandbox approval (requested by serf, not the agent): %s wants to access %s [--sandbox %s]. Press ctrl+y to Allow once, ctrl+n to Deny.%s",
+		"Sandbox approval (requested by serf, not the agent): %s wants to access %s [--sandbox %s]. Press ctrl+y to Allow once, ctrl+g to Deny.%s",
 		e.tool, e.path, e.mode, more))
 }
 
-// handleEscalationKey answers the HEAD escalation with a DELIBERATE chord: a single
-// unmodified keystroke must NEVER approve out-of-sandbox access (every message
-// starts on an empty composer and the card arrives async, so a bare `y` would be a
-// silent accident). ctrl+y allows, ctrl+n denies. Anything else is not handled.
+// handleEscalationKey answers the VIEWED session's head escalation with a DELIBERATE
+// chord (ctrl+y allow / ctrl+g deny). A bare key never answers, and neither chord is
+// bound by the composer textarea, so a multi-line draft is never stolen. Reports
+// handled=false when there is nothing answerable or the key is not a consent chord.
 func (m *hubModel) handleEscalationKey(msg tea.KeyMsg) (tea.Cmd, bool) {
-	if len(m.pendingEscalations) == 0 {
+	if m.headEscalation() == nil {
 		return nil, false
 	}
 	switch msg.String() {
-	case "ctrl+y":
+	case escalationChordAllow:
 		return m.resolveHeadEscalation(true), true
-	case "ctrl+n":
+	case escalationChordDeny:
 		return m.resolveHeadEscalation(false), true
 	}
 	return nil, false
 }
 
-// resolveHeadEscalation answers the front escalation, pops it, echoes the decision,
-// and surfaces the next queued one (if any). A deny (or a displacement) always sends
-// approve:false — never a silent drop, which would strand the daemon.
+// resolveHeadEscalation answers the viewed session's head escalation, pops it, echoes
+// the decision, and surfaces the next queued one for this session (if any).
 func (m *hubModel) resolveHeadEscalation(approve bool) tea.Cmd {
-	if len(m.pendingEscalations) == 0 {
+	ref := strings.TrimSpace(m.detail.Ref)
+	q := m.escalationsByRef[ref]
+	if len(q) == 0 {
 		return nil
 	}
-	e := m.pendingEscalations[0]
-	m.pendingEscalations = m.pendingEscalations[1:]
+	e := q[0]
+	if len(q) == 1 {
+		delete(m.escalationsByRef, ref)
+	} else {
+		m.escalationsByRef[ref] = q[1:]
+	}
 	if approve {
 		m.addSessionSystem("Allowed once.")
 	} else {
@@ -94,24 +135,6 @@ func (m *hubModel) resolveHeadEscalation(approve bool) tea.Cmd {
 	}
 	m.promptHeadEscalation()
 	return cmd
-}
-
-// clearSessionEscalations DENIES and clears every pending escalation. It runs when
-// the VIEWED session changes: a consent must not remain answerable (via the chord)
-// for a session whose card is no longer on screen, and a silent drop would strand
-// the daemon — so the safe, documented fallback is to deny them.
-func (m *hubModel) clearSessionEscalations() tea.Cmd {
-	if len(m.pendingEscalations) == 0 {
-		return nil
-	}
-	var cmds []tea.Cmd
-	if m.client != nil {
-		for _, e := range m.pendingEscalations {
-			cmds = append(cmds, sendHubEscalationResolve(m.client, e.ref, e.id, false))
-		}
-	}
-	m.pendingEscalations = nil
-	return tea.Batch(cmds...)
 }
 
 func sendHubEscalationResolve(client *appwire.Client, ref, escalationID string, approve bool) tea.Cmd {

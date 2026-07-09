@@ -302,6 +302,12 @@ type TurnCompletedParams struct {
 // M7 spec on why bwrap masking makes shell escalation unbuildable). It is never
 // appended to the model's transcript.
 type SandboxEscalationRequested struct {
+	// ThreadID/Ref identify the SESSION this escalation belongs to, so a client can
+	// route it by session (enqueue for a non-viewed session, answer the right one)
+	// rather than assuming the currently-viewed session — like every other
+	// thread-scoped notification.
+	ThreadID     string `json:"threadId,omitempty"`
+	Ref          string `json:"ref,omitempty"`
 	EscalationID string `json:"escalationId"`
 	Mode         string `json:"mode"`
 	Tool         string `json:"tool"`

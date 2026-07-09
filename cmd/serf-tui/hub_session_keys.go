@@ -41,9 +41,10 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.questionOverlay != nil && !m.questionOverlay.Deferred() {
 		return m.updateQuestionOverlayKey(msg)
 	}
-	// A pending M7 sandbox-escalation answers only to a DELIBERATE chord (ctrl+y /
-	// ctrl+n) — a security consent must never be a one-keystroke accident, so a bare
-	// key falls through to the composer as normal text.
+	// A pending M7 sandbox-escalation for the viewed session answers only to a
+	// DELIBERATE chord (ctrl+y allow / ctrl+g deny) — both verified NOT bound by the
+	// composer textarea, so a bare key never answers and a multi-line draft is never
+	// stolen (the round-1 ctrl+n collided with the textarea's LineNext).
 	if cmd, handled := m.handleEscalationKey(msg); handled {
 		return m, cmd
 	}

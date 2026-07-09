@@ -11,6 +11,7 @@ import (
 // enforced by serf-namingcheck) and that the resolve params round-trip.
 func TestSandboxEscalationWireKeys(t *testing.T) {
 	req := SandboxEscalationRequested{
+		ThreadID: "t1", Ref: "local:t1",
 		EscalationID: "esc_1", Mode: "read-only", Tool: "write_file", Kind: "file_tool",
 		DeniedPath: "hosts", Command: "cmd", OutputSoFar: "out", PartiallyRan: true,
 	}
@@ -18,7 +19,7 @@ func TestSandboxEscalationWireKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"escalationId", "mode", "tool", "kind", "deniedPath", "command", "outputSoFar", "partiallyRan"} {
+	for _, key := range []string{"threadId", "ref", "escalationId", "mode", "tool", "kind", "deniedPath", "command", "outputSoFar", "partiallyRan"} {
 		if !strings.Contains(string(b), `"`+key+`":`) {
 			t.Errorf("SandboxEscalationRequested is missing wire key %q in %s", key, b)
 		}

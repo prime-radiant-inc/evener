@@ -659,6 +659,8 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `threadId` | `string` | yes |  |
+| `ref` | `string` | yes |  |
 | `escalationId` | `string` |  |  |
 | `mode` | `string` |  |  |
 | `tool` | `string` |  |  |
