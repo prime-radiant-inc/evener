@@ -61,6 +61,11 @@ type hubSessionDetail struct {
 	Title            string
 	State            string
 	AskPending       bool
+	// PendingEscalations is the M7 surface-on-entry snapshot from
+	// thread.Serf.PendingEscalations — the redacted approval cards for escalations
+	// blocked on this session. Merged into hubModel.escalationsByRef (de-duped by
+	// id) on entry so a fresh/other/reconnecting client surfaces the card.
+	PendingEscalations []appwire.SandboxEscalationRequested
 	Model            string
 	Profile          string
 	WorkingDir       string
@@ -229,6 +234,7 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 		Title:               node.Title,
 		State:               node.State,
 		AskPending:          thread.Serf.AskPending,
+		PendingEscalations:  thread.Serf.PendingEscalations,
 		Model:               thread.ModelProvider,
 		Profile:             thread.Serf.Profile,
 		WorkingDir:          thread.CWD,

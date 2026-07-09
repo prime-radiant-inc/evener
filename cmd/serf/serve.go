@@ -392,6 +392,17 @@ func runServe(args []string) error {
 	srv.SetSessionMetaFunc(func() schema.SessionMeta { return getSession().Meta() })
 	srv.SetPendingAskFunc(func() bool { return getSession().HasPendingAsk() })
 	srv.SetPendingEscalationFunc(func() bool { return getSession().HasPendingEscalations() })
+	srv.SetPendingEscalationsSnapshotFunc(func() []appwire.SandboxEscalationRequested {
+		data := getSession().PendingEscalations()
+		out := make([]appwire.SandboxEscalationRequested, 0, len(data))
+		for _, d := range data {
+			out = append(out, appwire.SandboxEscalationRequested{
+				EscalationID: d.EscalationID, Mode: d.Mode, Tool: d.Tool, Kind: d.Kind,
+				DeniedPath: d.DeniedPath, Command: d.Command, OutputSoFar: d.OutputSoFar, PartiallyRan: d.PartiallyRan,
+			})
+		}
+		return out
+	})
 	srv.SetModelFunc(func(model string) { getSession().SetModel(model) })
 	srv.SetNameFunc(func(name string) { getSession().Rename(name) })
 	srv.SetReasoningEffortFunc(func(effort string) { getSession().SetReasoningEffort(effort) })

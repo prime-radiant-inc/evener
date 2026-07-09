@@ -206,6 +206,10 @@
       // (USER_INPUT) — the same incremental path drives cold and live attach,
       // since both replay through handle().
       this.pendingAsk = null;
+      // M7: ids of sandbox escalations already surfaced in this session view, so the
+      // thread/read snapshot (surface-on-entry / reconnect) and the live
+      // SANDBOX_ESCALATION_REQUESTED notification never double-render the same card.
+      this.shownEscalationIds = new Set();
 
       this.conversation.innerHTML = "";
 
@@ -738,6 +742,9 @@
           for (const [kind, data] of window.SerfAppwire.eventsFromThread(thread)) {
             this.handleData(kind, data);
           }
+          // Surface any sandbox escalation blocked on this session (M7 surface-on-
+          // entry / reconnect), de-duped against live ones.
+          this.surfaceSnapshotEscalations(thread);
           this.appwireHydrated = true;
           // The stream is live again: a reconnect succeeded, so retire any
           // chrome reconnect banner and re-enable the composer.
@@ -881,6 +888,7 @@
           for (const [kind, data] of window.SerfAppwire.eventsFromThread(thread)) {
             this.handleData(kind, data);
           }
+          this.surfaceSnapshotEscalations(thread);
           this.appwireHydrated = true;
         })
         .catch(() => {});
@@ -3377,10 +3385,28 @@
     // request; the card then settles in place (it is never a transcript turn and is
     // never replayed). Approve re-runs the single invocation with the one path
     // granted; deny returns the typed error to the model.
+    // surfaceSnapshotEscalations renders any escalations carried on the thread/read
+    // snapshot (thread.serf.pendingEscalations) — the surface-on-entry / reconnect /
+    // other-client-raised path. De-dupe by id (in appendSandboxEscalation) keeps it
+    // from double-rendering one the live notification already showed.
+    surfaceSnapshotEscalations(thread) {
+      const pending = thread && thread.serf && thread.serf.pendingEscalations;
+      if (!Array.isArray(pending)) return;
+      for (const data of pending) {
+        this.appendSandboxEscalation(data);
+      }
+    },
+
     appendSandboxEscalation(data) {
+      const escalationId = data.escalationId || "";
+      // De-dupe: a card already shown live must not be re-rendered by the entry/
+      // reconnect snapshot (and vice versa).
+      if (escalationId) {
+        if (this.shownEscalationIds.has(escalationId)) return;
+        this.shownEscalationIds.add(escalationId);
+      }
       this.endCheapCluster();
       this.closeSubagentModule();
-      const escalationId = data.escalationId || "";
       const isShell = data.kind === "shell";
 
       const card = document.createElement("div");

@@ -8,6 +8,24 @@ import (
 	"primeradiant.com/serf/appwire"
 )
 
+func TestAppThread_CarriesPendingEscalationsSnapshot(t *testing.T) {
+	t.Parallel()
+	s := NewServer(ServerConfig{})
+	s.SetAppIdentity("local", "th_1")
+	s.SetPendingEscalationsSnapshotFunc(func() []appwire.SandboxEscalationRequested {
+		return []appwire.SandboxEscalationRequested{{EscalationID: "esc_1", Tool: "read_file", DeniedPath: "/x", Mode: "read-only"}}
+	})
+	thread := s.appThread()
+	got := thread.Serf.PendingEscalations
+	if len(got) != 1 || got[0].EscalationID != "esc_1" || got[0].DeniedPath != "/x" {
+		t.Fatalf("appThread must carry the pending-escalation snapshot on thread/read: %+v", got)
+	}
+	// Stamped with this thread's identifiers so a client routes it like a live card.
+	if got[0].ThreadID != "th_1" || got[0].Ref != "local:th_1" {
+		t.Fatalf("snapshot escalation must be stamped with the thread's id/ref, got %+v", got[0])
+	}
+}
+
 func TestHandleSandboxEscalationResolve(t *testing.T) {
 	t.Parallel()
 

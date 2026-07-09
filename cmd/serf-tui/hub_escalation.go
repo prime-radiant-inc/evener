@@ -82,12 +82,42 @@ func (m *hubModel) headEscalation() *hubEscalation {
 	return q[0]
 }
 
-// surfaceEscalationsOnEntry re-surfaces the viewed session's head escalation prompt
-// when the user enters/re-enters that session. It NEVER denies — re-entering must
-// not auto-resolve; the escalation simply becomes visible and answerable again.
+// surfaceEscalationsOnEntry merges the entered session's thread/read snapshot of
+// pending escalations (so a fresh / other-client-raised / reconnecting escalation is
+// picked up) and re-surfaces the head prompt. It NEVER denies — re-entering must not
+// auto-resolve; the escalation simply becomes visible and answerable again.
 func (m *hubModel) surfaceEscalationsOnEntry() {
+	m.mergeSnapshotEscalations(m.detail)
 	if m.headEscalation() != nil {
 		m.promptHeadEscalation()
+	}
+}
+
+// mergeSnapshotEscalations folds the thread/read snapshot's pending escalations into
+// escalationsByRef, DE-DUPED BY ID against any already tracked live — so a client
+// that saw an escalation live and then re-enters (or a resync) never double-surfaces
+// it; only escalations it has not seen (fresh entry, reconnect, another client
+// raised it) are added.
+func (m *hubModel) mergeSnapshotEscalations(detail hubSessionDetail) {
+	ref := strings.TrimSpace(detail.Ref)
+	if ref == "" || len(detail.PendingEscalations) == 0 {
+		return
+	}
+	if m.escalationsByRef == nil {
+		m.escalationsByRef = map[string][]*hubEscalation{}
+	}
+	seen := map[string]bool{}
+	for _, e := range m.escalationsByRef[ref] {
+		seen[e.id] = true
+	}
+	for _, p := range detail.PendingEscalations {
+		if p.EscalationID == "" || seen[p.EscalationID] {
+			continue
+		}
+		seen[p.EscalationID] = true
+		m.escalationsByRef[ref] = append(m.escalationsByRef[ref], &hubEscalation{
+			id: p.EscalationID, tool: p.Tool, path: p.DeniedPath, mode: p.Mode, ref: ref,
+		})
 	}
 }
 

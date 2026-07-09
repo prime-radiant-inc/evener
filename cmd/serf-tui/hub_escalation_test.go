@@ -231,6 +231,47 @@ func TestHubModelSandboxEscalation_ConcurrentQueueBothAnswerable(t *testing.T) {
 	}
 }
 
+func TestHubModelSandboxEscalation_SnapshotSurfacesOnEntry(t *testing.T) {
+	m := newHubModel(nil, "")
+	m.mode = hubModeSession
+	// A fresh entry to a session whose thread/read snapshot carries a pending
+	// escalation (raised while not viewed, or by another client, or before connect).
+	thread := appwire.Thread{ID: "th_1", SessionID: "sess_1", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}, Serf: appwire.SerfThread{
+		Ref:                "local:th_1",
+		PendingEscalations: []appwire.SandboxEscalationRequested{{EscalationID: "esc_1", Tool: "read_file", DeniedPath: "/x", Mode: "read-only"}},
+	}}
+	updated, _ := m.Update(hubSessionMsg{detail: hubDetailFromThread(thread), ref: "local:th_1"})
+	got := updated.(hubModel)
+	if len(got.escalationsByRef["local:th_1"]) != 1 {
+		t.Fatalf("entering a session must surface its snapshot escalation, got %+v", got.escalationsByRef)
+	}
+	if !containsMsg(got, "/x") || !containsMsg(got, "requested by serf") {
+		t.Fatalf("the snapshot escalation must surface as a card: %+v", got.session.messages)
+	}
+}
+
+func TestHubModelSandboxEscalation_SnapshotDeDupesLive(t *testing.T) {
+	m := newHubModel(nil, "")
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
+	// Already tracking esc_1 live.
+	m.escalationsByRef = map[string][]*hubEscalation{"local:th_1": {{id: "esc_1", ref: "local:th_1"}}}
+	// A same-session resync snapshot includes esc_1 (already live) + esc_2 (new).
+	thread := appwire.Thread{ID: "th_1", SessionID: "sess_1", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}, Serf: appwire.SerfThread{
+		Ref: "local:th_1",
+		PendingEscalations: []appwire.SandboxEscalationRequested{
+			{EscalationID: "esc_1"},
+			{EscalationID: "esc_2", Tool: "write_file", DeniedPath: "/y"},
+		},
+	}}
+	updated, _ := m.Update(hubSessionMsg{detail: hubDetailFromThread(thread), ref: "local:th_1"})
+	got := updated.(hubModel)
+	q := got.escalationsByRef["local:th_1"]
+	if len(q) != 2 {
+		t.Fatalf("snapshot must add only the NEW escalation (de-dupe the live one), got %d: %+v", len(q), q)
+	}
+}
+
 func containsMsg(m hubModel, sub string) bool {
 	for _, msg := range m.session.messages {
 		if strings.Contains(msg.Text, sub) {

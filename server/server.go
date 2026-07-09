@@ -170,8 +170,9 @@ type Server struct {
 	compactFunc         func(context.Context) error
 	clearFunc           func(context.Context) error
 	pressureFn          func() float64
-	pendingAskFn        func() bool
-	pendingEscalationFn func() bool
+	pendingAskFn                 func() bool
+	pendingEscalationFn          func() bool
+	pendingEscalationsSnapshotFn func() []appwire.SandboxEscalationRequested
 	contextMetricsFn    func() ContextMetrics
 	// workMetricsFn returns the live working-state/token metrics (WS2 A7):
 	// accumulated wall-clock work time, cumulative token usage (nil when
@@ -432,6 +433,16 @@ func (s *Server) SetPendingAskFunc(fn func() bool) {
 func (s *Server) SetPendingEscalationFunc(fn func() bool) {
 	s.mu.Lock()
 	s.pendingEscalationFn = fn
+	s.mu.Unlock()
+}
+
+// SetPendingEscalationsSnapshotFunc sets a callback returning the redacted approval
+// cards for the session's currently-blocked sandbox escalations (M7). appThread()
+// puts them on thread/read so a client surfaces the card(s) on entry/reconnect. A
+// HUMAN-CLIENT field only — never entering the model's transcript.
+func (s *Server) SetPendingEscalationsSnapshotFunc(fn func() []appwire.SandboxEscalationRequested) {
+	s.mu.Lock()
+	s.pendingEscalationsSnapshotFn = fn
 	s.mu.Unlock()
 }
 

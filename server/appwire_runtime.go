@@ -474,6 +474,7 @@ func (s *Server) appThread() appwire.Thread {
 	wmfn := s.workMetricsFn
 	metafn := s.sessionMetaFn
 	pafn := s.pendingAskFn
+	pesfn := s.pendingEscalationsSnapshotFn
 	activeTurnID := s.appActiveTurnID
 	s.mu.RUnlock()
 
@@ -530,6 +531,16 @@ func (s *Server) appThread() appwire.Thread {
 	if pafn != nil {
 		askPending = pafn()
 	}
+	var pendingEscalations []appwire.SandboxEscalationRequested
+	if pesfn != nil {
+		pendingEscalations = pesfn()
+		// Stamp each snapshot card with this thread's identifiers so the client can
+		// route it exactly like a live notification.
+		for i := range pendingEscalations {
+			pendingEscalations[i].ThreadID = threadID
+			pendingEscalations[i].Ref = ref
+		}
+	}
 	var meta schema.SessionMeta
 	if metafn != nil {
 		meta = metafn()
@@ -565,6 +576,7 @@ func (s *Server) appThread() appwire.Thread {
 			WorkMillis:          workMillis,
 			ActiveTurnStartedAt: activeTurnStartedAt,
 			AskPending:          askPending,
+			PendingEscalations:  pendingEscalations,
 		},
 	}
 }

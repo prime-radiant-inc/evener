@@ -92,6 +92,33 @@ func TestEscalationWall_NotObservableInHistory(t *testing.T) {
 	}
 }
 
+// Wall 3b — NOT OBSERVABLE via the snapshot: the thread/read PendingEscalations
+// snapshot is a HUMAN-CLIENT field. While an escalation is pending it appears in the
+// human snapshot (PendingEscalations) but NEVER in the model's history — the
+// snapshot is a separate channel, not built from (or leaking into) what the model sees.
+func TestEscalationWall_SnapshotIsHumanOnlyNotInHistory(t *testing.T) {
+	s := escalatableSession(t)
+	res, _ := deniedResult("/secret/path/xyz")
+	done := make(chan tool.ExecResult, 1)
+	go func() {
+		done <- s.escalateOnSandboxDenial(context.Background(), "read_file", res, func(context.Context) tool.ExecResult { return succeededResult() })
+	}()
+	awaitPending(t, s, 1)
+
+	snap := s.PendingEscalations()
+	if len(snap) != 1 || snap[0].DeniedPath != "/secret/path/xyz" {
+		t.Fatalf("the human snapshot must carry the pending escalation: %+v", snap)
+	}
+	s.mu.Lock()
+	blob, _ := json.Marshal(s.history)
+	s.mu.Unlock()
+	if strings.Contains(string(blob), "/secret/path/xyz") || strings.Contains(string(blob), snap[0].EscalationID) {
+		t.Fatalf("the escalation must never appear in the model's history despite the snapshot: %s", blob)
+	}
+	_ = s.ResolveSandboxEscalation(snap[0].EscalationID, false)
+	<-done
+}
+
 // Wall 4 — NOT REPLAYABLE: an escalation blocked mid-wait resolves to the typed
 // denial (an IsError result) when the session closes, exactly like an interrupted
 // ask_user; nothing is persisted to replay. (The pending map is in-memory only.)

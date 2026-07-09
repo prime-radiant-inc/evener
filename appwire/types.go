@@ -234,6 +234,13 @@ type SerfThread struct {
 	// true while an ask_user question is unanswered. Additive: absent on old
 	// daemons and Codex threads, decoding as false.
 	AskPending bool `json:"askPending,omitempty"`
+	// PendingEscalations is the M7 surface-on-entry snapshot: the redacted approval
+	// cards for any sandbox-exemption escalations currently blocked on this session,
+	// so a client entering / reconnecting to / not-having-seen-live this session
+	// surfaces the card(s). It is a HUMAN-CLIENT field only — it is never part of the
+	// model's transcript or any model-visible projection. Absent on old daemons /
+	// Codex threads.
+	PendingEscalations []SandboxEscalationRequested `json:"pendingEscalations,omitempty"`
 }
 
 // GoalState is the wire representation of a session's /goal. Status is the
