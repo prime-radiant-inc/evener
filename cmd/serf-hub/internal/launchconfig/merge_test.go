@@ -82,6 +82,51 @@ func TestMerge_Sandbox(t *testing.T) {
 	}
 }
 
+// TestMerge_SandboxNetWithoutModeDiagnostic: an effective sandbox_net with no
+// (or off) sandbox mode is a silent no-op at serf serve, so mergeLayers emits a
+// diagnostic. A non-off mode (from ANY layer) suppresses the warning.
+func TestMerge_SandboxNetWithoutModeDiagnostic(t *testing.T) {
+	hasNetDiag := func(diags []Diagnostic) bool {
+		for _, d := range diags {
+			if d.Field == "sandbox_net" && strings.Contains(d.Message, "no effect") {
+				return true
+			}
+		}
+		return false
+	}
+
+	// net set, no mode → diagnostic (attributed to the layer that set net).
+	got, diags := mergeLayers(map[LayerName]Layer{LayerGlobal: {SandboxNet: ptrBool(false)}})
+	if !hasNetDiag(diags) {
+		t.Errorf("sandbox_net with no mode must warn, diags=%v", diags)
+	}
+	if !hasNetDiag(got.Diagnostics) {
+		t.Error("diagnostic must also be carried on Resolved.Diagnostics")
+	}
+
+	// net set + explicit off mode → diagnostic.
+	_, diags = mergeLayers(map[LayerName]Layer{LayerGlobal: {Sandbox: "off", SandboxNet: ptrBool(true)}})
+	if !hasNetDiag(diags) {
+		t.Errorf("sandbox_net with an off mode must warn, diags=%v", diags)
+	}
+
+	// net set + non-off mode → NO diagnostic.
+	_, diags = mergeLayers(map[LayerName]Layer{LayerGlobal: {Sandbox: "restricted", SandboxNet: ptrBool(true)}})
+	if hasNetDiag(diags) {
+		t.Errorf("sandbox_net with a non-off mode must not warn, diags=%v", diags)
+	}
+
+	// mode in one layer, net in another (the cross-layer case per-layer validation
+	// would miss) → NO diagnostic, because the effective config has both.
+	_, diags = mergeLayers(map[LayerName]Layer{
+		LayerGlobal: {Sandbox: "workspace-write"},
+		LayerLaunch: {SandboxNet: ptrBool(false)},
+	})
+	if hasNetDiag(diags) {
+		t.Errorf("cross-layer mode+net must not warn, diags=%v", diags)
+	}
+}
+
 func TestMerge_ScalarPointerSemantics(t *testing.T) {
 	g := Layer{MaxRounds: ptrInt(200), NonInteractive: ptrBool(true), RawHTTPLogging: ptrBool(true)}
 	l := Layer{NonInteractive: ptrBool(false), RawHTTPLogging: ptrBool(false)}

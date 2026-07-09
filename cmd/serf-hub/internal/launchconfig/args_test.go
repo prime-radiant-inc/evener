@@ -107,9 +107,13 @@ func TestToArgs_Sandbox(t *testing.T) {
 		{"unset", Layer{}, nil},
 		{"restricted", Layer{Sandbox: "restricted"}, []string{"--sandbox", "restricted"}},
 		{"explicit off", Layer{Sandbox: "off"}, []string{"--sandbox", "off"}},
-		{"net on", Layer{SandboxNet: ptrBool(true)}, []string{"--sandbox-net", "on"}},
-		{"net off", Layer{SandboxNet: ptrBool(false)}, []string{"--sandbox-net", "off"}},
+		// sandbox_net without a non-off mode is suppressed: serf ignores the flag
+		// without a sandbox, so passing it alone would be a silent no-op.
+		{"net on, no mode", Layer{SandboxNet: ptrBool(true)}, nil},
+		{"net off, no mode", Layer{SandboxNet: ptrBool(false)}, nil},
+		{"net with off mode", Layer{Sandbox: "off", SandboxNet: ptrBool(false)}, []string{"--sandbox", "off"}},
 		{"mode and net", Layer{Sandbox: "workspace-write", SandboxNet: ptrBool(false)}, []string{"--sandbox", "workspace-write", "--sandbox-net", "off"}},
+		{"restricted and net on", Layer{Sandbox: "restricted", SandboxNet: ptrBool(true)}, []string{"--sandbox", "restricted", "--sandbox-net", "on"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

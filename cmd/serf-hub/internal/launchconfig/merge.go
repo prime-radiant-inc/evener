@@ -15,6 +15,15 @@ var credentialBlocklistSuffixes = []string{
 	"API_KEY", "_KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
 }
 
+// sandboxModeIsOff reports whether a launch-config sandbox mode denotes no
+// confinement — empty (unset) or "off" (case/space-insensitive). sandbox_net has
+// no effect in that state (serf ignores --sandbox-net without a sandbox mode), so
+// ToArgs suppresses the flag and mergeLayers warns.
+func sandboxModeIsOff(mode string) bool {
+	m := strings.ToLower(strings.TrimSpace(mode))
+	return m == "" || m == "off"
+}
+
 func isCredentialEnvKey(key string) bool {
 	upper := strings.ToUpper(key)
 	for _, s := range credentialBlocklistSuffixes {
@@ -258,6 +267,19 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 		if nonEmpty {
 			contributing[name] = l
 		}
+	}
+
+	// sandbox_net only takes effect alongside a non-off sandbox mode. A merged
+	// effective config with net set but no (or off) mode is a silent no-op at serf
+	// serve (mirroring the delegate path, which now refuses the same combination), so
+	// warn. Checked on the EFFECTIVE config, not per layer, because the mode and net
+	// may legitimately arrive from different layers.
+	if eff.SandboxNet != nil && sandboxModeIsOff(eff.Sandbox) {
+		diags = append(diags, Diagnostic{
+			Layer:   prov["sandbox_net"],
+			Field:   "sandbox_net",
+			Message: "sandbox_net has no effect without a non-off sandbox mode",
+		})
 	}
 
 	return Resolved{

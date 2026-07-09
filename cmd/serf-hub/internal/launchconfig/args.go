@@ -74,7 +74,9 @@ func ToArgs(r Resolved) []string {
 	if e.Sandbox != "" {
 		add("--sandbox", e.Sandbox)
 	}
-	if e.SandboxNet != nil {
+	// Emit --sandbox-net only alongside a non-off mode: serf ignores the flag without
+	// a sandbox, so passing it alone would be a silent no-op.
+	if e.SandboxNet != nil && !sandboxModeIsOff(e.Sandbox) {
 		add("--sandbox-net", onOff(*e.SandboxNet))
 	}
 	for _, d := range e.SkillsDirs {
