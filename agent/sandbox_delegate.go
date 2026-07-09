@@ -1,10 +1,44 @@
 package agent
 
 import (
+	"fmt"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/sandbox"
 )
+
+// provisionRestoredSandbox engages enforcement on a RESUMED root session's env from
+// its PERSISTED mode, the resume-path counterpart to cmd/serf.provisionSandbox for a
+// fresh session. Off/empty skips the host probe and restores byte-identically. A
+// non-off mode re-resolves the persisted request against freshly-probed host facts
+// and the restored cwd (never replaying stored roots), then builds the enforced env
+// via EnableSandbox; a host that can no longer enforce the mode surfaces the
+// resolver's *sandbox.RefusalError so the resume fails closed rather than running
+// unconfined. A non-local env carrying a non-off mode is a misconfiguration — only
+// the local env can sandbox. Tests inject a FakeProber via cfg.testOnly so the
+// resume path stays hermetic.
+func provisionRestoredSandbox(cfg SessionConfig, env execenv.ExecutionEnvironment) error {
+	if sandbox.ModeIsOff(cfg.Sandbox) {
+		return nil
+	}
+	le, ok := env.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		return fmt.Errorf("restore session sandbox: execution environment does not support sandboxing (mode %q)", cfg.Sandbox)
+	}
+	prober := sandbox.Prober(sandbox.RealProber{})
+	if cfg.testOnly.sandboxProber != nil {
+		prober = cfg.testOnly.sandboxProber
+	}
+	rp, err := sandbox.ResolveNamed(cfg.Sandbox, cfg.SandboxNet, prober.Probe(), env.WorkingDirectory())
+	if err != nil {
+		return fmt.Errorf("restore session sandbox: %w", err)
+	}
+	if err := le.EnableSandbox(rp); err != nil {
+		return fmt.Errorf("restore session sandbox: %w", err)
+	}
+	return nil
+}
 
 // sandboxSnapshotFromEnv captures the durable sandbox policy INPUTS from a
 // (possibly re-rooted) execution environment, mirroring how localEnvPolicyName

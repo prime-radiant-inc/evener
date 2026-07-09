@@ -63,6 +63,17 @@ func (m Mode) String() string {
 	return modeNames[m]
 }
 
+// ModeIsOff reports whether a mode name denotes off — an empty string (the unset
+// carrier) or "off", case- and space-insensitive. The live flag/restore paths use
+// it to short-circuit the default (off) session BEFORE probing host capabilities,
+// so an unsandboxed run never forks the bwrap/overlay/uname probes RealProber
+// runs. A mistyped non-off name is not off here; it still reaches ParseMode and
+// fails loudly.
+func ModeIsOff(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	return n == "" || n == modeNames[ModeOff]
+}
+
 // ParseMode maps a mode name to its Mode, tolerating surrounding whitespace and
 // case. An unknown name is a typed error rather than a silent default so a
 // mistyped --sandbox value fails loudly instead of quietly disabling the box.

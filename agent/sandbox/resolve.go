@@ -283,6 +283,31 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 	return rp, nil
 }
 
+// ResolveNamed resolves a session policy from a mode NAME (the persisted/flag form)
+// plus the network decision, host facts, and cwd. It is the single glue the live
+// flag path (cmd/serf) and the resume path (agent.RestoreSessionFromMetaWithConfig)
+// share so both build a policy identically. An empty or off name returns
+// (nil, nil) — byte-identical to today, no containment; an unknown name is a typed
+// parse error; otherwise it returns the Resolve result (a *RefusalError when the
+// host cannot enforce the mode, surfaced as a start-time refusal by the caller).
+//
+// The caller supplies already-probed host facts so an OFF session can skip the
+// probe entirely (see ModeIsOff); ResolveNamed never probes.
+func ResolveNamed(modeName string, net *bool, host HostFacts, cwd string) (*ResolvedPolicy, error) {
+	if ModeIsOff(modeName) {
+		return nil, nil
+	}
+	mode, err := ParseMode(modeName)
+	if err != nil {
+		return nil, err
+	}
+	rp, err := Resolve(SandboxPolicy{Mode: mode, Network: net}, host, cwd)
+	if err != nil {
+		return nil, err
+	}
+	return &rp, nil
+}
+
 // chooseBackend applies the fail-closed floor: it returns the backend that will
 // enforce this (mode, net) on this host, or a *RefusalError naming the backend
 // that would.

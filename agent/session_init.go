@@ -329,19 +329,15 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if env == nil {
 		return nil, errors.New("execution environment is nil")
 	}
-	// Apply the pre-M5 sandbox feature gate to the persisted mode — the SAME gate
-	// session start applies at the flag layer (cmd/serf.configureSandbox). Without
-	// it, a persisted or hand-edited ConfigSnapshot carrying a non-off "sandbox"
-	// would resume claiming sandboxing with nothing enforced (M2/M3 wire the
-	// enforcement; the flag goes live in M5). An empty/off mode restores unchanged.
-	if name := strings.TrimSpace(cfg.Sandbox); name != "" {
-		mode, perr := sandbox.ParseMode(name)
-		if perr != nil {
-			return nil, perr
-		}
-		if gerr := sandbox.FeatureGate(mode); gerr != nil {
-			return nil, gerr
-		}
+	// Engage enforcement for the RESUMED session from its PERSISTED mode. The flag
+	// layer governs only a fresh session; on resume the persisted request is
+	// authoritative (immutable across restart) and is RE-RESOLVED against
+	// freshly-probed host facts against the restored cwd — so a host that can no
+	// longer enforce the mode fails closed here (a *sandbox.RefusalError) rather
+	// than resuming unconfined, and config drift can never widen an old session's
+	// box. An off/empty mode skips the probe and restores byte-identically.
+	if err := provisionRestoredSandbox(cfg, env); err != nil {
+		return nil, err
 	}
 	if err := env.Initialize(); err != nil {
 		return nil, fmt.Errorf("env initialize: %w", err)

@@ -99,8 +99,8 @@ func runServe(args []string) error {
 	var modelFallbacks cmdutil.StringSliceFlag
 	fs.Var(&modelFallbacks, "model-fallback", "fallback model (provider/model) tried on permanent provider errors (repeatable)")
 	openAIResponsesContinuation := fs.String("openai-responses-continuation", "", "OpenAI Responses continuation mode: off|auto (default: off)")
-	sandboxMode := fs.String("sandbox", "off", "sandbox mode: off (default); other modes are in development and not yet enabled")
-	sandboxNet := fs.String("sandbox-net", "on", "sandbox network egress on|off (only meaningful with a sandbox mode)")
+	sandboxMode := fs.String("sandbox", "off", "sandbox mode: off (default), read-only, workspace-write, or restricted")
+	sandboxNet := fs.String("sandbox-net", "on", "sandbox network egress on|off (default on; only applies with a non-off --sandbox mode)")
 	cpuProfile := fs.String("cpu-profile", "", "write CPU profile to file")
 	traceFile := fs.String("trace", "", "write execution trace to file")
 
@@ -234,6 +234,15 @@ func runServe(args []string) error {
 	if err := configureSandbox(&sessionCfg, *sandboxMode, *sandboxNet); err != nil {
 		return err
 	}
+	// Engage enforcement for a FRESH session from the flag-set mode. A resume
+	// re-provisions the env from the PERSISTED mode inside
+	// RestoreSessionFromMetaWithConfig (immutable across restart), so the flag
+	// governs only new sessions here.
+	if !resuming {
+		if err := provisionSandbox(env, &sessionCfg, env.WorkingDirectory()); err != nil {
+			return err
+		}
+	}
 
 	var sess *agent.Session
 	if resuming {
@@ -259,6 +268,13 @@ func runServe(args []string) error {
 		if err != nil {
 			return fmt.Errorf("session creation: %w", err)
 		}
+	}
+
+	// One startup line, loudly, states exactly what this host enforces (read from
+	// the env's resolved policy so it never overstates). Empty for an unsandboxed
+	// session — nothing to announce.
+	if line := sandboxEnforcementLine(env); line != "" {
+		fmt.Fprintln(os.Stderr, line)
 	}
 
 	// Signal handling.
