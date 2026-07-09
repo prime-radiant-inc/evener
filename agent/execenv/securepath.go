@@ -123,11 +123,38 @@ func (s *sandboxFS) deny(tool, denyPath, reason string) *sandbox.DeniedError {
 	// root, a read-only git surface, a symlink component — carry an informative
 	// non-secret path, so they keep the basename.
 	return &sandbox.DeniedError{
-		Mode:      s.policy.Mode,
-		Tool:      tool,
-		Path:      denyPath,
-		Reason:    reason,
-		Sensitive: reason == denyReasonMasked,
+		Mode:       s.policy.Mode,
+		Tool:       tool,
+		Path:       denyPath,
+		Reason:     reason,
+		Sensitive:  reason == denyReasonMasked,
+		ReasonKind: denialReasonKind(reason),
+	}
+}
+
+// denialReasonKind maps a display-text reason to its typed classification, so the
+// two never diverge from one place (deny() is the single construction site). M7's
+// escalation eligibility keys on the typed kind, never on this text.
+func denialReasonKind(reason string) sandbox.DenialReason {
+	switch reason {
+	case denyReasonOutsideRead:
+		return sandbox.DenialOutsideReadRoots
+	case denyReasonOutsideWrite:
+		return sandbox.DenialOutsideWriteRoots
+	case denyReasonWriteDenied:
+		return sandbox.DenialWritesDisabled
+	case denyReasonMasked:
+		return sandbox.DenialMasked
+	case denyReasonProtected:
+		return sandbox.DenialGitProtected
+	case denyReasonSymlink:
+		return sandbox.DenialSymlink
+	case denyReasonEscape:
+		return sandbox.DenialEscape
+	case denyReasonRootTarget:
+		return sandbox.DenialRootTarget
+	default:
+		return sandbox.DenialUnspecified
 	}
 }
 

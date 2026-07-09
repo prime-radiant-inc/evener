@@ -103,9 +103,14 @@ var escalatableTools = map[string]bool{
 // escalationAllowed reports whether a denial is eligible for human escalation. It
 // mirrors ask_user's root-only interactive gate (NonInteractive || subagent), adds
 // the reconciliation zero-subscriber rule, restricts escalation to the single-file
-// tools (escalatableTools), and refuses a SENSITIVE denial (a masked
-// credential/denylist path): granting it would relax the immutable secrets floor,
-// and its path must never be shown, so a human could not meaningfully approve it.
+// tools (escalatableTools), and — critically — only raises a card for a denial a
+// per-invocation single-leaf grant could actually CURE: a CONTAINMENT denial
+// (outside the roots). A masked/git-protected/symlinked/escape denial re-denies
+// deterministically on re-run, so escalating it would show the human "Allowed once"
+// while the model still gets a denial; those stay final. The reason is a TYPED kind
+// (denied.ReasonKind.Curable()), never a match on display text, and it fails closed
+// for an unclassified kind. Curable() excludes DenialMasked, so it subsumes the old
+// Sensitive check.
 //
 // callName is the tool the MODEL invoked (apply_patch's underlying writes carry
 // Tool=="write_file" on the denial, so the allowlist keys on the call, not the
@@ -115,10 +120,10 @@ func (s *Session) escalationAllowed(callName string, denied *sandbox.DeniedError
 	if s.cfg.NonInteractive || s.isSubagentSession() {
 		return false
 	}
-	if denied.Sensitive {
+	if !escalatableTools[callName] {
 		return false
 	}
-	if !escalatableTools[callName] {
+	if !denied.ReasonKind.Curable() {
 		return false
 	}
 	if s.subscriberCount() == 0 {

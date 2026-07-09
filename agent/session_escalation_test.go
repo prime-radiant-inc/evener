@@ -16,10 +16,11 @@ import (
 // exactly as ExecuteCall would return one after a securepath refusal.
 func deniedResult(path string) (tool.ExecResult, *sandbox.DeniedError) {
 	d := &sandbox.DeniedError{
-		Mode:   sandbox.ModeReadOnly,
-		Tool:   "write_file",
-		Path:   path,
-		Reason: "outside the sandbox's writable roots",
+		Mode:       sandbox.ModeReadOnly,
+		Tool:       "write_file",
+		Path:       path,
+		Reason:     "outside the sandbox's writable roots",
+		ReasonKind: sandbox.DenialOutsideWriteRoots, // a CURABLE containment denial
 	}
 	return tool.ExecResult{
 		ToolName:   "write_file",
@@ -116,7 +117,7 @@ func TestEscalation_GateMatrix(t *testing.T) {
 
 func TestEscalation_SensitiveDenialNeverEscalates(t *testing.T) {
 	s := escalatableSession(t)
-	d := &sandbox.DeniedError{Mode: sandbox.ModeReadOnly, Tool: "read_file", Path: "/home/u/.ssh/id_rsa", Reason: "credential path masked", Sensitive: true}
+	d := &sandbox.DeniedError{Mode: sandbox.ModeReadOnly, Tool: "read_file", Path: "/home/u/.ssh/id_rsa", Reason: "credential path masked", Sensitive: true, ReasonKind: sandbox.DenialMasked}
 	res := tool.ExecResult{ToolName: "read_file", CallID: "c", IsError: true, Err: d, FullOutput: d.Error()}
 	got := s.escalateOnSandboxDenial(context.Background(), "write_file", res, noRerun(t))
 	if !errors.Is(got.Err, d) {
@@ -129,7 +130,7 @@ func TestEscalation_OnlySingleFileToolsEscalate(t *testing.T) {
 	// tools (which walk a directory subtree) stay final, so one grant can never
 	// widen more than one leaf. Their underlying denials carry Tool=="write_file"
 	// or a read tool, but the allowlist keys on the invoking call name.
-	d := &sandbox.DeniedError{Mode: sandbox.ModeReadOnly, Tool: "write_file", Path: "/wt/f", Reason: "writes are denied in this sandbox mode"}
+	d := &sandbox.DeniedError{Mode: sandbox.ModeReadOnly, Tool: "write_file", Path: "/wt/f", Reason: "writes are denied in this sandbox mode", ReasonKind: sandbox.DenialWritesDisabled}
 	res := tool.ExecResult{ToolName: "x", CallID: "c", IsError: true, Err: d, FullOutput: d.Error()}
 	for _, callName := range []string{"apply_patch", "glob", "grep", "list_dir", "shell", "read_file_all"} {
 		s := escalatableSession(t)
@@ -140,6 +141,47 @@ func TestEscalation_OnlySingleFileToolsEscalate(t *testing.T) {
 		if len(pendingIDs(s)) != 0 {
 			t.Fatalf("%s must not register a pending escalation", callName)
 		}
+	}
+}
+
+func TestEscalation_OnlyCurableContainmentDenialsEscalate(t *testing.T) {
+	// Uncurable reasons re-deny deterministically on re-run, so they must NOT raise
+	// a futile approval card — they stay final like today. Includes the unspecified
+	// zero value (fail-closed).
+	final := []sandbox.DenialReason{
+		sandbox.DenialGitProtected, sandbox.DenialSymlink, sandbox.DenialEscape,
+		sandbox.DenialMasked, sandbox.DenialRootTarget, sandbox.DenialUnspecified,
+	}
+	for _, rk := range final {
+		s := escalatableSession(t)
+		d := &sandbox.DeniedError{Tool: "write_file", Path: "/wt/f", ReasonKind: rk}
+		res := tool.ExecResult{ToolName: "write_file", CallID: "c", IsError: true, Err: d, FullOutput: d.Error()}
+		got := s.escalateOnSandboxDenial(context.Background(), "write_file", res, noRerun(t))
+		if !errors.Is(got.Err, d) {
+			t.Fatalf("reason %v is uncurable and must stay final", rk)
+		}
+		if len(pendingIDs(s)) != 0 {
+			t.Fatalf("reason %v must not raise an escalation", rk)
+		}
+	}
+
+	// Curable containment reasons DO escalate (for a single-file tool).
+	curable := []sandbox.DenialReason{
+		sandbox.DenialOutsideReadRoots, sandbox.DenialOutsideWriteRoots, sandbox.DenialWritesDisabled,
+	}
+	for _, rk := range curable {
+		s := escalatableSession(t)
+		d := &sandbox.DeniedError{Tool: "read_file", Path: "/etc/x", ReasonKind: rk}
+		res := tool.ExecResult{ToolName: "read_file", CallID: "c", IsError: true, Err: d, FullOutput: d.Error()}
+		done := make(chan tool.ExecResult, 1)
+		go func() {
+			done <- s.escalateOnSandboxDenial(context.Background(), "read_file", res, func(context.Context) tool.ExecResult { return succeededResult() })
+		}()
+		ids := awaitPending(t, s, 1)
+		if err := s.ResolveSandboxEscalation(ids[0], false); err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		<-done
 	}
 }
 

@@ -56,6 +56,59 @@ type DeniedError struct {
 	// set ONLY for shell/kernel denials. M7 shows it so a human approving a
 	// re-run understands the command already partially executed.
 	OutputSoFar string
+
+	// ReasonKind classifies WHY the denial occurred, so a caller can decide
+	// programmatically WITHOUT matching the display text of Reason. M7's escalation
+	// eligibility uses it: only a CONTAINMENT denial (outside the roots) can be
+	// cured by a per-invocation single-leaf grant, so only those raise an approval
+	// card — a masked/git-protected/symlinked/escape denial re-denies deterministically
+	// on re-run and must stay final. The zero value (DenialUnspecified) is NOT
+	// curable, so a denial constructed without a kind fails closed (stays final).
+	ReasonKind DenialReason
+}
+
+// DenialReason classifies a sandbox denial by cause, independent of its display
+// text, so eligibility decisions never string-match a human-facing message.
+type DenialReason int
+
+const (
+	// DenialUnspecified is the zero value: an unclassified denial. It is NOT curable,
+	// so a hand-built or legacy DeniedError fails closed (stays final).
+	DenialUnspecified DenialReason = iota
+	// DenialOutsideReadRoots: a read outside the readable roots (restricted mode).
+	// A per-invocation grant of that one path CAN cure it.
+	DenialOutsideReadRoots
+	// DenialOutsideWriteRoots: a write outside the writable roots. Curable.
+	DenialOutsideWriteRoots
+	// DenialWritesDisabled: no writable roots in this mode (read-only). Curable.
+	DenialWritesDisabled
+	// DenialMasked: a secrets/pseudo-fs denylist hit (also Sensitive). NOT curable —
+	// a grant must never relax the secrets floor.
+	DenialMasked
+	// DenialGitProtected: a git config/hook surface write. NOT curable — the grant
+	// widens containment only, so the protected re-check re-denies on re-run.
+	DenialGitProtected
+	// DenialSymlink: a refused symlinked / non-directory path component. NOT curable —
+	// the grant opens with symlinks refused, so it re-denies.
+	DenialSymlink
+	// DenialEscape: a path that resolves outside the sandbox root. NOT curable.
+	DenialEscape
+	// DenialRootTarget: an attempt to operate on a sandbox root itself. NOT curable.
+	DenialRootTarget
+)
+
+// Curable reports whether a per-invocation single-leaf grant could actually let this
+// denial succeed on re-run. ONLY the containment denials (outside the roots) qualify;
+// masking, git-protection, symlink refusal, root-escape, and the unclassified zero
+// value all re-deny deterministically, so escalating them would show the human an
+// approval that the model still sees as a denial. Fail-closed for unknown kinds.
+func (r DenialReason) Curable() bool {
+	switch r {
+	case DenialOutsideReadRoots, DenialOutsideWriteRoots, DenialWritesDisabled:
+		return true
+	default:
+		return false
+	}
 }
 
 // Error implements error with a message safe to return to the model: it names
