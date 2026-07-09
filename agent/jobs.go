@@ -328,6 +328,10 @@ type jobNotification struct {
 	// against the owning jobManager's CURRENT pending state at accept time
 	// (spec §4.3). The frame text is deliberately NOT carried here.
 	WatchSend *watchSendToken
+	// Notice is the inform+breaker's model-facing self-influence line for a
+	// watcher-notification frame (the send path carries its notice on the
+	// rendered frame instead). Advisory and in-memory only.
+	Notice string
 	// receiverSessionID/receiverNotify route no-send watch notifications for
 	// concrete descendant watches back to the ancestor session that installed
 	// them. They are in-memory only; active watches are not restored without a

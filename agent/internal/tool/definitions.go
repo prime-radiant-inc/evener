@@ -198,6 +198,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 		"For cross-session session sources such as `parent`, omitting trigger fields watches all bounded public events for that source. " +
 		"Pick the trigger mode that matches the signal: session event frames use `events` (available: " + kinds + "), `event_filter`, and optional `every`; concrete job output uses `output_match`; periodic progress uses `progress_interval_ms`. " +
 		"`event_filter` narrows assistant.tool events by tool_name and ok/error status. " +
+		"Do not use job_watch to learn when a job completes — a finished job delivers its completion notification (with result excerpt) automatically; to trigger on a job's output, use `output_match`. " +
 		"Observers report findings with `communicate(end_turn=true)`. " +
 		"`operation=\"clear\"` removes a watch by `watch_id`."
 	return llm.ToolDefinition{

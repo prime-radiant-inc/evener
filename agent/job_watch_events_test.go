@@ -214,15 +214,18 @@ func TestConcreteJobEventWatchSendsFrame(t *testing.T) {
 	seedCommonWatchSendTargets(t, jm)
 
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	// job.notification is the one event kind a concrete-job target can scope
+	// (lifecycle payloads name their job); tool events are scoped by the
+	// watched job's child session and never fire from watcher-origin events.
 	_, err := jm.configureWatch(watchArgs{
 		Target: rec.JobID,
-		Events: []string{"assistant.tool"},
+		Events: []string{"job.notification"},
 		Send:   &watchSendArgs{To: "dlg_obs", Message: "observe"},
 	})
 	if err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	onSessionEventKD(jm, events.EventToolCallEnd, nil)
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: rec.JobID})
 
 	// Observation records the send as pending (frame snapshot included); delivery
 	// is the loop-owned drain's job.
@@ -242,7 +245,7 @@ func TestConcreteJobEventWatchSendsFrame(t *testing.T) {
 	}
 	if !strings.Contains(state.Frame, "observe") ||
 		!strings.Contains(state.Frame, rec.JobID) ||
-		!strings.Contains(state.Frame, "event: TOOL_CALL_END") {
+		!strings.Contains(state.Frame, "event: JOB_FINISHED") {
 		t.Fatalf("pending frame = %q, want configured message, job id, and trigger", state.Frame)
 	}
 }

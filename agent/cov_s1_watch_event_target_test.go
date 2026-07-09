@@ -26,18 +26,26 @@ func TestS1Cov_watchEventWatchedIdentity(t *testing.T) {
 
 func TestS1Cov_watchEventMatchesTarget(t *testing.T) {
 	// Session targets always match.
-	if !watchEventMatchesTarget("caller", events.JobStartedData{JobID: "job_x"}) {
+	if !watchEventMatchesTarget("caller", "", events.SessionEvent{Data: events.JobStartedData{JobID: "job_x"}}) {
 		t.Fatal("session target must match any event")
 	}
 	// Concrete targets match only the same job id.
-	if !watchEventMatchesTarget("job_x", events.JobStartedData{JobID: "job_x"}) {
+	if !watchEventMatchesTarget("job_x", "", events.SessionEvent{Data: events.JobStartedData{JobID: "job_x"}}) {
 		t.Fatal("start event for the target job must match")
 	}
-	if watchEventMatchesTarget("job_x", events.JobFinishedData{JobID: "job_y"}) {
+	if watchEventMatchesTarget("job_x", "", events.SessionEvent{Data: events.JobFinishedData{JobID: "job_y"}}) {
 		t.Fatal("finish event for a different job must not match")
 	}
-	// Non job-lifecycle events default to matching a concrete target.
-	if !watchEventMatchesTarget("job_x", events.CommunicateData{}) {
-		t.Fatal("non-lifecycle event defaults to match")
+	// Non job-lifecycle events are scoped by originating session: only the
+	// watched job's child session matches; watcher-origin and identity-less
+	// events do not (they would echo the watcher back at itself).
+	if !watchEventMatchesTarget("job_x", "sess_child", events.SessionEvent{SessionID: "sess_child", Data: events.CommunicateData{}}) {
+		t.Fatal("watched job's session event must match")
+	}
+	if watchEventMatchesTarget("job_x", "sess_child", events.SessionEvent{SessionID: "sess_watcher", Data: events.CommunicateData{}}) {
+		t.Fatal("watcher-origin non-lifecycle event must not match")
+	}
+	if watchEventMatchesTarget("job_x", "", events.SessionEvent{Data: events.CommunicateData{}}) {
+		t.Fatal("identity-less non-lifecycle event must not match")
 	}
 }
