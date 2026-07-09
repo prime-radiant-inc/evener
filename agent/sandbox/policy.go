@@ -78,9 +78,10 @@ func ModeIsOff(name string) bool {
 // axes the lattice is ordered by; a LOWER value is MORE confined. Reads:
 // off sees everything (2), the denylisted modes see anywhere-minus-denylist (1),
 // restricted sees only the worktree (0). Writes: read-only writes nothing but tmp
-// (0), every other mode writes the working root (1). Together they make the modes
-// a partial (not total) order — read-only and restricted are incomparable — which
-// is exactly what AtLeastAsConfining encodes for the delegate no-escalation floor.
+// (0), workspace-write and restricted write only the working tree (1), off applies
+// no write confinement and writes anywhere (2). Together they make the modes a
+// partial (not total) order — read-only and restricted are incomparable — which is
+// exactly what AtLeastAsConfining encodes for the delegate no-escalation floor.
 func (m Mode) readConfinement() int {
 	switch m {
 	case ModeOff:
@@ -93,10 +94,14 @@ func (m Mode) readConfinement() int {
 }
 
 func (m Mode) writeConfinement() int {
-	if m == ModeReadOnly {
+	switch m {
+	case ModeReadOnly:
 		return 0
+	case ModeOff:
+		return 2
+	default: // workspace-write, restricted
+		return 1
 	}
-	return 1
 }
 
 // AtLeastAsConfining reports whether this mode confines at least as much as other
