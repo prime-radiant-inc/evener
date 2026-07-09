@@ -233,6 +233,44 @@ func TestDefDelegateHasWatchParent(t *testing.T) {
 	}
 }
 
+// TestDefDelegateHasSandboxParams pins the per-delegate sandbox input surface:
+// a `sandbox` string enumerating the four modes and a `sandbox_net` boolean, both
+// documenting the no-escalation floor (you may only pick a box at least as
+// restrictive as your own) so the model self-selects a legal request.
+func TestDefDelegateHasSandboxParams(t *testing.T) {
+	props := DefDelegate(nil).Parameters["properties"].(map[string]any)
+
+	sb, ok := props["sandbox"].(map[string]any)
+	if !ok {
+		t.Fatal("DefDelegate missing sandbox param")
+	}
+	if typ, _ := sb["type"].(string); typ != "string" {
+		t.Errorf("sandbox type = %q, want string", sb["type"])
+	}
+	enum, ok := sb["enum"].([]string)
+	if !ok {
+		t.Fatalf("sandbox enum = %T, want []string", sb["enum"])
+	}
+	wantEnum := []string{"off", "read-only", "workspace-write", "restricted"}
+	if !reflect.DeepEqual(enum, wantEnum) {
+		t.Errorf("sandbox enum = %v, want %v", enum, wantEnum)
+	}
+	if desc, _ := sb["description"].(string); !strings.Contains(desc, "at least as restrictive") {
+		t.Errorf("sandbox description must explain the no-escalation floor, got %q", desc)
+	}
+
+	sn, ok := props["sandbox_net"].(map[string]any)
+	if !ok {
+		t.Fatal("DefDelegate missing sandbox_net param")
+	}
+	if typ, _ := sn["type"].(string); typ != "boolean" {
+		t.Errorf("sandbox_net type = %q, want boolean", sn["type"])
+	}
+	if desc, _ := sn["description"].(string); strings.TrimSpace(desc) == "" {
+		t.Error("sandbox_net must document that it is inherited when omitted")
+	}
+}
+
 func TestDefDelegateNoEnumWhenNoTypes(t *testing.T) {
 	def := DefDelegate(nil)
 	props := def.Parameters["properties"].(map[string]any)

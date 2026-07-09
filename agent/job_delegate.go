@@ -87,6 +87,8 @@ type delegateArgs struct {
 	DelegationAllowance int
 	WatchParent         bool
 	Isolation           string
+	Sandbox             string
+	SandboxNet          *bool
 	ResultSchema        map[string]any
 }
 
@@ -182,6 +184,19 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	if isolation != "" && isolation != "worktree" {
 		return delegateStartFailed(fmt.Errorf("invalid_request: isolation %q is not supported (expected \"worktree\")", isolation))
 	}
+	// Per-delegate sandbox no-escalation floor (security invariant): validated EARLY
+	// — before minting any IDs or creating a worktree — so a request for a looser box
+	// than the parent's is refused with a legible invalid_request error and never
+	// mints durable state. An absent sandbox leaves the inherit path untouched.
+	var requestedSandbox *sandbox.SandboxPolicy
+	if strings.TrimSpace(args.Sandbox) != "" {
+		parentMode, parentNet := s.parentSandboxModeNet()
+		pol, floorErr := buildDelegateSandboxPolicy(args.Sandbox, args.SandboxNet, parentMode, parentNet)
+		if floorErr != nil {
+			return delegateStartFailed(floorErr)
+		}
+		requestedSandbox = pol
+	}
 	jm, err := sessionJobManager(s)
 	if err != nil {
 		return delegateStartFailed(err)
@@ -225,6 +240,9 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 		}
 		workingDir = lanePath
 		ctx = context.WithValue(ctx, ctxIsolation, isolation)
+	}
+	if requestedSandbox != nil {
+		ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, requestedSandbox)
 	}
 	prepared, err := s.prepareSubagentRun(ctx, task, args.Model, workingDir, 0, args.AgentType, args.ReasoningEffort, nil, nil)
 	if err != nil {

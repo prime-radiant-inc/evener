@@ -8,6 +8,45 @@ import (
 	"primeradiant.com/serf/agent/sandbox"
 )
 
+// parentSandboxModeNet reports the session's effective sandbox (mode, network) —
+// the parent side of the per-delegate no-escalation floor. An unsandboxed session
+// (nil/non-enforced policy, or a non-local env) is off with unrestricted network,
+// so a delegate under an off parent may request any box.
+func (s *Session) parentSandboxModeNet() (sandbox.Mode, bool) {
+	if le, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok && le.Sandbox != nil && le.Sandbox.Enforced() {
+		return le.Sandbox.Mode, le.Sandbox.Network
+	}
+	return sandbox.ModeOff, true
+}
+
+// buildDelegateSandboxPolicy validates an explicit per-delegate sandbox request
+// against the parent session's effective (mode, network) and returns the policy to
+// enforce for the delegate, or an invalid_request error when the request would
+// grant MORE access than the parent has — the no-escalation floor (security
+// invariant). The mode must be at least as confining as the parent's on both axes;
+// the network may be turned off (tighter) but never on. An omitted sandbox_net
+// inherits the parent's effective network, so a delegate under a net-off parent
+// stays net-off. The parent's effective network is passed by the caller (off/
+// unsandboxed parents are net-on, i.e. unrestricted). It is pure so the floor is
+// exhaustively table-testable without minting a delegate.
+func buildDelegateSandboxPolicy(sandboxMode string, sandboxNet *bool, parentMode sandbox.Mode, parentNet bool) (*sandbox.SandboxPolicy, error) {
+	requested, err := sandbox.ParseMode(sandboxMode)
+	if err != nil {
+		return nil, fmt.Errorf("invalid_request: %w", err)
+	}
+	if !requested.AtLeastAsConfining(parentMode) {
+		return nil, fmt.Errorf("invalid_request: sandbox %q grants more access than your own sandbox (%s); a delegate cannot be less restricted than you", requested, parentMode)
+	}
+	net := parentNet
+	if sandboxNet != nil {
+		net = *sandboxNet
+	}
+	if net && !parentNet {
+		return nil, fmt.Errorf("invalid_request: sandbox_net on grants more network access than your own sandbox (network off); a delegate cannot be less restricted than you")
+	}
+	return &sandbox.SandboxPolicy{Mode: requested, Network: &net}, nil
+}
+
 // provisionRestoredSandbox engages enforcement on a RESUMED root session's env from
 // its PERSISTED mode, the resume-path counterpart to cmd/serf.provisionSandbox for a
 // fresh session. Off/empty skips the host probe and restores byte-identically. A

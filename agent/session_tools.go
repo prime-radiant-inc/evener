@@ -60,6 +60,15 @@ const ctxParentDelegateID ctxKey = "parentDelegateID"
 // manage_worktree regardless of the agent type's base tool policy.
 const ctxIsolation ctxKey = "isolation"
 
+// ctxDelegateSandboxPolicy carries an explicit per-delegate sandbox request (a
+// *sandbox.SandboxPolicy already validated against the parent's box by
+// createDelegate's no-escalation floor) into child session spawn plumbing.
+// prepareSubagentRun re-resolves it against the child's lane + memoized host facts
+// and EnableSandbox's the child env with it, overriding whatever policy the
+// working-dir re-root inherited from the parent. Absent = inherit the parent's box
+// (today's behavior).
+const ctxDelegateSandboxPolicy ctxKey = "delegateSandboxPolicy"
+
 const (
 	defaultAgentName = "default"
 )
