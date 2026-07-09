@@ -851,7 +851,7 @@
       // suppress re-rendering a STILL-pending escalation and the card would vanish
       // until a full reload. A settled escalation won't reappear (absent from the
       // fresh snapshot); a still-pending one correctly re-renders.
-      this.shownEscalationIds = new Set();
+      this.shownEscalationIds.clear();
       this.currentMessageId = null;
       this.userTurnIndex = 0;
       this.entryIndex = 0;

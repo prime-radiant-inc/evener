@@ -85,6 +85,14 @@ const { JSDOM } = require("jsdom");
   assert.strictEqual(cards.length, 1, "a still-pending escalation must RE-RENDER after a reconnect reset+re-hydrate, got " + cards.length);
   assert.ok(cards[0].textContent.includes("/snapshot/path"), "the re-rendered card must show the path");
 
+  // (5) SETTLED half of the invariant: once the escalation is resolved it is absent
+  // from the fresh snapshot, so a reset + re-hydrate must render NO card for it — a
+  // settled escalation never reappears.
+  window.SerfRenderer.resetTranscriptReplay();
+  window.SerfRenderer.surfaceSnapshotEscalations({ serf: { pendingEscalations: [] } });
+  cards = window.document.querySelectorAll(".sandbox-escalation");
+  assert.strictEqual(cards.length, 0, "a settled escalation (absent from the snapshot) must NOT reappear on re-hydrate, got " + cards.length);
+
   console.log("PASS test-sandbox-escalation-snapshot.js");
   process.exit(0);
 })().catch((err) => {
