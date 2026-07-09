@@ -402,13 +402,6 @@ func TestDelegateRestoreOffUnderSandboxedParentStaysOff(t *testing.T) {
 	}
 }
 
-func maskedOf(rp *sandbox.ResolvedPolicy) []string {
-	if rp == nil {
-		return nil
-	}
-	return rp.MaskedPaths
-}
-
 // sbxDelegateSession builds a delegate-capable session whose resumed-delegate
 // sandbox re-resolution uses an injected FakeProber (never the live host).
 func sbxDelegateSession(t *testing.T, facts sandbox.HostFacts) *Session {
