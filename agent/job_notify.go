@@ -172,12 +172,14 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt) 
 	}
 
 	if n.Status == jobNotificationEventWatch && n.JobID == "" {
+		body := fmt.Sprintf("Watch event triggered: %s.", n.Reason)
+		if n.Notice != "" {
+			body += "\n" + n.Notice
+		}
 		return fmt.Sprintf(
-			"<job-notification %s>\n"+
-				"Watch event triggered: %s.\n"+
-				"</job-notification>",
+			"<job-notification %s>\n%s\n</job-notification>",
 			strings.Join(attrs, " "),
-			n.Reason,
+			body,
 		)
 	}
 
@@ -194,6 +196,9 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt) 
 	body := fmt.Sprintf("Job %s %s. %s", n.JobID, event, instruction)
 	if excerpt.text != "" {
 		body += "\nexcerpt:\n" + excerpt.text
+	}
+	if n.Notice != "" {
+		body += "\n" + n.Notice
 	}
 	return fmt.Sprintf(
 		"<job-notification %s>\n%s\n</job-notification>",
