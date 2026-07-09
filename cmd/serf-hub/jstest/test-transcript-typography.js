@@ -6,7 +6,7 @@ const failures = [];
 const pass = (condition, message) => { if (!condition) failures.push(message); };
 const rule = (selector) => {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const matches = [...css.matchAll(new RegExp("^\\s*" + escaped + "\\s*\\{([^}]*)\\}", "gm"))];
+  const matches = [...css.matchAll(new RegExp("(?:^|,)\\s*" + escaped + "\\s*(?:,|\\{)([^}]*)\\}", "gm"))];
   return matches.map((match) => match[1]).join("\n");
 };
 
@@ -43,6 +43,18 @@ pass(/font-family:\s*var\(--font-mono\)/.test(shell) && /white-space:\s*pre-wrap
 const args = rule(".cheap-tool-args");
 pass(/font-family:\s*var\(--font-mono\)/.test(args) && /white-space:\s*pre-wrap/.test(args),
   ".cheap-tool-args must remain preformatted monospace JSON/arguments");
+
+const settingsDD = rule(".transcript-settings dd");
+pass(/font-family:\s*var\(--font-sans\)/.test(settingsDD),
+  "transcript settings value cells must default to sans instead of inherited monospace");
+
+const settingsHelp = rule(".transcript-settings .help");
+pass(/font-family:\s*var\(--font-sans\)/.test(settingsHelp) && /line-height:\s*var\(--leading-snug\)/.test(settingsHelp),
+  "transcript settings help must be readable sans secondary prose");
+
+const settingsState = rule(".transcript-settings .val-toggle .state");
+pass(/font-family:\s*var\(--font-mono\)/.test(settingsState),
+  "compact ON/OFF state text remains a monospace exception");
 
 if (failures.length) {
   console.error("FAIL: transcript typography contract");

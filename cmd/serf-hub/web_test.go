@@ -3517,12 +3517,22 @@ func TestWeb_Settings_Transcript_Renders(t *testing.T) {
 	})
 	body := settingsRequest(t, web, "transcript")
 	for _, want := range []string{
+		`class="settings-table transcript-settings"`,
 		`data-transcript-status-form`,
 		`data-transcript-status="roundTimings"`,
+		`id="lbl-transcript-round-timings"`,
+		`aria-labelledby="lbl-transcript-round-timings"`,
 		`data-transcript-status="hookExitsAll"`,
+		`id="lbl-transcript-hook-all"`,
+		`aria-labelledby="lbl-transcript-hook-all"`,
 		`data-transcript-status="hookExitsNormal"`,
+		`id="lbl-transcript-hook-normal"`,
+		`aria-labelledby="lbl-transcript-hook-normal"`,
 		`data-transcript-status="promptLoaded"`,
+		`id="lbl-transcript-prompt-loaded"`,
+		`aria-labelledby="lbl-transcript-prompt-loaded"`,
 		`Prompt Loaded`,
+		`The all-hooks setting includes these too.`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("transcript settings body missing %q:\n%s", want, body)

@@ -3418,6 +3418,37 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
   background: color-mix(in srgb, var(--text) 2%, transparent);
 }
 
+/* Transcript preferences are explanatory UI, not machine data. */
+.transcript-settings .row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: var(--space-5);
+  row-gap: var(--space-2);
+  padding: var(--space-5) 0;
+  align-items: center;
+}
+
+.transcript-settings dt,
+.transcript-settings dd,
+.transcript-settings .help {
+  font-family: var(--font-sans);
+}
+
+.transcript-settings dd {
+  font-size: var(--text-sm);
+  overflow-wrap: normal;
+}
+
+.transcript-settings .help {
+  grid-column: 1 / -1;
+  max-width: 560px;
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+}
+
+.transcript-settings .val-toggle .state {
+  font-family: var(--font-mono);
+}
+
 /* Value cells (variants of <dd>) */
 .settings-table .val-text {
   font-family: var(--font-mono);
