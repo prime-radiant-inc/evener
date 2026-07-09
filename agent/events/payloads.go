@@ -129,10 +129,11 @@ type ToolCallRepairedData struct {
 // SandboxEscalationRequestedData is the payload for an
 // EventSandboxEscalationRequested event (M7): a harness-raised, human-gated
 // sandbox-exemption approval request. Its fields mirror sandbox.EscalationRequest
-// but stay in the events package (plain, already-redacted values) so the projector
-// can map it to the AppWire notification without importing agent/sandbox. DeniedPath
-// is already redacted (basename, or "<denied>" for a sensitive path); file contents
-// never appear.
+// but stay in the events package (plain values) so the projector can map it to the
+// AppWire notification without importing agent/sandbox. DeniedPath carries the FULL
+// literal path for informed consent — only non-sensitive (containment) denials ever
+// escalate, so the full path is safe and necessary; a sensitive path (which never
+// escalates) degrades to "<denied>" as a defensive floor. File contents never appear.
 type SandboxEscalationRequestedData struct {
 	EscalationID string `json:"escalation_id"`
 	Mode         string `json:"mode"`

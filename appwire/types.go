@@ -294,11 +294,13 @@ type TurnCompletedParams struct {
 // SandboxEscalationRequested is the payload of a
 // serf/sandbox/escalation/requested notification (M7): a harness-raised approval
 // card for a single sandbox denial. It carries only what the human needs to decide
-// — never file contents, and DeniedPath is already redacted (a basename, or
-// "<denied>" for a sensitive path). Kind selects the card shape; the shell fields
-// (Command/OutputSoFar/PartiallyRan) are reserved and empty in v1 (file-tool
-// escalation only — see the M7 spec on why bwrap masking makes shell escalation
-// unbuildable). It is never appended to the model's transcript.
+// — never file contents. DeniedPath is the FULL literal path for informed consent
+// (only non-sensitive containment denials escalate, so the full path is safe; a
+// sensitive path, which never escalates, degrades to "<denied>" as a defensive
+// floor). Kind selects the card shape; the shell fields (Command/OutputSoFar/
+// PartiallyRan) are reserved and empty in v1 (file-tool escalation only — see the
+// M7 spec on why bwrap masking makes shell escalation unbuildable). It is never
+// appended to the model's transcript.
 type SandboxEscalationRequested struct {
 	EscalationID string `json:"escalationId"`
 	Mode         string `json:"mode"`

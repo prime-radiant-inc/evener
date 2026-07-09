@@ -631,9 +631,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	case events.EventSandboxEscalationRequested:
 		// A harness-raised sandbox-exemption approval card (M7). It rides the event
 		// stream ONLY — it is never appended to the transcript, so the model can
-		// neither observe nor replay it. DeniedPath is already redacted at the
-		// session (a basename, or "<denied>" for a sensitive path); file contents
-		// never appear. The shell fields are reserved and empty in v1.
+		// neither observe nor replay it. DeniedPath is the FULL path for informed
+		// consent (only non-sensitive containment denials escalate; a sensitive path,
+		// which never escalates, would degrade to "<denied>"); file contents never
+		// appear. The shell fields are reserved and empty in v1.
 		data := eventData[events.SandboxEscalationRequestedData](event.Data)
 		return []AppNotification{p.notification(appwire.NotifySerfSandboxEscalationRequested, appwire.SandboxEscalationRequested{
 			EscalationID: data.EscalationID,

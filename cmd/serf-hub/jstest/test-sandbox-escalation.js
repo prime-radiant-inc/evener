@@ -60,6 +60,8 @@ const { JSDOM } = require("jsdom");
     tasks: () => Promise.resolve([]),
     resolveSandboxEscalation: (sessionId, escalationId, approve) => {
       resolveCalls.push({ sessionId, escalationId, approve });
+      // esc_reject models a resolve the daemon rejects (already resolved / expired).
+      if (escalationId === "esc_reject") return Promise.reject(new Error("conflict"));
       return Promise.resolve();
     },
   };
@@ -91,6 +93,11 @@ const { JSDOM } = require("jsdom");
   assert.strictEqual(resolveCalls.length, 1, "Allow must post exactly one resolve");
   assert.strictEqual(resolveCalls[0].escalationId, "esc_1", "resolve must carry the escalation id");
   assert.strictEqual(resolveCalls[0].approve, true, "Allow must post approve:true");
+  // The card settles only AFTER the resolve request SUCCEEDS (not optimistically).
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.ok(/Allowed once/.test(card.textContent), "card must settle to the decision on resolve success");
+  assert.ok(!card.querySelector(".sandbox-escalation-allow"), "the Allow/Deny controls must be gone after settling");
 
   // A second escalation, denied, must post approve:false (never silently dropped).
   notify("serf/sandbox/escalation/requested", {
@@ -102,6 +109,19 @@ const { JSDOM } = require("jsdom");
   assert.strictEqual(resolveCalls.length, 2, "Deny must also post a resolve");
   assert.strictEqual(resolveCalls[1].escalationId, "esc_2");
   assert.strictEqual(resolveCalls[1].approve, false, "Deny must post approve:false");
+
+  // A rejected resolve (already resolved / expired) renders a DISTINCT expired
+  // state — not a confirmation for a no-op.
+  notify("serf/sandbox/escalation/requested", {
+    escalationId: "esc_reject", mode: "read-only", tool: "read_file", kind: "file_tool", deniedPath: "/etc/shadow",
+  });
+  const cards3 = window.document.querySelectorAll(".sandbox-escalation");
+  const card3 = cards3[cards3.length - 1];
+  card3.querySelector(".sandbox-escalation-allow").click();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.ok(card3.querySelector(".sandbox-escalation-expired"), "a rejected resolve must render the expired state");
+  assert.ok(!/Allowed once/.test(card3.textContent), "a rejected resolve must NOT show a success confirmation");
 
   console.log("PASS test-sandbox-escalation.js");
   process.exit(0);

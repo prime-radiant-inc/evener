@@ -3425,17 +3425,27 @@
 
       const actions = document.createElement("div");
       actions.className = "sandbox-escalation-actions";
-      const settle = (verb) => {
+      const settle = (verb, cls) => {
         actions.remove();
         const settled = document.createElement("div");
-        settled.className = "sandbox-escalation-settled";
+        settled.className = "sandbox-escalation-settled" + (cls ? " " + cls : "");
         settled.textContent = verb;
         card.appendChild(settled);
       };
+      // Settle the card on the resolve request's OUTCOME, not optimistically: only
+      // show the decision once the daemon has actually accepted it. A rejection
+      // (already resolved elsewhere, interrupted/closed, or a conflict) renders a
+      // distinct "expired" state rather than a confirmation for a no-op. Buttons are
+      // disabled immediately to prevent a double-submit while the request is in flight.
       const send = (approve, verb) => {
-        settle(verb);
+        allow.disabled = true;
+        deny.disabled = true;
         if (window.SerfAppwire && window.SerfAppwire.resolveSandboxEscalation) {
-          window.SerfAppwire.resolveSandboxEscalation(this.sessionId, escalationId, approve).catch(() => {});
+          window.SerfAppwire.resolveSandboxEscalation(this.sessionId, escalationId, approve)
+            .then(() => settle(verb))
+            .catch(() => settle("Escalation expired (already resolved)", "sandbox-escalation-expired"));
+        } else {
+          settle(verb);
         }
       };
       const allow = document.createElement("button");
