@@ -134,8 +134,8 @@ func TestRemoteMCPRefusedUnderNetOff(t *testing.T) {
 		dial := productionDial(mcpconfig.ServerConfig{Name: "remote", Type: typ, URL: "https://example.com/mcp"}, w)
 		if _, err := dial(context.Background()); err == nil {
 			t.Errorf("%s MCP server must be refused under net=off", typ)
-		} else if !strings.Contains(err.Error(), "net off") && !strings.Contains(err.Error(), "sandbox-net off") {
-			t.Errorf("%s refusal must be legible about net=off, got %v", typ, err)
+		} else if !strings.Contains(err.Error(), "network egress is disabled") || strings.Contains(err.Error(), "--sandbox-net") {
+			t.Errorf("%s refusal must be legible (flag-free) about disabled egress, got %v", typ, err)
 		}
 	}
 	// A stdio server stays available under net=off (its network is severed by

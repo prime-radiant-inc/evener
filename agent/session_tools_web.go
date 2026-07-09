@@ -30,7 +30,7 @@ func egressDeniedByNet(env execenv.ExecutionEnvironment, toolName string) error 
 	return &sandbox.DeniedError{
 		Mode:   w.Policy().Mode,
 		Tool:   toolName,
-		Reason: "network egress is disabled for this sandboxed session (--sandbox-net off)",
+		Reason: "network egress is disabled in this sandbox; this sandbox policy is fixed for the session",
 	}
 }
 
