@@ -266,8 +266,14 @@ func TestDefDelegateHasSandboxParams(t *testing.T) {
 	if typ, _ := sn["type"].(string); typ != "boolean" {
 		t.Errorf("sandbox_net type = %q, want boolean", sn["type"])
 	}
-	if desc, _ := sn["description"].(string); strings.TrimSpace(desc) == "" {
-		t.Error("sandbox_net must document that it is inherited when omitted")
+	// Pin the load-bearing sentences (matching the sandbox param's pinning strength):
+	// the inherit-on-omit behavior and the network no-escalation floor.
+	snDesc, _ := sn["description"].(string)
+	if !strings.Contains(snDesc, "inherit") {
+		t.Errorf("sandbox_net must document inherit-on-omit, got %q", snDesc)
+	}
+	if !strings.Contains(snDesc, "cannot enable network") {
+		t.Errorf("sandbox_net must document the network no-escalation floor, got %q", snDesc)
 	}
 }
 
