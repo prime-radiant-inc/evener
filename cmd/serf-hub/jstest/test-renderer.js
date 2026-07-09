@@ -50,6 +50,19 @@ const events = [
   ["STEERING_INJECTED", { text: "<SYSTEM-REMINDER>\n<CURRENT-TASK id=\"2\">\n<TITLE>Do the work</TITLE>\n</CURRENT-TASK>\n</SYSTEM-REMINDER>" }],
   ["TOOL_CALL_START", { arguments_json: JSON.stringify({ message: "Hello! I'm doing well." }), call_id: "call_b", tool_name: "communicate" }],
   ["TOOL_CALL_END", { call_id: "call_b", output: "{}", tool_name: "communicate" }],
+  ["TOOL_CALL_START", {
+    arguments_json: JSON.stringify({
+      command: "git status --short",
+      description: "Check the worktree state",
+    }),
+    call_id: "call_c",
+    tool_name: "exec_command",
+  }],
+  ["TOOL_CALL_END", {
+    call_id: "call_c",
+    output: " M cmd/serf-hub/assets/style.css\n",
+    tool_name: "exec_command",
+  }],
 ];
 
 // Wait for the cold-load /tasks fetch to resolve (a few microticks) so
@@ -101,14 +114,28 @@ if (taskCards.length === 1) {
 }
 
 // 4. Zero task-list tool-call cards.
-const toolCalls = conv.querySelectorAll(".tool-call");
+const toolCalls = conv.querySelectorAll(".tool-call.task_list");
 pass(toolCalls.length === 0, "expected 0 tool-call cards (task_list should be suppressed), got " + toolCalls.length);
 
 // 5. The communicate tool should produce exactly one assistant-message.
 const assistants = conv.querySelectorAll(".assistant-message");
 pass(assistants.length === 1, "expected 1 assistant-message (from communicate), got " + assistants.length);
 
-// 6. Tasks badge should NOT be set (we mocked fetch to return empty []).
+// 6. A standard exec_command call retains human-facing and machine-detail semantics.
+const execTool = conv.querySelector(".tool-call.exec_command");
+pass(!!execTool, "expected exec_command tool row");
+pass(execTool && !!execTool.querySelector(".tool-intent"),
+  "tool row should expose a human-readable intent element");
+pass(execTool && !!execTool.querySelector(".tool-command .verb"),
+  "tool row should expose its machine command verb");
+pass(execTool && !!execTool.querySelector(".tool-command .target"),
+  "tool row should expose its machine command target");
+pass(execTool && !!execTool.querySelector(".result-detail"),
+  "tool row should expose a human-facing result summary element");
+pass(execTool && !!execTool.querySelector("pre.shell-output"),
+  "tool row should retain a preformatted shell-output element");
+
+// 7. Tasks badge should NOT be set (we mocked fetch to return empty []).
 //    This just verifies updateTasksBadge handles empty state without throwing.
 const badge = window.document.querySelector(".panel-toggle-badge");
 pass(badge === null, "no badge expected for empty task list");

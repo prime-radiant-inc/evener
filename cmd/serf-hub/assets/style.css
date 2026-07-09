@@ -2333,7 +2333,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .think.think-tier-short .pv { color: var(--text-muted); }
 
 /* Annotation tier — tool calls, diffs, subagent references */
-.tool-call { margin: 0 0 var(--space-2) 0; font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-muted); display: flex; column-gap: var(--space-3); row-gap: var(--space-1); flex-wrap: wrap; align-items: baseline; }
+.tool-call { margin: 0 0 var(--space-3) 0; font-family: var(--font-sans); font-size: var(--text-sm); line-height: var(--leading-snug); color: var(--text-muted); display: flex; column-gap: var(--space-3); row-gap: var(--space-2); flex-wrap: wrap; align-items: baseline; }
 .tool-call-cluster { margin-bottom: var(--space-5); }
 .tool-call-cluster .tool-call:last-child { margin-bottom: 0; }
 /* Collapsed cluster summary (mockup #6 alt A): while the cluster is live the
@@ -2393,6 +2393,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
 }
 .tool-call .result-detail {
   color: var(--text-muted);
+  font-family: var(--font-sans);
   flex: none;
   white-space: nowrap;
 }
@@ -2400,7 +2401,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
   order: 2;
   margin-left: auto;
   color: var(--text-muted);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: var(--text-xs);
   white-space: nowrap;
   opacity: 1;
@@ -2472,7 +2473,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
   background: transparent;
   color: var(--text-dim);
   cursor: pointer;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: var(--text-xs);
   line-height: 1;
   flex: none;
@@ -2518,7 +2519,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .tool-body--list {
   flex: 0 0 100%;
 }
-.tool-body summary { cursor: pointer; color: var(--text-muted); padding: 0; user-select: none; }
+.tool-body summary { cursor: pointer; color: var(--text-muted); padding: 0; user-select: none; font-family: var(--font-sans); }
 .tool-body summary:hover { color: var(--text); }
 .tool-body--terminal {
   margin: 0 0 var(--space-4) var(--tool-indent);
@@ -3066,7 +3067,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
    you spoke. Sans because it is a human label, not machine text. */
 .steering .steering-verb { color: var(--text-muted); font-family: var(--font-sans); }
 .steering .steering-detail { color: var(--text); }
-.steering .steering-body { margin: var(--space-4) 0 0; padding: var(--space-4) var(--space-4); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-snug); color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.steering .steering-body { margin: var(--space-4) 0 0; padding: var(--space-4) var(--space-4); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-sans); font-size: var(--text-sm); line-height: var(--leading-snug); color: var(--text-muted); white-space: normal; overflow-wrap: anywhere; }
 
 .notification-card {
   margin: var(--space-4) 0 var(--space-4) var(--space-7);
@@ -3415,6 +3416,37 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
 .settings-table .row.editable { cursor: pointer; }
 .settings-table .row.editable:hover {
   background: color-mix(in srgb, var(--text) 2%, transparent);
+}
+
+/* Transcript preferences are explanatory UI, not machine data. */
+.transcript-settings .row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: var(--space-5);
+  row-gap: var(--space-2);
+  padding: var(--space-5) 0;
+  align-items: center;
+}
+
+.transcript-settings dt,
+.transcript-settings dd,
+.transcript-settings .help {
+  font-family: var(--font-sans);
+}
+
+.transcript-settings dd {
+  font-size: var(--text-sm);
+  overflow-wrap: normal;
+}
+
+.transcript-settings .help {
+  grid-column: 1 / -1;
+  max-width: 560px;
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+}
+
+.transcript-settings .val-toggle .state {
+  font-family: var(--font-mono);
 }
 
 /* Value cells (variants of <dd>) */
@@ -4379,6 +4411,76 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
   body:not([data-phone-density="comfortable"]) .msg.tool,
   body:not([data-phone-density="comfortable"]) .tool-body,
   body:not([data-phone-density="comfortable"]) .diff-body { font-size: var(--text-sm); }
+}
+
+/* Short landscape: reclaim space for the transcript. Desktop sidebar width and
+   tall composer chrome waste both axes at this aspect ratio. The existing nav
+   toggle opens the unchanged sidebar drawer when the session list is needed. */
+@media (max-width: 900px) and (max-height: 560px) {
+  body.app { display: block; }
+
+  #sidebar,
+  #sidebar-resizer,
+  .side-panes,
+  .pane-splitter { display: none !important; }
+
+  /* Re-enable the existing drawer only while sidebar.js has opened it. */
+  body.app[data-sidebar-open] #sidebar {
+    display: block !important;
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(360px, 88vw);
+    min-width: 0;
+    max-width: 88vw;
+    height: 100vh;
+    height: 100dvh;
+    z-index: var(--z-drawer);
+    background: var(--bg-raised);
+    transform: translateX(0);
+  }
+
+  .app-nav-toggle {
+    display: inline-flex;
+    position: fixed;
+    top: var(--space-3);
+    left: var(--space-3);
+    width: var(--tap-min);
+    height: var(--tap-min);
+    z-index: var(--z-fixed-action);
+  }
+  #workspace { width: 100%; height: 100vh; height: 100dvh; }
+  .workspace-header { padding: var(--space-2) var(--space-4) var(--space-2) calc(var(--tap-min) + var(--space-3)); }
+  .conversation { padding: var(--space-3) var(--space-4); }
+
+  .workspace-input { padding: var(--space-1) var(--space-3) calc(var(--space-1) + env(safe-area-inset-bottom)); }
+  .queue-preview { margin-bottom: var(--space-1); }
+  .task-status-row { display: none; }
+  .input-card { padding: var(--space-1) 0; }
+  .message-input { min-height: 24px; max-height: 20dvh; }
+  .input-controls { padding-top: var(--space-1); }
+
+  .input-status {
+    order: -1;
+    display: flex;
+    flex-wrap: nowrap;
+    gap: var(--space-3);
+    margin: 0 0 var(--space-1);
+    padding: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .input-status .source,
+  .input-status .turns { display: inline-flex; }
+  .input-status .cwd,
+  .input-status .branch,
+  .input-status .context,
+  .input-status .work,
+  .input-status .tokens,
+  .input-status .liveness-inline,
+  .input-status .cost,
+  .input-status .goal { display: none; }
 }
 
 /* Project settings pane (per-project settings, opened from sidebar gear).
