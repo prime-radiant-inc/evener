@@ -119,10 +119,13 @@ before editing — they will drift as milestones land):
   (bwrap 0.9.0, kernel 6.8; overlay cache path skips — no overlay support); flag-path
   proof TestSandboxFlagRestrictedEnforces. docs/sandboxing.md added. GATE: Jesse
   review + live feel-test (main agent) before push to main.
-- [x] M6 — macOS Seatbelt (merged `a76d330e`; roborev fixed firmlink-alias High +
-  Confine/cwd; Linux+`GOOS=darwin` build/vet green). ⚠️ paradise-park LIVE
-  validation PENDING (Jesse): `SERF_SEATBELT_LIVE=1 go test ./agent/sandbox/ -run
-  TestSeatbeltLive` + `scripts/seatbelt-smoke.sh` on the Mac.
+- [x] M6 — macOS Seatbelt (merged `a76d330e` + firmlink fix; Seatbelt wired into
+  EnableSandbox `ab5a38b1` so --sandbox enforces via sandbox-exec). ✅ LIVE-VALIDATED
+  on paradise-park 2026-07-09: `SERF_SEATBELT_LIVE` suite (git-config-protected,
+  contract-on-host) + `seatbelt-smoke.sh` (generated-policy parity) all PASS on the
+  real macOS kernel. A real-Mac run also caught + fixed a symlinked-ancestor
+  write-denial bug (macos-fix merge). One pre-existing worktree parallel-load flake
+  (passes isolated), not sandbox-related.
 - [ ] M7 — in-UI escalation
 
 ## Cross-milestone reconciliation (added 2026-07-08 after the M2–M7 plan drafts)
