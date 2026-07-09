@@ -68,6 +68,7 @@ func (s *Session) buildPromptData() promptData {
 		Today:                    s.envInfo.Today,
 		Model:                    s.profile.Model(),
 		KnowledgeCutoff:          s.envInfo.KnowledgeCutoff,
+		Sandbox:                  s.sessionSandboxPromptLine(),
 		GitModifiedFiles:         s.envInfo.GitModifiedFiles,
 		GitUntrackedFiles:        s.envInfo.GitUntrackedFiles,
 		GitRecentCommitTitles:    s.envInfo.GitRecentCommitTitles,
@@ -157,6 +158,22 @@ func (s *Session) canPromptDelegation() bool {
 		}
 	}
 	return true
+}
+
+// sessionSandboxPromptLine renders the environment-section sandbox line for a
+// sandboxed session ("<mode> (network on|off) — fixed for this session"), so the
+// model knows the immutable box it runs under. Empty for an unsandboxed session so
+// the line is omitted entirely (byte-identical prompt to today).
+func (s *Session) sessionSandboxPromptLine() string {
+	le, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok || le.Sandbox == nil || !le.Sandbox.Enforced() {
+		return ""
+	}
+	netStr := "on"
+	if !le.Sandbox.Network {
+		netStr = "off"
+	}
+	return fmt.Sprintf("%s (network %s) — fixed for this session", le.Sandbox.Mode, netStr)
 }
 
 // renderSystemPrompt renders the system prompt using the template resolver.

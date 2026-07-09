@@ -246,6 +246,22 @@ func TestParentClose_DisposesRetainedPerDelegateSandboxScratch(t *testing.T) {
 	}
 }
 
+// TestSessionSandboxPromptLine: an unsandboxed session sources no environment
+// sandbox line; a sandboxed session sources the mode + network line.
+func TestSessionSandboxPromptLine(t *testing.T) {
+	if line := newSession(t).sessionSandboxPromptLine(); line != "" {
+		t.Errorf("an unsandboxed session must have no sandbox line, got %q", line)
+	}
+
+	lane, home := sbxLane(t)
+	facts := sbxBwrapFacts(home)
+	s := sbxDelegateSession(t, facts)
+	sbxSetParentMode(t, s, facts, lane, sandbox.ModeRestricted) // net on
+	if got, want := s.sessionSandboxPromptLine(), "restricted (network on) — fixed for this session"; got != want {
+		t.Errorf("sandboxed session line = %q, want %q", got, want)
+	}
+}
+
 // TestCreateDelegate_ResultEchoesSandboxBox: an enforced delegate echoes its box
 // (mode + network) in the delegate result so the parent can verify the child's
 // actual confinement; an unsandboxed delegate omits the key.

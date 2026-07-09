@@ -522,6 +522,29 @@ func TestSystemTemplate_StructuralRegression(t *testing.T) {
 // as a session-start snapshot that may be stale, and reports when the working
 // directory is not a repository. The system prompt is cached, so an unlabeled
 // snapshot would be read as live.
+// TestEnvironmentSection_SandboxLine: a sandboxed session's environment section
+// carries a one-line sandbox notice; an unsandboxed session omits it entirely.
+func TestEnvironmentSection_SandboxLine(t *testing.T) {
+	t.Parallel()
+	resolver := &sectionResolver{
+		provider: "openai",
+		agent:    "coordinator",
+		agentFS:  bundled.Agents(),
+		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+	}
+
+	sandboxed := promptData{Provider: "openai", Agent: "coordinator", WorkingDir: "/tmp/test", Sandbox: "restricted (network off) — fixed for this session"}
+	env := resolver.Section("environment", sandboxed)
+	if !strings.Contains(env, "Sandbox: restricted (network off) — fixed for this session") {
+		t.Errorf("sandboxed environment section must carry the sandbox line, got:\n%s", env)
+	}
+
+	off := promptData{Provider: "openai", Agent: "coordinator", WorkingDir: "/tmp/test"}
+	if env := resolver.Section("environment", off); strings.Contains(env, "Sandbox:") {
+		t.Errorf("unsandboxed environment section must omit the sandbox line, got:\n%s", env)
+	}
+}
+
 func TestGitSection_SingleSourceAndLabeled(t *testing.T) {
 	t.Parallel()
 	resolver := &sectionResolver{
