@@ -136,6 +136,23 @@ func TestApplyEdit_FastCheapModel(t *testing.T) {
 	}
 }
 
+// TestApplyEdit_SandboxValidatesMode: the sandbox field is a select, not blind
+// free text. A valid mode is accepted, blank clears (inherit), and a typo is
+// rejected rather than silently written and only failing at spawn.
+func TestApplyEdit_SandboxValidatesMode(t *testing.T) {
+	got, err := applyEdit(appwire.LaunchConfigLayer{}, "sandbox", " restricted ")
+	if err != nil || got.Sandbox != "restricted" {
+		t.Fatalf("valid mode: got %q, %v", got.Sandbox, err)
+	}
+	got, err = applyEdit(appwire.LaunchConfigLayer{Sandbox: "off"}, "sandbox", "")
+	if err != nil || got.Sandbox != "" {
+		t.Fatalf("blank must clear to inherit: got %q, %v", got.Sandbox, err)
+	}
+	if _, err := applyEdit(appwire.LaunchConfigLayer{}, "sandbox", "restrcted"); err == nil {
+		t.Error("a typo'd sandbox mode must be rejected")
+	}
+}
+
 func TestLayerRows_ListFieldsExposeEditableValues(t *testing.T) {
 	rows := layerRows(appwire.LaunchConfigLayer{SkillsDirs: []string{"/one", "/two"}})
 	for _, row := range rows {

@@ -321,6 +321,13 @@ func (p LaunchSettingsPanel) ApplyEdit(field, value string) (LaunchSettingsPanel
 	return p, updated, nil
 }
 
+// validLaunchSandboxModes are the sandbox mode values the launch schema offers
+// (mirrors cmd/serf-hub/internal/launchconfig sandboxChoices); a blank value
+// inherits the lower layer, so the sandbox edit is a select, not free text.
+var validLaunchSandboxModes = map[string]bool{
+	"off": true, "read-only": true, "workspace-write": true, "restricted": true,
+}
+
 func applyEdit(layer appwire.LaunchConfigLayer, field, value string) (appwire.LaunchConfigLayer, error) {
 	switch field {
 	case "model":
@@ -336,7 +343,11 @@ func applyEdit(layer appwire.LaunchConfigLayer, field, value string) (appwire.La
 	case "openai_responses_continuation":
 		layer.OpenAIResponsesContinuation = strings.TrimSpace(value)
 	case "sandbox":
-		layer.Sandbox = strings.TrimSpace(value)
+		v := strings.TrimSpace(value)
+		if v != "" && !validLaunchSandboxModes[v] {
+			return layer, fmt.Errorf("invalid sandbox mode %q (want off, read-only, workspace-write, or restricted, or blank to inherit)", v)
+		}
+		layer.Sandbox = v
 	case "export_atif_provider_handles":
 		layer.ExportATIFProviderHandles = strings.TrimSpace(value)
 	case "max_rounds":
