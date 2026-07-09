@@ -70,7 +70,9 @@ func (e *DeniedError) Error() string {
 		b.WriteString(e.Reason)
 	}
 	if e.Mode != ModeOff {
-		fmt.Fprintf(&b, " [--sandbox %s]", e.Mode)
+		// Name the MODE, not a CLI flag: a per-delegate box is set by the delegate
+		// tool, not --sandbox, so "[--sandbox X]" would misdescribe how it arose.
+		fmt.Fprintf(&b, " [sandbox mode: %s]", e.Mode)
 	}
 	return b.String()
 }
