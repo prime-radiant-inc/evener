@@ -127,6 +127,41 @@ func TestMerge_SandboxNetWithoutModeDiagnostic(t *testing.T) {
 	}
 }
 
+// TestMerge_UnknownSandboxModeDiagnostic: a typo'd sandbox mode merges cleanly and
+// would only fail at spawn (serf's ParseMode) with no launch-config pointer at the
+// typo. mergeLayers emits a diagnostic naming the bad value; the four real modes
+// (case/space-insensitive) and an unset value do not warn.
+func TestMerge_UnknownSandboxModeDiagnostic(t *testing.T) {
+	hasModeDiag := func(diags []Diagnostic) bool {
+		for _, d := range diags {
+			if d.Field == "sandbox" && strings.Contains(d.Message, "unknown sandbox mode") {
+				return true
+			}
+		}
+		return false
+	}
+
+	got, diags := mergeLayers(map[LayerName]Layer{LayerGlobal: {Sandbox: "restrcted"}})
+	if !hasModeDiag(diags) {
+		t.Errorf("a typo'd sandbox mode must warn, diags=%v", diags)
+	}
+	if !hasModeDiag(got.Diagnostics) {
+		t.Error("diagnostic must also be carried on Resolved.Diagnostics")
+	}
+
+	for _, mode := range []string{"off", "read-only", "workspace-write", "restricted", "  Restricted "} {
+		_, diags := mergeLayers(map[LayerName]Layer{LayerGlobal: {Sandbox: mode}})
+		if hasModeDiag(diags) {
+			t.Errorf("valid mode %q must not warn, diags=%v", mode, diags)
+		}
+	}
+
+	_, diags = mergeLayers(map[LayerName]Layer{LayerGlobal: {}})
+	if hasModeDiag(diags) {
+		t.Errorf("unset sandbox must not warn, diags=%v", diags)
+	}
+}
+
 func TestMerge_ScalarPointerSemantics(t *testing.T) {
 	g := Layer{MaxRounds: ptrInt(200), NonInteractive: ptrBool(true), RawHTTPLogging: ptrBool(true)}
 	l := Layer{NonInteractive: ptrBool(false), RawHTTPLogging: ptrBool(false)}

@@ -24,6 +24,22 @@ func sandboxModeIsOff(mode string) bool {
 	return m == "" || m == "off"
 }
 
+// isKnownSandboxMode reports whether mode is one of the sandbox modes the schema
+// offers (and serf's --sandbox flag accepts), tolerating surrounding whitespace and
+// case the way serf's ParseMode does. Derived from sandboxChoices so the launch UI
+// and this validation never drift; the empty choice ("(default)") is unset, not a
+// mode. Kept in this package rather than importing agent/sandbox, matching how the
+// choice list is already hardcoded here.
+func isKnownSandboxMode(mode string) bool {
+	m := strings.ToLower(strings.TrimSpace(mode))
+	for _, c := range sandboxChoices() {
+		if c.Value != "" && c.Value == m {
+			return true
+		}
+	}
+	return false
+}
+
 func isCredentialEnvKey(key string) bool {
 	upper := strings.ToUpper(key)
 	for _, s := range credentialBlocklistSuffixes {
@@ -267,6 +283,17 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 		if nonEmpty {
 			contributing[name] = l
 		}
+	}
+
+	// A typo'd sandbox mode merges cleanly and would only fail at spawn (serf's
+	// ParseMode dies) with no launch-config pointer at the typo. Warn here; the
+	// fail-loud-at-spawn stays as the backstop.
+	if eff.Sandbox != "" && !isKnownSandboxMode(eff.Sandbox) {
+		diags = append(diags, Diagnostic{
+			Layer:   prov["sandbox"],
+			Field:   "sandbox",
+			Message: fmt.Sprintf("unknown sandbox mode %q (want one of: off, read-only, workspace-write, restricted)", eff.Sandbox),
+		})
 	}
 
 	// sandbox_net only takes effect alongside a non-off sandbox mode. A merged
