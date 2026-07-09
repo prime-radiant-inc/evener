@@ -3432,21 +3432,40 @@
         settled.textContent = verb;
         card.appendChild(settled);
       };
+      const clearNote = () => {
+        const existing = card.querySelector(".sandbox-escalation-note");
+        if (existing) existing.remove();
+      };
       // Settle the card on the resolve request's OUTCOME, not optimistically: only
-      // show the decision once the daemon has actually accepted it. A rejection
-      // (already resolved elsewhere, interrupted/closed, or a conflict) renders a
-      // distinct "expired" state rather than a confirmation for a no-op. Buttons are
-      // disabled immediately to prevent a double-submit while the request is in flight.
+      // show the decision once the daemon has actually accepted it. Buttons are
+      // disabled while the request is in flight (no double-submit). A rejection is
+      // split: a DAEMON error response (err.code present — already resolved /
+      // interrupted / unavailable) is TERMINAL, so the card settles to a distinct
+      // "expired" state; a TRANSPORT error (no code — connection lost / timeout)
+      // leaves the escalation still pending, so the buttons re-enable for a retry
+      // rather than stranding it unanswerable from web.
       const send = (approve, verb) => {
         allow.disabled = true;
         deny.disabled = true;
-        if (window.SerfAppwire && window.SerfAppwire.resolveSandboxEscalation) {
-          window.SerfAppwire.resolveSandboxEscalation(this.sessionId, escalationId, approve)
-            .then(() => settle(verb))
-            .catch(() => settle("Escalation expired (already resolved)", "sandbox-escalation-expired"));
-        } else {
+        clearNote();
+        if (!(window.SerfAppwire && window.SerfAppwire.resolveSandboxEscalation)) {
           settle(verb);
+          return;
         }
+        window.SerfAppwire.resolveSandboxEscalation(this.sessionId, escalationId, approve)
+          .then(() => settle(verb))
+          .catch((err) => {
+            if (err && typeof err.code === "number") {
+              settle("Escalation expired (already resolved)", "sandbox-escalation-expired");
+            } else {
+              allow.disabled = false;
+              deny.disabled = false;
+              const note = document.createElement("div");
+              note.className = "sandbox-escalation-note";
+              note.textContent = "Couldn't reach the agent — check your connection and try again.";
+              card.insertBefore(note, actions);
+            }
+          });
       };
       const allow = document.createElement("button");
       allow.type = "button";

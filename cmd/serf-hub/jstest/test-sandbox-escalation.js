@@ -60,8 +60,14 @@ const { JSDOM } = require("jsdom");
     tasks: () => Promise.resolve([]),
     resolveSandboxEscalation: (sessionId, escalationId, approve) => {
       resolveCalls.push({ sessionId, escalationId, approve });
-      // esc_reject models a resolve the daemon rejects (already resolved / expired).
-      if (escalationId === "esc_reject") return Promise.reject(new Error("conflict"));
+      // esc_conflict: a DAEMON error response (err.code present) — already resolved /
+      // interrupted → terminal "expired".
+      if (escalationId === "esc_conflict") {
+        const e = new Error("conflict"); e.code = -32013; return Promise.reject(e);
+      }
+      // esc_transport: a TRANSPORT error (no code) — the escalation may still be
+      // pending → buttons re-enable for retry.
+      if (escalationId === "esc_transport") return Promise.reject(new Error("connection lost"));
       return Promise.resolve();
     },
   };
@@ -110,18 +116,33 @@ const { JSDOM } = require("jsdom");
   assert.strictEqual(resolveCalls[1].escalationId, "esc_2");
   assert.strictEqual(resolveCalls[1].approve, false, "Deny must post approve:false");
 
-  // A rejected resolve (already resolved / expired) renders a DISTINCT expired
-  // state — not a confirmation for a no-op.
+  // A CONFLICT rejection (daemon error response, already resolved) renders a DISTINCT
+  // terminal expired state — not a confirmation for a no-op.
   notify("serf/sandbox/escalation/requested", {
-    escalationId: "esc_reject", mode: "read-only", tool: "read_file", kind: "file_tool", deniedPath: "/etc/shadow",
+    escalationId: "esc_conflict", mode: "read-only", tool: "read_file", kind: "file_tool", deniedPath: "/etc/shadow",
   });
-  const cards3 = window.document.querySelectorAll(".sandbox-escalation");
-  const card3 = cards3[cards3.length - 1];
-  card3.querySelector(".sandbox-escalation-allow").click();
+  let allCards = window.document.querySelectorAll(".sandbox-escalation");
+  const cardC = allCards[allCards.length - 1];
+  cardC.querySelector(".sandbox-escalation-allow").click();
   await Promise.resolve();
   await Promise.resolve();
-  assert.ok(card3.querySelector(".sandbox-escalation-expired"), "a rejected resolve must render the expired state");
-  assert.ok(!/Allowed once/.test(card3.textContent), "a rejected resolve must NOT show a success confirmation");
+  assert.ok(cardC.querySelector(".sandbox-escalation-expired"), "a conflict rejection must render the terminal expired state");
+  assert.ok(!/Allowed once/.test(cardC.textContent), "a conflict rejection must NOT show a success confirmation");
+
+  // A TRANSPORT rejection (no error code) must NOT settle — it re-enables the
+  // buttons and shows a transient note so the still-pending escalation stays answerable.
+  notify("serf/sandbox/escalation/requested", {
+    escalationId: "esc_transport", mode: "read-only", tool: "read_file", kind: "file_tool", deniedPath: "/etc/gshadow",
+  });
+  allCards = window.document.querySelectorAll(".sandbox-escalation");
+  const cardT = allCards[allCards.length - 1];
+  cardT.querySelector(".sandbox-escalation-allow").click();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.ok(!cardT.querySelector(".sandbox-escalation-expired"), "a transport error must NOT mark the card expired");
+  const allowT = cardT.querySelector(".sandbox-escalation-allow");
+  assert.ok(allowT && !allowT.disabled, "a transport error must re-enable the Allow button for retry");
+  assert.ok(cardT.querySelector(".sandbox-escalation-note"), "a transport error must show a transient retry note");
 
   console.log("PASS test-sandbox-escalation.js");
   process.exit(0);

@@ -16,6 +16,45 @@ import (
 // or symlink refusal, and it never widens a sibling. These are the securepath-level
 // guarantees the escalation approve path rests on.
 
+// TestDenialReasonKindMapping pins the reason-string → typed-kind mapping so a
+// renamed reason (or a broken switch arm) fails HERE rather than silently mapping to
+// DenialUnspecified — which would fail-closed but stop escalation firing for that
+// class with no failing test. It also cross-checks that exactly the containment
+// reasons are Curable(), tying the mapping to M7's escalation eligibility.
+func TestDenialReasonKindMapping(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		reason  string
+		want    sandbox.DenialReason
+		curable bool
+	}{
+		{denyReasonOutsideRead, sandbox.DenialOutsideReadRoots, true},
+		{denyReasonOutsideWrite, sandbox.DenialOutsideWriteRoots, true},
+		{denyReasonWriteDenied, sandbox.DenialWritesDisabled, true},
+		{denyReasonMasked, sandbox.DenialMasked, false},
+		{denyReasonProtected, sandbox.DenialGitProtected, false},
+		{denyReasonSymlink, sandbox.DenialSymlink, false},
+		{denyReasonEscape, sandbox.DenialEscape, false},
+		{denyReasonRootTarget, sandbox.DenialRootTarget, false},
+	}
+	for _, tc := range cases {
+		got := denialReasonKind(tc.reason)
+		if got != tc.want {
+			t.Errorf("denialReasonKind(%q) = %v, want %v", tc.reason, got, tc.want)
+		}
+		if got == sandbox.DenialUnspecified {
+			t.Errorf("reason %q must map to a specific kind, not Unspecified", tc.reason)
+		}
+		if got.Curable() != tc.curable {
+			t.Errorf("reason %q Curable() = %v, want %v", tc.reason, got.Curable(), tc.curable)
+		}
+	}
+	// An unknown/renamed reason fails closed to Unspecified (not curable → final).
+	if got := denialReasonKind("a reason nobody mapped"); got != sandbox.DenialUnspecified {
+		t.Errorf("unknown reason must map to DenialUnspecified, got %v", got)
+	}
+}
+
 func TestGrant_ReadsExactLeafOutsideReadRoots(t *testing.T) {
 	t.Parallel()
 	s, _, _ := newSB(t, sandbox.ModeRestricted)

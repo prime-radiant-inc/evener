@@ -174,8 +174,9 @@ func (s *Session) escalateOnSandboxDenial(ctx context.Context, callName string, 
 	}()
 
 	// Emit the card BEFORE blocking so RecordAppEvent → Broadcast pushes it to the
-	// human, then the goroutine waits. The payload carries only the redacted denial
-	// — never file contents, never a sensitive path.
+	// human, then the goroutine waits. The payload carries the FULL denied path for
+	// informed consent (only non-sensitive, grant-curable denials reach here; a
+	// sensitive path would degrade to "<denied>") — never file contents.
 	req := sandbox.NewEscalationRequest(id, denied)
 	s.emit(events.EventSandboxEscalationRequested, escalationRequestedData(req))
 

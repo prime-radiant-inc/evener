@@ -2881,6 +2881,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .sandbox-escalation-actions { display: flex; gap: var(--space-2); margin-top: var(--space-3); }
 .sandbox-escalation-settled { margin-top: var(--space-3); color: var(--text-muted); }
 .sandbox-escalation-settled.sandbox-escalation-expired { color: var(--state-warning); }
+.sandbox-escalation-note { margin-top: var(--space-2); color: var(--state-warning); font-size: var(--text-xs); }
 
 /* System-line: short prose narration between user and agent — used for compact
  * system events (hook exits, round timings). Reads as a quiet aside, not a tool
