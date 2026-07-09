@@ -123,7 +123,7 @@ func TestWebWorkspaceContentColumnCSSContract(t *testing.T) {
 	// Check each selector individually rather than the exact joined form, so
 	// that CSS reformatting (whitespace, selector ordering, CRLF) does not
 	// break the test while the stylesheet remains semantically identical.
-	checks := []string{
+	desktopChecks := []string{
 		"--workspace-content-max-w: 832px;",
 		".workspace-header,",
 		".conversation,",
@@ -131,9 +131,27 @@ func TestWebWorkspaceContentColumnCSSContract(t *testing.T) {
 		"width: min(100%, var(--workspace-content-max-w));",
 		"margin-inline: auto;",
 	}
-	for _, want := range checks {
+	for _, want := range desktopChecks {
 		if !strings.Contains(css, want) {
 			t.Fatalf("style.css missing %q", want)
+		}
+	}
+
+	landscapeChecks := []string{
+		"@media (max-width: 900px) and (max-height: 560px)",
+		"#sidebar,\n  #sidebar-resizer,\n  .side-panes,\n  .pane-splitter { display: none !important; }",
+		".app-nav-toggle {",
+		"position: fixed;",
+		"z-index: var(--z-fixed-action);",
+		"#workspace { width: 100%; height: 100vh; height: 100dvh; }",
+		".workspace-input {",
+		".message-input { min-height: 24px; max-height: 20dvh; }",
+		".input-status .source,\n  .input-status .turns { display: inline-flex; }",
+		".input-status .cwd,\n  .input-status .branch,\n  .input-status .context,\n  .input-status .work,\n  .input-status .tokens,\n  .input-status .liveness-inline,\n  .input-status .cost,\n  .input-status .goal { display: none; }",
+	}
+	for _, want := range landscapeChecks {
+		if !strings.Contains(css, want) {
+			t.Fatalf("style.css missing short-landscape contract %q", want)
 		}
 	}
 }

@@ -56,6 +56,15 @@ const settingsState = rule(".transcript-settings .val-toggle .state");
 pass(/font-family:\s*var\(--font-mono\)/.test(settingsState),
   "compact ON/OFF state text remains a monospace exception");
 
+pass(css.includes("@media (max-width: 900px) and (max-height: 560px)"),
+  "short-landscape media query must exist");
+pass(css.includes("#sidebar,\n  #sidebar-resizer,\n  .side-panes,\n  .pane-splitter { display: none !important; }"),
+  "short-landscape mode must remove persistent sidebar and pane chrome");
+pass(css.includes(".message-input { min-height: 24px; max-height: 20dvh; }"),
+  "short-landscape composer must use a bounded composing height");
+pass(css.includes(".app-nav-toggle {\n    display: inline-flex;\n    position: fixed;"),
+  "short-landscape mode must retain a fixed app navigation control to open the sidebar drawer");
+
 if (failures.length) {
   console.error("FAIL: transcript typography contract");
   for (const failure of failures) console.error("- " + failure);

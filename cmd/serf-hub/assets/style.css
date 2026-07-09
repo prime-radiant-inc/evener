@@ -4413,6 +4413,76 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
   body:not([data-phone-density="comfortable"]) .diff-body { font-size: var(--text-sm); }
 }
 
+/* Short landscape: reclaim space for the transcript. Desktop sidebar width and
+   tall composer chrome waste both axes at this aspect ratio. The existing nav
+   toggle opens the unchanged sidebar drawer when the session list is needed. */
+@media (max-width: 900px) and (max-height: 560px) {
+  body.app { display: block; }
+
+  #sidebar,
+  #sidebar-resizer,
+  .side-panes,
+  .pane-splitter { display: none !important; }
+
+  /* Re-enable the existing drawer only while sidebar.js has opened it. */
+  body.app[data-sidebar-open] #sidebar {
+    display: block !important;
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(360px, 88vw);
+    min-width: 0;
+    max-width: 88vw;
+    height: 100vh;
+    height: 100dvh;
+    z-index: var(--z-drawer);
+    background: var(--bg-raised);
+    transform: translateX(0);
+  }
+
+  .app-nav-toggle {
+    display: inline-flex;
+    position: fixed;
+    top: var(--space-3);
+    left: var(--space-3);
+    width: var(--tap-min);
+    height: var(--tap-min);
+    z-index: var(--z-fixed-action);
+  }
+  #workspace { width: 100%; height: 100vh; height: 100dvh; }
+  .workspace-header { padding: var(--space-2) var(--space-4) var(--space-2) calc(var(--tap-min) + var(--space-3)); }
+  .conversation { padding: var(--space-3) var(--space-4); }
+
+  .workspace-input { padding: var(--space-1) var(--space-3) calc(var(--space-1) + env(safe-area-inset-bottom)); }
+  .queue-preview { margin-bottom: var(--space-1); }
+  .task-status-row { display: none; }
+  .input-card { padding: var(--space-1) 0; }
+  .message-input { min-height: 24px; max-height: 20dvh; }
+  .input-controls { padding-top: var(--space-1); }
+
+  .input-status {
+    order: -1;
+    display: flex;
+    flex-wrap: nowrap;
+    gap: var(--space-3);
+    margin: 0 0 var(--space-1);
+    padding: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .input-status .source,
+  .input-status .turns { display: inline-flex; }
+  .input-status .cwd,
+  .input-status .branch,
+  .input-status .context,
+  .input-status .work,
+  .input-status .tokens,
+  .input-status .liveness-inline,
+  .input-status .cost,
+  .input-status .goal { display: none; }
+}
+
 /* Project settings pane (per-project settings, opened from sidebar gear).
    Renders as its own workspace partial — not inside the global settings shell. */
 .project-settings-pane { flex: 1; overflow-y: auto; padding: var(--space-6) var(--space-6); }
