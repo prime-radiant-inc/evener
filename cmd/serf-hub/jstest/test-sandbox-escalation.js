@@ -60,13 +60,17 @@ const { JSDOM } = require("jsdom");
     tasks: () => Promise.resolve([]),
     resolveSandboxEscalation: (sessionId, escalationId, approve) => {
       resolveCalls.push({ sessionId, escalationId, approve });
-      // esc_conflict: a DAEMON error response (err.code present) — already resolved /
-      // interrupted → terminal "expired".
+      // esc_conflict: a genuine conflict (serfErrorInfo="conflict") — already resolved
+      // / not pending → terminal "expired".
       if (escalationId === "esc_conflict") {
-        const e = new Error("conflict"); e.code = -32013; return Promise.reject(e);
+        const e = new Error("not pending"); e.code = -32013; e.serfErrorInfo = "conflict"; return Promise.reject(e);
       }
-      // esc_transport: a TRANSPORT error (no code) — the escalation may still be
-      // pending → buttons re-enable for retry.
+      // esc_unavailable: a CODED but NON-conflict error (daemon temporarily
+      // unavailable) — the escalation is still pending → retry, NOT terminal.
+      if (escalationId === "esc_unavailable") {
+        const e = new Error("daemon unavailable"); e.code = -32001; e.serfErrorInfo = "sessionUnavailable"; return Promise.reject(e);
+      }
+      // esc_transport: a TRANSPORT error (no code, no serfErrorInfo) → retry.
       if (escalationId === "esc_transport") return Promise.reject(new Error("connection lost"));
       return Promise.resolve();
     },
@@ -143,6 +147,20 @@ const { JSDOM } = require("jsdom");
   const allowT = cardT.querySelector(".sandbox-escalation-allow");
   assert.ok(allowT && !allowT.disabled, "a transport error must re-enable the Allow button for retry");
   assert.ok(cardT.querySelector(".sandbox-escalation-note"), "a transport error must show a transient retry note");
+
+  // A CODED but NON-conflict rejection (daemon temporarily unavailable) must ALSO
+  // route to retry — NOT terminally expired (the escalation is still pending).
+  notify("serf/sandbox/escalation/requested", {
+    escalationId: "esc_unavailable", mode: "read-only", tool: "read_file", kind: "file_tool", deniedPath: "/etc/group",
+  });
+  allCards = window.document.querySelectorAll(".sandbox-escalation");
+  const cardU = allCards[allCards.length - 1];
+  cardU.querySelector(".sandbox-escalation-allow").click();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.ok(!cardU.querySelector(".sandbox-escalation-expired"), "a daemon-unavailable (coded non-conflict) error must NOT be terminal");
+  const allowU = cardU.querySelector(".sandbox-escalation-allow");
+  assert.ok(allowU && !allowU.disabled, "a daemon-unavailable error must re-enable the Allow button for retry");
 
   console.log("PASS test-sandbox-escalation.js");
   process.exit(0);

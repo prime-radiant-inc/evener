@@ -3439,11 +3439,12 @@
       // Settle the card on the resolve request's OUTCOME, not optimistically: only
       // show the decision once the daemon has actually accepted it. Buttons are
       // disabled while the request is in flight (no double-submit). A rejection is
-      // split: a DAEMON error response (err.code present — already resolved /
-      // interrupted / unavailable) is TERMINAL, so the card settles to a distinct
-      // "expired" state; a TRANSPORT error (no code — connection lost / timeout)
-      // leaves the escalation still pending, so the buttons re-enable for a retry
-      // rather than stranding it unanswerable from web.
+      // split by CAUSE, not merely by whether it carried a code (a hub-relayed
+      // "daemon unavailable" also carries a code): ONLY a genuine conflict
+      // (serfErrorInfo === "conflict" — already resolved elsewhere / not pending) is
+      // TERMINAL and settles to "expired". Everything else — a transport error OR a
+      // transient daemon-unavailable — leaves the escalation still pending (its
+      // tool-exec goroutine is still blocked), so the buttons re-enable for a retry.
       const send = (approve, verb) => {
         allow.disabled = true;
         deny.disabled = true;
@@ -3455,7 +3456,7 @@
         window.SerfAppwire.resolveSandboxEscalation(this.sessionId, escalationId, approve)
           .then(() => settle(verb))
           .catch((err) => {
-            if (err && typeof err.code === "number") {
+            if (err && err.serfErrorInfo === "conflict") {
               settle("Escalation expired (already resolved)", "sandbox-escalation-expired");
             } else {
               allow.disabled = false;

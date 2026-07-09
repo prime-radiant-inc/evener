@@ -2,12 +2,23 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/appwire"
 )
+
+// hubEscalationResolvedMsg is the daemon's ACK for a resolve request. The resolve
+// is NON-OPTIMISTIC: the escalation stays queued until this arrives, so a transport
+// failure never drops a still-pending escalation.
+type hubEscalationResolvedMsg struct {
+	ref     string
+	id      string
+	approve bool
+	err     error
+}
 
 // M7 in-UI sandbox-exemption escalation for the TUI hub. Escalations are held in a
 // FIFO queue PER SESSION REF (escalationsByRef), independent of the viewed session,
@@ -30,6 +41,10 @@ type hubEscalation struct {
 	path string
 	mode string
 	ref  string
+	// resolving marks a resolve in flight: the escalation is kept at the head of
+	// its queue until the daemon ACKs, and a second chord is swallowed (no
+	// double-submit). Cleared on a transport failure so the user can retry.
+	resolving bool
 }
 
 // applySandboxEscalation enqueues an escalation under its OWN session ref (from the
@@ -110,31 +125,79 @@ func (m *hubModel) handleEscalationKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	return nil, false
 }
 
-// resolveHeadEscalation answers the viewed session's head escalation, pops it, echoes
-// the decision, and surfaces the next queued one for this session (if any).
+// resolveHeadEscalation SENDS the decision for the viewed session's head escalation
+// but does NOT pop it: the escalation stays queued until the daemon ACKs
+// (handleEscalationResolved), so a transport failure never drops a still-pending
+// escalation. A second chord while a resolve is in flight is swallowed.
 func (m *hubModel) resolveHeadEscalation(approve bool) tea.Cmd {
-	ref := strings.TrimSpace(m.detail.Ref)
-	q := m.escalationsByRef[ref]
-	if len(q) == 0 {
+	e := m.headEscalation()
+	if e == nil || e.resolving {
 		return nil
 	}
-	e := q[0]
-	if len(q) == 1 {
+	e.resolving = true
+	m.addSessionSystem("Resolving sandbox approval…")
+	if m.client == nil {
+		return nil
+	}
+	return sendHubEscalationResolve(m.client, e.ref, e.id, approve)
+}
+
+// handleEscalationResolved applies the daemon's ACK. On success the escalation is
+// popped and the decision echoed; a CONFLICT (already resolved elsewhere / not
+// pending) is terminal and pops it; any other error (transport / daemon-unavailable)
+// keeps it queued and retryable — never dropped while its tool-exec goroutine blocks.
+func (m *hubModel) handleEscalationResolved(msg hubEscalationResolvedMsg) {
+	q := m.escalationsByRef[msg.ref]
+	idx := -1
+	for i, e := range q {
+		if e.id == msg.id {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return
+	}
+	viewing := strings.TrimSpace(m.detail.Ref) == strings.TrimSpace(msg.ref)
+	echo := func(s string) {
+		if viewing {
+			m.addSessionSystem(s)
+		}
+	}
+	var we appwire.WireError
+	switch {
+	case msg.err == nil:
+		m.removeEscalationAt(msg.ref, idx)
+		if msg.approve {
+			echo("Allowed once.")
+		} else {
+			echo("Denied.")
+		}
+	case errors.As(msg.err, &we) && we.Code == appwire.CodeConflict:
+		m.removeEscalationAt(msg.ref, idx)
+		echo("Sandbox approval already resolved.")
+	default:
+		q[idx].resolving = false
+		echo("Couldn't reach the agent — retry with ctrl+y (Allow) / ctrl+g (Deny).")
+		return
+	}
+	if viewing {
+		m.promptHeadEscalation()
+	}
+}
+
+// removeEscalationAt drops the escalation at idx from ref's queue.
+func (m *hubModel) removeEscalationAt(ref string, idx int) {
+	q := m.escalationsByRef[ref]
+	if idx < 0 || idx >= len(q) {
+		return
+	}
+	q = append(q[:idx], q[idx+1:]...)
+	if len(q) == 0 {
 		delete(m.escalationsByRef, ref)
 	} else {
-		m.escalationsByRef[ref] = q[1:]
+		m.escalationsByRef[ref] = q
 	}
-	if approve {
-		m.addSessionSystem("Allowed once.")
-	} else {
-		m.addSessionSystem("Denied.")
-	}
-	var cmd tea.Cmd
-	if m.client != nil {
-		cmd = sendHubEscalationResolve(m.client, e.ref, e.id, approve)
-	}
-	m.promptHeadEscalation()
-	return cmd
 }
 
 func sendHubEscalationResolve(client *appwire.Client, ref, escalationID string, approve bool) tea.Cmd {
@@ -144,6 +207,6 @@ func sendHubEscalationResolve(client *appwire.Client, ref, escalationID string, 
 			EscalationID: escalationID,
 			Approve:      approve,
 		}, nil)
-		return hubActionMsg{action: "sandbox-escalation", err: err}
+		return hubEscalationResolvedMsg{ref: ref, id: escalationID, approve: approve, err: err}
 	}
 }

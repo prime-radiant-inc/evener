@@ -68,6 +68,10 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.detail = msg.detail
 			if msg.expectedState == "" {
 				m.replaceSessionTranscript(msg.messages)
+				// A same-session resync wipes the transcript (including the pending
+				// sandbox-approval prompt); re-surface it so a still-pending escalation
+				// stays visible and answerable after a reload.
+				m.surfaceEscalationsOnEntry()
 			}
 			// Refresh queue preview from the authoritative read response
 			// (kata r80p) so reloads / status refreshes resync state.
@@ -287,6 +291,9 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		panel := hubSessionPanel{Body: renderHubSessionStatus(msg.detail, msg.tasks, msg.auth, msg.taskErr, msg.authErr, tuiprim.PopupPaneContentWidth(m.width))}
 		m.sessionPanel = &panel
 		m.session.refreshViewport()
+		return m, nil
+	case hubEscalationResolvedMsg:
+		m.handleEscalationResolved(msg)
 		return m, nil
 	case hubActionMsg:
 		if msg.err != nil {

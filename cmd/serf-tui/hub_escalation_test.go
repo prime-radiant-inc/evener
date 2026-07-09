@@ -66,18 +66,25 @@ func TestHubModelSandboxEscalation_BareAndComposerKeysDoNotAnswer(t *testing.T) 
 		t.Fatal("the escalation must remain pending after bare/composer keys")
 	}
 
-	// The deliberate ctrl+y chord DOES answer it.
+	// The deliberate ctrl+y chord SENDS but does not pop optimistically: the
+	// escalation stays queued (marked resolving) until the daemon ACKs.
 	updated, _ := m.updateSessionKey(tea.KeyMsg{Type: tea.KeyCtrlY})
 	got := updated.(hubModel)
+	if len(got.escalationsByRef["local:th_1"]) != 1 || !got.escalationsByRef["local:th_1"][0].resolving {
+		t.Fatal("ctrl+y must send non-optimistically: the escalation stays queued+resolving until ACK")
+	}
+	// The daemon ACK (success) pops it and echoes the decision.
+	updated, _ = got.Update(hubEscalationResolvedMsg{ref: "local:th_1", id: "esc_1", approve: true})
+	got = updated.(hubModel)
 	if len(got.escalationsByRef["local:th_1"]) != 0 {
-		t.Fatal("ctrl+y must resolve the head escalation")
+		t.Fatal("a successful ACK must pop the escalation")
 	}
 	if !containsMsg(got, "Allowed once") {
-		t.Fatalf("ctrl+y must echo the allow decision: %+v", got.session.messages)
+		t.Fatalf("a successful allow ACK must echo the decision: %+v", got.session.messages)
 	}
 }
 
-func TestHubModelSandboxEscalation_ChordDenies(t *testing.T) {
+func TestHubModelSandboxEscalation_ChordDeniesOnAck(t *testing.T) {
 	m := newHubModel(nil, "")
 	m.mode = hubModeSession
 	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
@@ -85,11 +92,67 @@ func TestHubModelSandboxEscalation_ChordDenies(t *testing.T) {
 
 	updated, _ := m.updateSessionKey(tea.KeyMsg{Type: tea.KeyCtrlG})
 	got := updated.(hubModel)
+	updated, _ = got.Update(hubEscalationResolvedMsg{ref: "local:th_1", id: "esc_1", approve: false})
+	got = updated.(hubModel)
 	if len(got.escalationsByRef["local:th_1"]) != 0 {
-		t.Fatal("ctrl+g must resolve the head escalation")
+		t.Fatal("a deny ACK must pop the escalation")
 	}
 	if !containsMsg(got, "Denied") {
-		t.Fatalf("ctrl+g must echo the deny decision: %+v", got.session.messages)
+		t.Fatalf("a deny ACK must echo the decision: %+v", got.session.messages)
+	}
+}
+
+func TestHubModelSandboxEscalation_TransportFailureReSurfaces(t *testing.T) {
+	m := newHubModel(nil, "")
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
+	m.escalationsByRef = map[string][]*hubEscalation{"local:th_1": {{id: "esc_1", ref: "local:th_1", resolving: true}}}
+
+	// A transport/daemon-unavailable ACK must NOT drop the escalation — its
+	// tool-exec goroutine is still blocked; keep it queued and retryable.
+	updated, _ := m.Update(hubEscalationResolvedMsg{ref: "local:th_1", id: "esc_1", approve: true, err: appwire.WireError{Code: appwire.CodeInternalError}})
+	got := updated.(hubModel)
+	q := got.escalationsByRef["local:th_1"]
+	if len(q) != 1 {
+		t.Fatal("a transport failure must NOT drop the still-pending escalation")
+	}
+	if q[0].resolving {
+		t.Fatal("a transport failure must clear resolving so the user can retry")
+	}
+	if !containsMsg(got, "Couldn't reach the agent") {
+		t.Fatalf("a transport failure must prompt a retry: %+v", got.session.messages)
+	}
+}
+
+func TestHubModelSandboxEscalation_ConflictIsTerminal(t *testing.T) {
+	m := newHubModel(nil, "")
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
+	m.escalationsByRef = map[string][]*hubEscalation{"local:th_1": {{id: "esc_1", ref: "local:th_1", resolving: true}}}
+
+	// A genuine conflict (already resolved elsewhere / not pending) is terminal.
+	updated, _ := m.Update(hubEscalationResolvedMsg{ref: "local:th_1", id: "esc_1", approve: true, err: appwire.Conflict("not pending")})
+	got := updated.(hubModel)
+	if len(got.escalationsByRef["local:th_1"]) != 0 {
+		t.Fatal("a conflict ACK must terminally remove the escalation")
+	}
+	if !containsMsg(got, "already resolved") {
+		t.Fatalf("a conflict ACK must say the approval was already resolved: %+v", got.session.messages)
+	}
+}
+
+func TestHubModelSandboxEscalation_SameSessionResyncReSurfaces(t *testing.T) {
+	m := newHubModel(nil, "")
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
+	m.escalationsByRef = map[string][]*hubEscalation{"local:th_1": {{id: "esc_1", ref: "local:th_1", tool: "read_file", path: "/x"}}}
+
+	// A same-session resync replaces the transcript (wiping the prompt); the pending
+	// escalation must be re-surfaced so it stays visible.
+	updated, _ := m.Update(hubSessionMsg{detail: hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1", State: appwire.ThreadStatusActive}, ref: "local:th_1"})
+	got := updated.(hubModel)
+	if !containsMsg(got, "/x") || !containsMsg(got, "requested by serf") {
+		t.Fatalf("a same-session resync must re-surface the pending escalation prompt: %+v", got.session.messages)
 	}
 }
 
@@ -154,11 +217,15 @@ func TestHubModelSandboxEscalation_ConcurrentQueueBothAnswerable(t *testing.T) {
 
 	updated, _ := m.updateSessionKey(tea.KeyMsg{Type: tea.KeyCtrlY})
 	m1 := updated.(hubModel)
+	updated, _ = m1.Update(hubEscalationResolvedMsg{ref: "local:th_1", id: "esc_1", approve: true})
+	m1 = updated.(hubModel)
 	if len(m1.escalationsByRef["local:th_1"]) != 1 || m1.escalationsByRef["local:th_1"][0].id != "esc_2" {
 		t.Fatalf("head answered → esc_2 must remain, got %+v", m1.escalationsByRef["local:th_1"])
 	}
 	updated2, _ := m1.updateSessionKey(tea.KeyMsg{Type: tea.KeyCtrlG})
 	m2 := updated2.(hubModel)
+	updated2, _ = m2.Update(hubEscalationResolvedMsg{ref: "local:th_1", id: "esc_2", approve: false})
+	m2 = updated2.(hubModel)
 	if len(m2.escalationsByRef["local:th_1"]) != 0 {
 		t.Fatalf("both escalations must be answered, got %+v", m2.escalationsByRef["local:th_1"])
 	}
