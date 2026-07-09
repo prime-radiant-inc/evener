@@ -69,6 +69,22 @@ const { JSDOM } = require("jsdom");
   cards = window.document.querySelectorAll(".sandbox-escalation");
   assert.strictEqual(cards.length, 2, "a new live escalation must render its own card, got " + cards.length);
 
+  // (4) RECONNECT re-hydration: a reset (which wipes the DOM, destroying the
+  // rendered cards) followed by re-hydration with the still-pending snapshot must
+  // RE-RENDER the card. This is the HIGH regression — reset must clear the de-dupe
+  // set, else appendSandboxEscalation early-returns and the card vanishes until a
+  // full page reload while the daemon stays blocked.
+  window.SerfRenderer.resetTranscriptReplay();
+  assert.strictEqual(window.document.querySelectorAll(".sandbox-escalation").length, 0, "reset must wipe the rendered cards");
+  window.SerfRenderer.surfaceSnapshotEscalations({
+    serf: { pendingEscalations: [
+      { escalationId: "esc_snap", mode: "read-only", tool: "read_file", kind: "file_tool", deniedPath: "/snapshot/path" },
+    ] },
+  });
+  cards = window.document.querySelectorAll(".sandbox-escalation");
+  assert.strictEqual(cards.length, 1, "a still-pending escalation must RE-RENDER after a reconnect reset+re-hydrate, got " + cards.length);
+  assert.ok(cards[0].textContent.includes("/snapshot/path"), "the re-rendered card must show the path");
+
   console.log("PASS test-sandbox-escalation-snapshot.js");
   process.exit(0);
 })().catch((err) => {

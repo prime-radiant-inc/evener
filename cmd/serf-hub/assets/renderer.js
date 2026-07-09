@@ -846,6 +846,12 @@
       this.pendingTaskCalls.clear();
       this.pendingAskCalls.clear();
       this.pendingAsk = null;
+      // Clearing the DOM destroyed any rendered sandbox-escalation card, so the
+      // de-dupe set must reset too — otherwise a re-hydration after reconnect would
+      // suppress re-rendering a STILL-pending escalation and the card would vanish
+      // until a full reload. A settled escalation won't reappear (absent from the
+      // fresh snapshot); a still-pending one correctly re-renders.
+      this.shownEscalationIds = new Set();
       this.currentMessageId = null;
       this.userTurnIndex = 0;
       this.entryIndex = 0;
@@ -3377,14 +3383,6 @@
       this.conversation.appendChild(el);
     },
 
-    // appendSandboxEscalation renders the M7 human-gated approval card for a single
-    // sandbox denial. It is deliberately styled and labelled as a HARNESS prompt —
-    // never a model message — so a human cannot be socially-engineered by model text
-    // into the Allow button: the model can neither emit nor influence this card. The
-    // tool-exec goroutine on the daemon is BLOCKED until Allow/Deny posts the resolve
-    // request; the card then settles in place (it is never a transcript turn and is
-    // never replayed). Approve re-runs the single invocation with the one path
-    // granted; deny returns the typed error to the model.
     // surfaceSnapshotEscalations renders any escalations carried on the thread/read
     // snapshot (thread.serf.pendingEscalations) — the surface-on-entry / reconnect /
     // other-client-raised path. De-dupe by id (in appendSandboxEscalation) keeps it
@@ -3397,6 +3395,14 @@
       }
     },
 
+    // appendSandboxEscalation renders the M7 human-gated approval card for a single
+    // sandbox denial. It is deliberately styled and labelled as a HARNESS prompt —
+    // never a model message — so a human cannot be socially-engineered by model text
+    // into the Allow button: the model can neither emit nor influence this card. The
+    // tool-exec goroutine on the daemon is BLOCKED until Allow/Deny posts the resolve
+    // request; the card then settles in place (it is never a transcript turn and is
+    // never replayed). Approve re-runs the single invocation with the one path
+    // granted; deny returns the typed error to the model.
     appendSandboxEscalation(data) {
       const escalationId = data.escalationId || "";
       // De-dupe: a card already shown live must not be re-rendered by the entry/
