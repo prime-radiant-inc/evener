@@ -81,6 +81,13 @@ all workspace modules to the global coverage invocation and exposes a single
 deterministic check command. Initially it is allowed to be slow; runtime work is
 explicitly deferred until coverage is achieved.
 
+The registry checker emits the target plan as UTF-8 TSV with no header and one
+row per validated coverage target, sorted by module, package, kind, and name:
+`kind<TAB>module<TAB>package<TAB>name`. It emits only `native` and `rapid`
+rows; focus metadata and support-only `test` rows stay in `run-fuzz.sh` and are
+not part of the global replay contract. The global runner consumes this exact
+four-column format.
+
 ### 2. Narrow Exclusions
 
 An exclusion manifest is file-scoped and requires the module, package-relative

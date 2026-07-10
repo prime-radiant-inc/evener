@@ -126,6 +126,7 @@ type Target struct {
 func ParseRegistry(r io.Reader) ([]Target, error)
 func DiscoverWorkspace(root string) ([]Target, error)
 func CheckTargets(registered, discovered []Target) error
+func EmitPlan(w io.Writer, targets []Target) error
 ~~~
 
 - [ ] **Step 1: Write failing registry fixtures**
@@ -162,6 +163,16 @@ go run ./cmd/serf-fuzzregistry --repo-root "$repo_root" --registry "$registry" -
 ~~~
 
 Add make fuzz-registry-check. It may not run search, ordinary tests, or network traffic.
+
+The --emit-plan output is UTF-8 TSV with no header, sorted by module, package,
+kind, and name. Each validated coverage row is exactly:
+
+~~~text
+kind<TAB>module<TAB>package<TAB>name
+~~~
+
+Emit only native and rapid rows. Do not emit support-only test rows or focus
+metadata; Task 4 consumes this exact four-column schema.
 
 - [ ] **Step 4: Verify and commit**
 
