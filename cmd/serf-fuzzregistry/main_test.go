@@ -97,6 +97,93 @@ func TestCheckTargetsReportsDuplicateIdentity(t *testing.T) {
 	assertErrorContains(t, err, "duplicate registered target: native:agent:.:FuzzTurn")
 }
 
+func TestCheckTargetsDistinguishesColonContainingTupleFields(t *testing.T) {
+	targets := []Target{
+		{Kind: "native", Module: "agent:./internal", Package: "./tool", Name: "FuzzTurn"},
+		{Kind: "native", Module: "agent", Package: "./internal:./tool", Name: "FuzzTurn"},
+	}
+
+	if err := CheckTargets(targets, targets); err != nil {
+		t.Fatalf("CheckTargets() = %v, want distinct exact tuple identities", err)
+	}
+}
+
+func TestDiscoverWorkspaceIgnoresFuzzLikeProductionDeclaration(t *testing.T) {
+	root := newWorkspace(t, map[string]string{
+		"go.work": "go 1.25.0\n\nuse .\n",
+		"go.mod":  "module example.test/root\n\ngo 1.25.0\n",
+		"fuzz_like.go": `package root
+
+import "testing"
+
+func FuzzProduction(f *testing.F) {}
+`,
+	})
+
+	got, err := DiscoverWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("DiscoverWorkspace() = %#v, want no targets from production files", got)
+	}
+}
+
+func TestDiscoverWorkspaceRecognizesAliasedAndUnnamedNativeFuzzers(t *testing.T) {
+	root := newWorkspace(t, map[string]string{
+		"go.work": "go 1.25.0\n\nuse .\n",
+		"go.mod":  "module example.test/root\n\ngo 1.25.0\n",
+		"alias_fuzz_test.go": `package root
+
+import check "testing"
+
+type F = check.F
+
+func FuzzAlias(f *check.F) {}
+func Fuzz(*check.F) {}
+func FuzzDirect(*F) {}
+`,
+	})
+
+	got, err := DiscoverWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Target{
+		{Kind: "native", Module: ".", Package: ".", Name: "Fuzz"},
+		{Kind: "native", Module: ".", Package: ".", Name: "FuzzAlias"},
+		{Kind: "native", Module: ".", Package: ".", Name: "FuzzDirect"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("DiscoverWorkspace() = %#v, want %#v", got, want)
+	}
+}
+
+func TestDiscoverWorkspaceIgnoresMalformedNativeFuzzers(t *testing.T) {
+	root := newWorkspace(t, map[string]string{
+		"go.work": "go 1.25.0\n\nuse .\n",
+		"go.mod":  "module example.test/root\n\ngo 1.25.0\n",
+		"malformed_fuzz_test.go": `package root
+
+import "testing"
+
+func Fuzzlower(f *testing.F) {}
+func FuzzMultiple(first, second *testing.F) {}
+func FuzzResult(f *testing.F) error { return nil }
+func FuzzValue(f testing.F) {}
+func FuzzManyParams(f *testing.F, extra string) {}
+`,
+	})
+
+	got, err := DiscoverWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("DiscoverWorkspace() = %#v, want no malformed targets", got)
+	}
+}
+
 func TestDiscoverWorkspaceRejectsUnmarkedRapidTest(t *testing.T) {
 	root := newWorkspace(t, map[string]string{
 		"go.work": "go 1.25.0\n\nuse .\n",

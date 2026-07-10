@@ -18,6 +18,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/mod/modfile"
 )
@@ -27,6 +29,15 @@ const rapidMarker = "serf:fuzz rapid"
 // Target is a coverage-replay identity. Module and Package are paths relative to
 // go.work and its module directory, respectively.
 type Target struct {
+	Kind    string
+	Module  string
+	Package string
+	Name    string
+}
+
+// targetIdentity preserves the four target fields as an exact, comparable key.
+// Its string rendering is only for diagnostics and must not be used as identity.
+type targetIdentity struct {
 	Kind    string
 	Module  string
 	Package string
@@ -149,7 +160,7 @@ func DiscoverWorkspace(root string) ([]Target, error) {
 				}
 				return nil
 			}
-			if !strings.HasSuffix(entry.Name(), ".go") {
+			if !strings.HasSuffix(entry.Name(), "_test.go") {
 				return nil
 			}
 
@@ -181,7 +192,7 @@ func DiscoverWorkspace(root string) ([]Target, error) {
 					targets = append(targets, Target{Kind: "rapid", Module: module.label, Package: pkg, Name: fn.Name.Name})
 					continue
 				}
-				if strings.HasPrefix(fn.Name.Name, "Test") && callsRapidCheck(fn, rapidNames) {
+				if isTestFunction(fn) && callsRapidCheck(fn, rapidNames) {
 					issues = append(issues, fmt.Sprintf("%s: %s calls rapid.Check without // %s marker", displayPath(root, filePath), fn.Name.Name, rapidMarker))
 				}
 			}
@@ -228,7 +239,7 @@ func CheckTargets(registered, discovered []Target) error {
 // required; duplicate coverage rows are rejected here so a plan is never vague.
 func EmitPlan(w io.Writer, targets []Target) error {
 	coverage := make([]Target, 0, len(targets))
-	seen := make(map[string]struct{})
+	seen := make(map[targetIdentity]struct{})
 	for _, raw := range targets {
 		target, err := canonicalTarget(raw)
 		if err != nil {
@@ -237,9 +248,9 @@ func EmitPlan(w io.Writer, targets []Target) error {
 		if !isCoverageKind(target.Kind) {
 			continue
 		}
-		key := targetString(target)
+		key := identityOf(target)
 		if _, ok := seen[key]; ok {
-			return fmt.Errorf("duplicate coverage target: %s", key)
+			return fmt.Errorf("duplicate coverage target: %s", targetString(target))
 		}
 		seen[key] = struct{}{}
 		coverage = append(coverage, target)
@@ -306,8 +317,8 @@ func readWorkspaceModules(root string) ([]workspaceModule, error) {
 	return modules, nil
 }
 
-func targetSet(label string, targets []Target) (map[string]Target, []string) {
-	set := make(map[string]Target, len(targets))
+func targetSet(label string, targets []Target) (map[targetIdentity]Target, []string) {
+	set := make(map[targetIdentity]Target, len(targets))
 	var issues []string
 	for _, raw := range targets {
 		target, err := canonicalTarget(raw)
@@ -318,9 +329,9 @@ func targetSet(label string, targets []Target) (map[string]Target, []string) {
 		if !isCoverageKind(target.Kind) {
 			continue
 		}
-		key := targetString(target)
+		key := identityOf(target)
 		if _, ok := set[key]; ok {
-			issues = append(issues, fmt.Sprintf("duplicate %s target: %s", label, key))
+			issues = append(issues, fmt.Sprintf("duplicate %s target: %s", label, targetString(target)))
 			continue
 		}
 		set[key] = target
@@ -401,15 +412,29 @@ func skipDirectory(name string) bool {
 }
 
 func isNativeFuzzer(fn *ast.FuncDecl) bool {
-	return strings.HasPrefix(fn.Name.Name, "Fuzz") && hasSingleTestingParameter(fn, "F")
+	return isGoTestName(fn.Name.Name, "Fuzz") && hasSingleTestingParameter(fn, "F")
 }
 
 func isTestFunction(fn *ast.FuncDecl) bool {
-	return strings.HasPrefix(fn.Name.Name, "Test") && hasSingleTestingParameter(fn, "T")
+	return isGoTestName(fn.Name.Name, "Test") && hasSingleTestingParameter(fn, "T")
+}
+
+// isGoTestName and hasSingleTestingParameter mirror Go 1.25 cmd/go's test
+// target checks. In particular, cmd/go accepts *F and *anything.F because an
+// AST-only scan cannot reliably resolve how testing was imported.
+func isGoTestName(name, prefix string) bool {
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	if len(name) == len(prefix) {
+		return true
+	}
+	runeAfterPrefix, _ := utf8.DecodeRuneInString(name[len(prefix):])
+	return !unicode.IsLower(runeAfterPrefix)
 }
 
 func hasSingleTestingParameter(fn *ast.FuncDecl, typeName string) bool {
-	if fn.Type.Params == nil || len(fn.Type.Params.List) != 1 {
+	if fn.Type.Params == nil || len(fn.Type.Params.List) != 1 || len(fn.Type.Params.List[0].Names) > 1 {
 		return false
 	}
 	if fn.Type.Results != nil && len(fn.Type.Results.List) != 0 {
@@ -419,12 +444,11 @@ func hasSingleTestingParameter(fn *ast.FuncDecl, typeName string) bool {
 	if !ok {
 		return false
 	}
-	selector, ok := star.X.(*ast.SelectorExpr)
-	if !ok || selector.Sel.Name != typeName {
-		return false
+	if ident, ok := star.X.(*ast.Ident); ok {
+		return ident.Name == typeName
 	}
-	ident, ok := selector.X.(*ast.Ident)
-	return ok && ident.Name == "testing"
+	selector, ok := star.X.(*ast.SelectorExpr)
+	return ok && selector.Sel.Name == typeName
 }
 
 func rapidImportNames(file *ast.File) map[string]struct{} {
@@ -510,6 +534,15 @@ func isCoverageKind(kind string) bool {
 
 func targetString(target Target) string {
 	return target.Kind + ":" + target.Module + ":" + target.Package + ":" + target.Name
+}
+
+func identityOf(target Target) targetIdentity {
+	return targetIdentity{
+		Kind:    target.Kind,
+		Module:  target.Module,
+		Package: target.Package,
+		Name:    target.Name,
+	}
 }
 
 func sortTargets(targets []Target) {
