@@ -187,6 +187,44 @@ async function testMutualExclusionAndNoteAttachment() {
     "ask response dock must be removed after settlement");
 }
 
+async function testOtherClientSettlementRestoresComposer() {
+  const { window, conv, R } = newHarness();
+  await settle();
+  for (const [kind, data] of askCallEvents("call_remote", [{ header: "Choice", question: "Choose", options: [{ label: "A", detail: "" }] }])) {
+    R.handleData(kind, data);
+  }
+  R.handleData("USER_INPUT", { text: "[answers]\n1. [Choice] → \"A\"" });
+  const form = window.document.querySelector("[data-input-form]");
+  pass(!form.querySelector("[data-ask-response-dock]"), "other client reply must remove local ask dock");
+  pass(form.querySelector(".message-input").hidden === false, "other client reply must restore normal composer");
+  pass(!!conv.querySelector(".ask-settled-line"), "other client reply must leave a settled transcript line");
+}
+
+async function testConflictRestoresComposedDraft() {
+  const { window, R } = newHarness();
+  await settle();
+  for (const [kind, data] of askCallEvents("call_conflict", [{ header: "Choice", question: "Choose", options: [{ label: "A", detail: "" }] }])) {
+    R.handleData(kind, data);
+  }
+  const answer = window.document.querySelector("[data-ask-option-input]");
+  answer.checked = true;
+  answer.dispatchEvent(new window.Event("change", { bubbles: true }));
+  let startTurnCalls = 0;
+  window.SerfAppwire = {
+    startTurn: () => {
+      startTurnCalls += 1;
+      return Promise.reject(Object.assign(new Error("taken"), { serfErrorInfo: "conflict" }));
+    },
+  };
+  window.document.querySelector("[data-ask-send-btn]").click();
+  await settle();
+  const form = window.document.querySelector("[data-input-form]");
+  pass(!form.querySelector("[data-ask-response-dock]"), "conflict must leave ask dock mode");
+  pass(form.querySelector(".message-input").hidden === false, "conflict must restore normal composer mode");
+  pass(form.querySelector(".message-input").value.includes("[answers]"), "conflict must preserve composed answer in normal composer");
+  pass(startTurnCalls === 1, "conflict must not automatically retry startTurn, got " + startTurnCalls + " calls");
+}
+
 (async () => {
   testGoldenExampleExact();
   testUnresolvedComposesAsSkipped();
@@ -194,11 +232,13 @@ async function testMutualExclusionAndNoteAttachment() {
   testMultiSelectJoinsQuotedLabels();
   testQuoteGoStringRealisticSet();
   await testMutualExclusionAndNoteAttachment();
+  await testOtherClientSettlementRestoresComposer();
+  await testConflictRestoresComposedDraft();
 
   if (failures.length > 0) {
     for (const f of failures) console.log(f);
     process.exit(1);
   }
-  console.log("PASS: ask_user compose format is byte-exact per spec §4.3, and mutual exclusion/notes work through the real card UI");
+  console.log("PASS: ask_user compose format is byte-exact per spec §4.3, and dock interactions/settlement paths work through the real dock UI");
   process.exit(0);
 })();
