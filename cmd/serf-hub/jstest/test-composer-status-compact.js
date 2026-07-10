@@ -56,8 +56,8 @@ pass(cardRule && /background:/.test(cardRule) && !/border:\s*1px/.test(cardRule)
 
 pass(/\.input-telemetry \.location\s*\{[^}]*min-width:\s*0[^}]*overflow:\s*hidden/.test(css),
   "location group must be shrinkable and clipped before telemetry wraps");
-pass(/\.input-telemetry \.status-location-part \.status-value\s*\{[^}]*text-overflow:\s*ellipsis/.test(css),
-  "location values must truncate with ellipsis");
+pass(/\.input-telemetry \.status-location-part \.status-value\s*\{[^}]*min-width:\s*0[^}]*text-overflow:\s*ellipsis/.test(css),
+  "location values must be shrinkable so text-overflow produces ellipsis");
 pass(/\.input-telemetry\s*\{[^}]*flex-wrap:\s*nowrap/.test(mobile),
   "phone media aggregate must include the compact nonwrapping telemetry override");
 pass(!/\.input-telemetry\s*\{[^}]*flex-wrap:\s*wrap/.test(mobile),

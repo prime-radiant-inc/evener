@@ -124,6 +124,30 @@ func requireHTMLDescendant(t *testing.T, ancestor, node *html.Node, description 
 	}
 }
 
+func inputStatusHTML(t *testing.T, body string) string {
+	t.Helper()
+	document, err := html.Parse(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("parse rendered document: %v", err)
+	}
+	status := findElement(document, func(node *html.Node) bool {
+		for _, attr := range node.Attr {
+			if attr.Key == "id" && attr.Val == "input-status" {
+				return true
+			}
+		}
+		return false
+	})
+	if status == nil {
+		t.Fatalf("rendered document missing #input-status")
+	}
+	var out bytes.Buffer
+	if err := html.Render(&out, status); err != nil {
+		t.Fatalf("render #input-status: %v", err)
+	}
+	return out.String()
+}
+
 // injectMetasForTest replaces the past index with one holding the given metas.
 func (s *WebServer) injectMetasForTest(metas []schema.SessionMeta) {
 	idx := hubcore.NewPastIndex("")
@@ -2451,6 +2475,78 @@ func TestWeb_ThreadDocument_CompactsSubagentChromeAndFooter(t *testing.T) {
 	} {
 		if !strings.Contains(body, required) {
 			t.Fatalf("thread document missing compact-required markup %q in:\n%s", required, body)
+		}
+	}
+	if !strings.Contains(body, `hx-get="/_partials/s/local:child/state?thread_document=1"`) {
+		t.Fatalf("thread document status refresh must preserve thread-document mode:\n%s", body)
+	}
+}
+
+func TestWeb_ThreadDocument_StateRefreshPreservesCompactLocationMode(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID:           "01THREADSTATE",
+		WorktreePath: "/state/worktrees/serf/dlg_01H",
+		EnvInfo:      schema.EnvironmentInfo{WorkingDir: "/tmp/thread-wd", GitBranch: "thread-main"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    past,
+	})
+
+	threadReq := httptest.NewRequest(http.MethodGet, "/thread/01THREADSTATE", nil)
+	threadReq.Host = "127.0.0.1:9180"
+	threadRec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(threadRec, threadReq)
+	if threadRec.Code != http.StatusOK {
+		t.Fatalf("initial thread document status=%d body=%q", threadRec.Code, threadRec.Body.String())
+	}
+	initial := inputStatusHTML(t, threadRec.Body.String())
+	for _, forbidden := range []string{`data-status-location`, `status-location-part branch`, `status-location-part worktree`, `status-location-part cwd`, `/tmp/thread-wd`, `thread-main`, `dlg_01H`} {
+		if strings.Contains(initial, forbidden) {
+			t.Errorf("initial thread document unexpectedly renders location telemetry %q:\n%s", forbidden, initial)
+		}
+	}
+	if !strings.Contains(initial, `hx-get="/_partials/s/01THREADSTATE/state?thread_document=1"`) {
+		t.Fatalf("initial thread document did not preserve mode in status refresh URL:\n%s", initial)
+	}
+
+	refreshReq := httptest.NewRequest(http.MethodGet, "/_partials/s/01THREADSTATE/state?thread_document=1", nil)
+	refreshReq.Host = "127.0.0.1:9180"
+	refreshReq.Header.Set("HX-Request", "true")
+	refreshRec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(refreshRec, refreshReq)
+	if refreshRec.Code != http.StatusOK {
+		t.Fatalf("thread-document state refresh status=%d body=%q", refreshRec.Code, refreshRec.Body.String())
+	}
+	for _, forbidden := range []string{`data-status-location`, `status-location-part branch`, `status-location-part worktree`, `status-location-part cwd`, `/tmp/thread-wd`, `thread-main`, `dlg_01H`} {
+		if strings.Contains(refreshRec.Body.String(), forbidden) {
+			t.Errorf("thread-document state refresh unexpectedly renders location telemetry %q:\n%s", forbidden, refreshRec.Body.String())
+		}
+	}
+
+	normalReq := httptest.NewRequest(http.MethodGet, "/_partials/s/01THREADSTATE/state", nil)
+	normalReq.Host = "127.0.0.1:9180"
+	normalReq.Header.Set("HX-Request", "true")
+	normalRec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(normalRec, normalReq)
+	if normalRec.Code != http.StatusOK {
+		t.Fatalf("normal workspace state status=%d body=%q", normalRec.Code, normalRec.Body.String())
+	}
+	for _, required := range []string{`data-status-location`, `status-location-part branch`, `status-location-part worktree`, `status-location-part cwd`, `/tmp/thread-wd`, `thread-main`, `dlg_01H`} {
+		if !strings.Contains(normalRec.Body.String(), required) {
+			t.Errorf("normal workspace state should retain location telemetry %q:\n%s", required, normalRec.Body.String())
 		}
 	}
 }

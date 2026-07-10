@@ -96,7 +96,7 @@
     </div>
     <div id="input-status"
        class="input-status"
-       hx-get="/_partials/s/{{.ID}}/state"
+       hx-get="/_partials/s/{{.ID}}/state{{if .ThreadDocumentMode}}?thread_document=1{{end}}"
        hx-trigger="load, serf-hub:status-refresh from:body, every 30s"
        hx-swap="innerHTML">
       {{template "input_status" .}}

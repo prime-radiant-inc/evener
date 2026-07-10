@@ -558,6 +558,7 @@ func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id 
 	detail, _ := s.apiSessionState(id)
 	data := map[string]any{
 		"SourceLabel":           sourceLabelFromRefText(appRefFromRouteID(id)),
+		"ThreadDocumentMode":    r.URL.Query().Get("thread_document") == "1",
 		"Title":                 detail.Title,
 		"OOBTitle":              true,
 		"Model":                 detail.Model,
