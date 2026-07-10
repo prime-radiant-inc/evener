@@ -143,7 +143,7 @@ func TestWebWorkspaceContentColumnCSSContract(t *testing.T) {
 		".app-nav-toggle {",
 		"position: fixed;",
 		"z-index: var(--z-fixed-action);",
-		"#workspace { width: 100%; height: 100vh; height: 100dvh; }",
+		"#workspace { width: 100%; }",
 		".workspace-input {",
 		".message-input { min-height: 24px; max-height: 20dvh; }",
 		".input-status .source,\n  .input-status .turns { display: inline-flex; }",

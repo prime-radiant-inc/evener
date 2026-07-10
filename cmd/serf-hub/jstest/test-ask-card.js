@@ -21,7 +21,7 @@ function newHarness() {
         <button type="submit" class="btn btn-primary send-btn" data-capability-send="true" data-capability-queue="false">send</button>
       </div>
     </form>
-  </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
+  </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true, url: "https://serf.test/" });
   const { window } = dom;
   window.marked = { parse: (t) => String(t == null ? "" : t) };
   window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
@@ -91,6 +91,155 @@ async function testPendingDockRenders() {
   pass(!!responseDock.querySelector("[data-ask-skip-btn]"), "the dock offers skip");
   const why = responseDock.querySelector("[data-ask-why]");
   pass(!!why && why.textContent === "the writer refactor depends on it", "the dock renders the why line verbatim");
+}
+
+async function testAskDockFocusAnnouncementsAndInputNames() {
+  const { window, R } = newHarness();
+  await settle();
+  const question = {
+    header: "DB choice",
+    question: "Which datastore?",
+    options: [{ label: "Postgres", detail: "" }],
+  };
+  for (const [kind, data] of askCallEvents("call_focus", [question])) R.handleData(kind, data);
+
+  const responseDock = dock(window);
+  const qEl = questionEls(window)[0];
+  const questionText = qEl && qEl.querySelector(".ask-question-text");
+  const firstOption = qEl && qEl.querySelector("[data-ask-option-input]");
+  const freeInput = qEl && qEl.querySelector("[data-ask-free-input]");
+  const leaningInput = qEl && qEl.querySelector("[data-ask-decide-leaning]");
+  const noteInput = qEl && qEl.querySelector("[data-ask-note-field]");
+  const status = window.document.querySelector("[data-composer-mode-status]");
+
+  pass(!!responseDock, "sanity: pending ask mounts a response dock for focus and accessibility checks");
+  pass(window.document.activeElement === firstOption,
+    "entering ask mode focuses the first usable answer control");
+  pass(status && status.getAttribute("aria-live") === "polite" && /answer the agent.?s questions/i.test(status.textContent),
+    "entering ask mode announces the response mode through a concise polite live region");
+
+  for (const [input, kind] of [[freeInput, "free answer"], [leaningInput, "leaning"], [noteInput, "note"]]) {
+    const ids = input && (input.getAttribute("aria-labelledby") || "").trim().split(/\s+/);
+    pass(!!(ids && questionText && questionText.id && ids.includes(questionText.id)),
+      kind + " input programmatically names its question with aria-labelledby");
+    pass(!!(ids && ids.length > 1 && ids.every((id) => window.document.getElementById(id))),
+      kind + " input aria-labelledby references existing label elements");
+  }
+
+  qEl.querySelector("[data-ask-free-toggle]").click();
+  pass(window.document.activeElement === freeInput, "free-answer activation focuses the editable free-text input");
+  for (const [kind, data] of askCallEvents("call_focus_more", [{ header: "Follow-up", question: "Any constraint?", options: [{ label: "No", detail: "" }] }])) {
+    R.handleData(kind, data);
+  }
+  pass(window.document.activeElement === window.document.querySelector('[data-ask-question][data-ask-key="call_focus:0"] [data-ask-free-input]'),
+    "adding questions does not steal focus away from an answer input being edited");
+
+  R.resolvePendingAsk("[answers]");
+  pass(status && /message composer (is )?ready|composer restored/i.test(status.textContent),
+    "restoring the normal composer announces the mode transition through the live region");
+}
+
+async function testAskDockPreservesEnabledControlFocusAcrossRebuilds() {
+  const { window, R } = newHarness();
+  await settle();
+  const question = {
+    header: "Deployment",
+    question: "Which deployment path?",
+    options: [{ label: "Canary", detail: "" }, { label: "Direct", detail: "" }],
+    if_unanswered: "use Canary",
+  };
+  for (const [kind, data] of askCallEvents("call_focus_controls", [question])) R.handleData(kind, data);
+
+  const originalKey = "call_focus_controls:0";
+  const controlCases = [
+    ["[data-ask-option-input]", 1, "option input"],
+    ["[data-ask-free-toggle]", 0, "free-answer toggle"],
+    ["[data-ask-decide-toggle]", 0, "you-decide toggle"],
+    ["[data-ask-fallback-btn]", 0, "fallback button"],
+    ["[data-ask-skip-btn]", 0, "skip button"],
+    ["[data-ask-note-toggle]", 0, "note toggle"],
+    ["[data-ask-send-btn]", 0, "shared send button"],
+  ];
+  for (const [selector, index, label] of controlCases) {
+    const responseDock = dock(window);
+    const scope = selector === "[data-ask-send-btn]"
+      ? responseDock
+      : responseDock && responseDock.querySelector('[data-ask-question][data-ask-key="' + originalKey + '"]');
+    const control = scope && scope.querySelectorAll(selector)[index];
+    pass(!!control, "sanity: " + label + " exists before rebuild");
+    if (!control) continue;
+    control.focus();
+    pass(window.document.activeElement === control, "sanity: " + label + " can receive focus before rebuild");
+    const callId = "call_focus_controls_more_" + label.replace(/[^a-z]+/gi, "_");
+    for (const [kind, data] of askCallEvents(callId, [{ header: "Follow-up", question: "Any constraint?", options: [{ label: "No", detail: "" }] }])) {
+      R.handleData(kind, data);
+    }
+    const rebuiltDock = dock(window);
+    const rebuiltScope = selector === "[data-ask-send-btn]"
+      ? rebuiltDock
+      : rebuiltDock && rebuiltDock.querySelector('[data-ask-question][data-ask-key="' + originalKey + '"]');
+    const replacement = rebuiltScope && rebuiltScope.querySelectorAll(selector)[index];
+    pass(window.document.activeElement === replacement,
+      "adding a question restores focus to the same " + label + " rather than dropping it");
+  }
+
+  const firstQuestion = dock(window).querySelector('[data-ask-question][data-ask-key="' + originalKey + '"]');
+  const hiddenFreeInput = firstQuestion.querySelector("[data-ask-free-input]");
+  hiddenFreeInput.focus();
+  R.renderPendingAskDock();
+  pass(window.document.activeElement !== dock(window).querySelector('[data-ask-question][data-ask-key="' + originalKey + '"] [data-ask-free-input]'),
+    "a hidden dock control is not refocused during a rebuild");
+
+  const fallback = dock(window).querySelector('[data-ask-question][data-ask-key="' + originalKey + '"] [data-ask-fallback-btn]');
+  fallback.focus();
+  R.pendingAsk.items[0].ifUnanswered = "";
+  R.renderPendingAskDock();
+  pass(window.document.activeElement !== dock(window).querySelector('[data-ask-question][data-ask-key="' + originalKey + '"] [data-ask-fallback-btn]'),
+    "a removed dock control is not refocused during a rebuild");
+}
+
+async function testPendingAskBlocksNormalComposerSubmission() {
+  const { window, R } = newHarness();
+  await settle();
+  const form = window.document.querySelector("form[data-input-form]");
+  const composer = form.querySelector(".message-input");
+  composer.value = "old composer draft";
+  for (const [kind, data] of askCallEvents("call_submit_guard", [{ header: "Choice", question: "Choose", options: [{ label: "A", detail: "" }] }])) {
+    R.handleData(kind, data);
+  }
+  const calls = [];
+  window.SerfAppwire = { startTurn: (ref, text) => { calls.push({ ref, text }); return Promise.resolve({ turn: { id: "bad" } }); } };
+  const accepted = form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+  await settle();
+
+  pass(accepted === false, "implicit form submission from an ask input is prevented");
+  pass(calls.length === 0, "a pending ask blocks the normal composer startTurn path instead of sending an old draft");
+  pass(R.pendingAsk !== null && !!dock(window), "blocked implicit submission leaves the pending ask dock active");
+  pass(composer.value === "old composer draft", "blocked implicit submission preserves the old normal composer draft without settling the ask");
+}
+
+async function testReplayAndSessionReplacementTearDownAskDock() {
+  const question = { header: "Choice", question: "Choose", options: [{ label: "A", detail: "" }] };
+  {
+    const { window, R } = newHarness();
+    await settle();
+    for (const [kind, data] of askCallEvents("call_replay", [question])) R.handleData(kind, data);
+    R.resetTranscriptReplay();
+    const form = window.document.querySelector("form[data-input-form]");
+    pass(R.pendingAsk === null && !dock(window), "resetTranscriptReplay removes a pending ask dock rather than only clearing its state");
+    pass(!form.querySelector("[data-composer-surface]").hidden && !form.querySelector(".message-input").hidden,
+      "resetTranscriptReplay restores the normal composer after tearing down an ask dock");
+  }
+  {
+    const { window, R } = newHarness();
+    await settle();
+    for (const [kind, data] of askCallEvents("call_session", [question])) R.handleData(kind, data);
+    R.handleData("SESSION_START", { session_id: "01REPLACED", status: "idle" });
+    const form = window.document.querySelector("form[data-input-form]");
+    pass(R.pendingAsk === null && !dock(window), "a changed-session SESSION_START removes a pending ask dock rather than only clearing its state");
+    pass(!form.querySelector("[data-composer-surface]").hidden && !form.querySelector(".message-input").hidden,
+      "a changed-session SESSION_START restores the normal composer after tearing down an ask dock");
+  }
 }
 
 async function testNoFallbackWithoutIfUnanswered() {
@@ -242,6 +391,10 @@ async function testColdAttachPendingResolvedInterruptedDenied() {
 
 (async () => {
   await testPendingDockRenders();
+  await testAskDockFocusAnnouncementsAndInputNames();
+  await testAskDockPreservesEnabledControlFocusAcrossRebuilds();
+  await testPendingAskBlocksNormalComposerSubmission();
+  await testReplayAndSessionReplacementTearDownAskDock();
   await testNoFallbackWithoutIfUnanswered();
   await testAggregationAndGlobalNumbering();
   await testUserInputSettlesAnchorAndRestoresComposer();
