@@ -158,6 +158,7 @@ func TestReportGlobalRejectsBlocksOutsideResolvedProfileOwnership(t *testing.T) 
 	repo := t.TempDir()
 	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.com/root\n\ngo 1.25\n")
 	mustWrite(t, filepath.Join(repo, "agent", "go.mod"), "module example.com/root/agent\n\ngo 1.25\n")
+	mustWrite(t, filepath.Join(repo, "agent", "sandbox", "go.mod"), "module example.com/root/agent/sandbox\n\ngo 1.25\n")
 
 	wrongModule := writeGlobalProfile(t, repo, "wrong-module.cov", "mode: set\n"+
 		"example.com/root/root.go:1.1,1.2 1 1\n")
@@ -192,10 +193,14 @@ func TestReportGlobalRejectsBlocksOutsideResolvedProfileOwnership(t *testing.T) 
 		"example.com/root/agent/sandbox/policy.go:1.1,1.2 1 1\n")
 	sharedB := writeGlobalProfile(t, repo, "shared-b.cov", "mode: set\n"+
 		"example.com/root/agent/sandbox/policy.go:1.1,1.2 1 1\n")
-	if _, err := ReportGlobal([]GlobalProfile{
-		{Module: "agent", ModulePath: "example.com/root/agent", Package: "./sandbox", Path: sharedA},
-		{Module: "agent-sandbox", ModulePath: "example.com/root/agent/sandbox", Package: ".", Path: sharedB},
-	}, nil, 95); err == nil || !strings.Contains(err.Error(), "assigned to multiple") {
+	profiles, err = ResolveGlobalProfiles(repo, []GlobalProfile{
+		{Module: "agent", Package: "./sandbox", Path: sharedA},
+		{Module: "agent/sandbox", Package: ".", Path: sharedB},
+	})
+	if err != nil {
+		t.Fatalf("ResolveGlobalProfiles: %v", err)
+	}
+	if _, err := ReportGlobal(profiles, nil, 95); err == nil || !strings.Contains(err.Error(), "assigned to multiple") {
 		t.Fatalf("duplicate source ownership error = %v, want duplicate ownership rejection", err)
 	}
 }
