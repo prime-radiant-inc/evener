@@ -962,6 +962,11 @@
         case "TURN_COMPLETED":
           this.finalizeReasoning();
           if (!data.turnId || data.turnId === this.activeTurnId) {
+            // THREAD_STATUS_CHANGED("active") starts an asynchronous capability
+            // refresh. Once this turn has completed, that old active snapshot
+            // must not be allowed to arrive late and put the composer back into
+            // its disabled active state before the idle status notification.
+            this.statusUpdateSeq++;
             this.setActiveTurnId("");
             if (this.turnAcceptsActions(this.state)) this.updateThreadState("idle");
           }

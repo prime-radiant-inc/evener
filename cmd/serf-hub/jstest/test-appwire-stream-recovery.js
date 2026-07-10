@@ -579,6 +579,68 @@ async function testStaleCapabilityRefreshErrorDoesNotUpdateNewSession() {
   assert(newConversation.dataset.state === "idle", "stale failed capability refresh updated the new session state");
 }
 
+async function testCompletedTurnRejectsStaleActiveCapabilityRefresh() {
+  let resolveActiveCapabilities = null;
+  let readThreadCalls = 0;
+  const window = createWindow({
+    onNotification: () => () => {},
+    onConnectionLost: () => () => {},
+    eventsFromThread: (thread) => [["SESSION_START", {
+      session_id: thread.sessionId,
+      status: thread.status && thread.status.type || "idle",
+      capabilities: thread.serf && thread.serf.capabilities || {},
+    }]],
+    readThread: () => {
+      readThreadCalls++;
+      if (readThreadCalls === 1) {
+        return Promise.resolve({
+          thread: {
+            id: "thread-live",
+            sessionId: "sess-live",
+            status: { type: "idle" },
+            serf: {
+              ref: "local:thread-live",
+              capabilities: { send: true, queue: false, steer: false, interrupt: false },
+            },
+            turns: [],
+          },
+        });
+      }
+      return new Promise((resolve) => { resolveActiveCapabilities = resolve; });
+    },
+  });
+
+  await wait(30);
+  const renderer = window.SerfRenderer;
+  const send = window.document.querySelector(".send-btn");
+  renderer.activeTurnId = "turn_1";
+
+  renderer.handleData("THREAD_STATUS_CHANGED", { status: "active" });
+  assert(typeof resolveActiveCapabilities === "function", "active status should start a capability refresh");
+  assert(send.disabled, "active state without queue support should disable Send");
+
+  renderer.handleData("TURN_COMPLETED", { turnId: "turn_1" });
+  assert(renderer.state === "idle", "matching turn completion should restore the idle state");
+  assert(!send.disabled, "matching turn completion should re-enable Send before the stale refresh resolves");
+
+  resolveActiveCapabilities({
+    thread: {
+      id: "thread-live",
+      sessionId: "sess-live",
+      status: { type: "active" },
+      serf: {
+        ref: "local:thread-live",
+        capabilities: { send: false, queue: false, steer: true, interrupt: true },
+      },
+      turns: [{ id: "turn_1", status: "inProgress" }],
+    },
+  });
+  await wait(10);
+
+  assert(renderer.state === "idle", "completed turn must ignore a stale active capability refresh");
+  assert(!send.disabled, "completed turn must keep Send enabled after a stale active capability refresh");
+}
+
 async function testTranscriptStatusPreferenceChangeRerendersThread() {
   let readThreadCalls = 0;
   const window = createWindow({
@@ -634,6 +696,7 @@ async function testTranscriptStatusPreferenceChangeRerendersThread() {
 	await testBufferedTurnCompletedKeepsCompletionButSkipsHydratedItems();
 	await testBufferedTurnCompletedReplaysInProgressHydratedItems();
 	await testStaleCapabilityRefreshErrorDoesNotUpdateNewSession();
+	await testCompletedTurnRejectsStaleActiveCapabilityRefresh();
 	await testTranscriptStatusPreferenceChangeRerendersThread();
 	console.log("PASS: appwire renderer stream recovery");
 	process.exit(0);
