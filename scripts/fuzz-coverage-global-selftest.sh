@@ -67,6 +67,23 @@ assert_controlled_go_env() {
 	fi
 }
 
+assert_uncached_make_native_replays() {
+	local log_file="$1" label="$2"
+	if awk -F '\t' '
+		$15 ~ /^test -run \^Fuzz -tags serffuzz / {
+			seen = 1
+			if ($3 != "goenv=off" || $4 != "goflags=" || $15 !~ /(^| )-count=1( |$)/) {
+				bad = 1
+			}
+		}
+		END { exit !seen || bad }
+	' "$log_file"; then
+		ok "$label"
+	else
+		bad "$label (native replay missing isolated environment or -count=1)"
+	fi
+}
+
 repo="$work/repo"
 mkdir -p "$repo/scripts"
 cp "$runner" "$repo/scripts/fuzz-coverage-global.sh"
@@ -531,6 +548,7 @@ make_test_log="$work/make-go-test.log"
 awk -F '\t' '$15 ~ /^test /' "$go_log" >"$make_test_log"
 log="$(cat "$make_test_log")"
 assert_controlled_go_env "$make_test_log" 'all make fuzz Go test replays ignore ambient GOENV and GOFLAGS'
+assert_uncached_make_native_replays "$make_test_log" 'every make fuzz native replay disables cached test results'
 lacks "$log" '-coverpkg' 'make fuzz never accepts ambient coverpkg flags'
 lacks "$log" '-shuffle=on' 'make fuzz never accepts ambient shuffle flags'
 lacks "$log" '-mod=mod' 'make fuzz never accepts ambient module flags'
