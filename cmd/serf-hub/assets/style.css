@@ -2108,6 +2108,8 @@ button.composer-model-value .caret { color: var(--text-dim); }
 }
 .input-telemetry .location .cwd { flex: 1 1 auto; }
 .input-telemetry .context-bar { display: none; }
+/* Default compact context stays neutral; the threshold rule below turns it blue. */
+.input-telemetry .context .context-numbers { color: var(--text); }
 /* Near the context limit (>=80% of the window, mockup #17 Alt A): the whole
    gauge changes register to blue and a ⚠ glyph pairs the color so it reads
    without color (colorblind-safe). Blue = "needs your eye", not red — it is a

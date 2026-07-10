@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/net/html"
+
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/agent/transcript"
@@ -70,6 +72,56 @@ func controlTag(t *testing.T, body, marker string) string {
 		t.Fatalf("unterminated <button> tag for %q", marker)
 	}
 	return body[start : start+rel+1]
+}
+
+func findElement(root *html.Node, matches func(*html.Node) bool) *html.Node {
+	if root.Type == html.ElementNode && matches(root) {
+		return root
+	}
+	for child := root.FirstChild; child != nil; child = child.NextSibling {
+		if found := findElement(child, matches); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func hasHTMLAttribute(node *html.Node, name string) bool {
+	for _, attr := range node.Attr {
+		if attr.Key == name {
+			return true
+		}
+	}
+	return false
+}
+
+func hasHTMLClass(node *html.Node, class string) bool {
+	for _, attr := range node.Attr {
+		if attr.Key == "class" {
+			for _, nodeClass := range strings.Fields(attr.Val) {
+				if nodeClass == class {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func isHTMLDescendant(ancestor, node *html.Node) bool {
+	for node = node.Parent; node != nil; node = node.Parent {
+		if node == ancestor {
+			return true
+		}
+	}
+	return false
+}
+
+func requireHTMLDescendant(t *testing.T, ancestor, node *html.Node, description string) {
+	t.Helper()
+	if ancestor == nil || node == nil || !isHTMLDescendant(ancestor, node) {
+		t.Fatalf("%s", description)
+	}
 }
 
 // injectMetasForTest replaces the past index with one holding the given metas.
@@ -2420,21 +2472,37 @@ func TestWeb_ThreadDocument_ComposerControlsLiveInsideInputCard(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 	body := rec.Body.String()
-	composerSurface := strings.Index(body, `data-composer-surface`)
-	inputCard := strings.Index(body, `class="input-card"`)
-	messageInput := strings.Index(body, `class="message-input"`)
-	inputControls := strings.Index(body, `class="input-controls"`)
-	controlsLeft := strings.Index(body, `class="controls-left"`)
-	taskTrigger := strings.Index(body, `data-tasks-trigger`)
-	composerModel := strings.Index(body, `class="composer-model"`)
-	inputStatus := strings.Index(body, `id="input-status"`)
-	if composerSurface < 0 || inputCard < 0 || messageInput < 0 || inputControls < 0 || controlsLeft < 0 || taskTrigger < 0 || composerModel < 0 || inputStatus < 0 {
-		t.Fatalf("missing composer structure: composerSurface=%d inputCard=%d messageInput=%d inputControls=%d controlsLeft=%d taskTrigger=%d composerModel=%d inputStatus=%d", composerSurface, inputCard, messageInput, inputControls, controlsLeft, taskTrigger, composerModel, inputStatus)
+	document, err := html.Parse(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("parse rendered thread document: %v", err)
 	}
-	ordered := composerSurface < inputCard && inputCard < messageInput && messageInput < inputControls && inputControls < controlsLeft && controlsLeft < taskTrigger && taskTrigger < composerModel && composerModel < inputStatus
-	if !ordered {
-		t.Fatalf("composer should keep the task trigger in controls-left inside input-card, with model controls before input status")
+	composerSurface := findElement(document, func(node *html.Node) bool { return hasHTMLAttribute(node, "data-composer-surface") })
+	inputCard := findElement(document, func(node *html.Node) bool { return hasHTMLClass(node, "input-card") })
+	messageInput := findElement(document, func(node *html.Node) bool { return hasHTMLClass(node, "message-input") })
+	inputControls := findElement(document, func(node *html.Node) bool { return hasHTMLClass(node, "input-controls") })
+	controlsLeft := findElement(document, func(node *html.Node) bool { return hasHTMLClass(node, "controls-left") })
+	taskTrigger := findElement(document, func(node *html.Node) bool { return hasHTMLAttribute(node, "data-tasks-trigger") })
+	composerModel := findElement(document, func(node *html.Node) bool { return hasHTMLClass(node, "composer-model") })
+	inputStatus := findElement(document, func(node *html.Node) bool {
+		for _, attr := range node.Attr {
+			if attr.Key == "id" && attr.Val == "input-status" {
+				return true
+			}
+		}
+		return false
+	})
+	if composerSurface == nil || inputCard == nil || messageInput == nil || inputControls == nil || controlsLeft == nil || taskTrigger == nil || composerModel == nil || inputStatus == nil {
+		t.Fatalf("missing composer structure in rendered thread document")
 	}
+	requireHTMLDescendant(t, composerSurface, inputCard, "input-card should be inside data-composer-surface")
+	requireHTMLDescendant(t, inputCard, messageInput, "message-input should be inside input-card")
+	requireHTMLDescendant(t, inputCard, inputControls, "input-controls should be inside input-card")
+	requireHTMLDescendant(t, inputControls, controlsLeft, "controls-left should be inside input-controls")
+	requireHTMLDescendant(t, composerSurface, taskTrigger, "task trigger should be a descendant of data-composer-surface")
+	requireHTMLDescendant(t, inputCard, taskTrigger, "task trigger should be a descendant of input-card")
+	requireHTMLDescendant(t, controlsLeft, taskTrigger, "task trigger should be a descendant of controls-left")
+	requireHTMLDescendant(t, composerSurface, composerModel, "composer model should be inside data-composer-surface")
+	requireHTMLDescendant(t, composerSurface, inputStatus, "input status should be inside data-composer-surface")
 	if strings.Contains(body, `send as steer`) {
 		t.Fatalf("composer should use short steer label, not send as steer")
 	}

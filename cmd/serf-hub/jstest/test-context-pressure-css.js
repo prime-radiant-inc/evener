@@ -20,13 +20,20 @@ if (warnNumbers) {
 }
 const glyph = css.match(/\.input-telemetry \.context-warn-glyph\s*\{[^}]*\}/);
 pass(!!glyph, "context-warn-glyph rule exists (colorblind-safe ⚠ pairing)");
-if (glyph) pass(/var\(--state-awaiting\)/.test(glyph[0]), "warn glyph is blue --state-awaiting");
+if (glyph) {
+  pass(/var\(--state-awaiting\)/.test(glyph[0]), "warn glyph is blue --state-awaiting");
+  pass(!/var\(--error\)/.test(glyph[0]), "warn glyph must NOT be red --error");
+}
 
-// The default compact context numbers inherit the neutral status value color;
+// Default compact context numbers must state their neutral color directly;
 // only the warning selector above applies the awaiting color.
-const defaultNumbers = css.match(/\.input-telemetry \.status-value\s*\{[^}]*\}/);
+const defaultNumbers = css.match(/\.input-telemetry \.context \.context-numbers\s*\{[^}]*\}/);
 pass(!!defaultNumbers, "default compact context value rule exists");
-if (defaultNumbers) pass(!/var\(--state-awaiting\)/.test(defaultNumbers[0]), "default compact context is neutral, not blue");
+if (defaultNumbers) {
+  pass(/color\s*:\s*var\(--text\)/.test(defaultNumbers[0]), "default compact context uses neutral --text");
+  pass(!/var\(--state-awaiting\)/.test(defaultNumbers[0]), "default compact context must NOT be blue --state-awaiting");
+  pass(!/var\(--error\)/.test(defaultNumbers[0]), "default compact context must NOT be red --error");
+}
 
 // ── Compaction line: quiet neutral, never colored ──────────────────────────
 const compLabel = css.match(/\.context-compaction-label\s*\{[^}]*\}/);
