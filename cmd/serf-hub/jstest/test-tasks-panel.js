@@ -20,6 +20,13 @@ window.SerfRendererInternal.updateTasksBadge(0, 0, "");
 pass(textEl.textContent === "no tasks yet",
   "empty task list badge should read 'no tasks yet', not the terminal 'no tasks' (got: " + textEl.textContent + ")");
 
+window.SerfRendererInternal.updateTasksBadge(1, 3, "Implement compact rail");
+const badge = window.document.querySelector(".panel-toggle-badge");
+pass(badge && badge.textContent === "1/3", "task badge is the sole numeric 1/3 progress display");
+pass(textEl.textContent === "Implement compact rail",
+  "task-status text keeps only the current task summary, got " + JSON.stringify(textEl.textContent));
+pass(!/\b1\/3\b/.test(textEl.textContent), "task-status text must not duplicate the badge count");
+
 if (failures.length === 0) {
   console.log("PASS: task badge reads 'no tasks yet' for an empty task list");
   process.exit(0);

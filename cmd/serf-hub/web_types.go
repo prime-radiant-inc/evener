@@ -167,20 +167,22 @@ type WorkspaceData struct {
 	// out-of-band swap of the header's #workspace-session-title span. Only the
 	// polled /state response sets this true; the inline workspace render
 	// leaves it at its zero value so the title renders exactly once.
-	OOBTitle       bool
-	Branch         string
-	WorkingDir     string
-	HomeDir        string
-	State          string
-	StateLabel     string
-	TurnCount      int
-	Model          string
-	ContextWindow  int
-	ContextPercent int
-	ContextNumbers string
-	Cost           string
-	ActiveTurnID   string
-	RunningFor     string
+	OOBTitle              bool
+	Branch                string
+	WorkingDir            string
+	Worktree              string
+	HomeDir               string
+	State                 string
+	StateLabel            string
+	TurnCount             int
+	Model                 string
+	ContextWindow         int
+	ContextPercent        int
+	ContextNumbers        string
+	CompactContextNumbers string
+	Cost                  string
+	ActiveTurnID          string
+	RunningFor            string
 	// WorkMillis, Usage, and ActiveTurnStartedAt mirror appwire.SerfThread's
 	// working-state/token metrics (WS2). Usage is nil when no token data is
 	// available (fresh session, old daemon, or a Codex thread).

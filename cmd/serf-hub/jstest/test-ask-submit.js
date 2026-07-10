@@ -85,7 +85,10 @@ async function testRecheckCollapsesInsteadOfSending() {
 
 // A turn/start Conflict (another client's reply won the daemon's atomic
 // reservation) must never be retried automatically, and the composed text
-// must land in the composer for the user to decide (spec §6.1).
+// must land in the composer for the user to decide (spec §6.1). The losing
+// pending ask is discarded rather than settled: only an authoritative
+// USER_INPUT echo creates a settled line. This prevents later acknowledged
+// asks from merging into the stale pending anchor.
 async function testConflictDropsTextIntoComposerNoRetry() {
   const { conv, window, R } = newHarness();
   await settle();
@@ -113,12 +116,25 @@ async function testConflictDropsTextIntoComposerNoRetry() {
   pass(ta.value === expected, "the composed text must land in the composer on Conflict.\n  want: " + JSON.stringify(expected) + "\n  got:  " + JSON.stringify(ta.value));
   pass(!pendingDock(window), "Conflict restores the normal composer instead of leaving a duplicate pending dock");
   pass(window.document.querySelector(".message-input").hidden === false, "Conflict restores the normal composer input");
+  pass(R.pendingAsk === null, "Conflict discards the stale pending ask state rather than leaving it live");
+  pass(!conv.querySelector("[data-ask-anchor]"), "Conflict discards the stale pending transcript anchor rather than settling it without an authoritative reply");
+  pass(!conv.querySelector(".ask-settled-line"), "Conflict does not invent a settled line before the authoritative USER_INPUT echo");
 
   // No automatic retry happens on its own.
   await settle();
   pass(startTurnCalls.length === 1, "no automatic second send happens on its own after the Conflict, got " + startTurnCalls.length);
 
-  pass(R.pendingAsk !== null, "Conflict preserves pending ask state for the eventual authoritative reply");
+  // A later ask acknowledgement must start a new independent pending set,
+  // rather than merging into the stale conflict-era questions/anchor.
+  const laterQuestion = [{ header: "Cache choice", question: "Which cache?", options: [{ label: "Redis", detail: "" }] }];
+  for (const [kind, data] of askCallEvents("call_later", laterQuestion)) R.handleData(kind, data);
+  const laterDock = pendingDock(window);
+  const laterAnchor = conv.querySelector("[data-ask-anchor]");
+  pass(!!laterDock && !!laterAnchor, "a later acknowledged ask creates a fresh dock and transcript anchor after Conflict");
+  pass(R.pendingAsk && R.pendingAsk.items.length === 1 && R.pendingAsk.items[0].key === "call_later:0",
+    "a later acknowledged ask has only its own question instead of merging stale conflict state");
+  pass(laterDock && laterDock.querySelectorAll("[data-ask-question]").length === 1,
+    "the fresh dock contains only the later ask question");
 }
 
 // Submit reuses the exact function/endpoint the ordinary composer uses.

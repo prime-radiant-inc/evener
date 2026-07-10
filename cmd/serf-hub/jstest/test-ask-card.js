@@ -21,7 +21,7 @@ function newHarness() {
         <button type="submit" class="btn btn-primary send-btn" data-capability-send="true" data-capability-queue="false">send</button>
       </div>
     </form>
-  </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
+  </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true, url: "https://serf.test/" });
   const { window } = dom;
   window.marked = { parse: (t) => String(t == null ? "" : t) };
   window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
@@ -114,7 +114,7 @@ async function testAskDockFocusAnnouncementsAndInputNames() {
 
   pass(!!responseDock, "sanity: pending ask mounts a response dock for focus and accessibility checks");
   pass(window.document.activeElement === firstOption,
-    "entering ask mode focuses the first available answer control");
+    "entering ask mode focuses the first usable answer control");
   pass(status && status.getAttribute("aria-live") === "polite" && /answer the agent.?s questions/i.test(status.textContent),
     "entering ask mode announces the response mode through a concise polite live region");
 
@@ -137,6 +137,65 @@ async function testAskDockFocusAnnouncementsAndInputNames() {
   R.resolvePendingAsk("[answers]");
   pass(status && /message composer (is )?ready|composer restored/i.test(status.textContent),
     "restoring the normal composer announces the mode transition through the live region");
+}
+
+async function testAskDockPreservesEnabledControlFocusAcrossRebuilds() {
+  const { window, R } = newHarness();
+  await settle();
+  const question = {
+    header: "Deployment",
+    question: "Which deployment path?",
+    options: [{ label: "Canary", detail: "" }, { label: "Direct", detail: "" }],
+    if_unanswered: "use Canary",
+  };
+  for (const [kind, data] of askCallEvents("call_focus_controls", [question])) R.handleData(kind, data);
+
+  const originalKey = "call_focus_controls:0";
+  const controlCases = [
+    ["[data-ask-option-input]", 1, "option input"],
+    ["[data-ask-free-toggle]", 0, "free-answer toggle"],
+    ["[data-ask-decide-toggle]", 0, "you-decide toggle"],
+    ["[data-ask-fallback-btn]", 0, "fallback button"],
+    ["[data-ask-skip-btn]", 0, "skip button"],
+    ["[data-ask-note-toggle]", 0, "note toggle"],
+    ["[data-ask-send-btn]", 0, "shared send button"],
+  ];
+  for (const [selector, index, label] of controlCases) {
+    const responseDock = dock(window);
+    const scope = selector === "[data-ask-send-btn]"
+      ? responseDock
+      : responseDock && responseDock.querySelector('[data-ask-question][data-ask-key="' + originalKey + '"]');
+    const control = scope && scope.querySelectorAll(selector)[index];
+    pass(!!control, "sanity: " + label + " exists before rebuild");
+    if (!control) continue;
+    control.focus();
+    pass(window.document.activeElement === control, "sanity: " + label + " can receive focus before rebuild");
+    const callId = "call_focus_controls_more_" + label.replace(/[^a-z]+/gi, "_");
+    for (const [kind, data] of askCallEvents(callId, [{ header: "Follow-up", question: "Any constraint?", options: [{ label: "No", detail: "" }] }])) {
+      R.handleData(kind, data);
+    }
+    const rebuiltDock = dock(window);
+    const rebuiltScope = selector === "[data-ask-send-btn]"
+      ? rebuiltDock
+      : rebuiltDock && rebuiltDock.querySelector('[data-ask-question][data-ask-key="' + originalKey + '"]');
+    const replacement = rebuiltScope && rebuiltScope.querySelectorAll(selector)[index];
+    pass(window.document.activeElement === replacement,
+      "adding a question restores focus to the same " + label + " rather than dropping it");
+  }
+
+  const firstQuestion = dock(window).querySelector('[data-ask-question][data-ask-key="' + originalKey + '"]');
+  const hiddenFreeInput = firstQuestion.querySelector("[data-ask-free-input]");
+  hiddenFreeInput.focus();
+  R.renderPendingAskDock();
+  pass(window.document.activeElement !== dock(window).querySelector('[data-ask-question][data-ask-key="' + originalKey + '"] [data-ask-free-input]'),
+    "a hidden dock control is not refocused during a rebuild");
+
+  const fallback = dock(window).querySelector('[data-ask-question][data-ask-key="' + originalKey + '"] [data-ask-fallback-btn]');
+  fallback.focus();
+  R.pendingAsk.items[0].ifUnanswered = "";
+  R.renderPendingAskDock();
+  pass(window.document.activeElement !== dock(window).querySelector('[data-ask-question][data-ask-key="' + originalKey + '"] [data-ask-fallback-btn]'),
+    "a removed dock control is not refocused during a rebuild");
 }
 
 async function testPendingAskBlocksNormalComposerSubmission() {
@@ -333,6 +392,7 @@ async function testColdAttachPendingResolvedInterruptedDenied() {
 (async () => {
   await testPendingDockRenders();
   await testAskDockFocusAnnouncementsAndInputNames();
+  await testAskDockPreservesEnabledControlFocusAcrossRebuilds();
   await testPendingAskBlocksNormalComposerSubmission();
   await testReplayAndSessionReplacementTearDownAskDock();
   await testNoFallbackWithoutIfUnanswered();

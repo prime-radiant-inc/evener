@@ -2236,7 +2236,7 @@
       }
       if (level === "quiet") {
         el.dataset.level = "quiet";
-        el.textContent = "working · quiet " + this.formatLivenessQuiet(gap);
+        el.textContent = "quiet " + this.formatLivenessQuiet(gap);
         el.hidden = false;
       } else if (level === "concern") {
         el.dataset.level = "concern";
@@ -4664,15 +4664,23 @@
     renderPendingAskDock() {
       const pa = this.pendingAsk;
       const form = document.querySelector("form[data-input-form]");
-      const hadDock = !!(form && form.querySelector("[data-ask-response-dock]"));
       const dock = this.askDockEl();
       if (!pa || !dock) return;
+      const activating = form && form.dataset.responseMode !== "ask";
       const active = document.activeElement;
       const activeQuestion = active && typeof active.closest === "function" ? active.closest("[data-ask-question]") : null;
-      const activeKey = activeQuestion && dock.contains(activeQuestion) ? activeQuestion.dataset.askKey : "";
-      const activeSelector = active && active.matches && active.matches("[data-ask-free-input], [data-ask-decide-leaning], [data-ask-note-field]")
-        ? "[" + Array.from(active.attributes).find((attr) => attr.name.indexOf("data-ask-") === 0).name + "]"
-        : "";
+      const activeScope = activeQuestion && dock.contains(activeQuestion) ? activeQuestion : dock;
+      const activeAttr = active && active.attributes && Array.from(active.attributes)
+        .find((attr) => attr.name.indexOf("data-ask-") === 0);
+      const activeSelector = activeAttr ? "[" + activeAttr.name + "]" : "";
+      const activeIndex = activeSelector
+        ? Array.from(activeScope.querySelectorAll(activeSelector)).indexOf(active)
+        : -1;
+      const restoreFocus = active && dock.contains(active) && active.matches &&
+        active.matches("button, input, select, textarea, [tabindex]") &&
+        !active.disabled && !active.hidden && !active.closest("[hidden]") && activeIndex >= 0
+        ? { key: activeQuestion === activeScope ? activeQuestion.dataset.askKey : "", selector: activeSelector, index: activeIndex }
+        : null;
       this.setComposerAskMode(true);
       dock.replaceChildren();
       const questions = document.createElement("div");
@@ -4681,12 +4689,18 @@
       pa.items.forEach((item, index) => questions.appendChild(this.buildAskQuestionEl(item, index + 1)));
       dock.append(questions, this.buildAskFooterEl());
       this.updateAskFooter();
-      if (activeKey && activeSelector) {
-        const replacement = dock.querySelector('[data-ask-question][data-ask-key="' + activeKey + '"] ' + activeSelector);
-        if (replacement && !replacement.hidden) replacement.focus();
-      } else if (!hadDock) {
-        const firstControl = dock.querySelector("[data-ask-option-input], [data-ask-free-toggle]");
-        if (firstControl) firstControl.focus();
+      if (restoreFocus) {
+        const scope = restoreFocus.key
+          ? dock.querySelector('[data-ask-question][data-ask-key="' + restoreFocus.key + '"]')
+          : dock;
+        const replacement = scope && scope.querySelectorAll(restoreFocus.selector)[restoreFocus.index];
+        if (replacement && !replacement.disabled && !replacement.hidden && !replacement.closest("[hidden]")) {
+          replacement.focus();
+        }
+      } else if (activating) {
+        const firstAnswer = Array.from(dock.querySelectorAll("[data-ask-option-input], [data-ask-free-input], [data-ask-free-toggle]"))
+          .find((control) => !control.disabled && !control.hidden && !control.closest("[hidden]"));
+        if (firstAnswer) firstAnswer.focus();
       }
     },
 
@@ -4698,11 +4712,14 @@
       this.setComposerAskMode(false);
     },
 
-    // discardPendingAsk is the non-settlement teardown path used by replay and
-    // session replacement. Unlike resolvePendingAsk it leaves no settled
-    // transcript line, but it always restores the normal composer surface.
+    // discardPendingAsk is the non-settlement teardown path used by replay,
+    // session replacement, and send conflicts. Unlike resolvePendingAsk it
+    // leaves no settled transcript line, but it removes the old pending anchor
+    // and always restores the normal composer surface.
     discardPendingAsk() {
+      const pa = this.pendingAsk;
       this.pendingAsk = null;
+      if (pa && pa.el && pa.el.parentNode) pa.el.remove();
       this.clearPendingAskDock();
       this.clearAgentQuestion();
     },
@@ -5079,9 +5096,12 @@
 
     // dropComposedTextIntoComposer is the Conflict recovery path (spec
     // §6.1): the composed reply is never auto-retried, so it drops into the
-    // ordinary composer for the user to decide what to do next.
+    // ordinary composer for the user to decide what to do next. A Conflict
+    // proves this pending ask is no longer locally actionable, but is not the
+    // authoritative USER_INPUT echo that warrants a settled transcript line;
+    // discard it so a later ask cannot merge into its stale anchor/state.
     dropComposedTextIntoComposer(text) {
-      this.clearPendingAskDock();
+      this.discardPendingAsk();
       const ta = document.querySelector("form[data-input-form] .message-input");
       if (!ta) return;
       ta.value = text;

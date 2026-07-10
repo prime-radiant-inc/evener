@@ -61,16 +61,15 @@
     </div>
     <ul class="queue-preview-list" data-queue-list></ul>
     </div>
-    <div class="task-status-row">
-    <button type="button" class="status-item tasks-status" data-tasks-trigger title="task list">
-      <span class="status-key">tasks</span><span class="status-value" data-task-status-text>—</span>
-    </button>
-    </div>
     <div class="input-card" data-drop-zone>
     <textarea class="message-input" placeholder="message the agent…" autofocus rows="1"></textarea>
     <div class="input-controls">
       <div class="controls-left">
         <button type="button" class="btn btn-ghost composer-icon-btn" data-attach-trigger title="attach image" aria-label="attach image"><span class="composer-glyph" aria-hidden="true">+</span></button>
+        <button type="button" class="tasks-status" data-tasks-trigger title="task list">
+          <span class="status-key">tasks</span>
+          <span class="status-value" data-task-status-text>—</span>
+        </button>
       </div>
       <div class="controls-center">
         <div class="composer-model" title="{{if .Model}}{{.Model}}{{else}}model unavailable{{end}}">
@@ -97,7 +96,7 @@
     </div>
     <div id="input-status"
        class="input-status"
-       hx-get="/_partials/s/{{.ID}}/state"
+       hx-get="/_partials/s/{{.ID}}/state{{if .ThreadDocumentMode}}?thread_document=1{{end}}"
        hx-trigger="load, serf-hub:status-refresh from:body, every 30s"
        hx-swap="innerHTML">
       {{template "input_status" .}}
