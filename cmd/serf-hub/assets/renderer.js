@@ -86,6 +86,11 @@
       if (conversationEl.__serfInitialized) return;
       conversationEl.__serfInitialized = true;
 
+      // The workspace may have been swapped for a different session. Retire the
+      // previous viewport listeners and any queued callback before adopting its
+      // conversation element, so old callbacks cannot write into new chrome.
+      this.clearWorkspaceViewport();
+
       // Compact mode: when running inside a pane iframe, mark <body> with
       // pane-compact so CSS can apply denser layout without any query param.
       if (this.isInPane()) {
@@ -221,6 +226,7 @@
         this.showConnectionBanner("lost");
       }
 
+      this.bindWorkspaceViewport();
       this.bindInputForm();
       this.bindScrollAffordance();
       this.bindPaneParentLinks();
@@ -777,6 +783,46 @@
         this.appwireConnectionLostUnsubscribe = null;
       }
       this.liveStream = null;
+    },
+
+    // The visual viewport shrinks when a mobile software keyboard opens. Keep
+    // workspace-owned CSS in sync so the composer dock can stay above it. This
+    // listener belongs to the currently rendered workspace/session, not the
+    // global page lifecycle: an htmx session swap must retire callbacks from
+    // the previous workspace before it mounts the next one.
+    bindWorkspaceViewport() {
+      this.clearWorkspaceViewport();
+      const viewport = window.visualViewport;
+      const workspace = document.getElementById("workspace");
+      if (!viewport || !workspace || !Number.isFinite(viewport.height)) return;
+      const sessionId = this.sessionId;
+      let frame = null;
+      const apply = () => {
+        frame = null;
+        if (this.sessionId !== sessionId || document.getElementById("workspace") !== workspace) return;
+        if (Number.isFinite(viewport.height) && viewport.height > 0) {
+          workspace.style.setProperty("--workspace-visible-height", viewport.height + "px");
+        }
+      };
+      const schedule = () => {
+        if (frame != null) return;
+        frame = window.requestAnimationFrame(apply);
+      };
+      this.workspaceViewportCleanup = () => {
+        viewport.removeEventListener("resize", schedule);
+        viewport.removeEventListener("scroll", schedule);
+        if (frame != null) window.cancelAnimationFrame(frame);
+        frame = null;
+      };
+      viewport.addEventListener("resize", schedule);
+      viewport.addEventListener("scroll", schedule);
+      apply();
+    },
+
+    clearWorkspaceViewport() {
+      if (!this.workspaceViewportCleanup) return;
+      this.workspaceViewportCleanup();
+      this.workspaceViewportCleanup = null;
     },
 
     scheduleAppwireReconnect() {
