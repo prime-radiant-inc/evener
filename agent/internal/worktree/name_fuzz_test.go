@@ -1,21 +1,15 @@
 package worktree
 
 import (
-	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// FuzzValidateName drives ValidateName with arbitrary strings. Two
-// invariants hold regardless of input: ValidateName never panics, and any
-// name it accepts is also accepted by the real `git check-ref-format
-// --branch <name>` (the source of truth the create path itself consults,
-// spec §2) whenever git is on PATH. The git oracle is skipped under
-// testing.Short() so short/CI-fast runs don't pay for a subprocess per
-// input; the fuzz engine (-fuzz=...) does not set -short, so exploratory
-// fuzzing still gets the oracle. The name is always passed as a single argv
-// element to exec.Command — never through a shell — so no fuzz input can
-// escape into shell syntax.
+// FuzzValidateName drives ValidateName with arbitrary strings. ValidateName is
+// deliberately dependency-free, so this target never delegates acceptance to a
+// host git binary. Any accepted name must remain lexically contained below a
+// private root and must survive the sidecar-name codec fixed point exactly.
 func FuzzValidateName(f *testing.F) {
 	seeds := []string{
 		"feature/foo",
@@ -40,19 +34,28 @@ func FuzzValidateName(f *testing.F) {
 		f.Add(s)
 	}
 
-	gitPath, gitErr := exec.LookPath("git")
-
 	f.Fuzz(func(t *testing.T, name string) {
-		err := ValidateName(name) // must not panic regardless of err
+		if ValidateName(name) != nil { // must not panic regardless of outcome
+			return
+		}
+
+		root := filepath.Join(t.TempDir(), "worktrees")
+		candidate := filepath.Join(root, filepath.FromSlash(name))
+		rel, err := filepath.Rel(root, candidate)
 		if err != nil {
-			return
+			t.Fatalf("filepath.Rel(%q, %q): %v", root, candidate, err)
 		}
-		if testing.Short() || gitErr != nil {
-			return
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			t.Fatalf("ValidateName accepted path-escaping name %q: root=%q candidate=%q rel=%q", name, root, candidate, rel)
 		}
-		out, cmdErr := exec.Command(gitPath, "check-ref-format", "--branch", name).CombinedOutput()
-		if cmdErr != nil {
-			t.Fatalf("ValidateName accepted %q but git check-ref-format --branch rejected it: %v\n%s", name, cmdErr, out)
+
+		encoded := EncodeSidecarName(name)
+		if strings.Contains(encoded, "/") {
+			t.Fatalf("EncodeSidecarName(%q) = %q still contains a slash", name, encoded)
+		}
+		decoded, ok := DecodeSidecarName(encoded)
+		if !ok || decoded != name {
+			t.Fatalf("DecodeSidecarName(EncodeSidecarName(%q)) = (%q, %v), want (%q, true)", name, decoded, ok, name)
 		}
 	})
 }

@@ -1,6 +1,8 @@
 package sandbox
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -193,45 +195,146 @@ func TestReRootContract(t *testing.T) {
 	AssertReRoot(t, ReRootCases())
 }
 
-// FuzzReRoot drives ReRoot with an arbitrary target cwd against a real resolved
-// policy: it must never panic, never widen a grant onto a masked/pseudo-fs path,
-// and every refusal must be typed.
+func TestFuzzReRootFixtureUsesStructuralLinkedWorktrees(t *testing.T) {
+	fixture := newFuzzReRootFixture(t)
+	for _, cwd := range []string{fixture.laneA, fixture.laneB} {
+		layout, err := ClassifyWorkspace(cwd)
+		if err != nil {
+			t.Fatalf("ClassifyWorkspace(%q): %v", cwd, err)
+		}
+		if layout.Kind != LinkedWorktree {
+			t.Fatalf("ClassifyWorkspace(%q).Kind = %v, want %v", cwd, layout.Kind, LinkedWorktree)
+		}
+		if layout.CommonDir != filepath.Join(fixture.main, ".git") {
+			t.Fatalf("ClassifyWorkspace(%q).CommonDir = %q, want %q", cwd, layout.CommonDir, filepath.Join(fixture.main, ".git"))
+		}
+	}
+}
+
+type fuzzReRootFixture struct {
+	root      string
+	main      string
+	laneA     string
+	laneB     string
+	malformed string
+}
+
+// newFuzzReRootFixture materializes only the filesystem shapes ClassifyWorkspace
+// consumes. It intentionally does not use git: the fuzzer needs a deterministic
+// linked-worktree layout, not a real repository or subprocess.
+func newFuzzReRootFixture(t TestingT) fuzzReRootFixture {
+	t.Helper()
+	root := resolveCleanPath(t.TempDir())
+	fixture := fuzzReRootFixture{
+		root:      root,
+		main:      filepath.Join(root, "main"),
+		laneA:     filepath.Join(root, "lane-a"),
+		laneB:     filepath.Join(root, "lane-b"),
+		malformed: filepath.Join(root, "malformed"),
+	}
+	commonDir := filepath.Join(fixture.main, ".git")
+	for _, dir := range []string{
+		commonDir,
+		filepath.Join(commonDir, "worktrees", "lane-a"),
+		filepath.Join(commonDir, "worktrees", "lane-b"),
+		fixture.laneA,
+		fixture.laneB,
+		fixture.malformed,
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir fixture %q: %v", dir, err)
+		}
+	}
+	for _, lane := range []struct {
+		name string
+		path string
+	}{
+		{name: "lane-a", path: fixture.laneA},
+		{name: "lane-b", path: fixture.laneB},
+	} {
+		gitDir := filepath.Join(commonDir, "worktrees", lane.name)
+		if err := os.WriteFile(filepath.Join(lane.path, ".git"), []byte("gitdir: "+gitDir+"\n"), 0o644); err != nil {
+			t.Fatalf("write linked-worktree pointer for %q: %v", lane.path, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(fixture.malformed, ".git"), []byte("gitdir: "+filepath.Join(root, "not-a-git-layout")+"\n"), 0o644); err != nil {
+		t.Fatalf("write malformed-worktree pointer: %v", err)
+	}
+	return fixture
+}
+
+// cwd maps arbitrary fuzz bytes to a path whose entire ancestry is inside this
+// test-owned fixture. ClassifyWorkspace may walk parents while it looks for .git,
+// so passing raw fuzz paths here would otherwise inspect the developer's host.
+func (fixture fuzzReRootFixture) cwd(raw string) (cwd, worktree string, malformed bool) {
+	bases := []struct {
+		cwd       string
+		worktree  string
+		malformed bool
+	}{
+		{cwd: fixture.laneA, worktree: fixture.laneA},
+		{cwd: fixture.laneB, worktree: fixture.laneB},
+		{cwd: fixture.main, worktree: fixture.main},
+		{cwd: fixture.malformed, malformed: true},
+	}
+	index := 0
+	if len(raw) > 0 {
+		index = int(raw[0]) % len(bases)
+	}
+	chosen := bases[index]
+	if len(raw)%2 == 0 {
+		return chosen.cwd, chosen.worktree, chosen.malformed
+	}
+	digest := sha256.Sum256([]byte(raw))
+	return filepath.Join(chosen.cwd, "fuzz", hex.EncodeToString(digest[:8])), chosen.worktree, chosen.malformed
+}
+
+// FuzzReRoot drives ReRoot with arbitrary target selection against a structural,
+// temp-root Git fixture. It never launches git or inspects ambient paths. It must
+// never panic, never widen a grant onto a masked/pseudo-fs path, and every refusal
+// must be typed.
 func FuzzReRoot(f *testing.F) {
-	if _, err := os.Stat("/usr/bin/git"); err != nil {
-		f.Skip("git not available for the fuzz seed workspace")
+	fixture := newFuzzReRootFixture(f)
+	home := filepath.Join(fixture.root, "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		f.Fatalf("mkdir fake home: %v", err)
 	}
-	main := resolveCleanPath(f.TempDir())
-	seed := func(dir string, args ...string) {
-		requireGitHarness(f)
-		gitHarness(f, dir, args...)
-	}
-	seed(main, "init", "-q")
-	seed(main, "commit", "-q", "--allow-empty", "-m", "init")
-	facts := bwrapFacts(f.TempDir())
+	facts := bwrapFacts(home)
 
 	net := true
-	base, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: &net}, facts, main)
+	base, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: &net}, facts, fixture.laneA)
 	if err != nil {
 		f.Fatalf("seed resolve: %v", err)
 	}
 
-	f.Add("/tmp")
-	f.Add(main)
-	f.Add("relative/path")
+	f.Add("lane-a")
+	f.Add("lane-b")
+	f.Add("main")
+	f.Add("malformed")
 	f.Add("")
-	f.Add("/proc/self")
+	f.Add("../../ambient/path")
 
-	f.Fuzz(func(t *testing.T, cwd string) {
+	f.Fuzz(func(t *testing.T, raw string) {
+		cwd, wantWorktree, wantRefusal := fixture.cwd(raw)
 		rerooted, err := base.ReRoot(cwd)
 		if err != nil {
 			var ref *RefusalError
 			if !errors.As(err, &ref) {
 				t.Fatalf("re-root error must be a typed *RefusalError, got %T: %v", err, err)
 			}
+			if !wantRefusal {
+				t.Fatalf("ReRoot(%q) unexpectedly refused a valid structural workspace: %v", cwd, err)
+			}
 			return
 		}
+		if wantRefusal {
+			t.Fatalf("ReRoot(%q) accepted a deliberately malformed Git pointer", cwd)
+		}
 		if rerooted == nil {
-			return
+			t.Fatal("ReRoot returned nil policy for an enforced source policy")
+		}
+		if rerooted.Git.WorktreeRoot != wantWorktree {
+			t.Fatalf("ReRoot(%q).Git.WorktreeRoot = %q, want %q", cwd, rerooted.Git.WorktreeRoot, wantWorktree)
 		}
 		roots := slices.Concat(
 			rerooted.FileTool.ReadRoots, rerooted.FileTool.WriteRoots,
@@ -246,12 +349,14 @@ func FuzzReRoot(f *testing.F) {
 		}
 		// Recompute-not-copy: the file-tool write roots (worktree-only for the seed
 		// mode) must all fall within the RE-ROOTED worktree. A ReRoot that copied the
-		// source policy would keep granting the seed worktree, which — unless the
-		// fuzzed cwd is an ancestor of it — escapes the new worktree and trips here.
+		// source policy would keep granting lane A after targeting lane B or main.
 		for _, r := range rerooted.FileTool.WriteRoots {
 			if r != rerooted.Git.WorktreeRoot && !pathUnder(r, rerooted.Git.WorktreeRoot) {
 				t.Fatalf("re-rooted FileTool write root %q escapes the re-rooted worktree %q (copy bug?)", r, rerooted.Git.WorktreeRoot)
 			}
+		}
+		if wantWorktree != fixture.laneA && rootGrants(rerooted.FileTool.WriteRoots, fixture.laneA) {
+			t.Fatalf("ReRoot(%q) retained source lane A write grant: %v", cwd, rerooted.FileTool.WriteRoots)
 		}
 	})
 }
