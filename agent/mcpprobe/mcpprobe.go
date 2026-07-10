@@ -46,6 +46,14 @@ import (
 // server cannot delay or starve the others.
 const probeTimeout = 3 * time.Second
 
+// probeDeps contains the external boundaries used by one Probe call. It is
+// passed by value to keep test configuration local to that call; production
+// supplies the normal lookup and default-client behavior below.
+type probeDeps struct {
+	lookupPath func(string) (string, error)
+	httpClient *http.Client
+}
+
 // Result reports the reachability of one configured MCP server.
 type Result struct {
 	Name      string // from ServerConfig.Name
@@ -66,13 +74,20 @@ type Result struct {
 // writer and results is only read after wg.Wait() establishes
 // happens-before (mirrors agent/internal/mcp's NewManager).
 func Probe(ctx context.Context, configs []mcpconfig.ServerConfig) []Result {
+	return probeWithDeps(ctx, configs, probeDeps{lookupPath: exec.LookPath})
+}
+
+// probeWithDeps is Probe with its process lookup and HTTP client supplied by
+// the caller. Keeping the dependencies per-call means concurrent probes never
+// rely on mutable package-global test hooks.
+func probeWithDeps(ctx context.Context, configs []mcpconfig.ServerConfig, deps probeDeps) []Result {
 	results := make([]Result, len(configs))
 	var wg sync.WaitGroup
 	wg.Add(len(configs))
 	for i, cfg := range configs {
 		go func(i int, cfg mcpconfig.ServerConfig) {
 			defer wg.Done()
-			results[i] = probeOne(ctx, cfg)
+			results[i] = probeOne(ctx, cfg, deps)
 		}(i, cfg)
 	}
 	wg.Wait()
@@ -81,7 +96,9 @@ func Probe(ctx context.Context, configs []mcpconfig.ServerConfig) []Result {
 
 // probeOne probes a single server under its own probeTimeout, derived from
 // ctx so a caller-level cancellation still cuts every in-flight probe short.
-func probeOne(ctx context.Context, cfg mcpconfig.ServerConfig) Result {
+// Its external process and transport boundaries arrive in deps; a nil
+// httpClient retains the SDK's default-client behavior.
+func probeOne(ctx context.Context, cfg mcpconfig.ServerConfig, deps probeDeps) Result {
 	transport := cfg.Type
 	if transport == "" {
 		transport = "stdio"
@@ -95,7 +112,7 @@ func probeOne(ctx context.Context, cfg mcpconfig.ServerConfig) Result {
 	case "stdio":
 		// Command-present only: mcpprobe does not spawn the process (see
 		// package doc limits).
-		if _, err := exec.LookPath(cfg.Command); err != nil {
+		if _, err := deps.lookupPath(cfg.Command); err != nil {
 			r.Status = "missing"
 			r.Error = err.Error()
 			return r
@@ -104,7 +121,7 @@ func probeOne(ctx context.Context, cfg mcpconfig.ServerConfig) Result {
 		return r
 
 	case "sse", "http":
-		clientTransport, err := transportForProbe(cfg)
+		clientTransport, err := transportForProbe(cfg, deps)
 		if err != nil {
 			r.Status = "unreachable"
 			r.Error = err.Error()
@@ -133,16 +150,22 @@ func probeOne(ctx context.Context, cfg mcpconfig.ServerConfig) Result {
 // transportForConfig (which mcpprobe cannot use directly): the same
 // http/sse transport construction and header injection, minus the stdio
 // CommandTransport machinery mcpprobe doesn't need — probeOne handles stdio
-// itself via exec.LookPath.
-func transportForProbe(cfg mcpconfig.ServerConfig) (mcpsdk.Transport, error) {
+// through its lookup dependency. The supplied client remains nil in production
+// unless headers require the existing header-injecting wrapper.
+func transportForProbe(cfg mcpconfig.ServerConfig, deps probeDeps) (mcpsdk.Transport, error) {
+	client := deps.httpClient
+	if len(cfg.Headers) > 0 {
+		client = httpClientWithHeaders(client, cfg.Headers)
+	}
+
 	switch cfg.Type {
 	case "sse":
 		if cfg.URL == "" {
 			return nil, errors.New("sse transport requires a url")
 		}
 		t := &mcpsdk.SSEClientTransport{Endpoint: cfg.URL}
-		if len(cfg.Headers) > 0 {
-			t.HTTPClient = httpClientWithHeaders(cfg.Headers)
+		if client != nil {
+			t.HTTPClient = client
 		}
 		return t, nil
 
@@ -151,8 +174,8 @@ func transportForProbe(cfg mcpconfig.ServerConfig) (mcpsdk.Transport, error) {
 			return nil, errors.New("http transport requires a url")
 		}
 		t := &mcpsdk.StreamableClientTransport{Endpoint: cfg.URL}
-		if len(cfg.Headers) > 0 {
-			t.HTTPClient = httpClientWithHeaders(cfg.Headers)
+		if client != nil {
+			t.HTTPClient = client
 		}
 		return t, nil
 
@@ -174,12 +197,27 @@ func (h *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	return h.base.RoundTrip(req)
 }
 
-// httpClientWithHeaders returns an *http.Client that injects the given headers.
-func httpClientWithHeaders(headers map[string]string) *http.Client {
-	return &http.Client{
-		Transport: &headerRoundTripper{
-			base:    http.DefaultTransport,
-			headers: headers,
-		},
+// httpClientWithHeaders returns a copy of base that injects headers. A nil
+// base preserves the pre-existing production client behavior: use the default
+// transport in a new client rather than inheriting mutable DefaultClient state.
+func httpClientWithHeaders(base *http.Client, headers map[string]string) *http.Client {
+	if base == nil {
+		return &http.Client{
+			Transport: &headerRoundTripper{
+				base:    http.DefaultTransport,
+				headers: headers,
+			},
+		}
 	}
+
+	client := *base
+	transport := client.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	client.Transport = &headerRoundTripper{
+		base:    transport,
+		headers: headers,
+	}
+	return &client
 }
