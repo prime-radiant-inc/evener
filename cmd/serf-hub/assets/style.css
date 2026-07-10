@@ -4136,10 +4136,10 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
     background: rgba(0,0,0,0.5);
     z-index: var(--z-overlay, 800);
   }
-  /* dvh tracks the *visible* viewport, so the workspace (and the composer at its
-     bottom) shrinks above the on-screen keyboard instead of being pushed under
-     it. 100vh is the fallback for older engines. */
-  #workspace { width: 100%; height: 100vh; height: 100dvh; overflow-x: clip; }
+  /* The base #workspace height uses the renderer's visual-viewport property,
+     with a 100vh legacy fallback. Keep this responsive rule layout-only so it
+     does not reset that runtime height while the keyboard is open. */
+  #workspace { width: 100%; overflow-x: clip; }
 
   /* Reclaim horizontal room on phone: the desktop transcript reserves a wide
      left gutter (tool indent, 32px card/system indents) that wastes a quarter
@@ -4473,7 +4473,8 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
     height: var(--tap-min);
     z-index: var(--z-fixed-action);
   }
-  #workspace { width: 100%; height: 100vh; height: 100dvh; }
+  /* Preserve the base visual-viewport height; only widen the layout here. */
+  #workspace { width: 100%; }
   .workspace-header { padding: var(--space-2) var(--space-4) var(--space-2) calc(var(--tap-min) + var(--space-3)); }
   .conversation { padding: var(--space-3) var(--space-4); }
 

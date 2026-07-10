@@ -31,6 +31,21 @@ function extractMobileContent(src) {
   return result;
 }
 
+function extractMediaContent(src, query) {
+  const start = src.indexOf(query);
+  if (start === -1) return "";
+  const open = src.indexOf("{", start);
+  if (open === -1) return "";
+  let depth = 1;
+  let i = open + 1;
+  while (i < src.length && depth > 0) {
+    if (src[i] === "{") depth++;
+    else if (src[i] === "}") depth--;
+    i++;
+  }
+  return src.slice(open + 1, i - 1);
+}
+
 const mobile = extractMobileContent(css);
 
 const failures = [];
@@ -76,6 +91,18 @@ const workspaceViewportRule = (css.match(/#workspace\s*\{[^}]*\}/g) || [])
   .find((block) => /--workspace-visible-height\s*:/.test(block));
 pass(workspaceViewportRule && /height:\s*100vh\s*;\s*height:\s*var\(--workspace-visible-height,\s*100dvh\)/.test(workspaceViewportRule),
   "#workspace visible-height rule must declare height: 100vh immediately before height: var(--workspace-visible-height, 100dvh)");
+
+// The renderer writes --workspace-visible-height from visualViewport. Responsive
+// #workspace rules must inherit that base height rather than resetting it to
+// 100dvh, which would cover the keyboard-shrunken viewport on phone or in short
+// landscape.
+const shortLandscape = extractMediaContent(css, "@media (max-width: 900px) and (max-height: 560px)");
+for (const [name, responsiveCSS] of [["mobile", mobile], ["short-landscape", shortLandscape]]) {
+  const responsiveWorkspaceRules = responsiveCSS.match(/#workspace\s*\{[^}]*\}/g) || [];
+  pass(responsiveWorkspaceRules.length > 0, `${name} media query must retain a #workspace layout rule`);
+  pass(responsiveWorkspaceRules.every((block) => !/\bheight\s*:/.test(block)),
+    `${name} #workspace layout rule must not override the --workspace-visible-height runtime height`);
+}
 
 // The transcript is the only vertically scrollable flex child. A zero flex basis
 // and min-height:0 prevent the composer from being pushed below the visual viewport.
