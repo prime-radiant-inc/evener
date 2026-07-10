@@ -90,6 +90,7 @@ import (
 // A discovered failure is routed through fuzz/promoter (mirroring the Phase-2
 // appwire target): a deterministic reproduction survives the flake-guard and is
 // emitted to a temp dir as a regression test; a flaky one is quarantined.
+// serf:fuzz rapid
 func TestLifecycleSeqFuzz(t *testing.T) {
 	// Default-off: PersistPaths returns the temp fallbacks (no tree writes) for
 	// every gate run; the local triage tool sets SERF_FUZZ_PERSIST to capture a

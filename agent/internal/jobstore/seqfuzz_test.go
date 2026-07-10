@@ -56,6 +56,7 @@ import (
 // Under -tags serffuzz the reducer's own invariant.Hold assertions are live too,
 // so a generated sequence that tripped the in-reducer monotonicity guard would
 // surface as a panic.
+// serf:fuzz rapid
 func TestJobstoreSeqFuzz(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		m := newSeqModel()

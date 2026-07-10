@@ -31,6 +31,7 @@ import (
 // drawn permutation and asserts the owner-authority outcome per job_id is
 // identical to the in-order run: owner-wins is order-independent (only the kept
 // DEPTH may differ with order, never the authority).
+// serf:fuzz rapid
 func TestJobsFc2DescendantMergeSeqFuzz(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		n := rapid.IntRange(1, 30).Draw(rt, "nrecs")

@@ -54,6 +54,7 @@ type schemaValidator interface {
 // reproduction becomes a flake-guarded regression test (written to a temp dir;
 // promotion into the tree is the human/opt-in step). rapid shrinks to a minimal
 // failing case before the cleanup promotes it.
+// serf:fuzz rapid
 func TestToolArgsSchemaFuzz(t *testing.T) {
 	tools := coreToolSchemaDefs(t)
 	if len(tools) == 0 {

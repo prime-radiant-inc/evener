@@ -41,6 +41,7 @@ import (
 //	   working note ever added still appears verbatim — live in the tail or folded
 //	   into the checkpoint (which re-extracts them on re-compaction).
 //	I6 (pressure bound): the estimated post-op pressure is finite and non-negative.
+// serf:fuzz rapid
 func TestFc1MaybeCompactSeqFuzz(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		m := newFc1MaybeCompactModel(rapid.IntRange(1, 4).Draw(rt, "preserveRecent"))

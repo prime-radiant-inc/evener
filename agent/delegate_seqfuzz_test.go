@@ -80,6 +80,7 @@ import (
 // A discovered failure is routed through fuzz/promoter (mirroring TestLifecycleSeqFuzz):
 // a deterministic reproduction survives the flake-guard and is emitted as a
 // regression test; a flaky one is quarantined.
+// serf:fuzz rapid
 func TestDelegateSeqFuzz(t *testing.T) {
 	pkgDir, err := os.Getwd()
 	if err != nil {

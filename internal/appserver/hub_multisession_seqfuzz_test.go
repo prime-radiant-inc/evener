@@ -78,6 +78,7 @@ import (
 // cross-check — the only shared fabric they feed is this subscription index,
 // which is keyed by an opaque "<sourceID>:<threadID>" relay key and so is already
 // exercised by the thread pool here (the keys are opaque strings to the fabric).
+// serf:fuzz rapid
 func TestHubMultiSessionSeqFuzz(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		ops := rapid.SliceOfN(drawMSOp, 1, 64).Draw(rt, "ops")

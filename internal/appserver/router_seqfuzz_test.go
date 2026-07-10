@@ -55,6 +55,7 @@ import (
 // A discovered failure is routed through fuzz/promoter so a deterministic
 // reproduction becomes a flake-guarded regression test (emitted to a temp dir;
 // promotion into the tree is the human/opt-in step), mirroring Phase 1.
+// serf:fuzz rapid
 func TestRouterSeqFuzz(t *testing.T) {
 	// Default-off: PersistPaths returns the temp fallbacks (no tree writes) for
 	// every gate run; the local triage tool sets SERF_FUZZ_PERSIST to capture a

@@ -23,11 +23,12 @@ set -uo pipefail
 # "tag:module:package-relpath:name[:coverpkg[:focus]]":
 #   tag       "native" — a testing.F target driven by `go test -fuzz`; or
 #             "rapid"  — a Test* func driven by rapid.Check during ordinary
-#             `go test -run`. Both kinds share this one registry so the consumers
-#             have a single list instead of a parallel hardcoded rapid set.
+#             `go test -run`; or "test" — a support-only reachability check.
+#             Native and Rapid rows are machine-checked against source and are
+#             the only rows eligible for deterministic fuzz coverage replay.
 #   module    the go.work module dir ("." or "agent"/"llm"/"auth").
 #   package-relpath  the package relative to that module.
-#   name      the FuzzXxx (native) or TestXxx (rapid) function name.
+#   name      the FuzzXxx (native) or TestXxx (rapid/test) function name.
 # The two optional trailing fields are consumed only by the coverage tooling
 # (scripts/fuzz-coverage.sh + cmd/serf-fuzzcov), never by the campaign run below:
 #   coverpkg  go test -coverpkg value for the coverage replay; defaults to the

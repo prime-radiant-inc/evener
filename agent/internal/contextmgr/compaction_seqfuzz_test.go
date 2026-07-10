@@ -76,6 +76,7 @@ import (
 // cannot be asserted at the unit level without mocking the very logic under
 // test. The deterministic checkpoint layer IS the state-preserving surface and
 // is exercised through its real ForceCompact entry point.
+// serf:fuzz rapid
 func TestCompactionSeqFuzz(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		m := newCompactionModel(rapid.IntRange(1, 4).Draw(rt, "preserveRecent"))

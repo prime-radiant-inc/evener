@@ -55,6 +55,7 @@ import (
 //
 // All new symbols are ws_-prefixed so this file never collides with the
 // delegate-sequence fuzzer a parallel effort adds to package agent.
+// serf:fuzz rapid
 func TestWatchSeqFuzz(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		h := ws_newHarness(t, rt)
