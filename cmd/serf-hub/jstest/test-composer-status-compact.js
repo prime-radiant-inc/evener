@@ -5,23 +5,30 @@ const css = fs.readFileSync(path.resolve(__dirname, "../assets/style.css"), "utf
 const workspace = fs.readFileSync(path.resolve(__dirname, "../templates/partials/workspace.html"), "utf8");
 const inputStrip = fs.readFileSync(path.resolve(__dirname, "../templates/partials/input_strip.html"), "utf8");
 
-function extractMediaContent(src, query) {
-  const start = src.indexOf(query);
-  if (start === -1) return "";
-  const open = src.indexOf("{", start);
-  if (open === -1) return "";
-  let depth = 1;
-  let i = open + 1;
-  while (i < src.length && depth > 0) {
-    if (src[i] === "{") depth++;
-    else if (src[i] === "}") depth--;
-    i++;
+function extractMediaContents(src, query) {
+  const contents = [];
+  let searchFrom = 0;
+  while (searchFrom < src.length) {
+    const start = src.indexOf(query, searchFrom);
+    if (start === -1) break;
+    const open = src.indexOf("{", start + query.length);
+    if (open === -1) break;
+    let depth = 1;
+    let i = open + 1;
+    while (i < src.length && depth > 0) {
+      if (src[i] === "{") depth++;
+      else if (src[i] === "}") depth--;
+      i++;
+    }
+    if (depth !== 0) break;
+    contents.push(src.slice(open + 1, i - 1));
+    searchFrom = i;
   }
-  return src.slice(open + 1, i - 1);
+  return contents;
 }
 
-const mobile = extractMediaContent(css, "@media (max-width: 767px)");
-const shortLandscape = extractMediaContent(css, "@media (max-width: 900px) and (max-height: 560px)");
+const mobile = extractMediaContents(css, "@media (max-width: 767px)").join("\n");
+const shortLandscape = extractMediaContents(css, "@media (max-width: 900px) and (max-height: 560px)").join("\n");
 
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
@@ -51,6 +58,8 @@ pass(/\.input-telemetry \.location\s*\{[^}]*min-width:\s*0[^}]*overflow:\s*hidde
   "location group must be shrinkable and clipped before telemetry wraps");
 pass(/\.input-telemetry \.status-location-part \.status-value\s*\{[^}]*text-overflow:\s*ellipsis/.test(css),
   "location values must truncate with ellipsis");
+pass(/\.input-telemetry\s*\{[^}]*flex-wrap:\s*nowrap/.test(mobile),
+  "phone media aggregate must include the compact nonwrapping telemetry override");
 pass(!/\.input-telemetry\s*\{[^}]*flex-wrap:\s*wrap/.test(mobile),
   "phone telemetry rail must not wrap into a second metadata line");
 pass(!/\.input-telemetry\s*\{[^}]*flex-wrap:\s*wrap/.test(shortLandscape),
