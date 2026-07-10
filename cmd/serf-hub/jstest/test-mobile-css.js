@@ -104,6 +104,14 @@ for (const [name, responsiveCSS] of [["mobile", mobile], ["short-landscape", sho
     `${name} #workspace layout rule must not override the --workspace-visible-height runtime height`);
 }
 
+// A connection banner still leaves the workspace sized by the visual viewport.
+// The static 100vh subtraction remains as a fallback for browsers that reject
+// the custom-property calculation, but the later declaration must preserve the
+// renderer's keyboard-aware --workspace-visible-height value.
+const bannerWorkspaceRule = (css.match(/body\.has-connection-banner #sidebar,\s*body\.has-connection-banner #workspace\s*\{[^}]*\}/g) || [])[0];
+pass(bannerWorkspaceRule && /height:\s*calc\(100vh\s*-\s*32px\)\s*;\s*height:\s*calc\(var\(--workspace-visible-height,\s*100dvh\)\s*-\s*32px\)/.test(bannerWorkspaceRule),
+  "connection-banner workspace height must retain a 100vh fallback then subtract its offset from --workspace-visible-height");
+
 // The transcript is the only vertically scrollable flex child. A zero flex basis
 // and min-height:0 prevent the composer from being pushed below the visual viewport.
 pass(convScrollRule && /flex:\s*1\s+1\s+0/.test(convScrollRule) && /min-height:\s*0/.test(convScrollRule),

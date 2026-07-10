@@ -881,6 +881,7 @@
 
     resetTranscriptReplay() {
       if (!this.conversation) return;
+      this.discardPendingAsk();
       this.conversation.innerHTML = "";
       this.activeMessages.clear();
       this.activeTools.clear();
@@ -891,7 +892,6 @@
       this.suppressedToolCalls.clear();
       this.pendingTaskCalls.clear();
       this.pendingAskCalls.clear();
-      this.pendingAsk = null;
       // Clearing the DOM destroyed any rendered sandbox-escalation card, so the
       // de-dupe set must reset too — otherwise a re-hydration after reconnect would
       // suppress re-rendering a STILL-pending escalation and the card would vanish
@@ -1055,6 +1055,7 @@
         case "SESSION_START":
           this.statusUpdateSeq++;
           if (data.session_id && data.session_id !== this.sessionId) {
+            this.discardPendingAsk();
             this.sessionId = data.session_id;
             this.resetLiveCapabilities();
             history.replaceState(null, "", "/s/" + encodeURIComponent(data.session_id));
@@ -1070,7 +1071,6 @@
             this.suppressedToolCalls.clear();
             this.pendingTaskCalls.clear();
             this.pendingAskCalls.clear();
-            this.pendingAsk = null;
             taskDescriptions.clear();
             taskDetails.clear();
             this.lastCurrentTaskId = null;
@@ -4622,9 +4622,24 @@
       return dock;
     },
 
+    composerModeStatusEl(form) {
+      let status = form.querySelector("[data-composer-mode-status]");
+      if (!status) {
+        status = document.createElement("div");
+        status.className = "visually-hidden";
+        status.setAttribute("data-composer-mode-status", "");
+        status.setAttribute("role", "status");
+        status.setAttribute("aria-live", "polite");
+        status.setAttribute("aria-atomic", "true");
+        form.prepend(status);
+      }
+      return status;
+    },
+
     setComposerAskMode(active) {
       const form = document.querySelector("form[data-input-form]");
       if (!form) return;
+      const wasActive = form.dataset.responseMode === "ask";
       const composer = form.querySelector("[data-composer-surface]");
       const input = form.querySelector(".message-input");
       form.dataset.responseMode = active ? "ask" : "composer";
@@ -4639,12 +4654,25 @@
         input.hidden = active;
         input.inert = active;
       }
+      if (wasActive !== active) {
+        this.composerModeStatusEl(form).textContent = active
+          ? "Answer the agent’s questions."
+          : "Message composer ready.";
+      }
     },
 
     renderPendingAskDock() {
       const pa = this.pendingAsk;
+      const form = document.querySelector("form[data-input-form]");
+      const hadDock = !!(form && form.querySelector("[data-ask-response-dock]"));
       const dock = this.askDockEl();
       if (!pa || !dock) return;
+      const active = document.activeElement;
+      const activeQuestion = active && typeof active.closest === "function" ? active.closest("[data-ask-question]") : null;
+      const activeKey = activeQuestion && dock.contains(activeQuestion) ? activeQuestion.dataset.askKey : "";
+      const activeSelector = active && active.matches && active.matches("[data-ask-free-input], [data-ask-decide-leaning], [data-ask-note-field]")
+        ? "[" + Array.from(active.attributes).find((attr) => attr.name.indexOf("data-ask-") === 0).name + "]"
+        : "";
       this.setComposerAskMode(true);
       dock.replaceChildren();
       const questions = document.createElement("div");
@@ -4653,6 +4681,13 @@
       pa.items.forEach((item, index) => questions.appendChild(this.buildAskQuestionEl(item, index + 1)));
       dock.append(questions, this.buildAskFooterEl());
       this.updateAskFooter();
+      if (activeKey && activeSelector) {
+        const replacement = dock.querySelector('[data-ask-question][data-ask-key="' + activeKey + '"] ' + activeSelector);
+        if (replacement && !replacement.hidden) replacement.focus();
+      } else if (!hadDock) {
+        const firstControl = dock.querySelector("[data-ask-option-input], [data-ask-free-toggle]");
+        if (firstControl) firstControl.focus();
+      }
     },
 
     clearPendingAskDock() {
@@ -4661,6 +4696,15 @@
       const dock = form.querySelector("[data-ask-response-dock]");
       if (dock) dock.remove();
       this.setComposerAskMode(false);
+    },
+
+    // discardPendingAsk is the non-settlement teardown path used by replay and
+    // session replacement. Unlike resolvePendingAsk it leaves no settled
+    // transcript line, but it always restores the normal composer surface.
+    discardPendingAsk() {
+      this.pendingAsk = null;
+      this.clearPendingAskDock();
+      this.clearAgentQuestion();
     },
 
     // appendPendingAskQuestions merges newly-acked ask_user calls into a
@@ -4741,12 +4785,14 @@
       numEl.textContent = num + ".";
       const headerEl = document.createElement("span");
       headerEl.className = "ask-question-header";
+      headerEl.id = "ask-question-" + item.key.replace(/[^a-zA-Z0-9_-]/g, "_") + "-header";
       headerEl.textContent = item.header;
       head.append(numEl, headerEl);
       el.appendChild(head);
 
       const textEl = document.createElement("div");
       textEl.className = "ask-question-text";
+      textEl.id = "ask-question-" + item.key.replace(/[^a-zA-Z0-9_-]/g, "_") + "-text";
       textEl.textContent = item.question;
       el.appendChild(textEl);
 
@@ -4835,6 +4881,7 @@
       freeInput.type = "text";
       freeInput.className = "ask-free-input";
       freeInput.setAttribute("data-ask-free-input", "");
+      freeInput.setAttribute("aria-labelledby", headerEl.id + " " + textEl.id);
       freeInput.placeholder = "type your answer";
       freeInput.hidden = true;
       freeToggle.addEventListener("click", () => {
@@ -4856,6 +4903,7 @@
       decideLeaning.type = "text";
       decideLeaning.className = "ask-decide-leaning";
       decideLeaning.setAttribute("data-ask-decide-leaning", "");
+      decideLeaning.setAttribute("aria-labelledby", headerEl.id + " " + textEl.id);
       decideLeaning.placeholder = "leaning (optional)";
       decideLeaning.hidden = true;
       decideToggle.addEventListener("click", () => {
@@ -4907,6 +4955,7 @@
       noteField.type = "text";
       noteField.className = "ask-note-field";
       noteField.setAttribute("data-ask-note-field", "");
+      noteField.setAttribute("aria-labelledby", headerEl.id + " " + textEl.id);
       noteField.placeholder = "note (optional)";
       noteField.hidden = true;
       noteToggle.addEventListener("click", () => {
@@ -5256,6 +5305,10 @@
 
       const submit = async (e) => {
         e.preventDefault();
+	      // Ask controls live inside this form, so browser implicit submission
+	      // from a text answer must never fall through to the stale normal
+	      // composer draft. Ask answers are sent only by their explicit action.
+	      if (this.pendingAsk) return;
 	        const submittedValue = ta.value;
 	        const text = submittedValue.trim();
 	        const items = snapshotComposerItems();

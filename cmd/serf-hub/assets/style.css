@@ -462,6 +462,17 @@ html, body.app { height: 100vh; margin: 0; }
 body.app { display: flex; background: var(--bg); color: var(--text); font-family: var(--font-sans); overflow: hidden; }
 /* Mono utility — for one-off mono spans that don't have a dedicated class. */
 .mono { font-family: var(--font-mono); }
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 #sidebar {
   width: var(--sidebar-w, 260px);
   min-width: 180px;
@@ -5005,7 +5016,10 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
    are the same element, hence the standalone selector. */
 body.app.has-connection-banner { margin-top: 32px; height: calc(100vh - 32px); }
 body.has-connection-banner #sidebar,
-body.has-connection-banner #workspace { height: calc(100vh - 32px); }
+body.has-connection-banner #workspace {
+  height: calc(100vh - 32px);
+  height: calc(var(--workspace-visible-height, 100dvh) - 32px);
+}
 
 /* Pass 8 — Skeleton loading */
 .skeleton {
