@@ -1,6 +1,7 @@
 package repair
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -39,5 +40,20 @@ func TestExplainJSONError_MentionsToolAndObject(t *testing.T) {
 	msg := ExplainJSONError("read_file", editParamsForExplain(), "unexpected end of JSON input")
 	if !strings.Contains(msg, "read_file") || !strings.Contains(msg, "JSON object") {
 		t.Fatalf("msg = %q", msg)
+	}
+}
+
+func TestExplainSchemaError_DoesNotMutateStringRequired(t *testing.T) {
+	required := []string{"new_string", "file_path", "old_string"}
+	params := editParamsForExplain()
+	params["required"] = required
+
+	first := ExplainSchemaError("edit_file", params, map[string]any{}, "")
+	second := ExplainSchemaError("edit_file", params, map[string]any{}, "")
+	if first != second {
+		t.Fatalf("explanation changed across calls:\nfirst:  %q\nsecond: %q", first, second)
+	}
+	if want := []string{"new_string", "file_path", "old_string"}; !reflect.DeepEqual(required, want) {
+		t.Fatalf("required slice mutated: got %#v, want %#v", required, want)
 	}
 }

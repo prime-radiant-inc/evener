@@ -10,9 +10,15 @@ import (
 // GlobalPromptsDir returns the path to the global prompts directory.
 // Uses XDG_CONFIG_HOME if set, otherwise ~/.config.
 func GlobalPromptsDir() string {
-	dir := envvars.XDGConfigHome.Getenv()
+	return globalPromptsDir(envvars.XDGConfigHome.Getenv(), os.UserHomeDir)
+}
+
+// globalPromptsDir keeps environment and home-directory lookup at the boundary
+// so path construction remains deterministic for callers that supply both.
+func globalPromptsDir(xdgConfigHome string, userHomeDir func() (string, error)) string {
+	dir := xdgConfigHome
 	if dir == "" {
-		home, err := os.UserHomeDir()
+		home, err := userHomeDir()
 		if err != nil {
 			return ""
 		}

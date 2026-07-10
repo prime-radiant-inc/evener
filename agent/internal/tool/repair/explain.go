@@ -53,7 +53,7 @@ func requiredList(params map[string]any) []string {
 
 func minimalExample(params map[string]any) string {
 	props := schemaProps(params)
-	req := asStringSlice(params["required"])
+	req := append([]string(nil), asStringSlice(params["required"])...)
 	sort.Strings(req)
 	parts := make([]string, 0, len(req))
 	for _, r := range req {
