@@ -1,7 +1,7 @@
 # Global fuzz-reachable coverage floors (whole-module statement %).
-# Managed by scripts/fuzz-coverage-global.sh --bless. Raised upward only, EXCEPT a
-# documented downward reset when the MEASUREMENT BASIS changes (not a regression).
-# A partial `--bless --modules X` rewrites this file to just X; restore the others.
+# Managed by `serf-fuzzcov -global-manifest ... -bless`. The raw gate is stricter:
+# every measured module must be above 95.0% before a floor can be raised.
+# Blessing preserves all existing module floors and never lowers an entry.
 #
 # 2026-07-02 MEASUREMENT-BASIS FIX (robust per-package method). The prior numbers
 # were produced by `go test -coverpkg=./... ./...`, whose covdata textfmt merge

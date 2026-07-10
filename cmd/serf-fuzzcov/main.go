@@ -75,6 +75,11 @@ type result struct {
 func main() {
 	manifest := flag.String("manifest", "", "path to the target manifest written by fuzz-coverage.sh (required)")
 	floorsPath := flag.String("floors", "scripts/fuzzcov-floors.txt", "ratchet floors file")
+	globalManifest := flag.String("global-manifest", "", "path to module/package/profile TSV emitted by fuzz-coverage-global.sh")
+	globalExclusions := flag.String("global-exclusions", "scripts/fuzzcov-global-exclusions.txt", "reviewed whole-file global coverage exclusions")
+	globalFloors := flag.String("global-floors", "scripts/fuzzcov-global-floors.txt", "whole-module global coverage floors")
+	globalMinimum := flag.Float64("global-minimum", 95.0, "strict raw whole-module coverage threshold")
+	globalJSON := flag.Bool("global-json", false, "emit the global coverage report as JSON")
 	ignorePath := flag.String("ignore", "scripts/fuzzcov-ignore.txt", "gap-map ignore-list")
 	repoRoot := flag.String("repo-root", ".", "repository root")
 	modulesArg := flag.String("modules", ". agent llm auth fuzz", "space-separated go.work module dirs to scan for the gap map")
@@ -84,6 +89,23 @@ func main() {
 	gapOnly := flag.Bool("gap-only", false, "STATIC gap gate: derive the fuzzed set from the registry (no coverage replay) and exit non-zero on any unfuzzed, unignored parse package")
 	registry := flag.String("registry", "", "path to scripts/run-fuzz.sh --list output (required with -gap-only)")
 	flag.Parse()
+
+	if *globalManifest != "" {
+		if *gapOnly || *manifest != "" {
+			fatal("-global-manifest cannot be combined with -gap-only or -manifest")
+		}
+		code, err := runGlobalMode(globalModeOptions{
+			manifestPath: *globalManifest, exclusionsPath: *globalExclusions, floorsPath: *globalFloors,
+			repoRoot: *repoRoot, minimum: *globalMinimum, check: *check, bless: *bless, json: *globalJSON,
+		}, os.Stdout, os.Stderr)
+		if err != nil {
+			fatal("global coverage: %v", err)
+		}
+		os.Exit(code)
+	}
+	if *globalJSON {
+		fatal("-global-json requires -global-manifest")
+	}
 
 	if *gapOnly {
 		os.Exit(runGapOnly(*registry, *repoRoot, strings.Fields(*modulesArg), *ignorePath))

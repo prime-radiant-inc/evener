@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -98,6 +100,33 @@ func TestWriteFloorsUpwardOnly(t *testing.T) {
 	want := map[string]float64{"FuzzA": 80.0, "FuzzB": 60.0, "FuzzC": 30.0}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("floors after bless = %v, want %v", got, want)
+	}
+}
+
+func TestRunGlobalModeCheckUsesStrictThreshold(t *testing.T) {
+	repo := t.TempDir()
+	profile := filepath.Join(repo, "exact.cov")
+	mustWrite(t, profile, "mode: set\n"+
+		"example.com/m/p.go:1.1,1.2 95 1\n"+
+		"example.com/m/p.go:2.1,2.2 5 0\n")
+	manifest := filepath.Join(repo, "profiles.tsv")
+	mustWrite(t, manifest, ".\t.\t"+profile+"\n")
+	exclusions := filepath.Join(repo, "exclusions.tsv")
+	mustWrite(t, exclusions, "# intentionally empty\n")
+
+	var stdout, stderr bytes.Buffer
+	code, err := runGlobalMode(globalModeOptions{
+		manifestPath: manifest, exclusionsPath: exclusions, floorsPath: filepath.Join(repo, "floors.txt"),
+		repoRoot: repo, minimum: 95, check: true,
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("runGlobalMode: %v", err)
+	}
+	if code != 1 {
+		t.Fatalf("strict 95.0000%% run exit = %d, want 1; stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "RAW THRESHOLD BREACH") {
+		t.Fatalf("missing strict threshold error: %q", stderr.String())
 	}
 }
 
