@@ -2656,8 +2656,11 @@ func TestWeb_WorkspacePartial_RendersWorkingDirInStatusRow(t *testing.T) {
 	if !strings.Contains(body, "feature/bar") {
 		t.Errorf("status row missing Branch 'feature/bar': %q", body)
 	}
-	if !strings.Contains(body, `class="status-item cwd"`) {
-		t.Errorf("status row missing status-item cwd span: %q", body)
+	if !strings.Contains(body, `class="status-item location" data-status-location`) {
+		t.Errorf("status row missing grouped location hook: %q", body)
+	}
+	if !strings.Contains(body, `class="status-location-part cwd"`) {
+		t.Errorf("status row missing status-location-part cwd span: %q", body)
 	}
 	if !strings.Contains(body, `class="status-key"`) {
 		t.Errorf("status row missing status-key span: %q", body)
