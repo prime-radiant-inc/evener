@@ -14,6 +14,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/clock"
 	"primeradiant.com/serf/agent/internal/contextmgr"
 	"primeradiant.com/serf/agent/internal/diagnostic"
 	"primeradiant.com/serf/agent/internal/goal"
@@ -289,7 +290,11 @@ type RestoreSessionConfig struct {
 	spawn                       spawnConfig
 	resumeHistory               []schema.Turn
 	deferRestoreSideEffects     bool
-	testOnly                    testConfig
+	// clock is an intentionally package-private restore seam. NewSession already
+	// accepts this boundary through SessionConfig; restore must preserve it so
+	// deterministic job/watch replay never falls back to wall time mid-program.
+	clock    clock.Clock
+	testOnly testConfig
 }
 
 // RestoreSessionFromMeta creates a Session from a SessionMeta, recovering
@@ -316,6 +321,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	cfg.LLMRetryPolicy = restoreCfg.LLMRetryPolicy
 	cfg.LLMSleep = restoreCfg.LLMSleep
+	if restoreCfg.clock != nil {
+		cfg.clock = restoreCfg.clock
+	}
 	cfg.testOnly = restoreCfg.testOnly
 	cfg.SessionStartKind = plugin.SessionStartKindResume
 	cfg.applyDefaults()

@@ -3,15 +3,20 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/spf13/afero"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/fuzz/fault"
+	"primeradiant.com/serf/llm"
 )
 
 // This file fuzzes the watch-configuration and delegate-resume machinery in
@@ -134,6 +139,491 @@ func watchdel_checkWatchInvariants(t *testing.T, jm *jobManager) {
 	}
 	for cfg := range jm.terminalFlush {
 		check(cfg, "terminalFlush")
+	}
+}
+
+// watchdel_sessionFlow drives the same watch paths through a real Session rather
+// than a manager-only fixture. It keeps all effects at the approved boundaries:
+// the scripted adapter, fake clock, DenyEnv, and test-owned persistence root.
+// The program deliberately reaches the durable sequence that tends to regress:
+// create -> replace watch -> repeated output/coalesce -> notification delivery
+// -> clear -> terminal -> restore/re-arm -> notification delivery.
+func watchdel_sessionFlow(t *testing.T, data []byte) {
+	t.Helper()
+	r := &watchdel_reader{data: data}
+	stateDir := t.TempDir()
+	workDir := t.TempDir()
+	clk := agenttest.NewFakeClock()
+	client := llm.NewClient()
+	var childGate chan struct{}
+	releaseChildGate := func() {
+		if childGate != nil {
+			close(childGate)
+			childGate = nil
+		}
+	}
+	defer releaseChildGate()
+	client.Register(&agenttest.ScriptedAdapter{
+		Provider:  "openai",
+		Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
+	})
+	newSession := func(meta *schema.SessionMeta) (*Session, func()) {
+		env := &agenttest.DenyEnv{WorkDir: workDir, Seed: uint64(r.b())}
+		var (
+			sess *Session
+			err  error
+		)
+		if meta != nil {
+			sess, err = RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), env, *meta, RestoreSessionConfig{
+				StateDir: stateDir,
+				clock:    clk,
+				testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+			})
+		} else {
+			cfg := SessionConfig{
+				StateDir:         stateDir,
+				clock:            clk,
+				MaxSubagentDepth: 1,
+				NoProjectPrompts: true,
+				LLMSleep:         func(context.Context, time.Duration) error { return nil },
+			}
+			cfg.testOnly = testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true}
+			cfg.testOnly.childClientFactory = func() *llm.Client {
+				gate := childGate // captured before the child goroutine is launched
+				child := llm.NewClient()
+				child.Register(&agenttest.ScriptedAdapter{
+					Provider: "openai",
+					Responder: func(llm.Request) llm.Response {
+						if gate != nil {
+							<-gate
+						}
+						return agenttest.FinalResponse("child done")
+					},
+				})
+				return child
+			}
+			sess, err = NewSession(client, NewOpenAIProfile("gpt-5.2"), env, cfg)
+		}
+		if err != nil {
+			t.Fatalf("watchdel session setup: %v", err)
+		}
+		drainDone := make(chan struct{})
+		go func() {
+			for range sess.Events() {
+			}
+			close(drainDone)
+		}()
+		closed := false
+		return sess, func() {
+			if closed {
+				return
+			}
+			closed = true
+			releaseChildGate()
+			// A failure assertion can happen while a fuzzer-created runtime is
+			// deliberately parked. Abandoning it here keeps cleanup deterministic;
+			// normal paths have already reached terminal before this closure runs.
+			if sess.jobManager != nil {
+				sess.jobManager.abandonRunningJobs()
+			}
+			sess.Close()
+			<-drainDone
+		}
+	}
+
+	sess, closeSession := newSession(nil)
+	defer closeSession()
+	jm := sess.jobManager
+	if jm == nil {
+		closeSession()
+		t.Fatal("watchdel: Session has no job manager")
+	}
+
+	// The job is created through the manager's real persistence/open-output path.
+	rec, err := jm.createShell(createShellOpts{Command: "watchdel session flow"})
+	if err != nil {
+		closeSession()
+		t.Fatalf("watchdel create shell: %v", err)
+	}
+	monotonic := map[string]string{}
+	watchdel_checkSessionState(t, jm, monotonic)
+
+	// Same watch key, changed matcher: reaches the durable replace path. Caller
+	// delivery keeps the full Session notification boundary in scope.
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+	}); err != nil {
+		closeSession()
+		t.Fatalf("watchdel install watch: %v", err)
+	}
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "(?i)ready",
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+	}); err != nil {
+		closeSession()
+		t.Fatalf("watchdel replace watch: %v", err)
+	}
+	watchdel_checkSessionState(t, jm, monotonic)
+
+	// Only the pending-send append is faulted. Creation, output, terminalization,
+	// and restore remain real; an injected failure must roll the in-memory pending
+	// slot back to the same durable fold the oracle reads below.
+	origAppend := jm.appendEvent
+	gate := watchdel_faultGate(r.take(r.intn(5)))
+	jm.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventWatchSendPending {
+			if err := gate(); err != nil {
+				return err
+			}
+		}
+		return origAppend(e)
+	}
+
+	appendOutput := func(prefix string) {
+		jm.mu.Lock()
+		run := jm.running[rec.JobID]
+		jm.mu.Unlock()
+		if run == nil {
+			t.Fatalf("watchdel: running shell %s disappeared before output", rec.JobID)
+		}
+		chunk := append([]byte(prefix), r.take(r.intn(16))...)
+		chunk = append(chunk, '\n')
+		if _, err := jm.appendJobOutput(rec.JobID, run.output, chunk); err != nil {
+			t.Fatalf("watchdel append output: %v", err)
+		}
+		watchdel_checkSessionState(t, jm, monotonic)
+	}
+	appendOutput("ready one ")
+	appendOutput("READY two ") // same pending key; must coalesce before delivery.
+	jm.appendEvent = origAppend
+	pendingBeforeAccept, err := jm.store.LoadWatchSends()
+	if err != nil {
+		closeSession()
+		t.Fatalf("watchdel pending before accept: %v", err)
+	}
+	wantWatchDeliveries := make(map[string]bool, len(pendingBeforeAccept.Pending))
+	for _, state := range pendingBeforeAccept.Pending {
+		if state != nil && state.DeliveryID != "" {
+			wantWatchDeliveries[state.DeliveryID] = true
+		}
+	}
+
+	// A real notification turn, not a queue inspection, accepts the caller token
+	// and durably settles its final coalesced delivery ID. A second drain is the
+	// exactly-once check: it must not create another accepted delivery.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, _ = sess.ProcessInputKind(ctx, "", nil, EntryNotification)
+	_, _ = sess.ProcessInputKind(ctx, "", nil, EntryNotification)
+	watchdel_checkSessionState(t, jm, monotonic)
+	watchdel_checkAcceptedWatchDeliveries(t, jm, wantWatchDeliveries)
+
+	if _, err := jm.configureWatch(watchArgs{
+		Target: rec.JobID,
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller},
+		Clear:  true,
+	}); err != nil {
+		closeSession()
+		t.Fatalf("watchdel clear watch: %v", err)
+	}
+	watchdel_checkSessionState(t, jm, monotonic)
+
+	// Delegate creation uses the Session's real child orchestration, but the child
+	// receives its own scripted client and the same fake-time/deny-env boundary.
+	// A foreground completion must leave a durable terminal record with no orphaned
+	// runtime before the parent moves on to terminal-notification restore.
+	delegate := sess.createDelegate(ctx, delegateArgs{
+		Task:                "watchdel delegate completion",
+		Background:          false,
+		BlockTimeoutMS:      1000,
+		DelegationAllowance: 0,
+	})
+	if delegate.Err != nil || delegate.JobID == "" {
+		closeSession()
+		t.Fatalf("watchdel delegate completion: result=%+v", delegate)
+	}
+	watchdel_checkSessionState(t, jm, monotonic)
+	delegateRecords, err := jm.store.Load()
+	if err != nil {
+		closeSession()
+		t.Fatalf("watchdel delegate load: %v", err)
+	}
+	if drec := delegateRecords[delegate.JobID]; drec == nil || drec.Type != jobstore.JobDelegate || !drec.Status.IsTerminal() {
+		closeSession()
+		t.Fatalf("watchdel delegate record after completion = %+v, want terminal delegate", drec)
+	}
+	if running := jm.runningJobIDs(); len(running) != 1 || running[0] != rec.JobID {
+		closeSession()
+		t.Fatalf("watchdel delegate completion left running jobs %v, want only shell %q", running, rec.JobID)
+	}
+
+	// A second watch targets a real, still-running delegate. Its output match is drained
+	// through Session.drainPendingWatchSends, which invokes the real
+	// deliverPendingWatchSend -> sendDelegateMessage path (rather than a test
+	// sender). The child is gated until the delivery has steered into it.
+	childGate = make(chan struct{})
+	liveDelegate := sess.createDelegate(ctx, delegateArgs{
+		Task:                "watchdel live delegate",
+		Background:          true,
+		DelegationAllowance: 0,
+	})
+	if liveDelegate.Err != nil || liveDelegate.JobID == "" || liveDelegate.DelegateID == "" {
+		closeSession()
+		t.Fatalf("watchdel live delegate: result=%+v", liveDelegate)
+	}
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "direct",
+		Send:        &watchSendArgs{To: liveDelegate.DelegateID, Message: "continue"},
+	}); err != nil {
+		closeSession()
+		t.Fatalf("watchdel install delegate watch: %v", err)
+	}
+	jm.mu.Lock()
+	shellRun := jm.running[rec.JobID]
+	jm.mu.Unlock()
+	if shellRun == nil {
+		closeSession()
+		t.Fatalf("watchdel: shell %q disappeared before delegate watch output", rec.JobID)
+	}
+	if _, err := jm.appendJobOutput(rec.JobID, shellRun.output, []byte("direct ready\n")); err != nil {
+		closeSession()
+		t.Fatalf("watchdel append direct output: %v", err)
+	}
+	directPending, err := jm.store.LoadWatchSends()
+	if err != nil {
+		closeSession()
+		t.Fatalf("watchdel direct pending: %v", err)
+	}
+	directDeliveryIDs := make(map[string]bool, len(directPending.Pending))
+	for _, state := range directPending.Pending {
+		if state != nil && state.Key.ResolvedSendTo == liveDelegate.DelegateID && state.DeliveryID != "" {
+			directDeliveryIDs[state.DeliveryID] = true
+		}
+	}
+	if len(directDeliveryIDs) == 0 {
+		closeSession()
+		t.Fatal("watchdel: delegate watch did not persist a direct pending delivery")
+	}
+	if err := sess.drainPendingWatchSends(ctx); err != nil {
+		closeSession()
+		t.Fatalf("watchdel drain delegate watch: %v", err)
+	}
+	watchdel_checkAcceptedWatchDeliveries(t, jm, directDeliveryIDs)
+	releaseChildGate()
+	watchdel_quiesceDelegateJobs(t, sess, clk, rec.JobID)
+	drainJobNotificationTurns(sess)
+	watchdel_checkSessionState(t, jm, monotonic)
+
+	// Terminalize without accepting its terminal notification. Restore then owns
+	// the actual re-arm path; the restored EntryNotification turn is what marks
+	// the durable terminal delivery accepted exactly once.
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "watchdel_done", nil); err != nil {
+		closeSession()
+		t.Fatalf("watchdel finalize: %v", err)
+	}
+	watchdel_checkSessionState(t, jm, monotonic)
+	if running := jm.runningJobIDs(); len(running) != 0 {
+		closeSession()
+		t.Fatalf("watchdel: %d running jobs after deterministic finalization", len(running))
+	}
+	watchdel_checkNoLiveWatchForTerminal(t, jm, rec.JobID)
+	watchdel_checkTerminalNotifyState(t, jm, rec.JobID, jobstore.NotifyPending)
+
+	meta := sess.Meta()
+	closeSession()
+
+	restored, closeRestored := newSession(&meta)
+	defer closeRestored()
+	if restored.clock != clk || restored.jobManager.clock != clk {
+		t.Fatalf("watchdel: restore lost fake clock boundary")
+	}
+	_, _ = restored.ProcessInputKind(ctx, "", nil, EntryNotification)
+	_, _ = restored.ProcessInputKind(ctx, "", nil, EntryNotification)
+	watchdel_checkSessionState(t, restored.jobManager, monotonic)
+	watchdel_checkTerminalNotifyState(t, restored.jobManager, rec.JobID, jobstore.NotifyDelivered)
+	if running := restored.jobManager.runningJobIDs(); len(running) != 0 {
+		t.Fatalf("watchdel: restored manager has %d orphaned running jobs", len(running))
+	}
+}
+
+func watchdel_checkAcceptedWatchDeliveries(t *testing.T, jm *jobManager, want map[string]bool) {
+	t.Helper()
+	if len(want) == 0 {
+		return // The injected append fault intentionally leaves no accepted delivery.
+	}
+	events, err := jm.store.LoadEvents()
+	if err != nil {
+		t.Fatalf("watchdel delivery events: %v", err)
+	}
+	seen := map[string]int{}
+	for _, event := range events {
+		if event.Kind == jobstore.EventWatchSendDelivered && event.WatchSend != nil {
+			seen[event.WatchSend.DeliveryID]++
+		}
+	}
+	for id := range want {
+		if seen[id] != 1 {
+			t.Fatalf("watchdel: accepted watch delivery %q count=%d, want exactly 1", id, seen[id])
+		}
+	}
+}
+
+func watchdel_checkTerminalNotifyState(t *testing.T, jm *jobManager, jobID string, want jobstore.NotifyState) {
+	t.Helper()
+	recs, err := jm.store.Load()
+	if err != nil {
+		t.Fatalf("watchdel terminal state load: %v", err)
+	}
+	rec := recs[jobID]
+	if rec == nil {
+		t.Fatalf("watchdel terminal job %q missing", jobID)
+	}
+	if rec.NotifyState != want {
+		t.Fatalf("watchdel terminal job %q notify state=%q, want %q", jobID, rec.NotifyState, want)
+	}
+}
+
+// watchdel_quiesceDelegateJobs is the fake-clock/done-channel completion
+// handshake for just the delegate runtimes. The manually-created shell remains
+// intentionally running until the terminalization operation below, so the
+// lifecycle-wide quiesceJobs helper would wait on the wrong runtime here.
+func watchdel_quiesceDelegateJobs(t *testing.T, sess *Session, clk *agenttest.FakeClock, shellID string) {
+	t.Helper()
+	jm := sess.jobManager
+	if jm == nil {
+		t.Fatal("watchdel: no manager while quiescing delegate")
+	}
+	jm.mu.Lock()
+	var dones []chan struct{}
+	for id, run := range jm.running {
+		if id != shellID && run != nil && run.rec != nil && run.rec.Type == jobstore.JobDelegate {
+			dones = append(dones, run.done)
+		}
+	}
+	jm.mu.Unlock()
+	clk.Advance(shellFinalizeMaxRetryDelay)
+	for _, done := range dones {
+		select {
+		case <-done:
+		case <-time.After(lifecycleCallTimeout):
+			t.Fatal("watchdel: delegate did not quiesce")
+		}
+	}
+}
+
+// watchdel_checkSessionState compares the durable folds with runtime state after
+// every operation. The store is the crash-recovery truth; running records and
+// pending maps are the live truth. They must agree even when the fault gate
+// rejects a watch-send append.
+func watchdel_checkSessionState(t *testing.T, jm *jobManager, terminal map[string]string) {
+	t.Helper()
+	if jm == nil || jm.store == nil {
+		t.Fatal("watchdel: nil job manager/store")
+	}
+	durable, err := jm.store.Load()
+	if err != nil {
+		t.Fatalf("watchdel Load: %v", err)
+	}
+	livePending := map[jobstore.WatchSendKey]jobstore.WatchSendState{}
+	jm.mu.Lock()
+	for id, run := range jm.running {
+		if run == nil || run.rec == nil {
+			jm.mu.Unlock()
+			t.Fatalf("watchdel: nil running job %q", id)
+		}
+		folded := durable[id]
+		if folded == nil {
+			jm.mu.Unlock()
+			t.Fatalf("watchdel: running job %q missing from durable fold", id)
+		}
+		if folded.Type != run.rec.Type || folded.Status != run.rec.Status || folded.Reason != run.rec.Reason || folded.TerminalGen != run.rec.TerminalGen {
+			jm.mu.Unlock()
+			t.Fatalf("watchdel: durable/live job mismatch for %q: durable=%+v live=%+v", id, folded, run.rec)
+		}
+	}
+	collect := func(cfg *watchConfig) {
+		if cfg == nil {
+			return
+		}
+		for key, state := range cfg.pending {
+			if state != nil {
+				livePending[key] = *state
+			}
+		}
+	}
+	for _, cfg := range jm.watches {
+		collect(cfg)
+	}
+	for cfg := range jm.terminalFlush {
+		collect(cfg)
+	}
+	jm.mu.Unlock()
+
+	for id, rec := range durable {
+		if rec == nil {
+			continue
+		}
+		if prev, ok := terminal[id]; ok {
+			if !rec.Status.IsTerminal() || rec.TerminalGen != prev {
+				t.Fatalf("watchdel: terminal job regressed %s: generation %q -> status=%q generation=%q", id, prev, rec.Status, rec.TerminalGen)
+			}
+		} else if rec.Status.IsTerminal() {
+			terminal[id] = rec.TerminalGen
+		}
+	}
+
+	pending, err := jm.store.LoadWatchSends()
+	if err != nil {
+		t.Fatalf("watchdel LoadWatchSends: %v", err)
+	}
+	if len(livePending) != len(pending.Pending) {
+		t.Fatalf("watchdel: live pending=%d durable pending=%d", len(livePending), len(pending.Pending))
+	}
+	for key, live := range livePending {
+		folded := pending.Pending[key]
+		if folded == nil || folded.DeliveryID != live.DeliveryID || folded.UpdateSeq != live.UpdateSeq || folded.CoalescedCount != live.CoalescedCount {
+			t.Fatalf("watchdel: durable/live pending mismatch for %+v: durable=%+v live=%+v", key, folded, live)
+		}
+	}
+
+	events, err := jm.store.LoadEvents()
+	if err != nil {
+		t.Fatalf("watchdel LoadEvents: %v", err)
+	}
+	terminalDelivered := map[string]bool{}
+	watchDelivered := map[string]bool{}
+	for _, event := range events {
+		switch event.Kind {
+		case jobstore.EventJobNotificationDelivered:
+			key := event.JobID + "\x00" + event.TerminalGen
+			if terminalDelivered[key] {
+				t.Fatalf("watchdel: terminal notification accepted twice for %q", key)
+			}
+			terminalDelivered[key] = true
+		case jobstore.EventWatchSendDelivered:
+			if event.WatchSend == nil || event.WatchSend.DeliveryID == "" {
+				t.Fatalf("watchdel: delivered watch send has no delivery id: %+v", event)
+			}
+			if watchDelivered[event.WatchSend.DeliveryID] {
+				t.Fatalf("watchdel: watch delivery accepted twice for %q", event.WatchSend.DeliveryID)
+			}
+			watchDelivered[event.WatchSend.DeliveryID] = true
+		}
+	}
+}
+
+func watchdel_checkNoLiveWatchForTerminal(t *testing.T, jm *jobManager, jobID string) {
+	t.Helper()
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	for _, cfg := range jm.watches {
+		if cfg != nil && cfg.target == jobID {
+			t.Fatalf("watchdel: terminal job %q retains live watch %q", jobID, cfg.watchID)
+		}
 	}
 }
 
@@ -288,12 +778,17 @@ func watchdel_seedObserverDelegate(t *testing.T, jm *jobManager) {
 // through the append seam, and asserts the watch-state invariant after each step.
 func FuzzWatchdelWatchOps(f *testing.F) {
 	f.Add([]byte{})
+	// The session-backed flow reads this as a one-byte fault plan containing an
+	// injected failure, then proves the rollback agrees with the durable fold.
+	f.Add([]byte{7, 1, 0, 9, 11})
 	f.Add([]byte{1, 2, 3, 4, 5, 6, 7, 8})
 	f.Add([]byte{0, 1, 0, 3, 0, 2, 1, 1, 4, 4, 0, 0})
 	f.Add([]byte{2, 2, 2, 2, 9, 9, 9, 9, 1, 1, 1, 1, 5, 5, 5, 5})
 	f.Add([]byte{4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64})
 
 	f.Fuzz(func(t *testing.T, data []byte) {
+		watchdel_sessionFlow(t, data)
+
 		r := &watchdel_reader{data: data}
 		jm := newTestJM(t)
 

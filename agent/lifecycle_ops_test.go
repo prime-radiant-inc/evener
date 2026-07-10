@@ -8,8 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/oklog/ulid/v2"
+
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -46,6 +49,42 @@ func lifecycleTestSession(t *testing.T, parentResponder func(llm.Request) llm.Re
 		<-drainDone
 	})
 	return sess, clk
+}
+
+// TestRestoreSessionConfigUsesInjectedClock keeps the restore path on the same
+// deterministic clock boundary as NewSession. Stateful fuzzers advance this
+// clock to settle job and watch work without relying on wall time.
+func TestRestoreSessionConfigUsesInjectedClock(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	client := llm.NewClient()
+	client.Register(&agenttest.ScriptedAdapter{
+		Provider:  "openai",
+		Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
+	})
+
+	sess, err := RestoreSessionFromMetaWithConfig(
+		client,
+		NewOpenAIProfile("gpt-5.2"),
+		&agenttest.DenyEnv{WorkDir: t.TempDir()},
+		schema.SessionMeta{ID: ulid.Make().String(), ProfileID: "openai", Model: "gpt-5.2", CreatedAt: clk.Now()},
+		RestoreSessionConfig{
+			StateDir: t.TempDir(),
+			clock:    clk,
+			testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+		},
+	)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer sess.Close()
+
+	if sess.clock != clk {
+		t.Fatalf("restored session clock = %T, want injected fake clock", sess.clock)
+	}
+	if sess.jobManager.clock != clk {
+		t.Fatalf("restored job manager clock = %T, want injected fake clock", sess.jobManager.clock)
+	}
 }
 
 // TestLifecycleBackgroundShellQuiesces proves the C2 path: a turn that issues a

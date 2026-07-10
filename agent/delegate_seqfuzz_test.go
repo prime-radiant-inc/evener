@@ -14,7 +14,6 @@ import (
 
 	"pgregory.net/rapid"
 
-	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/fuzz/promoter"
@@ -27,9 +26,9 @@ import (
 // finalize, double-finalize, restore of a running delegate, allowance accounting
 // across grants), not in any single call. A rapid.Check state machine draws a
 // short op sequence and replays it against a REAL agent.Session + jobManager built
-// entirely offline: a real (local, temp-dir) exec env, an injected fake clock (all
-// timers/sleeps are virtual), StateDir on a temp dir (so restore-from-meta reads
-// real on-disk child meta + transcript), and a stateless scripted adapter whose
+// entirely offline: a deny-by-default execution environment, an injected fake
+// clock (all timers/sleeps are virtual), StateDir on a temp dir (so restore-from-meta
+// reads real on-disk child meta + transcript), and a stateless scripted adapter whose
 // every response is a terminal communicate/end_turn — so every delegate child turn
 // terminates in one round with no wall-clock wait.
 //
@@ -220,6 +219,7 @@ type ds_lastAction struct {
 	restoreAttempted bool
 	restoreErr       bool
 	restoredRunning  bool
+	restoredClockOK  bool
 	restoreSeedErr   string
 }
 
@@ -260,7 +260,8 @@ func ds_oracleRun(art ds_artifact) *promoter.Failure {
 		// backoff wait. The retry LOGIC still runs; only the delay is elided.
 		LLMSleep: func(context.Context, time.Duration) error { return nil },
 	}
-	root, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), cfg)
+	cfg.testOnly = testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true}
+	root, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), &agenttest.DenyEnv{WorkDir: workDir, Seed: art.Seed}, cfg)
 	if err != nil {
 		return ds_failure(promoter.Invariant, art, -1, "NewSession:"+err.Error())
 	}
@@ -469,6 +470,7 @@ func ds_applyRestoreSeed(root *Session, op ds_op, model *ds_model, seed *[]*Sess
 		sub.mu.Lock()
 		model.last.restoredRunning = sub.running
 		sub.mu.Unlock()
+		model.last.restoredClockOK = sub.sess.clock == root.clock && sub.sess.jobManager != nil && sub.sess.jobManager.clock == root.clock
 	}
 }
 
@@ -572,6 +574,9 @@ func ds_checkRestore(m *ds_model, art ds_artifact, step int) *promoter.Failure {
 		if m.last.restoreAttempted && !m.last.restoreErr && m.last.restoredRunning {
 			return ds_failure(promoter.Invariant, art, step, "restored-delegate-marked-running")
 		}
+		if m.last.restoreAttempted && !m.last.restoreErr && !m.last.restoredClockOK {
+			return ds_failure(promoter.Invariant, art, step, "restored-delegate-lost-fake-clock")
+		}
 	case dsMutBadParent, dsMutClearWorkDir, dsMutBadTranscript, dsMutRemoveMeta, dsMutRemoveTranscript:
 		// A corrupted descriptor/on-disk state must be rejected by assessment.
 		if m.last.restoreResumable {
@@ -666,19 +671,21 @@ func ds_checkStore(root *Session, m *ds_model, art ds_artifact, step int) *promo
 // resumable runtime_lost delegate. It returns the folded record and the seed child
 // session (which the caller closes) or an error.
 func ds_seedStoppedDelegateRestore(root *Session) (*jobstore.JobRecord, *Session, error) {
-	childWorkDir, err := os.MkdirTemp("", "ds-child-work-")
-	if err != nil {
-		return nil, nil, err
+	childEnv := root.currentEnv()
+	if childEnv == nil || strings.TrimSpace(childEnv.WorkingDirectory()) == "" {
+		return nil, nil, fmt.Errorf("missing deterministic child execution environment")
 	}
+	childWorkDir := childEnv.WorkingDirectory()
 	cfg := SessionConfig{
 		clock:            root.cfg.clock,
 		StateDir:         root.stateDir,
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
 	}
+	cfg.testOnly = testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true}
 	cfg.spawn.depth = root.depth + 1
 	cfg.spawn.parentSessionID = root.ID()
-	child, err := NewSession(root.client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(childWorkDir), cfg)
+	child, err := NewSession(root.client, NewOpenAIProfile("gpt-5.2"), childEnv, cfg)
 	if err != nil {
 		return nil, nil, err
 	}

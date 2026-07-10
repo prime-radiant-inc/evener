@@ -910,6 +910,7 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 		ModelFallbacks: append([]string(nil), s.cfg.ModelFallbacks...),
 		LLMRetryPolicy: s.cfg.LLMRetryPolicy,
 		LLMSleep:       s.cfg.LLMSleep,
+		clock:          s.clock,
 		spawn: spawnConfig{
 			parentSessionID:         desc.ParentSessionID,
 			parentToolCallID:        desc.OriginToolCallID,
