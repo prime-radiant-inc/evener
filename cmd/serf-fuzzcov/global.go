@@ -677,15 +677,13 @@ type globalModeOptions struct {
 	json           bool
 }
 
-// runGlobalMode keeps the command-line branch small and testable. Advisory runs
-// still print an honest failing raw result; --check and --bless turn that result
-// into a non-zero status. Blessing rewrites floors only after every module clears
-// the strict raw threshold.
+// runGlobalMode keeps the command-line branch small and testable. Every global
+// invocation enforces the repository-wide strict >95.0% raw threshold; --check
+// turns a measured breach into a non-zero status. Blessing rewrites floors only
+// after every module clears that threshold.
 func runGlobalMode(options globalModeOptions, stdout, stderr io.Writer) (int, error) {
-	if options.check || options.bless {
-		if err := validateGlobalGateMinimum(options.minimum); err != nil {
-			return 0, err
-		}
+	if err := validateGlobalModeMinimum(options.minimum); err != nil {
+		return 0, err
 	}
 	profiles, err := readGlobalProfilesFile(options.manifestPath)
 	if err != nil {
@@ -957,19 +955,9 @@ var globalPlatformBuildTags = map[string]struct{}{
 // a file hidden by !serffuzz, cgo, a release tag, or an arbitrary feature tag
 // is still ordinary production source and must remain in the denominator.
 func hasPlatformDerivedUnavailability(sourcePath, file string, coverageBuild build.Context) (bool, error) {
-	filenameUnavailable, err := hasUnavailablePlatformFilenameSuffix(sourcePath, file, coverageBuild)
-	if err != nil {
-		return false, err
-	}
-	if filenameUnavailable {
-		return true, nil
-	}
 	expressions, err := leadingBuildConstraintExpressions(sourcePath)
 	if err != nil {
 		return false, err
-	}
-	if len(expressions) == 0 {
-		return false, nil
 	}
 	for _, expression := range expressions {
 		tags := map[string]bool{}
@@ -983,7 +971,16 @@ func hasPlatformDerivedUnavailability(sourcePath, file string, coverageBuild bui
 			}
 		}
 	}
-	return true, nil
+
+	filenameUnavailable, err := hasUnavailablePlatformFilenameSuffix(sourcePath, file, coverageBuild)
+	if err != nil {
+		return false, err
+	}
+	// A genuine filename suffix can justify exclusion on its own. When a source
+	// header is present, it must already have passed the platform-only check
+	// above; otherwise an unrelated replay, cgo, or feature condition could
+	// hide ordinary production code behind an unavailable filename suffix.
+	return filenameUnavailable || len(expressions) > 0, nil
 }
 
 func isGlobalPlatformBuildTag(tag string) bool {
@@ -1243,15 +1240,15 @@ func validateGlobalMinimum(minimum float64) error {
 	return nil
 }
 
-// validateGlobalGateMinimum keeps ReportGlobal usable for focused accounting
-// tests while preventing the command's check/bless paths from weakening the
-// repository-wide >95.0% contract.
-func validateGlobalGateMinimum(minimum float64) error {
+// validateGlobalModeMinimum keeps ReportGlobal usable for focused accounting
+// tests while preventing any command-line global-coverage mode from weakening
+// the repository-wide >95.0% contract.
+func validateGlobalModeMinimum(minimum float64) error {
 	if err := validateGlobalMinimum(minimum); err != nil {
 		return err
 	}
 	if minimum < 95.0 {
-		return fmt.Errorf("global minimum %.4f must be at least 95.0 for --check or --bless", minimum)
+		return fmt.Errorf("global minimum %.4f must be at least 95.0 for global coverage", minimum)
 	}
 	return nil
 }

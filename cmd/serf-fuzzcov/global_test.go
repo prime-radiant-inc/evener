@@ -297,6 +297,36 @@ func TestRunGlobalModeRejectsSubTargetMinimumForCheckAndBless(t *testing.T) {
 	}
 }
 
+func TestRunGlobalModeRejectsSubTargetMinimumBeforeAdvisoryReporting(t *testing.T) {
+	repo := t.TempDir()
+	floors := filepath.Join(repo, "floors.txt")
+	const originalFloors = "# advisory runs must not rewrite floors\n. 96\n"
+	mustWrite(t, floors, originalFloors)
+
+	var stdout, stderr bytes.Buffer
+	code, err := runGlobalMode(globalModeOptions{
+		// A missing manifest proves the policy gate runs before profiling.
+		manifestPath: filepath.Join(repo, "must-not-be-read.tsv"), floorsPath: floors, repoRoot: repo,
+		minimum: 0,
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "at least 95.0") {
+		t.Fatalf("advisory minimum 0 error = %v, want minimum policy rejection", err)
+	}
+	if code != 0 {
+		t.Fatalf("advisory minimum 0 code = %d, want 0 with returned error", code)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("advisory policy rejection must not report coverage: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	got, readErr := os.ReadFile(floors)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != originalFloors {
+		t.Fatalf("advisory sub-target minimum rewrote floors:\n%s", got)
+	}
+}
+
 func TestGlobalJSONRemainsValidWhenBlessing(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "go.mod"), "module example.com/m\n\ngo 1.25\n")
@@ -413,6 +443,38 @@ func TestPlatformExclusionMustBeUnavailableAndExclusionsRejectInvalidRows(t *tes
 	if runtime.GOOS == otherOS {
 		otherOS = "linux"
 	}
+	for _, tagged := range []struct {
+		name   string
+		source string
+	}{
+		{
+			name:   "replay tag",
+			source: "//go:build !serffuzz\n\npackage pkg\n\nfunc NotReplay() {}\n",
+		},
+		{
+			name:   "cgo condition",
+			source: "//go:build cgo && !cgo\n\npackage pkg\n\nfunc ImpossibleCGO() {}\n",
+		},
+		{
+			name:   "arbitrary feature condition",
+			source: "//go:build serfcoveragefeature\n\npackage pkg\n\nfunc FeatureOnly() {}\n",
+		},
+	} {
+		t.Run("unavailable filename suffix plus "+tagged.name, func(t *testing.T) {
+			file := "platform_" + otherOS + ".go"
+			taggedRepo, _ := globalExclusionFixture(t, file, tagged.source)
+			line := "m\t./pkg\t" + file + "\tplatform\tnon-platform condition must not be masked by filename suffix\n"
+			if _, err := ReadGlobalExclusions(taggedRepo, strings.NewReader(line)); err == nil {
+				t.Fatalf("unavailable filename suffix plus %s must not be excluded as platform", tagged.name)
+			}
+		})
+	}
+
+	platformHeaderSuffixRepo, _ := globalExclusionFixture(t, "platform_"+otherOS+".go", "//go:build "+otherOS+"\n\npackage pkg\n\nfunc PlatformHeaderAndSuffix() {}\n")
+	if _, err := ReadGlobalExclusions(platformHeaderSuffixRepo, strings.NewReader("m\t./pkg\tplatform_"+otherOS+".go\tplatform\tplatform-only header and filename suffix\n")); err != nil {
+		t.Fatalf("unavailable filename suffix with platform-only header must be accepted: %v", err)
+	}
+
 	currentSuffixFile := "platform_" + runtime.GOOS + ".go"
 	currentSuffixRepo, _ := globalExclusionFixture(t, currentSuffixFile, "//go:build !serffuzz\n\npackage pkg\n\nfunc CurrentPlatformReplayOnly() {}\n")
 	if _, err := ReadGlobalExclusions(currentSuffixRepo, strings.NewReader("m\t./pkg\t"+currentSuffixFile+"\tplatform\tavailable GOOS suffix hidden only by replay tag\n")); err == nil {
