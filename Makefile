@@ -86,6 +86,9 @@ FUZZ_GO_MODULES := $(GO_MODULES) fuzz
 # Degrades to running uncapped (with a warning) where user scopes are unavailable.
 # See scripts/run-capped.sh and docs/fuzzing.md ("Memory safety").
 MEMCAP := scripts/run-capped.sh
+# Fuzz replay is a deterministic evidence gate: never inherit a developer's
+# persisted Go configuration or GOFLAGS, and always use this checkout's workspace.
+override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 
 test:
 	@MODULES="$(GO_MODULES)" $(MEMCAP) scripts/run-module-tests.sh -short -count=1
@@ -122,12 +125,12 @@ vet:
 # never-panic oracle catches it. The first step verifies the mechanism itself
 # fires under the tag; production builds and `make test` stay tag-free.
 fuzz:
-	@$(MEMCAP) sh -c 'cd invariant && go test -tags serffuzz ./...'
-	@$(MEMCAP) sh -c 'cd fuzz && go test -tags serffuzz ./...'
-	@$(MEMCAP) sh -c 'go test ./cmd/serf-fuzzcov ./cmd/serf-fuzz-harvest'
-	@for m in $(FUZZ_GO_MODULES); do ($(MEMCAP) sh -c "cd $$m && go test -run '^Fuzz' -tags serffuzz ./...") || exit 1; done
-	@set -eu; cap="$$(pwd)/$(MEMCAP)"; for target in $$(scripts/run-fuzz.sh --list | awk -F: '$$1 == "rapid" { print $$2 ":" $$3 ":" $$4 }'); do module=$${target%%:*}; rest=$${target#*:}; pkg=$${rest%%:*}; name=$${rest#*:}; for seed in 1 2 3 5 8; do echo "=== rapid replay $$module:$$name seed $$seed ==="; (cd "$$module" && env -u RAPID_FAILFILE RAPID_SEED="$$seed" RAPID_CHECKS=100 RAPID_STEPS=30 RAPID_NOFAILFILE=true RAPID_LOG=false RAPID_V=false RAPID_DEBUG=false RAPID_DEBUGVIS=false RAPID_SHRINKTIME=30s "$$cap" go test -tags serffuzz -run "^$${name}\$$" -count=1 "$$pkg"); done; done
-	@$(MEMCAP) sh -c "go test -run '^Test.*Golden\$$' ./appwire"
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd invariant && go test -tags serffuzz ./...'
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd fuzz && go test -tags serffuzz ./...'
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'go test ./cmd/serf-fuzzcov ./cmd/serf-fuzz-harvest'
+	@for m in $(FUZZ_GO_MODULES); do (GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c "cd $$m && go test -run '^Fuzz' -tags serffuzz ./...") || exit 1; done
+	@set -eu; cap="$$(pwd)/$(MEMCAP)"; go_work="$(FUZZ_GOWORK)"; for target in $$(scripts/run-fuzz.sh --list | awk -F: '$$1 == "rapid" { print $$2 ":" $$3 ":" $$4 }'); do module=$${target%%:*}; rest=$${target#*:}; pkg=$${rest%%:*}; name=$${rest#*:}; for seed in 1 2 3 5 8; do echo "=== rapid replay $$module:$$name seed $$seed ==="; (cd "$$module" && GOENV=off GOFLAGS= GOWORK="$$go_work" env -u RAPID_FAILFILE RAPID_SEED="$$seed" RAPID_CHECKS=100 RAPID_STEPS=30 RAPID_NOFAILFILE=true RAPID_LOG=false RAPID_V=false RAPID_DEBUG=false RAPID_DEBUGVIS=false RAPID_SHRINKTIME=30s "$$cap" go test -tags serffuzz -run "^$${name}\$$" -count=1 "$$pkg"); done; done
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c "go test -run '^Test.*Golden\$$' ./appwire"
 
 # fuzz-goldens regenerates the decode SNAPSHOT goldens — serf's differential
 # oracle. Each decode target's committed seed corpus is replayed and its decoded

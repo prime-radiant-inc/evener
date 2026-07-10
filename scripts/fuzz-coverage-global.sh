@@ -40,6 +40,8 @@ floors_file="$repo_root/scripts/fuzzcov-global-floors.txt"
 # explicit --modules selection is useful while a module is being raised, but the
 # default contract is the full workspace as it exists at execution time.
 workspace_modules=()
+declare -A workspace_module_paths=()
+declare -A workspace_module_dirs=()
 selected_modules=()
 modules_argument=""
 modules_argument_set=false
@@ -91,11 +93,43 @@ select_modules() {
 	done
 }
 
+# clean_lexical_path resolves . and .. without following symlinks. Workspace
+# target identity is intentionally based on this spelling, matching the registry
+# checker; physical resolution below is only a containment/integrity check.
+clean_lexical_path() {
+	local raw="$1" input component result
+	local -a components=()
+	case "$raw" in
+		/*) input="$raw" ;;
+		*) input="$repo_root/$raw" ;;
+	esac
+	IFS=/ read -r -a raw_components <<<"$input"
+	for component in "${raw_components[@]}"; do
+		case "$component" in
+			''|.) ;;
+			..)
+				[ "${#components[@]}" -gt 0 ] || return 1
+				components=("${components[@]:0:${#components[@]} - 1}")
+				;;
+			*) components+=("$component") ;;
+		esac
+	done
+	result=/
+	if [ "${#components[@]}" -gt 0 ]; then
+		local IFS=/
+		result="/${components[*]}"
+	fi
+	printf '%s\n' "$result"
+}
+
 discover_workspace_modules() {
 	local workspace_json="$work/go.work.json"
 	local workspace_paths="$work/go.work-paths.txt"
-	local disk_path module_dir module
-	declare -A seen=()
+	local disk_path logical_module_dir resolved_module_dir module
+	declare -A seen=() resolved_seen=()
+	workspace_modules=()
+	workspace_module_paths=()
+	workspace_module_dirs=()
 
 	if ! (cd "$repo_root" && "$go_bin" work edit -json "$go_work") >"$workspace_json"; then
 		die "cannot read go.work module list: $go_work"
@@ -125,26 +159,33 @@ discover_workspace_modules() {
 
 	while IFS= read -r disk_path; do
 		[ -n "$disk_path" ] || die "go.work contains an empty module path"
-		case "$disk_path" in
-			/*) module_dir="$disk_path" ;;
-			*) module_dir="$repo_root/$disk_path" ;;
-		esac
-		if ! module_dir="$(cd "$module_dir" 2>/dev/null && pwd -P)"; then
-			die "go.work module directory does not exist: $disk_path"
+		if ! logical_module_dir="$(clean_lexical_path "$disk_path")"; then
+			die "go.work module has unsafe path: $disk_path"
 		fi
-		case "$module_dir" in
+		case "$logical_module_dir" in
 			"$repo_root") module=. ;;
-			"$repo_root"/*) module="${module_dir#"$repo_root/"}" ;;
+			"$repo_root"/*) module="${logical_module_dir#"$repo_root/"}" ;;
 			*) die "go.work module is outside repository root: $disk_path" ;;
 		esac
 		case "$module" in
 			.) ;;
 			*) [[ "$module" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || die "go.work module has unsafe label: $disk_path" ;;
 		esac
-		[ -f "$module_dir/go.mod" ] || die "go.work module has no go.mod: $disk_path"
+		if ! resolved_module_dir="$(cd "$logical_module_dir" 2>/dev/null && pwd -P)"; then
+			die "go.work module directory does not exist: $disk_path"
+		fi
+		case "$resolved_module_dir" in
+			"$repo_root"|"$repo_root"/*) ;;
+			*) die "go.work module is outside repository root: $disk_path" ;;
+		esac
+		[ -f "$resolved_module_dir/go.mod" ] || die "go.work module has no go.mod: $disk_path"
 		[ -z "${seen[$module]+x}" ] || die "go.work lists duplicate module: $module"
+		[ -z "${resolved_seen[$resolved_module_dir]+x}" ] || die "go.work lists duplicate module directory: $disk_path"
 		seen[$module]=1
+		resolved_seen[$resolved_module_dir]=1
 		workspace_modules+=("$module")
+		workspace_module_paths["$module"]="$logical_module_dir"
+		workspace_module_dirs["$module"]="$resolved_module_dir"
 	done <"$workspace_paths"
 	[ "${#workspace_modules[@]}" -gt 0 ] || die "go.work contains no modules"
 }
@@ -180,8 +221,8 @@ esac
 [ -f "$floors_file" ] || die "missing floors manifest: $floors_file"
 
 # Every Go command, including the registry checker that internally invokes Go,
-# is pinned to this workspace rather than ambient developer GOWORK state.
-export GOWORK="$go_work"
+# gets one explicit workspace and ignores persisted or ambient Go configuration.
+export GOWORK="$go_work" GOENV=off GOFLAGS=
 
 work="$(mktemp -d -t serf-fuzzcov-global.XXXXXX)"
 trap 'rm -rf "$work"' EXIT
@@ -255,19 +296,22 @@ done
 declare -A production_package=()
 preflight_failed=false
 for module in "${selected_modules[@]}"; do
-	module_dir="$repo_root/$module"
-	[ -d "$module_dir" ] || die "missing module directory: $module_dir"
-	module_dir="$(cd "$module_dir" && pwd)"
+	logical_module_dir="${workspace_module_paths[$module]:-}"
+	module_dir="${workspace_module_dirs[$module]:-}"
+	[ -n "$logical_module_dir" ] && [ -n "$module_dir" ] || die "missing module directory mapping: $module"
 	list_file="$work/packages-${module//\//_}.txt"
-	if ! (cd "$module_dir" && "$go_bin" list -tags serffuzz -f '{{.Dir}}' ./...) >"$list_file"; then
+	if ! (cd "$logical_module_dir" && "$go_bin" list -tags serffuzz -f '{{.Dir}}' ./...) >"$list_file"; then
 		die "go list failed for module: $module"
 	fi
 	while IFS= read -r package_dir; do
 		[ -n "$package_dir" ] || continue
-		if [ "$package_dir" = "$module_dir" ]; then
+		if ! resolved_package_dir="$(cd "$package_dir" 2>/dev/null && pwd -P)"; then
+			die "go list returned unreadable package directory for module $module: $package_dir"
+		fi
+		if [ "$resolved_package_dir" = "$module_dir" ]; then
 			pkg=.
-		elif [[ "$package_dir" == "$module_dir/"* ]]; then
-			pkg="./${package_dir#"$module_dir/"}"
+		elif [[ "$resolved_package_dir" == "$module_dir/"* ]]; then
+			pkg="./${resolved_package_dir#"$module_dir/"}"
 		else
 			die "go list returned package outside module $module: $package_dir"
 		fi
@@ -357,17 +401,19 @@ merge_profiles() {
 
 replay_target() {
 	local kind="$1" module="$2" pkg="$3" name="$4" seed="${5:-}" profile="$6"
-	local label="$kind:$module:$pkg:$name"
+	local label="$kind:$module:$pkg:$name" logical_module_dir
 	[ -z "$seed" ] || label="$label seed=$seed"
+	logical_module_dir="${workspace_module_paths[$module]:-}"
+	[ -n "$logical_module_dir" ] || die "missing module directory mapping: $module"
 	echo "fuzz-coverage-global: replay $label" >&2
 	if [ "$kind" = rapid ]; then
-		if ! (cd "$repo_root/$module" && \
+		if ! (cd "$logical_module_dir" && \
 			env -u RAPID_FAILFILE RAPID_SEED="$seed" RAPID_CHECKS="$rapid_checks" RAPID_STEPS="$rapid_steps" RAPID_NOFAILFILE="$rapid_nofailfile" RAPID_LOG="$rapid_log" RAPID_V="$rapid_verbose" RAPID_DEBUG="$rapid_debug" RAPID_DEBUGVIS="$rapid_debugvis" RAPID_SHRINKTIME="$rapid_shrinktime" \
 			"$capped" "$go_bin" test -tags serffuzz -run "^$name\$" -count=1 -coverprofile="$profile" "$pkg") >&2; then
 			die "replay failed: $label"
 		fi
 	else
-		if ! (cd "$repo_root/$module" && \
+		if ! (cd "$logical_module_dir" && \
 			"$capped" "$go_bin" test -tags serffuzz -run "^$name\$" -count=1 -coverprofile="$profile" "$pkg") >&2; then
 			die "replay failed: $label"
 		fi

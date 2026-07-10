@@ -50,12 +50,31 @@ count_has() {
 	fi
 }
 
+assert_controlled_go_env() {
+	local log_file="$1" label="$2"
+	if awk -F '\t' '
+		NF {
+			seen = 1
+			if ($3 != "goenv=off" || $4 != "goflags=") {
+				bad = 1
+			}
+		}
+		END { exit !seen || bad }
+	' "$log_file"; then
+		ok "$label"
+	else
+		bad "$label (unexpected Go env: $(awk -F '\t' '$3 != "goenv=off" || $4 != "goflags=" { print $3 "," $4 }' "$log_file" | tr '\n' ';'))"
+	fi
+}
+
 repo="$work/repo"
 mkdir -p "$repo/scripts"
 cp "$runner" "$repo/scripts/fuzz-coverage-global.sh"
 for module in added agent auth envvars fuzz invariant llm; do
 	mkdir -p "$repo/$module"
 done
+mkdir -p "$repo/other" "$repo/missing-one" "$repo/missing-two"
+ln -s agent "$repo/alias"
 printf 'go 1.25.6\n\nuse (\n\t.\n\t./agent\n\t./auth\n\t./envvars\n\t./fuzz\n\t./invariant\n\t./llm\n\t./added\n)\n' >"$repo/go.work"
 for module in . added agent auth envvars fuzz invariant llm; do
 	printf 'module example.test/%s\n\ngo 1.25.6\n' "${module#.}" >"$repo/$module/go.mod"
@@ -72,7 +91,15 @@ registry="$work/registry-check.sh"
 cat >"$registry" <<'REGISTRY'
 #!/usr/bin/env bash
 set -euo pipefail
-printf 'registry\t%s\n' "${GOWORK:-}" >>"$FAKE_REGISTRY_LOG"
+env_value() {
+	local name="$1"
+	if [[ -v "$name" ]]; then
+		printf '%s' "${!name}"
+	else
+		printf '<unset>'
+	fi
+}
+printf 'registry\t%s\tgoenv=%s\tgoflags=%s\n' "${GOWORK:-}" "$(env_value GOENV)" "$(env_value GOFLAGS)" >>"$FAKE_REGISTRY_LOG"
 if [ "${FAKE_REGISTRY_FAIL:-}" = "1" ]; then
 	echo "synthetic registry drift" >&2
 	exit 17
@@ -86,6 +113,9 @@ printf 'native\t.\t./other\tFuzzOther\n'
 printf 'rapid\t.\t.\tTestRapid\n'
 if [ "${FAKE_REGISTRY_ADDED:-}" = "1" ]; then
 	printf 'native\tadded\t.\tFuzzAdded\n'
+fi
+if [ "${FAKE_REGISTRY_ALIAS:-}" = "1" ]; then
+	printf 'native\talias\t.\tFuzzAlias\n'
 fi
 REGISTRY
 chmod +x "$registry"
@@ -102,14 +132,49 @@ env_value() {
 		printf '<unset>'
 	fi
 }
-printf '%s\t%s\tseed=%s\tchecks=%s\tsteps=%s\tfailfile=%s\tnofailfile=%s\tlog=%s\tv=%s\tdebug=%s\tdebugvis=%s\tshrinktime=%s\t%s\n' \
-	"$PWD" "${GOWORK:-}" "$(env_value RAPID_SEED)" "$(env_value RAPID_CHECKS)" "$(env_value RAPID_STEPS)" "$(env_value RAPID_FAILFILE)" "$(env_value RAPID_NOFAILFILE)" "$(env_value RAPID_LOG)" "$(env_value RAPID_V)" "$(env_value RAPID_DEBUG)" "$(env_value RAPID_DEBUGVIS)" "$(env_value RAPID_SHRINKTIME)" "$*" >>"$FAKE_GO_LOG"
+printf '%s\t%s\tgoenv=%s\tgoflags=%s\tseed=%s\tchecks=%s\tsteps=%s\tfailfile=%s\tnofailfile=%s\tlog=%s\tv=%s\tdebug=%s\tdebugvis=%s\tshrinktime=%s\t%s\n' \
+	"$PWD" "${GOWORK:-}" "$(env_value GOENV)" "$(env_value GOFLAGS)" "$(env_value RAPID_SEED)" "$(env_value RAPID_CHECKS)" "$(env_value RAPID_STEPS)" "$(env_value RAPID_FAILFILE)" "$(env_value RAPID_NOFAILFILE)" "$(env_value RAPID_LOG)" "$(env_value RAPID_V)" "$(env_value RAPID_DEBUG)" "$(env_value RAPID_DEBUGVIS)" "$(env_value RAPID_SHRINKTIME)" "$*" >>"$FAKE_GO_LOG"
 command="$1"
 shift
 case "$command" in
 	work)
 		[ "$1" = edit ] && [ "$2" = -json ] || { echo "fake go: unexpected work command" >&2; exit 25; }
-		cat <<'JSON'
+		if [ "${FAKE_WORKSPACE_OUTSIDE:-}" = "1" ]; then
+			cat <<'JSON'
+{
+  "Use": [
+    {"DiskPath":"."},
+    {"DiskPath":"../outside"}
+  ]
+}
+JSON
+		elif [ "${FAKE_WORKSPACE_DUPLICATE:-}" = "1" ]; then
+			cat <<'JSON'
+{
+  "Use": [
+    {"DiskPath":"."},
+    {"DiskPath":"./agent"},
+    {"DiskPath":"./alias"}
+  ]
+}
+JSON
+		elif [ "${FAKE_WORKSPACE_ALIAS:-}" = "1" ]; then
+			cat <<'JSON'
+{
+  "Use": [
+    {"DiskPath":"."},
+    {"DiskPath":"./alias"},
+    {"DiskPath":"./auth"},
+    {"DiskPath":"./envvars"},
+    {"DiskPath":"./fuzz"},
+    {"DiskPath":"./invariant"},
+    {"DiskPath":"./llm"},
+    {"DiskPath":"./added"}
+  ]
+}
+JSON
+		else
+			cat <<'JSON'
 {
   "Use": [
     {"DiskPath":"."},
@@ -123,6 +188,7 @@ case "$command" in
   ]
 }
 JSON
+		fi
 		;;
 	list)
 		if [ "${FAKE_GO_LIST_FAIL:-}" = "1" ]; then
@@ -141,6 +207,10 @@ JSON
 			fi
 		elif [ "$PWD" = "$FAKE_REPO/added" ] && [ "${FAKE_REGISTRY_ADDED:-}" = "1" ]; then
 			printf '%s\n' "$PWD"
+		elif [ "$PWD" = "$FAKE_REPO/alias" ] && [ "${FAKE_WORKSPACE_ALIAS:-}" = "1" ]; then
+			# Go reports physical package directories even when the workspace uses a
+			# logical symlink spelling.
+			printf '%s\n' "$FAKE_REPO/agent"
 		fi
 		;;
 	test)
@@ -181,6 +251,8 @@ JSON
 				echo 'example.test/other.go:5.1,6.1 3 1'
 			elif [ "$run" = '^FuzzAdded$' ]; then
 				echo 'example.test/added.go:7.1,8.1 2 1'
+			elif [ "$run" = '^FuzzAlias$' ]; then
+				echo 'example.test/alias.go:9.1,10.1 2 1'
 			else
 				# Merge must retain this native-positive count and add the Rapid block.
 				echo 'example.test/root.go:1.1,2.1 1 0'
@@ -280,18 +352,19 @@ expect_failure() {
 
 echo '== exact all-module replay and merge =='
 reset_logs
-out="$(run_runner RAPID_STEPS=999 RAPID_FAILFILE=/tmp/ambient RAPID_NOFAILFILE=false RAPID_LOG=true RAPID_V=true RAPID_DEBUG=true RAPID_DEBUGVIS=true RAPID_SHRINKTIME=1h 2>&1)"
+out="$(run_runner GOENV="$work/ambient-goenv" GOFLAGS='-coverpkg=./... -shuffle=on -mod=mod' RAPID_STEPS=999 RAPID_FAILFILE=/tmp/ambient RAPID_NOFAILFILE=false RAPID_LOG=true RAPID_V=true RAPID_DEBUG=true RAPID_DEBUGVIS=true RAPID_SHRINKTIME=1h 2>&1)"
 has "$out" 'account package-local profiles' 'successful replay reaches global accounting'
-has "$(cat "$registry_log")" "$repo/go.work" 'registry checker inherits anchored GOWORK'
+has "$(cat "$registry_log")" $'registry\t'"$repo/go.work"$'\tgoenv=off\tgoflags=' 'registry checker inherits controlled Go workspace environment'
 
 log="$(cat "$go_log")"
+assert_controlled_go_env "$go_log" 'all runner Go commands ignore ambient GOENV and GOFLAGS'
 for module in . added agent auth envvars fuzz invariant llm; do
 	if [ "$module" = . ]; then
 		module_dir="$repo"
 	else
 		module_dir="$repo/$module"
 	fi
-	has "$log" "$module_dir"$'\t'"$repo/go.work"$'\tseed=<unset>\tchecks=<unset>\t' "go list -tags serffuzz covers module $module"
+	has "$log" "$module_dir"$'\t'"$repo/go.work"$'\tgoenv=off\tgoflags=\tseed=<unset>\tchecks=<unset>\t' "go list -tags serffuzz covers module $module"
 done
 has "$log" $'\ttest -tags serffuzz -run ^FuzzNative$ -count=1 -coverprofile=' 'native replay has exact deterministic flags'
 count_has "$log" $'\ttest -tags serffuzz -run ^FuzzNative$ -count=1 -coverprofile=' 1 'native target replays once'
@@ -301,6 +374,8 @@ for seed in 1 2 3 5 8; do
 	has "$log" $'\tseed='"$seed"$'\tchecks=100\tsteps=30\tfailfile=<unset>\tnofailfile=true\tlog=false\tv=false\tdebug=false\tdebugvis=false\tshrinktime=30s\ttest -tags serffuzz -run ^TestRapid$ -count=1 -coverprofile=' "rapid seed $seed pins every behavior control"
 done
 lacks "$log" '-coverpkg' 'replay never uses coverpkg'
+lacks "$log" '-shuffle=on' 'replay ignores ambient shuffle flags'
+lacks "$log" '-mod=mod' 'replay ignores ambient module flags'
 has "$log" $'\trun ./cmd/serf-fuzzcov -global-manifest ' 'global accounting runs serf-fuzzcov'
 has "$log" "-repo-root $repo -global-exclusions $repo/scripts/fuzzcov-global-exclusions.txt -global-floors $repo/scripts/fuzzcov-global-floors.txt -global-minimum 95 -check -bless" 'global accounting receives root, policy files, minimum, check, and bless'
 
@@ -327,7 +402,7 @@ else
 	bad "runner should replay a module discovered from go.work ($last_output)"
 fi
 log="$(cat "$go_log")"
-has "$log" "$repo/added"$'\t'"$repo/go.work"$'\tseed=<unset>\tchecks=<unset>\tsteps=<unset>\tfailfile=<unset>\tnofailfile=<unset>\tlog=<unset>\tv=<unset>\tdebug=<unset>\tdebugvis=<unset>\tshrinktime=<unset>\tlist -tags serffuzz -f {{.Dir}} ./...' 'derived added module is preflighted'
+has "$log" "$repo/added"$'\t'"$repo/go.work"$'\tgoenv=off\tgoflags=\tseed=<unset>\tchecks=<unset>\tsteps=<unset>\tfailfile=<unset>\tnofailfile=<unset>\tlog=<unset>\tv=<unset>\tdebug=<unset>\tdebugvis=<unset>\tshrinktime=<unset>\tlist -tags serffuzz -f {{.Dir}} ./...' 'derived added module is preflighted'
 has "$log" $'\ttest -tags serffuzz -run ^FuzzAdded$ -count=1 -coverprofile=' 'derived added module target is replayed'
 
 reset_logs
@@ -341,7 +416,7 @@ else
 	bad "--modules should accept a module derived from go.work ($last_output)"
 fi
 log="$(cat "$go_log")"
-has "$log" "$repo/added"$'\t'"$repo/go.work"$'\tseed=<unset>\tchecks=<unset>\tsteps=<unset>\tfailfile=<unset>\tnofailfile=<unset>\tlog=<unset>\tv=<unset>\tdebug=<unset>\tdebugvis=<unset>\tshrinktime=<unset>\tlist -tags serffuzz -f {{.Dir}} ./...' '--modules lists the derived module'
+has "$log" "$repo/added"$'\t'"$repo/go.work"$'\tgoenv=off\tgoflags=\tseed=<unset>\tchecks=<unset>\tsteps=<unset>\tfailfile=<unset>\tnofailfile=<unset>\tlog=<unset>\tv=<unset>\tdebug=<unset>\tdebugvis=<unset>\tshrinktime=<unset>\tlist -tags serffuzz -f {{.Dir}} ./...' '--modules lists the derived module'
 lacks "$log" "$repo/agent"$'\t'"$repo/go.work"$'\t' '--modules skips unselected workspace modules'
 
 reset_logs
@@ -356,6 +431,47 @@ else
 fi
 has "$last_output" 'unknown go.work module: missing-module' '--modules reports the unknown derived label exactly'
 lacks "$(cat "$go_log")" $'\tlist ' 'unknown --modules selection stops before preflight'
+
+echo '== symlink workspace labels remain logical =='
+reset_logs
+set +e
+last_output="$(run_runner FAKE_WORKSPACE_ALIAS=1 FAKE_REGISTRY_ALIAS=1 2>&1)"
+last_status=$?
+set -e
+if [ "$last_status" -eq 0 ]; then
+	ok 'runner accepts a logical symlink module label'
+else
+	bad "runner should accept a logical symlink module label ($last_output)"
+fi
+has "$last_output" 'replay native:alias:.:FuzzAlias' 'replay keeps the alias label from go.work'
+log="$(cat "$go_log")"
+has "$log" "$repo/alias"$'\t'"$repo/go.work"$'\tgoenv=off\tgoflags=\tseed=<unset>\tchecks=<unset>\tsteps=<unset>\tfailfile=<unset>\tnofailfile=<unset>\tlog=<unset>\tv=<unset>\tdebug=<unset>\tdebugvis=<unset>\tshrinktime=<unset>\tlist -tags serffuzz -f {{.Dir}} ./...' 'alias workspace path is preflighted'
+has "$log" $'\ttest -tags serffuzz -run ^FuzzAlias$ -count=1 -coverprofile=' 'alias plan target replays after physical package preflight'
+has "$(cat "$cov_manifest")" $'alias\t.\t' 'global manifest preserves the alias module label'
+
+reset_logs
+set +e
+last_output="$(run_runner FAKE_WORKSPACE_OUTSIDE=1 2>&1)"
+last_status=$?
+set -e
+if [ "$last_status" -ne 0 ]; then
+	ok 'runner rejects a lexical workspace path outside the repository'
+else
+	bad 'runner should reject a lexical workspace path outside the repository'
+fi
+has "$last_output" 'go.work module is outside repository root: ../outside' 'outside workspace path is reported exactly'
+
+reset_logs
+set +e
+last_output="$(run_runner FAKE_WORKSPACE_DUPLICATE=1 2>&1)"
+last_status=$?
+set -e
+if [ "$last_status" -ne 0 ]; then
+	ok 'runner rejects two labels for one resolved module directory'
+else
+	bad 'runner should reject two labels for one resolved module directory'
+fi
+has "$last_output" 'go.work lists duplicate module directory: ./alias' 'duplicate resolved workspace directory is reported exactly'
 
 echo '== JSON output is machine-readable =='
 json_check="$work/json-check.go"
@@ -403,7 +519,7 @@ has "$(cat "$json_err")" 'fuzz-coverage-global: validating registered native and
 echo '== Make rapid replay pins the full Rapid environment =='
 reset_logs
 set +e
-(cd "$repo" && PATH="$fake_bin:$PATH" FAKE_REPO="$repo" FAKE_GO_LOG="$go_log" RAPID_STEPS=999 RAPID_FAILFILE=/tmp/ambient RAPID_NOFAILFILE=false RAPID_LOG=true RAPID_V=true RAPID_DEBUG=true RAPID_DEBUGVIS=true RAPID_SHRINKTIME=1h make fuzz) >"$work/make.out" 2>"$work/make.err"
+(cd "$repo" && PATH="$fake_bin:$PATH" FAKE_REPO="$repo" FAKE_GO_LOG="$go_log" GOENV="$work/ambient-goenv" GOFLAGS='-coverpkg=./... -shuffle=on -mod=mod' RAPID_STEPS=999 RAPID_FAILFILE=/tmp/ambient RAPID_NOFAILFILE=false RAPID_LOG=true RAPID_V=true RAPID_DEBUG=true RAPID_DEBUGVIS=true RAPID_SHRINKTIME=1h make fuzz) >"$work/make.out" 2>"$work/make.err"
 last_status=$?
 set -e
 if [ "$last_status" -eq 0 ]; then
@@ -411,7 +527,13 @@ if [ "$last_status" -eq 0 ]; then
 else
 	bad "fake make fuzz should succeed: $(cat "$work/make.err")"
 fi
-log="$(cat "$go_log")"
+make_test_log="$work/make-go-test.log"
+awk -F '\t' '$15 ~ /^test /' "$go_log" >"$make_test_log"
+log="$(cat "$make_test_log")"
+assert_controlled_go_env "$make_test_log" 'all make fuzz Go test replays ignore ambient GOENV and GOFLAGS'
+lacks "$log" '-coverpkg' 'make fuzz never accepts ambient coverpkg flags'
+lacks "$log" '-shuffle=on' 'make fuzz never accepts ambient shuffle flags'
+lacks "$log" '-mod=mod' 'make fuzz never accepts ambient module flags'
 count_has "$log" $'\ttest -tags serffuzz -run ^TestRapid$ -count=1 .' 5 'make fuzz replays the rapid target for every fixed seed'
 for seed in 1 2 3 5 8; do
 	has "$log" $'\tseed='"$seed"$'\tchecks=100\tsteps=30\tfailfile=<unset>\tnofailfile=true\tlog=false\tv=false\tdebug=false\tdebugvis=false\tshrinktime=30s\ttest -tags serffuzz -run ^TestRapid$ -count=1 .' "make fuzz rapid seed $seed pins every behavior control"
