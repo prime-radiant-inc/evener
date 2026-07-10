@@ -328,7 +328,9 @@ func TestWeb_CodexSessionRouteReadsConfiguredSource(t *testing.T) {
 	if !strings.Contains(body, "Codex task") || !strings.Contains(body, `data-session-id="codex-local:th_codex"`) {
 		t.Fatalf("body=%s", body)
 	}
-	if !strings.Contains(body, `data-source-label="codex-local"`) || !strings.Contains(body, ">codex-local<") {
+	// The source remains available as a stable data hook. It is intentionally not
+	// rendered as a visible default-rail cluster in the compact composer layout.
+	if !strings.Contains(body, `data-source-label="codex-local"`) {
 		t.Fatalf("body=%s", body)
 	}
 	for _, unsupported := range []string{`data-action-trigger="shutdown"`, `data-model-trigger`} {
@@ -2382,6 +2384,7 @@ func TestWeb_ThreadDocument_CompactsSubagentChromeAndFooter(t *testing.T) {
 		`<span class="status-key">src</span>`,
 		`<span class="status-key">cwd</span>`,
 		`<span class="status-key">branch</span>`,
+		`class="status-item turns"`,
 	} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("thread document contains compact-forbidden markup %q in:\n%s", forbidden, body)
@@ -2392,7 +2395,7 @@ func TestWeb_ThreadDocument_CompactsSubagentChromeAndFooter(t *testing.T) {
 		`class="message-input"`,
 		`data-task-status-text`,
 		`class="status-badge"`,
-		`class="status-item turns"`,
+		`class="input-telemetry" data-input-telemetry`,
 	} {
 		if !strings.Contains(body, required) {
 			t.Fatalf("thread document missing compact-required markup %q in:\n%s", required, body)
@@ -2417,18 +2420,20 @@ func TestWeb_ThreadDocument_ComposerControlsLiveInsideInputCard(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 	body := rec.Body.String()
-	taskStatus := strings.Index(body, `class="task-status-row"`)
+	composerSurface := strings.Index(body, `data-composer-surface`)
 	inputCard := strings.Index(body, `class="input-card"`)
 	messageInput := strings.Index(body, `class="message-input"`)
-	composerModel := strings.Index(body, `class="composer-model"`)
 	inputControls := strings.Index(body, `class="input-controls"`)
+	controlsLeft := strings.Index(body, `class="controls-left"`)
+	taskTrigger := strings.Index(body, `data-tasks-trigger`)
+	composerModel := strings.Index(body, `class="composer-model"`)
 	inputStatus := strings.Index(body, `id="input-status"`)
-	if taskStatus < 0 || inputCard < 0 || messageInput < 0 || composerModel < 0 || inputControls < 0 || inputStatus < 0 {
-		t.Fatalf("missing composer structure: taskStatus=%d inputCard=%d messageInput=%d composerModel=%d inputControls=%d inputStatus=%d", taskStatus, inputCard, messageInput, composerModel, inputControls, inputStatus)
+	if composerSurface < 0 || inputCard < 0 || messageInput < 0 || inputControls < 0 || controlsLeft < 0 || taskTrigger < 0 || composerModel < 0 || inputStatus < 0 {
+		t.Fatalf("missing composer structure: composerSurface=%d inputCard=%d messageInput=%d inputControls=%d controlsLeft=%d taskTrigger=%d composerModel=%d inputStatus=%d", composerSurface, inputCard, messageInput, inputControls, controlsLeft, taskTrigger, composerModel, inputStatus)
 	}
-	ordered := taskStatus < inputCard && inputCard < messageInput && messageInput < inputControls && inputControls < composerModel && composerModel < inputStatus
+	ordered := composerSurface < inputCard && inputCard < messageInput && messageInput < inputControls && inputControls < controlsLeft && controlsLeft < taskTrigger && taskTrigger < composerModel && composerModel < inputStatus
 	if !ordered {
-		t.Fatalf("composer should render task status above input, then textarea, then controls/model row before input status")
+		t.Fatalf("composer should keep the task trigger in controls-left inside input-card, with model controls before input status")
 	}
 	if strings.Contains(body, `send as steer`) {
 		t.Fatalf("composer should use short steer label, not send as steer")
