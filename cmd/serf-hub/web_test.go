@@ -146,8 +146,11 @@ func TestWebWorkspaceContentColumnCSSContract(t *testing.T) {
 		"#workspace { width: 100%; }",
 		".workspace-input {",
 		".message-input { min-height: 24px; max-height: 20dvh; }",
-		".input-status .source,\n  .input-status .turns { display: inline-flex; }",
-		".input-status .cwd,\n  .input-status .branch,\n  .input-status .context,\n  .input-status .work,\n  .input-status .tokens,\n  .input-status .liveness-inline,\n  .input-status .cost,\n  .input-status .goal { display: none; }",
+		".input-telemetry {",
+		"flex-wrap: nowrap;",
+		".input-telemetry .status-badge,",
+		".input-telemetry .context,",
+		".input-telemetry .location .cwd { display: none; }",
 	}
 	for _, want := range landscapeChecks {
 		if !strings.Contains(css, want) {

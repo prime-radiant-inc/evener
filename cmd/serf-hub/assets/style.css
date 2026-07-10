@@ -1836,38 +1836,33 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 .needs-you-dock[hidden] { display: none; }
 /* ─────────────────────────────────────────────────────────────────────── */
 
-.workspace-input { padding: var(--space-4) var(--space-6) var(--space-4); border-top: 1px solid var(--rule); }
-.task-status-row {
-  display: flex;
-  align-items: center;
-  margin: 0 0 var(--space-3);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-}
+.workspace-input { padding: var(--space-2) var(--space-6) var(--space-2); border-top: 1px solid var(--rule-soft); }
 .tasks-status {
   appearance: none;
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: min(28rem, 38vw);
+  overflow: hidden;
   border: 0;
   background: transparent;
   color: var(--text-muted);
-  cursor: pointer;
   font: inherit;
-  min-width: 0;
-  max-width: 100%;
-  padding: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-md);
+  cursor: pointer;
 }
-.tasks-status:hover .status-value { color: var(--text); }
 .tasks-status .status-key { color: var(--text-muted); }
 .tasks-status .status-value {
-  display: inline-block;
-  max-width: min(760px, calc(100vw - 220px));
   overflow: hidden;
   text-overflow: ellipsis;
-  vertical-align: bottom;
   white-space: nowrap;
 }
+.tasks-status:hover,
+.tasks-status:focus-visible { color: var(--text); background: var(--bg); }
 
 /* Composer attachment rail — paste, drag-drop, and file-picker chips all
    render here through SerfComposerAttachments. Hides itself when empty. */
@@ -1950,7 +1945,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
   flex: 1;
 }
 
-.input-card { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-md); padding: var(--space-3) var(--space-4); min-height: 0; transition: border-color var(--motion-fast); }
+.input-card { background: color-mix(in srgb, var(--bg-raised) 88%, var(--bg)); border: 0; border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); min-height: 0; transition: outline-color var(--motion-fast), background var(--motion-fast); }
 /* kata 65mm: drop-active is set by the shared composer-attachments helper
    on dragenter. Visually subtle so dropping onto the existing .input-card
    keeps its border style; the dashed outline cues "drop here" without
@@ -1998,8 +1993,8 @@ button.composer-model-value:hover { background: var(--bg); color: var(--text); t
 button.composer-model-value:focus-visible { background: var(--bg); color: var(--text); }
 button.composer-model-value .caret { color: var(--text-dim); }
 .input-card .input-controls {
-  padding: var(--space-3) 0 0;
-  margin-top: var(--space-2);
+  padding: var(--space-2) 0 0;
+  margin-top: 0;
 }
 /* Composer action buttons: send (↑) is the one saturated action; attach (+) and
    stop (■) stay quiet until needed. The glyph rides alongside the label on
@@ -2010,13 +2005,11 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .controls-left .composer-icon-btn:hover:not([disabled]):not(:disabled) { color: var(--text); }
 /* The composer lights its edge when focused — a calm "you're typing here" cue,
    the one place an accent edge earns its keep. */
-.input-card:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--rule)); }
+.input-card:focus-within { outline: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: -1px; }
 .thread-document .workspace-input {
   padding: var(--space-3) var(--space-4);
 }
 .thread-document .input-status {
-  gap: var(--space-3);
-  padding-top: var(--space-2);
   margin-top: var(--space-1);
   border-top: 0;
 }
@@ -2049,93 +2042,95 @@ button.composer-model-value .caret { color: var(--text-dim); }
   padding: var(--space-2) var(--space-4);
 }
 .pane-compact .input-status {
-  padding-top: var(--space-1);
+  padding: 0;
   margin-top: 0;
   border-top: 0;
-  gap: var(--space-2);
 }
-.pane-compact .input-status .source,
-.pane-compact .input-status .cwd,
-.pane-compact .input-status .branch {
+.pane-compact .input-telemetry .location {
   display: none;
 }
 
-.input-controls { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) 0 0; flex-wrap: wrap; }
+.input-controls { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) 0 0; flex-wrap: nowrap; min-width: 0; }
 .controls-left,
-.controls-right { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.controls-right { display: flex; align-items: center; gap: var(--space-2); flex-wrap: nowrap; min-width: 0; }
 .controls-center { flex: 1; display: flex; align-items: center; justify-content: flex-start; min-width: 0; min-height: 1px; }
 
 .input-status {
+  min-width: 0;
+  margin-top: var(--space-1);
+  padding: 0;
+  border-top: 0;
+}
+.input-telemetry {
   display: flex;
   align-items: center;
-  gap: var(--space-5);
-  padding: var(--space-3) 0 0;
-  margin-top: var(--space-2);
-  border-top: 0;
+  gap: var(--space-3);
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  flex-wrap: nowrap;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
-  color: var(--text);
-  flex-wrap: wrap;
 }
-.input-status .status-item {
+.input-telemetry .status-item {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1);
   white-space: nowrap;
 }
-.input-status .status-key {
+.input-telemetry .status-key {
   color: var(--text-muted);
 }
-.input-status .status-value {
+.input-telemetry .status-value {
   color: var(--text);
 }
-.input-status .cwd .status-value {
-  max-width: 260px;
+.input-telemetry .status-badge,
+.input-telemetry .context,
+.input-telemetry .liveness-inline { flex: 0 0 auto; }
+.input-telemetry .location {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+.input-telemetry .status-location-part {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.input-telemetry .status-location-part .status-value {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.input-status .context-bar {
-  display: inline-block;
-  width: 80px;
-  height: 3px;
-  background: var(--bg);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-}
-.input-status .context-fill {
-  display: block;
-  height: 100%;
-  background: var(--state-working);
-}
+.input-telemetry .location .cwd { flex: 1 1 auto; }
+.input-telemetry .context-bar { display: none; }
 /* Near the context limit (>=80% of the window, mockup #17 Alt A): the whole
    gauge changes register to blue and a ⚠ glyph pairs the color so it reads
    without color (colorblind-safe). Blue = "needs your eye", not red — it is a
    real client-side threshold on real token numbers, not an "auto-compaction
    firing soon" signal (there is none). */
-.input-status .context.context-warn .status-key,
-.input-status .context.context-warn .context-numbers { color: var(--state-awaiting); }
-.input-status .context-fill.context-warn { background: var(--state-awaiting); }
-.input-status .context-warn-glyph { color: var(--state-awaiting); font-size: var(--text-xs); }
+.input-telemetry .context.context-warn .status-key,
+.input-telemetry .context.context-warn .context-numbers { color: var(--state-awaiting); }
+.input-telemetry .context-warn-glyph { color: var(--state-awaiting); font-size: var(--text-xs); }
 
 /* Work-time and token clusters (WS2): plain status-item styling — tabular
    nums so the digits don't jitter in width as the client-side tick (a later
    task) updates them. */
-.input-status .work-time,
-.input-status .tokens .status-value {
-  font-variant-numeric: tabular-nums;
-}
-
 /* Inline liveness (mockup #13's status-row variant): quiet/concern color
    language for the honest calm→concern model, scaled to a status-item. The
    ambient .status-value color isn't muted by default, so the quiet band
    needs its own explicit rule here. */
-.input-status .liveness-inline {
+.input-telemetry .liveness-inline {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
 }
-.input-status .liveness-inline[hidden] { display: none; }
-.input-status .liveness-inline::before {
+.input-telemetry .liveness-inline[hidden] { display: none; }
+.input-telemetry .liveness-inline::before {
   content: "";
   width: 6px;
   height: 6px;
@@ -2143,10 +2138,10 @@ button.composer-model-value .caret { color: var(--text-dim); }
   background: var(--text-muted);
   flex-shrink: 0;
 }
-.input-status .liveness-inline[data-level="quiet"] { color: var(--text-muted); }
-.input-status .liveness-inline[data-level="concern"] { color: var(--state-awaiting); }
-.input-status .liveness-inline[data-level="concern"]::before { background: var(--state-awaiting); }
-.input-status .liveness-inline .liveness-glyph {
+.input-telemetry .liveness-inline[data-level="quiet"] { color: var(--text-muted); }
+.input-telemetry .liveness-inline[data-level="concern"] { color: var(--state-awaiting); }
+.input-telemetry .liveness-inline[data-level="concern"]::before { background: var(--state-awaiting); }
+.input-telemetry .liveness-inline .liveness-glyph {
   font-weight: 700;
   color: var(--state-awaiting);
   flex-shrink: 0;
@@ -3838,6 +3833,12 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
 .settings-nav-link[hidden] { display: none; }
 .settings-nav-section[hidden] { display: none; }
 
+@media (max-width: 900px) {
+  .input-telemetry { gap: var(--space-2); }
+  .input-telemetry .location .cwd { display: none; }
+  .tasks-status { max-width: 20vw; }
+}
+
 /* Phone: nav-as-page navigation
    By default, both the nav and the content are visible side-by-side. On phone,
    we show ONE at a time. The body carries data-settings-pane="nav" (index) or
@@ -4218,10 +4219,8 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
   }
 
   /* ── Compact, bottom-anchored composer on phone ─────────────────────────
-     Pin it to the bottom and shed the desktop info-density: the tasks row and
-     the long src/turns/cwd/branch status line (the cwd path is what spilled
-     past the screen edge). Keep only the live state + context so you still know
-     whether the agent is working. */
+     Pin it to the bottom and shed desktop location detail while retaining the
+     one-line live-state/context telemetry rail. */
   /* The composer is a full-bleed bottom bar: the elevated surface spans the
      whole screen width (its top hairline runs edge to edge, matching the device
      screen) rather than a floating bordered card with side margins. The inner
@@ -4239,14 +4238,8 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
   }
   .workspace-input:focus-within { border-top-color: color-mix(in srgb, var(--accent) 55%, var(--rule)); }
   .workspace-input[data-response-mode="ask"] { border-top-color: color-mix(in srgb, var(--state-awaiting) 55%, var(--rule)); }
-  .task-status-row { display: none; }
-  .input-status { order: -1; display: flex; flex-wrap: wrap; gap: var(--space-3); margin: 0 0 var(--space-2); padding: 0; min-height: 0; }
-  .input-status .source,
-  .input-status .turns,
-  .input-status .cwd,
-  .input-status .branch,
-  .input-status .cost,
-  .input-status .goal { display: none; }
+  .input-status { order: -1; margin: 0 0 var(--space-2); padding: 0; min-height: 0; }
+  .input-telemetry { gap: var(--space-2); flex-wrap: nowrap; }
 
   .input-card { background: transparent; border: 0; border-radius: 0; padding: var(--space-1) 0; }
   .message-input { min-height: 24px; max-height: 32vh; }
@@ -4277,6 +4270,9 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
   .composer-model { font-size: var(--text-sm); min-width: 0; }
   .composer-model-value { max-width: 100%; }
   .input-controls .btn kbd { display: none; }
+  .input-telemetry .location .worktree { display: none; }
+  .input-telemetry .location { flex: 0 1 auto; }
+  .input-telemetry .status-location-part.branch { max-width: 34vw; }
 
   /* On phone the action buttons collapse to round icons: send (↑) is a filled
      blue disc — the one hero action — with attach (+) and stop (■) as matching
@@ -4491,31 +4487,18 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
 
   .workspace-input { padding: var(--space-1) var(--space-3) calc(var(--space-1) + env(safe-area-inset-bottom)); }
   .queue-preview { margin-bottom: var(--space-1); }
-  .task-status-row { display: none; }
   .input-card { padding: var(--space-1) 0; }
   .message-input { min-height: 24px; max-height: 20dvh; }
   .input-controls { padding-top: var(--space-1); }
 
   .input-status {
     order: -1;
-    display: flex;
-    flex-wrap: nowrap;
-    gap: var(--space-3);
     margin: 0 0 var(--space-1);
     padding: 0;
     min-height: 0;
-    overflow: hidden;
   }
-  .input-status .source,
-  .input-status .turns { display: inline-flex; }
-  .input-status .cwd,
-  .input-status .branch,
-  .input-status .context,
-  .input-status .work,
-  .input-status .tokens,
-  .input-status .liveness-inline,
-  .input-status .cost,
-  .input-status .goal { display: none; }
+  .input-telemetry { gap: var(--space-2); flex-wrap: nowrap; }
+  .input-telemetry .location { display: none; }
 }
 
 /* Project settings pane (per-project settings, opened from sidebar gear).

@@ -123,6 +123,17 @@ const phoneWorkspaceInputRule = (mobile.match(/\.workspace-input\s*\{[^}]*\}/g) 
 pass(phoneWorkspaceInputRule && /flex:\s*0\s+0\s+auto/.test(phoneWorkspaceInputRule) && /margin-top:\s*auto/.test(phoneWorkspaceInputRule) && !/position:\s*sticky/.test(phoneWorkspaceInputRule),
   "phone safe-area .workspace-input must be non-sticky flex dock content");
 
+// Compact telemetry is a single rail: responsive overrides may hide location
+// parts, but must never restore the old wrapping status grid.
+const phoneTelemetryRule = (mobile.match(/\.input-telemetry\s*\{[^}]*\}/g) || [])[0];
+pass(phoneTelemetryRule && /flex-wrap:\s*nowrap/.test(phoneTelemetryRule),
+  "phone telemetry rail must remain nonwrapping");
+pass(/\.input-telemetry \.location \.cwd\s*\{[^}]*display:\s*none/.test(css),
+  "narrow layouts must hide cwd through the semantic telemetry location selector");
+const shortLandscapeTelemetryRule = (shortLandscape.match(/\.input-telemetry\s*\{[^}]*\}/g) || [])[0];
+pass(shortLandscapeTelemetryRule && /flex-wrap:\s*nowrap/.test(shortLandscapeTelemetryRule),
+  "short-landscape telemetry rail must remain nonwrapping");
+
 pass(/\.workspace-input\[data-response-mode="ask"\]/.test(css),
   "stylesheet must provide a .workspace-input[data-response-mode=\"ask\"] response-mode hook");
 
