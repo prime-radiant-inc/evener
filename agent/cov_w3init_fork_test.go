@@ -81,9 +81,24 @@ func TestW3Init_ForkSession_OpenError(t *testing.T) {
 	}
 }
 
+// w3init_childTranscriptCreateFailFS only faults creation of a newly minted
+// transcript. Parent transcript/meta reads and the writer's MkdirAll proceed
+// through the base filesystem so the fault reaches the intended Create call.
+type w3init_childTranscriptCreateFailFS struct {
+	afero.Fs
+	parentTranscriptPath string
+}
+
+func (fs w3init_childTranscriptCreateFailFS) Create(name string) (afero.File, error) {
+	if filepath.Dir(name) == filepath.Dir(fs.parentTranscriptPath) &&
+		strings.HasSuffix(name, ".transcript.jsonl") && name != fs.parentTranscriptPath {
+		return nil, &os.PathError{Op: "create", Path: name, Err: fault.ErrInjected}
+	}
+	return fs.Fs.Create(name)
+}
+
 // TestW3Init_ForkSession_NewWriterError covers the child-transcript creation
-// failure arm with a read-only filesystem. Permission bits are not reliable
-// here: privileged test processes can create files in a mode-0500 directory.
+// failure arm with a filesystem boundary that fails only the child Create call.
 func TestW3Init_ForkSession_NewWriterError(t *testing.T) {
 	t.Parallel()
 	const stateDir = "/state"
@@ -100,9 +115,16 @@ func TestW3Init_ForkSession_NewWriterError(t *testing.T) {
 		t.Fatalf("save parent meta: %v", err)
 	}
 
-	_, err := forkSessionFS(afero.NewReadOnlyFs(base), stateDir, id, 1, "x", "")
+	fs := w3init_childTranscriptCreateFailFS{
+		Fs:                   base,
+		parentTranscriptPath: parentPath,
+	}
+	_, err := forkSessionFS(fs, stateDir, id, 1, "x", "")
 	if err == nil || !strings.Contains(err.Error(), "create child transcript") {
 		t.Fatalf("err = %v, want create child transcript error", err)
+	}
+	if !errors.Is(err, fault.ErrInjected) {
+		t.Fatalf("err = %v, want wrapped injected child transcript create error", err)
 	}
 }
 
