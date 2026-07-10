@@ -104,7 +104,7 @@ per-target focus sets, while the global command measures raw statement coverage
 of every production package in each module.
 
 ```sh
-make fuzz-coverage-global                    # all seven workspace modules
+make fuzz-coverage-global                    # every module declared in go.work
 make fuzz-coverage-global CHECK=1            # require raw coverage >95.0% per module
 make fuzz-coverage-global CHECK=1 FUZZ_ARGS='--modules agent --format json'
 make fuzz-coverage-global BLESS=1            # only after every measured module is >95.0%
@@ -115,15 +115,21 @@ The runner first obtains the exact four-column native/Rapid plan from
 `-tags serffuzz`; a package without a registered **local** fuzz surface fails
 before any replay with `missing local fuzz surface: <module>:<package>`.
 Each native target runs once. Each Rapid target runs with
-`RAPID_SEED=1,2,3,5,8` and `RAPID_CHECKS=100`. Their coverage profiles are
-unioned only within the owning package, then passed to `serf-fuzzcov` for the
-strict raw threshold, reviewed file-only exclusions, and upward-only floors.
-There is no `-coverpkg` cross-package instrumentation.
+`RAPID_SEED=1,2,3,5,8`, `RAPID_CHECKS=100`, `RAPID_STEPS=30`,
+`RAPID_NOFAILFILE=true`, `RAPID_LOG=false`, `RAPID_V=false`,
+`RAPID_DEBUG=false`, `RAPID_DEBUGVIS=false`, and `RAPID_SHRINKTIME=30s`;
+`RAPID_FAILFILE` is explicitly unset. Their coverage profiles are unioned only
+within the owning package, then passed to `serf-fuzzcov` for the strict raw
+threshold, reviewed file-only exclusions, and upward-only floors. There is no
+`-coverpkg` cross-package instrumentation.
 
-The runner exports `GOWORK=<repository>/go.work`, so its module list and
-profiles do not depend on an ambient workspace setting. Any registry, listing,
-replay, profile, or accounting failure is fatal; the command never turns a
-failed target into an omitted or synthetic zero profile.
+The runner exports `GOWORK=<repository>/go.work` and derives its canonical,
+repo-relative module labels from that file at invocation, so it does not depend
+on an ambient workspace setting or a stale hard-coded list. `--modules` accepts
+only those derived labels. `--format json` reserves stdout for the final
+`serf-fuzzcov` JSON document; runner progress and replay output go to stderr.
+Any registry, listing, replay, profile, or accounting failure is fatal; the
+command never turns a failed target into an omitted or synthetic zero profile.
 
 Current implementation status: the registry audit intentionally reports the
 fourteen known unregistered agent native targets until the local-surface work

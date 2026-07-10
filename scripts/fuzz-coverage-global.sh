@@ -8,8 +8,7 @@
 # Go toolchain's canonical block boundaries. Target profiles are unioned only
 # within that declared module/package before global accounting sees them.
 #
-# The default invocation covers every go.work module:
-#   . agent auth envvars fuzz invariant llm
+# The default invocation discovers and covers every repo-local go.work module.
 #
 # The target plan is obtained only from fuzz-registry-check.sh. A registry drift
 # failure, a package without a local registered fuzz surface, a replay failure,
@@ -29,7 +28,7 @@
 #                             scripts/fuzz-registry-check.sh)
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+repo_root="$(cd "$(dirname "$0")/.." && pwd -P)"
 go_work="$repo_root/go.work"
 go_bin="${SERF_FUZZ_GO:-go}"
 capped="${SERF_FUZZ_CAPPED:-$repo_root/scripts/run-capped.sh}"
@@ -37,12 +36,22 @@ registry_check="${SERF_FUZZ_REGISTRY_CHECK:-$repo_root/scripts/fuzz-registry-che
 exclusions_file="$repo_root/scripts/fuzzcov-global-exclusions.txt"
 floors_file="$repo_root/scripts/fuzzcov-global-floors.txt"
 
-# Keep these literals in go.work order. An explicit --modules selection is useful
-# while a module is being raised, but the default contract is the full workspace.
-workspace_modules=(. agent auth envvars fuzz invariant llm)
-selected_modules=("${workspace_modules[@]}")
+# Workspace modules are discovered from go.work after argument parsing. An
+# explicit --modules selection is useful while a module is being raised, but the
+# default contract is the full workspace as it exists at execution time.
+workspace_modules=()
+selected_modules=()
+modules_argument=""
+modules_argument_set=false
 rapid_seeds=(1 2 3 5 8)
 rapid_checks=100
+rapid_steps=30
+rapid_nofailfile=true
+rapid_log=false
+rapid_verbose=false
+rapid_debug=false
+rapid_debugvis=false
+rapid_shrinktime=30s
 check=false
 bless=false
 format=text
@@ -65,6 +74,12 @@ is_workspace_module() {
 }
 
 parse_modules() {
+	[ "$modules_argument_set" = false ] || die "--modules may be specified only once"
+	modules_argument="$1"
+	modules_argument_set=true
+}
+
+select_modules() {
 	local words="$1" module
 	read -r -a selected_modules <<<"$words"
 	[ "${#selected_modules[@]}" -gt 0 ] || die "--modules must name at least one go.work module"
@@ -74,6 +89,64 @@ parse_modules() {
 		[ -z "${seen[$module]+x}" ] || die "duplicate module: $module"
 		seen[$module]=1
 	done
+}
+
+discover_workspace_modules() {
+	local workspace_json="$work/go.work.json"
+	local workspace_paths="$work/go.work-paths.txt"
+	local disk_path module_dir module
+	declare -A seen=()
+
+	if ! (cd "$repo_root" && "$go_bin" work edit -json "$go_work") >"$workspace_json"; then
+		die "cannot read go.work module list: $go_work"
+	fi
+	# go work edit owns Go syntax and JSON escaping. This narrow extraction rejects
+	# escaped values rather than letting an un-decoded path enter shell logic.
+	if ! awk '
+		/"DiskPath"/ {
+			if ($0 !~ /"DiskPath"[[:space:]]*:[[:space:]]*"[^"\\]*"/) {
+				bad = 1
+				next
+			}
+			path = $0
+			sub(/^.*"DiskPath"[[:space:]]*:[[:space:]]*"/, "", path)
+			sub(/".*$/, "", path)
+			if (path ~ /\\/) {
+				bad = 1
+				next
+			}
+			print path
+			found = 1
+		}
+		END { exit bad || !found }
+	' "$workspace_json" >"$workspace_paths"; then
+		die "cannot parse go.work module list: $go_work"
+	fi
+
+	while IFS= read -r disk_path; do
+		[ -n "$disk_path" ] || die "go.work contains an empty module path"
+		case "$disk_path" in
+			/*) module_dir="$disk_path" ;;
+			*) module_dir="$repo_root/$disk_path" ;;
+		esac
+		if ! module_dir="$(cd "$module_dir" 2>/dev/null && pwd -P)"; then
+			die "go.work module directory does not exist: $disk_path"
+		fi
+		case "$module_dir" in
+			"$repo_root") module=. ;;
+			"$repo_root"/*) module="${module_dir#"$repo_root/"}" ;;
+			*) die "go.work module is outside repository root: $disk_path" ;;
+		esac
+		case "$module" in
+			.) ;;
+			*) [[ "$module" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || die "go.work module has unsafe label: $disk_path" ;;
+		esac
+		[ -f "$module_dir/go.mod" ] || die "go.work module has no go.mod: $disk_path"
+		[ -z "${seen[$module]+x}" ] || die "go.work lists duplicate module: $module"
+		seen[$module]=1
+		workspace_modules+=("$module")
+	done <"$workspace_paths"
+	[ "${#workspace_modules[@]}" -gt 0 ] || die "go.work contains no modules"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -116,7 +189,14 @@ plan="$work/targets.tsv"
 groups="$work/groups.tsv"
 global_manifest="$work/global-profiles.tsv"
 
-echo "fuzz-coverage-global: validating registered native and Rapid targets"
+discover_workspace_modules
+if [ "$modules_argument_set" = true ]; then
+	select_modules "$modules_argument"
+else
+	selected_modules=("${workspace_modules[@]}")
+fi
+
+echo "fuzz-coverage-global: validating registered native and Rapid targets" >&2
 if ! "$registry_check" >"$plan"; then
 	die "registry check failed; replay did not begin"
 fi
@@ -279,15 +359,16 @@ replay_target() {
 	local kind="$1" module="$2" pkg="$3" name="$4" seed="${5:-}" profile="$6"
 	local label="$kind:$module:$pkg:$name"
 	[ -z "$seed" ] || label="$label seed=$seed"
-	echo "fuzz-coverage-global: replay $label"
+	echo "fuzz-coverage-global: replay $label" >&2
 	if [ "$kind" = rapid ]; then
-		if ! (cd "$repo_root/$module" && RAPID_SEED="$seed" RAPID_CHECKS="$rapid_checks" \
-			"$capped" "$go_bin" test -tags serffuzz -run "^$name\$" -count=1 -coverprofile="$profile" "$pkg"); then
+		if ! (cd "$repo_root/$module" && \
+			env -u RAPID_FAILFILE RAPID_SEED="$seed" RAPID_CHECKS="$rapid_checks" RAPID_STEPS="$rapid_steps" RAPID_NOFAILFILE="$rapid_nofailfile" RAPID_LOG="$rapid_log" RAPID_V="$rapid_verbose" RAPID_DEBUG="$rapid_debug" RAPID_DEBUGVIS="$rapid_debugvis" RAPID_SHRINKTIME="$rapid_shrinktime" \
+			"$capped" "$go_bin" test -tags serffuzz -run "^$name\$" -count=1 -coverprofile="$profile" "$pkg") >&2; then
 			die "replay failed: $label"
 		fi
 	else
 		if ! (cd "$repo_root/$module" && \
-			"$capped" "$go_bin" test -tags serffuzz -run "^$name\$" -count=1 -coverprofile="$profile" "$pkg"); then
+			"$capped" "$go_bin" test -tags serffuzz -run "^$name\$" -count=1 -coverprofile="$profile" "$pkg") >&2; then
 			die "replay failed: $label"
 		fi
 	fi
@@ -333,7 +414,15 @@ fuzzcov_args=(
 "$check" && fuzzcov_args+=(-check)
 "$bless" && fuzzcov_args+=(-bless)
 
-echo "fuzz-coverage-global: account package-local profiles"
-if ! (cd "$repo_root" && "$capped" "$go_bin" "${fuzzcov_args[@]}"); then
-	die "global coverage accounting failed"
+echo "fuzz-coverage-global: account package-local profiles" >&2
+if [ "$format" = json ]; then
+	accounting_json="$work/accounting.json"
+	if ! (cd "$repo_root" && "$capped" "$go_bin" "${fuzzcov_args[@]}") >"$accounting_json"; then
+		die "global coverage accounting failed"
+	fi
+	cat "$accounting_json"
+else
+	if ! (cd "$repo_root" && "$capped" "$go_bin" "${fuzzcov_args[@]}"); then
+		die "global coverage accounting failed"
+	fi
 fi

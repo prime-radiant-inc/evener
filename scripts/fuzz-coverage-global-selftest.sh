@@ -5,6 +5,7 @@
 set -euo pipefail
 
 runner="$(cd "$(dirname "$0")" && pwd)/fuzz-coverage-global.sh"
+makefile="$(cd "$(dirname "$runner")/.." && pwd)/Makefile"
 work="$(mktemp -d -t fuzzcov-global-selftest.XXXXXX)"
 trap 'rm -rf "$work"' EXIT
 checks=0
@@ -52,11 +53,11 @@ count_has() {
 repo="$work/repo"
 mkdir -p "$repo/scripts"
 cp "$runner" "$repo/scripts/fuzz-coverage-global.sh"
-for module in agent auth envvars fuzz invariant llm; do
+for module in added agent auth envvars fuzz invariant llm; do
 	mkdir -p "$repo/$module"
 done
-printf 'go 1.25.6\n\nuse (\n\t.\n\t./agent\n\t./auth\n\t./envvars\n\t./fuzz\n\t./invariant\n\t./llm\n)\n' >"$repo/go.work"
-for module in . agent auth envvars fuzz invariant llm; do
+printf 'go 1.25.6\n\nuse (\n\t.\n\t./agent\n\t./auth\n\t./envvars\n\t./fuzz\n\t./invariant\n\t./llm\n\t./added\n)\n' >"$repo/go.work"
+for module in . added agent auth envvars fuzz invariant llm; do
 	printf 'module example.test/%s\n\ngo 1.25.6\n' "${module#.}" >"$repo/$module/go.mod"
 done
 : >"$repo/scripts/fuzzcov-global-exclusions.txt"
@@ -83,6 +84,9 @@ fi
 printf 'native\t.\t.\tFuzzNative\n'
 printf 'native\t.\t./other\tFuzzOther\n'
 printf 'rapid\t.\t.\tTestRapid\n'
+if [ "${FAKE_REGISTRY_ADDED:-}" = "1" ]; then
+	printf 'native\tadded\t.\tFuzzAdded\n'
+fi
 REGISTRY
 chmod +x "$registry"
 
@@ -90,17 +94,43 @@ gobin="$work/go.sh"
 cat >"$gobin" <<'GOBIN'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\t%s\tseed=%s\tchecks=%s\t%s\n' "$PWD" "${GOWORK:-}" "${RAPID_SEED:-}" "${RAPID_CHECKS:-}" "$*" >>"$FAKE_GO_LOG"
+env_value() {
+	local name="$1"
+	if [[ -v "$name" ]]; then
+		printf '%s' "${!name}"
+	else
+		printf '<unset>'
+	fi
+}
+printf '%s\t%s\tseed=%s\tchecks=%s\tsteps=%s\tfailfile=%s\tnofailfile=%s\tlog=%s\tv=%s\tdebug=%s\tdebugvis=%s\tshrinktime=%s\t%s\n' \
+	"$PWD" "${GOWORK:-}" "$(env_value RAPID_SEED)" "$(env_value RAPID_CHECKS)" "$(env_value RAPID_STEPS)" "$(env_value RAPID_FAILFILE)" "$(env_value RAPID_NOFAILFILE)" "$(env_value RAPID_LOG)" "$(env_value RAPID_V)" "$(env_value RAPID_DEBUG)" "$(env_value RAPID_DEBUGVIS)" "$(env_value RAPID_SHRINKTIME)" "$*" >>"$FAKE_GO_LOG"
 command="$1"
 shift
 case "$command" in
+	work)
+		[ "$1" = edit ] && [ "$2" = -json ] || { echo "fake go: unexpected work command" >&2; exit 25; }
+		cat <<'JSON'
+{
+  "Use": [
+    {"DiskPath":"."},
+    {"DiskPath":"./agent"},
+    {"DiskPath":"./auth"},
+    {"DiskPath":"./envvars"},
+    {"DiskPath":"./fuzz"},
+    {"DiskPath":"./invariant"},
+    {"DiskPath":"./llm"},
+    {"DiskPath":"./added"}
+  ]
+}
+JSON
+		;;
 	list)
 		if [ "${FAKE_GO_LIST_FAIL:-}" = "1" ]; then
 			echo "synthetic go list failure" >&2
 			exit 18
 		fi
-		# Root has two packages; the other six list successfully but have no
-		# packages, proving the runner asks all seven and keeps package profiles
+		# Root has two packages; the workspace modules list successfully but have no
+		# packages, except added, proving the runner asks every go.work module and keeps profiles
 		# separate within a module.
 		if [ "$PWD" = "$FAKE_REPO" ]; then
 			printf '%s\n' "$PWD"
@@ -109,6 +139,8 @@ case "$command" in
 				printf '%s/missing-one\n' "$PWD"
 				printf '%s/missing-two\n' "$PWD"
 			fi
+		elif [ "$PWD" = "$FAKE_REPO/added" ] && [ "${FAKE_REGISTRY_ADDED:-}" = "1" ]; then
+			printf '%s\n' "$PWD"
 		fi
 		;;
 	test)
@@ -128,7 +160,8 @@ case "$command" in
 				fi
 			done
 		fi
-		[ -n "$profile" ] || { echo "fake go: missing coverprofile" >&2; exit 19; }
+		# make fuzz replays ordinary deterministic tests without coverage profiles.
+		[ -n "$profile" ] || exit 0
 		if [ "${FAKE_GO_TEST_FAIL:-}" = "$run" ]; then
 			echo "synthetic replay failure" >&2
 			exit 20
@@ -146,6 +179,8 @@ case "$command" in
 				echo 'example.test/root.go:1.1,2.1 1 1'
 			elif [ "$run" = '^FuzzOther$' ]; then
 				echo 'example.test/other.go:5.1,6.1 3 1'
+			elif [ "$run" = '^FuzzAdded$' ]; then
+				echo 'example.test/added.go:7.1,8.1 2 1'
 			else
 				# Merge must retain this native-positive count and add the Rapid block.
 				echo 'example.test/root.go:1.1,2.1 1 0'
@@ -174,6 +209,12 @@ case "$command" in
 				./other) cp "$profile" "$FAKE_COV_OTHER_PROFILE" ;;
 			esac
 		done <"$manifest"
+		for arg in "$@"; do
+			if [ "$arg" = -global-json ]; then
+				printf '{"modules":[{"module":"fake"}]}\n'
+				break
+			fi
+		done
 		;;
 	*)
 		echo "fake go: unexpected command $command" >&2
@@ -182,6 +223,22 @@ case "$command" in
 esac
 GOBIN
 chmod +x "$gobin"
+
+# Exercise the Make rapid replay with the same fake Go boundary. Its ordinary
+# native/test commands intentionally have no coverprofile, which the fake above
+# accepts without producing a profile.
+cp "$makefile" "$repo/Makefile"
+cp "$cap" "$repo/scripts/run-capped.sh"
+cat >"$repo/scripts/run-fuzz.sh" <<'RUN_FUZZ'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$1" = --list ] || exit 26
+printf 'rapid:.:.:TestRapid\n'
+RUN_FUZZ
+chmod +x "$repo/scripts/run-capped.sh" "$repo/scripts/run-fuzz.sh"
+fake_bin="$work/bin"
+mkdir -p "$fake_bin"
+ln -s "$gobin" "$fake_bin/go"
 
 go_log="$work/go.log"
 registry_log="$work/registry.log"
@@ -199,6 +256,16 @@ run_runner() {
 	env FAKE_REPO="$repo" FAKE_GO_LOG="$go_log" FAKE_REGISTRY_LOG="$registry_log" FAKE_COV_MANIFEST="$cov_manifest" FAKE_COV_PROFILE="$cov_profile" FAKE_COV_OTHER_PROFILE="$cov_other_profile" SERF_FUZZ_GO="$gobin" SERF_FUZZ_CAPPED="$cap" SERF_FUZZ_REGISTRY_CHECK="$registry" "$@" bash "$repo/scripts/fuzz-coverage-global.sh" --check --bless
 }
 
+run_runner_json() {
+	env FAKE_REPO="$repo" FAKE_GO_LOG="$go_log" FAKE_REGISTRY_LOG="$registry_log" FAKE_COV_MANIFEST="$cov_manifest" FAKE_COV_PROFILE="$cov_profile" FAKE_COV_OTHER_PROFILE="$cov_other_profile" SERF_FUZZ_GO="$gobin" SERF_FUZZ_CAPPED="$cap" SERF_FUZZ_REGISTRY_CHECK="$registry" "$@" bash "$repo/scripts/fuzz-coverage-global.sh" --check --bless --format json
+}
+
+run_runner_modules() {
+	local modules="$1"
+	shift
+	env FAKE_REPO="$repo" FAKE_GO_LOG="$go_log" FAKE_REGISTRY_LOG="$registry_log" FAKE_COV_MANIFEST="$cov_manifest" FAKE_COV_PROFILE="$cov_profile" FAKE_COV_OTHER_PROFILE="$cov_other_profile" SERF_FUZZ_GO="$gobin" SERF_FUZZ_CAPPED="$cap" SERF_FUZZ_REGISTRY_CHECK="$registry" "$@" bash "$repo/scripts/fuzz-coverage-global.sh" --check --bless --modules "$modules"
+}
+
 expect_failure() {
 	set +e
 	last_output="$(run_runner "$@" 2>&1)"
@@ -213,25 +280,25 @@ expect_failure() {
 
 echo '== exact all-module replay and merge =='
 reset_logs
-out="$(run_runner 2>&1)"
+out="$(run_runner RAPID_STEPS=999 RAPID_FAILFILE=/tmp/ambient RAPID_NOFAILFILE=false RAPID_LOG=true RAPID_V=true RAPID_DEBUG=true RAPID_DEBUGVIS=true RAPID_SHRINKTIME=1h 2>&1)"
 has "$out" 'account package-local profiles' 'successful replay reaches global accounting'
 has "$(cat "$registry_log")" "$repo/go.work" 'registry checker inherits anchored GOWORK'
 
 log="$(cat "$go_log")"
-for module in . agent auth envvars fuzz invariant llm; do
+for module in . added agent auth envvars fuzz invariant llm; do
 	if [ "$module" = . ]; then
 		module_dir="$repo"
 	else
 		module_dir="$repo/$module"
 	fi
-	has "$log" "$module_dir"$'\t'"$repo/go.work"$'\tseed=\tchecks=\tlist -tags serffuzz -f {{.Dir}} ./...' "go list -tags serffuzz covers module $module"
+	has "$log" "$module_dir"$'\t'"$repo/go.work"$'\tseed=<unset>\tchecks=<unset>\t' "go list -tags serffuzz covers module $module"
 done
 has "$log" $'\ttest -tags serffuzz -run ^FuzzNative$ -count=1 -coverprofile=' 'native replay has exact deterministic flags'
 count_has "$log" $'\ttest -tags serffuzz -run ^FuzzNative$ -count=1 -coverprofile=' 1 'native target replays once'
 count_has "$log" $'\ttest -tags serffuzz -run ^FuzzOther$ -count=1 -coverprofile=' 1 'other package native target replays once'
 count_has "$log" $'\ttest -tags serffuzz -run ^TestRapid$ -count=1 -coverprofile=' 5 'rapid target replays fixed seed bank exactly once each'
 for seed in 1 2 3 5 8; do
-	has "$log" $'\tseed='"$seed"$'\tchecks=100\ttest -tags serffuzz -run ^TestRapid$ -count=1 -coverprofile=' "rapid seed $seed uses RAPID_CHECKS=100"
+	has "$log" $'\tseed='"$seed"$'\tchecks=100\tsteps=30\tfailfile=<unset>\tnofailfile=true\tlog=false\tv=false\tdebug=false\tdebugvis=false\tshrinktime=30s\ttest -tags serffuzz -run ^TestRapid$ -count=1 -coverprofile=' "rapid seed $seed pins every behavior control"
 done
 lacks "$log" '-coverpkg' 'replay never uses coverpkg'
 has "$log" $'\trun ./cmd/serf-fuzzcov -global-manifest ' 'global accounting runs serf-fuzzcov'
@@ -247,6 +314,108 @@ has "$merged" 'example.test/rapid.go:3.1,4.1 2 1' 'merge adds Rapid-only coverag
 other_merged="$(cat "$cov_other_profile")"
 has "$other_merged" 'example.test/other.go:5.1,6.1 3 1' 'other package profile keeps its own blocks'
 lacks "$other_merged" 'example.test/root.go' 'profiles never merge blocks across packages'
+
+echo '== workspace discovery and module selection =='
+reset_logs
+set +e
+last_output="$(run_runner FAKE_REGISTRY_ADDED=1 2>&1)"
+last_status=$?
+set -e
+if [ "$last_status" -eq 0 ]; then
+	ok 'runner replays a module discovered from go.work'
+else
+	bad "runner should replay a module discovered from go.work ($last_output)"
+fi
+log="$(cat "$go_log")"
+has "$log" "$repo/added"$'\t'"$repo/go.work"$'\tseed=<unset>\tchecks=<unset>\tsteps=<unset>\tfailfile=<unset>\tnofailfile=<unset>\tlog=<unset>\tv=<unset>\tdebug=<unset>\tdebugvis=<unset>\tshrinktime=<unset>\tlist -tags serffuzz -f {{.Dir}} ./...' 'derived added module is preflighted'
+has "$log" $'\ttest -tags serffuzz -run ^FuzzAdded$ -count=1 -coverprofile=' 'derived added module target is replayed'
+
+reset_logs
+set +e
+last_output="$(run_runner_modules added FAKE_REGISTRY_ADDED=1 2>&1)"
+last_status=$?
+set -e
+if [ "$last_status" -eq 0 ]; then
+	ok '--modules accepts a module derived from go.work'
+else
+	bad "--modules should accept a module derived from go.work ($last_output)"
+fi
+log="$(cat "$go_log")"
+has "$log" "$repo/added"$'\t'"$repo/go.work"$'\tseed=<unset>\tchecks=<unset>\tsteps=<unset>\tfailfile=<unset>\tnofailfile=<unset>\tlog=<unset>\tv=<unset>\tdebug=<unset>\tdebugvis=<unset>\tshrinktime=<unset>\tlist -tags serffuzz -f {{.Dir}} ./...' '--modules lists the derived module'
+lacks "$log" "$repo/agent"$'\t'"$repo/go.work"$'\t' '--modules skips unselected workspace modules'
+
+reset_logs
+set +e
+last_output="$(run_runner_modules missing-module 2>&1)"
+last_status=$?
+set -e
+if [ "$last_status" -ne 0 ]; then
+	ok '--modules rejects a label outside the derived workspace set'
+else
+	bad '--modules should reject a label outside the derived workspace set'
+fi
+has "$last_output" 'unknown go.work module: missing-module' '--modules reports the unknown derived label exactly'
+lacks "$(cat "$go_log")" $'\tlist ' 'unknown --modules selection stops before preflight'
+
+echo '== JSON output is machine-readable =='
+json_check="$work/json-check.go"
+cat >"$json_check" <<'GO'
+package main
+
+import (
+	"encoding/json"
+	"io"
+	"os"
+)
+
+func main() {
+	decoder := json.NewDecoder(os.Stdin)
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		panic(err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		panic("trailing non-JSON output")
+	}
+}
+GO
+reset_logs
+json_out="$work/global.json"
+json_err="$work/global.err"
+set +e
+run_runner_json >"$json_out" 2>"$json_err"
+last_status=$?
+set -e
+if [ "$last_status" -eq 0 ]; then
+	ok 'JSON runner invocation succeeds'
+else
+	bad 'JSON runner invocation should succeed'
+fi
+if go run "$json_check" <"$json_out" >/dev/null 2>&1; then
+	ok 'JSON mode emits valid JSON only on stdout'
+else
+	bad "JSON mode stdout is not valid JSON: $(cat "$json_out")"
+fi
+lacks "$(cat "$json_out")" 'fuzz-coverage-global:' 'JSON stdout excludes runner progress'
+has "$(cat "$json_err")" 'fuzz-coverage-global: validating registered native and Rapid targets' 'JSON runner progress goes to stderr'
+
+echo '== Make rapid replay pins the full Rapid environment =='
+reset_logs
+set +e
+(cd "$repo" && PATH="$fake_bin:$PATH" FAKE_REPO="$repo" FAKE_GO_LOG="$go_log" RAPID_STEPS=999 RAPID_FAILFILE=/tmp/ambient RAPID_NOFAILFILE=false RAPID_LOG=true RAPID_V=true RAPID_DEBUG=true RAPID_DEBUGVIS=true RAPID_SHRINKTIME=1h make fuzz) >"$work/make.out" 2>"$work/make.err"
+last_status=$?
+set -e
+if [ "$last_status" -eq 0 ]; then
+	ok 'fake make fuzz succeeds'
+else
+	bad "fake make fuzz should succeed: $(cat "$work/make.err")"
+fi
+log="$(cat "$go_log")"
+count_has "$log" $'\ttest -tags serffuzz -run ^TestRapid$ -count=1 .' 5 'make fuzz replays the rapid target for every fixed seed'
+for seed in 1 2 3 5 8; do
+	has "$log" $'\tseed='"$seed"$'\tchecks=100\tsteps=30\tfailfile=<unset>\tnofailfile=true\tlog=false\tv=false\tdebug=false\tdebugvis=false\tshrinktime=30s\ttest -tags serffuzz -run ^TestRapid$ -count=1 .' "make fuzz rapid seed $seed pins every behavior control"
+done
 
 echo '== missing local surface stops before replays =='
 reset_logs
