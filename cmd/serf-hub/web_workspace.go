@@ -352,12 +352,14 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 				data.ContextPercent = int(status.ContextPressure * 100)
 				data.ContextWindow = status.ContextWindow
 				data.ContextNumbers = formatContextNumbers(status.ContextUsed, status.ContextWindow, status.ContextRemaining)
+				data.CompactContextNumbers = formatCompactContextNumbers(status.ContextUsed, status.ContextWindow)
 			}
 			// Branch isn't on the rendezvous entry or daemon /status — fall
 			// back to the past index where the agent persists EnvInfo.
 			if s.cfg.Past != nil {
 				if pe, ok := s.cfg.Past.Find(id); ok {
 					data.Branch = pe.Meta.EnvInfo.GitBranch
+					data.Worktree = worktreeLabel(pe.Meta.WorktreePath)
 					if data.WorkingDir == "" {
 						data.WorkingDir = pe.Meta.EnvInfo.WorkingDir
 					}
@@ -388,6 +390,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 				Model:        pe.Meta.Model,
 				WorkingDir:   pe.Meta.EnvInfo.WorkingDir,
 				Branch:       pe.Meta.EnvInfo.GitBranch,
+				Worktree:     worktreeLabel(pe.Meta.WorktreePath),
 				Capabilities: s.apiSessionCapabilities(id, false),
 				// ActiveTurnStartedAt stays 0: the session has ended, so no
 				// turn is in flight.
@@ -554,24 +557,31 @@ func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id 
 	// keeping it fresh as the session's generated name changes.
 	detail, _ := s.apiSessionState(id)
 	data := map[string]any{
-		"SourceLabel":         sourceLabelFromRefText(appRefFromRouteID(id)),
-		"Title":               detail.Title,
-		"OOBTitle":            true,
-		"Model":               detail.Model,
-		"WorkingDir":          detail.WorkingDir,
-		"Branch":              detail.Branch,
-		"ContextPercent":      int(detail.ContextPressure * 100),
-		"ContextWindow":       detail.ContextWindow,
-		"ContextNumbers":      formatContextNumbers(detail.ContextUsed, detail.ContextWindow, detail.ContextRemaining),
-		"Cost":                appwire.EstimateCost(detail.Model, appwireUsageFromHub(detail.Usage)),
-		"State":               detail.State,
-		"StateLabel":          stateLabel(detail.State, false),
-		"TurnCount":           detail.TurnCount,
-		"GoalStatus":          detail.GoalStatus,
-		"GoalIterations":      detail.GoalIterations,
-		"WorkMillis":          detail.WorkMillis,
-		"Usage":               detail.Usage,
-		"ActiveTurnStartedAt": detail.ActiveTurnStartedAt,
+		"SourceLabel":           sourceLabelFromRefText(appRefFromRouteID(id)),
+		"Title":                 detail.Title,
+		"OOBTitle":              true,
+		"Model":                 detail.Model,
+		"WorkingDir":            detail.WorkingDir,
+		"Branch":                detail.Branch,
+		"ContextPercent":        int(detail.ContextPressure * 100),
+		"ContextWindow":         detail.ContextWindow,
+		"ContextNumbers":        formatContextNumbers(detail.ContextUsed, detail.ContextWindow, detail.ContextRemaining),
+		"CompactContextNumbers": formatCompactContextNumbers(detail.ContextUsed, detail.ContextWindow),
+		"Worktree":              "",
+		"Cost":                  appwire.EstimateCost(detail.Model, appwireUsageFromHub(detail.Usage)),
+		"State":                 detail.State,
+		"StateLabel":            stateLabel(detail.State, false),
+		"TurnCount":             detail.TurnCount,
+		"GoalStatus":            detail.GoalStatus,
+		"GoalIterations":        detail.GoalIterations,
+		"WorkMillis":            detail.WorkMillis,
+		"Usage":                 detail.Usage,
+		"ActiveTurnStartedAt":   detail.ActiveTurnStartedAt,
+	}
+	if isLocalRouteID(id) && s.cfg.Past != nil {
+		if pe, ok := s.cfg.Past.Find(id); ok {
+			data["Worktree"] = worktreeLabel(pe.Meta.WorktreePath)
+		}
 	}
 	if data["Model"] == "" {
 		data["Model"] = "—"

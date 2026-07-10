@@ -268,12 +268,17 @@ func TestHubDetailFromAppThreadCarriesGoal(t *testing.T) {
 		Source: "local",
 		Status: appwire.ThreadStatus{Type: "idle"},
 		Serf: appwire.SerfThread{
-			Ref:  "local:th_goal",
-			Goal: &appwire.GoalState{Status: "active", Iterations: 2},
+			Ref:           "local:th_goal",
+			Goal:          &appwire.GoalState{Status: "active", Iterations: 2},
+			ContextUsed:   42000,
+			ContextWindow: 100000,
 		},
 	})
 	if wd.GoalStatus != "active" || wd.GoalIterations != 2 {
 		t.Fatalf("workspace data dropped goal: status=%q iterations=%d", wd.GoalStatus, wd.GoalIterations)
+	}
+	if wd.CompactContextNumbers != "42k / 100k" {
+		t.Fatalf("workspace data compact context = %q, want 42k / 100k", wd.CompactContextNumbers)
 	}
 }
 
@@ -2679,7 +2684,8 @@ func TestWeb_State_RendersInputStatusPartial(t *testing.T) {
 	_ = os.MkdirAll(proj, 0o755)
 	_ = schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01STATE001", UpdatedAt: time.Now(),
-		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/wd", GitBranch: "main"},
+		WorktreePath: "/state/worktrees/serf/dlg_01H",
+		EnvInfo:      schema.EnvironmentInfo{WorkingDir: "/tmp/wd", GitBranch: "main"},
 	})
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
@@ -2730,6 +2736,10 @@ func TestWeb_State_RendersInputStatusPartial(t *testing.T) {
 	}
 	if strings.Contains(body, `class="status-item cost"`) {
 		t.Errorf("state partial should not render a cost cluster with nil usage: %q", body)
+	}
+	data := web.workspaceData("01STATE001")
+	if data.Worktree != "dlg_01H" {
+		t.Errorf("WorkspaceData.Worktree = %q, want dlg_01H", data.Worktree)
 	}
 }
 
@@ -2975,6 +2985,66 @@ func TestFormatContextNumbersShowsUsedWindowAndRemaining(t *testing.T) {
 	want := "42k / 100k tokens (55k left)"
 	if got != want {
 		t.Fatalf("formatContextNumbers() = %q, want %q", got, want)
+	}
+}
+
+func TestFormatCompactContextNumbersShowsOnlyUsedAndWindow(t *testing.T) {
+	cases := []struct {
+		used, window int
+		want         string
+	}{
+		{42000, 100000, "42k / 100k"},
+		{999, 2048, "999 / 2k"},
+		{42000, 0, ""},
+	}
+	for _, tc := range cases {
+		if got := formatCompactContextNumbers(tc.used, tc.window); got != tc.want {
+			t.Errorf("formatCompactContextNumbers(%d, %d) = %q, want %q", tc.used, tc.window, got, tc.want)
+		}
+	}
+}
+
+func TestWorktreeLabelUsesLeafAndIgnoresEmpty(t *testing.T) {
+	if got := worktreeLabel("/state/worktrees/serf/dlg_01H"); got != "dlg_01H" {
+		t.Fatalf("worktreeLabel() = %q, want dlg_01H", got)
+	}
+	if got := worktreeLabel(""); got != "" {
+		t.Fatalf("worktreeLabel(empty) = %q, want empty", got)
+	}
+}
+
+func TestWeb_WorkspaceDataUsesPersistedWorktree(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const sessionID = "01WORKTREE"
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID:           sessionID,
+		WorktreePath: "/state/worktrees/serf/dlg_01H",
+		EnvInfo: schema.EnvironmentInfo{
+			WorkingDir: "/state/worktrees/serf/dlg_01H",
+			GitBranch:  "feature/compact-rail",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRoster(t.TempDir(), nil), Past: idx})
+	data := web.workspaceData(sessionID)
+	if data.Worktree != "dlg_01H" {
+		t.Errorf("Worktree = %q, want dlg_01H", data.Worktree)
+	}
+	if data.WorkingDir != "/state/worktrees/serf/dlg_01H" {
+		t.Errorf("WorkingDir = %q, want full worktree path", data.WorkingDir)
+	}
+	if data.Branch != "feature/compact-rail" {
+		t.Errorf("Branch = %q, want feature/compact-rail", data.Branch)
 	}
 }
 

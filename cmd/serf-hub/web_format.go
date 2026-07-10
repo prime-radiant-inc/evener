@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -42,17 +43,18 @@ func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
 		state = "idle"
 	}
 	data := WorkspaceData{
-		ID:           ref,
-		SourceLabel:  sourceLabelFromRefText(ref),
-		Title:        title,
-		State:        state,
-		StateLabel:   stateLabel(state, false),
-		TurnCount:    completedTurnCount(thread.Turns),
-		ActiveTurnID: activeTurnIDFromAppwireThread(thread),
-		RunningFor:   activeTurnRunningFor(thread),
-		Model:        thread.ModelProvider,
-		WorkingDir:   thread.CWD,
-		Capabilities: hubCapabilitiesFromAppwire(thread.Serf.Capabilities),
+		ID:                    ref,
+		SourceLabel:           sourceLabelFromRefText(ref),
+		Title:                 title,
+		State:                 state,
+		StateLabel:            stateLabel(state, false),
+		TurnCount:             completedTurnCount(thread.Turns),
+		ActiveTurnID:          activeTurnIDFromAppwireThread(thread),
+		RunningFor:            activeTurnRunningFor(thread),
+		Model:                 thread.ModelProvider,
+		WorkingDir:            thread.CWD,
+		CompactContextNumbers: formatCompactContextNumbers(thread.Serf.ContextUsed, thread.Serf.ContextWindow),
+		Capabilities:          hubCapabilitiesFromAppwire(thread.Serf.Capabilities),
 		// WorkMillis/Usage/ActiveTurnStartedAt are WS2's working-state/token
 		// metrics, read on demand by the daemon rather than pushed per event.
 		WorkMillis:          thread.Serf.WorkMillis,
@@ -206,6 +208,24 @@ func formatContextNumbers(used, window, remaining int) string {
 		remaining = 0
 	}
 	return fmt.Sprintf("%s / %s tokens (%s left)", formatTokenCount(used), formatTokenCount(window), formatTokenCount(remaining))
+}
+
+func worktreeLabel(worktreePath string) string {
+	if strings.TrimSpace(worktreePath) == "" {
+		return ""
+	}
+	base := filepath.Base(filepath.Clean(worktreePath))
+	if base == "." || base == string(filepath.Separator) {
+		return ""
+	}
+	return base
+}
+
+func formatCompactContextNumbers(used, window int) string {
+	if window <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s / %s", formatTokenCount(used), formatTokenCount(window))
 }
 
 func formatTokenCount(n int) string {
