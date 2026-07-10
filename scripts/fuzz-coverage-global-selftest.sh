@@ -283,6 +283,16 @@ JSON
 			echo "synthetic global accounting failure" >&2
 			exit 24
 		fi
+		if [ "${FAKE_GO_RUN_GATE_FAIL:-}" = "1" ]; then
+			for arg in "$@"; do
+				if [ "$arg" = -global-json ]; then
+					printf '{"modules":[{"module":"fake-gate","covered":94,"total":100,"percent":94,"pass":false,"packages":[{"module":"fake-gate","package":".","covered":94,"total":100,"percent":94}]}],"raw_pass":false,"minimum":95,"applied_exclusions":null}\n'
+					break
+				fi
+			done
+			echo "serf-fuzzcov: RAW THRESHOLD BREACH: synthetic coverage below 95%" >&2
+			exit 1
+		fi
 		manifest=""
 		for ((i = 1; i <= $#; i++)); do
 			if [ "${!i}" = '-global-manifest' ]; then
@@ -300,7 +310,7 @@ JSON
 		done <"$manifest"
 		for arg in "$@"; do
 			if [ "$arg" = -global-json ]; then
-				printf '{"modules":[{"module":"fake"}]}\n'
+				printf '{"modules":[{"module":"fake","covered":100,"total":100,"percent":100,"pass":true,"packages":[{"module":"fake","package":".","covered":100,"total":100,"percent":100}]}],"raw_pass":true,"minimum":95,"applied_exclusions":null}\n'
 				break
 			fi
 		done
@@ -497,19 +507,38 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
+	"strconv"
 )
 
+type globalReport struct {
+	Modules []struct {
+		Module string `json:"module"`
+	} `json:"modules"`
+	RawPass bool `json:"raw_pass"`
+}
+
 func main() {
+	if len(os.Args) != 3 {
+		panic("usage: json-check <module> <raw-pass>")
+	}
+	wantRawPass, err := strconv.ParseBool(os.Args[2])
+	if err != nil {
+		panic(err)
+	}
 	decoder := json.NewDecoder(os.Stdin)
-	var value any
-	if err := decoder.Decode(&value); err != nil {
+	var report globalReport
+	if err := decoder.Decode(&report); err != nil {
 		panic(err)
 	}
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
 		panic("trailing non-JSON output")
+	}
+	if len(report.Modules) != 1 || report.Modules[0].Module != os.Args[1] || report.RawPass != wantRawPass {
+		panic(fmt.Sprintf("unexpected report: %#v", report))
 	}
 }
 GO
@@ -525,13 +554,56 @@ if [ "$last_status" -eq 0 ]; then
 else
 	bad 'JSON runner invocation should succeed'
 fi
-if go run "$json_check" <"$json_out" >/dev/null 2>&1; then
+if go run "$json_check" fake true <"$json_out" >/dev/null 2>&1; then
 	ok 'JSON mode emits valid JSON only on stdout'
 else
 	bad "JSON mode stdout is not valid JSON: $(cat "$json_out")"
 fi
 lacks "$(cat "$json_out")" 'fuzz-coverage-global:' 'JSON stdout excludes runner progress'
 has "$(cat "$json_err")" 'fuzz-coverage-global: validating registered native and Rapid targets' 'JSON runner progress goes to stderr'
+
+echo '== JSON gate breaches preserve the report =='
+reset_logs
+json_gate_out="$work/global-gate.json"
+json_gate_err="$work/global-gate.err"
+set +e
+run_runner_json FAKE_GO_RUN_GATE_FAIL=1 >"$json_gate_out" 2>"$json_gate_err"
+last_status=$?
+set -e
+if [ "$last_status" -eq 1 ]; then
+	ok 'JSON runner preserves a raw/floor gate exit status'
+else
+	bad "JSON runner gate exit = $last_status, want 1"
+fi
+if go run "$json_check" fake-gate false <"$json_gate_out" >/dev/null 2>&1; then
+	ok 'JSON gate breach emits its complete report on stdout'
+else
+	bad "JSON gate breach stdout is not a complete report: $(cat "$json_gate_out")"
+fi
+lacks "$(cat "$json_gate_out")" 'fuzz-coverage-global:' 'JSON gate breach stdout excludes runner progress'
+has "$(cat "$json_gate_err")" 'fuzz-coverage-global: validating registered native and Rapid targets' 'JSON gate breach runner progress stays on stderr'
+has "$(cat "$json_gate_err")" 'serf-fuzzcov: RAW THRESHOLD BREACH: synthetic coverage below 95%' 'JSON gate breach error stays on stderr'
+lacks "$(cat "$json_gate_err")" 'global coverage accounting failed' 'JSON gate breach is not misclassified as accounting failure'
+
+echo '== JSON accounting failures fail closed =='
+reset_logs
+json_failure_out="$work/global-failure.json"
+json_failure_err="$work/global-failure.err"
+set +e
+run_runner_json FAKE_GO_RUN_FAIL=1 >"$json_failure_out" 2>"$json_failure_err"
+last_status=$?
+set -e
+if [ "$last_status" -ne 0 ]; then
+	ok 'JSON runner fails for an accounting command failure'
+else
+	bad 'JSON runner should fail for an accounting command failure'
+fi
+if [ ! -s "$json_failure_out" ]; then
+	ok 'JSON accounting failure emits no partial stdout report'
+else
+	bad "JSON accounting failure unexpectedly emitted stdout: $(cat "$json_failure_out")"
+fi
+has "$(cat "$json_failure_err")" 'global coverage accounting failed' 'JSON accounting failure remains fatal'
 
 echo '== Make rapid replay pins the full Rapid environment =='
 reset_logs

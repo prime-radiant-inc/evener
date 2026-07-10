@@ -230,6 +230,11 @@ plan="$work/targets.tsv"
 groups="$work/groups.tsv"
 global_manifest="$work/global-profiles.tsv"
 
+is_expected_global_gate_failure() {
+	local stderr_file="$1"
+	grep -Eq '^serf-fuzzcov: (RAW THRESHOLD BREACH:|REGRESSION |refusing to bless:)' "$stderr_file"
+}
+
 discover_workspace_modules
 if [ "$modules_argument_set" = true ]; then
 	select_modules "$modules_argument"
@@ -463,7 +468,18 @@ fuzzcov_args=(
 echo "fuzz-coverage-global: account package-local profiles" >&2
 if [ "$format" = json ]; then
 	accounting_json="$work/accounting.json"
-	if ! (cd "$repo_root" && "$capped" "$go_bin" "${fuzzcov_args[@]}") >"$accounting_json"; then
+	accounting_stderr="$work/accounting.stderr"
+	if (cd "$repo_root" && "$capped" "$go_bin" "${fuzzcov_args[@]}") >"$accounting_json" 2>"$accounting_stderr"; then
+		accounting_status=0
+	else
+		accounting_status=$?
+	fi
+	cat "$accounting_stderr" >&2
+	if [ "$accounting_status" -ne 0 ]; then
+		if [ "$accounting_status" -eq 1 ] && [ -s "$accounting_json" ] && is_expected_global_gate_failure "$accounting_stderr"; then
+			cat "$accounting_json"
+			exit "$accounting_status"
+		fi
 		die "global coverage accounting failed"
 	fi
 	cat "$accounting_json"
