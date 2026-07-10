@@ -69,6 +69,27 @@ pass(purposeCmdRule && /padding-left:/.test(purposeCmdRule) && !/margin-left:/.t
 pass(/#workspace\s*\{[^}]*overflow-x:\s*clip/s.test(mobile),
   "mobile #workspace must set overflow-x: clip as a horizontal-anchor guard");
 
+// Visual viewport coordination sets this variable while a workspace is active;
+// the shell must consume it with a standards-based dynamic viewport fallback.
+const workspaceViewportRule = (css.match(/#workspace\s*\{[^}]*\}/g) || [])
+  .find((block) => /--workspace-visible-height\s*:/.test(block));
+pass(workspaceViewportRule && /height:\s*var\(--workspace-visible-height,\s*100dvh\)/.test(workspaceViewportRule),
+  "#workspace visible-height rule must use var(--workspace-visible-height, 100dvh)");
+
+// The transcript is the only vertically scrollable flex child. A zero flex basis
+// and min-height:0 prevent the composer from being pushed below the visual viewport.
+pass(convScrollRule && /flex:\s*1\s+1\s+0/.test(convScrollRule) && /min-height:\s*0/.test(convScrollRule),
+  ".conversation scroll container must be the flexible min-height:0 transcript region");
+
+// On phone the safe-area-aware composer is regular flex content, not sticky.
+const phoneWorkspaceInputRule = (mobile.match(/\.workspace-input\s*\{[^}]*\}/g) || [])
+  .find((block) => /safe-area-inset-bottom/.test(block));
+pass(phoneWorkspaceInputRule && /flex:\s*0\s+0\s+auto/.test(phoneWorkspaceInputRule) && /margin-top:\s*auto/.test(phoneWorkspaceInputRule) && !/position:\s*sticky/.test(phoneWorkspaceInputRule),
+  "phone safe-area .workspace-input must be non-sticky flex dock content");
+
+pass(/\.workspace-input\[data-response-mode="ask"\]/.test(css),
+  "stylesheet must provide a .workspace-input[data-response-mode=\"ask\"] response-mode hook");
+
 // iOS zoom guard: a focused field whose text is < 16px makes iOS Safari zoom
 // the page in (and never zoom back out on blur). Editable fields must be 16px
 // on phone — checked via the rule whose selector includes .message-input.

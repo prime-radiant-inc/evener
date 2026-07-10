@@ -487,10 +487,11 @@ body.app[data-sidebar-resizing="true"] .sidebar-resizer {
 }
 #workspace {
   --workspace-content-max-w: 832px;
+  --workspace-visible-height: 100dvh;
   position: relative;
   flex: 1;
   min-width: 0;
-  height: 100vh;
+  height: var(--workspace-visible-height, 100dvh);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1552,7 +1553,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 .status-badge[data-state="closed"]    { color: var(--text-muted); }
 .status-badge[data-state="notLoaded"] { color: var(--text-muted); }
 .conversation {
-  flex: 1;
+  flex: 1 1 0;
   min-height: 0;
   padding: var(--space-5) var(--space-6);
   overflow-y: auto;
@@ -4194,9 +4195,8 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
      card sheds its own border/radius so there's a single surface, not a box in a
      box. The status line moves to the top of the bar, above the input. */
   .workspace-input {
-    position: sticky;
-    bottom: 0;
-    flex: none;
+    flex: 0 0 auto;
+    margin-top: auto;
     display: flex;
     flex-direction: column;
     padding: var(--space-2) var(--space-3) calc(var(--space-2) + env(safe-area-inset-bottom));
@@ -4205,6 +4205,7 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
     transition: border-top-color var(--motion-fast);
   }
   .workspace-input:focus-within { border-top-color: color-mix(in srgb, var(--accent) 55%, var(--rule)); }
+  .workspace-input[data-response-mode="ask"] { border-top-color: color-mix(in srgb, var(--state-awaiting) 55%, var(--rule)); }
   .task-status-row { display: none; }
   .input-status { order: -1; display: flex; flex-wrap: wrap; gap: var(--space-3); margin: 0 0 var(--space-2); padding: 0; min-height: 0; }
   .input-status .source,
