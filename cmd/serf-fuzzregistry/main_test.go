@@ -1,6 +1,7 @@
 package main
 
 import (
+	"go/build"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -126,6 +127,61 @@ func FuzzProduction(f *testing.F) {}
 	}
 	if len(got) != 0 {
 		t.Fatalf("DiscoverWorkspace() = %#v, want no targets from production files", got)
+	}
+}
+
+func TestDiscoverWorkspaceHonorsGoBuildTestFileSelection(t *testing.T) {
+	inactiveGOOS := "windows"
+	if build.Default.GOOS == inactiveGOOS {
+		inactiveGOOS = "linux"
+	}
+
+	files := map[string]string{
+		"go.work": "go 1.25.0\n\nuse .\n",
+		"go.mod":  "module example.test/root\n\ngo 1.25.0\n",
+		"active_fuzz_test.go": `//go:build serffuzz
+
+package root
+
+import "testing"
+
+func FuzzActive(f *testing.F) {}
+`,
+		"inactive_build_fuzz_test.go": `//go:build ` + inactiveGOOS + `
+
+package root
+
+import "testing"
+
+func FuzzInactiveBuild(f *testing.F) {}
+`,
+		"_ignored_fuzz_test.go": `package root
+
+import "testing"
+
+func FuzzIgnoredFile(f *testing.F) {}
+`,
+		"_ignored/ignored_fuzz_test.go": `package ignored
+
+import "testing"
+
+func FuzzIgnoredDirectory(f *testing.F) {}
+`,
+	}
+	files["inactive_"+inactiveGOOS+"_test.go"] = `package root
+
+import "testing"
+
+func FuzzInactivePlatform(f *testing.F) {}
+`
+
+	got, err := DiscoverWorkspace(newWorkspace(t, files))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Target{{Kind: "native", Module: ".", Package: ".", Name: "FuzzActive"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("DiscoverWorkspace() = %#v, want %#v", got, want)
 	}
 }
 

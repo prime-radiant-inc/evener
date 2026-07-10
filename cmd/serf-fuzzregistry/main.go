@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/parser"
 	"go/token"
 	"io"
@@ -24,7 +25,10 @@ import (
 	"golang.org/x/mod/modfile"
 )
 
-const rapidMarker = "serf:fuzz rapid"
+const (
+	rapidMarker  = "serf:fuzz rapid"
+	fuzzBuildTag = "serffuzz"
+)
 
 // Target is a coverage-replay identity. Module and Package are paths relative to
 // go.work and its module directory, respectively.
@@ -137,6 +141,7 @@ func DiscoverWorkspace(root string) ([]Target, error) {
 	if err != nil {
 		return nil, err
 	}
+	buildContext := fuzzBuildContext()
 	moduleRoots := make(map[string]struct{}, len(modules))
 	for _, module := range modules {
 		moduleRoots[filepath.Clean(module.dir)] = struct{}{}
@@ -161,6 +166,13 @@ func DiscoverWorkspace(root string) ([]Target, error) {
 				return nil
 			}
 			if !strings.HasSuffix(entry.Name(), "_test.go") {
+				return nil
+			}
+			active, err := buildContext.MatchFile(filepath.Dir(filePath), entry.Name())
+			if err != nil {
+				return fmt.Errorf("match build constraints for %s: %w", filePath, err)
+			}
+			if !active {
 				return nil
 			}
 
@@ -408,7 +420,17 @@ func skipDirectory(name string) bool {
 	case "testdata", "vendor", "node_modules":
 		return true
 	}
-	return strings.HasPrefix(name, ".")
+	// Go package loading ignores both dot- and underscore-prefixed directories.
+	return strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")
+}
+
+// fuzzBuildContext matches the explicit build configuration used by run-fuzz
+// and coverage replay. build.Default supplies the current target platform,
+// architecture, cgo state, and toolchain tags; this adds only serffuzz.
+func fuzzBuildContext() build.Context {
+	context := build.Default
+	context.BuildTags = append(append([]string(nil), context.BuildTags...), fuzzBuildTag)
+	return context
 }
 
 func isNativeFuzzer(fn *ast.FuncDecl) bool {
