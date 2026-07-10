@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/build"
+	"go/build/constraint"
 	"go/parser"
 	"go/token"
 	"io"
@@ -681,6 +682,11 @@ type globalModeOptions struct {
 // into a non-zero status. Blessing rewrites floors only after every module clears
 // the strict raw threshold.
 func runGlobalMode(options globalModeOptions, stdout, stderr io.Writer) (int, error) {
+	if options.check || options.bless {
+		if err := validateGlobalGateMinimum(options.minimum); err != nil {
+			return 0, err
+		}
+	}
 	profiles, err := readGlobalProfilesFile(options.manifestPath)
 	if err != nil {
 		return 0, fmt.Errorf("read global profile manifest: %w", err)
@@ -914,6 +920,13 @@ func validateResolvedExclusion(exclusion Exclusion) error {
 		if matched {
 			return fmt.Errorf("source file %s is available on %s/%s with serffuzz; platform exclusions require an unavailable build-constrained file", exclusion.SourcePath, coverageBuild.GOOS, coverageBuild.GOARCH)
 		}
+		platformDerived, err := hasPlatformDerivedUnavailability(exclusion.SourcePath, exclusion.File, coverageBuild)
+		if err != nil {
+			return err
+		}
+		if !platformDerived {
+			return fmt.Errorf("source file %s is unavailable with serffuzz but not because of a GOOS/GOARCH filename suffix or platform-only build constraint", exclusion.SourcePath)
+		}
 	default:
 		return fmt.Errorf("kind %q must be generated or platform", exclusion.Kind)
 	}
@@ -928,6 +941,160 @@ func globalCoverageBuildContext() build.Context {
 	ctx.BuildTags = append([]string(nil), ctx.BuildTags...)
 	ctx.BuildTags = append(ctx.BuildTags, "serffuzz")
 	return ctx
+}
+
+// globalPlatformBuildTags mirrors go/build's unexported historical GOOS and
+// GOARCH tag lists as of Go 1.25. It deliberately excludes synthetic and
+// feature tags such as unix, cgo, compiler, go1.N, serffuzz, and arbitrary
+// user tags: those tags cannot justify excluding ordinary production source.
+var globalPlatformBuildTags = map[string]struct{}{
+	"aix": {}, "android": {}, "darwin": {}, "dragonfly": {}, "freebsd": {}, "hurd": {}, "illumos": {}, "ios": {}, "js": {}, "linux": {}, "nacl": {}, "netbsd": {}, "openbsd": {}, "plan9": {}, "solaris": {}, "wasip1": {}, "windows": {}, "zos": {},
+	"386": {}, "amd64": {}, "amd64p32": {}, "arm": {}, "armbe": {}, "arm64": {}, "arm64be": {}, "loong64": {}, "mips": {}, "mipsle": {}, "mips64": {}, "mips64le": {}, "mips64p32": {}, "mips64p32le": {}, "ppc": {}, "ppc64": {}, "ppc64le": {}, "riscv": {}, "riscv64": {}, "s390": {}, "s390x": {}, "sparc": {}, "sparc64": {}, "wasm": {},
+}
+
+// hasPlatformDerivedUnavailability proves that an unavailable replay source is
+// unavailable for a real platform reason. MatchFile alone is not sufficient:
+// a file hidden by !serffuzz, cgo, a release tag, or an arbitrary feature tag
+// is still ordinary production source and must remain in the denominator.
+func hasPlatformDerivedUnavailability(sourcePath, file string, coverageBuild build.Context) (bool, error) {
+	filenameUnavailable, err := hasUnavailablePlatformFilenameSuffix(sourcePath, file, coverageBuild)
+	if err != nil {
+		return false, err
+	}
+	if filenameUnavailable {
+		return true, nil
+	}
+	expressions, err := leadingBuildConstraintExpressions(sourcePath)
+	if err != nil {
+		return false, err
+	}
+	if len(expressions) == 0 {
+		return false, nil
+	}
+	for _, expression := range expressions {
+		tags := map[string]bool{}
+		collectBuildConstraintTags(expression, tags)
+		if len(tags) == 0 {
+			return false, nil
+		}
+		for tag := range tags {
+			if !isGlobalPlatformBuildTag(tag) {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
+}
+
+func isGlobalPlatformBuildTag(tag string) bool {
+	_, ok := globalPlatformBuildTags[tag]
+	return ok
+}
+
+// hasUnavailablePlatformFilenameSuffix asks go/build to evaluate the source
+// filename against the replay context while replacing its contents with a
+// neutral package declaration. This retains Go's exact suffix and compatibility
+// rules without letting !serffuzz or another source build constraint masquerade
+// as the filename's platform reason.
+func hasUnavailablePlatformFilenameSuffix(sourcePath, file string, coverageBuild build.Context) (bool, error) {
+	if !hasGlobalPlatformFilenameSuffix(file) {
+		return false, nil
+	}
+	filenameOnly := coverageBuild
+	filenameOnly.OpenFile = func(string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader("package fuzzcov\n")), nil
+	}
+	matched, err := filenameOnly.MatchFile(filepath.Dir(sourcePath), file)
+	if err != nil {
+		return false, fmt.Errorf("evaluate platform filename suffix for %s: %w", sourcePath, err)
+	}
+	return !matched, nil
+}
+
+// hasGlobalPlatformFilenameSuffix is a narrow precondition for the synthetic
+// MatchFile check above: MatchFile can reject names beginning with '_' or '.',
+// which is not a platform reason. Go treats a recognized final GOOS/GOARCH
+// token after an underscore as its filename platform suffix.
+func hasGlobalPlatformFilenameSuffix(file string) bool {
+	name := strings.TrimSuffix(file, ".go")
+	if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") {
+		return false
+	}
+	firstUnderscore := strings.Index(name, "_")
+	if firstUnderscore < 1 || firstUnderscore == len(name)-1 {
+		return false
+	}
+	parts := strings.Split(name[firstUnderscore+1:], "_")
+	_, ok := globalPlatformBuildTags[parts[len(parts)-1]]
+	return ok
+}
+
+// leadingBuildConstraintExpressions returns directives from the leading comment
+// block only, matching where Go permits build constraints. A later comment that
+// happens to mention a platform tag cannot turn a non-platform exclusion into a
+// valid one.
+func leadingBuildConstraintExpressions(filename string) ([]constraint.Expr, error) {
+	f, err := os.Open(filename)
+	if err != nil {
+		return nil, fmt.Errorf("open source file %s: %w", filename, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	var expressions []constraint.Expr
+	scanner := bufio.NewScanner(f)
+	inBlockComment := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if inBlockComment {
+			if end := strings.Index(line, "*/"); end >= 0 {
+				inBlockComment = false
+				if strings.TrimSpace(line[end+2:]) != "" {
+					return expressions, nil
+				}
+			}
+			continue
+		}
+		switch {
+		case line == "":
+			continue
+		case strings.HasPrefix(line, "//"):
+			if !constraint.IsGoBuild(line) && !constraint.IsPlusBuild(line) {
+				continue
+			}
+			expression, err := constraint.Parse(line)
+			if err != nil {
+				return nil, fmt.Errorf("parse build constraint in %s: %w", filename, err)
+			}
+			expressions = append(expressions, expression)
+		case strings.HasPrefix(line, "/*"):
+			if end := strings.Index(line, "*/"); end < 0 {
+				inBlockComment = true
+			} else if strings.TrimSpace(line[end+2:]) != "" {
+				return expressions, nil
+			}
+		default:
+			return expressions, nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read source file %s: %w", filename, err)
+	}
+	return expressions, nil
+}
+
+func collectBuildConstraintTags(expression constraint.Expr, tags map[string]bool) {
+	switch expression := expression.(type) {
+	case *constraint.TagExpr:
+		tags[expression.Tag] = true
+	case *constraint.NotExpr:
+		collectBuildConstraintTags(expression.X, tags)
+	case *constraint.AndExpr:
+		collectBuildConstraintTags(expression.X, tags)
+		collectBuildConstraintTags(expression.Y, tags)
+	case *constraint.OrExpr:
+		collectBuildConstraintTags(expression.X, tags)
+		collectBuildConstraintTags(expression.Y, tags)
+	}
 }
 
 // sourceModuleAndPackage derives a source file's module import path and package
@@ -1072,6 +1239,19 @@ func joinWithin(root, child string) (string, error) {
 func validateGlobalMinimum(minimum float64) error {
 	if math.IsNaN(minimum) || math.IsInf(minimum, 0) || minimum < 0 || minimum >= 100 {
 		return fmt.Errorf("global minimum %.4f must be in [0, 100)", minimum)
+	}
+	return nil
+}
+
+// validateGlobalGateMinimum keeps ReportGlobal usable for focused accounting
+// tests while preventing the command's check/bless paths from weakening the
+// repository-wide >95.0% contract.
+func validateGlobalGateMinimum(minimum float64) error {
+	if err := validateGlobalMinimum(minimum); err != nil {
+		return err
+	}
+	if minimum < 95.0 {
+		return fmt.Errorf("global minimum %.4f must be at least 95.0 for --check or --bless", minimum)
 	}
 	return nil
 }

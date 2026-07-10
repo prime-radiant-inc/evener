@@ -243,6 +243,60 @@ func TestGlobalBlessDoesNotWaiveOrLowerAFloor(t *testing.T) {
 	}
 }
 
+func TestRunGlobalModeRejectsSubTargetMinimumForCheckAndBless(t *testing.T) {
+	repo := t.TempDir()
+	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.com/m\n\ngo 1.25\n")
+	profile := writeGlobalProfile(t, repo, "sub-target.cov", "mode: set\n"+
+		"example.com/m/p.go:1.1,1.2 95 1\n"+
+		"example.com/m/p.go:2.1,2.2 5 0\n")
+	manifest := filepath.Join(repo, "profiles.tsv")
+	mustWrite(t, manifest, ".\t.\t"+profile+"\n")
+	exclusions := filepath.Join(repo, "exclusions.tsv")
+	mustWrite(t, exclusions, "# intentionally empty\n")
+
+	for _, operation := range []struct {
+		name  string
+		check bool
+		bless bool
+	}{
+		{name: "check", check: true},
+		{name: "bless", bless: true},
+	} {
+		for _, minimum := range []struct {
+			name  string
+			value float64
+		}{
+			{name: "94.9", value: 94.9},
+			{name: "0", value: 0},
+		} {
+			t.Run(operation.name+"-"+minimum.name, func(t *testing.T) {
+				floors := filepath.Join(t.TempDir(), "floors.txt")
+				const originalFloors = "# existing floors must remain untouched\n. 96\n"
+				mustWrite(t, floors, originalFloors)
+
+				var stdout, stderr bytes.Buffer
+				code, err := runGlobalMode(globalModeOptions{
+					manifestPath: manifest, exclusionsPath: exclusions, floorsPath: floors, repoRoot: repo,
+					minimum: minimum.value, check: operation.check, bless: operation.bless,
+				}, &stdout, &stderr)
+				if err == nil || !strings.Contains(err.Error(), "at least 95.0") {
+					t.Fatalf("runGlobalMode minimum %.4f error = %v, want minimum policy rejection", minimum.value, err)
+				}
+				if code != 0 {
+					t.Fatalf("runGlobalMode minimum %.4f code = %d, want 0 with returned error", minimum.value, code)
+				}
+				got, readErr := os.ReadFile(floors)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if string(got) != originalFloors {
+					t.Fatalf("sub-target %s rewrote floors:\n%s", operation.name, got)
+				}
+			})
+		}
+	}
+}
+
 func TestGlobalJSONRemainsValidWhenBlessing(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "go.mod"), "module example.com/m\n\ngo 1.25\n")
@@ -323,6 +377,67 @@ func TestPlatformExclusionMustBeUnavailableAndExclusionsRejectInvalidRows(t *tes
 	serfFuzzRepo, _ := globalExclusionFixture(t, "serffuzz.go", serfFuzzSource)
 	if _, err := ReadGlobalExclusions(serfFuzzRepo, strings.NewReader("m\t./pkg\tserffuzz.go\tplatform\tcompiled by coverage replay\n")); err == nil {
 		t.Fatal("source compiled by serffuzz coverage replay must not be excluded as platform")
+	}
+
+	for _, tagged := range []struct {
+		name   string
+		file   string
+		source string
+	}{
+		{
+			name:   "replay tag only",
+			file:   "not_serffuzz.go",
+			source: "//go:build !serffuzz\n\npackage pkg\n\nfunc NotReplay() {}\n",
+		},
+		{
+			name:   "arbitrary feature tag only",
+			file:   "not_feature.go",
+			source: "//go:build serfcoveragefeature\n\npackage pkg\n\nfunc FeatureOnly() {}\n",
+		},
+		{
+			name:   "cgo tag only",
+			file:   "impossible_cgo.go",
+			source: "//go:build cgo && !cgo\n\npackage pkg\n\nfunc ImpossibleCGO() {}\n",
+		},
+	} {
+		t.Run(tagged.name, func(t *testing.T) {
+			taggedRepo, _ := globalExclusionFixture(t, tagged.file, tagged.source)
+			line := "m\t./pkg\t" + tagged.file + "\tplatform\tnot a platform-derived exclusion\n"
+			if _, err := ReadGlobalExclusions(taggedRepo, strings.NewReader(line)); err == nil {
+				t.Fatalf("%s source must not be excluded as platform", tagged.name)
+			}
+		})
+	}
+
+	otherOS := "windows"
+	if runtime.GOOS == otherOS {
+		otherOS = "linux"
+	}
+	currentSuffixFile := "platform_" + runtime.GOOS + ".go"
+	currentSuffixRepo, _ := globalExclusionFixture(t, currentSuffixFile, "//go:build !serffuzz\n\npackage pkg\n\nfunc CurrentPlatformReplayOnly() {}\n")
+	if _, err := ReadGlobalExclusions(currentSuffixRepo, strings.NewReader("m\t./pkg\t"+currentSuffixFile+"\tplatform\tavailable GOOS suffix hidden only by replay tag\n")); err == nil {
+		t.Fatal("an available GOOS filename suffix must not hide replay-tag-only source")
+	}
+
+	legacyMixedRepo, _ := globalExclusionFixture(t, "legacy_mixed.go", "// +build !"+runtime.GOOS+"\n// +build !serffuzz\n\npackage pkg\n\nfunc LegacyMixed() {}\n")
+	if _, err := ReadGlobalExclusions(legacyMixedRepo, strings.NewReader("m\t./pkg\tlegacy_mixed.go\tplatform\tmixed platform and replay constraints\n")); err == nil {
+		t.Fatal("a mixed legacy platform/replay constraint must not become excludable")
+	}
+
+	suffixFile := "platform_" + otherOS + ".go"
+	suffixRepo, _ := globalExclusionFixture(t, suffixFile, "package pkg\n\nfunc FilenamePlatformOnly() {}\n")
+	if _, err := ReadGlobalExclusions(suffixRepo, strings.NewReader("m\t./pkg\t"+suffixFile+"\tplatform\tselected only for another GOOS\n")); err != nil {
+		t.Fatalf("unavailable GOOS filename suffix must be accepted: %v", err)
+	}
+
+	otherARCH := "386"
+	if runtime.GOARCH == otherARCH {
+		otherARCH = "amd64"
+	}
+	archSuffixFile := "platform_" + otherARCH + ".go"
+	archSuffixRepo, _ := globalExclusionFixture(t, archSuffixFile, "package pkg\n\nfunc FilenameArchOnly() {}\n")
+	if _, err := ReadGlobalExclusions(archSuffixRepo, strings.NewReader("m\t./pkg\t"+archSuffixFile+"\tplatform\tselected only for another GOARCH\n")); err != nil {
+		t.Fatalf("unavailable GOARCH filename suffix must be accepted: %v", err)
 	}
 
 	if _, err := ReadGlobalExclusions(repo, strings.NewReader(
