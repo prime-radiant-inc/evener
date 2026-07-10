@@ -1628,14 +1628,14 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
    than plain prose, so it opts out of the whole-frame "click anywhere
    focuses the composer" cursor. */
 .assistant-message.agent-question,
-.ask-card.agent-question {
+.ask-anchor.agent-question {
   border: 1px solid color-mix(in srgb, var(--state-awaiting) 30%, transparent);
   background: color-mix(in srgb, var(--state-awaiting) 5%, transparent);
   border-radius: var(--radius-md);
   padding: var(--space-3) var(--space-4);
   cursor: pointer;
 }
-.ask-card.agent-question { cursor: default; }
+.ask-anchor.agent-question { cursor: pointer; }
 .agent-question-head {
   display: flex;
   align-items: center;
@@ -1761,6 +1761,27 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 
 .ask-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin-top: var(--space-4); padding-top: var(--space-3); border-top: 1px solid color-mix(in srgb, var(--state-awaiting) 20%, transparent); }
 .ask-answered-count { font-size: var(--text-xs); color: var(--text-muted); }
+
+.ask-anchor {
+  margin: 0 0 var(--space-4);
+  color: var(--state-awaiting);
+  font-size: var(--text-sm);
+}
+
+.ask-response-dock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-height: min(56dvh, 560px);
+  overflow-y: auto;
+  padding-bottom: var(--space-2);
+}
+
+.workspace-input[data-response-mode="ask"] .ask-footer {
+  position: sticky;
+  bottom: 0;
+  background: var(--bg-raised);
+}
 
 .ask-collapsed-chip {
   display: inline-flex;

@@ -24,9 +24,10 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
        data-active-turn-id="turn_steer"
        data-state="active"></div>
   <form class="workspace-input" data-input-form data-session-id="01TEST">
-    <div class="composer-attachments" data-composer-attachments data-attachments></div>
-    <div class="composer-attachment-error" data-attachment-error hidden></div>
-    <div class="input-card" data-drop-zone>
+    <div data-composer-surface>
+      <div class="composer-attachments" data-composer-attachments data-attachments></div>
+      <div class="composer-attachment-error" data-attachment-error hidden></div>
+      <div class="input-card" data-drop-zone>
       <div class="composer-model" title="gpt-5.5">
         <span class="composer-model-key">model</span>
         <span class="composer-model-value" data-model-display>gpt-5.5</span>
@@ -42,9 +43,10 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
           <button type="submit" class="send-btn btn btn-primary">send</button>
         </div>
       </div>
+      </div>
+      <div class="input-status" id="input-status"></div>
+      <input type="file" data-file-picker hidden>
     </div>
-    <div class="input-status" id="input-status"></div>
-    <input type="file" data-file-picker hidden>
   </form>
 </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
 

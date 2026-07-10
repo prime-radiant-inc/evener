@@ -15,11 +15,13 @@ function newHarness() {
     <header class="workspace-header" data-session-id="01TEST"></header>
     <div id="conversation" data-session-id="01TEST" data-state="awaiting"></div>
     <form data-input-form data-session-id="01TEST">
-      <div class="task-status-row">
-        <button type="button" class="status-item tasks-status" data-tasks-trigger title="task list"><span class="status-key">tasks</span><span class="status-value" data-task-status-text>loading…</span></button>
+      <div data-composer-surface>
+        <div class="task-status-row">
+          <button type="button" class="status-item tasks-status" data-tasks-trigger title="task list"><span class="status-key">tasks</span><span class="status-value" data-task-status-text>loading…</span></button>
+        </div>
+        <textarea class="message-input"></textarea>
+        <button type="submit" class="btn btn-primary send-btn" data-capability-send="true" data-capability-queue="false">send</button>
       </div>
-      <textarea class="message-input"></textarea>
-      <button type="submit" class="btn btn-primary send-btn" data-capability-send="true" data-capability-queue="false">send</button>
     </form>
   </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
   const { window } = dom;
@@ -111,7 +113,7 @@ function testQuoteGoStringRealisticSet() {
   pass(R.quoteGoString("plain") === "\"plain\"", "plain text is just quoted, got: " + JSON.stringify(R.quoteGoString("plain")));
 }
 
-// ── Mutual exclusion + note attachment, driven through the real card UI ──
+// ── Mutual exclusion + note attachment, driven through the ask dock UI ──
 async function testMutualExclusionAndNoteAttachment() {
   const { conv, window, R } = newHarness();
   await settle();
@@ -121,10 +123,20 @@ async function testMutualExclusionAndNoteAttachment() {
     { header: "Decide", question: "Who decides?", options: [{ label: "A", detail: "" }, { label: "B", detail: "" }] },
   ];
   for (const [kind, data] of askCallEvents("call_1", questions)) R.handleData(kind, data);
-  const card = conv.querySelector(".ask-card");
-  const q1 = questionEl(card, "call_1:0");
-  const q2 = questionEl(card, "call_1:1");
-  const q3 = questionEl(card, "call_1:2");
+  const form = window.document.querySelector("[data-input-form]");
+  const dock = form.querySelector("[data-ask-response-dock]");
+  const inlineInteractive = conv.querySelector(".ask-card [data-ask-option-input]");
+  const composer = form.querySelector(".message-input");
+
+  pass(!!dock, "pending ask must render its response surface inside the workspace input dock");
+  pass(dock && dock.querySelector("[data-ask-option-input]"), "dock must own the canonical ask controls");
+  pass(!inlineInteractive, "transcript must not retain duplicate interactive ask controls");
+  pass(composer.hidden === true && composer.inert === true,
+    "normal composer must be hidden and inert while the dock answers a pending ask");
+
+  const q1 = questionEl(dock, "call_1:0");
+  const q2 = questionEl(dock, "call_1:1");
+  const q3 = questionEl(dock, "call_1:2");
 
   // Mutual exclusion, both directions: picking an option while free-text is
   // active clears free-text, and switching to free-text clears a checked
@@ -157,7 +169,7 @@ async function testMutualExclusionAndNoteAttachment() {
   window.SerfAppwire = {
     startTurn: (ref, text) => { startTurnCalls.push({ ref, text }); return Promise.resolve({ turn: { id: "t1" } }); },
   };
-  card.querySelector("[data-ask-send-btn]").click();
+  dock.querySelector("[data-ask-send-btn]").click();
   await settle();
 
   pass(startTurnCalls.length === 1, "Send answers calls startTurn exactly once, got " + startTurnCalls.length);
@@ -169,6 +181,10 @@ async function testMutualExclusionAndNoteAttachment() {
     "3. [Decide] → you decide — leaning: \"short names\" — note: \"re-ask if it gets weird\"",
   ].join("\n");
   pass(text === expected, "composed text after mutual-exclusion + notes wrong.\n  want: " + JSON.stringify(expected) + "\n  got:  " + JSON.stringify(text));
+  pass(composer.hidden === false && composer.inert === false,
+    "normal composer must return after ask answers settle");
+  pass(!form.querySelector("[data-ask-response-dock]"),
+    "ask response dock must be removed after settlement");
 }
 
 (async () => {

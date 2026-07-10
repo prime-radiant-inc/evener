@@ -18,7 +18,9 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <header class="workspace-header" data-session-id="01TEST"></header>
   <div class="conversation" id="conversation" data-session-id="01TEST" data-state="active"></div>
   <form data-input-form data-session-id="01TEST">
-    <textarea class="message-input"></textarea>
+    <div data-composer-surface>
+      <textarea class="message-input"></textarea>
+    </div>
   </form>
 </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
 
@@ -76,12 +78,6 @@ R.init(conv);
   // ── Ask-header glyph (formerly plain "◆") ─────────────────────────────────
   const glyph = questionEl.querySelector(".agent-question-glyph");
   assert.ok(glyph && glyph.innerHTML.includes("<svg"), "ask-header glyph must render an icon, not ◆ (got " + (glyph && glyph.innerHTML) + ")");
-
-  // ── Esc-collapsed ask chip (formerly "◆ question waiting") ────────────────
-  const card = R.buildAskCardEl();
-  const chip = card.querySelector("[data-ask-collapsed-chip]");
-  assert.ok(chip.innerHTML.includes("<svg"), "ask-collapsed chip must render the question-waiting icon, not ◆ (got " + chip.innerHTML + ")");
-  assert.ok(/question waiting/.test(chip.textContent), "ask-collapsed chip keeps its label text");
 
   // ── Settled-ask summary line (formerly "◆ asked …") ───────────────────────
   // XSS check: askedSummary comes from toolRendererFor("ask_user").target(),

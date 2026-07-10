@@ -1,11 +1,8 @@
-// ask_user question card (spec §6/§6.1): a completed-but-unanswered ask_user
-// call renders as one interactive amber card — recommended-first option
-// chips, "Something else…"/"You decide"/"do that"/skip, a dim `why` line —
-// aggregating every ask_user call in the turn under one global numbering.
-// Pending is a pure transcript-shape rule (spec §6): a completed ack with no
-// later user turn. Cold attach (a tight replay loop) and live attach (one
-// event at a time) must agree, so every scenario below is exercised both
-// ways.
+// ask_user responses (spec §6/§6.1): a completed-but-unanswered ask_user
+// call leaves a compact transcript anchor and puts the one interactive response
+// form in the composer dock. Pending remains a transcript-shape rule: a
+// completed ack with no later user turn. Cold attach (a tight replay loop) and
+// live attach must therefore agree.
 const { JSDOM } = require("jsdom");
 
 function newHarness() {
@@ -16,11 +13,13 @@ function newHarness() {
     <header class="workspace-header" data-session-id="01TEST"></header>
     <div id="conversation" data-session-id="01TEST" data-state="awaiting"></div>
     <form data-input-form data-session-id="01TEST">
-      <div class="task-status-row">
-        <button type="button" class="status-item tasks-status" data-tasks-trigger title="task list"><span class="status-key">tasks</span><span class="status-value" data-task-status-text>loading…</span></button>
+      <div data-composer-surface>
+        <div class="task-status-row">
+          <button type="button" class="status-item tasks-status" data-tasks-trigger title="task list"><span class="status-key">tasks</span><span class="status-value" data-task-status-text>loading…</span></button>
+        </div>
+        <textarea class="message-input"></textarea>
+        <button type="submit" class="btn btn-primary send-btn" data-capability-send="true" data-capability-queue="false">send</button>
       </div>
-      <textarea class="message-input"></textarea>
-      <button type="submit" class="btn btn-primary send-btn" data-capability-send="true" data-capability-queue="false">send</button>
     </form>
   </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
   const { window } = dom;
@@ -32,13 +31,8 @@ function newHarness() {
   return { window, conv, R: window.SerfRenderer };
 }
 
-// askCallEvents builds the realistic wire event pair for one completed
-// ask_user call. arguments_json is deliberately placed ONLY on
-// TOOL_CALL_START: the live item/completed push does not carry it
-// (internal/appprojector/appwire_projection.go's EventToolCallEnd omits
-// ArgumentsJSON), so a renderer that read it from TOOL_CALL_END would work in
-// cold-replay tests and silently fail to render a live-arriving question —
-// exactly the gap this fixture is shaped to catch.
+// arguments_json deliberately exists only on TOOL_CALL_START: the live END
+// event does not carry it, so this verifies the renderer caches live starts.
 function askCallEvents(callId, questions, opts) {
   opts = opts || {};
   const start = ["TOOL_CALL_START", { call_id: callId, tool_name: "ask_user", arguments_json: JSON.stringify({ questions }) }];
@@ -48,12 +42,13 @@ function askCallEvents(callId, questions, opts) {
 }
 
 async function settle() { await new Promise((r) => setTimeout(r, 30)); }
-
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
+const dock = (window) => window.document.querySelector("form[data-input-form] [data-ask-response-dock]");
+const questionEls = (window) => Array.from((dock(window) || window.document).querySelectorAll("[data-ask-question]"));
 
-async function testPendingCardRenders() {
-  const { conv, R } = newHarness();
+async function testPendingDockRenders() {
+  const { window, conv, R } = newHarness();
   await settle();
   const question = {
     header: "DB choice",
@@ -68,235 +63,196 @@ async function testPendingCardRenders() {
   };
   for (const [kind, data] of askCallEvents("call_1", [question])) R.handleData(kind, data);
 
-  const card = conv.querySelector(".ask-card");
-  pass(!!card, "pending ask renders a .ask-card");
-  pass(card && card.classList.contains("agent-question"), "the card carries the amber .agent-question frame");
-  pass(!!conv.querySelector(".agent-question-head"), "markAgentQuestion's amber head is present");
+  const anchor = conv.querySelector("[data-ask-anchor]");
+  const responseDock = dock(window);
+  const form = window.document.querySelector("form[data-input-form]");
+  const composer = form.querySelector("[data-composer-surface]");
+  const input = form.querySelector(".message-input");
+  pass(!!anchor, "pending ask leaves a compact transcript [data-ask-anchor]");
+  pass(!conv.querySelector(".ask-card"), "the transcript has no retired interactive .ask-card");
+  pass(!!responseDock, "the one interactive response form is [data-ask-response-dock] inside the input form");
+  pass(responseDock && responseDock.parentElement === form, "the response dock is owned by form[data-input-form]");
+  pass(composer.hidden && composer.inert, "the normal [data-composer-surface] is hidden and inert while an ask is pending");
+  pass(input.hidden && input.inert, "the normal textarea is unavailable while the dock owns the response");
+  if (!responseDock) return;
 
-  const options = card ? Array.from(card.querySelectorAll("[data-ask-option]")) : [];
-  pass(options.length === 2, "renders one chip per option, got " + options.length);
-  pass(options[0] && options[0].dataset.optionLabel === "Postgres", "the recommended option renders FIRST regardless of input order, got " + (options[0] && options[0].dataset.optionLabel));
-  pass(options[0] && options[0].classList.contains("recommended"), "the first (recommended) chip carries .recommended");
-  pass(options[0] && !!options[0].querySelector(".ask-option-tag"), "the recommended chip shows a tag");
+  const options = Array.from(responseDock.querySelectorAll("[data-ask-option]"));
+  pass(options.length === 2, "the dock renders one chip per option, got " + options.length);
+  pass(options[0] && options[0].dataset.optionLabel === "Postgres", "the recommended option renders FIRST regardless of input order");
+  pass(options[0] && options[0].classList.contains("recommended"), "the first option carries .recommended");
+  pass(options[0] && !!options[0].querySelector(".ask-option-tag"), "the recommended option shows a tag");
   pass(options[1] && options[1].dataset.optionLabel === "SQLite" && !options[1].classList.contains("recommended"), "the non-recommended option is not tagged");
-
-  pass(!!card.querySelector("[data-ask-free-toggle]"), "a 'Something else…' free-text row is offered");
-  pass(/something else/i.test(card.querySelector("[data-ask-free-toggle]").textContent), "free-text toggle reads 'Something else…'");
-  pass(!!card.querySelector("[data-ask-decide-toggle]"), "a 'You decide' row is offered");
-  pass(/you decide/i.test(card.querySelector("[data-ask-decide-toggle]").textContent), "decide toggle reads 'You decide'");
-  pass(!!card.querySelector("[data-ask-decide-leaning]"), "the leaning field exists for 'You decide'");
-  const fallbackBtn = card.querySelector("[data-ask-fallback-btn]");
-  pass(!!fallbackBtn, "a 'do that' fallback button renders when if_unanswered is present");
-  pass(fallbackBtn && fallbackBtn.textContent.includes("default to Postgres"), "the fallback button surfaces the model's stated fallback text");
-  pass(!!card.querySelector("[data-ask-skip-btn]"), "a skip affordance is offered");
-  const why = card.querySelector("[data-ask-why]");
-  pass(!!why && why.textContent === "the writer refactor depends on it", "the `why` context line renders dim/verbatim");
+  pass(!!responseDock.querySelector("[data-ask-free-toggle]"), "the dock offers 'Something else…'");
+  pass(!!responseDock.querySelector("[data-ask-decide-toggle]"), "the dock offers 'You decide'");
+  pass(!!responseDock.querySelector("[data-ask-decide-leaning]"), "the dock has the optional leaning field");
+  const fallbackBtn = responseDock.querySelector("[data-ask-fallback-btn]");
+  pass(!!fallbackBtn, "the dock renders a fallback when if_unanswered is present");
+  pass(fallbackBtn && fallbackBtn.textContent.includes("default to Postgres"), "the fallback exposes the stated fallback text");
+  pass(!!responseDock.querySelector("[data-ask-skip-btn]"), "the dock offers skip");
+  const why = responseDock.querySelector("[data-ask-why]");
+  pass(!!why && why.textContent === "the writer refactor depends on it", "the dock renders the why line verbatim");
 }
 
-// A question with no if_unanswered must NOT get a fallback button.
 async function testNoFallbackWithoutIfUnanswered() {
-  const { conv, R } = newHarness();
+  const { window, R } = newHarness();
   await settle();
   const question = { header: "Naming", question: "What should we call it?", options: [{ label: "A", detail: "" }, { label: "B", detail: "" }] };
   for (const [kind, data] of askCallEvents("call_1", [question])) R.handleData(kind, data);
-  pass(!conv.querySelector("[data-ask-fallback-btn]"), "no fallback button when if_unanswered is absent");
+  const responseDock = dock(window);
+  pass(!!responseDock, "sanity: pending ask provides the response dock");
+  if (responseDock) pass(!responseDock.querySelector("[data-ask-fallback-btn]"), "no dock fallback when if_unanswered is absent");
 }
 
-async function testMultiCardAggregationAndGlobalNumbering() {
-  const { conv, R } = newHarness();
+async function testAggregationAndGlobalNumbering() {
+  const { window, conv, R } = newHarness();
   await settle();
   const q = (header) => ({ header, question: header + "?", options: [{ label: "A", detail: "" }, { label: "B", detail: "" }] });
-  // Two ask_user calls in the same round, no user turn in between: they must
-  // aggregate into ONE card, numbered 1..4 across BOTH calls in call order.
   for (const [kind, data] of askCallEvents("call_A", [q("First"), q("Second")])) R.handleData(kind, data);
   for (const [kind, data] of askCallEvents("call_B", [q("Third"), q("Fourth")])) R.handleData(kind, data);
 
-  const cards = conv.querySelectorAll(".ask-card");
-  pass(cards.length === 1, "two ask_user calls with no intervening reply aggregate into ONE card, got " + cards.length);
-  const nums = Array.from(conv.querySelectorAll("[data-ask-question] .ask-question-num")).map((n) => n.textContent);
-  pass(nums.join(",") === "1.,2.,3.,4.", "questions are numbered globally 1..4 across both calls, got " + nums.join(","));
-  const headers = Array.from(conv.querySelectorAll(".ask-question-header")).map((n) => n.textContent);
+  pass(conv.querySelectorAll("[data-ask-anchor]").length === 1, "two calls with no reply keep one transcript anchor");
+  pass(window.document.querySelectorAll("[data-ask-response-dock]").length === 1, "two calls share one response dock");
+  if (!dock(window)) return;
+  const nums = questionEls(window).map((qEl) => qEl.querySelector(".ask-question-num").textContent);
+  pass(nums.join(",") === "1.,2.,3.,4.", "questions are globally numbered 1..4 across both calls, got " + nums.join(","));
+  const headers = questionEls(window).map((qEl) => qEl.querySelector(".ask-question-header").textContent);
   pass(headers.join(",") === "First,Second,Third,Fourth", "questions keep call-then-question posting order, got " + headers.join(","));
 }
 
-async function testCollapsesToSettledLineOnUserTurn() {
-  const { conv, R } = newHarness();
+async function testUserInputSettlesAnchorAndRestoresComposer() {
+  const { window, conv, R } = newHarness();
   await settle();
   const question = { header: "DB choice", question: "Which datastore?", options: [{ label: "Postgres", detail: "" }, { label: "SQLite", detail: "" }] };
   for (const [kind, data] of askCallEvents("call_1", [question])) R.handleData(kind, data);
-  pass(!!conv.querySelector(".ask-card"), "sanity: card is pending before the reply");
+  pass(!!dock(window), "sanity: the response dock is pending before the reply");
 
-  // A reply — from THIS client or another, the wire event is the same
-  // USER_INPUT push either way (spec §6.1).
   R.handleData("USER_INPUT", { text: "[answers]\n1. [DB choice] → \"Postgres\"" });
 
-  pass(!conv.querySelector(".ask-card"), "the interactive card is gone once a user turn follows");
+  pass(!dock(window), "USER_INPUT removes the interactive response dock");
+  pass(!conv.querySelector("[data-ask-anchor]"), "USER_INPUT removes the compact pending anchor");
   const settledLine = conv.querySelector(".ask-settled-line");
-  pass(!!settledLine, "a neutral settled line replaces the card");
-  pass(settledLine && /DB choice/.test(settledLine.textContent), "the settled line still names what was asked, got: " + (settledLine && settledLine.textContent));
-  pass(settledLine && /Postgres/.test(settledLine.textContent), "the settled line echoes the reply, got: " + (settledLine && settledLine.textContent));
+  pass(!!settledLine, "a neutral settled line replaces the anchor");
+  pass(settledLine && /DB choice/.test(settledLine.textContent), "the settled line names what was asked");
+  pass(settledLine && /Postgres/.test(settledLine.textContent), "the settled line echoes the reply");
+  const composer = window.document.querySelector("[data-composer-surface]");
+  const input = window.document.querySelector(".message-input");
+  pass(!composer.hidden && !composer.inert && !input.hidden && !input.inert, "settlement restores normal composer behavior");
   pass(R.pendingAsk === null, "pendingAsk is cleared once resolved");
 }
 
-// The composer is always the escape hatch (spec §6.1): typing prose directly
-// into it — never touching the card's own chips — must resolve a pending ask
-// immediately, the same as the card's own "Send answers" button, not just
-// after a later round-trip echo.
-async function testTypingIntoPlainComposerResolvesPendingCard() {
+async function testDockSendsAnswersWhileComposerIsGated() {
   const { window, conv, R } = newHarness();
   await settle();
   const question = { header: "DB choice", question: "Which datastore?", options: [{ label: "Postgres", detail: "" }, { label: "SQLite", detail: "" }] };
   for (const [kind, data] of askCallEvents("call_1", [question])) R.handleData(kind, data);
-  pass(!!conv.querySelector(".ask-card"), "sanity: card is pending before the reply");
-
-  window.SerfAppwire = { startTurn: () => Promise.resolve({ turn: { id: "t1" } }) };
-  const form = window.document.querySelector("form[data-input-form]");
-  const ta = form.querySelector(".message-input");
-  ta.value = "let's go with Postgres";
-  form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+  const responseDock = dock(window);
+  pass(!!responseDock, "sanity: the response dock is pending before its send action");
+  if (!responseDock) return;
+  pickOption(responseDock, "Postgres");
+  const calls = [];
+  window.SerfAppwire = { startTurn: (ref, text) => { calls.push({ ref, text }); return Promise.resolve({ turn: { id: "t1" } }); } };
+  responseDock.querySelector("[data-ask-send-btn]").click();
   await settle();
 
-  pass(!conv.querySelector(".ask-card"), "typing straight into the composer resolves the card immediately, without waiting for a later USER_INPUT echo");
-  pass(!!conv.querySelector(".ask-settled-line"), "a settled line is left behind");
-  pass(R.pendingAsk === null, "pendingAsk is cleared");
+  pass(calls.length === 1, "the dock's shared Send answers action invokes the normal startTurn path once");
+  pass(calls[0] && /\[answers\]/.test(calls[0].text) && /Postgres/.test(calls[0].text), "the dock sends the composed answer through startTurn");
+  pass(!dock(window) && !!conv.querySelector(".ask-settled-line"), "successful dock send resolves the pending ask");
+  pass(!window.document.querySelector("[data-composer-surface]").hidden, "normal composer returns after the docked send");
 }
 
-// multi_select renders checkboxes (not radios) and accumulates every checked
-// label into one "option" resolution; unchecking removes just that label,
-// and unchecking the last one clears the resolution entirely.
 async function testMultiSelectAccumulatesCheckedLabels() {
-  const { conv, R } = newHarness();
+  const { window, R } = newHarness();
   await settle();
-  const question = {
-    header: "Stack", question: "Which layers?", multi_select: true,
-    options: [{ label: "API", detail: "" }, { label: "Worker", detail: "" }, { label: "CLI", detail: "" }],
-  };
+  const question = { header: "Stack", question: "Which layers?", multi_select: true, options: [{ label: "API", detail: "" }, { label: "Worker", detail: "" }, { label: "CLI", detail: "" }] };
   for (const [kind, data] of askCallEvents("call_1", [question])) R.handleData(kind, data);
-  const q = conv.querySelector("[data-ask-question]");
-  const inputs = Array.from(q.querySelectorAll("[data-ask-option-input]"));
-  pass(inputs.every((i) => i.type === "checkbox"), "multi_select renders checkbox inputs, got types " + inputs.map((i) => i.type).join(","));
+  if (!dock(window)) {
+    pass(false, "sanity: pending multi-select ask provides the response dock");
+    return;
+  }
+  const qEl = questionEls(window)[0];
+  const inputs = Array.from(qEl.querySelectorAll("[data-ask-option-input]"));
+  pass(inputs.every((input) => input.type === "checkbox"), "multi_select renders checkboxes, got " + inputs.map((input) => input.type).join(","));
 
-  const byLabel = (label) => q.querySelector('[data-ask-option][data-option-label="' + label + '"] [data-ask-option-input]');
   const check = (label, value) => {
-    const input = byLabel(label);
+    const input = qEl.querySelector('[data-ask-option][data-option-label="' + label + '"] [data-ask-option-input]');
     input.checked = value;
     input.dispatchEvent(new input.ownerDocument.defaultView.Event("change", { bubbles: true }));
   };
-
   check("API", true);
   check("Worker", true);
-  const item1 = R.pendingAsk.items[0];
-  pass(item1.resolution && item1.resolution.kind === "option" && item1.resolution.labels.slice().sort().join(",") === "API,Worker",
-    "checking two boxes accumulates both labels, got " + JSON.stringify(item1.resolution));
-
+  const item = R.pendingAsk.items[0];
+  pass(item.resolution && item.resolution.kind === "option" && item.resolution.labels.slice().sort().join(",") === "API,Worker", "checking two dock boxes accumulates both labels");
   check("Worker", false);
-  pass(item1.resolution && item1.resolution.labels.join(",") === "API", "unchecking one box removes just that label, got " + JSON.stringify(item1.resolution));
-
+  pass(item.resolution && item.resolution.labels.join(",") === "API", "unchecking one box removes just that label");
   check("API", false);
-  pass(item1.resolution === null, "unchecking the last box clears the resolution entirely, got " + JSON.stringify(item1.resolution));
+  pass(item.resolution === null, "unchecking the last box clears the resolution");
 }
 
-// Esc collapses the still-pending card to a "◆ question waiting" chip
-// without discarding any in-progress answer; clicking the chip restores it
-// (spec §6.1).
-async function testEscCollapsesToChipAndExpandsBack() {
-  const { window, conv, R } = newHarness();
+async function testEscapeDoesNotHideOrDiscardDockedResponse() {
+  const { window, R } = newHarness();
   await settle();
   const question = { header: "DB choice", question: "Which datastore?", options: [{ label: "Postgres", detail: "" }, { label: "SQLite", detail: "" }] };
   for (const [kind, data] of askCallEvents("call_1", [question])) R.handleData(kind, data);
-  const card = conv.querySelector(".ask-card");
-  pickOption(card, "Postgres");
-
+  const before = dock(window);
+  pass(!!before, "sanity: pending ask has a dock before Escape");
+  if (!before) return;
+  pickOption(before, "Postgres");
   window.document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-  pass(card.querySelector("[data-ask-questions]").hidden === true, "Esc hides the questions list");
-  pass(card.querySelector(".ask-footer").hidden === true, "Esc hides the footer");
-  const chip = card.querySelector("[data-ask-collapsed-chip]");
-  pass(!!chip && chip.hidden === false, "Esc reveals the collapsed '◆ question waiting' chip");
-  pass(R.pendingAsk !== null, "collapsing is purely visual — the pending ask itself is untouched");
-  pass(R.pendingAsk.items[0].resolution && R.pendingAsk.items[0].resolution.labels[0] === "Postgres",
-    "the in-progress answer survives a collapse");
-
-  chip.click();
-  pass(card.querySelector("[data-ask-questions]").hidden === false, "clicking the chip restores the questions list");
-  pass(card.querySelector(".ask-footer").hidden === false, "clicking the chip restores the footer");
-  pass(chip.hidden === true, "clicking the chip hides itself again");
+  const after = dock(window);
+  pass(after === before && !after.hidden, "Escape does not hide, collapse, or replace the only docked response form");
+  pass(!window.document.querySelector("[data-ask-collapsed-chip]"), "Escape does not create the retired collapse chip");
+  pass(R.pendingAsk !== null && R.pendingAsk.items[0].resolution && R.pendingAsk.items[0].resolution.labels[0] === "Postgres", "Escape preserves the in-progress docked answer");
 }
 
-function pickOption(card, label) {
-  const input = card.querySelector('[data-ask-option][data-option-label="' + label + '"] [data-ask-option-input]');
+function pickOption(root, label) {
+  const input = root.querySelector('[data-ask-option][data-option-label="' + label + '"] [data-ask-option-input]');
   input.checked = true;
   input.dispatchEvent(new input.ownerDocument.defaultView.Event("change", { bubbles: true }));
 }
 
-// Cold-attach: pending vs resolved vs interrupted (ack-less), replayed as a
-// tight loop the way eventsFromThread's output would be — must agree with
-// the live, one-event-at-a-time behavior exercised by the tests above.
-async function testColdAttachPendingResolvedInterrupted() {
+async function testColdAttachPendingResolvedInterruptedDenied() {
   const question = { header: "DB choice", question: "Which datastore?", options: [{ label: "Postgres", detail: "" }, { label: "SQLite", detail: "" }] };
-
-  // Pending: a completed ack, no later user turn.
   {
-    const { conv, R } = newHarness();
+    const { window, conv, R } = newHarness();
     await settle();
-    const events = askCallEvents("call_1", [question]);
-    for (const [kind, data] of events) R.handleData(kind, data);
-    pass(!!conv.querySelector(".ask-card"), "cold attach: a completed ask with no later reply renders pending");
+    for (const [kind, data] of askCallEvents("call_1", [question])) R.handleData(kind, data);
+    pass(!!conv.querySelector("[data-ask-anchor]") && !!dock(window), "cold attach: completed unanswered ask has anchor plus dock");
     pass(R.pendingAsk !== null, "cold attach: pendingAsk is set");
   }
-
-  // Resolved: a completed ack, replayed together with the resolving reply.
   {
-    const { conv, R } = newHarness();
+    const { window, conv, R } = newHarness();
     await settle();
-    const events = askCallEvents("call_1", [question]).concat([
-      ["USER_INPUT", { text: "Postgres, please" }],
-    ]);
-    for (const [kind, data] of events) R.handleData(kind, data);
-    pass(!conv.querySelector(".ask-card"), "cold attach: an already-answered ask does not render an interactive card");
-    pass(!!conv.querySelector(".ask-settled-line"), "cold attach: an already-answered ask renders the settled line");
-    pass(R.pendingAsk === null, "cold attach: pendingAsk is null once resolved");
+    for (const [kind, data] of askCallEvents("call_1", [question]).concat([["USER_INPUT", { text: "Postgres, please" }]])) R.handleData(kind, data);
+    pass(!conv.querySelector("[data-ask-anchor]") && !dock(window), "cold attach: answered ask has no interactive anchor or dock");
+    pass(!!conv.querySelector(".ask-settled-line") && R.pendingAsk === null, "cold attach: answered ask is settled");
   }
-
-  // Interrupted / ack-less: TOOL_CALL_START with no matching TOOL_CALL_END
-  // (the turn was interrupted before the ack was ever recorded) — no ghost
-  // card (spec §6: "an ask whose turn was interrupted before the ack exists
-  // is never pending").
   {
-    const { conv, R } = newHarness();
+    const { window, conv, R } = newHarness();
     await settle();
-    const events = askCallEvents("call_1", [question], { noEnd: true });
-    for (const [kind, data] of events) R.handleData(kind, data);
-    pass(!conv.querySelector(".ask-card"), "cold attach: an ack-less (interrupted) ask renders NO card");
-    pass(!conv.querySelector(".ask-settled-line"), "cold attach: an ack-less ask renders no settled line either");
-    pass(R.pendingAsk === null, "cold attach: pendingAsk stays null for an ack-less ask");
+    for (const [kind, data] of askCallEvents("call_1", [question], { noEnd: true })) R.handleData(kind, data);
+    pass(!conv.querySelector("[data-ask-anchor]") && !dock(window) && !conv.querySelector(".ask-settled-line") && R.pendingAsk === null, "cold attach: ack-less interrupted ask creates no anchor, dock, or settled line");
   }
-
-  // A denied/errored ack (PreToolUse deny, or an invalid call) also posts
-  // nothing (spec §5.1/§5.5) — same no-card outcome as ack-less.
   {
-    const { conv, R } = newHarness();
+    const { window, conv, R } = newHarness();
     await settle();
-    const events = askCallEvents("call_1", [question], { error: "denied by hook" });
-    for (const [kind, data] of events) R.handleData(kind, data);
-    pass(!conv.querySelector(".ask-card"), "cold attach: a denied/errored ask renders NO card");
-    pass(R.pendingAsk === null, "cold attach: pendingAsk stays null for a denied ask");
+    for (const [kind, data] of askCallEvents("call_1", [question], { error: "denied by hook" })) R.handleData(kind, data);
+    pass(!conv.querySelector("[data-ask-anchor]") && !dock(window) && R.pendingAsk === null, "cold attach: denied ask creates no anchor or dock");
   }
 }
 
 (async () => {
-  await testPendingCardRenders();
+  await testPendingDockRenders();
   await testNoFallbackWithoutIfUnanswered();
-  await testMultiCardAggregationAndGlobalNumbering();
-  await testCollapsesToSettledLineOnUserTurn();
-  await testTypingIntoPlainComposerResolvesPendingCard();
+  await testAggregationAndGlobalNumbering();
+  await testUserInputSettlesAnchorAndRestoresComposer();
+  await testDockSendsAnswersWhileComposerIsGated();
   await testMultiSelectAccumulatesCheckedLabels();
-  await testEscCollapsesToChipAndExpandsBack();
-  await testColdAttachPendingResolvedInterrupted();
-
+  await testEscapeDoesNotHideOrDiscardDockedResponse();
+  await testColdAttachPendingResolvedInterruptedDenied();
   if (failures.length > 0) {
-    for (const f of failures) console.log(f);
+    for (const failure of failures) console.log(failure);
     process.exit(1);
   }
-  console.log("PASS: ask_user question card renders, aggregates, and resolves per the transcript-shape rule");
+  console.log("PASS: ask_user responses use a compact transcript anchor and one docked form");
   process.exit(0);
 })();

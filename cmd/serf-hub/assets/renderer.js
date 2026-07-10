@@ -4556,10 +4556,10 @@
     },
 
     // jumpToAgentQuestion scrolls the transcript to the blocking question and
-    // focuses the reply control so answering is one keystroke away. An
-    // ask_user card (spec §6.1) focuses its FIRST question's own control —
-    // the reply here is a chip/button tap, not typed prose — falling back to
-    // the composer for a plain prose question (mockup #16 Alt A).
+    // focuses the reply control so answering is one keystroke away. A pending
+    // ask_user response lives in the composer dock, so focus its FIRST question
+    // control — the reply here is a chip/button tap, not typed prose — falling
+    // back to the composer for a plain prose question (mockup #16 Alt A).
     jumpToAgentQuestion() {
       const sc = this.conversation;
       const q = this.agentQuestionEl;
@@ -4569,7 +4569,6 @@
         else sc.scrollTop = top;
       }
       if (this.pendingAsk) {
-        if (this.pendingAsk.collapsed) this.expandAskCard();
         const first = this.pendingAsk.items[0];
         const focusEl = first && first.el && first.el.querySelector("[data-ask-option-input], [data-ask-free-toggle]");
         if (focusEl) {
@@ -4607,22 +4606,80 @@
       this.appendPendingAskQuestions(callId, questions);
     },
 
-    // appendPendingAskQuestions merges a newly-acked ask_user call's questions
-    // into the turn's single aggregated card (spec §6.1: "multi-question calls
-    // stack as ONE card"), numbering them globally in posting order across
-    // every call this turn (spec §4.3). Creates the card on the first call;
-    // later calls in the same round extend it in place.
+    // askDockEl owns the canonical pending ask response form in the workspace
+    // input dock. The transcript keeps only a compact, noninteractive anchor.
+    askDockEl() {
+      const form = document.querySelector("form[data-input-form]");
+      if (!form) return null;
+      let dock = form.querySelector("[data-ask-response-dock]");
+      if (!dock) {
+        dock = document.createElement("section");
+        dock.className = "ask-response-dock";
+        dock.setAttribute("data-ask-response-dock", "");
+        dock.setAttribute("aria-label", "Answer the agent’s questions");
+        form.prepend(dock);
+      }
+      return dock;
+    },
+
+    setComposerAskMode(active) {
+      const form = document.querySelector("form[data-input-form]");
+      if (!form) return;
+      const composer = form.querySelector("[data-composer-surface]");
+      const input = form.querySelector(".message-input");
+      form.dataset.responseMode = active ? "ask" : "composer";
+      if (composer) {
+        composer.hidden = active;
+        composer.inert = active;
+      }
+      // Keep the actual text entry control unavailable as well. The surface is
+      // the stable hide/inert boundary; these properties make the constraint
+      // explicit to DOM consumers and test harnesses that inspect the input.
+      if (input) {
+        input.hidden = active;
+        input.inert = active;
+      }
+    },
+
+    renderPendingAskDock() {
+      const pa = this.pendingAsk;
+      const dock = this.askDockEl();
+      if (!pa || !dock) return;
+      this.setComposerAskMode(true);
+      dock.replaceChildren();
+      const questions = document.createElement("div");
+      questions.className = "ask-questions";
+      questions.setAttribute("data-ask-questions", "");
+      pa.items.forEach((item, index) => questions.appendChild(this.buildAskQuestionEl(item, index + 1)));
+      dock.append(questions, this.buildAskFooterEl());
+      this.updateAskFooter();
+    },
+
+    clearPendingAskDock() {
+      const form = document.querySelector("form[data-input-form]");
+      if (!form) return;
+      const dock = form.querySelector("[data-ask-response-dock]");
+      if (dock) dock.remove();
+      this.setComposerAskMode(false);
+    },
+
+    // appendPendingAskQuestions merges newly-acked ask_user calls into a
+    // pending set, numbering them globally in posting order across every call
+    // this turn (spec §4.3). Controls are rebuilt in the composer dock from
+    // pendingAsk; the transcript retains only the stable needs-you anchor.
     appendPendingAskQuestions(callId, questions) {
       if (!this.pendingAsk) {
         this.removeColdStartSkeleton();
         this.endCheapCluster();
         this.closeSubagentModule();
-        const el = this.buildAskCardEl();
+        const el = document.createElement("div");
+        el.className = "ask-anchor agent-question";
+        el.setAttribute("data-ask-anchor", "");
+        el.textContent = "The agent asked for your input below.";
         this.conversation.appendChild(el);
-        this.pendingAsk = { el, items: [], collapsed: false, sending: false };
+        this.pendingAsk = { el, items: [], sending: false };
       }
       const pa = this.pendingAsk;
-      const questionsEl = pa.el.querySelector("[data-ask-questions]");
       questions.forEach((q, idx) => {
         q = q || {};
         const item = {
@@ -4638,28 +4695,16 @@
           el: null,
         };
         pa.items.push(item);
-        questionsEl.appendChild(this.buildAskQuestionEl(item));
       });
-      this.updateAskFooter();
-      // Activates the dormant amber frame (mockup #16) and records the card
+      this.renderPendingAskDock();
+      // Activates the dormant amber frame (mockup #16) and records the anchor
       // as the dock's scroll target — idempotent across repeated calls.
       this.markAgentQuestion(pa.el);
     },
 
-    // buildAskCardEl creates the card container: the questions list, the
-    // footer (answered count + the single "Send answers" action, spec §6.1),
-    // and the Esc-collapsed "◆ question waiting" chip. Content is filled in
-    // by appendPendingAskQuestions/buildAskQuestionEl.
-    buildAskCardEl() {
-      const el = document.createElement("div");
-      el.className = "ask-card";
-      el.setAttribute("data-ask-card", "");
-
-      const questionsEl = document.createElement("div");
-      questionsEl.className = "ask-questions";
-      questionsEl.setAttribute("data-ask-questions", "");
-      el.appendChild(questionsEl);
-
+    // buildAskFooterEl creates the one shared answer action without coupling
+    // it to transcript rendering.
+    buildAskFooterEl() {
       const footer = document.createElement("div");
       footer.className = "ask-footer";
       const count = document.createElement("span");
@@ -4672,18 +4717,7 @@
       send.textContent = "Send answers";
       send.addEventListener("click", () => this.sendAskAnswers());
       footer.append(count, send);
-      el.appendChild(footer);
-
-      const chip = document.createElement("button");
-      chip.type = "button";
-      chip.className = "ask-collapsed-chip";
-      chip.setAttribute("data-ask-collapsed-chip", "");
-      chip.hidden = true;
-      chip.innerHTML = window.SerfIcons.questionWaiting + " question waiting";
-      chip.addEventListener("click", () => this.expandAskCard());
-      el.appendChild(chip);
-
-      return el;
+      return footer;
     },
 
     // buildAskQuestionEl renders one question's full control set (spec
@@ -4694,8 +4728,7 @@
     // `why` context line, and the question-level note control. Every control
     // funnels into setQuestionResolution so exactly one resolution kind is
     // ever active (spec §4.3: "exactly one resolution" per line).
-    buildAskQuestionEl(item) {
-      const num = this.pendingAsk.items.indexOf(item) + 1;
+    buildAskQuestionEl(item, num) {
       const el = document.createElement("div");
       el.className = "ask-question";
       el.setAttribute("data-ask-question", "");
@@ -4888,6 +4921,11 @@
       el.appendChild(noteRow);
 
       item.el = el;
+      if (item.note) {
+        noteField.value = item.note;
+        noteField.hidden = false;
+      }
+      if (item.resolution) this.setQuestionResolution(item, item.resolution);
       return el;
     },
 
@@ -4936,59 +4974,23 @@
     // "skipped (no answer)" (spec §4.3), so there is nothing to gate.
     updateAskFooter() {
       const pa = this.pendingAsk;
-      if (!pa || !pa.el) return;
+      const form = document.querySelector("form[data-input-form]");
+      if (!pa || !form) return;
       const total = pa.items.length;
       const answered = pa.items.filter((it) => it.resolution != null).length;
-      const countEl = pa.el.querySelector("[data-ask-answered-count]");
+      const countEl = form.querySelector("[data-ask-response-dock] [data-ask-answered-count]");
       if (countEl) countEl.textContent = answered + " of " + total + (total === 1 ? " question" : " questions") + " answered";
     },
 
-    // collapseAskCard / expandAskCard (spec §6.1): Esc collapses the still-
-    // pending card to a minimal "◆ question waiting" chip so it stops
-    // crowding the transcript without losing the answer; clicking the chip
-    // (or the notification deep link, jumpToAgentQuestion) restores it. Purely
-    // a visual fold — pendingAsk and every typed-but-unsent control value are
-    // untouched, so collapsing never discards an in-progress answer.
-    collapseAskCard() {
-      const pa = this.pendingAsk;
-      if (!pa || pa.collapsed) return;
-      pa.collapsed = true;
-      const questionsEl = pa.el.querySelector("[data-ask-questions]");
-      const footer = pa.el.querySelector(".ask-footer");
-      const chip = pa.el.querySelector("[data-ask-collapsed-chip]");
-      if (questionsEl) questionsEl.hidden = true;
-      if (footer) footer.hidden = true;
-      if (chip) chip.hidden = false;
-    },
-
-    expandAskCard() {
-      const pa = this.pendingAsk;
-      if (!pa || !pa.collapsed) return;
-      pa.collapsed = false;
-      const questionsEl = pa.el.querySelector("[data-ask-questions]");
-      const footer = pa.el.querySelector(".ask-footer");
-      const chip = pa.el.querySelector("[data-ask-collapsed-chip]");
-      if (questionsEl) questionsEl.hidden = false;
-      if (footer) footer.hidden = false;
-      if (chip) chip.hidden = true;
-    },
-
-    // bindAskCardEscape wires Esc to collapseAskCard, deferring to any open
-    // overlay exactly like bindSubagentEscapeToParent's existing Escape
-    // handler does (a second independent global listener, not a shared one,
-    // since the two collapse different things).
+    // bindAskCardEscape remains as a no-op compatibility hook. A pending ask
+    // has one canonical response form in the dock, so Escape must never hide
+    // that only active response surface.
     bindAskCardEscape() {
       if (this.__escToAskCollapseBound) return;
       this.__escToAskCollapseBound = true;
       document.addEventListener("keydown", (e) => {
         if (e.key !== "Escape" || e.metaKey || e.ctrlKey || e.altKey) return;
-        if (!this.pendingAsk || this.pendingAsk.collapsed) return;
-        if (document.getElementById("panel-scrim")) return;
-        if (document.getElementById("details-panel")) return;
-        if (document.getElementById("tasks-panel")) return;
-        const dlg = document.getElementById("search-dialog");
-        if (dlg && dlg.open) return;
-        this.collapseAskCard();
+        if (this.pendingAsk) return;
       });
     },
 
@@ -5001,6 +5003,7 @@
       if (!this.pendingAsk) return;
       const pa = this.pendingAsk;
       this.pendingAsk = null;
+      this.clearPendingAskDock();
       this.renderAskSettledLine(pa, replyText);
       this.clearAgentQuestion();
     },
@@ -5029,6 +5032,7 @@
     // §6.1): the composed reply is never auto-retried, so it drops into the
     // ordinary composer for the user to decide what to do next.
     dropComposedTextIntoComposer(text) {
+      this.clearPendingAskDock();
       const ta = document.querySelector("form[data-input-form] .message-input");
       if (!ta) return;
       ta.value = text;
