@@ -373,7 +373,7 @@
       const textEl = btn.querySelector("[data-task-status-text]");
       if (textEl) {
         if (total === 0) textEl.textContent = "no tasks yet";
-        else textEl.textContent = done + "/" + total + (currentText ? " · " + currentText : "");
+        else textEl.textContent = currentText || "tasks";
       }
     }
   }

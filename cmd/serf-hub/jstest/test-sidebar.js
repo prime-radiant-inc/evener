@@ -90,16 +90,15 @@ setTimeout(() => {
   pass(badge !== null, "badge should exist when tasks present");
   pass(badge && badge.textContent === "1/3", "badge should be 1/3, got: " + (badge ? badge.textContent : "null"));
 
-  // Status text element should also reflect progress and the current in-progress task.
-  // updateTasksBadge writes "<done>/<total> · <currentTaskDescription>" to [data-task-status-text].
+  // Status text contains only the current in-progress task. The badge owns
+  // numerical progress so that the controls do not duplicate it.
   const statusBtn = window.document.querySelector("[data-tasks-trigger]");
   const statusText = statusBtn ? statusBtn.querySelector("[data-task-status-text]") : null;
   pass(statusText !== null, "tasks trigger should have [data-task-status-text] element");
-  pass(statusText && statusText.textContent.includes("1/3"),
-    "status text should contain '1/3', got: " + (statusText ? statusText.textContent : "null"));
-  // task 2 is in_progress; its description is the current task summary
-  pass(statusText && statusText.textContent.includes("Add the new endpoint"),
-    "status text should contain current in-progress task description, got: " + (statusText ? statusText.textContent : "null"));
+  pass(statusText && statusText.textContent === "Add the new endpoint",
+    "status text should contain only current in-progress task description, got: " + (statusText ? statusText.textContent : "null"));
+  pass(statusText && !/\b1\/3\b/.test(statusText.textContent),
+    "status text must not duplicate the badge count, got: " + (statusText ? statusText.textContent : "null"));
 
   if (failures.length === 0) {
     console.log("PASS: sidebar panel fully expandable");

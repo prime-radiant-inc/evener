@@ -2236,7 +2236,7 @@
       }
       if (level === "quiet") {
         el.dataset.level = "quiet";
-        el.textContent = "working · quiet " + this.formatLivenessQuiet(gap);
+        el.textContent = "quiet " + this.formatLivenessQuiet(gap);
         el.hidden = false;
       } else if (level === "concern") {
         el.dataset.level = "concern";

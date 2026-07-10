@@ -101,10 +101,10 @@ const { JSDOM } = require("jsdom");
   // before it, not after.
   notify("serf/task/updated", { threadId: "01S", total: 3, done: 1 });
 
-  const textEl = window.document.querySelector("[data-task-status-text]");
-  assert.ok(textEl, "task-status-text element must exist");
-  assert.ok(/1\/3/.test(textEl.textContent),
-    "serf/task/updated must refresh the task-status row immediately, got " + JSON.stringify(textEl.textContent));
+  const badge = window.document.querySelector(".panel-toggle-badge");
+  assert.ok(badge, "task-status badge element must exist");
+  assert.strictEqual(badge.textContent, "1/3",
+    "serf/task/updated must refresh the task-status badge immediately, got " + JSON.stringify(badge.textContent));
 
   console.log("PASS test-task-updated-subscription.js");
   process.exit(0);

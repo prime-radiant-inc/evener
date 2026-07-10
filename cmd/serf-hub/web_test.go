@@ -2665,11 +2665,14 @@ func TestWeb_WorkspacePartial_RendersWorkingDirInStatusRow(t *testing.T) {
 	if !strings.Contains(body, `class="status-value"`) {
 		t.Errorf("status row missing status-value span: %q", body)
 	}
-	if !strings.Contains(body, `class="task-status-row"`) {
-		t.Errorf("workspace partial missing bottom task status row: %q", body)
+	if strings.Contains(body, `class="task-status-row"`) {
+		t.Errorf("workspace partial should not render standalone task status row: %q", body)
+	}
+	if !strings.Contains(body, `class="tasks-status" data-tasks-trigger`) {
+		t.Errorf("workspace partial missing composer-controls task trigger: %q", body)
 	}
 	if !strings.Contains(body, `data-task-status-text>—</span>`) {
-		t.Errorf("workspace partial missing bottom task neutral placeholder: %q", body)
+		t.Errorf("workspace partial missing task neutral placeholder: %q", body)
 	}
 	if strings.Contains(body, `data-task-status-text>tasks</span>`) {
 		t.Errorf("workspace partial should not render duplicated tasks label: %q", body)
@@ -2713,29 +2716,32 @@ func TestWeb_State_RendersInputStatusPartial(t *testing.T) {
 	if !strings.Contains(body, "main") {
 		t.Errorf("state partial missing Branch 'main': %q", body)
 	}
-	if !strings.Contains(body, `class="status-item source"`) || !strings.Contains(body, `>serf</span>`) {
-		t.Errorf("state partial missing bottom source label: %q", body)
+	for _, want := range []string{
+		`class="input-telemetry" data-input-telemetry`,
+		`class="status-item location" data-status-location`,
+		`class="status-location-part worktree"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("compact state partial missing %q:\n%s", want, body)
+		}
 	}
 	if !strings.Contains(body, `class="status-badge" data-state="ended"`) || !strings.Contains(body, `>Ended</span>`) {
 		t.Errorf("state partial missing bottom state badge: %q", body)
 	}
-	if !strings.Contains(body, `class="status-item turns"`) || !strings.Contains(body, `0 turns`) {
-		t.Errorf("state partial missing bottom turn count: %q", body)
+	for _, unwanted := range []string{
+		`class="status-item source"`,
+		`class="status-item turns"`,
+		`class="status-item work"`,
+		`class="status-item tokens"`,
+		`class="status-item cost"`,
+		`class="status-item goal"`,
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("compact state partial unexpectedly rendered %q:\n%s", unwanted, body)
+		}
 	}
 	if strings.Contains(body, `data-tasks-trigger`) {
 		t.Errorf("state partial should not duplicate task trigger; task status row lives above input: %q", body)
-	}
-	// This session has zero WorkMillis, no active turn, and nil usage (a
-	// fresh session predating WS2 accumulation) — both metrics clusters must
-	// hide entirely rather than render "0s" or "↑0 ↓0".
-	if strings.Contains(body, `class="status-item work"`) {
-		t.Errorf("state partial should not render a work-time cluster with zero WorkMillis and no active turn: %q", body)
-	}
-	if strings.Contains(body, `class="status-item tokens"`) {
-		t.Errorf("state partial should not render a token cluster with nil usage: %q", body)
-	}
-	if strings.Contains(body, `class="status-item cost"`) {
-		t.Errorf("state partial should not render a cost cluster with nil usage: %q", body)
 	}
 	data := web.workspaceData("01STATE001")
 	if data.Worktree != "dlg_01H" {
@@ -2743,9 +2749,8 @@ func TestWeb_State_RendersInputStatusPartial(t *testing.T) {
 	}
 }
 
-// TestWeb_State_RendersCostEstimate verifies the polled /state endpoint
-// renders a cost cluster computed from the session's Model + CumulativeUsage
-// via appwire.EstimateCost, once both are non-zero.
+// TestWeb_State_RendersCostEstimate verifies the compact /state endpoint omits
+// cost while the Details panel retains the full cost estimate.
 func TestWeb_State_RendersCostEstimate(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
@@ -2778,20 +2783,29 @@ func TestWeb_State_RendersCostEstimate(t *testing.T) {
 		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `class="status-item cost"`) || !strings.Contains(body, `~$1.00`) {
-		t.Errorf("state partial missing cost cluster with ~$1.00: %q", body)
+	if strings.Contains(body, `class="status-item cost"`) || strings.Contains(body, `~$1.00`) {
+		t.Errorf("compact state partial should omit cost detail: %q", body)
+	}
+
+	detailsReq := httptest.NewRequest(http.MethodGet, "/_partials/s/01STATECOST/details", nil)
+	detailsReq.Host = "127.0.0.1:9180"
+	detailsReq.Header.Set("HX-Request", "true")
+	detailsRec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(detailsRec, detailsReq)
+	if detailsRec.Code != http.StatusOK {
+		t.Fatalf("details status: %d body=%q", detailsRec.Code, detailsRec.Body.String())
+	}
+	if !strings.Contains(detailsRec.Body.String(), `data-row="cost"`) || !strings.Contains(detailsRec.Body.String(), `~$1.00`) {
+		t.Errorf("details panel missing preserved cost estimate ~$1.00: %q", detailsRec.Body.String())
 	}
 }
 
-// TestWeb_State_ShowsWorkTimeAndTokenClustersWithLeanFetch verifies the
-// consolidated status row's work-time and token clusters render from WS2's
-// WorkMillis/Usage, and that TurnCount comes from the daemon's /status
-// (StatusInfo.Turns) rather than a full transcript fetch — the L6 regression
-// the lean apiSessionState path must avoid. The scripted source's Turns
-// slice (3 completed) deliberately differs from /status's turns (12): if the
-// TurnCount override were missing, or if the request actually fetched the
-// full transcript instead of the lean view, the rendered count or the
-// recorded ReadThread params would betray it.
+// TestWeb_State_ShowsWorkTimeAndTokenClustersWithLeanFetch verifies the compact
+// status rail still renders context from the lean app-source read, while
+// apiSessionState keeps skipping the turns array. The scripted source's Turns
+// slice (3 completed) deliberately differs from /status's turns (12) so the
+// test continues to catch a full transcript fetch through recorded ReadThread
+// parameters rather than exposing the turn count in the compact rail.
 func TestWeb_State_ShowsWorkTimeAndTokenClustersWithLeanFetch(t *testing.T) {
 	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/status" {
@@ -2799,11 +2813,15 @@ func TestWeb_State_ShowsWorkTimeAndTokenClustersWithLeanFetch(t *testing.T) {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"session_id":  "01WORKTOK",
-			"state":       "active",
-			"turns":       12,
-			"model":       "gpt-5",
-			"working_dir": "/tmp/worktok",
+			"session_id":        "01WORKTOK",
+			"state":             "active",
+			"turns":             12,
+			"model":             "gpt-5",
+			"working_dir":       "/tmp/worktok",
+			"context_pressure":  0.42,
+			"context_used":      42000,
+			"context_window":    100000,
+			"context_remaining": 58000,
 		})
 	}))
 	defer daemon.Close()
@@ -2830,9 +2848,12 @@ func TestWeb_State_ShowsWorkTimeAndTokenClustersWithLeanFetch(t *testing.T) {
 				{ID: "t3", Status: appwire.TurnStatusCompleted},
 			},
 			Serf: appwire.SerfThread{
-				Ref:          "local:01WORKTOK",
-				Capabilities: appwire.ThreadCapabilities{Send: true},
-				WorkMillis:   185000,
+				Ref:              "local:01WORKTOK",
+				Capabilities:     appwire.ThreadCapabilities{Send: true},
+				ContextUsed:      42000,
+				ContextWindow:    100000,
+				ContextRemaining: 58000,
+				WorkMillis:       185000,
 				Usage: &appwire.SerfUsage{
 					InputTokens:     15000,
 					OutputTokens:    2400,
@@ -2856,32 +2877,21 @@ func TestWeb_State_ShowsWorkTimeAndTokenClustersWithLeanFetch(t *testing.T) {
 	}
 	body := rec.Body.String()
 
-	if !strings.Contains(body, `class="status-item turns"`) || !strings.Contains(body, `12 turns`) {
-		t.Errorf("state partial should show TurnCount 12 from /status, not the scripted thread's 3 completed turns: %q", body)
+	if !strings.Contains(body, `class="status-item context" data-status-context title="42k / 100k tokens (58k left)"`) {
+		t.Errorf("state partial missing compact context item with detailed title: %q", body)
 	}
-	if strings.Contains(body, `3 turns`) {
-		t.Errorf("state partial rendered the full-turns-derived count (3) instead of /status's (12) — the lean fetch is being ignored or the TurnCount override is missing: %q", body)
+	if !strings.Contains(body, `class="status-value context-numbers">42k / 100k<`) {
+		t.Errorf("state partial missing compact context numbers: %q", body)
 	}
-	if !strings.Contains(body, `class="status-item work"`) {
-		t.Errorf("state partial missing work-time cluster: %q", body)
-	}
-	if !strings.Contains(body, `data-work-millis="185000"`) {
-		t.Errorf("state partial missing data-work-millis=185000: %q", body)
-	}
-	if !strings.Contains(body, `data-active-turn-started="1700000000"`) {
-		t.Errorf("state partial missing data-active-turn-started=1700000000: %q", body)
-	}
-	if !strings.Contains(body, `class="status-value work-time">3m<`) {
-		t.Errorf("state partial should render formatted work time '3m' for 185000ms: %q", body)
-	}
-	if !strings.Contains(body, `class="status-item tokens"`) {
-		t.Errorf("state partial missing tokens cluster: %q", body)
-	}
-	if !strings.Contains(body, `↑15k ↓2k`) {
-		t.Errorf("state partial should show uncached token counts formatted as ↑15k ↓2k: %q", body)
-	}
-	if !strings.Contains(body, `title="uncached ↑15000 ↓2400 · cache-read 8000 · total 25400"`) {
-		t.Errorf("state partial missing hover breakdown with raw uncached/cache-read/total counts: %q", body)
+	for _, unwanted := range []string{
+		`class="status-item turns"`,
+		`class="status-item work"`,
+		`class="status-item tokens"`,
+		`class="status-item cost"`,
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("compact state partial unexpectedly rendered %q: %q", unwanted, body)
+		}
 	}
 	if !strings.Contains(body, `class="status-item liveness-inline"`) || !strings.Contains(body, `data-liveness`) {
 		t.Errorf("state partial missing inert liveness placeholder span: %q", body)
@@ -6030,8 +6040,10 @@ func TestHandleApiModels_DiagnosticsEnvelopeIncludesRecent(t *testing.T) {
 func TestInputStatus_NoDuplicateRunningIndicator(t *testing.T) {
 	tmpl := template.Must(template.New("input_strip.html").Funcs(inputStripTemplateFuncs).ParseFS(templatesFS, "templates/partials/input_strip.html"))
 	data := map[string]any{
-		"ContextWindow": 272000, "ContextPercent": 10, "ContextNumbers": "23k / 272k tokens",
-		"State": "active", "StateLabel": "Working", "TurnCount": 2,
+		"Branch": "main", "Worktree": "task-2", "WorkingDir": "/workspace/serf",
+		"ContextWindow": 100000, "ContextPercent": 42,
+		"ContextNumbers": "42k / 100k tokens (58k left)", "CompactContextNumbers": "42k / 100k",
+		"State": "active", "StateLabel": "Working",
 	}
 	var buf bytes.Buffer
 	if err := tmpl.ExecuteTemplate(&buf, "input_status", data); err != nil {
@@ -6041,8 +6053,31 @@ func TestInputStatus_NoDuplicateRunningIndicator(t *testing.T) {
 	if !strings.Contains(out, `class="status-badge"`) || !strings.Contains(out, "Working") {
 		t.Fatalf("active status row should show the StateLabel badge:\n%s", out)
 	}
-	if strings.Contains(out, "data-running-indicator") || strings.Contains(out, "running") {
-		t.Fatalf("active status row still renders the legacy running-indicator (duplicates the badge):\n%s", out)
+	if strings.Count(out, "Working") != 1 {
+		t.Fatalf("active status rail should render exactly one visible Working state label:\n%s", out)
+	}
+	for _, want := range []string{
+		`class="input-telemetry" data-input-telemetry`,
+		`class="status-item location" data-status-location`,
+		`class="status-item context" data-status-context`,
+		`class="status-value context-numbers">42k / 100k<`,
+		`class="status-location-part worktree"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("compact input status missing %q:\n%s", want, out)
+		}
+	}
+	for _, unwanted := range []string{
+		`class="status-item source"`,
+		`class="status-item turns"`,
+		`class="status-item work"`,
+		`class="status-item tokens"`,
+		`class="status-item cost"`,
+		`class="status-item goal"`,
+	} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("compact input status unexpectedly rendered %q:\n%s", unwanted, out)
+		}
 	}
 }
 
@@ -6054,12 +6089,13 @@ func TestInputStatusGaugeAmberThreshold(t *testing.T) {
 	tmpl := template.Must(template.New("input_strip.html").Funcs(inputStripTemplateFuncs).ParseFS(templatesFS, "templates/partials/input_strip.html"))
 	render := func(percent int) string {
 		data := map[string]any{
-			"ContextWindow":  272000,
-			"ContextPercent": percent,
-			"ContextNumbers": "23k / 272k tokens",
-			"State":          "active",
-			"StateLabel":     "Active",
-			"TurnCount":      3,
+			"ContextWindow":         272000,
+			"ContextPercent":        percent,
+			"ContextNumbers":        "23k / 272k tokens",
+			"CompactContextNumbers": "23k / 272k",
+			"State":                 "active",
+			"StateLabel":            "Active",
+			"TurnCount":             3,
 		}
 		var buf bytes.Buffer
 		if err := tmpl.ExecuteTemplate(&buf, "input_status", data); err != nil {

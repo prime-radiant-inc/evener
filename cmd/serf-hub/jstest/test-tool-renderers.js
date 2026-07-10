@@ -16,11 +16,18 @@ function newHarness() {
     <header class="workspace-header" data-session-id="01TEST"></header>
     <div id="conversation" data-session-id="01TEST" data-state="ended"></div>
     <form data-input-form data-session-id="01TEST">
-      <div class="task-status-row">
-        <button type="button" class="status-item tasks-status" data-tasks-trigger title="task list"><span class="status-key">tasks</span><span class="status-value" data-task-status-text>loading…</span></button>
+      <div class="input-controls">
+        <div class="controls-left">
+          <button type="button" data-attach-trigger>+</button>
+          <button type="button" class="tasks-status" data-tasks-trigger title="task list"><span class="status-key">tasks</span><span class="status-value" data-task-status-text>loading…</span></button>
+        </div>
       </div>
       <textarea class="message-input"></textarea>
     </form>
+    <div id="input-status">
+      <span class="status-badge" data-state="active"><span class="status-dot" data-state="active"></span>Working</span>
+      <span class="status-item liveness-inline" data-liveness hidden></span>
+    </div>
   </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
   const { window } = dom;
   window.marked = { parse: t => String(t || "").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>") };
@@ -437,7 +444,7 @@ await scenario("a subagents module separates surrounding cheap tool clusters", [
 });
 
 
-await scenario("bottom task status shows progress and current task text", [
+await scenario("composer task status shows badge progress and current task text", [
   ["SESSION_START", { session_id: "01TEST" }],
 ], ({ window }) => {
   window.SerfRenderer.applyTasks([
@@ -447,16 +454,29 @@ await scenario("bottom task status shows progress and current task text", [
   ]);
   const headerTasks = window.document.querySelector(".workspace-actions [data-tasks-trigger]");
   if (headerTasks) return { ok: false, detail: "tasks trigger should not be in header actions" };
-  const trigger = window.document.querySelector(".task-status-row [data-tasks-trigger]");
-  if (!trigger) return { ok: false, detail: "missing bottom task trigger" };
+  const trigger = window.document.querySelector(".controls-left [data-tasks-trigger]");
+  if (!trigger) return { ok: false, detail: "missing composer-controls task trigger" };
+  if (trigger.previousElementSibling !== window.document.querySelector("[data-attach-trigger]")) {
+    return { ok: false, detail: "task trigger must immediately follow attach control" };
+  }
   const text = trigger.querySelector("[data-task-status-text]");
   if (!text) return { ok: false, detail: "missing task status text element" };
-  if (text.textContent !== "1/3 · Implement the footer task status") return { ok: false, detail: "wrong task status text: " + text.textContent };
+  if (text.textContent !== "Implement the footer task status") return { ok: false, detail: "wrong task status text: " + text.textContent };
   const badge = trigger.querySelector(".panel-toggle-badge");
   if (!badge || badge.textContent !== "1/3") return { ok: false, detail: "missing task badge" };
-  if (!/\.task-status-row\s*\{[^}]*font-family:\s*var\(--font-mono\)/.test(styleSrc)) return { ok: false, detail: "task status row should use compact mono styling" };
-  if (!/\.tasks-status\s*\{[^}]*display:\s*inline-flex/.test(styleSrc)) return { ok: false, detail: "task status trigger should align key/value inline" };
-  if (/\.tasks-status \.panel-toggle-badge\s*\{[^}]*display:\s*none/.test(styleSrc)) return { ok: false, detail: "task status should keep the progress badge visible" };
+  return { ok: true };
+});
+
+await scenario("quiet liveness does not duplicate the Working state badge", [
+  ["SESSION_START", { session_id: "01TEST" }],
+], ({ window }) => {
+  const renderer = window.SerfRenderer;
+  renderer.state = "active";
+  renderer.lastFrameAt = Date.now() - 32000;
+  renderer.refreshLiveness();
+  const liveness = window.document.querySelector("[data-liveness]");
+  if (!liveness || !/quiet/.test(liveness.textContent)) return { ok: false, detail: "quiet liveness copy missing: " + (liveness && liveness.textContent) };
+  if (/working/i.test(liveness.textContent)) return { ok: false, detail: "quiet liveness duplicates Working badge: " + liveness.textContent };
   return { ok: true };
 });
 
