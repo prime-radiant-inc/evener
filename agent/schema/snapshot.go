@@ -162,12 +162,24 @@ const sessionsSubdir = "sessions"
 // SaveSessionMeta writes a SessionMeta to <dir>/sessions/<id>.meta.json using
 // atomic rename and compact JSON (no indentation).
 func SaveSessionMeta(dir string, meta SessionMeta) error {
-	return saveSessionMetaFS(afero.NewOsFs(), dir, meta)
+	return SaveSessionMetaWithFS(afero.NewOsFs(), dir, meta)
+}
+
+// SaveSessionMetaWithFS writes a SessionMeta through fs using the same atomic
+// temp-file and rename sequence as SaveSessionMeta.
+func SaveSessionMetaWithFS(fs afero.Fs, dir string, meta SessionMeta) error {
+	return saveSessionMetaFS(fs, dir, meta)
 }
 
 // LoadSessionMeta reads a SessionMeta from <dir>/sessions/<id>.meta.json.
 func LoadSessionMeta(dir, id string) (SessionMeta, error) {
-	return loadSessionMetaFS(afero.NewOsFs(), dir, id)
+	return LoadSessionMetaWithFS(afero.NewOsFs(), dir, id)
+}
+
+// LoadSessionMetaWithFS reads a SessionMeta through fs using the same path and
+// decoding behavior as LoadSessionMeta.
+func LoadSessionMetaWithFS(fs afero.Fs, dir, id string) (SessionMeta, error) {
+	return loadSessionMetaFS(fs, dir, id)
 }
 
 // ListSessionMetas returns all valid session metas sorted by UpdatedAt descending.

@@ -107,7 +107,14 @@ type Writer struct {
 // NewWriter creates a transcript file at path, writes the header as the first line,
 // and returns a writer that keeps the file handle open for subsequent Append calls.
 func NewWriter(path string, header Header) (*Writer, error) {
-	return newWriterFS(afero.NewOsFs(), path, header)
+	return NewWriterWithFS(afero.NewOsFs(), path, header)
+}
+
+// NewWriterWithFS creates a transcript writer over fs. It has the same behavior
+// as NewWriter, but allows callers that already own a filesystem boundary to
+// keep transcript persistence on that filesystem.
+func NewWriterWithFS(fs afero.Fs, path string, header Header) (*Writer, error) {
+	return newWriterFS(fs, path, header)
 }
 
 // newWriterFS is the filesystem-injecting seam behind NewWriter. Production

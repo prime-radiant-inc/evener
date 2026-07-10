@@ -2,12 +2,16 @@ package agent
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/fuzz/fault"
 )
 
 // w3init_writeOversizeLine writes a transcript file whose bytes exceed the fork
@@ -59,45 +63,44 @@ func TestW3Init_ForkSession_EntryScanError(t *testing.T) {
 	}
 }
 
-// TestW3Init_ForkSession_OpenError covers the non-IsNotExist open error arm: the
-// parent transcript exists but is unreadable.
+// TestW3Init_ForkSession_OpenError covers the non-IsNotExist open error arm with
+// a faulting filesystem. Permission bits are not reliable here: privileged test
+// processes can read a mode-000 file.
 func TestW3Init_ForkSession_OpenError(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	id := "01W3FORKOPENDENIED0000001"
-	lines := []string{s2cov_entryLine(t, schema.TurnUserInput, "task")}
-	s2cov_writeRawTranscript(t, stateDir, id, s2cov_headerLine(t, id), lines)
+	fs := fault.FS(afero.NewMemMapFs(), fault.FromBytes([]byte{0}))
 
-	tpath := filepath.Join(stateDir, sessionsSubdir, id+".transcript.jsonl")
-	if err := os.Chmod(tpath, 0o000); err != nil {
-		t.Fatalf("chmod: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(tpath, 0o644) })
-
-	_, err := ForkSession(stateDir, id, 1, "x", "")
+	_, err := forkSessionFS(fs, stateDir, id, 1, "x", "")
 	if err == nil || !strings.Contains(err.Error(), "open parent transcript") {
 		t.Fatalf("err = %v, want open parent transcript error", err)
+	}
+	if !errors.Is(err, fault.ErrInjected) {
+		t.Fatalf("err = %v, want wrapped injected open error", err)
 	}
 }
 
 // TestW3Init_ForkSession_NewWriterError covers the child-transcript creation
-// failure arm: the sessions dir is read-only, so the child file cannot be
-// created while the parent transcript and meta remain readable.
+// failure arm with a read-only filesystem. Permission bits are not reliable
+// here: privileged test processes can create files in a mode-0500 directory.
 func TestW3Init_ForkSession_NewWriterError(t *testing.T) {
 	t.Parallel()
-	stateDir := t.TempDir()
+	const stateDir = "/state"
 	id := "01W3FORKNEWWRITER00000001"
 	lines := []string{s2cov_entryLine(t, schema.TurnUserInput, "task")}
-	s2cov_writeRawTranscript(t, stateDir, id, s2cov_headerLine(t, id), lines)
-	s2cov_saveParentMeta(t, stateDir, id)
-
-	sessDir := filepath.Join(stateDir, sessionsSubdir)
-	if err := os.Chmod(sessDir, 0o500); err != nil {
-		t.Fatalf("chmod: %v", err)
+	base := afero.NewMemMapFs()
+	parentPath := filepath.Join(stateDir, sessionsSubdir, id+".transcript.jsonl")
+	parentBody := s2cov_headerLine(t, id) + "\n" + strings.Join(lines, "\n") + "\n"
+	if err := afero.WriteFile(base, parentPath, []byte(parentBody), 0o644); err != nil {
+		t.Fatalf("write parent transcript: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(sessDir, 0o755) })
+	parentMeta := schema.SessionMeta{ID: id, ProfileID: "openai", Model: "gpt-5.2"}
+	if err := schema.SaveSessionMetaWithFS(base, stateDir, parentMeta); err != nil {
+		t.Fatalf("save parent meta: %v", err)
+	}
 
-	_, err := ForkSession(stateDir, id, 1, "x", "")
+	_, err := forkSessionFS(afero.NewReadOnlyFs(base), stateDir, id, 1, "x", "")
 	if err == nil || !strings.Contains(err.Error(), "create child transcript") {
 		t.Fatalf("err = %v, want create child transcript error", err)
 	}

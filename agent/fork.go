@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/spf13/afero"
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
@@ -27,6 +28,10 @@ import (
 // If parentForkLabel is non-empty, the parent's meta is updated with that label so the
 // parent branch can be identified in session listings.
 func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, parentForkLabel string) (string, error) {
+	return forkSessionFS(afero.NewOsFs(), stateDir, parentID, divergenceTurn, editedMessage, parentForkLabel)
+}
+
+func forkSessionFS(fs afero.Fs, stateDir, parentID string, divergenceTurn int, editedMessage, parentForkLabel string) (string, error) {
 	if divergenceTurn < 1 {
 		return "", fmt.Errorf("divergenceTurn must be >= 1, got %d", divergenceTurn)
 	}
@@ -34,7 +39,7 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 	transcriptPath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
 
 	// Read the raw transcript lines so we can replay entry lines into the child.
-	f, err := os.Open(transcriptPath)
+	f, err := fs.Open(transcriptPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", fmt.Errorf("parent transcript not found for session %s", parentID)
@@ -115,7 +120,7 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 	prefixEntries := allEntries[:divergenceTurn-1]
 
 	// Load parent meta — required for copying fields to the child.
-	parentMeta, err := schema.LoadSessionMeta(stateDir, parentID)
+	parentMeta, err := schema.LoadSessionMetaWithFS(fs, stateDir, parentID)
 	if err != nil {
 		return "", fmt.Errorf("load parent session meta: %w", err)
 	}
@@ -141,7 +146,7 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 	}
 
 	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
-	tw, err := transcript.NewWriter(childTranscriptPath, childHeader)
+	tw, err := transcript.NewWriterWithFS(fs, childTranscriptPath, childHeader)
 	if err != nil {
 		return "", fmt.Errorf("create child transcript: %w", err)
 	}
@@ -186,14 +191,14 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 		ForkLabel:       "", // child carries no fork label; parent gets it
 	}
 
-	if err := schema.SaveSessionMeta(stateDir, childMeta); err != nil {
+	if err := schema.SaveSessionMetaWithFS(fs, stateDir, childMeta); err != nil {
 		return "", fmt.Errorf("save child session meta: %w", err)
 	}
 
 	// Update the parent meta with the fork label if provided.
 	if parentForkLabel != "" {
 		parentMeta.ForkLabel = parentForkLabel
-		if err := schema.SaveSessionMeta(stateDir, parentMeta); err != nil {
+		if err := schema.SaveSessionMetaWithFS(fs, stateDir, parentMeta); err != nil {
 			return "", fmt.Errorf("update parent session meta with fork label: %w", err)
 		}
 	}
