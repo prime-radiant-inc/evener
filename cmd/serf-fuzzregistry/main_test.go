@@ -77,6 +77,71 @@ func TestStateful(t *testing.T) {
 	}
 }
 
+func TestDiscoverWorkspaceUsesLogicalLabelForSymlinkedModule(t *testing.T) {
+	root := newWorkspace(t, map[string]string{
+		"go.work": "go 1.25.0\n\nuse (\n\t.\n\t./alias\n)\n",
+		"go.mod":  "module example.test/root\n\ngo 1.25.0\n",
+		"root_fuzz_test.go": `package root
+
+import "testing"
+
+func FuzzRoot(f *testing.F) {}
+`,
+		"nested/go.mod": "module example.test/nested\n\ngo 1.25.0\n",
+		"nested/alias_fuzz_test.go": `//go:build serffuzz
+
+package nested
+
+import "testing"
+
+func FuzzAlias(f *testing.F) {}
+`,
+	})
+	mustSymlink(t, "nested", filepath.Join(root, "alias"))
+
+	got, err := DiscoverWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Target{
+		{Kind: "native", Module: ".", Package: ".", Name: "FuzzRoot"},
+		{Kind: "native", Module: "alias", Package: ".", Name: "FuzzAlias"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("DiscoverWorkspace() = %#v, want %#v", got, want)
+	}
+	registered, err := ParseRegistry(strings.NewReader("native:.:.:FuzzRoot\nnative:alias:.:FuzzAlias\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckTargets(registered, got); err != nil {
+		t.Fatalf("CheckTargets() = %v, want alias registry row to match", err)
+	}
+}
+
+func TestDiscoverWorkspaceRejectsSymlinkedModuleOutsideRepository(t *testing.T) {
+	root := newWorkspace(t, map[string]string{
+		"go.work": "go 1.25.0\n\nuse ./alias\n",
+	})
+	outside := t.TempDir()
+	writeFile(t, outside, "go.mod", "module example.test/outside\n\ngo 1.25.0\n")
+	mustSymlink(t, outside, filepath.Join(root, "alias"))
+
+	_, err := DiscoverWorkspace(root)
+	assertErrorContains(t, err, `go.work module "./alias" is outside repository root`)
+}
+
+func TestDiscoverWorkspaceRejectsDuplicateResolvedModuleDirectories(t *testing.T) {
+	root := newWorkspace(t, map[string]string{
+		"go.work":       "go 1.25.0\n\nuse (\n\t./nested\n\t./alias\n)\n",
+		"nested/go.mod": "module example.test/nested\n\ngo 1.25.0\n",
+	})
+	mustSymlink(t, "nested", filepath.Join(root, "alias"))
+
+	_, err := DiscoverWorkspace(root)
+	assertErrorContains(t, err, `go.work lists duplicate module directory "./alias"`)
+}
+
 func TestCheckTargetsReportsMissingNativeFuzzer(t *testing.T) {
 	registered := []Target{{Kind: "rapid", Module: "agent", Package: ".", Name: "TestStateful"}}
 	discovered := append([]Target{{Kind: "native", Module: "agent", Package: ".", Name: "FuzzTurn"}}, registered...)
@@ -297,6 +362,13 @@ func writeFile(t *testing.T, root, name, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func mustSymlink(t *testing.T, oldname, newname string) {
+	t.Helper()
+	if err := os.Symlink(oldname, newname); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
 	}
 }
 

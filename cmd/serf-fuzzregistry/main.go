@@ -281,6 +281,11 @@ func readWorkspaceModules(root string) ([]workspaceModule, error) {
 	if err != nil {
 		return nil, fmt.Errorf("absolute repository root: %w", err)
 	}
+	physicalRoot, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve repository root: %w", err)
+	}
+	physicalRoot = filepath.Clean(physicalRoot)
 	workPath := filepath.Join(absRoot, "go.work")
 	data, err := os.ReadFile(workPath)
 	if err != nil {
@@ -291,18 +296,19 @@ func readWorkspaceModules(root string) ([]workspaceModule, error) {
 		return nil, fmt.Errorf("parse go.work: %w", err)
 	}
 
-	seen := make(map[string]struct{}, len(work.Use))
+	seenLabels := make(map[string]struct{}, len(work.Use))
+	seenDirs := make(map[string]struct{}, len(work.Use))
 	modules := make([]workspaceModule, 0, len(work.Use))
 	for _, use := range work.Use {
 		if use.Path == "" {
 			continue
 		}
-		dir := use.Path
-		if !filepath.IsAbs(dir) {
-			dir = filepath.Join(absRoot, dir)
+		logicalDir := use.Path
+		if !filepath.IsAbs(logicalDir) {
+			logicalDir = filepath.Join(absRoot, logicalDir)
 		}
-		dir = filepath.Clean(dir)
-		rel, err := filepath.Rel(absRoot, dir)
+		logicalDir = filepath.Clean(logicalDir)
+		rel, err := filepath.Rel(absRoot, logicalDir)
 		if err != nil {
 			return nil, fmt.Errorf("resolve go.work use %q: %w", use.Path, err)
 		}
@@ -313,20 +319,41 @@ func readWorkspaceModules(root string) ([]workspaceModule, error) {
 		if label == "" {
 			label = "."
 		}
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
+
+		physicalDir, err := filepath.EvalSymlinks(logicalDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve go.work module %q: %w", use.Path, err)
+		}
+		physicalDir = filepath.Clean(physicalDir)
+		if !pathWithinDir(physicalRoot, physicalDir) {
+			return nil, fmt.Errorf("go.work module %q is outside repository root", use.Path)
+		}
+		if _, err := os.Stat(filepath.Join(physicalDir, "go.mod")); err != nil {
 			return nil, fmt.Errorf("go.work module %q has no go.mod: %w", use.Path, err)
 		}
-		if _, ok := seen[label]; ok {
+		if _, ok := seenLabels[label]; ok {
 			return nil, fmt.Errorf("go.work lists module %q more than once", label)
 		}
-		seen[label] = struct{}{}
-		modules = append(modules, workspaceModule{label: label, dir: dir})
+		if _, ok := seenDirs[physicalDir]; ok {
+			return nil, fmt.Errorf("go.work lists duplicate module directory %q", use.Path)
+		}
+		seenLabels[label] = struct{}{}
+		seenDirs[physicalDir] = struct{}{}
+		modules = append(modules, workspaceModule{label: label, dir: physicalDir})
 	}
 	if len(modules) == 0 {
 		return nil, errors.New("go.work contains no modules")
 	}
 	sort.Slice(modules, func(i, j int) bool { return modules[i].label < modules[j].label })
 	return modules, nil
+}
+
+func pathWithinDir(root, candidate string) bool {
+	rel, err := filepath.Rel(root, candidate)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func targetSet(label string, targets []Target) (map[targetIdentity]Target, []string) {
