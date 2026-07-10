@@ -24,9 +24,9 @@ There are two modes: the **gate** (deterministic, fast, no search) and the
 **search** (coverage-guided, finds new inputs).
 
 ```sh
-make fuzz            # GATE: replay the committed seed corpus + saved crashers
-                     # across every Fuzz* target. Deterministic, no search.
-                     # This is what CI runs; keep it green.
+make fuzz            # GATE: replay native committed seeds/crashers and every
+                     # registered Rapid surface across its fixed seed bank.
+                     # Deterministic, no search. This is what CI runs; keep it green.
 
 make fuzz-nightly                          # SEARCH: coverage-guided, all targets, 60s each
 make fuzz-nightly FUZZ_ARGS="--time 10m"   #   …10 minutes each (any go -fuzztime value)
@@ -95,6 +95,42 @@ up. After legitimately raising a target's coverage, lock it in:
 make fuzz-coverage CHECK=1   # fail on a focus-set regression OR a gap breach (local/manual)
 make fuzz-coverage BLESS=1   # raise each floor to the current measured %
 ```
+
+## Whole-module fuzz coverage
+
+`make fuzz-coverage-global` is the slow, strict coverage gate for the entire
+workspace. It is distinct from `make fuzz-coverage`: the latter reports
+per-target focus sets, while the global command measures raw statement coverage
+of every production package in each module.
+
+```sh
+make fuzz-coverage-global                    # all seven workspace modules
+make fuzz-coverage-global CHECK=1            # require raw coverage >95.0% per module
+make fuzz-coverage-global CHECK=1 FUZZ_ARGS='--modules agent --format json'
+make fuzz-coverage-global BLESS=1            # only after every measured module is >95.0%
+```
+
+The runner first obtains the exact four-column native/Rapid plan from
+`make fuzz-registry-check`. It then lists every production package with
+`-tags serffuzz`; a package without a registered **local** fuzz surface fails
+before any replay with `missing local fuzz surface: <module>:<package>`.
+Each native target runs once. Each Rapid target runs with
+`RAPID_SEED=1,2,3,5,8` and `RAPID_CHECKS=100`. Their coverage profiles are
+unioned only within the owning package, then passed to `serf-fuzzcov` for the
+strict raw threshold, reviewed file-only exclusions, and upward-only floors.
+There is no `-coverpkg` cross-package instrumentation.
+
+The runner exports `GOWORK=<repository>/go.work`, so its module list and
+profiles do not depend on an ambient workspace setting. Any registry, listing,
+replay, profile, or accounting failure is fatal; the command never turns a
+failed target into an omitted or synthetic zero profile.
+
+Current implementation status: the registry audit intentionally reports the
+fourteen known unregistered agent native targets until the local-surface work
+lands. Therefore `make fuzz-coverage-global` currently stops at the registry
+gate before running Go tests. Once those registrations are complete, the next
+expected actionable failures are the exact packages still lacking local fuzz
+surfaces; they must be added rather than excluded.
 
 Interpreting a **low focus %**: use `go tool cover -func` on the profile to see
 which blocks are uncovered. A block with a `0` count that a crafted input *could*

@@ -111,9 +111,10 @@ e2e-cover:
 vet:
 	@for m in $(GO_MODULES); do (cd $$m && go vet ./...) || exit 1; done
 
-# fuzz runs every FuzzXxx target's SEED CORPUS plus any saved testdata/fuzz
-# crashers as ordinary deterministic tests — `go test -run '^Fuzz'` with no
-# -fuzz does NOT random-search. It is still fuzz coverage, so it stays out of
+# fuzz runs every native FuzzXxx target's seed corpus plus saved crashers as
+# ordinary deterministic tests — `go test -run '^Fuzz'` with no `-fuzz` does not
+# random-search. It also replays every registered Rapid property surface with
+# the fixed coverage seed bank. It is still fuzz coverage, so it stays out of
 # the regular test gate and runs through this explicit entry point.
 #
 # Everything here builds with -tags serffuzz so the internal/invariant assertions
@@ -125,6 +126,7 @@ fuzz:
 	@$(MEMCAP) sh -c 'cd fuzz && go test -tags serffuzz ./...'
 	@$(MEMCAP) sh -c 'go test ./cmd/serf-fuzzcov ./cmd/serf-fuzz-harvest'
 	@for m in $(FUZZ_GO_MODULES); do ($(MEMCAP) sh -c "cd $$m && go test -run '^Fuzz' -tags serffuzz ./...") || exit 1; done
+	@set -eu; cap="$$(pwd)/$(MEMCAP)"; for target in $$(scripts/run-fuzz.sh --list | awk -F: '$$1 == "rapid" { print $$2 ":" $$3 ":" $$4 }'); do module=$${target%%:*}; rest=$${target#*:}; pkg=$${rest%%:*}; name=$${rest#*:}; for seed in 1 2 3 5 8; do echo "=== rapid replay $$module:$$name seed $$seed ==="; (cd "$$module" && RAPID_SEED="$$seed" RAPID_CHECKS=100 "$$cap" go test -tags serffuzz -run "^$${name}\$$" -count=1 "$$pkg"); done; done
 	@$(MEMCAP) sh -c "go test -run '^Test.*Golden\$$' ./appwire"
 
 # fuzz-goldens regenerates the decode SNAPSHOT goldens — serf's differential
@@ -181,14 +183,16 @@ fuzz-drive:
 fuzz-drive-selftest:
 	@scripts/fuzz-drive-selftest.sh
 
-# fuzz-coverage-global measures WHOLE-MODULE fuzz-reachable coverage (the focus-set
-# tool fuzz-coverage measures per-target seams) and ratchets it against
-# scripts/fuzzcov-global-floors.txt. Heavy + local. CHECK=1 enforces the ratchet;
-# BLESS=1 raises floors to current.
+# fuzz-coverage-global validates the registered target plan, requires a local
+# native/Rapid fuzz surface for every production package, then replays each target
+# into package-local profiles for strict whole-module accounting. Heavy + local.
+# CHECK=1 enforces the raw >95% threshold and floors; BLESS=1 raises floors only
+# after every measured module clears that threshold.
 fuzz-coverage-global:
 	@scripts/fuzz-coverage-global.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(FUZZ_ARGS)
 
-# fuzz-coverage-global-selftest verifies the parse + ratchet logic with stubbed go.
+# fuzz-coverage-global-selftest verifies registry-gated replay/profile accounting
+# wiring with a fake go executable and no real compilation.
 fuzz-coverage-global-selftest:
 	@scripts/fuzz-coverage-global-selftest.sh
 

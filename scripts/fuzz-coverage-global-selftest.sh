@@ -1,99 +1,301 @@
 #!/usr/bin/env bash
-# fuzz-coverage-global-selftest.sh — deterministic test of fuzz-coverage-global.sh.
-#
-# Measuring real coverage is heavy and nondeterministic, so this stubs `go` to
-# emit known coverprofiles and a passthrough cap wrapper, then asserts the parse
-# (covered/total statements), the repo total, and the ratchet (--check pass/fail,
-# --bless raise-only) — the load-bearing logic — with no real test runs.
-set -uo pipefail
+# fuzz-coverage-global-selftest.sh exercises the replay runner without compiling
+# Serf. A registry-check seam emits a tiny validated plan and a fake Go command
+# records every invocation while writing synthetic package-local profiles.
+set -euo pipefail
 
-script="$(cd "$(dirname "$0")" && pwd)/fuzz-coverage-global.sh"
+runner="$(cd "$(dirname "$0")" && pwd)/fuzz-coverage-global.sh"
 work="$(mktemp -d -t fuzzcov-global-selftest.XXXXXX)"
 trap 'rm -rf "$work"' EXIT
-checks=0 fails=0
-ok()  { checks=$((checks+1)); printf 'ok   - %s\n' "$1"; }
-bad() { checks=$((checks+1)); fails=$((fails+1)); printf 'FAIL - %s\n' "$1"; }
-has() { if printf '%s' "$1" | grep -qF -- "$2"; then ok "$3"; else bad "$3 (missing: $2)"; fi; }
+checks=0
+fails=0
 
-# Passthrough cap wrapper.
-cap="$work/cap.sh"; printf '#!/usr/bin/env bash\nexec "$@"\n' >"$cap"; chmod +x "$cap"
-
-# Stub go: on `test ... -coverprofile=PATH ...`, write a profile whose covered/
-# total statements are controlled per-module by $COV (a "mod=cov/total,..." map
-# read from the cwd's basename). Emits 1 covered block and 1 uncovered block whose
-# numStmts sum to the requested totals.
-gobin="$work/go.sh"
-cat >"$gobin" <<'STUB'
-#!/usr/bin/env bash
-# `go list ./...` -> one synthetic package per module dir (the per-package
-# measurement iterates these, running a single-package coverage binary for each).
-if [ "$1" = list ]; then echo "example.com/$(basename "$PWD")"; exit 0; fi
-prof=""
-for a in "$@"; do case "$a" in -coverprofile=*) prof="${a#*=}";; esac; done
-[ -n "$prof" ] || exit 0
-mod="$(basename "$PWD")"
-# COV maps a module dir basename to "covered total"; default 0 0.
-pair="$(printf '%s\n' "$COV" | tr ',' '\n' | awk -F= -v m="$mod" '$1==m{print $2}')"
-cov="${pair%% *}"; tot="${pair##* }"
-[ -n "$cov" ] || { cov=0; tot=0; }
-uncov=$((tot - cov))
-{
-  echo "mode: set"
-  # Emit each block TWICE, as `go test -coverpkg=./... ./...` does (once per
-  # package test binary): the covered block recurs with count 0 from a binary
-  # that didn't run it. The parser MUST dedupe by position (count once, covered
-  # if any occurrence ran) — a naive per-line sum would inflate these totals and
-  # fail the percentage assertions below. This is the regression guard for that.
-  [ "$cov" -gt 0 ] && { echo "x/$mod/a.go:1.1,2.1 $cov 1"; echo "x/$mod/a.go:1.1,2.1 $cov 0"; }
-  [ "$uncov" -gt 0 ] && { echo "x/$mod/b.go:3.1,4.1 $uncov 0"; echo "x/$mod/b.go:3.1,4.1 $uncov 0"; }
-} >"$prof"
-exit 0
-STUB
-chmod +x "$gobin"
-
-# Build a throwaway module layout so cwd basenames are stable (alpha, beta).
-mkdir -p "$work/repo/scripts" "$work/repo/alpha" "$work/repo/beta"
-cp "$script" "$work/repo/scripts/fuzz-coverage-global.sh"
-
-run() { # COV-map, args...
-	local cov="$1"; shift
-	COV="$cov" SERF_FUZZ_GO="$gobin" SERF_FUZZ_CAPPED="$cap" \
-		bash "$work/repo/scripts/fuzz-coverage-global.sh" --modules "alpha beta" "$@" 2>&1
+ok() {
+	checks=$((checks + 1))
+	printf 'ok   - %s\n' "$1"
 }
 
-echo "== parse + repo total =="
-out="$(run "alpha=8 10,beta=3 10")"
-has "$out" "alpha" "alpha row present"
-# alpha 8/10=80.0%, beta 3/10=30.0%, repo 11/20=55.0%
-has "$out" "80.0%" "alpha pct = 80.0%"
-has "$out" "30.0%" "beta pct = 30.0%"
-has "$out" "55.0%" "repo total = 55.0%"
+bad() {
+	checks=$((checks + 1))
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n' "$1"
+}
 
-echo "== bless writes raise-only floors =="
-run "alpha=8 10,beta=3 10" --bless >/dev/null
-floors="$work/repo/scripts/fuzzcov-global-floors.txt"
-has "$(cat "$floors")" "alpha 80.0" "blessed alpha floor 80.0"
-has "$(cat "$floors")" "beta 30.0" "blessed beta floor 30.0"
-# Re-bless with LOWER current must not lower the floor.
-run "alpha=5 10,beta=3 10" --bless >/dev/null
-has "$(cat "$floors")" "alpha 80.0" "bless never lowers (alpha stays 80.0 despite 50%)"
+has() {
+	local haystack="$1" needle="$2" label="$3"
+	if printf '%s' "$haystack" | grep -Fq -- "$needle"; then
+		ok "$label"
+	else
+		bad "$label (missing: $needle)"
+	fi
+}
 
-echo "== check passes at/above floor, fails below =="
-set +e; run "alpha=8 10,beta=3 10" --check >/dev/null 2>&1; rc=$?; set -e
-[ "$rc" -eq 0 ] && ok "check passes when coverage meets floors" || bad "check should pass at floor (rc=$rc)"
-set +e; out="$(run "alpha=5 10,beta=3 10" --check)"; rc=$?; set -e
-[ "$rc" -ne 0 ] && ok "check fails on a regression below floor" || bad "check should fail below floor"
-has "$out" "REGRESSION" "regression reported for alpha"
-# Within tolerance (floor 80.0, value 79.7 with default 0.5pp) must still pass.
-set +e; run "alpha=797 1000,beta=3 10" --check >/dev/null 2>&1; rc=$?; set -e
-[ "$rc" -eq 0 ] && ok "check tolerates sub-floor wobble within 0.5pp" || bad "tolerance band not applied (rc=$rc)"
+lacks() {
+	local haystack="$1" needle="$2" label="$3"
+	if printf '%s' "$haystack" | grep -Fq -- "$needle"; then
+		bad "$label (unexpected: $needle)"
+	else
+		ok "$label"
+	fi
+}
 
-echo "== --with-full prints the context column =="
-# The stub returns the same coverage for both passes, so fuzz==full -> ratio 100%.
-out="$(run "alpha=8 10,beta=3 10" --with-full)"
-has "$out" "fuzz/full" "with-full: header has the fuzz/full column"
-has "$out" "100%" "with-full: fuzz/full ratio computed (100% when fuzz==full in the stub)"
+count_has() {
+	local haystack="$1" needle="$2" expected="$3" label="$4" count
+	count="$(printf '%s' "$haystack" | grep -F -c -- "$needle" || true)"
+	if [ "$count" -eq "$expected" ]; then
+		ok "$label"
+	else
+		bad "$label (want $expected, got $count for $needle)"
+	fi
+}
 
-echo "----"
+repo="$work/repo"
+mkdir -p "$repo/scripts"
+cp "$runner" "$repo/scripts/fuzz-coverage-global.sh"
+for module in agent auth envvars fuzz invariant llm; do
+	mkdir -p "$repo/$module"
+done
+printf 'go 1.25.6\n\nuse (\n\t.\n\t./agent\n\t./auth\n\t./envvars\n\t./fuzz\n\t./invariant\n\t./llm\n)\n' >"$repo/go.work"
+for module in . agent auth envvars fuzz invariant llm; do
+	printf 'module example.test/%s\n\ngo 1.25.6\n' "${module#.}" >"$repo/$module/go.mod"
+done
+: >"$repo/scripts/fuzzcov-global-exclusions.txt"
+printf '# test floor file\n' >"$repo/scripts/fuzzcov-global-floors.txt"
+
+# The cap seam stays transparent while preserving the production wrapper call.
+cap="$work/cap.sh"
+printf '#!/usr/bin/env bash\nexec "$@"\n' >"$cap"
+chmod +x "$cap"
+
+registry="$work/registry-check.sh"
+cat >"$registry" <<'REGISTRY'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'registry\t%s\n' "${GOWORK:-}" >>"$FAKE_REGISTRY_LOG"
+if [ "${FAKE_REGISTRY_FAIL:-}" = "1" ]; then
+	echo "synthetic registry drift" >&2
+	exit 17
+fi
+if [ "${FAKE_REGISTRY_MALFORMED:-}" = "1" ]; then
+	printf 'native\t.\t.\n'
+	exit 0
+fi
+printf 'native\t.\t.\tFuzzNative\n'
+printf 'native\t.\t./other\tFuzzOther\n'
+printf 'rapid\t.\t.\tTestRapid\n'
+REGISTRY
+chmod +x "$registry"
+
+gobin="$work/go.sh"
+cat >"$gobin" <<'GOBIN'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\t%s\tseed=%s\tchecks=%s\t%s\n' "$PWD" "${GOWORK:-}" "${RAPID_SEED:-}" "${RAPID_CHECKS:-}" "$*" >>"$FAKE_GO_LOG"
+command="$1"
+shift
+case "$command" in
+	list)
+		if [ "${FAKE_GO_LIST_FAIL:-}" = "1" ]; then
+			echo "synthetic go list failure" >&2
+			exit 18
+		fi
+		# Root has two packages; the other six list successfully but have no
+		# packages, proving the runner asks all seven and keeps package profiles
+		# separate within a module.
+		if [ "$PWD" = "$FAKE_REPO" ]; then
+			printf '%s\n' "$PWD"
+			printf '%s/other\n' "$PWD"
+			if [ "${FAKE_LIST_MISSING:-}" = "1" ]; then
+				printf '%s/missing-one\n' "$PWD"
+				printf '%s/missing-two\n' "$PWD"
+			fi
+		fi
+		;;
+	test)
+		run=""
+		profile=""
+		for arg in "$@"; do
+			case "$arg" in
+				-run=*) run="${arg#-run=}" ;;
+				-coverprofile=*) profile="${arg#-coverprofile=}" ;;
+			esac
+		done
+		if [ -z "$run" ]; then
+			for ((i = 1; i <= $#; i++)); do
+				if [ "${!i}" = "-run" ]; then
+					j=$((i + 1))
+					run="${!j}"
+				fi
+			done
+		fi
+		[ -n "$profile" ] || { echo "fake go: missing coverprofile" >&2; exit 19; }
+		if [ "${FAKE_GO_TEST_FAIL:-}" = "$run" ]; then
+			echo "synthetic replay failure" >&2
+			exit 20
+		fi
+		if [ "${FAKE_GO_NO_PROFILE:-}" = "$run" ]; then
+			exit 0
+		fi
+		if [ "${FAKE_GO_BAD_PROFILE:-}" = "$run" ]; then
+			echo 'mode: count' >"$profile"
+			exit 0
+		fi
+		{
+			echo 'mode: set'
+			if [ "$run" = '^FuzzNative$' ]; then
+				echo 'example.test/root.go:1.1,2.1 1 1'
+			elif [ "$run" = '^FuzzOther$' ]; then
+				echo 'example.test/other.go:5.1,6.1 3 1'
+			else
+				# Merge must retain this native-positive count and add the Rapid block.
+				echo 'example.test/root.go:1.1,2.1 1 0'
+				echo 'example.test/rapid.go:3.1,4.1 2 1'
+			fi
+		} >"$profile"
+		;;
+	run)
+		[ "$1" = './cmd/serf-fuzzcov' ] || { echo "fake go: unexpected run target $1" >&2; exit 21; }
+		if [ "${FAKE_GO_RUN_FAIL:-}" = "1" ]; then
+			echo "synthetic global accounting failure" >&2
+			exit 24
+		fi
+		manifest=""
+		for ((i = 1; i <= $#; i++)); do
+			if [ "${!i}" = '-global-manifest' ]; then
+				j=$((i + 1))
+				manifest="${!j}"
+			fi
+		done
+		[ -n "$manifest" ] || { echo "fake go: no global manifest" >&2; exit 22; }
+		cp "$manifest" "$FAKE_COV_MANIFEST"
+		while IFS=$'\t' read -r module pkg profile; do
+			case "$pkg" in
+				.) cp "$profile" "$FAKE_COV_PROFILE" ;;
+				./other) cp "$profile" "$FAKE_COV_OTHER_PROFILE" ;;
+			esac
+		done <"$manifest"
+		;;
+	*)
+		echo "fake go: unexpected command $command" >&2
+		exit 23
+		;;
+esac
+GOBIN
+chmod +x "$gobin"
+
+go_log="$work/go.log"
+registry_log="$work/registry.log"
+cov_manifest="$work/cov-manifest.tsv"
+cov_profile="$work/cov-profile.cov"
+cov_other_profile="$work/cov-other-profile.cov"
+
+reset_logs() {
+	: >"$go_log"
+	: >"$registry_log"
+	rm -f "$cov_manifest" "$cov_profile" "$cov_other_profile"
+}
+
+run_runner() {
+	env FAKE_REPO="$repo" FAKE_GO_LOG="$go_log" FAKE_REGISTRY_LOG="$registry_log" FAKE_COV_MANIFEST="$cov_manifest" FAKE_COV_PROFILE="$cov_profile" FAKE_COV_OTHER_PROFILE="$cov_other_profile" SERF_FUZZ_GO="$gobin" SERF_FUZZ_CAPPED="$cap" SERF_FUZZ_REGISTRY_CHECK="$registry" "$@" bash "$repo/scripts/fuzz-coverage-global.sh" --check --bless
+}
+
+expect_failure() {
+	set +e
+	last_output="$(run_runner "$@" 2>&1)"
+	last_status=$?
+	set -e
+	if [ "$last_status" -ne 0 ]; then
+		ok "runner fails for ${1:-synthetic failure}"
+	else
+		bad "runner should fail for ${1:-synthetic failure}"
+	fi
+}
+
+echo '== exact all-module replay and merge =='
+reset_logs
+out="$(run_runner 2>&1)"
+has "$out" 'account package-local profiles' 'successful replay reaches global accounting'
+has "$(cat "$registry_log")" "$repo/go.work" 'registry checker inherits anchored GOWORK'
+
+log="$(cat "$go_log")"
+for module in . agent auth envvars fuzz invariant llm; do
+	if [ "$module" = . ]; then
+		module_dir="$repo"
+	else
+		module_dir="$repo/$module"
+	fi
+	has "$log" "$module_dir"$'\t'"$repo/go.work"$'\tseed=\tchecks=\tlist -tags serffuzz -f {{.Dir}} ./...' "go list -tags serffuzz covers module $module"
+done
+has "$log" $'\ttest -tags serffuzz -run ^FuzzNative$ -count=1 -coverprofile=' 'native replay has exact deterministic flags'
+count_has "$log" $'\ttest -tags serffuzz -run ^FuzzNative$ -count=1 -coverprofile=' 1 'native target replays once'
+count_has "$log" $'\ttest -tags serffuzz -run ^FuzzOther$ -count=1 -coverprofile=' 1 'other package native target replays once'
+count_has "$log" $'\ttest -tags serffuzz -run ^TestRapid$ -count=1 -coverprofile=' 5 'rapid target replays fixed seed bank exactly once each'
+for seed in 1 2 3 5 8; do
+	has "$log" $'\tseed='"$seed"$'\tchecks=100\ttest -tags serffuzz -run ^TestRapid$ -count=1 -coverprofile=' "rapid seed $seed uses RAPID_CHECKS=100"
+done
+lacks "$log" '-coverpkg' 'replay never uses coverpkg'
+has "$log" $'\trun ./cmd/serf-fuzzcov -global-manifest ' 'global accounting runs serf-fuzzcov'
+has "$log" "-repo-root $repo -global-exclusions $repo/scripts/fuzzcov-global-exclusions.txt -global-floors $repo/scripts/fuzzcov-global-floors.txt -global-minimum 95 -check -bless" 'global accounting receives root, policy files, minimum, check, and bless'
+
+manifest="$(cat "$cov_manifest")"
+count_has "$manifest" $'.\t.\t' 1 'global manifest has one merged profile for the package'
+count_has "$manifest" $'.\t./other\t' 1 'global manifest has a separate profile for the other package'
+merged="$(cat "$cov_profile")"
+has "$merged" 'mode: set' 'merged profile preserves set mode'
+has "$merged" 'example.test/root.go:1.1,2.1 1 1' 'merge retains coverage from native replay'
+has "$merged" 'example.test/rapid.go:3.1,4.1 2 1' 'merge adds Rapid-only coverage block'
+other_merged="$(cat "$cov_other_profile")"
+has "$other_merged" 'example.test/other.go:5.1,6.1 3 1' 'other package profile keeps its own blocks'
+lacks "$other_merged" 'example.test/root.go' 'profiles never merge blocks across packages'
+
+echo '== missing local surface stops before replays =='
+reset_logs
+expect_failure FAKE_LIST_MISSING=1
+has "$last_output" 'missing local fuzz surface: .:./missing-one' 'first missing production package is named exactly'
+has "$last_output" 'missing local fuzz surface: .:./missing-two' 'second missing production package is also reported'
+log="$(cat "$go_log")"
+lacks "$log" $'\ttest ' 'missing-surface preflight runs no tests'
+lacks "$log" $'\trun ./cmd/serf-fuzzcov' 'missing-surface preflight skips global accounting'
+
+echo '== failed replay and profile output are fatal =='
+reset_logs
+expect_failure FAKE_GO_TEST_FAIL='^FuzzNative$'
+has "$last_output" 'replay failed: native:.:.:FuzzNative' 'failed native replay is fatal'
+log="$(cat "$go_log")"
+lacks "$log" $'\trun ./cmd/serf-fuzzcov' 'failed replay skips global accounting'
+
+reset_logs
+expect_failure FAKE_GO_NO_PROFILE='^FuzzNative$'
+has "$last_output" 'coverage profile missing after replay: native:.:.:FuzzNative' 'missing replay profile is fatal'
+log="$(cat "$go_log")"
+lacks "$log" $'\trun ./cmd/serf-fuzzcov' 'missing profile skips global accounting'
+
+reset_logs
+expect_failure FAKE_GO_BAD_PROFILE='^FuzzNative$'
+has "$last_output" 'coverage profile has invalid mode after replay: native:.:.:FuzzNative' 'malformed replay profile is fatal'
+log="$(cat "$go_log")"
+lacks "$log" $'\trun ./cmd/serf-fuzzcov' 'malformed profile skips global accounting'
+
+reset_logs
+expect_failure FAKE_GO_RUN_FAIL=1
+has "$last_output" 'global coverage accounting failed' 'global accounting failure is fatal'
+
+echo '== registry and package-list failures are fatal =='
+reset_logs
+expect_failure FAKE_REGISTRY_FAIL=1
+has "$last_output" 'registry check failed; replay did not begin' 'registry failure stops before preflight'
+lacks "$(cat "$go_log")" $'\tlist ' 'registry failure invokes no Go command'
+
+reset_logs
+expect_failure FAKE_REGISTRY_MALFORMED=1
+has "$last_output" 'registry checker did not emit exact four-column TSV' 'malformed registry plan is fatal'
+lacks "$(cat "$go_log")" $'\tlist ' 'malformed registry plan invokes no Go command'
+
+reset_logs
+expect_failure FAKE_GO_LIST_FAIL=1
+has "$last_output" 'go list failed for module: .' 'go list failure is fatal'
+lacks "$(cat "$go_log")" $'\ttest ' 'go list failure invokes no replay'
+
+echo '----'
 echo "fuzz-coverage-global-selftest: $checks checks, $fails failed"
 [ "$fails" -eq 0 ]

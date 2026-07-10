@@ -1,215 +1,339 @@
 #!/usr/bin/env bash
-# fuzz-coverage-global.sh — Plan 12 Phase D: measure WHOLE-CODEBASE fuzz-reachable
-# coverage and ratchet it.
+# fuzz-coverage-global.sh replays the registry-audited deterministic fuzz corpus
+# into one canonical self-coverage profile per production package, then delegates
+# strict whole-module accounting to cmd/serf-fuzzcov.
 #
-# The focus-set tool (fuzz-coverage.sh) answers "does each target cover its own
-# decode seam?"; this answers the bigger question "what fraction of an entire
-# module does the committed fuzz corpus reach?". For each module it replays every
-# Fuzz target's committed corpus in ONE `go test -run ^Fuzz` pass with
-# -coverpkg=./... (Go merges the coverage of all targets into a single profile),
-# then reports covered/total statements per module and across the repo.
+# This deliberately does not run `go test ./... -coverpkg=./...`. Every local
+# fuzz surface runs in its owning package only, so a package's profile has the
+# Go toolchain's canonical block boundaries. Target profiles are unioned only
+# within that declared module/package before global accounting sees them.
 #
-# READ THIS NUMBER CORRECTLY: it is FUZZ-REACHABLE coverage — what the fuzz corpus
-# ALONE drives — NOT total test coverage. It is intentionally a minority of the
-# module: fuzzing targets decode/parse/dispatch seams, while UNIT TESTS cover the
-# request-building, client, error-handling, UI, and CLI code fuzzing never touches.
-# The full test suite covers far more (measured: llm 39% fuzz vs 85% full-suite;
-# agent 26% vs 86%). Use --with-full to print both side by side. The fuzz number's
-# job is as a RATCHET (don't let fuzz reach regress), not a quality score.
+# The default invocation covers every go.work module:
+#   . agent auth envvars fuzz invariant llm
 #
-# It enforces a no-regression ratchet against scripts/fuzzcov-global-floors.txt
-# (per-module floors, raised only upward) so new code that isn't fuzz-reachable
-# visibly lowers the global number instead of slipping in unnoticed.
-#
-# This is HEAVY (whole-module instrumentation + the full seed corpus) and LOCAL /
-# on-demand — not a CI gate. Memory-capped via run-capped.sh.
-#
-# REQUIREMENT: -coverpkg=./... needs Go's prebuilt `covdata` tool to attribute
-# coverage to packages without tests. Some downloaded toolchains omit it; if a
-# module reports `no such tool "covdata"`, build it once into a writable GOTOOLDIR:
-#   go build -o "$(go env GOTOOLDIR)/covdata" cmd/covdata
+# The target plan is obtained only from fuzz-registry-check.sh. A registry drift
+# failure, a package without a local registered fuzz surface, a replay failure,
+# or a missing/malformed profile is fatal; no result is fabricated or omitted.
 #
 # Usage:
-#   scripts/fuzz-coverage-global.sh                 # advisory report (exit 0)
-#   scripts/fuzz-coverage-global.sh --check         # ratchet: exit non-zero on a drop
-#   scripts/fuzz-coverage-global.sh --bless         # raise floors to current %
-#   scripts/fuzz-coverage-global.sh --modules ". agent llm"
+#   scripts/fuzz-coverage-global.sh
+#   scripts/fuzz-coverage-global.sh --check
+#   scripts/fuzz-coverage-global.sh --bless
+#   scripts/fuzz-coverage-global.sh --modules agent
+#   scripts/fuzz-coverage-global.sh --format json
 #
-#   SERF_FUZZ_GO       the go binary (default: go) — a self-test seam.
-#   SERF_FUZZ_CAPPED   the memory-cap wrapper (default: run-capped.sh) — test seam.
-set -uo pipefail
+# Test seams:
+#   SERF_FUZZ_GO              go executable (default: go)
+#   SERF_FUZZ_CAPPED          command wrapper (default: scripts/run-capped.sh)
+#   SERF_FUZZ_REGISTRY_CHECK  executable registry checker (default:
+#                             scripts/fuzz-registry-check.sh)
+set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-floors_file="$repo_root/scripts/fuzzcov-global-floors.txt"
-modules=". agent llm"
-tolerance="0.5" # percentage-point band absorbing nondeterministic wobble
-check=false
-bless=false
-with_full=false
+go_work="$repo_root/go.work"
 go_bin="${SERF_FUZZ_GO:-go}"
 capped="${SERF_FUZZ_CAPPED:-$repo_root/scripts/run-capped.sh}"
+registry_check="${SERF_FUZZ_REGISTRY_CHECK:-$repo_root/scripts/fuzz-registry-check.sh}"
+exclusions_file="$repo_root/scripts/fuzzcov-global-exclusions.txt"
+floors_file="$repo_root/scripts/fuzzcov-global-floors.txt"
 
-while [ $# -gt 0 ]; do
+# Keep these literals in go.work order. An explicit --modules selection is useful
+# while a module is being raised, but the default contract is the full workspace.
+workspace_modules=(. agent auth envvars fuzz invariant llm)
+selected_modules=("${workspace_modules[@]}")
+rapid_seeds=(1 2 3 5 8)
+rapid_checks=100
+check=false
+bless=false
+format=text
+
+die() {
+	echo "fuzz-coverage-global: $*" >&2
+	exit 1
+}
+
+usage() {
+	sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+is_workspace_module() {
+	local candidate="$1" module
+	for module in "${workspace_modules[@]}"; do
+		[ "$candidate" = "$module" ] && return 0
+	done
+	return 1
+}
+
+parse_modules() {
+	local words="$1" module
+	read -r -a selected_modules <<<"$words"
+	[ "${#selected_modules[@]}" -gt 0 ] || die "--modules must name at least one go.work module"
+	declare -A seen=()
+	for module in "${selected_modules[@]}"; do
+		is_workspace_module "$module" || die "unknown go.work module: $module"
+		[ -z "${seen[$module]+x}" ] || die "duplicate module: $module"
+		seen[$module]=1
+	done
+}
+
+while [ "$#" -gt 0 ]; do
 	case "$1" in
-		--modules) modules="$2"; shift 2 ;;
-		--modules=*) modules="${1#*=}"; shift ;;
-		--tolerance) tolerance="$2"; shift 2 ;;
 		--check) check=true; shift ;;
 		--bless) bless=true; shift ;;
-		--with-full) with_full=true; shift ;;
-		-h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-		*) echo "fuzz-coverage-global: unknown arg $1" >&2; exit 2 ;;
+		--modules)
+			[ "$#" -ge 2 ] || die "--modules requires a space-separated module list"
+			parse_modules "$2"
+			shift 2
+			;;
+		--modules=*) parse_modules "${1#*=}"; shift ;;
+		--format)
+			[ "$#" -ge 2 ] || die "--format requires text or json"
+			format="$2"
+			shift 2
+			;;
+		--format=*) format="${1#*=}"; shift ;;
+		-h|--help) usage; exit 0 ;;
+		*) die "unknown argument: $1" ;;
 	esac
 done
 
-profiles_dir="$(mktemp -d -t serf-fuzzcov-global.XXXXXX)"
-trap 'rm -rf "$profiles_dir"' EXIT
+case "$format" in
+	text|json) ;;
+	*) die "--format must be text or json" ;;
+esac
 
-# floor_for echoes the recorded floor for a module, or empty if none.
-floor_for() {
-	[ -f "$floors_file" ] || return 0
-	awk -v m="$1" '$1==m {print $2}' "$floors_file"
-}
+[ -f "$go_work" ] || die "missing go.work: $go_work"
+[ -f "$exclusions_file" ] || die "missing exclusions manifest: $exclusions_file"
+[ -f "$floors_file" ] || die "missing floors manifest: $floors_file"
 
-# stmt_counts parses a Go text coverprofile and prints "covered total" statements.
-# A block reads "file:range numStmts count". Under -coverpkg=./..., go test emits
-# the SAME block once per package test binary (a block at a given position recurs
-# with different counts), so we MUST dedupe by position: count each block's
-# statements once, and treat it covered if ANY occurrence ran (the union, matching
-# `go tool cover`). Summing every line instead inflates the total ~Nx (N = number
-# of test binaries) and badly understates coverage.
-stmt_counts() {
-	awk 'NR>1 { pos=$1; stmts[pos]=$2; if ($3>0) cov[pos]=1 }
-	     END { for (p in stmts) { t+=stmts[p]; if (p in cov) c+=stmts[p] }
-	           printf "%d %d", c+0, t+0 }' "$1"
-}
+# Every Go command, including the registry checker that internally invokes Go,
+# is pinned to this workspace rather than ambient developer GOWORK state.
+export GOWORK="$go_work"
 
-# measure_module_profile writes a whole-module coverage profile to $4 by running
-# each package's tests in its OWN single-package coverage binary (default -cover,
-# self-package only) and concatenating the profiles under one synthetic header.
-#   $1 module dir, $2 -run regex, $3 extra go-test flags (e.g. "-tags serffuzz"), $4 out
-#
-# This deliberately AVOIDS `-coverpkg=./... ./...` whole-module instrumentation.
-# That form makes covdata merge many per-binary textfmt profiles, and the merge
-# emits BOUNDARY-VARIANT duplicate blocks for the same source lines (one binary
-# splits a statement range where another doesn't). Deduping by exact position
-# cannot collapse those overlapping variants, so the statement TOTAL inflates past
-# the real count — measured on the agent module: real 19661 stmts vs a merged
-# 25605 (+30%), and the inflation appeared only after new per-package fuzz binaries
-# joined the merge. A single-package binary instruments its own code exactly once,
-# so block boundaries are canonical and stmt_counts dedupes cleanly; the resulting
-# total equals the ground-truth statement count. Fuzz targets each fuzz their own
-# package, so self-coverage is precisely the fuzz-reachable signal. Sets the global
-# `measure_build_err` to a captured build failure, or "" on success.
-measure_build_err=""
-measure_module_profile() {
-	local mdir="$1" runre="$2" tagflags="$3" out="$4"
-	measure_build_err=""
-	echo "mode: set" >"$out"
-	local pp="$out.pp" pkg out_txt
-	while IFS= read -r pkg; do
-		[ -n "$pkg" ] || continue
-		rm -f "$pp"
-		if out_txt="$( cd "$mdir" && "$capped" "$go_bin" test $tagflags \
-				-timeout 20m -run "$runre" -coverprofile="$pp" "$pkg" 2>&1 )"; then
-			[ -s "$pp" ] && grep -v '^mode:' "$pp" >>"$out"
-		elif printf '%s\n' "$out_txt" | grep -qiE 'build failed|^#|panic:|--- FAIL|^FAIL'; then
-			measure_build_err="$out_txt"
-			rm -f "$pp"
-			return 0
-		fi
-		rm -f "$pp"
-	done < <( cd "$mdir" && "$go_bin" list ./... 2>/dev/null )
-}
+work="$(mktemp -d -t serf-fuzzcov-global.XXXXXX)"
+trap 'rm -rf "$work"' EXIT
+plan="$work/targets.tsv"
+groups="$work/groups.tsv"
+global_manifest="$work/global-profiles.tsv"
 
-echo "=== global FUZZ-REACHABLE coverage — what the corpus alone drives, NOT total"
-echo "    test coverage (the full suite covers far more); modules: $modules ==="
-if $with_full; then
-	printf '%-10s %10s %10s %9s %9s %7s\n' "module" "fuzz%" "full%" "fuzz/full" "floor" ""
-else
-	printf '%-10s %12s %12s %8s %8s\n' "module" "covered" "total" "fuzz%" "floor"
+echo "fuzz-coverage-global: validating registered native and Rapid targets"
+if ! "$registry_check" >"$plan"; then
+	die "registry check failed; replay did not begin"
 fi
 
-repo_c=0 repo_t=0 repo_fc=0 repo_ft=0 fail=0
-declare -A measured=()
-for m in $modules; do
-	prof="$profiles_dir/${m//\//_}.cov"
-	# Replay every Fuzz target's committed corpus, per package, into one
-	# concatenated whole-module profile. -run '^Fuzz' replays seeds (no -fuzz
-	# search). A package with no fuzz targets still emits its (all-uncovered) block
-	# set, so it counts toward the denominator honestly.
-	measure_module_profile "$repo_root/$m" '^Fuzz' '-tags serffuzz' "$prof"
-	if [ -n "$measure_build_err" ]; then
-		# A build/test failure is fatal to the measurement. Surface the actual cause.
-		printf '%-10s %s\n' "$m" "MEASUREMENT FAILED:"
-		printf '%s\n' "$measure_build_err" | grep -iE '^(FAIL|--- FAIL|panic|# )|build failed|signal: killed|timed out' | head -6 | sed 's/^/    /'
-		fail=1
-		continue
+# The registry checker promises this exact headerless schema. Validate it here
+# too, because treating a malformed plan as a partial plan would silently drop
+# surfaces from the denominator.
+if ! awk -F '\t' '
+	NF != 4 || $1 == "" || $2 == "" || $3 == "" || $4 == "" {
+		printf "fuzz-coverage-global: invalid registry replay row %d: %s\\n", NR, $0 > "/dev/stderr"
+		bad = 1
+	}
+	END { exit bad }
+' "$plan"; then
+	die "registry checker did not emit exact four-column TSV"
+fi
+[ -s "$plan" ] || die "registry checker emitted no coverage targets"
+
+declare -A surface=()
+declare -A target=()
+tab=$'\t'
+while IFS=$'\t' read -r kind module pkg name; do
+	case "$kind" in
+		native|rapid) ;;
+		*) die "registry plan has unsupported target kind: $kind" ;;
+	esac
+	is_workspace_module "$module" || die "registry plan names unknown module: $module"
+	case "$pkg" in
+		.) ;;
+		./*) ;;
+		*) die "registry plan has non-relative package path: $module:$pkg" ;;
+	esac
+	case "$pkg" in
+		./|../*|*/../*|*/..) die "registry plan has unsafe package path: $module:$pkg" ;;
+	esac
+	[[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "registry plan has invalid target name: $module:$pkg:$name"
+	case "$kind:$name" in
+		native:Fuzz*) ;;
+		rapid:Test*) ;;
+		*) die "registry plan has invalid $kind target name: $module:$pkg:$name" ;;
+	esac
+	identity="$kind$tab$module$tab$pkg$tab$name"
+	[ -z "${target[$identity]+x}" ] || die "registry plan duplicates target: $kind:$module:$pkg:$name"
+	target[$identity]=1
+	surface["$module$tab$pkg"]=1
+done <"$plan"
+
+declare -A selected=()
+for module in "${selected_modules[@]}"; do
+	selected[$module]=1
+done
+
+# Preflight every production package before running one replay. This avoids Go
+# 1.25's no-test-binary covdata path and gives a complete actionable list rather
+# than discovering missing local surfaces one package at a time mid-measurement.
+declare -A production_package=()
+preflight_failed=false
+for module in "${selected_modules[@]}"; do
+	module_dir="$repo_root/$module"
+	[ -d "$module_dir" ] || die "missing module directory: $module_dir"
+	module_dir="$(cd "$module_dir" && pwd)"
+	list_file="$work/packages-${module//\//_}.txt"
+	if ! (cd "$module_dir" && "$go_bin" list -tags serffuzz -f '{{.Dir}}' ./...) >"$list_file"; then
+		die "go list failed for module: $module"
 	fi
-	# More than just the "mode:" header line?
-	[ "$(wc -l <"$prof")" -gt 1 ] || { printf '%-10s %s\n' "$m" "no coverage profile (no fuzz targets?)"; continue; }
-
-	read -r c t < <(stmt_counts "$prof")
-	[ "$t" -gt 0 ] || { printf '%-10s %s\n' "$m" "no statements measured"; continue; }
-	pct="$(awk -v c="$c" -v t="$t" 'BEGIN{printf "%.1f", 100*c/t}')"
-	measured["$m"]="$pct"
-	repo_c=$((repo_c + c)); repo_t=$((repo_t + t))
-	floor="$(floor_for "$m")"
-
-	if $with_full; then
-		# Best-effort full-suite pass for CONTEXT (not ratcheted): a flaky/env-gated
-		# test failing here must not block the fuzz ratchet, so on failure show "—".
-		fullprof="$profiles_dir/${m//\//_}.full.cov"
-		measure_module_profile "$repo_root/$m" '.' '' "$fullprof"
-		if [ -z "$measure_build_err" ] && [ "$(wc -l <"$fullprof")" -gt 1 ]; then
-			read -r fc ft < <(stmt_counts "$fullprof")
-			full_pct="$(awk -v c="$fc" -v t="$ft" 'BEGIN{ printf "%.1f", (t>0)?(100*c/t):0 }')"
-			ratio="$(awk -v f="$pct" -v u="$full_pct" 'BEGIN{ r=(u>0)?(100*f/u):0; printf "%.0f%%", r }')"
-			repo_fc=$((repo_fc + fc)); repo_ft=$((repo_ft + ft))
+	while IFS= read -r package_dir; do
+		[ -n "$package_dir" ] || continue
+		if [ "$package_dir" = "$module_dir" ]; then
+			pkg=.
+		elif [[ "$package_dir" == "$module_dir/"* ]]; then
+			pkg="./${package_dir#"$module_dir/"}"
 		else
-			full_pct="—"; ratio="—"
+			die "go list returned package outside module $module: $package_dir"
 		fi
-		printf '%-10s %9s%% %9s%% %9s %8s\n' "$m" "$pct" "$full_pct" "$ratio" "${floor:-—}"
-	else
-		printf '%-10s %12d %12d %7s%% %7s\n' "$m" "$c" "$t" "$pct" "${floor:-—}"
-	fi
+		production_package["$module$tab$pkg"]=1
+		if [ -z "${surface["$module$tab$pkg"]+x}" ]; then
+			echo "missing local fuzz surface: $module:$pkg" >&2
+			preflight_failed=true
+		fi
+	done <"$list_file"
+done
 
-	if $check && [ -n "$floor" ]; then
-		below="$(awk -v p="$pct" -v f="$floor" -v tol="$tolerance" 'BEGIN{print (p < f - tol) ? 1 : 0}')"
-		if [ "$below" = "1" ]; then
-			echo "    REGRESSION: $m global coverage ${pct}% < floor ${floor}% (tolerance ${tolerance}pp)" >&2
-			fail=1
-		fi
+# A plan row for a non-production package is just as unsafe as a missing row:
+# it would otherwise be replayed outside the exact denominator we preflighted.
+for key in "${!surface[@]}"; do
+	module="${key%%$tab*}"
+	pkg="${key#*$tab}"
+	[ -n "${selected[$module]+x}" ] || continue
+	if [ -z "${production_package[$key]+x}" ]; then
+		echo "registered local fuzz surface is not a production package: $module:$pkg" >&2
+		preflight_failed=true
 	fi
 done
 
-if [ "$repo_t" -gt 0 ]; then
-	repo_pct="$(awk -v c="$repo_c" -v t="$repo_t" 'BEGIN{printf "%.1f", 100*c/t}')"
-	if $with_full && [ "$repo_ft" -gt 0 ]; then
-		repo_full="$(awk -v c="$repo_fc" -v t="$repo_ft" 'BEGIN{printf "%.1f", 100*c/t}')"
-		repo_ratio="$(awk -v f="$repo_pct" -v u="$repo_full" 'BEGIN{ r=(u>0)?(100*f/u):0; printf "%.0f%%", r }')"
-		printf '%-10s %9s%% %9s%% %9s\n' "REPO" "$repo_pct" "$repo_full" "$repo_ratio"
-	else
-		printf '%-10s %12d %12d %7s%%\n' "REPO" "$repo_c" "$repo_t" "$repo_pct"
+if [ "$preflight_failed" = true ]; then
+	die "local fuzz surface preflight failed; replay did not begin"
+fi
+
+# Select and sort the package groups after preflight. A package can own many
+# native/Rapid targets, but it contributes exactly one merged profile below.
+: >"$groups"
+while IFS=$'\t' read -r kind module pkg name; do
+	[ -n "${selected[$module]+x}" ] || continue
+	printf '%s\t%s\n' "$module" "$pkg" >>"$groups"
+done <"$plan"
+LC_ALL=C sort -u "$groups" >"$groups.sorted"
+mv "$groups.sorted" "$groups"
+[ -s "$groups" ] || die "no registered coverage targets for selected modules"
+
+validate_profile() {
+	local profile="$1" label="$2" header
+	[ -s "$profile" ] || die "coverage profile missing after replay: $label"
+	header="$(sed -n '1p' "$profile")"
+	[ "$header" = "mode: set" ] || die "coverage profile has invalid mode after replay: $label"
+}
+
+merge_profiles() {
+	local out="$1"
+	shift
+	[ "$#" -gt 0 ] || die "internal error: no profiles to merge for $out"
+	local blocks="$out.blocks"
+	if ! awk '
+		FNR == 1 {
+			if ($0 != "mode: set") {
+				printf "invalid coverage mode in %s: %s\\n", FILENAME, $0 > "/dev/stderr"
+				bad = 1
+			}
+			next
+		}
+		NF != 3 || $2 !~ /^[1-9][0-9]*$/ || $3 !~ /^[0-9]+$/ {
+			printf "invalid coverage block in %s: %s\\n", FILENAME, $0 > "/dev/stderr"
+			bad = 1
+			next
+		}
+		{
+			key = $1 " " $2
+			if (!(key in count) || $3 > count[key]) {
+				count[key] = $3
+			}
+		}
+		END {
+			for (key in count) {
+				print key " " count[key]
+			}
+			exit bad
+		}
+	' "$@" >"$blocks"; then
+		rm -f "$blocks"
+		die "cannot merge package-local coverage profiles: $out"
 	fi
-fi
-
-if $bless; then
-	tmp="$(mktemp)"
 	{
-		echo "# Global fuzz-reachable coverage floors (whole-module statement %)."
-		echo "# Managed by scripts/fuzz-coverage-global.sh --bless. Raised upward only."
-		for m in $modules; do
-			cur="${measured[$m]:-}"
-			old="$(floor_for "$m")"
-			# Keep the higher of old/current so --bless never lowers a floor.
-			keep="$cur"
-			[ -n "$old" ] && keep="$(awk -v a="$old" -v b="${cur:-0}" 'BEGIN{print (a>b)?a:b}')"
-			[ -n "$keep" ] && echo "$m $keep"
-		done
-	} >"$tmp"
-	mv "$tmp" "$floors_file"
-	echo "blessed floors -> $floors_file"
-fi
+		echo "mode: set"
+		LC_ALL=C sort "$blocks"
+	} >"$out"
+	rm -f "$blocks"
+	validate_profile "$out" "merged package profile $out"
+}
 
-exit "$fail"
+replay_target() {
+	local kind="$1" module="$2" pkg="$3" name="$4" seed="${5:-}" profile="$6"
+	local label="$kind:$module:$pkg:$name"
+	[ -z "$seed" ] || label="$label seed=$seed"
+	echo "fuzz-coverage-global: replay $label"
+	if [ "$kind" = rapid ]; then
+		if ! (cd "$repo_root/$module" && RAPID_SEED="$seed" RAPID_CHECKS="$rapid_checks" \
+			"$capped" "$go_bin" test -tags serffuzz -run "^$name\$" -count=1 -coverprofile="$profile" "$pkg"); then
+			die "replay failed: $label"
+		fi
+	else
+		if ! (cd "$repo_root/$module" && \
+			"$capped" "$go_bin" test -tags serffuzz -run "^$name\$" -count=1 -coverprofile="$profile" "$pkg"); then
+			die "replay failed: $label"
+		fi
+	fi
+	validate_profile "$profile" "$label"
+}
+
+: >"$global_manifest"
+while IFS=$'\t' read -r module pkg; do
+	package_profiles=()
+	while IFS=$'\t' read -r kind row_module row_pkg name; do
+		[ "$row_module" = "$module" ] && [ "$row_pkg" = "$pkg" ] || continue
+		if [ "$kind" = native ]; then
+			profile="$(mktemp "$work/target.XXXXXX.cov")"
+			rm -f "$profile"
+			replay_target "$kind" "$module" "$pkg" "$name" "" "$profile"
+			package_profiles+=("$profile")
+		else
+			for seed in "${rapid_seeds[@]}"; do
+				profile="$(mktemp "$work/target.XXXXXX.cov")"
+				rm -f "$profile"
+				replay_target "$kind" "$module" "$pkg" "$name" "$seed" "$profile"
+				package_profiles+=("$profile")
+			done
+		fi
+	done <"$plan"
+	package_profile="$(mktemp "$work/package.XXXXXX.cov")"
+	rm -f "$package_profile"
+	merge_profiles "$package_profile" "${package_profiles[@]}"
+	printf '%s\t%s\t%s\n' "$module" "$pkg" "$package_profile" >>"$global_manifest"
+done <"$groups"
+
+[ -s "$global_manifest" ] || die "internal error: no package profiles were produced"
+
+fuzzcov_args=(
+	run ./cmd/serf-fuzzcov
+	-global-manifest "$global_manifest"
+	-repo-root "$repo_root"
+	-global-exclusions "$exclusions_file"
+	-global-floors "$floors_file"
+	-global-minimum 95
+)
+[ "$format" = json ] && fuzzcov_args+=(-global-json)
+"$check" && fuzzcov_args+=(-check)
+"$bless" && fuzzcov_args+=(-bless)
+
+echo "fuzz-coverage-global: account package-local profiles"
+if ! (cd "$repo_root" && "$capped" "$go_bin" "${fuzzcov_args[@]}"); then
+	die "global coverage accounting failed"
+fi
