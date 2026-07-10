@@ -70,11 +70,12 @@ pass(/#workspace\s*\{[^}]*overflow-x:\s*clip/s.test(mobile),
   "mobile #workspace must set overflow-x: clip as a horizontal-anchor guard");
 
 // Visual viewport coordination sets this variable while a workspace is active;
-// the shell must consume it with a standards-based dynamic viewport fallback.
+// retain a legacy viewport unit immediately before the dynamic custom-property
+// height so older engines reject only the latter and keep a full-height shell.
 const workspaceViewportRule = (css.match(/#workspace\s*\{[^}]*\}/g) || [])
   .find((block) => /--workspace-visible-height\s*:/.test(block));
-pass(workspaceViewportRule && /height:\s*var\(--workspace-visible-height,\s*100dvh\)/.test(workspaceViewportRule),
-  "#workspace visible-height rule must use var(--workspace-visible-height, 100dvh)");
+pass(workspaceViewportRule && /height:\s*100vh\s*;\s*height:\s*var\(--workspace-visible-height,\s*100dvh\)/.test(workspaceViewportRule),
+  "#workspace visible-height rule must declare height: 100vh immediately before height: var(--workspace-visible-height, 100dvh)");
 
 // The transcript is the only vertically scrollable flex child. A zero flex basis
 // and min-height:0 prevent the composer from being pushed below the visual viewport.

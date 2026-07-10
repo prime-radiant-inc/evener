@@ -491,6 +491,7 @@ body.app[data-sidebar-resizing="true"] .sidebar-resizer {
   position: relative;
   flex: 1;
   min-width: 0;
+  height: 100vh;
   height: var(--workspace-visible-height, 100dvh);
   display: flex;
   flex-direction: column;
