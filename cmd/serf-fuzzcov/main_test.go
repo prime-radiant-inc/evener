@@ -105,6 +105,7 @@ func TestWriteFloorsUpwardOnly(t *testing.T) {
 
 func TestRunGlobalModeCheckUsesStrictThreshold(t *testing.T) {
 	repo := t.TempDir()
+	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.com/m\n\ngo 1.25\n")
 	profile := filepath.Join(repo, "exact.cov")
 	mustWrite(t, profile, "mode: set\n"+
 		"example.com/m/p.go:1.1,1.2 95 1\n"+

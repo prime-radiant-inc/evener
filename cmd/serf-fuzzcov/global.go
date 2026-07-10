@@ -23,9 +23,10 @@ import (
 // profiles may name the same module and package; their exact source blocks are
 // unioned before the package contributes to the module total.
 type GlobalProfile struct {
-	Module  string
-	Package string
-	Path    string
+	Module     string
+	Package    string
+	Path       string
+	ModulePath string
 }
 
 // Exclusion is one reviewed, whole-file denominator exclusion. SourcePath and
@@ -148,6 +149,54 @@ func ReadGlobalProfiles(r io.Reader) ([]GlobalProfile, error) {
 	return profiles, nil
 }
 
+// ResolveGlobalProfiles enriches the external three-column profile manifest
+// with the module import paths read directly from the workspace's go.mod files.
+// Coverage profiles are normally written in a temporary directory, so their
+// paths cannot establish ownership safely. ReportGlobal requires this resolved
+// ownership before it will accept profile blocks.
+func ResolveGlobalProfiles(repoRoot string, profiles []GlobalProfile) ([]GlobalProfile, error) {
+	root, err := filepath.Abs(repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve repository root: %w", err)
+	}
+	modulePaths := map[string]string{}
+	resolved := make([]GlobalProfile, 0, len(profiles))
+	for _, profile := range profiles {
+		module, err := cleanGlobalModule(profile.Module)
+		if err != nil {
+			return nil, fmt.Errorf("profile %q: %w", profile.Path, err)
+		}
+		pkg, err := cleanGlobalPackage(profile.Package)
+		if err != nil {
+			return nil, fmt.Errorf("profile %q: %w", profile.Path, err)
+		}
+		if strings.TrimSpace(profile.Path) == "" {
+			return nil, fmt.Errorf("profile for %s:%s has an empty path", module, pkg)
+		}
+		modulePath, ok := modulePaths[module]
+		if !ok {
+			moduleDir, err := joinWithin(root, module)
+			if err != nil {
+				return nil, fmt.Errorf("resolve module %s: %w", module, err)
+			}
+			content, err := os.ReadFile(filepath.Join(moduleDir, "go.mod"))
+			if err != nil {
+				return nil, fmt.Errorf("read module %s go.mod: %w", module, err)
+			}
+			modulePath, err = cleanGlobalModulePath(modulePathFromGoMod(content))
+			if err != nil {
+				return nil, fmt.Errorf("module %s go.mod: %w", module, err)
+			}
+			modulePaths[module] = modulePath
+		}
+		profile.Module = module
+		profile.Package = pkg
+		profile.ModulePath = modulePath
+		resolved = append(resolved, profile)
+	}
+	return resolved, nil
+}
+
 // ReadGlobalExclusions resolves and validates the reviewed whole-file manifest:
 //
 //	module<TAB>package-relative-path<TAB>file<TAB>generated|platform<TAB>reason
@@ -247,6 +296,8 @@ func ReportGlobal(profiles []GlobalProfile, exclusions []Exclusion, minimum floa
 
 	packages := map[globalPackageKey]map[string]globalBlock{}
 	profileOwners := map[string]globalPackageKey{}
+	blockOwners := map[string]globalPackageKey{}
+	modulePaths := map[string]string{}
 	for _, profile := range profiles {
 		module, err := cleanGlobalModule(profile.Module)
 		if err != nil {
@@ -259,6 +310,14 @@ func ReportGlobal(profiles []GlobalProfile, exclusions []Exclusion, minimum floa
 		if strings.TrimSpace(profile.Path) == "" {
 			return GlobalReport{}, fmt.Errorf("profile for %s:%s has an empty path", module, pkg)
 		}
+		modulePath, err := cleanGlobalModulePath(profile.ModulePath)
+		if err != nil {
+			return GlobalReport{}, fmt.Errorf("profile %s:%s (%s) has unresolved module ownership: %w", module, pkg, profile.Path, err)
+		}
+		if previous, ok := modulePaths[module]; ok && previous != modulePath {
+			return GlobalReport{}, fmt.Errorf("declared module %s has conflicting resolved import paths %s and %s", module, previous, modulePath)
+		}
+		modulePaths[module] = modulePath
 		absolutePath, err := filepath.Abs(profile.Path)
 		if err != nil {
 			return GlobalReport{}, fmt.Errorf("resolve profile %q: %w", profile.Path, err)
@@ -279,6 +338,13 @@ func ReportGlobal(profiles []GlobalProfile, exclusions []Exclusion, minimum floa
 			packages[key] = union
 		}
 		for _, block := range blocks {
+			if err := validateGlobalBlockOwnership(block, modulePath, pkg); err != nil {
+				return GlobalReport{}, fmt.Errorf("profile %s:%s (%s): %w", module, pkg, profile.Path, err)
+			}
+			if owner, ok := blockOwners[block.file]; ok && owner != key {
+				return GlobalReport{}, fmt.Errorf("profile block %s is assigned to multiple declared packages (%s:%s and %s:%s)", block.file, owner.module, owner.packagePath, module, pkg)
+			}
+			blockOwners[block.file] = key
 			if previous, ok := union[block.key]; ok {
 				if block.count > previous.count {
 					previous.count = block.count
@@ -419,10 +485,19 @@ func ReportGlobal(profiles []GlobalProfile, exclusions []Exclusion, minimum floa
 	return report, nil
 }
 
-// ReadGlobalFloors reads a module->percentage ratchet. It intentionally shares
+// globalFloor stores an exact coverage fraction. Existing floor files use
+// decimal percentages, while newly raised floors are serialized as exact
+// covered/total ratios so an identical replay cannot regress due to rounding.
+type globalFloor struct {
+	ratio      *big.Rat
+	serialized string
+}
+
+// ReadGlobalFloors reads a module ratchet. Existing decimal percentages remain
+// valid; a slash denotes an exact covered/total ratio. It intentionally shares
 // no state with the older per-target focus floors.
-func ReadGlobalFloors(r io.Reader) (map[string]float64, error) {
-	floors := map[string]float64{}
+func ReadGlobalFloors(r io.Reader) (map[string]globalFloor, error) {
+	floors := map[string]globalFloor{}
 	sc := bufio.NewScanner(r)
 	lineNo := 0
 	for sc.Scan() {
@@ -433,7 +508,7 @@ func ReadGlobalFloors(r io.Reader) (map[string]float64, error) {
 		}
 		fields := strings.Fields(line)
 		if len(fields) != 2 {
-			return nil, fmt.Errorf("global floors line %d: want \"module percent\", got %q", lineNo, line)
+			return nil, fmt.Errorf("global floors line %d: want \"module percent-or-ratio\", got %q", lineNo, line)
 		}
 		module, err := cleanGlobalModule(fields[0])
 		if err != nil {
@@ -442,9 +517,9 @@ func ReadGlobalFloors(r io.Reader) (map[string]float64, error) {
 		if _, exists := floors[module]; exists {
 			return nil, fmt.Errorf("global floors line %d: duplicate floor for %s", lineNo, module)
 		}
-		floor, err := strconv.ParseFloat(fields[1], 64)
-		if err != nil || math.IsNaN(floor) || math.IsInf(floor, 0) || floor < 0 || floor > 100 {
-			return nil, fmt.Errorf("global floors line %d: invalid percentage %q", lineNo, fields[1])
+		floor, err := parseGlobalFloor(fields[1])
+		if err != nil {
+			return nil, fmt.Errorf("global floors line %d: %w", lineNo, err)
 		}
 		floors[module] = floor
 	}
@@ -454,10 +529,54 @@ func ReadGlobalFloors(r io.Reader) (map[string]float64, error) {
 	return floors, nil
 }
 
-func readGlobalFloorsFile(filename string) (map[string]float64, error) {
+func parseGlobalFloor(value string) (globalFloor, error) {
+	value = strings.TrimSpace(value)
+	ratio, ok := new(big.Rat).SetString(value)
+	if !ok {
+		return globalFloor{}, fmt.Errorf("invalid floor %q", value)
+	}
+	if strings.Contains(value, "/") {
+		if ratio.Sign() < 0 || ratio.Cmp(big.NewRat(1, 1)) > 0 {
+			return globalFloor{}, fmt.Errorf("ratio %q must be in [0, 1]", value)
+		}
+		return globalFloor{ratio: ratio, serialized: ratio.RatString()}, nil
+	}
+	if ratio.Sign() < 0 || ratio.Cmp(big.NewRat(100, 1)) > 0 {
+		return globalFloor{}, fmt.Errorf("percentage %q must be in [0, 100]", value)
+	}
+	return globalFloor{
+		ratio:      new(big.Rat).Quo(ratio, big.NewRat(100, 1)),
+		serialized: value,
+	}, nil
+}
+
+func globalFloorFromCoverage(covered, total int) globalFloor {
+	ratio := new(big.Rat).SetFrac(big.NewInt(int64(covered)), big.NewInt(int64(total)))
+	return globalFloor{ratio: ratio, serialized: ratio.RatString()}
+}
+
+func globalFloorPercent(floor globalFloor) float64 {
+	if floor.ratio == nil {
+		return 0
+	}
+	percent, _ := new(big.Rat).Mul(floor.ratio, big.NewRat(100, 1)).Float64()
+	return percent
+}
+
+func globalFloorText(floor globalFloor) string {
+	if floor.serialized != "" {
+		return floor.serialized
+	}
+	if floor.ratio == nil {
+		return "0"
+	}
+	return floor.ratio.RatString()
+}
+
+func readGlobalFloorsFile(filename string) (map[string]globalFloor, error) {
 	f, err := os.Open(filename)
 	if os.IsNotExist(err) {
-		return map[string]float64{}, nil
+		return map[string]globalFloor{}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -468,8 +587,8 @@ func readGlobalFloorsFile(filename string) (map[string]float64, error) {
 
 // RaiseGlobalFloors returns a copy of old with only passing modules raised to
 // their measured ratio. A failed raw threshold can never create or lower a floor.
-func RaiseGlobalFloors(old map[string]float64, report GlobalReport) map[string]float64 {
-	raised := make(map[string]float64, len(old)+len(report.Modules))
+func RaiseGlobalFloors(old map[string]globalFloor, report GlobalReport) map[string]globalFloor {
+	raised := make(map[string]globalFloor, len(old)+len(report.Modules))
 	for module, floor := range old {
 		raised[module] = floor
 	}
@@ -477,26 +596,28 @@ func RaiseGlobalFloors(old map[string]float64, report GlobalReport) map[string]f
 		if !module.Pass || module.Total == 0 {
 			continue
 		}
-		current := globalPercent(module.Covered, module.Total)
-		if current > raised[module.Module] {
+		current := globalFloorFromCoverage(module.Covered, module.Total)
+		existing, ok := raised[module.Module]
+		if !ok || existing.ratio == nil || current.ratio.Cmp(existing.ratio) > 0 {
 			raised[module.Module] = current
 		}
 	}
 	return raised
 }
 
-func writeGlobalFloorsFile(filename string, floors map[string]float64) error {
+func writeGlobalFloorsFile(filename string, floors map[string]globalFloor) error {
 	modules := make([]string, 0, len(floors))
 	for module := range floors {
 		modules = append(modules, module)
 	}
 	sort.Strings(modules)
 	var out strings.Builder
-	out.WriteString("# Global fuzz-reachable coverage floors (whole-module statement %).\n")
+	out.WriteString("# Global fuzz-reachable coverage floors (whole-module statement coverage).\n")
 	out.WriteString("# Managed by serf-fuzzcov global mode. Floors rise only after raw coverage is strictly above 95.0%.\n")
+	out.WriteString("# Legacy decimal percentages are accepted; blessed floors use exact covered/total ratios.\n")
 	out.WriteString("# A blessing never lowers an existing floor.\n")
 	for _, module := range modules {
-		fmt.Fprintf(&out, "%s %s\n", module, strconv.FormatFloat(floors[module], 'f', -1, 64))
+		fmt.Fprintf(&out, "%s %s\n", module, globalFloorText(floors[module]))
 	}
 	return os.WriteFile(filename, []byte(out.String()), 0o644)
 }
@@ -563,6 +684,10 @@ func runGlobalMode(options globalModeOptions, stdout, stderr io.Writer) (int, er
 	if err != nil {
 		return 0, fmt.Errorf("read global profile manifest: %w", err)
 	}
+	profiles, err = ResolveGlobalProfiles(options.repoRoot, profiles)
+	if err != nil {
+		return 0, fmt.Errorf("resolve global profile ownership: %w", err)
+	}
 	exclusions, err := readGlobalExclusionsFile(options.repoRoot, options.exclusionsPath)
 	if err != nil {
 		return 0, fmt.Errorf("read global exclusions: %w", err)
@@ -595,7 +720,7 @@ func runGlobalMode(options globalModeOptions, stdout, stderr io.Writer) (int, er
 			if !ok || globalMeetsFloor(module.Covered, module.Total, floor) {
 				continue
 			}
-			fmt.Fprintf(stderr, "serf-fuzzcov: REGRESSION %s: raw %.4f%% < floor %.4f%%\n", module.Module, module.Percent, floor)
+			fmt.Fprintf(stderr, "serf-fuzzcov: REGRESSION %s: raw %.4f%% < floor %.4f%%\n", module.Module, module.Percent, globalFloorPercent(floor))
 			code = 1
 		}
 	}
@@ -845,6 +970,17 @@ func findExclusionProfileFile(exclusion Exclusion, union map[string]globalBlock)
 	return exclusion.ProfileFile, nil
 }
 
+func validateGlobalBlockOwnership(block globalBlock, modulePath, pkg string) error {
+	expectedDir := joinImport(modulePath, pkgSubdir(pkg))
+	if path.Dir(block.file) != expectedDir {
+		return fmt.Errorf("profile block %s does not belong to declared module/package import directory %s", block.file, expectedDir)
+	}
+	if name := path.Base(block.file); name == "." || name == "/" || name == "" {
+		return fmt.Errorf("profile block %s has no source filename", block.file)
+	}
+	return nil
+}
+
 func cleanGlobalModule(module string) (string, error) {
 	if module == "" {
 		return "", fmt.Errorf("module is empty")
@@ -858,6 +994,21 @@ func cleanGlobalModule(module string) (string, error) {
 	clean := filepath.ToSlash(filepath.Clean(module))
 	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
 		return "", fmt.Errorf("module path %q must stay below the repository root", module)
+	}
+	return clean, nil
+}
+
+func cleanGlobalModulePath(modulePath string) (string, error) {
+	modulePath = strings.TrimSpace(modulePath)
+	if modulePath == "" {
+		return "", fmt.Errorf("module path is empty")
+	}
+	if strings.Contains(modulePath, `\`) || strings.HasPrefix(modulePath, "/") {
+		return "", fmt.Errorf("invalid module path %q", modulePath)
+	}
+	clean := path.Clean(modulePath)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || clean != modulePath {
+		return "", fmt.Errorf("invalid module path %q", modulePath)
 	}
 	return clean, nil
 }
@@ -927,17 +1078,12 @@ func globalStrictlyExceeds(covered, total int, minimum float64) bool {
 	return left.Cmp(right) > 0
 }
 
-func globalMeetsFloor(covered, total int, floor float64) bool {
-	if total <= 0 {
+func globalMeetsFloor(covered, total int, floor globalFloor) bool {
+	if total <= 0 || floor.ratio == nil {
 		return false
 	}
-	floorRat, ok := new(big.Rat).SetString(strconv.FormatFloat(floor, 'f', -1, 64))
-	if !ok {
-		return false
-	}
-	left := new(big.Int).Mul(big.NewInt(int64(covered)), big.NewInt(100))
-	left.Mul(left, floorRat.Denom())
-	right := new(big.Int).Mul(big.NewInt(int64(total)), floorRat.Num())
+	left := new(big.Int).Mul(big.NewInt(int64(covered)), floor.ratio.Denom())
+	right := new(big.Int).Mul(big.NewInt(int64(total)), floor.ratio.Num())
 	return left.Cmp(right) >= 0
 }
 

@@ -50,9 +50,9 @@ func TestReportGlobalUnionsExactPackageBlocks(t *testing.T) {
 		"example.com/root/agent/sandbox/policy.go:1.1,2.2 4 1\n")
 
 	report, err := ReportGlobal([]GlobalProfile{
-		{Module: "agent", Package: "./sandbox", Path: agent},
-		{Module: ".", Package: ".", Path: rootA},
-		{Module: ".", Package: ".", Path: rootB},
+		resolvedGlobalProfile("agent", "example.com/root/agent", "./sandbox", agent),
+		resolvedGlobalProfile(".", "example.com/root", ".", rootA),
+		resolvedGlobalProfile(".", "example.com/root", ".", rootB),
 	}, nil, 95)
 	if err != nil {
 		t.Fatalf("ReportGlobal: %v", err)
@@ -76,7 +76,7 @@ func TestReportGlobalRequiresStrictRawThreshold(t *testing.T) {
 	exact := writeGlobalProfile(t, dir, "exact.cov", "mode: set\n"+
 		"example.com/m/p.go:1.1,1.2 95 1\n"+
 		"example.com/m/p.go:2.1,2.2 5 0\n")
-	report, err := ReportGlobal([]GlobalProfile{{Module: ".", Package: ".", Path: exact}}, nil, 95)
+	report, err := ReportGlobal([]GlobalProfile{resolvedGlobalProfile(".", "example.com/m", ".", exact)}, nil, 95)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestReportGlobalRequiresStrictRawThreshold(t *testing.T) {
 	above := writeGlobalProfile(t, dir, "above.cov", "mode: set\n"+
 		"example.com/m/p.go:1.1,1.2 950001 1\n"+
 		"example.com/m/p.go:2.1,2.2 49999 0\n")
-	report, err = ReportGlobal([]GlobalProfile{{Module: ".", Package: ".", Path: above}}, nil, 95)
+	report, err = ReportGlobal([]GlobalProfile{resolvedGlobalProfile(".", "example.com/m", ".", above)}, nil, 95)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,29 +100,109 @@ func TestReportGlobalRequiresStrictRawThreshold(t *testing.T) {
 }
 
 func TestGlobalFloorsNeverLowerAndNeverBlessFailure(t *testing.T) {
-	old := map[string]float64{".": 96, "agent": 54.2}
+	old := map[string]globalFloor{".": mustGlobalFloor(t, "96"), "agent": mustGlobalFloor(t, "54.2")}
 	report := GlobalReport{Modules: []ModuleReport{
 		{Module: ".", Covered: 955, Total: 1000, Pass: true},
 		{Module: "agent", Covered: 950, Total: 1000, Pass: false},
 	}}
 	got := RaiseGlobalFloors(old, report)
-	want := map[string]float64{".": 96, "agent": 54.2}
+	want := map[string]globalFloor{".": mustGlobalFloor(t, "96"), "agent": mustGlobalFloor(t, "54.2")}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("RaiseGlobalFloors = %v, want %v", got, want)
 	}
 
 	report.Modules[0] = ModuleReport{Module: ".", Covered: 970, Total: 1000, Pass: true}
 	got = RaiseGlobalFloors(old, report)
-	if got["."] != 97 {
+	if got["."].ratio.Cmp(mustGlobalFloor(t, "97").ratio) != 0 {
 		t.Fatalf("raised root floor = %v, want 97", got["."])
 	}
-	if got["agent"] != 54.2 {
+	if got["agent"].ratio.Cmp(mustGlobalFloor(t, "54.2").ratio) != 0 {
 		t.Fatalf("failed module floor = %v, want preserved 54.2", got["agent"])
+	}
+}
+
+func TestGlobalBlessRoundTripDoesNotRegressExactRatio(t *testing.T) {
+	repo := t.TempDir()
+	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.com/m\n\ngo 1.25\n")
+	profile := writeGlobalProfile(t, repo, "pass.cov", "mode: set\n"+
+		"example.com/m/p.go:1.1,1.2 96 1\n"+
+		"example.com/m/p.go:2.1,2.2 5 0\n")
+	manifest := filepath.Join(repo, "profiles.tsv")
+	mustWrite(t, manifest, ".\t.\t"+profile+"\n")
+	exclusions := filepath.Join(repo, "exclusions.tsv")
+	mustWrite(t, exclusions, "# intentionally empty\n")
+	floors := filepath.Join(repo, "floors.txt")
+
+	var stdout, stderr bytes.Buffer
+	options := globalModeOptions{
+		manifestPath: manifest, exclusionsPath: exclusions, floorsPath: floors, repoRoot: repo,
+		minimum: 95,
+	}
+	options.bless = true
+	code, err := runGlobalMode(options, &stdout, &stderr)
+	if err != nil || code != 0 {
+		t.Fatalf("initial bless = code %d, err %v, stdout %q, stderr %q", code, err, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	options.bless = false
+	options.check = true
+	code, err = runGlobalMode(options, &stdout, &stderr)
+	if err != nil || code != 0 {
+		t.Fatalf("identical recheck regressed exact 96/101 coverage: code %d, err %v, stdout %q, stderr %q", code, err, stdout.String(), stderr.String())
+	}
+}
+
+func TestReportGlobalRejectsBlocksOutsideResolvedProfileOwnership(t *testing.T) {
+	repo := t.TempDir()
+	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.com/root\n\ngo 1.25\n")
+	mustWrite(t, filepath.Join(repo, "agent", "go.mod"), "module example.com/root/agent\n\ngo 1.25\n")
+
+	wrongModule := writeGlobalProfile(t, repo, "wrong-module.cov", "mode: set\n"+
+		"example.com/root/root.go:1.1,1.2 1 1\n")
+	if _, err := ReportGlobal([]GlobalProfile{{
+		Module: "agent", Package: "./sandbox", Path: wrongModule,
+	}}, nil, 95); err == nil || !strings.Contains(err.Error(), "unresolved module ownership") {
+		t.Fatalf("unresolved profile error = %v, want ownership resolution rejection", err)
+	}
+	profiles, err := ResolveGlobalProfiles(repo, []GlobalProfile{{
+		Module: "agent", Package: "./sandbox", Path: wrongModule,
+	}})
+	if err != nil {
+		t.Fatalf("ResolveGlobalProfiles: %v", err)
+	}
+	if _, err := ReportGlobal(profiles, nil, 95); err == nil || !strings.Contains(err.Error(), "does not belong") {
+		t.Fatalf("wrong-module block error = %v, want ownership rejection", err)
+	}
+
+	wrongPackage := writeGlobalProfile(t, repo, "wrong-package.cov", "mode: set\n"+
+		"example.com/root/agent/other.go:1.1,1.2 1 1\n")
+	profiles, err = ResolveGlobalProfiles(repo, []GlobalProfile{{
+		Module: "agent", Package: "./sandbox", Path: wrongPackage,
+	}})
+	if err != nil {
+		t.Fatalf("ResolveGlobalProfiles: %v", err)
+	}
+	if _, err := ReportGlobal(profiles, nil, 95); err == nil || !strings.Contains(err.Error(), "does not belong") {
+		t.Fatalf("wrong-package block error = %v, want ownership rejection", err)
+	}
+
+	sharedA := writeGlobalProfile(t, repo, "shared-a.cov", "mode: set\n"+
+		"example.com/root/agent/sandbox/policy.go:1.1,1.2 1 1\n")
+	sharedB := writeGlobalProfile(t, repo, "shared-b.cov", "mode: set\n"+
+		"example.com/root/agent/sandbox/policy.go:1.1,1.2 1 1\n")
+	if _, err := ReportGlobal([]GlobalProfile{
+		{Module: "agent", ModulePath: "example.com/root/agent", Package: "./sandbox", Path: sharedA},
+		{Module: "agent-sandbox", ModulePath: "example.com/root/agent/sandbox", Package: ".", Path: sharedB},
+	}, nil, 95); err == nil || !strings.Contains(err.Error(), "assigned to multiple") {
+		t.Fatalf("duplicate source ownership error = %v, want duplicate ownership rejection", err)
 	}
 }
 
 func TestGlobalBlessDoesNotWaiveOrLowerAFloor(t *testing.T) {
 	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "go.mod"), "module example.com/m\n\ngo 1.25\n")
 	profile := writeGlobalProfile(t, dir, "pass.cov", "mode: set\n"+
 		"example.com/m/p.go:1.1,1.2 96 1\n"+
 		"example.com/m/p.go:2.1,2.2 4 0\n")
@@ -153,13 +233,14 @@ func TestGlobalBlessDoesNotWaiveOrLowerAFloor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got["."] != 97 {
+	if got["."].ratio.Cmp(mustGlobalFloor(t, "97").ratio) != 0 {
 		t.Fatalf("bless lowered floor to %v, want 97", got["."])
 	}
 }
 
 func TestGlobalJSONRemainsValidWhenBlessing(t *testing.T) {
 	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "go.mod"), "module example.com/m\n\ngo 1.25\n")
 	profile := writeGlobalProfile(t, dir, "pass.cov", "mode: set\n"+
 		"example.com/m/p.go:1.1,1.2 96 1\n"+
 		"example.com/m/p.go:2.1,2.2 4 0\n")
@@ -191,7 +272,7 @@ func TestGeneratedExclusionRequiresHeaderAndRemovesProfileBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadGlobalExclusions: %v", err)
 	}
-	report, err := ReportGlobal([]GlobalProfile{{Module: "m", Package: "./pkg", Path: profile}}, exclusions, 95)
+	report, err := ReportGlobal([]GlobalProfile{resolvedGlobalProfile("m", "example.com/m", "./pkg", profile)}, exclusions, 95)
 	if err != nil {
 		t.Fatalf("ReportGlobal: %v", err)
 	}
@@ -208,7 +289,7 @@ func TestGeneratedExclusionRequiresHeaderAndRemovesProfileBlocks(t *testing.T) {
 	}
 
 	ordinarySource := filepath.Join(ordinaryRepo, "m", "pkg", "ordinary.go")
-	if _, err := ReportGlobal([]GlobalProfile{{Module: "m", Package: "./pkg", Path: profile}}, []Exclusion{{
+	if _, err := ReportGlobal([]GlobalProfile{resolvedGlobalProfile("m", "example.com/m", "./pkg", profile)}, []Exclusion{{
 		Module: "m", Package: "./pkg", File: "ordinary.go", Kind: "generated", Reason: "forged direct exclusion",
 		SourcePath: ordinarySource, ProfileFile: "example.com/m/pkg/ordinary.go",
 	}}, 95); err == nil {
@@ -223,7 +304,7 @@ func TestPlatformExclusionMustBeUnavailableAndExclusionsRejectInvalidRows(t *tes
 	if err != nil {
 		t.Fatalf("unavailable platform source must be accepted: %v", err)
 	}
-	if _, err := ReportGlobal([]GlobalProfile{{Module: "m", Package: "./pkg", Path: profile}}, exclusions, 95); err != nil {
+	if _, err := ReportGlobal([]GlobalProfile{resolvedGlobalProfile("m", "example.com/m", "./pkg", profile)}, exclusions, 95); err != nil {
 		t.Fatalf("platform exclusion should apply to its profile block: %v", err)
 	}
 
@@ -248,7 +329,7 @@ func TestPlatformExclusionMustBeUnavailableAndExclusionsRejectInvalidRows(t *tes
 		t.Fatal(err)
 	}
 	wrongProfile := writeGlobalProfile(t, t.TempDir(), "wrong.cov", "mode: set\nexample.com/m/pkg/other.go:1.1,1.2 1 1\n")
-	if _, err := ReportGlobal([]GlobalProfile{{Module: "m", Package: "./pkg", Path: wrongProfile}}, generated, 95); err == nil {
+	if _, err := ReportGlobal([]GlobalProfile{resolvedGlobalProfile("m", "example.com/m", "./pkg", wrongProfile)}, generated, 95); err == nil {
 		t.Fatal("exclusion that removes zero profile blocks must fail")
 	}
 }
@@ -259,7 +340,7 @@ func TestGlobalReportPrintsAppliedExclusionsInTextAndJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	report, err := ReportGlobal([]GlobalProfile{{Module: "m", Package: "./pkg", Path: profile}}, exclusions, 95)
+	report, err := ReportGlobal([]GlobalProfile{resolvedGlobalProfile("m", "example.com/m", "./pkg", profile)}, exclusions, 95)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,6 +372,19 @@ func writeGlobalProfile(t *testing.T, dir, name, content string) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+func resolvedGlobalProfile(module, modulePath, pkg, profilePath string) GlobalProfile {
+	return GlobalProfile{Module: module, ModulePath: modulePath, Package: pkg, Path: profilePath}
+}
+
+func mustGlobalFloor(t *testing.T, value string) globalFloor {
+	t.Helper()
+	floor, err := parseGlobalFloor(value)
+	if err != nil {
+		t.Fatalf("parseGlobalFloor(%q): %v", value, err)
+	}
+	return floor
 }
 
 func globalExclusionFixture(t *testing.T, filename, source string) (string, string) {
