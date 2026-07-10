@@ -202,7 +202,8 @@ func ResolveGlobalProfiles(repoRoot string, profiles []GlobalProfile) ([]GlobalP
 //	module<TAB>package-relative-path<TAB>file<TAB>generated|platform<TAB>reason
 //
 // Generated entries require the standard Code generated header. Platform entries
-// require a production .go file which the active Go build context cannot select.
+// require a production .go file which the coverage replay build context cannot
+// select.
 func ReadGlobalExclusions(repoRoot string, r io.Reader) ([]Exclusion, error) {
 	root, err := filepath.Abs(repoRoot)
 	if err != nil {
@@ -905,17 +906,28 @@ func validateResolvedExclusion(exclusion Exclusion) error {
 			return fmt.Errorf("source file %s is not generated (missing Code generated header)", exclusion.SourcePath)
 		}
 	case "platform":
-		matched, err := build.Default.MatchFile(filepath.Dir(exclusion.SourcePath), exclusion.File)
+		coverageBuild := globalCoverageBuildContext()
+		matched, err := coverageBuild.MatchFile(filepath.Dir(exclusion.SourcePath), exclusion.File)
 		if err != nil {
 			return fmt.Errorf("evaluate platform constraints for %s: %w", exclusion.SourcePath, err)
 		}
 		if matched {
-			return fmt.Errorf("source file %s is available on %s/%s; platform exclusions require an unavailable build-constrained file", exclusion.SourcePath, build.Default.GOOS, build.Default.GOARCH)
+			return fmt.Errorf("source file %s is available on %s/%s with serffuzz; platform exclusions require an unavailable build-constrained file", exclusion.SourcePath, coverageBuild.GOOS, coverageBuild.GOARCH)
 		}
 	default:
 		return fmt.Errorf("kind %q must be generated or platform", exclusion.Kind)
 	}
 	return nil
+}
+
+// globalCoverageBuildContext matches the build settings used by the deterministic
+// coverage replay. Platform exclusions are valid only for production files that
+// replay cannot compile.
+func globalCoverageBuildContext() build.Context {
+	ctx := build.Default
+	ctx.BuildTags = append([]string(nil), ctx.BuildTags...)
+	ctx.BuildTags = append(ctx.BuildTags, "serffuzz")
+	return ctx
 }
 
 // sourceModuleAndPackage derives a source file's module import path and package

@@ -319,6 +319,12 @@ func TestPlatformExclusionMustBeUnavailableAndExclusionsRejectInvalidRows(t *tes
 		t.Fatal("available platform source must not be excluded")
 	}
 
+	serfFuzzSource := "//go:build serffuzz\n\npackage pkg\n\nfunc ReplayOnly() {}\n"
+	serfFuzzRepo, _ := globalExclusionFixture(t, "serffuzz.go", serfFuzzSource)
+	if _, err := ReadGlobalExclusions(serfFuzzRepo, strings.NewReader("m\t./pkg\tserffuzz.go\tplatform\tcompiled by coverage replay\n")); err == nil {
+		t.Fatal("source compiled by serffuzz coverage replay must not be excluded as platform")
+	}
+
 	if _, err := ReadGlobalExclusions(repo, strings.NewReader(
 		"m\t./pkg\tplatform.go\tplatform\tfirst\n"+
 			"m\t./pkg\tplatform.go\tplatform\tduplicate\n")); err == nil {
