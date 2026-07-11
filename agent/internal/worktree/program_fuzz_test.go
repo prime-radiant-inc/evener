@@ -3,6 +3,7 @@
 package worktree
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -319,6 +320,7 @@ func FuzzSidecarLifecycleProgram(f *testing.F) {
 			WorktreeRemoved: removed,
 			CreatedAt:       createdAt,
 		}
+		want := worktreeProgramJSONSidecar(t, sc)
 		if err := WriteSidecarExcl(dir, sc.Name, sc); err != nil {
 			t.Fatalf("WriteSidecarExcl: %v", err)
 		}
@@ -326,9 +328,11 @@ func FuzzSidecarLifecycleProgram(f *testing.F) {
 			t.Fatalf("second WriteSidecarExcl = %v, want os.IsExist", err)
 		}
 		got, err := ReadSidecar(dir, sc.Name)
-		if err != nil || got != sc {
-			t.Fatalf("ReadSidecar = %#v, %v; want %#v", got, err, sc)
+		if err != nil || got != want {
+			t.Fatalf("ReadSidecar = %#v, %v; want %#v", got, err, want)
 		}
+		want.WorktreeRemoved = true
+		want.TipSHAAtRemoval = "removed-tip"
 		if err := UpdateSidecar(dir, sc.Name, func(updated *Sidecar) {
 			updated.WorktreeRemoved = true
 			updated.TipSHAAtRemoval = "removed-tip"
@@ -336,8 +340,8 @@ func FuzzSidecarLifecycleProgram(f *testing.F) {
 			t.Fatalf("UpdateSidecar: %v", err)
 		}
 		updated, err := ReadSidecar(dir, sc.Name)
-		if err != nil || !updated.WorktreeRemoved || updated.TipSHAAtRemoval != "removed-tip" || updated.BaseSHA != base {
-			t.Fatalf("updated sidecar = %#v, %v", updated, err)
+		if err != nil || updated != want {
+			t.Fatalf("updated sidecar = %#v, %v; want %#v", updated, err, want)
 		}
 
 		if err := os.WriteFile(filepath.Join(dir, "note.txt"), []byte("noise"), 0o644); err != nil {
@@ -375,6 +379,23 @@ func FuzzSidecarLifecycleProgram(f *testing.F) {
 			t.Fatalf("SidecarAge missing = %v, want os.IsNotExist", err)
 		}
 	})
+}
+
+// worktreeProgramJSONSidecar returns the logical Sidecar value persisted by
+// encoding/json. Go strings may contain invalid UTF-8, which JSON replaces with
+// U+FFFD during encoding; the lifecycle fuzzer intentionally keeps those byte
+// strings in scope and compares against this canonical persisted value.
+func worktreeProgramJSONSidecar(t *testing.T, sc Sidecar) Sidecar {
+	t.Helper()
+	raw, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatalf("marshal expected sidecar: %v", err)
+	}
+	var want Sidecar
+	if err := json.Unmarshal(raw, &want); err != nil {
+		t.Fatalf("unmarshal expected sidecar: %v", err)
+	}
+	return want
 }
 
 func assertWorktreeDecisionAndVersionPrograms(t *testing.T, target string) {
