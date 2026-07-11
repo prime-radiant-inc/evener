@@ -16,6 +16,7 @@ FuzzCheckpointExtract 88.8
 FuzzCmdutilParsers 100.0
 FuzzCodexItemDecode 1.0
 FuzzColorParsing 100.0
+FuzzExpandTemplateProgram 100.0
 FuzzCountInputTokensResponse 84.6
 FuzzCredentialsStoreDecode 76.5
 FuzzDiagnosticClassificationProgram 100.0
@@ -33,6 +34,7 @@ FuzzHubReplayCarryThrough 78.1
 FuzzHubReplayLiveVsReload 78.1
 FuzzHubReplayLiveVsReloadStructured 78.1
 FuzzJobEventLogReplay 95.2
+FuzzJobstoreLifecycleProgram 95.4
 FuzzLLMCallParsers 100.0
 FuzzLaunchConfigDecode 1.5
 FuzzLifecycleSeq 21.2
@@ -80,6 +82,7 @@ FuzzSessionMetaRoundTrip 79.2
 FuzzSummarizeTool 78.0
 FuzzSkillDiscoveryProgram 99.0
 FuzzTaskStoreLoad 88.2
+FuzzTaskStoreFaultProgram 95.9
 FuzzTokenEndpointResponse 82.9
 FuzzToolArgsValidate 82.6
 FuzzToolArgumentsString 100.0
