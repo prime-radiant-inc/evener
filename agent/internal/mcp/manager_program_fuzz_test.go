@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -20,6 +21,7 @@ import (
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/mcpconfig"
+	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/llm"
 )
 
@@ -362,7 +364,7 @@ func mcpProgramConstructionCases(t *testing.T) {
 		t.Fatalf("unsandboxed production transport = %#v", plain)
 	}
 
-	wrapped := testWrapper(t)
+	wrapped := mcpProgramSandboxWrapper(t, true)
 	var options managerOptions
 	WithSandboxWrapper(wrapped)(&options)
 	if options.wrapper != wrapped {
@@ -384,7 +386,7 @@ func mcpProgramConstructionCases(t *testing.T) {
 		t.Fatalf("confined command = %#v", confined)
 	}
 
-	netOff := testWrapperNetOff(t)
+	netOff := mcpProgramSandboxWrapper(t, false)
 	for _, typ := range []string{"sse", "http"} {
 		if _, err := productionDial(mcpconfig.ServerConfig{Name: "remote", Type: typ, URL: "https://invalid.example/mcp"}, netOff)(ctx); err == nil || !strings.Contains(err.Error(), "network egress is disabled") {
 			t.Fatalf("net-off %s dial error = %v", typ, err)
@@ -572,6 +574,39 @@ func mcpProgramEnvValue(env []string, key string) string {
 		}
 	}
 	return ""
+}
+
+// mcpProgramSandboxWrapper resolves an enforcing policy over a bare temp
+// directory. Unlike the general sandbox test fixture, it never materializes a
+// Git repository or looks up a host tool: HostFacts are entirely injected and
+// Resolve classifies this root as NonGit. The fuzzer only inspects the wrapped
+// command; it never executes the configured bwrap path.
+func mcpProgramSandboxWrapper(t *testing.T, network bool) *sandbox.Wrapper {
+	t.Helper()
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	policy, err := sandbox.Resolve(
+		sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, Network: &network},
+		sandbox.HostFacts{
+			OS:               "linux",
+			Home:             home,
+			BwrapPath:        "/usr/bin/bwrap",
+			BwrapCapable:     true,
+			OverlaySupported: false,
+		},
+		root,
+	)
+	if err != nil {
+		t.Fatalf("resolve no-Git sandbox policy: %v", err)
+	}
+	if policy.Git.Kind != sandbox.NonGit || policy.Git.WorktreeRoot != root {
+		t.Fatalf("sandbox fixture layout = %+v, want NonGit root %q", policy.Git, root)
+	}
+	wrapper, err := sandbox.NewWrapper(policy, "/usr/bin/bwrap", filepath.Join(root, "session-tmp"))
+	if err != nil {
+		t.Fatalf("new no-Git sandbox wrapper: %v", err)
+	}
+	return wrapper
 }
 
 func mcpProgramConnSummary(c *conn) string {
