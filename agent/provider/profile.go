@@ -647,11 +647,13 @@ func (p *Profile) WithModel(model string) *Profile {
 	// rather than shallow-cloning, so a model switch can't leave a stale
 	// max-capable effort set or task_list enum on a model capped at high.
 	if p.behaviorTag == "anthropic" {
-		// Strip the redundant "anthropic/" self-prefix; cross-provider refs are
-		// the Session resolver's job, so leave them unchanged here.
+		// Strip the redundant instance self-prefix. Config-backed Anthropic
+		// profiles may be renamed, so this must use p.id rather than only the
+		// built-in "anthropic" name. Cross-provider refs remain for the Session
+		// resolver.
 		if parts := strings.SplitN(model, "/", 2); len(parts) == 2 {
 			provider := strings.ToLower(parts[0])
-			if provider == "anthropic" {
+			if decidePrefixAction(p.behaviorTag, p.id, provider) == prefixActionStrip {
 				model = parts[1]
 			}
 		}

@@ -58,6 +58,18 @@ func TestAnthropicProfile_WithModelRebuildsToolSchemas(t *testing.T) {
 	}
 }
 
+func TestAnthropicProfile_WithModelStripsRenamedInstancePrefix(t *testing.T) {
+	p := WithProviderID(newAnthropicProfile("claude-opus-4-6"), "work")
+	if p.CrossProviderRef("work/claude-opus-4-5-20251101") {
+		t.Fatal("renamed instance prefix classified as cross-provider")
+	}
+
+	q := p.WithModel("work/claude-opus-4-5-20251101")
+	if got := q.Model(); got != "claude-opus-4-5-20251101" {
+		t.Fatalf("WithModel renamed instance prefix = %q, want claude-opus-4-5-20251101", got)
+	}
+}
+
 // A qualified, dated, "[1m]" openrouter-anthropic ref must report the 1M context
 // window — the GetModelInfo-based resolver can't see the suffix.
 func TestOpenRouterAnthropicProfile_OneMillionContext(t *testing.T) {

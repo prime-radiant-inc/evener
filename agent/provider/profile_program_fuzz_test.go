@@ -3,6 +3,7 @@
 package provider
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -148,6 +149,8 @@ func assertProviderProfileDecorators(t *testing.T, profile *Profile, next string
 	}
 	baseWindow := profile.ContextWindowSize()
 	baseWebSearch := profile.SupportsWebSearch()
+	baseEfforts := profile.ReasoningEffortLevels()
+	baseTaskListEfforts := providerProgramTaskListEfforts(profile.ToolDefinitions())
 	resized := WithContextWindow(profile, window)
 	if resized.ContextWindowSize() != window || profile.ContextWindowSize() != baseWindow {
 		t.Fatalf("WithContextWindow = %d (base %d)", resized.ContextWindowSize(), profile.ContextWindowSize())
@@ -162,7 +165,14 @@ func assertProviderProfileDecorators(t *testing.T, profile *Profile, next string
 	if live == profile || live.ContextWindowSize() != window || live.SupportsWebSearch() != webSearch {
 		t.Fatalf("WithLiveModelInfo = %#v", live)
 	}
-	if profile.ContextWindowSize() != baseWindow || profile.SupportsWebSearch() != baseWebSearch {
+	wantLiveEfforts := []string{"low", "high"}
+	if got := live.ReasoningEffortLevels(); !reflect.DeepEqual(got, wantLiveEfforts) {
+		t.Fatalf("WithLiveModelInfo effort levels = %v, want %v", got, wantLiveEfforts)
+	}
+	if got := providerProgramTaskListEfforts(live.ToolDefinitions()); !reflect.DeepEqual(got, wantLiveEfforts) {
+		t.Fatalf("WithLiveModelInfo task_list effort enum = %v, want %v", got, wantLiveEfforts)
+	}
+	if profile.ContextWindowSize() != baseWindow || profile.SupportsWebSearch() != baseWebSearch || !reflect.DeepEqual(profile.ReasoningEffortLevels(), baseEfforts) || !reflect.DeepEqual(providerProgramTaskListEfforts(profile.ToolDefinitions()), baseTaskListEfforts) {
 		t.Fatal("WithLiveModelInfo mutated its base profile")
 	}
 
@@ -177,9 +187,28 @@ func assertProviderProfileDecorators(t *testing.T, profile *Profile, next string
 	if changed == nil || changed.ID() != profile.ID() || changed.BehaviorTag() != profile.BehaviorTag() {
 		t.Fatalf("WithModel identity = %#v", changed)
 	}
-	if strings.TrimSpace(changed.Model()) == "" {
-		t.Fatal("WithModel produced an empty model")
+	wantModel := next
+	if profile.BehaviorTag() == "minimax" {
+		wantModel = selfRef
 	}
+	if changed.Model() != wantModel {
+		t.Fatalf("WithModel(%q) = %q, want %q", selfRef, changed.Model(), wantModel)
+	}
+}
+
+func providerProgramTaskListEfforts(defs []llm.ToolDefinition) []string {
+	for _, def := range defs {
+		if def.Name != "task_list" {
+			continue
+		}
+		properties, _ := def.Parameters["properties"].(map[string]any)
+		tasks, _ := properties["tasks"].(map[string]any)
+		items, _ := tasks["items"].(map[string]any)
+		taskProperties, _ := items["properties"].(map[string]any)
+		reasoning, _ := taskProperties["reasoning_effort"].(map[string]any)
+		return append([]string(nil), toStringSlice(reasoning["enum"])...)
+	}
+	return nil
 }
 
 func assertProviderPurePrograms(t *testing.T, next string) {
