@@ -1433,7 +1433,13 @@
       run.classList.add("coalesced");
       const first = blocks[0] && blocks[0].dataset.systemTitle || "system event";
       const more = n - 1;
-      toggle.textContent = "✦ " + n + " system events · " + first + (more > 0 ? " + " + more + " more" : "");
+      // Glyph spanned off so it hangs in the marker gutter (one text column).
+      toggle.textContent = "";
+      const glyph = document.createElement("span");
+      glyph.className = "summary-glyph";
+      glyph.textContent = "✦";
+      toggle.appendChild(glyph);
+      toggle.appendChild(document.createTextNode(n + " system events · " + first + (more > 0 ? " + " + more + " more" : "")));
     },
 
     appendSystemLine(text) {
@@ -2115,9 +2121,15 @@
       const el = document.createElement("button");
       el.type = "button";
       el.className = "think streaming open";
+      // The ✦ marker is its own span so CSS can hang it in the shared marker
+      // gutter — the summary text then starts on the transcript's one column.
+      const glyph = document.createElement("span");
+      glyph.className = "think-glyph";
+      glyph.textContent = "✦";
+      el.appendChild(glyph);
       const label = document.createElement("span");
       label.className = "think-label";
-      label.textContent = "✦ Thinking…";
+      label.textContent = "Thinking…";
       const pv = document.createElement("span");
       pv.className = "pv";
       const body = document.createElement("span");
@@ -2163,7 +2175,7 @@
       const secs = Math.max(1, Math.round((Date.now() - (this.reasoningStartedAt || Date.now())) / 1000));
       el.classList.add("think-tier-" + reasoningTier(secs));
       const label = el.querySelector(".think-label");
-      if (label) label.innerHTML = "✦ Thought for <span class=\"num\">" + secs + "s</span>";
+      if (label) label.innerHTML = "Thought for <span class=\"num\">" + secs + "s</span>";
       const pv = el.querySelector(".pv");
       const gist = reasoningGist(this.reasoningBuf);
       if (pv) pv.textContent = gist ? "— " + gist : "";
@@ -2553,7 +2565,14 @@
         const extra = targets.length > 3 ? " + " + (targets.length - 3) + " more" : "";
         lede = calls.length + " steps" + (shown ? " · " + shown + extra : "");
       }
-      summary.textContent = "✓ " + lede;
+      // Glyph in its own span so CSS hangs it in the marker gutter and the
+      // summary text sits on the transcript's one column.
+      summary.textContent = "";
+      const glyph = document.createElement("span");
+      glyph.className = "summary-glyph";
+      glyph.textContent = "✓";
+      summary.appendChild(glyph);
+      summary.appendChild(document.createTextNode(lede));
       cluster.classList.add("done");
     },
 

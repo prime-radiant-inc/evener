@@ -1,13 +1,13 @@
 # Serf Web Hub — Design System & Style Guide
 
-Status: **draft / in progress** (2026-06-16). The canonical reference implementation is
-[`examples/01-golden-live-session.html`](examples/01-golden-live-session.html); hard cases
-are in [`examples/02-hard-cases.html`](examples/02-hard-cases.html). Open them in a browser —
-they are self-contained.
+Status: **current** (updated 2026-07-11; originally drafted 2026-06-16). Static references are
+[`examples/01-golden-live-session.html`](examples/01-golden-live-session.html) and
+[`examples/02-hard-cases.html`](examples/02-hard-cases.html) (self-contained; open in a
+browser). Note the examples still use the golden draft's token *names* (`--fs-*`, `--s1..6`,
+`--r`); the shipping names in §3 are canonical.
 
-This guide captures the *target* system. The current shipping UI
-(`cmd/serf-hub/assets/style.css`, `renderer.js`) already has a solid token foundation; the
-work is to enforce the rules below and rebuild the transcript's information design around them.
+This guide describes the SHIPPING system in `cmd/serf-hub/assets/style.css` + `renderer.js`.
+Where a rule has not landed yet it is marked as deferred (§7).
 
 ---
 
@@ -73,8 +73,17 @@ Neutral ramp: `--bg #0e0f13`, `--surface #16181d`, `--surface-2 #1c1f26`, rules 
 ### Type
 
 - **Sans (everything human):** Hanken Grotesk. **Mono (machine text only):** JetBrains Mono.
-- Scale: `--fs-xs 11` / `--fs-sm 12` / `--fs-base 13` / `--fs-md 15` (hero prose) / `--fs-lg 18`.
-- Numbers (durations, counts, relative times) are sans with `font-variant-numeric: tabular-nums`.
+- Shipping scale (M preset, px): `--text-2xs 10` / `--text-xs 11` / `--text-sm 12` /
+  `--text-base 13` / `--text-md 14` / `--text-lg 16` / `--text-xl 18` / `--text-2xl 22`.
+- **The transcript uses only four steps** (2026-07-11 typography pass): `--text-lg` assistant
+  prose (hero) · `--text-base` primary lines (tool purpose, user text, plan rows) ·
+  `--text-sm` secondary + machine text (commands, output, thinking, system asides) ·
+  `--text-xs` meta (timings, badges, demoted commands, fold heads). `--text-2xs` is reserved
+  for non-transcript chrome (sidebar counts, pickers) — never transcript text.
+- Leading: `--leading-tight 1.3` / `--leading-snug 1.5` / `--leading-normal 1.6` /
+  `--leading-relaxed 1.7`.
+- Numbers (durations, counts, clock stamps, relative times) are sans with
+  `font-variant-numeric: tabular-nums` — never mono (mono is machine text only).
 
 ### Font-size presets
 
@@ -93,12 +102,26 @@ Persisted per-browser in `localStorage` (`serf-hub.appearance.fontSize`), applie
 `body[data-font-size="…"]` attribute redefining the `--text-*` custom properties (they cascade
 to every descendant) — no per-element JS resize logic.
 
-### Spacing, radius, motion
+### Spacing, radius, elevation, motion
 
-- Spacing scale: `--s1 4` / `--s2 8` / `--s3 12` / `--s4 16` / `--s5 24` / `--s6 32`. Snap to it.
-- Radius: **two only** — `--r 5px` (rectangles) and pill (`999px`, chips/dots). Retire the rest.
-- Motion: one gentle breathe (~2.6s) on the live dot; a soft cursor fade. A one-time staggered
-  load reveal is fine. Everything inside `@media (prefers-reduced-motion: reduce)` → none.
+- Shipping spacing scale (px): `--space-1 2` / `--space-2 4` / `--space-3 8` / `--space-4 12` /
+  `--space-5 16` / `--space-6 24` / `--space-7 32` / `--space-8 48` / `--space-9 64`. Snap to it;
+  1px hairlines stay literal.
+- Radius: **two only** — `--radius-md 5px` (rectangles) and `--radius-pill 999px` (chips/dots).
+- Elevation: flat surfaces separated by hairline rules and background steps (`--bg` →
+  `--bg-raised` → `--surface`), not drop shadows; shadows appear only on true overlays
+  (lightbox, drawers).
+- Motion: three durations on one easing — `--motion-fast 110ms` / `--motion-base 180ms` /
+  `--motion-slow 260ms` on `--ease`; `--pulse-cycle` for the one sanctioned breathe. Everything
+  inside `@media (prefers-reduced-motion: reduce)` → none. (See §9.)
+
+### The transcript marker gutter
+
+`.conversation` defines `--gutter` (20px desktop; 12px phone; 8px in a narrow pane): a fixed
+left gutter for **markers and rails only**. Every transcript entry's TEXT starts at the same
+x=0 column line; anything that annotates the entry (the tool ✕/… status glyph, the thinking ✦,
+a body's border-left rail) hangs into the gutter with a negative margin. No entry may
+reintroduce a per-kind text indent — differentiation is weight/color/size, never indent.
 
 ### Retired from the old UI
 
@@ -141,8 +164,41 @@ content with the occasional red ✕ standing out; you never scan past a wall of 
 the tool-row caret is right-aligned (so the status/glyph leads a clean, aligned left edge), and
 card disclosures (`raw notification`, `full excerpt`, `show raw error`) read `label … ▸` with the
 chevron at the right edge. A left-hung ▸ offsets every row and ragged-edges the column; on the
-right it's a quiet "there's more." (On phones the hover-only timing meta is hidden so the command
-and file paths get the full row width instead of wrapping mid-word in a squeezed column.)
+right it's a quiet "there's more." (On phones the timing meta is out of the flow entirely so
+commands and file paths get the full row width; a tap on the row brings it back.)
+
+**Timing metadata is on-demand.** Per-row timestamps/runtimes (`.tool-call .tool-meta`:
+`03:19:32 PM · 1ms`) and the per-turn badge (`.assistant-message .turn-meta`: duration ·
+tokens · cost) rest at `opacity: 0` and reveal on row hover, keyboard `:focus-within`, or tap
+(sticky `:hover`) on touch. `opacity` — never `display`/`visibility` — so they stay in the
+accessibility tree. A column of permanent clock stamps was ambient noise competing with the
+content; the data is one hover away, not gone. (This supersedes the 2026-07-01
+"always-visible" revert: the accessibility concern is answered by the a11y-tree +
+focus-within pairing, not by permanence.)
+
+### Transcript row anatomy (reference)
+
+What each element of the two workhorse rows uses. Text column starts at x=0; the marker
+gutter (`--gutter`) is to its left (§3).
+
+**Tool call row (`.tool-call`)**
+- gutter: `.tool-status` glyph — `…` pending (`--text-dim`), *empty/quiet* when done, `✕`
+  `--error` on failure. Mono, `--text-xs`.
+- `.tool-intent` (when the agent stated a purpose): sans `--text-base`, `--text` — the primary
+  line.
+- `.tool-command` = `.verb` + `.target` + `.result-detail`: verb/target mono, result sans.
+  As primary (no purpose): `--text-sm`, target `--text`. Demoted under a purpose: one
+  truncated line, `--text-xs`, `--text-dim`, same x=0 column (no sub-indent).
+- `.tool-meta` top-right: sans `--text-xs` `tabular-nums`, `--text-muted`, hover/focus-reveal.
+- `.tool-body` / `.diff-body` / `.shell-output`…: full-width below; rails hang in the gutter,
+  boxed machine output is mono `--text-sm` with its own contained `overflow-x`.
+
+**Thinking row (`.think`)**
+- gutter: `.think-glyph` ✦ (breathes while streaming).
+- `.think-label` "Thought for Ns" + `.pv` gist: sans `--text-sm`, tier-colored
+  (`--text` long / `--text-muted` short), gist italic.
+- `.think-body`: expanded reasoning, `pre-wrap` italic `--text-muted`, text at x=0 with a
+  1px rail in the gutter.
 
 ### The notification / job card (worked example)
 
@@ -178,6 +234,13 @@ Project-first, ranked by recency, with disclosure folding. Tiers top→bottom:
 - **OLDER** — collapsed.
 - **TEST RUNS (N)** — auto-bucket the disposable `serf-e2e-*` single-session sprawl into one
   collapsed group so it stops drowning real projects.
+
+Session row anatomy (`.sb-row`, reference — note: the sidebar is under active restyling in a
+parallel 2026-07-11 pass; verify against `style.css` if this drifts): status dot/glyph (blue
+live · amber needs-you · neutral otherwise) · title sans `--text-base` `--text` (muted until
+hover/selected) · right-aligned relative age sans `--text-2xs` `--text-muted` `tabular-nums`
+(opacity-swapped for row actions on hover) · subagent children indented, dim, `--text-2xs`
+terminal-state glyph rows folding to "+N subagents".
 
 Project header: name (sans, not ALL-CAPS-mono) · relative age · count; rollup dot only when
 something is live/needs-you.
@@ -282,8 +345,11 @@ The shipping UI now carries the token foundation **and** the conversation-first 
 prose is the reading hero (size + leading + paragraph rhythm); tool calls are quiet one-line rows
 whose verbose per-call intent recedes to a single dim clamped breadcrumb (full text on
 hover/expand); turn boundaries breathe; mobile is single-column and overflow-proof; the motion
-layer above is in place, and the agent-question edge case from §7 has shipped. The rest of §7's
-deferred list is still open.
+layer above is in place, and the agent-question edge case from §7 has shipped. The 2026-07-11
+typography pass landed the one-column marker gutter, the four-step transcript type scale, and
+hover/focus-revealed timing metadata (all locked by
+`cmd/serf-hub/jstest/test-transcript-typography.js`). The rest of §7's deferred list is still
+open.
 
 **Dev loop:** set `SERF_HUB_ASSETS_DIR=<repo>/cmd/serf-hub` when launching `serf-hub` to serve
 `assets/` and re-parse `templates/` from disk — CSS/JS edits take effect on reload (templates on

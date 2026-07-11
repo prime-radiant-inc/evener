@@ -65,6 +65,46 @@ pass(css.includes(".message-input { min-height: 24px; max-height: 20dvh; }"),
 pass(css.includes(".app-nav-toggle {\n    display: inline-flex;\n    position: fixed;"),
   "short-landscape mode must retain a fixed app navigation control to open the sidebar drawer");
 
+// ── One text column + marker gutter (2026-07-11 typography redesign) ──────
+// Every transcript entry's text starts at x=0; markers/rails hang into the
+// --gutter. No entry may reintroduce a per-kind indent via --tool-indent.
+pass(/\.conversation\s*\{[^}]*--gutter:/m.test(css),
+  ".conversation must define the shared --gutter marker-gutter token");
+pass(!css.includes("--tool-indent"),
+  "the per-kind --tool-indent scheme is retired; use the --gutter marker gutter");
+for (const railed of [".tool-body", ".think-body", ".task-list-body", ".fetch-body", ".search-body", ".subs", ".task-card"]) {
+  const body = rule(railed);
+  pass(/margin[^;]*calc\(-1 \* var\(--gutter\)\)/.test(body) && /padding[^;]*var\(--gutter\)/.test(body),
+    railed + " must hang its rail in the marker gutter (negative margin) and keep its text on the x=0 column");
+}
+const toolStatus = rule(".tool-call .tool-status");
+pass(/margin-left:\s*calc\(-1 \* var\(--gutter\)\)/.test(toolStatus),
+  ".tool-status glyph must hang in the marker gutter, not indent the row text");
+const thinkGlyph = rule(".think .think-glyph");
+pass(/margin-left:\s*calc\(-1 \* var\(--gutter\)\)/.test(thinkGlyph),
+  ".think-glyph marker must hang in the marker gutter like .tool-status");
+const demotedCommand = rule(".tool-call.has-purpose .tool-command");
+pass(!/padding-left/.test(demotedCommand),
+  "the demoted command must sit on the same text column as the intent (no sub-indent)");
+
+// ── Timing metadata is hover/focus-revealed, but stays accessible ─────────
+pass(/opacity:\s*0\b/.test(rule(".tool-call .tool-meta")),
+  ".tool-meta rests hidden (opacity, so it stays in the accessibility tree)");
+pass(/\.tool-call:hover \.tool-meta,\s*\.tool-call:focus-within \.tool-meta\s*\{\s*opacity:\s*1/.test(css),
+  ".tool-meta must reveal on row hover and keyboard focus-within");
+pass(/opacity:\s*0\b/.test(rule(".assistant-message .turn-meta")),
+  ".turn-meta rests hidden (opacity, so it stays in the accessibility tree)");
+pass(/\.assistant-message:hover \.turn-meta,\s*\.assistant-message:focus-within \.turn-meta\s*\{\s*opacity:\s*1/.test(css),
+  ".turn-meta must reveal on message hover and keyboard focus-within");
+
+// ── Reduced type scale: transcript text uses lg/base/sm/xs only ───────────
+pass(!/font-family:\s*var\(--font-mono\)/.test(rule(".assistant-message .turn-meta")),
+  "durations/tokens chrome is sans (tabular-nums), not mono");
+for (const sized of [".task-list-body .task-type", ".diagnostic-badge", ".diagnostic-detail-pre", ".task-card-fold-head"]) {
+  pass(!/--text-2xs/.test(rule(sized)),
+    sized + " must not use the sub-scale --text-2xs size in the transcript");
+}
+
 if (failures.length) {
   console.error("FAIL: transcript typography contract");
   for (const failure of failures) console.error("- " + failure);
