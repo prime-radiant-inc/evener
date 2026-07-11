@@ -197,17 +197,30 @@ func RawBodyEnabled() bool { return rawBodyEnabled }
 var rawBodyEnabled = envvars.RecorderEnabled(envvars.SERFLogRawHTTP)
 
 // APILogger is middleware that logs every LLM API call to a JSONL file.
+//
+// It runs in one of two modes:
+//   - single-file (NewAPILogger): every entry appends to one fixed path.
+//   - per-session (NewSessionAPILogger): each entry routes to
+//     <stateDir>/sessions/<session_id>.api.jsonl by the session id carried in
+//     the entry; entries without a session id go to sessions/unattributed.api.jsonl.
 type APILogger struct {
 	file    *os.File
 	rawFile *os.File // nil when raw logging is disabled
 	mu      sync.Mutex
+
+	// sessionsDir, when non-empty, selects per-session mode: entries route to
+	// <sessionsDir>/<session_id>.api.jsonl instead of file/rawFile.
+	sessionsDir     string
+	sessionRaw      bool // per-session mode: also write <session_id>.api-raw.jsonl
+	sessionFiles    map[string]*os.File
+	sessionRawFiles map[string]*os.File
 
 	// SyncInterval controls how often write calls fsync.
 	// If 0, every write fsyncs (backward-compatible default for tests).
 	// If >0, write only fsyncs when this duration has elapsed since the last sync.
 	SyncInterval time.Duration
 
-	dirty    bool
+	dirty    map[*os.File]struct{}
 	lastSync time.Time
 }
 
@@ -238,7 +251,68 @@ func NewAPILogger(path string) (*APILogger, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &APILogger{file: f, lastSync: time.Now()}, nil
+	return &APILogger{file: f, dirty: map[*os.File]struct{}{}, lastSync: time.Now()}, nil
+}
+
+// NewSessionAPILogger creates an API logger that routes each entry to
+// <stateDir>/sessions/<session_id>.api.jsonl, sibling to the session's
+// transcript and log files. Entries carrying no session id (or one that is not
+// a safe filename component) go to sessions/unattributed.api.jsonl. The frozen
+// project-level api.jsonl is never written.
+func NewSessionAPILogger(stateDir string) (*APILogger, error) {
+	sessionsDir := filepath.Join(stateDir, "sessions")
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		return nil, err
+	}
+	return &APILogger{
+		sessionsDir:     sessionsDir,
+		sessionFiles:    map[string]*os.File{},
+		sessionRawFiles: map[string]*os.File{},
+		dirty:           map[*os.File]struct{}{},
+		lastSync:        time.Now(),
+	}, nil
+}
+
+// EnableSessionRawLogging turns on per-session raw HTTP body logs
+// (<session_id>.api-raw.jsonl). Only meaningful in per-session mode.
+func (l *APILogger) EnableSessionRawLogging() { l.sessionRaw = true }
+
+// rawLoggingEnabled reports whether raw HTTP body entries have somewhere to go:
+// a fixed raw file in single-file mode, or per-session raw routing.
+func (l *APILogger) rawLoggingEnabled() bool {
+	return l.rawFile != nil || (l.sessionsDir != "" && l.sessionRaw)
+}
+
+// sessionLogBaseName returns the routing key for a session id: the id itself
+// when it is a safe filename component, otherwise "unattributed".
+func sessionLogBaseName(sessionID string) string {
+	if sessionID == "" {
+		return "unattributed"
+	}
+	for _, r := range sessionID {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+		default:
+			return "unattributed"
+		}
+	}
+	return sessionID
+}
+
+// sessionFile returns (opening and caching on first use) the log file for a
+// session id. Caller holds l.mu. Returns nil when the open fails; the entry is
+// dropped (diagnostic data is never load-bearing).
+func (l *APILogger) sessionFile(files map[string]*os.File, sessionID, suffix string) *os.File {
+	base := sessionLogBaseName(sessionID)
+	if f, ok := files[base]; ok {
+		return f
+	}
+	f, err := os.OpenFile(filepath.Join(l.sessionsDir, base+suffix), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		f = nil
+	}
+	files[base] = f
+	return f
 }
 
 // EnableRawLogging opens a separate JSONL file for raw HTTP request/response bodies.
@@ -338,27 +412,31 @@ func (l *APILogger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	var firstErr error
-	if l.file != nil {
-		if l.dirty {
-			if err := l.file.Sync(); err != nil && firstErr == nil {
-				firstErr = err
-			}
-			l.dirty = false
+	closeFile := func(f *os.File) {
+		if f == nil {
+			return
 		}
-		if err := l.file.Close(); err != nil && firstErr == nil {
+		if err := f.Sync(); err != nil && firstErr == nil {
 			firstErr = err
 		}
-		l.file = nil
+		if err := f.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	if l.rawFile != nil {
-		if err := l.rawFile.Sync(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-		if err := l.rawFile.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-		l.rawFile = nil
+	closeFile(l.file)
+	l.file = nil
+	closeFile(l.rawFile)
+	l.rawFile = nil
+	for _, f := range l.sessionFiles {
+		closeFile(f)
 	}
+	l.sessionFiles = map[string]*os.File{}
+	for _, f := range l.sessionRawFiles {
+		closeFile(f)
+	}
+	l.sessionRawFiles = map[string]*os.File{}
+	l.dirty = map[*os.File]struct{}{}
+	l.sessionsDir = ""
 	return firstErr
 }
 
@@ -370,16 +448,22 @@ func (l *APILogger) write(entry APILogEntry) {
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.file == nil {
+	f := l.file
+	if l.sessionsDir != "" {
+		f = l.sessionFile(l.sessionFiles, entry.SessionID, ".api.jsonl")
+	}
+	if f == nil {
 		return
 	}
-	l.file.Write(append(data, '\n')) //nolint:errcheck
+	f.Write(append(data, '\n')) //nolint:errcheck
 
-	l.dirty = true
+	l.dirty[f] = struct{}{}
 	if l.SyncInterval == 0 || time.Since(l.lastSync) >= l.SyncInterval {
-		l.file.Sync() //nolint:errcheck
+		for dirtyFile := range l.dirty {
+			dirtyFile.Sync() //nolint:errcheck
+			delete(l.dirty, dirtyFile)
+		}
 		l.lastSync = time.Now()
-		l.dirty = false
 	}
 }
 
@@ -390,11 +474,18 @@ func (l *APILogger) writeRaw(entry APIRawLogEntry) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.rawFile == nil {
+	f := l.rawFile
+	if l.sessionsDir != "" {
+		if !l.sessionRaw {
+			return
+		}
+		f = l.sessionFile(l.sessionRawFiles, entry.SessionID, ".api-raw.jsonl")
+	}
+	if f == nil {
 		return
 	}
-	l.rawFile.Write(append(data, '\n')) //nolint:errcheck
-	l.rawFile.Sync()                    //nolint:errcheck
+	f.Write(append(data, '\n')) //nolint:errcheck
+	f.Sync()                    //nolint:errcheck
 }
 
 func buildAPILogEntry(ctx context.Context, req Request, start time.Time) APILogEntry {
@@ -416,7 +507,7 @@ func buildAPILogEntry(ctx context.Context, req Request, start time.Time) APILogE
 }
 
 func (l *APILogger) writeRawResponse(entry APILogEntry, req Request, mode string, resp Response) {
-	if l.rawFile == nil || (resp.RawRequestBody == "" && resp.RawResponseBody == "") {
+	if !l.rawLoggingEnabled() || (resp.RawRequestBody == "" && resp.RawResponseBody == "") {
 		return
 	}
 	l.writeRaw(APIRawLogEntry{
@@ -438,7 +529,7 @@ func (l *APILogger) writeRawResponse(entry APILogEntry, req Request, mode string
 }
 
 func (l *APILogger) writeRawError(entry APILogEntry, req Request, mode string, err error) {
-	if l.rawFile == nil || err == nil {
+	if !l.rawLoggingEnabled() || err == nil {
 		return
 	}
 	var rawErr RawHTTPBodyError
@@ -491,7 +582,7 @@ func (l *APILogger) writeAdapterAttempt(lc APILogContext, rec AdapterAttemptReco
 	}
 	l.write(entry)
 
-	if l.rawFile == nil || (rec.RawRequestBody == "" && rec.RawResponseBody == "") {
+	if !l.rawLoggingEnabled() || (rec.RawRequestBody == "" && rec.RawResponseBody == "") {
 		return
 	}
 	l.writeRaw(APIRawLogEntry{
