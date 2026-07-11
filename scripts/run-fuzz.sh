@@ -454,6 +454,7 @@ TARGETS=(
 	"native:agent:.:FuzzJdResolveDelegateTerminalStatus::job_delegate.go#resolveDelegateTerminalStatus"
 	"native:agent:.:FuzzJdClassifyDelegateSendTarget::job_delegate.go#classifyDelegateSendTarget"
 	"native:agent:.:FuzzJdRearmTerminalNotificationDecision::jobs.go#rearmTerminalNotificationDecision"
+	"native:agent:.:FuzzJdrDelegateRestoreLifecycle::job_delegate.go"
 	"native:agent:.:FuzzCtShellResultDisposition::session_tools_shell.go#shellResultDisposition"
 	"native:agent:.:FuzzCtClampJobBlockTimeout::session_tools_jobs.go#clampJobBlockTimeout"
 	"native:agent:.:FuzzCtCanonicalizeToolNames::session_tools.go#canonicalizeToolNames"
