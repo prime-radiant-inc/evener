@@ -255,6 +255,7 @@ TARGETS=(
 	"native:agent:./execenv:FuzzEgrepGrepNative::local.go#grepNative"
 	"native:agent:.:FuzzJobtoolsExec::session_tools_jobs.go#jobReadOutputTool"
 	"native:agent:.:FuzzJobtoolsFormat::session_tools_jobs.go#formatJobList"
+	"native:agent:.:FuzzJobReadRecoveryGrant::session_tools_jobs.go"
 	"native:agent:.:FuzzRawLinesForRange::transcript_render.go#rawLinesForRange"
 	"native:agent:.:FuzzResolveTranscript::transcript_lookup.go#resolveTranscript"
 	"native:agent:.:FuzzToolInputSummary::transcript_render.go#toolInputSummary"
