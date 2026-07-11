@@ -64,6 +64,7 @@ FuzzPluginLoad 77.8
 FuzzPluginManifestParse 100.0
 FuzzProject 26.8
 FuzzProjectTurn 83.8
+FuzzProviderProfilesProgram 97.6
 FuzzProvidersTOMLLoad 72.9
 FuzzRenderToolCall 100.0
 FuzzResolveProfileFromConfig 96.6
