@@ -67,6 +67,7 @@ TARGETS=(
 	"native:agent:.:FuzzRootJobReadWaitProgram::"
 	"native:agent:.:FuzzJobRuntimeRecoveryProgram::job_shell.go;jobs.go;session_tools_jobs.go"
 	"native:agent:.:FuzzResumeTurnQueueProgram::session_init.go#drainPendingSessionStartHooksForUserTurn;session_init.go#deliverSessionStartHookResultForUserTurn;session_lifecycle.go#acceptUserInput"
+	"native:agent:.:FuzzWorktreeFaultLifecycleProgram::session_tools_worktree.go"
 	"native:agent:./internal/jobstore:FuzzAcOutputMetaCodec::output.go#readValidOutputMetaFs"
 	"native:.:./cmd/serf-hub:FuzzHubReplayCarryThrough::app_threadread.go#replayTurnToAgentTurn"
 	"native:.:./cmd/serf-hub:FuzzHubReplayLiveVsReload::app_threadread.go#replayTurnToAgentTurn"
