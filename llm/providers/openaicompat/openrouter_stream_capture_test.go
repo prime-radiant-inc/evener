@@ -60,4 +60,11 @@ func TestReplay_CapturedOpenRouterStream(t *testing.T) {
 	if thinking == 0 || finalThinking == 0 {
 		t.Fatalf("captured real OpenRouter stream produced no thinking (deltas=%d final=%d)", thinking, finalThinking)
 	}
+	const wantID = "gen-1783017913-0zugW1oNmQbUgo0VdDsu"
+	if final == nil {
+		t.Fatal("captured real OpenRouter stream produced no final response")
+	}
+	if final.ID != wantID {
+		t.Fatalf("final response ID = %q, want %q", final.ID, wantID)
+	}
 }

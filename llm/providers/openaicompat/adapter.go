@@ -405,6 +405,7 @@ func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm
 	// Gemini/o-series) in arrival order; they ride the thinking part's
 	// EncryptedContent so the reasoning chain survives replay.
 	var encryptedDetails []map[string]any
+	var responseID string
 	var model string
 	var finishReason string
 	var usage *llm.Usage
@@ -495,6 +496,7 @@ func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm
 				}
 
 				finalResp := &llm.Response{
+					ID:        responseID,
 					Provider:  "openai-compatible",
 					Model:     model,
 					Message:   msg,
@@ -529,6 +531,9 @@ func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm
 				// Skip a single malformed chunk and keep the stream alive;
 				// returning the error would abort the whole stream.
 				return nil //nolint:nilerr // unparseable chunk is intentionally skipped, not fatal
+			}
+			if chunk.ID != "" {
+				responseID = chunk.ID
 			}
 			if chunk.Model != "" {
 				model = chunk.Model
