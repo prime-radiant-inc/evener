@@ -179,8 +179,13 @@ Project-first, ranked by recency, with disclosure folding. Tiers top→bottom:
 - **TEST RUNS (N)** — auto-bucket the disposable `serf-e2e-*` single-session sprawl into one
   collapsed group so it stops drowning real projects.
 
-Project header: name (sans, not ALL-CAPS-mono) · relative age · count; rollup dot only when
-something is live/needs-you.
+Project header: disclosure chevron (`›`, muted, rotates 90° when `aria-expanded="true"`,
+`--motion-fast`) · name (sans, not ALL-CAPS-mono) · relative age · count; rollup dot only when
+something is live/needs-you. The chevron appears on **every** project header, including
+collapsed archived stubs — the whole header is the toggle; the chevron is decorative
+(`aria-hidden`). Vertical rhythm: symmetric `--space-2` header padding plus a `--space-2`
+top margin between a project and whatever precedes it — group separation reads as a subtle
+rhythm break, not a void. Tap floors are untouched (32px desktop / 52px mobile min-height).
 
 ---
 
