@@ -38,13 +38,47 @@ type commandHookRuntime interface {
 	Run(context.Context, commandHookInvocation) (hookResult, error)
 }
 
+// commandHookProcess is the final process-launch boundary. Keeping it inside
+// a systemCommandHookRuntime instance lets deterministic callers exercise the
+// real command setup and error classification without starting a process.
+type commandHookProcess func(context.Context, commandHookInvocation, *exec.Cmd) error
+
+// commandHookExitCoder captures the process-exit contract used by exec.ExitError
+// without coupling deterministic process implementations to os.ProcessState.
+type commandHookExitCoder interface {
+	error
+	ExitCode() int
+}
+
+var _ commandHookExitCoder = (*exec.ExitError)(nil)
+
 // systemCommandHookRuntime preserves the historical command-hook behavior for
-// production callers. It is stateless; every Runner receives its own value.
-type systemCommandHookRuntime struct{}
+// production callers. Each Runner gets its own value, whose optional effects
+// can be replaced independently in deterministic tests.
+type systemCommandHookRuntime struct {
+	environ func() []string
+	run     commandHookProcess
+}
 
-func (systemCommandHookRuntime) Environ() []string { return os.Environ() }
+func newSystemCommandHookRuntime() systemCommandHookRuntime {
+	return systemCommandHookRuntime{
+		environ: os.Environ,
+		run:     runSystemCommandHookProcess,
+	}
+}
 
-func (systemCommandHookRuntime) Run(ctx context.Context, invocation commandHookInvocation) (hookResult, error) {
+func (r systemCommandHookRuntime) Environ() []string {
+	if r.environ != nil {
+		return r.environ()
+	}
+	return os.Environ()
+}
+
+func runSystemCommandHookProcess(_ context.Context, _ commandHookInvocation, cmd *exec.Cmd) error {
+	return cmd.Run()
+}
+
+func (r systemCommandHookRuntime) Run(ctx context.Context, invocation commandHookInvocation) (hookResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, invocation.Timeout)
 	defer cancel()
 
@@ -68,7 +102,11 @@ func (systemCommandHookRuntime) Run(ctx context.Context, invocation commandHookI
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	run := r.run
+	if run == nil {
+		run = runSystemCommandHookProcess
+	}
+	err := run(ctx, invocation, cmd)
 	result := hookResult{
 		Stdout: stdout.String(),
 		Stderr: stderr.String(),
@@ -81,7 +119,7 @@ func (systemCommandHookRuntime) Run(ctx context.Context, invocation commandHookI
 	if ctx.Err() != nil {
 		return result, fmt.Errorf("hook command killed: %w", ctx.Err())
 	}
-	var exitErr *exec.ExitError
+	var exitErr commandHookExitCoder
 	if errors.As(err, &exitErr) {
 		result.ExitCode = exitErr.ExitCode()
 		return result, nil
@@ -94,12 +132,12 @@ func (systemCommandHookRuntime) Run(ctx context.Context, invocation commandHookI
 // the runtime-aware helper below is only how Runner supplies its per-instance
 // external boundary.
 func executeCommandHook(ctx context.Context, hook plugin.RegisteredHook, input Input, wrapper ...*sandbox.Wrapper) (hookResult, error) {
-	return executeCommandHookWithRuntime(ctx, hook, input, systemCommandHookRuntime{}, wrapper...)
+	return executeCommandHookWithRuntime(ctx, hook, input, newSystemCommandHookRuntime(), wrapper...)
 }
 
 func executeCommandHookWithRuntime(ctx context.Context, hook plugin.RegisteredHook, input Input, runtime commandHookRuntime, wrapper ...*sandbox.Wrapper) (hookResult, error) {
 	if runtime == nil {
-		runtime = systemCommandHookRuntime{}
+		runtime = newSystemCommandHookRuntime()
 	}
 	var sbx *sandbox.Wrapper
 	if len(wrapper) > 0 {

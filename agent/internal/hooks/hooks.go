@@ -173,7 +173,7 @@ func newRunner(client promptHookClient, model string) *Runner {
 		hooks:              make(map[plugin.HookEvent][]plugin.RegisteredHook),
 		client:             client,
 		model:              model,
-		commandHookRuntime: systemCommandHookRuntime{},
+		commandHookRuntime: newSystemCommandHookRuntime(),
 	}
 }
 

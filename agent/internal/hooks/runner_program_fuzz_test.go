@@ -3,10 +3,14 @@
 package hooks
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"os/exec"
 	"reflect"
 	"sort"
 	"strconv"
@@ -25,9 +29,9 @@ import (
 // prompt substitution, output parsing, routing, denial/block decisions, input
 // merging, lifecycle event emission, and no-client behavior.
 //
-// SAFETY: command handlers route through a per-runner recording runtime. The
-// default process runtime is never used, so this target cannot start a shell,
-// process, Git command, network client, or provider request.
+// SAFETY: command handlers use a per-runner system runtime with a recording
+// low-level process fixture. This target cannot start a shell, process, Git
+// command, network client, or provider request.
 func FuzzHookRunnerProgram(f *testing.F) {
 	for _, seed := range [][]byte{
 		{0x00},
@@ -81,6 +85,7 @@ type hookRunnerProgramTrace struct {
 	CommandPre         PreToolUseResult
 	Post               RunResult
 	CommandPost        RunResult
+	CommandCanceled    RunResult
 	Stop               StopResult
 	SubagentStop       StopResult
 	UserPrompt         RunResult
@@ -222,9 +227,10 @@ func (c *hookRunnerProgramClient) snapshotCalls() []hookRunnerProgramCall {
 	return calls
 }
 
-// hookRunnerProgramCommandRuntime is the sole command-hook external boundary
-// for this fuzz target. It returns scripted outcomes and records the fully
-// prepared invocation, but never creates an exec.Cmd or consults host state.
+// hookRunnerProgramCommandRuntime is the low-level process fixture for this
+// fuzz target. systemCommandHookRuntime still creates and configures the
+// exec.Cmd; this fixture only records it and returns scripted outcomes, without
+// launching a process or consulting host state.
 type hookRunnerProgramCommandRuntime struct {
 	mu      sync.Mutex
 	baseEnv []string
@@ -235,36 +241,54 @@ func (r *hookRunnerProgramCommandRuntime) Environ() []string {
 	return append([]string(nil), r.baseEnv...)
 }
 
-func (r *hookRunnerProgramCommandRuntime) Run(ctx context.Context, invocation commandHookInvocation) (hookResult, error) {
-	if err := ctx.Err(); err != nil {
-		return hookResult{}, err
+func (r *hookRunnerProgramCommandRuntime) Run(_ context.Context, invocation commandHookInvocation, cmd *exec.Cmd) error {
+	inputJSON, err := io.ReadAll(cmd.Stdin)
+	if err != nil {
+		return fmt.Errorf("reading scripted command stdin: %w", err)
 	}
 	var input Input
-	if err := json.Unmarshal(invocation.InputJSON, &input); err != nil {
-		return hookResult{}, err
+	if err := json.Unmarshal(inputJSON, &input); err != nil {
+		return err
+	}
+	if cmd.Path != invocation.Program || !reflect.DeepEqual(cmd.Args, append([]string{invocation.Program}, invocation.Args...)) ||
+		!reflect.DeepEqual(cmd.Env, invocation.Env) {
+		return fmt.Errorf("scripted command setup = path:%q args:%#v env:%#v", cmd.Path, cmd.Args, cmd.Env)
+	}
+	stdout, stdoutOK := cmd.Stdout.(*bytes.Buffer)
+	stderr, stderrOK := cmd.Stderr.(*bytes.Buffer)
+	if !stdoutOK || !stderrOK {
+		return fmt.Errorf("scripted command streams = stdout:%T stderr:%T", cmd.Stdout, cmd.Stderr)
 	}
 	r.mu.Lock()
 	r.plans = append(r.plans, hookRunnerProgramCommandPlan{
-		Program: invocation.Program,
-		Args:    append([]string(nil), invocation.Args...),
+		Program: cmd.Path,
+		Args:    append([]string(nil), cmd.Args[1:]...),
 		Input:   input,
-		Env:     append([]string(nil), invocation.Env...),
+		Env:     append([]string(nil), cmd.Env...),
 		Timeout: invocation.Timeout,
 	})
 	r.mu.Unlock()
 
-	switch invocation.Program {
-	case "fixture-pre":
-		return hookResult{Stderr: "command pre denied", ExitCode: 2}, nil
-	case "bash":
-		if reflect.DeepEqual(invocation.Args, []string{"-c", "fixture-post"}) {
-			return hookResult{Stdout: `{"systemMessage":"command post","terminalSequence":"command-post-terminal","hookSpecificOutput":{"additionalContext":"command post context"}}`}, nil
-		}
-	case "fixture-notification-error":
-		return hookResult{}, errors.New("recorded executor fault")
+	switch cmd.Path {
+	case "/fixture/bin/fixture-pre":
+		_, _ = stderr.WriteString("command pre denied")
+		return hookRunnerProgramExitError{code: 2}
+	case "/fixture/bin/fixture-post":
+		_, _ = stdout.WriteString(`{"systemMessage":"command post","terminalSequence":"command-post-terminal","hookSpecificOutput":{"additionalContext":"command post context"}}`)
+		return nil
+	case "/fixture/bin/fixture-canceled":
+		return errors.New("recorded cancellation executor fault")
+	case "/fixture/bin/fixture-notification-error":
+		return errors.New("recorded executor fault")
 	}
-	return hookResult{}, errors.New("unexpected scripted command invocation")
+	return errors.New("unexpected scripted command invocation")
 }
+
+type hookRunnerProgramExitError struct{ code int }
+
+func (e hookRunnerProgramExitError) Error() string { return "scripted command exit" }
+
+func (e hookRunnerProgramExitError) ExitCode() int { return e.code }
 
 func (r *hookRunnerProgramCommandRuntime) snapshotPlans() []hookRunnerProgramCommandPlan {
 	r.mu.Lock()
@@ -346,7 +370,10 @@ func runHookRunnerProgram(t *testing.T, mode byte, token string) hookRunnerProgr
 		"PRIVATE_TOKEN=must-not-leak",
 		"CLAUDE_EFFORT=parent-value",
 	}}
-	runner.commandHookRuntime = commandRuntime
+	runner.commandHookRuntime = systemCommandHookRuntime{
+		environ: commandRuntime.Environ,
+		run:     commandRuntime.Run,
+	}
 	eventLog := &hookRunnerProgramEventLog{}
 	runner.SetEventCallback(eventLog.add)
 	runner.SetSandboxWrapper(nil)
@@ -407,6 +434,15 @@ func runHookRunnerProgram(t *testing.T, mode byte, token string) hookRunnerProgr
 		!containsHookRunnerProgramString(commandPost.UserMessages, "command post") {
 		t.Fatalf("command RunPostToolUse = %#v", commandPost)
 	}
+	canceledContext, cancel := context.WithCancel(context.Background())
+	cancel()
+	canceledInput := commandInput
+	canceledInput.HookEventName = "PostToolUse"
+	canceledInput.ToolName = "edit_file"
+	commandCanceled := runner.RunPostToolUse(canceledContext, canceledInput)
+	if !containsHookRunnerProgramString(commandCanceled.ModelContext, "hook command killed: context canceled") {
+		t.Fatalf("canceled command RunPostToolUse = %#v", commandCanceled)
+	}
 	stop := runner.RunStop(ctx, input)
 	if !stop.Blocked || stop.BlockReason != "stop reason" || !containsHookRunnerProgramString(stop.TerminalSequences, "stop-terminal") || !containsHookRunnerProgramString(stop.UserMessages, "stop json") {
 		t.Fatalf("RunStop = %#v", stop)
@@ -437,7 +473,7 @@ func runHookRunnerProgram(t *testing.T, mode byte, token string) hookRunnerProgr
 	notification := runner.RunNotification(ctx, input)
 	if !reflect.DeepEqual(notification.UserMessages, []string{"notify json"}) ||
 		!containsHookRunnerProgramString(notification.ModelContext, "notify context") ||
-		!containsHookRunnerProgramString(notification.ModelContext, "recorded executor fault") {
+		!containsHookRunnerProgramString(notification.ModelContext, "running hook command: recorded executor fault") {
 		t.Fatalf("RunNotification = %#v", notification)
 	}
 
@@ -495,8 +531,8 @@ func runHookRunnerProgram(t *testing.T, mode byte, token string) hookRunnerProgr
 		t.Fatalf("override-model call count = %d, calls=%#v", overrideModelCalls, calls)
 	}
 	commandPlans := commandRuntime.snapshotPlans()
-	assertHookRunnerProgramCommandPlans(t, commandPlans, commandInput, input, token)
-	assertHookRunnerProgramCommandPreparationErrors(t, commandRuntime)
+	assertHookRunnerProgramCommandPlans(t, commandPlans, commandInput, input, canceledInput, token)
+	assertHookRunnerProgramCommandPreparationErrors(t, runner.commandHookRuntime)
 	if merged := mergeHookInputMaps(map[string]any{"kept": "value"}, nil); merged["kept"] != "value" || len(merged) != 1 {
 		t.Fatalf("mergeHookInputMaps(empty) = %#v", merged)
 	}
@@ -509,6 +545,7 @@ func runHookRunnerProgram(t *testing.T, mode byte, token string) hookRunnerProgr
 		CommandPre:         commandPre,
 		Post:               post,
 		CommandPost:        commandPost,
+		CommandCanceled:    commandCanceled,
 		Stop:               stop,
 		SubagentStop:       subagentStop,
 		UserPrompt:         userPrompt,
@@ -539,13 +576,14 @@ func addHookRunnerProgramHooks(runner *Runner, token string, mode byte) {
 		hookRunnerProgramHook("Read", "prompt", "program:pre-read", "", ""),
 		hookRunnerProgramHook("[", "prompt", "program:never", "", ""),
 		hookRunnerProgramHook("Bash", "http", "program:unsupported", "", ""),
-		hookRunnerProgramCommandHook("Write", "fixture-pre", []string{"--pre", "literal"}, "ignored-by-exec-form", 17, "/plugin/"+token),
+		hookRunnerProgramCommandHook("Write", "/fixture/bin/fixture-pre", []string{"--pre", "literal"}, "ignored-by-exec-form", 17, "/plugin/"+token),
 	)
 	runner.Add(plugin.HookPostToolUse,
 		hookRunnerProgramHook("Bash|Read", "prompt", "program:post-json", "", ""),
 		hookRunnerProgramHook("Bash", "prompt", "program:post-plain", "", ""),
 		hookRunnerProgramHook("Bash", "prompt", "program:post-error", "", ""),
-		hookRunnerProgramCommandHook("Write", "fixture-post", nil, "bash", 19, "/plugin/"+token),
+		hookRunnerProgramCommandHook("Write", "/fixture/bin/fixture-post", []string{"--post", "literal"}, "", 19, "/plugin/"+token),
+		hookRunnerProgramCommandHook("Edit", "/fixture/bin/fixture-canceled", []string{"--canceled"}, "", 29, "/plugin/"+token),
 	)
 	runner.Add(plugin.HookStop, hookRunnerProgramHook("*", "prompt", "program:stop-block", "", ""))
 	runner.Add(plugin.HookSubagentStop, hookRunnerProgramHook("*", "prompt", "program:subagent-stop", "", ""))
@@ -558,7 +596,7 @@ func addHookRunnerProgramHooks(runner *Runner, token string, mode byte) {
 	runner.Add(plugin.HookPreCompact, hookRunnerProgramHook("", "prompt", "program:pre-compact", "", ""))
 	runner.Add(plugin.HookNotification,
 		hookRunnerProgramHook("*", "prompt", "program:notification mode="+string(rune('a'+mode%26)), "", ""),
-		hookRunnerProgramCommandHook("*", "fixture-notification-error", []string{"--notify"}, "", 23, "/plugin/"+token),
+		hookRunnerProgramCommandHook("*", "/fixture/bin/fixture-notification-error", []string{"--notify"}, "", 23, "/plugin/"+token),
 	)
 }
 
@@ -615,24 +653,28 @@ func assertHookRunnerProgramPost(t *testing.T, result RunResult) {
 	}
 }
 
-func assertHookRunnerProgramCommandPlans(t *testing.T, plans []hookRunnerProgramCommandPlan, commandInput, notificationInput Input, token string) {
+func assertHookRunnerProgramCommandPlans(t *testing.T, plans []hookRunnerProgramCommandPlan, commandInput, notificationInput, canceledInput Input, token string) {
 	t.Helper()
-	if len(plans) != 3 {
-		t.Fatalf("recorded command plans = %#v, want pre/post/error", plans)
+	if len(plans) != 4 {
+		t.Fatalf("recorded command plans = %#v, want pre/post/canceled/error", plans)
 	}
 	byProgram := make(map[string]hookRunnerProgramCommandPlan, len(plans))
 	for _, plan := range plans {
 		byProgram[plan.Program] = plan
 	}
-	pre, ok := byProgram["fixture-pre"]
+	pre, ok := byProgram["/fixture/bin/fixture-pre"]
 	if !ok || !reflect.DeepEqual(pre.Args, []string{"--pre", "literal"}) || pre.Timeout != 17*time.Second || !reflect.DeepEqual(pre.Input, commandInput) {
 		t.Fatalf("exec-form command plan = %#v", pre)
 	}
-	post, ok := byProgram["bash"]
-	if !ok || !reflect.DeepEqual(post.Args, []string{"-c", "fixture-post"}) || post.Timeout != 19*time.Second || !reflect.DeepEqual(post.Input, commandInput) {
-		t.Fatalf("shell-form command plan = %#v", post)
+	post, ok := byProgram["/fixture/bin/fixture-post"]
+	if !ok || !reflect.DeepEqual(post.Args, []string{"--post", "literal"}) || post.Timeout != 19*time.Second || !reflect.DeepEqual(post.Input, commandInput) {
+		t.Fatalf("post command plan = %#v", post)
 	}
-	failure, ok := byProgram["fixture-notification-error"]
+	canceled, ok := byProgram["/fixture/bin/fixture-canceled"]
+	if !ok || !reflect.DeepEqual(canceled.Args, []string{"--canceled"}) || canceled.Timeout != 29*time.Second || !reflect.DeepEqual(canceled.Input, canceledInput) {
+		t.Fatalf("canceled command plan = %#v", canceled)
+	}
+	failure, ok := byProgram["/fixture/bin/fixture-notification-error"]
 	if !ok || !reflect.DeepEqual(failure.Args, []string{"--notify"}) || failure.Timeout != 23*time.Second || !reflect.DeepEqual(failure.Input, notificationInput) {
 		t.Fatalf("error command plan = %#v", failure)
 	}
@@ -640,14 +682,14 @@ func assertHookRunnerProgramCommandPlans(t *testing.T, plans []hookRunnerProgram
 	for name, plan := range byProgram {
 		env := hookRunnerProgramEnvMap(t, plan.Env)
 		wantCWD := notificationInput.CWD
-		if name != "fixture-notification-error" {
+		if name != "/fixture/bin/fixture-notification-error" {
 			wantCWD = commandInput.CWD
 		}
 		if env["PATH"] != "/deterministic/bin" || env["SAFE"] != "kept" || env["CLAUDE_PLUGIN_ROOT"] != "/plugin/"+token ||
 			env["PLUGIN_ROOT"] != "/plugin/"+token || env["CLAUDE_PROJECT_DIR"] != wantCWD {
 			t.Fatalf("%s command environment = %#v", name, env)
 		}
-		if name == "fixture-notification-error" {
+		if name == "/fixture/bin/fixture-notification-error" {
 			if _, hasEffort := env["CLAUDE_EFFORT"]; hasEffort {
 				t.Fatalf("%s command environment inherited unexpected effort: %#v", name, env)
 			}
@@ -693,7 +735,15 @@ func assertHookRunnerProgramCommandPreparationErrors(t *testing.T, runtime comma
 			t.Fatalf("command shell %q unexpectedly reached the runtime", shell)
 		}
 	}
-	_, err := prepareCommandHookInvocation(plugin.RegisteredHook{Type: "command", Command: "never-run", Args: []string{"--x"}}, Input{
+	shellInvocation, err := prepareCommandHookInvocation(plugin.RegisteredHook{
+		Type:    "command",
+		Command: "fixture-shell",
+		Shell:   "bash",
+	}, Input{}, []string{"PATH=/deterministic/bin"}, nil)
+	if err != nil || shellInvocation.Program != "bash" || !reflect.DeepEqual(shellInvocation.Args, []string{"-c", "fixture-shell"}) {
+		t.Fatalf("bash command preparation = %#v, %v", shellInvocation, err)
+	}
+	_, err = prepareCommandHookInvocation(plugin.RegisteredHook{Type: "command", Command: "never-run", Args: []string{"--x"}}, Input{
 		ToolInput: map[string]any{"unsupported": func() {}},
 	}, []string{"PATH=/deterministic/bin"}, nil)
 	if err == nil {
@@ -736,7 +786,7 @@ func assertHookRunnerProgramEvents(t *testing.T, values []hookRunnerProgramEvent
 	if starts == 0 || starts != ends {
 		t.Fatalf("unbalanced hook lifecycle events starts=%d ends=%d values=%#v", starts, ends, values)
 	}
-	if commandStarts != 3 || commandEnds != 3 || !sawCommandExit2 {
+	if commandStarts != 4 || commandEnds != 4 || !sawCommandExit2 {
 		t.Fatalf("command lifecycle events starts=%d ends=%d exit2=%v values=%#v", commandStarts, commandEnds, sawCommandExit2, values)
 	}
 }
