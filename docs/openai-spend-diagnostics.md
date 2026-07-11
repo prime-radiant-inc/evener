@@ -2,11 +2,11 @@
 
 Serf records OpenAI API usage in two places under the Serf state directory:
 
-- `<state-dir>/api.jsonl`: the process-wide API log written by `serf run`, `serf serve`, and the embedded TUI.
+- `<state-dir>/sessions/<session-id>.api.jsonl`: the per-session API log written by `serf run`, `serf serve`, and the embedded TUI (side calls without a session id land in `sessions/unattributed.api.jsonl`). Older installs may also have a frozen `<state-dir>/api.jsonl` from before per-session logging; it is kept for history but never written again.
 - `<state-dir>/sessions/*.transcript.jsonl`: per-session transcripts that include `api_call` records.
 
 The analyzer reads either a single file or a directory. When given a directory,
-it recursively finds both `api.jsonl` files and transcript JSONL files, then
+it recursively finds API-log files (per-session `*.api.jsonl` and any frozen `api.jsonl`) and transcript JSONL files, then
 deduplicates matching API calls that appear in both sources.
 
 ## Quick Audit
