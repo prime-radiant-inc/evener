@@ -557,20 +557,14 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
 .sidebar-section-header .count,
 .project-header .count { margin-left: auto; font-family: var(--font-mono); color: var(--text-muted); }
 /* Sidebar row — grid: icon column, title (grows + single-line ellipsis),
-   meta (branch, right-pinned before the row-end slot), row-end (age flush
-   to the row's right edge; an optional children-disclosure toggle sits to
-   its left). Single line — the full title is still available via the
-   title="" hover tooltip set in sidebar.js. */
+   row-end (age flush to the row's right edge; an optional
+   children-disclosure toggle sits to its left). Single line — the full
+   title is still available via the title="" hover tooltip set in
+   sidebar.js. No branch/meta column (2026-07-11 polish): branch is
+   workspace detail, not navigation signal. */
 .sb-row {
   display: grid;
-  /* The meta column is capped at a fixed max (not "auto"): an "auto" track
-     sizes to its item's full, untruncated max-content width, so one long
-     branch name (e.g. "sweep/sidebar-polish") would claim the whole row and
-     starve the title down to a couple of characters — a real bug caught by
-     screenshot verification, not a hypothetical. Capping the track forces
-     the branch span's own overflow-ellipsis (below) to do the truncating
-     instead, and gives minmax(0,1fr) the leftover for the title. */
-  grid-template-columns: auto minmax(0, 1fr) minmax(0, 88px) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-2);
   padding: 4px var(--space-4);
@@ -599,27 +593,6 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.sb-row .meta {
-  font-family: var(--font-mono);
-  /* Density floor (Task 24 WS3): 11px minimum readable size — --text-2xs
-     (10px) was below the floor. Pairs with --text-muted below, which is
-     >=4.5:1 on the sidebar --bg in both themes (verified, see commit). */
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-  letter-spacing: 0.02em;
-  line-height: 1.2;
-  display: flex;
-  align-items: baseline;
-  white-space: nowrap;
-  min-width: 0; /* let the grid's 88px track cap win over the flex row's own content-driven min size */
-}
-/* Only span in .meta now (branch) — truncate instead of pushing the row-end
-   slot around. */
-.sb-row .meta > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-}
 /* row-end: the age is pinned flush to the row's right edge (no trailing
    column after it). age-slot stacks the age span and the ⋯ menu button in
    the SAME grid cell (grid-area overlap keeps the cell's intrinsic size
@@ -641,10 +614,13 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
 }
 .sb-row .age-slot > * { grid-area: 1 / 1; }
 .sb-row .age {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
+  /* Relative times are sans with tabular numerals (design-system §3 type),
+     matching .project-age — secondary text, smaller and dimmer than the
+     title, never mono. */
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-2xs);
   color: var(--text-muted);
-  letter-spacing: 0.02em;
   white-space: nowrap;
   transition: opacity var(--motion-fast);
 }
@@ -901,7 +877,7 @@ body.app[data-sidebar-rail] #sidebar { width: 56px; min-width: 56px; max-width: 
 body.app[data-sidebar-rail] .sidebar-resizer { display: none; }
 body.app[data-sidebar-rail] .sidebar-header .sidebar-action { display: none; }
 body.app[data-sidebar-rail] .sidebar-header { padding: 0 var(--space-3) var(--space-3); justify-content: center; gap: 0; }
-body.app[data-sidebar-rail] .sidebar-rail-toggle::before { content: "⇥"; }
+body.app[data-sidebar-rail] .sidebar-rail-toggle::before { content: "☰"; }
 body.app[data-sidebar-rail] .sidebar-rail-toggle { font-size: 0; }
 body.app[data-sidebar-rail] .sidebar-rail-toggle::before { font-size: var(--text-base); }
 body.app[data-sidebar-rail] .sidebar-section-header,
@@ -913,7 +889,6 @@ body.app[data-sidebar-rail] .project-new-btn { display: none; }
 body.app[data-sidebar-rail] .sb-row { grid-template-columns: 1fr; padding: var(--space-2); justify-content: center; }
 body.app[data-sidebar-rail] .sb-row .text-col,
 body.app[data-sidebar-rail] .sb-row .title,
-body.app[data-sidebar-rail] .sb-row .meta,
 body.app[data-sidebar-rail] .sb-row .row-end { display: none; }
 
 /* Container query — the same collapse triggered structurally if a parent
@@ -922,7 +897,6 @@ body.app[data-sidebar-rail] .sb-row .row-end { display: none; }
 @container sidebar (max-width: 80px) {
   .sb-row .text-col,
   .sb-row .title,
-  .sb-row .meta,
   .sb-row .row-end,
   .sidebar-section-header .count,
   .project-header .project-name,
@@ -959,6 +933,19 @@ body.app[data-sidebar-rail] .sb-row .row-end { display: none; }
   letter-spacing: 0;
   font-size: var(--text-sm);
   color: var(--text);
+}
+/* Project headers in the client-rendered tree (2026-07-11 polish): the
+   header is the sidebar's grouping level, so it steps UP the type scale
+   (--text-base, semibold) instead of blending into the session rows below
+   it. Whitespace between project groups comes from the header's own
+   margin-top — never from padding inside session rows, whose height is a
+   settled density decision. */
+.sb-tree .project-name {
+  font-size: var(--text-base);
+  font-weight: 600;
+}
+.sb-tree .project-header:not(:first-child) {
+  margin-top: var(--space-3);
 }
 /* In de-weighted bands (recent/older/test) the project name dims so the
    active band stays visually dominant. */
@@ -1069,9 +1056,15 @@ body.app[data-sidebar-rail] .sb-row .row-end { display: none; }
    rather than rendered as its own full-width row, so it overrides
    .subagent-toggle's block/indent layout down to a small inline control.
    Shares .subagent-toggle's dim color + rail/container-collapse hiding
-   (below) for visual consistency; only sizing/placement differs. */
+   (below) for visual consistency; only sizing/placement differs.
+
+   Visibility (2026-07-11 polish): hidden on plain collapsed rows so a
+   resting sidebar shows no "› N" noise. Revealed on row hover /
+   focus-within (keyboard: tabbing to the row's link reveals it, so it is
+   the next tab stop), on the active session's row, and always while its
+   children are expanded (the fold-back-up control must not vanish). */
 .subagent-toggle.sb-children-toggle {
-  display: inline-flex;
+  display: none;
   align-items: center;
   justify-content: center;
   width: auto;
@@ -1083,6 +1076,12 @@ body.app[data-sidebar-rail] .sb-row .row-end { display: none; }
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   font-size: var(--text-2xs);
+}
+.sb-row:hover .sb-children-toggle,
+.sb-row:focus-within .sb-children-toggle,
+.sb-row[data-active] .sb-children-toggle,
+.subagent-toggle.sb-children-toggle[aria-expanded="true"] {
+  display: inline-flex;
 }
 .sb-children-chevron {
   display: inline-block;
