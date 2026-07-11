@@ -289,6 +289,7 @@ TARGETS=(
 	"native:.:./cmd/serf-hub/internal/launchconfig:FuzzLaunchConfigPersistence::io.go#saveLayerFS"
 	"native:agent:./transcript:FuzzTranscriptWriterPersistence::transcript.go#newWriterFS"
 	"native:agent:./schema:FuzzSessionMetaPersistence::snapshot.go#saveSessionMetaFS"
+	"native:agent:./schema:FuzzSchemaPersistenceFaultProgram::snapshot.go#saveSessionMetaFS;snapshot.go#loadSessionMetaFS;snapshot.go#listSessionMetasFS;turn.go#NewTurn"
 	"native:.:./rendezvous:FuzzRendezvousPersistence::rendezvous.go#writeFS"
 	"native:.:./cmd/serf-hub/internal/hubcore:FuzzHubcorePersistFS::past.go#chmodSQLiteIndexFilesFS"
 	"native:agent:./execenv:FuzzEditFile::local.go#EditFile"
