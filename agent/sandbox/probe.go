@@ -81,8 +81,51 @@ func (f FakeProber) Probe() HostFacts { return f.Facts }
 
 // RealProber probes the live host. It is used only behind explicit opt-in (the
 // gated TestRealProberOptIn / eventual production wiring in M3+): the unit path
-// never constructs it, so unit runs stay hermetic.
-type RealProber struct{}
+// never constructs it, so unit runs stay hermetic. The private system field is
+// an explicit command/filesystem boundary for deterministic package tests;
+// production constructs the zero value and receives hostProbeSystem.
+type RealProber struct {
+	system probeSystem
+}
+
+// probeSystem is the narrow host boundary needed for capability discovery. It
+// intentionally owns every external read and command invocation, so the policy
+// resolver and its deterministic tests never need a process-wide seam or a real
+// bwrap installation.
+type probeSystem interface {
+	goos() string
+	userHomeDir() (string, error)
+	lookPath(string) (string, error)
+	nonDirectoryFile(string) bool
+	run(context.Context, string, ...string) error
+	combinedOutput(context.Context, string, ...string) ([]byte, error)
+	output(context.Context, string, ...string) ([]byte, error)
+}
+
+type hostProbeSystem struct{}
+
+func (hostProbeSystem) goos() string { return runtime.GOOS }
+
+func (hostProbeSystem) userHomeDir() (string, error) { return os.UserHomeDir() }
+
+func (hostProbeSystem) lookPath(name string) (string, error) { return exec.LookPath(name) }
+
+func (hostProbeSystem) nonDirectoryFile(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && !st.IsDir()
+}
+
+func (hostProbeSystem) run(ctx context.Context, name string, args ...string) error {
+	return exec.CommandContext(ctx, name, args...).Run()
+}
+
+func (hostProbeSystem) combinedOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+}
+
+func (hostProbeSystem) output(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).Output()
+}
 
 // probeCommandTimeout bounds each capability-probe subprocess.
 var probeCommandTimeout = 3 * time.Second
@@ -91,24 +134,32 @@ var probeCommandTimeout = 3 * time.Second
 // intentionally conservative here (presence + version); M3 hardens BwrapCapable
 // into a real unprivileged-userns execution probe and adds true overlay
 // detection. The Seatbelt/OS facts are exact.
-func (RealProber) Probe() HostFacts {
-	facts := HostFacts{
-		OS:            runtime.GOOS,
-		KernelVersion: probeKernelVersion(),
+func (p RealProber) Probe() HostFacts {
+	system := p.system
+	if system == nil {
+		system = hostProbeSystem{}
 	}
-	if home, err := os.UserHomeDir(); err == nil {
+	return probeHost(system)
+}
+
+func probeHost(system probeSystem) HostFacts {
+	facts := HostFacts{
+		OS:            system.goos(),
+		KernelVersion: probeKernelVersion(system),
+	}
+	if home, err := system.userHomeDir(); err == nil {
 		facts.Home = home
 	}
 
-	if path, err := exec.LookPath("bwrap"); err == nil {
+	if path, err := system.lookPath("bwrap"); err == nil {
 		facts.BwrapPath = path
-		facts.BwrapCapable = bwrapUsernsWorks(path)
-		facts.OverlaySupported = bwrapSupportsOverlay(path)
+		facts.BwrapCapable = bwrapUsernsWorks(system, path)
+		facts.OverlaySupported = bwrapSupportsOverlay(system, path)
 	}
 
-	if runtime.GOOS == "darwin" {
+	if facts.OS == "darwin" {
 		const seatbelt = "/usr/bin/sandbox-exec"
-		if st, err := os.Stat(seatbelt); err == nil && !st.IsDir() {
+		if system.nonDirectoryFile(seatbelt) {
 			facts.SandboxExecPath = seatbelt
 		}
 	}
@@ -124,12 +175,11 @@ func (RealProber) Probe() HostFacts {
 // namespaced sandbox (`true`) and reports success only if it exits 0 — the exact
 // capability the kernel wrapper relies on. Fail-closed: any error is "not
 // capable" so the floor refuses rather than half-enforcing.
-func bwrapUsernsWorks(path string) bool {
+func bwrapUsernsWorks(system probeSystem, path string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), probeCommandTimeout)
 	defer cancel()
 	args := bwrapProbeArgs(path)
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	return cmd.Run() == nil
+	return system.run(ctx, args[0], args[1:]...) == nil
 }
 
 // bwrapProbeArgs is the full argv (binary included) the capability probe runs. It
@@ -152,10 +202,10 @@ func bwrapProbeArgs(path string) []string {
 // support (`--overlay-src`/`--tmp-overlay`). Only affects cache strategy: when
 // false, cache roots degrade to the session-private redirect (never persistent-
 // writable). bubblewrap 0.9.0 built without overlay omits the option from --help.
-func bwrapSupportsOverlay(path string) bool {
+func bwrapSupportsOverlay(system probeSystem, path string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), probeCommandTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, path, "--help").CombinedOutput()
+	out, err := system.combinedOutput(ctx, path, "--help")
 	if err != nil {
 		return false
 	}
@@ -163,10 +213,10 @@ func bwrapSupportsOverlay(path string) bool {
 }
 
 // probeKernelVersion returns `uname -r` best-effort, or "" if unavailable.
-func probeKernelVersion() string {
+func probeKernelVersion(system probeSystem) string {
 	ctx, cancel := context.WithTimeout(context.Background(), probeCommandTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "uname", "-r").Output()
+	out, err := system.output(ctx, "uname", "-r")
 	if err != nil {
 		return ""
 	}

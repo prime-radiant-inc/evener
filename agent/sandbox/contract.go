@@ -168,9 +168,20 @@ func netTag(net bool) string {
 // runs it with sandbox.Resolve; M2/M3/M6 reuse ContractCases() to hold their
 // backends to the same contract.
 func AssertResolve(t TestingT, resolve ResolveFunc) {
+	assertResolveWith(t, resolve, MaterializeWorkspace)
+}
+
+// contractWorkspaceMaterializer is the external filesystem/Git boundary the
+// resolver contract needs. Production tests use MaterializeWorkspace; an offline
+// caller can provide the same structural .git layouts directly under a temp root.
+// Keeping this boundary explicit lets the contract assertions exercise the real
+// resolver without requiring an ambient Git binary.
+type contractWorkspaceMaterializer func(TestingT, WorkspaceKind) string
+
+func assertResolveWith(t TestingT, resolve ResolveFunc, materialize contractWorkspaceMaterializer) {
 	t.Helper()
 	for _, tc := range ContractCases() {
-		cwd := MaterializeWorkspace(t, tc.Workspace)
+		cwd := materialize(t, tc.Workspace)
 		host := tc.Host
 		if host.Home == "" {
 			host.Home = "/home/contract"
@@ -342,17 +353,18 @@ func ReRootCases() []ReRootCase {
 // worktrees (no mocks; skips when git is unavailable). M6 reuses it so Seatbelt
 // satisfies the same re-root semantics.
 func AssertReRoot(t TestingT, cases []ReRootCase) {
+	assertReRootWith(t, cases, materializeReRootLanes)
+}
+
+// contractReRootMaterializer is the external Git-layout boundary for the
+// re-root contract. The production implementation below shells out to Git;
+// offline callers can materialize the equivalent linked-worktree pointers
+// directly beneath their own temp root.
+type contractReRootMaterializer func(TestingT) (main, laneA, laneB string)
+
+func assertReRootWith(t TestingT, cases []ReRootCase, materialize contractReRootMaterializer) {
 	t.Helper()
-	requireGitHarness(t)
-	main := resolveCleanPath(t.TempDir())
-	gitHarness(t, main, "init", "-q")
-	gitHarness(t, main, "commit", "-q", "--allow-empty", "-m", "init")
-	laneA := main + "-a"
-	laneB := main + "-b"
-	gitHarness(t, main, "worktree", "add", "-q", laneA)
-	gitHarness(t, main, "worktree", "add", "-q", laneB)
-	laneA = resolveCleanPath(laneA)
-	laneB = resolveCleanPath(laneB)
+	main, laneA, laneB := materialize(t)
 
 	for _, tc := range cases {
 		host := tc.Host
@@ -410,6 +422,45 @@ func AssertReRoot(t TestingT, cases []ReRootCase) {
 	}
 }
 
+// contractGitRunner is the one external boundary used by the contract
+// materializers. The public helpers provide gitHarness; focused structural
+// tests can provide a filesystem-only implementation of the same protocol.
+type contractGitRunner func(TestingT, string, ...string)
+
+// contractGitRunnerProvider is deliberately private: only package-local test
+// harnesses can replace the external Git process boundary. Normal callers keep
+// the public materializer APIs and receive the real Git runner below.
+type contractGitRunnerProvider interface {
+	contractGitRunner() contractGitRunner
+}
+
+func contractGitRunnerFor(t TestingT) contractGitRunner {
+	if provider, ok := t.(contractGitRunnerProvider); ok {
+		return provider.contractGitRunner()
+	}
+	requireGitHarness(t)
+	return gitHarness
+}
+
+func materializeReRootLanes(t TestingT) (main, laneA, laneB string) {
+	t.Helper()
+	return materializeReRootLanesWith(t, contractGitRunnerFor(t))
+}
+
+func materializeReRootLanesWith(t TestingT, run contractGitRunner) (main, laneA, laneB string) {
+	t.Helper()
+	main = resolveCleanPath(t.TempDir())
+	run(t, main, "init", "-q")
+	run(t, main, "commit", "-q", "--allow-empty", "-m", "init")
+	laneA = main + "-a"
+	laneB = main + "-b"
+	run(t, main, "worktree", "add", "-q", laneA)
+	run(t, main, "worktree", "add", "-q", laneB)
+	laneA = resolveCleanPath(laneA)
+	laneB = resolveCleanPath(laneB)
+	return main, laneA, laneB
+}
+
 // MaterializeWorkspace creates a real git workspace of the requested kind under a
 // temp dir and returns its cwd. It uses the real git binary (no mocks); when git
 // is unavailable it skips. NonGit returns a bare temp dir.
@@ -417,21 +468,34 @@ func MaterializeWorkspace(t TestingT, kind WorkspaceKind) string {
 	t.Helper()
 	switch kind {
 	case NonGit:
+		return materializeWorkspaceWith(t, kind, nil)
+	case MainCheckout:
+		return materializeWorkspaceWith(t, kind, contractGitRunnerFor(t))
+	case LinkedWorktree:
+		return materializeWorkspaceWith(t, kind, contractGitRunnerFor(t))
+	default:
+		t.Fatalf("MaterializeWorkspace: unsupported kind %v", kind)
+		return ""
+	}
+}
+
+func materializeWorkspaceWith(t TestingT, kind WorkspaceKind, run contractGitRunner) string {
+	t.Helper()
+	switch kind {
+	case NonGit:
 		return resolveCleanPath(t.TempDir())
 	case MainCheckout:
-		requireGitHarness(t)
 		root := resolveCleanPath(t.TempDir())
-		gitHarness(t, root, "init", "-q")
+		run(t, root, "init", "-q")
 		return root
 	case LinkedWorktree:
-		requireGitHarness(t)
 		main := resolveCleanPath(t.TempDir())
-		gitHarness(t, main, "init", "-q")
-		gitHarness(t, main, "commit", "-q", "--allow-empty", "-m", "init")
+		run(t, main, "init", "-q")
+		run(t, main, "commit", "-q", "--allow-empty", "-m", "init")
 		// A sibling path derived from the unique temp `main`, so repeated
 		// LinkedWorktree materializations in one run never collide.
 		wt := main + "-wt"
-		gitHarness(t, main, "worktree", "add", "-q", wt)
+		run(t, main, "worktree", "add", "-q", wt)
 		return resolveCleanPath(wt)
 	default:
 		t.Fatalf("MaterializeWorkspace: unsupported kind %v", kind)

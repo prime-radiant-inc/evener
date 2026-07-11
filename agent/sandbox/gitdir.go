@@ -454,14 +454,49 @@ func includePathValue(line string) string {
 	}
 	val := strings.TrimSpace(line[i+1:])
 	if len(val) >= 2 && val[0] == '"' {
-		if end := strings.Index(val[1:], `"`); end >= 0 {
-			return strings.ReplaceAll(val[1:1+end], `\"`, `"`)
+		if parsed, ok := quotedIncludePathValue(val); ok {
+			return parsed
 		}
+		return ""
 	}
 	if c := strings.IndexAny(val, "#;"); c >= 0 {
 		val = strings.TrimSpace(val[:c])
 	}
 	return val
+}
+
+// quotedIncludePathValue returns the first complete double-quoted git-config
+// value. Git permits escaped quotes and backslashes in a quoted value; scanning
+// the closing quote rather than using strings.Index prevents an escaped quote in
+// an include path from truncating the path and bypassing include protection.
+func quotedIncludePathValue(value string) (string, bool) {
+	var out strings.Builder
+	for i := 1; i < len(value); i++ {
+		switch value[i] {
+		case '"':
+			return out.String(), true
+		case '\\':
+			i++
+			if i == len(value) {
+				return "", false
+			}
+			switch value[i] {
+			case '"', '\\':
+				out.WriteByte(value[i])
+			case 'n':
+				out.WriteByte('\n')
+			case 't':
+				out.WriteByte('\t')
+			case 'b':
+				out.WriteByte('\b')
+			default:
+				return "", false
+			}
+		default:
+			out.WriteByte(value[i])
+		}
+	}
+	return "", false
 }
 
 // globCouldReachWritable reports whether a glob include path might match a file
