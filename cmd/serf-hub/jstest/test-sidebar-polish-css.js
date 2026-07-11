@@ -55,7 +55,13 @@ if (css.indexOf(".sb-tree .project-header:not(:first-child)") === -1 ||
 // Row height must stay as-is: no vertical padding creep inside rows.
 if (!/padding:\s*4px var\(--space-4\)/.test(ruleBody(".sb-row {"))) fails.push("row padding must stay 4px vertical");
 
-// 5) Rail toggle is a hamburger.
+// 5) Subagent child rows share the row's single-line 3-track grid — the
+//    age/⋯ row-end must not wrap onto a second line (screenshot-caught).
+if (!/grid-template-columns:\s*14px minmax\(0,\s*1fr\)\s*auto/.test(ruleBody(".subagent-row {"))) {
+  fails.push(".subagent-row needs a 3-track grid so row-end stays on the same line");
+}
+
+// 6) Rail toggle is a hamburger.
 if (/data-sidebar-rail-toggle[^>]*>⇤/.test(appHtml)) fails.push("rail toggle must not be the '⇤' glyph");
 if (!/data-sidebar-rail-toggle[^>]*>☰/.test(appHtml)) fails.push("rail toggle must be a hamburger (☰)");
 

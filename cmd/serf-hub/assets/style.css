@@ -973,8 +973,11 @@ body.app[data-sidebar-rail] .sb-row .row-end { display: none; }
    Replaces the 2-column .sb-row.sub treatment for subagents specifically;
    forks keep the full row. */
 .subagent-row {
-  grid-template-columns: 14px 1fr;
-  align-items: baseline;
+  /* Three tracks, mirroring .sb-row (icon, title, row-end): the rows are
+     built by buildRow, so they carry a .row-end (age/⋯) that must share the
+     single line — a 2-track grid wrapped it onto its own row. */
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: center;
   gap: var(--space-2);
   padding: 2px var(--space-4) 2px var(--space-7);
   font-size: var(--text-xs);
