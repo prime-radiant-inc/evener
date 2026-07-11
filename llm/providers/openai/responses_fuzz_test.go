@@ -161,6 +161,15 @@ func FuzzOpenAIResponsesMetamorphic(f *testing.F) {
 			`data: {"type":"response.output_item.done"}` + "\n\n",
 		// An unrecognized event type → the default raw-passthrough branch.
 		`data: {"type":"response.totally_unknown_event"}` + "\n\n",
+		// GPT-5.6 streams interleave item types serf does not use (program /
+		// program_output / tool_search_call / compaction); the decoder must
+		// tolerate them around ordinary text and tool calls.
+		`data: {"type":"response.output_item.added","item":{"type":"program","id":"prog_1"}}` + "\n\n" +
+			`data: {"type":"response.output_item.added","item":{"type":"tool_search_call","id":"ts_1","status":"in_progress"}}` + "\n\n" +
+			`data: {"type":"response.output_item.done","item":{"type":"program_output","id":"po_1","output":"ok"}}` + "\n\n" +
+			`data: {"type":"response.output_text.delta","delta":"hi"}` + "\n\n" +
+			`data: {"type":"response.output_item.done","item":{"type":"compaction","id":"cmp_1"}}` + "\n\n" +
+			`data: {"type":"response.completed","response":{"id":"resp_56","model":"gpt-5.6-sol","status":"completed","output":[{"type":"program","id":"prog_1"},{"type":"message","content":[{"type":"output_text","text":"hi"}]},{"type":"compaction","id":"cmp_1"}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}` + "\n\n",
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))

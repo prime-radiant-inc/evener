@@ -68,6 +68,14 @@ func buildFuzzRequest(model, system, user string, toolArgs, toolParams []byte, s
 		req.ReasoningEffort = &eff
 	}
 	req.WebSearch = sel&4 == 4
+	if sel&32 == 32 {
+		// Image input, with the fuzzed string doubling as a detail hint —
+		// exercises the per-model detail encoding (omitted on responses-lite).
+		req.Messages[1].Content = append(req.Messages[1].Content, llm.ContentPart{
+			Kind:  llm.ContentImage,
+			Image: &llm.ImageData{MediaType: "image/png", Data: []byte{0x01}, Detail: system},
+		})
+	}
 	req.StopSequences = []string{system, user}
 	return req
 }
@@ -75,6 +83,9 @@ func buildFuzzRequest(model, system, user string, toolArgs, toolParams []byte, s
 func fuzzRequestSeeds(f *testing.F) {
 	f.Add("gpt-test", "be terse", "hello", []byte(`{"city":"paris"}`), []byte(`{"type":"object","properties":{"x":{"type":"string"}}}`), byte(0))
 	f.Add("gpt-5", "", "", []byte(`{}`), []byte(`{"oneOf":[{"type":"string"}]}`), byte(3))
+	// gpt-5.6 takes the responses-lite request shape (no image detail,
+	// reasoning always sent, prompt_cache_options).
+	f.Add("gpt-5.6-sol", "high", "look at this", []byte(`{"x":1}`), []byte(`{"type":"object"}`), byte(34))
 	f.Add("m", "sys", "u", []byte(`not json`), []byte(`null`), byte(11))
 	f.Add("", "s", "u", []byte(``), []byte(`{"anyOf":[1,2]}`), byte(22))
 }
