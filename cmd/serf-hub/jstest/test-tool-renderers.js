@@ -19,14 +19,16 @@ function newHarness() {
       <div class="input-controls">
         <div class="controls-left">
           <button type="button" data-attach-trigger>+</button>
-          <button type="button" class="tasks-status" data-tasks-trigger title="task list"><span class="status-key">tasks</span><span class="status-value" data-task-status-text>loading…</span></button>
         </div>
       </div>
       <textarea class="message-input"></textarea>
     </form>
-    <div id="input-status">
-      <span class="status-badge" data-state="active"><span class="status-dot" data-state="active"></span>Working</span>
-      <span class="status-item liveness-inline" data-liveness hidden></span>
+    <div class="input-status-rail">
+      <div id="input-status">
+        <span class="status-badge" data-state="active"><span class="status-dot" data-state="active"></span>Working</span>
+        <span class="status-item liveness-inline" data-liveness hidden></span>
+      </div>
+      <button type="button" class="tasks-status" data-tasks-trigger title="task list"><span class="status-key">tasks</span><span class="status-value" data-task-status-text>loading…</span></button>
     </div>
   </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
   const { window } = dom;
@@ -454,10 +456,12 @@ await scenario("composer task status shows badge progress and current task text"
   ]);
   const headerTasks = window.document.querySelector(".workspace-actions [data-tasks-trigger]");
   if (headerTasks) return { ok: false, detail: "tasks trigger should not be in header actions" };
-  const trigger = window.document.querySelector(".controls-left [data-tasks-trigger]");
-  if (!trigger) return { ok: false, detail: "missing composer-controls task trigger" };
-  if (trigger.previousElementSibling !== window.document.querySelector("[data-attach-trigger]")) {
-    return { ok: false, detail: "task trigger must immediately follow attach control" };
+  const inCard = window.document.querySelector(".input-controls [data-tasks-trigger]");
+  if (inCard) return { ok: false, detail: "tasks trigger should not live in the composer control row" };
+  const trigger = window.document.querySelector(".input-status-rail [data-tasks-trigger]");
+  if (!trigger) return { ok: false, detail: "missing status-rail task trigger" };
+  if (trigger.closest("#input-status")) {
+    return { ok: false, detail: "task trigger must sit outside the htmx input-status swap target" };
   }
   const text = trigger.querySelector("[data-task-status-text]");
   if (!text) return { ok: false, detail: "missing task status text element" };

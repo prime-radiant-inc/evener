@@ -2642,8 +2642,19 @@ func TestWeb_ThreadDocument_ComposerControlsLiveInsideInputCard(t *testing.T) {
 	requireHTMLDescendant(t, inputCard, inputControls, "input-controls should be inside input-card")
 	requireHTMLDescendant(t, inputControls, controlsLeft, "controls-left should be inside input-controls")
 	requireHTMLDescendant(t, composerSurface, taskTrigger, "task trigger should be a descendant of data-composer-surface")
-	requireHTMLDescendant(t, inputCard, taskTrigger, "task trigger should be a descendant of input-card")
-	requireHTMLDescendant(t, controlsLeft, taskTrigger, "task trigger should be a descendant of controls-left")
+	statusRail := findElement(document, func(node *html.Node) bool { return hasHTMLClass(node, "input-status-rail") })
+	if statusRail == nil {
+		t.Fatalf("missing input-status-rail in rendered thread document")
+	}
+	requireHTMLDescendant(t, composerSurface, statusRail, "input-status-rail should be inside data-composer-surface")
+	requireHTMLDescendant(t, statusRail, taskTrigger, "task trigger should live on the status rail, not in the input card")
+	requireHTMLDescendant(t, statusRail, inputStatus, "input status should live on the status rail")
+	if isHTMLDescendant(inputCard, taskTrigger) {
+		t.Fatalf("task trigger must not live inside the input card")
+	}
+	if isHTMLDescendant(inputStatus, taskTrigger) {
+		t.Fatalf("task trigger must sit outside the htmx input-status swap target so it survives swaps")
+	}
 	requireHTMLDescendant(t, composerSurface, composerModel, "composer model should be inside data-composer-surface")
 	requireHTMLDescendant(t, composerSurface, inputStatus, "input status should be inside data-composer-surface")
 	if strings.Contains(body, `send as steer`) {
@@ -2830,6 +2841,7 @@ func TestWeb_WorkspacePartial_RendersBottomStripAffordances(t *testing.T) {
 		"controls-center",
 		"controls-right",
 		"input-status",
+		"input-status-rail",
 		"data-file-picker",
 	}
 	for _, w := range wants {

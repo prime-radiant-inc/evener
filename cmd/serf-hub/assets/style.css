@@ -1873,7 +1873,14 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
    rules — the phone's .input-status { order: -1 } status-rail-on-top — keep
    working through the wrapper. */
 .workspace-input > [data-composer-surface] { display: flex; flex-direction: column; min-width: 0; }
+/* Status rail: the htmx-swapped telemetry strip plus the tasks trigger, side by
+   side. Tasks is a session fact — like branch/ctx/quiet — so it reads from the
+   rail, not from inside the input card's action row. The trigger stays outside
+   #input-status so htmx swaps never eat its JS-managed badge or listeners. */
+.input-status-rail { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
+.input-status-rail .input-status { flex: 1; min-width: 0; }
 .tasks-status {
+  flex: none;
   appearance: none;
   display: inline-flex;
   align-items: center;
@@ -4153,7 +4160,9 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
 .tasks-list .task-note-text { word-break: break-word; }
 
 /* Tasks button progress badge */
-.panel-toggle-badge { display: inline-flex; align-items: center; padding: var(--space-1) var(--space-3); margin-left: var(--space-2); font-family: var(--font-mono); font-size: var(--text-2xs); color: var(--text-muted); background: var(--bg); border: 1px solid var(--rule); border-radius: var(--radius-md); }
+/* The done/total count reads as quiet mono text, matching the other rail facts
+   (ctx, quiet) — not a boxed chip fighting the input card for attention. */
+.panel-toggle-badge { display: inline-flex; align-items: center; margin-left: var(--space-1); font-family: var(--font-mono); font-size: var(--text-2xs); color: var(--text-muted); }
 
 @container conversation (max-width: 599px) {
   .conversation { --gutter: 8px; padding: var(--space-3); }
@@ -4404,14 +4413,18 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
     margin-top: auto;
     display: flex;
     flex-direction: column;
-    padding: var(--space-2) var(--space-3) calc(var(--space-2) + env(safe-area-inset-bottom));
+    /* No bottom padding here: the safe-area inset lives INSIDE the action
+       row (.input-controls) so the last row of controls reaches down into
+       the home-indicator gutter instead of floating above a dead band. */
+    padding: var(--space-2) var(--space-3) 0;
     background: var(--bg-raised);
     border-top: 1px solid var(--rule);
     transition: border-top-color var(--motion-fast);
   }
   .workspace-input:focus-within { border-top-color: color-mix(in srgb, var(--accent) 55%, var(--rule)); }
   .workspace-input[data-response-mode="ask"] { border-top-color: color-mix(in srgb, var(--state-awaiting) 55%, var(--rule)); }
-  .input-status { order: -1; margin: 0 0 var(--space-2); padding: 0; min-height: 0; }
+  .input-status-rail { order: -1; margin: 0 0 var(--space-2); gap: var(--space-2); }
+  .input-status { margin: 0; padding: 0; min-height: 0; }
   .input-telemetry { gap: var(--space-2); flex-wrap: nowrap; }
 
   .input-card { background: transparent; border: 0; border-radius: 0; padding: var(--space-1) 0; }
@@ -4436,7 +4449,10 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
     font-size: 16px;
   }
 
-  .input-controls { display: flex; align-items: center; flex-wrap: nowrap; gap: var(--space-2); padding-top: var(--space-2); min-width: 0; }
+  /* The action row is the last thing on screen: its tap zone absorbs the
+     safe-area gutter so the buttons sit at the padding-edge of the home-
+     indicator zone. Zero-inset devices get the plain --space-2 they had. */
+  .input-controls { display: flex; align-items: center; flex-wrap: nowrap; gap: var(--space-2); padding-top: var(--space-2); padding-bottom: calc(var(--space-2) + env(safe-area-inset-bottom)); min-width: 0; }
   .controls-left, .controls-right { gap: var(--space-2); flex-wrap: nowrap; flex: none; }
   .controls-center { flex: 1; min-width: 0; overflow: hidden; }
   .composer-model-key { display: none; }
@@ -4653,15 +4669,15 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
   .workspace-header { padding: var(--space-2) var(--space-4) var(--space-2) calc(var(--tap-min) + var(--space-3)); }
   .conversation { padding: var(--space-3) var(--space-4); }
 
-  .workspace-input { padding: var(--space-1) var(--space-3) calc(var(--space-1) + env(safe-area-inset-bottom)); }
+  .workspace-input { padding: var(--space-1) var(--space-3) 0; }
   .queue-preview { margin-bottom: var(--space-1); }
   .input-card { padding: var(--space-1) 0; }
   .message-input { min-height: 24px; max-height: 20dvh; }
-  .input-controls { padding-top: var(--space-1); }
+  .input-controls { padding-top: var(--space-1); padding-bottom: calc(var(--space-1) + env(safe-area-inset-bottom)); }
 
+  .input-status-rail { order: -1; margin: 0 0 var(--space-1); }
   .input-status {
-    order: -1;
-    margin: 0 0 var(--space-1);
+    margin: 0;
     padding: 0;
     min-height: 0;
   }

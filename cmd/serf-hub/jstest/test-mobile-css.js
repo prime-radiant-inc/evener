@@ -118,11 +118,21 @@ pass(bannerWorkspaceRule && /height:\s*calc\(100vh\s*-\s*32px\)\s*;\s*height:\s*
 pass(convScrollRule && /flex:\s*1\s+1\s+0/.test(convScrollRule) && /min-height:\s*0/.test(convScrollRule),
   ".conversation scroll container must be the flexible min-height:0 transcript region");
 
-// On phone the safe-area-aware composer is regular flex content, not sticky.
+// On phone the composer is regular flex content, not sticky, and the
+// safe-area inset lives INSIDE the last control row's tap zone (padding on
+// .input-controls), not as a dead band below the dock (.workspace-input).
 const phoneWorkspaceInputRule = (mobile.match(/\.workspace-input\s*\{[^}]*\}/g) || [])
-  .find((block) => /safe-area-inset-bottom/.test(block));
-pass(phoneWorkspaceInputRule && /flex:\s*0\s+0\s+auto/.test(phoneWorkspaceInputRule) && /margin-top:\s*auto/.test(phoneWorkspaceInputRule) && !/position:\s*sticky/.test(phoneWorkspaceInputRule),
-  "phone safe-area .workspace-input must be non-sticky flex dock content");
+  .find((block) => /flex:\s*0\s+0\s+auto/.test(block));
+pass(phoneWorkspaceInputRule && /margin-top:\s*auto/.test(phoneWorkspaceInputRule) && !/position:\s*sticky/.test(phoneWorkspaceInputRule),
+  "phone .workspace-input must be non-sticky flex dock content");
+pass(phoneWorkspaceInputRule && !/safe-area-inset-bottom/.test(phoneWorkspaceInputRule),
+  "phone .workspace-input must not reserve the safe-area gutter as dock padding");
+for (const [name, responsiveCSS] of [["mobile", mobile], ["short-landscape", shortLandscape]]) {
+  const controlsRule = (responsiveCSS.match(/\.input-controls\s*\{[^}]*\}/g) || [])
+    .find((block) => /safe-area-inset-bottom/.test(block));
+  pass(controlsRule && /padding-bottom:\s*calc\(.*env\(safe-area-inset-bottom\)\)/.test(controlsRule),
+    `${name} .input-controls must absorb env(safe-area-inset-bottom) inside its own padding`);
+}
 
 // Compact telemetry is a single rail: responsive overrides may hide location
 // parts, but must never restore the old wrapping status grid.
