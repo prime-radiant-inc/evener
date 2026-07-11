@@ -89,6 +89,7 @@ func FuzzRootWatchTreeProgram(f *testing.F) {
 		r := &rwlpReader{data: data}
 		rwlpRunManagerProgram(t, r)
 		rwlpRunDrainProgram(t, r)
+		rwlpRunRestoreRetryProgram(t, r)
 	})
 }
 
@@ -332,6 +333,215 @@ func rwlpRunDrainProgram(t *testing.T, r *rwlpReader) {
 	}
 	if outstanding, err := sess.treeHasOutstandingWork(); err != nil || outstanding {
 		t.Fatalf("drained tree still outstanding=%v err=%v", outstanding, err)
+	}
+}
+
+// rwlpRunRestoreRetryProgram exercises the restore-time delivery split against
+// a real persisted Session. The caller frame must be retokened and settled by
+// the notification loop, while an already-durable unroutable frame must be
+// dropped exactly once during the restore retry pass. Terminalizing the watched
+// job before the restart puts both records in terminalFlush, so the final
+// assertions also cover detached-config cleanup rather than only live watches.
+func rwlpRunRestoreRetryProgram(t *testing.T, r *rwlpReader) {
+	t.Helper()
+	stateDir := t.TempDir()
+	workDir := t.TempDir()
+	clk := agenttest.NewFakeClock()
+	client := llm.NewClient()
+	client.Register(&agenttest.ScriptedAdapter{
+		Provider:  "openai",
+		Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("rwlp restored notification") },
+	})
+
+	newSession := func(seed uint64) (*Session, func()) {
+		env := &agenttest.DenyEnv{WorkDir: workDir, Seed: seed}
+		cfg := SessionConfig{
+			StateDir:         stateDir,
+			MaxSubagentDepth: 1,
+			NoProjectPrompts: true,
+			clock:            clk,
+			LLMSleep:         func(context.Context, time.Duration) error { return nil },
+		}
+		cfg.testOnly = testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+		}
+		sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, cfg)
+		if err != nil {
+			t.Fatalf("new restore fixture session: %v", err)
+		}
+		return sess, sess.Close
+	}
+
+	sess, closeSession := newSession(uint64(r.next()))
+	closed := false
+	defer func() {
+		if !closed {
+			closeSession()
+		}
+	}()
+	jm := sess.jobManager
+	rec, err := jm.createShell(createShellOpts{Command: "rwlp restore source"})
+	if err != nil {
+		t.Fatalf("create restore source: %v", err)
+	}
+	run := rwlpRunningJob(t, jm, rec.JobID)
+	watch, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send: &watchSendArgs{
+			To:             runtimeMessageAliasCaller,
+			Message:        "rwlp restore " + rwlpTexts[r.intn(len(rwlpTexts))],
+			IncludeExcerpt: r.bool(),
+		},
+	})
+	if err != nil || !watch.Watching {
+		t.Fatalf("configure restore caller watch = (%+v, %v)", watch, err)
+	}
+	if _, err := jm.appendJobOutput(rec.JobID, run.output, []byte("rwlp ready before restore\n")); err != nil {
+		t.Fatalf("append restore source output: %v", err)
+	}
+	pending, err := jm.store.LoadWatchSends()
+	if err != nil || len(pending.Pending) != 1 {
+		t.Fatalf("caller pending before terminal = (%+v, %v), want one", pending, err)
+	}
+	var callerState jobstore.WatchSendState
+	for _, state := range pending.Pending {
+		if state != nil {
+			callerState = *state
+		}
+	}
+	if callerState.DeliveryID == "" {
+		t.Fatal("caller pending lost delivery id")
+	}
+
+	// An independently durable invalid target makes the restore retry take its
+	// hard-failure branch while the real caller watch follows the token rail.
+	// It is appended through the actual manager store, then reconstructed with
+	// the caller record on the next Session's restore path.
+	droppedState := callerState
+	droppedState.Key.ResolvedSendTo = "dlg_rwlp_missing"
+	droppedState.Key.WatchID += "_missing"
+	droppedState.DeliveryID += "_missing"
+	droppedState.UpdateSeq++
+	droppedState.Frame += "\ndelivery_id: " + droppedState.DeliveryID
+	if err := jm.appendWatchSendEvents([]jobstore.Event{{
+		Kind:      jobstore.EventWatchSendPending,
+		TS:        clk.Now(),
+		WatchSend: &droppedState,
+	}}); err != nil {
+		t.Fatalf("append restore hard-failure pending: %v", err)
+	}
+
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "rwlp restore terminal", nil); err != nil {
+		t.Fatalf("finalize restore source: %v", err)
+	}
+	if rwlpLiveWatchExists(jm, watch.WatchID) {
+		t.Fatalf("terminal source retained live watch %q", watch.WatchID)
+	}
+	meta := sess.Meta()
+	// This is an abrupt process-loss simulation, deliberately distinct from
+	// Session.Close. Graceful close drops terminal-flush sends by contract; a
+	// crash closes its durable handles without inventing those terminal events,
+	// leaving the next Session to reconstruct and retry the persisted ledger.
+	if err := jm.closeStoreOnly(); err != nil {
+		t.Fatalf("close crashed restore source store: %v", err)
+	}
+	if sess.transcript != nil {
+		if err := sess.transcript.Close(); err != nil {
+			t.Fatalf("close crashed restore source transcript: %v", err)
+		}
+	}
+	if sess.cancelFunc != nil {
+		sess.cancelFunc()
+	}
+	closed = true
+
+	restored, err := RestoreSessionFromMetaWithConfig(
+		client,
+		NewOpenAIProfile("gpt-5.2"),
+		&agenttest.DenyEnv{WorkDir: workDir, Seed: uint64(r.next())},
+		meta,
+		RestoreSessionConfig{
+			StateDir: stateDir,
+			clock:    clk,
+			LLMSleep: func(context.Context, time.Duration) error { return nil },
+			testOnly: testConfig{
+				skipGitSnapshot:     true,
+				minimalSystemPrompt: true,
+				noSyncJobStore:      true,
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("restore watch retry session: %v", err)
+	}
+	defer restored.Close()
+
+	rwlpAssertRestoreRetryLedger(t, restored.jobManager, callerState.DeliveryID, droppedState.DeliveryID, false)
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		if _, err := restored.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+			t.Fatalf("restore notification turn %d: %v", i, err)
+		}
+	}
+	rwlpAssertRestoreRetryLedger(t, restored.jobManager, callerState.DeliveryID, droppedState.DeliveryID, true)
+}
+
+// rwlpAssertRestoreRetryLedger asserts the durable semantics shared by both
+// restore outcomes: each delivery id reaches at most one terminal event, the
+// caller state is the sole retryable record before its notification accept, and
+// settling everything releases every detached terminal-flush configuration.
+func rwlpAssertRestoreRetryLedger(t *testing.T, jm *jobManager, callerID, droppedID string, settled bool) {
+	t.Helper()
+	pending, err := jm.store.LoadWatchSends()
+	if err != nil {
+		t.Fatalf("load restored watch sends: %v", err)
+	}
+	if settled {
+		if len(pending.Pending) != 0 {
+			t.Fatalf("restored terminal pendings = %+v, want none after accept", pending.Pending)
+		}
+	} else if len(pending.Pending) != 1 {
+		t.Fatalf("restored retryable pendings = %+v, want caller only", pending.Pending)
+	}
+
+	events, err := jm.store.LoadEvents()
+	if err != nil {
+		t.Fatalf("load restored watch events: %v", err)
+	}
+	terminal := map[string]jobstore.EventKind{}
+	for _, event := range events {
+		if event.WatchSend == nil || event.WatchSend.DeliveryID == "" {
+			continue
+		}
+		if !isWatchSendTerminalEvent(event.Kind) {
+			continue
+		}
+		id := event.WatchSend.DeliveryID
+		if previous, duplicate := terminal[id]; duplicate {
+			t.Fatalf("watch delivery %q reached terminal events %q and %q", id, previous, event.Kind)
+		}
+		terminal[id] = event.Kind
+	}
+	if terminal[droppedID] != jobstore.EventWatchSendDropped {
+		t.Fatalf("restore hard-failure delivery %q terminal event = %q, want dropped", droppedID, terminal[droppedID])
+	}
+	if settled {
+		if terminal[callerID] != jobstore.EventWatchSendDelivered {
+			t.Fatalf("restored caller delivery %q terminal event = %q, want delivered", callerID, terminal[callerID])
+		}
+	} else if _, delivered := terminal[callerID]; delivered {
+		t.Fatalf("caller delivery %q settled before notification accept as %q", callerID, terminal[callerID])
+	}
+
+	jm.mu.Lock()
+	flushCount := len(jm.terminalFlush)
+	liveCount := len(jm.watches)
+	jm.mu.Unlock()
+	if settled && (flushCount != 0 || liveCount != 0) {
+		t.Fatalf("terminal watch cleanup left live=%d flush=%d", liveCount, flushCount)
 	}
 }
 
