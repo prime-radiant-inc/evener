@@ -346,6 +346,22 @@ func TestEnsureManifestFallback_MalformedPackageJSON(t *testing.T) {
 	}
 }
 
+// TestEnsureManifestFallback_EmptyBinName_NoteSkip pins a fuzz-found bug:
+// a bin map whose single entry has an empty name ({"":"cli.js"}) must not be
+// wired — an empty server name fails mcpconfig validation downstream.
+func TestEnsureManifestFallback_EmptyBinName_NoteSkip(t *testing.T) {
+	dir := t.TempDir()
+	writeBinPlugin(t, dir, "oops", `{"":"./cli.js"}`, "cli.js")
+
+	inst, note := fallbackAndLoad(t, dir, CatalogPlugin{Name: "oops"})
+	if len(inst.MCPConfigs) != 0 {
+		t.Errorf("MCPConfigs = %+v, want none for an empty bin name", inst.MCPConfigs)
+	}
+	if note == "" || !strings.Contains(note, "not wiring") {
+		t.Errorf("note = %q, want a skip note", note)
+	}
+}
+
 // TestEnsureManifestFallback_StringBin_NoteSkip: npm also allows "bin" to be a
 // bare string, but no real plugin in the surveyed caches uses it, so serf
 // deliberately does not wire that shape — skip with a note (don't guess).

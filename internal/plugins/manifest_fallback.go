@@ -148,6 +148,10 @@ func detectNPMBinServer(dir, pluginName string) (servers json.RawMessage, note s
 		}
 	}
 
+	if binName == "" || binPath == "" {
+		return nil, fmt.Sprintf("plugin %q: package.json bin entry has an empty name or path; not wiring an MCP server", pluginName)
+	}
+
 	rel := filepath.Clean(filepath.FromSlash(binPath))
 	if filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return nil, fmt.Sprintf("plugin %q: package.json bin %q points outside the plugin directory; not wiring an MCP server", pluginName, binPath)
