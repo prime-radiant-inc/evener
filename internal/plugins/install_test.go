@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	agentplugin "primeradiant.com/serf/agent/plugin"
@@ -147,7 +146,13 @@ func TestInstall_ManifestLessPlugin_MCPServerRegisters(t *testing.T) {
 	}
 }
 
-func TestInstall_ManifestLessPlugin_NoUsableFields_ClearError(t *testing.T) {
+// TestInstall_ManifestLessPlugin_NoUsableFields_Installs mirrors
+// private-journal-mcp@superpowers-marketplace: a bare repo with no plugin
+// scaffolding whose marketplace entry declares no components either. Claude
+// Code installs that shape (the plugin contributes only what conventional
+// dirs auto-discover — here nothing), so serf must install it too,
+// synthesizing a minimal name/description manifest.
+func TestInstall_ManifestLessPlugin_NoUsableFields_Installs(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
 	}
@@ -167,16 +172,26 @@ func TestInstall_ManifestLessPlugin_NoUsableFields_ClearError(t *testing.T) {
 	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	_, err := m.Install(context.Background(), "bare-nothing", "acme")
-	if err == nil {
-		t.Fatal("expected Install to fail for a manifest-less plugin with no usable entry fields")
+	entry, err := m.Install(context.Background(), "bare-nothing", "acme")
+	if err != nil {
+		t.Fatalf("Install of a manifest-less, component-less plugin: %v", err)
 	}
-	if strings.Contains(err.Error(), ".codex-plugin") {
-		t.Errorf("error must not name the misleading .codex-plugin path: %v", err)
+	if _, err := os.Stat(filepath.Join(entry.InstallPath, ".claude-plugin", "plugin.json")); err != nil {
+		t.Fatalf("synthesized plugin.json missing: %v", err)
+	}
+	inst, err := agentplugin.Load(entry.InstallPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if inst.Manifest.Name != "bare-nothing" {
+		t.Errorf("Manifest.Name = %q, want bare-nothing", inst.Manifest.Name)
+	}
+	if len(inst.MCPConfigs) != 0 || len(inst.Commands) != 0 || len(inst.Agents) != 0 || len(inst.Skills) != 0 {
+		t.Errorf("expected zero components, got %+v", inst)
 	}
 	reg, _ := LoadRegistry(m.registryPath())
-	if _, ok := reg.Plugins["bare-nothing@acme"]; ok {
-		t.Fatal("a failed install must not leave a registry entry")
+	if _, ok := reg.Plugins["bare-nothing@acme"]; !ok {
+		t.Fatal("a successful install must leave a registry entry")
 	}
 }
 
