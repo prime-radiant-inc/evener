@@ -73,7 +73,9 @@ FuzzRenderToolCall 100.0
 FuzzRealClockProgram 100.0
 FuzzResolveProfileFromConfig 96.6
 FuzzRunFlagParse 100.0
+FuzzSandboxEscalationLifecycleProgram 100.0
 FuzzSessionLogLoad 91.3
+FuzzSessionLoopRecoveryProgram 100.0
 FuzzSessionMetaRoundTrip 79.2
 FuzzSummarizeTool 78.0
 FuzzSkillDiscoveryProgram 99.0
