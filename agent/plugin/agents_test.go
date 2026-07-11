@@ -239,6 +239,119 @@ Body.
 	}
 }
 
+func TestParseAgent_ToolsCommaString(t *testing.T) {
+	// Claude Code agent frontmatter commonly writes tools as a
+	// comma-separated plain string (e.g. superpowers-chrome browser-user).
+	data := []byte(`---
+name: comma-tools
+description: comma
+tools: Read, Grep, Glob, Skill, mcp__plugin_superpowers-chrome_chrome__use_browser
+---
+Body.
+`)
+	agent, err := ParseAgent(data, "p")
+	if err != nil {
+		t.Fatalf("ParseAgent error: %v", err)
+	}
+	if agent.AllTools {
+		t.Error("AllTools should be false")
+	}
+	// Names without a serf canonical equivalent ("Skill", mcp__*) pass through unchanged.
+	want := []string{"read_file", "grep", "glob", "Skill", "mcp__plugin_superpowers-chrome_chrome__use_browser"}
+	if len(agent.Tools) != len(want) {
+		t.Fatalf("Tools = %v, want %v", agent.Tools, want)
+	}
+	for i, w := range want {
+		if agent.Tools[i] != w {
+			t.Errorf("Tools[%d] = %q, want %q", i, agent.Tools[i], w)
+		}
+	}
+}
+
+func TestParseAgent_ToolsSingleString(t *testing.T) {
+	data := []byte(`---
+name: single-tool
+description: single
+tools: Read
+---
+Body.
+`)
+	agent, err := ParseAgent(data, "p")
+	if err != nil {
+		t.Fatalf("ParseAgent error: %v", err)
+	}
+	if agent.AllTools {
+		t.Error("AllTools should be false")
+	}
+	if len(agent.Tools) != 1 || agent.Tools[0] != "read_file" {
+		t.Errorf("Tools = %v, want [read_file]", agent.Tools)
+	}
+}
+
+func TestParseAgent_ToolsCommaStringMessy(t *testing.T) {
+	// Extra whitespace, trailing comma, empty elements are tolerated.
+	data := []byte(`---
+name: messy-tools
+description: messy
+tools: "Read ,  Bash,, shell , "
+---
+Body.
+`)
+	agent, err := ParseAgent(data, "p")
+	if err != nil {
+		t.Fatalf("ParseAgent error: %v", err)
+	}
+	if len(agent.Tools) != 3 || agent.Tools[0] != "read_file" || agent.Tools[1] != "shell" || agent.Tools[2] != "shell" {
+		t.Errorf("Tools = %v, want [read_file shell shell]", agent.Tools)
+	}
+}
+
+func TestParseAgent_ToolsCommaStringAllElement(t *testing.T) {
+	// "all"/"*" mixed into a comma list is rejected the same way as in a
+	// YAML list: unrestricted access must use the scalar `tools: all`.
+	for _, val := range []string{"Read, all", "Read, *"} {
+		data := []byte("---\nname: comma-all\ndescription: bad\ntools: \"" + val + "\"\n---\nBody.\n")
+		if _, err := ParseAgent(data, "p"); err == nil {
+			t.Errorf("expected error for tools = %q", val)
+		}
+	}
+}
+
+func TestParseAgent_SkillsString(t *testing.T) {
+	// Claude Code writes skills as a plain (possibly comma-separated) string.
+	data := []byte(`---
+name: string-skills
+description: skills
+skills: superpowers-chrome:browsing
+---
+Body.
+`)
+	agent, err := ParseAgent(data, "p")
+	if err != nil {
+		t.Fatalf("ParseAgent error: %v", err)
+	}
+	if len(agent.Skills) != 1 || agent.Skills[0] != "superpowers-chrome:browsing" {
+		t.Errorf("Skills = %v, want [superpowers-chrome:browsing]", agent.Skills)
+	}
+}
+
+func TestParseAgent_SkillsCommaString(t *testing.T) {
+	data := []byte(`---
+name: comma-skills
+description: skills
+skills: "a:one, b:two, "
+---
+Body.
+`)
+	agent, err := ParseAgent(data, "p")
+	if err != nil {
+		t.Fatalf("ParseAgent error: %v", err)
+	}
+	if len(agent.Skills) != 2 || agent.Skills[0] != "a:one" || agent.Skills[1] != "b:two" {
+		t.Errorf("Skills = %v, want [a:one b:two]", agent.Skills)
+	}
+}
+
 func TestParseAgent_ToolsStarScalar(t *testing.T) {
 	data := []byte(`---
 name: star
@@ -320,13 +433,13 @@ func TestParseAgent_SkillsInvalidType(t *testing.T) {
 	data := []byte(`---
 name: bad-skills
 description: bad
-skills: not-a-list
+skills: 123
 ---
 Body.
 `)
 	_, err := ParseAgent(data, "p")
 	if err == nil {
-		t.Fatal("expected error for skills not a list")
+		t.Fatal("expected error for skills of non-string, non-list type")
 	}
 }
 
