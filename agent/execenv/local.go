@@ -60,10 +60,20 @@ var coreEnvVars = []envvars.Var{
 type LocalExecutionEnvironment struct {
 	RootDir     string        // directory that file operations and commands are rooted at
 	EnvPolicy   EnvVarPolicy  // which env vars child processes inherit
-	runningPIDs *sync.Map     // pid (int) → struct{}
+	runningPIDs *sync.Map     // pid (int) → commandRuntime; legacy marker entries are tolerated by Cleanup
 	gitRoots    *gitRootCache // active working-tree root per cwd (GitRootOrEmpty)
 	mainRoots   *gitRootCache // stable main repo root per cwd (ResolveMainRepoRoot)
 	fs          afero.Fs      // filesystem backing ReadFile/WriteFile/EditFile; defaults to the OS
+
+	// commandFactory, inheritedEnv, lookPath, sandboxTmpBase, and terminationGrace
+	// are instance-local test seams. Nil/empty values retain production os/exec,
+	// os.Environ, exec.LookPath, os.TempDir, and terminateGrace behavior. Keeping
+	// them on the environment avoids global swaps in deterministic fuzzers.
+	commandFactory   commandRuntimeFactory
+	inheritedEnv     func() []string
+	lookPath         func(string) (string, error)
+	sandboxTmpBase   string
+	terminationGrace *time.Duration
 
 	// Sandbox is the resolved sandbox policy for this environment, or nil for the
 	// default (off) — exactly today's behavior. M2 consults it in the FILE tools
@@ -144,15 +154,20 @@ func (e *LocalExecutionEnvironment) WithSandboxInvocationGrant(path string) Exec
 		return e
 	}
 	return &LocalExecutionEnvironment{
-		RootDir:      e.RootDir,
-		EnvPolicy:    e.EnvPolicy,
-		runningPIDs:  e.runningPIDs,
-		gitRoots:     e.gitRoots,
-		mainRoots:    e.mainRoots,
-		fs:           e.fs,
-		Sandbox:      e.Sandbox,
-		Wrapper:      e.Wrapper,
-		sandboxGrant: filepath.Clean(path),
+		RootDir:          e.RootDir,
+		EnvPolicy:        e.EnvPolicy,
+		runningPIDs:      e.runningPIDs,
+		gitRoots:         e.gitRoots,
+		mainRoots:        e.mainRoots,
+		fs:               e.fs,
+		commandFactory:   e.commandFactory,
+		inheritedEnv:     e.inheritedEnv,
+		lookPath:         e.lookPath,
+		sandboxTmpBase:   e.sandboxTmpBase,
+		terminationGrace: e.terminationGrace,
+		Sandbox:          e.Sandbox,
+		Wrapper:          e.Wrapper,
+		sandboxGrant:     filepath.Clean(path),
 	}
 }
 
@@ -212,6 +227,28 @@ func (e *LocalExecutionEnvironment) SetFs(fs afero.Fs) *LocalExecutionEnvironmen
 	return e
 }
 
+func (e *LocalExecutionEnvironment) commands() commandRuntimeFactory {
+	if e.commandFactory != nil {
+		return e.commandFactory
+	}
+	return systemCommandRuntimeFactory{}
+}
+
+func (e *LocalExecutionEnvironment) commandEnvironment(extra map[string]string) []string {
+	inherited := os.Environ()
+	if e.inheritedEnv != nil {
+		inherited = e.inheritedEnv()
+	}
+	return filteredEnvWithSource(e.EnvPolicy, extra, inherited)
+}
+
+func (e *LocalExecutionEnvironment) findExecutable(name string) (string, error) {
+	if e.lookPath != nil {
+		return e.lookPath(name)
+	}
+	return execLookPath(name)
+}
+
 // EnableSandbox provisions this env for a sandboxed session from an already-
 // resolved policy: it creates a fresh per-session tmp (NewSessionTmp) that the env
 // OWNS and disposes at Cleanup, attaches the policy, and — on the bwrap backend —
@@ -247,7 +284,7 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 		e.Wrapper = nil
 		return nil
 	}
-	tmp, err := sandbox.NewSessionTmp("")
+	tmp, err := sandbox.NewSessionTmp(e.sandboxTmpBase)
 	if err != nil {
 		// Leave the env unsandboxed: a half-wired sandbox must never run, and the
 		// prior policy/wrapper (torn down above) must not silently persist.
@@ -329,12 +366,17 @@ func (e *LocalExecutionEnvironment) filesystem() afero.Fs {
 // set. The owned session tmp is NOT copied: only the constructing env disposes it.
 func (e *LocalExecutionEnvironment) WithWorkingDirectory(dir string) *LocalExecutionEnvironment {
 	child := &LocalExecutionEnvironment{
-		RootDir:     dir,
-		EnvPolicy:   e.EnvPolicy,
-		runningPIDs: e.runningPIDs,
-		gitRoots:    &gitRootCache{m: map[string]string{}},
-		mainRoots:   &gitRootCache{m: map[string]string{}},
-		fs:          e.fs,
+		RootDir:          dir,
+		EnvPolicy:        e.EnvPolicy,
+		runningPIDs:      e.runningPIDs,
+		gitRoots:         &gitRootCache{m: map[string]string{}},
+		mainRoots:        &gitRootCache{m: map[string]string{}},
+		fs:               e.fs,
+		commandFactory:   e.commandFactory,
+		inheritedEnv:     e.inheritedEnv,
+		lookPath:         e.lookPath,
+		sandboxTmpBase:   e.sandboxTmpBase,
+		terminationGrace: e.terminationGrace,
 	}
 	if e.Sandbox != nil {
 		if rerooted, err := e.Sandbox.ReRoot(dir); err != nil {
@@ -421,6 +463,13 @@ func (e *LocalExecutionEnvironment) Initialize() error {
 // seconds.
 var terminateGrace = 2 * time.Second
 
+func (e *LocalExecutionEnvironment) terminationGraceDuration() time.Duration {
+	if e.terminationGrace != nil {
+		return *e.terminationGrace
+	}
+	return terminateGrace
+}
+
 // Cleanup terminates any tracked processes by sending SIGTERM to each process
 // group, waiting two seconds for graceful shutdown, then sending SIGKILL to
 // every tracked process group (a no-op for those that already exited).
@@ -446,22 +495,41 @@ func (e *LocalExecutionEnvironment) Cleanup() {
 		defer func() { _ = tmp.Cleanup() }()
 	}
 
-	// Collect running PIDs and send SIGTERM.
-	var pids []int
-	e.runningPIDs.Range(func(key, _ any) bool {
-		pids = append(pids, key.(int))
+	// Collect running process handles and send SIGTERM. Command execution stores a
+	// commandRuntime so scripted runtimes own their teardown too; a legacy marker
+	// value falls back to the historical PID process-group signals.
+	type trackedProcess struct {
+		pid     int
+		runtime commandRuntime
+	}
+	var processes []trackedProcess
+	e.runningPIDs.Range(func(key, value any) bool {
+		pid, ok := key.(int)
+		if !ok {
+			return true
+		}
+		runtime, _ := value.(commandRuntime)
+		processes = append(processes, trackedProcess{pid: pid, runtime: runtime})
 		return true
 	})
-	if len(pids) == 0 {
+	if len(processes) == 0 {
 		return
 	}
-	for _, pid := range pids {
-		terminateProcessGroup(pid)
+	for _, process := range processes {
+		if process.runtime != nil {
+			process.runtime.Terminate()
+		} else {
+			terminateProcessGroup(process.pid)
+		}
 	}
 	// Wait for graceful shutdown, then SIGKILL survivors.
-	time.Sleep(terminateGrace)
-	for _, pid := range pids {
-		killProcessGroup(pid)
+	time.Sleep(e.terminationGraceDuration())
+	for _, process := range processes {
+		if process.runtime != nil {
+			process.runtime.Kill()
+		} else {
+			killProcessGroup(process.pid)
+		}
 	}
 }
 
@@ -966,7 +1034,7 @@ func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter
 		return sfs.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults, outputMode)
 	}
 
-	rg, err := execLookPath("rg")
+	rg, err := e.findExecutable("rg")
 	if err != nil {
 		// Fallback to native Go regex search when ripgrep is absent
 		return e.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults, outputMode)
@@ -1048,18 +1116,18 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 // to SIGKILL. It returns an ExecResult capturing stdout, stderr, exit code,
 // timeout status, and duration.
 func (e *LocalExecutionEnvironment) ExecCommand(ctx context.Context, command string, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error) {
-	return e.execPreparedCommand(ctx, shellCommand(command), timeoutMS, workingDir, envVars)
+	return e.execPreparedCommand(ctx, e.commands().Shell(command), timeoutMS, workingDir, envVars)
 }
 
 // ExecArgv runs a command directly, without a shell, while preserving the same
 // working-directory, environment, process-group, timeout, and result semantics
 // as ExecCommand. Use it when the caller already has structured argv.
 func (e *LocalExecutionEnvironment) ExecArgv(ctx context.Context, name string, args []string, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error) {
-	cmd := execCommandContext(ctx, name, args...)
+	cmd := e.commands().Argv(ctx, name, args...)
 	return e.execPreparedCommand(ctx, cmd, timeoutMS, workingDir, envVars)
 }
 
-func (e *LocalExecutionEnvironment) execPreparedCommand(ctx context.Context, cmd *exec.Cmd, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error) {
+func (e *LocalExecutionEnvironment) execPreparedCommand(ctx context.Context, cmd commandRuntime, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error) {
 	if timeoutMS <= 0 {
 		timeoutMS = 10_000
 	}
@@ -1075,27 +1143,27 @@ func (e *LocalExecutionEnvironment) execPreparedCommand(ctx context.Context, cmd
 	}
 
 	start := time.Now()
-	cmd.Dir = dir
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = filteredEnvWithPolicy(e.EnvPolicy, envVars)
-	cmd.Env = injectLocalVenvPath(cmd.Env, []string{dir, e.RootDir})
-	if len(cmd.Args) > 0 {
-		if resolved, ok := lookPathInEnv(cmd.Args[0], cmd.Env); ok {
-			cmd.Path = resolved
-			cmd.Err = nil
+	var stdout, stderr bytes.Buffer
+	env := injectLocalVenvPath(e.commandEnvironment(envVars), []string{dir, e.RootDir})
+	config := commandRuntimeConfig{
+		Dir:     dir,
+		Env:     env,
+		Stdout:  &stdout,
+		Stderr:  &stderr,
+		Wrapper: e.Wrapper,
+	}
+	if args := cmd.Args(); len(args) > 0 {
+		if resolved, ok := lookPathInEnv(args[0], env); ok {
+			config.ExecutablePath = resolved
 		}
 	}
-	e.wrapForSandbox(cmd, dir)
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cmd.Configure(config)
 
 	if err := cmd.Start(); err != nil {
 		return ExecResult{ExitCode: 127}, err
 	}
-	pid := cmd.Process.Pid
-	e.runningPIDs.Store(pid, struct{}{})
+	pid := cmd.PID()
+	e.runningPIDs.Store(pid, cmd)
 	defer e.runningPIDs.Delete(pid)
 
 	done := make(chan error, 1)
@@ -1118,25 +1186,24 @@ func (e *LocalExecutionEnvironment) execPreparedCommand(ctx context.Context, cmd
 	}
 
 	if interrupted {
-		terminateProcessGroup(cmd.Process.Pid)
+		cmd.Terminate()
 		select {
 		case <-done:
 			// exited on SIGTERM
-		case <-time.After(terminateGrace):
-			killProcessGroup(cmd.Process.Pid)
+		case <-time.After(e.terminationGraceDuration()):
+			cmd.Kill()
 			// Best-effort: wait a bit for Wait() to return so we don't leak the goroutine.
 			select {
 			case <-done:
-			case <-time.After(terminateGrace):
+			case <-time.After(e.terminationGraceDuration()):
 			}
 		}
 	}
 
 	exitCode := 0
 	if waitErr != nil {
-		ee := &exec.ExitError{}
-		if errors.As(waitErr, &ee) {
-			exitCode = ee.ExitCode()
+		if code, ok := cmd.ExitCode(waitErr); ok {
+			exitCode = code
 		} else if timedOut {
 			exitCode = 124
 		} else if errors.Is(waitErr, context.Canceled) {
@@ -1181,20 +1248,20 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 		}
 	}
 
-	cmd := shellCommand(command)
-	cmd.Dir = dir
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = filteredEnvWithPolicy(e.EnvPolicy, envVars)
-	cmd.Env = injectLocalVenvPath(cmd.Env, []string{dir, e.RootDir})
-	cmd.Stdout = out
-	cmd.Stderr = out
-	e.wrapForSandbox(cmd, dir)
+	cmd := e.commands().Shell(command)
+	cmd.Configure(commandRuntimeConfig{
+		Dir:     dir,
+		Env:     injectLocalVenvPath(e.commandEnvironment(envVars), []string{dir, e.RootDir}),
+		Stdout:  out,
+		Stderr:  out,
+		Wrapper: e.Wrapper,
+	})
 
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	pid := cmd.Process.Pid
-	e.runningPIDs.Store(pid, struct{}{})
+	pid := cmd.PID()
+	e.runningPIDs.Store(pid, cmd)
 	detachedStart := false
 	if d, ok := ctx.(interface{ DetachAfterStart() }); ok {
 		d.DetachAfterStart()
@@ -1216,9 +1283,9 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 				return
 			default:
 			}
-			terminateProcessGroup(pid)
+			cmd.Terminate()
 			go func() {
-				timer := time.NewTimer(terminateGrace)
+				timer := time.NewTimer(e.terminationGraceDuration())
 				defer timer.Stop()
 				select {
 				case <-done:
@@ -1228,7 +1295,7 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 					case <-done:
 						return
 					default:
-						killProcessGroup(pid)
+						cmd.Kill()
 					}
 				}
 			}()
@@ -1249,9 +1316,8 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 		defer doneOnce.Do(func() { close(done) })
 		defer e.runningPIDs.Delete(pid)
 		if err := cmd.Wait(); err != nil {
-			ee := &exec.ExitError{}
-			if errors.As(err, &ee) {
-				return ee.ExitCode(), nil
+			if code, ok := cmd.ExitCode(err); ok {
+				return code, nil
 			}
 			return 127, err
 		}
@@ -1427,12 +1493,7 @@ func (e *LocalExecutionEnvironment) KernelWrapper() *sandbox.Wrapper { return e.
 // When Wrapper is nil it does nothing beyond the (already-default) fd hygiene, so
 // a non-sandboxed spawn stays byte-identical to before.
 func (e *LocalExecutionEnvironment) wrapForSandbox(cmd *exec.Cmd, dir string) {
-	cmd.ExtraFiles = nil
-	if e.Wrapper == nil {
-		return
-	}
-	cmd.Env = sandbox.ApplyEnvFloor(cmd.Env, e.Wrapper.Policy(), e.Wrapper.SessionTmp())
-	e.Wrapper.Confine(cmd, dir)
+	wrapCommandForSandbox(cmd, e.Wrapper, dir)
 }
 
 func (e *LocalExecutionEnvironment) resolve(path string) string {
@@ -1524,9 +1585,13 @@ func killProcessGroup(pid int) {
 }
 
 func filteredEnvWithPolicy(policy EnvVarPolicy, extra map[string]string) []string {
+	return filteredEnvWithSource(policy, extra, os.Environ())
+}
+
+func filteredEnvWithSource(policy EnvVarPolicy, extra map[string]string, inherited []string) []string {
 	switch policy {
 	case EnvPolicyAll:
-		out := os.Environ()
+		out := append([]string(nil), inherited...)
 		for k, v := range extra {
 			out = append(out, k+"="+v)
 		}
@@ -1543,7 +1608,7 @@ func filteredEnvWithPolicy(policy EnvVarPolicy, extra map[string]string) []strin
 			core[v.Name] = true
 		}
 		out := []string{}
-		for _, kv := range os.Environ() {
+		for _, kv := range inherited {
 			k, _, ok := strings.Cut(kv, "=")
 			if ok && core[k] {
 				out = append(out, kv)
@@ -1554,14 +1619,18 @@ func filteredEnvWithPolicy(policy EnvVarPolicy, extra map[string]string) []strin
 		}
 		return out
 	default: // EnvPolicyDefault
-		return filteredEnv(extra)
+		return filteredEnvFrom(extra, inherited)
 	}
 }
 
 func filteredEnv(extra map[string]string) []string {
+	return filteredEnvFrom(extra, os.Environ())
+}
+
+func filteredEnvFrom(extra map[string]string, inherited []string) []string {
 	deny := sandbox.IsSecretEnvName
 	out := []string{}
-	for _, kv := range os.Environ() {
+	for _, kv := range inherited {
 		k, _, ok := strings.Cut(kv, "=")
 		if !ok {
 			continue
