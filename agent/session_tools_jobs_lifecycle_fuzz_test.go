@@ -40,13 +40,13 @@ func FuzzJobtoolsLifecycleProgram(f *testing.F) {
 	// The fixed replay drives all eleven controls consumed below: every invalid
 	// delegate mode, both nested-list states, every read-window mode, and each
 	// watch-message variant. Short corpus inputs still exercise defaulting.
-	for invalidDelegateMode := byte(0); invalidDelegateMode < 5; invalidDelegateMode++ {
+	for readMode := byte(0); readMode < 6; readMode++ {
 		f.Add([]byte{
-			invalidDelegateMode, // invalid delegate shape
+			readMode % 5,        // invalid delegate shape
 			1, 2, 3, 4, 0, 1, 2, // message and shell controls
-			invalidDelegateMode & 1, // include_nested
-			invalidDelegateMode,     // read-window mode
-			4 - invalidDelegateMode, // watch message
+			readMode & 1, // include_nested
+			readMode,     // read-window mode
+			5 - readMode, // watch message
 		})
 	}
 
@@ -397,7 +397,7 @@ func jtlpSeedTerminalShell(t *testing.T, s *Session, r *jtlpReader) *jobstore.Jo
 
 func jtlpReadArgs(r *jtlpReader, jobID string) map[string]any {
 	args := map[string]any{"job_id": jobID}
-	switch r.intn(5) {
+	switch r.intn(6) {
 	case 0:
 		args["grep"] = "needle"
 	case 1:
@@ -405,6 +405,9 @@ func jtlpReadArgs(r *jtlpReader, jobID string) map[string]any {
 	case 2:
 		args["tail_lines"] = float64(1)
 	case 3:
+		args["head_lines"] = float64(1)
+		args["tail_lines"] = float64(1)
+	case 4:
 		args["from_line"] = float64(1)
 		args["line_count"] = float64(1)
 	}
