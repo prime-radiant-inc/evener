@@ -29,6 +29,10 @@ func FuzzParseAgent(f *testing.F) {
 		"---\nname: a\ndescription: d\nmodel: opus\ncolor: red\ntools: all\n---\n",
 		"---\nname: a\ndescription: d\ntools:\n  - read_file\n  - shell\nskills:\n  - x\n---\nprompt",
 		"---\nname: a\ndescription: d\ntools:\n  - \"*\"\n---\n",
+		"---\nname: a\ndescription: d\ntools: Read, Grep, Glob, Skill, mcp__plugin_x_y__z\n---\nbody",
+		"---\nname: a\ndescription: d\ntools: \"Read ,  Bash,, shell , \"\nskills: \"a:one, b:two, \"\n---\n",
+		"---\nname: a\ndescription: d\ntools: Read, all\n---\n",
+		"---\nname: a\ndescription: d\ntools: \",,,\"\nskills: sp:browsing\n---\n",
 		"---\nname: a\ndescription: d\ntasks:\n  - title: t\n    prompt: p\n    type: research\n---\n",
 		"---\nname: a\n---\nmissing description",
 		"---\ndescription: d\n---\nmissing name",
@@ -65,6 +69,19 @@ func FuzzParseAgent(f *testing.F) {
 		}
 		if agent.AllTools && len(agent.Tools) != 0 {
 			t.Fatalf("AllTools set but Tools list non-empty: %v", agent.Tools)
+		}
+		// Comma-string splitting must never yield empty or "all"/"*" entries;
+		// skills likewise never contain empty entries.
+		for _, tool := range agent.Tools {
+			switch tool {
+			case "", "all", "*":
+				t.Fatalf("accepted agent has invalid tool entry %q in %v", tool, agent.Tools)
+			}
+		}
+		for _, sk := range agent.Skills {
+			if sk == "" {
+				t.Fatalf("accepted agent has empty skill entry in %v", agent.Skills)
+			}
 		}
 
 		// SystemPrompt must equal the frontmatter body. A successful ParseAgent

@@ -88,33 +88,24 @@ func discoverPluginCommands(pluginDir string, commandsOverride json.RawMessage, 
 		}
 	}
 
-	dirs := resolveComponentDirs(pluginDir, "commands", override)
-	commands := map[string]Command{}
+	files, err := componentMarkdownFiles(resolveComponentDirs(pluginDir, "commands", override))
+	if err != nil {
+		return nil, err
+	}
 
-	for _, dir := range dirs {
-		entries, err := os.ReadDir(dir)
+	commands := map[string]Command{}
+	for _, file := range files {
+		data, err := os.ReadFile(file)
 		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, fmt.Errorf("reading commands dir %q: %w", dir, err)
+			return nil, fmt.Errorf("reading command file %q: %w", filepath.Base(file), err)
 		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
-				continue
-			}
-			data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-			if err != nil {
-				return nil, fmt.Errorf("reading command file %q: %w", entry.Name(), err)
-			}
-			name := strings.TrimSuffix(entry.Name(), ".md")
-			command, err := ParseCommand(data, name, pluginName)
-			if err != nil {
-				return nil, fmt.Errorf("parsing command file %q: %w", entry.Name(), err)
-			}
-			key := pluginName + ":" + command.Name
-			commands[key] = command
+		name := strings.TrimSuffix(filepath.Base(file), ".md")
+		command, err := ParseCommand(data, name, pluginName)
+		if err != nil {
+			return nil, fmt.Errorf("parsing command file %q: %w", filepath.Base(file), err)
 		}
+		key := pluginName + ":" + command.Name
+		commands[key] = command
 	}
 
 	return commands, nil

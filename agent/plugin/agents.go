@@ -27,6 +27,18 @@ type Agent struct {
 	PluginName   string              // owning plugin
 }
 
+// splitCommaList splits a comma-separated string into trimmed, non-empty
+// elements. Claude Code agent frontmatter uses this form for tools/skills.
+func splitCommaList(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // ParseAgent parses a markdown file with YAML frontmatter into an Agent.
 // Required frontmatter fields: name, description.
 // Optional: model, color, tools (mapped to serf canonical names, or the scalar string "all"), skills (plain strings).
@@ -72,6 +84,7 @@ func ParseAgent(data []byte, pluginName string) (Agent, error) {
 		tools    []string
 	)
 	if raw, ok := doc.Meta["tools"]; ok {
+		var names []string
 		switch v := raw.(type) {
 		case string:
 			switch strings.TrimSpace(strings.ToLower(v)) {
@@ -80,7 +93,9 @@ func ParseAgent(data []byte, pluginName string) (Agent, error) {
 			case "*":
 				return Agent{}, errors.New("agent field \"tools\" uses the scalar form \"all\" for unrestricted access; use `tools: all`")
 			default:
-				return Agent{}, errors.New("agent field \"tools\" must be a list of strings or the string \"all\"")
+				// Claude Code frontmatter writes tools as a
+				// comma-separated string (e.g. "Read, Grep, Glob").
+				names = splitCommaList(v)
 			}
 		case []any:
 			for _, item := range v {
@@ -88,30 +103,43 @@ func ParseAgent(data []byte, pluginName string) (Agent, error) {
 				if !ok {
 					return Agent{}, fmt.Errorf("agent tool name must be a string, got %T", item)
 				}
-				switch strings.TrimSpace(strings.ToLower(s)) {
-				case "all", "*":
-					return Agent{}, errors.New("agent field \"tools\" uses the scalar form \"all\" for unrestricted access; use `tools: all`")
-				default:
-					tools = append(tools, toolname.ClaudeToSerf(s))
-				}
+				names = append(names, s)
 			}
 		default:
-			return Agent{}, errors.New("agent field \"tools\" must be a list of strings or the string \"all\"")
+			return Agent{}, errors.New("agent field \"tools\" must be a list of strings, a comma-separated string, or the string \"all\"")
+		}
+		for _, s := range names {
+			switch strings.TrimSpace(strings.ToLower(s)) {
+			case "all", "*":
+				return Agent{}, errors.New("agent field \"tools\" uses the scalar form \"all\" for unrestricted access; use `tools: all`")
+			case "":
+				// tolerate empty list entries the same way as empty comma segments
+			default:
+				tools = append(tools, toolname.ClaudeToSerf(s))
+			}
 		}
 	}
 
 	var skills []string
 	if raw, ok := doc.Meta["skills"]; ok {
-		items, ok := raw.([]any)
-		if !ok {
-			return Agent{}, errors.New("agent field \"skills\" must be a list of strings")
-		}
-		for _, item := range items {
-			s, ok := item.(string)
-			if !ok {
-				return Agent{}, fmt.Errorf("agent skill name must be a string, got %T", item)
+		switch v := raw.(type) {
+		case string:
+			// Claude Code frontmatter writes skills as a plain
+			// (possibly comma-separated) string.
+			skills = splitCommaList(v)
+		case []any:
+			for _, item := range v {
+				s, ok := item.(string)
+				if !ok {
+					return Agent{}, fmt.Errorf("agent skill name must be a string, got %T", item)
+				}
+				if strings.TrimSpace(s) == "" {
+					continue // tolerate empty list entries like empty comma segments
+				}
+				skills = append(skills, s)
 			}
-			skills = append(skills, s)
+		default:
+			return Agent{}, errors.New("agent field \"skills\" must be a list of strings or a comma-separated string")
 		}
 	}
 
@@ -170,32 +198,23 @@ func discoverPluginAgents(pluginDir string, agentsOverride json.RawMessage, plug
 		}
 	}
 
-	dirs := resolveComponentDirs(pluginDir, "agents", override)
-	agents := map[string]Agent{}
+	files, err := componentMarkdownFiles(resolveComponentDirs(pluginDir, "agents", override))
+	if err != nil {
+		return nil, err
+	}
 
-	for _, dir := range dirs {
-		entries, err := os.ReadDir(dir)
+	agents := map[string]Agent{}
+	for _, file := range files {
+		data, err := os.ReadFile(file)
 		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, fmt.Errorf("reading agents dir %q: %w", dir, err)
+			return nil, fmt.Errorf("reading agent file %q: %w", filepath.Base(file), err)
 		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
-				continue
-			}
-			data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-			if err != nil {
-				return nil, fmt.Errorf("reading agent file %q: %w", entry.Name(), err)
-			}
-			agent, err := ParseAgent(data, pluginName)
-			if err != nil {
-				return nil, fmt.Errorf("parsing agent file %q: %w", entry.Name(), err)
-			}
-			key := pluginName + ":" + agent.Name
-			agents[key] = agent
+		agent, err := ParseAgent(data, pluginName)
+		if err != nil {
+			return nil, fmt.Errorf("parsing agent file %q: %w", filepath.Base(file), err)
 		}
+		key := pluginName + ":" + agent.Name
+		agents[key] = agent
 	}
 
 	return agents, nil

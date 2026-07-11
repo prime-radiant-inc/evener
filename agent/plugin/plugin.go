@@ -356,3 +356,37 @@ func resolveComponentDirs(pluginDir string, defaultName string, override any) []
 
 	return dirs
 }
+
+// componentMarkdownFiles expands resolved component paths into .md file paths.
+// A path may be a directory (scanned non-recursively for .md files) or an
+// individual .md file — Claude Code manifests allow both forms (e.g.
+// "agents": ["./agents/browser-user.md"]). Missing paths are skipped.
+func componentMarkdownFiles(paths []string) ([]string, error) {
+	var files []string
+	for _, p := range paths {
+		info, err := os.Stat(p)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("reading component path %q: %w", p, err)
+		}
+		if !info.IsDir() {
+			if strings.HasSuffix(p, ".md") {
+				files = append(files, p)
+			}
+			continue
+		}
+		entries, err := os.ReadDir(p)
+		if err != nil {
+			return nil, fmt.Errorf("reading component dir %q: %w", p, err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+				continue
+			}
+			files = append(files, filepath.Join(p, entry.Name()))
+		}
+	}
+	return files, nil
+}
