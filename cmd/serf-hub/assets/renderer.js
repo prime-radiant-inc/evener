@@ -2412,7 +2412,8 @@
         disclosure.setAttribute("aria-label", defaultExpanded ? "collapse tool details" : "expand tool details");
         disclosure.setAttribute("aria-expanded", defaultExpanded ? "true" : "false");
         disclosure.dataset.expandToggle = "";
-        disclosure.textContent = defaultExpanded ? "▾" : "▸";
+        // One glyph; CSS rotates it 90° when [aria-expanded="true"] (shared › idiom).
+        disclosure.textContent = "›";
         command.appendChild(disclosure);
         state.caretEl = disclosure;
       }
@@ -3313,7 +3314,9 @@
       if (more) {
         if (doneRows.length > 0) {
           more.hidden = false;
-          more.innerHTML = expanded ? "collapse ▴" : (window.SerfIcons.ended + " " + doneRows.length + " done ▾");
+          more.innerHTML = expanded
+            ? 'collapse <span class="fold-chevron open">›</span>'
+            : (window.SerfIcons.ended + " " + doneRows.length + ' done <span class="fold-chevron">›</span>');
         } else {
           more.hidden = true;
         }
@@ -4083,7 +4086,11 @@
         const toggle = document.createElement("button");
         toggle.type = "button";
         toggle.className = "task-card-toggle";
-        const setLabel = () => { toggle.textContent = card.dataset.expanded === "true" ? "collapse ▴" : "show all ▾"; };
+        const setLabel = () => {
+          toggle.innerHTML = card.dataset.expanded === "true"
+            ? 'collapse <span class="fold-chevron open">›</span>'
+            : 'show all <span class="fold-chevron">›</span>';
+        };
         setLabel();
         toggle.addEventListener("click", () => {
           card.dataset.expanded = card.dataset.expanded === "true" ? "false" : "true";
@@ -4106,7 +4113,11 @@
       const head = document.createElement("button");
       head.type = "button";
       head.className = "task-card-fold-head";
-      head.textContent = label + " ▸";
+      head.textContent = label + " ";
+      const chev = document.createElement("span");
+      chev.className = "fold-chevron";
+      chev.textContent = "›";
+      head.appendChild(chev);
       const rows = document.createElement("div");
       rows.className = "task-card-fold-rows";
       for (const t of items) {
@@ -4116,7 +4127,7 @@
       }
       head.addEventListener("click", () => {
         const open = wrap.classList.toggle("open");
-        head.textContent = label + (open ? " ▾" : " ▸");
+        chev.classList.toggle("open", open);
       });
       wrap.appendChild(head);
       wrap.appendChild(rows);

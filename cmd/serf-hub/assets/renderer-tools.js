@@ -542,7 +542,7 @@
       }
       if (failed && state.el) state.el.dataset.expanded = "true";
       if (failed && state.caretEl) {
-        state.caretEl.textContent = "▾";
+        // Glyph stays ›; CSS rotates it via [aria-expanded="true"].
         state.caretEl.setAttribute("aria-label", "collapse tool details");
         state.caretEl.setAttribute("aria-expanded", "true");
       }

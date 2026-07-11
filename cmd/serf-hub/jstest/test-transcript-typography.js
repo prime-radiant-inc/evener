@@ -105,6 +105,42 @@ for (const sized of [".task-list-body .task-type", ".diagnostic-badge", ".diagno
     sized + " must not use the sub-scale --text-2xs size in the transcript");
 }
 
+// ── Round 2 (2026-07-11): ONE flowing reading size + one disclosure idiom ─
+// All flowing reading text (assistant prose, tool intents/results, thinking,
+// user messages, system asides) sits at --text-base; mono machine text is the
+// --text-sm exception; true meta (timestamps, YOU, durations) is --text-xs.
+for (const flowing of [".assistant-message", ".tool-call", ".think", ".system-line", ".system-message", ".steering", ".user-message .pill", ".tool-body", ".fetch-body", ".search-body"]) {
+  pass(/font-size:\s*var\(--text-base\)/.test(rule(flowing)),
+    flowing + " must sit at the one --text-base flowing reading size");
+}
+pass(!/font-size:\s*var\(--text-lg\)/.test(rule(".assistant-message")),
+  "assistant prose dropped from --text-lg to --text-base (round 2 decision)");
+pass(/font-size:\s*var\(--text-sm\)/.test(rule(".tool-call .tool-command")),
+  "mono command text is the --text-sm machine exception");
+pass(!/font-size/.test(rule(".tool-call.has-purpose .tool-command")),
+  "the demoted command inherits the mono --text-sm step (color, not size, carries the demotion)");
+for (const consistent of [".assistant-message", ".tool-call", ".think", ".user-message .pill", ".system-line"]) {
+  pass(/line-height:\s*var\(--leading-normal\)/.test(rule(consistent)),
+    consistent + " must share the column line-height (--leading-normal)");
+}
+
+// ── Round 2: one disclosure idiom — › glyph, muted, rotate-on-open, ≥24px ─
+const disc = rule(".tool-disclosure");
+pass(/width:\s*24px/.test(disc) && /height:\s*24px/.test(disc),
+  ".tool-disclosure must have a 24px hit target");
+pass(/color:\s*var\(--text-muted\)/.test(disc) && /font-size:\s*var\(--text-md\)/.test(disc),
+  ".tool-disclosure glyph must be comfortably visible (muted, --text-md)");
+pass(/\.tool-disclosure\[aria-expanded="true"\]\s*\{\s*transform:\s*rotate\(90deg\)/.test(css),
+  ".tool-disclosure must rotate its › 90° when expanded");
+pass(/\.fold-chevron\.open\s*\{\s*transform:\s*rotate\(90deg\)/.test(css),
+  "the shared .fold-chevron must rotate 90° when its fold opens");
+pass(/content:\s*"›"/.test(rule(".notification-card-raw > summary::after")),
+  "notification/diagnostic fold summaries must use the shared › disclosure glyph");
+pass(/content:\s*"›"/.test(rule(".system-message > summary::before")),
+  "system-message folds must use the shared › disclosure glyph");
+pass(!css.includes('content: "▸"') || !/(notification-card|system-message|diagnostic)[^{}]*\{[^}]*content:\s*"▸"/.test(css),
+  "no transcript fold may keep the tiny ▸ triangle glyph");
+
 if (failures.length) {
   console.error("FAIL: transcript typography contract");
   for (const failure of failures) console.error("- " + failure);

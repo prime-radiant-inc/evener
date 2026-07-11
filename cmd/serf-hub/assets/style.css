@@ -1606,6 +1606,11 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
      negative margins into the conversation padding, so the reading column is a
      single vertical line regardless of entry kind. */
   --gutter: 20px;
+  /* One flowing reading size for the whole column (round 2): anything that
+     doesn't opt into the mono --text-sm or meta --text-xs exceptions reads
+     at --text-base. */
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
 }
 
 /* Safety net: no machine-text block may force the whole transcript column to
@@ -2217,7 +2222,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
   border-radius: 0;
   font-size: var(--text-base);
   color: var(--text-muted);
-  line-height: var(--leading-snug);
+  line-height: var(--leading-normal);
 }
 .user-message-actions { position: absolute; right: 0; top: var(--space-2); display: none; gap: var(--space-4); font-size: var(--text-xs); color: var(--text-muted); }
 .user-message:hover .user-message-actions { display: flex; }
@@ -2283,7 +2288,10 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .assistant-message {
   margin-bottom: var(--space-6);
   max-width: 680px;
-  font-size: var(--text-lg);
+  /* One reading size (2026-07-11 round 2): prose dropped from --text-lg to
+     --text-base so ALL flowing transcript text shares one size; contrast and
+     spacing carry the prose's weight, not a larger step. */
+  font-size: var(--text-base);
   line-height: var(--leading-normal);
   color: var(--text);
   letter-spacing: -0.003em;
@@ -2342,7 +2350,8 @@ button.composer-model-value .caret { color: var(--text-dim); }
   cursor: pointer;
   text-align: left;
   font-family: inherit;
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
   color: var(--text-muted);
 }
 .think:hover { color: var(--text); }
@@ -2397,7 +2406,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
   padding-left: var(--gutter);
   border-left: 1px solid var(--border);
   font-style: italic;
-  line-height: 1.6;
+  line-height: var(--leading-normal);
   color: var(--text-muted);
   white-space: pre-wrap;
 }
@@ -2418,7 +2427,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .think.think-tier-short .pv { color: var(--text-muted); }
 
 /* Annotation tier — tool calls, diffs, subagent references */
-.tool-call { margin: 0 0 var(--space-3) 0; font-family: var(--font-sans); font-size: var(--text-sm); line-height: var(--leading-snug); color: var(--text-muted); display: flex; column-gap: var(--space-3); row-gap: var(--space-2); flex-wrap: wrap; align-items: baseline; }
+.tool-call { margin: 0 0 var(--space-3) 0; font-family: var(--font-sans); font-size: var(--text-base); line-height: var(--leading-normal); color: var(--text-muted); display: flex; column-gap: var(--space-3); row-gap: var(--space-2); flex-wrap: wrap; align-items: baseline; }
 .tool-call-cluster { margin-bottom: var(--space-5); }
 .tool-call-cluster .tool-call:last-child { margin-bottom: 0; }
 /* Collapsed cluster summary (mockup #6 alt A): while the cluster is live the
@@ -2430,8 +2439,8 @@ button.composer-model-value .caret { color: var(--text-dim); }
   display: flex; align-items: baseline; gap: var(--space-3);
   width: 100%; max-width: 680px; margin: 0;
   padding: 0; background: none; border: none; cursor: pointer;
-  text-align: left; font-family: var(--font-sans); font-size: var(--text-sm);
-  color: var(--text-muted); line-height: var(--leading-snug);
+  text-align: left; font-family: var(--font-sans); font-size: var(--text-base);
+  color: var(--text-muted); line-height: var(--leading-normal);
 }
 .tool-call-cluster.done > .tool-cluster-summary:hover { color: var(--text); }
 .tool-call-cluster.done:not(.open) > .tool-cluster-body { display: none; }
@@ -2461,6 +2470,9 @@ button.composer-model-value .caret { color: var(--text-dim); }
   align-items: baseline;
   column-gap: var(--space-3);
   font-family: var(--font-mono);
+  /* Mono machine text sits one step under the flowing column (--text-sm),
+     whether the command is the primary line or demoted under an intent. */
+  font-size: var(--text-sm);
 }
 /* Verb and result hug their text; only the target absorbs the slack and wraps,
    so a long target never squeezes the verb into a vertical char-stack. */
@@ -2513,15 +2525,14 @@ button.composer-model-value .caret { color: var(--text-dim); }
   color: var(--text);
   font-family: var(--font-sans);
   font-size: var(--text-base);
-  line-height: var(--leading-snug);
+  line-height: var(--leading-normal);
 }
 .tool-call.has-purpose .tool-command {
   order: 4;
   flex: 0 0 100%;
   /* No sub-indent: the demoted command sits on the same text column as the
-     intent above it (one vertical reading line); weight/size carry the
-     demotion instead of a second indent level. */
-  font-size: var(--text-xs);
+     intent above it (one vertical reading line); dim color carries the
+     demotion — the size stays the shared mono --text-sm step. */
   overflow: hidden;
 }
 /* The demoted command is a glanceable detail, not the story: keep it to one
@@ -2550,28 +2561,44 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .tool-call[data-expanded="false"] .diff-body,
 .tool-call[data-expanded="false"] .output-preview-body { display: none; }
 /* Inline expandable-tool disclosure. The chevron belongs to the action text it
-   expands, not to a separate right-side column. It stays quiet but visible, with
-   a hit target larger than the glyph. */
+   expands, not to a separate right-side column. One shared idiom for every
+   transcript fold (2026-07-11 round 2, matching the sidebar .project-chevron):
+   a › glyph at --text-md, --text-muted, rotating 90° when open, on a hit
+   target of at least 24px. */
 .tool-disclosure {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   margin-left: var(--space-1);
   border: none;
   border-radius: var(--radius-md);
   background: transparent;
-  color: var(--text-dim);
+  color: var(--text-muted);
   cursor: pointer;
   font-family: var(--font-sans);
-  font-size: var(--text-xs);
+  font-size: var(--text-md);
   line-height: 1;
   flex: none;
+  transform: rotate(0deg);
+  transition: transform var(--motion-fast);
 }
-.tool-disclosure:hover { color: var(--text-muted); background: var(--surface-secondary); }
+.tool-disclosure:hover { color: var(--text); background: var(--surface-secondary); }
 .tool-disclosure:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.tool-call[data-expanded="true"] .tool-disclosure { color: var(--text-muted); }
+.tool-disclosure[aria-expanded="true"] { transform: rotate(90deg); }
+
+/* Shared fold-chevron span for text-labelled fold toggles (task-card folds,
+   "show all", subagent done-pile): same › idiom, rotates when its fold opens. */
+.fold-chevron {
+  display: inline-block;
+  font-size: var(--text-md);
+  line-height: 1;
+  color: var(--text-muted);
+  transform: rotate(0deg);
+  transition: transform var(--motion-fast);
+}
+.fold-chevron.open { transform: rotate(90deg); }
 .diff-body {
   margin: 0 0 var(--space-4) 0;
   padding: var(--space-3) var(--space-4);
@@ -2602,7 +2629,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
   margin: 0 0 var(--space-4) calc(-1 * var(--gutter));
   padding-left: var(--gutter);
   border-left: 1px solid var(--rule);
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
   color: var(--text-muted);
 }
 .tool-body--preview,
@@ -2610,6 +2637,25 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .tool-body--list {
   flex: 0 0 100%;
 }
+/* Details folds inside tool bodies use the shared › idiom, not the native
+   browser triangle. */
+.tool-body summary,
+.tool-output-more summary { list-style: none; }
+.tool-body summary::-webkit-details-marker,
+.tool-output-more summary::-webkit-details-marker { display: none; }
+.tool-body summary::before,
+.tool-output-more summary::before {
+  content: "›";
+  display: inline-block;
+  margin-right: var(--space-2);
+  font-size: var(--text-md);
+  line-height: 1;
+  transform: rotate(0deg);
+  transition: transform var(--motion-fast);
+}
+.tool-body details[open] > summary::before,
+details.tool-body[open] > summary::before,
+.tool-output-more[open] > summary::before { transform: rotate(90deg); }
 .tool-body summary { cursor: pointer; color: var(--text-muted); padding: 0; user-select: none; font-family: var(--font-sans); }
 .tool-body summary:hover { color: var(--text); }
 .tool-body--terminal {
@@ -2654,7 +2700,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
 /* Client-collapsed "expand · N more" — the bytes ARE present (they rode into
    context), so this is an honest, interactive (blue) affordance, distinct from
    the server-dropped note below (mockup #6 alt D). */
-.tool-output-more summary { cursor: pointer; color: var(--accent); padding: 0; user-select: none; order: 2; font-family: var(--font-sans); font-size: var(--text-sm); }
+.tool-output-more summary { cursor: pointer; color: var(--accent); padding: 0; min-height: 24px; user-select: none; order: 2; font-family: var(--font-sans); font-size: var(--text-base); }
 .tool-output-more summary:hover { text-decoration: underline; }
 .tool-output-rest { margin-top: 0; order: 1; }
 /* Server-dropped note — the bytes were truncated/binary at the source and are
@@ -2679,7 +2725,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
   margin: 0 0 var(--space-4) calc(-1 * var(--gutter));
   padding-left: var(--gutter);
   border-left: 1px solid var(--rule);
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
   color: var(--text-muted);
   font-style: italic;
 }
@@ -2689,7 +2735,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
   margin: 0 0 var(--space-4) calc(-1 * var(--gutter));
   padding-left: var(--gutter);
   border-left: 1px solid var(--rule);
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
   color: var(--text);
 }
 .search-body li { padding: var(--space-1) 0; }
@@ -2726,7 +2772,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
   gap: var(--space-4);
   margin-bottom: var(--space-2);
 }
-.subs-h .t { font-size: var(--text-sm); font-weight: 600; color: var(--text-muted); }
+.subs-h .t { font-size: var(--text-base); font-weight: 600; color: var(--text-muted); }
 .subs-h .tally {
   font-size: var(--text-xs);
   color: var(--text-muted);
@@ -2750,7 +2796,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
   padding: var(--space-2) 0;
   width: 100%;
   text-align: left;
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
   color: var(--text-muted);
 }
 .sub-r[hidden] { display: none; }
@@ -2765,7 +2811,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
   flex: 1;
   min-width: 0;
   font-family: var(--font-sans);
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
@@ -2890,6 +2936,10 @@ button.composer-model-value .caret { color: var(--text-dim); }
 }
 .subs-more {
   margin-top: var(--space-2);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 24px;
   font-size: var(--text-xs);
   color: var(--accent);
   text-align: left;
@@ -2906,7 +2956,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
   border-left: 3px solid var(--diagnostic-accent);
   border-radius: var(--radius-md);
   color: var(--text);
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
   line-height: var(--leading-snug);
 }
 .diagnostic-source-provider { --diagnostic-accent: var(--diagnostic-provider); }
@@ -2950,7 +3000,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .banner {
   margin: 0 0 var(--space-4) 0;
   padding: var(--space-3) var(--space-4);
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
   border-radius: var(--radius-md);
 }
 .banner.error   { color: var(--error); border-left: 2px solid var(--error); padding-left: var(--space-3); }
@@ -2993,7 +3043,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
 /* System-line: short prose narration between user and agent — used for compact
  * system events (hook exits, round timings). Reads as a quiet aside, not a tool
  * log. Task_list changes render as a .task-card, not a system-line. */
-.system-line { margin: var(--space-3) 0; padding: var(--space-2) 0; font-size: var(--text-sm); color: var(--text-muted); font-style: italic; line-height: var(--leading-snug); }
+.system-line { margin: var(--space-3) 0; padding: var(--space-2) 0; font-size: var(--text-base); color: var(--text-muted); font-style: italic; line-height: var(--leading-normal); }
 
 /* The living plan card (Design B): ONE card per session, rebuilt on each
    task_list change and floated to the live frontier — never a fresh card per
@@ -3017,7 +3067,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
   align-items: center;
   gap: var(--space-3);
 }
-.task-card-title { font-size: var(--text-sm); font-weight: 600; color: var(--text); }
+.task-card-title { font-size: var(--text-base); font-weight: 600; color: var(--text); }
 .task-card-progress {
   font-size: var(--text-xs);
   color: var(--text-muted);
@@ -3058,6 +3108,10 @@ button.composer-model-value .caret { color: var(--text-dim); }
   background: none;
   border: 0;
   padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 24px;
   font: inherit;
   font-size: var(--text-xs);
   letter-spacing: 0.08em;
@@ -3079,6 +3133,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
   font-size: var(--text-xs);
   color: var(--text-muted);
   cursor: pointer;
+  min-height: 24px;
 }
 .task-card-toggle:hover { color: var(--text); }
 .task-card-note {
@@ -3149,7 +3204,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
 /* Steering messages: render as a system insertion between user and agent
  * messages — full-width divider with the summary centered between rules.
  * Click to expand the full payload. No left indent: this is not a tool call. */
-.steering { margin: var(--space-5) 0; padding: 0; font-size: var(--text-sm); color: var(--text-muted); }
+.steering { margin: var(--space-5) 0; padding: 0; font-size: var(--text-base); line-height: var(--leading-normal); color: var(--text-muted); }
 .steering > summary { cursor: pointer; list-style: none; user-select: none; display: flex; align-items: center; gap: var(--space-4); padding: 0; }
 .steering > summary::-webkit-details-marker { display: none; }
 .steering > summary::before, .steering > summary::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
@@ -3159,7 +3214,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
    you spoke. Sans because it is a human label, not machine text. */
 .steering .steering-verb { color: var(--text-muted); font-family: var(--font-sans); }
 .steering .steering-detail { color: var(--text); }
-.steering .steering-body { margin: var(--space-4) 0 0; padding: var(--space-4) var(--space-4); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-sans); font-size: var(--text-sm); line-height: var(--leading-snug); color: var(--text-muted); white-space: normal; overflow-wrap: anywhere; }
+.steering .steering-body { margin: var(--space-4) 0 0; padding: var(--space-4) var(--space-4); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-sans); font-size: var(--text-base); line-height: var(--leading-normal); color: var(--text-muted); white-space: normal; overflow-wrap: anywhere; }
 
 .notification-card {
   margin: var(--space-4) 0 var(--space-4) 0;
@@ -3169,9 +3224,10 @@ button.composer-model-value .caret { color: var(--text-dim); }
   border-radius: var(--radius-md);
   background: var(--bg-raised);
   color: var(--text);
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
   min-width: 0;
   overflow-wrap: anywhere;
+  line-height: var(--leading-normal);
 }
 /* "Done" is the expected, settled state — its rail recedes to neutral. Colour
    (amber / red) is spent only on a warning or a failure that needs the eye. */
@@ -3216,14 +3272,27 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .notification-card-raw > summary::after,
 .notification-card-excerpt-full > summary::after,
 .diagnostic-detail-summary::after {
-  content: "▸";
+  /* Shared disclosure idiom: › at --text-md, muted, rotate-on-open; the whole
+     summary row is the hit target, kept at least 24px tall. */
+  content: "›";
   flex: none;
-  color: var(--text-dim);
-  font-size: var(--text-2xs);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  min-height: 24px;
+  color: var(--text-muted);
+  font-size: var(--text-md);
+  line-height: 1;
+  transform: rotate(0deg);
+  transition: transform var(--motion-fast);
 }
+.notification-card-raw > summary,
+.notification-card-excerpt-full > summary,
+.diagnostic-detail-summary { min-height: 24px; }
 .notification-card-raw[open] > summary::after,
 .notification-card-excerpt-full[open] > summary::after,
-details[open] > .diagnostic-detail-summary::after { content: "▾"; }
+details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
 
 .notification-card-raw { margin-top: var(--space-3); color: var(--text-muted); }
 .notification-card-raw > summary { cursor: pointer; font-size: var(--text-xs); }
@@ -3237,11 +3306,28 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
    NEVER divider-weight, and with no meaningless "N chars" count (mockup #7
    alt A). Override the steering divider rules and tighten the spacing so a
    skill/plugin/prompt marker recedes under the prose it sits beside. */
-.system-message { margin: var(--space-3) 0; font-size: var(--text-sm); }
+.system-message { margin: var(--space-3) 0; font-size: var(--text-base); }
 .system-message > summary { gap: var(--space-3); }
 .system-message > summary::after { content: none; }
-.system-message > summary::before { content: "▸"; flex: none; width: auto; height: auto; background: none; font-size: 9px; color: var(--text-dim); }
-.system-message[open] > summary::before { content: "▾"; }
+.system-message > summary::before {
+  /* Shared disclosure idiom: › at --text-md, muted, rotate-on-open. */
+  content: "›";
+  flex: none;
+  width: auto;
+  height: auto;
+  min-width: 24px;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  font-size: var(--text-md);
+  line-height: 1;
+  color: var(--text-muted);
+  transform: rotate(0deg);
+  transition: transform var(--motion-fast);
+}
+.system-message[open] > summary::before { transform: rotate(90deg); }
 .system-message .steering-verb { color: var(--text-muted); font-style: italic; }
 
 /* Coalesced lifecycle run (mockup #7 alt B): 3+ adjacent events fold to one
@@ -4507,23 +4593,13 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
   .tool-call:hover .tool-meta,
   .tool-call:focus-within .tool-meta { display: inline; }
 
-  /* Phone reading scale. A clear hierarchy, sized to actually read on a phone:
-     the assistant prose is the hero and the largest text; the agent's tool
-     purpose sits just under it; machine text (commands, diffs, output) is a
-     legible 12px mono — never the old 10px squint. Metadata stays quietest.
-       hero prose 14  >  purpose / user 13  >  command·diff·output 12  >  meta 11
-     Comfortable density (body[data-phone-density="comfortable"]) keeps the
-     larger desktop scale; compact is the default. */
+  /* Phone reading scale (2026-07-11 round 2): the transcript follows the same
+     one-size rule as desktop — flowing text --text-base, mono machine text
+     --text-sm, meta --text-xs — so compact density shrinks only the app
+     CHROME, never re-tiers the reading column. The transcript's own rules
+     already carry those sizes; only the chrome base shrinks here. */
   body:not([data-phone-density="comfortable"]) { font-size: var(--text-sm); line-height: var(--leading-snug); }
-  /* Conversation elements override desktop font-size so they must be set
-     explicitly here to take the compact phone scale. */
-  body:not([data-phone-density="comfortable"]) .conversation { font-size: inherit; }
-  body:not([data-phone-density="comfortable"]) .assistant-message { font-size: var(--text-md); }
-  body:not([data-phone-density="comfortable"]) .user-message .pill { font-size: var(--text-base); }
-  body:not([data-phone-density="comfortable"]) .tool-call,
-  body:not([data-phone-density="comfortable"]) .msg.tool,
-  body:not([data-phone-density="comfortable"]) .tool-body,
-  body:not([data-phone-density="comfortable"]) .diff-body { font-size: var(--text-sm); }
+  body:not([data-phone-density="comfortable"]) .conversation { font-size: var(--text-base); }
 }
 
 /* Short landscape: reclaim space for the transcript. Desktop sidebar width and

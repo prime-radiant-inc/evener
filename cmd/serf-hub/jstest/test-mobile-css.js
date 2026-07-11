@@ -146,21 +146,16 @@ const inputZoomRule = (mobile.match(/[^{}]*\{[^}]*\}/g) || [])
 pass(!!inputZoomRule,
   "mobile must pin editable fields (incl .message-input) to font-size: 16px so iOS does not auto-zoom on focus");
 
-// Phone reading hierarchy: the hero prose must be a larger step than the tool
-// machine text. An inverted scale (a small hero under a larger tool purpose)
-// reads as "the tool matters more than the answer". Lock the compact sizes.
+// One-size reading column (2026-07-11 round 2): compact phone density shrinks
+// only the app chrome; the transcript keeps the shared --text-base flowing
+// size and must NOT re-tier the column with per-kind size overrides.
 const blocks = mobile.match(/[^{}]*\{[^}]*\}/g) || [];
-const heroRule = blocks.find((b) => /\.assistant-message/.test(b.split("{")[0]) && /font-size:\s*var\(--text-md\)/.test(b));
-pass(!!heroRule, "compact phone density must size the assistant hero prose at --text-md (largest reading text)");
-const machineRule = blocks.find((b) => /\.tool-call\b/.test(b.split("{")[0]) && /font-size:\s*var\(--text-sm\)/.test(b));
-pass(!!machineRule, "compact phone density must size tool/machine text at --text-sm (legible, not the old 10px)");
-// Negative guard: a mobile rule that overrides .tool-call to any size other than
-// --text-sm (e.g. --text-base !important) inverts the reading hierarchy — tool
-// machine text becomes larger than assistant prose. Catch that mutation here.
-const toolCallSizeOverride = blocks.find(
-  (b) => /\.tool-call\b/.test(b.split("{")[0]) && /font-size:\s*var\(--text-(?!sm\b)/.test(b)
+const convRule = blocks.find((b) => /\.conversation/.test(b.split("{")[0]) && /font-size:\s*var\(--text-base\)/.test(b));
+pass(!!convRule, "compact phone density must keep the transcript column at --text-base against the smaller chrome font");
+const perKindOverride = blocks.find(
+  (b) => /\.(assistant-message|tool-call\b|user-message)/.test(b.split("{")[0]) && /font-size:/.test(b) && !/16px/.test(b)
 );
-pass(!toolCallSizeOverride, "no mobile rule must override .tool-call font-size away from --text-sm (inverts reading hierarchy)");
+pass(!perKindOverride, "no compact phone rule may re-tier the reading column with per-kind font-size overrides");
 
 // Compact phone layout hides timing meta narrowly to avoid reserving ~112px and
 // squeezing command/path text into a narrow, mid-word-wrapping column. This is a
