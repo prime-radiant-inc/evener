@@ -89,6 +89,7 @@ TARGETS=(
 	"native:agent:./transcript:FuzzTranscriptWriterProgram::transcript.go"
 	"native:agent:./task:FuzzTaskStoreLoad::task_store.go#Load"
 	"native:agent:./doctor:FuzzDoctorLoadTranscript::transcript.go#loadTranscript"
+	"native:agent:./doctor:FuzzDoctorFilesystemProgram::"
 	"native:agent:./mcpconfig:FuzzMCPConfigLoad::config.go"
 	"native:agent:./provider:FuzzResolveProfileFromConfig::resolve.go"
 	"native:agent:./provider:FuzzApOpenRouterAnthropicResolve::profile.go#resolveOpenRouterAnthropicWebSearch"
