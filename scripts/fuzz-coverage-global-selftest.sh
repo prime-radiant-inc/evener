@@ -275,6 +275,12 @@ JSON
 				echo 'example.test/root.go:1.1,2.1 1 0'
 				echo 'example.test/rapid.go:3.1,4.1 2 1'
 			fi
+			if [ "${FAKE_GO_ZERO_STATEMENT_BLOCK:-}" = "1" ]; then
+				echo 'example.test/zero.go:94.11,94.11 0 0'
+			fi
+			if [ "${FAKE_GO_MALFORMED_BLOCK:-}" = "1" ]; then
+				echo 'example.test/malformed.go:94.11,94.11 0 not-a-count'
+			fi
 		} >"$profile"
 		;;
 	run)
@@ -416,6 +422,33 @@ has "$merged" 'example.test/rapid.go:3.1,4.1 2 1' 'merge adds Rapid-only coverag
 other_merged="$(cat "$cov_other_profile")"
 has "$other_merged" 'example.test/other.go:5.1,6.1 3 1' 'other package profile keeps its own blocks'
 lacks "$other_merged" 'example.test/root.go' 'profiles never merge blocks across packages'
+
+echo '== zero-statement coverage blocks =='
+reset_logs
+set +e
+last_output="$(run_runner FAKE_GO_ZERO_STATEMENT_BLOCK=1 2>&1)"
+last_status=$?
+set -e
+if [ "$last_status" -eq 0 ]; then
+	ok 'runner accepts Go zero-statement coverage blocks'
+else
+	bad "runner should accept Go zero-statement coverage blocks ($last_output)"
+fi
+if [ -s "$cov_profile" ]; then
+	lacks "$(cat "$cov_profile")" 'example.test/zero.go:94.11,94.11 0 0' 'merged profile omits zero-statement blocks'
+else
+	bad 'zero-statement replay produces a merged root profile'
+fi
+if [ -s "$cov_other_profile" ]; then
+	lacks "$(cat "$cov_other_profile")" 'example.test/zero.go:94.11,94.11 0 0' 'every package-local merged profile omits zero-statement blocks'
+else
+	bad 'zero-statement replay produces a merged other-package profile'
+fi
+
+reset_logs
+expect_failure FAKE_GO_MALFORMED_BLOCK=1
+has "$last_output" 'invalid coverage block' 'malformed coverage blocks remain fatal'
+lacks "$(cat "$go_log")" $'\trun ./cmd/serf-fuzzcov' 'malformed coverage blocks skip global accounting'
 
 echo '== workspace discovery and module selection =='
 reset_logs

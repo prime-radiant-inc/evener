@@ -375,9 +375,14 @@ merge_profiles() {
 			}
 			next
 		}
-		NF != 3 || $2 !~ /^[1-9][0-9]*$/ || $3 !~ /^[0-9]+$/ {
+		NF != 3 || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ {
 			printf "invalid coverage block in %s: %s\\n", FILENAME, $0 > "/dev/stderr"
 			bad = 1
+			next
+		}
+		# Go can emit valid metadata blocks with no statements. They cannot affect
+		# either side of statement coverage, so leave them out of the union.
+		$2 == 0 {
 			next
 		}
 		{
