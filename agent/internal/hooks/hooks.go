@@ -1,14 +1,9 @@
 package hooks
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
-	"os/exec"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -56,112 +51,6 @@ type hookResult struct {
 	Stdout   string
 	Stderr   string
 	ExitCode int
-}
-
-// executeCommandHook runs a command hook with the given input piped as JSON to stdin.
-// Non-zero exit codes are captured in hookResult.ExitCode, not returned as Go errors.
-// Only returns an error for infrastructure failures (timeout, process start failure).
-//
-// Exec form: when hook.Args is non-empty, the command is spawned directly without
-// shell interpretation (hook.Shell is ignored). Shell form: when hook.Args is empty,
-// the command is run via the selected shell — "" or "bash" → bash -c <command>;
-// "powershell" → reserved, returns an error; any other value → error.
-// executeCommandHook runs a command hook. The optional wrapper (at most one; the
-// variadic keeps the many existing test callers intact) kernel-confines the hook
-// to the session sandbox when set.
-func executeCommandHook(ctx context.Context, hook plugin.RegisteredHook, input Input, wrapper ...*sandbox.Wrapper) (hookResult, error) {
-	var sbx *sandbox.Wrapper
-	if len(wrapper) > 0 {
-		sbx = wrapper[0]
-	}
-	inputJSON, err := json.Marshal(input)
-	if err != nil {
-		return hookResult{}, fmt.Errorf("marshaling hook input: %w", err)
-	}
-
-	timeout := time.Duration(hook.Timeout) * time.Second
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	var cmd *exec.Cmd
-	if len(hook.Args) > 0 {
-		// Exec form: direct spawn, no shell interpretation.
-		cmd = exec.CommandContext(ctx, hook.Command, hook.Args...)
-	} else {
-		// Shell form: select shell.
-		switch hook.Shell {
-		case "", "bash":
-			cmd = exec.CommandContext(ctx, "bash", "-c", hook.Command)
-		case "powershell":
-			return hookResult{}, errors.New("powershell shell not supported on this platform")
-		default:
-			return hookResult{}, fmt.Errorf("unsupported shell %q: only \"bash\" is supported", hook.Shell)
-		}
-	}
-
-	cmd.Stdin = bytes.NewReader(inputJSON)
-	// Hook commands historically built their env straight from os.Environ(),
-	// bypassing the *KEY*/*SECRET*/*TOKEN*/*PASSWORD*/*CREDENTIAL* scrub that shell
-	// tools already apply — so a hook saw serf's provider API key regardless of
-	// sandboxing. Scrub it here so hook commands get the same secret hygiene as
-	// every other spawned command (reconciliation #5).
-	env := sandbox.ScrubSecretEnv(os.Environ())
-	env = append(env,
-		"CLAUDE_PLUGIN_ROOT="+hook.PluginDir,
-		"PLUGIN_ROOT="+hook.PluginDir,
-		"CLAUDE_PROJECT_DIR="+input.CWD,
-	)
-	// CLAUDE_EFFORT: set only when the session has a configured effort level.
-	// The inherited value is stripped either way — when serf itself runs under
-	// an agent that exports CLAUDE_EFFORT, the parent's level must not leak
-	// into hooks as this session's.
-	// CLAUDE_CODE_REMOTE is intentionally not set here: serf has no remote/serve
-	// signal reachable at the hook exec site; fabricating a value is forbidden by
-	// the diagnostics spec (07 §"Common environment variables for command hooks").
-	env = slices.DeleteFunc(env, func(kv string) bool {
-		return strings.HasPrefix(kv, "CLAUDE_EFFORT=")
-	})
-	if input.Effort != "" {
-		env = append(env, "CLAUDE_EFFORT="+input.Effort)
-	}
-
-	// In a sandboxed session, kernel-confine the hook and its descendants to the
-	// session policy (a hook is arbitrary model-adjacent code), raise the sandbox
-	// env floor on top of the secret scrub (drop the ssh-agent handle + cloud
-	// creds), and empty ExtraFiles so the hook inherits no serf fds beyond stdio.
-	if sbx != nil {
-		env = sandbox.ApplyEnvFloor(env, sbx.Policy(), sbx.SessionTmp())
-		// Confine wraps the argv and, for Seatbelt, sets cmd.Dir to the worktree
-		// (sandbox-exec has no chdir flag, unlike bwrap's --chdir).
-		sbx.Confine(cmd, sbx.Policy().Git.WorktreeRoot)
-		cmd.ExtraFiles = nil
-	}
-	cmd.Env = env
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err = cmd.Run()
-	result := hookResult{
-		Stdout: stdout.String(),
-		Stderr: stderr.String(),
-	}
-
-	if err != nil {
-		// Check if context timed out or was canceled — report as infrastructure error.
-		if ctx.Err() != nil {
-			return result, fmt.Errorf("hook command killed: %w", ctx.Err())
-		}
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			result.ExitCode = exitErr.ExitCode()
-			return result, nil
-		}
-		return result, fmt.Errorf("running hook command: %w", err)
-	}
-
-	return result, nil
 }
 
 // promptHookClient is the interface for LLM calls used by prompt hooks.
@@ -243,6 +132,9 @@ type Runner struct {
 	client  promptHookClient
 	model   string
 	onEvent func(events.EventKind, events.EventData) // optional event callback
+	// commandHookRuntime is a per-runner process/environment boundary. Production
+	// uses systemCommandHookRuntime; deterministic callers may provide a fake.
+	commandHookRuntime commandHookRuntime
 
 	// sandboxWrapper, when non-nil, kernel-confines every command hook this runner
 	// spawns to the session's sandbox policy (and raises the env floor). Nil means
@@ -278,9 +170,10 @@ func NewRunner(client *llm.Client, model string) *Runner {
 // model for prompt hooks.
 func newRunner(client promptHookClient, model string) *Runner {
 	return &Runner{
-		hooks:  make(map[plugin.HookEvent][]plugin.RegisteredHook),
-		client: client,
-		model:  model,
+		hooks:              make(map[plugin.HookEvent][]plugin.RegisteredHook),
+		client:             client,
+		model:              model,
+		commandHookRuntime: systemCommandHookRuntime{},
 	}
 }
 
@@ -569,7 +462,7 @@ func (r *Runner) runHook(ctx context.Context, hook plugin.RegisteredHook, event 
 
 	switch hook.Type {
 	case "command":
-		hr, err = executeCommandHook(ctx, hook, input, r.sandboxWrapper)
+		hr, err = executeCommandHookWithRuntime(ctx, hook, input, r.commandHookRuntime, r.sandboxWrapper)
 	case "prompt":
 		if r.client == nil {
 			return parsedHookOutput{Continue: true, SystemMessage: "prompt hook skipped: no LLM client"}
