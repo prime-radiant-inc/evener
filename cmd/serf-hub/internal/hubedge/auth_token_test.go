@@ -133,8 +133,11 @@ func TestHandleAuth_ValidatesAndSetsCookie(t *testing.T) {
 	if len(got) != 1 || got[0].Name != authCookieName || got[0].Value != "secret" {
 		t.Errorf("cookie = %+v", got)
 	}
-	if got[0].SameSite != http.SameSiteStrictMode || !got[0].HttpOnly {
-		t.Errorf("cookie should be SameSite=Strict and HttpOnly: %+v", got[0])
+	// Lax, not Strict: iOS standalone (home-screen) launches are treated as
+	// externally initiated navigations by WebKit, and Strict cookies are not
+	// sent on those — the PWA relaunch would land on the 401 wall.
+	if got[0].SameSite != http.SameSiteLaxMode || !got[0].HttpOnly {
+		t.Errorf("cookie should be SameSite=Lax and HttpOnly: %+v", got[0])
 	}
 	if got[0].MaxAge != authCookieMaxAgeSeconds {
 		t.Errorf("cookie MaxAge = %d, want %d", got[0].MaxAge, authCookieMaxAgeSeconds)
@@ -267,6 +270,110 @@ func TestAuthGuard_ReturnsHTMLForBrowser(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, "Unauthorized") {
 		t.Errorf("body missing 'Unauthorized': %q", body)
+	}
+}
+
+// A GET to any guarded route with the capability token in the query must
+// self-authenticate: set the cookie and redirect to the same URL with the
+// token stripped. This is the self-heal for an iOS standalone relaunch that
+// restores a deep URL (e.g. /s/<id>) into a cookie jar that lost the cookie.
+func TestAuthGuard_AcceptsQueryTokenOnAnyGET(t *testing.T) {
+	guard := AuthGuard("secret")
+	h := guard(okHandler())
+	req := httptest.NewRequest(http.MethodGet, "/s/abc123?token=secret&pane=details", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("code = %d, want 302", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	if strings.Contains(loc, "secret") {
+		t.Errorf("redirect Location leaks the token: %q", loc)
+	}
+	if !strings.HasPrefix(loc, "/s/abc123") || !strings.Contains(loc, "pane=details") {
+		t.Errorf("Location = %q, want same path with token stripped and other params kept", loc)
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != authCookieName || cookies[0].Value != "secret" {
+		t.Errorf("query-token auth should set the auth cookie, got %+v", cookies)
+	}
+}
+
+func TestAuthGuard_RejectsWrongQueryToken(t *testing.T) {
+	guard := AuthGuard("secret")
+	h := guard(okHandler())
+	req := httptest.NewRequest(http.MethodGet, "/s/abc123?token=nope", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("code = %d, want 401", rec.Code)
+	}
+	if len(rec.Result().Cookies()) != 0 {
+		t.Errorf("wrong query token must not set a cookie")
+	}
+}
+
+func TestAuthGuard_IgnoresQueryTokenOnPOST(t *testing.T) {
+	guard := AuthGuard("secret")
+	h := guard(okHandler())
+	req := httptest.NewRequest(http.MethodPost, "/api/spawn?token=secret", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("code = %d, want 401 (query token is GET-navigation-only)", rec.Code)
+	}
+}
+
+// The 401 wall must never be cacheable: a cached 401 page in a PWA/browser
+// cache would keep an already re-authorized app stuck on the wall.
+func TestAuthGuard_401IsNoStore(t *testing.T) {
+	guard := AuthGuard("secret")
+	h := guard(okHandler())
+	for _, accept := range []string{"text/html", "application/json"} {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Accept", accept)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("code = %d, want 401", rec.Code)
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+			t.Errorf("Accept %s: Cache-Control = %q, want no-store", accept, cc)
+		}
+	}
+}
+
+// Every cookie-authenticated request slides the cookie's one-year expiry
+// forward, so an installed PWA's jar never ages out while in use.
+func TestAuthGuard_RefreshesCookieOnAuthenticatedRequest(t *testing.T) {
+	guard := AuthGuard("secret")
+	h := guard(okHandler())
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: authCookieName, Value: "secret"})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200", rec.Code)
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != authCookieName || cookies[0].MaxAge != authCookieMaxAgeSeconds {
+		t.Errorf("authenticated request should refresh the auth cookie, got %+v", cookies)
+	}
+}
+
+// Bearer-authenticated (scripted) requests must not get a Set-Cookie.
+func TestAuthGuard_NoCookieRefreshForBearer(t *testing.T) {
+	guard := AuthGuard("secret")
+	h := guard(okHandler())
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200", rec.Code)
+	}
+	if len(rec.Result().Cookies()) != 0 {
+		t.Errorf("bearer auth should not set cookies, got %+v", rec.Result().Cookies())
 	}
 }
 

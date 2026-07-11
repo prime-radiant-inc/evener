@@ -129,6 +129,22 @@ func AuthGuard(token string) func(http.Handler) http.Handler {
 				return
 			}
 			if !tokensEqual(tokenFromRequest(r), token) {
+				// Self-heal: accept the capability token in the query string
+				// on any GET, set the cookie, and redirect with the token
+				// stripped. An iOS standalone (home-screen) relaunch restores
+				// the last-viewed URL into a cookie jar that may have lost the
+				// cookie; this lets any tokened URL — not just /auth — recover.
+				if r.Method == http.MethodGet && tokensEqual(r.URL.Query().Get("token"), token) {
+					setAuthCookie(w, token)
+					q := r.URL.Query()
+					q.Del("token")
+					clean := *r.URL
+					clean.RawQuery = q.Encode()
+					http.Redirect(w, r, clean.RequestURI(), http.StatusFound)
+					return
+				}
+				// A cached 401 wall would keep a re-authorized client stuck.
+				w.Header().Set("Cache-Control", "no-store")
 				if strings.Contains(r.Header.Get("Accept"), "text/html") {
 					http.Error(w,
 						"Unauthorized.\n\n"+
@@ -142,9 +158,35 @@ func AuthGuard(token string) func(http.Handler) http.Handler {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
+			// Slide the cookie's expiry forward on every cookie-authed
+			// request so an installed PWA's jar never ages out while the
+			// app is in use. Bearer (scripted) clients get no cookie.
+			if c, err := r.Cookie(authCookieName); err == nil && tokensEqual(c.Value, token) {
+				setAuthCookie(w, token)
+			}
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// setAuthCookie writes the long-lived auth cookie. SameSite=Lax, not Strict:
+// iOS treats a standalone (home-screen) web-app launch as an externally
+// initiated top-level navigation and omits Strict cookies on it, which sent
+// every PWA relaunch to the 401 wall. Lax still withholds the cookie from
+// cross-site subresource and POST requests.
+func setAuthCookie(w http.ResponseWriter, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     authCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		// Secure is intentionally false: hub may serve plain HTTP on
+		// loopback or a Tailscale-only address. Set Secure=true via
+		// reverse proxy if you front the hub with TLS.
+		Secure: false,
+		MaxAge: authCookieMaxAgeSeconds,
+	})
 }
 
 // HandleAuth implements GET /auth?token=<t>: validates the token in the
@@ -156,18 +198,7 @@ func HandleAuth(token string) http.HandlerFunc {
 			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
 		}
-		http.SetCookie(w, &http.Cookie{
-			Name:     authCookieName,
-			Value:    token,
-			Path:     "/",
-			HttpOnly: true,
-			SameSite: http.SameSiteStrictMode,
-			// Secure is intentionally false: hub may serve plain HTTP on
-			// loopback or a Tailscale-only address. Set Secure=true via
-			// reverse proxy if you front the hub with TLS.
-			Secure: false,
-			MaxAge: authCookieMaxAgeSeconds,
-		})
+		setAuthCookie(w, token)
 		next := r.URL.Query().Get("next")
 		if next == "" || !strings.HasPrefix(next, "/") {
 			next = "/"
