@@ -62,6 +62,7 @@ TARGETS=(
 	"native:agent:.:FuzzWxEvaluateWatchEvent::job_watch.go#evaluateWatchEvent"
 	"native:agent:.:FuzzWxClassifyWatchSendTarget::job_watch.go#classifyWatchSendDeliveryTarget"
 	"native:agent:.:FuzzRootWatchTreeProgram::"
+	"native:agent:.:FuzzWatchGrantLifecycleProgram::job_watch.go#watchReadGrantObserver;job_watch.go#watchedWorkerSessionID;job_watch.go#stampObservedBy;job_watch.go#recordObserverLink;job_watch.go#lookupGrantedJobRead;job_watch.go#mintWatchCreateReadGrant;job_watch.go#mintWatchSendReadGrant"
 	"native:agent:.:FuzzRootParentObserverLifecycleProgram::"
 	"native:agent:.:FuzzRootDelegateResumeLifecycleProgram::"
 	"native:agent:.:FuzzRootJobReadWaitProgram::"
