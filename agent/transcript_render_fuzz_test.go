@@ -11,16 +11,21 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/fuzz/oracle"
+	"primeradiant.com/serf/llm"
 )
 
-// This file fuzzes three transcript-rendering/lookup seams that unit tests
+// This file fuzzes four transcript-rendering/lookup seams that unit tests
 // exercise but no fuzz target reaches:
 //
 //   - rawLinesForRange (transcript_render.go): reads a transcript file and
 //     returns the verbatim JSONL lines for a derived seq range.
 //   - toolInputSummary (transcript_render.go): one-line bounded summary of a
 //     tool call's JSON arguments.
+//   - renderTranscript (transcript_render.go): renders typed transcript turns,
+//     ranges, tool-result pairings, and expanded pins into bounded markdown.
 //   - resolveTranscript (transcript_lookup.go): turns a model-supplied selector
 //     into a concrete file path + opaque ref.
 //
@@ -175,6 +180,244 @@ func FuzzToolInputSummary(f *testing.F) {
 		fn := func(in []byte) string { return toolInputSummary(name, json.RawMessage(in)) }
 		oracle.Deterministic[[]byte, string](t, fn, args, func(a, b string) bool { return a == b })
 	})
+}
+
+// FuzzRenderTranscriptProgram drives the full typed markdown-rendering path
+// using a small finite input language. The language constructs valid and
+// deliberately malformed transcript shapes without decoding arbitrary wire
+// data, so each replay remains bounded and deterministic. Oracles:
+//
+//   - DETERMINISM: rendering and its provenance metadata are stable;
+//   - ACCOUNTING: rendered + elided turns equals the supplied entry count;
+//   - BOUNDS: the hard-cap contract holds even for a pinned full result;
+//   - STRUCTURE: every successful render retains its document header.
+func FuzzRenderTranscriptProgram(f *testing.F) {
+	for scenario := byte(0); scenario < 13; scenario++ {
+		f.Add([]byte{scenario}, "fuzz payload")
+	}
+
+	f.Fuzz(func(t *testing.T, program []byte, payload string) {
+		header, entries, rangeSpec, opt := trender_program(program, payload)
+
+		got, meta := renderTranscript(header, entries, rangeSpec, opt)
+		again, againMeta := renderTranscript(header, entries, rangeSpec, opt)
+		if got != again || meta != againMeta {
+			t.Fatalf("renderTranscript was not deterministic for program=%x", program)
+		}
+		if meta.TurnsTotal != len(entries) {
+			t.Fatalf("TurnsTotal = %d, want %d", meta.TurnsTotal, len(entries))
+		}
+		if meta.TurnsRendered+meta.ElidedTurns != meta.TurnsTotal {
+			t.Fatalf("rendered + elided = %d + %d, want %d", meta.TurnsRendered, meta.ElidedTurns, meta.TurnsTotal)
+		}
+		if meta.TurnsRendered == 0 {
+			if meta.FirstRendered != 0 || meta.LastRendered != -1 {
+				t.Fatalf("empty render span = [%d,%d], want [0,-1]", meta.FirstRendered, meta.LastRendered)
+			}
+		} else if meta.FirstRendered < 0 || meta.LastRendered < meta.FirstRendered || meta.LastRendered >= len(entries) {
+			t.Fatalf("invalid render span = [%d,%d] for %d entries", meta.FirstRendered, meta.LastRendered, len(entries))
+		}
+		if meta.TurnsRendered < meta.TurnsTotal && !meta.Truncated {
+			t.Fatal("elided turns did not set Truncated")
+		}
+		if !strings.HasPrefix(got, "# Transcript: ") {
+			t.Fatalf("missing document header: %q", got)
+		}
+		if len([]rune(got)) > hardCapChars {
+			t.Fatalf("rendered %d runes, exceeds hard cap %d", len([]rune(got)), hardCapChars)
+		}
+	})
+}
+
+func trender_program(program []byte, payload string) (transcript.Header, []transcript.Entry, string, renderOpts) {
+	scenario := byte(0)
+	if len(program) > 0 {
+		scenario = program[0] % 13
+	}
+	payload = trender_boundedPayload(payload)
+	bulkPayload := payload
+	if len(bulkPayload) > 48 {
+		bulkPayload = bulkPayload[:48]
+	}
+
+	header := transcript.Header{Task: "task " + payload}
+	opt := renderOpts{meta: schema.SessionMeta{
+		Name:           "session " + payload,
+		OriginalPrompt: "prompt " + payload,
+	}}
+
+	part := func(kind llm.ContentKind, text string) llm.ContentPart {
+		return llm.ContentPart{Kind: kind, Text: text}
+	}
+	call := func(id, name, args string) llm.ContentPart {
+		return llm.ContentPart{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:        id,
+				Name:      name,
+				Arguments: json.RawMessage(args),
+			},
+		}
+	}
+	result := func(id, name, content string, isError bool) llm.ContentPart {
+		return llm.ContentPart{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: id,
+				Name:       name,
+				Content:    content,
+				IsError:    isError,
+			},
+		}
+	}
+	entry := func(kind schema.TurnKind, parts ...llm.ContentPart) transcript.Entry {
+		return transcript.Entry{
+			Kind: "entry",
+			Turn: schema.Turn{
+				Kind:    kind,
+				Message: llm.Message{Content: parts},
+			},
+		}
+	}
+
+	switch scenario {
+	case 0:
+		return header, nil, "", opt
+	case 1:
+		entries := []transcript.Entry{
+			entry(schema.TurnUserInput, part(llm.ContentText, "user "+payload)),
+			entry(schema.TurnAssistant,
+				llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "think " + payload}},
+				llm.ContentPart{Kind: llm.ContentRedThinking},
+				part(llm.ContentText, "assistant "+payload),
+				call("call-shell", "shell", `{"command":"printf hi","purpose":"inspect"}`),
+				call("call-result", "communicate", `{"message":"done"}`),
+				llm.ContentPart{Kind: llm.ContentToolCall},
+			),
+			entry(schema.TurnToolResults,
+				result("call-shell", "shell", "line one\n```\nline two", false),
+				result("call-result", "communicate", `{"accepted":true}`, false),
+				result("orphan", "read_file", `{"path":"/tmp/a","ok":true}`, true),
+			),
+			entry(schema.TurnSteering, part(llm.ContentText, "steer\nsecond line")),
+			entry(schema.TurnSummary, part(llm.ContentText, "summary")),
+			entry(schema.TurnCheckpoint),
+			entry(schema.TurnSystem),
+			entry(schema.TurnTool),
+			entry(schema.TurnKind("FUTURE")),
+		}
+		return header, entries, "", opt
+	case 2:
+		entries := []transcript.Entry{
+			entry(schema.TurnAssistant,
+				call("one", "read_file", `{"file_path":"/tmp/a","offset":1,"limit":2}`),
+				call("two", "reply", `{"message":"custom result"}`),
+			),
+			entry(schema.TurnToolResults,
+				result("one", "read_file", `{"nested":{"x":1},"items":[true,false]}`, false),
+				result("one", "read_file", "later duplicate is ignored", true),
+				result("two", "reply", `{"accepted":true}`, false),
+				result("", "missing", "dropped", false),
+			),
+		}
+		opt.resultToolName = "reply"
+		return header, entries, "0-1", opt
+	case 3:
+		body := `{"job_id":"job-1","status":"completed","reason":"done","transcript_ref":"local:child","output":"` + strings.ReplaceAll(payload, "\n", "\\n") + `","structured_result":{"ok":true},"delivered":true}`
+		entries := []transcript.Entry{
+			entry(schema.TurnAssistant, call("job", "delegate", `{"task":"child"}`)),
+			entry(schema.TurnToolResults, result("job", "delegate", body, false)),
+		}
+		return header, entries, "last:2", opt
+	case 4:
+		entries := []transcript.Entry{
+			entry(schema.TurnAssistant, call("job", "delegate_send", `not json`)),
+			entry(schema.TurnToolResults, result("job", "delegate_send", `{"job_id":"job-2","status":"failed","extra":{"kept":true}}`, true)),
+			entry(schema.TurnToolResults, result("orphan", "unknown", strings.Repeat("line\n", 36), false)),
+		}
+		return header, entries, "last:99", opt
+	case 5:
+		entries := trender_manyEntries(48, strings.Repeat("old "+bulkPayload+" ", 140))
+		return header, entries, "", opt
+	case 6:
+		entries := trender_manyEntries(48, strings.Repeat("front "+bulkPayload+" ", 140))
+		return header, entries, "start:48", opt
+	case 7:
+		entries := []transcript.Entry{
+			entry(schema.TurnAssistant, call("pinned", "read_file", `{"file_path":"/tmp/pin"}`)),
+			entry(schema.TurnToolResults, result("pinned", "read_file", strings.Repeat("full line\n", 35), false)),
+		}
+		pin := 0
+		opt.fullResultFor = &pin
+		return header, entries, "0-1", opt
+	case 8:
+		entries := []transcript.Entry{
+			entry(schema.TurnAssistant, call("pinned", "shell", `{"command":"echo pin"}`)),
+			entry(schema.TurnToolResults, result("pinned", "shell", strings.Repeat("outside line\n", 35), false)),
+		}
+		entries = append(entries, trender_manyEntries(45, "later "+payload)...)
+		// Pinning the result entry (rather than its assistant owner) exercises
+		// the result-to-call ownership lookup used by expand_turn.
+		pin := 1
+		opt.fullResultFor = &pin
+		return header, entries, "last:1", opt
+	case 9:
+		entries := []transcript.Entry{
+			entry(schema.TurnAssistant, call("pinned", "read_file", `{"file_path":"/tmp/pin"}`)),
+			entry(schema.TurnToolResults, result("pinned", "read_file", strings.Repeat("very long pinned result\n", 11000), false)),
+		}
+		pin := 0
+		opt.fullResultFor = &pin
+		return header, entries, "0-1", opt
+	case 10:
+		return header, []transcript.Entry{entry(schema.TurnUserInput, part(llm.ContentText, payload))}, "last:0", opt
+	case 11:
+		return header, trender_manyEntries(3, payload), "invalid-range", opt
+	default:
+		entries := []transcript.Entry{
+			entry(schema.TurnAssistant,
+				part(llm.ContentText, payload),
+				call("bad", "unknown_tool", `{"z":1,"a":"two"}`),
+			),
+			entry(schema.TurnToolResults, result("bad", "unknown_tool", "plain body", false)),
+		}
+		return header, entries, "2-1", opt
+	}
+}
+
+func trender_manyEntries(n int, body string) []transcript.Entry {
+	entries := make([]transcript.Entry, 0, n)
+	for i := 0; i < n; i++ {
+		kind := schema.TurnUserInput
+		role := llm.RoleUser
+		if i%2 == 1 {
+			kind = schema.TurnAssistant
+			role = llm.RoleAssistant
+		}
+		entries = append(entries, transcript.Entry{
+			Kind: "entry",
+			Turn: schema.Turn{
+				Kind: kind,
+				Message: llm.Message{
+					Role:    role,
+					Content: []llm.ContentPart{{Kind: llm.ContentText, Text: body}},
+				},
+			},
+		})
+	}
+	return entries
+}
+
+func trender_boundedPayload(payload string) string {
+	const maxBytes = 256
+	if len(payload) > maxBytes {
+		payload = payload[:maxBytes]
+	}
+	payload = strings.ToValidUTF8(payload, "?")
+	if payload == "" {
+		return "payload"
+	}
+	return payload
 }
 
 // FuzzResolveTranscript drives resolveTranscript over a fuzzed selector against a
