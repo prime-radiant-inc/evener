@@ -24,7 +24,7 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 	}
 
 	body := map[string]any{
-		"model":               req.Model,
+		"model":               a.wireModel(req.Model),
 		"instructions":        instructions,
 		"input":               inputItems,
 		"parallel_tool_calls": true,
@@ -704,6 +704,19 @@ func toResponsesToolChoice(tc llm.ToolChoice) (any, error) {
 // deprecated prompt_cache_retention field.
 func responsesLiteModel(model string) bool {
 	return strings.HasPrefix(model, "gpt-5.6")
+}
+
+// wireModel returns the model slug to send on the wire. The ChatGPT codex
+// backend has no bare "gpt-5.6" slug — it rejects it with "not supported when
+// using Codex with a ChatGPT account" — because the codex CLI always sends a
+// full variant slug. Map bare gpt-5.6 to the default variant (sol, the
+// highest-priority variant in codex's model manifest). The platform API serves
+// bare gpt-5.6 directly, so api-key requests keep the caller's slug.
+func (a *Adapter) wireModel(model string) string {
+	if a.usesCodexBackend() && model == "gpt-5.6" {
+		return "gpt-5.6-sol"
+	}
+	return model
 }
 
 // defaultImageDetail returns the best image detail level for the model.
