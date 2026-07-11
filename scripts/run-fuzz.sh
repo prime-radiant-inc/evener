@@ -91,6 +91,7 @@ TARGETS=(
 	"native:agent:./doctor:FuzzDoctorLoadTranscript::transcript.go#loadTranscript"
 	"native:agent:./doctor:FuzzDoctorFilesystemProgram::"
 	"native:agent:./mcpconfig:FuzzMCPConfigLoad::config.go"
+	"native:agent:./mcpconfig:FuzzMCPConfigDiscoveryProgram::config.go#Discover"
 	"native:agent:./provider:FuzzResolveProfileFromConfig::resolve.go"
 	"native:agent:./provider:FuzzApOpenRouterAnthropicResolve::profile.go#resolveOpenRouterAnthropicWebSearch"
 	"native:agent:./provider:FuzzProviderProfilesProgram::profile.go#WithLiveModelInfo;profile.go#WithModel;profile_overrides.go#WithCheapModel;resolve.go#ResolveProfileFromConfig"
