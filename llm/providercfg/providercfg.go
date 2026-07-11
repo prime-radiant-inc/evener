@@ -126,10 +126,10 @@ type ModelConfig struct {
 	ContextWindow   int   `toml:"context_window"`
 	MaxOutputTokens int   `toml:"max_output_tokens"`
 	Reasoning       *bool `toml:"reasoning"`
-	// ThinkingLevels maps serf effort levels (minimal/low/medium/high/xhigh;
-	// "max" is accepted as an alias of xhigh) to the wire string the provider
-	// wants. When present it is the complete authority: levels absent from the
-	// map are unsupported and get clamped away.
+	// ThinkingLevels maps serf effort levels (minimal/low/medium/high/xhigh/
+	// max) to the wire string the provider wants. When present it is the
+	// complete authority: levels absent from the map are unsupported and get
+	// clamped away.
 	ThinkingLevels map[string]string `toml:"thinking_levels"`
 	Compat         *CompatConfig     `toml:"compat"`
 }

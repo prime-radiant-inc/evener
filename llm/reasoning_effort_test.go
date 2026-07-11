@@ -25,8 +25,18 @@ func TestClampReasoningEffort(t *testing.T) {
 			"xhigh", nil, "xhigh"},
 		{"xhigh allowed when model supports it",
 			"xhigh", []string{"low", "medium", "high", "xhigh"}, "xhigh"},
-		{"max treated as top tier equal to xhigh",
+		{"max clamps down to xhigh when model tops out at xhigh",
 			"max", []string{"low", "high", "xhigh"}, "xhigh"},
+		{"xhigh passes through when model also supports max",
+			"xhigh", []string{"low", "high", "xhigh", "max"}, "xhigh"},
+		{"max passes through when model supports it",
+			"max", []string{"low", "high", "xhigh", "max"}, "max"},
+		{"xhigh raises to max when max is the only level",
+			"xhigh", []string{"max"}, "max"},
+		{"gap between supported levels rounds up (Pi thinkingLevelMap parity)",
+			"xhigh", []string{"high", "max"}, "max"},
+		{"gap rounds up to the next supported level",
+			"medium", []string{"low", "high"}, "high"},
 		{"unknown level passes through",
 			"turbo", []string{"low", "medium", "high"}, "turbo"},
 		{"case-insensitive match",
@@ -42,10 +52,10 @@ func TestClampReasoningEffort(t *testing.T) {
 }
 
 func TestReasoningEffortRank(t *testing.T) {
-	if ReasoningEffortRank("max") != ReasoningEffortRank("xhigh") {
-		t.Errorf("max and xhigh should share a rank: max=%d xhigh=%d", ReasoningEffortRank("max"), ReasoningEffortRank("xhigh"))
+	if ReasoningEffortRank("max") <= ReasoningEffortRank("xhigh") {
+		t.Errorf("max should rank above xhigh: max=%d xhigh=%d", ReasoningEffortRank("max"), ReasoningEffortRank("xhigh"))
 	}
-	ladder := []string{"minimal", "low", "high", "max"}
+	ladder := []string{"minimal", "low", "medium", "high", "xhigh", "max"}
 	for i := 1; i < len(ladder); i++ {
 		if ReasoningEffortRank(ladder[i-1]) >= ReasoningEffortRank(ladder[i]) {
 			t.Errorf("ranks should be strictly increasing: %s(%d) is not < %s(%d)",

@@ -176,15 +176,15 @@ finish_reason_map = { sensitive = "content_filter" }
 	}
 }
 
-// thinking_levels keys are normalized: uppercase folds down, "max" aliases to
-// "xhigh" (serf's rank table treats them as one tier).
+// thinking_levels keys are normalized: uppercase folds down. "max" and "xhigh"
+// are distinct tiers (max ranks above xhigh), so each survives as its own key.
 func TestLoadNormalizesThinkingLevelKeys(t *testing.T) {
 	src := `
 [instances.gw]
 type = "glm"
 
 [instances.gw.models."glm-x"]
-thinking_levels = { LOW = "high", max = "max" }
+thinking_levels = { LOW = "high", xhigh = "ultra_think", MAX = "max_think" }
 `
 	cfg, err := Load([]byte(src))
 	if err != nil {
@@ -194,11 +194,11 @@ thinking_levels = { LOW = "high", max = "max" }
 	if got := mc.ThinkingLevels["low"]; got != "high" {
 		t.Errorf("ThinkingLevels[low] = %q, want high (case-folded)", got)
 	}
-	if got := mc.ThinkingLevels["xhigh"]; got != "max" {
-		t.Errorf("ThinkingLevels[xhigh] = %q, want max (max key aliases xhigh)", got)
+	if got := mc.ThinkingLevels["xhigh"]; got != "ultra_think" {
+		t.Errorf("ThinkingLevels[xhigh] = %q, want ultra_think", got)
 	}
-	if _, ok := mc.ThinkingLevels["max"]; ok {
-		t.Error("ThinkingLevels kept raw 'max' key; want normalized away")
+	if got := mc.ThinkingLevels["max"]; got != "max_think" {
+		t.Errorf("ThinkingLevels[max] = %q, want max_think (max is its own level, case-folded)", got)
 	}
 }
 
@@ -328,16 +328,6 @@ type = "glm"
 context_window = 100
 `,
 			wantErr: "model",
-		},
-		{
-			name: "max and xhigh keys collide",
-			src: `
-[instances.gw]
-type = "glm"
-[instances.gw.models."m"]
-thinking_levels = { max = "max", xhigh = "ultra" }
-`,
-			wantErr: "duplicate",
 		},
 		{
 			name: "case-folded duplicate level keys collide",

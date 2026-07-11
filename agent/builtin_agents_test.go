@@ -690,7 +690,7 @@ func TestStuckEscalation_BumpsReasoning(t *testing.T) {
 	}
 }
 
-func TestStuckEscalation_BumpsFromHighToXhigh(t *testing.T) {
+func TestStuckEscalation_BumpsFromHighToMax(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -705,8 +705,8 @@ func TestStuckEscalation_BumpsFromHighToXhigh(t *testing.T) {
 	defer sess.Close()
 
 	sess.stuckEscalation(1)
-	if sess.cfg.ReasoningEffort != "xhigh" {
-		t.Errorf("should bump high to xhigh, got: %s", sess.cfg.ReasoningEffort)
+	if sess.cfg.ReasoningEffort != "max" {
+		t.Errorf("should bump high to max (per-model clamp lowers it to the model's top tier), got: %s", sess.cfg.ReasoningEffort)
 	}
 }
 

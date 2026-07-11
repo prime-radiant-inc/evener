@@ -481,11 +481,27 @@ func TestThinkingLevels_TranslateEffortToWireValue(t *testing.T) {
 		t.Errorf("reasoning_effort = %v, want max (xhigh mapped)", got)
 	}
 
-	// "max" input aliases the xhigh row.
+	// "max" input clamps down to the xhigh row when the map tops out there.
 	req.ReasoningEffort = strp("max")
 	body = requestBody(t, req, false, mc)
 	if got := body["reasoning_effort"]; got != "max" {
 		t.Errorf("reasoning_effort for input max = %v, want max", got)
+	}
+
+	// A map with distinct xhigh and max rows keeps the tiers apart.
+	tiered := ModelCompat{
+		Quirks:         ProviderQuirks{ThinkingFormat: "zai", SupportsReasoningEffort: boolp(true)},
+		ThinkingLevels: map[string]string{"xhigh": "ultra_think", "max": "max_think"},
+	}
+	req.ReasoningEffort = strp("xhigh")
+	body = requestBody(t, req, false, tiered)
+	if got := body["reasoning_effort"]; got != "ultra_think" {
+		t.Errorf("reasoning_effort for xhigh = %v, want ultra_think (distinct from max)", got)
+	}
+	req.ReasoningEffort = strp("max")
+	body = requestBody(t, req, false, tiered)
+	if got := body["reasoning_effort"]; got != "max_think" {
+		t.Errorf("reasoning_effort for max = %v, want max_think (distinct from xhigh)", got)
 	}
 
 	// The level map beats TranslateMaxToXHigh.

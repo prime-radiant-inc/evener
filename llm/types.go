@@ -225,7 +225,7 @@ func OpenAICompatReasoningFields() []string {
 }
 
 // OrderedEffortLevels returns a thinking-levels map's keys sorted by
-// ReasoningEffortRank (minimal → xhigh) — the shape ReasoningEffortLevels,
+// ReasoningEffortRank (minimal → max) — the shape ReasoningEffortLevels,
 // the task_list enum, the spawn-form chip, and ClampReasoningEffort all
 // expect. One definition so those surfaces cannot drift.
 func OrderedEffortLevels(levels map[string]string) []string {
@@ -610,6 +610,10 @@ func ReasoningBudget(effort string) int {
 	case "high":
 		return 32768
 	case "xhigh", "max":
+		// max ranks above xhigh as an effort level, but the manual thinking
+		// budget table caps at 131072 for both: budgets only drive the legacy
+		// budget_tokens path, and the models that distinguish xhigh from max
+		// all take the effort parameter instead.
 		return 131072
 	default:
 		return 0
@@ -617,15 +621,15 @@ func ReasoningBudget(effort string) int {
 }
 
 // effortRank orders reasoning-effort levels from least to most. "xhigh" and
-// "max" are the same top tier under different vendor names (OpenRouter says
-// "xhigh"; serf and Anthropic say "max"), so they share a rank.
+// "max" are distinct ascending tiers: GPT-5.6 and Anthropic's
+// output_config.effort both place max above xhigh.
 var effortRank = map[string]int{
 	"minimal": 1,
 	"low":     2,
 	"medium":  3,
 	"high":    4,
 	"xhigh":   5,
-	"max":     5,
+	"max":     6,
 }
 
 // NormalizeReasoningEffort lowercases and trims a reasoning-effort value and maps
@@ -644,7 +648,7 @@ func NormalizeReasoningEffort(s string) string {
 }
 
 // ReasoningEffortRank returns the ordinal rank of a reasoning-effort level
-// (minimal=1 … xhigh=max=5), or 0 for empty/unknown values. Use it instead of a
+// (minimal=1 … max=6), or 0 for empty/unknown values. Use it instead of a
 // local hierarchy so effort comparisons (e.g. a "floor at high" side-channel)
 // honor the full vocabulary and cannot drift as levels are added.
 func ReasoningEffortRank(effort string) int {
@@ -652,12 +656,15 @@ func ReasoningEffortRank(effort string) int {
 }
 
 // ClampReasoningEffort clamps a requested effort to the levels a model supports.
-// A request above the model's top supported level is lowered to that level; a
-// request below the model's lowest is raised to it. Empty, "none", unknown
-// vocabulary, or an empty supported set pass through unchanged so the provider
-// can decide. This is the single guard that keeps loop-detector escalation, the
-// --reasoning-effort flag, and the UI selector from sending a level a model
-// rejects (e.g. "xhigh" to a model that only supports minimal/low/medium/high).
+// An unsupported request rounds up to the lowest supported level above it (Pi's
+// thinkingLevelMap parity — asking for more than a tier grants the next tier,
+// e.g. "xhigh" against a wire-spelled ["high","max"] resolves to "max"); a
+// request above the model's top supported level is lowered to that level.
+// Empty, "none", unknown vocabulary, or an empty supported set pass through
+// unchanged so the provider can decide. This is the single guard that keeps
+// loop-detector escalation, the --reasoning-effort flag, and the UI selector
+// from sending a level a model rejects (e.g. "max" to a model that only
+// supports minimal/low/medium/high).
 func ClampReasoningEffort(requested string, supportedLevels []string) string {
 	req := strings.ToLower(strings.TrimSpace(requested))
 	if req == "" || req == "none" || len(supportedLevels) == 0 {
@@ -667,8 +674,8 @@ func ClampReasoningEffort(requested string, supportedLevels []string) string {
 	if !ok {
 		return requested
 	}
-	best, bestRank := "", -1
-	lowest, lowestRank := "", 1<<30
+	ceil, ceilRank := "", 1<<30
+	highest, highestRank := "", -1
 	for _, lvl := range supportedLevels {
 		l := strings.ToLower(strings.TrimSpace(lvl))
 		r, ok := effortRank[l]
@@ -678,18 +685,18 @@ func ClampReasoningEffort(requested string, supportedLevels []string) string {
 		if l == req {
 			return l
 		}
-		if r < lowestRank {
-			lowest, lowestRank = l, r
+		if r >= reqRank && r < ceilRank {
+			ceil, ceilRank = l, r
 		}
-		if r <= reqRank && r > bestRank {
-			best, bestRank = l, r
+		if r > highestRank {
+			highest, highestRank = l, r
 		}
 	}
-	if best != "" {
-		return best
+	if ceil != "" {
+		return ceil
 	}
-	if lowest != "" {
-		return lowest
+	if highest != "" {
+		return highest
 	}
 	return requested
 }

@@ -250,9 +250,9 @@ func ResolveReasoningEffort(cliValue, envValue string) (ReasoningEffortResolutio
 		// A disable alias (none/null/off/false/0): explicitly clear the effort.
 		return ReasoningEffortResolution{Set: true, Value: ""}, nil
 	case "minimal", "low", "medium", "high", "xhigh", "max":
-		// "xhigh" and "max" are aliases for the top tier (OpenRouter/OpenAI say
-		// "xhigh"; Anthropic/serf say "max"). Both are accepted; the per-model
-		// clamp maps them to the level the chosen model actually advertises.
+		// "xhigh" and "max" are distinct ascending tiers (max above xhigh);
+		// the per-model clamp maps either to the nearest level the chosen
+		// model actually advertises.
 		return ReasoningEffortResolution{Set: true, Value: v}, nil
 	default:
 		return ReasoningEffortResolution{}, fmt.Errorf("invalid reasoning effort %q (expected minimal|low|medium|high|xhigh|max|none)", raw)

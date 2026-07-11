@@ -13,8 +13,8 @@ import (
 // request via compatFor.
 type ModelCompat struct {
 	Quirks ProviderQuirks
-	// ThinkingLevels maps serf effort levels (canonical keys, "xhigh" for the
-	// top tier) to the wire string the provider wants. Empty means no
+	// ThinkingLevels maps serf effort levels (canonical lowercase keys,
+	// minimal → max) to the wire string the provider wants. Empty means no
 	// translation — levels pass through by name.
 	ThinkingLevels map[string]string
 	// DefaultMaxTokens is sent as the output cap when the request sets none.
@@ -45,13 +45,7 @@ type ModelCompat struct {
 func (mc ModelCompat) wireEffort(effort string) string {
 	norm := strings.ToLower(strings.TrimSpace(effort))
 	if len(mc.ThinkingLevels) > 0 {
-		key := norm
-		if key == "max" {
-			// serf's rank table treats max and xhigh as one tier; the map is
-			// keyed on the canonical xhigh.
-			key = "xhigh"
-		}
-		key = llm.ClampReasoningEffort(key, llm.OrderedEffortLevels(mc.ThinkingLevels))
+		key := llm.ClampReasoningEffort(norm, llm.OrderedEffortLevels(mc.ThinkingLevels))
 		if v, ok := mc.ThinkingLevels[key]; ok {
 			return v
 		}

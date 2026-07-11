@@ -520,6 +520,29 @@ func TestParseLiteLLMCatalog_SynthesizesXHighEffortLevelFromFlags(t *testing.T) 
 	}
 }
 
+func TestParseLiteLLMCatalog_SynthesizesXHighAndMaxEffortLevels(t *testing.T) {
+	body := `{
+  "claude-sonnet-5": {
+    "litellm_provider":"anthropic","mode":"chat",
+    "supports_reasoning":true,
+    "supports_xhigh_reasoning_effort":true,
+    "supports_max_reasoning_effort":true
+  }
+}`
+	cat, err := parseLiteLLMCatalog([]byte(body))
+	if err != nil {
+		t.Fatalf("parseLiteLLMCatalog: %v", err)
+	}
+	mi := cat.GetModelInfo("claude-sonnet-5")
+	if mi == nil {
+		t.Fatal("claude-sonnet-5 not found")
+	}
+	want := []string{"low", "medium", "high", "xhigh", "max"}
+	if !reflect.DeepEqual(mi.ReasoningEffortLevels, want) {
+		t.Fatalf("ReasoningEffortLevels = %v, want %v (xhigh and max are distinct tiers)", mi.ReasoningEffortLevels, want)
+	}
+}
+
 // TestParseLiteLLMCatalog_WebSearchPresence verifies that
 // SupportsWebSearch is presence-aware: the parsed ModelInfo carries a
 // distinguishable "field absent" vs "explicitly false" vs "explicitly

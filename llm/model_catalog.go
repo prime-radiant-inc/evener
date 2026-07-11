@@ -351,7 +351,8 @@ func synthesizeReasoningEffortLevels(v map[string]any) []string {
 	}
 	if xhigh {
 		levels = append(levels, "xhigh")
-	} else if maxEffort {
+	}
+	if maxEffort {
 		levels = append(levels, "max")
 	}
 	return levels

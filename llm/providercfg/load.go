@@ -72,16 +72,16 @@ func ThinkingFormatNames() []string {
 }
 
 // validThinkingLevelKeys are the serf effort levels a thinking_levels map may
-// name. "max" is accepted as an input alias and normalized to "xhigh" at load
-// (serf's rank table treats them as one tier). "off" is deliberately absent:
-// serf's "none" clears the effort setting to the provider default rather than
-// forcing an explicit disable.
+// name. "xhigh" and "max" are distinct ascending tiers (max ranks above
+// xhigh). "off" is deliberately absent: serf's "none" clears the effort
+// setting to the provider default rather than forcing an explicit disable.
 var validThinkingLevelKeys = map[string]bool{
 	"minimal": true,
 	"low":     true,
 	"medium":  true,
 	"high":    true,
 	"xhigh":   true,
+	"max":     true,
 }
 
 // CompatFamily reports whether an instance routes through the openai-compat
@@ -136,8 +136,8 @@ func validateCompat(errs []string, instName, where string, c *CompatConfig) []st
 }
 
 // validateAndNormalizeModels validates each model entry and normalizes
-// thinking_levels keys (lowercase; "max" folds into "xhigh"). It mutates the
-// entries in place via the returned map.
+// thinking_levels keys (lowercase). It mutates the entries in place via the
+// returned map.
 func validateAndNormalizeModels(errs []string, instName string, models map[string]ModelConfig) ([]string, map[string]ModelConfig) {
 	if len(models) == 0 {
 		return errs, models
@@ -158,13 +158,10 @@ func validateAndNormalizeModels(errs []string, instName string, models map[strin
 			norm := make(map[string]string, len(mc.ThinkingLevels))
 			for k, v := range mc.ThinkingLevels {
 				key := strings.ToLower(strings.TrimSpace(k))
-				if key == "max" {
-					key = "xhigh"
-				}
 				if _, dup := norm[key]; dup {
 					// Map iteration order would otherwise pick the survivor
-					// nondeterministically (e.g. max vs xhigh, LOW vs low).
-					errs = append(errs, fmt.Sprintf("instance %q: model %q: thinking_levels has duplicate entries for level %q after normalization (max aliases xhigh; keys are case-insensitive)", instName, id, key))
+					// nondeterministically (e.g. LOW vs low).
+					errs = append(errs, fmt.Sprintf("instance %q: model %q: thinking_levels has duplicate entries for level %q after normalization (keys are case-insensitive)", instName, id, key))
 					continue
 				}
 				if key == "off" {
@@ -172,7 +169,7 @@ func validateAndNormalizeModels(errs []string, instName string, models map[strin
 					continue
 				}
 				if !validThinkingLevelKeys[key] {
-					errs = append(errs, fmt.Sprintf("instance %q: model %q: thinking_levels key %q is not a serf effort level (minimal, low, medium, high, xhigh/max)", instName, id, k))
+					errs = append(errs, fmt.Sprintf("instance %q: model %q: thinking_levels key %q is not a serf effort level (minimal, low, medium, high, xhigh, max)", instName, id, k))
 					continue
 				}
 				if strings.TrimSpace(v) == "" {

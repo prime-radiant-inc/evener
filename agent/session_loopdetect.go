@@ -14,8 +14,10 @@ func (s *Session) stuckEscalation(count int) string {
 		switch prev {
 		case "", "low", "medium":
 			s.cfg.ReasoningEffort = "high"
-		case "high":
-			s.cfg.ReasoningEffort = "xhigh"
+		case "high", "xhigh":
+			// "max" is the top of serf's effort lattice; the per-model clamp
+			// lowers it to whatever tier the model actually tops out at.
+			s.cfg.ReasoningEffort = "max"
 		}
 		s.mu.Unlock()
 		return "You are stuck in a loop. Your reasoning effort has been increased. " +
