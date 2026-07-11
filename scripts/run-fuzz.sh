@@ -361,7 +361,7 @@ TARGETS=(
 	"native:llm:./providers/openaicompat:FuzzOpenAICompatMultimodalParts::request.go#buildMultimodalParts"
 	"native:llm:./providers/anthropic:FuzzAnthropicImageRequestBuild::request.go#anthropicImageBlock"
 	"native:llm:./providers/google:FuzzGeminiImageRequestBuild::request.go#geminiImagePart"
-	"native:agent:./internal/jobstore:FuzzOutputMatcher::watch.go#OutputMatcher"
+	"native:agent:./internal/jobstore:FuzzOutputMatcher::watch.go"
 	"native:agent:./internal/contextmgr:FuzzSummarizeToolResult::context_manager.go#summarizeToolResult"
 	"native:agent:./internal/mcp:FuzzMergeEnv::manager.go#mergeEnv"
 	"native:agent:./internal/mcp:FuzzMCPResultToString::manager.go#mcpResultToString"
