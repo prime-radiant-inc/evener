@@ -339,6 +339,7 @@ TARGETS=(
 	"native:agent:./execenv:FuzzDetectImageFormat::local.go#detectImageFormat"
 	"native:agent:./task:FuzzTaskStorePersistence::task_store.go#save;task_store.go#Load"
 	"native:llm:.:FuzzAPILogWrite::apilog.go#write"
+	"native:llm:.:FuzzSessionAPILogWrite::apilog.go#sessionFile"
 	"native:llm:.:FuzzClientCapabilities::client.go#BehaviorTagOf"
 	"native:llm:.:FuzzTokenEstimators::token_count.go#estimateImageTokens"
 	"native:llm:.:FuzzEstimateInputTokens::token_count.go#estimateMessagesInputTokens"
