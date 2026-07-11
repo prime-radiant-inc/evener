@@ -41,18 +41,20 @@ import (
 // Registry: native:agent:.:FuzzShellToolsBufferedProgram::session_tools_shell.go#registerShellTools
 func FuzzShellToolsBufferedProgram(f *testing.F) {
 	for _, seed := range [][]byte{
-		nil,                     // normal success, defaults
-		{1},                     // background rejected on buffered env
-		{2},                     // timed-out result
-		{4},                     // context-cancelled executor result
-		{8},                     // ordinary executor error
-		{16},                    // list_dir error
-		{32},                    // grep error
-		{64},                    // glob error
-		{0, 0, 0, 1},            // max_runtime_ms clamps to one second
-		{0, 0, 0, 6},            // negative max_runtime_ms rejects before exec
-		stpFilledSeed(96, 0xff), // nonempty output and varied pagination inputs
-		stpFilledSeed(96, 0x55), // alternate output/type-marker paths
+		nil,                              // normal success, defaults
+		{1},                              // background rejected on buffered env
+		{2},                              // timed-out result
+		{4},                              // context-cancelled executor result
+		{8},                              // ordinary executor error
+		{16},                             // list_dir error
+		{32},                             // grep error
+		{64},                             // glob error
+		{0, 0, 0, 1},                     // max_runtime_ms clamps to one second
+		{0, 0, 0, 6},                     // negative max_runtime_ms rejects before exec
+		stpForegroundOutputSeed(4, 3, 0), // default timeout caps at max timeout
+		stpForegroundOutputSeed(4, 0, 4), // runtime lowers the default timeout
+		stpFilledSeed(96, 0xff),          // long background/list-error program
+		stpFilledSeed(96, 0x55),          // long background/grep-error program
 	} {
 		f.Add(seed)
 	}
@@ -76,6 +78,19 @@ func stpFilledSeed(n int, value byte) []byte {
 		seed[i] = value
 	}
 	return seed
+}
+
+// stpForegroundOutputSeed makes command/description empty so the next bytes
+// select nonempty no-newline stdout and stderr. This keeps fixed replay on the
+// real buffered-output formatter while the three timeout selectors cover its
+// precedence rules.
+func stpForegroundOutputSeed(defaultTimeout, maxTimeout, maxRuntime byte) []byte {
+	return []byte{
+		0, defaultTimeout, maxTimeout, maxRuntime, // foreground flags and timeouts
+		0, 0, // empty command/description suffixes
+		2, 1, 0, // stdout: one non-newline character
+		2, 1, 1, // stderr: one non-newline character
+	}
 }
 
 // stpReader makes every byte slice a finite, bounded program. End-of-input is
