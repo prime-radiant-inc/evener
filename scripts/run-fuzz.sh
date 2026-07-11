@@ -95,6 +95,8 @@ TARGETS=(
 	"native:agent:./internal/mcp:FuzzMCPSchemaToParams::manager.go#mcpSchemaToParams"
 	"native:agent:./internal/frontmatter:FuzzFrontmatterParse::frontmatter.go"
 	"native:agent:./internal/worktree:FuzzParsePorcelain::porcelain.go#ParsePorcelain"
+	"native:agent:./internal/worktree:FuzzWorktreePredicatesProgram::"
+	"native:agent:./internal/worktree:FuzzSidecarLifecycleProgram::"
 	# Whole-module local surface closure (agent Task 5).
 	"native:agent:./command:FuzzExpandInertArgumentDirectives::"
 	"native:agent:./events:FuzzSessionEventToStreamEvent::"
