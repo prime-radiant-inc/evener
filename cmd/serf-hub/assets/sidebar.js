@@ -779,9 +779,21 @@
   }
 
   // --- Fetch + lifecycle -----------------------------------------------------
+  // Shared in-flight /api/tree transfer: concurrent consumers (startup
+  // fetchTree + an early resync) reuse one request instead of each
+  // downloading the tree — the seq guard only discards the stale RESULT, not
+  // the duplicate transfer, which is megabytes on large hubs.
+  var inflightTree = null;
+  function fetchTreeJSON() {
+    if (inflightTree) return inflightTree;
+    inflightTree = window.fetch("/api/tree").then(function (r) { return r.json(); }).then(
+      function (tree) { inflightTree = null; return tree; },
+      function (err) { inflightTree = null; throw err; });
+    return inflightTree;
+  }
   function fetchTree() {
     var mySeq = ++model.seq;
-    return window.fetch("/api/tree").then(function (r) { return r.json(); }).then(function (tree) {
+    return fetchTreeJSON().then(function (tree) {
       if (mySeq !== model.seq) return; // sequence guard: a newer fetch won
       renderTree(tree);
       migrateExpansionKeys(); // Task 22 (no-op until then)
@@ -814,7 +826,7 @@
   }
   function doResync() {
     var mySeq = ++model.seq;
-    window.fetch("/api/tree").then(function (r) { return r.json(); }).then(function (tree) {
+    fetchTreeJSON().then(function (tree) {
       if (mySeq !== model.seq) return; // sequence guard
       reconcilePending(tree);
       renderTree(tree);
