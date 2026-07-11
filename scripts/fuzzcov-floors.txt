@@ -24,6 +24,7 @@ FuzzDelegateSandboxPolicyProgram 100.0
 FuzzDiagnosticClassificationProgram 100.0
 FuzzDoctorLoadTranscript 83.3
 FuzzErrorFromHTTPStatus 80.8
+FuzzEvalLifecycleProgram 100.0
 FuzzFrontmatterParse 100.0
 FuzzGeminiStreamMetamorphic 85.6
 FuzzGeminiStreamStructured 93.0
