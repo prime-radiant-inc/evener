@@ -322,6 +322,9 @@ func runPluginLifecycle(verb string, args []string, stdin io.Reader, stdout, std
 			return err
 		}
 		_, _ = fmt.Fprintf(stdout, "Installed %s@%s version %s at %s\n", plugin, marketplace, entry.Version, entry.InstallPath)
+		if entry.Note != "" {
+			_, _ = fmt.Fprintf(stdout, "Note: %s\n", entry.Note)
+		}
 		return nil
 
 	case "remove":

@@ -106,7 +106,8 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 		}
 		dir = final
 	}
-	if err := ensureManifestFallback(dir, staged, cp); err != nil {
+	note, err := ensureManifestFallback(dir, staged, cp)
+	if err != nil {
 		if strings.HasPrefix(dir, m.cacheDir()+string(os.PathSeparator)) {
 			_ = os.RemoveAll(dir)
 		}
@@ -129,6 +130,7 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 		Enabled:      true,
 		AutoUpgrade:  false,
 		Source:       cp.Source,
+		Note:         note,
 	}
 	reg, err := LoadRegistry(m.registryPath())
 	if err != nil {
@@ -220,7 +222,8 @@ func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string,
 	if err != nil {
 		return InstallEntry{}, false, false, err
 	}
-	if err := ensureManifestFallback(final, true, cp); err != nil {
+	note, err := ensureManifestFallback(final, true, cp)
+	if err != nil {
 		_ = os.RemoveAll(final)
 		return InstallEntry{}, false, false, err
 	}
@@ -234,6 +237,7 @@ func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string,
 	prev.Version = computeVersion(pluginManifestVersion(final), cp.Source.Ref, sha)
 	prev.LastUpdated = m.now().UTC()
 	prev.Source = cp.Source
+	prev.Note = note
 	reg.Plugins[key] = []InstallEntry{prev}
 	if err := SaveRegistry(m.registryPath(), reg); err != nil {
 		return InstallEntry{}, false, false, err

@@ -32,6 +32,10 @@ type InstallEntry struct {
 	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
 	AutoUpgrade bool   `json:"autoUpgrade"`
 	Source      Source `json:"source"`
+	// Note is an install-time message worth showing the user — currently
+	// only why an MCP-server-shaped, manifest-less plugin was NOT
+	// auto-wired (see ensureManifestFallback). Empty for a clean install.
+	Note string `json:"note,omitempty"`
 }
 
 // LoadRegistry reads installed_plugins.json. An absent file is not an error: it

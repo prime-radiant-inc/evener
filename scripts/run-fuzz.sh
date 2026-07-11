@@ -190,6 +190,7 @@ TARGETS=(
 	"native:.:./cmd/serf-hub/internal/hubcore:FuzzBuildTree::tree.go#BuildTreeAt"
 	"native:.:./internal/gitpath:FuzzParseGitdirPointer::gitpath.go#ParseGitdirPointer"
 	"native:.:./internal/plugins:FuzzSourceUnmarshalJSON::source.go#UnmarshalJSON"
+	"native:.:./internal/plugins:FuzzDetectNPMBinServer::manifest_fallback.go#detectNPMBinServer"
 	# Lane A3 (root module: CLI/TUI glue)
 	"native:.:./cmd/serf:FuzzRunFlagParse::main.go#newRunFlagSet"
 	"native:.:./cmd/llmcall:FuzzLLMCallParsers::main.go#parseMetadata"

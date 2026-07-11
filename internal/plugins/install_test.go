@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	agentplugin "primeradiant.com/serf/agent/plugin"
@@ -192,6 +193,97 @@ func TestInstall_ManifestLessPlugin_NoUsableFields_Installs(t *testing.T) {
 	reg, _ := LoadRegistry(m.registryPath())
 	if _, ok := reg.Plugins["bare-nothing@acme"]; !ok {
 		t.Fatal("a successful install must leave a registry entry")
+	}
+}
+
+// installBareNPMRepo installs a manifest-less plugin repo laid out from files
+// (path -> contents) whose marketplace entry declares no components, and
+// returns the entry and manager.
+func installBareNPMRepo(t *testing.T, pluginName string, files map[string]string) (InstallEntry, *Manager) {
+	t.Helper()
+	pluginRepo := filepath.Join(t.TempDir(), "pluginrepo")
+	for rel, content := range files {
+		p := filepath.Join(pluginRepo, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	makeGitRepo(t, pluginRepo, "README.md", "bare npm mcp server")
+
+	mktRepo := filepath.Join(t.TempDir(), "mkt")
+	os.MkdirAll(filepath.Join(mktRepo, ".claude-plugin"), 0o755)
+	mj := `{"name":"acme","owner":{"name":"o"},"plugins":[{
+	  "name":"` + pluginName + `",
+	  "source":{"source":"url","url":"` + pluginRepo + `"}
+	}]}`
+	os.WriteFile(filepath.Join(mktRepo, ".claude-plugin", "marketplace.json"), []byte(mj), 0o644)
+	makeGitRepo(t, mktRepo, "README.md", "x")
+
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	entry, err := m.Install(context.Background(), pluginName, "acme")
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	return entry, m
+}
+
+// TestInstall_BareNPMRepo_AutoWiresMCP is the end-to-end shape of the
+// feature: installing a manifest-less npm MCP-server repo whose bin target
+// exists yields a plugin whose Load() surfaces a working MCP server config.
+func TestInstall_BareNPMRepo_AutoWiresMCP(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	entry, _ := installBareNPMRepo(t, "journal-mcp", map[string]string{
+		"package.json":  `{"name":"journal-mcp","version":"1.0.0","bin":{"journal-mcp":"./dist/index.js"}}`,
+		"dist/index.js": "#!/usr/bin/env node\n",
+	})
+	if entry.Note != "" {
+		t.Errorf("Note = %q, want none on the wired path", entry.Note)
+	}
+	inst, err := agentplugin.Load(entry.InstallPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(inst.MCPConfigs) != 1 || inst.MCPConfigs[0].Name != "plugin_journal-mcp_journal-mcp" {
+		t.Fatalf("MCPConfigs = %+v, want the auto-wired server", inst.MCPConfigs)
+	}
+	if inst.MCPConfigs[0].Command != "node" {
+		t.Errorf("Command = %q, want node", inst.MCPConfigs[0].Command)
+	}
+}
+
+// TestInstall_BareNPMRepo_UnbuiltBin_NotePersisted: the real cached
+// private-journal-mcp shape (bin points at dist/ that the git clone does not
+// ship). Install succeeds with zero components; the reason lands in the
+// entry's Note and persists through the registry.
+func TestInstall_BareNPMRepo_UnbuiltBin_NotePersisted(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	entry, m := installBareNPMRepo(t, "journal-mcp", map[string]string{
+		"package.json": `{"name":"journal-mcp","version":"1.0.0","bin":{"journal-mcp":"./dist/index.js"}}`,
+		"src/index.ts": "// unbuilt",
+	})
+	if !strings.Contains(entry.Note, "not wiring") {
+		t.Errorf("Note = %q, want the not-wiring explanation", entry.Note)
+	}
+	inst, err := agentplugin.Load(entry.InstallPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(inst.MCPConfigs) != 0 {
+		t.Errorf("MCPConfigs = %+v, want none", inst.MCPConfigs)
+	}
+	reg, _ := LoadRegistry(m.registryPath())
+	if got := reg.Plugins["journal-mcp@acme"][0].Note; got != entry.Note {
+		t.Errorf("registry Note = %q, want %q", got, entry.Note)
 	}
 }
 
