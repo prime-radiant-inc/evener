@@ -382,18 +382,19 @@ merge_profiles() {
 	[ "$#" -gt 0 ] || die "internal error: no profiles to merge for $out"
 	local blocks="$out.blocks"
 	if ! LC_ALL=C awk -v go_int_max="$go_int_max" '
+		# Preserve parser-compatible decimal values without numeric coercion.
+		function normalize_decimal(value, normalized) {
+			normalized = value
+			sub(/^0+/, "", normalized)
+			if (normalized == "") {
+				normalized = "0"
+			}
+			return normalized
+		}
 		# Compare unsigned decimal integers without AWK numeric coercion.
 		function decimal_compare(left, right, normalized_left, normalized_right, left_length, right_length) {
-			normalized_left = left
-			sub(/^0+/, "", normalized_left)
-			if (normalized_left == "") {
-				normalized_left = "0"
-			}
-			normalized_right = right
-			sub(/^0+/, "", normalized_right)
-			if (normalized_right == "") {
-				normalized_right = "0"
-			}
+			normalized_left = normalize_decimal(left)
+			normalized_right = normalize_decimal(right)
 			left_length = length(normalized_left)
 			right_length = length(normalized_right)
 			if (left_length < right_length) {
@@ -426,6 +427,11 @@ merge_profiles() {
 		{
 			invalid = NF != 3 || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/
 			if (!invalid) {
+				statements = normalize_decimal($2)
+				count_value = normalize_decimal($3)
+				invalid = !fits_go_int(statements) || !fits_go_int(count_value)
+			}
+			if (!invalid) {
 				location = $1
 				invalid = location !~ /^.+:[0-9]+\.[0-9]+,[0-9]+\.[0-9]+$/
 			}
@@ -457,14 +463,14 @@ merge_profiles() {
 			}
 			# Go can emit valid metadata blocks with no statements. They cannot affect
 			# either side of statement coverage, so leave them out of the union.
-			if ($2 ~ /^0+$/) {
+			if (statements == "0") {
 				next
 			}
 		}
 		{
-			key = $1 " " $2
-			if (!(key in count) || $3 > count[key]) {
-				count[key] = $3
+			key = $1 " " statements
+			if (!(key in count) || decimal_compare(count_value, count[key]) > 0) {
+				count[key] = count_value
 			}
 		}
 		END {

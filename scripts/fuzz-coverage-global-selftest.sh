@@ -268,6 +268,9 @@ JSON
 			echo 'mode: set'
 			if [ "$run" = '^FuzzNative$' ]; then
 				echo 'example.test/root.go:1.1,2.1 1 1'
+				if [ "${FAKE_GO_EXACT_COUNT_UNION:-}" = "1" ]; then
+					echo 'example.test/large-count.go:5.1,6.1 1 9007199254740992'
+				fi
 			elif [ "$run" = '^FuzzOther$' ]; then
 				echo 'example.test/other.go:5.1,6.1 3 1'
 			elif [ "$run" = '^FuzzAdded$' ]; then
@@ -278,6 +281,9 @@ JSON
 				# Merge must retain this native-positive count and add the Rapid block.
 				echo 'example.test/root.go:1.1,2.1 1 0'
 				echo 'example.test/rapid.go:3.1,4.1 2 1'
+				if [ "${FAKE_GO_EXACT_COUNT_UNION:-}" = "1" ]; then
+					echo 'example.test/large-count.go:5.1,6.1 1 9007199254740993'
+				fi
 			fi
 			if [ "${FAKE_GO_ZERO_STATEMENT_BLOCK:-}" = "1" ]; then
 				echo 'example.test/zero.go:94.11,94.11 0 0'
@@ -304,6 +310,15 @@ JSON
 			fi
 			if [ "${FAKE_GO_32BIT_OVERSIZED_ZERO_COORDINATE:-}" = "1" ]; then
 				echo 'example.test/oversized-32bit-coordinate.go:2147483648.1,2147483648.1 0 0'
+			fi
+			if [ "${FAKE_GO_OVERSIZED_ZERO_COUNT:-}" = "1" ]; then
+				echo 'example.test/oversized-zero-count.go:1.1,1.1 0 9223372036854775808'
+			fi
+			if [ "${FAKE_GO_32BIT_OVERSIZED_ZERO_COUNT:-}" = "1" ]; then
+				echo 'example.test/oversized-32bit-zero-count.go:1.1,1.1 0 2147483648'
+			fi
+			if [ "${FAKE_GO_OVERSIZED_STATEMENT_COUNT:-}" = "1" ]; then
+				echo 'example.test/oversized-statement-count.go:1.1,1.1 9223372036854775808 0'
 			fi
 		} >"$profile"
 		;;
@@ -447,6 +462,22 @@ other_merged="$(cat "$cov_other_profile")"
 has "$other_merged" 'example.test/other.go:5.1,6.1 3 1' 'other package profile keeps its own blocks'
 lacks "$other_merged" 'example.test/root.go' 'profiles never merge blocks across packages'
 
+reset_logs
+set +e
+last_output="$(run_runner FAKE_GO_EXACT_COUNT_UNION=1 2>&1)"
+last_status=$?
+set -e
+if [ "$last_status" -eq 0 ]; then
+	ok 'runner merges large execution counts exactly'
+else
+	bad "runner should merge large execution counts exactly ($last_output)"
+fi
+if [ -s "$cov_profile" ]; then
+	has "$(cat "$cov_profile")" 'example.test/large-count.go:5.1,6.1 1 9007199254740993' 'merge keeps the exact larger execution count'
+else
+	bad 'large-count replay produces a merged root profile'
+fi
+
 echo '== zero-statement coverage blocks =='
 reset_logs
 set +e
@@ -508,6 +539,21 @@ reset_logs
 expect_failure FAKE_GOARCH=386 FAKE_GO_32BIT_OVERSIZED_ZERO_COORDINATE=1
 has "$last_output" 'invalid coverage block' 'zero-statement locations respect 32-bit Go coordinate limits'
 lacks "$(cat "$go_log")" $'\trun ./cmd/serf-fuzzcov' '32-bit oversized-coordinate blocks skip global accounting'
+
+reset_logs
+expect_failure FAKE_GO_OVERSIZED_ZERO_COUNT=1
+has "$last_output" 'invalid coverage block' 'zero-statement rows reject oversized 64-bit execution counts'
+lacks "$(cat "$go_log")" $'\trun ./cmd/serf-fuzzcov' 'oversized 64-bit zero-row counts skip global accounting'
+
+reset_logs
+expect_failure FAKE_GOARCH=386 FAKE_GO_32BIT_OVERSIZED_ZERO_COUNT=1
+has "$last_output" 'invalid coverage block' 'zero-statement rows reject oversized 32-bit execution counts'
+lacks "$(cat "$go_log")" $'\trun ./cmd/serf-fuzzcov' 'oversized 32-bit zero-row counts skip global accounting'
+
+reset_logs
+expect_failure FAKE_GO_OVERSIZED_STATEMENT_COUNT=1
+has "$last_output" 'invalid coverage block' 'nonzero rows reject oversized statement counts'
+lacks "$(cat "$go_log")" $'\trun ./cmd/serf-fuzzcov' 'oversized statement counts skip global accounting'
 
 echo '== workspace discovery and module selection =='
 reset_logs
