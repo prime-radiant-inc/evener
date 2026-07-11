@@ -101,6 +101,18 @@
           if (window.SerfToast) window.SerfToast.show("Copy failed — clipboard blocked", "error");
         });
       }
+    } else if (t.matches("[data-copy]")) {
+      // Generic click-to-copy (details panel path/id rows): the button
+      // carries the raw value in data-copy.
+      e.preventDefault();
+      const text = t.getAttribute("data-copy");
+      if (text && navigator.clipboard) {
+        navigator.clipboard.writeText(text).then(() => {
+          if (window.SerfToast) window.SerfToast.show("Copied", "success");
+        }, () => {
+          if (window.SerfToast) window.SerfToast.show("Copy failed — clipboard blocked", "error");
+        });
+      }
     } else if (t.matches("[data-details-trigger]") || t.closest && t.closest("[data-details-trigger]")) {
       e.preventDefault();
       var detailsTrigger = t.matches("[data-details-trigger]") ? t : t.closest("[data-details-trigger]");
