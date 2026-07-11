@@ -283,7 +283,7 @@ func productionDialWithEnv(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper,
 		if wrapper != nil && !wrapper.Policy().Network && (cfg.Type == "sse" || cfg.Type == "http") {
 			return nil, fmt.Errorf("remote MCP server %q (%s) is unavailable: network egress is disabled in this sandbox; this sandbox policy is fixed for the session", cfg.Name, cfg.Type)
 		}
-		t, err := transportForConfig(cfg)
+		t, err := transportForConfigWithEnv(cfg, environ)
 		if err != nil {
 			return nil, err
 		}
@@ -780,17 +780,25 @@ func mcpResultToString(result *mcpsdk.CallToolResult) string {
 // avoid paying ~5s per server on cleanup.
 var commandTerminateDuration time.Duration
 
-// transportForConfig creates the appropriate MCP transport for a config.
+// transportForConfig creates the appropriate MCP transport for a config using
+// the process environment, matching production's established behavior.
 func transportForConfig(cfg mcpconfig.ServerConfig) (mcpsdk.Transport, error) {
+	return transportForConfigWithEnv(cfg, os.Environ)
+}
+
+// transportForConfigWithEnv is transportForConfig's deterministic construction
+// seam. Production passes os.Environ; callers that need hermetic transport
+// assembly can supply a fixed base environment.
+func transportForConfigWithEnv(cfg mcpconfig.ServerConfig, environ func() []string) (mcpsdk.Transport, error) {
 	switch cfg.Type {
 	case "stdio", "":
 		if cfg.Command == "" {
 			return nil, errors.New("stdio transport requires a command")
 		}
 		cmd := exec.Command(cfg.Command, cfg.Args...) //nolint:noctx // MCP SDK's CommandTransport.Connect(ctx) owns the server process lifecycle
-		// Merge process env with configured env vars.
+		// Merge the supplied parent env with configured env vars.
 		if len(cfg.Env) > 0 {
-			cmd.Env = mergeEnv(cfg.Env)
+			cmd.Env = mergeEnvInto(environ(), cfg.Env)
 		}
 		return &mcpsdk.CommandTransport{Command: cmd, TerminateDuration: commandTerminateDuration}, nil
 

@@ -332,7 +332,7 @@ func mcpProgramConstructionCases(t *testing.T) {
 		{cfg: mcpconfig.ServerConfig{Type: "unknown"}, wantErr: true},
 	}
 	for _, tc := range cases {
-		transport, err := transportForConfig(tc.cfg)
+		transport, err := transportForConfigWithEnv(tc.cfg, mcpProgramFixedEnvironment)
 		if tc.wantErr {
 			if err == nil || transport != nil {
 				t.Fatalf("transportForConfig(%+v) = %T, %v; want error", tc.cfg, transport, err)
@@ -359,8 +359,20 @@ func mcpProgramConstructionCases(t *testing.T) {
 			}
 		}
 	}
+	configured, err := transportForConfigWithEnv(mcpconfig.ServerConfig{
+		Type:    "stdio",
+		Command: mcpProgramCommandPath,
+		Env:     map[string]string{"PROGRAM_VALUE": "transport"},
+	}, mcpProgramFixedEnvironment)
+	if err != nil {
+		t.Fatalf("fixed-environment stdio transport: %v", err)
+	}
+	configuredCommand, ok := configured.(*mcpsdk.CommandTransport)
+	if !ok || configuredCommand.Command == nil || mcpProgramEnvValue(configuredCommand.Command.Env, "MCP_PROGRAM_BASE") != "fixed" || mcpProgramEnvValue(configuredCommand.Command.Env, "PROGRAM_VALUE") != "transport" {
+		t.Fatalf("fixed-environment stdio transport = %#v", configured)
+	}
 
-	plainDial := productionDial(mcpconfig.ServerConfig{Type: "stdio", Command: mcpProgramCommandPath}, nil)
+	plainDial := productionDialWithEnv(mcpconfig.ServerConfig{Type: "stdio", Command: mcpProgramCommandPath}, nil, mcpProgramFixedEnvironment)
 	plain, err := plainDial(ctx)
 	if err != nil {
 		t.Fatalf("unsandboxed production dial: %v", err)
@@ -391,7 +403,7 @@ func mcpProgramConstructionCases(t *testing.T) {
 		t.Fatalf("confined command = %#v", confined)
 	}
 	joinedEnv := strings.Join(confinedCommand.Command.Env, "\n")
-	if confinedCommand.Command.Path != mcpProgramBwrapPath || !strings.Contains(joinedEnv, "PROGRAM_VALUE=kept") || !strings.Contains(joinedEnv, "MCP_SERVER_TOKEN=configured") || strings.Contains(joinedEnv, "SERF_AMBIENT_API_KEY=") || strings.Contains(joinedEnv, "SSH_AUTH_SOCK=") || confinedCommand.Command.ExtraFiles != nil {
+	if confinedCommand.Command.Path != mcpProgramBwrapPath || !strings.Contains(joinedEnv, "MCP_PROGRAM_BASE=fixed") || !strings.Contains(joinedEnv, "PROGRAM_VALUE=kept") || !strings.Contains(joinedEnv, "MCP_SERVER_TOKEN=configured") || strings.Contains(joinedEnv, "SERF_AMBIENT_API_KEY=") || strings.Contains(joinedEnv, "SSH_AUTH_SOCK=") || confinedCommand.Command.ExtraFiles != nil {
 		t.Fatalf("confined command = %#v", confined)
 	}
 
@@ -619,6 +631,7 @@ func mcpProgramSandboxWrapper(t *testing.T, network bool) *sandbox.Wrapper {
 func mcpProgramFixedEnvironment() []string {
 	return []string{
 		"PATH=/synthetic/bin",
+		"MCP_PROGRAM_BASE=fixed",
 		"SERF_AMBIENT_API_KEY=must-not-leak",
 		"SSH_AUTH_SOCK=/synthetic/agent.sock",
 		"TMPDIR=/synthetic/ambient-tmp",
