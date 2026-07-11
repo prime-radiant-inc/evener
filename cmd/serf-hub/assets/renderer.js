@@ -2115,9 +2115,15 @@
       const el = document.createElement("button");
       el.type = "button";
       el.className = "think streaming open";
+      // The ✦ marker is its own span so CSS can hang it in the shared marker
+      // gutter — the summary text then starts on the transcript's one column.
+      const glyph = document.createElement("span");
+      glyph.className = "think-glyph";
+      glyph.textContent = "✦";
+      el.appendChild(glyph);
       const label = document.createElement("span");
       label.className = "think-label";
-      label.textContent = "✦ Thinking…";
+      label.textContent = "Thinking…";
       const pv = document.createElement("span");
       pv.className = "pv";
       const body = document.createElement("span");
@@ -2163,7 +2169,7 @@
       const secs = Math.max(1, Math.round((Date.now() - (this.reasoningStartedAt || Date.now())) / 1000));
       el.classList.add("think-tier-" + reasoningTier(secs));
       const label = el.querySelector(".think-label");
-      if (label) label.innerHTML = "✦ Thought for <span class=\"num\">" + secs + "s</span>";
+      if (label) label.innerHTML = "Thought for <span class=\"num\">" + secs + "s</span>";
       const pv = el.querySelector(".pv");
       const gist = reasoningGist(this.reasoningBuf);
       if (pv) pv.textContent = gist ? "— " + gist : "";

@@ -122,32 +122,31 @@ pass(
   "thread-document main should remove legacy page padding and max-width"
 );
 
-// Transcript tool timing metadata is readable by default on desktop; it must not
-// rely on hover/focus-only reveal behavior.
+// Transcript tool timing metadata is quiet-on-demand (2026-07-11 typography
+// redesign): hidden at rest via opacity (NOT display/visibility, so it stays
+// in the accessibility tree) and revealed on row hover or keyboard
+// :focus-within.
 pass(
-  ruleContains(".tool-call .tool-meta", /opacity:\s*1\b/) &&
-    !ruleContains(".tool-call .tool-meta", /opacity:\s*0\b/) &&
+  ruleContains(".tool-call .tool-meta", /opacity:\s*0\b/) &&
     !ruleContains(".tool-call .tool-meta", /visibility:\s*hidden\b/),
-  "tool timing metadata should be readable by default without visibility:hidden"
+  "tool timing metadata should rest at opacity:0, never visibility:hidden"
 );
 pass(
-  !ruleContains(".tool-call:hover .tool-meta", /opacity:\s*1\b/) &&
-    !ruleContains(".tool-call:focus-within .tool-meta", /opacity:\s*1\b/),
-  "desktop tool timing metadata should not depend on hover/focus reveal rules"
+  /\.tool-call:hover \.tool-meta,\s*\.tool-call:focus-within \.tool-meta\s*\{\s*opacity:\s*1/.test(css),
+  "tool timing metadata must reveal on row hover and keyboard focus-within"
 );
 
 // Per-turn duration/tokens/cost badge mirrors the tool-meta pattern above:
-// readable by default, no hover/focus reveal.
+// hidden at rest, hover/focus-within reveal, still in the accessibility tree.
 pass(
   ruleContains(".assistant-message .turn-meta", /color:\s*var\(--text-muted\)/) &&
-    !ruleContains(".assistant-message .turn-meta", /opacity:\s*0\b/) &&
+    ruleContains(".assistant-message .turn-meta", /opacity:\s*0\b/) &&
     !ruleContains(".assistant-message .turn-meta", /visibility:\s*hidden\b/),
-  "turn-meta badge should be readable by default without opacity:0 or visibility:hidden"
+  "turn-meta badge should rest at opacity:0, never visibility:hidden"
 );
 pass(
-  !ruleContains(".assistant-message:hover .turn-meta", /opacity:\s*1\b/) &&
-    !ruleContains(".turn-meta:focus", /opacity:\s*1\b/),
-  "turn-meta badge should not depend on hover/focus reveal rules"
+  /\.assistant-message:hover \.turn-meta,\s*\.assistant-message:focus-within \.turn-meta\s*\{\s*opacity:\s*1/.test(css),
+  "turn-meta badge must reveal on message hover and keyboard focus-within"
 );
 
 // Job notification communicate output is already HTML rendered from markdown.

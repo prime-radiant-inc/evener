@@ -72,12 +72,13 @@ pass(convScrollRule && /overflow-x:\s*clip/.test(convScrollRule),
   ".conversation scroll container must set overflow-x: clip so no stray-wide element forces a horizontal scrollbar");
 
 // Horizontal-anchor guard (iOS keyboard): the demoted command line under a
-// tool's purpose is flex-basis:100%, so it MUST indent with padding, not a
-// margin — a margin pushes it past the row's right edge, a horizontal overflow
-// iOS scrolls to on keyboard focus, leaving the page shifted and un-anchored.
+// tool's purpose is flex-basis:100%, so it must never carry a left margin —
+// a margin pushes it past the row's right edge, a horizontal overflow iOS
+// scrolls to on keyboard focus, leaving the page shifted and un-anchored.
+// (Since the 2026-07-11 one-column redesign it carries no indent at all.)
 const purposeCmdRule = (css.match(/\.tool-call\.has-purpose \.tool-command\s*\{[^}]*\}/g) || [])[0];
-pass(purposeCmdRule && /padding-left:/.test(purposeCmdRule) && !/margin-left:/.test(purposeCmdRule),
-  ".tool-call.has-purpose .tool-command must indent with padding-left, not margin-left (flex-basis:100% + margin overflows the row)");
+pass(purposeCmdRule && !/margin-left:/.test(purposeCmdRule),
+  ".tool-call.has-purpose .tool-command must not use margin-left (flex-basis:100% + margin overflows the row)");
 
 // Belt-and-suspenders: the workspace clips horizontal overflow so no stray-wide
 // descendant can shift the page sideways during keyboard focus.
