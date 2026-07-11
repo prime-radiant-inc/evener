@@ -43,7 +43,13 @@
     </div>
   </aside>
   <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-controls="sidebar" aria-label="resize sidebar"></div>
+  <!-- hx-history-elt: scope htmx history snapshots/restores to the workspace.
+       The default (whole <body>) snapshot carries every asset <script> tag,
+       and htmx re-executes them on history restore (iOS swipe-back), which
+       double-binds all delegated handlers — each tap then toggles twice and
+       the page feels dead. The shell around #workspace is persistent. -->
   <main id="workspace"
+        hx-history-elt
         hx-get="{{.WorkspaceURL}}"
         hx-trigger="load"
         hx-swap="innerHTML">

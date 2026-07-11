@@ -163,6 +163,29 @@ pass(!perKindOverride, "no compact phone rule may re-tier the reading column wit
 const metaHidden = blocks.find((b) => /\.tool-call \.tool-meta/.test(b.split("{")[0]) && /display:\s*none/.test(b));
 pass(!!metaHidden, "compact mobile may hide .tool-call .tool-meta so the command gets full width");
 
+// iOS standalone runs edge-to-edge (black-translucent status bar), so every
+// full-height fixed overlay must pad its screen-edge sides with the safe-area
+// insets or its content renders under the clock / home indicator.
+const detailsBaseRule = (css.match(/\.details-panel\s*\{[^}]*\}/g) || [])
+  .find((block) => /position:\s*fixed/.test(block));
+pass(detailsBaseRule && /safe-area-inset-top/.test(detailsBaseRule) && /safe-area-inset-bottom/.test(detailsBaseRule),
+  ".details-panel (fixed, top:0/bottom:0) must pad with env(safe-area-inset-top) and -bottom");
+const detailsMobileRules = (mobile.match(/\.details-panel\s*\{[^}]*\}/g) || []);
+pass(detailsMobileRules.every((block) => !/padding\s*:/.test(block) || (/safe-area-inset-top/.test(block) && /safe-area-inset-bottom/.test(block))),
+  "mobile .details-panel padding overrides must retain the top and bottom safe-area insets");
+
+// The full-screen search palette's sticky header sits at the very top edge.
+const searchHeaderMobileRule = (mobile.match(/\.search-dialog-header\s*\{[^}]*\}/g) || [])[0];
+pass(searchHeaderMobileRule && /safe-area-inset-top/.test(searchHeaderMobileRule),
+  "mobile .search-dialog-header must pad with env(safe-area-inset-top)");
+
+// The composer children (status rail, input card) live inside the
+// [data-composer-surface] wrapper. It must be a flex column, or the mobile
+// `.input-status { order: -1 }` rule silently stops moving the status rail
+// above the input.
+pass(/\.workspace-input\s*>\s*\[data-composer-surface\]\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column/s.test(css),
+  ".workspace-input > [data-composer-surface] must be a flex column so .input-status order:-1 applies");
+
 if (failures.length === 0) {
   console.log("PASS: mobile search palette CSS contract + layout guards");
   process.exit(0);

@@ -206,6 +206,36 @@ func TestWeb_Landing_Renders(t *testing.T) {
 	}
 }
 
+// The htmx history element must be #workspace, not the default <body>. A
+// body-wide history snapshot includes every asset <script> tag, and htmx
+// re-executes them on history restore (e.g. iOS swipe-back), double-binding
+// all delegated handlers so each tap toggles twice — every button "dead".
+func TestWeb_AppShellScopesHtmxHistoryToWorkspace(t *testing.T) {
+	r := hubcore.NewRoster(t.TempDir(), nil)
+	idx := hubcore.NewPastIndex("")
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  r,
+		Past:    idx,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	start := strings.Index(body, `<main id="workspace"`)
+	if start == -1 {
+		t.Fatalf("body missing <main id=\"workspace\">")
+	}
+	tag := body[start:strings.Index(body[start:], ">")+start+1]
+	if !strings.Contains(tag, "hx-history-elt") {
+		t.Errorf("#workspace must carry hx-history-elt so history restores never re-run body scripts; got tag %q", tag)
+	}
+}
+
 func TestWebWorkspaceContentColumnCSSContract(t *testing.T) {
 	data, err := assetsFS.ReadFile("assets/style.css")
 	if err != nil {
