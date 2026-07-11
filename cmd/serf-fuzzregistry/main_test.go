@@ -20,13 +20,54 @@ func TestParseRegistry(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []Target{
-		{Kind: "native", Module: "agent", Package: ".", Name: "FuzzTurn"},
+		{Kind: "native", Module: "agent", Package: ".", Name: "FuzzTurn", Focus: "turn.go"},
 		{Kind: "rapid", Module: "agent", Package: "./core", Name: "TestStateful"},
 		{Kind: "test", Module: ".", Package: "./appwire", Name: "TestStructuredFrameReachesDecoder"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ParseRegistry() = %#v, want %#v", got, want)
 	}
+}
+
+func TestCheckFocusSpecsAcceptsResolvableSpecs(t *testing.T) {
+	root := newWorkspace(t, map[string]string{
+		"go.work":      "go 1.25.0\n\nuse ./agent\n",
+		"agent/go.mod": "module example.test/agent\n\ngo 1.25.0\n",
+		"agent/core/turn.go": `package core
+
+type Matcher struct{}
+
+func (m *Matcher) Feed() {}
+
+func Retry[T any](v T) T { return v }
+`,
+	})
+	targets := []Target{
+		{Kind: "native", Module: "agent", Package: "./core", Name: "FuzzTurn", Focus: "turn.go#Feed;turn.go#Retry"},
+		{Kind: "native", Module: "agent", Package: "./core", Name: "FuzzWholeFile", Focus: "turn.go"},
+		{Kind: "native", Module: "agent", Package: "./core", Name: "FuzzNoFocus"},
+	}
+	if err := CheckFocusSpecs(root, targets); err != nil {
+		t.Fatalf("CheckFocusSpecs() = %v, want nil", err)
+	}
+}
+
+func TestCheckFocusSpecsReportsUnresolvableSpecs(t *testing.T) {
+	root := newWorkspace(t, map[string]string{
+		"go.work":      "go 1.25.0\n\nuse ./agent\n",
+		"agent/go.mod": "module example.test/agent\n\ngo 1.25.0\n",
+		"agent/core/turn.go": `package core
+
+type Matcher struct{}
+`,
+	})
+	targets := []Target{
+		{Kind: "native", Module: "agent", Package: "./core", Name: "FuzzType", Focus: "turn.go#Matcher"},
+		{Kind: "native", Module: "agent", Package: "./core", Name: "FuzzGone", Focus: "missing.go#Feed"},
+	}
+	err := CheckFocusSpecs(root, targets)
+	assertErrorContains(t, err, "FuzzType: function Matcher not found in agent/core/turn.go")
+	assertErrorContains(t, err, "FuzzGone: agent/core/missing.go")
 }
 
 func TestDiscoverWorkspaceFindsNativeAndMarkedRapidTargets(t *testing.T) {
