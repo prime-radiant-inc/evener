@@ -276,8 +276,8 @@ func TestEmbeddedModelCatalog_GPT56Family(t *testing.T) {
 		if !strings.EqualFold(mi.Provider, "openai") {
 			t.Errorf("%s Provider = %q, want openai", id, mi.Provider)
 		}
-		if mi.ContextWindow != 1_050_000 {
-			t.Errorf("%s ContextWindow = %d, want 1050000", id, mi.ContextWindow)
+		if mi.ContextWindow != 372_000 {
+			t.Errorf("%s ContextWindow = %d, want 372000", id, mi.ContextWindow)
 		}
 		if mi.MaxOutputTokens == nil || *mi.MaxOutputTokens != 128_000 {
 			t.Errorf("%s MaxOutputTokens = %v, want 128000", id, mi.MaxOutputTokens)
