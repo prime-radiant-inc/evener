@@ -224,6 +224,20 @@ esac
 # gets one explicit workspace and ignores persisted or ambient Go configuration.
 export GOWORK="$go_work" GOENV=off GOFLAGS=
 
+# Keep zero-row validation aligned with the int width used by the Go accounting
+# command. Unknown architectures use the safe 32-bit bound.
+if ! go_arch="$("$go_bin" env GOARCH)"; then
+	die "cannot determine Go architecture for coverage profile validation"
+fi
+case "$go_arch" in
+	amd64|arm64|loong64|mips64|mips64le|ppc64|ppc64le|riscv64|s390x)
+		go_int_max=9223372036854775807
+		;;
+	*)
+		go_int_max=2147483647
+		;;
+esac
+
 work="$(mktemp -d -t serf-fuzzcov-global.XXXXXX)"
 trap 'rm -rf "$work"' EXIT
 plan="$work/targets.tsv"
@@ -367,7 +381,7 @@ merge_profiles() {
 	shift
 	[ "$#" -gt 0 ] || die "internal error: no profiles to merge for $out"
 	local blocks="$out.blocks"
-	if ! LC_ALL=C awk '
+	if ! LC_ALL=C awk -v go_int_max="$go_int_max" '
 		# Compare unsigned decimal integers without AWK numeric coercion.
 		function decimal_compare(left, right, normalized_left, normalized_right, left_length, right_length) {
 			normalized_left = left
@@ -397,6 +411,10 @@ merge_profiles() {
 			}
 			return 0
 		}
+		# go_int_max comes from the same Go executable that runs accounting.
+		function fits_go_int(value) {
+			return decimal_compare(value, go_int_max) <= 0
+		}
 
 		FNR == 1 {
 			if ($0 != "mode: set") {
@@ -418,6 +436,14 @@ merge_profiles() {
 				invalid = position_count != 4 ||
 					position[1] ~ /^0+$/ || position[2] ~ /^0+$/ ||
 					position[3] ~ /^0+$/ || position[4] ~ /^0+$/
+				if (!invalid) {
+					for (position_index = 1; position_index <= 4; position_index++) {
+						if (!fits_go_int(position[position_index])) {
+							invalid = 1
+							break
+						}
+					}
+				}
 				if (!invalid) {
 					line_order = decimal_compare(position[3], position[1])
 					invalid = line_order < 0 ||

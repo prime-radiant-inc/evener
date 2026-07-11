@@ -154,6 +154,10 @@ printf '%s\t%s\tgoenv=%s\tgoflags=%s\tseed=%s\tchecks=%s\tsteps=%s\tfailfile=%s\
 command="$1"
 shift
 case "$command" in
+	env)
+		[ "$#" -eq 1 ] && [ "$1" = GOARCH ] || { echo "fake go: unexpected env command" >&2; exit 25; }
+		printf '%s\n' "${FAKE_GOARCH:-amd64}"
+		;;
 	work)
 		[ "$1" = edit ] && [ "$2" = -json ] || { echo "fake go: unexpected work command" >&2; exit 25; }
 		if [ "${FAKE_WORKSPACE_OUTSIDE:-}" = "1" ]; then
@@ -277,6 +281,8 @@ JSON
 			fi
 			if [ "${FAKE_GO_ZERO_STATEMENT_BLOCK:-}" = "1" ]; then
 				echo 'example.test/zero.go:94.11,94.11 0 0'
+				echo 'example.test/leading-zero.go:00094.00011,00094.00011 0 0'
+				echo 'example.test/max-coordinate.go:9223372036854775807.1,9223372036854775807.1 0 0'
 			fi
 			if [ "${FAKE_GO_MALFORMED_BLOCK:-}" = "1" ]; then
 				echo 'example.test/malformed.go:94.11,94.11 0 not-a-count'
@@ -292,6 +298,12 @@ JSON
 			fi
 			if [ "${FAKE_GO_PRECISION_BACKWARD_ZERO_RANGE:-}" = "1" ]; then
 				echo 'example.test/precision-range.go:9007199254740993.1,9007199254740992.1 0 0'
+			fi
+			if [ "${FAKE_GO_OVERSIZED_ZERO_COORDINATE:-}" = "1" ]; then
+				echo 'example.test/oversized-coordinate.go:9223372036854775808.1,9223372036854775808.1 0 0'
+			fi
+			if [ "${FAKE_GO_32BIT_OVERSIZED_ZERO_COORDINATE:-}" = "1" ]; then
+				echo 'example.test/oversized-32bit-coordinate.go:2147483648.1,2147483648.1 0 0'
 			fi
 		} >"$profile"
 		;;
@@ -449,6 +461,8 @@ fi
 if [ -s "$cov_profile" ]; then
 	zero_merged="$(cat "$cov_profile")"
 	lacks "$zero_merged" 'example.test/zero.go:94.11,94.11 0 0' 'merged profile omits zero-statement blocks'
+	lacks "$zero_merged" 'example.test/leading-zero.go:00094.00011,00094.00011 0 0' 'leading-zero coordinates remain valid zero-statement blocks'
+	lacks "$zero_merged" 'example.test/max-coordinate.go:9223372036854775807.1,9223372036854775807.1 0 0' 'max-int coordinates remain valid zero-statement blocks'
 	has "$zero_merged" 'example.test/root.go:1.1,2.1 1 1' 'zero-statement filtering keeps native coverage blocks'
 	has "$zero_merged" 'example.test/rapid.go:3.1,4.1 2 1' 'zero-statement filtering keeps Rapid coverage blocks'
 else
@@ -484,6 +498,16 @@ reset_logs
 expect_failure FAKE_GO_PRECISION_BACKWARD_ZERO_RANGE=1
 has "$last_output" 'invalid coverage block' 'zero-statement locations reject precision-boundary backward ranges'
 lacks "$(cat "$go_log")" $'\trun ./cmd/serf-fuzzcov' 'precision-boundary blocks skip global accounting'
+
+reset_logs
+expect_failure FAKE_GO_OVERSIZED_ZERO_COORDINATE=1
+has "$last_output" 'invalid coverage block' 'zero-statement locations reject oversized coordinates'
+lacks "$(cat "$go_log")" $'\trun ./cmd/serf-fuzzcov' 'oversized-coordinate blocks skip global accounting'
+
+reset_logs
+expect_failure FAKE_GOARCH=386 FAKE_GO_32BIT_OVERSIZED_ZERO_COORDINATE=1
+has "$last_output" 'invalid coverage block' 'zero-statement locations respect 32-bit Go coordinate limits'
+lacks "$(cat "$go_log")" $'\trun ./cmd/serf-fuzzcov' '32-bit oversized-coordinate blocks skip global accounting'
 
 echo '== workspace discovery and module selection =='
 reset_logs
