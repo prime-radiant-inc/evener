@@ -48,18 +48,43 @@ func TestEnsureManifestFallback_ExistingManifestIsNoop(t *testing.T) {
 	}
 }
 
-func TestEnsureManifestFallback_NoManifestNoFields_ClearError(t *testing.T) {
-	dir := t.TempDir() // bare: no plugin.json, no components anywhere
-	cp := CatalogPlugin{Name: "bare-plugin"}
-	err := ensureManifestFallback(dir, true, cp)
-	if err == nil {
-		t.Fatal("expected an error for a manifest-less plugin with no usable entry fields")
+// TestEnsureManifestFallback_NoManifestNoFields_Installs mirrors the real
+// shape of private-journal-mcp in superpowers-marketplace: a bare npm MCP
+// server repo with NO plugin scaffolding at all (no .claude-plugin/, no
+// .mcp.json, no commands/agents/skills/hooks dirs) and a marketplace entry
+// that declares no components either. Claude Code installs this shape
+// successfully (the plugin just contributes whatever conventional dirs
+// exist — here, none), so serf must too: synthesize a minimal manifest from
+// the entry's name/description and load with zero components.
+func TestEnsureManifestFallback_NoManifestNoFields_Installs(t *testing.T) {
+	dir := t.TempDir()
+	// Bare npm-package layout, as in the real cached plugin.
+	os.WriteFile(filepath.Join(dir, "package.json"),
+		[]byte(`{"name":"private-journal-mcp","version":"2.0.1","bin":{"private-journal-mcp":"./dist/index.js"}}`), 0o644)
+	os.MkdirAll(filepath.Join(dir, "src"), 0o755)
+	os.WriteFile(filepath.Join(dir, "README.md"), []byte("# private-journal-mcp"), 0o644)
+
+	cp := CatalogPlugin{Name: "private-journal-mcp", Description: "Private journaling MCP server"}
+	if err := ensureManifestFallback(dir, true, cp); err != nil {
+		t.Fatalf("ensureManifestFallback on a manifest-less, component-less plugin: %v", err)
 	}
-	if strings.Contains(err.Error(), ".codex-plugin") {
-		t.Errorf("error must not name the misleading .codex-plugin path, got: %v", err)
+	data, err := os.ReadFile(filepath.Join(dir, ".claude-plugin", "plugin.json"))
+	if err != nil {
+		t.Fatalf("synthesized plugin.json missing: %v", err)
 	}
-	if !strings.Contains(err.Error(), "bare-plugin") {
-		t.Errorf("error should name the plugin, got: %v", err)
+	var m agentplugin.Manifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("synthesized plugin.json is not valid JSON: %v", err)
+	}
+	if m.Name != "private-journal-mcp" || m.Description != "Private journaling MCP server" {
+		t.Errorf("synthesized manifest = %+v, want entry's name/description", m)
+	}
+	inst, err := agentplugin.Load(dir)
+	if err != nil {
+		t.Fatalf("Load after synthesis: %v", err)
+	}
+	if len(inst.MCPConfigs) != 0 || len(inst.Commands) != 0 || len(inst.Agents) != 0 || len(inst.Skills) != 0 {
+		t.Errorf("expected zero components, got %+v", inst)
 	}
 }
 

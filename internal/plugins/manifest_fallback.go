@@ -39,29 +39,28 @@ func hasPluginManifest(dir string) bool {
 // of scope for v1).
 //
 // If dir has no plugin.json:
-//   - and the entry declares no usable component (cp.HasManifestFields()),
-//     this returns a clear, honest, plugin-named error — no misleading
-//     .codex-plugin path, no Load() call at all.
-//   - and the entry does declare components, and dir is a cache directory
-//     serf materialized (staged), it writes a synthesized
-//     .claude-plugin/plugin.json built from the entry's fields, so every
-//     later Load() of dir (this install's own validation, a future
+//   - and dir is a cache directory serf materialized (staged), it writes a
+//     synthesized .claude-plugin/plugin.json built from the entry's fields,
+//     so every later Load() of dir (this install's own validation, a future
 //     session's EnabledPluginDirs(), `serf plugin list`'s Broken check,
 //     serf-doctor) finds an ordinary on-disk manifest and needs no
-//     special-casing.
-//   - and the entry declares components but dir is NOT a cache directory
-//     (staged=false — a directory-source plugin referenced in place, a
-//     local-dev/test convenience), it returns a distinct clear error: serf
-//     will not write a generated file into a directory it does not own.
+//     special-casing. The entry may declare no components at all — Claude
+//     Code installs that shape fine (e.g. private-journal-mcp in
+//     superpowers-marketplace: a bare npm MCP-server repo with no plugin
+//     scaffolding and a components-free entry), with the plugin
+//     contributing only whatever conventional dirs Load() auto-discovers —
+//     so the synthesized manifest may carry just the entry's
+//     name/description.
+//   - and dir is NOT a cache directory (staged=false — a directory-source
+//     plugin referenced in place, a local-dev/test convenience), it returns
+//     a clear error: serf will not write a generated file into a directory
+//     it does not own.
 func ensureManifestFallback(dir string, staged bool, cp CatalogPlugin) error {
 	if hasPluginManifest(dir) {
 		return nil
 	}
-	if !cp.HasManifestFields() {
-		return fmt.Errorf("plugin %q: source has no plugin manifest and the marketplace entry declares no components (commands/agents/hooks/mcpServers)", cp.Name)
-	}
 	if !staged {
-		return fmt.Errorf("plugin %q: source has no plugin manifest; the marketplace entry declares components, but serf only synthesizes a fallback manifest into a materialized cache install, not a directory source referenced in place", cp.Name)
+		return fmt.Errorf("plugin %q: source has no plugin manifest; serf only synthesizes a fallback manifest into a materialized cache install, not a directory source referenced in place", cp.Name)
 	}
 
 	manifest := agentplugin.Manifest{
