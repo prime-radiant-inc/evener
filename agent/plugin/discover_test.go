@@ -69,11 +69,47 @@ func TestDiscoverPluginAgents_Override(t *testing.T) {
 		}
 	})
 
+	t.Run("override entry may be a single .md file", func(t *testing.T) {
+		// Claude Code manifests list individual agent files, e.g.
+		// superpowers-chrome's "agents": ["./agents/browser-user.md"].
+		dir := t.TempDir()
+		writeAgentFile(t, dir, "agents", "browser-user.md", "---\nname: browser-user\ndescription: d\ntools: Read, Grep\n---\nx\n")
+		override, _ := json.Marshal([]string{"./agents/browser-user.md"})
+		agents, err := discoverPluginAgents(dir, override, "p")
+		if err != nil {
+			t.Fatalf("discoverPluginAgents: %v", err)
+		}
+		if _, ok := agents["p:browser-user"]; !ok {
+			t.Fatalf("agents = %v, want p:browser-user from the file override", agents)
+		}
+	})
+
 	t.Run("malformed override errors", func(t *testing.T) {
 		if _, err := discoverPluginAgents(t.TempDir(), json.RawMessage(`{bad`), "p"); err == nil {
 			t.Fatal("err = nil, want an agents-override parse error")
 		}
 	})
+}
+
+// TestDiscoverPluginCommands_FileOverride: Claude Code manifests may list
+// individual command files in the commands override, not just directories.
+func TestDiscoverPluginCommands_FileOverride(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "extra")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "solo.md"), []byte("---\ndescription: Solo\n---\n# S\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	override, _ := json.Marshal([]string{"./extra/solo.md"})
+	commands, err := discoverPluginCommands(dir, override, "p")
+	if err != nil {
+		t.Fatalf("discoverPluginCommands: %v", err)
+	}
+	if _, ok := commands["p:solo"]; !ok {
+		t.Fatalf("commands = %v, want p:solo from the file override", commands)
+	}
 }
 
 func writeAgentFile(t *testing.T, pluginDir, sub, name, content string) {
