@@ -78,6 +78,7 @@ FuzzResolveProfileFromConfig 96.6
 FuzzRunFlagParse 100.0
 FuzzSandboxEscalationLifecycleProgram 100.0
 FuzzSessionLogLoad 91.3
+FuzzSessionLogFaultLifecycle 97.1
 FuzzSessionLoopRecoveryProgram 100.0
 FuzzSessionMetaRoundTrip 79.2
 FuzzSummarizeTool 78.0

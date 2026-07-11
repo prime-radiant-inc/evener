@@ -102,6 +102,7 @@ TARGETS=(
 	"native:agent:./internal/atif:FuzzATIFConvert::atif.go"
 	"native:agent:./internal/atif:FuzzATIFConversionProgram::atif.go"
 	"native:agent:./internal/sessionlog:FuzzSessionLogLoad::sessionlog.go"
+	"native:agent:./internal/sessionlog:FuzzSessionLogFaultLifecycle::"
 	"native:agent:./internal/contextmgr:FuzzCheckpointExtract::checkpoint_format.go"
 	"native:agent:./internal/contextmgr:FuzzManagerLifecycleProgram::context_manager.go"
 	"native:agent:./internal/contextmgr:FuzzStrategyContractProgram::context_strategy.go;fork_summarize.go;strategy_checkpoint_pred.go;strategy_memory_crystals.go;strategy_obs_mask.go;strategy_ooda.go;strategy_recursive_distill.go;strategy_session_log.go"
