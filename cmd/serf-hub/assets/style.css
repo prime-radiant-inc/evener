@@ -1868,6 +1868,11 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 /* ─────────────────────────────────────────────────────────────────────── */
 
 .workspace-input { padding: var(--space-2) var(--space-6) var(--space-2); border-top: 1px solid var(--rule-soft); }
+/* The composer subtree sits inside the [data-composer-surface] wrapper (the
+   ask-dock hide/inert boundary). It must be a flex column so child `order`
+   rules — the phone's .input-status { order: -1 } status-rail-on-top — keep
+   working through the wrapper. */
+.workspace-input > [data-composer-surface] { display: flex; flex-direction: column; min-width: 0; }
 .tasks-status {
   appearance: none;
   display: inline-flex;
@@ -4077,7 +4082,9 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
 
 
 /* Details slide-over panel */
-.details-panel { position: fixed; top: 0; right: 0; bottom: 0; width: 360px; background: var(--bg-raised); border-left: 1px solid var(--rule); padding: var(--space-5) var(--space-6); overflow-y: auto; box-shadow: -8px 0 24px rgba(0,0,0,0.2); z-index: var(--z-drawer); animation: panel-slide-in var(--motion-base) both; }
+/* Edge-to-edge fixed panel: pad top/bottom with the iOS safe-area insets so
+   the header never sits under the status-bar clock in standalone mode. */
+.details-panel { position: fixed; top: 0; right: 0; bottom: 0; width: 360px; background: var(--bg-raised); border-left: 1px solid var(--rule); padding: calc(var(--space-5) + env(safe-area-inset-top)) var(--space-6) calc(var(--space-5) + env(safe-area-inset-bottom)); overflow-y: auto; box-shadow: -8px 0 24px rgba(0,0,0,0.2); z-index: var(--z-drawer); animation: panel-slide-in var(--motion-base) both; }
 @keyframes panel-slide-in {
   from { transform: translateX(100%); }
   to   { transform: translateX(0); }
@@ -4380,7 +4387,7 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
   /* Tasks/details: full screen on mobile so they're actually readable. */
   .details-panel {
     width: 100%;
-    padding: var(--space-4);
+    padding: calc(var(--space-4) + env(safe-area-inset-top)) var(--space-4) calc(var(--space-4) + env(safe-area-inset-bottom));
     box-shadow: none;
   }
 
@@ -4559,6 +4566,8 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
     align-items: flex-start;
     flex-wrap: wrap;
     background: var(--bg-raised);
+    /* Full-screen palette starts at the very top edge — clear the notch. */
+    padding-top: calc(var(--space-4) + env(safe-area-inset-top));
   }
   #search-input { min-width: 0; }
   .search-results {
