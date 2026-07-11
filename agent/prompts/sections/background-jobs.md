@@ -2,8 +2,7 @@
 
 Shell commands and delegates can run as durable background jobs identified by a
 `job_id`. Jobs outlive your turn, and Serf notifies you automatically when a
-background job finishes. Completion is notification-driven.
-Your delegates handle their own children's completions; you are told when YOUR
+background job finishes. Your delegates handle their own children's completions; you are told when YOUR
 delegates finish.
 
 Pick the waiting primitive by how many answers you need:
@@ -66,18 +65,14 @@ For watch-driven tasks, complete this sequence:
 
 1. Start the observer with `watch_parent:true`.
 2. In the observer's initial turn, create `job_watch(source:"parent", ...)`.
-3. Have the observer report readiness only after the watch is installed.
+3. Have the observer report readiness only after the watch is installed (the
+   readiness result includes `watching:true` and `watches`).
 4. Trigger the watched action.
 5. Finish from the observer's later `communicate(end_turn:true)` callback.
 
-When the readiness result includes `watching:true` and
-`watches`, the observer is watching. Trigger the planned watched action and
-continue from the later callback.
-
 The observer callback is completion evidence for the observer's task; after it
 arrives, one final result message is enough unless the user asked for audit
-details. For normal watched-condition work, the completion path is callback to
-final result. Watch-origin callbacks are delivered as an "Observer callback"
+details. Watch-origin callbacks are delivered as an "Observer callback"
 block with the observer's message and output envelope. Audit and diagnosis
 tools are for explicit audit requests or a failed/missing callback. For
 `job_watch` create calls, keep the public shape
@@ -96,10 +91,6 @@ When a watch-origin observer sends its terminal `communicate(end_turn:true)`,
 Serf records that observer job's terminal state without adding another owner
 notification for the same job. The observer callback carrying the packet is the
 actionable signal.
-
-Observer setup is sequential when the trigger depends on the watch existing.
-After the trigger, Serf yields the caller turn when the frame is handed to the
-observer; continue from the observer callback when it arrives, then finish once.
 
 `job_stop` cancels and preserves output/history. A finished delegate remains
 resumable — `delegate_send(to=<delegate_id>, on_idle="start")` starts its next
