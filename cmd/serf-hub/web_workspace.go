@@ -352,6 +352,10 @@ func (s *WebServer) detailsSections(id string) []detailsSection {
 		if _, err := os.Stat(transcript); err == nil {
 			files = append(files, detailsRow{Label: "transcript", Value: transcript, Mono: true, Wide: true, Copy: true})
 		}
+		apiLog := filepath.Join(stateDir, "sessions", meta.ID+".api.jsonl")
+		if _, err := os.Stat(apiLog); err == nil {
+			files = append(files, detailsRow{Label: "api log", Value: apiLog, Mono: true, Wide: true, Copy: true})
+		}
 	}
 
 	sections := []detailsSection{

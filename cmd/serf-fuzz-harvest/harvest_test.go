@@ -285,3 +285,21 @@ func equalSnapshot(a, b map[string]bool) bool {
 	}
 	return true
 }
+
+// TestDiscoverSourcesFindsPerSessionRawLogs verifies discovery picks up the
+// per-session raw HTTP logs (sessions/<id>.api-raw.jsonl) alongside the frozen
+// project-level api-raw.jsonl.
+func TestDiscoverSourcesFindsPerSessionRawLogs(t *testing.T) {
+	state := writeFixtureState(t)
+	sessDir := filepath.Join(state, "serf", "projects", "abcdef0123456789", "sessions")
+	rawEntry, _ := json.Marshal(llm.APIRawLogEntry{Provider: "openai", Model: "gpt-5", Mode: "stream", ResponseBody: "data: {}\n\n"})
+	writeFile(t, filepath.Join(sessDir, "01SID.api-raw.jsonl"), string(rawEntry)+"\n")
+
+	src, err := discoverSources(state)
+	if err != nil {
+		t.Fatalf("discoverSources: %v", err)
+	}
+	if len(src.sse) != 2 {
+		t.Fatalf("sse sources = %v, want the project api-raw.jsonl AND sessions/01SID.api-raw.jsonl", src.sse)
+	}
+}

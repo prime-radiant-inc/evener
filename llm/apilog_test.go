@@ -943,7 +943,7 @@ func TestAPILogger_PeriodicSync_SkipsSyncWithinInterval(t *testing.T) {
 
 	// dirty should be true (writes happened but no sync).
 	logger.mu.Lock()
-	dirty := logger.dirty
+	dirty := len(logger.dirty) > 0
 	logger.mu.Unlock()
 	if !dirty {
 		t.Error("expected dirty=true after writes within sync interval")
@@ -1002,7 +1002,7 @@ func TestAPILogger_PeriodicSync_ZeroIntervalSyncsEveryWrite(t *testing.T) {
 		}
 		// After each write with zero interval, dirty should be false.
 		logger.mu.Lock()
-		dirty := logger.dirty
+		dirty := len(logger.dirty) > 0
 		logger.mu.Unlock()
 		if dirty {
 			t.Errorf("call %d: expected dirty=false with zero SyncInterval", i)
@@ -1119,7 +1119,7 @@ func TestAPILogger_PeriodicSync_SyncsAfterIntervalExpires(t *testing.T) {
 
 	// dirty should be false after sync.
 	logger.mu.Lock()
-	dirty := logger.dirty
+	dirty := len(logger.dirty) > 0
 	logger.mu.Unlock()
 	if dirty {
 		t.Error("expected dirty=false after sync interval elapsed")

@@ -54,14 +54,18 @@ func TestAttachAPILoggerWritesAPIJSONL(t *testing.T) {
 		t.Fatalf("closeLog: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, "api.jsonl"))
+	data, err := os.ReadFile(filepath.Join(dir, "sessions", "sess-1.api.jsonl"))
 	if err != nil {
-		t.Fatalf("read api.jsonl: %v", err)
+		t.Fatalf("read sessions/sess-1.api.jsonl: %v", err)
 	}
 	for _, want := range []string{`"session_id":"sess-1"`, `"round":7`, `"endpoint_url":"https://example.test/v1/responses"`} {
 		if !strings.Contains(string(data), want) {
-			t.Fatalf("api.jsonl missing %s:\n%s", want, string(data))
+			t.Fatalf("sessions/sess-1.api.jsonl missing %s:\n%s", want, string(data))
 		}
+	}
+	// The project-level api.jsonl is frozen: never written by new sessions.
+	if _, err := os.Stat(filepath.Join(dir, "api.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("project-level api.jsonl was written (stat err=%v)", err)
 	}
 }
 
@@ -112,13 +116,16 @@ func runAttachAPILoggerRawHelper(t *testing.T) {
 		t.Fatalf("closeLog: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, "api-raw.jsonl"))
+	data, err := os.ReadFile(filepath.Join(dir, "sessions", "sess-raw.api-raw.jsonl"))
 	if err != nil {
-		t.Fatalf("read api-raw.jsonl: %v", err)
+		t.Fatalf("read sessions/sess-raw.api-raw.jsonl: %v", err)
 	}
 	for _, want := range []string{`"session_id":"sess-raw"`, `"request_body":"{\"input\":\"hi\"}"`, `"response_body":"{\"output\":\"ok\"}"`} {
 		if !strings.Contains(string(data), want) {
-			t.Fatalf("api-raw.jsonl missing %s:\n%s", want, string(data))
+			t.Fatalf("sessions/sess-raw.api-raw.jsonl missing %s:\n%s", want, string(data))
 		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "api-raw.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("project-level api-raw.jsonl was written (stat err=%v)", err)
 	}
 }

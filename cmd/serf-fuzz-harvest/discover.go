@@ -34,7 +34,9 @@ func discoverSources(stateDir string) (recordedSources, error) {
 			return nil
 		}
 		switch base := d.Name(); {
-		case base == "api-raw.jsonl":
+		// Frozen project-level api-raw.jsonl AND per-session
+		// sessions/<id>.api-raw.jsonl both feed the SSE surface.
+		case base == "api-raw.jsonl" || strings.HasSuffix(base, ".api-raw.jsonl"):
 			s.sse = append(s.sse, path)
 		case base == "appwire-frames.jsonl":
 			s.appwire = append(s.appwire, path)

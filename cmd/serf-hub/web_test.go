@@ -6833,6 +6833,62 @@ func TestDetailsPanel_ShowsTranscriptPathWithCopy(t *testing.T) {
 	}
 }
 
+// TestDetailsPanel_ShowsAPILogPathWithCopy verifies the Files section shows
+// the session's per-session API log path (<StateDir>/sessions/<id>.api.jsonl)
+// with a click-to-copy affordance when the file exists, and omits the row
+// otherwise (same stat-guarded pattern as the transcript row).
+func TestDetailsPanel_ShowsAPILogPathWithCopy(t *testing.T) {
+	const id = "01DETAILAPILOG0000000000000"
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: id, UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	apiLog := filepath.Join(proj, "sessions", id+".api.jsonl")
+	if err := os.WriteFile(apiLog, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+
+	fetch := func() string {
+		req := httptest.NewRequest(http.MethodGet, "/_partials/s/"+id+"/details", nil)
+		req.Host = "127.0.0.1:9180"
+		req.Header.Set("HX-Request", "true")
+		rec := httptest.NewRecorder()
+		web.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+		}
+		return rec.Body.String()
+	}
+
+	body := fetch()
+	if !strings.Contains(body, ">api log</dt>") || !strings.Contains(body, htmlEscape(apiLog)) {
+		t.Errorf("details panel missing api log path row for %q: %q", apiLog, body)
+	}
+	if !strings.Contains(body, `data-copy="`+htmlEscape(apiLog)+`"`) {
+		t.Errorf("api log row missing click-to-copy affordance: %q", body)
+	}
+
+	if err := os.Remove(apiLog); err != nil {
+		t.Fatal(err)
+	}
+	body = fetch()
+	if strings.Contains(body, ">api log</dt>") {
+		t.Errorf("details panel should omit the api log row when the file is gone: %q", body)
+	}
+}
+
 // TestDetailsPanel_ContextRendersStructuredMeter verifies a live session's
 // context row renders as a visual usage meter plus structured stat pieces
 // ("42% used · 42k / 100k · 58k left") instead of the old nested-parens

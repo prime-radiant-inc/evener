@@ -65,13 +65,13 @@ This uses a mock LLM client with 10ms simulated latency and reports per-round ov
 
 ### API log timing
 
-Every LLM call is logged to `<state-dir>/api.jsonl` with latency:
+Every LLM call is logged per session to `<state-dir>/sessions/<session-id>.api.jsonl` with latency:
 
 ```bash
 # Total LLM time vs wall clock
 python3 -c "
 import json
-calls = [json.loads(l) for l in open('state/api.jsonl')]
+calls = [json.loads(l) for l in open('state/sessions/SESSION_ID.api.jsonl')]
 total_ms = sum(c['latency_ms'] for c in calls)
 print(f'API calls: {len(calls)}')
 print(f'LLM time:  {total_ms/1000:.1f}s')

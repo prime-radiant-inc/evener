@@ -17,6 +17,9 @@ import (
 // Runs all compaction layers (observation masking, thinking clearing,
 // checkpoint, and LLM summarization). Safe to call while idle.
 func (s *Session) Compact(ctx context.Context) error {
+	// Attribute the summarizer's LLM side calls to this session in the
+	// per-session API log (the per-attempt context only covers turn model calls).
+	ctx = llm.WithAPILogContext(ctx, s.id, 0)
 	// Refused while a question is pending (spec §5.3): summarizing away the
 	// transcript tail the pending question lives in would compact out from
 	// under the user's reply. Returning before any history read/mutation
