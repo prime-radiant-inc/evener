@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	agentplugin "primeradiant.com/serf/agent/plugin"
 )
@@ -55,12 +56,25 @@ func hasPluginManifest(dir string) bool {
 //     plugin referenced in place, a local-dev/test convenience), it returns
 //     a clear error: serf will not write a generated file into a directory
 //     it does not own.
-func ensureManifestFallback(dir string, staged bool, cp CatalogPlugin) error {
+//
+// The synthesized manifest goes beyond Claude Code's zero-component parity in
+// one way: if the entry declares no mcpServers of its own, detectNPMBinServer
+// inspects the source's package.json bin map and, when it unambiguously names
+// an existing script, wires it as a stdio MCP server — see that function for
+// the rules. The returned note (empty when nothing noteworthy happened) is an
+// install-time message for the user explaining why an MCP-server-shaped
+// plugin was NOT auto-wired; it is never an error.
+func ensureManifestFallback(dir string, staged bool, cp CatalogPlugin) (note string, err error) {
 	if hasPluginManifest(dir) {
-		return nil
+		return "", nil
 	}
 	if !staged {
-		return fmt.Errorf("plugin %q: source has no plugin manifest; serf only synthesizes a fallback manifest into a materialized cache install, not a directory source referenced in place", cp.Name)
+		return "", fmt.Errorf("plugin %q: source has no plugin manifest; serf only synthesizes a fallback manifest into a materialized cache install, not a directory source referenced in place", cp.Name)
+	}
+
+	mcpServers := cp.MCPServers
+	if len(mcpServers) == 0 {
+		mcpServers, note = detectNPMBinServer(dir, cp.Name)
 	}
 
 	manifest := agentplugin.Manifest{
@@ -69,18 +83,86 @@ func ensureManifestFallback(dir string, staged bool, cp CatalogPlugin) error {
 		Commands:    cp.Commands,
 		Agents:      cp.Agents,
 		Hooks:       cp.Hooks,
-		MCPServers:  cp.MCPServers,
+		MCPServers:  mcpServers,
 	}
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
-		return fmt.Errorf("synthesizing manifest for plugin %q: %w", cp.Name, err)
+		return "", fmt.Errorf("synthesizing manifest for plugin %q: %w", cp.Name, err)
 	}
 	manifestDir := filepath.Join(dir, ".claude-plugin")
 	if err := os.MkdirAll(manifestDir, 0o755); err != nil {
-		return fmt.Errorf("synthesizing manifest for plugin %q: %w", cp.Name, err)
+		return "", fmt.Errorf("synthesizing manifest for plugin %q: %w", cp.Name, err)
 	}
 	if err := os.WriteFile(filepath.Join(manifestDir, "plugin.json"), data, 0o644); err != nil {
-		return fmt.Errorf("synthesizing manifest for plugin %q: %w", cp.Name, err)
+		return "", fmt.Errorf("synthesizing manifest for plugin %q: %w", cp.Name, err)
 	}
-	return nil
+	return note, nil
+}
+
+// detectNPMBinServer auto-wires the MCP server of a bare npm MCP-server repo
+// (e.g. private-journal-mcp: no plugin scaffolding, just a package.json whose
+// bin map points at the built server script). It returns an mcpServers JSON
+// object to embed in the synthesized manifest, or a note explaining why an
+// MCP-shaped repo was skipped, or neither for repos that are not MCP-shaped
+// at all (no package.json, no bin — the LSP plugins land here silently).
+//
+// Wiring rules (deliberately conservative — never guess):
+//   - a root .mcp.json is the plugin's own MCP declaration and Load() already
+//     honors it; skip silently so the server isn't registered twice.
+//   - bin must be the map form with exactly one entry, or the entry whose
+//     name equals the plugin name when there are several.
+//   - the bin path must stay inside the plugin dir and the file must exist in
+//     the cached artifact. A missing target (an unbuilt TypeScript repo whose
+//     dist/ only appears after `npm install` runs the prepare script — the
+//     real private-journal-mcp cache ships this shape) gets a note, not a
+//     broken server: serf never builds at install time.
+//
+// The wired command is `node ${CLAUDE_PLUGIN_ROOT}/<bin path>`; Load() expands
+// the root placeholder to the installed plugin dir.
+func detectNPMBinServer(dir, pluginName string) (servers json.RawMessage, note string) {
+	if _, err := os.Stat(filepath.Join(dir, ".mcp.json")); err == nil {
+		return nil, "" // Load() picks up the plugin's own .mcp.json
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		return nil, "" // not an npm repo
+	}
+	var pkg struct {
+		Bin json.RawMessage `json:"bin"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil || len(pkg.Bin) == 0 {
+		return nil, "" // malformed or bin-less package.json: nothing detectable
+	}
+	var bins map[string]string
+	if err := json.Unmarshal(pkg.Bin, &bins); err != nil || len(bins) == 0 {
+		return nil, fmt.Sprintf("plugin %q: package.json bin is not a map of names to paths; not wiring an MCP server", pluginName)
+	}
+
+	binName, binPath := pluginName, bins[pluginName]
+	if binPath == "" {
+		if len(bins) != 1 {
+			return nil, fmt.Sprintf("plugin %q: package.json declares %d bins and none matches the plugin name; not wiring an MCP server", pluginName, len(bins))
+		}
+		for n, p := range bins {
+			binName, binPath = n, p
+		}
+	}
+
+	rel := filepath.Clean(filepath.FromSlash(binPath))
+	if filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, fmt.Sprintf("plugin %q: package.json bin %q points outside the plugin directory; not wiring an MCP server", pluginName, binPath)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, rel)); err != nil || fi.IsDir() {
+		return nil, fmt.Sprintf("plugin %q: package.json bin target %q does not exist in the installed source (unbuilt repo?); not wiring an MCP server", pluginName, binPath)
+	}
+
+	entry := map[string]any{
+		"command": "node",
+		"args":    []string{"${CLAUDE_PLUGIN_ROOT}/" + filepath.ToSlash(rel)},
+	}
+	out, err := json.Marshal(map[string]any{binName: entry})
+	if err != nil {
+		return nil, "" // cannot happen for this shape; fail safe by not wiring
+	}
+	return out, ""
 }
