@@ -75,8 +75,16 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 	if strings.TrimSpace(req.SafetyIdentifier) != "" && !a.usesCodexBackend() {
 		body["safety_identifier"] = strings.TrimSpace(req.SafetyIdentifier)
 	}
-	if strings.TrimSpace(req.PromptCacheRetention) != "" && !a.usesCodexBackend() {
-		body["prompt_cache_retention"] = strings.TrimSpace(req.PromptCacheRetention)
+	if ret := strings.TrimSpace(req.PromptCacheRetention); ret != "" && !a.usesCodexBackend() {
+		if responsesLiteModel(req.Model) {
+			// prompt_cache_retention is deprecated in favor of
+			// prompt_cache_options.ttl; gpt-5.6+ takes the new field. Older
+			// models keep the deprecated field until OpenAI documents that
+			// they accept the new one.
+			body["prompt_cache_options"] = map[string]any{"ttl": ret}
+		} else {
+			body["prompt_cache_retention"] = ret
+		}
 	}
 	if strings.TrimSpace(req.Truncation) != "" && !a.usesCodexBackend() {
 		body["truncation"] = strings.TrimSpace(req.Truncation)
@@ -103,9 +111,16 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 			"effort":  *req.ReasoningEffort,
 			"summary": reasoningSummaryLevel(req.Model),
 		}
+	} else if responsesLiteModel(req.Model) {
+		// Responses-lite models always reason; the codex client sends the
+		// reasoning object on every request. Request summaries so thinking
+		// displays, and let the API pick its default effort.
+		body["reasoning"] = map[string]any{
+			"summary": reasoningSummaryLevel(req.Model),
+		}
 	}
 	include := append([]string{}, req.Include...)
-	if req.ReasoningEffort != nil {
+	if req.ReasoningEffort != nil || responsesLiteModel(req.Model) {
 		include = appendUniqueString(include, encryptedReasoning)
 	}
 	if len(include) > 0 {
@@ -144,6 +159,7 @@ func openAICodexUnsupportedRequestField(key string) bool {
 		"service_tier",
 		"safety_identifier",
 		"prompt_cache_retention",
+		"prompt_cache_options",
 		"truncation",
 		"max_tool_calls",
 		"background":
