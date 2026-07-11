@@ -346,6 +346,7 @@ TARGETS=(
 	"native:llm:.:FuzzUsageAdd::types.go#Add"
 	"native:llm:.:FuzzParseRateLimitHeaders::ratelimit.go#ParseRateLimitHeaders"
 	"native:llm:.:FuzzParseLiteLLMCatalog::model_catalog.go#parseLiteLLMCatalog"
+	"native:llm:.:FuzzApplyCatalogOverrides::model_catalog_embedded.go#applyOverrides"
 	"native:llm:.:FuzzStreamAccumulator::stream_accumulator.go#Process"
 	"native:llm:.:FuzzResponsesContinuationDecision::responses_continuation.go#DecideResponsesContinuation"
 	"native:llm:.:FuzzLmParseRetryAfter::errors.go#ParseRetryAfter"
