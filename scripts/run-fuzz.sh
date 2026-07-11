@@ -87,6 +87,7 @@ TARGETS=(
 	"native:agent:./mcpconfig:FuzzMCPConfigLoad::config.go"
 	"native:agent:./provider:FuzzResolveProfileFromConfig::resolve.go"
 	"native:agent:./provider:FuzzApOpenRouterAnthropicResolve::profile.go#resolveOpenRouterAnthropicWebSearch"
+	"native:agent:./provider:FuzzProviderProfilesProgram::"
 	"native:agent:./skill:FuzzApSkillFileParse::skills.go#parseSkillFile"
 	"native:agent:./internal/atif:FuzzATIFConvert::atif.go"
 	"native:agent:./internal/sessionlog:FuzzSessionLogLoad::sessionlog.go"
