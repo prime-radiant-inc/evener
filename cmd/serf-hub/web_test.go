@@ -159,9 +159,26 @@ func (s *WebServer) injectMetasForTest(metas []schema.SessionMeta) {
 // activity tier. Task 4 split active/archived projects into separate wire
 // arrays (Projects/ArchivedProjects); tests that only care whether a session
 // shows up somewhere in the tree — not which tier its project landed in —
-// scan both.
-func allTreeProjects(resp hubapi.TreeResponse) []hubapi.TreeProject {
-	return append(append([]hubapi.TreeProject(nil), resp.Projects...), resp.ArchivedProjects...)
+// scan both. Archived projects arrive as session-less stubs in /api/tree, so
+// this hydrates each one from /api/tree/project?key= exactly like the
+// sidebar's lazy expand does.
+func allTreeProjects(t *testing.T, web *WebServer, resp hubapi.TreeResponse) []hubapi.TreeProject {
+	t.Helper()
+	out := append([]hubapi.TreeProject(nil), resp.Projects...)
+	for _, p := range resp.ArchivedProjects {
+		req := httptest.NewRequest(http.MethodGet, "/api/tree/project?key="+url.QueryEscape(p.Key), nil)
+		rec := httptest.NewRecorder()
+		web.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("hydrating archived project %q: status=%d body=%s", p.Key, rec.Code, rec.Body.String())
+		}
+		var full hubapi.TreeProject
+		if err := json.Unmarshal(rec.Body.Bytes(), &full); err != nil {
+			t.Fatalf("hydrating archived project %q: %v", p.Key, err)
+		}
+		out = append(out, full)
+	}
+	return out
 }
 
 func TestWeb_Landing_Renders(t *testing.T) {
@@ -719,7 +736,7 @@ func TestWeb_APITreeIncludesConfiguredCodexSourceThreads(t *testing.T) {
 		t.Fatalf("codex live node lost source-qualified identity: %+v", got.Live[0])
 	}
 	var foundProject bool
-	for _, project := range allTreeProjects(got) {
+	for _, project := range allTreeProjects(t, web, got) {
 		for _, session := range project.Sessions {
 			if session.Ref == "codex:th_codex" && session.Title == "Codex tree task" {
 				foundProject = true
@@ -773,7 +790,7 @@ func TestWeb_APITreeMarksConfiguredCodexEndedThreadsRecent(t *testing.T) {
 		t.Fatalf("ended codex thread appeared in live tree: %+v", got.Live)
 	}
 	var found *hubapi.TreeNode
-	for _, project := range allTreeProjects(got) {
+	for _, project := range allTreeProjects(t, web, got) {
 		for i := range project.Sessions {
 			if project.Sessions[i].Ref == "codex:th_codex_ended" {
 				found = &project.Sessions[i]
@@ -842,7 +859,7 @@ func TestWeb_APITreeIncludesManagedCodexLaunchThreads(t *testing.T) {
 			hasSource = true
 		}
 	}
-	for _, project := range allTreeProjects(got) {
+	for _, project := range allTreeProjects(t, web, got) {
 		for _, session := range project.Sessions {
 			if session.Ref == "codex-managed:th_fake" && session.Title == "fake codex" {
 				hasThread = true

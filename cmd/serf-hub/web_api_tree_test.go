@@ -240,6 +240,55 @@ func TestAPITree_SummaryOnly(t *testing.T) {
 	}
 }
 
+// TestAPITree_ArchivedProjectsAreStubs: the archive is unbounded, so the
+// /api/tree snapshot ships archived projects as stubs — metadata plus a
+// session_count, with sessions null. The full sessions stay available
+// per-project from /api/tree/project?key= (the sidebar lazy-loads them on
+// expand).
+func TestAPITree_ArchivedProjectsAreStubs(t *testing.T) {
+	now := time.Now()
+	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "index.db"))
+	if err := store.Set("project", "/w/old", true, now); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), Archive: store})
+	web.injectMetasForTest([]schema.SessionMeta{
+		{ID: "01OLD1", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/old"}},
+		{ID: "01OLD2", CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now.Add(-2 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/old"}},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	var resp hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.ArchivedProjects) != 1 {
+		t.Fatalf("want 1 archived project, got %+v", resp.ArchivedProjects)
+	}
+	stub := resp.ArchivedProjects[0]
+	if stub.Sessions != nil {
+		t.Fatalf("archived stub must not ship sessions, got %d", len(stub.Sessions))
+	}
+	if stub.SessionCount != 2 {
+		t.Fatalf("archived stub session_count=%d, want 2", stub.SessionCount)
+	}
+	if stub.Key == "" || stub.Name == "" || stub.WorkingDir != "/w/old" || !stub.IsArchived {
+		t.Fatalf("archived stub missing metadata: %+v", stub)
+	}
+	// The lazy per-project endpoint still serves the full sessions.
+	req2 := httptest.NewRequest(http.MethodGet, "/api/tree/project?key="+stub.Key, nil)
+	rec2 := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec2, req2)
+	var full hubapi.TreeProject
+	if err := json.Unmarshal(rec2.Body.Bytes(), &full); err != nil {
+		t.Fatal(err)
+	}
+	if len(full.Sessions) != 2 {
+		t.Fatalf("/api/tree/project must keep full archived sessions, got %+v", full)
+	}
+}
+
 func TestAPITree_NeedsYouCarriesAskPending(t *testing.T) {
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
 		Entry: rendezvous.Entry{SessionID: "01A", PID: 1}, SessionID: "01A", Status: "awaiting", PendingAsk: true,

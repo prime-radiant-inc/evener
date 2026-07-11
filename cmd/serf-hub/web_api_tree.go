@@ -82,7 +82,14 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 			for _, n := range projectSessions(p) {
 				seenProjectRefs[n.ID] = true
 			}
-			resp.ArchivedProjects = append(resp.ArchivedProjects, s.apiTreeProject("project", favs, p))
+			// Archived projects ship as stubs: the archive is unbounded, so its
+			// sessions never ride in the snapshot. Sessions stays nil (wire:
+			// null) and SessionCount carries the row count; the sidebar
+			// lazy-loads the full project from /api/tree/project?key= on expand.
+			stub := s.apiTreeProject("project", favs, p)
+			stub.SessionCount = len(stub.Sessions)
+			stub.Sessions = nil
+			resp.ArchivedProjects = append(resp.ArchivedProjects, stub)
 			continue
 		}
 		projectIndexes[p.Key] = len(resp.Projects)
