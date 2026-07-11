@@ -198,6 +198,8 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 		"For cross-session session sources such as `parent`, omitting trigger fields watches all bounded public events for that source. " +
 		"Pick the trigger mode that matches the signal: session event frames use `events` (available: " + kinds + "), `event_filter`, and optional `every`; concrete job output uses `output_match`; periodic progress uses `progress_interval_ms`. " +
 		"`event_filter` narrows assistant.tool events by tool_name and ok/error status. " +
+		"Frames coalesce while the recipient is busy: it sees the latest state, not a backlog. " +
+		"Delivered assistant.tool frames include the matched `status` and the original tool `arguments_json`; use those frame fields as the first evidence before reaching for audit tools. " +
 		"Observers report findings with `communicate(end_turn=true)`. " +
 		"`operation=\"clear\"` removes a watch by `watch_id`."
 	return llm.ToolDefinition{

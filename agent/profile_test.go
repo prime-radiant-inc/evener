@@ -262,6 +262,18 @@ func TestBuildSystemPrompt_IncludesBackgroundJobsSection(t *testing.T) {
 	}
 }
 
+// TestBuildSystemPrompt_PinsAntiPollGuidance makes the scenario card
+// test/scenarios/job-delegate-wait-no-poll.md's grep pin durable: the assembled
+// system prompt must carry the exact anti-poll sentence.
+func TestBuildSystemPrompt_PinsAntiPollGuidance(t *testing.T) {
+	t.Parallel()
+	prompt := renderPromptForTest(t, newAnthropicProfile("claude-test"), promptData{})
+
+	if !strings.Contains(prompt, "Do not call `job_status` in a loop") {
+		t.Fatalf("system prompt missing anti-poll pin (scenario job-delegate-wait-no-poll depends on it):\n%s", prompt)
+	}
+}
+
 func TestSubagentPrompt_DoesNotIncludeBackgroundJobsSection(t *testing.T) {
 	t.Parallel()
 	resolver := &sectionResolver{
