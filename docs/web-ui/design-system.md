@@ -75,11 +75,16 @@ Neutral ramp: `--bg #0e0f13`, `--surface #16181d`, `--surface-2 #1c1f26`, rules 
 - **Sans (everything human):** Hanken Grotesk. **Mono (machine text only):** JetBrains Mono.
 - Shipping scale (M preset, px): `--text-2xs 10` / `--text-xs 11` / `--text-sm 12` /
   `--text-base 13` / `--text-md 14` / `--text-lg 16` / `--text-xl 18` / `--text-2xl 22`.
-- **The transcript uses only four steps** (2026-07-11 typography pass): `--text-lg` assistant
-  prose (hero) · `--text-base` primary lines (tool purpose, user text, plan rows) ·
-  `--text-sm` secondary + machine text (commands, output, thinking, system asides) ·
-  `--text-xs` meta (timings, badges, demoted commands, fold heads). `--text-2xs` is reserved
-  for non-transcript chrome (sidebar counts, pickers) — never transcript text.
+- **The transcript uses ONE reading size + two exceptions** (2026-07-11 round 2, tightened
+  from the four-step scale): ALL flowing reading text — assistant prose, tool intents and
+  result text, thinking summaries and bodies, user messages, system asides, plan rows —
+  sits at `--text-base`; mono machine text (commands, code, paths, diffs, raw output) is
+  `--text-sm`; true meta (timestamps, the YOU tag, durations, badges, fold heads) is
+  `--text-xs`. Line-height across the column is `--leading-normal`. **Prose dropped from
+  `--text-lg` to `--text-base`**: the larger hero step made the column read as
+  differently-sized fragments; contrast and paragraph rhythm carry the prose's weight now,
+  not size. `--text-2xs` remains reserved for non-transcript chrome (sidebar counts,
+  pickers) — never transcript text.
 - Leading: `--leading-tight 1.3` / `--leading-snug 1.5` / `--leading-normal 1.6` /
   `--leading-relaxed 1.7`.
 - Numbers (durations, counts, clock stamps, relative times) are sans with
@@ -162,8 +167,8 @@ content with the occasional red ✕ standing out; you never scan past a wall of 
 
 **Disclosure placement.** Expand affordances in the transcript sit on the **right**, not the left:
 the tool-row caret is right-aligned (so the status/glyph leads a clean, aligned left edge), and
-card disclosures (`raw notification`, `full excerpt`, `show raw error`) read `label … ▸` with the
-chevron at the right edge. A left-hung ▸ offsets every row and ragged-edges the column; on the
+card disclosures (`raw notification`, `full excerpt`, `show raw error`) read `label … ›` with the
+chevron at the right edge. A left-hung chevron offsets every row and ragged-edges the column; on the
 right it's a quiet "there's more." (On phones the timing meta is out of the flow entirely so
 commands and file paths get the full row width; a tap on the row brings it back.)
 
@@ -187,15 +192,16 @@ gutter (`--gutter`) is to its left (§3).
 - `.tool-intent` (when the agent stated a purpose): sans `--text-base`, `--text` — the primary
   line.
 - `.tool-command` = `.verb` + `.target` + `.result-detail`: verb/target mono, result sans.
-  As primary (no purpose): `--text-sm`, target `--text`. Demoted under a purpose: one
-  truncated line, `--text-xs`, `--text-dim`, same x=0 column (no sub-indent).
+  Mono `--text-sm` whether primary (no purpose, target `--text`) or demoted under a purpose
+  (one truncated line, `--text-dim`, same x=0 column, no sub-indent) — dim color, not a
+  smaller size, carries the demotion.
 - `.tool-meta` top-right: sans `--text-xs` `tabular-nums`, `--text-muted`, hover/focus-reveal.
 - `.tool-body` / `.diff-body` / `.shell-output`…: full-width below; rails hang in the gutter,
   boxed machine output is mono `--text-sm` with its own contained `overflow-x`.
 
 **Thinking row (`.think`)**
 - gutter: `.think-glyph` ✦ (breathes while streaming).
-- `.think-label` "Thought for Ns" + `.pv` gist: sans `--text-sm`, tier-colored
+- `.think-label` "Thought for Ns" + `.pv` gist: sans `--text-base`, tier-colored
   (`--text` long / `--text-muted` short), gist italic.
 - `.think-body`: expanded reasoning, `pre-wrap` italic `--text-muted`, text at x=0 with a
   1px rail in the gutter.
@@ -310,19 +316,11 @@ a single-pane workspace; the sidebar becomes an off-canvas drawer behind the hea
   horizontal scrollbar.
 - **Touch.** `--tap-min: 44px` on phone (desktop is 32px); suppress sticky `:hover` backgrounds
   under `@media (hover: none)` so a tapped row doesn't stay lit.
-- **Reading scale (sized to actually read on a phone).** A clear, descending hierarchy — the
-  conversation leads, machine text is legible (never the old 10px squint), metadata is quietest:
-
-  | level | size | what |
-  |---|---|---|
-  | hero | 14 | assistant prose — the thing you read, the largest text |
-  | primary | 13 | the agent's tool **purpose**; the user's message |
-  | machine | 12 | commands, diffs, output, code (mono) |
-  | meta | 11 | the demoted command under a purpose; timings, counts |
-
-  The hero must stay larger than the tool purpose, which must stay larger than the command — an
-  inverted step (a 12px hero under a 13px purpose) reads as "the tool matters more than the
-  answer." Editable fields are pinned to **16px** so iOS never zoom-jumps on focus.
+- **Reading scale on a phone (2026-07-11 round 2).** The transcript follows the same
+  one-size rule as desktop — flowing text `--text-base`, mono machine text `--text-sm`,
+  meta `--text-xs`. Compact density shrinks only the app **chrome** (`body` drops to
+  `--text-sm`); the `.conversation` column keeps `--text-base` and is never re-tiered
+  per-kind. Editable fields are pinned to **16px** so iOS never zoom-jumps on focus.
 - **Editable fields ≥ 16px.** iOS Safari zooms the page into any focused field whose text is
   smaller than 16px and does not zoom back out — so the composer, prompt, and search inputs are all
   16px on phone.
@@ -351,9 +349,13 @@ prose is the reading hero (size + leading + paragraph rhythm); tool calls are qu
 whose verbose per-call intent recedes to a single dim clamped breadcrumb (full text on
 hover/expand); turn boundaries breathe; mobile is single-column and overflow-proof; the motion
 layer above is in place, and the agent-question edge case from §7 has shipped. The 2026-07-11
-typography pass landed the one-column marker gutter, the four-step transcript type scale, and
-hover/focus-revealed timing metadata (all locked by
-`cmd/serf-hub/jstest/test-transcript-typography.js`). The rest of §7's deferred list is still
+typography pass landed the one-column marker gutter and hover/focus-revealed timing metadata;
+round 2 (same day) squashed the column to ONE flowing reading size (`--text-base`, prose
+included) with mono `--text-sm` and meta `--text-xs` as the only exceptions, and normalized
+every transcript disclosure to the sidebar chevron idiom — a `›` glyph, `--text-muted`,
+`--text-md`, rotating 90° when open, on a hit target of at least 24px (`.tool-disclosure`,
+`summary` fold markers, and the shared `.fold-chevron` span for text-labelled folds). All
+locked by `cmd/serf-hub/jstest/test-transcript-typography.js`. The rest of §7's deferred list is still
 open.
 
 **Dev loop:** set `SERF_HUB_ASSETS_DIR=<repo>/cmd/serf-hub` when launching `serf-hub` to serve

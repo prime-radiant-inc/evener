@@ -59,7 +59,7 @@ await scenario("edit_file collapses to +N −N stat and expands to a unified dif
   // Collapsed by default — the diff body is hidden until expanded.
   if (card.dataset.expanded !== "false") return { ok: false, detail: "edit should collapse by default, got data-expanded=" + card.dataset.expanded };
   const caret = card.querySelector(".tool-disclosure[data-expand-toggle]");
-  if (!caret || caret.textContent !== "▸") return { ok: false, detail: "caret should be ▸ when collapsed, got " + (caret && caret.textContent) };
+  if (!caret || caret.textContent !== "›" || caret.getAttribute("aria-expanded") !== "false") return { ok: false, detail: "caret should be › with aria-expanded=false when collapsed, got " + (caret && caret.textContent) };
 
   // The collapsed line carries the +N −N stat (computed from the diff): the
   // change is 2 removed lines, 3 added lines. The +++/--- path headers must NOT
@@ -79,7 +79,7 @@ await scenario("edit_file collapses to +N −N stat and expands to a unified dif
   // Expand: clicking the caret reveals the body (data-expanded flips true).
   caret.dispatchEvent(new conv.ownerDocument.defaultView.MouseEvent("click", { bubbles: true, cancelable: true }));
   if (card.dataset.expanded !== "true") return { ok: false, detail: "caret click should expand the diff" };
-  if (caret.textContent !== "▾") return { ok: false, detail: "caret should be ▾ when expanded" };
+  if (caret.getAttribute("aria-expanded") !== "true") return { ok: false, detail: "caret should be aria-expanded=true when expanded" };
   return { ok: true };
 });
 

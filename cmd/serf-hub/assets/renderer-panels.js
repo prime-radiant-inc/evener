@@ -75,7 +75,7 @@
     const expanded = toolCall.dataset.expanded === "true";
     const next = !expanded;
     toolCall.dataset.expanded = next ? "true" : "false";
-    btn.textContent = next ? "▾" : "▸";
+    // The › glyph is constant; CSS rotates it via [aria-expanded].
     btn.setAttribute("aria-label", next ? "collapse tool details" : "expand tool details");
     btn.setAttribute("aria-expanded", next ? "true" : "false");
   });

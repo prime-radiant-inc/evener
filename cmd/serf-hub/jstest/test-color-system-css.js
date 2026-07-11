@@ -123,9 +123,10 @@ pass(!/\.steering \.steering-verb\s*\{[^}]*color:\s*var\(--state-warning\)/s.tes
 const assistantRule = css.match(/\.assistant-message\s*\{[^}]*\}/s);
 pass(assistantRule != null, "assistant-message rule exists");
 if (assistantRule) {
-  // Hero wins via size: the reading layer is the largest prose in the
-  // transcript — at least --text-md, and lifted to --text-lg in the overhaul.
-  pass(/font-size:\s*var\(--text-(md|lg)\)/.test(assistantRule[0]), "assistant prose is hero size (--text-md or larger)");
+  // 2026-07-11 round 2: the transcript is ONE reading size — prose dropped
+  // from --text-lg to --text-base so all flowing text matches; contrast and
+  // spacing carry the prose's weight, not a larger step.
+  pass(/font-size:\s*var\(--text-base\)/.test(assistantRule[0]), "assistant prose shares the one-column --text-base reading size");
 }
 const codeRule = css.match(/\.assistant-message code\s*\{[^}]*\}/s);
 pass(codeRule != null, "assistant-message code rule exists");

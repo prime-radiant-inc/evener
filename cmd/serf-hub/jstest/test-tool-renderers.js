@@ -538,12 +538,14 @@ await scenario("edit_file collapses to a stat with the diff one click away", [
   if (!diff.querySelector(".add")) return { ok: false, detail: "no .add lines" };
   if (!diff.querySelector(".del")) return { ok: false, detail: "no .del lines" };
   if (!card.querySelector(".tool-status-good")) return { ok: false, detail: "missing left success icon" };
-  // Caret button should exist and default to ▸ (collapsed); clicking expands.
+  // Disclosure button: a constant › glyph (CSS rotates on open) whose state
+  // lives in aria-expanded; clicking expands. (2026-07-11 round 2 idiom.)
   const caret = card.querySelector(".tool-disclosure[data-expand-toggle]");
   if (!caret) return { ok: false, detail: "no inline disclosure button" };
-  if (caret.textContent !== "▸") return { ok: false, detail: "caret should be ▸ when collapsed, got " + caret.textContent };
+  if (caret.textContent !== "›") return { ok: false, detail: "caret glyph should be ›, got " + caret.textContent };
+  if (caret.getAttribute("aria-expanded") !== "false") return { ok: false, detail: "caret should start aria-expanded=false" };
   caret.dispatchEvent(new conv.ownerDocument.defaultView.MouseEvent("click", { bubbles: true, cancelable: true }));
-  if (card.dataset.expanded !== "true" || caret.textContent !== "▾") return { ok: false, detail: "caret click should expand to ▾" };
+  if (card.dataset.expanded !== "true" || caret.getAttribute("aria-expanded") !== "true") return { ok: false, detail: "caret click should expand (aria-expanded=true)" };
   return { ok: true };
 });
 
@@ -994,23 +996,25 @@ await (async function () {
   check("read_file data-expanded false", readCall && readCall.dataset.expanded, "false");
   const readCaret = readCall && readCall.querySelector(".tool-disclosure[data-expand-toggle]");
   check("read_file disclosure exists", !!readCaret, true);
-  check("read_file disclosure glyph collapsed", readCaret && readCaret.textContent, "▸");
+  check("read_file disclosure glyph collapsed", readCaret && readCaret.textContent, "›");
+  check("read_file disclosure aria collapsed", readCaret && readCaret.getAttribute("aria-expanded"), "false");
 
   // write_file: collapsed by default (alt A), data-expanded="false", disclosure ▸.
   const writeCall = conv.querySelector(".tool-call.write_file");
   check("write_file data-expanded false", writeCall && writeCall.dataset.expanded, "false");
   const writeCaret = writeCall && writeCall.querySelector(".tool-disclosure[data-expand-toggle]");
-  check("write_file disclosure glyph collapsed", writeCaret && writeCaret.textContent, "▸");
+  check("write_file disclosure glyph collapsed", writeCaret && writeCaret.textContent, "›");
+  check("write_file disclosure aria collapsed", writeCaret && writeCaret.getAttribute("aria-expanded"), "false");
 
   // Click read_file disclosure to expand.
   if (readCaret) {
     readCaret.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
     check("read_file expanded after click", readCall.dataset.expanded, "true");
-    check("read_file disclosure glyph after expand", readCaret.textContent, "▾");
+    check("read_file disclosure aria after expand", readCaret.getAttribute("aria-expanded"), "true");
     // Click again to collapse.
     readCaret.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
     check("read_file collapsed after second click", readCall.dataset.expanded, "false");
-    check("read_file disclosure glyph after collapse", readCaret.textContent, "▸");
+    check("read_file disclosure aria after collapse", readCaret.getAttribute("aria-expanded"), "false");
   }
 
   // Keyboard: Enter on disclosure triggers expand.
