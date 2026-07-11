@@ -368,14 +368,16 @@ func (cm *Manager) ForceCompact(
 	if cm.client != nil {
 		turnsBefore = len(*history)
 		before = estimateTokens(*history)
-		lenBefore := len(*history)
+		// The summarizer returns the input unchanged for short or unsafe history,
+		// which must not count a pre-existing summary as a newly generated one.
+		canSummarize := len(*history) > cm.PreserveRecentTurns && safeCutoff(*history, len(*history)-cm.PreserveRecentTurns) >= 0
 		result, err := cm.summarizeWithLLMSteered(ctx, *history, cm.PreserveRecentTurns, instructions)
 		if err != nil {
 			emitFn(events.EventWarning, events.WarningData{
 				Message: "LLM summarization failed: " + err.Error(),
 			})
 		} else {
-			summarized = len(result) != lenBefore
+			summarized = canSummarize && len(result) > 0 && result[0].Kind == schema.TurnSummary
 			*history = result
 			after := estimateTokens(*history)
 			emitFn(events.EventContextCompaction, events.ContextCompactionData{

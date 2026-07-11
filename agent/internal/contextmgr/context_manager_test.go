@@ -2116,6 +2116,45 @@ func TestForceCompact_ReportsSummarized(t *testing.T) {
 	}
 }
 
+func TestForceCompact_ReportsGeneratedSummary(t *testing.T) {
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("summary")}
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	profile := testProfile("openai", "test", 100_000)
+
+	cm := NewManager(profile, client)
+	cm.PreserveRecentTurns = 2
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first question")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working on it")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("second question")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent one")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent two")),
+	}
+	if !cm.ForceCompact(context.Background(), &history, "", func(events.EventKind, events.EventData) {}) {
+		t.Fatal("ForceCompact returned false after generating a summary")
+	}
+
+	// A no-op must not be mistaken for a generated summary merely because the
+	// short input already begins with a summary turn.
+	short := []schema.Turn{
+		schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\nprior\n[END SUMMARY]")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("recent")),
+	}
+	shortCM := NewManager(profile, client)
+	shortCM.PreserveRecentTurns = len(short)
+	if shortCM.ForceCompact(context.Background(), &short, "", func(events.EventKind, events.EventData) {}) {
+		t.Fatal("ForceCompact reported a pre-existing short summary as newly generated")
+	}
+}
+
 // --- Working notes in checkpoint ---
 
 func TestCheckpoint_ExtractsWorkingNotes(t *testing.T) {
