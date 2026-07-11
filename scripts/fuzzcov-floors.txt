@@ -20,6 +20,7 @@ FuzzColorParsing 100.0
 FuzzExpandTemplateProgram 100.0
 FuzzCountInputTokensResponse 84.6
 FuzzCredentialsStoreDecode 76.5
+FuzzDelegateSandboxPolicyProgram 100.0
 FuzzDiagnosticClassificationProgram 100.0
 FuzzDoctorLoadTranscript 83.3
 FuzzErrorFromHTTPStatus 80.8

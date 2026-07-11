@@ -259,6 +259,7 @@ TARGETS=(
 	"native:agent:.:FuzzResolveTranscript::transcript_lookup.go#resolveTranscript"
 	"native:agent:.:FuzzToolInputSummary::transcript_render.go#toolInputSummary"
 	"native:agent:.:FuzzSessionNamerProgram::session_namer.go"
+	"native:agent:.:FuzzDelegateSandboxPolicyProgram::sandbox_delegate.go"
 	"native:agent:.:FuzzWatchdelDelegateResume::job_delegate.go#assessDelegateResumability"
 	"native:agent:.:FuzzWatchdelWatchOps::job_watch.go#configureWatch"
 	# Agent-core whole-module lifecycle and rendering coverage.
