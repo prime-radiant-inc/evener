@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -172,6 +174,32 @@ func t8RunOODA(t *testing.T, ctx context.Context, profile *provider.Profile, cli
 	if logText := strategy.log.String(); !strings.Contains(logText, userEvidence) || !strings.Contains(logText, terminalEvidence) {
 		t.Fatalf("fork summary lost evidence: %q", logText)
 	}
+
+	// The OODA orientation must survive a strategy restart, rather than only
+	// being visible through the first strategy's in-memory SessionLog.
+	logPath := filepath.Join(host.stateDir, "sessions", "task8-ooda.log.jsonl")
+	persisted, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read persisted OODA log: %v", err)
+	}
+	if !strings.Contains(string(persisted), userEvidence) || !strings.Contains(string(persisted), terminalEvidence) {
+		t.Fatalf("persisted OODA log lost evidence: %q", persisted)
+	}
+	reopened, err := NewOODAStrategy(NewManager(profile, client), host)
+	if err != nil {
+		t.Fatalf("reopen OODA strategy: %v", err)
+	}
+	if reopened.log.Len() != 1 {
+		t.Fatalf("reopened OODA log entries = %d, want 1", reopened.log.Len())
+	}
+	restartedHistory := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("restart orientation probe")),
+	}
+	if err := reopened.ManageContext(ctx, &restartedHistory, 0, noopEmit); err != nil {
+		t.Fatalf("reopened OODA ManageContext: %v", err)
+	}
+	t8AssertSingleMarker(t, restartedHistory, "[SESSION ORIENTATION]")
+	t8AssertOrientationEvidence(t, restartedHistory, userEvidence, terminalEvidence)
 }
 
 func t8AssertUsageAndMetrics(t *testing.T, profile *provider.Profile, history []schema.Turn, program []byte) {
@@ -271,6 +299,22 @@ func t8AssertHistoryEvidence(t *testing.T, history []schema.Turn, evidence ...st
 			t.Fatalf("history lost evidence %q", want)
 		}
 	}
+}
+
+func t8AssertOrientationEvidence(t *testing.T, history []schema.Turn, evidence ...string) {
+	t.Helper()
+	for _, turn := range history {
+		if turn.Kind != schema.TurnSteering || !strings.Contains(turn.Message.Text(), "[SESSION ORIENTATION]") {
+			continue
+		}
+		for _, want := range evidence {
+			if !strings.Contains(turn.Message.Text(), want) {
+				t.Fatalf("reopened orientation lost evidence %q: %q", want, turn.Message.Text())
+			}
+		}
+		return
+	}
+	t.Fatal("reopened OODA history has no orientation turn")
 }
 
 func t8ProgramByte(program []byte, index int) byte {

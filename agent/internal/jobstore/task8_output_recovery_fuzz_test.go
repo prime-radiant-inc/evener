@@ -27,9 +27,12 @@ import (
 // partial/corrupt trailing event lines, and preservation of a committed event
 // after injected append failures and recovery.
 func FuzzTask8OutputRecovery(f *testing.F) {
-	// Forces several retained-tail prunes and a complete trailing event without
-	// its newline, which the Store must terminate on reopen.
+	// Forces several retained-tail prunes and the incomplete-trailing-event
+	// recovery mode.
 	f.Add([]byte{0, 1, 0, 2}, []byte("alpha\nbeta\ngamma\n"))
+	// Selects the complete-no-newline recovery mode explicitly. The first seed
+	// above selects mode 1, and the second selects mode 2.
+	f.Add([]byte{0, 0, 0, 2}, []byte("complete trailing event\n"))
 	// Exercises the corrupt trailing-event forensic path and different chunking.
 	f.Add([]byte{77, 2, 2, 31}, []byte("\x00longer payload\nwith lines\n"))
 
@@ -272,6 +275,18 @@ func t8AssertReadEventsRecovery(t *testing.T, mode int) {
 		if openErr != nil {
 			t.Fatalf("Store recovery mode %d: %v", mode, openErr)
 		}
+		if mode == 0 {
+			// A complete JSON record without a newline becomes durable as the
+			// exact original bytes plus one newline during Store reopen recovery.
+			wantRecovered := append(append([]byte(nil), raw...), '\n')
+			persisted, err := afero.ReadFile(mem, "/jobs.jsonl")
+			if err != nil {
+				t.Fatalf("read newline-recovered events: %v", err)
+			}
+			if !bytes.Equal(persisted, wantRecovered) {
+				t.Fatalf("newline recovery bytes = %q, want %q", persisted, wantRecovered)
+			}
+		}
 		store.disableSync = true
 		events, err := store.LoadEvents()
 		if err != nil || len(events) != wantStore {
@@ -351,6 +366,114 @@ func t8AssertStoreFaultRollback(t *testing.T) {
 	if !sawAppendFault {
 		t.Fatal("fault sweep did not reach an append rollback path")
 	}
+	t8AssertStorePostWriteSyncRollback(t)
+}
+
+// t8AssertStorePostWriteSyncRollback proves the durability path after bytes
+// have reached the file: the first candidate-event Sync fails, rollback
+// truncates it, then a clean reopen preserves the committed sequence exactly.
+func t8AssertStorePostWriteSyncRollback(t *testing.T) {
+	t.Helper()
+	base := afero.NewMemMapFs()
+	const path = "/task8-sync-fault-jobs.jsonl"
+
+	seed, err := openFs(base, path)
+	if err != nil {
+		t.Fatalf("open sync-fault seed store: %v", err)
+	}
+	if err := seed.Append(t8RollbackEvent("committed")); err != nil {
+		t.Fatalf("append sync-fault committed event: %v", err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatalf("close sync-fault seed store: %v", err)
+	}
+
+	syncFaultFS := &t8SyncFaultFS{Fs: base}
+	faulted, err := openFs(syncFaultFS, path)
+	if err != nil {
+		t.Fatalf("open post-write sync-fault store: %v", err)
+	}
+	appendErr := faulted.Append(t8RollbackEvent("candidate"))
+	if !errors.Is(appendErr, fault.ErrInjected) {
+		t.Fatalf("candidate append error = %v, want injected sync error", appendErr)
+	}
+	if syncFaultFS.writeBytes == 0 || syncFaultFS.syncFailures != 1 {
+		t.Fatalf("post-write sync seam = writes:%d sync failures:%d, want write then one sync failure", syncFaultFS.writeBytes, syncFaultFS.syncFailures)
+	}
+	if err := faulted.Close(); err != nil {
+		t.Fatalf("close post-write sync-fault store: %v", err)
+	}
+
+	// Reopen through the clean filesystem, which is the durable rollback oracle.
+	recovered, err := openFs(base, path)
+	if err != nil {
+		t.Fatalf("clean reopen after sync fault: %v", err)
+	}
+	defer func() { _ = recovered.Close() }()
+	events, err := recovered.LoadEvents()
+	if err != nil {
+		t.Fatalf("load clean-reopened events: %v", err)
+	}
+	t8AssertRollbackSequence(t, events, []string{"job_task8_committed"})
+	if err := recovered.Append(t8RollbackEvent("after_recovery")); err != nil {
+		t.Fatalf("append after clean recovery: %v", err)
+	}
+	events, err = recovered.LoadEvents()
+	if err != nil {
+		t.Fatalf("reload after clean recovery append: %v", err)
+	}
+	t8AssertRollbackSequence(t, events, []string{"job_task8_committed", "job_task8_after_recovery"})
+}
+
+func t8AssertRollbackSequence(t *testing.T, events []Event, wantIDs []string) {
+	t.Helper()
+	if len(events) != len(wantIDs) {
+		t.Fatalf("recovered event count = %d, want %d: %+v", len(events), len(wantIDs), events)
+	}
+	for i, wantID := range wantIDs {
+		if events[i].JobID != wantID || events[i].Seq != int64(i+1) {
+			t.Fatalf("recovered event %d = job:%q seq:%d, want job:%q seq:%d", i, events[i].JobID, events[i].Seq, wantID, i+1)
+		}
+		if events[i].JobID == "job_task8_candidate" {
+			t.Fatalf("candidate event survived rollback: %+v", events[i])
+		}
+	}
+}
+
+// t8SyncFaultFS leaves every operation alone except the first Sync after a
+// successful Write. This is the narrow test boundary needed to distinguish a
+// post-write durability error from an earlier open/seek/write failure.
+type t8SyncFaultFS struct {
+	afero.Fs
+	writeBytes   int
+	syncFailures int
+}
+
+func (fs *t8SyncFaultFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	f, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &t8SyncFaultFile{File: f, owner: fs}, nil
+}
+
+type t8SyncFaultFile struct {
+	afero.File
+	owner *t8SyncFaultFS
+}
+
+func (f *t8SyncFaultFile) Write(p []byte) (int, error) {
+	n, err := f.File.Write(p)
+	f.owner.writeBytes += n
+	return n, err
+}
+
+func (f *t8SyncFaultFile) Sync() error {
+	if f.owner.writeBytes > 0 && f.owner.syncFailures == 0 {
+		f.owner.syncFailures++
+		return fault.ErrInjected
+	}
+	return f.File.Sync()
 }
 
 func t8RollbackEvent(label string) Event {
