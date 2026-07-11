@@ -108,6 +108,47 @@ func TestBuildTree_UsesGeneratedNameForSessionTitle(t *testing.T) {
 	}
 }
 
+func TestBuildTree_TruncatesLongOriginalPromptTitles(t *testing.T) {
+	long := strings.Repeat("é", 5000) // multi-byte runes: truncation must be rune-safe
+	tree := buildTree([]schema.SessionMeta{{
+		ID:             "01LONG",
+		OriginalPrompt: long,
+		UpdatedAt:      time.Now(),
+	}}, nil)
+	if len(tree.Projects) != 1 || len(allSessions(tree.Projects[0])) != 1 {
+		t.Fatalf("unexpected tree shape: %#v", tree)
+	}
+	got := allSessions(tree.Projects[0])[0].Title
+	if want := strings.Repeat("é", 200) + "…"; got != want {
+		t.Fatalf("title = %d runes (%.30q...), want 200 runes + ellipsis", len([]rune(got)), got)
+	}
+}
+
+func TestBuildTree_TruncatesLongForkBaseTitleKeepingLabel(t *testing.T) {
+	long := strings.Repeat("x", 300)
+	tree := buildTree([]schema.SessionMeta{{
+		ID:             "01LONGFORK",
+		OriginalPrompt: long,
+		ForkLabel:      "before TDD",
+		UpdatedAt:      time.Now(),
+	}}, nil)
+	got := allSessions(tree.Projects[0])[0].Title
+	if want := strings.Repeat("x", 200) + "… · before TDD"; got != want {
+		t.Fatalf("fork title = %q, want truncated base plus label", got)
+	}
+}
+
+func TestBuildTree_ShortTitleNotTruncated(t *testing.T) {
+	tree := buildTree([]schema.SessionMeta{{
+		ID:             "01SHORT",
+		OriginalPrompt: strings.Repeat("a", 200),
+		UpdatedAt:      time.Now(),
+	}}, nil)
+	if got := allSessions(tree.Projects[0])[0].Title; got != strings.Repeat("a", 200) {
+		t.Fatalf("title = %q, want untouched 200-rune title", got)
+	}
+}
+
 func TestBuildTree_UsesGeneratedNameForForkBaseTitle(t *testing.T) {
 	tree := buildTree([]schema.SessionMeta{{
 		ID:             "01FORK",

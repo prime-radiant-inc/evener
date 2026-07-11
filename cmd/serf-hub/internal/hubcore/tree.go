@@ -213,7 +213,7 @@ func ProjectSlug(path string) string { return projectSlug(path) }
 // short, human-friendlier rendering of the session ID rather than the full
 // 26-character ULID, which clutters the sidebar.
 func nodeTitle(m schema.SessionMeta, kind string) string {
-	base := schema.SessionDisplayName(m)
+	base := truncateTitle(schema.SessionDisplayName(m))
 	if base == "" {
 		base = ShortID(m.ID)
 	}
@@ -221,6 +221,24 @@ func nodeTitle(m schema.SessionMeta, kind string) string {
 		return base + " · " + m.ForkLabel
 	}
 	return base
+}
+
+// maxTitleRunes caps sidebar node titles. Titles fall back to the session's
+// full OriginalPrompt, which can run to tens of kilobytes; a one-line sidebar
+// row only ever shows the first couple hundred characters, and shipping the
+// full prompt for every archived session made /api/tree megabytes heavier
+// than it needed to be. The full prompt remains available from the session
+// detail endpoints.
+const maxTitleRunes = 200
+
+// truncateTitle caps s at maxTitleRunes runes, appending an ellipsis when it
+// truncates. Rune-safe: never splits a multi-byte character.
+func truncateTitle(s string) string {
+	r := []rune(s)
+	if len(r) <= maxTitleRunes {
+		return s
+	}
+	return string(r[:maxTitleRunes]) + "…"
 }
 
 // ShortID renders an unnamed session ID compactly.
