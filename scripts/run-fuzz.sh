@@ -65,6 +65,7 @@ TARGETS=(
 	"native:agent:.:FuzzRootWatchTreeProgram::"
 	"native:agent:.:FuzzWatchConfigValidationProgram::job_watch.go"
 	"native:agent:.:FuzzWatchRestoreClearHistoryProgram::job_watch.go#restoreWatchSendPending;job_watch.go#clearWatch;job_watch.go#clearWatchByIDMatching;job_watch.go#watchListToolResult;job_watch.go#watchListToolResultForReceiver;job_watch.go#recentWatchSummaries;job_watch.go#inspectWatchByID;job_watch.go#inspectReceiverWatchByID;job_watch.go#liveWatchSummaries;job_watch.go#liveWatchSummariesForReceiver"
+	"native:agent:.:FuzzWatchAttachTerminalProgram::job_watch.go#prepareAttachScanLocked;job_watch.go#completeAttachScan;job_watch.go#fireAttachScan;job_watch.go#runTerminalCatchup"
 	"native:agent:.:FuzzWatchGrantLifecycleProgram::job_watch.go#watchReadGrantObserver;job_watch.go#watchedWorkerSessionID;job_watch.go#stampObservedBy;job_watch.go#recordObserverLink;job_watch.go#lookupGrantedJobRead;job_watch.go#mintWatchCreateReadGrant;job_watch.go#mintWatchSendReadGrant"
 	"native:agent:.:FuzzRootParentObserverLifecycleProgram::"
 	"native:agent:.:FuzzRootDelegateResumeLifecycleProgram::"
