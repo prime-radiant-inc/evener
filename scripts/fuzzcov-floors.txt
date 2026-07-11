@@ -75,6 +75,7 @@ FuzzProvidersTOMLLoad 72.9
 FuzzRenderToolCall 100.0
 FuzzRealClockProgram 100.0
 FuzzResolveProfileFromConfig 96.6
+FuzzResumeTurnQueueProgram 95.3
 FuzzRunFlagParse 100.0
 FuzzSandboxEscalationLifecycleProgram 100.0
 FuzzSessionLogLoad 91.3
