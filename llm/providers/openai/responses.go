@@ -31,6 +31,12 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 		"store":               false,
 	}
 
+	// The codex backend serves gpt-5.6 through its "responses-lite" variant,
+	// which takes a restructured request (mirroring the codex CLI,
+	// codex-rs/core/src/client.rs build_responses_request): instructions and
+	// tools ride inside the input, and parallel tool calls are disabled.
+	codexLite := a.usesCodexBackend() && responsesLiteModel(req.Model)
+
 	var tools []map[string]any
 	if len(req.Tools) > 0 {
 		tools = toResponsesTools(req.Tools)
@@ -38,7 +44,32 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 	if req.WebSearch {
 		tools = append(tools, map[string]any{"type": "web_search"})
 	}
-	if len(tools) > 0 {
+	if codexLite {
+		// Tools become a developer additional_tools input item (always
+		// present, even empty), and base instructions become a developer
+		// message after it; the top-level fields are emptied.
+		toolsAny := make([]any, 0, len(tools))
+		for _, tool := range tools {
+			toolsAny = append(toolsAny, tool)
+		}
+		prefix := []any{map[string]any{
+			"type":  "additional_tools",
+			"role":  "developer",
+			"tools": toolsAny,
+		}}
+		if instructions != "" {
+			prefix = append(prefix, map[string]any{
+				"type": "message",
+				"role": "developer",
+				"content": []any{
+					map[string]any{"type": "input_text", "text": instructions},
+				},
+			})
+		}
+		body["input"] = append(prefix, inputItems...)
+		body["instructions"] = ""
+		body["parallel_tool_calls"] = false
+	} else if len(tools) > 0 {
 		body["tools"] = tools
 	}
 	if req.ToolChoice != nil {
@@ -119,6 +150,16 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 			"summary": reasoningSummaryLevel(req.Model),
 		}
 	}
+	if codexLite {
+		// Responses-lite reasoning must span every turn, matching the codex
+		// client's ReasoningContext::AllTurns.
+		reasoning, _ := body["reasoning"].(map[string]any)
+		if reasoning == nil {
+			reasoning = map[string]any{}
+		}
+		reasoning["context"] = "all_turns"
+		body["reasoning"] = reasoning
+	}
 	include := append([]string{}, req.Include...)
 	if req.ReasoningEffort != nil || responsesLiteModel(req.Model) {
 		include = appendUniqueString(include, encryptedReasoning)
@@ -135,6 +176,18 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 			text["format"] = rf
 			body["text"] = text
 		}
+	}
+	if codexLite {
+		// Responses-lite requests always carry text.verbosity; the codex
+		// client's default for every gpt-5.6 variant is "low".
+		text, _ := body["text"].(map[string]any)
+		if text == nil {
+			text = map[string]any{}
+		}
+		if _, ok := text["verbosity"]; !ok {
+			text["verbosity"] = "low"
+		}
+		body["text"] = text
 	}
 	if req.ProviderOptions != nil {
 		if ov, ok := req.ProviderOptions["openai"].(map[string]any); ok {
