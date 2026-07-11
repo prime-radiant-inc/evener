@@ -242,8 +242,13 @@ hover/selected) · right-aligned relative age sans `--text-2xs` `--text-muted` `
 (opacity-swapped for row actions on hover) · subagent children indented, dim, `--text-2xs`
 terminal-state glyph rows folding to "+N subagents".
 
-Project header: name (sans, not ALL-CAPS-mono) · relative age · count; rollup dot only when
-something is live/needs-you.
+Project header: disclosure chevron (`›`, muted, rotates 90° when `aria-expanded="true"`,
+`--motion-fast`) · name (sans, not ALL-CAPS-mono) · relative age · count; rollup dot only when
+something is live/needs-you. The chevron appears on **every** project header, including
+collapsed archived stubs — the whole header is the toggle; the chevron is decorative
+(`aria-hidden`). Vertical rhythm: symmetric `--space-2` header padding plus a `--space-2`
+top margin between a project and whatever precedes it — group separation reads as a subtle
+rhythm break, not a void. Tap floors are untouched (32px desktop / 52px mobile min-height).
 
 ---
 

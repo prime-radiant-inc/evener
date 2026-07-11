@@ -680,6 +680,18 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
    specificity matches the mobile media-query override below, which must
    keep winning on narrow viewports (52px there). */
 .project-header { cursor: pointer; min-height: 32px; }
+/* Tightened header rhythm: stacked collapsed projects read as a subtle
+   rhythm break, not a void. Vertical padding drops from space-4/space-2 to a
+   symmetric space-2 (the base rule at .sidebar-section-header above still
+   carries the horizontal space-5); a small margin separates a project from
+   whatever precedes it. Tap targets are untouched — the 32px min-height
+   floor above (52px mobile, media query below) still binds. */
+.project-header { padding-top: var(--space-2); padding-bottom: var(--space-2); }
+.sb-tree .project-header:not(:first-child) { margin-top: var(--space-2); }
+/* Disclosure chevron: same › idiom as .sb-children-chevron/.cluster-chevron.
+   A decorative span inside the header (the whole header is the toggle);
+   rotation keys off the header's aria-expanded so it can never desync from
+   the real expansion state. */
 .project-chevron {
   display: inline-block;
   width: 12px;
@@ -690,7 +702,11 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
   font: inherit;
   cursor: pointer;
   user-select: none;
+  flex-shrink: 0;
+  transform: rotate(0deg);
+  transition: transform var(--motion-fast);
 }
+.project-header[aria-expanded="true"] .project-chevron { transform: rotate(90deg); }
 .project-chevron:hover { color: var(--text); }
 .project-folder { display: inline-block; flex-shrink: 0; }
 .project-name {
@@ -944,9 +960,9 @@ body.app[data-sidebar-rail] .sb-row .row-end { display: none; }
   font-size: var(--text-base);
   font-weight: 600;
 }
-.sb-tree .project-header:not(:first-child) {
-  margin-top: var(--space-3);
-}
+/* Group rhythm lives in the single margin rule near the header block above
+   (space-2); duplicating it here would win by source order and undo the
+   2026-07-11 tightening. */
 /* In de-weighted bands (recent/older/test) the project name dims so the
    active band stays visually dominant. */
 .sidebar-tier[data-tier="recent"] .project-name,

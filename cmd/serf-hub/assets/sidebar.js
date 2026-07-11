@@ -514,7 +514,11 @@
     d.setAttribute("data-project-key", p.key);
     d.setAttribute("role", "button");
     d.setAttribute("aria-expanded", String(isExpanded(p.key, p.default_expanded)));
-    d.innerHTML = '<span class="project-name"></span><span class="project-count"></span><span class="project-rollup"></span>';
+    // Disclosure affordance: same "›" idiom as sb-children-chevron /
+    // cluster-chevron. Decorative span (aria-hidden) — the header itself is
+    // the toggle and carries aria-expanded, which style.css uses to rotate
+    // the chevron 90° when open.
+    d.innerHTML = '<span class="project-chevron" aria-hidden="true">›</span><span class="project-name"></span><span class="project-count"></span><span class="project-rollup"></span>';
     d.querySelector(".project-name").textContent = p.name;
     setProjectCount(d, p);
     setProjectRollup(d, p);
