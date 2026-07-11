@@ -233,8 +233,11 @@ func TestAttachAPILogger(t *testing.T) {
 	if err := closeFn(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(stateDir, "api.jsonl")); err != nil {
-		t.Fatalf("api.jsonl not created: %v", err)
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions")); err != nil {
+		t.Fatalf("sessions dir not created: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "api.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("frozen project-level api.jsonl was created (stat err=%v)", err)
 	}
 }
 
