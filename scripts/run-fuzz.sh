@@ -100,6 +100,7 @@ TARGETS=(
 	"native:agent:./skill:FuzzApSkillFileParse::skills.go#parseSkillFile"
 	"native:agent:./skill:FuzzSkillDiscoveryProgram::builtin_skills.go;skills.go"
 	"native:agent:./internal/atif:FuzzATIFConvert::atif.go"
+	"native:agent:./internal/atif:FuzzATIFConversionProgram::atif.go"
 	"native:agent:./internal/sessionlog:FuzzSessionLogLoad::sessionlog.go"
 	"native:agent:./internal/contextmgr:FuzzCheckpointExtract::checkpoint_format.go"
 	"native:agent:./internal/contextmgr:FuzzManagerLifecycleProgram::context_manager.go"
