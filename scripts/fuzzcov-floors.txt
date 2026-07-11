@@ -72,6 +72,7 @@ FuzzRunFlagParse 100.0
 FuzzSessionLogLoad 91.3
 FuzzSessionMetaRoundTrip 79.2
 FuzzSummarizeTool 78.0
+FuzzSkillDiscoveryProgram 99.0
 FuzzTaskStoreLoad 88.2
 FuzzTokenEndpointResponse 82.9
 FuzzToolArgsValidate 82.6
