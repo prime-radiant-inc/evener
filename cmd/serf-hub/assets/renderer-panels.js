@@ -218,27 +218,34 @@
     document.addEventListener("mousedown", onDown, true);
   }
 
+  // dismissPanels is the single teardown for the tasks/details slide-overs.
+  // Every dismissal path — ✕ button, scrim tap, Escape, click-outside, trigger
+  // re-tap, and history navigation (popstate / htmx:historyRestore, e.g. an
+  // iOS swipe-back) — converges here so no path can strand the scrim, poll
+  // timer, focus trap, or trigger active state.
+  function dismissPanels() {
+    for (const id of ["tasks-panel", "details-panel"]) {
+      const panel = document.getElementById(id);
+      if (!panel) continue;
+      if (panel.__pollTimer) clearInterval(panel.__pollTimer);
+      if (panel.__trapHandle && window.SerfFocusTrap) {
+        window.SerfFocusTrap.deactivate(panel.__trapHandle);
+        panel.__trapHandle = null;
+      }
+      panel.remove();
+    }
+    removePanelScrim();
+    setPanelToggleActive("[data-tasks-trigger]", false);
+    setPanelToggleActive("[data-details-trigger]", false);
+  }
+  window.addEventListener("popstate", dismissPanels);
+  document.addEventListener("htmx:historyRestore", dismissPanels);
+
   function toggleTasksPanel(trigger) {
     const existing = document.getElementById("tasks-panel");
-    if (existing) {
-      if (existing.__pollTimer) clearInterval(existing.__pollTimer);
-      if (existing.__trapHandle && window.SerfFocusTrap) {
-        window.SerfFocusTrap.deactivate(existing.__trapHandle);
-      }
-      existing.remove();
-      removePanelScrim();
-      setPanelToggleActive("[data-tasks-trigger]", false);
-      return;
-    }
-    // Close details panel if open — they share the same slot.
-    const details = document.getElementById("details-panel");
-    if (details) {
-      if (details.__trapHandle && window.SerfFocusTrap) {
-        window.SerfFocusTrap.deactivate(details.__trapHandle);
-      }
-      details.remove();
-    }
-    setPanelToggleActive("[data-details-trigger]", false);
+    // Closes whichever panel is open — details shares the same slot.
+    dismissPanels();
+    if (existing) return;
 
     const header = document.querySelector(".workspace-header");
     if (!header) return;
@@ -272,15 +279,7 @@
       panel.__trapHandle = window.SerfFocusTrap.activate(panel, triggerEl);
     }
 
-    function closePanel() {
-      if (panel.__pollTimer) clearInterval(panel.__pollTimer);
-      if (panel.__trapHandle && window.SerfFocusTrap) {
-        window.SerfFocusTrap.deactivate(panel.__trapHandle);
-      }
-      panel.remove();
-      removePanelScrim();
-      setPanelToggleActive("[data-tasks-trigger]", false);
-    }
+    function closePanel() { dismissPanels(); }
     document.addEventListener("keydown", function escClose(ev) {
       if (ev.key === "Escape") {
         // Do not close the panel if the event originated inside the search dialog.
@@ -441,26 +440,10 @@
 
   function toggleDetailsPanel(trigger) {
     const existing = document.getElementById("details-panel");
-    if (existing) {
-      if (existing.__trapHandle && window.SerfFocusTrap) {
-        window.SerfFocusTrap.deactivate(existing.__trapHandle);
-      }
-      existing.remove();
-      removePanelScrim();
-      setPanelToggleActive("[data-details-trigger]", false);
-      return;
-    }
-    // Close tasks panel if open — they share the same slot.
-    const tasks = document.getElementById("tasks-panel");
-    if (tasks) {
-      if (tasks.__pollTimer) clearInterval(tasks.__pollTimer);
-      if (tasks.__trapHandle && window.SerfFocusTrap) {
-        window.SerfFocusTrap.deactivate(tasks.__trapHandle);
-      }
-      tasks.remove();
-      removePanelScrim();
-      setPanelToggleActive("[data-tasks-trigger]", false);
-    }
+    // Closes whichever panel is open — tasks shares the same slot.
+    dismissPanels();
+    if (existing) return;
+
     const header = document.querySelector(".workspace-header");
     if (!header) return;
     const id = header.dataset.sessionId;
@@ -489,14 +472,7 @@
       panel.__trapHandle = window.SerfFocusTrap.activate(panel, triggerEl);
     }
 
-    function closePanel() {
-      if (panel.__trapHandle && window.SerfFocusTrap) {
-        window.SerfFocusTrap.deactivate(panel.__trapHandle);
-      }
-      panel.remove();
-      removePanelScrim();
-      setPanelToggleActive("[data-details-trigger]", false);
-    }
+    function closePanel() { dismissPanels(); }
     document.addEventListener("keydown", function escClose(ev) {
       if (ev.key === "Escape") {
         // Do not close the panel if the event originated inside the search dialog.
