@@ -11,9 +11,12 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
+	"primeradiant.com/serf/agent/internal/clock"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	tooldefs "primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -34,6 +37,18 @@ func FuzzJobtoolsLifecycleProgram(f *testing.F) {
 	f.Add([]byte{0, 0, 0, 0, 0, 0})
 	f.Add([]byte{1, 2, 3, 4, 5, 6, 7, 8})
 	f.Add([]byte{255, 254, 253, 252, 251, 250, 249, 248})
+	// The fixed replay drives all eleven controls consumed below: every invalid
+	// delegate mode, both nested-list states, every read-window mode, and each
+	// watch-message variant. Short corpus inputs still exercise defaulting.
+	for invalidDelegateMode := byte(0); invalidDelegateMode < 5; invalidDelegateMode++ {
+		f.Add([]byte{
+			invalidDelegateMode, // invalid delegate shape
+			1, 2, 3, 4, 0, 1, 2, // message and shell controls
+			invalidDelegateMode & 1, // include_nested
+			invalidDelegateMode,     // read-window mode
+			4 - invalidDelegateMode, // watch message
+		})
+	}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		r := &jtlpReader{data: data}
@@ -47,9 +62,17 @@ func FuzzJobtoolsLifecycleProgram(f *testing.F) {
 		}
 
 		// A malformed delegate request must fail before it mints a child or a job.
+		beforeChildren := len(root.subagents.sessions())
+		beforeJobs := len(root.jobManager.list(listFilter{}))
 		invalidDelegate, err := delegateTool(context.Background(), root, jtlpInvalidDelegateArgs(r), jobToolResultDefaultMaxChar)
 		if err == nil || invalidDelegate != "" {
 			t.Fatalf("invalid delegate = (%q, %v), want empty result plus error", invalidDelegate, err)
+		}
+		if got := len(root.subagents.sessions()); got != beforeChildren {
+			t.Fatalf("invalid delegate changed child count from %d to %d", beforeChildren, got)
+		}
+		if got := len(root.jobManager.list(listFilter{})); got != beforeJobs {
+			t.Fatalf("invalid delegate changed job count from %d to %d", beforeJobs, got)
 		}
 
 		createdCall := jtlpExecute(t, root, "delegate", map[string]any{
@@ -129,36 +152,21 @@ func FuzzJobtoolsLifecycleProgram(f *testing.F) {
 		}
 
 		listArgs := map[string]any{"limit": float64(defaultJobListLimit), "include_nested": r.bool()}
-		first, err := jobListTool(root, listArgs, jobToolResultDefaultMaxChar)
-		if err != nil {
-			t.Fatalf("first job_list: %v", err)
+		first := jtlpExecute(t, root, "job_list", listArgs)
+		second := jtlpExecute(t, root, "job_list", listArgs)
+		if first.IsError || second.IsError {
+			t.Fatalf("job_list errors = (%q, %q)", first.Output, second.Output)
 		}
-		second, err := jobListTool(root, listArgs, jobToolResultDefaultMaxChar)
-		if err != nil {
-			t.Fatalf("second job_list: %v", err)
+		if len(first.ToolState) == 0 || len(second.ToolState) == 0 {
+			t.Fatalf("job_list public wrapper omitted structured state: (%q, %q)", first.ToolState, second.ToolState)
 		}
-		firstState, ok := first.(tooldefs.StateResult)
-		if !ok {
-			t.Fatalf("first job_list type = %T", first)
+		if string(toolResultJSON(first)) != string(toolResultJSON(second)) || first.Output != second.Output {
+			t.Fatalf("job_list changed without a mutation\nfirst:  %s\nsecond: %s", toolResultJSON(first), toolResultJSON(second))
 		}
-		secondState, ok := second.(tooldefs.StateResult)
-		if !ok {
-			t.Fatalf("second job_list type = %T", second)
-		}
-		firstJSON, err := json.Marshal(firstState.State)
-		if err != nil {
-			t.Fatalf("marshal first job_list state: %v", err)
-		}
-		secondJSON, err := json.Marshal(secondState.State)
-		if err != nil {
-			t.Fatalf("marshal second job_list state: %v", err)
-		}
-		if string(firstJSON) != string(secondJSON) || firstState.Output != secondState.Output {
-			t.Fatalf("job_list changed without a mutation\nfirst:  %s\nsecond: %s", firstJSON, secondJSON)
-		}
-		list, ok := firstState.State.(jobListResult)
-		if !ok || list.Count != len(list.Jobs) || !jtlpContainsJob(list.Jobs, shell.JobID) || !jtlpContainsJob(list.Jobs, created.JobID) {
-			t.Fatalf("job_list state = %#v, want shell and delegate rows", firstState.State)
+		var list jobListResult
+		jtlpDecode(t, first, &list)
+		if list.Count != len(list.Jobs) || !jtlpContainsJob(list.Jobs, shell.JobID) || !jtlpContainsJob(list.Jobs, created.JobID) {
+			t.Fatalf("job_list state = %#v, want shell and delegate rows", list)
 		}
 
 		readValue, err := jobReadOutputTool(context.Background(), root, jtlpReadArgs(r, shell.JobID), jobToolResultDefaultMaxChar)
@@ -220,6 +228,27 @@ func FuzzJobtoolsLifecycleProgram(f *testing.F) {
 		if watch.Watching {
 			t.Fatalf("job_watch clear left watch active: %+v", watch)
 		}
+		if got := root.jobManager.watchCount(); got != 0 {
+			t.Fatalf("job_watch clear left %d live watches", got)
+		}
+		listedAfterClear := jtlpExecute(t, root, "job_watch", map[string]any{"operation": "list"})
+		if listedAfterClear.IsError {
+			t.Fatalf("job_watch list after clear failed: %s", listedAfterClear.Output)
+		}
+		var watchesAfterClear jobWatchListToolResult
+		jtlpDecode(t, listedAfterClear, &watchesAfterClear)
+		if jtlpContainsWatch(watchesAfterClear.Watches, watch.WatchID) {
+			t.Fatalf("job_watch list retained cleared watch %q: %+v", watch.WatchID, watchesAfterClear)
+		}
+		inspectAfterClear := jtlpExecute(t, root, "job_watch", map[string]any{"operation": "inspect", "watch_id": watch.WatchID})
+		if inspectAfterClear.IsError {
+			t.Fatalf("job_watch inspect after clear failed: %s", inspectAfterClear.Output)
+		}
+		var clearedInspect jobWatchInspectToolResult
+		jtlpDecode(t, inspectAfterClear, &clearedInspect)
+		if clearedInspect.Watching || clearedInspect.WatchID != watch.WatchID {
+			t.Fatalf("job_watch inspect retained cleared watch: %+v", clearedInspect)
+		}
 	})
 }
 
@@ -278,6 +307,7 @@ func jtlpNewRootSession(t *testing.T) *Session {
 	}
 	cfg.testOnly = testConfig{
 		skipGitSnapshot:     true,
+		environmentInfo:     jtlpEnvironmentInfo,
 		minimalSystemPrompt: true,
 		noSyncJobStore:      true,
 		childClientFactory: func() *llm.Client {
@@ -300,6 +330,15 @@ func jtlpNewRootSession(t *testing.T) *Session {
 		}
 	})
 	return root
+}
+
+func jtlpEnvironmentInfo(env execenv.ExecutionEnvironment, clk clock.Clock) schema.EnvironmentInfo {
+	return schema.EnvironmentInfo{
+		WorkingDir: env.WorkingDirectory(),
+		Platform:   "jtlp",
+		OSVersion:  "jtlp",
+		Today:      clk.Now().UTC().Format("2006-01-02"),
+	}
 }
 
 func jtlpExecute(t *testing.T, s *Session, name string, args map[string]any) tooldefs.ExecResult {
