@@ -1,5 +1,6 @@
-// Sidebar density/contrast floor: row meta uses >=11px and not --text-dim;
-// menu/reveal controls are >=24px.
+// Sidebar density/contrast floor: menu/reveal controls are >=24px. (The row
+// meta/branch column was removed 2026-07-11 — its floor assertions went with
+// it; the age's treatment is covered by test-sidebar-polish-css.js.)
 const fs = require("fs");
 const css = fs.readFileSync(__dirname + "/../assets/style.css", "utf8");
 function ruleBody(selector) {
@@ -8,9 +9,6 @@ function ruleBody(selector) {
   return css.slice(i, css.indexOf("}", i));
 }
 const fails = [];
-const metaRule = ruleBody(".sb-row .meta");
-if (!/font-size:\s*var\(--text-xs\)|font-size:\s*11px/.test(metaRule)) fails.push("row meta must be 11px (--text-xs)");
-if (/--text-dim/.test(metaRule)) fails.push("row meta must not use --text-dim");
 const menuBtn = ruleBody(".sb-menu-btn");
 if (!/min-height:\s*24px/.test(menuBtn) || !/min-width:\s*24px/.test(menuBtn)) fails.push("reveal button must be >=24px");
 // Rail mode (56px icon-only collapsed sidebar) must hide the ENTIRE

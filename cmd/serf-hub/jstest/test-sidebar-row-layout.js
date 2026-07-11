@@ -1,8 +1,9 @@
-// Compact single-line session rows (sweep/sidebar-polish): title, meta, and
-// row-end are direct grid children of .sb-row (no .text-col wrapper stacking
-// title above meta on a second line), the title carries the full name as a
-// hover tooltip, the age is pinned flush to the row's right edge inside
-// row-end (v2), and rail-collapsed mode hides everything but the status icon.
+// Compact single-line session rows (sweep/sidebar-polish, v3 2026-07-11):
+// title and row-end are direct grid children of .sb-row (no .text-col
+// wrapper), there is NO meta/branch column at all, the title carries the
+// full name as a hover tooltip, the age is pinned flush to the row's right
+// edge inside row-end, and rail-collapsed mode hides everything but the
+// status icon.
 "use strict";
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
@@ -29,12 +30,12 @@ const longTitle = "refactor auth middleware to use the new session token store";
 const node = { row_id: "project:x:local:01A", ref: "local:01A", state: "active", title: longTitle, branch: "main", updated_at: new Date().toISOString(), session_id: "01A" };
 const row = w.SerfSidebarInternal.buildRow(node);
 
-// title/meta/row-end are direct children of .sb-row — no .text-col wrapper.
-assert.ok(!row.querySelector(".text-col"), "session row must not wrap title/meta in .text-col");
+// title/row-end are direct children of .sb-row — no .text-col wrapper, and
+// no meta/branch column (branch is workspace detail, not navigation signal).
+assert.ok(!row.querySelector(".text-col"), "session row must not wrap title in .text-col");
 const title = row.querySelector(":scope > .title");
 assert.ok(title, ".title must be a direct child of .sb-row");
-const meta = row.querySelector(":scope > .meta");
-assert.ok(meta, ".meta must be a direct child of .sb-row");
+assert.ok(!row.querySelector(".meta"), "session row must not render a .meta/branch column");
 const rowEnd = row.querySelector(":scope > .row-end");
 assert.ok(rowEnd, ".row-end must be a direct child of .sb-row");
 
@@ -49,8 +50,6 @@ assert.ok(ageEl, ".age must live inside row-end's age-slot, alongside the menu b
 assert.strictEqual(title.getAttribute("title"), longTitle, "title element must carry the full name as a tooltip");
 assert.strictEqual(title.textContent, longTitle);
 
-// meta now holds only the branch — age moved to row-end (flush right, v2).
-assert.strictEqual(meta.textContent, "main", "meta must hold only the branch, not the age");
 assert.ok(ageEl.textContent.length > 0, "age-slot's age span must carry the rendered age text");
 
 console.log("test-sidebar-row-layout.js: markup OK");
@@ -66,8 +65,8 @@ const fails = [];
 
 const sbRowRule = ruleBody(".sb-row {");
 if (!sbRowRule) fails.push("no .sb-row base rule found");
-else if (!/grid-template-columns:\s*auto minmax\(0,\s*1fr\)\s*minmax\(0,\s*\d+px\)\s*auto/.test(sbRowRule)) {
-  fails.push(".sb-row must use a 4-track grid (icon, title-grows, meta-capped, row-end), got: " + sbRowRule);
+else if (!/grid-template-columns:\s*auto minmax\(0,\s*1fr\)\s*auto/.test(sbRowRule)) {
+  fails.push(".sb-row must use a 3-track grid (icon, title-grows, row-end), got: " + sbRowRule);
 }
 
 const titleRule = ruleBody(".sb-row .title {");
@@ -78,9 +77,7 @@ else {
   if (!/text-overflow:\s*ellipsis/.test(titleRule)) fails.push(".sb-row .title must ellipsize overflow");
 }
 
-const metaRule = ruleBody(".sb-row .meta {");
-if (!metaRule) fails.push("no .sb-row .meta rule found");
-else if (/margin-top/.test(metaRule)) fails.push(".sb-row .meta must not be pushed onto its own line with margin-top");
+if (ruleBody(".sb-row .meta {")) fails.push(".sb-row .meta rule must be gone along with the branch column");
 
 // row-end pins content to the row's right edge (no trailing column after it)
 // and age-slot stacks age + ⋯ in one cell so they can swap without shifting.
@@ -98,16 +95,13 @@ if (!/\.sb-row:hover \.sb-menu-btn,\s*\.sb-row:focus-within \.sb-menu-btn\s*\{[^
   fails.push("hovering/focusing the row must fade the ⋯ menu in");
 }
 
-// Rail-collapsed mode (56px icon rail) must hide title/meta/row-end, leaving
+// Rail-collapsed mode (56px icon rail) must hide title/row-end, leaving
 // only the status icon visible.
 const railBlock = css.slice(css.indexOf('body.app[data-sidebar-rail] .sb-row {'));
 const railSnippet = railBlock.slice(0, railBlock.indexOf('@container'));
 if (!/\.sb-row \.title[^;{}]*\{[^}]*display:\s*none/.test(railSnippet) &&
     !/\.title[\s\S]{0,80}display:\s*none/.test(railSnippet)) {
   fails.push("rail mode must hide .sb-row .title");
-}
-if (!/\.meta[\s\S]{0,120}display:\s*none/.test(railSnippet)) {
-  fails.push("rail mode must hide .sb-row .meta");
 }
 if (!/\.row-end[\s\S]{0,120}display:\s*none/.test(railSnippet)) {
   fails.push("rail mode must hide .sb-row .row-end");

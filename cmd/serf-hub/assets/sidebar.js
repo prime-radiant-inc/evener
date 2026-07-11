@@ -5,7 +5,13 @@
   "use strict";
 
   var EXPAND_PREFIX = "serf-hub.sidebar.expanded.";
-  var model = { tree: null, expanded: new Set(), lazyCache: new Map(), seq: 0, pending: new Map() };
+  // expanded: keys the user opened. collapsed: keys the user explicitly
+  // folded — needed because a project can be expanded BY DEFAULT
+  // (default_expanded, set server-side while it has live/attention sessions);
+  // a bare "not in expanded" can't distinguish "never touched" from "user
+  // folded it", so default_expanded used to win forever and active projects
+  // could not be folded back up.
+  var model = { tree: null, expanded: new Set(), collapsed: new Set(), lazyCache: new Map(), seq: 0, pending: new Map() };
   window.SerfSidebarModel = model; // test/inspection surface
   window.SerfSidebarInternal = { buildRow: buildRow, stateIconKey: stateIconKey, stateWord: stateWord, buildRollupBadge: buildRollupBadge }; // test/inspection surface
 
@@ -59,16 +65,17 @@
     a.setAttribute("hx-target", "#workspace");
     a.setAttribute("hx-swap", "innerHTML");
     a.setAttribute("hx-push-url", "/s/" + n.session_id);
-    // Single-line row: title, meta, and the row-end slot are direct grid
-    // children of .sb-row (no .text-col wrapper stacking them onto a second
-    // line) — see .sb-row's 4-track grid in style.css. The row-end slot
-    // pins the age flush to the row's right edge; on hover/focus-within the
-    // age fades out and the ⋯ menu fades in over the SAME spot (age-slot
-    // stacks both via grid-area overlap, so nothing shifts).
+    // Single-line row: title and the row-end slot are direct grid children
+    // of .sb-row (no .text-col wrapper stacking them onto a second line) —
+    // see .sb-row's 3-track grid in style.css. Branch/worktree deliberately
+    // does not render here (2026-07-11 polish): it is workspace detail, not
+    // navigation signal. The row-end slot pins the age flush to the row's
+    // right edge; on hover/focus-within the age fades out and the ⋯ menu
+    // fades in over the SAME spot (age-slot stacks both via grid-area
+    // overlap, so nothing shifts).
     a.innerHTML =
       '<div class="dot-col"><span class="status-icon" data-state="' + n.state + '"></span></div>' +
       '<div class="title"></div>' +
-      '<div class="meta"></div>' +
       '<div class="row-end"><div class="age-slot"><span class="age"></span></div></div>';
     var title = a.querySelector(".title");
     title.textContent = n.title;
@@ -76,8 +83,6 @@
     var icon = a.querySelector(".status-icon");
     icon.innerHTML = window.SerfIcons[stateIconKey(n.state, n.ask_pending)];
     icon.setAttribute("title", stateWord(n.state, n.ask_pending));
-    var meta = a.querySelector(".meta");
-    if (n.branch) meta.appendChild(metaSpan(n.branch));
     a.querySelector(".age").textContent = ageString(n.updated_at);
     if (n.favorite) a.setAttribute("data-favorite", "");
     if (n.ask_pending) a.setAttribute("data-ask", "true");
@@ -96,7 +101,6 @@
     a.querySelector(".age-slot").appendChild(menuBtn);
     return a;
   }
-  function metaSpan(text) { var s = document.createElement("span"); s.textContent = text; return s; }
 
   function patchRow(a, n) {
     if (a.getAttribute("data-state") !== n.state) {
@@ -338,8 +342,7 @@
   function pushProject(out, p) {
     // Project header is itself a keyed element (data-row-id="header:<key>").
     out.push({ row_id: "header:" + p.key, __project: p });
-    var expanded = model.expanded.has(p.key) || p.default_expanded;
-    if (!expanded) return;
+    if (!isExpanded(p.key, p.default_expanded)) return;
     (p.sessions || []).forEach(function (n) {
       if (n.__drop) return;
       n.__projectKey = p.key;
@@ -510,7 +513,7 @@
     d.setAttribute("data-row-id", "header:" + p.key);
     d.setAttribute("data-project-key", p.key);
     d.setAttribute("role", "button");
-    d.setAttribute("aria-expanded", String(model.expanded.has(p.key) || p.default_expanded === true));
+    d.setAttribute("aria-expanded", String(isExpanded(p.key, p.default_expanded)));
     d.innerHTML = '<span class="project-name"></span><span class="project-count"></span><span class="project-rollup"></span>';
     d.querySelector(".project-name").textContent = p.name;
     setProjectCount(d, p);
@@ -530,7 +533,7 @@
     return d;
   }
   function patchProjectHeader(el, p) {
-    el.setAttribute("aria-expanded", String(model.expanded.has(p.key) || p.default_expanded === true));
+    el.setAttribute("aria-expanded", String(isExpanded(p.key, p.default_expanded)));
     setProjectCount(el, p);
     setProjectRollup(el, p);
   }
@@ -580,11 +583,36 @@
     return b;
   }
 
+  // Effective expansion for a key: an explicit user collapse always wins;
+  // otherwise a user expand or the server default opens it.
+  function isExpanded(key, defaultExpanded) {
+    if (model.collapsed.has(key)) return false;
+    return model.expanded.has(key) || defaultExpanded === true;
+  }
+  // The server default for a project key (sections/clusters/children keys
+  // have no default and resolve false). Looked up live so a toggle always
+  // flips the CURRENT effective state, even after default_expanded changed
+  // on a resync.
+  function defaultExpandedFor(key) {
+    if (!model.tree) return false;
+    var all = (model.tree.projects || []).concat(model.tree.archived_projects || [], model.tree.test_runs || []);
+    for (var i = 0; i < all.length; i++) { if (all[i].key === key) return all[i].default_expanded === true; }
+    return false;
+  }
   // Generic expand/collapse toggle, keyed either by a project key or a
   // section key (e.g. SECTION_ARCHIVED) — both live in the same
-  // model.expanded Set and persist through the same localStorage mechanism.
+  // model.expanded/collapsed Sets and persist through the same localStorage
+  // mechanism ("true" = user expanded, "false" = user folded a
+  // default-expanded project, absent = no preference).
   function toggleExpanded(key) {
-    if (model.expanded.has(key)) model.expanded.delete(key); else model.expanded.add(key);
+    var def = defaultExpandedFor(key);
+    if (isExpanded(key, def)) {
+      model.expanded.delete(key);
+      if (def) model.collapsed.add(key); else model.collapsed.delete(key);
+    } else {
+      model.collapsed.delete(key);
+      model.expanded.add(key);
+    }
     persistExpanded(key);
     if (model.tree) renderTree(model.tree);
     if (model.expanded.has(key)) hydrateProjectStub(key);
@@ -603,17 +631,21 @@
   function persistExpanded(key) {
     try {
       if (model.expanded.has(key)) window.localStorage.setItem(EXPAND_PREFIX + key, "true");
+      else if (model.collapsed.has(key)) window.localStorage.setItem(EXPAND_PREFIX + key, "false");
       else window.localStorage.removeItem(EXPAND_PREFIX + key);
+    } catch (e) {}
+  }
+  function restoreExpansionPref(key) {
+    try {
+      var v = window.localStorage.getItem(EXPAND_PREFIX + key);
+      if (v === "true") model.expanded.add(key);
+      else if (v === "false") model.collapsed.add(key);
     } catch (e) {}
   }
   function restoreExpanded(tree) {
     var all = (tree.projects || []).concat(tree.archived_projects || [], tree.test_runs || []);
-    all.forEach(function (p) {
-      try { if (window.localStorage.getItem(EXPAND_PREFIX + p.key) === "true") model.expanded.add(p.key); } catch (e) {}
-    });
-    SECTION_KEYS.forEach(function (key) {
-      try { if (window.localStorage.getItem(EXPAND_PREFIX + key) === "true") model.expanded.add(key); } catch (e) {}
-    });
+    all.forEach(function (p) { restoreExpansionPref(p.key); });
+    SECTION_KEYS.forEach(restoreExpansionPref);
   }
 
   // Pending overlay: every optimistic op is re-applied on top of every admitted
@@ -741,7 +773,9 @@
     if (!chain || !chain.length) return; // not found anywhere, or needs no expansion
     var changed = false;
     chain.forEach(function (key) {
-      if (!model.expanded.has(key)) { model.expanded.add(key); persistExpanded(key); changed = true; }
+      if (!model.expanded.has(key) || model.collapsed.has(key)) {
+        model.collapsed.delete(key); model.expanded.add(key); persistExpanded(key); changed = true;
+      }
     });
     if (changed) renderTree(model.tree); // tail-calls syncActiveRow; guard above short-circuits the re-entry
   }
