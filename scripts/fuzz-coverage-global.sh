@@ -375,15 +375,36 @@ merge_profiles() {
 			}
 			next
 		}
-		NF != 3 || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ {
-			printf "invalid coverage block in %s: %s\\n", FILENAME, $0 > "/dev/stderr"
-			bad = 1
-			next
-		}
-		# Go can emit valid metadata blocks with no statements. They cannot affect
-		# either side of statement coverage, so leave them out of the union.
-		$2 == 0 {
-			next
+		{
+			invalid = NF != 3 || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/
+			if (!invalid) {
+				location = $1
+				invalid = location !~ /^.+:[0-9]+\.[0-9]+,[0-9]+\.[0-9]+$/
+			}
+			if (!invalid) {
+				range = location
+				sub(/^.*:/, "", range)
+				position_count = split(range, position, /[,.]/)
+				start_line = position[1] + 0
+				start_column = position[2] + 0
+				end_line = position[3] + 0
+				end_column = position[4] + 0
+				invalid = position_count != 4 ||
+					start_line < 1 || start_column < 1 ||
+					end_line < 1 || end_column < 1 ||
+					end_line < start_line ||
+					(end_line == start_line && end_column < start_column)
+			}
+			if (invalid) {
+				printf "invalid coverage block in %s: %s\\n", FILENAME, $0 > "/dev/stderr"
+				bad = 1
+				next
+			}
+			# Go can emit valid metadata blocks with no statements. They cannot affect
+			# either side of statement coverage, so leave them out of the union.
+			if ($2 == 0) {
+				next
+			}
 		}
 		{
 			key = $1 " " $2

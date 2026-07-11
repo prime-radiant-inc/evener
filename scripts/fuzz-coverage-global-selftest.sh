@@ -281,6 +281,15 @@ JSON
 			if [ "${FAKE_GO_MALFORMED_BLOCK:-}" = "1" ]; then
 				echo 'example.test/malformed.go:94.11,94.11 0 not-a-count'
 			fi
+			if [ "${FAKE_GO_MALFORMED_ZERO_LOCATION:-}" = "1" ]; then
+				echo 'not-a-go-cover-block 0 0'
+			fi
+			if [ "${FAKE_GO_ZERO_POSITION:-}" = "1" ]; then
+				echo 'example.test/zero-position.go:0.1,1.1 0 0'
+			fi
+			if [ "${FAKE_GO_BACKWARD_ZERO_RANGE:-}" = "1" ]; then
+				echo 'example.test/backward-range.go:94.11,94.10 0 0'
+			fi
 		} >"$profile"
 		;;
 	run)
@@ -435,7 +444,10 @@ else
 	bad "runner should accept Go zero-statement coverage blocks ($last_output)"
 fi
 if [ -s "$cov_profile" ]; then
-	lacks "$(cat "$cov_profile")" 'example.test/zero.go:94.11,94.11 0 0' 'merged profile omits zero-statement blocks'
+	zero_merged="$(cat "$cov_profile")"
+	lacks "$zero_merged" 'example.test/zero.go:94.11,94.11 0 0' 'merged profile omits zero-statement blocks'
+	has "$zero_merged" 'example.test/root.go:1.1,2.1 1 1' 'zero-statement filtering keeps native coverage blocks'
+	has "$zero_merged" 'example.test/rapid.go:3.1,4.1 2 1' 'zero-statement filtering keeps Rapid coverage blocks'
 else
 	bad 'zero-statement replay produces a merged root profile'
 fi
@@ -449,6 +461,21 @@ reset_logs
 expect_failure FAKE_GO_MALFORMED_BLOCK=1
 has "$last_output" 'invalid coverage block' 'malformed coverage blocks remain fatal'
 lacks "$(cat "$go_log")" $'\trun ./cmd/serf-fuzzcov' 'malformed coverage blocks skip global accounting'
+
+reset_logs
+expect_failure FAKE_GO_MALFORMED_ZERO_LOCATION=1
+has "$last_output" 'invalid coverage block' 'malformed zero-statement locations remain fatal'
+lacks "$(cat "$go_log")" $'\trun ./cmd/serf-fuzzcov' 'malformed zero-statement locations skip global accounting'
+
+reset_logs
+expect_failure FAKE_GO_ZERO_POSITION=1
+has "$last_output" 'invalid coverage block' 'zero-statement locations require positive positions'
+lacks "$(cat "$go_log")" $'\trun ./cmd/serf-fuzzcov' 'zero-position blocks skip global accounting'
+
+reset_logs
+expect_failure FAKE_GO_BACKWARD_ZERO_RANGE=1
+has "$last_output" 'invalid coverage block' 'zero-statement locations reject backward ranges'
+lacks "$(cat "$go_log")" $'\trun ./cmd/serf-fuzzcov' 'backward-range blocks skip global accounting'
 
 echo '== workspace discovery and module selection =='
 reset_logs
