@@ -488,14 +488,17 @@ func TestServeClient_APILogWritesJSONL(t *testing.T) {
 		t.Fatalf("closeAPILog: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(stateDir, "api.jsonl"))
+	data, err := os.ReadFile(filepath.Join(stateDir, "sessions", "serve-session.api.jsonl"))
 	if err != nil {
-		t.Fatalf("read api.jsonl: %v", err)
+		t.Fatalf("read sessions/serve-session.api.jsonl: %v", err)
 	}
 	for _, want := range []string{`"provider":"openai"`, `"model":"gpt-test"`, `"session_id":"serve-session"`, `"round":4`} {
 		if !strings.Contains(string(data), want) {
-			t.Fatalf("api.jsonl missing %s:\n%s", want, string(data))
+			t.Fatalf("sessions/serve-session.api.jsonl missing %s:\n%s", want, string(data))
 		}
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "api.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("frozen project-level api.jsonl was written (stat err=%v)", err)
 	}
 	select {
 	case <-called:

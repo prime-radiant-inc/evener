@@ -92,6 +92,8 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 			filepath.Join(sess, e.ID+".meta.json"),
 			filepath.Join(sess, e.ID+".transcript.jsonl"),
 			filepath.Join(sess, e.ID+".log.jsonl"),
+			filepath.Join(sess, e.ID+".api.jsonl"),
+			filepath.Join(sess, e.ID+".api-raw.jsonl"),
 		} {
 			if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 				removeErr = err

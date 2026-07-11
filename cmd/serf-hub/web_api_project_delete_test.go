@@ -27,7 +27,7 @@ func writeSession(t *testing.T, stateDir, id, wd string) {
 		t.Fatal(err)
 	}
 	sess := filepath.Join(stateDir, "sessions")
-	for _, suffix := range []string{".transcript.jsonl", ".log.jsonl"} {
+	for _, suffix := range []string{".transcript.jsonl", ".log.jsonl", ".api.jsonl", ".api-raw.jsonl"} {
 		if err := os.WriteFile(filepath.Join(sess, id+suffix), []byte("x\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -65,7 +65,7 @@ func TestProjectDeleteRemovesFilesAndScrubs(t *testing.T) {
 	if len(resp.Deleted) != 1 {
 		t.Fatalf("want 1 deleted ref, got %+v", resp)
 	}
-	for _, suffix := range []string{".meta.json", ".transcript.jsonl", ".log.jsonl"} {
+	for _, suffix := range []string{".meta.json", ".transcript.jsonl", ".log.jsonl", ".api.jsonl", ".api-raw.jsonl"} {
 		if _, err := os.Stat(filepath.Join(stateDir, "sessions", "01A"+suffix)); !os.IsNotExist(err) {
 			t.Fatalf("%s should be removed", suffix)
 		}
