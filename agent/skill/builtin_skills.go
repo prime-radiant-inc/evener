@@ -34,12 +34,19 @@ func EmbeddedSkillsDir() (string, error) {
 // The returned directory contains skill subdirectories (e.g. test-driven-development/SKILL.md)
 // and is suitable for use as an extraDirs argument to DiscoverSkills.
 func ExtractEmbeddedSkills() (string, error) {
-	dir, err := os.MkdirTemp("", "serf-skills-*")
+	return extractEmbeddedSkills(bundled.Skills(), os.MkdirTemp)
+}
+
+// extractEmbeddedSkills is the filesystem-backed extraction implementation.
+// Keeping its immutable source and temporary-directory factory explicit lets
+// tests exercise filesystem failures without changing the exported bundled
+// asset behavior.
+func extractEmbeddedSkills(skillsFS fs.FS, mkdirTemp func(string, string) (string, error)) (string, error) {
+	dir, err := mkdirTemp("", "serf-skills-*")
 	if err != nil {
 		return "", fmt.Errorf("creating temp dir for embedded skills: %w", err)
 	}
 
-	skillsFS := bundled.Skills()
 	err = fs.WalkDir(skillsFS, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
