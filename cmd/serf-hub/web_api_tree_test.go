@@ -201,6 +201,94 @@ func TestAPITreeProjectServedFromTree(t *testing.T) {
 	}
 }
 
+// TestAPITree_SummaryOnly: /api/tree?summary=1 returns just generated_at +
+// attentionSummary — no tiers, no projects — so notification clients can poll
+// the badge counts without downloading the whole (potentially multi-MB) tree.
+func TestAPITree_SummaryOnly(t *testing.T) {
+	now := time.Now()
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry: rendezvous.Entry{SessionID: "01A", PID: 1}, SessionID: "01A", Status: "awaiting",
+	})
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), Roster: roster})
+	web.injectMetasForTest([]schema.SessionMeta{
+		{ID: "01B", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/proj"}},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/tree?summary=1", nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, heavy := range []string{"projects", "archived_projects", "live", "needs_you", "favorites", "test_runs", "sources"} {
+		if v, ok := raw[heavy]; ok && string(v) != "null" {
+			t.Fatalf("summary response must not carry %q, got %s", heavy, v)
+		}
+	}
+	if _, ok := raw["generated_at"]; !ok {
+		t.Fatal("summary response missing generated_at")
+	}
+	var sum hubapi.AttentionSummary
+	if err := json.Unmarshal(raw["attentionSummary"], &sum); err != nil {
+		t.Fatal(err)
+	}
+	if sum.NeedsYou != 1 {
+		t.Fatalf("attentionSummary.needsYou=%d, want 1 (one awaiting live session)", sum.NeedsYou)
+	}
+}
+
+// TestAPITree_ArchivedProjectsAreStubs: the archive is unbounded, so the
+// /api/tree snapshot ships archived projects as stubs — metadata plus a
+// session_count, with sessions null. The full sessions stay available
+// per-project from /api/tree/project?key= (the sidebar lazy-loads them on
+// expand).
+func TestAPITree_ArchivedProjectsAreStubs(t *testing.T) {
+	now := time.Now()
+	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "index.db"))
+	if err := store.Set("project", "/w/old", true, now); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), Archive: store})
+	web.injectMetasForTest([]schema.SessionMeta{
+		{ID: "01OLD1", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/old"}},
+		{ID: "01OLD2", CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now.Add(-2 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/old"}},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	var resp hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.ArchivedProjects) != 1 {
+		t.Fatalf("want 1 archived project, got %+v", resp.ArchivedProjects)
+	}
+	stub := resp.ArchivedProjects[0]
+	if stub.Sessions != nil {
+		t.Fatalf("archived stub must not ship sessions, got %d", len(stub.Sessions))
+	}
+	if stub.SessionCount != 2 {
+		t.Fatalf("archived stub session_count=%d, want 2", stub.SessionCount)
+	}
+	if stub.Key == "" || stub.Name == "" || stub.WorkingDir != "/w/old" || !stub.IsArchived {
+		t.Fatalf("archived stub missing metadata: %+v", stub)
+	}
+	// The lazy per-project endpoint still serves the full sessions.
+	req2 := httptest.NewRequest(http.MethodGet, "/api/tree/project?key="+stub.Key, nil)
+	rec2 := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec2, req2)
+	var full hubapi.TreeProject
+	if err := json.Unmarshal(rec2.Body.Bytes(), &full); err != nil {
+		t.Fatal(err)
+	}
+	if len(full.Sessions) != 2 {
+		t.Fatalf("/api/tree/project must keep full archived sessions, got %+v", full)
+	}
+}
+
 func TestAPITree_NeedsYouCarriesAskPending(t *testing.T) {
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
 		Entry: rendezvous.Entry{SessionID: "01A", PID: 1}, SessionID: "01A", Status: "awaiting", PendingAsk: true,

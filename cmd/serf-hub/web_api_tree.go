@@ -35,6 +35,18 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
 		return
 	}
+	// summary=1: badge counts only. Notification clients poll this on init and
+	// reconnect; serializing the full tree (megabytes on large hubs) just to
+	// read attentionSummary was the single biggest avoidable transfer.
+	if r.URL.Query().Get("summary") == "1" {
+		_, attentionSummary := s.memoTree(r.Context())
+		writeAPIJSON(w, http.StatusOK, struct {
+			GeneratedAt time.Time `json:"generated_at"`
+			// serf:naming-ignore
+			AttentionSummary hubapi.AttentionSummary `json:"attentionSummary"` // camelCase: see hubapi.AttentionSummary's doc
+		}{time.Now().UTC(), hubAttentionSummaryFromCore(attentionSummary)})
+		return
+	}
 	_, live := s.navigationTreeInputs(r.Context())
 	favs := s.favoriteDecisions()
 	tree, attentionSummary := s.memoTree(r.Context())
@@ -70,7 +82,14 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 			for _, n := range projectSessions(p) {
 				seenProjectRefs[n.ID] = true
 			}
-			resp.ArchivedProjects = append(resp.ArchivedProjects, s.apiTreeProject("project", favs, p))
+			// Archived projects ship as stubs: the archive is unbounded, so its
+			// sessions never ride in the snapshot. Sessions stays nil (wire:
+			// null) and SessionCount carries the row count; the sidebar
+			// lazy-loads the full project from /api/tree/project?key= on expand.
+			stub := s.apiTreeProject("project", favs, p)
+			stub.SessionCount = len(stub.Sessions)
+			stub.Sessions = nil
+			resp.ArchivedProjects = append(resp.ArchivedProjects, stub)
 			continue
 		}
 		projectIndexes[p.Key] = len(resp.Projects)

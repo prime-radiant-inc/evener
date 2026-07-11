@@ -511,8 +511,9 @@
     d.setAttribute("data-project-key", p.key);
     d.setAttribute("role", "button");
     d.setAttribute("aria-expanded", String(model.expanded.has(p.key) || p.default_expanded === true));
-    d.innerHTML = '<span class="project-name"></span><span class="project-rollup"></span>';
+    d.innerHTML = '<span class="project-name"></span><span class="project-count"></span><span class="project-rollup"></span>';
     d.querySelector(".project-name").textContent = p.name;
+    setProjectCount(d, p);
     setProjectRollup(d, p);
     d.addEventListener("click", function () { toggleExpanded(p.key); });
     var menuBtn = document.createElement("button");
@@ -530,7 +531,17 @@
   }
   function patchProjectHeader(el, p) {
     el.setAttribute("aria-expanded", String(model.expanded.has(p.key) || p.default_expanded === true));
+    setProjectCount(el, p);
     setProjectRollup(el, p);
+  }
+
+  // Session count on not-yet-hydrated stubs (archived projects): the header
+  // is the only place their size can show before the lazy load. Cleared once
+  // sessions arrive — the rows speak for themselves then.
+  function setProjectCount(el, p) {
+    var span = el.querySelector(".project-count");
+    if (!span) return;
+    span.textContent = (!p.sessions && p.session_count) ? "(" + p.session_count + ")" : "";
   }
 
   // Magnitude rollup badges (mockup #10 rec A): an icon+count badge for each
@@ -576,6 +587,18 @@
     if (model.expanded.has(key)) model.expanded.delete(key); else model.expanded.add(key);
     persistExpanded(key);
     if (model.tree) renderTree(model.tree);
+    if (model.expanded.has(key)) hydrateProjectStub(key);
+  }
+  // Archived projects ride the /api/tree snapshot as session-less stubs
+  // (sessions: null, session_count: N) — the archive is unbounded, so its
+  // sessions never ship eagerly. Expanding a stub (or restoring a
+  // previously-expanded one) lazy-loads the full project.
+  function hydrateProjectStub(key) {
+    if (!model.tree) return;
+    var all = (model.tree.projects || []).concat(model.tree.archived_projects || [], model.tree.test_runs || []);
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].key === key && !all[i].sessions && all[i].session_count) { refetchProjectChildren(key); return; }
+    }
   }
   function persistExpanded(key) {
     try {
@@ -779,12 +802,27 @@
   }
 
   // --- Fetch + lifecycle -----------------------------------------------------
+  // Shared in-flight /api/tree transfer: concurrent consumers (startup
+  // fetchTree + an early resync) reuse one request instead of each
+  // downloading the tree — the seq guard only discards the stale RESULT, not
+  // the duplicate transfer, which is megabytes on large hubs.
+  var inflightTree = null;
+  function fetchTreeJSON() {
+    if (inflightTree) return inflightTree;
+    inflightTree = window.fetch("/api/tree").then(function (r) { return r.json(); }).then(
+      function (tree) { inflightTree = null; return tree; },
+      function (err) { inflightTree = null; throw err; });
+    return inflightTree;
+  }
   function fetchTree() {
     var mySeq = ++model.seq;
-    return window.fetch("/api/tree").then(function (r) { return r.json(); }).then(function (tree) {
+    return fetchTreeJSON().then(function (tree) {
       if (mySeq !== model.seq) return; // sequence guard: a newer fetch won
       renderTree(tree);
       migrateExpansionKeys(); // Task 22 (no-op until then)
+      // Previously-expanded archived stubs (restored from localStorage by
+      // renderTree) must load their sessions now, not wait for a resync.
+      model.expanded.forEach(function (key) { hydrateProjectStub(key); });
     }).catch(function () {});
   }
   // One-time migration of legacy basename-keyed expansion entries to the new
@@ -814,7 +852,7 @@
   }
   function doResync() {
     var mySeq = ++model.seq;
-    window.fetch("/api/tree").then(function (r) { return r.json(); }).then(function (tree) {
+    fetchTreeJSON().then(function (tree) {
       if (mySeq !== model.seq) return; // sequence guard
       reconcilePending(tree);
       renderTree(tree);
@@ -828,6 +866,9 @@
       model.lazyCache.set(key, p);
       var projects = (model.tree.projects || []).concat(model.tree.archived_projects || [], model.tree.test_runs || []);
       for (var i = 0; i < projects.length; i++) { if (projects[i].key === key) { projects[i].sessions = p.sessions; } }
+      // Lazy-loaded sessions may confirm pending ops the stubbed snapshot
+      // couldn't reflect (e.g. rename/favorite on an archived session).
+      reconcilePending(model.tree);
       renderTree(model.tree);
     }).catch(function () {});
   }

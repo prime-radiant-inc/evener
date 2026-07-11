@@ -61,19 +61,23 @@ type Source struct {
 }
 
 type TreeProject struct {
-	Key             string     `json:"key"`
-	Name            string     `json:"name"`
-	WorkingDir      string     `json:"working_dir,omitempty"`
-	RollupState     string     `json:"rollup_state,omitempty"`
-	RollupLive      int        `json:"rollup_live,omitempty"`
-	RollupAttn      int        `json:"rollup_attn,omitempty"`
-	DefaultExpanded bool       `json:"default_expanded,omitempty"`
-	MoreCurrent     int        `json:"more_current,omitempty"`
-	MoreRecent      int        `json:"more_recent,omitempty"`
-	MoreArchived    int        `json:"more_archived,omitempty"`
-	Worktrees       int        `json:"worktrees,omitempty"`
-	IsArchived      bool       `json:"is_archived,omitempty"`
-	Sessions        []TreeNode `json:"sessions"`
+	Key             string `json:"key"`
+	Name            string `json:"name"`
+	WorkingDir      string `json:"working_dir,omitempty"`
+	RollupState     string `json:"rollup_state,omitempty"`
+	RollupLive      int    `json:"rollup_live,omitempty"`
+	RollupAttn      int    `json:"rollup_attn,omitempty"`
+	DefaultExpanded bool   `json:"default_expanded,omitempty"`
+	MoreCurrent     int    `json:"more_current,omitempty"`
+	MoreRecent      int    `json:"more_recent,omitempty"`
+	MoreArchived    int    `json:"more_archived,omitempty"`
+	Worktrees       int    `json:"worktrees,omitempty"`
+	IsArchived      bool   `json:"is_archived,omitempty"`
+	// SessionCount is set on archived-project stubs in /api/tree, whose
+	// Sessions are omitted (null) to keep the snapshot bounded; the sidebar
+	// lazy-loads the sessions from /api/tree/project?key= on expand.
+	SessionCount int        `json:"session_count,omitempty"`
+	Sessions     []TreeNode `json:"sessions"`
 }
 
 type TreeNode struct {

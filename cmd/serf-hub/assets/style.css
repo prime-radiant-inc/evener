@@ -729,6 +729,10 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
   flex: 1;
 }
 
+/* Session count on not-yet-hydrated archived stubs (sidebar.js
+   setProjectCount): muted, never wraps, empty once sessions are loaded. */
+.project-count { color: var(--text-dim); white-space: nowrap; flex-shrink: 0; }
+
 /* Per-project collapse: hide the children container. The rollup dot stays
    visible in the header so the collapsed row still communicates urgency. */
 .project-section.collapsed .project-children { display: none; }
