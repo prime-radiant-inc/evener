@@ -4427,7 +4427,13 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
   .input-status { margin: 0; padding: 0; min-height: 0; }
   .input-telemetry { gap: var(--space-2); flex-wrap: nowrap; }
 
-  .input-card { background: transparent; border: 0; border-radius: 0; padding: var(--space-1) 0; }
+  .input-card { background: transparent; border: 0; border-radius: 0; padding: 0; }
+  /* One containment device: the dock surface IS the composer's container on
+     phone (top hairline + background step). The desktop card focus outline
+     would redraw a box around the textarea+controls block, so it goes; focus
+     is signalled by the dock's top-rule accent tint (above) and the caret.
+     Individual controls keep their own :focus-visible rings. */
+  .input-card:focus-within { outline: none; }
   .message-input { min-height: 24px; max-height: 32vh; }
 
   /* iOS Safari auto-zooms into any focused field whose text is smaller than
@@ -4464,6 +4470,17 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
   .input-telemetry .location .worktree { display: none; }
   .input-telemetry .location { flex: 0 1 auto; }
   .input-telemetry .status-location-part.branch { max-width: 34vw; }
+  /* De-cluttered rail: one calm secondary line with generous gaps. The
+     "branch" label word goes (the truncated ref is self-evident next to the
+     state word); the tasks trigger drops its current-task prose (the count
+     badge carries it) and only appears while it has signal — an unfinished
+     task list. "42/42 forever" is noise; at rest the rail is dot + state +
+     branch + ctx and nothing else. */
+  .input-telemetry { gap: var(--space-3); }
+  .input-telemetry .status-location-part.branch .status-key { display: none; }
+  .tasks-status .status-value { display: none; }
+  .tasks-status[data-tasks-signal="none"],
+  .tasks-status[data-tasks-signal="done"] { display: none; }
 
   /* On phone the action buttons collapse to round icons: send (↑) is a filled
      blue disc — the one hero action — with attach (+) and stop (■) as matching
@@ -4486,6 +4503,11 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
 
   /* steer stays a quiet text button (no obvious icon), sized for touch. */
   .steer-btn { min-height: var(--tap-min); }
+  /* stop and steer only mean something during an active turn; a dimmed
+     disabled disc at rest is one more object at the bottom of the screen.
+     They appear when the turn starts (which itself signals liveness). */
+  .input-controls .stop-btn[disabled],
+  .input-controls .steer-btn[disabled] { display: none; }
   button.composer-model-value { min-height: var(--tap-min); display: inline-flex; align-items: center; }
 
   /* ── Session-creation (spawn) form on phone ─────────────────────────────

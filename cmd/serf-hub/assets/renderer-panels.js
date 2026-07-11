@@ -370,6 +370,10 @@
     const triggers = Array.from(document.querySelectorAll("[data-tasks-trigger]"));
     if (!triggers.length) return;
     for (const btn of triggers) {
+      // Signal state for the phone rail: "active" (unfinished tasks) is the
+      // only state worth a rail slot; "done" and "none" hide there. Desktop
+      // keeps the trigger visible in every state.
+      btn.dataset.tasksSignal = total === 0 ? "none" : (done >= total ? "done" : "active");
       let badge = btn.querySelector(".panel-toggle-badge");
       if (total === 0) {
         if (badge) badge.remove();
