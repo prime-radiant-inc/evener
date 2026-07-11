@@ -290,6 +290,9 @@ JSON
 			if [ "${FAKE_GO_BACKWARD_ZERO_RANGE:-}" = "1" ]; then
 				echo 'example.test/backward-range.go:94.11,94.10 0 0'
 			fi
+			if [ "${FAKE_GO_PRECISION_BACKWARD_ZERO_RANGE:-}" = "1" ]; then
+				echo 'example.test/precision-range.go:9007199254740993.1,9007199254740992.1 0 0'
+			fi
 		} >"$profile"
 		;;
 	run)
@@ -476,6 +479,11 @@ reset_logs
 expect_failure FAKE_GO_BACKWARD_ZERO_RANGE=1
 has "$last_output" 'invalid coverage block' 'zero-statement locations reject backward ranges'
 lacks "$(cat "$go_log")" $'\trun ./cmd/serf-fuzzcov' 'backward-range blocks skip global accounting'
+
+reset_logs
+expect_failure FAKE_GO_PRECISION_BACKWARD_ZERO_RANGE=1
+has "$last_output" 'invalid coverage block' 'zero-statement locations reject precision-boundary backward ranges'
+lacks "$(cat "$go_log")" $'\trun ./cmd/serf-fuzzcov' 'precision-boundary blocks skip global accounting'
 
 echo '== workspace discovery and module selection =='
 reset_logs

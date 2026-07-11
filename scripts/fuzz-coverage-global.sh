@@ -367,7 +367,37 @@ merge_profiles() {
 	shift
 	[ "$#" -gt 0 ] || die "internal error: no profiles to merge for $out"
 	local blocks="$out.blocks"
-	if ! awk '
+	if ! LC_ALL=C awk '
+		# Compare unsigned decimal integers without AWK numeric coercion.
+		function decimal_compare(left, right, normalized_left, normalized_right, left_length, right_length) {
+			normalized_left = left
+			sub(/^0+/, "", normalized_left)
+			if (normalized_left == "") {
+				normalized_left = "0"
+			}
+			normalized_right = right
+			sub(/^0+/, "", normalized_right)
+			if (normalized_right == "") {
+				normalized_right = "0"
+			}
+			left_length = length(normalized_left)
+			right_length = length(normalized_right)
+			if (left_length < right_length) {
+				return -1
+			}
+			if (left_length > right_length) {
+				return 1
+			}
+			# A nonnumeric prefix forces an exact lexical comparison at equal length.
+			if (("x" normalized_left) < ("x" normalized_right)) {
+				return -1
+			}
+			if (("x" normalized_left) > ("x" normalized_right)) {
+				return 1
+			}
+			return 0
+		}
+
 		FNR == 1 {
 			if ($0 != "mode: set") {
 				printf "invalid coverage mode in %s: %s\\n", FILENAME, $0 > "/dev/stderr"
@@ -385,15 +415,14 @@ merge_profiles() {
 				range = location
 				sub(/^.*:/, "", range)
 				position_count = split(range, position, /[,.]/)
-				start_line = position[1] + 0
-				start_column = position[2] + 0
-				end_line = position[3] + 0
-				end_column = position[4] + 0
 				invalid = position_count != 4 ||
-					start_line < 1 || start_column < 1 ||
-					end_line < 1 || end_column < 1 ||
-					end_line < start_line ||
-					(end_line == start_line && end_column < start_column)
+					position[1] ~ /^0+$/ || position[2] ~ /^0+$/ ||
+					position[3] ~ /^0+$/ || position[4] ~ /^0+$/
+				if (!invalid) {
+					line_order = decimal_compare(position[3], position[1])
+					invalid = line_order < 0 ||
+						(line_order == 0 && decimal_compare(position[4], position[2]) < 0)
+				}
 			}
 			if (invalid) {
 				printf "invalid coverage block in %s: %s\\n", FILENAME, $0 > "/dev/stderr"
@@ -402,7 +431,7 @@ merge_profiles() {
 			}
 			# Go can emit valid metadata blocks with no statements. They cannot affect
 			# either side of statement coverage, so leave them out of the union.
-			if ($2 == 0) {
+			if ($2 ~ /^0+$/) {
 				next
 			}
 		}
