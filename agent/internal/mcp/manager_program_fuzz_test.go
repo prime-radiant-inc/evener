@@ -377,7 +377,7 @@ func mcpProgramConstructionCases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unsandboxed production dial: %v", err)
 	}
-	if command, ok := plain.(*mcpsdk.CommandTransport); !ok || command.Command.Path != mcpProgramCommandPath {
+	if command, ok := plain.(*mcpsdk.CommandTransport); !ok || command.Command == nil || command.Command.Path != mcpProgramCommandPath || mcpProgramEnvValue(command.Command.Env, "MCP_PROGRAM_BASE") != "fixed" {
 		t.Fatalf("unsandboxed production transport = %#v", plain)
 	}
 

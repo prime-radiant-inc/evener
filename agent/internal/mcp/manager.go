@@ -796,10 +796,10 @@ func transportForConfigWithEnv(cfg mcpconfig.ServerConfig, environ func() []stri
 			return nil, errors.New("stdio transport requires a command")
 		}
 		cmd := exec.Command(cfg.Command, cfg.Args...) //nolint:noctx // MCP SDK's CommandTransport.Connect(ctx) owns the server process lifecycle
-		// Merge the supplied parent env with configured env vars.
-		if len(cfg.Env) > 0 {
-			cmd.Env = mergeEnvInto(environ(), cfg.Env)
-		}
+		// Always materialize the supplied parent environment. Besides keeping a
+		// deterministic construction seam, this makes an empty configured map
+		// mean "inherit this supplied environment", never the caller's ambient one.
+		cmd.Env = mergeEnvInto(environ(), cfg.Env)
 		return &mcpsdk.CommandTransport{Command: cmd, TerminateDuration: commandTerminateDuration}, nil
 
 	case "sse":
