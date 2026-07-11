@@ -678,6 +678,18 @@ func toResponsesToolChoice(tc llm.ToolChoice) (any, error) {
 	}
 }
 
+// responsesLiteModel reports whether the model runs on OpenAI's "responses-lite"
+// backend variant (the gpt-5.6 family). Responses-lite models mishandle the
+// image "detail" field, so requests to them must omit it entirely — even when a
+// caller set an explicit detail — mirroring the first-party codex client, which
+// strips detail from every image on these models. They also expect the
+// reasoning object (and reasoning.encrypted_content in include) on every
+// request, and take prompt cache TTL via prompt_cache_options instead of the
+// deprecated prompt_cache_retention field.
+func responsesLiteModel(model string) bool {
+	return strings.HasPrefix(model, "gpt-5.6")
+}
+
 // defaultImageDetail returns the best image detail level for the model.
 // GPT-5.4+ supports "original" (full fidelity); older models use "high".
 func defaultImageDetail(model string) string {
@@ -802,10 +814,14 @@ func toResponsesInput(msgs []llm.Message, model string) (instructions string, it
 								"type":      "input_image",
 								"image_url": url,
 							}
-							if p.Image.Detail != "" {
-								img["detail"] = p.Image.Detail
-							} else {
-								img["detail"] = defaultImageDetail(model)
+							// Responses-lite models reject/mishandle detail;
+							// omit it there even when explicitly set.
+							if !responsesLiteModel(model) {
+								if p.Image.Detail != "" {
+									img["detail"] = p.Image.Detail
+								} else {
+									img["detail"] = defaultImageDetail(model)
+								}
 							}
 							content = append(content, img)
 						}
@@ -920,11 +936,15 @@ func toResponsesInput(msgs []llm.Message, model string) (instructions string, it
 					if mt == "" {
 						mt = "image/png"
 					}
-					items = append(items, map[string]any{
+					img := map[string]any{
 						"type":      "input_image",
 						"image_url": llm.DataURI(mt, p.ToolResult.ImageData),
-						"detail":    defaultImageDetail(model),
-					})
+					}
+					// Responses-lite models reject/mishandle detail; omit it there.
+					if !responsesLiteModel(model) {
+						img["detail"] = defaultImageDetail(model)
+					}
+					items = append(items, img)
 				}
 			}
 		default:
