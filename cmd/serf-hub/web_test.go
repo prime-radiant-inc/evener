@@ -6578,7 +6578,7 @@ func TestDetailsPanel_LiveSessionShowsContextWorkTokensCost(t *testing.T) {
 	}
 	body := rec.Body.String()
 
-	if !strings.Contains(body, "42% used") || !strings.Contains(body, formatContextNumbers(42000, 100000, 58000)) {
+	if !strings.Contains(body, "42% used") || !strings.Contains(body, "42k / 100k") || !strings.Contains(body, "58k left") {
 		t.Errorf("details panel missing context row: %q", body)
 	}
 	if !strings.Contains(body, formatWorkMillis(4200)) {
@@ -6644,5 +6644,227 @@ func TestDetailsPanel_EndedSessionShowsWorkTokensCostNoContext(t *testing.T) {
 	}
 	if strings.Contains(body, "<dt>context</dt>") {
 		t.Errorf("ended session details panel should not show a context row: %q", body)
+	}
+}
+
+// detailsTestDaemon serves a canned /status for details-panel tests.
+func detailsTestDaemon(t *testing.T, sessionID string) *httptest.Server {
+	t.Helper()
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session_id":        sessionID,
+			"state":             "active",
+			"model":             "claude-opus-4-5",
+			"context_pressure":  0.42,
+			"context_used":      42000,
+			"context_window":    100000,
+			"context_remaining": 58000,
+			"work_millis":       4200,
+			"usage": map[string]any{
+				"inputTokens":  100_000,
+				"outputTokens": 20_000,
+			},
+		})
+	}))
+	t.Cleanup(daemon.Close)
+	return daemon
+}
+
+// TestDetailsPanel_LiveWithPastMetaDeduplicatesFacts verifies that when a
+// session is both live (roster + daemon /status) and indexed in the past
+// index (persisted SessionMeta), the details panel renders work time, tokens,
+// and cost exactly once each — the live status takes precedence over the
+// persisted meta instead of both being appended.
+func TestDetailsPanel_LiveWithPastMetaDeduplicatesFacts(t *testing.T) {
+	const id = "01DETAILDUP0000000000000000"
+	daemon := detailsTestDaemon(t, id)
+
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: id, UpdatedAt: time.Now(),
+		Model:      "claude-opus-4-5",
+		WorkMillis: 999_000,
+		CumulativeUsage: schema.CumulativeUsage{
+			InputTokens:  1,
+			OutputTokens: 1,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	addr := strings.TrimPrefix(daemon.URL, "http://")
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:     rendezvous.Entry{Address: addr, SessionID: id, Model: "claude-opus-4-5"},
+		SessionID: id,
+		Status:    "active",
+	})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: roster, Past: idx})
+
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/"+id+"/details", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+
+	for label, want := range map[string]int{">work time</dt>": 1, ">tokens</dt>": 1, ">cost</dt>": 1} {
+		if got := strings.Count(body, label); got != want {
+			t.Errorf("details panel renders %q %d times, want %d: %q", label, got, want, body)
+		}
+	}
+	// Live status wins over stale persisted meta.
+	if !strings.Contains(body, formatWorkMillis(4200)) {
+		t.Errorf("details panel should show live work time %q: %q", formatWorkMillis(4200), body)
+	}
+	if strings.Contains(body, formatWorkMillis(999_000)) {
+		t.Errorf("details panel should not show the persisted meta's stale work time: %q", body)
+	}
+}
+
+// TestDetailsPanel_GroupsFactsIntoTitledSections verifies the details panel
+// groups its facts under titled sections (Session / Usage / Runtime / Files)
+// instead of one flat label:value table.
+func TestDetailsPanel_GroupsFactsIntoTitledSections(t *testing.T) {
+	const id = "01DETAILSECT000000000000000"
+	daemon := detailsTestDaemon(t, id)
+
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: id, UpdatedAt: time.Now(), Model: "claude-opus-4-5",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, "sessions", id+".transcript.jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	addr := strings.TrimPrefix(daemon.URL, "http://")
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:     rendezvous.Entry{Address: addr, SessionID: id, Model: "claude-opus-4-5"},
+		SessionID: id,
+		Status:    "active",
+	})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: roster, Past: idx})
+
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/"+id+"/details", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	for _, title := range []string{"Session", "Usage", "Runtime", "Files"} {
+		if !strings.Contains(body, `details-section-title">`+title+`<`) {
+			t.Errorf("details panel missing section title %q: %q", title, body)
+		}
+	}
+}
+
+// TestDetailsPanel_ShowsTranscriptPathWithCopy verifies an indexed session's
+// details panel shows the on-disk transcript path
+// (<StateDir>/sessions/<id>.transcript.jsonl) with a click-to-copy
+// affordance, and omits the row when no transcript file exists.
+func TestDetailsPanel_ShowsTranscriptPathWithCopy(t *testing.T) {
+	const id = "01DETAILPATH000000000000000"
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: id, UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	transcript := filepath.Join(proj, "sessions", id+".transcript.jsonl")
+	if err := os.WriteFile(transcript, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+
+	fetch := func() string {
+		req := httptest.NewRequest(http.MethodGet, "/_partials/s/"+id+"/details", nil)
+		req.Host = "127.0.0.1:9180"
+		req.Header.Set("HX-Request", "true")
+		rec := httptest.NewRecorder()
+		web.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+		}
+		return rec.Body.String()
+	}
+
+	body := fetch()
+	if !strings.Contains(body, ">transcript</dt>") || !strings.Contains(body, htmlEscape(transcript)) {
+		t.Errorf("details panel missing transcript path row for %q: %q", transcript, body)
+	}
+	if !strings.Contains(body, `data-copy="`+htmlEscape(transcript)+`"`) {
+		t.Errorf("transcript row missing click-to-copy affordance: %q", body)
+	}
+
+	if err := os.Remove(transcript); err != nil {
+		t.Fatal(err)
+	}
+	body = fetch()
+	if strings.Contains(body, ">transcript</dt>") {
+		t.Errorf("details panel should omit the transcript row when the file is gone: %q", body)
+	}
+}
+
+// TestDetailsPanel_ContextRendersStructuredMeter verifies a live session's
+// context row renders as a visual usage meter plus structured stat pieces
+// ("42% used · 42k / 100k · 58k left") instead of the old nested-parens
+// sentence "42% used (42k / 100k tokens (58k left))".
+func TestDetailsPanel_ContextRendersStructuredMeter(t *testing.T) {
+	const id = "01DETAILMETER00000000000000"
+	daemon := detailsTestDaemon(t, id)
+
+	addr := strings.TrimPrefix(daemon.URL, "http://")
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:     rendezvous.Entry{Address: addr, SessionID: id, Model: "claude-opus-4-5"},
+		SessionID: id,
+		Status:    "active",
+	})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: roster})
+
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/"+id+"/details", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `details-meter-fill" style="width:42%"`) {
+		t.Errorf("context row missing meter fill at 42%%: %q", body)
+	}
+	for _, piece := range []string{"42% used", "42k / 100k", "58k left"} {
+		if !strings.Contains(body, piece) {
+			t.Errorf("context row missing structured piece %q: %q", piece, body)
+		}
+	}
+	if strings.Contains(body, "tokens (58k left)") {
+		t.Errorf("context row still uses the nested-parens sentence: %q", body)
 	}
 }

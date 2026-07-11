@@ -164,8 +164,22 @@ func (s *WebServer) renderThreadDocument(w http.ResponseWriter, r *http.Request,
 // detailsRow is one <dt>/<dd> pair in the details panel. DataRow, when
 // non-empty, renders as a data-row="..." attribute on both elements so CSS
 // can gate specific rows (e.g. a "show cost" toggle) without touching every
-// other row.
-type detailsRow struct{ Label, Value, DataRow string }
+// other row. Mono marks machine values (ids, paths, addresses) that render
+// in the mono face; Wide spans the value across the full panel width (long
+// paths); Copy adds a click-to-copy button carrying the raw value; HTML,
+// when non-empty, is pre-escaped markup rendered instead of Value (the
+// context meter).
+type detailsRow struct {
+	Label, Value, DataRow string
+	Mono, Wide, Copy      bool
+	HTML                  string
+}
+
+// detailsSection is one titled group of rows in the details panel.
+type detailsSection struct {
+	Title string
+	Rows  []detailsRow
+}
 
 // renderDetailsRow writes a single detailsRow's <dt>/<dd> pair to w.
 func renderDetailsRow(w io.Writer, row detailsRow) {
@@ -173,7 +187,26 @@ func renderDetailsRow(w io.Writer, row detailsRow) {
 	if row.DataRow != "" {
 		attr = ` data-row="` + htmlEscape(row.DataRow) + `"`
 	}
-	_, _ = fmt.Fprintf(w, `<dt%s>%s</dt><dd%s>%s</dd>`, attr, htmlEscape(row.Label), attr, htmlEscape(row.Value))
+	dtClass, ddClasses := "", []string{}
+	if row.Mono {
+		ddClasses = append(ddClasses, "mono")
+	}
+	if row.Wide {
+		dtClass = ` class="wide"`
+		ddClasses = append(ddClasses, "wide")
+	}
+	ddClass := ""
+	if len(ddClasses) > 0 {
+		ddClass = ` class="` + strings.Join(ddClasses, " ") + `"`
+	}
+	value := row.HTML
+	if value == "" {
+		value = htmlEscape(row.Value)
+	}
+	if row.Copy {
+		value += `<button class="details-copy" data-copy="` + htmlEscape(row.Value) + `" title="copy" aria-label="copy ` + htmlEscape(row.Label) + `">⧉</button>`
+	}
+	_, _ = fmt.Fprintf(w, `<dt%s%s>%s</dt><dd%s%s>%s</dd>`, attr, dtClass, htmlEscape(row.Label), attr, ddClass, value)
 }
 
 // tokensAndCostRows returns the "tokens" and (when estimable) "cost" rows
@@ -193,83 +226,162 @@ func tokensAndCostRows(model string, usage *appwire.SerfUsage) []detailsRow {
 	return rows
 }
 
-// renderDetailsPanel returns a side-panel with the session's verbose
-// metadata: full session id, working dir, branch + sha, model, turn count,
-// last input tokens, and (for forks) the parent session id and divergence
-// turn. Triggered by clicking the "details" link in the workspace header.
-func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, id string) {
-	var rows []detailsRow
-	rows = append(rows,
-		detailsRow{Label: "source", Value: sourceLabelFromRefText(appRefFromRouteID(id))},
-		detailsRow{Label: "session id", Value: id},
-	)
-
-	addMeta := func(m schema.SessionMeta) {
-		if m.OriginalPrompt != "" {
-			rows = append(rows, detailsRow{Label: "prompt", Value: m.OriginalPrompt})
-		}
-		if m.EnvInfo.WorkingDir != "" {
-			rows = append(rows, detailsRow{Label: "working dir", Value: m.EnvInfo.WorkingDir})
-		}
-		if m.EnvInfo.GitBranch != "" {
-			rows = append(rows, detailsRow{Label: "branch", Value: m.EnvInfo.GitBranch})
-		}
-		if m.Model != "" {
-			rows = append(rows, detailsRow{Label: "model", Value: m.ProfileID + " · " + m.Model})
-		}
-		if m.TurnCount > 0 {
-			rows = append(rows, detailsRow{Label: "turns", Value: strconv.Itoa(m.TurnCount)})
-		}
-		if m.LastInputTokens > 0 {
-			rows = append(rows, detailsRow{Label: "last input tokens", Value: strconv.Itoa(m.LastInputTokens)})
-		}
-		if m.WorkMillis > 0 {
-			rows = append(rows, detailsRow{Label: "work time", Value: formatWorkMillis(m.WorkMillis)})
-		}
-		rows = append(rows, tokensAndCostRows(m.Model, serfUsageFromCumulative(m.CumulativeUsage))...)
-		if m.ParentSessionID != "" {
-			rows = append(rows,
-				detailsRow{Label: "forked from", Value: m.ParentSessionID},
-				detailsRow{Label: "divergence turn", Value: strconv.Itoa(m.DivergenceTurn)},
-			)
-		}
-		if m.IsSubagent {
-			rows = append(rows, detailsRow{Label: "kind", Value: "subagent"})
-		}
+// contextMeterHTML renders the context-usage row's value: a thin neutral
+// meter (the task-card meter idiom) plus structured stat pieces
+// ("42% used · 42k / 100k · 58k left") instead of a nested-parens sentence.
+func contextMeterHTML(pressure float64, used, window, remaining int) string {
+	pct := int(pressure * 100)
+	if pct < 0 {
+		pct = 0
 	}
-
-	if s.cfg.Roster != nil {
-		if le, ok := s.cfg.Roster.Find(id); ok {
-			rows = append(rows,
-				detailsRow{Label: "daemon", Value: le.Address},
-				detailsRow{Label: "pid", Value: strconv.Itoa(le.PID)},
-			)
-			if status := s.fetchStatus(le); status != nil {
-				if status.ContextWindow > 0 {
-					rows = append(rows, detailsRow{Label: "context", Value: fmt.Sprintf("%.0f%% used (%s)",
-						status.ContextPressure*100,
-						formatContextNumbers(status.ContextUsed, status.ContextWindow, status.ContextRemaining))})
-				}
-				if status.WorkMillis > 0 {
-					rows = append(rows, detailsRow{Label: "work time", Value: formatWorkMillis(status.WorkMillis)})
-				}
-				rows = append(rows, tokensAndCostRows(status.Model, status.Usage)...)
-			}
-		}
+	if pct > 100 {
+		pct = 100
 	}
+	if remaining < 0 {
+		remaining = 0
+	}
+	return fmt.Sprintf(`<div class="details-context"><div class="details-meter"><div class="details-meter-fill" style="width:%d%%"></div></div><div class="details-context-stats"><span>%d%% used</span><span>%s / %s</span><span>%s left</span></div></div>`,
+		pct, pct, formatTokenCount(used), formatTokenCount(window), formatTokenCount(remaining))
+}
+
+// detailsSections gathers the session's facts from the live daemon status
+// and the persisted past-index meta, merged so each fact appears exactly
+// once (live status wins over the persisted meta when both know a value),
+// grouped into titled sections.
+func (s *WebServer) detailsSections(id string) []detailsSection {
+	var meta *schema.SessionMeta
+	stateDir := ""
 	if s.cfg.Past != nil {
 		if pe, ok := s.cfg.Past.Find(id); ok {
-			addMeta(pe.Meta)
+			m := pe.Meta
+			meta = &m
+			stateDir = pe.StateDir
+		}
+	}
+	var status *daemonStatus
+	daemonAddr, daemonPID := "", 0
+	live := false
+	if s.cfg.Roster != nil {
+		if le, ok := s.cfg.Roster.Find(id); ok {
+			live = true
+			daemonAddr, daemonPID = le.Address, le.PID
+			status = s.fetchStatus(le)
 		}
 	}
 
+	// Session — identity.
+	session := []detailsRow{
+		{Label: "source", Value: sourceLabelFromRefText(appRefFromRouteID(id))},
+		{Label: "session id", Value: id, Mono: true, Copy: true},
+	}
+	switch {
+	case meta != nil && meta.Model != "":
+		if meta.ProfileID != "" {
+			session = append(session, detailsRow{Label: "model", Value: meta.ProfileID + " · " + meta.Model, Mono: true})
+		} else {
+			session = append(session, detailsRow{Label: "model", Value: meta.Model, Mono: true})
+		}
+	case status != nil && status.Model != "":
+		session = append(session, detailsRow{Label: "model", Value: status.Model, Mono: true})
+	}
+	if meta != nil {
+		if meta.EnvInfo.GitBranch != "" {
+			session = append(session, detailsRow{Label: "branch", Value: meta.EnvInfo.GitBranch, Mono: true})
+		}
+		if meta.ParentSessionID != "" {
+			session = append(session,
+				detailsRow{Label: "forked from", Value: meta.ParentSessionID, Mono: true},
+				detailsRow{Label: "divergence turn", Value: strconv.Itoa(meta.DivergenceTurn)},
+			)
+		}
+		if meta.IsSubagent {
+			session = append(session, detailsRow{Label: "kind", Value: "subagent"})
+		}
+		if meta.OriginalPrompt != "" {
+			session = append(session, detailsRow{Label: "prompt", Value: meta.OriginalPrompt, Wide: true})
+		}
+	}
+
+	// Usage — context, tokens, cost, turns, work time. Live status wins.
+	var usage []detailsRow
+	if status != nil && status.ContextWindow > 0 {
+		usage = append(usage, detailsRow{Label: "context", Wide: true,
+			HTML: contextMeterHTML(status.ContextPressure, status.ContextUsed, status.ContextWindow, status.ContextRemaining)})
+	}
+	switch {
+	case status != nil && status.Usage != nil:
+		usage = append(usage, tokensAndCostRows(status.Model, status.Usage)...)
+	case meta != nil:
+		usage = append(usage, tokensAndCostRows(meta.Model, serfUsageFromCumulative(meta.CumulativeUsage))...)
+	}
+	if meta != nil && meta.TurnCount > 0 {
+		usage = append(usage, detailsRow{Label: "turns", Value: strconv.Itoa(meta.TurnCount)})
+	}
+	switch {
+	case status != nil && status.WorkMillis > 0:
+		usage = append(usage, detailsRow{Label: "work time", Value: formatWorkMillis(status.WorkMillis)})
+	case meta != nil && meta.WorkMillis > 0:
+		usage = append(usage, detailsRow{Label: "work time", Value: formatWorkMillis(meta.WorkMillis)})
+	}
+	if meta != nil && meta.LastInputTokens > 0 {
+		usage = append(usage, detailsRow{Label: "last input tokens", Value: strconv.Itoa(meta.LastInputTokens)})
+	}
+
+	// Runtime — where the session runs.
+	var runtime []detailsRow
+	if live {
+		runtime = append(runtime, detailsRow{Label: "daemon", Value: daemonAddr, Mono: true})
+		if daemonPID > 0 {
+			runtime = append(runtime, detailsRow{Label: "pid", Value: strconv.Itoa(daemonPID), Mono: true})
+		}
+	}
+	workingDir := ""
+	if meta != nil && meta.EnvInfo.WorkingDir != "" {
+		workingDir = meta.EnvInfo.WorkingDir
+	} else if status != nil && status.WorkingDir != "" {
+		workingDir = status.WorkingDir
+	}
+	if workingDir != "" {
+		runtime = append(runtime, detailsRow{Label: "working dir", Value: workingDir, Mono: true, Wide: true, Copy: true})
+	}
+
+	// Files — on-disk artifacts.
+	var files []detailsRow
+	if meta != nil && stateDir != "" {
+		transcript := filepath.Join(stateDir, "sessions", meta.ID+".transcript.jsonl")
+		if _, err := os.Stat(transcript); err == nil {
+			files = append(files, detailsRow{Label: "transcript", Value: transcript, Mono: true, Wide: true, Copy: true})
+		}
+	}
+
+	sections := []detailsSection{
+		{Title: "Session", Rows: session},
+		{Title: "Usage", Rows: usage},
+		{Title: "Runtime", Rows: runtime},
+		{Title: "Files", Rows: files},
+	}
+	out := sections[:0]
+	for _, sec := range sections {
+		if len(sec.Rows) > 0 {
+			out = append(out, sec)
+		}
+	}
+	return out
+}
+
+// renderDetailsPanel returns a side-panel with the session's verbose
+// metadata grouped into titled sections (Session / Usage / Runtime / Files).
+// Triggered by clicking the "details" link in the workspace header.
+func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, id string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = fmt.Fprintln(w, `<header class="details-panel-header"><span>details</span><button class="details-panel-close" aria-label="close panel" onclick="document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))">✕</button></header>`)
-	_, _ = fmt.Fprintln(w, `<dl class="details-list">`)
-	for _, row := range rows {
-		renderDetailsRow(w, row)
+	for _, sec := range s.detailsSections(id) {
+		_, _ = fmt.Fprintf(w, `<section class="details-section"><h3 class="details-section-title">%s</h3><dl class="details-list">`, htmlEscape(sec.Title))
+		for _, row := range sec.Rows {
+			renderDetailsRow(w, row)
+		}
+		_, _ = fmt.Fprintln(w, `</dl></section>`)
 	}
-	_, _ = fmt.Fprintln(w, `</dl>`)
 }
 
 // renderSessionTasks returns the session's task list as JSON. For live

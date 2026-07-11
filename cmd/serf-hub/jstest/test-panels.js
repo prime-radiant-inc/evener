@@ -107,6 +107,18 @@ pass(window.document.getElementById("tasks-panel") !== null, "panel open before 
 tasksTrigger.click();
 pass(window.document.getElementById("tasks-panel") === null, "clicking trigger again should close panel");
 
+// 8. Generic [data-copy] click-to-copy (details panel path/id rows): copies
+//    the attribute value to the clipboard and toasts.
+let copied = null;
+window.navigator.clipboard = { writeText: (t) => { copied = t; return Promise.resolve(); } };
+let toasted = null;
+window.SerfToast = { show: (msg, kind) => { toasted = msg + "/" + kind; } };
+const copyBtn = window.document.createElement("button");
+copyBtn.setAttribute("data-copy", "/state/sessions/01X.transcript.jsonl");
+window.document.body.appendChild(copyBtn);
+copyBtn.click();
+pass(copied === "/state/sessions/01X.transcript.jsonl", "[data-copy] click should copy the attribute value");
+
 if (failures.length === 0) {
   console.log("PASS: click-outside dismissal works for tasks and details panels");
   process.exit(0);
