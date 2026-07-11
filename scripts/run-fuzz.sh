@@ -86,6 +86,7 @@ TARGETS=(
 	# Phase 7 Wave 1 — a decode/parse target for every remaining package.
 	# Lane A1 (agent module)
 	"native:agent:./transcript:FuzzTranscriptWriterRoundTrip::transcript.go"
+	"native:agent:./transcript:FuzzTranscriptWriterProgram::transcript.go"
 	"native:agent:./task:FuzzTaskStoreLoad::task_store.go#Load"
 	"native:agent:./doctor:FuzzDoctorLoadTranscript::transcript.go#loadTranscript"
 	"native:agent:./mcpconfig:FuzzMCPConfigLoad::config.go"
@@ -129,6 +130,7 @@ TARGETS=(
 	"native:agent:./execenv:FuzzMainRootFromGitdirPointer::"
 	"native:agent:./execenv:FuzzSecurePathResolve::"
 	"native:agent:./execenv:FuzzSecureFilesystemOperationProgram::securepath.go;securepath_browse.go;mutator.go"
+	"native:agent:./execenv:FuzzLocalFilesystemOperationProgram::"
 	"native:agent:./sandbox:FuzzReRoot::"
 	"native:agent:./sandbox:FuzzResolve::"
 	"native:agent:./sandbox:FuzzSeatbeltPolicyNoInterpolation::"

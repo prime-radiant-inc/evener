@@ -87,6 +87,7 @@ FuzzToolExecution 66.1
 FuzzTranscriptReadersAgree 49.1
 FuzzTranscriptReplay 70.4
 FuzzTranscriptReplayStructured 59.7
+FuzzTranscriptWriterProgram 96.7
 FuzzTranscriptWriterRoundTrip 44.7
 FuzzTurnPagingEquivalence 90.5
 FuzzWebHandler 56.7
