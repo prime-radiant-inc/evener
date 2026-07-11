@@ -201,6 +201,45 @@ func TestAPITreeProjectServedFromTree(t *testing.T) {
 	}
 }
 
+// TestAPITree_SummaryOnly: /api/tree?summary=1 returns just generated_at +
+// attentionSummary — no tiers, no projects — so notification clients can poll
+// the badge counts without downloading the whole (potentially multi-MB) tree.
+func TestAPITree_SummaryOnly(t *testing.T) {
+	now := time.Now()
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry: rendezvous.Entry{SessionID: "01A", PID: 1}, SessionID: "01A", Status: "awaiting",
+	})
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), Roster: roster})
+	web.injectMetasForTest([]schema.SessionMeta{
+		{ID: "01B", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/proj"}},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/tree?summary=1", nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, heavy := range []string{"projects", "archived_projects", "live", "needs_you", "favorites", "test_runs", "sources"} {
+		if v, ok := raw[heavy]; ok && string(v) != "null" {
+			t.Fatalf("summary response must not carry %q, got %s", heavy, v)
+		}
+	}
+	if _, ok := raw["generated_at"]; !ok {
+		t.Fatal("summary response missing generated_at")
+	}
+	var sum hubapi.AttentionSummary
+	if err := json.Unmarshal(raw["attentionSummary"], &sum); err != nil {
+		t.Fatal(err)
+	}
+	if sum.NeedsYou != 1 {
+		t.Fatalf("attentionSummary.needsYou=%d, want 1 (one awaiting live session)", sum.NeedsYou)
+	}
+}
+
 func TestAPITree_NeedsYouCarriesAskPending(t *testing.T) {
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
 		Entry: rendezvous.Entry{SessionID: "01A", PID: 1}, SessionID: "01A", Status: "awaiting", PendingAsk: true,

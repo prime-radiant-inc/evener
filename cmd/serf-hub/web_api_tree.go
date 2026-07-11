@@ -35,6 +35,18 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
 		return
 	}
+	// summary=1: badge counts only. Notification clients poll this on init and
+	// reconnect; serializing the full tree (megabytes on large hubs) just to
+	// read attentionSummary was the single biggest avoidable transfer.
+	if r.URL.Query().Get("summary") == "1" {
+		_, attentionSummary := s.memoTree(r.Context())
+		writeAPIJSON(w, http.StatusOK, struct {
+			GeneratedAt time.Time `json:"generated_at"`
+			// serf:naming-ignore
+			AttentionSummary hubapi.AttentionSummary `json:"attentionSummary"` // camelCase: see hubapi.AttentionSummary's doc
+		}{time.Now().UTC(), hubAttentionSummaryFromCore(attentionSummary)})
+		return
+	}
 	_, live := s.navigationTreeInputs(r.Context())
 	favs := s.favoriteDecisions()
 	tree, attentionSummary := s.memoTree(r.Context())

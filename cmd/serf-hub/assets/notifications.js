@@ -213,11 +213,13 @@
     } catch (e) {}
   }
 
-  // Baseline fetch: the authoritative /api/tree summary. Called on init and
+  // Baseline fetch: the authoritative attention summary. Called on init and
   // on AppWire reconnect (a dropped connection can miss broadcasts, so the
   // reconnect handler re-syncs rather than trusting the gap stayed empty).
+  // summary=1 returns just {generated_at, attentionSummary} — this client
+  // only reads the badge counts, so it must never download the full tree.
   function fetchBaseline() {
-    return fetch("/api/tree").then((r) => r.json()).then((resp) => {
+    return fetch("/api/tree?summary=1").then((r) => r.json()).then((resp) => {
       summary = (resp && resp.attentionSummary) || { needsYou: 0, error: 0, working: 0 };
       applyCounts();
     }).catch(() => {});
