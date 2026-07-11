@@ -196,6 +196,8 @@ func FuzzRenderTranscriptProgram(f *testing.F) {
 	for scenario := byte(0); scenario < 13; scenario++ {
 		f.Add([]byte{scenario}, "fuzz payload")
 	}
+	// Exercise the bulk byte bound at the first byte of a multibyte rune.
+	f.Add([]byte{5}, strings.Repeat("a", 47)+string(rune(0x20AC)))
 
 	f.Fuzz(func(t *testing.T, program []byte, payload string) {
 		scenario := trenderScenario(program)
@@ -267,10 +269,7 @@ func trenderScenario(program []byte) byte {
 func trender_program(program []byte, payload string) (transcript.Header, []transcript.Entry, string, renderOpts) {
 	scenario := trenderScenario(program)
 	payload = trender_boundedPayload(payload)
-	bulkPayload := payload
-	if len(bulkPayload) > 48 {
-		bulkPayload = bulkPayload[:48]
-	}
+	bulkPayload := trenderUTF8Prefix(payload, 48)
 
 	header := transcript.Header{Task: "task " + payload}
 	opt := renderOpts{meta: schema.SessionMeta{
@@ -375,6 +374,7 @@ func trender_program(program []byte, payload string) (transcript.Header, []trans
 		entries := trender_manyEntries(48, strings.Repeat("front "+bulkPayload+" ", 140))
 		return header, entries, "start:48", opt
 	case 7:
+		header, opt = trenderPinnedFixture()
 		entries := []transcript.Entry{
 			entry(schema.TurnAssistant, call("pinned", "read_file", `{"file_path":"/tmp/pin"}`)),
 			entry(schema.TurnToolResults, result("pinned", "read_file", strings.Repeat("full line\n", 35), false)),
@@ -383,17 +383,19 @@ func trender_program(program []byte, payload string) (transcript.Header, []trans
 		opt.fullResultFor = &pin
 		return header, entries, "0-1", opt
 	case 8:
+		header, opt = trenderPinnedFixture()
 		entries := []transcript.Entry{
 			entry(schema.TurnAssistant, call("pinned", "shell", `{"command":"echo pin"}`)),
 			entry(schema.TurnToolResults, result("pinned", "shell", strings.Repeat("outside line\n", 35), false)),
 		}
-		entries = append(entries, trender_manyEntries(45, "later "+payload)...)
+		entries = append(entries, trender_manyEntries(45, "later fixture")...)
 		// Pinning the result entry (rather than its assistant owner) exercises
 		// the result-to-call ownership lookup used by expand_turn.
 		pin := 1
 		opt.fullResultFor = &pin
 		return header, entries, "last:1", opt
 	case 9:
+		header, opt = trenderPinnedFixture()
 		entries := []transcript.Entry{
 			entry(schema.TurnAssistant, call("pinned", "read_file", `{"file_path":"/tmp/pin"}`)),
 			entry(schema.TurnToolResults, result("pinned", "read_file", strings.Repeat("very long pinned result\n", 11000), false)),
@@ -415,6 +417,13 @@ func trender_program(program []byte, payload string) (transcript.Header, []trans
 		}
 		return header, entries, "2-1", opt
 	}
+}
+
+func trenderPinnedFixture() (transcript.Header, renderOpts) {
+	return transcript.Header{Task: "pinned fixture"}, renderOpts{meta: schema.SessionMeta{
+		Name:           "pinned fixture",
+		OriginalPrompt: "pinned fixture",
+	}}
 }
 
 func trender_manyEntries(n int, body string) []transcript.Entry {
@@ -450,6 +459,17 @@ func trender_boundedPayload(payload string) string {
 		return "payload"
 	}
 	return payload
+}
+
+func trenderUTF8Prefix(value string, maxBytes int) string {
+	if len(value) <= maxBytes {
+		return value
+	}
+	limit := maxBytes
+	for limit > 0 && !utf8.RuneStart(value[limit]) {
+		limit--
+	}
+	return value[:limit]
 }
 
 // FuzzResolveTranscript drives resolveTranscript over a fuzzed selector against a
