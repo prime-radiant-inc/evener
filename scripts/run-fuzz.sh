@@ -238,6 +238,7 @@ TARGETS=(
 	"native:agent:.:FuzzMsfzContinuationAnchorPlanning::session_model_call.go#applyResponsesContinuationAnchorPlanning"
 	"native:agent:.:FuzzSafz_DriveNotificationTurn::subagents.go#driveSubagentNotificationTurn"
 	"native:agent:.:FuzzSafz_PrepareSubagentRun::subagents.go#prepareSubagentRun"
+	"native:agent:.:FuzzNslpNestedLifecycleProgram::subagents.go;subagent_manager.go;jobs_nested.go;session_jobtree_drain.go;session_tools_communicate.go"
 	"native:agent:.:FuzzRfzForkSession::fork.go#ForkSession"
 	"native:agent:.:FuzzRfzRestoreSessionFromMeta::session_init.go#RestoreSessionFromMetaWithConfig"
 	"native:agent:.:FuzzShfz_RunShellForeground::job_shell.go#runShell"
