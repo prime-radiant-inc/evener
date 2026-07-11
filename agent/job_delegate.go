@@ -911,6 +911,7 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 		LLMRetryPolicy: s.cfg.LLMRetryPolicy,
 		LLMSleep:       s.cfg.LLMSleep,
 		clock:          s.clock,
+		testOnly:       s.cfg.testOnly,
 		spawn: spawnConfig{
 			parentSessionID:         desc.ParentSessionID,
 			parentToolCallID:        desc.OriginToolCallID,
