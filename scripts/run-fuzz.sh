@@ -110,6 +110,7 @@ TARGETS=(
 	"native:agent:./internal/agenttest:FuzzDenyEnvProgram::"
 	"native:agent:./internal/agenttest:FuzzFakeClockProgram::"
 	"native:agent:./internal/clock:FuzzRealTimerStopResetNonPositive::"
+	"native:agent:./internal/clock:FuzzRealClockProgram::clock.go"
 	"native:agent:./internal/diagnostic:FuzzDiagnosticClassification::"
 	"native:agent:./internal/goal:FuzzGoalStoreTerminalPersistence::"
 	"native:agent:./internal/installid:FuzzLoadOrCreateInstallationIDWithFS::"
