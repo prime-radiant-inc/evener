@@ -1,9 +1,13 @@
 package agent
 
 import (
+	"context"
+
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/clock"
 	"primeradiant.com/serf/agent/internal/contextmgr"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/internal/worktree"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/provider"
@@ -197,6 +201,18 @@ type SessionConfig struct {
 // deterministic. Never set by app callers; never persisted (json:"-" on the
 // parent field).
 type testConfig struct {
+	// worktreeGitRunner replaces only the Git subprocess boundary used by the
+	// native worktree lifecycle. Package-agent tests use it to replay the real
+	// Session lifecycle against a scripted Git model without launching a host
+	// process. Nil preserves the production runner.
+	worktreeGitRunner func(context.Context, execenv.ExecutionEnvironment) worktree.GitRunner
+
+	// environmentInfo replaces the host-derived environment snapshot for tests
+	// that need a LocalExecutionEnvironment's real filesystem semantics but
+	// must not invoke its OS-version subprocess. Nil preserves the production
+	// snapshot path.
+	environmentInfo func(execenv.ExecutionEnvironment, clock.Clock) schema.EnvironmentInfo
+
 	// contextStrategyOverride, when non-nil, is used instead of creating a
 	// strategy from the ContextStrategy string.
 	contextStrategyOverride contextmgr.Strategy

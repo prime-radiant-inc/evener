@@ -648,7 +648,7 @@ func cacheReadPtr(n int64) *int {
 // Returns the prompt sources so the caller can emit events after SessionStart.
 func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, runSessionStartHooks bool) ([]promptSource, error) {
 	env := s.currentEnv()
-	ei := envInfoFromEnv(env, s.sclock())
+	ei := s.snapshotEnvironmentInfo(env)
 	ei.KnowledgeCutoff = s.profile.KnowledgeCutoff()
 	if !s.cfg.testOnly.skipGitSnapshot {
 		if inRepo, branch, mod, untracked, commits := snapshotGit(env, ei.WorkingDir); inRepo {

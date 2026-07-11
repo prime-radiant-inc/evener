@@ -26,7 +26,7 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment) {
 	// fresh gitRoots cache), so without this call step 2 would fork
 	// `git rev-parse --show-toplevel` while holding s.mu.
 	newWD := next.WorkingDirectory()
-	ei := envInfoFromEnv(next, s.sclock())
+	ei := s.snapshotEnvironmentInfo(next)
 	if !s.cfg.testOnly.skipGitSnapshot {
 		if inRepo, branch, mod, untracked, commits := snapshotGit(next, newWD); inRepo {
 			ei.IsGitRepo = true

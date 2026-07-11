@@ -72,7 +72,7 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) {
 		return
 	}
 	controlEnv := local.WithWorkingDirectory(mainRoot)
-	run := gitRunner(context.Background(), controlEnv)
+	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 
 	// The path must still be a worktree git's own registry knows about (spec
 	// §7: "validated as in switch by path").
@@ -211,7 +211,7 @@ func (s *Session) applyInitInsideWorktreeLock(isGitRepo bool) {
 	}
 
 	controlEnv := local.WithWorkingDirectory(canonicalMain)
-	run := gitRunner(context.Background(), controlEnv)
+	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 	locked, reason, err := lockStateOf(run, activeRoot)
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{

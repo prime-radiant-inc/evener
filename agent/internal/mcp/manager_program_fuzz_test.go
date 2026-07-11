@@ -25,6 +25,11 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+const (
+	mcpProgramCommandPath = "/synthetic/mcp-program"
+	mcpProgramBwrapPath   = "/synthetic/bwrap"
+)
+
 // FuzzMCPManagerProgram drives Manager through its real in-memory MCP boundary.
 // It deliberately keeps every transport in-process: no stdio command, HTTP
 // client, listener, or wall-clock retry is involved. The program covers the
@@ -317,7 +322,7 @@ func mcpProgramConstructionCases(t *testing.T) {
 		wantErr  bool
 	}{
 		{cfg: mcpconfig.ServerConfig{Type: "stdio"}, wantErr: true},
-		{cfg: mcpconfig.ServerConfig{Type: "stdio", Command: "mcp-program", Args: []string{"--probe"}}, wantType: "command"},
+		{cfg: mcpconfig.ServerConfig{Type: "stdio", Command: mcpProgramCommandPath, Args: []string{"--probe"}}, wantType: "command"},
 		{cfg: mcpconfig.ServerConfig{Type: "sse"}, wantErr: true},
 		{cfg: mcpconfig.ServerConfig{Type: "sse", URL: "https://invalid.example/mcp"}, wantType: "sse"},
 		{cfg: mcpconfig.ServerConfig{Type: "sse", URL: "https://invalid.example/mcp", Headers: map[string]string{"X-Program": "sse"}}, wantType: "sse-header"},
@@ -339,7 +344,7 @@ func mcpProgramConstructionCases(t *testing.T) {
 		}
 		switch tc.wantType {
 		case "command":
-			if command, ok := transport.(*mcpsdk.CommandTransport); !ok || command.Command == nil || command.Command.Args[0] != "mcp-program" {
+			if command, ok := transport.(*mcpsdk.CommandTransport); !ok || command.Command == nil || command.Command.Args[0] != mcpProgramCommandPath || command.Command.Path != mcpProgramCommandPath {
 				t.Fatalf("stdio transport = %#v", transport)
 			}
 		case "sse", "sse-header":
@@ -355,12 +360,12 @@ func mcpProgramConstructionCases(t *testing.T) {
 		}
 	}
 
-	plainDial := productionDial(mcpconfig.ServerConfig{Type: "stdio", Command: "mcp-program"}, nil)
+	plainDial := productionDial(mcpconfig.ServerConfig{Type: "stdio", Command: mcpProgramCommandPath}, nil)
 	plain, err := plainDial(ctx)
 	if err != nil {
 		t.Fatalf("unsandboxed production dial: %v", err)
 	}
-	if command, ok := plain.(*mcpsdk.CommandTransport); !ok || command.Command.Path != "mcp-program" {
+	if command, ok := plain.(*mcpsdk.CommandTransport); !ok || command.Command.Path != mcpProgramCommandPath {
 		t.Fatalf("unsandboxed production transport = %#v", plain)
 	}
 
@@ -370,25 +375,29 @@ func mcpProgramConstructionCases(t *testing.T) {
 	if options.wrapper != wrapped {
 		t.Fatal("WithSandboxWrapper did not retain wrapper")
 	}
-	confinedDial := productionDial(mcpconfig.ServerConfig{
+	confinedDial := productionDialWithEnv(mcpconfig.ServerConfig{
 		Name:    "program",
 		Type:    "stdio",
-		Command: "mcp-program",
+		Command: mcpProgramCommandPath,
 		Args:    []string{"--probe"},
-		Env:     map[string]string{"PROGRAM_VALUE": "kept"},
-	}, wrapped)
+		Env:     map[string]string{"PROGRAM_VALUE": "kept", "MCP_SERVER_TOKEN": "configured"},
+	}, wrapped, mcpProgramFixedEnvironment)
 	confined, err := confinedDial(ctx)
 	if err != nil {
 		t.Fatalf("confined production dial: %v", err)
 	}
 	confinedCommand, ok := confined.(*mcpsdk.CommandTransport)
-	if !ok || confinedCommand.Command == nil || confinedCommand.Command.Path != "/usr/bin/bwrap" || !strings.Contains(strings.Join(confinedCommand.Command.Env, "\n"), "PROGRAM_VALUE=kept") || confinedCommand.Command.ExtraFiles != nil {
+	if !ok || confinedCommand.Command == nil {
+		t.Fatalf("confined command = %#v", confined)
+	}
+	joinedEnv := strings.Join(confinedCommand.Command.Env, "\n")
+	if confinedCommand.Command.Path != mcpProgramBwrapPath || !strings.Contains(joinedEnv, "PROGRAM_VALUE=kept") || !strings.Contains(joinedEnv, "MCP_SERVER_TOKEN=configured") || strings.Contains(joinedEnv, "SERF_AMBIENT_API_KEY=") || strings.Contains(joinedEnv, "SSH_AUTH_SOCK=") || confinedCommand.Command.ExtraFiles != nil {
 		t.Fatalf("confined command = %#v", confined)
 	}
 
 	netOff := mcpProgramSandboxWrapper(t, false)
 	for _, typ := range []string{"sse", "http"} {
-		if _, err := productionDial(mcpconfig.ServerConfig{Name: "remote", Type: typ, URL: "https://invalid.example/mcp"}, netOff)(ctx); err == nil || !strings.Contains(err.Error(), "network egress is disabled") {
+		if _, err := productionDialWithEnv(mcpconfig.ServerConfig{Name: "remote", Type: typ, URL: "https://invalid.example/mcp"}, netOff, mcpProgramFixedEnvironment)(ctx); err == nil || !strings.Contains(err.Error(), "network egress is disabled") {
 			t.Fatalf("net-off %s dial error = %v", typ, err)
 		}
 	}
@@ -576,37 +585,45 @@ func mcpProgramEnvValue(env []string, key string) string {
 	return ""
 }
 
-// mcpProgramSandboxWrapper resolves an enforcing policy over a bare temp
-// directory. Unlike the general sandbox test fixture, it never materializes a
-// Git repository or looks up a host tool: HostFacts are entirely injected and
-// Resolve classifies this root as NonGit. The fuzzer only inspects the wrapped
-// command; it never executes the configured bwrap path.
+// mcpProgramSandboxWrapper injects the minimal enforcing policy needed to
+// inspect command confinement. It deliberately does not call sandbox.Resolve:
+// Resolve structurally classifies a cwd and could walk a hostile TMPDIR ancestor
+// containing .git. This explicit NonGit layout stays entirely inside the test
+// root, and the synthetic bwrap path is never executed.
 func mcpProgramSandboxWrapper(t *testing.T, network bool) *sandbox.Wrapper {
 	t.Helper()
 	root := t.TempDir()
-	home := filepath.Join(root, "home")
-	policy, err := sandbox.Resolve(
-		sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, Network: &network},
-		sandbox.HostFacts{
-			OS:               "linux",
-			Home:             home,
-			BwrapPath:        "/usr/bin/bwrap",
-			BwrapCapable:     true,
-			OverlaySupported: false,
+	policy := sandbox.ResolvedPolicy{
+		Mode:          sandbox.ModeWorkspaceWrite,
+		Network:       network,
+		Backend:       sandbox.BackendBwrap,
+		CacheStrategy: sandbox.CacheSessionPrivate,
+		SessionTmp:    true,
+		FileTool: sandbox.AccessScope{
+			Read:       sandbox.ReadAnywhere,
+			WriteRoots: []string{root},
 		},
-		root,
-	)
-	if err != nil {
-		t.Fatalf("resolve no-Git sandbox policy: %v", err)
+		Spawned: sandbox.AccessScope{
+			Read:       sandbox.ReadAnywhere,
+			WriteRoots: []string{root},
+		},
+		Git: sandbox.GitLayout{Kind: sandbox.NonGit, WorktreeRoot: root},
 	}
-	if policy.Git.Kind != sandbox.NonGit || policy.Git.WorktreeRoot != root {
-		t.Fatalf("sandbox fixture layout = %+v, want NonGit root %q", policy.Git, root)
-	}
-	wrapper, err := sandbox.NewWrapper(policy, "/usr/bin/bwrap", filepath.Join(root, "session-tmp"))
+	wrapper, err := sandbox.NewWrapper(policy, mcpProgramBwrapPath, filepath.Join(root, "session-tmp"))
 	if err != nil {
 		t.Fatalf("new no-Git sandbox wrapper: %v", err)
 	}
 	return wrapper
+}
+
+func mcpProgramFixedEnvironment() []string {
+	return []string{
+		"PATH=/synthetic/bin",
+		"SERF_AMBIENT_API_KEY=must-not-leak",
+		"SSH_AUTH_SOCK=/synthetic/agent.sock",
+		"TMPDIR=/synthetic/ambient-tmp",
+		"GOCACHE=/synthetic/ambient-cache",
+	}
 }
 
 func mcpProgramConnSummary(c *conn) string {

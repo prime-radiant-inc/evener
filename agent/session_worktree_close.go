@@ -114,7 +114,7 @@ func (s *Session) disposeOneDelegateLane(local *execenv.LocalExecutionEnvironmen
 		return "", false
 	}
 	controlEnv := local.WithWorkingDirectory(mainRoot)
-	run := gitRunner(context.Background(), controlEnv)
+	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 
 	// The sidecar carries the recorded base SHA the unchanged predicate needs.
 	// Without it (unknown provenance) the lane is not ours to judge — leave it.
@@ -256,7 +256,7 @@ func (s *Session) unlockOwnManagedWorktreeAtClose() {
 		return
 	}
 	controlEnv := local.WithWorkingDirectory(mainRoot)
-	run := gitRunner(context.Background(), controlEnv)
+	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 	if err := s.leaveCurrentWorktree(run); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("unlocking own worktree %s at close failed: %v", path, err)})
 	}

@@ -1069,7 +1069,7 @@ func (s *Session) reacquireDelegateWorktreeLock(lanePath, delegateID string) err
 	if err := controlEnv.UseControlPolicy(mainRoot); err != nil {
 		return err
 	}
-	run := gitRunner(context.Background(), controlEnv)
+	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 	locked, reason, lsErr := lockStateOf(run, lanePath)
 	if lsErr != nil {
 		return fmt.Errorf("delegate isolation worktree %s lock state could not be verified: %w", lanePath, lsErr)
@@ -2348,7 +2348,7 @@ func (s *Session) isolatedDelegateWorktreeReport(desc *jobstore.DelegateRestoreD
 	if err := controlEnv.UseControlPolicy(mainRoot); err != nil {
 		return nil // best-effort: skip when the control policy is unsatisfiable
 	}
-	run := gitRunner(context.Background(), controlEnv)
+	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 
 	// The sidecar (written at lane creation, see createDelegateWorktree) is
 	// the authoritative source of the lane's branch and base SHA — the

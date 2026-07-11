@@ -268,6 +268,14 @@ func WithSandboxWrapper(w *sandbox.Wrapper) Option {
 // stdio server's command is kernel-confined to the session sandbox before the
 // transport hands it to the SDK.
 func productionDial(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper) func(context.Context) (mcpsdk.Transport, error) {
+	return productionDialWithEnv(cfg, wrapper, os.Environ)
+}
+
+// productionDialWithEnv is productionDial's deterministic construction seam.
+// Production always passes os.Environ; package-local tests can supply a fixed
+// environment while exercising the same transport and sandbox wiring without
+// observing the developer machine's process environment.
+func productionDialWithEnv(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper, environ func() []string) func(context.Context) (mcpsdk.Transport, error) {
 	return func(context.Context) (mcpsdk.Transport, error) {
 		// A remote (sse/http) MCP server is tool-plane egress: refuse it with a
 		// legible error under net=off, before dialing. A stdio server is local and
@@ -281,7 +289,7 @@ func productionDial(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper) func(c
 		}
 		if wrapper != nil {
 			if ct, ok := t.(*mcpsdk.CommandTransport); ok && ct.Command != nil {
-				confineCommandUnderSandbox(ct.Command, cfg.Env, wrapper)
+				confineCommandUnderSandbox(ct.Command, cfg.Env, wrapper, environ)
 			}
 		}
 		return t, nil
@@ -299,8 +307,11 @@ func productionDial(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper) func(c
 // configured cfg.Env var — even a secret-named one, which is deliberate server
 // configuration — survives. The floor (ssh-agent handle, cloud creds, TMPDIR,
 // cache redirect) is applied last.
-func confineCommandUnderSandbox(cmd *exec.Cmd, cfgEnv map[string]string, w *sandbox.Wrapper) {
-	base := mergeEnvInto(sandbox.ScrubSecretEnv(os.Environ()), cfgEnv)
+// environ must return the parent environment to scrub before cfgEnv is
+// applied. productionDial passes os.Environ; deterministic construction tests
+// pass a fixed slice.
+func confineCommandUnderSandbox(cmd *exec.Cmd, cfgEnv map[string]string, w *sandbox.Wrapper, environ func() []string) {
+	base := mergeEnvInto(sandbox.ScrubSecretEnv(environ()), cfgEnv)
 	cmd.Env = sandbox.ApplyEnvFloor(base, w.Policy(), w.SessionTmp())
 	// Confine wraps the argv and, for Seatbelt, sets cmd.Dir to the worktree so a
 	// macOS MCP server starts in the same directory a Linux (bwrap, via --chdir)

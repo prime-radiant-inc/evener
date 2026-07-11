@@ -425,6 +425,16 @@ func gitRunner(ctx context.Context, env execenv.ExecutionEnvironment) worktree.G
 	}
 }
 
+// newWorktreeGitRunner returns the lifecycle Git boundary for this session.
+// Production uses gitRunner; package-agent tests can inject a scripted runner
+// through testConfig to exercise the real orchestration without a subprocess.
+func (s *Session) newWorktreeGitRunner(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+	if scripted := s.cfg.testOnly.worktreeGitRunner; scripted != nil {
+		return scripted(ctx, env)
+	}
+	return gitRunner(ctx, env)
+}
+
 // worktreeControlEnv returns a local env rooted at mainRepoRoot for lifecycle
 // git commands (spec §2 "Git control environment", §7 controlEnv()). The
 // user-facing s.env may be rooted inside a worktree after create/switch, and
@@ -679,7 +689,7 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 	if cerr != nil {
 		return worktreeCreateCoreResult{}, cerr
 	}
-	run := gitRunner(ctx, controlEnv)
+	run := s.newWorktreeGitRunner(ctx, controlEnv)
 
 	// Step 2: projectid over the canonical main repo root.
 	canonicalMain := mr
@@ -873,7 +883,7 @@ func (s *Session) rollbackFreshDelegateWorktree(delegateID, lanePath string) {
 	if err := controlEnv.UseControlPolicy(mainRoot); err != nil {
 		return // best-effort: skip when the control policy is unsatisfiable
 	}
-	run := gitRunner(context.Background(), controlEnv)
+	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 	_, _ = run("worktree", "unlock", lanePath)
 	_, _ = run("worktree", "remove", "--force", "--", lanePath)
 	_, _ = run("branch", "-D", delegateID)
@@ -993,7 +1003,7 @@ func (s *Session) worktreeControlRun(ctx context.Context, mainRepoRoot string) (
 	if err != nil {
 		return nil, err
 	}
-	return gitRunner(ctx, controlEnv), nil
+	return s.newWorktreeGitRunner(ctx, controlEnv), nil
 }
 
 // relPathUnderManagedDir canonicalizes projectDir (spec §5: "canonicalize

@@ -25,3 +25,13 @@ func envInfoFromEnv(env execenv.ExecutionEnvironment, clk clock.Clock) schema.En
 		Workspace:  ScanWorkspace(wd),
 	}
 }
+
+// snapshotEnvironmentInfo reads the environment snapshot used by this session.
+// Production delegates to envInfoFromEnv; package-agent tests may inject only
+// this host boundary while still exercising the real Session lifecycle.
+func (s *Session) snapshotEnvironmentInfo(env execenv.ExecutionEnvironment) schema.EnvironmentInfo {
+	if snapshot := s.cfg.testOnly.environmentInfo; snapshot != nil {
+		return snapshot(env, s.sclock())
+	}
+	return envInfoFromEnv(env, s.sclock())
+}
