@@ -88,6 +88,96 @@
       "max"
     ]
   },
+  "claude-sonnet-5": {
+    "_note": "Anthropic Sonnet 5 (platform.claude.com, verified 2026-07-11). Base LiteLLM entry carries context/pricing; overlay adds the effort ladder + adaptive thinking (the DEFAULT when thinking is omitted).",
+    "reasoning_effort_levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "supports_adaptive_thinking": true,
+    "supports_effort_parameter": true,
+    "supports_web_search": true
+  },
+  "claude-fable-5": {
+    "_note": "Anthropic Fable 5 (platform.claude.com, verified 2026-07-11). Thinking is ALWAYS ON — sending thinking disabled is an API 400, hence thinking_always_on.",
+    "reasoning_effort_levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "supports_adaptive_thinking": true,
+    "supports_effort_parameter": true,
+    "supports_web_search": true,
+    "thinking_always_on": true
+  },
+  "gpt-5.6-sol": {
+    "_note": "OpenAI GPT-5.6 Sol (developers.openai.com, released 2026-07-09). Not in the LiteLLM catalog — materialized. Context 1,050,000 per first-party API docs (codex's models.json says 372,000; the API docs win). \"ultra\" is a codex-client-only effort concept and is deliberately absent.",
+    "provider": "openai",
+    "display_name": "GPT-5.6 Sol",
+    "context_window": 1050000,
+    "max_output_tokens": 128000,
+    "supports_tools": true,
+    "supports_vision": true,
+    "supports_reasoning": true,
+    "reasoning_effort_levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "input_cost_per_million": 5.0,
+    "output_cost_per_million": 30.0,
+    "cache_read_input_cost_per_million": 0.5,
+    "aliases": [
+      "gpt-5.6"
+    ]
+  },
+  "gpt-5.6-terra": {
+    "_note": "OpenAI GPT-5.6 Terra (developers.openai.com, released 2026-07-09). Materialized; see gpt-5.6-sol note.",
+    "provider": "openai",
+    "display_name": "GPT-5.6 Terra",
+    "context_window": 1050000,
+    "max_output_tokens": 128000,
+    "supports_tools": true,
+    "supports_vision": true,
+    "supports_reasoning": true,
+    "reasoning_effort_levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "input_cost_per_million": 2.5,
+    "output_cost_per_million": 15.0,
+    "cache_read_input_cost_per_million": 0.25
+  },
+  "gpt-5.6-luna": {
+    "_note": "OpenAI GPT-5.6 Luna (developers.openai.com, released 2026-07-09). Materialized; see gpt-5.6-sol note.",
+    "provider": "openai",
+    "display_name": "GPT-5.6 Luna",
+    "context_window": 1050000,
+    "max_output_tokens": 128000,
+    "supports_tools": true,
+    "supports_vision": true,
+    "supports_reasoning": true,
+    "reasoning_effort_levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "input_cost_per_million": 1.0,
+    "output_cost_per_million": 6.0,
+    "cache_read_input_cost_per_million": 0.1
+  },
   "claude-opus-4-6": {
     "reasoning_effort_levels": [
       "low",

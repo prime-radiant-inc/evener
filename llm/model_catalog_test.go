@@ -210,6 +210,100 @@ func TestEmbeddedModelCatalog(t *testing.T) {
 	}
 }
 
+// The new-model entries: Anthropic claude-sonnet-5 / claude-fable-5 (base
+// LiteLLM entries + serf overlay) and the materialized gpt-5.6 family.
+func TestEmbeddedModelCatalog_ClaudeSonnet5AndFable5(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+	if cat == nil {
+		t.Fatal("embedded catalog nil")
+	}
+	wantLevels := []string{"low", "medium", "high", "xhigh", "max"}
+	for _, id := range []string{"claude-sonnet-5", "claude-fable-5"} {
+		mi := cat.GetModelInfo(id)
+		if mi == nil {
+			t.Fatalf("%s not found in embedded catalog", id)
+		}
+		if mi.ContextWindow != 1_000_000 {
+			t.Errorf("%s ContextWindow = %d, want 1000000", id, mi.ContextWindow)
+		}
+		if mi.MaxOutputTokens == nil || *mi.MaxOutputTokens != 128_000 {
+			t.Errorf("%s MaxOutputTokens = %v, want 128000", id, mi.MaxOutputTokens)
+		}
+		if !reflect.DeepEqual(mi.ReasoningEffortLevels, wantLevels) {
+			t.Errorf("%s ReasoningEffortLevels = %v, want %v", id, mi.ReasoningEffortLevels, wantLevels)
+		}
+		if !mi.SupportsAdaptiveThinking || !mi.SupportsEffortParameter {
+			t.Errorf("%s adaptive/effort = %v/%v, want true/true", id, mi.SupportsAdaptiveThinking, mi.SupportsEffortParameter)
+		}
+		if !mi.SupportsTools || !mi.SupportsVision || !mi.SupportsReasoning {
+			t.Errorf("%s tools/vision/reasoning = %v/%v/%v, want all true", id, mi.SupportsTools, mi.SupportsVision, mi.SupportsReasoning)
+		}
+	}
+	sonnet := cat.GetModelInfo("claude-sonnet-5")
+	if sonnet.InputCostPerMillion == nil || *sonnet.InputCostPerMillion != 3.0 ||
+		sonnet.OutputCostPerMillion == nil || *sonnet.OutputCostPerMillion != 15.0 {
+		t.Errorf("claude-sonnet-5 pricing = %v/%v, want 3/15", sonnet.InputCostPerMillion, sonnet.OutputCostPerMillion)
+	}
+	if sonnet.ThinkingAlwaysOn {
+		t.Error("claude-sonnet-5 ThinkingAlwaysOn = true, want false (thinking can be disabled)")
+	}
+	fable := cat.GetModelInfo("claude-fable-5")
+	if fable.InputCostPerMillion == nil || *fable.InputCostPerMillion != 10.0 ||
+		fable.OutputCostPerMillion == nil || *fable.OutputCostPerMillion != 50.0 {
+		t.Errorf("claude-fable-5 pricing = %v/%v, want 10/50", fable.InputCostPerMillion, fable.OutputCostPerMillion)
+	}
+	if !fable.ThinkingAlwaysOn {
+		t.Error("claude-fable-5 ThinkingAlwaysOn = false, want true (thinking cannot be disabled)")
+	}
+}
+
+func TestEmbeddedModelCatalog_GPT56Family(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+	if cat == nil {
+		t.Fatal("embedded catalog nil")
+	}
+	wantLevels := []string{"low", "medium", "high", "xhigh", "max"}
+	pricing := map[string][3]float64{ // in, out, cache-read $/MTok
+		"gpt-5.6-sol":   {5, 30, 0.5},
+		"gpt-5.6-terra": {2.5, 15, 0.25},
+		"gpt-5.6-luna":  {1, 6, 0.1},
+	}
+	for id, p := range pricing {
+		mi := cat.GetModelInfo(id)
+		if mi == nil {
+			t.Fatalf("%s not found in embedded catalog", id)
+		}
+		if !strings.EqualFold(mi.Provider, "openai") {
+			t.Errorf("%s Provider = %q, want openai", id, mi.Provider)
+		}
+		if mi.ContextWindow != 1_050_000 {
+			t.Errorf("%s ContextWindow = %d, want 1050000", id, mi.ContextWindow)
+		}
+		if mi.MaxOutputTokens == nil || *mi.MaxOutputTokens != 128_000 {
+			t.Errorf("%s MaxOutputTokens = %v, want 128000", id, mi.MaxOutputTokens)
+		}
+		if !reflect.DeepEqual(mi.ReasoningEffortLevels, wantLevels) {
+			t.Errorf("%s ReasoningEffortLevels = %v, want %v", id, mi.ReasoningEffortLevels, wantLevels)
+		}
+		if !mi.SupportsTools || !mi.SupportsVision || !mi.SupportsReasoning {
+			t.Errorf("%s tools/vision/reasoning = %v/%v/%v, want all true", id, mi.SupportsTools, mi.SupportsVision, mi.SupportsReasoning)
+		}
+		if mi.InputCostPerMillion == nil || *mi.InputCostPerMillion != p[0] ||
+			mi.OutputCostPerMillion == nil || *mi.OutputCostPerMillion != p[1] {
+			t.Errorf("%s pricing = %v/%v, want %v/%v", id, mi.InputCostPerMillion, mi.OutputCostPerMillion, p[0], p[1])
+		}
+		if mi.CacheReadInputCostPerMillion == nil || *mi.CacheReadInputCostPerMillion != p[2] {
+			t.Errorf("%s cache-read pricing = %v, want %v", id, mi.CacheReadInputCostPerMillion, p[2])
+		}
+	}
+	// The bare gpt-5.6 alias resolves to sol via both lookup paths.
+	for _, ref := range []string{"gpt-5.6", "openai/gpt-5.6"} {
+		if mi := cat.LookupModelInfo(ref); mi == nil || mi.ID != "gpt-5.6-sol" {
+			t.Errorf("LookupModelInfo(%q) = %+v, want gpt-5.6-sol", ref, mi)
+		}
+	}
+}
+
 // LookupModelInfo must canonicalize a model ref the same way regardless of who
 // asks: strip the Anthropic "[1m]" 1M-context suffix, then the provider
 // namespace ("anthropic/…" from an openrouter-anthropic instance), and resolve
