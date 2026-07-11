@@ -59,9 +59,9 @@ func FuzzSecureFilesystemOperationProgram(f *testing.F) {
 		// reach a sensitive path class.
 		pfsAssertBrowseSurface(t, env, fixture, byte(len(data)))
 		pfsAssertReadBoundary(t, env, fixture, model, mode)
-		pfsAssertEditPolicy(t, env, fixture)
+		pfsAssertEditPolicy(t, env, fixture, mode)
 		pfsRunGrant(t, env, fixture, model, mode, byte(len(data)), 0)
-		pfsAssertDeniedMutation(t, env, fixture, byte(len(data)%pfsDeniedCaseCount))
+		pfsAssertDeniedMutation(t, env, fixture, mode, byte(len(data)%pfsDeniedCaseCount))
 		pfsAssertState(t, fixture, model)
 		if len(data) <= 1 {
 			pfsAssertOffMutator(t)
@@ -300,7 +300,7 @@ func pfsRunOperation(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFi
 	case pfsOpMkdir:
 		pfsMkdir(t, env, fixture, mode, a)
 	case pfsOpDenied:
-		pfsAssertDeniedMutation(t, env, fixture, a%pfsDeniedCaseCount)
+		pfsAssertDeniedMutation(t, env, fixture, mode, a%pfsDeniedCaseCount)
 	case pfsOpGrant:
 		pfsRunGrant(t, env, fixture, model, mode, a, b)
 	default:
@@ -330,22 +330,22 @@ func pfsReadRaw(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixture
 	case 1:
 		got, err := env.ReadFileRaw(fixture.outsideReadable)
 		if mode == sandbox.ModeRestricted {
-			pfsMustDenied(t, err, "restricted read outside readable file")
+			pfsMustNoBytesAndDenied(t, got, err, sandbox.DenialOutsideReadRoots, false, "restricted read outside readable file")
 			return
 		}
 		if err != nil || string(got) != pfsReadableMarker+"\n" {
 			t.Fatalf("%v read-anywhere file = %q, %v", mode, got, err)
 		}
 	case 2:
-		_, err := env.ReadFileRaw(fixture.maskedSentinel)
-		pfsMustDenied(t, err, "read masked sentinel")
+		got, err := env.ReadFileRaw(fixture.maskedSentinel)
+		pfsMustNoBytesAndDenied(t, got, err, sandbox.DenialMasked, true, "read masked sentinel")
 	case 3:
 		target := filepath.Join(fixture.escapeDir, "sentinel.txt")
 		if b&1 != 0 {
 			target = fixture.leafSymlink
 		}
-		_, err := env.ReadFileRaw(target)
-		pfsMustDenied(t, err, "read through escape symlink")
+		got, err := env.ReadFileRaw(target)
+		pfsMustNoBytesAndDenied(t, got, err, sandbox.DenialSymlink, false, "read through escape symlink")
 	}
 }
 
@@ -374,7 +374,7 @@ func pfsWriteRaw(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixtur
 	content := pfsContent("RAW", a, b)
 	err := env.WriteFileRaw(pfsWorkArg(fixture, rel, b), []byte(content), 0o640)
 	if mode == sandbox.ModeReadOnly {
-		pfsMustDenied(t, err, "read-only raw write %q", rel)
+		pfsMustDenied(t, err, sandbox.DenialWritesDisabled, false, "read-only raw write %q", rel)
 		return
 	}
 	if err != nil {
@@ -389,7 +389,7 @@ func pfsWriteRendered(t *testing.T, env *LocalExecutionEnvironment, fixture pfsF
 	content := pfsContent("WRITE", a, b)
 	message, err := env.WriteFile(pfsWorkArg(fixture, rel, b), content)
 	if mode == sandbox.ModeReadOnly {
-		pfsMustDenied(t, err, "read-only write_file %q", rel)
+		pfsMustDenied(t, err, sandbox.DenialWritesDisabled, false, "read-only write_file %q", rel)
 		return
 	}
 	if err != nil {
@@ -407,7 +407,7 @@ func pfsEdit(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixture, m
 	old, exists := model.files[rel]
 	if mode == sandbox.ModeReadOnly {
 		_, err := env.EditFile(pfsWorkArg(fixture, rel, b), old, pfsContent("EDIT", a, b), false)
-		pfsMustDenied(t, err, "read-only edit %q", rel)
+		pfsMustDenied(t, err, sandbox.DenialWritesDisabled, false, "read-only edit %q", rel)
 		return
 	}
 	if !exists {
@@ -429,7 +429,7 @@ func pfsRemove(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixture,
 	rel := pfsManagedPaths[int(a)%len(pfsManagedPaths)]
 	err := env.RemovePath(pfsWorkArg(fixture, rel, b))
 	if mode == sandbox.ModeReadOnly {
-		pfsMustDenied(t, err, "read-only remove %q", rel)
+		pfsMustDenied(t, err, sandbox.DenialWritesDisabled, false, "read-only remove %q", rel)
 		return
 	}
 	if err != nil {
@@ -444,7 +444,7 @@ func pfsRename(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixture,
 	newRel := pfsManagedPaths[int(b)%len(pfsManagedPaths)]
 	err := env.RenamePath(pfsWorkArg(fixture, oldRel, a), pfsWorkArg(fixture, newRel, b))
 	if mode == sandbox.ModeReadOnly {
-		pfsMustDenied(t, err, "read-only rename %q to %q", oldRel, newRel)
+		pfsMustDenied(t, err, sandbox.DenialWritesDisabled, false, "read-only rename %q to %q", oldRel, newRel)
 		return
 	}
 	content, exists := model.files[oldRel]
@@ -503,14 +503,19 @@ func pfsMkdir(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixture, 
 	}
 	var target string
 	writable := false
+	nonReadOnlyKind := sandbox.DenialOutsideWriteRoots
+	nonReadOnlySensitive := false
 	switch selector % 5 {
 	case 0:
 		target = filepath.Join(fixture.worktree, "mkdir", "nested", "leaf")
 		writable = true
 	case 1:
 		target = filepath.Join(fixture.maskedDir, "new")
+		nonReadOnlyKind = sandbox.DenialMasked
+		nonReadOnlySensitive = true
 	case 2:
 		target = filepath.Join(fixture.worktree, ".git", "hooks", "new")
+		nonReadOnlyKind = sandbox.DenialGitProtected
 	case 3:
 		target = filepath.Join(filepath.Dir(fixture.outsideSentinel), "new")
 	case 4:
@@ -519,7 +524,8 @@ func pfsMkdir(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixture, 
 	}
 	err := sfs.mkdirAll("apply_patch", target)
 	if mode == sandbox.ModeReadOnly || !writable {
-		pfsMustDenied(t, err, "mkdir %q", target)
+		kind, sensitive := pfsExpectedWriteDenial(mode, nonReadOnlyKind, nonReadOnlySensitive)
+		pfsMustDenied(t, err, kind, sensitive, "mkdir %q", target)
 		return
 	}
 	if err != nil {
@@ -531,26 +537,34 @@ func pfsMkdir(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixture, 
 	}
 }
 
-func pfsAssertDeniedMutation(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixture, selector byte) {
+func pfsAssertDeniedMutation(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixture, mode sandbox.Mode, selector byte) {
 	t.Helper()
 	switch selector % pfsDeniedCaseCount {
 	case 0:
-		pfsMustDenied(t, env.WriteFileRaw(fixture.protected, []byte("PFS_ATTACK\n"), 0o600), "write protected config")
+		kind, sensitive := pfsExpectedWriteDenial(mode, sandbox.DenialGitProtected, false)
+		pfsMustDenied(t, env.WriteFileRaw(fixture.protected, []byte("PFS_ATTACK\n"), 0o600), kind, sensitive, "write protected config")
 	case 1:
-		pfsMustDenied(t, env.RemovePath(fixture.protected), "remove protected config")
+		kind, sensitive := pfsExpectedWriteDenial(mode, sandbox.DenialGitProtected, false)
+		pfsMustDenied(t, env.RemovePath(fixture.protected), kind, sensitive, "remove protected config")
 	case 2:
 		source := pfsWorkArg(fixture, pfsManagedPaths[0], selector)
-		pfsMustDenied(t, env.RenamePath(source, fixture.protected), "rename into protected config")
+		kind, sensitive := pfsExpectedWriteDenial(mode, sandbox.DenialGitProtected, false)
+		pfsMustDenied(t, env.RenamePath(source, fixture.protected), kind, sensitive, "rename into protected config")
 	case 3:
-		pfsMustDenied(t, env.WriteFileRaw(fixture.outsideSentinel, []byte("PFS_ATTACK\n"), 0o600), "write outside sentinel")
+		kind, sensitive := pfsExpectedWriteDenial(mode, sandbox.DenialOutsideWriteRoots, false)
+		pfsMustDenied(t, env.WriteFileRaw(fixture.outsideSentinel, []byte("PFS_ATTACK\n"), 0o600), kind, sensitive, "write outside sentinel")
 	case 4:
-		pfsMustDenied(t, env.RemovePath(fixture.outsideSentinel), "remove outside sentinel")
+		kind, sensitive := pfsExpectedWriteDenial(mode, sandbox.DenialOutsideWriteRoots, false)
+		pfsMustDenied(t, env.RemovePath(fixture.outsideSentinel), kind, sensitive, "remove outside sentinel")
 	case 5:
-		pfsMustDenied(t, env.WriteFileRaw(fixture.maskedSentinel, []byte("PFS_ATTACK\n"), 0o600), "write masked sentinel")
+		kind, sensitive := pfsExpectedWriteDenial(mode, sandbox.DenialMasked, true)
+		pfsMustDenied(t, env.WriteFileRaw(fixture.maskedSentinel, []byte("PFS_ATTACK\n"), 0o600), kind, sensitive, "write masked sentinel")
 	case 6:
-		pfsMustDenied(t, env.WriteFileRaw(filepath.Join(fixture.escapeDir, "pwned.txt"), []byte("PFS_ATTACK\n"), 0o600), "write through escape symlink")
+		kind, sensitive := pfsExpectedWriteDenial(mode, sandbox.DenialSymlink, false)
+		pfsMustDenied(t, env.WriteFileRaw(filepath.Join(fixture.escapeDir, "pwned.txt"), []byte("PFS_ATTACK\n"), 0o600), kind, sensitive, "write through escape symlink")
 	case 7:
-		pfsMustDenied(t, env.WriteFileRaw(fixture.leafSymlink, []byte("PFS_ATTACK\n"), 0o600), "write symlink leaf")
+		kind, sensitive := pfsExpectedWriteDenial(mode, sandbox.DenialSymlink, false)
+		pfsMustDenied(t, env.WriteFileRaw(fixture.leafSymlink, []byte("PFS_ATTACK\n"), 0o600), kind, sensitive, "write symlink leaf")
 	}
 }
 
@@ -559,8 +573,8 @@ func pfsAssertBrowseSurface(t *testing.T, env *LocalExecutionEnvironment, fixtur
 	pfsAssertList(t, env, fixture, int(selector%3)+1)
 	pfsAssertGlob(t, env, fixture, selector)
 	pfsAssertGrep(t, env, fixture, selector, selector>>1)
-	_, err := env.ListDirectory(fixture.maskedDir, 1)
-	pfsMustDenied(t, err, "list masked directory")
+	entries, err := env.ListDirectory(fixture.maskedDir, 1)
+	pfsMustNoEntriesAndDenied(t, entries, err, sandbox.DenialMasked, true, "list masked directory")
 }
 
 func pfsAssertList(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixture, depth int) {
@@ -648,11 +662,20 @@ func pfsAssertReadBoundary(t *testing.T, env *LocalExecutionEnvironment, fixture
 	pfsReadRaw(t, env, fixture, model, mode, 1, 0) // read-anywhere branch
 }
 
-func pfsAssertEditPolicy(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixture) {
+func pfsAssertEditPolicy(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixture, mode sandbox.Mode) {
 	t.Helper()
-	for _, target := range []string{fixture.protected, fixture.maskedSentinel, fixture.outsideSentinel} {
-		_, err := env.EditFile(target, "PFS_ATTACK", "PFS_REPLACEMENT", false)
-		pfsMustDenied(t, err, "edit immutable path %q", target)
+	for _, tc := range []struct {
+		target    string
+		kind      sandbox.DenialReason
+		sensitive bool
+	}{
+		{target: fixture.protected, kind: sandbox.DenialGitProtected},
+		{target: fixture.maskedSentinel, kind: sandbox.DenialMasked, sensitive: true},
+		{target: fixture.outsideSentinel, kind: sandbox.DenialOutsideWriteRoots},
+	} {
+		kind, sensitive := pfsExpectedWriteDenial(mode, tc.kind, tc.sensitive)
+		_, err := env.EditFile(tc.target, "PFS_ATTACK", "PFS_REPLACEMENT", false)
+		pfsMustDenied(t, err, kind, sensitive, "edit immutable path %q", tc.target)
 	}
 }
 
@@ -720,10 +743,11 @@ func pfsRunGrant(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixtur
 
 	// A grant is one exact leaf. It enables no outside sibling mutation, in every
 	// mode, even though read-only/workspace-write may independently read elsewhere.
-	pfsMustDenied(t, grant.WriteFileRaw(fixture.outsideSentinel, []byte("PFS_ATTACK\n"), 0o600), "grant write outside sibling")
+	kind, sensitive := pfsExpectedWriteDenial(mode, sandbox.DenialOutsideWriteRoots, false)
+	pfsMustDenied(t, grant.WriteFileRaw(fixture.outsideSentinel, []byte("PFS_ATTACK\n"), 0o600), kind, sensitive, "grant write outside sibling")
 	if mode == sandbox.ModeRestricted {
-		_, err := grant.ReadFileRaw(fixture.outsideSentinel)
-		pfsMustDenied(t, err, "restricted grant read outside sibling")
+		got, err := grant.ReadFileRaw(fixture.outsideSentinel)
+		pfsMustNoBytesAndDenied(t, got, err, sandbox.DenialOutsideReadRoots, false, "restricted grant read outside sibling")
 	}
 
 	maskedGrant, ok := env.WithSandboxInvocationGrant(fixture.maskedSentinel).(*LocalExecutionEnvironment)
@@ -731,15 +755,15 @@ func pfsRunGrant(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixtur
 		t.Fatal("masked local grant did not return a local environment")
 	}
 	t.Cleanup(maskedGrant.Cleanup)
-	_, err = maskedGrant.ReadFileRaw(fixture.maskedSentinel)
-	pfsMustDenied(t, err, "grant read masked sentinel")
+	got, err = maskedGrant.ReadFileRaw(fixture.maskedSentinel)
+	pfsMustNoBytesAndDenied(t, got, err, sandbox.DenialMasked, true, "grant read masked sentinel")
 
 	protectedGrant, ok := env.WithSandboxInvocationGrant(fixture.protected).(*LocalExecutionEnvironment)
 	if !ok {
 		t.Fatal("protected local grant did not return a local environment")
 	}
 	t.Cleanup(protectedGrant.Cleanup)
-	pfsMustDenied(t, protectedGrant.WriteFileRaw(fixture.protected, []byte("PFS_ATTACK\n"), 0o600), "grant write protected config")
+	pfsMustDenied(t, protectedGrant.WriteFileRaw(fixture.protected, []byte("PFS_ATTACK\n"), 0o600), sandbox.DenialGitProtected, false, "grant write protected config")
 }
 
 func pfsAssertState(t *testing.T, fixture pfsFixture, model *pfsModel) {
@@ -841,7 +865,30 @@ func pfsContent(kind string, a, b byte) string {
 	return fmt.Sprintf("PFS_%s_%02X_%02X\n", kind, a, b)
 }
 
-func pfsMustDenied(t *testing.T, err error, format string, args ...any) {
+func pfsExpectedWriteDenial(mode sandbox.Mode, nonReadOnlyKind sandbox.DenialReason, nonReadOnlySensitive bool) (sandbox.DenialReason, bool) {
+	if mode == sandbox.ModeReadOnly {
+		return sandbox.DenialWritesDisabled, false
+	}
+	return nonReadOnlyKind, nonReadOnlySensitive
+}
+
+func pfsMustNoBytesAndDenied(t *testing.T, got []byte, err error, kind sandbox.DenialReason, sensitive bool, format string, args ...any) {
+	t.Helper()
+	if len(got) != 0 {
+		t.Fatalf("%s: denied read returned %d bytes", fmt.Sprintf(format, args...), len(got))
+	}
+	pfsMustDenied(t, err, kind, sensitive, format, args...)
+}
+
+func pfsMustNoEntriesAndDenied(t *testing.T, entries []DirEntry, err error, kind sandbox.DenialReason, sensitive bool, format string, args ...any) {
+	t.Helper()
+	if len(entries) != 0 {
+		t.Fatalf("%s: denied directory listing returned %d entries", fmt.Sprintf(format, args...), len(entries))
+	}
+	pfsMustDenied(t, err, kind, sensitive, format, args...)
+}
+
+func pfsMustDenied(t *testing.T, err error, kind sandbox.DenialReason, sensitive bool, format string, args ...any) {
 	t.Helper()
 	if err == nil {
 		t.Fatalf("%s: expected a sandbox denial", fmt.Sprintf(format, args...))
@@ -849,6 +896,12 @@ func pfsMustDenied(t *testing.T, err error, format string, args ...any) {
 	var denied *sandbox.DeniedError
 	if !errors.As(err, &denied) {
 		t.Fatalf("%s: expected *sandbox.DeniedError, got %T: %v", fmt.Sprintf(format, args...), err, err)
+	}
+	if denied.ReasonKind != kind {
+		t.Fatalf("%s: denial reason kind = %v, want %v", fmt.Sprintf(format, args...), denied.ReasonKind, kind)
+	}
+	if denied.Sensitive != sensitive {
+		t.Fatalf("%s: denial sensitive = %v, want %v", fmt.Sprintf(format, args...), denied.Sensitive, sensitive)
 	}
 }
 
