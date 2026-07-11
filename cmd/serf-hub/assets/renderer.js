@@ -1433,7 +1433,13 @@
       run.classList.add("coalesced");
       const first = blocks[0] && blocks[0].dataset.systemTitle || "system event";
       const more = n - 1;
-      toggle.textContent = "✦ " + n + " system events · " + first + (more > 0 ? " + " + more + " more" : "");
+      // Glyph spanned off so it hangs in the marker gutter (one text column).
+      toggle.textContent = "";
+      const glyph = document.createElement("span");
+      glyph.className = "summary-glyph";
+      glyph.textContent = "✦";
+      toggle.appendChild(glyph);
+      toggle.appendChild(document.createTextNode(n + " system events · " + first + (more > 0 ? " + " + more + " more" : "")));
     },
 
     appendSystemLine(text) {
@@ -2559,7 +2565,14 @@
         const extra = targets.length > 3 ? " + " + (targets.length - 3) + " more" : "";
         lede = calls.length + " steps" + (shown ? " · " + shown + extra : "");
       }
-      summary.textContent = "✓ " + lede;
+      // Glyph in its own span so CSS hangs it in the marker gutter and the
+      // summary text sits on the transcript's one column.
+      summary.textContent = "";
+      const glyph = document.createElement("span");
+      glyph.className = "summary-glyph";
+      glyph.textContent = "✓";
+      summary.appendChild(glyph);
+      summary.appendChild(document.createTextNode(lede));
       cluster.classList.add("done");
     },
 

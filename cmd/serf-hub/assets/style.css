@@ -2333,6 +2333,15 @@ button.composer-model-value .caret { color: var(--text-dim); }
   text-align: left;
 }
 .think .think-label { flex-shrink: 0; }
+/* Shared marker treatment for collapsed-summary glyphs (cheap-tool cluster ✓,
+   coalesced system-events ✦): hang in the gutter, text on the x=0 column. */
+.tool-cluster-summary .summary-glyph,
+.system-run-toggle .summary-glyph {
+  flex: 0 0 var(--gutter);
+  margin-left: calc(-1 * var(--gutter));
+  margin-right: calc(-1 * var(--space-3));
+  text-align: left;
+}
 .think .num { font-variant-numeric: tabular-nums; }
 .think .pv {
   flex: 1;
