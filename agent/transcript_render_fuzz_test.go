@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
@@ -197,6 +198,7 @@ func FuzzRenderTranscriptProgram(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, program []byte, payload string) {
+		scenario := trenderScenario(program)
 		header, entries, rangeSpec, opt := trender_program(program, payload)
 
 		got, meta := renderTranscript(header, entries, rangeSpec, opt)
@@ -216,6 +218,8 @@ func FuzzRenderTranscriptProgram(f *testing.F) {
 			}
 		} else if meta.FirstRendered < 0 || meta.LastRendered < meta.FirstRendered || meta.LastRendered >= len(entries) {
 			t.Fatalf("invalid render span = [%d,%d] for %d entries", meta.FirstRendered, meta.LastRendered, len(entries))
+		} else if meta.LastRendered-meta.FirstRendered+1 != meta.TurnsRendered {
+			t.Fatalf("render span [%d,%d] has %d turns, metadata says %d", meta.FirstRendered, meta.LastRendered, meta.LastRendered-meta.FirstRendered+1, meta.TurnsRendered)
 		}
 		if meta.TurnsRendered < meta.TurnsTotal && !meta.Truncated {
 			t.Fatal("elided turns did not set Truncated")
@@ -226,14 +230,42 @@ func FuzzRenderTranscriptProgram(f *testing.F) {
 		if len([]rune(got)) > hardCapChars {
 			t.Fatalf("rendered %d runes, exceeds hard cap %d", len([]rune(got)), hardCapChars)
 		}
+		if !utf8.ValidString(got) {
+			t.Fatal("rendered markdown is not valid UTF-8")
+		}
+
+		switch scenario {
+		case 7:
+			if lines := strings.Count(got, "full line"); lines < 35 {
+				t.Fatalf("in-range pinned result was condensed to %d lines, want all 35", lines)
+			}
+		case 8:
+			if !strings.Contains(got, "pinned turn 0 (full result, outside range)") {
+				t.Fatalf("result-seq pin did not render its out-of-range owner: %q", got)
+			}
+			if lines := strings.Count(got, "outside line"); lines < 35 {
+				t.Fatalf("out-of-range pinned result was condensed to %d lines, want all 35", lines)
+			}
+		case 9:
+			if !meta.Truncated {
+				t.Fatal("hard-cap scenario did not set Truncated")
+			}
+			if !strings.Contains(got, "content truncated at the 200,000-character hard cap") {
+				t.Fatalf("hard-cap scenario omitted truncation marker: %q", got)
+			}
+		}
 	})
 }
 
-func trender_program(program []byte, payload string) (transcript.Header, []transcript.Entry, string, renderOpts) {
-	scenario := byte(0)
-	if len(program) > 0 {
-		scenario = program[0] % 13
+func trenderScenario(program []byte) byte {
+	if len(program) == 0 {
+		return 0
 	}
+	return program[0] % 13
+}
+
+func trender_program(program []byte, payload string) (transcript.Header, []transcript.Entry, string, renderOpts) {
+	scenario := trenderScenario(program)
 	payload = trender_boundedPayload(payload)
 	bulkPayload := payload
 	if len(bulkPayload) > 48 {
