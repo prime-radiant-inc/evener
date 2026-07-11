@@ -19,22 +19,27 @@ import (
 )
 
 // FuzzStatefulSessionToolsProgram drives the real root-session registry for
-// communicate, ask_user, update_goal, and compact_context. It keeps the LLM
-// boundary scripted, uses a fake clock, and supplies a DenyEnv, so handlers run
-// through the same Session-owned state as production without filesystem,
-// process, provider, or network effects.
+// communicate, ask_user, update_goal, and compact_context, plus restore,
+// round-persistence, runtime-registry, and vision-request contracts. It keeps
+// the LLM boundary scripted, uses a fake clock, and supplies a DenyEnv, so
+// handlers run through the same Session-owned state as production without
+// filesystem, process, provider, or network effects.
 func FuzzStatefulSessionToolsProgram(f *testing.F) {
 	for _, seed := range [][]byte{
 		nil,
 		{0},
 		{1, 2, 3, 4},
+		{1, 3, 3, 7},
 		{5, 8, 13, 21, 34},
 		{255, 0, 255, 0, 255, 0},
+		{255, 1, 0, 255, 2, 3},
 	} {
 		f.Add(seed)
 	}
 
 	f.Fuzz(func(t *testing.T, program []byte) {
+		stmRunRestoreContracts(t, program)
+		stmRunRoundContracts(t, program)
 		first := stpRun(t, program)
 		second := stpRun(t, program)
 		if first != second {

@@ -24,20 +24,24 @@ import (
 // surface over a bounded state-home fixture. The fixture contains current and
 // sibling project buckets, a parent/child relationship, rich transcript turns,
 // and one recoverable corrupt line. It exercises discovery plus markdown,
-// outline, and raw reads without consulting a user state directory, starting a
-// provider request, or running a process.
+// outline, raw, and job-transcript reads without consulting a user state
+// directory, starting a provider request, or running a process.
 func FuzzTranscriptDiscoveryReadProgram(f *testing.F) {
 	for _, seed := range [][]byte{
 		nil,
 		{0},
+		{1, 2, 3},
 		{1, 2, 3, 4},
+		{5, 8, 13, 21},
 		{5, 8, 13, 21, 34},
+		{255, 0, 255, 0},
 		{255, 0, 255, 0, 255, 0},
 	} {
 		f.Add(seed)
 	}
 
 	f.Fuzz(func(t *testing.T, program []byte) {
+		stmRunJobTranscriptContracts(t, program)
 		first := tdrpRun(t, program)
 		second := tdrpRun(t, program)
 		if first != second {
