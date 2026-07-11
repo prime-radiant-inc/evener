@@ -445,6 +445,11 @@ func (a *Adapter) setRequestHeaders(httpReq *http.Request, req llm.Request) {
 	if !a.usesCodexBackend() {
 		return
 	}
+	if responsesLiteModel(req.Model) {
+		// Routes gpt-5.6-family requests to the codex backend's
+		// responses-lite variant; without it the backend hangs.
+		httpReq.Header.Set("x-openai-internal-codex-responses-lite", "true")
+	}
 	if strings.TrimSpace(req.SessionID) != "" {
 		httpReq.Header.Set("session-id", strings.TrimSpace(req.SessionID))
 	}

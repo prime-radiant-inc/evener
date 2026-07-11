@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"net/http"
 	"testing"
 
 	"primeradiant.com/serf/llm"
@@ -221,5 +222,40 @@ func TestGPT56_CodexResponsesLiteVerbosityDefaultLow(t *testing.T) {
 	}
 	if _, ok := buildCodexBodyForTest(t, codexLiteRequest("gpt-5.5"))["text"]; ok {
 		t.Error("codex gpt-5.5 request grew a text param")
+	}
+}
+
+// Responses-lite requests are routed by the x-openai-internal-codex-
+// responses-lite header; without it the codex backend hangs on gpt-5.6.
+// It must appear only on codex-backend requests for lite models.
+func TestGPT56_CodexResponsesLiteHeader(t *testing.T) {
+	const liteHeader = "x-openai-internal-codex-responses-lite"
+	newHTTPReq := func(t *testing.T) *http.Request {
+		t.Helper()
+		httpReq, err := http.NewRequest(http.MethodPost, "https://example.test/responses", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return httpReq
+	}
+
+	codex := &Adapter{ChatGPTAccountID: "acct_test"}
+	httpReq := newHTTPReq(t)
+	codex.setRequestHeaders(httpReq, llm.Request{Model: "gpt-5.6-sol"})
+	if got := httpReq.Header.Get(liteHeader); got != "true" {
+		t.Errorf("codex gpt-5.6-sol %s = %q, want \"true\"", liteHeader, got)
+	}
+
+	httpReq = newHTTPReq(t)
+	codex.setRequestHeaders(httpReq, llm.Request{Model: "gpt-5.5"})
+	if got := httpReq.Header.Get(liteHeader); got != "" {
+		t.Errorf("codex gpt-5.5 %s = %q, want absent", liteHeader, got)
+	}
+
+	platform := &Adapter{}
+	httpReq = newHTTPReq(t)
+	platform.setRequestHeaders(httpReq, llm.Request{Model: "gpt-5.6"})
+	if got := httpReq.Header.Get(liteHeader); got != "" {
+		t.Errorf("platform gpt-5.6 %s = %q, want absent", liteHeader, got)
 	}
 }
