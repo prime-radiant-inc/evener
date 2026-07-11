@@ -35,9 +35,6 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
       <div class="input-controls">
         <div class="controls-left">
           <button type="button" class="btn btn-secondary" data-attach-trigger>＋</button>
-          <button type="button" class="tasks-status" data-tasks-trigger title="task list">
-            <span class="status-key">tasks</span><span class="status-value" data-task-status-text>—</span>
-          </button>
         </div>
         <div class="controls-center"></div>
         <div class="controls-right">
@@ -46,7 +43,12 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
         </div>
       </div>
       </div>
-      <div class="input-status" id="input-status"><div class="input-telemetry" data-input-telemetry></div></div>
+      <div class="input-status-rail">
+        <div class="input-status" id="input-status"><div class="input-telemetry" data-input-telemetry></div></div>
+        <button type="button" class="tasks-status" data-tasks-trigger title="task list">
+          <span class="status-key">tasks</span><span class="status-value" data-task-status-text>—</span>
+        </button>
+      </div>
       <input type="file" data-file-picker hidden>
     </div>
   </form>
@@ -134,12 +136,14 @@ const form = window.document.querySelector("form[data-input-form]");
 const inputCard = form.querySelector(".input-card");
 const inputControls = form.querySelector(".input-controls");
 const composerModel = form.querySelector(".composer-model");
-const taskTrigger = form.querySelector(".controls-left [data-tasks-trigger]");
+const taskTrigger = form.querySelector(".input-status-rail [data-tasks-trigger]");
 const telemetry = form.querySelector("[data-input-telemetry]");
 pass(inputCard && inputCard.contains(inputControls), "expected input controls inside input card");
 pass(composerModel && composerModel.querySelector("[data-model-display]"), "expected model display outside button row");
 pass(!form.querySelector(".model-chip"), "model should not occupy the composer button row");
-pass(!!taskTrigger, "task trigger must share the composer control row");
+pass(!!taskTrigger, "task trigger must live on the status rail");
+pass(!form.querySelector(".input-controls [data-tasks-trigger]"), "task trigger must not occupy the composer control row");
+pass(taskTrigger && !taskTrigger.closest("#input-status"), "task trigger must sit outside the htmx input-status swap target");
 pass(!form.querySelector(".task-status-row"), "composer must not reserve a standalone task-status row");
 pass(!!telemetry && telemetry.parentElement.id === "input-status", "telemetry rail remains inside the HTMX input-status swap target");
 
