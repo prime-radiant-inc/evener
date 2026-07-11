@@ -122,7 +122,7 @@ TARGETS=(
 	"native:agent:./mcpprobe:FuzzProbe::"
 	"native:agent:./execenv:FuzzMainRootFromGitdirPointer::"
 	"native:agent:./execenv:FuzzSecurePathResolve::"
-	"native:agent:./execenv:FuzzSecureFilesystemOperationProgram::securepath.go;securepath_browse.go;mutator.go;local.go#ReadFile;local.go#WriteFile;local.go#EditFile;local.go#FileExists;local.go#ListDirectory;local.go#Glob;local.go#Grep"
+	"native:agent:./execenv:FuzzSecureFilesystemOperationProgram::securepath.go;securepath_browse.go;mutator.go"
 	"native:agent:./sandbox:FuzzReRoot::"
 	"native:agent:./sandbox:FuzzResolve::"
 	"native:agent:./sandbox:FuzzSeatbeltPolicyNoInterpolation::"
