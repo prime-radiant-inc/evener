@@ -343,6 +343,7 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 
 	var usage llm.Usage
 	finish := llm.FinishReason{Reason: "stop"}
+	var refusalWarn *llm.Warning
 	var msgID string
 	var actualModel string
 	var rawMessage map[string]any
@@ -532,6 +533,13 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 					if sr, _ := delta["stop_reason"].(string); sr != "" {
 						finish = llm.NormalizeFinishReason("anthropic", sr)
 					}
+					// Claude 5+ attaches stop_details to a "refusal" stop
+					// reason; capture it for the final Response's warnings.
+					if details, ok := delta["stop_details"].(map[string]any); ok {
+						if w := refusalWarning(details); w != nil {
+							refusalWarn = w
+						}
+					}
 				}
 				if u, ok := payload["usage"].(map[string]any); ok {
 					u2 := parseUsage(u)
@@ -635,6 +643,9 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 					Finish:   finish,
 					Usage:    usage,
 					Raw:      rawMessage,
+				}
+				if refusalWarn != nil {
+					r.Warnings = append(r.Warnings, *refusalWarn)
 				}
 				llm.StampEndpointURL(&r, a.BaseURL+"/v1/messages")
 				if len(r.ToolCalls()) > 0 {

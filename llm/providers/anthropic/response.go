@@ -107,6 +107,15 @@ func fromAnthropicResponse(raw map[string]any, requestedModel string) llm.Respon
 		r.Finish = llm.NormalizeFinishReason("anthropic", sr)
 	}
 
+	// Claude 5+ attaches a stop_details object to a "refusal" stop reason
+	// (null for other stop reasons). Surface its category/explanation as a
+	// warning so the agent layer can show why generation stopped.
+	if details, ok := raw["stop_details"].(map[string]any); ok {
+		if w := refusalWarning(details); w != nil {
+			r.Warnings = append(r.Warnings, *w)
+		}
+	}
+
 	if u, ok := raw["usage"].(map[string]any); ok {
 		r.Usage = parseUsage(u)
 	}
@@ -119,6 +128,23 @@ func fromAnthropicResponse(raw map[string]any, requestedModel string) llm.Respon
 	}
 
 	return r
+}
+
+// refusalWarning converts an Anthropic stop_details object (Claude 5+
+// "refusal" stop reason) into a human-readable warning. Returns nil when the
+// details describe no refusal.
+func refusalWarning(details map[string]any) *llm.Warning {
+	if typ, _ := details["type"].(string); typ != "refusal" {
+		return nil
+	}
+	msg := "model refused to continue"
+	if cat, _ := details["category"].(string); cat != "" {
+		msg += " (category: " + cat + ")"
+	}
+	if expl, _ := details["explanation"].(string); expl != "" {
+		msg += ": " + expl
+	}
+	return &llm.Warning{Code: "refusal", Message: msg}
 }
 
 func parseUsage(u map[string]any) llm.Usage {

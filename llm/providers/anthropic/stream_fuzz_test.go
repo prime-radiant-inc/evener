@@ -147,10 +147,24 @@ func FuzzAnthropicStreamMetamorphic(f *testing.F) {
 		"event: message_stop\n" +
 		`data: {"type":"message_stop"}` + "\n\n"
 
+	// Claude 5+ surfaces: refusal stop reason with stop_details, a fallback
+	// content block, and usage.iterations.
+	refusalStream := "event: message_start\n" +
+		`data: {"type":"message_start","message":{"id":"msg_4","model":"claude-fable-5","usage":{"input_tokens":9}}}` + "\n\n" +
+		"event: content_block_start\n" +
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"fallback","from":{"model":"claude-fable-5"},"to":{"model":"claude-sonnet-5"}}}` + "\n\n" +
+		"event: content_block_stop\n" +
+		`data: {"type":"content_block_stop","index":0}` + "\n\n" +
+		"event: message_delta\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber","explanation":"nope"}},"usage":{"output_tokens":2,"iterations":[{"model":"claude-fable-5"}]}}` + "\n\n" +
+		"event: message_stop\n" +
+		`data: {"type":"message_stop"}` + "\n\n"
+
 	seeds := []string{
 		textStream,
 		toolStream,
 		thinkingStream,
+		refusalStream,
 		"event: message_stop\ndata: not-json\n\n",
 		": just a comment\n\n",
 		"\n\n\n",

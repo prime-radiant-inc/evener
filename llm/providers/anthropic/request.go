@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"primeradiant.com/serf/invariant"
@@ -30,6 +31,7 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 
 	// Strip the [1m] suffix — it's a client-side convention, not an API model ID.
 	apiModel := strings.TrimSuffix(req.Model, "[1m]")
+	claude5 := isClaude5OrNewer(apiModel)
 
 	body := map[string]any{
 		"model":         apiModel,
@@ -44,10 +46,12 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 			"cache_control": map[string]any{"type": "ephemeral"},
 		}}
 	}
-	if req.Temperature != nil {
+	// Claude 5+ models reject sampling params (Sonnet 5 400s on non-default
+	// temperature/top_p; Fable removed them), so they are omitted there.
+	if req.Temperature != nil && !claude5 {
 		body["temperature"] = *req.Temperature
 	}
-	if req.TopP != nil {
+	if req.TopP != nil && !claude5 {
 		body["top_p"] = *req.TopP
 	}
 	if len(req.StopSequences) > 0 {
@@ -125,9 +129,18 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 		}
 	}
 
-	if adaptiveThinking {
-		// New path: Opus 4.6, Sonnet 4.6, Mythos — adaptive thinking.
-		body["thinking"] = map[string]any{"type": "adaptive"}
+	if adaptiveThinking || claude5 {
+		// New path: Opus 4.6, Sonnet 4.6, Mythos, and all Claude 5+ models
+		// (Sonnet 5, Fable 5) — adaptive thinking. Claude 5 takes this path
+		// even without a catalog entry: budget_tokens 400s on those models.
+		thinking := map[string]any{"type": "adaptive"}
+		if claude5 {
+			// Claude 5 defaults thinking display to "omitted" (empty thinking
+			// text); serf's UI shows live thinking, so request summaries.
+			// Older adaptive models must stay byte-identical: no display field.
+			thinking["display"] = "summarized"
+		}
+		body["thinking"] = thinking
 		if req.ReasoningEffort != nil {
 			effort := clampEffort(*req.ReasoningEffort, effortLevels)
 			body["output_config"] = map[string]any{"effort": effort}
@@ -207,6 +220,27 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 		}
 	}
 	return body, nil
+}
+
+// isClaude5OrNewer reports whether a model ID belongs to the Claude 5+
+// generation (claude-sonnet-5, claude-fable-5, and future 5+ families). These
+// models only accept adaptive thinking (budget_tokens 400s), reject sampling
+// params (temperature/top_p/top_k), and need thinking display:"summarized"
+// for visible thinking text. Keyed off the model ID locally for now; once the
+// catalog grows a flag for this generation (e.g. thinking-always-on), this
+// helper can be rewired to it.
+func isClaude5OrNewer(model string) bool {
+	if !strings.HasPrefix(model, "claude-") {
+		return false
+	}
+	// The first numeric segment after "claude-" is the major generation:
+	// claude-fable-5 -> 5, claude-sonnet-4-6 -> 4, claude-3-5-sonnet -> 3.
+	for _, seg := range strings.Split(strings.TrimPrefix(model, "claude-"), "-") {
+		if n, err := strconv.Atoi(seg); err == nil {
+			return n >= 5
+		}
+	}
+	return false
 }
 
 func applyAnthropicResponseFormat(system string, rf *llm.ResponseFormat) (string, error) {

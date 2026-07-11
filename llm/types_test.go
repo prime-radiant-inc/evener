@@ -23,6 +23,7 @@ func TestNormalizeFinishReason(t *testing.T) {
 		{"anthropic", "stop_sequence", "stop"},
 		{"anthropic", "max_tokens", "length"},
 		{"anthropic", "tool_use", "tool_calls"},
+		{"anthropic", "refusal", "content_filter"},
 
 		// Google/Gemini
 		{"google", "STOP", "stop"},

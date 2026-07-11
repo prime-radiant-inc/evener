@@ -28,6 +28,10 @@ func FuzzAnthropicComplete(f *testing.F) {
 		[]byte(`{"content":[{"type":"tool_use","id":"t1","name":"shell","input":{"cmd":"ls"}}],"stop_reason":"tool_use"}`),
 		[]byte(`{"content":[{"type":"thinking","thinking":"hmm","signature":"s"}]}`),
 		[]byte(`{"type":"error","error":{"type":"overloaded_error","message":"slow down"}}`),
+		// Claude 5+ surfaces: refusal stop_details, fallback block, usage.iterations.
+		[]byte(`{"id":"msg_r","model":"claude-fable-5","content":[{"type":"text","text":"no"}],"stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber","explanation":"nope"},"usage":{"input_tokens":3,"output_tokens":1,"iterations":[{"model":"claude-fable-5"}]}}`),
+		[]byte(`{"content":[{"type":"fallback","from":{"model":"claude-fable-5"},"to":{"model":"claude-sonnet-5"}},{"type":"text","text":"hi"}],"stop_reason":"end_turn","stop_details":null}`),
+		[]byte(`{"stop_reason":"refusal","stop_details":{"type":"refusal","category":null,"explanation":7}}`),
 		[]byte(`{"content":"not-an-array"}`),
 		[]byte(`{}`),
 		[]byte(``),

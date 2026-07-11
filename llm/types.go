@@ -402,6 +402,11 @@ func normalizeFinish(provider, raw string) string {
 			return FinishReasonToolCalls
 		case "pause_turn":
 			return FinishReasonPauseTurn
+		case "refusal":
+			// Claude 5+ models stop with "refusal" (plus a stop_details object)
+			// when they decline to continue; the closest canonical value is
+			// content_filter, with the raw value preserved alongside.
+			return FinishReasonContentFilter
 		}
 	case "google":
 		switch raw {
