@@ -444,6 +444,11 @@ func (s *Session) processInputWithProvenance(ctx context.Context, input string, 
 }
 
 func (s *Session) processInputKindWithProvenance(ctx context.Context, input string, images []ImageAttachment, kind EntryKind, inputProvenance *provenance.Causal) (string, error) {
+	// Stamp the session id for the whole turn so LLM side calls made from tools
+	// (web fetch summaries, naming, in-turn compaction) attribute to this
+	// session in the per-session API log. callModelWithFallback layers its
+	// per-attempt metadata on top via WithAPILogAttemptContext.
+	ctx = llm.WithAPILogContext(ctx, s.id, 0)
 	// Reset so SESSION_END can fire at the end of this input's processing.
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
