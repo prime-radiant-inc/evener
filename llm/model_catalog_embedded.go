@@ -141,6 +141,12 @@ func applyOverlayFields(m *ModelInfo, ov map[string]any) {
 	if v, ok := ov["supports_effort_parameter"].(bool); ok {
 		m.SupportsEffortParameter = v
 	}
+	if v, ok := ov["thinking_always_on"].(bool); ok {
+		m.ThinkingAlwaysOn = v
+	}
+	if v, ok := ov["supports_vision"].(bool); ok {
+		m.SupportsVision = v
+	}
 	if v, ok := ov["supports_reasoning"].(bool); ok {
 		m.SupportsReasoning = v
 	}
@@ -160,6 +166,26 @@ func applyOverlayFields(m *ModelInfo, ov map[string]any) {
 	if v, ok := ov["supports_web_search"].(bool); ok {
 		b := v
 		m.SupportsWebSearch = &b
+	}
+	if v, ok := ov["input_cost_per_million"].(float64); ok {
+		c := v
+		m.InputCostPerMillion = &c
+	}
+	if v, ok := ov["output_cost_per_million"].(float64); ok {
+		c := v
+		m.OutputCostPerMillion = &c
+	}
+	if v, ok := ov["cache_read_input_cost_per_million"].(float64); ok {
+		c := v
+		m.CacheReadInputCostPerMillion = &c
+	}
+	if aliases, ok := ov["aliases"].([]any); ok {
+		m.Aliases = nil
+		for _, a := range aliases {
+			if s, ok := a.(string); ok {
+				m.Aliases = append(m.Aliases, s)
+			}
+		}
 	}
 }
 

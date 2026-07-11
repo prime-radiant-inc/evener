@@ -26,6 +26,11 @@ type ModelInfo struct {
 	ReasoningEffortLevels    []string `json:"reasoning_effort_levels,omitempty"`
 	SupportsAdaptiveThinking bool     `json:"supports_adaptive_thinking,omitempty"`
 	SupportsEffortParameter  bool     `json:"supports_effort_parameter,omitempty"`
+	// ThinkingAlwaysOn marks models whose thinking cannot be disabled: sending
+	// an explicit thinking-disabled request is an API error (e.g.
+	// claude-fable-5 returns 400). Request builders must never emit a
+	// thinking-off wire shape for these models.
+	ThinkingAlwaysOn bool `json:"thinking_always_on,omitempty"`
 	// SupportsWebSearch is presence-aware: nil means the catalog is silent
 	// on web-search support (caller should use its default), &true / &false
 	// reflect explicit catalog values. The override layer can flip an

@@ -702,6 +702,68 @@ func TestApplyOverrides_MaterializesSerfOnlyModel(t *testing.T) {
 	}
 }
 
+// thinking_always_on marks models whose thinking cannot be disabled (sending
+// thinking disabled is an API 400, e.g. claude-fable-5). The overrides layer
+// is the only source: LiteLLM has no such field.
+func TestApplyOverrides_ThinkingAlwaysOn(t *testing.T) {
+	cat, err := parseLiteLLMCatalog([]byte(`{
+        "claude-fable-5":  {"litellm_provider": "anthropic"},
+        "claude-sonnet-5": {"litellm_provider": "anthropic"}
+    }`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	applyOverrides(cat, []byte(`{"claude-fable-5": {"thinking_always_on": true}}`))
+
+	if !cat.GetModelInfo("claude-fable-5").ThinkingAlwaysOn {
+		t.Error("claude-fable-5 ThinkingAlwaysOn = false, want true from override")
+	}
+	if cat.GetModelInfo("claude-sonnet-5").ThinkingAlwaysOn {
+		t.Error("claude-sonnet-5 ThinkingAlwaysOn = true, want false (no override)")
+	}
+}
+
+// Materialized Serf-only entries can carry vision support, per-million pricing
+// (including cache reads), and aliases — everything a first-party model that
+// LiteLLM lacks needs (e.g. the gpt-5.6 family).
+func TestApplyOverrides_MaterializesVisionPricingAndAliases(t *testing.T) {
+	cat, err := parseLiteLLMCatalog([]byte(`{"existing-model": {"litellm_provider": "x"}}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	applyOverrides(cat, []byte(`{
+		"serf-only": {
+			"provider": "openai", "context_window": 1050000,
+			"supports_vision": true,
+			"input_cost_per_million": 5.0,
+			"output_cost_per_million": 30.0,
+			"cache_read_input_cost_per_million": 0.5,
+			"aliases": ["serf-only-alias"]
+		}
+	}`))
+
+	mi := cat.GetModelInfo("serf-only")
+	if mi == nil {
+		t.Fatal("serf-only model was not materialized")
+	}
+	if !mi.SupportsVision {
+		t.Error("SupportsVision = false, want true")
+	}
+	if mi.InputCostPerMillion == nil || *mi.InputCostPerMillion != 5.0 {
+		t.Errorf("InputCostPerMillion = %v, want 5.0", mi.InputCostPerMillion)
+	}
+	if mi.OutputCostPerMillion == nil || *mi.OutputCostPerMillion != 30.0 {
+		t.Errorf("OutputCostPerMillion = %v, want 30.0", mi.OutputCostPerMillion)
+	}
+	if mi.CacheReadInputCostPerMillion == nil || *mi.CacheReadInputCostPerMillion != 0.5 {
+		t.Errorf("CacheReadInputCostPerMillion = %v, want 0.5", mi.CacheReadInputCostPerMillion)
+	}
+	// The alias must resolve through the lazily-built index.
+	if got := cat.GetModelInfo("serf-only-alias"); got == nil || got.ID != "serf-only" {
+		t.Errorf("GetModelInfo(serf-only-alias) = %+v, want serf-only", got)
+	}
+}
+
 // TestApplyOverrides_MaxOutputTokens verifies the overrides schema carries
 // max_output_tokens onto both a materialized Serf-only entry and an overlay of
 // an existing catalog model.
