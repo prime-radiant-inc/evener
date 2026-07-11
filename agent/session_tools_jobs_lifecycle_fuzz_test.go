@@ -274,6 +274,7 @@ func jtlpNewRootSession(t *testing.T) *Session {
 		MaxSubagentDepth: 2,
 		NoProjectPrompts: true,
 		LLMSleep:         func(context.Context, time.Duration) error { return nil },
+		clock:            agenttest.NewFakeClock(),
 	}
 	cfg.testOnly = testConfig{
 		skipGitSnapshot:     true,
