@@ -58,6 +58,29 @@ pass(/\.input-telemetry \.location\s*\{[^}]*min-width:\s*0[^}]*overflow:\s*hidde
   "location group must be shrinkable and clipped before telemetry wraps");
 pass(/\.input-telemetry \.status-location-part \.status-value\s*\{[^}]*min-width:\s*0[^}]*text-overflow:\s*ellipsis/.test(css),
   "location values must be shrinkable so text-overflow produces ellipsis");
+// Borderless phone composer: the dock surface is the ONE containment device.
+// The inner card must be transparent, unpadded, and must not redraw a focus
+// box around the textarea+controls block (focus reads from the dock's
+// top-rule tint instead).
+const phoneCardRule = (mobile.match(/\.input-card\s*\{[^}]*\}/g) || [])[0];
+pass(phoneCardRule && /background:\s*transparent/.test(phoneCardRule) && /border:\s*0/.test(phoneCardRule) && /padding:\s*0/.test(phoneCardRule),
+  "phone .input-card must be a transparent, borderless, unpadded pass-through");
+pass(/\.input-card:focus-within\s*\{[^}]*outline:\s*none/.test(mobile),
+  "phone must suppress the card focus-within outline (dock top rule carries focus)");
+
+// De-cluttered phone rail: no "branch" label word, no current-task prose,
+// and the tasks trigger only surfaces while the task list is unfinished.
+pass(/\.input-telemetry \.status-location-part\.branch \.status-key\s*\{[^}]*display:\s*none/.test(mobile),
+  "phone rail must drop the 'branch' label word");
+pass(/\.tasks-status \.status-value\s*\{[^}]*display:\s*none/.test(mobile),
+  "phone tasks trigger must drop the current-task prose (count badge carries it)");
+pass(/\.tasks-status\[data-tasks-signal="none"\],\s*\.tasks-status\[data-tasks-signal="done"\]\s*\{[^}]*display:\s*none/.test(mobile),
+  "phone tasks trigger must hide at rest (no tasks / all complete)");
+pass(/data-tasks-trigger data-tasks-signal="none"/.test(workspace),
+  "tasks trigger must boot in the no-signal state until the badge updater runs");
+pass(/\.input-controls \.stop-btn\[disabled\],\s*\.input-controls \.steer-btn\[disabled\]\s*\{[^}]*display:\s*none/.test(mobile),
+  "phone must hide inert stop/steer controls instead of dimming them");
+
 pass(/\.input-telemetry\s*\{[^}]*flex-wrap:\s*nowrap/.test(mobile),
   "phone media aggregate must include the compact nonwrapping telemetry override");
 pass(!/\.input-telemetry\s*\{[^}]*flex-wrap:\s*wrap/.test(mobile),

@@ -468,6 +468,20 @@ await scenario("composer task status shows badge progress and current task text"
   if (text.textContent !== "Implement the footer task status") return { ok: false, detail: "wrong task status text: " + text.textContent };
   const badge = trigger.querySelector(".panel-toggle-badge");
   if (!badge || badge.textContent !== "1/3") return { ok: false, detail: "missing task badge" };
+  if (trigger.dataset.tasksSignal !== "active") {
+    return { ok: false, detail: "unfinished task list must mark the trigger active, got: " + trigger.dataset.tasksSignal };
+  }
+  window.SerfRenderer.applyTasks([
+    { id: 1, description: "done task", status: "done" },
+    { id: 2, description: "also done", status: "done" },
+  ]);
+  if (trigger.dataset.tasksSignal !== "done") {
+    return { ok: false, detail: "completed task list must mark the trigger done, got: " + trigger.dataset.tasksSignal };
+  }
+  window.SerfRenderer.applyTasks([]);
+  if (trigger.dataset.tasksSignal !== "none") {
+    return { ok: false, detail: "empty task list must mark the trigger none, got: " + trigger.dataset.tasksSignal };
+  }
   return { ok: true };
 });
 

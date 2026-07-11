@@ -270,6 +270,37 @@ rhythm break, not a void. Tap floors are untouched (32px desktop / 52px mobile m
   attach, `Interrupt`, `Send as steer`, `Send` (primary blue). Every control is a real
   `<button>` with a visible `:focus-visible` ring and ≥30px hit target.
 
+### Composer anatomy (shipping, 2026-07-11 round 3)
+
+Top to bottom inside `.workspace-input` (the dock):
+
+- **The dock is the container.** A hairline top rule + a background step (`--bg-raised`)
+  separate it from the transcript — that is the composer's ONE containment device
+  (principle #3). On **phone** the inner `.input-card` is a transparent, borderless,
+  unpadded pass-through: no box, no radius, and **no focus-within outline** — focus reads
+  from the dock's top-rule accent tint plus the caret, and each control keeps its own
+  `:focus-visible` ring. On **desktop** the card keeps a subtle raised background,
+  `--radius-md`, and the quiet focus-within outline: in the wide two-pane layout the dock
+  spans the window, so the card earns its keep by locating the input; removing it there is
+  a separate call.
+- **Status rail** (`.input-status-rail`, above the textarea on phone): ONE calm secondary
+  line — status dot + state word · branch ref (truncated; on phone the "branch" label word
+  is dropped, the ref is self-evident) · `ctx` + compact `16k / 262k` numbers · the honest
+  quiet-liveness item when the agent has been silent · the **tasks trigger**. The tasks
+  trigger carries `data-tasks-signal` (`none` / `active` / `done`, set by the badge
+  updater): on phone it renders **only while `active`** (an unfinished list — `tasks 1/3`);
+  at rest ("42/42 forever", or no tasks) it is hidden — a settled count is noise, and the
+  full plan card in the transcript + the desktop trigger keep the panel discoverable. On
+  phone the trigger shows the count badge only, never the current-task prose.
+- **Textarea**: bare — transparent background, no border/outline at rest, 16px on phone
+  (iOS zoom guard).
+- **Action row** (`.input-controls`) is the last content band: `+` attach · model chip ·
+  stop `■` · `steer` · send `↑` (the one blue disc on phone). Its tap zone absorbs
+  `env(safe-area-inset-bottom)` as its own bottom padding, so the row's touch target runs
+  through the home-indicator gutter and the dock has no dead band below it. On phone,
+  **stop and steer render only while they are live** (`[disabled]` → `display: none`): a
+  dimmed disc at rest is one more object at the bottom of the screen for nothing.
+
 ---
 
 ## 7. What still needs rules (deferred from the review panels)
