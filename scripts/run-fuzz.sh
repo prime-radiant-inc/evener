@@ -94,6 +94,7 @@ TARGETS=(
 	"native:llm:./providercfg:FuzzProvidersTOMLLoad::load.go"
 	"native:.:./cmd/serf-hub/internal/launchconfig:FuzzLaunchConfigDecode::io.go"
 	"native:.:./cmd/serf-hub/internal/launchconfig:FuzzLaunchConfigResolve::resolver.go#Resolve"
+	"native:.:./cmd/serf-fuzzregistry:FuzzParseRegistry::main.go#ParseRegistry"
 	"native:agent:./plugin:FuzzPluginManifestParse::plugin.go#ParseManifest"
 	"native:agent:./plugin:FuzzPluginLoaderProgram::"
 	"native:.:./internal/credentials:FuzzCredentialsStoreDecode::store.go"
