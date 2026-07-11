@@ -24,6 +24,7 @@ FuzzErrorFromHTTPStatus 80.8
 FuzzFrontmatterParse 100.0
 FuzzGeminiStreamMetamorphic 85.6
 FuzzGeminiStreamStructured 93.0
+FuzzGoalLifecycleProgram 100.0
 FuzzGoogleComplete 82.2
 FuzzGoogleRequestBuild 80.0
 FuzzHandleMessage 82.4

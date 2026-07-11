@@ -114,6 +114,7 @@ TARGETS=(
 	"native:agent:./internal/diagnostic:FuzzDiagnosticClassification::"
 	"native:agent:./internal/diagnostic:FuzzDiagnosticClassificationProgram::diagnostic.go"
 	"native:agent:./internal/goal:FuzzGoalStoreTerminalPersistence::"
+	"native:agent:./internal/goal:FuzzGoalLifecycleProgram::goal.go;prompt.go"
 	"native:agent:./internal/installid:FuzzLoadOrCreateInstallationIDWithFS::"
 	"native:agent:./internal/promptpath:FuzzPromptPaths::"
 	"native:agent:./internal/tool/repair:FuzzRepairJSON::"
