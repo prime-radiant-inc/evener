@@ -112,6 +112,7 @@ TARGETS=(
 	"native:agent:./internal/clock:FuzzRealTimerStopResetNonPositive::"
 	"native:agent:./internal/clock:FuzzRealClockProgram::clock.go"
 	"native:agent:./internal/diagnostic:FuzzDiagnosticClassification::"
+	"native:agent:./internal/diagnostic:FuzzDiagnosticClassificationProgram::diagnostic.go"
 	"native:agent:./internal/goal:FuzzGoalStoreTerminalPersistence::"
 	"native:agent:./internal/installid:FuzzLoadOrCreateInstallationIDWithFS::"
 	"native:agent:./internal/promptpath:FuzzPromptPaths::"

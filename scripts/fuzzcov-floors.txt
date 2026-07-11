@@ -18,6 +18,7 @@ FuzzCodexItemDecode 1.0
 FuzzColorParsing 100.0
 FuzzCountInputTokensResponse 84.6
 FuzzCredentialsStoreDecode 76.5
+FuzzDiagnosticClassificationProgram 100.0
 FuzzDoctorLoadTranscript 83.3
 FuzzErrorFromHTTPStatus 80.8
 FuzzFrontmatterParse 100.0
