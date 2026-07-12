@@ -32,6 +32,12 @@ func runAgentJobsSeed100(t *testing.T, text string) {
 	seed100Nested(t)
 	seed100Drain(t)
 	seed100JobTools(t, text)
+	seed100SessionToolsJobsMore(t)
+	seed100ToolsRangeA(t)
+	seed100ToolsRangeB(t)
+	seed100ToolsRangeC(t)
+	seed100ToolsRangeD(t)
+	seed100ToolsFinal(t)
 }
 
 func seed100Jobs(t *testing.T, text string) {

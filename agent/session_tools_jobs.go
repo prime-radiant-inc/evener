@@ -913,7 +913,7 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
 			jobs = append(jobs, projectJobRecord(s, rec))
 		}
 	}
-	delegateRecords, err := jm.store.LoadDelegates()
+	delegateRecords, err := loadDelegatesForJobList(jm)
 	if err != nil {
 		return "", err
 	}
@@ -935,6 +935,10 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	}
 	_ = maxChars
 	return tool.StateResult{Output: formatJobList(result), State: result}, nil
+}
+
+var loadDelegatesForJobList = func(jm *jobManager) (map[string]*jobstore.DelegateRecord, error) {
+	return jm.store.LoadDelegates()
 }
 
 func jobListDelegatesForJobs(s *Session, records map[string]*jobstore.DelegateRecord, jobs []jobListEntry) []delegateListEntry {
@@ -1113,12 +1117,12 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 	if _, pre, lookupErr := s.nestedOrLocalJobManager(jobID); lookupErr == nil && pre != nil {
 		previousStatus = pre.Status
 	}
-	rec, err := s.stopNestedOrLocal(jobID)
+	rec, err := stopNestedOrLocalForJobStop(s, jobID)
 	if err != nil {
 		return "", errors.Join(childStopErr, err)
 	}
 	if cascadeChild != nil {
-		if _, cascadeErr := s.stopDelegateSubtree(cascadeChild); cascadeErr != nil {
+		if _, cascadeErr := stopDelegateSubtreeForJobStop(s, cascadeChild); cascadeErr != nil {
 			childStopErr = errors.Join(childStopErr, cascadeErr)
 		}
 	}
@@ -1145,6 +1149,14 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 		Outcome:        classifyStopOutcome(previousStatus, rec),
 	}
 	return tool.StateResult{Output: formatJobStop(stop), State: stop}, nil
+}
+
+var stopNestedOrLocalForJobStop = func(s *Session, jobID string) (*jobstore.JobRecord, error) {
+	return s.stopNestedOrLocal(jobID)
+}
+
+var stopDelegateSubtreeForJobStop = func(s *Session, child *Session) ([]*jobstore.JobRecord, error) {
+	return s.stopDelegateSubtree(child)
 }
 
 type jobReadOutputResult struct {
