@@ -4,12 +4,14 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -17,11 +19,11 @@ import (
 // FuzzJobDelegateSendSeed100Edges exercises deterministic send and restore
 // guards whose inputs normally require a partially lost delegate runtime.
 func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
-	for seed := byte(0); seed < 10; seed++ {
+	for seed := byte(0); seed < 13; seed++ {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, seed byte) {
-		switch seed % 10 {
+		switch seed % 13 {
 		case 0:
 			s := newLeanDelegateRestorePreflightSession(t, llm.NewClient())
 			rec := seedStoppedDelegateRestoreRecord(t, s)
@@ -109,6 +111,33 @@ func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
 			s.subagents.track(&subagent{id: rec.DelegateRestore.ChildSessionID, sess: &Session{}, running: true})
 			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed", OnIdle: "start"})
 			requireSendSeed100Error(t, res, "target_not_resumable:")
+		case 10:
+			s := &Session{}
+			s.cfg.spawn.parentSteer = func(string, *provenance.Causal) {}
+			delegateSendTestHooks.afterClassify = func(got *Session) { got.cfg.spawn.parentSteer = nil }
+			t.Cleanup(func() { delegateSendTestHooks.afterClassify = nil })
+			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: runtimeMessageAliasCaller, Message: "seed"})
+			requireSendSeed100Error(t, res, "caller unavailable")
+		case 11:
+			s := newLeanDelegateRestorePreflightSession(t, llm.NewClient())
+			rec := seedStoppedDelegateRestoreRecord(t, s)
+			delegateSendTestHooks.findJob = func(*jobManager, string) (*jobstore.JobRecord, error) {
+				return nil, errors.New("seed lookup")
+			}
+			t.Cleanup(func() { delegateSendTestHooks.findJob = nil })
+			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed"})
+			requireSendSeed100Error(t, res, "target_not_found: seed lookup")
+		case 12:
+			s := newLeanDelegateRestorePreflightSession(t, llm.NewClient())
+			rec := seedStoppedDelegateRestoreRecord(t, s)
+			events := loadJobStoreEvents(t, s.jobManager)
+			events = events[:len(events)-1]
+			rewriteJobStoreEvents(t, s.jobManager, events)
+			s.subagents.track(&subagent{id: rec.DelegateRestore.ChildSessionID, sess: &Session{}})
+			delegateSendTestHooks.finalize = func(*Session, string, string, *subagent) error { return errors.New("seed finalize") }
+			t.Cleanup(func() { delegateSendTestHooks.finalize = nil })
+			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed"})
+			requireSendSeed100Error(t, res, "target_not_resumable: finalize observed-terminal")
 		}
 	})
 }

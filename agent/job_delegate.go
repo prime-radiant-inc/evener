@@ -417,6 +417,12 @@ func classifyDelegateSendTarget(target, message, onIdle string, blockTimeoutMS i
 	return delegateTargetDelegateID, ""
 }
 
+var delegateSendTestHooks struct {
+	afterClassify func(*Session)
+	findJob       func(*jobManager, string) (*jobstore.JobRecord, error)
+	finalize      func(*Session, string, string, *subagent) error
+}
+
 func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs) sendMessageResult {
 	if ctx == nil {
 		ctx = context.Background()
@@ -432,6 +438,9 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		onIdle = "fail"
 	}
 	kind, reason := classifyDelegateSendTarget(target, message, onIdle, args.BlockTimeoutMS, args.FromWatch, s.hasCallerRoute())
+	if hook := delegateSendTestHooks.afterClassify; hook != nil {
+		hook(s)
+	}
 	switch kind {
 	case delegateTargetRejected:
 		return sendMessageFailed(target, errors.New(reason))
@@ -503,7 +512,11 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	if recTarget == "" {
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate %q has no job history", target))
 	}
-	rec, err := findJobRecord(jm, recTarget)
+	findJob := findJobRecord
+	if hook := delegateSendTestHooks.findJob; hook != nil {
+		findJob = hook
+	}
+	rec, err := findJob(jm, recTarget)
 	if err != nil {
 		return sendMessageFailed(target, fmt.Errorf("target_not_found: %w", err))
 	}
