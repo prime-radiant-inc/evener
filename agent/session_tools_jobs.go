@@ -772,9 +772,9 @@ type jobReadOutputSnapshot struct {
 // resolution keys on fallbackTarget.
 func (s *Session) readJobOutputSnapshot(jm *jobManager, fallbackTarget *Session, jobID string, readBytes int, fromHead bool, grepRE *regexp.Regexp) (jobReadOutputSnapshot, error) {
 	for {
-		_, err := findJobRecord(jm, jobID)
+		_, err := findJobRecordForSnapshot(jm, jobID)
 		if err != nil {
-			next, ok, fallbackErr := fallbackTarget.jobReadClosedStoreFallback(jm, err)
+			next, ok, fallbackErr := jobReadFallbackForSnapshot(fallbackTarget, jm, err)
 			if ok {
 				jm = next
 				continue
@@ -782,9 +782,9 @@ func (s *Session) readJobOutputSnapshot(jm *jobManager, fallbackTarget *Session,
 			return jobReadOutputSnapshot{}, fallbackErr
 		}
 
-		content, totalBytes, dropped, truncated, err := jm.readJobWindow(jobID, readBytes, fromHead)
+		content, totalBytes, dropped, truncated, err := readJobWindowForSnapshot(jm, jobID, readBytes, fromHead)
 		if err != nil {
-			next, ok, fallbackErr := fallbackTarget.jobReadClosedStoreFallback(jm, err)
+			next, ok, fallbackErr := jobReadFallbackForSnapshot(fallbackTarget, jm, err)
 			if ok {
 				jm = next
 				continue
@@ -792,9 +792,9 @@ func (s *Session) readJobOutputSnapshot(jm *jobManager, fallbackTarget *Session,
 			return jobReadOutputSnapshot{}, fallbackErr
 		}
 
-		rec, err := findJobRecord(jm, jobID)
+		rec, err := findJobRecordForSnapshot(jm, jobID)
 		if err != nil {
-			next, ok, fallbackErr := fallbackTarget.jobReadClosedStoreFallback(jm, err)
+			next, ok, fallbackErr := jobReadFallbackForSnapshot(fallbackTarget, jm, err)
 			if ok {
 				jm = next
 				continue
@@ -804,18 +804,18 @@ func (s *Session) readJobOutputSnapshot(jm *jobManager, fallbackTarget *Session,
 
 		var matches []jobstore.Match
 		if grepRE != nil {
-			matches, err = jm.grepOutput(jobID, grepRE)
+			matches, err = grepJobOutputForSnapshot(jm, jobID, grepRE)
 			if err != nil {
-				next, ok, fallbackErr := fallbackTarget.jobReadClosedStoreFallback(jm, err)
+				next, ok, fallbackErr := jobReadFallbackForSnapshot(fallbackTarget, jm, err)
 				if ok {
 					jm = next
 					continue
 				}
 				return jobReadOutputSnapshot{}, fallbackErr
 			}
-			rec, err = findJobRecord(jm, jobID)
+			rec, err = findJobRecordForSnapshot(jm, jobID)
 			if err != nil {
-				next, ok, fallbackErr := fallbackTarget.jobReadClosedStoreFallback(jm, err)
+				next, ok, fallbackErr := jobReadFallbackForSnapshot(fallbackTarget, jm, err)
 				if ok {
 					jm = next
 					continue
@@ -835,6 +835,19 @@ func (s *Session) readJobOutputSnapshot(jm *jobManager, fallbackTarget *Session,
 		}, nil
 	}
 }
+
+var (
+	findJobRecordForSnapshot = findJobRecord
+	readJobWindowForSnapshot = func(jm *jobManager, jobID string, bytes int, fromHead bool) (string, int64, int64, bool, error) {
+		return jm.readJobWindow(jobID, bytes, fromHead)
+	}
+	grepJobOutputForSnapshot = func(jm *jobManager, jobID string, re *regexp.Regexp) ([]jobstore.Match, error) {
+		return jm.grepOutput(jobID, re)
+	}
+	jobReadFallbackForSnapshot = func(target *Session, jm *jobManager, err error) (*jobManager, bool, error) {
+		return target.jobReadClosedStoreFallback(jm, err)
+	}
+)
 
 // snapshot serves a watch-granted cross-session read from the parent store's
 // read-only view: the same content/grep shape as readJobOutputSnapshot, but

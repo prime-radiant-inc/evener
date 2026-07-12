@@ -47,6 +47,11 @@ func seed100SessionToolsJobsMore(t *testing.T) {
 	_, _ = root.inspectDescendantReceiverWatchByID("missing")
 	_, _, _ = root.clearDescendantReceiverWatchByID("missing")
 	delete(root.subagents.subs, "nil-child")
+	root.subagents.subs["bare-child"] = &subagent{id: "bare-child", sess: &Session{}}
+	_ = root.watchListToolResultWithDescendantReceivers(jobWatchListToolResult{})
+	_, _ = root.inspectDescendantReceiverWatchByID("missing")
+	_, _, _ = root.clearDescendantReceiverWatchByID("missing")
+	delete(root.subagents.subs, "bare-child")
 
 	// Delegate projection ownership and absent-current/latest filtering.
 	jobs := []jobListEntry{{JobID: "job_one", DelegateID: "dlg_one"}}
@@ -63,6 +68,9 @@ func seed100SessionToolsJobsMore(t *testing.T) {
 	// Bounding reaches the successful empty-output fallback before the final
 	// structured-result degradation.
 	_, _ = marshalBoundedDelegateResult(delegateToolResult{Output: ptrString(strings.Repeat("x", 100))}, 128)
+	for limit := 1; limit <= 512; limit++ {
+		_, _ = marshalBoundedDelegateResult(delegateToolResult{Output: ptrString(strings.Repeat("x", 100))}, limit)
+	}
 
 	// Granted reads expose both independent provider error paths.
 	want := errors.New("seed read fault")
@@ -99,6 +107,51 @@ func seed100SessionToolsJobsMore(t *testing.T) {
 	_, _ = jobListTool(closedSession, nil, 100)
 	_, _ = jobReadOutputTool(nil, closedSession, map[string]any{"job_id": "job_x"}, 100)
 
+	// Each snapshot phase fails once, falls back, and is retried successfully.
+	origFind := findJobRecordForSnapshot
+	origWindow := readJobWindowForSnapshot
+	origGrep := grepJobOutputForSnapshot
+	origFallback := jobReadFallbackForSnapshot
+	rec := &jobstore.JobRecord{JobID: "job_snapshot", Status: jobstore.StatusRunning}
+	findCalls := 0
+	findJobRecordForSnapshot = func(*jobManager, string) (*jobstore.JobRecord, error) {
+		findCalls++
+		if findCalls == 2 || findCalls == 4 || findCalls == 9 {
+			return nil, errors.New("seed find fault")
+		}
+		return rec, nil
+	}
+	windowCalls := 0
+	readJobWindowForSnapshot = func(*jobManager, string, int, bool) (string, int64, int64, bool, error) {
+		windowCalls++
+		if windowCalls == 1 {
+			return "", 0, 0, false, errors.New("seed window fault")
+		}
+		return "match", 5, 0, false, nil
+	}
+	grepCalls := 0
+	grepJobOutputForSnapshot = func(*jobManager, string, *regexp.Regexp) ([]jobstore.Match, error) {
+		grepCalls++
+		if grepCalls == 1 {
+			return nil, errors.New("seed grep fault")
+		}
+		return []jobstore.Match{{Line: "match"}}, nil
+	}
+	jobReadFallbackForSnapshot = func(*Session, *jobManager, error) (*jobManager, bool, error) {
+		return closedSession.jobManager, true, nil
+	}
+	_, _ = root.readJobOutputSnapshot(closedSession.jobManager, root, rec.JobID, 10, false, regexp.MustCompile("match"))
+	findJobRecordForSnapshot = origFind
+	readJobWindowForSnapshot = origWindow
+	grepJobOutputForSnapshot = origGrep
+	jobReadFallbackForSnapshot = origFallback
+	t.Cleanup(func() {
+		findJobRecordForSnapshot = origFind
+		readJobWindowForSnapshot = origWindow
+		grepJobOutputForSnapshot = origGrep
+		jobReadFallbackForSnapshot = origFallback
+	})
+
 	// Script a continuously growing output window to exhaust the retry budget,
 	// then feed that not-ok result through the incremental scanner.
 	originalRead := readJobOutputForScan
@@ -114,6 +167,11 @@ func seed100SessionToolsJobsMore(t *testing.T) {
 	}
 	jobOutputBytesForScan = func(*jobManager, string) (int64, error) { return 3, nil }
 	g = &jobGrepScan{scanned: 2, lastTotal: 0}
+	_ = g.step(nil, "job_x", regexp.MustCompile("x"), 10)
+	readJobOutputForScan = func(*jobManager, string, int) (string, int64, bool, error) {
+		return "", 0, false, errors.New("seed scan fault")
+	}
+	g = &jobGrepScan{lastTotal: 0}
 	_ = g.step(nil, "job_x", regexp.MustCompile("x"), 10)
 	readJobOutputForScan = originalRead
 	jobOutputBytesForScan = originalBytes
