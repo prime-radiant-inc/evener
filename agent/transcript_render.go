@@ -154,6 +154,17 @@ type readMeta struct {
 // errBadRange is the sentinel wrapped by parseRangeErr for malformed range specs.
 var errBadRange = errors.New("malformed range")
 
+var encodeTranscriptJSON = func(v any) (string, error) {
+	var buf strings.Builder
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		return "", err
+	}
+	return strings.TrimRight(buf.String(), "\n"), nil
+}
+
 // parseRange resolves a range spec to inclusive [startSeq, endSeq] bounds over an
 // entry list of length entryCount, clamping to valid bounds. A malformed spec is
 // treated as the smart default. An empty entry list yields the empty range
@@ -691,9 +702,6 @@ func applyHardCap(content string) (bool, string) {
 	}
 	note := "\n\n_… content truncated at the 200,000-character hard cap; use range or expand_turn to narrow …_\n"
 	keep := hardCapChars - len([]rune(note))
-	if keep < 0 {
-		keep = 0
-	}
 	return true, string(runes[:keep]) + note
 }
 
@@ -1133,14 +1141,11 @@ func hasNonJobResultKeys(raw string) bool {
 }
 
 func prettyJSONValue(v any) (string, bool) {
-	var buf strings.Builder
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(v); err != nil {
+	pretty, err := encodeTranscriptJSON(v)
+	if err != nil {
 		return "", false
 	}
-	return strings.TrimRight(buf.String(), "\n"), true
+	return pretty, true
 }
 
 // prettyJSON re-indents a JSON object or array body for readability, returning
@@ -1158,14 +1163,11 @@ func prettyJSON(raw string) (string, bool) {
 	if err := decodeSingleJSON(dec, &v); err != nil {
 		return "", false
 	}
-	var buf strings.Builder
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(v); err != nil {
+	pretty, err := encodeTranscriptJSON(v)
+	if err != nil {
 		return "", false
 	}
-	return strings.TrimRight(buf.String(), "\n"), true
+	return pretty, true
 }
 
 // writeResultBody renders a tool result body verbatim inside a fenced code block,

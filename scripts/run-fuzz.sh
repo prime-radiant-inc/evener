@@ -296,6 +296,7 @@ TARGETS=(
 	"native:agent:.:FuzzJobReadRecoveryGrant::session_tools_jobs.go"
 	"native:agent:.:FuzzRawLinesForRange::transcript_render.go#rawLinesForRange"
 	"native:agent:.:FuzzResolveTranscript::transcript_lookup.go#resolveTranscript"
+	"native:agent:.:FuzzTranscriptRenderLookupExact::transcript_render.go;transcript_lookup.go"
 	"native:agent:.:FuzzToolInputSummary::transcript_render.go#toolInputSummary"
 	"native:agent:.:FuzzSessionNamerProgram::session_namer.go"
 	"native:agent:.:FuzzEvalLifecycleProgram::eval.go;eval_probes.go"

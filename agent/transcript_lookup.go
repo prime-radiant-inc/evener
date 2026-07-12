@@ -7,6 +7,8 @@ import (
 	"strings"
 )
 
+var transcriptBucketGlob = filepath.Glob
+
 // resolveTranscript turns a model-supplied selector into a concrete file path
 // and its opaque ref.
 //
@@ -123,7 +125,7 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 // It returns bucket roots, not their sessions subdirectories.
 func enumerateBuckets(stateHome string) ([]string, error) {
 	pattern := filepath.Join(stateHome, "serf", "projects", "*")
-	matches, err := filepath.Glob(pattern)
+	matches, err := transcriptBucketGlob(pattern)
 	if err != nil {
 		return nil, fmt.Errorf("glob project buckets: %w", err)
 	}
