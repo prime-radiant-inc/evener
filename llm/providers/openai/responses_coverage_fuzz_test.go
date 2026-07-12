@@ -134,6 +134,89 @@ func TestResponsesCoverageAdversarialStreamBranches(t *testing.T) {
 	responsesCoverageAdversarialStreamBranches(t)
 }
 
+func responsesCoverageRemainingBranches(t testing.TB) {
+	t.Helper()
+	strict := true
+	temperature := 0.2
+	topP := 0.8
+	maxTokens := 12
+	maxToolCalls := 2
+	background := true
+	store := true
+	effort := "high"
+	format := llm.ResponseFormat{Type: "json_schema", JSONSchema: map[string]any{"type": "object"}, Strict: true}
+	codex := &Adapter{ResponsesPath: defaultCodexResponses}
+	body, err := codex.buildRequestBody(llm.Request{
+		Model: "gpt-5.6",
+		Messages: []llm.Message{
+			{Role: llm.RoleSystem, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "system"}}},
+			{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "user"}}},
+		},
+		Tools:     []llm.ToolDefinition{{Name: "tool", Parameters: map[string]any{"type": "object"}, Strict: &strict}},
+		WebSearch: true, ResponseFormat: &format, ReasoningEffort: &effort,
+		ProviderOptions: map[string]any{"openai": map[string]any{
+			"parallel_tool_calls": true, "verbosity": "high", "temperature": 1,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["parallel_tool_calls"] != false || body["model"] != "gpt-5.6-sol" {
+		t.Fatalf("codex lite body=%v", body)
+	}
+	if _, err := codex.buildRequestBody(llm.Request{Model: "gpt-5.6"}); err != nil {
+		t.Fatal(err)
+	}
+
+	public := &Adapter{}
+	_, err = public.buildRequestBody(llm.Request{
+		Model: "gpt-5.6", Temperature: &temperature, TopP: &topP, MaxTokens: &maxTokens,
+		StopSequences: []string{"stop"}, PromptCacheKey: " cache ", PreviousResponseID: " prev ",
+		ConversationID: " conv ", ServiceTier: " auto ", SafetyIdentifier: " safe ",
+		PromptCacheRetention: "24h", Truncation: "auto", MaxToolCalls: &maxToolCalls,
+		Background: &background, Store: &store, Metadata: map[string]string{"k": "v"},
+		Include: []string{"extra"}, ResponseFormat: &format,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = toResponsesInput([]llm.Message{
+		{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: "a", Phase: "final"}, {Kind: llm.ContentText, Text: "b", Phase: "final"},
+		}},
+		{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentDocument, Document: &llm.DocumentData{Data: []byte("pdf")}}}},
+		{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+			ToolCallID: "call", Content: map[string]any{"ok": true}, ImageData: []byte("png"),
+		}}}},
+	}, "gpt-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := fromResponses(map[string]any{"output": []any{
+		map[string]any{"type": "web_search_call", "action": map[string]any{"query": "q"}},
+		map[string]any{"type": "reasoning", "id": "reason", "encrypted_content": "secret", "summary": []any{map[string]any{"text": "summary"}}},
+	}}, "requested")
+	if len(r.Message.Content) != 2 {
+		t.Fatalf("decoded content=%v", r.Message.Content)
+	}
+
+	sse := "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"call_id\":\"nameless\"}}\n\n" +
+		"data: {\"type\":\"response.function_call_arguments.delta\",\"call_id\":\"nameless\",\"name\":\"named\"}\n\n" +
+		"data: {\"type\":\"response.completed\",\"status\":\"completed\"}\n\n"
+	if resp, sawError := accumulateResponsesSSE(&Adapter{}, []byte(sse), false); sawError || resp == nil {
+		t.Fatalf("response=%v error=%v", resp, sawError)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	stream := llm.NewChanStream(func() {})
+	go (&Adapter{}).decodeResponsesStream(ctx, func() {}, &http.Response{Body: io.NopCloser(strings.NewReader(""))}, stream, llm.Request{}, nil)
+	for range stream.Events() {
+	}
+}
+
 func responsesCoverageAdversarialStreamBranches(t testing.TB) {
 	t.Helper()
 	originalRawBodyEnabled := responsesRawBodyEnabled
@@ -167,17 +250,19 @@ func responsesCoverageAdversarialStreamBranches(t testing.TB) {
 }
 
 func FuzzResponsesCoverage(f *testing.F) {
-	for _, scenario := range []byte{0, 1, 2} {
+	for _, scenario := range []byte{0, 1, 2, 3} {
 		f.Add(scenario)
 	}
 	f.Fuzz(func(t *testing.T, scenario byte) {
-		switch scenario % 3 {
+		switch scenario % 4 {
 		case 0:
 			responsesCoverageRequestAndTransportBranches(t)
 		case 1:
 			responsesCoverageSchemaInputAndDecodeBranches(t)
 		case 2:
 			responsesCoverageAdversarialStreamBranches(t)
+		case 3:
+			responsesCoverageRemainingBranches(t)
 		}
 	})
 }
