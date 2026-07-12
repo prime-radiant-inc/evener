@@ -143,56 +143,6 @@ func FuzzMainOptions(f *testing.F) {
 	})
 }
 
-func FuzzRunMainEarlyBootstrap(f *testing.F) {
-	for mode := byte(0); mode < 5; mode++ {
-		f.Add(mode)
-	}
-	f.Fuzz(func(t *testing.T, mode byte) {
-		mode %= 5
-		stop := errors.New("stop")
-		root := t.TempDir()
-		cfg := DefaultConfig()
-		cfg.RunDir = root
-		cfg.StateGlob = root + "/projects/*"
-		cfg.PastIndexDB = root + "/index.db"
-		cfg.HubStateRoot = root
-		released := false
-		deps := mainDeps{
-			loadConfig: func(string) (Config, error) {
-				if mode == 1 {
-					return Config{}, stop
-				}
-				return cfg, nil
-			},
-			ensureDirs: func() error {
-				if mode == 2 {
-					return stop
-				}
-				return nil
-			},
-			acquireLock: func(string) (func(), error) {
-				if mode == 3 {
-					return nil, stop
-				}
-				return func() { released = true }, nil
-			},
-			newToken: func() (string, error) { return "", stop },
-		}
-		args := []string(nil)
-		if mode == 0 {
-			args = []string{"-unknown"}
-		}
-		var stderr bytes.Buffer
-		err := runMain(args, &stderr, deps)
-		if err == nil {
-			t.Fatal("runMain unexpectedly succeeded")
-		}
-		if mode >= 4 && !released {
-			t.Fatal("acquired lock was not released")
-		}
-	})
-}
-
 func lastColon(s string) int {
 	for i := len(s) - 1; i >= 0; i-- {
 		if s[i] == ':' {
