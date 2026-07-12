@@ -11,6 +11,8 @@ import (
 	"primeradiant.com/serf/envvars"
 )
 
+var pluginUserHomeDir = os.UserHomeDir
+
 // Manager owns all on-disk plugin state under Root (~/.config/serf/plugins).
 type Manager struct {
 	Root   string           // store root
@@ -31,7 +33,7 @@ func NewManager(root string) *Manager {
 func DefaultRoot() string {
 	dir := envvars.XDGConfigHome.Getenv()
 	if dir == "" {
-		home, err := os.UserHomeDir()
+		home, err := pluginUserHomeDir()
 		if err != nil {
 			return ""
 		}

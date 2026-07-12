@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+var marshalRegistry = json.MarshalIndent
+
 // Registry is installed_plugins.json: the set of installed plugins keyed by
 // "<plugin>@<marketplace>". The value is an array (Claude Code's shape); v1
 // writes exactly one entry per key.
@@ -67,7 +69,7 @@ func SaveRegistry(path string, r Registry) error {
 		r.Plugins = map[string][]InstallEntry{}
 	}
 	r.Version = 2
-	body, err := json.MarshalIndent(r, "", "  ")
+	body, err := marshalRegistry(r, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshalling registry: %w", err)
 	}
