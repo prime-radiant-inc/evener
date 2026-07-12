@@ -431,13 +431,21 @@ func (e *LocalExecutionEnvironment) UseControlPolicy(mainRepoRoot string) error 
 	// The policy was replaced, so drop the cached fd layer built from the old one.
 	e.invalidateSandboxFS()
 	if e.Wrapper != nil && ctrl != nil {
-		w, werr := wrapperWithPolicy(e.Wrapper, *ctrl)
-		if werr != nil {
-			return werr
+		w, err := applyWrapperPolicy(e.Wrapper, *ctrl)
+		if err == nil {
+			e.Wrapper = w
 		}
-		e.Wrapper = w
+		return err
 	}
 	return nil
+}
+
+func applyWrapperPolicy(w *sandbox.Wrapper, policy sandbox.ResolvedPolicy) (*sandbox.Wrapper, error) {
+	updated, err := wrapperWithPolicy(w, policy)
+	if err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 
 // Initialize prepares the environment for use.
@@ -577,10 +585,14 @@ var (
 	shellStat              = os.Stat
 	grepReadFile           = os.ReadFile
 	grepWalk               = filepath.WalkDir
-	listReadDir            = afero.ReadDir
+	listReadDir            = os.ReadDir
 	streamBeforeSignalOnce = func(func()) {}
 	streamAfterTimer       = func(func()) {}
 	wrapperWithPolicy      = func(w *sandbox.Wrapper, p sandbox.ResolvedPolicy) (*sandbox.Wrapper, error) { return w.WithPolicy(p) }
+	splitEditLines         = strings.Split
+	venvCandidateDirs      = func(root, binDir string) []string {
+		return []string{filepath.Join(root, ".venv", binDir), filepath.Join(root, "venv", binDir)}
+	}
 )
 
 func resolveOSVersion() string {
@@ -794,7 +806,10 @@ func normalizeWS(s string) string {
 // dropped word or an omitted line, the usual causes of a near miss the fuzzy
 // matcher cannot rescue. Returns "" when nothing is similar enough to help.
 func nearestFileRegion(content, oldString string) string {
-	oldLines := strings.Split(strings.TrimRight(oldString, "\n"), "\n")
+	oldLines := splitEditLines(strings.TrimRight(oldString, "\n"), "\n")
+	if len(oldLines) == 0 {
+		return ""
+	}
 	target := normalizeWS(oldLines[0])
 	if target == "" {
 		return ""
@@ -916,7 +931,7 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 	var out []DirEntry
 	var walk func(absDir string, relPrefix string, d int) error
 	walk = func(absDir string, relPrefix string, d int) error {
-		ents, err := os.ReadDir(absDir)
+		ents, err := listReadDir(absDir)
 		if err != nil {
 			return err
 		}
@@ -1285,6 +1300,7 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 			return
 		default:
 		}
+		streamBeforeSignalOnce(func() { doneOnce.Do(func() { close(done) }) })
 		signalOnce.Do(func() {
 			select {
 			case <-done:
@@ -1299,6 +1315,7 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 				case <-done:
 					return
 				case <-timer.C:
+					streamAfterTimer(func() { doneOnce.Do(func() { close(done) }) })
 					select {
 					case <-done:
 						return
@@ -1400,17 +1417,19 @@ func injectLocalVenvPath(env []string, roots []string) []string {
 		binDir = "Scripts"
 	}
 
+	seenDirs := map[string]struct{}{}
 	var prefixDirs []string
 	for _, root := range uniqueRoots {
-		candidates := []string{
-			filepath.Join(root, ".venv", binDir),
-			filepath.Join(root, "venv", binDir),
-		}
+		candidates := venvCandidateDirs(root, binDir)
 		for _, cand := range candidates {
 			info, err := os.Stat(cand)
 			if err != nil || !info.IsDir() {
 				continue
 			}
+			if _, ok := seenDirs[cand]; ok {
+				continue
+			}
+			seenDirs[cand] = struct{}{}
 			prefixDirs = append(prefixDirs, cand)
 		}
 	}

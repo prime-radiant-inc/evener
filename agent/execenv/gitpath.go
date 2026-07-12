@@ -238,9 +238,14 @@ func DirsFromRootToCwd(root, cwd string) []string {
 
 	out := []string{root}
 	cur := root
-	for _, p := range strings.Split(rel, string(filepath.Separator)) {
+	for _, p := range splitPathComponents(rel, string(filepath.Separator)) {
+		if p == "" || p == "." {
+			continue
+		}
 		cur = filepath.Join(cur, p)
 		out = append(out, cur)
 	}
 	return out
 }
+
+var splitPathComponents = strings.Split

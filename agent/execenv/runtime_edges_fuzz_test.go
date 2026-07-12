@@ -102,6 +102,18 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 		runtimeGOOS = "windows"
 		_ = injectLocalVenvPath([]string{"PATH=/base"}, []string{windowsRoot})
 		runtimeGOOS = originalGOOS
+		candidateOrig := venvCandidateDirs
+		venvCandidateDirs = func(string, string) []string { return []string{filepath.Join(venvRoot, ".venv", "bin")} }
+		_ = injectLocalVenvPath([]string{"PATH=/base"}, []string{"root-a", "root-b"})
+		venvCandidateDirs = candidateOrig
+		splitEditOrig := splitEditLines
+		splitEditLines = func(string, string) []string { return nil }
+		_ = nearestFileRegion("content", "old")
+		splitEditLines = splitEditOrig
+		splitPathOrig := splitPathComponents
+		splitPathComponents = func(string, string) []string { return []string{"."} }
+		_ = DirsFromRootToCwd("/root", "/root/child")
+		splitPathComponents = splitPathOrig
 
 		zeroGrace := time.Duration(0)
 		timeoutCommand := &processRuntimeCommand{plan: processRuntimePlan{waitForTerminate: true}, pid: 70001, terminated: make(chan struct{})}
@@ -128,6 +140,55 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 		if streamCommand.terminate == 0 || streamCommand.kill == 0 {
 			t.Fatalf("stream signals terminate=%d kill=%d", streamCommand.terminate, streamCommand.kill)
 		}
+		for _, afterTimer := range []bool{false, true} {
+			cmd := &processRuntimeCommand{plan: processRuntimePlan{waitForTerminate: true, ignoreTerminate: true}, pid: 71000, terminated: make(chan struct{})}
+			env := NewLocalExecutionEnvironment(t.TempDir())
+			env.commandFactory = oneRuntimeFactory{command: cmd}
+			env.terminationGrace = &zeroGrace
+			h, err := env.StreamCommand(context.Background(), "scripted", "", nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if afterTimer {
+				orig := streamAfterTimer
+				called := make(chan struct{})
+				streamAfterTimer = func(closeDone func()) { closeDone(); close(called) }
+				h.Signal()
+				<-called
+				streamAfterTimer = orig
+			} else {
+				orig := streamBeforeSignalOnce
+				streamBeforeSignalOnce = func(closeDone func()) { closeDone() }
+				h.Signal()
+				streamBeforeSignalOnce = orig
+			}
+			cmd.doneOnce.Do(func() { close(cmd.terminated) })
+			_, _ = h.Wait()
+		}
+
+		policyForWrapper := sandbox.ResolvedPolicy{Mode: sandbox.ModeWorkspaceWrite, Backend: sandbox.BackendBwrap}
+		wrapper, err := sandbox.NewWrapper(policyForWrapper, "/fixture/bwrap", t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		wrapperOrig := wrapperWithPolicy
+		wrapperWithPolicy = func(*sandbox.Wrapper, sandbox.ResolvedPolicy) (*sandbox.Wrapper, error) {
+			return nil, errors.New("scripted wrapper failure")
+		}
+		_, _ = applyWrapperPolicy(wrapper, policyForWrapper)
+		controlEnv := NewLocalExecutionEnvironment(t.TempDir())
+		controlEnv.Sandbox, controlEnv.Wrapper = &policyForWrapper, wrapper
+		_ = controlEnv.UseControlPolicy(controlEnv.RootDir)
+		controlNoWrapper := NewLocalExecutionEnvironment(t.TempDir())
+		resolvedRoot := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(resolvedRoot, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		resolvedPolicy := sandboxLifecyclePolicy(t, sandbox.ModeWorkspaceWrite, sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapCapable: true, BwrapPath: "/fixture/bwrap", OverlaySupported: true}, resolvedRoot)
+		controlNoWrapper.RootDir = resolvedRoot
+		controlNoWrapper.Sandbox = resolvedPolicy
+		_ = controlNoWrapper.UseControlPolicy(controlNoWrapper.RootDir)
+		wrapperWithPolicy = wrapperOrig
 
 		if err := atomicWriteAt(-1, "leaf", raw, 0o600); err == nil {
 			t.Fatal("atomic write on invalid descriptor succeeded")
@@ -187,6 +248,10 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 		canonicalPathForFd = func(int) (string, error) { return root, nil }
 		_ = rootFS.recheckWriteTargetFd("write_file", file, -1, "protected")
 		canonicalPathForFd, canonicalRecheckRequired = canonicalOrig, requiredOrig
+		pathRelOrig := securePathRel
+		securePathRel = func(string, string) (string, error) { return "", errors.New("scripted rel failure") }
+		_, _, _ = containingRoot([]string{root}, filepath.Join(root, "child"))
+		securePathRel = pathRelOrig
 		if _, err := rootFS.listDir("list_directory", root, 2); err != nil {
 			t.Fatal(err)
 		}
@@ -248,6 +313,22 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 			t.Fatal("local walk fault succeeded")
 		}
 		grepWalk = grepWalkOrig
+		if err := os.MkdirAll(filepath.Join(root, "list-child"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		listReadOrig := listReadDir
+		listCalls := 0
+		listReadDir = func(name string) ([]os.DirEntry, error) {
+			listCalls++
+			if listCalls > 1 {
+				return nil, fs.ErrPermission
+			}
+			return listReadOrig(name)
+		}
+		if _, err := NewLocalExecutionEnvironment(root).ListDirectory(root, 2); err == nil {
+			t.Fatal("recursive list fault succeeded")
+		}
+		listReadDir = listReadOrig
 		subdir := filepath.Join(root, "subdir")
 		if err := os.Mkdir(subdir, 0o755); err != nil {
 			t.Fatal(err)

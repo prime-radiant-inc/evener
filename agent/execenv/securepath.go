@@ -26,6 +26,7 @@ var (
 	secureRenameat       = unix.Renameat
 	secureReadDirEntries = readDirEntries
 	secureEntryInfo      = func(entry os.DirEntry) (os.FileInfo, error) { return entry.Info() }
+	securePathRel        = filepath.Rel
 )
 
 // sandboxFS enforces a resolved sandbox policy on file operations using
@@ -813,7 +814,10 @@ func containingRoot(roots []string, abs string) (root, rel string, ok bool) {
 			return r, ".", true
 		}
 		if pathUnder(abs, r) {
-			rl, _ := filepath.Rel(r, abs)
+			rl, err := securePathRel(r, abs)
+			if err != nil {
+				continue
+			}
 			return r, filepath.ToSlash(rl), true
 		}
 	}
