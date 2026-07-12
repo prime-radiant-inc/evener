@@ -219,6 +219,17 @@ TARGETS=(
 	"native:agent:.:FuzzJobManagerErrorRecoveryProgram::jobs.go"
 	"native:agent:.:FuzzStoolCommunicationDispatch::session_tools_communicate.go"
 	"native:agent:.:FuzzStwebRegistrationEgress::session_tools_web.go"
+	"native:agent:.:FuzzNdbNestedDrainBranches::jobs_nested.go#keepIncomingDescendantRow;jobs_nested.go#liveSubagentSessions;jobs_nested.go#liveDirectSubagents;jobs_nested.go#liveSubagentSession;session_jobtree_drain.go#outstandingDelegateCount;session_jobtree_drain.go#DrainJobTree"
+	"native:agent:.:FuzzTranscriptCoverageContracts::transcript_read.go;transcript_lookup.go;transcript_render.go;session_tools_transcript.go"
+	"native:agent:.:FuzzDelegateFinalizeReportProgram::job_delegate.go"
+	"native:agent:.:FuzzWatchPendingFrameProgram::job_watch.go"
+	"native:agent:.:FuzzResponsesContinuationEligibility::responses_continuation_eligibility.go"
+	"native:agent:.:FuzzSessionMetadataHelpers::session_namer.go;live_model_metadata.go;observer_grants.go;status.go;session_events.go;task_reminders.go"
+	"native:agent:.:FuzzSessionGoalCompactState::session_goal.go;session_self_compact.go"
+	"native:agent:.:FuzzShellNotificationRenderProgram::job_notify.go"
+	"native:agent:.:FuzzShellDigestReadProgram::job_output_digest.go#readJobOutputDigest"
+	"native:agent:.:FuzzShellMarshalProgram::job_shell.go;session_tools_shell.go"
+	"native:agent:.:FuzzSessionQueueLifecycleProgram::session.go;session_queue.go;session_lifecycle.go"
 	# Phase 7 Wave 3 — behavioral API fuzzing (under the B0 sandbox) + tool execution.
 	# B1/B2 (hub)
 	"native:.:./cmd/serf-hub:FuzzAppWireDispatch::app_rpc.go#newHubAppServer"
