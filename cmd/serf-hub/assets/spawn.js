@@ -30,6 +30,13 @@
       : Buffer.from(binary, "binary").toString("base64");
   }
 
+  function autoExpandTextarea(ta) {
+    if (!ta) return;
+    ta.style.height = "auto";
+    const nextHeight = ta.scrollHeight;
+    ta.style.height = nextHeight + "px";
+  }
+
   function projectKey(workingDir) {
     return "serf-hub.spawn-defaults." + (workingDir || "global");
   }
@@ -1141,21 +1148,33 @@
       chip.addEventListener("click", () => openPicker(chip));
     });
 
+    const promptTa = form.querySelector("textarea[name=prompt]");
+
     // Recent prompt click pre-fills
     document.querySelectorAll("[data-recent-prompt]").forEach(row => {
       row.addEventListener("click", () => {
-        form.querySelector("textarea[name=prompt]").value = row.dataset.recentPrompt;
-        form.querySelector("textarea[name=prompt]").focus();
+        if (promptTa) {
+          promptTa.value = row.dataset.recentPrompt;
+          promptTa.focus();
+        }
       });
     });
 
     // ⌘↵ submits
-    form.querySelector("textarea[name=prompt]").addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        form.requestSubmit();
-      }
-    });
+    if (promptTa) {
+      promptTa.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+          e.preventDefault();
+          form.requestSubmit();
+        }
+      });
+    }
+
+    // Auto-expand the prompt textarea as the user types; CSS max-height caps growth.
+    if (promptTa) {
+      promptTa.addEventListener("input", () => autoExpandTextarea(promptTa));
+      autoExpandTextarea(promptTa);
+    }
 
     // Wire the shared composer-attachments helpers (paste from r6a1; drag-
     // drop + file picker from 65mm). pendingState lives on the form element
@@ -1164,7 +1183,6 @@
     // [data-composer-attachments] container just above the textarea; the
     // [data-attachment-error] sibling surfaces rejection banners.
     if (window.SerfComposerAttachments) {
-      const promptTa = form.querySelector("textarea[name=prompt]");
       const pasteContainer = form.querySelector("[data-composer-attachments]");
       const dropZone = form.querySelector("[data-drop-zone]");
       const attachTrigger = form.querySelector("[data-attach-trigger]");
@@ -1200,8 +1218,7 @@
 	      }
 	      if (!rawPrompt.trim() && attachments.length === 0) {
         renderSpawnError(form, new Error("Prompt is empty. Type something before spawning."));
-        const ta = form.querySelector('textarea[name=prompt]');
-        if (ta) ta.focus();
+        if (promptTa) promptTa.focus();
         return;
       }
       const validationResult = validateAdvancedPathScalars();
