@@ -277,9 +277,7 @@ func isSessionNameCompactionTurn(turn schema.Turn) bool {
 
 func (s *Session) handleCompactionTurn(t schema.Turn) {
 	if s.transcript != nil {
-		if err := s.transcript.Append(t); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
-		}
+		s.reportCompactionTranscriptAppend(s.transcript.Append(t))
 	}
 	if isSessionNameCompactionTurn(t) {
 		s.emit(events.EventCompactionTurn, events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text()})
@@ -295,6 +293,12 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 	if s.stateDir != "" && s.id != "" {
 		ref := encodeRef("", s.id)
 		s.Steer("<SYSTEM-REMINDER>If you need the exact transcript of this session before compaction, use the transcript tool instead of reading raw transcript files directly. Default read: read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"format\": \"markdown\"}). For long sessions, first get a turn map with read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"format\": \"outline\"}), then read a focused range with read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"range\": \"A-B\"}).</SYSTEM-REMINDER>")
+	}
+}
+
+func (s *Session) reportCompactionTranscriptAppend(err error) {
+	if err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
 	}
 }
 
@@ -332,7 +336,10 @@ func (s *Session) nameSessionFromText(ctx context.Context, source, text string) 
 		})
 		return err
 	}
+	return s.applySessionNameResult(result)
+}
 
+func (s *Session) applySessionNameResult(result sessionNameResult) error {
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
@@ -371,14 +378,8 @@ func (s *Session) shouldApplySessionNameLocked(source string) bool {
 		return true
 	}
 	currentSource := strings.TrimSpace(s.naming.source)
-	switch source {
-	case sessionNameSourceCompaction:
-		return currentSource == sessionNameSourcePrompt || currentSource == sessionNameSourceCompaction
-	case sessionNameSourcePrompt:
-		return false
-	default:
-		return false
-	}
+	return source == sessionNameSourceCompaction &&
+		(currentSource == sessionNameSourcePrompt || currentSource == sessionNameSourceCompaction)
 }
 
 func (s *Session) appendSessionNamerLog(entry sessionlog.SessionLogEntry) {
@@ -393,7 +394,11 @@ func (s *Session) appendSessionNamerLog(entry sessionlog.SessionLogEntry) {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("session namer log open failed: %v", err)})
 		return
 	}
-	if err := log.Append(entry); err != nil {
+	s.reportSessionNamerLogAppend(log.Append(entry))
+}
+
+func (s *Session) reportSessionNamerLogAppend(err error) {
+	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("session namer log append failed: %v", err)})
 	}
 }

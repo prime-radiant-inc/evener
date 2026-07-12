@@ -302,6 +302,7 @@ TARGETS=(
 	"native:agent:.:FuzzTranscriptReadToolsExactCoverage::transcript_read.go;session_tools_transcript.go"
 	"native:agent:.:FuzzToolInputSummary::transcript_render.go#toolInputSummary"
 	"native:agent:.:FuzzSessionNamerProgram::session_namer.go"
+	"native:agent:.:FuzzSessionStateGoalExactCoverage::session_goal.go;session_state.go;history_repair.go;session_namer.go;session_tools_compact.go"
 	"native:agent:.:FuzzEvalLifecycleProgram::eval.go;eval_probes.go"
 	"native:agent:.:FuzzStatusSupportProgram::status.go;session_metrics.go;context_metrics.go;atif.go;errors.go;context_host.go;tool_web_search.go"
 	"native:agent:.:FuzzWorkspacePromptProgram::workspace_info.go;project_docs.go;session_prompts.go;prompt_data.go;session_outline.go;section_resolver.go;git_snapshot.go;runtime_dir.go"

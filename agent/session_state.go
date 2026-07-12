@@ -196,7 +196,7 @@ func (s *Session) finishProcessingAtBoundary(ctx context.Context, state SessionS
 	s.mu.Unlock()
 	if transitioned {
 		s.emit(events.EventTurnEnded, events.TurnEndedData{TurnDurationMS: turnMS})
-		if err := s.drainPendingWatchSends(ctx); err != nil {
+		if err := s.drainPendingWatchSendsAtBoundary(ctx); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: "watch send retry at processing boundary failed: " + err.Error()})
 		}
 		s.finishActiveProvenance()

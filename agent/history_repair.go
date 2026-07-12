@@ -11,6 +11,15 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+type pendingWatchSendDrainFaultKey struct{}
+
+func (s *Session) drainPendingWatchSendsAtBoundary(ctx context.Context) error {
+	if err, _ := ctx.Value(pendingWatchSendDrainFaultKey{}).(error); err != nil {
+		return err
+	}
+	return s.drainPendingWatchSends(ctx)
+}
+
 func repairOrphanedToolResults(history []schema.Turn) ([]schema.Turn, int) {
 	if len(history) == 0 {
 		return history, 0
@@ -133,7 +142,7 @@ func (s *Session) repairOrphanedToolResults(reason string) int {
 }
 
 func (s *Session) retryPendingCallerWatchSendsAfterRepair(ctx context.Context) {
-	if err := s.drainPendingWatchSends(ctx); err != nil {
+	if err := s.drainPendingWatchSendsAtBoundary(ctx); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: "watch send retry after history repair failed: " + err.Error()})
 	}
 }
