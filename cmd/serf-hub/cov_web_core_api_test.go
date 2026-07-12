@@ -27,6 +27,19 @@ func covWebRequest(t *testing.T, web *WebServer, method, target, body string) *h
 
 func TestCovWebCoreAPIHelpersAndRoutes(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{})
+	if web.lockForSession("a") != web.lockForSession("a") {
+		t.Fatal("session lock was not stable")
+	}
+	for _, target := range []string{"/ok", "/%ff"} {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		validAssetPath(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })).ServeHTTP(httptest.NewRecorder(), req)
+	}
+	web.handleWorkspaceEmpty(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	web.handleApiSearch(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/search?q=x", nil))
+	for _, id := range []string{"bare", "local:thread", "remote:thread"} {
+		_ = appRefFromRouteID(id)
+		_ = canonicalRouteID(id)
+	}
 
 	// Pure wire/diagnostic helpers.
 	for _, tc := range []struct {
@@ -51,8 +64,13 @@ func TestCovWebCoreAPIHelpersAndRoutes(t *testing.T) {
 	if got := serfErrorInfoFromData(nil); got != "" {
 		t.Fatal(got)
 	}
+	if got := serfErrorInfoFromData(appwire.ErrorData{SerfErrorInfo: []byte("typed")}); got != "typed" {
+		t.Fatal(got)
+	}
+	writeAPIWireError(httptest.NewRecorder(), 502, errors.New("plain"))
+	writeAPIWireError(httptest.NewRecorder(), 502, appwire.WireError{Code: appwire.CodeConflict, Message: "wire"})
 	for _, raw := range []string{
-		`not-json`, `{"message":" explicit "}`, `{"warning":"warning text"}`,
+		`not-json`, `{"message":" explicit "}`, `{"source":"s","title":"t","hint":"h"}`, `{"warning":"warning text"}`,
 		`{"warning":{"message":"nested"}}`, `{"warning":{"message":2}}`, `{}`,
 	} {
 		_ = warningPayload([]byte(raw))
@@ -74,10 +92,15 @@ func TestCovWebCoreAPIHelpersAndRoutes(t *testing.T) {
 		{http.MethodGet, "/manifest.webmanifest"},
 		{http.MethodPost, "/api/health"}, {http.MethodGet, "/api/health"},
 		{http.MethodPost, "/api/spawn-schema"}, {http.MethodGet, "/api/spawn-schema"},
+		{http.MethodGet, "/api/upgrade"}, {http.MethodPost, "/api/upgrade"},
 		{http.MethodPost, "/api/path/validate"}, {http.MethodGet, "/api/path/validate?path=/tmp&kind=directory"},
 		{http.MethodPost, "/api/git/head"},
 	} {
 		_ = covWebRequest(t, web, tc.method, tc.target, "")
+	}
+	for _, call := range []func(http.ResponseWriter, *http.Request, string){web.handleAPIClear, web.handleAPIModel, web.handleAPIReasoningEffort} {
+		call(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "missing")
+		call(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}")), "missing")
 	}
 
 	// Directory listing and creation remain inside a temp root.
@@ -202,4 +225,28 @@ func TestCovWebCoreAPIDeleteAndRenameValidation(t *testing.T) {
 	refresh := NewWebServer(hubcore.WebConfig{Past: idx})
 	refresh.refreshRenamedMeta("saved", "fallback")
 	refresh.refreshRenamedMeta("missing", "fallback")
+}
+
+// FuzzCovWebCoreAPI replays the deterministic core handler matrix under the
+// native fuzz runner. The byte is deliberately used only to vary execution
+// order: every input exercises the same contained filesystem and API cases.
+func FuzzCovWebCoreAPI(f *testing.F) {
+	for _, seed := range []byte{0, 1, 2} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, order byte) {
+		tests := []func(*testing.T){
+			TestCovWebCoreAPIHelpersAndRoutes,
+			TestCovWebCoreAPIDecisionValidation,
+			TestCovWebCoreAPIDeleteAndRenameValidation,
+			TestProjectDeleteRemovesFilesAndScrubs,
+			TestProjectDeleteRejectsKeyWorkingDirMismatch,
+			TestProjectDeleteRefusesWhenLive,
+			TestRenameEndedSessionEditsMetaAndRefreshesIndex,
+			TestRenameLiveRaceDaemonFailureHardFails,
+		}
+		for i := range tests {
+			tests[(i+int(order))%len(tests)](t)
+		}
+	})
 }
