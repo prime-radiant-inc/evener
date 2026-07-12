@@ -21,6 +21,7 @@ type ArchiveKey struct {
 // stored here — only deliberate user decisions are recorded.
 type ArchiveStore struct {
 	dbPath string
+	openDB func(string, string) (*sql.DB, error)
 
 	// fs mediates the directory-scaffolding and existence-check filesystem ops
 	// (MkdirAll, Stat) around the SQLite database. It defaults to
@@ -38,7 +39,7 @@ type ArchiveStore struct {
 // NewArchiveStore returns a store backed by the SQLite file at dbPath. An empty
 // dbPath yields a store whose Decisions() is always empty (graceful no-op).
 func NewArchiveStore(dbPath string) *ArchiveStore {
-	return &ArchiveStore{dbPath: dbPath, fs: afero.NewOsFs()}
+	return &ArchiveStore{dbPath: dbPath, fs: afero.NewOsFs(), openDB: sql.Open}
 }
 
 // SetFs overrides the store's filesystem for the dir-scaffolding and
@@ -72,7 +73,7 @@ func (s *ArchiveStore) open() (*sql.DB, error) {
 	if err := s.fs.MkdirAll(filepath.Dir(s.dbPath), 0o700); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", s.dbPath)
+	db, err := s.openDB("sqlite", s.dbPath)
 	if err != nil {
 		return nil, err
 	}

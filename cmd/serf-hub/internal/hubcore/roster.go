@@ -37,6 +37,27 @@ type Prober interface {
 	Probe(entry rendezvous.Entry) (sessionID, status string, pendingAsk, pendingEscalation, ok bool)
 }
 
+type rosterWatcher interface {
+	Add(string) error
+	Close() error
+	Events() <-chan fsnotify.Event
+	Errors() <-chan error
+}
+
+type fsnotifyWatcher struct{ *fsnotify.Watcher }
+
+func (w fsnotifyWatcher) Events() <-chan fsnotify.Event { return w.Watcher.Events }
+func (w fsnotifyWatcher) Errors() <-chan error          { return w.Watcher.Errors }
+
+type rosterTicker interface {
+	C() <-chan time.Time
+	Stop()
+}
+
+type timeTicker struct{ *time.Ticker }
+
+func (t timeTicker) C() <-chan time.Time { return t.Ticker.C }
+
 // Roster maintains the live-daemon set on the host. Reads of the underlying
 // rendezvous directory are decoupled from network probes via the Prober
 // interface so unit tests can substitute a stub.
@@ -63,6 +84,8 @@ type Roster struct {
 	// been registered on runDir. Nil in production; injected by tests to
 	// synchronize file-creation events without wall-clock sleeps.
 	watchReadyFn func()
+	newWatcher   func() (rosterWatcher, error)
+	newTicker    func(time.Duration) rosterTicker
 
 	// onChange, when set via SetOnChange, is fired by Refresh only when the
 	// live set's membership or per-session status actually changes.
@@ -91,6 +114,11 @@ func NewRoster(runDir string, prober Prober) *Roster {
 		bySess:    make(map[string]LiveEntry),
 		byPID:     make(map[int]LiveEntry),
 		procAlive: processAlive,
+		newWatcher: func() (rosterWatcher, error) {
+			w, err := fsnotify.NewWatcher()
+			return fsnotifyWatcher{w}, err
+		},
+		newTicker: func(d time.Duration) rosterTicker { return timeTicker{time.NewTicker(d)} },
 	}
 }
 
@@ -310,7 +338,7 @@ func ensureDir(fs afero.Fs, dir string) error {
 func (r *Roster) Watch(ctx context.Context) error {
 	r.Refresh()
 
-	w, err := fsnotify.NewWatcher()
+	w, err := r.newWatcher()
 	if err != nil {
 		return err
 	}
@@ -325,24 +353,24 @@ func (r *Roster) Watch(ctx context.Context) error {
 		r.watchReadyFn()
 	}
 
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := r.newTicker(5 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case _, ok := <-w.Events:
+		case _, ok := <-w.Events():
 			if !ok {
 				return nil
 			}
 			r.Refresh()
-		case err := <-w.Errors:
+		case err := <-w.Errors():
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "[hub] fsnotify error on %s: %v\n", r.runDir, err)
 			}
 			r.Refresh()
-		case <-ticker.C:
+		case <-ticker.C():
 			r.Refresh()
 		}
 	}

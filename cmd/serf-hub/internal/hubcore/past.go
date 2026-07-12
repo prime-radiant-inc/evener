@@ -32,6 +32,7 @@ type PastEntry struct {
 type PastIndex struct {
 	stateGlob string
 	dbPath    string
+	openDB    func(string, string) (*sql.DB, error)
 
 	// fs mediates the directory-scaffolding, chmod, and sessions-dir scan
 	// filesystem ops. It defaults to afero.NewOsFs() (identical to direct os
@@ -71,6 +72,7 @@ func NewPastIndex(projectGlob string) *PastIndex {
 	return &PastIndex{
 		stateGlob: projectGlob,
 		fs:        afero.NewOsFs(),
+		openDB:    sql.Open,
 		byID:      make(map[string]PastEntry),
 	}
 }
@@ -343,7 +345,7 @@ func (i *PastIndex) rebuildFTS(entries []PastEntry) error {
 	if err := i.fs.MkdirAll(dbDir, 0o700); err != nil {
 		return err
 	}
-	db, err := sql.Open("sqlite", i.dbPath)
+	db, err := i.openDB("sqlite", i.dbPath)
 	if err != nil {
 		return err
 	}
@@ -416,7 +418,7 @@ func (i *PastIndex) searchFTS(q string) ([]PastEntry, bool) {
 	if !available || i.dbPath == "" {
 		return nil, false
 	}
-	db, err := sql.Open("sqlite", i.dbPath)
+	db, err := i.openDB("sqlite", i.dbPath)
 	if err != nil {
 		return nil, false
 	}
@@ -458,10 +460,6 @@ func ftsQuery(q string) string {
 	}
 	parts := make([]string, 0, len(tokens))
 	for _, token := range tokens {
-		token = strings.TrimSpace(token)
-		if token == "" {
-			continue
-		}
 		parts = append(parts, token+"*")
 	}
 	return strings.Join(parts, " AND ")

@@ -15,6 +15,7 @@ import (
 type FavoriteStore struct {
 	dbPath string
 	fs     afero.Fs
+	openDB func(string, string) (*sql.DB, error)
 
 	// onChange, when set via SetOnChange, is fired after a successful Set or
 	// Delete. Nil is a safe no-op (existing tests construct stores without it).
@@ -22,7 +23,7 @@ type FavoriteStore struct {
 }
 
 func NewFavoriteStore(dbPath string) *FavoriteStore {
-	return &FavoriteStore{dbPath: dbPath, fs: afero.NewOsFs()}
+	return &FavoriteStore{dbPath: dbPath, fs: afero.NewOsFs(), openDB: sql.Open}
 }
 
 func (s *FavoriteStore) SetFs(fs afero.Fs) *FavoriteStore { s.fs = fs; return s }
@@ -50,7 +51,7 @@ func (s *FavoriteStore) open() (*sql.DB, error) {
 	if err := s.fs.MkdirAll(filepath.Dir(s.dbPath), 0o700); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", s.dbPath)
+	db, err := s.openDB("sqlite", s.dbPath)
 	if err != nil {
 		return nil, err
 	}
