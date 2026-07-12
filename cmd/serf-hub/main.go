@@ -48,38 +48,78 @@ import (
 
 const Version = "0.1.0"
 
-func main() {
-	configPath := flag.String("config", DefaultConfigPath(), "path to hub.toml")
-	addr := flag.String("addr", "", "override hub listen address")
-	serfBinary := flag.String("serf", "", "path to serf binary (default: 'serf' on PATH)")
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: serf-hub [flags]\n\nMulti-session web orchestrator for serf serve daemons.\n\n")
-		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\nEnvironment variables:\n")
-		printHubEnvVars(os.Stderr)
-	}
-	flag.Parse()
+var (
+	hubExecutable  = os.Executable
+	hubProcessArgs = func() []string { return os.Args }
+	hubHostname    = os.Hostname
+)
 
-	cfg, err := LoadConfig(*configPath)
+type hubHTTPServer interface {
+	ListenAndServe() error
+	Shutdown(context.Context) error
+}
+
+type hubShutdowner interface {
+	Shutdown(context.Context) error
+}
+
+type hubOptions struct {
+	configPath string
+	addr       string
+	serfBinary string
+}
+
+type mainDeps struct {
+	loadConfig  func(string) (Config, error)
+	ensureDirs  func() error
+	acquireLock func(string) (func(), error)
+	newToken    func() (string, error)
+}
+
+func defaultMainDeps() mainDeps {
+	return mainDeps{
+		loadConfig:  LoadConfig,
+		ensureDirs:  cmdutil.EnsureUserConfigDirs,
+		acquireLock: hostlock.AcquireLock,
+		newToken:    newHubToken,
+	}
+}
+
+func main() {
+	if runMain(os.Args[1:], os.Stderr, defaultMainDeps()) != nil {
+		os.Exit(1)
+	}
+}
+
+func runMain(args []string, stderr io.Writer, deps mainDeps) error {
+	opts, err := parseHubOptions(args, stderr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[hub] config: %v\n", err)
-		os.Exit(1)
+		if err != flag.ErrHelp {
+			fmt.Fprintf(stderr, "[hub] %v\n", err)
+		}
+		return err
 	}
-	if *addr != "" {
-		cfg.Addr = *addr
+
+	cfg, err := deps.loadConfig(opts.configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "[hub] config: %v\n", err)
+		return err
 	}
-	if err := cmdutil.EnsureUserConfigDirs(); err != nil {
-		fmt.Fprintf(os.Stderr, "[hub] %v\n", err)
-		os.Exit(1)
+	if opts.addr != "" {
+		cfg.Addr = opts.addr
+	}
+	if err := deps.ensureDirs(); err != nil {
+		fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
 	}
 
 	// flock to ensure single hub per host.
 	home, _ := os.UserHomeDir()
 	lockPath := filepath.Join(home, ".serf", "hub.lock")
-	release, err := hostlock.AcquireLock(lockPath)
+	release, err := deps.acquireLock(lockPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[hub] %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
 	}
 	defer release()
 
@@ -109,10 +149,10 @@ func main() {
 	favorite := hubcore.NewFavoriteStore(pastIndexDB)
 
 	// Spawner
-	hubToken, err := newHubToken()
+	hubToken, err := deps.newToken()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[hub] %v\n", err)
-		os.Exit(1) //nolint:gocritic // exitAfterDefer: the deferred release() only drops a flock the kernel frees on process exit
+		fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
 	}
 	hubStateRoot := cfg.HubStateRoot
 	authToken, err := hubedge.LoadOrCreateAuthToken(hubStateRoot)
@@ -147,8 +187,8 @@ func main() {
 		loadedProviderConfig = &materialized
 		fmt.Fprintf(os.Stderr, "[hub] materialized %s\n", providersConfigPath)
 	}
-	resolvedSerfBinary := resolveSerfBinaryPath(*serfBinary, currentExecutable(), exec.LookPath)
-	if *serfBinary == "" && resolvedSerfBinary != "" && resolvedSerfBinary != "serf" {
+	resolvedSerfBinary := resolveSerfBinaryPath(opts.serfBinary, currentExecutable(), exec.LookPath)
+	if opts.serfBinary == "" && resolvedSerfBinary != "" && resolvedSerfBinary != "serf" {
 		fmt.Fprintf(os.Stderr, "[hub] resolved serf at %s\n", resolvedSerfBinary)
 	}
 	spawner := &HubSpawner{
@@ -381,34 +421,71 @@ func main() {
 		Handler: web.Handler(),
 	}
 
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer scancel()
-		_ = srv.Shutdown(shutdownCtx)
-		if codexLauncher != nil {
-			_ = codexLauncher.Shutdown(shutdownCtx)
-		}
-	}()
-
 	fmt.Fprintf(os.Stderr, "[hub] serf-hub %s listening on %s (run_dir=%s)\n", Version, cfg.Addr, runDir)
 	// Build a usable auth URL. If the bind addr is 0.0.0.0 or ::, replace
 	// it with a hostname the operator can reach the hub at.
-	authHost := cfg.Addr
-	if strings.HasPrefix(authHost, "0.0.0.0:") || strings.HasPrefix(authHost, "[::]:") {
-		port := authHost[strings.LastIndex(authHost, ":"):]
-		host, _ := os.Hostname()
-		if host == "" {
-			host = "localhost"
-		}
-		authHost = host + port
-	}
+	authHost := advertisedHubHost(cfg.Addr, hubHostname)
 	fmt.Fprintf(os.Stderr, "[hub] auth URL (visit once per browser): http://%s/auth?token=%s\n", authHost, authToken)
 	fmt.Fprintf(os.Stderr, "[hub] auth token also at %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		fmt.Fprintf(os.Stderr, "[hub] %v\n", err)
-		os.Exit(1)
+	if err := serveHub(ctx, srv, codexLauncher); err != nil {
+		fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
 	}
+	return nil
+}
+
+func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
+	opts := hubOptions{configPath: DefaultConfigPath()}
+	fs := flag.NewFlagSet("serf-hub", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.StringVar(&opts.configPath, "config", opts.configPath, "path to hub.toml")
+	fs.StringVar(&opts.addr, "addr", "", "override hub listen address")
+	fs.StringVar(&opts.serfBinary, "serf", "", "path to serf binary (default: 'serf' on PATH)")
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, "Usage: serf-hub [flags]\n\nMulti-session web orchestrator for serf serve daemons.\n\n")
+		fs.PrintDefaults()
+		fmt.Fprintf(stderr, "\nEnvironment variables:\n")
+		printHubEnvVars(stderr)
+	}
+	err := fs.Parse(args)
+	if err == nil && fs.NArg() != 0 {
+		err = fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	return opts, err
+}
+
+func advertisedHubHost(addr string, hostname func() (string, error)) string {
+	if !strings.HasPrefix(addr, "0.0.0.0:") && !strings.HasPrefix(addr, "[::]:") {
+		return addr
+	}
+	port := addr[strings.LastIndex(addr, ":"):]
+	host, _ := hostname()
+	if host == "" {
+		host = "localhost"
+	}
+	return host + port
+}
+
+func serveHub(ctx context.Context, srv hubHTTPServer, companion hubShutdowner) error {
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+		if companion != nil {
+			_ = companion.Shutdown(shutdownCtx)
+		}
+	}()
+	err := srv.ListenAndServe()
+	if ctx.Err() != nil {
+		<-shutdownDone
+	}
+	if err == nil || err == http.ErrServerClosed {
+		return nil
+	}
+	return err
 }
 
 func printHubEnvVars(w io.Writer) {
@@ -434,11 +511,12 @@ func printHubEnvVars(w io.Writer) {
 // binresolve.Resolve needs to find a sibling "serf" binary even when
 // serf-hub was launched via a relative path like "./serf-hub".
 func currentExecutable() string {
-	if exe, err := os.Executable(); err == nil && exe != "" {
+	if exe, err := hubExecutable(); err == nil && exe != "" {
 		return exe
 	}
-	if len(os.Args) > 0 {
-		return os.Args[0]
+	args := hubProcessArgs()
+	if len(args) > 0 {
+		return args[0]
 	}
 	return ""
 }
