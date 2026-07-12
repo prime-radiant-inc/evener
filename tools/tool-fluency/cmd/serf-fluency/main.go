@@ -40,10 +40,12 @@ import (
 	_ "primeradiant.com/serf/llm/providers/openrouter_anthropic"
 )
 
+var exitProcess = os.Exit
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "serf-fluency:", err)
-		os.Exit(1)
+		exitProcess(1)
 	}
 }
 
@@ -81,6 +83,8 @@ type catalogTool struct {
 	Description string `json:"description,omitempty"`
 	Strict      *bool  `json:"strict,omitempty"`
 }
+
+var runnerNewSession = agent.NewSession
 
 func runCatalog(args []string) error {
 	fs := flag.NewFlagSet("catalog", flag.ContinueOnError)
@@ -121,7 +125,7 @@ func catalogTools(modelRef string) ([]catalogTool, error) {
 		_ = os.RemoveAll(tmp)
 	}()
 	client := llm.NewClient()
-	sess, err := agent.NewSession(client, profile, execenv.NewLocalExecutionEnvironment(tmp), agent.SessionConfig{
+	sess, err := runnerNewSession(client, profile, execenv.NewLocalExecutionEnvironment(tmp), agent.SessionConfig{
 		StateDir:         filepath.Join(tmp, "state"),
 		NoProjectPrompts: true,
 		NonInteractive:   true,
@@ -470,6 +474,8 @@ type liveKick struct {
 }
 
 var runnerLoadClient = cmdutil.LoadClient
+var runnerAttachAPILogger = cmdutil.AttachAPILogger
+var runnerMarshalEvent = json.Marshal
 
 func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *probeResult, stdout, stderr *bytes.Buffer) error {
 	restoreEnv := maybeClearOpenAIAPIKey(cfg.clearOpenAIAPIKey)
@@ -486,7 +492,7 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	if err != nil {
 		return fmt.Errorf("LLM client setup: %w", err)
 	}
-	closeAPILog, err := cmdutil.AttachAPILogger(client, res.StateDir, stderr)
+	closeAPILog, err := runnerAttachAPILogger(client, res.StateDir, stderr)
 	if err != nil {
 		return err
 	}
@@ -517,7 +523,7 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	if effort.Set {
 		sessCfg.ReasoningEffort = effort.Value
 	}
-	sess, err := agent.NewSession(client, profile, execenv.NewLocalExecutionEnvironment(res.WorkDir), sessCfg)
+	sess, err := runnerNewSession(client, profile, execenv.NewLocalExecutionEnvironment(res.WorkDir), sessCfg)
 	if err != nil {
 		return err
 	}
@@ -528,7 +534,7 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	go func() {
 		defer close(eventsDone)
 		for ev := range sess.Events() {
-			line, err := json.Marshal(ev)
+			line, err := runnerMarshalEvent(ev)
 			if err != nil {
 				continue
 			}
@@ -540,18 +546,8 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	}()
 
 	kicks := make(chan liveKick, 16)
-	submitKick := func(k liveKick) {
-		select {
-		case kicks <- k:
-		default:
-		}
-	}
-	sess.SetKickFunc(func(prompt string) {
-		submitKick(liveKick{kind: agent.EntryContinuation, input: prompt})
-	})
-	sess.SetNotifyFunc(func() {
-		submitKick(liveKick{kind: agent.EntryNotification})
-	})
+	sess.SetKickFunc(liveKickSubmitter(kicks))
+	sess.SetNotifyFunc(liveNotifySubmitter(kicks))
 
 	closeSession := func() {
 		sess.Close()
@@ -560,10 +556,7 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	defer closeSession()
 
 	out, err := sess.ProcessInput(ctx, probe.Prompt, nil)
-	if strings.TrimSpace(out) != "" {
-		stdout.WriteString(out)
-		stdout.WriteByte('\n')
-	}
+	appendLiveOutput(stdout, out)
 	if err != nil {
 		return err
 	}
@@ -573,18 +566,49 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 
 	timer := time.NewTimer(cfg.postTurnWait)
 	defer timer.Stop()
+	return runLiveKickLoop(ctx, timer.C, kicks, sess, stdout)
+}
+
+func trySubmitLiveKick(kicks chan<- liveKick, kick liveKick) {
+	select {
+	case kicks <- kick:
+	default:
+	}
+}
+
+func liveKickSubmitter(kicks chan<- liveKick) func(string) {
+	return func(prompt string) {
+		trySubmitLiveKick(kicks, liveKick{kind: agent.EntryContinuation, input: prompt})
+	}
+}
+
+func liveNotifySubmitter(kicks chan<- liveKick) func() {
+	return func() {
+		trySubmitLiveKick(kicks, liveKick{kind: agent.EntryNotification})
+	}
+}
+
+func appendLiveOutput(stdout *bytes.Buffer, out string) {
+	if strings.TrimSpace(out) != "" {
+		stdout.WriteString(out)
+		stdout.WriteByte('\n')
+	}
+}
+
+type liveKickProcessor interface {
+	ProcessInputKind(context.Context, string, []agent.ImageAttachment, agent.EntryKind) (string, error)
+}
+
+func runLiveKickLoop(ctx context.Context, timer <-chan time.Time, kicks <-chan liveKick, process liveKickProcessor, stdout *bytes.Buffer) error {
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-timer.C:
+		case <-timer:
 			return nil
 		case kick := <-kicks:
-			out, err := sess.ProcessInputKind(ctx, kick.input, nil, kick.kind)
-			if strings.TrimSpace(out) != "" {
-				stdout.WriteString(out)
-				stdout.WriteByte('\n')
-			}
+			out, err := process.ProcessInputKind(ctx, kick.input, nil, kick.kind)
+			appendLiveOutput(stdout, out)
 			if err != nil {
 				return err
 			}
@@ -737,7 +761,7 @@ func allTranscriptToolCounts(stateDir string) (map[string]int, error) {
 		if !ok || id == "" {
 			continue
 		}
-		tr, err := doctor.Transcript(stateDir, id, doctor.TranscriptOpts{})
+		tr, err := runnerReadTranscript(stateDir, id, doctor.TranscriptOpts{})
 		if err != nil {
 			return counts, err
 		}
@@ -747,6 +771,8 @@ func allTranscriptToolCounts(stateDir string) (map[string]int, error) {
 	}
 	return counts, nil
 }
+
+var runnerReadTranscript = doctor.Transcript
 
 func rootSessionID(stateDir string) (string, error) {
 	matches, err := filepath.Glob(filepath.Join(stateDir, "sessions", "*.meta.json"))
@@ -875,7 +901,7 @@ func writeProbeResult(outDir string, res probeResult) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(res, "", "  ")
+	data, err := runnerMarshalProbeResult(res, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -884,7 +910,7 @@ func writeProbeResult(outDir string, res probeResult) error {
 	}
 	jsonl := filepath.Join(outDir, "results.jsonl")
 	line, _ := json.Marshal(res)
-	f, err := os.OpenFile(jsonl, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := runnerOpenResultAppend(jsonl, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
 	}
@@ -895,6 +921,19 @@ func writeProbeResult(outDir string, res probeResult) error {
 		return err
 	}
 	return f.Close()
+}
+
+type resultAppendFile interface {
+	Write([]byte) (int, error)
+	Close() error
+}
+
+var runnerMarshalProbeResult = func(res probeResult, prefix, indent string) ([]byte, error) {
+	return json.MarshalIndent(res, prefix, indent)
+}
+
+var runnerOpenResultAppend = func(name string, flag int, perm os.FileMode) (resultAppendFile, error) {
+	return os.OpenFile(name, flag, perm)
 }
 
 func writeSummary(outDir string, results []probeResult) error {
@@ -909,11 +948,15 @@ func writeSummary(outDir string, results []probeResult) error {
 	for _, res := range results {
 		rows = append(rows, row{Probe: res.Probe, Tool: res.Tool, Model: res.Model, Status: res.Status, Findings: len(res.Findings)})
 	}
-	data, err := json.MarshalIndent(rows, "", "  ")
+	data, err := runnerMarshalSummary(rows, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(outDir, "summary.json"), append(data, '\n'), 0o644)
+}
+
+var runnerMarshalSummary = func(v any, prefix, indent string) ([]byte, error) {
+	return json.MarshalIndent(v, prefix, indent)
 }
 
 func formatCounts(counts map[string]int) string {
