@@ -476,10 +476,8 @@ func assertPluginLoaderProgramErrorPaths(t *testing.T, fx pluginLoaderProgramFix
 	for _, data := range []string{
 		"---\nname: \ndescription: d\n---\n",
 		"---\nname: a\ndescription: d\ntools: \"*\"\n---\n",
-		"---\nname: a\ndescription: d\ntools: unknown\n---\n",
 		"---\nname: a\ndescription: d\ntools:\n  - Read\n  - 7\n---\n",
 		"---\nname: a\ndescription: d\ntools: 7\n---\n",
-		"---\nname: a\ndescription: d\nskills: one\n---\n",
 		"---\nname: a\ndescription: d\nskills:\n  - 7\n---\n",
 		"---\nname: a\ndescription: d\ntasks: one\n---\n",
 		"---\nname: a\ndescription: d\ntasks:\n  - one\n---\n",
@@ -488,9 +486,25 @@ func assertPluginLoaderProgramErrorPaths(t *testing.T, fx pluginLoaderProgramFix
 			t.Fatalf("invalid agent parse = %#v, %v for %q", agent, err, data)
 		}
 	}
+	unknownTool, err := ParseAgent([]byte("---\nname: a\ndescription: d\ntools: unknown\n---\n"), "p")
+	if err != nil || !reflect.DeepEqual(unknownTool.Tools, []string{"unknown"}) {
+		t.Fatalf("unknown agent tool was not preserved for runtime resolution: %#v, %v", unknownTool, err)
+	}
+	scalarSkill, err := ParseAgent([]byte("---\nname: a\ndescription: d\nskills: one\n---\n"), "p")
+	if err != nil || !reflect.DeepEqual(scalarSkill.Skills, []string{"one"}) {
+		t.Fatalf("scalar agent skill was not accepted: %#v, %v", scalarSkill, err)
+	}
 	detailed, err := ParseAgent([]byte("---\nname: detailed\ndescription: d\ntasks:\n  - title: t\n    prompt: p\n    reasoning_effort: high\n    type: research\n    insert: append\n---\nbody\n"), "p")
 	if err != nil || len(detailed.Tasks) != 1 || detailed.Tasks[0].ReasoningEffort != "high" || detailed.Tasks[0].Insert != "append" {
 		t.Fatalf("detailed agent parse = %#v, %v", detailed, err)
+	}
+	directAgents, err := discoverPluginAgents(fx.alpha, json.RawMessage(`"agents/helper.md"`), "alpha")
+	if err != nil || len(directAgents) == 0 {
+		t.Fatalf("agents direct-file override = %#v, %v", directAgents, err)
+	}
+	directCommands, err := discoverPluginCommands(fx.alpha, json.RawMessage(`"commands/hello.md"`), "alpha")
+	if err != nil || len(directCommands) == 0 {
+		t.Fatalf("commands direct-file override = %#v, %v", directCommands, err)
 	}
 
 	for _, check := range []struct {
@@ -499,14 +513,6 @@ func assertPluginLoaderProgramErrorPaths(t *testing.T, fx pluginLoaderProgramFix
 	}{
 		{"agents malformed override", func() error { _, err := discoverPluginAgents(fx.alpha, json.RawMessage(`{`), "alpha"); return err }},
 		{"commands malformed override", func() error { _, err := discoverPluginCommands(fx.alpha, json.RawMessage(`{`), "alpha"); return err }},
-		{"agents file as directory", func() error {
-			_, err := discoverPluginAgents(fx.alpha, json.RawMessage(`"agents/helper.md"`), "alpha")
-			return err
-		}},
-		{"commands file as directory", func() error {
-			_, err := discoverPluginCommands(fx.alpha, json.RawMessage(`"commands/hello.md"`), "alpha")
-			return err
-		}},
 		{"missing specified hooks file", func() error {
 			_, _, _, err := discoverPluginHooksDiag(fx.beta, json.RawMessage(`"hooks/missing.json"`), "beta")
 			return err
