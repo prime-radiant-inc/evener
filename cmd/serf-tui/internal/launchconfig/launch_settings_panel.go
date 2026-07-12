@@ -553,9 +553,9 @@ func LaunchSettingsFieldUsesPathCompletion(field string) bool {
 	}
 }
 
-func launchSettingsFieldReadOnly(field string) bool {
-	return false
-}
+var launchSettingsFieldReadOnly = func(string) bool { return false }
+
+var marshalMCPEditSpecs = func(specs []mcpEditSpec) ([]byte, error) { return json.Marshal(specs) }
 
 func mcpEditValue(mcps []appwire.MCPServerSpec) string {
 	if len(mcps) == 0 {
@@ -565,7 +565,7 @@ func mcpEditValue(mcps []appwire.MCPServerSpec) string {
 	for _, mcp := range mcps {
 		specs = append(specs, mcpEditSpec{Name: mcp.Name, Command: mcp.Command, Args: mcp.Args})
 	}
-	data, err := json.Marshal(specs)
+	data, err := marshalMCPEditSpecs(specs)
 	if err != nil {
 		return ""
 	}
@@ -610,9 +610,6 @@ func parseMCPs(value string) ([]appwire.MCPServerSpec, error) {
 	out := make([]appwire.MCPServerSpec, 0, len(rows))
 	for i, line := range rows {
 		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
 		name, rest, ok := strings.Cut(line, ":")
 		name = strings.TrimSpace(name)
 		rest = strings.TrimSpace(rest)
