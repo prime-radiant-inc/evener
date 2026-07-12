@@ -35,7 +35,11 @@ type exactNameSource struct{ *scriptedAppSource }
 func (*exactNameSource) SetThreadName(context.Context, appwire.ThreadNameSetParams) error { return nil }
 
 func (s *exactListSource) ListThreads(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
-	return appwire.ThreadListResponse{Data: []appwire.Thread{s.thread, {ID: "id2", Source: "local"}}}, nil
+	return appwire.ThreadListResponse{Data: []appwire.Thread{
+		s.thread,
+		{ID: "id2", Source: "local"},
+		{Serf: appwire.SerfThread{Kind: "subagent", ParentRef: "local:root"}},
+	}}, nil
 }
 
 func (*exactContractLister) Spawn(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
@@ -67,6 +71,7 @@ func FuzzExactTails(f *testing.F) {
 			t.Fatal(err)
 		}
 		meta := schema.SessionMeta{ID: "past", Name: "past", Model: "gpt-5"}
+		meta.EnvInfo.WorkingDir = "/work/delete"
 		if err := schema.SaveSessionMeta(state, meta); err != nil {
 			t.Fatal(err)
 		}
@@ -151,11 +156,7 @@ func FuzzExactTails(f *testing.F) {
 		ensureManagedCodexSourcesForList = oldManagedList
 
 		// Project deletion's second liveness check can race with a resume.
-		deletePast := hubcore.NewPastIndex("")
-		deleteMeta := schema.SessionMeta{ID: "delete", Name: "delete"}
-		deleteMeta.EnvInfo.WorkingDir = "/work/delete"
-		deletePast.SeedForTest([]schema.SessionMeta{deleteMeta})
-		deleteWeb := NewWebServer(hubcore.WebConfig{Past: deletePast, Roster: hubcore.NewRosterWithEntries()})
+		deleteWeb := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
 		tree, _ := deleteWeb.memoTree(context.Background())
 		if len(tree.Projects) > 0 {
 			body, _ := json.Marshal(map[string]string{"key": tree.Projects[0].Key, "working_dir": tree.Projects[0].WorkingDir})
