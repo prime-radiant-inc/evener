@@ -389,6 +389,8 @@ func FuzzRegistrySemanticRoundTrip(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, data []byte, selector uint8) {
+		exerciseTypegenSurface(t, data)
+
 		idx := int(selector) % len(types)
 		name := string(rune('a' + idx))
 		first, ok := reg.Value(name, schemagen.Valid, schemagen.NewByteSource(data))
@@ -426,6 +428,75 @@ func FuzzRegistrySemanticRoundTrip(f *testing.F) {
 		adjacent, _ := reg.Value(name, schemagen.Adjacent, schemagen.NewByteSource(data))
 		_, _ = json.Marshal(adjacent)
 	})
+}
+
+// exerciseTypegenSurface keeps the fuzz seed corpus accountable for the whole
+// type-to-schema bridge, including registry misses and reflection cases that
+// random structured values cannot discover on their own.
+func exerciseTypegenSurface(t *testing.T, data []byte) {
+	t.Helper()
+
+	types := []reflect.Type{
+		nil,
+		reflect.TypeOf(""),
+		reflect.TypeOf(false),
+		reflect.TypeOf(int8(0)),
+		reflect.TypeOf(float32(0)),
+		reflect.TypeOf([]byte(nil)),
+		reflect.TypeOf([]string(nil)),
+		reflect.TypeOf([1]string{}),
+		reflect.TypeOf(map[string]int{}),
+		reflect.TypeOf((*string)(nil)),
+		reflect.TypeOf((*any)(nil)).Elem(),
+		reflect.TypeOf(make(chan int)),
+		reflect.TypeOf(json.RawMessage(nil)),
+		reflect.TypeOf(customLayer{}),
+		reflect.TypeOf(recursiveNode{}),
+		reflect.TypeOf(embeddedFields{}),
+		reflect.TypeOf(requiredContainers{}),
+		reflect.TypeOf(trickyStruct{}),
+		reflect.TypeOf(struct{ Plain string }{}),
+	}
+	for _, typ := range types {
+		_ = SchemaFromType(typ)
+	}
+
+	if got := GeneratorForType(reflect.TypeOf(""), schemagen.Valid).Example(0); reflect.TypeOf(got).Kind() != reflect.String {
+		t.Fatalf("GeneratorForType(string) produced %T", got)
+	}
+	if _, ok := ValueFromBytes[cleanStruct](data, schemagen.Valid); !ok {
+		t.Fatal("ValueFromBytes rejected a valid cleanStruct")
+	}
+	if _, ok := ValueFromBytes[string]([]byte{1, 0}, schemagen.Adjacent); ok {
+		t.Fatal("ValueFromBytes accepted an adjacent wrong-type string")
+	}
+
+	override := map[string]any{"type": "object"}
+	reg := NewRegistry()
+	reg.RegisterTypeSchema(reflect.TypeOf(customLayer{}), override)
+	reg.RegisterType("holder", reflect.TypeOf(holder{}))
+	reg.RegisterSchema("literal", map[string]any{"type": "string"})
+	if _, ok := reg.Schema("holder"); !ok {
+		t.Fatal("registered holder schema missing")
+	}
+	if _, ok := reg.Schema("missing"); ok {
+		t.Fatal("missing schema reported present")
+	}
+	if _, ok := reg.Value("literal", schemagen.Valid, schemagen.NewByteSource(data)); !ok {
+		t.Fatal("registered literal value missing")
+	}
+	if _, ok := reg.Value("missing", schemagen.Valid, schemagen.NewByteSource(data)); ok {
+		t.Fatal("missing value reported present")
+	}
+	if reg.Generator("literal", schemagen.Valid) == nil {
+		t.Fatal("registered literal generator missing")
+	}
+	if reg.Generator("missing", schemagen.Valid) != nil {
+		t.Fatal("missing generator reported present")
+	}
+	if got := reg.Names(); !reflect.DeepEqual(got, []string{"holder", "literal"}) {
+		t.Fatalf("registry names = %v", got)
+	}
 }
 
 // TestNoSerfImport is the portability guard: no source file in this package may
