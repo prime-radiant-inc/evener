@@ -1461,6 +1461,9 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	if resolved, err := filepath.EvalSymlinks(target); err == nil {
 		canonicalTarget = filepath.Clean(resolved)
 	}
+	if !isUnderManagedDir(canonicalTarget, projectDir) {
+		return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: %s is not a managed worktree", name)
+	}
 	run, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
 	if err != nil {
 		return WorktreeRemoveResult{}, err
