@@ -33,22 +33,62 @@ type CodexLaunchConfig struct {
 }
 
 type CodexLauncher struct {
-	Mu      sync.Mutex
-	configs map[string]CodexLaunchConfig
-	Running map[string]*LaunchedCodex
-	Sources map[string]appsource.Source
-	client  *http.Client
-	command func(string, ...string) *exec.Cmd
+	Mu          sync.Mutex
+	configs     map[string]CodexLaunchConfig
+	Running     map[string]*LaunchedCodex
+	Sources     map[string]appsource.Source
+	client      *http.Client
+	process     func(string, ...string) launchProcess
+	newTicker   func(time.Duration) launchTicker
+	withTimeout func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 }
 
 type LaunchedCodex struct {
 	Cmd      *exec.Cmd
+	process  launchProcess
 	endpoint string
 	// Exited is closed when the launched process exits (cmd.Wait returns). It is
 	// a broadcast: any number of observers may select on it, repeatedly, without
 	// consuming a single-shot signal.
 	Exited <-chan struct{}
 }
+
+type launchProcess interface {
+	Cmd() *exec.Cmd
+	SetDir(string)
+	SetEnv([]string)
+	StdoutPipe() (io.ReadCloser, error)
+	StderrPipe() (io.ReadCloser, error)
+	Start() error
+	Wait() error
+	Kill() error
+}
+
+type execLaunchProcess struct{ cmd *exec.Cmd }
+
+func (p *execLaunchProcess) Cmd() *exec.Cmd                     { return p.cmd }
+func (p *execLaunchProcess) SetDir(dir string)                  { p.cmd.Dir = dir }
+func (p *execLaunchProcess) SetEnv(env []string)                { p.cmd.Env = env }
+func (p *execLaunchProcess) StdoutPipe() (io.ReadCloser, error) { return p.cmd.StdoutPipe() }
+func (p *execLaunchProcess) StderrPipe() (io.ReadCloser, error) { return p.cmd.StderrPipe() }
+func (p *execLaunchProcess) Start() error                       { return p.cmd.Start() }
+func (p *execLaunchProcess) Wait() error                        { return p.cmd.Wait() }
+func (p *execLaunchProcess) Kill() error {
+	if p.cmd.Process == nil {
+		return nil
+	}
+	return p.cmd.Process.Kill()
+}
+
+type launchTicker interface {
+	C() <-chan time.Time
+	Stop()
+}
+
+type realLaunchTicker struct{ ticker *time.Ticker }
+
+func (t *realLaunchTicker) C() <-chan time.Time { return t.ticker.C }
+func (t *realLaunchTicker) Stop()               { t.ticker.Stop() }
 
 var newRequestWithContext = http.NewRequestWithContext
 
@@ -67,7 +107,13 @@ func NewCodexLauncher(configs []CodexLaunchConfig) *CodexLauncher {
 		Running: map[string]*LaunchedCodex{},
 		Sources: map[string]appsource.Source{},
 		client:  http.DefaultClient,
-		command: exec.Command,
+		process: func(name string, args ...string) launchProcess {
+			return &execLaunchProcess{cmd: exec.Command(name, args...)}
+		},
+		newTicker: func(d time.Duration) launchTicker {
+			return &realLaunchTicker{ticker: time.NewTicker(d)}
+		},
+		withTimeout: context.WithTimeout,
 	}
 }
 
@@ -146,7 +192,9 @@ func (l *CodexLauncher) Shutdown(ctx context.Context) error {
 	l.Mu.Unlock()
 
 	for _, launched := range running {
-		if launched.Cmd.Process != nil {
+		if launched.process != nil {
+			_ = launched.process.Kill()
+		} else if launched.Cmd.Process != nil {
 			_ = launched.Cmd.Process.Kill()
 		}
 		select {
@@ -178,19 +226,19 @@ func (l *CodexLauncher) launchLocked(ctx context.Context, cfg CodexLaunchConfig)
 	// NOT CommandContext: the launched codex app-server must outlive this
 	// call's ctx (the caller owns it via LaunchedCodex). ctx scopes only the
 	// readiness wait below; on timeout we kill the process explicitly.
-	cmd := l.command(binary, args...) //nolint:noctx // detached app-server must outlive ctx (see comment)
-	cmd.Dir = cfg.WorkingDir
-	cmd.Env = codexLaunchEnv(cfg.Env)
-	stdout, err := cmd.StdoutPipe()
+	process := l.process(binary, args...) //nolint:noctx // detached app-server must outlive ctx (see comment)
+	process.SetDir(cfg.WorkingDir)
+	process.SetEnv(codexLaunchEnv(cfg.Env))
+	stdout, err := process.StdoutPipe()
 	if err != nil {
 		return nil, appwire.HubLaunchError("prepare codex app-server stdout: " + err.Error())
 	}
-	stderr, err := cmd.StderrPipe()
+	stderr, err := process.StderrPipe()
 	if err != nil {
 		return nil, appwire.HubLaunchError("prepare codex app-server stderr: " + err.Error())
 	}
 	endpoints := make(chan string, 4)
-	if err := cmd.Start(); err != nil {
+	if err := process.Start(); err != nil {
 		return nil, appwire.HubLaunchError("start codex app-server: " + err.Error())
 	}
 	go scanCodexEndpoint(stdout, endpoints)
@@ -200,18 +248,18 @@ func (l *CodexLauncher) launchLocked(ctx context.Context, cfg CodexLaunchConfig)
 	exited := make(chan struct{})
 	var exitErr error
 	go func() {
-		exitErr = cmd.Wait()
+		exitErr = process.Wait()
 		close(exited)
 	}()
 
-	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	waitCtx, cancel := l.withTimeout(ctx, timeout)
 	defer cancel()
 	endpoint := configuredCodexEndpoint(listen)
-	ticker := time.NewTicker(50 * time.Millisecond)
+	ticker := l.newTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		if endpoint != "" && CodexReady(waitCtx, l.client, endpoint) {
-			return &LaunchedCodex{Cmd: cmd, endpoint: endpoint, Exited: exited}, nil
+			return &LaunchedCodex{Cmd: process.Cmd(), process: process, endpoint: endpoint, Exited: exited}, nil
 		}
 		select {
 		case next := <-endpoints:
@@ -223,9 +271,9 @@ func (l *CodexLauncher) launchLocked(ctx context.Context, cfg CodexLaunchConfig)
 				return nil, appwire.HubLaunchError("codex app-server exited before ready: " + exitErr.Error())
 			}
 			return nil, appwire.HubLaunchError("codex app-server exited before ready")
-		case <-ticker.C:
+		case <-ticker.C():
 		case <-waitCtx.Done():
-			_ = cmd.Process.Kill()
+			_ = process.Kill()
 			return nil, appwire.HubLaunchError("codex app-server timed out waiting for ready")
 		}
 	}

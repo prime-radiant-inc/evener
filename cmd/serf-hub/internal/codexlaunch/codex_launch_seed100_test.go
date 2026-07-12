@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +27,67 @@ func seedClient(status int, err error) *http.Client {
 		}
 		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(""))}, nil
 	})}
+}
+
+type seedProcess struct {
+	cmd       *exec.Cmd
+	stdout    io.ReadCloser
+	stderr    io.ReadCloser
+	stdoutErr error
+	stderrErr error
+	startErr  error
+	waitErr   error
+	wait      chan struct{}
+	killed    chan struct{}
+	killOnce  sync.Once
+	dir       string
+	env       []string
+}
+
+func newSeedProcess(stdout, stderr string) *seedProcess {
+	return &seedProcess{
+		cmd:    &exec.Cmd{},
+		stdout: io.NopCloser(strings.NewReader(stdout)),
+		stderr: io.NopCloser(strings.NewReader(stderr)),
+		wait:   make(chan struct{}),
+		killed: make(chan struct{}),
+	}
+}
+
+func (p *seedProcess) Cmd() *exec.Cmd                     { return p.cmd }
+func (p *seedProcess) SetDir(dir string)                  { p.dir = dir }
+func (p *seedProcess) SetEnv(env []string)                { p.env = env }
+func (p *seedProcess) StdoutPipe() (io.ReadCloser, error) { return p.stdout, p.stdoutErr }
+func (p *seedProcess) StderrPipe() (io.ReadCloser, error) { return p.stderr, p.stderrErr }
+func (p *seedProcess) Start() error                       { return p.startErr }
+func (p *seedProcess) Wait() error                        { <-p.wait; return p.waitErr }
+func (p *seedProcess) Kill() error {
+	p.killOnce.Do(func() { close(p.killed); close(p.wait) })
+	return nil
+}
+func (p *seedProcess) Exit() { p.killOnce.Do(func() { close(p.wait) }) }
+
+type seedTicker struct{ ch chan time.Time }
+
+func (t *seedTicker) C() <-chan time.Time { return t.ch }
+func (*seedTicker) Stop()                 {}
+
+func useSeedRuntime(l *CodexLauncher, process *seedProcess, ticks int, timedOut bool) {
+	l.process = func(string, ...string) launchProcess { return process }
+	l.newTicker = func(time.Duration) launchTicker {
+		ch := make(chan time.Time, ticks)
+		for range ticks {
+			ch <- time.Time{}
+		}
+		return &seedTicker{ch: ch}
+	}
+	l.withTimeout = func(ctx context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+		waitCtx, cancel := context.WithCancel(ctx)
+		if timedOut {
+			cancel()
+		}
+		return waitCtx, cancel
+	}
 }
 
 func TestSeed100LauncherConfigurationAndCache(t *testing.T) {
@@ -143,59 +206,90 @@ func TestSeed100LaunchFailureModes(t *testing.T) {
 	if _, err := l.launchLocked(context.Background(), CodexLaunchConfig{Listen: "http://bad"}); err == nil {
 		t.Fatal("non-websocket listen accepted")
 	}
+	startFailure := newSeedProcess("", "")
+	startFailure.startErr = errors.New("missing executable")
+	useSeedRuntime(l, startFailure, 0, false)
 	if _, err := l.launchLocked(context.Background(), CodexLaunchConfig{Binary: "/definitely/not/a/binary", Listen: "ws://127.0.0.1:1"}); err == nil {
 		t.Fatal("missing binary started")
 	}
 	if _, err := l.launchLocked(context.Background(), CodexLaunchConfig{Binary: "/definitely/not/a/binary"}); err == nil {
 		t.Fatal("default listen with missing binary started")
 	}
-	if _, err := l.launchLocked(context.Background(), CodexLaunchConfig{Binary: os.Args[0], Args: []string{"-test.run=TestSeed100HelperExit", "--"}, Listen: "ws://127.0.0.1:1", Timeout: 10 * time.Second}); err == nil || !strings.Contains(err.Error(), "exited before ready") {
+	earlyExit := newSeedProcess("", "")
+	earlyExit.Exit()
+	useSeedRuntime(l, earlyExit, 0, false)
+	if _, err := l.launchLocked(context.Background(), CodexLaunchConfig{Listen: "ws://127.0.0.1:1"}); err == nil || !strings.Contains(err.Error(), "exited before ready") {
 		t.Fatalf("early exit error = %v", err)
 	}
-	if _, err := l.launchLocked(context.Background(), CodexLaunchConfig{Binary: os.Args[0], Args: []string{"-test.run=TestSeed100HelperBlock", "--"}, Listen: "ws://127.0.0.1:1", Timeout: time.Nanosecond}); err == nil || !strings.Contains(err.Error(), "timed out") {
+	timedOut := newSeedProcess("", "")
+	useSeedRuntime(l, timedOut, 0, true)
+	if _, err := l.launchLocked(context.Background(), CodexLaunchConfig{Listen: "ws://127.0.0.1:1"}); err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("timeout error = %v", err)
+	}
+	select {
+	case <-timedOut.killed:
+	default:
+		t.Fatal("timed out process was not killed")
 	}
 }
 
 func TestSeed100EndpointDiscoveryAndErroredExit(t *testing.T) {
 	l := NewCodexLauncher(nil)
+	discovered := newSeedProcess("noise\n{\"endpoint\":\"ws://127.0.0.1:4567\"}\n", "")
+	useSeedRuntime(l, discovered, 0, false)
 	requests := 0
 	l.client = &http.Client{Transport: seedRoundTripper(func(*http.Request) (*http.Response, error) {
 		requests++
-		status := http.StatusServiceUnavailable
-		if requests > 1 {
-			status = http.StatusOK
-		}
-		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(""))}, nil
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(""))}, nil
 	})}
-	launched, err := l.launchLocked(context.Background(), CodexLaunchConfig{Binary: os.Args[0], Args: []string{"-test.run=TestSeed100HelperEndpoint", "--"}, Timeout: time.Second})
+	launched, err := l.launchLocked(context.Background(), CodexLaunchConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if launched.endpoint != "ws://127.0.0.1:4567" {
 		t.Fatalf("discovered endpoint = %q", launched.endpoint)
 	}
-	_ = launched.Cmd.Process.Kill()
+	_ = launched.process.Kill()
 	<-launched.Exited
 
 	l.client = seedClient(0, errors.New("offline"))
-	if _, err := l.launchLocked(context.Background(), CodexLaunchConfig{Binary: os.Args[0], Args: []string{"-test.run=TestSeed100HelperErrorExit", "--"}, Listen: "ws://127.0.0.1:1", Timeout: time.Second}); err == nil || !strings.Contains(err.Error(), "exit status") {
+	errorExit := newSeedProcess("", "")
+	errorExit.waitErr = errors.New("exit status 7")
+	errorExit.Exit()
+	useSeedRuntime(l, errorExit, 0, false)
+	if _, err := l.launchLocked(context.Background(), CodexLaunchConfig{Listen: "ws://127.0.0.1:1"}); err == nil || !strings.Contains(err.Error(), "exit status") {
 		t.Fatalf("errored exit = %v", err)
+	}
+
+	retry := newSeedProcess("", "")
+	useSeedRuntime(l, retry, 1, false)
+	requests = 0
+	l.client = &http.Client{Transport: seedRoundTripper(func(*http.Request) (*http.Response, error) {
+		requests++
+		status := http.StatusServiceUnavailable
+		if requests == 2 {
+			status = http.StatusOK
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})}
+	if _, err := l.launchLocked(context.Background(), CodexLaunchConfig{Listen: "ws://127.0.0.1:9"}); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 {
+		t.Fatalf("readiness requests = %d, want 2", requests)
 	}
 }
 
 func TestSeed100LaunchPipeFailures(t *testing.T) {
 	for _, stderr := range []bool{false, true} {
 		l := NewCodexLauncher(nil)
-		l.command = func(string, ...string) *exec.Cmd {
-			cmd := exec.Command(os.Args[0], "-test.run=TestSeed100HelperExit")
-			if stderr {
-				cmd.Stderr = io.Discard
-			} else {
-				cmd.Stdout = io.Discard
-			}
-			return cmd
+		process := newSeedProcess("", "")
+		if stderr {
+			process.stderrErr = errors.New("stderr pipe")
+		} else {
+			process.stdoutErr = errors.New("stdout pipe")
 		}
+		useSeedRuntime(l, process, 0, false)
 		if _, err := l.launchLocked(context.Background(), CodexLaunchConfig{Listen: "ws://127.0.0.1:1"}); err == nil {
 			t.Fatalf("stderr=%v: preconfigured pipe succeeded", stderr)
 		}
@@ -203,7 +297,9 @@ func TestSeed100LaunchPipeFailures(t *testing.T) {
 }
 
 func TestSeed100EnsureSourceLaunchAndShutdown(t *testing.T) {
-	l := NewCodexLauncher([]CodexLaunchConfig{{ID: "live", Binary: os.Args[0], Args: []string{"-test.run=TestSeed100HelperBlock", "--"}, Listen: "ws://127.0.0.1:4321", Timeout: time.Second}})
+	l := NewCodexLauncher([]CodexLaunchConfig{{ID: "live", Listen: "ws://127.0.0.1:4321"}})
+	process := newSeedProcess("", "")
+	useSeedRuntime(l, process, 0, false)
 	l.client = seedClient(http.StatusOK, nil)
 	registry := appsource.NewRegistry()
 	source, err := l.EnsureSource(context.Background(), "live", registry)
@@ -218,27 +314,6 @@ func TestSeed100EnsureSourceLaunchAndShutdown(t *testing.T) {
 	}
 	if len(l.Running) != 0 || len(l.Sources) != 0 {
 		t.Fatal("shutdown retained launcher state")
-	}
-}
-
-func TestSeed100HelperExit(t *testing.T) {}
-
-func TestSeed100HelperEndpoint(t *testing.T) {
-	if os.Getenv("SERF_HUB_SPAWNED_CODEX") == "1" {
-		_, _ = os.Stdout.WriteString("noise\n{\"endpoint\":\"ws://127.0.0.1:4567\"}\n")
-		select {}
-	}
-}
-
-func TestSeed100HelperErrorExit(t *testing.T) {
-	if os.Getenv("SERF_HUB_SPAWNED_CODEX") == "1" {
-		os.Exit(7)
-	}
-}
-
-func TestSeed100HelperBlock(t *testing.T) {
-	if os.Getenv("SERF_HUB_SPAWNED_CODEX") == "1" {
-		select {}
 	}
 }
 
@@ -257,6 +332,47 @@ func TestSeed100Shutdown(t *testing.T) {
 	cancel()
 	if err := l.Shutdown(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Shutdown error = %v", err)
+	}
+}
+
+func TestSeed100ProductionRuntimeAdaptersWithoutStartingChild(t *testing.T) {
+	l := NewCodexLauncher(nil)
+	process := l.process(filepath.Join(t.TempDir(), "missing"))
+	process.SetDir("/tmp")
+	process.SetEnv([]string{"A=B"})
+	if process.Cmd().Dir != "/tmp" || strings.Join(process.Cmd().Env, "") != "A=B" {
+		t.Fatal("exec process configuration was not retained")
+	}
+	if _, err := process.StdoutPipe(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := process.StderrPipe(); err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Start(); err == nil {
+		t.Fatal("missing executable started")
+	}
+	if err := process.Wait(); err == nil {
+		t.Fatal("waiting on an unstarted command succeeded")
+	}
+	if err := process.Kill(); err != nil {
+		t.Fatalf("kill before start: %v", err)
+	}
+
+	process.Cmd().Process, _ = os.FindProcess(2147483647)
+	_ = process.Kill()
+	ticker := l.newTicker(time.Hour)
+	_ = ticker.C()
+	ticker.Stop()
+	waitCtx, cancel := l.withTimeout(context.Background(), time.Hour)
+	cancel()
+	<-waitCtx.Done()
+
+	exited := make(chan struct{})
+	close(exited)
+	l.Running["legacy"] = &LaunchedCodex{Cmd: process.Cmd(), Exited: exited}
+	if err := l.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 
