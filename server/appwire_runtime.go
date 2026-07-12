@@ -384,16 +384,27 @@ func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.Threa
 	if model == "" {
 		return appwire.EmptyResponse{}, appwire.InvalidParams("model is required")
 	}
-	if provider := strings.TrimSpace(params.ModelProvider); provider != "" && !strings.Contains(model, "/") {
+	if provider := strings.TrimSpace(params.ModelProvider); provider != "" {
 		model = provider + "/" + model
 	}
 	s.mu.RLock()
+	processing := s.processing
+	reservedTurnID := strings.TrimSpace(s.appReservedTurnID)
 	fn := s.modelFunc
 	s.mu.RUnlock()
+	if processing || reservedTurnID != "" {
+		msg := "session is processing"
+		if reservedTurnID != "" {
+			msg = "turn " + reservedTurnID + " is active"
+		}
+		return appwire.EmptyResponse{}, appwire.Conflict(msg)
+	}
 	if fn == nil {
 		return appwire.EmptyResponse{}, appwire.Unavailable("model change not available")
 	}
-	fn(model)
+	if err := fn(model); err != nil {
+		return appwire.EmptyResponse{}, appwire.InvalidParams(err.Error())
+	}
 	return appwire.EmptyResponse{}, nil
 }
 

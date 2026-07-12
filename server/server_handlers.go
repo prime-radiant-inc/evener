@@ -195,8 +195,19 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.RLock()
+	processing := s.processing
+	reservedTurnID := strings.TrimSpace(s.appReservedTurnID)
 	fn := s.modelFunc
 	s.mu.RUnlock()
+
+	if processing || reservedTurnID != "" {
+		msg := "session is processing"
+		if reservedTurnID != "" {
+			msg = "turn " + reservedTurnID + " is active"
+		}
+		http.Error(w, msg, http.StatusConflict)
+		return
+	}
 
 	if fn == nil {
 		http.Error(w, "model change not available", http.StatusServiceUnavailable)
@@ -212,7 +223,10 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "model is required", http.StatusBadRequest)
 		return
 	}
-	fn(req.Model)
+	if err := fn(req.Model); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
