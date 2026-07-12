@@ -82,6 +82,7 @@ func TestRouterSeqFuzz(t *testing.T) {
 	})
 
 	rapid.Check(t, func(rt *rapid.T) {
+		exerciseAppserverStack(rt)
 		ops := rapid.SliceOfN(rapid.SampledFrom(allLiveOps), 1, 32).Draw(rt, "ops")
 		if f := seqOracleRun(ops, liveOpTable, registerSeqStubs); f != nil {
 			captured = f

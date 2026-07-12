@@ -31,6 +31,15 @@ type webSocketSender interface {
 	Send(context.Context, appwire.Message) error
 }
 
+type webSocketTransport interface {
+	webSocketSender
+	Recv(context.Context) (appwire.Message, error)
+}
+
+type webSocketCloser interface {
+	Close(websocket.StatusCode, string) error
+}
+
 // wsPinger is the subset of *websocket.Conn the keepalive loop needs. Ping
 // sends a WebSocket ping and blocks until the peer pongs or ctx is done.
 type wsPinger interface {
@@ -61,6 +70,10 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	go runWebSocketKeepalive(ctx, ws, cancel, keepalivePingInterval, keepalivePongTimeout)
 
+	runWebSocketReceiveLoop(ctx, ws, transport, conn)
+}
+
+func runWebSocketReceiveLoop(ctx context.Context, ws webSocketCloser, transport webSocketTransport, conn *Connection) {
 	for {
 		msg, err := transport.Recv(ctx)
 		if err != nil {
