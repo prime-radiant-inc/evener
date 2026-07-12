@@ -469,6 +469,8 @@ type liveKick struct {
 	input string
 }
 
+var runnerLoadClient = cmdutil.LoadClient
+
 func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *probeResult, stdout, stderr *bytes.Buffer) error {
 	restoreEnv := maybeClearOpenAIAPIKey(cfg.clearOpenAIAPIKey)
 	defer restoreEnv()
@@ -480,7 +482,7 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	if err != nil {
 		return err
 	}
-	client, provCfg, hasProvConfig, err := cmdutil.LoadClient(llm.WithStateDir(res.StateDir))
+	client, provCfg, hasProvConfig, err := runnerLoadClient(llm.WithStateDir(res.StateDir))
 	if err != nil {
 		return fmt.Errorf("LLM client setup: %w", err)
 	}

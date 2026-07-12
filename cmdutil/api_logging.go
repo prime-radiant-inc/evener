@@ -8,6 +8,8 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+var apiRawBodyEnabled = llm.RawBodyEnabled
+
 // AttachAPILogger installs the standard Serf API logger on client. Entries
 // route per session to <stateDir>/sessions/<session_id>.api.jsonl (raw HTTP
 // bodies, when enabled, to <session_id>.api-raw.jsonl), sibling to the
@@ -24,7 +26,7 @@ func AttachAPILogger(client *llm.Client, stateDir string, warnings io.Writer) (f
 	}
 
 	apiLog.SyncInterval = 2 * time.Second
-	if llm.RawBodyEnabled() {
+	if apiRawBodyEnabled() {
 		apiLog.EnableSessionRawLogging()
 	}
 	client.Use(apiLog)

@@ -12,6 +12,8 @@ import (
 	"primeradiant.com/serf/llm/providercfg"
 )
 
+var newClientFromAvailableProviders = llm.NewFromAvailableProviders
+
 // LoadProviderConfig resolves the providers config using the same path and
 // credential injection rules as LoadClient, but does not construct adapters.
 //
@@ -110,7 +112,7 @@ func LoadClient(opts ...llm.EnvOption) (*llm.Client, providercfg.Config, bool, e
 	if err != nil {
 		return nil, providercfg.Config{}, false, err
 	}
-	client, _, err := llm.NewFromAvailableProviders(cfg, opts...)
+	client, _, err := newClientFromAvailableProviders(cfg, opts...)
 	if err != nil {
 		return nil, providercfg.Config{}, false, fmt.Errorf("LLM client from config: %w", err)
 	}

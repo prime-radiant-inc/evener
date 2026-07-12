@@ -8,13 +8,15 @@ import (
 	"primeradiant.com/serf/llm/providercfg"
 )
 
+var newClientFromEnv = llm.NewFromEnv
+
 // seedConfigFromEnv detects providers from the environment and returns a
 // descriptors-only Config. It does NOT write anything to disk. LoadClient uses
 // this for the absent-file case so a read operation never has a write side
 // effect; callers that want to persist the result (the hub) use
 // MaterializeProvidersConfig.
 func seedConfigFromEnv(opts ...llm.EnvOption) (providercfg.Config, error) {
-	client, err := llm.NewFromEnv(opts...)
+	client, err := newClientFromEnv(opts...)
 	if err != nil {
 		return providercfg.Config{}, fmt.Errorf("seed providers config: detect providers: %w", err)
 	}
