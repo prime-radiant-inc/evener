@@ -32,6 +32,27 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 }
 
 func forkSessionFS(fs afero.Fs, stateDir, parentID string, divergenceTurn int, editedMessage, parentForkLabel string) (string, error) {
+	return forkSessionWithDeps(fs, stateDir, parentID, divergenceTurn, editedMessage, parentForkLabel, forkSessionDeps{
+		newWriter: func(fs afero.Fs, path string, header transcript.Header) (forkTranscriptWriter, error) {
+			return transcript.NewWriterWithFS(fs, path, header)
+		},
+		saveMeta:     schema.SaveSessionMetaWithFS,
+		maxScanToken: 10 * 1024 * 1024,
+	})
+}
+
+type forkTranscriptWriter interface {
+	Append(schema.Turn) error
+	Close() error
+}
+
+type forkSessionDeps struct {
+	newWriter    func(afero.Fs, string, transcript.Header) (forkTranscriptWriter, error)
+	saveMeta     func(afero.Fs, string, schema.SessionMeta) error
+	maxScanToken int
+}
+
+func forkSessionWithDeps(fs afero.Fs, stateDir, parentID string, divergenceTurn int, editedMessage, parentForkLabel string, deps forkSessionDeps) (string, error) {
 	if divergenceTurn < 1 {
 		return "", fmt.Errorf("divergenceTurn must be >= 1, got %d", divergenceTurn)
 	}
@@ -49,7 +70,11 @@ func forkSessionFS(fs afero.Fs, stateDir, parentID string, divergenceTurn int, e
 	defer func() { _ = f.Close() }() // read-only handle; close error is immaterial
 
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+	maxScanToken := deps.maxScanToken
+	if maxScanToken <= 0 {
+		maxScanToken = 10 * 1024 * 1024
+	}
+	scanner.Buffer(make([]byte, 0, min(64*1024, maxScanToken)), maxScanToken)
 
 	// First line is the header.
 	if !scanner.Scan() {
@@ -146,7 +171,7 @@ func forkSessionFS(fs afero.Fs, stateDir, parentID string, divergenceTurn int, e
 	}
 
 	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
-	tw, err := transcript.NewWriterWithFS(fs, childTranscriptPath, childHeader)
+	tw, err := deps.newWriter(fs, childTranscriptPath, childHeader)
 	if err != nil {
 		return "", fmt.Errorf("create child transcript: %w", err)
 	}
@@ -191,14 +216,14 @@ func forkSessionFS(fs afero.Fs, stateDir, parentID string, divergenceTurn int, e
 		ForkLabel:       "", // child carries no fork label; parent gets it
 	}
 
-	if err := schema.SaveSessionMetaWithFS(fs, stateDir, childMeta); err != nil {
+	if err := deps.saveMeta(fs, stateDir, childMeta); err != nil {
 		return "", fmt.Errorf("save child session meta: %w", err)
 	}
 
 	// Update the parent meta with the fork label if provided.
 	if parentForkLabel != "" {
 		parentMeta.ForkLabel = parentForkLabel
-		if err := schema.SaveSessionMetaWithFS(fs, stateDir, parentMeta); err != nil {
+		if err := deps.saveMeta(fs, stateDir, parentMeta); err != nil {
 			return "", fmt.Errorf("update parent session meta with fork label: %w", err)
 		}
 	}
