@@ -28,22 +28,34 @@ import (
 // unlock/disposal, persisted runtime settings, and status projection bounds.
 func FuzzSessionRestoreCloseStatusProgram(f *testing.F) {
 	for _, seed := range [][]byte{
-		{0, 0, 0}, // empty re-entry, unchanged disposal, gpt-5.3
-		{1, 1, 1}, // missing worktree, changed disposal, gpt-4.1
-		{2, 0, 2}, // non-managed re-entry
-		{3, 1, 3}, // managed unlocked re-entry
-		{4, 0, 4}, // managed own-lock adoption
-		{5, 1, 5}, // foreign-lock refusal
-		{6, 0, 6}, // unregistered-worktree refusal
-		{7, 1, 7}, // porcelain failure refusal
+		{0, 0, 0},   // empty re-entry, unchanged disposal, gpt-5.3
+		{1, 1, 1},   // missing worktree, changed disposal, gpt-4.1
+		{2, 0, 2},   // non-managed re-entry
+		{3, 1, 3},   // managed unlocked re-entry
+		{4, 0, 4},   // managed own-lock adoption
+		{5, 1, 5},   // foreign-lock refusal
+		{6, 0, 6},   // unregistered-worktree refusal
+		{7, 1, 7},   // porcelain failure refusal
+		{8, 2, 8},   // non-local restore, missing-sidecar disposal
+		{9, 3, 9},   // lock-state failure, unverifiable disposal
+		{10, 4, 10}, // relock failure, foreign-lock preservation
+		{11, 5, 11}, // restore without fallback root, unlock failure
+		{3, 6, 12},  // init lock-state failure
+		{4, 7, 13},  // init relock failure
+		{5, 8, 14},  // missing lane at close, foreign init lock
+		{6, 9, 15},  // unlocked close residue, tracked-init no-op
+		{7, 10, 16}, // branch cleanup failure
+		{4, 11, 17}, // pre-remove close hook
 	} {
 		f.Add(seed)
 	}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		mode := srspByte(data, 0) % 8
+		mode := srspByte(data, 0) % 12
 		srspRestoreWorktree(t, mode)
-		srspCloseWorktree(t, srspByte(data, 1)&1 == 1)
+		srspCloseWorktree(t, srspByte(data, 1)%12)
+		srspInitWorktree(t, srspByte(data, 2)%8)
+		srspOwnedIsolationLanes(t)
 		srspRuntimeAndStatus(t, srspByte(data, 2))
 	})
 }
@@ -70,6 +82,16 @@ func srspRestoreWorktree(t *testing.T, mode byte) {
 		h.s.resumeWorktreeReentry(schema.SessionMeta{WorktreePath: ghost, WorktreeManaged: true, WorktreeRestoreRoot: h.root})
 		if got := h.s.currentEnv().WorkingDirectory(); got != h.root {
 			t.Fatalf("missing worktree restore landed at %q, want %q", got, h.root)
+		}
+		return
+	}
+	if mode == 8 {
+		h.s.mu.Lock()
+		h.s.env = &timeoutEnv{wd: h.root}
+		h.s.mu.Unlock()
+		h.s.resumeWorktreeReentry(schema.SessionMeta{WorktreePath: h.root})
+		if _, ok := h.s.currentEnv().(*timeoutEnv); !ok {
+			t.Fatal("non-local restore replaced the execution environment")
 		}
 		return
 	}
@@ -122,6 +144,32 @@ func srspRestoreWorktree(t *testing.T, mode byte) {
 			return func(...string) (string, error) { return "", errors.New("srsp: porcelain unavailable") }
 		}
 		wantReentry = false
+	case 9:
+		meta.WorktreeManaged = true
+		calls := 0
+		h.s.cfg.testOnly.worktreeGitRunner = func(context.Context, execenv.ExecutionEnvironment) worktree.GitRunner {
+			return func(args ...string) (string, error) {
+				if scriptedArgs(args, "worktree", "list", "--porcelain") {
+					calls++
+					if calls == 2 {
+						return "", errors.New("srsp: lock state unavailable")
+					}
+				}
+				return h.git.run(args...)
+			}
+		}
+		wantReentry = false
+	case 10:
+		meta.WorktreeManaged = true
+		entry.lockReason = ""
+		faults := &worktreeFaults{git: h.git, lockErr: map[string]error{filepath.Clean(path): errors.New("srsp: lock denied")}}
+		h.s.cfg.testOnly.worktreeGitRunner = func(context.Context, execenv.ExecutionEnvironment) worktree.GitRunner { return faults.run }
+		wantReentry = false
+	case 11:
+		meta.WorktreeManaged = true
+		meta.WorktreeRestoreRoot = ""
+		entry.lockReason = "serf:another-session"
+		wantReentry = false
 	}
 
 	h.s.resumeWorktreeReentry(meta)
@@ -149,7 +197,7 @@ func srspRestoreWorktree(t *testing.T, mode byte) {
 	}
 }
 
-func srspCloseWorktree(t *testing.T, keepDelegateLane bool) {
+func srspCloseWorktree(t *testing.T, mode byte) {
 	t.Helper()
 	h := newScriptedWorktreeSession(t)
 	out, err := h.exec(map[string]any{"operation": "create", "name": "srsp-close"})
@@ -181,7 +229,7 @@ func srspCloseWorktree(t *testing.T, keepDelegateLane bool) {
 		t.Fatalf("close did not unlock own managed worktree: %q", entry.lockReason)
 	}
 
-	h2 := newScriptedWorktreeSession(t)
+	h2, faults := newWorktreeFaultSession(t)
 	lane, branch, _, _, err := h2.s.createDelegateWorktree(context.Background(), "srsp-delegate")
 	if err != nil {
 		t.Fatalf("create delegate worktree: %v", err)
@@ -193,19 +241,67 @@ func srspCloseWorktree(t *testing.T, keepDelegateLane bool) {
 	if laneEntry == nil {
 		t.Fatalf("delegate lane %q missing from scripted Git", lane)
 	}
-	if keepDelegateLane {
+	if mode == 1 || (mode >= 4 && mode <= 7) {
 		laneEntry.head = "srsp-changed-head"
+	}
+	switch mode {
+	case 2:
+		if err := worktree.DeleteSidecar(h2.metaDir(), "srsp-delegate"); err != nil {
+			t.Fatalf("delete delegate sidecar: %v", err)
+		}
+	case 3:
+		faults.listErr = errors.New("srsp: list unavailable")
+	case 4:
+		laneEntry.lockReason = "serf:another-session"
+	case 5:
+		faults.unlockErr[filepath.Clean(lane)] = errors.New("srsp: unlock denied")
+	case 6:
+		faults.statusErr[filepath.Clean(lane)] = errors.New("srsp: status unavailable")
+	case 7:
+		faults.removeErr[filepath.Clean(lane)] = errors.New("srsp: late dirty write")
+	case 8:
+		if err := os.Remove(filepath.Join(lane, ".git")); err != nil {
+			t.Fatalf("remove delegate git pointer: %v", err)
+		}
+	case 9:
+		laneEntry.lockReason = ""
+	case 10:
+		faults.deleteErr["srsp-delegate"] = errors.New("srsp: branch delete denied")
+	case 11:
+		h2.s.worktreeDisposeBeforeRemove = func(got string) {
+			if got != lane {
+				t.Fatalf("dispose hook path = %q, want %q", got, lane)
+			}
+		}
 	}
 	note, kept := h2.s.disposeOneDelegateLane(h2.s.currentEnv().(*execenv.LocalExecutionEnvironment), isolationLane{
 		delegateID: "srsp-delegate",
 		path:       lane,
 	})
-	if keepDelegateLane {
+	if mode == 1 {
 		if !kept || !strings.Contains(note, "srsp-delegate") {
 			t.Fatalf("changed lane disposal = (%q,%t), want kept delegate note", note, kept)
 		}
 		if h2.git.entry(lane) == nil || laneEntry.lockReason != "" {
 			t.Fatalf("changed lane was not kept unlocked: entry=%v lock=%q", h2.git.entry(lane) != nil, laneEntry.lockReason)
+		}
+		return
+	}
+	if mode == 2 || mode == 3 || mode == 4 || mode == 5 {
+		if kept || note != "" || h2.git.entry(lane) == nil {
+			t.Fatalf("declined lane disposal = (%q,%t, present=%t)", note, kept, h2.git.entry(lane) != nil)
+		}
+		return
+	}
+	if mode == 6 || mode == 7 {
+		if !kept || h2.git.entry(lane) == nil {
+			t.Fatalf("preserving lane disposal = (%q,%t, present=%t)", note, kept, h2.git.entry(lane) != nil)
+		}
+		return
+	}
+	if mode == 8 {
+		if kept || note != "" || h2.git.entry(lane) == nil {
+			t.Fatalf("missing lane disposal = (%q,%t, present=%t)", note, kept, h2.git.entry(lane) != nil)
 		}
 		return
 	}
@@ -217,6 +313,66 @@ func srspCloseWorktree(t *testing.T, keepDelegateLane bool) {
 	}
 	if _, err := os.Stat(filepath.Join(lane, ".git")); !os.IsNotExist(err) {
 		t.Fatalf("removed lane .git stat error = %v, want not-exist", err)
+	}
+}
+
+func srspInitWorktree(t *testing.T, mode byte) {
+	t.Helper()
+	h, faults := newWorktreeFaultSession(t)
+	if mode == 0 {
+		h.s.applyInitInsideWorktreeLock(false)
+		return
+	}
+	if mode == 1 {
+		h.s.cfg.spawn.parentSessionID = "parent"
+		h.s.applyInitInsideWorktreeLock(true)
+		return
+	}
+	path := scriptedCreate(t, h, "srsp-init")
+	entry := h.git.entry(path)
+	entry.lockReason = ""
+	local := h.s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	h.s.mu.Lock()
+	h.s.env = local.WithWorkingDirectory(path)
+	h.s.worktreeCurrentPath = ""
+	h.s.worktreeCurrentManaged = false
+	h.s.mu.Unlock()
+	switch mode {
+	case 2:
+		h.s.mu.Lock()
+		h.s.env = &timeoutEnv{wd: path}
+		h.s.mu.Unlock()
+	case 3:
+		faults.listErr = errors.New("srsp: lock inspection unavailable")
+	case 4:
+		faults.lockErr[filepath.Clean(path)] = errors.New("srsp: lock denied")
+	case 5:
+		entry.lockReason = worktree.FormatSessionMarker(h.s.id)
+	case 6:
+		entry.lockReason = "serf:another-session"
+	case 7:
+		h.s.worktreeCurrentPath = path
+	}
+	h.s.applyInitInsideWorktreeLock(true)
+	if mode == 5 && h.s.worktreeCurrentPath != path {
+		t.Fatalf("own init lock was not adopted: %q, want %q", h.s.worktreeCurrentPath, path)
+	}
+}
+
+func srspOwnedIsolationLanes(t *testing.T) {
+	t.Helper()
+	recs := map[string]*jobstore.JobRecord{
+		"nil":             {},
+		"other-isolation": {DelegateID: "other", DelegateRestore: &jobstore.DelegateRestoreDescriptor{Isolation: "shared", ParentSessionID: "session", WorkingDir: "/other"}},
+		"foreign-parent":  {DelegateID: "foreign", DelegateRestore: &jobstore.DelegateRestoreDescriptor{Isolation: "worktree", ParentSessionID: "other", WorkingDir: "/foreign"}},
+		"empty-path":      {DelegateID: "empty", DelegateRestore: &jobstore.DelegateRestoreDescriptor{Isolation: "worktree", ParentSessionID: "session", WorkingDir: "  "}},
+		"empty-id":        {DelegateRestore: &jobstore.DelegateRestoreDescriptor{Isolation: "worktree", ParentSessionID: "session", WorkingDir: "/empty-id"}},
+		"lane":            {DelegateID: "lane", DelegateRestore: &jobstore.DelegateRestoreDescriptor{Isolation: "worktree", ParentSessionID: "session", WorkingDir: " /lane "}},
+		"duplicate":       {DelegateID: "lane", DelegateRestore: &jobstore.DelegateRestoreDescriptor{Isolation: "worktree", ParentSessionID: "session", WorkingDir: "/duplicate"}},
+	}
+	lanes := ownedIsolationLanes(recs, "session")
+	if len(lanes) != 1 || lanes[0].delegateID != "lane" || (lanes[0].path != "/lane" && lanes[0].path != "/duplicate") {
+		t.Fatalf("owned isolation lanes = %+v", lanes)
 	}
 }
 
