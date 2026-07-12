@@ -270,7 +270,7 @@ rhythm break, not a void. Tap floors are untouched (32px desktop / 52px mobile m
   attach, `Interrupt`, `Send as steer`, `Send` (primary blue). Every control is a real
   `<button>` with a visible `:focus-visible` ring and ≥30px hit target.
 
-### Composer anatomy (shipping, 2026-07-11 round 3)
+### Composer anatomy (shipping, 2026-07-12 round 4)
 
 Top to bottom inside `.workspace-input` (the dock):
 
@@ -283,23 +283,34 @@ Top to bottom inside `.workspace-input` (the dock):
   `--radius-md`, and the quiet focus-within outline: in the wide two-pane layout the dock
   spans the window, so the card earns its keep by locating the input; removing it there is
   a separate call.
+- **Current-task strip** (the tasks trigger, phone only): the dock's own TOP line, above
+  the status rail — "what the agent is doing right now": `▸ 2/5 Refactor session config`
+  (count badge + the in-progress task's subject), ONE truncated line, full-width,
+  `--tap-min` tall, tapping opens the tasks panel. The trigger carries `data-tasks-signal`
+  (`none` / `active` / `done`, set by the badge updater) and the strip renders **only while
+  `active`** (an unfinished list); at rest ("42/42 forever", or no tasks) it is hidden — a
+  settled count is noise, and the plan card in the transcript + the desktop trigger keep
+  the panel discoverable. Because the "tasks" label word and the glyph are visual-only, the
+  updater writes a full `aria-label` ("tasks 2/5 — …"). This strip REPLACED the round-3
+  badge-only `tasks 1/3` rail item, so tasks never show twice. On desktop the trigger stays
+  a rail item (count badge + prose) as before.
 - **Status rail** (`.input-status-rail`, above the textarea on phone): ONE calm secondary
   line — status dot + state word · branch ref (truncated; on phone the "branch" label word
   is dropped, the ref is self-evident) · `ctx` + compact `16k / 262k` numbers · the honest
-  quiet-liveness item when the agent has been silent · the **tasks trigger**. The tasks
-  trigger carries `data-tasks-signal` (`none` / `active` / `done`, set by the badge
-  updater): on phone it renders **only while `active`** (an unfinished list — `tasks 1/3`);
-  at rest ("42/42 forever", or no tasks) it is hidden — a settled count is noise, and the
-  full plan card in the transcript + the desktop trigger keep the panel discoverable. On
-  phone the trigger shows the count badge only, never the current-task prose.
+  quiet-liveness item when the agent has been silent.
 - **Textarea**: bare — transparent background, no border/outline at rest, 16px on phone
   (iOS zoom guard).
 - **Action row** (`.input-controls`) is the last content band: `+` attach · model chip ·
-  stop `■` · `steer` · send `↑` (the one blue disc on phone). Its tap zone absorbs
-  `env(safe-area-inset-bottom)` as its own bottom padding, so the row's touch target runs
-  through the home-indicator gutter and the dock has no dead band below it. On phone,
-  **stop and steer render only while they are live** (`[disabled]` → `display: none`): a
-  dimmed disc at rest is one more object at the bottom of the screen for nothing.
+  stop `■` · `steer` · send `↑` (the one blue disc on phone). The home indicator and the
+  corner curves only constrain the **edges** of the bottommost band, so the row is inset
+  **horizontally** (`env(safe-area-inset-left/right) + --space-4`, on top of the dock's
+  `--space-3`) and keeps only a small fixed `--space-2` bottom pad — it does **not** stack
+  `env(safe-area-inset-bottom)` under itself (round 3 did, which floated the controls
+  ~80px above the physical bottom with a dead band below). The controls sit down in the
+  gutter zone alongside the home indicator, which overlays dock background between them —
+  Safari's own toolbar pattern. On phone, **stop and steer render only while they are
+  live** (`[disabled]` → `display: none`): a dimmed disc at rest is one more object at the
+  bottom of the screen for nothing.
 
 ---
 
