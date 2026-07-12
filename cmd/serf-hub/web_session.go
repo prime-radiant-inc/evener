@@ -15,6 +15,12 @@ import (
 	"primeradiant.com/serf/hubapi"
 )
 
+var (
+	webManagedLaunchSourceIDForRef      = managedLaunchSourceIDForRef
+	webSourceForThreadWithManagedLaunch = sourceForThreadWithManagedLaunch
+	webEnsureThreadActionAvailable      = ensureThreadActionAvailable
+)
+
 func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string) {
 	r.Body = http.MaxBytesReader(w, r.Body, hubcore.SendMaxRequestBytes)
 	var body sendRequest
@@ -38,13 +44,13 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 	}
 	ref := appRefFromRouteID(id)
 	if !isLocalRouteID(id) {
-		if _, managed := managedLaunchSourceIDForRef(s.cfg, ref); managed {
-			source, err := sourceForThreadWithManagedLaunch(r.Context(), s.cfg, s.sources, ref, "")
+		if _, managed := webManagedLaunchSourceIDForRef(s.cfg, ref); managed {
+			source, err := webSourceForThreadWithManagedLaunch(r.Context(), s.cfg, s.sources, ref, "")
 			if err != nil {
 				writeSessionActionError(w, r, err)
 				return
 			}
-			if err := ensureThreadActionAvailable(r.Context(), source, ref, "", "send"); err != nil {
+			if err := webEnsureThreadActionAvailable(r.Context(), source, ref, "", "send"); err != nil {
 				writeSessionActionError(w, r, err)
 				return
 			}

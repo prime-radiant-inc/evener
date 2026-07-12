@@ -71,6 +71,14 @@ func (s *exactWebSessionSource) CompactThread(context.Context, appwire.ThreadCom
 func FuzzCovExactWebSession(f *testing.F) {
 	f.Add(uint8(0))
 	f.Fuzz(func(t *testing.T, _ uint8) {
+		oldManaged := webManagedLaunchSourceIDForRef
+		oldManagedSource := webSourceForThreadWithManagedLaunch
+		oldEnsure := webEnsureThreadActionAvailable
+		defer func() {
+			webManagedLaunchSourceIDForRef = oldManaged
+			webSourceForThreadWithManagedLaunch = oldManagedSource
+			webEnsureThreadActionAvailable = oldEnsure
+		}()
 		caps := appwire.ThreadCapabilities{
 			Send: true, Steer: true, Interrupt: true, Compact: true,
 			Clear: true, Shutdown: true, Queue: true,
@@ -98,6 +106,31 @@ func FuzzCovExactWebSession(f *testing.F) {
 		call(func(w http.ResponseWriter, r *http.Request) { web.handleSessionAction(w, r, "remote:live", "compact") }, http.MethodPost, "/s/remote:live/compact", `{}`)
 		src.err = nil
 		call(func(w http.ResponseWriter, r *http.Request) { web.handleSessionAction(w, r, "remote:live", "compact") }, http.MethodPost, "/s/remote:live/compact", `{}`)
+		call(func(w http.ResponseWriter, r *http.Request) { web.handleSessionAction(w, r, "remote:live", "queue") }, http.MethodPost, "/s/remote:live/queue", `{}`)
+
+		managedThread := thread
+		managedThread.ID, managedThread.SessionID, managedThread.Source = "thread", "thread", "managed"
+		managedThread.Serf.Ref = "managed:thread"
+		managedSource := &exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "managed", thread: managedThread, startTurn: func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+			return appwire.TurnStartResponse{}, nil
+		}}}
+		managedWeb := NewWebServer(hubcore.WebConfig{})
+		managedWeb.sources.Add(managedSource)
+		webManagedLaunchSourceIDForRef = func(hubcore.WebConfig, string) (string, bool) { return "managed", true }
+		webSourceForThreadWithManagedLaunch = func(context.Context, hubcore.WebConfig, *appsource.Registry, string, string) (appsource.Source, error) {
+			return nil, errors.New("managed launch failure")
+		}
+		call(func(w http.ResponseWriter, r *http.Request) { managedWeb.handleSend(w, r, "managed:thread") }, http.MethodPost, "/s/managed:thread/send", `{"text":"hi"}`)
+		webSourceForThreadWithManagedLaunch = func(context.Context, hubcore.WebConfig, *appsource.Registry, string, string) (appsource.Source, error) {
+			return managedSource, nil
+		}
+		webEnsureThreadActionAvailable = func(context.Context, appsource.Source, string, string, string) error {
+			return appwire.Unavailable("managed send unavailable")
+		}
+		call(func(w http.ResponseWriter, r *http.Request) { managedWeb.handleSend(w, r, "managed:thread") }, http.MethodPost, "/s/managed:thread/send", `{"text":"hi"}`)
+		webEnsureThreadActionAvailable = oldEnsure
+		call(func(w http.ResponseWriter, r *http.Request) { managedWeb.handleSend(w, r, "managed:thread") }, http.MethodPost, "/s/managed:thread/send", `{"text":"hi"}`)
+		webManagedLaunchSourceIDForRef = oldManaged
 
 		invalidItems := make([]appwire.InputItem, 9)
 		for i := range invalidItems {
@@ -169,6 +202,18 @@ func FuzzCovExactWebSession(f *testing.F) {
 		}
 		localWeb = NewWebServer(hubcore.WebConfig{RunDir: runDir, Roster: localRoster, Past: past, Spawner: exactWebSessionSpawner{resume: resume}})
 		call(func(w http.ResponseWriter, r *http.Request) { localWeb.handleSend(w, r, localID) }, http.MethodPost, "/s/"+localID+"/send", `{"text":"resume"}`)
+		_, _ = localWeb.forkSession(localID, forkRequest{Turn: 3, EditedMessage: "edited", Label: "branch"})
+
+		rosterOnly := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 33, Address: "127.0.0.1:1"}, SessionID: "roster-only"})})
+		call(func(w http.ResponseWriter, r *http.Request) { rosterOnly.handleSend(w, r, "roster-only") }, http.MethodPost, "/s/roster-only/send", `{"text":"hi"}`)
+		deniedLocal := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 34, Address: "127.0.0.1:1"}, SessionID: "denied"})})
+		deniedLocal.sources.Add(&exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "local", thread: appwire.Thread{ID: "denied", SessionID: "denied", Source: "local", Serf: appwire.SerfThread{Ref: "local:denied"}}}})
+		call(func(w http.ResponseWriter, r *http.Request) { deniedLocal.handleSend(w, r, "denied") }, http.MethodPost, "/s/denied/send", `{"text":"hi"}`)
+		remoteRetry := NewWebServer(hubcore.WebConfig{})
+		remoteRetry.sources.Add(&exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "retry", thread: appwire.Thread{ID: "thread", SessionID: "thread", Source: "retry", Serf: appwire.SerfThread{Ref: "retry:thread", Capabilities: appwire.ThreadCapabilities{Send: true}}}, startTurn: func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+			return appwire.TurnStartResponse{}, appwire.SessionUnavailable("gone")
+		}}})
+		call(func(w http.ResponseWriter, r *http.Request) { remoteRetry.handleSend(w, r, "retry:thread") }, http.MethodPost, "/s/retry:thread/send", `{"text":"hi"}`)
 
 		// A valid past state plus a failing spawner reaches the launcher error
 		// mapping without starting a process.
