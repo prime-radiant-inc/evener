@@ -114,11 +114,12 @@ func ReadGlobalProfiles(r io.Reader) ([]GlobalProfile, error) {
 	lineNo := 0
 	for sc.Scan() {
 		lineNo++
-		line := strings.TrimSpace(sc.Text())
+		raw := sc.Text()
+		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		fields := strings.Split(line, "\t")
+		fields := strings.Split(raw, "\t")
 		if len(fields) != 3 {
 			return nil, fmt.Errorf("global profile manifest line %d: want 3 tab-separated fields, got %q", lineNo, line)
 		}
@@ -156,7 +157,7 @@ func ReadGlobalProfiles(r io.Reader) ([]GlobalProfile, error) {
 // paths cannot establish ownership safely. ReportGlobal requires this resolved
 // ownership before it will accept profile blocks.
 func ResolveGlobalProfiles(repoRoot string, profiles []GlobalProfile) ([]GlobalProfile, error) {
-	root, err := filepath.Abs(repoRoot)
+	root, err := fuzzcovSystem.abs(repoRoot)
 	if err != nil {
 		return nil, fmt.Errorf("resolve repository root: %w", err)
 	}
@@ -180,7 +181,7 @@ func ResolveGlobalProfiles(repoRoot string, profiles []GlobalProfile) ([]GlobalP
 			if err != nil {
 				return nil, fmt.Errorf("resolve module %s: %w", module, err)
 			}
-			content, err := os.ReadFile(filepath.Join(moduleDir, "go.mod"))
+			content, err := fuzzcovSystem.readFile(filepath.Join(moduleDir, "go.mod"))
 			if err != nil {
 				return nil, fmt.Errorf("read module %s go.mod: %w", module, err)
 			}
@@ -206,7 +207,7 @@ func ResolveGlobalProfiles(repoRoot string, profiles []GlobalProfile) ([]GlobalP
 // require a production .go file which the coverage replay build context cannot
 // select.
 func ReadGlobalExclusions(repoRoot string, r io.Reader) ([]Exclusion, error) {
-	root, err := filepath.Abs(repoRoot)
+	root, err := fuzzcovSystem.abs(repoRoot)
 	if err != nil {
 		return nil, fmt.Errorf("resolve repository root: %w", err)
 	}
@@ -217,11 +218,12 @@ func ReadGlobalExclusions(repoRoot string, r io.Reader) ([]Exclusion, error) {
 	lineNo := 0
 	for sc.Scan() {
 		lineNo++
-		line := strings.TrimSpace(sc.Text())
+		raw := sc.Text()
+		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		fields := strings.Split(line, "\t")
+		fields := strings.Split(raw, "\t")
 		if len(fields) != 5 {
 			return nil, fmt.Errorf("global exclusion manifest line %d: want 5 tab-separated fields, got %q", lineNo, line)
 		}
@@ -264,7 +266,7 @@ func ReadGlobalExclusions(repoRoot string, r io.Reader) ([]Exclusion, error) {
 }
 
 func readGlobalProfilesFile(filename string) ([]GlobalProfile, error) {
-	f, err := os.Open(filename)
+	f, err := fuzzcovSystem.open(filename)
 	if err != nil {
 		return nil, err
 	}
@@ -320,7 +322,7 @@ func ReportGlobal(profiles []GlobalProfile, exclusions []Exclusion, minimum floa
 			return GlobalReport{}, fmt.Errorf("declared module %s has conflicting resolved import paths %s and %s", module, previous, modulePath)
 		}
 		modulePaths[module] = modulePath
-		absolutePath, err := filepath.Abs(profile.Path)
+		absolutePath, err := fuzzcovSystem.abs(profile.Path)
 		if err != nil {
 			return GlobalReport{}, fmt.Errorf("resolve profile %q: %w", profile.Path, err)
 		}
@@ -393,10 +395,7 @@ func ReportGlobal(profiles []GlobalProfile, exclusions []Exclusion, minimum floa
 		if union == nil {
 			return GlobalReport{}, fmt.Errorf("exclusion %s:%s:%s names a package without a profile", module, pkg, exclusion.File)
 		}
-		profileFile, err := findExclusionProfileFile(exclusion, union)
-		if err != nil {
-			return GlobalReport{}, fmt.Errorf("exclusion %s:%s:%s: %w", module, pkg, exclusion.File, err)
-		}
+		profileFile := exclusion.ProfileFile
 		marked := excluded[packageKey]
 		if marked == nil {
 			marked = map[string]bool{}
@@ -424,12 +423,7 @@ func ReportGlobal(profiles []GlobalProfile, exclusions []Exclusion, minimum floa
 	for key := range packages {
 		keys = append(keys, key)
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		if keys[i].module != keys[j].module {
-			return keys[i].module < keys[j].module
-		}
-		return keys[i].packagePath < keys[j].packagePath
-	})
+	sortGlobalPackageKeys(keys)
 
 	moduleReports := map[string]*ModuleReport{}
 	for _, key := range keys {
@@ -474,6 +468,21 @@ func ReportGlobal(profiles []GlobalProfile, exclusions []Exclusion, minimum floa
 		}
 		report.Modules = append(report.Modules, *moduleReport)
 	}
+	sortAppliedExclusions(applied)
+	report.AppliedExclusions = applied
+	return report, nil
+}
+
+func sortGlobalPackageKeys(keys []globalPackageKey) {
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].module != keys[j].module {
+			return keys[i].module < keys[j].module
+		}
+		return keys[i].packagePath < keys[j].packagePath
+	})
+}
+
+func sortAppliedExclusions(applied []AppliedExclusion) {
 	sort.Slice(applied, func(i, j int) bool {
 		if applied[i].Module != applied[j].Module {
 			return applied[i].Module < applied[j].Module
@@ -483,8 +492,6 @@ func ReportGlobal(profiles []GlobalProfile, exclusions []Exclusion, minimum floa
 		}
 		return applied[i].File < applied[j].File
 	})
-	report.AppliedExclusions = applied
-	return report, nil
 }
 
 // globalFloor stores an exact coverage fraction. Existing floor files use
@@ -621,7 +628,7 @@ func writeGlobalFloorsFile(filename string, floors map[string]globalFloor) error
 	for _, module := range modules {
 		fmt.Fprintf(&out, "%s %s\n", module, globalFloorText(floors[module]))
 	}
-	return os.WriteFile(filename, []byte(out.String()), 0o644)
+	return fuzzcovSystem.writeFile(filename, []byte(out.String()), 0o644)
 }
 
 // PrintGlobalReport emits the human-readable companion to WriteGlobalReportJSON.
@@ -848,7 +855,7 @@ func resolveGlobalExclusion(repoRoot, module, pkg, file, kind, reason string) (E
 	if err != nil {
 		return Exclusion{}, err
 	}
-	moduleContents, err := os.ReadFile(filepath.Join(moduleDir, "go.mod"))
+	moduleContents, err := fuzzcovSystem.readFile(filepath.Join(moduleDir, "go.mod"))
 	if err != nil {
 		return Exclusion{}, fmt.Errorf("read module go.mod: %w", err)
 	}
@@ -878,7 +885,7 @@ func validateResolvedExclusion(exclusion Exclusion) error {
 	if filepath.Base(exclusion.SourcePath) != exclusion.File {
 		return fmt.Errorf("resolved source %s does not match manifest file %s", exclusion.SourcePath, exclusion.File)
 	}
-	info, err := os.Stat(exclusion.SourcePath)
+	info, err := fuzzcovSystem.stat(exclusion.SourcePath)
 	if err != nil {
 		return fmt.Errorf("source file %s: %w", exclusion.SourcePath, err)
 	}
@@ -962,9 +969,6 @@ func hasPlatformDerivedUnavailability(sourcePath, file string, coverageBuild bui
 	for _, expression := range expressions {
 		tags := map[string]bool{}
 		collectBuildConstraintTags(expression, tags)
-		if len(tags) == 0 {
-			return false, nil
-		}
 		for tag := range tags {
 			if !isGlobalPlatformBuildTag(tag) {
 				return false, nil
@@ -972,10 +976,7 @@ func hasPlatformDerivedUnavailability(sourcePath, file string, coverageBuild bui
 		}
 	}
 
-	filenameUnavailable, err := hasUnavailablePlatformFilenameSuffix(sourcePath, file, coverageBuild)
-	if err != nil {
-		return false, err
-	}
+	filenameUnavailable := hasUnavailablePlatformFilenameSuffix(sourcePath, file, coverageBuild)
 	// A genuine filename suffix can justify exclusion on its own. When a source
 	// header is present, it must already have passed the platform-only check
 	// above; otherwise an unrelated replay, cgo, or feature condition could
@@ -993,19 +994,16 @@ func isGlobalPlatformBuildTag(tag string) bool {
 // neutral package declaration. This retains Go's exact suffix and compatibility
 // rules without letting !serffuzz or another source build constraint masquerade
 // as the filename's platform reason.
-func hasUnavailablePlatformFilenameSuffix(sourcePath, file string, coverageBuild build.Context) (bool, error) {
+func hasUnavailablePlatformFilenameSuffix(sourcePath, file string, coverageBuild build.Context) bool {
 	if !hasGlobalPlatformFilenameSuffix(file) {
-		return false, nil
+		return false
 	}
 	filenameOnly := coverageBuild
 	filenameOnly.OpenFile = func(string) (io.ReadCloser, error) {
 		return io.NopCloser(strings.NewReader("package fuzzcov\n")), nil
 	}
-	matched, err := filenameOnly.MatchFile(filepath.Dir(sourcePath), file)
-	if err != nil {
-		return false, fmt.Errorf("evaluate platform filename suffix for %s: %w", sourcePath, err)
-	}
-	return !matched, nil
+	matched, _ := filenameOnly.MatchFile(filepath.Dir(sourcePath), file)
+	return !matched
 }
 
 // hasGlobalPlatformFilenameSuffix is a narrow precondition for the synthetic
@@ -1031,7 +1029,7 @@ func hasGlobalPlatformFilenameSuffix(file string) bool {
 // happens to mention a platform tag cannot turn a non-platform exclusion into a
 // valid one.
 func leadingBuildConstraintExpressions(filename string) ([]constraint.Expr, error) {
-	f, err := os.Open(filename)
+	f, err := fuzzcovSystem.open(filename)
 	if err != nil {
 		return nil, fmt.Errorf("open source file %s: %w", filename, err)
 	}
@@ -1102,20 +1100,17 @@ func sourceModuleAndPackage(sourcePath string) (string, string, error) {
 	dir := filepath.Dir(sourcePath)
 	for {
 		goMod := filepath.Join(dir, "go.mod")
-		if content, err := os.ReadFile(goMod); err == nil {
+		if content, err := fuzzcovSystem.readFile(goMod); err == nil {
 			modulePath := modulePathFromGoMod(content)
 			if modulePath == "" {
 				return "", "", fmt.Errorf("module %s has no module path", dir)
 			}
-			rel, err := filepath.Rel(dir, filepath.Dir(sourcePath))
+			rel, err := fuzzcovSystem.rel(dir, filepath.Dir(sourcePath))
 			if err != nil {
 				return "", "", err
 			}
 			if rel == "." {
 				return modulePath, ".", nil
-			}
-			if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-				return "", "", fmt.Errorf("source file %s escapes module %s", sourcePath, dir)
 			}
 			return modulePath, "./" + filepath.ToSlash(rel), nil
 		} else if !os.IsNotExist(err) {
@@ -1137,13 +1132,6 @@ func hasCodeGeneratedHeader(filename string) (bool, error) {
 		return false, fmt.Errorf("parse source file %s: %w", filename, err)
 	}
 	return ast.IsGenerated(file), nil
-}
-
-func findExclusionProfileFile(exclusion Exclusion, union map[string]globalBlock) (string, error) {
-	if exclusion.ProfileFile == "" {
-		return "", fmt.Errorf("exclusion is not resolved to a profile filename")
-	}
-	return exclusion.ProfileFile, nil
 }
 
 func validateGlobalBlockOwnership(block globalBlock, modulePath, pkg string) error {
@@ -1218,12 +1206,12 @@ func validateExclusionFilename(file string) error {
 }
 
 func joinWithin(root, child string) (string, error) {
-	rootAbs, err := filepath.Abs(root)
+	rootAbs, err := fuzzcovSystem.abs(root)
 	if err != nil {
 		return "", err
 	}
 	joined := filepath.Join(rootAbs, filepath.FromSlash(child))
-	rel, err := filepath.Rel(rootAbs, joined)
+	rel, err := fuzzcovSystem.rel(rootAbs, joined)
 	if err != nil {
 		return "", err
 	}

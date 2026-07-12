@@ -35,6 +35,8 @@ import (
 	"strings"
 )
 
+var exitProcess = os.Exit
+
 // target is one fuzz target plus the metadata the reporter needs to attribute
 // its profile. The first five fields mirror scripts/run-fuzz.sh's TARGETS entry;
 // profile is the path to that target's replayed -coverprofile.
@@ -73,59 +75,72 @@ type result struct {
 }
 
 func main() {
-	manifest := flag.String("manifest", "", "path to the target manifest written by fuzz-coverage.sh (required)")
-	floorsPath := flag.String("floors", "scripts/fuzzcov-floors.txt", "ratchet floors file")
-	globalManifest := flag.String("global-manifest", "", "path to module/package/profile TSV emitted by fuzz-coverage-global.sh")
-	globalExclusions := flag.String("global-exclusions", "scripts/fuzzcov-global-exclusions.txt", "reviewed whole-file global coverage exclusions")
-	globalFloors := flag.String("global-floors", "scripts/fuzzcov-global-floors.txt", "whole-module global coverage floors")
-	globalMinimum := flag.Float64("global-minimum", 95.0, "strict raw whole-module coverage threshold")
-	globalJSON := flag.Bool("global-json", false, "emit the global coverage report as JSON")
-	ignorePath := flag.String("ignore", "scripts/fuzzcov-ignore.txt", "gap-map ignore-list")
-	repoRoot := flag.String("repo-root", ".", "repository root")
-	modulesArg := flag.String("modules", ". agent llm auth fuzz", "space-separated go.work module dirs to scan for the gap map")
-	check := flag.Bool("check", false, "exit non-zero on a focus-set regression or a gap breach")
-	bless := flag.Bool("bless", false, "raise each floor upward to the current measured focus %")
-	tolerance := flag.Float64("tolerance", 0.5, "ratchet tolerance band (percentage points) absorbing nondeterministic wobble")
-	gapOnly := flag.Bool("gap-only", false, "STATIC gap gate: derive the fuzzed set from the registry (no coverage replay) and exit non-zero on any unfuzzed, unignored parse package")
-	registry := flag.String("registry", "", "path to scripts/run-fuzz.sh --list output (required with -gap-only)")
-	flag.Parse()
+	code, err := runCLI(os.Args[1:], os.Stdout, os.Stderr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "serf-fuzzcov: %v\n", err)
+		code = 2
+	}
+	exitProcess(code)
+}
+
+func runCLI(args []string, stdout, stderr *os.File) (int, error) {
+	flags := flag.NewFlagSet("serf-fuzzcov", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	manifest := flags.String("manifest", "", "path to the target manifest written by fuzz-coverage.sh (required)")
+	floorsPath := flags.String("floors", "scripts/fuzzcov-floors.txt", "ratchet floors file")
+	globalManifest := flags.String("global-manifest", "", "path to module/package/profile TSV emitted by fuzz-coverage-global.sh")
+	globalExclusions := flags.String("global-exclusions", "scripts/fuzzcov-global-exclusions.txt", "reviewed whole-file global coverage exclusions")
+	globalFloors := flags.String("global-floors", "scripts/fuzzcov-global-floors.txt", "whole-module global coverage floors")
+	globalMinimum := flags.Float64("global-minimum", 95.0, "strict raw whole-module coverage threshold")
+	globalJSON := flags.Bool("global-json", false, "emit the global coverage report as JSON")
+	ignorePath := flags.String("ignore", "scripts/fuzzcov-ignore.txt", "gap-map ignore-list")
+	repoRoot := flags.String("repo-root", ".", "repository root")
+	modulesArg := flags.String("modules", ". agent llm auth fuzz", "space-separated go.work module dirs to scan for the gap map")
+	check := flags.Bool("check", false, "exit non-zero on a focus-set regression or a gap breach")
+	bless := flags.Bool("bless", false, "raise each floor upward to the current measured focus %")
+	tolerance := flags.Float64("tolerance", 0.5, "ratchet tolerance band (percentage points) absorbing nondeterministic wobble")
+	gapOnly := flags.Bool("gap-only", false, "STATIC gap gate: derive the fuzzed set from the registry (no coverage replay) and exit non-zero on any unfuzzed, unignored parse package")
+	registry := flags.String("registry", "", "path to scripts/run-fuzz.sh --list output (required with -gap-only)")
+	if err := flags.Parse(args); err != nil {
+		return 2, err
+	}
 
 	if *globalManifest != "" {
 		if *gapOnly || *manifest != "" {
-			fatal("-global-manifest cannot be combined with -gap-only or -manifest")
+			return 2, fmt.Errorf("-global-manifest cannot be combined with -gap-only or -manifest")
 		}
 		code, err := runGlobalMode(globalModeOptions{
 			manifestPath: *globalManifest, exclusionsPath: *globalExclusions, floorsPath: *globalFloors,
 			repoRoot: *repoRoot, minimum: *globalMinimum, check: *check, bless: *bless, json: *globalJSON,
-		}, os.Stdout, os.Stderr)
+		}, stdout, stderr)
 		if err != nil {
-			fatal("global coverage: %v", err)
+			return 2, fmt.Errorf("global coverage: %w", err)
 		}
-		os.Exit(code)
+		return code, nil
 	}
 	if *globalJSON {
-		fatal("-global-json requires -global-manifest")
+		return 2, fmt.Errorf("-global-json requires -global-manifest")
 	}
 
 	if *gapOnly {
-		os.Exit(runGapOnly(*registry, *repoRoot, strings.Fields(*modulesArg), *ignorePath))
+		return runGapOnlyE(*registry, *repoRoot, strings.Fields(*modulesArg), *ignorePath)
 	}
 
 	if *manifest == "" {
-		fatal("--manifest is required")
+		return 2, fmt.Errorf("--manifest is required")
 	}
 
 	targets, err := readManifest(*manifest)
 	if err != nil {
-		fatal("read manifest: %v", err)
+		return 2, fmt.Errorf("read manifest: %w", err)
 	}
 	modulePaths, err := readModulePaths(*repoRoot, strings.Fields(*modulesArg))
 	if err != nil {
-		fatal("read module paths: %v", err)
+		return 2, fmt.Errorf("read module paths: %w", err)
 	}
 	floors, err := readFloors(*floorsPath)
 	if err != nil {
-		fatal("read floors: %v", err)
+		return 2, fmt.Errorf("read floors: %w", err)
 	}
 
 	// Parse every profile once; build per-target blocks and the merged union.
@@ -134,7 +149,7 @@ func main() {
 	for _, t := range targets {
 		blocks, err := parseProfile(t.profile)
 		if err != nil {
-			fatal("%s: %v", t.name, err)
+			return 2, fmt.Errorf("%s: %w", t.name, err)
 		}
 		perTarget[t.name] = blocks
 		for _, b := range blocks {
@@ -154,7 +169,7 @@ func main() {
 	for _, t := range targets {
 		r, err := computeTarget(*repoRoot, modulePaths, t, perTarget[t.name], floors)
 		if err != nil {
-			fatal("%s: %v", t.name, err)
+			return 2, fmt.Errorf("%s: %w", t.name, err)
 		}
 		results = append(results, r)
 	}
@@ -163,26 +178,27 @@ func main() {
 	fuzzed := fuzzedPackages(merged)
 	universe, err := scanUniverse(*repoRoot, modulePaths)
 	if err != nil {
-		fatal("scan parse universe: %v", err)
+		return 2, fmt.Errorf("scan parse universe: %w", err)
 	}
 	ignore, err := readIgnore(*ignorePath)
 	if err != nil {
-		fatal("read ignore-list: %v", err)
+		return 2, fmt.Errorf("read ignore-list: %w", err)
 	}
 	gaps := gapMap(universe, fuzzed, ignore)
 
 	if *bless {
 		if err := writeFloors(*floorsPath, results, floors); err != nil {
-			fatal("bless floors: %v", err)
+			return 2, fmt.Errorf("bless floors: %w", err)
 		}
-		fmt.Printf("serf-fuzzcov: raised floors in %s\n", *floorsPath)
+		fmt.Fprintf(stdout, "serf-fuzzcov: raised floors in %s\n", *floorsPath)
 	}
 
-	printReport(results, gaps)
+	printReportTo(stdout, results, gaps)
 
 	if *check {
-		os.Exit(checkExit(results, gaps, *tolerance))
+		return checkExitTo(stderr, results, gaps, *tolerance), nil
 	}
+	return 0, nil
 }
 
 // runGapOnly is the fast STATIC gap gate. It never replays a corpus: it derives
@@ -191,38 +207,46 @@ func main() {
 // parse package is left un-fuzzed and un-ignored. Seconds, deterministic — safe
 // for the PR gate, unlike the slow coverage-driven --check.
 func runGapOnly(registryPath, repoRoot string, modules []string, ignorePath string) int {
+	code, err := runGapOnlyE(registryPath, repoRoot, modules, ignorePath)
+	if err != nil {
+		fatal("%v", err)
+	}
+	return code
+}
+
+func runGapOnlyE(registryPath, repoRoot string, modules []string, ignorePath string) (int, error) {
 	if registryPath == "" {
-		fatal("-gap-only requires -registry (the scripts/run-fuzz.sh --list output)")
+		return 2, fmt.Errorf("-gap-only requires -registry (the scripts/run-fuzz.sh --list output)")
 	}
 	targets, err := readRegistry(registryPath)
 	if err != nil {
-		fatal("read registry: %v", err)
+		return 2, fmt.Errorf("read registry: %w", err)
 	}
 	modulePaths, err := readModulePaths(repoRoot, modules)
 	if err != nil {
-		fatal("read module paths: %v", err)
+		return 2, fmt.Errorf("read module paths: %w", err)
 	}
 	fuzzed := staticFuzzedPackages(targets, modulePaths)
 	universe, err := scanUniverse(repoRoot, modulePaths)
 	if err != nil {
-		fatal("scan parse universe: %v", err)
+		return 2, fmt.Errorf("scan parse universe: %w", err)
 	}
 	ignore, err := readIgnore(ignorePath)
 	if err != nil {
-		fatal("read ignore-list: %v", err)
+		return 2, fmt.Errorf("read ignore-list: %w", err)
 	}
 	gaps := gapMap(universe, fuzzed, ignore)
 
 	if len(gaps) == 0 {
 		fmt.Printf("fuzz gap check: all %d decode/parse package(s) have a registered target or a reasoned ignore\n", len(universe))
-		return 0
+		return 0, nil
 	}
 	fmt.Fprintln(os.Stderr, "GAP MAP — decode/parse packages with NO registered fuzz target")
 	for _, g := range gaps {
 		fmt.Fprintf(os.Stderr, "  %-52s (%s)\n", g[0], g[1])
 	}
 	fmt.Fprintf(os.Stderr, "serf-fuzzcov: GAP BREACH: %d decode/parse package(s) have no fuzz target and are not ignored\n", len(gaps))
-	return 1
+	return 1, nil
 }
 
 // staticFuzzedPackages returns the package import paths a target registry claims
@@ -402,7 +426,7 @@ func scanUniverse(repoRoot string, modulePaths map[string]string) (map[string]st
 			if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
 				return nil
 			}
-			content, e := os.ReadFile(p)
+			content, e := fuzzcovSystem.readFile(p)
 			if e != nil {
 				return e
 			}
@@ -450,9 +474,13 @@ func gapMap(universe map[string]string, fuzzed, ignore map[string]bool) [][2]str
 }
 
 func printReport(results []result, gaps [][2]string) {
-	fmt.Println("FUZZ SURFACE COVERAGE  (committed corpus, deterministic replay — goal: 100%)")
-	fmt.Println()
-	fmt.Printf("  %-40s %-44s %8s %8s %8s\n", "TARGET", "FOCUS SET", "FOCUS %", "FLOOR", "PKG %")
+	printReportTo(os.Stdout, results, gaps)
+}
+
+func printReportTo(w *os.File, results []result, gaps [][2]string) {
+	fmt.Fprintln(w, "FUZZ SURFACE COVERAGE  (committed corpus, deterministic replay — goal: 100%)")
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  %-40s %-44s %8s %8s %8s\n", "TARGET", "FOCUS SET", "FOCUS %", "FLOOR", "PKG %")
 	for _, r := range results {
 		// Compare against the 1-decimal floor with a matching band so a target at
 		// its floor reads "=", not a perpetual "^" from sub-0.1 rounding noise.
@@ -465,35 +493,39 @@ func printReport(results []result, gaps [][2]string) {
 		default:
 			mark = "="
 		}
-		fmt.Printf("  %-40s %-44s %6.1f%% %s %6.1f%% %6.1f%%\n",
+		fmt.Fprintf(w, "  %-40s %-44s %6.1f%% %s %6.1f%% %6.1f%%\n",
 			r.name, truncate(r.focusLabel, 44), r.focusPct, mark, r.floor, r.pkgPct)
 	}
-	fmt.Println()
-	fmt.Println("  (^ above floor — ratchet will rise; = at floor; ! below floor fails --check)")
-	fmt.Println()
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  (^ above floor — ratchet will rise; = at floor; ! below floor fails --check)")
+	fmt.Fprintln(w)
 	if len(gaps) == 0 {
-		fmt.Println("GAP MAP — decode/parse packages with ZERO fuzz coverage: none (all covered or ignored)")
+		fmt.Fprintln(w, "GAP MAP — decode/parse packages with ZERO fuzz coverage: none (all covered or ignored)")
 		return
 	}
-	fmt.Println("GAP MAP — decode/parse packages with ZERO fuzz coverage")
+	fmt.Fprintln(w, "GAP MAP — decode/parse packages with ZERO fuzz coverage")
 	for _, g := range gaps {
-		fmt.Printf("  %-52s (%s)\n", g[0], g[1])
+		fmt.Fprintf(w, "  %-52s (%s)\n", g[0], g[1])
 	}
 }
 
 // checkExit returns the process exit code for --check: non-zero on any focus-set
 // regression (beyond the tolerance band) or any unignored gap.
 func checkExit(results []result, gaps [][2]string, tolerance float64) int {
+	return checkExitTo(os.Stderr, results, gaps, tolerance)
+}
+
+func checkExitTo(w *os.File, results []result, gaps [][2]string, tolerance float64) int {
 	code := 0
 	for _, r := range results {
 		if r.focusPct+tolerance+1e-9 < r.floor {
-			fmt.Fprintf(os.Stderr, "serf-fuzzcov: REGRESSION %s: focus %.1f%% < floor %.1f%% (tolerance %.1f)\n",
+			fmt.Fprintf(w, "serf-fuzzcov: REGRESSION %s: focus %.1f%% < floor %.1f%% (tolerance %.1f)\n",
 				r.name, r.focusPct, r.floor, tolerance)
 			code = 1
 		}
 	}
 	if len(gaps) > 0 {
-		fmt.Fprintf(os.Stderr, "serf-fuzzcov: GAP BREACH: %d decode/parse package(s) have zero fuzz coverage and are not ignored\n", len(gaps))
+		fmt.Fprintf(w, "serf-fuzzcov: GAP BREACH: %d decode/parse package(s) have zero fuzz coverage and are not ignored\n", len(gaps))
 		code = 1
 	}
 	return code
@@ -644,7 +676,7 @@ func readModulePaths(repoRoot string, modules []string) (map[string]string, erro
 	out := map[string]string{}
 	for _, m := range modules {
 		gomod := filepath.Join(repoRoot, m, "go.mod")
-		content, err := os.ReadFile(gomod)
+		content, err := fuzzcovSystem.readFile(gomod)
 		if err != nil {
 			return nil, err
 		}
@@ -721,7 +753,7 @@ func writeFloors(p string, results []result, old map[string]float64) error {
 	for _, n := range names {
 		fmt.Fprintf(&sb, "%s %.1f\n", n, raised[n])
 	}
-	return os.WriteFile(p, []byte(sb.String()), 0o644)
+	return fuzzcovSystem.writeFile(p, []byte(sb.String()), 0o644)
 }
 
 // readIgnore reads the gap-map ignore-list. Every entry must carry a reason
@@ -787,5 +819,5 @@ func truncate(s string, n int) string {
 
 func fatal(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "serf-fuzzcov: "+format+"\n", args...)
-	os.Exit(2)
+	exitProcess(2)
 }
