@@ -634,6 +634,15 @@ TARGETS=(
 	"native:.:./cmd/serf-tui:FuzzSessionControls::"
 	"native:.:./cmd/serf-tui:FuzzSpawnAndViewProgram::"
 	"native:.:./cmd/serf-tui:FuzzWidgetPrograms::"
+	"native:.:./cmd/serf:FuzzMainSeedCoverage::"
+	"native:.:./cmd/serf:FuzzOpenAIAuthCommandCoverage::"
+	"native:.:./cmd/serf:FuzzPluginCommandSeedCoverage::"
+	"native:.:./cmd/serf:FuzzRunCoverage::"
+	"native:.:./cmd/serf:FuzzRunServeExactCoverage::"
+	"native:.:./cmd/serf:FuzzSandboxHelpers::"
+	"native:.:./cmd/serf:FuzzServeResidualCoverage::"
+	"native:.:./cmd/serf:FuzzServeSeedCoverage::"
+	"native:.:./cmd/serf:FuzzUpgradeErrorSeedCoverage::"
 )
 
 duration="60s"
