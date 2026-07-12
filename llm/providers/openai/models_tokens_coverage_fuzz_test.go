@@ -81,6 +81,17 @@ func FuzzOpenAIModelsTokensCoverage(f *testing.F) {
 			if codexHasTool([]string{"computer"}, "search") {
 				t.Fatal("codexHasTool reported absent tool")
 			}
+			info := (codexModelListEntry{
+				Slug:               "gpt-covered",
+				MaxOutputTokens:    8192,
+				SupportsSearchTool: true,
+			}).modelInfo()
+			if info.MaxOutputTokens == nil || *info.MaxOutputTokens != 8192 {
+				t.Fatalf("MaxOutputTokens = %v", info.MaxOutputTokens)
+			}
+			if info.SupportsWebSearch == nil || !*info.SupportsWebSearch {
+				t.Fatalf("SupportsWebSearch = %v", info.SupportsWebSearch)
+			}
 
 		case 4:
 			a := &Adapter{ResponsesPath: defaultCodexResponses}
