@@ -63,7 +63,7 @@ func FuzzExactTails(f *testing.F) {
 		if err := schema.SaveSessionMeta(state, meta); err != nil {
 			t.Fatal(err)
 		}
-		transcript := "not-json\n" + `{"kind":"entry","turn":{"kind":"USER_INPUT","message":{"role":"user","content":[{"kind":"image","image":{"data":""}}]},"usage":{"input_tokens":100,"output_tokens":50}}}` + "\n"
+		transcript := "not-json\n" + `{"kind":"entry","turn":"invalid"}` + "\n" + `{"kind":"entry","turn":{"kind":"USER_INPUT","message":{"role":"user","content":[{"kind":"image","image":{"data":""}}]},"usage":{"input_tokens":100,"output_tokens":50}}}` + "\n"
 		if err := os.WriteFile(filepath.Join(state, "sessions", "past.transcript.jsonl"), []byte(transcript), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -80,6 +80,10 @@ func FuzzExactTails(f *testing.F) {
 		_ = appItemsFromReplayTurn("s", "t", 0, hubcore.ReplayTurn{Kind: string(schema.TurnAssistant), Message: hubcore.ReplayMessage{Content: []hubcore.ReplayPart{
 			{Kind: string(llm.ContentToolResult), ToolResult: &hubcore.ReplayToolResult{ImageData: []byte("x")}},
 		}}}, map[string]string{})
+		_ = projectReplayInputImage(llm.ImageData{}, nil)
+		_ = projectReplayInputImage(llm.ImageData{Data: []byte("x")}, map[string]string{})
+		_ = projectReplayOutputImages("s", nil)
+		_ = projectReplayOutputImages("s", &llm.ToolResultData{ImageData: []byte("x")})
 
 		thread := appwire.Thread{ID: "id", Source: "local", Status: appwire.ThreadStatus{Type: "nonsense"}, Serf: appwire.SerfThread{Ref: "local:id"}}
 		_ = workspaceDataFromAppThread(thread)

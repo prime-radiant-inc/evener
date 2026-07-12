@@ -215,35 +215,37 @@ func pastEntryTurns(entry hubcore.PastEntry) []appwire.Turn {
 func appItemsFromReplayTurn(sessionID, turnID string, turnIndex int, turn hubcore.ReplayTurn, toolNames map[string]string) []appwire.ThreadItem {
 	agentTurn, imageNames := replayTurnToAgentTurn(turn)
 	return apptranscript.ProjectTurn(turnID, turnIndex, agentTurn, toolNames, func(image llm.ImageData) appwire.InputItem {
-		item := apptranscript.DefaultImageProjector(image)
-		if len(image.Data) == 0 {
-			return item
-		}
-		sha := imageSha(image.Data)
-		item.Name = imageNames[sha]
-		item.Metadata = map[string]string{
-			"sha":  sha,
-			"size": strconv.Itoa(len(image.Data)),
-		}
-		return item
+		return projectReplayInputImage(image, imageNames)
 	}, func(result *llm.ToolResultData) []appwire.OutputImage {
-		if result == nil || len(result.ImageData) == 0 {
-			return nil
-		}
-		sha := imageSha(result.ImageData)
-		mediaType := result.ImageMediaType
-		if mediaType == "" {
-			mediaType = "image/png"
-		}
-		return []appwire.OutputImage{{
-			Source:    "tool-result",
-			Name:      result.Name,
-			MediaType: mediaType,
-			Size:      int64(len(result.ImageData)),
-			SHA:       sha,
-			URL:       "/s/" + url.PathEscape(sessionID) + "/images/" + sha,
-		}}
+		return projectReplayOutputImages(sessionID, result)
 	})
+}
+
+func projectReplayInputImage(image llm.ImageData, imageNames map[string]string) appwire.InputItem {
+	item := apptranscript.DefaultImageProjector(image)
+	if len(image.Data) == 0 {
+		return item
+	}
+	sha := imageSha(image.Data)
+	item.Name = imageNames[sha]
+	item.Metadata = map[string]string{"sha": sha, "size": strconv.Itoa(len(image.Data))}
+	return item
+}
+
+func projectReplayOutputImages(sessionID string, result *llm.ToolResultData) []appwire.OutputImage {
+	if result == nil || len(result.ImageData) == 0 {
+		return nil
+	}
+	sha := imageSha(result.ImageData)
+	mediaType := result.ImageMediaType
+	if mediaType == "" {
+		mediaType = "image/png"
+	}
+	return []appwire.OutputImage{{
+		Source: "tool-result", Name: result.Name, MediaType: mediaType,
+		Size: int64(len(result.ImageData)), SHA: sha,
+		URL: "/s/" + url.PathEscape(sessionID) + "/images/" + sha,
+	}}
 }
 
 func enrichThreadFileBackedOutputImages(thread appwire.Thread) appwire.Thread {
