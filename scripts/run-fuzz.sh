@@ -563,6 +563,9 @@ TARGETS=(
 	"native:llm:./providers/minimax:FuzzInstanceFactory::"
 	"native:llm:./providers/openrouter:FuzzInstanceFactory::"
 	"native:llm:./providers/openrouter_anthropic:FuzzInstanceFactory::"
+	"native:.:./cmd/serf:FuzzRootCommandSeedCoverage::"
+	"native:auth:./openai:FuzzAuthOpenAIFaultSeams::"
+	"native:auth:./openai:FuzzAuthOpenAISeedReplay::"
 )
 
 duration="60s"
