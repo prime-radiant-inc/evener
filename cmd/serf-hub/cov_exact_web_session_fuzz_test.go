@@ -74,10 +74,16 @@ func FuzzCovExactWebSession(f *testing.F) {
 		oldManaged := webManagedLaunchSourceIDForRef
 		oldManagedSource := webSourceForThreadWithManagedLaunch
 		oldEnsure := webEnsureThreadActionAvailable
+		oldRosterFind := webRosterFind
+		oldSourceForThread := webSourceForThread
+		oldWaitForRoster := webWaitForRosterMatch
 		defer func() {
 			webManagedLaunchSourceIDForRef = oldManaged
 			webSourceForThreadWithManagedLaunch = oldManagedSource
 			webEnsureThreadActionAvailable = oldEnsure
+			webRosterFind = oldRosterFind
+			webSourceForThread = oldSourceForThread
+			webWaitForRosterMatch = oldWaitForRoster
 		}()
 		caps := appwire.ThreadCapabilities{
 			Send: true, Steer: true, Interrupt: true, Compact: true,
@@ -97,6 +103,33 @@ func FuzzCovExactWebSession(f *testing.F) {
 			req := httptest.NewRequest(method, target, strings.NewReader(body))
 			fn(httptest.NewRecorder(), req)
 		}
+		remoteDenied := NewWebServer(hubcore.WebConfig{})
+		remoteDenied.sources.Add(&exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "denied-remote", thread: appwire.Thread{ID: "thread", SessionID: "thread", Source: "denied-remote", Serf: appwire.SerfThread{Ref: "denied-remote:thread"}}}})
+		call(func(w http.ResponseWriter, r *http.Request) { remoteDenied.handleSend(w, r, "denied-remote:thread") }, http.MethodPost, "/s/denied-remote:thread/send", `{"text":"hi"}`)
+
+		missingSource := func(*appsource.Registry, string, string) (appsource.Source, error) {
+			return nil, errors.New("scripted source missing")
+		}
+		webSourceForThread = missingSource
+		noRosterSend := NewWebServer(hubcore.WebConfig{})
+		call(func(w http.ResponseWriter, r *http.Request) { noRosterSend.handleSend(w, r, "missing") }, http.MethodPost, "/s/missing/send", `{"text":"hi"}`)
+
+		rosterHit := hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 41, Address: "127.0.0.1:1"}, SessionID: "hit"}
+		webRosterFind = func(*hubcore.Roster, string) (hubcore.LiveEntry, bool) { return rosterHit, true }
+		firstHit := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries()})
+		call(func(w http.ResponseWriter, r *http.Request) { firstHit.handleSend(w, r, "hit") }, http.MethodPost, "/s/hit/send", `{"text":"hi"}`)
+
+		findCalls := 0
+		webRosterFind = func(*hubcore.Roster, string) (hubcore.LiveEntry, bool) {
+			findCalls++
+			return rosterHit, findCalls >= 2
+		}
+		secondHit := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries(), Spawner: exactWebSessionSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			return rendezvous.Entry{}, errors.New("must not resume")
+		}}})
+		call(func(w http.ResponseWriter, r *http.Request) { secondHit.handleSend(w, r, "hit") }, http.MethodPost, "/s/hit/send", `{"text":"hi"}`)
+		webRosterFind = oldRosterFind
+		webSourceForThread = oldSourceForThread
 		call(func(w http.ResponseWriter, r *http.Request) { web.handleSteer(w, r, "remote:live") }, http.MethodPost, "/s/remote:live/steer", `{"text":"go"}`)
 		call(func(w http.ResponseWriter, r *http.Request) { web.handleQueue(w, r, "remote:live") }, http.MethodPost, "/s/remote:live/queue", `{"text":"later"}`)
 		call(func(w http.ResponseWriter, r *http.Request) { web.handleDrainAsSteer(w, r, "remote:live") }, http.MethodPost, "/s/remote:live/drain-as-steer", `{}`)
@@ -188,6 +221,14 @@ func FuzzCovExactWebSession(f *testing.F) {
 		localSource := &exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "local", thread: localThread, startTurn: func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 			return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn"}}, nil
 		}}}
+		webSourceForThread = missingSource
+		webWaitForRosterMatch = func(*hubcore.Roster, string, int, time.Duration) hubcore.LiveEntry { return hubcore.LiveEntry{} }
+		timedOut := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries(), Past: past, Spawner: exactWebSessionSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			return rendezvous.Entry{PID: 99}, nil
+		}}})
+		call(func(w http.ResponseWriter, r *http.Request) { timedOut.handleSend(w, r, localID) }, http.MethodPost, "/s/"+localID+"/send", `{"text":"hi"}`)
+		webSourceForThread = oldSourceForThread
+		webWaitForRosterMatch = oldWaitForRoster
 		resume := func(_ context.Context, _ hubcore.ResumeRequest) (rendezvous.Entry, error) {
 			entry := rendezvous.Entry{PID: os.Getpid(), Address: "127.0.0.1:1", SessionID: localID, SourceID: "local", ThreadID: localID}
 			if _, err := rendezvous.Write(runDir, entry); err != nil {

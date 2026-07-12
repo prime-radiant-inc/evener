@@ -19,6 +19,9 @@ var (
 	webManagedLaunchSourceIDForRef      = managedLaunchSourceIDForRef
 	webSourceForThreadWithManagedLaunch = sourceForThreadWithManagedLaunch
 	webEnsureThreadActionAvailable      = ensureThreadActionAvailable
+	webRosterFind                       = func(r *hubcore.Roster, id string) (hubcore.LiveEntry, bool) { return r.Find(id) }
+	webSourceForThread                  = sourceForThread
+	webWaitForRosterMatch               = waitForRosterMatch
 )
 
 func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string) {
@@ -67,7 +70,7 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 			return hubcore.LiveEntry{}, errors.New("spawner not configured")
 		}
 		if !forceResume {
-			if le, ok := s.cfg.Roster.Find(id); ok {
+			if le, ok := webRosterFind(s.cfg.Roster, id); ok {
 				return le, nil
 			}
 		}
@@ -78,7 +81,7 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 		lock := s.lockForSession(id)
 		lock.Lock()
 		defer lock.Unlock()
-		if le, ok := s.cfg.Roster.Find(id); ok && !forceResume {
+		if le, ok := webRosterFind(s.cfg.Roster, id); ok && !forceResume {
 			return le, nil
 		}
 		resumeReq, err := s.resumeRequestFor(id)
@@ -89,7 +92,7 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 		if err != nil {
 			return hubcore.LiveEntry{}, fmt.Errorf("resume: %w", err)
 		}
-		le := waitForRosterMatch(s.cfg.Roster, id, entry.PID, 5*time.Second)
+		le := webWaitForRosterMatch(s.cfg.Roster, id, entry.PID, 5*time.Second)
 		if le.Address == "" {
 			return hubcore.LiveEntry{}, errors.New("daemon not in roster after resume")
 		}
@@ -106,7 +109,7 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 			if _, rerr := resolve(forceResume); rerr != nil {
 				return rerr
 			}
-		} else if _, err := sourceForThread(s.sources, ref, ""); err != nil {
+		} else if _, err := webSourceForThread(s.sources, ref, ""); err != nil {
 			if !isLocalRouteID(id) {
 				return err
 			}
@@ -114,7 +117,7 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 				return rerr
 			}
 		}
-		source, err := sourceForThread(s.sources, ref, "")
+		source, err := webSourceForThread(s.sources, ref, "")
 		if err != nil {
 			return err
 		}
