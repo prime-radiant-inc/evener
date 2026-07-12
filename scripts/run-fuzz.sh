@@ -211,6 +211,13 @@ TARGETS=(
 	"native:auth:./openai:FuzzResolveRuntimeCredentials::service.go#ResolveRuntimeCredentials"
 	"native:auth:./openai:FuzzTokenEndpointResponse::tokens.go"
 	"native:invariant:.:FuzzInvariantHold::invariant_serffuzz.go#Hold"
+	"native:agent:.:FuzzSubagentPolicyProgram::subagents.go"
+	"native:agent:.:FuzzSessionInitErrorRestoreProgram::session_init.go"
+	"native:agent:.:FuzzModelRoundContracts::session_model_call.go;session_tool_round.go"
+	"native:agent:.:FuzzJobtoolsContractProgram::session_tools_jobs.go#marshalDelegateSendResult;session_tools_jobs.go#marshalDelegateResult;session_tools_jobs.go#watchSendArg;session_tools_jobs.go#jobStatusTool;session_tools_jobs.go#jobStopTool"
+	"native:agent:.:FuzzJobManagerErrorRecoveryProgram::jobs.go"
+	"native:agent:.:FuzzStoolCommunicationDispatch::session_tools_communicate.go"
+	"native:agent:.:FuzzStwebRegistrationEgress::session_tools_web.go"
 	# Phase 7 Wave 3 — behavioral API fuzzing (under the B0 sandbox) + tool execution.
 	# B1/B2 (hub)
 	"native:.:./cmd/serf-hub:FuzzAppWireDispatch::app_rpc.go#newHubAppServer"
