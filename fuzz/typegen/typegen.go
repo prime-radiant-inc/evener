@@ -66,10 +66,9 @@ func GeneratorForType(t reflect.Type, mode schemagen.Mode) *rapid.Generator[any]
 func ValueFromBytes[T any](data []byte, mode schemagen.Mode) (T, bool) {
 	var zero T
 	schema := SchemaFromType(reflect.TypeOf(&zero).Elem())
-	raw, err := json.Marshal(schemagen.Value(schemagen.NewByteSource(data), schema, mode))
-	if err != nil {
-		return zero, false
-	}
+	// schemagen emits only JSON-native values with finite numbers, so marshaling
+	// cannot fail. Decode remains fallible in Adjacent mode by design.
+	raw, _ := json.Marshal(schemagen.Value(schemagen.NewByteSource(data), schema, mode))
 	var out T
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return zero, false

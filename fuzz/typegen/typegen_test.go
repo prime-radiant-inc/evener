@@ -63,6 +63,28 @@ type holder struct {
 	ByMap map[string]customLayer `json:"by_map,omitempty"`
 }
 
+type recursiveNode struct {
+	Value string         `json:"value"`
+	Next  *recursiveNode `json:"next,omitempty"`
+}
+
+type embeddedFields struct {
+	cleanInner
+	*embeddedPointer
+	Named cleanInner `json:"named"`
+	int
+}
+
+type embeddedPointer struct {
+	Enabled bool `json:"enabled"`
+}
+
+type requiredContainers struct {
+	Values []string       `json:"values"`
+	Lookup map[string]int `json:"lookup"`
+	Data   any            `json:"data"`
+}
+
 func TestSchemaFromType_Scalars(t *testing.T) {
 	cases := []struct {
 		val      any
@@ -81,6 +103,56 @@ func TestSchemaFromType_Scalars(t *testing.T) {
 		if !reflect.DeepEqual(got["type"], c.wantType) {
 			t.Errorf("%T: type = %#v, want %#v", c.val, got["type"], c.wantType)
 		}
+	}
+}
+
+func TestSchemaFromType_AllStructuralKinds(t *testing.T) {
+	if got := SchemaFromType(nil); len(got) != 0 {
+		t.Fatalf("nil type schema = %#v, want untyped", got)
+	}
+
+	cases := []struct {
+		typ      reflect.Type
+		wantType any
+	}{
+		{reflect.TypeOf([2]string{}), "array"},
+		{reflect.TypeOf(make(chan int)), nil},
+		{reflect.TypeOf(complex64(0)), nil},
+	}
+	for _, tc := range cases {
+		got := SchemaFromType(tc.typ)
+		if !reflect.DeepEqual(got["type"], tc.wantType) {
+			t.Errorf("%s type = %#v, want %#v", tc.typ, got["type"], tc.wantType)
+		}
+	}
+
+	recursive := SchemaFromType(reflect.TypeOf(recursiveNode{}))
+	next := recursive["properties"].(map[string]any)["next"].(map[string]any)
+	if len(next) != 0 {
+		t.Errorf("recursive occurrence = %#v, want untyped nullable schema", next)
+	}
+}
+
+func TestSchemaFromType_EmbeddedAndContainerFields(t *testing.T) {
+	schema := SchemaFromType(reflect.TypeOf(embeddedFields{}))
+	props := schema["properties"].(map[string]any)
+	for _, name := range []string{"a", "b", "enabled", "named"} {
+		if _, ok := props[name]; !ok {
+			t.Errorf("promoted properties missing %q: %#v", name, props)
+		}
+	}
+	if _, ok := props["int"]; ok {
+		t.Errorf("unexported anonymous field leaked: %#v", props)
+	}
+
+	containers := SchemaFromType(reflect.TypeOf(requiredContainers{}))
+	if got := containers["required"].([]string); len(got) != 0 {
+		t.Errorf("nullable container fields marked required: %v", got)
+	}
+
+	untagged := SchemaFromType(reflect.TypeOf(struct{ Plain string }{}))
+	if _, ok := untagged["properties"].(map[string]any)["Plain"]; !ok {
+		t.Errorf("exported untagged field did not use its Go name: %#v", untagged)
 	}
 }
 
@@ -292,6 +364,68 @@ func TestRegistryNamesAndLookup(t *testing.T) {
 	if g := reg.Generator("missing", schemagen.Valid); g != nil {
 		t.Errorf("Generator on missing name = %v, want nil", g)
 	}
+	if g := reg.Generator("a", schemagen.Valid); g == nil {
+		t.Fatal("Generator on registered name returned nil")
+	} else if got := g.Example(0); reflect.TypeOf(got).Kind() != reflect.String {
+		t.Errorf("registered generator value = %#v, want string", got)
+	}
+}
+
+func FuzzRegistrySemanticRoundTrip(f *testing.F) {
+	types := []reflect.Type{
+		reflect.TypeOf(cleanStruct{}),
+		reflect.TypeOf(cleanInner{}),
+		reflect.TypeOf(struct {
+			Items [2]string `json:"items"`
+			OK    bool      `json:"ok"`
+		}{}),
+	}
+	reg := NewRegistry()
+	for i, typ := range types {
+		reg.RegisterType(string(rune('a'+i)), typ)
+	}
+	for _, seed := range [][]byte{nil, {0}, {1, 2, 3}, pseudoBytes(17, 64)} {
+		f.Add(seed, uint8(len(seed)))
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte, selector uint8) {
+		idx := int(selector) % len(types)
+		name := string(rune('a' + idx))
+		first, ok := reg.Value(name, schemagen.Valid, schemagen.NewByteSource(data))
+		if !ok {
+			t.Fatalf("registered type %q missing", name)
+		}
+		second, _ := reg.Value(name, schemagen.Valid, schemagen.NewByteSource(data))
+		if !reflect.DeepEqual(first, second) {
+			t.Fatalf("generation is not deterministic: first=%#v second=%#v", first, second)
+		}
+
+		raw, err := json.Marshal(first)
+		if err != nil {
+			t.Fatalf("marshal generated value: %v", err)
+		}
+		decoded := reflect.New(types[idx]).Interface()
+		if err := json.Unmarshal(raw, decoded); err != nil {
+			t.Fatalf("valid value failed to decode as %s: %v", types[idx], err)
+		}
+		once, err := json.Marshal(decoded)
+		if err != nil {
+			t.Fatalf("marshal decoded value: %v", err)
+		}
+		again := reflect.New(types[idx]).Interface()
+		if err := json.Unmarshal(once, again); err != nil {
+			t.Fatalf("second decode as %s: %v", types[idx], err)
+		}
+		twice, _ := json.Marshal(again)
+		if !bytes.Equal(once, twice) {
+			t.Fatalf("JSON round trip is not a fixed point: once=%s twice=%s", once, twice)
+		}
+
+		// Adjacent generation is intentionally allowed to reject at the Go type
+		// boundary; it must remain deterministic and panic-free.
+		adjacent, _ := reg.Value(name, schemagen.Adjacent, schemagen.NewByteSource(data))
+		_, _ = json.Marshal(adjacent)
+	})
 }
 
 // TestNoSerfImport is the portability guard: no source file in this package may
@@ -357,6 +491,12 @@ func TestValueFromBytes(t *testing.T) {
 func TestValueFromBytes_Empty(t *testing.T) {
 	if _, ok := ValueFromBytes[cleanStruct](nil, schemagen.Valid); !ok {
 		t.Fatal("empty byte source should still yield a decodable Valid value")
+	}
+}
+
+func TestValueFromBytes_AdjacentDecodeRejection(t *testing.T) {
+	if got, ok := ValueFromBytes[string]([]byte{1, 0}, schemagen.Adjacent); ok {
+		t.Fatalf("wrong-type adjacent value decoded as string %q", got)
 	}
 }
 
