@@ -38,7 +38,11 @@ type Entry struct {
 
 // DefaultDir returns the canonical rendezvous directory ($HOME/.serf/run).
 func DefaultDir() string {
-	home, err := os.UserHomeDir()
+	return defaultDir(os.UserHomeDir)
+}
+
+func defaultDir(userHomeDir func() (string, error)) string {
+	home, err := userHomeDir()
 	if err != nil || home == "" {
 		home = "."
 	}
@@ -56,13 +60,17 @@ func Write(dir string, entry Entry) (string, error) {
 // on-disk behavior is byte-identical; tests and fuzzers inject an in-memory or
 // sandboxed filesystem.
 func writeFS(fs afero.Fs, dir string, entry Entry) (string, error) {
+	return writeFSWithMarshal(fs, dir, entry, json.Marshal)
+}
+
+func writeFSWithMarshal(fs afero.Fs, dir string, entry Entry, marshal func(any) ([]byte, error)) (string, error) {
 	if err := fs.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create rendezvous dir: %w", err)
 	}
 	if err := fs.Chmod(dir, 0o700); err != nil {
 		return "", fmt.Errorf("secure rendezvous dir: %w", err)
 	}
-	data, err := json.Marshal(entry)
+	data, err := marshal(entry)
 	if err != nil {
 		return "", fmt.Errorf("marshal entry: %w", err)
 	}

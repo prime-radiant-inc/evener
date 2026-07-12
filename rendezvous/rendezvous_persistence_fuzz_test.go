@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,6 +45,8 @@ import (
 // MkdirAll/Rename semantics would legitimately diverge from the OS and would be a
 // modeled-out quirk rather than a product bug. No network, no subprocess.
 func FuzzRendezvousPersistence(f *testing.F) {
+	exerciseRendezvousBranches(f)
+
 	f.Add([]byte{opWrite, 1, opWrite, 2, opList})
 	f.Add([]byte{opWrite, 7, opRemove, 7, opList})
 	f.Add([]byte{opWrite, 3, opWrite, 3, opRemove, 9, opList})
@@ -96,6 +100,123 @@ func FuzzRendezvousPersistence(f *testing.F) {
 			t.Fatalf("final List diverges across filesystems")
 		}
 	})
+}
+
+func exerciseRendezvousBranches(t testing.TB) {
+	t.Helper()
+
+	if got := defaultDir(func() (string, error) { return "", os.ErrNotExist }); got != filepath.Join(".", ".serf", "run") {
+		t.Fatalf("DefaultDir fallback = %q", got)
+	}
+	if got := defaultDir(func() (string, error) { return "/home/test", nil }); got != filepath.Join("/home/test", ".serf", "run") {
+		t.Fatalf("DefaultDir home = %q", got)
+	}
+	_ = DefaultDir()
+
+	dir := t.TempDir()
+	entry := Entry{PID: 42, Address: "local"}
+	path, err := Write(dir, entry)
+	if err != nil {
+		t.Fatalf("public Write: %v", err)
+	}
+	if entries, err := List(dir); err != nil || len(entries) != 1 {
+		t.Fatalf("public List: entries=%v err=%v", entries, err)
+	}
+	if err := Remove(dir, entry.PID); err != nil {
+		t.Fatalf("public Remove: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("public Remove left %q: %v", path, err)
+	}
+
+	assertWriteError(t, "create rendezvous dir", &rendezvousFaultFS{Fs: afero.NewMemMapFs(), op: "mkdir"})
+	assertWriteError(t, "secure rendezvous dir", &rendezvousFaultFS{Fs: afero.NewMemMapFs(), op: "chmod-dir"})
+	assertWriteError(t, "write tmp", &rendezvousFaultFS{Fs: afero.NewMemMapFs(), op: "open-tmp"})
+	assertWriteError(t, "secure tmp", &rendezvousFaultFS{Fs: afero.NewMemMapFs(), op: "chmod-tmp"})
+	assertWriteError(t, "rename", &rendezvousFaultFS{Fs: afero.NewMemMapFs(), op: "rename"})
+
+	fs := afero.NewMemMapFs()
+	if _, err := writeFSWithMarshal(fs, "/run", entry, func(any) ([]byte, error) { return nil, os.ErrInvalid }); err == nil || !strings.Contains(err.Error(), "marshal entry") {
+		t.Fatalf("marshal error = %v", err)
+	}
+
+	removeFault := &rendezvousFaultFS{Fs: afero.NewMemMapFs(), op: "remove"}
+	if err := removeFS(removeFault, "/run", 1); err == nil || !strings.Contains(err.Error(), "remove rendezvous file") {
+		t.Fatalf("remove error = %v", err)
+	}
+
+	listFault := &rendezvousFaultFS{Fs: afero.NewMemMapFs(), op: "open-dir"}
+	if _, err := listFS(listFault, "/run"); err == nil || !strings.Contains(err.Error(), "read rendezvous dir") {
+		t.Fatalf("list error = %v", err)
+	}
+	if entries, err := listFS(afero.NewMemMapFs(), "/missing"); err != nil || entries != nil {
+		t.Fatalf("missing list: entries=%v err=%v", entries, err)
+	}
+
+	filterFS := afero.NewMemMapFs()
+	_ = filterFS.MkdirAll("/run/sub.json", 0o700)
+	_ = afero.WriteFile(filterFS, "/run/note", []byte("x"), 0o600)
+	_ = afero.WriteFile(filterFS, "/run/name.json", []byte("{}"), 0o600)
+	_ = afero.WriteFile(filterFS, "/run/7.json", []byte("{}"), 0o600)
+	readFault := &rendezvousFaultFS{Fs: filterFS, op: "open-entry"}
+	if entries, err := listFS(readFault, "/run"); err != nil || len(entries) != 0 {
+		t.Fatalf("filtered list: entries=%v err=%v", entries, err)
+	}
+}
+
+func assertWriteError(t testing.TB, label string, fs afero.Fs) {
+	t.Helper()
+	_, err := writeFS(fs, "/run", Entry{PID: 42})
+	if err == nil || !strings.Contains(err.Error(), label) {
+		t.Fatalf("%s error = %v", label, err)
+	}
+}
+
+type rendezvousFaultFS struct {
+	afero.Fs
+	op string
+}
+
+func (fs *rendezvousFaultFS) MkdirAll(path string, perm os.FileMode) error {
+	if fs.op == "mkdir" {
+		return os.ErrPermission
+	}
+	return fs.Fs.MkdirAll(path, perm)
+}
+
+func (fs *rendezvousFaultFS) Chmod(name string, mode os.FileMode) error {
+	if fs.op == "chmod-dir" || fs.op == "chmod-tmp" && strings.HasSuffix(name, ".tmp") {
+		return os.ErrPermission
+	}
+	return fs.Fs.Chmod(name, mode)
+}
+
+func (fs *rendezvousFaultFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	if fs.op == "open-tmp" && strings.HasSuffix(name, ".tmp") {
+		return nil, os.ErrPermission
+	}
+	return fs.Fs.OpenFile(name, flag, perm)
+}
+
+func (fs *rendezvousFaultFS) Rename(oldname, newname string) error {
+	if fs.op == "rename" {
+		return os.ErrPermission
+	}
+	return fs.Fs.Rename(oldname, newname)
+}
+
+func (fs *rendezvousFaultFS) Remove(name string) error {
+	if fs.op == "remove" {
+		return os.ErrPermission
+	}
+	return fs.Fs.Remove(name)
+}
+
+func (fs *rendezvousFaultFS) Open(name string) (afero.File, error) {
+	if fs.op == "open-dir" || fs.op == "open-entry" && strings.HasSuffix(name, "/7.json") {
+		return nil, os.ErrPermission
+	}
+	return fs.Fs.Open(name)
 }
 
 // opReader is a cursor over the fuzz program that draws operations and their
