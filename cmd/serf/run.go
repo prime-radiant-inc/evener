@@ -75,6 +75,26 @@ type runConfig struct {
 // provider while exercising the real CLI/session/tool plumbing.
 var runLoadClient = cmdutil.LoadClient
 
+var (
+	runGetwd                = os.Getwd
+	runEnsureUserConfigDirs = cmdutil.EnsureUserConfigDirs
+	runSeedMarketplaces     = func() error {
+		_, err := plugins.NewManager("").SeedDefaultMarketplaces()
+		return err
+	}
+	runAttachAPILogger  = cmdutil.AttachAPILogger
+	runNewSession       = agent.NewSession
+	runRestoreSession   = agent.RestoreSessionFromMetaWithConfig
+	runProvisionSandbox = provisionSandbox
+	runSandboxLine      = sandboxEnforcementLine
+	runProcessInput     = func(sess *agent.Session, ctx context.Context, prompt string) (string, error) {
+		return sess.ProcessInput(ctx, prompt, nil)
+	}
+	runDrainJobTree = func(sess *agent.Session, ctx context.Context) (string, error) {
+		return sess.DrainJobTree(ctx)
+	}
+)
+
 func run(ctx context.Context, cfg runConfig) error {
 	if cfg.stdout == nil {
 		cfg.stdout = os.Stdout
@@ -83,19 +103,19 @@ func run(ctx context.Context, cfg runConfig) error {
 		cfg.stderr = os.Stderr
 	}
 	if cfg.workDir == "" {
-		wd, err := os.Getwd()
+		wd, err := runGetwd()
 		if err != nil {
 			return fmt.Errorf("cannot determine working directory: %w", err)
 		}
 		cfg.workDir = wd
 	}
-	if err := cmdutil.EnsureUserConfigDirs(); err != nil {
+	if err := runEnsureUserConfigDirs(); err != nil {
 		return err
 	}
 	// --no-default-marketplaces opts out of seeding on this bare-serf path only;
 	// serve and plugin subcommands always seed (best-effort, first-run-only).
 	if !cfg.noDefaultMarketplaces {
-		if _, err := plugins.NewManager("").SeedDefaultMarketplaces(); err != nil {
+		if err := runSeedMarketplaces(); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: seeding default marketplaces: %v\n", err)
 		}
 	}
@@ -162,7 +182,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		return fmt.Errorf("LLM client setup: %w", err)
 	}
 
-	closeAPILog, err := cmdutil.AttachAPILogger(client, stateDir, cfg.stderr)
+	closeAPILog, err := runAttachAPILogger(client, stateDir, cfg.stderr)
 	if err != nil {
 		return err
 	}
@@ -214,12 +234,12 @@ func run(ctx context.Context, cfg runConfig) error {
 	// RestoreSessionFromMetaWithConfig (the immutable-across-restart guarantee), so
 	// the flag governs only new sessions here.
 	if meta == nil {
-		if err := provisionSandbox(env, &baseSessionCfg, env.WorkingDirectory()); err != nil {
+		if err := runProvisionSandbox(env, &baseSessionCfg, env.WorkingDirectory()); err != nil {
 			return err
 		}
 	}
 	if meta != nil {
-		sess, err = agent.RestoreSessionFromMetaWithConfig(client, profile, env, *meta, agent.RestoreSessionConfig{
+		sess, err = runRestoreSession(client, profile, env, *meta, agent.RestoreSessionConfig{
 			StateDir:                    stateDir,
 			ResolveProfile:              baseSessionCfg.ResolveProfile,
 			OpenAIResponsesContinuation: openAIResponsesContinuation,
@@ -236,7 +256,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			fmt.Fprintf(cfg.stderr, "[resumed] session %s (%d turns)\n", meta.ID, meta.TurnCount) //nolint:errcheck
 		}
 	} else {
-		sess, err = agent.NewSession(client, profile, env, baseSessionCfg)
+		sess, err = runNewSession(client, profile, env, baseSessionCfg)
 		if err != nil {
 			return fmt.Errorf("session creation: %w", err)
 		}
@@ -246,7 +266,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	// One startup line, loudly, states exactly what this host enforces (read from
 	// the env's resolved policy so it never overstates). Empty for an unsandboxed
 	// session — nothing to announce.
-	if line := sandboxEnforcementLine(env); line != "" {
+	if line := runSandboxLine(env); line != "" {
 		fmt.Fprintln(cfg.stderr, line) //nolint:errcheck
 	}
 
@@ -257,14 +277,14 @@ func run(ctx context.Context, cfg runConfig) error {
 		done = drainEventsHuman(sess.Events(), cfg.stderr)
 	}
 
-	result, err := sess.ProcessInput(ctx, prompt, nil)
+	result, err := runProcessInput(sess, ctx, prompt)
 	if err == nil {
 		// Drain any fire-and-return delegates before Close() SIGKILLs them: keep
 		// re-driving the coordinator on child completions until the job tree is
 		// terminal. The coordinator's real final answer is produced on the
 		// post-completion notification turn, so prefer it over the "waiting on
 		// delegate" turn that ended ProcessInput (PRI-2441).
-		if drained, derr := sess.DrainJobTree(ctx); derr != nil {
+		if drained, derr := runDrainJobTree(sess, ctx); derr != nil {
 			err = derr
 		} else if drained != "" {
 			result = drained
