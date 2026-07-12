@@ -10,7 +10,7 @@ import (
 )
 
 var openAIStatusAction = func(stateDir, instanceName string) (authopenai.AuthStatus, error) {
-	return authopenai.NewService(authopenai.DefaultConfig(), nil).Status(stateDir, instanceName)
+	return openAIStoredAuthServiceFactory().Status(stateDir, instanceName)
 }
 
 func runOpenAIStatus(args []string, stdout, stderr io.Writer) error {
@@ -36,7 +36,7 @@ func runOpenAIStatus(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
 
-	resolvedStateDir, err := resolveOpenAIStateDir(*workDir, *stateDir)
+	resolvedStateDir, err := resolveOpenAIStateDirAction(*workDir, *stateDir)
 	if err != nil {
 		return err
 	}

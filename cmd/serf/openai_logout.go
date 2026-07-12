@@ -9,8 +9,17 @@ import (
 	authopenai "primeradiant.com/serf/auth/openai"
 )
 
+type openAIStoredAuthService interface {
+	Logout(string, string) (bool, error)
+	Status(string, string) (authopenai.AuthStatus, error)
+}
+
+var openAIStoredAuthServiceFactory = func() openAIStoredAuthService {
+	return authopenai.NewService(authopenai.DefaultConfig(), nil)
+}
+
 var openAILogoutAction = func(stateDir, instanceName string) (bool, error) {
-	return authopenai.NewService(authopenai.DefaultConfig(), nil).Logout(stateDir, instanceName)
+	return openAIStoredAuthServiceFactory().Logout(stateDir, instanceName)
 }
 
 func runOpenAILogout(args []string, stdout, stderr io.Writer) error {
@@ -36,7 +45,7 @@ func runOpenAILogout(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
 
-	resolvedStateDir, err := resolveOpenAIStateDir(*workDir, *stateDir)
+	resolvedStateDir, err := resolveOpenAIStateDirAction(*workDir, *stateDir)
 	if err != nil {
 		return err
 	}

@@ -17,28 +17,49 @@ import (
 	"primeradiant.com/serf/envvars"
 )
 
-var openAILoginAction = func(ctx context.Context, stateDir, instanceName string, openBrowser func(string) error, readRedirectURL func(context.Context) (string, error)) (authopenai.AuthStatus, error) {
-	service := authopenai.NewService(authopenai.DefaultConfig(), nil).
+type openAILoginService interface {
+	Login(context.Context, string, string) (authopenai.AuthStatus, error)
+}
+
+type openAIDeviceLoginService interface {
+	LoginWithDevice(context.Context, string, string, func(authopenai.DeviceCode)) (authopenai.AuthStatus, error)
+}
+
+var openAILoginServiceFactory = func(openBrowser func(string) error, readRedirectURL func(context.Context) (string, error)) openAILoginService {
+	return authopenai.NewService(authopenai.DefaultConfig(), nil).
 		WithBrowserOpener(openBrowser).
 		WithManualRedirectReader(readRedirectURL)
-	return service.Login(ctx, stateDir, instanceName)
+}
+
+var openAILoginAction = func(ctx context.Context, stateDir, instanceName string, openBrowser func(string) error, readRedirectURL func(context.Context) (string, error)) (authopenai.AuthStatus, error) {
+	return openAILoginServiceFactory(openBrowser, readRedirectURL).Login(ctx, stateDir, instanceName)
+}
+
+var openAIDeviceLoginServiceFactory = func(notifyConcurrentLogin func()) openAIDeviceLoginService {
+	return authopenai.NewService(authopenai.DefaultConfig(), nil).
+		WithConcurrentLoginNotifier(notifyConcurrentLogin)
 }
 
 var openAIDeviceLoginAction = func(ctx context.Context, stateDir, instanceName string, showPrompt func(authopenai.DeviceCode), notifyConcurrentLogin func()) (authopenai.AuthStatus, error) {
-	service := authopenai.NewService(authopenai.DefaultConfig(), nil).
-		WithConcurrentLoginNotifier(notifyConcurrentLogin)
-	return service.LoginWithDevice(ctx, stateDir, instanceName, showPrompt)
+	return openAIDeviceLoginServiceFactory(notifyConcurrentLogin).LoginWithDevice(ctx, stateDir, instanceName, showPrompt)
 }
+
+var (
+	openAIRuntimeGOOS           = runtime.GOOS
+	openAIExecCommand           = exec.Command
+	resolveOpenAIStateDirAction = resolveOpenAIStateDir
+	isHeadlessLoginAction       = isHeadlessLogin
+)
 
 var openAIBrowserOpener = func(rawURL string) error {
 	var cmd *exec.Cmd
-	switch runtime.GOOS {
+	switch openAIRuntimeGOOS {
 	case "darwin":
-		cmd = exec.Command("open", rawURL)
+		cmd = openAIExecCommand("open", rawURL)
 	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", rawURL)
+		cmd = openAIExecCommand("rundll32", "url.dll,FileProtocolHandler", rawURL)
 	default:
-		cmd = exec.Command("xdg-open", rawURL)
+		cmd = openAIExecCommand("xdg-open", rawURL)
 	}
 	return cmd.Start()
 }
@@ -101,7 +122,7 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 		return errors.New("conflicting flags: --device and --no-device cannot both be set")
 	}
 
-	resolvedStateDir, err := resolveOpenAIStateDir(*workDir, *stateDir)
+	resolvedStateDir, err := resolveOpenAIStateDirAction(*workDir, *stateDir)
 	if err != nil {
 		return err
 	}
@@ -151,7 +172,7 @@ func chooseLoginMode(forceDevice, forceBrowser bool) (mode, reason string) {
 	case forceBrowser:
 		return "browser", "forced"
 	}
-	if isHeadlessLogin() {
+	if isHeadlessLoginAction() {
 		return "device", "auto_no_display"
 	}
 	return "browser", "auto"
