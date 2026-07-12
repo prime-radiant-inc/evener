@@ -154,23 +154,12 @@ func FoldDelegates(events []Event) map[string]*DelegateRecord {
 				continue
 			}
 			d := delegates[delegateID]
-			if d == nil {
-				continue
-			}
 			if e.TranscriptRef != "" {
 				d.TranscriptRef = e.TranscriptRef
 			}
 			if e.Resumable != nil {
 				d.Resumable = *e.Resumable
 				d.NotResumableWhy = e.NotResumableWhy
-				switch d.Status {
-				case "", DelegateIdle, DelegateNotResumable:
-					if d.Resumable {
-						d.Status = DelegateIdle
-					} else {
-						d.Status = DelegateNotResumable
-					}
-				}
 			}
 		case EventJobFinished:
 			delegateID := jobToDelegate[e.JobID]
@@ -178,9 +167,6 @@ func FoldDelegates(events []Event) map[string]*DelegateRecord {
 				continue
 			}
 			d := delegates[delegateID]
-			if d == nil {
-				continue
-			}
 			if d.CurrentJobID != e.JobID {
 				continue
 			}

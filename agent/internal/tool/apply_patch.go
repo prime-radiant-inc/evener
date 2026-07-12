@@ -170,9 +170,6 @@ func parseV4APatchLines(lines []string) ([]patchOp, error) {
 				if strings.HasPrefix(lines[i], "*** ") {
 					break
 				}
-				if strings.TrimSpace(lines[i]) == "*** End Patch" {
-					break
-				}
 				if !strings.HasPrefix(lines[i], "+") {
 					return nil, fmt.Errorf("apply_patch: add file %s: expected '+' line, got %q", path, lines[i])
 				}

@@ -279,6 +279,10 @@ func GrepFileLimit(path string, re *regexp.Regexp, limitBytes int, maxMatches in
 // GrepFileLimitAt is like GrepFileLimit, but shifts returned offsets by
 // retainedStart when the file contains only a retained tail.
 func GrepFileLimitAt(path string, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int, retainedStart int64) (matches []Match, err error) {
+	return grepFileLimitAtOpen(path, re, limitBytes, maxMatches, maxLineBytes, retainedStart, func(path string) (io.ReadCloser, error) { return os.Open(path) })
+}
+
+func grepFileLimitAtOpen(path string, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int, retainedStart int64, open func(string) (io.ReadCloser, error)) (matches []Match, err error) {
 	if limitBytes < 0 {
 		return nil, fmt.Errorf("%w: limitBytes=%d", ErrInvalidLimit, limitBytes)
 	}
@@ -286,7 +290,7 @@ func GrepFileLimitAt(path string, re *regexp.Regexp, limitBytes int, maxMatches 
 		return nil, nil
 	}
 
-	f, err := os.Open(path)
+	f, err := open(path)
 	if err != nil {
 		return nil, fmt.Errorf("jobstore: open output: %w", err)
 	}
@@ -423,10 +427,14 @@ func writeOutputMetaFileFs(fs afero.Fs, path string, meta outputMeta) error {
 }
 
 func writeOutputMetaFileFsSync(fs afero.Fs, path string, meta outputMeta, syncWrites bool) error {
+	return writeOutputMetaFileFsSyncMarshal(fs, path, meta, syncWrites, json.Marshal)
+}
+
+func writeOutputMetaFileFsSyncMarshal(fs afero.Fs, path string, meta outputMeta, syncWrites bool, marshal func(any) ([]byte, error)) error {
 	if path == "" {
 		return nil
 	}
-	b, err := json.Marshal(meta)
+	b, err := marshal(meta)
 	if err != nil {
 		return fmt.Errorf("jobstore: marshal output metadata: %w", err)
 	}

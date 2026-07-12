@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"sort"
 	"strings"
@@ -658,6 +659,13 @@ var (
 )
 
 func compileSchema(params map[string]any) (schema *jsonschema.Schema, err error) {
+	return compileSchemaWith(params,
+		func(c *jsonschema.Compiler, uri string, r io.Reader) error { return c.AddResource(uri, r) },
+		func(c *jsonschema.Compiler, uri string) (*jsonschema.Schema, error) { return c.Compile(uri) },
+	)
+}
+
+func compileSchemaWith(params map[string]any, addResource func(*jsonschema.Compiler, string, io.Reader) error, compile func(*jsonschema.Compiler, string) (*jsonschema.Schema, error)) (schema *jsonschema.Schema, err error) {
 	// The jsonschema library has multiple panic() sites for malformed inputs.
 	// Recover so a bad MCP/plugin tool schema doesn't crash the process.
 	defer func() {
@@ -694,10 +702,10 @@ func compileSchema(params map[string]any) (schema *jsonschema.Schema, err error)
 	// A relative URL like "schema.json" triggers os.Getwd() which can panic
 	// in transient environments (e.g. deleted git worktrees).
 	const schemaURI = "urn:serf:tool-schema"
-	if err := c.AddResource(schemaURI, bytes.NewReader(b)); err != nil {
+	if err := addResource(c, schemaURI, bytes.NewReader(b)); err != nil {
 		return nil, err
 	}
-	compiled, err := c.Compile(schemaURI)
+	compiled, err := compile(c, schemaURI)
 	if err != nil {
 		return nil, err
 	}

@@ -32,6 +32,7 @@ type SessionLogEntry struct {
 type SessionLog struct {
 	path    string
 	fs      afero.Fs
+	marshal func(any) ([]byte, error)
 	mu      sync.RWMutex
 	entries []SessionLogEntry
 }
@@ -52,6 +53,7 @@ func newSessionLogFS(path string, fs afero.Fs) (*SessionLog, error) {
 	log := &SessionLog{
 		path:    path,
 		fs:      fs,
+		marshal: json.Marshal,
 		entries: []SessionLogEntry{},
 	}
 
@@ -115,7 +117,7 @@ func (l *SessionLog) appendToDisk(entry SessionLogEntry) error {
 	}
 	defer func() { _ = f.Close() }() // best-effort observability log; the write error below is what matters
 
-	data, err := json.Marshal(entry)
+	data, err := l.marshal(entry)
 	if err != nil {
 		return err
 	}
