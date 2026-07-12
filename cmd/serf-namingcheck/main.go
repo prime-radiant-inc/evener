@@ -35,6 +35,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -127,42 +128,59 @@ func isProvidersPath(rel string) bool {
 }
 
 func main() {
+	osExit(runNaming(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+var osExit = os.Exit
+var filepathAbs = filepath.Abs
+var namingRun = Run
+var filepathWalkDir = filepath.WalkDir
+var filepathRel = filepath.Rel
+var goFileChecker = checkGoFile
+var tomlFileChecker = checkTOMLFile
+
+func runNaming(args []string, stdout, stderr io.Writer) int {
 	var (
 		root    string
 		verbose bool
 	)
-	flag.StringVar(&root, "root", ".", "repo root to scan")
-	flag.BoolVar(&verbose, "v", false, "print scanned files")
-	flag.Parse()
-
-	abs, err := filepath.Abs(root)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "namingcheck:", err)
-		os.Exit(2)
+	fs := flag.NewFlagSet("serf-namingcheck", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.StringVar(&root, "root", ".", "repo root to scan")
+	fs.BoolVar(&verbose, "v", false, "print scanned files")
+	if err := fs.Parse(args); err != nil {
+		return 2
 	}
-	violations, err := Run(abs, verbose)
+
+	abs, err := filepathAbs(root)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "namingcheck:", err)
-		os.Exit(2)
+		fmt.Fprintln(stderr, "namingcheck:", err)
+		return 2
+	}
+	violations, err := namingRun(abs, verbose)
+	if err != nil {
+		fmt.Fprintln(stderr, "namingcheck:", err)
+		return 2
 	}
 	for _, v := range violations {
-		fmt.Println(v)
+		fmt.Fprintln(stdout, v)
 	}
 	if len(violations) > 0 {
-		fmt.Fprintf(os.Stderr, "\n%d naming violation(s)\n", len(violations))
-		os.Exit(1)
+		fmt.Fprintf(stderr, "\n%d naming violation(s)\n", len(violations))
+		return 1
 	}
+	return 0
 }
 
 // Run walks root and returns every violation it finds. Exposed for tests and
 // for the analyzer wrapper.
 func Run(root string, verbose bool) ([]Violation, error) {
 	var out []Violation
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	err := filepathWalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, rerr := filepath.Rel(root, path)
+		rel, rerr := filepathRel(root, path)
 		if rerr != nil {
 			return rerr
 		}
@@ -183,7 +201,7 @@ func Run(root string, verbose bool) ([]Violation, error) {
 			if verbose {
 				fmt.Fprintln(os.Stderr, "scan go:", rel)
 			}
-			vs, err := checkGoFile(path, rel)
+			vs, err := goFileChecker(path, rel)
 			if err != nil {
 				return err
 			}
@@ -192,7 +210,7 @@ func Run(root string, verbose bool) ([]Violation, error) {
 			if verbose {
 				fmt.Fprintln(os.Stderr, "scan toml:", rel)
 			}
-			vs, err := checkTOMLFile(path, rel)
+			vs, err := tomlFileChecker(path, rel)
 			if err != nil {
 				return err
 			}
@@ -274,10 +292,7 @@ func checkGoFile(path, rel string) ([]Violation, error) {
 			}
 			raw := field.Tag.Value
 			// raw is the quoted literal (with surrounding backticks or quotes).
-			if len(raw) < 2 {
-				continue
-			}
-			tag := reflect.StructTag(raw[1 : len(raw)-1])
+			tag := parseStructTag(raw)
 			if v, ok := tag.Lookup("json"); ok {
 				if msg := checkJSONTag(v, rel); msg != "" {
 					out = append(out, Violation{File: rel, Line: fieldLine, Message: msg})
@@ -292,6 +307,13 @@ func checkGoFile(path, rel string) ([]Violation, error) {
 		return true
 	})
 	return out, nil
+}
+
+func parseStructTag(raw string) reflect.StructTag {
+	if len(raw) < 2 {
+		return ""
+	}
+	return reflect.StructTag(raw[1 : len(raw)-1])
 }
 
 // tagKey extracts the actual field name from a struct tag value, dropping the
@@ -400,9 +422,6 @@ func toCamelCase(s string) string {
 	var b strings.Builder
 	b.WriteString(strings.ToLower(parts[0]))
 	for _, p := range parts[1:] {
-		if p == "" {
-			continue
-		}
 		b.WriteString(strings.ToUpper(p[:1]))
 		b.WriteString(strings.ToLower(p[1:]))
 	}

@@ -23,6 +23,7 @@ package main
 import (
 	"fmt"
 	"go/types"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -47,25 +48,26 @@ var libraryPackages = []string{
 }
 
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "serf-internalcheck:", err)
-		os.Exit(2)
-	}
+	osExit(runWith(findLeaks, os.Stdout, os.Stderr))
 }
 
-func run() error {
-	leaks, err := findLeaks()
+var osExit = os.Exit
+var packagesLoad = packages.Load
+var packagesVisit = packages.Visit
+
+func runWith(find func() ([]string, error), stdout, stderr io.Writer) int {
+	leaks, err := find()
 	if err != nil {
-		return err
-	}
-	if len(leaks) == 0 {
-		return nil
+		fmt.Fprintln(stderr, "serf-internalcheck:", err)
+		return 2
 	}
 	for _, v := range leaks {
-		fmt.Println(v)
+		fmt.Fprintln(stdout, v)
 	}
-	os.Exit(1)
-	return nil
+	if len(leaks) != 0 {
+		return 1
+	}
+	return 0
 }
 
 // findLeaks loads the library packages and returns one sorted message per
@@ -78,12 +80,12 @@ func findLeaks() ([]string, error) {
 		// data (resolved by NeedTypes) already provides.
 		Mode: packages.NeedName | packages.NeedTypes | packages.NeedImports,
 	}
-	pkgs, err := packages.Load(cfg, libraryPackages...)
+	pkgs, err := packagesLoad(cfg, libraryPackages...)
 	if err != nil {
 		return nil, fmt.Errorf("load packages: %w", err)
 	}
 	var loadErr error
-	packages.Visit(pkgs, nil, func(p *packages.Package) {
+	packagesVisit(pkgs, nil, func(p *packages.Package) {
 		for _, e := range p.Errors {
 			if loadErr == nil {
 				loadErr = fmt.Errorf("loading %s: %w", p.PkgPath, e)

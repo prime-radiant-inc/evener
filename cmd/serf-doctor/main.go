@@ -30,8 +30,11 @@ import (
 )
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	osExit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
+
+var osExit = os.Exit
+var doctorLocate = doctor.Locate
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -165,7 +168,7 @@ func cmdLocate(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	base := doctor.ResolveStateBase(*stateDir)
-	paths, err := doctor.Locate(base, sel)
+	paths, err := doctorLocate(base, sel)
 	if err != nil {
 		return fail(stderr, "locate", err)
 	}

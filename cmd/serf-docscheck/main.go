@@ -25,6 +25,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -57,19 +58,25 @@ type violation struct {
 }
 
 func main() {
+	osExit(runDocsCheck(libraryPackages, checkPackage, os.Stdout, os.Stderr))
+}
+
+var osExit = os.Exit
+
+func runDocsCheck(packages []string, check func(string) ([]violation, error), stdout, stderr io.Writer) int {
 	var violations []violation
-	for _, pkg := range libraryPackages {
-		v, err := checkPackage(pkg)
+	for _, pkg := range packages {
+		v, err := check(pkg)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "serf-docscheck: %s: %v\n", pkg, err)
-			os.Exit(2)
+			fmt.Fprintf(stderr, "serf-docscheck: %s: %v\n", pkg, err)
+			return 2
 		}
 		violations = append(violations, v...)
 	}
 
 	if len(violations) == 0 {
-		fmt.Println("serf-docscheck: all exported package-level declarations in the library packages are documented")
-		return
+		fmt.Fprintln(stdout, "serf-docscheck: all exported package-level declarations in the library packages are documented")
+		return 0
 	}
 
 	sort.Slice(violations, func(i, j int) bool {
@@ -79,10 +86,10 @@ func main() {
 		return violations[i].name < violations[j].name
 	})
 	for _, v := range violations {
-		fmt.Printf("%s/%s: %s %s is undocumented\n", v.pkg, v.file, v.kind, v.name)
+		fmt.Fprintf(stdout, "%s/%s: %s %s is undocumented\n", v.pkg, v.file, v.kind, v.name)
 	}
-	fmt.Fprintf(os.Stderr, "\nserf-docscheck: %d undocumented exported declaration(s)\n", len(violations))
-	os.Exit(1)
+	fmt.Fprintf(stderr, "\nserf-docscheck: %d undocumented exported declaration(s)\n", len(violations))
+	return 1
 }
 
 // checkPackage parses the non-test Go files in dir and returns a violation for

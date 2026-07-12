@@ -38,11 +38,15 @@ import (
 // - No system prompt by default; optional --system / --system-file / --system-append.
 func main() {
 	openaiprovider.ClientVersion = buildinfo.Version()
-	if err := llmcallMain(os.Args[1:], os.Stdout, os.Stderr); err != nil {
+	if err := llmcallEntry(os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "llmcall: %v\n", err)
-		os.Exit(1)
+		osExit(1)
 	}
 }
+
+var osExit = os.Exit
+var llmcallEntry = llmcallMain
+var newLLMClientFromEnv = llm.NewFromEnv
 
 type stringSliceFlag = cmdutil.StringSliceFlag
 
@@ -222,7 +226,7 @@ func runLLMCall(ctx context.Context, cfg llmCallConfig) error {
 
 	client := cfg.client
 	if client == nil {
-		c, err := llm.NewFromEnv()
+		c, err := newLLMClientFromEnv()
 		if err != nil {
 			return fmt.Errorf("LLM client setup: %w", err)
 		}
@@ -315,21 +319,17 @@ func runLLMCall(ctx context.Context, cfg llmCallConfig) error {
 		printUsage(cfg.stderr, res)
 	}
 
-	switch cfg.format {
-	case "text":
+	if cfg.format == "text" {
 		fmt.Fprintln(cfg.stdout, res.Text) //nolint:errcheck
 		return nil
-	case "json":
-		var out any
-		dec := json.NewDecoder(strings.NewReader(res.Text))
-		dec.UseNumber()
-		if err := dec.Decode(&out); err != nil {
-			return fmt.Errorf("failed to parse JSON output: %w", err)
-		}
-		return writeJSON(cfg.stdout, out, cfg.pretty)
-	default:
-		return fmt.Errorf("invalid --format %q: must be text|json", cfg.format)
 	}
+	var out any
+	dec := json.NewDecoder(strings.NewReader(res.Text))
+	dec.UseNumber()
+	if err := dec.Decode(&out); err != nil {
+		return fmt.Errorf("failed to parse JSON output: %w", err)
+	}
+	return writeJSON(cfg.stdout, out, cfg.pretty)
 }
 
 func buildSystemPrompt(systemText, systemFile string, appendFiles []string) (string, error) {

@@ -16,6 +16,7 @@ import (
 type fakeAdapter struct {
 	name  string
 	resp  llm.Response
+	err   error
 	check func(req llm.Request)
 }
 
@@ -25,6 +26,9 @@ func (a *fakeAdapter) Complete(ctx context.Context, req llm.Request) (llm.Respon
 	_ = ctx
 	if a.check != nil {
 		a.check(req)
+	}
+	if a.err != nil {
+		return llm.Response{}, a.err
 	}
 	if a.resp.Message.Role == "" {
 		a.resp.Model = req.Model

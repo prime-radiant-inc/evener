@@ -57,52 +57,70 @@ type workspaceModule struct {
 }
 
 func main() {
-	repoRoot := flag.String("repo-root", ".", "repository root containing go.work")
-	registryPath := flag.String("registry", "", "path to scripts/run-fuzz.sh --list output")
-	check := flag.Bool("check", false, "fail when registered and discovered coverage targets differ")
-	emitPlan := flag.Bool("emit-plan", false, "write validated native/Rapid targets as TSV")
-	flag.Parse()
+	osExit(runRegistry(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+var osExit = os.Exit
+var discoverWorkspace = DiscoverWorkspace
+var registryAbs = filepath.Abs
+var registryEvalSymlinks = filepath.EvalSymlinks
+var registryRel = filepath.Rel
+var registryWalkDir = filepath.WalkDir
+var registryPackagePath = packagePath
+var registryParseWork = modfile.ParseWork
+
+func runRegistry(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("serf-fuzzregistry", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	repoRoot := fs.String("repo-root", ".", "repository root containing go.work")
+	registryPath := fs.String("registry", "", "path to scripts/run-fuzz.sh --list output")
+	check := fs.Bool("check", false, "fail when registered and discovered coverage targets differ")
+	emitPlan := fs.Bool("emit-plan", false, "write validated native/Rapid targets as TSV")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
 
 	if *registryPath == "" {
-		fatal("--registry is required")
+		return registryError(stderr, "--registry is required")
 	}
-	if flag.NArg() != 0 {
-		fatal("unexpected arguments: %s", strings.Join(flag.Args(), " "))
+	if fs.NArg() != 0 {
+		return registryError(stderr, "unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
 
 	file, err := os.Open(*registryPath)
 	if err != nil {
-		fatal("open registry: %v", err)
+		return registryError(stderr, "open registry: %v", err)
 	}
 	defer file.Close()
 
 	registered, err := ParseRegistry(file)
 	if err != nil {
-		fatal("parse registry: %v", err)
+		return registryError(stderr, "parse registry: %v", err)
 	}
 
 	if *check || *emitPlan {
-		discovered, err := DiscoverWorkspace(*repoRoot)
+		discovered, err := discoverWorkspace(*repoRoot)
 		if err != nil {
-			fatal("discover workspace: %v", err)
+			return registryError(stderr, "discover workspace: %v", err)
 		}
 		if err := CheckTargets(registered, discovered); err != nil {
-			fatal("%v", err)
+			return registryError(stderr, "%v", err)
 		}
 		if err := CheckFocusSpecs(*repoRoot, registered); err != nil {
-			fatal("%v", err)
+			return registryError(stderr, "%v", err)
 		}
 	}
 	if *emitPlan {
-		if err := EmitPlan(os.Stdout, registered); err != nil {
-			fatal("emit replay plan: %v", err)
+		if err := EmitPlan(stdout, registered); err != nil {
+			return registryError(stderr, "emit replay plan: %v", err)
 		}
 	}
+	return 0
 }
 
-func fatal(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "serf-fuzzregistry: "+format+"\n", args...)
-	os.Exit(1)
+func registryError(w io.Writer, format string, args ...any) int {
+	fmt.Fprintf(w, "serf-fuzzregistry: "+format+"\n", args...)
+	return 1
 }
 
 // ParseRegistry reads the colon-delimited TARGETS rows emitted by run-fuzz.sh.
@@ -163,7 +181,7 @@ func DiscoverWorkspace(root string) ([]Target, error) {
 	var targets []Target
 	var issues []string
 	for _, module := range modules {
-		err := filepath.WalkDir(module.dir, func(filePath string, entry fs.DirEntry, walkErr error) error {
+		err := registryWalkDir(module.dir, func(filePath string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
 			}
@@ -194,7 +212,7 @@ func DiscoverWorkspace(root string) ([]Target, error) {
 			if err != nil {
 				return fmt.Errorf("parse %s: %w", filePath, err)
 			}
-			pkg, err := packagePath(module.dir, filepath.Dir(filePath))
+			pkg, err := registryPackagePath(module.dir, filepath.Dir(filePath))
 			if err != nil {
 				return err
 			}
@@ -290,11 +308,11 @@ func EmitPlan(w io.Writer, targets []Target) error {
 }
 
 func readWorkspaceModules(root string) ([]workspaceModule, error) {
-	absRoot, err := filepath.Abs(root)
+	absRoot, err := registryAbs(root)
 	if err != nil {
 		return nil, fmt.Errorf("absolute repository root: %w", err)
 	}
-	physicalRoot, err := filepath.EvalSymlinks(absRoot)
+	physicalRoot, err := registryEvalSymlinks(absRoot)
 	if err != nil {
 		return nil, fmt.Errorf("resolve repository root: %w", err)
 	}
@@ -304,7 +322,7 @@ func readWorkspaceModules(root string) ([]workspaceModule, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read go.work: %w", err)
 	}
-	work, err := modfile.ParseWork(workPath, data, nil)
+	work, err := registryParseWork(workPath, data, nil)
 	if err != nil {
 		return nil, fmt.Errorf("parse go.work: %w", err)
 	}
@@ -321,7 +339,7 @@ func readWorkspaceModules(root string) ([]workspaceModule, error) {
 			logicalDir = filepath.Join(absRoot, logicalDir)
 		}
 		logicalDir = filepath.Clean(logicalDir)
-		rel, err := filepath.Rel(absRoot, logicalDir)
+		rel, err := registryRel(absRoot, logicalDir)
 		if err != nil {
 			return nil, fmt.Errorf("resolve go.work use %q: %w", use.Path, err)
 		}
@@ -329,11 +347,8 @@ func readWorkspaceModules(root string) ([]workspaceModule, error) {
 			return nil, fmt.Errorf("go.work module %q is outside repository root", use.Path)
 		}
 		label := filepath.ToSlash(rel)
-		if label == "" {
-			label = "."
-		}
 
-		physicalDir, err := filepath.EvalSymlinks(logicalDir)
+		physicalDir, err := registryEvalSymlinks(logicalDir)
 		if err != nil {
 			return nil, fmt.Errorf("resolve go.work module %q: %w", use.Path, err)
 		}
@@ -362,7 +377,7 @@ func readWorkspaceModules(root string) ([]workspaceModule, error) {
 }
 
 func pathWithinDir(root, candidate string) bool {
-	rel, err := filepath.Rel(root, candidate)
+	rel, err := registryRel(root, candidate)
 	if err != nil {
 		return false
 	}
@@ -490,7 +505,7 @@ func canonicalPackage(value string) (string, error) {
 }
 
 func packagePath(moduleDir, dir string) (string, error) {
-	rel, err := filepath.Rel(moduleDir, dir)
+	rel, err := registryRel(moduleDir, dir)
 	if err != nil {
 		return "", err
 	}
@@ -627,11 +642,11 @@ func callsRapidCheck(fn *ast.FuncDecl, rapidNames map[string]struct{}) bool {
 }
 
 func displayPath(root, filePath string) string {
-	absRoot, err := filepath.Abs(root)
+	absRoot, err := registryAbs(root)
 	if err != nil {
 		return filepath.ToSlash(filePath)
 	}
-	rel, err := filepath.Rel(absRoot, filePath)
+	rel, err := registryRel(absRoot, filePath)
 	if err != nil {
 		return filepath.ToSlash(filePath)
 	}
