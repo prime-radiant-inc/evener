@@ -69,13 +69,15 @@ type jobManager struct {
 	// for the same key inherits it and a clear-and-recreate loop cannot reset
 	// the runaway fuse. Bounded (watchLineageKeyCap keys, oldest evicted);
 	// in-memory like the volume-budget counter. Guarded by jm.mu.
-	watchLineage      map[watchKey][]string
-	watchLineageOrder []watchKey
-	closing           bool
-	appendEvent       func(jobstore.Event) error
-	appendEvents      func([]jobstore.Event) error
-	openOutput        outputStoreOpener
-	emit              func(events.EventKind, events.EventData, *provenance.Causal)
+	watchLineage           map[watchKey][]string
+	watchLineageOrder      []watchKey
+	closing                bool
+	appendEvent            func(jobstore.Event) error
+	appendEvents           func([]jobstore.Event) error
+	openOutput             outputStoreOpener
+	appendAbandonSnapshots func([]watchSendTerminalSnapshot) ([]watchSendTerminalSnapshot, error)
+	finalizeShellAsync     func(string, jobstore.Status, string, *int)
+	emit                   func(events.EventKind, events.EventData, *provenance.Causal)
 
 	forward     func(jobstore.Event) error
 	parentJobID string
@@ -420,6 +422,10 @@ func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotifi
 		quietWindow:           delegateQuietWindow,
 		quietCheckInterval:    delegateQuietCheckInterval,
 	}
+	jm.appendAbandonSnapshots = jm.appendWatchSendTerminalSnapshots
+	jm.finalizeShellAsync = func(jobID string, status jobstore.Status, reason string, exitCode *int) {
+		go jm.finalizeShellUntilDurable(jobID, status, reason, exitCode)
+	}
 	if err := restorePending(jm); err != nil {
 		_ = store.Close()
 		return nil, err
@@ -534,7 +540,7 @@ func (jm *jobManager) abandonRunningJobs() {
 	}
 	jm.mu.Unlock()
 	dropped := terminalSnapshots(targets)
-	applied, err := jm.appendWatchSendTerminalSnapshots(dropped)
+	applied, err := jm.appendAbandonSnapshots(dropped)
 	if err != nil {
 		jm.removeWatchSendTerminalSnapshots(applied)
 		jm.rollbackWatchConfigSnapshotsRejecting(targets)
@@ -652,7 +658,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 			run.forwardDisabled = true
 			jm.running[jobID] = run
 			jm.mu.Unlock()
-			go jm.finalizeShellUntilDurable(jobID, jobstore.StatusFailed, "forward_failed", nil)
+			jm.finalizeShellAsync(jobID, jobstore.StatusFailed, "forward_failed", nil)
 			return nil, errors.Join(err, terminalErr)
 		}
 		jm.mu.Unlock()
@@ -1022,11 +1028,15 @@ func (jm *jobManager) grepOutput(jobID string, re *regexp.Regexp) ([]jobstore.Ma
 }
 
 func (jm *jobManager) reconcileLostJobs() error {
-	recs, err := jm.store.Load()
+	return jm.reconcileLostJobsWithLoad(jm.store.Load, jm.store.LoadWatches)
+}
+
+func (jm *jobManager) reconcileLostJobsWithLoad(loadJobs func() (map[string]*jobstore.JobRecord, error), loadWatches func() (map[string]*jobstore.WatchRecord, error)) error {
+	recs, err := loadJobs()
 	if err != nil {
 		return err
 	}
-	watches, err := jm.store.LoadWatches()
+	watches, err := loadWatches()
 	if err != nil {
 		return err
 	}

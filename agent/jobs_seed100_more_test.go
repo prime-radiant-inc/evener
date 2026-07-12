@@ -35,6 +35,31 @@ func seed100JobsMore(t *testing.T) {
 
 	jm := newTestJM(t)
 	freezeClock(jm)
+	jm.appendAbandonSnapshots = func([]watchSendTerminalSnapshot) ([]watchSendTerminalSnapshot, error) { return nil, want }
+	abandoned := &runningJob{rec: &jobstore.JobRecord{JobID: "abandoned"}, done: make(chan struct{})}
+	jm.running[abandoned.rec.JobID] = abandoned
+	jm.abandonRunningJobs()
+	jm.appendAbandonSnapshots = jm.appendWatchSendTerminalSnapshots
+
+	// A forwarded start whose compensating terminal append also fails is kept
+	// live for durable retry. Suppress only the asynchronous retry in this test.
+	appendCalls := 0
+	jm.appendEvent = func(event jobstore.Event) error {
+		appendCalls++
+		if appendCalls == 1 {
+			return jm.store.Append(event)
+		}
+		return want
+	}
+	jm.forward = func(jobstore.Event) error { return want }
+	jm.parentJobID = "parent"
+	jm.finalizeShellAsync = func(string, jobstore.Status, string, *int) {}
+	if _, err := jm.createShell(createShellOpts{Command: "true"}); !errors.Is(err, want) {
+		t.Fatalf("double start failure = %v", err)
+	}
+	jm.appendEvent = jm.store.Append
+	jm.forward = nil
+
 	jm.running["live"] = &runningJob{rec: &jobstore.JobRecord{JobID: "live", Status: jobstore.StatusRunning}}
 	if err := jm.reconcileLostJobs(); err != nil {
 		t.Fatal(err)
@@ -68,6 +93,9 @@ func seed100JobsMore(t *testing.T) {
 	if err := jm2.reconcileLostJobs(); !errors.Is(err, want) {
 		t.Fatalf("reconcile append = %v", err)
 	}
+	if err := jm2.reconcileLostJobsWithLoad(jm2.store.Load, func() (map[string]*jobstore.WatchRecord, error) { return nil, want }); !errors.Is(err, want) {
+		t.Fatalf("reconcile watches = %v", err)
+	}
 
 	// Existing terminals cover the kept-sync terminal path and both mismatch guards.
 	jm3 := newTestJM(t)
@@ -95,9 +123,34 @@ func seed100JobsMore(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Removing the runtime during pending forwarding covers the stale-arm guard.
+	out2, err := jm3.openOutput(filepath.Join(jm3.dir, "jobs", "stale.log"), 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := &runningJob{rec: &jobstore.JobRecord{JobID: "stale", Type: jobstore.JobShell}, output: out2, done: make(chan struct{})}
+	staleTerminal := &terminalJob{status: jobstore.StatusCompleted, endedAt: started, generation: "tg-stale", notificationPendingAppended: true, notificationPending: jobstore.Event{}}
+	stale.terminal = staleTerminal
+	jm3.running[stale.rec.JobID] = stale
+	jm3.parentJobID = "parent"
+	jm3.forward = func(jobstore.Event) error { delete(jm3.running, stale.rec.JobID); return nil }
+	if err := jm3.armFinalizedJob(stale, staleTerminal); err != nil {
+		t.Fatal(err)
+	}
+
 	// The schema library's resource-load failure and panic containment are explicit seams.
 	_ = validateStructuredResultWithAddResource(nil, map[string]any{}, func(*jsonschema.Compiler, string, io.Reader) error { return want })
 	_ = validateStructuredResultWithAddResource(nil, map[string]any{}, func(*jsonschema.Compiler, string, io.Reader) error { panic(want) })
+
+	closed, err := jobstore.OpenOutputNoSync(filepath.Join(t.TempDir(), "closed.log"), 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, _ = tailOutput(closed, 1)
+	_, _, _, _ = headOutput(closed, 1)
 
 	// Restore ordering uses both the equal-time ID tiebreak and descending start time.
 	jm4 := newTestJM(t)
