@@ -137,6 +137,65 @@ func FuzzProject(f *testing.F) {
 
 func projectCoverageSweep(t *testing.T, p *AppEventProjector) {
 	t.Helper()
+	projectRegressionTests := []struct {
+		name string
+		run  func(*testing.T)
+	}{
+		{"assistant_delta", TestAppEventProjectorProjectsAssistantDelta},
+		{"user_input_index", TestAppEventProjectorCarriesUserInputTranscriptEntryIndex},
+		{"task_updated", TestProject_TaskUpdated},
+		{"sandbox_escalation", TestProject_SandboxEscalationRequested},
+		{"sandbox_transcript", TestProject_SandboxEscalationNotInTranscript},
+		{"turn_started_at", TestAppEventProjectorTurnStartedCarriesStartedAt},
+		{"turn_zero_time", TestAppEventProjectorTurnStartedZeroTimestampOmitsStartedAt},
+		{"reasoning_delta", TestAppEventProjectorProjectsReasoningDelta},
+		{"lifecycle_json", TestAppEventProjectorJSONUsesCodexLifecycleShape},
+		{"user_images", TestAppEventProjectorCarriesUserInputImages},
+		{"output_images", TestAppEventProjectorCarriesToolCallOutputImages},
+		{"queued_input", TestAppEventProjectorCompletesActiveTurnBeforeQueuedUserInput},
+		{"goal_continuation", TestAppEventProjectorGoalContinuationOpensNonUserTurn},
+		{"goal_prior_turn", TestAppEventProjectorGoalContinuationCompletesActivePriorTurn},
+		{"goal_ended", TestAppEventProjectorGoalEndedRendersSystemAnnouncement},
+		{"thread_lifecycle", TestAppEventProjectorProjectsThreadLifecycle},
+		{"restored_session", TestAppEventProjectorRestoredSessionStartCarriesAwaitingState},
+		{"session_end", TestAppEventProjectorCompletesTurnOnSessionEnd},
+		{"awaiting_end", TestAppEventProjectorMapsAwaitingSessionEnd},
+		{"interrupted", TestAppEventProjectorMarksInterruptedTurnCanceled},
+		{"canceled_error", TestAppEventProjectorLetsInterruptedSessionEndCancelAfterContextCanceledError},
+		{"turn_timing", TestProjectorTurnEndedStampsTiming},
+		{"interrupt_status", TestProjectorTurnEndedPreservesInterruptStatus},
+		{"usage_rounds", TestProjectorAccumulatesPerTurnUsageAcrossRounds},
+		{"usage_reset", TestProjectorNewTurnResetsUsageAccumulator},
+		{"tool_after_text", TestAppEventProjectorKeepsToolEventsInActiveTurnAfterAssistantText},
+		{"tool_description", TestAppEventProjectorCarriesToolDescription},
+		{"communicate", TestAppEventProjectorProjectsCommunicateAsAssistantMessage},
+		{"communicate_suppressed", TestAppEventProjectorSuppressesCommunicateToolEvents},
+		{"output_call_id", TestAppEventProjectorIncludesCallIDOnToolOutputDelta},
+		{"jobs", TestAppEventProjectorProjectsJobEvents},
+		{"queue", TestAppEventProjectorProjectsQueueChanged},
+		{"steering", TestAppEventProjectorProjectsSteeringInjected},
+		{"compaction_turn", TestAppEventProjectorProjectsCompactionTurn},
+		{"active_compaction", TestAppEventProjectorProjectsCompactionTurnInActiveTurn},
+		{"skill_before_end", TestAppEventProjectorGroupsSkillActivationBeforeUseSkillEnd},
+		{"skill_group", TestAppEventProjectorGroupsSkillActivationWithUseSkill},
+		{"skill_unmatched", TestAppEventProjectorLeavesUnmatchedSkillActivationStandalone},
+		{"skill_legacy", TestAppEventProjectorGroupsSkillActivationWithLegacyUseSkillNameArg},
+		{"skill_text_boundary", TestAppEventProjectorDoesNotInferSkillActivationAcrossAssistantText},
+		{"agent_announcements", TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements},
+		{"compaction_numbers", TestAppEventProjectorContextCompactionCarriesStructuredNumbers},
+		{"hook_start", TestAppEventProjectorDoesNotDisplayHookStart},
+		{"active_announcement", TestAppEventProjectorProjectsAgentOnlyAnnouncementInActiveTurn},
+		{"image_steering", TestAppEventProjectorProjectsImageOnlySteeringInjected},
+		{"provider_cause", TestProjector_ForwardsProviderCause},
+		{"absent_cause", TestProjector_OmitsCauseWhenAbsent},
+		{"legacy_error", TestProjector_BackcompatNonProviderError},
+		{"diagnostic", TestProjector_GenuineErrorEmitsSingleDiagnostic},
+		{"assistant_reset", TestProjector_AssistantTextResetDiscardsInProgressItem},
+	}
+	for _, regression := range projectRegressionTests {
+		t.Run(regression.name, regression.run)
+	}
+
 	project := func(kind events.EventKind, data events.EventData) {
 		t.Helper()
 		for _, n := range p.Project(events.SessionEvent{Kind: kind, SessionID: "thread-fuzz", Data: data}) {
