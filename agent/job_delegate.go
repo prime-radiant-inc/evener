@@ -549,10 +549,16 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 			// does not strand the steer.
 			return s.sendRunningDelegateMessage(target, message, rec, args.FromWatch, args.Provenance)
 		}
-		if err := s.finalizeDelegate(rec.JobID, childID, sub); err != nil {
+		finalize := func(s *Session, jobID, childID string, sub *subagent) error {
+			return s.finalizeDelegate(jobID, childID, sub)
+		}
+		if hook := delegateSendTestHooks.finalize; hook != nil {
+			finalize = hook
+		}
+		if err := finalize(s, rec.JobID, childID, sub); err != nil {
 			return sendMessageFailed(target, fmt.Errorf("target_not_resumable: finalize observed-terminal delegate job %q: %w", target, err))
 		}
-		rec, err = findJobRecord(jm, rec.JobID)
+		rec, err = findJob(jm, rec.JobID)
 		if err != nil {
 			return sendMessageFailed(target, fmt.Errorf("target_not_found: %w", err))
 		}
