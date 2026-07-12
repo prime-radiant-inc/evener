@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,11 +22,25 @@ type exactWebSessionSource struct {
 	*scriptedAppSource
 	err      error
 	registry *appsource.Registry
+	reads    int
+	removeAt int
+}
+
+type exactWebSessionSpawner struct {
+	resume func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error)
+}
+
+func (s exactWebSessionSpawner) Spawn(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
+	return rendezvous.Entry{}, errors.New("unused spawn")
+}
+func (s exactWebSessionSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+	return s.resume(ctx, req)
 }
 
 func (s *exactWebSessionSource) ReadThread(ctx context.Context, p appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 	resp, err := s.scriptedAppSource.ReadThread(ctx, p)
-	if s.registry != nil {
+	s.reads++
+	if s.registry != nil && s.reads == s.removeAt {
 		s.registry.Remove(s.ID())
 	}
 	return resp, err
@@ -96,7 +112,7 @@ func FuzzCovExactWebSession(f *testing.F) {
 
 		vanishing := func(run func(*WebServer)) {
 			w := NewWebServer(hubcore.WebConfig{Roster: roster})
-			v := &exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "remote", thread: thread}, registry: w.sources}
+			v := &exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "remote", thread: thread}, registry: w.sources, removeAt: 2}
 			w.sources.Add(v)
 			run(w)
 		}
@@ -121,6 +137,45 @@ func FuzzCovExactWebSession(f *testing.F) {
 		call(func(w http.ResponseWriter, r *http.Request) { empty.handleSend(w, r, "missing") }, http.MethodPost, "/s/missing/send", `{"text":"hi"}`)
 		emptyNoRoster := NewWebServer(hubcore.WebConfig{})
 		call(func(w http.ResponseWriter, r *http.Request) { emptyNoRoster.handleSend(w, r, "missing") }, http.MethodPost, "/s/missing/send", `{"text":"hi"}`)
+
+		// Resume a known local session entirely through scripted boundaries. The
+		// spawner publishes a rendezvous record and registers the resumed source;
+		// the real roster refresh and send flow run below those boundaries.
+		root := t.TempDir()
+		stateDir := filepath.Join(root, "projects", "past")
+		localID := buildRPCParentSession(t, stateDir)
+		past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+		if err := past.Rebuild(); err != nil {
+			t.Fatal(err)
+		}
+		runDir := filepath.Join(root, "run")
+		localRoster := hubcore.NewRoster(runDir, fakeProber{sessionID: localID, status: "idle"})
+		var localWeb *WebServer
+		localThread := appwire.Thread{ID: localID, SessionID: localID, Source: "local", Serf: appwire.SerfThread{Ref: "local:" + localID, Capabilities: appwire.ThreadCapabilities{Send: true}}}
+		localSource := &exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "local", thread: localThread, startTurn: func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+			return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn"}}, nil
+		}}}
+		resume := func(_ context.Context, _ hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			entry := rendezvous.Entry{PID: os.Getpid(), Address: "127.0.0.1:1", SessionID: localID, SourceID: "local", ThreadID: localID}
+			if _, err := rendezvous.Write(runDir, entry); err != nil {
+				return rendezvous.Entry{}, err
+			}
+			localRoster.Refresh()
+			if _, ok := localRoster.Find(localID); !ok {
+				t.Fatalf("resumed rendezvous entry was not indexed")
+			}
+			localWeb.sources.Add(localSource)
+			return entry, nil
+		}
+		localWeb = NewWebServer(hubcore.WebConfig{RunDir: runDir, Roster: localRoster, Past: past, Spawner: exactWebSessionSpawner{resume: resume}})
+		call(func(w http.ResponseWriter, r *http.Request) { localWeb.handleSend(w, r, localID) }, http.MethodPost, "/s/"+localID+"/send", `{"text":"resume"}`)
+
+		// A valid past state plus a failing spawner reaches the launcher error
+		// mapping without starting a process.
+		failSpawn := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries(), Past: past, Spawner: exactWebSessionSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			return rendezvous.Entry{}, errors.New("scripted resume failure")
+		}}})
+		call(func(w http.ResponseWriter, r *http.Request) { failSpawn.handleSend(w, r, localID) }, http.MethodPost, "/s/"+localID+"/send", `{"text":"hi"}`)
 
 		// Exercise the polling miss and its sleep edge with a bounded local roster.
 		_ = waitForRosterMatch(hubcore.NewRosterWithEntries(), "missing", 99, 151*time.Millisecond)
