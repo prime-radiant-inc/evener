@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/rendezvous"
@@ -19,6 +18,8 @@ type scriptedAppwireTransport struct {
 	recv      chan appwire.Message
 	closed    chan struct{}
 	closeOnce sync.Once
+	recvDone  chan struct{}
+	recvOnce  sync.Once
 	send      func(context.Context, appwire.Message) error
 }
 
@@ -27,7 +28,9 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 func newScriptedAppwireTransport(send func(context.Context, appwire.Message) error) *scriptedAppwireTransport {
-	return &scriptedAppwireTransport{recv: make(chan appwire.Message, 16), closed: make(chan struct{}), send: send}
+	return &scriptedAppwireTransport{
+		recv: make(chan appwire.Message, 16), closed: make(chan struct{}), recvDone: make(chan struct{}), send: send,
+	}
 }
 
 func (t *scriptedAppwireTransport) Send(ctx context.Context, msg appwire.Message) error {
@@ -42,8 +45,10 @@ func (t *scriptedAppwireTransport) Recv(ctx context.Context) (appwire.Message, e
 	case msg := <-t.recv:
 		return msg, nil
 	case <-t.closed:
+		t.recvOnce.Do(func() { close(t.recvDone) })
 		return appwire.Message{}, io.EOF
 	case <-ctx.Done():
+		t.recvOnce.Do(func() { close(t.recvDone) })
 		return appwire.Message{}, ctx.Err()
 	}
 }
@@ -218,8 +223,10 @@ func TestCodexRPCResponseErrors(t *testing.T) {
 	}
 	ctx := context.Background()
 	ref := "codex:thread"
-	turnClient := appwire.NewClient(respondingTransport(func(string) (any, error) { return nil, errors.New("rpc failed") }))
-	turnClient.Start(ctx)
+	turnTransport := respondingTransport(func(string) (any, error) { return nil, errors.New("rpc failed") })
+	turnCtx, cancelTurn := context.WithCancel(ctx)
+	turnClient := appwire.NewClient(turnTransport)
+	turnClient.Start(turnCtx)
 	calls := []func() error{
 		func() error { _, err := newSource().StartThread(ctx, appwire.ThreadStartParams{}); return err },
 		func() error {
@@ -239,9 +246,15 @@ func TestCodexRPCResponseErrors(t *testing.T) {
 	}
 	for i, call := range calls {
 		if err := call(); err == nil {
+			cancelTurn()
+			_ = turnClient.Close()
+			<-turnTransport.recvDone
 			t.Fatalf("call %d returned nil", i)
 		}
 	}
+	cancelTurn()
+	_ = turnClient.Close()
+	<-turnTransport.recvDone
 }
 
 func TestCodexInitialAndResumedTurnFailures(t *testing.T) {
@@ -345,24 +358,17 @@ func TestLocalDaemonRemainingTransportBranches(t *testing.T) {
 			s.dial = dialTransport(transport)
 			out, err := s.SubscribeThread(callCtx, appwire.ThreadReadParams{Ref: "local:thread"})
 			if err != nil {
+				cancel()
 				t.Fatal(err)
 			}
 			if publish {
 				transport.recv <- appwire.NotificationMessage("event", nil)
-				select {
-				case <-out:
-				case <-time.After(time.Second):
-					t.Fatal("notification was not forwarded")
-				}
+				<-out
 			}
 			cancel()
-			select {
-			case _, ok := <-out:
-				if ok {
-					t.Fatal("subscription remained open")
-				}
-			case <-time.After(time.Second):
-				t.Fatal("subscription did not close")
+			<-transport.recvDone
+			if _, ok := <-out; ok {
+				t.Fatal("subscription remained open")
 			}
 		}
 	})
@@ -376,13 +382,9 @@ func TestLocalDaemonRemainingTransportBranches(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = transport.Close()
-		select {
-		case _, ok := <-out:
-			if ok {
-				t.Fatal("subscription remained open")
-			}
-		case <-time.After(time.Second):
-			t.Fatal("subscription did not close")
+		<-transport.recvDone
+		if _, ok := <-out; ok {
+			t.Fatal("subscription remained open")
 		}
 	})
 

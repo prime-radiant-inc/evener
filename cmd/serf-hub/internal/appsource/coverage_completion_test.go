@@ -163,18 +163,9 @@ func TestCodexLiveThreadRemainingLifecycleBranches(t *testing.T) {
 		t.Fatal("backlog order changed")
 	}
 	cancel()
-	select {
-	case _, ok := <-out:
-		if ok {
-			t.Fatal("subscriber remained open")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("unsubscribe timed out")
-	}
-	select {
-	case <-closedSignal:
-	case <-time.After(time.Second):
-		t.Fatal("retirement timed out")
+	<-closedSignal
+	if _, ok := <-out; ok {
+		t.Fatal("subscriber remained open")
 	}
 	if closed.Load() != 1 {
 		t.Fatalf("close count = %d", closed.Load())
