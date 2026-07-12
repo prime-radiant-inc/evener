@@ -30,6 +30,8 @@ type skillActivationCandidate struct {
 	activationName string
 }
 
+var marshalContextCompaction = json.Marshal
+
 type AppEventProjector struct {
 	threadID string
 	ref      string
@@ -979,7 +981,7 @@ func contextCompactionRaw(data events.ContextCompactionData) json.RawMessage {
 		data.EstTokensBefore == 0 && data.EstTokensAfter == 0 {
 		return nil
 	}
-	raw, err := json.Marshal(map[string]any{"compaction": data})
+	raw, err := marshalContextCompaction(map[string]any{"compaction": data})
 	if err != nil {
 		return nil
 	}

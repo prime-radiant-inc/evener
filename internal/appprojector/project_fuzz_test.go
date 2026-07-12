@@ -1,7 +1,9 @@
 package appprojector
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -96,6 +98,7 @@ var projectorCases = []struct {
 // panic" plus re-serializability of every emitted notification's params, since
 // the projector's whole job is producing wire-bound AppWire notifications.
 func FuzzProject(f *testing.F) {
+	f.Add([]byte("\x00coverage-sweep"))
 	f.Add([]byte{0, 2, '{', '}'})                   // session start
 	f.Add([]byte{0, 0, 2, 2, '{', '}', 3, 0, 5, 0}) // start, user input, assistant start, end
 	f.Add([]byte{2, 5, '{', '"', 'x', '"', '}'})    // user input, malformed payload
@@ -104,6 +107,10 @@ func FuzzProject(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, script []byte) {
 		p := NewAppEventProjector("thread-fuzz", "ref-fuzz")
+		if bytes.Equal(script, []byte("\x00coverage-sweep")) {
+			projectCoverageSweep(t, p)
+			return
+		}
 
 		const maxRecords = 96
 		i := 0
@@ -126,6 +133,68 @@ func FuzzProject(f *testing.F) {
 			applyEvent(t, p, kindIdx, payload, records)
 		}
 	})
+}
+
+func projectCoverageSweep(t *testing.T, p *AppEventProjector) {
+	t.Helper()
+	project := func(kind events.EventKind, data events.EventData) {
+		t.Helper()
+		for _, n := range p.Project(events.SessionEvent{Kind: kind, SessionID: "thread-fuzz", Data: data}) {
+			if _, err := json.Marshal(n.Params); err != nil {
+				t.Fatalf("%s notification params failed to marshal: %v", kind, err)
+			}
+		}
+	}
+
+	// Fill a projector initialized without a thread ID and cover the explicit idle state.
+	empty := NewAppEventProjector("", "ref-fuzz")
+	empty.Project(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "derived", Data: events.SessionStartData{State: "idle"}})
+	empty.Project(events.SessionEvent{Kind: events.EventKind("unknown")})
+
+	reserved := p.ReserveTurnID()
+	if p.ReserveTurnID() != reserved || p.ActiveTurnID() != reserved {
+		t.Fatal("reserved turn ID was not stable")
+	}
+	p.ReleaseReservedTurnID("different")
+	project(events.EventUserInput, events.UserInputData{Text: "start reserved turn"})
+	if p.ActiveTurnID() != reserved {
+		t.Fatal("reserved turn ID was not adopted")
+	}
+	released := p.ReserveTurnID()
+	p.ReleaseReservedTurnID(released)
+
+	project(events.EventAssistantTextEnd, events.AssistantTextEndData{Text: "same"})
+	project(events.EventCommunicate, events.CommunicateData{Message: "same"})
+	project(events.EventReasoningSummaryDelta, events.ReasoningSummaryDeltaData{Delta: "one"})
+	project(events.EventReasoningSummaryDelta, events.ReasoningSummaryDeltaData{Delta: "two"})
+	project(events.EventTurnEnded, events.TurnEndedData{})
+	project(events.EventSessionEnd, events.SessionEndData{State: "idle"})
+	project(events.EventTurnEnded, events.TurnEndedData{})
+
+	project(events.EventWarning, events.WarningData{})
+	project(events.EventError, events.ErrorData{})
+	project(events.EventSessionNameChanged, events.SessionNameChangedData{})
+	project(events.EventToolCallRepaired, events.ToolCallRepairedData{})
+	project(events.EventToolCallEnd, events.ToolCallEndData{OutputImages: []events.OutputImage{{}, {SHA: "sha"}}})
+
+	// Exercise fallback and zero-value announcement forms through their real events.
+	project(events.EventTurnLimit, events.TurnLimitData{})
+	project(events.EventContextCompaction, events.ContextCompactionData{})
+	project(events.EventPluginLoaded, events.PluginLoadedData{})
+	project(events.EventHookEnd, events.HookEndData{})
+	project(events.EventForkSummary, events.ForkSummaryData{})
+	project(events.EventPromptLoaded, events.PromptLoadedData{})
+
+	project(events.EventToolCallStart, events.ToolCallStartData{ToolName: "use_skill", ArgumentsJSON: "{"})
+	project(events.EventToolCallEnd, events.ToolCallEndData{ToolName: "use_skill"})
+	project(events.EventToolCallStart, events.ToolCallStartData{ToolName: "use_skill", ArgumentsJSON: `{}`})
+
+	oldMarshal := marshalContextCompaction
+	defer func() { marshalContextCompaction = oldMarshal }()
+	marshalContextCompaction = func(any) ([]byte, error) { return nil, errors.New("injected marshal failure") }
+	if raw := contextCompactionRaw(events.ContextCompactionData{Layer: "layer"}); raw != nil {
+		t.Fatalf("marshal failure returned raw payload: %s", raw)
+	}
 }
 
 func applyEvent(t *testing.T, p *AppEventProjector, kindIdx int, payload []byte, record int) {
