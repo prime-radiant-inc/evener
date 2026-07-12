@@ -98,9 +98,9 @@ setter, tests in `agent/session_set_model_test.go`
   kind named (spec's explicit per-tag policy table — compat *silently drops*
   documents/audio today, which counts as unrepresentable by policy);
   (d) same history → openai Responses target accepted (it carries
-  documents); (e) audio in history → rejected for anthropic-family, google,
-  and openai-compat targets; (f) every rejection leaves profile, meta.json,
-  and history byte-identical; (g) after a successful cross-tag switch,
+  documents); (e) audio in history → rejected for anthropic-family, google, openai-compat,
+  AND openai Responses targets (`responses.go:913-938`); (f) every rejection
+  leaves profile, meta.json, and history byte-identical; (g) after a successful cross-tag switch,
   `cfg.ModelFallbacks` entries that no longer validate against the new
   profile are dropped (re-run of `validateModelFallbacks`,
   `agent/session_init.go:775-805`) and the dropped names are surfaced for

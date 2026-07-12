@@ -36,14 +36,17 @@ This spec finishes the feature. Ten deltas:
    instantly (`serf/thread/name/changed` is the template).
 3. **Snapshot freshness.** A switch updates the daemon's session info
    synchronously; `thread/read` and hub hydration reflect the new model
-   immediately. The thread snapshot also gains the current reasoning effort.
+   immediately. The thread snapshot also gains `reasoningEffort`,
+   `reasoningEffortLevels`, and `supportsReasoning`.
 4. **Turn-boundary rule.** `thread/model/set` is rejected while a turn is
-   processing (the `thread/clear` precedent). Clients disable the control
-   during a run.
-5. **Cross-model replay provenance rules.** Thinking blocks replay only to
-   the exact (provider, model) that produced them; `web_search` raw blocks
-   replay only within their producing behavior-tag family; both are dropped
-   otherwise — normative, enforced at projection, tested per target tag.
+   processing or a turn id is reserved (see the decisions table — stricter
+   than the `thread/clear` gate). Clients disable the control during a run.
+5. **Cross-model replay provenance rules.** Thinking blocks from completed
+   prior turns replay only to the (provider, model) that produced them —
+   exact-model for anthropic-family targets, same-provider for google;
+   `web_search` raw blocks replay only within their producing behavior-tag
+   family; both drop otherwise — normative, enforced at projection, tested
+   per target tag.
 6. **Transcript marker.** A successful switch emits a `systemMessage` divider
    ("Switched model: X → Y") in both UIs via the existing announcement hook.
 7. **Web header chip becomes the picker.** Wire `data-model-trigger` to a
@@ -138,8 +141,10 @@ This spec finishes the feature. Ten deltas:
   documented and produces a clear error (decisions table); reloading adapters
   in a live daemon is its own project.
 - **No document/audio support added to provider builders.** The N1 preflight
-  refuses switches that would hit the Anthropic builder's hard error; teaching
-  that builder documents is a separate follow-up (worth a ticket).
+  refuses switches into any target that cannot carry a kind present in
+  history (hard-error or silent-drop — per-tag table in the decisions row);
+  teaching the anthropic/google/compat builders documents is a separate
+  follow-up (worth a ticket).
 - **No translation of foreign `web_search` blocks.** Cross-tag they drop;
   converting them to text summaries is possible future work.
 
@@ -155,8 +160,8 @@ This spec finishes the feature. Ten deltas:
 | Ref grammar (slashed model ids) | When `ThreadModelSetParams.modelProvider` is non-empty the daemon joins `modelProvider + "/" + model` **unconditionally**; the model half may itself contain slashes (openrouter vendor-prefixed ids). Clients keep splitting picker items on the first slash (instance names cannot contain `/`) | Today the daemon skips the join when the model already contains a slash (`server/appwire_runtime.go:387-388`), so picking `openrouter/anthropic/claude-x` resolves `anthropic/claude-x` — routing to the anthropic instance and silently discarding openrouter |
 | Effort across a switch | The requested level persists; per-call clamping to the new model's ladder already happens at request build (`agent/session_model_call.go:750`); UIs display the model's supported levels | Zero new clamp machinery; the user's intent survives round-trips through weaker models |
 | Change announcement | New session events → projector → new notifications `thread/model/changed`, `thread/reasoning-effort/changed`; plus synchronous `UpdateSessionInfo` so hydration agrees | `serf/thread/name/changed` is the proven template (`appwire_projection.go:652`); hydration freshness fixes G2 for clients that missed the push |
-| Transcript marker | `systemMessage` item via `systemAnnouncementWithRaw` on successful model switch (not for effort) | Both renderers already display `systemMessage`; effort changes are low-stakes and chip-visible — a divider per effort tweak is noise |
-| Snapshot surface | Thread snapshot gains `reasoningEffort`; `ModelProvider` stays the model field and becomes switch-fresh | Smallest wire addition that lets clients render both settings without a side channel |
+| Transcript marker | A persisted marker turn rendered as a `systemMessage` item in both projections (mechanism: the "Marker persistence" row + N5) on successful model switch; nothing for effort | Both renderers already display `systemMessage`; effort changes are low-stakes and chip-visible — a divider per effort tweak is noise |
+| Snapshot surface | Thread snapshot gains `reasoningEffort`, `reasoningEffortLevels`, and `supportsReasoning`; `ModelProvider` stays the model field and becomes switch-fresh | Cold-attached clients must render both settings AND populate pickers with no side channel — the appwire model list carries provider+model only |
 | Web picker | Reuse the existing picker pattern (`settings-pickers.js` / `spawn.js`) wired to `data-model-trigger`; palette entry retained | The chip is where users look; the dead button is worse than no button |
 | TUI `/effort` | New command mirroring `/model`: bare form opens a level picker for the current model, arg form sends directly | Surface parity; reuses `tuipick` primitives and the existing `thread/reasoning-effort/set` method |
 | Delegate echo | `delegateResult` gains the resolved `provider/model` (mirror of the sandbox echo) | Parent-side verifiability; the restore descriptor already persists the same fields |
@@ -239,7 +244,7 @@ tested per destination behavior tag:
 | `web_search` raw blocks | Replay verbatim only when the target behavior tag matches the producing family (anthropic-family ↔ anthropic-family, openai ↔ openai); otherwise drop (G13). Compat already drops them |
 | `tool_call` / `tool_result` | Replay verbatim with ids untouched (all three builders already do); no provenance restriction — ids are opaque strings to every wire format |
 | `text`, `image` | Replay everywhere (existing behavior) |
-| `document`, `audio` | No replay rule change; instead the N1 preflight rejects a switch whose target builder hard-errors on a kind present in history (G14) |
+| `document`, `audio` | No replay rule change; instead the N1 preflight rejects the switch per the explicit per-tag policy table in the decisions row ("Unrepresentable history") — hard-erroring targets (anthropic-family, google; Responses for audio) and silently-dropping targets (openai-compat) alike (G14) |
 | OpenAI Responses continuation | Nothing to do: the continuation anchor is reused only when the stored request fingerprint matches, and the fingerprint hashes the model (`openai/responses_continuation_fingerprint.go:32-42`), so any model change falls back to full-history replay. Pin with a test |
 
 Dropped content stays in the stored transcript untouched — the rules govern
