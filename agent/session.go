@@ -684,12 +684,12 @@ func (s *Session) SetModel(model string) error {
 	client := s.client
 	s.mu.Unlock()
 
-	nextProfile = resolveLiveModelProfileWithTimeout(client, nextProfile)
-
-	// Model membership preflight: reject before any state changes when the
-	// target instance can enumerate its models and the requested model isn't
-	// among them.
-	if err := validateModelSwitchMembership(client, nextProfile); err != nil {
+	// Live model list is fetched once and reused for both metadata fill and
+	// the membership preflight below (see resolveModelSwitchTarget) — this
+	// rejects before any state changes when the target instance can
+	// enumerate its models and the requested model isn't among them.
+	nextProfile, err = resolveModelSwitchTarget(client, nextProfile)
+	if err != nil {
 		return err
 	}
 

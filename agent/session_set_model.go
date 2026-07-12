@@ -79,17 +79,17 @@ func formatContentKinds(kinds []llm.ContentKind) string {
 // for the analogous membership check SetModel performs.
 const modelSwitchEnumerationTimeout = 8 * time.Second
 
-// validateModelSwitchMembership mirrors the launch policy's live-enumeration +
-// catalog-visibility model membership check
-// (cmd/serf/internal/launchcheck/launchcheck.go's validateLaunchCheckModel,
-// cmd/serf-hub/app_models.go's launchProviderAllowsUnreportedModels), with one
-// amendment per spec: a switch fails open (accepts) on ANY enumeration error
-// class — not just launchcheck's message allowlist — so dead credentials
-// never block a switch (those two files are cmd-internal and not importable
-// from agent, so the policy is mirrored here rather than shared).
-func validateModelSwitchMembership(client *llm.Client, profile *provider.Profile) error {
+// resolveModelSwitchTarget fetches the target instance's live model list ONCE
+// and reuses it for both metadata fill (WithLiveModelInfo) and membership
+// validation (validateModelSwitchMembership), rather than issuing two
+// independent ListModels calls to the same instance for the same switch. A
+// second call would double the network latency/timeout budget per switch and
+// open a TOCTOU window where the provider's model list could change between
+// the metadata-fill call and the membership-check call, letting the two
+// disagree about availability.
+func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile) (*provider.Profile, error) {
 	if client == nil || profile == nil {
-		return nil
+		return profile, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), modelSwitchEnumerationTimeout)
 	defer cancel()
@@ -97,7 +97,32 @@ func validateModelSwitchMembership(client *llm.Client, profile *provider.Profile
 	if err != nil {
 		// Fail open unconditionally: a non-enumerable instance (adapter
 		// doesn't implement ModelLister) and any enumeration failure
-		// (timeout, auth error, etc.) both accept the switch.
+		// (timeout, auth error, etc.) both accept the switch, with no live
+		// metadata to fill.
+		return profile, nil
+	}
+	if info, ok := liveModelInfoFor(models, profile.Model()); ok {
+		profile = profile.WithLiveModelInfo(info)
+	}
+	if err := validateModelSwitchMembership(client, profile, models); err != nil {
+		return profile, err
+	}
+	return profile, nil
+}
+
+// validateModelSwitchMembership mirrors the launch policy's live-enumeration +
+// catalog-visibility model membership check
+// (cmd/serf/internal/launchcheck/launchcheck.go's validateLaunchCheckModel,
+// cmd/serf-hub/app_models.go's launchProviderAllowsUnreportedModels), with one
+// amendment per spec: a switch fails open (accepts) on ANY enumeration error
+// class — not just launchcheck's message allowlist — so dead credentials
+// never block a switch (those two files are cmd-internal and not importable
+// from agent, so the policy is mirrored here rather than shared). The model
+// list is supplied by the caller (resolveModelSwitchTarget), which has
+// already fetched it once for metadata fill; fail-open-on-enumeration-error
+// is handled there, before this is called.
+func validateModelSwitchMembership(client *llm.Client, profile *provider.Profile, models []llm.ModelInfo) error {
+	if client == nil || profile == nil {
 		return nil
 	}
 	tag := client.BehaviorTagOf(profile.ID())
