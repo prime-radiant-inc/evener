@@ -19,18 +19,24 @@ import (
 )
 
 func (m *hubModel) resizeSessionInputFrom(prevHeight int) {
-	wantHeight := m.session.input.LineCount()
-	if wantHeight < 1 {
-		wantHeight = 1
-	}
-	if wantHeight > m.session.input.MaxHeight {
-		wantHeight = m.session.input.MaxHeight
-	}
+	wantHeight := clampSessionInputHeight(m.session.input.LineCount(), m.session.input.MaxHeight)
 	if wantHeight != prevHeight {
 		m.session.input.SetHeight(wantHeight)
 		m.session.viewport.Height = m.session.vpHeight()
 	}
 }
+
+func clampSessionInputHeight(wantHeight, maxHeight int) int {
+	if wantHeight < 1 {
+		wantHeight = 1
+	}
+	if wantHeight > maxHeight {
+		wantHeight = maxHeight
+	}
+	return wantHeight
+}
+
+var newSessionClipboardSource = func() clipboard.ClipboardSource { return clipboard.NewSystemClipboardSource() }
 
 func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// The question overlay early-returns first: reached both via the focus
@@ -374,9 +380,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if composerMode == hubComposerModeReadOnly || !m.sessionCanStartTurn() {
 			reason := m.sessionComposerReadOnlyReason()
-			if reason == "" {
-				reason = "send is not available for this session"
-			}
+			reason = sessionSendUnavailableReason(reason)
 			m.addActionUnavailableNotice("send", "Send is not available for this session.", reason)
 			return m, nil
 		}
@@ -402,6 +406,13 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.session.input, cmd = m.session.input.Update(msg)
 	m.resizeSessionInputFrom(prevHeight)
 	return m, cmd
+}
+
+func sessionSendUnavailableReason(reason string) string {
+	if reason == "" {
+		return "send is not available for this session"
+	}
+	return reason
 }
 
 func (m *hubModel) runHubSlashCommand(cmd, args string) tea.Cmd {
@@ -532,7 +543,7 @@ func isAltVKey(msg tea.KeyMsg) bool {
 func (m hubModel) handleClipboardPaste() (tea.Model, tea.Cmd) {
 	src := m.clipboardSource
 	if src == nil {
-		src = clipboard.NewSystemClipboardSource()
+		src = newSessionClipboardSource()
 		m.clipboardSource = src
 	}
 	img, err := clipboard.PasteClipboardImage(src)
