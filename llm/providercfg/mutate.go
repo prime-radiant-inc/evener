@@ -51,13 +51,19 @@ func onDiskAPIKeys(fs afero.Fs, path string) map[string]string {
 // byte-identical to using os calls; tests and fuzzers inject an in-memory or
 // sandboxed filesystem to exercise persistence without touching real disk.
 func writeFileFS(fs afero.Fs, path string, cfg Config) error {
+	return writeFileCodecFS(fs, path, cfg, Marshal)
+}
+
+// writeFileCodecFS exposes the serialization boundary for deterministic
+// failure-path tests while production always passes Marshal.
+func writeFileCodecFS(fs afero.Fs, path string, cfg Config, marshal func(Config) ([]byte, error)) error {
 	disk := onDiskAPIKeys(fs, path)
 	scrubbed := Config{Default: cfg.Default, Instances: append([]InstanceConfig(nil), cfg.Instances...)}
 	for i := range scrubbed.Instances {
 		scrubbed.Instances[i].APIKey = disk[scrubbed.Instances[i].Name]
 	}
 	cfg = scrubbed
-	data, err := Marshal(cfg)
+	data, err := marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("providers.toml: marshal: %w", err)
 	}
