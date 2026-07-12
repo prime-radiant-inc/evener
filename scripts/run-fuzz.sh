@@ -620,6 +620,7 @@ TARGETS=(
 	"native:.:./cmd/serf-hub:FuzzRPCRelayPass3::"
 	"native:.:./cmd/serf-hub:FuzzSessionTreePass3::"
 	"native:llm:./providers/openaicompat:FuzzOpenAICompatDeterministicUnion::"
+	"native:agent:.:FuzzAgentMiscProgram::"
 )
 
 duration="60s"
