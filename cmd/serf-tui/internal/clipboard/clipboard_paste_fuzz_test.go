@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+var fuzzCoverageUnion = func(*testing.T) {}
+
 // FuzzNormalizePastedPath drives the package's real pasted-text parser. The four
 // recognised forms (file:// URL, quoted path, Windows/UNC path, POSIX/WSL path)
 // all flow through NormalizePastedPath, which then feeds the path conversions
@@ -40,6 +42,7 @@ func FuzzNormalizePastedPath(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, text string) {
+		fuzzCoverageUnion(t)
 		got := NormalizePastedPath(text)
 
 		// Exercise the sibling path converters on the same input; all are pure.

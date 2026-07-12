@@ -114,7 +114,7 @@ func PasteClipboardImage(src ClipboardSource) (*PastedImage, error) {
 			if !IsImageFile(p) {
 				continue
 			}
-			info, err := os.Stat(p)
+			info, err := clipboardStat(p)
 			if err != nil {
 				continue
 			}
@@ -149,7 +149,7 @@ func PasteClipboardImage(src ClipboardSource) (*PastedImage, error) {
 	if IsProbablyWSLFromSource(src) {
 		path, werr := TryWSLClipboardFallback(src, err)
 		if werr == nil {
-			info, statErr := os.Stat(path)
+			info, statErr := clipboardStat(path)
 			if statErr != nil {
 				return nil, fmt.Errorf("wsl clipboard image stat %q: %w", path, statErr)
 			}
@@ -332,12 +332,8 @@ func ConvertWindowsPathToWSL(input string) string {
 	rest := input[2:]
 	rest = strings.TrimLeft(rest, `\/`)
 	parts := strings.FieldsFunc(rest, func(r rune) bool { return r == '\\' || r == '/' })
-	// Filter empties for safety.
 	out := "/mnt/" + drive
 	for _, p := range parts {
-		if p == "" {
-			continue
-		}
 		out = out + "/" + p
 	}
 	return out
@@ -364,17 +360,17 @@ func MediaTypeForPath(path string) string {
 // "serf-clipboard-" prefix and ".png" suffix, returning the absolute
 // path. The caller owns cleanup.
 func WriteTempPNG(data []byte) (string, error) {
-	f, err := os.CreateTemp("", "serf-clipboard-*.png")
+	f, err := clipboardCreateTemp("", "serf-clipboard-*.png")
 	if err != nil {
 		return "", err
 	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		_ = os.Remove(f.Name())
+	if _, err := clipboardWrite(f, data); err != nil {
+		_ = clipboardClose(f)
+		_ = clipboardRemove(f.Name())
 		return "", err
 	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(f.Name())
+	if err := clipboardClose(f); err != nil {
+		_ = clipboardRemove(f.Name())
 		return "", err
 	}
 	return f.Name(), nil
