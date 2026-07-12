@@ -3,6 +3,7 @@
 package invariant
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -44,4 +45,36 @@ func TestFuzzBuildEnforces(t *testing.T) {
 		}
 	}()
 	Hold(false, "status went backwards: %s -> %s", "terminal", "running")
+}
+
+// FuzzInvariantHold checks both sides of the fuzz-build contract: satisfied
+// invariants are inert, while violations panic with the exact formatted detail.
+func FuzzInvariantHold(f *testing.F) {
+	f.Add(true, "status: %s / %d", "running", int64(7))
+	f.Add(false, "status: %s / %d", "terminal", int64(-1))
+	f.Add(false, "%[2]d:%[1]s", "job", int64(42))
+
+	f.Fuzz(func(t *testing.T, cond bool, format, detail string, number int64) {
+		want := "invariant violated: " + fmt.Sprintf(format, detail, number)
+		var recovered any
+		func() {
+			defer func() { recovered = recover() }()
+			Hold(cond, format, detail, number)
+		}()
+
+		if cond {
+			if recovered != nil {
+				t.Fatalf("Hold(true) panicked: %v", recovered)
+			}
+			return
+		}
+
+		got, ok := recovered.(string)
+		if !ok {
+			t.Fatalf("Hold(false) panic = %#v (%T), want string %q", recovered, recovered, want)
+		}
+		if got != want {
+			t.Fatalf("Hold(false) panic = %q, want %q", got, want)
+		}
+	})
 }
