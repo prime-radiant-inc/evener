@@ -5,15 +5,236 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/llm"
 )
+
+// FuzzStoolCommunicationDispatch drives communicate through the real registry
+// executor and through its handler boundary. The handler cases deliberately
+// cover inputs rejected before registry validation as well as successful
+// terminal and non-terminal deliveries. All dependencies are in-memory
+// recorders; no provider, filesystem, process, or network boundary is used.
+func FuzzStoolCommunicationDispatch(f *testing.F) {
+	for _, seed := range [][]byte{
+		nil,
+		{0},
+		{1, 2, 3, 4},
+		{255, 0, 128, 64, 32},
+	} {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		first := stoolCommunicateRun(t, data)
+		second := stoolCommunicateRun(t, data)
+		if first != second {
+			t.Fatalf("communicate dispatch was nondeterministic:\nfirst=%#v\nsecond=%#v", first, second)
+		}
+	})
+}
+
+type stoolCommunicateTrace struct {
+	TerminalOutput string
+	Inbox          string
+	Reply          string
+	Structured     string
+	Callback       string
+	Events         int
+	Deferred       int
+}
+
+func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
+	t.Helper()
+	token := (&stweb_reader{data: data}).stweb_token()
+	if token == "" {
+		token = "empty"
+	}
+	abortErr := errors.New("fixture abort")
+
+	// Both abort checks are observable: the first rejects before argument
+	// parsing, while the second rejects a valid call before any side effects.
+	for _, abortAt := range []int{1, 2} {
+		calls := 0
+		deps := stoolCommunicateDeps()
+		deps.abort = func(context.Context) error {
+			calls++
+			if calls == abortAt {
+				return abortErr
+			}
+			return nil
+		}
+		reg := tool.NewRegistry()
+		registerCommunicateTool(reg, deps)
+		_, err := reg.Get("communicate").Exec(context.Background(), nil, map[string]any{
+			"message": "abort " + token, "end_turn": true,
+		})
+		if !errors.Is(err, abortErr) || calls != abortAt {
+			t.Fatalf("abort %d: calls=%d err=%v", abortAt, calls, err)
+		}
+	}
+
+	deps := stoolCommunicateDeps()
+	committed := false
+	deps.setCommunicateResult = func(string, string, string) { committed = true }
+	reg := tool.NewRegistry()
+	registerCommunicateTool(reg, deps)
+	handler := reg.Get("communicate").Exec
+	if _, err := handler(context.Background(), nil, map[string]any{"message": token}); err == nil || !strings.Contains(err.Error(), "end_turn") {
+		t.Fatalf("missing end_turn error = %v", err)
+	}
+	if _, err := handler(context.Background(), nil, map[string]any{"end_turn": false}); err == nil || !strings.Contains(err.Error(), "message") {
+		t.Fatalf("missing message error = %v", err)
+	}
+
+	// Nonterminal output may supply the message, but must not commit a result.
+	nonterminal, err := handler(context.Background(), nil, map[string]any{
+		"end_turn": false,
+		"output": map[string]any{
+			"message":   token,
+			"data":      map[string]any{"iteration": len(data)},
+			"artifacts": []any{"artifact-" + token},
+		},
+	})
+	if err != nil || !strings.Contains(nonterminal.(string), `"accepted":true`) || committed {
+		t.Fatalf("nonterminal communicate = %#v err=%v committed=%v", nonterminal, err, committed)
+	}
+
+	var resultMessage, resultReply, resultOutput string
+	var structured any
+	var callback string
+	var emitted int
+	var deferred []steeringMessage
+	deps.emit = func(kind events.EventKind, data events.EventData) {
+		if kind != events.EventCommunicate {
+			t.Fatalf("communicate emitted unexpected event %q", kind)
+		}
+		emitted++
+	}
+	deps.drainSteering = func() []steeringMessage {
+		return []steeringMessage{
+			{Text: "steer " + token},
+			{Images: []ImageAttachment{{Data: []byte("image-" + token), MediaType: "image/png"}}},
+		}
+	}
+	deps.prependSteering = func(entries []steeringMessage) { deferred = append(deferred, entries...) }
+	deps.setCommunicateResult = func(message, reply, output string) {
+		resultMessage, resultReply, resultOutput = message, reply, output
+	}
+	deps.setCommunicateStructured = func(raw any) { structured = raw }
+	deps.deliverWatchCallback = func(message string) { callback = message }
+
+	args := map[string]any{
+		"message":  " done " + token + " ",
+		"end_turn": true,
+		"output": map[string]any{
+			"message":   token,
+			"data":      map[string]any{"bytes": len(data)},
+			"artifacts": []any{"artifact-" + token},
+		},
+	}
+	raw, err := json.Marshal(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := reg.ExecuteCall(context.Background(), &agenttest.DenyEnv{}, llm.ToolCallData{
+		ID: "communicate-terminal", Name: "communicate", Arguments: raw, Type: "function",
+	})
+	if terminal.IsError || terminal.Err != nil || resultMessage != "done "+token || resultReply != resultOutput {
+		t.Fatalf("terminal communicate result=%#v message=%q reply=%q output=%q", terminal, resultMessage, resultReply, resultOutput)
+	}
+	if structured == nil || emitted != 1 || len(deferred) != 1 || len(deferred[0].Images) != 1 {
+		t.Fatalf("terminal side effects: structured=%#v events=%d deferred=%#v", structured, emitted, deferred)
+	}
+	if !strings.Contains(callback, "Observer callback:") || !strings.Contains(callback, "done "+token) || !strings.Contains(callback, resultOutput) {
+		t.Fatalf("watch callback = %q", callback)
+	}
+	var response struct {
+		Inbox []string `json:"inbox"`
+	}
+	if err := json.Unmarshal([]byte(terminal.FullOutput), &response); err != nil || len(response.Inbox) != 1 || response.Inbox[0] != "steer "+token {
+		t.Fatalf("terminal response=%q decoded=%#v err=%v", terminal.FullOutput, response, err)
+	}
+
+	// The small pure normalization surface is part of communicate dispatch:
+	// keep its accepted dynamic wire forms and default/custom schema detection
+	// under the same fuzz replay.
+	for _, rawOutput := range []any{
+		nil,
+		nodeOutput{},
+		nodeOutput{Data: nil, Artifacts: nil},
+		nodeOutput{Decision: "continue", Message: token, Data: map[string]any{"ok": true}, Artifacts: []string{"a"}},
+		map[string]any{"message": 42, "artifacts": []string{"a"}},
+		map[string]any{"artifacts": []any{"a", 2}},
+		map[string]any{"decision": " "},
+		map[string]any{"decision": "continue"},
+		map[string]any{"message": "message"},
+		map[string]any{"data": map[string]any{}},
+		map[string]any{"data": []any{}},
+		map[string]any{"data": nil},
+		map[string]any{"artifacts": []string{}},
+		map[string]any{"artifacts": []any{}},
+		map[string]any{"artifacts": 42},
+		map[string]any{"extra": false},
+		"custom-output",
+	} {
+		_ = hasMeaningfulNodeOutput(normalizeNodeOutput(rawOutput))
+		_ = hasMeaningfulRawOutput(rawOutput)
+		if text := canonicalNodeOutputText(rawOutput); !json.Valid([]byte(text)) {
+			t.Fatalf("canonical output is not JSON: %q", text)
+		}
+	}
+	if !usesDefaultCommunicateOutputEnvelope(tool.DefCommunicateNamed("communicate")) {
+		t.Fatal("base communicate definition was not recognized")
+	}
+	for _, def := range []llm.ToolDefinition{
+		{},
+		{Parameters: map[string]any{"properties": map[string]any{"output": map[string]any{}}}},
+		{Parameters: map[string]any{"properties": map[string]any{"output": map[string]any{"properties": map[string]any{"message": map[string]any{}}}}}},
+	} {
+		if usesDefaultCommunicateOutputEnvelope(def) {
+			t.Fatalf("custom schema recognized as default: %#v", def)
+		}
+	}
+	if got := communicateSchemaStringSlice([]any{"message", 1, "data"}); len(got) != 2 || !communicateSchemaContains(got, "data") {
+		t.Fatalf("schema string normalization = %#v", got)
+	}
+	if got := communicateSchemaStringSlice(42); got != nil {
+		t.Fatalf("unexpected schema strings = %#v", got)
+	}
+	if got := watchCommunicateCallbackText(" "+token+" ", " "); got != "Observer callback:\nmessage: "+token {
+		t.Fatalf("empty-output callback = %q", got)
+	}
+
+	return stoolCommunicateTrace{
+		TerminalOutput: terminal.FullOutput,
+		Inbox:          strings.Join(response.Inbox, "|"),
+		Reply:          resultReply,
+		Structured:     resultOutput,
+		Callback:       callback,
+		Events:         emitted,
+		Deferred:       len(deferred),
+	}
+}
+
+func stoolCommunicateDeps() *toolDeps {
+	return &toolDeps{
+		emit:                     func(events.EventKind, events.EventData) {},
+		abort:                    func(context.Context) error { return nil },
+		drainSteering:            func() []steeringMessage { return nil },
+		prependSteering:          func([]steeringMessage) {},
+		resultToolName:           func() string { return "communicate" },
+		setCommunicateResult:     func(string, string, string) {},
+		setCommunicateStructured: func(any) {},
+	}
+}
 
 // FuzzStwebRegistrationEgress drives the web-tool registration boundary through
 // the real registry. Its dependency functions are inert recorders, so the
