@@ -13,6 +13,20 @@ import (
 	"primeradiant.com/serf/internal/plugins"
 )
 
+var (
+	pluginAutoUpgradeListMarketplaces   = func(mgr *plugins.Manager) (plugins.Marketplaces, error) { return mgr.ListMarketplaces() }
+	pluginAutoUpgradeRefreshMarketplace = func(ctx context.Context, mgr *plugins.Manager, name string) error {
+		return mgr.RefreshMarketplace(ctx, name)
+	}
+	pluginAutoUpgradeUpdate = func(ctx context.Context, mgr *plugins.Manager) ([]plugins.UpgradedPlugin, error) {
+		return mgr.UpdateAutoUpgrade(ctx)
+	}
+	pluginAutoUpgradeNewTicker = func(interval time.Duration) (<-chan time.Time, func()) {
+		ticker := time.NewTicker(interval)
+		return ticker.C, ticker.Stop
+	}
+)
+
 // runPluginAutoUpgradeTick is the plain, timer-free core of the auto-upgrade
 // daemon (design doc §9.1): refresh every known marketplace, then upgrade
 // every installed, git-backed plugin that has autoUpgrade enabled. It never
@@ -25,7 +39,7 @@ import (
 // unit-testable without spinning a real timer: construct a Manager against a
 // temp root, install fixtures, call this once, and assert on the result.
 func runPluginAutoUpgradeTick(ctx context.Context, mgr *plugins.Manager, stderr io.Writer) (updated []plugins.UpgradedPlugin, errs []string) {
-	mk, err := mgr.ListMarketplaces()
+	mk, err := pluginAutoUpgradeListMarketplaces(mgr)
 	if err != nil {
 		msg := fmt.Sprintf("listing marketplaces: %v", err)
 		_, _ = fmt.Fprintf(stderr, "[hub] plugin auto-upgrade: %s\n", msg)
@@ -38,14 +52,14 @@ func runPluginAutoUpgradeTick(ctx context.Context, mgr *plugins.Manager, stderr 
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		if err := mgr.RefreshMarketplace(ctx, name); err != nil {
+		if err := pluginAutoUpgradeRefreshMarketplace(ctx, mgr, name); err != nil {
 			msg := fmt.Sprintf("refreshing marketplace %q: %v", name, err)
 			errs = append(errs, msg)
 			_, _ = fmt.Fprintf(stderr, "[hub] plugin auto-upgrade: %s\n", msg)
 		}
 	}
 
-	updated, err = mgr.UpdateAutoUpgrade(ctx)
+	updated, err = pluginAutoUpgradeUpdate(ctx, mgr)
 	if err != nil {
 		errs = append(errs, err.Error())
 		_, _ = fmt.Fprintf(stderr, "[hub] plugin auto-upgrade: %v\n", err)
@@ -67,13 +81,13 @@ func startPluginAutoUpgradeDaemon(ctx context.Context, mgr *plugins.Manager, int
 		}
 	}
 	tick()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	ticks, stop := pluginAutoUpgradeNewTicker(interval)
+	defer stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-ticks:
 			tick()
 		}
 	}
