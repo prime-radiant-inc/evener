@@ -2,7 +2,36 @@
 
 package main
 
-import "testing"
+import (
+	"errors"
+	"io"
+	"testing"
+
+	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
+)
+
+func testServeLLMClientErrors(t *testing.T) {
+	oldLoad, oldAttach := serveLoadClient, serveAttachAPILogger
+	t.Cleanup(func() { serveLoadClient, serveAttachAPILogger = oldLoad, oldAttach })
+
+	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+		return nil, providercfg.Config{}, false, errors.New("load")
+	}
+	if _, _, _, _, err := newServeLLMClient(t.TempDir(), io.Discard); err == nil {
+		t.Fatal("expected load error")
+	}
+
+	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+		return llm.NewClient(), providercfg.Config{}, false, nil
+	}
+	serveAttachAPILogger = func(*llm.Client, string, io.Writer) (func() error, error) {
+		return nil, errors.New("attach")
+	}
+	if _, _, _, _, err := newServeLLMClient(t.TempDir(), io.Discard); err == nil {
+		t.Fatal("expected attach error")
+	}
+}
 
 // FuzzServeSeedCoverage replays deterministic daemon workflows as part of the
 // committed fuzz seed bank. Their provider boundary is scripted in-process.
@@ -13,6 +42,7 @@ func FuzzServeSeedCoverage(f *testing.F) {
 			name string
 			fn   func(*testing.T)
 		}{
+			{"client errors", testServeLLMClientErrors},
 			{"profile config", TestBuildInitialProfile_ConfigPath},
 			{"profile schema", TestBuildInitialProfile_ConfigPathInvalidOutputSchema},
 			{"profile unknown", TestBuildInitialProfile_UnknownInstanceError},

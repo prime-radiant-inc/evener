@@ -47,13 +47,14 @@ import (
 // serveLoadClient is the injectable hook for tests. Production code calls
 // cmdutil.LoadClient; tests may replace this to inject a stub client.
 var serveLoadClient = cmdutil.LoadClient
+var serveAttachAPILogger = cmdutil.AttachAPILogger
 
 func newServeLLMClient(stateDir string, warnings io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
 	client, cfg, hasConfig, err := serveLoadClient(llm.WithStateDir(stateDir))
 	if err != nil {
 		return nil, providercfg.Config{}, false, nil, fmt.Errorf("LLM client: %w", err)
 	}
-	closeAPILog, err := cmdutil.AttachAPILogger(client, stateDir, warnings)
+	closeAPILog, err := serveAttachAPILogger(client, stateDir, warnings)
 	if err != nil {
 		return nil, providercfg.Config{}, false, nil, err
 	}
