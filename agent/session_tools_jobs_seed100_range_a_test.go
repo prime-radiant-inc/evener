@@ -59,7 +59,48 @@ func seed100ToolsRangeA(t *testing.T) {
 	for _, args := range invalidReadArgs[2:] {
 		_, _ = jobReadOutputTool(context.Background(), bare, args, 100)
 	}
+	_, _ = jobReadOutputTool(context.Background(), bare, map[string]any{
+		"job_id": "missing",
+		"grep":   string(make([]byte, maxJobGrepPatternBytes+1)),
+	}, 100)
 	_, _ = jobReadOutputTool(context.Background(), bare, map[string]any{"job_id": "missing", "tail_lines": 1}, 100)
+
+	// A terminal local record makes the non-grep wait return synchronously.
+	terminalID := "job_range_a_terminal"
+	ended := frozenTestTime
+	if err := bare.jobManager.appendJobEvents([]jobstore.Event{
+		{Kind: jobstore.EventJobStarted, TS: ended, JobID: terminalID, Type: jobstore.JobShell, OwnerSessionID: bare.ID(), StartedAt: &ended},
+		{Kind: jobstore.EventJobFinished, TS: ended, JobID: terminalID, Status: jobstore.StatusCompleted, EndedAt: &ended, TerminalGen: "range-a-terminal"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = jobReadOutputTool(context.Background(), bare, map[string]any{"job_id": terminalID, "max_wait_ms": 1}, 100)
+
+	// A forwarded depth-2 record is first found in the root store, then resolved
+	// recursively to its real owner in the grandchild session.
+	root := newSession(t)
+	coordinator := newSession(t)
+	worker := newSession(t)
+	root.subagents.track(&subagent{id: coordinator.ID(), sess: coordinator, status: SubagentRunning})
+	coordinator.subagents.track(&subagent{id: worker.ID(), sess: worker, status: SubagentRunning})
+	deepID := "job_range_a_deep"
+	for _, fixture := range []struct {
+		sess    *Session
+		visible string
+	}{
+		{root, root.ID()},
+		{coordinator, coordinator.ID()},
+		{worker, worker.ID()},
+	} {
+		if err := fixture.sess.jobManager.appendEvent(jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: ended, JobID: deepID, Type: jobstore.JobShell,
+			OwnerSessionID: worker.ID(), VisibleToSession: fixture.visible, StartedAt: &ended,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, _ = jobReadOutputTool(context.Background(), root, map[string]any{"job_id": deepID}, 100)
+
 	child := newSession(t)
 	bare.subagents.track(&subagent{id: child.ID(), sess: child, status: SubagentRunning})
 	_, _, _ = bare.clearDescendantReceiverWatchByID("missing")
