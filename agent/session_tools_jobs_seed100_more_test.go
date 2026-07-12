@@ -16,6 +16,39 @@ import (
 func seed100SessionToolsJobsMore(t *testing.T) {
 	t.Helper()
 
+	// Keep the fuzz-only gate self-contained by replaying the deterministic
+	// job-tool fixtures that otherwise run only in the ordinary test suite.
+	for _, test := range []func(*testing.T){
+		TestJobWatchCreateReturnsIDAndClearUsesIDOnly,
+		TestJobWatchListAndInspectReturnWatchIDs,
+		TestJobWatchTerminalOutputMatchCatchupThroughTool,
+		TestJobToolsRejectDelegateIDWithActionableGuidance,
+		TestJobToolsControlBackgroundShellJob,
+		TestDelegateSendIdleDefaultFailsAndOnIdleStartResumes,
+		TestMarshalDelegateResultsBoundLargeOutput,
+		TestLiveSteerWaitIgnoredReason,
+		TestClassifyStopOutcome,
+		TestJobStopReportsOutcomeAndPreviousStatus,
+		TestJobReadOutputReportsStatus,
+		TestJobReadOutputHeadAndTailTogether,
+		TestJobReadOutputFromLineMiddleSlice,
+		TestJobReadOutputReturnsBackgroundDelegateStructuredResult,
+		TestJobReadOutputBlockGrepWaitsForMatchNotJustNewOutput,
+		TestJobGrepScanCarriesPartialLineAcrossSteps,
+		TestJobGrepScanNeverMatchesOverlongLines,
+		TestReadJobOutputFromWidensPastStaleTotal,
+		TestJobReadOutputRejectsInvalidArgs,
+		TestJobReadOutputProjectionTooLargeDoesNotMutateDurableStructuredResult,
+		TestJobListIncludesDelegatesRecoverySurface,
+		TestJobListDelegatesDoNotExposeFilteredCurrentJob,
+		TestJobListToolIncludeNestedSurfacesForwardedRecords,
+		TestJobListIncludeDescendantsWalksLiveTree,
+		TestJobListWatchConditionSummaryFormats,
+		TestJobListStoppedDelegateResumableAssessmentIsDynamicAndPure,
+	} {
+		t.Run("job-tool-fixture", test)
+	}
+
 	// Pure validation branches.
 	for _, args := range []map[string]any{
 		{"max_wait_ms": minJobBlockTimeoutMS - 1},
