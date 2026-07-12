@@ -1,6 +1,8 @@
 package hubedge
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -8,6 +10,32 @@ import (
 	"strings"
 	"testing"
 )
+
+type errorReader struct{ err error }
+
+func (r errorReader) Read([]byte) (int, error) { return 0, r.err }
+
+func TestLoadOrCreateAuthToken_RandomError(t *testing.T) {
+	want := errors.New("random failed")
+	_, err := loadOrCreateAuthToken(t.TempDir(), errorReader{err: want}, os.Rename)
+	if !errors.Is(err, want) {
+		t.Fatalf("loadOrCreateAuthToken error = %v, want %v", err, want)
+	}
+}
+
+func TestLoadOrCreateAuthToken_RenameErrorRemovesTemporaryFile(t *testing.T) {
+	root := t.TempDir()
+	want := errors.New("rename failed")
+	_, err := loadOrCreateAuthToken(root, io.LimitReader(strings.NewReader(strings.Repeat("x", 32)), 32), func(string, string) error {
+		return want
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("loadOrCreateAuthToken error = %v, want %v", err, want)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, TokenFileName+".tmp")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("temporary token remains after rename error: %v", statErr)
+	}
+}
 
 func okHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

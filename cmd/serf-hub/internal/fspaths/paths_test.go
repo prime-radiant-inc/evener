@@ -6,7 +6,40 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/appwire"
 )
+
+func TestCompleteDirs_EmptyHomeUsesRoot(t *testing.T) {
+	t.Setenv("HOME", "")
+	var gotDir string
+	resp, err := completeDirs(appwire.DirsCompleteParams{}, func(dir string) ([]os.DirEntry, error) {
+		gotDir = dir
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotDir != string(filepath.Separator) {
+		t.Fatalf("ReadDir called with %q, want filesystem root", gotDir)
+	}
+	if len(resp.Data) != 0 {
+		t.Fatalf("fake empty root returned %v", resp.Data)
+	}
+}
+
+func TestCanonicalizeDir_StatErrorAfterResolution(t *testing.T) {
+	want := errors.New("stat failed")
+	_, err := canonicalizeDir(t.TempDir(), pathOps{
+		evalSymlinks: filepath.EvalSymlinks,
+		stat: func(string) (os.FileInfo, error) {
+			return nil, want
+		},
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("canonicalizeDir error = %v, want %v", err, want)
+	}
+}
 
 func TestCanonicalizeDir_RejectsRelative(t *testing.T) {
 	if _, err := CanonicalizeDir("foo/bar"); err == nil {
@@ -199,5 +232,11 @@ func TestResolveInRoot_RejectsEmpty(t *testing.T) {
 	}
 	if _, err := ResolveInRoot("", "x"); err == nil {
 		t.Fatal("expected error for empty root")
+	}
+}
+
+func TestResolveInRoot_RejectsMissingRoot(t *testing.T) {
+	if _, err := ResolveInRoot(filepath.Join(t.TempDir(), "missing"), "file"); err == nil {
+		t.Fatal("expected error for missing root")
 	}
 }

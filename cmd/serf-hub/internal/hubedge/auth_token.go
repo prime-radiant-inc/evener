@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -44,6 +45,10 @@ const (
 // $hubStateRoot/auth-token, or generates a fresh 256-bit token and
 // persists it. The file is created with mode 0600.
 func LoadOrCreateAuthToken(hubStateRoot string) (string, error) {
+	return loadOrCreateAuthToken(hubStateRoot, rand.Reader, os.Rename)
+}
+
+func loadOrCreateAuthToken(hubStateRoot string, random io.Reader, rename func(string, string) error) (string, error) {
 	if strings.TrimSpace(hubStateRoot) == "" {
 		return "", errors.New("hub state root not configured")
 	}
@@ -61,7 +66,7 @@ func LoadOrCreateAuthToken(hubStateRoot string) (string, error) {
 	}
 
 	var buf [32]byte
-	if _, err := rand.Read(buf[:]); err != nil {
+	if _, err := io.ReadFull(random, buf[:]); err != nil {
 		return "", fmt.Errorf("auth token: rand: %w", err)
 	}
 	tok := base64.RawURLEncoding.EncodeToString(buf[:])
@@ -69,7 +74,7 @@ func LoadOrCreateAuthToken(hubStateRoot string) (string, error) {
 	if err := os.WriteFile(tmp, []byte(tok+"\n"), 0o600); err != nil {
 		return "", fmt.Errorf("auth token: write %s: %w", tmp, err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return "", fmt.Errorf("auth token: rename %s: %w", path, err)
 	}
@@ -200,7 +205,7 @@ func HandleAuth(token string) http.HandlerFunc {
 		}
 		setAuthCookie(w, token)
 		next := r.URL.Query().Get("next")
-		if next == "" || !strings.HasPrefix(next, "/") {
+		if next == "" || !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
 			next = "/"
 		}
 		http.Redirect(w, r, next, http.StatusFound)

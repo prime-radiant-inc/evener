@@ -12,6 +12,10 @@ import (
 )
 
 func CompleteDirs(params appwire.DirsCompleteParams) (appwire.DirsCompleteResponse, error) {
+	return completeDirs(params, os.ReadDir)
+}
+
+func completeDirs(params appwire.DirsCompleteParams, readDir func(string) ([]os.DirEntry, error)) (appwire.DirsCompleteResponse, error) {
 	prefix := params.Prefix
 	if prefix == "" {
 		prefix = envvars.Home.Getenv()
@@ -36,7 +40,7 @@ func CompleteDirs(params appwire.DirsCompleteParams) (appwire.DirsCompleteRespon
 		filter = filepath.Base(prefix)
 	}
 
-	entries, err := os.ReadDir(listDir)
+	entries, err := readDir(listDir)
 	if err != nil {
 		return appwire.DirsCompleteResponse{}, nil //nolint:nilerr // autocomplete: an unreadable directory yields no suggestions, not an error
 	}

@@ -13,6 +13,16 @@ import (
 	"strings"
 )
 
+type pathOps struct {
+	evalSymlinks func(string) (string, error)
+	stat         func(string) (os.FileInfo, error)
+}
+
+var osPathOps = pathOps{
+	evalSymlinks: filepath.EvalSymlinks,
+	stat:         os.Stat,
+}
+
 // CanonicalizeDir resolves a user-supplied directory path to its canonical
 // absolute form. The path must be absolute, must exist, and must be a
 // directory. Symlinks are resolved.
@@ -22,6 +32,10 @@ import (
 // exposes beyond loopback, so canonicalize at the boundary and let callers
 // trust the result.
 func CanonicalizeDir(p string) (string, error) {
+	return canonicalizeDir(p, osPathOps)
+}
+
+func canonicalizeDir(p string, ops pathOps) (string, error) {
 	p = strings.TrimSpace(p)
 	if p == "" {
 		return "", errors.New("path is empty")
@@ -30,19 +44,11 @@ func CanonicalizeDir(p string) (string, error) {
 		return "", errors.New("path must be absolute")
 	}
 	cleaned := filepath.Clean(p)
-	// After Clean on an absolute path, ".." segments are normally collapsed
-	// (Clean("/../foo") == "/foo"). A residual ".." would be a parser bug;
-	// reject defensively.
-	for _, seg := range strings.Split(cleaned, string(filepath.Separator)) {
-		if seg == ".." {
-			return "", errors.New("path contains traversal")
-		}
-	}
-	resolved, err := filepath.EvalSymlinks(cleaned)
+	resolved, err := ops.evalSymlinks(cleaned)
 	if err != nil {
 		return "", fmt.Errorf("resolve: %w", err)
 	}
-	info, err := os.Stat(resolved)
+	info, err := ops.stat(resolved)
 	if err != nil {
 		return "", err
 	}

@@ -180,6 +180,16 @@ func TestCompleteDirs(t *testing.T) {
 	})
 }
 
+func TestCompleteDirs_TraversalReturnsNoSuggestions(t *testing.T) {
+	resp, err := fspaths.CompleteDirs(appwire.DirsCompleteParams{Prefix: "../"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Data) != 0 {
+		t.Fatalf("traversal returned suggestions: %v", resp.Data)
+	}
+}
+
 func TestValidateLaunchPath(t *testing.T) {
 	// Set up a temp directory with various files/dirs for testing.
 	tmp := t.TempDir()

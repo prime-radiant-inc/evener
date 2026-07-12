@@ -1,0 +1,59 @@
+package fspaths
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func FuzzSanitizeDirPrefix(f *testing.F) {
+	for _, prefix := range []string{"", "/tmp/", "../etc", "/tmp/a/../b", "  /tmp/x  "} {
+		f.Add(prefix)
+	}
+	f.Fuzz(func(t *testing.T, prefix string) {
+		if len(prefix) > 4096 {
+			t.Skip()
+		}
+		got, err := SanitizeDirPrefix(prefix)
+		if err != nil {
+			if !strings.Contains(filepath.Clean(strings.TrimSpace(prefix)), "..") {
+				t.Fatalf("unexpected sanitize error for %q: %v", prefix, err)
+			}
+			return
+		}
+		if strings.TrimSpace(prefix) != "" && filepath.Clean(got) != got && !strings.HasSuffix(got, string(filepath.Separator)) {
+			t.Fatalf("result is not clean: %q", got)
+		}
+	})
+}
+
+func FuzzResolveInRoot(f *testing.F) {
+	root := f.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "inside"), []byte("x"), 0o600); err != nil {
+		f.Fatal(err)
+	}
+	for _, rel := range []string{"inside", "missing", "../outside", "/etc/passwd", ".", " /000"} {
+		f.Add(rel)
+	}
+	f.Fuzz(func(t *testing.T, rel string) {
+		if len(rel) > 4096 || strings.IndexByte(rel, 0) >= 0 {
+			t.Skip()
+		}
+		got, err := ResolveInRoot(root, rel)
+		if err == nil && !withinRoot(root, got) {
+			t.Fatalf("resolved outside root: %q", got)
+		}
+		trimmedRel := strings.TrimSpace(rel)
+		joined := filepath.Clean(trimmedRel)
+		if !filepath.IsAbs(trimmedRel) {
+			joined = filepath.Clean(filepath.Join(root, trimmedRel))
+		}
+		if errors.Is(err, ErrPathEscapesRoot) && withinRoot(root, joined) {
+			// A lexical in-root path can still escape through a symlink. This fake
+			// root contains no symlinks, so that result would violate containment.
+			t.Fatalf("in-root path %q reported as escape", rel)
+		}
+	})
+}
