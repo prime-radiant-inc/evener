@@ -7,6 +7,8 @@ import (
 	"primeradiant.com/serf/appwire"
 )
 
+var fuzzCoverageUnion = func(*testing.T) {}
+
 // FuzzApplyThreadItem drives the reducer's real fold seam: ApplyThreadItem
 // dispatches on item.Type and, for tool items, decodes the untrusted item.Raw /
 // item.Output JSON via subagentRunFromToolItem (json.Unmarshal of the wire
@@ -34,6 +36,7 @@ func FuzzApplyThreadItem(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, typ, raw, output, toolName, args string) {
+		fuzzCoverageUnion(t)
 		item := appwire.ThreadItem{
 			ID:            "item-1",
 			TurnID:        "turn_3",

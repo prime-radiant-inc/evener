@@ -321,9 +321,7 @@ func (r *TranscriptReducer) ApplySerfJob(job appwire.SerfJobInfo) {
 	}
 	if matched {
 		info := r.messages[idx].Tool
-		if info == nil {
-			return
-		}
+		// subagentMessageIndex only matches rows with non-nil tool info.
 		merged := mergeSubagentRun(info.Subagent, run)
 		info.Subagent = &merged
 		if merged.Task != "" && info.Description == "" {
