@@ -4,6 +4,8 @@ package agent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
@@ -16,11 +18,11 @@ import (
 // FuzzJobDelegateExactCreateSend drives defensive create/send branches with
 // deterministic sessions and durable fixture records.
 func FuzzJobDelegateExactCreateSend(f *testing.F) {
-	for op := byte(0); op < 12; op++ {
+	for op := byte(0); op < 13; op++ {
 		f.Add(op)
 	}
 	f.Fuzz(func(t *testing.T, op byte) {
-		switch op % 12 {
+		switch op % 13 {
 		case 0:
 			called := false
 			s := &Session{delegateRestoreResumeHistory: func([]transcript.Entry) []schema.Turn {
@@ -103,22 +105,42 @@ func FuzzJobDelegateExactCreateSend(f *testing.F) {
 				t.Fatal(err)
 			}
 			s.subagents.track(&subagent{id: childID, sess: &Session{}, running: true})
-			active := *rec
-			active.JobID = jobstore.NewJobID()
-			active.Status = jobstore.StatusRunning
-			delegateSendTestHooks.findRunning = func(*jobManager, string) (*jobstore.JobRecord, error) { return &active, nil }
-			t.Cleanup(func() { delegateSendTestHooks.findRunning = nil })
+			now := s.jobManager.now()
+			if err := s.jobManager.appendEvent(jobstore.Event{
+				Kind:             jobstore.EventJobStarted,
+				TS:               now,
+				JobID:            jobstore.NewJobID(),
+				DelegateID:       jobstore.NewDelegateID(),
+				Type:             jobstore.JobDelegate,
+				OwnerSessionID:   s.ID(),
+				VisibleToSession: s.ID(),
+				StartedAt:        &now,
+				TranscriptRef:    rec.TranscriptRef,
+			}); err != nil {
+				t.Fatal(err)
+			}
 			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "hello"})
-			if res.Err == nil {
-				t.Fatal("running delegate without a steer route succeeded")
+			if res.Action != "steered" {
+				t.Fatalf("running delegate redirect = %+v", res)
 			}
 		case 11:
 			s := newLeanDelegateRestorePreflightSession(t, llm.NewClient())
 			rec := seedStoppedDelegateRestoreRecord(t, s)
 			setStoredDelegateTerminalStatus(t, s, rec, jobstore.StatusCompleted, "exit_zero")
+			removeChildSessionMeta(t, s, rec)
 			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "hello", OnIdle: "start"})
 			if res.Err == nil {
 				t.Fatalf("missing-runtime restore = %+v", res)
+			}
+		case 12:
+			s := newLeanDelegateRestorePreflightSession(t, llm.NewClient())
+			rec := seedStoppedDelegateRestoreRecord(t, s)
+			if err := os.WriteFile(filepath.Join(s.jobManager.dir, "jobs.jsonl"), []byte("{\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "hello"})
+			if res.Err == nil {
+				t.Fatal("send with corrupt delegate store succeeded")
 			}
 		}
 	})
