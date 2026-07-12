@@ -138,6 +138,7 @@ TARGETS=(
 	"native:agent:./internal/agenttest:FuzzAgenttestAdaptersProgram::"
 	"native:agent:./internal/agenttest:FuzzDenyEnvProgram::"
 	"native:agent:./internal/agenttest:FuzzFakeClockProgram::"
+	"native:agent:./internal/agenttest:FuzzGlobalAgenttestTails::"
 	"native:agent:./internal/clock:FuzzRealTimerStopResetNonPositive::"
 	"native:agent:./internal/clock:FuzzRealClockProgram::clock.go"
 	"native:agent:./internal/diagnostic:FuzzDiagnosticClassification::"
@@ -513,6 +514,7 @@ TARGETS=(
 	"native:agent:.:FuzzCtCanonicalizeToolNames::session_tools.go#canonicalizeToolNames"
 	"native:agent:.:FuzzCtProviderVisibleToolNames::session_tools.go#providerVisibleToolNames"
 	"native:agent:./internal/contextmgr:FuzzCtMaskToolResult::context_manager.go#maskToolResultContent"
+	"native:agent:./internal/contextmgr:FuzzGlobalContextmgrTails::"
 
 	# Native bridge of the rapid lifecycle SEQUENCE fuzzer: replays a JSON-encoded
 	# op sequence through the real offline Session (turn loop, handleModelError
