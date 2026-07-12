@@ -197,6 +197,11 @@ const (
 
 var LocalHubImmediateExitWindow = 750 * time.Millisecond
 
+var (
+	openHubOutput     = os.OpenFile
+	releaseHubProcess = func(process *os.Process) error { return process.Release() }
+)
+
 type StartupError struct {
 	Kind   StartupErrorKind
 	Addr   string
@@ -444,13 +449,13 @@ func StartLocalHub(req HubStartRequest) error {
 		if err := os.MkdirAll(filepath.Dir(req.LogFile), 0o755); err != nil {
 			return err
 		}
-		f, err := os.OpenFile(req.LogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		f, err := openHubOutput(req.LogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 		if err != nil {
 			return err
 		}
 		out = f
 	} else {
-		f, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		f, err := openHubOutput(os.DevNull, os.O_WRONLY, 0)
 		if err != nil {
 			return err
 		}
@@ -477,7 +482,7 @@ func StartLocalHub(req HubStartRequest) error {
 		return fmt.Errorf("serf-hub exited during startup: %w", err)
 	case <-time.After(LocalHubImmediateExitWindow):
 	}
-	return cmd.Process.Release()
+	return releaseHubProcess(cmd.Process)
 }
 
 func StateHomeForSerfStateDir(stateDir string) string {
