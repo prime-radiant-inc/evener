@@ -616,6 +616,10 @@ TARGETS=(
 	"native:.:./internal/plugins:FuzzPluginsMiscCoverage::"
 	"native:agent:.:FuzzInitWorktreeSeed100::"
 	"native:llm:./providercfg:FuzzProviderCfgSeedUnion::"
+	"native:.:./cmd/serf-hub:FuzzMainListenerLifecycle::"
+	"native:.:./cmd/serf-hub:FuzzRPCRelayPass3::"
+	"native:.:./cmd/serf-hub:FuzzSessionTreePass3::"
+	"native:llm:./providers/openaicompat:FuzzOpenAICompatDeterministicUnion::"
 )
 
 duration="60s"
