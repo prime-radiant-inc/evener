@@ -16,7 +16,6 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hostlock"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
@@ -25,7 +24,6 @@ import (
 	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/internal/binresolve"
 	"primeradiant.com/serf/internal/credentials"
-	"primeradiant.com/serf/internal/plugins"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/rendezvous"
@@ -254,9 +252,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// instead of waiting for the past index's next 60s Rebuild tick, so the
 	// sidebar order (which is keyed off UpdatedAt) doesn't lag behind a
 	// completed turn.
-	roster.SetOnStatusChange(func(sessionID string) {
-		past.RefreshOne(sessionID)
-	})
+	roster.SetOnStatusChange(refreshPastOnStatus(past))
 
 	// attentionPoke lets a web handler (e.g. an archive decision) nudge the
 	// attention watcher below to recompute immediately instead of waiting for
@@ -324,11 +320,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// run concurrently, so this is bounded by ~one probe timeout regardless of
 	// how many daemons are live.
 	roster.Refresh()
-	go func() {
-		if err := roster.Watch(ctx); err != nil && ctx.Err() == nil {
-			fmt.Fprintf(os.Stderr, "[hub] roster watch: %v\n", err)
-		}
-	}()
+	go watchHubRoster(ctx, roster)
 
 	go func() {
 		ticker := time.NewTicker(cfg.PastIndexRebuild)
@@ -353,35 +345,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// working past hubcore.StallThreshold, the watcher runs the stale-wedge
 	// probe (hubcore.WedgedStatus) against it and, on a positive, overrides
 	// its level to "error" before broadcasting.
-	go func() {
-		w := hubcore.NewAttentionWatcher(func(p hubcore.AttentionChangedPayload) {
-			web.appRPC.BroadcastAll(appwire.NotifySerfAttentionChanged, p)
-		})
-		tick := time.NewTicker(5 * time.Second)
-		defer tick.Stop()
-		seenActive := map[string]time.Time{}
-		run := func() {
-			decisions, _ := archive.Decisions()
-			m, sum := hubcore.DeriveAttention(past.AllMetas(), roster.List(), decisions)
-			for _, id := range hubcore.StaleActives(seenActive, m, time.Now()) {
-				if entry, ok := past.Find(id); ok && hubcore.WedgedStatus(entry) {
-					hubcore.ApplyWedgeOverride(m, &sum, id)
-				}
-			}
-			w.Tick(m, sum)
-		}
-		run()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-tick.C:
-				run()
-			case <-attentionPoke:
-				run()
-			}
-		}
-	}()
+	go watchHubAttention(ctx, attentionPoke, archive, past, roster, web)
 
 	// Seed the bundled default marketplaces (best-effort, first-run-gated —
 	// see SeedDefaultMarketplaces). Every serf CLI path does this already
@@ -389,9 +353,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// that never did, so a fresh install whose first interaction is the web
 	// UI (Settings → Marketplaces & Plugins) saw zero marketplaces until a
 	// session happened to spawn and seed them first.
-	if _, err := plugins.NewManager("").SeedDefaultMarketplaces(); err != nil {
-		fmt.Fprintf(os.Stderr, "[hub] warning: seeding default marketplaces: %v\n", err)
-	}
+	seedHubMarketplaces()
 
 	// Plugin auto-upgrade daemon (design doc §9.1): refreshes every known
 	// marketplace, then upgrades every installed, git-backed plugin with
@@ -400,40 +362,14 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// default — see config.go). Never deletes; superseded dirs are reclaimed
 	// separately by `serf plugin gc` (also run once here, before any session
 	// exists, per §12).
-	if cfg.PluginAutoUpgrade {
-		go startPluginAutoUpgradeDaemon(ctx, plugins.NewManager(""), cfg.PluginAutoUpgradeInterval, web.appRPC)
-	}
-	if removed, err := plugins.NewManager("").Gc(); err != nil {
-		fmt.Fprintf(os.Stderr, "[hub] plugin gc: %v\n", err)
-	} else if len(removed) > 0 {
-		fmt.Fprintf(os.Stderr, "[hub] plugin gc: removed %d superseded cache dir(s)\n", len(removed))
-	}
+	startHubPluginMaintenance(ctx, cfg, web)
 	// Remote-thread cache refresher: refreshRemoteThreads (web_api_tree.go)
 	// walks every configured remote source's ListThreads, a synchronous
 	// network hop that used to run inline on every /api/tree request. Move it
 	// to a ~30s ticker + poke so a tree render never blocks on it; the tree
 	// read path (remoteTreeThreads) reads remoteCache.Get() instead whenever
 	// RemoteThreadCache is configured.
-	go func() {
-		tick := time.NewTicker(30 * time.Second)
-		defer tick.Stop()
-		refresh := func() {
-			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			defer cancel()
-			remoteCache.Store(web.refreshRemoteThreads(ctx))
-		}
-		refresh()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-tick.C:
-				refresh()
-			case <-remotePoke:
-				refresh()
-			}
-		}
-	}()
+	go refreshHubRemoteThreads(ctx, remotePoke, remoteCache, web)
 
 	srv := &http.Server{
 		Addr:    cfg.Addr,

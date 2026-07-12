@@ -136,11 +136,11 @@ func FuzzFinalMainProcessBoundary(f *testing.F) {
 }
 
 func FuzzFinalMainExecutableFallbacks(f *testing.F) {
-	for mode := byte(0); mode < 5; mode++ {
+	for mode := byte(0); mode < 6; mode++ {
 		f.Add(mode)
 	}
 	f.Fuzz(func(t *testing.T, mode byte) {
-		mode %= 5
+		mode %= 6
 		oldExecutable, oldArgs := hubExecutable, hubProcessArgs
 		t.Cleanup(func() { hubExecutable, hubProcessArgs = oldExecutable, oldArgs })
 		switch mode {
@@ -161,6 +161,9 @@ func FuzzFinalMainExecutableFallbacks(f *testing.F) {
 			if deps.loadConfig == nil || deps.serve == nil {
 				t.Fatal("default dependencies incomplete")
 			}
+		case 5:
+			hubExecutable = func() (string, error) { return "", errors.New("missing") }
+			_ = currentExecutable()
 		}
 		if mode < 3 {
 			_ = currentExecutable()
