@@ -29,6 +29,10 @@ var applyEditFields = []string{
 	"system_prompt_file", "system_prompt_append_file", // 18,19
 }
 
+// fuzzApplyEditCoverage is installed by the serffuzz-only coverage union.
+// Normal tests and active fuzzing otherwise keep the hook as a no-op.
+var fuzzApplyEditCoverage = func(*testing.T) {}
+
 // pathFields are the indices into applyEditFields whose handler validates a
 // path on the filesystem.
 func isPathField(field string) bool {
@@ -96,6 +100,12 @@ func FuzzApplyEdit(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, fieldIdx int, value string) {
+		// This seed is part of the target's permanent in-source corpus. Use it
+		// to replay the package's deterministic UI/RPC branch matrix without
+		// registering a separate fuzz target.
+		if fieldIdx == 0 && value == "200" {
+			fuzzApplyEditCoverage(t)
+		}
 		if fieldIdx < 0 {
 			fieldIdx = -fieldIdx
 		}
