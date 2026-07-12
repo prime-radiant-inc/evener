@@ -9,6 +9,10 @@ import (
 	"primeradiant.com/serf/agent/sandbox"
 )
 
+var probeSandboxHost = func() sandbox.HostFacts {
+	return sandbox.RealProber{}.Probe()
+}
+
 // configureSandbox parses the --sandbox / --sandbox-net flag values into the
 // session config's carrier fields. Off (the default) leaves the carrier fields
 // zero, so a default session's env and persisted config are byte-identical to an
@@ -56,7 +60,7 @@ func provisionSandbox(env *execenv.LocalExecutionEnvironment, cfg *agent.Session
 	if sandbox.ModeIsOff(cfg.Sandbox) {
 		return nil
 	}
-	return provisionSandboxWithHost(env, cfg, cwd, sandbox.RealProber{}.Probe())
+	return provisionSandboxWithHost(env, cfg, cwd, probeSandboxHost())
 }
 
 // provisionSandboxWithHost is provisionSandbox with the host facts supplied by the
