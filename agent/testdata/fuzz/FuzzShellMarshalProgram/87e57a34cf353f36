@@ -1,0 +1,5 @@
+go test fuzz v1
+byte('\x02')
+string("\xe7")
+int(86)
+int(800)
