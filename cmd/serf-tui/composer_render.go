@@ -116,9 +116,6 @@ func renderComposerChipStrip(ctx composerContext) string {
 		return band.Render(leftContent + bgOnly.Render(" ") + rightContent)
 	}
 	gap := inner - leftW - rightW
-	if gap < 1 {
-		gap = 1
-	}
 	return band.Render(leftContent + bgOnly.Render(strings.Repeat(" ", gap)) + rightContent)
 }
 

@@ -384,9 +384,6 @@ func renderComposerDraft(draft string, width, maxLines int) string {
 	// Reserve the 2-column gutter ("> " on the first row, "  " on the rest).
 	inner := width - 2
 	logical := strings.Split(draft, "\n")
-	if len(logical) == 0 {
-		logical = []string{""}
-	}
 
 	var rows []string
 	for _, line := range logical {
@@ -397,10 +394,6 @@ func renderComposerDraft(draft string, width, maxLines int) string {
 			rows = append(rows, line)
 		}
 	}
-	if len(rows) == 0 {
-		rows = []string{""}
-	}
-
 	if maxLines > 0 && len(rows) > maxLines {
 		if maxLines == 1 {
 			rows = []string{"..."}
