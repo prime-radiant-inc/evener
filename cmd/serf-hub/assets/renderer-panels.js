@@ -390,6 +390,13 @@
         if (total === 0) textEl.textContent = "no tasks yet";
         else textEl.textContent = currentText || "tasks";
       }
+      // The phone strip hides the "tasks" label word and leads with a
+      // decorative glyph, so the button carries a full spoken label.
+      if (total === 0) {
+        btn.removeAttribute("aria-label");
+      } else {
+        btn.setAttribute("aria-label", "tasks " + done + "/" + total + (currentText ? " — " + currentText : ""));
+      }
     }
   }
 

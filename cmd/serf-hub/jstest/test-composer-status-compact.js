@@ -68,14 +68,28 @@ pass(phoneCardRule && /background:\s*transparent/.test(phoneCardRule) && /border
 pass(/\.input-card:focus-within\s*\{[^}]*outline:\s*none/.test(mobile),
   "phone must suppress the card focus-within outline (dock top rule carries focus)");
 
-// De-cluttered phone rail: no "branch" label word, no current-task prose,
-// and the tasks trigger only surfaces while the task list is unfinished.
+// De-cluttered phone rail: no "branch" label word, and the tasks trigger only
+// surfaces while the task list is unfinished.
 pass(/\.input-telemetry \.status-location-part\.branch \.status-key\s*\{[^}]*display:\s*none/.test(mobile),
   "phone rail must drop the 'branch' label word");
-pass(/\.tasks-status \.status-value\s*\{[^}]*display:\s*none/.test(mobile),
-  "phone tasks trigger must drop the current-task prose (count badge carries it)");
+// Round 4: on phone the tasks trigger is a one-line current-task STRIP — the
+// dock's own top line, above the status rail — showing count + current task
+// subject (truncated), not a badge-only rail item.
+pass(/\.input-status-rail\s*\{[^}]*flex-direction:\s*column/.test(mobile),
+  "phone status rail must stack so the task strip gets its own line");
+const stripRule = (mobile.match(/\.tasks-status\s*\{[^}]*\}/g) || [])[0];
+pass(stripRule && /order:\s*-1/.test(stripRule) && /width:\s*100%/.test(stripRule),
+  "phone task strip must be a full-width line ABOVE the telemetry rail (order:-1)");
+pass(stripRule && /min-height:\s*var\(--tap-min\)/.test(stripRule),
+  "phone task strip must keep the 44px touch floor");
+const stripValueRule = (mobile.match(/\.tasks-status \.status-value\s*\{[^}]*\}/g) || [])[0];
+pass(stripValueRule && !/display:\s*none/.test(stripValueRule) &&
+  /text-overflow:\s*ellipsis/.test(stripValueRule) && /white-space:\s*nowrap/.test(stripValueRule) && /min-width:\s*0/.test(stripValueRule),
+  "phone task strip must show the current-task subject as ONE truncated line");
+pass(/\.tasks-status \.status-key\s*\{[^}]*display:\s*none/.test(mobile),
+  "phone task strip must drop the 'tasks' label word (count + subject carry it)");
 pass(/\.tasks-status\[data-tasks-signal="none"\],\s*\.tasks-status\[data-tasks-signal="done"\]\s*\{[^}]*display:\s*none/.test(mobile),
-  "phone tasks trigger must hide at rest (no tasks / all complete)");
+  "phone task strip must hide at rest (no tasks / all complete)");
 pass(/data-tasks-trigger data-tasks-signal="none"/.test(workspace),
   "tasks trigger must boot in the no-signal state until the badge updater runs");
 pass(/\.input-controls \.stop-btn\[disabled\],\s*\.input-controls \.steer-btn\[disabled\]\s*\{[^}]*display:\s*none/.test(mobile),

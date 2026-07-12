@@ -118,9 +118,12 @@ pass(bannerWorkspaceRule && /height:\s*calc\(100vh\s*-\s*32px\)\s*;\s*height:\s*
 pass(convScrollRule && /flex:\s*1\s+1\s+0/.test(convScrollRule) && /min-height:\s*0/.test(convScrollRule),
   ".conversation scroll container must be the flexible min-height:0 transcript region");
 
-// On phone the composer is regular flex content, not sticky, and the
-// safe-area inset lives INSIDE the last control row's tap zone (padding on
-// .input-controls), not as a dead band below the dock (.workspace-input).
+// On phone the composer is regular flex content, not sticky. Round 4: the
+// home indicator and corner curves only constrain the EDGES of the bottom
+// band, so the action row is inset horizontally (side safe-area insets + a
+// fixed gutter) and keeps only a small fixed bottom pad — it does NOT stack
+// env(safe-area-inset-bottom) under itself (that stacked the row ~80px above
+// the physical bottom with a dead band below it).
 const phoneWorkspaceInputRule = (mobile.match(/\.workspace-input\s*\{[^}]*\}/g) || [])
   .find((block) => /flex:\s*0\s+0\s+auto/.test(block));
 pass(phoneWorkspaceInputRule && /margin-top:\s*auto/.test(phoneWorkspaceInputRule) && !/position:\s*sticky/.test(phoneWorkspaceInputRule),
@@ -128,10 +131,13 @@ pass(phoneWorkspaceInputRule && /margin-top:\s*auto/.test(phoneWorkspaceInputRul
 pass(phoneWorkspaceInputRule && !/safe-area-inset-bottom/.test(phoneWorkspaceInputRule),
   "phone .workspace-input must not reserve the safe-area gutter as dock padding");
 for (const [name, responsiveCSS] of [["mobile", mobile], ["short-landscape", shortLandscape]]) {
-  const controlsRule = (responsiveCSS.match(/\.input-controls\s*\{[^}]*\}/g) || [])
-    .find((block) => /safe-area-inset-bottom/.test(block));
-  pass(controlsRule && /padding-bottom:\s*calc\(.*env\(safe-area-inset-bottom\)\)/.test(controlsRule),
-    `${name} .input-controls must absorb env(safe-area-inset-bottom) inside its own padding`);
+  const controlsRules = responsiveCSS.match(/\.input-controls\s*\{[^}]*\}/g) || [];
+  pass(controlsRules.every((block) => !/safe-area-inset-bottom/.test(block)),
+    `${name} .input-controls must not stack env(safe-area-inset-bottom) under the action row`);
+  const insetRule = controlsRules.find((block) =>
+    /safe-area-inset-left/.test(block) && /safe-area-inset-right/.test(block));
+  pass(!!insetRule,
+    `${name} .input-controls must inset its sides with env(safe-area-inset-left/right) plus a fixed gutter`);
 }
 
 // Compact telemetry is a single rail: responsive overrides may hide location
