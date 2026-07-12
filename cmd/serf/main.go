@@ -59,69 +59,120 @@ type runCLIFlags struct {
 }
 
 func main() {
+	mainWithDeps(defaultMainDeps())
+}
+
+type mainDeps struct {
+	args       []string
+	stdin      io.Reader
+	stdout     io.Writer
+	stderr     io.Writer
+	stdinMode  func() (os.FileMode, error)
+	exit       func(int)
+	dispatch   func([]string, io.Reader, io.Writer, io.Writer) (bool, string, error)
+	startCPU   func(string) (func(), error)
+	startTrace func(string) (func(), error)
+	notify     func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
+	run        func(context.Context, runConfig) error
+}
+
+func defaultMainDeps() mainDeps {
+	return defaultMainDepsWithStdin(os.Stdin)
+}
+
+func defaultMainDepsWithStdin(stdin *os.File) mainDeps {
+	return mainDeps{
+		args: os.Args[1:], stdin: stdin, stdout: os.Stdout, stderr: os.Stderr,
+		stdinMode: func() (os.FileMode, error) {
+			stat, err := stdin.Stat()
+			if stat == nil {
+				return 0, err
+			}
+			return stat.Mode(), err
+		},
+		exit: os.Exit, dispatch: dispatchCLICommand,
+		startCPU: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
+		notify: signal.NotifyContext, run: run,
+	}
+}
+
+func mainWithDeps(deps mainDeps) {
 	// Report the serf build version in the OpenAI provider's User-Agent and in
 	// agent session metadata.
 	openaiprovider.ClientVersion = buildinfo.Version()
 	agent.BuildVersion = buildinfo.Version()
 
 	// Quick flags that don't need full flag.Parse().
-	if len(os.Args) > 1 && os.Args[1] == "--version" {
-		fmt.Println("serf", buildinfo.VersionLong())
+	if len(deps.args) > 0 && deps.args[0] == "--version" {
+		fmt.Fprintln(deps.stdout, "serf", buildinfo.VersionLong())
 		return
 	}
 
 	// Subcommand dispatch — before flag.Parse() so subcommands get their own flag sets.
-	if handled, label, err := dispatchCLICommand(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); handled {
+	if handled, label, err := deps.dispatch(deps.args, deps.stdin, deps.stdout, deps.stderr); handled {
 		if err != nil {
 			if errors.Is(err, flag.ErrHelp) {
 				// Subcommand printed usage via fs.Usage; exit cleanly.
 				return
 			}
-			fmt.Fprintf(os.Stderr, "%s: %v\n", label, err)
-			os.Exit(1)
+			fmt.Fprintf(deps.stderr, "%s: %v\n", label, err)
+			deps.exit(1)
+			return
 		}
 		return
 	}
 
-	fs, flags := newRunFlagSet(os.Stderr)
-	if err := fs.Parse(os.Args[1:]); err != nil {
+	fs, flags := newRunFlagSet(deps.stderr)
+	if err := fs.Parse(deps.args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
-		os.Exit(2)
+		deps.exit(2)
+		return
 	}
 
+	var cpuStop func()
 	if *flags.cpuProfile != "" {
-		stop, err := cmdutil.StartCPUProfile(*flags.cpuProfile)
+		stop, err := deps.startCPU(*flags.cpuProfile)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "serf: %v\n", err)
-			os.Exit(1)
+			fmt.Fprintf(deps.stderr, "serf: %v\n", err)
+			deps.exit(1)
+			return
 		}
-		defer stop()
+		cpuStop = stop
 	}
+	var traceStop func()
 	if *flags.traceFile != "" {
-		stop, err := cmdutil.StartTrace(*flags.traceFile)
+		stop, err := deps.startTrace(*flags.traceFile)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "serf: %v\n", err)
-			os.Exit(1) //nolint:gocritic // exitAfterDefer: fatal trace-setup failure; the optional cpu-profile finalizer is the only skipped defer
+			fmt.Fprintf(deps.stderr, "serf: %v\n", err)
+			deps.exit(1)
+			return
 		}
-		defer stop()
+		traceStop = stop
+	}
+	if cpuStop != nil {
+		defer cpuStop()
+	}
+	if traceStop != nil {
+		defer traceStop()
 	}
 
 	isResume := *flags.resume != "" || *flags.resumeWith != "" || *flags.resumeLast || *flags.listSessions
-	stat, _ := os.Stdin.Stat()
-	stdinIsCharDevice := stat != nil && (stat.Mode()&os.ModeCharDevice) != 0
-	prompt := cliprompt.Read(fs.Args(), *flags.listSessions, os.Stdin, stdinIsCharDevice)
+	mode, _ := deps.stdinMode()
+	stdinIsCharDevice := (mode & os.ModeCharDevice) != 0
+	prompt := cliprompt.Read(fs.Args(), *flags.listSessions, deps.stdin, stdinIsCharDevice)
 
 	if prompt == "" && !isResume {
 		fs.Usage()
-		os.Exit(1)
+		deps.exit(1)
+		return
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := deps.notify(context.Background(), os.Interrupt)
 	defer cancel()
 
-	err := run(ctx, runConfig{
+	err := deps.run(ctx, runConfig{
 		prompt:                      prompt,
 		model:                       *flags.model,
 		fastCheapModel:              *flags.fastCheapModel,
@@ -150,17 +201,18 @@ func main() {
 		openAIResponsesContinuation: *flags.openAIResponsesContinuation,
 		sandboxMode:                 *flags.sandbox,
 		sandboxNet:                  *flags.sandboxNet,
-		stdout:                      os.Stdout,
-		stderr:                      os.Stderr,
+		stdout:                      deps.stdout,
+		stderr:                      deps.stderr,
 		resume:                      *flags.resume,
 		resumeWith:                  *flags.resumeWith,
 		resumeLast:                  *flags.resumeLast,
 		listSessions:                *flags.listSessions,
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "serf: %v\n", err)
+		fmt.Fprintf(deps.stderr, "serf: %v\n", err)
 		cancel()
-		os.Exit(1) //nolint:gocritic // cancel() called explicitly above
+		deps.exit(1)
+		return
 	}
 }
 
@@ -272,21 +324,43 @@ func printRunEnvVars(w io.Writer) {
 }
 
 func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer) (bool, string, error) {
+	return dispatchCLICommandWith(args, stdin, stdout, stderr, cliCommandRunners{
+		serve: runServe,
+		launchCheck: func(args []string, _ io.Reader, stdout, stderr io.Writer) error {
+			return launchcheck.RunLaunchCheck(args, stdout, stderr)
+		},
+		openAI: runOpenAI,
+		upgrade: func(args []string, _ io.Reader, stdout, stderr io.Writer) error {
+			return runUpgrade(args, stdout, stderr)
+		},
+		plugin: runPlugin,
+	})
+}
+
+type cliCommandRunners struct {
+	serve       func([]string) error
+	launchCheck func([]string, io.Reader, io.Writer, io.Writer) error
+	openAI      func([]string, io.Reader, io.Writer, io.Writer) error
+	upgrade     func([]string, io.Reader, io.Writer, io.Writer) error
+	plugin      func([]string, io.Reader, io.Writer, io.Writer) error
+}
+
+func dispatchCLICommandWith(args []string, stdin io.Reader, stdout, stderr io.Writer, runners cliCommandRunners) (bool, string, error) {
 	if len(args) == 0 {
 		return false, "", nil
 	}
 
 	switch args[0] {
 	case "serve":
-		return true, "serf serve", runServe(args[1:])
+		return true, "serf serve", runners.serve(args[1:])
 	case "launch-check":
-		return true, "serf launch-check", launchcheck.RunLaunchCheck(args[1:], stdout, stderr)
+		return true, "serf launch-check", runners.launchCheck(args[1:], stdin, stdout, stderr)
 	case "openai":
-		return true, "serf openai", runOpenAI(args[1:], stdin, stdout, stderr)
+		return true, "serf openai", runners.openAI(args[1:], stdin, stdout, stderr)
 	case "upgrade":
-		return true, "serf upgrade", runUpgrade(args[1:], stdout, stderr)
+		return true, "serf upgrade", runners.upgrade(args[1:], stdin, stdout, stderr)
 	case "plugin":
-		return true, "serf plugin", runPlugin(args[1:], stdin, stdout, stderr)
+		return true, "serf plugin", runners.plugin(args[1:], stdin, stdout, stderr)
 	default:
 		return false, "", nil
 	}
