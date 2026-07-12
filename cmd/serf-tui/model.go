@@ -151,15 +151,19 @@ func (m *model) resetInput() {
 func (m *model) setInputValue(s string) {
 	m.input.Reset()
 	m.input.SetValue(s)
-	wantH := m.input.LineCount()
+	wantH := clampTextareaHeight(m.input.LineCount(), m.input.MaxHeight)
+	m.input.SetHeight(wantH)
+	m.viewport.Height = m.vpHeight()
+}
+
+func clampTextareaHeight(wantH, maxHeight int) int {
 	if wantH < 1 {
 		wantH = 1
 	}
-	if wantH > m.input.MaxHeight {
-		wantH = m.input.MaxHeight
+	if wantH > maxHeight {
+		wantH = maxHeight
 	}
-	m.input.SetHeight(wantH)
-	m.viewport.Height = m.vpHeight()
+	return wantH
 }
 
 // addHistory appends text to the in-memory history. Hub-mode does not

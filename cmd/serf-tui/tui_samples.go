@@ -434,11 +434,10 @@ func sampleRenders() []tuiSampleRender {
 	out := make([]tuiSampleRender, 0, len(specs))
 	for _, spec := range specs {
 		render, ok := sampleRenderFromRealWidget(spec.name, spec.width)
-		if !ok {
-			continue
+		if ok {
+			render.Contains = spec.contains
+			out = append(out, render)
 		}
-		render.Contains = spec.contains
-		out = append(out, render)
 	}
 	return out
 }
