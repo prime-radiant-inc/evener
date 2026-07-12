@@ -40,8 +40,16 @@ const defaultMaxSeedBytes = 32768
 var allSurfaces = []string{"sse", "toolargs", "appwire", "http", "jobs"}
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	osExit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
+
+var osExit = os.Exit
+var harvestDiscoverSources = discoverSources
+var harvestCoreToolNames = agent.CoreToolNames
+var harvestGitleaksScan = gitleaksScan
+var harvestDefaultStateRoot = cmdutil.DefaultStateRoot
+var harvestResolveStateBase = doctor.ResolveStateBase
+var harvestIsDir = isDir
 
 func run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("serf-fuzz-harvest", flag.ContinueOnError)
@@ -88,7 +96,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	var coreNames []string
 	if surfaces["toolargs"] {
-		coreNames, err = agent.CoreToolNames()
+		coreNames, err = harvestCoreToolNames()
 		if err != nil {
 			fmt.Fprintf(stderr, "resolve core tool names: %v\n", err) //nolint:errcheck
 			return 1
@@ -104,7 +112,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if *keepValues && personal {
 			fmt.Fprintf(stderr, "note: --keep-values ignored for personal state dir %s (shape-scrub forced)\n", sd) //nolint:errcheck
 		}
-		src, err := discoverSources(sd)
+		src, err := harvestDiscoverSources(sd)
 		if err != nil {
 			fmt.Fprintf(stderr, "discover %s: %v\n", sd, err) //nolint:errcheck
 			continue
@@ -135,7 +143,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if !*dryRun && !*noGitleaks {
-		switch clean, available := gitleaksScan(r.dir("."), stderr); {
+		switch clean, available := harvestGitleaksScan(r.dir("."), stderr); {
 		case !available:
 			fmt.Fprintln(stderr, "note: gitleaks not found; skipped the post-write secret-scan barrier") //nolint:errcheck
 		case !clean:
@@ -156,7 +164,7 @@ func defaultStateDirs() stringSlice {
 	seen := map[string]bool{}
 	var out stringSlice
 	add := func(dir string) {
-		abs, err := filepath.Abs(dir)
+		abs, err := harvestAbs(dir)
 		if err != nil {
 			abs = dir
 		}
@@ -166,9 +174,9 @@ func defaultStateDirs() stringSlice {
 		seen[abs] = true
 		out = append(out, dir)
 	}
-	add(cmdutil.DefaultStateRoot())
-	base := doctor.ResolveStateBase("")
-	if sub := filepath.Join(base, "serf"); isDir(sub) {
+	add(harvestDefaultStateRoot())
+	base := harvestResolveStateBase("")
+	if sub := filepath.Join(base, "serf"); harvestIsDir(sub) {
 		add(sub)
 	} else {
 		add(base)

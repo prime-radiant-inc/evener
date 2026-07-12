@@ -8,6 +8,10 @@ import (
 	"sort"
 )
 
+var gateRedactKnownSecrets = redactKnownSecrets
+var gateDetectSecret = detectSecret
+var sanitizerProcess = func(s *Sanitizer, raw []byte, sse bool) ([]byte, error) { return s.Process(raw, sse) }
+
 // runner carries the shared harvest state: where seeds land, the emitter, the
 // optional provenance log, per-surface stats, and the secret-leak tally that
 // drives the process exit code.
@@ -54,7 +58,7 @@ func (r *runner) logf(format string, args ...any) {
 // (and tallying it toward the non-zero exit) or an unscrubbable skip. It returns
 // the sanitized bytes and whether they are safe to emit.
 func (r *runner) scrub(st *surfaceStat, san *Sanitizer, raw []byte, sse bool) ([]byte, bool) {
-	out, err := san.Process(raw, sse)
+	out, err := sanitizerProcess(san, raw, sse)
 	if err != nil {
 		var leak *SecretLeakError
 		if errors.As(err, &leak) {
@@ -73,8 +77,8 @@ func (r *runner) scrub(st *surfaceStat, san *Sanitizer, raw []byte, sse bool) ([
 // and runs the abort gate, preserving the value otherwise (so path-traversal
 // shapes survive). It returns the safe string and whether it may be emitted.
 func (r *runner) gateString(st *surfaceStat, s string) (string, bool) {
-	red := redactKnownSecrets([]byte(s))
-	if finding := detectSecret(red, false); finding != "" {
+	red := gateRedactKnownSecrets([]byte(s))
+	if finding := gateDetectSecret(red, false); finding != "" {
 		st.leaks++
 		r.leaks++
 		r.logf("LEAK dropped http suffix: %s", finding)

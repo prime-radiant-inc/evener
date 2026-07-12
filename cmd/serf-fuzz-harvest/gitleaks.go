@@ -8,17 +8,20 @@ import (
 	"os/exec"
 )
 
+var gitleaksLookPath = exec.LookPath
+var gitleaksCommandContext = exec.CommandContext
+
 // gitleaksScan runs `gitleaks detect --no-git` over dir as the final pre-commit
 // barrier — the same engine the repo's make secret-scan target uses, so the
 // writer and the repo gate cannot drift. It reports whether the corpus is clean
 // and whether gitleaks was available at all (when absent, the caller skips the
 // step and the in-process abort gate remains the protection).
 func gitleaksScan(dir string, stderr io.Writer) (clean, available bool) {
-	bin, err := exec.LookPath("gitleaks")
+	bin, err := gitleaksLookPath("gitleaks")
 	if err != nil {
 		return false, false
 	}
-	cmd := exec.CommandContext(context.Background(), bin, "detect", "--no-git", "--redact", "--source", dir)
+	cmd := gitleaksCommandContext(context.Background(), bin, "detect", "--no-git", "--redact", "--source", dir)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return true, true

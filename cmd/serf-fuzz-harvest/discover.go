@@ -10,6 +10,9 @@ import (
 	"primeradiant.com/serf/envvars"
 )
 
+var harvestWalkDir = filepath.WalkDir
+var harvestAbs = filepath.Abs
+
 // recordedSources are the on-disk files a single state directory yields, grouped
 // by the fuzz surface they feed. Each list is sorted for deterministic harvest.
 type recordedSources struct {
@@ -26,7 +29,7 @@ type recordedSources struct {
 // re-deriving bucket paths.
 func discoverSources(stateDir string) (recordedSources, error) {
 	var s recordedSources
-	err := filepath.WalkDir(stateDir, func(path string, d fs.DirEntry, err error) error {
+	err := harvestWalkDir(stateDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil //nolint:nilerr // unreadable subtree: skip it, don't abort the whole walk
 		}
@@ -67,11 +70,11 @@ func isPersonalStateDir(dir string) bool {
 	if envvars.SERFStateDir.Getenv() != "" {
 		return false
 	}
-	abs, err := filepath.Abs(dir)
+	abs, err := harvestAbs(dir)
 	if err != nil {
 		return false
 	}
-	def, err := filepath.Abs(cmdutil.DefaultStateRoot())
+	def, err := harvestAbs(cmdutil.DefaultStateRoot())
 	if err != nil {
 		return false
 	}

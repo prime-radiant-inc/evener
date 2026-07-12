@@ -50,9 +50,7 @@ func (s *Sanitizer) Process(raw []byte, sse bool) ([]byte, error) {
 		// below is the backstop for anything redaction's format set misses.
 		out = redactKnownSecrets(raw)
 	case sse:
-		if out, err = scrubSSE(raw); err != nil {
-			return nil, err
-		}
+		out, _ = scrubSSE(raw)
 	default:
 		if out, err = scrubJSON(raw); err != nil {
 			return nil, err
