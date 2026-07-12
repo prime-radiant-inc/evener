@@ -25,10 +25,14 @@ func (p *scriptedTUIProgram) Run() (tea.Model, error) { return p.model, p.err }
 func (p *scriptedTUIProgram) Send(tea.Msg)            { p.sent = true }
 
 func FuzzRootTUIMain(f *testing.F) {
-	for selector := byte(0); selector < 9; selector++ {
+	for selector := byte(0); selector < 10; selector++ {
 		f.Add(selector)
 	}
 	f.Fuzz(func(t *testing.T, selector byte) {
+		if selector%10 == 9 {
+			testRootTUIMainAndExecutableBoundaries(t)
+			return
+		}
 		var stderr, stdout bytes.Buffer
 		var reset, applied, probed, initialized, altScreen, sent bool
 		var warm sync.WaitGroup
@@ -121,6 +125,10 @@ func FuzzRootTUIMain(f *testing.F) {
 }
 
 func TestRootTUIMainAndExecutableBoundaries(t *testing.T) {
+	testRootTUIMainAndExecutableBoundaries(t)
+}
+
+func testRootTUIMainAndExecutableBoundaries(t *testing.T) {
 	oldExit, oldArgs, oldExe, oldParse := exitProcess, processArgs, processExecutable, parseStartupOptions
 	t.Cleanup(func() {
 		exitProcess, processArgs, processExecutable, parseStartupOptions = oldExit, oldArgs, oldExe, oldParse

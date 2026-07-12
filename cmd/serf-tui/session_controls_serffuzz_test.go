@@ -110,6 +110,10 @@ func testSessionSimpleKeys(t *testing.T) {
 	m.updateSessionKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("no.png"), Paste: true})
 	m = newSessionHubModel(nil)
 	m.updateSessionKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = newSessionHubModel(nil)
+	m.session.history = []string{"prior"}
+	m.session.historyIdx = 0
+	m.updateSessionKey(tea.KeyMsg{Type: tea.KeyDown})
 	m.spawnLaunchOverrides = &appwire.LaunchConfigLayer{}
 	_, cmd := m.updateSessionKey(tea.KeyMsg{Type: tea.KeyCtrlL})
 	if cmd != nil {
