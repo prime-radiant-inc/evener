@@ -529,6 +529,7 @@ TARGETS=(
 
 	# Whole-package coverage surfaces added by the strict global preflight wave.
 	"native:.:./appwire/appwiretest:FuzzScriptedTransportLifecycle::"
+	"native:.:./appwire/appwiretest:FuzzScriptedTransportEdges::"
 	"native:.:./buildinfo:FuzzVersionFormatting::"
 	"native:.:./cmd/serf-docscheck:FuzzCheckPackage::"
 	"native:.:./cmd/serf-docscheck:FuzzDocsCheckCoverage::"
@@ -568,8 +569,11 @@ TARGETS=(
 	"native:.:./cmd/serf-tui/internal/tuiprim:FuzzPrimitives::"
 	"native:.:./cmd/serf-tui/internal/tuitext:FuzzTruncateText::"
 	"native:.:./cmd/serf/internal/cliprompt:FuzzRead::"
+	"native:.:./cmd/serf/internal/cliprompt:FuzzReadError::"
 	"native:.:./cmd/serf/internal/launchcheck:FuzzLaunchCheckClassifiers::"
+	"native:.:./cmd/serf/internal/launchcheck:FuzzLaunchCheckProgram::"
 	"native:.:./cmd/serf/internal/rvreg:FuzzRegistrationSessionID::"
+	"native:.:./cmd/serf/internal/rvreg:FuzzRegistrationLifecycle::"
 	"native:.:./internal/appwiredoc:FuzzFieldsOf::"
 	"native:.:./internal/binresolve:FuzzSiblingDir::"
 	"native:.:./internal/bundled:FuzzAssets::"

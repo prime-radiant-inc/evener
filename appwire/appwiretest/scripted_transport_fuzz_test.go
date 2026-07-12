@@ -80,3 +80,41 @@ func FuzzScriptedTransportLifecycle(f *testing.F) {
 		}
 	})
 }
+
+func FuzzScriptedTransportEdges(f *testing.F) {
+	for scenario := uint8(0); scenario < 4; scenario++ {
+		f.Add(scenario, "message")
+	}
+	f.Fuzz(func(t *testing.T, scenario uint8, message string) {
+		transport := NewScriptedTransport()
+		switch scenario % 4 {
+		case 0:
+			if err := transport.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := transport.Send(context.Background(), appwire.Message{}); err == nil {
+				t.Fatal("send on closed transport succeeded")
+			}
+		case 1:
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			if _, err := transport.Recv(ctx); err == nil {
+				t.Fatal("receive with canceled context succeeded")
+			}
+		case 2:
+			id := appwire.NewIntID(42)
+			transport.DeliverError(id, -1, message)
+			got, err := transport.Recv(context.Background())
+			if err != nil || got.Error == nil || got.Error.Error.Message != message {
+				t.Fatalf("Recv()=(%+v, %v)", got, err)
+			}
+		case 3:
+			if err := transport.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := transport.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+}

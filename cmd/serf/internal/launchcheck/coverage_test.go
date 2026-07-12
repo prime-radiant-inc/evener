@@ -155,6 +155,226 @@ func FuzzLaunchCheckClassifiers(f *testing.F) {
 	})
 }
 
+func FuzzLaunchCheckProgram(f *testing.F) {
+	llm.RegisterInstanceAdapterFactory("fuzz-launchcheck", "", func(inst providercfg.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
+		if inst.BaseURL == "factory-error" {
+			return nil, errors.New("factory failed")
+		}
+		return &launchCheckFakeAdapter{
+			name: inst.Name,
+			models: []llm.ModelInfo{
+				{ID: "z-chat"},
+				{ID: "text-embedding-3-small"},
+				{ID: "a-chat"},
+			},
+			err: errorForString(inst.BaseURL),
+		}, nil
+	})
+	for scenario := uint8(0); scenario < 27; scenario++ {
+		f.Add(scenario, "credential-value-123")
+	}
+	f.Fuzz(func(t *testing.T, scenario uint8, value string) {
+		withLaunchCheckHooks(t)
+		switch scenario % 27 {
+		case 0:
+			if err := RunLaunchCheck([]string{"--unknown"}, io.Discard, io.Discard); err == nil {
+				t.Fatal("unknown flag accepted")
+			}
+		case 1:
+			if err := RunLaunchCheck([]string{"--protocol", "old"}, io.Discard, io.Discard); err == nil {
+				t.Fatal("unsupported protocol accepted")
+			}
+		case 2:
+			var out bytes.Buffer
+			if err := RunLaunchCheck(nil, &out, io.Discard); err != nil || out.Len() == 0 {
+				t.Fatalf("plain launch check: output=%q err=%v", out.String(), err)
+			}
+		case 3:
+			if err := RunLaunchCheck([]string{"--json"}, errorWriter{}, io.Discard); err == nil {
+				t.Fatal("JSON writer failure ignored")
+			}
+		case 4:
+			if err := RunLaunchCheck([]string{"--model", "invalid"}, io.Discard, io.Discard); err == nil {
+				t.Fatal("invalid model accepted")
+			}
+		case 5:
+			launchCheckLoadConfig = func() (providercfg.Config, bool, error) {
+				return providercfg.Config{}, false, errors.New("config failed")
+			}
+			if err := validateLaunchCheckProfile(cmdutil.ModelRef{Provider: "openai", Model: "gpt"}); err == nil {
+				t.Fatal("config failure ignored")
+			}
+		case 6:
+			launchCheckLoadConfig = func() (providercfg.Config, bool, error) {
+				return providercfg.Config{Instances: []providercfg.InstanceConfig{{Name: "custom", Type: "openai"}}}, true, nil
+			}
+			if err := validateLaunchCheckProfile(cmdutil.ModelRef{Provider: "custom", Model: "gpt"}); err != nil {
+				t.Fatal(err)
+			}
+		case 7:
+			launchCheckLoadProviderConfig = func(...llm.EnvOption) (providercfg.Config, bool, error) {
+				return providercfg.Config{}, false, errors.New("providers failed")
+			}
+			if _, _, err := launchCheckModels(); err == nil {
+				t.Fatal("provider config failure ignored")
+			}
+		case 8:
+			launchCheckLoadProviderConfig = fuzzProviderConfig(
+				providercfg.InstanceConfig{Name: " "},
+				providercfg.InstanceConfig{Name: "skip", Type: "openrouter-anthropic"},
+				providercfg.InstanceConfig{Name: "bad", Type: "fuzz-launchcheck", BaseURL: "factory-error"},
+				providercfg.InstanceConfig{Name: "good", Type: "fuzz-launchcheck"},
+			)
+			models, diagnostics, err := launchCheckModels()
+			if err != nil || len(models) != 2 || len(diagnostics) != 1 {
+				t.Fatalf("models=%+v diagnostics=%+v err=%v", models, diagnostics, err)
+			}
+		case 9:
+			launchCheckLoadProviderConfig = fuzzProviderConfig(providercfg.InstanceConfig{Name: "bad", Type: "fuzz-launchcheck", BaseURL: "list-error"})
+			_, diagnostics, err := launchCheckModels()
+			if err != nil || len(diagnostics) != 1 {
+				t.Fatalf("diagnostics=%+v err=%v", diagnostics, err)
+			}
+		case 10:
+			launchCheckLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+				return nil, providercfg.Config{}, false, errors.New("unavailable")
+			}
+			if err := validateLaunchCheckModel(cmdutil.ModelRef{Provider: "p", Model: "m"}); err != nil {
+				t.Fatal(err)
+			}
+		case 11:
+			client := llm.NewClient()
+			client.Register(&launchCheckFakeAdapter{name: "other"})
+			launchCheckLoadClient = fixedLaunchCheckClient(client)
+			if err := validateLaunchCheckModel(cmdutil.ModelRef{Provider: "missing", Model: "m"}); err != nil {
+				t.Fatal(err)
+			}
+		case 12:
+			client := fuzzLaunchCheckClient(errors.New("HTTP 403"))
+			launchCheckLoadClient = fixedLaunchCheckClient(client)
+			if err := validateLaunchCheckModel(cmdutil.ModelRef{Provider: "fake", Model: "m"}); err != nil {
+				t.Fatal(err)
+			}
+		case 13:
+			client := fuzzLaunchCheckClient(errors.New("invalid response"))
+			launchCheckLoadClient = fixedLaunchCheckClient(client)
+			if err := validateLaunchCheckModel(cmdutil.ModelRef{Provider: "fake", Model: "m"}); err == nil {
+				t.Fatal("definite listing error ignored")
+			}
+		case 14:
+			client := fuzzLaunchCheckClient(nil, llm.ModelInfo{ID: "m"})
+			launchCheckLoadClient = fixedLaunchCheckClient(client)
+			if err := validateLaunchCheckModel(cmdutil.ModelRef{Provider: "fake", Model: "m"}); err != nil {
+				t.Fatal(err)
+			}
+		case 15:
+			client := fuzzLaunchCheckClient(nil, llm.ModelInfo{ID: "other"})
+			launchCheckLoadClient = fixedLaunchCheckClient(client)
+			if err := validateLaunchCheckModel(cmdutil.ModelRef{Provider: "fake", Model: "m"}); err == nil {
+				t.Fatal("missing model accepted")
+			}
+		case 16:
+			for _, err := range []error{nil, context.DeadlineExceeded, launchCheckTimeoutError{}, errors.New("no such host")} {
+				_ = launchCheckModelListUnavailable(err)
+			}
+		case 17:
+			for _, id := range []string{"embedding", "whisper", "tts", "dall-e", "moderation", "audio", "transcribe", "image"} {
+				if launchCheckModelVisible("other", id, nil) {
+					t.Fatalf("media model %q visible", id)
+				}
+			}
+		case 18:
+			_ = launchCheckModelVisible("openrouter", "not-in-catalog", llm.EmbeddedModelCatalog())
+			_ = launchCheckModelVisible("openrouter", "gpt-5", llm.EmbeddedModelCatalog())
+			_ = launchCheckCatalogModelInfo(nil, "model")
+		case 19:
+			if len(value) < 8 {
+				value = "credential-value-123"
+			}
+			t.Setenv("FUZZ_LAUNCH_TOKEN", value)
+			got := redactLaunchCheckDiagnostic("rejected " + value)
+			if strings.Contains(got, value) {
+				t.Fatalf("secret not redacted: %q", got)
+			}
+		case 20:
+			launchCheckLoadConfig = func() (providercfg.Config, bool, error) { return providercfg.Config{}, false, nil }
+			if err := validateLaunchCheckProfile(cmdutil.ModelRef{Provider: "openrouter", Model: "free"}); err != nil {
+				t.Fatal(err)
+			}
+		case 21:
+			launchCheckLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+				return nil, providercfg.Config{}, false, errors.New("unavailable")
+			}
+			var out bytes.Buffer
+			if err := RunLaunchCheck([]string{"--model", "openrouter/free"}, &out, io.Discard); err != nil || !strings.Contains(out.String(), "provider=openrouter") {
+				t.Fatalf("output=%q err=%v", out.String(), err)
+			}
+		case 22:
+			launchCheckLoadProviderConfig = fuzzProviderConfig(providercfg.InstanceConfig{Name: "good", Type: "fuzz-launchcheck"})
+			var out bytes.Buffer
+			if err := RunLaunchCheck([]string{"--models", "--json"}, &out, io.Discard); err != nil || out.Len() == 0 {
+				t.Fatalf("output=%q err=%v", out.String(), err)
+			}
+		case 23:
+			if _, _, err := launchCheckLoadConfig(); err != nil {
+				t.Fatal(err)
+			}
+		case 24:
+			launchCheckLoadProviderConfig = func(...llm.EnvOption) (providercfg.Config, bool, error) {
+				return providercfg.Config{}, false, errors.New("providers failed")
+			}
+			if err := RunLaunchCheck([]string{"--models"}, io.Discard, io.Discard); err == nil {
+				t.Fatal("models config failure ignored")
+			}
+		case 25:
+			launchCheckLoadConfig = func() (providercfg.Config, bool, error) {
+				return providercfg.Config{}, false, errors.New("config failed")
+			}
+			if err := RunLaunchCheck([]string{"--model", "openai/gpt"}, io.Discard, io.Discard); err == nil {
+				t.Fatal("profile validation failure ignored")
+			}
+		case 26:
+			client := llm.NewClient()
+			client.Register(&launchCheckFakeAdapter{name: "openrouter", models: []llm.ModelInfo{{ID: "other"}}})
+			launchCheckLoadClient = fixedLaunchCheckClient(client)
+			if err := RunLaunchCheck([]string{"--model", "openrouter/missing"}, io.Discard, io.Discard); err == nil {
+				t.Fatal("model validation failure ignored")
+			}
+		}
+	})
+}
+
+func withLaunchCheckHooks(t *testing.T) {
+	t.Helper()
+	oldClient := launchCheckLoadClient
+	oldProviderConfig := launchCheckLoadProviderConfig
+	oldConfig := launchCheckLoadConfig
+	t.Cleanup(func() {
+		launchCheckLoadClient = oldClient
+		launchCheckLoadProviderConfig = oldProviderConfig
+		launchCheckLoadConfig = oldConfig
+	})
+}
+
+func fuzzProviderConfig(instances ...providercfg.InstanceConfig) func(...llm.EnvOption) (providercfg.Config, bool, error) {
+	return func(...llm.EnvOption) (providercfg.Config, bool, error) {
+		return providercfg.Config{Instances: instances}, true, nil
+	}
+}
+
+func fuzzLaunchCheckClient(err error, models ...llm.ModelInfo) *llm.Client {
+	client := llm.NewClient()
+	client.Register(&launchCheckFakeAdapter{name: "fake", err: err, models: models})
+	return client
+}
+
+func errorForString(value string) error {
+	if value == "list-error" {
+		return errors.New(value)
+	}
+	return nil
+}
+
 type errorWriter struct{}
 
 func (errorWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }

@@ -1,6 +1,8 @@
 package cliprompt
 
 import (
+	"errors"
+	"io"
 	"strings"
 	"testing"
 )
@@ -27,3 +29,20 @@ func FuzzRead(f *testing.F) {
 		}
 	})
 }
+
+func FuzzReadError(f *testing.F) {
+	f.Add([]byte("read failure"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if got := Read(nil, false, errorReader{data: data}, false); got != "" {
+			t.Fatalf("Read()=%q, want empty after read error", got)
+		}
+	})
+}
+
+type errorReader struct{ data []byte }
+
+func (r errorReader) Read(p []byte) (int, error) {
+	return copy(p, r.data), errors.New("read failed")
+}
+
+var _ io.Reader = errorReader{}

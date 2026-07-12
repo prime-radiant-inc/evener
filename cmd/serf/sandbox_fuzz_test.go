@@ -13,12 +13,12 @@ import (
 )
 
 func FuzzSandboxHelpers(f *testing.F) {
-	for scenario := uint8(0); scenario < 10; scenario++ {
+	for scenario := uint8(0); scenario < 11; scenario++ {
 		f.Add(scenario)
 	}
 
 	f.Fuzz(func(t *testing.T, scenario uint8) {
-		switch scenario % 10 {
+		switch scenario % 11 {
 		case 0:
 			cfg := agent.SessionConfig{}
 			if err := configureSandbox(&cfg, "", ""); err != nil {
@@ -127,6 +127,10 @@ func FuzzSandboxHelpers(f *testing.F) {
 			if got := sandboxEnforcementLine(env); !strings.Contains(got, "read-only") {
 				t.Fatalf("enforcement line = %q", got)
 			}
+		case 10:
+			// Exercise the production probe closure; its result is intentionally
+			// unconstrained because host capabilities are not the behavior under test.
+			_ = probeSandboxHost()
 		}
 	})
 }
