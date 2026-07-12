@@ -365,6 +365,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 			}
 		}
 	}
+	s.execToolCheckpoint("after_pre_hook")
 	if err := s.abortIfClosing(ctx); err != nil {
 		return skippedToolResult(call, err)
 	}
@@ -383,7 +384,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 	if d := toolStartDescription(args); d != "" {
 		startData.Description = d
 	}
-	startEmitted := false
+	s.execToolCheckpoint("before_side_effects")
 	toolEventOpen := false
 	closeToolEvent := func() {
 		if toolEventOpen {
@@ -393,17 +394,14 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 	}
 	if err := s.withResponseSideEffects(ctx, func() {
 		s.toolEventsWG.Add(1)
-		startEmitted = true
 		toolEventOpen = true
 		s.emit(events.EventToolCallStart, startData)
 	}); err != nil {
 		return skippedToolResult(call, err)
 	}
+	s.execToolCheckpoint("after_start")
 	defer closeToolEvent()
 	emitCanceledEnd := func(err error) {
-		if !startEmitted {
-			return
-		}
 		res := skippedToolResult(call, err)
 		s.responseSideEffectsMu.Lock()
 		s.emit(events.EventToolCallEnd, events.ToolCallEndData{
@@ -414,7 +412,6 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 		})
 		s.responseSideEffectsMu.Unlock()
 		closeToolEvent()
-		startEmitted = false
 	}
 
 	// Session-level tools (subagents) are registered in the registry with closures.
@@ -447,24 +444,15 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 	// on deny/interrupt/close, the typed denial flows on to the model unchanged. A
 	// non-sandbox error, a non-interactive/subagent session, or an ineligible denial
 	// all pass through untouched (escalateOnSandboxDenial is a no-op for them).
-	res = s.escalateOnSandboxDenial(ctx, call.Name, res, func(grantCtx context.Context) tool.ExecResult {
-		env := s.currentEnv()
-		if grantPath, ok := invocationGrant(grantCtx); ok {
-			if g, gok := env.(sandboxGranter); gok {
-				env = g.WithSandboxInvocationGrant(grantPath)
-			}
-		}
-		rerunStart := s.sclock().Now()
-		rr := s.reg.ExecuteCall(grantCtx, env, call)
-		rr.DurationMS = s.sclock().Now().Sub(rerunStart).Milliseconds()
-		return rr
-	})
+	res = s.escalateOnSandboxDenial(ctx, call.Name, res, toolCallRerunner{session: s, call: call}.run)
+	s.execToolCheckpoint("after_execute")
 	if err := s.errIfClosing(); err != nil {
 		emitCanceledEnd(err)
 		return skippedToolResult(call, err)
 	}
 
 	s.responseSideEffectsMu.Lock()
+	s.execToolCheckpoint("after_side_effect_lock")
 	if err := s.errIfClosing(); err != nil {
 		s.emit(events.EventToolCallEnd, events.ToolCallEndData{
 			ToolName:      call.Name,
@@ -506,7 +494,6 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 	s.emit(events.EventToolCallEnd, endData)
 	s.responseSideEffectsMu.Unlock()
 	closeToolEvent()
-	startEmitted = false
 
 	// PostToolUse hooks
 	if s.hookRunner != nil {
@@ -525,6 +512,34 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 	}
 
 	return res
+}
+
+func (s *Session) execToolCheckpoint(name string) {
+	if checkpoint := s.cfg.testOnly.execToolCheckpoint; checkpoint != nil {
+		checkpoint(name)
+	}
+}
+
+func (s *Session) rerunToolWithGrant(ctx context.Context, call llm.ToolCallData) tool.ExecResult {
+	env := s.currentEnv()
+	if grantPath, ok := invocationGrant(ctx); ok {
+		if g, gok := env.(sandboxGranter); gok {
+			env = g.WithSandboxInvocationGrant(grantPath)
+		}
+	}
+	rerunStart := s.sclock().Now()
+	result := s.reg.ExecuteCall(ctx, env, call)
+	result.DurationMS = s.sclock().Now().Sub(rerunStart).Milliseconds()
+	return result
+}
+
+type toolCallRerunner struct {
+	session *Session
+	call    llm.ToolCallData
+}
+
+func (r toolCallRerunner) run(ctx context.Context) tool.ExecResult {
+	return r.session.rerunToolWithGrant(ctx, r.call)
 }
 
 // toolStartDescription resolves the tool-call-start Description from a tool call's
@@ -791,15 +806,7 @@ func (s *Session) rebuildToolDefsCache() {
 		if included[td.Name] {
 			continue
 		}
-		// Normalize empty parameters to a valid object schema so the LLM
-		// client doesn't reject the tool definition.
-		if td.Parameters != nil && td.Parameters["type"] == nil {
-			td.Parameters = map[string]any{
-				"type":       "object",
-				"properties": map[string]any{},
-			}
-		}
-		defs = append(defs, td)
+		defs = append(defs, normalizeRegistryToolDefinition(td))
 	}
 	for i := range defs {
 		if isResultToolDefinition(defs[i].Name, defs[i].Name, s.resultToolName()) {
@@ -810,6 +817,18 @@ func (s *Session) rebuildToolDefsCache() {
 	}
 
 	s.cachedToolDefs = defs
+}
+
+// normalizeRegistryToolDefinition keeps directly registered tools acceptable
+// to providers even when a caller supplied only a partial parameter schema.
+func normalizeRegistryToolDefinition(td llm.ToolDefinition) llm.ToolDefinition {
+	if td.Parameters != nil && td.Parameters["type"] == nil {
+		td.Parameters = map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		}
+	}
+	return td
 }
 
 // trackReadFile records that a file has been read in this session.

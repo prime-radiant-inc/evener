@@ -7,6 +7,7 @@ import (
 	"primeradiant.com/serf/agent/internal/clock"
 	"primeradiant.com/serf/agent/internal/contextmgr"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/internal/worktree"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provenance"
@@ -217,6 +218,18 @@ type testConfig struct {
 	subagentReserveTreeSlot func(*Session) (*treeReservation, bool)
 	// subagentStopGated overrides child stop-gating when handled is true.
 	subagentStopGated func(*Session, string) (stopped, handled bool)
+
+	// registerTool injects deterministic registration failures. Nil preserves
+	// direct Registry.Register calls.
+	registerTool func(*tool.Registry, tool.RegisteredTool) error
+
+	// execToolCheckpoint observes deterministic dispatch boundaries. Nil is a
+	// no-op; fuzz tests use it to transition the session to closing without races.
+	execToolCheckpoint func(string)
+
+	// appendCompactionTurn injects transcript append failures. Nil preserves the
+	// session transcript writer.
+	appendCompactionTurn func(schema.Turn) error
 
 	// worktreeGitRunner replaces only the Git subprocess boundary used by the
 	// native worktree lifecycle. Package-agent tests use it to replay the real

@@ -77,8 +77,17 @@ func clampJobBlockTimeout(ms int) time.Duration {
 var rootOnlyJobControlTools = []string{"delegate", "job_watch"}
 
 func registerJobTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
+	if deps != nil && deps.registerTool != nil {
+		return registerJobToolsWithRegistrar(reg, jobToolRegisterFunc(func(registered tool.RegisteredTool) error {
+			return deps.registerTool(reg, registered)
+		}), s, deps)
+	}
 	return registerJobToolsWithRegistrar(reg, reg, s, deps)
 }
+
+type jobToolRegisterFunc func(tool.RegisteredTool) error
+
+func (f jobToolRegisterFunc) Register(registered tool.RegisteredTool) error { return f(registered) }
 
 type jobToolRegistrar interface {
 	Register(tool.RegisteredTool) error

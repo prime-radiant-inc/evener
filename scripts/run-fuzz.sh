@@ -603,6 +603,7 @@ TARGETS=(
 	"native:agent:.:FuzzSubagentsSeed100Exact::subagents.go"
 	"native:agent:.:FuzzWorktreeSeed100ExactProgram::session_tools_worktree.go"
 	"native:agent:.:FuzzSessionToolRoundTailCoverage::"
+	"native:agent:.:FuzzSessionToolsCoreExactCoverage::"
 	"native:agent:.:FuzzJobDelegateSeed100Edges::"
 	"native:agent:.:FuzzJobDelegateAttachFinalizeSeed100Edges::"
 	"native:agent:.:FuzzJobDelegateGitReportSeed100::"

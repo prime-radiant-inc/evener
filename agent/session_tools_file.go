@@ -10,8 +10,14 @@ import (
 )
 
 func registerFileTools(reg *tool.Registry, deps *toolDeps) error {
+	register := reg.Register
+	if deps != nil && deps.registerTool != nil {
+		register = func(registered tool.RegisteredTool) error {
+			return deps.registerTool(reg, registered)
+		}
+	}
 	// read_file
-	if err := reg.Register(tool.RegisteredTool{
+	if err := register(tool.RegisteredTool{
 		Tool: llm.Tool{Definition: tool.DefReadFile(), ReadOnly: true},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -40,7 +46,7 @@ func registerFileTools(reg *tool.Registry, deps *toolDeps) error {
 	}
 
 	// write_file
-	if err := reg.Register(tool.RegisteredTool{
+	if err := register(tool.RegisteredTool{
 		Tool: llm.Tool{Definition: tool.DefWriteFile()},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -57,7 +63,7 @@ func registerFileTools(reg *tool.Registry, deps *toolDeps) error {
 	}
 
 	// edit_file
-	_ = reg.Register(tool.RegisteredTool{
+	_ = register(tool.RegisteredTool{
 		Tool: llm.Tool{Definition: tool.DefEditFile()},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx

@@ -166,6 +166,7 @@ type webDeps struct {
 // unchanged. Built once in registerCoreTools.
 func newToolDeps(s *Session) *toolDeps {
 	return &toolDeps{
+		registerTool:    s.cfg.testOnly.registerTool,
 		emit:            s.emit,
 		steer:           s.Steer,
 		drainSteering:   s.drainSteeringForTurn,
@@ -265,7 +266,10 @@ func newProfileToolRegistry(p *provider.Profile) *tool.Registry {
 	if p == nil {
 		return tool.NewRegistry()
 	}
-	defs := p.ToolDefinitions()
+	return newProfileToolRegistryForDefs(p.ToolDefinitions())
+}
+
+func newProfileToolRegistryForDefs(defs []llm.ToolDefinition) *tool.Registry {
 	key, cacheable := profileToolRegistryCacheKey(defs)
 	if !cacheable {
 		return buildProfileToolRegistry(defs)
@@ -336,8 +340,14 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 		registerAskTool(reg, s, deps)
 	}
 	registerSkillTool(reg, deps)
+	register := reg.Register
+	if deps.registerTool != nil {
+		register = func(registered tool.RegisteredTool) error {
+			return deps.registerTool(reg, registered)
+		}
+	}
 	for _, rt := range transcriptTools(deps) {
-		if err := reg.Register(rt); err != nil {
+		if err := register(rt); err != nil {
 			return err
 		}
 	}
