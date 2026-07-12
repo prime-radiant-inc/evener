@@ -10,6 +10,15 @@ import (
 	agentplugin "primeradiant.com/serf/agent/plugin"
 )
 
+var (
+	manifestStat          = os.Stat
+	manifestReadFile      = os.ReadFile
+	manifestMarshal       = json.Marshal
+	manifestMarshalIndent = json.MarshalIndent
+	manifestMkdirAll      = os.MkdirAll
+	manifestWriteFile     = os.WriteFile
+)
+
 // hasPluginManifest reports whether dir already has a plugin.json under
 // either recognized manifest directory — the same two paths
 // agent/plugin.Load tries (.claude-plugin/ first, .codex-plugin/ as
@@ -17,7 +26,7 @@ import (
 // this stays in lock-step with Load's own fallback order.
 func hasPluginManifest(dir string) bool {
 	for _, mf := range []string{".claude-plugin", ".codex-plugin"} {
-		if _, err := os.Stat(filepath.Join(dir, mf, "plugin.json")); err == nil {
+		if _, err := manifestStat(filepath.Join(dir, mf, "plugin.json")); err == nil {
 			return true
 		}
 	}
@@ -85,15 +94,15 @@ func ensureManifestFallback(dir string, staged bool, cp CatalogPlugin) (note str
 		Hooks:       cp.Hooks,
 		MCPServers:  mcpServers,
 	}
-	data, err := json.MarshalIndent(manifest, "", "  ")
+	data, err := manifestMarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("synthesizing manifest for plugin %q: %w", cp.Name, err)
 	}
 	manifestDir := filepath.Join(dir, ".claude-plugin")
-	if err := os.MkdirAll(manifestDir, 0o755); err != nil {
+	if err := manifestMkdirAll(manifestDir, 0o755); err != nil {
 		return "", fmt.Errorf("synthesizing manifest for plugin %q: %w", cp.Name, err)
 	}
-	if err := os.WriteFile(filepath.Join(manifestDir, "plugin.json"), data, 0o644); err != nil {
+	if err := manifestWriteFile(filepath.Join(manifestDir, "plugin.json"), data, 0o644); err != nil {
 		return "", fmt.Errorf("synthesizing manifest for plugin %q: %w", cp.Name, err)
 	}
 	return note, nil
@@ -120,10 +129,10 @@ func ensureManifestFallback(dir string, staged bool, cp CatalogPlugin) (note str
 // The wired command is `node ${CLAUDE_PLUGIN_ROOT}/<bin path>`; Load() expands
 // the root placeholder to the installed plugin dir.
 func detectNPMBinServer(dir, pluginName string) (servers json.RawMessage, note string) {
-	if _, err := os.Stat(filepath.Join(dir, ".mcp.json")); err == nil {
+	if _, err := manifestStat(filepath.Join(dir, ".mcp.json")); err == nil {
 		return nil, "" // Load() picks up the plugin's own .mcp.json
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	data, err := manifestReadFile(filepath.Join(dir, "package.json"))
 	if err != nil {
 		return nil, "" // not an npm repo
 	}
@@ -164,7 +173,7 @@ func detectNPMBinServer(dir, pluginName string) (servers json.RawMessage, note s
 		"command": "node",
 		"args":    []string{"${CLAUDE_PLUGIN_ROOT}/" + filepath.ToSlash(rel)},
 	}
-	out, err := json.Marshal(map[string]any{binName: entry})
+	out, err := manifestMarshal(map[string]any{binName: entry})
 	if err != nil {
 		return nil, "" // cannot happen for this shape; fail safe by not wiring
 	}
