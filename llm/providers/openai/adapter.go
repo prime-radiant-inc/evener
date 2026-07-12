@@ -49,6 +49,23 @@ type Config struct {
 	StateHome string
 }
 
+type runtimeAuthService interface {
+	Status(stateDir, instanceName string) (authopenai.AuthStatus, error)
+	ResolveRuntimeCredentials(ctx context.Context, stateDir, instanceName string) (authopenai.RuntimeCredentials, error)
+}
+
+var newRuntimeAuthService = func(client *http.Client) runtimeAuthService {
+	return authopenai.NewService(authopenai.DefaultConfig(), client)
+}
+
+var hashContinuationScopeValue = func(hasher *llm.ContinuationHasher, kind, value string) (string, error) {
+	return hasher.HashContinuationScopeValue(kind, value)
+}
+
+var hashContinuationStorageScope = func(hasher *llm.ContinuationHasher, scope llm.ContinuationStorageScope) (string, error) {
+	return hasher.HashContinuationStorageScope(scope)
+}
+
 type Adapter struct {
 	name                string
 	APIKey              string
@@ -97,7 +114,7 @@ func NewForInstance(params OpenAIInstanceParams) (*Adapter, error) {
 	// the key-based API. This mirrors the preference order in NewFromEnv.
 	authStateDir := authopenai.DefaultStateDirWithStateHome(params.StateHome)
 	instanceName := params.Name
-	service := authopenai.NewService(authopenai.DefaultConfig(), params.AuthHTTPClient)
+	service := newRuntimeAuthService(params.AuthHTTPClient)
 	status, err := service.Status(authStateDir, instanceName)
 	if err != nil {
 		return nil, fmt.Errorf("load OpenAI auth: %w", err)
@@ -196,28 +213,35 @@ func NewForInstance(params OpenAIInstanceParams) (*Adapter, error) {
 }
 
 func init() {
-	llm.RegisterEnvAdapterFactory(func(env llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
-		a, err := NewFromEnv(Config{StateHome: env.StateHome})
-		if err != nil {
-			if isUnconfigured(err) {
-				return nil, false, nil
-			}
-			return nil, true, err
-		}
-		return a, true, nil
-	})
+	llm.RegisterEnvAdapterFactory(openAIEnvAdapterFactory)
 	// Register for config-driven construction: openai + responses/auto (or empty) style.
-	factory := func(inst providercfg.InstanceConfig, stateHome string) (llm.ProviderAdapter, error) {
-		params, err := instanceParamsFromConfig(inst.Name, inst.BaseURL, inst.APIKey, stateHome)
-		if err != nil {
-			return nil, err
+	llm.RegisterInstanceAdapterFactory("openai", "responses", openAIInstanceAdapterFactory)
+	llm.RegisterInstanceAdapterFactory("openai", "auto", openAIInstanceAdapterFactory)
+	llm.RegisterInstanceAdapterFactory("openai", "", openAIInstanceAdapterFactory)
+}
+
+func openAIEnvAdapterFactory(env llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
+	a, err := NewFromEnv(Config{StateHome: env.StateHome})
+	if err != nil {
+		if isUnconfigured(err) {
+			return nil, false, nil
 		}
-		params.Headers = inst.Headers
-		return NewForInstance(params)
+		return nil, true, err
 	}
-	llm.RegisterInstanceAdapterFactory("openai", "responses", factory)
-	llm.RegisterInstanceAdapterFactory("openai", "auto", factory)
-	llm.RegisterInstanceAdapterFactory("openai", "", factory)
+	return a, true, nil
+}
+
+func openAIInstanceAdapterFactory(inst providercfg.InstanceConfig, stateHome string) (llm.ProviderAdapter, error) {
+	params, err := instanceParamsFromConfig(inst.Name, inst.BaseURL, inst.APIKey, stateHome)
+	if err != nil {
+		return nil, err
+	}
+	params.Headers = inst.Headers
+	a, err := NewForInstance(params)
+	if err != nil {
+		return nil, err
+	}
+	return a, nil
 }
 
 // instanceParamsFromConfig builds OpenAIInstanceParams for a config-driven
@@ -245,7 +269,7 @@ func authScopeForAPIKey(hasher *llm.ContinuationHasher, apiKey string) (llm.Auth
 	if hasher == nil {
 		return llm.AuthScopeIdentity{}, nil
 	}
-	hash, err := hasher.HashContinuationScopeValue("credential", apiKey)
+	hash, err := hashContinuationScopeValue(hasher, "credential", apiKey)
 	if err != nil {
 		return llm.AuthScopeIdentity{}, err
 	}
@@ -268,7 +292,7 @@ func authScopeForOAuth(hasher *llm.ContinuationHasher, accountID, workspaceID st
 	if err != nil {
 		return llm.AuthScopeIdentity{}, err
 	}
-	credentialHash, err := hasher.HashContinuationScopeValue("credential", "oauth:"+strings.TrimSpace(accountID)+":"+strings.TrimSpace(workspaceID))
+	credentialHash, err := hashContinuationScopeValue(hasher, "credential", "oauth:"+strings.TrimSpace(accountID)+":"+strings.TrimSpace(workspaceID))
 	if err != nil {
 		return llm.AuthScopeIdentity{}, err
 	}
@@ -285,7 +309,7 @@ func hashOpenAIScopeIdentifier(hasher *llm.ContinuationHasher, kind, value strin
 	if hasher == nil || strings.TrimSpace(value) == "" {
 		return "", nil
 	}
-	return hasher.HashContinuationScopeValue(kind, value)
+	return hashContinuationScopeValue(hasher, kind, value)
 }
 
 func NewFromEnv(cfgs ...Config) (*Adapter, error) {
@@ -342,7 +366,7 @@ func (a *Adapter) PlanResponsesContinuation(req llm.Request) (llm.ResponsesConti
 	storagePolicy, storageAllowed := responsesStoragePolicyForPlan(endpointFamily, body)
 	conversationIDHash := ""
 	if strings.TrimSpace(req.ConversationID) != "" {
-		conversationIDHash, err = a.ContinuationHasher.HashContinuationScopeValue("conversation_id", req.ConversationID)
+		conversationIDHash, err = hashContinuationScopeValue(a.ContinuationHasher, "conversation_id", req.ConversationID)
 		if err != nil {
 			return llm.ResponsesContinuationPlan{}, err
 		}
@@ -362,7 +386,7 @@ func (a *Adapter) PlanResponsesContinuation(req llm.Request) (llm.ResponsesConti
 		ConversationIDHash: conversationIDHash,
 		StoragePolicy:      storagePolicy,
 	}
-	storageScopeFingerprint, err := a.ContinuationHasher.HashContinuationStorageScope(storageScope)
+	storageScopeFingerprint, err := hashContinuationStorageScope(a.ContinuationHasher, storageScope)
 	if err != nil {
 		return llm.ResponsesContinuationPlan{}, err
 	}
