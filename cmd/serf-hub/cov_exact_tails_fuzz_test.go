@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
@@ -61,6 +62,7 @@ func FuzzExactTails(f *testing.F) {
 		cfg := hubcore.WebConfig{Spawner: lister}
 		_ = hasSerfLaunchModelLister(cfg)
 		_ = validateSerfLaunchModel(context.Background(), cfg, cmdutil.ModelRef{Provider: "p", Model: "m"}, "/tmp")
+		_, _ = ResumeDaemon(context.Background(), "", t.TempDir(), hubcore.ResumeRequest{}, time.Nanosecond)
 
 		// Transcript projection tails: malformed JSON, usage cost stamping,
 		// empty input images, and default output-image media type.
