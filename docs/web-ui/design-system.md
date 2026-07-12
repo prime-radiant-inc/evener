@@ -366,6 +366,7 @@ a single-pane workspace; the sidebar becomes an off-canvas drawer behind the hea
 - **Editable fields ≥ 16px.** iOS Safari zooms the page into any focused field whose text is
   smaller than 16px and does not zoom back out — so the composer, prompt, and search inputs are all
   16px on phone.
+- **Short forms.** For creation flows like `/new`, use the mobile form rules in §11.
 
 ## 9. Motion
 
@@ -403,3 +404,47 @@ open.
 **Dev loop:** set `SERF_HUB_ASSETS_DIR=<repo>/cmd/serf-hub` when launching `serf-hub` to serve
 `assets/` and re-parse `templates/` from disk — CSS/JS edits take effect on reload (templates on
 restart) with no rebuild. Unset in production; assets ship embedded.
+
+## 11. Mobile forms
+
+For short, committed creation flows like `/new`, the mobile form is a single column with one clear hierarchy: the prompt first, the config as a stack of full-width rows, and a pinned bottom action band.
+
+### Form rows
+
+On phone, configuration options become full-width rows rather than a pile of chips:
+
+- **Min-height:** `48px` (on top of `--tap-min` 44px).
+- **Label:** sans, sentence case, `--text-base` minimum, left.
+- **Value:** sans, `--text-base` or `--text-md`, right, truncated.
+- **Caret:** at the far right; the whole row is the hit target.
+- **Separator:** 1px `--line` hairline.
+- **No** ALL-CAPS, monospace, letter-spacing, or per-row boxes.
+
+This is the same settings-row idiom the user already knows from system settings, rendered in the existing Serf neutral palette.
+
+### Auto-expanding text inputs
+
+Textareas that grow with content stay visible without a manual resize handle or a permanent oversized field:
+
+- **Min-height:** `96px`.
+- **Max-height:** `40vh` or `8` lines, whichever is smaller.
+- **Font-size:** `16px` so iOS never auto-zooms on focus.
+- **Motion:** height changes only when `prefers-reduced-motion` allows.
+
+### Bottom action band
+
+The primary action for a mobile form lives in a fixed bottom band:
+
+- Sits on top of `env(safe-area-inset-bottom)`, not floating above it.
+- Background: `--bg-raised`; top border: 1px `--line`.
+- Primary button: at least `52px` tall, accent background.
+- Secondary attach/action button: at least `44px` tall.
+- No shadows unless the band is a true overlay.
+
+### Mobile pickers
+
+When a form row opens a selector, it uses a **bottom sheet** anchored to the bottom of the viewport. Sheet rows are `48px` minimum, sans labels, grouped by plain headings, with a large `Done` action.
+
+### Retired for mobile forms
+
+The ALL-CAPS-mono `<details>` summary, the 10px chip labels, the 9px caret-only hit target, and keyboard-hint labels inside buttons.

@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf — Mobile spawn form treatments</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<style>
+  body { overflow: auto; background: #0a0b0e; }
+  .page { max-width: 1480px; margin: 0 auto; padding: var(--s6) var(--s5) 96px; }
+  .page-h { margin-bottom: var(--s6); }
+  .page-h h1 { font-size: var(--fs-lg); font-weight: 600; letter-spacing: -0.01em; }
+  .page-h .sub { color: var(--ink-2); margin-top: var(--s2); max-width: 760px; line-height: 1.6; }
+  .treatments { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: var(--s6); }
+  .treatment { display: flex; flex-direction: column; gap: var(--s3); }
+  .t-h { display: flex; align-items: baseline; gap: var(--s2); }
+  .t-h .badge { color: var(--accent); font-weight: 700; font-variant-numeric: tabular-nums; }
+  .t-h .name { font-weight: 600; }
+  .t-cap { color: var(--ink-2); font-size: var(--fs-sm); line-height: 1.6; max-width: 360px; }
+  .phone { width: 360px; height: 640px; background: var(--bg); border: 1px solid var(--line); border-radius: 28px; overflow: hidden; display: flex; flex-direction: column; position: relative; flex-shrink: 0; }
+  .phone-header { height: 48px; border-bottom: 1px solid var(--line); display: flex; align-items: center; padding: 0 var(--s4); justify-content: space-between; flex: none; }
+  .phone-header .title { font-weight: 600; font-size: var(--fs-md); }
+  .phone-header .quiet { color: var(--ink-3); }
+  .phone-body { flex: 1; overflow-y: auto; padding: var(--s4); display: flex; flex-direction: column; gap: var(--s4); }
+  .phone-actions { flex: none; padding: var(--s3) var(--s4) calc(var(--s4) + 12px); border-top: 1px solid var(--line); background: #101117; display: flex; align-items: center; gap: var(--s3); }
+  .phone-actions .spacer { flex: 1; }
+  .btn { font-family: var(--sans); font-size: var(--fs-md); border-radius: var(--r); display: inline-flex; align-items: center; justify-content: center; gap: var(--s2); cursor: pointer; min-height: 44px; padding: 0 var(--s4); font-weight: 600; }
+  .btn-primary { background: var(--accent); color: #0a0b0e; }
+  .btn-secondary { background: var(--surface); color: var(--ink); border: 1px solid var(--line); }
+  .btn-ghost { color: var(--ink-2); }
+  .prompt-label { font-size: var(--fs-lg); font-weight: 600; letter-spacing: -0.01em; line-height: 1.25; }
+  .prompt-sub { color: var(--ink-3); font-size: var(--fs-sm); }
+  .prompt { width: 100%; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: var(--s3); font-family: var(--sans); font-size: 16px; color: var(--ink); line-height: 1.5; resize: none; outline: none; }
+  .prompt::placeholder { color: var(--ink-4); }
+  .row { display: flex; align-items: center; justify-content: space-between; min-height: 48px; padding: var(--s2) 0; border-bottom: 1px solid var(--line); gap: var(--s3); }
+  .row .label { font-size: var(--fs-md); color: var(--ink); font-weight: 500; }
+  .row .value { font-size: var(--fs-md); color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; text-align: right; }
+  .row .caret { color: var(--ink-3); margin-left: var(--s2); font-size: 10px; }
+  .section-title { font-size: var(--fs-sm); font-weight: 600; color: var(--ink-3); margin-top: var(--s2); }
+  .link { color: var(--accent); font-size: var(--fs-sm); text-decoration: none; }
+  .sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--surface); border-top: 1px solid var(--line); border-radius: 20px 20px 0 0; padding: var(--s4); display: flex; flex-direction: column; gap: var(--s3); z-index: 10; max-height: 70%; }
+  .sheet-h { display: flex; align-items: center; justify-content: space-between; }
+  .sheet-h .title { font-weight: 600; font-size: var(--fs-md); }
+  .scrim { position: absolute; inset: 0; background: rgba(0,0,0,0.45); z-index: 9; }
+  .stepper { display: flex; align-items: center; gap: var(--s2); font-size: var(--fs-sm); color: var(--ink-3); }
+  .stepper .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+  .recap { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: var(--s3); font-size: var(--fs-sm); color: var(--ink-2); line-height: 1.5; }
+  .toolbar { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: var(--r-pill); background: var(--surface); border: 1px solid var(--line); font-size: var(--fs-sm); color: var(--ink); }
+  .chip .k { color: var(--ink-3); }
+  .composer-dock { border-top: 1px solid var(--line); padding: var(--s3) var(--s4) calc(var(--s4) + 12px); background: #101117; flex: none; }
+  .composer-dock .ta { width: 100%; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: var(--s3); font-family: var(--sans); font-size: 16px; color: var(--ink); min-height: 48px; resize: none; outline: none; }
+  .composer-bar { display: flex; align-items: center; gap: var(--s2); margin-top: var(--s2); }
+  .composer-bar .spacer { flex: 1; }
+  .send-disc { width: 44px; height: 44px; border-radius: 50%; background: var(--accent); color: #0a0b0e; display: inline-flex; align-items: center; justify-content: center; font-size: var(--fs-lg); font-weight: 700; }
+  .intent-card { display: flex; flex-direction: column; gap: var(--s2); padding: var(--s4); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); cursor: pointer; }
+  .intent-card .title { font-weight: 600; font-size: var(--fs-md); }
+  .intent-card .desc { font-size: var(--fs-sm); color: var(--ink-2); line-height: 1.5; }
+  .empty-hint { color: var(--ink-3); font-size: var(--fs-sm); text-align: center; margin-top: auto; margin-bottom: auto; }
+  .recent-row { padding: var(--s3) 0; border-bottom: 1px solid var(--line); color: var(--ink-2); font-size: var(--fs-sm); line-height: 1.5; }
+  .kbd { font-family: var(--mono); font-size: 10px; color: var(--ink-3); border: 1px solid var(--line); padding: 1px 4px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="page-h">
+    <h1>Mobile spawn form — five treatments</h1>
+    <p class="sub">Rough, comparable mockups of the <code>/new</code> session creation form on a 360×640 viewport. These are direction-only, not production code. Open each treatment to see the trade-offs in the conversation.</p>
+  </div>
+
+  <div class="treatments">
+
+    <!-- A — Tuned single screen -->
+    <div class="treatment">
+      <div class="t-h"><span class="badge">A</span><span class="name">Tuned single screen</span></div>
+      <p class="t-cap">One page, fixed hierarchy, large tappable rows, pinned bottom action.</p>
+      <div class="phone">
+        <div class="phone-header"><span class="title quiet">new</span><span class="quiet">⋯</span></div>
+        <div class="phone-body">
+          <div>
+            <div class="prompt-label">What should the agent do?</div>
+            <div class="prompt-sub">Leave blank to start a dormant session.</div>
+          </div>
+          <textarea class="prompt" rows="4" placeholder="describe the prompt…"></textarea>
+          <div class="row"><span class="label">Model</span><span class="value">GPT-5.5</span><span class="caret">▾</span></div>
+          <div class="row"><span class="label">Project</span><span class="value">serf</span><span class="caret">▾</span></div>
+          <div class="row"><span class="label">Branch</span><span class="value">main</span><span class="caret">▾</span></div>
+          <div class="row"><span class="label">Mode</span><span class="value">read-write</span><span class="caret">▾</span></div>
+          <div class="row"><span class="label">Reasoning</span><span class="value">default</span><span class="caret">▾</span></div>
+          <a href="#" class="link">Advanced options</a>
+        </div>
+        <div class="phone-actions">
+          <button class="btn btn-secondary">📎 Attach</button>
+          <div class="spacer"></div>
+          <button class="btn btn-primary">Spawn</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- B — Bottom-sheet config -->
+    <div class="treatment">
+      <div class="t-h"><span class="badge">B</span><span class="name">Bottom-sheet config</span></div>
+      <p class="t-cap">Prompt-first surface. One summary row opens a full bottom sheet of large config options.</p>
+      <div class="phone">
+        <div class="phone-header"><span class="title quiet">new</span><span class="quiet">⋯</span></div>
+        <div class="phone-body">
+          <div>
+            <div class="prompt-label">What should the agent do?</div>
+            <div class="prompt-sub">Leave blank to start a dormant session.</div>
+          </div>
+          <textarea class="prompt" rows="5" placeholder="describe the prompt…"></textarea>
+          <div class="row" style="border:1px solid var(--line); border-radius:var(--r); padding:var(--s3); margin-top:var(--s2);">
+            <span class="label">Setup</span>
+            <span class="value">GPT-5.5 · serf · main</span>
+            <span class="caret">▾</span>
+          </div>
+        </div>
+        <div class="phone-actions">
+          <button class="btn btn-secondary">📎 Attach</button>
+          <div class="spacer"></div>
+          <button class="btn btn-primary">Spawn</button>
+        </div>
+        <div class="scrim"></div>
+        <div class="sheet">
+          <div class="sheet-h"><span class="title">Session setup</span><span class="quiet">Done</span></div>
+          <div class="row"><span class="label">Model</span><span class="value">GPT-5.5</span><span class="caret">▾</span></div>
+          <div class="row"><span class="label">Project</span><span class="value">serf</span><span class="caret">▾</span></div>
+          <div class="row"><span class="label">Branch</span><span class="value">main</span><span class="caret">▾</span></div>
+          <div class="row"><span class="label">Mode</span><span class="value">read-write</span><span class="caret">▾</span></div>
+          <div class="row"><span class="label">Reasoning</span><span class="value">default</span><span class="caret">▾</span></div>
+          <a href="#" class="link">Advanced options</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- C — Two-step wizard -->
+    <div class="treatment">
+      <div class="t-h"><span class="badge">C</span><span class="name">Two-step wizard</span></div>
+      <p class="t-cap">One decision per screen: first the prompt, then confirm the setup.</p>
+      <div class="phone">
+        <div class="phone-header">
+          <span class="title quiet">new</span>
+          <span class="stepper"><span class="dot"></span> Step 1 of 2</span>
+        </div>
+        <div class="phone-body">
+          <div>
+            <div class="prompt-label">What should the agent do?</div>
+            <div class="prompt-sub">Leave blank to start a dormant session.</div>
+          </div>
+          <textarea class="prompt" rows="5" placeholder="describe the prompt…"></textarea>
+          <div class="section-title">Recent</div>
+          <div class="recent-row">↻ Refactor the spawn form mobile layout</div>
+          <div class="recent-row">↻ Update the design system for forms</div>
+          <div class="recent-row">↻ Write tests for the hub launch config</div>
+        </div>
+        <div class="phone-actions">
+          <button class="btn btn-ghost">Attach</button>
+          <div class="spacer"></div>
+          <button class="btn btn-primary">Next</button>
+        </div>
+      </div>
+      <div class="phone" style="margin-top:var(--s4);">
+        <div class="phone-header">
+          <span class="title quiet">new</span>
+          <span class="stepper"><span class="dot"></span> Step 2 of 2</span>
+        </div>
+        <div class="phone-body">
+          <div class="prompt-label">Confirm setup</div>
+          <div class="recap">Refactor the spawn form mobile layout and update the style guide.</div>
+          <div class="row"><span class="label">Model</span><span class="value">GPT-5.5</span><span class="caret">▾</span></div>
+          <div class="row"><span class="label">Project</span><span class="value">serf</span><span class="caret">▾</span></div>
+          <div class="row"><span class="label">Branch</span><span class="value">main</span><span class="caret">▾</span></div>
+          <div class="row"><span class="label">Mode</span><span class="value">read-write</span><span class="caret">▾</span></div>
+          <div class="row"><span class="label">Reasoning</span><span class="value">default</span><span class="caret">▾</span></div>
+        </div>
+        <div class="phone-actions">
+          <button class="btn btn-secondary">Back</button>
+          <div class="spacer"></div>
+          <button class="btn btn-primary">Start session</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- D — Composer launch -->
+    <div class="treatment">
+      <div class="t-h"><span class="badge">D</span><span class="name">Composer launch</span></div>
+      <p class="t-cap">The live-session composer becomes the spawn surface. Config floats as a toolbar above it.</p>
+      <div class="phone">
+        <div class="phone-header"><span class="title">New session</span><span class="quiet">×</span></div>
+        <div class="phone-body" style="justify-content:center;">
+          <div class="empty-hint">Type a prompt to start a session.</div>
+        </div>
+        <div style="padding: var(--s3) var(--s4) var(--s2); border-top:1px solid var(--line); background:#101117;">
+          <div class="toolbar">
+            <span class="chip"><span class="k">model</span> GPT-5.5</span>
+            <span class="chip"><span class="k">project</span> serf</span>
+            <span class="chip">read-write</span>
+            <span class="chip" style="border-style:dashed;">Setup ▾</span>
+          </div>
+        </div>
+        <div class="composer-dock">
+          <textarea class="ta" rows="2" placeholder="What should the agent do?"></textarea>
+          <div class="composer-bar">
+            <button class="btn btn-ghost">📎</button>
+            <span class="chip" style="background:transparent; border-style:dashed;">effort default</span>
+            <div class="spacer"></div>
+            <span class="send-disc">↑</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- E — Intent-first cards -->
+    <div class="treatment">
+      <div class="t-h"><span class="badge">E</span><span class="name">Intent-first cards</span></div>
+      <p class="t-cap">Pick a high-level intent, then refine. Custom prompt is always available.</p>
+      <div class="phone">
+        <div class="phone-header"><span class="title">Start a session</span><span class="quiet">⋯</span></div>
+        <div class="phone-body">
+          <textarea class="prompt" rows="2" placeholder="Or describe your own task…"></textarea>
+          <div class="intent-card">
+            <span class="title">♻️ Refactor or clean up</span>
+            <span class="desc">Tidy code, rename symbols, or improve structure.</span>
+          </div>
+          <div class="intent-card">
+            <span class="title">🧪 Write or update tests</span>
+            <span class="desc">Add coverage, fix a failing test, or review assertions.</span>
+          </div>
+          <div class="intent-card">
+            <span class="title">🔍 Explain or debug</span>
+            <span class="desc">Walk through a failure, trace behavior, or clarify intent.</span>
+          </div>
+          <div class="intent-card">
+            <span class="title">📋 Review a diff</span>
+            <span class="desc">Review changes, suggest improvements, or catch risks.</span>
+          </div>
+          <div class="intent-card">
+            <span class="title">🚀 Start from scratch</span>
+            <span class="desc">Open a blank session with no pre-filled direction.</span>
+          </div>
+          <div class="row" style="margin-top:var(--s2);"><span class="label">Setup</span><span class="value">GPT-5.5 · serf · main</span><span class="caret">▾</span></div>
+        </div>
+        <div class="phone-actions">
+          <div class="spacer"></div>
+          <button class="btn btn-primary">Spawn</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</body>
+</html>
