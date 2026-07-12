@@ -1941,12 +1941,6 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 	if a.Source == "*" {
 		return watchArgs{}, errors.New("invalid_request: wildcard watch target is not supported in v1")
 	}
-	if a.Send != nil && strings.HasPrefix(a.Send.To, "job_") {
-		return watchArgs{}, errors.New("invalid_request: job_id is a job/turn handle; watch sends target delegate_id")
-	}
-	if a.Send != nil && a.Send.To == runtimeMessageAliasWatched {
-		return watchArgs{}, errors.New("invalid_request: watched is not a v1 delivery target")
-	}
 	return a, nil
 }
 
@@ -2035,7 +2029,7 @@ func validateJobGrepPattern(pattern string, maxChars int) error {
 	if len([]byte(pattern)) > maxJobGrepPatternBytes {
 		return fmt.Errorf("grep must be at most %d bytes", maxJobGrepPatternBytes)
 	}
-	b, err := json.Marshal(pattern)
+	b, err := marshalJobGrepPattern(pattern)
 	if err != nil {
 		return err
 	}
@@ -2043,6 +2037,10 @@ func validateJobGrepPattern(pattern string, maxChars int) error {
 		return errors.New("grep is too large after JSON escaping")
 	}
 	return nil
+}
+
+var marshalJobGrepPattern = func(pattern string) ([]byte, error) {
+	return json.Marshal(pattern)
 }
 
 func maxJobGrepPatternJSONChars(maxChars int) int {

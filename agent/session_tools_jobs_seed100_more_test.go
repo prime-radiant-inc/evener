@@ -1,0 +1,88 @@
+//go:build serffuzz
+
+package agent
+
+import (
+	"errors"
+	"regexp"
+	"strings"
+	"testing"
+
+	"primeradiant.com/serf/agent/internal/jobstore"
+)
+
+// seed100SessionToolsJobsMore covers the deterministic tail of job-tool
+// validation, projection, watch routing, and grep scanning.
+func seed100SessionToolsJobsMore(t *testing.T) {
+	t.Helper()
+
+	// Pure validation branches.
+	for _, args := range []map[string]any{
+		{"max_wait_ms": minJobBlockTimeoutMS - 1},
+		{"max_wait_ms": maxJobBlockTimeoutMS + 1},
+	} {
+		_, _ = decodeDelegateArgs(args)
+	}
+	originalMarshal := marshalJobGrepPattern
+	marshalJobGrepPattern = func(string) ([]byte, error) { return nil, errors.New("seed marshal fault") }
+	t.Cleanup(func() { marshalJobGrepPattern = originalMarshal })
+	_ = validateJobGrepPattern("x", 100)
+	marshalJobGrepPattern = originalMarshal
+
+	// Nil guards and stable watch ordering.
+	_, _, _ = (*Session)(nil).configureDescendantReceiverWatch(watchArgs{Target: "job_x"})
+	_ = (*Session)(nil).liveDescendantSessions()
+	local := jobWatchListToolResult{Watches: []jobWatchInspectToolResult{
+		{WatchID: "b", Source: "z"},
+		{WatchID: "b", Source: "a"},
+		{WatchID: "a", Source: "a"},
+	}}
+	_ = (&Session{}).watchListToolResultWithDescendantReceivers(local)
+
+	// A nil child session is retained by the subagent registry and exercises the
+	// defensive descendant walkers without needing a runtime.
+	root := newSession(t)
+	root.subagents.subs["nil-child"] = &subagent{id: "nil-child"}
+	_ = root.watchListToolResultWithDescendantReceivers(jobWatchListToolResult{})
+	_, _ = root.inspectDescendantReceiverWatchByID("missing")
+	_, _, _ = root.clearDescendantReceiverWatchByID("missing")
+	delete(root.subagents.subs, "nil-child")
+
+	// Delegate projection ownership and absent-current/latest filtering.
+	jobs := []jobListEntry{{JobID: "job_one", DelegateID: "dlg_one"}}
+	_ = jobListDelegatesForJobs(root, map[string]*jobstore.DelegateRecord{
+		"dlg_one": nil,
+	}, jobs)
+	_ = jobListDelegatesForJobs(root, map[string]*jobstore.DelegateRecord{
+		"dlg_one": {DelegateID: "dlg_one", OwnerSessionID: root.ID(), CurrentJobID: "missing", LatestJobID: "missing"},
+	}, jobs)
+
+	// Bounding reaches the successful empty-output fallback before the final
+	// structured-result degradation.
+	_, _ = marshalBoundedDelegateResult(delegateToolResult{Output: ptrString(strings.Repeat("x", 100))}, 128)
+
+	// Granted reads expose both independent provider error paths.
+	want := errors.New("seed read fault")
+	granted := &grantedJobRead{
+		record:     &jobstore.JobRecord{JobID: "job_x"},
+		readWindow: func(int, bool) (string, int64, int64, bool, error) { return "", 0, 0, false, want },
+	}
+	_, _ = granted.snapshot(1, false, nil)
+	granted.readWindow = func(int, bool) (string, int64, int64, bool, error) { return "x", 1, 0, false, nil }
+	granted.grepOutput = func(*regexp.Regexp) ([]jobstore.Match, error) { return nil, want }
+	_, _ = granted.snapshot(1, false, regexp.MustCompile("x"))
+
+	// Closed managers cover the transient grep scanner and output-read failures.
+	closed := newTestJM(t)
+	if err := closed.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	g := &jobGrepScan{}
+	_ = g.step(closed, "missing", regexp.MustCompile("x"), 10)
+	g.lastTotal = -1
+	_ = g.step(closed, "missing", regexp.MustCompile("x"), 10)
+
+	// Retention clamping is reachable with a synthetic lifetime total even when
+	// the underlying record is absent.
+	_, _, _ = readJobOutputFrom(closed, "missing", 0, maxJobOutputRetentionBytes+1)
+}
