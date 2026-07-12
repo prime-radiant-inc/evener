@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -135,12 +136,28 @@ func exerciseResidualCallbacks(s *residualServeServer) {
 }
 
 func TestRunServeResidualCoverage(t *testing.T) {
-	t.Run("resume success", TestServeAsk_RestoreReportsAwaitingImmediately)
+	t.Run("resume success", func(t *testing.T) {
+		t.Setenv("SERF_REASONING_EFFORT", "low")
+		TestServeAsk_RestoreReportsAwaitingImmediately(t)
+	})
+	t.Run("resume reporting and sandbox line", func(t *testing.T) {
+		var out bytes.Buffer
+		reportServeResume(&out, schema.SessionMeta{ID: "id", TurnCount: 2}, cmdutil.ModelRef{Provider: "openai", Model: "new"}, "openai", "old", true)
+		reportServeResume(&out, schema.SessionMeta{ID: "id", TurnCount: 2}, cmdutil.ModelRef{}, "", "", false)
+		printServeSandboxLine(&out, "")
+		printServeSandboxLine(&out, "sandboxed")
+	})
 	t.Run("default subscriber count", func(t *testing.T) {
 		d := defaultServeDeps()
 		s := server.NewServer(server.ServerConfig{})
 		if got := d.subscriberCount(s, "missing"); got != 0 {
 			t.Fatalf("subscriber count = %d", got)
+		}
+	})
+	t.Run("escalation mapping", func(t *testing.T) {
+		got := mapServePendingEscalations([]events.SandboxEscalationRequestedData{{EscalationID: "e", Tool: "shell"}})
+		if len(got) != 1 || got[0].EscalationID != "e" {
+			t.Fatalf("mapping = %+v", got)
 		}
 	})
 	boom := errors.New("boom")
@@ -222,6 +239,19 @@ func TestRunServeResidualCoverage(t *testing.T) {
 		d.newServer = func(cfg server.ServerConfig) serveServer { captured = newResidualServeServer(cfg); return captured }
 		d.bridge = func(serveServer, *agent.Session, func(events.SessionEvent)) {}
 		d.subscriberCount = func(serveServer, string) int { return 1 }
+		d.observeCallbacks = func(c serveCallbackObserver) {
+			_ = c.transcript()
+			c.notify()
+			if c.subscriberCount() != 1 {
+				t.Fatal("subscriber callback")
+			}
+			_ = c.pendingEscalations()
+			c.setSession(nil)
+			if c.transcript() != "" {
+				t.Fatal("nil session transcript")
+			}
+			c.setSession(c.session)
+		}
 		d.register = func(*rvreg.Registration, string, rendezvous.Entry) error { return boom }
 		d.serveHTTP = func(*http.Server, net.Listener) error {
 			exerciseResidualCallbacks(captured)

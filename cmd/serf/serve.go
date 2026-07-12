@@ -112,6 +112,16 @@ type serveDeps struct {
 	provisionSandbox func(*execenv.LocalExecutionEnvironment, *agent.SessionConfig, string) error
 	newClearSession  func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error)
 	updateSessionID  func(*rvreg.Registration, string) error
+	observeCallbacks func(serveCallbackObserver)
+}
+
+type serveCallbackObserver struct {
+	transcript         func() string
+	notify             func()
+	subscriberCount    func() int
+	pendingEscalations func() []appwire.SandboxEscalationRequested
+	setSession         func(*agent.Session)
+	session            *agent.Session
 }
 
 func defaultServeDeps() serveDeps {
@@ -354,11 +364,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		if effort.Set {
 			sess.SetReasoningEffort(effort.Value)
 		}
-		if strings.TrimSpace(*model) != "" {
-			fmt.Fprintf(os.Stderr, "[serve] resumed session %s with model override %s (was %s/%s)\n", resumedMeta.ID, modelRef.Qualified(), resumeProvider, resumeModel)
-		} else {
-			fmt.Fprintf(os.Stderr, "[serve] resumed session %s (%d turns)\n", resumedMeta.ID, resumedMeta.TurnCount)
-		}
+		reportServeResume(os.Stderr, resumedMeta, modelRef, resumeProvider, resumeModel, strings.TrimSpace(*model) != "")
 	} else {
 		sess, err = deps.newSession(client, profile, env, sessionCfg)
 		if err != nil {
@@ -369,9 +375,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// One startup line, loudly, states exactly what this host enforces (read from
 	// the env's resolved policy so it never overstates). Empty for an unsandboxed
 	// session — nothing to announce.
-	if line := sandboxEnforcementLine(env); line != "" {
-		fmt.Fprintln(os.Stderr, line)
-	}
+	printServeSandboxLine(os.Stderr, sandboxEnforcementLine(env))
 
 	// Signal handling.
 	ctx, cancel := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -404,12 +408,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		defer currentMu.RUnlock()
 		return currentSess
 	}
-	srv.SetTranscriptPathFunc(func() string {
+	transcriptCallback := func() string {
 		if current := getSession(); current != nil {
 			return current.TranscriptPath()
 		}
 		return ""
-	})
+	}
+	srv.SetTranscriptPathFunc(transcriptCallback)
 	setSession := func(next *agent.Session, nextEnv *execenv.LocalExecutionEnvironment) {
 		currentMu.Lock()
 		currentSess = next
@@ -429,6 +434,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 	}
 
+	var notifyCallback func()
+	var subscriberCallback func() int
 	bridgeSession := func(s *agent.Session) {
 		// The idle kick is set on the Session, so it must be re-established
 		// whenever the session is replaced (e.g. on /clear). It feeds the
@@ -440,12 +447,14 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// and the parent is idle, the durable notification queue is already
 		// populated; this callback feeds a text-less EntryNotification kick
 		// into the serve loop so the parent drains it on the next turn.
-		s.SetNotifyFunc(func() { srv.SubmitNotification() })
+		notifyCallback = func() { srv.SubmitNotification() }
+		s.SetNotifyFunc(notifyCallback)
 		// The M7 sandbox-escalation gate blocks a denied tool call only when a human
 		// is actually watching this thread; the probe reads the live AppWire
 		// subscriber count. Set per-session (like the kick/notify wakes) so it tracks
 		// the current session's id across /clear.
-		s.SetSubscriberCountFunc(func() int { return deps.subscriberCount(srv, s.ID()) })
+		subscriberCallback = func() int { return deps.subscriberCount(srv, s.ID()) }
+		s.SetSubscriberCountFunc(subscriberCallback)
 		go deps.bridge(srv, s, eventObserver)
 	}
 
@@ -488,16 +497,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	srv.SetPendingAskFunc(func() bool { return getSession().HasPendingAsk() })
 	srv.SetPendingEscalationFunc(func() bool { return getSession().HasPendingEscalations() })
 	srv.SetPendingEscalationsSnapshotFunc(func() []appwire.SandboxEscalationRequested {
-		data := getSession().PendingEscalations()
-		out := make([]appwire.SandboxEscalationRequested, 0, len(data))
-		for _, d := range data {
-			out = append(out, appwire.SandboxEscalationRequested{
-				EscalationID: d.EscalationID, Mode: d.Mode, Tool: d.Tool, Kind: d.Kind,
-				DeniedPath: d.DeniedPath, Command: d.Command, OutputSoFar: d.OutputSoFar, PartiallyRan: d.PartiallyRan,
-			})
-		}
-		return out
+		return mapServePendingEscalations(getSession().PendingEscalations())
 	})
+	pendingEscalations := func() []appwire.SandboxEscalationRequested {
+		return mapServePendingEscalations(getSession().PendingEscalations())
+	}
 	srv.SetModelFunc(func(model string) { getSession().SetModel(model) })
 	srv.SetNameFunc(func(name string) { getSession().Rename(name) })
 	srv.SetReasoningEffortFunc(func(effort string) { getSession().SetReasoningEffort(effort) })
@@ -551,6 +555,14 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 
 	// Bridge session events to appwire notifications.
 	bridgeSession(sess)
+	if deps.observeCallbacks != nil {
+		deps.observeCallbacks(serveCallbackObserver{
+			transcript: transcriptCallback, notify: notifyCallback,
+			subscriberCount: subscriberCallback, pendingEscalations: pendingEscalations,
+			setSession: func(next *agent.Session) { setSession(next, currentEnv) },
+			session:    sess,
+		})
+	}
 	if resuming {
 		// Belt-and-suspenders with the Bridge/projector SessionStart fix
 		// (spec §5.4 "two touchpoints"): the session's SessionStart event may
@@ -666,6 +678,31 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 	<-shutdownDone
 	return nil
+}
+
+func mapServePendingEscalations(data []events.SandboxEscalationRequestedData) []appwire.SandboxEscalationRequested {
+	out := make([]appwire.SandboxEscalationRequested, 0, len(data))
+	for _, d := range data {
+		out = append(out, appwire.SandboxEscalationRequested{
+			EscalationID: d.EscalationID, Mode: d.Mode, Tool: d.Tool, Kind: d.Kind,
+			DeniedPath: d.DeniedPath, Command: d.Command, OutputSoFar: d.OutputSoFar, PartiallyRan: d.PartiallyRan,
+		})
+	}
+	return out
+}
+
+func reportServeResume(w io.Writer, meta schema.SessionMeta, model cmdutil.ModelRef, oldProvider, oldModel string, overridden bool) {
+	if overridden {
+		fmt.Fprintf(w, "[serve] resumed session %s with model override %s (was %s/%s)\n", meta.ID, model.Qualified(), oldProvider, oldModel)
+	} else {
+		fmt.Fprintf(w, "[serve] resumed session %s (%d turns)\n", meta.ID, meta.TurnCount)
+	}
+}
+
+func printServeSandboxLine(w io.Writer, line string) {
+	if line != "" {
+		fmt.Fprintln(w, line)
+	}
 }
 
 // holdServeStateForAwaitingWake reports whether the input loop should skip
