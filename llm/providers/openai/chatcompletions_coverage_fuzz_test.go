@@ -38,6 +38,9 @@ func FuzzOpenAIChatCompletionsCoverage(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, selector byte) {
+		if raw, ok := chatCompletionsRawBody(bytes.NewBufferString("raw")); !ok || raw != "raw" {
+			t.Fatalf("raw body helper = %q, %v", raw, ok)
+		}
 		tmp := t.TempDir()
 		imagePath := tmp + "/image.unknown"
 		docPath := tmp + "/document.unknown"
