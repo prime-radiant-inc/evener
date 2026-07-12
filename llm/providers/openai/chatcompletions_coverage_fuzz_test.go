@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -32,7 +33,7 @@ func (rt chatCoverageRoundTripper) RoundTrip(*http.Request) (*http.Response, err
 // FuzzOpenAIChatCompletionsCoverage replays branch-focused request and stream
 // shapes. Every transport is in-memory; local-file cases use the fuzz temp dir.
 func FuzzOpenAIChatCompletionsCoverage(f *testing.F) {
-	for i := byte(0); i < 18; i++ {
+	for i := byte(0); i < 19; i++ {
 		f.Add(i)
 	}
 
@@ -90,7 +91,7 @@ func FuzzOpenAIChatCompletionsCoverage(f *testing.F) {
 			llm.ToolResult("c", "plain", false),
 		})
 
-		switch selector % 18 {
+		switch selector % 19 {
 		case 0, 1, 2, 3, 4, 5:
 			modes := []llm.ToolChoice{
 				{}, {Mode: "none"}, {Mode: "required"}, {Mode: "named", Name: "tool"},
@@ -128,7 +129,7 @@ func FuzzOpenAIChatCompletionsCoverage(f *testing.F) {
 		case 14:
 			a := &Adapter{BaseURL: "https://example.test", Client: &http.Client{Transport: chatCoverageRoundTripper{status: 429, body: `{"error":"limited"}`}}}
 			_, _ = a.streamViaChatCompletions(context.Background(), req)
-		default:
+		case 15, 16, 17:
 			streams := []string{
 				"data: {bad}\n\ndata: {\"model\":\"m\",\"choices\":[]}\n\ndata: [DONE]\n\n",
 				"data: {\"model\":\"m\",\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5},\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n",
@@ -141,6 +142,18 @@ func FuzzOpenAIChatCompletionsCoverage(f *testing.F) {
 				}
 				_ = stream.Close()
 			}
+		case 18:
+			original := chatCompletionsRawBody
+			chatCompletionsRawBody = func(*bytes.Buffer) (string, bool) { return "captured", true }
+			t.Cleanup(func() { chatCompletionsRawBody = original })
+			a := &Adapter{BaseURL: "https://example.test", Client: &http.Client{Transport: chatCoverageRoundTripper{status: 200, body: "data: [DONE]\n\n"}}}
+			stream, err := a.streamViaChatCompletions(context.Background(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range stream.Events() {
+			}
+			_ = stream.Close()
 		}
 	})
 }

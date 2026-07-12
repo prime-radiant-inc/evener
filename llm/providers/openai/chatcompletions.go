@@ -19,6 +19,13 @@ import (
 	"primeradiant.com/serf/llm/providers/internal/transport"
 )
 
+var chatCompletionsRawBody = func(buf *bytes.Buffer) (string, bool) {
+	if buf == nil {
+		return "", false
+	}
+	return buf.String(), true
+}
+
 // streamViaChatCompletions provides a fallback streaming path using the
 // Chat Completions API (/v1/chat/completions). This handles models that do
 // not support the Responses API endpoint.
@@ -156,9 +163,9 @@ func (a *Adapter) decodeChatCompletionsStream(sctx context.Context, cancel conte
 					finalResp.Usage = *usage
 				}
 				llm.StampEndpointURL(finalResp, a.chatCompletionsURL())
-				if sseBuf != nil {
+				if rawResponseBody, ok := chatCompletionsRawBody(sseBuf); ok {
 					finalResp.RawRequestBody = rawReqBody
-					finalResp.RawResponseBody = sseBuf.String()
+					finalResp.RawResponseBody = rawResponseBody
 				}
 				s.Send(llm.StreamEvent{
 					Type:         llm.StreamEventFinish,
