@@ -316,8 +316,12 @@ func hasMeaningfulRawOutput(raw any) bool {
 }
 
 func canonicalNodeOutputText(raw any) string {
+	return canonicalNodeOutputTextWithMarshal(raw, json.Marshal)
+}
+
+func canonicalNodeOutputTextWithMarshal(raw any, marshal func(any) ([]byte, error)) string {
 	out := normalizeNodeOutput(raw)
-	b, err := json.Marshal(out)
+	b, err := marshal(out)
 	if err != nil {
 		return "{}"
 	}

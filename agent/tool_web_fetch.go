@@ -57,6 +57,24 @@ func (s *Session) webFetchClient() httpDoer {
 
 // webFetch performs the full web_fetch operation: HTTP GET, cache files, cheap model Q&A.
 func (s *Session) webFetch(ctx context.Context, rawURL string, question string) (any, error) {
+	return s.webFetchWithRuntime(ctx, rawURL, question, webFetchRuntime{
+		cachePath:  webFetchCachePath,
+		mkdirAll:   os.MkdirAll,
+		writeFile:  os.WriteFile,
+		toMarkdown: htmlToMarkdown,
+		newRequest: http.NewRequestWithContext,
+	})
+}
+
+type webFetchRuntime struct {
+	cachePath  func(string) string
+	mkdirAll   func(string, os.FileMode) error
+	writeFile  func(string, []byte, os.FileMode) error
+	toMarkdown func(string) (string, error)
+	newRequest func(context.Context, string, string, io.Reader) (*http.Request, error)
+}
+
+func (s *Session) webFetchWithRuntime(ctx context.Context, rawURL string, question string, rt webFetchRuntime) (any, error) {
 	// Validate URL scheme.
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -70,7 +88,7 @@ func (s *Session) webFetch(ctx context.Context, rawURL string, question string) 
 	httpCtx, cancel := context.WithTimeout(ctx, webFetchTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(httpCtx, http.MethodGet, rawURL, nil)
+	req, err := rt.newRequest(httpCtx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
@@ -97,8 +115,8 @@ func (s *Session) webFetch(ctx context.Context, rawURL string, question string) 
 	sizeBytes := len(body)
 
 	// Per-fetch cache directory (absolute XDG path).
-	fetchDir := webFetchCachePath(rawURL)
-	if err := os.MkdirAll(fetchDir, 0o755); err != nil {
+	fetchDir := rt.cachePath(rawURL)
+	if err := rt.mkdirAll(fetchDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating cache dir: %w", err)
 	}
 
@@ -106,7 +124,7 @@ func (s *Session) webFetch(ctx context.Context, rawURL string, question string) 
 	rawExt := extFromContentType(contentType)
 	rawName := "raw" + rawExt
 	rawPath := filepath.Join(fetchDir, rawName)
-	if err := os.WriteFile(rawPath, body, 0o644); err != nil {
+	if err := rt.writeFile(rawPath, body, 0o644); err != nil {
 		return nil, fmt.Errorf("writing raw file: %w", err)
 	}
 
@@ -114,14 +132,14 @@ func (s *Session) webFetch(ctx context.Context, rawURL string, question string) 
 	var readableContent string
 	mdPath := ""
 	if isHTML {
-		md, err := htmlToMarkdown(string(body))
+		md, err := rt.toMarkdown(string(body))
 		if err != nil {
 			// Fall back to raw content if conversion fails.
 			readableContent = string(body)
 		} else {
 			readableContent = md
 			mdPath = filepath.Join(fetchDir, "rendered.md")
-			if err := os.WriteFile(mdPath, []byte(md), 0o644); err != nil {
+			if err := rt.writeFile(mdPath, []byte(md), 0o644); err != nil {
 				return nil, fmt.Errorf("writing rendered markdown: %w", err)
 			}
 		}

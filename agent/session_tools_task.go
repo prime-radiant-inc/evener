@@ -219,13 +219,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 						} else {
 							// No eligible task. If nothing remains open or in_progress,
 							// signal the agent that the list is exhausted.
-							allDone := true
-							for _, t := range store.View() {
-								if t.Status == taskpkg.TaskOpen || t.Status == taskpkg.TaskInProgress {
-									allDone = false
-									break
-								}
-							}
+							allDone := taskListAllDone(store.View())
 							if allDone && len(store.View()) > 0 {
 								deps.steer(taskReminderAllDone())
 								msg.WriteString("All tasks complete. ")
@@ -243,4 +237,13 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 			}
 		},
 	})
+}
+
+func taskListAllDone(tasks []taskpkg.Task) bool {
+	for _, task := range tasks {
+		if task.Status == taskpkg.TaskOpen || task.Status == taskpkg.TaskInProgress {
+			return false
+		}
+	}
+	return true
 }

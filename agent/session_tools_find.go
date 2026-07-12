@@ -116,13 +116,17 @@ func findSessionTranscriptsTool(deps *toolDeps) tool.RegisteredTool {
 			if err != nil {
 				return nil, err
 			}
-			env, ok := v.(findSessionsEnvelope)
-			if !ok {
-				return v, nil
-			}
-			return formatSessionFindings(env), nil
+			return formatFindSessionResult(v), nil
 		},
 	}
+}
+
+func formatFindSessionResult(v any) any {
+	env, ok := v.(findSessionsEnvelope)
+	if !ok {
+		return v
+	}
+	return formatSessionFindings(env)
 }
 
 // formatSessionFindings renders the find result as plain text: one numbered block
@@ -346,6 +350,10 @@ func execFindChildren(deps *toolDeps, ref string, limit int) (any, error) {
 // under a flat state dir (stateHomeFor == "") it degrades to the current bucket
 // and reports current_project (spec §"Discovery Cost").
 func findBuckets(currentStateDir, scope string) (buckets []string, scopeApplied string) {
+	return findBucketsWithEnumerate(currentStateDir, scope, enumerateBuckets)
+}
+
+func findBucketsWithEnumerate(currentStateDir, scope string, enumerate func(string) ([]string, error)) (buckets []string, scopeApplied string) {
 	if scope != scopeAllProjects {
 		return []string{currentStateDir}, scopeCurrentProject
 	}
@@ -353,7 +361,7 @@ func findBuckets(currentStateDir, scope string) (buckets []string, scopeApplied 
 	if sh == "" {
 		return []string{currentStateDir}, scopeCurrentProject
 	}
-	all, err := enumerateBuckets(sh)
+	all, err := enumerate(sh)
 	if err != nil || len(all) == 0 {
 		return []string{currentStateDir}, scopeCurrentProject
 	}
