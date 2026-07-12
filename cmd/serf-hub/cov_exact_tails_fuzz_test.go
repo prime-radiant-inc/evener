@@ -7,6 +7,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/schema"
@@ -52,6 +55,25 @@ func FuzzExactTails(f *testing.F) {
 		// empty input images, and default output-image media type.
 		entry := hubcore.PastEntry{StateDir: t.TempDir(), Meta: schema.SessionMeta{ID: "missing", Model: "gpt-5"}}
 		_ = pastEntryTurns(entry)
+		state := filepath.Join(t.TempDir(), "state")
+		if err := os.MkdirAll(filepath.Join(state, "sessions"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		meta := schema.SessionMeta{ID: "past", Name: "past", Model: "gpt-5"}
+		if err := schema.SaveSessionMeta(state, meta); err != nil {
+			t.Fatal(err)
+		}
+		transcript := "not-json\n" + `{"kind":"entry","turn":{"kind":"USER_INPUT","message":{"role":"user","content":[{"kind":"image","image":{"data":""}}]},"usage":{"input_tokens":100,"output_tokens":50}}}` + "\n"
+		if err := os.WriteFile(filepath.Join(state, "sessions", "past.transcript.jsonl"), []byte(transcript), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		past := hubcore.NewPastIndex(filepath.Join(filepath.Dir(state), "*"))
+		if err := past.Rebuild(); err != nil {
+			t.Fatal(err)
+		}
+		if pe, ok := past.Find("past"); ok {
+			_ = pastEntryTurns(pe)
+		}
 		_ = appItemsFromReplayTurn("s", "t", 0, hubcore.ReplayTurn{Kind: string(schema.TurnUserInput), Message: hubcore.ReplayMessage{Content: []hubcore.ReplayPart{
 			{Kind: string(llm.ContentImage), Image: &hubcore.ReplayImage{}},
 		}}}, map[string]string{})
@@ -76,6 +98,24 @@ func FuzzExactTails(f *testing.F) {
 
 		// Defensive HTTP branches that require no ambient services.
 		web.handleSubagentPreview(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/?ref=remote:missing", nil))
+		pastWeb := NewWebServer(hubcore.WebConfig{Past: past})
+		pastWeb.handleSubagentPreview(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/?ref=local:past", nil))
+		errSource := &pass6TailSource{scriptedAppSource: &scriptedAppSource{id: "local"}, readErr: errors.New("read")}
+		pastWeb.sources.Add(errSource)
+		pastWeb.handleSubagentPreview(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/?ref=local:past", nil))
+
+		// Missing live sources are a distinct API failure from ended sessions.
+		roster := hubcore.NewRosterWithEntries(
+			hubcore.LiveEntry{SessionID: "live-a", Entry: rendezvous.Entry{SessionID: "live-a"}},
+			hubcore.LiveEntry{SessionID: "live-b", Entry: rendezvous.Entry{SessionID: "live-b"}},
+			hubcore.LiveEntry{},
+		)
+		liveWeb := NewWebServer(hubcore.WebConfig{Roster: roster})
+		liveWeb.sources = appsource.NewRegistry()
+		liveWeb.handleApiSearch(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/search", nil))
+		liveWeb.handleAPIModel(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"model":"p/m"}`)), "live-a")
+		liveWeb.handleAPIReasoningEffort(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"reasoning_effort":"high"}`)), "live-a")
+		liveWeb.handleAPIRename(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"new"}`)), "live-a")
 		writeJSON(httptest.NewRecorder(), make(chan int))
 		web.handleInternalPartial(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/_partials/unknown", nil))
 	})
