@@ -210,6 +210,7 @@ TARGETS=(
 	"native:auth:./openai:FuzzParseIDTokenClaims::claims.go#ParseIDTokenClaims"
 	"native:auth:./openai:FuzzResolveRuntimeCredentials::service.go#ResolveRuntimeCredentials"
 	"native:auth:./openai:FuzzTokenEndpointResponse::tokens.go"
+	"native:invariant:.:FuzzInvariantHold::invariant_serffuzz.go#Hold"
 	# Phase 7 Wave 3 — behavioral API fuzzing (under the B0 sandbox) + tool execution.
 	# B1/B2 (hub)
 	"native:.:./cmd/serf-hub:FuzzAppWireDispatch::app_rpc.go#newHubAppServer"
