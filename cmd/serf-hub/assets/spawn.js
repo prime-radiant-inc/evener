@@ -37,6 +37,10 @@
     ta.style.height = nextHeight + "px";
   }
 
+  function shouldAutoExpand() {
+    return window.matchMedia && window.matchMedia("(max-width: 767px)").matches;
+  }
+
   function projectKey(workingDir) {
     return "serf-hub.spawn-defaults." + (workingDir || "global");
   }
@@ -1156,6 +1160,7 @@
         if (promptTa) {
           promptTa.value = row.dataset.recentPrompt;
           promptTa.focus();
+          if (shouldAutoExpand()) autoExpandTextarea(promptTa);
         }
       });
     });
@@ -1171,7 +1176,7 @@
     }
 
     // Auto-expand the prompt textarea as the user types; CSS max-height caps growth.
-    if (promptTa) {
+    if (promptTa && shouldAutoExpand()) {
       promptTa.addEventListener("input", () => autoExpandTextarea(promptTa));
       autoExpandTextarea(promptTa);
     }

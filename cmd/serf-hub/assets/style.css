@@ -4599,6 +4599,8 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
   .spawn-row:active:not([disabled]):not(:disabled) { background: var(--surface-secondary); }
   .spawn-input {
     min-height: 96px;
+    max-height: 40vh;
+    overflow-y: auto;
     font-size: 16px;
     resize: none;
     padding: var(--space-4);
