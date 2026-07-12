@@ -12,6 +12,22 @@ import (
 	"primeradiant.com/serf/envvars"
 )
 
+type authTempFile interface {
+	Name() string
+	Chmod(os.FileMode) error
+	Write([]byte) (int, error)
+	Sync() error
+	Close() error
+}
+
+var (
+	authMkdirAll   = os.MkdirAll
+	authMarshal    = json.MarshalIndent
+	authCreateTemp = func(dir, pattern string) (authTempFile, error) { return os.CreateTemp(dir, pattern) }
+	authRemove     = os.Remove
+	authRename     = os.Rename
+)
+
 const (
 	authDirName = "auth"
 )
@@ -112,17 +128,17 @@ func LoadAuth(stateDir, instanceName string) (AuthRecord, error) {
 // written record.
 func SaveAuth(stateDir, instanceName string, record AuthRecord) error {
 	path := AuthFilePath(stateDir, instanceName)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := authMkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create auth directory: %w", err)
 	}
 
-	data, err := json.MarshalIndent(record, "", "  ")
+	data, err := authMarshal(record, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal auth record: %w", err)
 	}
 	data = append(data, '\n')
 
-	tmp, err := os.CreateTemp(filepath.Dir(path), instanceName+".json.*")
+	tmp, err := authCreateTemp(filepath.Dir(path), instanceName+".json.*")
 	if err != nil {
 		return fmt.Errorf("create temp auth file: %w", err)
 	}
@@ -131,7 +147,7 @@ func SaveAuth(stateDir, instanceName string, record AuthRecord) error {
 	defer func() {
 		_ = tmp.Close()
 		if cleanup {
-			_ = os.Remove(tmpPath)
+			_ = authRemove(tmpPath)
 		}
 	}()
 
@@ -147,7 +163,7 @@ func SaveAuth(stateDir, instanceName string, record AuthRecord) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp auth file: %w", err)
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := authRename(tmpPath, path); err != nil {
 		return fmt.Errorf("replace auth file: %w", err)
 	}
 	cleanup = false

@@ -669,8 +669,12 @@ func defaultBrowserOpener(rawURL string) error {
 	// immediately; we Start it and never Wait. It is deliberately detached from
 	// the login context — cancelling login must not kill the spawned browser —
 	// so context.Background is the correct context here.
+	return browserCommand(runtime.GOOS, rawURL).Start()
+}
+
+func browserCommand(goos, rawURL string) *exec.Cmd {
 	var cmd *exec.Cmd
-	switch runtime.GOOS {
+	switch goos {
 	case "darwin":
 		cmd = exec.CommandContext(context.Background(), "open", rawURL)
 	case "windows":
@@ -678,5 +682,5 @@ func defaultBrowserOpener(rawURL string) error {
 	default:
 		cmd = exec.CommandContext(context.Background(), "xdg-open", rawURL)
 	}
-	return cmd.Start()
+	return cmd
 }

@@ -35,9 +35,11 @@ type callbackResult struct {
 	err    error
 }
 
+var callbackListen = listenCallbackPort
+
 // StartCallbackServer starts a localhost listener on port. Use port 0 to ask the OS for a free port.
 func StartCallbackServer(ctx context.Context, cfg Config, port int, expectedState string) (*CallbackServer, error) {
-	listener, err := listenCallbackPort(ctx, port)
+	listener, err := callbackListen(ctx, port)
 	if err != nil {
 		return nil, fmt.Errorf("listen for OpenAI callback: %w", err)
 	}
@@ -103,11 +105,16 @@ func (s *CallbackServer) Close() error {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		closeErr = s.server.Shutdown(ctx)
-		if errors.Is(closeErr, http.ErrServerClosed) {
-			closeErr = nil
-		}
+		closeErr = normalizeServerCloseError(closeErr)
 	})
 	return closeErr
+}
+
+func normalizeServerCloseError(err error) error {
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
 }
 
 func (s *CallbackServer) handleCallback(w http.ResponseWriter, r *http.Request) {

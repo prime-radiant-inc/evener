@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+var marshalDeviceRequest = json.Marshal
+
 const (
 	defaultPollMaxWait     = 15 * time.Minute
 	defaultDeviceInterval  = 5 * time.Second
@@ -109,7 +111,7 @@ func RequestDeviceCode(ctx context.Context, client *http.Client, cfg Config) (De
 		client = &http.Client{Timeout: cfg.HTTPTimeout}
 	}
 
-	body, err := json.Marshal(deviceUserCodeRequest{ClientID: cfg.clientID()})
+	body, err := marshalDeviceRequest(deviceUserCodeRequest{ClientID: cfg.clientID()})
 	if err != nil {
 		return DeviceCode{}, fmt.Errorf("marshal device usercode request: %w", err)
 	}
@@ -170,7 +172,7 @@ func PollDeviceAuthOnce(ctx context.Context, client *http.Client, cfg Config, dc
 	if client == nil {
 		client = &http.Client{Timeout: cfg.HTTPTimeout}
 	}
-	body, err := json.Marshal(devicePollRequest{DeviceAuthID: dc.DeviceAuthID, UserCode: dc.UserCode})
+	body, err := marshalDeviceRequest(devicePollRequest{DeviceAuthID: dc.DeviceAuthID, UserCode: dc.UserCode})
 	if err != nil {
 		return DeviceCodeSuccess{}, false, fmt.Errorf("marshal device poll request: %w", err)
 	}
