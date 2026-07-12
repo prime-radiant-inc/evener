@@ -580,6 +580,8 @@ TARGETS=(
 	"native:.:./internal/gitpath:FuzzPackageUnion::"
 	"native:.:./internal/plugins:FuzzPackageUnion::"
 	"native:.:./internal/selfupdate:FuzzPackageUnion::"
+	"native:.:./cmdutil:FuzzCmdutilCoverage::"
+	"native:.:./tools/tool-fluency/cmd/serf-fluency:FuzzFluencyCoverage::"
 )
 
 duration="60s"
