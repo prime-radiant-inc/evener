@@ -235,7 +235,7 @@ func lastLineBytes(b []byte, n int) (slice []byte, lines int, more bool) {
 	if b[scan-1] == '\n' {
 		scan--
 	}
-	for lines < n {
+	for {
 		nl := bytes.LastIndexByte(b[:scan], '\n')
 		lines++
 		if nl < 0 {
@@ -247,5 +247,4 @@ func lastLineBytes(b []byte, n int) (slice []byte, lines int, more bool) {
 			return b[nl+1:], lines, true
 		}
 	}
-	return b, lines, true
 }
