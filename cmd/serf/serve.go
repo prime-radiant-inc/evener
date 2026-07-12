@@ -49,6 +49,89 @@ import (
 var serveLoadClient = cmdutil.LoadClient
 var serveAttachAPILogger = cmdutil.AttachAPILogger
 
+type serveServer interface {
+	http.Handler
+	SetTranscriptPathFunc(func() string)
+	SetAppIdentity(string, string)
+	SetSandboxEscalationResolveFunc(func(string, bool) error)
+	SetCompactFunc(func(context.Context) error)
+	SetSteerFunc(func(string))
+	SetSteerWithImagesFunc(func(string, []server.ImageAttachment))
+	SetQueueFunc(func(string) error)
+	SetQueueWithImagesFunc(func(string, []server.ImageAttachment) error)
+	SetGoalFunc(func(string) (bool, error))
+	SetGoalStatusFunc(func() (string, int, bool))
+	SetDrainAsSteerFunc(func() error)
+	SetDrainAsSteerWithInputFunc(func(string, []server.ImageAttachment) error)
+	SetQueueDepthFunc(func() int)
+	SetQueuePreviewFunc(func() []string)
+	SetContextPressureFunc(func() float64)
+	SetContextMetricsFunc(func() server.ContextMetrics)
+	SetWorkMetricsFunc(func() (int64, *appwire.SerfUsage, int64))
+	SetSessionMetaFunc(func() schema.SessionMeta)
+	SetPendingAskFunc(func() bool)
+	SetPendingEscalationFunc(func() bool)
+	SetPendingEscalationsSnapshotFunc(func() []appwire.SandboxEscalationRequested)
+	SetModelFunc(func(string))
+	SetNameFunc(func(string))
+	SetReasoningEffortFunc(func(string))
+	SetListModelsFunc(func(context.Context) ([]server.ModelsResponseItem, error))
+	SetDetailedStatusFunc(func() server.DetailedStatus)
+	SetTasksFunc(func() any)
+	SetClearFunc(func(context.Context) error)
+	SetWorkingDir(string)
+	SetShutdownFunc(func())
+	SetProcessing(bool)
+	SetState(string)
+	SetCancelFunc(context.CancelFunc)
+	InputCh() <-chan server.InputMessage
+	SubmitContinuation(string)
+	SubmitNotification()
+}
+
+type serveDeps struct {
+	getwd            func() (string, error)
+	ensureConfigDirs func() error
+	seedMarketplaces func() error
+	resolveMeta      func(string, string, bool) (schema.SessionMeta, error)
+	newClient        func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error)
+	buildProfile     func(providercfg.Config, cmdutil.ModelRef, string) (*provider.Profile, error)
+	applyCheap       func(*provider.Profile, string, *llm.Client) (*provider.Profile, error)
+	newSession       func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error)
+	restoreSession   func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, agent.RestoreSessionConfig) (*agent.Session, error)
+	listen           func(context.Context, string, string) (net.Listener, error)
+	newServer        func(server.ServerConfig) serveServer
+	bridge           func(serveServer, *agent.Session, func(events.SessionEvent))
+	subscriberCount  func(serveServer, string) int
+	notifyContext    func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
+	startCPUProfile  func(string) (func(), error)
+	startTrace       func(string) (func(), error)
+	register         func(*rvreg.Registration, string, rendezvous.Entry) error
+	serveHTTP        func(*http.Server, net.Listener) error
+}
+
+func defaultServeDeps() serveDeps {
+	return serveDeps{
+		getwd: os.Getwd, ensureConfigDirs: cmdutil.EnsureUserConfigDirs,
+		seedMarketplaces: func() error { _, err := plugins.NewManager("").SeedDefaultMarketplaces(); return err },
+		resolveMeta:      cmdutil.ResolveSessionMeta, newClient: newServeLLMClient,
+		buildProfile: buildInitialProfile, applyCheap: applyFastCheapModel,
+		newSession: agent.NewSession, restoreSession: agent.RestoreSessionFromMetaWithConfig,
+		listen: func(ctx context.Context, network, addr string) (net.Listener, error) {
+			var lc net.ListenConfig
+			return lc.Listen(ctx, network, addr)
+		},
+		newServer: func(cfg server.ServerConfig) serveServer { return server.NewServer(cfg) },
+		bridge: func(s serveServer, sess *agent.Session, observer func(events.SessionEvent)) {
+			server.BridgeWithObserver(s.(*server.Server), sess.Events(), observer)
+		},
+		subscriberCount: func(s serveServer, id string) int { return s.(*server.Server).AppServer().SubscriberCount(id) },
+		notifyContext:   signal.NotifyContext, startCPUProfile: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
+		register:  func(r *rvreg.Registration, dir string, entry rendezvous.Entry) error { return r.Register(dir, entry) },
+		serveHTTP: func(s *http.Server, l net.Listener) error { return s.Serve(l) },
+	}
+}
+
 func newServeLLMClient(stateDir string, warnings io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
 	client, cfg, hasConfig, err := serveLoadClient(llm.WithStateDir(stateDir))
 	if err != nil {
@@ -62,6 +145,10 @@ func newServeLLMClient(stateDir string, warnings io.Writer) (*llm.Client, provid
 }
 
 func runServe(args []string) error {
+	return runServeWithDeps(args, defaultServeDeps())
+}
+
+func runServeWithDeps(args []string, deps serveDeps) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:9131", "listen address")
 	model := fs.String("model", "", "LLM model identifier (provider/model)")
@@ -118,14 +205,14 @@ func runServe(args []string) error {
 	resolvedOpenAIResponsesContinuation := resolveOpenAIResponsesContinuation(*openAIResponsesContinuation, nil)
 
 	if *cpuProfile != "" {
-		stop, err := cmdutil.StartCPUProfile(*cpuProfile)
+		stop, err := deps.startCPUProfile(*cpuProfile)
 		if err != nil {
 			return fmt.Errorf("CPU profile: %w", err)
 		}
 		defer stop()
 	}
 	if *traceFile != "" {
-		stop, err := cmdutil.StartTrace(*traceFile)
+		stop, err := deps.startTrace(*traceFile)
 		if err != nil {
 			return fmt.Errorf("trace: %w", err)
 		}
@@ -136,15 +223,15 @@ func runServe(args []string) error {
 	wd := *workDir
 	if wd == "" {
 		var err error
-		wd, err = os.Getwd()
+		wd, err = deps.getwd()
 		if err != nil {
 			return fmt.Errorf("cannot determine working directory: %w", err)
 		}
 	}
-	if err := cmdutil.EnsureUserConfigDirs(); err != nil {
+	if err := deps.ensureConfigDirs(); err != nil {
 		return err
 	}
-	if _, err := plugins.NewManager("").SeedDefaultMarketplaces(); err != nil {
+	if err := deps.seedMarketplaces(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: seeding default marketplaces: %v\n", err)
 	}
 
@@ -162,7 +249,7 @@ func runServe(args []string) error {
 	var resumedMeta schema.SessionMeta
 	if resuming {
 		var metaErr error
-		resumedMeta, metaErr = cmdutil.ResolveSessionMeta(sd, *resume, *resumeLast)
+		resumedMeta, metaErr = deps.resolveMeta(sd, *resume, *resumeLast)
 		if metaErr != nil {
 			return metaErr
 		}
@@ -190,16 +277,16 @@ func runServe(args []string) error {
 	}
 
 	// Create LLM client and session.
-	client, provCfg, hasProvConfig, closeAPILog, err := newServeLLMClient(sd, os.Stderr)
+	client, provCfg, hasProvConfig, closeAPILog, err := deps.newClient(sd, os.Stderr)
 	if err != nil {
 		return err
 	}
 	defer closeAPILog() //nolint:errcheck
-	profile, err := buildInitialProfile(provCfg, modelRef, *outputSchema)
+	profile, err := deps.buildProfile(provCfg, modelRef, *outputSchema)
 	if err != nil {
 		return err
 	}
-	profile, err = applyFastCheapModel(profile, *fastCheapModel, client)
+	profile, err = deps.applyCheap(profile, *fastCheapModel, client)
 	if err != nil {
 		return err
 	}
@@ -247,7 +334,7 @@ func runServe(args []string) error {
 
 	var sess *agent.Session
 	if resuming {
-		sess, err = agent.RestoreSessionFromMetaWithConfig(client, profile, env, resumedMeta, agent.RestoreSessionConfig{
+		sess, err = deps.restoreSession(client, profile, env, resumedMeta, agent.RestoreSessionConfig{
 			StateDir:                    sd,
 			ResolveProfile:              sessionCfg.ResolveProfile,
 			ModelFallbacks:              sessionCfg.ModelFallbacks,
@@ -265,7 +352,7 @@ func runServe(args []string) error {
 			fmt.Fprintf(os.Stderr, "[serve] resumed session %s (%d turns)\n", resumedMeta.ID, resumedMeta.TurnCount)
 		}
 	} else {
-		sess, err = agent.NewSession(client, profile, env, sessionCfg)
+		sess, err = deps.newSession(client, profile, env, sessionCfg)
 		if err != nil {
 			return fmt.Errorf("session creation: %w", err)
 		}
@@ -279,18 +366,17 @@ func runServe(args []string) error {
 	}
 
 	// Signal handling.
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	var lc net.ListenConfig
-	listener, err := lc.Listen(ctx, "tcp", *addr)
+	listener, err := deps.listen(ctx, "tcp", *addr)
 	if err != nil {
 		sess.Close()
 		return fmt.Errorf("listen %s: %w", *addr, err)
 	}
 
 	hubToken := envvars.SERFHubToken.Getenv()
-	srv := server.NewServer(server.ServerConfig{
+	srv := deps.newServer(server.ServerConfig{
 		AppReplaySize: *appReplaySize,
 		HubToken:      hubToken,
 		AllowedHost:   listener.Addr().String(),
@@ -351,8 +437,8 @@ func runServe(args []string) error {
 		// is actually watching this thread; the probe reads the live AppWire
 		// subscriber count. Set per-session (like the kick/notify wakes) so it tracks
 		// the current session's id across /clear.
-		s.SetSubscriberCountFunc(func() int { return srv.AppServer().SubscriberCount(s.ID()) })
-		go server.BridgeWithObserver(srv, s.Events(), eventObserver)
+		s.SetSubscriberCountFunc(func() int { return deps.subscriberCount(srv, s.ID()) })
+		go deps.bridge(srv, s, eventObserver)
 	}
 
 	srv.SetSandboxEscalationResolveFunc(func(id string, approve bool) error {
@@ -547,7 +633,7 @@ func runServe(args []string) error {
 		StartedAt:  time.Now().UTC(),
 		SpawnedBy:  spawnedBy,
 	}
-	if err := rvRegistration.Register(runDir, rvEntry); err != nil {
+	if err := deps.register(rvRegistration, runDir, rvEntry); err != nil {
 		fmt.Fprintf(os.Stderr, "[serve] rendezvous write failed: %v\n", err)
 	} else {
 		defer func() {
@@ -565,7 +651,7 @@ func runServe(args []string) error {
 		getSession().Close()
 	}()
 
-	if err := httpSrv.Serve(listener); err != http.ErrServerClosed {
+	if err := deps.serveHTTP(httpSrv, listener); err != http.ErrServerClosed {
 		cancel()
 		<-shutdownDone
 		return err
