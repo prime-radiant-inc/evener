@@ -45,11 +45,22 @@ func seed100SessionToolsJobsMore(t *testing.T) {
 		TestJobListIncludeDescendantsWalksLiveTree,
 		TestJobListWatchConditionSummaryFormats,
 		TestJobListStoppedDelegateResumableAssessmentIsDynamicAndPure,
+		TestNestedReadOutputDepth2FallsBackToOwnerParentForwardedCopy,
+		TestJobReadOutputRejectsJSONExpandedGrepBeforeRegistryTruncation,
+		TestJobListIncludeDescendantsSurfacesOwnStoreError,
+		TestStopDelegateIncludeChildrenSurfacesChildStopError,
+		TestW2Conc_WaitForJobDoneOrOutputNotRunningReturns,
+		TestW2Conc_WaitForJobDoneOrOutputTimeout,
+		TestW2Conc_WaitForJobDoneOrOutputCtxCancel,
+		TestW2Conc_WaitForJobGrepMatchNotRunningReturns,
+		TestW2Conc_WaitForJobGrepMatchCtxCancel,
 	} {
 		t.Run("job-tool-fixture", test)
 	}
 
 	// Pure validation branches.
+	_, _, _ = strictZeroJobBytesArg(map[string]any{"x": maxJobOutputBytes + 1}, "x")
+	_, _ = watchArgsFromToolArgs(map[string]any{"operation": "create", "source": "self", "every": 2})
 	for _, args := range []map[string]any{
 		{"max_wait_ms": minJobBlockTimeoutMS - 1},
 		{"max_wait_ms": maxJobBlockTimeoutMS + 1},
@@ -172,6 +183,22 @@ func seed100SessionToolsJobsMore(t *testing.T) {
 	}
 	jobReadFallbackForSnapshot = func(*Session, *jobManager, error) (*jobManager, bool, error) {
 		return closedSession.jobManager, true, nil
+	}
+	_, _ = root.readJobOutputSnapshot(closedSession.jobManager, root, rec.JobID, 10, false, regexp.MustCompile("match"))
+	findCalls = 0
+	findJobRecordForSnapshot = func(*jobManager, string) (*jobstore.JobRecord, error) {
+		findCalls++
+		if findCalls == 3 {
+			return nil, errors.New("seed terminal find fault")
+		}
+		return rec, nil
+	}
+	readJobWindowForSnapshot = func(*jobManager, string, int, bool) (string, int64, int64, bool, error) {
+		return "match", 5, 0, false, nil
+	}
+	grepJobOutputForSnapshot = func(*jobManager, string, *regexp.Regexp) ([]jobstore.Match, error) { return nil, nil }
+	jobReadFallbackForSnapshot = func(*Session, *jobManager, error) (*jobManager, bool, error) {
+		return nil, false, errors.New("seed fallback fault")
 	}
 	_, _ = root.readJobOutputSnapshot(closedSession.jobManager, root, rec.JobID, 10, false, regexp.MustCompile("match"))
 	findJobRecordForSnapshot = origFind
