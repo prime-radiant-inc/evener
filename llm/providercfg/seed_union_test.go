@@ -10,8 +10,7 @@ import (
 	"github.com/spf13/afero"
 )
 
-func TestSeedUnionEnvExpansionEdges(t *testing.T) {
-	t.Setenv("SERF_CFG_A", "alpha")
+func seedUnionEnvExpansionEdges(t *testing.T) {
 	for _, tc := range []struct {
 		raw  string
 		want string
@@ -32,13 +31,12 @@ func TestSeedUnionEnvExpansionEdges(t *testing.T) {
 			t.Fatalf("ResolveHeaderValue(%q) unexpectedly succeeded", raw)
 		}
 	}
-	t.Setenv("SERF_CFG_UNSET", "")
 	if _, err := ResolveAPIKey("${SERF_CFG_UNSET}"); err == nil {
 		t.Fatal("empty braced environment variable unexpectedly resolved")
 	}
 }
 
-func TestSeedUnionMarshalAllCompatScalars(t *testing.T) {
+func seedUnionMarshalAllCompatScalars(t *testing.T) {
 	truth, falsehood, three := true, false, 3
 	c := &CompatConfig{
 		ThinkingFormat: "chat-template", SupportsStrictMode: &truth,
@@ -70,7 +68,7 @@ func TestSeedUnionMarshalAllCompatScalars(t *testing.T) {
 	}
 }
 
-func TestSeedUnionLoadFileFailures(t *testing.T) {
+func seedUnionLoadFileFailures(t *testing.T) {
 	fs := afero.NewMemMapFs()
 	if _, exists, err := loadFileFS(faultFS{Fs: fs, fail: "read"}, "/providers.toml"); err == nil || exists {
 		t.Fatalf("failed read = exists %v, err %v", exists, err)
@@ -158,7 +156,7 @@ func (f *faultFile) Close() error {
 }
 func (f *faultFile) Read(p []byte) (int, error) { return 0, io.EOF }
 
-func TestSeedUnionWriteFileFailures(t *testing.T) {
+func seedUnionWriteFileFailures(t *testing.T) {
 	valid := Config{Default: "x", Instances: []InstanceConfig{{Name: "x", Type: "openai"}}}
 	for _, seam := range []string{"mkdir", "create", "write", "chmod", "sync", "close", "rename"} {
 		t.Run(seam, func(t *testing.T) {
@@ -190,4 +188,85 @@ func TestSeedUnionWriteFileFailures(t *testing.T) {
 	}); !errors.Is(err, marshalErr) {
 		t.Fatalf("marshal failure = %v, want wrapped %v", err, marshalErr)
 	}
+}
+
+func seedUnionExistingScenarios(t *testing.T) {
+	TestKnownTypeNames_SortedAndComplete(t)
+	TestBehaviorTag(t)
+	TestNameToTagIdentityForTypeNames(t)
+	TestWriteFileRoundTrip(t)
+	TestWriteFileCreatesParentDir(t)
+	TestUpsertAppendsNewInstance(t)
+	TestUpsertReplacesExistingInstance(t)
+	TestUpsertReturnsSortedByName(t)
+	TestUpsertDoesNotMutateInput(t)
+	TestRemoveInstanceDropsNamed(t)
+	TestRemoveInstanceNoOpForMissingName(t)
+	TestWithDefaultSetsDefault(t)
+	TestValidateInstanceNameRejectsEmpty(t)
+	TestValidateInstanceNameRejectsUppercase(t)
+	TestValidateInstanceNameRejectsSlash(t)
+	TestValidateInstanceNameAcceptsValid(t)
+	TestValidateAPIStyleAcceptsEmpty(t)
+	TestValidateAPIStyleAcceptsValidOpenAIStyles(t)
+	TestValidateAPIStyleRejectsStyleOnNonOpenAI(t)
+	TestValidateAPIStyleRejectsUnknownStyle(t)
+	TestValidateType(t)
+	TestKnownTypeNamesGolden(t)
+	TestLoadParsesInstanceCompatAndModels(t)
+	TestLoadParsesAllCompatFields(t)
+	TestLoadNormalizesThinkingLevelKeys(t)
+	TestLoadRejectsInvalidCompatAndModels(t)
+	TestLoadAcceptsCompatForCompatFamily(t)
+	TestMarshalRoundTripsCompatAndModels(t)
+	TestWriteFile_PreservesOnDiskAPIKeyAndScrubsInjected(t)
+	TestLoad_ExplicitEmptyCompatMapsSurvive(t)
+	TestLoad_ChatTemplateKwargsRejectsNestedValues(t)
+	TestMarshalDescriptorsOnly(t)
+	TestLoadParsesTwoInstances(t)
+	TestLoadDefaultFallsToFirstSorted(t)
+	TestLoadRejectsZeroInstances(t)
+	TestLoadRejectsUpperCaseName(t)
+	TestLoadRejectsSlashInName(t)
+	TestLoadRejectsUnknownType(t)
+	TestLoadRejectsAPIStyleOnNonOpenAI(t)
+	TestLoadAcceptsOpenAIAutoAPIStyle(t)
+	TestLoadRejectsDefaultNamingAbsentInstance(t)
+	TestLoadRejectsUnknownAPIStyle(t)
+	TestLoadFileAbsentReturnsExistsFalse(t)
+	TestLoadFilePresent(t)
+	TestLoad_CacheRetentionAndAffinityFlags(t)
+	TestMarshal_CacheRetentionAndAffinityFlags_RoundTrip(t)
+	TestResolveAPIKey_ErrorNamesApiKey(t)
+	TestLoad_Headers_AnyType(t)
+	TestLoad_Headers_EmptyName_Rejected(t)
+	TestMarshal_Headers_RoundTrip(t)
+	TestLoad_ThinkingFormat_ChatTemplateVariants(t)
+	TestMarshal_CompatStrictAndChatTemplate_RoundTrip(t)
+	TestLoad_Headers_CaseCollisionRejected(t)
+}
+
+// FuzzProviderCfgSeedUnion registers deterministic seeds for branches that
+// arbitrary TOML and mutation programs cannot reach: environment expansion,
+// complete compat serialization, and injected filesystem/codec failures.
+func FuzzProviderCfgSeedUnion(f *testing.F) {
+	f.Setenv("SERF_CFG_A", "alpha")
+	f.Setenv("SERF_CFG_UNSET", "")
+	for selector := uint8(0); selector < 5; selector++ {
+		f.Add(selector)
+	}
+	f.Fuzz(func(t *testing.T, selector uint8) {
+		switch selector % 5 {
+		case 0:
+			seedUnionEnvExpansionEdges(t)
+		case 1:
+			seedUnionMarshalAllCompatScalars(t)
+		case 2:
+			seedUnionLoadFileFailures(t)
+		case 3:
+			seedUnionWriteFileFailures(t)
+		case 4:
+			seedUnionExistingScenarios(t)
+		}
+	})
 }
