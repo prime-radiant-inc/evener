@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -60,6 +61,9 @@ func FuzzShellToolsBufferedProgram(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) == 0 {
+			stpReplayRegistrationContracts(t)
+		}
 		program := stpDecodeProgram(data)
 		got := stpRunProgram(t, program)
 		stpAssertProgram(t, program, got)
@@ -68,6 +72,61 @@ func FuzzShellToolsBufferedProgram(f *testing.F) {
 		// model-facing results and the exact calls sent to the boundary.
 		if replay := stpRunProgram(t, program); !reflect.DeepEqual(got, replay) {
 			t.Fatalf("non-deterministic shell-tool replay:\nfirst=%#v\nsecond=%#v", got, replay)
+		}
+	})
+}
+
+// stpReplayRegistrationContracts covers the handler shapes that do not belong
+// in the decoded buffered program: streaming execution and apply_patch's
+// FileMutator capability boundary. One committed seed replays
+// these deterministic contracts, keeping every other seed focused on the fake
+// non-streaming environment below.
+func stpReplayRegistrationContracts(t *testing.T) {
+	t.Helper()
+	run := func(name string, fn func(*testing.T)) { t.Run(name, fn) }
+	run("streaming", TestShellToolStreamingPathHonorsSessionTimeouts)
+	run("streaming-without-job-manager", TestW3Sub_RegisterShellTools_StreamingNoJobManager)
+	run("list-dir-positive-options", TestW3Sub_RegisterShellTools_ListDirOffsetLimit)
+	run("grep-options", TestW3Sub_RegisterShellTools_GrepArgs)
+	run("glob-error", TestW3Sub_RegisterShellTools_GlobError)
+	for _, failedName := range []string{"shell", "grep", "glob"} {
+		failedName := failedName
+		run("register-error-"+failedName, func(t *testing.T) {
+			want := stpError("register " + failedName)
+			deps := &toolDeps{registerTool: func(reg *tool.Registry, registered tool.RegisteredTool) error {
+				if registered.Definition.Name == failedName {
+					return want
+				}
+				return reg.Register(registered)
+			}}
+			if err := registerShellTools(tool.NewRegistry(), nil, deps); !errors.Is(err, want) {
+				t.Fatalf("registerShellTools error = %v, want %v", err, want)
+			}
+		})
+	}
+	run("apply-patch-unsupported", func(t *testing.T) {
+		reg := tool.NewRegistry()
+		if err := registerShellTools(reg, nil, &toolDeps{}); err != nil {
+			t.Fatalf("registerShellTools: %v", err)
+		}
+		result := reg.ExecuteCall(context.Background(), &stpEnv{}, llm.ToolCallData{
+			ID: "stp-apply-patch", Name: "apply_patch", Arguments: json.RawMessage(`{"patch":"*** Begin Patch\n*** End Patch"}`),
+		})
+		if !result.IsError || !strings.Contains(result.FullOutput, "does not support file mutation") {
+			t.Fatalf("unsupported apply_patch result = %#v", result)
+		}
+	})
+	run("apply-patch-supported", func(t *testing.T) {
+		reg := tool.NewRegistry()
+		if err := registerShellTools(reg, nil, &toolDeps{}); err != nil {
+			t.Fatalf("registerShellTools: %v", err)
+		}
+		env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+		result := reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
+			ID: "stp-apply-patch", Name: "apply_patch", Arguments: json.RawMessage(`{"patch":"invalid"}`),
+		})
+		if !result.IsError {
+			t.Fatalf("invalid apply_patch result = %#v", result)
 		}
 	})
 }

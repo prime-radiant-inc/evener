@@ -44,6 +44,10 @@ type toolDeps struct {
 	// the values are NOT snapshotted at registration time.
 	cmdTimeouts func() (def, maxTimeout int)
 
+	// registerTool defaults to Registry.Register. Tests may inject registration
+	// failures to exercise the error propagation contract of register helpers.
+	registerTool func(*tool.Registry, tool.RegisteredTool) error
+
 	// readGuard exposes the read-before-write guardrail without leaking the raw
 	// readFiles map or its mutex.
 	readGuard readGuard

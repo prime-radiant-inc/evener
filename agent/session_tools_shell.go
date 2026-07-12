@@ -131,8 +131,14 @@ func paginateDirEntries(path string, entries []execenv.DirEntry, offset, limit i
 }
 
 func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
+	register := reg.Register
+	if deps != nil && deps.registerTool != nil {
+		register = func(registered tool.RegisteredTool) error {
+			return deps.registerTool(reg, registered)
+		}
+	}
 	// shell
-	if err := reg.Register(tool.RegisteredTool{
+	if err := register(tool.RegisteredTool{
 		Tool: llm.Tool{Definition: tool.DefShell()},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			shellArgs, err := parseShellToolArgs(args)
@@ -182,7 +188,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	})
 
 	// grep
-	if err := reg.Register(tool.RegisteredTool{
+	if err := register(tool.RegisteredTool{
 		Tool: llm.Tool{Definition: tool.DefGrep(), ReadOnly: true},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -208,7 +214,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	}
 
 	// glob
-	if err := reg.Register(tool.RegisteredTool{
+	if err := register(tool.RegisteredTool{
 		Tool: llm.Tool{Definition: tool.DefGlob(), ReadOnly: true},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
