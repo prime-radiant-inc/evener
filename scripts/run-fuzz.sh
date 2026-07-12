@@ -582,6 +582,8 @@ TARGETS=(
 	"native:.:./internal/selfupdate:FuzzPackageUnion::"
 	"native:.:./cmdutil:FuzzCmdutilCoverage::"
 	"native:.:./tools/tool-fluency/cmd/serf-fluency:FuzzFluencyCoverage::"
+	"native:agent:.:FuzzSessionEngineCoverage::"
+	"native:agent:.:FuzzJobDelegateSeed100Edges::"
 )
 
 duration="60s"
