@@ -1,5 +1,3 @@
-//go:build fuzzcov
-
 package main
 
 import (
