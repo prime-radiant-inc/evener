@@ -126,6 +126,9 @@ func (s *Session) maybeWarnContextUsage(profile *provider.Profile, req llm.Reque
 		return false
 	}
 	cw := profile.ContextWindowSize()
+	if s.cfg.testOnly.modelCallContextWindowFunc != nil {
+		cw = s.cfg.testOnly.modelCallContextWindowFunc(profile)
+	}
 	if cw <= 0 {
 		return false
 	}
@@ -308,7 +311,11 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 	}
 
 	reservation := reserveResponsesContinuationHistoryBase(historyTurns)
-	if !responsesContinuationHistoryBaseStillCurrent(reservation, historyTurns) {
+	historyCurrent := responsesContinuationHistoryBaseStillCurrent(reservation, historyTurns)
+	if s.cfg.testOnly.responsesContinuationHistoryCurrentFunc != nil {
+		historyCurrent = s.cfg.testOnly.responsesContinuationHistoryCurrentFunc(reservation, historyTurns)
+	}
+	if !historyCurrent {
 		req.HistoryMode = llm.HistoryModeFullHistory
 		return responsesContinuationWithInputEstimate(req)
 	}
@@ -946,7 +953,7 @@ func (s *Session) logAPICall(round int, roundStart time.Time, llmLatency time.Du
 		} else {
 			apiCall.Response = buildTranscriptAPILogResponse(resp, attempt.ResponseIDHash)
 		}
-		if werr := s.transcript.AppendAPICall(apiCall); werr != nil {
+		if werr := s.appendModelAPICall(apiCall); werr != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", werr)})
 		}
 	}
@@ -973,9 +980,16 @@ func (s *Session) appendAdapterAttemptAPICall(round int, roundStart time.Time, l
 	} else if attempt.Response != nil {
 		apiCall.Response = buildTranscriptAPILogResponse(*attempt.Response, "")
 	}
-	if werr := s.transcript.AppendAPICall(apiCall); werr != nil {
+	if werr := s.appendModelAPICall(apiCall); werr != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", werr)})
 	}
+}
+
+func (s *Session) appendModelAPICall(call transcript.APICall) error {
+	if s.cfg.testOnly.appendModelAPICallFunc != nil {
+		return s.cfg.testOnly.appendModelAPICallFunc(call)
+	}
+	return s.transcript.AppendAPICall(call)
 }
 
 func buildTranscriptAPILogResponse(resp llm.Response, idHash string) *llm.APILogResponse {

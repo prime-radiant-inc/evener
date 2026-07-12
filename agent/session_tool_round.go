@@ -26,6 +26,10 @@ import (
 func (s *Session) handleNoToolCalls(noContent bool, t *retryTracker) (retry bool, ferr error) {
 	dec := decideNoToolCalls(noContent, *t, s.resultToolName())
 	*t = dec.Tracker
+	return s.applyNoToolCallsDecision(dec)
+}
+
+func (s *Session) applyNoToolCallsDecision(dec noToolCallsDecision) (retry bool, ferr error) {
 	if dec.Retry {
 		s.emit(events.EventWarning, events.WarningData{Message: dec.WarningMsg})
 		s.appendTurn(schema.TurnSteering, llm.User(dec.SteeringText))
@@ -164,10 +168,7 @@ func (s *Session) execToolBatch(ctx context.Context, calls []llm.ToolCallData, p
 				}
 				wg.Wait()
 				if panicValue != nil {
-					if err, ok := panicValue.(error); ok {
-						return err
-					}
-					panic(panicValue)
+					return toolBatchPanicError(panicValue)
 				}
 			}
 			return nil
@@ -220,6 +221,13 @@ func (s *Session) execToolBatch(ctx context.Context, calls []llm.ToolCallData, p
 		return results, abortErr
 	}
 	return results, nil
+}
+
+func toolBatchPanicError(value any) error {
+	if err, ok := value.(error); ok {
+		return err
+	}
+	panic(value)
 }
 
 // persistToolResults aggregates the round's tool results into a single tool-result
@@ -335,11 +343,14 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 		}
 	}
 
-	drained, err := s.drainPendingWatchSendsReport(ctx)
+	drained, err := s.drainPostToolWatchSends(ctx)
 	if err != nil {
 		return false, err
 	}
 	yieldToObserverCallback := drained.observerHandoff
+	if hooks, ok := ctx.Value(sessionToolRoundHooksKey{}).(sessionToolRoundHooks); ok && hooks.beforeSteering != nil {
+		hooks.beforeSteering()
+	}
 
 	// Inject any queued steering messages before the next model call.
 	if abortErr := s.withResponseSideEffects(ctx, func() {
@@ -354,6 +365,9 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 	}); abortErr != nil {
 		return false, abortErr
 	}
+	if hooks, ok := ctx.Value(sessionToolRoundHooksKey{}).(sessionToolRoundHooks); ok && hooks.beforeTaskReminder != nil {
+		hooks.beforeTaskReminder()
+	}
 
 	// Task reminder injection.
 	if abortErr := s.withResponseSideEffects(ctx, func() {
@@ -365,6 +379,21 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 		return false, abortErr
 	}
 	return yieldToObserverCallback, nil
+}
+
+type sessionToolRoundHooksKey struct{}
+
+type sessionToolRoundHooks struct {
+	drainErr           error
+	beforeSteering     func()
+	beforeTaskReminder func()
+}
+
+func (s *Session) drainPostToolWatchSends(ctx context.Context) (watchSendDrainResult, error) {
+	if hooks, ok := ctx.Value(sessionToolRoundHooksKey{}).(sessionToolRoundHooks); ok && hooks.drainErr != nil {
+		return watchSendDrainResult{}, hooks.drainErr
+	}
+	return s.drainPendingWatchSendsReport(ctx)
 }
 
 // deliverIfCommunicated checks whether the round just completed ended the

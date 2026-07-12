@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/task"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -229,6 +230,12 @@ type testConfig struct {
 	// responsesContinuationShadowEstimateFunc makes shadow-estimate failure
 	// deterministic in package-agent tests.
 	responsesContinuationShadowEstimateFunc func(llm.Request) (int, bool)
+
+	// modelCallContextWindowFunc and responsesContinuationHistoryCurrentFunc
+	// expose otherwise unreachable model-call decisions to deterministic tests.
+	modelCallContextWindowFunc              func(*provider.Profile) int
+	responsesContinuationHistoryCurrentFunc func(responsesContinuationHistoryReservation, []schema.Turn) bool
+	appendModelAPICallFunc                  func(transcript.APICall) error
 
 	// childClientFactory, when non-nil, supplies the llm.Client a spawned child
 	// (subagent/delegate) session uses instead of reusing the parent's. The fuzz

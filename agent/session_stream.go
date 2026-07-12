@@ -12,6 +12,15 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+type sessionStreamAccumulator interface {
+	Process(llm.StreamEvent)
+	Response() *llm.Response
+}
+
+var newSessionStreamAccumulator = func() sessionStreamAccumulator {
+	return llm.NewStreamAccumulator()
+}
+
 type sessionModelResponse struct {
 	Response          llm.Response
 	StreamedAssistant bool
@@ -101,7 +110,7 @@ func streamUnavailable(err error) bool {
 func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st llm.Stream) (sessionModelResponse, bool, error) {
 	defer st.Close() //nolint:errcheck
 
-	acc := llm.NewStreamAccumulator()
+	acc := newSessionStreamAccumulator()
 	toolArgs := map[string]*strings.Builder{}
 	toolNames := map[string]string{}
 	communicateText := map[string]string{}

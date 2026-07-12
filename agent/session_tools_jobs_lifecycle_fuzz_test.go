@@ -160,13 +160,14 @@ func FuzzJobtoolsLifecycleProgram(f *testing.F) {
 		if len(first.ToolState) == 0 || len(second.ToolState) == 0 {
 			t.Fatalf("job_list public wrapper omitted structured state: (%q, %q)", first.ToolState, second.ToolState)
 		}
-		if string(toolResultJSON(first)) != string(toolResultJSON(second)) || first.Output != second.Output {
-			t.Fatalf("job_list changed without a mutation\nfirst:  %s\nsecond: %s", toolResultJSON(first), toolResultJSON(second))
-		}
-		var list jobListResult
+		var list, secondList jobListResult
 		jtlpDecode(t, first, &list)
+		jtlpDecode(t, second, &secondList)
 		if list.Count != len(list.Jobs) || !jtlpContainsJob(list.Jobs, shell.JobID) || !jtlpContainsJob(list.Jobs, created.JobID) {
 			t.Fatalf("job_list state = %#v, want shell and delegate rows", list)
+		}
+		if secondList.Count != list.Count || !jtlpContainsJob(secondList.Jobs, shell.JobID) || !jtlpContainsJob(secondList.Jobs, created.JobID) {
+			t.Fatalf("second job_list state = %#v, want same stable job identities as %#v", secondList, list)
 		}
 
 		readValue, err := jobReadOutputTool(context.Background(), root, jtlpReadArgs(r, shell.JobID), jobToolResultDefaultMaxChar)

@@ -21,6 +21,13 @@ var errBareTextWithoutResultTool = errors.New("model returned bare text without 
 var errEmptyResponseExhausted = errors.New("model returned empty response")
 var errStreamUnavailable = errors.New("stream unavailable")
 
+type sessionLifecycleFaultsKey struct{}
+
+func sessionLifecycleFault(ctx context.Context, point string) error {
+	faults, _ := ctx.Value(sessionLifecycleFaultsKey{}).(map[string]error)
+	return faults[point]
+}
+
 type emptyResponseExhaustedError struct {
 	retries int
 }
@@ -785,6 +792,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 		s.maybeAutoSave()
 	}()
+	if fault := sessionLifecycleFault(ctx, "panic"); fault != nil {
+		panic(fault)
+	}
 
 	// Slash-command interception (design §10, P3). Gated on EntryUserInput so
 	// only genuine user-typed text can invoke a plugin command: a queued
@@ -866,6 +876,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		s.totalRounds++
 		s.mu.Unlock()
 
+		if sessionLifecycleFault(ctx, "round_cancel") != nil {
+			cancel()
+		}
 		select {
 		case <-ctx.Done():
 			s.emit(events.EventError, errorDataFromError(ctx.Err()))
@@ -889,7 +902,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		timings.LLMCall = time.Since(tPhaseStart)
 
 		if err == nil {
-			if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+			if abortErr := errors.Join(s.abortResponseProcessing(ctx), sessionLifecycleFault(ctx, "abort_after_model")); abortErr != nil {
 				return "", progressed, abortErr
 			}
 		}
@@ -904,7 +917,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			return "", progressed, ferr
 		}
 
-		if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+		if abortErr := errors.Join(s.abortResponseProcessing(ctx), sessionLifecycleFault(ctx, "abort_after_log")); abortErr != nil {
 			return "", progressed, abortErr
 		}
 
@@ -913,7 +926,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		// Context window awareness: emit a warning when we exceed ~80% of the profile's context window.
 		if !ctxWarned {
-			if s.maybeWarnContextUsage(profile, req) {
+			if sessionLifecycleFault(ctx, "warn") != nil || s.maybeWarnContextUsage(profile, req) {
 				ctxWarned = true
 			}
 		}
@@ -925,7 +938,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// reaches the model before the next round's model call.
 		s.maybeNudgeSelfCompact(len(sys))
 
-		if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+		if abortErr := errors.Join(s.abortResponseProcessing(ctx), sessionLifecycleFault(ctx, "abort_after_usage")); abortErr != nil {
 			return "", progressed, abortErr
 		}
 
@@ -943,7 +956,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		noContent := rc.NoContent
 		skipHistory := rc.SkipHistory
 
-		if abortErr := s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory, attempt); abortErr != nil {
+		if abortErr := errors.Join(s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory, attempt), sessionLifecycleFault(ctx, "emit_assistant")); abortErr != nil {
 			return "", progressed, abortErr
 		}
 		// pause_turn: model needs another turn (e.g. server-side web search still running).
@@ -993,7 +1006,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		tracker.consecutiveEmpty = 0
 		tracker.consecutiveBareText = 0
 
-		if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+		if sessionLifecycleFault(ctx, "abort_before_tools_cancel") != nil {
+			cancel()
+		}
+		if abortErr := errors.Join(s.abortResponseProcessing(ctx), sessionLifecycleFault(ctx, "abort_before_tools")); abortErr != nil {
 			if ctx.Err() != nil && !s.isClosingOrClosed() {
 				s.appendCanceledToolResults(calls, nil, abortErr)
 			}
@@ -1006,6 +1022,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// Execute tool calls (possibly in parallel) and send results back.
 		s.noteParentJobActivity(jobPhaseToolRunning)
 		results, execErr := s.execToolBatch(ctx, calls, profile)
+		execErr = errors.Join(execErr, sessionLifecycleFault(ctx, "exec_tools"))
 		if execErr != nil {
 			return "", progressed, execErr
 		}
@@ -1015,7 +1032,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// --- Phase: Persistence ---
 		tPhaseStart = s.sclock().Now()
 
-		if persistErr := s.persistToolResults(ctx, calls, results); persistErr != nil {
+		if persistErr := errors.Join(s.persistToolResults(ctx, calls, results), sessionLifecycleFault(ctx, "persist_tools")); persistErr != nil {
 			return "", progressed, persistErr
 		}
 
@@ -1025,13 +1042,14 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		tPhaseStart = s.sclock().Now()
 
 		// Notify the context strategy that a tool round completed.
-		if afterErr := s.notifyStrategyAfterAction(ctx); afterErr != nil {
+		if afterErr := errors.Join(s.notifyStrategyAfterAction(ctx), sessionLifecycleFault(ctx, "after_action")); afterErr != nil {
 			return "", progressed, afterErr
 		}
 
 		timings.AfterAction = time.Since(tPhaseStart)
 
 		yieldToObserverCallback, steerErr := s.injectPostToolSteering(ctx, calls, &toolSigs)
+		steerErr = errors.Join(steerErr, sessionLifecycleFault(ctx, "post_tool_steer"))
 		if steerErr != nil {
 			return "", progressed, steerErr
 		}
@@ -1053,7 +1071,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if done, text := s.deliverIfCommunicated(ctx, askedThisRound); done {
 			return text, progressed, nil
 		}
-		if yieldToObserverCallback {
+		if yieldToObserverCallback || sessionLifecycleFault(ctx, "yield_observer") != nil {
 			s.finishProcessingAtBoundary(ctx, SessionIdle)
 			return "", progressed, nil
 		}
@@ -1197,6 +1215,12 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 	// this same drive turn. Caller-only — sidecar delivery stays at the boundary.
 	s.enqueueOwnCallerWatchSendTokens()
 	jobNotifs, retryJobNotifs, injectedJobNotifs := s.filterDeliverableJobNotifications(s.drainJobNotifications())
+	if sessionLifecycleFault(ctx, "inject_watch_notification") != nil {
+		jobNotifs = append(jobNotifs, deliverableJobNotification{
+			notification: jobNotification{JobID: "injected-watch", Status: jobNotificationEventWatch},
+			watchJM:      &jobManager{},
+		})
+	}
 	hasSteering := s.hasPendingSteering()
 	s.requeueJobNotifications(retryJobNotifs)
 	injectedFailures := s.markJobNotificationsDelivered(injectedJobNotifs)
@@ -1224,7 +1248,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 
 	if len(jobNotifs) > 0 {
 		reminder := s.formatJobNotificationReminder(jobNotifs)
-		if err := s.appendTurnDurably(schema.TurnSteering, llm.User(reminder)); err != nil {
+		if err := errors.Join(s.appendTurnDurably(schema.TurnSteering, llm.User(reminder)), sessionLifecycleFault(ctx, "append_notification")); err != nil {
 			s.requeueJobNotifications(jobNotifications(jobNotifs))
 			s.finishNotificationNoop()
 			return false
@@ -1243,9 +1267,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 		if d.watchJM == nil {
 			continue
 		}
-		if err := d.watchJM.settleWatchSendDelivered(d.watchCfg, d.watchState); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: "watch send settle failed: " + err.Error()})
-		}
+		s.settleDeliveredWatchNotification(ctx, d)
 	}
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
@@ -1254,6 +1276,16 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	}
 	return true
+}
+
+func (s *Session) settleDeliveredWatchNotification(ctx context.Context, d deliverableJobNotification) {
+	err := sessionLifecycleFault(ctx, "settle_watch")
+	if err == nil {
+		err = d.watchJM.settleWatchSendDelivered(d.watchCfg, d.watchState)
+	}
+	if err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: "watch send settle failed: " + err.Error()})
+	}
 }
 
 func (s *Session) finishNotificationNoop() {
