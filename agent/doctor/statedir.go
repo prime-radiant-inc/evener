@@ -7,6 +7,8 @@ import (
 	"primeradiant.com/serf/envvars"
 )
 
+var doctorUserHomeDir = os.UserHomeDir
+
 // ResolveStateBase resolves the doctor's state base with serf's session-state
 // precedence: the --state-dir flag › SERF_STATE_DIR env › $XDG_STATE_HOME ›
 // ~/.local/state. Locate (and the subcommands built on it) then auto-detect
@@ -25,7 +27,7 @@ func ResolveStateBase(flagStateDir string) string {
 	if v := envvars.XDGStateHome.Getenv(); v != "" {
 		return v
 	}
-	home, err := os.UserHomeDir()
+	home, err := doctorUserHomeDir()
 	if err != nil {
 		home = os.TempDir()
 	}

@@ -4,6 +4,7 @@ package doctor
 
 import (
 	"encoding/base64"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -243,7 +244,7 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	if _, err := Locate(fixture.base, "proj:doctor_absent:"+fixture.rootSID); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("missing bucket Locate error = %v", err)
 	}
-	for _, selector := range []string{"", "current", "../escape", "local:../escape", "proj:bad"} {
+	for _, selector := range []string{"", "current", "../escape", "local:../escape", "proj:bad", "proj::sid"} {
 		if _, err := Locate(fixture.base, selector); err == nil {
 			t.Fatalf("invalid selector %q unexpectedly resolved", selector)
 		}
@@ -267,6 +268,82 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	trace.ResolvedStateBases = append(trace.ResolvedStateBases, ResolveStateBase(""))
 	if trace.ResolvedStateBases[0] != "flag-state" || trace.ResolvedStateBases[1] != fixture.base || trace.ResolvedStateBases[2] != filepath.Join(fixture.base, "xdg") {
 		t.Fatalf("ResolveStateBase precedence = %#v", trace.ResolvedStateBases)
+	}
+	t.Setenv("XDG_STATE_HOME", "")
+	_ = ResolveStateBase("")
+	originalGlob := globProjectBuckets
+	globProjectBuckets = func(string) ([]string, error) { return nil, errors.New("scripted glob failure") }
+	t.Cleanup(func() { globProjectBuckets = originalGlob })
+	if _, err := Locate(fixture.base, fixture.rootSID); err == nil {
+		t.Fatal("malformed bucket glob unexpectedly succeeded")
+	}
+	globProjectBuckets = originalGlob
+	originalHome := doctorUserHomeDir
+	doctorUserHomeDir = func() (string, error) { return "", errors.New("scripted home failure") }
+	_ = ResolveStateBase("")
+	doctorUserHomeDir = originalHome
+	missing := filepath.Join(fixture.base, "missing.transcript.jsonl")
+	if _, err := loadTranscript(missing); err == nil {
+		t.Fatal("missing transcript unexpectedly loaded")
+	}
+	badInterior := filepath.Join(fixture.base, "bad-interior.jsonl")
+	if err := os.WriteFile(badInterior, []byte("{bad}\n{\"kind\":\"header\"}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadTranscript(badInterior); err == nil {
+		t.Fatal("malformed interior transcript unexpectedly loaded")
+	}
+	badEntry := filepath.Join(fixture.base, "bad-entry.jsonl")
+	if err := os.WriteFile(badEntry, []byte("{\"kind\":\"entry\",\"turn\":\"bad\"}\n{\"kind\":\"header\"}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadTranscript(badEntry); err == nil {
+		t.Fatal("malformed transcript entry unexpectedly loaded")
+	}
+	if _, err := Count(fixture.base, "missing", "tool"); err == nil {
+		t.Fatal("Count missing selector unexpectedly succeeded")
+	}
+	if _, err := Transcript(fixture.base, "missing", TranscriptOpts{}); err == nil {
+		t.Fatal("Transcript missing selector unexpectedly succeeded")
+	}
+	_ = toolResultContentText(make(chan int))
+	_ = toolResultContentText(nil)
+	if _, err := Locate(fixture.base, "proj:"+hash1+":missing"); err == nil {
+		t.Fatal("missing session in existing bucket unexpectedly resolved")
+	}
+	originalRead := readTranscriptFile
+	readTranscriptFile = func(string) ([]byte, error) { return nil, errors.New("scripted transcript read failure") }
+	if _, err := Count(fixture.base, fixture.rootSID, "tool"); err == nil {
+		t.Fatal("Count unreadable transcript unexpectedly succeeded")
+	}
+	if _, err := Transcript(fixture.base, fixture.rootSID, TranscriptOpts{}); err == nil {
+		t.Fatal("Transcript unreadable transcript unexpectedly succeeded")
+	}
+	readTranscriptFile = originalRead
+	blankLine := filepath.Join(fixture.base, "blank-line.jsonl")
+	if err := os.WriteFile(blankLine, []byte("\n{\"kind\":\"header\"}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadTranscript(blankLine); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Watches(fixture.base, "missing", WatchOpts{}); err == nil {
+		t.Fatal("Watches missing selector unexpectedly succeeded")
+	}
+	_ = RenderWatches(WatchReport{SessionID: "edge", Watches: []WatchView{{MaxSelfInfluenceDepth: 1}}})
+	unreadableJobs := "\x00"
+	if got := depthLimitNote(Paths{JobsPath: unreadableJobs}); got != "" {
+		t.Fatalf("missing depth-limit jobs note = %q", got)
+	}
+	emptyJobs := filepath.Join(fixture.base, "empty-jobs.jsonl")
+	writeJobsEvents(t, emptyJobs, nil)
+	if got := depthLimitNote(Paths{JobsPath: emptyJobs}); got != "" {
+		t.Fatalf("empty depth-limit jobs note = %q", got)
+	}
+	depthJobs := filepath.Join(fixture.base, "depth-jobs.jsonl")
+	writeJobsEvents(t, depthJobs, []jobstore.Event{{Kind: jobstore.EventDelegateCreated, DelegateID: "d", Delegate: &jobstore.DelegateEvent{ChildSessionID: "child"}}})
+	if got := depthLimitNote(Paths{JobsPath: depthJobs}); got == "" {
+		t.Fatal("depth-limit child note missing")
 	}
 
 	for _, tool := range []string{"read_file", "submit_answer", "delegate_send"} {

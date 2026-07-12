@@ -11,6 +11,8 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+var readTranscriptFile = os.ReadFile
+
 // transcriptDoc is a parsed transcript file: the header, the conversation
 // entries (turns), and the raw api_call lines (kept verbatim for the mentions
 // scan, which is deliberately separate from the structural tool-call count).
@@ -21,7 +23,7 @@ type transcriptDoc struct {
 }
 
 func loadTranscript(path string) (transcriptDoc, error) {
-	data, err := os.ReadFile(path)
+	data, err := readTranscriptFile(path)
 	if err != nil {
 		return transcriptDoc{}, fmt.Errorf("read transcript %s: %w", path, err)
 	}

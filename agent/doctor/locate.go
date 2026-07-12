@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+var globProjectBuckets = filepath.Glob
+
 // bucket is a resolved project bucket directory. hash is the 16-hex bucket name
 // when the bucket lives under serf/projects/, and "" for an override / scratch
 // root whose sessions/ sit directly under the state base.
@@ -92,7 +94,7 @@ func locateAcrossBuckets(stateBase string, buckets []bucket, sel selector) (Path
 func resolveBuckets(stateBase string) ([]bucket, error) {
 	projects := filepath.Join(stateBase, "serf", "projects")
 	if isDir(projects) {
-		matches, err := filepath.Glob(filepath.Join(projects, "*"))
+		matches, err := globProjectBuckets(filepath.Join(projects, "*"))
 		if err != nil {
 			return nil, fmt.Errorf("glob project buckets: %w", err)
 		}
