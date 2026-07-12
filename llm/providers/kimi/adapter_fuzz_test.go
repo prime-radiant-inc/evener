@@ -2,11 +2,17 @@ package kimi
 
 import (
 	"context"
+	"errors"
+	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 // FuzzCountInputTokensResponse drives the kimi adapter's REAL response-decode
@@ -41,6 +47,7 @@ func FuzzCountInputTokensResponse(f *testing.F) {
 	f.Add(byte(99), []byte(`{"error":"invalid_request"}`))
 
 	f.Fuzz(func(t *testing.T, statusSel byte, body []byte) {
+		replayKimiConstructionBranches(t)
 		// Map the selector onto a realistic HTTP status so the fuzzer can drive
 		// both the 2xx decode branch and the non-2xx error-mapping branch.
 		status := http.StatusOK
@@ -75,3 +82,44 @@ func FuzzCountInputTokensResponse(f *testing.F) {
 		}
 	})
 }
+
+func replayKimiConstructionBranches(t *testing.T) {
+	t.Helper()
+	t.Setenv(envvars.KimiAPIKey.Name, "")
+	_, _ = llm.NewFromEnv()
+	t.Setenv(envvars.KimiAPIKey.Name, "seed-key")
+	t.Setenv(envvars.KimiBaseURL.Name, "")
+	_, _ = llm.NewFromEnv()
+	_, _ = llm.NewFromProviders(providercfg.Config{Instances: []providercfg.InstanceConfig{{Name: "kimi-seed", Type: providerName}}})
+
+	var nilAdapter *adapter
+	_, _ = nilAdapter.CountInputTokens(context.Background(), llm.Request{})
+	_, _ = (&adapter{}).CountInputTokens(context.Background(), llm.Request{})
+	_, _ = (&adapter{OpenAICompat: nil}).CountInputTokens(context.Background(), llm.Request{})
+
+	invalidChoice := llm.ToolChoice{Mode: "invalid"}
+	_, _ = NewForInstance(InstanceParams{}).CountInputTokens(context.Background(), llm.Request{ToolChoice: &invalidChoice})
+	_, _ = NewForInstance(InstanceParams{}).CountInputTokens(context.Background(), llm.Request{ProviderOptions: map[string]any{"openai-compatible": map[string]any{"seed": math.Inf(1)}}})
+	_, _ = NewForInstance(InstanceParams{BaseURL: "://"}).CountInputTokens(context.Background(), llm.Request{})
+
+	a := NewForInstance(InstanceParams{BaseURL: "https://kimi.invalid", APIKey: ""})
+	a.Client = &http.Client{Transport: kimiRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("seed transport failure")
+	})}
+	_, _ = a.CountInputTokens(context.Background(), llm.Request{})
+
+	a = NewForInstance(InstanceParams{BaseURL: "https://kimi.invalid"})
+	a.Client = nil
+	a.BaseURL = "http://127.0.0.1:0"
+	_, _ = a.CountInputTokens(context.Background(), llm.Request{})
+
+	a = NewForInstance(InstanceParams{BaseURL: "https://kimi.invalid"})
+	a.Client = &http.Client{Transport: kimiRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"data":{"total_tokens":1}}`))}, nil
+	})}
+	_, _ = a.CountInputTokens(context.Background(), llm.Request{})
+}
+
+type kimiRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f kimiRoundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

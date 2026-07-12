@@ -27,6 +27,9 @@ type StreamRunner struct {
 	// RawRequestBody is the serialized request body to attach to raw stream
 	// errors when RawBody capture is enabled.
 	RawRequestBody string
+	// CaptureRawBody overrides the process-wide raw-body setting when non-nil.
+	// It supports deterministic callers that need an explicit capture policy.
+	CaptureRawBody *bool
 	// Stream receives decoded events, including the terminal error event.
 	Stream *llm.ChanStream
 	// SSEOpts are passed through to ParseSSE (e.g. the stream-read timeout).
@@ -46,9 +49,13 @@ type StreamRunner struct {
 // Run drives the SSE decode loop. It never calls cancel(): any cancellation is
 // the adapter's responsibility inside OnEvent.
 func (r *StreamRunner) Run(ctx context.Context) {
+	captureRawBody := llm.RawBodyEnabled()
+	if r.CaptureRawBody != nil {
+		captureRawBody = *r.CaptureRawBody
+	}
 	var sseBody io.Reader = r.Resp.Body
 	var sseBuf *bytes.Buffer
-	if llm.RawBodyEnabled() {
+	if captureRawBody {
 		sseBuf = &bytes.Buffer{}
 		sseBody = io.TeeReader(r.Resp.Body, sseBuf)
 	}
@@ -63,7 +70,7 @@ func (r *StreamRunner) Run(ctx context.Context) {
 		} else {
 			rawReqBody := ""
 			rawRespBody := ""
-			if llm.RawBodyEnabled() {
+			if captureRawBody {
 				rawReqBody = r.RawRequestBody
 				if sseBuf != nil {
 					rawRespBody = sseBuf.String()

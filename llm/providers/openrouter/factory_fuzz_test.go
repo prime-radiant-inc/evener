@@ -30,6 +30,11 @@ func FuzzInstanceFactory(f *testing.F) {
 	f.Add("named", " https://example.test/v1 ", "secret", "model", uint16(8192))
 	f.Add("", "", "", "", uint16(0))
 	f.Fuzz(func(t *testing.T, name, base, key, model string, tokens uint16) {
+		t.Setenv(envvars.OpenRouterAPIKey.Name, "")
+		_, _, _ = envAdapterFactory(llm.EnvConfig{})
+		t.Setenv(envvars.OpenRouterAPIKey.Name, "seed-key")
+		t.Setenv(envvars.OpenRouterBaseURL.Name, strings.ReplaceAll(base, "\x00", ""))
+		_, _, _ = envAdapterFactory(llm.EnvConfig{})
 		models := map[string]providercfg.ModelConfig{model: {MaxOutputTokens: int(tokens)}}
 		a, err := instanceAdapterFactory(providercfg.InstanceConfig{Name: name, BaseURL: base, APIKey: key, Compat: &providercfg.CompatConfig{ThinkingFormat: "openai"}, Models: models, Headers: map[string]string{"X-Test": "yes"}}, "ignored")
 		wantName := name

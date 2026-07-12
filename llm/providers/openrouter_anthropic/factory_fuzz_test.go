@@ -31,6 +31,12 @@ func FuzzInstanceFactory(f *testing.F) {
 	f.Add("named", " https://example.test/api/ ", "secret", "X-Test", "yes")
 	f.Add("", "", "", "", "")
 	f.Fuzz(func(t *testing.T, name, base, key, header, value string) {
+		t.Setenv(envvars.OpenRouterAPIKey.Name, "")
+		_, _, _ = envAdapterFactory(llm.EnvConfig{})
+		t.Setenv(envvars.OpenRouterAPIKey.Name, "seed-key")
+		t.Setenv(envvars.OpenRouterBaseURL.Name, strings.ReplaceAll(base, "\x00", ""))
+		_, _, _ = envAdapterFactory(llm.EnvConfig{})
+		_ = newTestAdapter(base, key, &http.Client{})
 		if strings.ContainsAny(header, "\r\n") {
 			return
 		}

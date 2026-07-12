@@ -14,6 +14,7 @@ func FuzzGLMFactories(f *testing.F) {
 	f.Add(uint8(0), "", "")
 	f.Add(uint8(1), "  https://glm.invalid/v4  ", "instance")
 	f.Add(uint8(2), "https://glm.invalid/custom", "configured")
+	f.Add(uint8(2), "", "default-base")
 
 	f.Fuzz(func(t *testing.T, mode uint8, baseURL, name string) {
 		baseURL = strings.ReplaceAll(baseURL, "\x00", "")

@@ -3,6 +3,10 @@ package ollama
 import (
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/envvars"
+	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 // FuzzMiscOllamaNormalizeHost drives normalizeHost — the OLLAMA_HOST resolver
@@ -51,6 +55,17 @@ func FuzzMiscOllamaNormalizeHost(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, h string) {
+		_ = resolveBaseURL(" https://base.invalid/v1/ ", h)
+		_ = resolveBaseURL("", h)
+		_ = resolveBaseURL("", "")
+		newAdapter("", nil).NonDefaultEligible()
+		_ = newForInstance(InstanceParams{})
+		_ = newForInstance(InstanceParams{Name: "seed", BaseURL: "https://ollama.invalid/v1"})
+		t.Setenv(envvars.OllamaBaseURL.Name, "")
+		t.Setenv(envvars.OllamaHost.Name, strings.ReplaceAll(h, "\x00", ""))
+		t.Setenv(envvars.OllamaAPIKey.Name, "seed-key")
+		_, _ = llm.NewFromEnv()
+		_, _ = llm.NewFromProviders(providercfg.Config{Instances: []providercfg.InstanceConfig{{Name: "ollama-seed", Type: providerName}}})
 		got := normalizeHost(h)
 
 		if !strings.HasSuffix(got, "/v1") {
