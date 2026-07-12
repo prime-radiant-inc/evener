@@ -3400,11 +3400,19 @@ func (jm *jobManager) deliverPendingWatchSend(ctx context.Context, cfg *watchCon
 }
 
 func (jm *jobManager) staleDelegateWatchSend(state jobstore.WatchSendState) (bool, string, error) {
+	return staleDelegateWatchSendWithLoaders(state, jm.store.LoadDelegates, jm.store.LoadEvents)
+}
+
+func staleDelegateWatchSendWithLoaders(
+	state jobstore.WatchSendState,
+	loadDelegates func() (map[string]*jobstore.DelegateRecord, error),
+	loadEvents func() ([]jobstore.Event, error),
+) (bool, string, error) {
 	target := state.Key.ResolvedSendTo
 	if !strings.HasPrefix(target, "dlg_") {
 		return false, "", nil
 	}
-	delegates, err := jm.store.LoadDelegates()
+	delegates, err := loadDelegates()
 	if err != nil {
 		return false, "", err
 	}
@@ -3416,7 +3424,7 @@ func (jm *jobManager) staleDelegateWatchSend(state jobstore.WatchSendState) (boo
 		if delegate.StopGateClosed {
 			return true, "delegate stopped before delivery", nil
 		}
-		stopped, err := jm.delegateStoppedAfterWatchSendPending(target, state)
+		stopped, err := delegateStoppedAfterWatchSendPendingWithLoader(target, state, loadEvents)
 		if err != nil {
 			return false, "", err
 		}
@@ -3432,7 +3440,11 @@ func (jm *jobManager) staleDelegateWatchSend(state jobstore.WatchSendState) (boo
 }
 
 func (jm *jobManager) delegateStoppedAfterWatchSendPending(delegateID string, state jobstore.WatchSendState) (bool, error) {
-	events, err := jm.store.LoadEvents()
+	return delegateStoppedAfterWatchSendPendingWithLoader(delegateID, state, jm.store.LoadEvents)
+}
+
+func delegateStoppedAfterWatchSendPendingWithLoader(delegateID string, state jobstore.WatchSendState, loadEvents func() ([]jobstore.Event, error)) (bool, error) {
+	events, err := loadEvents()
 	if err != nil {
 		return false, err
 	}
