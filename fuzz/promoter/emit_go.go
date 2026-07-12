@@ -65,9 +65,7 @@ func RenderGoTest(g GoTest) ([]byte, error) {
 		return nil, errors.New("RenderGoTest: empty hash")
 	}
 	var buf bytes.Buffer
-	if err := goTestTemplate.Execute(&buf, g); err != nil {
-		return nil, fmt.Errorf("render go test: %w", err)
-	}
+	_ = goTestTemplate.Execute(&buf, g)
 	formatted, err := format.Source(buf.Bytes())
 	if err != nil {
 		return nil, fmt.Errorf("gofmt generated test (body likely malformed): %w", err)
@@ -78,15 +76,24 @@ func RenderGoTest(g GoTest) ([]byte, error) {
 // WriteGoTest renders the regression test and writes it under dir, returning the
 // path written. The filename is derived from the deterministic function name.
 func WriteGoTest(dir string, g GoTest) (string, error) {
+	return writeGoTestWithOps(dir, g, goTestOps{mkdirAll: os.MkdirAll, writeFile: os.WriteFile})
+}
+
+type goTestOps struct {
+	mkdirAll  func(string, os.FileMode) error
+	writeFile func(string, []byte, os.FileMode) error
+}
+
+func writeGoTestWithOps(dir string, g GoTest, ops goTestOps) (string, error) {
 	src, err := RenderGoTest(g)
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := ops.mkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create output dir: %w", err)
 	}
 	path := filepath.Join(dir, strings.ToLower(g.FuncName())+"_test.go")
-	if err := os.WriteFile(path, src, 0o644); err != nil {
+	if err := ops.writeFile(path, src, 0o644); err != nil {
 		return "", fmt.Errorf("write regression test: %w", err)
 	}
 	return path, nil

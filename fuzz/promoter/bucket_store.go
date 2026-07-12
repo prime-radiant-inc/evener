@@ -19,16 +19,45 @@ import (
 // how the store is used today.
 type BucketStore struct {
 	path string
+	ops  bucketStoreOps
 
 	mu      sync.Mutex
 	buckets map[string]string // signature.String() -> test path
 }
 
+type atomicFile interface {
+	Write([]byte) (int, error)
+	Close() error
+	Name() string
+}
+
+type bucketStoreOps struct {
+	readFile   func(string) ([]byte, error)
+	mkdirAll   func(string, os.FileMode) error
+	createTemp func(string, string) (atomicFile, error)
+	rename     func(string, string) error
+	remove     func(string) error
+}
+
+var osBucketStoreOps = bucketStoreOps{
+	readFile: os.ReadFile,
+	mkdirAll: os.MkdirAll,
+	createTemp: func(dir, pattern string) (atomicFile, error) {
+		return os.CreateTemp(dir, pattern)
+	},
+	rename: os.Rename,
+	remove: os.Remove,
+}
+
 // OpenBucketStore loads the bucket store at path, creating an empty one if the
 // file does not exist.
 func OpenBucketStore(path string) (*BucketStore, error) {
-	s := &BucketStore{path: path, buckets: map[string]string{}}
-	data, err := os.ReadFile(path)
+	return openBucketStoreWithOps(path, osBucketStoreOps)
+}
+
+func openBucketStoreWithOps(path string, ops bucketStoreOps) (*BucketStore, error) {
+	s := &BucketStore{path: path, ops: ops, buckets: map[string]string{}}
+	data, err := ops.readFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return s, nil
@@ -81,31 +110,28 @@ func (s *BucketStore) Len() int {
 
 // persistLocked writes the store to disk atomically. Caller must hold s.mu.
 func (s *BucketStore) persistLocked() error {
-	data, err := json.MarshalIndent(s.buckets, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal bucket store: %w", err)
-	}
+	data, _ := json.MarshalIndent(s.buckets, "", "  ")
 	if dir := filepath.Dir(s.path); dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := s.ops.mkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("create bucket store dir: %w", err)
 		}
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".buckets-*.tmp")
+	tmp, err := s.ops.createTemp(filepath.Dir(s.path), ".buckets-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp bucket store: %w", err)
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
-		_ = os.Remove(tmpName)
+		_ = s.ops.remove(tmpName)
 		return fmt.Errorf("write temp bucket store: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
+		_ = s.ops.remove(tmpName)
 		return fmt.Errorf("close temp bucket store: %w", err)
 	}
-	if err := os.Rename(tmpName, s.path); err != nil {
-		_ = os.Remove(tmpName)
+	if err := s.ops.rename(tmpName, s.path); err != nil {
+		_ = s.ops.remove(tmpName)
 		return fmt.Errorf("commit bucket store: %w", err)
 	}
 	return nil
