@@ -13,17 +13,28 @@ import (
 	"primeradiant.com/serf/internal/plugins"
 )
 
+type pluginAutoUpgradeTicker interface {
+	Chan() <-chan time.Time
+	Stop()
+}
+
+type realPluginAutoUpgradeTicker struct{ *time.Ticker }
+
+func (t realPluginAutoUpgradeTicker) Chan() <-chan time.Time { return t.C }
+
+var newPluginAutoUpgradeTicker = func(interval time.Duration) pluginAutoUpgradeTicker {
+	return realPluginAutoUpgradeTicker{time.NewTicker(interval)}
+}
+
+var pluginAutoUpgradeTick = runPluginAutoUpgradeTick
+
 var (
-	pluginAutoUpgradeListMarketplaces   = func(mgr *plugins.Manager) (plugins.Marketplaces, error) { return mgr.ListMarketplaces() }
-	pluginAutoUpgradeRefreshMarketplace = func(ctx context.Context, mgr *plugins.Manager, name string) error {
+	pluginListMarketplaces   = func(mgr *plugins.Manager) (map[string]plugins.MarketplaceRef, error) { return mgr.ListMarketplaces() }
+	pluginRefreshMarketplace = func(ctx context.Context, mgr *plugins.Manager, name string) error {
 		return mgr.RefreshMarketplace(ctx, name)
 	}
-	pluginAutoUpgradeUpdate = func(ctx context.Context, mgr *plugins.Manager) ([]plugins.UpgradedPlugin, error) {
+	pluginUpdateAutoUpgrade = func(ctx context.Context, mgr *plugins.Manager) ([]plugins.UpgradedPlugin, error) {
 		return mgr.UpdateAutoUpgrade(ctx)
-	}
-	pluginAutoUpgradeNewTicker = func(interval time.Duration) (<-chan time.Time, func()) {
-		ticker := time.NewTicker(interval)
-		return ticker.C, ticker.Stop
 	}
 )
 
@@ -39,7 +50,7 @@ var (
 // unit-testable without spinning a real timer: construct a Manager against a
 // temp root, install fixtures, call this once, and assert on the result.
 func runPluginAutoUpgradeTick(ctx context.Context, mgr *plugins.Manager, stderr io.Writer) (updated []plugins.UpgradedPlugin, errs []string) {
-	mk, err := pluginAutoUpgradeListMarketplaces(mgr)
+	mk, err := pluginListMarketplaces(mgr)
 	if err != nil {
 		msg := fmt.Sprintf("listing marketplaces: %v", err)
 		_, _ = fmt.Fprintf(stderr, "[hub] plugin auto-upgrade: %s\n", msg)
@@ -52,14 +63,14 @@ func runPluginAutoUpgradeTick(ctx context.Context, mgr *plugins.Manager, stderr 
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		if err := pluginAutoUpgradeRefreshMarketplace(ctx, mgr, name); err != nil {
+		if err := pluginRefreshMarketplace(ctx, mgr, name); err != nil {
 			msg := fmt.Sprintf("refreshing marketplace %q: %v", name, err)
 			errs = append(errs, msg)
 			_, _ = fmt.Fprintf(stderr, "[hub] plugin auto-upgrade: %s\n", msg)
 		}
 	}
 
-	updated, err = pluginAutoUpgradeUpdate(ctx, mgr)
+	updated, err = pluginUpdateAutoUpgrade(ctx, mgr)
 	if err != nil {
 		errs = append(errs, err.Error())
 		_, _ = fmt.Fprintf(stderr, "[hub] plugin auto-upgrade: %v\n", err)
@@ -75,19 +86,19 @@ func runPluginAutoUpgradeTick(ctx context.Context, mgr *plugins.Manager, stderr 
 // watcher).
 func startPluginAutoUpgradeDaemon(ctx context.Context, mgr *plugins.Manager, interval time.Duration, server *appserver.Server) {
 	tick := func() {
-		updated, _ := runPluginAutoUpgradeTick(ctx, mgr, os.Stderr)
+		updated, _ := pluginAutoUpgradeTick(ctx, mgr, os.Stderr)
 		if len(updated) > 0 {
 			notifyPluginUpdated(server)
 		}
 	}
 	tick()
-	ticks, stop := pluginAutoUpgradeNewTicker(interval)
-	defer stop()
+	ticker := newPluginAutoUpgradeTicker(interval)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticks:
+		case <-ticker.Chan():
 			tick()
 		}
 	}

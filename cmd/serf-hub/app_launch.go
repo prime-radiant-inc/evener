@@ -16,6 +16,11 @@ type hubLaunchController struct {
 	now       func() time.Time
 }
 
+var (
+	hubLaunchResolve  = launchconfig.Resolve
+	hubLaunchSaveMeta = launchconfig.SaveMeta
+)
+
 func newHubLaunchController(stateRoot string) *hubLaunchController {
 	return &hubLaunchController{stateRoot: stateRoot, now: time.Now}
 }
@@ -63,7 +68,7 @@ func (c *hubLaunchController) Resolve(ctx context.Context, params appwire.Launch
 	if params.LaunchOverrides != nil {
 		overrides = launchconfig.FromWire(*params.LaunchOverrides)
 	}
-	resolved, err := launchconfig.Resolve(c.stateRoot, cwd, overrides)
+	resolved, err := hubLaunchResolve(c.stateRoot, cwd, overrides)
 	if err != nil {
 		return appwire.LaunchConfigResolved{}, err
 	}
@@ -132,7 +137,7 @@ func (c *hubLaunchController) SetLayer(ctx context.Context, params appwire.Launc
 	if err := launchconfig.SaveLayer(path, layer); err != nil {
 		return appwire.LaunchConfigResolved{}, err
 	}
-	resolved, err := launchconfig.Resolve(c.stateRoot, cwd, launchconfig.Layer{})
+	resolved, err := hubLaunchResolve(c.stateRoot, cwd, launchconfig.Layer{})
 	if err != nil {
 		return appwire.LaunchConfigResolved{}, err
 	}
@@ -144,7 +149,7 @@ func (c *hubLaunchController) TrustRepo(ctx context.Context, params appwire.Laun
 	if err != nil {
 		return appwire.LaunchConfigResolved{}, appwire.InvalidParams("cwd: " + err.Error())
 	}
-	resolved, err := launchconfig.Resolve(c.stateRoot, cwd, launchconfig.Layer{})
+	resolved, err := hubLaunchResolve(c.stateRoot, cwd, launchconfig.Layer{})
 	if err != nil {
 		return appwire.LaunchConfigResolved{}, err
 	}
@@ -176,10 +181,10 @@ func (c *hubLaunchController) TrustRepo(ctx context.Context, params appwire.Laun
 		Decision:  "trusted",
 		DecidedAt: c.now(),
 	}
-	if err := launchconfig.SaveMeta(paths.Meta, meta); err != nil {
+	if err := hubLaunchSaveMeta(paths.Meta, meta); err != nil {
 		return appwire.LaunchConfigResolved{}, err
 	}
-	resolved, err = launchconfig.Resolve(c.stateRoot, cwd, launchconfig.Layer{})
+	resolved, err = hubLaunchResolve(c.stateRoot, cwd, launchconfig.Layer{})
 	if err != nil {
 		return appwire.LaunchConfigResolved{}, err
 	}
