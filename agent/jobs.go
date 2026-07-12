@@ -383,6 +383,11 @@ func newJobManagerNoSync(stateDir, sessionID string, enqueue func(jobNotificatio
 }
 
 func newJobManagerWithStoreOpen(stateDir, sessionID string, enqueue func(jobNotification), openStore jobStoreOpener, openOutput outputStoreOpener) (*jobManager, error) {
+	return newJobManagerWithRestore(stateDir, sessionID, enqueue, openStore, openOutput,
+		(*jobManager).restoreWatchSendPending, (*jobManager).clearUnrestoredActiveWatches)
+}
+
+func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotification), openStore jobStoreOpener, openOutput outputStoreOpener, restorePending, clearWatches func(*jobManager) error) (*jobManager, error) {
 	dir := jobsDir(stateDir, sessionID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
@@ -415,11 +420,11 @@ func newJobManagerWithStoreOpen(stateDir, sessionID string, enqueue func(jobNoti
 		quietWindow:           delegateQuietWindow,
 		quietCheckInterval:    delegateQuietCheckInterval,
 	}
-	if err := jm.restoreWatchSendPending(); err != nil {
+	if err := restorePending(jm); err != nil {
 		_ = store.Close()
 		return nil, err
 	}
-	if err := jm.clearUnrestoredActiveWatches(); err != nil {
+	if err := clearWatches(jm); err != nil {
 		_ = store.Close()
 		return nil, err
 	}
@@ -1491,6 +1496,12 @@ func boundedStructuredResult(value any, resultSchema any, captureFailed bool) (a
 }
 
 func validateStructuredResult(value any, resultSchema any) (err error) {
+	return validateStructuredResultWithAddResource(value, resultSchema, func(c *jsonschema.Compiler, uri string, r io.Reader) error {
+		return c.AddResource(uri, r)
+	})
+}
+
+func validateStructuredResultWithAddResource(value any, resultSchema any, addResource func(*jsonschema.Compiler, string, io.Reader) error) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("schema validation panicked: %v", r)
@@ -1503,7 +1514,7 @@ func validateStructuredResult(value any, resultSchema any) (err error) {
 	}
 	c := jsonschema.NewCompiler()
 	const schemaURI = "urn:serf:delegate-result-schema"
-	if err := c.AddResource(schemaURI, bytes.NewReader(b)); err != nil {
+	if err := addResource(c, schemaURI, bytes.NewReader(b)); err != nil {
 		return err
 	}
 	compiled, err := c.Compile(schemaURI)
@@ -1737,11 +1748,22 @@ func validatedOutputStatsForRecord(path string, rec *jobstore.JobRecord) (total 
 }
 
 func tailOutputFile(path string, tailBytes int, total int64) (output string, totalBytes int64, truncated bool, err error) {
+	return tailOutputFileWithOpen(path, tailBytes, total, func(path string) (jobOutputReadFile, error) { return os.Open(path) })
+}
+
+type jobOutputReadFile interface {
+	io.Reader
+	io.Seeker
+	Stat() (os.FileInfo, error)
+	Close() error
+}
+
+func tailOutputFileWithOpen(path string, tailBytes int, total int64, open func(string) (jobOutputReadFile, error)) (output string, totalBytes int64, truncated bool, err error) {
 	if tailBytes < 0 {
 		return "", 0, false, fmt.Errorf("%w: maxBytes=%d", jobstore.ErrInvalidLimit, tailBytes)
 	}
 
-	f, err := os.Open(path)
+	f, err := open(path)
 	if err != nil {
 		return "", 0, false, fmt.Errorf("jobstore: open output: %w", err)
 	}
@@ -1778,11 +1800,15 @@ func tailOutputFile(path string, tailBytes int, total int64) (output string, tot
 }
 
 func headOutputFile(path string, headBytes int, total int64) (output string, totalBytes int64, truncated bool, err error) {
+	return headOutputFileWithOpen(path, headBytes, total, func(path string) (jobOutputReadFile, error) { return os.Open(path) })
+}
+
+func headOutputFileWithOpen(path string, headBytes int, total int64, open func(string) (jobOutputReadFile, error)) (output string, totalBytes int64, truncated bool, err error) {
 	if headBytes < 0 {
 		return "", 0, false, fmt.Errorf("%w: maxBytes=%d", jobstore.ErrInvalidLimit, headBytes)
 	}
 
-	f, err := os.Open(path)
+	f, err := open(path)
 	if err != nil {
 		return "", 0, false, fmt.Errorf("jobstore: open output: %w", err)
 	}
