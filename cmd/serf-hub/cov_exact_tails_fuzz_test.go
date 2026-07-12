@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
+	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/llm"
@@ -88,6 +89,7 @@ func FuzzExactTails(f *testing.F) {
 		thread := appwire.Thread{ID: "id", Source: "local", Status: appwire.ThreadStatus{Type: "nonsense"}, Serf: appwire.SerfThread{Ref: "local:id"}}
 		_ = workspaceDataFromAppThread(thread)
 		web := NewWebServer(hubcore.WebConfig{})
+		_ = NewWebServer(hubcore.WebConfig{CodexLaunches: []codexlaunch.CodexLaunchConfig{{ID: "codex"}}})
 		web.sources = appsource.NewRegistry()
 		_ = web.workspaceData("remote:id")
 		data := WorkspaceData{}
@@ -121,6 +123,10 @@ func FuzzExactTails(f *testing.F) {
 		liveWeb.handleAPIReasoningEffort(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"reasoning_effort":"high"}`)), "live-a")
 		liveWeb.handleAPIRename(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"new"}`)), "live-a")
 		writeJSON(httptest.NewRecorder(), make(chan int))
+		(&WebServer{}).handleManifest(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil))
+		partialReq := httptest.NewRequest(http.MethodGet, "/_partials/workspace/spawn", nil)
+		partialReq.Header.Set("HX-Request", "true")
+		web.handleInternalPartial(httptest.NewRecorder(), partialReq)
 		web.handleInternalPartial(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/_partials/unknown", nil))
 	})
 }
