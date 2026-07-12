@@ -343,7 +343,24 @@ func nslpDriveChildNotifications(t *testing.T, parent *Session, child *subagent)
 func nslpDrain(root *Session) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	return root.DrainJobTree(ctx)
+
+	// DrainJobTree's production lost-wake backstop is a clock ticker. This
+	// fixture deliberately freezes its shared FakeClock, so drive the extracted
+	// recheck seam directly instead of depending on wall time or advancing every
+	// unrelated timer in the delegate tree.
+	recheck := make(chan time.Time)
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			select {
+			case recheck <- time.Time{}:
+			case <-stop:
+				return
+			}
+		}
+	}()
+	return root.drainJobTree(ctx, recheck)
 }
 
 func nslpAssertDelegateLedger(t *testing.T, root, coordinator *Session, rootJobID, workerJobID string) {

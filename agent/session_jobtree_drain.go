@@ -145,6 +145,16 @@ func (s *Session) DrainJobTree(ctx context.Context) (string, error) {
 	if s.jobManager == nil {
 		return "", nil
 	}
+	ticker := s.clock.NewTicker(drainRecheckInterval)
+	defer ticker.Stop()
+	return s.drainJobTree(ctx, ticker.C())
+}
+
+// drainJobTree contains the drain loop behind an injectable recheck channel.
+// Production always passes the session clock's ticker; deterministic tests can
+// explicitly drive rechecks without depending on wall time or advancing every
+// unrelated waiter on a shared fake clock.
+func (s *Session) drainJobTree(ctx context.Context, recheck <-chan time.Time) (string, error) {
 	wake := make(chan struct{}, 1)
 	s.SetNotifyFunc(func() {
 		select {
@@ -153,9 +163,6 @@ func (s *Session) DrainJobTree(ctx context.Context) (string, error) {
 		}
 	})
 	defer s.SetNotifyFunc(nil)
-
-	ticker := s.clock.NewTicker(drainRecheckInterval)
-	defer ticker.Stop()
 
 	lastResult := ""
 	for {
@@ -197,7 +204,7 @@ func (s *Session) DrainJobTree(ctx context.Context) (string, error) {
 		// fires, or the caller's context is cancelled; the next iteration re-kicks.
 		select {
 		case <-wake:
-		case <-ticker.C():
+		case <-recheck:
 		case <-ctx.Done():
 			return lastResult, ctx.Err()
 		}
