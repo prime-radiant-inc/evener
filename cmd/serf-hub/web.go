@@ -61,6 +61,8 @@ var inputStripTemplateFuncs = template.FuncMap{
 	"formatTokenCount": func(n int64) string { return formatTokenCount(int(n)) },
 }
 
+var manifestMarshal = json.Marshal
+
 // NewWebServer constructs the web server. Templates are parsed from embed.FS.
 func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 	appTmpl := template.Must(template.New("app.html").Funcs(template.FuncMap{"assetv": assetVersionQuery}).ParseFS(templatesRoot(), "templates/app.html"))
@@ -264,7 +266,7 @@ func (s *WebServer) handleManifest(w http.ResponseWriter, r *http.Request) {
 	if token := s.cfg.AuthToken; token != "" {
 		manifest["start_url"] = "/auth?token=" + url.QueryEscape(token) + "&next=" + url.QueryEscape("/")
 	}
-	out, err := json.Marshal(manifest)
+	out, err := manifestMarshal(manifest)
 	if err != nil {
 		http.Error(w, "manifest encode failed", http.StatusInternalServerError)
 		return

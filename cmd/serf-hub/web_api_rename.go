@@ -10,6 +10,11 @@ import (
 	"primeradiant.com/serf/appwire"
 )
 
+var (
+	loadSessionMetaForRename = schema.LoadSessionMeta
+	saveSessionMetaForRename = schema.SaveSessionMeta
+)
+
 // handleAPIRename renames a session. Live serf sessions route through the
 // daemon method (daemon-truth); ended local sessions have their meta edited
 // behind a probe-resolved Roster.Find re-check. Both paths refresh the past
@@ -84,7 +89,7 @@ func (s *WebServer) handleAPIRename(w http.ResponseWriter, r *http.Request, id s
 		writeAPIError(w, http.StatusNotFound, "session not found")
 		return
 	}
-	meta, err := schema.LoadSessionMeta(pe.StateDir, pe.ID)
+	meta, err := loadSessionMetaForRename(pe.StateDir, pe.ID)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "load meta: "+err.Error())
 		return
@@ -92,7 +97,7 @@ func (s *WebServer) handleAPIRename(w http.ResponseWriter, r *http.Request, id s
 	meta.Name = name
 	meta.NameSource = "user"
 	meta.NameUpdatedAt = time.Now().UTC()
-	if err := schema.SaveSessionMeta(pe.StateDir, meta); err != nil {
+	if err := saveSessionMetaForRename(pe.StateDir, meta); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "save meta: "+err.Error())
 		return
 	}
@@ -109,7 +114,7 @@ func (s *WebServer) handleAPIRename(w http.ResponseWriter, r *http.Request, id s
 func (s *WebServer) refreshRenamedMeta(id, name string) {
 	rid := canonicalRouteID(id)
 	if pe, ok := s.cfg.Past.Find(rid); ok {
-		if meta, err := schema.LoadSessionMeta(pe.StateDir, pe.ID); err == nil {
+		if meta, err := loadSessionMetaForRename(pe.StateDir, pe.ID); err == nil {
 			s.cfg.Past.UpdateMeta(pe.ID, meta)
 			if s.cfg.PokeAttention != nil {
 				s.cfg.PokeAttention()

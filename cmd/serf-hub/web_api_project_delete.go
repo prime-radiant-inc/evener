@@ -14,6 +14,11 @@ type projectDeleteSkip struct {
 	Reason string `json:"reason"`
 }
 
+var (
+	removeProjectSessionFile = os.Remove
+	removeProjectSessionDir  = os.RemoveAll
+)
+
 // handleAPIProjectDelete removes every session file under a project and scrubs
 // its decision rows. Path-validated; refuses when anything is live at entry.
 func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Request) {
@@ -95,7 +100,7 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 			filepath.Join(sess, e.ID+".api.jsonl"),
 			filepath.Join(sess, e.ID+".api-raw.jsonl"),
 		} {
-			if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			if err := removeProjectSessionFile(p); err != nil && !os.IsNotExist(err) {
 				removeErr = err
 				break
 			}
@@ -104,7 +109,7 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 			skipped = append(skipped, projectDeleteSkip{ID: e.ID, Reason: removeErr.Error()})
 			continue
 		}
-		_ = os.RemoveAll(filepath.Join(sess, e.ID))
+		_ = removeProjectSessionDir(filepath.Join(sess, e.ID))
 		if s.cfg.Archive != nil {
 			_ = s.cfg.Archive.Delete("session", e.ID)
 		}

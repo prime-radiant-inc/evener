@@ -21,6 +21,11 @@ import (
 	"primeradiant.com/serf/internal/diagnostic"
 )
 
+var (
+	webHubUpgrade = hubUpgrade
+	gitCommand    = exec.CommandContext
+)
+
 func (s *WebServer) handleApiSearch(w http.ResponseWriter, r *http.Request) {
 	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
 	var resp searchResponse
@@ -154,7 +159,7 @@ func (s *WebServer) handleAPIUpgrade(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	resp, err := hubUpgrade(r.Context(), params)
+	resp, err := webHubUpgrade(r.Context(), params)
 	if err != nil {
 		writeAPIError(w, http.StatusBadGateway, err.Error())
 		return
@@ -488,14 +493,14 @@ func (s *WebServer) handleAPIDirCreate(w http.ResponseWriter, r *http.Request) {
 // gitHeadBranch runs `git rev-parse --abbrev-ref HEAD` in dir and returns
 // the branch name. In detached HEAD state it falls back to the short SHA.
 func gitHeadBranch(ctx context.Context, dir string) (string, error) {
-	out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	out, err := gitCommand(ctx, "git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
 	if err != nil {
 		return "", err
 	}
 	branch := strings.TrimSpace(string(out))
 	if branch == "HEAD" {
 		// Detached HEAD — return short SHA instead.
-		out2, err2 := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--short", "HEAD").Output()
+		out2, err2 := gitCommand(ctx, "git", "-C", dir, "rev-parse", "--short", "HEAD").Output()
 		if err2 != nil {
 			return branch, nil //nolint:nilerr // detached HEAD: short-SHA refinement is best-effort; the literal "HEAD" is a valid fallback
 		}
