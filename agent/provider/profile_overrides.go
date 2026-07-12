@@ -8,6 +8,11 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+var (
+	profileJSONMarshal   = json.Marshal
+	profileJSONUnmarshal = json.Unmarshal
+)
+
 // WithCommunicateOutputSchema returns a cloned profile whose `communicate` tool
 // has its `output` property schema replaced wholesale by the given schema. The
 // top-level `required` list on the tool parameters is also updated to include
@@ -119,12 +124,12 @@ func WithContextWindow(p *Profile, n int) *Profile {
 func replaceCommunicateOutputSchema(td llm.ToolDefinition, outputSchema map[string]any) llm.ToolDefinition {
 	// Deep-copy Parameters via JSON round-trip to avoid mutating shared map state.
 	if td.Parameters != nil {
-		b, err := json.Marshal(td.Parameters)
+		b, err := profileJSONMarshal(td.Parameters)
 		if err != nil {
 			return td
 		}
 		var params map[string]any
-		if err := json.Unmarshal(b, &params); err != nil {
+		if err := profileJSONUnmarshal(b, &params); err != nil {
 			return td
 		}
 		td.Parameters = params
@@ -159,12 +164,12 @@ func replaceCommunicateOutputSchema(td llm.ToolDefinition, outputSchema map[stri
 // deepCopyJSONMap returns a deep copy of m via JSON round-trip. Returns an
 // error on unmarshalable values.
 func deepCopyJSONMap(m map[string]any) (map[string]any, error) {
-	b, err := json.Marshal(m)
+	b, err := profileJSONMarshal(m)
 	if err != nil {
 		return nil, err
 	}
 	var out map[string]any
-	if err := json.Unmarshal(b, &out); err != nil {
+	if err := profileJSONUnmarshal(b, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -176,12 +181,12 @@ func addDecisionToSchema(td llm.ToolDefinition, decisions []string) llm.ToolDefi
 	// so the shallow struct copy in WithAllowedDecisions does NOT copy the
 	// nested maps inside Parameters.
 	if td.Parameters != nil {
-		b, err := json.Marshal(td.Parameters)
+		b, err := profileJSONMarshal(td.Parameters)
 		if err != nil {
 			return td
 		}
 		var params map[string]any
-		if err := json.Unmarshal(b, &params); err != nil {
+		if err := profileJSONUnmarshal(b, &params); err != nil {
 			return td
 		}
 		td.Parameters = params

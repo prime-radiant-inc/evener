@@ -10,6 +10,11 @@ import (
 	"primeradiant.com/serf/internal/gitpath"
 )
 
+var (
+	gitWalkDir = filepath.WalkDir
+	gitRel     = filepath.Rel
+)
+
 // WorkspaceKind classifies cwd's git layout. The distinction drives gitdir
 // resolution: linked-worktree/submodule git dirs live outside the worktree and
 // need a read grant + external config/hook protection, while a MainCheckout's
@@ -286,7 +291,7 @@ func moduleConfigProtections(commonDir string) []string {
 	var out []string
 	// A submodule git dir is any directory under modules/ that holds a "config"
 	// file; protect its full surface set (incl. its own per-worktree configs).
-	_ = filepath.WalkDir(modulesRoot, func(path string, d fs.DirEntry, err error) error {
+	_ = gitWalkDir(modulesRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil //nolint:nilerr // skip unreadable entries; never abort the walk
 		}
@@ -570,7 +575,7 @@ func removeProtectedFromWritable(writable, protected []string) []string {
 
 // pathUnder reports whether p is at or beneath dir.
 func pathUnder(p, dir string) bool {
-	rel, err := filepath.Rel(dir, p)
+	rel, err := gitRel(dir, p)
 	if err != nil {
 		return false
 	}

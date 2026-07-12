@@ -62,6 +62,18 @@ func FuzzSchemaPersistenceFaultProgram(f *testing.F) {
 			t.Fatalf("rename failure left temp file: exists=%v err=%v", exists, err)
 		}
 
+		mkdirSentinel := errors.New("mkdir fault")
+		if err := saveSessionMetaFS(schemaFuzzFaultFS{Fs: afero.NewMemMapFs(), mkdirErr: mkdirSentinel}, "/state", meta); !errors.Is(err, mkdirSentinel) {
+			t.Fatalf("mkdir fault = %v", err)
+		}
+		marshalSentinel := errors.New("marshal fault")
+		oldMarshal := marshalSessionMeta
+		marshalSessionMeta = func(any) ([]byte, error) { return nil, marshalSentinel }
+		if err := saveSessionMetaFS(afero.NewMemMapFs(), "/state", meta); !errors.Is(err, marshalSentinel) {
+			t.Fatalf("marshal fault = %v", err)
+		}
+		marshalSessionMeta = oldMarshal
+
 		readSentinel := errors.New("read-dir fault")
 		if _, err := listSessionMetasFS(schemaFuzzFaultFS{Fs: afero.NewMemMapFs(), openErr: readSentinel}, "/state"); !errors.Is(err, readSentinel) {
 			t.Fatalf("read-dir fault = %v", err)
@@ -76,9 +88,17 @@ func FuzzSchemaPersistenceFaultProgram(f *testing.F) {
 
 type schemaFuzzFaultFS struct {
 	afero.Fs
+	mkdirErr    error
 	openErr     error
 	openFileErr error
 	renameErr   error
+}
+
+func (fs schemaFuzzFaultFS) MkdirAll(path string, perm os.FileMode) error {
+	if fs.mkdirErr != nil {
+		return fs.mkdirErr
+	}
+	return fs.Fs.MkdirAll(path, perm)
 }
 
 func (fs schemaFuzzFaultFS) Open(name string) (afero.File, error) {

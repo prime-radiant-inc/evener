@@ -6,6 +6,11 @@ import (
 	"strings"
 )
 
+var (
+	bwrapEvalSymlinks = filepath.EvalSymlinks
+	bwrapStat         = os.Stat
+)
+
 // buildBwrapArgv turns a ResolvedPolicy into the bubblewrap flag vector (the
 // arguments AFTER the bwrap binary and BEFORE the "--" that precedes the real
 // command). It implements the spec's flat-roots model: a read baseline (`--ro-bind
@@ -157,14 +162,14 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 // that reaches it. A path that does not exist (or a broken symlink) needs no mask
 // — there is nothing to hide. seen dedups masks that resolve to the same target.
 func maskInvisible(a *[]string, seen map[string]bool, path string) {
-	resolved, err := filepath.EvalSymlinks(path)
+	resolved, err := bwrapEvalSymlinks(path)
 	if err != nil {
 		return
 	}
 	if seen[resolved] {
 		return
 	}
-	fi, err := os.Stat(resolved)
+	fi, err := bwrapStat(resolved)
 	if err != nil {
 		return
 	}

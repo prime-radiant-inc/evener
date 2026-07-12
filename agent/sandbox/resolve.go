@@ -7,6 +7,8 @@ import (
 	"strings"
 )
 
+var resolveAbs = filepath.Abs
+
 // Backend names the concrete enforcement mechanism the resolver chose for a
 // session on this host. It is recorded on the ResolvedPolicy so M3/M6 know which
 // backend to drive; M1 selects it but nothing enforces.
@@ -218,7 +220,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 	// absolute paths — a relative root would silently never match. Absolutize
 	// fail-closed (filepath.Abs only errors if the process working directory is
 	// unresolvable).
-	absCwd, err := filepath.Abs(cwd)
+	absCwd, err := resolveAbs(cwd)
 	if err != nil {
 		return ResolvedPolicy{}, &RefusalError{
 			Mode:   policy.Mode,

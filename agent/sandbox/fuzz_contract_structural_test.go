@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -243,8 +244,134 @@ func FuzzSandboxPublicContractHarness(f *testing.F) {
 		if got := materializeWorkspaceWith(rec, WorkspaceKind(99), scriptedContractGit); got != "" || rec.errors < 2 {
 			t.Fatalf("materializeWorkspaceWith unsupported kind = (%q, %d errors)", got, rec.errors)
 		}
+		fuzzSandboxResidualBranches(t)
 	})
 }
+
+func fuzzSandboxResidualBranches(t *testing.T) {
+	t.Helper()
+	rec := &recordingT{T: t}
+	_ = MaterializeWorkspace(rec, NonGit)
+	_ = MaterializeWorkspace(rec, MainCheckout)
+	_ = MaterializeWorkspace(rec, LinkedWorktree)
+	_, _, _ = materializeReRootLanes(rec)
+	refusal := ContractCase{Name: "bad-refusal", WantRefusal: true, WantRequiredBackend: "wanted"}
+	assertRefusal(rec, refusal, nil)
+	assertRefusal(rec, refusal, errors.New("wrong type"))
+	assertRefusal(rec, refusal, &RefusalError{RequiredBackend: "other"})
+	assertResolveWith(rec, func(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, error) {
+		if policy.Mode == ModeOff {
+			return ResolvedPolicy{}, errors.New("forced")
+		}
+		return Resolve(policy, host, cwd)
+	}, func(t TestingT, kind WorkspaceKind) string { return newStructuralFixture(t, 0).workspace(kind) })
+	bad := ContractCase{Name: "bad", Mode: ModeRestricted, WantBackend: BackendSeatbelt, WantNetwork: true,
+		WantCache: CacheOverlay, WantFileRead: ReadWorktreeOnly, WantSpawnRead: ReadWorktreeOnly, WantWorktreeWrite: true}
+	assertResolution(rec, bad, ResolvedPolicy{
+		Backend: BackendBwrap, Network: false, CacheStrategy: CacheNone,
+		FileTool:   AccessScope{Read: ReadAnywhere, ReadRoots: []string{"/"}, WriteRoots: []string{"/"}},
+		Spawned:    AccessScope{Read: ReadAnywhere, ReadRoots: []string{"/"}, WriteRoots: []string{"/"}},
+		SessionTmp: false, MaskedPaths: []string{"/"},
+	}, "/work", "/home")
+	assertRerooted(rec, ReRootCase{Name: "nil"}, nil, "/main", "/a", "/b")
+	assertRerooted(rec, ReRootCase{Name: "off"}, &ResolvedPolicy{}, "/main", "/a", "/b")
+	badReroot := &ResolvedPolicy{
+		Mode: ModeWorkspaceWrite, Backend: BackendBwrap,
+		FileTool: AccessScope{WriteRoots: []string{"/main", "/a"}},
+		Spawned:  AccessScope{WriteRoots: []string{"/main", "/a"}},
+	}
+	assertRerooted(rec, ReRootCase{Name: "bad-write", WantWorktreeWrite: true}, badReroot, "/main", "/a", "/b")
+	badReadOnly := *badReroot
+	badReadOnly.FileTool.WriteRoots = []string{"/b"}
+	badReadOnly.Spawned.WriteRoots = []string{"/b"}
+	assertRerooted(rec, ReRootCase{Name: "bad-read-only"}, &badReadOnly, "/main", "/a", "/b")
+	assertReRootWith(rec, []ReRootCase{{Name: "default-home", Mode: ModeReadOnly, Net: true, Host: HostFacts{OS: "linux", BwrapCapable: true}}}, structuralReRootLanes)
+	assertReRootWith(rec, []ReRootCase{{Name: "bad-source", Mode: ModeReadOnly, Net: true, Host: HostFacts{OS: "linux", Home: "/home", BwrapCapable: true}}}, func(t TestingT) (string, string, string) {
+		fixture := newStructuralFixture(t, 0)
+		return fixture.main, fixture.malformed, fixture.main
+	})
+	assertReRootWith(rec, []ReRootCase{{Name: "bad-target", Mode: ModeReadOnly, Net: true, Host: HostFacts{OS: "linux", Home: "/home", BwrapCapable: true}}}, func(t TestingT) (string, string, string) {
+		fixture := newStructuralFixture(t, 0)
+		return fixture.main, fixture.main, fixture.malformed
+	})
+
+	oldSeatbelt := wrapSeatbelt
+	wrapSeatbelt = func(argv []string, _ ResolvedPolicy, _, _ string) ([]string, error) {
+		return append([]string{"seatbelt"}, argv...), nil
+	}
+	w := &Wrapper{policy: ResolvedPolicy{Backend: BackendSeatbelt}}
+	if got := w.Wrap([]string{"cmd"}, "/work"); len(got) != 2 || got[0] != "seatbelt" {
+		t.Fatalf("seatbelt wrap seam = %v", got)
+	}
+	wrapSeatbelt = oldSeatbelt
+
+	root := t.TempDir()
+	session := filepath.Join(root, "session")
+	if err := os.MkdirAll(session, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = buildBwrapArgv(ResolvedPolicy{Spawned: AccessScope{Read: ReadAnywhere, ReadRoots: []string{session}}}, session, root)
+	oldEval, oldStat := bwrapEvalSymlinks, bwrapStat
+	bwrapEvalSymlinks = func(string) (string, error) { return "/fixture/resolved", nil }
+	bwrapStat = func(string) (os.FileInfo, error) { return nil, errors.New("stat") }
+	maskInvisible(&[]string{}, map[string]bool{}, "fixture")
+	bwrapEvalSymlinks, bwrapStat = oldEval, oldStat
+
+	oldAbs := resolveAbs
+	resolveAbs = func(string) (string, error) { return "", errors.New("abs") }
+	_, _ = Resolve(SandboxPolicy{Mode: ModeReadOnly}, HostFacts{OS: "linux", Home: "/home", BwrapCapable: true}, "relative")
+	resolveAbs = oldAbs
+	_, _ = ResolveNamed("read-only", nil, HostFacts{OS: "linux", Home: "relative"}, root)
+	_, _ = chooseBackend(SandboxPolicy{Mode: ModeReadOnly}, HostFacts{OS: "plan9"}, true)
+	_ = filterMasked([]string{"/secret"}, []string{"/secret"})
+	faultPolicy := ResolvedPolicy{resolveInputs: SandboxPolicy{Mode: ModeReadOnly}, resolveHost: HostFacts{OS: "linux"}}
+	_, _ = faultPolicy.ControlPolicy(root)
+	_, _ = (&Wrapper{policy: faultPolicy}).ReRoot(root)
+	_ = includePathValue("not-a-path-line")
+	oldWalk, oldRel := gitWalkDir, gitRel
+	_ = os.MkdirAll(filepath.Join(root, "modules"), 0o755)
+	gitWalkDir = func(root string, fn fs.WalkDirFunc) error { return fn(root, nil, errors.New("walk")) }
+	_ = moduleConfigProtections(root)
+	gitRel = func(string, string) (string, error) { return "", errors.New("rel") }
+	_ = pathUnder("/a", "/b")
+	gitWalkDir, gitRel = oldWalk, oldRel
+	nestedConfig := filepath.Join(root, "nested.conf")
+	if err := os.WriteFile(nestedConfig, []byte("[include]\npath = *.conf\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rootConfig := filepath.Join(root, "root.conf")
+	if err := os.WriteFile(rootConfig, []byte("[include]\npath = nested.conf\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = scanConfigIncludes(rootConfig, []string{root}, map[string]bool{}, 0)
+
+	oldHome := probeUserHomeDir
+	probeUserHomeDir = func() (string, error) { return "/fixture/home", nil }
+	if home, err := (hostProbeSystem{}).userHomeDir(); err != nil || home != "/fixture/home" {
+		t.Fatalf("home seam = %q, %v", home, err)
+	}
+	probeUserHomeDir = oldHome
+	_ = (RealProber{system: nil}).Probe()
+	_ = bwrapSupportsOverlay(scriptedProbeSystem{bwrapHelpErr: errors.New("help")}, "/fixture/bwrap")
+
+	oldTemp, oldRead := sessionTempDir, sessionReadDir
+	sessionTempDir = func() string { return root }
+	tmp, err := NewSessionTmp("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = tmp.Cleanup()
+	sessionReadDir = func(string) ([]os.DirEntry, error) { return []os.DirEntry{faultDirEntry{}}, nil }
+	sweepCrashedSessions(root)
+	sessionTempDir, sessionReadDir = oldTemp, oldRead
+}
+
+type faultDirEntry struct{}
+
+func (faultDirEntry) Name() string               { return sessionTmpPrefix + "fault" }
+func (faultDirEntry) IsDir() bool                { return true }
+func (faultDirEntry) Type() fs.FileMode          { return fs.ModeDir }
+func (faultDirEntry) Info() (fs.FileInfo, error) { return nil, errors.New("info") }
 
 // scriptedContractGit is the smallest external Git boundary needed by the
 // contract materializers. It creates the precise .git shapes those helpers need

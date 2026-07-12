@@ -38,6 +38,7 @@ func FuzzProviderProfilesProgram(f *testing.F) {
 			assertProviderProfileDecorators(t, profile, next, window, webSearch)
 		}
 		assertProviderPurePrograms(t, next)
+		assertProviderResidualBranches(t)
 
 		if got, err := ResolveProfileFromConfig(providercfg.Config{}, "missing/model"); got != nil || err == nil {
 			t.Fatalf("missing provider = %#v, %v", got, err)
@@ -51,6 +52,58 @@ func FuzzProviderProfilesProgram(f *testing.F) {
 			}
 		}
 	})
+}
+
+func assertProviderResidualBranches(t *testing.T) {
+	t.Helper()
+	p := NewOpenAIProfile("gpt-5")
+	if p.CheapModelRefString() != "" || p.CrossProviderRef("bare-model") {
+		t.Fatal("empty cheap model or bare model ref classified incorrectly")
+	}
+	if p.WithModel(" ").Model() != p.Model() {
+		t.Fatal("empty model did not preserve the active model")
+	}
+	if restampInstanceIdentity(nil, "tag", "id") != nil {
+		t.Fatal("nil identity restamp must stay nil")
+	}
+	if (*Profile)(nil).WithCommunicateOverridesFrom(p) != nil || p.WithCommunicateOverridesFrom(nil) != p {
+		t.Fatal("nil communicate override guard failed")
+	}
+	withoutCommunicate := &Profile{toolDefs: []llm.ToolDefinition{{Name: "shell"}}}
+	if p.WithCommunicateOverridesFrom(withoutCommunicate) != p {
+		t.Fatal("missing source communicate tool changed profile")
+	}
+	target := &Profile{toolDefs: []llm.ToolDefinition{{Name: "shell"}}}
+	target.WithCommunicateOverridesFrom(p)
+	if len(target.toolDefs) != 2 || target.toolDefs[1].Name != "communicate" {
+		t.Fatal("communicate override was not appended")
+	}
+	lookup := func(key string) *llm.ModelInfo {
+		switch key {
+		case "anthropic/model":
+			return &llm.ModelInfo{ReasoningEffortLevels: []string{"high"}}
+		case "model":
+			return &llm.ModelInfo{ContextWindow: 42, ReasoningEffortLevels: []string{"low"}}
+		default:
+			return nil
+		}
+	}
+	ctx, efforts := resolveOpenRouterAnthropicCtxAndEfforts(lookup, "anthropic/model", 1, nil)
+	if ctx != 42 || !reflect.DeepEqual(efforts, []string{"high"}) {
+		t.Fatalf("openrouter fallback = %d/%v", ctx, efforts)
+	}
+	ctx, efforts = resolveOpenRouterAnthropicCtxAndEfforts(func(key string) *llm.ModelInfo {
+		if key == "openrouter/anthropic/model" {
+			return &llm.ModelInfo{}
+		}
+		if key == "model" {
+			return &llm.ModelInfo{ReasoningEffortLevels: []string{"low"}}
+		}
+		return nil
+	}, "anthropic/model", 1, nil)
+	if ctx != 1 || !reflect.DeepEqual(efforts, []string{"low"}) {
+		t.Fatalf("openrouter stripped effort fallback = %d/%v", ctx, efforts)
+	}
 }
 
 type providerProfileProgramCase struct {

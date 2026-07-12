@@ -1,12 +1,9 @@
 package sandbox
 
 import (
-	"context"
 	"errors"
-	"os/exec"
 	"path/filepath"
 	"slices"
-	"time"
 )
 
 // TestingT is the subset of *testing.T the contract harness needs. Depending on
@@ -183,9 +180,6 @@ func assertResolveWith(t TestingT, resolve ResolveFunc, materialize contractWork
 	for _, tc := range ContractCases() {
 		cwd := materialize(t, tc.Workspace)
 		host := tc.Host
-		if host.Home == "" {
-			host.Home = "/home/contract"
-		}
 		net := tc.Net
 		rp, err := resolve(SandboxPolicy{Mode: tc.Mode, Network: &net}, host, cwd)
 
@@ -382,43 +376,47 @@ func assertReRootWith(t TestingT, cases []ReRootCase, materialize contractReRoot
 			t.Errorf("case %s: re-root to lane B: %v", tc.Name, err)
 			continue
 		}
-		if rerooted == nil {
-			t.Errorf("case %s: re-root returned a nil policy", tc.Name)
-			continue
+		assertRerooted(t, tc, rerooted, main, laneA, laneB)
+	}
+}
+
+func assertRerooted(t TestingT, tc ReRootCase, rerooted *ResolvedPolicy, main, laneA, laneB string) {
+	if rerooted == nil {
+		t.Errorf("case %s: re-root returned a nil policy", tc.Name)
+		return
+	}
+	if !rerooted.Enforced() {
+		t.Errorf("case %s: re-root must stay enforced, got off", tc.Name)
+		return
+	}
+	if !slices.Contains(rerooted.MaskedPaths, "/proc") {
+		t.Errorf("case %s: re-rooted policy must keep the pseudo-fs floor masked: %v", tc.Name, rerooted.MaskedPaths)
+	}
+	// The shared main repo (parent of neither sibling lane) must never leak as a
+	// write root — a check the lane-vs-lane assertions below cannot see, since
+	// `main` is not an ancestor of either sibling lane.
+	if rootGrants(rerooted.FileTool.WriteRoots, main) || rootGrants(rerooted.Spawned.WriteRoots, main) {
+		t.Errorf("case %s: re-root leaked the shared main repo %q as a write root: file=%v spawned=%v", tc.Name, main, rerooted.FileTool.WriteRoots, rerooted.Spawned.WriteRoots)
+	}
+	if !tc.WantWorktreeWrite {
+		// read-only: no worktree write in either lane.
+		if rootGrants(rerooted.FileTool.WriteRoots, laneB) || rootGrants(rerooted.Spawned.WriteRoots, laneB) {
+			t.Errorf("case %s: read-only re-root granted a write to lane B: file=%v spawned=%v", tc.Name, rerooted.FileTool.WriteRoots, rerooted.Spawned.WriteRoots)
 		}
-		if !rerooted.Enforced() {
-			t.Errorf("case %s: re-root must stay enforced, got off", tc.Name)
-			continue
-		}
-		if !slices.Contains(rerooted.MaskedPaths, "/proc") {
-			t.Errorf("case %s: re-rooted policy must keep the pseudo-fs floor masked: %v", tc.Name, rerooted.MaskedPaths)
-		}
-		// The shared main repo (parent of neither sibling lane) must never leak as a
-		// write root — a check the lane-vs-lane assertions below cannot see, since
-		// `main` is not an ancestor of either sibling lane.
-		if rootGrants(rerooted.FileTool.WriteRoots, main) || rootGrants(rerooted.Spawned.WriteRoots, main) {
-			t.Errorf("case %s: re-root leaked the shared main repo %q as a write root: file=%v spawned=%v", tc.Name, main, rerooted.FileTool.WriteRoots, rerooted.Spawned.WriteRoots)
-		}
-		if !tc.WantWorktreeWrite {
-			// read-only: no worktree write in either lane.
-			if rootGrants(rerooted.FileTool.WriteRoots, laneB) || rootGrants(rerooted.Spawned.WriteRoots, laneB) {
-				t.Errorf("case %s: read-only re-root granted a write to lane B: file=%v spawned=%v", tc.Name, rerooted.FileTool.WriteRoots, rerooted.Spawned.WriteRoots)
-			}
-			continue
-		}
-		// The write grant must re-anchor to lane B and must NOT still cover lane A.
-		if !rootGrants(rerooted.FileTool.WriteRoots, laneB) {
-			t.Errorf("case %s: re-rooted FileTool must grant writes to target lane %q: %v", tc.Name, laneB, rerooted.FileTool.WriteRoots)
-		}
-		if rootGrants(rerooted.FileTool.WriteRoots, laneA) {
-			t.Errorf("case %s: re-rooted FileTool must NOT still grant the source lane %q (leaked roots): %v", tc.Name, laneA, rerooted.FileTool.WriteRoots)
-		}
-		if !rootGrants(rerooted.Spawned.WriteRoots, laneB) {
-			t.Errorf("case %s: re-rooted Spawned must grant writes to target lane %q: %v", tc.Name, laneB, rerooted.Spawned.WriteRoots)
-		}
-		if rootGrants(rerooted.Spawned.WriteRoots, laneA) {
-			t.Errorf("case %s: re-rooted Spawned must NOT still grant the source lane %q (leaked roots): %v", tc.Name, laneA, rerooted.Spawned.WriteRoots)
-		}
+		return
+	}
+	// The write grant must re-anchor to lane B and must NOT still cover lane A.
+	if !rootGrants(rerooted.FileTool.WriteRoots, laneB) {
+		t.Errorf("case %s: re-rooted FileTool must grant writes to target lane %q: %v", tc.Name, laneB, rerooted.FileTool.WriteRoots)
+	}
+	if rootGrants(rerooted.FileTool.WriteRoots, laneA) {
+		t.Errorf("case %s: re-rooted FileTool must NOT still grant the source lane %q (leaked roots): %v", tc.Name, laneA, rerooted.FileTool.WriteRoots)
+	}
+	if !rootGrants(rerooted.Spawned.WriteRoots, laneB) {
+		t.Errorf("case %s: re-rooted Spawned must grant writes to target lane %q: %v", tc.Name, laneB, rerooted.Spawned.WriteRoots)
+	}
+	if rootGrants(rerooted.Spawned.WriteRoots, laneA) {
+		t.Errorf("case %s: re-rooted Spawned must NOT still grant the source lane %q (leaked roots): %v", tc.Name, laneA, rerooted.Spawned.WriteRoots)
 	}
 }
 
@@ -500,28 +498,5 @@ func materializeWorkspaceWith(t TestingT, kind WorkspaceKind, run contractGitRun
 	default:
 		t.Fatalf("MaterializeWorkspace: unsupported kind %v", kind)
 		return ""
-	}
-}
-
-func requireGitHarness(t TestingT) {
-	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skipf("git binary not available")
-	}
-}
-
-func gitHarness(t TestingT, dir string, args ...string) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(cmd.Environ(),
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e",
-		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e",
-		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
-	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
 	}
 }

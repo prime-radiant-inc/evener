@@ -3,10 +3,12 @@ package provider
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 
 	"primeradiant.com/serf/fuzz/edgeseeds"
+	"primeradiant.com/serf/llm"
 )
 
 // FuzzProfileOverrides drives the communicate-tool schema decorators
@@ -98,7 +100,48 @@ func FuzzProfileOverrides(f *testing.F) {
 
 		// toStringSlice agrees on []string and the []any form JSON unmarshal yields.
 		assertToStringSliceAgrees(t, decisions)
+		assertOverrideFaultBranches(t)
 	})
+}
+
+func assertOverrideFaultBranches(t *testing.T) {
+	t.Helper()
+	td := llm.ToolDefinition{Parameters: map[string]any{"properties": map[string]any{"output": map[string]any{"properties": map[string]any{}}}}}
+	badShapes := []llm.ToolDefinition{
+		{},
+		{Parameters: map[string]any{}},
+		{Parameters: map[string]any{"properties": "bad"}},
+		{Parameters: map[string]any{"properties": map[string]any{}}},
+		{Parameters: map[string]any{"properties": map[string]any{"output": "bad"}}},
+		{Parameters: map[string]any{"properties": map[string]any{"output": map[string]any{}}}},
+	}
+	for _, bad := range badShapes {
+		_ = replaceCommunicateOutputSchema(bad, map[string]any{})
+		_ = addDecisionToSchema(bad, []string{"continue"})
+	}
+	_ = addDecisionToSchema(td, []string{"continue"})
+	_ = replaceCommunicateOutputSchema(td, map[string]any{"bad": make(chan int)})
+	marshalErr := errors.New("marshal")
+	unmarshalErr := errors.New("unmarshal")
+	oldMarshal, oldUnmarshal := profileJSONMarshal, profileJSONUnmarshal
+	defer func() { profileJSONMarshal, profileJSONUnmarshal = oldMarshal, oldUnmarshal }()
+	profileJSONMarshal = func(any) ([]byte, error) { return nil, marshalErr }
+	_ = replaceCommunicateOutputSchema(td, map[string]any{})
+	_ = addDecisionToSchema(td, []string{"continue"})
+	_, _ = deepCopyJSONMap(map[string]any{})
+	profileJSONMarshal = oldMarshal
+	profileJSONUnmarshal = func([]byte, any) error { return unmarshalErr }
+	_ = replaceCommunicateOutputSchema(td, map[string]any{})
+	_ = addDecisionToSchema(td, []string{"continue"})
+	_, _ = deepCopyJSONMap(map[string]any{})
+	profileJSONUnmarshal = oldUnmarshal
+	profileJSONMarshal = func(v any) ([]byte, error) {
+		if v == nil {
+			return nil, marshalErr
+		}
+		return oldMarshal(v)
+	}
+	_ = replaceCommunicateOutputSchema(td, nil)
 }
 
 func assertBaseUnchanged(t *testing.T, base *Profile, snapshot []byte, op string) {

@@ -104,9 +104,11 @@ type probeSystem interface {
 
 type hostProbeSystem struct{}
 
+var probeUserHomeDir = os.UserHomeDir
+
 func (hostProbeSystem) goos() string { return runtime.GOOS }
 
-func (hostProbeSystem) userHomeDir() (string, error) { return os.UserHomeDir() }
+func (hostProbeSystem) userHomeDir() (string, error) { return probeUserHomeDir() }
 
 func (hostProbeSystem) lookPath(name string) (string, error) { return exec.LookPath(name) }
 

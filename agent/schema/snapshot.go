@@ -12,6 +12,8 @@ import (
 	"github.com/spf13/afero"
 )
 
+var marshalSessionMeta = json.Marshal
+
 // SessionMeta holds session metadata without the full conversation history.
 // The history is always recovered from the transcript JSONL file.
 type SessionMeta struct {
@@ -199,7 +201,7 @@ func saveSessionMetaFS(fs afero.Fs, dir string, meta SessionMeta) error {
 		return fmt.Errorf("create sessions dir: %w", err)
 	}
 
-	data, err := json.Marshal(meta)
+	data, err := marshalSessionMeta(meta)
 	if err != nil {
 		return fmt.Errorf("marshal session meta: %w", err)
 	}

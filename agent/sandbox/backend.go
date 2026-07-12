@@ -24,6 +24,8 @@ type Wrapper struct {
 	sessionTmp string // per-session writable tmp; also the child's TMPDIR
 }
 
+var wrapSeatbelt = seatbeltWrap
+
 // NewWrapper builds a kernel wrapper for policy using the backend binary at
 // binaryPath and the per-session tmp dir sessionTmp. It refuses a backend that
 // imposes no containment (BackendNone) and a non-absolute binary path: a
@@ -86,7 +88,7 @@ func (w *Wrapper) Wrap(argv []string, cwd string) []string {
 		return argv
 	}
 	if w.policy.Backend == BackendSeatbelt {
-		wrapped, err := seatbeltWrap(argv, w.policy, w.sessionTmp, cwd)
+		wrapped, err := wrapSeatbelt(argv, w.policy, w.sessionTmp, cwd)
 		if err != nil {
 			// Unreachable in a real deployment: the resolver selects the seatbelt
 			// backend only on darwin, where seatbeltWrap always succeeds. A seatbelt

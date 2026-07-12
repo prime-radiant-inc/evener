@@ -36,6 +36,10 @@ func FuzzProvenance(f *testing.F) {
 	f.Add(bytes.Repeat([]byte{1, 3}, 12), bytes.Repeat([]byte{3}, 20), "w", "g", "d")
 
 	f.Fuzz(func(t *testing.T, a, b []byte, watchID, watchGen, deliveryID string) {
+		if ContainsWatch(nil, watchID, watchGen) || ContainsWatch(&Causal{}, watchID, watchGen) ||
+			ContainsWatch(&Causal{WatchKeys: []WatchKey{{WatchID: "other", WatchGeneration: "other"}}}, "missing", "missing") {
+			t.Fatal("ContainsWatch accepted an absent or degenerate watch")
+		}
 		pa := buildCausal(a)
 		pb := buildCausal(b)
 

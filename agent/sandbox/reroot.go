@@ -151,8 +151,5 @@ func (w *Wrapper) ReRoot(cwd string) (*Wrapper, error) {
 	if err != nil {
 		return nil, err
 	}
-	if rerooted == nil {
-		return nil, nil
-	}
 	return NewWrapper(*rerooted, w.binaryPath, w.sessionTmp)
 }

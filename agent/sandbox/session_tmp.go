@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+var (
+	sessionTempDir = os.TempDir
+	sessionReadDir = os.ReadDir
+)
+
 // sessionTmpPrefix names every per-session tmp dir so the age-sweep can recognize
 // serf's own dirs and never touch anything else under the base tmp.
 const sessionTmpPrefix = "serf-sandbox-"
@@ -32,7 +37,7 @@ type SessionTmp struct {
 // returned dir must be Cleanup()'d at session end.
 func NewSessionTmp(base string) (*SessionTmp, error) {
 	if base == "" {
-		base = os.TempDir()
+		base = sessionTempDir()
 	}
 	sweepCrashedSessions(base)
 	dir, err := os.MkdirTemp(base, sessionTmpPrefix+"*")
@@ -56,7 +61,7 @@ func (s *SessionTmp) Cleanup() error {
 // user's own files under the base tmp are never at risk. Errors are ignored — a
 // best-effort sweep must never block a new session from starting.
 func sweepCrashedSessions(base string) {
-	entries, err := os.ReadDir(base)
+	entries, err := sessionReadDir(base)
 	if err != nil {
 		return
 	}
