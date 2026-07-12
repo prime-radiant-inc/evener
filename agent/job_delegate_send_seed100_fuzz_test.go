@@ -117,7 +117,9 @@ func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
 			delegateSendTestHooks.afterClassify = func(got *Session) { got.cfg.spawn.parentSteer = nil }
 			t.Cleanup(func() { delegateSendTestHooks.afterClassify = nil })
 			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: runtimeMessageAliasCaller, Message: "seed"})
-			requireSendSeed100Error(t, res, "caller unavailable")
+			if res.Err != nil || !res.Delivered {
+				t.Fatalf("local caller steering = %+v, want delivered", res)
+			}
 		case 11:
 			s := newLeanDelegateRestorePreflightSession(t, llm.NewClient())
 			rec := seedStoppedDelegateRestoreRecord(t, s)
