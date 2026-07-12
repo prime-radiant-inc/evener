@@ -23,6 +23,11 @@ import (
 	"primeradiant.com/serf/frontmatter"
 )
 
+var (
+	settingsLaunchModelList = serfLaunchModelList
+	settingsAbsPath         = filepath.Abs
+)
+
 func (s *WebServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("HX-Request") == "true" {
 		http.NotFound(w, r)
@@ -70,7 +75,7 @@ func (s *WebServer) renderSettingsPartial(w http.ResponseWriter, r *http.Request
 	}
 
 	// Group launch harness models by provider for the providers page.
-	launchModelList, launchModelErr := serfLaunchModelList(r.Context(), s.cfg, "")
+	launchModelList, launchModelErr := settingsLaunchModelList(r.Context(), s.cfg, "")
 	if launchModelErr != nil {
 		launchModelList = appwire.ModelListResponse{
 			Diagnostics: []appwire.ModelListDiagnostic{launchModelListErrorDiagnostic(launchModelErr)},
@@ -106,38 +111,6 @@ func (s *WebServer) renderSettingsPartial(w http.ResponseWriter, r *http.Request
 	mcpPath := s.mcpConfigPathForSettings()
 	mcps, mcpsErr := s.discoverMCPsForSettings(r.Context(), mcpPath)
 
-	// Resolve canonical project cwd for the per-project settings page.
-	var projectCWD string
-	if section == "project" {
-		if cwd := strings.TrimSpace(r.URL.Query().Get("cwd")); cwd != "" {
-			if abs, err := filepath.Abs(cwd); err == nil {
-				projectCWD = abs
-			} else {
-				projectCWD = cwd
-			}
-		}
-	}
-
-	// Build a deduplicated list of known projects for the project picker.
-	var availableProjects []projectListItem
-	if section == "project" && projectCWD == "" && s.cfg.Past != nil {
-		seen := map[string]bool{}
-		for _, meta := range s.cfg.Past.AllMetas() {
-			cwd := meta.EnvInfo.WorkingDir
-			if cwd == "" || seen[cwd] {
-				continue
-			}
-			seen[cwd] = true
-			availableProjects = append(availableProjects, projectListItem{
-				CWD:  cwd,
-				Name: filepath.Base(cwd),
-			})
-		}
-		sort.Slice(availableProjects, func(i, j int) bool {
-			return availableProjects[i].Name < availableProjects[j].Name
-		})
-	}
-
 	// Compute display-only fields for the general/storage settings pages.
 	pastIndexPath := tildeHome(s.cfg.PastIndexPath)
 	pastIndexSize := fileSizeHuman(s.cfg.PastIndexPath)
@@ -147,30 +120,28 @@ func (s *WebServer) renderSettingsPartial(w http.ResponseWriter, r *http.Request
 	}
 
 	data := settingsData{
-		Active:            section,
-		HubAddr:           s.cfg.HubAddr,
-		RunDir:            s.cfg.RunDir,
-		StateDir:          s.cfg.StateDir,
-		SpawnTimeout:      "30s",
-		PastPerPage:       s.cfg.PastPerPage,
-		PastIndexPath:     pastIndexPath,
-		PastIndexSize:     pastIndexSize,
-		BearerTokenAge:    bearerTokenAge,
-		HubVersion:        Version,
-		HubCommit:         buildinfo.GitSHA,
-		Providers:         providers,
-		ModelDiagnostics:  launchModelList.Diagnostics,
-		Agents:            agents,
-		Plugins:           plugins,
-		PluginsError:      errString(pluginsErr),
-		Skills:            skills,
-		Mcps:              mcps,
-		McpsError:         errString(mcpsErr),
-		McpConfigPath:     mcpPath,
-		PastCount:         pastCount,
-		CodexLaunches:     s.cfg.CodexLaunches,
-		ProjectCWD:        projectCWD,
-		AvailableProjects: availableProjects,
+		Active:           section,
+		HubAddr:          s.cfg.HubAddr,
+		RunDir:           s.cfg.RunDir,
+		StateDir:         s.cfg.StateDir,
+		SpawnTimeout:     "30s",
+		PastPerPage:      s.cfg.PastPerPage,
+		PastIndexPath:    pastIndexPath,
+		PastIndexSize:    pastIndexSize,
+		BearerTokenAge:   bearerTokenAge,
+		HubVersion:       Version,
+		HubCommit:        buildinfo.GitSHA,
+		Providers:        providers,
+		ModelDiagnostics: launchModelList.Diagnostics,
+		Agents:           agents,
+		Plugins:          plugins,
+		PluginsError:     errString(pluginsErr),
+		Skills:           skills,
+		Mcps:             mcps,
+		McpsError:        errString(mcpsErr),
+		McpConfigPath:    mcpPath,
+		PastCount:        pastCount,
+		CodexLaunches:    s.cfg.CodexLaunches,
 	}
 
 	// Render just the inner settings-content partial when htmx is targeting
@@ -193,7 +164,7 @@ func (s *WebServer) renderSettingsPartial(w http.ResponseWriter, r *http.Request
 func (s *WebServer) renderProjectSettingsPartial(w http.ResponseWriter, r *http.Request) {
 	var projectCWD string
 	if cwd := strings.TrimSpace(r.URL.Query().Get("cwd")); cwd != "" {
-		if abs, err := filepath.Abs(cwd); err == nil {
+		if abs, err := settingsAbsPath(cwd); err == nil {
 			projectCWD = abs
 		} else {
 			projectCWD = cwd
