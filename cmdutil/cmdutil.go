@@ -354,7 +354,10 @@ func trimNonEmpty(parts []string) []string {
 // HTTP requests. `provider` must be the provider TYPE / behavior tag
 // (kimi/glm/openrouter), not an instance name — the lookup keys on
 // providerEnvConfig by that tag.
-var queryModelContextWindow = func(provider, model, instanceBaseURL, instanceAPIKey string, instanceHeaders map[string]string) int {
+var queryModelContextWindow = queryModelContextWindowImpl
+var lookupProviderEnv = envvars.Provider
+
+func queryModelContextWindowImpl(provider, model, instanceBaseURL, instanceAPIKey string, instanceHeaders map[string]string) int {
 	switch provider {
 	case "kimi", "glm", "openrouter":
 		// Provider types with an env-registry fallback for key/base URL.
@@ -370,7 +373,7 @@ var queryModelContextWindow = func(provider, model, instanceBaseURL, instanceAPI
 		// OpenAI /models shape and local models have no upstream window.
 		return 0
 	}
-	env, envOK := envvars.Provider(provider)
+	env, envOK := lookupProviderEnv(provider)
 	// Prefer the instance's configured key/base URL (providers.toml) over the
 	// provider-type env var / default, so an instance with a custom endpoint
 	// (the Kimi coding plan) is queried at its real /models.

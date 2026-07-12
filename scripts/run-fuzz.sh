@@ -585,6 +585,7 @@ TARGETS=(
 	"native:.:./internal/plugins:FuzzPackageUnion::"
 	"native:.:./internal/selfupdate:FuzzPackageUnion::"
 	"native:.:./cmdutil:FuzzCmdutilCoverage::"
+	"native:.:./cmdutil:FuzzCmdutilScenarioReplay::"
 	"native:.:./tools/tool-fluency/cmd/serf-fluency:FuzzFluencyCoverage::"
 	"native:agent:.:FuzzSessionEngineCoverage::"
 	"native:agent:.:FuzzModelCallExactCoverage::"

@@ -9,6 +9,7 @@ import (
 )
 
 var newClientFromEnv = llm.NewFromEnv
+var findEnvVar = envvars.Find
 
 // seedConfigFromEnv detects providers from the environment and returns a
 // descriptors-only Config. It does NOT write anything to disk. LoadClient uses
@@ -40,7 +41,7 @@ func seedConfigFromEnv(opts ...llm.EnvOption) (providercfg.Config, error) {
 		if v == "" {
 			return ""
 		}
-		envVar, ok := envvars.Find(v)
+		envVar, ok := findEnvVar(v)
 		if !ok {
 			return ""
 		}

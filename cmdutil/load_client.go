@@ -13,6 +13,7 @@ import (
 )
 
 var newClientFromAvailableProviders = llm.NewFromAvailableProviders
+var loadCredentialStore = credentials.LoadStore
 
 // LoadProviderConfig resolves the providers config using the same path and
 // credential injection rules as LoadClient, but does not construct adapters.
@@ -54,7 +55,7 @@ func LoadProviderConfig(opts ...llm.EnvOption) (providercfg.Config, bool, error)
 		}
 	}
 
-	store, err := credentials.LoadStore(filepath.Join(filepath.Dir(path), "credentials.toml"))
+	store, err := loadCredentialStore(filepath.Join(filepath.Dir(path), "credentials.toml"))
 	if err != nil {
 		return providercfg.Config{}, false, fmt.Errorf("credentials store: %w", err)
 	}
