@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -82,6 +83,10 @@ func seed100ToolsRangeC(t *testing.T) {
 		JobID: "job_seed", Output: ptrString(strings.Repeat("x", 64)),
 		StructuredResult: strings.Repeat("y", 256),
 	}, 16)
+	changing := &seed100ChangingJSON{}
+	_, _ = marshalBoundedDelegateResult(delegateToolResult{
+		JobID: "job_seed", Output: ptrString(""), StructuredResult: changing,
+	}, 256)
 	_, _, _ = marshalDelegateResultWithOutputLimit(delegateToolResult{
 		JobID: "job_seed", Output: ptrString("x"), StructuredResult: make(chan int),
 	}, 100)
@@ -93,10 +98,21 @@ func seed100ToolsRangeC(t *testing.T) {
 	_, _ = jobStatusArrayArg(map[string]any{}, "status")
 	_, _ = jobStatusArrayArg(map[string]any{"status": "running"}, "status")
 	_, _ = jobStatusArrayArg(map[string]any{"status": []any{"bogus"}}, "status")
+	_, _, _ = strictZeroJobBytesArg(map[string]any{"head_bytes": maxJobOutputBytes + 1}, "head_bytes")
 	_, _ = watchArgsFromToolArgs(map[string]any{"operation": "create", "target": "self"})
 	_, _ = watchArgsFromToolArgs(map[string]any{
-		"operation": "create", "source": "self", "progress_interval_ms": 10,
+		"operation": "create", "source": "self", "progress_interval_ms": 10, "every": 2,
 		"events": "terminal",
 	})
 	_, _ = watchArgsFromToolArgs(map[string]any{"operation": "create", "source": "dlg_seed"})
+}
+
+type seed100ChangingJSON struct{ calls int }
+
+func (v *seed100ChangingJSON) MarshalJSON() ([]byte, error) {
+	v.calls++
+	if v.calls == 1 {
+		return json.Marshal(strings.Repeat("x", 512))
+	}
+	return []byte(`"ok"`), nil
 }
