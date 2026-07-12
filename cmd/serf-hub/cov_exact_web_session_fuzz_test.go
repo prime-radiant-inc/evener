@@ -111,6 +111,9 @@ func FuzzCovExactWebSession(f *testing.F) {
 			return nil, errors.New("scripted source missing")
 		}
 		webSourceForThread = missingSource
+		remoteMissing := NewWebServer(hubcore.WebConfig{})
+		remoteMissing.sources.Add(&exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "remote-missing", thread: appwire.Thread{ID: "thread", SessionID: "thread", Source: "remote-missing", Serf: appwire.SerfThread{Ref: "remote-missing:thread", Capabilities: appwire.ThreadCapabilities{Send: true}}}}})
+		call(func(w http.ResponseWriter, r *http.Request) { remoteMissing.handleSend(w, r, "remote-missing:thread") }, http.MethodPost, "/s/remote-missing:thread/send", `{"text":"hi"}`)
 		noRosterSend := NewWebServer(hubcore.WebConfig{})
 		call(func(w http.ResponseWriter, r *http.Request) { noRosterSend.handleSend(w, r, "missing") }, http.MethodPost, "/s/missing/send", `{"text":"hi"}`)
 
