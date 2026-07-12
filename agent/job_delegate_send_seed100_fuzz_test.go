@@ -21,11 +21,11 @@ import (
 // FuzzJobDelegateSendSeed100Edges exercises deterministic send and restore
 // guards whose inputs normally require a partially lost delegate runtime.
 func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
-	for seed := byte(0); seed < 18; seed++ {
+	for seed := byte(0); seed < 21; seed++ {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, seed byte) {
-		switch seed % 18 {
+		switch seed % 21 {
 		case 0:
 			s := newLeanDelegateRestorePreflightSession(t, llm.NewClient())
 			rec := seedStoppedDelegateRestoreRecord(t, s)
@@ -179,7 +179,7 @@ func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
 			rec := seedStoppedDelegateRestoreRecord(t, s)
 			delegateSendTestHooks.beforePostState = func(sub *subagent) { sub.mu.Lock(); sub.running = true; sub.mu.Unlock() }
 			delegateSendTestHooks.findRunning = func(*jobManager, string) (*jobstore.JobRecord, error) {
-				if seed%18 == 15 {
+				if seed%21 == 15 {
 					return nil, errors.New("running lookup fault")
 				}
 				return rec, nil
@@ -196,6 +196,44 @@ func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
 			}
 			t.Cleanup(func() { delegateSendTestHooks.resume = nil })
 			_ = s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed", OnIdle: "start"})
+		case 18:
+			s := newDelegateRestorePreflightSession(t, llm.NewClient())
+			rec := seedStoppedDelegateRestoreRecord(t, s)
+			rec.Reason = "stopped"
+			delegateSendTestHooks.findJob = func(*jobManager, string) (*jobstore.JobRecord, error) { return rec, nil }
+			old := delegateRestoreSession
+			delegateRestoreSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, RestoreSessionConfig) (*Session, error) {
+				return nil, errors.New("seed restore fault")
+			}
+			t.Cleanup(func() {
+				delegateSendTestHooks.findJob = nil
+				delegateRestoreSession = old
+			})
+			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed", OnIdle: "start"})
+			requireSendSeed100Error(t, res, "target_not_resumable: delegate session")
+		case 19:
+			base := NewOpenAIProfile("base")
+			s := &Session{resolveProfile: func(string) (*provider.Profile, error) {
+				return provider.WithProviderID(NewOpenAIProfile("restored"), "other"), nil
+			}}
+			got, err := s.resolveDelegateRestoreProfileRef(base, "other", "restored")
+			if err != nil || got == nil || got.ID() != "other" {
+				t.Fatalf("cross-provider restore profile = (%v, %v)", got, err)
+			}
+		case 20:
+			rig := newWtDlgRepo(t, delegateTestClient(func(llm.Request) llm.Response {
+				return communicateWithDefaultOutput("done")
+			}))
+			res := rig.s.createDelegate(nil, delegateArgs{Task: "lane", Isolation: "worktree", Background: true})
+			if res.Err != nil {
+				t.Fatalf("create isolated delegate: %v", res.Err)
+			}
+			desc := &jobstore.DelegateRestoreDescriptor{
+				Isolation: "worktree", WorkingDir: rig.lanePath(res.DelegateID), LocalEnvPolicy: "default",
+			}
+			if _, err := rig.s.restoreDelegateChildEnvironment(desc, "dlg_other"); err == nil {
+				t.Fatal("foreign delegate restored into locked worktree")
+			}
 		}
 	})
 }

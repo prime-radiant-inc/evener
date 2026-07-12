@@ -172,6 +172,7 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 		nodeOutput{Data: nil, Artifacts: nil},
 		nodeOutput{Decision: "continue", Message: token, Data: map[string]any{"ok": true}, Artifacts: []string{"a"}},
 		map[string]any{"message": 42, "artifacts": []string{"a"}},
+		map[string]any{"artifacts": []string{"a"}},
 		map[string]any{"artifacts": []any{"a", 2}},
 		map[string]any{"decision": " "},
 		map[string]any{"decision": "continue"},
