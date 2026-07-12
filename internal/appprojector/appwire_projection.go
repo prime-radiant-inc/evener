@@ -658,6 +658,25 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Name:     data.Name,
 			Source:   data.Source,
 		})}
+	case events.EventModelChanged:
+		p.clearSkillCandidate()
+		data := eventData[events.ModelChangedData](event.Data)
+		return []AppNotification{p.notification(appwire.NotifyThreadModelChanged, appwire.ThreadModelChangedParams{
+			ThreadID:              p.threadID,
+			Ref:                   p.ref,
+			ModelProvider:         data.NewProvider,
+			Model:                 data.NewModel,
+			ReasoningEffortLevels: data.ReasoningEffortLevels,
+			SupportsReasoning:     data.SupportsReasoning,
+		})}
+	case events.EventReasoningEffortChanged:
+		p.clearSkillCandidate()
+		data := eventData[events.ReasoningEffortChangedData](event.Data)
+		return []AppNotification{p.notification(appwire.NotifyThreadReasoningEffortChanged, appwire.ThreadReasoningEffortChangedParams{
+			ThreadID:        p.threadID,
+			Ref:             p.ref,
+			ReasoningEffort: data.ReasoningEffort,
+		})}
 	case events.EventJobStarted:
 		p.clearSkillCandidate()
 		data := eventData[events.JobStartedData](event.Data)

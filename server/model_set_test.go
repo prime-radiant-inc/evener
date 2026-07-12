@@ -147,3 +147,35 @@ func TestHandleModel_SuccessReturnsNoContent(t *testing.T) {
 		t.Fatalf("hook not called as expected: called=%v got=%q", called, got)
 	}
 }
+
+// TestHandleAppThreadModelSet_ThreadReadReflectsNewModelWithNoInterveningTurn
+// pins the G2 snapshot-freshness fix (Task 4d): the daemon's cached session
+// info (status.Model) must refresh SYNCHRONOUSLY on the model-hook path, so
+// thread/read reports the new model immediately after thread/model/set
+// returns — with NO intervening turn and no EventSessionStart round trip.
+// This is the same wiring shape cmd/serf/serve.go's SetModelFunc closure
+// uses: on a successful model hook, call UpdateSessionInfo with the new
+// provider/model before returning.
+func TestHandleAppThreadModelSet_ThreadReadReflectsNewModelWithNoInterveningTurn(t *testing.T) {
+	s := NewServer(ServerConfig{})
+	s.SetStatus(StatusInfo{SessionID: "s1", Model: "gpt-5.4", Profile: "openai"})
+	s.SetModelFunc(func(m string) error {
+		// Mirrors serve.go: the hook itself refreshes the cached session info
+		// synchronously after a successful switch, rather than waiting for the
+		// next EventSessionStart (which never fires again mid-session).
+		s.UpdateSessionInfo("s1", m, "anthropic")
+		return nil
+	})
+
+	if _, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{ModelProvider: "anthropic", Model: "claude-opus-4-6"}); err != nil {
+		t.Fatalf("handleAppThreadModelSet: %v", err)
+	}
+
+	thread, err := s.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{})
+	if err != nil {
+		t.Fatalf("handleAppThreadRead: %v", err)
+	}
+	if thread.Thread.ModelProvider != "anthropic/claude-opus-4-6" {
+		t.Fatalf("thread/read ModelProvider = %q, want anthropic/claude-opus-4-6 with no intervening turn", thread.Thread.ModelProvider)
+	}
+}

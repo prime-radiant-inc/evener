@@ -486,6 +486,7 @@ func (s *Server) appThread() appwire.Thread {
 	metafn := s.sessionMetaFn
 	pafn := s.pendingAskFn
 	pesfn := s.pendingEscalationsSnapshotFn
+	rifn := s.reasoningInfoFn
 	activeTurnID := s.appActiveTurnID
 	s.mu.RUnlock()
 
@@ -552,6 +553,12 @@ func (s *Server) appThread() appwire.Thread {
 			pendingEscalations[i].Ref = ref
 		}
 	}
+	var reasoningEffort string
+	var reasoningEffortLevels []string
+	var supportsReasoning bool
+	if rifn != nil {
+		reasoningEffort, reasoningEffortLevels, supportsReasoning = rifn()
+	}
 	var meta schema.SessionMeta
 	if metafn != nil {
 		meta = metafn()
@@ -572,22 +579,25 @@ func (s *Server) appThread() appwire.Thread {
 		Path:          filepath.Base(status.WorkingDir),
 		Source:        sourceID,
 		Serf: appwire.SerfThread{
-			Ref:                 ref,
-			Profile:             status.Profile,
-			ActiveTurnID:        activeTurnID,
-			ContextPressure:     pressure,
-			ContextUsed:         metrics.Used,
-			ContextWindow:       metrics.Window,
-			ContextRemaining:    metrics.Remaining,
-			Capabilities:        s.appCapabilities(status.State, processing),
-			Diagnostics:         diagnostics,
-			Queue:               queue,
-			Goal:                goalState,
-			Usage:               usage,
-			WorkMillis:          workMillis,
-			ActiveTurnStartedAt: activeTurnStartedAt,
-			AskPending:          askPending,
-			PendingEscalations:  pendingEscalations,
+			Ref:                   ref,
+			Profile:               status.Profile,
+			ActiveTurnID:          activeTurnID,
+			ContextPressure:       pressure,
+			ContextUsed:           metrics.Used,
+			ContextWindow:         metrics.Window,
+			ContextRemaining:      metrics.Remaining,
+			Capabilities:          s.appCapabilities(status.State, processing),
+			Diagnostics:           diagnostics,
+			Queue:                 queue,
+			Goal:                  goalState,
+			Usage:                 usage,
+			WorkMillis:            workMillis,
+			ActiveTurnStartedAt:   activeTurnStartedAt,
+			AskPending:            askPending,
+			PendingEscalations:    pendingEscalations,
+			ReasoningEffort:       reasoningEffort,
+			ReasoningEffortLevels: reasoningEffortLevels,
+			SupportsReasoning:     supportsReasoning,
 		},
 	}
 }

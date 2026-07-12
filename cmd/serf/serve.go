@@ -403,9 +403,26 @@ func runServe(args []string) error {
 		}
 		return out
 	})
-	srv.SetModelFunc(func(model string) error { return getSession().SetModel(model) })
+	srv.SetModelFunc(func(model string) error {
+		sess := getSession()
+		if err := sess.SetModel(model); err != nil {
+			return err
+		}
+		// Refresh the daemon's cached session info synchronously (G2): status.Model
+		// otherwise only updates on EventSessionStart, which never fires again
+		// mid-session, so thread/read would report a stale model until the next
+		// turn re-derived it.
+		p := sess.Profile()
+		srv.UpdateSessionInfo(sess.ID(), p.Model(), p.ID())
+		return nil
+	})
 	srv.SetNameFunc(func(name string) { getSession().Rename(name) })
 	srv.SetReasoningEffortFunc(func(effort string) { getSession().SetReasoningEffort(effort) })
+	srv.SetReasoningInfoFunc(func() (string, []string, bool) {
+		sess := getSession()
+		p := sess.Profile()
+		return sess.ReasoningEffort(), p.ReasoningEffortLevels(), p.SupportsReasoning()
+	})
 	srv.SetListModelsFunc(cmdutil.ListModelsFunc(client, profile.ID()))
 	srv.SetDetailedStatusFunc(func() server.DetailedStatus {
 		return agentToServerDetailedStatus(getSession().DetailedStatus())

@@ -563,6 +563,14 @@ func (s *Session) StateDir() string { return s.stateDir }
 // Profile returns the session's current provider profile.
 func (s *Session) Profile() *provider.Profile { return s.currentProfile() }
 
+// ReasoningEffort returns the session's current reasoning-effort configuration
+// (already normalized by SetReasoningEffort; empty means unset/default).
+func (s *Session) ReasoningEffort() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg.ReasoningEffort
+}
+
 // currentProfile returns the active profile under s.mu so reads never race
 // SetModel's swap (s.profile is reassigned under s.mu). Callers that already
 // hold s.mu must read s.profile directly instead of calling this.
@@ -597,7 +605,9 @@ func (s *Session) SetReasoningEffort(effort string) {
 	// reasoning effort rather than forwarding the literal to the provider, matching
 	// the CLI resolver.
 	s.cfg.ReasoningEffort = llm.NormalizeReasoningEffort(effort)
+	normalized := s.cfg.ReasoningEffort
 	s.mu.Unlock()
+	s.emit(events.EventReasoningEffortChanged, events.ReasoningEffortChangedData{ReasoningEffort: normalized})
 	// Flush meta.json so a daemon crash before the next happy-path turn
 	// boundary doesn't leave on-disk cfg stale. Kata wnfz. maybeAutoSave
 	// re-acquires s.mu via s.Meta(), so the lock must be released first.
@@ -666,6 +676,7 @@ func (s *Session) SetModel(model string) error {
 		s.mu.Unlock()
 		return nil
 	}
+	oldProfile := s.profile
 	oldTag := s.profile.BehaviorTag()
 	nextProfile, crossProvider, err := s.resolveProfileForRef(s.profile, model)
 	if err != nil {
@@ -713,6 +724,14 @@ func (s *Session) SetModel(model string) error {
 	// recorded for a later marker (Task 5) to surface as a warning.
 	s.lastDroppedModelFallbacks = s.revalidateModelFallbacksLocked()
 	s.mu.Unlock()
+	s.emit(events.EventModelChanged, events.ModelChangedData{
+		OldProvider:           oldProfile.ID(),
+		OldModel:              oldProfile.Model(),
+		NewProvider:           nextProfile.ID(),
+		NewModel:              nextProfile.Model(),
+		ReasoningEffortLevels: nextProfile.ReasoningEffortLevels(),
+		SupportsReasoning:     nextProfile.SupportsReasoning(),
+	})
 	// Flush meta.json so a daemon crash before the next happy-path turn
 	// boundary doesn't leave on-disk model stale. Kata wnfz. maybeAutoSave
 	// re-acquires s.mu via s.Meta(), so the lock must be released first.

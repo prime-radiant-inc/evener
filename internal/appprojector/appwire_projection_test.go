@@ -43,6 +43,55 @@ func TestAppEventProjectorCarriesUserInputTranscriptEntryIndex(t *testing.T) {
 	}
 }
 
+func TestProject_ModelChanged(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{
+		Kind: events.EventModelChanged,
+		Data: events.ModelChangedData{
+			OldProvider:           "openai",
+			OldModel:              "gpt-5.4",
+			NewProvider:           "anthropic",
+			NewModel:              "claude-opus-4-6",
+			ReasoningEffortLevels: []string{"low", "high"},
+			SupportsReasoning:     true,
+		},
+	})
+	if len(out) != 1 || out[0].Method != appwire.NotifyThreadModelChanged {
+		t.Fatalf("want one thread/model/changed notification, got %+v", out)
+	}
+	params, ok := out[0].Params.(appwire.ThreadModelChangedParams)
+	if !ok {
+		t.Fatalf("params type = %T, want appwire.ThreadModelChangedParams", out[0].Params)
+	}
+	if params.ThreadID != "th1" || params.Ref != "local:th1" {
+		t.Fatalf("params missing threadId/ref: %+v", params)
+	}
+	if params.ModelProvider != "anthropic" || params.Model != "claude-opus-4-6" {
+		t.Fatalf("params modelProvider/model = %s/%s, want anthropic/claude-opus-4-6", params.ModelProvider, params.Model)
+	}
+	if !params.SupportsReasoning || len(params.ReasoningEffortLevels) != 2 {
+		t.Fatalf("params = %+v, want SupportsReasoning=true and 2 effort levels", params)
+	}
+}
+
+func TestProject_ReasoningEffortChanged(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{
+		Kind: events.EventReasoningEffortChanged,
+		Data: events.ReasoningEffortChangedData{ReasoningEffort: "high"},
+	})
+	if len(out) != 1 || out[0].Method != appwire.NotifyThreadReasoningEffortChanged {
+		t.Fatalf("want one thread/reasoning-effort/changed notification, got %+v", out)
+	}
+	params, ok := out[0].Params.(appwire.ThreadReasoningEffortChangedParams)
+	if !ok {
+		t.Fatalf("params type = %T, want appwire.ThreadReasoningEffortChangedParams", out[0].Params)
+	}
+	if params.ThreadID != "th1" || params.Ref != "local:th1" || params.ReasoningEffort != "high" {
+		t.Fatalf("params = %+v", params)
+	}
+}
+
 func TestProject_TaskUpdated(t *testing.T) {
 	p := NewAppEventProjector("th1", "local:th1")
 	out := p.Project(events.SessionEvent{
