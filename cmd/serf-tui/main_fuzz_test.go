@@ -33,6 +33,12 @@ func FuzzRootTUIMain(f *testing.F) {
 			testRootTUIMainAndExecutableBoundaries(t)
 			return
 		}
+		if selector%10 == 8 {
+			// Construction does not start terminal I/O; Run remains fully faked.
+			_ = processArgs()
+			warmModelCatalog()
+			_ = newTUIProgram(hubModel{})
+		}
 		var stderr, stdout bytes.Buffer
 		var reset, applied, probed, initialized, altScreen, sent bool
 		var warm sync.WaitGroup
