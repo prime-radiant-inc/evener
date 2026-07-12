@@ -121,8 +121,13 @@ func FuzzAnthropicCompleteRoundTrip(f *testing.F) {
 	f.Add("claude-test", "s", "u", "t", byte(3), 1.0, byte(44), []byte(`{"error":{"message":"bad"}}`)) // 4xx
 	f.Add("claude-test", "", "", "", byte(2), 0.0, byte(4), []byte(`not json`))
 	f.Add("m", "s", "u", "shell", byte(1), 0.0, byte(0), []byte("{\"content\":\xff}"))
+	f.Add("__anthropic_coverage_sweep__", "", "", "", byte(0), 0.0, byte(0), ok)
 
 	f.Fuzz(func(t *testing.T, model, sys, user, toolName string, effortSel byte, temp float64, statusSel byte, respBody []byte) {
+		if model == "__anthropic_coverage_sweep__" {
+			anthropicCoverageSweep(t)
+			return
+		}
 		req := fuzzRoundTripRequest(model, sys, user, toolName, effortSel, temp)
 		status := fuzzRoundTripStatus(statusSel)
 

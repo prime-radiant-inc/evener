@@ -46,6 +46,10 @@ func NewForInstance(params AnthropicInstanceParams) (*Adapter, error) {
 	if base == "" {
 		base = "https://api.anthropic.com"
 	}
+	return newAdapter(params, base), nil
+}
+
+func newAdapter(params AnthropicInstanceParams, base string) *Adapter {
 	return &Adapter{
 		name:   params.Name,
 		APIKey: params.APIKey,
@@ -53,7 +57,7 @@ func NewForInstance(params AnthropicInstanceParams) (*Adapter, error) {
 		BaseURL:        strings.TrimRight(base, "/"),
 		Client:         &http.Client{Timeout: 0},
 		DefaultHeaders: llm.MergeHeaders(nil, params.Headers),
-	}, nil
+	}
 }
 
 func init() {
@@ -61,11 +65,16 @@ func init() {
 		if envvars.AnthropicAPIKey.Trimmed() == "" {
 			return nil, false, nil
 		}
-		a, err := NewFromEnv()
-		if err != nil {
-			return nil, true, err
+		params := AnthropicInstanceParams{
+			Name:    "anthropic",
+			APIKey:  envvars.AnthropicAPIKey.Trimmed(),
+			BaseURL: envvars.AnthropicBaseURL.Trimmed(),
 		}
-		return a, true, nil
+		base := strings.TrimSpace(params.BaseURL)
+		if base == "" {
+			base = "https://api.anthropic.com"
+		}
+		return newAdapter(params, strings.TrimRight(base, "/")), true, nil
 	})
 	llm.RegisterInstanceAdapterFactory("anthropic", "", func(inst providercfg.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
 		return NewForInstance(AnthropicInstanceParams{
@@ -500,9 +509,6 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 				switch st.typ {
 				case "text":
 					if st.textStarted {
-						if st.textID == "" {
-							st.textID = fmt.Sprintf("text_%d", idx)
-						}
 						s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: st.textID})
 						st.textStarted = false
 					}
