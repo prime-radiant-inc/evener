@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/rendezvous"
 )
 
 func covThreadreadServer(t *testing.T) (*WebServer, string, string) {
@@ -66,11 +67,20 @@ func covThreadReadSeed(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = pastThreadForRead(hubcore.WebConfig{}, appwire.ThreadReadParams{ThreadID: session})
+	_, _ = pastThreadForRead(web.cfg, appwire.ThreadReadParams{})
 	_, _ = pastThreadForRead(web.cfg, appwire.ThreadReadParams{ThreadID: "missing"})
 	_, _ = pastThreadForRead(web.cfg, appwire.ThreadReadParams{ThreadID: session})
 	past, _ := pastThreadForRead(web.cfg, appwire.ThreadReadParams{Ref: "local:" + session, IncludeTurns: true})
 	_ = pastEntryThread(entry, false)
 	_ = pastEntryThread(entry, true)
+	variants := []schema.SessionMeta{
+		{},
+		{ID: "fallback", ParentSessionID: "parent", EnvInfo: schema.EnvironmentInfo{WorkingDir: cwd}},
+		{ID: "sub", IsSubagent: true, ParentSessionID: "parent", EnvInfo: schema.EnvironmentInfo{WorkingDir: cwd}},
+	}
+	for _, meta := range variants {
+		_ = pastEntryThread(hubcore.PastEntry{Meta: meta, StateDir: t.TempDir()}, false)
+	}
 	_ = windowedReadResponse(past, 1)
 	_ = pastEntryTurns(entry)
 	for _, p := range []appwire.ThreadReadParams{{}, {ThreadID: " x "}, {Ref: "bad"}, {Ref: "remote:x"}, {Ref: "local:x"}} {
@@ -82,7 +92,9 @@ func covThreadReadSeed(t *testing.T) {
 	_ = mergePastThreadForRead(hubcore.WebConfig{}, appwire.ThreadReadParams{}, appwire.Thread{ID: "x"})
 	_ = mergePastThreadForRead(hubcore.WebConfig{}, appwire.ThreadReadParams{}, appwire.Thread{SessionID: "x"})
 	_ = mergePastThreadForRead(hubcore.WebConfig{}, appwire.ThreadReadParams{}, appwire.Thread{Serf: appwire.SerfThread{Ref: "local:x"}})
+	_ = mergePastThreadForRead(web.cfg, appwire.ThreadReadParams{}, appwire.Thread{Source: "remote"})
 	_ = mergePastThreadForRead(web.cfg, appwire.ThreadReadParams{IncludeTurns: true}, appwire.Thread{ID: session, SessionID: session, Preview: session})
+	_ = mergePastThreadForRead(web.cfg, appwire.ThreadReadParams{ThreadID: session}, appwire.Thread{ID: session})
 	_ = mergePastThreadForRead(web.cfg, appwire.ThreadReadParams{IncludeTurns: true}, appwire.Thread{SessionID: session})
 	full := past
 	full.Name, full.ModelProvider, full.Path, full.CWD, full.Source, full.Serf.Profile = "n", "m", "p", cwd, "local", "profile"
@@ -109,6 +121,12 @@ func covThreadReadSeed(t *testing.T) {
 	_ = enrichThreadFileBackedOutputImages(appwire.Thread{})
 	_ = enrichThreadFileBackedOutputImages(appwire.Thread{ID: "x"})
 	_ = enrichThreadFileBackedOutputImages(appwire.Thread{ID: session, CWD: cwd, Turns: []appwire.Turn{{Items: []appwire.ThreadItem{{Type: "text"}, {Type: "commandExecution", CallID: "c", ArgumentsJSON: `{"file_path":"missing.png"}`}, {Type: "commandExecution", ToolName: "write_file", CallID: "c", Status: appwire.TurnStatusCompleted}}}}})
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(cwd, "made.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = enrichThreadFileBackedOutputImages(appwire.Thread{ID: session, CWD: cwd, Turns: []appwire.Turn{{Items: []appwire.ThreadItem{{Type: "commandExecution", ToolName: "write_file", ArgumentsJSON: `{"file_path":"made.png"}`, Status: appwire.TurnStatusCompleted}}}}})
+	_ = appendOutputImagesUnique([]appwire.OutputImage{{URL: "u"}, {}}, []appwire.OutputImage{{URL: "u"}})
 	_ = appendOutputImagesUnique(nil, nil)
 	_ = appendOutputImagesUnique([]appwire.OutputImage{{}}, []appwire.OutputImage{{}, {URL: "u"}, {URL: "u"}, {SHA: "s"}, {Path: "p"}})
 	for _, img := range []appwire.OutputImage{{}, {URL: "u"}, {SHA: "s"}, {Path: "p"}} {
@@ -161,6 +179,18 @@ func covDocServeSeed(t *testing.T) {
 		web.handleDocFile(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/doc/file?session="+session+"&path="+name, nil))
 		web.handleDocImage(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/doc/image?session="+session+"&path="+name, nil))
 	}
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(cwd, "ok.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	web.handleDocImage(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/doc/image?session="+session+"&path=ok.png", nil))
+	web.handleDocImage(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/doc/image?session="+session+"&path=.", nil))
+	web.handleDocFile(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/doc/file?session="+session+"&path=.", nil))
+	_, _ = (&WebServer{}).localSessionCWD(session)
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{ThreadID: "live", SessionID: "live", WorkingDir: cwd}, SessionID: "live"})
+	liveWeb := NewWebServer(hubcore.WebConfig{Roster: roster})
+	_, _ = liveWeb.localSessionCWD("live")
+	_, _ = liveWeb.localSessionCWD("missing")
 	_, _ = readDocFile(cwd)
 	_, _ = readDocFile(filepath.Join(cwd, "missing"))
 	if err := os.WriteFile(filepath.Join(cwd, "empty"), nil, 0o644); err != nil {
@@ -187,7 +217,21 @@ func covOutputImagesSeed(t *testing.T) {
 			_ = outputImagesForToolCall("s", cwd, tool, args, `"x.png" 'x.png' x.png https://x/y.png`)
 		}
 	}
+	var many strings.Builder
+	for i := 0; i < outputImageMaxRendered+1; i++ {
+		name := "cap" + string(rune('a'+i)) + ".png"
+		if err := os.WriteFile(filepath.Join(cwd, name), png, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		many.WriteString(name + " ")
+	}
+	_ = outputImagesForToolCall("s", cwd, "shell", `{}`, many.String())
 	_ = shellOutputImageCandidates(strings.Repeat(" a.png", outputImageMaxCandidates+2))
+	var candidates strings.Builder
+	for i := 0; i < outputImageMaxCandidates+2; i++ {
+		candidates.WriteString(" z" + string(rune('a'+i)) + ".png")
+	}
+	_ = shellOutputImageCandidates(candidates.String())
 	for _, data := range [][]byte{nil, []byte("text"), png, {0xff, 0xd8, 0xff}, []byte("GIF89a"), []byte("RIFF0000WEBP")} {
 		_, _ = supportedOutputImageMedia(data, "x")
 	}
@@ -205,6 +249,8 @@ func covOutputImagesSeed(t *testing.T) {
 	_ = outputImageDisplayName("/")
 
 	base := appwire.Notification{}
+	_ = enrichOutputImageNotification("", cwd, nil, base)
+	_ = enrichOutputImageNotification("s", "", map[string]string{}, base)
 	for _, n := range []appwire.Notification{
 		base,
 		{Method: appwire.NotifyItemStarted},
@@ -222,6 +268,8 @@ func covOutputImagesSeed(t *testing.T) {
 	_ = enrichOutputImageNotification("s", cwd, args, *done)
 	direct := appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{"item": appwire.ThreadItem{Type: "commandExecution", ToolName: "write_file", CallID: "d", ArgumentsJSON: `{"file_path":"x.png"}`}}).Notification
 	_ = enrichOutputImageNotification("s", cwd, args, *direct)
+	noImage := appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{"item": appwire.ThreadItem{Type: "commandExecution", ToolName: "shell", CallID: "none", Output: "nothing"}}).Notification
+	_ = enrichOutputImageNotification("s", cwd, args, *noImage)
 }
 
 func covImageServeSeed(t *testing.T) {
@@ -240,6 +288,13 @@ func covImageServeSeed(t *testing.T) {
 	_, _, _ = findImageInTranscript("missing", sha)
 	_, _, _ = findImageInTranscript(path, strings.Repeat("0", 64))
 	_, _, _ = findImageInTranscript(path, sha)
+	toolData := []byte("tool-image")
+	toolSHA := imageSha(toolData)
+	toolLine := `{"kind":"entry","turn":{"message":{"content":[{"kind":"tool_result","tool_result":{"image_data":"dG9vbC1pbWFnZQ==","image_media_type":"image/png"}}]}}}`
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"+toolLine+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _ = findImageInTranscript(path, toolSHA)
 	for _, tc := range []struct{ sid, sha string }{{session, "bad"}, {"missing", sha}, {session, strings.Repeat("0", 64)}, {session, sha}} {
 		web.handleSessionImage(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), tc.sid, tc.sha)
 	}
