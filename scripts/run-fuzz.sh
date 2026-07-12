@@ -572,6 +572,14 @@ TARGETS=(
 	"native:llm:.:FuzzCoreContracts::"
 	"native:llm:.:FuzzCoreDeterministicScenarios::"
 	"native:llm:.:FuzzRootScenarioReplay::"
+	"native:.:./internal/appwiredoc:FuzzPackageUnion::"
+	"native:.:./internal/binresolve:FuzzPackageUnion::"
+	"native:.:./internal/bundled:FuzzPackageUnion::"
+	"native:.:./internal/credentials:FuzzPackageUnion::"
+	"native:.:./internal/diagnostic:FuzzPackageUnion::"
+	"native:.:./internal/gitpath:FuzzPackageUnion::"
+	"native:.:./internal/plugins:FuzzPackageUnion::"
+	"native:.:./internal/selfupdate:FuzzPackageUnion::"
 )
 
 duration="60s"
