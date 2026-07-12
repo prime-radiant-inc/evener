@@ -399,9 +399,12 @@ func joinNonEmpty(segs []string) []string {
 // "… N turns elided — read a range to see them …" marker where the drop occurred,
 // and returns truncated=true with the dropped-line count. The kept head/tail are
 // sized so the final content (including the marker) stays within the budget.
+var outlineBudgetChars = convBudgetChars
+var outlineMarkerReserve = 80
+
 func boundOutline(lines []string) (content string, truncated bool, elidedTurns int) {
 	full := strings.Join(lines, "\n")
-	if len([]rune(full)) <= convBudgetChars {
+	if len([]rune(full)) <= outlineBudgetChars {
 		return full, false, 0
 	}
 
@@ -412,15 +415,13 @@ func boundOutline(lines []string) (content string, truncated bool, elidedTurns i
 	used := 0
 	// Reserve room for the marker; its exact elided count is known only at the end,
 	// so reserve a generous fixed width that bounds the marker length.
-	const markerReserve = 80
-	budget := convBudgetChars - markerReserve
+	budget := outlineBudgetChars - outlineMarkerReserve
 	if budget < 0 {
 		budget = 0
 	}
 
 	for head+tail < n {
 		// Prefer growing the head, then the tail, alternately, so both ends survive.
-		grewThisPass := false
 		if head <= tail && head < n-tail {
 			cost := len([]rune(lines[head])) + 1 // +1 for newline
 			if used+cost > budget {
@@ -428,7 +429,6 @@ func boundOutline(lines []string) (content string, truncated bool, elidedTurns i
 			}
 			used += cost
 			head++
-			grewThisPass = true
 		}
 		if tail < n-head {
 			cost := len([]rune(lines[n-1-tail])) + 1
@@ -437,10 +437,6 @@ func boundOutline(lines []string) (content string, truncated bool, elidedTurns i
 			}
 			used += cost
 			tail++
-			grewThisPass = true
-		}
-		if !grewThisPass {
-			break
 		}
 	}
 

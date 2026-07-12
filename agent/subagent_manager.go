@@ -40,6 +40,8 @@ const defaultMaxRetainedTerminal = 128
 
 var errSubagentManagerClosing = errors.New("session is closed")
 
+var restoreSideEffectsWait = (*sync.Cond).Wait
+
 // newSubagentManager creates a manager that captures the parent session's emit
 // closure for forwarding subagent lifecycle events.
 func newSubagentManager(emit func(events.EventKind, events.EventData)) *subagentManager {
@@ -139,7 +141,7 @@ func (m *subagentManager) waitForReconstructionSideEffects() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for m.activeRestoreSideEffects > 0 {
-		m.restoreSideEffectsCond.Wait()
+		restoreSideEffectsWait(m.restoreSideEffectsCond)
 	}
 }
 

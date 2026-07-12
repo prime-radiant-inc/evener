@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"embed"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,17 @@ import (
 	"primeradiant.com/serf/internal/bundled"
 	"primeradiant.com/serf/llm"
 )
+
+var renderEmbeddedSystemPrompt = func(resolver *sectionResolver, fs embed.FS, prefix, name string, data promptData) (string, []promptSource, error) {
+	return resolver.RenderEmbedded(fs, prefix, name, data)
+}
+
+var projectPromptDir = func(env execenv.ExecutionEnvironment, workingDir string) string {
+	gitRoot := execenv.GitRootOrEmpty(env, workingDir)
+	return promptpath.ProjectPromptsDir(gitRoot)
+}
+
+var globalPromptDir = promptpath.GlobalPromptsDir
 
 func prependSystemPromptToUserMessage(systemPrompt string, user llm.Message) llm.Message {
 	combined := user
@@ -185,8 +197,7 @@ func sandboxPromptLine(env execenv.ExecutionEnvironment) string {
 func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) string {
 	projDir := ""
 	if !s.cfg.NoProjectPrompts {
-		gitRoot := execenv.GitRootOrEmpty(env, s.envInfo.WorkingDir)
-		projDir = promptpath.ProjectPromptsDir(gitRoot)
+		projDir = projectPromptDir(env, s.envInfo.WorkingDir)
 	}
 
 	projSections := ""
@@ -194,7 +205,7 @@ func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) string {
 	if projDir != "" {
 		projSections = filepath.Join(projDir, "sections")
 	}
-	if gd := promptpath.GlobalPromptsDir(); gd != "" {
+	if gd := globalPromptDir(); gd != "" {
 		globalSections = filepath.Join(gd, "sections")
 	}
 
@@ -224,7 +235,7 @@ func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) string {
 		templateName = "subagent"
 	}
 
-	result, sources, err := resolver.RenderEmbedded(
+	result, sources, err := renderEmbeddedSystemPrompt(resolver,
 		embeddedPrompts, "prompts/templates/", templateName, data,
 	)
 	if err != nil {
