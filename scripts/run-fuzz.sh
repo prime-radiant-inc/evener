@@ -211,6 +211,7 @@ TARGETS=(
 	"native:auth:./openai:FuzzResolveRuntimeCredentials::service.go#ResolveRuntimeCredentials"
 	"native:auth:./openai:FuzzTokenEndpointResponse::tokens.go"
 	"native:invariant:.:FuzzInvariantHold::invariant_serffuzz.go#Hold"
+	"native:envvars:.:FuzzEnvvarsSurface::envvars.go;providers.go"
 	"native:agent:.:FuzzSubagentPolicyProgram::subagents.go"
 	"native:agent:.:FuzzSessionInitErrorRestoreProgram::session_init.go"
 	"native:agent:.:FuzzModelRoundContracts::session_model_call.go;session_tool_round.go"
