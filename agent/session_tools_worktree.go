@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
@@ -20,6 +21,56 @@ import (
 // tool forks. `git worktree add` checks out a fresh tree and `git status` can
 // take real time on a large repo, so the ceiling is generous.
 const worktreeGitTimeoutMS = 300_000
+
+// worktreeTestSeams provides per-session failure injection at filesystem and
+// sandbox boundaries that cannot be made to fail reliably under a temp dir.
+// The map is empty in production, so the wrappers below preserve the normal
+// direct calls without ambient state or behavior changes.
+type worktreeTestSeams struct {
+	useControlPolicy func(*execenv.LocalExecutionEnvironment, string) error
+	enterWorktree    func(string, bool) error
+	writeSidecar     func(string, string, worktree.Sidecar) error
+	deleteSidecar    func(string, string) error
+	updateSidecar    func(string, string, func(*worktree.Sidecar)) error
+}
+
+var worktreeSeams sync.Map // map[*Session]worktreeTestSeams
+
+func (s *Session) testWorktreeSeams() worktreeTestSeams {
+	seams, ok := worktreeSeams.Load(s)
+	if !ok {
+		return worktreeTestSeams{}
+	}
+	return seams.(worktreeTestSeams)
+}
+
+func (s *Session) useWorktreeControlPolicy(env *execenv.LocalExecutionEnvironment, root string) error {
+	if hook := s.testWorktreeSeams().useControlPolicy; hook != nil {
+		return hook(env, root)
+	}
+	return env.UseControlPolicy(root)
+}
+
+func (s *Session) writeWorktreeSidecar(dir, name string, sidecar worktree.Sidecar) error {
+	if hook := s.testWorktreeSeams().writeSidecar; hook != nil {
+		return hook(dir, name, sidecar)
+	}
+	return worktree.WriteSidecarExcl(dir, name, sidecar)
+}
+
+func (s *Session) deleteWorktreeSidecar(dir, name string) error {
+	if hook := s.testWorktreeSeams().deleteSidecar; hook != nil {
+		return hook(dir, name)
+	}
+	return worktree.DeleteSidecar(dir, name)
+}
+
+func (s *Session) updateWorktreeSidecar(dir, name string, mutate func(*worktree.Sidecar)) error {
+	if hook := s.testWorktreeSeams().updateSidecar; hook != nil {
+		return hook(dir, name, mutate)
+	}
+	return worktree.UpdateSidecar(dir, name, mutate)
+}
 
 // worktreeState is the snapshot worktreeGuard.state() returns (spec §7): the
 // current env, the saved restore env, the resolved main repo root, the derived
@@ -444,7 +495,7 @@ func (s *Session) worktreeControlEnv(mainRepoRoot string) (execenv.ExecutionEnvi
 	if err := control.SandboxReRootError(); err != nil {
 		return nil, err
 	}
-	if err := control.UseControlPolicy(mainRepoRoot); err != nil {
+	if err := s.useWorktreeControlPolicy(control, mainRepoRoot); err != nil {
 		return nil, err
 	}
 	return control, nil
@@ -499,6 +550,11 @@ func (s *Session) worktreeRootFor(env execenv.ExecutionEnvironment, stateDir, ma
 // forks git for the snapshot); manage_worktree is serialized in the tool
 // stream, so nothing else swaps the env concurrently.
 func (s *Session) enterWorktree(path string, managed bool) error {
+	if hook := s.testWorktreeSeams().enterWorktree; hook != nil {
+		if err := hook(path, managed); err != nil {
+			return err
+		}
+	}
 	s.mu.Lock()
 	local, ok := s.env.(*execenv.LocalExecutionEnvironment)
 	if !ok {
@@ -737,7 +793,7 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 	if sidecarMutate != nil {
 		sidecarMutate(&sc)
 	}
-	if werr := worktree.WriteSidecarExcl(metaDir, name, sc); werr != nil {
+	if werr := s.writeWorktreeSidecar(metaDir, name, sc); werr != nil {
 		if os.IsExist(werr) {
 			return worktreeCreateCoreResult{}, fmt.Errorf("%s: a worktree named %q is already being created", errPrefix, name)
 		}
@@ -757,18 +813,18 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 		// agent/internal/worktree/lockstate_test.go's TestDecideEveryCell.
 		// Kept as a guard against a future caller passing an unexpected
 		// LockEvent rather than trusting every call site forever.
-		_ = worktree.DeleteSidecar(metaDir, name)
+		_ = s.deleteWorktreeSidecar(metaDir, name)
 		return worktreeCreateCoreResult{}, fmt.Errorf("%s: internal error: create is not an atomic-add-lock event", errPrefix)
 	}
 	if mkErr := os.MkdirAll(filepath.Dir(worktreePath), 0o755); mkErr != nil {
-		_ = worktree.DeleteSidecar(metaDir, name)
+		_ = s.deleteWorktreeSidecar(metaDir, name)
 		return worktreeCreateCoreResult{}, fmt.Errorf("%s: create worktree parent dir: %w", errPrefix, mkErr)
 	}
 	if _, addErr := run("worktree", "add", "--lock", "--reason", lockReason, "-b", name, "--", worktreePath, baseSHA); addErr != nil {
 		// Step 6 crash-safety: a failed add (e.g. a refs/heads D/F conflict)
 		// must delete the just-written sidecar in the same call, or the name
 		// becomes uncreatable until a post-grace prune (spec §3 step 6).
-		_ = worktree.DeleteSidecar(metaDir, name)
+		_ = s.deleteWorktreeSidecar(metaDir, name)
 		return worktreeCreateCoreResult{}, fmt.Errorf("%s: git worktree add failed: %w", errPrefix, addErr)
 	}
 
@@ -865,7 +921,7 @@ func (s *Session) rollbackFreshDelegateWorktree(delegateID, lanePath string) {
 	if controlEnv.SandboxReRootError() != nil {
 		return // best-effort: cannot build a confined control env for this lane
 	}
-	if err := controlEnv.UseControlPolicy(mainRoot); err != nil {
+	if err := s.useWorktreeControlPolicy(controlEnv, mainRoot); err != nil {
 		return // best-effort: skip when the control policy is unsatisfiable
 	}
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
@@ -873,7 +929,7 @@ func (s *Session) rollbackFreshDelegateWorktree(delegateID, lanePath string) {
 	_, _ = run("worktree", "remove", "--force", "--", lanePath)
 	_, _ = run("branch", "-D", delegateID)
 	metaDir := metaDirForLane(lanePath)
-	_ = worktree.DeleteSidecar(metaDir, delegateID)
+	_ = s.deleteWorktreeSidecar(metaDir, delegateID)
 }
 
 // currentStateDir reads s.stateDir under s.mu.
@@ -1608,14 +1664,14 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	// unmarked sidecar is still handled correctly, just less precisely
 	// reported meanwhile.
 	if result.BranchDeleted {
-		if err := worktree.DeleteSidecar(metaDir, name); err != nil && !os.IsNotExist(err) {
+		if err := s.deleteWorktreeSidecar(metaDir, name); err != nil && !os.IsNotExist(err) {
 			return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: deleting sidecar: %w", err)
 		}
 	} else if hasSidecar {
 		tipOut, tipErr := run("rev-parse", "--verify", "refs/heads/"+name)
 		if tipErr == nil {
 			tipSHA := strings.TrimSpace(tipOut)
-			if err := worktree.UpdateSidecar(metaDir, name, func(sc *worktree.Sidecar) {
+			if err := s.updateWorktreeSidecar(metaDir, name, func(sc *worktree.Sidecar) {
 				sc.WorktreeRemoved = true
 				sc.TipSHAAtRemoval = tipSHA
 			}); err != nil && !os.IsNotExist(err) {
@@ -1909,7 +1965,7 @@ func (s *Session) worktreePruneSweep1(run worktree.GitRunner, managed []managedE
 		if _, err := run("branch", "-D", e.Name); err != nil {
 			return nil, nil, fmt.Errorf("manage_worktree prune: deleting branch %q: %w", e.Name, err)
 		}
-		if err := worktree.DeleteSidecar(metaDir, e.Name); err != nil && !os.IsNotExist(err) {
+		if err := s.deleteWorktreeSidecar(metaDir, e.Name); err != nil && !os.IsNotExist(err) {
 			return nil, nil, fmt.Errorf("manage_worktree prune: deleting sidecar for %q: %w", e.Name, err)
 		}
 		removed = append(removed, WorktreePruneEntry{
@@ -1979,7 +2035,7 @@ func (s *Session) worktreePruneSweep2(run worktree.GitRunner, managed []managedE
 		}
 
 		if !branchExists(run, sc.Name) {
-			if err := worktree.DeleteSidecar(metaDir, sc.Name); err != nil && !os.IsNotExist(err) {
+			if err := s.deleteWorktreeSidecar(metaDir, sc.Name); err != nil && !os.IsNotExist(err) {
 				return nil, nil, fmt.Errorf("manage_worktree prune: deleting stale sidecar %q: %w", sc.Name, err)
 			}
 			removed = append(removed, WorktreePruneEntry{Name: sc.Name, SidecarRemoved: true, Reason: "stale sidecar (no worktree, no branch)"})
@@ -1997,7 +2053,7 @@ func (s *Session) worktreePruneSweep2(run worktree.GitRunner, managed []managedE
 		// user has since built on it (tip is neither the recorded base nor
 		// the tip serf recorded at removal time) — serf's claim expires.
 		if sc.WorktreeRemoved && worktree.Adopted(tip, sc.BaseSHA, sc.TipSHAAtRemoval) {
-			if err := worktree.DeleteSidecar(metaDir, sc.Name); err != nil && !os.IsNotExist(err) {
+			if err := s.deleteWorktreeSidecar(metaDir, sc.Name); err != nil && !os.IsNotExist(err) {
 				return nil, nil, fmt.Errorf("manage_worktree prune: deleting adopted sidecar %q: %w", sc.Name, err)
 			}
 			removed = append(removed, WorktreePruneEntry{Name: sc.Name, SidecarRemoved: true, Reason: "adopted"})
@@ -2024,7 +2080,7 @@ func (s *Session) worktreePruneSweep2(run worktree.GitRunner, managed []managedE
 			skipped = append(skipped, WorktreePruneEntry{Name: sc.Name, Reason: reason})
 			continue
 		}
-		if err := worktree.DeleteSidecar(metaDir, sc.Name); err != nil && !os.IsNotExist(err) {
+		if err := s.deleteWorktreeSidecar(metaDir, sc.Name); err != nil && !os.IsNotExist(err) {
 			return nil, nil, fmt.Errorf("manage_worktree prune: deleting sidecar %q: %w", sc.Name, err)
 		}
 		removed = append(removed, WorktreePruneEntry{Name: sc.Name, BranchRemoved: true, SidecarRemoved: true, Reason: reasonTag})

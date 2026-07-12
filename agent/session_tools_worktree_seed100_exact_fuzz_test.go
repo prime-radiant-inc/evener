@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/worktree"
 	"primeradiant.com/serf/agent/sandbox"
 )
 
@@ -133,4 +134,112 @@ func worktreeSeed100ExactProgram(t *testing.T) {
 		}
 		h.s.rollbackFreshDelegateWorktree("delegate", filepath.Join(h.root, "delegate"))
 	})
+
+	t.Run("injected boundaries", func(t *testing.T) {
+		t.Run("control policy", func(t *testing.T) {
+			h, _ := newWorktreeFaultSession(t)
+			installWorktreeSeams(t, h.s, worktreeTestSeams{useControlPolicy: func(*execenv.LocalExecutionEnvironment, string) error {
+				return errors.New("scripted control policy failure")
+			}})
+			if _, err := h.s.worktreeControlEnv(h.root); err == nil {
+				t.Fatal("control environment accepted policy failure")
+			}
+			h.s.rollbackFreshDelegateWorktree("delegate", filepath.Join(h.root, "delegate"))
+		})
+
+		t.Run("sidecar write", func(t *testing.T) {
+			h, _ := newWorktreeFaultSession(t)
+			installWorktreeSeams(t, h.s, worktreeTestSeams{writeSidecar: func(string, string, worktree.Sidecar) error {
+				return errors.New("scripted sidecar write failure")
+			}})
+			if _, err := h.exec(map[string]any{"operation": "create", "name": "write-failure"}); err == nil {
+				t.Fatal("create accepted sidecar write failure")
+			}
+		})
+
+		t.Run("enter create and external", func(t *testing.T) {
+			for _, external := range []bool{false, true} {
+				h, _ := newWorktreeFaultSession(t)
+				var path string
+				if external {
+					path = h.addExternal("enter-failure")
+				}
+				installWorktreeSeams(t, h.s, worktreeTestSeams{enterWorktree: func(string, bool) error {
+					return errors.New("scripted enter failure")
+				}})
+				var err error
+				if external {
+					_, err = h.s.worktreeSwitchByPath(context.Background(), path)
+				} else {
+					_, err = h.s.worktreeCreate(context.Background(), "enter-create", "")
+				}
+				if err == nil {
+					t.Fatal("operation accepted enter failure")
+				}
+			}
+		})
+
+		t.Run("remove sidecar disposition", func(t *testing.T) {
+			for _, deleteBranch := range []bool{false, true} {
+				h, _ := newWorktreeFaultSession(t)
+				name := map[bool]string{false: "update-failure", true: "delete-failure"}[deleteBranch]
+				scriptedCreate(t, h, name)
+				h.exitToRoot(t)
+				seams := worktreeTestSeams{}
+				if deleteBranch {
+					seams.deleteSidecar = func(string, string) error { return errors.New("scripted delete failure") }
+				} else {
+					seams.updateSidecar = func(string, string, func(*worktree.Sidecar)) error { return errors.New("scripted update failure") }
+				}
+				installWorktreeSeams(t, h.s, seams)
+				if _, err := h.s.worktreeRemove(context.Background(), name, false, false, deleteBranch); err == nil {
+					t.Fatal("remove accepted sidecar disposition failure")
+				}
+			}
+		})
+
+		t.Run("prune sidecar disposition", func(t *testing.T) {
+			t.Run("registered", func(t *testing.T) {
+				h, _ := newWorktreeFaultSession(t)
+				scriptedCreate(t, h, "prune-registered")
+				h.exitToRoot(t)
+				installWorktreeSeams(t, h.s, failingDeleteWorktreeSeam())
+				if _, err := h.s.worktreePrune(context.Background()); err == nil {
+					t.Fatal("prune accepted registered sidecar delete failure")
+				}
+			})
+			for _, mode := range []string{"stale", "adopted", "branch"} {
+				t.Run(mode, func(t *testing.T) {
+					h, _ := newWorktreeFaultSession(t)
+					name := "prune-" + mode
+					switch mode {
+					case "stale":
+						worktreeFaultWriteSidecar(t, h, name, "base-sha", false, "", true)
+					case "adopted":
+						h.git.branches[name] = "new-tip"
+						worktreeFaultWriteSidecar(t, h, name, "base-sha", true, "removed-tip", true)
+					case "branch":
+						h.git.branches[name] = "base-sha"
+						worktreeFaultWriteSidecar(t, h, name, "base-sha", false, "", true)
+					}
+					installWorktreeSeams(t, h.s, failingDeleteWorktreeSeam())
+					if _, err := h.s.worktreePrune(context.Background()); err == nil {
+						t.Fatal("prune accepted reconciled sidecar delete failure")
+					}
+				})
+			}
+		})
+	})
+}
+
+func installWorktreeSeams(t *testing.T, s *Session, seams worktreeTestSeams) {
+	t.Helper()
+	worktreeSeams.Store(s, seams)
+	t.Cleanup(func() { worktreeSeams.Delete(s) })
+}
+
+func failingDeleteWorktreeSeam() worktreeTestSeams {
+	return worktreeTestSeams{deleteSidecar: func(string, string) error {
+		return errors.New("scripted sidecar delete failure")
+	}}
 }
