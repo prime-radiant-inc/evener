@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -33,6 +35,9 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 	f.Fuzz(func(t *testing.T, op byte, data string) {
 		switch op % 6 {
 		case 0:
+			_ = DefaultConfigPath()
+			_ = DefaultStateGlob()
+			_ = DefaultPastIndexDBPath()
 			root := t.TempDir()
 			path := filepath.Join(root, "hub.toml")
 			if data != "" {
@@ -143,6 +148,24 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 				t.Fatal(got)
 			}
 		case 5:
+			var envHelp bytes.Buffer
+			printHubEnvVars(&envHelp)
+			if envHelp.Len() == 0 || currentExecutable() == "" {
+				t.Fatal("main helpers returned empty output")
+			}
+			if got := resolveSerfBinaryPath("/explicit", "/hub", nil); got != "/explicit" {
+				t.Fatal(got)
+			}
+			if got := resolveSerfBinaryPath("", "/x/serf-hub", func(string) (string, error) { return "/path/serf", nil }); got == "" {
+				t.Fatal("binary path unresolved")
+			}
+			_ = resolveSerfBinaryPath("", "serf-hub", func(string) (string, error) { return "", errors.New("missing") })
+			if envToMap([]string{"A=1", "bad", "A=2"})["A"] != "2" {
+				t.Fatal("environment map did not keep last value")
+			}
+			if redactEnvSecrets("long-secret", []string{"API_KEY=long-secret"}) == "long-secret" || !isSensitiveEnvKey("AUTH_TOKEN") || isSensitiveEnvKey("HOME") {
+				t.Fatal("secret redaction mismatch")
+			}
 			if data == "token" {
 				tok, err := newHubToken()
 				b, decErr := base64.RawURLEncoding.DecodeString(tok)
@@ -152,6 +175,7 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 				return
 			}
 			var b tailBuffer
+			_, _ = b.Write([]byte("discarded"))
 			b.limit = 4
 			_, _ = b.Write([]byte("abcdef"))
 			if b.String() != "cdef" {
@@ -161,7 +185,7 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 			if b.String() != "efgh" {
 				t.Fatalf("tail=%q", b.String())
 			}
-			if launchFailureError("launch", nil, "") == nil {
+			if launchFailureError("launch", nil, "") == nil || launchFailureError("launch", errors.New("exit"), "stderr") == nil {
 				t.Fatal("missing launch error")
 			}
 		}
