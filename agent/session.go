@@ -152,6 +152,7 @@ type Session struct {
 	createdAt                     time.Time // stamped once at construction/restore; Meta() reads it rather than re-stamping "now" on every call
 	workMillis                    int64     // accumulated wall-clock work time across turns; seeded from SessionMeta on restore, mapped out via Meta()
 	turnStartedAt                 time.Time // wall-clock instant the current turn began (stamped at the processing-begin transition); zero when no turn is in flight. Guarded by mu, like workMillis.
+	turnHistoryBaseline           int       // history index of the first turn belonging to the in-flight turn (captured at round 0, adjusted for mid-turn compaction). Turns at or after it are exempt from N4 replay-provenance filtering (fallback rounds keep today's replay semantics). Guarded by mu.
 	history                       []schema.Turn
 	responsesContinuationDisabled map[responsesContinuationDisabledKey]bool
 

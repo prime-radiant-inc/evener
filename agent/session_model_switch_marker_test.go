@@ -122,7 +122,7 @@ func TestExpandHistory_ExcludesModelSwitchMarker(t *testing.T) {
 		schema.NewTurn(schema.TurnModelSwitch, llm.System("Switched model: openai/gpt-5.4 → anthropic/claude-opus-4-6")),
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("hi")),
 	}
-	out := expandHistory(turns)
+	out := expandHistory(turns, replayScope{})
 	if len(out) != 2 {
 		t.Fatalf("expandHistory returned %d messages, want 2 (marker excluded): %+v", len(out), out)
 	}
