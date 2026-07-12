@@ -132,6 +132,35 @@ func jobstorePackageMetadataEdges(t *testing.T) {
 		writeMeta(final, tc.meta)
 		_, _, _ = readOutputMetaForFile(&jobstorePackageOpenFaultFS{Fs: base, path: output, failAt: tc.failAt}, final, output, 6)
 	}
+
+	// Keep the prefix-mismatch arm independent from the fault-sweep state above.
+	prefixFS := afero.NewMemMapFs()
+	if err := afero.WriteFile(prefixFS, output, []byte("abcdef"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOutputMetaFileFsSync(prefixFS, pending, outputMeta{
+		TotalBytes: 6, RetainedStart: 2, RetainedSHA256: hash([]byte("cdef")),
+	}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOutputMetaFileFsSync(prefixFS, final, outputMeta{
+		TotalBytes: 6, RetainedStart: 0, RetainedSHA256: hash([]byte("wrong-prefix")),
+	}, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := readOutputMetaForFile(prefixFS, final, output, 6); err == nil {
+		t.Fatal("mismatched final prefix hash was accepted")
+	}
+	if err := writeOutputMetaFileFsSync(prefixFS, final, outputMeta{
+		TotalBytes: 6, RetainedStart: 0, RetainedSHA256: hash([]byte("abcdef")),
+	}, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := readOutputMetaForFile(&jobstorePackageOpenFaultFS{
+		Fs: prefixFS, path: output, failAt: 2,
+	}, final, output, 6); err == nil {
+		t.Fatal("prefix hash open fault was ignored")
+	}
 }
 
 func jobstorePackageStoreEdges(t *testing.T) {
