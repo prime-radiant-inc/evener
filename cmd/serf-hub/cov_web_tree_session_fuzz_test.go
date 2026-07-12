@@ -47,7 +47,11 @@ func FuzzCovWebTreeSessionPure(f *testing.F) {
 		}
 		for _, meta := range []schema.SessionMeta{{ID: "id"}, {ID: "id", Name: title}, {ID: "id", OriginalPrompt: title}} {
 			_ = sessionTitleFromMeta(meta)
+			_ = searchPastTitle(hubcore.PastEntry{Meta: meta})
 		}
+		_ = liveTitle("0123456789", hubcore.LiveEntry{}, nil)
+		_ = hubUsageFromAppwire(nil)
+		_ = hubUsageFromAppwire(&appwire.SerfUsage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, TotalTokens: 6})
 
 		thread := appwire.Thread{
 			ID: "thread", SessionID: "session", Source: "remote", Name: title,
@@ -64,6 +68,13 @@ func FuzzCovWebTreeSessionPure(f *testing.F) {
 		_, _, _ = appThreadTreeEntries(thread)
 		_, _ = appThreadTreeRef(thread)
 		_ = hubRefFromAppThread(thread)
+		thread.Serf.ActiveTurnID = ""
+		_ = activeTurnIDFromAppwireThread(thread)
+		thread.Turns = nil
+		_ = activeTurnIDFromAppwireThread(thread)
+		_ = activeTurnRunningFor(thread)
+		thread.Preview, thread.SessionID = "", "session"
+		_ = workspaceDataFromAppThread(thread)
 		thread.Serf.Ref = "bad"
 		_ = hubRefFromAppThread(thread)
 		thread.Serf.Ref = ""
@@ -76,6 +87,8 @@ func FuzzCovWebTreeSessionPure(f *testing.F) {
 			thread.Status.Type = status
 			_ = appThreadTreeLive(thread)
 		}
+		_ = workspaceDataFromAppThread(appwire.Thread{ID: "id", Preview: "preview"})
+		_ = workspaceDataFromAppThread(appwire.Thread{ID: "id"})
 	})
 }
 
@@ -103,12 +116,62 @@ func FuzzCovWebTreeSessionHandlers(f *testing.F) {
 			{http.MethodPost, "/s/" + sandboxSessionID + "/drain-as-steer"},
 			{http.MethodGet, "/s/" + sandboxSessionID + "/interrupt"},
 		}
-		route := routes[int(selector)%len(routes)]
-		req := httptest.NewRequest(route.method, route.path, bytes.NewReader(body))
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
-		if rec.Code >= 500 && rec.Code != http.StatusInternalServerError && rec.Code != http.StatusBadGateway && rec.Code != http.StatusServiceUnavailable {
-			t.Fatalf("unexpected status %d", rec.Code)
+		// Rotate the matrix while still executing every row. This retains useful
+		// fuzz variation without leaving seed coverage to corpus scheduling.
+		for i := range routes {
+			route := routes[(i+int(selector))%len(routes)]
+			req := httptest.NewRequest(route.method, route.path, bytes.NewReader(body))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code >= 500 && rec.Code != http.StatusInternalServerError && rec.Code != http.StatusBadGateway && rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("unexpected status %d", rec.Code)
+			}
+		}
+
+		for _, action := range []string{"send", "steer", "interrupt", "compact", "clear", "fork", "shutdown", "model", "queue", "unknown"} {
+			_ = sessionCapabilityAvailable(hubCapabilitiesFromAppwire(appwire.ThreadCapabilities{
+				Send: true, Steer: true, Interrupt: true, Compact: true, Clear: true,
+				ForkFromTurn: true, Shutdown: true, ChangeModel: true, Queue: true,
+			}), action)
+		}
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			for _, action := range []string{"interrupt", "clear", "shutdown", "compact", "unknown"} {
+				req := httptest.NewRequest(method, "/s/missing/"+action, bytes.NewReader(body))
+				rec := httptest.NewRecorder()
+				sb.Web.handleSessionAction(rec, req, "missing", action)
+			}
+		}
+		for _, target := range []string{"/api/tree?summary=1", "/api/tree", "/api/tree/project?key=missing"} {
+			rec := httptest.NewRecorder()
+			sb.Web.handleAPITree(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		}
+		for _, target := range []string{"/api/tree/project", "/api/tree/project?key=missing"} {
+			rec := httptest.NewRecorder()
+			sb.Web.handleAPITreeProject(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		}
+		_ = sb.Web.archiveDecisions()
+		_ = sb.Web.favoriteDecisions()
+		_, _ = sb.Web.memoTree(t.Context())
+		_, _ = sb.Web.navigationTreeInputs(t.Context())
+		_ = sb.Web.remoteTreeThreads(t.Context())
+		_ = inputItemsForText("")
+		_ = inputItemsForText(" text ")
+		for _, target := range []string{"/s/missing/fork", "/api/sessions/local%3Amissing/fork"} {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, target, bytes.NewReader(body))
+			if strings.HasPrefix(target, "/api/") {
+				sb.Web.handleAPIFork(rec, req, "missing")
+			} else {
+				sb.Web.handleFork(rec, req, "missing")
+			}
+		}
+		for _, api := range []bool{false, true} {
+			target := "/s/missing/send"
+			if api {
+				target = "/api/sessions/local%3Amissing/send"
+			}
+			rec := httptest.NewRecorder()
+			writeSessionActionError(rec, httptest.NewRequest(http.MethodPost, target, nil), appwire.Unavailable("unavailable"))
 		}
 	})
 }
