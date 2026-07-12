@@ -607,6 +607,13 @@ TARGETS=(
 	"native:llm:.:FuzzGenerateObjectResidual::"
 	"native:llm:.:FuzzRetryStreamCore::"
 	"native:llm:.:FuzzStreamGenerateCoverage::"
+	"native:.:./cmd/serf-tui/internal/hubstart:FuzzHubStartupCoverage::"
+	"native:.:./internal/plugins:FuzzAtomicGitCoverage::"
+	"native:.:./internal/plugins:FuzzCoverageSourceManifestUnion::"
+	"native:.:./internal/plugins:FuzzDoctorGCCoverage::"
+	"native:.:./internal/plugins:FuzzPluginsInstallCoverage::"
+	"native:.:./internal/plugins:FuzzPluginsMarketplacesCoverage::"
+	"native:.:./internal/plugins:FuzzPluginsMiscCoverage::"
 )
 
 duration="60s"
