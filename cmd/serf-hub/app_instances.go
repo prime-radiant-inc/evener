@@ -18,13 +18,37 @@ import (
 type hubInstancesController struct {
 	providersConfigPath string
 	auth                *hubAuthController
+	loadFile            func(string) (providercfg.Config, bool, error)
+	writeFile           func(string, providercfg.Config) error
+	removeFile          func(string) error
 	mu                  sync.Mutex
+}
+
+func (c *hubInstancesController) load(path string) (providercfg.Config, bool, error) {
+	if c.loadFile != nil {
+		return c.loadFile(path)
+	}
+	return providercfg.LoadFile(path)
+}
+
+func (c *hubInstancesController) write(path string, cfg providercfg.Config) error {
+	if c.writeFile != nil {
+		return c.writeFile(path, cfg)
+	}
+	return providercfg.WriteFile(path, cfg)
+}
+
+func (c *hubInstancesController) remove(path string) error {
+	if c.removeFile != nil {
+		return c.removeFile(path)
+	}
+	return os.Remove(path)
 }
 
 // List returns the current list of instances, each enriched with credential
 // status from the auth controller. Results are sorted by Type, then Name.
 func (c *hubInstancesController) List() appwire.InstanceListResponse {
-	cfg, _, _ := providercfg.LoadFile(c.providersConfigPath)
+	cfg, _, _ := c.load(c.providersConfigPath)
 
 	entries := make([]appwire.InstanceEntry, 0, len(cfg.Instances))
 	for _, inst := range cfg.Instances {
@@ -94,7 +118,7 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 	}
 	newCfg := cfg.Upsert(inst)
 
-	if err := providercfg.WriteFile(c.providersConfigPath, newCfg); err != nil {
+	if err := c.write(c.providersConfigPath, newCfg); err != nil {
 		return fmt.Errorf("write providers.toml: %w", err)
 	}
 	return nil
@@ -133,7 +157,7 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 	}
 
 	newCfg := cfg.Upsert(updated)
-	if err := providercfg.WriteFile(c.providersConfigPath, newCfg); err != nil {
+	if err := c.write(c.providersConfigPath, newCfg); err != nil {
 		return fmt.Errorf("write providers.toml: %w", err)
 	}
 	return nil
@@ -184,10 +208,10 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		// Load (WriteFile rightly refuses to persist one), and the documented
 		// absent-file behavior is exactly what the user is asking for — the
 		// hub re-seeds providers.toml from the environment on next startup.
-		if err := os.Remove(c.providersConfigPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := c.remove(c.providersConfigPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove providers.toml: %w", err)
 		}
-	} else if err := providercfg.WriteFile(c.providersConfigPath, newCfg); err != nil {
+	} else if err := c.write(c.providersConfigPath, newCfg); err != nil {
 		return fmt.Errorf("write providers.toml: %w", err)
 	}
 
@@ -227,7 +251,7 @@ func (c *hubInstancesController) SetDefault(params appwire.InstanceSetDefaultPar
 	}
 
 	newCfg := cfg.WithDefault(params.Name)
-	if err := providercfg.WriteFile(c.providersConfigPath, newCfg); err != nil {
+	if err := c.write(c.providersConfigPath, newCfg); err != nil {
 		return fmt.Errorf("write providers.toml: %w", err)
 	}
 	return nil
@@ -237,7 +261,7 @@ func (c *hubInstancesController) SetDefault(params appwire.InstanceSetDefaultPar
 // When the file is absent it returns an empty Config (no instances). The
 // caller must already hold c.mu.
 func (c *hubInstancesController) reloadFromDisk() (providercfg.Config, error) {
-	cfg, exists, err := providercfg.LoadFile(c.providersConfigPath)
+	cfg, exists, err := c.load(c.providersConfigPath)
 	if err != nil {
 		return providercfg.Config{}, fmt.Errorf("reload providers.toml: %w", err)
 	}

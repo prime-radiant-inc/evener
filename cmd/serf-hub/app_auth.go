@@ -26,10 +26,17 @@ type hubAuthController struct {
 	cfg               authopenai.Config
 	client            *http.Client
 	now               func() time.Time
+	generateState     func() (string, error)
+	generatePKCE      func() (verifier, challenge string, err error)
 	exchangeCode      func(context.Context, *http.Client, authopenai.Config, authopenai.TokenExchangeRequest) (authopenai.TokenSet, error)
 	requestDeviceCode func(context.Context, *http.Client, authopenai.Config) (authopenai.DeviceCode, error)
 	pollDeviceOnce    func(context.Context, *http.Client, authopenai.Config, authopenai.DeviceCode) (authopenai.DeviceCodeSuccess, bool, error)
 	exchangeDevice    func(context.Context, *http.Client, authopenai.Config, string, string) (authopenai.TokenSet, error)
+	loadAuth          func(string, string) (authopenai.AuthRecord, error)
+	saveAuth          func(string, string, authopenai.AuthRecord) error
+	deleteAuth        func(string, string) (bool, error)
+	setCredential     func(string, string) error
+	clearCredential   func(string) error
 	// providersConfigPath is the path to providers.toml. When non-empty, auth
 	// methods resolve the instance type from the file and key credentials and
 	// OAuth state by instance name rather than provider type.
@@ -72,20 +79,28 @@ func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
 	stateDir := openAIStateDirFromEnv(authEnv)
 	credsPath := filepath.Join(filepath.Dir(stateDir), "credentials.toml")
 	store, _ := credentials.LoadStore(credsPath)
-	return &hubAuthController{
+	c := &hubAuthController{
 		stateDir:          stateDir,
 		authEnv:           authEnv,
 		creds:             store,
 		cfg:               cfg,
 		client:            client,
 		now:               time.Now,
+		generateState:     authopenai.GenerateState,
+		generatePKCE:      authopenai.GeneratePKCE,
 		exchangeCode:      authopenai.ExchangeCode,
 		requestDeviceCode: authopenai.RequestDeviceCode,
 		pollDeviceOnce:    authopenai.PollDeviceAuthOnce,
 		exchangeDevice:    authopenai.ExchangeDeviceCode,
+		loadAuth:          authopenai.LoadAuth,
+		saveAuth:          authopenai.SaveAuth,
+		deleteAuth:        authopenai.DeleteAuth,
 		flows:             map[string]hubAuthFlow{},
 		deviceFlows:       map[string]deviceFlow{},
 	}
+	c.setCredential = c.creds.Set
+	c.clearCredential = c.creds.Clear
+	return c
 }
 
 // newHubAuthControllerWithStore creates a controller backed by an explicit credentials store.
@@ -110,13 +125,20 @@ func newHubAuthControllerWithStore(_ string, store *credentials.Store) *hubAuthC
 		cfg:               cfg,
 		client:            client,
 		now:               time.Now,
+		generateState:     authopenai.GenerateState,
+		generatePKCE:      authopenai.GeneratePKCE,
 		exchangeCode:      authopenai.ExchangeCode,
 		requestDeviceCode: authopenai.RequestDeviceCode,
 		pollDeviceOnce:    authopenai.PollDeviceAuthOnce,
 		exchangeDevice:    authopenai.ExchangeDeviceCode,
+		loadAuth:          authopenai.LoadAuth,
+		saveAuth:          authopenai.SaveAuth,
+		deleteAuth:        authopenai.DeleteAuth,
 		flows:             map[string]hubAuthFlow{},
 		deviceFlows:       map[string]deviceFlow{},
 	}
+	c.setCredential = c.creds.Set
+	c.clearCredential = c.creds.Clear
 	if hubAuthControllerSetup != nil {
 		hubAuthControllerSetup(c)
 	}
@@ -183,11 +205,11 @@ func (c *hubAuthController) LoginStart(params appwire.AuthLoginStartParams) (app
 		return appwire.AuthLoginStartResponse{}, err
 	}
 
-	state, err := authopenai.GenerateState()
+	state, err := c.generateState()
 	if err != nil {
 		return appwire.AuthLoginStartResponse{}, fmt.Errorf("generate OAuth state: %w", err)
 	}
-	verifier, challenge, err := authopenai.GeneratePKCE()
+	verifier, challenge, err := c.generatePKCE()
 	if err != nil {
 		return appwire.AuthLoginStartResponse{}, fmt.Errorf("generate PKCE values: %w", err)
 	}
@@ -261,7 +283,7 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 		record.AccountID = strutil.FirstNonEmpty(claims.AccountID, record.AccountID)
 		record.WorkspaceID = strutil.FirstNonEmpty(claims.WorkspaceID, record.WorkspaceID)
 	}
-	if err := authopenai.SaveAuth(c.stateDir, provider, record); err != nil {
+	if err := c.saveAuth(c.stateDir, provider, record); err != nil {
 		return appwire.AuthLoginCompleteResponse{}, err
 	}
 
@@ -283,7 +305,7 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 	isOpenAI := c.instanceIsOpenAI(name)
 
 	if !isOpenAI {
-		if err := c.creds.Clear(name); err != nil {
+		if err := c.clearCredential(name); err != nil {
 			return appwire.AuthLogoutResponse{}, err
 		}
 		status, _ := c.Status(appwire.AuthStatusParams{Provider: name})
@@ -293,11 +315,11 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 	// OpenAI-type: clear the effective layer only. An OAuth record (present or
 	// corrupt) shadows the stored file key, so remove it first; otherwise clear
 	// the file key. The env layer cannot be cleared.
-	_, loadErr := authopenai.LoadAuth(c.stateDir, name)
+	_, loadErr := c.loadAuth(c.stateDir, name)
 	hasRecord := loadErr == nil || errors.Is(loadErr, authopenai.ErrAuthCorrupt)
 	removed := false
 	if hasRecord {
-		r, delErr := authopenai.DeleteAuth(c.stateDir, name)
+		r, delErr := c.deleteAuth(c.stateDir, name)
 		if delErr != nil {
 			return appwire.AuthLogoutResponse{}, delErr
 		}
@@ -305,7 +327,7 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 	} else {
 		hasFile, _ := c.creds.Layers(name)
 		if hasFile {
-			if clrErr := c.creds.Clear(name); clrErr != nil {
+			if clrErr := c.clearCredential(name); clrErr != nil {
 				return appwire.AuthLogoutResponse{}, clrErr
 			}
 			removed = true
@@ -347,7 +369,7 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 	if strings.TrimSpace(params.Value) == "" {
 		return appwire.AuthStatusResponse{}, appwire.InvalidParams("value is required")
 	}
-	if err := c.creds.Set(name, params.Value); err != nil {
+	if err := c.setCredential(name, params.Value); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
 	return c.Status(appwire.AuthStatusParams{Provider: name})
@@ -418,7 +440,7 @@ func (c *hubAuthController) DeviceStart(ctx context.Context, params appwire.Auth
 		}
 		return appwire.AuthDeviceStartResponse{}, err
 	}
-	flowID, err := authopenai.GenerateState()
+	flowID, err := c.generateState()
 	if err != nil {
 		return appwire.AuthDeviceStartResponse{}, fmt.Errorf("generate device flow id: %w", err)
 	}
@@ -475,7 +497,7 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 		record.AccountID = strutil.FirstNonEmpty(claims.AccountID, record.AccountID)
 		record.WorkspaceID = strutil.FirstNonEmpty(claims.WorkspaceID, record.WorkspaceID)
 	}
-	if err := authopenai.SaveAuth(c.stateDir, provider, record); err != nil {
+	if err := c.saveAuth(c.stateDir, provider, record); err != nil {
 		return appwire.AuthDevicePollResponse{}, err
 	}
 	c.mu.Lock()
@@ -585,7 +607,7 @@ func (c *hubAuthController) instanceStatus(name, typ string) appwire.AuthStatusR
 // openAIInstanceStatus is like openAIStatus but keyed by instance name rather
 // than the hard-coded "openai". It reads auth/<name>.json and credentials[name].
 func (c *hubAuthController) openAIInstanceStatus(name string) (appwire.AuthStatusResponse, error) {
-	record, err := authopenai.LoadAuth(c.stateDir, name)
+	record, err := c.loadAuth(c.stateDir, name)
 	hasRecord := false
 	switch {
 	case err == nil:
