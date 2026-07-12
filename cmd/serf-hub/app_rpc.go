@@ -59,6 +59,14 @@ type hubRelayHandle struct {
 
 var hubRelayIdleInterval = 250 * time.Millisecond
 
+type hubRelayFunctions struct {
+	startRelay          func(context.Context, appsource.Source, appwire.ThreadReadParams, appwire.Thread) error
+	startTurn           func(context.Context, appsource.Source, appwire.TurnStartParams) (appwire.TurnStartResponse, error)
+	startRelayForThread func(context.Context, appwire.Thread) error
+}
+
+var observeHubRelayFunctions func(hubRelayFunctions)
+
 type threadReadRelayPolicy interface {
 	RelayOnThreadRead() bool
 }
@@ -271,6 +279,9 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 			return err
 		}
 		return nil
+	}
+	if observeHubRelayFunctions != nil {
+		observeHubRelayFunctions(hubRelayFunctions{startRelay, startTurn, startRelayForThread})
 	}
 	registerThreadHandlers(server, cfg, sources, startRelay, startTurn, startRelayForThread)
 	registerAuthHandlers(server, authController)

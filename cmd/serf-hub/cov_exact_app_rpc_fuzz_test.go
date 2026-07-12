@@ -1,5 +1,3 @@
-//go:build fuzzcov
-
 package main
 
 import (
@@ -26,6 +24,8 @@ type exactRPCSource struct {
 	notifications                   chan appwire.Notification
 	startThread                     appwire.Thread
 	resumeThread                    appwire.Thread
+	started                         chan struct{}
+	release                         chan struct{}
 }
 
 func (s *exactRPCSource) ReadThread(ctx context.Context, p appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
@@ -41,6 +41,17 @@ func (s *exactRPCSource) ListTurns(context.Context, appwire.ThreadTurnsListParam
 	return appwire.ThreadTurnsListResponse{Data: s.thread.Turns}, nil
 }
 func (s *exactRPCSource) SubscribeThread(ctx context.Context, _ appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
+	if s.started != nil {
+		select {
+		case s.started <- struct{}{}:
+		default:
+		}
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	if s.subscribeErr != nil {
 		return nil, s.subscribeErr
 	}
@@ -101,7 +112,7 @@ func exactDispatchFailures(t *testing.T, server *appserver.Server) {
 }
 
 func FuzzExactAppRPC(f *testing.F) {
-	for i := uint8(0); i < 4; i++ {
+	for i := uint8(0); i < 5; i++ {
 		f.Add(i)
 	}
 	f.Fuzz(func(t *testing.T, variant uint8) {
@@ -115,7 +126,7 @@ func FuzzExactAppRPC(f *testing.F) {
 		cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), RelayHooks: hubcore.RelayLifecycleHooks{IdleExit: func(string) {}, AfterIdleDelete: func(string) {}}}
 		server := newHubAppServer(cfg, registry)
 
-		switch variant % 4 {
+		switch variant % 5 {
 		case 0:
 			exactDispatchFailures(t, server)
 			noCaps := thread
@@ -165,17 +176,28 @@ func FuzzExactAppRPC(f *testing.F) {
 			t.Setenv("HOME", "")
 			_ = newHubAppServer(hubcore.WebConfig{PluginRoot: t.TempDir()}, appsource.NewRegistry())
 			runDir := t.TempDir()
-			_ = os.WriteFile(filepath.Join(runDir, "bad.json"), []byte("{}"), 0o600)
-			_ = newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir, CodexSources: []appsource.CodexSourceConfig{{ID: "codex"}}})
+			_, _ = rendezvous.Write(runDir, rendezvous.Entry{PID: 7, Address: "127.0.0.1:1", ThreadID: "thread"})
+			runRegistry := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir, CodexSources: []appsource.CodexSourceConfig{{ID: "codex"}}})
+			if local, ok := runRegistry.Source("local"); ok {
+				_, _ = local.ListThreads(context.Background(), appwire.ThreadListParams{})
+			}
 			roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{ThreadID: "x", PID: 1}, SessionID: "x"})
-			_ = newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
+			rosterRegistry := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
+			if local, ok := rosterRegistry.Source("local"); ok {
+				_, _ = local.ListThreads(context.Background(), appwire.ThreadListParams{})
+			}
 			pluginDir := t.TempDir()
 			_ = os.MkdirAll(filepath.Join(pluginDir, ".claude-plugin"), 0o755)
 			_ = os.WriteFile(filepath.Join(pluginDir, ".claude-plugin", "plugin.json"), []byte(`{"name":"p"}`), 0o600)
 			_ = os.MkdirAll(filepath.Join(pluginDir, "commands"), 0o755)
 			_ = os.WriteFile(filepath.Join(pluginDir, "commands", "z.md"), []byte("---\ndescription: z\n---\nz"), 0o600)
 			_ = os.WriteFile(filepath.Join(pluginDir, "commands", "a.md"), []byte("---\ndescription: a\n---\na"), 0o600)
-			_, _ = hubCommandList(hubcore.WebConfig{PluginDirs: []string{pluginDir}})
+			pluginDir2 := t.TempDir()
+			_ = os.MkdirAll(filepath.Join(pluginDir2, ".claude-plugin"), 0o755)
+			_ = os.WriteFile(filepath.Join(pluginDir2, ".claude-plugin", "plugin.json"), []byte(`{"name":"q"}`), 0o600)
+			_ = os.MkdirAll(filepath.Join(pluginDir2, "commands"), 0o755)
+			_ = os.WriteFile(filepath.Join(pluginDir2, "commands", "a.md"), []byte("---\ndescription: a\n---\na"), 0o600)
+			_, _ = hubCommandList(hubcore.WebConfig{PluginDirs: []string{pluginDir, pluginDir2}})
 
 			for _, c := range []struct {
 				m string
@@ -211,6 +233,126 @@ func FuzzExactAppRPC(f *testing.F) {
 			} {
 				_, _ = exactDispatch(t, server, context.Background(), c.m, c.p)
 			}
+			_, _ = exactDispatch(t, server, context.Background(), appwire.MethodSerfAuthApiKeySet, appwire.AuthApiKeySetParams{Provider: "anthropic", Value: "test-key"})
+			_, _ = exactDispatch(t, server, context.Background(), appwire.MethodSerfAuthLogout, appwire.AuthLogoutParams{Provider: "anthropic"})
+			launchServer := appserver.NewServer(appserver.ServerConfig{})
+			registerLaunchHandlers(launchServer, newHubLaunchController(t.TempDir()))
+			_, _ = exactDispatch(t, launchServer, context.Background(), appwire.MethodSerfLaunchSetLayer, appwire.LaunchConfigSetLayerParams{CWD: t.TempDir(), Layer: "global"})
+
+			// Drive successful instance mutations through their registered closures.
+			instDir := t.TempDir()
+			tomlPath := filepath.Join(instDir, "providers.toml")
+			writeMinimalProvidersToml(t, tomlPath)
+			instCtl := newTestInstancesController(t, tomlPath, instDir, t.TempDir())
+			instServer := appserver.NewServer(appserver.ServerConfig{})
+			registerInstanceHandlers(instServer, instCtl)
+			for _, c := range []struct {
+				m string
+				p any
+			}{
+				{appwire.MethodSerfInstanceList, appwire.EmptyParams{}},
+				{appwire.MethodSerfInstanceCreate, appwire.InstanceCreateParams{Name: "work", Type: "anthropic"}},
+				{appwire.MethodSerfInstanceEdit, appwire.InstanceEditParams{Name: "work"}},
+				{appwire.MethodSerfInstanceSetDefault, appwire.InstanceSetDefaultParams{Name: "work"}},
+				{appwire.MethodSerfInstanceRemove, appwire.InstanceRemoveParams{Name: "work"}},
+			} {
+				if _, err := exactDispatch(t, instServer, context.Background(), c.m, c.p); err != nil {
+					t.Fatalf("instance %s: %v", c.m, err)
+				}
+			}
+
+			pastRoot := t.TempDir()
+			pastState := filepath.Join(pastRoot, "projects", "saved")
+			pastID := buildRPCParentSession(t, pastState)
+			past := hubcore.NewPastIndex(filepath.Join(pastRoot, "projects", "*"))
+			if err := past.Rebuild(); err != nil {
+				t.Fatal(err)
+			}
+			pastServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: past, PluginRoot: t.TempDir()}, appsource.NewRegistry())
+			pastRef := "local:" + pastID
+			_, _ = exactDispatch(t, pastServer, context.Background(), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: pastRef, IncludeTurns: true, TurnLimit: 1})
+			_, _ = exactDispatch(t, pastServer, context.Background(), appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: pastRef, Limit: 1})
+			_, _ = exactDispatch(t, pastServer, context.Background(), appwire.MethodSerfSubagentPreview, appwire.SerfSubagentPreviewParams{Ref: pastRef, Limit: 1})
+
+			// Drive every successful marketplace/plugin mutation through the router.
+			marketDir := t.TempDir()
+			writeTestMarketplace(t, marketDir)
+			pluginCtl := newHubPluginsController(t.TempDir())
+			pluginServer := appserver.NewServer(appserver.ServerConfig{})
+			registerPluginHandlers(pluginServer, pluginCtl)
+			ref := appwire.PluginRefParams{Plugin: "widget", Marketplace: "acme"}
+			for _, c := range []struct {
+				m string
+				p any
+			}{
+				{appwire.MethodSerfMarketplaceAdd, appwire.MarketplaceAddParams{Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: marketDir}}},
+				{appwire.MethodSerfMarketplaceBrowse, appwire.MarketplaceBrowseParams{Name: "acme"}},
+				{appwire.MethodSerfMarketplaceRefresh, appwire.MarketplaceNameParams{Name: "acme"}},
+				{appwire.MethodSerfPluginInstall, ref},
+				{appwire.MethodSerfPluginDisable, ref},
+				{appwire.MethodSerfPluginEnable, ref},
+				{appwire.MethodSerfPluginSetAutoUpgrade, appwire.PluginSetAutoUpgradeParams{Plugin: "widget", Marketplace: "acme", AutoUpgrade: true}},
+				{appwire.MethodSerfPluginUpgrade, ref},
+				{appwire.MethodSerfPluginRemove, ref},
+				{appwire.MethodSerfMarketplaceRemove, appwire.MarketplaceNameParams{Name: "acme"}},
+			} {
+				_, _ = exactDispatch(t, pluginServer, context.Background(), c.m, c.p)
+			}
+		case 4:
+			var relay hubRelayFunctions
+			observeHubRelayFunctions = func(got hubRelayFunctions) { relay = got }
+			_ = newHubAppServer(cfg, registry)
+			observeHubRelayFunctions = nil
+			t.Cleanup(func() { observeHubRelayFunctions = nil })
+
+			_ = relay.startRelay(context.Background(), source, appwire.ThreadReadParams{}, appwire.Thread{})
+			blankRef := thread
+			blankRef.Serf.Ref = ""
+			_ = relay.startRelay(context.Background(), source, appwire.ThreadReadParams{}, blankRef)
+			source.readErr = errors.New("read")
+			_, _ = relay.startTurn(context.Background(), source, appwire.TurnStartParams{Ref: "remote:thread"})
+			source.readErr = nil
+			noSend := thread
+			noSend.Serf.Capabilities.Send = false
+			source.thread = noSend
+			_, _ = relay.startTurn(context.Background(), source, appwire.TurnStartParams{Ref: "remote:thread"})
+			source.thread = thread
+			errThread := thread
+			errThread.Serf.Ref = "err:thread"
+			errSource := &exactRPCSource{scriptedAppSource: &scriptedAppSource{id: "err", thread: errThread}, subscribeErr: errors.New("turn relay")}
+			_, _ = relay.startTurn(context.Background(), errSource, appwire.TurnStartParams{Ref: "err:thread"})
+			_, _ = exactDispatch(t, server, context.Background(), appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: "remote:thread"})
+
+			open := make(chan appwire.Notification)
+			source.notifications = open
+			_ = relay.startRelay(context.Background(), source, appwire.ThreadReadParams{}, thread)
+			_ = relay.startRelay(context.Background(), source, appwire.ThreadReadParams{ReplaceSubscription: true}, thread)
+			close(open)
+
+			blocked := &exactRPCSource{
+				scriptedAppSource: &scriptedAppSource{id: "blocked", thread: thread},
+				subscribeErr:      errors.New("blocked failure"),
+				started:           make(chan struct{}, 1),
+				release:           make(chan struct{}),
+			}
+			firstDone := make(chan error, 1)
+			go func() {
+				firstDone <- relay.startRelay(context.Background(), blocked, appwire.ThreadReadParams{}, thread)
+			}()
+			<-blocked.started
+			canceled, cancel := context.WithCancel(context.Background())
+			cancel()
+			_ = relay.startRelay(canceled, blocked, appwire.ThreadReadParams{}, thread)
+			secondDone := make(chan error, 1)
+			go func() {
+				secondDone <- relay.startRelay(context.Background(), blocked, appwire.ThreadReadParams{}, thread)
+			}()
+			close(blocked.release)
+			<-firstDone
+			<-secondDone
+
+			_ = relay.startRelayForThread(context.Background(), appwire.Thread{})
+			_ = relay.startRelayForThread(context.Background(), appwire.Thread{SessionID: "session"})
 		}
 	})
 }
