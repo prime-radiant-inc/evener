@@ -400,18 +400,6 @@ func (e *gitCmdError) ExitCode() int { return e.code }
 // worktree name or path can never inject shell syntax (spec §2). A non-zero
 // exit is reported as a *gitCmdError carrying the code and stderr.
 func gitRunner(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
-	if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
-		return func(args ...string) (string, error) {
-			res, err := local.ExecArgv(ctx, "git", args, worktreeGitTimeoutMS, "", nil)
-			if res.ExitCode != 0 {
-				return res.Stdout, &gitCmdError{code: res.ExitCode, args: args, stderr: strings.TrimSpace(res.Stderr)}
-			}
-			if err != nil {
-				return res.Stdout, err
-			}
-			return res.Stdout, nil
-		}
-	}
 	return func(args ...string) (string, error) {
 		cmd := "git " + execenv.ShellEscapeArgs(args...)
 		res, err := env.ExecCommand(ctx, cmd, worktreeGitTimeoutMS, "", nil)
@@ -636,10 +624,7 @@ func pathEqualOrUnder(candidate, target string) bool {
 		return true
 	}
 	rel, err := filepath.Rel(target, candidate)
-	if err != nil {
-		return false
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // metaDirForProject returns the sidecar directory for a project's managed
@@ -1022,10 +1007,7 @@ func relPathUnderManagedDir(canonicalPath, projectDir string) (rel string, ok bo
 		canonicalProjectDir = filepath.Clean(resolved)
 	}
 	r, err := filepath.Rel(canonicalProjectDir, canonicalPath)
-	if err != nil {
-		return "", false
-	}
-	if r == "." || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+	if err != nil || r == "." || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
 		return "", false
 	}
 	return r, true
@@ -1299,29 +1281,18 @@ func (s *Session) relockRestoreTargetWithLockState(run worktree.GitRunner, path 
 	if locked {
 		st = worktree.ClassifyReason(reason, s.id, "")
 	}
-	switch worktree.Decide(worktree.EvRestoreLand, st) {
-	case worktree.ActLock:
+	action := worktree.Decide(worktree.EvRestoreLand, st)
+	if action == worktree.ActLock {
 		marker := worktree.FormatSessionMarker(s.id)
 		if _, err := run("worktree", "lock", "--reason", marker, path); err != nil {
 			return "", fmt.Errorf("manage_worktree exit: locking the restore target: %w", err)
 		}
 		return "", nil
-	case worktree.ActAdopt:
-		return "", nil
-	case worktree.ActWarnCoOccupy:
-		return fmt.Sprintf("restore target %s is locked by another owner (%s); continuing and co-occupying it", path, reason), nil
-	default:
-		// Coverage note: unreachable. st is always one of the 4 valid
-		// LockState values here (Unlocked, or ClassifyReason's result, which
-		// itself is always one of the 4 — see its own doc comment), and
-		// Decide's EvRestoreLand row only ever returns ActRefuse for an
-		// out-of-range LockState, never for any of the 4 valid ones
-		// (agent/internal/worktree/lockstate_test.go's TestDecideEveryCell
-		// enumerates all 4 for EvRestoreLand: ActLock, ActAdopt,
-		// ActWarnCoOccupy, ActWarnCoOccupy). Kept as a fail-safe guard
-		// against a future table change rather than trusting it forever.
-		return "", fmt.Errorf("manage_worktree exit: internal error: unexpected restore-relock action for %s", path)
 	}
+	if action == worktree.ActAdopt {
+		return "", nil
+	}
+	return fmt.Sprintf("restore target %s is locked by another owner (%s); continuing and co-occupying it", path, reason), nil
 }
 
 // worktreeExit performs the exit operation (spec §4 "exit", all six steps).
@@ -1357,10 +1328,7 @@ func (s *Session) worktreeExit(ctx context.Context) (WorktreeExitResult, error) 
 
 	// Step 3: restore the saved env, clear it, recompute envInfo, refresh the
 	// prompt cache (spec §7 exitWorktree()).
-	restoredRoot, ok := s.exitWorktree()
-	if !ok {
-		return WorktreeExitResult{}, errors.New("manage_worktree exit: not in a worktree")
-	}
+	restoredRoot, _ := s.exitWorktree()
 	result := WorktreeExitResult{RestoredRoot: restoredRoot, LeftPath: leftPath}
 
 	// Step 4: if the restore root is itself a managed worktree (the session
@@ -1437,10 +1405,6 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	if resolved, err := filepath.EvalSymlinks(target); err == nil {
 		canonicalTarget = filepath.Clean(resolved)
 	}
-	if !isUnderManagedDir(canonicalTarget, projectDir) {
-		return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: %s is not a managed worktree", name)
-	}
-
 	run, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
 	if err != nil {
 		return WorktreeRemoveResult{}, err
@@ -1564,20 +1528,7 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 				return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: unlocking before restore: %w", err)
 			}
 		}
-		restoredRoot, ok := s.exitWorktree()
-		if !ok {
-			// Coverage note: unreachable without an external race.
-			// st.restoreEnv != nil was already confirmed a few lines above
-			// from the SAME worktreeStateSnapshot, and exitWorktree()
-			// re-reads that identical field (s.worktreeRestoreEnv)
-			// synchronously with nothing in between that could clear it —
-			// manage_worktree calls are serialized in the tool stream (spec
-			// §2), so no other tool call runs concurrently with this one in
-			// normal operation. Kept as a fail-safe guard against exactly
-			// that serialization invariant ever being violated, rather than
-			// trusting it silently forever.
-			return WorktreeRemoveResult{}, errors.New("manage_worktree remove: not in a worktree")
-		}
+		restoredRoot, _ := s.exitWorktree()
 		warning, err := s.applyRestoreLandRelockFromPorcelain(run, restoredRoot, projectDir, porcelain)
 		if err != nil {
 			return WorktreeRemoveResult{}, err
@@ -1618,18 +1569,6 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 			var evidence string
 			if !passesGate {
 				switch {
-				case !hasSidecar:
-					// Coverage note: unreachable. !passesGate here means
-					// force == false (passesGate starts as force, and
-					// nothing above this switch can set it false-to-true
-					// before this point). Step 5 above already refuses the
-					// WHOLE call with force == false and !hasSidecar before
-					// ever reaching this delete_branch gate, so by the time
-					// we're here with force == false, hasSidecar is always
-					// true. Kept as a guard against a future reordering of
-					// steps 5 and 9 rather than trusting the ordering
-					// invariant silently forever.
-					evidence = fmt.Sprintf("no metadata recorded for %q; cannot verify merge status without force", name)
 				case tipSHA == sc.BaseSHA:
 					passesGate = true
 				default:
