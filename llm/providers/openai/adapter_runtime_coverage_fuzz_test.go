@@ -53,6 +53,7 @@ func FuzzOpenAIAdapterRuntimeCoverage(f *testing.F) {
 			adapterRuntimeExerciseComplete(t)
 		}
 		adapterRuntimeExerciseHelpers(t)
+		adapterRuntimeExerciseInjectedErrors(t)
 	})
 }
 
@@ -208,6 +209,20 @@ func adapterRuntimeExerciseStreams(t *testing.T) {
 	}
 	_ = s.Close()
 
+	directFallback := &Adapter{APIKey: "k", BaseURL: "https://runtime.test", Client: &http.Client{Transport: adapterRuntimeRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(req.URL.Path, "/responses") {
+			return adapterRuntimeHTTPResponse(req, http.StatusNotFound, `{"error":{"code":"model_not_found"}}`), nil
+		}
+		return adapterRuntimeHTTPResponse(req, http.StatusOK, chatSSE), nil
+	})}}
+	s, err = directFallback.Stream(context.Background(), llm.Request{Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range s.Events() {
+	}
+	_ = s.Close()
+
 	contentThenEmpty := &adapterRuntimeStream{events: make(chan llm.StreamEvent, 2)}
 	contentThenEmpty.events <- llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: "x"}
 	contentThenEmpty.events <- llm.StreamEvent{Type: llm.StreamEventError, Err: errEmptyResponsesStream}
@@ -261,13 +276,19 @@ func adapterRuntimeExerciseHelpers(t *testing.T) {
 	if !a.shouldFallbackToChatCompletions(continuationReq, modelErr) {
 		t.Fatal("model endpoint with history not eligible")
 	}
+	permanent404 := llm.ErrorFromHTTPStatus("openai", http.StatusNotFound, "bad request", map[string]any{}, nil)
+	if a.shouldFallbackToChatCompletions(continuationReq, permanent404) {
+		t.Fatal("permanent continuation error eligible")
+	}
 
 	for _, tc := range []struct {
 		err  error
 		want llm.ResponsesErrorClass
 	}{
+		{nil, llm.ResponsesErrorPermanentOther},
 		{context.DeadlineExceeded, llm.ResponsesErrorTransient},
 		{errors.New("plain"), llm.ResponsesErrorPermanentOther},
+		{llm.ErrorFromHTTPStatus("openai", 400, "bad request", map[string]any{}, nil), llm.ResponsesErrorPermanentOther},
 		{llm.ErrorFromHTTPStatus("openai", 400, "previous response expired", map[string]any{}, nil), llm.ResponsesErrorContinuationRejected},
 		{llm.ErrorFromHTTPStatus("openai", 400, "model not supported", map[string]any{}, nil), llm.ResponsesErrorModelEndpoint},
 	} {
@@ -329,4 +350,105 @@ func adapterRuntimeExerciseHelpers(t *testing.T) {
 	if r.Raw["id_hash"] == nil {
 		t.Fatal("response id hash missing")
 	}
+}
+
+func adapterRuntimeExerciseInjectedErrors(t *testing.T) {
+	t.Helper()
+	originalBuild := adapterRuntimeBuildRequestBody
+	originalMarshal := adapterRuntimeMarshal
+	originalRaw := adapterRuntimeRawBodyEnabled
+	originalHash := adapterRuntimeHashResponseID
+	originalStream := adapterRuntimeOpenStream
+	originalFallback := adapterRuntimeFallbackStream
+	defer func() {
+		adapterRuntimeBuildRequestBody = originalBuild
+		adapterRuntimeMarshal = originalMarshal
+		adapterRuntimeRawBodyEnabled = originalRaw
+		adapterRuntimeHashResponseID = originalHash
+		adapterRuntimeOpenStream = originalStream
+		adapterRuntimeFallbackStream = originalFallback
+	}()
+
+	a := &Adapter{BaseURL: "https://runtime.test", Client: &http.Client{Transport: adapterRuntimeRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return adapterRuntimeHTTPResponse(req, http.StatusOK, `{"id":"r","output":[]}`), nil
+	})}}
+	adapterRuntimeBuildRequestBody = func(*Adapter, llm.Request) (map[string]any, error) { return nil, errors.New("build") }
+	if _, err := a.Complete(context.Background(), llm.Request{}); err == nil {
+		t.Fatal("injected build error ignored")
+	}
+	adapterRuntimeBuildRequestBody = originalBuild
+	adapterRuntimeMarshal = func(any) ([]byte, error) { return nil, errors.New("marshal") }
+	if _, err := a.Complete(context.Background(), llm.Request{}); err == nil {
+		t.Fatal("injected marshal error ignored")
+	}
+	adapterRuntimeMarshal = originalMarshal
+	adapterRuntimeRawBodyEnabled = func() bool { return true }
+	if resp, err := a.Complete(context.Background(), llm.Request{}); err != nil || resp.RawRequestBody == "" || resp.RawResponseBody == "" {
+		t.Fatalf("raw completion = (%q, %q, %v)", resp.RawRequestBody, resp.RawResponseBody, err)
+	}
+	adapterRuntimeRawBodyEnabled = originalRaw
+
+	a.ContinuationHasher = llm.NewContinuationHasher(bytes.Repeat([]byte{2}, 32))
+	adapterRuntimeHashResponseID = func(*llm.ContinuationHasher, string) (string, error) { return "", errors.New("hash") }
+	r := &llm.Response{ID: "r"}
+	a.stampResponseIDHash(r)
+	adapterRuntimeHashResponseID = originalHash
+
+	adapterRuntimeOpenStream = func(*Adapter, context.Context, llm.Request) (llm.Stream, error) {
+		return nil, errors.New("stream setup")
+	}
+	if _, err := a.completeViaStream(context.Background(), llm.Request{}); err == nil {
+		t.Fatal("stream setup error ignored")
+	}
+	for _, tc := range []struct {
+		name   string
+		events []llm.StreamEvent
+	}{
+		{"nil-error", []llm.StreamEvent{{Type: llm.StreamEventError}}},
+		{"typed-error", []llm.StreamEvent{{Type: llm.StreamEventError, Err: errors.New("event")}}},
+		{"no-finish", []llm.StreamEvent{{Type: llm.StreamEventStreamStart}}},
+	} {
+		t.Run("complete-stream-"+tc.name, func(t *testing.T) {
+			adapterRuntimeOpenStream = func(*Adapter, context.Context, llm.Request) (llm.Stream, error) {
+				return adapterRuntimeStaticStream(tc.events), nil
+			}
+			if _, err := a.completeViaStream(context.Background(), llm.Request{}); err == nil {
+				t.Fatal("injected stream unexpectedly completed")
+			}
+		})
+	}
+	adapterRuntimeOpenStream = originalStream
+
+	adapterRuntimeFallbackStream = func(*Adapter, context.Context, llm.Request, error) (llm.Stream, error) {
+		return nil, errors.New("fallback setup")
+	}
+	if _, err := a.completeViaChatCompletionsFallback(context.Background(), llm.Request{}, errors.New("responses")); err == nil {
+		t.Fatal("fallback setup error ignored")
+	}
+	for _, tc := range []struct {
+		name   string
+		events []llm.StreamEvent
+	}{
+		{"nil-error", []llm.StreamEvent{{Type: llm.StreamEventError}}},
+		{"typed-error", []llm.StreamEvent{{Type: llm.StreamEventError, Err: errors.New("event")}}},
+		{"no-finish", []llm.StreamEvent{{Type: llm.StreamEventStreamStart}}},
+	} {
+		t.Run("complete-fallback-"+tc.name, func(t *testing.T) {
+			adapterRuntimeFallbackStream = func(*Adapter, context.Context, llm.Request, error) (llm.Stream, error) {
+				return adapterRuntimeStaticStream(tc.events), nil
+			}
+			if _, err := a.completeViaChatCompletionsFallback(context.Background(), llm.Request{}, errors.New("responses")); err == nil {
+				t.Fatal("injected fallback unexpectedly completed")
+			}
+		})
+	}
+}
+
+func adapterRuntimeStaticStream(events []llm.StreamEvent) llm.Stream {
+	c := make(chan llm.StreamEvent, len(events))
+	for _, ev := range events {
+		c <- ev
+	}
+	close(c)
+	return &adapterRuntimeStream{events: c}
 }

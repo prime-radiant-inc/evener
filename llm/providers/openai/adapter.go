@@ -519,6 +519,23 @@ func appendUniqueString(values []string, value string) []string {
 	return append(values, value)
 }
 
+var (
+	adapterRuntimeBuildRequestBody = func(a *Adapter, req llm.Request) (map[string]any, error) {
+		return a.buildRequestBody(req)
+	}
+	adapterRuntimeMarshal        = json.Marshal
+	adapterRuntimeRawBodyEnabled = llm.RawBodyEnabled
+	adapterRuntimeHashResponseID = func(h *llm.ContinuationHasher, id string) (string, error) {
+		return h.HashContinuationHandle("response_id", id)
+	}
+	adapterRuntimeOpenStream = func(a *Adapter, ctx context.Context, req llm.Request) (llm.Stream, error) {
+		return a.Stream(ctx, req)
+	}
+	adapterRuntimeFallbackStream = func(a *Adapter, ctx context.Context, req llm.Request, responsesErr error) (llm.Stream, error) {
+		return a.fallbackToChatCompletions(ctx, req, responsesErr)
+	}
+)
+
 func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	if a.requiresStreamingComplete() {
 		return a.completeViaStream(ctx, req)
@@ -528,12 +545,12 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		a.Client = &http.Client{Timeout: 0}
 	}
 
-	body, err := a.buildRequestBody(req)
+	body, err := adapterRuntimeBuildRequestBody(a, req)
 	if err != nil {
 		return llm.Response{}, err
 	}
 
-	b, err := json.Marshal(body)
+	b, err := adapterRuntimeMarshal(body)
 	if err != nil {
 		return llm.Response{}, err
 	}
@@ -579,7 +596,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	a.stampResponseIDHash(&r)
 	llm.StampEndpointURL(&r, a.responsesURL())
 	r.RateLimit = llm.ParseRateLimitHeaders(resp.Header)
-	if llm.RawBodyEnabled() {
+	if adapterRuntimeRawBodyEnabled() {
 		r.RawRequestBody = string(b)
 		r.RawResponseBody = string(rawBytes)
 	}
@@ -590,7 +607,7 @@ func (a *Adapter) stampResponseIDHash(resp *llm.Response) {
 	if a == nil || resp == nil || a.ContinuationHasher == nil || strings.TrimSpace(resp.ID) == "" {
 		return
 	}
-	idHash, err := a.ContinuationHasher.HashContinuationHandle("response_id", resp.ID)
+	idHash, err := adapterRuntimeHashResponseID(a.ContinuationHasher, resp.ID)
 	if err != nil {
 		return
 	}
@@ -601,7 +618,7 @@ func (a *Adapter) stampResponseIDHash(resp *llm.Response) {
 }
 
 func (a *Adapter) completeViaStream(ctx context.Context, req llm.Request) (llm.Response, error) {
-	stream, err := a.Stream(ctx, req)
+	stream, err := adapterRuntimeOpenStream(a, ctx, req)
 	if err != nil {
 		return llm.Response{}, err
 	}
@@ -626,7 +643,7 @@ func (a *Adapter) completeViaStream(ctx context.Context, req llm.Request) (llm.R
 }
 
 func (a *Adapter) completeViaChatCompletionsFallback(ctx context.Context, req llm.Request, responsesErr error) (llm.Response, error) {
-	stream, err := a.fallbackToChatCompletions(ctx, req, responsesErr)
+	stream, err := adapterRuntimeFallbackStream(a, ctx, req, responsesErr)
 	if err != nil {
 		return llm.Response{}, err
 	}
