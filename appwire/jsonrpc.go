@@ -9,6 +9,8 @@ import (
 	"primeradiant.com/serf/invariant"
 )
 
+var unmarshalMessageFrame = json.Unmarshal
+
 type MessageKind int
 
 const (
@@ -165,25 +167,25 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	switch {
 	case len(probe.Error) > 0:
 		var resp ErrorResponse
-		if err := json.Unmarshal(data, &resp); err != nil {
+		if err := unmarshalMessageFrame(data, &resp); err != nil {
 			return err
 		}
 		m.Error = &resp
 	case len(probe.Result) > 0:
 		var resp Response
-		if err := json.Unmarshal(data, &resp); err != nil {
+		if err := unmarshalMessageFrame(data, &resp); err != nil {
 			return err
 		}
 		m.Response = &resp
 	case probe.Method != "" && probe.ID != nil:
 		var req Request
-		if err := json.Unmarshal(data, &req); err != nil {
+		if err := unmarshalMessageFrame(data, &req); err != nil {
 			return err
 		}
 		m.Request = &req
 	case probe.Method != "":
 		var notif Notification
-		if err := json.Unmarshal(data, &notif); err != nil {
+		if err := unmarshalMessageFrame(data, &notif); err != nil {
 			return err
 		}
 		m.Notification = &notif

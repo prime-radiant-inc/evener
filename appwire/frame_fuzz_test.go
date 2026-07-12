@@ -176,6 +176,7 @@ func FuzzMessageDecodeStructured(f *testing.F) {
 // decoder (as FuzzMessageDecode does) is rejected the overwhelming majority of
 // the time. It also asserts generateFrame is deterministic given identical bytes.
 func TestStructuredFrameReachesDecoder(t *testing.T) {
+	runRegisteredCoverageSuite(t)
 	reg, _ := buildRegistry()
 	const samples = 4000
 

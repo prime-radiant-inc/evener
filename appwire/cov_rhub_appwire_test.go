@@ -246,6 +246,54 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
+		{"ThreadNameSet", MethodSerfThreadNameSet, EmptyResponse{}, func(ctx context.Context, c *Client) error { return c.ThreadNameSet(ctx, ThreadNameSetParams{}) }},
+		{"TurnStart", MethodTurnStart, TurnStartResponse{}, func(ctx context.Context, c *Client) error { _, err := c.TurnStart(ctx, TurnStartParams{}); return err }},
+		{"TurnSteer", MethodTurnSteer, EmptyResponse{}, func(ctx context.Context, c *Client) error { return c.TurnSteer(ctx, TurnSteerParams{}) }},
+		{"TurnQueue", MethodTurnQueue, EmptyResponse{}, func(ctx context.Context, c *Client) error { return c.TurnQueue(ctx, TurnQueueParams{}) }},
+		{"TurnDrain", MethodTurnDrainAsSteer, EmptyResponse{}, func(ctx context.Context, c *Client) error { return c.TurnDrainAsSteer(ctx, TurnDrainAsSteerParams{}) }},
+		{"CommandList", MethodSerfCommandList, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.CommandList(ctx); return err }},
+		{"MarketplaceList", MethodSerfMarketplaceList, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.MarketplaceList(ctx); return err }},
+		{"MarketplaceAdd", MethodSerfMarketplaceAdd, map[string]any{}, func(ctx context.Context, c *Client) error {
+			_, err := c.MarketplaceAdd(ctx, MarketplaceAddParams{})
+			return err
+		}},
+		{"MarketplaceRemove", MethodSerfMarketplaceRemove, map[string]any{}, func(ctx context.Context, c *Client) error {
+			_, err := c.MarketplaceRemove(ctx, MarketplaceNameParams{})
+			return err
+		}},
+		{"MarketplaceRefresh", MethodSerfMarketplaceRefresh, map[string]any{}, func(ctx context.Context, c *Client) error {
+			_, err := c.MarketplaceRefresh(ctx, MarketplaceNameParams{})
+			return err
+		}},
+		{"MarketplaceBrowse", MethodSerfMarketplaceBrowse, map[string]any{}, func(ctx context.Context, c *Client) error {
+			_, err := c.MarketplaceBrowse(ctx, MarketplaceBrowseParams{})
+			return err
+		}},
+		{"PluginList", MethodSerfPluginList, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.PluginList(ctx); return err }},
+		{"PluginInstall", MethodSerfPluginInstall, map[string]any{}, func(ctx context.Context, c *Client) error {
+			_, err := c.PluginInstall(ctx, PluginRefParams{})
+			return err
+		}},
+		{"PluginUpgrade", MethodSerfPluginUpgrade, map[string]any{}, func(ctx context.Context, c *Client) error {
+			_, err := c.PluginUpgrade(ctx, PluginRefParams{})
+			return err
+		}},
+		{"PluginRemove", MethodSerfPluginRemove, map[string]any{}, func(ctx context.Context, c *Client) error {
+			_, err := c.PluginRemove(ctx, PluginRefParams{})
+			return err
+		}},
+		{"PluginEnable", MethodSerfPluginEnable, map[string]any{}, func(ctx context.Context, c *Client) error {
+			_, err := c.PluginEnable(ctx, PluginRefParams{})
+			return err
+		}},
+		{"PluginDisable", MethodSerfPluginDisable, map[string]any{}, func(ctx context.Context, c *Client) error {
+			_, err := c.PluginDisable(ctx, PluginRefParams{})
+			return err
+		}},
+		{"PluginAutoUpgrade", MethodSerfPluginSetAutoUpgrade, map[string]any{}, func(ctx context.Context, c *Client) error {
+			_, err := c.PluginSetAutoUpgrade(ctx, PluginSetAutoUpgradeParams{})
+			return err
+		}},
 	}
 
 	for _, tc := range cases {

@@ -9,6 +9,11 @@ import (
 	"primeradiant.com/serf/envvars"
 )
 
+var (
+	marshalRecordedFrame = json.Marshal
+	frameRecorderHomeDir = os.UserHomeDir
+)
+
 // FrameRecorder appends every AppWire WebSocket frame that crosses a transport
 // to a JSONL file, one frame per line. It exists solely to harvest real wire
 // traffic into fuzz seed corpora (serf-fuzz-harvest); it is opt-in via
@@ -49,7 +54,7 @@ func (r *FrameRecorder) record(dir string, data []byte) {
 	if r == nil || r.f == nil {
 		return
 	}
-	line, err := json.Marshal(recordedFrame{Dir: dir, Frame: string(data)})
+	line, err := marshalRecordedFrame(recordedFrame{Dir: dir, Frame: string(data)})
 	if err != nil {
 		return
 	}
@@ -89,7 +94,7 @@ func recorderStateRoot() string {
 	if dir := envvars.SERFStateDir.Getenv(); dir != "" {
 		return dir
 	}
-	if home, err := os.UserHomeDir(); err == nil {
+	if home, err := frameRecorderHomeDir(); err == nil {
 		return filepath.Join(home, ".serf")
 	}
 	return ".serf"

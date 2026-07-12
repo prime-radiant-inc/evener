@@ -8,6 +8,13 @@ import (
 	"github.com/coder/websocket"
 )
 
+var (
+	marshalWSMessage   = json.Marshal
+	unmarshalWSMessage = json.Unmarshal
+	pingWebSocket      = (*websocket.Conn).Ping
+	readWebSocket      = (*websocket.Conn).Read
+)
+
 type WSTransport struct {
 	conn *websocket.Conn
 	rec  *FrameRecorder // nil unless SERF_RECORD_APPWIRE selected recording
@@ -37,7 +44,7 @@ func NewWSTransport(conn *websocket.Conn) *WSTransport {
 }
 
 func (t *WSTransport) Send(ctx context.Context, msg Message) error {
-	data, err := json.Marshal(msg)
+	data, err := marshalWSMessage(msg)
 	if err != nil {
 		return err
 	}
@@ -46,13 +53,13 @@ func (t *WSTransport) Send(ctx context.Context, msg Message) error {
 }
 
 func (t *WSTransport) Recv(ctx context.Context) (Message, error) {
-	_, data, err := t.conn.Read(ctx)
+	_, data, err := readWebSocket(t.conn, ctx)
 	if err != nil {
 		return Message{}, err
 	}
 	t.rec.RecordRecv(data)
 	var msg Message
-	if err := json.Unmarshal(data, &msg); err != nil {
+	if err := unmarshalWSMessage(data, &msg); err != nil {
 		return Message{}, err
 	}
 	return msg, nil
@@ -62,7 +69,7 @@ func (t *WSTransport) Recv(ctx context.Context) (Message, error) {
 // pongs or ctx is done. The client keepalive loop uses it to detect a
 // silently-dropped connection.
 func (t *WSTransport) Ping(ctx context.Context) error {
-	return t.conn.Ping(ctx)
+	return pingWebSocket(t.conn, ctx)
 }
 
 func (t *WSTransport) Close() error {

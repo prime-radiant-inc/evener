@@ -1117,7 +1117,7 @@ func (l LaunchConfigLayer) MarshalJSON() ([]byte, error) {
 	type alias LaunchConfigLayer
 	a := alias(l)
 	a.ModelFallbacks = nil
-	raw, err := json.Marshal(a)
+	raw, err := marshalLaunchConfig(a)
 	if err != nil {
 		return nil, err
 	}
@@ -1125,16 +1125,22 @@ func (l LaunchConfigLayer) MarshalJSON() ([]byte, error) {
 		return raw, nil
 	}
 	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &obj); err != nil {
+	if err := unmarshalLaunchConfig(raw, &obj); err != nil {
 		return nil, err
 	}
-	modelFallbacks, err := json.Marshal(l.ModelFallbacks)
+	modelFallbacks, err := marshalModelFallbacks(l.ModelFallbacks)
 	if err != nil {
 		return nil, err
 	}
 	obj["modelFallbacks"] = modelFallbacks
-	return json.Marshal(obj)
+	return marshalLaunchConfig(obj)
 }
+
+var (
+	marshalLaunchConfig   = json.Marshal
+	unmarshalLaunchConfig = json.Unmarshal
+	marshalModelFallbacks = json.Marshal
+)
 
 // MCPServerSpec mirrors launchconfig.MCPServerSpec on the wire.
 type MCPServerSpec struct {
