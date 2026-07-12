@@ -112,4 +112,8 @@ func seed100JobtreeDrainMore(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("stop-gated kick: %v", err)
 	}
+	kickChild.enqueueJobNotification(jobNotification{JobID: "seed100-gated-attention"})
+	if outstanding, err := kickRoot.treeHasOutstandingWork(); err != nil || outstanding {
+		t.Fatalf("stop-gated tree outstanding = %v, %v; want false, nil", outstanding, err)
+	}
 }
