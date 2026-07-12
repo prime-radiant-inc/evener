@@ -20,6 +20,11 @@ func (f responsesCoverageRoundTripper) RoundTrip(r *http.Request) (*http.Respons
 }
 
 func TestResponsesCoverageRequestAndTransportBranches(t *testing.T) {
+	responsesCoverageRequestAndTransportBranches(t)
+}
+
+func responsesCoverageRequestAndTransportBranches(t testing.TB) {
+	t.Helper()
 	a := &Adapter{}
 	_, err := a.buildRequestBody(llm.Request{Model: "gpt-5.6", ProviderOptions: map[string]any{"openai": map[string]any{
 		"reasoning": "invalid replacement", "parallel_tool_calls": true,
@@ -69,6 +74,11 @@ func TestResponsesCoverageRequestAndTransportBranches(t *testing.T) {
 }
 
 func TestResponsesCoverageSchemaInputAndDecodeBranches(t *testing.T) {
+	responsesCoverageSchemaInputAndDecodeBranches(t)
+}
+
+func responsesCoverageSchemaInputAndDecodeBranches(t testing.TB) {
+	t.Helper()
 	strictifyJSONSchemaInPlace(nil)
 	schema := map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "anyOf": "bad", "oneOf": []any{map[string]any{"type": "object"}, "ignored"}, "allOf": nil}
 	strictifyJSONSchemaInPlace(schema)
@@ -121,6 +131,11 @@ func TestResponsesCoverageSchemaInputAndDecodeBranches(t *testing.T) {
 }
 
 func TestResponsesCoverageAdversarialStreamBranches(t *testing.T) {
+	responsesCoverageAdversarialStreamBranches(t)
+}
+
+func responsesCoverageAdversarialStreamBranches(t testing.TB) {
+	t.Helper()
 	originalRawBodyEnabled := responsesRawBodyEnabled
 	responsesRawBodyEnabled = func() bool { return true }
 	t.Cleanup(func() { responsesRawBodyEnabled = originalRawBodyEnabled })
@@ -149,4 +164,20 @@ func TestResponsesCoverageAdversarialStreamBranches(t *testing.T) {
 	if sawError || resp == nil {
 		t.Fatalf("response=%v sawError=%v", resp, sawError)
 	}
+}
+
+func FuzzResponsesCoverage(f *testing.F) {
+	for _, scenario := range []byte{0, 1, 2} {
+		f.Add(scenario)
+	}
+	f.Fuzz(func(t *testing.T, scenario byte) {
+		switch scenario % 3 {
+		case 0:
+			responsesCoverageRequestAndTransportBranches(t)
+		case 1:
+			responsesCoverageSchemaInputAndDecodeBranches(t)
+		case 2:
+			responsesCoverageAdversarialStreamBranches(t)
+		}
+	})
 }
