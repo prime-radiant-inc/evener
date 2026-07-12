@@ -600,6 +600,13 @@ TARGETS=(
 	"native:llm:./providers/openai:FuzzOpenAIChatCompletionsCoverage::"
 	"native:llm:./providers/openai:FuzzOpenAIModelsTokensCoverage::"
 	"native:llm:./providers/openai:FuzzResponsesCoverage::"
+	"native:llm:.:FuzzAPILogEdges::"
+	"native:llm:.:FuzzCatalogPricingCoverage::"
+	"native:llm:.:FuzzClientConfigEdges::"
+	"native:llm:.:FuzzGenerateEdges::"
+	"native:llm:.:FuzzGenerateObjectResidual::"
+	"native:llm:.:FuzzRetryStreamCore::"
+	"native:llm:.:FuzzStreamGenerateCoverage::"
 )
 
 duration="60s"
