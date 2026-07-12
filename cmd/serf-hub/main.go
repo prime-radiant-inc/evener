@@ -26,6 +26,7 @@ import (
 	"primeradiant.com/serf/internal/binresolve"
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/internal/plugins"
+	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/rendezvous"
 
@@ -70,18 +71,30 @@ type hubOptions struct {
 }
 
 type mainDeps struct {
-	loadConfig  func(string) (Config, error)
-	ensureDirs  func() error
-	acquireLock func(string) (func(), error)
-	newToken    func() (string, error)
+	loadConfig         func(string) (Config, error)
+	ensureDirs         func() error
+	acquireLock        func(string) (func(), error)
+	newToken           func() (string, error)
+	loadAuthToken      func(string) (string, error)
+	loadCredentials    func(string) (*credentials.Store, error)
+	loadProviderConfig func(string) (providercfg.Config, bool, error)
+	materializeConfig  func(string, ...llm.EnvOption) (providercfg.Config, error)
+	notifyContext      func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
+	serve              func(context.Context, hubHTTPServer, hubShutdowner) error
 }
 
 func defaultMainDeps() mainDeps {
 	return mainDeps{
-		loadConfig:  LoadConfig,
-		ensureDirs:  cmdutil.EnsureUserConfigDirs,
-		acquireLock: hostlock.AcquireLock,
-		newToken:    newHubToken,
+		loadConfig:         LoadConfig,
+		ensureDirs:         cmdutil.EnsureUserConfigDirs,
+		acquireLock:        hostlock.AcquireLock,
+		newToken:           newHubToken,
+		loadAuthToken:      hubedge.LoadOrCreateAuthToken,
+		loadCredentials:    credentials.LoadStore,
+		loadProviderConfig: providercfg.LoadFile,
+		materializeConfig:  cmdutil.MaterializeProvidersConfig,
+		notifyContext:      signal.NotifyContext,
+		serve:              serveHub,
 	}
 }
 
@@ -155,34 +168,34 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		return err
 	}
 	hubStateRoot := cfg.HubStateRoot
-	authToken, err := hubedge.LoadOrCreateAuthToken(hubStateRoot)
+	authToken, err := deps.loadAuthToken(hubStateRoot)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[hub] auth token: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "[hub] auth token: %v\n", err)
+		return err
 	}
-	credsStore, err := credentials.LoadStore(filepath.Join(hubStateRoot, "credentials.toml"))
+	credsStore, err := deps.loadCredentials(filepath.Join(hubStateRoot, "credentials.toml"))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[hub] credentials store: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "[hub] credentials store: %v\n", err)
+		return err
 	}
 	providersConfigPath := envvars.SERFProvidersConfig.Getenv()
 	if providersConfigPath == "" {
 		providersConfigPath = filepath.Join(hubStateRoot, "providers.toml")
 	}
 	var loadedProviderConfig *providercfg.Config
-	if pcfg, exists, pcfgErr := providercfg.LoadFile(providersConfigPath); pcfgErr != nil {
-		fmt.Fprintf(os.Stderr, "[hub] providers config: %v\n", pcfgErr)
-		os.Exit(1)
+	if pcfg, exists, pcfgErr := deps.loadProviderConfig(providersConfigPath); pcfgErr != nil {
+		fmt.Fprintf(stderr, "[hub] providers config: %v\n", pcfgErr)
+		return pcfgErr
 	} else if exists {
 		loadedProviderConfig = &pcfg
 	} else {
 		// File absent — materialize a descriptors-only providers.toml from the
 		// environment so the hub has a single source of truth and spawned
 		// children load the same file via SERF_PROVIDERS_CONFIG.
-		materialized, matErr := cmdutil.MaterializeProvidersConfig(providersConfigPath)
+		materialized, matErr := deps.materializeConfig(providersConfigPath)
 		if matErr != nil {
-			fmt.Fprintf(os.Stderr, "[hub] materialize providers config: %v\n", matErr)
-			os.Exit(1)
+			fmt.Fprintf(stderr, "[hub] materialize providers config: %v\n", matErr)
+			return matErr
 		}
 		loadedProviderConfig = &materialized
 		fmt.Fprintf(os.Stderr, "[hub] materialized %s\n", providersConfigPath)
@@ -297,7 +310,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	})
 
 	// Lifecycle
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	// Populate the roster before serving so the first sidebar request can't hit
@@ -427,7 +440,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	authHost := advertisedHubHost(cfg.Addr, hubHostname)
 	fmt.Fprintf(os.Stderr, "[hub] auth URL (visit once per browser): http://%s/auth?token=%s\n", authHost, authToken)
 	fmt.Fprintf(os.Stderr, "[hub] auth token also at %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
-	if err := serveHub(ctx, srv, codexLauncher); err != nil {
+	if err := deps.serve(ctx, srv, codexLauncher); err != nil {
 		fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
