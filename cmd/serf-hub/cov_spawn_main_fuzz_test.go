@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"errors"
 	"io"
@@ -190,4 +191,80 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 			}
 		}
 	})
+}
+
+func TestCovSpawnMainFaultSeams(t *testing.T) {
+	originalRead := hubTokenRead
+	originalOpen := httpRecorderOpenFile
+	originalMarshal := httpRecorderMarshal
+	t.Cleanup(func() {
+		hubTokenRead = originalRead
+		httpRecorderOpenFile = originalOpen
+		httpRecorderMarshal = originalMarshal
+	})
+
+	hubTokenRead = func([]byte) (int, error) { return 0, errors.New("entropy") }
+	if _, err := newHubToken(); err == nil || !strings.Contains(err.Error(), "entropy") {
+		t.Fatalf("newHubToken error = %v", err)
+	}
+
+	t.Setenv(envvars.SERFRecordHTTP.Name, "1")
+	httpRecorderOpenFile = func(string, int, os.FileMode) (*os.File, error) {
+		return nil, errors.New("open")
+	}
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) })
+	rr := httptest.NewRecorder()
+	newHTTPRequestRecorder(t.TempDir())(next).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("identity recorder status = %d", rr.Code)
+	}
+
+	httpRecorderOpenFile = originalOpen
+	httpRecorderMarshal = func(any) ([]byte, error) { return nil, errors.New("marshal") }
+	rr = httptest.NewRecorder()
+	newHTTPRequestRecorder(t.TempDir())(next).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("marshal-failing recorder status = %d", rr.Code)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := WaitForRendezvous(ctx, t.TempDir(), 123, WithStartedAfter(time.Now())); err == nil {
+		t.Fatal("canceled rendezvous wait succeeded")
+	}
+	exited := make(chan error, 1)
+	exited <- errors.New("exit")
+	if _, err := waitForRendezvousOrExit(context.Background(), t.TempDir(), 123, exited); err == nil || !strings.Contains(err.Error(), "exit") {
+		t.Fatalf("process-exit wait error = %v", err)
+	}
+	exited = make(chan error, 1)
+	exited <- nil
+	if _, err := waitForRendezvousOrExit(context.Background(), t.TempDir(), 123, exited); err == nil {
+		t.Fatal("clean process exit before rendezvous succeeded")
+	}
+
+	if _, err := SpawnDaemon(context.Background(), filepath.Join(t.TempDir(), "missing"), t.TempDir(), hubcore.SpawnRequest{}, time.Second); err == nil {
+		t.Fatal("missing spawn binary succeeded")
+	}
+	if _, err := ResumeDaemon(context.Background(), filepath.Join(t.TempDir(), "missing"), t.TempDir(), hubcore.ResumeRequest{SessionID: "s"}, time.Second); err == nil {
+		t.Fatal("missing resume binary succeeded")
+	}
+
+	if _, _, err := prepareResolvedForSpawn("", launchconfig.Resolved{Effective: launchconfig.Layer{SystemPromptMode: "inline"}}); err == nil {
+		t.Fatal("inline prompt without state directory succeeded")
+	}
+	resolved := launchconfig.Resolved{Effective: launchconfig.Layer{
+		SystemPromptMode:       "inline",
+		SystemPromptText:       "system",
+		SystemPromptAppendMode: "inline",
+		SystemPromptAppendText: "append",
+	}}
+	prepared, cleanup, err := prepareResolvedForSpawn(t.TempDir(), resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if prepared.Effective.SystemPromptMode != "file" || prepared.Effective.SystemPromptAppendMode != "file" {
+		t.Fatalf("inline prompts not materialized: %+v", prepared.Effective)
+	}
 }

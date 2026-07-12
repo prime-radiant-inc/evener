@@ -12,13 +12,15 @@ import (
 	"primeradiant.com/serf/envvars"
 )
 
-var recorderOpenFile = os.OpenFile
-var recorderMarshal = json.Marshal
-
 // httpRecorderMaxBodyBytes caps the request-body copy a recording keeps. The
 // downstream handler still receives the full body; only the recorded copy is
 // bounded so a large upload cannot blow up the recording file or memory.
 const httpRecorderMaxBodyBytes = 64 << 10
+
+var (
+	httpRecorderOpenFile = os.OpenFile
+	httpRecorderMarshal  = json.Marshal
+)
 
 // recordedHTTPRequest is one JSONL line in hub-http.jsonl. It is the raw,
 // unscrubbed inbound request; sanitization happens later in serf-fuzz-harvest,
@@ -43,13 +45,13 @@ func newHTTPRequestRecorder(stateRoot string) func(http.Handler) http.Handler {
 	if !envvars.RecorderEnabled(envvars.SERFRecordHTTP) {
 		return identity
 	}
-	f, err := recorderOpenFile(filepath.Join(stateRoot, "hub-http.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := httpRecorderOpenFile(filepath.Join(stateRoot, "hub-http.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return identity
 	}
 	var mu sync.Mutex
 	write := func(rec recordedHTTPRequest) {
-		line, err := recorderMarshal(rec)
+		line, err := httpRecorderMarshal(rec)
 		if err != nil {
 			return
 		}
