@@ -23,7 +23,7 @@ type UpgradedPlugin struct {
 // the change-detection both happen fresh, under this same lock acquisition,
 // rather than against a snapshot taken before the lock was acquired.
 func (m *Manager) upgradeAuto(ctx context.Context, plugin, marketplace string) (entry InstallEntry, changed, skipped bool, err error) {
-	release, err := acquireLock(m.lockPath(), 30*time.Second)
+	release, err := installAcquireLock(m.lockPath(), 30*time.Second)
 	if err != nil {
 		return InstallEntry{}, false, false, err
 	}
@@ -57,7 +57,7 @@ func (m *Manager) upgradeAuto(ctx context.Context, plugin, marketplace string) (
 // Failures are collected but do not stop the others (failure-isolated),
 // matching UpdateAll.
 func (m *Manager) UpdateAutoUpgrade(ctx context.Context) ([]UpgradedPlugin, error) {
-	reg, err := LoadRegistry(m.registryPath())
+	reg, err := installLoadRegistry(m.registryPath())
 	if err != nil {
 		return nil, err
 	}

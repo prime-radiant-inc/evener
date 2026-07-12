@@ -10,17 +10,34 @@ import (
 	"time"
 )
 
+var (
+	installAcquireLock   = acquireLock
+	installEnsureFetched = func(m *Manager, ctx context.Context, marketplace string) (MarketplaceRef, error) {
+		return m.ensureFetched(ctx, marketplace)
+	}
+	installParseCatalog     = ParseCatalog
+	installFetchSource      = fetchPluginSource
+	installRemoveAll        = os.RemoveAll
+	installMkdirAll         = os.MkdirAll
+	installRename           = os.Rename
+	installManifestFallback = ensureManifestFallback
+	installValidateDir      = validatePluginDir
+	installManifestVersion  = pluginManifestVersion
+	installLoadRegistry     = LoadRegistry
+	installSaveRegistry     = SaveRegistry
+)
+
 func registryKey(plugin, marketplace string) string { return plugin + "@" + marketplace }
 
 // catalogPlugin finds a named plugin's entry + its marketplace ref, lazily
 // fetching a seeded-but-unfetched marketplace first. Callers (Install/Upgrade)
 // already hold m.lockPath(), which ensureFetched requires.
 func (m *Manager) catalogPlugin(ctx context.Context, marketplace, plugin string) (MarketplaceRef, CatalogPlugin, error) {
-	ref, err := m.ensureFetched(ctx, marketplace)
+	ref, err := installEnsureFetched(m, ctx, marketplace)
 	if err != nil {
 		return MarketplaceRef{}, CatalogPlugin{}, err
 	}
-	cat, err := ParseCatalog(m.catalogRoot(ref))
+	cat, err := installParseCatalog(m.catalogRoot(ref))
 	if err != nil {
 		return MarketplaceRef{}, CatalogPlugin{}, err
 	}
@@ -47,10 +64,10 @@ func (m *Manager) stagePlugin(ctx context.Context, marketplace, plugin string, r
 		}
 	}
 	staging := m.pluginCacheDir(marketplace, plugin, ".staging")
-	_ = os.RemoveAll(staging)
-	sha, err = fetchPluginSource(ctx, cp.Source, m.catalogRoot(ref), staging)
+	_ = installRemoveAll(staging)
+	sha, err = installFetchSource(ctx, cp.Source, m.catalogRoot(ref), staging)
 	if err != nil {
-		_ = os.RemoveAll(staging)
+		_ = installRemoveAll(staging)
 		return "", "", false, err
 	}
 	return staging, sha, true, nil
@@ -64,13 +81,13 @@ func (m *Manager) commitStaged(marketplace, plugin, staging, sha string) (string
 		key = "unknown"
 	}
 	final := m.pluginCacheDir(marketplace, plugin, key)
-	_ = os.RemoveAll(final)
-	if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
-		_ = os.RemoveAll(staging)
+	_ = installRemoveAll(final)
+	if err := installMkdirAll(filepath.Dir(final), 0o755); err != nil {
+		_ = installRemoveAll(staging)
 		return "", err
 	}
-	if err := os.Rename(staging, final); err != nil {
-		_ = os.RemoveAll(staging)
+	if err := installRename(staging, final); err != nil {
+		_ = installRemoveAll(staging)
 		return "", err
 	}
 	return final, nil
@@ -78,7 +95,7 @@ func (m *Manager) commitStaged(marketplace, plugin, staging, sha string) (string
 
 // Install installs plugin from marketplace, enabled.
 func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (InstallEntry, error) {
-	release, err := acquireLock(m.lockPath(), 30*time.Second)
+	release, err := installAcquireLock(m.lockPath(), 30*time.Second)
 	if err != nil {
 		return InstallEntry{}, err
 	}
@@ -106,16 +123,16 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 		}
 		dir = final
 	}
-	note, err := ensureManifestFallback(dir, staged, cp)
+	note, err := installManifestFallback(dir, staged, cp)
 	if err != nil {
 		if strings.HasPrefix(dir, m.cacheDir()+string(os.PathSeparator)) {
-			_ = os.RemoveAll(dir)
+			_ = installRemoveAll(dir)
 		}
 		return InstallEntry{}, err
 	}
-	if err := validatePluginDir(dir); err != nil {
+	if err := installValidateDir(dir); err != nil {
 		if strings.HasPrefix(dir, m.cacheDir()+string(os.PathSeparator)) {
-			_ = os.RemoveAll(dir)
+			_ = installRemoveAll(dir)
 		}
 		return InstallEntry{}, fmt.Errorf("installed plugin failed validation: %w", err)
 	}
@@ -123,7 +140,7 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 	now := m.now().UTC()
 	entry := InstallEntry{
 		InstallPath:  dir,
-		Version:      computeVersion(pluginManifestVersion(dir), cp.Source.Ref, sha),
+		Version:      computeVersion(installManifestVersion(dir), cp.Source.Ref, sha),
 		GitCommitSha: sha,
 		InstalledAt:  now,
 		LastUpdated:  now,
@@ -132,12 +149,12 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 		Source:       cp.Source,
 		Note:         note,
 	}
-	reg, err := LoadRegistry(m.registryPath())
+	reg, err := installLoadRegistry(m.registryPath())
 	if err != nil {
 		return InstallEntry{}, err
 	}
 	reg.Plugins[registryKey(plugin, marketplace)] = []InstallEntry{entry}
-	if err := SaveRegistry(m.registryPath(), reg); err != nil {
+	if err := installSaveRegistry(m.registryPath(), reg); err != nil {
 		return InstallEntry{}, err
 	}
 	return entry, nil
@@ -154,7 +171,7 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 // The auto-upgrade daemon uses upgradeAuto instead, which re-checks the flag
 // under the same lock immediately before acting — see upgradeLocked.
 func (m *Manager) Upgrade(ctx context.Context, plugin, marketplace string) (InstallEntry, error) {
-	release, err := acquireLock(m.lockPath(), 30*time.Second)
+	release, err := installAcquireLock(m.lockPath(), 30*time.Second)
 	if err != nil {
 		return InstallEntry{}, err
 	}
@@ -189,7 +206,7 @@ func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string,
 	}
 
 	key := registryKey(plugin, marketplace)
-	reg, err := LoadRegistry(m.registryPath())
+	reg, err := installLoadRegistry(m.registryPath())
 	if err != nil {
 		return InstallEntry{}, false, false, err
 	}
@@ -213,7 +230,7 @@ func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string,
 	}
 	if !staged || sha == prev.GitCommitSha {
 		if staged {
-			_ = os.RemoveAll(staging)
+			_ = installRemoveAll(staging)
 		}
 		return prev, false, false, nil
 	}
@@ -222,37 +239,37 @@ func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string,
 	if err != nil {
 		return InstallEntry{}, false, false, err
 	}
-	note, err := ensureManifestFallback(final, true, cp)
+	note, err := installManifestFallback(final, true, cp)
 	if err != nil {
-		_ = os.RemoveAll(final)
+		_ = installRemoveAll(final)
 		return InstallEntry{}, false, false, err
 	}
-	if err := validatePluginDir(final); err != nil {
-		_ = os.RemoveAll(final)
+	if err := installValidateDir(final); err != nil {
+		_ = installRemoveAll(final)
 		return InstallEntry{}, false, false, fmt.Errorf("upgraded plugin failed validation: %w", err)
 	}
 
 	prev.InstallPath = final
 	prev.GitCommitSha = sha
-	prev.Version = computeVersion(pluginManifestVersion(final), cp.Source.Ref, sha)
+	prev.Version = computeVersion(installManifestVersion(final), cp.Source.Ref, sha)
 	prev.LastUpdated = m.now().UTC()
 	prev.Source = cp.Source
 	prev.Note = note
 	reg.Plugins[key] = []InstallEntry{prev}
-	if err := SaveRegistry(m.registryPath(), reg); err != nil {
+	if err := installSaveRegistry(m.registryPath(), reg); err != nil {
 		return InstallEntry{}, false, false, err
 	}
 	return prev, true, false, nil
 }
 
 func (m *Manager) mutateEntry(plugin, marketplace string, fn func(*InstallEntry)) error {
-	release, err := acquireLock(m.lockPath(), 30*time.Second)
+	release, err := installAcquireLock(m.lockPath(), 30*time.Second)
 	if err != nil {
 		return err
 	}
 	defer release()
 	key := registryKey(plugin, marketplace)
-	reg, err := LoadRegistry(m.registryPath())
+	reg, err := installLoadRegistry(m.registryPath())
 	if err != nil {
 		return err
 	}
@@ -263,7 +280,7 @@ func (m *Manager) mutateEntry(plugin, marketplace string, fn func(*InstallEntry)
 	e := entries[0]
 	fn(&e)
 	reg.Plugins[key] = []InstallEntry{e}
-	return SaveRegistry(m.registryPath(), reg)
+	return installSaveRegistry(m.registryPath(), reg)
 }
 
 func (m *Manager) SetEnabled(plugin, marketplace string, enabled bool) error {
@@ -277,13 +294,13 @@ func (m *Manager) SetAutoUpgrade(plugin, marketplace string, on bool) error {
 // Remove deletes the registry entry and its cache dir. A plugin referenced in
 // place (directory-source marketplace) leaves the source untouched.
 func (m *Manager) Remove(plugin, marketplace string) error {
-	release, err := acquireLock(m.lockPath(), 30*time.Second)
+	release, err := installAcquireLock(m.lockPath(), 30*time.Second)
 	if err != nil {
 		return err
 	}
 	defer release()
 	key := registryKey(plugin, marketplace)
-	reg, err := LoadRegistry(m.registryPath())
+	reg, err := installLoadRegistry(m.registryPath())
 	if err != nil {
 		return err
 	}
@@ -294,11 +311,11 @@ func (m *Manager) Remove(plugin, marketplace string) error {
 	if len(entries) > 0 {
 		p := entries[0].InstallPath
 		if strings.HasPrefix(p, m.cacheDir()+string(os.PathSeparator)) {
-			_ = os.RemoveAll(p)
+			_ = installRemoveAll(p)
 		}
 	}
 	delete(reg.Plugins, key)
-	return SaveRegistry(m.registryPath(), reg)
+	return installSaveRegistry(m.registryPath(), reg)
 }
 
 type ListItem struct {
@@ -327,7 +344,7 @@ func splitKey(key string) (plugin, marketplace string) {
 }
 
 func (m *Manager) List() ([]ListItem, error) {
-	reg, err := LoadRegistry(m.registryPath())
+	reg, err := installLoadRegistry(m.registryPath())
 	if err != nil {
 		return nil, err
 	}
@@ -347,7 +364,7 @@ func (m *Manager) List() ([]ListItem, error) {
 			Version:      e.Version,
 			Enabled:      e.Enabled,
 			AutoUpgrade:  e.AutoUpgrade,
-			Broken:       validatePluginDir(e.InstallPath) != nil,
+			Broken:       installValidateDir(e.InstallPath) != nil,
 			InstallPath:  e.InstallPath,
 			GitCommitSha: e.GitCommitSha,
 			InstalledAt:  e.InstalledAt,
@@ -367,7 +384,7 @@ func (m *Manager) List() ([]ListItem, error) {
 // sources are inherently current and skipped). Failures are collected but do
 // not stop the others.
 func (m *Manager) UpdateAll(ctx context.Context) ([]InstallEntry, error) {
-	reg, err := LoadRegistry(m.registryPath())
+	reg, err := installLoadRegistry(m.registryPath())
 	if err != nil {
 		return nil, err
 	}
