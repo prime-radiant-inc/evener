@@ -38,6 +38,7 @@ type CodexLauncher struct {
 	Running map[string]*LaunchedCodex
 	Sources map[string]appsource.Source
 	client  *http.Client
+	command func(string, ...string) *exec.Cmd
 }
 
 type LaunchedCodex struct {
@@ -48,6 +49,8 @@ type LaunchedCodex struct {
 	// consuming a single-shot signal.
 	Exited <-chan struct{}
 }
+
+var newRequestWithContext = http.NewRequestWithContext
 
 func NewCodexLauncher(configs []CodexLaunchConfig) *CodexLauncher {
 	byID := make(map[string]CodexLaunchConfig, len(configs))
@@ -64,6 +67,7 @@ func NewCodexLauncher(configs []CodexLaunchConfig) *CodexLauncher {
 		Running: map[string]*LaunchedCodex{},
 		Sources: map[string]appsource.Source{},
 		client:  http.DefaultClient,
+		command: exec.Command,
 	}
 }
 
@@ -174,7 +178,7 @@ func (l *CodexLauncher) launchLocked(ctx context.Context, cfg CodexLaunchConfig)
 	// NOT CommandContext: the launched codex app-server must outlive this
 	// call's ctx (the caller owns it via LaunchedCodex). ctx scopes only the
 	// readiness wait below; on timeout we kill the process explicitly.
-	cmd := exec.Command(binary, args...) //nolint:noctx // detached app-server must outlive ctx (see comment)
+	cmd := l.command(binary, args...) //nolint:noctx // detached app-server must outlive ctx (see comment)
 	cmd.Dir = cfg.WorkingDir
 	cmd.Env = codexLaunchEnv(cfg.Env)
 	stdout, err := cmd.StdoutPipe()
@@ -318,7 +322,7 @@ func CodexReady(ctx context.Context, client *http.Client, endpoint string) bool 
 	if err != nil {
 		return false
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, readyURL, nil)
+	req, err := newRequestWithContext(ctx, http.MethodGet, readyURL, nil)
 	if err != nil {
 		return false
 	}
