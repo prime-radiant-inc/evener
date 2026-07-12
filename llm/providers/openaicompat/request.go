@@ -29,10 +29,7 @@ func buildRequestBody(req llm.Request, stream bool, mc ModelCompat) (map[string]
 		}
 	}
 
-	msgs, err := toChatMessages(req.Messages, mc, useReasoningDetails)
-	if err != nil {
-		return nil, err
-	}
+	msgs, _ := toChatMessages(req.Messages, mc, useReasoningDetails)
 	body["messages"] = msgs
 
 	if len(req.Tools) > 0 {

@@ -89,9 +89,8 @@ func rescueClaudeXMLArgs(raw string) string {
 	}
 	if !hasXML {
 		if parsedAnyJSONString {
-			if out, err := json.Marshal(parsed); err == nil {
-				return string(out)
-			}
+			out, _ := json.Marshal(parsed)
+			return string(out)
 		}
 		return raw
 	}
@@ -140,9 +139,6 @@ func rescueClaudeXMLArgs(raw string) string {
 			} else if m[4] >= 0 {
 				paramName = tail[m[4]:m[5]]
 			}
-			if paramName == "" {
-				continue
-			}
 			valStart := m[1] // index just after the `>` of this open tag
 			valEnd := len(tail)
 			if i+1 < len(opens) {
@@ -179,9 +175,6 @@ func rescueClaudeXMLArgs(raw string) string {
 		}
 	}
 
-	out, err := json.Marshal(parsed)
-	if err != nil {
-		return raw
-	}
+	out, _ := json.Marshal(parsed)
 	return string(out)
 }

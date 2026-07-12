@@ -95,10 +95,7 @@ func encodeEncryptedDetails(items []reasoningDetailItem) string {
 	if len(enc) == 0 {
 		return ""
 	}
-	b, err := json.Marshal(enc)
-	if err != nil {
-		return ""
-	}
+	b, _ := json.Marshal(enc)
 	return string(b)
 }
 

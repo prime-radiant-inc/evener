@@ -95,20 +95,19 @@ func NewForInstance(params OpenAICompatInstanceParams) *Adapter {
 }
 
 func init() {
-	llm.RegisterEnvAdapterFactory(func(_ llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
-		base := envvars.OpenAICompatibleBaseURL.Trimmed()
-		if base == "" {
-			return nil, false, nil
-		}
-		a, err := NewFromEnv()
-		if err != nil {
-			return nil, true, err
-		}
-		return a, true, nil
-	})
+	llm.RegisterEnvAdapterFactory(newOpenAICompatEnvAdapter)
 	// Register for the openai+chat-completions fold-in: an openai instance with
 	// apiStyle=chat-completions routes through the openaicompat adapter.
 	llm.RegisterInstanceAdapterFactory("openai", "chat-completions", newOpenAIChatCompletionsInstance)
+}
+
+func newOpenAICompatEnvAdapter(_ llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
+	base := envvars.OpenAICompatibleBaseURL.Trimmed()
+	if base == "" {
+		return nil, false, nil
+	}
+	a, _ := NewFromEnv()
+	return a, true, nil
 }
 
 // openAIDefaultBaseURL is the endpoint an openai + chat-completions instance
