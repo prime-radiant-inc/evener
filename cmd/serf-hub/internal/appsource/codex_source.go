@@ -30,8 +30,15 @@ type CodexSource struct {
 	bearerToken     string
 	bearerTokenFile string
 	client          *http.Client
+	dial            appwireDialFunc
 	mu              sync.Mutex
 	live            map[string]*codexLiveThread
+}
+
+type appwireDialFunc func(context.Context, string, *http.Client, http.Header) (appwire.Transport, error)
+
+func defaultAppwireDial(ctx context.Context, endpoint string, client *http.Client, header http.Header) (appwire.Transport, error) {
+	return appwire.DialWebSocketWithHeaders(ctx, endpoint, client, header)
 }
 
 func NewCodexSource(cfg CodexSourceConfig, client *http.Client) *CodexSource {
@@ -45,6 +52,7 @@ func NewCodexSource(cfg CodexSourceConfig, client *http.Client) *CodexSource {
 		bearerToken:     cfg.BearerToken,
 		bearerTokenFile: cfg.BearerTokenFile,
 		client:          client,
+		dial:            defaultAppwireDial,
 		live:            map[string]*codexLiveThread{},
 	}
 }
@@ -515,11 +523,11 @@ func codexSourceDialError(err error) error {
 
 	// Transport-level timeouts: hung daemon, slow loopback, or network filter
 	// holding the SYN.
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
+	if errors.Is(err, context.DeadlineExceeded) {
 		return appwire.SessionUnavailable("codex daemon unavailable: " + err.Error())
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
 		return appwire.SessionUnavailable("codex daemon unavailable: " + err.Error())
 	}
 
@@ -600,7 +608,7 @@ func (s *CodexSource) connect(ctx context.Context) (*appwire.Client, func() erro
 	if err != nil {
 		return nil, nil, err
 	}
-	transport, err := appwire.DialWebSocketWithHeaders(ctx, s.endpoint, s.client, header)
+	transport, err := s.dial(ctx, s.endpoint, s.client, header)
 	if err != nil {
 		if cerr := ctx.Err(); cerr != nil {
 			return nil, nil, cerr

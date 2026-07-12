@@ -21,6 +21,7 @@ type LocalDaemonSource struct {
 	sourceID string
 	entries  func() []LocalDaemonEntry
 	client   *http.Client
+	dial     appwireDialFunc
 }
 
 type LocalDaemonEntry struct {
@@ -52,7 +53,7 @@ func NewLocalDaemonSourceWithEntries(sourceID string, entries func() []LocalDaem
 	if sourceID == "" {
 		sourceID = "local"
 	}
-	return &LocalDaemonSource{sourceID: sourceID, entries: entries, client: client}
+	return &LocalDaemonSource{sourceID: sourceID, entries: entries, client: client, dial: defaultAppwireDial}
 }
 
 func (s *LocalDaemonSource) ID() string {
@@ -318,7 +319,7 @@ func (s *LocalDaemonSource) SubscribeThread(ctx context.Context, params appwire.
 	if err != nil {
 		return nil, err
 	}
-	transport, err := appwire.DialWebSocketWithHeaders(ctx, entry.Endpoint, s.client, daemonAuthHeader(entry.HubToken))
+	transport, err := s.dial(ctx, entry.Endpoint, s.client, daemonAuthHeader(entry.HubToken))
 	if err != nil {
 		if cerr := ctx.Err(); cerr != nil {
 			return nil, cerr
@@ -355,19 +356,22 @@ func (s *LocalDaemonSource) SubscribeThread(ctx context.Context, params appwire.
 				if !ok {
 					return
 				}
-				select {
-				case <-ctx.Done():
-					return
-				case out <- notification:
-				}
+				forwardLocalDaemonNotification(ctx, out, notification)
 			}
 		}
 	}()
 	return out, nil
 }
 
+func forwardLocalDaemonNotification(ctx context.Context, out chan<- appwire.Notification, notification appwire.Notification) {
+	select {
+	case <-ctx.Done():
+	case out <- notification:
+	}
+}
+
 func (s *LocalDaemonSource) withClient(ctx context.Context, entry rendezvous.Entry, fn func(*appwire.Client) error) error {
-	transport, err := appwire.DialWebSocketWithHeaders(ctx, entry.Endpoint, s.client, daemonAuthHeader(entry.HubToken))
+	transport, err := s.dial(ctx, entry.Endpoint, s.client, daemonAuthHeader(entry.HubToken))
 	if err != nil {
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
@@ -419,11 +423,11 @@ func localDaemonDialError(err error) error {
 	// kernel TCP retransmit timeout, *net.OpError with i/o timeout) or as
 	// context.DeadlineExceeded from a child context inside the dial library
 	// (the caller's ctx was already checked at the call site).
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
+	if errors.Is(err, context.DeadlineExceeded) {
 		return appwire.SessionUnavailable("local daemon unavailable: " + err.Error())
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
 		return appwire.SessionUnavailable("local daemon unavailable: " + err.Error())
 	}
 

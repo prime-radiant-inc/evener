@@ -153,7 +153,8 @@ func TestLocalDaemonRESTInterruptFailures(t *testing.T) {
 
 func TestCodexLiveThreadRemainingLifecycleBranches(t *testing.T) {
 	var closed atomic.Int32
-	live := &codexLiveThread{close: func() error { closed.Add(1); return nil }, done: make(chan struct{}), subscribers: map[chan appwire.Notification]struct{}{}}
+	closedSignal := make(chan struct{})
+	live := &codexLiveThread{close: func() error { closed.Add(1); close(closedSignal); return nil }, done: make(chan struct{}), subscribers: map[chan appwire.Notification]struct{}{}}
 	live.publish(appwire.Notification{Method: "one"})
 	live.publish(appwire.Notification{Method: "two"})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -169,6 +170,11 @@ func TestCodexLiveThreadRemainingLifecycleBranches(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("unsubscribe timed out")
+	}
+	select {
+	case <-closedSignal:
+	case <-time.After(time.Second):
+		t.Fatal("retirement timed out")
 	}
 	if closed.Load() != 1 {
 		t.Fatalf("close count = %d", closed.Load())
