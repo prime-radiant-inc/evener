@@ -12,6 +12,7 @@ import (
 )
 
 var fuzzCoverageMu sync.Mutex
+var fuzzDependencyDefaults sync.Once
 
 func init() {
 	fuzzCoverageUnion = testFuzzCoverageUnion
@@ -34,6 +35,7 @@ func configureFuzzDeps(t *testing.T) {
 func testFuzzCoverageUnion(t *testing.T) {
 	fuzzCoverageMu.Lock()
 	defer fuzzCoverageMu.Unlock()
+	fuzzDependencyDefaults.Do(func() { testFuzzDependencyDefaults(t) })
 	configureFuzzDeps(t)
 	TestIsImageFile(t)
 	TestIsProbablyWSL(t)
@@ -52,6 +54,25 @@ func testFuzzCoverageUnion(t *testing.T) {
 	testPasteCoverage(t)
 	testSystemCoverage(t)
 	testTempFailureCoverage(t)
+}
+
+func testFuzzDependencyDefaults(t *testing.T) {
+	if _, err := clipboardLookPath("disabled"); err == nil {
+		t.Fatal("fuzz clipboard lookup unexpectedly enabled")
+	}
+	f, err := os.CreateTemp(t.TempDir(), "clipboard-defaults-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := clipboardWrite(f, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := clipboardClose(f); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := clipboardOutput("disabled"); err == nil {
+		t.Fatal("fuzz clipboard command unexpectedly enabled")
+	}
 }
 
 func testPasteCoverage(t *testing.T) {

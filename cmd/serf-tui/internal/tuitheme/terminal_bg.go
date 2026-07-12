@@ -3,12 +3,10 @@ package tuitheme
 import (
 	"fmt"
 	"math"
-	"os"
 	"strconv"
 	"strings"
 
 	"github.com/muesli/termenv"
-	"golang.org/x/term"
 )
 
 // probedOriginalFg / probedOriginalBg cache the terminal's default
@@ -20,14 +18,6 @@ var (
 	probedOriginalFg string // "#rrggbb" or empty if probe failed
 	probedOriginalBg string
 	probedDone       bool
-
-	terminalIsStdout      = func() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
-	terminalForeground    = termenv.ForegroundColor
-	terminalBackground    = termenv.BackgroundColor
-	terminalHasDarkBg     = termenv.HasDarkBackground
-	terminalSetForeground = func(c termenv.Color) { termenv.DefaultOutput().SetForegroundColor(c) }
-	terminalSetBackground = func(c termenv.Color) { termenv.DefaultOutput().SetBackgroundColor(c) }
-	terminalWriteString   = func(s string) { _, _ = os.Stdout.WriteString(s) }
 )
 
 // ProbeTerminalDefaults queries the terminal for its default foreground

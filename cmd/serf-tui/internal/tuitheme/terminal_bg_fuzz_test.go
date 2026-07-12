@@ -81,6 +81,15 @@ func exerciseThemePackage(t *testing.T) {
 		writeThemeFile, marshalThemePrefs = savedWriteFile, savedMarshal
 	})
 
+	_ = terminalIsStdout()
+	_ = terminalForeground()
+	_ = terminalBackground()
+	_ = terminalHasDarkBg()
+	terminalSetForeground(termenv.RGBColor("#000000"))
+	terminalSetBackground(termenv.RGBColor("#ffffff"))
+	terminalWriteString("")
+	markdownInvalidator()
+
 	terminalIsStdout = func() bool { return false }
 	terminalHasDarkBg = func() bool { return true }
 	terminalSetForeground = func(termenv.Color) {}
