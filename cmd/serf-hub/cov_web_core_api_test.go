@@ -64,7 +64,7 @@ func TestCovWebCoreAPIHelpersAndRoutes(t *testing.T) {
 	if got := serfErrorInfoFromData(nil); got != "" {
 		t.Fatal(got)
 	}
-	if got := serfErrorInfoFromData(appwire.ErrorData{SerfErrorInfo: []byte("typed")}); got != "typed" {
+	if got := serfErrorInfoFromData(appwire.ErrorData{SerfErrorInfo: appwire.ErrorInfo("typed")}); got != "typed" {
 		t.Fatal(got)
 	}
 	writeAPIWireError(httptest.NewRecorder(), 502, errors.New("plain"))
