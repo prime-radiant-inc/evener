@@ -200,9 +200,6 @@ func commandPaletteEntriesForRows(mode hubMode, caps hubSessionCapabilities, row
 		case hubRowSession:
 			ref := row.ref
 			refText := ref.String()
-			if refText == ":" {
-				refText = ""
-			}
 			detail := strings.TrimSpace(fmt.Sprintf("%s %s %s", row.sourceLabel, stateLabel(row.state), row.model))
 			entries = append(entries, commandPaletteEntry{
 				Item: tuipick.PickerPanelItem{

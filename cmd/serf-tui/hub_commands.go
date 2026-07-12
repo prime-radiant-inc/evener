@@ -415,8 +415,6 @@ func buildModelPickerItems(models []appwire.ModelDescriptor, rawModelID bool) []
 		id := provider + "/" + model
 		if rawModelID {
 			id = model
-		} else if provider == "" {
-			id = model
 		}
 		var meta string
 		if cat != nil {
