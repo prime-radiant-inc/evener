@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -83,7 +84,15 @@ func FuzzShellToolsBufferedProgram(f *testing.F) {
 // non-streaming environment below.
 func stpReplayRegistrationContracts(t *testing.T) {
 	t.Helper()
+	stpReplayShellHelperContracts(t)
 	run := func(name string, fn func(*testing.T)) { t.Run(name, fn) }
+	run("format-dir-listing", TestFormatDirListing)
+	run("paginate-dir-entries", TestPaginateDirEntries)
+	run("paginate-dir-budget", TestPaginateDirEntriesStaysUnderToolCap)
+	run("parse-shell-args", TestParseShellToolArgsBackground)
+	run("shell-result-status", TestShellOutputStatus)
+	run("shell-result-format", TestShellResultReportsOutputBytes)
+	run("shell-timeout-policy", TestShellToolStreamingPathHonorsSessionTimeouts)
 	run("streaming", TestShellToolStreamingPathHonorsSessionTimeouts)
 	run("streaming-without-job-manager", TestW3Sub_RegisterShellTools_StreamingNoJobManager)
 	run("list-dir-positive-options", TestW3Sub_RegisterShellTools_ListDirOffsetLimit)
@@ -129,6 +138,64 @@ func stpReplayRegistrationContracts(t *testing.T) {
 			t.Fatalf("invalid apply_patch result = %#v", result)
 		}
 	})
+}
+
+func stpReplayShellHelperContracts(t *testing.T) {
+	t.Helper()
+	if got := formatDirListing(listDirResult{Total: 2, Returned: 1, Offset: 1}); !strings.Contains(got, "offset 1") {
+		t.Fatalf("offset listing = %q", got)
+	}
+	entries := []execenv.DirEntry{{Name: strings.Repeat("x", listDirCharBudget)}, {Name: "tail"}}
+	if got := paginateDirEntries(".", entries, -1, 0); !got.Truncated || got.Returned != 1 {
+		t.Fatalf("budgeted page = %#v", got)
+	}
+	if got := paginateDirEntries(".", entries, len(entries)+1, 1); got.Returned != 0 {
+		t.Fatalf("past-end page = %#v", got)
+	}
+
+	enforceShellToolJSONLimit(nil)
+	if got := shellToolResultMaxChars(nil); got != shellToolResultDefaultMaxChars {
+		t.Fatalf("nil shell limit = %d", got)
+	}
+	empty := tool.NewRegistry()
+	enforceShellToolJSONLimit(empty)
+	if got := shellToolResultMaxChars(empty); got != shellToolResultDefaultMaxChars {
+		t.Fatalf("empty shell limit = %d", got)
+	}
+	low := tool.NewRegistry()
+	if err := low.Register(tool.RegisteredTool{
+		Tool:  llm.Tool{Definition: tool.DefShell()},
+		Limit: schema.ToolOutputLimit{MaxChars: 1},
+		Exec:  func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) { return "", nil },
+	}); err != nil {
+		t.Fatalf("register low-limit shell: %v", err)
+	}
+	if got := shellToolResultMaxChars(low); got != shellToolResultMinJSONChars {
+		t.Fatalf("clamped shell limit = %d", got)
+	}
+	enforceShellToolJSONLimit(low)
+
+	if got := outputWindowStatus(10, 1, false); got != "evicted" {
+		t.Fatalf("evicted status = %q", got)
+	}
+	if jsonCharLen([]byte("world")) != 5 {
+		t.Fatal("jsonCharLen mismatch")
+	}
+	output := "out"
+	if got := formatShellResult(shellToolResult{Output: &output, DroppedBytes: 1}); !strings.Contains(got, "dropped") {
+		t.Fatalf("dropped result = %q", got)
+	}
+	if shellStringPtrOrNil("") != nil {
+		t.Fatal("empty shell string was retained")
+	}
+	args := shellArgs{BlockTimeoutMS: 20}
+	if got := applyShellTimeoutPolicy(nil, args); got.BlockTimeoutMS != 20 {
+		t.Fatalf("nil timeout policy = %#v", got)
+	}
+	deps := &toolDeps{cmdTimeouts: func() (int, int) { return 10, 30 }}
+	if got := applyShellTimeoutPolicy(deps, args); got.BlockTimeoutMS != 20 {
+		t.Fatalf("explicit timeout policy = %#v", got)
+	}
 }
 
 func stpFilledSeed(n int, value byte) []byte {
