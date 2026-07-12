@@ -722,7 +722,7 @@ func FuzzSessionLoopRecoveryProgram(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
 		r := &tfpReader{data: data}
-		efforts := []string{"", "low", "medium", "high", "xhigh"}
+			efforts := []string{"", "low", "medium", "high", "xhigh", "max"}
 		before := efforts[r.intn(len(efforts))]
 		sess := &Session{cfg: SessionConfig{ReasoningEffort: before}}
 		count := r.intn(5) + 1
@@ -735,8 +735,8 @@ func FuzzSessionLoopRecoveryProgram(f *testing.F) {
 			switch before {
 			case "", "low", "medium":
 				want = "high"
-			case "high":
-				want = "xhigh"
+				case "high", "xhigh":
+					want = "max"
 			}
 			if got := sess.cfg.ReasoningEffort; got != want {
 				t.Fatalf("first stuck escalation effort = %q, want %q", got, want)
