@@ -30,6 +30,9 @@ func runAgentJobsSeed100(t *testing.T, text string) {
 	}
 	seed100Jobs(t, text)
 	seed100JobsMore(t)
+	seed100JobsRangeA(t)
+	seed100JobsRangeB(t)
+	seed100JobsRangeC(t)
 	seed100Nested(t)
 	seed100JobsNestedMore(t)
 	seed100Drain(t)

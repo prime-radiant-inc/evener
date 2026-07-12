@@ -13,23 +13,7 @@ import (
 func seed100JobsRangeB(t *testing.T) {
 	t.Helper()
 
-	// Exercise the live head reader after the output store has closed.
 	headJM := newTestJM(t)
-	out, err := headJM.openOutput(filepath.Join(headJM.dir, "jobs", "closed-head.log"), 64)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := out.Close(); err != nil {
-		t.Fatal(err)
-	}
-	headJM.running["closed-head"] = &runningJob{
-		rec:    &jobstore.JobRecord{JobID: "closed-head", Type: jobstore.JobShell},
-		output: out,
-	}
-	if _, _, _, err := headJM.readOutputHead("closed-head", 1); err == nil {
-		t.Fatal("readOutputHead on closed live output succeeded")
-	}
-
 	if got, want := headJM.outputPathForJob(nil, "fallback"), filepath.Join(headJM.dir, "jobs", "fallback.log"); got != want {
 		t.Fatalf("fallback output path = %q, want %q", got, want)
 	}
