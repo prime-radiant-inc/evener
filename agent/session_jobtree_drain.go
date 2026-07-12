@@ -155,13 +155,8 @@ func (s *Session) DrainJobTree(ctx context.Context) (string, error) {
 // explicitly drive rechecks without depending on wall time or advancing every
 // unrelated waiter on a shared fake clock.
 func (s *Session) drainJobTree(ctx context.Context, recheck <-chan time.Time) (string, error) {
-	wake := make(chan struct{}, 1)
-	s.SetNotifyFunc(func() {
-		select {
-		case wake <- struct{}{}:
-		default:
-		}
-	})
+	wake, notify := newDrainWake()
+	s.SetNotifyFunc(notify)
 	defer s.SetNotifyFunc(nil)
 
 	lastResult := ""
@@ -202,12 +197,30 @@ func (s *Session) drainJobTree(ctx context.Context, recheck <-chan time.Time) (s
 		// Work is still in flight in the subtree but this rail has not been
 		// signalled yet. Block until a completion wakes us, the periodic re-check
 		// fires, or the caller's context is cancelled; the next iteration re-kicks.
-		select {
-		case <-wake:
-		case <-recheck:
-		case <-ctx.Done():
-			return lastResult, ctx.Err()
+		if err := waitDrainWake(ctx, wake, recheck); err != nil {
+			return lastResult, err
 		}
+	}
+}
+
+func newDrainWake() (chan struct{}, func()) {
+	wake := make(chan struct{}, 1)
+	return wake, func() {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func waitDrainWake(ctx context.Context, wake <-chan struct{}, recheck <-chan time.Time) error {
+	select {
+	case <-wake:
+		return nil
+	case <-recheck:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
