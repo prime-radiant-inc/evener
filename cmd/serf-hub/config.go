@@ -13,6 +13,9 @@ import (
 	"primeradiant.com/serf/envvars"
 )
 
+var configUserHomeDir = os.UserHomeDir
+var configReadFile = os.ReadFile
+
 // ProviderConfig lists the models available from a single provider.
 type ProviderConfig struct {
 	Name   string   `toml:"name"`
@@ -66,7 +69,7 @@ func DefaultConfig() Config {
 
 // DefaultHubStateRoot returns ~/.serf.
 func DefaultHubStateRoot() string {
-	home, err := os.UserHomeDir()
+	home, err := configUserHomeDir()
 	if err != nil || home == "" {
 		home = "."
 	}
@@ -75,7 +78,7 @@ func DefaultHubStateRoot() string {
 
 // DefaultConfigPath returns ~/.serf/hub.toml.
 func DefaultConfigPath() string {
-	home, err := os.UserHomeDir()
+	home, err := configUserHomeDir()
 	if err != nil || home == "" {
 		home = "."
 	}
@@ -86,7 +89,7 @@ func DefaultConfigPath() string {
 func DefaultStateGlob() string {
 	base := envvars.XDGStateHome.Getenv()
 	if base == "" {
-		home, err := os.UserHomeDir()
+		home, err := configUserHomeDir()
 		if err != nil || home == "" {
 			home = "."
 		}
@@ -97,7 +100,7 @@ func DefaultStateGlob() string {
 
 // DefaultPastIndexDBPath returns ~/.serf/index.db.
 func DefaultPastIndexDBPath() string {
-	home, err := os.UserHomeDir()
+	home, err := configUserHomeDir()
 	if err != nil || home == "" {
 		home = "."
 	}
@@ -107,7 +110,7 @@ func DefaultPastIndexDBPath() string {
 // LoadConfig reads path. A missing file returns DefaultConfig() and nil error.
 func LoadConfig(path string) (Config, error) {
 	cfg := DefaultConfig()
-	data, err := os.ReadFile(path)
+	data, err := configReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return cfg, nil

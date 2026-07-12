@@ -16,6 +16,13 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
 )
 
+var outputImageMarshal = json.Marshal
+var outputImageResolve = resolveOutputImageFile
+var outputImageStat = os.Stat
+var outputImageReadFile = os.ReadFile
+var outputImageEvalSymlinks = filepath.EvalSymlinks
+var outputImageRel = filepath.Rel
+
 const outputImageMaxCandidates = 20
 const outputImageMaxRendered = 8
 const outputImageMaxBytes = 8 * 1024 * 1024
@@ -51,7 +58,7 @@ func outputImagesForToolCall(sessionID, cwd, toolName, argumentsJSON, output str
 	out := make([]appwire.OutputImage, 0, min(len(candidates), outputImageMaxRendered))
 	seen := map[string]struct{}{}
 	for _, c := range candidates {
-		img, ok := resolveOutputImageFile(sessionID, cwd, c.path, c.source)
+		img, ok := outputImageResolve(sessionID, cwd, c.path, c.source)
 		if !ok || img.URL == "" {
 			continue
 		}
@@ -103,12 +110,12 @@ func enrichOutputImageNotification(sessionID, cwd string, argsByCallID map[strin
 		return notification
 	}
 	item.OutputImages = appendOutputImagesUnique(item.OutputImages, fileBacked)
-	itemData, err := json.Marshal(item)
+	itemData, err := outputImageMarshal(item)
 	if err != nil {
 		return notification
 	}
 	params["item"] = itemData
-	data, err := json.Marshal(params)
+	data, err := outputImageMarshal(params)
 	if err != nil {
 		return notification
 	}
@@ -178,11 +185,11 @@ func resolveOutputImageFile(sessionID, cwd, candidate, source string) (appwire.O
 	if !ok {
 		return appwire.OutputImage{}, false
 	}
-	realRoot, err := filepath.EvalSymlinks(filepath.Clean(cwd))
+	realRoot, err := outputImageEvalSymlinks(filepath.Clean(cwd))
 	if err != nil {
 		return appwire.OutputImage{}, false
 	}
-	rel, err := filepath.Rel(realRoot, abs)
+	rel, err := outputImageRel(realRoot, abs)
 	if err != nil {
 		return appwire.OutputImage{}, false
 	}
@@ -199,11 +206,11 @@ func resolveOutputImageFile(sessionID, cwd, candidate, source string) (appwire.O
 }
 
 func readOutputImageFile(abs string) ([]byte, os.FileInfo, bool) {
-	info, err := os.Stat(abs)
+	info, err := outputImageStat(abs)
 	if err != nil || !info.Mode().IsRegular() || info.Size() > outputImageMaxBytes {
 		return nil, nil, false
 	}
-	data, err := os.ReadFile(abs)
+	data, err := outputImageReadFile(abs)
 	if err != nil {
 		return nil, nil, false
 	}

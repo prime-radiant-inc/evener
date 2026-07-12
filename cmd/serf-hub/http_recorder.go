@@ -12,6 +12,9 @@ import (
 	"primeradiant.com/serf/envvars"
 )
 
+var recorderOpenFile = os.OpenFile
+var recorderMarshal = json.Marshal
+
 // httpRecorderMaxBodyBytes caps the request-body copy a recording keeps. The
 // downstream handler still receives the full body; only the recorded copy is
 // bounded so a large upload cannot blow up the recording file or memory.
@@ -40,13 +43,13 @@ func newHTTPRequestRecorder(stateRoot string) func(http.Handler) http.Handler {
 	if !envvars.RecorderEnabled(envvars.SERFRecordHTTP) {
 		return identity
 	}
-	f, err := os.OpenFile(filepath.Join(stateRoot, "hub-http.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := recorderOpenFile(filepath.Join(stateRoot, "hub-http.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return identity
 	}
 	var mu sync.Mutex
 	write := func(rec recordedHTTPRequest) {
-		line, err := json.Marshal(rec)
+		line, err := recorderMarshal(rec)
 		if err != nil {
 			return
 		}

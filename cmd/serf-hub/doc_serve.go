@@ -12,6 +12,9 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
 )
 
+var docStat = os.Stat
+var docOpen = os.Open
+
 // docFileMaxBytes caps how much of a file we read into a document pane. A pane
 // is a quick read-only reference, not a pager; large files are truncated with
 // a notice rather than streamed in full.
@@ -156,14 +159,14 @@ func (s *WebServer) localSessionCWD(session string) (string, bool) {
 // readDocFile reads up to docFileMaxBytes from a regular file. Directories and
 // other non-regular files are refused.
 func readDocFile(abs string) ([]byte, error) {
-	info, err := os.Stat(abs)
+	info, err := docStat(abs)
 	if err != nil {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
 		return nil, os.ErrInvalid
 	}
-	f, err := os.Open(abs)
+	f, err := docOpen(abs)
 	if err != nil {
 		return nil, err
 	}
