@@ -40,6 +40,21 @@ func seed100JobsMore(t *testing.T) {
 	jm.running[abandoned.rec.JobID] = abandoned
 	jm.abandonRunningJobs()
 	jm.appendAbandonSnapshots = jm.appendWatchSendTerminalSnapshots
+	closeJM := newTestJM(t)
+	closeJM.appendTeardown = func([]watchSendTerminalSnapshot, []watchConfigTerminalSnapshot) error { return want }
+	_ = closeJM.closeRuntimeState()
+	jm.appendAbandonSnapshots = func([]watchSendTerminalSnapshot) ([]watchSendTerminalSnapshot, error) { return nil, want }
+	jm.running["abandoned-one"] = &runningJob{rec: &jobstore.JobRecord{JobID: "abandoned-one"}, done: make(chan struct{})}
+	jm.abandonRunningJob("abandoned-one")
+	jm.appendAbandonSnapshots = jm.appendWatchSendTerminalSnapshots
+	jm.running["nil-rec"] = &runningJob{}
+	jm.stampLastActivityLocked("nil-rec")
+	delete(jm.running, "nil-rec")
+	jm.running["shell-dir"] = &runningJob{rec: &jobstore.JobRecord{JobID: "shell-dir", Type: jobstore.JobShell, WorkingDir: "/tmp/shell"}}
+	jm.running["delegate-dir"] = &runningJob{rec: &jobstore.JobRecord{JobID: "delegate-dir", Type: jobstore.JobDelegate, DelegateRestore: &jobstore.DelegateRestoreDescriptor{WorkingDir: "/tmp/delegate"}}}
+	_ = jm.liveWorkHandles()
+	delete(jm.running, "shell-dir")
+	delete(jm.running, "delegate-dir")
 
 	// A forwarded start whose compensating terminal append also fails is kept
 	// live for durable retry. Suppress only the asynchronous retry in this test.
@@ -65,6 +80,13 @@ func seed100JobsMore(t *testing.T) {
 		t.Fatal(err)
 	}
 	delete(jm.running, "live")
+	foreignStarted := frozenTestTime
+	if err := jm.appendEvent(jobstore.Event{Kind: jobstore.EventJobStarted, TS: foreignStarted, JobID: "foreign", Type: jobstore.JobShell, OwnerSessionID: "other", StartedAt: &foreignStarted}); err != nil {
+		t.Fatal(err)
+	}
+	if err := jm.reconcileLostJobs(); err != nil {
+		t.Fatal(err)
+	}
 
 	started := frozenTestTime
 	badOutput := filepath.Join(t.TempDir(), "bad-output")
@@ -96,6 +118,56 @@ func seed100JobsMore(t *testing.T) {
 	if err := jm2.reconcileLostJobsWithLoad(jm2.store.Load, func() (map[string]*jobstore.WatchRecord, error) { return nil, want }); !errors.Is(err, want) {
 		t.Fatalf("reconcile watches = %v", err)
 	}
+	_ = includeAllWatchRecords(nil)
+
+	closedJM := newTestJM(t)
+	if err := closedJM.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, _ = closedJM.readOutput("x", 1)
+	_, _, _, _ = closedJM.readOutputHead("x", 1)
+	_, _ = closedJM.outputDropped("x")
+	_, _ = closedJM.grepOutput("x", nil)
+	missingJM := newTestJM(t)
+	_, _, _, _ = missingJM.readOutput("x", 1)
+	_, _, _, _ = missingJM.readOutputHead("x", 1)
+	_, _ = missingJM.outputDropped("x")
+	_, _ = missingJM.grepOutput("x", nil)
+	_, _, _, _, _ = missingJM.readJobWindow("x", 1, true)
+	_, _, _, _, _ = missingJM.readJobWindow("x", 1, false)
+	badMetaJM := newTestJM(t)
+	badMetaPath := filepath.Join(t.TempDir(), "bad-meta.log")
+	if err := os.WriteFile(badMetaPath, []byte("abc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	badMetaStart := frozenTestTime
+	if err := badMetaJM.appendJobEvents([]jobstore.Event{
+		{Kind: jobstore.EventJobStarted, TS: badMetaStart, JobID: "bad-meta", Type: jobstore.JobShell, OwnerSessionID: badMetaJM.sessionID, StartedAt: &badMetaStart, OutputPath: badMetaPath},
+		{Kind: jobstore.EventJobFinished, TS: badMetaStart, JobID: "bad-meta", Status: jobstore.StatusCompleted, OutputBytes: 99, TerminalGen: "tg-bad"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, _ = badMetaJM.readOutput("bad-meta", 1)
+	_, _, _, _ = badMetaJM.readOutputHead("bad-meta", 1)
+	_, _ = badMetaJM.grepOutput("bad-meta", nil)
+
+	listJM := newTestJM(t)
+	listOut, err := listJM.openOutput(filepath.Join(listJM.dir, "jobs", "list.log"), 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = listOut.Append([]byte("abc"))
+	listJM.running["skip"] = &runningJob{rec: &jobstore.JobRecord{JobID: "skip"}}
+	for _, id := range []string{"b", "a"} {
+		listJM.running[id] = &runningJob{rec: &jobstore.JobRecord{JobID: id, Type: jobstore.JobShell, Status: jobstore.StatusRunning, StartedAt: started}, output: listOut, durableStarted: true}
+	}
+	if _, err := listJM.listWithError(listFilter{Limit: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := listJM.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = listJM.listWithError(listFilter{})
 
 	// Existing terminals cover the kept-sync terminal path and both mismatch guards.
 	jm3 := newTestJM(t)
@@ -137,6 +209,66 @@ func seed100JobsMore(t *testing.T) {
 	if err := jm3.armFinalizedJob(stale, staleTerminal); err != nil {
 		t.Fatal(err)
 	}
+	terminalRun := &runningJob{rec: &jobstore.JobRecord{JobID: "terminal-stop", Status: jobstore.StatusCompleted}, terminal: &terminalJob{}}
+	jm3.running[terminalRun.rec.JobID] = terminalRun
+	_, _ = jm3.stop(terminalRun.rec.JobID)
+	delete(jm3.running, terminalRun.rec.JobID)
+	doneAttempt := &finalizeAttempt{done: make(chan struct{}), err: want}
+	close(doneAttempt.done)
+	attemptRun := &runningJob{rec: &jobstore.JobRecord{JobID: "attempt"}, finalize: doneAttempt}
+	jm3.running[attemptRun.rec.JobID] = attemptRun
+	_ = jm3.finalizeWithRunMode(attemptRun.rec.JobID, func(*runningJob) (jobstore.Status, string, *int, error) { return "", "", nil, nil }, true)
+	delete(jm3.running, attemptRun.rec.JobID)
+
+	registryRun := &runningJob{rec: &jobstore.JobRecord{JobID: "registry", Type: jobstore.JobShell}, output: out, done: make(chan struct{})}
+	registryTerminal := &terminalJob{status: jobstore.StatusCompleted, endedAt: started, generation: "tg-registry"}
+	registryRun.terminal = registryTerminal
+	jm3.running[registryRun.rec.JobID] = registryRun
+	jm3.appendRegistry = func([]jobstore.Event) error { return want }
+	_ = jm3.finalizeKeptSync(registryRun, "", "", nil)
+	_ = jm3.armFinalizedJob(registryRun, registryTerminal)
+	jm3.appendRegistry = jm3.appendWatchRegistryEvents
+
+	pendingRun := &runningJob{rec: &jobstore.JobRecord{JobID: "pending", Type: jobstore.JobShell}, output: out, done: make(chan struct{})}
+	pendingTerminal := &terminalJob{status: jobstore.StatusCompleted, endedAt: started, generation: "tg-pending"}
+	pendingRun.terminal = pendingTerminal
+	jm3.running[pendingRun.rec.JobID] = pendingRun
+	jm3.appendEvent = func(jobstore.Event) error { return want }
+	_ = jm3.armFinalizedJob(pendingRun, pendingTerminal)
+	jm3.appendEvent = jm3.store.Append
+
+	forwardRun := &runningJob{rec: &jobstore.JobRecord{JobID: "forward-terminal"}, terminal: &terminalJob{finished: jobstore.Event{}, notificationPending: jobstore.Event{}, notificationPendingAppended: true}}
+	jm3.running[forwardRun.rec.JobID] = forwardRun
+	jm3.parentJobID = "parent"
+	jm3.forward = func(jobstore.Event) error { return want }
+	_ = jm3.finalizeWithRunMode(forwardRun.rec.JobID, func(*runningJob) (jobstore.Status, string, *int, error) { return "", "", nil, nil }, true)
+	_ = jm3.armFinalizedJob(forwardRun, forwardRun.terminal)
+	_ = jm3.forwardPendingJobNotification(forwardRun, forwardRun.terminal)
+	forwardRun.forwardDisabled = true
+	_ = jm3.forwardFinishedJob(forwardRun, forwardRun.terminal)
+	_ = jm3.forwardPendingJobNotification(forwardRun, forwardRun.terminal)
+	forwardRun.fromWatch.Store(true)
+	jm3.markWatchOriginCallerCallbackDelivered(forwardRun.rec.JobID)
+	delete(jm3.running, forwardRun.rec.JobID)
+	writeOut, err := jm3.openOutput(filepath.Join(jm3.dir, "jobs", "write-forward.log"), 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRun := &runningJob{rec: &jobstore.JobRecord{JobID: "write-forward", Type: jobstore.JobShell, Status: jobstore.StatusRunning}, output: writeOut, done: make(chan struct{})}
+	jm3.running[writeRun.rec.JobID] = writeRun
+	jm3.forward = func(jobstore.Event) error { return want }
+	_, _ = jm3.writeFinishJob(writeRun, jobstore.StatusCompleted, "done", nil)
+	delete(jm3.running, writeRun.rec.JobID)
+	successOut, err := jm3.openOutput(filepath.Join(jm3.dir, "jobs", "success-terminal.log"), 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	successRun := &runningJob{rec: &jobstore.JobRecord{JobID: "success-terminal", Type: jobstore.JobShell}, output: successOut, done: make(chan struct{})}
+	successTerminal := &terminalJob{status: jobstore.StatusCompleted, endedAt: started, generation: "tg-success", finished: jobstore.Event{}, notificationPendingAppended: true, notificationPending: jobstore.Event{}}
+	successRun.terminal = successTerminal
+	jm3.running[successRun.rec.JobID] = successRun
+	jm3.forward = nil
+	_ = jm3.finalizeWithRunMode(successRun.rec.JobID, func(*runningJob) (jobstore.Status, string, *int, error) { return "", "", nil, nil }, true)
 
 	// The schema library's resource-load failure and panic containment are explicit seams.
 	_ = validateStructuredResultWithAddResource(nil, map[string]any{}, func(*jsonschema.Compiler, string, io.Reader) error { return want })
@@ -151,6 +283,8 @@ func seed100JobsMore(t *testing.T) {
 	}
 	_, _, _, _ = tailOutput(closed, 1)
 	_, _, _, _ = headOutput(closed, 1)
+	_, _, _, _ = stringOutputResult([]byte("partial"), 7, true, want)
+	_, _, _ = validatedOutputStatsForRecord(filepath.Join(t.TempDir(), "missing"), nil)
 
 	// Restore ordering uses both the equal-time ID tiebreak and descending start time.
 	jm4 := newTestJM(t)
@@ -171,6 +305,16 @@ func seed100JobsMore(t *testing.T) {
 	if err := jm4.armPendingTerminalNotifications(); err != nil {
 		t.Fatal(err)
 	}
+	jm5 := newTestJM(t)
+	freezeClock(jm5)
+	if err := jm5.appendJobEvents([]jobstore.Event{
+		{Kind: jobstore.EventJobStarted, TS: started, JobID: "rearm-fail", Type: jobstore.JobShell, OwnerSessionID: jm5.sessionID, StartedAt: &started},
+		{Kind: jobstore.EventJobFinished, TS: started, JobID: "rearm-fail", Status: jobstore.StatusCompleted, TerminalGen: "tg-rearm"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	jm5.appendEvent = func(jobstore.Event) error { return want }
+	_ = jm5.armPendingTerminalNotifications()
 
 	// File faults are driven below os.Open, keeping production defaults unchanged.
 	info := seed100FileInfo{size: 3}

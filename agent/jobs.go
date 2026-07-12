@@ -76,6 +76,8 @@ type jobManager struct {
 	appendEvents           func([]jobstore.Event) error
 	openOutput             outputStoreOpener
 	appendAbandonSnapshots func([]watchSendTerminalSnapshot) ([]watchSendTerminalSnapshot, error)
+	appendTeardown         func([]watchSendTerminalSnapshot, []watchConfigTerminalSnapshot) error
+	appendRegistry         func([]jobstore.Event) error
 	finalizeShellAsync     func(string, jobstore.Status, string, *int)
 	emit                   func(events.EventKind, events.EventData, *provenance.Causal)
 
@@ -423,9 +425,9 @@ func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotifi
 		quietCheckInterval:    delegateQuietCheckInterval,
 	}
 	jm.appendAbandonSnapshots = jm.appendWatchSendTerminalSnapshots
-	jm.finalizeShellAsync = func(jobID string, status jobstore.Status, reason string, exitCode *int) {
-		go jm.finalizeShellUntilDurable(jobID, status, reason, exitCode)
-	}
+	jm.appendTeardown = jm.appendWatchTeardownBatch
+	jm.appendRegistry = jm.appendWatchRegistryEvents
+	jm.finalizeShellAsync = jm.finalizeShellUntilDurable
 	if err := restorePending(jm); err != nil {
 		_ = store.Close()
 		return nil, err
@@ -474,7 +476,7 @@ func (jm *jobManager) closeRuntimeState() error {
 	jm.mu.Unlock()
 	jm.watchNotifyMu.Unlock()
 
-	err := jm.appendWatchTeardownBatch(dropped, targets)
+	err := jm.appendTeardown(dropped, targets)
 	if err != nil {
 		jm.rollbackWatchConfigSnapshotsRejecting(targets)
 		jm.closeWatchConfigSnapshots(targets)
@@ -576,7 +578,7 @@ func (jm *jobManager) abandonRunningJob(jobID string) {
 		return
 	}
 	dropped := terminalSnapshots(targets)
-	applied, err := jm.appendWatchSendTerminalSnapshots(dropped)
+	applied, err := jm.appendAbandonSnapshots(dropped)
 	if err != nil {
 		jm.removeWatchSendTerminalSnapshots(applied)
 		jm.rollbackWatchConfigSnapshotsRejecting(targets)
@@ -658,7 +660,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 			run.forwardDisabled = true
 			jm.running[jobID] = run
 			jm.mu.Unlock()
-			jm.finalizeShellAsync(jobID, jobstore.StatusFailed, "forward_failed", nil)
+			go jm.finalizeShellAsync(jobID, jobstore.StatusFailed, "forward_failed", nil)
 			return nil, errors.Join(err, terminalErr)
 		}
 		jm.mu.Unlock()
@@ -1103,10 +1105,10 @@ func (jm *jobManager) clearUnrestoredActiveWatches() error {
 	if err != nil {
 		return err
 	}
-	return jm.appendJobEvents(watchClearEventsForRecords(watches, jm.now(), "runtime_lost", func(*jobstore.WatchRecord) bool {
-		return true
-	}))
+	return jm.appendJobEvents(watchClearEventsForRecords(watches, jm.now(), "runtime_lost", includeAllWatchRecords))
 }
+
+func includeAllWatchRecords(*jobstore.WatchRecord) bool { return true }
 
 func watchClearEventsForRecords(watches map[string]*jobstore.WatchRecord, ts time.Time, endReason string, include func(*jobstore.WatchRecord) bool) []jobstore.Event {
 	if len(watches) == 0 {
@@ -1244,7 +1246,7 @@ func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, 
 		return nil
 	}
 	watchRegistryEvents, expiredWatches, watchRootProvenance := jm.expireJobWatchesLocked(run.rec.JobID)
-	if err := jm.appendWatchRegistryEvents(watchRegistryEvents); err != nil {
+	if err := jm.appendRegistry(watchRegistryEvents); err != nil {
 		jm.mu.Unlock()
 		return err
 	}
@@ -1552,7 +1554,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 	}
 
 	if !pendingAppended {
-		if err := jm.appendWatchRegistryEvents(watchRegistryEvents); err != nil {
+		if err := jm.appendRegistry(watchRegistryEvents); err != nil {
 			jm.mu.Unlock()
 			return err
 		}
@@ -1732,14 +1734,15 @@ func (jm *jobManager) armPendingTerminalNotifications() error {
 
 func tailOutput(output *jobstore.OutputStore, tailBytes int) (string, int64, bool, error) {
 	b, total, truncated, err := output.Tail(tailBytes)
-	if err != nil {
-		return "", total, truncated, err
-	}
-	return string(b), total, truncated, nil
+	return stringOutputResult(b, total, truncated, err)
 }
 
 func headOutput(output *jobstore.OutputStore, headBytes int) (string, int64, bool, error) {
 	b, total, truncated, err := output.Head(headBytes)
+	return stringOutputResult(b, total, truncated, err)
+}
+
+func stringOutputResult(b []byte, total int64, truncated bool, err error) (string, int64, bool, error) {
 	if err != nil {
 		return "", total, truncated, err
 	}
