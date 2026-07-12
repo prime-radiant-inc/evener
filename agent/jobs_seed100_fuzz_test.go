@@ -29,8 +29,11 @@ func runAgentJobsSeed100(t *testing.T, text string) {
 		text = text[:32]
 	}
 	seed100Jobs(t, text)
+	seed100JobsMore(t)
 	seed100Nested(t)
+	seed100JobsNestedMore(t)
 	seed100Drain(t)
+	seed100JobtreeDrainMore(t)
 	seed100JobTools(t, text)
 	seed100SessionToolsJobsMore(t)
 	seed100ToolsRangeA(t)
