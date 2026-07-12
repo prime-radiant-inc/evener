@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 
 	"github.com/BurntSushi/toml"
 )
@@ -14,12 +15,18 @@ import (
 // whitespace edits and key reorderings produce a stable hash but semantic
 // changes break it.
 func CanonicalHashTOML(data []byte) (string, error) {
+	return canonicalHashTOML(data, func(w io.Writer, l Layer) error {
+		return toml.NewEncoder(w).Encode(l)
+	})
+}
+
+func canonicalHashTOML(data []byte, encode func(io.Writer, Layer) error) (string, error) {
 	var l Layer
 	if _, err := toml.Decode(string(data), &l); err != nil {
 		return "", fmt.Errorf("canonical hash: parse: %w", err)
 	}
 	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(l); err != nil {
+	if err := encode(&buf, l); err != nil {
 		return "", fmt.Errorf("canonical hash: encode: %w", err)
 	}
 	sum := sha256.Sum256(buf.Bytes())

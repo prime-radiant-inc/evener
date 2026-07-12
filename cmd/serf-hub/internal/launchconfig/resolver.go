@@ -104,13 +104,21 @@ func loadRepoLayer(cwd, stateRoot string) (*RepoStatus, Layer, []Diagnostic) {
 	var layer Layer
 	var diags []Diagnostic
 	if state == TrustTrusted {
-		if _, err := tomlDecode(data, &layer); err != nil {
-			diags = append(diags, Diagnostic{Layer: LayerRepo, Field: ".serf/launch.toml", Message: err.Error()})
-			return status, Layer{}, diags
-		}
-		layer, diags = validateAndExpandRepoLayer(cwd, layer)
+		returnLayer, returnDiags := decodeTrustedRepoLayer(cwd, data, func(data []byte, out interface{}) error {
+			_, err := tomlDecode(data, out)
+			return err
+		})
+		layer, diags = returnLayer, returnDiags
 	}
 	return status, layer, diags
+}
+
+func decodeTrustedRepoLayer(repoRoot string, data []byte, decode func([]byte, interface{}) error) (Layer, []Diagnostic) {
+	var layer Layer
+	if err := decode(data, &layer); err != nil {
+		return Layer{}, []Diagnostic{{Layer: LayerRepo, Field: ".serf/launch.toml", Message: err.Error()}}
+	}
+	return validateAndExpandRepoLayer(repoRoot, layer)
 }
 
 // validateAndExpandRepoLayer rejects path entries that escape the repo

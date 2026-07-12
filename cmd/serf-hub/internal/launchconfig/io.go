@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -44,6 +45,12 @@ func SaveLayer(path string, layer Layer) error {
 
 // saveLayerFS is the filesystem seam beneath SaveLayer. See loadLayerFS.
 func saveLayerFS(fs afero.Fs, path string, layer Layer) error {
+	return writeAtomicFS(fs, path, func(w io.Writer) error {
+		return toml.NewEncoder(w).Encode(layer)
+	})
+}
+
+func writeAtomicFS(fs afero.Fs, path string, encode func(io.Writer) error) error {
 	if err := fs.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("launchconfig: mkdir %s: %w", filepath.Dir(path), err)
 	}
@@ -53,7 +60,7 @@ func saveLayerFS(fs afero.Fs, path string, layer Layer) error {
 		return fmt.Errorf("launchconfig: open %s: %w", tmp, err)
 	}
 	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(layer); err != nil {
+	if err := encode(&buf); err != nil {
 		_ = f.Close()
 		_ = fs.Remove(tmp)
 		return fmt.Errorf("launchconfig: encode %s: %w", tmp, err)
@@ -113,31 +120,7 @@ func SaveMeta(path string, meta Meta) error {
 
 // saveMetaFS is the filesystem seam beneath SaveMeta. See loadLayerFS.
 func saveMetaFS(fs afero.Fs, path string, meta Meta) error {
-	if err := fs.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("launchconfig: mkdir %s: %w", filepath.Dir(path), err)
-	}
-	tmp := path + ".tmp"
-	f, err := fs.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("launchconfig: open %s: %w", tmp, err)
-	}
-	if err := toml.NewEncoder(f).Encode(meta); err != nil {
-		_ = f.Close()
-		_ = fs.Remove(tmp)
-		return fmt.Errorf("launchconfig: encode %s: %w", tmp, err)
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		_ = fs.Remove(tmp)
-		return fmt.Errorf("launchconfig: sync %s: %w", tmp, err)
-	}
-	if err := f.Close(); err != nil {
-		_ = fs.Remove(tmp)
-		return fmt.Errorf("launchconfig: close %s: %w", tmp, err)
-	}
-	if err := fs.Rename(tmp, path); err != nil {
-		_ = fs.Remove(tmp)
-		return fmt.Errorf("launchconfig: rename %s -> %s: %w", tmp, path, err)
-	}
-	return nil
+	return writeAtomicFS(fs, path, func(w io.Writer) error {
+		return toml.NewEncoder(w).Encode(meta)
+	})
 }

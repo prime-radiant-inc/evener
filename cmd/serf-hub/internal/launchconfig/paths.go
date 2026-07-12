@@ -62,11 +62,15 @@ func identityProjectDir(stateRoot, cwd string) string {
 // ValidateRepoRelativePath ensures `path` (when resolved against repoRoot)
 // stays inside repoRoot. Absolute paths and `..` escapes are rejected.
 func ValidateRepoRelativePath(repoRoot, path string) error {
+	return validateRepoRelativePath(repoRoot, path, filepath.Rel)
+}
+
+func validateRepoRelativePath(repoRoot, path string, relPath func(string, string) (string, error)) error {
 	if filepath.IsAbs(path) {
 		return fmt.Errorf("absolute path not allowed in repo layer: %q", path)
 	}
 	clean := filepath.Clean(filepath.Join(repoRoot, path))
-	rel, err := filepath.Rel(repoRoot, clean)
+	rel, err := relPath(repoRoot, clean)
 	if err != nil {
 		return fmt.Errorf("path resolution: %w", err)
 	}
