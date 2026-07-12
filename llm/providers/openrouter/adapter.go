@@ -62,27 +62,20 @@ func NewForInstance(params InstanceParams) *adapter {
 	}))
 }
 
+func envAdapterFactory(_ llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
+	key := envvars.OpenRouterAPIKey.Trimmed()
+	if key == "" {
+		return nil, false, nil
+	}
+	base := envvars.OpenRouterBaseURL.Trimmed()
+	return NewForInstance(InstanceParams{Name: providerName, BaseURL: base, APIKey: key}), true, nil
+}
+
+func instanceAdapterFactory(inst providercfg.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
+	return NewForInstance(InstanceParams{Name: inst.Name, BaseURL: inst.BaseURL, APIKey: inst.APIKey, Compat: inst.Compat, Models: inst.Models, Headers: inst.Headers}), nil
+}
+
 func init() {
-	llm.RegisterEnvAdapterFactory(func(_ llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
-		key := envvars.OpenRouterAPIKey.Trimmed()
-		if key == "" {
-			return nil, false, nil
-		}
-		base := envvars.OpenRouterBaseURL.Trimmed()
-		return NewForInstance(InstanceParams{
-			Name:    providerName,
-			BaseURL: base,
-			APIKey:  key,
-		}), true, nil
-	})
-	llm.RegisterInstanceAdapterFactory("openrouter", "", func(inst providercfg.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
-		return NewForInstance(InstanceParams{
-			Name:    inst.Name,
-			BaseURL: inst.BaseURL,
-			APIKey:  inst.APIKey,
-			Compat:  inst.Compat,
-			Models:  inst.Models,
-			Headers: inst.Headers,
-		}), nil
-	})
+	llm.RegisterEnvAdapterFactory(envAdapterFactory)
+	llm.RegisterInstanceAdapterFactory("openrouter", "", instanceAdapterFactory)
 }

@@ -64,25 +64,20 @@ func newTestAdapter(baseURL, apiKey string, client *http.Client) *adapter {
 	})
 }
 
+func envAdapterFactory(_ llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
+	key := envvars.MinimaxAPIKey.Trimmed()
+	if key == "" {
+		return nil, false, nil
+	}
+	base := envvars.MinimaxBaseURL.Trimmed()
+	return NewForInstance(InstanceParams{Name: providerName, BaseURL: base, APIKey: key}), true, nil
+}
+
+func instanceAdapterFactory(inst providercfg.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
+	return NewForInstance(InstanceParams{Name: inst.Name, BaseURL: inst.BaseURL, APIKey: inst.APIKey, Headers: inst.Headers}), nil
+}
+
 func init() {
-	llm.RegisterEnvAdapterFactory(func(_ llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
-		key := envvars.MinimaxAPIKey.Trimmed()
-		if key == "" {
-			return nil, false, nil
-		}
-		base := envvars.MinimaxBaseURL.Trimmed()
-		return NewForInstance(InstanceParams{
-			Name:    providerName,
-			BaseURL: base,
-			APIKey:  key,
-		}), true, nil
-	})
-	llm.RegisterInstanceAdapterFactory("minimax", "", func(inst providercfg.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
-		return NewForInstance(InstanceParams{
-			Name:    inst.Name,
-			BaseURL: inst.BaseURL,
-			APIKey:  inst.APIKey,
-			Headers: inst.Headers,
-		}), nil
-	})
+	llm.RegisterEnvAdapterFactory(envAdapterFactory)
+	llm.RegisterInstanceAdapterFactory("minimax", "", instanceAdapterFactory)
 }
