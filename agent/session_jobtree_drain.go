@@ -155,6 +155,10 @@ func (s *Session) DrainJobTree(ctx context.Context) (string, error) {
 // explicitly drive rechecks without depending on wall time or advancing every
 // unrelated waiter on a shared fake clock.
 func (s *Session) drainJobTree(ctx context.Context, recheck <-chan time.Time) (string, error) {
+	return s.drainJobTreeWith(ctx, recheck, s.kickDriveTree, s.ProcessInputKind)
+}
+
+func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time, kick func(context.Context) error, process func(context.Context, string, []ImageAttachment, EntryKind) (string, error)) (string, error) {
 	wake, notify := newDrainWake()
 	s.SetNotifyFunc(notify)
 	defer s.SetNotifyFunc(nil)
@@ -168,7 +172,7 @@ func (s *Session) drainJobTree(ctx context.Context, recheck <-chan time.Time) (s
 		// Caller sends render as a token on the owning session's own rail, so this
 		// converts them into queued notifications the loop then drains — a one-shot
 		// run must not Close() before that delivery.
-		if err := s.kickDriveTree(ctx); err != nil {
+		if err := kick(ctx); err != nil {
 			return lastResult, err
 		}
 		if s.peekNotifications() > 0 {
@@ -177,7 +181,7 @@ func (s *Session) drainJobTree(ctx context.Context, recheck <-chan time.Time) (s
 			// up. The turn's boundary also drives any idle descendant that has
 			// undelivered attention. The turn's internal loop drains any further
 			// already-pending notifications.
-			res, err := s.ProcessInputKind(ctx, "", nil, EntryNotification)
+			res, err := process(ctx, "", nil, EntryNotification)
 			if err != nil {
 				return lastResult, err
 			}
@@ -233,7 +237,13 @@ func waitDrainWake(ctx context.Context, wake <-chan struct{}, recheck <-chan tim
 // carries no immediate signal. All the underlying operations are idempotent and
 // self-terminating, so repeated kicks are safe.
 func (s *Session) kickDriveTree(ctx context.Context) error {
-	if err := s.drainPendingWatchSends(ctx); err != nil {
+	return s.kickDriveTreeWith(ctx, func(sess *Session, ctx context.Context) error {
+		return sess.drainPendingWatchSends(ctx)
+	})
+}
+
+func (s *Session) kickDriveTreeWith(ctx context.Context, drain func(*Session, context.Context) error) error {
+	if err := drain(s, ctx); err != nil {
 		return err
 	}
 	for _, sub := range s.liveDirectSubagents() {
@@ -241,7 +251,7 @@ func (s *Session) kickDriveTree(ctx context.Context) error {
 		if child == nil || s.childStopGated(child.id) {
 			continue
 		}
-		if err := child.kickDriveTree(ctx); err != nil {
+		if err := child.kickDriveTreeWith(ctx, drain); err != nil {
 			return err
 		}
 	}
