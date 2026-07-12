@@ -11,6 +11,19 @@ import (
 	"time"
 )
 
+var (
+	marketplaceReadFile        = os.ReadFile
+	marketplaceMarshalIndent   = json.MarshalIndent
+	marketplaceAtomicWriteFile = atomicWriteFile
+	marketplaceGitClone        = gitClone
+	marketplaceGitSparseClone  = gitSparseClone
+	marketplaceGitPull         = gitPull
+	marketplaceRemoveAll       = os.RemoveAll
+	marketplaceRename          = os.Rename
+	marketplaceAcquireLock     = acquireLock
+	marketplaceStat            = os.Stat
+)
+
 type MarketplaceRef struct {
 	Source Source `json:"source"`
 	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
@@ -32,7 +45,7 @@ func (m *Manager) catalogRoot(ref MarketplaceRef) string {
 }
 
 func (m *Manager) loadMarketplaces() (Marketplaces, error) {
-	data, err := os.ReadFile(m.marketplacesFile())
+	data, err := marketplaceReadFile(m.marketplacesFile())
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return Marketplaces{}, nil
@@ -50,11 +63,11 @@ func (m *Manager) loadMarketplaces() (Marketplaces, error) {
 }
 
 func (m *Manager) saveMarketplaces(mk Marketplaces) error {
-	body, err := json.MarshalIndent(mk, "", "  ")
+	body, err := marketplaceMarshalIndent(mk, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshalling marketplaces: %w", err)
 	}
-	return atomicWriteFile(m.marketplacesFile(), append(body, '\n'), 0o644)
+	return marketplaceAtomicWriteFile(m.marketplacesFile(), append(body, '\n'), 0o644)
 }
 
 // fetchMarketplaceContainer clones/references src into destDir and returns the
@@ -65,17 +78,17 @@ func (m *Manager) fetchMarketplaceContainer(ctx context.Context, src Source, des
 		return src.Path, nil // referenced in place
 	case SourceGitHub:
 		url := "https://github.com/" + src.Repo + ".git"
-		if err := gitClone(ctx, url, destDir, src.Ref, src.Sha); err != nil {
+		if err := marketplaceGitClone(ctx, url, destDir, src.Ref, src.Sha); err != nil {
 			return "", err
 		}
 		return destDir, nil
 	case SourceURL:
-		if err := gitClone(ctx, src.URL, destDir, src.Ref, src.Sha); err != nil {
+		if err := marketplaceGitClone(ctx, src.URL, destDir, src.Ref, src.Sha); err != nil {
 			return "", err
 		}
 		return destDir, nil
 	case SourceGitSubdir:
-		if err := gitSparseClone(ctx, src.URL, destDir, src.Path, src.Ref, src.Sha); err != nil {
+		if err := marketplaceGitSparseClone(ctx, src.URL, destDir, src.Path, src.Ref, src.Sha); err != nil {
 			return "", err
 		}
 		return filepath.Join(destDir, src.Path), nil
@@ -108,7 +121,7 @@ func (m *Manager) ensureFetched(ctx context.Context, name string) (MarketplaceRe
 	installLoc := ref.Source.Path // directory source: referenced in place
 	if ref.Source.Kind != SourceDirectory {
 		installLoc = m.marketplaceDir(name)
-		_ = os.RemoveAll(installLoc)
+		_ = marketplaceRemoveAll(installLoc)
 		if _, err := m.fetchMarketplaceContainer(ctx, ref.Source, installLoc); err != nil {
 			return MarketplaceRef{}, err
 		}
@@ -125,7 +138,7 @@ func (m *Manager) ensureFetched(ctx context.Context, name string) (MarketplaceRe
 // AddMarketplace fetches src, reads its marketplace.json for the name (unless
 // name is given), and records it. Returns the stored ref.
 func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (MarketplaceRef, error) {
-	release, err := acquireLock(m.lockPath(), 30*time.Second)
+	release, err := marketplaceAcquireLock(m.lockPath(), 30*time.Second)
 	if err != nil {
 		return MarketplaceRef{}, err
 	}
@@ -133,45 +146,45 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 
 	// Fetch into a staging dir first so a bad marketplace never half-registers.
 	staging := m.marketplaceDir(".staging")
-	_ = os.RemoveAll(staging)
+	_ = marketplaceRemoveAll(staging)
 	root, err := m.fetchMarketplaceContainer(ctx, src, staging)
 	if err != nil {
-		_ = os.RemoveAll(staging)
+		_ = marketplaceRemoveAll(staging)
 		return MarketplaceRef{}, err
 	}
 	cat, err := ParseCatalog(root)
 	if err != nil {
-		_ = os.RemoveAll(staging)
+		_ = marketplaceRemoveAll(staging)
 		return MarketplaceRef{}, fmt.Errorf("reading marketplace.json: %w", err)
 	}
 	if name == "" {
 		name = cat.Name
 	}
 	if name == "" {
-		_ = os.RemoveAll(staging)
+		_ = marketplaceRemoveAll(staging)
 		return MarketplaceRef{}, errors.New("marketplace has no name and none was given")
 	}
 	if err := validNameComponent("marketplace", name); err != nil {
-		_ = os.RemoveAll(staging)
+		_ = marketplaceRemoveAll(staging)
 		return MarketplaceRef{}, err
 	}
 
 	installLoc := src.Path // directory source: in place
 	if src.Kind != SourceDirectory {
 		installLoc = m.marketplaceDir(name)
-		_ = os.RemoveAll(installLoc)
-		if err := os.Rename(staging, installLoc); err != nil {
-			_ = os.RemoveAll(staging)
+		_ = marketplaceRemoveAll(installLoc)
+		if err := marketplaceRename(staging, installLoc); err != nil {
+			_ = marketplaceRemoveAll(staging)
 			return MarketplaceRef{}, fmt.Errorf("installing marketplace clone: %w", err)
 		}
 	} else {
-		_ = os.RemoveAll(staging)
+		_ = marketplaceRemoveAll(staging)
 	}
 
 	mk, err := m.loadMarketplaces()
 	if err != nil {
 		if src.Kind != SourceDirectory {
-			_ = os.RemoveAll(installLoc)
+			_ = marketplaceRemoveAll(installLoc)
 		}
 		return MarketplaceRef{}, err
 	}
@@ -179,7 +192,7 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 	mk[name] = ref
 	if err := m.saveMarketplaces(mk); err != nil {
 		if src.Kind != SourceDirectory {
-			_ = os.RemoveAll(installLoc)
+			_ = marketplaceRemoveAll(installLoc)
 		}
 		return MarketplaceRef{}, err
 	}
@@ -189,7 +202,7 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 func (m *Manager) ListMarketplaces() (Marketplaces, error) { return m.loadMarketplaces() }
 
 func (m *Manager) RemoveMarketplace(name string) error {
-	release, err := acquireLock(m.lockPath(), 30*time.Second)
+	release, err := marketplaceAcquireLock(m.lockPath(), 30*time.Second)
 	if err != nil {
 		return err
 	}
@@ -203,7 +216,7 @@ func (m *Manager) RemoveMarketplace(name string) error {
 		return fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceNotFound)
 	}
 	if ref.Source.Kind != SourceDirectory {
-		if err := os.RemoveAll(m.marketplaceDir(name)); err != nil {
+		if err := marketplaceRemoveAll(m.marketplaceDir(name)); err != nil {
 			_, _ = fmt.Fprintf(m.stderr(), "warning: removing marketplace clone %s: %v\n", m.marketplaceDir(name), err)
 		}
 	}
@@ -212,7 +225,7 @@ func (m *Manager) RemoveMarketplace(name string) error {
 }
 
 func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
-	release, err := acquireLock(m.lockPath(), 30*time.Second)
+	release, err := marketplaceAcquireLock(m.lockPath(), 30*time.Second)
 	if err != nil {
 		return err
 	}
@@ -229,12 +242,12 @@ func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 		if ref.InstallLocation == "" {
 			// Never fetched (seeded pointer): clone now — that is the refresh.
 			installLoc := m.marketplaceDir(name)
-			_ = os.RemoveAll(installLoc)
+			_ = marketplaceRemoveAll(installLoc)
 			if _, err := m.fetchMarketplaceContainer(ctx, ref.Source, installLoc); err != nil {
 				return err
 			}
 			ref.InstallLocation = installLoc
-		} else if err := gitPull(ctx, ref.InstallLocation); err != nil {
+		} else if err := marketplaceGitPull(ctx, ref.InstallLocation); err != nil {
 			return err
 		}
 	}
