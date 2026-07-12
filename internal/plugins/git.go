@@ -9,8 +9,14 @@ import (
 	"strings"
 )
 
+var (
+	gitLookPath = exec.LookPath
+	gitMkdirAll = os.MkdirAll
+	gitRun      = git
+)
+
 func gitAvailable() bool {
-	_, err := exec.LookPath("git")
+	_, err := gitLookPath("git")
 	return err == nil
 }
 
@@ -46,7 +52,7 @@ func gitClone(ctx context.Context, url, dir, ref, sha string) error {
 			return err
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+	if err := gitMkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return err
 	}
 	args := []string{"clone", "--quiet"}
@@ -54,16 +60,16 @@ func gitClone(ctx context.Context, url, dir, ref, sha string) error {
 		args = append(args, "--depth=1")
 	}
 	args = append(args, "--", url, dir)
-	if _, err := git(ctx, "", args...); err != nil {
+	if _, err := gitRun(ctx, "", args...); err != nil {
 		return err
 	}
 	if ref != "" {
-		if _, err := git(ctx, dir, "checkout", "--quiet", ref); err != nil {
+		if _, err := gitRun(ctx, dir, "checkout", "--quiet", ref); err != nil {
 			return err
 		}
 	}
 	if sha != "" {
-		if _, err := git(ctx, dir, "checkout", "--quiet", sha); err != nil {
+		if _, err := gitRun(ctx, dir, "checkout", "--quiet", sha); err != nil {
 			return err
 		}
 	}
@@ -78,14 +84,14 @@ func gitSparseClone(ctx context.Context, url, dir, subdir, ref, sha string) erro
 			return err
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+	if err := gitMkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return err
 	}
 	args := []string{"clone", "--quiet", "--filter=blob:none", "--no-checkout", "--", url, dir}
-	if _, err := git(ctx, "", args...); err != nil {
+	if _, err := gitRun(ctx, "", args...); err != nil {
 		return err
 	}
-	if _, err := git(ctx, dir, "sparse-checkout", "set", "--cone", subdir); err != nil {
+	if _, err := gitRun(ctx, dir, "sparse-checkout", "set", "--cone", subdir); err != nil {
 		return err
 	}
 	target := "HEAD"
@@ -94,19 +100,19 @@ func gitSparseClone(ctx context.Context, url, dir, subdir, ref, sha string) erro
 	} else if ref != "" {
 		target = ref
 	}
-	if _, err := git(ctx, dir, "checkout", "--quiet", target); err != nil {
+	if _, err := gitRun(ctx, dir, "checkout", "--quiet", target); err != nil {
 		return err
 	}
 	return nil
 }
 
 func gitPull(ctx context.Context, dir string) error {
-	_, err := git(ctx, dir, "pull", "--ff-only", "--quiet")
+	_, err := gitRun(ctx, dir, "pull", "--ff-only", "--quiet")
 	return err
 }
 
 func gitHeadSHA(ctx context.Context, dir string) (string, error) {
-	out, err := git(ctx, dir, "rev-parse", "HEAD")
+	out, err := gitRun(ctx, dir, "rev-parse", "HEAD")
 	if err != nil {
 		return "", err
 	}
