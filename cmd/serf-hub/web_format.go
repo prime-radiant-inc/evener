@@ -39,9 +39,6 @@ func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
 		title = strutil.FirstNonEmpty(thread.SessionID, thread.ID)
 	}
 	state := hubcore.NormalizeState(thread.Status.Type)
-	if state == "" {
-		state = "idle"
-	}
 	data := WorkspaceData{
 		ID:                    ref,
 		SourceLabel:           sourceLabelFromRefText(ref),
