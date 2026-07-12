@@ -22,7 +22,7 @@ func writeMeta(t *testing.T, dir string, meta schema.SessionMeta) {
 	}
 }
 
-func TestPastIndex_RebuildLoadsAllMetas(t *testing.T) {
+func fuzzScenarioPastIndex_RebuildLoadsAllMetas(t *testing.T) {
 	root := t.TempDir()
 	projA := filepath.Join(root, "projects", "aaa")
 	projB := filepath.Join(root, "projects", "bbb")
@@ -64,7 +64,7 @@ func TestPastIndex_RebuildLoadsAllMetas(t *testing.T) {
 	}
 }
 
-func TestPastIndex_RebuildOrdersByUpdatedCreatedTitleAndID(t *testing.T) {
+func fuzzScenarioPastIndex_RebuildOrdersByUpdatedCreatedTitleAndID(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	if err := os.MkdirAll(proj, 0o755); err != nil {
@@ -113,7 +113,7 @@ func TestPastIndex_RebuildOrdersByUpdatedCreatedTitleAndID(t *testing.T) {
 	}
 }
 
-func TestPastIndex_Search(t *testing.T) {
+func fuzzScenarioPastIndex_Search(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
@@ -151,7 +151,7 @@ func TestPastIndex_Search(t *testing.T) {
 	}
 }
 
-func TestPastIndex_SearchMatchesGeneratedName(t *testing.T) {
+func fuzzScenarioPastIndex_SearchMatchesGeneratedName(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
@@ -172,7 +172,7 @@ func TestPastIndex_SearchMatchesGeneratedName(t *testing.T) {
 	}
 }
 
-func TestPastIndex_SearchSQLiteFTSMatchesGeneratedName(t *testing.T) {
+func fuzzScenarioPastIndex_SearchSQLiteFTSMatchesGeneratedName(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
@@ -193,7 +193,7 @@ func TestPastIndex_SearchSQLiteFTSMatchesGeneratedName(t *testing.T) {
 	}
 }
 
-func TestPastIndex_SearchUsesSQLiteFTSWhenConfigured(t *testing.T) {
+func fuzzScenarioPastIndex_SearchUsesSQLiteFTSWhenConfigured(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
@@ -237,7 +237,7 @@ func TestPastIndex_SearchUsesSQLiteFTSWhenConfigured(t *testing.T) {
 	}
 }
 
-func TestPastIndex_SearchWithSQLitePreservesSubstringMatches(t *testing.T) {
+func fuzzScenarioPastIndex_SearchWithSQLitePreservesSubstringMatches(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
@@ -269,7 +269,7 @@ func TestPastIndex_SearchWithSQLitePreservesSubstringMatches(t *testing.T) {
 	}
 }
 
-func TestPastIndex_SearchWithSQLiteMergesFTSAndSubstringMatches(t *testing.T) {
+func fuzzScenarioPastIndex_SearchWithSQLiteMergesFTSAndSubstringMatches(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
@@ -301,7 +301,7 @@ func TestPastIndex_SearchWithSQLiteMergesFTSAndSubstringMatches(t *testing.T) {
 	}
 }
 
-func TestPastIndex_SQLiteIndexUsesPrivateFilePermissions(t *testing.T) {
+func fuzzScenarioPastIndex_SQLiteIndexUsesPrivateFilePermissions(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
@@ -339,7 +339,7 @@ func TestPastIndex_SQLiteIndexUsesPrivateFilePermissions(t *testing.T) {
 	}
 }
 
-func TestPastIndex_SearchFallsBackWhenSQLiteUnavailable(t *testing.T) {
+func fuzzScenarioPastIndex_SearchFallsBackWhenSQLiteUnavailable(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
@@ -360,7 +360,7 @@ func TestPastIndex_SearchFallsBackWhenSQLiteUnavailable(t *testing.T) {
 	}
 }
 
-func TestPastIndex_Pagination(t *testing.T) {
+func fuzzScenarioPastIndex_Pagination(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
@@ -382,7 +382,7 @@ func TestPastIndex_Pagination(t *testing.T) {
 	}
 }
 
-func TestPastIndex_Find(t *testing.T) {
+func fuzzScenarioPastIndex_Find(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
@@ -406,7 +406,7 @@ func TestPastIndex_Find(t *testing.T) {
 	}
 }
 
-func TestPastIndex_FindRefreshesNewSessionOnMiss(t *testing.T) {
+func fuzzScenarioPastIndex_FindRefreshesNewSessionOnMiss(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
@@ -433,7 +433,7 @@ func TestPastIndex_FindRefreshesNewSessionOnMiss(t *testing.T) {
 	}
 }
 
-func TestPastIndex_FindWithMalformedGlob(t *testing.T) {
+func fuzzScenarioPastIndex_FindWithMalformedGlob(t *testing.T) {
 	idx := NewPastIndex("[unclosed")
 	// Rebuild must propagate the glob compile error rather than swallow it: a
 	// silently-ignored ErrBadPattern leaves the index empty so Find still
@@ -450,7 +450,7 @@ func TestPastIndex_FindWithMalformedGlob(t *testing.T) {
 	}
 }
 
-func TestPastIndex_RebuildFTSError(t *testing.T) {
+func fuzzScenarioPastIndex_RebuildFTSError(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
@@ -476,7 +476,7 @@ func TestPastIndex_RebuildFTSError(t *testing.T) {
 	}
 }
 
-func TestPastIndex_AllMetas(t *testing.T) {
+func fuzzScenarioPastIndex_AllMetas(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
@@ -494,7 +494,7 @@ func TestPastIndex_AllMetas(t *testing.T) {
 	}
 }
 
-func TestPastIndex_SearchFTSSpecialCharsOnly(t *testing.T) {
+func fuzzScenarioPastIndex_SearchFTSSpecialCharsOnly(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
@@ -522,7 +522,7 @@ func TestPastIndex_SearchFTSSpecialCharsOnly(t *testing.T) {
 	}
 }
 
-func TestChmodSQLiteIndexFiles_Error(t *testing.T) {
+func fuzzScenarioChmodSQLiteIndexFiles_Error(t *testing.T) {
 	dir := t.TempDir()
 	// Place the db path under a parent component that is a regular file, not a
 	// directory. chmod on any path beneath it returns ENOTDIR regardless of uid,
@@ -541,7 +541,7 @@ func TestChmodSQLiteIndexFiles_Error(t *testing.T) {
 	}
 }
 
-func TestPastIndex_FindEmptyStateGlob(t *testing.T) {
+func fuzzScenarioPastIndex_FindEmptyStateGlob(t *testing.T) {
 	idx := NewPastIndex("")
 	got, ok := idx.Find("something")
 	if ok {
@@ -557,7 +557,7 @@ func TestPastIndex_FindEmptyStateGlob(t *testing.T) {
 // a rebuild, even when the glob points at real on-disk sessions. Dropping the
 // guard would route the empty id through Rebuild, which populates the index as a
 // side effect — observable here as a non-empty All() snapshot.
-func TestPastIndex_FindEmptySessionIDSkipsRebuild(t *testing.T) {
+func fuzzScenarioPastIndex_FindEmptySessionIDSkipsRebuild(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
@@ -578,7 +578,7 @@ func TestPastIndex_FindEmptySessionIDSkipsRebuild(t *testing.T) {
 	}
 }
 
-func TestPastIndexOnChangeFiresOnContentDeltaOnly(t *testing.T) {
+func fuzzScenarioPastIndexOnChangeFiresOnContentDeltaOnly(t *testing.T) {
 	dir := t.TempDir()
 	proj := filepath.Join(dir, "proj")
 	writeMeta := func(id string) {
@@ -606,7 +606,7 @@ func TestPastIndexOnChangeFiresOnContentDeltaOnly(t *testing.T) {
 	}
 }
 
-func TestUpdateMetaReordersAndPreservesStateDir(t *testing.T) {
+func fuzzScenarioUpdateMetaReordersAndPreservesStateDir(t *testing.T) {
 	dir := t.TempDir()
 	proj := filepath.Join(dir, "proj")
 	for _, id := range []string{"01A", "01B"} {
@@ -648,7 +648,7 @@ func TestUpdateMetaReordersAndPreservesStateDir(t *testing.T) {
 // in-flight, unlocked Rebuild was still reading. This test has no
 // assertions of its own — under `go test -race` the race detector is the
 // failure mode.
-func TestUpdateMetaConcurrentWithRebuildIsRaceFree(t *testing.T) {
+func fuzzScenarioUpdateMetaConcurrentWithRebuildIsRaceFree(t *testing.T) {
 	dir := t.TempDir()
 	proj := filepath.Join(dir, "proj")
 	for _, id := range []string{"01A", "01B"} {
@@ -686,7 +686,7 @@ func TestUpdateMetaConcurrentWithRebuildIsRaceFree(t *testing.T) {
 	wg.Wait()
 }
 
-func TestPastIndex_RecentModels_DedupesGlobalRecencyLastN(t *testing.T) {
+func fuzzScenarioPastIndex_RecentModels_DedupesGlobalRecencyLastN(t *testing.T) {
 	idx := NewPastIndex("")
 	now := time.Now().UTC()
 	idx.SeedForTest([]schema.SessionMeta{
@@ -717,7 +717,7 @@ func TestPastIndex_RecentModels_DedupesGlobalRecencyLastN(t *testing.T) {
 // index's 60s Rebuild ticks. RefreshOne re-reads just that one session's meta
 // and feeds it through the existing UpdateMeta reorder path, without waiting
 // for the next full Rebuild.
-func TestPastIndex_RefreshOneRereadsChangedMetaAndReorders(t *testing.T) {
+func fuzzScenarioPastIndex_RefreshOneRereadsChangedMetaAndReorders(t *testing.T) {
 	dir := t.TempDir()
 	proj := filepath.Join(dir, "proj")
 	base := time.Unix(1_700_000_000, 0)
@@ -750,7 +750,7 @@ func TestPastIndex_RefreshOneRereadsChangedMetaAndReorders(t *testing.T) {
 // TestPastIndex_RefreshOneOnChangeFires pins that RefreshOne's UpdateMeta call
 // still fires the content-delta onChange hook (the version-bump path the tree
 // memo depends on), same as a direct UpdateMeta call.
-func TestPastIndex_RefreshOneOnChangeFires(t *testing.T) {
+func fuzzScenarioPastIndex_RefreshOneOnChangeFires(t *testing.T) {
 	dir := t.TempDir()
 	proj := filepath.Join(dir, "proj")
 	writeMeta(t, proj, schema.SessionMeta{ID: "01A", UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
@@ -772,7 +772,7 @@ func TestPastIndex_RefreshOneOnChangeFires(t *testing.T) {
 // TestPastIndex_RefreshOneNoOpsOnUntrackedID mirrors UpdateMeta's own
 // untracked-ID no-op: an id RefreshOne has never indexed (e.g. a stale roster
 // entry racing a rename) must not panic or mutate the index.
-func TestPastIndex_RefreshOneNoOpsOnUntrackedID(t *testing.T) {
+func fuzzScenarioPastIndex_RefreshOneNoOpsOnUntrackedID(t *testing.T) {
 	idx := NewPastIndex(filepath.Join(t.TempDir(), "*"))
 	idx.RefreshOne("nonexistent")
 	if all := idx.All(); len(all) != 0 {
@@ -784,7 +784,7 @@ func TestPastIndex_RefreshOneNoOpsOnUntrackedID(t *testing.T) {
 // case: the id is indexed but its .meta.json is gone (renamed session dir,
 // race with cleanup). LoadSessionMeta fails; RefreshOne must log and return,
 // never panic or corrupt the existing entry.
-func TestPastIndex_RefreshOneNoOpsOnMissingMetaFile(t *testing.T) {
+func fuzzScenarioPastIndex_RefreshOneNoOpsOnMissingMetaFile(t *testing.T) {
 	dir := t.TempDir()
 	proj := filepath.Join(dir, "proj")
 	writeMeta(t, proj, schema.SessionMeta{ID: "01A", UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
@@ -811,14 +811,14 @@ func TestPastIndex_RefreshOneNoOpsOnMissingMetaFile(t *testing.T) {
 	}
 }
 
-func TestPastIndex_RecentModels_EmptyIndexReturnsNil(t *testing.T) {
+func fuzzScenarioPastIndex_RecentModels_EmptyIndexReturnsNil(t *testing.T) {
 	idx := NewPastIndex("")
 	if got := idx.RecentModels(5); got != nil {
 		t.Fatalf("RecentModels on empty index = %+v, want nil", got)
 	}
 }
 
-func TestPastIndex_RecentModels_SkipsBlankProviderOrModel(t *testing.T) {
+func fuzzScenarioPastIndex_RecentModels_SkipsBlankProviderOrModel(t *testing.T) {
 	idx := NewPastIndex("")
 	idx.SeedForTest([]schema.SessionMeta{
 		{ID: "a", ProfileID: "", Model: "gpt-5.2", UpdatedAt: time.Now()},

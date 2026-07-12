@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func TestArchiveStoreSetAndRead(t *testing.T) {
+func fuzzScenarioArchiveStoreSetAndRead(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "index.db")
 	s := NewArchiveStore(db)
 	now := time.Unix(1_700_000_000, 0)
@@ -38,7 +38,7 @@ func TestArchiveStoreSetAndRead(t *testing.T) {
 	}
 }
 
-func TestArchiveStoreEmptyWhenNoDB(t *testing.T) {
+func fuzzScenarioArchiveStoreEmptyWhenNoDB(t *testing.T) {
 	s := NewArchiveStore("")
 	got, err := s.Decisions()
 	if err != nil {
@@ -49,7 +49,7 @@ func TestArchiveStoreEmptyWhenNoDB(t *testing.T) {
 	}
 }
 
-func TestArchiveStoreOpenError(t *testing.T) {
+func fuzzScenarioArchiveStoreOpenError(t *testing.T) {
 	// Root-proof injection: make the dbPath itself a directory. MkdirAll of the
 	// parent succeeds, but sqlite cannot open a directory as a database file, so
 	// open() fails at db.Exec regardless of uid (root cannot open a dir as a DB).
@@ -71,7 +71,7 @@ func TestArchiveStoreOpenError(t *testing.T) {
 	}
 }
 
-func TestArchiveStoreMkdirAllError(t *testing.T) {
+func fuzzScenarioArchiveStoreMkdirAllError(t *testing.T) {
 	dir := t.TempDir()
 	blocker := filepath.Join(dir, "blocker")
 	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
@@ -94,7 +94,7 @@ func TestArchiveStoreMkdirAllError(t *testing.T) {
 	}
 }
 
-func TestArchiveStoreDelete(t *testing.T) {
+func fuzzScenarioArchiveStoreDelete(t *testing.T) {
 	dir := t.TempDir()
 	store := NewArchiveStore(filepath.Join(dir, "index.db"))
 	now := time.Unix(1_700_000_000, 0)

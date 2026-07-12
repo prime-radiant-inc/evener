@@ -126,7 +126,7 @@ func edgeOpen(stage string) func(string, string) (*sql.DB, error) {
 	}
 }
 
-func TestPersistenceExternalErrors(t *testing.T) {
+func fuzzScenarioPersistenceExternalErrors(t *testing.T) {
 	if got, err := NewArchiveStore("missing").SetFs(afero.NewMemMapFs()).Decisions(); err != nil || len(got) != 0 {
 		t.Fatalf("missing archive: %v, %v", got, err)
 	}
@@ -181,7 +181,7 @@ func (s *FavoriteStore) openOnly() error {
 	return err
 }
 
-func TestPastIndexSQLLifecycleErrors(t *testing.T) {
+func fuzzScenarioPastIndexSQLLifecycleErrors(t *testing.T) {
 	entry := PastEntry{ID: "id", Meta: schema.SessionMeta{ID: "id"}}
 	for _, stage := range []string{"open", "exec", "begin", "tx-exec", "prepare", "stmt-exec", "commit", "close"} {
 		i := NewPastIndexWithDB("", "x").SetFs(afero.NewMemMapFs())
@@ -217,7 +217,7 @@ type edgeTicker struct{ c <-chan time.Time }
 func (t edgeTicker) C() <-chan time.Time { return t.c }
 func (edgeTicker) Stop()                 {}
 
-func TestRosterWatcherExternalEdges(t *testing.T) {
+func fuzzScenarioRosterWatcherExternalEdges(t *testing.T) {
 	r := NewRoster("", nil).SetFs(afero.NewMemMapFs())
 	r.newWatcher = func() (rosterWatcher, error) { return nil, errExternalEdge }
 	if err := r.Watch(context.Background()); !errors.Is(err, errExternalEdge) {
@@ -270,7 +270,7 @@ func TestRosterWatcherExternalEdges(t *testing.T) {
 	}
 }
 
-func TestRemainingPureBranches(t *testing.T) {
+func fuzzScenarioRemainingPureBranches(t *testing.T) {
 	NewRoster("", nil).SetFs(afero.NewMemMapFs())
 	NewRoster("\x00", nil).Refresh()
 	NewPastIndex("").UpdateMeta("missing", schema.SessionMeta{})

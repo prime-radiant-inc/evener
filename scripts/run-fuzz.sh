@@ -190,6 +190,7 @@ TARGETS=(
 	"native:.:./cmd/serf-hub/internal/appsource:FuzzAppSourceProgram::"
 	"native:.:./cmd/serf-hub/internal/codexlaunch:FuzzParseCodexEndpoint::codex_launch.go#ParseCodexEndpoint"
 	"native:.:./cmd/serf-hub/internal/hubcore:FuzzBuildTree::tree.go#BuildTreeAt"
+	"native:.:./cmd/serf-hub/internal/hubcore:FuzzHubcoreScenarios::"
 	"native:.:./internal/gitpath:FuzzParseGitdirPointer::gitpath.go#ParseGitdirPointer"
 	"native:.:./internal/plugins:FuzzSourceUnmarshalJSON::source.go#UnmarshalJSON"
 	"native:.:./internal/plugins:FuzzDetectNPMBinServer::manifest_fallback.go#detectNPMBinServer"

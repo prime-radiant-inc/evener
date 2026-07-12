@@ -9,7 +9,7 @@ import (
 	"primeradiant.com/serf/rendezvous"
 )
 
-func TestUnixTime(t *testing.T) {
+func fuzzScenarioUnixTime(t *testing.T) {
 	if got := UnixTime(0); !got.IsZero() {
 		t.Fatalf("UnixTime(0)=%v, want zero", got)
 	}
@@ -25,7 +25,7 @@ func TestUnixTime(t *testing.T) {
 	}
 }
 
-func TestUnixSeconds(t *testing.T) {
+func fuzzScenarioUnixSeconds(t *testing.T) {
 	if got := UnixSeconds(time.Time{}); got != 0 {
 		t.Fatalf("UnixSeconds(zero)=%d, want 0", got)
 	}
@@ -35,7 +35,7 @@ func TestUnixSeconds(t *testing.T) {
 	}
 }
 
-func TestAppwireThreadLess(t *testing.T) {
+func fuzzScenarioAppwireThreadLess(t *testing.T) {
 	newer := appwire.Thread{ID: "a", Name: "Alpha", UpdatedAt: 200, CreatedAt: 100}
 	older := appwire.Thread{ID: "b", Name: "Beta", UpdatedAt: 100, CreatedAt: 100}
 	// More recently updated threads sort first (Less == true).
@@ -54,7 +54,7 @@ func TestAppwireThreadLess(t *testing.T) {
 	}
 }
 
-func TestAppwireThreadOrderKeyTitleFallback(t *testing.T) {
+func fuzzScenarioAppwireThreadOrderKeyTitleFallback(t *testing.T) {
 	// Name wins when present.
 	if got := appwireThreadOrderKey(appwire.Thread{Name: "N", Preview: "P", SessionID: "S"}); got.title != "N" {
 		t.Fatalf("title=%q, want Name", got.title)
@@ -80,7 +80,7 @@ func liveEntry(sessionID, address string, started time.Time) LiveEntry {
 	}
 }
 
-func TestLiveEntryWithPastLessNilIndex(t *testing.T) {
+func fuzzScenarioLiveEntryWithPastLessNilIndex(t *testing.T) {
 	newer := liveEntry("s1", "addr1", time.Unix(200, 0))
 	older := liveEntry("s2", "addr2", time.Unix(100, 0))
 	// With no past index, ordering uses the live entry's own StartedAt.
@@ -89,7 +89,7 @@ func TestLiveEntryWithPastLessNilIndex(t *testing.T) {
 	}
 }
 
-func TestLiveEntryWithPastLessUsesPastMeta(t *testing.T) {
+func fuzzScenarioLiveEntryWithPastLessUsesPastMeta(t *testing.T) {
 	// A past index whose meta for s1 is much newer must reorder s1 ahead of s2
 	// even though s1's live StartedAt is older — the past meta is authoritative.
 	past := &PastIndex{
@@ -110,7 +110,7 @@ func TestLiveEntryWithPastLessUsesPastMeta(t *testing.T) {
 	}
 }
 
-func TestLiveEntryOrderKeyFallbackID(t *testing.T) {
+func fuzzScenarioLiveEntryOrderKeyFallbackID(t *testing.T) {
 	// Fallback id preference: SessionID, then ThreadID, then Address.
 	le := LiveEntry{Entry: rendezvous.Entry{Address: "addr", ThreadID: "th"}}
 	if got := liveEntryFallbackOrderKey(le); got.id != "th" {

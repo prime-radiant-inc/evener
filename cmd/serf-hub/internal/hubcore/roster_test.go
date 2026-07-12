@@ -20,7 +20,7 @@ func writeRendezvous(t *testing.T, dir string, e rendezvous.Entry) {
 	}
 }
 
-func TestRoster_LoadFromDir(t *testing.T) {
+func fuzzScenarioRoster_LoadFromDir(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{
 		PID:        1001,
@@ -49,7 +49,7 @@ func TestRoster_LoadFromDir(t *testing.T) {
 	}
 }
 
-func TestRoster_FindBySessionID(t *testing.T) {
+func fuzzScenarioRoster_FindBySessionID(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{
 		PID:     1001,
@@ -68,7 +68,7 @@ func TestRoster_FindBySessionID(t *testing.T) {
 	}
 }
 
-func TestRosterListOrdersByStartedAtAndID(t *testing.T) {
+func fuzzScenarioRosterListOrdersByStartedAtAndID(t *testing.T) {
 	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	r := NewRoster(t.TempDir(), nil)
 	r.byPID = map[int]LiveEntry{
@@ -89,7 +89,7 @@ func TestRosterListOrdersByStartedAtAndID(t *testing.T) {
 	}
 }
 
-func TestRosterListDedupesSessionIDPreferringAppWireEntry(t *testing.T) {
+func fuzzScenarioRosterListDedupesSessionIDPreferringAppWireEntry(t *testing.T) {
 	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	r := NewRoster(t.TempDir(), nil)
 	r.byPID = map[int]LiveEntry{
@@ -119,7 +119,7 @@ func TestRosterListDedupesSessionIDPreferringAppWireEntry(t *testing.T) {
 	}
 }
 
-func TestRoster_PrunesUnreachableDeadProcess(t *testing.T) {
+func fuzzScenarioRoster_PrunesUnreachableDeadProcess(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{
 		PID:     1001,
@@ -137,7 +137,7 @@ func TestRoster_PrunesUnreachableDeadProcess(t *testing.T) {
 // "flash of no sessions" bug: a live daemon that transiently fails its /status
 // probe (busy daemon / overloaded host) must stay in the roster, not blank the
 // sidebar.
-func TestRoster_KeepsAliveDaemonThroughProbeFailures(t *testing.T) {
+func fuzzScenarioRoster_KeepsAliveDaemonThroughProbeFailures(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{
 		PID:       1001,
@@ -172,14 +172,14 @@ func TestRoster_KeepsAliveDaemonThroughProbeFailures(t *testing.T) {
 	}
 }
 
-func TestRoster_FindMissing(t *testing.T) {
+func fuzzScenarioRoster_FindMissing(t *testing.T) {
 	r := NewRoster(t.TempDir(), nil)
 	if _, ok := r.Find("missing"); ok {
 		t.Fatal("expected missing to return false")
 	}
 }
 
-func TestRoster_DefaultRunDir(t *testing.T) {
+func fuzzScenarioRoster_DefaultRunDir(t *testing.T) {
 	t.Setenv("HOME", "/tmp/fakehome")
 	want := filepath.Join("/tmp/fakehome", ".serf", "run") //nolint:gocritic // filepathJoin: base is a full home path; mirrors rendezvous.DefaultDir
 	if got := rendezvous.DefaultDir(); got != want {
@@ -187,7 +187,7 @@ func TestRoster_DefaultRunDir(t *testing.T) {
 	}
 }
 
-func TestRoster_Watch_PicksUpNewFile(t *testing.T) {
+func fuzzScenarioRoster_Watch_PicksUpNewFile(t *testing.T) {
 	dir := t.TempDir()
 	r := NewRoster(dir, fakeProber{sessionID: "01SESS001"})
 
@@ -233,7 +233,7 @@ func (p fakeProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAs
 	return p.sessionID, p.status, p.pendingAsk, false, true
 }
 
-func TestRoster_CarriesPendingAskFromProber(t *testing.T) {
+func fuzzScenarioRoster_CarriesPendingAskFromProber(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{
 		PID:     1001,
@@ -268,7 +268,7 @@ func (p *gateProber) Probe(rendezvous.Entry) (sessionID, status string, pendingA
 // TestRoster_ListStaysResponsiveDuringSlowProbe is the regression test for the
 // startup/refresh hang: Refresh must probe without holding the roster lock, so
 // List() returns the last good snapshot instead of blocking on a slow probe.
-func TestRoster_ListStaysResponsiveDuringSlowProbe(t *testing.T) {
+func fuzzScenarioRoster_ListStaysResponsiveDuringSlowProbe(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:1", SessionID: "01S"})
 	started := make(chan struct{}, 1)
@@ -317,7 +317,7 @@ func (p *flakyProber) Probe(rendezvous.Entry) (sessionID, status string, pending
 	return p.sessionID, p.status, false, false, true
 }
 
-func TestPreferLiveEntry(t *testing.T) {
+func fuzzScenarioPreferLiveEntry(t *testing.T) {
 	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	cases := []struct {
 		name      string
@@ -382,7 +382,7 @@ func TestPreferLiveEntry(t *testing.T) {
 	}
 }
 
-func TestProcessAlive(t *testing.T) {
+func fuzzScenarioProcessAlive(t *testing.T) {
 	if processAlive(0) {
 		t.Fatal("processAlive(0) should be false")
 	}
@@ -412,7 +412,7 @@ func (p *statusProber) Probe(rendezvous.Entry) (sessionID, status string, pendin
 // consecutive Refresh snapshots must fire the per-session hook with that
 // session's id, so the hub can re-read just that session's on-disk meta
 // instead of waiting for the next full past-index rebuild.
-func TestRoster_OnStatusChangeFiresForTransitioningSession(t *testing.T) {
+func fuzzScenarioRoster_OnStatusChangeFiresForTransitioningSession(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:50001"})
 
@@ -435,7 +435,7 @@ func TestRoster_OnStatusChangeFiresForTransitioningSession(t *testing.T) {
 // a Refresh whose per-session status set is identical to the prior snapshot
 // must not fire the hook, so a targeted re-read isn't triggered on every
 // roster poll (only genuine transitions).
-func TestRoster_OnStatusChangeNotFiredWhenStatusUnchanged(t *testing.T) {
+func fuzzScenarioRoster_OnStatusChangeNotFiredWhenStatusUnchanged(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:50001"})
 
@@ -459,7 +459,7 @@ func TestRoster_OnStatusChangeNotFiredWhenStatusUnchanged(t *testing.T) {
 // on-disk meta and, on a genuine content delta, bumps the shared
 // InputsVersion counter the /api/tree memo keys on. Before this fix, that
 // bump only happened on PastIndex's own 60s Rebuild ticker.
-func TestRoster_StatusChangeDrivesPastIndexRefreshAndVersionBump(t *testing.T) {
+func fuzzScenarioRoster_StatusChangeDrivesPastIndexRefreshAndVersionBump(t *testing.T) {
 	stateRoot := t.TempDir()
 	proj := filepath.Join(stateRoot, "proj")
 	base := time.Unix(1_700_000_000, 0)
@@ -513,7 +513,7 @@ func TestRoster_StatusChangeDrivesPastIndexRefreshAndVersionBump(t *testing.T) {
 	}
 }
 
-func TestNewRosterWithEntries(t *testing.T) {
+func fuzzScenarioNewRosterWithEntries(t *testing.T) {
 	r := NewRosterWithEntries(
 		LiveEntry{Entry: rendezvous.Entry{PID: 1, Address: "127.0.0.1:1"}, SessionID: "01A"},
 		LiveEntry{Entry: rendezvous.Entry{PID: 2, Address: "127.0.0.1:2"}, SessionID: "01B"},

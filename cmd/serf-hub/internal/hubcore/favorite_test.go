@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func TestFavoriteStoreSetAndDelete(t *testing.T) {
+func fuzzScenarioFavoriteStoreSetAndDelete(t *testing.T) {
 	dir := t.TempDir()
 	fav := NewFavoriteStore(filepath.Join(dir, "index.db"))
 	now := time.Unix(1_700_000_000, 0)

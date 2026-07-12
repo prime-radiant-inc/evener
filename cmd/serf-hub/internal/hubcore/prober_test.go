@@ -16,7 +16,7 @@ type statusStub struct {
 	State     string `json:"state"`
 }
 
-func TestStatusProber_Success(t *testing.T) {
+func fuzzScenarioStatusProber_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/status" {
 			http.NotFound(w, r)
@@ -40,7 +40,7 @@ func TestStatusProber_Success(t *testing.T) {
 	}
 }
 
-func TestStatusProber_NetworkFailure(t *testing.T) {
+func fuzzScenarioStatusProber_NetworkFailure(t *testing.T) {
 	p := &StatusProber{Timeout: 100 * time.Millisecond}
 	_, _, _, _, ok := p.Probe(rendezvous.Entry{Address: "127.0.0.1:1"}) // port 1 not listening
 	if ok {
@@ -48,7 +48,7 @@ func TestStatusProber_NetworkFailure(t *testing.T) {
 	}
 }
 
-func TestStatusProber_BadJSON(t *testing.T) {
+func fuzzScenarioStatusProber_BadJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("{not json"))
 	}))
@@ -60,7 +60,7 @@ func TestStatusProber_BadJSON(t *testing.T) {
 	}
 }
 
-func TestStatusProberSendsHubTokenBearer(t *testing.T) {
+func fuzzScenarioStatusProberSendsHubTokenBearer(t *testing.T) {
 	gotAuth := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth <- r.Header.Get("Authorization")
@@ -83,7 +83,7 @@ func TestStatusProberSendsHubTokenBearer(t *testing.T) {
 	}
 }
 
-func TestStatusProber_NonOKStatus(t *testing.T) {
+func fuzzScenarioStatusProber_NonOKStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Valid JSON body so ok=false can only come from the status guard,
 		// not a JSON-decode failure (which TestStatusProber_BadJSON covers).
@@ -104,7 +104,7 @@ func TestStatusProber_NonOKStatus(t *testing.T) {
 	}
 }
 
-func TestStatusProber_DecodesPendingAsk(t *testing.T) {
+func fuzzScenarioStatusProber_DecodesPendingAsk(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"session_id": "01A", "state": "awaiting", "pending_ask": true})
 	}))
@@ -117,7 +117,7 @@ func TestStatusProber_DecodesPendingAsk(t *testing.T) {
 	}
 }
 
-func TestStatusProber_DecodesPendingEscalation(t *testing.T) {
+func fuzzScenarioStatusProber_DecodesPendingEscalation(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"session_id": "01A", "state": "active", "pending_escalation": true})
 	}))
@@ -130,7 +130,7 @@ func TestStatusProber_DecodesPendingEscalation(t *testing.T) {
 	}
 }
 
-func TestStatusProber_AbsentPendingAskDecodesFalse(t *testing.T) {
+func fuzzScenarioStatusProber_AbsentPendingAskDecodesFalse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"session_id": "01A", "state": "active"})
 	}))

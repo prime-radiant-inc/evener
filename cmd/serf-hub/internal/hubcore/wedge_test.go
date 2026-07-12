@@ -9,7 +9,7 @@ import (
 	"primeradiant.com/serf/agent/schema"
 )
 
-func TestStallThresholdIsThreeMinutes(t *testing.T) {
+func fuzzScenarioStallThresholdIsThreeMinutes(t *testing.T) {
 	if StallThreshold != 3*time.Minute {
 		t.Fatalf("StallThreshold = %v, want 3m", StallThreshold)
 	}
@@ -34,7 +34,7 @@ func writeWedgeEntry(t *testing.T, sessionID, tailJSON string) PastEntry {
 	return PastEntry{ID: sessionID, Meta: schema.SessionMeta{ID: sessionID}, StateDir: stateDir}
 }
 
-func TestWedgedStatusFlipsOnFailedAPICallTail(t *testing.T) {
+func fuzzScenarioWedgedStatusFlipsOnFailedAPICallTail(t *testing.T) {
 	// Port of TestSanitizeStaleProcessingStatusFlipsFailedAPICallToError
 	// (app_rpc_test.go): a tail api_call with a non-empty Error means the
 	// session is wedged (kata r6y9).
@@ -45,7 +45,7 @@ func TestWedgedStatusFlipsOnFailedAPICallTail(t *testing.T) {
 	}
 }
 
-func TestWedgedStatusLeavesCompletedAssistantTailAlone(t *testing.T) {
+func fuzzScenarioWedgedStatusLeavesCompletedAssistantTailAlone(t *testing.T) {
 	// Port of TestSanitizeStaleProcessingStatusLeavesCompletedAssistantTailAlone:
 	// mid-flight processing (a completed assistant turn as the tail) must not
 	// be reported as wedged.
@@ -56,7 +56,7 @@ func TestWedgedStatusLeavesCompletedAssistantTailAlone(t *testing.T) {
 	}
 }
 
-func TestWedgedStatusLeavesUserInputTailAlone(t *testing.T) {
+func fuzzScenarioWedgedStatusLeavesUserInputTailAlone(t *testing.T) {
 	// Port of TestSanitizeStaleProcessingStatusLeavesUserInputTailAlone: a
 	// bare USER_INPUT tail with no api_call yet could mean the agent is
 	// genuinely preparing its first LLM call — conservatively not wedged.
@@ -67,7 +67,7 @@ func TestWedgedStatusLeavesUserInputTailAlone(t *testing.T) {
 	}
 }
 
-func TestWedgedStatusLeavesSuccessfulAPICallTailAlone(t *testing.T) {
+func fuzzScenarioWedgedStatusLeavesSuccessfulAPICallTailAlone(t *testing.T) {
 	// An api_call tail with no Error means the daemon may legitimately still
 	// be mid-round.
 	entry := writeWedgeEntry(t, "01OKCALL00000000000001", `{"kind":"api_call","seq":2}`)
@@ -76,14 +76,14 @@ func TestWedgedStatusLeavesSuccessfulAPICallTailAlone(t *testing.T) {
 	}
 }
 
-func TestWedgedStatusMissingTranscriptIsNotWedged(t *testing.T) {
+func fuzzScenarioWedgedStatusMissingTranscriptIsNotWedged(t *testing.T) {
 	entry := PastEntry{ID: "01MISSING", Meta: schema.SessionMeta{ID: "01MISSING"}, StateDir: t.TempDir()}
 	if WedgedStatus(entry) {
 		t.Fatal("missing transcript must not be reported as wedged")
 	}
 }
 
-func TestStaleActivesNewlyWorkingIsNotStale(t *testing.T) {
+func fuzzScenarioStaleActivesNewlyWorkingIsNotStale(t *testing.T) {
 	seen := map[string]time.Time{}
 	cur := map[string]AttentionEntry{"01A": {ID: "01A", Level: "working"}}
 	now := time.Now()
@@ -96,7 +96,7 @@ func TestStaleActivesNewlyWorkingIsNotStale(t *testing.T) {
 	}
 }
 
-func TestStaleActivesContinuousPastThresholdIsStale(t *testing.T) {
+func fuzzScenarioStaleActivesContinuousPastThresholdIsStale(t *testing.T) {
 	seen := map[string]time.Time{}
 	cur := map[string]AttentionEntry{"01A": {ID: "01A", Level: "working"}}
 	t0 := time.Now()
@@ -107,7 +107,7 @@ func TestStaleActivesContinuousPastThresholdIsStale(t *testing.T) {
 	}
 }
 
-func TestStaleActivesBelowThresholdIsNotYetStale(t *testing.T) {
+func fuzzScenarioStaleActivesBelowThresholdIsNotYetStale(t *testing.T) {
 	seen := map[string]time.Time{}
 	cur := map[string]AttentionEntry{"01A": {ID: "01A", Level: "working"}}
 	t0 := time.Now()
@@ -118,7 +118,7 @@ func TestStaleActivesBelowThresholdIsNotYetStale(t *testing.T) {
 	}
 }
 
-func TestStaleActivesFlippedToNonWorkingDropsTracking(t *testing.T) {
+func fuzzScenarioStaleActivesFlippedToNonWorkingDropsTracking(t *testing.T) {
 	seen := map[string]time.Time{}
 	t0 := time.Now()
 	StaleActives(seen, map[string]AttentionEntry{"01A": {ID: "01A", Level: "working"}}, t0)
@@ -140,7 +140,7 @@ func TestStaleActivesFlippedToNonWorkingDropsTracking(t *testing.T) {
 	}
 }
 
-func TestStaleActivesDisappearedDropsTracking(t *testing.T) {
+func fuzzScenarioStaleActivesDisappearedDropsTracking(t *testing.T) {
 	seen := map[string]time.Time{}
 	t0 := time.Now()
 	StaleActives(seen, map[string]AttentionEntry{"01A": {ID: "01A", Level: "working"}}, t0)
@@ -150,7 +150,7 @@ func TestStaleActivesDisappearedDropsTracking(t *testing.T) {
 	}
 }
 
-func TestApplyWedgeOverrideMovesWorkingToErrorConsistently(t *testing.T) {
+func fuzzScenarioApplyWedgeOverrideMovesWorkingToErrorConsistently(t *testing.T) {
 	m := map[string]AttentionEntry{"01A": {ID: "01A", Level: "working"}}
 	sum := AttentionSummary{Working: 1}
 	ApplyWedgeOverride(m, &sum, "01A")
@@ -162,7 +162,7 @@ func TestApplyWedgeOverrideMovesWorkingToErrorConsistently(t *testing.T) {
 	}
 }
 
-func TestApplyWedgeOverrideNoopIfNotWorking(t *testing.T) {
+func fuzzScenarioApplyWedgeOverrideNoopIfNotWorking(t *testing.T) {
 	m := map[string]AttentionEntry{"01A": {ID: "01A", Level: "needs_you"}}
 	sum := AttentionSummary{NeedsYou: 1}
 	ApplyWedgeOverride(m, &sum, "01A")
@@ -171,7 +171,7 @@ func TestApplyWedgeOverrideNoopIfNotWorking(t *testing.T) {
 	}
 }
 
-func TestApplyWedgeOverrideNoopIfIDMissing(t *testing.T) {
+func fuzzScenarioApplyWedgeOverrideNoopIfIDMissing(t *testing.T) {
 	m := map[string]AttentionEntry{}
 	sum := AttentionSummary{}
 	ApplyWedgeOverride(m, &sum, "nope")

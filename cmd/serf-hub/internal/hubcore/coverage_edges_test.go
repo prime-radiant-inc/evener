@@ -32,7 +32,7 @@ func (f failingFs) Stat(string) (os.FileInfo, error) {
 }
 func (f failingFs) Chmod(string, os.FileMode) error { return f.chmodErr }
 
-func TestCoveragePersistenceEdges(t *testing.T) {
+func fuzzScenarioCoveragePersistenceEdges(t *testing.T) {
 	t.Run("setters callbacks and empty paths", func(t *testing.T) {
 		calls := 0
 		a := NewArchiveStore("").SetFs(afero.NewMemMapFs())
@@ -190,7 +190,7 @@ func TestCoveragePersistenceEdges(t *testing.T) {
 	})
 }
 
-func TestCoveragePureEdges(t *testing.T) {
+func fuzzScenarioCoveragePureEdges(t *testing.T) {
 	if attentionLevel("unknown") != "idle" {
 		t.Fatal("attention fallback")
 	}
@@ -231,7 +231,7 @@ func TestCoveragePureEdges(t *testing.T) {
 	BuildTreeAt([]schema.SessionMeta{{ID: "sub", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/p"}}}, []LiveEntry{{SessionID: ""}, {SessionID: "missing-session-id", Status: "awaiting"}, {SessionID: "sub", Status: "awaiting"}}, nil, time.Now())
 }
 
-func TestCoverageTranscriptEdges(t *testing.T) {
+func fuzzScenarioCoverageTranscriptEdges(t *testing.T) {
 	dir := t.TempDir()
 	cases := []struct{ name, body string }{
 		{"empty", "\n\n"},
@@ -253,7 +253,7 @@ func TestCoverageTranscriptEdges(t *testing.T) {
 	}
 }
 
-func TestCoverageHTTPFailures(t *testing.T) {
+func fuzzScenarioCoverageHTTPFailures(t *testing.T) {
 	for _, h := range []http.Handler{
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) }),
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("{")) }),

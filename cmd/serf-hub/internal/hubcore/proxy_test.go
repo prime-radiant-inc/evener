@@ -27,7 +27,7 @@ func (f fakeRoster) Find(sessionID string) (LiveEntry, bool) {
 	}, true
 }
 
-func TestRESTProxy_RoutesByPath(t *testing.T) {
+func fuzzScenarioRESTProxy_RoutesByPath(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Upstream-Path", r.URL.Path)
 		w.WriteHeader(http.StatusOK)
@@ -53,7 +53,7 @@ func TestRESTProxy_RoutesByPath(t *testing.T) {
 	}
 }
 
-func TestRESTProxyStampsHubTokenBearer(t *testing.T) {
+func fuzzScenarioRESTProxyStampsHubTokenBearer(t *testing.T) {
 	gotAuth := make(chan string, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth <- r.Header.Get("Authorization")
@@ -82,7 +82,7 @@ func TestRESTProxyStampsHubTokenBearer(t *testing.T) {
 	}
 }
 
-func TestRESTProxyStripsBrowserOrigin(t *testing.T) {
+func fuzzScenarioRESTProxyStripsBrowserOrigin(t *testing.T) {
 	gotOrigin := make(chan string, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotOrigin <- r.Header.Get("Origin")
@@ -111,7 +111,7 @@ func TestRESTProxyStripsBrowserOrigin(t *testing.T) {
 	}
 }
 
-func TestRESTProxy_404UnknownSession(t *testing.T) {
+func fuzzScenarioRESTProxy_404UnknownSession(t *testing.T) {
 	resolver := fakeRoster{}
 	proxy := NewRESTProxy(resolver)
 
@@ -124,7 +124,7 @@ func TestRESTProxy_404UnknownSession(t *testing.T) {
 	}
 }
 
-func TestSplitLivePath(t *testing.T) {
+func fuzzScenarioSplitLivePath(t *testing.T) {
 	cases := []struct {
 		name        string
 		path        string

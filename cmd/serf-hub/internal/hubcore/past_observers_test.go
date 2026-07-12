@@ -36,7 +36,7 @@ func writeGrantLog(t *testing.T, project, sessID, watchedJobID, workerRef, obser
 // A watch-read-grant on disk maps the watched job's worker session to its
 // observer session id, even though neither worker nor observer carries the
 // forward ObservedBy stamp (the existing-data case: 0/2211 stamped).
-func TestPastIndex_ObserversOf_FromGrantLog(t *testing.T) {
+func fuzzScenarioPastIndex_ObserversOf_FromGrantLog(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "p")
 	writeMeta(t, proj, schema.SessionMeta{ID: "PARENT", UpdatedAt: time.Now()})
@@ -56,7 +56,7 @@ func TestPastIndex_ObserversOf_FromGrantLog(t *testing.T) {
 }
 
 // A worker with no grants anywhere on disk has no observers.
-func TestPastIndex_ObserversOf_NoneWhenUngranted(t *testing.T) {
+func fuzzScenarioPastIndex_ObserversOf_NoneWhenUngranted(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "p")
 	writeMeta(t, proj, schema.SessionMeta{ID: "WORKER", UpdatedAt: time.Now()})
@@ -73,7 +73,7 @@ func TestPastIndex_ObserversOf_NoneWhenUngranted(t *testing.T) {
 // A grant whose watched job resolves to a worker via a proj: (cross-project)
 // transcript ref is skipped — the hub can only auto-open same-bucket local
 // sessions, mirroring the stamp's ok=false handling.
-func TestPastIndex_ObserversOf_SkipsCrossProjectRef(t *testing.T) {
+func fuzzScenarioPastIndex_ObserversOf_SkipsCrossProjectRef(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "p")
 	writeMeta(t, proj, schema.SessionMeta{ID: "PARENT", UpdatedAt: time.Now()})
@@ -90,7 +90,7 @@ func TestPastIndex_ObserversOf_SkipsCrossProjectRef(t *testing.T) {
 
 // Two observers watching the same worker (grants in distinct watching sessions)
 // both surface, deduped.
-func TestPastIndex_ObserversOf_MultipleObservers(t *testing.T) {
+func fuzzScenarioPastIndex_ObserversOf_MultipleObservers(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "p")
 	writeMeta(t, proj, schema.SessionMeta{ID: "P1", UpdatedAt: time.Now()})
@@ -111,7 +111,7 @@ func TestPastIndex_ObserversOf_MultipleObservers(t *testing.T) {
 
 // Rebuild does not create a jobs.jsonl in session dirs that lack one (read-only
 // over existing data) — opening a jobstore with O_CREATE would litter empty logs.
-func TestPastIndex_ObserversOf_DoesNotCreateJobsLog(t *testing.T) {
+func fuzzScenarioPastIndex_ObserversOf_DoesNotCreateJobsLog(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "p")
 	writeMeta(t, proj, schema.SessionMeta{ID: "WORKER", UpdatedAt: time.Now()})

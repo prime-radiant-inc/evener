@@ -6,7 +6,7 @@ import (
 	"primeradiant.com/serf/appwire"
 )
 
-func TestRemoteThreadCacheReadReturnsLastStored(t *testing.T) {
+func fuzzScenarioRemoteThreadCacheReadReturnsLastStored(t *testing.T) {
 	c := &RemoteThreadCache{}
 	if got := c.Get(); got != nil {
 		t.Fatalf("empty cache should return nil, got %v", got)

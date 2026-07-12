@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-func TestTreeCacheMemoizesByVersionAndBucket(t *testing.T) {
+func fuzzScenarioTreeCacheMemoizesByVersionAndBucket(t *testing.T) {
 	cache := &TreeCache{}
 	now := time.Unix(1_700_000_000, 0)
 	calls := 0
@@ -26,7 +26,7 @@ func TestTreeCacheMemoizesByVersionAndBucket(t *testing.T) {
 	}
 }
 
-func TestInputsVersionBump(t *testing.T) {
+func fuzzScenarioInputsVersionBump(t *testing.T) {
 	iv := &InputsVersion{}
 	if iv.Load() != 0 {
 		t.Fatal("fresh version should be 0")

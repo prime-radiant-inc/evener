@@ -12,7 +12,7 @@ import (
 	"primeradiant.com/serf/rendezvous"
 )
 
-func TestBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
+func fuzzScenarioBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{
 		// Active branch — newer, holds the original session's name. Top-level.
@@ -93,7 +93,7 @@ func TestBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 	}
 }
 
-func TestBuildTree_UsesGeneratedNameForSessionTitle(t *testing.T) {
+func fuzzScenarioBuildTree_UsesGeneratedNameForSessionTitle(t *testing.T) {
 	tree := buildTree([]schema.SessionMeta{{
 		ID:             "01NAMED",
 		Name:           "Launch Config Cheap Model",
@@ -108,7 +108,7 @@ func TestBuildTree_UsesGeneratedNameForSessionTitle(t *testing.T) {
 	}
 }
 
-func TestBuildTree_TruncatesLongOriginalPromptTitles(t *testing.T) {
+func fuzzScenarioBuildTree_TruncatesLongOriginalPromptTitles(t *testing.T) {
 	long := strings.Repeat("é", 5000) // multi-byte runes: truncation must be rune-safe
 	tree := buildTree([]schema.SessionMeta{{
 		ID:             "01LONG",
@@ -124,7 +124,7 @@ func TestBuildTree_TruncatesLongOriginalPromptTitles(t *testing.T) {
 	}
 }
 
-func TestBuildTree_TruncatesLongForkBaseTitleKeepingLabel(t *testing.T) {
+func fuzzScenarioBuildTree_TruncatesLongForkBaseTitleKeepingLabel(t *testing.T) {
 	long := strings.Repeat("x", 300)
 	tree := buildTree([]schema.SessionMeta{{
 		ID:             "01LONGFORK",
@@ -138,7 +138,7 @@ func TestBuildTree_TruncatesLongForkBaseTitleKeepingLabel(t *testing.T) {
 	}
 }
 
-func TestBuildTree_ShortTitleNotTruncated(t *testing.T) {
+func fuzzScenarioBuildTree_ShortTitleNotTruncated(t *testing.T) {
 	tree := buildTree([]schema.SessionMeta{{
 		ID:             "01SHORT",
 		OriginalPrompt: strings.Repeat("a", 200),
@@ -149,7 +149,7 @@ func TestBuildTree_ShortTitleNotTruncated(t *testing.T) {
 	}
 }
 
-func TestBuildTree_UsesGeneratedNameForForkBaseTitle(t *testing.T) {
+func fuzzScenarioBuildTree_UsesGeneratedNameForForkBaseTitle(t *testing.T) {
 	tree := buildTree([]schema.SessionMeta{{
 		ID:             "01FORK",
 		Name:           "Generated Base",
@@ -165,7 +165,7 @@ func TestBuildTree_UsesGeneratedNameForForkBaseTitle(t *testing.T) {
 	}
 }
 
-func TestBuildTree_AttentionSortsLive(t *testing.T) {
+func fuzzScenarioBuildTree_AttentionSortsLive(t *testing.T) {
 	// Three live sessions: idle, awaiting, processing.
 	// Live should sort: awaiting, processing, idle.
 	now := time.Now()
@@ -206,7 +206,7 @@ func TestBuildTree_AttentionSortsLive(t *testing.T) {
 	}
 }
 
-func TestBuildTree_OrdersProjectSessionsByUpdatedCreatedTitleAndID(t *testing.T) {
+func fuzzScenarioBuildTree_OrdersProjectSessionsByUpdatedCreatedTitleAndID(t *testing.T) {
 	updated := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{
 		{ID: "02OLD", CreatedAt: updated.Add(-2 * time.Hour), UpdatedAt: updated, OriginalPrompt: "beta task",
@@ -236,7 +236,7 @@ func TestBuildTree_OrdersProjectSessionsByUpdatedCreatedTitleAndID(t *testing.T)
 	}
 }
 
-func TestBuildTree_OrdersLiveRowsWithoutMetasByStartedAtAndID(t *testing.T) {
+func fuzzScenarioBuildTree_OrdersLiveRowsWithoutMetasByStartedAtAndID(t *testing.T) {
 	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	live := []LiveEntry{
 		{Entry: rendezvous.Entry{PID: 1, StartedAt: base.Add(-time.Hour)}, SessionID: "02OLD", Status: appwire.ThreadStatusIdle},
@@ -256,7 +256,7 @@ func TestBuildTree_OrdersLiveRowsWithoutMetasByStartedAtAndID(t *testing.T) {
 	}
 }
 
-func TestBuildTree_OrdersMixedLiveRowsByMergedMetadata(t *testing.T) {
+func fuzzScenarioBuildTree_OrdersMixedLiveRowsByMergedMetadata(t *testing.T) {
 	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{{
 		ID:             "01META",
@@ -280,7 +280,7 @@ func TestBuildTree_OrdersMixedLiveRowsByMergedMetadata(t *testing.T) {
 	}
 }
 
-func TestBuildTree_NoProjectFallback(t *testing.T) {
+func fuzzScenarioBuildTree_NoProjectFallback(t *testing.T) {
 	// A meta with empty WorkingDir — project name "(no project)".
 	now := time.Now()
 	metas := []schema.SessionMeta{
@@ -324,7 +324,7 @@ func TestBuildTree_NoProjectFallback(t *testing.T) {
 // TreeProject.WorkingDir) under its restore root, not the worktree path —
 // else it lands under a phantom project named after the worktree leaf
 // (e.g. "dlg_01H...").
-func TestBuildTree_GroupsByRestoreRootWhenWorktreeActive(t *testing.T) {
+func fuzzScenarioBuildTree_GroupsByRestoreRootWhenWorktreeActive(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{
 		{ID: "01WT", UpdatedAt: now, OriginalPrompt: "work in lane",
@@ -351,7 +351,7 @@ func TestBuildTree_GroupsByRestoreRootWhenWorktreeActive(t *testing.T) {
 // TestBuildTree_PathEnteredNonManagedWorktreeAlsoGroupsByRestoreRoot proves
 // the non-managed by-path case migrates too — spec §7 is explicit that both
 // switch modes swap the env and so must both use the restore root.
-func TestBuildTree_PathEnteredNonManagedWorktreeAlsoGroupsByRestoreRoot(t *testing.T) {
+func fuzzScenarioBuildTree_PathEnteredNonManagedWorktreeAlsoGroupsByRestoreRoot(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{
 		{ID: "01PATHWT", UpdatedAt: now, OriginalPrompt: "poke around a sibling checkout",
@@ -409,7 +409,7 @@ func projectNames(ps []TreeProject) []string {
 	return names
 }
 
-func TestBuildTreeSessionTiersAndProjectOrder(t *testing.T) {
+func fuzzScenarioBuildTreeSessionTiersAndProjectOrder(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	mk := func(id, proj string, createdAgo, updatedAgo time.Duration) schema.SessionMeta {
 		return schema.SessionMeta{ID: id, CreatedAt: now.Add(-createdAgo), UpdatedAt: now.Add(-updatedAgo),
@@ -443,7 +443,7 @@ func TestBuildTreeSessionTiersAndProjectOrder(t *testing.T) {
 	}
 }
 
-func TestBuildTreeArchivedProjectPlacement(t *testing.T) {
+func fuzzScenarioBuildTreeArchivedProjectPlacement(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	mk := func(id, proj string, updatedAgo time.Duration) schema.SessionMeta {
 		return schema.SessionMeta{ID: id, CreatedAt: now.Add(-updatedAgo), UpdatedAt: now.Add(-updatedAgo),
@@ -470,7 +470,7 @@ func TestBuildTreeArchivedProjectPlacement(t *testing.T) {
 	}
 }
 
-func TestBuildTreeManualSessionArchiveAndUnarchive(t *testing.T) {
+func fuzzScenarioBuildTreeManualSessionArchiveAndUnarchive(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	mk := func(id string, updatedAgo time.Duration) schema.SessionMeta {
 		return schema.SessionMeta{ID: id, CreatedAt: now.Add(-updatedAgo), UpdatedAt: now.Add(-updatedAgo),
@@ -495,7 +495,7 @@ func TestBuildTreeManualSessionArchiveAndUnarchive(t *testing.T) {
 	}
 }
 
-func TestBuildTreeE2eProjectsClassifyByRecency(t *testing.T) {
+func fuzzScenarioBuildTreeE2eProjectsClassifyByRecency(t *testing.T) {
 	// The serf-e2e-* prefix bucket is gone: a fresh e2e project flows through the
 	// normal model (active, ordered by recency), and a stale one auto-archives.
 	now := time.Unix(1_700_000_000, 0)
@@ -516,7 +516,7 @@ func TestBuildTreeE2eProjectsClassifyByRecency(t *testing.T) {
 	}
 }
 
-func TestBuildTree_RollupMagnitudeCountsLiveAndAttention(t *testing.T) {
+func fuzzScenarioBuildTree_RollupMagnitudeCountsLiveAndAttention(t *testing.T) {
 	// mockup #10 spine: a project header carries a *magnitude* rollup
 	// (how many are live vs. how many need you), not a single ambiguous dot.
 	now := time.Now()
@@ -551,7 +551,7 @@ func TestBuildTree_RollupMagnitudeCountsLiveAndAttention(t *testing.T) {
 	}
 }
 
-func TestBuildTree_NeedsYouAggregatesAwaitingAcrossProjects(t *testing.T) {
+func fuzzScenarioBuildTree_NeedsYouAggregatesAwaitingAcrossProjects(t *testing.T) {
 	// mockup #11 rec: a single "Needs you" tier that aggregates every awaiting
 	// session across all projects, oldest-first, hidden when nothing awaits.
 	now := time.Now()
@@ -588,7 +588,7 @@ func TestBuildTree_NeedsYouAggregatesAwaitingAcrossProjects(t *testing.T) {
 	}
 }
 
-func TestBuildTree_NeedsYouEmptyWhenNothingAwaits(t *testing.T) {
+func fuzzScenarioBuildTree_NeedsYouEmptyWhenNothingAwaits(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{
 		{ID: "01LIVE", UpdatedAt: now, OriginalPrompt: "working",
@@ -602,7 +602,7 @@ func TestBuildTree_NeedsYouEmptyWhenNothingAwaits(t *testing.T) {
 	}
 }
 
-func TestBuildTree_ClustersRepeatedIdleTitles(t *testing.T) {
+func fuzzScenarioBuildTree_ClustersRepeatedIdleTitles(t *testing.T) {
 	// mockup #10/#C rec: a run of same-titled idle sessions collapses to one
 	// cluster row; live/needs-you sessions stay un-clustered so signal isn't
 	// hidden behind a fold.
@@ -647,7 +647,7 @@ func TestBuildTree_ClustersRepeatedIdleTitles(t *testing.T) {
 	}
 }
 
-func TestBuildTree_DoesNotClusterLiveRepeatedTitles(t *testing.T) {
+func fuzzScenarioBuildTree_DoesNotClusterLiveRepeatedTitles(t *testing.T) {
 	// A live/needs-you member must keep all repeated-title sessions un-clustered
 	// so live signal is never hidden behind a fold.
 	now := time.Now()
@@ -675,7 +675,7 @@ func TestBuildTree_DoesNotClusterLiveRepeatedTitles(t *testing.T) {
 	}
 }
 
-func TestBuildTree_ClampsSubagentsOfDeadParent(t *testing.T) {
+func fuzzScenarioBuildTree_ClampsSubagentsOfDeadParent(t *testing.T) {
 	// A subagent that still reports "active" in the live map but whose parent
 	// session has ended must not keep spinning ⟳ forever — its state is clamped
 	// to "ended" so the dead session's children read as terminal.
@@ -701,7 +701,7 @@ func TestBuildTree_ClampsSubagentsOfDeadParent(t *testing.T) {
 	}
 }
 
-func TestBuildTree_KeepsSubagentStateWhenParentLive(t *testing.T) {
+func fuzzScenarioBuildTree_KeepsSubagentStateWhenParentLive(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{
 		{ID: "01LIVEP", UpdatedAt: now, OriginalPrompt: "parent",
@@ -720,7 +720,7 @@ func TestBuildTree_KeepsSubagentStateWhenParentLive(t *testing.T) {
 	}
 }
 
-func TestBuildTree_OrdersProjectsByLastActivity(t *testing.T) {
+func fuzzScenarioBuildTree_OrdersProjectsByLastActivity(t *testing.T) {
 	// Active projects are emitted newest-first by their most recent
 	// last-activity (max last-activity across the project's sessions), not by
 	// when a session merely started.
@@ -746,7 +746,7 @@ func TestBuildTree_OrdersProjectsByLastActivity(t *testing.T) {
 	}
 }
 
-func TestBuildTree_OrdersProjectsByLastActivityNotCreatedAt(t *testing.T) {
+func fuzzScenarioBuildTree_OrdersProjectsByLastActivityNotCreatedAt(t *testing.T) {
 	// A project's ordering key is last ACTIVITY, not session start: a project
 	// whose only session was created long ago but touched moments ago must
 	// outrank a project whose only session was created recently but has sat
@@ -772,7 +772,7 @@ func TestBuildTree_OrdersProjectsByLastActivityNotCreatedAt(t *testing.T) {
 	}
 }
 
-func TestBuildTree_ExpandedOnlyForLiveProjects(t *testing.T) {
+func fuzzScenarioBuildTree_ExpandedOnlyForLiveProjects(t *testing.T) {
 	// A project auto-expands only when it has a live (working) or awaiting
 	// (needs-you) session — RollupLive > 0 || RollupAttn > 0. Idle-only and
 	// archived projects stay collapsed.
@@ -813,7 +813,7 @@ func TestBuildTree_ExpandedOnlyForLiveProjects(t *testing.T) {
 	}
 }
 
-func TestBuildTree_ExpandedForAwaitingProject(t *testing.T) {
+func fuzzScenarioBuildTree_ExpandedForAwaitingProject(t *testing.T) {
 	// An awaiting (needs-you) session counts toward RollupAttn, which auto-expands.
 	now := time.Now()
 	metas := []schema.SessionMeta{
@@ -829,7 +829,7 @@ func TestBuildTree_ExpandedForAwaitingProject(t *testing.T) {
 	}
 }
 
-func TestBuildTree_CapsSessionsPerTierWithOverflowCounts(t *testing.T) {
+func fuzzScenarioBuildTree_CapsSessionsPerTierWithOverflowCounts(t *testing.T) {
 	// Each tier is capped at maxSidebarSessionsPerTier; the overflow count is
 	// recorded so the sidebar can show a "+N older" note instead of every row.
 	now := time.Unix(1_700_000_000, 0)
@@ -858,7 +858,7 @@ func TestBuildTree_CapsSessionsPerTierWithOverflowCounts(t *testing.T) {
 	}
 }
 
-func TestBuildTree_NoOverflowWhenUnderCap(t *testing.T) {
+func fuzzScenarioBuildTree_NoOverflowWhenUnderCap(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	metas := []schema.SessionMeta{
 		{ID: "01A", OriginalPrompt: "a", CreatedAt: now, UpdatedAt: now,
@@ -871,7 +871,7 @@ func TestBuildTree_NoOverflowWhenUnderCap(t *testing.T) {
 	}
 }
 
-func TestBuildProjectTree_ReturnsSingleProjectTiers(t *testing.T) {
+func fuzzScenarioBuildProjectTree_ReturnsSingleProjectTiers(t *testing.T) {
 	// The lazy-load helper rebuilds one named project's tiers from the full meta
 	// set, ignoring sessions from other projects.
 	now := time.Unix(1_700_000_000, 0)
@@ -906,7 +906,7 @@ func TestBuildProjectTree_ReturnsSingleProjectTiers(t *testing.T) {
 	}
 }
 
-func TestBuildProjectTree_FindsArchivedProject(t *testing.T) {
+func fuzzScenarioBuildProjectTree_FindsArchivedProject(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	metas := []schema.SessionMeta{
 		{ID: "g1", OriginalPrompt: "g1", CreatedAt: now.Add(-30 * 24 * time.Hour),
@@ -922,7 +922,7 @@ func TestBuildProjectTree_FindsArchivedProject(t *testing.T) {
 	}
 }
 
-func TestBuildProjectTree_PrefersFirstActiveSameNameProject(t *testing.T) {
+func fuzzScenarioBuildProjectTree_PrefersFirstActiveSameNameProject(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	metas := []schema.SessionMeta{
 		{ID: "active-older", OriginalPrompt: "active older", CreatedAt: now.Add(-2 * time.Hour),
@@ -945,7 +945,7 @@ func TestBuildProjectTree_PrefersFirstActiveSameNameProject(t *testing.T) {
 	}
 }
 
-func TestBuildProjectTree_UnknownProjectReturnsFalse(t *testing.T) {
+func fuzzScenarioBuildProjectTree_UnknownProjectReturnsFalse(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	metas := []schema.SessionMeta{
 		{ID: "a", OriginalPrompt: "a", CreatedAt: now, UpdatedAt: now,
@@ -956,7 +956,7 @@ func TestBuildProjectTree_UnknownProjectReturnsFalse(t *testing.T) {
 	}
 }
 
-func TestClassifySession(t *testing.T) {
+func fuzzScenarioClassifySession(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	yes, no := true, false
 	cases := []struct {
@@ -983,7 +983,7 @@ func TestClassifySession(t *testing.T) {
 	}
 }
 
-func TestNormalizeState(t *testing.T) {
+func fuzzScenarioNormalizeState(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"", "idle"},
 		{"awaiting", "awaiting"},
@@ -1003,7 +1003,7 @@ func TestNormalizeState(t *testing.T) {
 	}
 }
 
-func TestAttentionRank(t *testing.T) {
+func fuzzScenarioAttentionRank(t *testing.T) {
 	cases := []struct {
 		in   string
 		want int
@@ -1017,7 +1017,7 @@ func TestAttentionRank(t *testing.T) {
 	}
 }
 
-func TestRollupRank(t *testing.T) {
+func fuzzScenarioRollupRank(t *testing.T) {
 	cases := []struct {
 		in   string
 		want int
@@ -1031,7 +1031,7 @@ func TestRollupRank(t *testing.T) {
 	}
 }
 
-func TestAgeString(t *testing.T) {
+func fuzzScenarioAgeString(t *testing.T) {
 	// AgeString calls time.Since internally so we keep inputs well within each
 	// bucket (≥10s of margin). The 59s boundary cannot be reliably tested
 	// without clock injection — use 45s (15s margin) to stay in "now".
@@ -1059,7 +1059,7 @@ func TestAgeString(t *testing.T) {
 	}
 }
 
-func TestShortID(t *testing.T) {
+func fuzzScenarioShortID(t *testing.T) {
 	if got := ShortID("01A"); got != "01A" {
 		t.Errorf("ShortID(01A) = %q, want 01A", got)
 	}
@@ -1076,7 +1076,7 @@ func TestShortID(t *testing.T) {
 	}
 }
 
-func TestNodeTitle_EmptyBaseWithForkLabel(t *testing.T) {
+func fuzzScenarioNodeTitle_EmptyBaseWithForkLabel(t *testing.T) {
 	m := schema.SessionMeta{ID: "", Name: "", OriginalPrompt: ""}
 	got := nodeTitle(m, "fork")
 	if got != "" {
@@ -1099,7 +1099,7 @@ func TestNodeTitle_EmptyBaseWithForkLabel(t *testing.T) {
 	}
 }
 
-func TestCompareOrderText(t *testing.T) {
+func fuzzScenarioCompareOrderText(t *testing.T) {
 	if got := compareOrderText("alpha", "beta"); got != -1 {
 		t.Errorf("compareOrderText(alpha, beta) = %d, want -1", got)
 	}
@@ -1114,7 +1114,7 @@ func TestCompareOrderText(t *testing.T) {
 	}
 }
 
-func TestOrderUpdatedAt(t *testing.T) {
+func fuzzScenarioOrderUpdatedAt(t *testing.T) {
 	now := time.Now()
 	if got := OrderUpdatedAt(now.Add(time.Hour), now); got != now.Add(time.Hour) {
 		t.Errorf("OrderUpdatedAt(updated, created) = %v, want updated", got)
@@ -1124,7 +1124,7 @@ func TestOrderUpdatedAt(t *testing.T) {
 	}
 }
 
-func TestOrderCreatedAt(t *testing.T) {
+func fuzzScenarioOrderCreatedAt(t *testing.T) {
 	now := time.Now()
 	if got := OrderCreatedAt(now.Add(time.Hour), now); got != now.Add(time.Hour) {
 		t.Errorf("OrderCreatedAt(created, updated) = %v, want created", got)
@@ -1134,7 +1134,7 @@ func TestOrderCreatedAt(t *testing.T) {
 	}
 }
 
-func TestAttentionRanks_Errored(t *testing.T) {
+func fuzzScenarioAttentionRanks_Errored(t *testing.T) {
 	if hubapi.AttentionRank("errored") <= hubapi.AttentionRank("awaiting") {
 		t.Fatal("errored must outrank awaiting")
 	}
@@ -1143,7 +1143,7 @@ func TestAttentionRanks_Errored(t *testing.T) {
 	}
 }
 
-func TestNeedsYou_AdmitsErroredAndWarning_RanksErroredFirst(t *testing.T) {
+func fuzzScenarioNeedsYou_AdmitsErroredAndWarning_RanksErroredFirst(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{
 		{ID: "01AWAIT", UpdatedAt: now.Add(-1 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
@@ -1168,7 +1168,7 @@ func TestNeedsYou_AdmitsErroredAndWarning_RanksErroredFirst(t *testing.T) {
 	}
 }
 
-func TestNeedsYou_ArchivedLiveAwaitingExcluded(t *testing.T) {
+func fuzzScenarioNeedsYou_ArchivedLiveAwaitingExcluded(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{{ID: "01ARCH", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
 	live := []LiveEntry{{Entry: rendezvous.Entry{PID: 1}, SessionID: "01ARCH", Status: appwire.ThreadStatusAwaiting}}
@@ -1178,7 +1178,7 @@ func TestNeedsYou_ArchivedLiveAwaitingExcluded(t *testing.T) {
 	}
 }
 
-func TestCoBasenameProjectsAreDistinctNodes(t *testing.T) {
+func fuzzScenarioCoBasenameProjectsAreDistinctNodes(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	metas := []schema.SessionMeta{
 		{ID: "01A", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/a/foo"}},
@@ -1203,7 +1203,7 @@ func TestCoBasenameProjectsAreDistinctNodes(t *testing.T) {
 	}
 }
 
-func TestNoProjectKeyIsStable(t *testing.T) {
+func fuzzScenarioNoProjectKeyIsStable(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	metas := []schema.SessionMeta{{ID: "01A", CreatedAt: now, UpdatedAt: now}}
 	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
@@ -1212,7 +1212,7 @@ func TestNoProjectKeyIsStable(t *testing.T) {
 	}
 }
 
-func TestProjectArchiveDecisionPathKeyedWithLegacyFallback(t *testing.T) {
+func fuzzScenarioProjectArchiveDecisionPathKeyedWithLegacyFallback(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	mk := func(id, wd string) schema.SessionMeta {
 		return schema.SessionMeta{ID: id, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: wd}}
@@ -1231,7 +1231,7 @@ func TestProjectArchiveDecisionPathKeyedWithLegacyFallback(t *testing.T) {
 	}
 }
 
-func TestTwoClustersInOneProjectGetDistinctIDs(t *testing.T) {
+func fuzzScenarioTwoClustersInOneProjectGetDistinctIDs(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	old := now.Add(-30 * 24 * time.Hour) // ended, clusterable
 	mk := func(id, title string) schema.SessionMeta {
@@ -1263,7 +1263,7 @@ func TestTwoClustersInOneProjectGetDistinctIDs(t *testing.T) {
 	}
 }
 
-func TestSubagentChildrenCappedPerTier(t *testing.T) {
+func fuzzScenarioSubagentChildrenCappedPerTier(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	parent := schema.SessionMeta{ID: "01P", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/p"}}
 	metas := []schema.SessionMeta{parent}
@@ -1287,7 +1287,7 @@ func TestSubagentChildrenCappedPerTier(t *testing.T) {
 	}
 }
 
-func TestAllTestSessionsClassifyAsTestRun(t *testing.T) {
+func fuzzScenarioAllTestSessionsClassifyAsTestRun(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	mk := func(id, origin string) schema.SessionMeta {
 		return schema.SessionMeta{ID: id, Origin: origin, CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/tp"}}
@@ -1311,7 +1311,7 @@ func TestAllTestSessionsClassifyAsTestRun(t *testing.T) {
 	}
 }
 
-func TestNeedsYou_CarriesAskPendingFromLiveEntry(t *testing.T) {
+func fuzzScenarioNeedsYou_CarriesAskPendingFromLiveEntry(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{{ID: "01A", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
 	live := []LiveEntry{{Entry: rendezvous.Entry{PID: 1}, SessionID: "01A", Status: appwire.ThreadStatusAwaiting, PendingAsk: true}}
@@ -1325,7 +1325,7 @@ func TestNeedsYou_CarriesAskPendingFromLiveEntry(t *testing.T) {
 // TreeNode builder silently dropping AskPending: a session that's ask-pending
 // in NeedsYou must show the same marker in the flat Live rail, or the sidebar
 // disagrees with itself about the same session.
-func TestLiveTier_CarriesAskPendingFromLiveEntry(t *testing.T) {
+func fuzzScenarioLiveTier_CarriesAskPendingFromLiveEntry(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{{ID: "01A", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
 	live := []LiveEntry{{Entry: rendezvous.Entry{PID: 1}, SessionID: "01A", Status: appwire.ThreadStatusAwaiting, PendingAsk: true}}
@@ -1339,7 +1339,7 @@ func TestLiveTier_CarriesAskPendingFromLiveEntry(t *testing.T) {
 // per-project TreeNode builder silently dropping AskPending: the same
 // ask-pending session rendered under its project (Current tier) must carry
 // the marker too, or the project row disagrees with its NeedsYou tile.
-func TestProjectTier_CarriesAskPendingFromLiveEntry(t *testing.T) {
+func fuzzScenarioProjectTier_CarriesAskPendingFromLiveEntry(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{{ID: "01A", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
 	live := []LiveEntry{{Entry: rendezvous.Entry{PID: 1}, SessionID: "01A", Status: appwire.ThreadStatusAwaiting, PendingAsk: true}}
@@ -1353,7 +1353,7 @@ func TestProjectTier_CarriesAskPendingFromLiveEntry(t *testing.T) {
 	}
 }
 
-func TestNeedsYou_AskPendingBandsBetweenErroredAndYourMove(t *testing.T) {
+func fuzzScenarioNeedsYou_AskPendingBandsBetweenErroredAndYourMove(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{
 		{ID: "01OLD_YOURMOVE", UpdatedAt: now.Add(-3 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},

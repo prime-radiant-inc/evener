@@ -9,7 +9,7 @@ import (
 	"primeradiant.com/serf/rendezvous"
 )
 
-func TestDeriveAttention_SummaryCountsTierEligibleOnly(t *testing.T) {
+func fuzzScenarioDeriveAttention_SummaryCountsTierEligibleOnly(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{
 		{ID: "01A", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
@@ -41,7 +41,7 @@ func TestDeriveAttention_SummaryCountsTierEligibleOnly(t *testing.T) {
 	}
 }
 
-func TestDeriveAttention_StaleUnarchivedNeverDecays(t *testing.T) {
+func fuzzScenarioDeriveAttention_StaleUnarchivedNeverDecays(t *testing.T) {
 	// A live awaiting session whose meta is older than the sidebar's 14-day
 	// age-archive window must STILL carry attention unless the user explicitly
 	// archived it: the badge summary is defined as the tier-eligible set, and
@@ -73,7 +73,7 @@ func TestDeriveAttention_StaleUnarchivedNeverDecays(t *testing.T) {
 	}
 }
 
-func TestAttentionWatcher_DiffEmitsOncePerChangeAndSeedsSilently(t *testing.T) {
+func fuzzScenarioAttentionWatcher_DiffEmitsOncePerChangeAndSeedsSilently(t *testing.T) {
 	var emitted []AttentionChangedPayload
 	w := NewAttentionWatcher(func(p AttentionChangedPayload) { emitted = append(emitted, p) })
 	first := map[string]AttentionEntry{"01A": {ID: "01A", Level: "needs_you"}}
@@ -98,7 +98,7 @@ func TestAttentionWatcher_DiffEmitsOncePerChangeAndSeedsSilently(t *testing.T) {
 	}
 }
 
-func TestDeriveAttention_CarriesAskPending(t *testing.T) {
+func fuzzScenarioDeriveAttention_CarriesAskPending(t *testing.T) {
 	metas := []schema.SessionMeta{{ID: "01A", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
 	live := []LiveEntry{{SessionID: "01A", Status: "awaiting", PendingAsk: true}}
 	entries, _ := DeriveAttention(metas, live, nil)
@@ -107,7 +107,7 @@ func TestDeriveAttention_CarriesAskPending(t *testing.T) {
 	}
 }
 
-func TestDeriveAttention_PendingEscalationPromotesToNeedsYou(t *testing.T) {
+func fuzzScenarioDeriveAttention_PendingEscalationPromotesToNeedsYou(t *testing.T) {
 	metas := []schema.SessionMeta{{ID: "01A", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
 	// A sandbox escalation blocks MID-TURN, so the daemon status is still "active"
 	// (level "working"). The pending-escalation flag must promote it to needs_you so
@@ -129,7 +129,7 @@ func TestDeriveAttention_PendingEscalationPromotesToNeedsYou(t *testing.T) {
 	}
 }
 
-func TestDeriveAttention_PendingEscalationNeverDowngradesError(t *testing.T) {
+func fuzzScenarioDeriveAttention_PendingEscalationNeverDowngradesError(t *testing.T) {
 	metas := []schema.SessionMeta{{ID: "01A", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
 	live := []LiveEntry{{SessionID: "01A", Status: appwire.ThreadStatusSystemError, PendingEscalation: true}}
 	entries, _ := DeriveAttention(metas, live, nil)
@@ -138,7 +138,7 @@ func TestDeriveAttention_PendingEscalationNeverDowngradesError(t *testing.T) {
 	}
 }
 
-func TestAttentionWatcher_TicksOnAskOnlyFlip(t *testing.T) {
+func fuzzScenarioAttentionWatcher_TicksOnAskOnlyFlip(t *testing.T) {
 	var got []AttentionChangedPayload
 	w := NewAttentionWatcher(func(p AttentionChangedPayload) { got = append(got, p) })
 	base := map[string]AttentionEntry{"01A": {ID: "01A", Level: "needs_you", AskPending: false}}
