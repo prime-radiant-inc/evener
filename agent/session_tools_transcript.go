@@ -288,6 +288,8 @@ func readOutline(path, ref, rangeArg string) (any, error) {
 
 const formatJSONL = "jsonl"
 
+var readRawLinesForRange = rawLinesForRange
+
 // readRawEnvelope is the wire shape for a jsonl read: the verbatim NDJSON bytes for
 // the range. It is the debug/replay escape hatch — noisy (system prompt + api_call
 // records) and steered against for comprehension.
@@ -325,7 +327,7 @@ func readRaw(path, ref, rangeArg string) (any, error) {
 	}
 
 	start, end := parseRange(effectiveRange, len(entries))
-	content, lines, skipped, truncated, err := rawLinesForRange(path, start, end)
+	content, lines, skipped, truncated, err := readRawLinesForRange(path, start, end)
 	if err != nil {
 		return nil, err
 	}

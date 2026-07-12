@@ -15,11 +15,15 @@ import (
 
 const transcriptJSONLMaxLineBytes = 128 << 20
 
+var openTranscriptFile = func(path string) (io.ReadCloser, error) {
+	return os.Open(path)
+}
+
 // readTranscript reads a transcript JSONL file, returning the header, all valid entries,
 // and the count of skipped (corrupt/partial) lines. Callers can use the skipped count
 // to decide whether to warn about data loss from crash recovery.
 func readTranscript(path string) (transcript.Header, []transcript.Entry, int, error) {
-	f, err := os.Open(path)
+	f, err := openTranscriptFile(path)
 	if err != nil {
 		return transcript.Header{}, nil, 0, fmt.Errorf("open transcript: %w", err)
 	}
@@ -84,7 +88,7 @@ var (
 // readTranscriptFull reads a transcript JSONL file, returning all line types:
 // header, entries, and API calls. Corrupt/partial lines are counted in Skipped.
 func readTranscriptFull(path string) (transcriptData, error) {
-	f, err := os.Open(path)
+	f, err := openTranscriptFile(path)
 	if err != nil {
 		return transcriptData{}, fmt.Errorf("open transcript: %w", err)
 	}
@@ -158,7 +162,7 @@ func validateStrictChildTranscript(path, expectedSessionID string, maxLineBytes 
 }
 
 func readStrictChildTranscriptWithOptions(path, expectedSessionID string, retainLines bool, maxLineBytes int) (transcriptData, error) {
-	f, err := os.Open(path)
+	f, err := openTranscriptFile(path)
 	if err != nil {
 		return transcriptData{}, fmt.Errorf("open transcript: %w", err)
 	}
@@ -198,9 +202,6 @@ func readStrictChildTranscriptWithOptions(path, expectedSessionID string, retain
 		finalIncomplete := errors.Is(readErr, io.EOF) && !bytes.HasSuffix(line, []byte{'\n'})
 		line = bytes.TrimSuffix(line, []byte{'\n'})
 		if len(line) == 0 {
-			if errors.Is(readErr, io.EOF) {
-				break
-			}
 			continue
 		}
 		var peek struct {
