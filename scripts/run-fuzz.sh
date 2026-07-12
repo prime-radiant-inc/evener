@@ -621,6 +621,15 @@ TARGETS=(
 	"native:.:./cmd/serf-hub:FuzzSessionTreePass3::"
 	"native:llm:./providers/openaicompat:FuzzOpenAICompatDeterministicUnion::"
 	"native:agent:.:FuzzAgentMiscProgram::"
+	"native:.:./cmd/serf-tui:FuzzCommandRegistryProgram::"
+	"native:.:./cmd/serf-tui:FuzzHubControlProgram::"
+	"native:.:./cmd/serf-tui:FuzzHubUpdateConfig::"
+	"native:.:./cmd/serf-tui:FuzzHubUpdateProgram::"
+	"native:.:./cmd/serf-tui:FuzzRootTUIMain::"
+	"native:.:./cmd/serf-tui:FuzzRootTUIModelMisc::"
+	"native:.:./cmd/serf-tui:FuzzSessionControls::"
+	"native:.:./cmd/serf-tui:FuzzSpawnAndViewProgram::"
+	"native:.:./cmd/serf-tui:FuzzWidgetPrograms::"
 )
 
 duration="60s"
