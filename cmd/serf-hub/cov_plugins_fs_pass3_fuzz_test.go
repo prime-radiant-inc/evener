@@ -239,8 +239,8 @@ func fuzzExerciseUpgrade() {
 }
 
 func FuzzPluginsFSPass3(f *testing.F) {
-	oldList, oldRefresh, oldUpdate := pluginAutoUpgradeListMarketplaces, pluginAutoUpgradeRefreshMarketplace, pluginAutoUpgradeUpdate
-	pluginAutoUpgradeListMarketplaces = func(mgr *plugins.Manager) (plugins.Marketplaces, error) {
+	oldList, oldRefresh, oldUpdate := pluginListMarketplaces, pluginRefreshMarketplace, pluginUpdateAutoUpgrade
+	pluginListMarketplaces = func(mgr *plugins.Manager) (map[string]plugins.MarketplaceRef, error) {
 		switch filepath.Base(mgr.Root) {
 		case "forced-list":
 			return nil, errors.New("list")
@@ -250,7 +250,7 @@ func FuzzPluginsFSPass3(f *testing.F) {
 			return oldList(mgr)
 		}
 	}
-	pluginAutoUpgradeRefreshMarketplace = func(ctx context.Context, mgr *plugins.Manager, name string) error {
+	pluginRefreshMarketplace = func(ctx context.Context, mgr *plugins.Manager, name string) error {
 		if filepath.Base(mgr.Root) == "forced-refresh" && name == "a" {
 			return errors.New("refresh")
 		}
@@ -259,7 +259,7 @@ func FuzzPluginsFSPass3(f *testing.F) {
 		}
 		return oldRefresh(ctx, mgr, name)
 	}
-	pluginAutoUpgradeUpdate = func(ctx context.Context, mgr *plugins.Manager) ([]plugins.UpgradedPlugin, error) {
+	pluginUpdateAutoUpgrade = func(ctx context.Context, mgr *plugins.Manager) ([]plugins.UpgradedPlugin, error) {
 		switch filepath.Base(mgr.Root) {
 		case "forced-update":
 			return nil, errors.New("update")
@@ -270,9 +270,9 @@ func FuzzPluginsFSPass3(f *testing.F) {
 		}
 	}
 	f.Cleanup(func() {
-		pluginAutoUpgradeListMarketplaces = oldList
-		pluginAutoUpgradeRefreshMarketplace = oldRefresh
-		pluginAutoUpgradeUpdate = oldUpdate
+		pluginListMarketplaces = oldList
+		pluginRefreshMarketplace = oldRefresh
+		pluginUpdateAutoUpgrade = oldUpdate
 	})
 	f.Add([]byte("model"))
 	f.Fuzz(func(t *testing.T, data []byte) {
