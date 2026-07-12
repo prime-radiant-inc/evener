@@ -145,7 +145,13 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if cfg.testOnly.noSyncJobStore {
 		newJM = newJobManagerNoSync
 	}
-	jm, err := newJM(s.stateDir, s.id, s.enqueueJobNotificationAndNotify)
+	var jm *jobManager
+	var err error
+	if fault := s.sessionInitFault("new_job_manager"); fault != nil {
+		err = fault
+	} else {
+		jm, err = newJM(s.stateDir, s.id, s.enqueueJobNotificationAndNotify)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("job manager: %w", err)
 	}
@@ -235,7 +241,13 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			AgentTasks:       agentTasks,
 		}
 		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
-		tw, twErr := transcript.NewWriter(tpath, hdr)
+		var tw *transcript.Writer
+		var twErr error
+		if fault := s.sessionInitFault("new_transcript"); fault != nil {
+			twErr = fault
+		} else {
+			tw, twErr = transcript.NewWriter(tpath, hdr)
+		}
 		if twErr != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript create failed: %v", twErr)})
 		}
@@ -449,10 +461,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	jm.now = s.clock.Now
 	s.jobManager = jm
 	if !restoreCfg.deferRestoreSideEffects {
-		if err := jm.reconcileLostJobs(); err != nil {
+		if err := s.restoreSideEffect("reconcile_lost_jobs", jm.reconcileLostJobs); err != nil {
 			return nil, fmt.Errorf("job reconcile: %w", err)
 		}
-		if err := jm.recoverForwardedTerminalEvents(); err != nil {
+		if err := s.restoreSideEffect("recover_terminal", jm.recoverForwardedTerminalEvents); err != nil {
 			return nil, fmt.Errorf("nested job recovery: %w", err)
 		}
 	}
@@ -526,10 +538,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		tw, twErr := transcript.OpenWriter(tpath)
 		if twErr != nil {
 			// Transcript might not exist (new session from meta). Create new.
-			var agentTasks []task.Task
-			if s.taskStore != nil {
-				agentTasks = s.taskStore.View()
-			}
 			hdr := transcript.Header{
 				SessionID:        s.id,
 				ParentSessionID:  cfg.spawn.parentSessionID,
@@ -542,9 +550,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 				Depth:            cfg.spawn.depth,
 				BuildVersion:     BuildVersion,
 				SystemPrompt:     s.cachedSystemPrompt,
-				AgentTasks:       agentTasks,
 			}
-			tw, twErr = transcript.NewWriter(tpath, hdr)
+			if fault := s.sessionInitFault("restore_new_transcript"); fault != nil {
+				twErr = fault
+			} else {
+				tw, twErr = transcript.NewWriter(tpath, hdr)
+			}
 			if twErr != nil {
 				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript open failed: %v", twErr)})
 			}
@@ -556,13 +567,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 
 	if !restoreCfg.deferRestoreSideEffects {
-		if err := s.retryRestoredPendingWatchSends(context.Background()); err != nil {
+		if err := s.restoreSideEffect("retry_watch_sends", func() error { return s.retryRestoredPendingWatchSends(context.Background()) }); err != nil {
 			return nil, fmt.Errorf("watch send retry: %w", err)
 		}
-		if err := jm.armPendingTerminalNotifications(); err != nil {
+		if err := s.restoreSideEffect("arm_notifications", jm.armPendingTerminalNotifications); err != nil {
 			return nil, fmt.Errorf("job notifications: %w", err)
 		}
-		if err := jm.recoverForwardedPendingNotifications(); err != nil {
+		if err := s.restoreSideEffect("recover_notifications", jm.recoverForwardedPendingNotifications); err != nil {
 			return nil, fmt.Errorf("nested job notifications: %w", err)
 		}
 	}
@@ -671,7 +682,13 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 
 	// Load the core built-in agents first. Configured plugin agents are merged in
 	// during plugin initialization below.
-	builtins, err := builtinAgents()
+	var builtins map[string]plugin.Agent
+	var err error
+	if fault := s.sessionInitFault("builtin_agents"); fault != nil {
+		err = fault
+	} else {
+		builtins, err = builtinAgents()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("loading built-in agents: %w", err)
 	}
@@ -699,7 +716,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	}
 
 	// Initialize plugins (skills, agents, hooks). Plugin agents override builtins.
-	if err := s.initPlugins(sessionStartKind, runSessionStartHooks); err != nil {
+	if err := s.restoreSideEffect("init_plugins", func() error { return s.initPlugins(sessionStartKind, runSessionStartHooks) }); err != nil {
 		return nil, fmt.Errorf("plugin initialization: %w", err)
 	}
 	s.applyAgentRolePromptOverride()
@@ -714,12 +731,12 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	var reg *tool.Registry
 	if s.cfg.testOnly.minimalWorktreeToolRegistry {
 		reg = tool.NewRegistry()
-		if err := registerMinimalWorktreeTools(reg, s); err != nil {
+		if err := s.restoreSideEffect("register_minimal_tools", func() error { return registerMinimalWorktreeTools(reg, s) }); err != nil {
 			return nil, err
 		}
 	} else {
 		reg = newProfileToolRegistry(s.profile)
-		if err := registerCoreTools(reg, s); err != nil {
+		if err := s.restoreSideEffect("register_core_tools", func() error { return registerCoreTools(reg, s) }); err != nil {
 			return nil, err
 		}
 	}
@@ -791,15 +808,9 @@ func (s *Session) validateModelFallbacks() error {
 				return fmt.Errorf("model_fallbacks entry %q switches provider from %q to %q; cross-provider fallbacks are not supported because provider prompt/tool surfaces differ", fbModel, s.profile.BehaviorTag(), targetTag)
 			}
 		}
-		fbProfile, _, err := s.resolveProfileForRef(s.profile, fbModel)
-		if err != nil {
-			return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
-		}
-		// Same-provider resolution: guard on BehaviorTag rather than ID so
-		// renamed instances still pass.
-		if fbProfile.BehaviorTag() != s.profile.BehaviorTag() {
-			return fmt.Errorf("model_fallbacks entry %q switches provider from %q to %q; cross-provider fallbacks are not supported because provider prompt/tool surfaces differ", fbModel, s.profile.BehaviorTag(), fbProfile.BehaviorTag())
-		}
+		// A ref reaching this point is same-provider. resolveProfileForRef only
+		// invokes the injected resolver for cross-provider refs, which returned
+		// above; same-provider refs are a direct WithModel projection.
 	}
 	return nil
 }
@@ -1241,23 +1252,37 @@ func (s *Session) runDeferredRestoreSideEffects() error {
 	if s == nil || s.jobManager == nil {
 		return nil
 	}
-	if err := s.jobManager.reconcileLostJobs(); err != nil {
+	if err := s.restoreSideEffect("reconcile_lost_jobs", s.jobManager.reconcileLostJobs); err != nil {
 		return fmt.Errorf("job reconcile: %w", err)
 	}
-	if err := s.jobManager.recoverForwardedTerminalEvents(); err != nil {
+	if err := s.restoreSideEffect("recover_terminal", s.jobManager.recoverForwardedTerminalEvents); err != nil {
 		return fmt.Errorf("nested job recovery: %w", err)
 	}
-	if err := s.retryRestoredPendingWatchSends(context.Background()); err != nil {
+	if err := s.restoreSideEffect("retry_watch_sends", func() error { return s.retryRestoredPendingWatchSends(context.Background()) }); err != nil {
 		return fmt.Errorf("watch send retry: %w", err)
 	}
-	if err := s.jobManager.armPendingTerminalNotifications(); err != nil {
+	if err := s.restoreSideEffect("arm_notifications", s.jobManager.armPendingTerminalNotifications); err != nil {
 		return fmt.Errorf("job notifications: %w", err)
 	}
-	if err := s.jobManager.recoverForwardedPendingNotifications(); err != nil {
+	if err := s.restoreSideEffect("recover_notifications", s.jobManager.recoverForwardedPendingNotifications); err != nil {
 		return fmt.Errorf("nested job notifications: %w", err)
 	}
 	s.runPendingSessionStartHooksForRestoreSideEffects(context.Background())
 	return nil
+}
+
+func (s *Session) sessionInitFault(point string) error {
+	if s != nil && s.cfg.testOnly.sessionInitFault != nil {
+		return s.cfg.testOnly.sessionInitFault(point)
+	}
+	return nil
+}
+
+func (s *Session) restoreSideEffect(point string, run func() error) error {
+	if fault := s.sessionInitFault(point); fault != nil {
+		return fault
+	}
+	return run()
 }
 
 // unknownHookEventWarning builds the load-time warning text for a hook declared

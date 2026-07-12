@@ -202,6 +202,9 @@ type SessionConfig struct {
 // deterministic. Never set by app callers; never persisted (json:"-" on the
 // parent field).
 type testConfig struct {
+	// sessionInitFault injects deterministic failures at external initialization
+	// boundaries. Nil preserves the production implementation.
+	sessionInitFault func(point string) error
 	// subagentPrepareFault injects deterministic external-boundary failures into
 	// prepareSubagentRun. Nil preserves every production boundary.
 	subagentPrepareFault func(point string) error

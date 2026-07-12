@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/hooks"
 	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -89,6 +90,7 @@ func FuzzSessionInitSeed100Exact(f *testing.F) {
 		for _, program := range programs {
 			t.Run(program.name, program.run)
 		}
+		t.Run("fault-boundaries", fuzzSessionInitFaultBoundaries)
 		t.Run("pure-helpers", func(t *testing.T) {
 			if cacheReadPtr(0) != nil || *cacheReadPtr(7) != 7 {
 				t.Fatal("cacheReadPtr conversion mismatch")
@@ -278,4 +280,130 @@ func FuzzSessionInitSeed100Exact(f *testing.F) {
 
 		})
 	})
+}
+
+func fuzzSessionInitFaultBoundaries(t *testing.T) {
+	t.Helper()
+	client := sierClient()
+	profile := NewOpenAIProfile("gpt-5.2")
+	env := pifNewDenyEnv(t.TempDir(), 1)
+	clk := agenttest.NewFakeClock()
+	injected := errors.New("injected init fault")
+
+	for _, point := range []string{"new_job_manager", "builtin_agents", "init_plugins", "register_core_tools", "register_minimal_tools"} {
+		point := point
+		t.Run("new-"+point, func(t *testing.T) {
+			cfg := sierConfig(clk)
+			cfg.testOnly.sessionInitFault = func(got string) error {
+				if got == point {
+					return injected
+				}
+				return nil
+			}
+			if point == "register_minimal_tools" {
+				cfg.testOnly.minimalWorktreeToolRegistry = true
+			}
+			if sess, err := NewSession(client, profile, env, cfg); err == nil {
+				sess.Close()
+				t.Fatalf("fault %s succeeded", point)
+			}
+		})
+	}
+
+	t.Run("new-transcript", func(t *testing.T) {
+		cfg := sierConfig(clk)
+		cfg.StateDir = t.TempDir()
+		cfg.testOnly.sessionInitFault = func(point string) error {
+			if point == "new_transcript" {
+				return injected
+			}
+			return nil
+		}
+		sess, err := NewSession(client, profile, env, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sess.transcript != nil {
+			t.Fatal("faulted transcript was installed")
+		}
+		sess.Close()
+	})
+
+	t.Run("restore-transcript", func(t *testing.T) {
+		cfg := sierRestoreConfig(t.TempDir(), clk)
+		cfg.deferRestoreSideEffects = true
+		cfg.testOnly.sessionInitFault = sessionInitFaultAt("restore_new_transcript", injected)
+		sess, err := RestoreSessionFromMetaWithConfig(client, profile, env, sierMeta(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sess.transcript != nil {
+			t.Fatal("faulted restored transcript was installed")
+		}
+		sess.Close()
+	})
+
+	t.Run("minimal-tools-success", func(t *testing.T) {
+		cfg := sierConfig(clk)
+		cfg.testOnly.minimalWorktreeToolRegistry = true
+		sess, err := NewSession(client, profile, env, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sess.Close()
+	})
+
+	for _, point := range []string{"reconcile_lost_jobs", "recover_terminal", "retry_watch_sends", "arm_notifications", "recover_notifications"} {
+		point := point
+		t.Run("restore-"+point, func(t *testing.T) {
+			cfg := sierRestoreConfig(t.TempDir(), clk)
+			cfg.deferRestoreSideEffects = false
+			cfg.testOnly.sessionInitFault = func(got string) error {
+				if got == point {
+					return injected
+				}
+				return nil
+			}
+			if sess, err := RestoreSessionFromMetaWithConfig(client, profile, env, sierMeta(), cfg); err == nil {
+				sess.Close()
+				t.Fatalf("restore fault %s succeeded", point)
+			}
+		})
+	}
+
+	for _, point := range []string{"reconcile_lost_jobs", "recover_terminal", "retry_watch_sends", "arm_notifications", "recover_notifications"} {
+		want := point
+		s := newSession(t)
+		s.cfg.testOnly.sessionInitFault = sessionInitFaultAt(want, injected)
+		if s.sessionInitFault(want) == nil {
+			t.Fatalf("fault hook missing for %s", want)
+		}
+		if err := s.runDeferredRestoreSideEffects(); err == nil {
+			t.Fatalf("deferred fault %s succeeded", want)
+		}
+	}
+
+	for _, mismatch := range []bool{false, true} {
+		cfg := sierConfig(clk)
+		cfg.ModelFallbacks = []string{"anthropic/fallback-model"}
+		cfg.ResolveProfile = func(string) (*provider.Profile, error) {
+			if !mismatch {
+				return nil, injected
+			}
+			return newAnthropicProfile("claude-sonnet-4-5"), nil
+		}
+		if sess, err := NewSession(client, profile, env, cfg); err == nil {
+			sess.Close()
+			t.Fatalf("fallback mismatch=%t succeeded", mismatch)
+		}
+	}
+}
+
+func sessionInitFaultAt(want string, err error) func(string) error {
+	return func(got string) error {
+		if got == want {
+			return err
+		}
+		return nil
+	}
 }
