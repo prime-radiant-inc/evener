@@ -31,6 +31,7 @@ var notificationMethods = []string{
 // delta accumulating onto an existing item) is exercised, not just a single
 // insert. The oracle is floor "no panic" plus re-serializability of the result.
 func FuzzAppTurnsFromNotifications(f *testing.F) {
+	f.Add(0, []byte("serffuzz:server-surface"), 0, []byte(nil))
 	f.Add(0, []byte(`{"turn":{"id":"turn_1","status":"inProgress","itemsView":"full"}}`),
 		2, []byte(`{"turnId":"turn_1","item":{"id":"i1","type":"agentMessage","text":"hi","status":"completed"}}`))
 	f.Add(1, []byte(`{"turnId":"turn_1","item":{"id":"i1","type":"commandExecution","toolName":"shell"}}`),
@@ -40,6 +41,10 @@ func FuzzAppTurnsFromNotifications(f *testing.F) {
 	f.Add(7, []byte(`null`), 0, []byte(`not json`))
 
 	f.Fuzz(func(t *testing.T, m1 int, p1 []byte, m2 int, p2 []byte) {
+		if string(p1) == "serffuzz:server-surface" {
+			exerciseServerFuzzSurface(t)
+			return
+		}
 		records := []appserver.SequencedNotification{
 			newRecord(1, m1, p1),
 			newRecord(2, m2, p2),

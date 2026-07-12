@@ -28,15 +28,24 @@ func useTranscriptTurns(transcriptTurns, notificationTurns []appwire.Turn) bool 
 // each page. One daemon serves one session, so a small cache suffices.
 var transcriptTurnCache = apptranscript.NewTurnCache()
 
+var (
+	appTurnsEnsureTurnHook   func(string) bool
+	appTurnsItemForDeltaHook func(*appwire.ThreadItem)
+)
+
 func appTurnsFromTranscriptFile(path string) []appwire.Turn {
 	toolNames := map[string]string{}
 	return transcriptTurnCache.TurnsFromFile(path, 128<<20, func(raw json.RawMessage, turnID string, entryIndex int) []appwire.ThreadItem {
-		var entry transcript.Entry
-		if err := json.Unmarshal(raw, &entry); err != nil {
-			return nil
-		}
-		return apptranscript.ProjectTurn(turnID, entryIndex, entry.Turn, toolNames, nil, nil)
+		return projectTranscriptTurn(raw, turnID, entryIndex, toolNames)
 	})
+}
+
+func projectTranscriptTurn(raw json.RawMessage, turnID string, entryIndex int, toolNames map[string]string) []appwire.ThreadItem {
+	var entry transcript.Entry
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		return nil
+	}
+	return apptranscript.ProjectTurn(turnID, entryIndex, entry.Turn, toolNames, nil, nil)
 }
 
 func appTurnsFromNotifications(records []appserver.SequencedNotification) []appwire.Turn {
@@ -45,6 +54,9 @@ func appTurnsFromNotifications(records []appserver.SequencedNotification) []appw
 
 	ensureTurn := func(id string) *appwire.Turn {
 		if strings.TrimSpace(id) == "" {
+			return nil
+		}
+		if appTurnsEnsureTurnHook != nil && appTurnsEnsureTurnHook(id) {
 			return nil
 		}
 		if idx, ok := turnIndex[id]; ok {
@@ -83,6 +95,9 @@ func appTurnsFromNotifications(records []appserver.SequencedNotification) []appw
 		}
 		for i := range turn.Items {
 			if turn.Items[i].ID == itemID {
+				if appTurnsItemForDeltaHook != nil {
+					appTurnsItemForDeltaHook(&turn.Items[i])
+				}
 				if turn.Items[i].TurnID == "" {
 					turn.Items[i].TurnID = turnID
 				}
