@@ -186,6 +186,7 @@ TARGETS=(
 	"native:.:./internal/appprojector:FuzzProject::appwire_projection.go#Project"
 	"native:.:./internal/apptranscript:FuzzProjectTurn::apptranscript.go#ProjectTurn"
 	"native:.:./cmd/serf-hub/internal/appsource:FuzzMapCodexTurn::codex_mapping.go#mapCodexTurn"
+	"native:.:./cmd/serf-hub/internal/appsource:FuzzAppSourceProgram::"
 	"native:.:./cmd/serf-hub/internal/codexlaunch:FuzzParseCodexEndpoint::codex_launch.go#ParseCodexEndpoint"
 	"native:.:./cmd/serf-hub/internal/hubcore:FuzzBuildTree::tree.go#BuildTreeAt"
 	"native:.:./internal/gitpath:FuzzParseGitdirPointer::gitpath.go#ParseGitdirPointer"

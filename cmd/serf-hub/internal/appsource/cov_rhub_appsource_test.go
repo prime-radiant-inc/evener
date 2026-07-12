@@ -15,7 +15,7 @@ func newTestCodexSource() *CodexSource {
 	return NewCodexSource(CodexSourceConfig{ID: "codex"}, nil)
 }
 
-func TestMapCodexThreadStatus(t *testing.T) {
+func fuzzScenarioMapCodexThreadStatus(t *testing.T) {
 	cases := []struct {
 		in   codexThreadStatus
 		want string
@@ -39,7 +39,7 @@ func TestMapCodexThreadStatus(t *testing.T) {
 	}
 }
 
-func TestCodexInput(t *testing.T) {
+func fuzzScenarioCodexInput(t *testing.T) {
 	pngData := []byte{0x89, 0x50, 0x4e, 0x47}
 
 	got, err := codexInput("hi", []appwire.InputItem{
@@ -84,7 +84,7 @@ func TestCodexInput(t *testing.T) {
 	}
 }
 
-func TestCodexInputErrors(t *testing.T) {
+func fuzzScenarioCodexInputErrors(t *testing.T) {
 	cases := []struct {
 		name string
 		item appwire.InputItem
@@ -104,7 +104,7 @@ func TestCodexInputErrors(t *testing.T) {
 	}
 }
 
-func TestDecodeDataImageURL(t *testing.T) {
+func fuzzScenarioDecodeDataImageURL(t *testing.T) {
 	data := []byte("hello")
 	valid := "data:image/png;base64," + base64.StdEncoding.EncodeToString(data)
 	gotData, mediaType, ok := decodeDataImageURL(valid)
@@ -124,7 +124,7 @@ func TestDecodeDataImageURL(t *testing.T) {
 	}
 }
 
-func TestMapThread(t *testing.T) {
+func fuzzScenarioMapThread(t *testing.T) {
 	s := newTestCodexSource()
 	thread := codexThread{
 		ID:            "th_1",
@@ -158,7 +158,7 @@ func TestMapThread(t *testing.T) {
 	}
 }
 
-func TestThreadID(t *testing.T) {
+func fuzzScenarioThreadID(t *testing.T) {
 	s := newTestCodexSource()
 
 	got, err := s.threadID("codex:th_1", "")
@@ -180,7 +180,7 @@ func TestThreadID(t *testing.T) {
 	}
 }
 
-func TestAuthHeader(t *testing.T) {
+func fuzzScenarioAuthHeader(t *testing.T) {
 	// Inline bearer token.
 	s := NewCodexSource(CodexSourceConfig{ID: "codex", BearerToken: " tok123 "}, nil)
 	h, err := s.authHeader()
@@ -219,7 +219,7 @@ func TestAuthHeader(t *testing.T) {
 	}
 }
 
-func TestCodexThreadListStatuses(t *testing.T) {
+func fuzzScenarioCodexThreadListStatuses(t *testing.T) {
 	if got := codexThreadListStatuses(nil); got != nil {
 		t.Fatalf("nil input should yield nil, got %v", got)
 	}
@@ -235,7 +235,7 @@ func TestCodexThreadListStatuses(t *testing.T) {
 	}
 }
 
-func TestCodexThreadSupportsTurnActions(t *testing.T) {
+func fuzzScenarioCodexThreadSupportsTurnActions(t *testing.T) {
 	for _, s := range []string{"active", "idle"} {
 		if !codexThreadSupportsTurnActions(s) {
 			t.Errorf("%q should support turn actions", s)
@@ -248,7 +248,7 @@ func TestCodexThreadSupportsTurnActions(t *testing.T) {
 	}
 }
 
-func TestCodexForkHasEditAtTurnMetadata(t *testing.T) {
+func fuzzScenarioCodexForkHasEditAtTurnMetadata(t *testing.T) {
 	if codexForkHasEditAtTurnMetadata(appwire.ThreadForkParams{}) {
 		t.Fatal("empty fork params should have no edit-at-turn metadata")
 	}
@@ -260,7 +260,7 @@ func TestCodexForkHasEditAtTurnMetadata(t *testing.T) {
 	}
 }
 
-func TestMapNotificationRoutes(t *testing.T) {
+func fuzzScenarioMapNotificationRoutes(t *testing.T) {
 	s := newTestCodexSource()
 
 	outputDelta := appwire.Notification{
@@ -327,7 +327,7 @@ func TestMapNotificationRoutes(t *testing.T) {
 	}
 }
 
-func TestNotificationMessageMarshalFallback(t *testing.T) {
+func fuzzScenarioNotificationMessageMarshalFallback(t *testing.T) {
 	// A value json.Marshal cannot encode (a channel) falls back to "{}".
 	got := notificationMessage("m", make(chan int))
 	if string(got.Params) != "{}" {
@@ -340,7 +340,7 @@ func TestNotificationMessageMarshalFallback(t *testing.T) {
 	}
 }
 
-func TestJSONStringAndHelpers(t *testing.T) {
+func fuzzScenarioJSONStringAndHelpers(t *testing.T) {
 	if got := jsonString(map[string]int{"x": 1}); got != `{"x":1}` {
 		t.Fatalf("jsonString=%q", got)
 	}
@@ -361,7 +361,7 @@ func TestJSONStringAndHelpers(t *testing.T) {
 	}
 }
 
-func TestCodexSourceMetadata(t *testing.T) {
+func fuzzScenarioCodexSourceMetadata(t *testing.T) {
 	s := newTestCodexSource()
 	if s.ID() != "codex" {
 		t.Fatalf("ID()=%q", s.ID())
@@ -377,7 +377,7 @@ func TestCodexSourceMetadata(t *testing.T) {
 
 // The codex source deliberately does not support several serf-only actions;
 // each must fail with an Unavailable error rather than connecting.
-func TestCodexSourceUnavailableMethods(t *testing.T) {
+func fuzzScenarioCodexSourceUnavailableMethods(t *testing.T) {
 	s := newTestCodexSource()
 	ctx := context.Background()
 
@@ -409,7 +409,7 @@ func TestCodexSourceUnavailableMethods(t *testing.T) {
 
 // Turn actions validate their arguments before dialing the daemon, so bad input
 // fails fast without a live connection.
-func TestCodexSourceTurnActionPreConnectValidation(t *testing.T) {
+func fuzzScenarioCodexSourceTurnActionPreConnectValidation(t *testing.T) {
 	s := newTestCodexSource()
 	ctx := context.Background()
 
@@ -429,7 +429,7 @@ func TestCodexSourceTurnActionPreConnectValidation(t *testing.T) {
 	}
 }
 
-func TestRegistryRemove(t *testing.T) {
+func fuzzScenarioRegistryRemove(t *testing.T) {
 	r := NewRegistry()
 	src := newTestCodexSource()
 	r.Add(src)
@@ -444,7 +444,7 @@ func TestRegistryRemove(t *testing.T) {
 	r.Remove("nonexistent")
 }
 
-func TestMapCodexTurnStatus(t *testing.T) {
+func fuzzScenarioMapCodexTurnStatus(t *testing.T) {
 	cases := map[string]string{
 		"inProgress":  appwire.TurnStatusInProgress,
 		"interrupted": appwire.TurnStatusInterrupted,

@@ -26,7 +26,7 @@ func (e fakeTimeoutError) Error() string   { return e.msg }
 func (e fakeTimeoutError) Timeout() bool   { return true }
 func (e fakeTimeoutError) Temporary() bool { return true }
 
-func TestLocalDaemonDialErrorMapsTransportFailures(t *testing.T) {
+func fuzzScenarioLocalDaemonDialErrorMapsTransportFailures(t *testing.T) {
 	cases := []struct {
 		name string
 		err  error
@@ -51,7 +51,7 @@ func TestLocalDaemonDialErrorMapsTransportFailures(t *testing.T) {
 	}
 }
 
-func TestLocalDaemonDialErrorPassesThroughApplicationErrors(t *testing.T) {
+func fuzzScenarioLocalDaemonDialErrorPassesThroughApplicationErrors(t *testing.T) {
 	// JSON-RPC application-level error: should not be touched, since the
 	// daemon is alive and signalling semantic failure.
 	app := appwire.InvalidParams("missing ref")
@@ -71,7 +71,7 @@ func TestLocalDaemonDialErrorPassesThroughApplicationErrors(t *testing.T) {
 	}
 }
 
-func TestLocalDaemonSubscribeReadErrorPreservesApplicationWireErrors(t *testing.T) {
+func fuzzScenarioLocalDaemonSubscribeReadErrorPreservesApplicationWireErrors(t *testing.T) {
 	app := appwire.InvalidParams("broken pipe is part of semantic error")
 	got := localDaemonSubscribeReadError(app)
 	var wire appwire.WireError
@@ -83,12 +83,12 @@ func TestLocalDaemonSubscribeReadErrorPreservesApplicationWireErrors(t *testing.
 	}
 }
 
-func TestLocalDaemonSubscribeReadErrorMapsInternalTransportWireErrors(t *testing.T) {
+func fuzzScenarioLocalDaemonSubscribeReadErrorMapsInternalTransportWireErrors(t *testing.T) {
 	got := localDaemonSubscribeReadError(appwire.InternalError("read failed: i/o timeout"))
 	assertSessionUnavailable(t, got, "internal i/o timeout")
 }
 
-func TestLocalDaemonCallErrorMapsRawTransportFailures(t *testing.T) {
+func fuzzScenarioLocalDaemonCallErrorMapsRawTransportFailures(t *testing.T) {
 	cases := []struct {
 		name string
 		err  error
@@ -105,7 +105,7 @@ func TestLocalDaemonCallErrorMapsRawTransportFailures(t *testing.T) {
 	}
 }
 
-func TestLocalDaemonInitializeErrorPreservesApplicationWireErrors(t *testing.T) {
+func fuzzScenarioLocalDaemonInitializeErrorPreservesApplicationWireErrors(t *testing.T) {
 	app := appwire.InvalidParams("broken pipe is part of semantic error")
 	got := localDaemonInitializeError(app)
 	var wire appwire.WireError
@@ -117,12 +117,12 @@ func TestLocalDaemonInitializeErrorPreservesApplicationWireErrors(t *testing.T) 
 	}
 }
 
-func TestLocalDaemonInitializeErrorMapsInternalTransportWireErrors(t *testing.T) {
+func fuzzScenarioLocalDaemonInitializeErrorMapsInternalTransportWireErrors(t *testing.T) {
 	got := localDaemonInitializeError(appwire.InternalError("initialize failed: i/o timeout"))
 	assertSessionUnavailable(t, got, "internal i/o timeout")
 }
 
-func TestLocalDaemonCallErrorPreservesCallerCancellation(t *testing.T) {
+func fuzzScenarioLocalDaemonCallErrorPreservesCallerCancellation(t *testing.T) {
 	if got := localDaemonCallError(context.Canceled); !errors.Is(got, context.Canceled) {
 		t.Fatalf("context.Canceled remapped: %v", got)
 	}
@@ -131,13 +131,13 @@ func TestLocalDaemonCallErrorPreservesCallerCancellation(t *testing.T) {
 	}
 }
 
-func TestLocalDaemonDialErrorIgnoresNil(t *testing.T) {
+func fuzzScenarioLocalDaemonDialErrorIgnoresNil(t *testing.T) {
 	if got := localDaemonDialError(nil); got != nil {
 		t.Fatalf("nil mapped to %v, want nil", got)
 	}
 }
 
-func TestLocalDaemonSourceReadThreadMapsIOTimeoutToSessionUnavailable(t *testing.T) {
+func fuzzScenarioLocalDaemonSourceReadThreadMapsIOTimeoutToSessionUnavailable(t *testing.T) {
 	// A listener that accepts TCP but never speaks the HTTP upgrade. The
 	// dial will fail with i/o timeout once the caller's short deadline fires,
 	// surfacing as a net.Error.Timeout()==true wrapped in OpError.
@@ -187,7 +187,7 @@ func TestLocalDaemonSourceReadThreadMapsIOTimeoutToSessionUnavailable(t *testing
 	}
 }
 
-func TestLocalDaemonSourceReadThreadMapsEOFDuringHandshake(t *testing.T) {
+func fuzzScenarioLocalDaemonSourceReadThreadMapsEOFDuringHandshake(t *testing.T) {
 	// Server accepts the websocket upgrade, then immediately drops the
 	// connection without responding to Initialize. The Initialize call
 	// surfaces an EOF/abnormal-close, which should map to SessionUnavailable.
@@ -218,7 +218,7 @@ func TestLocalDaemonSourceReadThreadMapsEOFDuringHandshake(t *testing.T) {
 	assertSessionUnavailable(t, err, "ReadThread (EOF mid-handshake)")
 }
 
-func TestLocalDaemonSourceReadThreadReturnsCallerCtxCancellation(t *testing.T) {
+func fuzzScenarioLocalDaemonSourceReadThreadReturnsCallerCtxCancellation(t *testing.T) {
 	// Hang the upgrade indefinitely so the dial blocks until the caller
 	// cancels its context.
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -256,7 +256,7 @@ func TestLocalDaemonSourceReadThreadReturnsCallerCtxCancellation(t *testing.T) {
 	}
 }
 
-func TestLocalDaemonSourceListsOnlyAppWireRendezvousThreads(t *testing.T) {
+func fuzzScenarioLocalDaemonSourceListsOnlyAppWireRendezvousThreads(t *testing.T) {
 	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
 		return []rendezvous.Entry{
 			{
@@ -292,7 +292,7 @@ func TestLocalDaemonSourceListsOnlyAppWireRendezvousThreads(t *testing.T) {
 	}
 }
 
-func TestLocalDaemonSourceThreadTimestampsUseStartedAtAndZeroForMissing(t *testing.T) {
+func fuzzScenarioLocalDaemonSourceThreadTimestampsUseStartedAtAndZeroForMissing(t *testing.T) {
 	startedAt := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
 		return []rendezvous.Entry{
@@ -331,7 +331,7 @@ func TestLocalDaemonSourceThreadTimestampsUseStartedAtAndZeroForMissing(t *testi
 	}
 }
 
-func TestLocalDaemonSourceReadsThreadOverAppWire(t *testing.T) {
+func fuzzScenarioLocalDaemonSourceReadsThreadOverAppWire(t *testing.T) {
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_1", SessionID: "sess_1", Serf: appwire.SerfThread{Ref: "local:th_1"}}}, nil
@@ -358,7 +358,7 @@ func TestLocalDaemonSourceReadsThreadOverAppWire(t *testing.T) {
 	}
 }
 
-func TestLocalDaemonSourceDrainUsesInputShapeDirectly(t *testing.T) {
+func fuzzScenarioLocalDaemonSourceDrainUsesInputShapeDirectly(t *testing.T) {
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	var drained appwire.TurnDrainAsSteerParams
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
@@ -391,7 +391,7 @@ func TestLocalDaemonSourceDrainUsesInputShapeDirectly(t *testing.T) {
 // authoritative queue-state passthrough: ReadThread must surface the
 // daemon's Queue (depth + first-line-truncated preview) verbatim so the
 // hub/UIs render from wire data instead of mirroring locally.
-func TestLocalDaemonSourceReadThreadIncludesQueue(t *testing.T) {
+func fuzzScenarioLocalDaemonSourceReadThreadIncludesQueue(t *testing.T) {
 	wantQueue := appwire.QueueState{
 		Depth:   2,
 		Preview: []string{"first queued message", "second queued message"},
@@ -438,7 +438,7 @@ func TestLocalDaemonSourceReadThreadIncludesQueue(t *testing.T) {
 	}
 }
 
-func TestLocalDaemonSourceListQueuesOnlyProcessingThreads(t *testing.T) {
+func fuzzScenarioLocalDaemonSourceListQueuesOnlyProcessingThreads(t *testing.T) {
 	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
 		return []LocalDaemonEntry{
 			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/idle", ThreadID: "th_idle", SessionID: "sess_idle"}, Status: "idle"},
@@ -470,7 +470,7 @@ func TestLocalDaemonSourceListQueuesOnlyProcessingThreads(t *testing.T) {
 // on a LocalDaemonEntry, threadFromEntry must carry it through to
 // appwire.SerfThread.AskPending, since that's the field the TUI dashboard
 // reads (cmd/serf-tui/hub_types.go).
-func TestLocalDaemonSourceListCarriesAskPending(t *testing.T) {
+func fuzzScenarioLocalDaemonSourceListCarriesAskPending(t *testing.T) {
 	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
 		return []LocalDaemonEntry{
 			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/ask", ThreadID: "th_ask", SessionID: "sess_ask"}, Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
@@ -494,7 +494,7 @@ func TestLocalDaemonSourceListCarriesAskPending(t *testing.T) {
 	}
 }
 
-func TestLocalDaemonSourceSubscribeThreadRequestsSubscription(t *testing.T) {
+func fuzzScenarioLocalDaemonSourceSubscribeThreadRequestsSubscription(t *testing.T) {
 	gotSubscribe := make(chan bool, 1)
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
@@ -533,7 +533,7 @@ func TestLocalDaemonSourceSubscribeThreadRequestsSubscription(t *testing.T) {
 	}
 }
 
-func TestLocalDaemonSourceSubscribeThreadMapsConnectionRefused(t *testing.T) {
+func fuzzScenarioLocalDaemonSourceSubscribeThreadMapsConnectionRefused(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -564,7 +564,7 @@ func TestLocalDaemonSourceSubscribeThreadMapsConnectionRefused(t *testing.T) {
 	}
 }
 
-func TestLocalDaemonSourceSubscribeThreadPreservesInitializeWireError(t *testing.T) {
+func fuzzScenarioLocalDaemonSourceSubscribeThreadPreservesInitializeWireError(t *testing.T) {
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(app.Router(), appwire.MethodInitialize, func(_ context.Context, _ appwire.InitializeParams) (appwire.InitializeResponse, error) {
 		return appwire.InitializeResponse{}, appwire.InvalidParams("broken pipe is semantic here")
@@ -592,7 +592,7 @@ func TestLocalDaemonSourceSubscribeThreadPreservesInitializeWireError(t *testing
 	}
 }
 
-func TestLocalDaemonSourceSubscribeThreadPreservesThreadReadWireError(t *testing.T) {
+func fuzzScenarioLocalDaemonSourceSubscribeThreadPreservesThreadReadWireError(t *testing.T) {
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		return appwire.ThreadReadResponse{}, appwire.InvalidParams("broken pipe is semantic here")
@@ -620,7 +620,7 @@ func TestLocalDaemonSourceSubscribeThreadPreservesThreadReadWireError(t *testing
 	}
 }
 
-func TestLocalDaemonSourceStartTurnMapsDroppedTransportToSessionUnavailable(t *testing.T) {
+func fuzzScenarioLocalDaemonSourceStartTurnMapsDroppedTransportToSessionUnavailable(t *testing.T) {
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -667,7 +667,7 @@ func TestLocalDaemonSourceStartTurnMapsDroppedTransportToSessionUnavailable(t *t
 	}
 }
 
-func TestLocalDaemonSourceSendsHubTokenBearer(t *testing.T) {
+func fuzzScenarioLocalDaemonSourceSendsHubTokenBearer(t *testing.T) {
 	gotAuth := make(chan string, 1)
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
@@ -703,7 +703,7 @@ func TestLocalDaemonSourceSendsHubTokenBearer(t *testing.T) {
 	}
 }
 
-func TestLocalDaemonSourceInterruptWithoutTurnIDUsesRESTInterrupt(t *testing.T) {
+func fuzzScenarioLocalDaemonSourceInterruptWithoutTurnIDUsesRESTInterrupt(t *testing.T) {
 	var called bool
 	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/interrupt" {

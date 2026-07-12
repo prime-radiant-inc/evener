@@ -16,7 +16,7 @@ import (
 	"primeradiant.com/serf/rendezvous"
 )
 
-func TestLocalDaemonSourceRPCSurface(t *testing.T) {
+func fuzzScenarioLocalDaemonSourceRPCSurface(t *testing.T) {
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadTurnsList, func(context.Context, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 		return appwire.ThreadTurnsListResponse{}, nil
@@ -110,7 +110,7 @@ func emptyHandler[T any](context.Context, T) (appwire.EmptyResponse, error) {
 	return appwire.EmptyResponse{}, nil
 }
 
-func TestLocalDaemonSourceUnavailableSurface(t *testing.T) {
+func fuzzScenarioLocalDaemonSourceUnavailableSurface(t *testing.T) {
 	source := NewLocalDaemonSource("", nil, nil)
 	ctx := context.Background()
 	if got, err := source.ListModels(ctx, appwire.ModelListParams{}); err != nil || len(got.Data) != 0 {
@@ -130,7 +130,7 @@ func TestLocalDaemonSourceUnavailableSurface(t *testing.T) {
 	}
 }
 
-func TestLocalDaemonRESTInterruptFailures(t *testing.T) {
+func fuzzScenarioLocalDaemonRESTInterruptFailures(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer token" {
 			t.Errorf("authorization = %q", r.Header.Get("Authorization"))
@@ -151,7 +151,7 @@ func TestLocalDaemonRESTInterruptFailures(t *testing.T) {
 	}
 }
 
-func TestCodexLiveThreadRemainingLifecycleBranches(t *testing.T) {
+func fuzzScenarioCodexLiveThreadRemainingLifecycleBranches(t *testing.T) {
 	var closed atomic.Int32
 	closedSignal := make(chan struct{})
 	live := &codexLiveThread{close: func() error { closed.Add(1); close(closedSignal); return nil }, done: make(chan struct{}), subscribers: map[chan appwire.Notification]struct{}{}}
@@ -180,7 +180,7 @@ func TestCodexLiveThreadRemainingLifecycleBranches(t *testing.T) {
 	live.retireIfNoSubscriber(time.Hour)
 }
 
-func TestLocalDaemonErrorMappingRemainingBranches(t *testing.T) {
+func fuzzScenarioLocalDaemonErrorMappingRemainingBranches(t *testing.T) {
 	for _, err := range []error{errors.New("I/O TIMEOUT"), appwire.InternalError("failed to get reader"), appwire.InternalError("semantic failure")} {
 		if got := localDaemonCallError(err); got == nil {
 			t.Fatalf("mapped %v to nil", err)
@@ -194,7 +194,7 @@ func TestLocalDaemonErrorMappingRemainingBranches(t *testing.T) {
 	}
 }
 
-func TestLocalDaemonSourceRejectsUnknownReferenceAcrossRPCSurface(t *testing.T) {
+func fuzzScenarioLocalDaemonSourceRejectsUnknownReferenceAcrossRPCSurface(t *testing.T) {
 	s := NewLocalDaemonSource("local", nil, nil)
 	ctx := context.Background()
 	ref := "local:missing"
@@ -232,7 +232,7 @@ func TestLocalDaemonSourceRejectsUnknownReferenceAcrossRPCSurface(t *testing.T) 
 	}
 }
 
-func TestCodexSourceRemainingRPCSurface(t *testing.T) {
+func fuzzScenarioCodexSourceRemainingRPCSurface(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(context.Context, map[string]any) (map[string]any, error) {
 		return map[string]any{"data": []map[string]any{{"id": "turn", "status": "completed"}}, "nextCursor": "next"}, nil
@@ -281,7 +281,7 @@ func TestCodexSourceRemainingRPCSurface(t *testing.T) {
 	}
 }
 
-func TestCodexSourceRejectsInvalidReferencesAcrossRPCSurface(t *testing.T) {
+func fuzzScenarioCodexSourceRejectsInvalidReferencesAcrossRPCSurface(t *testing.T) {
 	s := newTestCodexSource()
 	ctx := context.Background()
 	calls := []func() error{
@@ -311,7 +311,7 @@ func TestCodexSourceRejectsInvalidReferencesAcrossRPCSurface(t *testing.T) {
 	}
 }
 
-func TestCodexLiveThreadBacklogLimitFinishAndReplacement(t *testing.T) {
+func fuzzScenarioCodexLiveThreadBacklogLimitFinishAndReplacement(t *testing.T) {
 	live := &codexLiveThread{close: func() error { return nil }, done: make(chan struct{}), subscribers: map[chan appwire.Notification]struct{}{}}
 	for i := 0; i <= codexLiveBacklogLimit; i++ {
 		live.publish(appwire.Notification{})
@@ -338,7 +338,7 @@ func TestCodexLiveThreadBacklogLimitFinishAndReplacement(t *testing.T) {
 	}
 }
 
-func TestLocalDaemonFilteringAndRegistryInvalidRef(t *testing.T) {
+func fuzzScenarioLocalDaemonFilteringAndRegistryInvalidRef(t *testing.T) {
 	s := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
 		return []LocalDaemonEntry{
 			{Entry: rendezvous.Entry{Protocol: "wrong", Endpoint: "ws://x", ThreadID: "a"}},

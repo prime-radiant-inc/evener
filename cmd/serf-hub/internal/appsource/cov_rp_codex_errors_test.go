@@ -7,7 +7,7 @@ import (
 	"primeradiant.com/serf/appwire"
 )
 
-func TestCodexSourceSessionUnavailable(t *testing.T) {
+func fuzzScenarioCodexSourceSessionUnavailable(t *testing.T) {
 	// A canonical SessionUnavailable wire error is recognised.
 	if !codexSourceSessionUnavailable(appwire.SessionUnavailable("gone")) {
 		t.Error("SessionUnavailable wire error should be recognised")

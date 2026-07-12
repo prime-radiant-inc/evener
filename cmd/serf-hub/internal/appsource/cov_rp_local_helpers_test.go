@@ -6,7 +6,7 @@ import (
 	"primeradiant.com/serf/appwire"
 )
 
-func TestLocalDaemonThreadStatus(t *testing.T) {
+func fuzzScenarioLocalDaemonThreadStatus(t *testing.T) {
 	known := []string{
 		appwire.ThreadStatusActive,
 		appwire.ThreadStatusAwaiting,
@@ -29,7 +29,7 @@ func TestLocalDaemonThreadStatus(t *testing.T) {
 	}
 }
 
-func TestFirstLocalHelpers(t *testing.T) {
+func fuzzScenarioFirstLocalHelpers(t *testing.T) {
 	if got := firstLocalDaemonValue("", "", "third"); got != "third" {
 		t.Errorf("firstLocalDaemonValue = %q, want third", got)
 	}
@@ -44,7 +44,7 @@ func TestFirstLocalHelpers(t *testing.T) {
 	}
 }
 
-func TestLocalThreadTimestamps(t *testing.T) {
+func fuzzScenarioLocalThreadTimestamps(t *testing.T) {
 	// UpdatedAt wins when present; otherwise falls back to CreatedAt.
 	if got := localThreadUpdatedAt(appwire.Thread{UpdatedAt: 10, CreatedAt: 5}); got != 10 {
 		t.Errorf("updatedAt = %d, want 10", got)
@@ -67,7 +67,7 @@ func TestLocalThreadTimestamps(t *testing.T) {
 	}
 }
 
-func TestLocalThreadTitle(t *testing.T) {
+func fuzzScenarioLocalThreadTitle(t *testing.T) {
 	if got := localThreadTitle(appwire.Thread{Preview: "prev", SessionID: "sid"}); got != "prev" {
 		t.Errorf("title = %q, want prev", got)
 	}
@@ -76,7 +76,7 @@ func TestLocalThreadTitle(t *testing.T) {
 	}
 }
 
-func TestCompareLocalOrderText(t *testing.T) {
+func fuzzScenarioCompareLocalOrderText(t *testing.T) {
 	if compareLocalOrderText("apple", "banana") >= 0 {
 		t.Error("apple should sort before banana")
 	}
@@ -95,7 +95,7 @@ func TestCompareLocalOrderText(t *testing.T) {
 	}
 }
 
-func TestLocalThreadLess(t *testing.T) {
+func fuzzScenarioLocalThreadLess(t *testing.T) {
 	// More-recently-updated sorts first (descending).
 	newer := appwire.Thread{UpdatedAt: 200}
 	older := appwire.Thread{UpdatedAt: 100}

@@ -81,7 +81,7 @@ func dialTransport(transport appwire.Transport) appwireDialFunc {
 	}
 }
 
-func TestSourceDialSeamsPreserveCallerCancellation(t *testing.T) {
+func fuzzScenarioSourceDialSeamsPreserveCallerCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	dial := func(context.Context, string, *http.Client, http.Header) (appwire.Transport, error) {
@@ -111,7 +111,7 @@ func rendezvousEntry(endpoint string) rendezvous.Entry {
 	return rendezvous.Entry{Endpoint: endpoint}
 }
 
-func TestCodexConnectHandshakeFailures(t *testing.T) {
+func fuzzScenarioCodexConnectHandshakeFailures(t *testing.T) {
 	t.Run("initialize error", func(t *testing.T) {
 		transport := respondingTransport(func(method string) (any, error) {
 			return nil, errors.New(method + " failed")
@@ -172,7 +172,7 @@ func TestCodexConnectHandshakeFailures(t *testing.T) {
 	}
 }
 
-func TestCodexRPCFailureAndValidationBranches(t *testing.T) {
+func fuzzScenarioCodexRPCFailureAndValidationBranches(t *testing.T) {
 	dialErr := errors.New("connection refused")
 	dial := func(context.Context, string, *http.Client, http.Header) (appwire.Transport, error) {
 		return nil, dialErr
@@ -209,7 +209,7 @@ func TestCodexRPCFailureAndValidationBranches(t *testing.T) {
 	}
 }
 
-func TestCodexRPCResponseErrors(t *testing.T) {
+func fuzzScenarioCodexRPCResponseErrors(t *testing.T) {
 	newSource := func() *CodexSource {
 		transport := respondingTransport(func(method string) (any, error) {
 			if method == appwire.MethodInitialize {
@@ -257,7 +257,7 @@ func TestCodexRPCResponseErrors(t *testing.T) {
 	<-turnTransport.recvDone
 }
 
-func TestCodexInitialAndResumedTurnFailures(t *testing.T) {
+func fuzzScenarioCodexInitialAndResumedTurnFailures(t *testing.T) {
 	result := func(method string) (any, error) {
 		switch method {
 		case appwire.MethodInitialize:
@@ -301,7 +301,7 @@ func TestCodexInitialAndResumedTurnFailures(t *testing.T) {
 	}
 }
 
-func TestLocalDaemonRemainingTransportBranches(t *testing.T) {
+func fuzzScenarioLocalDaemonRemainingTransportBranches(t *testing.T) {
 	ctx := context.Background()
 	entry := rendezvousEntry("ws://daemon")
 	entry.ThreadID = "thread"
@@ -390,13 +390,13 @@ func TestLocalDaemonRemainingTransportBranches(t *testing.T) {
 
 }
 
-func TestForwardLocalDaemonNotificationCanceled(t *testing.T) {
+func fuzzScenarioForwardLocalDaemonNotificationCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	forwardLocalDaemonNotification(ctx, make(chan appwire.Notification), appwire.Notification{})
 }
 
-func TestLocalDaemonRESTDefaultClientAndRequestError(t *testing.T) {
+func fuzzScenarioLocalDaemonRESTDefaultClientAndRequestError(t *testing.T) {
 	s := NewLocalDaemonSource("local", nil, nil)
 	if err := s.restInterrupt(context.Background(), rendezvous.Entry{Address: "%"}); err == nil {
 		t.Fatal("invalid URL returned nil")
@@ -418,7 +418,7 @@ func TestLocalDaemonRESTDefaultClientAndRequestError(t *testing.T) {
 	}
 }
 
-func TestLocalDaemonInternalHandshakeErrorFallbacks(t *testing.T) {
+func fuzzScenarioLocalDaemonInternalHandshakeErrorFallbacks(t *testing.T) {
 	internal := appwire.InternalError("semantic failure")
 	if got := localDaemonInitializeError(internal); got == nil {
 		t.Fatal("initialize error mapped nil")

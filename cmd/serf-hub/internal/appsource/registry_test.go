@@ -75,7 +75,7 @@ func (f fakeSource) SubscribeThread(context.Context, appwire.ThreadReadParams) (
 	return nil, nil
 }
 
-func TestRegistryRoutesByRefSource(t *testing.T) {
+func fuzzScenarioRegistryRoutesByRefSource(t *testing.T) {
 	reg := NewRegistry()
 	reg.Add(fakeSource{id: "local"})
 	src, err := reg.SourceForRef("local:th_1")
@@ -87,14 +87,14 @@ func TestRegistryRoutesByRefSource(t *testing.T) {
 	}
 }
 
-func TestRegistryRejectsMissingSource(t *testing.T) {
+func fuzzScenarioRegistryRejectsMissingSource(t *testing.T) {
 	reg := NewRegistry()
 	if _, err := reg.SourceForRef("remote:th_1"); err == nil {
 		t.Fatal("expected missing source error")
 	}
 }
 
-func TestRegistryAllReturnsSourcesInIDOrder(t *testing.T) {
+func fuzzScenarioRegistryAllReturnsSourcesInIDOrder(t *testing.T) {
 	reg := NewRegistry()
 	// Insert in non-lexicographic order; "local" sorts between "codex" and "serf",
 	// so all three positions must be correct — a random permutation matches in only 1/6 runs.
