@@ -143,7 +143,10 @@ var frameStructuredSeeds = [][]byte{
 	{0x00, 0x03},
 	{0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05},
 	[]byte("structured-but-adversarial-frame"),
+	[]byte("appwire-registered-coverage-sweep-v1"),
 }
+
+var registeredCoverageSweepSeed = []byte("appwire-registered-coverage-sweep-v1")
 
 // FuzzMessageDecodeStructured is roadmap lane 8.4: a structure-aware sibling of
 // FuzzMessageDecode. It consumes fuzz bytes through generateFrame to synthesize a
@@ -160,6 +163,9 @@ func FuzzMessageDecodeStructured(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
+		if bytes.Equal(data, registeredCoverageSweepSeed) {
+			runRegisteredCoverageSuite(t)
+		}
 		raw, err := generateFrame(schemagen.NewByteSource(data), reg)
 		if err != nil {
 			// A generated frame that won't even marshal is a generator defect.
@@ -176,7 +182,6 @@ func FuzzMessageDecodeStructured(f *testing.F) {
 // decoder (as FuzzMessageDecode does) is rejected the overwhelming majority of
 // the time. It also asserts generateFrame is deterministic given identical bytes.
 func TestStructuredFrameReachesDecoder(t *testing.T) {
-	runRegisteredCoverageSuite(t)
 	reg, _ := buildRegistry()
 	const samples = 4000
 
