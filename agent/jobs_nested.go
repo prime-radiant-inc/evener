@@ -86,17 +86,21 @@ func (s *Session) walkDescendantJobs(filter listFilter) ([]jobListEntry, error) 
 
 	jobs := make([]jobListEntry, 0, len(rows))
 	for _, row := range rows {
-		// Project against the row's owner session (the T11 advisory), defaulting
-		// to the caller for safety when no owner was recorded.
-		projectSession := row.ownerSess
-		if projectSession == nil {
-			projectSession = s
-		}
-		entry := projectJobRecordForViewer(s, projectSession, row.rec)
-		entry.Depth = row.depth
-		jobs = append(jobs, entry)
+		jobs = append(jobs, projectDescendantWalkRow(s, row))
 	}
 	return jobs, nil
+}
+
+func projectDescendantWalkRow(viewer *Session, row descendantWalkRow) jobListEntry {
+	// Project against the row's owner session (the T11 advisory), defaulting
+	// to the caller for safety when no owner was recorded.
+	projectSession := row.ownerSess
+	if projectSession == nil {
+		projectSession = viewer
+	}
+	entry := projectJobRecordForViewer(viewer, projectSession, row.rec)
+	entry.Depth = row.depth
+	return entry
 }
 
 // keepIncomingDescendantRow decides whether an incoming record replaces the row
@@ -254,6 +258,8 @@ func liveSubagentSession(mgr *subagentManager, id string) *Session {
 	return sub.sess
 }
 
+var nestedFindJobRecord = findJobRecord
+
 func (s *Session) nestedOrLocalJobManager(jobID string) (*jobManager, *jobstore.JobRecord, error) {
 	local, err := sessionJobManager(s)
 	if err != nil {
@@ -264,10 +270,10 @@ func (s *Session) nestedOrLocalJobManager(jobID string) (*jobManager, *jobstore.
 		if forwarded != nil {
 			return local, forwarded, nil
 		}
-		rec, err := findJobRecord(local, jobID)
+		rec, err := nestedFindJobRecord(local, jobID)
 		return local, rec, err
 	}
-	rec, err := findJobRecord(owner, jobID)
+	rec, err := nestedFindJobRecord(owner, jobID)
 	if err != nil {
 		if errors.Is(err, jobstore.ErrStoreClosed) && forwarded != nil {
 			return local, forwarded, nil
@@ -688,10 +694,15 @@ func (jm *jobManager) recoveredEventTime(rec *jobstore.JobRecord) time.Time {
 	return jm.now()
 }
 
+var forwardEventAfterAppend func(*jobManager)
+
 func (jm *jobManager) forwardEvent(e jobstore.Event) error {
 	e.VisibleToSession = jm.sessionID
 	if err := jm.store.Append(e); err != nil {
 		return err
+	}
+	if forwardEventAfterAppend != nil {
+		forwardEventAfterAppend(jm)
 	}
 	if e.Kind != jobstore.EventJobNotificationPending || jm.enqueue == nil {
 		return nil
