@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
+	"primeradiant.com/serf/envvars"
 )
 
 // FuzzSpawnAndViewProgram is a deterministic branch program for the root TUI's
@@ -178,13 +179,16 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 			_ = m.spawnFieldHint()
 		}
 		m.closeSpawnForm()
+		t.Setenv(envvars.SERFModel.Name, "provider/model")
+		m.resetSpawnForm()
 		m.spawnFocus = hubSpawnFieldDir
 		m.spawnDirInput.SetValue(".")
 		_, _ = m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyTab})
 		_, _ = m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyCtrlL})
 		layer := appwire.LaunchConfigLayer{}
 		m.spawnLaunchOverrides = &layer
-		_, _ = m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyCtrlL})
+		_, openOverrides := m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyCtrlL})
+		_ = openOverrides()
 		m.spawnHarnesses = nil
 		m.cycleSpawnHarness()
 		m.spawnHarnesses = []string{"serf", "codex"}
@@ -255,6 +259,9 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 		m.spawnEmptyTaskReasons = nil
 		m.spawnHarness = "serf"
 		m.spawnHarnessKinds = map[string]string{"serf": "serf"}
+		m.client = nil
+		m.spawnModels = nil
+		_, _ = m.activateSpawnModelField()
 		m.spawnModel = ""
 		_, _ = m.submitSpawnForm()
 		m.spawnModels = []tuipick.ModelPickerItem{{ID: "bad", DisabledReason: "disabled"}}
@@ -263,6 +270,17 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 		m.spawnModels = []tuipick.ModelPickerItem{{ID: "ok"}}
 		m.spawnModel = "ok"
 		_, _ = m.submitSpawnForm()
+		m.spawnFocus = hubSpawnFieldModel
+		m.spawnHarness = "codex"
+		m.spawnHarnessKinds = map[string]string{"codex": "codex"}
+		m.spawnHarnessModels = nil
+		_ = m.spawnFieldHint()
+		m.spawnHarness = "serf"
+		m.spawnHarnessKinds = map[string]string{"serf": "serf"}
+		m.spawnModel, m.spawnModels = "", []tuipick.ModelPickerItem{{ID: "ok"}}
+		_ = m.spawnView()
+		m.selected = -1
+		_ = m.spawnWorkingDir()
 		m.tree.Projects = []hubTreeProject{{Key: "p", WorkingDir: "/work/p"}}
 		m.rows = []hubRow{{kind: hubRowProject, projectKey: "p", project: "p"}}
 		m.selected = 0
@@ -278,5 +296,15 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 		m.err = errors.New("spawn")
 		m.spawnProject = "project"
 		_ = m.spawnView()
+
+		// Validation errors return before the inert client can issue RPC.
+		submit := newHubModel(&appwire.Client{}, "hub")
+		submit.spawnHarness = "serf"
+		submit.spawnHarnessKinds = map[string]string{"serf": "serf"}
+		submit.spawnModel = ""
+		_, _ = submit.submitSpawnForm()
+		submit.spawnModels = []tuipick.ModelPickerItem{{ID: "bad", DisabledReason: "disabled"}}
+		submit.spawnModel = "bad"
+		_, _ = submit.submitSpawnForm()
 	})
 }

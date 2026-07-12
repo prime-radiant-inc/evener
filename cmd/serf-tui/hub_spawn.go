@@ -226,9 +226,6 @@ func (m *hubModel) resizeSpawnInput() {
 
 func (m *hubModel) resizeSpawnInputFrom(prevHeight int) {
 	wantHeight := m.session.input.LineCount()
-	if wantHeight < 1 {
-		wantHeight = 1
-	}
 	if wantHeight > m.session.input.MaxHeight {
 		wantHeight = m.session.input.MaxHeight
 	}

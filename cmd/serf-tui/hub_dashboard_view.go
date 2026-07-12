@@ -86,20 +86,13 @@ func (m hubModel) dashboardView() string {
 		b.WriteString("\n\n")
 	}
 	if len(rows) == 0 {
-		if strings.TrimSpace(m.dashboardFilter.Value()) != "" {
-			b.WriteString("No sessions match this filter.\n\n")
-			return tuiprim.AppShell{
-				TopBar: topBar,
-				Body:   b.String(),
-				Footer: "esc clear filter",
-				Height: m.height,
-			}.View()
-		}
-		b.WriteString("No live sessions are running.\n\n")
+		// foldedDashboardRows always includes the launch row, so an empty
+		// result can only come from an active, non-empty filter.
+		b.WriteString("No sessions match this filter.\n\n")
 		return tuiprim.AppShell{
 			TopBar: topBar,
 			Body:   b.String(),
-			Footer: emptyDashboardFooter(width),
+			Footer: "esc clear filter",
 			Height: m.height,
 		}.View()
 	}

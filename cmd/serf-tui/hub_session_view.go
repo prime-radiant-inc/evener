@@ -135,11 +135,9 @@ func (m hubModel) sessionCapabilityStatusLabel() string {
 	case hubComposerModeQueue:
 		return "queue: ready"
 	case hubComposerModeReadOnly:
-		reason := m.sessionComposerReadOnlyReason()
-		if reason == "" {
-			reason = "send is not available"
-		}
-		return "read-only: " + reason
+		// sessionComposerMode returns read-only only when the capability
+		// checks in sessionComposerReadOnlyReason produce a concrete reason.
+		return "read-only: " + m.sessionComposerReadOnlyReason()
 	case hubComposerModeFork:
 		return "fork: draft"
 	default:

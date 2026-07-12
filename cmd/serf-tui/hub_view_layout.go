@@ -23,9 +23,6 @@ func joinDashboardColumns(left, right string, leftWidth, rightWidth, totalWidth 
 			rightLine = tuitext.TruncateText(rightLines[i], rightWidth)
 		}
 		padding := leftWidth - lipgloss.Width(leftLine)
-		if padding < 0 {
-			padding = 0
-		}
 		line := leftLine + strings.Repeat(" ", padding) + "  " + rightLine
 		b.WriteString(tuitext.TruncateText(line, totalWidth))
 		b.WriteString("\n")
