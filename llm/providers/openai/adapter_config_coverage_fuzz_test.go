@@ -26,6 +26,9 @@ func FuzzOpenAIAdapterConfigProgram(f *testing.F) {
 		if len(name)+len(key)+len(base)+len(org)+len(project)+len(conversation) > 1<<16 {
 			t.Skip()
 		}
+		// Environment values and filesystem paths cannot contain NUL bytes.
+		clean := func(value string) string { return strings.ReplaceAll(value, "\x00", "") }
+		name, key, base, org, project, conversation = clean(name), clean(key), clean(base), clean(org), clean(project), clean(conversation)
 		stateHome := t.TempDir()
 		hasher := llm.NewContinuationHasher([]byte("adapter-config-coverage"))
 
