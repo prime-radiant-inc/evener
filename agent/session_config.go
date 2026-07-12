@@ -202,6 +202,19 @@ type SessionConfig struct {
 // deterministic. Never set by app callers; never persisted (json:"-" on the
 // parent field).
 type testConfig struct {
+	// subagentPrepareFault injects deterministic external-boundary failures into
+	// prepareSubagentRun. Nil preserves every production boundary.
+	subagentPrepareFault func(point string) error
+	// subagentAfterPrepare runs after spawnAgent has prepared a child but before
+	// it tracks the child, allowing tests to reproduce the close race.
+	subagentAfterPrepare func(*Session)
+	// subagentReserveSlot replaces only the retained-terminal reservation boundary.
+	subagentReserveSlot func(*Session) ([]*subagent, error)
+	// subagentReserveTreeSlot replaces only the tree-capacity reservation boundary.
+	subagentReserveTreeSlot func(*Session) (*treeReservation, bool)
+	// subagentStopGated overrides child stop-gating when handled is true.
+	subagentStopGated func(*Session, string) (stopped, handled bool)
+
 	// worktreeGitRunner replaces only the Git subprocess boundary used by the
 	// native worktree lifecycle. Package-agent tests use it to replay the real
 	// Session lifecycle against a scripted Git model without launching a host

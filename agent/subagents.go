@@ -273,9 +273,9 @@ func cloneMap(in map[string]any) map[string]any {
 		return cloneShallowMap(in)
 	}
 	var out map[string]any
-	if err := json.Unmarshal(b, &out); err != nil {
-		return cloneShallowMap(in)
-	}
+	// json.Marshal only returns syntactically valid JSON. Unmarshal into the
+	// matching generic shape therefore cannot fail here.
+	_ = json.Unmarshal(b, &out)
 	return out
 }
 
@@ -330,6 +330,9 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	// path can release it. The tree counter bounds delegate turns (spec §4); this
 	// in-process turn is not one, so return the slot rather than leak it.
 	releasePreparedTreeSlot(prepared)
+	if hook := s.cfg.testOnly.subagentAfterPrepare; hook != nil {
+		hook(s)
+	}
 	if err := s.trackAndLaunchPreparedSubagent(prepared); err != nil {
 		prepared.sub.sess.Close()
 		return "", err
@@ -481,6 +484,9 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	if agent != nil && len(agent.Skills) > 0 {
 		for _, skillName := range agent.Skills {
 			body, err := skill.ResolveSkillContent(s.skills, skillName)
+			if fault := s.subagentPrepareFault("skill_resolve"); fault != nil {
+				err = fault
+			}
 			if err != nil {
 				continue
 			}
@@ -520,8 +526,6 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 			}
 			if len(allowedTools) > 0 {
 				allowedTools = appendUniqueStrings(allowedTools, toolName)
-			} else {
-				deniedTools = removeStrings(deniedTools, []string{toolName})
 			}
 		}
 	}
@@ -541,14 +545,18 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	}
 	if workingDir = strings.TrimSpace(workingDir); workingDir != "" {
 		le, ok := subEnv.(*execenv.LocalExecutionEnvironment)
-		if !ok {
+		if s.subagentPrepareFault("working_dir_env") != nil || !ok {
 			return nil, errors.New("execution environment does not support working_dir override")
 		}
 		rerooted := le.WithWorkingDirectory(workingDir)
 		// Fail closed: if the sandbox policy cannot be re-anchored to the child's
 		// worktree lane, refuse the spawn rather than launch a child that would run
 		// with the parent's roots or none (a containment hole).
-		if err := rerooted.SandboxReRootError(); err != nil {
+		rerootErr := rerooted.SandboxReRootError()
+		if fault := s.subagentPrepareFault("sandbox_reroot"); fault != nil {
+			rerootErr = fault
+		}
+		if err := rerootErr; err != nil {
 			return nil, fmt.Errorf("sandbox cannot confine the subagent to %s: %w", workingDir, err)
 		}
 		subEnv = rerooted
@@ -561,17 +569,29 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	// parent env first when there was no working-dir re-root to clone it for us.
 	if reqSandbox != nil {
 		le, ok := subEnv.(*execenv.LocalExecutionEnvironment)
-		if !ok {
+		if s.subagentPrepareFault("sandbox_env") != nil || !ok {
 			return nil, errors.New("execution environment does not support a per-delegate sandbox")
 		}
 		if workingDir == "" {
 			le = le.WithWorkingDirectory(le.WorkingDirectory())
 		}
-		rp, err := sandbox.Resolve(*reqSandbox, s.sandboxHostFacts(), le.WorkingDirectory())
+		var rp sandbox.ResolvedPolicy
+		var err error
+		if fault := s.subagentPrepareFault("sandbox_resolve"); fault != nil {
+			err = fault
+		} else {
+			rp, err = sandbox.Resolve(*reqSandbox, s.sandboxHostFacts(), le.WorkingDirectory())
+		}
 		if err != nil {
 			return nil, fmt.Errorf("per-delegate sandbox: %w", err)
 		}
-		if err := le.EnableSandbox(&rp); err != nil {
+		var enableErr error
+		if fault := s.subagentPrepareFault("sandbox_enable"); fault != nil {
+			enableErr = fault
+		} else {
+			enableErr = le.EnableSandbox(&rp)
+		}
+		if err := enableErr; err != nil {
 			return nil, fmt.Errorf("per-delegate sandbox: %w", err)
 		}
 		subEnv = le
@@ -588,7 +608,13 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	if factory := s.cfg.testOnly.childClientFactory; factory != nil {
 		childClient = factory()
 	}
-	subSess, err := NewSession(childClient, subProfile, subEnv, subCfg)
+	var subSess *Session
+	var err error
+	if fault := s.subagentPrepareFault("new_session"); fault != nil {
+		err = fault
+	} else {
+		subSess, err = NewSession(childClient, subProfile, subEnv, subCfg)
+	}
 	if err != nil {
 		// A per-delegate sandbox EnableSandbox'd a FRESH env (re-rooted or cloned) and
 		// provisioned a scratch dir it owns; this failed spawn never hands subEnv to a
@@ -619,7 +645,11 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	// Populate default tasks from agent definition + parent tasks.
 	if agent != nil && len(agent.Tasks) > 0 {
 		subStore := subSess.getOrCreateTaskStore()
-		if err := subStore.PopulateFromTemplates(agent.Tasks, parentTasks); err != nil {
+		populateErr := subStore.PopulateFromTemplates(agent.Tasks, parentTasks)
+		if fault := s.subagentPrepareFault("task_populate"); fault != nil {
+			populateErr = fault
+		}
+		if err := populateErr; err != nil {
 			// Non-fatal: surface as a warning so the spawn still proceeds but the
 			// failure is observable instead of silently swallowed.
 			s.emit(events.EventWarning, warningDataFromError("failed to populate subagent tasks from templates", err))
@@ -634,7 +664,12 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	// the child is fully built, but a failure must not leak it: close the created
 	// session (mirroring the created-but-not-tracked cleanup above) before returning.
 	// On success, GC-evicted records are closed here, OUTSIDE the manager mutex.
-	evicted, err := s.subagents.reserveSlot()
+	var evicted []*subagent
+	if reserve := s.cfg.testOnly.subagentReserveSlot; reserve != nil {
+		evicted, err = reserve(s)
+	} else {
+		evicted, err = s.subagents.reserveSlot()
+	}
 	if err != nil {
 		subSess.Close()
 		return nil, err
@@ -649,7 +684,13 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	// the tree_at_capacity error to the tool call. Ownership of the reservation
 	// transfers to the delegate runningJob at attach; an unattached prepared run
 	// releases it (releasePreparedTreeSlot).
-	treeSlot, ok := s.reserveTreeSlot()
+	var treeSlot *treeReservation
+	var ok bool
+	if reserve := s.cfg.testOnly.subagentReserveTreeSlot; reserve != nil {
+		treeSlot, ok = reserve(s)
+	} else {
+		treeSlot, ok = s.reserveTreeSlot()
+	}
 	if !ok {
 		subSess.Close()
 		return nil, errTreeAtCapacity
@@ -900,7 +941,13 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 			// It is idempotent and self-terminating: it re-drives only when real
 			// attention remains, each re-drive is a fresh goroutine, and it stops
 			// when peek==0 && !hasPendingWatchSends.
-			if s.childStopGated(childSess.id) {
+			stopGated := s.childStopGated(childSess.id)
+			if hook := s.cfg.testOnly.subagentStopGated; hook != nil {
+				if stopped, handled := hook(s, childSess.id); handled {
+					stopGated = stopped
+				}
+			}
+			if stopGated {
 				return
 			}
 			if childSess.peekNotifications() > 0 || (childSess.jobManager != nil && childSess.jobManager.hasPendingWatchSends()) {
@@ -912,6 +959,13 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		_, _ = childSess.ProcessInputKind(driveCtx, "", nil, EntryNotification)
 	}()
 	return true
+}
+
+func (s *Session) subagentPrepareFault(point string) error {
+	if hook := s.cfg.testOnly.subagentPrepareFault; hook != nil {
+		return hook(point)
+	}
+	return nil
 }
 
 func resetSubagentForRunLocked(sub *subagent, cancel context.CancelFunc, startedAt time.Time) {
