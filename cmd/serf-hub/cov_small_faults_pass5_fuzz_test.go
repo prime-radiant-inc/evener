@@ -45,13 +45,13 @@ func FuzzSmallFaultsPass5(f *testing.F) {
 
 		oldHome, oldRead := configUserHomeDir, configReadFile
 		oldStat, oldOpen := docStat, docOpen
-		oldRecOpen, oldRecMarshal := recorderOpenFile, recorderMarshal
+		oldRecOpen, oldRecMarshal := httpRecorderOpenFile, httpRecorderMarshal
 		oldMarshal, oldResolve, oldImageStat, oldImageRead := outputImageMarshal, outputImageResolve, outputImageStat, outputImageReadFile
 		oldEval, oldRel, oldToken := outputImageEvalSymlinks, outputImageRel, hubTokenRead
 		defer func() {
 			configUserHomeDir, configReadFile = oldHome, oldRead
 			docStat, docOpen = oldStat, oldOpen
-			recorderOpenFile, recorderMarshal = oldRecOpen, oldRecMarshal
+			httpRecorderOpenFile, httpRecorderMarshal = oldRecOpen, oldRecMarshal
 			outputImageMarshal, outputImageResolve, outputImageStat, outputImageReadFile = oldMarshal, oldResolve, oldImageStat, oldImageRead
 			outputImageEvalSymlinks, outputImageRel, hubTokenRead = oldEval, oldRel, oldToken
 		}()
@@ -137,15 +137,15 @@ func FuzzSmallFaultsPass5(f *testing.F) {
 		t.Setenv(envvars.SERFRecordHTTP.Name, "")
 		_ = newHTTPRequestRecorder(root)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 		t.Setenv(envvars.SERFRecordHTTP.Name, "1")
-		recorderOpenFile = func(string, int, os.FileMode) (*os.File, error) { return nil, errors.New("open") }
+		httpRecorderOpenFile = func(string, int, os.FileMode) (*os.File, error) { return nil, errors.New("open") }
 		_ = newHTTPRequestRecorder(root)
-		recorderOpenFile = oldRecOpen
+		httpRecorderOpenFile = oldRecOpen
 		h := newHTTPRequestRecorder(root)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { _, _ = io.ReadAll(r.Body) }))
 		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/x?q=1", strings.NewReader(strings.Repeat("a", httpRecorderMaxBodyBytes+1))))
 		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", nil))
-		recorderMarshal = func(any) ([]byte, error) { return nil, errors.New("marshal") }
+		httpRecorderMarshal = func(any) ([]byte, error) { return nil, errors.New("marshal") }
 		newHTTPRequestRecorder(root)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
-		recorderMarshal = oldRecMarshal
+		httpRecorderMarshal = oldRecMarshal
 
 		var many strings.Builder
 		for i := 0; i < 25; i++ {
