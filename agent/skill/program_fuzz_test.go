@@ -187,6 +187,15 @@ func FuzzSkillDiscoveryProgram(f *testing.F) {
 			t.Fatal("cloneSkillMetaMap exposed the original map")
 		}
 
+		cachedDir, cachedSkills := embeddedSkillsCache.dir, embeddedSkillsCache.skills
+		embeddedSkillsCache.dir = filepath.Join(root, "missing-cache")
+		embeddedSkillsCache.skills = nil
+		t.Setenv("TMPDIR", filepath.Join(root, "missing-tmp"))
+		if _, err := EmbeddedSkills(); err == nil {
+			t.Fatal("EmbeddedSkills temp-directory failure did not propagate")
+		}
+		embeddedSkillsCache.dir, embeddedSkillsCache.skills = cachedDir, cachedSkills
+
 		skillProgramAssertExtractionFailures(t)
 	})
 }

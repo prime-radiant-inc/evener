@@ -16,6 +16,17 @@ import (
 	"primeradiant.com/serf/agent/skill"
 )
 
+var (
+	pluginAbs              = filepath.Abs
+	pluginReadFile         = os.ReadFile
+	pluginReadDir          = os.ReadDir
+	pluginStat             = os.Stat
+	pluginDiscoverAgents   = discoverPluginAgents
+	pluginDiscoverCommands = discoverPluginCommands
+	pluginDiscoverHooks    = discoverPluginHooksDiag
+	pluginDiscoverMCP      = discoverPluginMCPConfigs
+)
+
 // Manifest represents a parsed plugin.json file.
 // Fields like Author, Commands, Agents, Hooks, and MCPServers use
 // json.RawMessage because their shapes vary (string, array, or object).
@@ -174,7 +185,7 @@ func discoverPluginMCPConfigs(pluginDir string, manifestMCPServers json.RawMessa
 // loadPluginMCPFile reads a plugin's .mcp.json file, expands
 // ${CLAUDE_PLUGIN_ROOT} in the raw JSON, then parses server configs.
 func loadPluginMCPFile(path, pluginDir string) ([]mcpconfig.ServerConfig, error) {
-	data, err := os.ReadFile(path)
+	data, err := pluginReadFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -205,21 +216,21 @@ func Load(dir string) (Instance, error) {
 	if err != nil {
 		return Instance{}, fmt.Errorf("resolving plugin dir %q: %w", dir, err)
 	}
-	resolved, err = filepath.Abs(resolved)
+	resolved, err = pluginAbs(resolved)
 	if err != nil {
 		return Instance{}, fmt.Errorf("resolving plugin dir %q: %w", dir, err)
 	}
 
 	manifestPath := filepath.Join(resolved, ".claude-plugin", "plugin.json")
 	flavor := "claude"
-	if _, err := os.Stat(manifestPath); err != nil {
+	if _, err := pluginStat(manifestPath); err != nil {
 		if !os.IsNotExist(err) {
 			return Instance{}, fmt.Errorf("reading plugin manifest %q: %w", manifestPath, err)
 		}
 		manifestPath = filepath.Join(resolved, ".codex-plugin", "plugin.json")
 		flavor = "codex"
 	}
-	data, err := os.ReadFile(manifestPath)
+	data, err := pluginReadFile(manifestPath)
 	if err != nil {
 		return Instance{}, fmt.Errorf("reading plugin manifest %q: %w", manifestPath, err)
 	}
@@ -232,19 +243,19 @@ func Load(dir string) (Instance, error) {
 	lp := Instance{Manifest: manifest, Dir: resolved, ManifestFlavor: flavor, ManifestPath: manifestPath}
 	lp.Skills = discoverPluginSkills(resolved, manifest.Name)
 
-	agents, err := discoverPluginAgents(resolved, manifest.Agents, manifest.Name)
+	agents, err := pluginDiscoverAgents(resolved, manifest.Agents, manifest.Name)
 	if err != nil {
 		return Instance{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
 	}
 	lp.Agents = agents
 
-	commands, err := discoverPluginCommands(resolved, manifest.Commands, manifest.Name)
+	commands, err := pluginDiscoverCommands(resolved, manifest.Commands, manifest.Name)
 	if err != nil {
 		return Instance{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
 	}
 	lp.Commands = commands
 
-	hooks, unsupportedHooks, unknownHooks, err := discoverPluginHooksDiag(resolved, manifest.Hooks, manifest.Name)
+	hooks, unsupportedHooks, unknownHooks, err := pluginDiscoverHooks(resolved, manifest.Hooks, manifest.Name)
 	if err != nil {
 		return Instance{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
 	}
@@ -252,7 +263,7 @@ func Load(dir string) (Instance, error) {
 	lp.UnsupportedHooks = unsupportedHooks
 	lp.UnknownHooks = unknownHooks
 
-	mcpConfigs, mcpWarnings, err := discoverPluginMCPConfigs(resolved, manifest.MCPServers, manifest.Name)
+	mcpConfigs, mcpWarnings, err := pluginDiscoverMCP(resolved, manifest.MCPServers, manifest.Name)
 	if err != nil {
 		return Instance{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
 	}
@@ -338,7 +349,7 @@ func resolveComponentDirs(pluginDir string, defaultName string, override any) []
 
 	// Include the default dir if it exists on disk.
 	defaultDir := filepath.Join(pluginDir, defaultName)
-	if info, err := os.Stat(defaultDir); err == nil && info.IsDir() {
+	if info, err := pluginStat(defaultDir); err == nil && info.IsDir() {
 		dirs = append(dirs, defaultDir)
 	}
 
@@ -364,7 +375,7 @@ func resolveComponentDirs(pluginDir string, defaultName string, override any) []
 func componentMarkdownFiles(paths []string) ([]string, error) {
 	var files []string
 	for _, p := range paths {
-		info, err := os.Stat(p)
+		info, err := pluginStat(p)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -377,7 +388,7 @@ func componentMarkdownFiles(paths []string) ([]string, error) {
 			}
 			continue
 		}
-		entries, err := os.ReadDir(p)
+		entries, err := pluginReadDir(p)
 		if err != nil {
 			return nil, fmt.Errorf("reading component dir %q: %w", p, err)
 		}

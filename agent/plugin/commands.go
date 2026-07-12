@@ -3,7 +3,6 @@ package plugin
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -95,7 +94,7 @@ func discoverPluginCommands(pluginDir string, commandsOverride json.RawMessage, 
 
 	commands := map[string]Command{}
 	for _, file := range files {
-		data, err := os.ReadFile(file)
+		data, err := pluginReadFile(file)
 		if err != nil {
 			return nil, fmt.Errorf("reading command file %q: %w", filepath.Base(file), err)
 		}

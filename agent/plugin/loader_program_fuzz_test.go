@@ -5,6 +5,7 @@ package plugin
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/agent/mcpconfig"
 )
 
 // FuzzPluginLoaderProgram builds a bounded set of real plugin trees and drives
@@ -479,6 +482,7 @@ func assertPluginLoaderProgramErrorPaths(t *testing.T, fx pluginLoaderProgramFix
 		"---\nname: a\ndescription: d\ntools:\n  - Read\n  - 7\n---\n",
 		"---\nname: a\ndescription: d\ntools: 7\n---\n",
 		"---\nname: a\ndescription: d\nskills:\n  - 7\n---\n",
+		"---\nname: a\ndescription: d\nskills: 7\n---\n",
 		"---\nname: a\ndescription: d\ntasks: one\n---\n",
 		"---\nname: a\ndescription: d\ntasks:\n  - one\n---\n",
 	} {
@@ -493,6 +497,10 @@ func assertPluginLoaderProgramErrorPaths(t *testing.T, fx pluginLoaderProgramFix
 	scalarSkill, err := ParseAgent([]byte("---\nname: a\ndescription: d\nskills: one\n---\n"), "p")
 	if err != nil || !reflect.DeepEqual(scalarSkill.Skills, []string{"one"}) {
 		t.Fatalf("scalar agent skill was not accepted: %#v, %v", scalarSkill, err)
+	}
+	blankSkill, err := ParseAgent([]byte("---\nname: a\ndescription: d\nskills:\n  - '  '\n---\n"), "p")
+	if err != nil || len(blankSkill.Skills) != 0 {
+		t.Fatalf("blank agent skill was not ignored: %#v, %v", blankSkill, err)
 	}
 	detailed, err := ParseAgent([]byte("---\nname: detailed\ndescription: d\ntasks:\n  - title: t\n    prompt: p\n    reasoning_effort: high\n    type: research\n    insert: append\n---\nbody\n"), "p")
 	if err != nil || len(detailed.Tasks) != 1 || detailed.Tasks[0].ReasoningEffort != "high" || detailed.Tasks[0].Insert != "append" {
@@ -528,6 +536,10 @@ func assertPluginLoaderProgramErrorPaths(t *testing.T, fx pluginLoaderProgramFix
 	if commands, err := discoverPluginCommands(fx.alpha, json.RawMessage(`"missing-commands"`), "alpha"); err != nil || len(commands) != 1 {
 		t.Fatalf("commands missing override = %#v, %v", commands, err)
 	}
+	if _, _, _, err := discoverPluginHooksDiag(fx.alpha, json.RawMessage(`"unterminated`), "alpha"); err == nil {
+		t.Fatal("malformed hooks path unexpectedly succeeded")
+	}
+	assertPluginLoaderProgramInjectedFailures(t, fx)
 
 	for _, data := range [][]byte{
 		[]byte(`{"PreToolUse":{}}`),
@@ -571,6 +583,75 @@ func assertPluginLoaderProgramErrorPaths(t *testing.T, fx pluginLoaderProgramFix
 	if _, err := LoadSettings(fx.workDir, "directory"); err == nil {
 		t.Fatal("LoadSettings(directory path) unexpectedly succeeded")
 	}
+}
+
+func assertPluginLoaderProgramInjectedFailures(t *testing.T, fx pluginLoaderProgramFixture) {
+	t.Helper()
+	fault := errors.New("scripted filesystem fault")
+	origAbs, origReadFile, origReadDir, origStat := pluginAbs, pluginReadFile, pluginReadDir, pluginStat
+	origAgents, origCommands, origHooks, origMCP := pluginDiscoverAgents, pluginDiscoverCommands, pluginDiscoverHooks, pluginDiscoverMCP
+	defer func() {
+		pluginAbs, pluginReadFile, pluginReadDir, pluginStat = origAbs, origReadFile, origReadDir, origStat
+		pluginDiscoverAgents, pluginDiscoverCommands, pluginDiscoverHooks, pluginDiscoverMCP = origAgents, origCommands, origHooks, origMCP
+	}()
+
+	pluginAbs = func(string) (string, error) { return "", fault }
+	assertLoaderProgramFailure(t, fx.alpha, "absolute path fault")
+	pluginAbs = origAbs
+
+	pluginStat = func(string) (os.FileInfo, error) { return nil, fault }
+	if _, err := componentMarkdownFiles([]string{"component"}); err == nil {
+		t.Fatal("component stat fault did not propagate")
+	}
+	if _, err := discoverPluginAgents(fx.alpha, json.RawMessage(`"component"`), "alpha"); err == nil {
+		t.Fatal("agent component fault did not propagate")
+	}
+	if _, err := discoverPluginCommands(fx.alpha, json.RawMessage(`"component"`), "alpha"); err == nil {
+		t.Fatal("command component fault did not propagate")
+	}
+	pluginStat = origStat
+	pluginReadDir = func(string) ([]os.DirEntry, error) { return nil, fault }
+	if _, err := componentMarkdownFiles([]string{fx.alpha}); err == nil {
+		t.Fatal("component directory read fault did not propagate")
+	}
+	pluginReadDir = origReadDir
+	componentDir := filepath.Join(fx.root, "component-filter")
+	if err := os.MkdirAll(filepath.Join(componentDir, "nested"), 0o755); err != nil {
+		t.Fatalf("mkdir component filter: %v", err)
+	}
+	if files, err := componentMarkdownFiles([]string{componentDir}); err != nil || len(files) != 0 {
+		t.Fatalf("component directory filter = %#v, %v", files, err)
+	}
+
+	pluginReadFile = func(path string) ([]byte, error) {
+		if strings.HasSuffix(path, "helper.md") || strings.HasSuffix(path, "hello.md") {
+			return nil, fault
+		}
+		return origReadFile(path)
+	}
+	if _, err := discoverPluginAgents(fx.alpha, json.RawMessage(`"agents/helper.md"`), "alpha"); err == nil {
+		t.Fatal("agent file read fault did not propagate")
+	}
+	if _, err := discoverPluginCommands(fx.alpha, json.RawMessage(`"commands/hello.md"`), "alpha"); err == nil {
+		t.Fatal("command file read fault did not propagate")
+	}
+	pluginReadFile = origReadFile
+
+	pluginDiscoverAgents = func(string, json.RawMessage, string) (map[string]Agent, error) { return nil, fault }
+	assertLoaderProgramFailure(t, fx.alpha, "agent discovery fault")
+	pluginDiscoverAgents = origAgents
+	pluginDiscoverCommands = func(string, json.RawMessage, string) (map[string]Command, error) { return nil, fault }
+	assertLoaderProgramFailure(t, fx.alpha, "command discovery fault")
+	pluginDiscoverCommands = origCommands
+	pluginDiscoverHooks = func(string, json.RawMessage, string) (map[HookEvent][]RegisteredHook, map[HookEvent]bool, map[string]bool, error) {
+		return nil, nil, nil, fault
+	}
+	assertLoaderProgramFailure(t, fx.alpha, "hook discovery fault")
+	pluginDiscoverHooks = origHooks
+	pluginDiscoverMCP = func(string, json.RawMessage, string) ([]mcpconfig.ServerConfig, []string, error) {
+		return nil, nil, fault
+	}
+	assertLoaderProgramFailure(t, fx.alpha, "MCP discovery fault")
 }
 
 func pluginLoaderProgramInstanceIsZero(inst Instance) bool {

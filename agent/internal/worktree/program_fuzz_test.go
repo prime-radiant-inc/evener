@@ -265,6 +265,30 @@ func assertWorktreeMergedPrograms(t *testing.T, target, tip, base string) {
 	if err != nil || !remoteAhead.Merged || remoteAhead.TargetRef != "refs/remotes/origin/"+target {
 		t.Fatalf("Merged remote-ahead = %#v, %v", remoteAhead, err)
 	}
+	if _, err := Merged(func(args ...string) (string, error) {
+		switch args[0] {
+		case "rev-parse":
+			return "local-tip\n", nil
+		case "for-each-ref":
+			return "refs/remotes/origin/" + target + " remote-tip\n", nil
+		default:
+			return "", errors.New("comparison fault")
+		}
+	}, tip, target, base); err == nil {
+		t.Fatal("Merged remote comparison fault did not propagate")
+	}
+	if _, err := Merged(func(args ...string) (string, error) {
+		switch args[0] {
+		case "rev-parse":
+			return "local-tip\n", nil
+		case "for-each-ref":
+			return "", nil
+		default:
+			return "", errors.New("merge check fault")
+		}
+	}, tip, target, base); err == nil {
+		t.Fatal("Merged candidate check fault did not propagate")
+	}
 
 	noRefs, err := Merged(func(args ...string) (string, error) {
 		if args[0] == "for-each-ref" {
@@ -321,6 +345,12 @@ func FuzzSidecarLifecycleProgram(f *testing.F) {
 			CreatedAt:       createdAt,
 		}
 		want := worktreeProgramJSONSidecar(t, sc)
+		origWrite := sidecarWrite
+		sidecarWrite = func(*os.File, []byte) (int, error) { return 0, errors.New("scripted write fault") }
+		if err := WriteSidecarExcl(dir, "write-fault", sc); err == nil {
+			t.Fatal("WriteSidecarExcl write fault did not propagate")
+		}
+		sidecarWrite = origWrite
 		if err := WriteSidecarExcl(dir, sc.Name, sc); err != nil {
 			t.Fatalf("WriteSidecarExcl: %v", err)
 		}
@@ -342,6 +372,9 @@ func FuzzSidecarLifecycleProgram(f *testing.F) {
 		updated, err := ReadSidecar(dir, sc.Name)
 		if err != nil || updated != want {
 			t.Fatalf("updated sidecar = %#v, %v; want %#v", updated, err, want)
+		}
+		if age, err := SidecarAge(dir, sc.Name); err != nil || age < 0 {
+			t.Fatalf("SidecarAge existing = %v, %v", age, err)
 		}
 
 		if err := os.WriteFile(filepath.Join(dir, "note.txt"), []byte("noise"), 0o644); err != nil {

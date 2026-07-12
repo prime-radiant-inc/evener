@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -205,7 +204,7 @@ func discoverPluginAgents(pluginDir string, agentsOverride json.RawMessage, plug
 
 	agents := map[string]Agent{}
 	for _, file := range files {
-		data, err := os.ReadFile(file)
+		data, err := pluginReadFile(file)
 		if err != nil {
 			return nil, fmt.Errorf("reading agent file %q: %w", filepath.Base(file), err)
 		}

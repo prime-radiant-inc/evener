@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+var sidecarWrite = func(f *os.File, raw []byte) (int, error) { return f.Write(raw) }
+
 // Sidecar is the on-disk shape of a managed worktree's metadata JSON file
 // (spec §6 "Metadata sidecar" — field names and json tags are normative).
 // It is the sole source of a managed worktree's provenance: who created it,
@@ -49,15 +51,15 @@ func sidecarPath(metaDir, name string) string {
 // §3 step 5). On a losing race the returned error satisfies os.IsExist.
 func WriteSidecarExcl(metaDir, name string, sc Sidecar) error {
 	path := sidecarPath(metaDir, name)
+	raw, _ := json.MarshalIndent(sc, "", "  ")
+	raw = append(raw, '\n')
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(sc); err != nil {
+	if _, err := sidecarWrite(f, raw); err != nil {
 		_ = f.Close()
-		return fmt.Errorf("worktree: encode sidecar %s: %w", path, err)
+		return err
 	}
 	return f.Close()
 }
@@ -88,18 +90,7 @@ func UpdateSidecar(metaDir, name string, mutate func(*Sidecar)) error {
 		return err
 	}
 	mutate(&sc)
-	raw, err := json.MarshalIndent(sc, "", "  ")
-	if err != nil {
-		// Unreachable with Sidecar's current field set (plain strings and
-		// bools only — nothing MarshalIndent can choke on: no channel, func,
-		// complex, or NaN value). Unlike WriteSidecarExcl's matching check,
-		// this one marshals to an in-memory buffer before any I/O, so it
-		// can't be reached by an os-level write failure either (see
-		// TestUpdateSidecarEncodeFailure, which forces the *subsequent*
-		// os.WriteFile below to fail instead). Kept as a guard against a
-		// future field addition introducing a non-marshalable type.
-		return fmt.Errorf("worktree: encode sidecar for %s: %w", name, err)
-	}
+	raw, _ := json.MarshalIndent(sc, "", "  ")
 	return os.WriteFile(sidecarPath(metaDir, name), raw, 0o644)
 }
 

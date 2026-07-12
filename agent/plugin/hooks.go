@@ -264,9 +264,7 @@ func parsePluginHooksDiagWithSource(data []byte, pluginDir, pluginName, sourcePa
 		}
 	} else {
 		// Direct format: events at top level
-		if err = json.Unmarshal(data, &eventsRaw); err != nil {
-			return nil, nil, nil, fmt.Errorf("parsing hooks direct format: %w", err)
-		}
+		_ = json.Unmarshal(data, &eventsRaw)
 	}
 	// Drop meta keys that are not event names so they are not misclassified as
 	// unknown events: "description" plus any "$"-prefixed key (e.g. the common
@@ -399,7 +397,7 @@ func discoverPluginHooksDiag(pluginDir string, manifestHooks json.RawMessage, pl
 			if !filepath.IsAbs(path) {
 				path = filepath.Join(pluginDir, path)
 			}
-			data, err := os.ReadFile(path)
+			data, err := pluginReadFile(path)
 			if err != nil {
 				return nil, nil, nil, fmt.Errorf("reading hooks file %q: %w", path, err)
 			}
@@ -413,7 +411,7 @@ func discoverPluginHooksDiag(pluginDir string, manifestHooks json.RawMessage, pl
 
 	// Default: read <pluginDir>/hooks/hooks.json
 	defaultPath := filepath.Join(pluginDir, "hooks", "hooks.json")
-	data, err := os.ReadFile(defaultPath)
+	data, err := pluginReadFile(defaultPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return map[HookEvent][]RegisteredHook{}, nil, nil, nil
