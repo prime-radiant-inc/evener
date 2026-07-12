@@ -774,34 +774,67 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 
 func (s *Session) validateModelFallbacks() error {
 	for _, fbModel := range s.cfg.ModelFallbacks {
-		// Always check whether the ref is a cross-provider switch, regardless of
-		// whether a resolver is present. Cross-provider fallbacks are unsupported
-		// because the prompt/tool surfaces differ between providers.
-		if parts := strings.SplitN(fbModel, "/", 2); len(parts) == 2 {
-			if s.profile.CrossProviderRef(fbModel) {
-				// Resolve to get the target provider name for the error message.
-				targetTag := strings.ToLower(parts[0]) // best-effort for the error message
-				fbProfile, crossProvider, err := s.resolveProfileForRef(s.profile, fbModel)
-				if err != nil {
-					return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
-				}
-				if crossProvider {
-					targetTag = fbProfile.BehaviorTag()
-				}
-				return fmt.Errorf("model_fallbacks entry %q switches provider from %q to %q; cross-provider fallbacks are not supported because provider prompt/tool surfaces differ", fbModel, s.profile.BehaviorTag(), targetTag)
-			}
-		}
-		fbProfile, _, err := s.resolveProfileForRef(s.profile, fbModel)
-		if err != nil {
-			return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
-		}
-		// Same-provider resolution: guard on BehaviorTag rather than ID so
-		// renamed instances still pass.
-		if fbProfile.BehaviorTag() != s.profile.BehaviorTag() {
-			return fmt.Errorf("model_fallbacks entry %q switches provider from %q to %q; cross-provider fallbacks are not supported because provider prompt/tool surfaces differ", fbModel, s.profile.BehaviorTag(), fbProfile.BehaviorTag())
+		if err := s.validateModelFallbackEntry(fbModel); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// validateModelFallbackEntry checks a single model_fallbacks entry against
+// s.profile. It backs both validateModelFallbacks (all-or-nothing, run at
+// session init) and revalidateModelFallbacksLocked (per-entry, run after a
+// mid-session model switch commits).
+func (s *Session) validateModelFallbackEntry(fbModel string) error {
+	// Always check whether the ref is a cross-provider switch, regardless of
+	// whether a resolver is present. Cross-provider fallbacks are unsupported
+	// because the prompt/tool surfaces differ between providers.
+	if parts := strings.SplitN(fbModel, "/", 2); len(parts) == 2 {
+		if s.profile.CrossProviderRef(fbModel) {
+			// Resolve to get the target provider name for the error message.
+			targetTag := strings.ToLower(parts[0]) // best-effort for the error message
+			fbProfile, crossProvider, err := s.resolveProfileForRef(s.profile, fbModel)
+			if err != nil {
+				return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
+			}
+			if crossProvider {
+				targetTag = fbProfile.BehaviorTag()
+			}
+			return fmt.Errorf("model_fallbacks entry %q switches provider from %q to %q; cross-provider fallbacks are not supported because provider prompt/tool surfaces differ", fbModel, s.profile.BehaviorTag(), targetTag)
+		}
+	}
+	fbProfile, _, err := s.resolveProfileForRef(s.profile, fbModel)
+	if err != nil {
+		return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
+	}
+	// Same-provider resolution: guard on BehaviorTag rather than ID so
+	// renamed instances still pass.
+	if fbProfile.BehaviorTag() != s.profile.BehaviorTag() {
+		return fmt.Errorf("model_fallbacks entry %q switches provider from %q to %q; cross-provider fallbacks are not supported because provider prompt/tool surfaces differ", fbModel, s.profile.BehaviorTag(), fbProfile.BehaviorTag())
+	}
+	return nil
+}
+
+// revalidateModelFallbacksLocked re-checks cfg.ModelFallbacks against the
+// session's current profile after a mid-session model switch commits,
+// dropping entries that no longer validate (cross-tag, or otherwise
+// unresolvable against the new profile) and returning their names in order.
+// A same-tag switch leaves every still-valid entry in place. Must be called
+// with s.mu held.
+func (s *Session) revalidateModelFallbacksLocked() []string {
+	if len(s.cfg.ModelFallbacks) == 0 {
+		return nil
+	}
+	var kept, dropped []string
+	for _, fbModel := range s.cfg.ModelFallbacks {
+		if err := s.validateModelFallbackEntry(fbModel); err != nil {
+			dropped = append(dropped, fbModel)
+			continue
+		}
+		kept = append(kept, fbModel)
+	}
+	s.cfg.ModelFallbacks = kept
+	return dropped
 }
 
 func modelFallbackEligible(err error) bool {

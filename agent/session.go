@@ -39,6 +39,12 @@ type Session struct {
 	client         *llm.Client
 	profile        *provider.Profile
 	resolveProfile func(ref string) (*provider.Profile, error) // cross-provider resolver; may be nil
+	// lastDroppedModelFallbacks records the cfg.ModelFallbacks entries dropped
+	// by the most recent SetModel's post-switch revalidation (entries that no
+	// longer validate against the new profile). Nil until a switch drops any.
+	// Surfaced via DroppedModelFallbacksFromLastSwitch for a later marker
+	// warning line; this type does not build that marker itself.
+	lastDroppedModelFallbacks []string
 	// httpClient issues the web_fetch HTTP GET. Nil means the production default
 	// (http.DefaultClient); tests set it on their own session to serve a fabricated
 	// response through an injected transport without touching the network.
@@ -648,7 +654,12 @@ func (s *Session) reapplyProviderSpecificTools(oldTag, newTag string) {
 
 // SetModel changes the model used for future LLM calls.
 // Takes effect on the next request. Returns an error (without changing any
-// session state) when the model ref cannot be resolved to a profile.
+// session state) when the model ref cannot be resolved to a profile, when the
+// current history contains content the target can't represent (see
+// unrepresentableHistoryKinds), or when the target model fails live
+// membership validation (see validateModelSwitchMembership). On a successful
+// switch, cfg.ModelFallbacks entries that no longer validate against the new
+// profile are dropped; see DroppedModelFallbacksFromLastSwitch.
 func (s *Session) SetModel(model string) error {
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
@@ -664,10 +675,23 @@ func (s *Session) SetModel(model string) error {
 	if crossProvider {
 		nextProfile = nextProfile.WithCommunicateOverridesFrom(s.profile)
 	}
+	// Unrepresentable-history preflight: reject before any state changes when
+	// the target can't faithfully carry content kinds already in history.
+	if kinds := unrepresentableHistoryKinds(s.history, nextProfile.BehaviorTag()); len(kinds) > 0 {
+		s.mu.Unlock()
+		return fmt.Errorf("cannot switch to %s: history contains content unrepresentable by that target (%s)", nextProfile.ID(), formatContentKinds(kinds))
+	}
 	client := s.client
 	s.mu.Unlock()
 
 	nextProfile = resolveLiveModelProfileWithTimeout(client, nextProfile)
+
+	// Model membership preflight: reject before any state changes when the
+	// target instance can enumerate its models and the requested model isn't
+	// among them.
+	if err := validateModelSwitchMembership(client, nextProfile); err != nil {
+		return err
+	}
 
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
@@ -684,12 +708,26 @@ func (s *Session) SetModel(model string) error {
 	}
 	s.rebuildToolDefsCache()
 	s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
+	// Post-swap fallback re-validation: cfg.ModelFallbacks entries that no
+	// longer validate against the new profile are dropped; their names are
+	// recorded for a later marker (Task 5) to surface as a warning.
+	s.lastDroppedModelFallbacks = s.revalidateModelFallbacksLocked()
 	s.mu.Unlock()
 	// Flush meta.json so a daemon crash before the next happy-path turn
 	// boundary doesn't leave on-disk model stale. Kata wnfz. maybeAutoSave
 	// re-acquires s.mu via s.Meta(), so the lock must be released first.
 	s.maybeAutoSave()
 	return nil
+}
+
+// DroppedModelFallbacksFromLastSwitch returns the cfg.ModelFallbacks entries
+// dropped by the most recent SetModel call's post-switch revalidation (nil if
+// none were dropped, or no switch has occurred yet). A later marker (Task 5)
+// surfaces this as a warning line; this method only exposes the names.
+func (s *Session) DroppedModelFallbacksFromLastSwitch() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastDroppedModelFallbacks
 }
 
 // SetTimeout changes the default command timeout for shell tool invocations.
