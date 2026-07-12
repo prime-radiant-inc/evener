@@ -91,7 +91,7 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 		// genuine resume between entry and removal aborts this session.
 		if s.cfg.Roster != nil {
 			if projectSessionLive(s.cfg.Roster, e.ID) {
-				skipped = append(skipped, projectDeleteSkip{ID: e.ID, Reason: "resumed live"})
+				skipped = appendProjectDeleteLiveSkip(skipped, e.ID)
 				continue
 			}
 		}
@@ -153,4 +153,8 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 		s.cfg.PokeAttention()
 	}
 	writeAPIJSON(w, http.StatusOK, map[string]any{"deleted": deleted, "skipped": skipped})
+}
+
+func appendProjectDeleteLiveSkip(skipped []projectDeleteSkip, id string) []projectDeleteSkip {
+	return append(skipped, projectDeleteSkip{ID: id, Reason: "resumed live"})
 }

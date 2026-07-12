@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmdutil"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
 )
@@ -180,6 +181,17 @@ func FuzzExactTails(f *testing.F) {
 		}
 		_, _ = hubThreadTranscriptList(context.Background(), hubcore.WebConfig{}, appsource.NewRegistry(), appwire.ThreadTranscriptListParams{Ref: "fallback"})
 		_, _ = hubThreadTranscriptList(context.Background(), hubcore.WebConfig{}, appsource.NewRegistry(), appwire.ThreadTranscriptListParams{})
+		duplicateRegistry := appsource.NewRegistry()
+		duplicateRegistry.Add(&exactListSource{scriptedAppSource: &scriptedAppSource{
+			id: "local",
+			thread: appwire.Thread{ID: "root", Source: "local", Serf: appwire.SerfThread{
+				Ref: "local:root", Kind: "subagent", ParentRef: "local:root",
+			}},
+		}})
+		hubTranscriptRootForList = func(context.Context, hubcore.WebConfig, *appsource.Registry, string) (appwire.Thread, error) {
+			return appwire.Thread{ID: "root", Source: "local", Serf: appwire.SerfThread{Ref: "local:root"}}, nil
+		}
+		_, _ = hubThreadTranscriptList(context.Background(), hubcore.WebConfig{}, duplicateRegistry, appwire.ThreadTranscriptListParams{Ref: "local:root"})
 		hubTranscriptRootForList = oldTranscriptRoot
 
 		oldEnsureAction := ensureAPIActionAvailable
@@ -187,7 +199,14 @@ func FuzzExactTails(f *testing.F) {
 		liveWeb.sources = appsource.NewRegistry()
 		liveWeb.handleAPIClear(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", nil), "live-a")
 		liveWeb.handleAPIModel(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"model":"p/m"}`)), "live-a")
+		liveWeb.sources.Add(&exactNameSource{scriptedAppSource: &scriptedAppSource{id: "local"}})
+		ensureAPIActionAvailable = func(*WebServer, string, string) error { return errors.New("denied") }
+		liveWeb.handleAPIModel(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"model":"p/m"}`)), "live-a")
 		ensureAPIActionAvailable = oldEnsureAction
+		_ = appendProjectDeleteLiveSkip(nil, "id")
+		sortLiveForSearch([]hubcore.LiveEntry{{SessionID: "b"}, {SessionID: "a"}}, nil)
+		t.Setenv(envvars.Home.Name, "")
+		liveWeb.handleApiDirs(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/dirs", nil))
 		writeJSON(httptest.NewRecorder(), make(chan int))
 		(&WebServer{}).handleManifest(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil))
 		partialReq := httptest.NewRequest(http.MethodGet, "/_partials/workspace/spawn", nil)

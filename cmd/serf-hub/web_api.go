@@ -34,9 +34,7 @@ func (s *WebServer) handleApiSearch(w http.ResponseWriter, r *http.Request) {
 	var resp searchResponse
 	if s.cfg.Roster != nil {
 		live := s.cfg.Roster.List()
-		sort.SliceStable(live, func(i, j int) bool {
-			return hubcore.LiveEntryWithPastLess(live[i], live[j], s.cfg.Past)
-		})
+		sortLiveForSearch(live, s.cfg.Past)
 		for _, le := range live {
 			if le.SessionID == "" {
 				continue
@@ -68,6 +66,12 @@ func (s *WebServer) handleApiSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp) //nolint:errcheck
+}
+
+func sortLiveForSearch(live []hubcore.LiveEntry, past *hubcore.PastIndex) {
+	sort.SliceStable(live, func(i, j int) bool {
+		return hubcore.LiveEntryWithPastLess(live[i], live[j], past)
+	})
 }
 
 func writeAPIJSON(w http.ResponseWriter, status int, v any) {
