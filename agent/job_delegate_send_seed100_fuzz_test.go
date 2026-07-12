@@ -21,11 +21,11 @@ import (
 // FuzzJobDelegateSendSeed100Edges exercises deterministic send and restore
 // guards whose inputs normally require a partially lost delegate runtime.
 func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
-	for seed := byte(0); seed < 14; seed++ {
+	for seed := byte(0); seed < 18; seed++ {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, seed byte) {
-		switch seed % 14 {
+		switch seed % 18 {
 		case 0:
 			s := newLeanDelegateRestorePreflightSession(t, llm.NewClient())
 			rec := seedStoppedDelegateRestoreRecord(t, s)
@@ -154,6 +154,48 @@ func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
 			if _, err := s.restoreTerminalDelegateChild(rec, rec.DelegateRestore.ChildSessionID, preflight); err == nil {
 				t.Fatal("restore session fault was ignored")
 			}
+		case 14:
+			s := newLeanDelegateRestorePreflightSession(t, llm.NewClient())
+			rec := seedStoppedDelegateRestoreRecord(t, s)
+			events := loadJobStoreEvents(t, s.jobManager)
+			events = events[:len(events)-1]
+			rewriteJobStoreEvents(t, s.jobManager, events)
+			s.subagents.track(&subagent{id: rec.DelegateRestore.ChildSessionID, sess: &Session{}})
+			calls := 0
+			delegateSendTestHooks.findJob = func(jm *jobManager, id string) (*jobstore.JobRecord, error) {
+				calls++
+				if calls > 1 {
+					return nil, errors.New("reload fault")
+				}
+				return findJobRecord(jm, id)
+			}
+			t.Cleanup(func() { delegateSendTestHooks.findJob = nil })
+			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed"})
+			requireSendSeed100Error(t, res, "target_not_found: reload fault")
+		case 15, 16:
+			client := llm.NewClient()
+			client.Register(&fakeAdapter{name: "openai"})
+			s := newDelegateRestorePreflightSession(t, client)
+			rec := seedStoppedDelegateRestoreRecord(t, s)
+			delegateSendTestHooks.beforePostState = func(sub *subagent) { sub.mu.Lock(); sub.running = true; sub.mu.Unlock() }
+			delegateSendTestHooks.findRunning = func(*jobManager, string) (*jobstore.JobRecord, error) {
+				if seed%18 == 15 {
+					return nil, errors.New("running lookup fault")
+				}
+				return rec, nil
+			}
+			t.Cleanup(func() { delegateSendTestHooks.beforePostState = nil; delegateSendTestHooks.findRunning = nil })
+			_ = s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed", OnIdle: "start"})
+		case 17:
+			client := llm.NewClient()
+			client.Register(&fakeAdapter{name: "openai"})
+			s := newDelegateRestorePreflightSession(t, client)
+			rec := seedStoppedDelegateRestoreRecord(t, s)
+			delegateSendTestHooks.resume = func(*jobManager, string, string, *subagent, string, string, any, *jobstore.DelegateRestoreDescriptor, bool, *provenance.Causal) (*runningJob, <-chan error, *jobstore.JobRecord, error) {
+				return nil, nil, rec, nil
+			}
+			t.Cleanup(func() { delegateSendTestHooks.resume = nil })
+			_ = s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed", OnIdle: "start"})
 		}
 	})
 }

@@ -451,9 +451,12 @@ func classifyDelegateSendTarget(target, message, onIdle string, blockTimeoutMS i
 }
 
 var delegateSendTestHooks struct {
-	afterClassify func(*Session)
-	findJob       func(*jobManager, string) (*jobstore.JobRecord, error)
-	finalize      func(*Session, string, string, *subagent) error
+	afterClassify   func(*Session)
+	findJob         func(*jobManager, string) (*jobstore.JobRecord, error)
+	finalize        func(*Session, string, string, *subagent) error
+	beforePostState func(*subagent)
+	findRunning     func(*jobManager, string) (*jobstore.JobRecord, error)
+	resume          func(*jobManager, string, string, *subagent, string, string, any, *jobstore.DelegateRestoreDescriptor, bool, *provenance.Causal) (*runningJob, <-chan error, *jobstore.JobRecord, error)
 }
 
 func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs) sendMessageResult {
@@ -648,6 +651,9 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		}
 	}
 
+	if hook := delegateSendTestHooks.beforePostState; hook != nil {
+		hook(sub)
+	}
 	sub.mu.Lock()
 	running := sub.running
 	driving := sub.driving
@@ -663,7 +669,11 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		return s.sendRunningDelegateMessage(target, message, rec, args.FromWatch, args.Provenance)
 	}
 	if running {
-		active, err := findRunningDelegateByTranscriptRef(jm, rec.TranscriptRef)
+		findRunning := findRunningDelegateByTranscriptRef
+		if hook := delegateSendTestHooks.findRunning; hook != nil {
+			findRunning = hook
+		}
+		active, err := findRunning(jm, rec.TranscriptRef)
 		if err != nil {
 			return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate session %q is running but active job is unknown: %w", childID, err))
 		}
@@ -674,7 +684,14 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	if messageProvenance == nil {
 		messageProvenance = s.activeCausalProvenance()
 	}
-	run, finalizeErr, active, err := s.resumeOrFindRunningDelegate(jm, childID, message, sub, rec.TranscriptRef, delegateID, delegateResultSchema(rec), rec.DelegateRestore, args.FromWatch, messageProvenance)
+	var run *runningJob
+	var finalizeErr <-chan error
+	var active *jobstore.JobRecord
+	if hook := delegateSendTestHooks.resume; hook != nil {
+		run, finalizeErr, active, err = hook(jm, childID, message, sub, rec.TranscriptRef, delegateID, delegateResultSchema(rec), rec.DelegateRestore, args.FromWatch, messageProvenance)
+	} else {
+		run, finalizeErr, active, err = s.resumeOrFindRunningDelegate(jm, childID, message, sub, rec.TranscriptRef, delegateID, delegateResultSchema(rec), rec.DelegateRestore, args.FromWatch, messageProvenance)
+	}
 	if err != nil {
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: resume delegate session %q: %w", childID, err))
 	}
