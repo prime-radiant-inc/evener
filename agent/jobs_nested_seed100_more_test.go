@@ -75,6 +75,7 @@ func seed100JobsNestedMore(t *testing.T) {
 	start(t, grandchild.jobManager, "deeper", greatGrandchild.ID(), "grandchild-delegate", jobstore.JobShell, "")
 	start(t, greatGrandchild.jobManager, "deeper", greatGrandchild.ID(), "grandchild-delegate", jobstore.JobShell, "")
 	_, _, _, _, _ = parent.resolveDescendantJobOwner("deeper")
+	_, _, _, _, _ = parent.resolveDescendantJobOwner("not-in-tree")
 
 	// The owner can disappear between resolution and the authoritative read.
 	ownerRoot := newSession(t)
@@ -116,7 +117,7 @@ func seed100JobsNestedMore(t *testing.T) {
 	_ = parent.delegateChildSessionToCascade("nil-jm")
 	nilJM.jobManager = nilJMOriginal
 	failing := newSession(t)
-	run := &runningJob{rec: &jobstore.JobRecord{JobID: "stop-fault", Type: jobstore.JobDelegate, DelegateID: "dlg", Status: jobstore.StatusRunning}, done: make(chan struct{}), signal: func() {}}
+	run := &runningJob{rec: &jobstore.JobRecord{JobID: "stop-fault", Type: jobstore.JobDelegate, DelegateID: "dlg", Status: jobstore.StatusRunning}, done: make(chan struct{}), signal: func() {}, durableStarted: true}
 	failing.jobManager.running[run.rec.JobID] = run
 	failing.jobManager.appendEvent = func(jobstore.Event) error { return errors.New("stop fault") }
 	_, _ = parent.stopDelegateSubtree(failing)
