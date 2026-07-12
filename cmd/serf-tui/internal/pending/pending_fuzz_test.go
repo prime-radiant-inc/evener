@@ -8,6 +8,8 @@ import (
 	"primeradiant.com/serf/appwire"
 )
 
+var fuzzCoverageUnion = func(*testing.T) {}
+
 type fuzzTimer struct {
 	fn      func()
 	stopped bool
@@ -42,6 +44,7 @@ func FuzzPendingCoordinator(f *testing.F) {
 	f.Add("turn/send", " hello  world ", " thread ", false)
 	f.Add(appwire.MethodTurnDrainAsSteer, "ignored", "", true)
 	f.Fuzz(func(t *testing.T, method, text, ref string, timeout bool) {
+		fuzzCoverageUnion(t)
 		clock := &fuzzClock{}
 		messages := make(chan tea.Msg, 8)
 		coord := NewPendingCoordinator(clock, nil)

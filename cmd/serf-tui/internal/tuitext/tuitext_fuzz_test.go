@@ -8,10 +8,13 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitext"
 )
 
+var fuzzCoverageUnion = func(*testing.T) {}
+
 func FuzzTruncateText(f *testing.F) {
 	f.Add("hello world", 8)
 	f.Add("日本語", 3)
 	f.Fuzz(func(t *testing.T, input string, width int) {
+		fuzzCoverageUnion(t)
 		if width < -1024 || width > 1024 {
 			return
 		}

@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+var fuzzCoverageUnion = func(*testing.T) {}
+
 func FuzzPrimitives(f *testing.F) {
 	seeds := []struct {
 		left, right string
@@ -20,6 +22,7 @@ func FuzzPrimitives(f *testing.F) {
 		f.Add(seed.left, seed.right, seed.width)
 	}
 	f.Fuzz(func(t *testing.T, left, right string, width int) {
+		fuzzCoverageUnion(t)
 		if width < -256 || width > 256 {
 			return
 		}

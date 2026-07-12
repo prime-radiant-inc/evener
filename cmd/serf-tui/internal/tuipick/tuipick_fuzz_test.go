@@ -9,12 +9,15 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+var fuzzCoverageUnion = func(*testing.T) {}
+
 func FuzzPickers(f *testing.F) {
 	for action := byte(0); action < 7; action++ {
 		f.Add("a", action)
 	}
 	f.Add("missing", byte(4))
 	f.Fuzz(func(t *testing.T, filter string, action byte) {
+		fuzzCoverageUnion(t)
 		items := make([]ModelPickerItem, 16)
 		panels := make([]PickerPanelItem, 16)
 		for i := range items {

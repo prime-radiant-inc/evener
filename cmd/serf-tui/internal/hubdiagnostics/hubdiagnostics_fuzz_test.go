@@ -7,6 +7,8 @@ import (
 	"primeradiant.com/serf/appwire"
 )
 
+var fuzzCoverageUnion = func(*testing.T) {}
+
 func FuzzFormatHubDiagnostic(f *testing.F) {
 	seeds := []struct{ title, source, message, fallback, kind string }{
 		{"", "provider", "boom", "fallback", ""},
@@ -20,6 +22,7 @@ func FuzzFormatHubDiagnostic(f *testing.F) {
 		f.Add(seed.title, seed.source, seed.message, seed.fallback, seed.kind)
 	}
 	f.Fuzz(func(t *testing.T, title, source, message, fallback, kind string) {
+		fuzzCoverageUnion(t)
 		cause := &appwire.DiagnosticCause{Kind: kind}
 		got := FormatHubDiagnosticWithCause(title, source, message, fallback, cause)
 		if got != strings.TrimSpace(got) || got == "" {

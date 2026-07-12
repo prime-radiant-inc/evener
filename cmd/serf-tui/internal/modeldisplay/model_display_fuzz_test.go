@@ -4,11 +4,14 @@ import (
 	"testing"
 )
 
+var fuzzCoverageUnion = func(*testing.T) {}
+
 func FuzzAbbreviateModel(f *testing.F) {
 	for _, id := range []string{"", "openai/gpt-5-20260101", "openai/gpt-5-2026x101", "bare-model"} {
 		f.Add(id)
 	}
 	f.Fuzz(func(t *testing.T, id string) {
+		fuzzCoverageUnion(t)
 		got := AbbreviateModel(id)
 		if len(got) > len(id) {
 			t.Fatalf("abbreviation grew from %d to %d bytes", len(id), len(got))

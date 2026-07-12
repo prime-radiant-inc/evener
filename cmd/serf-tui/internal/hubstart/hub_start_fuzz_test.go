@@ -16,6 +16,8 @@ import (
 	"primeradiant.com/serf/appwire"
 )
 
+var fuzzCoverageUnion = func(*testing.T) {}
+
 // FuzzParseStartup drives hubstart's two real parsers: ParseTUIStartupOptions
 // (the serf-tui flag parser, with a stubbed getenv so it is env-independent) and
 // NormalizeHubAddress (the hub URL parser). The flag selector bit picks which.
@@ -47,6 +49,7 @@ func FuzzParseStartup(f *testing.F) {
 	getenv := func(string) string { return "" }
 
 	f.Fuzz(func(t *testing.T, which int, raw string) {
+		fuzzCoverageUnion(t)
 		if which&1 == 0 {
 			args := strings.Split(raw, " ")
 			// flag parsing must never panic, only return an error.
