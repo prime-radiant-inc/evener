@@ -566,6 +566,12 @@ TARGETS=(
 	"native:.:./cmd/serf:FuzzRootCommandSeedCoverage::"
 	"native:auth:./openai:FuzzAuthOpenAIFaultSeams::"
 	"native:auth:./openai:FuzzAuthOpenAISeedReplay::"
+	"native:.:./cmd/serf-tui:FuzzRootTUIFactories::"
+	"native:.:./cmd/serf-tui:FuzzRootTUIMessageProgram::"
+	"native:llm:./providers/openaicompat:FuzzOpenAICompatCoverageUnion::"
+	"native:llm:.:FuzzCoreContracts::"
+	"native:llm:.:FuzzCoreDeterministicScenarios::"
+	"native:llm:.:FuzzRootScenarioReplay::"
 )
 
 duration="60s"
