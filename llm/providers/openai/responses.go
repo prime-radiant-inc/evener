@@ -192,6 +192,9 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 	if req.ProviderOptions != nil {
 		if ov, ok := req.ProviderOptions["openai"].(map[string]any); ok {
 			for k, v := range ov {
+				if codexLite && k == "parallel_tool_calls" {
+					continue
+				}
 				if a.usesCodexBackend() && openAICodexUnsupportedRequestField(k) {
 					continue
 				}

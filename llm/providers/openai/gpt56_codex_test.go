@@ -132,6 +132,21 @@ func TestGPT56_CodexResponsesLiteShape(t *testing.T) {
 	}
 }
 
+// The OpenAI agent profile enables parallel tool calls through provider
+// options. Responses-lite does not support them, so that generic default must
+// not override the request shape required by the Codex backend.
+func TestGPT56_CodexResponsesLiteRejectsParallelToolCallsOverride(t *testing.T) {
+	req := codexLiteRequest("gpt-5.6-sol")
+	req.ProviderOptions = map[string]any{
+		"openai": map[string]any{"parallel_tool_calls": true},
+	}
+
+	body := buildCodexBodyForTest(t, req)
+	if body["parallel_tool_calls"] != false {
+		t.Fatalf("parallel_tool_calls = %#v, want false on responses-lite after provider options", body["parallel_tool_calls"])
+	}
+}
+
 // The additional_tools item is always first in the input on responses-lite,
 // even with no tools declared — matching the codex CLI, which prepends it
 // unconditionally.
