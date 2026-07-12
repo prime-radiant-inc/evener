@@ -164,6 +164,7 @@ TARGETS=(
 	"native:agent:./execenv:FuzzSandboxLifecycleProgram::"
 	"native:agent:./execenv:FuzzSecurePathEdgeContractProgram::"
 	"native:agent:./execenv:FuzzLocalEdgeContractProgram::"
+	"native:agent:./execenv:FuzzRuntimeBoundaryEdges::command_runtime.go;local.go;securepath.go"
 	"native:agent:./sandbox:FuzzReRoot::"
 	"native:agent:./sandbox:FuzzResolve::"
 	"native:agent:./sandbox:FuzzSeatbeltPolicyNoInterpolation::"

@@ -431,7 +431,7 @@ func (e *LocalExecutionEnvironment) UseControlPolicy(mainRepoRoot string) error 
 	// The policy was replaced, so drop the cached fd layer built from the old one.
 	e.invalidateSandboxFS()
 	if e.Wrapper != nil && ctrl != nil {
-		w, werr := e.Wrapper.WithPolicy(*ctrl)
+		w, werr := wrapperWithPolicy(e.Wrapper, *ctrl)
 		if werr != nil {
 			return werr
 		}
@@ -539,7 +539,7 @@ func (e *LocalExecutionEnvironment) WorkingDirectory() string { return e.RootDir
 // Platform returns the operating system family as one of "darwin", "windows",
 // or "linux" (the default for any other GOOS).
 func (e *LocalExecutionEnvironment) Platform() string {
-	switch runtime.GOOS {
+	switch runtimeGOOS {
 	case "darwin":
 		return "darwin"
 	case "windows":
@@ -570,24 +570,35 @@ func (e *LocalExecutionEnvironment) OSVersion() string {
 var (
 	execLookPath       = exec.LookPath
 	execCommandContext = exec.CommandContext
+	runtimeGOOS        = runtime.GOOS
+	osVersionOutput    = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return execCommandContext(ctx, name, args...).Output()
+	}
+	shellStat              = os.Stat
+	grepReadFile           = os.ReadFile
+	grepWalk               = filepath.WalkDir
+	listReadDir            = afero.ReadDir
+	streamBeforeSignalOnce = func(func()) {}
+	streamAfterTimer       = func(func()) {}
+	wrapperWithPolicy      = func(w *sandbox.Wrapper, p sandbox.ResolvedPolicy) (*sandbox.Wrapper, error) { return w.WithPolicy(p) }
 )
 
 func resolveOSVersion() string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	switch runtime.GOOS {
+	switch runtimeGOOS {
 	case "darwin", "linux":
-		out, err := execCommandContext(ctx, "uname", "-rs").Output()
+		out, err := osVersionOutput(ctx, "uname", "-rs")
 		if err == nil {
 			return strings.TrimSpace(string(out))
 		}
 	case "windows":
-		out, err := execCommandContext(ctx, "cmd", "/c", "ver").Output()
+		out, err := osVersionOutput(ctx, "cmd", "/c", "ver")
 		if err == nil {
 			return strings.TrimSpace(string(out))
 		}
 	}
-	return runtime.GOOS + "/" + runtime.GOARCH // fallback
+	return runtimeGOOS + "/" + runtime.GOARCH // fallback
 }
 
 // ReadFile reads the file at path (resolved relative to RootDir) and returns
@@ -784,9 +795,6 @@ func normalizeWS(s string) string {
 // matcher cannot rescue. Returns "" when nothing is similar enough to help.
 func nearestFileRegion(content, oldString string) string {
 	oldLines := strings.Split(strings.TrimRight(oldString, "\n"), "\n")
-	if len(oldLines) == 0 {
-		return ""
-	}
 	target := normalizeWS(oldLines[0])
 	if target == "" {
 		return ""
@@ -1068,7 +1076,7 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 		return "", err
 	}
 
-	err = filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
+	err = grepWalk(path, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil //nolint:nilerr // best-effort grep: skip unreadable entries and keep walking
 		}
@@ -1088,7 +1096,7 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 				return nil
 			}
 		}
-		data, err := os.ReadFile(p)
+		data, err := grepReadFile(p)
 		if err != nil {
 			return nil //nolint:nilerr // best-effort grep: skip unreadable files and keep walking
 		}
@@ -1388,11 +1396,10 @@ func injectLocalVenvPath(env []string, roots []string) []string {
 	}
 
 	binDir := "bin"
-	if runtime.GOOS == "windows" {
+	if runtimeGOOS == "windows" {
 		binDir = "Scripts"
 	}
 
-	seenDirs := map[string]struct{}{}
 	var prefixDirs []string
 	for _, root := range uniqueRoots {
 		candidates := []string{
@@ -1404,10 +1411,6 @@ func injectLocalVenvPath(env []string, roots []string) []string {
 			if err != nil || !info.IsDir() {
 				continue
 			}
-			if _, ok := seenDirs[cand]; ok {
-				continue
-			}
-			seenDirs[cand] = struct{}{}
 			prefixDirs = append(prefixDirs, cand)
 		}
 	}
@@ -1470,11 +1473,11 @@ func injectLocalVenvPath(env []string, roots []string) []string {
 // timeout) is managed by the caller (ExecCommand) via its own process-group
 // SIGTERM->SIGKILL escalation, so CommandContext is deliberately not used here.
 func shellCommand(command string) *exec.Cmd {
-	if runtime.GOOS == "windows" {
+	if runtimeGOOS == "windows" {
 		return exec.Command("cmd.exe", "/c", command) //nolint:noctx // lifecycle managed by ExecCommand's process-group kill
 	}
 	shell := "/bin/bash"
-	if _, err := os.Stat(shell); err != nil {
+	if _, err := shellStat(shell); err != nil {
 		shell = "/bin/sh"
 	}
 	return exec.Command(shell, "-c", command) //nolint:noctx // lifecycle managed by ExecCommand's process-group kill

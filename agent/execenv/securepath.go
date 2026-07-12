@@ -17,6 +17,17 @@ import (
 	"primeradiant.com/serf/agent/sandbox"
 )
 
+var (
+	canonicalPathForFd   = canonicalPathOfFd
+	secureRandRead       = rand.Read
+	secureOpenat         = unix.Openat
+	secureWrite          = unix.Write
+	secureClose          = unix.Close
+	secureRenameat       = unix.Renameat
+	secureReadDirEntries = readDirEntries
+	secureEntryInfo      = func(entry os.DirEntry) (os.FileInfo, error) { return entry.Info() }
+)
+
 // sandboxFS enforces a resolved sandbox policy on file operations using
 // fd-anchored, symlink-refusing primitives. It is the in-process (privileged)
 // enforcement layer described in the sandboxing design's "Race-safe path
@@ -328,7 +339,7 @@ func (s *sandboxFS) openInRoot(tool, abs, root, rel string, flags int) (int, err
 // Where canonicalization is unavailable it fails closed only on platforms that
 // require it (darwin); on Linux the textual pre-check already held.
 func (s *sandboxFS) recheckMaskedFd(tool, orig string, fd int) error {
-	canon, err := canonicalPathOfFd(fd)
+	canon, err := canonicalPathForFd(fd)
 	if err != nil || canon == "" {
 		if canonicalRecheckRequired {
 			return s.deny(tool, orig, denyReasonMasked)
@@ -347,7 +358,7 @@ func (s *sandboxFS) recheckMaskedFd(tool, orig string, fd int) error {
 // a ".GIT/hooks" plant on APFS). Fails closed on platforms that require the
 // re-check when canonicalization is unavailable.
 func (s *sandboxFS) recheckWriteTargetFd(tool, orig string, parentFd int, leaf string) error {
-	canon, err := canonicalPathOfFd(parentFd)
+	canon, err := canonicalPathForFd(parentFd)
 	if err != nil || canon == "" {
 		if canonicalRecheckRequired {
 			return s.deny(tool, orig, denyReasonProtected)
@@ -616,7 +627,7 @@ func (s *sandboxFS) listDir(tool, abs string, depth int) ([]DirEntry, error) {
 // absolute path of dirFd, used only to skip masked entries.
 func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, out *[]DirEntry) error {
 	defer func() { _ = unix.Close(dirFd) }()
-	ents, err := readDirEntries(dirFd)
+	ents, err := secureReadDirEntries(dirFd)
 	if err != nil {
 		return err
 	}
@@ -636,7 +647,7 @@ func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, o
 			de.IsSymlink = true
 		}
 		if !ent.IsDir() {
-			if info, ierr := ent.Info(); ierr == nil {
+			if info, ierr := secureEntryInfo(ent); ierr == nil {
 				de.Size = info.Size()
 				if info.Mode()&0o111 != 0 {
 					de.IsExec = true
@@ -647,7 +658,7 @@ func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, o
 		if ent.IsDir() && depth > 1 {
 			// Re-open the subdir beneath dirFd (O_NOFOLLOW): a symlinked dir is
 			// refused, and resolution stays anchored at the checked parent.
-			childFd, cerr := unix.Openat(dirFd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+			childFd, cerr := secureOpenat(dirFd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 			if cerr != nil {
 				continue // unreadable/symlinked subdir: skip, keep listing
 			}
@@ -680,7 +691,7 @@ func (s *sandboxFS) openReadBaseFd(tool, base string) (int, string, error) {
 // fails the create rather than clobbering anything.
 func tempName() string {
 	var b [12]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	if _, err := secureRandRead(b[:]); err != nil {
 		// crypto/rand should never fail; fall back to a pid-tagged name rather than
 		// panicking. Still O_EXCL-guarded at the create site.
 		return fmt.Sprintf(".serf-sbtmp-%d", os.Getpid())
@@ -693,7 +704,7 @@ func tempName() string {
 // operations use dirFd — the path is never re-resolved after the parent check.
 func atomicWriteAt(dirFd int, leaf string, data []byte, perm os.FileMode) error {
 	tmp := tempName()
-	fd, err := unix.Openat(dirFd, tmp, unix.O_CREAT|unix.O_EXCL|unix.O_WRONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, uint32(perm.Perm()))
+	fd, err := secureOpenat(dirFd, tmp, unix.O_CREAT|unix.O_EXCL|unix.O_WRONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, uint32(perm.Perm()))
 	if err != nil {
 		return err
 	}
@@ -702,11 +713,11 @@ func atomicWriteAt(dirFd int, leaf string, data []byte, perm os.FileMode) error 
 		_ = unix.Unlinkat(dirFd, tmp, 0)
 		return werr
 	}
-	if cerr := unix.Close(fd); cerr != nil {
+	if cerr := secureClose(fd); cerr != nil {
 		_ = unix.Unlinkat(dirFd, tmp, 0)
 		return cerr
 	}
-	if rerr := unix.Renameat(dirFd, tmp, dirFd, leaf); rerr != nil {
+	if rerr := secureRenameat(dirFd, tmp, dirFd, leaf); rerr != nil {
 		_ = unix.Unlinkat(dirFd, tmp, 0)
 		return rerr
 	}
@@ -716,7 +727,7 @@ func atomicWriteAt(dirFd int, leaf string, data []byte, perm os.FileMode) error 
 // writeAllFd writes all of data to fd, retrying short writes and EINTR.
 func writeAllFd(fd int, data []byte) error {
 	for len(data) > 0 {
-		n, err := unix.Write(fd, data)
+		n, err := secureWrite(fd, data)
 		if err != nil {
 			if errors.Is(err, unix.EINTR) {
 				continue
@@ -802,10 +813,7 @@ func containingRoot(roots []string, abs string) (root, rel string, ok bool) {
 			return r, ".", true
 		}
 		if pathUnder(abs, r) {
-			rl, err := filepath.Rel(r, abs)
-			if err != nil {
-				continue
-			}
+			rl, _ := filepath.Rel(r, abs)
 			return r, filepath.ToSlash(rl), true
 		}
 	}

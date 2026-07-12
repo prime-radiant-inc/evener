@@ -9,11 +9,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+var secureOpenat2 = unix.Openat2
+
 // canonicalRecheckRequired is false on Linux: ext4/xfs/btrfs are case-sensitive
 // and RESOLVE_NO_SYMLINKS makes lexical path cleaning match kernel resolution, so
 // the pre-open textual denylist check is already authoritative. The fd re-check is
 // pure defense-in-depth here and may be skipped if /proc is unavailable.
-const canonicalRecheckRequired = false
+var canonicalRecheckRequired = false
 
 // canonicalPathOfFd returns the kernel's canonical path for an open fd via
 // /proc/self/fd. Used to re-verify the denylist against the real (true-cased)
@@ -63,7 +65,7 @@ func openRootDir(path string) (int, error) {
 // while the kernel resolves a large path).
 func openat2Retry(dirfd int, path string, how *unix.OpenHow) (int, error) {
 	for {
-		fd, err := unix.Openat2(dirfd, path, how)
+		fd, err := secureOpenat2(dirfd, path, how)
 		if err == unix.EINTR || err == unix.EAGAIN {
 			continue
 		}

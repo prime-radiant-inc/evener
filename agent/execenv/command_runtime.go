@@ -53,6 +53,8 @@ type systemCommandRuntime struct {
 	cmd *exec.Cmd
 }
 
+var processExitCode = (*exec.ExitError).ExitCode
+
 func (c *systemCommandRuntime) Args() []string { return c.cmd.Args }
 
 func (c *systemCommandRuntime) Configure(config commandRuntimeConfig) {
@@ -82,7 +84,7 @@ func (c *systemCommandRuntime) PID() int {
 func (c *systemCommandRuntime) ExitCode(err error) (int, bool) {
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
-		return exitErr.ExitCode(), true
+		return processExitCode(exitErr), true
 	}
 	return 0, false
 }

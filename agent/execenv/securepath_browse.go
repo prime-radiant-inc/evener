@@ -15,6 +15,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+var (
+	secureBrowseWalkDir  = fs.WalkDir
+	secureBrowseReadFile = fs.ReadFile
+)
+
 // checkWritable reports whether a write to abs would be permitted by the policy
 // (writable-root membership, not masked, not a protected git surface) WITHOUT
 // opening or creating anything. It is a textual pre-check used to deny an edit up
@@ -138,7 +143,7 @@ func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive
 		return "", err
 	}
 	fsys := &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s}
-	err = fs.WalkDir(fsys, ".", func(rel string, d fs.DirEntry, walkErr error) error {
+	err = secureBrowseWalkDir(fsys, ".", func(rel string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil //nolint:nilerr // skip unreadable / symlink-refused entries and keep walking
 		}
@@ -164,7 +169,7 @@ func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive
 				return nil
 			}
 		}
-		data, rerr := fs.ReadFile(fsys, rel)
+		data, rerr := secureBrowseReadFile(fsys, rel)
 		if rerr != nil {
 			return nil //nolint:nilerr // best-effort grep: skip unreadable files
 		}

@@ -84,6 +84,7 @@ type processRuntimePlan struct {
 	exitCode         int
 	hasExitCode      bool
 	waitForTerminate bool
+	ignoreTerminate  bool
 }
 
 type processRuntimeFactory struct {
@@ -231,7 +232,9 @@ func (c *processRuntimeCommand) ExitCode(error) (int, bool) {
 
 func (c *processRuntimeCommand) Terminate() {
 	c.terminate++
-	c.doneOnce.Do(func() { close(c.terminated) })
+	if !c.plan.ignoreTerminate {
+		c.doneOnce.Do(func() { close(c.terminated) })
+	}
 }
 
 func (c *processRuntimeCommand) Kill() {
