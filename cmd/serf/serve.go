@@ -403,7 +403,7 @@ func runServe(args []string) error {
 		}
 		return out
 	})
-	srv.SetModelFunc(func(model string) { getSession().SetModel(model) })
+	srv.SetModelFunc(func(model string) error { return getSession().SetModel(model) })
 	srv.SetNameFunc(func(name string) { getSession().Rename(name) })
 	srv.SetReasoningEffortFunc(func(effort string) { getSession().SetReasoningEffort(effort) })
 	srv.SetListModelsFunc(cmdutil.ListModelsFunc(client, profile.ID()))

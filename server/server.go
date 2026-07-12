@@ -181,7 +181,7 @@ type Server struct {
 	workMetricsFn       func() (workMillis int64, usage *appwire.SerfUsage, activeTurnStartedAt int64)
 	sessionMetaFn       func() schema.SessionMeta
 	detailedStatusFn    func() DetailedStatus
-	modelFunc           func(string)
+	modelFunc           func(string) error
 	nameFunc            func(string)
 	reasoningEffortFunc func(string)
 	listModelsFunc      func(context.Context) ([]ModelsResponseItem, error)
@@ -494,7 +494,7 @@ func (s *Server) SetClearFunc(fn func(context.Context) error) {
 }
 
 // SetModelFunc sets the function called by POST /model.
-func (s *Server) SetModelFunc(fn func(string)) {
+func (s *Server) SetModelFunc(fn func(string) error) {
 	s.mu.Lock()
 	s.modelFunc = fn
 	s.mu.Unlock()

@@ -647,18 +647,19 @@ func (s *Session) reapplyProviderSpecificTools(oldTag, newTag string) {
 }
 
 // SetModel changes the model used for future LLM calls.
-// Takes effect on the next request.
-func (s *Session) SetModel(model string) {
+// Takes effect on the next request. Returns an error (without changing any
+// session state) when the model ref cannot be resolved to a profile.
+func (s *Session) SetModel(model string) error {
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
-		return
+		return nil
 	}
 	oldTag := s.profile.BehaviorTag()
 	nextProfile, crossProvider, err := s.resolveProfileForRef(s.profile, model)
 	if err != nil {
 		s.mu.Unlock()
-		return
+		return err
 	}
 	if crossProvider {
 		nextProfile = nextProfile.WithCommunicateOverridesFrom(s.profile)
@@ -671,7 +672,7 @@ func (s *Session) SetModel(model string) {
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
-		return
+		return nil
 	}
 	newTag := nextProfile.BehaviorTag()
 	s.profile = nextProfile
@@ -688,6 +689,7 @@ func (s *Session) SetModel(model string) {
 	// boundary doesn't leave on-disk model stale. Kata wnfz. maybeAutoSave
 	// re-acquires s.mu via s.Meta(), so the lock must be released first.
 	s.maybeAutoSave()
+	return nil
 }
 
 // SetTimeout changes the default command timeout for shell tool invocations.
