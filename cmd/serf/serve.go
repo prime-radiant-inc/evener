@@ -108,6 +108,9 @@ type serveDeps struct {
 	startTrace       func(string) (func(), error)
 	register         func(*rvreg.Registration, string, rendezvous.Entry) error
 	serveHTTP        func(*http.Server, net.Listener) error
+	provisionSandbox func(*execenv.LocalExecutionEnvironment, *agent.SessionConfig, string) error
+	newClearSession  func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error)
+	updateSessionID  func(*rvreg.Registration, string) error
 }
 
 func defaultServeDeps() serveDeps {
@@ -127,8 +130,11 @@ func defaultServeDeps() serveDeps {
 		},
 		subscriberCount: func(s serveServer, id string) int { return s.(*server.Server).AppServer().SubscriberCount(id) },
 		notifyContext:   signal.NotifyContext, startCPUProfile: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
-		register:  func(r *rvreg.Registration, dir string, entry rendezvous.Entry) error { return r.Register(dir, entry) },
-		serveHTTP: func(s *http.Server, l net.Listener) error { return s.Serve(l) },
+		register:         func(r *rvreg.Registration, dir string, entry rendezvous.Entry) error { return r.Register(dir, entry) },
+		serveHTTP:        func(s *http.Server, l net.Listener) error { return s.Serve(l) },
+		provisionSandbox: provisionSandbox,
+		newClearSession:  agent.NewSession,
+		updateSessionID:  func(r *rvreg.Registration, id string) error { return r.UpdateSessionID(id) },
 	}
 }
 
@@ -327,7 +333,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// RestoreSessionFromMetaWithConfig (immutable across restart), so the flag
 	// governs only new sessions here.
 	if !resuming {
-		if err := provisionSandbox(env, &sessionCfg, env.WorkingDirectory()); err != nil {
+		if err := deps.provisionSandbox(env, &sessionCfg, env.WorkingDirectory()); err != nil {
 			return err
 		}
 	}
@@ -515,17 +521,17 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// (a fail-open). Each session owns its own env + session tmp, disposed on Close,
 		// so oldSess.Close() no longer pulls the tmp out from under the new session.
 		clearEnv := execenv.NewLocalExecutionEnvironment(wd)
-		if err := provisionSandbox(clearEnv, &clearCfg, wd); err != nil {
+		if err := deps.provisionSandbox(clearEnv, &clearCfg, wd); err != nil {
 			return fmt.Errorf("clear sandbox: %w", err)
 		}
-		newSess, err := agent.NewSession(client, profile, clearEnv, clearCfg)
+		newSess, err := deps.newClearSession(client, profile, clearEnv, clearCfg)
 		if err != nil {
 			clearEnv.Cleanup()
 			return fmt.Errorf("new session: %w", err)
 		}
 		setSession(newSess, clearEnv)
 		srv.SetAppIdentity("local", newSess.ID())
-		if err := rvRegistration.UpdateSessionID(newSess.ID()); err != nil {
+		if err := deps.updateSessionID(rvRegistration, newSess.ID()); err != nil {
 			setSession(oldSess, oldEnv)
 			srv.SetAppIdentity("local", oldSess.ID())
 			newSess.Close() // disposes clearEnv
