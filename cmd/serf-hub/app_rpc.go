@@ -53,8 +53,9 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 }
 
 type hubRelayHandle struct {
-	ready chan struct{}
-	err   error
+	ready  chan struct{}
+	err    error
+	cancel context.CancelFunc
 }
 
 var hubRelayIdleInterval = 250 * time.Millisecond
@@ -63,9 +64,25 @@ type hubRelayFunctions struct {
 	startRelay          func(context.Context, appsource.Source, appwire.ThreadReadParams, appwire.Thread) error
 	startTurn           func(context.Context, appsource.Source, appwire.TurnStartParams) (appwire.TurnStartResponse, error)
 	startRelayForThread func(context.Context, appwire.Thread) error
+	stopRelay           func(string)
 }
 
 var observeHubRelayFunctions func(hubRelayFunctions)
+var observeHubRelayWait func()
+
+var (
+	resolveTurnStartSource = sourceForThreadWithManagedLaunch
+	resumeTurnStartThread  = hubThreadResume
+	authLoginComplete      = func(c *hubAuthController, ctx context.Context, p appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
+		return c.LoginComplete(ctx, p)
+	}
+	authDevicePoll = func(c *hubAuthController, ctx context.Context, p appwire.AuthDevicePollParams) (appwire.AuthDevicePollResponse, error) {
+		return c.DevicePoll(ctx, p)
+	}
+	launchTrustRepo = func(c *hubLaunchController, ctx context.Context, p appwire.LaunchConfigTrustRepoParams) (appwire.LaunchConfigResolved, error) {
+		return c.TrustRepo(ctx, p)
+	}
+)
 
 type threadReadRelayPolicy interface {
 	RelayOnThreadRead() bool
@@ -145,6 +162,9 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 			}
 			ready := existing.ready
 			relayMu.Unlock()
+			if observeHubRelayWait != nil {
+				observeHubRelayWait()
+			}
 
 			select {
 			case <-ready:
@@ -170,6 +190,7 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 		}
 
 		relayCtx, cancelRelay := context.WithCancel(context.WithoutCancel(ctx))
+		relayHandle.cancel = cancelRelay
 		notifications, err := source.SubscribeThread(relayCtx, subscribeParams)
 		if err != nil {
 			cancelRelay()
@@ -280,8 +301,16 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 		}
 		return nil
 	}
+	stopRelay := func(key string) {
+		relayMu.Lock()
+		handle := relayedThreads[key]
+		relayMu.Unlock()
+		if handle != nil && handle.cancel != nil {
+			handle.cancel()
+		}
+	}
 	if observeHubRelayFunctions != nil {
-		observeHubRelayFunctions(hubRelayFunctions{startRelay, startTurn, startRelayForThread})
+		observeHubRelayFunctions(hubRelayFunctions{startRelay, startTurn, startRelayForThread, stopRelay})
 	}
 	registerThreadHandlers(server, cfg, sources, startRelay, startTurn, startRelayForThread)
 	registerAuthHandlers(server, authController)
@@ -428,12 +457,12 @@ func registerThreadHandlers(
 		if err := validateAppWireInputItems(params.Input); err != nil {
 			return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
 		}
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
+		source, err := resolveTurnStartSource(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if err != nil {
-			if _, resumeErr := hubThreadResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
+			if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
 				return appwire.TurnStartResponse{}, resumeErr
 			}
-			source, err = sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
+			source, err = resolveTurnStartSource(ctx, cfg, sources, params.Ref, params.ThreadID)
 			if err != nil {
 				return appwire.TurnStartResponse{}, err
 			}
@@ -448,10 +477,10 @@ func registerThreadHandlers(
 		if !shouldResumeAfterTurnStartError(err) {
 			return appwire.TurnStartResponse{}, err
 		}
-		if _, resumeErr := hubThreadResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
+		if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
 			return appwire.TurnStartResponse{}, resumeErr
 		}
-		source, sourceErr := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
+		source, sourceErr := resolveTurnStartSource(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if sourceErr != nil {
 			return appwire.TurnStartResponse{}, sourceErr
 		}
@@ -591,7 +620,7 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 		return authController.LoginStart(params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthLoginComplete, func(ctx context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
-		resp, err := authController.LoginComplete(ctx, params)
+		resp, err := authLoginComplete(authController, ctx, params)
 		if err == nil {
 			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource)
 		}
@@ -618,7 +647,7 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 		return authController.DeviceStart(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthDevicePoll, func(ctx context.Context, params appwire.AuthDevicePollParams) (appwire.AuthDevicePollResponse, error) {
-		resp, err := authController.DevicePoll(ctx, params)
+		resp, err := authDevicePoll(authController, ctx, params)
 		if err == nil && resp.State == "authorized" {
 			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource)
 		}
@@ -682,7 +711,7 @@ func registerLaunchHandlers(server *appserver.Server, launchController *hubLaunc
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchTrustRepo, func(ctx context.Context, params appwire.LaunchConfigTrustRepoParams) (appwire.LaunchConfigResolved, error) {
-		resp, err := launchController.TrustRepo(ctx, params)
+		resp, err := launchTrustRepo(launchController, ctx, params)
 		if err == nil {
 			notifyLaunchUpdated(server, params.CWD, "repo")
 		}
