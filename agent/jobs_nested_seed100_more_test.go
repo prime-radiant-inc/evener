@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
@@ -99,6 +100,7 @@ func seed100JobsNestedMore(t *testing.T) {
 	}
 	_, _, _ = ownerRoot.nestedOrLocalJobManager("owner-race")
 	nestedFindJobRecord = originalFind
+	_, _, _ = ownerRoot.nestedOrLocalJobManager("owner-race")
 
 	// A stale forwarded owner plus a deeper live owner produces guidance.
 	start(t, parent.jobManager, "deep-forwarded", "gone-owner", "delegate", jobstore.JobShell, "")
@@ -161,4 +163,163 @@ func seed100JobsNestedMore(t *testing.T) {
 	}
 	_ = jm3.forwardEvent(jobstore.Event{Kind: jobstore.EventJobNotificationPending, JobID: "missing", TerminalGen: "gen"})
 	forwardEventAfterAppend = nil
+
+	// Remaining fuzz-only union guards from the nested job profile.
+	_, _ = (*Session)(nil).ownerJobManagerFor("nil")
+	guardRoot := newSession(t)
+	guardChild := newSession(t)
+	start(t, guardRoot.jobManager, "guard", guardChild.ID(), "parent", jobstore.JobShell, "")
+	guardSubs := guardRoot.subagents
+	guardRoot.subagents = nil
+	_, _ = guardRoot.ownerJobManagerFor("guard")
+	_, _, _ = guardRoot.nestedOrLocalJobManager("guard")
+	_ = (&Session{}).liveDirectSubagents()
+	directs := newSession(t)
+	directs.subagents.subs["nil"] = nil
+	directs.subagents.subs["empty"] = &subagent{id: "empty"}
+	directClosed := newSession(t)
+	directs.subagents.subs[directClosed.ID()] = &subagent{id: directClosed.ID(), sess: directClosed, closed: true}
+	_ = directs.liveDirectSubagents()
+	_ = liveSubagentSession(nil, "nil")
+	_ = liveSubagentSession(directs.subagents, "absent")
+	_ = liveSubagentSession(directs.subagents, "empty")
+	_ = liveSubagentSession(directs.subagents, directClosed.ID())
+	delete(directs.subagents.subs, "nil")
+	delete(directs.subagents.subs, "empty")
+	delete(directs.subagents.subs, directClosed.ID())
+	guardRoot.subagents = guardSubs
+	guardSub := &subagent{id: guardChild.ID(), sess: guardChild, closed: true}
+	guardRoot.subagents.subs[guardChild.ID()] = guardSub
+	_, _ = guardRoot.ownerJobManagerFor("guard")
+	guardSub.closed = false
+	if err := guardChild.jobManager.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = guardRoot.ownerJobManagerFor("guard")
+
+	// Root collection errors are surfaced; descendant errors remain best effort.
+	_, _ = (&Session{}).walkDescendantJobs(listFilter{})
+	closedWalk := newSession(t)
+	if err := closedWalk.jobManager.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = closedWalk.walkDescendantJobs(listFilter{})
+	ordered := newSession(t)
+	earlier := started.Add(-time.Second)
+	if err := ordered.jobManager.store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, TS: earlier, JobID: "earlier", Type: jobstore.JobShell, OwnerSessionID: ordered.ID(), VisibleToSession: ordered.ID(), StartedAt: &earlier}); err != nil {
+		t.Fatal(err)
+	}
+	start(t, ordered.jobManager, "later", ordered.ID(), "", jobstore.JobShell, "")
+	_, _ = ordered.walkDescendantJobs(listFilter{})
+	_ = ordered.directDelegateJobForChild("absent")
+
+	// Direct-owner stop success/error, dead forwarded terminal, and local stop.
+	stopRoot := newSession(t)
+	stopChild := newSession(t)
+	stopRoot.subagents.subs[stopChild.ID()] = &subagent{id: stopChild.ID(), sess: stopChild}
+	start(t, stopRoot.jobManager, "owned-stop", stopChild.ID(), "delegate", jobstore.JobShell, "")
+	start(t, stopChild.jobManager, "owned-stop", stopChild.ID(), "delegate", jobstore.JobShell, "")
+	stopRun := &runningJob{rec: &jobstore.JobRecord{JobID: "owned-stop", Type: jobstore.JobDelegate, DelegateID: "dlg", Status: jobstore.StatusRunning}, done: make(chan struct{}), signal: func() {}, durableStarted: true}
+	stopChild.jobManager.running[stopRun.rec.JobID] = stopRun
+	stopChild.jobManager.appendEvent = func(jobstore.Event) error { return errors.New("owned stop fault") }
+	_, _ = stopRoot.stopNestedOrLocal("owned-stop")
+	delete(stopChild.jobManager.running, stopRun.rec.JobID)
+	stopChild.jobManager.appendEvent = stopChild.jobManager.store.Append
+	_, _ = stopRoot.stopNestedOrLocal("owned-stop")
+	terminalTime := started
+	if err := stopRoot.jobManager.store.Append(jobstore.Event{Kind: jobstore.EventJobFinished, TS: terminalTime, JobID: "owned-stop", Status: jobstore.StatusCompleted, TerminalGen: "term"}); err != nil {
+		t.Fatal(err)
+	}
+	stopRoot.subagents.subs[stopChild.ID()].closed = true
+	_, _ = stopRoot.stopNestedOrLocal("owned-stop")
+	_, _ = stopRoot.stopNestedOrLocal("missing-local")
+	_, _ = parent.stopNestedOrLocal("deep")
+	deadOwner := newSession(t)
+	start(t, deadOwner.jobManager, "dead-running", "gone", "delegate", jobstore.JobShell, "")
+	_, _ = deadOwner.stopNestedOrLocal("dead-running")
+	localTerminal := newSession(t)
+	start(t, localTerminal.jobManager, "local-done", localTerminal.ID(), "", jobstore.JobShell, "")
+	if err := localTerminal.jobManager.store.Append(jobstore.Event{Kind: jobstore.EventJobFinished, TS: started, JobID: "local-done", Status: jobstore.StatusCompleted, TerminalGen: "done"}); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = localTerminal.stopNestedOrLocal("local-done")
+
+	// stopChildren load failure and child stop failure/success aggregation.
+	closedStopChildren := newSession(t)
+	if err := closedStopChildren.jobManager.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = closedStopChildren.stopChildren("delegate")
+	childrenRoot := newSession(t)
+	childrenChild := newSession(t)
+	childrenRoot.subagents.subs[childrenChild.ID()] = &subagent{id: childrenChild.ID(), sess: childrenChild}
+	start(t, childrenRoot.jobManager, "dead-child", "gone-child", "delegate", jobstore.JobShell, "")
+	for _, id := range []string{"child-fail", "child-ok"} {
+		start(t, childrenRoot.jobManager, id, childrenChild.ID(), "delegate", jobstore.JobShell, "")
+		start(t, childrenChild.jobManager, id, childrenChild.ID(), "delegate", jobstore.JobShell, "")
+	}
+	start(t, childrenRoot.jobManager, "other-parent", childrenRoot.ID(), "other", jobstore.JobShell, "")
+	start(t, childrenRoot.jobManager, "already-done", childrenRoot.ID(), "delegate", jobstore.JobShell, "")
+	if err := childrenRoot.jobManager.store.Append(jobstore.Event{Kind: jobstore.EventJobFinished, TS: started, JobID: "already-done", Status: jobstore.StatusCompleted, TerminalGen: "done"}); err != nil {
+		t.Fatal(err)
+	}
+	childFailRun := &runningJob{rec: &jobstore.JobRecord{JobID: "child-fail", Type: jobstore.JobDelegate, DelegateID: "dlg", Status: jobstore.StatusRunning}, done: make(chan struct{}), signal: func() {}, durableStarted: true}
+	childrenChild.jobManager.running["child-fail"] = childFailRun
+	childrenChild.jobManager.appendEvent = func(e jobstore.Event) error {
+		if e.JobID == "child-fail" {
+			return errors.New("child fault")
+		}
+		return childrenChild.jobManager.store.Append(e)
+	}
+	_, _ = childrenRoot.stopChildren("delegate")
+
+	// Closed delegate store, stale parent id, nil subtree manager, and closed lookup.
+	_ = closedStopChildren.delegateChildSessionToCascade("delegate")
+	staleRoot := newSession(t)
+	staleChild := newSession(t)
+	staleRoot.subagents.subs[staleChild.ID()] = &subagent{id: staleChild.ID(), sess: staleChild}
+	start(t, staleRoot.jobManager, "stale", staleRoot.ID(), "", jobstore.JobDelegate, encodeRef("", staleChild.ID()))
+	staleChild.jobManager.setParentJobID("newer")
+	_ = staleRoot.delegateChildSessionToCascade("stale")
+	noManager := &Session{}
+	_, _ = staleRoot.stopDelegateSubtree(noManager)
+	cascadeChild := newSession(t)
+	cascadeGrandchild := newSession(t)
+	cascadeChild.subagents.subs[cascadeGrandchild.ID()] = &subagent{id: cascadeGrandchild.ID(), sess: cascadeGrandchild}
+	cascadeRun := &runningJob{rec: &jobstore.JobRecord{JobID: "cascade-ok", Type: jobstore.JobShell, Status: jobstore.StatusRunning}, done: make(chan struct{}), signal: func() {}, durableStarted: true}
+	cascadeGrandchild.jobManager.running[cascadeRun.rec.JobID] = cascadeRun
+	_, _ = staleRoot.stopDelegateSubtree(cascadeChild)
+	_ = closedStopChildren.directDelegateJobForChild("child")
+
+	// Recovery skip rows and successful owner-scoped enqueue.
+	recovery := newTestJM(t)
+	_ = recovery.recoverForwardedTerminalEvents()
+	_ = recovery.recoverForwardedPendingNotifications()
+	recovery.parentJobID = "parent"
+	recovery.forward = func(jobstore.Event) error { return nil }
+	start(t, recovery, "running", recovery.sessionID, "parent", jobstore.JobShell, "")
+	_ = recovery.recoverForwardedTerminalEvents()
+	_ = recovery.recoverForwardedPendingNotifications()
+	_ = recovery.shouldRecoverForwardedTerminalRecord(&jobstore.JobRecord{JobID: "no-gen", ParentJobID: "parent", OwnerSessionID: recovery.sessionID, Status: jobstore.StatusCompleted}, "parent")
+	ended := started
+	_ = recovery.recoveredEventTime(&jobstore.JobRecord{EndedAt: &ended})
+	enqueued := false
+	enqueueJM := newTestJM(t)
+	enqueueJM.enqueue = func(jobNotification) { enqueued = true }
+	start(t, enqueueJM, "local-terminal", enqueueJM.sessionID, "", jobstore.JobShell, "")
+	if err := enqueueJM.store.Append(jobstore.Event{Kind: jobstore.EventJobFinished, TS: started, JobID: "local-terminal", Status: jobstore.StatusCompleted, TerminalGen: "gen"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = enqueueJM.forwardEvent(jobstore.Event{Kind: jobstore.EventJobNotificationPending, TS: started, JobID: "local-terminal", TerminalGen: "gen"})
+	if !enqueued {
+		t.Fatal("local forwarded notification was not enqueued")
+	}
+	_ = enqueueJM.forwardEvent(jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "early", Type: jobstore.JobShell})
+	descendantJM := newTestJM(t)
+	descendantJM.enqueue = func(jobNotification) { t.Fatal("descendant notification enqueued locally") }
+	start(t, descendantJM, "descendant-terminal", "child-owner", "delegate", jobstore.JobShell, "")
+	if err := descendantJM.store.Append(jobstore.Event{Kind: jobstore.EventJobFinished, TS: started, JobID: "descendant-terminal", Status: jobstore.StatusCompleted, TerminalGen: "gen"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = descendantJM.forwardEvent(jobstore.Event{Kind: jobstore.EventJobNotificationPending, TS: started, JobID: "descendant-terminal", TerminalGen: "gen"})
 }
