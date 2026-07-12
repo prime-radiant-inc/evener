@@ -17,6 +17,10 @@ type projectDeleteSkip struct {
 var (
 	removeProjectSessionFile = os.Remove
 	removeProjectSessionDir  = os.RemoveAll
+	projectSessionLive       = func(roster *hubcore.Roster, id string) bool {
+		_, ok := roster.Find(id)
+		return ok
+	}
 )
 
 // handleAPIProjectDelete removes every session file under a project and scrubs
@@ -70,7 +74,7 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 	if s.cfg.Roster != nil {
 		var liveNames []string
 		for _, e := range entries {
-			if _, ok := s.cfg.Roster.Find(e.ID); ok {
+			if projectSessionLive(s.cfg.Roster, e.ID) {
 				liveNames = append(liveNames, hubcore.ShortID(e.ID))
 			}
 		}
@@ -86,7 +90,7 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 		// TOCTOU re-check via the probe-resolved Roster.Find (round-2 A9): a
 		// genuine resume between entry and removal aborts this session.
 		if s.cfg.Roster != nil {
-			if _, ok := s.cfg.Roster.Find(e.ID); ok {
+			if projectSessionLive(s.cfg.Roster, e.ID) {
 				skipped = append(skipped, projectDeleteSkip{ID: e.ID, Reason: "resumed live"})
 				continue
 			}

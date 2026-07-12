@@ -10,8 +10,10 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
 )
 
+var hubTranscriptRootForList = hubTranscriptRoot
+
 func hubThreadTranscriptList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
-	root, err := hubTranscriptRoot(ctx, cfg, sources, params.Ref)
+	root, err := hubTranscriptRootForList(ctx, cfg, sources, params.Ref)
 	if err != nil {
 		return appwire.ThreadTranscriptListResponse{}, err
 	}

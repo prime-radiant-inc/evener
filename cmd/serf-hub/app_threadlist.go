@@ -11,10 +11,12 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
 )
 
+var ensureManagedCodexSourcesForList = ensureManagedCodexSources
+
 func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 	var threads []appwire.Thread
 	liveIDs := map[string]struct{}{}
-	if err := ensureManagedCodexSources(ctx, cfg, sources, params); err != nil {
+	if err := ensureManagedCodexSourcesForList(ctx, cfg, sources, params); err != nil {
 		return appwire.ThreadListResponse{}, err
 	}
 	for _, source := range sources.All() {

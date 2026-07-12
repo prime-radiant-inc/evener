@@ -22,8 +22,11 @@ import (
 )
 
 var (
-	webHubUpgrade = hubUpgrade
-	gitCommand    = exec.CommandContext
+	webHubUpgrade            = hubUpgrade
+	gitCommand               = exec.CommandContext
+	ensureAPIActionAvailable = func(s *WebServer, id, action string) error {
+		return s.ensureSessionActionAvailable(id, action)
+	}
 )
 
 func (s *WebServer) handleApiSearch(w http.ResponseWriter, r *http.Request) {
@@ -256,7 +259,7 @@ func (s *WebServer) handleAPIClear(w http.ResponseWriter, r *http.Request, id st
 		writeAPIError(w, http.StatusNotFound, "session not live")
 		return
 	}
-	if err := s.ensureSessionActionAvailable(id, "clear"); err != nil {
+	if err := ensureAPIActionAvailable(s, id, "clear"); err != nil {
 		writeAPIWireError(w, http.StatusBadGateway, err)
 		return
 	}
@@ -312,7 +315,7 @@ func (s *WebServer) handleAPIModel(w http.ResponseWriter, r *http.Request, id st
 	if model == "" {
 		model = body.Model
 	}
-	if err := s.ensureSessionActionAvailable(id, "model"); err != nil {
+	if err := ensureAPIActionAvailable(s, id, "model"); err != nil {
 		writeAPIWireError(w, http.StatusBadGateway, err)
 		return
 	}

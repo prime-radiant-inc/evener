@@ -13,6 +13,7 @@ import (
 var (
 	loadSessionMetaForRename = schema.LoadSessionMeta
 	saveSessionMetaForRename = schema.SaveSessionMeta
+	isLiveForRename          = func(s *WebServer, id string) bool { return s.isLive(id) }
 )
 
 // handleAPIRename renames a session. Live serf sessions route through the
@@ -40,7 +41,7 @@ func (s *WebServer) handleAPIRename(w http.ResponseWriter, r *http.Request, id s
 	}
 	ref := appRefFromRouteID(id)
 
-	if s.isLive(id) {
+	if isLiveForRename(s, id) {
 		source, err := sourceForThread(s.sources, ref, "")
 		if err != nil {
 			writeAPIError(w, http.StatusNotFound, "session not live")

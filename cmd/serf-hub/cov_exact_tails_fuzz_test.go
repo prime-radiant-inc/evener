@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -27,6 +28,10 @@ type exactContractLister struct {
 }
 
 type exactListSource struct{ *scriptedAppSource }
+
+type exactNameSource struct{ *scriptedAppSource }
+
+func (*exactNameSource) SetThreadName(context.Context, appwire.ThreadNameSetParams) error { return nil }
 
 func (s *exactListSource) ListThreads(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 	return appwire.ThreadListResponse{Data: []appwire.Thread{s.thread, {ID: "id2", Source: "local"}}}, nil
@@ -105,6 +110,7 @@ func FuzzExactTails(f *testing.F) {
 		// Defensive HTTP branches that require no ambient services.
 		web.handleSubagentPreview(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/?ref=remote:missing", nil))
 		pastWeb := NewWebServer(hubcore.WebConfig{Past: past})
+		pastWeb.sources = appsource.NewRegistry()
 		pastWeb.handleSubagentPreview(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/?ref=local:past", nil))
 		errSource := &pass6TailSource{scriptedAppSource: &scriptedAppSource{id: "local"}, readErr: errors.New("read")}
 		pastWeb.sources.Add(errSource)
@@ -122,6 +128,66 @@ func FuzzExactTails(f *testing.F) {
 		liveWeb.handleAPIModel(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"model":"p/m"}`)), "live-a")
 		liveWeb.handleAPIReasoningEffort(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"reasoning_effort":"high"}`)), "live-a")
 		liveWeb.handleAPIRename(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"new"}`)), "live-a")
+
+		// Model a rename race: the first liveness check is stale, while the
+		// pre-write roster recheck observes the resumed session.
+		oldRenameLive := isLiveForRename
+		isLiveForRename = func(*WebServer, string) bool { return false }
+		liveWeb.handleAPIRename(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"new"}`)), "live-a")
+		liveWeb.sources.Add(&scriptedAppSource{id: "local"})
+		liveWeb.handleAPIRename(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"new"}`)), "live-a")
+		liveWeb.sources = appsource.NewRegistry()
+		liveWeb.sources.Add(&exactNameSource{scriptedAppSource: &scriptedAppSource{id: "local"}})
+		liveWeb.cfg.Past = past
+		liveWeb.handleAPIRename(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"new"}`)), "live-a")
+		isLiveForRename = oldRenameLive
+
+		oldManagedList := ensureManagedCodexSourcesForList
+		ensureManagedCodexSourcesForList = func(context.Context, hubcore.WebConfig, *appsource.Registry, appwire.ThreadListParams) error {
+			return errors.New("managed source")
+		}
+		_, _ = hubThreadList(context.Background(), hubcore.WebConfig{}, appsource.NewRegistry(), appwire.ThreadListParams{})
+		ensureManagedCodexSourcesForList = oldManagedList
+
+		// Project deletion's second liveness check can race with a resume.
+		deletePast := hubcore.NewPastIndex("")
+		deleteMeta := schema.SessionMeta{ID: "delete", Name: "delete"}
+		deleteMeta.EnvInfo.WorkingDir = "/work/delete"
+		deletePast.SeedForTest([]schema.SessionMeta{deleteMeta})
+		deleteWeb := NewWebServer(hubcore.WebConfig{Past: deletePast, Roster: hubcore.NewRosterWithEntries()})
+		tree, _ := deleteWeb.memoTree(context.Background())
+		if len(tree.Projects) > 0 {
+			body, _ := json.Marshal(map[string]string{"key": tree.Projects[0].Key, "working_dir": tree.Projects[0].WorkingDir})
+			checks := 0
+			oldProjectLive := projectSessionLive
+			projectSessionLive = func(*hubcore.Roster, string) bool {
+				checks++
+				return checks > 1
+			}
+			deleteWeb.handleAPIProjectDelete(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body))))
+			projectSessionLive = oldProjectLive
+		}
+
+		lineagePast := hubcore.NewPastIndex("")
+		lineagePast.SeedForTest([]schema.SessionMeta{{ID: "", ParentSessionID: "parent"}})
+		lineageWeb := NewWebServer(hubcore.WebConfig{Past: lineagePast})
+		lineageWeb.fillForkLineage(&data, schema.SessionMeta{ID: "parent", ForkLabel: "fork"})
+		lineageWeb.handleSession(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/s/missing/fork", nil))
+
+		oldTranscriptRoot := hubTranscriptRootForList
+		hubTranscriptRootForList = func(context.Context, hubcore.WebConfig, *appsource.Registry, string) (appwire.Thread, error) {
+			return appwire.Thread{}, nil
+		}
+		_, _ = hubThreadTranscriptList(context.Background(), hubcore.WebConfig{}, appsource.NewRegistry(), appwire.ThreadTranscriptListParams{Ref: "fallback"})
+		_, _ = hubThreadTranscriptList(context.Background(), hubcore.WebConfig{}, appsource.NewRegistry(), appwire.ThreadTranscriptListParams{})
+		hubTranscriptRootForList = oldTranscriptRoot
+
+		oldEnsureAction := ensureAPIActionAvailable
+		ensureAPIActionAvailable = func(*WebServer, string, string) error { return nil }
+		liveWeb.sources = appsource.NewRegistry()
+		liveWeb.handleAPIClear(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", nil), "live-a")
+		liveWeb.handleAPIModel(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"model":"p/m"}`)), "live-a")
+		ensureAPIActionAvailable = oldEnsureAction
 		writeJSON(httptest.NewRecorder(), make(chan int))
 		(&WebServer{}).handleManifest(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil))
 		partialReq := httptest.NewRequest(http.MethodGet, "/_partials/workspace/spawn", nil)
