@@ -217,10 +217,10 @@ func fuzzRegistryEdges(t *testing.T) {
 	}
 	origMarshal := marshalRegistry
 	marshalRegistry = func(any, string, string) ([]byte, error) { return nil, errors.New("marshal fault") }
+	t.Cleanup(func() { marshalRegistry = origMarshal })
 	if err := SaveRegistry(filepath.Join(root, "marshal.json"), Registry{}); err == nil {
 		t.Fatal("marshal fault succeeded")
 	}
-	marshalRegistry = origMarshal
 
 	var warnings bytes.Buffer
 	m := &Manager{Root: block, Stderr: &warnings}
