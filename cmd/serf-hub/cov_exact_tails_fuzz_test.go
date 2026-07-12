@@ -158,8 +158,9 @@ func FuzzExactTails(f *testing.F) {
 		// Project deletion's second liveness check can race with a resume.
 		deleteWeb := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
 		tree, _ := deleteWeb.memoTree(context.Background())
-		if len(tree.Projects) > 0 {
-			body, _ := json.Marshal(map[string]string{"key": tree.Projects[0].Key, "working_dir": tree.Projects[0].WorkingDir})
+		projects := append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...)
+		if len(projects) > 0 {
+			body, _ := json.Marshal(map[string]string{"key": projects[0].Key, "working_dir": projects[0].WorkingDir})
 			checks := 0
 			oldProjectLive := projectSessionLive
 			projectSessionLive = func(*hubcore.Roster, string) bool {
