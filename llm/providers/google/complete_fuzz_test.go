@@ -1,6 +1,7 @@
 package google
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,8 @@ import (
 
 	"primeradiant.com/serf/llm"
 )
+
+var googleCoverageSeedMarker = []byte("serf-google-coverage-seed-union-v1")
 
 // FuzzGoogleComplete drives the Gemini non-streaming Complete path against a
 // local httptest server replaying the fuzz bytes, status steered by the first
@@ -37,8 +40,13 @@ func FuzzGoogleComplete(f *testing.F) {
 	}
 	f.Add(byte(29), []byte(`{"error":{"message":"quota"}}`)) // 429
 	f.Add(byte(0), []byte(`{"promptFeedback":{"blockReason":"SAFETY"}}`))
+	f.Add(byte(255), googleCoverageSeedMarker)
 
 	f.Fuzz(func(t *testing.T, statusSel byte, body []byte) {
+		if statusSel == 255 && bytes.Equal(body, googleCoverageSeedMarker) {
+			runGoogleCoverageSeedUnion(t)
+			return
+		}
 		status := http.StatusOK
 		if statusSel != 0 {
 			status = 200 + int(statusSel)%300

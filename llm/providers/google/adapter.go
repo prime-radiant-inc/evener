@@ -28,6 +28,11 @@ type Adapter struct {
 	DefaultHeaders map[string]string
 }
 
+var (
+	newGoogleFromEnv       = NewFromEnv
+	newGoogleStreamRequest = http.NewRequestWithContext
+)
+
 // GoogleInstanceParams holds the configuration for a single Google adapter instance.
 type GoogleInstanceParams struct {
 	Name    string
@@ -63,7 +68,7 @@ func init() {
 		if envvars.GeminiAPIKey.Trimmed() == "" && envvars.GoogleAPIKey.Trimmed() == "" {
 			return nil, false, nil
 		}
-		a, err := NewFromEnv()
+		a, err := newGoogleFromEnv()
 		if err != nil {
 			return nil, true, err
 		}
@@ -295,7 +300,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	q.Set("alt", "sse")
 	u.RawQuery = q.Encode()
 
-	httpReq, err := http.NewRequestWithContext(sctx, http.MethodPost, u.String(), bytes.NewReader(b))
+	httpReq, err := newGoogleStreamRequest(sctx, http.MethodPost, u.String(), bytes.NewReader(b))
 	if err != nil {
 		cancel()
 		return nil, err
@@ -493,11 +498,9 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 						llm.StampEndpointURL(&r, endpoint)
 						if len(r.ToolCalls()) > 0 {
 							r.Finish = llm.FinishReason{Reason: "tool_calls", Raw: r.Finish.Raw}
-						} else if r.Finish.Reason == "" {
-							r.Finish = llm.FinishReason{Reason: "stop"}
 						}
-						// The branches above force a tool_calls or stop fallback, so a
-						// finished google response always carries a finish reason.
+						// NormalizeFinishReason always supplies a non-empty canonical reason;
+						// tool calls override it with the provider-neutral continuation reason.
 						invariant.Hold(r.Finish.Reason != "", "google finished response has an empty finish reason")
 						rp := r
 						if sseBuf != nil {
