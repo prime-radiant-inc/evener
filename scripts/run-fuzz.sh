@@ -615,6 +615,7 @@ TARGETS=(
 	"native:.:./internal/plugins:FuzzPluginsMarketplacesCoverage::"
 	"native:.:./internal/plugins:FuzzPluginsMiscCoverage::"
 	"native:agent:.:FuzzInitWorktreeSeed100::"
+	"native:llm:./providercfg:FuzzProviderCfgSeedUnion::"
 )
 
 duration="60s"
