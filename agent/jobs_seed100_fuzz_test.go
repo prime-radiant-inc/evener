@@ -173,6 +173,40 @@ func seed100Nested(t *testing.T) {
 	_, _ = root.ownerJobManagerFor("missing")
 	_ = root.delegateChildSessionToCascade("missing")
 
+	child := newSession(t)
+	live := &subagent{id: child.ID(), sess: child}
+	root.subagents.subs[live.id] = live
+	started := frozenTestTime
+	forwarded := jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_nested_seed", Type: jobstore.JobShell, OwnerSessionID: child.ID(), VisibleToSession: root.ID(), ParentJobID: "job_parent", StartedAt: &started}
+	owned := forwarded
+	owned.VisibleToSession = child.ID()
+	if err := root.jobManager.appendEvent(forwarded); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.jobManager.appendEvent(owned); err != nil {
+		t.Fatal(err)
+	}
+	if owner, rec := root.ownerJobManagerFor(forwarded.JobID); owner != child.jobManager || rec == nil {
+		t.Fatalf("nested owner = %p, %+v", owner, rec)
+	}
+	if jobs, err := root.walkDescendantJobs(listFilter{Limit: 1}); err != nil || len(jobs) != 1 {
+		t.Fatalf("descendant walk = %v, %v", jobs, err)
+	}
+	_, _, _, _, _ = root.resolveDescendantJobOwner(forwarded.JobID)
+	_ = root.directChildOwningDescendant(forwarded.JobID)
+
+	delegateID := "job_delegate_seed"
+	if err := root.jobManager.appendEvent(jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: delegateID, Type: jobstore.JobDelegate, OwnerSessionID: root.ID(), VisibleToSession: root.ID(), TranscriptRef: encodeRef("", child.ID()), StartedAt: &started}); err != nil {
+		t.Fatal(err)
+	}
+	child.jobManager.setParentJobID(delegateID)
+	_ = root.delegateChildSessionToCascade(delegateID)
+	_ = root.directDelegateJobForChild(child.ID())
+	childRun := &runningJob{rec: &jobstore.JobRecord{JobID: "job_child_running", Type: jobstore.JobShell, Status: jobstore.StatusRunning}, done: make(chan struct{}), signal: func() {}}
+	child.jobManager.running[childRun.rec.JobID] = childRun
+	_, _ = root.stopDelegateSubtree(child)
+	delete(child.jobManager.running, childRun.rec.JobID)
+
 	jm := newTestJM(t)
 	jm.forward = func(jobstore.Event) error { return errors.New("forward") }
 	jm.parentJobID = "parent"
@@ -199,6 +233,11 @@ func seed100Drain(t *testing.T) {
 
 func seed100JobTools(t *testing.T, text string) {
 	t.Helper()
+	for failAt := 1; failAt <= 6; failAt++ {
+		reg := tool.NewRegistry()
+		fault := &seed100Registrar{failAt: failAt}
+		_ = registerJobToolsWithRegistrar(reg, fault, newSession(t), nil)
+	}
 	for _, fn := range []func() (any, error){
 		func() (any, error) { return jobWatchTool(nil, nil, 1) },
 		func() (any, error) { return jobStatusTool(nil, nil, 1) },
@@ -271,4 +310,16 @@ func seed100JobTools(t *testing.T, text string) {
 
 	// Ensure json itself sees the fuzz-derived text so the input is meaningful.
 	_, _ = json.Marshal(text)
+}
+
+type seed100Registrar struct {
+	calls, failAt int
+}
+
+func (r *seed100Registrar) Register(tool.RegisteredTool) error {
+	r.calls++
+	if r.calls == r.failAt {
+		return errors.New("register fault")
+	}
+	return nil
 }
