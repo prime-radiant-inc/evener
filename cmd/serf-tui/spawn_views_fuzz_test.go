@@ -50,6 +50,7 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 		_ = dashboardRecentExpanded(rows, 3)
 		_ = dashboardProjectExpanded(rows, -1)
 		_ = dashboardProjectExpanded(rows, 1)
+		_ = dashboardProjectExpanded([]hubRow{{kind: hubRowProject, projectKey: "a"}, {kind: hubRowProject, projectKey: "b"}}, 0)
 		_ = dashboardProjectExpanded([]hubRow{{kind: hubRowProject}}, 0)
 		for _, state := range []string{"awaiting", "active", "warning", "idle", "ended", "errored", "mystery"} {
 			_ = stateColor(state)
@@ -66,6 +67,10 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 		_ = m.dashboardDetailsView(rows, 50)
 		m.err = nil
 		_ = m.dashboardRecentDetails(rows[3])
+		m.tree.Projects = []hubTreeProject{{Key: "p", WorkingDir: "/work/p"}}
+		_ = m.dashboardRecentDetails(rows[3])
+		m.selected = 0
+		_ = m.dashboardDetailsView([]hubRow{{kind: hubRowKind(99)}}, 50)
 		_ = dashboardSessionDetails(hubRow{})
 		_, _ = projectSessionCounts(hubRow{kind: hubRowProject, projectKey: "p"}, rows)
 		_ = projectSummary(hubRow{kind: hubRowProject, projectKey: "p", state: "idle"}, rows)
@@ -121,6 +126,8 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 		}
 		m.session.scrollMode, m.browseSelected = true, 0
 		_ = m.renderSessionMainBody()
+		m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Hidden: true}}}
+		_ = m.renderSessionMainBody()
 		m.session.scrollMode = false
 		m.height = 0
 		_ = m.sessionBody("", 0, false)
@@ -137,6 +144,20 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 		_ = m.sessionPanelOverlay()
 		m.sessionPanel = nil
 		_ = m.sessionPanelOverlay()
+		question := newQuestionOverlay("ref", []askQuestion{{Header: "h", Question: "q"}}, 40)
+		m.questionOverlay = question
+		picker := tuipick.NewModelPicker([]tuipick.ModelPickerItem{{ID: "m"}}, "m", 40)
+		m.sessionModelPicker = &picker
+		themePicker := tuipick.NewThemePicker()
+		m.sessionThemePicker = &themePicker
+		transcriptPicker := tuipick.NewModelPicker([]tuipick.ModelPickerItem{{ID: "t"}}, "t", 40)
+		m.sessionTranscriptPicker = &transcriptPicker
+		m.openCommandPalette()
+		overrides := launchconfig.NewLaunchOverridesModal()
+		m.launchOverridesModal = &overrides
+		followSession := tuipick.NewTextInputModal("prompt", "tag")
+		m.followupModal = &followSession
+		_, _, _ = m.sessionChromeText()
 
 		// Spawn focus, harness selection, modal priority, and submit guards.
 		m = newHubModel(nil, "hub")
@@ -160,6 +181,9 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 		m.spawnFocus = hubSpawnFieldDir
 		m.spawnDirInput.SetValue(".")
 		_, _ = m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyTab})
+		_, _ = m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyCtrlL})
+		layer := appwire.LaunchConfigLayer{}
+		m.spawnLaunchOverrides = &layer
 		_, _ = m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyCtrlL})
 		m.spawnHarnesses = nil
 		m.cycleSpawnHarness()
@@ -214,6 +238,8 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 		m.openSpawnModelPicker(m.spawnModels)
 		_, _ = m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyEsc})
 		_, _ = m.activateSpawnModelField()
+		m.spawnModels = nil
+		_, _ = m.activateSpawnModelField()
 		_, _ = m.submitSpawnForm()
 		client := &appwire.Client{}
 		m.client = client
@@ -237,6 +263,16 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 		m.spawnModels = []tuipick.ModelPickerItem{{ID: "ok"}}
 		m.spawnModel = "ok"
 		_, _ = m.submitSpawnForm()
+		m.tree.Projects = []hubTreeProject{{Key: "p", WorkingDir: "/work/p"}}
+		m.rows = []hubRow{{kind: hubRowProject, projectKey: "p", project: "p"}}
+		m.selected = 0
+		_ = m.spawnWorkingDir()
+		m.spawnModelPicker = &picker
+		m.launchOverridesModal = &overrides
+		m.followupModal = &followSession
+		m.notices = []noticePanel{{Title: "notice", Reason: "reason"}}
+		m.spawnSubmitting = true
+		_ = m.spawnView()
 		m.spawnSubmitting = true
 		_, _ = m.submitSpawnForm()
 		m.err = errors.New("spawn")
