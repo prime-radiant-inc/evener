@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -260,7 +262,83 @@ func transcriptAssertWriterFailurePaths(t *testing.T, root string, r *transcript
 	transcriptAssertMarshalFailures(t, root, header)
 	transcriptAssertNilAndClosedNoOps(t, root, header)
 	transcriptAssertFaultedAppendPaths(t, root, header, r.next())
+	transcriptAssertZeroProgressWrite(t, root, header)
+	transcriptAssertCloseRaceNoOps(t, root, header)
 	transcriptAssertCloseFailurePaths(t, root, header, r.next())
+}
+
+type transcriptZeroWriteFS struct{ afero.Fs }
+
+func (fs transcriptZeroWriteFS) Create(name string) (afero.File, error) {
+	f, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return &transcriptZeroWriteFile{File: f}, nil
+}
+
+type transcriptZeroWriteFile struct {
+	afero.File
+	armed bool
+}
+
+func (f *transcriptZeroWriteFile) Write(p []byte) (int, error) {
+	if f.armed {
+		f.armed = false
+		return 0, nil
+	}
+	return f.File.Write(p)
+}
+
+func transcriptAssertZeroProgressWrite(t *testing.T, root string, header Header) {
+	t.Helper()
+	fs := transcriptZeroWriteFS{Fs: afero.NewBasePathFs(afero.NewOsFs(), root)}
+	w, err := newWriterFS(fs, "/zero-write.jsonl", header)
+	if err != nil {
+		t.Fatalf("newWriterFS zero write: %v", err)
+	}
+	w.file.(*transcriptZeroWriteFile).armed = true
+	if err := w.Append(transcriptProgramTurn(1)); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("zero-progress Append error = %v, want io.ErrShortWrite", err)
+	}
+	_ = w.Close()
+}
+
+func transcriptAssertCloseRaceNoOps(t *testing.T, root string, header Header) {
+	t.Helper()
+	path := filepath.Join(root, "close-race", "transcript.jsonl")
+	w, err := NewWriter(path, header)
+	if err != nil {
+		t.Fatalf("NewWriter close race: %v", err)
+	}
+
+	previousProcs := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(previousProcs)
+	for _, invoke := range []func() error{
+		func() error { return w.Append(transcriptProgramTurn(2)) },
+		func() error { return w.AppendAPICall(transcriptProgramAPICall(3)) },
+	} {
+		w.closed.Store(false)
+		w.mu.Lock()
+		started := make(chan struct{})
+		done := make(chan error, 1)
+		go func(invoke func() error) {
+			close(started)
+			done <- invoke()
+		}(invoke)
+		<-started
+		// With one P, yielding lets the caller run until it blocks on w.mu,
+		// after its unlocked closed check and before the locked re-check.
+		runtime.Gosched()
+		w.closed.Store(true)
+		w.mu.Unlock()
+		if err := <-done; err != nil {
+			t.Fatalf("close-raced append: %v", err)
+		}
+	}
+	if err := w.file.Close(); err != nil {
+		t.Fatalf("close race file: %v", err)
+	}
 }
 
 func transcriptAssertMarshalFailures(t *testing.T, root string, header Header) {
@@ -593,6 +671,15 @@ func transcriptAssertReaderRecoveryPaths(t *testing.T, root string, r *transcrip
 	transcriptAssertLastAPICallSeq(t, emptyPath, 0)
 
 	transcriptAssertFaultedReaderPaths(t, root, append(partialPrefix, []byte("crash-tail")...))
+
+	oversizedPath := filepath.Join(root, "reader", "oversized.jsonl")
+	oversized := append(bytes.Repeat([]byte{'x'}, transcriptJSONLMaxLineBytes+1), '\n')
+	if err := os.WriteFile(oversizedPath, oversized, 0o600); err != nil {
+		t.Fatalf("write oversized transcript: %v", err)
+	}
+	if _, err := OpenWriter(oversizedPath); err == nil || !strings.Contains(err.Error(), "scanning transcript entries") {
+		t.Fatalf("OpenWriter oversized error = %v", err)
+	}
 }
 
 func transcriptAssertFaultedReaderPaths(t *testing.T, root string, data []byte) {

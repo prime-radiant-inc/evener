@@ -186,6 +186,45 @@ func taskFaultLifecycleMatrix(t *testing.T, input TaskInput) {
 	if !hasCycle(map[int][]int{1: {2}, 2: {3}, 3: {1}}) {
 		t.Fatal("hasCycle missed a directed cycle")
 	}
+
+	// Exercise replacement entries in both halves of validateDependencies.
+	// Production IDs are unique, but the validator deliberately accepts the
+	// task being replaced in either the committed or pending slice.
+	replacement := taskFaultStore(afero.NewMemMapFs())
+	replacement.tasks = []Task{{ID: 1, Status: TaskOpen}}
+	if err := replacement.validateDependencies(1, nil, nil); err != nil {
+		t.Fatalf("validate committed replacement: %v", err)
+	}
+	if err := replacement.validateDependencies(2, nil, []Task{{ID: 2, Status: TaskOpen}}); err != nil {
+		t.Fatalf("validate pending replacement: %v", err)
+	}
+
+	deps := []int{added[0].ID}
+	if err := s.Update([]TaskUpdate{{ID: dependent[0].ID, Status: TaskOpen, DependsOn: &deps}}); err != nil {
+		t.Fatalf("Update dependencies: %v", err)
+	}
+
+	// The apply loop defensively retains an unknown-ID check even though the
+	// projected validation normally proves it unreachable. A deterministic
+	// clock callback models state loss between two applications and covers that
+	// final guard without races or host effects.
+	disappearing := taskFaultStore(afero.NewMemMapFs())
+	disappearing.tasks = []Task{{ID: 1, Status: TaskOpen}, {ID: 2, Status: TaskOpen}}
+	disappearing.nextID = 3
+	disappearing.SetClock(func() time.Time {
+		disappearing.tasks = disappearing.tasks[:1]
+		return time.Unix(1_700_000_100, 0).UTC()
+	})
+	if err := disappearing.Update([]TaskUpdate{{ID: 1, Status: TaskDone}, {ID: 2, Status: TaskCancelled}}); err == nil {
+		t.Fatal("Update accepted a task that disappeared during application")
+	}
+
+	invalidTime := time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+	marshalFailure := taskFaultStore(afero.NewMemMapFs())
+	marshalFailure.tasks = []Task{{ID: 1, Status: TaskOpen, CreatedAt: &invalidTime}}
+	if err := marshalFailure.save(); err == nil {
+		t.Fatal("save accepted a timestamp JSON cannot represent")
+	}
 }
 
 func taskFaultAppendFailure(t *testing.T, input TaskInput, failAt int) {
