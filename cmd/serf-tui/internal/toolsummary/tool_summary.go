@@ -252,18 +252,19 @@ func unifiedDiff(filename, old, new_ string) string {
 
 // highlightDiff applies chroma syntax highlighting to a unified diff string.
 func highlightDiff(diff string) string {
-	lexer := lexers.Get("diff")
+	return highlightDiffWith(diff, lexers.Get("diff"), styles.Get("monokai"), formatters.Get("terminal256"))
+}
+
+func highlightDiffWith(diff string, lexer chroma.Lexer, style *chroma.Style, formatter chroma.Formatter) string {
 	if lexer == nil {
 		return diff
 	}
 	lexer = chroma.Coalesce(lexer)
 
-	style := styles.Get("monokai")
 	if style == nil {
 		style = styles.Fallback
 	}
 
-	formatter := formatters.Get("terminal256")
 	if formatter == nil {
 		return diff
 	}

@@ -2,6 +2,8 @@ package toolsummary
 
 import "testing"
 
+var fuzzCoverageUnion = func(*testing.T) {}
+
 // FuzzSummarizeTool drives the package's real one-line/detail renderer, whose
 // parse seam is the json.Unmarshal of the tool's arguments JSON in
 // SummarizeTool. Every branch (shell/read_file/edit_file/task_list/...) decodes
@@ -33,12 +35,27 @@ func FuzzSummarizeTool(f *testing.F) {
 		// (idF, _ := m["id"].(float64)) makes it a no-op. Kept as a seed so the
 		// fix stays regression-guarded by the corpus, not only under -fuzz.
 		{"task_list", `{"action":"update","updates":[{}]}`},
+		{"write_file", `{"file_path":"","content":""}`},
+		{"glob", `{"pattern":"*.go"}`},
+		{"grep", `{"pattern":"TODO"}`},
+		{"web_fetch", `{"url":"https://example.test/abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz"}`},
+		{"job_send_message", `{"target":"worker-1"}`},
+		{"job_read_output", `{"job_id":"job-1"}`},
+		{"job_stop", `{"job_id":"job-2"}`},
+		{"use_skill", `{"skill_name":"testing"}`},
+		{"communicate", `{}`},
+		{"some_mcp__op", `{"long":"abcdefghijklmnopqrstuvwxyzabcdefghijklmno","nested":{},"items":[]}`},
+		{"task_list", `{"action":"append","tasks":[null,{"description":"d","prompt":"abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz"}]}`},
+		{"task_list", `{"action":"append","tasks":[]}`},
+		{"task_list", `{"action":"update","updates":[null,{"id":2,"status":"unknown"}]}`},
+		{"task_list", `{"action":"update","updates":[]}`},
 	}
 	for _, s := range seeds {
 		f.Add(s.tool, s.args)
 	}
 
 	f.Fuzz(func(t *testing.T, toolName, argsJSON string) {
+		fuzzCoverageUnion(t)
 		// Floor oracle: the renderer must not panic on any input.
 		desc, detail := SummarizeTool(toolName, argsJSON)
 		_ = desc
