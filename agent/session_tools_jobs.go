@@ -264,8 +264,6 @@ func jobWatchTool(s *Session, args map[string]any, maxChars int) (any, error) {
 			return marshalWatchInspectResult(ownerInspect, maxChars)
 		}
 		return marshalWatchInspectResult(inspect, maxChars)
-	default:
-		return "", fmt.Errorf("invalid_request: unsupported operation %q", a.Operation)
 	}
 	if err != nil {
 		return "", err
@@ -2182,7 +2180,7 @@ type jobGrepScan struct {
 // boundary; transient read errors leave the scan state unchanged for the next
 // poll.
 func (g *jobGrepScan) step(jm *jobManager, jobID string, re *regexp.Regexp, maxLineBytes int) bool {
-	total, err := jobOutputBytes(jm, jobID)
+	total, err := jobOutputBytesForScan(jm, jobID)
 	if err != nil || total <= g.lastTotal {
 		return false
 	}
@@ -2280,7 +2278,7 @@ func readJobOutputFrom(jm *jobManager, jobID string, from, total int64) (content
 		if req > maxJobOutputRetentionBytes {
 			req = maxJobOutputRetentionBytes
 		}
-		c, totalNow, _, err := jm.readOutput(jobID, int(req))
+		c, totalNow, _, err := readJobOutputForScan(jm, jobID, int(req))
 		if err != nil {
 			return "", 0, false
 		}
@@ -2299,6 +2297,12 @@ func readJobOutputFrom(jm *jobManager, jobID string, from, total int64) (content
 		want = totalNow - from
 	}
 }
+
+var readJobOutputForScan = func(jm *jobManager, jobID string, bytes int) (string, int64, bool, error) {
+	return jm.readOutput(jobID, bytes)
+}
+
+var jobOutputBytesForScan = jobOutputBytes
 
 func jobOutputBytes(jm *jobManager, jobID string) (int64, error) {
 	_, total, _, err := jm.readOutput(jobID, 0)

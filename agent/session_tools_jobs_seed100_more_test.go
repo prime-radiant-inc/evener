@@ -56,6 +56,9 @@ func seed100SessionToolsJobsMore(t *testing.T) {
 	_ = jobListDelegatesForJobs(root, map[string]*jobstore.DelegateRecord{
 		"dlg_one": {DelegateID: "dlg_one", OwnerSessionID: root.ID(), CurrentJobID: "missing", LatestJobID: "missing"},
 	}, jobs)
+	_ = jobListDelegatesForJobs(root, map[string]*jobstore.DelegateRecord{
+		"dlg_one": {DelegateID: "dlg_one", OwnerSessionID: root.ID(), CurrentJobID: "job_one", LatestJobID: "missing"},
+	}, jobs)
 
 	// Bounding reaches the successful empty-output fallback before the final
 	// structured-result degradation.
@@ -85,4 +88,37 @@ func seed100SessionToolsJobsMore(t *testing.T) {
 	// Retention clamping is reachable with a synthetic lifetime total even when
 	// the underlying record is absent.
 	_, _, _ = readJobOutputFrom(closed, "missing", 0, maxJobOutputRetentionBytes+1)
+
+	// Closed-store front doors surface their durable lookup/load errors.
+	closedSession := newSession(t)
+	if err := closedSession.jobManager.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = jobWatchTool(closedSession, map[string]any{"operation": "clear", "watch_id": "watch_x"}, 100)
+	_, _ = jobStatusTool(closedSession, map[string]any{"job_id": "job_x"}, 100)
+	_, _ = jobListTool(closedSession, nil, 100)
+	_, _ = jobReadOutputTool(nil, closedSession, map[string]any{"job_id": "job_x"}, 100)
+
+	// Script a continuously growing output window to exhaust the retry budget,
+	// then feed that not-ok result through the incremental scanner.
+	originalRead := readJobOutputForScan
+	originalBytes := jobOutputBytesForScan
+	calls := 0
+	readJobOutputForScan = func(*jobManager, string, int) (string, int64, bool, error) {
+		calls++
+		return "x", int64(calls + 1), false, nil
+	}
+	_, _, _ = readJobOutputFrom(nil, "job_x", 0, 1)
+	readJobOutputForScan = func(*jobManager, string, int) (string, int64, bool, error) {
+		return "abc", 3, false, nil
+	}
+	jobOutputBytesForScan = func(*jobManager, string) (int64, error) { return 3, nil }
+	g = &jobGrepScan{scanned: 2, lastTotal: 0}
+	_ = g.step(nil, "job_x", regexp.MustCompile("x"), 10)
+	readJobOutputForScan = originalRead
+	jobOutputBytesForScan = originalBytes
+	t.Cleanup(func() {
+		readJobOutputForScan = originalRead
+		jobOutputBytesForScan = originalBytes
+	})
 }
