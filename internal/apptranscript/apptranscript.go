@@ -228,6 +228,20 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 			Text:                 text,
 			Status:               appwire.TurnStatusCompleted,
 		}}
+	case schema.TurnModelSwitch:
+		text := strings.TrimSpace(turn.Message.Text())
+		if text == "" {
+			return nil
+		}
+		return []appwire.ThreadItem{{
+			Type:                 "systemMessage",
+			ID:                   fmt.Sprintf("item_model_switch_%d", turnIndex),
+			TurnID:               turnID,
+			TranscriptEntryIndex: turnIndex,
+			Description:          "Model switch",
+			Text:                 text,
+			Status:               appwire.TurnStatusCompleted,
+		}}
 	case schema.TurnUserInput:
 		images := ImagesFromContent(turn.Message.Content, imageProjector)
 		images = append(images, AttachmentsFromContent(turn.Message.Content)...)

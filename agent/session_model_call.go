@@ -1004,8 +1004,9 @@ func buildTranscriptAPILogResponse(resp llm.Response, idHash string) *llm.APILog
 }
 
 // expandHistory flattens conversation turns into the per-message slice sent to
-// the model: steering/checkpoint/summary turns pass through as-is, and
-// aggregated tool-result turns are expanded into individual tool-result messages.
+// the model: steering/checkpoint/summary turns pass through as-is, aggregated
+// tool-result turns are expanded into individual tool-result messages, and
+// TurnModelSwitch markers are dropped (presentational only, never sent).
 func expandHistory(historyTurns []schema.Turn) []llm.Message {
 	history := make([]llm.Message, 0, len(historyTurns))
 	for _, t := range historyTurns {
@@ -1041,6 +1042,10 @@ func expandHistory(historyTurns []schema.Turn) []llm.Message {
 		if t.Kind == schema.TurnCheckpoint || t.Kind == schema.TurnSummary {
 			// Compaction turns carry user-role messages; include as-is.
 			history = append(history, t.Message)
+			continue
+		}
+		if t.Kind == schema.TurnModelSwitch {
+			// Persisted switch marker: presentational only, never sent to the model.
 			continue
 		}
 		history = append(history, t.Message)

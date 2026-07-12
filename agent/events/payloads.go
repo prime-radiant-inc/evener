@@ -199,6 +199,11 @@ type ModelChangedData struct {
 	NewModel              string   `json:"new_model"`
 	ReasoningEffortLevels []string `json:"reasoning_effort_levels,omitempty"`
 	SupportsReasoning     bool     `json:"supports_reasoning,omitempty"`
+	// MarkerText is the persisted switch-marker text ("Switched model: <old>
+	// → <new>", plus any warning lines) — the exact text SetModel wrote to
+	// the transcript's TurnModelSwitch turn. The live projector renders it
+	// verbatim as a systemMessage item so live and replay stay byte-identical.
+	MarkerText string `json:"marker_text,omitempty"`
 }
 
 // ReasoningEffortChangedData is the payload for an EventReasoningEffortChanged

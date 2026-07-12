@@ -54,10 +54,14 @@ func TestProject_ModelChanged(t *testing.T) {
 			NewModel:              "claude-opus-4-6",
 			ReasoningEffortLevels: []string{"low", "high"},
 			SupportsReasoning:     true,
+			MarkerText:            "Switched model: openai/gpt-5.4 → anthropic/claude-opus-4-6",
 		},
 	})
-	if len(out) != 1 || out[0].Method != appwire.NotifyThreadModelChanged {
-		t.Fatalf("want one thread/model/changed notification, got %+v", out)
+	if len(out) != 2 {
+		t.Fatalf("want thread/model/changed + systemMessage notifications, got %+v", out)
+	}
+	if out[0].Method != appwire.NotifyThreadModelChanged {
+		t.Fatalf("out[0].Method = %q, want thread/model/changed", out[0].Method)
 	}
 	params, ok := out[0].Params.(appwire.ThreadModelChangedParams)
 	if !ok {
@@ -71,6 +75,19 @@ func TestProject_ModelChanged(t *testing.T) {
 	}
 	if !params.SupportsReasoning || len(params.ReasoningEffortLevels) != 2 {
 		t.Fatalf("params = %+v, want SupportsReasoning=true and 2 effort levels", params)
+	}
+
+	// (b) the live-only echo of the persisted switch marker: a systemMessage
+	// item carrying the exact MarkerText SetModel wrote to the transcript.
+	// No turn is active in this projector, so systemAnnouncement wraps the
+	// item in a synthetic turn/completed notification (same as any other
+	// systemAnnouncement fired outside a turn, e.g. context compaction).
+	turn := notificationTurn(t, out[1:], appwire.NotifyTurnCompleted)
+	if len(turn.Items) != 1 || turn.Items[0].Type != "systemMessage" {
+		t.Fatalf("marker turn items = %+v, want one systemMessage item", turn.Items)
+	}
+	if turn.Items[0].Text != "Switched model: openai/gpt-5.4 → anthropic/claude-opus-4-6" {
+		t.Fatalf("marker item Text = %q", turn.Items[0].Text)
 	}
 }
 

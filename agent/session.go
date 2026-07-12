@@ -718,12 +718,36 @@ func (s *Session) SetModel(model string) error {
 		s.reapplyProviderSpecificTools(oldTag, newTag)
 	}
 	s.rebuildToolDefsCache()
+	// Knowledge cutoff must be recomputed BEFORE the prompt-cache refresh
+	// below, or the cached prompt keeps claiming the launch model's cutoff
+	// forever (G15).
+	s.envInfo.KnowledgeCutoff = nextProfile.KnowledgeCutoff()
 	s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
 	// Post-swap fallback re-validation: cfg.ModelFallbacks entries that no
 	// longer validate against the new profile are dropped; their names are
-	// recorded for a later marker (Task 5) to surface as a warning.
+	// surfaced in the switch marker's warning line below.
 	s.lastDroppedModelFallbacks = s.revalidateModelFallbacksLocked()
+	// Context-window-shrink warning: the new profile may have a smaller
+	// window than the old one, so estimated usage against the just-applied
+	// profile (contextMgr.SetProfile above) may already exceed its
+	// compaction threshold. Blocking the switch would strand users on
+	// expensive models; the marker just warns.
+	contextWarningPct := 0
+	contextWarning := false
+	if s.contextMgr != nil {
+		pressure := s.contextMgr.EstimatePressure(s.history, len(s.cachedSystemPrompt))
+		if pressure >= s.contextMgr.CheckpointThreshold {
+			contextWarning = true
+			contextWarningPct = int(pressure*100 + 0.5)
+		}
+	}
+	markerText := buildModelSwitchMarkerText(oldProfile, nextProfile, contextWarning, contextWarningPct, s.lastDroppedModelFallbacks)
 	s.mu.Unlock()
+	// Persisted marker turn (N5): a new schema.Turn kind rendered as a
+	// systemMessage by both projection paths and excluded from
+	// expandHistory. Must be appended (and thus visible to a replaying
+	// client) before the live-only EventModelChanged notification below.
+	s.appendTurn(schema.TurnModelSwitch, llm.System(markerText))
 	s.emit(events.EventModelChanged, events.ModelChangedData{
 		OldProvider:           oldProfile.ID(),
 		OldModel:              oldProfile.Model(),
@@ -731,12 +755,30 @@ func (s *Session) SetModel(model string) error {
 		NewModel:              nextProfile.Model(),
 		ReasoningEffortLevels: nextProfile.ReasoningEffortLevels(),
 		SupportsReasoning:     nextProfile.SupportsReasoning(),
+		MarkerText:            markerText,
 	})
 	// Flush meta.json so a daemon crash before the next happy-path turn
 	// boundary doesn't leave on-disk model stale. Kata wnfz. maybeAutoSave
 	// re-acquires s.mu via s.Meta(), so the lock must be released first.
 	s.maybeAutoSave()
 	return nil
+}
+
+// buildModelSwitchMarkerText renders the persisted model-switch marker text:
+// "Switched model: <old provider/model> → <new provider/model>", with
+// warning lines appended when estimated context usage exceeds the new
+// profile's compaction threshold and/or the switch dropped now-invalid
+// cfg.ModelFallbacks entries (N5, decision rows "Transcript marker" /
+// "Context-window shrink" / "Model-fallbacks after a switch").
+func buildModelSwitchMarkerText(oldProfile, nextProfile *provider.Profile, contextWarning bool, contextWarningPct int, droppedFallbacks []string) string {
+	lines := []string{fmt.Sprintf("Switched model: %s/%s → %s/%s", oldProfile.ID(), oldProfile.Model(), nextProfile.ID(), nextProfile.Model())}
+	if contextWarning {
+		lines = append(lines, fmt.Sprintf("Warning: context usage is at ~%d%% of %s's context window, over the compaction threshold.", contextWarningPct, nextProfile.ID()))
+	}
+	if len(droppedFallbacks) > 0 {
+		lines = append(lines, fmt.Sprintf("Warning: dropped model fallbacks no longer valid for %s: %s", nextProfile.ID(), strings.Join(droppedFallbacks, ", ")))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // DroppedModelFallbacksFromLastSwitch returns the cfg.ModelFallbacks entries
