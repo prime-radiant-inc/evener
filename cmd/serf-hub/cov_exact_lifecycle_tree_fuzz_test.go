@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
 	"primeradiant.com/serf/cmdutil"
+	"primeradiant.com/serf/hubapi"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -116,6 +117,77 @@ func FuzzExactLifecycleTree(f *testing.F) {
 		)
 		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: treeRoster, Favorite: fav})
 		web.handleAPITree(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/tree", nil))
+
+		oldBuild, oldDerive := hubBuildNavigationTree, hubDeriveNavigationAttention
+		oldNormalize, oldRef, oldNavigation, oldLiveTitle, oldIsLive, oldWorkspace, oldRank := hubNormalizeTreeState, hubAppThreadRef, hubNavigationInputs, hubLiveTreeTitle, hubIsSessionLive, hubTreeWorkspaceData, hubTreeAttentionRank
+		t.Cleanup(func() {
+			hubBuildNavigationTree, hubDeriveNavigationAttention = oldBuild, oldDerive
+			hubNormalizeTreeState, hubAppThreadRef = oldNormalize, oldRef
+			hubNavigationInputs = oldNavigation
+			hubLiveTreeTitle = oldLiveTitle
+			hubIsSessionLive = oldIsLive
+			hubTreeWorkspaceData = oldWorkspace
+			hubTreeAttentionRank = oldRank
+		})
+		key := hubcore.ProjectSlug("/work/p")
+		node := func(id, kind, state string, updated time.Time) hubcore.TreeNode {
+			return hubcore.TreeNode{ID: id, Kind: kind, State: state, Title: id, UpdatedAt: updated, CreatedAt: updated}
+		}
+		hubBuildNavigationTree = func([]schema.SessionMeta, []hubcore.LiveEntry, map[hubcore.ArchiveKey]bool) hubcore.Tree {
+			return hubcore.Tree{
+				NeedsYou: []hubcore.TreeNode{node("active", "session", "waiting", now)},
+				Projects: []hubcore.TreeProject{{Key: key, Name: "p", WorkingDir: "/work/p", RollupState: "idle", Current: []hubcore.TreeNode{
+					node("active", "session", "waiting", now), node("fav", "session", "idle", now.Add(-time.Minute)), node("fav2", "session", "idle", now.Add(-2*time.Minute)), node("group", "group", "idle", now),
+				}}},
+			}
+		}
+		_ = fav.Set("session", "fav2", true, now)
+		structuredRoster := hubcore.NewRosterWithEntries(
+			hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "active", WorkingDir: "/work/p", StartedAt: now}, SessionID: "active", Status: "waiting"},
+			hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "orphan", WorkingDir: "/work/p", StartedAt: now}, SessionID: "orphan", Status: "error"},
+			hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "pathless", StartedAt: now}, SessionID: "pathless", Status: "idle"},
+		)
+		hubNavigationInputs = func(*WebServer, context.Context) ([]schema.SessionMeta, []hubcore.LiveEntry) {
+			return nil, []hubcore.LiveEntry{
+				{Entry: rendezvous.Entry{SessionID: "active", WorkingDir: "/work/p", StartedAt: now}, SessionID: "active", Status: "waiting"},
+				{Entry: rendezvous.Entry{SessionID: "orphan", WorkingDir: "/work/p", StartedAt: now}, SessionID: "orphan", Status: "errored"},
+				{Entry: rendezvous.Entry{SessionID: "pathless", StartedAt: now}, SessionID: "pathless", Status: "idle"},
+			}
+		}
+		rankCalls := 0
+		hubTreeAttentionRank = func(string) int {
+			rankCalls++
+			if rankCalls%2 == 1 {
+				return 10
+			}
+			return 0
+		}
+		structured := NewWebServer(hubcore.WebConfig{Roster: structuredRoster, Favorite: fav})
+		structured.handleAPITree(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/tree", nil))
+		hubNavigationInputs = oldNavigation
+		hubTreeAttentionRank = oldRank
+
+		hubNormalizeTreeState = func(string) string { return "" }
+		hubAppThreadRef = func(appwire.Thread) hubapi.Ref { return hubapi.Ref{HostID: "remote"} }
+		_ = hubDetailFromAppThread(appwire.Thread{ID: "fallback"})
+		hubNormalizeTreeState, hubAppThreadRef = oldNormalize, oldRef
+
+		invalidCache := &hubcore.RemoteThreadCache{}
+		invalidCache.Store([]appwire.Thread{{}})
+		_, _ = NewWebServer(hubcore.WebConfig{RemoteThreadCache: invalidCache}).navigationTreeInputs(ctx)
+
+		detailPast := hubcore.NewPastIndex("")
+		detailPast.SeedForTest([]schema.SessionMeta{{ID: "r", Name: "past title", TurnCount: 3, CreatedAt: now, UpdatedAt: now}})
+		detailRoster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "r"}, SessionID: "r", Status: "idle"})
+		detailThread := appwire.Thread{ID: "r", Source: "local", Serf: appwire.SerfThread{Ref: "local:r"}}
+		detailWeb := finalSessionWeb(hubcore.WebConfig{Past: detailPast, Roster: detailRoster}, detailThread)
+		hubLiveTreeTitle = func(string, hubcore.LiveEntry, *hubcore.PastIndex) string { return "" }
+		hubIsSessionLive = func(*WebServer, string) bool { return true }
+		hubTreeWorkspaceData = func(*WebServer, string) WorkspaceData { return WorkspaceData{ID: "r", TurnCount: 3} }
+		_, _ = detailWeb.apiSessionDetail("r")
+		hubLiveTreeTitle = oldLiveTitle
+		hubIsSessionLive = oldIsLive
+		hubTreeWorkspaceData = oldWorkspace
 
 		// Invalid remote rows are ignored, local sources are skipped, successful
 		// empty lists clear last-good data, and nil registries are valid.

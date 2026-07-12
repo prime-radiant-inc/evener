@@ -17,6 +17,18 @@ import (
 	"primeradiant.com/serf/rendezvous"
 )
 
+var (
+	hubBuildNavigationTree       = hubcore.BuildTree
+	hubDeriveNavigationAttention = hubcore.DeriveAttention
+	hubNormalizeTreeState        = hubcore.NormalizeState
+	hubAppThreadRef              = hubRefFromAppThread
+	hubNavigationInputs          = (*WebServer).navigationTreeInputs
+	hubLiveTreeTitle             = liveTitle
+	hubIsSessionLive             = (*WebServer).isLive
+	hubTreeWorkspaceData         = (*WebServer).workspaceData
+	hubTreeAttentionRank         = hubapi.AttentionRank
+)
+
 // archiveDecisions returns the current set of user-explicit archive decisions.
 // Returns an empty map (never nil) when cfg.Archive is nil or Decisions() fails.
 func (s *WebServer) archiveDecisions() map[hubcore.ArchiveKey]bool {
@@ -47,7 +59,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		}{time.Now().UTC(), hubAttentionSummaryFromCore(attentionSummary)})
 		return
 	}
-	_, live := s.navigationTreeInputs(r.Context())
+	_, live := hubNavigationInputs(s, r.Context())
 	favs := s.favoriteDecisions()
 	tree, attentionSummary := s.memoTree(r.Context())
 	resp := hubapi.TreeResponse{
@@ -113,9 +125,9 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		key := hubcore.ProjectSlug(le.WorkingDir)
 		node := hubcore.TreeNode{
 			ID:        le.SessionID,
-			Title:     liveTitle(le.SessionID, le, s.cfg.Past),
+			Title:     hubLiveTreeTitle(le.SessionID, le, s.cfg.Past),
 			Project:   project,
-			State:     hubcore.NormalizeState(le.Status),
+			State:     hubNormalizeTreeState(le.Status),
 			Kind:      "session",
 			CreatedAt: le.StartedAt,
 			UpdatedAt: le.StartedAt,
@@ -125,7 +137,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		if idx, ok := projectIndexes[key]; ok {
 			p := &resp.Projects[idx]
 			p.Sessions = append(p.Sessions, apiNode)
-			if hubapi.AttentionRank(node.State) > hubapi.AttentionRank(p.RollupState) {
+			if hubTreeAttentionRank(node.State) > hubTreeAttentionRank(p.RollupState) {
 				p.RollupState = node.State
 			}
 			continue
@@ -172,15 +184,15 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 // themselves, since memoTree's return shape only carries what treeCache
 // stores.
 func (s *WebServer) memoTree(ctx context.Context) (hubcore.Tree, hubcore.AttentionSummary) {
-	metas, live := s.navigationTreeInputs(ctx)
+	metas, live := hubNavigationInputs(s, ctx)
 	decisions := s.archiveDecisions()
 	var version uint64
 	if s.cfg.Inputs != nil {
 		version = s.cfg.Inputs.Load()
 	}
 	return s.treeCache.Get(version, time.Now(), func() (hubcore.Tree, hubcore.AttentionSummary) {
-		t := hubcore.BuildTree(metas, live, decisions)
-		_, sum := hubcore.DeriveAttention(metas, live, decisions)
+		t := hubBuildNavigationTree(metas, live, decisions)
+		_, sum := hubDeriveNavigationAttention(metas, live, decisions)
 		return t, sum
 	})
 }
@@ -441,8 +453,8 @@ func hubUsageFromAppwire(u *appwire.SerfUsage) *hubapi.Usage {
 }
 
 func hubDetailFromAppThread(thread appwire.Thread) hubapi.SessionDetail {
-	ref := hubRefFromAppThread(thread)
-	state := hubcore.NormalizeState(thread.Status.Type)
+	ref := hubAppThreadRef(thread)
+	state := hubNormalizeTreeState(thread.Status.Type)
 	if state == "" {
 		state = "idle"
 	}
@@ -692,15 +704,13 @@ func (s *WebServer) handleAPISession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *WebServer) apiSessionDetail(id string) (hubapi.SessionDetail, bool) {
-	wd := s.workspaceData(id)
+	wd := hubTreeWorkspaceData(s, id)
 	if wd.ID == "" {
 		return hubapi.SessionDetail{}, false
 	}
-	ref, err := hubapi.ParseRef(appRefFromRouteID(id))
-	if err != nil {
-		ref = hubapi.LocalRef(id)
-	}
-	live := s.isLive(id)
+	// appRefFromRouteID canonicalizes malformed route IDs to a local ref.
+	ref, _ := hubapi.ParseRef(appRefFromRouteID(id))
+	live := hubIsSessionLive(s, id)
 	detail := hubapi.SessionDetail{
 		Ref:            ref.String(),
 		HostID:         ref.HostID,
@@ -750,7 +760,7 @@ func (s *WebServer) apiSessionDetail(id string) (hubapi.SessionDetail, bool) {
 		if detail.Title == "" || detail.Title == detail.SessionID {
 			if s.cfg.Roster != nil {
 				le, _ := s.cfg.Roster.Find(canonicalRouteID(id))
-				if resolved := liveTitle(id, le, s.cfg.Past); resolved != "" {
+				if resolved := hubLiveTreeTitle(id, le, s.cfg.Past); resolved != "" {
 					detail.Title = resolved
 				}
 			}
@@ -798,15 +808,13 @@ func (s *WebServer) apiSessionDetail(id string) (hubapi.SessionDetail, bool) {
 // this function — its JSON-API/action callers keep fetching the full
 // transcript and so keep a correct TurnCount independent of this lean path.
 func (s *WebServer) apiSessionState(id string) (hubapi.SessionDetail, bool) {
-	wd := s.workspaceData(id)
+	wd := hubTreeWorkspaceData(s, id)
 	if wd.ID == "" {
 		return hubapi.SessionDetail{}, false
 	}
-	ref, err := hubapi.ParseRef(appRefFromRouteID(id))
-	if err != nil {
-		ref = hubapi.LocalRef(id)
-	}
-	live := s.isLive(id)
+	// appRefFromRouteID canonicalizes malformed route IDs to a local ref.
+	ref, _ := hubapi.ParseRef(appRefFromRouteID(id))
+	live := hubIsSessionLive(s, id)
 	detail := hubapi.SessionDetail{
 		Ref:            ref.String(),
 		HostID:         ref.HostID,
