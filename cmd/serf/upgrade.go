@@ -12,6 +12,8 @@ import (
 	"primeradiant.com/serf/internal/selfupdate"
 )
 
+var selfUpdateUpgrade = selfupdate.Upgrade
+
 func runUpgrade(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("upgrade", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -38,7 +40,7 @@ func runUpgrade(args []string, stdout, stderr io.Writer) error {
 		requested = fs.Arg(0)
 	}
 
-	result, err := selfupdate.Upgrade(context.Background(), selfupdate.Options{
+	result, err := selfUpdateUpgrade(context.Background(), selfupdate.Options{
 		Requested:      requested,
 		CurrentChannel: buildinfo.UpgradeChannel(),
 		Prefix:         *prefix,

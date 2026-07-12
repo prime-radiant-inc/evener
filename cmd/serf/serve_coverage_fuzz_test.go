@@ -36,9 +36,6 @@ func FuzzServeSeedCoverage(f *testing.F) {
 			{"noninteractive", TestRunServeNonInteractiveFlagControlsPromptAddendum},
 			{"shutdown waits", TestRunServeShutdownWaitsForInFlightInput},
 			{"goal", TestServeGoal_TUIPathEndToEnd},
-			{"ask awaiting", TestServeAsk_StatusAwaitingAtRest},
-			{"ask wake", TestServeAsk_NoFlickerOnJobCompletion},
-			{"ask restore", TestServeAsk_RestoreReportsAwaitingImmediately},
 		}
 		for _, tc := range tests {
 			t.Run(tc.name, tc.fn)
