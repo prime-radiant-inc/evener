@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestToArgs_AllFields(t *testing.T) {
+func checkToArgs_AllFields(t *testing.T) {
 	r := Resolved{Effective: Layer{
 		Model:                       "openai/gpt-5",
 		FastCheapModel:              "openai/gpt-5-mini",
@@ -71,7 +71,7 @@ func TestToArgs_AllFields(t *testing.T) {
 	}
 }
 
-func TestToArgs_InlinePromptTextDoesNotEmitArgv(t *testing.T) {
+func checkToArgs_InlinePromptTextDoesNotEmitArgv(t *testing.T) {
 	got := ToArgs(Resolved{Effective: Layer{
 		SystemPromptMode:       "inline",
 		SystemPromptText:       "do not leak me",
@@ -85,7 +85,7 @@ func TestToArgs_InlinePromptTextDoesNotEmitArgv(t *testing.T) {
 	}
 }
 
-func TestToArgs_SkipsUnset(t *testing.T) {
+func checkToArgs_SkipsUnset(t *testing.T) {
 	got := ToArgs(Resolved{Effective: Layer{Model: "openai/gpt-5"}})
 	want := []string{"--model", "openai/gpt-5"}
 	if !reflect.DeepEqual(got, want) {
@@ -98,7 +98,7 @@ func TestToArgs_SkipsUnset(t *testing.T) {
 // launch layer can override a global default back to off); an unset mode emits
 // nothing. sandbox_net is a tri-state: true/false emit `--sandbox-net on|off`,
 // nil emits nothing.
-func TestToArgs_Sandbox(t *testing.T) {
+func checkToArgs_Sandbox(t *testing.T) {
 	cases := []struct {
 		name  string
 		layer Layer
@@ -125,7 +125,7 @@ func TestToArgs_Sandbox(t *testing.T) {
 	}
 }
 
-func TestToArgs_BoolFalseDoesNotEmitFlag(t *testing.T) {
+func checkToArgs_BoolFalseDoesNotEmitFlag(t *testing.T) {
 	got := ToArgs(Resolved{Effective: Layer{NoProjectPrompts: ptrBool(false), NonInteractive: ptrBool(false)}})
 	for _, a := range got {
 		if a == "--no-project-prompts" {

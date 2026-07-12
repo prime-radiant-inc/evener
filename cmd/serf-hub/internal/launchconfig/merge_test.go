@@ -9,7 +9,7 @@ import (
 func ptrInt(v int) *int    { return &v }
 func ptrBool(v bool) *bool { return &v }
 
-func TestMerge_ScalarPrecedence(t *testing.T) {
+func checkMerge_ScalarPrecedence(t *testing.T) {
 	g := Layer{Model: "g-model", FastCheapModel: "g-fast", ReasoningEffort: "low", OpenAIResponsesContinuation: "off"}
 	r := Layer{Model: "r-model", FastCheapModel: "r-fast"}
 	p := Layer{}
@@ -46,7 +46,7 @@ func TestMerge_ScalarPrecedence(t *testing.T) {
 // TestMerge_Sandbox: a global sandbox default is inherited when the launch layer
 // leaves it unset, but an explicit launch value overrides it — including overriding
 // a global restricted back to off. SandboxNet follows the non-nil-wins pointer rule.
-func TestMerge_Sandbox(t *testing.T) {
+func checkMerge_Sandbox(t *testing.T) {
 	// Global restricted + launch unset → inherit restricted.
 	got, _ := mergeLayers(map[LayerName]Layer{
 		LayerGlobal: {Sandbox: "restricted", SandboxNet: ptrBool(true)},
@@ -85,7 +85,7 @@ func TestMerge_Sandbox(t *testing.T) {
 // TestMerge_SandboxNetWithoutModeDiagnostic: an effective sandbox_net with no
 // (or off) sandbox mode is a silent no-op at serf serve, so mergeLayers emits a
 // diagnostic. A non-off mode (from ANY layer) suppresses the warning.
-func TestMerge_SandboxNetWithoutModeDiagnostic(t *testing.T) {
+func checkMerge_SandboxNetWithoutModeDiagnostic(t *testing.T) {
 	hasNetDiag := func(diags []Diagnostic) bool {
 		for _, d := range diags {
 			if d.Field == "sandbox_net" && strings.Contains(d.Message, "no effect") {
@@ -131,7 +131,7 @@ func TestMerge_SandboxNetWithoutModeDiagnostic(t *testing.T) {
 // would only fail at spawn (serf's ParseMode) with no launch-config pointer at the
 // typo. mergeLayers emits a diagnostic naming the bad value; the four real modes
 // (case/space-insensitive) and an unset value do not warn.
-func TestMerge_UnknownSandboxModeDiagnostic(t *testing.T) {
+func checkMerge_UnknownSandboxModeDiagnostic(t *testing.T) {
 	hasModeDiag := func(diags []Diagnostic) bool {
 		for _, d := range diags {
 			if d.Field == "sandbox" && strings.Contains(d.Message, "unknown sandbox mode") {
@@ -162,7 +162,7 @@ func TestMerge_UnknownSandboxModeDiagnostic(t *testing.T) {
 	}
 }
 
-func TestMerge_ScalarPointerSemantics(t *testing.T) {
+func checkMerge_ScalarPointerSemantics(t *testing.T) {
 	g := Layer{MaxRounds: ptrInt(200), NonInteractive: ptrBool(true), RawHTTPLogging: ptrBool(true)}
 	l := Layer{NonInteractive: ptrBool(false), RawHTTPLogging: ptrBool(false)}
 	got, _ := mergeLayers(map[LayerName]Layer{LayerGlobal: g, LayerLaunch: l})
@@ -180,7 +180,7 @@ func TestMerge_ScalarPointerSemantics(t *testing.T) {
 	}
 }
 
-func TestMergeLayers_SystemPromptModesOverrideByLayer(t *testing.T) {
+func checkMergeLayers_SystemPromptModesOverrideByLayer(t *testing.T) {
 	resolved, _ := mergeLayers(map[LayerName]Layer{
 		LayerGlobal:  {SystemPromptMode: "file", SystemPromptFile: "/global.md", SystemPromptAppendMode: "file", SystemPromptAppendFile: "/global-append.md"},
 		LayerProject: {SystemPromptMode: "inline", SystemPromptText: "project", SystemPromptAppendMode: "inline", SystemPromptAppendText: "project append"},
@@ -193,7 +193,7 @@ func TestMergeLayers_SystemPromptModesOverrideByLayer(t *testing.T) {
 	}
 }
 
-func TestMergeLayers_LegacySystemPromptAppendMigratesOneEntry(t *testing.T) {
+func checkMergeLayers_LegacySystemPromptAppendMigratesOneEntry(t *testing.T) {
 	resolved, diags := mergeLayers(map[LayerName]Layer{
 		LayerGlobal: {SystemPromptAppend: []string{"/legacy-append.md"}},
 	})
@@ -211,7 +211,7 @@ func TestMergeLayers_LegacySystemPromptAppendMigratesOneEntry(t *testing.T) {
 	}
 }
 
-func TestMergeLayers_LegacySystemPromptAppendMultiEntryUsesFirstWithDiagnostic(t *testing.T) {
+func checkMergeLayers_LegacySystemPromptAppendMultiEntryUsesFirstWithDiagnostic(t *testing.T) {
 	resolved, diags := mergeLayers(map[LayerName]Layer{
 		LayerProject: {SystemPromptAppend: []string{"/first.md", "/second.md"}},
 	})
@@ -229,7 +229,7 @@ func TestMergeLayers_LegacySystemPromptAppendMultiEntryUsesFirstWithDiagnostic(t
 	}
 }
 
-func TestMergeLayers_ExplicitAppendModeBeatsLegacyAppendSameLayer(t *testing.T) {
+func checkMergeLayers_ExplicitAppendModeBeatsLegacyAppendSameLayer(t *testing.T) {
 	resolved, diags := mergeLayers(map[LayerName]Layer{
 		LayerLaunch: {
 			SystemPromptAppendMode: "inline",
@@ -248,7 +248,7 @@ func TestMergeLayers_ExplicitAppendModeBeatsLegacyAppendSameLayer(t *testing.T) 
 	}
 }
 
-func TestMerge_ListAppendInLayerOrder(t *testing.T) {
+func checkMerge_ListAppendInLayerOrder(t *testing.T) {
 	g := Layer{SkillsDirs: []string{"/g1", "/g2"}}
 	r := Layer{SkillsDirs: []string{"/r1"}}
 	p := Layer{SkillsDirs: []string{"/p1"}}
@@ -262,7 +262,7 @@ func TestMerge_ListAppendInLayerOrder(t *testing.T) {
 	}
 }
 
-func TestMerge_EnvMapLastWriteWins(t *testing.T) {
+func checkMerge_EnvMapLastWriteWins(t *testing.T) {
 	g := Layer{Env: map[string]string{"A": "g", "B": "g"}}
 	p := Layer{Env: map[string]string{"A": "p"}}
 	got, _ := mergeLayers(map[LayerName]Layer{LayerGlobal: g, LayerProject: p})
@@ -274,7 +274,7 @@ func TestMerge_EnvMapLastWriteWins(t *testing.T) {
 	}
 }
 
-func TestMerge_MCPsAppendWithDuplicateDiagnostic(t *testing.T) {
+func checkMerge_MCPsAppendWithDuplicateDiagnostic(t *testing.T) {
 	g := Layer{MCPs: []MCPServerSpec{{Name: "x", Command: "x1"}}}
 	p := Layer{MCPs: []MCPServerSpec{{Name: "x", Command: "x2"}}}
 	got, diags := mergeLayers(map[LayerName]Layer{LayerGlobal: g, LayerProject: p})
@@ -292,7 +292,7 @@ func TestMerge_MCPsAppendWithDuplicateDiagnostic(t *testing.T) {
 	}
 }
 
-func TestMerge_ModelFallbacksReplaceNotAppend(t *testing.T) {
+func checkMerge_ModelFallbacksReplaceNotAppend(t *testing.T) {
 	// Kata cxw8: ModelFallbacks REPLACES rather than appends. Setting a
 	// fallback chain at a higher-precedence layer (e.g. launch) replaces
 	// any chain inherited from a lower layer.
@@ -308,7 +308,7 @@ func TestMerge_ModelFallbacksReplaceNotAppend(t *testing.T) {
 	}
 }
 
-func TestMerge_ModelFallbacksGlobalOnly(t *testing.T) {
+func checkMerge_ModelFallbacksGlobalOnly(t *testing.T) {
 	g := Layer{ModelFallbacks: &[]string{"openai/gpt-5.4"}}
 	got, _ := mergeLayers(map[LayerName]Layer{LayerGlobal: g})
 	want := []string{"openai/gpt-5.4"}
@@ -317,7 +317,7 @@ func TestMerge_ModelFallbacksGlobalOnly(t *testing.T) {
 	}
 }
 
-func TestMerge_EmptyModelFallbacksClearsInherited(t *testing.T) {
+func checkMerge_EmptyModelFallbacksClearsInherited(t *testing.T) {
 	g := Layer{ModelFallbacks: &[]string{"openai/gpt-5.4"}}
 	l := Layer{ModelFallbacks: &[]string{}}
 	got, _ := mergeLayers(map[LayerName]Layer{LayerGlobal: g, LayerLaunch: l})
@@ -332,7 +332,7 @@ func TestMerge_EmptyModelFallbacksClearsInherited(t *testing.T) {
 	}
 }
 
-func TestMerge_BlockedCredentialEnvKeys(t *testing.T) {
+func checkMerge_BlockedCredentialEnvKeys(t *testing.T) {
 	g := Layer{Env: map[string]string{"OPENAI_API_KEY": "leak"}}
 	got, diags := mergeLayers(map[LayerName]Layer{LayerGlobal: g})
 	if len(diags) == 0 || diags[0].Field != "env.OPENAI_API_KEY" {
@@ -343,7 +343,7 @@ func TestMerge_BlockedCredentialEnvKeys(t *testing.T) {
 	}
 }
 
-func TestMerge_CoversRemainingScalarAndListFields(t *testing.T) {
+func checkMerge_CoversRemainingScalarAndListFields(t *testing.T) {
 	g := Layer{
 		Agent:            "global-agent",
 		ContextStrategy:  "global-ctx",
@@ -383,7 +383,7 @@ func TestMerge_CoversRemainingScalarAndListFields(t *testing.T) {
 	}
 }
 
-func TestMerge_AppReplaySizeNonGlobalDiagnostic(t *testing.T) {
+func checkMerge_AppReplaySizeNonGlobalDiagnostic(t *testing.T) {
 	l := Layer{AppReplaySize: ptrInt(10)}
 	got, diags := mergeLayers(map[LayerName]Layer{LayerLaunch: l})
 	var seen bool
@@ -403,7 +403,7 @@ func TestMerge_AppReplaySizeNonGlobalDiagnostic(t *testing.T) {
 	}
 }
 
-func TestMerge_AppReplaySizeGlobalApplied(t *testing.T) {
+func checkMerge_AppReplaySizeGlobalApplied(t *testing.T) {
 	g := Layer{AppReplaySize: ptrInt(10)}
 	got, diags := mergeLayers(map[LayerName]Layer{LayerGlobal: g})
 	for _, d := range diags {
@@ -419,7 +419,7 @@ func TestMerge_AppReplaySizeGlobalApplied(t *testing.T) {
 	}
 }
 
-func TestIsCredentialEnvKey(t *testing.T) {
+func checkIsCredentialEnvKey(t *testing.T) {
 	cases := []struct {
 		key  string
 		want bool

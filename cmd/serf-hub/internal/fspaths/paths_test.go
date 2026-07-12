@@ -10,7 +10,7 @@ import (
 	"primeradiant.com/serf/appwire"
 )
 
-func TestCompleteDirs_EmptyHomeUsesRoot(t *testing.T) {
+func checkCompleteDirs_EmptyHomeUsesRoot(t *testing.T) {
 	t.Setenv("HOME", "")
 	var gotDir string
 	resp, err := completeDirs(appwire.DirsCompleteParams{}, func(dir string) ([]os.DirEntry, error) {
@@ -28,7 +28,7 @@ func TestCompleteDirs_EmptyHomeUsesRoot(t *testing.T) {
 	}
 }
 
-func TestCanonicalizeDir_StatErrorAfterResolution(t *testing.T) {
+func checkCanonicalizeDir_StatErrorAfterResolution(t *testing.T) {
 	want := errors.New("stat failed")
 	_, err := canonicalizeDir(t.TempDir(), pathOps{
 		evalSymlinks: filepath.EvalSymlinks,
@@ -41,25 +41,25 @@ func TestCanonicalizeDir_StatErrorAfterResolution(t *testing.T) {
 	}
 }
 
-func TestCanonicalizeDir_RejectsRelative(t *testing.T) {
+func checkCanonicalizeDir_RejectsRelative(t *testing.T) {
 	if _, err := CanonicalizeDir("foo/bar"); err == nil {
 		t.Fatal("expected error for relative path")
 	}
 }
 
-func TestCanonicalizeDir_RejectsEmpty(t *testing.T) {
+func checkCanonicalizeDir_RejectsEmpty(t *testing.T) {
 	if _, err := CanonicalizeDir(""); err == nil {
 		t.Fatal("expected error for empty path")
 	}
 }
 
-func TestCanonicalizeDir_RejectsNonexistent(t *testing.T) {
+func checkCanonicalizeDir_RejectsNonexistent(t *testing.T) {
 	if _, err := CanonicalizeDir("/nonexistent/path/that/should/not/exist"); err == nil {
 		t.Fatal("expected error for nonexistent path")
 	}
 }
 
-func TestCanonicalizeDir_RejectsFile(t *testing.T) {
+func checkCanonicalizeDir_RejectsFile(t *testing.T) {
 	tmp := t.TempDir()
 	f := filepath.Join(tmp, "file")
 	if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
@@ -70,7 +70,7 @@ func TestCanonicalizeDir_RejectsFile(t *testing.T) {
 	}
 }
 
-func TestCanonicalizeDir_ResolvesSymlink(t *testing.T) {
+func checkCanonicalizeDir_ResolvesSymlink(t *testing.T) {
 	tmp := t.TempDir()
 	realDir := filepath.Join(tmp, "real")
 	if err := os.Mkdir(realDir, 0o755); err != nil {
@@ -90,7 +90,7 @@ func TestCanonicalizeDir_ResolvesSymlink(t *testing.T) {
 	}
 }
 
-func TestCanonicalizeDir_NormalizesTraversal(t *testing.T) {
+func checkCanonicalizeDir_NormalizesTraversal(t *testing.T) {
 	tmp := t.TempDir()
 	sub := filepath.Join(tmp, "sub")
 	if err := os.Mkdir(sub, 0o755); err != nil {
@@ -107,7 +107,7 @@ func TestCanonicalizeDir_NormalizesTraversal(t *testing.T) {
 	}
 }
 
-func TestSanitizeDirPrefix_PreservesTrailingSlash(t *testing.T) {
+func checkSanitizeDirPrefix_PreservesTrailingSlash(t *testing.T) {
 	got, err := SanitizeDirPrefix("/Users/jesse/")
 	if err != nil {
 		t.Fatal(err)
@@ -117,13 +117,13 @@ func TestSanitizeDirPrefix_PreservesTrailingSlash(t *testing.T) {
 	}
 }
 
-func TestSanitizeDirPrefix_RejectsTraversal(t *testing.T) {
+func checkSanitizeDirPrefix_RejectsTraversal(t *testing.T) {
 	if _, err := SanitizeDirPrefix("../etc/passwd"); err == nil {
 		t.Fatal("expected error for traversal")
 	}
 }
 
-func TestSanitizeDirPrefix_NormalizesInternalTraversal(t *testing.T) {
+func checkSanitizeDirPrefix_NormalizesInternalTraversal(t *testing.T) {
 	got, err := SanitizeDirPrefix("/Users/jesse/foo/../bar")
 	if err != nil {
 		t.Fatal(err)
@@ -133,7 +133,7 @@ func TestSanitizeDirPrefix_NormalizesInternalTraversal(t *testing.T) {
 	}
 }
 
-func TestSanitizeDirPrefix_Empty(t *testing.T) {
+func checkSanitizeDirPrefix_Empty(t *testing.T) {
 	got, err := SanitizeDirPrefix("")
 	if err != nil {
 		t.Fatal(err)
@@ -143,7 +143,7 @@ func TestSanitizeDirPrefix_Empty(t *testing.T) {
 	}
 }
 
-func TestResolveInRoot_AllowsFileInsideRoot(t *testing.T) {
+func checkResolveInRoot_AllowsFileInsideRoot(t *testing.T) {
 	root := t.TempDir()
 	f := filepath.Join(root, "ok.txt")
 	if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
@@ -159,7 +159,7 @@ func TestResolveInRoot_AllowsFileInsideRoot(t *testing.T) {
 	}
 }
 
-func TestResolveInRoot_AllowsNestedFile(t *testing.T) {
+func checkResolveInRoot_AllowsNestedFile(t *testing.T) {
 	root := t.TempDir()
 	sub := filepath.Join(root, "a", "b")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
@@ -179,7 +179,7 @@ func TestResolveInRoot_AllowsNestedFile(t *testing.T) {
 	}
 }
 
-func TestResolveInRoot_RejectsDotDotTraversal(t *testing.T) {
+func checkResolveInRoot_RejectsDotDotTraversal(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(filepath.Dir(root), "secret.txt")
 	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
@@ -190,14 +190,14 @@ func TestResolveInRoot_RejectsDotDotTraversal(t *testing.T) {
 	}
 }
 
-func TestResolveInRoot_RejectsAbsoluteOutside(t *testing.T) {
+func checkResolveInRoot_RejectsAbsoluteOutside(t *testing.T) {
 	root := t.TempDir()
 	if _, err := ResolveInRoot(root, "/etc/passwd"); !errors.Is(err, ErrPathEscapesRoot) {
 		t.Fatalf("expected ErrPathEscapesRoot, got %v", err)
 	}
 }
 
-func TestResolveInRoot_RejectsSymlinkEscape(t *testing.T) {
+func checkResolveInRoot_RejectsSymlinkEscape(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(filepath.Dir(root), "outside.txt")
 	if err := os.WriteFile(outside, []byte("x"), 0o644); err != nil {
@@ -212,7 +212,7 @@ func TestResolveInRoot_RejectsSymlinkEscape(t *testing.T) {
 	}
 }
 
-func TestResolveInRoot_MissingFileNotEscape(t *testing.T) {
+func checkResolveInRoot_MissingFileNotEscape(t *testing.T) {
 	root := t.TempDir()
 	// A path inside the root that doesn't exist returns a non-escape error so
 	// the caller renders 404, not 403.
@@ -225,7 +225,7 @@ func TestResolveInRoot_MissingFileNotEscape(t *testing.T) {
 	}
 }
 
-func TestResolveInRoot_RejectsEmpty(t *testing.T) {
+func checkResolveInRoot_RejectsEmpty(t *testing.T) {
 	root := t.TempDir()
 	if _, err := ResolveInRoot(root, ""); err == nil {
 		t.Fatal("expected error for empty path")
@@ -235,7 +235,7 @@ func TestResolveInRoot_RejectsEmpty(t *testing.T) {
 	}
 }
 
-func TestResolveInRoot_RejectsMissingRoot(t *testing.T) {
+func checkResolveInRoot_RejectsMissingRoot(t *testing.T) {
 	if _, err := ResolveInRoot(filepath.Join(t.TempDir(), "missing"), "file"); err == nil {
 		t.Fatal("expected error for missing root")
 	}

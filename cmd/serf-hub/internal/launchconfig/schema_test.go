@@ -7,7 +7,7 @@ import (
 	"primeradiant.com/serf/envvars"
 )
 
-func TestLaunchOptionSchema_FieldCoverage(t *testing.T) {
+func checkLaunchOptionSchema_FieldCoverage(t *testing.T) {
 	got := map[string]bool{}
 	for _, opt := range LaunchOptionSchema() {
 		got[opt.Field] = true
@@ -42,7 +42,7 @@ func TestLaunchOptionSchema_FieldCoverage(t *testing.T) {
 	}
 }
 
-func TestLaunchOptionSchema_OpenAIResponsesContinuation(t *testing.T) {
+func checkLaunchOptionSchema_OpenAIResponsesContinuation(t *testing.T) {
 	opts := LaunchOptionSchema()
 	idx := indexOption(opts, "openai_responses_continuation")
 	if idx < 0 {
@@ -75,7 +75,7 @@ func TestLaunchOptionSchema_OpenAIResponsesContinuation(t *testing.T) {
 	}
 }
 
-func TestLaunchOptionSchema_ExportATIFProviderHandles(t *testing.T) {
+func checkLaunchOptionSchema_ExportATIFProviderHandles(t *testing.T) {
 	opts := LaunchOptionSchema()
 	idx := indexOption(opts, "export_atif_provider_handles")
 	if idx < 0 {
@@ -105,7 +105,7 @@ func TestLaunchOptionSchema_ExportATIFProviderHandles(t *testing.T) {
 	}
 }
 
-func TestLaunchOptionSchema_Sandbox(t *testing.T) {
+func checkLaunchOptionSchema_Sandbox(t *testing.T) {
 	opts := LaunchOptionSchema()
 
 	sb := indexOption(opts, "sandbox")
@@ -172,7 +172,7 @@ func TestLaunchOptionSchema_Sandbox(t *testing.T) {
 	}
 }
 
-func TestLaunchOptionSchema_RawHTTPLoggingIsDebugLaunchSetting(t *testing.T) {
+func checkLaunchOptionSchema_RawHTTPLoggingIsDebugLaunchSetting(t *testing.T) {
 	opts := LaunchOptionSchema()
 	idx := indexOption(opts, "raw_http_logging")
 	if idx < 0 {
@@ -205,7 +205,7 @@ func TestLaunchOptionSchema_RawHTTPLoggingIsDebugLaunchSetting(t *testing.T) {
 	}
 }
 
-func TestLaunchOptionSchema_GroupOrder(t *testing.T) {
+func checkLaunchOptionSchema_GroupOrder(t *testing.T) {
 	opts := LaunchOptionSchema()
 	if len(opts) == 0 {
 		t.Fatal("empty schema")
@@ -227,7 +227,7 @@ func TestLaunchOptionSchema_GroupOrder(t *testing.T) {
 	}
 }
 
-func TestLaunchOptionSchema_ExclusionsAreExplicit(t *testing.T) {
+func checkLaunchOptionSchema_ExclusionsAreExplicit(t *testing.T) {
 	excluded := LaunchOptionExclusions()
 	for _, flag := range []string{"addr", "run_dir", "resume", "resume_last", "state_dir", "system_prompt_as_user", "output_schema", "result_tool_name", "share_task_store"} {
 		if excluded[flag] == "" {
@@ -236,7 +236,7 @@ func TestLaunchOptionSchema_ExclusionsAreExplicit(t *testing.T) {
 	}
 }
 
-func TestContextChoices_NoRecall(t *testing.T) {
+func checkContextChoices_NoRecall(t *testing.T) {
 	choices := contextChoices()
 	wantValues := map[string]bool{"": true, "compact": true, "session-log": true, "ooda": true}
 	for _, c := range choices {

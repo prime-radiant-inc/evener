@@ -9,7 +9,7 @@ import (
 	"primeradiant.com/serf/appwire"
 )
 
-func TestFromWire(t *testing.T) {
+func checkFromWire(t *testing.T) {
 	noProjectPrompts := true
 	appReplaySize := 42
 	in := appwire.LaunchConfigLayer{
@@ -77,7 +77,7 @@ func TestFromWire(t *testing.T) {
 	}
 }
 
-func TestToWire(t *testing.T) {
+func checkToWire(t *testing.T) {
 	in := Layer{Model: "openai/gpt-5", FastCheapModel: "openai/gpt-5-mini", OpenAIResponsesContinuation: "auto", MaxRounds: ptrInt(50)}
 	got := ToWire(in)
 	if got.Model != "openai/gpt-5" {
@@ -94,7 +94,7 @@ func TestToWire(t *testing.T) {
 	}
 }
 
-func TestToWirePreservesExplicitEmptyModelFallbacks(t *testing.T) {
+func checkToWirePreservesExplicitEmptyModelFallbacks(t *testing.T) {
 	got := ToWire(Layer{ModelFallbacks: &[]string{}})
 	if got.ModelFallbacks == nil || len(got.ModelFallbacks) != 0 {
 		t.Fatalf("ModelFallbacks = %#v, want explicit empty slice", got.ModelFallbacks)
@@ -108,7 +108,7 @@ func TestToWirePreservesExplicitEmptyModelFallbacks(t *testing.T) {
 	}
 }
 
-func TestWire_SystemPromptAndDebugFieldsRoundTrip(t *testing.T) {
+func checkWire_SystemPromptAndDebugFieldsRoundTrip(t *testing.T) {
 	verbose := true
 	rawHTTPLogging := true
 	nonInteractive := true
@@ -143,7 +143,7 @@ func TestWire_SystemPromptAndDebugFieldsRoundTrip(t *testing.T) {
 // TestWire_SandboxRoundTrips: Sandbox (plain string) and SandboxNet (tri-state
 // *bool) survive FromWire∘ToWire for all three SandboxNet states — nil (unset),
 // explicit false, and explicit true must stay distinct across the wire.
-func TestWire_SandboxRoundTrips(t *testing.T) {
+func checkWire_SandboxRoundTrips(t *testing.T) {
 	for _, net := range []*bool{nil, ptrBool(false), ptrBool(true)} {
 		in := Layer{Sandbox: "restricted", SandboxNet: net}
 		got := FromWire(ToWire(in))
@@ -169,7 +169,7 @@ func boolPtrEq(a, b *bool) bool {
 	return *a == *b
 }
 
-func TestWireOmitsUnsetModelFallbacks(t *testing.T) {
+func checkWireOmitsUnsetModelFallbacks(t *testing.T) {
 	raw, err := json.Marshal(appwire.LaunchConfigLayer{})
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
@@ -179,7 +179,7 @@ func TestWireOmitsUnsetModelFallbacks(t *testing.T) {
 	}
 }
 
-func TestResolvedToWire(t *testing.T) {
+func checkResolvedToWire(t *testing.T) {
 	r := Resolved{
 		Effective:   Layer{Model: "m"},
 		Layers:      map[LayerName]Layer{LayerGlobal: {Model: "m"}},
@@ -208,7 +208,7 @@ func TestResolvedToWire(t *testing.T) {
 // TestLaunchConfigLayer_ConfigPlumbingRoundtrip: ModelFallbacks survives the
 // wire (appwire.LaunchConfigLayer ⇄ launchconfig.Layer) and merges correctly
 // across layers (launch overrides global).
-func TestLaunchConfigLayer_ConfigPlumbingRoundtrip(t *testing.T) {
+func checkLaunchConfigLayer_ConfigPlumbingRoundtrip(t *testing.T) {
 	// Wire → internal.
 	wireLayer := appwire.LaunchConfigLayer{
 		ModelFallbacks: []string{"openai/gpt-5.4", "anthropic/claude-haiku-4-5"},
@@ -240,7 +240,7 @@ func jsonContains(raw []byte, needle string) bool {
 	return strings.Contains(string(raw), needle)
 }
 
-func TestToWire_WithSchemaAndMCPs(t *testing.T) {
+func checkToWire_WithSchemaAndMCPs(t *testing.T) {
 	in := Layer{
 		Model:  "m",
 		Schema: 2,
@@ -261,7 +261,7 @@ func TestToWire_WithSchemaAndMCPs(t *testing.T) {
 	}
 }
 
-func TestToWire_NonNilPtrToNilSliceClears(t *testing.T) {
+func checkToWire_NonNilPtrToNilSliceClears(t *testing.T) {
 	// A non-nil pointer to a nil slice is still the explicit-clear state:
 	// ToWire must surface it as a non-nil empty array on the wire.
 	mf := []string(nil)

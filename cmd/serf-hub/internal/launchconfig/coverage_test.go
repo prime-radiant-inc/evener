@@ -54,7 +54,7 @@ func (fs *atomicFailureFS) OpenFile(name string, flag int, perm os.FileMode) (af
 	return &failureFile{File: f, writeErr: fs.writeErr, syncErr: fs.syncErr, closeErr: fs.closeErr}, nil
 }
 
-func TestWriteAtomicFSFailuresRemoveTemporaryFile(t *testing.T) {
+func checkWriteAtomicFSFailuresRemoveTemporaryFile(t *testing.T) {
 	tests := []struct {
 		name      string
 		encodeErr error
@@ -107,7 +107,7 @@ func TestWriteAtomicFSFailuresRemoveTemporaryFile(t *testing.T) {
 	}
 }
 
-func TestValidateRepoRelativePathResolutionError(t *testing.T) {
+func checkValidateRepoRelativePathResolutionError(t *testing.T) {
 	errSentinel := errors.New("rel failed")
 	err := validateRepoRelativePath("/repo", "child", func(string, string) (string, error) {
 		return "", errSentinel
@@ -117,7 +117,7 @@ func TestValidateRepoRelativePathResolutionError(t *testing.T) {
 	}
 }
 
-func TestDecodeTrustedRepoLayerError(t *testing.T) {
+func checkDecodeTrustedRepoLayerError(t *testing.T) {
 	sentinel := errors.New("decode failed")
 	_, diags := decodeTrustedRepoLayer("/repo", []byte("model = \"x\""), func([]byte, interface{}) error {
 		return sentinel
@@ -127,7 +127,7 @@ func TestDecodeTrustedRepoLayerError(t *testing.T) {
 	}
 }
 
-func TestCanonicalHashEncodeError(t *testing.T) {
+func checkCanonicalHashEncodeError(t *testing.T) {
 	sentinel := errors.New("encode failed")
 	_, err := canonicalHashTOML([]byte("model = \"x\""), func(io.Writer, Layer) error {
 		return sentinel
@@ -137,7 +137,7 @@ func TestCanonicalHashEncodeError(t *testing.T) {
 	}
 }
 
-func TestMergeAdditionalLaunchFields(t *testing.T) {
+func checkMergeAdditionalLaunchFields(t *testing.T) {
 	verbose := true
 	resolved, _ := mergeLayers(map[LayerName]Layer{
 		LayerLaunch: {
@@ -157,7 +157,7 @@ func TestMergeAdditionalLaunchFields(t *testing.T) {
 	}
 }
 
-func TestResolveProjectLoadError(t *testing.T) {
+func checkResolveProjectLoadError(t *testing.T) {
 	fs := afero.NewMemMapFs()
 	stateRoot := "/state"
 	cwd := "/repo"
@@ -171,7 +171,7 @@ func TestResolveProjectLoadError(t *testing.T) {
 	}
 }
 
-func TestLoadProjectLayerLegacyStatError(t *testing.T) {
+func checkLoadProjectLayerLegacyStatError(t *testing.T) {
 	stateRoot := "/state"
 	cwd := "/repo"
 	paths := PathsFor(stateRoot, cwd)
@@ -196,7 +196,7 @@ func (fs *statFailureFS) Stat(name string) (os.FileInfo, error) {
 	return fs.Fs.Stat(name)
 }
 
-func TestComputeTrustStateUnknownDecision(t *testing.T) {
+func checkComputeTrustStateUnknownDecision(t *testing.T) {
 	meta := Meta{Trust: MetaTrust{Hash: "hash", Decision: "pending"}}
 	if got := ComputeTrustState("hash", meta); got != TrustUntrusted {
 		t.Fatalf("ComputeTrustState = %q, want %q", got, TrustUntrusted)

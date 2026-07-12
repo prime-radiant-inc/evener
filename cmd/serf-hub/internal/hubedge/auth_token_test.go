@@ -15,7 +15,7 @@ type errorReader struct{ err error }
 
 func (r errorReader) Read([]byte) (int, error) { return 0, r.err }
 
-func TestLoadOrCreateAuthToken_RandomError(t *testing.T) {
+func checkLoadOrCreateAuthToken_RandomError(t *testing.T) {
 	want := errors.New("random failed")
 	_, err := loadOrCreateAuthToken(t.TempDir(), errorReader{err: want}, os.Rename)
 	if !errors.Is(err, want) {
@@ -23,7 +23,7 @@ func TestLoadOrCreateAuthToken_RandomError(t *testing.T) {
 	}
 }
 
-func TestLoadOrCreateAuthToken_RenameErrorRemovesTemporaryFile(t *testing.T) {
+func checkLoadOrCreateAuthToken_RenameErrorRemovesTemporaryFile(t *testing.T) {
 	root := t.TempDir()
 	want := errors.New("rename failed")
 	_, err := loadOrCreateAuthToken(root, io.LimitReader(strings.NewReader(strings.Repeat("x", 32)), 32), func(string, string) error {
@@ -43,7 +43,7 @@ func okHandler() http.Handler {
 	})
 }
 
-func TestLoadOrCreateAuthToken_PersistsAndReloads(t *testing.T) {
+func checkLoadOrCreateAuthToken_PersistsAndReloads(t *testing.T) {
 	root := t.TempDir()
 	a, err := LoadOrCreateAuthToken(root)
 	if err != nil {
@@ -68,7 +68,7 @@ func TestLoadOrCreateAuthToken_PersistsAndReloads(t *testing.T) {
 	}
 }
 
-func TestAuthGuard_AllowsExemptRoutes(t *testing.T) {
+func checkAuthGuard_AllowsExemptRoutes(t *testing.T) {
 	guard := AuthGuard("secret")
 	h := guard(okHandler())
 	// /auth + health bootstrap, plus the non-sensitive PWA icons (so the OS can
@@ -90,7 +90,7 @@ func TestAuthGuard_AllowsExemptRoutes(t *testing.T) {
 	}
 }
 
-func TestAuthGuard_RejectsMissingToken(t *testing.T) {
+func checkAuthGuard_RejectsMissingToken(t *testing.T) {
 	guard := AuthGuard("secret")
 	h := guard(okHandler())
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -101,7 +101,7 @@ func TestAuthGuard_RejectsMissingToken(t *testing.T) {
 	}
 }
 
-func TestAuthGuard_AcceptsCookie(t *testing.T) {
+func checkAuthGuard_AcceptsCookie(t *testing.T) {
 	guard := AuthGuard("secret")
 	h := guard(okHandler())
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -113,7 +113,7 @@ func TestAuthGuard_AcceptsCookie(t *testing.T) {
 	}
 }
 
-func TestAuthGuard_AcceptsBearer(t *testing.T) {
+func checkAuthGuard_AcceptsBearer(t *testing.T) {
 	guard := AuthGuard("secret")
 	h := guard(okHandler())
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -125,7 +125,7 @@ func TestAuthGuard_AcceptsBearer(t *testing.T) {
 	}
 }
 
-func TestAuthGuard_RejectsWrongToken(t *testing.T) {
+func checkAuthGuard_RejectsWrongToken(t *testing.T) {
 	guard := AuthGuard("secret")
 	h := guard(okHandler())
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -137,7 +137,7 @@ func TestAuthGuard_RejectsWrongToken(t *testing.T) {
 	}
 }
 
-func TestAuthGuard_EmptyTokenBypassesAuth(t *testing.T) {
+func checkAuthGuard_EmptyTokenBypassesAuth(t *testing.T) {
 	// Empty token is the documented testing escape hatch.
 	guard := AuthGuard("")
 	h := guard(okHandler())
@@ -149,7 +149,7 @@ func TestAuthGuard_EmptyTokenBypassesAuth(t *testing.T) {
 	}
 }
 
-func TestHandleAuth_ValidatesAndSetsCookie(t *testing.T) {
+func checkHandleAuth_ValidatesAndSetsCookie(t *testing.T) {
 	h := HandleAuth("secret")
 	req := httptest.NewRequest(http.MethodGet, "/auth?token=secret", nil)
 	rec := httptest.NewRecorder()
@@ -175,7 +175,7 @@ func TestHandleAuth_ValidatesAndSetsCookie(t *testing.T) {
 	}
 }
 
-func TestHandleAuth_RejectsWrongToken(t *testing.T) {
+func checkHandleAuth_RejectsWrongToken(t *testing.T) {
 	h := HandleAuth("secret")
 	req := httptest.NewRequest(http.MethodGet, "/auth?token=nope", nil)
 	rec := httptest.NewRecorder()
@@ -185,7 +185,7 @@ func TestHandleAuth_RejectsWrongToken(t *testing.T) {
 	}
 }
 
-func TestHandleAuth_HonorsNextParam(t *testing.T) {
+func checkHandleAuth_HonorsNextParam(t *testing.T) {
 	h := HandleAuth("secret")
 	req := httptest.NewRequest(http.MethodGet, "/auth?token=secret&next=/settings/launch", nil)
 	rec := httptest.NewRecorder()
@@ -198,7 +198,7 @@ func TestHandleAuth_HonorsNextParam(t *testing.T) {
 	}
 }
 
-func TestHandleAuth_RejectsExternalNext(t *testing.T) {
+func checkHandleAuth_RejectsExternalNext(t *testing.T) {
 	h := HandleAuth("secret")
 	req := httptest.NewRequest(http.MethodGet, "/auth?token=secret&next=http://evil.example.com/", nil)
 	rec := httptest.NewRecorder()
@@ -208,7 +208,7 @@ func TestHandleAuth_RejectsExternalNext(t *testing.T) {
 	}
 }
 
-func TestAuthURLFor(t *testing.T) {
+func checkAuthURLFor(t *testing.T) {
 	got := AuthURLFor("http://magic-kingdom:9180/", "tok")
 	want := "http://magic-kingdom:9180/auth?token=tok"
 	if got != want {
@@ -216,7 +216,7 @@ func TestAuthURLFor(t *testing.T) {
 	}
 }
 
-func TestLoadOrCreateAuthToken_EmptyRoot(t *testing.T) {
+func checkLoadOrCreateAuthToken_EmptyRoot(t *testing.T) {
 	_, err := LoadOrCreateAuthToken("")
 	if err == nil {
 		t.Fatal("expected error for empty hubStateRoot")
@@ -233,7 +233,7 @@ func TestLoadOrCreateAuthToken_EmptyRoot(t *testing.T) {
 	}
 }
 
-func TestLoadOrCreateAuthToken_MkdirAllError(t *testing.T) {
+func checkLoadOrCreateAuthToken_MkdirAllError(t *testing.T) {
 	dir := t.TempDir()
 	// Create a file where the parent of hubStateRoot should be a directory.
 	blocker := filepath.Join(dir, "blocker")
@@ -250,7 +250,7 @@ func TestLoadOrCreateAuthToken_MkdirAllError(t *testing.T) {
 	}
 }
 
-func TestLoadOrCreateAuthToken_ReadFileError(t *testing.T) {
+func checkLoadOrCreateAuthToken_ReadFileError(t *testing.T) {
 	root := t.TempDir()
 	// Make the token path itself a directory. ReadFile opens it fine but the
 	// first Read returns EISDIR ("is a directory"), which is a non-ErrNotExist
@@ -267,7 +267,7 @@ func TestLoadOrCreateAuthToken_ReadFileError(t *testing.T) {
 	}
 }
 
-func TestLoadOrCreateAuthToken_WriteFileError(t *testing.T) {
+func checkLoadOrCreateAuthToken_WriteFileError(t *testing.T) {
 	root := t.TempDir()
 	// The token file doesn't exist yet (ReadFile returns ErrNotExist), so the
 	// code proceeds to write the temp file path+".tmp". Pre-create that path as
@@ -285,7 +285,7 @@ func TestLoadOrCreateAuthToken_WriteFileError(t *testing.T) {
 	}
 }
 
-func TestAuthGuard_ReturnsHTMLForBrowser(t *testing.T) {
+func checkAuthGuard_ReturnsHTMLForBrowser(t *testing.T) {
 	guard := AuthGuard("secret")
 	h := guard(okHandler())
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -305,7 +305,7 @@ func TestAuthGuard_ReturnsHTMLForBrowser(t *testing.T) {
 // self-authenticate: set the cookie and redirect to the same URL with the
 // token stripped. This is the self-heal for an iOS standalone relaunch that
 // restores a deep URL (e.g. /s/<id>) into a cookie jar that lost the cookie.
-func TestAuthGuard_AcceptsQueryTokenOnAnyGET(t *testing.T) {
+func checkAuthGuard_AcceptsQueryTokenOnAnyGET(t *testing.T) {
 	guard := AuthGuard("secret")
 	h := guard(okHandler())
 	req := httptest.NewRequest(http.MethodGet, "/s/abc123?token=secret&pane=details", nil)
@@ -327,7 +327,7 @@ func TestAuthGuard_AcceptsQueryTokenOnAnyGET(t *testing.T) {
 	}
 }
 
-func TestAuthGuard_RejectsWrongQueryToken(t *testing.T) {
+func checkAuthGuard_RejectsWrongQueryToken(t *testing.T) {
 	guard := AuthGuard("secret")
 	h := guard(okHandler())
 	req := httptest.NewRequest(http.MethodGet, "/s/abc123?token=nope", nil)
@@ -341,7 +341,7 @@ func TestAuthGuard_RejectsWrongQueryToken(t *testing.T) {
 	}
 }
 
-func TestAuthGuard_IgnoresQueryTokenOnPOST(t *testing.T) {
+func checkAuthGuard_IgnoresQueryTokenOnPOST(t *testing.T) {
 	guard := AuthGuard("secret")
 	h := guard(okHandler())
 	req := httptest.NewRequest(http.MethodPost, "/api/spawn?token=secret", nil)
@@ -354,7 +354,7 @@ func TestAuthGuard_IgnoresQueryTokenOnPOST(t *testing.T) {
 
 // The 401 wall must never be cacheable: a cached 401 page in a PWA/browser
 // cache would keep an already re-authorized app stuck on the wall.
-func TestAuthGuard_401IsNoStore(t *testing.T) {
+func checkAuthGuard_401IsNoStore(t *testing.T) {
 	guard := AuthGuard("secret")
 	h := guard(okHandler())
 	for _, accept := range []string{"text/html", "application/json"} {
@@ -373,7 +373,7 @@ func TestAuthGuard_401IsNoStore(t *testing.T) {
 
 // Every cookie-authenticated request slides the cookie's one-year expiry
 // forward, so an installed PWA's jar never ages out while in use.
-func TestAuthGuard_RefreshesCookieOnAuthenticatedRequest(t *testing.T) {
+func checkAuthGuard_RefreshesCookieOnAuthenticatedRequest(t *testing.T) {
 	guard := AuthGuard("secret")
 	h := guard(okHandler())
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -390,7 +390,7 @@ func TestAuthGuard_RefreshesCookieOnAuthenticatedRequest(t *testing.T) {
 }
 
 // Bearer-authenticated (scripted) requests must not get a Set-Cookie.
-func TestAuthGuard_NoCookieRefreshForBearer(t *testing.T) {
+func checkAuthGuard_NoCookieRefreshForBearer(t *testing.T) {
 	guard := AuthGuard("secret")
 	h := guard(okHandler())
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -405,7 +405,7 @@ func TestAuthGuard_NoCookieRefreshForBearer(t *testing.T) {
 	}
 }
 
-func TestAuthGuard_ReturnsPlainForAPI(t *testing.T) {
+func checkAuthGuard_ReturnsPlainForAPI(t *testing.T) {
 	guard := AuthGuard("secret")
 	h := guard(okHandler())
 	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)

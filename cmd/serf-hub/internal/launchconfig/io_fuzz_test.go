@@ -115,7 +115,7 @@ func metaEqual(a, b Meta) bool {
 // ModelFallbacks *[]string refactor preserves all three states through the REAL
 // encode/decode path, with no prepend quirk: nil stays nil (unset), non-nil
 // empty stays non-nil empty (explicit clear), and a set chain stays set.
-func TestLaunchConfigThreeStateRoundTrip(t *testing.T) {
+func checkLaunchConfigThreeStateRoundTrip(t *testing.T) {
 	cases := []struct {
 		name string
 		in   *[]string

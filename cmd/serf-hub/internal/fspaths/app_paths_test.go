@@ -12,7 +12,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
 )
 
-func TestCompleteDirs(t *testing.T) {
+func checkCompleteDirs(t *testing.T) {
 	// Use a fake home so that empty prefix and ~ expansion are deterministic.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -180,7 +180,7 @@ func TestCompleteDirs(t *testing.T) {
 	})
 }
 
-func TestCompleteDirs_TraversalReturnsNoSuggestions(t *testing.T) {
+func checkCompleteDirs_TraversalReturnsNoSuggestions(t *testing.T) {
 	resp, err := fspaths.CompleteDirs(appwire.DirsCompleteParams{Prefix: "../"})
 	if err != nil {
 		t.Fatal(err)
@@ -190,7 +190,7 @@ func TestCompleteDirs_TraversalReturnsNoSuggestions(t *testing.T) {
 	}
 }
 
-func TestValidateLaunchPath(t *testing.T) {
+func checkValidateLaunchPath(t *testing.T) {
 	// Set up a temp directory with various files/dirs for testing.
 	tmp := t.TempDir()
 

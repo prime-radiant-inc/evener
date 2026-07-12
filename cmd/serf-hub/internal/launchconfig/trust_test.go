@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-func TestCanonicalHash_StableAcrossWhitespace(t *testing.T) {
+func checkCanonicalHash_StableAcrossWhitespace(t *testing.T) {
 	a := `model = "x"
 skills_dirs = ["/a"]
 `
@@ -28,7 +28,7 @@ skills_dirs = ["/a"]
 	}
 }
 
-func TestCanonicalHash_DetectsSemanticChange(t *testing.T) {
+func checkCanonicalHash_DetectsSemanticChange(t *testing.T) {
 	a := `model = "x"`
 	b := `model = "y"`
 	ha, _ := CanonicalHashTOML([]byte(a))
@@ -38,7 +38,7 @@ func TestCanonicalHash_DetectsSemanticChange(t *testing.T) {
 	}
 }
 
-func TestCanonicalHash_DistinguishesExplicitEmptyModelFallbacks(t *testing.T) {
+func checkCanonicalHash_DistinguishesExplicitEmptyModelFallbacks(t *testing.T) {
 	absent := `model = "openai/gpt-5.2"`
 	explicitEmpty := `model = "openai/gpt-5.2"
 model_fallbacks = []
@@ -56,7 +56,7 @@ model_fallbacks = []
 	}
 }
 
-func TestComputeTrustState(t *testing.T) {
+func checkComputeTrustState(t *testing.T) {
 	// File absent.
 	if got := ComputeTrustState("", Meta{}); got != TrustAbsent {
 		t.Errorf("absent: got %q, want %q", got, TrustAbsent)

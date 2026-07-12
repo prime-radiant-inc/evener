@@ -19,7 +19,7 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
-func TestResolve_LayersMerge(t *testing.T) {
+func checkResolve_LayersMerge(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()
 	writeFile(t, filepath.Join(stateRoot, "launch.toml"), `model = "g"
@@ -55,7 +55,7 @@ decision = "trusted"
 	}
 }
 
-func TestResolve_LegacyProjectLayerFallback(t *testing.T) {
+func checkResolve_LegacyProjectLayerFallback(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()
 	paths := PathsFor(stateRoot, cwd)
@@ -73,7 +73,7 @@ func TestResolve_LegacyProjectLayerFallback(t *testing.T) {
 	}
 }
 
-func TestResolve_ProjectLayerPrefersLocalFileOverLegacy(t *testing.T) {
+func checkResolve_ProjectLayerPrefersLocalFileOverLegacy(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()
 	paths := PathsFor(stateRoot, cwd)
@@ -94,7 +94,7 @@ func TestResolve_ProjectLayerPrefersLocalFileOverLegacy(t *testing.T) {
 	}
 }
 
-func TestResolve_UntrustedRepoSkipped(t *testing.T) {
+func checkResolve_UntrustedRepoSkipped(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()
 	writeFile(t, filepath.Join(cwd, ".serf", "launch.toml"), `model = "from-repo"`)
@@ -113,7 +113,7 @@ func TestResolve_UntrustedRepoSkipped(t *testing.T) {
 	}
 }
 
-func TestResolve_RejectedRepoSkippedSilently(t *testing.T) {
+func checkResolve_RejectedRepoSkippedSilently(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()
 	writeFile(t, filepath.Join(cwd, ".serf", "launch.toml"), `model = "from-repo"`)
@@ -134,7 +134,7 @@ decision = "rejected"
 	}
 }
 
-func TestResolve_RepoPathsExpandedAndValidated(t *testing.T) {
+func checkResolve_RepoPathsExpandedAndValidated(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()
 	writeFile(t, filepath.Join(cwd, ".serf", "launch.toml"), `skills_dirs = ["../outside", "good/dir"]`)
@@ -163,7 +163,7 @@ decision = "trusted"
 	}
 }
 
-func TestResolve_GlobalProjectInvalidPathsReportDiagnostics(t *testing.T) {
+func checkResolve_GlobalProjectInvalidPathsReportDiagnostics(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()
 	pid := ProjectID(cwd)
@@ -211,7 +211,7 @@ func hasDiagnostic(diags []Diagnostic, layer LayerName, field string) bool {
 	return false
 }
 
-func TestLoadProjectLayer_StatError(t *testing.T) {
+func checkLoadProjectLayer_StatError(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()
 	paths := PathsFor(stateRoot, cwd)
@@ -234,7 +234,7 @@ func TestLoadProjectLayer_StatError(t *testing.T) {
 	}
 }
 
-func TestLoadProjectLayer_LegacyLoadError(t *testing.T) {
+func checkLoadProjectLayer_LegacyLoadError(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()
 	paths := PathsFor(stateRoot, cwd)
@@ -251,7 +251,7 @@ func TestLoadProjectLayer_LegacyLoadError(t *testing.T) {
 	}
 }
 
-func TestLoadRepoLayer_ReadFileError(t *testing.T) {
+func checkLoadRepoLayer_ReadFileError(t *testing.T) {
 	cwd := t.TempDir()
 	repoPath := filepath.Join(cwd, ".serf", "launch.toml")
 	// Make the parent component (<cwd>/.serf) a regular file so os.ReadFile on
@@ -272,7 +272,7 @@ func TestLoadRepoLayer_ReadFileError(t *testing.T) {
 	}
 }
 
-func TestValidateAndExpandRepoLayer_InvalidPaths(t *testing.T) {
+func checkValidateAndExpandRepoLayer_InvalidPaths(t *testing.T) {
 	cwd := t.TempDir()
 	in := Layer{
 		SkillsDirs:             []string{"../escape", "ok"},

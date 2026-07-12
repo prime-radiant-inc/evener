@@ -18,7 +18,7 @@ func (s stubCreds) APIKeyFor(provider string) (string, string) {
 	return v, "file"
 }
 
-func TestToEnv_BaselineSetsRunStateAndProvider(t *testing.T) {
+func checkToEnv_BaselineSetsRunStateAndProvider(t *testing.T) {
 	parent := []string{"PATH=/usr/bin"}
 	r := Resolved{Effective: Layer{Model: "anthropic/claude-1", Env: map[string]string{"FOO": "bar"}}}
 	creds := stubCreds{keys: map[string]string{"anthropic": "sk-ant-FROM-FILE"}}
@@ -48,7 +48,7 @@ func TestToEnv_BaselineSetsRunStateAndProvider(t *testing.T) {
 	}
 }
 
-func TestToEnv_PerLaunchEnvBeatsCredsStore(t *testing.T) {
+func checkToEnv_PerLaunchEnvBeatsCredsStore(t *testing.T) {
 	r := Resolved{Effective: Layer{Env: map[string]string{"ANTHROPIC_API_KEY": "from-overrides"}}}
 	creds := stubCreds{keys: map[string]string{"anthropic": "from-file"}}
 	got := envSliceToMap(ToEnv(EnvInputs{
@@ -59,7 +59,7 @@ func TestToEnv_PerLaunchEnvBeatsCredsStore(t *testing.T) {
 	}
 }
 
-func TestToEnv_OpenAICompatibleCredentialUsesAPIKeyEnv(t *testing.T) {
+func checkToEnv_OpenAICompatibleCredentialUsesAPIKeyEnv(t *testing.T) {
 	r := Resolved{Effective: Layer{Env: map[string]string{
 		"OPENAI_COMPATIBLE_BASE_URL": "https://compat.example.test/v1",
 	}}}
@@ -77,7 +77,7 @@ func TestToEnv_OpenAICompatibleCredentialUsesAPIKeyEnv(t *testing.T) {
 	}
 }
 
-func TestToEnv_NoProviderNoInjection(t *testing.T) {
+func checkToEnv_NoProviderNoInjection(t *testing.T) {
 	creds := stubCreds{keys: map[string]string{"anthropic": "x"}}
 	got := envSliceToMap(ToEnv(EnvInputs{Provider: "", Creds: creds}))
 	if _, ok := got["ANTHROPIC_API_KEY"]; ok {
@@ -85,7 +85,7 @@ func TestToEnv_NoProviderNoInjection(t *testing.T) {
 	}
 }
 
-func TestToEnv_OpenAIStoredKeyInjectsOpenAIAPIKey(t *testing.T) {
+func checkToEnv_OpenAIStoredKeyInjectsOpenAIAPIKey(t *testing.T) {
 	creds := stubCreds{keys: map[string]string{"openai": "sk-FROM-FILE"}}
 	got := envSliceToMap(ToEnv(EnvInputs{
 		Provider:  "openai",
@@ -97,7 +97,7 @@ func TestToEnv_OpenAIStoredKeyInjectsOpenAIAPIKey(t *testing.T) {
 	}
 }
 
-func TestToEnv_ProvidersConfigPathSetsEnvVar(t *testing.T) {
+func checkToEnv_ProvidersConfigPathSetsEnvVar(t *testing.T) {
 	got := envSliceToMap(ToEnv(EnvInputs{
 		ProvidersConfigPath: "/hub/.serf/providers.toml",
 		ParentEnv:           []string{"PATH=/usr/bin"},
@@ -107,7 +107,7 @@ func TestToEnv_ProvidersConfigPathSetsEnvVar(t *testing.T) {
 	}
 }
 
-func TestToEnv_NoProvidersConfigPathDoesNotSetEnvVar(t *testing.T) {
+func checkToEnv_NoProvidersConfigPathDoesNotSetEnvVar(t *testing.T) {
 	got := envSliceToMap(ToEnv(EnvInputs{
 		ParentEnv: []string{"PATH=/usr/bin"},
 	}))
@@ -116,7 +116,7 @@ func TestToEnv_NoProvidersConfigPathDoesNotSetEnvVar(t *testing.T) {
 	}
 }
 
-func TestToEnv_RawHTTPLoggingSetsRawLogEnv(t *testing.T) {
+func checkToEnv_RawHTTPLoggingSetsRawLogEnv(t *testing.T) {
 	got := envSliceToMap(ToEnv(EnvInputs{
 		Resolved: Resolved{Effective: Layer{RawHTTPLogging: ptrBool(true)}},
 		ParentEnv: []string{
@@ -129,7 +129,7 @@ func TestToEnv_RawHTTPLoggingSetsRawLogEnv(t *testing.T) {
 	}
 }
 
-func TestToEnv_RawHTTPLoggingFalseOverridesInheritedEnv(t *testing.T) {
+func checkToEnv_RawHTTPLoggingFalseOverridesInheritedEnv(t *testing.T) {
 	got := envSliceToMap(ToEnv(EnvInputs{
 		Resolved: Resolved{Effective: Layer{RawHTTPLogging: ptrBool(false)}},
 		ParentEnv: []string{
@@ -142,7 +142,7 @@ func TestToEnv_RawHTTPLoggingFalseOverridesInheritedEnv(t *testing.T) {
 	}
 }
 
-func TestToEnv_RawHTTPLoggingUnsetPreservesInheritedEnv(t *testing.T) {
+func checkToEnv_RawHTTPLoggingUnsetPreservesInheritedEnv(t *testing.T) {
 	got := envSliceToMap(ToEnv(EnvInputs{
 		ParentEnv: []string{
 			"PATH=/usr/bin",

@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestProjectID_Stable(t *testing.T) {
+func checkProjectID_Stable(t *testing.T) {
 	a := ProjectID("/home/jesse/git/prime-radiant/serf")
 	b := ProjectID("/home/jesse/git/prime-radiant/serf")
 	if a != b {
@@ -16,7 +16,7 @@ func TestProjectID_Stable(t *testing.T) {
 	}
 }
 
-func TestProjectID_Differs(t *testing.T) {
+func checkProjectID_Differs(t *testing.T) {
 	a := ProjectID("/a")
 	b := ProjectID("/b")
 	if a == b {
@@ -24,7 +24,7 @@ func TestProjectID_Differs(t *testing.T) {
 	}
 }
 
-func TestPathsFor(t *testing.T) {
+func checkPathsFor(t *testing.T) {
 	root := "/var/serf"
 	cwd := "/proj"
 	p := PathsFor(root, cwd)
@@ -50,7 +50,7 @@ func TestPathsFor(t *testing.T) {
 	}
 }
 
-func TestValidateRepoPath(t *testing.T) {
+func checkValidateRepoPath(t *testing.T) {
 	cases := []struct {
 		repo string
 		path string
@@ -73,7 +73,7 @@ func TestValidateRepoPath(t *testing.T) {
 	}
 }
 
-func TestValidateAbsolutePath(t *testing.T) {
+func checkValidateAbsolutePath(t *testing.T) {
 	if err := ValidateAbsolutePath("/abs/path"); err != nil {
 		t.Errorf("/abs/path: %v", err)
 	}

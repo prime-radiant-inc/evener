@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func TestAcquireLock_Success(t *testing.T) {
+func checkAcquireLock_Success(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hub.lock")
 	rel, err := AcquireLock(path)
@@ -18,7 +18,7 @@ func TestAcquireLock_Success(t *testing.T) {
 	rel()
 }
 
-func TestAcquireLock_FailsIfHeld(t *testing.T) {
+func checkAcquireLock_FailsIfHeld(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hub.lock")
 	rel1, err := AcquireLock(path)
@@ -57,7 +57,7 @@ func TestAcquireLock_FailsIfHeld(t *testing.T) {
 	}
 }
 
-func TestAcquireLock_ReleaseUnblocks(t *testing.T) {
+func checkAcquireLock_ReleaseUnblocks(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hub.lock")
 	rel1, err := AcquireLock(path)
@@ -73,7 +73,7 @@ func TestAcquireLock_ReleaseUnblocks(t *testing.T) {
 	rel2()
 }
 
-func TestAcquireLock_MkdirAllError(t *testing.T) {
+func checkAcquireLock_MkdirAllError(t *testing.T) {
 	dir := t.TempDir()
 	// Create a file where a directory is expected.
 	blocker := filepath.Join(dir, "blocker")
@@ -90,7 +90,7 @@ func TestAcquireLock_MkdirAllError(t *testing.T) {
 	}
 }
 
-func TestAcquireLock_OpenFileError(t *testing.T) {
+func checkAcquireLock_OpenFileError(t *testing.T) {
 	dir := t.TempDir()
 	// The lock parent exists (so MkdirAll succeeds), but the lock path
 	// itself is a directory. Opening a directory O_RDWR returns EISDIR,

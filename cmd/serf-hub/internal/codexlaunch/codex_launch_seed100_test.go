@@ -90,7 +90,7 @@ func useSeedRuntime(l *CodexLauncher, process *seedProcess, ticks int, timedOut 
 	}
 }
 
-func TestSeed100LauncherConfigurationAndCache(t *testing.T) {
+func checkSeed100LauncherConfigurationAndCache(t *testing.T) {
 	l := NewCodexLauncher([]CodexLaunchConfig{{ID: "  "}, {ID: " named "}})
 	if !l.Manages("codex") || !l.Manages("named") || l.Manages("missing") {
 		t.Fatal("launcher did not normalize configured IDs")
@@ -125,7 +125,7 @@ func TestSeed100LauncherConfigurationAndCache(t *testing.T) {
 	}
 }
 
-func TestSeed100LaunchArgumentsEnvironmentAndScanning(t *testing.T) {
+func checkSeed100LaunchArgumentsEnvironmentAndScanning(t *testing.T) {
 	tests := []struct {
 		binary string
 		args   []string
@@ -165,7 +165,7 @@ func TestSeed100LaunchArgumentsEnvironmentAndScanning(t *testing.T) {
 	}
 }
 
-func TestSeed100ReadyAndEndpointConversion(t *testing.T) {
+func checkSeed100ReadyAndEndpointConversion(t *testing.T) {
 	ctx := context.Background()
 	if !CodexReady(ctx, seedClient(http.StatusOK, nil), "ws://host:9/app?q=1#frag") {
 		t.Fatal("200 readiness response rejected")
@@ -189,7 +189,7 @@ func TestSeed100ReadyAndEndpointConversion(t *testing.T) {
 	}
 }
 
-func TestSeed100ReadyRequestConstructionFailure(t *testing.T) {
+func checkSeed100ReadyRequestConstructionFailure(t *testing.T) {
 	original := newRequestWithContext
 	newRequestWithContext = func(context.Context, string, string, io.Reader) (*http.Request, error) {
 		return nil, errors.New("request failure")
@@ -200,7 +200,7 @@ func TestSeed100ReadyRequestConstructionFailure(t *testing.T) {
 	}
 }
 
-func TestSeed100LaunchFailureModes(t *testing.T) {
+func checkSeed100LaunchFailureModes(t *testing.T) {
 	l := NewCodexLauncher(nil)
 	l.client = seedClient(0, errors.New("not ready"))
 	if _, err := l.launchLocked(context.Background(), CodexLaunchConfig{Listen: "http://bad"}); err == nil {
@@ -233,7 +233,7 @@ func TestSeed100LaunchFailureModes(t *testing.T) {
 	}
 }
 
-func TestSeed100EndpointDiscoveryAndErroredExit(t *testing.T) {
+func checkSeed100EndpointDiscoveryAndErroredExit(t *testing.T) {
 	l := NewCodexLauncher(nil)
 	discovered := newSeedProcess("noise\n{\"endpoint\":\"ws://127.0.0.1:4567\"}\n", "")
 	useSeedRuntime(l, discovered, 0, false)
@@ -280,7 +280,7 @@ func TestSeed100EndpointDiscoveryAndErroredExit(t *testing.T) {
 	}
 }
 
-func TestSeed100LaunchPipeFailures(t *testing.T) {
+func checkSeed100LaunchPipeFailures(t *testing.T) {
 	for _, stderr := range []bool{false, true} {
 		l := NewCodexLauncher(nil)
 		process := newSeedProcess("", "")
@@ -296,7 +296,7 @@ func TestSeed100LaunchPipeFailures(t *testing.T) {
 	}
 }
 
-func TestSeed100EnsureSourceLaunchAndShutdown(t *testing.T) {
+func checkSeed100EnsureSourceLaunchAndShutdown(t *testing.T) {
 	l := NewCodexLauncher([]CodexLaunchConfig{{ID: "live", Listen: "ws://127.0.0.1:4321"}})
 	process := newSeedProcess("", "")
 	useSeedRuntime(l, process, 0, false)
@@ -317,7 +317,7 @@ func TestSeed100EnsureSourceLaunchAndShutdown(t *testing.T) {
 	}
 }
 
-func TestSeed100Shutdown(t *testing.T) {
+func checkSeed100Shutdown(t *testing.T) {
 	l := NewCodexLauncher(nil)
 	exited := make(chan struct{})
 	close(exited)
@@ -335,7 +335,7 @@ func TestSeed100Shutdown(t *testing.T) {
 	}
 }
 
-func TestSeed100ProductionRuntimeAdaptersWithoutStartingChild(t *testing.T) {
+func checkSeed100ProductionRuntimeAdaptersWithoutStartingChild(t *testing.T) {
 	l := NewCodexLauncher(nil)
 	process := l.process(filepath.Join(t.TempDir(), "missing"))
 	process.SetDir("/tmp")

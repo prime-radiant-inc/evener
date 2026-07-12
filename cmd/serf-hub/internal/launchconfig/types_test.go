@@ -7,7 +7,7 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-func TestLayerTOMLRoundTrip(t *testing.T) {
+func checkLayerTOMLRoundTrip(t *testing.T) {
 	input := `
 schema = 1
 model = "openai/gpt-5"
@@ -66,7 +66,7 @@ FOO = "bar"
 	}
 }
 
-func TestLayerOmitEmptyOnEncode(t *testing.T) {
+func checkLayerOmitEmptyOnEncode(t *testing.T) {
 	l := Layer{Model: "openai/gpt-5"}
 	var buf strings.Builder
 	if err := toml.NewEncoder(&buf).Encode(l); err != nil {

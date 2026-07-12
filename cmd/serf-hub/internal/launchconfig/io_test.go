@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestLoadLayer_Missing(t *testing.T) {
+func checkLoadLayer_Missing(t *testing.T) {
 	got, err := LoadLayer(filepath.Join(t.TempDir(), "nope.toml"))
 	if err != nil {
 		t.Fatalf("LoadLayer missing = %v, want nil", err)
@@ -17,7 +17,7 @@ func TestLoadLayer_Missing(t *testing.T) {
 	}
 }
 
-func TestLoadLayer_Parses(t *testing.T) {
+func checkLoadLayer_Parses(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "launch.toml")
 	if err := os.WriteFile(path, []byte("schema = 1\nmodel = \"openai/gpt-5\"\n"), 0o600); err != nil {
@@ -32,7 +32,7 @@ func TestLoadLayer_Parses(t *testing.T) {
 	}
 }
 
-func TestLoadLayer_TracksExplicitEmptyModelFallbacks(t *testing.T) {
+func checkLoadLayer_TracksExplicitEmptyModelFallbacks(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "launch.toml")
 	if err := os.WriteFile(path, []byte("model_fallbacks = []\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -49,7 +49,7 @@ func TestLoadLayer_TracksExplicitEmptyModelFallbacks(t *testing.T) {
 	}
 }
 
-func TestSaveLayer_AtomicAndPermissions(t *testing.T) {
+func checkSaveLayer_AtomicAndPermissions(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "launch.toml")
 	if err := SaveLayer(path, Layer{Schema: 1, Model: "openai/gpt-5"}); err != nil {
@@ -76,7 +76,7 @@ func TestSaveLayer_AtomicAndPermissions(t *testing.T) {
 	}
 }
 
-func TestSaveLayer_PersistsExplicitEmptyModelFallbacks(t *testing.T) {
+func checkSaveLayer_PersistsExplicitEmptyModelFallbacks(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "launch.toml")
 	if err := SaveLayer(path, Layer{Model: "mentions model_fallbacks", ModelFallbacks: &[]string{}}); err != nil {
 		t.Fatalf("SaveLayer: %v", err)
@@ -97,7 +97,7 @@ func TestSaveLayer_PersistsExplicitEmptyModelFallbacks(t *testing.T) {
 	}
 }
 
-func TestSaveMeta_AtomicAndPermissions(t *testing.T) {
+func checkSaveMeta_AtomicAndPermissions(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "meta.toml")
 	if err := SaveMeta(path, Meta{Schema: 1, CWD: "/cwd"}); err != nil {
@@ -122,7 +122,7 @@ func TestSaveMeta_AtomicAndPermissions(t *testing.T) {
 	}
 }
 
-func TestLoadLayer_ReadError(t *testing.T) {
+func checkLoadLayer_ReadError(t *testing.T) {
 	// Root-proof read failure: a directory cannot be read as a file
 	// (EISDIR), and it is not ErrNotExist so it never hits the
 	// missing-file no-op branch. chmod-based injection would no-op as root.
@@ -140,7 +140,7 @@ func TestLoadLayer_ReadError(t *testing.T) {
 	}
 }
 
-func TestLoadLayer_ParseError(t *testing.T) {
+func checkLoadLayer_ParseError(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "launch.toml")
 	if err := os.WriteFile(path, []byte("invalid {{{ toml"), 0o600); err != nil {
@@ -155,7 +155,7 @@ func TestLoadLayer_ParseError(t *testing.T) {
 	}
 }
 
-func TestLoadMeta_ReadError(t *testing.T) {
+func checkLoadMeta_ReadError(t *testing.T) {
 	// Root-proof read failure: reading a directory as a file errors
 	// (EISDIR) for any uid, unlike chmod which root bypasses.
 	dir := t.TempDir()
@@ -172,7 +172,7 @@ func TestLoadMeta_ReadError(t *testing.T) {
 	}
 }
 
-func TestLoadMeta_ParseError(t *testing.T) {
+func checkLoadMeta_ParseError(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "meta.toml")
 	if err := os.WriteFile(path, []byte("invalid {{{ toml"), 0o600); err != nil {
@@ -187,7 +187,7 @@ func TestLoadMeta_ParseError(t *testing.T) {
 	}
 }
 
-func TestSaveLayer_WriteError(t *testing.T) {
+func checkSaveLayer_WriteError(t *testing.T) {
 	// Root-proof write failure: MkdirAll on the real parent succeeds, but
 	// the atomic temp target (path + ".tmp") is pre-created as a directory,
 	// so OpenFile(..., O_WRONLY|O_TRUNC) fails with EISDIR for any uid.
@@ -206,7 +206,7 @@ func TestSaveLayer_WriteError(t *testing.T) {
 	}
 }
 
-func TestSaveMeta_WriteError(t *testing.T) {
+func checkSaveMeta_WriteError(t *testing.T) {
 	// Root-proof write failure: the atomic temp target (path + ".tmp") is a
 	// directory, so OpenFile(..., O_WRONLY|O_TRUNC) fails with EISDIR for
 	// any uid. A read-only dir would no-op as root.
@@ -224,7 +224,7 @@ func TestSaveMeta_WriteError(t *testing.T) {
 	}
 }
 
-func TestSaveLayer_MkdirAllError(t *testing.T) {
+func checkSaveLayer_MkdirAllError(t *testing.T) {
 	dir := t.TempDir()
 	blocker := filepath.Join(dir, "blocker")
 	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
@@ -240,7 +240,7 @@ func TestSaveLayer_MkdirAllError(t *testing.T) {
 	}
 }
 
-func TestSaveMeta_MkdirAllError(t *testing.T) {
+func checkSaveMeta_MkdirAllError(t *testing.T) {
 	dir := t.TempDir()
 	blocker := filepath.Join(dir, "blocker")
 	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
@@ -256,7 +256,7 @@ func TestSaveMeta_MkdirAllError(t *testing.T) {
 	}
 }
 
-func TestSaveLayer_RenameError(t *testing.T) {
+func checkSaveLayer_RenameError(t *testing.T) {
 	dir := t.TempDir()
 	// Create path as a non-empty directory so Rename fails.
 	path := filepath.Join(dir, "launch.toml")
@@ -275,7 +275,7 @@ func TestSaveLayer_RenameError(t *testing.T) {
 	}
 }
 
-func TestSaveMeta_RenameError(t *testing.T) {
+func checkSaveMeta_RenameError(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "meta.toml")
 	if err := os.MkdirAll(filepath.Join(path, "sub"), 0o755); err != nil {

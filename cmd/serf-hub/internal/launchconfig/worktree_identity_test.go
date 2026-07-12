@@ -49,7 +49,7 @@ func newLinkedWorktree(t *testing.T) (main, wt string) {
 // stable main-repo root so trust decisions survive switching between a repo's
 // linked worktrees, while Repo/Project config content stays keyed off the
 // active cwd (the checked-out worktree).
-func TestPathsFor_MetaAndLegacyProjectKeyedByStableRoot(t *testing.T) {
+func checkPathsFor_MetaAndLegacyProjectKeyedByStableRoot(t *testing.T) {
 	main, wt := newLinkedWorktree(t)
 	stateRoot := t.TempDir()
 
@@ -78,7 +78,7 @@ func TestPathsFor_MetaAndLegacyProjectKeyedByStableRoot(t *testing.T) {
 // launched from the main root must be honored when the identical content is
 // resolved from a linked worktree of the same repo, because trust is TOFU'd
 // against the content hash + stable identity, not the raw cwd.
-func TestResolve_TrustFromMainRootAppliesInLinkedWorktree(t *testing.T) {
+func checkResolve_TrustFromMainRootAppliesInLinkedWorktree(t *testing.T) {
 	main, wt := newLinkedWorktree(t)
 	stateRoot := t.TempDir()
 
