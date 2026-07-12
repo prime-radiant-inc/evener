@@ -21,12 +21,17 @@ import (
 var markdownRenderer *glamour.TermRenderer
 var markdownRendererWidth int
 
+var newMarkdownRenderer = glamour.NewTermRenderer
+var renderMarkdownWith = func(r *glamour.TermRenderer, text string) (string, error) {
+	return r.Render(text)
+}
+
 func InitMarkdownRenderer(width int) {
 	if width <= 0 {
 		width = 80
 	}
 	style := themedGlamourStyle()
-	r, err := glamour.NewTermRenderer(
+	r, err := newMarkdownRenderer(
 		glamour.WithStyles(style),
 		glamour.WithWordWrap(max(1, width-4)),
 	)
@@ -89,7 +94,7 @@ func renderMarkdown(text string, width int) string {
 	if markdownRenderer == nil {
 		return text
 	}
-	rendered, err := markdownRenderer.Render(text)
+	rendered, err := renderMarkdownWith(markdownRenderer, text)
 	if err != nil {
 		return text
 	}

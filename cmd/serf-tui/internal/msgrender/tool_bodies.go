@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 
+	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/formatters"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
@@ -13,6 +15,17 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
+
+var matchChromaLexer = lexers.Match
+var getChromaLexer = lexers.Get
+var getChromaStyle = styles.Get
+var getChromaFormatter = formatters.Get
+var tokeniseChroma = func(lexer chroma.Lexer, text string) (chroma.Iterator, error) {
+	return lexer.Tokenise(nil, text)
+}
+var formatChroma = func(formatter chroma.Formatter, w io.Writer, style *chroma.Style, iter chroma.Iterator) error {
+	return formatter.Format(w, style, iter)
+}
 
 // diffBody renders a unified diff with per-line state tints:
 //   - "+" lines → StateIdleTint background (green)
@@ -63,24 +76,24 @@ func chromaStyleForActiveTheme() string {
 // highlightBlockByFilename returns chroma-highlighted text for the language
 // inferred from filename, or empty string on any failure.
 func highlightBlockByFilename(text, filename string) string {
-	lexer := lexers.Match(filename)
+	lexer := matchChromaLexer(filename)
 	if lexer == nil {
 		lexer = lexers.Fallback
 	}
-	style := styles.Get(chromaStyleForActiveTheme())
+	style := getChromaStyle(chromaStyleForActiveTheme())
 	if style == nil {
 		style = styles.Fallback
 	}
-	formatter := formatters.Get("terminal256")
+	formatter := getChromaFormatter("terminal256")
 	if formatter == nil {
 		return ""
 	}
-	iter, err := lexer.Tokenise(nil, text)
+	iter, err := tokeniseChroma(lexer, text)
 	if err != nil {
 		return ""
 	}
 	var buf bytes.Buffer
-	if err := formatter.Format(&buf, style, iter); err != nil {
+	if err := formatChroma(formatter, &buf, style, iter); err != nil {
 		return ""
 	}
 	return buf.String()
@@ -89,24 +102,24 @@ func highlightBlockByFilename(text, filename string) string {
 // highlightBlock returns chroma-highlighted text for the given language name,
 // or empty string on any failure (unknown language, tokenise error, etc.).
 func highlightBlock(text, lang string) string {
-	lexer := lexers.Get(lang)
+	lexer := getChromaLexer(lang)
 	if lexer == nil {
 		return ""
 	}
-	style := styles.Get(chromaStyleForActiveTheme())
+	style := getChromaStyle(chromaStyleForActiveTheme())
 	if style == nil {
 		style = styles.Fallback
 	}
-	formatter := formatters.Get("terminal256")
+	formatter := getChromaFormatter("terminal256")
 	if formatter == nil {
 		return ""
 	}
-	iter, err := lexer.Tokenise(nil, text)
+	iter, err := tokeniseChroma(lexer, text)
 	if err != nil {
 		return ""
 	}
 	var buf bytes.Buffer
-	if err := formatter.Format(&buf, style, iter); err != nil {
+	if err := formatChroma(formatter, &buf, style, iter); err != nil {
 		return ""
 	}
 	return buf.String()
