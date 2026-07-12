@@ -3413,7 +3413,13 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
 .spawn-confirm-actions { display: flex; gap: var(--space-3); justify-content: flex-end; }
 /* Spawn-advanced — the <details> toggle for the per-launch override panel. */
 .spawn-advanced { color: var(--text-muted); font-size: var(--text-sm); }
-.spawn-advanced summary { cursor: pointer; padding: var(--space-2) 0; font-family: var(--font-mono); font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: 0.16em; color: var(--text-muted); }
+.spawn-advanced summary {
+  cursor: pointer;
+  padding: var(--space-2) 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  color: var(--text-2);
+}
 .spawn-advanced[open] summary { color: var(--text); }
 .spawn-advanced-body { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4) 0; border-top: 1px solid var(--rule); }
 .spawn-advanced-note { margin: 0 0 var(--space-2); }
@@ -3429,6 +3435,9 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
 .spawn-recent-header { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-2xs); font-weight: 500; text-transform: uppercase; letter-spacing: 0.16em; margin-bottom: var(--space-3); }
 .spawn-recent-row { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; padding: var(--space-3) var(--space-4); border-radius: var(--radius-md); color: var(--text); cursor: pointer; font-size: var(--text-sm); text-decoration: none; }
 .spawn-recent-row:hover { background: var(--bg-raised); }
+
+/* Mobile-only config rows; hidden on desktop where the chip rail is used. */
+.spawn-mobile-rows { display: none; }
 
 /* ── Model picker (two-pane) ─────────────────────────────────────────────── */
 .chip-picker-wide { width: 520px; max-height: 360px; display: flex; flex-direction: column; }
@@ -4541,19 +4550,59 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
      right — instead of a ragged pile of differently-sized pills. */
   .spawn-pane { padding: var(--space-5) var(--space-4); }
   .spawn-prompt { font-size: var(--text-xl); }
-  .spawn-chips { flex-direction: column; align-items: stretch; gap: var(--space-2); }
-  .btn-chip {
-    width: 100%;
-    justify-content: flex-start;
-    gap: var(--space-2);
-    min-height: var(--tap-min);
-    border-radius: var(--radius-md);
-    padding: var(--space-3) var(--space-4);
+  /* Desktop chips are replaced by the mobile settings-row block. */
+  .spawn-chips { display: none; }
+  .spawn-mobile-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin-top: var(--space-2);
   }
-  .btn-chip .caret { margin-left: auto; font-size: var(--text-xs); }
-  .btn-chip .val { max-width: none; min-width: 0; }
-  /* access_mode chip has no label; keep its tint but align like the rest. */
-  .btn-chip[data-mode] { justify-content: flex-start; }
+  .spawn-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 48px;
+    padding: var(--space-2) 0;
+    border: none;
+    border-bottom: 1px solid var(--line);
+    border-radius: 0;
+    background: transparent;
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    font-weight: 400;
+    text-align: left;
+    cursor: pointer;
+  }
+  .spawn-row:first-child { border-top: 1px solid var(--line); }
+  .spawn-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .spawn-row-label {
+    font-weight: 500;
+    color: var(--text);
+  }
+  .spawn-row-value {
+    flex: 1;
+    margin-left: var(--space-3);
+    text-align: right;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text-2);
+  }
+  .spawn-row-caret {
+    flex: none;
+    margin-left: var(--space-2);
+    color: var(--text-3);
+    font-size: 10px;
+  }
+  .spawn-row:active:not([disabled]):not(:disabled) { background: var(--surface-2); }
+  .spawn-input {
+    min-height: 96px;
+    font-size: 16px;
+    resize: none;
+    padding: var(--space-4);
+  }
   /* Attach + spawn: full touch height; let them wrap rather than crush. */
   .spawn-attach-row { flex-wrap: wrap; gap: var(--space-3); }
   .spawn-attach-btn, .spawn-btn { min-height: var(--tap-min); }
