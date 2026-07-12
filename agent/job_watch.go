@@ -491,7 +491,16 @@ func normalizeWatchArgs(a *watchArgs) error {
 	return nil
 }
 
+type watchConfigureHooks struct {
+	beforeTargetRevalidate func(string)
+	afterDetachedTeardown  func(watchKey)
+}
+
 func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
+	return jm.configureWatchWithHooks(a, watchConfigureHooks{})
+}
+
+func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureHooks) (watchResult, error) {
 	if a.Target == "" {
 		return watchResult{}, errors.New("invalid_request: target is required")
 	}
@@ -589,6 +598,9 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	jm.mu.Lock()
 	if !isWatchSessionTarget(key.Target) && !isWatchableConcreteJobLocked(jm.running[key.Target]) {
 		jm.mu.Unlock()
+		if hooks.beforeTargetRevalidate != nil {
+			hooks.beforeTargetRevalidate(key.Target)
+		}
 		if err := jm.validateWatchTarget(key.Target); err != nil {
 			return watchResult{}, err
 		}
@@ -660,6 +672,9 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 			jm.removeWatchSendTerminalSnapshots(applied)
 			jm.rollbackWatchConfigsRejecting(detachedCfgs)
 			return watchResult{}, err
+		}
+		if hooks.afterDetachedTeardown != nil {
+			hooks.afterDetachedTeardown(key)
 		}
 		jm.mu.Lock()
 		if current := jm.watches[key]; current != nil {
@@ -783,9 +798,6 @@ func (jm *jobManager) validateWatchTarget(target string) error {
 		return watchTargetTerminalError(target, "finalizing")
 	}
 	jm.mu.Unlock()
-	if run != nil {
-		return watchTargetNotFoundError(target)
-	}
 
 	recs, err := jm.store.Load()
 	if err != nil {
@@ -1041,10 +1053,9 @@ func normalizedWatchConfigHash(a watchArgs) string {
 			ReceiverDelegateID:  receiverDelegateID,
 		}
 	}
-	b, err := json.Marshal(payload)
-	if err != nil {
-		return ""
-	}
+	// payload contains only strings, ints, bools, and slices of strings, so the
+	// standard encoder cannot fail.
+	b, _ := json.Marshal(payload)
 	sum := sha256.Sum256(b)
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
@@ -1170,8 +1181,14 @@ func jobProvenanceForWatch(jm *jobManager, jobID string) *provenance.Causal {
 	return nil
 }
 
+type watchSendLoader func() (jobstore.WatchSendRecord, error)
+
 func (jm *jobManager) restoreWatchSendPending() error {
-	rec, err := jm.store.LoadWatchSends()
+	return jm.restoreWatchSendPendingFrom(jm.store.LoadWatchSends)
+}
+
+func (jm *jobManager) restoreWatchSendPendingFrom(load watchSendLoader) error {
+	rec, err := load()
 	if err != nil {
 		return err
 	}
@@ -4175,7 +4192,8 @@ func (s *Session) drainPendingWatchSendsReport(ctx context.Context) (watchSendDr
 	}
 	if s.subagents != nil {
 		for _, child := range s.subagents.sessions() {
-			if child == nil || child.jobManager == nil {
+			// sessions filters nil subagents and sessions before returning.
+			if child.jobManager == nil {
 				continue
 			}
 			drained, err := child.drainJobManagerWatchSends(ctx, child.jobManager, child.id)
@@ -4207,9 +4225,7 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 	live := make(map[string]bool)
 	for _, sub := range s.liveDirectSubagents() {
 		child := sub.sess
-		if child == nil {
-			continue
-		}
+		// liveDirectSubagents filters nil subagents and sessions.
 		live[child.id] = true
 		// Stop-gating (spec §3): a deliberately stopped child is never resurrected
 		// by a drive for attention that predates the stop. New work clears the gate.
@@ -4257,7 +4273,16 @@ func (s *Session) renderUnreachableChildPendings(live map[string]bool) {
 		return
 	}
 	jm := s.jobManager
-	recs, err := jm.store.Load()
+	s.renderUnreachableChildPendingsWithLoaders(live, jm.store.Load, jm.store.LoadWatchSends)
+}
+
+func (s *Session) renderUnreachableChildPendingsWithLoaders(
+	live map[string]bool,
+	loadJobs func() (map[string]*jobstore.JobRecord, error),
+	loadWatchSends watchSendLoader,
+) {
+	jm := s.jobManager
+	recs, err := loadJobs()
 	if err != nil {
 		return
 	}
@@ -4280,7 +4305,7 @@ func (s *Session) renderUnreachableChildPendings(live map[string]bool) {
 		n.Reason = strings.TrimSpace("child unreachable: " + rec.Reason)
 		s.enqueueJobNotification(n)
 	}
-	watchSends, err := jm.store.LoadWatchSends()
+	watchSends, err := loadWatchSends()
 	if err != nil {
 		return
 	}

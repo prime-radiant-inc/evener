@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -22,6 +23,24 @@ func FuzzWatchStoreLoadFaultSeams(f *testing.F) {
 		)
 		if !errors.Is(err, want) {
 			t.Fatalf("error = %v, want %v", err, want)
+		}
+
+		jm := newTestJM(t)
+		s := &Session{jobManager: jm}
+		s.renderUnreachableChildPendingsWithLoaders(nil,
+			func() (map[string]*jobstore.JobRecord, error) { return map[string]*jobstore.JobRecord{}, nil },
+			func() (jobstore.WatchSendRecord, error) { return jobstore.WatchSendRecord{}, want },
+		)
+		if got := s.peekNotifications(); got != 0 {
+			t.Fatalf("load failure enqueued %d notifications", got)
+		}
+
+		child := &Session{}
+		parent := &Session{subagents: &subagentManager{subs: map[string]*subagent{
+			"child": {id: "child", sess: child, closed: true},
+		}}}
+		if _, err := parent.drainPendingWatchSendsReport(context.Background()); err != nil {
+			t.Fatalf("drain child without manager: %v", err)
 		}
 	})
 }

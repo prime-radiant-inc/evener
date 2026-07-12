@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -33,6 +34,7 @@ func FuzzJobWatchDrainRenderTail(f *testing.F) {
 			func() { jdrExerciseClassifier(t, s) },
 			func() { jdrExercisePendingAndRender(t, s) },
 			func() { jdrExerciseGuardsAndFailures(t, s) },
+			func() { jdrExerciseSuccessfulChildDrive(t) },
 		}
 		if order&1 != 0 {
 			steps[0], steps[2] = steps[2], steps[0]
@@ -41,6 +43,36 @@ func FuzzJobWatchDrainRenderTail(f *testing.F) {
 			step()
 		}
 	})
+}
+
+func jdrExerciseSuccessfulChildDrive(t *testing.T) {
+	t.Helper()
+	clk := agenttest.NewFakeClock()
+	parent := safzNewParent(t, clk, 1, []int{1}, &agenttest.DenyEnv{WorkDir: t.TempDir()})
+	res, err := parent.spawnAgent(context.Background(), "drain queued notification", "", "", 0, "", "", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spawned struct {
+		AgentID string `json:"agent_id"`
+	}
+	if err := json.Unmarshal([]byte(res.(string)), &spawned); err != nil || spawned.AgentID == "" {
+		t.Fatalf("spawn result malformed: %v (%q)", err, res)
+	}
+	sub := parent.getSub(spawned.AgentID)
+	if sub == nil || sub.sess == nil {
+		t.Fatal("spawned child is not tracked")
+	}
+	safzWaitDone(t, sub)
+	sub.sess.enqueueJobNotification(jobNotification{JobID: "job_drive_tail", Reason: "drive tail"})
+	parent.driveChildrenWithUndeliveredAttention()
+	safzWaitCounterZero(t, parent)
+
+	// sessions() retains a real child Session even when its job manager has not
+	// been initialized, covering the defensive drain-report guard.
+	nilJMParent := &Session{subagents: newSubagentManager(nil)}
+	nilJMParent.subagents.track(&subagent{id: "child-no-jm", sess: &Session{id: "child-no-jm"}, closed: true})
+	_, _ = nilJMParent.drainPendingWatchSendsReport(context.Background())
 }
 
 func jdrExerciseClassifier(t *testing.T, s *Session) {
@@ -154,6 +186,16 @@ func jdrExercisePendingAndRender(t *testing.T, s *Session) {
 	jm.mu.Unlock()
 	failAppendN(jm, jobstore.EventWatchSendDropped, 1)
 	_ = s.retryRestoredPendingWatchSends(context.Background())
+	seedWatchSendDelegateTarget(t, jm, "dlg_busy_tail")
+	busyKey := jobstore.WatchSendKey{WatchTarget: "busy", ResolvedWatchedIdentity: "busy", ResolvedSendTo: "dlg_busy_tail", VisibleSessionID: "S"}
+	busyState := &jobstore.WatchSendState{Key: busyKey, UpdateSeq: 4, DeliveryID: "delivery-busy-tail"}
+	busyCfg := &watchConfig{send: &watchSendArgs{To: "dlg_busy_tail"}, pending: map[jobstore.WatchSendKey]*jobstore.WatchSendState{busyKey: busyState}, pendingOrder: []jobstore.WatchSendKey{busyKey}}
+	jm.mu.Lock()
+	jm.terminalFlush[busyCfg] = true
+	jm.mu.Unlock()
+	if err := s.retryRestoredPendingWatchSends(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 
 	if resolve, err := resolveWatchSendTarget(runtimeMessageAliasWatched, ""); resolve != "" || err == nil {
 		t.Fatal("unresolved watched alias")
@@ -177,6 +219,23 @@ func jdrExercisePendingAndRender(t *testing.T, s *Session) {
 	writeWatchFrameBoolField(&b, "x", false)
 	_ = limitWatchText("abcdef", 2)
 	_ = limitWatchText("abcdef", 20)
+	outputRec, err := jm.createShell(createShellOpts{Command: "output", Description: "truncated excerpt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jm.mu.Lock()
+	outputRun := jm.running[outputRec.JobID]
+	jm.mu.Unlock()
+	if outputRun == nil {
+		t.Fatal("running output fixture disappeared")
+	}
+	if _, err := jm.appendJobOutput(outputRec.JobID, outputRun.output, []byte(strings.Repeat("x", watchExcerptTailBytes+100))); err != nil {
+		t.Fatal(err)
+	}
+	truncatedFrame := jm.buildWatchFrame(cfg, outputRec.JobID, "output", "delivery-output", events.SessionEvent{}, nil)
+	if !strings.Contains(truncatedFrame, "[excerpt truncated]") && !strings.HasSuffix(truncatedFrame, watchTruncatedIndicator) {
+		t.Fatalf("missing truncated marker: %q", truncatedFrame)
+	}
 	jm.enqueueWatchNotifications(nil)
 	routed := false
 	jm.enqueueWatchNotifications([]jobNotification{{receiverNotify: func(jobNotification) { routed = true }}})
@@ -241,7 +300,26 @@ func jdrExerciseGuardsAndFailures(t *testing.T, s *Session) {
 	appendForwardedChildTerminalPending(t, s.jobManager, "job_gone_tail", "child-gone")
 	appendForwardedChildCallerWatchSendPending(t, s.jobManager, "child-live", "job_live_watch_tail")
 	appendForwardedChildCallerWatchSendPending(t, s.jobManager, "child-gone", "job_gone_watch_tail")
+	appendForwardedChildCallerWatchSendPending(t, s.jobManager, s.id, "job_same_session_watch_tail")
+	appendForwardedChildCallerWatchSendPending(t, s.jobManager, "child-drop-error", "job_drop_error_watch_tail")
+	failAppendN(s.jobManager, jobstore.EventWatchSendDropped, 1)
 	s.renderUnreachableChildPendings(map[string]bool{"child-live": true})
+	// Retry after the injected durable drop failure so the same pending is also
+	// exercised through successful tombstoning and escalation.
+	s.renderUnreachableChildPendings(map[string]bool{"child-live": true})
+
+	resumableSession := newDelegateRestorePreflightSession(t, nil)
+	resumableRec := seedStoppedDelegateRestoreRecord(t, resumableSession)
+	_, resumableChildID, err := decodeRef(resumableRec.TranscriptRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resumableSession.childResumable(resumableChildID) {
+		t.Fatal("retained child fixture is not resumable")
+	}
+	appendForwardedChildTerminalPending(t, resumableSession.jobManager, "job_resumable_tail", resumableChildID)
+	appendForwardedChildCallerWatchSendPending(t, resumableSession.jobManager, resumableChildID, "job_resumable_watch_tail")
+	resumableSession.renderUnreachableChildPendings(nil)
 
 	now := s.jobManager.now()
 	if err := s.jobManager.appendEvent(jobstore.Event{

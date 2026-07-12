@@ -78,6 +78,7 @@ func FuzzWatchCoreConfigEdges(f *testing.F) {
 
 		jwccExerciseConfigureFailures(t)
 		jwccExerciseReplacementBranches(t)
+		jwccExerciseInterleavingSeams(t)
 	})
 }
 
@@ -210,5 +211,64 @@ func jwccExerciseReplacementBranches(t *testing.T) {
 	jwccDetached(t, detachedOK, runtimeMessageAliasCaller)
 	if _, err := detachedOK.configureWatch(args); err != nil {
 		t.Fatalf("detached cleanup configure: %v", err)
+	}
+}
+
+func jwccExerciseInterleavingSeams(t *testing.T) {
+	t.Helper()
+
+	// The target may disappear between the optimistic durable validation and
+	// the locked attachment recheck. Closing the store at that exact unlocked
+	// boundary gives the second validation a deterministic observable failure.
+	revalidate := jwccManager(t)
+	wcvpAppendStoreJob(t, revalidate, "job_revalidate", revalidate.sessionID, jobstore.StatusRunning)
+	_, err := revalidate.configureWatchWithHooks(
+		watchArgs{Target: "job_revalidate", Events: []string{"job.notification"}},
+		watchConfigureHooks{beforeTargetRevalidate: func(string) {
+			if closeErr := revalidate.store.Close(); closeErr != nil {
+				t.Fatalf("close revalidation store: %v", closeErr)
+			}
+		}},
+	)
+	if err == nil || !errors.Is(err, jobstore.ErrStoreClosed) {
+		t.Fatalf("target revalidation error = %v", err)
+	}
+
+	// Detached teardown releases jm.mu for durable I/O. Model the legitimate
+	// competing installer winning that interval and assert this call returns the
+	// winner rather than overwriting it.
+	winnerJM := jwccManager(t)
+	jwccDetached(t, winnerJM, runtimeMessageAliasCaller)
+	winner, err := newWatchConfig(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}}, winnerJM.now())
+	if err != nil {
+		t.Fatalf("new winner config: %v", err)
+	}
+	result, err := winnerJM.configureWatchWithHooks(
+		watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"job.notification"}},
+		watchConfigureHooks{afterDetachedTeardown: func(key watchKey) {
+			winnerJM.mu.Lock()
+			winnerJM.watches[key] = winner
+			winnerJM.mu.Unlock()
+		}},
+	)
+	if err != nil {
+		t.Fatalf("configure after competing install: %v", err)
+	}
+	if result.WatchID != winner.watchID {
+		t.Fatalf("winning watch id = %q, want %q", result.WatchID, winner.watchID)
+	}
+
+	// Folded state is defensive against nil values even though the concrete
+	// event fold currently never emits one. The injected loader exercises that
+	// robustness boundary without fabricating on-disk JSON.
+	restore := jwccManager(t)
+	nilKey := jobstore.WatchSendKey{WatchID: "wch_nil", WatchTarget: runtimeMessageAliasCaller}
+	if err := restore.restoreWatchSendPendingFrom(func() (jobstore.WatchSendRecord, error) {
+		return jobstore.WatchSendRecord{Pending: map[jobstore.WatchSendKey]*jobstore.WatchSendState{nilKey: nil}}, nil
+	}); err != nil {
+		t.Fatalf("restore nil pending state: %v", err)
+	}
+	if len(restore.terminalFlush) != 0 {
+		t.Fatalf("nil pending restore created %d configs", len(restore.terminalFlush))
 	}
 }

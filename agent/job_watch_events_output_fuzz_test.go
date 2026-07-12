@@ -5,9 +5,12 @@ package agent
 import (
 	"errors"
 	"os"
+	"runtime"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
 
@@ -16,7 +19,7 @@ import (
 // selects a deterministic scenario; the seeds keep every edge in the default
 // fuzz corpus.
 func FuzzJobWatchEventsOutput(f *testing.F) {
-	for scenario := uint8(0); scenario < 22; scenario++ {
+	for scenario := uint8(0); scenario < 23; scenario++ {
 		f.Add(scenario)
 	}
 	f.Fuzz(func(t *testing.T, scenario uint8) {
@@ -26,7 +29,7 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			_ = jm.close()
 		})
 
-		switch scenario % 22 {
+		switch scenario % 23 {
 		case 0:
 			dec := evaluateWatchEvent(watchEventSnapshot{
 				target: runtimeMessageAliasCaller, targetActive: true,
@@ -204,6 +207,44 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			if !jm.terminalFlush[cfg] {
 				t.Fatal("pending watch not detached")
 			}
+		case 22:
+			clk := agenttest.NewFakeClockAt(time.Unix(1000, 0).UTC())
+			jm.clock = clk
+			fired := make(chan struct{}, 1)
+			jm.enqueue = func(jobNotification) { fired <- struct{}{} }
+			key := watchKey{Target: runtimeMessageAliasCaller}
+			stop := make(chan struct{})
+			cfg := &watchConfig{target: runtimeMessageAliasCaller, progressIntervalMS: 1}
+			jm.watches[key] = cfg
+			jm.startProgressTimer(key, cfg, stop)
+			clk.BlockUntil(1)
+			clk.Advance(time.Millisecond)
+			<-fired
+			clk.Advance(time.Millisecond)
+			<-fired
+
+			// Hold the manager lock while the final tick becomes ready. After a
+			// scheduler handoff the timer is queued on this mutex; the waiter
+			// channel therefore closes only after fireProgressTick observes the
+			// invalid registration, returns false, and releases the mutex.
+			jm.mu.Lock()
+			delete(jm.watches, key)
+			clk.Advance(time.Millisecond)
+			for i := 0; i < 10; i++ {
+				runtime.Gosched()
+			}
+			done := make(chan struct{})
+			go func() {
+				jm.mu.Lock()
+				jm.mu.Unlock()
+				close(done)
+			}()
+			jm.mu.Unlock()
+			<-done
+			if jm.fireProgressTick(key, cfg) {
+				t.Fatal("inactive progress watch stayed alive")
+			}
+			close(stop)
 		}
 	})
 }
