@@ -54,13 +54,15 @@ func runHubControlProgram(t *testing.T) {
 	m.followupModal = &modal
 	_, _ = m.updateDashboardKey(tea.KeyMsg{Type: tea.KeyEnter})
 	settings := launchconfig.NewLaunchSettingsPanel(nil, "")
-	m.launchSettingsPanel = &settings
-	_, _ = m.updateDashboardKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
-	_, _ = m.updateDashboardKey(tea.KeyMsg{Type: tea.KeyEsc})
+	settingsModel := newHubModel(nil, "")
+	settingsModel.launchSettingsPanel = &settings
+	_, _ = settingsModel.updateDashboardKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	_, _ = settingsModel.updateDashboardKey(tea.KeyMsg{Type: tea.KeyEsc})
 
 	// Dashboard construction, ordering, filtering, folding, and selection.
 	tree := hubTreeResponse{Projects: []hubTreeProject{
-		{Name: "", WorkingDir: "/tmp/none", Sessions: nil},
+		{Name: "empty", Sessions: nil},
+		{Name: "", WorkingDir: "/tmp/none", Sessions: []hubTreeNode{{Ref: ":", SessionID: "invalid"}}},
 		{Name: "alpha", WorkingDir: "/tmp/alpha", RollupState: "idle", Sessions: []hubTreeNode{
 			{Ref: "bad", SessionID: "bad"},
 			{Ref: "local:a", SessionID: "a", Title: "", State: "", Live: false, CreatedAt: 1},
@@ -81,6 +83,7 @@ func runHubControlProgram(t *testing.T) {
 	}})
 	_ = buildProjectRows(tree.Projects[0])
 	_ = buildProjectRows(tree.Projects[1])
+	_ = buildProjectRows(tree.Projects[2])
 	_ = hubProjectKey("")
 	_ = hubProjectKey("a/b:c d")
 	_, _ = m.selectedDashboardRow()
@@ -149,10 +152,9 @@ func runHubControlProgram(t *testing.T) {
 		_, _ = m.activateDashboardRow([]hubRow{row})
 	}
 	fakeClient := &appwire.Client{}
-	m.client = fakeClient
-	m.selected = 0
-	_, _ = m.updateDashboardKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
-	_, _ = m.activateDashboardRow([]hubRow{{kind: hubRowLaunch}})
+	clean := newHubModel(fakeClient, "")
+	_, _ = clean.updateDashboardKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	_, _ = clean.activateDashboardRow([]hubRow{{kind: hubRowLaunch}})
 	m.commandPalette = nil
 	_, _ = m.updateCommandPaletteKey(tea.KeyMsg{Type: tea.KeyEnter})
 	m.openCommandPalette()
@@ -163,6 +165,7 @@ func runHubControlProgram(t *testing.T) {
 		{Item: tuipick.PickerPanelItem{ID: "session", Label: "session"}, Kind: commandPaletteSession, Ref: appwire.Ref{SourceID: "local", ThreadID: "x"}},
 		{Item: tuipick.PickerPanelItem{ID: "other", Label: "other"}, Kind: commandPaletteEntryKind(99)},
 	} {
+		m.client = fakeClient
 		palette := newCommandPalette("x", []commandPaletteEntry{entry}, 80)
 		m.commandPalette = &palette
 		_, _ = m.updateCommandPaletteKey(tea.KeyMsg{Type: tea.KeyEnter})
@@ -170,9 +173,18 @@ func runHubControlProgram(t *testing.T) {
 	empty := newCommandPalette("x", nil, 80)
 	m.commandPalette = &empty
 	_, _ = m.updateCommandPaletteKey(tea.KeyMsg{Type: tea.KeyEnter})
+	noMatch := newCommandPalette("x", []commandPaletteEntry{{Item: tuipick.PickerPanelItem{ID: "only", Label: "only"}}}, 80)
+	m.commandPalette = &noMatch
+	_, _ = m.updateCommandPaletteKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("zzz")})
+	_, _ = m.updateCommandPaletteKey(tea.KeyMsg{Type: tea.KeyEnter})
+	nilClientPalette := newCommandPalette("x", []commandPaletteEntry{{Item: tuipick.PickerPanelItem{ID: "s", Label: "s"}, Kind: commandPaletteSession}}, 80)
+	nilClientModel := newHubModel(nil, "")
+	nilClientModel.commandPalette = &nilClientPalette
+	_, _ = nilClientModel.updateCommandPaletteKey(tea.KeyMsg{Type: tea.KeyEnter})
 	_, _ = m.runCommandPaletteCommand("not-a-command")
-	m.mode = hubModeSession
-	_, _ = m.runCommandPaletteCommand("new")
+	unavailable := newHubModel(nil, "")
+	unavailable.mode = hubModeSession
+	_, _ = unavailable.runCommandPaletteCommand("interrupt")
 
 	// Browse cursor, scrolling, details, fork validation, and system messages.
 	m = newHubModel(nil, "http://hub.invalid")

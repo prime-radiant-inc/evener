@@ -196,10 +196,7 @@ func (m hubModel) updateCommandPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if palette.panel.Cancelled() {
 		return m, cmd
 	}
-	entry, ok := palette.selectedEntry()
-	if !ok {
-		return m, cmd
-	}
+	entry, _ := palette.selectedEntry()
 	switch entry.Kind {
 	case commandPaletteCommand:
 		return m.runCommandPaletteCommand(entry.Command)

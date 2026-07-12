@@ -128,9 +128,6 @@ func (m *hubModel) moveBrowseSelection(direction int) {
 func (m *hubModel) scrollBrowseSelectionIntoView() {
 	m.syncSessionViewport()
 	height := m.session.viewport.Height
-	if height < 1 {
-		return
-	}
 	cursor := -1
 	for i, line := range strings.Split(m.renderSessionMainBody(), "\n") {
 		if strings.HasPrefix(line, msgrender.SelectionPrefix) {
