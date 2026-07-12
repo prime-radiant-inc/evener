@@ -93,7 +93,12 @@ type jobManager struct {
 	// delegate, shell, and quiet-watchdog paths. Defaulted to clock.Real() at
 	// construction and overridden (alongside now) by the owning session so the
 	// whole job lifecycle runs on one injectable clock.
-	clock clock.Clock
+	// The shell decision hooks are nil in production. Deterministic tests use
+	// them to resolve the otherwise scheduler-dependent instant between a select
+	// receive and its timeout-flag check.
+	shellBeforeWaitTimeoutDecision  func(*atomic.Bool)
+	shellBeforeBlockTimeoutDecision func(*atomic.Bool)
+	clock                           clock.Clock
 	// closeGrace bounds how long closeRuntimeState waits for each still-running
 	// job to finalize before abandoning it. Seeded from defaultCloseGrace at
 	// construction so tests can shrink the graceful-shutdown window.

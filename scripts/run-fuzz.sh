@@ -279,6 +279,7 @@ TARGETS=(
 	"native:agent:.:FuzzRfzRestoreSessionFromMeta::session_init.go#RestoreSessionFromMetaWithConfig"
 	"native:agent:.:FuzzShfz_RunShellForeground::job_shell.go#runShell"
 	"native:agent:.:FuzzShfz_RunShellModes::job_shell.go#runShell"
+	"native:agent:.:FuzzCovJobShellSeed100::job_shell.go"
 	"native:agent:./internal/tool:FuzzApatchApplyPatch::apply_patch.go#apply"
 	"native:agent:./internal/tool:FuzzApatchParseV4APatchLines::apply_patch.go#parseV4APatchLines"
 	"native:agent:./internal/contextmgr:FuzzCtxmgrCheckpointData::context_manager.go#collectCheckpointData"

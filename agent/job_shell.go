@@ -163,6 +163,9 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 	}
 	select {
 	case wait := <-waitCh:
+		if jm.shellBeforeWaitTimeoutDecision != nil {
+			jm.shellBeforeWaitTimeoutDecision(&runtimeTimedOut)
+		}
 		if runtimeTimedOut.Load() {
 			return jm.finishForegroundRuntimeTimeout(run, wait)
 		}
@@ -204,6 +207,9 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 		wait := <-waitCh
 		return jm.finishForegroundRuntimeTimeout(run, wait)
 	case <-timer.C():
+		if jm.shellBeforeBlockTimeoutDecision != nil {
+			jm.shellBeforeBlockTimeoutDecision(&runtimeTimedOut)
+		}
 		if runtimeTimedOut.Load() {
 			wait := <-waitCh
 			return jm.finishForegroundRuntimeTimeout(run, wait)
