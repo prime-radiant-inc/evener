@@ -17,11 +17,11 @@ import (
 // FuzzJobDelegateAttachFinalizeSeed100Edges drives rare delegate attach and
 // terminal-result branches with deterministic in-process faults.
 func FuzzJobDelegateAttachFinalizeSeed100Edges(f *testing.F) {
-	for i := byte(0); i < 4; i++ {
+	for i := byte(0); i < 6; i++ {
 		f.Add(i)
 	}
 	f.Fuzz(func(t *testing.T, op byte) {
-		switch op % 4 {
+		switch op % 6 {
 		case 0:
 			jdaf100AttachForwardDoubleFault(t)
 		case 1:
@@ -30,8 +30,57 @@ func FuzzJobDelegateAttachFinalizeSeed100Edges(f *testing.F) {
 			jdaf100TerminalStructuredFallback(t)
 		case 3:
 			jdaf100CreateAttachRollback(t)
+		case 4:
+			jdaf100CreateLaunchRollback(t)
+		case 5:
+			jdaf100CreateDefaultTrack(t)
 		}
 	})
+}
+
+func jdaf100CreateDefaultTrack(t *testing.T) {
+	t.Helper()
+	release := make(chan struct{})
+	client := delegateTestClient(func(llm.Request) llm.Response {
+		<-release
+		return communicateWithDefaultOutput("tracked")
+	})
+	rig := newWtDlgRepo(t, client)
+	result := rig.s.createDelegate(context.Background(), delegateArgs{
+		Task:       "default tracker",
+		Background: true,
+	})
+	if result.Err != nil {
+		t.Fatalf("create default track: %v", result.Err)
+	}
+	if result.StartedJobID == "" {
+		t.Fatal("default tracker returned no job id")
+	}
+	rig.s.jobManager.mu.Lock()
+	run := rig.s.jobManager.running[result.StartedJobID]
+	rig.s.jobManager.mu.Unlock()
+	if run == nil {
+		t.Fatalf("default tracker did not install running job %q", result.StartedJobID)
+	}
+	close(release)
+	<-run.done
+}
+
+func jdaf100CreateLaunchRollback(t *testing.T) {
+	t.Helper()
+	client := delegateTestClient(func(llm.Request) llm.Response { return communicateWithDefaultOutput("unused") })
+	rig := newWtDlgRepo(t, client)
+	want := errors.New("seed launch failure")
+	old := delegateTrackPrepared
+	delegateTrackPrepared = func(*Session, *preparedSubagentRun) error { return want }
+	t.Cleanup(func() { delegateTrackPrepared = old })
+	result := rig.s.createDelegate(context.Background(), delegateArgs{Task: "rollback isolated launch", Isolation: "worktree", Background: true})
+	if !errors.Is(result.Err, want) {
+		t.Fatalf("create error = %v, want %v", result.Err, want)
+	}
+	if _, err := os.Stat(rig.lanePath(result.DelegateID)); !os.IsNotExist(err) {
+		t.Fatalf("lane stat after launch rollback = %v, want not exist", err)
+	}
 }
 
 func jdaf100CreateAttachRollback(t *testing.T) {

@@ -19,15 +19,15 @@ import (
 // FuzzJobDelegateGitReportSeed100 exercises delegate revival ownership and
 // terminal worktree reporting without starting Git or depending on a host repo.
 func FuzzJobDelegateGitReportSeed100(f *testing.F) {
-	for i := byte(0); i < 20; i++ {
+	for i := byte(0); i < 22; i++ {
 		f.Add(i)
 	}
 	f.Fuzz(func(t *testing.T, op byte) {
-		if op%20 < 10 {
-			jdgr100Reacquire(t, op%10)
+		if op%22 < 11 {
+			jdgr100Reacquire(t, op%11)
 			return
 		}
-		jdgr100Report(t, op%10)
+		jdgr100Report(t, op%11)
 	})
 }
 
@@ -102,6 +102,15 @@ func jdgr100Reacquire(t *testing.T, mode byte) {
 			t.Fatalf("sandbox re-root refusal = %v", err)
 		}
 	case 9:
+		old := delegateWorktreeControlPolicy
+		delegateWorktreeControlPolicy = func(*execenv.LocalExecutionEnvironment, string) error {
+			return errors.New("control policy denied")
+		}
+		t.Cleanup(func() { delegateWorktreeControlPolicy = old })
+		if err := h.s.reacquireDelegateWorktreeLock(lane, delegateID); err == nil || !strings.Contains(err.Error(), "control policy denied") {
+			t.Fatalf("control-policy refusal = %v", err)
+		}
+	case 10:
 		entry.lockReason = "placeholder"
 		h.s.cfg.testOnly.worktreeGitRunner = func(context.Context, execenv.ExecutionEnvironment) worktree.GitRunner {
 			return func(args ...string) (string, error) {
@@ -168,9 +177,15 @@ func jdgr100Report(t *testing.T, mode byte) {
 				return h.git.run(args...)
 			}
 		}
-	case 8, 9:
+	case 8:
 		local := h.s.currentEnv().(*execenv.LocalExecutionEnvironment)
 		local.Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeWorkspaceWrite}
+	case 9, 10:
+		old := delegateWorktreeControlPolicy
+		delegateWorktreeControlPolicy = func(*execenv.LocalExecutionEnvironment, string) error {
+			return errors.New("control policy denied")
+		}
+		t.Cleanup(func() { delegateWorktreeControlPolicy = old })
 	}
 
 	got := h.s.isolatedDelegateWorktreeReport(desc)

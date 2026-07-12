@@ -21,10 +21,43 @@ import (
 	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/serf/llm"
 )
 
 var errDelegateStartForwardFailed = errors.New("delegate start forward failed")
 var errDelegateStartForwardTerminalFailed = errors.New("delegate start forward terminal append failed")
+
+// delegateResultJSONUnmarshal is the JSON boundary used when cloning a result
+// schema. Production uses encoding/json directly; tagged fault tests replace it
+// to exercise the defensive fallback after a successful marshal.
+var delegateResultJSONUnmarshal = json.Unmarshal
+
+var delegateTrackPrepared func(*Session, *preparedSubagentRun) error
+var delegateWorktreeControlPolicy func(*execenv.LocalExecutionEnvironment, string) error
+var delegateResultSchemaJSONUnmarshal = json.Unmarshal
+var delegateRestoreSession func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, RestoreSessionConfig) (*Session, error)
+var delegateEnableSandbox func(*execenv.LocalExecutionEnvironment, *sandbox.ResolvedPolicy) error
+
+func trackPreparedDelegate(s *Session, prepared *preparedSubagentRun) error {
+	if delegateTrackPrepared != nil {
+		return delegateTrackPrepared(s, prepared)
+	}
+	return s.trackAndLaunchPreparedSubagent(prepared)
+}
+
+func restoreDelegateSession(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, meta schema.SessionMeta, cfg RestoreSessionConfig) (*Session, error) {
+	if delegateRestoreSession != nil {
+		return delegateRestoreSession(client, profile, env, meta, cfg)
+	}
+	return RestoreSessionFromMetaWithConfig(client, profile, env, meta, cfg)
+}
+
+func enableRestoredDelegateSandbox(env *execenv.LocalExecutionEnvironment, policy *sandbox.ResolvedPolicy) error {
+	if delegateEnableSandbox != nil {
+		return delegateEnableSandbox(env, policy)
+	}
+	return env.EnableSandbox(policy)
+}
 
 const (
 	delegateFinalizeWaitTimeout = 5 * time.Second
@@ -288,7 +321,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 		}
 		return delegateStartFailedWithIDs(delegateID, jobID, err)
 	}
-	if err := s.trackAndLaunchPreparedSubagent(prepared); err != nil {
+	if err := trackPreparedDelegate(s, prepared); err != nil {
 		// Coverage note on the workingDir != "" rollback below:
 		// trackAndLaunchPreparedSubagent's only error path is the parent
 		// session being closed (closingOrClosedLocked()) at the exact
@@ -959,7 +992,7 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 	if strings.TrimSpace(desc.ReasoningEffort) != "" {
 		meta.Config.ReasoningEffort = desc.ReasoningEffort
 	}
-	child, err := RestoreSessionFromMetaWithConfig(s.client, profile, childEnv, meta, restoreCfg)
+	child, err := restoreDelegateSession(s.client, profile, childEnv, meta, restoreCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -1052,7 +1085,7 @@ func (s *Session) restoreDelegateChildEnvironment(desc *jobstore.DelegateRestore
 		if reason != "" {
 			return nil, fmt.Errorf("delegate restore: %s", reason)
 		}
-		if err := clone.EnableSandbox(rp); err != nil {
+		if err := enableRestoredDelegateSandbox(clone, rp); err != nil {
 			return nil, fmt.Errorf("delegate restore: %s: %w", notResumableSandboxUnsatisfiable, err)
 		}
 		childEnv = clone
@@ -1086,7 +1119,7 @@ func (s *Session) reacquireDelegateWorktreeLock(lanePath, delegateID string) err
 	if err := controlEnv.SandboxReRootError(); err != nil {
 		return err
 	}
-	if err := controlEnv.UseControlPolicy(mainRoot); err != nil {
+	if err := s.useDelegateWorktreeControlPolicy(controlEnv, mainRoot); err != nil {
 		return err
 	}
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
@@ -1343,7 +1376,7 @@ func delegateResultSchemaMap(schema any) map[string]any {
 		return nil
 	}
 	var out map[string]any
-	if err := json.Unmarshal(b, &out); err != nil {
+	if err := delegateResultSchemaJSONUnmarshal(b, &out); err != nil {
 		return nil
 	}
 	if len(out) == 0 {
@@ -2365,7 +2398,7 @@ func (s *Session) isolatedDelegateWorktreeReport(desc *jobstore.DelegateRestoreD
 	if controlEnv.SandboxReRootError() != nil {
 		return nil // best-effort: cannot build a confined control env for this lane
 	}
-	if err := controlEnv.UseControlPolicy(mainRoot); err != nil {
+	if err := s.useDelegateWorktreeControlPolicy(controlEnv, mainRoot); err != nil {
 		return nil // best-effort: skip when the control policy is unsatisfiable
 	}
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
@@ -2399,6 +2432,13 @@ func (s *Session) isolatedDelegateWorktreeReport(desc *jobstore.DelegateRestoreD
 	}
 }
 
+func (s *Session) useDelegateWorktreeControlPolicy(env *execenv.LocalExecutionEnvironment, mainRoot string) error {
+	if delegateWorktreeControlPolicy != nil {
+		return delegateWorktreeControlPolicy(env, mainRoot)
+	}
+	return env.UseControlPolicy(mainRoot)
+}
+
 func activeDelegateWatchSummaries(jm *jobManager, rec *jobstore.JobRecord) []watchListEntry {
 	if jm == nil || rec == nil || rec.DelegateID == "" || rec.TranscriptRef == "" {
 		return nil
@@ -2429,7 +2469,7 @@ func cloneDelegateResultSchema(schema any) any {
 		return schema
 	}
 	var cloned any
-	if err := json.Unmarshal(b, &cloned); err != nil {
+	if err := delegateResultJSONUnmarshal(b, &cloned); err != nil {
 		return schema
 	}
 	if m, ok := cloned.(map[string]any); ok && len(m) == 0 {

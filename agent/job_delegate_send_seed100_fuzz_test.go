@@ -10,8 +10,10 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -19,11 +21,11 @@ import (
 // FuzzJobDelegateSendSeed100Edges exercises deterministic send and restore
 // guards whose inputs normally require a partially lost delegate runtime.
 func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
-	for seed := byte(0); seed < 13; seed++ {
+	for seed := byte(0); seed < 14; seed++ {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, seed byte) {
-		switch seed % 13 {
+		switch seed % 14 {
 		case 0:
 			s := newLeanDelegateRestorePreflightSession(t, llm.NewClient())
 			rec := seedStoppedDelegateRestoreRecord(t, s)
@@ -140,6 +142,18 @@ func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
 			t.Cleanup(func() { delegateSendTestHooks.finalize = nil })
 			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed"})
 			requireSendSeed100Error(t, res, "target_not_resumable: finalize observed-terminal")
+		case 13:
+			s := newDelegateRestorePreflightSession(t, llm.NewClient())
+			rec := seedStoppedDelegateRestoreRecord(t, s)
+			preflight := s.assessDelegateResumability(rec, delegateResumabilityPreflight).Preflight
+			old := delegateRestoreSession
+			delegateRestoreSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, RestoreSessionConfig) (*Session, error) {
+				return nil, errors.New("restore fault")
+			}
+			t.Cleanup(func() { delegateRestoreSession = old })
+			if _, err := s.restoreTerminalDelegateChild(rec, rec.DelegateRestore.ChildSessionID, preflight); err == nil {
+				t.Fatal("restore session fault was ignored")
+			}
 		}
 	})
 }

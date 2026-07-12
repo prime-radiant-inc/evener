@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 
@@ -83,11 +84,11 @@ func FuzzJobDelegateRestoreSandboxFloorSeed100(f *testing.F) {
 // FuzzJobDelegateRestorePureGuardsSeed100 keeps corrupt persisted inputs on the
 // pure validation side of the restore boundary and covers schema clone fallbacks.
 func FuzzJobDelegateRestorePureGuardsSeed100(f *testing.F) {
-	for _, seed := range []byte{0, 1, 2, 3, 4, 255} {
+	for _, seed := range []byte{0, 1, 2, 3, 4, 5, 6, 7, 255} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, selector byte) {
-		switch selector % 5 {
+		switch selector % 8 {
 		case 0:
 			if !hasValidDelegateRestoreSandbox(nil) {
 				t.Fatal("nil restore descriptor rejected")
@@ -109,6 +110,32 @@ func FuzzJobDelegateRestorePureGuardsSeed100(f *testing.F) {
 		case 4:
 			if got := cloneDelegateResultSchema(map[string]any{}); got != nil {
 				t.Fatalf("empty schema clone = %#v, want nil", got)
+			}
+		case 5:
+			old := delegateResultJSONUnmarshal
+			delegateResultJSONUnmarshal = func([]byte, any) error { return errors.New("decode fault") }
+			t.Cleanup(func() { delegateResultJSONUnmarshal = old })
+			value := map[string]any{"type": "object"}
+			if got := cloneDelegateResultSchema(value); !reflect.DeepEqual(got, value) {
+				t.Fatalf("decode failure clone = %#v, want %#v", got, value)
+			}
+		case 6:
+			old := delegateResultSchemaJSONUnmarshal
+			delegateResultSchemaJSONUnmarshal = func([]byte, any) error { return errors.New("decode fault") }
+			t.Cleanup(func() { delegateResultSchemaJSONUnmarshal = old })
+			if got := delegateResultSchemaMap(struct{ Type string }{Type: "object"}); got != nil {
+				t.Fatalf("decode failure schema = %#v, want nil", got)
+			}
+		case 7:
+			s := newTestSession(t)
+			old := delegateEnableSandbox
+			delegateEnableSandbox = func(*execenv.LocalExecutionEnvironment, *sandbox.ResolvedPolicy) error {
+				return errors.New("enable fault")
+			}
+			t.Cleanup(func() { delegateEnableSandbox = old })
+			desc := &jobstore.DelegateRestoreDescriptor{WorkingDir: s.currentEnv().WorkingDirectory(), LocalEnvPolicy: "default"}
+			if _, err := s.restoreDelegateChildEnvironment(desc, "dlg_seed"); err == nil {
+				t.Fatal("sandbox enable fault was ignored")
 			}
 		}
 	})
