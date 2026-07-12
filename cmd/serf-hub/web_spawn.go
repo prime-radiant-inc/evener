@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"regexp"
 	"sort"
@@ -22,6 +21,8 @@ import (
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 )
+
+var webSpawnLoadClient = cmdutil.LoadClient
 
 // handleWorkspaceSpawn renders the prompt-first spawn surface partial.
 // Accepts an optional ?dir=<absolute path> query param. When present and the
@@ -98,12 +99,6 @@ func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 	if err := validateAppWireInputItems(req.Items); err != nil {
 		http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
 		return
-	}
-	for i, it := range req.Items {
-		if len(it.Data) > hubcore.SendMaxImageBytes {
-			http.Error(w, fmt.Sprintf("items[%d] %q exceeds %d-byte limit", i, it.Name, hubcore.SendMaxImageBytes), http.StatusRequestEntityTooLarge)
-			return
-		}
 	}
 	if s.cfg.Spawner == nil && len(s.cfg.CodexSources) == 0 && len(s.cfg.CodexLaunches) == 0 {
 		writeSpawnError(w, appwire.Unavailable("spawner not configured"))
@@ -401,7 +396,7 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 	}
 	s.liveModels.mu.Unlock()
 
-	c, _, _, err := cmdutil.LoadClient()
+	c, _, _, err := webSpawnLoadClient()
 	if err != nil || c == nil {
 		return nil
 	}
