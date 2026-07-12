@@ -72,10 +72,11 @@ func LoadStore(path string) (*Store, error) {
 // Tests and fuzzers inject an in-memory or sandboxed filesystem to drive
 // persistence off real disk.
 func loadStoreFS(fs afero.Fs, path string) (*Store, error) {
-	s := &Store{path: path, data: fileShape{Schema: 1, Providers: map[string]providerSection{}}, fs: fs}
+	s := &Store{path: path, data: fileShape{Schema: 1}, fs: fs}
 	info, err := fs.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			s.data.Providers = map[string]providerSection{}
 			return s, nil
 		}
 		return nil, fmt.Errorf("credentials: stat %s: %w", path, err)
