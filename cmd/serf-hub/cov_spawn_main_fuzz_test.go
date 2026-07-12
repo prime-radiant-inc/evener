@@ -197,15 +197,28 @@ func TestCovSpawnMainFaultSeams(t *testing.T) {
 	originalRead := hubTokenRead
 	originalOpen := httpRecorderOpenFile
 	originalMarshal := httpRecorderMarshal
+	originalExecutable := hubExecutable
+	originalArgs := hubProcessArgs
 	t.Cleanup(func() {
 		hubTokenRead = originalRead
 		httpRecorderOpenFile = originalOpen
 		httpRecorderMarshal = originalMarshal
+		hubExecutable = originalExecutable
+		hubProcessArgs = originalArgs
 	})
 
 	hubTokenRead = func([]byte) (int, error) { return 0, errors.New("entropy") }
 	if _, err := newHubToken(); err == nil || !strings.Contains(err.Error(), "entropy") {
 		t.Fatalf("newHubToken error = %v", err)
+	}
+	hubExecutable = func() (string, error) { return "", errors.New("executable") }
+	hubProcessArgs = func() []string { return []string{"relative-hub"} }
+	if got := currentExecutable(); got != "relative-hub" {
+		t.Fatalf("currentExecutable fallback = %q", got)
+	}
+	hubProcessArgs = func() []string { return nil }
+	if got := currentExecutable(); got != "" {
+		t.Fatalf("currentExecutable empty fallback = %q", got)
 	}
 
 	t.Setenv(envvars.SERFRecordHTTP.Name, "1")
