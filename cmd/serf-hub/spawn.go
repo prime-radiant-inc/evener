@@ -29,6 +29,16 @@ import (
 const serfLaunchCheckTimeout = 30 * time.Second
 const daemonLaunchStderrLimit = 64 * 1024
 
+var (
+	spawnMkdirAll                    = os.MkdirAll
+	spawnMkdirTemp                   = os.MkdirTemp
+	spawnWriteFile                   = os.WriteFile
+	spawnRemoveAll                   = os.RemoveAll
+	listSerfLaunchModelContractFn    = listSerfLaunchModelContract
+	openAIStoredOAuthUsableForLaunch = openAIStoredOAuthUsable
+	listRendezvousForWait            = rendezvous.List
+)
+
 // HubSpawner fulfills the hubcore.Spawner interface using SpawnDaemon.
 type HubSpawner struct {
 	Cfg                 Config
@@ -71,7 +81,7 @@ func (h *HubSpawner) ListLaunchModelContract(ctx context.Context) (appwire.Model
 		ParentEnv:           os.Environ(),
 		ProvidersConfigPath: h.ProvidersConfigPath,
 	})
-	return listSerfLaunchModelContract(ctx, h.SerfBinary, env)
+	return listSerfLaunchModelContractFn(ctx, h.SerfBinary, env)
 }
 
 func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, workingDir string) (appwire.ModelListResponse, error) {
@@ -85,7 +95,7 @@ func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, w
 		ParentEnv:           os.Environ(),
 		ProvidersConfigPath: h.ProvidersConfigPath,
 	})
-	return listSerfLaunchModelContract(ctx, h.SerfBinary, env)
+	return listSerfLaunchModelContractFn(ctx, h.SerfBinary, env)
 }
 
 func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
@@ -176,17 +186,17 @@ func prepareResolvedForSpawn(stateDir string, resolved launchconfig.Resolved) (l
 	if stateDir == "" {
 		return launchconfig.Resolved{}, nil, errors.New("state dir is required for inline system prompts")
 	}
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+	if err := spawnMkdirAll(stateDir, 0o700); err != nil {
 		return launchconfig.Resolved{}, nil, fmt.Errorf("create state dir for inline prompts: %w", err)
 	}
-	tempDir, err := os.MkdirTemp(stateDir, "inline-prompts-")
+	tempDir, err := spawnMkdirTemp(stateDir, "inline-prompts-")
 	if err != nil {
 		return launchconfig.Resolved{}, nil, fmt.Errorf("create inline prompt dir: %w", err)
 	}
-	cleanupPartial := func() { _ = os.RemoveAll(tempDir) }
+	cleanupPartial := func() { _ = spawnRemoveAll(tempDir) }
 	writePrompt := func(name, text string) (string, error) {
 		path := filepath.Join(tempDir, name)
-		if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		if err := spawnWriteFile(path, []byte(text), 0o600); err != nil {
 			return "", err
 		}
 		return path, nil
@@ -510,7 +520,7 @@ func validateProviderCredentials(provider string, store *credentials.Store, env 
 
 noConfig:
 	// No-config path: original type-map behavior, unchanged.
-	if strings.EqualFold(strings.TrimSpace(provider), "openai") && openAIStoredOAuthUsable(env) {
+	if strings.EqualFold(strings.TrimSpace(provider), "openai") && openAIStoredOAuthUsableForLaunch(env) {
 		return nil
 	}
 	if strings.EqualFold(strings.TrimSpace(provider), "openai-compatible") && openAICompatibleBaseURLInEnv(env) {
@@ -722,7 +732,7 @@ func waitForRendezvousOrExit(ctx context.Context, runDir string, pid int, exited
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		entries, _ := rendezvous.List(runDir)
+		entries, _ := listRendezvousForWait(runDir)
 		for _, e := range entries {
 			if e.PID != pid {
 				continue

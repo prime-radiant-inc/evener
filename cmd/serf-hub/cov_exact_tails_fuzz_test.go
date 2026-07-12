@@ -19,8 +19,10 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/envvars"
+	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
 )
@@ -63,6 +65,55 @@ func FuzzExactTails(f *testing.F) {
 		_ = hasSerfLaunchModelLister(cfg)
 		_ = validateSerfLaunchModel(context.Background(), cfg, cmdutil.ModelRef{Provider: "p", Model: "m"}, "/tmp")
 		_, _ = ResumeDaemon(context.Background(), "", t.TempDir(), hubcore.ResumeRequest{}, time.Nanosecond)
+
+		oldContract := listSerfLaunchModelContractFn
+		listSerfLaunchModelContractFn = func(context.Context, string, []string) (appwire.ModelListResponse, error) {
+			return appwire.ModelListResponse{}, errors.New("contract")
+		}
+		_, _ = (&HubSpawner{}).ListLaunchModels(context.Background())
+		listSerfLaunchModelContractFn = oldContract
+
+		inline := launchconfig.Resolved{}
+		inline.Effective.SystemPromptMode = "inline"
+		inline.Effective.SystemPromptText = "system"
+		oldMkdirAll, oldMkdirTemp := spawnMkdirAll, spawnMkdirTemp
+		oldWriteFile, oldRemoveAll := spawnWriteFile, spawnRemoveAll
+		spawnMkdirAll = func(string, os.FileMode) error { return errors.New("mkdir") }
+		_, _, _ = prepareResolvedForSpawn(t.TempDir(), inline)
+		spawnMkdirAll = oldMkdirAll
+		spawnMkdirTemp = func(string, string) (string, error) { return "", errors.New("temp") }
+		_, _, _ = prepareResolvedForSpawn(t.TempDir(), inline)
+		spawnMkdirTemp = oldMkdirTemp
+		spawnWriteFile = func(string, []byte, os.FileMode) error { return errors.New("write") }
+		spawnRemoveAll = func(string) error { return nil }
+		_, _, _ = prepareResolvedForSpawn(t.TempDir(), inline)
+		appendInline := launchconfig.Resolved{}
+		appendInline.Effective.SystemPromptAppendMode = "inline"
+		appendInline.Effective.SystemPromptAppendText = "append"
+		_, _, _ = prepareResolvedForSpawn(t.TempDir(), appendInline)
+		spawnWriteFile, spawnRemoveAll = oldWriteFile, oldRemoveAll
+
+		store, err := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		oldOAuth := openAIStoredOAuthUsableForLaunch
+		openAIStoredOAuthUsableForLaunch = func([]string) bool { return true }
+		_ = validateProviderCredentials("openai", store, nil, "")
+		openAIStoredOAuthUsableForLaunch = oldOAuth
+
+		canceled, cancel := context.WithCancel(context.Background())
+		cancel()
+		_ = validateSerfLaunchContract(canceled, "/bin/true", "", nil)
+		_, _ = listSerfLaunchModelContract(canceled, "/bin/true", nil)
+
+		oldListRendezvous := listRendezvousForWait
+		startedAfter := time.Now().UTC()
+		listRendezvousForWait = func(string) ([]rendezvous.Entry, error) {
+			return []rendezvous.Entry{{PID: 42, StartedAt: startedAfter.Add(-time.Second)}}, nil
+		}
+		_, _ = waitForRendezvousOrExit(canceled, t.TempDir(), 42, nil, WithStartedAfter(startedAfter))
+		listRendezvousForWait = oldListRendezvous
 
 		// Transcript projection tails: malformed JSON, usage cost stamping,
 		// empty input images, and default output-image media type.
