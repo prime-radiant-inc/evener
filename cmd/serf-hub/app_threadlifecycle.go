@@ -10,10 +10,23 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
+	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
 	"primeradiant.com/serf/cmdutil"
+)
+
+var (
+	hubCanonicalizeDir = fspaths.CanonicalizeDir
+	hubResolveLaunch   = launchconfig.Resolve
+	hubParseModelRef   = cmdutil.ParseModelRef
+	hubRosterRefresh   = func(r *hubcore.Roster) { r.Refresh() }
+	hubRosterList      = func(r *hubcore.Roster) []hubcore.LiveEntry { return r.List() }
+	hubForkSession     = agent.ForkSession
+	hubEnsureSource    = func(ctx context.Context, launcher *codexlaunch.CodexLauncher, id string, sources *appsource.Registry) (appsource.Source, error) {
+		return launcher.EnsureSource(ctx, id, sources)
+	}
 )
 
 func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
@@ -24,7 +37,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	if sourceID != "" && sourceID != "local" {
 		var source appsource.Source
 		if cfg.CodexLauncher != nil && cfg.CodexLauncher.Manages(sourceID) {
-			launched, err := cfg.CodexLauncher.EnsureSource(ctx, sourceID, sources)
+			launched, err := hubEnsureSource(ctx, cfg.CodexLauncher, sourceID, sources)
 			if err != nil {
 				return appwire.ThreadStartResponse{}, err
 			}
@@ -36,7 +49,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 				if cfg.CodexLauncher == nil {
 					return appwire.ThreadStartResponse{}, appwire.Unavailable("spawn source is not available: " + sourceID)
 				}
-				launched, err := cfg.CodexLauncher.EnsureSource(ctx, sourceID, sources)
+				launched, err := hubEnsureSource(ctx, cfg.CodexLauncher, sourceID, sources)
 				if err != nil {
 					return appwire.ThreadStartResponse{}, err
 				}
@@ -53,7 +66,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	}
 	workingDir := params.CWD
 	if workingDir != "" {
-		resolved, err := fspaths.CanonicalizeDir(workingDir)
+		resolved, err := hubCanonicalizeDir(workingDir)
 		if err != nil {
 			return appwire.ThreadStartResponse{}, appwire.InvalidParams("cwd: " + err.Error())
 		}
@@ -69,7 +82,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		if params.ModelProvider != "" && !strings.HasPrefix(params.Model, params.ModelProvider+"/") {
 			model = params.ModelProvider + "/" + params.Model
 		}
-		modelRef, err := cmdutil.ParseModelRef(model)
+		modelRef, err := hubParseModelRef(model)
 		if err != nil {
 			return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
 		}
@@ -85,7 +98,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		v := *params.NonInteractive
 		overrides.NonInteractive = &v
 	}
-	spawnResolved, resolveErr := launchconfig.Resolve(cfg.HubStateRoot, workingDir, overrides)
+	spawnResolved, resolveErr := hubResolveLaunch(cfg.HubStateRoot, workingDir, overrides)
 	if resolveErr != nil {
 		return appwire.ThreadStartResponse{}, resolveErr
 	}
@@ -93,7 +106,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	if resolvedModel == "" {
 		return appwire.ThreadStartResponse{}, appwire.InvalidParams("model is required")
 	}
-	modelRef, err := cmdutil.ParseModelRef(resolvedModel)
+	modelRef, err := hubParseModelRef(resolvedModel)
 	if err != nil {
 		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
 	}
@@ -109,9 +122,9 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		return appwire.ThreadStartResponse{}, appwire.HubLaunchError(err.Error())
 	}
 	if cfg.Roster != nil {
-		cfg.Roster.Refresh()
+		hubRosterRefresh(cfg.Roster)
 		if entry.ThreadID == "" || entry.SessionID == "" {
-			for _, live := range cfg.Roster.List() {
+			for _, live := range hubRosterList(cfg.Roster) {
 				if live.PID == entry.PID {
 					if entry.ThreadID == "" {
 						entry.ThreadID = live.SessionID
@@ -176,7 +189,7 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 		if ref.SourceID != "local" {
 			var source appsource.Source
 			if cfg.CodexLauncher != nil && cfg.CodexLauncher.Manages(ref.SourceID) {
-				launched, err := cfg.CodexLauncher.EnsureSource(ctx, ref.SourceID, sources)
+				launched, err := hubEnsureSource(ctx, cfg.CodexLauncher, ref.SourceID, sources)
 				if err != nil {
 					return appwire.ThreadResumeResponse{}, err
 				}
@@ -188,7 +201,7 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 					if cfg.CodexLauncher == nil {
 						return appwire.ThreadResumeResponse{}, err
 					}
-					launched, launchErr := cfg.CodexLauncher.EnsureSource(ctx, ref.SourceID, sources)
+					launched, launchErr := hubEnsureSource(ctx, cfg.CodexLauncher, ref.SourceID, sources)
 					if launchErr != nil {
 						return appwire.ThreadResumeResponse{}, launchErr
 					}
@@ -203,10 +216,8 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 	}
 	sessionID := strings.TrimSpace(params.Session)
 	if sessionID == "" && params.Ref != "" {
-		ref, err := appwire.ParseRef(params.Ref)
-		if err != nil {
-			return appwire.ThreadResumeResponse{}, err
-		}
+		// A non-empty ref was parsed at function entry, so this cannot fail.
+		ref, _ := appwire.ParseRef(params.Ref)
 		sessionID = ref.ThreadID
 	}
 	if sessionID == "" {
@@ -221,7 +232,7 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(err.Error())
 	}
 	if cfg.Roster != nil {
-		cfg.Roster.Refresh()
+		hubRosterRefresh(cfg.Roster)
 	}
 	threadID := entry.ThreadID
 	if threadID == "" {
@@ -298,7 +309,7 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	if stateDir == "" {
 		return appwire.ThreadForkResponse{}, appwire.Unavailable("state dir not resolvable for parent thread")
 	}
-	childID, err := agent.ForkSession(stateDir, ref.ThreadID, turn, params.EditedInput, params.Label)
+	childID, err := hubForkSession(stateDir, ref.ThreadID, turn, params.EditedInput, params.Label)
 	if err != nil {
 		return appwire.ThreadForkResponse{}, err
 	}

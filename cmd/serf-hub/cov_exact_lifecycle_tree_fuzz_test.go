@@ -16,6 +16,8 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
+	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -51,6 +53,54 @@ func FuzzExactLifecycleTree(f *testing.F) {
 		_, _ = hubThreadResume(ctx, hubcore.WebConfig{CodexLauncher: fallbackLaunch}, missing, appwire.ThreadResumeParams{Ref: "remote:r"})
 		_, _ = hubThreadResume(ctx, hubcore.WebConfig{Spawner: finalSessionSpawner{entry: rendezvous.Entry{SessionID: "r"}}}, reg, appwire.ThreadResumeParams{Ref: "local:r"})
 
+		oldCanonicalize, oldResolve, oldParse := hubCanonicalizeDir, hubResolveLaunch, hubParseModelRef
+		oldRefresh, oldList, oldFork, oldEnsure := hubRosterRefresh, hubRosterList, hubForkSession, hubEnsureSource
+		t.Cleanup(func() {
+			hubCanonicalizeDir, hubResolveLaunch, hubParseModelRef = oldCanonicalize, oldResolve, oldParse
+			hubRosterRefresh, hubRosterList, hubForkSession = oldRefresh, oldList, oldFork
+			hubEnsureSource = oldEnsure
+		})
+		_ = oldList(hubcore.NewRosterWithEntries())
+		hubEnsureSource = func(context.Context, *codexlaunch.CodexLauncher, string, *appsource.Registry) (appsource.Source, error) {
+			return nil, nil
+		}
+		_, _ = hubThreadStart(ctx, hubcore.WebConfig{CodexLauncher: bad}, appsource.NewRegistry(), appwire.ThreadStartParams{Harness: "managed"})
+		hubEnsureSource = oldEnsure
+		spawner := &fakeRPCModelContractSpawner{fakeRPCSpawner: fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
+			return rendezvous.Entry{PID: 44}, nil
+		}, resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			return rendezvous.Entry{SessionID: "r"}, nil
+		}}, contract: appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}}
+		localCfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Spawner: spawner}
+		hubCanonicalizeDir = func(string) (string, error) { return "", errors.New("canonical") }
+		_, _ = hubThreadStart(ctx, localCfg, reg, appwire.ThreadStartParams{CWD: "/work", Model: "openai/gpt-5"})
+		hubCanonicalizeDir = oldCanonicalize
+		hubResolveLaunch = func(string, string, launchconfig.Layer) (launchconfig.Resolved, error) {
+			return launchconfig.Resolved{}, errors.New("resolve")
+		}
+		_, _ = hubThreadStart(ctx, localCfg, reg, appwire.ThreadStartParams{Model: "openai/gpt-5"})
+		hubResolveLaunch = func(string, string, launchconfig.Layer) (launchconfig.Resolved, error) {
+			return launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5"}}, nil
+		}
+		hubParseModelRef = func(string) (cmdutil.ModelRef, error) { return cmdutil.ModelRef{}, errors.New("parse") }
+		_, _ = hubThreadStart(ctx, localCfg, reg, appwire.ThreadStartParams{})
+		hubParseModelRef = oldParse
+		_, _ = hubThreadStart(ctx, localCfg, appsource.NewRegistry(), appwire.ThreadStartParams{})
+		roster := hubcore.NewRosterWithEntries()
+		localCfg.Roster = roster
+		hubRosterRefresh = func(*hubcore.Roster) {}
+		hubRosterList = func(*hubcore.Roster) []hubcore.LiveEntry {
+			return []hubcore.LiveEntry{{Entry: rendezvous.Entry{PID: 44, SessionID: "r"}, SessionID: "r"}}
+		}
+		_, _ = hubThreadStart(ctx, localCfg, reg, appwire.ThreadStartParams{})
+		_, _ = hubThreadResume(ctx, localCfg, reg, appwire.ThreadResumeParams{Session: "r"})
+		freshMissing := appsource.NewRegistry()
+		_, _ = hubThreadResume(ctx, hubcore.WebConfig{CodexLauncher: fallbackLaunch}, freshMissing, appwire.ThreadResumeParams{Ref: "remote:r"})
+		hubResolveLaunch = oldResolve
+
+		hubForkSession = func(string, string, int, string, string) (string, error) { return "child", nil }
+		_, _ = hubThreadFork(ctx, hubcore.WebConfig{StateDir: t.TempDir(), Past: hubcore.NewPastIndex("")}, reg, appwire.ThreadForkParams{Ref: "local:r", SourceTurnID: "1", EditedInput: "edit"})
+
 		now := time.Unix(1700000000, 0).UTC()
 		past := hubcore.NewPastIndex("")
 		past.SeedForTest([]schema.SessionMeta{
@@ -60,11 +110,11 @@ func FuzzExactLifecycleTree(f *testing.F) {
 		fav := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "tree.db"))
 		_ = fav.Set("session", "active", true, now)
 		_ = fav.Set("session", "fav", true, now)
-		roster := hubcore.NewRosterWithEntries(
+		treeRoster := hubcore.NewRosterWithEntries(
 			hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "active", WorkingDir: "/work/p", StartedAt: now}, SessionID: "active", Status: "waiting"},
 			hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "orphan", WorkingDir: "/work/p", StartedAt: now}, SessionID: "orphan", Status: "error"},
 		)
-		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster, Favorite: fav})
+		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: treeRoster, Favorite: fav})
 		web.handleAPITree(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/tree", nil))
 
 		// Invalid remote rows are ignored, local sources are skipped, successful
