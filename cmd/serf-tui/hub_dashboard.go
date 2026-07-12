@@ -74,9 +74,6 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 		if name == "" {
 			name = "(no project)"
 		}
-		if key == "" {
-			key = hubProjectKey(name)
-		}
 		if group, ok := groups[key]; ok {
 			if group.name == "" || group.name == "(no project)" {
 				group.name = name
@@ -99,9 +96,6 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 		}
 		if project == "" {
 			project = "(no project)"
-		}
-		if key == "" {
-			key = hubProjectKey(project)
 		}
 		title := n.Title
 		if title == "" {
@@ -173,7 +167,7 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 	ordered := make([]*dashboardGroup, 0, len(projectOrder))
 	for _, key := range projectOrder {
 		group := groups[key]
-		if group == nil || len(group.sessions) == 0 {
+		if len(group.sessions) == 0 {
 			continue
 		}
 		sort.SliceStable(group.sessions, func(i, j int) bool {

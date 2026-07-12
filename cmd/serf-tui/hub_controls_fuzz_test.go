@@ -8,7 +8,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
 )
 
 // FuzzHubControlProgram replays state-machine boundary cases which are awkward
@@ -25,8 +27,36 @@ func FuzzHubControlProgram(f *testing.F) {
 }
 
 func runHubControlProgram(t *testing.T) {
+	// Replay the deterministic behavioral programs whose setup includes the
+	// richer overlay and fake-appwire states used by these controls.
+	for _, program := range []func(*testing.T){
+		TestHubModelDashboardLaunchRowOpensUnscopedSpawn,
+		TestHubModelDashboardNewFromProjectRowUsesProjectDir,
+		TestHubModelDashboardUsesNForNewSession,
+		TestHubModelCommandPaletteOwnsPrintableKeys,
+		TestHubModelCommandPaletteCanOpenNewSession,
+		TestHubModelSlashDashboardAndProjectNavigate,
+		TestHubModelBrowseUpDownUseComposerHistory,
+		TestHubModelBrowseSelectionScrollsIntoView,
+		TestHubModelCtrlOReturnsDashboardFromSession,
+		TestHubModelDashboardShowsFullSessionTreeGroupedByProject,
+		TestHubModelDashboardSortsByAttentionThenRecency,
+	} {
+		program(t)
+	}
+
 	m := newHubModel(nil, "http://hub.invalid")
 	m.width, m.height = 100, 30
+	modal := tuipick.NewTextInputModal("prompt", "tag")
+	m.followupModal = &modal
+	_, _ = m.updateDashboardKey(tea.KeyMsg{Type: tea.KeyEsc})
+	modal = tuipick.NewTextInputModal("prompt", "tag")
+	m.followupModal = &modal
+	_, _ = m.updateDashboardKey(tea.KeyMsg{Type: tea.KeyEnter})
+	settings := launchconfig.NewLaunchSettingsPanel(nil, "")
+	m.launchSettingsPanel = &settings
+	_, _ = m.updateDashboardKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	_, _ = m.updateDashboardKey(tea.KeyMsg{Type: tea.KeyEsc})
 
 	// Dashboard construction, ordering, filtering, folding, and selection.
 	tree := hubTreeResponse{Projects: []hubTreeProject{
@@ -43,6 +73,12 @@ func runHubControlProgram(t *testing.T) {
 	}}
 	m.tree = tree
 	m.rows = buildDashboardRows(tree)
+	_ = buildDashboardRows(hubTreeResponse{Projects: []hubTreeProject{
+		{Key: "same", Name: "", Sessions: []hubTreeNode{{Ref: "local:e", SessionID: "e"}}},
+		{Key: "same", Name: "named", Sessions: []hubTreeNode{{Ref: "local:f", SessionID: "f"}}},
+		{Key: "tie-a", Name: "A", Sessions: []hubTreeNode{{Ref: "local:g", SessionID: "g"}}},
+		{Key: "tie-b", Name: "B", Sessions: []hubTreeNode{{Ref: "local:h", SessionID: "h"}}},
+	}})
 	_ = buildProjectRows(tree.Projects[0])
 	_ = buildProjectRows(tree.Projects[1])
 	_ = hubProjectKey("")
@@ -112,11 +148,31 @@ func runHubControlProgram(t *testing.T) {
 		m.selected = 0
 		_, _ = m.activateDashboardRow([]hubRow{row})
 	}
+	fakeClient := &appwire.Client{}
+	m.client = fakeClient
+	m.selected = 0
+	_, _ = m.updateDashboardKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	_, _ = m.activateDashboardRow([]hubRow{{kind: hubRowLaunch}})
 	m.commandPalette = nil
 	_, _ = m.updateCommandPaletteKey(tea.KeyMsg{Type: tea.KeyEnter})
 	m.openCommandPalette()
 	_, _ = m.updateCommandPaletteKey(tea.KeyMsg{Type: tea.KeyEsc})
+	for _, entry := range []commandPaletteEntry{
+		{Item: tuipick.PickerPanelItem{ID: "cmd", Label: "/new"}, Kind: commandPaletteCommand, Command: "new"},
+		{Item: tuipick.PickerPanelItem{ID: "project", Label: "project"}, Kind: commandPaletteProject, ProjectKey: "p"},
+		{Item: tuipick.PickerPanelItem{ID: "session", Label: "session"}, Kind: commandPaletteSession, Ref: appwire.Ref{SourceID: "local", ThreadID: "x"}},
+		{Item: tuipick.PickerPanelItem{ID: "other", Label: "other"}, Kind: commandPaletteEntryKind(99)},
+	} {
+		palette := newCommandPalette("x", []commandPaletteEntry{entry}, 80)
+		m.commandPalette = &palette
+		_, _ = m.updateCommandPaletteKey(tea.KeyMsg{Type: tea.KeyEnter})
+	}
+	empty := newCommandPalette("x", nil, 80)
+	m.commandPalette = &empty
+	_, _ = m.updateCommandPaletteKey(tea.KeyMsg{Type: tea.KeyEnter})
 	_, _ = m.runCommandPaletteCommand("not-a-command")
+	m.mode = hubModeSession
+	_, _ = m.runCommandPaletteCommand("new")
 
 	// Browse cursor, scrolling, details, fork validation, and system messages.
 	m = newHubModel(nil, "http://hub.invalid")
@@ -124,6 +180,8 @@ func runHubControlProgram(t *testing.T) {
 	m.detail.Ref = "local:thread"
 	m.session.messages = nil
 	m.enterSessionBrowse(true)
+	m.mode = hubModeSpawn
+	m.returnToDashboard()
 	m.exitSessionBrowse()
 	m.moveBrowsePage(-1)
 	m.moveBrowsePage(1)
@@ -142,6 +200,8 @@ func runHubControlProgram(t *testing.T) {
 	m.moveBrowseSelection(-1)
 	m.moveBrowseSelection(1)
 	m.session.viewport.Height = 0
+	m.scrollBrowseSelectionIntoView()
+	m.height = 1
 	m.scrollBrowseSelectionIntoView()
 	_, _, _ = m.selectedBrowseMessage()
 	m.browseSelected = -1
@@ -205,7 +265,11 @@ func runHubControlProgram(t *testing.T) {
 	m.session.historyIdx = -1
 	m.session.setInputValue("")
 	_, _ = m.updateSessionBrowseComposerKey(tea.KeyMsg{Type: tea.KeyUp})
+	m.session.historyIdx = 1
 	_, _ = m.updateSessionBrowseComposerKey(tea.KeyMsg{Type: tea.KeyUp})
+	_, _ = m.updateSessionBrowseComposerKey(tea.KeyMsg{Type: tea.KeyUp})
+	_, _ = m.updateSessionBrowseComposerKey(tea.KeyMsg{Type: tea.KeyDown})
+	m.session.historyIdx = 0
 	_, _ = m.updateSessionBrowseComposerKey(tea.KeyMsg{Type: tea.KeyDown})
 	_, _ = m.updateSessionBrowseComposerKey(tea.KeyMsg{Type: tea.KeyDown})
 	m.session.historyIdx = -1
