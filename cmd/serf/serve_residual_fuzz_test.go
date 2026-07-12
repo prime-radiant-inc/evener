@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"net"
 	"net/http"
 	"testing"
@@ -134,15 +135,49 @@ func exerciseResidualCallbacks(s *residualServeServer) {
 }
 
 func TestRunServeResidualCoverage(t *testing.T) {
+	t.Run("resume success", TestServeAsk_RestoreReportsAwaitingImmediately)
+	t.Run("default subscriber count", func(t *testing.T) {
+		d := defaultServeDeps()
+		s := server.NewServer(server.ServerConfig{})
+		if got := d.subscriberCount(s, "missing"); got != 0 {
+			t.Fatalf("subscriber count = %d", got)
+		}
+	})
 	boom := errors.New("boom")
 	base := func(t *testing.T) (serveDeps, []string) { return exactServeDeps(t), exactServeArgs(t) }
 	tests := []struct {
 		name   string
 		mutate func(*testing.T, *serveDeps, *[]string)
 	}{
+		{"parse error", func(_ *testing.T, d *serveDeps, a *[]string) {
+			d.newFlagSet = func(name string, _ flag.ErrorHandling) *flag.FlagSet {
+				return flag.NewFlagSet(name, flag.ContinueOnError)
+			}
+			*a = []string{"--bad"}
+		}},
+		{"help", func(_ *testing.T, d *serveDeps, a *[]string) {
+			d.newFlagSet = func(name string, _ flag.ErrorHandling) *flag.FlagSet {
+				return flag.NewFlagSet(name, flag.ContinueOnError)
+			}
+			*a = []string{"-h"}
+		}},
 		{"seed warning", func(_ *testing.T, d *serveDeps, _ *[]string) {
 			d.seedMarketplaces = func() error { return boom }
 			d.listen = func(context.Context, string, string) (net.Listener, error) { return nil, boom }
+		}},
+		{"computed state dir", func(t *testing.T, d *serveDeps, a *[]string) {
+			t.Setenv("SERF_STATE_DIR", "")
+			*a = []string{"--model", "openai/test", "--dir", t.TempDir()}
+			d.listen = func(context.Context, string, string) (net.Listener, error) { return nil, boom }
+		}},
+		{"restore error", func(_ *testing.T, d *serveDeps, a *[]string) {
+			*a = append(*a, "--resume", "id")
+			d.resolveMeta = func(string, string, bool) (schema.SessionMeta, error) {
+				return schema.SessionMeta{ID: "id", ProfileID: "openai", Model: "test"}, nil
+			}
+			d.restoreSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, agent.RestoreSessionConfig) (*agent.Session, error) {
+				return nil, boom
+			}
 		}},
 		{"build profile", func(_ *testing.T, d *serveDeps, _ *[]string) {
 			d.buildProfile = func(providercfg.Config, cmdutil.ModelRef, string) (*provider.Profile, error) { return nil, boom }

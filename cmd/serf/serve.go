@@ -90,6 +90,7 @@ type serveServer interface {
 }
 
 type serveDeps struct {
+	newFlagSet       func(string, flag.ErrorHandling) *flag.FlagSet
 	getwd            func() (string, error)
 	ensureConfigDirs func() error
 	seedMarketplaces func() error
@@ -115,7 +116,8 @@ type serveDeps struct {
 
 func defaultServeDeps() serveDeps {
 	return serveDeps{
-		getwd: os.Getwd, ensureConfigDirs: cmdutil.EnsureUserConfigDirs,
+		newFlagSet: flag.NewFlagSet,
+		getwd:      os.Getwd, ensureConfigDirs: cmdutil.EnsureUserConfigDirs,
 		seedMarketplaces: func() error { _, err := plugins.NewManager("").SeedDefaultMarketplaces(); return err },
 		resolveMeta:      cmdutil.ResolveSessionMeta, newClient: newServeLLMClient,
 		buildProfile: buildInitialProfile, applyCheap: applyFastCheapModel,
@@ -155,7 +157,7 @@ func runServe(args []string) error {
 }
 
 func runServeWithDeps(args []string, deps serveDeps) error {
-	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	fs := deps.newFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:9131", "listen address")
 	model := fs.String("model", "", "LLM model identifier (provider/model)")
 	fastCheapModel := fs.String("fast-cheap-model", "", "auxiliary model for side calls (naming, summarization, web fetch); 'provider/model' may use a different provider than --model, or a bare 'model' for the active provider")
