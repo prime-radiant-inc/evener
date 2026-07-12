@@ -17,6 +17,8 @@ import (
 	"primeradiant.com/serf/llm/providers/internal/openaichat"
 )
 
+var responsesRawBodyEnabled = llm.RawBodyEnabled
+
 func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 	instructions, inputItems, err := toResponsesInput(req.Messages, req.Model)
 	if err != nil {
@@ -153,10 +155,7 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 	if codexLite {
 		// Responses-lite reasoning must span every turn, matching the codex
 		// client's ReasoningContext::AllTurns.
-		reasoning, _ := body["reasoning"].(map[string]any)
-		if reasoning == nil {
-			reasoning = map[string]any{}
-		}
+		reasoning := body["reasoning"].(map[string]any)
 		reasoning["context"] = "all_turns"
 		body["reasoning"] = reasoning
 	}
@@ -312,7 +311,7 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 
 	var sseBody io.Reader = resp.Body
 	var sseBuf *bytes.Buffer
-	if llm.RawBodyEnabled() {
+	if responsesRawBodyEnabled() {
 		sseBuf = &bytes.Buffer{}
 		sseBody = io.TeeReader(resp.Body, sseBuf)
 	}
