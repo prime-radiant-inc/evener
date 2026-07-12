@@ -7,6 +7,7 @@ import (
 
 //go:embed agents/*.md all:skills all:plugins
 var assets embed.FS
+var subFS = fs.Sub
 
 func Agents() fs.FS {
 	return mustSub("agents")
@@ -21,7 +22,7 @@ func Plugins() fs.FS {
 }
 
 func mustSub(dir string) fs.FS {
-	sub, err := fs.Sub(assets, dir)
+	sub, err := subFS(assets, dir)
 	if err != nil {
 		panic("invalid bundled asset directory " + dir + ": " + err.Error())
 	}

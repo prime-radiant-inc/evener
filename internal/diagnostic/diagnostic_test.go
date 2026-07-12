@@ -28,6 +28,40 @@ func TestClassifyUnknownProviderAsSerfConfiguration(t *testing.T) {
 	}
 }
 
+func TestDefaultForEverySource(t *testing.T) {
+	for _, tc := range []struct {
+		source  Source
+		message string
+	}{
+		{SourceUI, ""}, {SourceMCP, ""}, {SourceSerf, "configuration provider invalid"},
+		{SourceSerf, "ordinary failure"},
+		{Source("unknown"), "hub connection failed"},
+	} {
+		if got := defaultForSource(tc.source, tc.message); got.Title == "" {
+			t.Fatalf("empty info for %q", tc.source)
+		}
+	}
+}
+
+func TestDefaultForSerfConfiguration(t *testing.T) {
+	got := defaultForSource(SourceSerf, "unknown provider supplied")
+	if got.Title != "Serf configuration error" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func FuzzClassify(f *testing.F) {
+	for _, seed := range []string{"", "unknown provider", "hub connection refused", "rate limit exceeded", "ordinary failure"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, message string) {
+		got := Classify(message)
+		if got.Source == "" || got.Title == "" || got.Hint == "" {
+			t.Fatalf("incomplete classification: %+v", got)
+		}
+	})
+}
+
 func TestClassifyProviderHTTPFailureAsProvider(t *testing.T) {
 	info := Classify("openai error (status=401): invalid API key")
 	if info.Source != SourceProvider {

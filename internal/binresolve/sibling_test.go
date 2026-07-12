@@ -269,6 +269,45 @@ func TestSiblingDir_AbsFailsWithVeryLongPath(t *testing.T) {
 	}
 }
 
+func TestInjectedPlatformAndAbsFailures(t *testing.T) {
+	oldGOOS, oldAbs, oldEval := goos, absPath, evalSymlinks
+	t.Cleanup(func() { goos, absPath, evalSymlinks = oldGOOS, oldAbs, oldEval })
+	absPath = func(string) (string, error) { return "", errors.New("abs") }
+	if dir, ok := SiblingDir("binary"); ok || dir != "" {
+		t.Fatalf("SiblingDir=%q,%v", dir, ok)
+	}
+	absPath = oldAbs
+	evalSymlinks = func(path string) (string, error) { return path, nil }
+	goos = "windows"
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "tool.exe")
+	if err := os.WriteFile(exe, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Resolve("tool", "", filepath.Join(dir, "current.exe"), nil)
+	if err != nil || got != exe {
+		t.Fatalf("Resolve=%q,%v", got, err)
+	}
+	if !isExecutable(exe) {
+		t.Fatal("Windows file rejected")
+	}
+}
+
+func FuzzSiblingDir(f *testing.F) {
+	for _, seed := range []string{"", " ", "serf", "./bin/serf", "/tmp/serf"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, executable string) {
+		dir, ok := SiblingDir(executable)
+		if ok != (strings.TrimSpace(executable) != "") {
+			t.Fatalf("SiblingDir(%q)=%q,%v", executable, dir, ok)
+		}
+		if ok && !filepath.IsAbs(dir) {
+			t.Fatalf("non-absolute dir %q", dir)
+		}
+	})
+}
+
 func TestResolveWithNilLookPath(t *testing.T) {
 	// Passing nil lookPath triggers the default exec.LookPath branch.
 	// Since serf-hub is unlikely to be on the real PATH, this should error.

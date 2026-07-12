@@ -19,6 +19,12 @@ const defaultRepoURL = "https://github.com/prime-radiant-inc/serf"
 
 var installBinaries = []string{"serf", "serf-hub", "serf-tui", "serf-doctor"}
 
+var (
+	copyStream = io.Copy
+	closeFile  = (*os.File).Close
+	renameFile = os.Rename
+)
+
 type Options struct {
 	Requested      string
 	CurrentChannel string
@@ -179,13 +185,13 @@ func download(ctx context.Context, client *http.Client, url, dest string) error 
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(file, resp.Body); err != nil {
-		if closeErr := file.Close(); closeErr != nil {
+	if _, err := copyStream(file, resp.Body); err != nil {
+		if closeErr := closeFile(file); closeErr != nil {
 			return errors.Join(err, closeErr)
 		}
 		return err
 	}
-	return file.Close()
+	return closeFile(file)
 }
 
 func extractReleaseArchive(archivePath, root, destRoot string) error {
@@ -233,8 +239,8 @@ func extractReleaseArchive(archivePath, root, destRoot string) error {
 		if err != nil {
 			return err
 		}
-		_, copyErr := io.Copy(file, tr)
-		closeErr := file.Close()
+		_, copyErr := copyStream(file, tr)
+		closeErr := closeFile(file)
 		if copyErr != nil {
 			return copyErr
 		}
@@ -286,8 +292,8 @@ func copyExecutable(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	_, copyErr := io.Copy(out, in)
-	closeErr := out.Close()
+	_, copyErr := copyStream(out, in)
+	closeErr := closeFile(out)
 	if copyErr != nil {
 		_ = os.Remove(tmp)
 		return copyErr
@@ -296,7 +302,7 @@ func copyExecutable(src, dst string) error {
 		_ = os.Remove(tmp)
 		return closeErr
 	}
-	return os.Rename(tmp, dst)
+	return renameFile(tmp, dst)
 }
 
 func firstNonEmpty(values ...string) string {

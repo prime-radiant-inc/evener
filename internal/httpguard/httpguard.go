@@ -26,9 +26,6 @@ func NewSameOriginPolicy(allowedHost string) SameOriginPolicy {
 	}
 	hosts := map[string]struct{}{}
 	addHost := func(host string) {
-		if host == "" {
-			return
-		}
 		hosts[host] = struct{}{}
 	}
 	addHost(allowedHost)

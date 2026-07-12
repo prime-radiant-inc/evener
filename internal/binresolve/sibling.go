@@ -19,6 +19,12 @@ import (
 	"strings"
 )
 
+var (
+	goos         = runtime.GOOS
+	absPath      = filepath.Abs
+	evalSymlinks = filepath.EvalSymlinks
+)
+
 // Resolve returns the path to the named sibling binary. Resolution order:
 //  1. explicit (if non-empty) is returned as-is after an executability
 //     check.
@@ -42,7 +48,7 @@ func Resolve(name, explicit, currentExecutable string, lookPath func(string) (st
 		return explicit, nil
 	}
 	target := name
-	if runtime.GOOS == "windows" {
+	if goos == "windows" {
 		target += ".exe"
 	}
 	if dir, ok := SiblingDir(currentExecutable); ok {
@@ -77,11 +83,11 @@ func SiblingDir(currentExecutable string) (string, bool) {
 	if candidate == "" {
 		return "", false
 	}
-	abs, err := filepath.Abs(candidate)
+	abs, err := absPath(candidate)
 	if err != nil {
 		return "", false
 	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+	if resolved, err := evalSymlinks(abs); err == nil {
 		abs = resolved
 	}
 	return filepath.Dir(abs), true
@@ -95,7 +101,7 @@ func isExecutable(path string) bool {
 	if err != nil || info.IsDir() {
 		return false
 	}
-	if runtime.GOOS == "windows" {
+	if goos == "windows" {
 		return true
 	}
 	return info.Mode()&0o111 != 0

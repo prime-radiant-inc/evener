@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -217,5 +219,202 @@ func TestUpgradeDownloadFailurePropagates(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected Upgrade to fail when the download 500s")
+	}
+}
+
+func TestUpgradeStageFailures(t *testing.T) {
+	t.Run("target", func(t *testing.T) {
+		if _, err := Upgrade(t.Context(), Options{Requested: "bad"}); err == nil {
+			t.Fatal("expected error")
+		}
+	})
+	t.Run("prefix", func(t *testing.T) {
+		t.Setenv("HOME", "")
+		if _, err := Upgrade(t.Context(), Options{GOOS: "linux", GOARCH: "amd64"}); err == nil {
+			t.Fatal("expected error")
+		}
+	})
+	t.Run("temp", func(t *testing.T) {
+		file := filepath.Join(t.TempDir(), "file")
+		if err := os.WriteFile(file, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("TMPDIR", file)
+		if _, err := Upgrade(t.Context(), Options{Prefix: t.TempDir(), GOOS: "linux", GOARCH: "amd64"}); err == nil {
+			t.Fatal("expected error")
+		}
+	})
+	t.Run("extract", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("bad gzip")) }))
+		defer server.Close()
+		if _, err := Upgrade(t.Context(), Options{Prefix: t.TempDir(), GOOS: "linux", GOARCH: "amd64", RepoURL: server.URL}); err == nil {
+			t.Fatal("expected error")
+		}
+	})
+	t.Run("install", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(releaseArchive(t, "serf_linux_amd64")) }))
+		defer server.Close()
+		block := filepath.Join(t.TempDir(), "block")
+		if err := os.WriteFile(block, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Upgrade(t.Context(), Options{Prefix: t.TempDir(), ShareBinDir: filepath.Join(block, "share"), GOOS: "linux", GOARCH: "amd64", RepoURL: server.URL}); err == nil {
+			t.Fatal("expected error")
+		}
+	})
+}
+
+func TestExtractArchiveErrors(t *testing.T) {
+	root := "root"
+	t.Run("mkdir", func(t *testing.T) {
+		archive := filepath.Join(t.TempDir(), "a")
+		if err := os.WriteFile(archive, tarGz(t, nil, nil), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		block := filepath.Join(t.TempDir(), "block")
+		if err := os.WriteFile(block, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := extractReleaseArchive(archive, root, filepath.Join(block, "out")); err == nil {
+			t.Fatal("expected error")
+		}
+	})
+	t.Run("truncated tar", func(t *testing.T) {
+		var buf bytes.Buffer
+		gz := gzip.NewWriter(&buf)
+		_, _ = gz.Write([]byte("not a tar stream"))
+		_ = gz.Close()
+		archive := filepath.Join(t.TempDir(), "a")
+		_ = os.WriteFile(archive, buf.Bytes(), 0o600)
+		if err := extractReleaseArchive(archive, root, t.TempDir()); err == nil {
+			t.Fatal("expected error")
+		}
+	})
+	t.Run("existing output", func(t *testing.T) {
+		entries := map[string][]byte{path.Join(root, installBinaries[0]): []byte("x")}
+		archive := filepath.Join(t.TempDir(), "a")
+		_ = os.WriteFile(archive, tarGz(t, entries, nil), 0o600)
+		out := t.TempDir()
+		_ = os.WriteFile(filepath.Join(out, installBinaries[0]), nil, 0o600)
+		if err := extractReleaseArchive(archive, root, out); err == nil {
+			t.Fatal("expected error")
+		}
+	})
+	t.Run("ignores unrelated entry", func(t *testing.T) {
+		archive := filepath.Join(t.TempDir(), "a")
+		_ = os.WriteFile(archive, tarGz(t, map[string][]byte{"unrelated/readme": []byte("x")}, nil), 0o600)
+		if err := extractReleaseArchive(archive, root, t.TempDir()); err == nil || !strings.Contains(err.Error(), "did not contain") {
+			t.Fatalf("err=%v", err)
+		}
+	})
+}
+
+func TestInstallDirectoryAndSymlinkErrors(t *testing.T) {
+	extract := t.TempDir()
+	for _, bin := range installBinaries {
+		_ = os.WriteFile(filepath.Join(extract, bin), []byte(bin), 0o755)
+	}
+	block := filepath.Join(t.TempDir(), "block")
+	_ = os.WriteFile(block, nil, 0o600)
+	if err := installExtractedBinaries(extract, filepath.Join(block, "share"), t.TempDir()); err == nil {
+		t.Fatal("share mkdir")
+	}
+	if err := installExtractedBinaries(extract, t.TempDir(), filepath.Join(block, "bin")); err == nil {
+		t.Fatal("bin mkdir")
+	}
+	binDir := t.TempDir()
+	_ = os.Mkdir(filepath.Join(binDir, installBinaries[0]), 0o755)
+	_ = os.WriteFile(filepath.Join(binDir, installBinaries[0], "keep"), nil, 0o600)
+	if err := installExtractedBinaries(extract, t.TempDir(), binDir); err == nil {
+		t.Fatal("symlink")
+	}
+}
+
+func FuzzResolveTarget(f *testing.F) {
+	for _, s := range []string{"", "current", "snapshot", "release", "latest", "v1", "bad"} {
+		f.Add(s, "snapshot")
+	}
+	f.Fuzz(func(t *testing.T, requested, current string) {
+		got, err := ResolveTarget(requested, current)
+		if err == nil && (got.Release == "" || got.Channel == "") {
+			t.Fatalf("empty target: %+v", got)
+		}
+	})
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return fn(r) }
+
+func TestDownloadTransportAndIOErrors(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "out")
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) { return nil, errors.New("offline") })}
+	if err := download(t.Context(), client, "http://local.invalid", dest); err == nil {
+		t.Fatal("transport")
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("body")) }))
+	defer server.Close()
+	oldCopy, oldClose := copyStream, closeFile
+	t.Cleanup(func() { copyStream, closeFile = oldCopy, oldClose })
+	copyStream = func(io.Writer, io.Reader) (int64, error) { return 0, errors.New("copy") }
+	closeFile = func(*os.File) error { return errors.New("close") }
+	if err := download(t.Context(), server.Client(), server.URL, dest); err == nil || !strings.Contains(err.Error(), "copy") || !strings.Contains(err.Error(), "close") {
+		t.Fatalf("joined err=%v", err)
+	}
+	closeFile = oldClose
+	if err := download(t.Context(), server.Client(), server.URL, filepath.Join(t.TempDir(), "out")); err == nil {
+		t.Fatal("copy")
+	}
+	copyStream = oldCopy
+	closeFile = func(*os.File) error { return errors.New("close") }
+	if err := download(t.Context(), server.Client(), server.URL, filepath.Join(t.TempDir(), "out")); err == nil {
+		t.Fatal("close")
+	}
+}
+
+func TestExtractCopyAndCloseErrors(t *testing.T) {
+	root := "root"
+	entries := map[string][]byte{}
+	for _, bin := range installBinaries {
+		entries[path.Join(root, bin)] = []byte(bin)
+	}
+	entries["unrelated/readme.txt"] = []byte("ignored")
+	archive := filepath.Join(t.TempDir(), "a")
+	_ = os.WriteFile(archive, tarGz(t, entries, nil), 0o600)
+	oldCopy, oldClose := copyStream, closeFile
+	t.Cleanup(func() { copyStream, closeFile = oldCopy, oldClose })
+	copyStream = func(io.Writer, io.Reader) (int64, error) { return 0, errors.New("copy") }
+	if err := extractReleaseArchive(archive, root, t.TempDir()); err == nil {
+		t.Fatal("copy")
+	}
+	copyStream = oldCopy
+	closeFile = func(*os.File) error { return errors.New("close") }
+	if err := extractReleaseArchive(archive, root, t.TempDir()); err == nil {
+		t.Fatal("close")
+	}
+}
+
+func TestCopyExecutableIOErrors(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	_ = os.WriteFile(src, []byte("body"), 0o755)
+	oldCopy, oldClose, oldRename := copyStream, closeFile, renameFile
+	t.Cleanup(func() { copyStream, closeFile, renameFile = oldCopy, oldClose, oldRename })
+	copyStream = func(io.Writer, io.Reader) (int64, error) { return 0, errors.New("copy") }
+	if err := copyExecutable(src, filepath.Join(t.TempDir(), "dst")); err == nil {
+		t.Fatal("copy")
+	}
+	copyStream = oldCopy
+	closeFile = func(*os.File) error { return errors.New("close") }
+	if err := copyExecutable(src, filepath.Join(t.TempDir(), "dst")); err == nil {
+		t.Fatal("close")
+	}
+	closeFile = oldClose
+	renameFile = func(string, string) error { return errors.New("rename") }
+	if err := copyExecutable(src, filepath.Join(t.TempDir(), "dst")); err == nil {
+		t.Fatal("rename")
+	}
+	if err := copyExecutable(src, filepath.Join(t.TempDir(), "missing", "dst")); err == nil {
+		t.Fatal("open output")
 	}
 }

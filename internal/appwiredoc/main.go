@@ -26,6 +26,12 @@ import (
 
 //go:embed protocol.md.tmpl
 var tmplText string
+var (
+	exitProcess     = os.Exit
+	executeTemplate = func(t *template.Template, buf *strings.Builder, data docData) error {
+		return t.Execute(buf, data)
+	}
+)
 
 type fieldView struct {
 	JSON      string
@@ -60,11 +66,19 @@ type docData struct {
 }
 
 func main() {
-	out := flag.String("out", "", "output markdown path")
-	flag.Parse()
+	exitProcess(run(os.Args[1:], os.Stderr, os.WriteFile))
+}
+
+func run(args []string, stderr *os.File, writeFile func(string, []byte, os.FileMode) error) int {
+	flags := flag.NewFlagSet("appwiredoc", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	out := flags.String("out", "", "output markdown path")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
 	if *out == "" {
-		fmt.Fprintln(os.Stderr, "appwiredoc: -out is required")
-		os.Exit(2)
+		fmt.Fprintln(stderr, "appwiredoc: -out is required")
+		return 2
 	}
 
 	data := build()
@@ -78,14 +92,15 @@ func main() {
 	}).Parse(tmplText))
 
 	var buf strings.Builder
-	if err := tmpl.Execute(&buf, data); err != nil {
-		fmt.Fprintln(os.Stderr, "appwiredoc: render:", err)
-		os.Exit(1)
+	if err := executeTemplate(tmpl, &buf, data); err != nil {
+		fmt.Fprintln(stderr, "appwiredoc: render:", err)
+		return 1
 	}
-	if err := os.WriteFile(*out, []byte(buf.String()), 0o644); err != nil {
-		fmt.Fprintln(os.Stderr, "appwiredoc: write:", err)
-		os.Exit(1)
+	if err := writeFile(*out, []byte(buf.String()), 0o644); err != nil {
+		fmt.Fprintln(stderr, "appwiredoc: write:", err)
+		return 1
 	}
+	return 0
 }
 
 func build() docData {
@@ -93,21 +108,7 @@ func build() docData {
 	typeNames := map[string]typeView{}
 
 	register := func(v any) string {
-		t := reflect.TypeOf(v)
-		if t == nil {
-			return "(inline)"
-		}
-		for t.Kind() == reflect.Pointer {
-			t = t.Elem()
-		}
-		name := t.Name()
-		if name == "" {
-			name = t.String()
-		}
-		if _, seen := typeNames[name]; !seen {
-			typeNames[name] = typeView{Name: name, Fields: fieldsOf(t)}
-		}
-		return name
+		return registerType(typeNames, v)
 	}
 
 	for _, m := range appwire.Methods {
@@ -132,6 +133,24 @@ func build() docData {
 	}
 	sort.Slice(d.Types, func(i, j int) bool { return d.Types[i].Name < d.Types[j].Name })
 	return d
+}
+
+func registerType(typeNames map[string]typeView, v any) string {
+	t := reflect.TypeOf(v)
+	if t == nil {
+		return "(inline)"
+	}
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	name := t.Name()
+	if name == "" {
+		name = t.String()
+	}
+	if _, seen := typeNames[name]; !seen {
+		typeNames[name] = typeView{Name: name, Fields: fieldsOf(t)}
+	}
+	return name
 }
 
 func fieldsOf(t reflect.Type) []fieldView {
