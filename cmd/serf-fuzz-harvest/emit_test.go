@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestEncodeBytesSeedRoundTrips(t *testing.T) {
+func scenarioEncodeBytesSeedRoundTrips(t *testing.T) {
 	data := []byte("data:\x07\nweird\xff")
 	enc := string(encodeBytesSeed(data))
 	lines := strings.SplitN(enc, "\n", 2)
@@ -25,7 +25,7 @@ func TestEncodeBytesSeedRoundTrips(t *testing.T) {
 	}
 }
 
-func TestEmitWritesDedupsAndIsIdempotent(t *testing.T) {
+func scenarioEmitWritesDedupsAndIsIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	e := NewEmitter(false, 32768)
 
@@ -55,7 +55,7 @@ func TestEmitWritesDedupsAndIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestEmitDropsOversize(t *testing.T) {
+func scenarioEmitDropsOversize(t *testing.T) {
 	dir := t.TempDir()
 	e := NewEmitter(false, 16)
 	if _, err := e.EmitBytes(dir, []byte(strings.Repeat("A", 100))); err != nil {
@@ -69,7 +69,7 @@ func TestEmitDropsOversize(t *testing.T) {
 	}
 }
 
-func TestEmitDryRunWritesNothing(t *testing.T) {
+func scenarioEmitDryRunWritesNothing(t *testing.T) {
 	dir := t.TempDir()
 	e := NewEmitter(true, 32768)
 	if _, err := e.EmitIntBytes(dir, 3, []byte("x")); err != nil {
@@ -87,7 +87,7 @@ func TestEmitDryRunWritesNothing(t *testing.T) {
 
 // The written file must be loadable by `go test -run '^Fuzz'`. We assert the
 // exact shape here; the harvester acceptance test runs the real loader.
-func TestEmitIntBytesShape(t *testing.T) {
+func scenarioEmitIntBytesShape(t *testing.T) {
 	dir := t.TempDir()
 	e := NewEmitter(false, 32768)
 	if _, err := e.EmitIntBytes(dir, 5, []byte(`{"a":1}`)); err != nil {

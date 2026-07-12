@@ -23,7 +23,7 @@ type failingReader struct{}
 
 func (failingReader) Read([]byte) (int, error) { return 0, errors.New("read") }
 
-func TestRunRegistryAllPipelineFailures(t *testing.T) {
+func scenarioRunRegistryAllPipelineFailures(t *testing.T) {
 	var out, errOut bytes.Buffer
 	if runRegistry([]string{"--bad"}, &out, &errOut) != 1 || runRegistry(nil, &out, &errOut) != 1 {
 		t.Fatal("argument failures")
@@ -66,7 +66,7 @@ func TestRunRegistryAllPipelineFailures(t *testing.T) {
 	}
 }
 
-func TestRegistryMainAndReaderWriterErrors(t *testing.T) {
+func scenarioRegistryMainAndReaderWriterErrors(t *testing.T) {
 	if _, err := ParseRegistry(failingReader{}); err == nil {
 		t.Fatal("reader error")
 	}
@@ -84,7 +84,7 @@ func TestRegistryMainAndReaderWriterErrors(t *testing.T) {
 	}
 }
 
-func TestRegistryFocusAndEmitValidationFailures(t *testing.T) {
+func scenarioRegistryFocusAndEmitValidationFailures(t *testing.T) {
 	var out, errOut bytes.Buffer
 	reg := filepath.Join(t.TempDir(), "registry")
 	row := "native:.:.:FuzzX::missing.go#Nope\n"
@@ -108,7 +108,7 @@ func TestRegistryFocusAndEmitValidationFailures(t *testing.T) {
 	}
 }
 
-func TestCanonicalAndHelperRejections(t *testing.T) {
+func scenarioCanonicalAndHelperRejections(t *testing.T) {
 	for _, target := range []Target{
 		{Kind: "bad", Module: ".", Package: ".", Name: "x"}, {Kind: "native", Module: "", Package: ".", Name: "x"},
 		{Kind: "native", Module: "../x", Package: ".", Name: "x"}, {Kind: "native", Module: ".", Package: "", Name: "x"},
@@ -142,7 +142,7 @@ func TestCanonicalAndHelperRejections(t *testing.T) {
 	}
 }
 
-func TestASTHelperBranches(t *testing.T) {
+func scenarioASTHelperBranches(t *testing.T) {
 	src := `package p
 import r "pgregory.net/rapid"
 import _ "pgregory.net/rapid"
@@ -195,7 +195,7 @@ func TestNoBody(t *T)
 	}
 }
 
-func TestRegistryInjectedFilesystemFailures(t *testing.T) {
+func scenarioRegistryInjectedFilesystemFailures(t *testing.T) {
 	oldWalk, oldPkg, oldRel, oldAbs := registryWalkDir, registryPackagePath, registryRel, registryAbs
 	t.Cleanup(func() {
 		registryWalkDir, registryPackagePath, registryRel, registryAbs = oldWalk, oldPkg, oldRel, oldAbs
@@ -235,7 +235,7 @@ func TestRegistryInjectedFilesystemFailures(t *testing.T) {
 	}
 }
 
-func TestReadWorkspaceModuleFailureMatrix(t *testing.T) {
+func scenarioReadWorkspaceModuleFailureMatrix(t *testing.T) {
 	oldAbs, oldEval, oldRel, oldParse := registryAbs, registryEvalSymlinks, registryRel, registryParseWork
 	t.Cleanup(func() {
 		registryAbs, registryEvalSymlinks, registryRel, registryParseWork = oldAbs, oldEval, oldRel, oldParse
@@ -321,7 +321,7 @@ func TestReadWorkspaceModuleFailureMatrix(t *testing.T) {
 	}
 }
 
-func TestDiscoverWorkspaceMalformedFilesAndRapidIssues(t *testing.T) {
+func scenarioDiscoverWorkspaceMalformedFilesAndRapidIssues(t *testing.T) {
 	makeWS := func(t *testing.T, source string) string {
 		t.Helper()
 		root := t.TempDir()

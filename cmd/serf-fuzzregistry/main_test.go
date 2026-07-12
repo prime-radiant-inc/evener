@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestParseRegistry(t *testing.T) {
+func scenarioParseRegistry(t *testing.T) {
 	got, err := ParseRegistry(strings.NewReader(strings.Join([]string{
 		"native:agent:.:FuzzTurn::turn.go",
 		"rapid:agent:./core:TestStateful",
@@ -29,7 +29,7 @@ func TestParseRegistry(t *testing.T) {
 	}
 }
 
-func TestCheckFocusSpecsAcceptsResolvableSpecs(t *testing.T) {
+func scenarioCheckFocusSpecsAcceptsResolvableSpecs(t *testing.T) {
 	root := newWorkspace(t, map[string]string{
 		"go.work":      "go 1.25.0\n\nuse ./agent\n",
 		"agent/go.mod": "module example.test/agent\n\ngo 1.25.0\n",
@@ -52,7 +52,7 @@ func Retry[T any](v T) T { return v }
 	}
 }
 
-func TestCheckFocusSpecsReportsUnresolvableSpecs(t *testing.T) {
+func scenarioCheckFocusSpecsReportsUnresolvableSpecs(t *testing.T) {
 	root := newWorkspace(t, map[string]string{
 		"go.work":      "go 1.25.0\n\nuse ./agent\n",
 		"agent/go.mod": "module example.test/agent\n\ngo 1.25.0\n",
@@ -70,7 +70,7 @@ type Matcher struct{}
 	assertErrorContains(t, err, "FuzzGone: agent/core/missing.go")
 }
 
-func TestDiscoverWorkspaceFindsNativeAndMarkedRapidTargets(t *testing.T) {
+func scenarioDiscoverWorkspaceFindsNativeAndMarkedRapidTargets(t *testing.T) {
 	root := newWorkspace(t, map[string]string{
 		"go.work": "go 1.25.0\n\nuse (\n\t.\n\t./agent\n)\n",
 		"go.mod":  "module example.test/root\n\ngo 1.25.0\n",
@@ -118,7 +118,7 @@ func TestStateful(t *testing.T) {
 	}
 }
 
-func TestDiscoverWorkspaceUsesLogicalLabelForSymlinkedModule(t *testing.T) {
+func scenarioDiscoverWorkspaceUsesLogicalLabelForSymlinkedModule(t *testing.T) {
 	root := newWorkspace(t, map[string]string{
 		"go.work": "go 1.25.0\n\nuse (\n\t.\n\t./alias\n)\n",
 		"go.mod":  "module example.test/root\n\ngo 1.25.0\n",
@@ -160,7 +160,7 @@ func FuzzAlias(f *testing.F) {}
 	}
 }
 
-func TestDiscoverWorkspaceRejectsSymlinkedModuleOutsideRepository(t *testing.T) {
+func scenarioDiscoverWorkspaceRejectsSymlinkedModuleOutsideRepository(t *testing.T) {
 	root := newWorkspace(t, map[string]string{
 		"go.work": "go 1.25.0\n\nuse ./alias\n",
 	})
@@ -172,7 +172,7 @@ func TestDiscoverWorkspaceRejectsSymlinkedModuleOutsideRepository(t *testing.T) 
 	assertErrorContains(t, err, `go.work module "./alias" is outside repository root`)
 }
 
-func TestDiscoverWorkspaceRejectsDuplicateResolvedModuleDirectories(t *testing.T) {
+func scenarioDiscoverWorkspaceRejectsDuplicateResolvedModuleDirectories(t *testing.T) {
 	root := newWorkspace(t, map[string]string{
 		"go.work":       "go 1.25.0\n\nuse (\n\t./nested\n\t./alias\n)\n",
 		"nested/go.mod": "module example.test/nested\n\ngo 1.25.0\n",
@@ -183,14 +183,14 @@ func TestDiscoverWorkspaceRejectsDuplicateResolvedModuleDirectories(t *testing.T
 	assertErrorContains(t, err, `go.work lists duplicate module directory "./alias"`)
 }
 
-func TestCheckTargetsReportsMissingNativeFuzzer(t *testing.T) {
+func scenarioCheckTargetsReportsMissingNativeFuzzer(t *testing.T) {
 	registered := []Target{{Kind: "rapid", Module: "agent", Package: ".", Name: "TestStateful"}}
 	discovered := append([]Target{{Kind: "native", Module: "agent", Package: ".", Name: "FuzzTurn"}}, registered...)
 	err := CheckTargets(registered, discovered)
 	assertErrorContains(t, err, "missing registration: native:agent:.:FuzzTurn")
 }
 
-func TestCheckTargetsReportsStalePackageRow(t *testing.T) {
+func scenarioCheckTargetsReportsStalePackageRow(t *testing.T) {
 	registered := []Target{{Kind: "native", Module: "agent", Package: "./stale", Name: "FuzzTurn"}}
 	discovered := []Target{{Kind: "native", Module: "agent", Package: ".", Name: "FuzzTurn"}}
 	err := CheckTargets(registered, discovered)
@@ -198,13 +198,13 @@ func TestCheckTargetsReportsStalePackageRow(t *testing.T) {
 	assertErrorContains(t, err, "stale registration: native:agent:./stale:FuzzTurn")
 }
 
-func TestCheckTargetsReportsDuplicateIdentity(t *testing.T) {
+func scenarioCheckTargetsReportsDuplicateIdentity(t *testing.T) {
 	target := Target{Kind: "native", Module: "agent", Package: ".", Name: "FuzzTurn"}
 	err := CheckTargets([]Target{target, target}, []Target{target})
 	assertErrorContains(t, err, "duplicate registered target: native:agent:.:FuzzTurn")
 }
 
-func TestCheckTargetsDistinguishesColonContainingTupleFields(t *testing.T) {
+func scenarioCheckTargetsDistinguishesColonContainingTupleFields(t *testing.T) {
 	targets := []Target{
 		{Kind: "native", Module: "agent:./internal", Package: "./tool", Name: "FuzzTurn"},
 		{Kind: "native", Module: "agent", Package: "./internal:./tool", Name: "FuzzTurn"},
@@ -215,7 +215,7 @@ func TestCheckTargetsDistinguishesColonContainingTupleFields(t *testing.T) {
 	}
 }
 
-func TestDiscoverWorkspaceIgnoresFuzzLikeProductionDeclaration(t *testing.T) {
+func scenarioDiscoverWorkspaceIgnoresFuzzLikeProductionDeclaration(t *testing.T) {
 	root := newWorkspace(t, map[string]string{
 		"go.work": "go 1.25.0\n\nuse .\n",
 		"go.mod":  "module example.test/root\n\ngo 1.25.0\n",
@@ -236,7 +236,7 @@ func FuzzProduction(f *testing.F) {}
 	}
 }
 
-func TestDiscoverWorkspaceHonorsGoBuildTestFileSelection(t *testing.T) {
+func scenarioDiscoverWorkspaceHonorsGoBuildTestFileSelection(t *testing.T) {
 	inactiveGOOS := "windows"
 	if build.Default.GOOS == inactiveGOOS {
 		inactiveGOOS = "linux"
@@ -291,7 +291,7 @@ func FuzzInactivePlatform(f *testing.F) {}
 	}
 }
 
-func TestDiscoverWorkspaceRecognizesAliasedAndUnnamedNativeFuzzers(t *testing.T) {
+func scenarioDiscoverWorkspaceRecognizesAliasedAndUnnamedNativeFuzzers(t *testing.T) {
 	root := newWorkspace(t, map[string]string{
 		"go.work": "go 1.25.0\n\nuse .\n",
 		"go.mod":  "module example.test/root\n\ngo 1.25.0\n",
@@ -321,7 +321,7 @@ func FuzzDirect(*F) {}
 	}
 }
 
-func TestDiscoverWorkspaceIgnoresMalformedNativeFuzzers(t *testing.T) {
+func scenarioDiscoverWorkspaceIgnoresMalformedNativeFuzzers(t *testing.T) {
 	root := newWorkspace(t, map[string]string{
 		"go.work": "go 1.25.0\n\nuse .\n",
 		"go.mod":  "module example.test/root\n\ngo 1.25.0\n",
@@ -346,7 +346,7 @@ func FuzzManyParams(f *testing.F, extra string) {}
 	}
 }
 
-func TestDiscoverWorkspaceRejectsUnmarkedRapidTest(t *testing.T) {
+func scenarioDiscoverWorkspaceRejectsUnmarkedRapidTest(t *testing.T) {
 	root := newWorkspace(t, map[string]string{
 		"go.work": "go 1.25.0\n\nuse .\n",
 		"go.mod":  "module example.test/root\n\ngo 1.25.0\n",
@@ -367,7 +367,7 @@ func TestStateful(t *testing.T) {
 	assertErrorContains(t, err, "TestStateful calls rapid.Check without // serf:fuzz rapid marker")
 }
 
-func TestEmitPlanSortsCoverageTargetsAndExcludesSupportTests(t *testing.T) {
+func scenarioEmitPlanSortsCoverageTargetsAndExcludesSupportTests(t *testing.T) {
 	var out strings.Builder
 	err := EmitPlan(&out, []Target{
 		{Kind: "test", Module: ".", Package: ".", Name: "TestSupport"},

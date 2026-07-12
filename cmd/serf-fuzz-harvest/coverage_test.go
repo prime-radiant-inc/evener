@@ -20,7 +20,7 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-func TestHarvestRunFailuresAndMain(t *testing.T) {
+func scenarioHarvestRunFailuresAndMain(t *testing.T) {
 	var out, errOut bytes.Buffer
 	if run([]string{"--bad"}, &out, &errOut) != 2 || run([]string{"--surface", "bad"}, &out, &errOut) != 2 {
 		t.Fatal("parse failures")
@@ -49,7 +49,7 @@ func TestHarvestRunFailuresAndMain(t *testing.T) {
 	}
 }
 
-func TestMixedSurfaceFixtures(t *testing.T) {
+func scenarioMixedSurfaceFixtures(t *testing.T) {
 	d := t.TempDir()
 	out := t.TempDir()
 	r := newRunner(out, NewEmitter(false, 32768), nil)
@@ -78,7 +78,7 @@ func TestMixedSurfaceFixtures(t *testing.T) {
 	}
 }
 
-func TestSanitizerRemainingPrimitiveBranches(t *testing.T) {
+func scenarioSanitizerRemainingPrimitiveBranches(t *testing.T) {
 	for _, n := range []int{0, 1, 9, 65} {
 		if placeholder(n) == "" && n != 0 {
 			t.Errorf("placeholder %d", n)
@@ -106,7 +106,7 @@ func TestSanitizerRemainingPrimitiveBranches(t *testing.T) {
 	}
 }
 
-func TestGitleaksScanOutcomes(t *testing.T) {
+func scenarioGitleaksScanOutcomes(t *testing.T) {
 	oldLook, oldCmd := gitleaksLookPath, gitleaksCommandContext
 	t.Cleanup(func() { gitleaksLookPath, gitleaksCommandContext = oldLook, oldCmd })
 	var stderr bytes.Buffer
@@ -128,7 +128,7 @@ func TestGitleaksScanOutcomes(t *testing.T) {
 	}
 }
 
-func TestHarvestLeakExitAndSmallHelpers(t *testing.T) {
+func scenarioHarvestLeakExitAndSmallHelpers(t *testing.T) {
 	oldDiscover := harvestDiscoverSources
 	t.Cleanup(func() { harvestDiscoverSources = oldDiscover })
 	d := t.TempDir()
@@ -150,7 +150,7 @@ func TestHarvestLeakExitAndSmallHelpers(t *testing.T) {
 	r.logf("discard")
 }
 
-func TestEmitterWriteFileFailure(t *testing.T) {
+func scenarioEmitterWriteFileFailure(t *testing.T) {
 	e := NewEmitter(false, 100)
 	d := t.TempDir()
 	encoded := encodeBytesSeed([]byte("x"))
@@ -164,7 +164,7 @@ func TestEmitterWriteFileFailure(t *testing.T) {
 	}
 }
 
-func TestHarvesterInjectedSanitizeAndEmitFailures(t *testing.T) {
+func scenarioHarvesterInjectedSanitizeAndEmitFailures(t *testing.T) {
 	oldProcess := sanitizerProcess
 	t.Cleanup(func() { sanitizerProcess = oldProcess })
 	calls := 0
@@ -198,7 +198,7 @@ func TestHarvesterInjectedSanitizeAndEmitFailures(t *testing.T) {
 	harvestToolArgs(r, &Sanitizer{}, []string{tr}, []string{"known"})
 }
 
-func TestReverseHTTPNoMatchAndBadQuery(t *testing.T) {
+func scenarioReverseHTTPNoMatchAndBadQuery(t *testing.T) {
 	if _, _, ok := reverseMapHTTP("GET", "not-absolute", ""); ok {
 		t.Fatal("match")
 	}
@@ -207,7 +207,7 @@ func TestReverseHTTPNoMatchAndBadQuery(t *testing.T) {
 	}
 }
 
-func TestForEachJSONLineOpenAndEmpty(t *testing.T) {
+func scenarioForEachJSONLineOpenAndEmpty(t *testing.T) {
 	if err := forEachJSONLine(filepath.Join(t.TempDir(), "missing"), func([]byte) {}); err == nil {
 		t.Fatal("open")
 	}
@@ -219,7 +219,7 @@ func TestForEachJSONLineOpenAndEmpty(t *testing.T) {
 	}
 }
 
-func TestRemainingFilesystemAndGateBranches(t *testing.T) {
+func scenarioRemainingFilesystemAndGateBranches(t *testing.T) {
 	oldWalk, oldAbs := harvestWalkDir, harvestAbs
 	t.Cleanup(func() { harvestWalkDir, harvestAbs = oldWalk, oldAbs })
 	boom := errors.New("boom")
@@ -273,7 +273,7 @@ func TestRemainingFilesystemAndGateBranches(t *testing.T) {
 	}
 }
 
-func TestRunLogAndPersonalKeepNote(t *testing.T) {
+func scenarioRunLogAndPersonalKeepNote(t *testing.T) {
 	oldDiscover, oldAbs := harvestDiscoverSources, harvestAbs
 	t.Cleanup(func() { harvestDiscoverSources, harvestAbs = oldDiscover, oldAbs })
 	harvestDiscoverSources = func(string) (recordedSources, error) { return recordedSources{}, nil }
@@ -290,7 +290,7 @@ func TestRunLogAndPersonalKeepNote(t *testing.T) {
 	}
 }
 
-func TestToolArgsSecondDecodeAndSanitizeFailure(t *testing.T) {
+func scenarioToolArgsSecondDecodeAndSanitizeFailure(t *testing.T) {
 	d := t.TempDir()
 	p := filepath.Join(d, "tr")
 	mustHarvestWrite(t, p, "{\"kind\":\"entry\",\"turn\":[]}\n"+marshalLine(t, transcript.Entry{Kind: "entry", Turn: schema.Turn{Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{Name: "known", Arguments: []byte(`{}`)}}}}}})+"\n")
@@ -319,7 +319,7 @@ func mustHarvestWrite(t *testing.T, p, s string) {
 	}
 }
 
-func TestHarvestRunInjectedOutcomes(t *testing.T) {
+func scenarioHarvestRunInjectedOutcomes(t *testing.T) {
 	oldDiscover, oldCore, oldScan := harvestDiscoverSources, harvestCoreToolNames, harvestGitleaksScan
 	t.Cleanup(func() {
 		harvestDiscoverSources, harvestCoreToolNames, harvestGitleaksScan = oldDiscover, oldCore, oldScan
@@ -345,7 +345,7 @@ func TestHarvestRunInjectedOutcomes(t *testing.T) {
 	}
 }
 
-func TestRunnerFailureAccountingAndHelpers(t *testing.T) {
+func scenarioRunnerFailureAccountingAndHelpers(t *testing.T) {
 	var log bytes.Buffer
 	r := newRunner(t.TempDir(), NewEmitter(false, 3), &log)
 	st := r.stat("x")

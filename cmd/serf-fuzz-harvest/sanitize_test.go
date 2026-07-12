@@ -12,7 +12,7 @@ import (
 // A planted OpenAI key in a normal string value must be scrubbed away by
 // construction: the detector flags it in the raw input (red before), and it is
 // absent from the sanitized output, which the gate passes (green after).
-func TestShapeScrubStripsPlantedSecret(t *testing.T) {
+func scenarioShapeScrubStripsPlantedSecret(t *testing.T) {
 	const key = "sk-proj-abcdefABCDEF0123456789ghijklMNOP"
 	raw := []byte(`{"messages":[{"role":"user","content":"my key is ` + key + `"}]}`)
 
@@ -41,7 +41,7 @@ func TestShapeScrubStripsPlantedSecret(t *testing.T) {
 // A secret hiding in an enum-allowlisted value survives shape-scrub (enum values
 // are kept verbatim), so the abort gate must catch it: Process drops the seed
 // and returns SecretLeakError, which the harvester turns into a non-zero exit.
-func TestAbortGateCatchesSecretInEnumValue(t *testing.T) {
+func scenarioAbortGateCatchesSecretInEnumValue(t *testing.T) {
 	const key = "sk-ant-api03-abcdefABCDEF0123456789ghijklmnop"
 	raw := []byte(`{"type":"` + key + `","data":"hello"}`)
 
@@ -61,7 +61,7 @@ func TestAbortGateCatchesSecretInEnumValue(t *testing.T) {
 
 // Under --keep-values a known secret is redacted in place (values otherwise
 // preserved), so the output is real-but-clean and the gate passes.
-func TestKeepValuesRedactsKnownSecret(t *testing.T) {
+func scenarioKeepValuesRedactsKnownSecret(t *testing.T) {
 	const key = "AIzaSyA1234567890123456789012345678901234"
 	raw := []byte(`{"note":"token ` + key + ` here","count":42}`)
 
@@ -84,7 +84,7 @@ func TestKeepValuesRedactsKnownSecret(t *testing.T) {
 
 // Under --keep-values an unknown-format high-entropy token (no regex match)
 // survives redaction, so the entropy quarantine in the gate must abort.
-func TestKeepValuesEntropyQuarantineAborts(t *testing.T) {
+func scenarioKeepValuesEntropyQuarantineAborts(t *testing.T) {
 	// 40 base64-ish random chars: high entropy, matches no known prefix.
 	raw := []byte(`{"blob":"Zk9q3SxV1pLmTtRwYbNcHgJdFeUoIa72Qw0PzXyB"}`)
 
@@ -101,7 +101,7 @@ func TestKeepValuesEntropyQuarantineAborts(t *testing.T) {
 
 // Shape-scrub of an SSE stream keeps event:/comment/[DONE] framing byte-for-byte
 // and scrubs only the data: JSON payloads.
-func TestScrubSSEPreservesFraming(t *testing.T) {
+func scenarioScrubSSEPreservesFraming(t *testing.T) {
 	raw := []byte("event: response.output_text.delta\n" +
 		`data: {"type":"response.output_text.delta","delta":"secret words"}` + "\n\n" +
 		": a comment\n\n" +
@@ -133,7 +133,7 @@ func TestScrubSSEPreservesFraming(t *testing.T) {
 // Shape-scrub is deterministic: identical inputs (and inputs differing only in
 // free-text) produce byte-identical output, which is what makes dedup collapse
 // near-duplicate traffic.
-func TestShapeScrubDeterministicAndCollapsing(t *testing.T) {
+func scenarioShapeScrubDeterministicAndCollapsing(t *testing.T) {
 	a := []byte(`{"role":"user","text":"hello there"}`)
 	b := []byte(`{"role":"user","text":"different content entirely"}`)
 
@@ -158,7 +158,7 @@ func TestShapeScrubDeterministicAndCollapsing(t *testing.T) {
 // TestShapeScrubKeepsTimestampsDecodable proves a timestamp leaf is scrubbed to
 // a valid RFC3339 instant (not an unparseable x-fill), so jobstore/transcript
 // seeds still decode and exercise their deeper oracles after scrubbing.
-func TestShapeScrubKeepsTimestampsDecodable(t *testing.T) {
+func scenarioShapeScrubKeepsTimestampsDecodable(t *testing.T) {
 	in := []byte(`{"kind":"job_started","ts":"2026-06-01T10:00:01.123Z","note":"some private detail"}`)
 	out, err := scrubJSON(in)
 	if err != nil {

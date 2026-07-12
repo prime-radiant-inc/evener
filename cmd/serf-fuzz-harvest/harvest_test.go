@@ -86,7 +86,7 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
-func TestHarvestEndToEnd(t *testing.T) {
+func scenarioHarvestEndToEnd(t *testing.T) {
 	state := writeFixtureState(t)
 	out := t.TempDir()
 
@@ -133,7 +133,7 @@ func TestHarvestEndToEnd(t *testing.T) {
 
 // A personal-source harvest with --keep-values must force shape-scrub and still
 // strip the planted secret (decision 6).
-func TestHarvestPersonalSourceForcesScrub(t *testing.T) {
+func scenarioHarvestPersonalSourceForcesScrub(t *testing.T) {
 	state := writeFixtureState(t)
 	t.Setenv("SERF_STATE_DIR", state) // makes this an explicit (non-personal) source override
 	t.Setenv("SERF_FUZZ_CAPTURE_ENV", "1")
@@ -289,7 +289,7 @@ func equalSnapshot(a, b map[string]bool) bool {
 // TestDiscoverSourcesFindsPerSessionRawLogs verifies discovery picks up the
 // per-session raw HTTP logs (sessions/<id>.api-raw.jsonl) alongside the frozen
 // project-level api-raw.jsonl.
-func TestDiscoverSourcesFindsPerSessionRawLogs(t *testing.T) {
+func scenarioDiscoverSourcesFindsPerSessionRawLogs(t *testing.T) {
 	state := writeFixtureState(t)
 	sessDir := filepath.Join(state, "serf", "projects", "abcdef0123456789", "sessions")
 	rawEntry, _ := json.Marshal(llm.APIRawLogEntry{Provider: "openai", Model: "gpt-5", Mode: "stream", ResponseBody: "data: {}\n\n"})

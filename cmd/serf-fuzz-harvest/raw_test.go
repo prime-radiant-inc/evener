@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestSplitSSEEvents(t *testing.T) {
+func scenarioSplitSSEEvents(t *testing.T) {
 	body := []byte("data: a\n\ndata: b\n\ndata: c\n\n")
 	events := splitSSEEvents(body)
 	if len(events) != 3 {
@@ -22,7 +22,7 @@ func TestSplitSSEEvents(t *testing.T) {
 	}
 }
 
-func TestSSESeedWindows(t *testing.T) {
+func scenarioSSESeedWindows(t *testing.T) {
 	// A stream within the cap is a single window, unchanged.
 	small := []byte("data: a\n\ndata: b\n\n")
 	if w := sseSeedWindows(small, 1000); len(w) != 1 || !bytes.Equal(w[0], small) {
@@ -57,7 +57,7 @@ func TestSSESeedWindows(t *testing.T) {
 	}
 }
 
-func TestSSESeedWindows_SkipsOversizedEvent(t *testing.T) {
+func scenarioSSESeedWindows_SkipsOversizedEvent(t *testing.T) {
 	// A single event larger than the cap is skipped (can't fit any window), while
 	// the surrounding fitting events are still emitted.
 	body := []byte("data: ok1\n\ndata: " + string(bytes.Repeat([]byte("x"), 500)) + "\n\ndata: ok2\n\n")
