@@ -69,35 +69,57 @@ type hubOptions struct {
 	serfBinary string
 }
 
+type mainDeps struct {
+	loadConfig  func(string) (Config, error)
+	ensureDirs  func() error
+	acquireLock func(string) (func(), error)
+	newToken    func() (string, error)
+}
+
+func defaultMainDeps() mainDeps {
+	return mainDeps{
+		loadConfig:  LoadConfig,
+		ensureDirs:  cmdutil.EnsureUserConfigDirs,
+		acquireLock: hostlock.AcquireLock,
+		newToken:    newHubToken,
+	}
+}
+
 func main() {
-	opts, err := parseHubOptions(os.Args[1:], os.Stderr)
-	if err != nil {
-		if err != flag.ErrHelp {
-			fmt.Fprintf(os.Stderr, "[hub] %v\n", err)
-		}
+	if runMain(os.Args[1:], os.Stderr, defaultMainDeps()) != nil {
 		os.Exit(1)
 	}
+}
 
-	cfg, err := LoadConfig(opts.configPath)
+func runMain(args []string, stderr io.Writer, deps mainDeps) error {
+	opts, err := parseHubOptions(args, stderr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[hub] config: %v\n", err)
-		os.Exit(1)
+		if err != flag.ErrHelp {
+			fmt.Fprintf(stderr, "[hub] %v\n", err)
+		}
+		return err
+	}
+
+	cfg, err := deps.loadConfig(opts.configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "[hub] config: %v\n", err)
+		return err
 	}
 	if opts.addr != "" {
 		cfg.Addr = opts.addr
 	}
-	if err := cmdutil.EnsureUserConfigDirs(); err != nil {
-		fmt.Fprintf(os.Stderr, "[hub] %v\n", err)
-		os.Exit(1)
+	if err := deps.ensureDirs(); err != nil {
+		fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
 	}
 
 	// flock to ensure single hub per host.
 	home, _ := os.UserHomeDir()
 	lockPath := filepath.Join(home, ".serf", "hub.lock")
-	release, err := hostlock.AcquireLock(lockPath)
+	release, err := deps.acquireLock(lockPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[hub] %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
 	}
 	defer release()
 
@@ -127,10 +149,10 @@ func main() {
 	favorite := hubcore.NewFavoriteStore(pastIndexDB)
 
 	// Spawner
-	hubToken, err := newHubToken()
+	hubToken, err := deps.newToken()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[hub] %v\n", err)
-		os.Exit(1) //nolint:gocritic // exitAfterDefer: the deferred release() only drops a flock the kernel frees on process exit
+		fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
 	}
 	hubStateRoot := cfg.HubStateRoot
 	authToken, err := hubedge.LoadOrCreateAuthToken(hubStateRoot)
@@ -406,9 +428,10 @@ func main() {
 	fmt.Fprintf(os.Stderr, "[hub] auth URL (visit once per browser): http://%s/auth?token=%s\n", authHost, authToken)
 	fmt.Fprintf(os.Stderr, "[hub] auth token also at %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
 	if err := serveHub(ctx, srv, codexLauncher); err != nil {
-		fmt.Fprintf(os.Stderr, "[hub] %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
 	}
+	return nil
 }
 
 func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
