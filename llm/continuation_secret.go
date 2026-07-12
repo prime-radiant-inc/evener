@@ -79,10 +79,7 @@ func (h *ContinuationHasher) HashContinuationStorageScope(scope ContinuationStor
 		ConversationIDHash: strings.TrimSpace(scope.ConversationIDHash),
 		StoragePolicy:      strings.TrimSpace(scope.StoragePolicy),
 	}
-	b, err := json.Marshal(input)
-	if err != nil {
-		return "", fmt.Errorf("%w: marshal storage scope: %w", ErrContinuationSecretUnavailable, err)
-	}
+	b, _ := json.Marshal(input) // input contains only strings, so marshaling cannot fail.
 	return versionedContinuationHMAC(ContinuationScopeHashVersion, "storage_scope", h.scopeKey, string(b)), nil
 }
 
@@ -99,15 +96,39 @@ func ContinuationSecretPath(stateDir string) string {
 // stateDir, creating it (mode 0600) if absent, and returns
 // ErrContinuationSecretUnavailable on failure.
 func LoadOrCreateContinuationSecret(stateDir string) ([]byte, error) {
+	return loadOrCreateContinuationSecret(stateDir, continuationSecretOps{
+		mkdirAll: os.MkdirAll,
+		read:     readContinuationSecret,
+		randRead: rand.Read,
+		openFile: func(name string, flag int, perm os.FileMode) (continuationSecretFile, error) {
+			return os.OpenFile(name, flag, perm)
+		},
+	})
+}
+
+type continuationSecretFile interface {
+	Write([]byte) (int, error)
+	Sync() error
+	Close() error
+}
+
+type continuationSecretOps struct {
+	mkdirAll func(string, os.FileMode) error
+	read     func(string) ([]byte, error)
+	randRead func([]byte) (int, error)
+	openFile func(string, int, os.FileMode) (continuationSecretFile, error)
+}
+
+func loadOrCreateContinuationSecret(stateDir string, ops continuationSecretOps) ([]byte, error) {
 	path := ContinuationSecretPath(stateDir)
 	if path == "" {
 		return nil, fmt.Errorf("%w: missing state dir", ErrContinuationSecretUnavailable)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := ops.mkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("%w: create secret dir: %w", ErrContinuationSecretUnavailable, err)
 	}
 
-	secret, err := readContinuationSecret(path)
+	secret, err := ops.read(path)
 	if err == nil {
 		return secret, nil
 	}
@@ -116,12 +137,12 @@ func LoadOrCreateContinuationSecret(stateDir string) ([]byte, error) {
 	}
 
 	secret = make([]byte, 32)
-	if _, err := rand.Read(secret); err != nil {
+	if _, err := ops.randRead(secret); err != nil {
 		return nil, fmt.Errorf("%w: generate secret: %w", ErrContinuationSecretUnavailable, err)
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := ops.openFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if errors.Is(err, os.ErrExist) {
-		return readContinuationSecret(path)
+		return ops.read(path)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: create secret file: %w", ErrContinuationSecretUnavailable, err)

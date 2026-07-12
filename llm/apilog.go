@@ -196,6 +196,10 @@ func RawBodyEnabled() bool { return rawBodyEnabled }
 
 var rawBodyEnabled = envvars.RecorderEnabled(envvars.SERFLogRawHTTP)
 
+var apiLogJSONMarshal = json.Marshal
+var apiLogFileSync = func(f *os.File) error { return f.Sync() }
+var apiLogFileClose = func(f *os.File) error { return f.Close() }
+
 // APILogger is middleware that logs every LLM API call to a JSONL file.
 //
 // It runs in one of two modes:
@@ -416,10 +420,10 @@ func (l *APILogger) Close() error {
 		if f == nil {
 			return
 		}
-		if err := f.Sync(); err != nil && firstErr == nil {
+		if err := apiLogFileSync(f); err != nil && firstErr == nil {
 			firstErr = err
 		}
-		if err := f.Close(); err != nil && firstErr == nil {
+		if err := apiLogFileClose(f); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -441,7 +445,7 @@ func (l *APILogger) Close() error {
 }
 
 func (l *APILogger) write(entry APILogEntry) {
-	data, err := json.Marshal(entry)
+	data, err := apiLogJSONMarshal(entry)
 	if err != nil {
 		return
 	}
@@ -468,7 +472,7 @@ func (l *APILogger) write(entry APILogEntry) {
 }
 
 func (l *APILogger) writeRaw(entry APIRawLogEntry) {
-	data, err := json.Marshal(entry)
+	data, err := apiLogJSONMarshal(entry)
 	if err != nil {
 		return
 	}

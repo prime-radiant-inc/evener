@@ -26,6 +26,9 @@ func FuzzResponsesContinuationDecision(f *testing.F) {
 	f.Add(true, true, int64(3600), "", "public-openai-store", true, false)
 	f.Add(false, true, int64(3600), "conv-1", "public-openai-store", false, true)
 	f.Add(true, false, int64(0), "", "other", true, true)
+	f.Add(true, true, int64(3600), "", ResponsesStoragePolicyPublicOpenAIStore, true, true)
+	f.Add(true, true, int64(0), "", "other", false, false)
+	f.Add(true, true, int64(3600), "conv", "other", false, false)
 
 	f.Fuzz(func(t *testing.T, auto, enabled bool, maxAge int64, convID, policy string, storeSet, storeVal bool) {
 		mode := ResponsesContinuationOff
@@ -82,6 +85,11 @@ func FuzzResponsesContinuationDecision(f *testing.F) {
 		empty := ResponsesContinuationSupportFor(map[ResponsesEndpointFamily]ResponsesContinuationSupport{}, ResponsesEndpointFamilyOpenAIPublic)
 		if empty.Enabled {
 			t.Fatalf("absent family returned an enabled support entry")
+		}
+		registry := DefaultResponsesContinuationSupportRegistry()
+		present := ResponsesContinuationSupportFor(registry, ResponsesEndpointFamilyOpenAIPublic)
+		if !present.Enabled || present.MaxAnchorAgeSeconds <= 0 {
+			t.Fatalf("default public support malformed: %+v", present)
 		}
 	})
 }

@@ -33,23 +33,29 @@ var (
 // Returns nil if loading fails (should not happen with a valid build).
 func EmbeddedModelCatalog() *ModelCatalog {
 	embeddedCatalogOnce.Do(func() {
-		data, err := embeddedCatalogFS.ReadFile("data/litellm_model_catalog.json")
-		if err != nil {
-			return
-		}
-		embeddedCatalog, _ = parseLiteLLMCatalog(data)
-		if embeddedCatalog == nil {
-			return
-		}
-
-		// Merge Serf-specific overrides.
-		overrideData, err := embeddedCatalogFS.ReadFile("data/serf_model_catalog_overrides.json")
-		if err != nil {
-			return // Overrides file missing is not fatal.
-		}
-		applyOverrides(embeddedCatalog, overrideData)
+		embeddedCatalog = loadEmbeddedModelCatalog(embeddedCatalogFS.ReadFile, parseLiteLLMCatalog)
 	})
 	return embeddedCatalog
+}
+
+func loadEmbeddedModelCatalog(
+	readFile func(string) ([]byte, error),
+	parse func([]byte) (*ModelCatalog, error),
+) *ModelCatalog {
+	data, err := readFile("data/litellm_model_catalog.json")
+	if err != nil {
+		return nil
+	}
+	cat, _ := parse(data)
+	if cat == nil {
+		return nil
+	}
+	overrideData, err := readFile("data/serf_model_catalog_overrides.json")
+	if err != nil {
+		return cat // Overrides file missing is not fatal.
+	}
+	applyOverrides(cat, overrideData)
+	return cat
 }
 
 // applyOverrides merges Serf-specific model metadata on top of the base catalog.

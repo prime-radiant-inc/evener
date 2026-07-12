@@ -3,8 +3,10 @@ package llm
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -15,6 +17,17 @@ import (
 type oneByteReader struct {
 	data []byte
 	pos  int
+}
+
+type sseErrorReader struct{ err error }
+
+func (r sseErrorReader) Read([]byte) (int, error) { return 0, r.err }
+
+type sseBlockingReader struct{ release <-chan struct{} }
+
+func (r sseBlockingReader) Read([]byte) (int, error) {
+	<-r.release
+	return 0, io.EOF
 }
 
 func (r *oneByteReader) Read(p []byte) (int, error) {
@@ -82,6 +95,40 @@ func FuzzParseSSE(f *testing.F) {
 		if !sameSSEResult(whole, errWhole, timed, errTimed) {
 			t.Fatalf("SSE path divergence (blocking vs timeout) for %q:\n blocking=%v (err=%v)\n timeout=%v (err=%v)",
 				raw, whole, errWhole, timed, errTimed)
+		}
+
+		boom := io.ErrUnexpectedEOF
+		if err := ParseSSE(context.Background(), sseErrorReader{boom}, func(SSEEvent) error { return nil }); !errors.Is(err, boom) {
+			t.Fatalf("blocking read error = %v, want %v", err, boom)
+		}
+		callbackErr := errors.New("callback failed")
+		for _, timeout := range []time.Duration{0, longTimeout} {
+			err := ParseSSE(context.Background(), strings.NewReader("data: x\n\n"), func(SSEEvent) error { return callbackErr }, WithStreamReadTimeout(timeout))
+			if !errors.Is(err, callbackErr) {
+				t.Fatalf("callback error with timeout %v = %v", timeout, err)
+			}
+		}
+		if err := ParseSSE(context.Background(), sseErrorReader{boom}, func(SSEEvent) error { return nil }, WithStreamReadTimeout(longTimeout)); !errors.Is(err, boom) {
+			t.Fatalf("timed read error = %v, want %v", err, boom)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := ParseSSE(ctx, strings.NewReader("data: x\n"), func(SSEEvent) error { return nil }); !errors.Is(err, context.Canceled) {
+			t.Fatalf("blocking canceled error = %v", err)
+		}
+		release := make(chan struct{})
+		ctx, cancel = context.WithCancel(context.Background())
+		cancel()
+		err := ParseSSE(ctx, sseBlockingReader{release}, func(SSEEvent) error { return nil }, WithStreamReadTimeout(longTimeout))
+		close(release)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("timed canceled error = %v", err)
+		}
+		release = make(chan struct{})
+		err = ParseSSE(context.Background(), sseBlockingReader{release}, func(SSEEvent) error { return nil }, WithStreamReadTimeout(time.Nanosecond))
+		close(release)
+		if err == nil || !strings.Contains(err.Error(), "stream read timeout") {
+			t.Fatalf("timeout error = %v", err)
 		}
 	})
 }

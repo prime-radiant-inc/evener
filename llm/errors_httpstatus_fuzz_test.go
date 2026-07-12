@@ -25,6 +25,9 @@ func FuzzErrorFromHTTPStatus(f *testing.F) {
 		body   string
 	}{
 		{400, `{"error":{"message":"context length exceeded","code":"context_length_exceeded"}}`},
+		{400, `{"error":{"message":"blocked","code":"invalid_prompt"}}`},
+		{400, `{"error":{"message":"billing quota exceeded"}}`},
+		{400, `{"error":{"message":"resource not found"}}`},
 		{401, `{"error":{"type":"authentication_error"}}`},
 		{403, `{"error":{"code":"cyber_policy_violation"}}`},
 		{404, `{"error":{"message":"model does not exist"}}`},

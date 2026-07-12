@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -371,6 +372,19 @@ func prepareTools(tools []Tool) (map[string]Tool, []ToolDefinition, error) {
 }
 
 func compileSchema(params map[string]any) (*jsonschema.Schema, error) {
+	compileSchemaHookMu.RLock()
+	defer compileSchemaHookMu.RUnlock()
+	return compileSchemaUnlocked(params)
+}
+
+var (
+	compileSchemaHookMu      sync.RWMutex
+	compileSchemaAddResource = func(c *jsonschema.Compiler, uri string, r io.Reader) error {
+		return c.AddResource(uri, r)
+	}
+)
+
+func compileSchemaUnlocked(params map[string]any) (*jsonschema.Schema, error) {
 	c := jsonschema.NewCompiler()
 	c.Draft = jsonschema.Draft2020
 	b, err := json.Marshal(params)
@@ -379,7 +393,7 @@ func compileSchema(params map[string]any) (*jsonschema.Schema, error) {
 	}
 	// Use an absolute URI so the library never calls filepath.Abs → os.Getwd().
 	const schemaURI = "urn:serf:tool-schema"
-	if err := c.AddResource(schemaURI, bytes.NewReader(b)); err != nil {
+	if err := compileSchemaAddResource(c, schemaURI, bytes.NewReader(b)); err != nil {
 		return nil, err
 	}
 	return c.Compile(schemaURI)

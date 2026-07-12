@@ -7,6 +7,8 @@ import (
 	"sync"
 )
 
+var streamGenerateAccumulatedResponse = func(acc *StreamAccumulator) *Response { return acc.Response() }
+
 // StreamResult is the high-level streaming generation result. It yields StreamEvent
 // values over Events() and exposes the accumulated final response once the stream
 // ends.
@@ -264,7 +266,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 
 			stepResp := finishEv.Response
 			if stepResp == nil {
-				stepResp = acc.Response()
+				stepResp = streamGenerateAccumulatedResponse(acc)
 			}
 			if stepResp == nil {
 				err := NewStreamError(strings.TrimSpace(req.Provider), "missing response in finish event", nil)

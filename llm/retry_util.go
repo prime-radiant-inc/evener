@@ -70,7 +70,7 @@ func Retry[T any](ctx context.Context, policy RetryPolicy, sleep SleepFunc, rand
 		maxRetries = 0
 	}
 
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	for attempt := 0; ; attempt++ {
 		v, err := fn()
 		if err == nil {
 			return v, nil
@@ -93,7 +93,6 @@ func Retry[T any](ctx context.Context, policy RetryPolicy, sleep SleepFunc, rand
 			return zero, err
 		}
 	}
-	return zero, context.Canceled
 }
 
 func retryDelay(policy RetryPolicy, randFloat func() float64, err error, n int) (time.Duration, bool) {

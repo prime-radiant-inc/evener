@@ -5,6 +5,7 @@ import "testing"
 func FuzzRootScenarioReplay(f *testing.F) {
 	f.Add(uint8(0))
 	f.Fuzz(func(t *testing.T, _ uint8) {
+		t.Run("client-config-edges", replayClientConfigEdges)
 		TestApplyAdapterTimeout_Request(t)
 		TestApplyAdapterTimeout_Nil(t)
 		TestApplyAdapterTimeout_Streaming(t)

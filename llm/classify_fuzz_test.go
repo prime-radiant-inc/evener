@@ -5,7 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 )
+
+type classifyResidualError struct{ status int }
+
+func (e classifyResidualError) Error() string              { return "residual" }
+func (e classifyResidualError) Provider() string           { return "other" }
+func (e classifyResidualError) BehaviorTag() string        { return "other" }
+func (e classifyResidualError) StatusCode() int            { return e.status }
+func (e classifyResidualError) ErrorCode() string          { return "" }
+func (e classifyResidualError) Retryable() bool            { return false }
+func (e classifyResidualError) RetryAfter() *time.Duration { return nil }
+func (e classifyResidualError) Raw() any                   { return nil }
+func (e classifyResidualError) Unwrap() error              { return nil }
 
 // FuzzClassify drives the retry-class classifier over a diverse error space —
 // the kinds Classify branches on (nil, cancellation, deadline, AbortError, an
@@ -27,6 +40,8 @@ func FuzzClassify(f *testing.F) {
 	f.Add(uint8(5), 429, "anthropic", "rate limited", uint8(0))
 	f.Add(uint8(2), 0, "", "", uint8(2))
 	f.Add(uint8(4), 0, "", "aborted by user", uint8(0))
+	f.Add(uint8(5), 408, "other", "timeout", uint8(0))
+	f.Add(uint8(5), 418, "other", "teapot", uint8(0))
 
 	f.Fuzz(func(t *testing.T, kind uint8, status int, provider, msg string, wrap uint8) {
 		isCancel, isAbort, isLLMErr, base := buildClassifyError(kind, status, provider, msg)
@@ -58,6 +73,18 @@ func FuzzClassify(f *testing.F) {
 		// returns it). If we never produced one, fallback must not appear.
 		if class == ErrorClassFallback && !isLLMErr {
 			t.Fatalf("non-llm.Error classified as fallback: %v", err)
+		}
+		streamErr := NewStreamError("old", msg, nil)
+		RewriteErrorProvider(streamErr, " new ")
+		StampErrorBehaviorTag(streamErr, " tag ")
+		if e := streamErr.(Error); e.Provider() != "new" || e.BehaviorTag() != "tag" {
+			t.Fatalf("non-HTTP stamps not applied: provider=%q tag=%q", e.Provider(), e.BehaviorTag())
+		}
+		if Classify(classifyResidualError{status: 408}) != ErrorClassRetryable {
+			t.Fatal("non-retryable 408 must classify retryable by status")
+		}
+		if Classify(classifyResidualError{}) != ErrorClassPermanent {
+			t.Fatal("non-HTTP non-retryable error must classify permanent")
 		}
 	})
 }

@@ -41,7 +41,7 @@ func RetryStream(ctx context.Context, opts RetryStreamOptions, attempt StreamAtt
 	if maxRetries < 0 {
 		maxRetries = 0
 	}
-	for n := 0; n <= maxRetries; n++ {
+	for n := 0; ; n++ {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
@@ -76,5 +76,4 @@ func RetryStream(ctx context.Context, opts RetryStreamOptions, attempt StreamAtt
 			opts.OnReset()
 		}
 	}
-	return nil
 }

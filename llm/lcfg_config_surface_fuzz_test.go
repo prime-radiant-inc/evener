@@ -16,6 +16,20 @@ import (
 	"primeradiant.com/serf/llm/providercfg"
 )
 
+type lcfgSecretFile struct {
+	writeErr error
+	syncErr  error
+}
+
+func (f *lcfgSecretFile) Write(p []byte) (int, error) {
+	if f.writeErr != nil {
+		return 0, f.writeErr
+	}
+	return len(p), nil
+}
+func (f *lcfgSecretFile) Sync() error  { return f.syncErr }
+func (f *lcfgSecretFile) Close() error { return nil }
+
 // This file fuzzes the llm package's top-level config / pricing / error-surface
 // entry points. Every top-level identifier is prefixed with the lane token
 // "lcfg" to avoid collisions with sibling fuzz lanes editing package llm.
@@ -514,6 +528,49 @@ func Fuzz_lcfg_ContinuationSecret(f *testing.F) {
 	f.Add(uint8(4), "blocked", []byte("z"))
 
 	f.Fuzz(func(t *testing.T, variant uint8, rawName string, content []byte) {
+		injectedErr := errors.New("injected secret failure")
+		baseOps := continuationSecretOps{
+			mkdirAll: func(string, os.FileMode) error { return nil },
+			read:     func(string) ([]byte, error) { return nil, os.ErrNotExist },
+			randRead: func(p []byte) (int, error) { return len(p), nil },
+			openFile: func(string, int, os.FileMode) (continuationSecretFile, error) { return &lcfgSecretFile{}, nil },
+		}
+		for _, failure := range []string{"rand", "exist", "open", "write", "sync"} {
+			ops := baseOps
+			switch failure {
+			case "rand":
+				ops.randRead = func([]byte) (int, error) { return 0, injectedErr }
+			case "exist":
+				ops.openFile = func(string, int, os.FileMode) (continuationSecretFile, error) { return nil, os.ErrExist }
+				reads := 0
+				ops.read = func(string) ([]byte, error) {
+					reads++
+					if reads == 1 {
+						return nil, os.ErrNotExist
+					}
+					return make([]byte, 32), nil
+				}
+			case "open":
+				ops.openFile = func(string, int, os.FileMode) (continuationSecretFile, error) { return nil, injectedErr }
+			case "write":
+				ops.openFile = func(string, int, os.FileMode) (continuationSecretFile, error) {
+					return &lcfgSecretFile{writeErr: injectedErr}, nil
+				}
+			case "sync":
+				ops.openFile = func(string, int, os.FileMode) (continuationSecretFile, error) {
+					return &lcfgSecretFile{syncErr: injectedErr}, nil
+				}
+			}
+			secret, err := loadOrCreateContinuationSecret("state", ops)
+			if failure == "exist" {
+				if err != nil || len(secret) != 32 {
+					t.Fatalf("exclusive-create race = (%d,%v)", len(secret), err)
+				}
+			} else if !errors.Is(err, ErrContinuationSecretUnavailable) {
+				t.Fatalf("%s failure = %v, want ErrContinuationSecretUnavailable", failure, err)
+			}
+		}
+
 		// Empty-state-dir branch: independent of variant.
 		if _, err := LoadOrCreateContinuationSecret(""); !errors.Is(err, ErrContinuationSecretUnavailable) {
 			t.Fatalf("LoadOrCreateContinuationSecret(\"\") = %v, want ErrContinuationSecretUnavailable", err)
@@ -522,6 +579,12 @@ func Fuzz_lcfg_ContinuationSecret(f *testing.F) {
 		root := t.TempDir()
 		name := lcfgSafeName(rawName)
 		stateDir := filepath.Join(root, name)
+		readBlocked := filepath.Join(root, "read-blocked")
+		if err := os.Mkdir(readBlocked, 0o600); err == nil {
+			if _, err := readContinuationSecret(readBlocked); !errors.Is(err, ErrContinuationSecretUnavailable) {
+				t.Fatalf("directory secret read = %v", err)
+			}
+		}
 
 		switch variant % 5 {
 		case 0, 1:

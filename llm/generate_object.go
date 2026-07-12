@@ -17,6 +17,11 @@ type GenerateObjectOptions struct {
 	Schema map[string]any
 }
 
+var (
+	streamGenerateObjectStartMu sync.RWMutex
+	streamGenerateObjectStart   = StreamGenerate
+)
+
 // GenerateObject calls Generate with a json_schema response format derived from
 // opts.Schema, strips any markdown code fence from the result text, parses it as
 // JSON, and validates it against the schema. It returns an error if the schema is
@@ -124,7 +129,9 @@ func StreamGenerateObject(ctx context.Context, opts GenerateObjectOptions) (*Str
 		Strict:     true,
 	}
 
-	inner, err := StreamGenerate(ctx, ro)
+	streamGenerateObjectStartMu.RLock()
+	inner, err := streamGenerateObjectStart(ctx, ro)
+	streamGenerateObjectStartMu.RUnlock()
 	if err != nil {
 		return nil, err
 	}

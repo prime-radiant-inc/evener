@@ -143,12 +143,6 @@ func parseSSEWithTimeout(ctx context.Context, r io.Reader, fn func(ev SSEEvent) 
 	for {
 		select {
 		case res := <-lineCh:
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
 			timer.Reset(timeout)
 
 			line := res.line
