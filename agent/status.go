@@ -9,6 +9,8 @@ import (
 	"primeradiant.com/serf/agent/skill"
 )
 
+var detailedStatusMCPServers = func(s *Session) []mcpconfig.ServerInfo { return s.mcpMgr.Servers() }
+
 // ToolInfo describes a registered tool and its source.
 type ToolInfo struct {
 	Name   string `json:"name"`   // e.g. "shell", "linear__search"
@@ -74,7 +76,7 @@ func (s *Session) DetailedStatus() DetailedStatus {
 	// Build MCP tool → server name map for tool categorization.
 	mcpToolServer := map[string]string{}
 	if s.mcpMgr != nil {
-		servers := s.mcpMgr.Servers()
+		servers := detailedStatusMCPServers(s)
 		ds.MCP = servers
 		for _, srv := range servers {
 			for _, toolName := range srv.Tools {

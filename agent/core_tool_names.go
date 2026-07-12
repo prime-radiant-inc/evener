@@ -5,8 +5,15 @@ import (
 	"os"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/llm"
+)
+
+var (
+	coreToolNamesMkdirTemp  = os.MkdirTemp
+	coreToolNamesNewSession = NewSession
+	coreToolNamesHasSchema  = func(rt *tool.RegisteredTool) bool { return rt != nil && rt.Schema != nil }
 )
 
 // CoreToolNames returns the sorted names of the core tools that carry a compiled
@@ -19,13 +26,13 @@ import (
 // client makes the live-model probe fall back immediately) to run the real
 // registerCoreTools wiring, then returns the registry's schema-bearing names.
 func CoreToolNames() ([]string, error) {
-	dir, err := os.MkdirTemp("", "serf-coretools-")
+	dir, err := coreToolNamesMkdirTemp("", "serf-coretools-")
 	if err != nil {
 		return nil, fmt.Errorf("temp dir: %w", err)
 	}
 	defer os.RemoveAll(dir) //nolint:errcheck
 
-	sess, err := NewSession(llm.NewClient(), provider.NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := coreToolNamesNewSession(llm.NewClient(), provider.NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		return nil, fmt.Errorf("new session: %w", err)
 	}
@@ -34,8 +41,7 @@ func CoreToolNames() ([]string, error) {
 	names := sess.reg.Names()
 	kept := make([]string, 0, len(names))
 	for _, name := range names {
-		rt := sess.reg.Get(name)
-		if rt == nil || rt.Schema == nil {
+		if !coreToolNamesHasSchema(sess.reg.Get(name)) {
 			continue
 		}
 		kept = append(kept, name)

@@ -17,6 +17,8 @@ var builtinAgentsCache struct {
 	err    error
 }
 
+var builtinAgentsFS = bundled.Agents
+
 // builtinAgents parses and returns the core agents embedded directly into the
 // binary. These are keyed by their public name (no plugin prefix).
 func builtinAgents() (map[string]plugin.Agent, error) {
@@ -30,7 +32,7 @@ func builtinAgents() (map[string]plugin.Agent, error) {
 }
 
 func loadBuiltinAgents() (map[string]plugin.Agent, error) {
-	agentsFS := bundled.Agents()
+	agentsFS := builtinAgentsFS()
 	entries, err := fs.ReadDir(agentsFS, ".")
 	if err != nil {
 		return nil, fmt.Errorf("reading embedded agents dir: %w", err)

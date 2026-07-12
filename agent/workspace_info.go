@@ -35,6 +35,11 @@ var excludedDirs = map[string]bool{
 	".cache":        true,
 }
 
+var (
+	workspaceEntryInfo = os.DirEntry.Info
+	workspaceReadDir   = os.ReadDir
+)
+
 // ScanWorkspace walks the working directory and returns structured context
 // about its contents: a directory tree and build system information.
 func ScanWorkspace(root string) schema.WorkspaceInfo {
@@ -75,7 +80,7 @@ func walkTree(root string, entryLimit int) ([]treeEntry, bool) {
 			return
 		}
 
-		dirEntries, err := os.ReadDir(dir)
+		dirEntries, err := workspaceReadDir(dir)
 		if err != nil {
 			return
 		}
@@ -113,7 +118,7 @@ func walkTree(root string, entryLimit int) ([]treeEntry, bool) {
 			rel, _ := filepath.Rel(root, filepath.Join(dir, name))
 
 			var size int64
-			if fi, err := de.Info(); err == nil {
+			if fi, err := workspaceEntryInfo(de); err == nil {
 				size = fi.Size()
 			}
 

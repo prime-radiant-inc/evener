@@ -9,6 +9,12 @@ import (
 	"primeradiant.com/serf/agent/internal/atif"
 )
 
+var (
+	atifMarshalIndent = json.MarshalIndent
+	atifMkdirAll      = os.MkdirAll
+	atifWriteFile     = os.WriteFile
+)
+
 // exportATIF reads a transcript JSONL file, converts it to an ATIF v1.7
 // trajectory, and writes the result to outPath.
 func exportATIF(transcriptPath, outPath, providerHandleMode string) error {
@@ -21,14 +27,14 @@ func exportATIF(transcriptPath, outPath, providerHandleMode string) error {
 		return fmt.Errorf("read transcript: %w", err)
 	}
 	traj := atif.ConvertTranscriptWithOptions(transcriptData.Header, transcriptData.Entries, transcriptData.APICalls, atif.Options{ProviderHandles: mode})
-	data, err := json.MarshalIndent(traj, "", "  ")
+	data, err := atifMarshalIndent(traj, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal ATIF: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+	if err := atifMkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
 	}
-	if err := os.WriteFile(outPath, data, 0o644); err != nil {
+	if err := atifWriteFile(outPath, data, 0o644); err != nil {
 		return fmt.Errorf("write ATIF: %w", err)
 	}
 	return nil

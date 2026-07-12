@@ -8,6 +8,17 @@ import (
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
 
+type historicalJobStore interface {
+	Close() error
+	Load() (map[string]*jobstore.JobRecord, error)
+	LoadGrants() (map[string]map[string]bool, error)
+}
+
+var (
+	historicalJobsStat = os.Stat
+	historicalJobsOpen = func(path string) (historicalJobStore, error) { return jobstore.Open(path) }
+)
+
 // HistoricalJobRecord is a flattened, read-only snapshot of one job as it was
 // persisted in a session's durable jobs.jsonl — the origin coordinates, the
 // delegate/task it ran, and its terminal status — for tooling that inspects
@@ -31,14 +42,14 @@ type HistoricalJobRecord struct {
 // a session with no jobs.jsonl yields an empty map and creates no file.
 func LoadSessionHistoricalJobRecords(stateDir, sessionID string) (map[string]HistoricalJobRecord, error) {
 	path := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
-	if _, err := os.Stat(path); err != nil {
+	if _, err := historicalJobsStat(path); err != nil {
 		if os.IsNotExist(err) {
 			return map[string]HistoricalJobRecord{}, nil
 		}
 		return nil, err
 	}
 
-	store, err := jobstore.Open(path)
+	store, err := historicalJobsOpen(path)
 	if err != nil {
 		return nil, err
 	}
@@ -89,14 +100,14 @@ func LoadSessionHistoricalJobRecords(stateDir, sessionID string) (map[string]His
 // undecodable ref — are skipped, mirroring watchedWorkerSessionID's ok=false.
 func LoadSessionObserverGrants(stateDir, sessionID string) (map[string][]string, error) {
 	path := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
-	if _, err := os.Stat(path); err != nil {
+	if _, err := historicalJobsStat(path); err != nil {
 		if os.IsNotExist(err) {
 			return map[string][]string{}, nil
 		}
 		return nil, err
 	}
 
-	store, err := jobstore.Open(path)
+	store, err := historicalJobsOpen(path)
 	if err != nil {
 		return nil, err
 	}

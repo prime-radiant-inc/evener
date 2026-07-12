@@ -70,9 +70,6 @@ func LoadProjectDocs(env execenv.ExecutionEnvironment, filenames ...string) ([]P
 			content := string(b)
 			if used+len(content) > projectDocByteBudget {
 				remain := projectDocByteBudget - used
-				if remain < 0 {
-					remain = 0
-				}
 				if remain < len(content) {
 					content = content[:remain]
 				}
