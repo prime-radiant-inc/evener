@@ -1,0 +1,150 @@
+//go:build serffuzz
+
+package openaicompat
+
+import (
+	"testing"
+	_ "unsafe"
+)
+
+//go:linkname serfFuzzRawBodyEnabled primeradiant.com/serf/llm.rawBodyEnabled
+var serfFuzzRawBodyEnabled bool
+
+// FuzzOpenAICompatDeterministicUnion replays the package's deterministic wire
+// scenarios when the coverage gate selects fuzz targets only.
+func FuzzOpenAICompatDeterministicUnion(f *testing.F) {
+	f.Add(byte(0))
+	f.Fuzz(func(t *testing.T, _ byte) {
+		previousRawBodyEnabled := serfFuzzRawBodyEnabled
+		serfFuzzRawBodyEnabled = true
+		t.Cleanup(func() { serfFuzzRawBodyEnabled = previousRawBodyEnabled })
+		tests := []struct {
+			name string
+			fn   func(*testing.T)
+		}{
+			{"complete", TestAdapter_Complete_MapsToChatCompletionsAPI},
+			{"responses complete", TestNewFromEnv_CompleteAutoPrefersResponsesAPI},
+			{"responses fallback", TestNewFromEnv_CompleteAutoFallsBackToChatCompletions},
+			{"responses quirks", TestNewFromEnv_CompleteAutoFallbackPreservesOpenAICompatibleQuirks},
+			{"responses stream", TestNewFromEnv_StreamAutoPrefersResponsesAPI},
+			{"responses stream fallback", TestNewFromEnv_StreamAutoFallsBackToChatCompletions},
+			{"tool calling", TestAdapter_Complete_ToolCalling},
+			{"tool results", TestAdapter_Complete_ToolResults},
+			{"malformed tool args", TestBuildRequestBody_SanitizesMalformedHistoricalToolCallArguments},
+			{"http error", TestAdapter_Complete_HTTPError_MapsToErrorType},
+			{"stream text", TestAdapter_Stream_YieldsTextDeltasAndFinish},
+			{"stream read error", TestAdapter_Stream_MidStreamReadFailure_SurfacesCause},
+			{"stream tools", TestAdapter_Stream_ToolCalls},
+			{"retry after", TestHTTPErrorMapping_IncludesRetryAfter},
+			{"usage", TestComplete_PopulatesTotalTokens},
+			{"cached usage", TestComplete_ExtractsCachedTokens},
+			{"normalized usage", TestComplete_NormalizesInputTokens_SubtractsCached},
+			{"missing cached usage", TestComplete_NoCachedTokensField_LeavesNil},
+			{"canceled", TestComplete_WrapsContextCanceled},
+			{"request timeout", TestAdapterTimeout_Request_EnforcedOnComplete},
+			{"stream timeout", TestAdapterTimeout_Stream_AcceptsAdapterTimeout},
+			{"complete headers", TestDefaultHeaders_SentOnCompleteRequests},
+			{"stream headers", TestDefaultHeaders_SentOnStreamRequests},
+			{"image url", TestAdapter_Complete_ImageContent_IncludedInRequest},
+			{"image base64", TestAdapter_Complete_ImageContent_Base64},
+			{"image detail", TestAdapter_Complete_ImageContent_Detail},
+			{"text", TestAdapter_Complete_TextOnly_StaysString},
+			{"bad tool mode", TestAdapter_Complete_UnknownToolChoiceMode_ReturnsError},
+			{"empty tool name", TestAdapter_Complete_NamedToolChoice_EmptyName_ReturnsError},
+			{"provider headers", TestDefaultHeaders_CannotOverrideProviderHeaders},
+			{"rate headers", TestAdapter_Complete_RateLimitHeaders_Parsed},
+			{"reasoning effort", TestAdapter_Complete_ReasoningEffort_Propagated},
+			{"models", TestAdapter_ListModels},
+			{"metadata", TestAdapter_Complete_Metadata_Propagated},
+			{"reasoning parse", TestComplete_ReasoningContent_ParsedAsThinking},
+			{"reasoning absent", TestComplete_NoReasoningContent_OnlyText},
+			{"reasoning tokens", TestComplete_ReasoningTokens_NativeFromCompletionDetails},
+			{"reasoning tokens absent", TestComplete_ReasoningTokens_NilWhenProviderOmits},
+			{"reasoning replay", TestComplete_RoundTrip_ThinkingSerializedAsReasoningContent},
+			{"reasoning replay absent", TestComplete_RoundTrip_NoThinking_NoReasoningContent},
+			{"reasoning stream", TestStream_ReasoningContent_EmitsReasoningEvents},
+			{"reasoning tool stream", TestStream_ReasoningThenToolCalls_ReasoningEndBeforeToolStart},
+			{"locked params", TestQuirks_LockedParams_StrippedFromRequest},
+			{"tool choice clamp", TestQuirks_ToolChoiceAutoOnly_ClampsRequired},
+			{"tool choice auto", TestQuirks_ToolChoiceAutoOnly_PreservesAuto},
+			{"stop clamp", TestQuirks_MaxStopSequences_Truncates},
+			{"strip empty", TestQuirks_StripEmptyContent_RemovesEmptyTextParts},
+			{"json downgrade", TestQuirks_NoJSONSchema_DowngradesToJsonObject},
+			{"finish map", TestQuirks_FinishReasonMap_MapsNonStandard},
+			{"kimi preset", TestQuirksPreset_KimiK25},
+			{"glm preset", TestQuirksPreset_GLM5},
+			{"unknown preset", TestQuirksPreset_Unknown_ReturnsZeroValue},
+			{"case preset", TestQuirksPreset_CaseInsensitive},
+			{"stream finish map", TestQuirks_FinishReasonMap_Streaming},
+			{"reasoning details", TestComplete_ReasoningDetails_ParsedAsThinking},
+			{"reasoning details replay", TestComplete_RoundTrip_ThinkingSerializedAsReasoningDetails},
+			{"reasoning details stream", TestStream_ReasoningDetails_EmitsReasoningEvents},
+			{"rescue", TestRescueClaudeXMLArgs},
+			{"instance name", TestNewForInstance_Name},
+			{"instance quirks", TestNewForInstance_QuirksApplied},
+			{"env name", TestNewForInstance_EnvPathPreservesName},
+			{"model context", TestAdapter_ListModels_ParsesContextLength},
+			{"encrypted reasoning", TestComplete_EncryptedReasoningDetails},
+			{"choice usage", TestComplete_ChoiceLevelUsageFallback},
+			{"usage precedence", TestComplete_TopLevelUsageWinsOverChoice},
+			{"instance default", TestNewOpenAIChatCompletionsInstance_DefaultBaseURL},
+			{"affinity complete", TestSessionAffinityHeaders_OnComplete},
+			{"affinity stream", TestSessionAffinityHeaders_OnStream},
+			{"strict", TestSupportsStrictMode_AddsStrictFalseWhenExplicitlyTrue},
+			{"qwen template", TestThinkingFormat_QwenChatTemplate},
+			{"template kwargs", TestThinkingFormat_ChatTemplate_VerbatimKwargs},
+			{"compat overlay", TestApplyCompatConfig_OverlaysFieldByField},
+			{"model compat", TestNewForInstance_ResolvesPerModelCompat},
+			{"catalog", TestCompatFor_CatalogFillsDefaults},
+			{"catalog precedence", TestCompatFor_InstanceEntryWinsOverCatalog},
+			{"glm wire", TestGLMCatalogDefaults_WireBody},
+			{"reasoning off", TestReasoningOff_SuppressesAllThinkingFormats},
+			{"thinking formats", TestThinkingFormats_WireShapes},
+			{"thinking levels", TestThinkingLevels_TranslateEffortToWireValue},
+			{"token defaults", TestMaxTokensFieldAndDefault},
+			{"stream options", TestStoreToolStreamAndStreamOptions},
+			{"developer role", TestDeveloperRole},
+			{"tool name", TestRequireToolResultName},
+			{"assistant after tool", TestRequireAssistantAfterToolResult},
+			{"thinking text", TestThinkingAsText},
+			{"empty reasoning", TestEmptyReasoningContentOnAssistant},
+			{"cache control", TestAnthropicCacheControl},
+			{"reasoning options off", TestReasoningOff_SuppressesProviderOptionReasoning},
+			{"catalog gaps", TestCompatFor_DeclaredEntryStillGetsCatalogGapFill},
+			{"thinking replay off", TestReasoningOff_SuppressesThinkingReplay},
+			{"catalog qualified", TestFillFromCatalog_ProviderQualifiedLookup},
+			{"encrypted replay", TestEncryptedDetails_VerbatimReplay},
+			{"catalog namespace", TestFillFromCatalog_NamespacedModelNoLastSegmentFallback},
+			{"catalog bad cap", TestFillFromCatalog_RejectsOutputCapSwallowingWindow},
+			{"merged headers", TestNewForInstance_HeadersMergedIntoDefaultHeaders},
+			{"captured stream", TestReplay_CapturedOpenRouterStream},
+			{"cache key", TestPromptCacheKey_ExplicitKey},
+			{"cache session", TestPromptCacheKey_DerivedFromSessionID},
+			{"long cache", TestAnthropicCacheControl_TTLWithLongRetention},
+			{"plain cache", TestAnthropicCacheControl_PlainEphemeralWithoutLongRetention},
+			{"compat cache", TestApplyCompatConfig_CacheRetentionAndAffinity},
+			{"reasoning variants", TestStream_ReasoningFieldVariants},
+			{"reasoning duplicates", TestStream_DuplicatedReasoningFieldsNotDoubled},
+			{"reasoning deltas", TestStream_ReasoningDetailsDeltas},
+			{"reasoning field replay", TestReplay_ThinkingReturnsToSameField},
+			{"complete variants", TestComplete_ReasoningFieldVariants},
+			{"encrypted stream", TestStream_EncryptedReasoningDetails_RoundTrip},
+			{"mixed stream", TestStream_MixedTextAndEncryptedReasoningDetails},
+			{"encrypted before tool", TestStream_EncryptedDetailBeforeToolCall},
+			{"mixed replay", TestReplay_MixedTextAndEncryptedReasoningDetails},
+			{"encrypted only", TestReplay_EncryptedOnlyWithoutReasoningFlag},
+			{"stream choice usage", TestStream_ChoiceLevelUsageFallback},
+			{"stream usage precedence", TestStream_TopLevelUsageWinsOverChoice},
+			{"foreign encrypted", TestReplay_ForeignEncryptedContentSkipped},
+			{"cross chunk usage", TestStream_TopLevelUsageWinsAcrossChunks},
+			{"signature stream", TestStream_SignatureReasoningDetailSurvives},
+			{"signature merge", TestToChatMessages_MergesTextIntoSignatureItem},
+			{"reasoning tool choice", TestBuildRequestBody_ToolChoiceAutoUnderReasoning},
+			{"structured stream", TestStructuredOpenAICompatReachesDeeper},
+			{"parallel tools", TestChatParallelToolCallOrderStable},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, tc.fn)
+		}
+	})
+}
