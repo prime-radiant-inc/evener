@@ -32,6 +32,7 @@ func FuzzJobManagerErrorRecoveryProgram(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		p := decodeJobManagerErrorProgram(data)
+		runAgentJobsSeed100(t, p.output)
 		first := runJobManagerErrorProgram(t, p)
 		if replay := runJobManagerErrorProgram(t, p); !reflect.DeepEqual(first, replay) {
 			t.Fatalf("job-manager error replay changed:\nfirst:  %#v\nreplay: %#v", first, replay)
