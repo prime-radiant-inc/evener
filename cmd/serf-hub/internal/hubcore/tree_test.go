@@ -922,6 +922,29 @@ func TestBuildProjectTree_FindsArchivedProject(t *testing.T) {
 	}
 }
 
+func TestBuildProjectTree_PrefersFirstActiveSameNameProject(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	metas := []schema.SessionMeta{
+		{ID: "active-older", OriginalPrompt: "active older", CreatedAt: now.Add(-2 * time.Hour),
+			UpdatedAt: now.Add(-2 * time.Hour),
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/work/older/shared"}},
+		{ID: "archived", OriginalPrompt: "archived", CreatedAt: now.Add(-30 * 24 * time.Hour),
+			UpdatedAt: now.Add(-30 * 24 * time.Hour),
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/work/archived/shared"}},
+		{ID: "active-newest", OriginalPrompt: "active newest", CreatedAt: now.Add(-time.Hour),
+			UpdatedAt: now.Add(-time.Hour),
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/work/newest/shared"}},
+	}
+
+	proj, ok := BuildProjectTreeAt(metas, nil, map[ArchiveKey]bool{}, now, "shared")
+	if !ok {
+		t.Fatal("BuildProjectTreeAt should find project 'shared'")
+	}
+	if proj.WorkingDir != "/work/newest/shared" {
+		t.Fatalf("WorkingDir = %q, want first active same-name project", proj.WorkingDir)
+	}
+}
+
 func TestBuildProjectTree_UnknownProjectReturnsFalse(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	metas := []schema.SessionMeta{

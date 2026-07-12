@@ -733,19 +733,15 @@ func BuildProjectTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions 
 		return TreeProject{}, false
 	}
 	tree := BuildTreeAt(subset, live, decisions, now)
-	var result TreeProject
-	found := false
 	for _, p := range tree.Projects {
 		if p.Name == name {
-			result, found = p, true
+			return p, true
 		}
 	}
-	for _, p := range tree.ArchivedProjects {
-		if p.Name == name {
-			result, found = p, true
-		}
-	}
-	return result, found
+	// A non-empty subset always produces at least one project with this name.
+	// If none is active, the first archived project has the same precedence the
+	// original search loop provided.
+	return tree.ArchivedProjects[0], true
 }
 
 // decisionFor returns the explicit archive decision for a session ID as a
