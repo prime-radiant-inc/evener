@@ -20,6 +20,14 @@ var (
 	probedOriginalFg string // "#rrggbb" or empty if probe failed
 	probedOriginalBg string
 	probedDone       bool
+
+	terminalIsStdout      = func() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
+	terminalForeground    = termenv.ForegroundColor
+	terminalBackground    = termenv.BackgroundColor
+	terminalHasDarkBg     = termenv.HasDarkBackground
+	terminalSetForeground = func(c termenv.Color) { termenv.DefaultOutput().SetForegroundColor(c) }
+	terminalSetBackground = func(c termenv.Color) { termenv.DefaultOutput().SetBackgroundColor(c) }
+	terminalWriteString   = func(s string) { _, _ = os.Stdout.WriteString(s) }
 )
 
 // ProbeTerminalDefaults queries the terminal for its default foreground
@@ -39,10 +47,10 @@ func ProbeTerminalDefaults() bool {
 	if !stdoutIsTerminal() {
 		return false
 	}
-	if c := termenv.ForegroundColor(); c != nil {
+	if c := terminalForeground(); c != nil {
 		probedOriginalFg = colorToHex(c)
 	}
-	if c := termenv.BackgroundColor(); c != nil {
+	if c := terminalBackground(); c != nil {
 		probedOriginalBg = colorToHex(c)
 	}
 	return probedOriginalBg != ""
@@ -59,7 +67,7 @@ func detectSystemThemeKey() string {
 		}
 		return "light"
 	}
-	if termenv.HasDarkBackground() {
+	if terminalHasDarkBg() {
 		return "dark"
 	}
 	return "light"
@@ -135,12 +143,11 @@ func ApplyTerminalBg() {
 		return
 	}
 	th := ActiveTheme()
-	out := termenv.DefaultOutput()
 	if fg := string(th.Text); fg != "" {
-		out.SetForegroundColor(termenv.RGBColor(fg))
+		terminalSetForeground(termenv.RGBColor(fg))
 	}
 	if bg := string(th.Bg); bg != "" {
-		out.SetBackgroundColor(termenv.RGBColor(bg))
+		terminalSetBackground(termenv.RGBColor(bg))
 	}
 }
 
@@ -156,19 +163,18 @@ func ResetTerminalBg() {
 	if !stdoutIsTerminal() {
 		return
 	}
-	out := termenv.DefaultOutput()
 	if probedOriginalFg != "" {
-		out.SetForegroundColor(termenv.RGBColor(probedOriginalFg))
+		terminalSetForeground(termenv.RGBColor(probedOriginalFg))
 	} else {
-		_, _ = os.Stdout.WriteString("\x1b]110\x07")
+		terminalWriteString("\x1b]110\x07")
 	}
 	if probedOriginalBg != "" {
-		out.SetBackgroundColor(termenv.RGBColor(probedOriginalBg))
+		terminalSetBackground(termenv.RGBColor(probedOriginalBg))
 	} else {
-		_, _ = os.Stdout.WriteString("\x1b]111\x07")
+		terminalWriteString("\x1b]111\x07")
 	}
 }
 
 func stdoutIsTerminal() bool {
-	return term.IsTerminal(int(os.Stdout.Fd()))
+	return terminalIsStdout()
 }

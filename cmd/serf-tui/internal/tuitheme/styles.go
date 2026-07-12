@@ -9,6 +9,13 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+var (
+	readThemeFile     = os.ReadFile
+	makeThemeDirs     = os.MkdirAll
+	writeThemeFile    = os.WriteFile
+	marshalThemePrefs = json.MarshalIndent
+)
+
 // TUIStyles holds composed lipgloss.Style values derived from the active
 // Theme. DefaultTUIStyles() rebuilds this from ActiveTheme() on each call so
 // runtime theme switches take effect immediately.
@@ -197,7 +204,7 @@ func LoadThemePreference(stateDir string) (string, bool) {
 	if path == "" {
 		return "", false
 	}
-	data, err := os.ReadFile(path)
+	data, err := readThemeFile(path)
 	if err != nil {
 		return "", false
 	}
@@ -217,15 +224,15 @@ func saveThemePreference(stateDir, name string) error {
 	if path == "" || !validThemeName(name) {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := makeThemeDirs(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(tuiPreferences{Theme: name}, "", "  ")
+	data, err := marshalThemePrefs(tuiPreferences{Theme: name}, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o644)
+	return writeThemeFile(path, data, 0o644)
 }
 
 func validThemeName(name string) bool {
