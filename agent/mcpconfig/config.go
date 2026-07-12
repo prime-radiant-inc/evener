@@ -312,9 +312,13 @@ func Discover(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string
 // globalMCPConfigPath returns the path to the global MCP config file.
 // Uses XDG_CONFIG_HOME if set, otherwise ~/.config.
 func globalMCPConfigPath() string {
+	return globalMCPConfigPathWithHome(os.UserHomeDir)
+}
+
+func globalMCPConfigPathWithHome(userHomeDir func() (string, error)) string {
 	dir := envvars.XDGConfigHome.Getenv()
 	if dir == "" {
-		home, err := os.UserHomeDir()
+		home, err := userHomeDir()
 		if err != nil {
 			return ""
 		}

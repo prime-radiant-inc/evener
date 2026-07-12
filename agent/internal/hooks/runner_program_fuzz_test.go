@@ -10,8 +10,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +24,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/llm"
 )
 
@@ -54,7 +58,83 @@ func FuzzHookRunnerProgram(f *testing.F) {
 			secondJSON, _ := json.Marshal(second)
 			t.Fatalf("hook runner program is not deterministic:\nfirst=%s\nsecond=%s", firstJSON, secondJSON)
 		}
+		runHookRuntimeResidualProgram(t, mode, token)
 	})
+}
+
+func runHookRuntimeResidualProgram(t *testing.T, mode byte, token string) {
+	t.Helper()
+	runtime := systemCommandHookRuntime{
+		run: func(_ context.Context, _ commandHookInvocation, cmd *exec.Cmd) error {
+			_, _ = cmd.Stdout.Write([]byte(token))
+			if mode&1 != 0 {
+				return errors.New("scripted process failure")
+			}
+			return nil
+		},
+	}
+	if env := runtime.Environ(); env == nil {
+		t.Fatal("system runtime returned a nil environment")
+	}
+	result, err := runtime.Run(context.Background(), commandHookInvocation{
+		Program: "scripted-hook", Timeout: time.Second,
+	})
+	if mode&1 != 0 {
+		if err == nil || !strings.Contains(err.Error(), "scripted process failure") {
+			t.Fatalf("scripted runtime error = %v", err)
+		}
+	} else if err != nil || result.Stdout != token {
+		t.Fatalf("scripted runtime result = %#v, %v", result, err)
+	}
+	if mode == 1 {
+		sandboxRoot := t.TempDir()
+		wrapper, err := sandbox.NewWrapper(sandbox.ResolvedPolicy{
+			Mode: sandbox.ModeWorkspaceWrite, Backend: sandbox.BackendBwrap,
+			FileTool: sandbox.AccessScope{Read: sandbox.ReadAnywhere, WriteRoots: []string{sandboxRoot}},
+			Spawned:  sandbox.AccessScope{Read: sandbox.ReadAnywhere, WriteRoots: []string{sandboxRoot}},
+			Git:      sandbox.GitLayout{Kind: sandbox.NonGit, WorktreeRoot: sandboxRoot},
+		}, "/scripted/bwrap", filepath.Join(sandboxRoot, "tmp"))
+		if err != nil {
+			t.Fatalf("new scripted sandbox wrapper: %v", err)
+		}
+		if _, err := runtime.Run(context.Background(), commandHookInvocation{
+			Program: "scripted-hook", Timeout: time.Second, SandboxWrapper: wrapper,
+		}); err == nil || !strings.Contains(err.Error(), "scripted process failure") {
+			t.Fatalf("scripted sandbox runtime: %v", err)
+		}
+	}
+
+	if mode == 0xff {
+		canceled, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err = executeCommandHook(canceled, plugin.RegisteredHook{
+			Type: "command", Command: "/scripted/not-executed", Args: []string{"arg"}, Timeout: 1,
+		}, Input{})
+		if err == nil {
+			t.Fatal("canceled default command runtime unexpectedly succeeded")
+		}
+		if _, err := executeCommandHookWithRuntime(context.Background(), plugin.RegisteredHook{
+			Type: "command", Command: "/scripted/not-executed", Args: []string{"arg"}, Timeout: 1,
+		}, Input{}, nil); err == nil {
+			t.Fatal("nil command runtime unexpectedly succeeded")
+		}
+	}
+	if mode == 0x7f {
+		script := filepath.Join(t.TempDir(), "hook-script")
+		if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+			t.Fatalf("write hook process script: %v", err)
+		}
+		if _, err := (systemCommandHookRuntime{}).Run(context.Background(), commandHookInvocation{
+			Program: script, Timeout: time.Second,
+		}); err != nil {
+			t.Fatalf("default process runner script: %v", err)
+		}
+	}
+
+	matched, err := matchTarget("^Write"+regexp.QuoteMeta(token[:min(2, len(token))]), "Write"+token)
+	if err != nil || !matched {
+		t.Fatalf("regex matcher residual = %v, %v", matched, err)
+	}
 }
 
 type hookRunnerProgramReader struct {

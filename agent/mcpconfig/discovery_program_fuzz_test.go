@@ -5,6 +5,7 @@ package mcpconfig
 import (
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +44,11 @@ func FuzzMCPConfigDiscoveryProgram(f *testing.F) {
 		fuzzMCPConfigDiscoverNoProjectRoot(t, token)
 		fuzzMCPConfigDiscoverFatalInputs(t)
 		fuzzMCPConfigDiscoverHomeFallback(t, token)
+		if got := globalMCPConfigPathWithHome(func() (string, error) {
+			return "", errors.New("scripted home lookup failure")
+		}); got != "" {
+			t.Fatalf("global path after home lookup failure = %q, want empty", got)
+		}
 	})
 }
 

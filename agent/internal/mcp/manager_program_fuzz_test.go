@@ -70,7 +70,106 @@ func FuzzMCPManagerProgram(f *testing.F) {
 		mcpProgramRollback(t, payload)
 		mcpProgramConstructionCases(t)
 		mcpProgramManagerEdges(t)
+		mcpProgramResidualEdges(t, variant)
 	})
+}
+
+func mcpProgramResidualEdges(t *testing.T, variant uint8) {
+	t.Helper()
+	ctx := context.Background()
+	plain := &conn{}
+	if plain.clock().IsZero() {
+		t.Fatal("default connection clock returned zero")
+	}
+
+	invalid := mcpconfig.ServerConfig{Name: "invalid", Type: "unknown"}
+	if _, err := productionDialWithEnv(invalid, nil, mcpProgramFixedEnvironment)(ctx); err == nil {
+		t.Fatal("invalid production dial unexpectedly succeeded")
+	}
+	if _, err := transportForConfig(invalid); err == nil {
+		t.Fatal("invalid production transport unexpectedly succeeded")
+	}
+	if got := mergeEnv(map[string]string{"MCP_PROGRAM_RESIDUAL": fmt.Sprint(variant)}); mcpProgramEnvValue(got, "MCP_PROGRAM_RESIDUAL") == "" {
+		t.Fatal("production environment merge dropped explicit value")
+	}
+
+	if variant != 7 && variant != 19 && variant != 25 {
+		return
+	}
+	server, transport := mcpProgramServer(t, "error:")
+	defer func() { _ = server.Close() }()
+	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{{Name: "residual"}}, []func(context.Context) (mcpsdk.Transport, error){staticDial(transport)}, WithSandboxWrapper(nil))
+	if len(outcomes) != 0 {
+		t.Fatalf("residual manager outcomes = %+v", outcomes)
+	}
+	defer mgr.Close()
+	reg := tool.NewRegistry()
+	if outcomes := mgr.RegisterTools(reg); len(outcomes) != 0 {
+		t.Fatalf("residual register outcomes = %+v", outcomes)
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	result := mcpProgramExecute(t, canceled, reg, &agenttest.DenyEnv{}, "residual__probe", "canceled")
+	if !result.IsError {
+		t.Fatalf("canceled MCP call = %#v, want error", result)
+	}
+
+	switch variant {
+	case 7:
+		errorServer := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "fuzz-error", Version: "v1"}, nil)
+		errorServer.AddTool(&mcpsdk.Tool{Name: "fail", InputSchema: map[string]any{"type": "object"}}, func(context.Context, *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+			return nil, errors.New("scripted MCP handler failure")
+		})
+		serverTransport, clientTransport := mcpsdk.NewInMemoryTransports()
+		errorSession, err := errorServer.Connect(ctx, serverTransport, nil)
+		if err != nil {
+			t.Fatalf("connect error server: %v", err)
+		}
+		defer func() { _ = errorSession.Close() }()
+		errorManager, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{{Name: "failure"}}, []func(context.Context) (mcpsdk.Transport, error){staticDial(clientTransport)})
+		if len(outcomes) != 0 {
+			t.Fatalf("error manager outcomes = %+v", outcomes)
+		}
+		defer errorManager.Close()
+		errorRegistry := tool.NewRegistry()
+		if outcomes := errorManager.RegisterTools(errorRegistry); len(outcomes) != 0 {
+			t.Fatalf("error register outcomes = %+v", outcomes)
+		}
+		if result := mcpProgramExecute(t, ctx, errorRegistry, &agenttest.DenyEnv{}, "failure__fail", "x"); !result.IsError {
+			t.Fatalf("handler failure = %#v, want error", result)
+		}
+
+	case 19:
+		badContent := &mcpsdk.ImageContent{Meta: mcpsdk.Meta{"bad": make(chan int)}}
+		if got := mcpResultToString(&mcpsdk.CallToolResult{Content: []mcpsdk.Content{badContent}}); !strings.Contains(got, "ImageContent") {
+			t.Fatalf("unmarshalable MCP content fallback = %q", got)
+		}
+	case 25:
+		closeServer, closeTransport := mcpProgramServer(t, "close-race:")
+		defer func() { _ = closeServer.Close() }()
+		closeConn := &conn{client: mcpsdk.NewClient(&mcpsdk.Implementation{Name: "close-race", Version: "v1"}, nil)}
+		closeConn.dial = func(context.Context) (mcpsdk.Transport, error) {
+			return mcpProgramClosingTransport{Transport: closeTransport, conn: closeConn}, nil
+		}
+		if session, ok := closeConn.reconnect(ctx); session != nil || ok {
+			t.Fatalf("close-winning reconnect = %v, %v", session, ok)
+		}
+	}
+}
+
+type mcpProgramClosingTransport struct {
+	mcpsdk.Transport
+	conn *conn
+}
+
+func (t mcpProgramClosingTransport) Connect(ctx context.Context) (mcpsdk.Connection, error) {
+	connection, err := t.Transport.Connect(ctx)
+	if err == nil {
+		t.conn.mu.Lock()
+		t.conn.closed = true
+		t.conn.mu.Unlock()
+	}
+	return connection, err
 }
 
 func mcpProgramLifecycle(t *testing.T, payload string, variant uint8) {
