@@ -12,6 +12,19 @@ import (
 	"time"
 )
 
+type doctorTempFile interface {
+	Name() string
+	Close() error
+}
+
+var (
+	doctorStat         = os.Stat
+	doctorReadDir      = os.ReadDir
+	doctorCreateTemp   = func(dir, pattern string) (doctorTempFile, error) { return os.CreateTemp(dir, pattern) }
+	doctorRemove       = os.Remove
+	doctorGitAvailable = gitAvailable
+)
+
 // Doctor finding levels.
 const (
 	LevelOK   = "OK"
@@ -100,7 +113,7 @@ func (m *Manager) Doctor() ([]DoctorFinding, error) {
 // A missing or non-directory install path is the one blocking problem — it
 // short-circuits the rest, since there is nothing left at that path to check.
 func (m *Manager) doctorEntry(key string, e InstallEntry) []DoctorFinding {
-	info, err := os.Stat(e.InstallPath)
+	info, err := doctorStat(e.InstallPath)
 	if err != nil {
 		return []DoctorFinding{{
 			Level: LevelFail, Category: catRegistry,
@@ -172,7 +185,7 @@ func sourceCannotUpgrade(src Source) bool {
 // sha-dir that no registry entry's InstallPath points at — left behind by a
 // crash mid-install/upgrade, or a superseded dir awaiting the gc sweep (§12).
 func (m *Manager) doctorOrphanCacheDirs(knownPaths map[string]bool) []DoctorFinding {
-	marketplaceEnts, err := os.ReadDir(m.cacheDir())
+	marketplaceEnts, err := doctorReadDir(m.cacheDir())
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
@@ -189,7 +202,7 @@ func (m *Manager) doctorOrphanCacheDirs(knownPaths map[string]bool) []DoctorFind
 			continue
 		}
 		mktPath := filepath.Join(m.cacheDir(), mktEnt.Name())
-		pluginEnts, err := os.ReadDir(mktPath)
+		pluginEnts, err := doctorReadDir(mktPath)
 		if err != nil {
 			continue
 		}
@@ -198,7 +211,7 @@ func (m *Manager) doctorOrphanCacheDirs(knownPaths map[string]bool) []DoctorFind
 				continue
 			}
 			plugPath := filepath.Join(mktPath, plugEnt.Name())
-			shaEnts, err := os.ReadDir(plugPath)
+			shaEnts, err := doctorReadDir(plugPath)
 			if err != nil {
 				continue
 			}
@@ -239,7 +252,7 @@ func (m *Manager) doctorMarketplace(name string, ref MarketplaceRef) DoctorFindi
 		fixIt = fmt.Sprintf("the referenced directory is gone or invalid; run `serf plugin marketplace remove %s` and re-add it with a valid path", name)
 	}
 
-	info, err := os.Stat(ref.InstallLocation)
+	info, err := doctorStat(ref.InstallLocation)
 	if err != nil || !info.IsDir() {
 		return DoctorFinding{
 			Level: LevelFail, Category: catMarketplace,
@@ -248,7 +261,7 @@ func (m *Manager) doctorMarketplace(name string, ref MarketplaceRef) DoctorFindi
 		}
 	}
 
-	if ref.Source.Kind != SourceDirectory && gitAvailable() {
+	if ref.Source.Kind != SourceDirectory && doctorGitAvailable() {
 		if _, err := git(context.Background(), ref.InstallLocation, "rev-parse", "--git-dir"); err != nil {
 			return DoctorFinding{
 				Level: LevelFail, Category: catMarketplace,
@@ -283,7 +296,7 @@ func (m *Manager) doctorMarketplace(name string, ref MarketplaceRef) DoctorFindi
 // depends on: git for fetch/clone/pull, and a writable store root.
 func (m *Manager) doctorEnvironment() []DoctorFinding {
 	var findings []DoctorFinding
-	if gitAvailable() {
+	if doctorGitAvailable() {
 		findings = append(findings, DoctorFinding{Level: LevelOK, Category: catEnvironment, Message: "git is available on PATH"})
 	} else {
 		findings = append(findings, DoctorFinding{
@@ -318,7 +331,7 @@ func (m *Manager) doctorEnvironment() []DoctorFinding {
 // exist, it is probed with a throwaway temp file, without disturbing any real
 // state.
 func (m *Manager) checkStoreWritable() (exists bool, err error) {
-	info, statErr := os.Stat(m.Root)
+	info, statErr := doctorStat(m.Root)
 	if statErr != nil {
 		if errors.Is(statErr, fs.ErrNotExist) {
 			return false, nil
@@ -329,16 +342,16 @@ func (m *Manager) checkStoreWritable() (exists bool, err error) {
 		return true, fmt.Errorf("%s is not a directory", m.Root)
 	}
 
-	f, err := os.CreateTemp(m.Root, ".doctor-write-test-*")
+	f, err := doctorCreateTemp(m.Root, ".doctor-write-test-*")
 	if err != nil {
 		return true, err
 	}
 	name := f.Name()
 	if cerr := f.Close(); cerr != nil {
-		_ = os.Remove(name)
+		_ = doctorRemove(name)
 		return true, cerr
 	}
-	return true, os.Remove(name)
+	return true, doctorRemove(name)
 }
 
 // RenderDoctorFindings renders findings as a human-readable report: an

@@ -6,6 +6,8 @@ import (
 	agentplugin "primeradiant.com/serf/agent/plugin"
 )
 
+var enabledLoad = agentplugin.Load
+
 // EnabledPluginDirs returns the plugin directories a session should load:
 // the explicit --plugin-dir values first, then every installed+enabled+valid
 // registry entry. Each dir is dry-run validated (agent/plugin.Load), and the
@@ -17,7 +19,7 @@ func (m *Manager) EnabledPluginDirs(explicit []string) []string {
 	var out []string
 
 	add := func(dir string, fromRegistry bool) {
-		inst, err := agentplugin.Load(dir)
+		inst, err := enabledLoad(dir)
 		if err != nil {
 			if fromRegistry {
 				_, _ = fmt.Fprintf(m.stderr(), "warning: skipping broken plugin %s: %v\n", dir, err)

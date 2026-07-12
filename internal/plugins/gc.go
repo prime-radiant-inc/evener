@@ -10,6 +10,12 @@ import (
 	"time"
 )
 
+var (
+	gcAcquireLock = acquireLock
+	gcReadDir     = os.ReadDir
+	gcRemoveAll   = os.RemoveAll
+)
+
 // Gc sweeps cacheDir() (cache/<marketplace>/<plugin>/<sha>/) for materialized
 // plugin dirs that no registry entry's InstallPath references, and removes
 // them. It returns the removed paths.
@@ -24,7 +30,7 @@ import (
 // when the user is idle. Gc itself does not enforce that; it runs under the
 // same flock as every other mutation, so it never races an install/upgrade.
 func (m *Manager) Gc() ([]string, error) {
-	release, err := acquireLock(m.lockPath(), 30*time.Second)
+	release, err := gcAcquireLock(m.lockPath(), 30*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +47,7 @@ func (m *Manager) Gc() ([]string, error) {
 		}
 	}
 
-	marketplaceEntries, err := os.ReadDir(m.cacheDir())
+	marketplaceEntries, err := gcReadDir(m.cacheDir())
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return []string{}, nil
@@ -58,7 +64,7 @@ func (m *Manager) Gc() ([]string, error) {
 			continue
 		}
 		mktDir := filepath.Join(m.cacheDir(), mktEnt.Name())
-		pluginEntries, err := os.ReadDir(mktDir)
+		pluginEntries, err := gcReadDir(mktDir)
 		if err != nil {
 			continue // best-effort: a transient read error on one marketplace shouldn't abort the sweep
 		}
@@ -67,7 +73,7 @@ func (m *Manager) Gc() ([]string, error) {
 				continue
 			}
 			pluginDir := filepath.Join(mktDir, plugEnt.Name())
-			shaEntries, err := os.ReadDir(pluginDir)
+			shaEntries, err := gcReadDir(pluginDir)
 			if err != nil {
 				continue
 			}
@@ -79,7 +85,7 @@ func (m *Manager) Gc() ([]string, error) {
 				if referenced[filepath.Clean(shaDir)] {
 					continue
 				}
-				if err := os.RemoveAll(shaDir); err != nil {
+				if err := gcRemoveAll(shaDir); err != nil {
 					return removed, fmt.Errorf("removing %s: %w", shaDir, err)
 				}
 				removed = append(removed, shaDir)
