@@ -4565,7 +4565,7 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
     min-height: 48px;
     padding: var(--space-2) 0;
     border: none;
-  border-bottom: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
     border-radius: 0;
     background: transparent;
     color: var(--text);
@@ -4575,7 +4575,7 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
     text-align: left;
     cursor: pointer;
   }
-.spawn-row:first-child { border-top: 1px solid var(--rule); }
+  .spawn-row:first-child { border-top: 1px solid var(--rule); }
   .spawn-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .spawn-row-label {
     font-weight: 500;
@@ -4588,12 +4588,12 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-  color: var(--text-muted);
+    color: var(--text-muted);
   }
   .spawn-row-caret {
     flex: none;
     margin-left: var(--space-2);
-  color: var(--text-dim);
+    color: var(--text-dim);
     font-size: 10px;
   }
   .spawn-row:active:not([disabled]):not(:disabled) { background: var(--surface-secondary); }
