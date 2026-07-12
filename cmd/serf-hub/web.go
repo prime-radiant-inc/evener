@@ -48,7 +48,8 @@ type WebServer struct {
 	liveModels *modelsCache
 	// treeCache memoizes the /api/tree BuildTree+attention-summary computation
 	// by inputs-version + 30s time bucket (see hubcore.TreeCache).
-	treeCache *hubcore.TreeCache
+	treeCache  *hubcore.TreeCache
+	manifestFS fs.FS
 }
 
 // inputStripTemplateFuncs supplies the input-status partial's formatting
@@ -107,6 +108,7 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 		lastGoodThreads:     map[string][]appwire.Thread{},
 		liveModels:          &modelsCache{},
 		treeCache:           &hubcore.TreeCache{},
+		manifestFS:          assetsRoot(),
 	}
 	web.appRPC = newHubAppServer(cfg, sources)
 	return web
@@ -245,7 +247,11 @@ func (s *WebServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 // own cookie jar instead of hitting the auth wall. When the guard is disabled
 // (no token) start_url stays "/".
 func (s *WebServer) handleManifest(w http.ResponseWriter, r *http.Request) {
-	raw, err := fs.ReadFile(assetsRoot(), "manifest.webmanifest")
+	manifestFS := s.manifestFS
+	if manifestFS == nil {
+		manifestFS = assetsRoot()
+	}
+	raw, err := fs.ReadFile(manifestFS, "manifest.webmanifest")
 	if err != nil {
 		http.Error(w, "manifest unavailable", http.StatusInternalServerError)
 		return
