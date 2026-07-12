@@ -57,6 +57,8 @@ type hubRelayHandle struct {
 	err   error
 }
 
+var hubRelayIdleInterval = 250 * time.Millisecond
+
 type threadReadRelayPolicy interface {
 	RelayOnThreadRead() bool
 }
@@ -69,6 +71,7 @@ func relayOnThreadRead(source appsource.Source) bool {
 }
 
 func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appserver.Server {
+	relayIdleInterval := hubRelayIdleInterval
 	server := appserver.NewServer(appserver.ServerConfig{
 		ServerName: "serf-hub",
 		Version:    Version,
@@ -180,7 +183,7 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 		close(relayHandle.ready)
 		relayMu.Unlock()
 		go func() {
-			ticker := time.NewTicker(250 * time.Millisecond)
+			ticker := time.NewTicker(relayIdleInterval)
 			cleanupRelay := func() {
 				cancelRelay()
 				relayMu.Lock()
