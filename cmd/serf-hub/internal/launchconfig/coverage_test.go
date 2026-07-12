@@ -70,9 +70,22 @@ func TestWriteAtomicFSFailuresRemoveTemporaryFile(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			sentinel := tc.encodeErr
+			if sentinel == nil {
+				sentinel = tc.writeErr
+			}
+			if sentinel == nil {
+				sentinel = tc.syncErr
+			}
+			if sentinel == nil {
+				sentinel = tc.closeErr
+			}
 			base := afero.NewMemMapFs()
 			fs := &atomicFailureFS{Fs: base, writeErr: tc.writeErr, syncErr: tc.syncErr, closeErr: tc.closeErr}
 			path := filepath.Join("config", "launch.toml")
+			if err := afero.WriteFile(base, path, []byte("original"), 0o600); err != nil {
+				t.Fatal(err)
+			}
 			err := writeAtomicFS(fs, path, func(w io.Writer) error {
 				if tc.encodeErr != nil {
 					return tc.encodeErr
@@ -80,8 +93,12 @@ func TestWriteAtomicFSFailuresRemoveTemporaryFile(t *testing.T) {
 				_, err := w.Write([]byte("model = \"x\"\n"))
 				return err
 			})
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
+			if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), tc.want+" "+path+".tmp") {
 				t.Fatalf("writeAtomicFS error = %v, want %q failure", err, tc.want)
+			}
+			got, readErr := afero.ReadFile(base, path)
+			if readErr != nil || string(got) != "original" {
+				t.Fatalf("destination = %q, err=%v; want unchanged", got, readErr)
 			}
 			if exists, err := afero.Exists(base, path+".tmp"); err != nil || exists {
 				t.Fatalf("temporary file exists=%v, err=%v", exists, err)
@@ -101,19 +118,21 @@ func TestValidateRepoRelativePathResolutionError(t *testing.T) {
 }
 
 func TestDecodeTrustedRepoLayerError(t *testing.T) {
+	sentinel := errors.New("decode failed")
 	_, diags := decodeTrustedRepoLayer("/repo", []byte("model = \"x\""), func([]byte, interface{}) error {
-		return errors.New("decode failed")
+		return sentinel
 	})
-	if len(diags) != 1 || !strings.Contains(diags[0].Message, "decode failed") {
+	if len(diags) != 1 || diags[0].Layer != LayerRepo || diags[0].Field != ".serf/launch.toml" || diags[0].Message != sentinel.Error() {
 		t.Fatalf("diagnostics = %#v", diags)
 	}
 }
 
 func TestCanonicalHashEncodeError(t *testing.T) {
+	sentinel := errors.New("encode failed")
 	_, err := canonicalHashTOML([]byte("model = \"x\""), func(io.Writer, Layer) error {
-		return errors.New("encode failed")
+		return sentinel
 	})
-	if err == nil || !strings.Contains(err.Error(), "canonical hash: encode") {
+	if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), "canonical hash: encode") {
 		t.Fatalf("canonicalHashTOML error = %v", err)
 	}
 }
@@ -139,33 +158,42 @@ func TestMergeAdditionalLaunchFields(t *testing.T) {
 }
 
 func TestResolveProjectLoadError(t *testing.T) {
-	stateRoot := t.TempDir()
-	cwd := t.TempDir()
+	fs := afero.NewMemMapFs()
+	stateRoot := "/state"
+	cwd := "/repo"
 	path := PathsFor(stateRoot, cwd).Project
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := afero.WriteFile(fs, path, []byte("invalid {{{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("invalid {{{"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, err := Resolve(stateRoot, cwd, Layer{})
+	_, err := resolveFS(fs, stateRoot, cwd, Layer{})
 	if err == nil || !strings.Contains(err.Error(), "project: launchconfig: parse") {
 		t.Fatalf("Resolve error = %v", err)
 	}
 }
 
 func TestLoadProjectLayerLegacyStatError(t *testing.T) {
-	stateRoot := t.TempDir()
-	cwd := t.TempDir()
+	stateRoot := "/state"
+	cwd := "/repo"
 	paths := PathsFor(stateRoot, cwd)
-	blocker := filepath.Join(stateRoot, "projects")
-	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
-		t.Fatal(err)
+	sentinel := errors.New("legacy stat failed")
+	fs := &statFailureFS{Fs: afero.NewMemMapFs(), path: paths.LegacyProject, err: sentinel}
+	_, _, err := loadProjectLayerFS(fs, paths)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("loadProjectLayerFS error = %v, want legacy stat failure", err)
 	}
-	_, _, err := LoadProjectLayer(paths)
-	if err == nil {
-		t.Fatal("LoadProjectLayer returned nil error")
+}
+
+type statFailureFS struct {
+	afero.Fs
+	path string
+	err  error
+}
+
+func (fs *statFailureFS) Stat(name string) (os.FileInfo, error) {
+	if name == fs.path {
+		return nil, fs.err
 	}
+	return fs.Fs.Stat(name)
 }
 
 func TestComputeTrustStateUnknownDecision(t *testing.T) {
