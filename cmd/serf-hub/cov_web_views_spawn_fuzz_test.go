@@ -13,8 +13,11 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/serf/hubapi"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 // FuzzCovWebViewsSpawn drives deterministic edge seeds through the web view
@@ -90,8 +93,31 @@ func FuzzCovWebViewsSpawn(f *testing.F) {
 		_ = modelDescriptorsToAPIModels(nil, nil)
 		_ = modelDescriptorsToAPIModels([]appwire.ModelDescriptor{{}, {Provider: "openai", Model: "gpt-4o"}}, nil)
 		_ = catalogModelInfo(nil, "", "")
+		no, yes := false, true
+		providerCfg := &providercfg.Config{Instances: []providercfg.InstanceConfig{
+			{Name: "plain", Type: "ollama"},
+			{Name: "custom", Type: "openai", APIStyle: providercfg.StyleChatCompletions, Models: map[string]providercfg.ModelConfig{
+				"off":    {Reasoning: &no},
+				"levels": {ThinkingLevels: map[string]string{"high": "hard", "low": "easy"}},
+				"on":     {Reasoning: &yes, ContextWindow: 1234},
+			}},
+		}}
+		for _, model := range []string{"missing", "off", "levels", "on"} {
+			entry := map[string]any{}
+			applyInstanceModelOverride(entry, providerCfg, "custom", model)
+		}
+		applyInstanceModelOverride(map[string]any{}, providerCfg, "absent", "x")
+		_ = behaviorTagFor(providerCfg, "plain")
+		_ = behaviorTagFor(providerCfg, "custom")
+		_ = behaviorTagFor(providerCfg, "absent")
 		_ = contextMeterHTML(-1, 0, 0, -1)
 		_ = contextMeterHTML(2, 10, 5, 2)
+		_ = tokensAndCostRows("", nil)
+		_ = tokensAndCostRows("gpt-4o", &appwire.SerfUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15})
+		_ = serfUsageFromCumulative(schema.CumulativeUsage{})
+		_ = serfUsageFromCumulative(schema.CumulativeUsage{InputTokens: 1})
+		_ = appwireUsageFromHub(nil)
+		_ = appwireUsageFromHub(&hubapi.Usage{InputTokens: 1})
 
 		for _, tc := range []struct{ method, target, body string }{
 			{http.MethodGet, "/api/spawn", ""},
@@ -107,6 +133,50 @@ func FuzzCovWebViewsSpawn(f *testing.F) {
 		}
 		writeModelsResponse(httptest.NewRecorder(), nil, nil, nil, true)
 		writeModelsResponse(httptest.NewRecorder(), models, nil, nil, false)
+
+		sb := newSandbox(t)
+		sb.Web.cfg.MCPConfigPath = filepath.Join(root, "missing-mcp")
+		for _, section := range []string{"launch", "project", "missing", "general"} {
+			req := httptest.NewRequest(http.MethodGet, "/_partials/settings/"+section, nil)
+			sb.Web.renderSettingsPartial(httptest.NewRecorder(), req, section)
+		}
+		for _, target := range []string{"/settings/launch", "/settings/project?cwd=" + root, "/settings/general"} {
+			sb.Web.handleSettings(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, target, nil))
+		}
+		hx := httptest.NewRequest(http.MethodGet, "/settings", nil)
+		hx.Header.Set("HX-Request", "true")
+		sb.Web.handleSettings(httptest.NewRecorder(), hx)
+		sb.Web.handleCredentialsPartial(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+		_ = sb.Web.workspaceDataForRender(sandboxSessionID)
+		sb.Web.renderWorkspacePartial(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), sandboxSessionID)
+		_ = sb.Web.detailsSections(sandboxSessionID)
+		sb.Web.renderDetailsPanel(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), sandboxSessionID)
+		sb.Web.renderSessionTasks(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), sandboxSessionID)
+		sb.Web.renderSessionTasks(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "missing")
+		sb.Web.fillForkLineage(&WorkspaceData{}, schema.SessionMeta{})
+		sb.Web.fillForkLineage(&WorkspaceData{}, schema.SessionMeta{ID: "id", ForkLabel: "fork", DivergenceTurn: 2})
+		sb.Web.fillSubagentLineage(&WorkspaceData{}, schema.SessionMeta{})
+		sb.Web.fillSubagentLineage(&WorkspaceData{}, schema.SessionMeta{IsSubagent: true, ParentSessionID: "parent"})
+		sb.Web.fillObserverLink(&WorkspaceData{}, schema.SessionMeta{})
+		observerData := WorkspaceData{}
+		sb.Web.fillObserverLink(&observerData, schema.SessionMeta{ObservedBy: []string{"", "observer", "observer"}})
+		for _, target := range []string{
+			"/s/", "/s/" + sandboxSessionID, "/s/" + sandboxSessionID + "/state",
+			"/s/" + sandboxSessionID + "/details", "/s/" + sandboxSessionID + "/tasks",
+			"/s/" + sandboxSessionID + "/unknown", "/s/" + sandboxSessionID + "/images/bad",
+			"/s/" + sandboxSessionID + "/send", "/s/" + sandboxSessionID + "/fork",
+			"/s/" + sandboxSessionID + "/steer", "/s/" + sandboxSessionID + "/queue",
+			"/s/" + sandboxSessionID + "/drain-as-steer",
+		} {
+			sb.Web.handleSession(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, target, nil))
+		}
+		hxSession := httptest.NewRequest(http.MethodGet, "/s/"+sandboxSessionID, nil)
+		hxSession.Header.Set("HX-Request", "true")
+		sb.Web.handleSession(httptest.NewRecorder(), hxSession)
+		for _, target := range []string{"/thread/", "/thread/a/b"} {
+			sb.Web.handleThreadDocument(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, target, nil))
+		}
+		sb.Web.handleThreadDocument(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/thread/x", nil))
 
 		broken := template.Must(template.New("root").Parse(`{{define "app"}}{{.Missing.Field}}{{end}}{{define "spawn"}}{{.Missing.Field}}{{end}}{{define "workspace"}}{{.Missing.Field}}{{end}}{{define "thread_document"}}{{.Missing.Field}}{{end}}{{define "project_settings"}}{{.Missing.Field}}{{end}}`))
 		web.appTmpl, web.spawnTmpl, web.workspaceTmpl, web.threadTmpl, web.projectSettingsTmpl = broken, broken, broken, broken, broken
