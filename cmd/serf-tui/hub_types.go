@@ -97,6 +97,14 @@ type hubSessionDetail struct {
 	Usage               *appwire.SerfUsage
 	WorkMillis          int64
 	ActiveTurnStartedAt int64
+	// ReasoningEffort, ReasoningEffortLevels, and SupportsReasoning mirror
+	// thread.Serf's live reasoning-effort settings (Task 4) so the /effort
+	// command and session header render without a fresh round-trip, and
+	// thread/model/changed / thread/reasoning-effort/changed keep them
+	// current mid-session.
+	ReasoningEffort       string
+	ReasoningEffortLevels []string
+	SupportsReasoning     bool
 }
 
 type hubRefResponse struct {
@@ -228,33 +236,36 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 		capabilities.Resume = true
 	}
 	return hubSessionDetail{
-		Ref:                 node.Ref,
-		SessionID:           thread.SessionID,
-		SourceLabel:         node.SourceLabel,
-		Title:               node.Title,
-		State:               node.State,
-		AskPending:          thread.Serf.AskPending,
-		PendingEscalations:  thread.Serf.PendingEscalations,
-		Model:               thread.ModelProvider,
-		Profile:             thread.Serf.Profile,
-		WorkingDir:          thread.CWD,
-		Project:             node.Project,
-		Branch:              gitBranchFromThread(thread),
-		TurnCount:           len(thread.Turns),
-		ActiveTurnID:        activeTurnIDFromThread(thread),
-		ContextPressure:     thread.Serf.ContextPressure,
-		ContextUsed:         thread.Serf.ContextUsed,
-		ContextWindow:       thread.Serf.ContextWindow,
-		ContextRemaining:    thread.Serf.ContextRemaining,
-		RecentErrors:        recentTurnErrors(thread),
-		Diagnostics:         thread.Serf.Diagnostics,
-		Live:                node.Live,
-		Capabilities:        capabilities,
-		Queue:               thread.Serf.Queue,
-		Goal:                thread.Serf.Goal,
-		Usage:               thread.Serf.Usage,
-		WorkMillis:          thread.Serf.WorkMillis,
-		ActiveTurnStartedAt: thread.Serf.ActiveTurnStartedAt,
+		Ref:                   node.Ref,
+		SessionID:             thread.SessionID,
+		SourceLabel:           node.SourceLabel,
+		Title:                 node.Title,
+		State:                 node.State,
+		AskPending:            thread.Serf.AskPending,
+		PendingEscalations:    thread.Serf.PendingEscalations,
+		Model:                 thread.ModelProvider,
+		Profile:               thread.Serf.Profile,
+		WorkingDir:            thread.CWD,
+		Project:               node.Project,
+		Branch:                gitBranchFromThread(thread),
+		TurnCount:             len(thread.Turns),
+		ActiveTurnID:          activeTurnIDFromThread(thread),
+		ContextPressure:       thread.Serf.ContextPressure,
+		ContextUsed:           thread.Serf.ContextUsed,
+		ContextWindow:         thread.Serf.ContextWindow,
+		ContextRemaining:      thread.Serf.ContextRemaining,
+		RecentErrors:          recentTurnErrors(thread),
+		Diagnostics:           thread.Serf.Diagnostics,
+		Live:                  node.Live,
+		Capabilities:          capabilities,
+		Queue:                 thread.Serf.Queue,
+		Goal:                  thread.Serf.Goal,
+		Usage:                 thread.Serf.Usage,
+		WorkMillis:            thread.Serf.WorkMillis,
+		ActiveTurnStartedAt:   thread.Serf.ActiveTurnStartedAt,
+		ReasoningEffort:       thread.Serf.ReasoningEffort,
+		ReasoningEffortLevels: thread.Serf.ReasoningEffortLevels,
+		SupportsReasoning:     thread.Serf.SupportsReasoning,
 	}
 }
 

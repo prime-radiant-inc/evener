@@ -151,6 +151,19 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			// the daemon (kata r80p); we no longer mirror locally on turn
 			// completion.
 		}
+	case appwire.NotifyThreadModelChanged:
+		var params appwire.ThreadModelChangedParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			m.detail.Model = params.Model
+			m.detail.ReasoningEffortLevels = params.ReasoningEffortLevels
+			m.detail.SupportsReasoning = params.SupportsReasoning
+			m.updateDashboardRowModel(params.Ref, params.Model)
+		}
+	case appwire.NotifyThreadReasoningEffortChanged:
+		var params appwire.ThreadReasoningEffortChangedParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			m.detail.ReasoningEffort = params.ReasoningEffort
+		}
 	case appwire.NotifyThreadQueueChanged:
 		var params appwire.ThreadQueueChangedParams
 		if json.Unmarshal(notification.Params, &params) == nil {
@@ -349,6 +362,22 @@ func (m *hubModel) applyQueueState(ref string, queue appwire.QueueState) {
 		return
 	}
 	m.sessionQueue = append([]string(nil), queue.Preview...)
+}
+
+// updateDashboardRowModel keeps the dashboard's session-row Model column
+// live: thread/model/changed fires while the daemon still holds the row list
+// (m.rows), which is otherwise only rebuilt from a fresh tree fetch.
+func (m *hubModel) updateDashboardRowModel(ref, model string) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" || model == "" {
+		return
+	}
+	for i := range m.rows {
+		if m.rows[i].ref.String() == ref {
+			m.rows[i].model = model
+			return
+		}
+	}
 }
 
 // clearSessionQueue empties the local queue preview. Called when
