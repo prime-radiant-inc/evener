@@ -135,6 +135,12 @@ type delegateWorktreeReport struct {
 	Branch string
 	Ahead  int
 	Dirty  bool
+	// DisposalHint is the spec §P2 completion nudge, rendered verbatim on both
+	// surfaces (inline tool result and background notification) iff the
+	// receiving session has the dispose op AND owns the delegate. Empty when
+	// either gate fails (a forwarded descendant copy in an ancestor, or a leaf
+	// delegate whose manage_worktree was stripped). Computed git-free.
+	DisposalHint string
 }
 
 // delegateSandboxReport is the delegate's enforced sandbox box (mode + network),
@@ -2527,11 +2533,35 @@ func (s *Session) isolatedDelegateWorktreeReport(desc *jobstore.DelegateRestoreD
 		return nil
 	}
 	return &delegateWorktreeReport{
-		Path:   lanePath,
-		Branch: sc.Branch,
-		Ahead:  ahead,
-		Dirty:  !clean,
+		Path:         lanePath,
+		Branch:       sc.Branch,
+		Ahead:        ahead,
+		Dirty:        !clean,
+		DisposalHint: s.delegateDisposalHint(desc, filepath.Base(lanePath)),
 	}
+}
+
+// delegateDisposalHint returns the spec §P2 completion nudge for a finished
+// isolated delegate, or "" when the receiving session s cannot act on it: the
+// session lacks the dispose op (manage_worktree is not in its registry — leaf
+// delegates have it stripped), or it does not own the delegate
+// (desc.ParentSessionID != s.id — a forwarded descendant copy in an ancestor).
+// The gate consults only the registry and the descriptor; no git runs here, so
+// both render surfaces stay git-free (spec §P2 "no git at render").
+func (s *Session) delegateDisposalHint(desc *jobstore.DelegateRestoreDescriptor, id string) string {
+	if s == nil || desc == nil {
+		return ""
+	}
+	if desc.ParentSessionID != s.id {
+		return ""
+	}
+	if s.reg == nil || s.reg.Get("manage_worktree") == nil {
+		return ""
+	}
+	if !isDelegateID(id) {
+		return ""
+	}
+	return fmt.Sprintf("When you're done with this delegate's work (e.g., after merging it), dispose its worktree and branch: manage_worktree op=dispose id=%s.", id)
 }
 
 func (s *Session) useDelegateWorktreeControlPolicy(env *execenv.LocalExecutionEnvironment, mainRoot string) error {

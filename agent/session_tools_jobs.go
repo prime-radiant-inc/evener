@@ -1456,13 +1456,18 @@ type delegateWorktreeToolResult struct {
 	Branch string `json:"branch"`
 	Ahead  int    `json:"ahead_commits"`
 	Dirty  bool   `json:"dirty"`
+	// DisposalHint carries the spec §P2 completion nudge. It MUST be exported —
+	// an unexported field is silently dropped by encoding/json (roborev finding
+	// 2718-2). Empty (and omitted) unless the receiving session has the dispose
+	// op and owns the delegate.
+	DisposalHint string `json:"disposal_hint,omitempty"`
 }
 
 func delegateWorktreeToolResultFrom(wt *delegateWorktreeReport) *delegateWorktreeToolResult {
 	if wt == nil {
 		return nil
 	}
-	return &delegateWorktreeToolResult{Path: wt.Path, Branch: wt.Branch, Ahead: wt.Ahead, Dirty: wt.Dirty}
+	return &delegateWorktreeToolResult{Path: wt.Path, Branch: wt.Branch, Ahead: wt.Ahead, Dirty: wt.Dirty, DisposalHint: wt.DisposalHint}
 }
 
 type delegateSandboxToolResult struct {

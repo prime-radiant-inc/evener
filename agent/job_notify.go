@@ -195,6 +195,12 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt) 
 	if excerpt.text != "" {
 		body += "\nexcerpt:\n" + excerpt.text
 	}
+	// The spec §P2 completion nudge rides the same lane report as the inline
+	// tool result, gated identically (has-op AND owns-delegate) — the report's
+	// DisposalHint is non-empty only when both gates hold.
+	if wt := excerpt.worktree; wt != nil && wt.DisposalHint != "" {
+		body += "\n" + wt.DisposalHint
+	}
 	return fmt.Sprintf(
 		"<job-notification %s>\n%s\n</job-notification>",
 		strings.Join(attrs, " "),
