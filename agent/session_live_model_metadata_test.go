@@ -79,3 +79,35 @@ func TestSessionSetModelAppliesLiveOpenAIModelContextWindow(t *testing.T) {
 		t.Fatalf("context manager window via ContextMetrics = %d, want live 1000000", got)
 	}
 }
+
+// TestSessionSetModelFetchesModelListExactlyOnce locks in the TOCTOU fix:
+// SetModel fetches the live model list a single time and reuses it for both
+// metadata fill and the membership preflight, rather than calling ListModels
+// twice (which could observe two different catalogs mid-switch).
+func TestSessionSetModelFetchesModelListExactlyOnce(t *testing.T) {
+	t.Parallel()
+	adapter := &liveModelMetadataAdapter{
+		fakeAdapter: fakeAdapter{name: "openai"},
+		models: []llm.ModelInfo{
+			{ID: "gpt-5.4", Provider: "openai", ContextWindow: 400_000},
+			{ID: "gpt-5.5", Provider: "openai", ContextWindow: 1_000_000},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// Discard the init-time fetch; count only the fetches SetModel triggers.
+	adapter.listCalls = 0
+	if err := sess.SetModel("gpt-5.5"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+
+	if adapter.listCalls != 1 {
+		t.Fatalf("ListModels called %d times during SetModel, want exactly 1", adapter.listCalls)
+	}
+}
