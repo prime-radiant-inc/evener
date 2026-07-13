@@ -1401,6 +1401,10 @@ type delegateToolResult struct {
 	// Sandbox echoes the delegate's enforced box (mode + network) so the parent can
 	// verify the child's actual confinement; nil for an unsandboxed (off) delegate.
 	Sandbox *delegateSandboxToolResult `json:"sandbox,omitempty"`
+	// Model echoes the resolved "provider/model" the delegate actually ran with
+	// (captured at spawn, an explicit model arg pin, or the persisted descriptor
+	// model on restore); empty when unavailable.
+	Model string `json:"model,omitempty"`
 }
 
 // delegateWorktreeToolResult is the tool-facing shape of delegateWorktreeReport
@@ -1706,6 +1710,7 @@ func marshalDelegateResult(res delegateResult, maxChars int) (string, error) {
 		Watches:             res.Watches,
 		Worktree:            delegateWorktreeToolResultFrom(res.Worktree),
 		Sandbox:             delegateSandboxToolResultFrom(res.Sandbox),
+		Model:               res.Model,
 	}
 	if !res.RunningInBackground || res.TimedOut {
 		out.Output = &res.Output
