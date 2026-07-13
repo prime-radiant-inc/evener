@@ -120,6 +120,24 @@ type jobManager struct {
 // teardown of jobs that never naturally terminate from costing real seconds.
 var defaultCloseGrace = 5 * time.Second
 
+// Delegate-lane disposal tunables (auto-delegate-lane-disposal spec §Constants).
+// Package vars, not consts, so tests can override and restore them without
+// waiting wall-clock time. The spec also defines laneSweepDelay (10m) and
+// laneGrace (30m) for the P3 residue-collection passes; those are omitted here
+// until a later task consumes them, because golangci-lint rejects unused
+// package-level vars.
+var (
+	// laneClosePassBudget bounds the P0 close disposal and the P3 close pass
+	// TOGETHER — one shared deadline per close cascade. It bounds git/history
+	// work only; the budget-exempt touch+unlock tail runs after expiry, so
+	// shutdown never blocks on git yet no lane is left locked.
+	laneClosePassBudget = 30 * time.Second
+	// laneTailWarnThreshold is the lane count above which the budget-exempt
+	// touch+unlock tail earns a second aggregated warning (a pathological
+	// session leaked far more lanes than a close pass can collect).
+	laneTailWarnThreshold = 50
+)
+
 func (jm *jobManager) setParentJobID(jobID string) {
 	jm.mu.Lock()
 	jm.parentJobID = jobID

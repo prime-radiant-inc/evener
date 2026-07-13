@@ -78,11 +78,16 @@ type retryTracker struct {
 // when configured for the root session, removes any embedded skills directory,
 // waits for in-flight event emitters to finish, and closes the events channel.
 func (s *Session) Close() {
-	s.close(true)
+	s.close(context.Background(), true)
 }
 
-func (s *Session) close(cleanupEnv bool) {
+func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 	s.closeOnce.Do(func() {
+		// One budget per close cascade (spec §P0, Implementation-order item 4):
+		// the initiating close mints the deadline; descendants reached below via
+		// close(budgetCtx, false) reuse it rather than minting their own.
+		budgetCtx, cancelBudget := ensureCloseBudget(ctx)
+		defer cancelBudget()
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
 		turns := s.modelResponses
@@ -138,7 +143,7 @@ func (s *Session) close(cleanupEnv bool) {
 		// can own durable jobs whose process handles live in the parent env. The
 		// parent owns cleanup of the shared env, so child closes skip env cleanup.
 		for _, sub := range subs {
-			sub.sess.close(false)
+			sub.sess.close(budgetCtx, false)
 			// A child that owns a FRESH env (a per-delegate sandbox and/or a lane
 			// re-root) may hold a sandbox scratch dir + file-tool fds that close(false)
 			// deliberately skips (child env cleanup is the parent's job because children
@@ -161,7 +166,7 @@ func (s *Session) close(cleanupEnv bool) {
 		// residual lane process; a residual writer racing the clean check is
 		// self-healing since disposal's `git worktree remove` runs without
 		// --force and downgrades to keep on a dirty refusal.
-		s.disposeDelegateLanesAtClose()
+		s.disposeDelegateLanesAtClose(budgetCtx)
 		s.unlockOwnManagedWorktreeAtClose()
 
 		if s.jobManager != nil {

@@ -212,9 +212,9 @@ func fuzzInitWorktreePureEdges(t *testing.T) {
 	// Non-local worktree lifecycle paths must remain inert.
 	s := &Session{env: &worktreeFaultExecEnv{}, cfg: SessionConfig{}}
 	s.resumeWorktreeReentry(schema.SessionMeta{WorktreePath: "/tmp/not-local"})
-	s.disposeDelegateLanesAtClose()
+	s.disposeDelegateLanesAtClose(context.Background())
 	s.unlockOwnManagedWorktreeAtClose()
-	if _, kept := s.disposeOneDelegateLane(&execenv.LocalExecutionEnvironment{}, isolationLane{delegateID: "gone", path: t.TempDir()}); kept {
+	if _, kept := s.disposeOneDelegateLane(context.Background(), &execenv.LocalExecutionEnvironment{}, isolationLane{delegateID: "gone", path: t.TempDir()}); kept {
 		t.Fatal("missing lane was kept")
 	}
 }
@@ -230,7 +230,7 @@ func fuzzInitWorktreeCloseUnlockFailure(t *testing.T) {
 	h.setLock(path, worktree.FormatDelegateMarker(name, h.s.id))
 	faults.unlockErr[path] = errors.New("scripted dispose unlock failure")
 	local := h.s.currentEnv().(*execenv.LocalExecutionEnvironment)
-	if _, kept := h.s.disposeOneDelegateLane(local, isolationLane{delegateID: name, path: path}); kept {
+	if _, kept := h.s.disposeOneDelegateLane(context.Background(), local, isolationLane{delegateID: name, path: path}); kept {
 		t.Fatal("unlock failure reported lane kept")
 	}
 
@@ -239,7 +239,7 @@ func fuzzInitWorktreeCloseUnlockFailure(t *testing.T) {
 	foreignPath := scriptedCreate(t, h2, foreignName)
 	h2.exitToRoot(t)
 	h2.setLock(foreignPath, "serf:foreign")
-	if _, kept := h2.s.disposeOneDelegateLane(h2.s.currentEnv().(*execenv.LocalExecutionEnvironment), isolationLane{delegateID: foreignName, path: foreignPath}); kept {
+	if _, kept := h2.s.disposeOneDelegateLane(context.Background(), h2.s.currentEnv().(*execenv.LocalExecutionEnvironment), isolationLane{delegateID: foreignName, path: foreignPath}); kept {
 		t.Fatal("foreign unchanged lane reported kept")
 	}
 }

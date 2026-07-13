@@ -1298,7 +1298,7 @@ func TestReconstructDelegateRuntimeCollisionDoesNotCleanupSharedEnv(t *testing.T
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	t.Cleanup(func() { s.close(false) })
+	t.Cleanup(func() { s.close(context.Background(), false) })
 	rec := seedStoppedDelegateRestoreRecord(t, s)
 	rec.DelegateRestore.WorkingDir = workDir
 	replaceStoredDelegateRecord(t, s, rec)

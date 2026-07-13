@@ -64,7 +64,7 @@ func ownedIsolationLanes(recs map[string]*jobstore.JobRecord, sessionID string) 
 // to KEEP and re-locks it. Every step is best-effort: a lane it cannot cleanly
 // dispose is left for `prune` / the crash net (step 5's WorkingDir stat), never
 // force-removed. The kept lanes are surfaced as a close-time notice.
-func (s *Session) disposeDelegateLanesAtClose() {
+func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 	if s.jobManager == nil || s.jobManager.store == nil {
 		return
 	}
@@ -81,9 +81,27 @@ func (s *Session) disposeDelegateLanesAtClose() {
 		return
 	}
 
+	// The whole close cascade shares ONE budget (spec §P0, Implementation-order
+	// item 4): reuse an incoming cascade deadline, or mint one here when this is
+	// the initiating close. laneClosePassBudget bounds evaluation + disposal git
+	// work only — never the touch+unlock tail below.
+	budgetCtx, cancel := ensureCloseBudget(ctx)
+	defer cancel()
+
 	var kept []string
+	var tail []string
 	for _, lane := range lanes {
-		if note, wasKept := s.disposeOneDelegateLane(local, lane); wasKept {
+		// Budget check at the top of each iteration: once the deadline passes,
+		// every remaining lane gets ONLY the budget-exempt touch+unlock tail (no
+		// predicate evaluation, no remove/branch-D) so a pathological session
+		// never blocks shutdown on git — yet no lane is ever left locked.
+		if budgetCtx.Err() != nil {
+			if note := s.touchUnlockLaneTail(local, lane); note != "" {
+				tail = append(tail, note)
+			}
+			continue
+		}
+		if note, wasKept := s.disposeOneDelegateLane(budgetCtx, local, lane); wasKept {
 			kept = append(kept, note)
 		}
 	}
@@ -92,6 +110,63 @@ func (s *Session) disposeDelegateLanesAtClose() {
 			Message: "kept " + strconv.Itoa(len(kept)) + " isolation worktree lane(s) not collected automatically (unmerged or squash-merged), dirty, or unverifiable at session close: " + strings.Join(kept, "; "),
 		})
 	}
+	if len(tail) > 0 {
+		s.emit(events.EventWarning, events.WarningData{
+			Message: "close budget exhausted; " + strconv.Itoa(len(tail)) + " isolation worktree lane(s) touched+unlocked without disposal (evaluation skipped, left resumable for prune): " + strings.Join(tail, "; "),
+		})
+		if len(tail) > laneTailWarnThreshold {
+			s.emit(events.EventWarning, events.WarningData{
+				Message: "delegate lane close tail of " + strconv.Itoa(len(tail)) + " lane(s) exceeded threshold " + strconv.Itoa(laneTailWarnThreshold) + ": this session leaked more isolation lanes than a bounded close pass can collect",
+			})
+		}
+	}
+}
+
+// ensureCloseBudget returns a context carrying the shared close-cascade deadline.
+// When ctx already carries a deadline (a descendant reached through the close
+// cascade), it is reused unchanged so per-session budgets never stack; otherwise
+// this is the initiating close and a fresh laneClosePassBudget deadline is minted.
+func ensureCloseBudget(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, laneClosePassBudget)
+}
+
+// touchUnlockLaneTail runs the budget-exempt tail for a lane the close pass could
+// not reach before the budget expired (spec §P0, rev-9.1 finding O2): touch the
+// sidecar (so P3's grace keys on a fresh mtime) and release the disposer's own
+// lock — two cheap constant-cost ops, no predicate evaluation and no remove. It
+// uses a non-expiring background git runner precisely because the budget is
+// already spent, so a lane is never left locked. Returns a human-readable note
+// for the aggregated tail warning, or "" for a lane not ours to touch.
+func (s *Session) touchUnlockLaneTail(local *execenv.LocalExecutionEnvironment, lane isolationLane) string {
+	lanePath := filepath.Clean(lane.path)
+	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
+		return ""
+	}
+	rootedAtLane := local.WithWorkingDirectory(lanePath)
+	mainRoot := execenv.ResolveMainRepoRoot(rootedAtLane, lanePath)
+	if mainRoot == "" {
+		return ""
+	}
+	controlEnv := local.WithWorkingDirectory(mainRoot)
+	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
+	metaDir := metaDirForLane(lanePath)
+
+	locked, reason, lsErr := lockStateOf(run, lanePath)
+	if lsErr != nil {
+		// Lock state unverifiable: still touch so the lane's grace mtime is
+		// fresh; leave the lock alone (we cannot prove it is ours to release).
+		touchSidecar(metaDir, lane.delegateID)
+		return lane.delegateID + " at " + lanePath + " (lock state unverifiable)"
+	}
+	st := worktree.Unlocked
+	if locked {
+		st = worktree.ClassifyReason(reason, s.id, lane.delegateID)
+	}
+	s.unlockLaneIfOwn(run, worktree.EvDisposeChanged, st, lanePath, metaDir, lane.delegateID)
+	return lane.delegateID + " at " + lanePath
 }
 
 // disposeOneDelegateLane disposes a single isolation lane and reports whether
@@ -99,7 +174,7 @@ func (s *Session) disposeDelegateLanesAtClose() {
 // human-readable note for the close-time listing. It returns kept=false for a
 // removed (unchanged) lane and for any lane it declines to touch (already gone,
 // no sidecar, or foreign/session-locked — not the disposer's serf:dlg: lock).
-func (s *Session) disposeOneDelegateLane(local *execenv.LocalExecutionEnvironment, lane isolationLane) (note string, kept bool) {
+func (s *Session) disposeOneDelegateLane(ctx context.Context, local *execenv.LocalExecutionEnvironment, lane isolationLane) (note string, kept bool) {
 	lanePath := filepath.Clean(lane.path)
 
 	// The lane directory must still exist and be a real linked worktree; a
@@ -114,7 +189,9 @@ func (s *Session) disposeOneDelegateLane(local *execenv.LocalExecutionEnvironmen
 		return "", false
 	}
 	controlEnv := local.WithWorkingDirectory(mainRoot)
-	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
+	// Evaluation and disposal git ops run under the shared close budget, so a
+	// pass that blows the deadline is interrupted rather than blocking shutdown.
+	run := s.newWorktreeGitRunner(ctx, controlEnv)
 
 	// The sidecar carries the recorded base SHA the unchanged predicate needs.
 	// Without it (unknown provenance) the lane is not ours to judge — leave it.

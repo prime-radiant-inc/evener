@@ -880,7 +880,7 @@ func TestCreateDelegateSignalCancelsChildAfterSubagentDrain(t *testing.T) {
 	drained := sess.subagents.drainForClose()
 	t.Cleanup(func() {
 		for _, drainedSub := range drained {
-			drainedSub.sess.close(false)
+			drainedSub.sess.close(context.Background(), false)
 		}
 	})
 	if got := sess.subagents.get(childID); got != nil {
