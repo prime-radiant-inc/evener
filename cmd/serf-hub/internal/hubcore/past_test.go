@@ -662,7 +662,9 @@ func fuzzScenarioUpdateMetaConcurrentWithRebuildIsRaceFree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const iterations = 300
+	// Keep enough overlap for the race detector without multiplying full disk
+	// rescans inside every fuzz input; the fuzz engine supplies repeated schedules.
+	const iterations = 30
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
