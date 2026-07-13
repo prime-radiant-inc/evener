@@ -1,9 +1,13 @@
 // JSDOM tests for the search palette's command mode.
 const fs = require("fs");
+const path = require("path");
 const { JSDOM } = require("jsdom");
 
 const SEARCH_PATH = "../assets/search.js";
-const searchSrc = fs.readFileSync(SEARCH_PATH, "utf8");
+// thread-state.js defines window.SerfThreadState (isThreadBusy depends on it);
+// production loads it first (templates/app.html), so prepend it here.
+const threadStateSrc = fs.readFileSync(path.resolve(__dirname, "../assets/thread-state.js"), "utf8");
+const searchSrc = threadStateSrc + "\n" + fs.readFileSync(path.resolve(__dirname, SEARCH_PATH), "utf8");
 
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
@@ -279,6 +283,28 @@ function tick(ms) { return new Promise(r => setTimeout(r, ms)); }
     // The user typed "/model" to get into args mode. After backing out
     // they should see that same filter restored, not a generic "/".
     pass(ctx.input.value === "/model", "Esc from args restores pre-args filter (got " + JSON.stringify(ctx.input.value) + ")");
+  }
+
+  // -------- Scenario 8b: Model enum source failure surfaces an error row, not "No matches" --------
+  {
+    const dom = makeDom(`<div id="conversation" data-session-id="01S" data-state="live"></div>`,
+      { url: "http://localhost/s/01S" });
+    const ctx = await loadAndOpen(dom);
+    ctx.window.fetch = (url) => {
+      if (url === "/api/models") {
+        return Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({}) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    };
+    ctx.window.SerfSearch.open();
+    ctx.input.value = "/model";
+    ctx.input.dispatchEvent(new ctx.window.Event("input", { bubbles: true }));
+    await tick(20);
+    ctx.input.dispatchEvent(new ctx.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await tick(30); // let the failing model fetch reject
+    const html = ctx.results.innerHTML;
+    pass(/Couldn't load options/.test(html), "model fetch failure surfaces an error row");
+    pass(!/No matches/.test(html), "model fetch failure is NOT shown as 'No matches'");
   }
 
   // -------- Scenario 9: Selecting an enum item POSTs to /s/<id>/model --------
