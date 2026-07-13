@@ -89,7 +89,7 @@ func (s *Session) disposeDelegateLanesAtClose() {
 	}
 	if len(kept) > 0 {
 		s.emit(events.EventWarning, events.WarningData{
-			Message: "kept " + strconv.Itoa(len(kept)) + " isolation worktree lane(s) with unmerged work at session close: " + strings.Join(kept, "; "),
+			Message: "kept " + strconv.Itoa(len(kept)) + " isolation worktree lane(s) not collected automatically (unmerged or squash-merged), dirty, or unverifiable at session close: " + strings.Join(kept, "; "),
 		})
 	}
 }
@@ -133,22 +133,25 @@ func (s *Session) disposeOneDelegateLane(local *execenv.LocalExecutionEnvironmen
 		st = worktree.ClassifyReason(reason, s.id, lane.delegateID)
 	}
 
-	// Step-4 predicate: unchanged == clean tree AND tip == recorded base SHA;
-	// anything else (commits OR a dirty tree) is a CHANGED lane whose work must
-	// be preserved.
-	unchanged, uErr := worktree.Unchanged(run, lanePath, sc.BaseSHA)
+	// D0-auto predicate (spec §D0): a lane is auto-collectible when it is
+	// Unchanged (clean tree AND tip == recorded base SHA) OR clean and
+	// ancestry-merged into its LOCAL merge_target branch. Anything else (commits
+	// not reachable from a local branch, a cherry-only/remote-tracking merge, or
+	// a dirty tree) is a KEPT lane whose work must be preserved.
+	collectible, uErr := laneAutoCollectible(run, lanePath, sc.BaseSHA, sc.MergeTarget)
 	if uErr != nil {
-		// Cannot evaluate cleanly. Fail safe toward preservation: release our
-		// own lock (if any) and keep the lane resumable rather than risk
-		// removing unexamined work.
-		s.unlockLaneIfOwn(run, worktree.EvDisposeChanged, st, lanePath)
+		// Cannot evaluate cleanly. Fail safe toward preservation: touch the
+		// sidecar, release our own lock (if any), and keep the lane resumable
+		// rather than risk removing unexamined work.
+		s.unlockLaneIfOwn(run, worktree.EvDisposeChanged, st, lanePath, metaDir, lane.delegateID)
 		return lane.delegateID + " at " + lanePath + " (state unverifiable)", true
 	}
 
-	if !unchanged {
-		// CHANGED → unlock and keep; the descriptor is NEVER touched, so the
-		// lane stays resumable and `prune` collects it once its branch merges.
-		if !s.unlockLaneIfOwn(run, worktree.EvDisposeChanged, st, lanePath) {
+	if !collectible {
+		// KEPT → touch the sidecar, unlock, and keep; the descriptor is NEVER
+		// touched, so the lane stays resumable and `prune` collects it once its
+		// branch merges.
+		if !s.unlockLaneIfOwn(run, worktree.EvDisposeChanged, st, lanePath, metaDir, lane.delegateID) {
 			return "", false // foreign / session-locked — not the disposer's dlg lock
 		}
 		dirty := false
@@ -164,11 +167,52 @@ func (s *Session) disposeOneDelegateLane(local *execenv.LocalExecutionEnvironmen
 		return fmt.Sprintf("%s at %s (branch %s, %d ahead, dirty=%t)", lane.delegateID, lanePath, lane.delegateID, ahead, dirty), true
 	}
 
-	// UNCHANGED → unlock, then `git worktree remove` (non-force), then mark the
-	// descriptor disposed, then delete branch + sidecar. The close path
-	// downgrades a late-dirty refusal back to KEEP by re-locking (dead owner
-	// re-lock is today's behavior; Task 2 flips it to unlock-keep).
-	return s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeRelockKeep)
+	// COLLECTIBLE → unlock, then `git worktree remove` (non-force), then mark the
+	// descriptor disposed, then delete branch + sidecar. A late-dirty refusal
+	// downgrades back to KEEP; at close the dead owner's lock is left released
+	// (downgradeUnlockKeep) rather than re-locked.
+	return s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeUnlockKeep)
+}
+
+// laneAutoCollectible applies the D0-auto disposal predicate (spec §D0): a lane
+// is collectible when it is Unchanged (clean tree AND tip == recorded base) OR
+// clean and ancestry-merged into its LOCAL merge_target branch. It never runs
+// the cherry/patch-equivalence arm and never consults remote-tracking refs, so
+// automatic disposal (no human in the loop) never deletes commits that are not
+// reachable from a local branch. A dirty tree is never collectible. Any
+// predicate git failure is returned as err so the caller can fail safe to KEEP.
+func laneAutoCollectible(run worktree.GitRunner, lanePath, baseSHA, mergeTarget string) (bool, error) {
+	unchanged, err := worktree.Unchanged(run, lanePath, baseSHA)
+	if err != nil {
+		return false, err
+	}
+	if unchanged {
+		return true, nil
+	}
+	clean, _, err := worktree.CleanTree(run, lanePath)
+	if err != nil {
+		return false, err
+	}
+	if !clean {
+		return false, nil // a dirty lane is never auto-collectible
+	}
+	tip, err := run("-C", lanePath, "rev-parse", "HEAD")
+	if err != nil {
+		return false, err
+	}
+	m, err := worktree.MergedAncestryLocal(run, strings.TrimSpace(tip), mergeTarget)
+	if err != nil {
+		return false, err
+	}
+	return m.Merged, nil
+}
+
+// touchSidecar rewrites the lane's sidecar in place (identical content, fresh
+// mtime) so P3's residue-collection grace keys on a recent timestamp for a KEPT
+// lane. Best-effort: a touch failure is not fatal — the lane is still unlocked
+// and resumable, matching every other best-effort close-time git op.
+func touchSidecar(metaDir, delegateID string) {
+	_ = worktree.UpdateSidecar(metaDir, delegateID, func(*worktree.Sidecar) {})
 }
 
 // downgradePolicy selects how a late-dirty remove refusal is handled when an
@@ -197,6 +241,10 @@ func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st workt
 	lanePath := filepath.Clean(lane.path)
 	switch worktree.Decide(worktree.EvDisposeUnchanged, st) {
 	case worktree.ActUnlock:
+		// Touch BEFORE the unlock (spec §P0): if a late-dirty write downgrades
+		// this to KEEP below, the lane is already released with a fresh sidecar;
+		// on the common success path the sidecar is deleted anyway.
+		touchSidecar(metaDir, lane.delegateID)
 		if _, err := run("worktree", "unlock", lanePath); err != nil {
 			return "", false // cannot release our lock; leave the lane for prune
 		}
@@ -250,14 +298,19 @@ func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st workt
 // is a no-op for an already-unlocked (crash-residue) lane, and returns false
 // when the state is foreign or a plain session marker (someone switched in) so
 // the caller declines to touch it. Only ActUnlock and ActNone keep the lane.
-func (s *Session) unlockLaneIfOwn(run worktree.GitRunner, ev worktree.LockEvent, st worktree.LockState, lanePath string) bool {
+// On both keeping outcomes it touches the sidecar BEFORE releasing the lock
+// (spec §P0), so once the lane is observable as unlocked its sidecar is already
+// fresh for P3's grace; a foreign / declined lane (ActRefuse) is never touched.
+func (s *Session) unlockLaneIfOwn(run worktree.GitRunner, ev worktree.LockEvent, st worktree.LockState, lanePath, metaDir, delegateID string) bool {
 	switch worktree.Decide(ev, st) {
 	case worktree.ActUnlock:
+		touchSidecar(metaDir, delegateID)
 		if _, err := run("worktree", "unlock", lanePath); err != nil {
 			return false
 		}
 		return true
 	case worktree.ActNone:
+		touchSidecar(metaDir, delegateID)
 		return true
 	default:
 		return false

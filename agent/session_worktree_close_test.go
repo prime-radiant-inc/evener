@@ -358,9 +358,11 @@ func TestDisposeDirtyLane_Kept(t *testing.T) {
 	}
 }
 
-// TestDisposeRacingDirtyWrite_DowngradesToKeep: the non-force remove refuses
-// because a write raced the clean check → downgrade to keep + re-lock.
-func TestDisposeRacingDirtyWrite_DowngradesToKeep(t *testing.T) {
+// TestDisposeRacingDirtyWrite_DowngradesToKeepUnlocked: the non-force remove
+// refuses because a write raced the clean check → downgrade to keep. At CLOSE
+// the policy is downgradeUnlockKeep (spec §P0: a dead owner whose lock nobody
+// would ever release again), so the kept lane is left UNLOCKED, not re-locked.
+func TestDisposeRacingDirtyWrite_DowngradesToKeepUnlocked(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
@@ -375,18 +377,265 @@ func TestDisposeRacingDirtyWrite_DowngradesToKeep(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
 		t.Errorf("lane removed despite racing dirty write: %v", err)
 	}
-	reg, locked, reason := r.laneLocked(t, lanePath)
+	reg, locked, _ := r.laneLocked(t, lanePath)
 	if !reg {
 		t.Fatal("lane deregistered after downgrade")
 	}
-	if !locked {
-		t.Error("downgraded lane not re-locked")
+	if locked {
+		t.Error("close-path downgrade must leave the lane UNLOCKED (dead owner), not re-locked")
 	}
-	if m, ok := worktree.ParseMarker(reason); !ok || m.DelegateID != delegateID {
-		t.Errorf("re-lock reason = %q, want serf:dlg marker for %s", reason, delegateID)
+	if !r.branchExists(t, delegateID) {
+		t.Error("downgraded lane branch deleted; must stay resumable")
 	}
 	if r.disposedEventPresent(t, delegateID) {
 		t.Error("downgraded lane wrongly marked disposed")
+	}
+}
+
+// TestDisposeAncestryMergedLane_Collected: a lane with commits that are an
+// ancestor of the LOCAL merge_target branch (a real merge) is auto-collectible
+// at close (spec §P0 / §D0-auto): removed, disposed-marked, branch + sidecar
+// gone. An unchanged lane in the same close pass is still collected.
+func TestDisposeAncestryMergedLane_Collected(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	mergedID, mergedPath, _ := r.seedIsolationLane(t)
+	unchangedID, unchangedPath, _ := r.seedIsolationLane(t)
+	metaDir := r.metaDir(r.canonicalMain(t))
+
+	// Commit twice in the merged lane, then fast-forward main to the lane tip so
+	// the lane's commits are reachable from refs/heads/main (ancestry-merged).
+	if err := os.WriteFile(filepath.Join(mergedPath, "work.txt"), []byte("done\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	wtGit(t, mergedPath, "add", "work.txt")
+	wtGit(t, mergedPath, "commit", "-m", "merged lane work")
+	wtGit(t, r.mainRoot, "merge", "--ff-only", mergedID)
+
+	r.s.disposeDelegateLanesAtClose()
+
+	// Merged lane collected.
+	if _, err := os.Stat(filepath.Join(mergedPath, ".git")); !os.IsNotExist(err) {
+		t.Errorf("ancestry-merged lane still present after disposal: err=%v", err)
+	}
+	if r.branchExists(t, mergedID) {
+		t.Error("ancestry-merged lane branch still exists after disposal")
+	}
+	if _, err := worktree.ReadSidecar(metaDir, mergedID); err == nil {
+		t.Error("ancestry-merged lane sidecar still present after disposal")
+	}
+	if !r.disposedEventPresent(t, mergedID) {
+		t.Error("ancestry-merged lane not marked disposed")
+	}
+	// Unchanged lane still collected in the same pass.
+	if _, err := os.Stat(filepath.Join(unchangedPath, ".git")); !os.IsNotExist(err) {
+		t.Errorf("unchanged lane still present after disposal: err=%v", err)
+	}
+	if !r.disposedEventPresent(t, unchangedID) {
+		t.Error("unchanged lane not marked disposed")
+	}
+}
+
+// gitLogRepoShim installs a git shim that appends every invocation's argv to a
+// log file and execs real git, so a test can assert which subcommands ran.
+func gitLogRepoShim(t *testing.T, repoRoot string) string {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available")
+	}
+	logPath := filepath.Join(t.TempDir(), "gitcalls.log")
+	script := "#!/bin/sh\n" +
+		"echo \"$*\" >> '" + logPath + "'\n" +
+		"exec '" + realGit + "' \"$@\"\n"
+	writeRepoGitShim(t, repoRoot, script)
+	return logPath
+}
+
+func assertNoGitCherry(t *testing.T, logPath string) {
+	t.Helper()
+	b, err := os.ReadFile(logPath)
+	if err != nil {
+		return // no calls logged at all
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if line == "cherry" || strings.HasPrefix(line, "cherry ") {
+			t.Fatalf("git cherry must never run at close; call log:\n%s", string(b))
+		}
+	}
+}
+
+// TestDisposeCherryOnlyMergedLane_KeptNoCherry: a lane whose commit is
+// patch-equivalent to a commit on main but NOT an ancestor of it (a
+// cherry-pick / squash) is NOT auto-collectible (spec §D0-auto: ancestry arm
+// only). It is KEPT, and close never runs `git cherry`.
+func TestDisposeCherryOnlyMergedLane_KeptNoCherry(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	delegateID, lanePath, _ := r.seedIsolationLane(t)
+
+	if err := os.WriteFile(filepath.Join(lanePath, "work.txt"), []byte("patch\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	wtGit(t, lanePath, "add", "work.txt")
+	wtGit(t, lanePath, "commit", "-m", "lane work")
+	laneTip := strings.TrimSpace(wtGit(t, lanePath, "rev-parse", "HEAD"))
+	// Diverge main with its own commit first, then cherry-pick the lane commit
+	// onto it: main gains a patch-equivalent commit with a DIFFERENT parent (and
+	// SHA), so the lane tip is patch-equal-but-NOT-an-ancestor of main.
+	if err := os.WriteFile(filepath.Join(r.mainRoot, "other.txt"), []byte("other\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	wtGit(t, r.mainRoot, "add", "other.txt")
+	wtGit(t, r.mainRoot, "commit", "-m", "diverge main")
+	wtGit(t, r.mainRoot, "cherry-pick", laneTip)
+
+	logPath := gitLogRepoShim(t, r.mainRoot)
+	r.s.disposeDelegateLanesAtClose()
+
+	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
+		t.Errorf("cherry-only-merged lane wrongly removed: %v", err)
+	}
+	if !r.branchExists(t, delegateID) {
+		t.Error("cherry-only-merged lane branch deleted; must stay resumable")
+	}
+	if r.disposedEventPresent(t, delegateID) {
+		t.Error("cherry-only-merged lane wrongly marked disposed")
+	}
+	assertNoGitCherry(t, logPath)
+}
+
+// TestDisposeRemoteTrackingOnlyMergeTarget_Kept: a lane whose merge_target
+// resolves ONLY to a remote-tracking ref (no local branch) is NOT
+// auto-collectible (spec §D0-auto: remote-tracking evidence is not
+// auto-trustworthy) — KEPT, and `git cherry` never runs.
+func TestDisposeRemoteTrackingOnlyMergeTarget_Kept(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	delegateID, lanePath, _ := r.seedIsolationLane(t)
+	metaDir := r.metaDir(r.canonicalMain(t))
+
+	if err := os.WriteFile(filepath.Join(lanePath, "work.txt"), []byte("feat\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	wtGit(t, lanePath, "add", "work.txt")
+	wtGit(t, lanePath, "commit", "-m", "lane work")
+	// Publish the lane tip as origin/feature (a remote-tracking ref that
+	// contains the lane) with NO local refs/heads/feature branch.
+	remoteDir := filepath.Join(t.TempDir(), "origin.git")
+	wtGit(t, r.mainRoot, "init", "-q", "--bare", remoteDir)
+	wtGit(t, r.mainRoot, "remote", "add", "origin", remoteDir)
+	wtGit(t, r.mainRoot, "push", "-q", "origin", delegateID+":feature")
+	wtGit(t, r.mainRoot, "fetch", "-q", "origin")
+	if err := worktree.UpdateSidecar(metaDir, delegateID, func(sc *worktree.Sidecar) {
+		sc.MergeTarget = "feature"
+	}); err != nil {
+		t.Fatalf("update sidecar merge_target: %v", err)
+	}
+
+	logPath := gitLogRepoShim(t, r.mainRoot)
+	r.s.disposeDelegateLanesAtClose()
+
+	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
+		t.Errorf("remote-tracking-only merge_target lane wrongly removed: %v", err)
+	}
+	if !r.branchExists(t, delegateID) {
+		t.Error("remote-tracking-only lane branch deleted; must stay resumable")
+	}
+	if r.disposedEventPresent(t, delegateID) {
+		t.Error("remote-tracking-only lane wrongly marked disposed")
+	}
+	assertNoGitCherry(t, logPath)
+}
+
+// TestKeepWarningCopy_LumpedWording: the close-time KEEP warning uses the
+// lumped wording (spec §P0: close cannot distinguish cherry-merged from
+// unmerged without the banned cherry test).
+func TestKeepWarningCopy_LumpedWording(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	_, lanePath, _ := r.seedIsolationLane(t)
+	// A dirty (unmerged) lane so it is KEPT and listed in the warning.
+	if err := os.WriteFile(filepath.Join(lanePath, "dirty.txt"), []byte("wip\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	r.s.disposeDelegateLanesAtClose()
+
+	msgs := warningMessages(r.s)
+	if !anyContainsAll(msgs, "not collected automatically (unmerged or squash-merged), dirty, or unverifiable") {
+		t.Errorf("KEEP warning does not use the lumped wording: %v", msgs)
+	}
+}
+
+// TestDisposeKeptLane_TouchesSidecarBeforeUnlock: every KEEP path refreshes the
+// lane's sidecar (spec §P0: P3's residue-collection grace keys on the touch)
+// before releasing the lock. A changed lane exercises the changed-keep path.
+func TestDisposeKeptLane_TouchesSidecarBeforeUnlock(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	delegateID, lanePath, _ := r.seedIsolationLane(t)
+	metaDir := r.metaDir(r.canonicalMain(t))
+	if err := os.WriteFile(filepath.Join(lanePath, "work.txt"), []byte("wip\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	wtGit(t, lanePath, "add", "work.txt")
+	wtGit(t, lanePath, "commit", "-m", "lane work")
+	// Backdate the sidecar so a fresh touch is unambiguously detectable.
+	scPath := filepath.Join(metaDir, worktree.EncodeSidecarName(delegateID)+".json")
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(scPath, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	r.s.disposeDelegateLanesAtClose()
+
+	info, err := os.Stat(scPath)
+	if err != nil {
+		t.Fatalf("stat sidecar: %v", err)
+	}
+	if !info.ModTime().After(old) {
+		t.Errorf("kept lane's sidecar was not touched (mtime %v not after %v)", info.ModTime(), old)
+	}
+	// And the lane is still unlocked + resumable.
+	if _, locked, _ := r.laneLocked(t, lanePath); locked {
+		t.Error("kept changed lane still locked")
+	}
+}
+
+// TestResumeAfterP0Disposal_Refused: after P0 collects an ancestry-merged lane,
+// a later resume of that delegate hits the disposed refusal (spec §P0 → the
+// existing assessDelegateResumability path).
+func TestResumeAfterP0Disposal_Refused(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	delegateID, lanePath, _ := r.seedIsolationLane(t)
+
+	if err := os.WriteFile(filepath.Join(lanePath, "work.txt"), []byte("done\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	wtGit(t, lanePath, "add", "work.txt")
+	wtGit(t, lanePath, "commit", "-m", "merged lane work")
+	wtGit(t, r.mainRoot, "merge", "--ff-only", delegateID)
+
+	r.s.disposeDelegateLanesAtClose()
+
+	recs, err := r.s.jobManager.store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	var rec *jobstore.JobRecord
+	for _, candidate := range recs {
+		if candidate.DelegateID == delegateID {
+			rec = candidate
+		}
+	}
+	if rec == nil {
+		t.Fatal("no job record for the disposed delegate")
+	}
+	a := r.s.assessDelegateResumability(rec, delegateResumabilityProjection)
+	if a.Resumable || a.Reason != notResumableWorktreeDisposed {
+		t.Fatalf("assessment = %+v, want not-resumable with %s", a, notResumableWorktreeDisposed)
 	}
 }
 
