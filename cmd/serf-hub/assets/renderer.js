@@ -4841,6 +4841,7 @@
       el.className = "ask-question";
       el.setAttribute("data-ask-question", "");
       el.dataset.askKey = item.key;
+      const idPrefix = "ask-question-" + num;
 
       const head = document.createElement("div");
       head.className = "ask-question-head";
@@ -4849,14 +4850,14 @@
       numEl.textContent = num + ".";
       const headerEl = document.createElement("span");
       headerEl.className = "ask-question-header";
-      headerEl.id = "ask-question-" + item.key.replace(/[^a-zA-Z0-9_-]/g, "_") + "-header";
+      headerEl.id = idPrefix + "-header";
       headerEl.textContent = item.header;
       head.append(numEl, headerEl);
       el.appendChild(head);
 
       const textEl = document.createElement("div");
       textEl.className = "ask-question-text";
-      textEl.id = "ask-question-" + item.key.replace(/[^a-zA-Z0-9_-]/g, "_") + "-text";
+      textEl.id = idPrefix + "-text";
       textEl.textContent = item.question;
       el.appendChild(textEl);
 
@@ -4868,7 +4869,7 @@
         el.appendChild(whyEl);
       }
 
-      const groupName = "ask-opt-" + item.key.replace(/[^a-zA-Z0-9_-]/g, "_");
+      const groupName = idPrefix + "-options";
       const optionsEl = document.createElement("div");
       optionsEl.className = "ask-options";
       optionsEl.setAttribute("data-ask-options", "");
@@ -4923,7 +4924,7 @@
         });
         const labelText = document.createElement("span");
         labelText.className = "ask-option-label";
-        labelText.id = "ask-option-" + item.key.replace(/[^a-zA-Z0-9_-]/g, "_") + "-" + idSuffix;
+        labelText.id = idPrefix + "-option-" + idSuffix;
         labelText.textContent = label;
         optLabel.append(input, labelText);
         return { optLabel, input };
@@ -5023,7 +5024,7 @@
       noteRow.className = "ask-note-row";
       const noteLabel = document.createElement("span");
       noteLabel.className = "visually-hidden";
-      noteLabel.id = "ask-question-" + item.key.replace(/[^a-zA-Z0-9_-]/g, "_") + "-note";
+      noteLabel.id = idPrefix + "-note";
       noteLabel.textContent = "note";
       const noteField = document.createElement("input");
       noteField.type = "text";

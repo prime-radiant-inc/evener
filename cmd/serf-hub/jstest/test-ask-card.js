@@ -204,6 +204,42 @@ async function testOptionLabelIDsRemainUniqueAcrossCollidingLabels() {
   }
 }
 
+async function testQuestionIDsRemainUniqueAcrossCollidingKeys() {
+  const { window, R } = newHarness();
+  await settle();
+  const question = {
+    header: "Collision",
+    question: "Which option?",
+    options: [{ label: "First", detail: "" }, { label: "Second", detail: "" }],
+  };
+  for (const callId of ["call:a", "call_a"]) {
+    for (const [kind, data] of askCallEvents(callId, [question])) R.handleData(kind, data);
+  }
+
+  const responseDock = dock(window);
+  const questions = questionEls(window);
+  const ids = Array.from(responseDock.querySelectorAll("[id]"), (el) => el.id);
+  pass(questions.length === 2, "sanity: both acknowledged colliding-key questions render in the dock");
+  pass(ids.length === new Set(ids).size,
+    "distinct question keys that sanitize identically still produce globally unique dock ids");
+  for (const qEl of questions) {
+    for (const labelled of qEl.querySelectorAll("[aria-labelledby]")) {
+      const labelledBy = labelled.getAttribute("aria-labelledby").trim().split(/\s+/);
+      pass(labelledBy.every((id) => {
+        const label = window.document.getElementById(id);
+        return !!label && qEl.contains(label);
+      }), "every aria-labelledby token resolves within its owning question " + qEl.dataset.askKey);
+    }
+    for (const [kind, editorSelector] of [["free", "[data-ask-free-input]"], ["decide", "[data-ask-decide-leaning]"]]) {
+      const alternative = qEl.querySelector('[data-ask-option][data-option-kind="' + kind + '"] .ask-option-label');
+      const editor = qEl.querySelector(editorSelector);
+      const firstLabelId = editor.getAttribute("aria-labelledby").trim().split(/\s+/)[0];
+      pass(window.document.getElementById(firstLabelId) === alternative,
+        kind + " editor aria-labelledby resolves to its own alternative in question " + qEl.dataset.askKey);
+    }
+  }
+}
+
 async function testAskDockPreservesEnabledControlFocusAcrossRebuilds() {
   const { window, R } = newHarness();
   await settle();
@@ -475,6 +511,7 @@ async function testColdAttachPendingResolvedInterruptedDenied() {
   await testPendingDockRenders();
   await testAskDockFocusAnnouncementsAndInputNames();
   await testOptionLabelIDsRemainUniqueAcrossCollidingLabels();
+  await testQuestionIDsRemainUniqueAcrossCollidingKeys();
   await testAskDockPreservesEnabledControlFocusAcrossRebuilds();
   await testAlternativeRadiosToggleOff();
   await testPendingAskBlocksNormalComposerSubmission();
