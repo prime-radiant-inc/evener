@@ -13,7 +13,7 @@
   // could not be folded back up.
   var model = { tree: null, expanded: new Set(), collapsed: new Set(), lazyCache: new Map(), seq: 0, pending: new Map() };
   window.SerfSidebarModel = model; // test/inspection surface
-  window.SerfSidebarInternal = { buildRow: buildRow, stateIconKey: stateIconKey, stateWord: stateWord, buildRollupBadge: buildRollupBadge }; // test/inspection surface
+  window.SerfSidebarInternal = { buildRow: buildRow, stateIconKey: stateIconKey, stateWord: stateWord, buildRollupBadge: buildRollupBadge, sessionRouteID: sessionRouteID, sessionHref: sessionHref, sessionMenuItems: sessionMenuItems, findRevealChain: findRevealChain }; // test/inspection surface
 
   function sidebarEl() { return document.getElementById("sidebar"); }
 
@@ -32,6 +32,22 @@
 
   // --- Row + section builders ------------------------------------------------
   function rowKey(n) { return n.row_id; }
+  function parseSessionRef(raw) {
+    if (typeof raw !== "string" || !/^[A-Za-z0-9._~:-]+$/.test(raw)) return null;
+    var split = raw.indexOf(":");
+    if (split <= 0 || split === raw.length - 1) return null;
+    var sessionID = raw.slice(split + 1);
+    if (sessionID.indexOf("..") !== -1) return null;
+    return { hostID: raw.slice(0, split), sessionID: sessionID };
+  }
+  function sessionRouteID(n) {
+    var fallback = n && typeof n.session_id === "string" ? n.session_id : "";
+    var parsed = parseSessionRef(n && n.ref);
+    if (!parsed || parsed.hostID === "local") return fallback;
+    return n.ref;
+  }
+  function sessionHref(n) { return "/s/" + sessionRouteID(n); }
+  function sessionWorkspaceHref(n) { return "/_partials/s/" + sessionRouteID(n) + "/workspace"; }
 
   // stateIconKey maps a tree-node state (+ optional ask_pending) to the
   // SerfIcons key and the hubapi.StateWord-equivalent tooltip text. Mirrors
@@ -60,11 +76,12 @@
     a.setAttribute("data-state", n.state);
     a.setAttribute("data-ref", n.ref);
     if (n.__projectKey) a.setAttribute("data-project-key-of", n.__projectKey);
-    a.setAttribute("href", "/s/" + n.session_id);
-    a.setAttribute("hx-get", "/_partials/s/" + n.session_id + "/workspace");
+    var href = sessionHref(n);
+    a.setAttribute("href", href);
+    a.setAttribute("hx-get", sessionWorkspaceHref(n));
     a.setAttribute("hx-target", "#workspace");
     a.setAttribute("hx-swap", "innerHTML");
-    a.setAttribute("hx-push-url", "/s/" + n.session_id);
+    a.setAttribute("hx-push-url", href);
     // Single-line row: title and the row-end slot are direct grid children
     // of .sb-row (no .text-col wrapper stacking them onto a second line) —
     // see .sb-row's 3-track grid in style.css. Branch/worktree deliberately
@@ -216,8 +233,9 @@
   }
 
   function sessionMenuItems(n) {
+    var openHref = sessionHref(n);
     return [
-      { label: "Open", run: function () { window.location.href = "/s/" + n.session_id; } },
+      { label: "Open", href: openHref, run: function () { window.location.href = openHref; } },
       { label: "Open beside", run: function () { if (window.SerfPanes) window.SerfPanes.open("/thread/" + encodeURIComponent(n.ref), n.title); } },
       { label: n.favorite ? "Unfavorite" : "Favorite", run: function () { window.SerfSidebar.favorite(n.ref, !n.favorite); } },
       { label: "Rename", hidden: !n.rename, run: function () { startInlineRename(n); } },
@@ -798,25 +816,25 @@
   }
   // Searches every tier of the tree (NeedsYou, Pinned, active/archived/
   // test-run projects — including nested cluster members and subagent
-  // children) for the node whose session_id matches, and returns the list of
-  // model.expanded keys needed to make it visible: any enclosing
+  // children) for the node whose canonical route ID matches, and returns the
+  // list of model.expanded keys needed to make it visible: any enclosing
   // section/project key, plus a cluster row_id or children:<row_id> key for
-  // each disclosure the match sits behind. Returns null if sessionId is
-  // nowhere in the tree.
-  function findRevealChain(tree, sessionId) {
+  // each disclosure the match sits behind. Returns null if routeID is nowhere
+  // in the tree.
+  function findRevealChain(tree, routeID) {
     return (
-      searchNodes(tree.needs_you, sessionId, []) ||
-      searchNodes(tree.favorites, sessionId, []) ||
-      searchProjects(tree.projects, sessionId, []) ||
-      searchProjects(tree.archived_projects, sessionId, [SECTION_ARCHIVED]) ||
-      searchProjects(tree.test_runs, sessionId, [SECTION_TEST_RUNS]) ||
+      searchNodes(tree.needs_you, routeID, []) ||
+      searchNodes(tree.favorites, routeID, []) ||
+      searchProjects(tree.projects, routeID, []) ||
+      searchProjects(tree.archived_projects, routeID, [SECTION_ARCHIVED]) ||
+      searchProjects(tree.test_runs, routeID, [SECTION_TEST_RUNS]) ||
       null
     );
   }
-  function searchProjects(projects, sessionId, prefix) {
+  function searchProjects(projects, routeID, prefix) {
     for (var i = 0; i < (projects || []).length; i++) {
       var p = projects[i];
-      var found = searchNodes(p.sessions, sessionId, prefix.concat([p.key]));
+      var found = searchNodes(p.sessions, routeID, prefix.concat([p.key]));
       if (found) return found;
     }
     return null;
@@ -824,15 +842,15 @@
   // `chain` is the expansion keys needed to reach `nodes` itself; a match
   // inside a cluster's members or a session's children extends the chain
   // with that disclosure's own key before returning.
-  function searchNodes(nodes, sessionId, chain) {
+  function searchNodes(nodes, routeID, chain) {
     for (var i = 0; i < (nodes || []).length; i++) {
       var n = nodes[i];
-      if (n.session_id === sessionId) return chain;
+      if (sessionRouteID(n) === routeID) return chain;
       if (n.kind === "cluster") {
-        var cm = searchNodes(n.children, sessionId, chain.concat([n.row_id]));
+        var cm = searchNodes(n.children, routeID, chain.concat([n.row_id]));
         if (cm) return cm;
       } else if (n.children && n.children.length) {
-        var cc = searchNodes(n.children, sessionId, chain.concat([childrenKey(n)]));
+        var cc = searchNodes(n.children, routeID, chain.concat([childrenKey(n)]));
         if (cc) return cc;
       }
     }
