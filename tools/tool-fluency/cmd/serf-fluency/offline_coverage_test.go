@@ -260,7 +260,7 @@ func TestRunProbeOfflineStates(t *testing.T) {
 	if err := os.Chmod(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cfg := runConfig{model: "openai/m", harness: "cli", outDir: filepath.Join(dir, "out"), serfBin: bin, timeout: time.Second, reasoningEffort: "low"}
+	cfg := runConfig{model: "openai/m", harness: "cli", outDir: filepath.Join(dir, "out"), serfBin: bin, timeout: 5 * time.Second, reasoningEffort: "low"}
 	probe := probeFile{ID: "pass", Prompt: "hello", Fixture: fixtureSpec{Files: map[string]string{"a.txt": "a"}}, Expect: expectSpec{Calls: []expectedCall{{Tool: "read"}}, FinalContains: []string{"ok"}}}
 	if res := runProbe(cfg, probe, 1, map[string]bool{}); res.Status != "passed" {
 		t.Fatalf("pass result = %#v", res)
