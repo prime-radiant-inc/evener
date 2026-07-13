@@ -109,6 +109,43 @@ func TestProject_ReasoningEffortChanged(t *testing.T) {
 	}
 }
 
+// TestProject_ModelThenEffortNotificationOrdering pins the client-facing
+// contract for a switch that also clamps effort: the model-changed
+// notification (which carries the new reasoning-effort ladder) is delivered
+// before the reasoning-effort-changed notification, so a client re-derives the
+// ladder before applying the new effort value. The switch marker systemMessage
+// rides between them, immediately after model-changed.
+func TestProject_ModelThenEffortNotificationOrdering(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	var out []AppNotification
+	out = append(out, p.Project(events.SessionEvent{
+		Kind: events.EventModelChanged,
+		Data: events.ModelChangedData{
+			OldProvider:           "anthropic",
+			OldModel:              "claude-opus-4-6",
+			NewProvider:           "openai",
+			NewModel:              "gpt-5.5",
+			ReasoningEffortLevels: []string{"low", "high"},
+			SupportsReasoning:     true,
+			MarkerText:            "Switched model: anthropic/claude-opus-4-6 → openai/gpt-5.5",
+		},
+	})...)
+	out = append(out, p.Project(events.SessionEvent{
+		Kind: events.EventReasoningEffortChanged,
+		Data: events.ReasoningEffortChangedData{ReasoningEffort: "high"},
+	})...)
+
+	if got := len(out); got != 3 {
+		t.Fatalf("want model-changed + marker + effort-changed, got %d: %+v", got, out)
+	}
+	if out[0].Method != appwire.NotifyThreadModelChanged {
+		t.Fatalf("out[0].Method = %q, want thread/model/changed first", out[0].Method)
+	}
+	if out[len(out)-1].Method != appwire.NotifyThreadReasoningEffortChanged {
+		t.Fatalf("out[last].Method = %q, want thread/reasoning-effort/changed last", out[len(out)-1].Method)
+	}
+}
+
 func TestProject_TaskUpdated(t *testing.T) {
 	p := NewAppEventProjector("th1", "local:th1")
 	out := p.Project(events.SessionEvent{
