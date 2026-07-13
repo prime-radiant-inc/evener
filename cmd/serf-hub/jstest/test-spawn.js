@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+
 const { JSDOM } = require("jsdom");
 
 const iconsSrc = fs.readFileSync(path.resolve(__dirname, "../assets/icons.js"), "utf8");
@@ -28,6 +29,17 @@ assert(spawnActionsIndex < spawnAdvancedIndex, "launch button should appear abov
 assert(spawnAttachRowIndex < spawnAttachButtonIndex, "attach button should appear inside attach row");
 assert(spawnAttachButtonIndex < spawnActionsIndex, "launch button should appear after attach button");
 assert(spawnActionsIndex < composerAttachmentsIndex, "launch button should share the attach row above attachments list");
+
+const spawnMobileRowsIndex = spawnTemplateSrc.indexOf('class="spawn-mobile-rows"');
+const spawnMobileRowIndex = spawnTemplateSrc.indexOf('data-spawn-row');
+const spawnPromptIndex = spawnTemplateSrc.indexOf('class="spawn-prompt"');
+const spawnInputIndex = spawnTemplateSrc.indexOf('class="spawn-input"');
+assert(spawnMobileRowsIndex !== -1, "spawn template should include mobile row block");
+assert(spawnMobileRowIndex !== -1, "spawn template should include data-spawn-row buttons");
+assert(spawnPromptIndex < spawnInputIndex, "prompt heading should appear before textarea");
+assert(spawnInputIndex < spawnMobileRowsIndex, "mobile rows should appear after textarea");
+assert(spawnTemplateSrc.indexOf('class="spawn-advanced-summary"') !== -1, "spawn template should use sentence-case advanced summary");
+assert(!spawnTemplateSrc.includes("<summary>advanced</summary>"), "spawn template should not use the old lowercase mono summary");
 
 (async function main() {
 const dom = new JSDOM(`<!DOCTYPE html><html><body></body></html>`, {
@@ -666,6 +678,36 @@ assert(
   formDom.window.document.querySelector('textarea[name="prompt"]').value === "ship the rename",
   "recent prompt should prefill the prompt textarea",
 );
+
+const expandDom = new JSDOM(`<!DOCTYPE html><html><body>
+  <form data-spawn-form>
+    <textarea class="spawn-input" name="prompt" style="min-height:96px;max-height:320px;"></textarea>
+    <button class="btn btn-primary spawn-btn" type="submit">spawn</button>
+    <input type="hidden" name="harness" value="serf">
+    <input type="hidden" name="model" value="openai/gpt-5.5">
+    <input type="hidden" name="working_dir" value="/tmp/expand">
+    <input type="hidden" name="branch" value="">
+    <input type="hidden" name="access_mode" value="full">
+    <input type="hidden" name="agent" value="default">
+    <input type="hidden" name="reasoning_effort" value="">
+  </form>
+</body></html>`, {
+  runScripts: "outside-only",
+  pretendToBeVisual: true,
+  url: "http://127.0.0.1:9180/new",
+});
+  expandDom.window.matchMedia = () => ({ matches: true, addListener: () => {}, removeListener: () => {} });
+  expandDom.window.fetch = () => Promise.resolve({ ok: true, text: () => Promise.resolve('{"branch":"main"}') });
+  expandDom.window.eval(dirPickerSrc);
+  expandDom.window.eval(spawnSrc);
+  expandDom.window.document.dispatchEvent(new expandDom.window.Event("DOMContentLoaded", { bubbles: true }));
+  const expandTa = expandDom.window.document.querySelector('textarea[name="prompt"]');
+  const beforeHeight = expandTa.style.height;
+  expandTa.value = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5";
+  // JSDOM does not compute layout, so override scrollHeight to simulate content growth.
+  Object.defineProperty(expandTa, "scrollHeight", { value: 200, configurable: true });
+  expandTa.dispatchEvent(new expandDom.window.Event("input", { bubbles: true }));
+  assert(expandTa.style.height === "200px", `textarea should grow to scrollHeight after input event (was ${beforeHeight})`);
 
 let alertCalled = false;
 formDom.window.alert = () => { alertCalled = true; };

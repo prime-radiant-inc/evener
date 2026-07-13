@@ -162,6 +162,16 @@ const inputZoomRule = (mobile.match(/[^{}]*\{[^}]*\}/g) || [])
 pass(!!inputZoomRule,
   "mobile must pin editable fields (incl .message-input) to font-size: 16px so iOS does not auto-zoom on focus");
 
+pass(mobile.indexOf(".spawn-mobile-rows") !== -1, "mobile stylesheet must include .spawn-mobile-rows");
+pass(/\.spawn-mobile-rows\s*\{[^}]*display:\s*flex/s.test(mobile), "mobile must show spawn-mobile-rows as flex");
+pass(/\.spawn-chips\s*\{[^}]*display:\s*none/s.test(mobile), "mobile must hide desktop .spawn-chips");
+pass(/\.spawn-row\s*\{[^}]*min-height:\s*48px/s.test(mobile), "mobile spawn rows must be 48px tall");
+pass(/\.spawn-row\s*\{[^}]*font-family:\s*var\(--font-sans\)/s.test(mobile), "mobile spawn rows must use sans font");
+pass(/\.spawn-input\s*\{[^}]*min-height:\s*96px/s.test(mobile), "mobile spawn textarea must have a 96px min-height");
+pass(/\.spawn-input\s*\{[^}]*resize:\s*none/s.test(mobile), "mobile spawn textarea must hide the resize handle");
+pass(!/\.spawn-advanced summary\s*\{[^}]*text-transform:\s*uppercase/s.test(mobile), "mobile advanced summary must not be uppercase");
+pass(!/\.spawn-advanced summary\s*\{[^}]*font-family:\s*var\(--font-mono\)/s.test(mobile), "mobile advanced summary must not use mono font");
+
 // One-size reading column (2026-07-11 round 2): compact phone density shrinks
 // only the app chrome; the transcript keeps the shared --text-base flowing
 // size and must NOT re-tier the column with per-kind size overrides.
