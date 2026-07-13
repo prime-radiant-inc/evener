@@ -11,35 +11,28 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// unrepresentableContentKinds is the spec's explicit per-tag policy table
+// unrepresentableContentKinds is the spec's per-tag policy table
 // (docs/superpowers/specs/2026-07-12-model-switching-design.md, "Unrepresentable
 // history") for content kinds a target's request builder cannot faithfully
-// carry: hard errors for anthropic-family (anthropic/request.go:512-513) and
-// google (google/request.go:280-281,328-329); silent drops for openai-compat
+// carry. It derives the family from builderFamily (session_model_call.go) so
+// this preflight and the N4 replay classifier share a single source of truth
+// and cannot drift: a tag misfiled here that the anthropic/google builder
+// hard-errors on would brick every subsequent turn.
+//
+// Per family: hard errors for anthropic-family (anthropic/request.go:512-513)
+// and google (google/request.go:280-281,328-329); silent drops for openai-compat
 // (openaicompat/request.go:299-329 has no document/audio cases — silently
 // dropping user content counts as unrepresentable by policy); audio only for
 // openai Responses (responses.go:913-938 — documents are carried).
 func unrepresentableContentKinds(behaviorTag string) map[llm.ContentKind]bool {
-	switch {
-	case behaviorTag == "anthropic" || behaviorTag == "openrouter-anthropic" || behaviorTag == "google":
+	switch builderFamily(behaviorTag) {
+	case "anthropic", "google", "compat":
 		return map[llm.ContentKind]bool{llm.ContentDocument: true, llm.ContentAudio: true}
-	case isOpenAICompatFamilyTag(behaviorTag):
-		return map[llm.ContentKind]bool{llm.ContentDocument: true, llm.ContentAudio: true}
-	case behaviorTag == "openai":
+	case "openai":
 		return map[llm.ContentKind]bool{llm.ContentAudio: true}
 	default:
 		return nil
 	}
-}
-
-// isOpenAICompatFamilyTag reports whether tag routes through the openai-compat
-// adapter — the behavior-tag-level counterpart of llm/providercfg.CompatFamily.
-func isOpenAICompatFamilyTag(tag string) bool {
-	switch tag {
-	case "openai-compatible", "kimi", "glm", "openrouter", "ollama":
-		return true
-	}
-	return false
 }
 
 // unrepresentableHistoryKinds scans history for content kinds the target

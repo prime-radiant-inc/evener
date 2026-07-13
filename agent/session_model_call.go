@@ -1073,7 +1073,7 @@ func builderFamily(tag string) string {
 		return "google"
 	case "openai":
 		return "openai"
-	case "openai-compatible", "glm", "zai", "deepseek", "together", "ollama", "openrouter":
+	case "openai-compatible", "kimi", "glm", "zai", "deepseek", "together", "ollama", "openrouter":
 		return "compat"
 	default:
 		return strings.TrimSpace(tag)

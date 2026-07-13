@@ -383,6 +383,146 @@ func TestSetModel_AudioInHistory_RejectedForAllTargetsIncludingResponses(t *test
 	}
 }
 
+// unrepresentableTargetResolver resolves the anthropic-builder targets whose
+// misclassification was the bricking bug the unification fix closes:
+// kimi-anthropic and minimax both route through the anthropic request builder,
+// which hard-errors on document/audio. Before the fix,
+// unrepresentableContentKinds' hand-maintained anthropic branch omitted both, so
+// a switch into them with a document or audio already in history passed the
+// preflight and then hard-failed at every subsequent turn — a bricked session.
+func unrepresentableTargetResolver(ref string) (*provider.Profile, error) {
+	parts := strings.SplitN(ref, "/", 2)
+	if len(parts) != 2 {
+		return nil, nil
+	}
+	provider := strings.ToLower(parts[0])
+	model := parts[1]
+	switch provider {
+	case "openai":
+		return NewOpenAIProfile(model), nil
+	case "kimi-anthropic":
+		return newKimiAnthropicProfile(model), nil
+	case "minimax":
+		return newMiniMaxProfile(model), nil
+	}
+	return nil, nil
+}
+
+// TestUnrepresentableContentKinds_FamilyTable pins the derived per-tag policy so
+// the switch preflight and the N4 builderFamily classifier cannot drift again.
+// zai/deepseek/together are openai-compat thinking-format tags carried defensively
+// in builderFamily; they are unit-covered here because they are not constructible
+// as live profiles (they are thinking_format values, not provider types).
+func TestUnrepresentableContentKinds_FamilyTable(t *testing.T) {
+	t.Parallel()
+	doc := llm.ContentDocument
+	aud := llm.ContentAudio
+	both := map[llm.ContentKind]bool{doc: true, aud: true}
+	audioOnly := map[llm.ContentKind]bool{aud: true}
+	cases := []struct {
+		tag  string
+		want map[llm.ContentKind]bool
+	}{
+		{"anthropic", both},
+		{"kimi-anthropic", both},
+		{"openrouter-anthropic", both},
+		{"minimax", both},
+		{"google", both},
+		{"openai-compatible", both},
+		{"kimi", both},
+		{"glm", both},
+		{"zai", both},
+		{"deepseek", both},
+		{"together", both},
+		{"ollama", both},
+		{"openrouter", both},
+		{"openai", audioOnly},
+		{"some-future-provider", nil},
+	}
+	for _, tc := range cases {
+		got := unrepresentableContentKinds(tc.tag)
+		if len(got) != len(tc.want) {
+			t.Errorf("unrepresentableContentKinds(%q) = %v, want %v", tc.tag, got, tc.want)
+			continue
+		}
+		for k, v := range tc.want {
+			if got[k] != v {
+				t.Errorf("unrepresentableContentKinds(%q)[%v] = %v, want %v", tc.tag, k, got[k], v)
+			}
+		}
+	}
+}
+
+// TestSetModel_DocumentInHistory_RejectedForNewlyClassifiedTargets is the
+// end-to-end regression guard for the bricking bug: a document in history must
+// reject a switch into kimi-anthropic/minimax (both route through the anthropic
+// builder). Before the fix, unrepresentableContentKinds returned nil for both,
+// so the switch was NOT rejected and every subsequent turn hard-failed.
+func TestSetModel_DocumentInHistory_RejectedForNewlyClassifiedTargets(t *testing.T) {
+	t.Parallel()
+	targets := []string{
+		"kimi-anthropic/kimi-k3",
+		"minimax/MiniMax-M2.7",
+	}
+	for _, target := range targets {
+		target := target
+		t.Run(target, func(t *testing.T) {
+			t.Parallel()
+			sess := newSession(t,
+				withProfile(NewOpenAIProfile("gpt-5.4")),
+				withAdapter(&fakeAdapter{name: "openai"}),
+				withConfig(SessionConfig{
+					NoProjectPrompts: true,
+					ResolveProfile:   unrepresentableTargetResolver,
+					testOnly:         testConfig{skipGitSnapshot: true},
+				}),
+			)
+			sess.appendTurn(schema.TurnUserInput, documentTurn().Message)
+
+			err := sess.SetModel(target)
+			if err == nil {
+				t.Fatalf("SetModel(%q) with document in history = nil error, want non-nil (was bricking before fix)", target)
+			}
+			if !strings.Contains(err.Error(), "document") {
+				t.Fatalf("error = %q, want it to name the document kind", err.Error())
+			}
+		})
+	}
+}
+
+// TestSetModel_AudioInHistory_RejectedForAnthropicBuilderTargets verifies the
+// same unification for audio: kimi-anthropic and minimax route through the
+// anthropic builder, which hard-errors on audio, so an audio part in history
+// must reject the switch (was silently allowed → bricked session before the fix).
+func TestSetModel_AudioInHistory_RejectedForAnthropicBuilderTargets(t *testing.T) {
+	t.Parallel()
+	targets := []string{"kimi-anthropic/kimi-k3", "minimax/MiniMax-M2.7"}
+	for _, target := range targets {
+		target := target
+		t.Run(target, func(t *testing.T) {
+			t.Parallel()
+			sess := newSession(t,
+				withProfile(NewOpenAIProfile("gpt-5.4")),
+				withAdapter(&fakeAdapter{name: "openai"}),
+				withConfig(SessionConfig{
+					NoProjectPrompts: true,
+					ResolveProfile:   unrepresentableTargetResolver,
+					testOnly:         testConfig{skipGitSnapshot: true},
+				}),
+			)
+			sess.appendTurn(schema.TurnUserInput, audioTurn().Message)
+
+			err := sess.SetModel(target)
+			if err == nil {
+				t.Fatalf("SetModel(%q) with audio in history = nil error, want non-nil (was bricking before fix)", target)
+			}
+			if !strings.Contains(err.Error(), "audio") {
+				t.Fatalf("error = %q, want it to name the audio kind", err.Error())
+			}
+		})
+	}
+}
+
 // rejectionTestResolver behaves like testResolver for the anthropic/google
 // instances the byte-identical rejection test configures, but — like
 // unknownInstanceResolver — returns an error naming the configured instances
