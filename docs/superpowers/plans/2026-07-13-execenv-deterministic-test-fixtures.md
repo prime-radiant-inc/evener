@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the macOS `agent/execenv` tests exercise their intended sandbox and cleanup contracts without changing production behavior.
+**Goal:** Make the macOS default tests exercise their intended sandbox, cleanup, and offline-probe contracts without changing production behavior.
 
-**Architecture:** Keep both repairs in test code. Canonicalize only shared sandbox fixture roots before those paths enter the no-symlink walker, and keep the lifecycle fixture's Bash process alive so its TERM trap remains installed.
+**Architecture:** Keep all repairs in test code. Canonicalize only shared sandbox fixture roots before those paths enter the no-symlink walker, keep the lifecycle fixture's Bash process alive so its TERM trap remains installed, and give the offline fake CLI a load-tolerant bounded guard.
 
 **Tech Stack:** Go testing, `filepath.EvalSymlinks`, Bash process traps, Git.
 
@@ -14,6 +14,7 @@
 - Do not weaken assertions or skip macOS coverage.
 - Do not add sleeps, network access, provider credentials, or ambient machine dependencies.
 - Preserve tests that intentionally construct symlinks.
+- Preserve explicit timeout-path coverage.
 - Keep each repair independently committed and verified.
 
 ---
@@ -149,14 +150,63 @@ git add agent/execenv/sandbox_lifecycle_test.go
 git commit -m "test(execenv): keep cleanup trap process alive" -m "Background the lifecycle fixture's sleeper and wait in Bash so the shell is not tail-execed away after readiness. The tracked process now retains its TERM trap and the existing sentinel measures whether cleanup preserves the owned scratch directory through graceful shutdown."
 ```
 
-### Task 3: Integrated Verification
+### Task 3: Bound the Offline Fake CLI Without a Load Race
+
+**Files:**
+- Modify: `tools/tool-fluency/cmd/serf-fluency/offline_coverage_test.go:263`
+
+**Interfaces:**
+- Consumes: `runConfig.timeout` as the per-probe context deadline.
+- Produces: a five-second test guard for non-timeout result classification.
+
+- [ ] **Step 1: Preserve the repository-gate red evidence**
+
+The preceding `make test` run failed `TestRunProbeOfflineStates` with
+`DurationMS:1001`, `Error:"signal: killed"`, and `Status:"blocked_infra"` while
+the same test passed ten isolated runs in 180–280 ms each.
+
+- [ ] **Step 2: Use the repository-standard subprocess guard**
+
+Change:
+
+```go
+timeout: time.Second
+```
+
+to:
+
+```go
+timeout: 5 * time.Second
+```
+
+- [ ] **Step 3: Verify the focused result-classification test repeatedly**
+
+Run:
+
+```bash
+gofmt -w tools/tool-fluency/cmd/serf-fluency/offline_coverage_test.go
+go test ./tools/tool-fluency/cmd/serf-fluency -run '^TestRunProbeOfflineStates$' -count=20
+```
+
+Expected: PASS for all twenty repetitions.
+
+- [ ] **Step 4: Commit the offline fixture guard**
+
+Run `git status --short`, then:
+
+```bash
+git add tools/tool-fluency/cmd/serf-fluency/offline_coverage_test.go
+git commit -m "test(fluency): tolerate loaded fake probe startup" -m "Give the offline result-classification fixture the repository-standard five-second subprocess guard. The prior one-second deadline killed an otherwise immediate fake CLI under concurrent module load; explicit timeout classification remains covered separately by immediate cancellation."
+```
+
+### Task 4: Integrated Verification
 
 **Files:**
 - Verify: `agent/execenv`
 - Verify: repository test modules
 
 **Interfaces:**
-- Consumes: Tasks 1 and 2.
+- Consumes: Tasks 1 through 3.
 - Produces: evidence that the repaired tests are deterministic and no other module regressed.
 
 - [ ] **Step 1: Run the complete execenv package**
