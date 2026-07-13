@@ -165,7 +165,36 @@ func (s *Session) disposeOneDelegateLane(local *execenv.LocalExecutionEnvironmen
 	}
 
 	// UNCHANGED → unlock, then `git worktree remove` (non-force), then mark the
-	// descriptor disposed, then delete branch + sidecar.
+	// descriptor disposed, then delete branch + sidecar. The close path
+	// downgrades a late-dirty refusal back to KEEP by re-locking (dead owner
+	// re-lock is today's behavior; Task 2 flips it to unlock-keep).
+	return s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeRelockKeep)
+}
+
+// downgradePolicy selects how a late-dirty remove refusal is handled when an
+// UNCHANGED lane cannot be cleanly removed: a write raced the clean check and
+// git refused the non-force remove, so the lane is downgraded back to KEEP.
+type downgradePolicy int
+
+const (
+	// downgradeRelockKeep re-locks the disposer's own serf:dlg marker on the
+	// kept lane (live dispose: the owner is still around to hold the lock).
+	downgradeRelockKeep downgradePolicy = iota
+	// downgradeUnlockKeep leaves the kept lane unlocked (close path: a dead
+	// owner whose lock nobody would ever release again).
+	downgradeUnlockKeep
+)
+
+// disposeUnchangedLaneMechanics runs the unlock → `git worktree remove`
+// (non-force) → mark disposed → `branch -D` → sidecar-delete sequence for an
+// UNCHANGED lane already judged collectible. It is the shared core of close-time
+// disposal and the live `dispose` op. It returns kept=false when the lane is
+// removed (disposed) and for a foreign / session-locked lane it declines to
+// touch (ActRefuse); it returns kept=true with a note when git refuses the
+// non-force remove (a late dirty write raced the clean check) and the lane is
+// downgraded back to KEEP per the downgrade policy.
+func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st worktree.LockState, lane isolationLane, metaDir string, downgrade downgradePolicy) (note string, kept bool) {
+	lanePath := filepath.Clean(lane.path)
 	switch worktree.Decide(worktree.EvDisposeUnchanged, st) {
 	case worktree.ActUnlock:
 		if _, err := run("worktree", "unlock", lanePath); err != nil {
@@ -183,11 +212,16 @@ func (s *Session) disposeOneDelegateLane(local *execenv.LocalExecutionEnvironmen
 	}
 	if _, err := run("worktree", "remove", "--", lanePath); err != nil {
 		// A late dirty write raced the clean check and git refused the
-		// non-force remove: downgrade back to KEEP and re-lock the lane so it
-		// is protected and resumable again.
-		marker := worktree.FormatDelegateMarker(lane.delegateID, s.id)
-		_, _ = run("worktree", "lock", "--reason", marker, lanePath)
-		return lane.delegateID + " at " + lanePath + " (dirty at removal; re-locked)", true
+		// non-force remove: downgrade back to KEEP so the lane is preserved and
+		// resumable again. The policy decides whether to re-lock our own marker.
+		switch downgrade {
+		case downgradeRelockKeep:
+			marker := worktree.FormatDelegateMarker(lane.delegateID, s.id)
+			_, _ = run("worktree", "lock", "--reason", marker, lanePath)
+			return lane.delegateID + " at " + lanePath + " (dirty at removal; re-locked)", true
+		default: // downgradeUnlockKeep
+			return lane.delegateID + " at " + lanePath + " (dirty at removal; kept unlocked)", true
+		}
 	}
 
 	// The worktree is gone. Mark the descriptor disposed BEFORE deleting the
