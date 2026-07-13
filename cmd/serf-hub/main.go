@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -314,17 +315,30 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 
 	// Lifecycle
-	ctx, cancel := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
+	signalCtx, cancelSignals := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancelSignals()
+	ctx, cancelBackground := context.WithCancel(signalCtx)
+	var background sync.WaitGroup
+	defer func() {
+		cancelBackground()
+		background.Wait()
+	}()
+	startBackground := func(fn func()) {
+		background.Add(1)
+		go func() {
+			defer background.Done()
+			fn()
+		}()
+	}
 
 	// Populate the roster before serving so the first sidebar request can't hit
 	// an empty roster (the "flash of no sessions" right after a restart). Probes
 	// run concurrently, so this is bounded by ~one probe timeout regardless of
 	// how many daemons are live.
 	roster.Refresh()
-	go watchHubRoster(ctx, roster)
+	startBackground(func() { watchHubRoster(ctx, roster) })
 
-	go func() {
+	startBackground(func() {
 		ticker := time.NewTicker(cfg.PastIndexRebuild)
 		defer ticker.Stop()
 		for {
@@ -335,7 +349,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 				_ = past.Rebuild()
 			}
 		}
-	}()
+	})
 
 	// Attention watcher: derives each live session's attention level from the
 	// same roster/past-index/archive inputs the sidebar tree uses, and
@@ -347,7 +361,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// working past hubcore.StallThreshold, the watcher runs the stale-wedge
 	// probe (hubcore.WedgedStatus) against it and, on a positive, overrides
 	// its level to "error" before broadcasting.
-	go watchHubAttention(ctx, attentionPoke, archive, past, roster, web)
+	startBackground(func() { watchHubAttention(ctx, attentionPoke, archive, past, roster, web) })
 
 	// Seed the bundled default marketplaces (best-effort, first-run-gated —
 	// see SeedDefaultMarketplaces). Every serf CLI path does this already
@@ -364,14 +378,14 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// default — see config.go). Never deletes; superseded dirs are reclaimed
 	// separately by `serf plugin gc` (also run once here, before any session
 	// exists, per §12).
-	startHubPluginMaintenance(ctx, cfg, web)
+	startHubPluginMaintenance(ctx, cfg, web, startBackground)
 	// Remote-thread cache refresher: refreshRemoteThreads (web_api_tree.go)
 	// walks every configured remote source's ListThreads, a synchronous
 	// network hop that used to run inline on every /api/tree request. Move it
 	// to a ~30s ticker + poke so a tree render never blocks on it; the tree
 	// read path (remoteTreeThreads) reads remoteCache.Get() instead whenever
 	// RemoteThreadCache is configured.
-	go refreshHubRemoteThreads(ctx, remotePoke, remoteCache, web)
+	startBackground(func() { refreshHubRemoteThreads(ctx, remotePoke, remoteCache, web) })
 
 	srv := &http.Server{
 		Addr:    cfg.Addr,

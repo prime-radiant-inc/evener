@@ -33,12 +33,18 @@ func refreshPastOnStatus(past *hubcore.PastIndex) func(string) {
 }
 
 func watchHubRoster(ctx context.Context, roster *hubcore.Roster) {
+	if ctx.Err() != nil {
+		return
+	}
 	if err := hubRosterWatch(ctx, roster); err != nil && ctx.Err() == nil {
 		fmt.Fprintf(os.Stderr, "[hub] roster watch: %v\n", err)
 	}
 }
 
 func watchHubAttention(ctx context.Context, poke <-chan struct{}, archive *hubcore.ArchiveStore, past *hubcore.PastIndex, roster *hubcore.Roster, web *WebServer) {
+	if ctx.Err() != nil {
+		return
+	}
 	w := hubcore.NewAttentionWatcher(func(p hubcore.AttentionChangedPayload) {
 		web.appRPC.BroadcastAll(appwire.NotifySerfAttentionChanged, p)
 	})
@@ -74,9 +80,9 @@ func seedHubMarketplaces() {
 	}
 }
 
-func startHubPluginMaintenance(ctx context.Context, cfg Config, web *WebServer) {
+func startHubPluginMaintenance(ctx context.Context, cfg Config, web *WebServer, startBackground func(func())) {
 	if cfg.PluginAutoUpgrade {
-		go hubStartUpgrade(ctx, cfg, web)
+		startBackground(func() { hubStartUpgrade(ctx, cfg, web) })
 	}
 	if removed, err := hubPluginGC(); err != nil {
 		fmt.Fprintf(os.Stderr, "[hub] plugin gc: %v\n", err)
@@ -86,6 +92,9 @@ func startHubPluginMaintenance(ctx context.Context, cfg Config, web *WebServer) 
 }
 
 func refreshHubRemoteThreads(ctx context.Context, poke <-chan struct{}, cache *hubcore.RemoteThreadCache, web *WebServer) {
+	if ctx.Err() != nil {
+		return
+	}
 	ticks, stop := hubTicker(30 * time.Second)
 	defer stop()
 	refresh := func() {
