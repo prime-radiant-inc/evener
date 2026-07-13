@@ -654,7 +654,10 @@ func DefManageWorktree() llm.ToolDefinition {
 		"exit (return to the main checkout); remove (delete a worktree by `name`; `delete_branch` also deletes its branch, " +
 		"`force` overrides provenance/merge gating, `force_dirty` overrides the refusal to discard uncommitted changes); " +
 		"prune (remove worktrees that have no unmerged work — unchanged or already-merged lanes, including ones left behind " +
-		"by finished sessions — the one-call way to clean up). " +
+		"by finished sessions — the one-call way to clean up); " +
+		"dispose (retire a delegate's isolation worktree lane by its delegate `id` once you are done with its work — unlocks, " +
+		"removes the worktree, deletes its branch, and marks the delegate disposed; `force` overrides the refusal to discard " +
+		"unmerged commits, `force_dirty` overrides the refusal to discard uncommitted changes). " +
 		"Subsequent tool calls after create/switch/exit operate inside the resulting checkout. There is no merge operation: " +
 		"to land a lane's work, exit and merge its branch from the main checkout with plain git."
 	return llm.ToolDefinition{
@@ -666,12 +669,16 @@ func DefManageWorktree() llm.ToolDefinition {
 			"properties": map[string]any{
 				"operation": map[string]any{
 					"type":        "string",
-					"description": "create, list, switch, exit, remove, or prune.",
-					"enum":        []string{"create", "list", "switch", "exit", "remove", "prune"},
+					"description": "create, list, switch, exit, remove, prune, or dispose.",
+					"enum":        []string{"create", "list", "switch", "exit", "remove", "prune", "dispose"},
 				},
 				"name": map[string]any{
 					"type":        "string",
 					"description": "Worktree name; also used as the branch name. Required for create; for switch, exactly one of name/path; required for remove.",
+				},
+				"id": map[string]any{
+					"type":        "string",
+					"description": "For dispose: the delegate id (dlg_…) whose isolation worktree lane to retire.",
 				},
 				"base_ref": map[string]any{
 					"type":        "string",
@@ -683,11 +690,11 @@ func DefManageWorktree() llm.ToolDefinition {
 				},
 				"force": map[string]any{
 					"type":        "boolean",
-					"description": "For remove: override provenance and merge-safety gating (unmanaged sidecar, unmerged branch deletion). Does NOT discard uncommitted changes — use force_dirty for that. Default false.",
+					"description": "For remove/dispose: override the merge-safety gating (unmanaged sidecar or unmerged branch deletion for remove; a lane with unmerged commits for dispose). Does NOT discard uncommitted changes — use force_dirty for that. Default false.",
 				},
 				"force_dirty": map[string]any{
 					"type":        "boolean",
-					"description": "For remove: remove a worktree even if it has uncommitted changes (they are discarded). Separate from force so overriding a provenance/merge refusal cannot silently discard an edit. Default false.",
+					"description": "For remove/dispose: proceed even if the worktree has uncommitted changes (they are discarded). Separate from force so overriding a merge refusal cannot silently discard an edit, and vice versa. Default false.",
 				},
 				"delete_branch": map[string]any{
 					"type":        "boolean",

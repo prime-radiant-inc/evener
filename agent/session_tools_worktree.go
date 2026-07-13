@@ -245,6 +245,11 @@ type worktreeGuard struct {
 	listOp func(ctx context.Context) ([]WorktreeListEntry, error)
 	// pruneOp runs the prune operation (spec §5 prune, all three sweeps).
 	pruneOp func(ctx context.Context) (WorktreePruneResult, error)
+	// disposeOp runs the dispose operation (spec §P1): retire a delegate's
+	// isolation worktree lane by id. force overrides an unmerged-commits refusal;
+	// forceDirty separately overrides an uncommitted-changes refusal (orthogonal,
+	// like remove).
+	disposeOp func(ctx context.Context, id string, force, forceDirty bool) (WorktreeDisposeResult, error)
 }
 
 // registerWorktreeTool registers the manage_worktree lifecycle tool (spec §2)
@@ -409,6 +414,25 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 					"registry_pruned":      res.RegistryPruned,
 					"registry_skip_reason": res.RegistrySkipReason,
 					"message":              msg,
+				}, nil
+			case "dispose":
+				id, _ := args["id"].(string)
+				force, _ := args["force"].(bool)
+				forceDirty, _ := args["force_dirty"].(bool)
+				res, err := deps.worktreeGuard.disposeOp(ctx, id, force, forceDirty)
+				if err != nil {
+					return nil, err
+				}
+				status := "disposed"
+				if res.AlreadyDisposed {
+					status = "already_disposed"
+				}
+				return map[string]any{
+					"status":  status,
+					"id":      res.DelegateID,
+					"path":    res.LanePath,
+					"branch":  res.Branch,
+					"message": res.Message,
 				}, nil
 			default:
 				return nil, fmt.Errorf("manage_worktree: unknown operation %q", operation)
