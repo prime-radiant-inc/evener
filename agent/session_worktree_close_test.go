@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/worktree"
 )
@@ -386,6 +387,107 @@ func TestDisposeRacingDirtyWrite_DowngradesToKeep(t *testing.T) {
 	}
 	if r.disposedEventPresent(t, delegateID) {
 		t.Error("downgraded lane wrongly marked disposed")
+	}
+}
+
+// laneDisposalRunner builds the git control runner and observed lock state for
+// a seeded lane, mirroring disposeOneDelegateLane's setup, so a test can drive
+// disposeUnchangedLaneMechanics directly with either downgrade policy.
+func (r *wtRepo) laneDisposalRunner(t *testing.T, lane isolationLane) (worktree.GitRunner, worktree.LockState) {
+	t.Helper()
+	local, ok := r.s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("session env is not a LocalExecutionEnvironment")
+	}
+	lanePath := filepath.Clean(lane.path)
+	rootedAtLane := local.WithWorkingDirectory(lanePath)
+	mainRoot := execenv.ResolveMainRepoRoot(rootedAtLane, lanePath)
+	if mainRoot == "" {
+		t.Fatal("could not resolve main repo root for lane")
+	}
+	run := r.s.newWorktreeGitRunner(context.Background(), local.WithWorkingDirectory(mainRoot))
+	locked, reason, err := lockStateOf(run, lanePath)
+	if err != nil {
+		t.Fatalf("lockStateOf: %v", err)
+	}
+	st := worktree.Unlocked
+	if locked {
+		st = worktree.ClassifyReason(reason, r.s.id, lane.delegateID)
+	}
+	return run, st
+}
+
+// TestDisposeUnchangedLaneMechanics_RelockPolicy: a late dirty write races the
+// clean check so git refuses the non-force remove; under downgradeRelockKeep the
+// helper re-locks the lane with the disposer's own serf:dlg marker and keeps it.
+func TestDisposeUnchangedLaneMechanics_RelockPolicy(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	delegateID, lanePath, _ := r.seedIsolationLane(t)
+	lane := isolationLane{delegateID: delegateID, path: lanePath}
+	metaDir := r.metaDir(r.canonicalMain(t))
+	run, st := r.laneDisposalRunner(t, lane)
+	r.s.worktreeDisposeBeforeRemove = func(p string) {
+		_ = os.WriteFile(filepath.Join(p, "raced.txt"), []byte("late\n"), 0o644)
+	}
+
+	note, kept := r.s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeRelockKeep)
+
+	if !kept {
+		t.Fatal("relock policy: lane not kept after refused remove")
+	}
+	if !strings.Contains(note, "re-locked") {
+		t.Errorf("relock policy note = %q, want it to mention re-locked", note)
+	}
+	reg, locked, reason := r.laneLocked(t, lanePath)
+	if !reg {
+		t.Fatal("relock policy: lane deregistered")
+	}
+	if !locked {
+		t.Error("relock policy: lane not re-locked")
+	}
+	if m, ok := worktree.ParseMarker(reason); !ok || m.DelegateID != delegateID {
+		t.Errorf("relock policy: reason = %q, want serf:dlg marker for %s", reason, delegateID)
+	}
+	if r.disposedEventPresent(t, delegateID) {
+		t.Error("relock policy: lane wrongly marked disposed")
+	}
+}
+
+// TestDisposeUnchangedLaneMechanics_UnlockPolicy: same refused-remove race, but
+// under downgradeUnlockKeep the helper leaves the kept lane UNLOCKED (a dead
+// owner at close whose lock nobody would ever release) and never marks disposed.
+func TestDisposeUnchangedLaneMechanics_UnlockPolicy(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	delegateID, lanePath, _ := r.seedIsolationLane(t)
+	lane := isolationLane{delegateID: delegateID, path: lanePath}
+	metaDir := r.metaDir(r.canonicalMain(t))
+	run, st := r.laneDisposalRunner(t, lane)
+	r.s.worktreeDisposeBeforeRemove = func(p string) {
+		_ = os.WriteFile(filepath.Join(p, "raced.txt"), []byte("late\n"), 0o644)
+	}
+
+	note, kept := r.s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeUnlockKeep)
+
+	if !kept {
+		t.Fatal("unlock policy: lane not kept after refused remove")
+	}
+	if !strings.Contains(note, "kept unlocked") {
+		t.Errorf("unlock policy note = %q, want it to mention kept unlocked", note)
+	}
+	reg, locked, _ := r.laneLocked(t, lanePath)
+	if !reg {
+		t.Fatal("unlock policy: lane deregistered")
+	}
+	if locked {
+		t.Error("unlock policy: lane still locked; a dead owner's lane must be left unlocked")
+	}
+	if !r.branchExists(t, delegateID) {
+		t.Error("unlock policy: lane branch deleted; must stay resumable")
+	}
+	if r.disposedEventPresent(t, delegateID) {
+		t.Error("unlock policy: lane wrongly marked disposed")
 	}
 }
 
