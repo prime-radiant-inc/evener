@@ -3413,15 +3413,18 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
 .spawn-confirm-actions { display: flex; gap: var(--space-3); justify-content: flex-end; }
 /* Spawn-advanced — the <details> toggle for the per-launch override panel. */
 .spawn-advanced { color: var(--text-muted); font-size: var(--text-sm); }
-.spawn-advanced summary {
+.spawn-advanced-summary {
   cursor: pointer;
   padding: var(--space-2) 0;
   font-family: var(--font-sans);
   font-size: var(--text-base);
   color: var(--text-muted);
+  background: transparent;
+  border: none;
 }
-.spawn-advanced[open] summary { color: var(--text); }
+.spawn-advanced.is-open .spawn-advanced-summary { color: var(--text); }
 .spawn-advanced-body { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4) 0; border-top: 1px solid var(--rule); }
+.spawn-advanced:not(.is-open) .spawn-advanced-body { display: none; }
 .spawn-advanced-note { margin: 0 0 var(--space-2); }
 .launch-radio-composite { flex-direction: column; align-items: stretch; gap: var(--space-3); }
 .launch-radio-composite .launch-radio-option { display: flex; flex-direction: row; align-items: center; gap: var(--space-3); color: var(--text-muted); }

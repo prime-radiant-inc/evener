@@ -16,7 +16,7 @@ function assert(cond, msg) {
 }
 
 const spawnActionsIndex = spawnTemplateSrc.indexOf('<div class="spawn-actions">');
-const spawnAdvancedIndex = spawnTemplateSrc.indexOf('<details class="spawn-advanced">');
+const spawnAdvancedIndex = spawnTemplateSrc.indexOf('<div class="spawn-advanced">');
 const spawnAttachRowIndex = spawnTemplateSrc.indexOf('<div class="spawn-attach-row">');
 const spawnAttachButtonIndex = spawnTemplateSrc.indexOf('data-attach-trigger');
 const composerAttachmentsIndex = spawnTemplateSrc.indexOf('<div class="composer-attachments"');
@@ -38,8 +38,10 @@ assert(spawnMobileRowsIndex !== -1, "spawn template should include mobile row bl
 assert(spawnMobileRowIndex !== -1, "spawn template should include data-spawn-row buttons");
 assert(spawnPromptIndex < spawnInputIndex, "prompt heading should appear before textarea");
 assert(spawnInputIndex < spawnMobileRowsIndex, "mobile rows should appear after textarea");
-assert(spawnTemplateSrc.indexOf('class="spawn-advanced-summary"') !== -1, "spawn template should use sentence-case advanced summary");
+assert(spawnTemplateSrc.indexOf('spawn-advanced-summary') !== -1, "spawn template should use sentence-case advanced summary");
 assert(!spawnTemplateSrc.includes("<summary>advanced</summary>"), "spawn template should not use the old lowercase mono summary");
+  assert(!spawnTemplateSrc.includes('<details class="spawn-advanced">'), "spawn template should not use details element for advanced options");
+  assert(spawnTemplateSrc.indexOf('data-spawn-advanced-toggle') !== -1, "spawn template should include an advanced toggle button");
 
 (async function main() {
 const dom = new JSDOM(`<!DOCTYPE html><html><body></body></html>`, {
@@ -750,6 +752,35 @@ const mobileRowsDom = new JSDOM(`<!DOCTYPE html><html><body>
   accessRow.click();
   assert(accessHidden.value === "full", "tapping mobile access_mode row again should toggle hidden input back to full");
   assert(accessDisplay.textContent === "full", "tapping mobile access_mode row again should update row display back to full");
+
+const advancedDom = new JSDOM(`<!DOCTYPE html><html><body>
+  <form data-spawn-form>
+    <div class="spawn-advanced">
+      <button type="button" class="btn spawn-advanced-summary" data-spawn-advanced-toggle>Advanced options</button>
+      <div class="spawn-advanced-body">
+        <div id="ovr-resolved-out"></div>
+      </div>
+    </div>
+    <input type="hidden" name="harness" value="serf">
+    <input type="hidden" name="model" value="">
+  </form>
+</body></html>`, {
+  runScripts: "outside-only",
+  pretendToBeVisual: true,
+  url: "http://127.0.0.1:9180/new",
+});
+  advancedDom.window.matchMedia = () => ({ matches: true, addListener: () => {}, removeListener: () => {} });
+  advancedDom.window.fetch = () => Promise.resolve({ ok: true, text: () => Promise.resolve('{"branch":"main"}') });
+  advancedDom.window.eval(dirPickerSrc);
+  advancedDom.window.eval(spawnSrc);
+  advancedDom.window.document.dispatchEvent(new advancedDom.window.Event("DOMContentLoaded", { bubbles: true }));
+  const advancedEl = advancedDom.window.document.querySelector(".spawn-advanced");
+  const advancedToggle = advancedDom.window.document.querySelector("[data-spawn-advanced-toggle]");
+  const advancedBody = advancedEl.querySelector(".spawn-advanced-body");
+  advancedToggle.click();
+  assert(advancedEl.classList.contains("is-open"), "clicking advanced toggle should open the advanced panel");
+  advancedToggle.click();
+  assert(!advancedEl.classList.contains("is-open"), "clicking advanced toggle again should close the advanced panel");
 
 let alertCalled = false;
 formDom.window.alert = () => { alertCalled = true; };

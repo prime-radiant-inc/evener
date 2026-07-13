@@ -92,8 +92,8 @@
     <input type="hidden" name="access_mode" value="{{.DefaultAccessMode}}">
     <input type="hidden" name="agent" value="default">
     <input type="hidden" name="reasoning_effort" value="">
-    <details class="spawn-advanced">
-      <summary class="spawn-advanced-summary">Advanced options</summary>
+    <div class="spawn-advanced">
+      <button type="button" class="btn spawn-advanced-summary" data-spawn-advanced-toggle>Advanced options</button>
       <div class="spawn-advanced-body">
         <p class="settings-help spawn-advanced-note">
           Per-launch overrides for this thread only. Defaults come from
@@ -111,7 +111,7 @@
         </div>
         <pre id="ovr-resolved-out" class="settings-code"></pre>
       </div>
-    </details>
+    </div>
   </form>
 
   {{if .RecentPrompts}}

@@ -1127,9 +1127,11 @@
     // Scroll the advanced section into view when it opens so the content
     // isn't clipped below the viewport.
     const advancedDetails = form.querySelector(".spawn-advanced");
-    if (advancedDetails) {
-      advancedDetails.addEventListener("toggle", () => {
-        if (advancedDetails.open) {
+    const advancedToggle = form.querySelector("[data-spawn-advanced-toggle]");
+    if (advancedDetails && advancedToggle) {
+      advancedToggle.addEventListener("click", () => {
+        advancedDetails.classList.toggle("is-open");
+        if (advancedDetails.classList.contains("is-open") && advancedDetails.scrollIntoView) {
           advancedDetails.scrollIntoView({ block: "nearest", behavior: "smooth" });
         }
       });
