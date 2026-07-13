@@ -722,6 +722,52 @@ func TestSession_CompactEmitsCompactionTurnEvent(t *testing.T) {
 	}
 }
 
+func TestSession_CompactQueuesOneTranscriptReminder(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			return finalResponse("forced summary")
+		},
+	}})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	sess.contextMgr.PreserveRecentTurns = 1
+	sess.history = []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first task")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("I will inspect the project and report enough detail to summarize.")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("second task")),
+	}
+
+	if err := sess.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	sess.mu.Lock()
+	queue := append([]steeringMessage(nil), sess.steeringQueue...)
+	sess.mu.Unlock()
+
+	const reminderNeedle = "If you need the exact transcript of this session before compaction"
+	var reminders []string
+	for _, message := range queue {
+		if strings.Contains(message.Text, reminderNeedle) {
+			reminders = append(reminders, message.Text)
+		}
+	}
+	if len(reminders) != 1 {
+		t.Fatalf("compaction transcript reminders = %d, want 1; queue=%v", len(reminders), queue)
+	}
+	wantCall := `read_session_transcript({"transcript_ref": "local:` + sess.ID() + `", "format": "markdown"})`
+	if !strings.Contains(reminders[0], wantCall) {
+		t.Fatalf("compaction transcript reminder missing %q; got:\n%s", wantCall, reminders[0])
+	}
+}
+
 func TestSession_CompactionReminderUsesTranscriptTool(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
