@@ -13,7 +13,7 @@ function newHarness() {
     </div>
     <header class="workspace-header" data-session-id="01TEST"></header>
     <div id="conversation" data-session-id="01TEST" data-state="awaiting"></div>
-    <form data-input-form data-session-id="01TEST">
+    <form class="workspace-input" data-input-form data-session-id="01TEST">
       <div data-composer-surface>
         <div class="task-status-row">
           <button type="button" class="status-item tasks-status" data-tasks-trigger title="task list"><span class="status-key">tasks</span><span class="status-value" data-task-status-text>loading…</span></button>
@@ -68,7 +68,7 @@ async function testRecheckCollapsesInsteadOfSending() {
   // Hold a reference to the Send button as it existed while still pending —
   // exactly what a slow human hand does: the click lands after the reply
   // already arrived and collapsed the card underneath it.
-  const sendBtn = dock.querySelector("[data-ask-send-btn]");
+  const sendBtn = window.document.querySelector("[data-ask-send-btn]");
 
   const startTurnCalls = [];
   window.SerfAppwire = { startTurn: (ref, text) => { startTurnCalls.push({ ref, text }); return Promise.resolve({ turn: { id: "t1" } }); } };
@@ -107,7 +107,7 @@ async function testConflictDropsTextIntoComposerNoRetry() {
     },
   };
 
-  dock.querySelector("[data-ask-send-btn]").click();
+  window.document.querySelector("[data-ask-send-btn]").click();
   await settle();
 
   pass(startTurnCalls.length === 1, "Conflict must not be retried — expected exactly 1 startTurn call, got " + startTurnCalls.length);
@@ -149,7 +149,7 @@ async function testSendReusesComposerSendPath() {
   R.appwireRef = "ref:01TEST";
   window.SerfAppwire = { startTurn: (ref, text, items) => { startTurnCalls.push({ ref, text, items }); return Promise.resolve({ turn: { id: "t1" } }); } };
 
-  dock.querySelector("[data-ask-send-btn]").click();
+  window.document.querySelector("[data-ask-send-btn]").click();
   await settle();
 
   pass(startTurnCalls.length === 1, "expected exactly one startTurn call, got " + startTurnCalls.length);
@@ -160,10 +160,34 @@ async function testSendReusesComposerSendPath() {
   pass(!!conv.querySelector(".ask-settled-line"), "a successful send leaves the settled line behind");
 }
 
+async function testSendDisabledThroughoutInFlightRebuildAndRetryableError() {
+  const { window, R } = newHarness();
+  await settle();
+  for (const [kind, data] of askCallEvents("call_slow", ONE_QUESTION)) R.handleData(kind, data);
+  pickFirstOption(pendingDock(window));
+  let rejectStart;
+  window.SerfAppwire = { startTurn: () => new Promise((resolve, reject) => { rejectStart = reject; }) };
+  const form = window.document.querySelector("form[data-input-form]");
+  form.querySelector("[data-ask-send-btn]").click();
+  await Promise.resolve();
+  pass(form.querySelector("[data-ask-send-btn]").disabled,
+    "the shared send button is disabled before startTurn settles");
+
+  for (const [kind, data] of askCallEvents("call_slow_more", [{ header: "Follow-up", question: "Anything else?", options: [{ label: "No", detail: "" }] }])) R.handleData(kind, data);
+  pass(form.querySelector("[data-ask-send-btn]").disabled,
+    "a footer rebuilt during send remains disabled");
+
+  rejectStart(new Error("temporary failure"));
+  await settle();
+  pass(!form.querySelector("[data-ask-send-btn]").disabled,
+    "a non-settling send error enables the currently connected send button again");
+}
+
 (async () => {
   await testRecheckCollapsesInsteadOfSending();
   await testConflictDropsTextIntoComposerNoRetry();
   await testSendReusesComposerSendPath();
+  await testSendDisabledThroughoutInFlightRebuildAndRetryableError();
 
   if (failures.length > 0) {
     for (const f of failures) console.log(f);

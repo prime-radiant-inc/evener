@@ -14,7 +14,7 @@ function newHarness() {
     </div>
     <header class="workspace-header" data-session-id="01TEST"></header>
     <div id="conversation" data-session-id="01TEST" data-state="awaiting"></div>
-    <form data-input-form data-session-id="01TEST">
+    <form class="workspace-input" data-input-form data-session-id="01TEST">
       <div data-composer-surface>
         <div class="task-status-row">
           <button type="button" class="status-item tasks-status" data-tasks-trigger title="task list"><span class="status-key">tasks</span><span class="status-value" data-task-status-text>loading…</span></button>
@@ -143,7 +143,7 @@ async function testMutualExclusionAndNoteAttachment() {
   // option (exactly one resolution per line, spec §4.3/§6.1).
   checkOption(q1, "A");
   pass(optionInput(q1, "A").checked === true, "sanity: option A is checked after clicking it");
-  q1.querySelector("[data-ask-free-toggle]").click();
+  q1.querySelector('[data-ask-option][data-option-kind="free"] input').click();
   setValue(q1.querySelector("[data-ask-free-input]"), "custom answer");
   pass(optionInput(q1, "A").checked === false, "switching to free-text clears the previously-checked option");
   checkOption(q1, "B");
@@ -151,25 +151,22 @@ async function testMutualExclusionAndNoteAttachment() {
   pass(optionInput(q1, "A").checked === false && optionInput(q1, "B").checked === true, "only the newly-picked option (B) ends up checked");
 
   // Note attaches to whichever resolution is finally chosen — here, option B.
-  q1.querySelector("[data-ask-note-toggle]").click();
   setValue(q1.querySelector("[data-ask-note-field]"), "only the primary");
 
   // Note attaches to an explicit skip.
   q2.querySelector("[data-ask-skip-btn]").click();
-  q2.querySelector("[data-ask-note-toggle]").click();
   setValue(q2.querySelector("[data-ask-note-field]"), "irrelevant");
 
   // Note attaches to "you decide" (plus its own optional leaning).
-  q3.querySelector("[data-ask-decide-toggle]").click();
+  q3.querySelector('[data-ask-option][data-option-kind="decide"] input').click();
   setValue(q3.querySelector("[data-ask-decide-leaning]"), "short names");
-  q3.querySelector("[data-ask-note-toggle]").click();
   setValue(q3.querySelector("[data-ask-note-field]"), "re-ask if it gets weird");
 
   const startTurnCalls = [];
   window.SerfAppwire = {
     startTurn: (ref, text) => { startTurnCalls.push({ ref, text }); return Promise.resolve({ turn: { id: "t1" } }); },
   };
-  dock.querySelector("[data-ask-send-btn]").click();
+  form.querySelector("[data-ask-send-btn]").click();
   await settle();
 
   pass(startTurnCalls.length === 1, "Send answers calls startTurn exactly once, got " + startTurnCalls.length);
@@ -185,6 +182,8 @@ async function testMutualExclusionAndNoteAttachment() {
     "normal composer must return after ask answers settle");
   pass(!form.querySelector("[data-ask-response-dock]"),
     "ask response dock must be removed after settlement");
+  pass(!form.querySelector("[data-ask-footer]"),
+    "ask footer must be removed after settlement");
 }
 
 async function testOtherClientSettlementRestoresComposer() {
@@ -196,6 +195,7 @@ async function testOtherClientSettlementRestoresComposer() {
   R.handleData("USER_INPUT", { text: "[answers]\n1. [Choice] → \"A\"" });
   const form = window.document.querySelector("[data-input-form]");
   pass(!form.querySelector("[data-ask-response-dock]"), "other client reply must remove local ask dock");
+  pass(!form.querySelector("[data-ask-footer]"), "other client reply must remove local ask footer");
   pass(form.querySelector(".message-input").hidden === false, "other client reply must restore normal composer");
   pass(!!conv.querySelector(".ask-settled-line"), "other client reply must leave a settled transcript line");
 }
