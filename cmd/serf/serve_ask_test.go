@@ -212,11 +212,10 @@ func TestServeAsk_StatusAwaitingAtRest(t *testing.T) {
 		t.Fatalf("TurnStart (reply): %v", err)
 	}
 
-	// Wait for the reply's own turn to actually complete: Turns advancing past
-	// turnsBeforeReply proves it was accepted and processed, independent of
-	// whatever state /status happens to report at any single poll (a
-	// never-processed reply would leave both Turns AND state stuck, so this
-	// still fails loudly if the reply silently dropped).
+	// Wait for the reply's own turn to be accepted and processed. Turns advancing
+	// past turnsBeforeReply proves the reply was not silently dropped, but the
+	// status state can still be observed in its narrow active window before the
+	// serve layer publishes the final settled state.
 	deadline := time.Now().Add(10 * time.Second)
 	var afterReply serveStatusState
 	for {
@@ -233,6 +232,10 @@ func TestServeAsk_StatusAwaitingAtRest(t *testing.T) {
 	// (scriptedCommunicate("answered")) is a clean, output-producing
 	// completion with nothing else in flight, so /status legitimately
 	// settles back to "awaiting" rather than "idle" — the merged truth.
+	afterReply = pollServeAskStatusUntil(t, entry.Address, "awaiting", 10*time.Second, 100*time.Millisecond)
+	if afterReply.Turns <= turnsBeforeReply {
+		t.Fatalf("state settled awaiting before reply turn advanced: turns=%d, want > %d", afterReply.Turns, turnsBeforeReply)
+	}
 	if afterReply.State != "awaiting" {
 		t.Fatalf("state after reply's turn completed = %q, want %q (inbox semantics: the reply's own clean, output-producing turn re-arms awaiting)", afterReply.State, "awaiting")
 	}
