@@ -348,7 +348,13 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
-	app := startTUITmux(t, bin, hub.URL())
+	// The /help output (all session slash commands + the browse keybindings)
+	// is taller than the default 40-row pane's transcript viewport, which pins
+	// to the bottom and scrolls the "Available commands:" header off the top.
+	// Give this pane extra rows so the whole help block — header through the
+	// final key line — fits on screen at once, which is what the WaitFor below
+	// asserts (all three substrings visible simultaneously).
+	app := startTUITmuxSized(t, bin, hub.URL(), 140, 52)
 	defer app.Close()
 
 	openLiveSession(t, app)
@@ -739,14 +745,16 @@ func TestTUITmuxE2E_ModelPickerShowsAuthRequiredModels(t *testing.T) {
 	app.WaitFor("serf / session / live task", "initial question")
 
 	app.TypeLine("/model")
-	// The row (qualified ID + catalog Meta tail + disabled reason) is long
-	// enough to word-wrap inside the popup, splitting "disabled: Login
-	// required" across two lines — check each half as its own WaitFor want
-	// (each is independently a substring.Contains check) instead of the
-	// contiguous phrase.
-	app.WaitFor("Select model", "openai/gpt-5", "disabled: Login", "OpenAI login required (run /auth openai)")
+	// The active model (session model "gpt-5") is marked with an "(active)" tag
+	// on the provider-qualified "openai/gpt-5" row, and the row (qualified ID +
+	// catalog Meta tail + "(active)" + disabled reason) is long enough to
+	// word-wrap inside the popup — the wrap lands right after "disabled:", so
+	// "disabled:" and its reason "Login required: ..." fall on separate lines.
+	// Check the disabled label and the reason as independent substring.Contains
+	// wants (plus the "(active)" tag) rather than a contiguous phrase.
+	app.WaitFor("Select model", "openai/gpt-5", "(active)", "disabled:", "OpenAI login required (run /auth openai)")
 	app.SendKeys("Enter")
-	app.WaitFor("Select model", "disabled: Login", "OpenAI login required (run /auth openai)")
+	app.WaitFor("Select model", "disabled:", "OpenAI login required (run /auth openai)")
 	if models := hub.Models(); len(models) != 0 {
 		t.Fatalf("auth-required model should not be selected: %+v", models)
 	}

@@ -86,6 +86,44 @@ func TestModelPicker_ActiveHighlight(t *testing.T) {
 	}
 }
 
+// TestModelPicker_ActiveHighlightNormalizesProviderQualifiedID covers the
+// /model picker's real bug: item IDs are "provider/model" (hub_commands.go
+// buildModelPickerItems) but the session's active model is the bare model
+// name (hub_types.go hubDetailFromThread: Model: thread.ModelProvider, which
+// itself is set from the bare status.Model). Without normalizing, the
+// currently active model never renders "(active)".
+func TestModelPicker_ActiveHighlightNormalizesProviderQualifiedID(t *testing.T) {
+	items := []ModelPickerItem{
+		{ID: "openai/gpt-5", Display: "gpt-5"},
+		{ID: "openai/gpt-5-mini", Display: "gpt-5-mini"},
+	}
+	p := NewModelPicker(items, "gpt-5-mini", 80)
+
+	plain := ansiPattern.ReplaceAllString(p.View(), "")
+	lines := strings.Split(plain, "\n")
+
+	var miniLine, gptLine string
+	for _, line := range lines {
+		if strings.Contains(line, "gpt-5-mini") {
+			miniLine = line
+		} else if strings.Contains(line, "gpt-5") {
+			gptLine = line
+		}
+	}
+	if miniLine == "" {
+		t.Fatal("no line containing gpt-5-mini found in view")
+	}
+	if !strings.Contains(miniLine, "(active)") {
+		t.Errorf("line with gpt-5-mini should contain (active) once the provider-qualified id is normalized against the bare active model, got: %q", miniLine)
+	}
+	if gptLine == "" {
+		t.Fatal("no line containing gpt-5 found in view")
+	}
+	if strings.Contains(gptLine, "(active)") {
+		t.Errorf("line with gpt-5 should NOT contain (active), got: %q", gptLine)
+	}
+}
+
 func TestModelPicker_DisabledItemRendersReasonAndCannotSelect(t *testing.T) {
 	items := []ModelPickerItem{
 		{ID: "openai/gpt-5", Display: "openai/gpt-5", DisabledReason: "login required: run /auth openai"},

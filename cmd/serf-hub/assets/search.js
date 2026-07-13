@@ -229,6 +229,14 @@
     return (window.SerfRenderer && window.SerfRenderer.activeTurnId) || (conv && conv.getAttribute("data-active-turn-id")) || "";
   }
 
+  // Same signal the composer's interrupt/steer buttons and the header model
+  // chip key off: Status.Type == "active" AND ActiveTurnID set. NOT
+  // activeFlags, which serf daemons never populate.
+  function isThreadBusy() {
+    const conv = document.getElementById("conversation");
+    return !!conv && conv.getAttribute("data-state") === "active" && !!conv.getAttribute("data-active-turn-id");
+  }
+
   function showTurnActionUnavailable(message) {
     if (window.SerfRenderer && window.SerfRenderer.appendBanner) {
       window.SerfRenderer.appendBanner("error", message, { source: "hub", title: "Hub action error" });
@@ -338,6 +346,11 @@
         args: { kind: "enum", placeholder: "choose a model…",
           source: () => fetchModels(),
           run: (ctx, item) => {
+            if (isThreadBusy()) {
+              const msg = "model change failed: turn in progress";
+              showTurnActionUnavailable(msg);
+              return blocked(msg);
+            }
             const p = window.SerfAppwire ? window.SerfAppwire.setModel(ctx.sessionId, item.id) : fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/model", {
               method: "POST", headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ model: item.id }),
@@ -355,18 +368,20 @@
           } } },
       { id: "reasoning-effort", title: "Set reasoning effort", hint: "", keywords: ["effort", "reasoning", "thinking"], scope: "session",
         args: { kind: "enum", placeholder: "choose effort…",
-          // The daemon clamps to what the active model supports, so offering the
-          // full vocabulary here is safe. "none" is omitted: it normalizes to
-          // "" (same as default), so it is not a distinct option.
-          source: () => Promise.resolve([
-            { id: "", label: "(default)" },
-            { id: "minimal", label: "minimal" },
-            { id: "low", label: "low" },
-            { id: "medium", label: "medium" },
-            { id: "high", label: "high" },
-            { id: "xhigh", label: "xhigh" },
-            { id: "max", label: "max" },
-          ]),
+          // The live picker lists exactly the current model's levels (task 8,
+          // G8), sourced snapshot-first via SerfModelSwitch.effortLevels()
+          // (reasoningEffortLevels/supportsReasoning from the thread
+          // snapshot/notifications — not /api/models, which the live surface
+          // shouldn't need). A model the hub reports as non-reasoning
+          // (supportsReasoning === false) yields a known-empty ladder — no
+          // options at all. "none" is omitted from a non-empty list: it
+          // normalizes to "" (same as default), so it is not a distinct
+          // option.
+          source: () => {
+            const levels = (window.SerfModelSwitch && window.SerfModelSwitch.effortLevels) ? window.SerfModelSwitch.effortLevels() : [];
+            if (!levels.length) return Promise.resolve([]);
+            return Promise.resolve([{ id: "", label: "(default)" }].concat(levels.map((l) => ({ id: l, label: l }))));
+          },
           run: (ctx, item) => {
             const eff = item.id || "";
             const p = window.SerfAppwire ? window.SerfAppwire.setReasoningEffort(ctx.sessionId, eff) : fetch("/api/sessions/" + encodeURIComponent(ctx.sessionId) + "/reasoning-effort", {
@@ -1037,5 +1052,5 @@
     init();
   }
 
-  window.SerfSearch = { open: open, close: close, openWith: openWith, Nav: Nav };
+  window.SerfSearch = { open: open, close: close, openWith: openWith, Nav: Nav, _commands: commands };
 })();

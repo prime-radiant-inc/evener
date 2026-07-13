@@ -159,6 +159,40 @@ func delegateSandboxReportForSession(sess *Session) *delegateSandboxReport {
 	return &delegateSandboxReport{Mode: le.Sandbox.Mode.String(), Network: le.Sandbox.Network}
 }
 
+// delegateModelReportForSession reads a delegate session's resolved model as a
+// "provider/model" ref, echoed back in the delegate result so the parent can
+// see the model the child actually ran with (spec N7 "Delegate echo", G9).
+// Delegate inheritance semantics are unchanged by this: it reports whatever
+// was already captured at spawn (parent's current profile, an explicit
+// model arg, or a plugin agent's pinned model).
+func delegateModelReportForSession(sess *Session) string {
+	if sess == nil {
+		return ""
+	}
+	profile := sess.currentProfile()
+	if profile == nil {
+		return ""
+	}
+	return profile.ID() + "/" + profile.Model()
+}
+
+// delegateModelReportForDescriptor is delegateModelReportForSession's restore-path
+// counterpart: it reports the persisted descriptor's resolved model
+// (jobstore/record.go ResolvedProfileID/ResolvedModel) rather than re-reading a
+// live session, so a restored delegate's terminal result echoes the model it
+// actually ran under even after the parent has since switched.
+func delegateModelReportForDescriptor(desc *jobstore.DelegateRestoreDescriptor) string {
+	if desc == nil {
+		return ""
+	}
+	profileID := strings.TrimSpace(desc.ResolvedProfileID)
+	model := strings.TrimSpace(desc.ResolvedModel)
+	if profileID == "" || model == "" {
+		return ""
+	}
+	return profileID + "/" + model
+}
+
 type delegateResult struct {
 	DelegateID               string
 	StartedJobID             string
@@ -180,6 +214,7 @@ type delegateResult struct {
 	Watches                  []watchListEntry
 	Worktree                 *delegateWorktreeReport
 	Sandbox                  *delegateSandboxReport
+	Model                    string
 	Err                      error
 }
 
@@ -312,6 +347,10 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	// The delegate's enforced box is fixed at spawn; snapshot it once to echo in
 	// every result path so the parent can verify the child's actual confinement.
 	sandboxReport := delegateSandboxReportForSession(sub.sess)
+	// The delegate's resolved model is likewise fixed at spawn (captured-at-spawn
+	// inheritance, an explicit model arg pin, or a plugin agent's pinned model —
+	// spec N7 "Delegate echo", G9); snapshot it once to echo in every result path.
+	modelReport := delegateModelReportForSession(sub.sess)
 	run, err := s.attachDelegateJobWithPreparedAndDelegate(jm, childID, task, sub, jobID, delegateID, delegateGeneration, args.AgentType, args.ResultSchema, false, prepared)
 	if err != nil {
 		prepared.runCancel()
@@ -353,6 +392,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 			RunningInBackground: true,
 			TranscriptRef:       run.rec.TranscriptRef,
 			Sandbox:             sandboxReport,
+			Model:               modelReport,
 		}
 	}
 
@@ -364,6 +404,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 		finalizeErr := s.bridgeDelegateFinalizationWithDone(run.rec.JobID, childID, sub, done, false)
 		res := waitForDelegateFinalization(ctx, s, jm, run, finalizeErr)
 		res.Sandbox = sandboxReport
+		res.Model = modelReport
 		return res
 	case <-timer.C():
 		s.bridgeDelegateFinalizationWithDone(run.rec.JobID, childID, sub, done, true)
@@ -382,6 +423,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 			Output:              output,
 			Truncated:           truncated,
 			Sandbox:             sandboxReport,
+			Model:               modelReport,
 			Err:                 readErr,
 		}
 		return res
@@ -2365,6 +2407,7 @@ func delegateTerminalResult(s *Session, jm *jobManager, run *runningJob) delegat
 		wt = s.isolatedDelegateWorktreeReport(rec.DelegateRestore)
 	}
 	return delegateResult{
+		Model:                    delegateModelReportForDescriptor(rec.DelegateRestore),
 		DelegateID:               rec.DelegateID,
 		StartedJobID:             rec.JobID,
 		JobID:                    rec.JobID,

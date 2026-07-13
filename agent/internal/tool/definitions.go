@@ -125,7 +125,7 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 			"properties": map[string]any{
 				"task":                 map[string]any{"type": "string"},
 				"agent_type":           agentTypeSchema,
-				"model":                map[string]any{"type": "string", "description": "Model override (default: parent model)."},
+				"model":                map[string]any{"type": "string", "description": "Model override. Default: the delegate captures your CURRENT model at the moment it is spawned (so a delegate spawned after you switch models inherits the new one, and one spawned before keeps the model it started with). An explicit value here pins the delegate to that model instead, regardless of your current or future model."},
 				"reasoning_effort":     map[string]any{"type": "string", "description": "Reasoning effort for this delegate (low, medium, or high). Default inherits from parent.", "enum": []string{"low", "medium", "high"}},
 				"max_wait_ms":          map[string]any{"type": "integer", "description": "0 (default): return the delegate_id and started job_id immediately; you are notified on completion. >0: wait inline up to this many ms; a timeout leaves the job running."},
 				"delegation_allowance": map[string]any{"type": "integer", "description": "0 (default): a leaf delegate that cannot itself delegate. >0: the delegate may delegate, granting onward allowances strictly smaller than this; must be strictly less than your own allowance. The allowance only takes effect if the chosen agent_type actually has the `delegate` tool: the built-in `subagent` role is a non-delegating leaf, so a >0 allowance on it is a silent no-op. For a multi-level tree, omit agent_type (the default role can delegate)."},

@@ -752,6 +752,10 @@ func writeEntry(b *strings.Builder, seq int, e transcript.Entry, resultTool stri
 		fmt.Fprintf(b, "\n## Turn %d — Checkpoint\n", seq)
 		writeCompactNote(b, "Checkpoint", e.Turn)
 
+	case schema.TurnModelSwitch:
+		fmt.Fprintf(b, "\n## Turn %d — Model switch\n", seq)
+		writeCompactNote(b, "Model switch", e.Turn)
+
 	case schema.TurnToolResults:
 		// TOOL_RESULTS do not get a standalone heading — they fold under the
 		// assistant turn that owns the tool call. Skip silently as a no-op.

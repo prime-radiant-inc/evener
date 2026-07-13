@@ -215,6 +215,8 @@ func (s *Session) prepareModelRequest(ctx context.Context, round int, t *events.
 		s.mu.Unlock()
 	}
 
+	preManageLen := len(historyTurns)
+
 	// Apply context management before each LLM request.
 	if s.strategy != nil {
 		// Populate compaction metadata so checkpoint/summarize have session context.
@@ -241,8 +243,30 @@ func (s *Session) prepareModelRequest(ctx context.Context, round int, t *events.
 	// --- Phase: HistoryExpand ---
 	tPhaseStart = s.sclock().Now()
 
+	// Establish the in-flight-turn boundary (spec N4 exemption): capture it at
+	// round 0, then track any mid-turn compaction that folds prior turns so the
+	// boundary keeps pointing at the current turn's first appended turn.
+	s.mu.Lock()
+	if round == 0 {
+		s.turnHistoryBaseline = len(historyTurns)
+	} else if shrink := preManageLen - len(historyTurns); shrink > 0 {
+		s.turnHistoryBaseline -= shrink
+		if s.turnHistoryBaseline < 0 {
+			s.turnHistoryBaseline = 0
+		}
+	}
+	inFlightFrom := s.turnHistoryBaseline
+	s.mu.Unlock()
+
 	// Reuse historyTurns from context management — no redundant copy.
-	history = expandHistory(historyTurns)
+	history = expandHistory(historyTurns, replayScope{
+		Provider:       profile.ID(),
+		Model:          profile.Model(),
+		BehaviorTag:    profile.BehaviorTag(),
+		InFlightFrom:   inFlightFrom,
+		behaviorTagOf:  s.client.BehaviorTagOf,
+		canonicalModel: canonicalModelID,
+	})
 
 	t.HistoryExpand = time.Since(tPhaseStart)
 
@@ -407,7 +431,9 @@ func responsesContinuationDeltaMessages(base []llm.Message, deltaTurns []schema.
 		}
 		messages = append(messages, msg)
 	}
-	messages = append(messages, expandHistory(deltaTurns)...)
+	// Responses-continuation delta path (openai target): the Responses builder
+	// keeps its own reasoning guard, so expansion filters nothing here.
+	messages = append(messages, expandHistory(deltaTurns, replayScope{})...)
 	return messages
 }
 
@@ -1017,12 +1043,161 @@ func buildTranscriptAPILogResponse(resp llm.Response, idHash string) *llm.APILog
 	}
 }
 
+// replayScope carries the outgoing target identity that decides whether
+// provider/model-scoped content — thinking/redacted_thinking and web_search raw
+// blocks — from completed prior turns may replay after a mid-session model
+// switch (spec N4). A zero replayScope (empty BehaviorTag) disables all
+// filtering, so history expansion for a target that keeps its own builder
+// guards (openai Responses, openai-compat) or for the Responses-continuation
+// delta path is byte-identical to before this rule existed.
+type replayScope struct {
+	Provider    string // outgoing instance id (req.Provider)
+	Model       string // outgoing requested model (req.Model)
+	BehaviorTag string // outgoing behavior tag; empty ⇒ no filtering
+
+	// InFlightFrom is the history index of the first turn belonging to the
+	// in-flight turn. Turns at or after it are exempt from filtering: a
+	// same-behavior-tag fallback round earlier in the current turn keeps its
+	// thinking (N4 exempts in-flight rounds and the fallback path).
+	InFlightFrom int
+
+	// behaviorTagOf resolves a stored turn's ResponseProvider (instance id) to
+	// its behavior tag for the web_search family check. Nil ⇒ the producing
+	// family is treated as unknown and web_search is compared same-provider.
+	behaviorTagOf func(string) string
+	// canonicalModel canonicalizes a model id for the ResponseModel fallback
+	// comparison. Nil ⇒ raw (trimmed) string comparison.
+	canonicalModel func(string) string
+}
+
+// active reports whether the scope enforces the N4 replay-provenance rules. An
+// empty behavior tag means "expand without filtering".
+func (rs replayScope) active() bool { return strings.TrimSpace(rs.BehaviorTag) != "" }
+
+// builderFamily maps a behavior tag to the wire-format family whose request
+// builder serves it. web_search raw blocks are foreign JSON across families, and
+// the thinking rule is scoped per family (exact-model for anthropic, same-
+// provider for google). An unrecognized tag maps to itself so an unknown
+// provider never silently shares a family with a known one.
+func builderFamily(tag string) string {
+	switch strings.TrimSpace(tag) {
+	case "anthropic", "kimi-anthropic", "openrouter-anthropic", "minimax":
+		return "anthropic"
+	case "google":
+		return "google"
+	case "openai":
+		return "openai"
+	case "openai-compatible", "kimi", "glm", "zai", "deepseek", "together", "ollama", "openrouter":
+		return "compat"
+	default:
+		return strings.TrimSpace(tag)
+	}
+}
+
+// thinkingReplayEligible reports whether a completed prior turn's
+// thinking/redacted_thinking blocks may replay into the outgoing request.
+// Empty provenance (legacy transcripts) is always eligible. anthropic-family
+// targets require an exact (instance id, requested model) match — the requested
+// model taken from ResponseRequestModel, or catalog-canonicalized ResponseModel
+// when the request-model field is empty (closes G12). google targets require
+// only the same instance id (its builder must replay prior tool-call thought
+// signatures regardless of model). Every other target keeps its own builder
+// guard, so expansion never strips thinking for it.
+func (rs replayScope) thinkingReplayEligible(t schema.Turn) bool {
+	if strings.TrimSpace(t.ResponseProvider) == "" {
+		return true
+	}
+	switch builderFamily(rs.BehaviorTag) {
+	case "anthropic":
+		return rs.Provider == t.ResponseProvider && rs.requestedModelMatches(t)
+	case "google":
+		return rs.Provider == t.ResponseProvider
+	default:
+		return true
+	}
+}
+
+// requestedModelMatches compares the outgoing requested model against the
+// producing turn's, in requested-model space (ResponseRequestModel), falling
+// back to catalog-canonicalized ResponseModel when the request-model field is
+// empty.
+func (rs replayScope) requestedModelMatches(t schema.Turn) bool {
+	if rm := strings.TrimSpace(t.ResponseRequestModel); rm != "" {
+		return strings.TrimSpace(rs.Model) == rm
+	}
+	return rs.canonicalize(rs.Model) == rs.canonicalize(t.ResponseModel)
+}
+
+func (rs replayScope) canonicalize(model string) string {
+	if rs.canonicalModel != nil {
+		return rs.canonicalModel(model)
+	}
+	return strings.TrimSpace(model)
+}
+
+// webSearchReplayEligible reports whether a completed prior turn's web_search
+// raw blocks may replay verbatim. Empty provenance is eligible; otherwise the
+// producing behavior-tag family must match the target family (anthropic ↔
+// anthropic, openai ↔ openai) — cross-family the raw payload is foreign JSON and
+// is dropped (G13).
+func (rs replayScope) webSearchReplayEligible(t schema.Turn) bool {
+	if strings.TrimSpace(t.ResponseProvider) == "" {
+		return true
+	}
+	var producerTag string
+	if rs.behaviorTagOf != nil {
+		producerTag = rs.behaviorTagOf(t.ResponseProvider)
+	} else if rs.Provider == t.ResponseProvider {
+		producerTag = rs.BehaviorTag
+	} else {
+		producerTag = t.ResponseProvider
+	}
+	return builderFamily(producerTag) == builderFamily(rs.BehaviorTag)
+}
+
+// projectTurnMessage returns t.Message with provider/model-scoped content
+// filtered per the N4 rules for the scope. In-flight turns and inactive scopes
+// pass through unchanged (identical to legacy expansion). tool_call/tool_result
+// and text/image content is never touched.
+func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Message {
+	if !rs.active() || inFlight {
+		return t.Message
+	}
+	keepThinking := rs.thinkingReplayEligible(t)
+	keepWebSearch := rs.webSearchReplayEligible(t)
+	if keepThinking && keepWebSearch {
+		return t.Message
+	}
+	filtered := make([]llm.ContentPart, 0, len(t.Message.Content))
+	for _, p := range t.Message.Content {
+		switch p.Kind {
+		case llm.ContentThinking, llm.ContentRedThinking:
+			if !keepThinking {
+				continue
+			}
+		case llm.ContentWebSearch:
+			if !keepWebSearch {
+				continue
+			}
+		}
+		filtered = append(filtered, p)
+	}
+	msg := t.Message
+	msg.Content = filtered
+	return msg
+}
+
 // expandHistory flattens conversation turns into the per-message slice sent to
-// the model: steering/checkpoint/summary turns pass through as-is, and
-// aggregated tool-result turns are expanded into individual tool-result messages.
-func expandHistory(historyTurns []schema.Turn) []llm.Message {
+// the model: steering/checkpoint/summary turns pass through as-is, aggregated
+// tool-result turns are expanded into individual tool-result messages, and
+// TurnModelSwitch markers are dropped (presentational only, never sent).
+// scope enforces the N4 cross-model replay-provenance rules: after a switch,
+// thinking and web_search blocks a target cannot accept are stripped from the
+// outgoing request while staying untouched in the stored transcript.
+func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message {
 	history := make([]llm.Message, 0, len(historyTurns))
-	for _, t := range historyTurns {
+	for i, t := range historyTurns {
+		inFlight := scope.active() && i >= scope.InFlightFrom
 		if t.Kind == schema.TurnSteering {
 			history = append(history, t.Message)
 			continue
@@ -1057,7 +1232,25 @@ func expandHistory(historyTurns []schema.Turn) []llm.Message {
 			history = append(history, t.Message)
 			continue
 		}
-		history = append(history, t.Message)
+		if t.Kind == schema.TurnModelSwitch {
+			// Persisted switch marker: presentational only, never sent to the model.
+			continue
+		}
+		history = append(history, scope.projectTurnMessage(t, inFlight))
 	}
 	return history
+}
+
+// canonicalModelID canonicalizes a model ref through the embedded catalog so a
+// requested alias and a provider-reported dated snapshot of the same model
+// compare equal in the ResponseModel provenance fallback. Unknown refs compare
+// by trimmed string.
+func canonicalModelID(model string) string {
+	trimmed := strings.TrimSpace(model)
+	if cat := llm.EmbeddedModelCatalog(); cat != nil {
+		if mi := cat.LookupModelInfo(trimmed); mi != nil && mi.ID != "" {
+			return mi.ID
+		}
+	}
+	return trimmed
 }

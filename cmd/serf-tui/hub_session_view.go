@@ -51,6 +51,7 @@ func (m hubModel) sessionHeaderLines() []string {
 	addPart("src", firstNonEmptyString(m.detail.SourceLabel, sourceLabelFromRefText(m.detail.Ref)))
 	addPart("branch", m.detail.Branch)
 	addPart("model", modeldisplay.AbbreviateModel(m.detail.Model))
+	addPart("effort", m.detail.ReasoningEffort)
 	if m.detail.WorkingDir != "" {
 		addPart("dir", modeldisplay.AbbreviatePath(m.detail.WorkingDir, 32))
 	}
@@ -295,6 +296,10 @@ func (m *hubModel) sessionChromeText() (topBar, overlayText, footer string) {
 	}
 	if m.sessionModelPicker != nil {
 		overlay.WriteString(m.sessionModelPicker.View())
+		overlay.WriteString("\n\n")
+	}
+	if m.sessionEffortPicker != nil {
+		overlay.WriteString(m.sessionEffortPicker.View())
 		overlay.WriteString("\n\n")
 	}
 	if m.sessionThemePicker != nil {

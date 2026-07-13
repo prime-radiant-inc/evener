@@ -601,6 +601,12 @@ async function runCaseCS(tc) {
   const detailsBtn = window.document.querySelector("[data-details-trigger]");
   if (detailsBtn) detailsBtn.click = () => { calls.panelClicks.details += 1; };
 
+  // The reasoning-effort command reads its option list from
+  // SerfModelSwitch.effortLevels() (task 8, G8) rather than a hardcoded
+  // vocabulary; stub it here so command-sweep cases exercising /effort still
+  // have levels to select from. tc.effortLevels lets a case narrow/empty it.
+  window.SerfModelSwitch = { effortLevels: () => (tc.effortLevels || ["minimal", "low", "medium", "high", "xhigh", "max"]) };
+
   window.eval(searchSrc);
   await new Promise(r => setTimeout(r, 30));
   const input = window.document.getElementById("search-input");
