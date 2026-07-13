@@ -184,7 +184,9 @@ pass(!!blockWith(".spawn-recent-row", /min-height:\s*44px/, css), "mobile recent
 pass(!!blockWith(".spawn-input", /max-height:\s*min\(40vh,\s*8lh\)/, mobile), "mobile spawn textarea must cap height at 40vh or 8 lines");
 pass(!!blockWith(".spawn-btn kbd", /display:\s*none/, mobile), "mobile spawn buttons must hide keyboard-hint labels");
 pass(!!blockWith(".chip-picker-sheet .chip-picker-option", /font-family:\s*var\(--font-sans\)/, mobile), "mobile picker sheet options must use sans font");
-pass(!!blockWith(".chip-picker-sheet .chip-picker-option", /min-height:\s*48px/, mobile), "mobile picker sheet options must be at least 48px tall");
+pass(/\.spawn-pane\s*\{[^}]*calc\(68px\s*\+\s*env\(safe-area-inset-bottom\)\)/s.test(mobile), "mobile scrollable pane must reserve space for the fixed action band");
+pass(!!blockWith(".spawn-attach-btn .spawn-attach-label", /display:\s*none/, mobile), "mobile attach button must hide the verbose label");
+pass(!!blockWith(".spawn-recent-row", /font-size:\s*var\(--text-base\)/, mobile), "mobile recent-prompt rows must use base font size");
 
 // One-size reading column (2026-07-11 round 2): compact phone density shrinks
 // only the app chrome; the transcript keeps the shared --text-base flowing

@@ -4553,7 +4553,8 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
      Desktop reserves a 64px side gutter; reclaim it. The config chips become
      full-width settings-style rows — label+value at the left, chevron pinned
      right — instead of a ragged pile of differently-sized pills. */
-  .spawn-pane { padding: var(--space-5) var(--space-4); }
+  .spawn-pane { padding: var(--space-5) var(--space-4) calc(68px + env(safe-area-inset-bottom)); }
+  .spawn-recent-row { font-size: var(--text-base); }
   .spawn-prompt { font-size: var(--text-xl); }
   /* Desktop chips are replaced by the mobile settings-row block. */
   .spawn-chips { display: none; }
@@ -4612,7 +4613,6 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
     padding: var(--space-4);
   }
   /* Fixed bottom action band on phone so the primary action stays in the thumb zone. */
-  .spawn-form { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
   .spawn-attach-row {
     position: fixed;
     left: 0;
@@ -4630,6 +4630,7 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
   .spawn-attach-row .spawn-btn { min-height: 52px; }
   .spawn-attach-btn .spawn-attach-label kbd,
   .spawn-btn kbd { display: none; }
+  .spawn-attach-btn .spawn-attach-label { display: none; }
 
   /* ── Chip selectors (model / path / etc.) as a bottom sheet on phone ──────
      The desktop pickers are fixed 480–520px panels anchored under a chip — far

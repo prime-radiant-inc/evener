@@ -74,17 +74,21 @@
 
   Do not remove or duplicate the hidden inputs. The mobile rows read from the same hidden inputs and `data-chip-value-*` spans as the desktop chips.
 
-- [ ] **Step 3: Replace the retired `advanced` summary text**
+- [ ] **Step 3: Replace the retired `<details>` advanced toggle with a plain button**
 
   Change:
   ```html
   <details class="spawn-advanced">
     <summary>advanced</summary>
+    ...
+  </details>
   ```
   to:
   ```html
-  <details class="spawn-advanced">
-    <summary class="spawn-advanced-summary">Advanced options</summary>
+  <div class="spawn-advanced">
+    <button type="button" class="btn spawn-advanced-summary" data-spawn-advanced-toggle aria-expanded="false" aria-controls="spawn-advanced-body">Advanced options</button>
+    ...
+  </div>
   ```
 
 - [ ] **Step 4: Verify the template still renders**
@@ -203,19 +207,24 @@
 
   Ensure this rule is inside the mobile block so the desktop `min-height: 160px` is overridden.
 
-- [ ] **Step 5: Update the advanced summary style**
+- [ ] **Step 5: Update the advanced toggle style**
 
-  Replace the existing `.spawn-advanced summary` rule (which uses uppercase/letter-spacing/mono) with:
+  Replace the existing `.spawn-advanced summary` rule (which uses uppercase/letter-spacing/mono) with a plain-button style that hides the body by default:
 
   ```css
-  .spawn-advanced summary {
+  .spawn-advanced-summary {
     cursor: pointer;
     padding: var(--space-2) 0;
     font-family: var(--font-sans);
     font-size: var(--text-base);
     color: var(--text-muted);
+    background: transparent;
+    border: none;
+    text-align: left;
   }
-  .spawn-advanced[open] summary { color: var(--text); }
+  .spawn-advanced-summary:hover { background: transparent; }
+  .spawn-advanced.is-open .spawn-advanced-summary { color: var(--text); }
+  .spawn-advanced:not(.is-open) .spawn-advanced-body { display: none; }
   ```
 
   Remove any `text-transform: uppercase`, `letter-spacing`, or `font-family: var(--font-mono)` from this rule.
@@ -317,8 +326,10 @@
   assert(spawnMobileRowIndex !== -1, "spawn template should include data-spawn-row buttons");
   assert(spawnPromptIndex < spawnInputIndex, "prompt heading should appear before textarea");
   assert(spawnInputIndex < spawnMobileRowsIndex, "mobile rows should appear after textarea");
-  assert(spawnTemplateSrc.indexOf('class="spawn-advanced-summary"') !== -1, "spawn template should use sentence-case advanced summary");
-  assert(!spawnTemplateSrc.includes("<summary>advanced</summary>"), "spawn template should not use the old lowercase mono summary");
+assert(spawnTemplateSrc.indexOf('spawn-advanced-summary') !== -1, "spawn template should use sentence-case advanced summary");
+assert(!spawnTemplateSrc.includes("<summary>advanced</summary>"), "spawn template should not use the old lowercase mono summary");
+assert(!spawnTemplateSrc.includes('<details class="spawn-advanced">'), "spawn template should not use details element for advanced options");
+assert(spawnTemplateSrc.indexOf('data-spawn-advanced-toggle') !== -1, "spawn template should include an advanced toggle button");
   ```
 
 - [ ] **Step 2: Add auto-expand test in `test-spawn.js`**
@@ -365,8 +376,10 @@
   pass(/\.spawn-row\s*\{[^}]*font-family:\s*var\(--font-sans\)/s.test(mobile), "mobile spawn rows must use sans font");
   pass(/\.spawn-input\s*\{[^}]*min-height:\s*96px/s.test(mobile), "mobile spawn textarea must have a 96px min-height");
   pass(/\.spawn-input\s*\{[^}]*resize:\s*none/s.test(mobile), "mobile spawn textarea must hide the resize handle");
-  pass(!/\.spawn-advanced summary\s*\{[^}]*text-transform:\s*uppercase/s.test(mobile), "mobile advanced summary must not be uppercase");
-  pass(!/\.spawn-advanced summary\s*\{[^}]*font-family:\s*var\(--font-mono\)/s.test(mobile), "mobile advanced summary must not use mono font");
+pass(/\.spawn-advanced-summary\s*\{[^}]*background:\s*transparent/s.test(mobile), "mobile advanced summary must have transparent background");
+pass(!/\.spawn-advanced-summary\s*\{[^}]*text-transform:\s*uppercase/s.test(mobile), "mobile advanced summary must not be uppercase");
+pass(!/\.spawn-advanced-summary\s*\{[^}]*font-family:\s*var\(--font-mono\)/s.test(mobile), "mobile advanced summary must not use mono font");
+pass(/\.spawn-advanced:not\(\.is-open\)\s+\.spawn-advanced-body\s*\{[^}]*display:\s*none/s.test(mobile), "mobile advanced body must be hidden when not open");
   ```
 
 - [ ] **Step 4: Run the test files**
