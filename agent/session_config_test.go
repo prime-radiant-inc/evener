@@ -780,7 +780,7 @@ func TestSession_CompactionReminderUsesTranscriptTool(t *testing.T) {
 	}
 	defer sess.Close()
 
-	sess.handleCompactionTurn(schema.NewTurn(schema.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]\nsummary")))
+	sess.steerCompactionTranscriptReminder()
 
 	sess.mu.Lock()
 	queue := append([]steeringMessage(nil), sess.steeringQueue...)

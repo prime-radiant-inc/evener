@@ -69,21 +69,41 @@ type steeringTurnRecord struct {
 	text string
 }
 
+func (s *Session) steerCompactionTranscriptReminder() {
+	if s.stateDir == "" || s.id == "" {
+		return
+	}
+	ref := encodeRef("", s.id)
+	s.Steer("<SYSTEM-REMINDER>If you need the exact transcript of this session before compaction, use the transcript tool instead of reading raw transcript files directly. Default read: read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"format\": \"markdown\"}). For long sessions, first get a turn map with read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"format\": \"outline\"}), then read a focused range with read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"range\": \"A-B\"}).</SYSTEM-REMINDER>")
+}
+
 func (s *Session) compactionEmitFunc(ctx context.Context, history *[]schema.Turn) (func(events.EventKind, events.EventData), func()) {
 	preCompactRan := false
+	historyFolded := false
 	var pendingSteering []steeringTurnRecord
 	emitFn := func(kind events.EventKind, data events.EventData) {
-		if kind == events.EventContextCompaction && !preCompactRan {
-			preCompactRan = true
-			pendingSteering = append(pendingSteering, s.runPreCompactHook(ctx, history)...)
-			s.mu.Lock()
-			s.nudgedSinceCompact = false // reset nudge latch on ANY compaction
-			s.mu.Unlock()
+		if kind == events.EventContextCompaction {
+			if compaction, ok := data.(events.ContextCompactionData); ok {
+				switch compaction.Layer {
+				case "checkpoint", "checkpoint_pred", "session_log_checkpoint", "summarize":
+					historyFolded = true
+				}
+			}
+			if !preCompactRan {
+				preCompactRan = true
+				pendingSteering = append(pendingSteering, s.runPreCompactHook(ctx, history)...)
+				s.mu.Lock()
+				s.nudgedSinceCompact = false // reset nudge latch on ANY compaction
+				s.mu.Unlock()
+			}
 		}
 		s.emit(kind, data)
 	}
 	flush := func() {
 		s.flushSteeringTurnRecords(pendingSteering)
+		if historyFolded {
+			s.steerCompactionTranscriptReminder()
+		}
 	}
 	return emitFn, flush
 }

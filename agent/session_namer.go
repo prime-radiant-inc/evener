@@ -294,11 +294,6 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 			s.Steer(reminder)
 		}
 	}
-	// Tell the agent how to inspect the full pre-compaction transcript.
-	if s.stateDir != "" && s.id != "" {
-		ref := encodeRef("", s.id)
-		s.Steer("<SYSTEM-REMINDER>If you need the exact transcript of this session before compaction, use the transcript tool instead of reading raw transcript files directly. Default read: read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"format\": \"markdown\"}). For long sessions, first get a turn map with read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"format\": \"outline\"}), then read a focused range with read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"range\": \"A-B\"}).</SYSTEM-REMINDER>")
-	}
 }
 
 func (s *Session) reportCompactionTranscriptAppend(err error) {
