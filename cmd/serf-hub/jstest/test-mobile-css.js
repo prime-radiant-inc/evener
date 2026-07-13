@@ -153,6 +153,14 @@ pass(shortLandscapeTelemetryRule && /flex-wrap:\s*nowrap/.test(shortLandscapeTel
 
 pass(/\.workspace-input\[data-response-mode="ask"\]/.test(css),
   "stylesheet must provide a .workspace-input[data-response-mode=\"ask\"] response-mode hook");
+pass(/\.workspace-input\[data-response-mode="ask"\]\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column[^}]*max-height:\s*min\(56dvh,\s*560px\)/s.test(css),
+  "ask mode is a bounded flex column");
+pass(/\.ask-response-dock\s*\{[^}]*flex:\s*1\s+1\s+auto[^}]*min-height:\s*0[^}]*overflow-y:\s*auto/s.test(css),
+  "only the question dock is the bounded scroll region");
+pass(/\.workspace-input\s*>\s*\[data-composer-surface\]\[hidden\]\s*\{[^}]*display:\s*none/s.test(css),
+  "the hidden composer surface cannot occupy ask-mode layout space");
+pass(/@media\s*\([^)]*max-width:[^)]*\)[\s\S]*?\.ask-footer\s*\{[^}]*safe-area-inset-left[^}]*safe-area-inset-right/s.test(css),
+  "the mobile ask footer clears horizontal safe areas");
 
 // iOS zoom guard: a focused field whose text is < 16px makes iOS Safari zoom
 // the page in (and never zoom back out on blur). Editable fields must be 16px

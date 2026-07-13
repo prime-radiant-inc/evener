@@ -1711,6 +1711,8 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
+  min-width: var(--tap-min);
+  min-height: var(--tap-min);
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--rule);
   border-radius: var(--radius-pill);
@@ -1720,6 +1722,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
   cursor: pointer;
 }
 .ask-option:hover { border-color: var(--accent); }
+.ask-option:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 .ask-option:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--bg-raised)); }
 .ask-option.recommended { border-color: color-mix(in srgb, var(--accent) 45%, var(--rule)); }
 .ask-option-tag {
@@ -1747,6 +1750,8 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
   background: transparent;
   border: 1px dashed var(--rule);
   border-radius: var(--radius-pill);
+  min-width: var(--tap-min);
+  min-height: var(--tap-min);
   padding: var(--space-2) var(--space-3);
   cursor: pointer;
 }
@@ -1754,6 +1759,8 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 .ask-decide-toggle:hover,
 .ask-fallback-btn:hover,
 .ask-skip-btn:hover { color: var(--text); border-color: var(--text-muted); }
+.ask-fallback-btn:focus-visible,
+.ask-skip-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .ask-free-toggle.active,
 .ask-decide-toggle.active,
 .ask-fallback-btn.active,
@@ -1801,7 +1808,19 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 }
 .ask-note-field[hidden] { display: none; }
 
-.ask-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin-top: var(--space-4); padding-top: var(--space-3); border-top: 1px solid color-mix(in srgb, var(--state-awaiting) 20%, transparent); }
+.ask-footer {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: var(--space-4);
+  padding: var(--space-3) 0 0;
+  border-top: 1px solid color-mix(in srgb, var(--state-awaiting) 20%, transparent);
+  background: var(--bg-raised);
+}
 .ask-answered-count { font-size: var(--text-xs); color: var(--text-muted); }
 
 .ask-anchor {
@@ -1813,16 +1832,16 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 .ask-response-dock {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
   gap: var(--space-3);
-  max-height: min(56dvh, 560px);
   overflow-y: auto;
-  padding-bottom: var(--space-2);
 }
 
-.workspace-input[data-response-mode="ask"] .ask-footer {
-  position: sticky;
-  bottom: 0;
-  background: var(--bg-raised);
+.workspace-input[data-response-mode="ask"] {
+  display: flex;
+  flex-direction: column;
+  max-height: min(56dvh, 560px);
 }
 
 .ask-collapsed-chip {
@@ -1873,6 +1892,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
    rules — the phone's .input-status { order: -1 } status-rail-on-top — keep
    working through the wrapper. */
 .workspace-input > [data-composer-surface] { display: flex; flex-direction: column; min-width: 0; }
+.workspace-input > [data-composer-surface][hidden] { display: none; }
 /* Status rail: the htmx-swapped telemetry strip plus the tasks trigger, side by
    side. Tasks is a session fact — like branch/ctx/quiet — so it reads from the
    rail, not from inside the input card's action row. The trigger stays outside
@@ -4423,6 +4443,11 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
   }
   .workspace-input:focus-within { border-top-color: color-mix(in srgb, var(--accent) 55%, var(--rule)); }
   .workspace-input[data-response-mode="ask"] { border-top-color: color-mix(in srgb, var(--state-awaiting) 55%, var(--rule)); }
+  .ask-footer {
+    padding-block: var(--space-3) var(--space-2);
+    padding-left: calc(env(safe-area-inset-left) + var(--space-4));
+    padding-right: calc(env(safe-area-inset-right) + var(--space-4));
+  }
   .input-status-rail { order: -1; margin: 0 0 var(--space-2); gap: var(--space-2); flex-direction: column; align-items: stretch; }
   .input-status-rail .input-status { flex: none; }
   .input-status { margin: 0; padding: 0; min-height: 0; }
