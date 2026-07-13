@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -264,5 +265,43 @@ func TestComputeTargetFocusAttribution(t *testing.T) {
 	// Package: 2 of 3 statements across decode.go = 66.7%.
 	if got := r.pkgPct; got < 66.0 || got > 67.0 {
 		t.Errorf("pkgPct = %.1f, want ~66.7", got)
+	}
+}
+
+func TestGoWorkModules(t *testing.T) {
+	repo := t.TempDir()
+	work := "go 1.25.6\n" +
+		"\n" +
+		"use (\n" +
+		"\t.\n" +
+		"\t./agent\n" +
+		"\t./invariant\n" +
+		")\n" +
+		"\n" +
+		"replace example.com/agent v0.0.0 => ./agent\n"
+	if err := os.WriteFile(filepath.Join(repo, "go.work"), []byte(work), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mods, err := goWorkModules(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{".", "agent", "invariant"}
+	if !slices.Equal(mods, want) {
+		t.Errorf("goWorkModules = %v, want %v", mods, want)
+	}
+}
+
+func TestGoWorkModulesSingleLineUse(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "go.work"), []byte("go 1.25.6\nuse ./llm\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mods, err := goWorkModules(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(mods, []string{"llm"}) {
+		t.Errorf("goWorkModules = %v, want [llm]", mods)
 	}
 }

@@ -96,7 +96,7 @@ func runCLI(args []string, stdout, stderr *os.File) (int, error) {
 	globalJSON := flags.Bool("global-json", false, "emit the global coverage report as JSON")
 	ignorePath := flags.String("ignore", "scripts/fuzzcov-ignore.txt", "gap-map ignore-list")
 	repoRoot := flags.String("repo-root", ".", "repository root")
-	modulesArg := flags.String("modules", ". agent llm auth fuzz", "space-separated go.work module dirs to scan for the gap map")
+	modulesArg := flags.String("modules", "", "space-separated go.work module dirs to scan for the gap map (default: derived from go.work)")
 	check := flags.Bool("check", false, "exit non-zero on a focus-set regression or a gap breach")
 	bless := flags.Bool("bless", false, "raise each floor upward to the current measured focus %")
 	tolerance := flags.Float64("tolerance", 0.5, "ratchet tolerance band (percentage points) absorbing nondeterministic wobble")
@@ -123,8 +123,17 @@ func runCLI(args []string, stdout, stderr *os.File) (int, error) {
 		return 2, errors.New("-global-json requires -global-manifest")
 	}
 
+	modules := strings.Fields(*modulesArg)
+	if len(modules) == 0 {
+		var err error
+		modules, err = goWorkModules(*repoRoot)
+		if err != nil {
+			return 2, fmt.Errorf("derive modules from go.work: %w", err)
+		}
+	}
+
 	if *gapOnly {
-		return runGapOnlyE(*registry, *repoRoot, strings.Fields(*modulesArg), *ignorePath)
+		return runGapOnlyE(*registry, *repoRoot, modules, *ignorePath)
 	}
 
 	if *manifest == "" {
@@ -135,7 +144,7 @@ func runCLI(args []string, stdout, stderr *os.File) (int, error) {
 	if err != nil {
 		return 2, fmt.Errorf("read manifest: %w", err)
 	}
-	modulePaths, err := readModulePaths(*repoRoot, strings.Fields(*modulesArg))
+	modulePaths, err := readModulePaths(*repoRoot, modules)
 	if err != nil {
 		return 2, fmt.Errorf("read module paths: %w", err)
 	}
@@ -671,6 +680,42 @@ func parseBlock(line string) (block, error) {
 		return block{}, fmt.Errorf("bad start line in %q: %w", line, err)
 	}
 	return block{file: file, start: startLine, stmts: stmts, count: count}, nil
+}
+
+// goWorkModules derives the module dir list from the repo's go.work use
+// directives, so new workspace modules are picked up without touching flags.
+func goWorkModules(repoRoot string) ([]string, error) {
+	content, err := fuzzcovSystem.readFile(filepath.Join(repoRoot, "go.work"))
+	if err != nil {
+		return nil, err
+	}
+	var mods []string
+	inBlock := false
+	sc := bufio.NewScanner(strings.NewReader(string(content)))
+	for sc.Scan() {
+		fields := strings.Fields(sc.Text())
+		if len(fields) == 0 {
+			continue
+		}
+		switch {
+		case inBlock:
+			if fields[0] == ")" {
+				inBlock = false
+				continue
+			}
+			mods = append(mods, filepath.Clean(fields[0]))
+		case fields[0] == "use" && len(fields) >= 2:
+			if fields[1] == "(" {
+				inBlock = true
+				continue
+			}
+			mods = append(mods, filepath.Clean(fields[1]))
+		}
+	}
+	if len(mods) == 0 {
+		return nil, fmt.Errorf("no use directives in %s", filepath.Join(repoRoot, "go.work"))
+	}
+	return mods, nil
 }
 
 func readModulePaths(repoRoot string, modules []string) (map[string]string, error) {
