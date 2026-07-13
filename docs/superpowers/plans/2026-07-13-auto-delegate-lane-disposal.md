@@ -98,8 +98,11 @@ A lane is clean iff `worktree.CleanTree` holds. Then:
 
 **No-fetch invariant** (rev-8 finding M5): `worktree.Merged` resolves only
 local refs (`rev-parse`, `for-each-ref`; `predicates.go:96-130`) — no
-network at close or in sweeps, ever. Stale tracking refs can only produce
-false *unmerged* (lane kept — safe).
+network at close or in sweeps, ever. **Stale-ref acceptance statement**
+(roborev 2718): a stale remote-tracking ref makes ancestry judge against an
+*older* target tip; a commit reachable from the old tip is reachable from
+every newer tip, so staleness can only produce false *unmerged* (lane
+kept), never false *merged* — safe by construction, accepted.
 
 ### P0. Close-time disposal collects ancestry-merged lanes
 
@@ -133,8 +136,13 @@ so removal + `branch -D` loses nothing. Consequences:
   budget-exempt touch + unlock** (two cheap constant-cost ops per lane, no
   history walks), because skipping the unlock would strand them under a
   dead session's lock — the exact "collectable by nothing" class of the N1
-  limitation (rev-9.1 finding O2). A wedged unlock is skipped after the
-  op-level cancellation below; that residual is accepted and warned. P0's
+  limitation (rev-9.1 finding O2). The tail is O(lanes) with ~ms-scale ops
+  and lane count is bounded by the delegates one session spawned (flagship
+  worst case 21 ≈ well under a second) — accepted without a second cap; if
+  a pathological count ever appears, cap the tail and warn (roborev
+  2718-3). A wedged unlock is skipped after the op-level cancellation
+  below; the residual is reported in one aggregated warning naming the
+  still-locked lanes. P0's
   git ops run before `env.Cleanup()`, so a stale `index.lock` can stall an
   op — the budget plus ctx-aware git runners are the mitigation; each op is
   best-effort skip-on-error as today.
@@ -204,10 +212,15 @@ Non-isolated coordinators: full tool.
    **Nested-coordinator cascade — intended and bounded** (rev-9.1 finding
    P2): closing a coordinator child runs *its* `disposeDelegateLanesAtClose`
    — its ancestry-merged grandchild lanes are collected right there, its
-   unmerged ones KEPT+touched+unlocked, exactly as at any close; the
-   child's close-time work runs under its own `laneClosePassBudget`, so the
-   cascade adds at most one budget's worth of git work to the dispose turn.
-   KEEP warnings from the cascade surface as events.
+   unmerged ones KEPT+touched+unlocked, exactly as at any close. **The
+   whole cascade shares ONE budget**: the initiating dispose turn passes a
+   deadline-carrying ctx down the close cascade, and every descendant's
+   close-time disposal honors it — `close(false)` recurses through retained
+   descendant coordinators, so per-session budgets would multiply by
+   subtree depth (roborev finding 2718-1). A depth-2 cascade test pins
+   this. KEEP warnings from the cascade surface as events; ctx-cancelled
+   git ops are skipped with **one aggregated warning naming the residual
+   lanes** (per-lane spam forbidden).
 8. **Unlock → `git worktree remove` → `EventDelegateDisposed` →
    `git branch -D` → delete sidecar.** Remove refused → stat: gone →
    mark + clean remnants + report disposed; present (late dirty) → re-lock
@@ -264,9 +277,12 @@ dispose its worktree and branch: manage_worktree op=dispose id=<dlg_…>.`
 
 Surface mechanics (rev-9.1 finding P5): the notification path renders text —
 the sentence is appended there; the inline tool-result path is a typed
-struct (`delegateWorktreeToolResult`), so the sentence ships as a new
-optional field **`disposal_hint string`** (`json:"disposal_hint,omitempty"`)
-— additive, hub consumers ignore unknown fields. No render-time git. Honest reach: completion-time only — pre-existing
+struct (`delegateWorktreeToolResult`, owned by `session_tools_jobs.go`), so
+the sentence ships as a new **exported** field
+**`DisposalHint string`** with tag `json:"disposal_hint,omitempty"` — an
+unexported field would be silently dropped by `encoding/json` (roborev
+finding 2718-2). Populated in `delegateWorktreeToolResultFrom`. Additive;
+hub consumers ignore unknown fields. No render-time git. Honest reach: completion-time only — pre-existing
 completed delegates' lanes are P0's job (or spontaneous model action), not
 P2's. Note the nudge is now the **primary** path for rebase/squash-merge
 workflows (D0-auto excludes them), which raises its importance — the eval
@@ -342,6 +358,18 @@ staleness-based lock reclaim).
 
 All three test-overridable.
 
+## Implementation order (close/dispose concurrency — land as separate,
+ordered commits, each red→green; roborev 2718)
+
+1. WG admission: check-AND-Add under one `s.mu` hold + `closing` flag split.
+2. Close reorder: set-flag → cancel → join → drain, with the
+   `responseSideEffectsMu` placement pinned above.
+3. Ctx-aware git runners on the dispose/close paths (cancellation actually
+   interrupts ops).
+4. Budget ctx propagation through the close cascade.
+5. In-flight-dispose cancellation tests (test 15) last, over the assembled
+   protocol.
+
 ## Testing (TDD, red → green per case)
 
 P0 unit:
@@ -382,9 +410,11 @@ P1 unit:
     session close".
 12a. **Nested coordinator eviction cascade:** disposing a coordinator
     delegate runs the child's own close-time disposal — ancestry-merged
-    grandchild lanes collected, unmerged ones KEPT+touched+unlocked, under
-    the child's own budget; step-8 late-dirty KEEP after eviction →
-    KEPT-after-eviction, resumable via restore path (gate-reversal exempt).
+    grandchild lanes collected, unmerged ones KEPT+touched+unlocked;
+    **depth-2 subtree case**: the whole cascade consumes ONE shared budget
+    (deadline ctx propagated), not one per descendant; step-8 late-dirty
+    KEEP after eviction → KEPT-after-eviction, resumable via restore path
+    (gate-reversal exempt).
 13. Remove-refused: present+dirty → re-locked, KEPT; gone → marked +
     remnants cleaned; re-lock failure warns.
 14. Half-removed residue: control env via `OriginalRoot`; merged tip →
@@ -457,8 +487,10 @@ delay+grace; resume refusals: disposed-mark for (b), stat-net for (c).
   P3 timer/close-pass (~35 loc)
 - `agent/internal/jobstore/fold.go` (+ doctor consumers) — Disposed in
   projections (~25 loc)
-- `agent/session_tools_jobs.go` / `agent/job_notify.go` — nudge surfaces
-  (~30 loc)
+- `agent/session_tools_jobs.go` / `agent/job_notify.go` — nudge surfaces:
+  exported `DisposalHint` field on `delegateWorktreeToolResult` + populate
+  in `delegateWorktreeToolResultFrom`; text append on the notification
+  path (~30 loc)
 - `agent/internal/worktree/predicates.go` — ancestry-only entry point for
   D0-auto (~15 loc)
 - `tests/scenarios/worktree-dispose/` (new) — eval cards incl. squash card
