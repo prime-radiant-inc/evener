@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
@@ -44,6 +45,13 @@ func FuzzJobDelegateExactCreateSend(f *testing.F) {
 				func(llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
 			}})
 			s := newDelegateTestSession(t, client)
+			s.cfg.testOnly.sandboxProber = sandbox.FakeProber{Facts: sandbox.HostFacts{
+				OS:               "linux",
+				Home:             t.TempDir(),
+				BwrapPath:        "/fixture/bwrap",
+				BwrapCapable:     true,
+				OverlaySupported: true,
+			}}
 			res := s.createDelegate(nil, delegateArgs{Task: "sandboxed", Sandbox: "restricted", Background: true})
 			if res.Err != nil {
 				t.Fatalf("sandboxed create: %v", res.Err)

@@ -104,7 +104,7 @@ func mainWithDeps(deps mainDeps) {
 
 	// Quick flags that don't need full flag.Parse().
 	if len(deps.args) > 0 && deps.args[0] == "--version" {
-		fmt.Fprintln(deps.stdout, "serf", buildinfo.VersionLong())
+		_, _ = fmt.Fprintln(deps.stdout, "serf", buildinfo.VersionLong())
 		return
 	}
 
@@ -115,7 +115,7 @@ func mainWithDeps(deps mainDeps) {
 				// Subcommand printed usage via fs.Usage; exit cleanly.
 				return
 			}
-			fmt.Fprintf(deps.stderr, "%s: %v\n", label, err)
+			_, _ = fmt.Fprintf(deps.stderr, "%s: %v\n", label, err)
 			deps.exit(1)
 			return
 		}
@@ -135,7 +135,7 @@ func mainWithDeps(deps mainDeps) {
 	if *flags.cpuProfile != "" {
 		stop, err := deps.startCPU(*flags.cpuProfile)
 		if err != nil {
-			fmt.Fprintf(deps.stderr, "serf: %v\n", err)
+			_, _ = fmt.Fprintf(deps.stderr, "serf: %v\n", err)
 			deps.exit(1)
 			return
 		}
@@ -145,7 +145,7 @@ func mainWithDeps(deps mainDeps) {
 	if *flags.traceFile != "" {
 		stop, err := deps.startTrace(*flags.traceFile)
 		if err != nil {
-			fmt.Fprintf(deps.stderr, "serf: %v\n", err)
+			_, _ = fmt.Fprintf(deps.stderr, "serf: %v\n", err)
 			deps.exit(1)
 			return
 		}
@@ -209,7 +209,7 @@ func mainWithDeps(deps mainDeps) {
 		listSessions:                *flags.listSessions,
 	})
 	if err != nil {
-		fmt.Fprintf(deps.stderr, "serf: %v\n", err)
+		_, _ = fmt.Fprintf(deps.stderr, "serf: %v\n", err)
 		cancel()
 		deps.exit(1)
 		return

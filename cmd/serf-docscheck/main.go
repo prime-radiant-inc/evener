@@ -68,14 +68,14 @@ func runDocsCheck(packages []string, check func(string) ([]violation, error), st
 	for _, pkg := range packages {
 		v, err := check(pkg)
 		if err != nil {
-			fmt.Fprintf(stderr, "serf-docscheck: %s: %v\n", pkg, err)
+			_, _ = fmt.Fprintf(stderr, "serf-docscheck: %s: %v\n", pkg, err)
 			return 2
 		}
 		violations = append(violations, v...)
 	}
 
 	if len(violations) == 0 {
-		fmt.Fprintln(stdout, "serf-docscheck: all exported package-level declarations in the library packages are documented")
+		_, _ = fmt.Fprintln(stdout, "serf-docscheck: all exported package-level declarations in the library packages are documented")
 		return 0
 	}
 
@@ -86,9 +86,9 @@ func runDocsCheck(packages []string, check func(string) ([]violation, error), st
 		return violations[i].name < violations[j].name
 	})
 	for _, v := range violations {
-		fmt.Fprintf(stdout, "%s/%s: %s %s is undocumented\n", v.pkg, v.file, v.kind, v.name)
+		_, _ = fmt.Fprintf(stdout, "%s/%s: %s %s is undocumented\n", v.pkg, v.file, v.kind, v.name)
 	}
-	fmt.Fprintf(stderr, "\nserf-docscheck: %d undocumented exported declaration(s)\n", len(violations))
+	_, _ = fmt.Fprintf(stderr, "\nserf-docscheck: %d undocumented exported declaration(s)\n", len(violations))
 	return 1
 }
 

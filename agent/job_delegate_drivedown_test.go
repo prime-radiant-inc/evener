@@ -223,6 +223,8 @@ type alwaysAckAdapter struct {
 
 	mu       sync.Mutex
 	requests []llm.Request
+	waiters  map[string]chan struct{}
+	seen     map[string]bool
 }
 
 func (a *alwaysAckAdapter) Name() string { return a.name }
@@ -230,6 +232,13 @@ func (a *alwaysAckAdapter) Name() string { return a.name }
 func (a *alwaysAckAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
 	a.mu.Lock()
 	a.requests = append(a.requests, req)
+	for text, ch := range a.waiters {
+		if a.seen[text] || !requestContainsText(req, text) {
+			continue
+		}
+		a.seen[text] = true
+		close(ch)
+	}
 	a.mu.Unlock()
 	resp := finalResponse("ack")
 	resp.Provider = a.name
@@ -247,6 +256,48 @@ func (a *alwaysAckAdapter) Requests() []llm.Request {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]llm.Request{}, a.requests...)
+}
+
+func (a *alwaysAckAdapter) NotifyOn(text string) <-chan struct{} {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.waiters == nil {
+		a.waiters = make(map[string]chan struct{})
+	}
+	if a.seen == nil {
+		a.seen = make(map[string]bool)
+	}
+	if ch, ok := a.waiters[text]; ok {
+		return ch
+	}
+	ch := make(chan struct{})
+	for _, req := range a.requests {
+		if requestContainsText(req, text) {
+			a.seen[text] = true
+			close(ch)
+			break
+		}
+	}
+	a.waiters[text] = ch
+	return ch
+}
+
+func requestContainsText(req llm.Request, want string) bool {
+	for _, msg := range req.Messages {
+		if strings.Contains(msg.Text(), want) {
+			return true
+		}
+	}
+	return false
+}
+
+func waitForAdapterText(t *testing.T, ch <-chan struct{}, timeout time.Duration, desc string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(timeout):
+		t.Fatalf("timed out after %s waiting for %s", timeout, desc)
+	}
 }
 
 // TestDriveAtDepth3WithIdleMiddle proves drive-down is recursive (spec §3 / §9):
@@ -333,28 +384,17 @@ func TestDriveAtDepth3WithIdleMiddle(t *testing.T) {
 	enqueueCompletedDelegateNotification(t, midSess, "mid-job")
 	enqueueCompletedDelegateNotification(t, gcSess, "gc-job")
 
+	midJobSeen := adapter.NotifyOn("mid-job")
+	gcJobSeen := adapter.NotifyOn("gc-job")
+
 	// Fire the mid's wake edge (the worker-finish notify production produces). The
 	// grandchild is NOT woken directly — the mid must drive it at the mid's own
 	// boundary during the mid's drive turn.
 	midSess.notify()
 
 	// Allow the recursive drive cascade to run: root → mid → grandchild.
-	waitForCondition(t, 6*time.Second, "both mid-job and gc-job notifications to reach the model", func() bool {
-		foundMid := false
-		foundGC := false
-		for _, req := range adapter.Requests() {
-			for _, msg := range req.Messages {
-				text := msg.Text()
-				if strings.Contains(text, "mid-job") {
-					foundMid = true
-				}
-				if strings.Contains(text, "gc-job") {
-					foundGC = true
-				}
-			}
-		}
-		return foundMid && foundGC
-	})
+	waitForAdapterText(t, midJobSeen, 30*time.Second, "mid-job notification to reach the model")
+	waitForAdapterText(t, gcJobSeen, 30*time.Second, "gc-job notification to reach the model")
 
 	reqs := adapter.Requests()
 	foundMidJob := false
@@ -438,21 +478,14 @@ func TestMidOwnerCallerFramesRenderMidSide(t *testing.T) {
 		t.Fatalf("restore mid caller pending: %v", err)
 	}
 
+	deliverySeen := adapter.NotifyOn("delivery_restore_pending")
+
 	// Fire the mid's wake edge (a real caller-send observation kicks the mid's
 	// notify, which drive-down wires to the parent). The parent must drive the mid
 	// on the pending-watch-send signal.
 	midSess.notify()
 
-	waitForCondition(t, 6*time.Second, "the mid's caller watch-send frame to reach the mid's model turn", func() bool {
-		for _, req := range adapter.Requests() {
-			for _, msg := range req.Messages {
-				if strings.Contains(msg.Text(), "delivery_restore_pending") {
-					return true
-				}
-			}
-		}
-		return false
-	})
+	waitForAdapterText(t, deliverySeen, 30*time.Second, "the mid's caller watch-send frame to reach the mid's model turn")
 
 	// === ASSERTION 1 — the caller frame reaches the mid's own model turn. ===
 	foundFrame := false

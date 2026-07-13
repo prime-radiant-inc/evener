@@ -1627,10 +1627,9 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 			passesGate := force
 			var evidence string
 			if !passesGate {
-				switch {
-				case tipSHA == sc.BaseSHA:
+				if tipSHA == sc.BaseSHA {
 					passesGate = true
-				default:
+				} else {
 					mr, mErr := worktree.Merged(run, tipSHA, sc.MergeTarget, sc.BaseSHA)
 					if mErr != nil {
 						return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: checking merge status: %w", mErr)

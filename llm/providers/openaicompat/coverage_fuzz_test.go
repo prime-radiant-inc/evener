@@ -195,13 +195,13 @@ func FuzzOpenAICompatCoverageUnion(f *testing.F) {
 				t.Fatal("missing transport error")
 			}
 			readErr := coverageRoundTripper(func(*http.Request) (*http.Response, error) {
-				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: &coverageErrorReader{data: "{"}}, nil
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: &coverageErrorReader{data: "{"}}, nil
 			})
 			if _, err := coverageAdapter("https://example.invalid", readErr).Complete(context.Background(), llm.Request{}); err == nil {
 				t.Fatal("missing read error")
 			}
 			badJSON := coverageRoundTripper(func(*http.Request) (*http.Response, error) {
-				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("not-json"))}, nil
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("not-json"))}, nil
 			})
 			if _, err := coverageAdapter("https://example.invalid", badJSON).Complete(context.Background(), llm.Request{}); err == nil {
 				t.Fatal("missing no-choices error")
@@ -221,7 +221,7 @@ func FuzzOpenAICompatCoverageUnion(f *testing.F) {
 				if r.Header.Get("X-Test") != "yes" {
 					t.Fatalf("missing default header: %v", r.Header)
 				}
-				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("{"))}, nil
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("{"))}, nil
 			})
 			a := coverageAdapter("https://example.invalid", badJSON)
 			a.DefaultHeaders = map[string]string{"X-Test": "yes"}

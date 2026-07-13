@@ -106,7 +106,7 @@ func FuzzModelCallTailCoverage(f *testing.F) {
 			schema.NewTurn(schema.TurnCheckpoint, llm.User("checkpoint")),
 			schema.NewTurn(schema.TurnSummary, llm.User("summary")),
 		}
-		if got := expandHistory(turns); len(got) != 2 || got[0].Text() != "checkpoint" || got[1].Text() != "summary" {
+		if got := expandHistory(turns, replayScope{}); len(got) != 2 || got[0].Text() != "checkpoint" || got[1].Text() != "summary" {
 			t.Fatalf("expanded compaction history = %#v", got)
 		}
 	})

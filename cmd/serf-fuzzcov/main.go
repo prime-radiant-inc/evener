@@ -21,6 +21,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"go/ast"
@@ -77,7 +78,7 @@ type result struct {
 func main() {
 	code, err := runCLI(os.Args[1:], os.Stdout, os.Stderr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "serf-fuzzcov: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "serf-fuzzcov: %v\n", err)
 		code = 2
 	}
 	exitProcess(code)
@@ -107,7 +108,7 @@ func runCLI(args []string, stdout, stderr *os.File) (int, error) {
 
 	if *globalManifest != "" {
 		if *gapOnly || *manifest != "" {
-			return 2, fmt.Errorf("-global-manifest cannot be combined with -gap-only or -manifest")
+			return 2, errors.New("-global-manifest cannot be combined with -gap-only or -manifest")
 		}
 		code, err := runGlobalMode(globalModeOptions{
 			manifestPath: *globalManifest, exclusionsPath: *globalExclusions, floorsPath: *globalFloors,
@@ -119,7 +120,7 @@ func runCLI(args []string, stdout, stderr *os.File) (int, error) {
 		return code, nil
 	}
 	if *globalJSON {
-		return 2, fmt.Errorf("-global-json requires -global-manifest")
+		return 2, errors.New("-global-json requires -global-manifest")
 	}
 
 	if *gapOnly {
@@ -127,7 +128,7 @@ func runCLI(args []string, stdout, stderr *os.File) (int, error) {
 	}
 
 	if *manifest == "" {
-		return 2, fmt.Errorf("--manifest is required")
+		return 2, errors.New("--manifest is required")
 	}
 
 	targets, err := readManifest(*manifest)
@@ -190,7 +191,7 @@ func runCLI(args []string, stdout, stderr *os.File) (int, error) {
 		if err := writeFloors(*floorsPath, results, floors); err != nil {
 			return 2, fmt.Errorf("bless floors: %w", err)
 		}
-		fmt.Fprintf(stdout, "serf-fuzzcov: raised floors in %s\n", *floorsPath)
+		_, _ = fmt.Fprintf(stdout, "serf-fuzzcov: raised floors in %s\n", *floorsPath)
 	}
 
 	printReportTo(stdout, results, gaps)
@@ -216,7 +217,7 @@ func runGapOnly(registryPath, repoRoot string, modules []string, ignorePath stri
 
 func runGapOnlyE(registryPath, repoRoot string, modules []string, ignorePath string) (int, error) {
 	if registryPath == "" {
-		return 2, fmt.Errorf("-gap-only requires -registry (the scripts/run-fuzz.sh --list output)")
+		return 2, errors.New("-gap-only requires -registry (the scripts/run-fuzz.sh --list output)")
 	}
 	targets, err := readRegistry(registryPath)
 	if err != nil {
@@ -241,11 +242,11 @@ func runGapOnlyE(registryPath, repoRoot string, modules []string, ignorePath str
 		fmt.Printf("fuzz gap check: all %d decode/parse package(s) have a registered target or a reasoned ignore\n", len(universe))
 		return 0, nil
 	}
-	fmt.Fprintln(os.Stderr, "GAP MAP — decode/parse packages with NO registered fuzz target")
+	_, _ = fmt.Fprintln(os.Stderr, "GAP MAP — decode/parse packages with NO registered fuzz target")
 	for _, g := range gaps {
-		fmt.Fprintf(os.Stderr, "  %-52s (%s)\n", g[0], g[1])
+		_, _ = fmt.Fprintf(os.Stderr, "  %-52s (%s)\n", g[0], g[1])
 	}
-	fmt.Fprintf(os.Stderr, "serf-fuzzcov: GAP BREACH: %d decode/parse package(s) have no fuzz target and are not ignored\n", len(gaps))
+	_, _ = fmt.Fprintf(os.Stderr, "serf-fuzzcov: GAP BREACH: %d decode/parse package(s) have no fuzz target and are not ignored\n", len(gaps))
 	return 1, nil
 }
 
@@ -478,9 +479,9 @@ func printReport(results []result, gaps [][2]string) {
 }
 
 func printReportTo(w *os.File, results []result, gaps [][2]string) {
-	fmt.Fprintln(w, "FUZZ SURFACE COVERAGE  (committed corpus, deterministic replay — goal: 100%)")
-	fmt.Fprintln(w)
-	fmt.Fprintf(w, "  %-40s %-44s %8s %8s %8s\n", "TARGET", "FOCUS SET", "FOCUS %", "FLOOR", "PKG %")
+	_, _ = fmt.Fprintln(w, "FUZZ SURFACE COVERAGE  (committed corpus, deterministic replay — goal: 100%)")
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintf(w, "  %-40s %-44s %8s %8s %8s\n", "TARGET", "FOCUS SET", "FOCUS %", "FLOOR", "PKG %")
 	for _, r := range results {
 		// Compare against the 1-decimal floor with a matching band so a target at
 		// its floor reads "=", not a perpetual "^" from sub-0.1 rounding noise.
@@ -493,19 +494,19 @@ func printReportTo(w *os.File, results []result, gaps [][2]string) {
 		default:
 			mark = "="
 		}
-		fmt.Fprintf(w, "  %-40s %-44s %6.1f%% %s %6.1f%% %6.1f%%\n",
+		_, _ = fmt.Fprintf(w, "  %-40s %-44s %6.1f%% %s %6.1f%% %6.1f%%\n",
 			r.name, truncate(r.focusLabel, 44), r.focusPct, mark, r.floor, r.pkgPct)
 	}
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  (^ above floor — ratchet will rise; = at floor; ! below floor fails --check)")
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, "  (^ above floor — ratchet will rise; = at floor; ! below floor fails --check)")
+	_, _ = fmt.Fprintln(w)
 	if len(gaps) == 0 {
-		fmt.Fprintln(w, "GAP MAP — decode/parse packages with ZERO fuzz coverage: none (all covered or ignored)")
+		_, _ = fmt.Fprintln(w, "GAP MAP — decode/parse packages with ZERO fuzz coverage: none (all covered or ignored)")
 		return
 	}
-	fmt.Fprintln(w, "GAP MAP — decode/parse packages with ZERO fuzz coverage")
+	_, _ = fmt.Fprintln(w, "GAP MAP — decode/parse packages with ZERO fuzz coverage")
 	for _, g := range gaps {
-		fmt.Fprintf(w, "  %-52s (%s)\n", g[0], g[1])
+		_, _ = fmt.Fprintf(w, "  %-52s (%s)\n", g[0], g[1])
 	}
 }
 
@@ -519,13 +520,13 @@ func checkExitTo(w *os.File, results []result, gaps [][2]string, tolerance float
 	code := 0
 	for _, r := range results {
 		if r.focusPct+tolerance+1e-9 < r.floor {
-			fmt.Fprintf(w, "serf-fuzzcov: REGRESSION %s: focus %.1f%% < floor %.1f%% (tolerance %.1f)\n",
+			_, _ = fmt.Fprintf(w, "serf-fuzzcov: REGRESSION %s: focus %.1f%% < floor %.1f%% (tolerance %.1f)\n",
 				r.name, r.focusPct, r.floor, tolerance)
 			code = 1
 		}
 	}
 	if len(gaps) > 0 {
-		fmt.Fprintf(w, "serf-fuzzcov: GAP BREACH: %d decode/parse package(s) have zero fuzz coverage and are not ignored\n", len(gaps))
+		_, _ = fmt.Fprintf(w, "serf-fuzzcov: GAP BREACH: %d decode/parse package(s) have zero fuzz coverage and are not ignored\n", len(gaps))
 		code = 1
 	}
 	return code
@@ -751,7 +752,7 @@ func writeFloors(p string, results []result, old map[string]float64) error {
 	sb.WriteString("# A target's focus-set coverage may never drop below its floor (serf-fuzzcov --check).\n")
 	sb.WriteString("# Raised upward only, by `make fuzz-coverage CHECK=1` with --bless; never edit downward.\n")
 	for _, n := range names {
-		fmt.Fprintf(&sb, "%s %.1f\n", n, raised[n])
+		_, _ = fmt.Fprintf(&sb, "%s %.1f\n", n, raised[n])
 	}
 	return fuzzcovSystem.writeFile(p, []byte(sb.String()), 0o644)
 }
@@ -818,6 +819,6 @@ func truncate(s string, n int) string {
 }
 
 func fatal(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "serf-fuzzcov: "+format+"\n", args...)
+	_, _ = fmt.Fprintf(os.Stderr, "serf-fuzzcov: "+format+"\n", args...)
 	exitProcess(2)
 }

@@ -227,6 +227,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 			Description:          CompactionDescription(string(turn.Kind)),
 			Text:                 text,
 			Status:               appwire.TurnStatusCompleted,
+			EventKind:            appwire.ThreadItemEventKindCompaction,
 		}}
 	case schema.TurnModelSwitch:
 		text := strings.TrimSpace(turn.Message.Text())

@@ -85,8 +85,8 @@ func anthropicCoverageSweep(t *testing.T) {
 
 	requestCoverageSweep(t, a)
 	responseCoverageSweep(t)
-	transportCoverageSweep(t, ctx)
-	streamCoverageSweep(t, ctx)
+	transportCoverageSweep(ctx, t)
+	streamCoverageSweep(ctx, t)
 }
 
 func requestCoverageSweep(t *testing.T, a *Adapter) {
@@ -230,7 +230,7 @@ func responseCoverageSweep(t *testing.T) {
 	}
 }
 
-func transportCoverageSweep(t *testing.T, ctx context.Context) {
+func transportCoverageSweep(ctx context.Context, t *testing.T) {
 	t.Helper()
 	fail := sweepRoundTripFunc(func(*http.Request) (*http.Response, error) { return nil, errors.New("transport down") })
 	for _, invoke := range []func(*Adapter) error{
@@ -316,7 +316,7 @@ func transportCoverageSweep(t *testing.T, ctx context.Context) {
 
 }
 
-func streamCoverageSweep(t *testing.T, ctx context.Context) {
+func streamCoverageSweep(ctx context.Context, t *testing.T) {
 	t.Helper()
 	sse := strings.Join([]string{
 		`event: message_start\ndata: {"type":"message_start","message":{"id":"msg","model":"actual","usage":{"input_tokens":1}}}\n\n`,

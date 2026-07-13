@@ -28,7 +28,7 @@ func FuzzLoadOrCreateInstallationIDWithFS(f *testing.F) {
 
 		stateDir := " \t"
 		if !emptyStateDir {
-			stateDir = filepath.Join("/state", hex.EncodeToString([]byte(label)))
+			stateDir = filepath.Join(string(filepath.Separator), "state", hex.EncodeToString([]byte(label)))
 		}
 		fs := afero.NewMemMapFs()
 

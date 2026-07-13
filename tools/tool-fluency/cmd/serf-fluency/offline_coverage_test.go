@@ -88,7 +88,7 @@ func TestLoadProbesAndFixtures(t *testing.T) {
 	if err := materializeFixture(work, fixtureSpec{Files: map[string]string{"nested/a.txt": "hello"}}); err != nil {
 		t.Fatal(err)
 	}
-	if body, _ := os.ReadFile(filepath.Join(work, "nested/a.txt")); string(body) != "hello" {
+	if body, _ := os.ReadFile(filepath.Join(work, "nested", "a.txt")); string(body) != "hello" {
 		t.Fatalf("fixture body = %q", body)
 	}
 	if err := materializeFixture(work, fixtureSpec{Files: map[string]string{"../escape": "x"}}); err == nil {

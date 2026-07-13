@@ -27,7 +27,8 @@ func covWebRequest(t *testing.T, web *WebServer, method, target, body string) *h
 
 func TestCovWebCoreAPIHelpersAndRoutes(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{})
-	if web.lockForSession("a") != web.lockForSession("a") {
+	firstLock := web.lockForSession("a")
+	if firstLock != web.lockForSession("a") {
 		t.Fatal("session lock was not stable")
 	}
 	for _, target := range []string{"/ok", "/%ff"} {

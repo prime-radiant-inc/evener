@@ -49,7 +49,7 @@ type residualServeServer struct {
 	pendingAsk         func() bool
 	pendingEscalation  func() bool
 	pendingEscalations func() []appwire.SandboxEscalationRequested
-	model              func(string)
+	model              func(string) error
 	name               func(string)
 	effort             func(string)
 	detailed           func() server.DetailedStatus
@@ -97,7 +97,7 @@ func (s *residualServeServer) SetPendingEscalationFunc(f func() bool)         { 
 func (s *residualServeServer) SetPendingEscalationsSnapshotFunc(f func() []appwire.SandboxEscalationRequested) {
 	s.pendingEscalations = f
 }
-func (s *residualServeServer) SetModelFunc(f func(string))                          { s.model = f }
+func (s *residualServeServer) SetModelFunc(f func(string) error)                    { s.model = f }
 func (s *residualServeServer) SetNameFunc(f func(string))                           { s.name = f }
 func (s *residualServeServer) SetReasoningEffortFunc(f func(string))                { s.effort = f }
 func (s *residualServeServer) SetDetailedStatusFunc(f func() server.DetailedStatus) { s.detailed = f }
@@ -128,7 +128,7 @@ func exerciseResidualCallbacks(s *residualServeServer) {
 	_ = s.pendingAsk()
 	_ = s.pendingEscalation()
 	_ = s.pendingEscalations()
-	s.model("test2")
+	_ = s.model("test2")
 	s.name("renamed")
 	s.effort("low")
 	_ = s.detailed()

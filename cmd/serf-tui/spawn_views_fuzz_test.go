@@ -57,8 +57,8 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 			_ = stateColor(state)
 			_ = statusDot(state)
 		}
-		_ = emptyDashboardFooter(60)
-		_ = emptyDashboardFooter(100)
+		_ = dashboardFooter(60)
+		_ = dashboardFooter(100)
 		m.rows = rows
 		for i := 0; i <= len(rows); i++ {
 			m.selected = i

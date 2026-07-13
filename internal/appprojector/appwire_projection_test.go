@@ -1240,6 +1240,7 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 		name        string
 		event       events.SessionEvent
 		description string
+		eventKind   string
 		contains    []string
 		notContains []string
 		singleLine  bool
@@ -1285,8 +1286,8 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 			event: events.SessionEvent{Kind: events.EventPluginLoaded, SessionID: "th_1", Data: events.PluginLoadedData{
 				Name: "superpowers", SkillCount: 5, AgentCount: 2, MCPCount: 1,
 			}},
-			description: "Plugin loaded",
-			contains:    []string{"superpowers", "5 skills", "2 agents", "1 MCP"},
+			description: "Loaded plugin superpowers (5 skills, 2 agents, 1 MCP servers)",
+			eventKind:   appwire.ThreadItemEventKindPluginLoaded,
 		},
 		{
 			name: "hook end",
@@ -1351,6 +1352,9 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 			if item.Type != "systemMessage" || item.Description != tt.description || item.Status != appwire.TurnStatusCompleted {
 				t.Fatalf("item=%+v", item)
 			}
+			if tt.eventKind != "" && item.EventKind != tt.eventKind {
+				t.Fatalf("item eventKind=%q, want %q", item.EventKind, tt.eventKind)
+			}
 			for _, want := range tt.contains {
 				if !strings.Contains(item.Text, want) {
 					t.Fatalf("item text %q does not contain %q", item.Text, want)
@@ -1405,6 +1409,88 @@ func TestAppEventProjectorContextCompactionCarriesStructuredNumbers(t *testing.T
 		got.Compaction.TurnsBefore != 42 || got.Compaction.TurnsAfter != 8 ||
 		got.Compaction.EstTokensBefore != 120000 || got.Compaction.EstTokensAfter != 23000 {
 		t.Fatalf("Raw compaction numbers wrong: %+v", got.Compaction)
+	}
+}
+
+func TestAppEventProjectorProjectsPluginLoadedWithSafeEventKindDetail(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	out := projector.Project(events.SessionEvent{Kind: events.EventPluginLoaded, SessionID: "th_1", Data: events.PluginLoadedData{
+		Name:           "superpowers",
+		Dir:            "/home/jesse/.codex/plugins/superpowers",
+		SkillCount:     14,
+		AgentCount:     0,
+		MCPCount:       0,
+		ManifestFlavor: "codex",
+		ManifestPath:   "/home/jesse/.codex/plugins/superpowers/.codex-plugin/plugin.json",
+	}})
+
+	if len(out) != 1 || out[0].Method != appwire.NotifyTurnCompleted {
+		t.Fatalf("notifications=%+v", out)
+	}
+	turn := notificationTurn(t, out, appwire.NotifyTurnCompleted)
+	if len(turn.Items) != 1 {
+		t.Fatalf("turn=%+v", turn)
+	}
+	item := turn.Items[0]
+	if item.Type != "systemMessage" {
+		t.Fatalf("item type=%q, want systemMessage", item.Type)
+	}
+	itemJSON, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal item: %v", err)
+	}
+	var itemFields map[string]json.RawMessage
+	if err := json.Unmarshal(itemJSON, &itemFields); err != nil {
+		t.Fatalf("unmarshal item fields: %v (%s)", err, itemJSON)
+	}
+	var eventKind string
+	if err := json.Unmarshal(itemFields["eventKind"], &eventKind); err != nil {
+		t.Fatalf("item eventKind missing or invalid: %v (%s)", err, itemJSON)
+	}
+	if eventKind != "plugin_loaded" {
+		t.Fatalf("item eventKind=%q, want plugin_loaded", eventKind)
+	}
+	if _, ok := itemFields["noDisclosure"]; ok {
+		t.Fatalf("item must not expose noDisclosure: %s", itemJSON)
+	}
+	const wantSummary = "Loaded plugin superpowers (14 skills, 0 agents, 0 MCP servers)"
+	if item.Description != wantSummary {
+		t.Fatalf("item description=%q, want %q", item.Description, wantSummary)
+	}
+	if item.Text != "" {
+		t.Fatalf("plugin-loaded inline contract should not require text, got %q", item.Text)
+	}
+	if len(item.Raw) == 0 {
+		t.Fatalf("plugin-loaded item should carry safe raw detail, got none: %+v", item)
+	}
+	var rawFields map[string]json.RawMessage
+	if err := json.Unmarshal(item.Raw, &rawFields); err != nil {
+		t.Fatalf("Raw is not valid JSON: %v (%s)", err, item.Raw)
+	}
+	pluginRaw, ok := rawFields["pluginLoaded"]
+	if !ok {
+		t.Fatalf("Raw should carry pluginLoaded detail, got %s", item.Raw)
+	}
+	var pluginLoaded struct {
+		Name       string `json:"name"`
+		SkillCount int    `json:"skillCount"`
+		AgentCount int    `json:"agentCount"`
+		MCPCount   int    `json:"mcpCount"`
+	}
+	if err := json.Unmarshal(pluginRaw, &pluginLoaded); err != nil {
+		t.Fatalf("pluginLoaded detail is invalid: %v (%s)", err, pluginRaw)
+	}
+	if pluginLoaded.Name != "superpowers" || pluginLoaded.SkillCount != 14 || pluginLoaded.AgentCount != 0 || pluginLoaded.MCPCount != 0 {
+		t.Fatalf("pluginLoaded detail=%+v, want safe display counts", pluginLoaded)
+	}
+	var pluginFields map[string]json.RawMessage
+	if err := json.Unmarshal(pluginRaw, &pluginFields); err != nil {
+		t.Fatalf("pluginLoaded fields invalid: %v (%s)", err, pluginRaw)
+	}
+	for _, forbidden := range []string{"dir", "manifest_path", "manifestFlavor", "manifest_flavor"} {
+		if _, ok := pluginFields[forbidden]; ok {
+			t.Fatalf("pluginLoaded detail must not expose %q: %s", forbidden, pluginRaw)
+		}
 	}
 }
 

@@ -18,7 +18,7 @@ func (a *streamGenerateCoverageAdapter) Stream(ctx context.Context, req Request)
 	return a.stream(ctx, req)
 }
 
-func runStreamGenerateCoverage(t *testing.T, ctx context.Context, adapter *streamGenerateCoverageAdapter, tools []Tool) (*Response, error) {
+func runStreamGenerateCoverage(ctx context.Context, t *testing.T, adapter *streamGenerateCoverageAdapter, tools []Tool) (*Response, error) {
 	t.Helper()
 	client := NewClient()
 	client.Register(adapter)
@@ -79,17 +79,17 @@ func FuzzStreamGenerateCoverage(f *testing.F) {
 
 		cancelled, cancel := context.WithCancel(context.Background())
 		cancel()
-		_, _ = runStreamGenerateCoverage(t, cancelled, &streamGenerateCoverageAdapter{stream: func(context.Context, Request) (Stream, error) {
+		_, _ = runStreamGenerateCoverage(cancelled, t, &streamGenerateCoverageAdapter{stream: func(context.Context, Request) (Stream, error) {
 			t.Fatal("adapter called with pre-cancelled context")
 			return nil, nil
 		}}, nil)
 
-		_, _ = runStreamGenerateCoverage(t, context.Background(), &streamGenerateCoverageAdapter{stream: func(context.Context, Request) (Stream, error) {
+		_, _ = runStreamGenerateCoverage(context.Background(), t, &streamGenerateCoverageAdapter{stream: func(context.Context, Request) (Stream, error) {
 			return nil, ErrorFromHTTPStatus("stream-coverage", 400, "permanent", nil, nil)
 		}}, nil)
 
 		// A nil-error ERROR event is informational and is forwarded before FINISH.
-		_, _ = runStreamGenerateCoverage(t, context.Background(), &streamGenerateCoverageAdapter{stream: func(context.Context, Request) (Stream, error) {
+		_, _ = runStreamGenerateCoverage(context.Background(), t, &streamGenerateCoverageAdapter{stream: func(context.Context, Request) (Stream, error) {
 			resp := Response{Model: "m", Provider: "stream-coverage", Finish: FinishReason{Reason: FinishReasonStop}}
 			return newSliceStream(StreamEvent{Type: StreamEventError}, StreamEvent{Type: StreamEventFinish, Response: &resp}), nil
 		}}, nil)
@@ -97,13 +97,13 @@ func FuzzStreamGenerateCoverage(f *testing.F) {
 		// FINISH without content or a response must surface the missing-response error.
 		oldAccumulatedResponse := streamGenerateAccumulatedResponse
 		streamGenerateAccumulatedResponse = func(*StreamAccumulator) *Response { return nil }
-		_, _ = runStreamGenerateCoverage(t, context.Background(), &streamGenerateCoverageAdapter{stream: func(context.Context, Request) (Stream, error) {
+		_, _ = runStreamGenerateCoverage(context.Background(), t, &streamGenerateCoverageAdapter{stream: func(context.Context, Request) (Stream, error) {
 			return newSliceStream(StreamEvent{Type: StreamEventFinish}), nil
 		}}, nil)
 		streamGenerateAccumulatedResponse = oldAccumulatedResponse
 
 		// Text accumulation supplies a response when FINISH omits its Response field.
-		resp, err := runStreamGenerateCoverage(t, context.Background(), &streamGenerateCoverageAdapter{stream: func(context.Context, Request) (Stream, error) {
+		resp, err := runStreamGenerateCoverage(context.Background(), t, &streamGenerateCoverageAdapter{stream: func(context.Context, Request) (Stream, error) {
 			finish := FinishReason{Reason: FinishReasonStop}
 			return newSliceStream(
 				StreamEvent{Type: StreamEventTextDelta, Delta: "accumulated"},
@@ -116,7 +116,7 @@ func FuzzStreamGenerateCoverage(f *testing.F) {
 
 		passive := Tool{Definition: ToolDefinition{Name: "passive", Parameters: map[string]any{"type": "object"}}}
 		active := Tool{Definition: ToolDefinition{Name: "active", Parameters: map[string]any{"type": "object"}}, Execute: func(context.Context, any) (any, error) { return "unused", nil }}
-		_, _ = runStreamGenerateCoverage(t, context.Background(), &streamGenerateCoverageAdapter{stream: func(context.Context, Request) (Stream, error) {
+		_, _ = runStreamGenerateCoverage(context.Background(), t, &streamGenerateCoverageAdapter{stream: func(context.Context, Request) (Stream, error) {
 			call := ToolCallData{ID: "c", Name: "passive", Arguments: []byte(`{}`)}
 			resp := Response{Model: "m", Provider: "stream-coverage", Message: Message{Role: RoleAssistant,
 				Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}}, Finish: FinishReason{Reason: FinishReasonToolCalls}}

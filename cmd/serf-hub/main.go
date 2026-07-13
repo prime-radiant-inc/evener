@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -109,22 +110,23 @@ func main() {
 func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	opts, err := parseHubOptions(args, stderr)
 	if err != nil {
-		if err != flag.ErrHelp {
-			fmt.Fprintf(stderr, "[hub] %v\n", err)
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
 		}
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
 
 	cfg, err := deps.loadConfig(opts.configPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "[hub] config: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "[hub] config: %v\n", err)
 		return err
 	}
 	if opts.addr != "" {
 		cfg.Addr = opts.addr
 	}
 	if err := deps.ensureDirs(); err != nil {
-		fmt.Fprintf(stderr, "[hub] %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
 
@@ -133,7 +135,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	lockPath := filepath.Join(home, ".serf", "hub.lock")
 	release, err := deps.acquireLock(lockPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "[hub] %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
 	defer release()
@@ -158,7 +160,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 
 	past := hubcore.NewPastIndexWithDB(stateGlob, pastIndexDB)
 	if err := past.Rebuild(); err != nil {
-		fmt.Fprintf(os.Stderr, "[hub] past index rebuild: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "[hub] past index rebuild: %v\n", err)
 	}
 	archive := hubcore.NewArchiveStore(pastIndexDB)
 	favorite := hubcore.NewFavoriteStore(pastIndexDB)
@@ -166,18 +168,18 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// Spawner
 	hubToken, err := deps.newToken()
 	if err != nil {
-		fmt.Fprintf(stderr, "[hub] %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
 	hubStateRoot := cfg.HubStateRoot
 	authToken, err := deps.loadAuthToken(hubStateRoot)
 	if err != nil {
-		fmt.Fprintf(stderr, "[hub] auth token: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "[hub] auth token: %v\n", err)
 		return err
 	}
 	credsStore, err := deps.loadCredentials(filepath.Join(hubStateRoot, "credentials.toml"))
 	if err != nil {
-		fmt.Fprintf(stderr, "[hub] credentials store: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "[hub] credentials store: %v\n", err)
 		return err
 	}
 	providersConfigPath := envvars.SERFProvidersConfig.Getenv()
@@ -186,7 +188,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	var loadedProviderConfig *providercfg.Config
 	if pcfg, exists, pcfgErr := deps.loadProviderConfig(providersConfigPath); pcfgErr != nil {
-		fmt.Fprintf(stderr, "[hub] providers config: %v\n", pcfgErr)
+		_, _ = fmt.Fprintf(stderr, "[hub] providers config: %v\n", pcfgErr)
 		return pcfgErr
 	} else if exists {
 		loadedProviderConfig = &pcfg
@@ -196,15 +198,15 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		// children load the same file via SERF_PROVIDERS_CONFIG.
 		materialized, matErr := deps.materializeConfig(providersConfigPath)
 		if matErr != nil {
-			fmt.Fprintf(stderr, "[hub] materialize providers config: %v\n", matErr)
+			_, _ = fmt.Fprintf(stderr, "[hub] materialize providers config: %v\n", matErr)
 			return matErr
 		}
 		loadedProviderConfig = &materialized
-		fmt.Fprintf(os.Stderr, "[hub] materialized %s\n", providersConfigPath)
+		_, _ = fmt.Fprintf(os.Stderr, "[hub] materialized %s\n", providersConfigPath)
 	}
 	resolvedSerfBinary := resolveSerfBinaryPath(opts.serfBinary, currentExecutable(), exec.LookPath)
 	if opts.serfBinary == "" && resolvedSerfBinary != "" && resolvedSerfBinary != "serf" {
-		fmt.Fprintf(os.Stderr, "[hub] resolved serf at %s\n", resolvedSerfBinary)
+		_, _ = fmt.Fprintf(os.Stderr, "[hub] resolved serf at %s\n", resolvedSerfBinary)
 	}
 	spawner := &HubSpawner{
 		Cfg:                 cfg,
@@ -313,17 +315,30 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 
 	// Lifecycle
-	ctx, cancel := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
+	signalCtx, cancelSignals := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancelSignals()
+	ctx, cancelBackground := context.WithCancel(signalCtx)
+	var background sync.WaitGroup
+	defer func() {
+		cancelBackground()
+		background.Wait()
+	}()
+	startBackground := func(fn func()) {
+		background.Add(1)
+		go func() {
+			defer background.Done()
+			fn()
+		}()
+	}
 
 	// Populate the roster before serving so the first sidebar request can't hit
 	// an empty roster (the "flash of no sessions" right after a restart). Probes
 	// run concurrently, so this is bounded by ~one probe timeout regardless of
 	// how many daemons are live.
 	roster.Refresh()
-	go watchHubRoster(ctx, roster)
+	startBackground(func() { watchHubRoster(ctx, roster) })
 
-	go func() {
+	startBackground(func() {
 		ticker := time.NewTicker(cfg.PastIndexRebuild)
 		defer ticker.Stop()
 		for {
@@ -334,7 +349,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 				_ = past.Rebuild()
 			}
 		}
-	}()
+	})
 
 	// Attention watcher: derives each live session's attention level from the
 	// same roster/past-index/archive inputs the sidebar tree uses, and
@@ -346,7 +361,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// working past hubcore.StallThreshold, the watcher runs the stale-wedge
 	// probe (hubcore.WedgedStatus) against it and, on a positive, overrides
 	// its level to "error" before broadcasting.
-	go watchHubAttention(ctx, attentionPoke, archive, past, roster, web)
+	startBackground(func() { watchHubAttention(ctx, attentionPoke, archive, past, roster, web) })
 
 	// Seed the bundled default marketplaces (best-effort, first-run-gated —
 	// see SeedDefaultMarketplaces). Every serf CLI path does this already
@@ -363,28 +378,28 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// default — see config.go). Never deletes; superseded dirs are reclaimed
 	// separately by `serf plugin gc` (also run once here, before any session
 	// exists, per §12).
-	startHubPluginMaintenance(ctx, cfg, web)
+	startHubPluginMaintenance(ctx, cfg, web, startBackground)
 	// Remote-thread cache refresher: refreshRemoteThreads (web_api_tree.go)
 	// walks every configured remote source's ListThreads, a synchronous
 	// network hop that used to run inline on every /api/tree request. Move it
 	// to a ~30s ticker + poke so a tree render never blocks on it; the tree
 	// read path (remoteTreeThreads) reads remoteCache.Get() instead whenever
 	// RemoteThreadCache is configured.
-	go refreshHubRemoteThreads(ctx, remotePoke, remoteCache, web)
+	startBackground(func() { refreshHubRemoteThreads(ctx, remotePoke, remoteCache, web) })
 
 	srv := &http.Server{
 		Addr:    cfg.Addr,
 		Handler: web.Handler(),
 	}
 
-	fmt.Fprintf(os.Stderr, "[hub] serf-hub %s listening on %s (run_dir=%s)\n", Version, cfg.Addr, runDir)
+	_, _ = fmt.Fprintf(os.Stderr, "[hub] serf-hub %s listening on %s (run_dir=%s)\n", Version, cfg.Addr, runDir)
 	// Build a usable auth URL. If the bind addr is 0.0.0.0 or ::, replace
 	// it with a hostname the operator can reach the hub at.
 	authHost := advertisedHubHost(cfg.Addr, hubHostname)
-	fmt.Fprintf(os.Stderr, "[hub] auth URL (visit once per browser): http://%s/auth?token=%s\n", authHost, authToken)
-	fmt.Fprintf(os.Stderr, "[hub] auth token also at %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
+	_, _ = fmt.Fprintf(os.Stderr, "[hub] auth URL (visit once per browser): http://%s/auth?token=%s\n", authHost, authToken)
+	_, _ = fmt.Fprintf(os.Stderr, "[hub] auth token also at %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
 	if err := deps.serve(ctx, srv, codexLauncher); err != nil {
-		fmt.Fprintf(stderr, "[hub] %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
 	return nil
@@ -398,9 +413,9 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 	fs.StringVar(&opts.addr, "addr", "", "override hub listen address")
 	fs.StringVar(&opts.serfBinary, "serf", "", "path to serf binary (default: 'serf' on PATH)")
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "Usage: serf-hub [flags]\n\nMulti-session web orchestrator for serf serve daemons.\n\n")
+		_, _ = fmt.Fprintf(stderr, "Usage: serf-hub [flags]\n\nMulti-session web orchestrator for serf serve daemons.\n\n")
 		fs.PrintDefaults()
-		fmt.Fprintf(stderr, "\nEnvironment variables:\n")
+		_, _ = fmt.Fprintf(stderr, "\nEnvironment variables:\n")
 		printHubEnvVars(stderr)
 	}
 	err := fs.Parse(args)
@@ -438,7 +453,7 @@ func serveHub(ctx context.Context, srv hubHTTPServer, companion hubShutdowner) e
 	if ctx.Err() != nil {
 		<-shutdownDone
 	}
-	if err == nil || err == http.ErrServerClosed {
+	if err == nil || errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
 	return err

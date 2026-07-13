@@ -133,7 +133,7 @@ func fuzzProviders(t *testing.T, raw string, selector uint8) {
 
 	want, wantOK := ProviderEnv{}, false
 	for _, p := range providers {
-		if p.Name == strings.ToLower(raw) {
+		if strings.EqualFold(p.Name, raw) {
 			want, wantOK = p, true
 			break
 		}

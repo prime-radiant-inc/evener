@@ -3,10 +3,8 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -134,8 +132,5 @@ sleep 1
 		timeoutBin := fuzzExecutable(t, `sleep 2`)
 		_, _ = SpawnDaemon(ctx, timeoutBin, liveDir, hubcore.SpawnRequest{}, time.Millisecond)
 		_, _ = ResumeDaemon(ctx, timeoutBin, liveDir, hubcore.ResumeRequest{}, time.Millisecond)
-		if strings.Contains(fmt.Sprint(mode), "never") {
-			t.Fatal("unreachable")
-		}
 	})
 }

@@ -77,7 +77,11 @@ func FuzzClassify(f *testing.F) {
 		streamErr := NewStreamError("old", msg, nil)
 		RewriteErrorProvider(streamErr, " new ")
 		StampErrorBehaviorTag(streamErr, " tag ")
-		if e := streamErr.(Error); e.Provider() != "new" || e.BehaviorTag() != "tag" {
+		var e Error
+		if !errors.As(streamErr, &e) {
+			t.Fatalf("stream error does not implement llm.Error: %v", streamErr)
+		}
+		if e.Provider() != "new" || e.BehaviorTag() != "tag" {
 			t.Fatalf("non-HTTP stamps not applied: provider=%q tag=%q", e.Provider(), e.BehaviorTag())
 		}
 		if Classify(classifyResidualError{status: 408}) != ErrorClassRetryable {

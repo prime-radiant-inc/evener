@@ -315,9 +315,9 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 		if err := os.WriteFile(blockedState, []byte("file"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		deleteAuth := *ic.auth
+		deleteAuth := newHubAuthControllerWithStore(root, ic.auth.creds)
 		deleteAuth.stateDir = blockedState
-		deleteFail := &hubInstancesController{auth: &deleteAuth,
+		deleteFail := &hubInstancesController{auth: deleteAuth,
 			loadFile:  func(string) (providercfg.Config, bool, error) { return baseCfg, true, nil },
 			writeFile: func(string, providercfg.Config) error { return nil },
 		}

@@ -2,7 +2,6 @@ package task
 
 import (
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 
@@ -322,5 +321,5 @@ func taskFaultDescription(raw string) string {
 	if raw == "" {
 		return "empty description"
 	}
-	return fmt.Sprintf("task:%s", raw)
+	return "task:" + raw
 }

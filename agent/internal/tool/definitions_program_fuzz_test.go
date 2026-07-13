@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
@@ -169,7 +168,7 @@ func toolProgramVocabulary(prefix, _ string, variant uint8) []string {
 	// Registry caches compiled schemas globally by their JSON representation.
 	// Keep enum values finite during mutation fuzzing so this target does not
 	// turn an arbitrary byte stream into an unbounded process-lifetime cache.
-	value := fmt.Sprintf("%s_one", prefix)
+	value := prefix + "_one"
 	switch variant % 3 {
 	case 0:
 		return nil

@@ -153,7 +153,7 @@ func FuzzFinalMainExecutableFallbacks(f *testing.F) {
 			hubExecutable = func() (string, error) { return "", errors.New("missing") }
 			hubProcessArgs = func() []string { return nil }
 		case 3:
-			if got := resolveSerfBinaryPath("", "", nil); got != "" && got != "serf" {
+			if got := resolveSerfBinaryPath("", "", func(string) (string, error) { return "", errors.New("missing") }); got != "" {
 				t.Fatalf("unexpected resolved path %q", got)
 			}
 		case 4:

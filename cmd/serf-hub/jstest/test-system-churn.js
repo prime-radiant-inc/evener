@@ -76,6 +76,22 @@ async function scenario(name, fn) {
     return { ok: true };
   });
 
+  await scenario("plugin-loaded system events render inline by event kind", async ({ conv, R }) => {
+    const summary = "Loaded plugin primeradiant-ops (14 skills, 0 agents, 0 MCP servers)";
+    R.handleData("SYSTEM_MESSAGE", { title: "Plugin ready", eventKind: "plugin_loaded", text: summary });
+    R.handleData("SYSTEM_MESSAGE", { title: "Skill activated", text: "release skill" });
+    R.handleData("SYSTEM_MESSAGE", { title: "Tools (2)", text: "- read_file\n- apply_patch" });
+    const blocks = conv.querySelectorAll(".system-run .system-message");
+    if (blocks.length !== 3) return { ok: false, detail: "expected 3 system-message blocks, got " + blocks.length };
+    const pluginBlock = blocks[0];
+    if (!pluginBlock.textContent.includes("primeradiant-ops")) return { ok: false, detail: "plugin name missing from block: " + pluginBlock.textContent };
+    if (pluginBlock.tagName === "DETAILS" || pluginBlock.querySelector("details")) return { ok: false, detail: "plugin-loaded event should render inline without a details disclosure" };
+    const toggle = conv.querySelector(".system-run.coalesced .system-run-toggle");
+    if (!toggle) return { ok: false, detail: "3 system events should coalesce" };
+    if (!toggle.textContent.includes("primeradiant-ops")) return { ok: false, detail: "coalesced toggle should include plugin name: " + toggle.textContent };
+    return { ok: true };
+  });
+
   // B — fewer than 3 adjacent events do NOT coalesce (no toggle, blocks shown).
   await scenario("2 adjacent lifecycle events do not coalesce", async ({ conv, R }) => {
     R.handleData("SYSTEM_MESSAGE", { title: "Skill activated", text: "release skill" });

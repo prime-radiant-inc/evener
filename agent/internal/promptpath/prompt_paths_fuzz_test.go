@@ -54,7 +54,7 @@ func FuzzPromptPaths(f *testing.F) {
 
 		projectRoot := ""
 		if project != "" {
-			projectRoot = filepath.Join("/worktrees", hex.EncodeToString([]byte(project)))
+			projectRoot = filepath.Join(string(filepath.Separator), "worktrees", hex.EncodeToString([]byte(project)))
 		}
 		gotProject := ProjectPromptsDir(projectRoot)
 		if projectRoot == "" {

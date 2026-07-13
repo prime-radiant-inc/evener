@@ -109,7 +109,7 @@ type ToolCallOutputDeltaData struct {
 type OutputImage struct {
 	Source    string `json:"source"`
 	Name      string `json:"name,omitempty"`
-	MediaType string `json:"mediaType,omitempty"`
+	MediaType string `json:"media_type,omitempty"`
 	Size      int64  `json:"size,omitempty"`
 	URL       string `json:"url,omitempty"`
 	SHA       string `json:"sha,omitempty"`

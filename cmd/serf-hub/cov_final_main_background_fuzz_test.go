@@ -58,7 +58,7 @@ func FuzzFinalMainBackground(f *testing.F) {
 			started := make(chan struct{})
 			hubStartUpgrade = func(context.Context, Config, *WebServer) { close(started) }
 			web := NewWebServer(hubcore.WebConfig{})
-			startHubPluginMaintenance(context.Background(), Config{PluginAutoUpgrade: true}, web)
+			startHubPluginMaintenance(context.Background(), Config{PluginAutoUpgrade: true}, web, func(fn func()) { go fn() })
 			<-started
 		case 5:
 			runFinalBackgroundLoops(t, root, past, roster)

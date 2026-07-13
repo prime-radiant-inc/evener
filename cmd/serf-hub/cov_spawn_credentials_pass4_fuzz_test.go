@@ -108,10 +108,11 @@ printf '{"pid":%s,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}' 
 		resolved.Effective.Env = map[string]string{"OPENROUTER_API_KEY": "launch-key"}
 		spawn := hubcore.SpawnRequest{Provider: "openrouter", WorkingDir: root, Resolved: resolved}
 		resume := hubcore.ResumeRequest{Provider: "openrouter", SessionID: "old", WorkingDir: root, Resolved: resolved}
-		if mode%3 == 0 {
+		switch mode % 3 {
+		case 0:
 			spawn.Resolved.Effective.Env["FAIL_CHECK"] = "1"
 			resume.Resolved.Effective.Env["FAIL_CHECK"] = "1"
-		} else if mode%3 == 1 {
+		case 1:
 			spawn.Resolved.Effective.Env["OPENROUTER_API_KEY"] = ""
 			resume.Resolved.Effective.Env["OPENROUTER_API_KEY"] = ""
 		}

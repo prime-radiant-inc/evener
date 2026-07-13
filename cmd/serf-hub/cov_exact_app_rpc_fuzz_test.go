@@ -92,7 +92,7 @@ func (s *exactRPCSource) StartTurn(context.Context, appwire.TurnStartParams) (ap
 	return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_exact"}}, nil
 }
 
-func exactDispatch(t *testing.T, server *appserver.Server, ctx context.Context, method string, params any) (any, error) {
+func exactDispatch(ctx context.Context, t *testing.T, server *appserver.Server, method string, params any) (any, error) {
 	t.Helper()
 	raw, err := json.Marshal(params)
 	if err != nil {
@@ -130,7 +130,7 @@ func exactDispatchFailures(t *testing.T, server *appserver.Server) {
 		{appwire.MethodSerfTasksList, appwire.TaskListParams{Ref: "missing:x"}},
 	}
 	for _, c := range calls {
-		_, _ = exactDispatch(t, server, ctx, c.method, c.params)
+		_, _ = exactDispatch(ctx, t, server, c.method, c.params)
 	}
 }
 
@@ -165,14 +165,14 @@ func FuzzExactAppRPC(f *testing.F) {
 				{appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: "remote:thread"}}, {appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{Ref: "remote:thread"}},
 				{appwire.MethodSerfThreadNameSet, appwire.ThreadNameSetParams{Ref: "remote:thread"}}, {appwire.MethodGoalSet, appwire.GoalSetParams{Ref: "remote:thread"}},
 			} {
-				_, _ = exactDispatch(t, server, context.Background(), c.m, c.p)
+				_, _ = exactDispatch(context.Background(), t, server, c.m, c.p)
 			}
 		case 1:
 			// Empty IDs and refs cover the best-effort start/resume relay normalization.
 			source.startThread = appwire.Thread{}
 			source.resumeThread = appwire.Thread{SessionID: "session", Source: ""}
-			_, _ = exactDispatch(t, server, context.Background(), appwire.MethodThreadStart, appwire.ThreadStartParams{Harness: "remote"})
-			_, _ = exactDispatch(t, server, context.Background(), appwire.MethodThreadResume, appwire.ThreadResumeParams{Ref: "remote:thread"})
+			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodThreadStart, appwire.ThreadStartParams{Harness: "remote"})
+			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodThreadResume, appwire.ThreadResumeParams{Ref: "remote:thread"})
 			// A local notification exercises image enrichment before idle cleanup.
 			localThread := thread
 			localThread.Source = "local"
@@ -184,17 +184,17 @@ func FuzzExactAppRPC(f *testing.F) {
 			lr := appsource.NewRegistry()
 			lr.Add(local)
 			ls := newHubAppServer(cfg, lr)
-			_, _ = exactDispatch(t, ls, context.Background(), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:thread", Subscribe: true, ReplaceSubscription: true})
+			_, _ = exactDispatch(context.Background(), t, ls, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:thread", Subscribe: true, ReplaceSubscription: true})
 			time.Sleep(3 * time.Millisecond)
 		case 2:
 			// Subscription failure and read failure cover relay and turn error propagation.
 			source.subscribeErr = errors.New("subscribe")
-			_, _ = exactDispatch(t, server, context.Background(), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "remote:thread", Subscribe: true, ReplaceSubscription: true})
+			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "remote:thread", Subscribe: true, ReplaceSubscription: true})
 			source.subscribeErr = nil
 			source.readErr = errors.New("read")
-			_, _ = exactDispatch(t, server, context.Background(), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "remote:thread"})
-			_, _ = exactDispatch(t, server, context.Background(), appwire.MethodSerfSubagentPreview, appwire.SerfSubagentPreviewParams{Ref: "remote:thread"})
-			_, _ = exactDispatch(t, server, context.Background(), appwire.MethodTurnStart, appwire.TurnStartParams{Ref: "remote:thread"})
+			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "remote:thread"})
+			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodSerfSubagentPreview, appwire.SerfSubagentPreviewParams{Ref: "remote:thread"})
+			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{Ref: "remote:thread"})
 		case 3:
 			// Filesystem-backed source enumeration and command sorting.
 			t.Setenv("HOME", "")
@@ -255,13 +255,13 @@ func FuzzExactAppRPC(f *testing.F) {
 				{appwire.MethodSerfHarnessesList, appwire.HarnessListParams{}},
 				{appwire.MethodSerfCommandList, appwire.EmptyParams{}},
 			} {
-				_, _ = exactDispatch(t, server, context.Background(), c.m, c.p)
+				_, _ = exactDispatch(context.Background(), t, server, c.m, c.p)
 			}
-			_, _ = exactDispatch(t, server, context.Background(), appwire.MethodSerfAuthApiKeySet, appwire.AuthApiKeySetParams{Provider: "anthropic", Value: "test-key"})
-			_, _ = exactDispatch(t, server, context.Background(), appwire.MethodSerfAuthLogout, appwire.AuthLogoutParams{Provider: "anthropic"})
+			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodSerfAuthApiKeySet, appwire.AuthApiKeySetParams{Provider: "anthropic", Value: "test-key"})
+			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodSerfAuthLogout, appwire.AuthLogoutParams{Provider: "anthropic"})
 			launchServer := appserver.NewServer(appserver.ServerConfig{})
 			registerLaunchHandlers(launchServer, newHubLaunchController(t.TempDir()))
-			_, _ = exactDispatch(t, launchServer, context.Background(), appwire.MethodSerfLaunchSetLayer, appwire.LaunchConfigSetLayerParams{CWD: t.TempDir(), Layer: "global"})
+			_, _ = exactDispatch(context.Background(), t, launchServer, appwire.MethodSerfLaunchSetLayer, appwire.LaunchConfigSetLayerParams{CWD: t.TempDir(), Layer: "global"})
 
 			// Drive successful instance mutations through their registered closures.
 			instDir := t.TempDir()
@@ -280,7 +280,7 @@ func FuzzExactAppRPC(f *testing.F) {
 				{appwire.MethodSerfInstanceSetDefault, appwire.InstanceSetDefaultParams{Name: "work"}},
 				{appwire.MethodSerfInstanceRemove, appwire.InstanceRemoveParams{Name: "work"}},
 			} {
-				if _, err := exactDispatch(t, instServer, context.Background(), c.m, c.p); err != nil {
+				if _, err := exactDispatch(context.Background(), t, instServer, c.m, c.p); err != nil {
 					t.Fatalf("instance %s: %v", c.m, err)
 				}
 			}
@@ -294,9 +294,9 @@ func FuzzExactAppRPC(f *testing.F) {
 			}
 			pastServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: past, PluginRoot: t.TempDir()}, appsource.NewRegistry())
 			pastRef := "local:" + pastID
-			_, _ = exactDispatch(t, pastServer, context.Background(), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: pastRef, IncludeTurns: true, TurnLimit: 1})
-			_, _ = exactDispatch(t, pastServer, context.Background(), appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: pastRef, Limit: 1})
-			_, _ = exactDispatch(t, pastServer, context.Background(), appwire.MethodSerfSubagentPreview, appwire.SerfSubagentPreviewParams{Ref: pastRef, Limit: 1})
+			_, _ = exactDispatch(context.Background(), t, pastServer, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: pastRef, IncludeTurns: true, TurnLimit: 1})
+			_, _ = exactDispatch(context.Background(), t, pastServer, appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: pastRef, Limit: 1})
+			_, _ = exactDispatch(context.Background(), t, pastServer, appwire.MethodSerfSubagentPreview, appwire.SerfSubagentPreviewParams{Ref: pastRef, Limit: 1})
 
 			// Drive every successful marketplace/plugin mutation through the router.
 			marketDir := t.TempDir()
@@ -320,7 +320,7 @@ func FuzzExactAppRPC(f *testing.F) {
 				{appwire.MethodSerfPluginRemove, ref},
 				{appwire.MethodSerfMarketplaceRemove, appwire.MarketplaceNameParams{Name: "acme"}},
 			} {
-				_, _ = exactDispatch(t, pluginServer, context.Background(), c.m, c.p)
+				_, _ = exactDispatch(context.Background(), t, pluginServer, c.m, c.p)
 			}
 		case 4:
 			var relay hubRelayFunctions
@@ -345,7 +345,7 @@ func FuzzExactAppRPC(f *testing.F) {
 			errThread.Serf.Ref = "err:thread"
 			errSource := &exactRPCSource{scriptedAppSource: &scriptedAppSource{id: "err", thread: errThread}, subscribeErr: errors.New("turn relay")}
 			_, _ = relay.startTurn(context.Background(), errSource, appwire.TurnStartParams{Ref: "err:thread"})
-			_, _ = exactDispatch(t, server, context.Background(), appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: "remote:thread"})
+			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: "remote:thread"})
 
 			open := make(chan appwire.Notification)
 			source.notifications = open
@@ -422,7 +422,7 @@ func FuzzExactAppRPC(f *testing.F) {
 				calls++
 				return nil, errors.New("resolve")
 			}
-			_, _ = exactDispatch(t, server, context.Background(), appwire.MethodTurnStart, appwire.TurnStartParams{})
+			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{})
 
 			calls = 0
 			source.startTurnErr = appwire.SessionUnavailable("resume")
@@ -433,7 +433,7 @@ func FuzzExactAppRPC(f *testing.F) {
 				}
 				return nil, errors.New("resolve after resume")
 			}
-			_, _ = exactDispatch(t, server, context.Background(), appwire.MethodTurnStart, appwire.TurnStartParams{})
+			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{})
 
 			calls = 0
 			resolveTurnStartSource = func(context.Context, hubcore.WebConfig, *appsource.Registry, string, string) (appsource.Source, error) {
@@ -441,12 +441,12 @@ func FuzzExactAppRPC(f *testing.F) {
 				return source, nil
 			}
 			source.startTurnErr = nil
-			_, _ = exactDispatch(t, server, context.Background(), appwire.MethodTurnStart, appwire.TurnStartParams{})
+			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{})
 			source.startTurnErr = errors.New("plain")
-			_, _ = exactDispatch(t, server, context.Background(), appwire.MethodTurnStart, appwire.TurnStartParams{})
+			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{})
 			source.startTurnErr = nil
 			source.startTurnErrors = []error{appwire.SessionUnavailable("resume"), nil}
-			_, _ = exactDispatch(t, server, context.Background(), appwire.MethodTurnStart, appwire.TurnStartParams{})
+			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{})
 
 			authLoginComplete = func(*hubAuthController, context.Context, appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
 				return appwire.AuthLoginCompleteResponse{Status: appwire.AuthStatusResponse{Provider: "openai"}}, nil
@@ -454,13 +454,13 @@ func FuzzExactAppRPC(f *testing.F) {
 			authDevicePoll = func(*hubAuthController, context.Context, appwire.AuthDevicePollParams) (appwire.AuthDevicePollResponse, error) {
 				return appwire.AuthDevicePollResponse{State: "authorized", Status: appwire.AuthStatusResponse{Provider: "openai"}}, nil
 			}
-			_, _ = exactDispatch(t, server, context.Background(), appwire.MethodSerfAuthLoginComplete, appwire.AuthLoginCompleteParams{})
-			_, _ = exactDispatch(t, server, context.Background(), appwire.MethodSerfAuthDevicePoll, appwire.AuthDevicePollParams{})
+			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodSerfAuthLoginComplete, appwire.AuthLoginCompleteParams{})
+			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodSerfAuthDevicePoll, appwire.AuthDevicePollParams{})
 			launchTrustRepo = func(*hubLaunchController, context.Context, appwire.LaunchConfigTrustRepoParams) (appwire.LaunchConfigResolved, error) {
 				return appwire.LaunchConfigResolved{}, nil
 			}
-			_, _ = exactDispatch(t, server, context.Background(), appwire.MethodSerfLaunchTrustRepo, appwire.LaunchConfigTrustRepoParams{})
-			_, _ = exactDispatch(t, instServerForExactSetDefaultError(t), context.Background(), appwire.MethodSerfInstanceSetDefault, appwire.InstanceSetDefaultParams{Name: "missing"})
+			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodSerfLaunchTrustRepo, appwire.LaunchConfigTrustRepoParams{})
+			_, _ = exactDispatch(context.Background(), t, instServerForExactSetDefaultError(t), appwire.MethodSerfInstanceSetDefault, appwire.InstanceSetDefaultParams{Name: "missing"})
 		}
 	})
 }

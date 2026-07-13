@@ -154,19 +154,19 @@ func runNaming(args []string, stdout, stderr io.Writer) int {
 
 	abs, err := filepathAbs(root)
 	if err != nil {
-		fmt.Fprintln(stderr, "namingcheck:", err)
+		_, _ = fmt.Fprintln(stderr, "namingcheck:", err)
 		return 2
 	}
 	violations, err := namingRun(abs, verbose)
 	if err != nil {
-		fmt.Fprintln(stderr, "namingcheck:", err)
+		_, _ = fmt.Fprintln(stderr, "namingcheck:", err)
 		return 2
 	}
 	for _, v := range violations {
-		fmt.Fprintln(stdout, v)
+		_, _ = fmt.Fprintln(stdout, v)
 	}
 	if len(violations) > 0 {
-		fmt.Fprintf(stderr, "\n%d naming violation(s)\n", len(violations))
+		_, _ = fmt.Fprintf(stderr, "\n%d naming violation(s)\n", len(violations))
 		return 1
 	}
 	return 0

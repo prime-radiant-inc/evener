@@ -61,13 +61,16 @@ var SpecDocumented = 1
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined := ""
+	var joined strings.Builder
 	for _, v := range got {
-		joined += v.kind + ":" + v.name + ","
+		joined.WriteString(v.kind)
+		joined.WriteString(":")
+		joined.WriteString(v.name)
+		joined.WriteString(",")
 	}
 	for _, want := range []string{"func:Exported", "type:T", "var:ExportedVar", "const:ExportedConst"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("%q missing %q", joined, want)
+		if !strings.Contains(joined.String(), want) {
+			t.Errorf("%q missing %q", joined.String(), want)
 		}
 	}
 	if _, err := checkPackage(filepath.Join(d, "missing")); err == nil {

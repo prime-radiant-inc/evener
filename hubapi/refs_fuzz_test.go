@@ -136,10 +136,10 @@ func coverClient(t *testing.T) {
 	if err := client.post(ctx, "/post", make(chan int), nil); err == nil {
 		t.Fatal("post marshaled unsupported body")
 	}
-	if err := client.get(nil, "/get", &struct{}{}); err == nil {
+	if err := client.get(nil, "/get", &struct{}{}); err == nil { //nolint:staticcheck // Verifies nil contexts are rejected before an HTTP request is built.
 		t.Fatal("get accepted a nil context")
 	}
-	if err := client.post(nil, "/post", nil, nil); err == nil {
+	if err := client.post(nil, "/post", nil, nil); err == nil { //nolint:staticcheck // Verifies nil contexts are rejected before an HTTP request is built.
 		t.Fatal("post accepted a nil context")
 	}
 }

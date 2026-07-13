@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -690,7 +691,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		getSession().Close()
 	}()
 
-	if err := deps.serveHTTP(httpSrv, listener); err != http.ErrServerClosed {
+	if err := deps.serveHTTP(httpSrv, listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		cancel()
 		<-shutdownDone
 		return err
@@ -712,15 +713,15 @@ func mapServePendingEscalations(data []events.SandboxEscalationRequestedData) []
 
 func reportServeResume(w io.Writer, meta schema.SessionMeta, model cmdutil.ModelRef, oldProvider, oldModel string, overridden bool) {
 	if overridden {
-		fmt.Fprintf(w, "[serve] resumed session %s with model override %s (was %s/%s)\n", meta.ID, model.Qualified(), oldProvider, oldModel)
+		_, _ = fmt.Fprintf(w, "[serve] resumed session %s with model override %s (was %s/%s)\n", meta.ID, model.Qualified(), oldProvider, oldModel)
 	} else {
-		fmt.Fprintf(w, "[serve] resumed session %s (%d turns)\n", meta.ID, meta.TurnCount)
+		_, _ = fmt.Fprintf(w, "[serve] resumed session %s (%d turns)\n", meta.ID, meta.TurnCount)
 	}
 }
 
 func printServeSandboxLine(w io.Writer, line string) {
 	if line != "" {
-		fmt.Fprintln(w, line)
+		_, _ = fmt.Fprintln(w, line)
 	}
 }
 

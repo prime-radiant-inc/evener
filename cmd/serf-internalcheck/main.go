@@ -58,11 +58,11 @@ var packagesVisit = packages.Visit
 func runWith(find func() ([]string, error), stdout, stderr io.Writer) int {
 	leaks, err := find()
 	if err != nil {
-		fmt.Fprintln(stderr, "serf-internalcheck:", err)
+		_, _ = fmt.Fprintln(stderr, "serf-internalcheck:", err)
 		return 2
 	}
 	for _, v := range leaks {
-		fmt.Fprintln(stdout, v)
+		_, _ = fmt.Fprintln(stdout, v)
 	}
 	if len(leaks) != 0 {
 		return 1

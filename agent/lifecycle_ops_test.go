@@ -136,7 +136,11 @@ func TestLifecycleDelegateViaTurn(t *testing.T) {
 
 	responder := func(llm.Request) llm.Response {
 		if parentCalls.Add(1) == 1 {
-			return buildResponse(kindDelegate, 0)
+			return lifecycleToolCall("call_0", "delegate", map[string]any{
+				"task":                 "child task",
+				"delegation_allowance": 0,
+				"max_wait_ms":          5000,
+			})
 		}
 		return agenttest.FinalResponse("done")
 	}

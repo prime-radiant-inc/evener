@@ -75,7 +75,6 @@ func FuzzCoreAPIPass4(f *testing.F) {
 		if err := os.Rename(stateDir, filepath.Join(root, "project-state")); err != nil {
 			t.Fatal(err)
 		}
-		stateDir = filepath.Join(root, "project-state")
 		if err := past.Rebuild(); err != nil {
 			t.Fatal(err)
 		}

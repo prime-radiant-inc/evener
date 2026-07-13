@@ -1077,6 +1077,27 @@ func pinTmuxWindowSize(t *testing.T, session string, width, height int) {
 	t.Helper()
 	runTmux(t, "set-option", "-t", session, "window-size", "manual")
 	runTmux(t, "resize-window", "-t", session, "-x", strconv.Itoa(width), "-y", strconv.Itoa(height))
+	waitForTmuxPaneSize(t, session, width, height)
+}
+
+func waitForTmuxPaneSize(t *testing.T, session string, width, height int) {
+	t.Helper()
+	deadline := time.Now().Add(tuiE2EWaitTimeout)
+	wantWidth := strconv.Itoa(width)
+	wantHeight := strconv.Itoa(height)
+	var last string
+	for time.Now().Before(deadline) {
+		out, err := exec.Command("tmux", "display-message", "-p", "-t", session, "#{pane_width} #{pane_height}").CombinedOutput()
+		last = strings.TrimSpace(string(out))
+		if err == nil {
+			fields := strings.Fields(last)
+			if len(fields) == 2 && fields[0] == wantWidth && fields[1] == wantHeight {
+				return
+			}
+		}
+		time.Sleep(tuiE2EPollInterval)
+	}
+	t.Fatalf("tmux pane size for %s = %q, want %dx%d", session, last, width, height)
 }
 
 func (a *tmuxTUI) Close() {
@@ -1121,6 +1142,7 @@ func (a *tmuxTUI) CaptureHistory() string {
 func (a *tmuxTUI) Resize(width, height int) {
 	a.t.Helper()
 	runTmux(a.t, "resize-window", "-t", a.session, "-x", strconv.Itoa(width), "-y", strconv.Itoa(height))
+	waitForTmuxPaneSize(a.t, a.session, width, height)
 }
 
 func (a *tmuxTUI) WaitFor(wants ...string) string {
