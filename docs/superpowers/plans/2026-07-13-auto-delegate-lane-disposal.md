@@ -1,7 +1,7 @@
 # Delegate-lane disposal: dispose operation + nudge + automatic residue collection
 
-**Status:** draft spec, rev 9 (seven adversarial review rounds, 7×2 competing
-reviewers; history in §Review log)
+**Status:** draft spec, rev 9.1 (seven adversarial review rounds, 7×2
+competing reviewers; history in §Review log)
 **Problem owner:** Jesse
 **Date:** 2026-07-13
 
@@ -62,6 +62,14 @@ Observed failures (2026-07-13):
   cherry-equivalent and multi-commit-squash lanes are collected only via
   model-judged `dispose` (P2 makes that likely). This also keeps P0 cheap
   (no `git cherry` patch-id walks at close — rev-8 finding M1).
+  **Designated mitigation if squash-heavy workflows pile up** (decided
+  rev 9.1, not built — no such workflow exists in current practice): the
+  worktree and the branch ref are separable — an automatic collector may
+  remove a cherry-merged lane's **worktree** (disk, registry entry, lock —
+  the actual pileup) while **keeping the branch ref**, which preserves
+  every commit. Prune's vocabulary already has this worktree-removed/
+  branch-kept state (`WorktreeRemoved`). If the gap becomes real, build
+  this; never auto-`branch -D` on cherry evidence.
 - **Behavior change, acknowledged:** ancestry-merged lanes no longer survive
   the parent's close for post-close inspection (`docs/worktrees.md:136-138`
   promises changed lanes are "inspectable/mergeable/switch-able" after
@@ -265,9 +273,10 @@ manual-only.
 
 Rev-3 design preserved at `75c7b086`. Build trigger: live sessions still
 accumulating collectible lanes past an agreed threshold despite P1/P2 —
-including via the P3 cadence gap, squash-merge blindness, and abandoned-
-session lock pileups (the last may also motivate staleness-based lock
-reclaim).
+including via the P3 cadence gap, squash-merge blindness (first response:
+the branch-preserving worktree-only collection designated in §Non-goals,
+not the sweep), and abandoned-session lock pileups (which may also motivate
+staleness-based lock reclaim).
 
 ## Constants
 
