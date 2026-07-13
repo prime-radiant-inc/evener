@@ -768,7 +768,16 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// deny list (which frozenSubagentToolNames drops on restore, and which
 	// the allTools branch skips entirely).
 	if s.cfg.spawn.isolation == "worktree" {
-		s.reg.Remove("manage_worktree")
+		if s.delegationAllowance > 0 {
+			// A worktree-isolated coordinator keeps manage_worktree, but only its
+			// dispose operation, so it can retire its own sub-delegates' lanes
+			// (spec §P1 "Availability"). The registry serves whole tools, so the
+			// full definition is swapped for the dispose-only variant and the
+			// handler gates the other ops via worktreeDisposeOnlySurface().
+			s.serveDisposeOnlyWorktreeTool()
+		} else {
+			s.reg.Remove("manage_worktree")
+		}
 	}
 	if s.delegationAllowance <= 0 {
 		for _, name := range rootOnlySubagentTools() {

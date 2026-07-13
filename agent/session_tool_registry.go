@@ -207,6 +207,7 @@ func newToolDeps(s *Session) *toolDeps {
 			listOp:        s.worktreeList,
 			pruneOp:       s.worktreePrune,
 			disposeOp:     s.worktreeDispose,
+			disposeOnly:   s.worktreeDisposeOnlySurface,
 		},
 		now: s.sclock().Now,
 		web: webDeps{

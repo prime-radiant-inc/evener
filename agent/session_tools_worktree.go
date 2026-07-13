@@ -250,6 +250,43 @@ type worktreeGuard struct {
 	// forceDirty separately overrides an uncommitted-changes refusal (orthogonal,
 	// like remove).
 	disposeOp func(ctx context.Context, id string, force, forceDirty bool) (WorktreeDisposeResult, error)
+	// disposeOnly reports whether this session is served the dispose-only
+	// manage_worktree surface (delegate-lane disposal spec §P1 "Availability"):
+	// a worktree-isolated coordinator that may only dispose its own delegates'
+	// lanes. When true the handler refuses every operation except dispose. The
+	// registry can add or remove only whole tools, not individual operations, so
+	// the dispose-only schema variant is paired with this in-handler gate.
+	disposeOnly func() bool
+}
+
+// worktreeDisposeOnlySurface reports whether this session is served the
+// dispose-only manage_worktree surface. It backs the handler gate seam
+// (worktreeGuard.disposeOnly). The flag is write-once during session init,
+// before any tool call runs, so no lock is needed.
+func (s *Session) worktreeDisposeOnlySurface() bool {
+	return s.worktreeDisposeOnly
+}
+
+// serveDisposeOnlyWorktreeTool swaps the full manage_worktree tool for its
+// dispose-only variant (spec §P1 "Availability"), preserving the same tool name
+// and executor. The executor gates non-dispose operations via the
+// worktreeDisposeOnly flag this method sets. Called from initSessionState for a
+// worktree-isolated coordinator, on both the spawn and restore paths.
+func (s *Session) serveDisposeOnlyWorktreeTool() {
+	existing := s.reg.Get("manage_worktree")
+	if existing == nil {
+		return
+	}
+	s.worktreeDisposeOnly = true
+	t := *existing
+	t.Definition = tool.DefManageWorktreeDisposeOnly()
+	// Force a fresh schema compile for the narrowed parameters: Register reuses
+	// the existing registration's compiled (full) schema when Schema is nil, so
+	// the old registration must be dropped first.
+	t.Schema = nil
+	t.Execute = nil
+	s.reg.Unregister("manage_worktree")
+	_ = s.reg.Register(t)
 }
 
 // registerWorktreeTool registers the manage_worktree lifecycle tool (spec §2)
@@ -267,6 +304,16 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env // the guard reads/writes the session env under s.mu; the passed env is currentEnv()
 			operation, _ := args["operation"].(string)
+			// Dispose-only surface (spec §P1 "Availability"): a worktree-isolated
+			// coordinator gets the dispose-only schema variant, but the registry can
+			// only add or remove whole tools — so the handler enforces the same
+			// restriction, refusing every op except dispose with the isolation
+			// rationale (a session inside a lane that could create/switch/remove
+			// worktrees would be able to force-remove sibling lanes the parent
+			// created; see rootOnlyWorktreeTools).
+			if operation != "dispose" && deps.worktreeGuard.disposeOnly != nil && deps.worktreeGuard.disposeOnly() {
+				return nil, fmt.Errorf("manage_worktree %s: refused — you run inside your own isolation worktree lane, so you may only dispose your own delegates' lanes (operation=dispose); creating, switching, listing, removing, or pruning worktrees could disturb the sibling lanes your parent created", operation)
+			}
 			switch operation {
 			case "create":
 				name, _ := args["name"].(string)

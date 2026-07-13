@@ -319,6 +319,14 @@ type Session struct {
 	// Tool names registered during session initialization (not custom).
 	coreToolNames map[string]bool
 
+	// worktreeDisposeOnly is set at session init for a worktree-isolated
+	// coordinator (delegate spawned isolation:"worktree" that itself carries a
+	// delegation allowance): the manage_worktree tool is served as the
+	// dispose-only variant and the handler refuses every op except dispose
+	// (delegate-lane disposal spec §P1 "Availability"). Write-once during init,
+	// before the session serves any tool call.
+	worktreeDisposeOnly bool
+
 	// Project docs loaded once at session init and cached for lifetime.
 	projectDocs          []ProjectDoc
 	projectDocsTruncated bool
