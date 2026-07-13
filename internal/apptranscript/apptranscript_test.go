@@ -375,6 +375,21 @@ func TestProjectTurnProjectsAudioAndDocumentAttachments(t *testing.T) {
 	}
 }
 
+func TestProjectTurnTagsCompactionSystemMessages(t *testing.T) {
+	items := ProjectTurn("turn_1", 1, schema.Turn{
+		Kind:    schema.TurnSummary,
+		Message: llm.Assistant("kept useful context"),
+	}, map[string]string{}, nil, nil)
+
+	if len(items) != 1 {
+		t.Fatalf("summary items=%+v, want 1", items)
+	}
+	item := items[0]
+	if item.Type != "systemMessage" || item.Description != "Context summary" || item.EventKind != appwire.ThreadItemEventKindCompaction {
+		t.Fatalf("summary item=%+v", item)
+	}
+}
+
 func TestDefaultImageProjector(t *testing.T) {
 	img := llm.ImageData{MediaType: "image/png", Data: []byte("secret")}
 	item := DefaultImageProjector(img)

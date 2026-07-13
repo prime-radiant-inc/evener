@@ -1370,8 +1370,8 @@
     // appendSystemMessage renders a lifecycle event (skill activated, plugin
     // loaded, tools, prompt) as a quiet, dim one-liner — never divider-weight,
     // and without the meaningless "N chars" payload count (mockup #7 alt A).
-    // The full payload stays available behind the disclosure. Adjacent events
-    // coalesce into one collapsed line once a run reaches 3 (alt B).
+    // Detail-bearing events keep the full payload behind a disclosure. Adjacent
+    // events coalesce into one collapsed line once a run reaches 3 (alt B).
     appendSystemMessage(data) {
       data = data || {};
       const text = String(data.text || "");
@@ -1379,9 +1379,28 @@
       this.endCheapCluster();
       this.closeSubagentModule();
       const title = systemMessageDisplayTitle(data.title || "System");
+      const eventKind = String(data.eventKind || "");
+      const run = this.ensureSystemRun();
+
+      if (eventKind === "plugin_loaded") {
+        const el = document.createElement("div");
+        el.className = "steering system-message system-message-inline";
+        el.dataset.systemTitle = text || title;
+        el.dataset.systemText = text;
+        el.dataset.systemEventKind = eventKind;
+        const verb = document.createElement("span");
+        verb.className = "steering-verb";
+        verb.textContent = text;
+        el.appendChild(verb);
+        run.querySelector(".system-run-body").appendChild(el);
+        this.coalesceSystemRun(run);
+        return;
+      }
+
       const el = document.createElement("details");
       el.className = "steering system-message";
       el.dataset.systemTitle = title;
+      if (eventKind) el.dataset.systemEventKind = eventKind;
 
       const summary = document.createElement("summary");
       const verb = document.createElement("span");
@@ -1394,7 +1413,6 @@
       body.textContent = text;
       el.append(summary, body);
 
-      const run = this.ensureSystemRun();
       run.querySelector(".system-run-body").appendChild(el);
       this.coalesceSystemRun(run);
     },
@@ -1432,6 +1450,21 @@
       }
       run.classList.add("coalesced");
       const first = blocks[0] && blocks[0].dataset.systemTitle || "system event";
+      const pluginSummaries = [];
+      for (const block of blocks) {
+        if (block.dataset.systemEventKind !== "plugin_loaded") continue;
+        const summary = String(block.dataset.systemText || block.dataset.systemTitle || "").trim();
+        if (summary && summary !== first) pluginSummaries.push(summary);
+      }
+      let label = first;
+      if (pluginSummaries.length > 0) {
+        const visible = pluginSummaries.slice(0, 2);
+        let pluginText = visible.join(", ");
+        if (pluginSummaries.length > visible.length) {
+          pluginText += " + " + (pluginSummaries.length - visible.length) + " more plugins";
+        }
+        label += " · " + pluginText;
+      }
       const more = n - 1;
       // Glyph spanned off so it hangs in the marker gutter (one text column).
       toggle.textContent = "";
@@ -1439,7 +1472,7 @@
       glyph.className = "summary-glyph";
       glyph.textContent = "✦";
       toggle.appendChild(glyph);
-      toggle.appendChild(document.createTextNode(n + " system events · " + first + (more > 0 ? " + " + more + " more" : "")));
+      toggle.appendChild(document.createTextNode(n + " system events · " + label + (more > 0 ? " + " + more + " more" : "")));
     },
 
     appendSystemLine(text) {

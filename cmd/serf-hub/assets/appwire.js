@@ -630,14 +630,15 @@
       return [["STEERING_INJECTED", { text: item.text || "", images: item.images || [] }]];
     }
     if (type === "systemMessage") {
-      if (!item.text) return [];
+      if (!item.text && !item.description) return [];
       const hookLine = hookSystemLineText(item);
       if (hookLine) return [["SYSTEM_LINE", { text: hookLine }]];
-      const payload = { title: item.description || "System", text: item.text || "" };
+      const payload = { title: item.description || "System", text: item.text || item.description || "" };
       // Carry the structured detail (e.g. compaction before/after numbers under
       // raw.compaction) so the renderer can draw an honest, inspectable expand
       // from real numbers rather than re-parsing the prose (mockup #17 Alt A).
       if (item.raw != null && item.raw !== "") payload.raw = item.raw;
+      if (item.eventKind) payload.eventKind = item.eventKind;
       return [["SYSTEM_MESSAGE", payload]];
     }
     if (type === "agentMessage") {

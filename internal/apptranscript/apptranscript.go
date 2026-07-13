@@ -227,6 +227,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 			Description:          CompactionDescription(string(turn.Kind)),
 			Text:                 text,
 			Status:               appwire.TurnStatusCompleted,
+			EventKind:            appwire.ThreadItemEventKindCompaction,
 		}}
 	case schema.TurnUserInput:
 		images := ImagesFromContent(turn.Message.Content, imageProjector)

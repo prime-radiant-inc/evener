@@ -455,6 +455,23 @@ type DiagnosticCause struct {
 	Status   int    `json:"status,omitempty"`
 }
 
+// Stable semantic event kinds for systemMessage transcript items. These values
+// identify what happened; display titles and summaries may change independently.
+const (
+	ThreadItemEventKindPluginLoaded      = "plugin_loaded"
+	ThreadItemEventKindSkillActivated    = "skill_activated"
+	ThreadItemEventKindHookCompleted     = "hook_completed"
+	ThreadItemEventKindPromptLoaded      = "prompt_loaded"
+	ThreadItemEventKindContextCompaction = "context_compaction"
+	ThreadItemEventKindCompaction        = "compaction"
+	ThreadItemEventKindTurnLimit         = "turn_limit"
+	ThreadItemEventKindLoopDetection     = "loop_detection"
+	ThreadItemEventKindGoalEnded         = "goal_ended"
+	ThreadItemEventKindForkSummary       = "fork_summary"
+	ThreadItemEventKindRoundTimings      = "round_timings"
+	ThreadItemEventKindToolRepair        = "tool_repair"
+)
+
 type ThreadItem struct {
 	Type                 string          `json:"type"`
 	ID                   string          `json:"id"`
@@ -474,6 +491,7 @@ type ThreadItem struct {
 	StartedAt            *int64          `json:"startedAt,omitempty"`
 	CompletedAt          *int64          `json:"completedAt,omitempty"`
 	Raw                  json.RawMessage `json:"raw,omitempty"`
+	EventKind            string          `json:"eventKind,omitempty"`
 }
 
 type OutputImage struct {

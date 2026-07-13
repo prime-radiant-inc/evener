@@ -3341,6 +3341,7 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
 }
 .system-message[open] > summary::before { transform: rotate(90deg); }
 .system-message .steering-verb { color: var(--text-muted); font-style: italic; }
+.system-message-inline { display: block; }
 
 /* Coalesced lifecycle run (mockup #7 alt B): 3+ adjacent events fold to one
    quiet collapsible line. Below the threshold the toggle is hidden and the
