@@ -68,6 +68,17 @@ func TestCurrentExecutable(t *testing.T) {
 	}
 }
 
+func TestRunMainHelpReturnsNil(t *testing.T) {
+	var stderr bytes.Buffer
+	err := runMain([]string{"--help"}, &stderr, defaultMainDeps())
+	if err != nil {
+		t.Fatalf("runMain(--help) err = %v, want nil", err)
+	}
+	if !strings.Contains(stderr.String(), "Usage: serf-hub") {
+		t.Fatalf("help output missing usage:\n%s", stderr.String())
+	}
+}
+
 func TestResolveSerfBinaryPath(t *testing.T) {
 	t.Run("explicit wins", func(t *testing.T) {
 		got := resolveSerfBinaryPath("/usr/bin/serf", "", nil)

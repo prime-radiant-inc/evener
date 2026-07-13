@@ -109,9 +109,10 @@ func main() {
 func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	opts, err := parseHubOptions(args, stderr)
 	if err != nil {
-		if err != flag.ErrHelp {
-			fmt.Fprintf(stderr, "[hub] %v\n", err)
+		if err == flag.ErrHelp {
+			return nil
 		}
+		fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
 
