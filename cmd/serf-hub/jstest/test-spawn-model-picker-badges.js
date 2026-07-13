@@ -27,7 +27,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
       </div>
       <textarea name="prompt"></textarea>
       <input type="hidden" name="harness" value="serf">
-      <input type="hidden" name="model" value="">
+      <input type="hidden" name="model" value="anthropic/claude-opus-4-6">
       <input type="hidden" name="working_dir" value="">
       <input type="hidden" name="branch" value="">
       <input type="hidden" name="access_mode" value="full">
@@ -75,6 +75,10 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 
   const catalogued = Array.from(rows).find(r => r.textContent.includes("Claude Opus 4 6"));
   pass(catalogued, "catalogued model row rendered with prettified name");
+  pass(catalogued && catalogued.getAttribute("aria-current") === "true",
+    "current model row exposes aria-current");
+  pass(catalogued && catalogued.querySelector(".chip-picker-model-check"),
+    "current model row renders a check marker");
   pass(catalogued && catalogued.querySelector(".chip-picker-model-id").textContent === "claude-opus-4-6",
     "secondary line shows the raw id");
   const badges = catalogued ? Array.from(catalogued.querySelectorAll(".chip-picker-badge")).map(b => b.textContent) : [];
@@ -87,6 +91,10 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 
   const uncatalogued = Array.from(rows).find(r => r.textContent.includes("Unknown Model"));
   pass(uncatalogued, "uncatalogued model still renders");
+  pass(uncatalogued && uncatalogued.getAttribute("aria-current") !== "true",
+    "non-current model row should not expose aria-current");
+  pass(uncatalogued && !uncatalogued.querySelector(".chip-picker-model-check"),
+    "non-current model row should not render a check marker");
   pass(uncatalogued && uncatalogued.querySelectorAll(".chip-picker-badge").length === 0,
     "uncatalogued model has no badges");
 

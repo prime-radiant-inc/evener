@@ -3461,7 +3461,9 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
   color: var(--text-muted);
 }
 .chip-picker-model {
-  display: block;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
   width: 100%;
   text-align: left;
   background: transparent;
@@ -3471,10 +3473,14 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
   cursor: pointer;
 }
 .chip-picker-model:hover { background: var(--rule); }
+.chip-picker-model.is-current { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.chip-picker-model-body { flex: 1; min-width: 0; }
 .chip-picker-model-name { color: var(--text); font-family: var(--font-mono); font-size: var(--text-sm); }
 .chip-picker-model-meta { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); margin-top: var(--space-1); }
 .chip-picker-model-id { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); }
 .chip-picker-model-badges { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: var(--space-1); }
+.chip-picker-model-check { color: var(--accent); flex: 0 0 auto; font-size: var(--text-md); line-height: 1; margin-top: 1px; }
+.chip-picker-model-check svg { width: 1em; height: 1em; }
 .chip-picker-badge { color: var(--text-muted); background: var(--bg); border-radius: var(--radius-pill); padding: 0 var(--space-2); font-size: var(--text-2xs); font-family: var(--font-mono); }
 .chip-picker-empty { padding: var(--space-4); color: var(--text-muted); font-size: var(--text-sm); }
 .chip-picker-diagnostics { border-top: 1px solid var(--rule); padding: var(--space-2) var(--space-4); display: flex; flex-direction: column; gap: var(--space-1); }
@@ -4731,6 +4737,10 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
     font-size: var(--text-xs);
     text-transform: none;
     letter-spacing: normal;
+  }
+  .chip-picker-sheet .chip-picker-model {
+    flex-direction: row;
+    align-items: flex-start;
   }
   .chip-picker-sheet .chip-picker-option,
   .chip-picker-sheet .chip-picker-model,

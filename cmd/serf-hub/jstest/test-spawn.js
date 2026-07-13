@@ -233,11 +233,15 @@ assert(workingDirChip, "working_dir chip should exist in spawn chips test fixtur
 workingDirChip.click();
 await new Promise((r) => setTimeout(r, 0));
 assert(formDom.window.document.querySelector(".chip-picker-dir"), "working_dir chip should open shared directory picker");
-assert(dirCompletionPrefixes[0] === "/tmp/project-with-oauth",
-  "working_dir picker should fetch initial suggestions for current chip value, got " + dirCompletionPrefixes[0]);
+assert(dirCompletionPrefixes[0] === "/tmp/project-with-oauth/",
+  "working_dir picker should list children of current chip value, got " + dirCompletionPrefixes[0]);
 formDom.window.document.querySelector(".chip-picker-dir-row").click();
+await new Promise((r) => setTimeout(r, 0));
+assert(formDom.window.localStorage.getItem("serf-hub.spawn-defaults.global.last-working-dir") === "/tmp/some-other-dir",
+  "clicking working_dir row should browse without persisting last working directory");
+formDom.window.document.querySelector(".chip-picker-dir-use").click();
 assert(formDom.window.localStorage.getItem("serf-hub.spawn-defaults.global.last-working-dir") === "/tmp/project-with-oauth",
-  "clicking working_dir suggestion should persist last working directory");
+  "accepting working_dir picker should persist last working directory");
 
 const staleModelDom = new JSDOM(`<!DOCTYPE html><html><body>
   <form data-spawn-form>

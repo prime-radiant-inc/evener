@@ -1486,19 +1486,49 @@
         return badges;
       }
 
+      function currentModelPickerValue() {
+        const hidden = document.querySelector('input[type=hidden][name="model"]');
+        return hidden ? hidden.value.trim() : "";
+      }
+
+      function modelPickerValue(m) {
+        return harnessUsesSerfModels(harness) ? m.provider + "/" + m.model : m.model;
+      }
+
+      function modelPickerCheckIcon() {
+        if (window.SerfIcons && window.SerfIcons.ended) return window.SerfIcons.ended;
+        return "&#10003;";
+      }
+
+      function modelMatchesFilter(m, filter) {
+        if (!filter) return true;
+        return [
+          m.provider || "",
+          m.model || "",
+          m.display_name || "",
+        ].join(" ").toLowerCase().includes(filter);
+      }
+
       function buildModelRow(m) {
         const el = document.createElement("button");
         el.type = "button";
         el.className = "chip-picker-model";
+        const isCurrent = currentModelPickerValue() === modelPickerValue(m);
+        if (isCurrent) {
+          el.classList.add("is-current");
+          el.setAttribute("aria-current", "true");
+        }
+        const body = document.createElement("div");
+        body.className = "chip-picker-model-body";
         const name = document.createElement("div");
         name.className = "chip-picker-model-name";
         name.textContent = m.display_name || m.model;
-        el.appendChild(name);
+        body.appendChild(name);
         if (m.display_name && m.display_name !== m.model) {
           const idLine = document.createElement("div");
           idLine.className = "chip-picker-model-id";
           idLine.textContent = m.model;
-          el.appendChild(idLine);
+          body.appendChild(idLine);
         }
         const badges = modelBadges(m);
         if (badges.length) {
@@ -1510,7 +1540,7 @@
             span.textContent = b;
             badgeRow.appendChild(span);
           });
-          el.appendChild(badgeRow);
+          body.appendChild(badgeRow);
         }
         const meta = document.createElement("div");
         meta.className = "chip-picker-model-meta";
@@ -1521,7 +1551,15 @@
         if (m.output_cost_per_million != null) parts.push("$" + m.output_cost_per_million.toFixed(2) + "/M out");
         if (parts.length) {
           meta.textContent = parts.join(" · ");
-          el.appendChild(meta);
+          body.appendChild(meta);
+        }
+        el.appendChild(body);
+        if (isCurrent) {
+          const check = document.createElement("span");
+          check.className = "chip-picker-model-check";
+          check.setAttribute("aria-hidden", "true");
+          check.innerHTML = modelPickerCheckIcon();
+          el.appendChild(check);
         }
         el.addEventListener("click", () => selectModel(m));
         return el;
@@ -1539,9 +1577,7 @@
       function renderList(filter) {
         list.innerHTML = "";
         let shown = 0;
-        const recentMatches = recentModels.filter(m =>
-          !filter || (m.model + " " + (m.display_name || "")).toLowerCase().includes(filter)
-        );
+        const recentMatches = recentModels.filter(m => modelMatchesFilter(m, filter));
         if (recentMatches.length > 0) {
           const header = document.createElement("div");
           header.className = "chip-picker-group";
@@ -1553,9 +1589,7 @@
           });
         }
         providers.forEach(p => {
-          const matches = byProvider[p].filter(m =>
-            !filter || (m.model + " " + (m.display_name || "")).toLowerCase().includes(filter)
-          );
+          const matches = byProvider[p].filter(m => modelMatchesFilter(m, filter));
           if (matches.length === 0) return;
           const header = document.createElement("div");
           header.className = "chip-picker-group";
