@@ -13,11 +13,11 @@ absolute no-symlink walker. The walker therefore refuses the fixture path at the
 The resulting failures cover read, list, glob, grep, and file-existence tests,
 but they all share this fixture-path cause.
 
-Second, `TestCleanupDisposesOwnedTmpAfterChildGrace` uses a Go raw string for a
-Bash TERM trap while also escaping its double quotes. Bash treats those escaped
-quotes as literal path characters. The trap consequently checks a nonexistent
-quoted directory name and never writes its sentinel, even though cleanup keeps
-the owned temporary directory alive for the grace period.
+Second, `TestCleanupDisposesOwnedTmpAfterChildGrace` ends its Bash script with
+the external command `sleep 300`. Bash tail-executes that final command after
+creating the readiness file, so the tracked PID becomes `sleep` and the shell's
+TERM trap no longer exists. Cleanup signals the tracked process correctly, but
+the fixture has discarded the observer that was supposed to write the sentinel.
 
 ## Evidence
 
@@ -26,9 +26,12 @@ the owned temporary directory alive for the grace period.
 - Running the affected sandbox tests with the resolved `TMPDIR` passes five
   consecutive repetitions.
 - The lifecycle test fails twenty consecutive repetitions with the existing
-  trap.
-- Executing the current escaped Bash directory expression misses `/tmp`; the
-  same expression with ordinary shell quoting matches `/tmp`.
+  final command.
+- After readiness, the tracked PID reports its command as `sleep`, and `Wait`
+  reports signal termination without any trap output.
+- Replacing the final command with `sleep 300 & wait` keeps the tracked command
+  as `/bin/bash`; the trap observes the scratch directory and passes ten
+  consecutive repetitions.
 
 ## Design
 
@@ -41,10 +44,11 @@ no-symlink enforcement layer. The fixtures will then exercise the declared
 sandbox contracts without an ambient macOS system symlink becoming part of the
 test case. Tests that intentionally construct symlinks remain unchanged.
 
-Correct the lifecycle test's TERM trap by removing the unnecessary backslashes
-before its double quotes. The raw Go string will then deliver normal quoted Bash
-variables, so the existing sentinel proves that the owned temporary directory
-was present when TERM was handled.
+Keep Bash alive in the lifecycle fixture by backgrounding the sleeper and using
+the shell's `wait` builtin. Bash remains the tracked process and retains its TERM
+trap, while the background sleeper remains in the same process group. The
+existing sentinel then proves that the owned temporary directory was present
+when TERM was handled.
 
 ## Alternatives Rejected
 
@@ -52,8 +56,8 @@ was present when TERM was handled.
   no-symlink absolute-read guarantee to repair test setup.
 - Setting a process-wide canonical `TMPDIR` in `TestMain` would alter unrelated
   tests and hide which fixtures require real paths.
-- Increasing the test termination grace would not fix the malformed trap and
-  would add wall-clock cost without making the assertion meaningful.
+- Increasing the test termination grace would not restore a trap discarded by
+  tail-exec and would add wall-clock cost without making the assertion meaningful.
 
 ## Verification
 

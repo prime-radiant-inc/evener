@@ -4,7 +4,7 @@
 
 **Goal:** Make the macOS `agent/execenv` tests exercise their intended sandbox and cleanup contracts without changing production behavior.
 
-**Architecture:** Keep both repairs in test code. Canonicalize only shared sandbox fixture roots before those paths enter the no-symlink walker, and correct the existing Bash TERM trap so its variables use actual shell quoting instead of literal quote characters.
+**Architecture:** Keep both repairs in test code. Canonicalize only shared sandbox fixture roots before those paths enter the no-symlink walker, and keep the lifecycle fixture's Bash process alive so its TERM trap remains installed.
 
 **Tech Stack:** Go testing, `filepath.EvalSymlinks`, Bash process traps, Git.
 
@@ -96,14 +96,14 @@ git add agent/execenv/securepath_test.go agent/execenv/sandbox_tools_test.go
 git commit -m "test(execenv): canonicalize sandbox fixture roots" -m "Resolve shared sandbox test roots before passing them through the no-symlink file-tool layer. This keeps macOS's /var system symlink from turning unrelated read, list, glob, grep, and existence contracts into symlink-refusal cases while preserving production enforcement and intentional symlink tests."
 ```
 
-### Task 2: Correct the Cleanup TERM Trap
+### Task 2: Keep the Cleanup TERM Observer Alive
 
 **Files:**
 - Modify: `agent/execenv/sandbox_lifecycle_test.go:191-192`
 
 **Interfaces:**
 - Consumes: existing `WATCH`, `SENTINEL`, and `READY` environment variables.
-- Produces: a TERM trap that records the watched directory's real existence before exiting.
+- Produces: a Bash process that retains its TERM trap while a background child waits.
 
 - [ ] **Step 1: Confirm the lifecycle regression is red repeatedly**
 
@@ -113,24 +113,20 @@ Run:
 go test ./agent/execenv -run '^TestCleanupDisposesOwnedTmpAfterChildGrace$' -count=10
 ```
 
-Expected: FAIL ten times because the escaped quotes make the trap test a directory name containing literal quote characters.
+Expected: FAIL ten times because Bash tail-executes the final `sleep`, discards its TERM trap, and never writes the sentinel.
 
-- [ ] **Step 2: Correct the raw Bash trap quoting**
+- [ ] **Step 2: Prevent Bash from tail-executing the sleeper**
 
 Change:
 
 ```go
-script := `trap 'if [ -d \"$WATCH\" ]; then : > \"$SENTINEL\"; fi; exit 0' TERM
-: > \"$READY\"
 sleep 300`
 ```
 
 to:
 
 ```go
-script := `trap 'if [ -d "$WATCH" ]; then : > "$SENTINEL"; fi; exit 0' TERM
-: > "$READY"
-sleep 300`
+sleep 300 & wait`
 ```
 
 - [ ] **Step 3: Format and verify the lifecycle regression is green repeatedly**
@@ -150,7 +146,7 @@ Run `git status --short`, then:
 
 ```bash
 git add agent/execenv/sandbox_lifecycle_test.go
-git commit -m "test(execenv): correct cleanup trap quoting" -m "Remove literal escaped quotes from the raw Bash TERM trap so it checks the real WATCH path and writes the real SENTINEL path. The existing assertion now measures cleanup ordering instead of malformed shell operands."
+git commit -m "test(execenv): keep cleanup trap process alive" -m "Background the lifecycle fixture's sleeper and wait in Bash so the shell is not tail-execed away after readiness. The tracked process now retains its TERM trap and the existing sentinel measures whether cleanup preserves the owned scratch directory through graceful shutdown."
 ```
 
 ### Task 3: Integrated Verification
