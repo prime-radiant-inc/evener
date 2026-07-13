@@ -126,12 +126,22 @@ await scenario("living plan card leads with progress + active task, collapsed by
   if (!active.querySelector(".plan-glyph").innerHTML.includes("<svg")) return { ok: false, detail: "active glyph should be the working svg icon" };
   if (!active.textContent.includes("Port the charge and refund paths")) return { ok: false, detail: "wrong active task text" };
 
+  const currentLabel = card.querySelector(".task-card-current-label");
+  if (!currentLabel || currentLabel.textContent.trim() !== "Up next") {
+    return { ok: false, detail: "current task should be labeled 'Up next'" };
+  }
+  const currentRow = currentLabel.nextElementSibling;
+  if (!currentRow || !currentRow.classList.contains("task-card-active") ||
+      !/Port the charge and refund paths/.test(currentRow.textContent)) {
+    return { ok: false, detail: "'Up next' label should precede the current task row" };
+  }
+
   // Collapsed: the done pile + what's left fold into one quiet summary line; the
   // expanded body and the individual rows are not shown yet.
   if (card.dataset.expanded !== "false") return { ok: false, detail: "card should start collapsed" };
   const summary = card.querySelector(".task-card-summary-line");
-  if (!summary || !/3 done/.test(summary.textContent) || !/3 up next/.test(summary.textContent)) {
-    return { ok: false, detail: "summary should read '3 done · 3 up next', got " + (summary && summary.textContent) };
+  if (!summary || !/3 done/.test(summary.textContent) || /\d+ up next/i.test(summary.textContent)) {
+    return { ok: false, detail: "summary should retain done count without an aggregate up-next count, got " + (summary && summary.textContent) };
   }
   const toggle = card.querySelector(".task-card-toggle");
   if (!toggle || !/show all/.test(toggle.textContent)) return { ok: false, detail: "missing 'show all' toggle" };
