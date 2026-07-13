@@ -149,6 +149,56 @@ await scenario("living plan card leads with progress + active task, collapsed by
   return { ok: true };
 });
 
+await scenario("open-only plan keeps no current label and shows the open count in the collapsed summary", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ...appendTask("t1", [
+    { id: 1, description: "Draft the rollout notes", status: "done" },
+    { id: 2, description: "Prepare the follow-up task", status: "open" },
+    { id: 3, description: "Schedule the handoff", status: "open" },
+  ]),
+], ({ conv }) => {
+  const card = conv.querySelector(".task-card");
+  if (!card) return { ok: false, detail: "missing card" };
+
+  if (card.querySelector(".task-card-current-label")) {
+    return { ok: false, detail: "open-only plan should not render a current label" };
+  }
+
+  const summary = card.querySelector(".task-card-summary-line");
+  if (!summary || !/2 up next/.test(summary.textContent)) {
+    return { ok: false, detail: "collapsed summary should report 2 up next, got " + (summary && summary.textContent) };
+  }
+  if (/\d+ cancelled/i.test(summary.textContent)) {
+    return { ok: false, detail: "open-only summary should not mention cancelled tasks: " + summary.textContent };
+  }
+
+  return { ok: true };
+});
+
+await scenario("active plus cancelled plan keeps cancelled count and omits aggregate up next", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ...appendTask("t1", [
+    { id: 1, description: "Warm up the environment", status: "done" },
+    { id: 2, description: "Run the active migration", status: "in_progress" },
+    { id: 3, description: "Retire the old path", status: "cancelled" },
+    { id: 4, description: "Archive the remaining cleanup", status: "cancelled" },
+  ]),
+], ({ conv }) => {
+  const card = conv.querySelector(".task-card");
+  if (!card) return { ok: false, detail: "missing card" };
+
+  const summary = card.querySelector(".task-card-summary-line");
+  if (!summary) return { ok: false, detail: "missing collapsed summary" };
+  if (!/2 cancelled/.test(summary.textContent)) {
+    return { ok: false, detail: "collapsed summary should retain 2 cancelled, got " + summary.textContent };
+  }
+  if (/\d+ up next/i.test(summary.textContent)) {
+    return { ok: false, detail: "collapsed summary should omit aggregate up next count, got " + summary.textContent };
+  }
+
+  return { ok: true };
+});
+
 await scenario("repeated task_list edits keep ONE living card, updated in place", [
   ["SESSION_START", { session_id: "01TEST" }],
   ...appendTask("t1", PLAN),
