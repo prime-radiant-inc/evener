@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -206,6 +207,40 @@ func TestDispose_RemoveRefused_PresentDirty_KeptAfterEviction(t *testing.T) {
 	// still resumable via the restore path (no Disposed reason).
 	if a := r.delegateResumability(t, id); a.Reason == notResumableWorktreeDisposed {
 		t.Errorf("KEPT-after-eviction wrongly reports a disposed refusal: %+v", a)
+	}
+}
+
+// TestDispose_RemoveRefused_TransientStatError_Kept proves the present/gone
+// classifier does not misread a transient stat failure (EIO/EACCES) as a gone
+// lane: the non-force remove is refused (the lane is still present), the
+// <lanePath>/.git stat then fails with a non-ENOENT error, and the lane takes the
+// conservative KEEP path — never marked disposed, branch intact — rather than
+// being destroyed while the worktree still exists.
+func TestDispose_RemoveRefused_TransientStatError_Kept(t *testing.T) {
+	r := newWorktreeRepo(t)
+	id, lanePath, _ := r.seedIsolationLane(t)
+
+	// Late dirty write refuses the non-force remove so the classifier runs.
+	r.s.worktreeDisposeBeforeRemove = func(p string) {
+		_ = os.WriteFile(filepath.Join(p, "raced.txt"), []byte("late\n"), 0o644)
+	}
+	// The lane IS still present, but its stat transiently fails (not ENOENT).
+	r.s.worktreeLaneStat = func(string) (os.FileInfo, error) {
+		return nil, &os.PathError{Op: "stat", Path: lanePath, Err: syscall.EIO}
+	}
+
+	res, err := r.s.worktreeDispose(context.Background(), id, false, false)
+	if err != nil {
+		t.Fatalf("dispose: %v", err)
+	}
+	if res.AlreadyDisposed || r.disposedEventPresent(t, id) {
+		t.Error("transient-stat-error lane wrongly marked disposed")
+	}
+	if !laneWorktreePresent(lanePath) {
+		t.Error("transient-stat-error lane was removed")
+	}
+	if !r.branchExists(t, id) {
+		t.Error("transient-stat-error lane branch was destroyed")
 	}
 }
 

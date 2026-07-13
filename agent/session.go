@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -132,12 +133,19 @@ type Session struct {
 	// the lane path immediately before the non-force `git worktree remove`, so a
 	// test can dirty the lane and exercise the racing-dirty-write downgrade.
 	// Nothing in production code ever sets this field.
+	//
+	// worktreeLaneStat is a test-only seam for the post-refusal present/gone
+	// classification in disposeUnchangedLaneMechanics: when set, that stat of
+	// <lanePath>/.git routes through it, so a test can inject a non-ENOENT stat
+	// failure (EIO/EACCES) and prove a transient error takes the conservative
+	// KEEP path rather than being misread as a gone lane. Nil in production.
 	worktreeRestoreEnv          *execenv.LocalExecutionEnvironment
 	worktreeCurrentPath         string
 	worktreeCurrentManaged      bool
 	worktreeGitVersionOK        bool
 	worktreeLiveWorkStub        func(path string) []string
 	worktreeDisposeBeforeRemove func(lanePath string)
+	worktreeLaneStat            func(path string) (os.FileInfo, error)
 
 	// responseSideEffectsMu serializes a response's user-visible side-effect
 	// bundle (emit + appendTurn + counter bump) against teardown.

@@ -345,6 +345,17 @@ const (
 // unless dirty-forced"): the model-facing dispose op sets it when `force_dirty`
 // discards a dirty lane, which a non-force remove would refuse. The close path
 // never forces — a late dirty write there downgrades back to KEEP instead.
+// statLaneGitDir stats <lanePath>/.git through the worktreeLaneStat test seam
+// when set, else os.Stat. It is the classifier's view of whether a lane the
+// non-force remove refused is still present.
+func (s *Session) statLaneGitDir(lanePath string) (os.FileInfo, error) {
+	gitPath := filepath.Join(lanePath, ".git")
+	if s.worktreeLaneStat != nil {
+		return s.worktreeLaneStat(gitPath)
+	}
+	return os.Stat(gitPath)
+}
+
 func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st worktree.LockState, lane isolationLane, metaDir string, downgrade downgradePolicy, forceRemove bool) (outcome laneDisposalOutcome, note string) {
 	lanePath := filepath.Clean(lane.path)
 	switch worktree.Decide(worktree.EvDisposeUnchanged, st) {
@@ -373,10 +384,11 @@ func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st workt
 	if _, err := run(removeArgs...); err != nil {
 		// The non-force remove was refused. Distinguish a concurrent collector
 		// (the lane directory is already gone — someone else won the remove) from
-		// a late dirty write (the lane is still present). A present lane downgrades
-		// back to KEEP; a gone lane falls through to finish the disposal
-		// bookkeeping so the mark/branch/sidecar cleanup happens exactly once.
-		if _, statErr := os.Stat(filepath.Join(lanePath, ".git")); statErr == nil {
+		// a late dirty write (the lane is still present). Only a definitively gone
+		// lane (ENOENT) falls through to finish the disposal bookkeeping; a present
+		// lane AND any transient stat failure (EIO/EACCES) take the conservative
+		// KEEP path — a lane may still exist, and destruction must not act on doubt.
+		if _, statErr := s.statLaneGitDir(lanePath); !os.IsNotExist(statErr) {
 			switch downgrade {
 			case downgradeRelockKeep:
 				marker := worktree.FormatDelegateMarker(lane.delegateID, s.id)
