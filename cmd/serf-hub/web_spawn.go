@@ -75,6 +75,34 @@ func safeSpawnEnv() map[string]string {
 	return out
 }
 
+func sandboxForAccessMode(mode string) string {
+	mode = strings.TrimSpace(mode)
+	switch mode {
+	case "full":
+		return "off"
+	case "read-only", "workspace-write", "restricted":
+		return mode
+	default:
+		return ""
+	}
+}
+
+func launchOverridesWithAccessMode(overrides *appwire.LaunchConfigLayer, accessMode string) *appwire.LaunchConfigLayer {
+	sandbox := sandboxForAccessMode(accessMode)
+	if sandbox == "" {
+		return overrides
+	}
+	if overrides == nil {
+		return &appwire.LaunchConfigLayer{Sandbox: sandbox}
+	}
+	if strings.TrimSpace(overrides.Sandbox) != "" {
+		return overrides
+	}
+	next := *overrides
+	next.Sandbox = sandbox
+	return &next
+}
+
 func launchHarnessIDs(cfg hubcore.WebConfig) []string {
 	descriptors := launchHarnessDescriptors(cfg)
 	out := make([]string, 0, len(descriptors))
@@ -112,7 +140,7 @@ func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 		Profile:         req.Agent,
 		ReasoningEffort: req.ReasoningEffort,
 		NonInteractive:  req.NonInteractive,
-		LaunchOverrides: req.LaunchOverrides,
+		LaunchOverrides: launchOverridesWithAccessMode(req.LaunchOverrides, req.AccessMode),
 	})
 	if err != nil {
 		writeSpawnError(w, err)

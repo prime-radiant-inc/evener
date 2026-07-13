@@ -72,6 +72,10 @@ function deferred() {
   assert(picker.querySelectorAll(".chip-picker-dir-row").length === 2,
     "picker should render child directory rows");
   assert(picker.querySelector(".chip-picker-dir-name"), "picker should render directory basename text");
+  assert(!picker.querySelector(".chip-picker-dir-path"),
+    "directory rows should not render the full path underneath the basename");
+  assert(picker.querySelector('[data-dir-path="/tmp/project"] .chip-picker-dir-name').textContent === "project",
+    "directory row should show the basename while retaining the full path in data-dir-path");
   assert(picker.querySelector(".chip-picker-dir-tag").textContent === "git",
     "picker should render git tag");
 
@@ -142,11 +146,11 @@ function deferred() {
   await new Promise((r) => setTimeout(r, 170));
   raceNew.resolve({ results: [{ path: "/race/newest", is_git: false }] });
   await new Promise((r) => setTimeout(r, 0));
-  assert(racePicker.querySelector('[data-dir-path="/race/newest"] .chip-picker-dir-path').textContent === "/race/newest",
+  assert(racePicker.querySelector('[data-dir-path="/race/newest"] .chip-picker-dir-name').textContent === "newest",
     "newer directory results should render first");
   raceOld.resolve({ results: [{ path: "/race/old-stale", is_git: false }] });
   await new Promise((r) => setTimeout(r, 0));
-  assert(racePicker.querySelector('[data-dir-path="/race/newest"] .chip-picker-dir-path').textContent === "/race/newest",
+  assert(racePicker.querySelector('[data-dir-path="/race/newest"] .chip-picker-dir-name').textContent === "newest",
     "stale directory results should not overwrite newer results");
 
   const cleanupDom = new JSDOM(`<!DOCTYPE html><html><body>

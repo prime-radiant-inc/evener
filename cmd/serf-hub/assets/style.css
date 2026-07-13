@@ -3520,7 +3520,7 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
 .chip-picker-dir-parent {
   width: 100%;
   display: grid;
-  grid-template-columns: minmax(84px, max-content) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
@@ -3533,7 +3533,6 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
 .chip-picker-dir-row:hover,
 .chip-picker-dir-parent:hover { background: var(--rule); }
 .chip-picker-dir-name { color: var(--text); font-family: var(--font-mono); font-size: var(--text-sm); min-width: 0; overflow-wrap: anywhere; }
-.chip-picker-dir-path { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); min-width: 0; word-break: break-all; }
 .chip-picker-dir-tag { color: var(--state-warning); font-family: var(--font-mono); font-size: var(--text-2xs); padding: var(--space-1) var(--space-3); border: 1px solid var(--state-warning); border-radius: var(--radius-md); flex-shrink: 0; }
 
 

@@ -1,6 +1,13 @@
 (function () {
   "use strict";
 
+  const ACCESS_MODE_OPTIONS = [
+    { value: "full", sandbox: "off" },
+    { value: "read-only", sandbox: "read-only" },
+    { value: "workspace-write", sandbox: "workspace-write" },
+    { value: "restricted", sandbox: "restricted" },
+  ];
+
   // spawnEncodeAttachmentData base64-encodes ArrayBuffer-shaped image bytes
   // for the /api/spawn REST fallback when SerfAppwire isn't installed (kata
   // v80q). The appwire path uses the same shape via inputItemsFromAttachments
@@ -48,6 +55,23 @@
   function currentWorkingDir() {
     const el = document.querySelector('input[type=hidden][name="working_dir"]');
     return el ? el.value : "";
+  }
+
+  function sandboxForAccessMode(value) {
+    const mode = String(value || "").trim();
+    for (const opt of ACCESS_MODE_OPTIONS) {
+      if (opt.value === mode) return opt.sandbox;
+    }
+    return "";
+  }
+
+  function launchOverridesWithAccessMode(overrides, accessMode) {
+    const sandbox = sandboxForAccessMode(accessMode);
+    const next = Object.assign({}, overrides || {});
+    if (sandbox && !Object.prototype.hasOwnProperty.call(next, "sandbox")) {
+      next.sandbox = sandbox;
+    }
+    return Object.keys(next).length ? next : undefined;
   }
 
   function loadDefaults() {
@@ -1239,7 +1263,8 @@
       if (validationResult !== true && !(await validationResult)) return;
       const mcpValidation = validateAdvancedMCPCommands();
       if (mcpValidation !== true && !(await mcpValidation)) return;
-      const launchOverrides = collectAdvancedOverrides();
+      const accessMode = (fd.get("access_mode") || "full").toString();
+      const launchOverrides = launchOverridesWithAccessMode(collectAdvancedOverrides(), accessMode);
       const chipModel = fd.get("model") || "";
       const body = {
         launch_overrides: launchOverrides,
@@ -1248,7 +1273,7 @@
         model: advancedOverrideValue(launchOverrides, "model") || chipModel,
         working_dir: fd.get("working_dir") || "",
         branch: fd.get("branch") || "",
-        access_mode: fd.get("access_mode") || "full",
+        access_mode: accessMode,
         agent: advancedOverrideValue(launchOverrides, "agent") || fd.get("agent") || "default",
         reasoning_effort: advancedOverrideValue(launchOverrides, "reasoningEffort") || fd.get("reasoning_effort") || "",
         // appwire.startThread reads body.attachments; the REST fallback
@@ -1324,13 +1349,35 @@
     if (kind === "reasoning_effort") { openEffortPicker(chip); return; }
     if (kind === "working_dir") { openDirPicker(chip); return; }
     if (kind === "branch") { openTextPicker(chip, "branch", "branch / worktree"); return; }
-    const display = chipValueDisplay(chip);
-    const current = display.textContent.trim();
-    let value;
     if (kind === "access_mode") {
-      value = current === "full" ? "read-only" : "full";
+      openAccessModePicker(chip);
+      return;
     }
-    if (value !== null && value !== undefined && value !== "") setChipValue(kind, value);
+  }
+
+  function openAccessModePicker(chip) {
+    const existing = document.querySelector(".chip-picker");
+    if (existing) { existing.remove(); return; }
+
+    const picker = document.createElement("div");
+    picker.className = "chip-picker";
+
+    ACCESS_MODE_OPTIONS.forEach((opt) => {
+      const row = document.createElement("div");
+      row.className = "chip-picker-option";
+      row.textContent = opt.value;
+      row.addEventListener("click", () => {
+        setChipValue("access_mode", opt.value);
+        picker.remove();
+      });
+      picker.appendChild(row);
+    });
+
+    chip.parentNode.style.position = "relative";
+    chip.parentNode.appendChild(picker);
+    picker.style.position = "absolute";
+    placeChipPicker(picker, chip);
+    attachPickerDismiss(picker);
   }
 
   function openTextPicker(chip, name, placeholder) {

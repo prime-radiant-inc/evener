@@ -750,6 +750,8 @@ const mobileRowsDom = new JSDOM(`<!DOCTYPE html><html><body>
         <span class="spawn-row-value" data-chip-value-access_mode>full</span>
       </button>
     </div>
+    <textarea name="prompt">use the restricted sandbox</textarea>
+    <button class="btn btn-primary spawn-btn" type="submit">spawn</button>
     <input type="hidden" name="harness" value="serf">
     <input type="hidden" data-harness-option value="serf" data-label="serf">
     <input type="hidden" data-harness-option value="openai" data-label="OpenAI">
@@ -790,14 +792,34 @@ const mobileRowsDom = new JSDOM(`<!DOCTYPE html><html><body>
   accessRow.click();
   const accessHidden = mobileRowsDom.window.document.querySelector('input[type=hidden][name="access_mode"]');
   const accessDisplay = accessRow.querySelector('[data-chip-value-access_mode]');
-  assert(accessHidden.value === "read-only", "tapping mobile access_mode row should toggle hidden input to read-only");
-  assert(accessDisplay.textContent === "read-only", "tapping mobile access_mode row should update row display to read-only");
-  accessRow.click();
-  assert(accessHidden.value === "full", "tapping mobile access_mode row again should toggle hidden input back to full");
-  assert(accessDisplay.textContent === "full", "tapping mobile access_mode row again should update row display back to full");
+  const accessOptions = Array.from(mobileRowsDom.window.document.querySelectorAll(".chip-picker-option"))
+    .map((row) => row.textContent.trim());
+  assert(accessOptions.join(",") === "full,read-only,workspace-write,restricted",
+    "access_mode row should open the full sandbox-mode picker, got " + accessOptions.join(","));
+  assert(accessHidden.value === "full", "opening access_mode picker should not immediately change the hidden input");
+  const restrictedOption = Array.from(mobileRowsDom.window.document.querySelectorAll(".chip-picker-option"))
+    .find((row) => row.textContent.trim() === "restricted");
+  assert(restrictedOption, "access_mode picker should include restricted mode");
+  restrictedOption.click();
+  assert(accessHidden.value === "restricted", "selecting restricted should update hidden input");
+  assert(accessDisplay.textContent === "restricted", "selecting restricted should update row display");
   await new Promise((r) => setTimeout(r, 0));
   const branchDisplay = mobileRowsDom.window.document.querySelector('[data-chip="branch"][data-spawn-row] [data-chip-value-branch]');
   assert(branchDisplay.textContent === "main", "resolved HEAD branch should update the visible mobile branch row");
+  let mobileStartBody = null;
+  mobileRowsDom.window.SerfAppwire = {
+    startThread(body) {
+      mobileStartBody = body;
+      return Promise.resolve({ ref: "local:01MOBILE", session_id: "01MOBILE" });
+    },
+  };
+  mobileRowsDom.window.document.querySelector("[data-spawn-form]").dispatchEvent(new mobileRowsDom.window.Event("submit", {
+    bubbles: true,
+    cancelable: true,
+  }));
+  await new Promise((r) => setTimeout(r, 0));
+  assert(mobileStartBody && mobileStartBody.launch_overrides && mobileStartBody.launch_overrides.sandbox === "restricted",
+    "spawn submit should translate selected restricted mode to launch_overrides.sandbox");
 
 const advancedDom = new JSDOM(`<!DOCTYPE html><html><body>
   <form data-spawn-form>
@@ -853,6 +875,8 @@ formDom.window.document.querySelector("[data-spawn-form]").dispatchEvent(new for
 await new Promise((r) => setTimeout(r, 0));
 assert(sentSpawnBody.prompt === "ship the rename", "spawn request should send prompt field");
 assert(!Object.prototype.hasOwnProperty.call(sentSpawnBody, "task"), "spawn request should not send legacy task field");
+assert(sentSpawnBody.launch_overrides && sentSpawnBody.launch_overrides.sandbox === "off",
+  "spawn request should translate full access_mode to sandbox=off");
 assert(!alertCalled, "spawn failure should not call window.alert");
 const diagnostic = formDom.window.document.querySelector('[role="alert"]');
 assert(diagnostic, "spawn failure should render an in-page diagnostic");

@@ -230,7 +230,7 @@ func TestWeb_AppShellScopesHtmxHistoryToWorkspace(t *testing.T) {
 	if start == -1 {
 		t.Fatalf("body missing <main id=\"workspace\">")
 	}
-	tag := body[start:strings.Index(body[start:], ">")+start+1]
+	tag := body[start : strings.Index(body[start:], ">")+start+1]
 	if !strings.Contains(tag, "hx-history-elt") {
 		t.Errorf("#workspace must carry hx-history-elt so history restores never re-run body scripts; got tag %q", tag)
 	}
@@ -1974,6 +1974,57 @@ func TestWeb_ApiSpawn_WaitsForSlowSpawnerAndReturnsSession(t *testing.T) {
 	}
 	if spawner.got.Resolved.Effective.ReasoningEffort != "high" {
 		t.Fatalf("reasoning_effort=%q, want high", spawner.got.Resolved.Effective.ReasoningEffort)
+	}
+}
+
+func TestWeb_ApiSpawn_AccessModeSetsSandboxOverride(t *testing.T) {
+	for _, tc := range []struct {
+		accessMode string
+		want       string
+	}{
+		{accessMode: "full", want: "off"},
+		{accessMode: "workspace-write", want: "workspace-write"},
+		{accessMode: "restricted", want: "restricted"},
+	} {
+		t.Run(tc.accessMode, func(t *testing.T) {
+			runDir := t.TempDir()
+			workDir := t.TempDir()
+			spawner := &delayedRosterSpawner{
+				runDir: runDir,
+				entry: rendezvous.Entry{
+					PID:        56,
+					Protocol:   appwire.ProtocolVersion,
+					SourceID:   "local",
+					ThreadID:   "01SANDBOX",
+					SessionID:  "01SANDBOX",
+					WorkingDir: workDir,
+					Model:      "gpt-5",
+				},
+			}
+			web := NewWebServer(hubcore.WebConfig{
+				HubAddr: "127.0.0.1:9180",
+				Roster:  hubcore.NewRoster(runDir, fakeProber{sessionID: "01SANDBOX", status: "idle"}),
+				Past:    hubcore.NewPastIndex(""),
+				Spawner: spawner,
+			})
+			body := strings.NewReader(fmt.Sprintf(
+				`{"harness":"serf","model":"openai/gpt-5","working_dir":%q,"access_mode":%q}`,
+				workDir,
+				tc.accessMode,
+			))
+			req := httptest.NewRequest(http.MethodPost, "/api/spawn", body)
+			req.Host = "127.0.0.1:9180"
+			req.Header.Set("Origin", "http://127.0.0.1:9180")
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			web.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			if spawner.got.Resolved.Effective.Sandbox != tc.want {
+				t.Fatalf("sandbox=%q, want %q", spawner.got.Resolved.Effective.Sandbox, tc.want)
+			}
+		})
 	}
 }
 

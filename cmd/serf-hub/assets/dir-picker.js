@@ -189,8 +189,8 @@
       const row = document.createElement("button");
       row.type = "button";
       row.className = "chip-picker-dir-parent";
-      row.innerHTML = '<span class="chip-picker-dir-name">..</span><span class="chip-picker-dir-path"></span>';
-      row.querySelector(".chip-picker-dir-path").textContent = parent || "/";
+      row.title = parent || "/";
+      row.innerHTML = '<span class="chip-picker-dir-name">..</span>';
       row.addEventListener("click", () => browseTo(parent || "/"));
       results.appendChild(row);
     }
@@ -200,14 +200,11 @@
       el.type = "button";
       el.className = "chip-picker-dir-row";
       el.dataset.dirPath = r.path;
+      el.title = r.path;
       const name = document.createElement("span");
       name.className = "chip-picker-dir-name";
       name.textContent = baseName(r.path);
       el.appendChild(name);
-      const path = document.createElement("span");
-      path.className = "chip-picker-dir-path";
-      path.textContent = r.path;
-      el.appendChild(path);
       if (r.is_git) {
         const tag = document.createElement("span");
         tag.className = "chip-picker-dir-tag";
