@@ -1,0 +1,4 @@
+go test fuzz v1
+[]byte("{\"minItems\":10}")
+[]byte("0")
+byte('\x00')

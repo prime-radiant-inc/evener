@@ -201,6 +201,14 @@ func TestByteSourceExhaustionTerminates(t *testing.T) {
 	}
 }
 
+func TestArrayMinItemsAboveDefaultWindow(t *testing.T) {
+	schema := map[string]any{"type": "array", "minItems": 10}
+	v := Value(NewByteSource(nil), schema, Valid)
+	if ok, why := conforms(v, schema); !ok {
+		t.Fatalf("minItems-only schema produced non-conforming value: %s\nvalue=%#v", why, v)
+	}
+}
+
 // pseudoBytes derives a deterministic byte stream from seed (a tiny LCG) so
 // byte-source tests sweep many distinct streams without a rapid dependency.
 func pseudoBytes(seed, n int) []byte {

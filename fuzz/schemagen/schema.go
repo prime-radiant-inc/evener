@@ -190,11 +190,15 @@ func intBounds(schema map[string]any) (int, int) {
 // cannot panic.
 func arrayLenBounds(schema map[string]any) (int, int) {
 	lo, hi := 0, 4
-	if v, ok := numBound(schema, "minItems"); ok {
-		lo = int(math.Ceil(v))
+	_, hasMax := numBound(schema, "maxItems")
+	if v, hasMin := numBound(schema, "minItems"); hasMin {
+		lo = max(0, int(math.Ceil(v)))
+		if !hasMax && lo > hi {
+			hi = lo
+		}
 	}
 	if v, ok := numBound(schema, "maxItems"); ok {
-		hi = int(math.Floor(v))
+		hi = max(0, int(math.Floor(v)))
 	}
 	if lo > hi {
 		lo = hi
