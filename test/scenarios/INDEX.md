@@ -114,6 +114,10 @@ the area they exercise.
   "Set reasoning effort" command both show only the current model's
   levels; both surfaces render current model + effort on a cold
   attach.
+- `model-switch-providers-live.md` — live cross-provider switch
+  ladder against the `serf serve` daemon's own HTTP surface (marker
+  persistence, `response_model` per leg, effort-ladder
+  re-derivation, thinking-absence on the wire); AC 8.
 
 ## Goal engine (`/goal`)
 
