@@ -3,6 +3,7 @@
 package worktree
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -20,15 +21,9 @@ func FuzzWorktreePredicatesProgram(f *testing.F) {
 	f.Add("release/v2", "tip", "base")
 
 	f.Fuzz(func(t *testing.T, target, tip, base string) {
-		if target == "" {
-			target = "main"
-		}
-		if tip == "" {
-			tip = "tip"
-		}
-		if base == "" {
-			base = "base"
-		}
+		target = "fuzz-" + hex.EncodeToString([]byte(target))
+		tip = "tip-" + hex.EncodeToString([]byte(tip))
+		base = "base-" + hex.EncodeToString([]byte(base))
 
 		clean, offending, err := CleanTree(func(args ...string) (string, error) {
 			return "", nil
@@ -99,7 +94,7 @@ func FuzzWorktreePredicatesProgram(f *testing.F) {
 		tips, err := remoteTrackingTips(func(args ...string) (string, error) {
 			return "malformed\nrefs/remotes/origin/" + target + " remote-tip\n", nil
 		}, target)
-		if err != nil || len(tips) != 1 || tips[0].sha != "remote-tip" {
+		if err != nil || len(tips) != 1 || tips[0].ref != "refs/remotes/origin/"+target || tips[0].sha != "remote-tip" {
 			t.Fatalf("remoteTrackingTips = %#v, %v", tips, err)
 		}
 		if _, err := remoteTrackingTips(func(args ...string) (string, error) { return "", errors.New("remote fault") }, target); err == nil {
