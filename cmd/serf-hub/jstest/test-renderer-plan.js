@@ -182,6 +182,7 @@ await scenario("active plus cancelled plan keeps cancelled count and omits aggre
     { id: 2, description: "Run the active migration", status: "in_progress" },
     { id: 3, description: "Retire the old path", status: "cancelled" },
     { id: 4, description: "Archive the remaining cleanup", status: "cancelled" },
+    { id: 5, description: "Queue the follow-on review", status: "open" },
   ]),
 ], ({ conv }) => {
   const card = conv.querySelector(".task-card");
