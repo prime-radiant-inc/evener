@@ -5200,7 +5200,7 @@
       } finally {
         pa.sending = false;
         const connectedSend = document.querySelector("form[data-input-form] [data-ask-send-btn]");
-        if (connectedSend) connectedSend.disabled = false;
+        if (connectedSend) connectedSend.disabled = !!(this.pendingAsk && this.pendingAsk.sending);
       }
     },
 

@@ -183,11 +183,42 @@ async function testSendDisabledThroughoutInFlightRebuildAndRetryableError() {
     "a non-settling send error enables the currently connected send button again");
 }
 
+async function testOldSendSettlementDoesNotEnableNewPendingSend() {
+  const { window, R } = newHarness();
+  await settle();
+  const deferred = [];
+  window.SerfAppwire = {
+    startTurn: () => new Promise((resolve, reject) => deferred.push({ resolve, reject })),
+  };
+
+  for (const [kind, data] of askCallEvents("call_a", ONE_QUESTION)) R.handleData(kind, data);
+  pickFirstOption(pendingDock(window));
+  window.document.querySelector("[data-ask-send-btn]").click();
+  await Promise.resolve();
+
+  R.handleData("USER_INPUT", { text: "Postgres" });
+  for (const [kind, data] of askCallEvents("call_b", [{ header: "Cache choice", question: "Which cache?", options: [{ label: "Redis", detail: "" }] }])) R.handleData(kind, data);
+  pickFirstOption(pendingDock(window));
+  window.document.querySelector("[data-ask-send-btn]").click();
+  await Promise.resolve();
+  pass(deferred.length === 2, "sanity: both ask sends are independently in flight");
+
+  deferred[0].resolve({ turn: { id: "turn_a" } });
+  await Promise.resolve();
+  await Promise.resolve();
+  pass(window.document.querySelector("[data-ask-send-btn]").disabled,
+    "settling old ask A does not enable newer ask B's connected send button while B is in flight");
+
+  deferred[1].reject(new Error("temporary failure"));
+  await settle();
+}
+
 (async () => {
   await testRecheckCollapsesInsteadOfSending();
   await testConflictDropsTextIntoComposerNoRetry();
   await testSendReusesComposerSendPath();
   await testSendDisabledThroughoutInFlightRebuildAndRetryableError();
+  await testOldSendSettlementDoesNotEnableNewPendingSend();
 
   if (failures.length > 0) {
     for (const f of failures) console.log(f);
