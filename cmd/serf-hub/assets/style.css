@@ -4605,9 +4605,23 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
     resize: none;
     padding: var(--space-4);
   }
-  /* Attach + spawn: full touch height; let them wrap rather than crush. */
-  .spawn-attach-row { flex-wrap: wrap; gap: var(--space-3); }
-  .spawn-attach-btn, .spawn-btn { min-height: var(--tap-min); }
+  /* Fixed bottom action band on phone so the primary action stays in the thumb zone. */
+  .spawn-form { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+  .spawn-attach-row {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 100;
+    background: var(--bg-raised);
+    border-top: 1px solid var(--rule);
+    padding: var(--space-3) var(--space-4);
+    padding-bottom: calc(var(--space-3) + env(safe-area-inset-bottom));
+    box-sizing: border-box;
+    min-height: 64px;
+  }
+  .spawn-attach-row .spawn-attach-btn { min-height: 44px; }
+  .spawn-attach-row .spawn-btn { min-height: 52px; }
 
   /* ── Chip selectors (model / path / etc.) as a bottom sheet on phone ──────
      The desktop pickers are fixed 480–520px panels anchored under a chip — far
