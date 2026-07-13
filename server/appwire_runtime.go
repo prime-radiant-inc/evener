@@ -403,6 +403,11 @@ func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.Threa
 		return appwire.EmptyResponse{}, appwire.Unavailable("model change not available")
 	}
 	if err := fn(model); err != nil {
+		// Every SetModel failure is mapped to InvalidParams deliberately: the
+		// hook's error modes today are all validation-shaped (unknown model,
+		// not a member of the instance's catalog, unresolvable ref). Revisit
+		// this blanket mapping if SetModel grows I/O failure modes (e.g. a live
+		// ListModels fetch failing), which would deserve a distinct code.
 		return appwire.EmptyResponse{}, appwire.InvalidParams(err.Error())
 	}
 	return appwire.EmptyResponse{}, nil
