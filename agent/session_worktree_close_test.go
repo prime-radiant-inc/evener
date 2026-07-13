@@ -807,8 +807,12 @@ func TestResumability_RefusesDisposedDelegate(t *testing.T) {
 	}
 	// The delegate_send message is clear and actionable.
 	err := notResumableSendError(a.Reason)
-	if err == nil || !containsAll(err.Error(), "disposed at session close", "start a new delegate") {
+	if err == nil || !containsAll(err.Error(), "disposed", "start a new delegate") {
 		t.Errorf("send error = %v, want a clear disposed message", err)
+	}
+	// Mid-life dispose exists now, so the copy must not claim WHEN it happened.
+	if strings.Contains(err.Error(), "at session close") {
+		t.Errorf("send error = %q, must not claim disposal happened at session close", err.Error())
 	}
 }
 

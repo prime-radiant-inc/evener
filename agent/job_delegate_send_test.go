@@ -115,6 +115,57 @@ func TestSendDelegateMessageTerminalDelegateResumeCreatesNewJob(t *testing.T) {
 	}
 }
 
+// TestSendDisposedRetainedDelegateRefusesOnRetainedPath: a delegate whose child
+// runtime is still tracked (retained) but whose record is marked Disposed must be
+// refused by delegate_send on the retained path too — defense-in-depth for future
+// flows that dispose without evicting. The refusal must NOT take the restore path:
+// the child runtime stays tracked.
+func TestSendDisposedRetainedDelegateRefusesOnRetainedPath(t *testing.T) {
+	t.Parallel()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("first") },
+	}})
+	s := newDelegateTestSession(t, c)
+	first := s.createDelegate(context.Background(), delegateArgs{Task: "first", Background: false, BlockTimeoutMS: 5000})
+	if first.Err != nil {
+		t.Fatalf("first delegate: %v", first.Err)
+	}
+	_, childID, err := decodeRef(first.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decode transcript ref: %v", err)
+	}
+	if s.subagents.get(childID) == nil {
+		t.Fatalf("child runtime not retained after createDelegate")
+	}
+	// Construct the retained+Disposed state artificially: the child is still
+	// tracked, and the durable record is marked Disposed.
+	if err := s.jobManager.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateDisposed,
+		TS:         time.Now().UTC(),
+		DelegateID: first.DelegateID,
+	}); err != nil {
+		t.Fatalf("append disposed: %v", err)
+	}
+
+	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:         first.DelegateID,
+		Message:        "second",
+		OnIdle:         "start",
+		Background:     false,
+		BackgroundSet:  true,
+		BlockTimeoutMS: 5000,
+	})
+	if res.Err == nil || !containsAll(res.Err.Error(), "disposed", "start a new delegate") {
+		t.Fatalf("send result = %+v, want disposed refusal", res)
+	}
+	// The refusal came from the retained path, not the restore path: the child
+	// runtime is still tracked (restore would have re-created/replaced it).
+	if s.subagents.get(childID) == nil {
+		t.Fatalf("child runtime dropped; refusal took the restore path")
+	}
+}
+
 func TestDelegateResumeKeepsDelegateIDAndUpdatesLatestJob(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()

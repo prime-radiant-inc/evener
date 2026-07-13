@@ -644,6 +644,14 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	if !rec.Status.IsTerminal() {
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate job %q has status %q", target, rec.Status))
 	}
+	// A disposed delegate refuses every send, including on the retained path
+	// (spec §P1 "Post-disposal delegate_send"). assessDelegateResumability also
+	// checks Disposed, but that runs only on the restore path; a still-tracked
+	// child would otherwise resume past it. Checking here — before we split into
+	// retained vs restore — keeps the child tracked (no restore side effects).
+	if rec.Disposed {
+		return sendMessageFailed(target, notResumableSendError(notResumableWorktreeDisposed))
+	}
 	_, childID, err := decodeRef(rec.TranscriptRef)
 	if err != nil {
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: invalid transcript_ref for job %q: %w", target, err))
@@ -774,7 +782,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 func notResumableSendError(reason string) error {
 	switch reason {
 	case notResumableWorktreeDisposed:
-		return errors.New("target_not_resumable: this delegate's isolation worktree was disposed at session close; start a new delegate")
+		return errors.New("target_not_resumable: this delegate's isolation worktree was disposed; start a new delegate")
 	case notResumableWorkingDirMissing:
 		return errors.New("target_not_resumable: this delegate's working directory no longer exists; start a new delegate")
 	default:
