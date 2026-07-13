@@ -59,14 +59,12 @@ func runWrapped(t *testing.T, facts HostFacts, mode Mode, netOn bool, cwd, sessi
 func TestBwrapLinkedWorktreeStarts(t *testing.T) {
 	facts := requireRealBwrap(t)
 
-	// A base under the package dir (not /tmp), removed at test end.
-	pkgDir, err := os.Getwd()
+	// Keep the fixture outside /tmp, which the sandbox replaces with tmpfs.
+	// /var/tmp also remains traversable when the test runner has elevated host
+	// privileges that bubblewrap intentionally drops.
+	base, err := os.MkdirTemp("/var/tmp", "sbxlwt-")
 	if err != nil {
-		t.Fatal(err)
-	}
-	base, err := os.MkdirTemp(pkgDir, "sbxlwt-")
-	if err != nil {
-		t.Fatal(err)
+		t.Skipf("create non-/tmp sandbox fixture: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(base) })
 

@@ -17,13 +17,9 @@ import (
 // planted secret + marker file. Returns the main root and the lane paths.
 func nonTmpMainAndLanes(t *testing.T, n int) (string, []string) {
 	t.Helper()
-	pkgDir, err := os.Getwd()
+	base, err := os.MkdirTemp("/var/tmp", "sbxlane-")
 	if err != nil {
-		t.Fatal(err)
-	}
-	base, err := os.MkdirTemp(pkgDir, "sbxlane-")
-	if err != nil {
-		t.Fatal(err)
+		t.Skipf("create non-/tmp sandbox fixture: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(base) })
 
