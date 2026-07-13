@@ -46,6 +46,14 @@ function extractMediaContent(src, query) {
   return src.slice(open + 1, i - 1);
 }
 
+function blockWith(selector, property, cssText) {
+  const blocks = cssText.match(/[^{}]*\{[^}]*\}/g) || [];
+  return blocks.find((b) => {
+    const sel = b.split("{")[0];
+    return sel.split(",").map((s) => s.trim()).includes(selector) && property.test(b);
+  });
+}
+
 const mobile = extractMobileContent(css);
 
 const failures = [];
@@ -171,6 +179,12 @@ pass(/\.spawn-input\s*\{[^}]*min-height:\s*96px/s.test(mobile), "mobile spawn te
 pass(/\.spawn-input\s*\{[^}]*resize:\s*none/s.test(mobile), "mobile spawn textarea must hide the resize handle");
 pass(!/\.spawn-advanced summary\s*\{[^}]*text-transform:\s*uppercase/s.test(mobile), "mobile advanced summary must not be uppercase");
 pass(!/\.spawn-advanced summary\s*\{[^}]*font-family:\s*var\(--font-mono\)/s.test(mobile), "mobile advanced summary must not use mono font");
+
+pass(!!blockWith(".spawn-recent-row", /min-height:\s*44px/, css), "mobile recent-prompt rows must be at least 44px tall");
+pass(!!blockWith(".spawn-input", /max-height:\s*min\(40vh,\s*8lh\)/, mobile), "mobile spawn textarea must cap height at 40vh or 8 lines");
+pass(!!blockWith(".spawn-btn kbd", /display:\s*none/, mobile), "mobile spawn buttons must hide keyboard-hint labels");
+pass(!!blockWith(".chip-picker-sheet .chip-picker-option", /font-family:\s*var\(--font-sans\)/, mobile), "mobile picker sheet options must use sans font");
+pass(!!blockWith(".chip-picker-sheet .chip-picker-option", /min-height:\s*48px/, mobile), "mobile picker sheet options must be at least 48px tall");
 
 // One-size reading column (2026-07-11 round 2): compact phone density shrinks
 // only the app chrome; the transcript keeps the shared --text-base flowing

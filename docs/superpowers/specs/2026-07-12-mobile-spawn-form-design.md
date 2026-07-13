@@ -28,7 +28,7 @@ The mobile spawn form is a shrunken desktop layout, not a touch-native surface. 
 
 1. **Header:** identity only — title `new` and the `Details` overflow. No model chip here.
 2. **Prompt section:** heading `What should the agent do?`, subtitle `Leave blank to start a dormant session.`, auto-expanding textarea.
-3. **Config rows:** full-width rows, in the same order as the current chips — **Harness**, **Model**, **Working directory**, **Branch**, **Reasoning effort**, **Access mode**. Display the current value as the row’s right-hand text. (The working-directory row may be labeled “Project” if that matches the rest of the hub.)
+3. **Config rows:** full-width rows, in the order **Harness**, **Model**, **Working directory**, **Branch**, **Reasoning effort**, **Access mode**. Display the current value as the row’s right-hand text. (The working-directory row may be labeled “Project” if that matches the rest of the hub.)
 4. **Advanced options:** a quiet text link `Advanced options` below the config rows. No ALL-CAPS, no `<details>` summary, no monospace.
 5. **Recent prompts:** if present, full-width rows below the form, two-line clamp, sans labels.
 6. **Bottom action band:** attach button left, `Spawn` primary button right.
