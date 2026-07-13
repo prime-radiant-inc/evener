@@ -1122,19 +1122,26 @@
           this.appendSandboxEscalation(data);
           break;
         case "USER_INPUT":
+          const promotedLocalUserMessage = this.promoteLocalUserMessage(data);
+          const localAskEcho = promotedLocalUserMessage && this.pendingAsk && this.pendingAsk.localSettledEcho;
+          const matchesLocalAskEcho = !!(localAskEcho &&
+            this.normalizedUserText(data.text) === this.normalizedUserText(localAskEcho.text) &&
+            (!localAskEcho.turnId || !data.turnId || String(data.turnId) === localAskEcho.turnId));
+          if (matchesLocalAskEcho) delete this.pendingAsk.localSettledEcho;
           // A user message answers any pending blocking question; tear down the
           // live "awaiting your answer" affordances (the in-flow frame stays).
-          this.clearAgentQuestion();
+          if (!matchesLocalAskEcho) this.clearAgentQuestion();
           // Resolves the WHOLE ask_user pending set at once (spec §5.2),
-          // whether this reply came from this client or another — USER_INPUT
-          // is pushed to every attached client regardless of who submitted it
-          // (spec §6.1). Steering/checkpoint/summary/system items never reach
-          // this case, so they correctly never resolve a pending ask.
-          this.resolvePendingAsk(data.text || "");
+          // whether this reply came from this client or another. The one
+          // exception is the promoted server echo of a partial local ask send:
+          // its submitted questions are already settled, while later questions
+          // remain pending. Steering/checkpoint/summary/system items never
+          // reach this case, so they correctly never resolve a pending ask.
+          if (!matchesLocalAskEcho) this.resolvePendingAsk(data.text || "");
           this.lastUserText = data.text || "";
           this.snapshotSubmittedTurn(this.retryPayload(data.text || "", data.images || []));
           this.dissolveWelcome();
-          if (this.promoteLocalUserMessage(data)) { this.showColdStartSkeleton(); break; }
+          if (promotedLocalUserMessage) { this.showColdStartSkeleton(); break; }
           this.userTurnIndex++;
           if (typeof data.turn === "number" && data.turn > 0) {
             this.entryIndex = data.turn;
@@ -5127,6 +5134,37 @@
       this.clearAgentQuestion();
     },
 
+    // A successful local send settles only the questions included in that
+    // request. An ask_user acknowledgement can append more questions while
+    // turn/start is in flight; keep those item objects (and their draft state)
+    // pending under a fresh transcript anchor.
+    resolveSubmittedAsk(pa, submittedItems, replyText, turnId) {
+      if (this.pendingAsk !== pa) return;
+      const submitted = new Set(submittedItems);
+      const lateItems = pa.items.filter((item) => !submitted.has(item));
+      if (lateItems.length === 0) {
+        this.resolvePendingAsk(replyText);
+        return;
+      }
+
+      const oldAnchor = pa.el;
+      const parent = oldAnchor && oldAnchor.parentNode;
+      const next = oldAnchor && oldAnchor.nextSibling;
+      this.renderAskSettledLine({ el: oldAnchor, items: submittedItems }, replyText);
+
+      const anchor = document.createElement("div");
+      anchor.className = "ask-anchor agent-question";
+      anchor.setAttribute("data-ask-anchor", "");
+      anchor.textContent = "The agent asked for your input below.";
+      if (parent) parent.insertBefore(anchor, next);
+      pa.el = anchor;
+      pa.items = lateItems;
+      pa.sending = false;
+      pa.localSettledEcho = { text: replyText, turnId: String(turnId || "") };
+      this.renderPendingAskDock();
+      this.markAgentQuestion(anchor);
+    },
+
     // renderAskSettledLine replaces the interactive card with a neutral,
     // dim line echoing the reply (spec §6.1) — reusing the ask_user tool
     // renderer's target() formatter (renderer-tools.js) for "what was asked",
@@ -5182,7 +5220,8 @@
       pa.sending = true;
       const currentSend = document.querySelector("form[data-input-form] [data-ask-send-btn]");
       if (currentSend) currentSend.disabled = true;
-      const composedText = composeAskAnswers(pa.items);
+      const submittedItems = pa.items.slice();
+      const composedText = composeAskAnswers(submittedItems);
       const ref = this.appwireRef || this.sessionId;
       try {
         if (!window.SerfAppwire || typeof window.SerfAppwire.startTurn !== "function") {
@@ -5195,7 +5234,7 @@
         const turnId = (resp && resp.turn && resp.turn.id) || "";
         this.setActiveTurnId(turnId || this.activeTurnId);
         this.appendLocalUserMessage(composedText, [], turnId, previousUserCount);
-        this.resolvePendingAsk(composedText);
+        this.resolveSubmittedAsk(pa, submittedItems, composedText, turnId);
         this.ensureLiveStream();
       } catch (err) {
         if (this.pendingAsk !== pa) return;
