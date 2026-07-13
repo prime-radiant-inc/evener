@@ -1,6 +1,6 @@
 # Delegate-lane disposal: dispose operation + nudge + automatic residue collection
 
-**Status:** draft spec, rev 7 (five adversarial review rounds, 5×2 competing
+**Status:** draft spec, rev 8 (six adversarial review rounds, 6×2 competing
 reviewers; history in §Review log)
 **Problem owner:** Jesse
 **Date:** 2026-07-13
@@ -8,10 +8,10 @@ reviewers; history in §Review log)
 ## Problem
 
 Isolation delegate worktree lanes (`dlg_*`) are only disposed in the parent
-session's close path (`disposeDelegateLanesAtClose`, native worktree tools
-spec §9 step 4). Merged-but-committed lanes are additionally only collected
-by the `prune` operation of the `manage_worktree` tool — and a lane locked
-with the live session's own `serf:dlg:` marker is skipped even by that.
+session's close path — and only when **unchanged** (`worktree.Unchanged`);
+merged-but-committed lanes are KEPT at close and collected only by the
+model-invoked `prune` operation. A lane locked with the live session's own
+`serf:dlg:` marker is skipped even by that.
 
 Observed failures (2026-07-13):
 
@@ -21,19 +21,22 @@ Observed failures (2026-07-13):
    on a clean, merged worktree) were **refused and gave up**: `liveWorkUnder`'s
    subagent branch counts every retained child rooted under the path with no
    running/driving check and labels it `"(subagent, running)"`
-   (`session_tools_worktree.go:647-667`) — a completed, idle, retained
-   delegate is reported to the model as a running subagent. The models
-   correctly declined to bypass a safety guard; the guard's label was false.
+   (`session_tools_worktree.go:647-667`). The models correctly declined to
+   bypass a safety guard; the guard's label was false.
 3. Closed sessions' KEPT lanes sit until someone happens to run prune.
 
 ## Goal, phased
 
-- **Phase 1 (build scope):** a synchronous `dispose` primitive (P1), a
-  completion-time nudge toward it (P2), and automatic collection of
-  closed-session residue (P3). P1+P2 make prompt cleanup possible and
-  likely; P3 guarantees eventual, model-independent collection of a
-  closed-session lane **once its branch merges and a top-level session later
-  opens or closes in that repo**.
+- **Phase 1 (build scope):**
+  - **P0:** close-time disposal collects **merged** lanes, not just
+    unchanged ones — the owner disposes its own residue at exit, with the
+    durable mark, no model action (this alone collects the flagship 21 at
+    that session's close).
+  - **P1:** a synchronous `dispose` primitive so a live session (model) can
+    collect a lane the moment its work merges.
+  - **P2:** a completion-time nudge toward P1.
+  - **P3:** automatic collection of dead sessions' residue by later
+    sessions.
 - **Phase 2 (specified, deferred):** the rev-3 background mid-life sweep as
   a backstop iff phase 1 measurably leaks (preserved at commit `75c7b086`).
 
@@ -42,17 +45,18 @@ Observed failures (2026-07-13):
 - Automatic collection of managed (user/session) worktrees — `prune`
   territory, unchanged.
 - Reclaiming lanes locked by foreign sessions.
-- Live-session pileup is bounded, not eliminated, in phase 1.
-- **P3 cadence gap (accepted):** P3 fires per top-level session at open+10m
-  **and once at close**. A lane whose branch merges while sessions are
-  already past their open pass is collected at the next top-level close or
-  open in that repo — in a long-lived-session workflow that can lag hours or
-  days. Continuous collection is exactly phase 2's ticker; this gap is part
-  of its build trigger. (rev-6 finding J3.)
+- **Multi-commit squash merges are not auto-detected** (rev-7 finding L2):
+  `worktree.Merged`'s cherry arm is single-commit patch-equivalence, and
+  `docs/worktrees.md:108-113` already documents such lanes reporting
+  `unmerged`. They are collected only via model judgment (`dispose` +
+  `force` after verifying the squash landed) — the nudge makes that path
+  likely; P0/P3 never collect them. Accepted.
+- Live-session pileup between merges and close is bounded by P1/P2, not
+  eliminated; **P3 cadence** (open+10m and close passes) can lag a merge by
+  hours in long-lived-session workflows. Both feed phase 2's build trigger.
 - Changed-never-merged and dirty lanes of dead sessions persist for manual
-  handling (`force`/`force_dirty`/switch-in) — P3 never touches dirt.
-- Changing the lock decision core (`worktree.Decide`) — `EvDelegateRevive`
-  already expresses the resume re-lock (verified round 4).
+  handling — nothing automatic touches dirt or unmerged work.
+- Changing the lock decision core — `EvDelegateRevive` suffices (verified).
 
 ## Phase 1 design
 
@@ -63,171 +67,191 @@ either existing predicate holds:
 
 - `worktree.Unchanged(run, lane, sc.BaseSHA)` — tip == recorded base, or
 - `disposableReason(run, tip, sc.BaseSHA, sc.MergeTarget)` disposable — the
-  shared two-arm merged test (`worktree.Merged`: ancestry **or**
+  shared two-arm merged test (`worktree.Merged`: ancestry or single-commit
   cherry/patch-equivalence, with remote-tracking-tip resolution).
+
+### P0. Close-time disposal collects merged lanes
+
+`disposeOneDelegateLane`'s predicate widens from `worktree.Unchanged` to
+**collectible per D0** (children are already closed at that point; a merged
+lane's work is reachable from the target, so removal+`branch -D` is safe —
+the "unchanged lane: tip == base, no work lost" rationale generalizes).
+Consequences:
+
+- The owner appends `EventDelegateDisposed` in its **own** store — later
+  resumes get the clear disposed refusal, not the stat-net fallback.
+- The KEEP set shrinks to unmerged / dirty / state-unverifiable lanes.
+- **Every KEEP path touches the sidecar before unlocking** — changed-lane,
+  late-dirty downgrade, **and the state-unverifiable path**
+  (`session_worktree_close.go:139-145`), which rev 7 missed (finding K4);
+  the touch (an `UpdateSidecar` rewrite; mtime is the signal) is what P3's
+  grace keys on.
+- This resolves rev-7's self-nullifying pair (finding L1): rev 7 wanted a
+  close-time P3 pass to collect the session's own just-merged lanes, but
+  the KEEP touch put them inside the grace window. With P0, own merged
+  lanes never reach KEEP at all; the close-time P3 pass exists only for
+  *foreign* residue and keeps its grace semantics intact.
 
 ### P1. `dispose` operation on `manage_worktree` (new)
 
 Synchronous, in-turn, on the owning session. Target: a delegate id
 (`dlg_*`); the lane path resolves from the descriptor's `WorkingDir`, the
-sidecar from `metaDirForLane` of it.
+sidecar from `metaDirForLane` of it. **The git control env resolves from the
+sidecar's `OriginalRoot`** — not by walking up from the lane path: lanes
+live under the state dir, *outside any git repo*, so with the lane directory
+gone there is nothing to walk up from (rev-7 finding K1; `OriginalRoot`
+exists for exactly this, `sidecar.go:23`). The lane-path route stays as the
+consistency cross-check when the directory exists.
 
 **Availability.** Two strips exist today (`session_init.go:770-780`): leaf
 delegates (`delegationAllowance <= 0`) lose all root-only tools — unchanged;
 worktree-isolated children lose `manage_worktree` unconditionally. The
-second stays for the repo-wide ops but is loosened for `dispose`
-(ownership-safe by construction, steps 1/6): **isolated coordinators with a
-delegation allowance get a dispose-only surface** — the gate is
-**in-handler** on `spawn.isolation` (durable in the restore descriptor;
-per-session registries make a **dispose-only tool-definition variant**
-expressible, so the schema doesn't advertise ops that refuse). The
-`delegate` tool's isolation copy ("The delegate cannot use manage_worktree
-itself", `definitions.go:136`) is updated. Non-isolated coordinators already
-have the full tool.
+second is loosened for `dispose` (ownership-safe by construction):
+**isolated coordinators with a delegation allowance get a dispose-only
+surface** — in-handler gate on `spawn.isolation` plus a dispose-only
+tool-definition variant (per-session registries make this expressible). The
+`delegate` tool's isolation copy (`definitions.go:136`) is updated.
 
 **Steps:**
 
-1. **Validate ownership + record quiescence.** Ownership: record in **this**
-   session's jobstore with `ParentSessionID == s.id` (forwarded copies
-   refused). Record quiescence — latest job terminal, no running/queued
-   follow-up — under **`jm.mu`** with snapshot and running-map read in one
-   hold (the `outstandingDelegateCount` recipe).
+1. **Validate ownership + record quiescence.** Record in **this** session's
+   jobstore with `ParentSessionID == s.id` (forwarded copies refused).
+   Latest job terminal, no running/queued follow-up — under **`jm.mu`**,
+   snapshot and running-map in one hold. **An already-Disposed record is
+   handled idempotently, not refused** (rev-7 finding L6): skip to remnant
+   cleanup — delete the branch if its tip judges collectible, delete the
+   sidecar, report already-disposed — so a crash between the mark and
+   `branch -D` doesn't strand remnants forever.
 2. **Validate delivery quiescence:** refuse on any armed watch routing
-   `send_to` this delegate or any pending (fired-but-undelivered) watch-send
-   targeting it — `cfg.pending` / durable `EventWatchSendPending` in this
-   session's job manager **and all retained children's**. Refusal names it.
-3. **Validate subtree quiescence — two checks, both required:**
-   - drain-style (`treeHasOutstandingWork`): no outstanding delegate jobs,
-     undelivered attention, or driving in the child's subtree;
-   - **live shells under the lane, tree-wide:** the drain check excludes
-     shells by design, and the parent's `liveWorkUnder` shell branch scans
-     only the parent's own `jm.running` (`agent/jobs.go:275-292`) — a
-     grandchild's shell lives in the **retained child's** job manager and is
-     invisible to both (rev-6 finding I1). New small helper: recurse
-     `liveWorkHandles()` across this session **and all retained descendant
-     sessions**, refusing if any live shell's `WorkingDir`
-     (`jobstore/record.go:218-225`) is under the lane. The subagent branch
-     is not used here (the retained child is what step 7 evicts) — and,
-     companion fix, that branch's label becomes honest:
-     `"(subagent, retained — idle)"` when the child is quiescent, so
-     `remove` refusals stop calling finished delegates "running" (field
-     failures #2).
-4. **Dispose-gate the child.** No existing primitive fits: `childStopGated`
-   keys on a cancelled-by-parent record and cannot gate a *completed*
-   delegate, and the durable stop-gate field feeds only watch-send
-   suppression (rev-6 finding J1). New minimal machinery: a per-child
-   in-memory `sub.disposeGated` flag set **under `sub.mu`** after
-   re-verifying `!running && !driving`; `driveSubagentNotificationTurn`
-   refuses to launch while it is set (same `sub.mu` hold that sets
-   `sub.driving`), and `delegate_send`'s retained path refuses with a
-   busy/retryable error. **Reversal is mandatory:** any refusal or failure
-   after this step clears the flag before returning, so a kept lane's
-   delegate is immediately resumable again. Eviction (step 7) makes the flag
-   moot.
-5. **Refuse foreign lanes:** lock state must classify as this session's own
-   `serf:dlg:` marker (or unlocked crash residue) per
-   `worktree.ClassifyReason` / `worktree.Decide`.
-6. **Evaluate the lane**, reporting state either way:
-   - collectible per D0 → proceed;
-   - unmerged commits → refuse; `force` overrides (merge gate);
-   - dirty tree → refuse; `force_dirty` overrides (dirty gate);
-   - **lane directory missing/not-a-worktree but record+branch+sidecar
-     remain** (half-removed residue, manual `mv`): skip the tree checks,
-     judge the *branch tip* against base/merge_target directly; collectible
-     → proceed to step 8's mark/branch-delete/sidecar-delete (no worktree
-     remove); unmerged → refuse with the state named (rev-6 finding J7).
-   Flags orthogonal, matching `remove` exactly.
-7. **Evict the retained child** if present: close it, remove from the
-   subagent table, `DisposeSandboxScratch` for an owned env.
-8. **Unlock → `git worktree remove` (non-force unless dirty-forced) → append
-   `EventDelegateDisposed` → `git branch -D` → delete sidecar.** Factored
-   from `disposeOneDelegateLane`; the late-dirty downgrade is
-   **caller-dependent** (rev-5.1 G1): close path unlocks-and-keeps (dead
-   owner); a live `dispose` whose remove is refused **stats the lane
-   first** (rev-6 finding I2): directory gone (a concurrent collector won
-   the unlock window) → treat as collected — append the Disposed mark (our
-   store), clean up branch/sidecar remnants, report disposed; directory
-   present (late dirty write) → re-lock with own marker and report KEPT; a
-   failed re-lock is a warning naming the exposed lane, not a silent KEPT.
+   `send_to` this delegate or any pending watch-send targeting it —
+   `cfg.pending` / durable `EventWatchSendPending` in this session's job
+   manager and all retained children's.
+3. **Validate subtree quiescence — two checks:** drain-style
+   (`treeHasOutstandingWork`), and live shells tree-wide via the recursive
+   `liveWorkHandles` walk across this session and all retained descendants
+   (grandchild shells live in the child's job manager,
+   `jobstore/record.go:218-225`). Companion fix: `liveWorkUnder`'s subagent
+   label becomes `"(subagent, retained — idle)"` when quiescent.
+4. **Dispose-gate the child:** per-child in-memory `sub.disposeGated` under
+   `sub.mu` after re-verifying `!running && !driving`;
+   `driveSubagentNotificationTurn` refuses while set; `delegate_send`
+   retained path gets busy/retryable. **Reversal mandatory** on every
+   later refusal/failure exit. (No existing primitive fits — verified
+   round 5.)
+5. **Refuse foreign lanes:** lock state per `worktree.ClassifyReason` /
+   `worktree.Decide`.
+6. **Evaluate the lane:** collectible → proceed; unmerged → refuse, `force`
+   overrides; dirty → refuse, `force_dirty` overrides (orthogonal, matching
+   `remove`); **lane directory missing but record+branch+sidecar remain** →
+   judge the branch tip via the `OriginalRoot` control env; collectible →
+   step 8's mark/branch-delete/sidecar-delete; unmerged → refuse naming the
+   state.
+7. **Evict the retained child:** close, remove from subagent table,
+   `DisposeSandboxScratch`.
+8. **Unlock → `git worktree remove` (non-force unless dirty-forced) →
+   `EventDelegateDisposed` → `git branch -D` → delete sidecar** (factored
+   from `disposeOneDelegateLane`). Remove refused → stat: gone (concurrent
+   collector) → mark + clean remnants + report disposed; present (late
+   dirty) → re-lock own marker, KEPT; re-lock failure → warning naming the
+   lane.
 
-Post-disposal `delegate_send` takes the not-retained restore path (eviction
-precedes the mark) where the Disposed check already lives; the check is
-**also added to the retained path** as cheap defense-in-depth — no phase-1
-flow produces retained+Disposed, so its test constructs the state explicitly
-(rev-6 finding I3) — and the refusal copy is generalized (today hardcodes
-"disposed at session close", `job_delegate.go:768`).
+**Dispose-turn vs own-close race** (rev-7 finding K2 — new race P1
+introduces; close cancels the turn ctx then runs its own disposal *before*
+joining tool goroutines, `session_lifecycle.go:124-126,164,215-219`, and
+both actors hold the same own-marker lock so the lock protocol gives no
+exclusion): steps 5–8 run inside a session-level **in-flight-dispose
+WaitGroup**; the close path **joins it first** — at the same pre-
+`drainForClose` point where it joins the P3 open pass — so close's
+disposal/`drainForClose` never overlaps a mid-dispose lane or yanks the
+gated child under step 7. Dispose observes ctx cancellation only *between*
+git ops (each op completes or fails atomically; the reversal clause covers
+the failure exits).
+
+Post-disposal `delegate_send` takes the restore path where the Disposed
+check lives; the check is also added to the retained path as
+defense-in-depth (test constructs the state); refusal copy generalized
+(today hardcodes "at session close", `job_delegate.go:768`).
+
+**Mid-life Disposed visibility** (rev-7 finding L4): `FoldDelegates` /
+`DelegateRecord` gain Disposed handling so `Delegates()` consumers
+(doctor tree, listings) stop showing a disposed delegate as resumable —
+tolerable when disposal implied a dead session, wrong once P1 makes it
+routine.
 
 **Sandboxed sessions:** control env exactly as delegate revival
 (`useDelegateWorktreeControlPolicy`); unsatisfiable → clear error.
 
 ### P2. Completion nudge
 
-Unconditional wording, conditional surface (round-4 G3: lanes merge *after*
-the completion report renders, so a merged-gated nudge would never fire for
-the flagship class; `dispose` refuses premature calls safely):
-
-The terminal lane report of a finished isolated delegate (inline tool result
-AND background `job_finished` notification) gains one sentence, rendered iff
-the receiving session **has the `dispose` op AND owns the delegate**
-(`ParentSessionID == s.id`; forwarded reports in ancestors get no nudge):
+Unconditional wording, conditional surface (lanes merge *after* the report
+renders; `dispose` refuses premature calls safely). Rendered on both
+surfaces iff the receiving session **has the op AND owns the delegate**
+(`ParentSessionID == s.id`):
 
 `When you're done with this delegate's work (e.g., after merging it),
 dispose its worktree and branch: manage_worktree op=dispose id=<dlg_…>.`
 
-No render-time git evaluation. Copy validated with the multi-provider live
-ergonomics-eval harness before landing: (a) disposal after the model merges,
-(b) no disposal of delegates the scenario resumes later (and no `force`
-under the premature refusal), (c) zero scolds/confusion.
+No render-time git. **Honest reach** (rev-7 finding L7): the nudge is a
+completion-time surface — it never reaches lanes whose delegates already
+completed (the existing 21 get collected by P0 at that session's close, or
+by the model spontaneously; not by P2).
+
+**Eval gate, made falsifiable** (rev-7 finding L5): scenario cards under
+`tests/scenarios/worktree-dispose/` (the e2e-scenario-testing format used
+for the F1–F4 ergonomics evals), run live against **3 providers ×
+3 runs each** (claude / gpt-5.x / kimi tiers configured in the harness).
+Pass: (a) ≥ 2/3 runs per provider dispose after the scenario's merge step;
+(b) 0/9 runs dispose or `force` a delegate the scenario later resumes;
+(c) 0/9 scolds/confusion (manual transcript check). Copy iterates until the
+gate passes; results recorded alongside the cards.
 
 ### P3. Automatic residue collection (no model in the loop)
 
 Runs per top-level session (`isSubagentSession()`), local exec envs only:
-**once at open+`laneSweepDelay` (10m)** — past open-time revival races —
-**and once at close**, immediately after `disposeDelegateLanesAtClose`
-(same quiesce domain; a long-lived session thereby collects at its exit
-what merged during its life — rev-6 finding J3). The open timer is cancelled
-if close begins first, and **close joins an in-flight open pass** before its
-own disposal runs — cancellation alone doesn't cover a pass mid-git (rev-6
-finding J2a).
+**once at open+`laneSweepDelay` (10m)** and **once at close** after the
+session's own P0 disposal (foreign residue only — P0 already collected own
+merged lanes). Open timer cancelled if close begins first; close **joins**
+an in-flight open pass. **The close pass is time-boxed**
+(`laneClosePassBudget`, 30s): lanes not reached are skipped with one
+warning — unbounded foreign git work must not block daemon shutdown
+(rev-7 finding K3); a pass killed mid-lane leaves at most one lane's
+remnants, which the sweep-2 arm below reclaims later.
 
-Scope: **delegate lanes only** (sidecar `DelegateID` provenance), **unlocked**
-and collectible per D0, in this repo's worktree root. Implementation:
-parameterized reuse of `worktreePruneSweep1` (structurally verified) with
-delegate-only filter, `Unchanged` OR'd in, skip-and-continue, no
-disposed-mark attempt (foreign store; WorkingDir-stat crash net covers
-revival), never re-lock on failure, grace below.
+Scope: delegate lanes only (sidecar `DelegateID` provenance), unlocked,
+collectible per D0, this repo's worktree root. Implementation parameterizes
+**both** prune sweeps (rev-7 finding L3): sweep 1 (worktree-list-driven
+collection) **and sweep 2's orphan-sidecar reconciliation** restricted to
+delegate sidecars — without it, a crash/skip between `worktree remove` and
+`branch -D` leaves branch+sidecar orphans invisible to a list-driven sweep
+forever, resurrecting the model-must-run-prune dependency. Skip-and-continue
+per lane; no disposed-mark attempt (foreign store; stat net covers
+revival); never re-lock on failure.
 
-**Lock/grace model:**
+**Grace = sidecar mtime** (`SidecarAge` pattern): skip lanes whose sidecar
+mtime is within `laneGrace` (30m); every close-KEEP path touches the
+sidecar before unlocking (P0). **Cross-collector concurrency argument,
+stated** (rev-7 finding L8): two passes (same daemon or two processes on a
+shared state dir) may race on one lane; every mutating step is a single git
+op that exactly one side wins (`worktree remove`, `branch -D`,
+sidecar unlink), losers treat refusal/ENOENT as skip-and-continue, and
+neither side marks foreign stores — so the worst interleaving is one side
+doing the other's remnant cleanup. Test 28 exercises two concurrent passes.
 
-- **Grace = sidecar mtime** (`SidecarAge` pattern — the sidecar layer itself
-  documents mtime-over-wall-clock for cross-machine skew,
-  `sidecar.go:31-38,138-149`): skip lanes whose sidecar mtime is within
-  `laneGrace` (30m). **Close-time KEEP touches the sidecar** (rewrite, no
-  new field — the write *is* the signal; rev-6 finding J4 killed rev-6's
-  `kept_at` wall-clock field), and the touch is pinned **before the
-  unlock** in the close path, so no collector can observe
-  unlocked+out-of-grace mid-close (rev-6 finding J2b). Both KEEP paths
-  (changed-lane and late-dirty downgrade) touch.
-- **Session resume re-locks its own undisposed lanes** via
-  `EvDelegateRevive` (Unlocked→lock, OwnDelegate→adopt). Placement: a
-  **post-init resume step** (needs the jobstore; `resumeWorktreeReentry`
-  runs pre-init). Failure: warning + one retry — at the P3 open timer for
-  top-level sessions, or a dedicated one-shot `laneSweepDelay` timer for
-  restored subagent coordinators, which have no P3 (rev-6 finding I4);
-  still-failed → warning naming the exposed lane.
-- **Close-path late-dirty downgrade unlocks-and-keeps** (dead owner). That
-  lane is dirty, so P3/prune skip it; unlocking's benefit is manual
-  collection (`force_dirty`, switch-in, adoption) — asserted, not
-  oversold.
+**Session resume re-locks its own undisposed lanes** via `EvDelegateRevive`
+(post-init step — needs the jobstore; `resumeWorktreeReentry` runs
+pre-init). Failure: warning + one retry (P3 open timer, or a dedicated
+one-shot for restored subagent coordinators); still-failed → warning naming
+the lane.
 
-Close-time disposal is otherwise unchanged.
+**Close-path late-dirty downgrade unlocks-and-keeps**; that lane is dirty,
+so P3/prune skip it — unlocking's benefit is manual collection.
 
 ## Phase 2 (deferred backstop): mid-life background sweep
 
-Rev-3 design preserved at `75c7b086`; P1's factored mechanics, dispose-gate,
-guards, and quiescence checks are the code it would reuse. Build trigger:
-live sessions still accumulating collectible lanes past an agreed threshold
-despite P2 — including via the accepted P3 cadence gap.
+Rev-3 design preserved at `75c7b086`; P1's factored mechanics, gate, and
+guards are the code it would reuse. Build trigger: live sessions still
+accumulating collectible lanes past an agreed threshold despite P1/P2 —
+including via the accepted P3 cadence gap and squash-merge blindness.
 
 ## Constants
 
@@ -235,168 +259,168 @@ despite P2 — including via the accepted P3 cadence gap.
 |---|---|---|
 | `laneSweepDelay` | 10m | P3 open-pass delay past revival races; re-lock retry point |
 | `laneGrace` | 30m | sidecar-mtime grace covering close and hand-off windows |
+| `laneClosePassBudget` | 30s | close must not block shutdown on foreign git work |
 
 ## Testing (TDD, red → green per case)
 
-P1 unit (real-git fixtures via the existing worktree test harness):
+P0 unit:
 
-1. Terminal + merged (ancestry) → disposed: lane removed,
-   `EventDelegateDisposed`, branch + sidecar deleted.
-2. Squash-merged (cherry arm) → disposed.
-3. Unchanged lane, empty/deleted merge_target → disposed (Unchanged arm).
-4. Clean + unmerged commits → refused with ahead report; `force` → disposed;
-   `force_dirty` alone → still refused (orthogonality).
-5. Dirty tree → refused; `force_dirty` → disposed; `force` alone → refused.
-6. Running or driving delegate → refused (before the gate is ever set).
-7. Dispose-gate: gate set under `sub.mu` after re-verify; a concurrently
-   arming notification cannot launch a drive while gated; `delegate_send`
-   retained path gets busy/retryable; **a refusal at step 5/6 clears the
-   gate** and the delegate drives/resumes normally after.
-8. Live grandchild **background shell in a retained child's job manager**,
-   rooted in the lane → refused (the recursive handle walk; the parent-only
-   scan must fail this test red first).
-9. Live grandchild delegate / undelivered attention → refused (drain check).
-10. Armed watch `send_to=` the delegate → refused, watch named.
-11. Pending watch-send targeting the delegate (incl. in a retained child's
-    manager; incl. restored after budget-clear) → refused.
-12. Retained quiescent child → gated, evicted, removed; subsequent
-    `delegate_send` gets the disposed refusal (restore path); retained-path
-    Disposed check verified against a constructed retained+Disposed state;
-    copy doesn't claim "at session close".
-13. Live dispose remove-refusal: lane present+dirty → re-locked own marker,
-    KEPT; lane **gone** (concurrent collector) → Disposed mark appended,
-    branch/sidecar remnants cleaned, reported disposed; re-lock failure →
-    warning naming the lane.
-14. Half-removed residue (dir gone, record+branch+sidecar remain): merged
-    branch → mark+branch-delete+sidecar-delete; unmerged → refused naming
-    the state. Unknown id → invalid_request.
-15. Foreign / session lock marker → refused.
-16. Availability: leaf delegate has no `manage_worktree`; non-isolated
-    coordinator full tool; isolated coordinator with allowance gets the
-    dispose-only variant (schema lists only `dispose`); ownership refusal on
-    a sibling's lane; `delegate` tool description updated.
-17. `remove` blocked only by a retained terminal delegate → refusal labels
-    it `retained — idle` and suggests `dispose`.
-18. Sandboxed session: control-env dance; unsatisfiable → clear error.
+1. Close-time disposal collects a **merged-with-commits** lane (ancestry and
+   cherry arms): removed, marked Disposed in own store, branch+sidecar gone.
+2. Unchanged lane at close → still collected (regression).
+3. Unmerged / dirty / state-unverifiable lanes at close → KEPT, **sidecar
+   touched before unlock on all three paths**, then unlocked.
+4. Resume after P0 disposal → clear disposed refusal (own-store mark).
 
-P2: nudge on both surfaces iff op available AND `ParentSessionID == s.id`;
-absent in ancestors/leaves/non-isolated delegates; copy pinned; no git at
-render. Multi-provider live eval gates landing.
+P1 unit (real-git fixtures):
+
+5. Live dispose: merged (both arms) → disposed end-to-end.
+6. Unchanged, empty/deleted merge_target → disposed (Unchanged arm).
+7. Clean+unmerged → refused; `force` → disposed; `force_dirty` alone →
+   refused. Dirty → refused; `force_dirty` → disposed; `force` alone →
+   refused.
+8. Running/driving delegate → refused (pre-gate).
+9. Dispose-gate: set under `sub.mu`; concurrent notification can't launch a
+   drive; retained `delegate_send` busy/retryable; **every post-gate refusal
+   exit (steps 5, 6, 7, 8) clears the gate** — parameterized over exits.
+10. Grandchild shell in a retained child's job manager, rooted in the lane →
+    refused (recursive walk; parent-only scan fails red first).
+11. Grandchild delegate / undelivered attention → refused. Armed watch →
+    refused, named. Pending watch-send (incl. child-manager, incl. restored
+    post-budget-clear) → refused.
+12. Retained quiescent child → gated, evicted, removed; `delegate_send`
+    disposed refusal (restore path); retained-path check vs constructed
+    state; copy doesn't claim "at session close".
+13. Remove-refused: present+dirty → re-locked own marker, KEPT; gone →
+    marked + remnants cleaned + reported disposed; re-lock failure warns.
+14. Half-removed residue (dir gone): control env via sidecar
+    `OriginalRoot` (no lane path to walk); merged tip → mark+branch-D+
+    sidecar-delete; unmerged → refused. **Already-Disposed record →
+    idempotent remnant cleanup, reported already-disposed.** Unknown id →
+    invalid_request.
+15. Dispose-turn vs own-close: close joins the in-flight-dispose WG before
+    `drainForClose`; no double remove, no false "re-locked" note, gated
+    child not yanked mid-step-7.
+16. Foreign / session lock marker → refused.
+17. Availability: leaf → no tool; non-isolated coordinator → full tool;
+    isolated coordinator → dispose-only variant (schema lists only
+    `dispose`); sibling-lane ownership refusal; `delegate` copy updated.
+18. `remove` blocked only by a retained terminal delegate → `retained —
+    idle` label + dispose suggestion.
+19. Sandboxed: control-env dance; unsatisfiable → clear error.
+20. Doctor/listing: mid-life Disposed delegate shows non-resumable
+    (fold/DelegateRecord).
+
+P2: nudge iff op available AND owner; absent in ancestors/leaves/
+non-isolated; copy pinned; no git at render. Live eval per the falsifiable
+gate (3×3, thresholds above).
 
 P3 unit (fake clock):
 
-19. Unlocked merged delegate lane KEPT by a prior session's close (sidecar
-    mtime aged past grace) → collected at the open pass; nothing before the
-    delay; open timer cancelled by early close.
-20. **Close pass:** lane merges while a long-lived session is open → its
-    close pass collects it (after own disposal, before store close).
-21. Close vs in-flight open pass → close joins the pass first; no
-    overlapping git ops on the same lanes.
-22. Close-KEEP sidecar touch ordering: touch lands before unlock; a
-    collector observing mid-close always sees either locked or
-    within-grace.
-23. Late-dirty downgraded lane: left unlocked; P3 skips (dirty) even after
-    its branch merges; manual `force_dirty` collects.
-24. Managed (non-delegate) worktree, unlocked+merged → untouched.
-25. Owner-resume re-lock (post-init): re-locks undisposed lanes; another
-    session's P3 skips them; revival adopts own re-locked lane; failed
-    re-lock retried at the appropriate timer (top-level: P3 open timer;
-    restored coordinator: dedicated one-shot).
-26. remove/branch refusal in P3 → lane left unlocked, sweep continues; no
-    disposed-mark attempt; owner's later resume gets the WorkingDir-stat
-    refusal.
-27. Locked lanes → skipped. Child sessions / non-local envs → no P3.
+21. Unlocked merged foreign lane (sidecar mtime past grace) → collected at
+    open pass; nothing before delay; timer cancelled by early close.
+22. Close pass collects foreign residue; **time-box**: a slow lane exhausts
+    the budget → remaining lanes skipped with one warning, close proceeds.
+23. Close vs in-flight open pass → join first; no overlapping git ops.
+24. KEEP sidecar touch ordering: collector observing mid-close sees locked
+    or within-grace — including the state-unverifiable KEEP path.
+25. Late-dirty downgraded lane: unlocked, P3 skips (dirty), manual
+    `force_dirty` collects.
+26. Managed (non-delegate) worktree unlocked+merged → untouched. Locked
+    lanes → skipped. Child sessions / non-local envs → no P3.
+27. Orphan branch+sidecar (crash between remove and branch-D; or
+    budget-killed close pass) → reclaimed by the sweep-2 arm.
+28. Two concurrent passes (two sessions) on one repo → every lane collected
+    exactly once; losers skip on refusal/ENOENT; no error escalation.
+29. Owner-resume re-lock: re-locks undisposed lanes; foreign P3 skips them;
+    revival adopts; failed re-lock retried at the appropriate timer.
+30. P3 remove/branch refusal → lane left unlocked, sweep continues; owner's
+    later resume gets the stat-net refusal.
 
 E2E: (a) live nudge flow — delegate completes, model merges, disposes;
-(b) session A closes keeping a changed lane (sidecar touched), branch
-merges, session B opens → after delay+grace the lane/branch/sidecar are
-gone; resuming A's delegate reports the working-directory-missing refusal.
+(b) session A closes with a merged lane → **P0 collects it at A's close**
+(the flagship path); (c) A closes keeping an unmerged lane, branch merges
+later, session B opens → collected after delay+grace; resuming A's delegate
+gets the appropriate refusal (disposed-mark for (b), stat-net for (c)).
 
 ## Files touched (est.)
 
 - `agent/internal/tool/definitions.go` — `dispose` op; dispose-only variant;
   `delegate` isolation copy (~35 loc)
-- `agent/session_tools_worktree.go` — dispose op + validation; in-handler op
-  gate; honest subagent label + dispose suggestion in `remove` refusals
-  (~190 loc)
-- `agent/session_worktree_close.go` — factor mechanics; caller-dependent
-  downgrade; sidecar touch before unlock on KEEP paths (~55 loc)
-- `agent/session_worktree_sweep.go` (new) — P3 pass parameterizing sweep1;
-  open-timer + close-pass entry points (~110 loc)
-- `agent/jobs.go` — recursive tree-wide `liveWorkHandles` helper (~25 loc)
-- `agent/subagents.go` / `agent/job_watch.go` — `sub.disposeGated` flag;
+- `agent/session_tools_worktree.go` — dispose op + validation; in-handler
+  gate; honest subagent label + dispose suggestion (~190 loc)
+- `agent/session_worktree_close.go` — P0 predicate widening; factor
+  mechanics; caller-dependent downgrade; touch-before-unlock on all KEEP
+  paths (~70 loc)
+- `agent/session_worktree_sweep.go` (new) — P3 parameterizing sweeps 1+2;
+  open-timer + time-boxed close pass (~140 loc)
+- `agent/jobs.go` — recursive tree-wide `liveWorkHandles` (~25 loc)
+- `agent/subagents.go` / `agent/job_watch.go` — `sub.disposeGated`;
   drive-launch and retained-send checks (~30 loc)
-- `agent/session_init.go` — post-init resume re-lock (+ coordinator retry
-  timer); dispose-only surface wiring (~55 loc)
-- `agent/session_lifecycle.go` — P3 open-timer start/cancel; close-pass call
-  + in-flight join (~25 loc)
-- `agent/job_delegate.go` — retained-path Disposed check; refusal copy (~25 loc)
-- `agent/session_tools_jobs.go` / `agent/job_notify.go` — nudge surfaces with
-  ownership gate (~30 loc)
-- `docs/worktrees.md` — beyond the two scheduled updates: `:121-123` (the
-  delegate-can't-use-manage_worktree claim vs the dispose-only surface),
-  `:136-138` (the "prune will *offer* to collect" promise vs P3's silent
-  collection — deliberate behavior change, documented), `:108-112` (manual
-  `remove` guidance → `dispose`); native worktree tools spec §9 (~doc)
-- tests (~900 loc) + provider ergonomics eval scenarios
+- `agent/session_init.go` — post-init resume re-lock + coordinator retry;
+  dispose-only surface wiring (~55 loc)
+- `agent/session_lifecycle.go` — P3 timer/close-pass; joins (dispose WG +
+  open pass) before `drainForClose` (~30 loc)
+- `agent/job_delegate.go` — retained-path Disposed check; refusal copy;
+  idempotent already-Disposed handling (~35 loc)
+- `agent/internal/jobstore/fold.go` (+ doctor consumers) — Disposed in
+  `FoldDelegates`/`DelegateRecord` (~25 loc)
+- `agent/session_tools_jobs.go` / `agent/job_notify.go` — nudge surfaces
+  (~30 loc)
+- `tests/scenarios/worktree-dispose/` (new) — eval cards + recorded results
+- `docs/worktrees.md` — §disposal (close now collects merged), `:108-112`
+  (squash guidance → `dispose force`), `:121-123` (dispose-only surface),
+  `:136-138` ("prune will offer" → P0/P3 semantics); native spec §9 (~doc)
+- tests (~1000 loc)
 
 ## Review log
 
-**Rev 1 → rev 2** (A, B): reservation vs unimplementable mutex; retained-child
-eviction + Disposed check; predicate reuse; residue pass rescoped; quiesce;
-latest-record TTL.
+**Rev 1 → rev 2** (A, B) · **rev 2 → rev 3** (C, D) · **rev 3 → rev 4**
+(Jesse: phased restructure) · **rev 4 → rev 5** (E, F) · **rev 5 → 5.1**
+(Jesse: dispose-only surface) · **rev 5.1 → 6** (G, H + field #2) ·
+**rev 6 → 7** (I, J) — details preserved in git history of this file.
 
-**Rev 2 → rev 3** (C, D): drive turns mint no record; liveWorkUnder verbatim
-unsweepable; symmetric reservation; foreign-store mark; never re-lock foreign;
-quiesce before drainForClose; coordinator gap accepted.
+**Rev 7 → rev 8** (K, L):
 
-**Rev 3 → rev 4** (Jesse): phased restructure around synchronous `dispose` +
-nudge; sweep deferred to phase 2.
+- **L1 (major):** rev-7's close pass and KEEP-touch nullified each other
+  (own just-merged lanes always within grace at close) → **P0**: close-time
+  disposal itself widened to D0-collectible; close pass narrowed to foreign
+  residue. Also makes the flagship story honest: the 21 lanes collect at
+  owner close with no model action (was: only via 21 dispose calls).
+- **K1 (major):** the half-removed arm had no repo to run git in (lanes
+  live outside any repo; nothing to walk up from) → control env via sidecar
+  `OriginalRoot`.
+- **K2 (major):** dispose-turn vs own-close was a new unguarded race (close
+  cancels ctx, disposes, joins tool goroutines only later; both actors hold
+  the same marker) → in-flight-dispose WG joined before `drainForClose`.
+- **K3 (major):** close pass added unbounded synchronous foreign git work
+  to shutdown → `laneClosePassBudget` (30s) time-box; budget-killed
+  remnants covered by the sweep-2 arm.
+- **L2 (major):** multi-commit squash merges permanently undetected —
+  guarantee overstated → accepted limitation, documented; `dispose force`
+  is the path; flagship-collectible claim qualified.
+- **L3 (major):** remove→branch-D crash tail orphans branch+sidecar,
+  invisible to a sweep-1-only P3 → P3 parameterizes sweep 2's
+  orphan-sidecar reconciliation too.
+- **L4 (minor):** mid-life Disposed invisible to `FoldDelegates`/doctor →
+  fold + consumers scheduled.
+- **L5 (minor):** eval gate referenced a harness that isn't a repo artifact
+  and asserted an unfalsifiable negative → concrete scenario-card location,
+  3×3 run matrix, numeric thresholds.
+- **L6 (minor):** dispose on an already-Disposed record undefined though
+  phase 1 produces it → idempotent remnant cleanup.
+- **L7 (minor):** P2 has zero reach into pre-existing lanes → stated;
+  P0 owns that class.
+- **L8 (minor):** cross-collector concurrency argument unstated → stated
+  (single-git-op atomicity + skip-on-refusal/ENOENT), test 28.
+- **K4 (minor):** third KEEP path (state-unverifiable) skipped the touch →
+  all KEEP paths touch; test 24.
 
-**Rev 4 → rev 5** (E, F): wake-edge stop-gate need (E1, adjudicated);
-pending watch-sends; subtree quiescence; force orthogonality; nudge
-availability; resume re-lock + downgrade no-relock; sweep1 reuse; guarantee
-qualified; field evidence #1.
-
-**Rev 5 → rev 5.1** (Jesse): dispose-only surface for isolated coordinators.
-
-**Rev 5.1 → rev 6** (G, H + field #2): caller-dependent downgrade; shell-aware
-quiescence; nudge redesign (no render-time D0); honest late-dirty semantics;
-post-init re-lock + kept_at + grace rework; ownership nudge gate; in-handler
-op gate; honest "retained — idle" label.
-
-**Rev 6 → rev 7** (I, J):
-
-- **J1 (critical):** no stop-gate primitive exists for a *terminal* delegate
-  (`childStopGated` needs cancelled-by-parent; durable gate feeds only
-  watch suppression) → new minimal `sub.disposeGated` flag under `sub.mu`
-  with mandatory reversal on refusal; test 7.
-- **I1 (major, + J5's citation catch):** parent-only `liveWorkUnder` cannot
-  see grandchild shells in retained children's job managers → recursive
-  tree-wide `liveWorkHandles` helper, budgeted; citations corrected.
-- **J2 (major):** in-flight open pass vs close needed a join, not just
-  cancellation; sidecar touch pinned before unlock.
-- **J3 (major):** one-shot-at-open cadence left merge-after-open lanes
-  uncollected for the life of long sessions → close pass added; residual
-  gap documented as accepted + phase-2 trigger.
-- **J4 (minor):** `kept_at` wall-clock field was the sidecar layer's own
-  documented anti-pattern and redundant with the write's mtime → dropped;
-  grace keys on sidecar mtime, KEEP touches the sidecar.
-- **I2 (minor):** live dispose racing a concurrent collector → stat-after-
-  refusal: gone ⇒ mark disposed + clean remnants; present ⇒ re-lock; re-lock
-  failure warns.
-- **I3 (minor):** retained-path Disposed check has no producing phase-1
-  scenario → kept as defense-in-depth, test constructs the state.
-- **I4 (minor):** restored subagent coordinators have no P3 timer for the
-  re-lock retry → dedicated one-shot.
-- **J6 (minor):** three additional `docs/worktrees.md` contradictions
-  scheduled, incl. the "prune will offer" promise P3 deliberately changes.
-- **J7 (minor):** half-removed-lane outcome defined (step 6 fourth arm,
-  test 14).
-
-Verified-clean in rounds 4–5 (foundations positively confirmed): sweep1
-reuse; pending-send enumerability; `EvDelegateRevive` rows; forwarded-
-descriptor ownership; lane-rooted coordinator control env; per-session
-registries expressing the dispose-only variant; sidecar machinery in scope
-at close; render sites seeing `ParentSessionID`; delegate sidecars carrying
-`MergeTarget` (the flagship 21-lane class is collectible).
+Foundations positively verified across rounds 4–6: sweep1 reuse; pending-
+send enumerability; `EvDelegateRevive` rows; forwarded-descriptor ownership;
+lane-rooted coordinator control env; per-session registry variants; sidecar
+machinery (`UpdateSidecar` truncating rewrite under held lock); render sites
+seeing `ParentSessionID`; `MergeTarget` on delegate sidecars; `disposeGated`
+reversal reachability incl. interruption (synchronous handler, in-memory
+flag); recursive-walk lock ordering (no `jm.mu` nesting; `sub.mu → s.mu`
+respected); mid-life Disposed events fold-safe (nothing un-disposes).
