@@ -365,11 +365,21 @@ staleness-based lock reclaim).
 | `laneClosePassBudget` | 30s | bounds P0 **and** the P3 close pass together; one shared deadline per cascade; shutdown must not block on git work |
 | `laneTailWarnThreshold` | 50 | aggregated warning when the budget-exempt touch+unlock tail exceeds this |
 
-All three test-overridable.
+All four test-overridable. Note `laneClosePassBudget` bounds git/history
+work only — total close latency additionally includes the budget-exempt
+touch+unlock tail, by design.
 
 ## Implementation order (close/dispose concurrency — land as separate,
 ordered commits, each red→green; roborev 2718)
 
+0. **D0-auto evidence boundary (the rev-10.2 safety fix — lands FIRST):**
+   a single ancestry-only, **local-refs-only** entry point in
+   `agent/internal/worktree/predicates.go` (either an "auto-trusted refs"
+   mode on merge detection or a post-filter so only `refs/heads/*` evidence
+   satisfies it), and **both** consumers — P0 close disposal and the P3
+   sweeps — call this one chokepoint; no caller of the full two-arm /
+   remote-inclusive `Merged` remains on an automatic path (roborev 2722).
+   Test 2a runs against both consumers.
 1. WG admission: check-AND-Add under one `s.mu` hold + `closing` flag split.
 2. Close reorder: set-flag → cancel → join → drain, with the
    `responseSideEffectsMu` placement pinned above.
