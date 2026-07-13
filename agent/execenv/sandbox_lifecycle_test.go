@@ -190,7 +190,7 @@ func TestCleanupDisposesOwnedTmpAfterChildGrace(t *testing.T) {
 	// ordering under test).
 	script := `trap 'if [ -d "$WATCH" ]; then : > "$SENTINEL"; fi; exit 0' TERM
 : > "$READY"
-sleep 300`
+sleep 300 & wait`
 	h, err := env.StreamCommand(context.Background(), script, dir,
 		map[string]string{"WATCH": tmp.Dir, "SENTINEL": sentinel, "READY": ready}, io.Discard)
 	if err != nil {
