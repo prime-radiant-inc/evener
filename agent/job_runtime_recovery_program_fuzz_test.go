@@ -176,6 +176,7 @@ type jrrpRuntimeExecutor struct {
 	start     context.Context
 	startOnly *startOnlyContext
 	started   chan struct{}
+	accepted  chan struct{}
 	startErr  error
 }
 
@@ -197,6 +198,9 @@ func (e *jrrpRuntimeExecutor) StreamCommand(ctx context.Context, _ string, _ str
 	}
 	if _, err := out.Write(e.output); err != nil {
 		return nil, err
+	}
+	if e.accepted != nil {
+		close(e.accepted)
 	}
 	return &execenv.StreamHandle{
 		Wait: func() (int, error) {
@@ -543,12 +547,14 @@ func jrrpAssertShellFailureEdges(t *testing.T, p jrrpProgram) {
 			exitCode: p.exitCode,
 			done:     make(chan struct{}),
 			started:  make(chan struct{}),
+			accepted: make(chan struct{}),
 		}
 		resultCh := make(chan shellResult, 1)
 		go func() {
 			resultCh <- runShell(ctx, jm, exec, shellArgs{Command: "cancel-after-start", BlockTimeoutMS: 1000})
 		}()
 		<-exec.started
+		<-exec.accepted
 		cancel()
 		res := <-resultCh
 		if res.Status != string(jobstore.StatusStopped) || res.Reason != "cancelled" || res.RunningInBackground || res.TimedOut || res.Output != p.runtimeOutput {
