@@ -113,6 +113,20 @@ func (s *Session) disposeDelegateLane(ctx context.Context, id string, force, for
 
 	laneDirPresent := laneWorktreePresent(lanePath)
 
+	// When the lane dir still exists, cross-check that it resolves to the same
+	// main root the sidecar's OriginalRoot named — a mismatch means the sidecar's
+	// provenance and the on-disk lane disagree, so the control env we would run
+	// git under is not this lane's; refuse with a clear error rather than acting
+	// on the wrong repository.
+	if laneDirPresent {
+		if local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
+			laneMain := execenv.ResolveMainRepoRoot(local.WithWorkingDirectory(lanePath), lanePath)
+			if laneMain != "" && filepath.Clean(laneMain) != filepath.Clean(originalRoot) {
+				return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s lane at %s resolves to main root %s but its sidecar records %s; refusing on a provenance mismatch", id, lanePath, laneMain, originalRoot)
+			}
+		}
+	}
+
 	// Idempotent already-disposed: the durable disposed mark exists. Clean up any
 	// remnants (branch if its tip judges D0-model-collectible, sidecar) and report
 	// already-disposed rather than refusing — a re-issued dispose is a no-op.
@@ -236,7 +250,10 @@ func (s *Session) disposeEvaluateLane(run worktree.GitRunner, id, lanePath strin
 	}
 
 	// Collectible (or force-overridden). Execution (steps 7-8) is the follow-up
-	// task; return the stub, leaving the gate armed for it to consume.
+	// task. Until it exists, clear the gate before returning the stub so a
+	// retained child is not left frozen by an op that cannot yet complete; the
+	// execution task takes over gate ownership from the evaluation boundary.
+	clearGateOnRefusal()
 	return WorktreeDisposeResult{}, errDisposeExecutionNotImplemented
 }
 
@@ -261,6 +278,7 @@ func (s *Session) disposeEvaluateHalfRemoved(run worktree.GitRunner, id, lanePat
 		clearGateOnRefusal()
 		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s lane is half-removed (worktree gone, branch %s remains, %s); merge it or pass force to delete the branch", id, id, reason)
 	}
+	clearGateOnRefusal()
 	return WorktreeDisposeResult{}, errDisposeExecutionNotImplemented
 }
 
