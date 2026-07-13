@@ -694,6 +694,51 @@ const (
 	subagentRetainedIdleLabel = " (subagent, retained — idle)"
 )
 
+// disposeHintForRetainedIdle returns a remove-refusal suffix pointing the caller
+// at the dispose op (spec §P1 step 3), but ONLY when every live-work blocker in
+// handles is a retained, idle delegate child. A retained-idle subagent holds no
+// live work of its own — it is terminal history the dispose op can reclaim — so
+// naming the delegate id and suggesting `manage_worktree op=dispose id=<dlg_…>`
+// gives the model a legitimate way forward instead of an opaque refusal it
+// correctly will not bypass. It returns "" (leaving the generic refusal in
+// place) when any blocker is NOT a retained-idle subagent — a running shell,
+// delegate job, or driving child would not be cleared by a dispose — or when a
+// blocker does not resolve to a delegate id (a plain subagent is not a delegate,
+// so no dispose op applies). The forward reference to a not-yet-implemented
+// dispose op is intentional (spec §P1 step 3).
+func (s *Session) disposeHintForRetainedIdle(handles []string) string {
+	if len(handles) == 0 || s.jobManager == nil {
+		return ""
+	}
+	childIDs := make([]string, 0, len(handles))
+	for _, h := range handles {
+		id, ok := strings.CutSuffix(h, subagentRetainedIdleLabel)
+		if !ok {
+			return ""
+		}
+		childIDs = append(childIDs, id)
+	}
+	delegates, err := s.jobManager.store.LoadDelegates()
+	if err != nil {
+		return ""
+	}
+	childToDelegate := make(map[string]string, len(delegates))
+	for _, d := range delegates {
+		if d != nil && d.ChildSessionID != "" && d.DelegateID != "" {
+			childToDelegate[d.ChildSessionID] = d.DelegateID
+		}
+	}
+	suggestions := make([]string, 0, len(childIDs))
+	for _, cid := range childIDs {
+		dlg, ok := childToDelegate[cid]
+		if !ok {
+			return ""
+		}
+		suggestions = append(suggestions, "manage_worktree op=dispose id="+dlg)
+	}
+	return "All blockers are retained, idle delegate(s) holding no live work; dispose them to proceed: " + strings.Join(suggestions, "; ")
+}
+
 // pathEqualOrUnder reports whether candidate is target itself or nested under
 // it, both already canonicalized by the caller (canonicalOrClean). This is
 // liveWorkUnder's "equal to path or under it" (spec §7) — the one case
@@ -1553,6 +1598,9 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	// subagent envs (see its doc comment); a shell command that `cd`s after
 	// launch is invisible to it.
 	if live := s.liveWorkUnder(target); len(live) > 0 {
+		if hint := s.disposeHintForRetainedIdle(live); hint != "" {
+			return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: live work under %s: %s. %s", target, strings.Join(live, ", "), hint)
+		}
 		return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: live work under %s: %s", target, strings.Join(live, ", "))
 	}
 
