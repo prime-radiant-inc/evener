@@ -214,6 +214,17 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 			steps = append(steps, step)
 			stepID++
 
+		case schema.TurnModelSwitch:
+			step := Step{
+				StepID:    stepID,
+				Source:    "system",
+				Message:   turn.Message.Text(),
+				Timestamp: formatTimestamp(turn),
+				Extra:     map[string]any{"serf_kind": "model_switch"},
+			}
+			steps = append(steps, step)
+			stepID++
+
 		case schema.TurnToolResults:
 			// Orphaned TOOL_RESULTS (not preceded by ASSISTANT). ATIF forbids an
 			// observation on a non-agent step and requires every observation
