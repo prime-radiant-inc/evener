@@ -4916,6 +4916,7 @@
         });
         const labelText = document.createElement("span");
         labelText.className = "ask-option-label";
+        labelText.id = "ask-option-" + item.key.replace(/[^a-zA-Z0-9_-]/g, "_") + "-" + (kind || label).replace(/[^a-zA-Z0-9_-]/g, "_");
         labelText.textContent = label;
         optLabel.append(input, labelText);
         return { optLabel, input };
@@ -4949,28 +4950,34 @@
       freeInput.type = "text";
       freeInput.className = "ask-free-input";
       freeInput.setAttribute("data-ask-free-input", "");
-      freeInput.setAttribute("aria-labelledby", headerEl.id + " " + textEl.id);
+      freeInput.setAttribute("aria-labelledby", freeChoice.optLabel.querySelector(".ask-option-label").id + " " + headerEl.id + " " + textEl.id);
       freeInput.placeholder = "type your answer";
       freeInput.hidden = true;
       freeInput.addEventListener("input", () => {
         this.setQuestionResolution(item, { kind: "free", text: freeInput.value }, { skipRender: true });
       });
-      freeChoice.optLabel.appendChild(freeInput);
-      optionsEl.appendChild(freeChoice.optLabel);
+      const freeRow = document.createElement("div");
+      freeRow.className = "ask-alternative-row";
+      freeRow.setAttribute("data-ask-alternative-row", "");
+      freeRow.append(freeChoice.optLabel, freeInput);
+      optionsEl.appendChild(freeRow);
 
       const decideChoice = makeOptionLabel(null, "decide", "let serf decide");
       const decideLeaning = document.createElement("input");
       decideLeaning.type = "text";
       decideLeaning.className = "ask-decide-leaning";
       decideLeaning.setAttribute("data-ask-decide-leaning", "");
-      decideLeaning.setAttribute("aria-labelledby", headerEl.id + " " + textEl.id);
+      decideLeaning.setAttribute("aria-labelledby", decideChoice.optLabel.querySelector(".ask-option-label").id + " " + headerEl.id + " " + textEl.id);
       decideLeaning.placeholder = "leaning (optional)";
       decideLeaning.hidden = true;
       decideLeaning.addEventListener("input", () => {
         this.setQuestionResolution(item, { kind: "decide", leaning: decideLeaning.value }, { skipRender: true });
       });
-      decideChoice.optLabel.appendChild(decideLeaning);
-      optionsEl.appendChild(decideChoice.optLabel);
+      const decideRow = document.createElement("div");
+      decideRow.className = "ask-alternative-row";
+      decideRow.setAttribute("data-ask-alternative-row", "");
+      decideRow.append(decideChoice.optLabel, decideLeaning);
+      optionsEl.appendChild(decideRow);
       el.appendChild(optionsEl);
 
       const altRow = document.createElement("div");

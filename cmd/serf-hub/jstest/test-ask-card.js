@@ -92,6 +92,20 @@ async function testPendingDockRenders() {
   pass(!!responseDock.querySelector('[data-ask-option][data-option-kind="decide"]'),
     "let serf decide is a native option choice");
   pass(!!responseDock.querySelector("[data-ask-decide-leaning]"), "the dock has the optional leaning field");
+  for (const kind of ["free", "decide"]) {
+    const optionLabel = responseDock.querySelector('[data-ask-option][data-option-kind="' + kind + '"]');
+    const editor = responseDock.querySelector(kind === "free" ? "[data-ask-free-input]" : "[data-ask-decide-leaning]");
+    const row = optionLabel && optionLabel.closest("[data-ask-alternative-row]");
+    const labelable = optionLabel && optionLabel.querySelectorAll("button, input, meter, output, progress, select, textarea");
+    pass(labelable && labelable.length === 1 && labelable[0].matches('[type="radio"]'),
+      kind + " option label contains exactly one labelable descendant, its radio");
+    pass(!!row && editor && editor.parentElement === row && optionLabel.parentElement === row,
+      kind + " editor is a sibling of its radio label in a wrapping alternative row");
+    const optionText = optionLabel && optionLabel.querySelector(".ask-option-label");
+    const labelledBy = editor && (editor.getAttribute("aria-labelledby") || "").split(/\s+/);
+    pass(optionText && optionText.id && labelledBy && labelledBy.includes(optionText.id),
+      kind + " editor is explicitly labelled by its alternative option text");
+  }
   const fallbackBtn = responseDock.querySelector("[data-ask-fallback-btn]");
   pass(!!fallbackBtn, "the dock renders a fallback when if_unanswered is present");
   pass(fallbackBtn && fallbackBtn.textContent.includes("default to Postgres"), "the fallback exposes the stated fallback text");

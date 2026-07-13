@@ -162,6 +162,18 @@ pass(/\.workspace-input\s*>\s*\[data-composer-surface\]\[hidden\]\s*\{[^}]*displ
 pass(/@media\s*\([^)]*max-width:[^)]*\)[\s\S]*?\.ask-footer\s*\{[^}]*safe-area-inset-left[^}]*safe-area-inset-right/s.test(css),
   "the mobile ask footer clears horizontal safe areas");
 
+const alternativeRowRule = (mobile.match(/\.ask-alternative-row\s*\{[^}]*\}/g) || [])[0];
+pass(alternativeRowRule && /display:\s*flex/.test(alternativeRowRule) &&
+    /flex-wrap:\s*wrap/.test(alternativeRowRule) && /min-width:\s*0/.test(alternativeRowRule),
+  "mobile alternative rows wrap and cannot impose an intrinsic minimum width");
+const alternativeOptionRule = (mobile.match(/\.ask-alternative-row\s+\.ask-option\s*\{[^}]*\}/g) || [])[0];
+pass(alternativeOptionRule && /max-width:\s*100%/.test(alternativeOptionRule),
+  "mobile alternative option labels stay within the narrow response dock");
+const alternativeEditorRule = (mobile.match(/\.ask-alternative-row\s+\.(?:ask-free-input|ask-decide-leaning)[^\{]*\{[^}]*\}/g) || [])[0];
+pass(alternativeEditorRule && /min-width:\s*0/.test(alternativeEditorRule) &&
+    /flex:\s*1\s+1\s+\d+px/.test(alternativeEditorRule) && /max-width:\s*100%/.test(alternativeEditorRule),
+  "mobile alternative editors shrink and wrap without overflowing a 320px viewport");
+
 // iOS zoom guard: a focused field whose text is < 16px makes iOS Safari zoom
 // the page in (and never zoom back out on blur). Editable fields must be 16px
 // on phone — checked via the rule whose selector includes .message-input.

@@ -1739,6 +1739,15 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
    not --text-dim, for the same contrast reason as .ask-why above. */
 .ask-option-detail { font-size: var(--text-xs); color: var(--text-muted); }
 
+.ask-alternative-row {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
 .ask-alt-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-top: var(--space-3); }
 .ask-free-toggle,
 .ask-decide-toggle,
@@ -1783,6 +1792,23 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 }
 .ask-free-input[hidden],
 .ask-decide-leaning[hidden] { display: none; }
+
+@media (max-width: 767px) {
+  .ask-alternative-row {
+    display: flex;
+    flex-wrap: wrap;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .ask-alternative-row .ask-option { max-width: 100%; }
+  .ask-alternative-row .ask-free-input,
+  .ask-alternative-row .ask-decide-leaning {
+    flex: 1 1 180px;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+}
 
 .ask-note-row { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-2); }
 .ask-note-toggle {
