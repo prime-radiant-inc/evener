@@ -1148,7 +1148,7 @@
     }
 
     // Chip pickers
-    document.querySelectorAll(".btn-chip").forEach(chip => {
+    document.querySelectorAll(".btn-chip, [data-spawn-row]").forEach(chip => {
       chip.addEventListener("click", () => openPicker(chip));
     });
 
@@ -1304,6 +1304,10 @@
     });
   }
 
+  function chipValueDisplay(chip) {
+    return chip.querySelector(".chip-value, .spawn-row-value");
+  }
+
   function openPicker(chip) {
     const kind = chip.dataset.chip;
     if (kind === "harness") { openHarnessPicker(chip); return; }
@@ -1311,7 +1315,7 @@
     if (kind === "reasoning_effort") { openEffortPicker(chip); return; }
     if (kind === "working_dir") { openDirPicker(chip); return; }
     if (kind === "branch") { openTextPicker(chip, "branch", "branch / worktree"); return; }
-    const display = chip.querySelector(".chip-value");
+    const display = chipValueDisplay(chip);
     const current = display.textContent.trim();
     let value;
     if (kind === "access_mode") {
@@ -1324,7 +1328,7 @@
     const existing = document.querySelector(".chip-picker");
     if (existing) { existing.remove(); return; }
 
-    const display = chip.querySelector(".chip-value");
+    const display = chipValueDisplay(chip);
     const current = display ? display.textContent.trim() : "";
 
     const picker = document.createElement("div");
@@ -1809,7 +1813,7 @@
   function openDirPicker(chip) {
     if (!window.SerfDirPicker || typeof window.SerfDirPicker.open !== "function") return;
 
-    const display = chip.querySelector(".chip-value");
+    const display = chipValueDisplay(chip);
     const chipText = display ? display.textContent.trim() : "";
     const current = (chipText === "(pick a directory)") ? "" : chipText;
     const fallback = window.localStorage.getItem("serf-hub.spawn-defaults.global.last-working-dir") || "";
