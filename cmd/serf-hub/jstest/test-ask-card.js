@@ -172,6 +172,38 @@ async function testAskDockFocusAnnouncementsAndInputNames() {
     "restoring the normal composer announces the mode transition through the live region");
 }
 
+async function testOptionLabelIDsRemainUniqueAcrossCollidingLabels() {
+  const { window, R } = newHarness();
+  await settle();
+  const question = {
+    header: "Collision",
+    question: "Which label?",
+    options: [
+      { label: "free", detail: "collides with the free alternative suffix" },
+      { label: "Same label", detail: "first duplicate" },
+      { label: "Same label", detail: "second duplicate" },
+      { label: "Same-label", detail: "sanitizes like Same label" },
+      { label: "decide", detail: "collides with the decide alternative suffix" },
+    ],
+  };
+  for (const [kind, data] of askCallEvents("call_id_collision", [question])) R.handleData(kind, data);
+
+  const qEl = questionEls(window)[0];
+  const optionLabels = Array.from(qEl.querySelectorAll(".ask-option-label"));
+  const ids = optionLabels.map((label) => label.id);
+  pass(ids.length === new Set(ids).size,
+    "duplicate, sanitized-colliding, and alternative option labels receive unique ids");
+  for (const [kind, editorSelector] of [["free", "[data-ask-free-input]"], ["decide", "[data-ask-decide-leaning]"]]) {
+    const alternative = qEl.querySelector('[data-ask-option][data-option-kind="' + kind + '"] .ask-option-label');
+    const editor = qEl.querySelector(editorSelector);
+    const labelledBy = (editor.getAttribute("aria-labelledby") || "").trim().split(/\s+/);
+    pass(labelledBy[0] === alternative.id,
+      kind + " editor references its own unique alternative label id first");
+    pass(window.document.getElementById(labelledBy[0]) === alternative,
+      kind + " editor label id resolves to the correct alternative label element");
+  }
+}
+
 async function testAskDockPreservesEnabledControlFocusAcrossRebuilds() {
   const { window, R } = newHarness();
   await settle();
@@ -442,6 +474,7 @@ async function testColdAttachPendingResolvedInterruptedDenied() {
 (async () => {
   await testPendingDockRenders();
   await testAskDockFocusAnnouncementsAndInputNames();
+  await testOptionLabelIDsRemainUniqueAcrossCollidingLabels();
   await testAskDockPreservesEnabledControlFocusAcrossRebuilds();
   await testAlternativeRadiosToggleOff();
   await testPendingAskBlocksNormalComposerSubmission();

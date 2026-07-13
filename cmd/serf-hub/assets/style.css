@@ -4470,7 +4470,8 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
   .workspace-input:focus-within { border-top-color: color-mix(in srgb, var(--accent) 55%, var(--rule)); }
   .workspace-input[data-response-mode="ask"] { border-top-color: color-mix(in srgb, var(--state-awaiting) 55%, var(--rule)); }
   .ask-footer {
-    padding-block: var(--space-3) var(--space-2);
+    padding-block-start: var(--space-3);
+    padding-block-end: calc(var(--space-2) + env(safe-area-inset-bottom));
     padding-left: calc(env(safe-area-inset-left) + var(--space-4));
     padding-right: calc(env(safe-area-inset-right) + var(--space-4));
   }

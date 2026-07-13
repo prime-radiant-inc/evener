@@ -161,6 +161,9 @@ pass(/\.workspace-input\s*>\s*\[data-composer-surface\]\[hidden\]\s*\{[^}]*displ
   "the hidden composer surface cannot occupy ask-mode layout space");
 pass(/@media\s*\([^)]*max-width:[^)]*\)[\s\S]*?\.ask-footer\s*\{[^}]*safe-area-inset-left[^}]*safe-area-inset-right/s.test(css),
   "the mobile ask footer clears horizontal safe areas");
+const mobileAskFooterRule = (mobile.match(/\.ask-footer\s*\{[^}]*\}/g) || [])[0];
+pass(mobileAskFooterRule && /padding-(?:block-end|bottom):\s*calc\(var\(--space-\d+\)\s*\+\s*env\(safe-area-inset-bottom\)\)/.test(mobileAskFooterRule),
+  "the bottommost mobile ask footer must combine fixed spacing with env(safe-area-inset-bottom)");
 
 const alternativeRowRule = (mobile.match(/\.ask-alternative-row\s*\{[^}]*\}/g) || [])[0];
 pass(alternativeRowRule && /display:\s*flex/.test(alternativeRowRule) &&

@@ -4867,7 +4867,7 @@
       optionsEl.setAttribute("data-ask-options", "");
       optionsEl.setAttribute("role", item.multiSelect ? "group" : "radiogroup");
       optionsEl.setAttribute("aria-labelledby", headerEl.id + " " + textEl.id);
-      const makeOptionLabel = (opt, kind, visibleLabel) => {
+      const makeOptionLabel = (opt, kind, visibleLabel, idSuffix) => {
         const regular = !kind;
         const label = regular ? String((opt && opt.label) || "") : visibleLabel;
         const optLabel = document.createElement("label");
@@ -4916,7 +4916,7 @@
         });
         const labelText = document.createElement("span");
         labelText.className = "ask-option-label";
-        labelText.id = "ask-option-" + item.key.replace(/[^a-zA-Z0-9_-]/g, "_") + "-" + (kind || label).replace(/[^a-zA-Z0-9_-]/g, "_");
+        labelText.id = "ask-option-" + item.key.replace(/[^a-zA-Z0-9_-]/g, "_") + "-" + idSuffix;
         labelText.textContent = label;
         optLabel.append(input, labelText);
         return { optLabel, input };
@@ -4928,8 +4928,8 @@
         const br = b && b.recommended ? 1 : 0;
         return br - ar;
       });
-      for (const opt of orderedOptions) {
-        const built = makeOptionLabel(opt, "", "");
+      orderedOptions.forEach((opt, optionIndex) => {
+        const built = makeOptionLabel(opt, "", "", "regular-" + optionIndex);
         const optLabel = built.optLabel;
         if (opt && opt.recommended) {
           const tag = document.createElement("span");
@@ -4944,8 +4944,8 @@
           optLabel.appendChild(detail);
         }
         optionsEl.appendChild(optLabel);
-      }
-      const freeChoice = makeOptionLabel(null, "free", "Something else…");
+      });
+      const freeChoice = makeOptionLabel(null, "free", "Something else…", "alternative-free");
       const freeInput = document.createElement("input");
       freeInput.type = "text";
       freeInput.className = "ask-free-input";
@@ -4962,7 +4962,7 @@
       freeRow.append(freeChoice.optLabel, freeInput);
       optionsEl.appendChild(freeRow);
 
-      const decideChoice = makeOptionLabel(null, "decide", "let serf decide");
+      const decideChoice = makeOptionLabel(null, "decide", "let serf decide", "alternative-decide");
       const decideLeaning = document.createElement("input");
       decideLeaning.type = "text";
       decideLeaning.className = "ask-decide-leaning";
