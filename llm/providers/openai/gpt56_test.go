@@ -28,9 +28,8 @@ func buildBodyForTest(t *testing.T, req llm.Request) map[string]any {
 	return round
 }
 
-// collectInputImages returns every input_image item in the request input, both
-// inside user message content and as top-level items (the tool-result image
-// site).
+// collectInputImages returns every input_image nested in message or function
+// call output content.
 func collectInputImages(t *testing.T, body map[string]any) []map[string]any {
 	t.Helper()
 	input, _ := body["input"].([]any)
@@ -39,9 +38,13 @@ func collectInputImages(t *testing.T, body map[string]any) []map[string]any {
 		item, _ := itemAny.(map[string]any)
 		switch item["type"] {
 		case "input_image":
-			images = append(images, item)
-		case "message":
-			content, _ := item["content"].([]any)
+			t.Fatalf("unexpected top-level input_image: %#v", item)
+		case "message", "function_call_output":
+			field := "content"
+			if item["type"] == "function_call_output" {
+				field = "output"
+			}
+			content, _ := item[field].([]any)
 			for _, cAny := range content {
 				c, _ := cAny.(map[string]any)
 				if c["type"] == "input_image" {
@@ -103,9 +106,9 @@ func TestGPT56_ImageDetailOmitted(t *testing.T) {
 	}
 }
 
-// Regression guard: gpt-5.5 image encoding is unchanged — explicit detail
-// passes through on the user site, and the tool-result site gets the model
-// default ("original" on gpt-5.4+).
+// Regression guard: gpt-5.5 image detail behavior is unchanged — explicit
+// detail passes through on the user site, and the tool-result site gets the
+// model default ("original" on gpt-5.4+).
 func TestGPT55_ImageDetailUnchanged(t *testing.T) {
 	body := buildBodyForTest(t, imageRequest("gpt-5.5"))
 	images := collectInputImages(t, body)

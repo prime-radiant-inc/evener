@@ -3779,42 +3779,40 @@ func TestToResponsesInput_ToolResultWithImage(t *testing.T) {
 		t.Fatalf("toResponsesInput: %v", err)
 	}
 
-	// Find the function_call_output and input_image items.
-	var foundOutput, foundImage bool
-	var imageURL string
+	var outputItem map[string]any
 	for _, itemAny := range items {
 		item, ok := itemAny.(map[string]any)
 		if !ok {
 			continue
 		}
-		switch item["type"] {
-		case "function_call_output":
-			if item["call_id"] == "call_img" {
-				foundOutput = true
-			}
-		case "input_image":
-			foundImage = true
-			imageURL, _ = item["image_url"].(string)
+		if item["type"] == "input_image" {
+			t.Fatalf("tool-result image must not be a top-level input item: %v", items)
+		}
+		if item["type"] == "function_call_output" && item["call_id"] == "call_img" {
+			outputItem = item
 		}
 	}
-
-	if !foundOutput {
+	if outputItem == nil {
 		t.Fatalf("expected function_call_output item with call_id=call_img; items=%v", items)
 	}
-	if !foundImage {
-		t.Fatalf("expected input_image item after function_call_output; items=%v", items)
-	}
 
-	// Verify the data URI format.
-	wantPrefix := "data:image/png;base64,"
-	if !strings.HasPrefix(imageURL, wantPrefix) {
-		t.Fatalf("image_url should start with %q, got %q", wantPrefix, imageURL)
+	content, ok := outputItem["output"].([]any)
+	if !ok || len(content) != 2 {
+		t.Fatalf("function_call_output.output=%#v, want text and image content", outputItem["output"])
 	}
-
-	// Verify the data URI matches what DataURI would produce.
-	wantURI := llm.DataURI("image/png", imgBytes)
-	if imageURL != wantURI {
-		t.Fatalf("image_url = %q, want %q", imageURL, wantURI)
+	text, _ := content[0].(map[string]any)
+	if text["type"] != "input_text" || text["text"] != "image content below" {
+		t.Fatalf("output text=%#v, want input_text with tool output", text)
+	}
+	image, _ := content[1].(map[string]any)
+	if image["type"] != "input_image" {
+		t.Fatalf("output image=%#v, want input_image", image)
+	}
+	if got := image["image_url"]; got != llm.DataURI("image/png", imgBytes) {
+		t.Fatalf("image_url=%#v, want tool-result data URI", got)
+	}
+	if got := image["detail"]; got != "original" {
+		t.Fatalf("detail=%#v, want original for gpt-5.4", got)
 	}
 }
 
@@ -3874,7 +3872,14 @@ func TestToResponsesInput_ToolResultWithImage_DefaultMediaType(t *testing.T) {
 			continue
 		}
 		if item["type"] == "input_image" {
-			imageURL, _ = item["image_url"].(string)
+			t.Fatalf("tool-result image must not be a top-level input item: %v", items)
+		}
+		if item["type"] == "function_call_output" {
+			content, _ := item["output"].([]any)
+			if len(content) == 2 {
+				image, _ := content[1].(map[string]any)
+				imageURL, _ = image["image_url"].(string)
+			}
 		}
 	}
 	if imageURL == "" {
@@ -3883,6 +3888,34 @@ func TestToResponsesInput_ToolResultWithImage_DefaultMediaType(t *testing.T) {
 	wantPrefix := "data:image/png;base64,"
 	if !strings.HasPrefix(imageURL, wantPrefix) {
 		t.Fatalf("image_url should default to image/png; got %q", imageURL)
+	}
+}
+
+func TestToResponsesInput_ErrorToolResultWithImagePreservesWrappedText(t *testing.T) {
+	msgs := []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentPart{{
+		Kind: llm.ContentToolResult,
+		ToolResult: &llm.ToolResultData{
+			ToolCallID:     "call_error_image",
+			Content:        "connection refused",
+			IsError:        true,
+			ImageData:      []byte("png"),
+			ImageMediaType: "image/png",
+		},
+	}}}}
+
+	_, items, err := toResponsesInput(msgs, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("toResponsesInput: %v", err)
+	}
+	item := items[0].(map[string]any)
+	content := item["output"].([]any)
+	text := content[0].(map[string]any)
+	var wrapped map[string]any
+	if err := json.Unmarshal([]byte(text["text"].(string)), &wrapped); err != nil {
+		t.Fatalf("wrapped error text is not JSON: %v", err)
+	}
+	if wrapped["is_error"] != true || wrapped["content"] != "connection refused" {
+		t.Fatalf("wrapped error=%#v", wrapped)
 	}
 }
 

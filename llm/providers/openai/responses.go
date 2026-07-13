@@ -1013,7 +1013,6 @@ func toResponsesInput(msgs []llm.Message, model string) (instructions string, it
 					"call_id": p.ToolResult.ToolCallID,
 					"output":  outStr,
 				}
-				items = append(items, item)
 
 				if len(p.ToolResult.ImageData) > 0 {
 					mt := p.ToolResult.ImageMediaType
@@ -1028,8 +1027,12 @@ func toResponsesInput(msgs []llm.Message, model string) (instructions string, it
 					if !responsesLiteModel(model) {
 						img["detail"] = defaultImageDetail(model)
 					}
-					items = append(items, img)
+					item["output"] = []any{
+						map[string]any{"type": "input_text", "text": outStr},
+						img,
+					}
 				}
+				items = append(items, item)
 			}
 		default:
 			// ignore unknown roles
