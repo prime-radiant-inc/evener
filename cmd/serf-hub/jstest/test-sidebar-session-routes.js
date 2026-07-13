@@ -45,12 +45,14 @@ const I = w.SerfSidebarInternal;
 const local = node("local:01LOCAL", "01LOCAL", "project:p:local:01LOCAL");
 const codex = node("codex-local:th_codex", "codex-session", "project:p:codex-local:th_codex");
 const malformed = node("not a ref", "fallback-id", "project:p:local:fallback-id");
+const malformedCodex = node("codex-local:thread:extra", "fallback-id", "project:p:local:fallback-id-2");
 
 assert.strictEqual(I.sessionRouteID(local), "01LOCAL");
 assert.strictEqual(I.sessionRouteID(codex), "codex-local:th_codex");
 assert.strictEqual(I.sessionRouteID(malformed), "fallback-id");
 assert.strictEqual(I.sessionHref(local), "/s/01LOCAL");
 assert.strictEqual(I.sessionHref(codex), "/s/codex-local:th_codex");
+assert.strictEqual(I.sessionHref(malformedCodex), "/s/fallback-id");
 
 const localRow = I.buildRow(local);
 assert.strictEqual(localRow.getAttribute("href"), "/s/01LOCAL");
@@ -62,9 +64,18 @@ assert.strictEqual(codexRow.getAttribute("href"), "/s/codex-local:th_codex");
 assert.strictEqual(codexRow.getAttribute("hx-get"), "/_partials/s/codex-local:th_codex/workspace");
 assert.strictEqual(codexRow.getAttribute("hx-push-url"), "/s/codex-local:th_codex");
 
+const malformedRow = I.buildRow(malformedCodex);
+assert.strictEqual(malformedRow.getAttribute("href"), "/s/fallback-id");
+assert.strictEqual(malformedRow.getAttribute("hx-get"), "/_partials/s/fallback-id/workspace");
+assert.strictEqual(malformedRow.getAttribute("hx-push-url"), "/s/fallback-id");
+
 const openItem = I.sessionMenuItems(codex).find((item) => item.label === "Open");
 assert.ok(openItem, "Codex row menu must contain Open");
 assert.strictEqual(openItem.href, "/s/codex-local:th_codex");
+
+const malformedOpenItem = I.sessionMenuItems(malformedCodex).find((item) => item.label === "Open");
+assert.ok(malformedOpenItem, "Malformed Codex row menu must contain Open");
+assert.strictEqual(malformedOpenItem.href, "/s/fallback-id");
 
 const tree = {
   needs_you: [], favorites: [], archived_projects: [], test_runs: [],

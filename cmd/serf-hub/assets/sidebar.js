@@ -33,12 +33,14 @@
   // --- Row + section builders ------------------------------------------------
   function rowKey(n) { return n.row_id; }
   function parseSessionRef(raw) {
-    if (typeof raw !== "string" || !/^[A-Za-z0-9._~:-]+$/.test(raw)) return null;
+    if (typeof raw !== "string") return null;
     var split = raw.indexOf(":");
     if (split <= 0 || split === raw.length - 1) return null;
+    var hostID = raw.slice(0, split);
     var sessionID = raw.slice(split + 1);
+    if (!/^[A-Za-z0-9._~-]+$/.test(hostID) || !/^[A-Za-z0-9._~-]+$/.test(sessionID)) return null;
     if (sessionID.indexOf("..") !== -1) return null;
-    return { hostID: raw.slice(0, split), sessionID: sessionID };
+    return { hostID: hostID, sessionID: sessionID };
   }
   function sessionRouteID(n) {
     var fallback = n && typeof n.session_id === "string" ? n.session_id : "";
