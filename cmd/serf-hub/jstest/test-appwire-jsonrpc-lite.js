@@ -178,11 +178,13 @@ vm.runInContext(SRC, context);
     id: "th_serf",
     sessionId: "th_serf",
     serf: { ref: "local:th_serf" },
-    turns: [{ items: [{ type: "systemMessage", eventKind: "plugin_loaded", description: "Loaded plugin superpowers (14 skills, 0 agents, 0 MCP servers)", text: "" }] }],
+    turns: [{ items: [{ type: "systemMessage", eventKind: "plugin_loaded", description: "Loaded plugin superpowers (14 skills, 0 agents, 0 MCP servers)", text: "", raw: { pluginLoaded: { name: "superpowers", skillCount: 14, agentCount: 0, mcpCount: 0 } } }] }],
   });
   const pluginEvent = replayedPluginEvents.find(([kind]) => kind === "SYSTEM_MESSAGE");
   assert(pluginEvent && pluginEvent[1].eventKind === "plugin_loaded",
     "browser appwire replay should carry plugin-loaded eventKind (got " + JSON.stringify(replayedPluginEvents) + ")");
+  assert(pluginEvent && pluginEvent[1].raw && pluginEvent[1].raw.pluginLoaded && pluginEvent[1].raw.pluginLoaded.name === "superpowers",
+    "browser appwire replay should preserve plugin-loaded raw detail");
   const replayedHookEvents = context.window.SerfAppwire.eventsFromThread({
     id: "th_serf",
     sessionId: "th_serf",
