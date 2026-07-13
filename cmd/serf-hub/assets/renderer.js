@@ -1123,19 +1123,26 @@
           this.appendSandboxEscalation(data);
           break;
         case "USER_INPUT":
+          const promotedLocalUserMessage = this.promoteLocalUserMessage(data);
+          const localAskEcho = promotedLocalUserMessage && this.pendingAsk && this.pendingAsk.localSettledEcho;
+          const matchesLocalAskEcho = !!(localAskEcho &&
+            this.normalizedUserText(data.text) === this.normalizedUserText(localAskEcho.text) &&
+            (!localAskEcho.turnId || !data.turnId || String(data.turnId) === localAskEcho.turnId));
+          if (matchesLocalAskEcho) delete this.pendingAsk.localSettledEcho;
           // A user message answers any pending blocking question; tear down the
           // live "awaiting your answer" affordances (the in-flow frame stays).
-          this.clearAgentQuestion();
+          if (!matchesLocalAskEcho) this.clearAgentQuestion();
           // Resolves the WHOLE ask_user pending set at once (spec §5.2),
-          // whether this reply came from this client or another — USER_INPUT
-          // is pushed to every attached client regardless of who submitted it
-          // (spec §6.1). Steering/checkpoint/summary/system items never reach
-          // this case, so they correctly never resolve a pending ask.
-          this.resolvePendingAsk(data.text || "");
+          // whether this reply came from this client or another. The one
+          // exception is the promoted server echo of a partial local ask send:
+          // its submitted questions are already settled, while later questions
+          // remain pending. Steering/checkpoint/summary/system items never
+          // reach this case, so they correctly never resolve a pending ask.
+          if (!matchesLocalAskEcho) this.resolvePendingAsk(data.text || "");
           this.lastUserText = data.text || "";
           this.snapshotSubmittedTurn(this.retryPayload(data.text || "", data.images || []));
           this.dissolveWelcome();
-          if (this.promoteLocalUserMessage(data)) { this.showColdStartSkeleton(); break; }
+          if (promotedLocalUserMessage) { this.showColdStartSkeleton(); break; }
           this.userTurnIndex++;
           if (typeof data.turn === "number" && data.turn > 0) {
             this.entryIndex = data.turn;
@@ -4700,30 +4707,34 @@
       const activating = form && form.dataset.responseMode !== "ask";
       const active = document.activeElement;
       const activeQuestion = active && typeof active.closest === "function" ? active.closest("[data-ask-question]") : null;
-      const activeScope = activeQuestion && dock.contains(activeQuestion) ? activeQuestion : dock;
+      const activeScope = activeQuestion && dock.contains(activeQuestion) ? activeQuestion : form;
       const activeAttr = active && active.attributes && Array.from(active.attributes)
         .find((attr) => attr.name.indexOf("data-ask-") === 0);
       const activeSelector = activeAttr ? "[" + activeAttr.name + "]" : "";
       const activeIndex = activeSelector
         ? Array.from(activeScope.querySelectorAll(activeSelector)).indexOf(active)
         : -1;
-      const restoreFocus = active && dock.contains(active) && active.matches &&
+      const restoreFocus = active && form.contains(active) &&
+        (dock.contains(active) || !!active.closest("[data-ask-footer]")) && active.matches &&
         active.matches("button, input, select, textarea, [tabindex]") &&
         !active.disabled && !active.hidden && !active.closest("[hidden]") && activeIndex >= 0
         ? { key: activeQuestion === activeScope ? activeQuestion.dataset.askKey : "", selector: activeSelector, index: activeIndex }
         : null;
       this.setComposerAskMode(true);
+      const staleFooter = form.querySelector("[data-ask-footer]");
+      if (staleFooter) staleFooter.remove();
       dock.replaceChildren();
       const questions = document.createElement("div");
       questions.className = "ask-questions";
       questions.setAttribute("data-ask-questions", "");
       pa.items.forEach((item, index) => questions.appendChild(this.buildAskQuestionEl(item, index + 1)));
-      dock.append(questions, this.buildAskFooterEl());
+      dock.appendChild(questions);
+      form.appendChild(this.buildAskFooterEl());
       this.updateAskFooter();
       if (restoreFocus) {
         const scope = restoreFocus.key
           ? dock.querySelector('[data-ask-question][data-ask-key="' + restoreFocus.key + '"]')
-          : dock;
+          : form;
         const replacement = scope && scope.querySelectorAll(restoreFocus.selector)[restoreFocus.index];
         if (replacement && !replacement.disabled && !replacement.hidden && !replacement.closest("[hidden]")) {
           replacement.focus();
@@ -4740,6 +4751,8 @@
       if (!form) return;
       const dock = form.querySelector("[data-ask-response-dock]");
       if (dock) dock.remove();
+      const footer = form.querySelector("[data-ask-footer]");
+      if (footer) footer.remove();
       this.setComposerAskMode(false);
     },
 
@@ -4799,14 +4812,18 @@
     buildAskFooterEl() {
       const footer = document.createElement("div");
       footer.className = "ask-footer";
+      footer.setAttribute("data-ask-footer", "");
       const count = document.createElement("span");
       count.className = "ask-answered-count";
       count.setAttribute("data-ask-answered-count", "");
+      count.setAttribute("aria-live", "polite");
+      count.setAttribute("aria-atomic", "true");
       const send = document.createElement("button");
       send.type = "button";
       send.className = "btn btn-primary ask-send-btn";
       send.setAttribute("data-ask-send-btn", "");
       send.textContent = "Send answers";
+      send.disabled = !!(this.pendingAsk && this.pendingAsk.sending);
       send.addEventListener("click", () => this.sendAskAnswers());
       footer.append(count, send);
       return footer;
@@ -4825,6 +4842,7 @@
       el.className = "ask-question";
       el.setAttribute("data-ask-question", "");
       el.dataset.askKey = item.key;
+      const idPrefix = "ask-question-" + num;
 
       const head = document.createElement("div");
       head.className = "ask-question-head";
@@ -4833,14 +4851,14 @@
       numEl.textContent = num + ".";
       const headerEl = document.createElement("span");
       headerEl.className = "ask-question-header";
-      headerEl.id = "ask-question-" + item.key.replace(/[^a-zA-Z0-9_-]/g, "_") + "-header";
+      headerEl.id = idPrefix + "-header";
       headerEl.textContent = item.header;
       head.append(numEl, headerEl);
       el.appendChild(head);
 
       const textEl = document.createElement("div");
       textEl.className = "ask-question-text";
-      textEl.id = "ask-question-" + item.key.replace(/[^a-zA-Z0-9_-]/g, "_") + "-text";
+      textEl.id = idPrefix + "-text";
       textEl.textContent = item.question;
       el.appendChild(textEl);
 
@@ -4852,10 +4870,66 @@
         el.appendChild(whyEl);
       }
 
-      const groupName = "ask-opt-" + item.key.replace(/[^a-zA-Z0-9_-]/g, "_");
+      const groupName = idPrefix + "-options";
       const optionsEl = document.createElement("div");
       optionsEl.className = "ask-options";
       optionsEl.setAttribute("data-ask-options", "");
+      optionsEl.setAttribute("role", item.multiSelect ? "group" : "radiogroup");
+      optionsEl.setAttribute("aria-labelledby", headerEl.id + " " + textEl.id);
+      const makeOptionLabel = (opt, kind, visibleLabel, idSuffix) => {
+        const regular = !kind;
+        const label = regular ? String((opt && opt.label) || "") : visibleLabel;
+        const optLabel = document.createElement("label");
+        optLabel.className = "ask-option" + (regular && opt && opt.recommended ? " recommended" : "");
+        optLabel.setAttribute("data-ask-option", "");
+        if (regular) optLabel.dataset.optionLabel = label;
+        else optLabel.dataset.optionKind = kind;
+        const input = document.createElement("input");
+        input.type = regular && item.multiSelect ? "checkbox" : "radio";
+        if (input.type === "radio") input.name = groupName;
+        input.setAttribute("data-ask-option-input", "");
+        optLabel.addEventListener("click", (event) => {
+          if (!regular && event.target === input && item.resolution && item.resolution.kind === kind) {
+            event.preventDefault();
+            this.setQuestionResolution(item, null);
+            Promise.resolve().then(() => { input.checked = false; });
+          }
+        }, true);
+        input.addEventListener("click", (event) => {
+          if (!regular && item.resolution && item.resolution.kind === kind) {
+            event.preventDefault();
+            this.setQuestionResolution(item, null);
+          }
+        });
+        input.addEventListener("change", () => {
+          if (!input.checked) {
+            if (regular && item.resolution && item.resolution.kind === "option") {
+              const remaining = Array.from(optionsEl.querySelectorAll('[data-ask-option][data-option-label] [data-ask-option-input]:checked'))
+                .map((i) => i.closest("[data-ask-option]").dataset.optionLabel);
+              this.setQuestionResolution(item, remaining.length ? { kind: "option", labels: remaining } : null);
+            }
+            return;
+          }
+          if (kind === "free") {
+            this.setQuestionResolution(item, { kind: "free", text: "" });
+            freeInput.focus();
+          } else if (kind === "decide") {
+            this.setQuestionResolution(item, { kind: "decide", leaning: "" });
+            decideLeaning.focus();
+          }
+          else if (item.multiSelect) {
+            const checked = Array.from(optionsEl.querySelectorAll('[data-ask-option][data-option-label] [data-ask-option-input]:checked'))
+              .map((i) => i.closest("[data-ask-option]").dataset.optionLabel);
+            this.setQuestionResolution(item, { kind: "option", labels: checked });
+          } else this.setQuestionResolution(item, { kind: "option", labels: [label] });
+        });
+        const labelText = document.createElement("span");
+        labelText.className = "ask-option-label";
+        labelText.id = idPrefix + "-option-" + idSuffix;
+        labelText.textContent = label;
+        optLabel.append(input, labelText);
+        return { optLabel, input };
+      };
       // Recommended goes first (spec §4.2); Array.prototype.sort is stable, so
       // non-recommended options otherwise keep the model's given order.
       const orderedOptions = item.options.slice().sort((a, b) => {
@@ -4863,39 +4937,9 @@
         const br = b && b.recommended ? 1 : 0;
         return br - ar;
       });
-      for (const opt of orderedOptions) {
-        const label = String((opt && opt.label) || "");
-        const optLabel = document.createElement("label");
-        optLabel.className = "ask-option" + (opt && opt.recommended ? " recommended" : "");
-        optLabel.setAttribute("data-ask-option", "");
-        optLabel.dataset.optionLabel = label;
-        const input = document.createElement("input");
-        input.type = item.multiSelect ? "checkbox" : "radio";
-        if (!item.multiSelect) input.name = groupName;
-        input.setAttribute("data-ask-option-input", "");
-        input.addEventListener("change", () => {
-          if (!input.checked) {
-            // Unchecking the last-checked box in a multi-select group clears
-            // the resolution entirely (back to "nothing chosen yet").
-            if (item.resolution && item.resolution.kind === "option") {
-              const remaining = Array.from(optionsEl.querySelectorAll("[data-ask-option-input]:checked"))
-                .map((i) => i.closest("[data-ask-option]").dataset.optionLabel);
-              this.setQuestionResolution(item, remaining.length ? { kind: "option", labels: remaining } : null);
-            }
-            return;
-          }
-          if (item.multiSelect) {
-            const checked = Array.from(optionsEl.querySelectorAll("[data-ask-option-input]:checked"))
-              .map((i) => i.closest("[data-ask-option]").dataset.optionLabel);
-            this.setQuestionResolution(item, { kind: "option", labels: checked });
-          } else {
-            this.setQuestionResolution(item, { kind: "option", labels: [label] });
-          }
-        });
-        const labelText = document.createElement("span");
-        labelText.className = "ask-option-label";
-        labelText.textContent = label;
-        optLabel.append(input, labelText);
+      orderedOptions.forEach((opt, optionIndex) => {
+        const built = makeOptionLabel(opt, "", "", "regular-" + optionIndex);
+        const optLabel = built.optLabel;
         if (opt && opt.recommended) {
           const tag = document.createElement("span");
           tag.className = "ask-option-tag";
@@ -4909,66 +4953,51 @@
           optLabel.appendChild(detail);
         }
         optionsEl.appendChild(optLabel);
-      }
-      el.appendChild(optionsEl);
-
-      // Free text / You decide / do that / skip: mutually exclusive with the
-      // options above and with each other (setQuestionResolution enforces one
-      // active resolution at a time). Clicking an already-active control
-      // toggles it back off, so the reader can back out without having to
-      // pick a different resolution.
-      const altRow = document.createElement("div");
-      altRow.className = "ask-alt-row";
-
-      const freeToggle = document.createElement("button");
-      freeToggle.type = "button";
-      freeToggle.className = "ask-free-toggle";
-      freeToggle.setAttribute("data-ask-free-toggle", "");
-      freeToggle.textContent = "Something else…";
+      });
+      const freeChoice = makeOptionLabel(null, "free", "Something else…", "alternative-free");
       const freeInput = document.createElement("input");
       freeInput.type = "text";
       freeInput.className = "ask-free-input";
       freeInput.setAttribute("data-ask-free-input", "");
-      freeInput.setAttribute("aria-labelledby", headerEl.id + " " + textEl.id);
+      freeInput.setAttribute("aria-labelledby", freeChoice.optLabel.querySelector(".ask-option-label").id + " " + headerEl.id + " " + textEl.id);
       freeInput.placeholder = "type your answer";
       freeInput.hidden = true;
-      freeToggle.addEventListener("click", () => {
-        if (item.resolution && item.resolution.kind === "free") { this.setQuestionResolution(item, null); return; }
-        this.setQuestionResolution(item, { kind: "free", text: "" });
-        freeInput.focus();
-      });
       freeInput.addEventListener("input", () => {
         this.setQuestionResolution(item, { kind: "free", text: freeInput.value }, { skipRender: true });
       });
-      altRow.append(freeToggle, freeInput);
+      const freeRow = document.createElement("div");
+      freeRow.className = "ask-alternative-row";
+      freeRow.setAttribute("data-ask-alternative-row", "");
+      freeRow.append(freeChoice.optLabel, freeInput);
+      optionsEl.appendChild(freeRow);
 
-      const decideToggle = document.createElement("button");
-      decideToggle.type = "button";
-      decideToggle.className = "ask-decide-toggle";
-      decideToggle.setAttribute("data-ask-decide-toggle", "");
-      decideToggle.textContent = "You decide";
+      const decideChoice = makeOptionLabel(null, "decide", "let serf decide", "alternative-decide");
       const decideLeaning = document.createElement("input");
       decideLeaning.type = "text";
       decideLeaning.className = "ask-decide-leaning";
       decideLeaning.setAttribute("data-ask-decide-leaning", "");
-      decideLeaning.setAttribute("aria-labelledby", headerEl.id + " " + textEl.id);
+      decideLeaning.setAttribute("aria-labelledby", decideChoice.optLabel.querySelector(".ask-option-label").id + " " + headerEl.id + " " + textEl.id);
       decideLeaning.placeholder = "leaning (optional)";
       decideLeaning.hidden = true;
-      decideToggle.addEventListener("click", () => {
-        if (item.resolution && item.resolution.kind === "decide") { this.setQuestionResolution(item, null); return; }
-        this.setQuestionResolution(item, { kind: "decide", leaning: "" });
-        decideLeaning.focus();
-      });
       decideLeaning.addEventListener("input", () => {
         this.setQuestionResolution(item, { kind: "decide", leaning: decideLeaning.value }, { skipRender: true });
       });
-      altRow.append(decideToggle, decideLeaning);
+      const decideRow = document.createElement("div");
+      decideRow.className = "ask-alternative-row";
+      decideRow.setAttribute("data-ask-alternative-row", "");
+      decideRow.append(decideChoice.optLabel, decideLeaning);
+      optionsEl.appendChild(decideRow);
+      el.appendChild(optionsEl);
+
+      const altRow = document.createElement("div");
+      altRow.className = "ask-alt-row";
 
       if (item.ifUnanswered) {
         const fallbackBtn = document.createElement("button");
         fallbackBtn.type = "button";
         fallbackBtn.className = "ask-fallback-btn";
         fallbackBtn.setAttribute("data-ask-fallback-btn", "");
+        fallbackBtn.setAttribute("aria-pressed", "false");
         fallbackBtn.textContent = "do that: " + item.ifUnanswered;
         fallbackBtn.addEventListener("click", () => {
           if (item.resolution && item.resolution.kind === "fallback") { this.setQuestionResolution(item, null); return; }
@@ -4981,6 +5010,7 @@
       skipBtn.type = "button";
       skipBtn.className = "ask-skip-btn";
       skipBtn.setAttribute("data-ask-skip-btn", "");
+      skipBtn.setAttribute("aria-pressed", "false");
       skipBtn.textContent = "skip";
       skipBtn.addEventListener("click", () => {
         if (item.resolution && item.resolution.kind === "skip") { this.setQuestionResolution(item, null); return; }
@@ -4993,34 +5023,26 @@
       // attaches to WHICHEVER resolution is chosen, never a modal.
       const noteRow = document.createElement("div");
       noteRow.className = "ask-note-row";
-      const noteToggle = document.createElement("button");
-      noteToggle.type = "button";
-      noteToggle.className = "ask-note-toggle";
-      noteToggle.setAttribute("data-ask-note-toggle", "");
-      noteToggle.textContent = "+";
-      noteToggle.title = "add a note";
+      const noteLabel = document.createElement("span");
+      noteLabel.className = "visually-hidden";
+      noteLabel.id = idPrefix + "-note";
+      noteLabel.textContent = "note";
       const noteField = document.createElement("input");
       noteField.type = "text";
       noteField.className = "ask-note-field";
       noteField.setAttribute("data-ask-note-field", "");
-      noteField.setAttribute("aria-labelledby", headerEl.id + " " + textEl.id);
+      noteField.setAttribute("aria-labelledby", headerEl.id + " " + textEl.id + " " + noteLabel.id);
       noteField.placeholder = "note (optional)";
-      noteField.hidden = true;
-      noteToggle.addEventListener("click", () => {
-        noteField.hidden = !noteField.hidden;
-        if (!noteField.hidden) noteField.focus();
-      });
       noteField.addEventListener("input", () => {
         item.note = noteField.value;
         this.updateAskFooter();
       });
-      noteRow.append(noteToggle, noteField);
+      noteRow.append(noteLabel, noteField);
       el.appendChild(noteRow);
 
       item.el = el;
       if (item.note) {
         noteField.value = item.note;
-        noteField.hidden = false;
       }
       if (item.resolution) this.setQuestionResolution(item, item.resolution);
       return el;
@@ -5043,7 +5065,10 @@
         const wantLabels = kind === "option" ? new Set(resolution.labels) : new Set();
         el.querySelectorAll("[data-ask-option]").forEach((label) => {
           const input = label.querySelector("[data-ask-option-input]");
-          if (input) input.checked = wantLabels.has(label.dataset.optionLabel);
+          if (input) {
+            if (label.dataset.optionKind) input.checked = kind === label.dataset.optionKind;
+            else input.checked = wantLabels.has(label.dataset.optionLabel);
+          }
         });
         const freeInput = el.querySelector("[data-ask-free-input]");
         if (freeInput) {
@@ -5055,12 +5080,18 @@
           decideLeaning.hidden = kind !== "decide";
           decideLeaning.value = kind === "decide" && resolution.leaning !== undefined ? resolution.leaning : "";
         }
-        el.querySelectorAll("[data-ask-fallback-btn], [data-ask-skip-btn], [data-ask-free-toggle], [data-ask-decide-toggle]")
-          .forEach((btn) => btn.classList.remove("active"));
-        const activeSelector = { fallback: "[data-ask-fallback-btn]", skip: "[data-ask-skip-btn]", free: "[data-ask-free-toggle]", decide: "[data-ask-decide-toggle]" }[kind];
+        el.querySelectorAll("[data-ask-fallback-btn], [data-ask-skip-btn]")
+          .forEach((btn) => {
+            btn.classList.remove("active");
+            btn.setAttribute("aria-pressed", "false");
+          });
+        const activeSelector = { fallback: "[data-ask-fallback-btn]", skip: "[data-ask-skip-btn]" }[kind];
         if (activeSelector) {
           const btn = el.querySelector(activeSelector);
-          if (btn) btn.classList.add("active");
+          if (btn) {
+            btn.classList.add("active");
+            btn.setAttribute("aria-pressed", "true");
+          }
         }
       }
       this.updateAskFooter();
@@ -5075,7 +5106,7 @@
       if (!pa || !form) return;
       const total = pa.items.length;
       const answered = pa.items.filter((it) => it.resolution != null).length;
-      const countEl = form.querySelector("[data-ask-response-dock] [data-ask-answered-count]");
+      const countEl = form.querySelector("[data-ask-footer] [data-ask-answered-count]");
       if (countEl) countEl.textContent = answered + " of " + total + (total === 1 ? " question" : " questions") + " answered";
     },
 
@@ -5103,6 +5134,37 @@
       this.clearPendingAskDock();
       this.renderAskSettledLine(pa, replyText);
       this.clearAgentQuestion();
+    },
+
+    // A successful local send settles only the questions included in that
+    // request. An ask_user acknowledgement can append more questions while
+    // turn/start is in flight; keep those item objects (and their draft state)
+    // pending under a fresh transcript anchor.
+    resolveSubmittedAsk(pa, submittedItems, replyText, turnId) {
+      if (this.pendingAsk !== pa) return;
+      const submitted = new Set(submittedItems);
+      const lateItems = pa.items.filter((item) => !submitted.has(item));
+      if (lateItems.length === 0) {
+        this.resolvePendingAsk(replyText);
+        return;
+      }
+
+      const oldAnchor = pa.el;
+      const parent = oldAnchor && oldAnchor.parentNode;
+      const next = oldAnchor && oldAnchor.nextSibling;
+      this.renderAskSettledLine({ el: oldAnchor, items: submittedItems }, replyText);
+
+      const anchor = document.createElement("div");
+      anchor.className = "ask-anchor agent-question";
+      anchor.setAttribute("data-ask-anchor", "");
+      anchor.textContent = "The agent asked for your input below.";
+      if (parent) parent.insertBefore(anchor, next);
+      pa.el = anchor;
+      pa.items = lateItems;
+      pa.sending = false;
+      pa.localSettledEcho = { text: replyText, turnId: String(turnId || "") };
+      this.renderPendingAskDock();
+      this.markAgentQuestion(anchor);
     },
 
     // renderAskSettledLine replaces the interactive card with a neutral,
@@ -5158,7 +5220,10 @@
       const pa = this.pendingAsk;
       if (!pa || pa.sending) return;
       pa.sending = true;
-      const composedText = composeAskAnswers(pa.items);
+      const currentSend = document.querySelector("form[data-input-form] [data-ask-send-btn]");
+      if (currentSend) currentSend.disabled = true;
+      const submittedItems = pa.items.slice();
+      const composedText = composeAskAnswers(submittedItems);
       const ref = this.appwireRef || this.sessionId;
       try {
         if (!window.SerfAppwire || typeof window.SerfAppwire.startTurn !== "function") {
@@ -5171,7 +5236,7 @@
         const turnId = (resp && resp.turn && resp.turn.id) || "";
         this.setActiveTurnId(turnId || this.activeTurnId);
         this.appendLocalUserMessage(composedText, [], turnId, previousUserCount);
-        this.resolvePendingAsk(composedText);
+        this.resolveSubmittedAsk(pa, submittedItems, composedText, turnId);
         this.ensureLiveStream();
       } catch (err) {
         if (this.pendingAsk !== pa) return;
@@ -5182,6 +5247,8 @@
         this.appendBanner("error", "send failed: " + err.message, { source: "hub", title: "Hub send error" });
       } finally {
         pa.sending = false;
+        const connectedSend = document.querySelector("form[data-input-form] [data-ask-send-btn]");
+        if (connectedSend) connectedSend.disabled = !!(this.pendingAsk && this.pendingAsk.sending);
       }
     },
 

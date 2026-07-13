@@ -13,7 +13,7 @@ function newHarness() {
     </div>
     <header class="workspace-header" data-session-id="01TEST"></header>
     <div id="conversation" data-session-id="01TEST" data-state="awaiting"></div>
-    <form data-input-form data-session-id="01TEST">
+    <form class="workspace-input" data-input-form data-session-id="01TEST">
       <div data-composer-surface>
         <div class="task-status-row">
           <button type="button" class="status-item tasks-status" data-tasks-trigger title="task list"><span class="status-key">tasks</span><span class="status-value" data-task-status-text>loading…</span></button>
@@ -68,7 +68,7 @@ async function testRecheckCollapsesInsteadOfSending() {
   // Hold a reference to the Send button as it existed while still pending —
   // exactly what a slow human hand does: the click lands after the reply
   // already arrived and collapsed the card underneath it.
-  const sendBtn = dock.querySelector("[data-ask-send-btn]");
+  const sendBtn = window.document.querySelector("[data-ask-send-btn]");
 
   const startTurnCalls = [];
   window.SerfAppwire = { startTurn: (ref, text) => { startTurnCalls.push({ ref, text }); return Promise.resolve({ turn: { id: "t1" } }); } };
@@ -107,7 +107,7 @@ async function testConflictDropsTextIntoComposerNoRetry() {
     },
   };
 
-  dock.querySelector("[data-ask-send-btn]").click();
+  window.document.querySelector("[data-ask-send-btn]").click();
   await settle();
 
   pass(startTurnCalls.length === 1, "Conflict must not be retried — expected exactly 1 startTurn call, got " + startTurnCalls.length);
@@ -149,7 +149,7 @@ async function testSendReusesComposerSendPath() {
   R.appwireRef = "ref:01TEST";
   window.SerfAppwire = { startTurn: (ref, text, items) => { startTurnCalls.push({ ref, text, items }); return Promise.resolve({ turn: { id: "t1" } }); } };
 
-  dock.querySelector("[data-ask-send-btn]").click();
+  window.document.querySelector("[data-ask-send-btn]").click();
   await settle();
 
   pass(startTurnCalls.length === 1, "expected exactly one startTurn call, got " + startTurnCalls.length);
@@ -160,10 +160,158 @@ async function testSendReusesComposerSendPath() {
   pass(!!conv.querySelector(".ask-settled-line"), "a successful send leaves the settled line behind");
 }
 
+async function testSendDisabledThroughoutInFlightRebuildAndRetryableError() {
+  const { window, R } = newHarness();
+  await settle();
+  for (const [kind, data] of askCallEvents("call_slow", ONE_QUESTION)) R.handleData(kind, data);
+  pickFirstOption(pendingDock(window));
+  let rejectStart;
+  window.SerfAppwire = { startTurn: () => new Promise((resolve, reject) => { rejectStart = reject; }) };
+  const form = window.document.querySelector("form[data-input-form]");
+  form.querySelector("[data-ask-send-btn]").click();
+  await Promise.resolve();
+  pass(form.querySelector("[data-ask-send-btn]").disabled,
+    "the shared send button is disabled before startTurn settles");
+
+  for (const [kind, data] of askCallEvents("call_slow_more", [{ header: "Follow-up", question: "Anything else?", options: [{ label: "No", detail: "" }] }])) R.handleData(kind, data);
+  pass(form.querySelector("[data-ask-send-btn]").disabled,
+    "a footer rebuilt during send remains disabled");
+
+  rejectStart(new Error("temporary failure"));
+  await settle();
+  pass(!form.querySelector("[data-ask-send-btn]").disabled,
+    "a non-settling send error enables the currently connected send button again");
+}
+
+async function testSuccessfulSendSettlesOnlyItsSubmittedQuestions() {
+  const { conv, window, R } = newHarness();
+  await settle();
+  for (const [kind, data] of askCallEvents("call_a", ONE_QUESTION)) R.handleData(kind, data);
+  pickFirstOption(pendingDock(window));
+
+  const calls = [];
+  let resolveA;
+  window.SerfAppwire = {
+    startTurn: (ref, text) => {
+      calls.push({ ref, text });
+      if (calls.length === 1) return new Promise((resolve) => { resolveA = resolve; });
+      return Promise.resolve({ turn: { id: "turn_b" } });
+    },
+  };
+
+  window.document.querySelector("[data-ask-send-btn]").click();
+  await Promise.resolve();
+  const cacheQuestion = [{ header: "Cache choice", question: "Which cache?", options: [{ label: "Redis", detail: "" }] }];
+  for (const [kind, data] of askCallEvents("call_b", cacheQuestion)) R.handleData(kind, data);
+  const lateDock = pendingDock(window);
+  const lateQuestion = lateDock.querySelector('[data-ask-question][data-ask-key="call_b:0"]');
+  pickFirstOption(lateQuestion);
+  const note = lateQuestion.querySelector("[data-ask-note-field]");
+  note.value = "keep warm";
+  note.dispatchEvent(new window.Event("input", { bubbles: true }));
+  note.focus();
+
+  pass(calls.length === 1 && calls[0].text === '[answers]\n1. [DB choice] → "Postgres"',
+    "the in-flight payload is frozen to ask A");
+  resolveA({ turn: { id: "turn_a" } });
+  await Promise.resolve();
+  await Promise.resolve();
+  R.handleData("USER_INPUT", { text: '[answers]\n1. [DB choice] → "Postgres"', turnId: "turn_a" });
+
+  const settled = conv.querySelector(".ask-settled-line");
+  const remainingDock = pendingDock(window);
+  const remainingQuestion = remainingDock && remainingDock.querySelector('[data-ask-question][data-ask-key="call_b:0"]');
+  pass(!!settled && settled.textContent.includes("DB choice") && !settled.textContent.includes("Cache choice"),
+    "successful A creates settled history for A only");
+  pass(R.pendingAsk && R.pendingAsk.items.length === 1 && R.pendingAsk.items[0].key === "call_b:0",
+    "late ask B remains the only pending item after A's authoritative USER_INPUT echo");
+  pass(!!remainingQuestion && remainingQuestion.querySelector("[data-ask-option-input]").checked &&
+    remainingQuestion.querySelector("[data-ask-note-field]").value === "keep warm",
+    "late ask B preserves its selected answer and note draft");
+  pass(window.document.activeElement === remainingQuestion.querySelector("[data-ask-note-field]"),
+    "late ask B preserves focus through A's settlement and echo");
+  pass(window.document.querySelector(".message-input").hidden &&
+    window.document.querySelector("form[data-input-form]").dataset.responseMode === "ask",
+    "the ordinary composer remains gated while late ask B is pending");
+  const remainingSend = window.document.querySelector("[data-ask-send-btn]");
+  pass(!!remainingSend && !remainingSend.disabled,
+    "late ask B becomes independently sendable after A settles");
+
+  if (remainingSend) remainingSend.click();
+  await settle();
+  pass(calls.length === 2 && calls[1].text === '[answers]\n1. [Cache choice] → "Redis" — note: "keep warm"',
+    "late ask B requires a later send with an exact B-only payload, got " + JSON.stringify(calls[1] && calls[1].text));
+}
+
+async function testOtherClientInputStillSettlesLateQuestions() {
+  const { window, R } = newHarness();
+  await settle();
+  for (const [kind, data] of askCallEvents("call_a", ONE_QUESTION)) R.handleData(kind, data);
+  pickFirstOption(pendingDock(window));
+
+  let resolveA;
+  window.SerfAppwire = {
+    startTurn: () => new Promise((resolve) => { resolveA = resolve; }),
+  };
+  window.document.querySelector("[data-ask-send-btn]").click();
+  await Promise.resolve();
+  for (const [kind, data] of askCallEvents("call_b", [{
+    header: "Cache choice",
+    question: "Which cache?",
+    options: [{ label: "Redis", detail: "" }],
+  }])) R.handleData(kind, data);
+
+  resolveA({ turn: { id: "turn_a" } });
+  await Promise.resolve();
+  await Promise.resolve();
+  pass(R.pendingAsk && R.pendingAsk.localSettledEcho,
+    "successful A records its expected local echo while late ask B remains pending");
+
+  R.handleData("USER_INPUT", { text: "Memcached", turnId: "turn_other" });
+  pass(R.pendingAsk === null,
+    "authoritative input from another client still settles late ask B");
+  pass(!pendingDock(window),
+    "authoritative input from another client removes the late ask dock");
+}
+
+async function testOldSendSettlementDoesNotEnableNewPendingSend() {
+  const { window, R } = newHarness();
+  await settle();
+  const deferred = [];
+  window.SerfAppwire = {
+    startTurn: () => new Promise((resolve, reject) => deferred.push({ resolve, reject })),
+  };
+
+  for (const [kind, data] of askCallEvents("call_a", ONE_QUESTION)) R.handleData(kind, data);
+  pickFirstOption(pendingDock(window));
+  window.document.querySelector("[data-ask-send-btn]").click();
+  await Promise.resolve();
+
+  R.handleData("USER_INPUT", { text: "Postgres" });
+  for (const [kind, data] of askCallEvents("call_b", [{ header: "Cache choice", question: "Which cache?", options: [{ label: "Redis", detail: "" }] }])) R.handleData(kind, data);
+  pickFirstOption(pendingDock(window));
+  window.document.querySelector("[data-ask-send-btn]").click();
+  await Promise.resolve();
+  pass(deferred.length === 2, "sanity: both ask sends are independently in flight");
+
+  deferred[0].resolve({ turn: { id: "turn_a" } });
+  await Promise.resolve();
+  await Promise.resolve();
+  pass(window.document.querySelector("[data-ask-send-btn]").disabled,
+    "settling old ask A does not enable newer ask B's connected send button while B is in flight");
+
+  deferred[1].reject(new Error("temporary failure"));
+  await settle();
+}
+
 (async () => {
   await testRecheckCollapsesInsteadOfSending();
   await testConflictDropsTextIntoComposerNoRetry();
   await testSendReusesComposerSendPath();
+  await testSendDisabledThroughoutInFlightRebuildAndRetryableError();
+  await testSuccessfulSendSettlesOnlyItsSubmittedQuestions();
+  await testOtherClientInputStillSettlesLateQuestions();
+  await testOldSendSettlementDoesNotEnableNewPendingSend();
 
   if (failures.length > 0) {
     for (const f of failures) console.log(f);

@@ -12,7 +12,7 @@ function newHarness() {
     </div>
     <header class="workspace-header" data-session-id="01TEST"></header>
     <div id="conversation" data-session-id="01TEST" data-state="awaiting"></div>
-    <form data-input-form data-session-id="01TEST">
+    <form class="workspace-input" data-input-form data-session-id="01TEST">
       <div data-composer-surface>
         <div class="task-status-row">
           <button type="button" class="status-item tasks-status" data-tasks-trigger title="task list"><span class="status-key">tasks</span><span class="status-value" data-task-status-text>loading…</span></button>
@@ -66,29 +66,60 @@ async function testPendingDockRenders() {
   const anchor = conv.querySelector("[data-ask-anchor]");
   const responseDock = dock(window);
   const form = window.document.querySelector("form[data-input-form]");
+  const footer = form.querySelector("[data-ask-footer]");
   const composer = form.querySelector("[data-composer-surface]");
   const input = form.querySelector(".message-input");
   pass(!!anchor, "pending ask leaves a compact transcript [data-ask-anchor]");
   pass(!conv.querySelector(".ask-card"), "the transcript has no retired interactive .ask-card");
   pass(!!responseDock, "the one interactive response form is [data-ask-response-dock] inside the input form");
   pass(responseDock && responseDock.parentElement === form, "the response dock is owned by form[data-input-form]");
+  pass(footer && footer.parentElement === form,
+    "the shared footer is a form-owned sibling of the scrolling question dock");
+  pass(!responseDock.contains(footer),
+    "the shared footer does not scroll with the question list");
   pass(composer.hidden && composer.inert, "the normal [data-composer-surface] is hidden and inert while an ask is pending");
   pass(input.hidden && input.inert, "the normal textarea is unavailable while the dock owns the response");
   if (!responseDock) return;
 
   const options = Array.from(responseDock.querySelectorAll("[data-ask-option]"));
-  pass(options.length === 2, "the dock renders one chip per option, got " + options.length);
+  pass(options.length === 4, "the dock renders regular and alternative options in one group, got " + options.length);
   pass(options[0] && options[0].dataset.optionLabel === "Postgres", "the recommended option renders FIRST regardless of input order");
   pass(options[0] && options[0].classList.contains("recommended"), "the first option carries .recommended");
   pass(options[0] && !!options[0].querySelector(".ask-option-tag"), "the recommended option shows a tag");
   pass(options[1] && options[1].dataset.optionLabel === "SQLite" && !options[1].classList.contains("recommended"), "the non-recommended option is not tagged");
-  pass(!!responseDock.querySelector("[data-ask-free-toggle]"), "the dock offers 'Something else…'");
-  pass(!!responseDock.querySelector("[data-ask-decide-toggle]"), "the dock offers 'You decide'");
+  pass(!!responseDock.querySelector('[data-ask-option][data-option-kind="free"]'),
+    "Something else is a native option choice");
+  pass(!!responseDock.querySelector('[data-ask-option][data-option-kind="decide"]'),
+    "let serf decide is a native option choice");
   pass(!!responseDock.querySelector("[data-ask-decide-leaning]"), "the dock has the optional leaning field");
+  for (const kind of ["free", "decide"]) {
+    const optionLabel = responseDock.querySelector('[data-ask-option][data-option-kind="' + kind + '"]');
+    const editor = responseDock.querySelector(kind === "free" ? "[data-ask-free-input]" : "[data-ask-decide-leaning]");
+    const row = optionLabel && optionLabel.closest("[data-ask-alternative-row]");
+    const labelable = optionLabel && optionLabel.querySelectorAll("button, input, meter, output, progress, select, textarea");
+    pass(labelable && labelable.length === 1 && labelable[0].matches('[type="radio"]'),
+      kind + " option label contains exactly one labelable descendant, its radio");
+    pass(!!row && editor && editor.parentElement === row && optionLabel.parentElement === row,
+      kind + " editor is a sibling of its radio label in a wrapping alternative row");
+    const optionText = optionLabel && optionLabel.querySelector(".ask-option-label");
+    const labelledBy = editor && (editor.getAttribute("aria-labelledby") || "").split(/\s+/);
+    pass(optionText && optionText.id && labelledBy && labelledBy.includes(optionText.id),
+      kind + " editor is explicitly labelled by its alternative option text");
+  }
   const fallbackBtn = responseDock.querySelector("[data-ask-fallback-btn]");
   pass(!!fallbackBtn, "the dock renders a fallback when if_unanswered is present");
   pass(fallbackBtn && fallbackBtn.textContent.includes("default to Postgres"), "the fallback exposes the stated fallback text");
   pass(!!responseDock.querySelector("[data-ask-skip-btn]"), "the dock offers skip");
+  pass(!!responseDock.querySelector("[data-ask-note-field]") &&
+       !responseDock.querySelector("[data-ask-note-field]").hidden,
+    "the optional note field is visible without a disclosure toggle");
+  pass(!responseDock.querySelector("[data-ask-note-toggle]"),
+    "the obsolete note disclosure is absent");
+  pass(responseDock.querySelector("[data-ask-options]").getAttribute("role") === "radiogroup",
+    "single-select answer choices expose radiogroup semantics");
+  pass(footer && footer.querySelector("[data-ask-answered-count]") &&
+       footer.querySelector("[data-ask-answered-count]").getAttribute("aria-live") === "polite",
+    "answer progress is announced politely");
   const why = responseDock.querySelector("[data-ask-why]");
   pass(!!why && why.textContent === "the writer refactor depends on it", "the dock renders the why line verbatim");
 }
@@ -126,7 +157,9 @@ async function testAskDockFocusAnnouncementsAndInputNames() {
       kind + " input aria-labelledby references existing label elements");
   }
 
-  qEl.querySelector("[data-ask-free-toggle]").click();
+  const freeChoice = qEl.querySelector('[data-ask-option][data-option-kind="free"] input');
+  pass(!!freeChoice, "free answer is exposed as a native radio before focus testing");
+  (freeChoice || qEl.querySelector("[data-ask-free-toggle]")).click();
   pass(window.document.activeElement === freeInput, "free-answer activation focuses the editable free-text input");
   for (const [kind, data] of askCallEvents("call_focus_more", [{ header: "Follow-up", question: "Any constraint?", options: [{ label: "No", detail: "" }] }])) {
     R.handleData(kind, data);
@@ -137,6 +170,74 @@ async function testAskDockFocusAnnouncementsAndInputNames() {
   R.resolvePendingAsk("[answers]");
   pass(status && /message composer (is )?ready|composer restored/i.test(status.textContent),
     "restoring the normal composer announces the mode transition through the live region");
+}
+
+async function testOptionLabelIDsRemainUniqueAcrossCollidingLabels() {
+  const { window, R } = newHarness();
+  await settle();
+  const question = {
+    header: "Collision",
+    question: "Which label?",
+    options: [
+      { label: "free", detail: "collides with the free alternative suffix" },
+      { label: "Same label", detail: "first duplicate" },
+      { label: "Same label", detail: "second duplicate" },
+      { label: "Same-label", detail: "sanitizes like Same label" },
+      { label: "decide", detail: "collides with the decide alternative suffix" },
+    ],
+  };
+  for (const [kind, data] of askCallEvents("call_id_collision", [question])) R.handleData(kind, data);
+
+  const qEl = questionEls(window)[0];
+  const optionLabels = Array.from(qEl.querySelectorAll(".ask-option-label"));
+  const ids = optionLabels.map((label) => label.id);
+  pass(ids.length === new Set(ids).size,
+    "duplicate, sanitized-colliding, and alternative option labels receive unique ids");
+  for (const [kind, editorSelector] of [["free", "[data-ask-free-input]"], ["decide", "[data-ask-decide-leaning]"]]) {
+    const alternative = qEl.querySelector('[data-ask-option][data-option-kind="' + kind + '"] .ask-option-label');
+    const editor = qEl.querySelector(editorSelector);
+    const labelledBy = (editor.getAttribute("aria-labelledby") || "").trim().split(/\s+/);
+    pass(labelledBy[0] === alternative.id,
+      kind + " editor references its own unique alternative label id first");
+    pass(window.document.getElementById(labelledBy[0]) === alternative,
+      kind + " editor label id resolves to the correct alternative label element");
+  }
+}
+
+async function testQuestionIDsRemainUniqueAcrossCollidingKeys() {
+  const { window, R } = newHarness();
+  await settle();
+  const question = {
+    header: "Collision",
+    question: "Which option?",
+    options: [{ label: "First", detail: "" }, { label: "Second", detail: "" }],
+  };
+  for (const callId of ["call:a", "call_a"]) {
+    for (const [kind, data] of askCallEvents(callId, [question])) R.handleData(kind, data);
+  }
+
+  const responseDock = dock(window);
+  const questions = questionEls(window);
+  const ids = Array.from(responseDock.querySelectorAll("[id]"), (el) => el.id);
+  pass(questions.length === 2, "sanity: both acknowledged colliding-key questions render in the dock");
+  pass(ids.length === new Set(ids).size,
+    "distinct question keys that sanitize identically still produce globally unique dock ids");
+  for (const qEl of questions) {
+    for (const labelled of qEl.querySelectorAll("[aria-labelledby]")) {
+      const labelledBy = labelled.getAttribute("aria-labelledby").trim().split(/\s+/);
+      pass(labelledBy.every((id) => {
+        const label = window.document.getElementById(id);
+        return !!label && qEl.contains(label);
+      }), "every aria-labelledby token resolves within its owning question " + qEl.dataset.askKey);
+    }
+    for (const [kind, editorSelector] of [["free", "[data-ask-free-input]"], ["decide", "[data-ask-decide-leaning]"]]) {
+      const alternative = qEl.querySelector('[data-ask-option][data-option-kind="' + kind + '"] .ask-option-label');
+      const editor = qEl.querySelector(editorSelector);
+      const firstLabelId = editor.getAttribute("aria-labelledby").trim().split(/\s+/)[0];
+      pass(window.document.getElementById(firstLabelId) === alternative,
+        kind + " editor aria-labelledby resolves to its own alternative in question " + qEl.dataset.askKey);
+    }
+  }
 }
 
 async function testAskDockPreservesEnabledControlFocusAcrossRebuilds() {
@@ -153,17 +254,17 @@ async function testAskDockPreservesEnabledControlFocusAcrossRebuilds() {
   const originalKey = "call_focus_controls:0";
   const controlCases = [
     ["[data-ask-option-input]", 1, "option input"],
-    ["[data-ask-free-toggle]", 0, "free-answer toggle"],
-    ["[data-ask-decide-toggle]", 0, "you-decide toggle"],
+    ['[data-ask-option][data-option-kind="free"] input', 0, "free-answer radio"],
+    ['[data-ask-option][data-option-kind="decide"] input', 0, "you-decide radio"],
     ["[data-ask-fallback-btn]", 0, "fallback button"],
     ["[data-ask-skip-btn]", 0, "skip button"],
-    ["[data-ask-note-toggle]", 0, "note toggle"],
+    ["[data-ask-note-field]", 0, "visible note field"],
     ["[data-ask-send-btn]", 0, "shared send button"],
   ];
   for (const [selector, index, label] of controlCases) {
     const responseDock = dock(window);
     const scope = selector === "[data-ask-send-btn]"
-      ? responseDock
+      ? window.document.querySelector("form[data-input-form]")
       : responseDock && responseDock.querySelector('[data-ask-question][data-ask-key="' + originalKey + '"]');
     const control = scope && scope.querySelectorAll(selector)[index];
     pass(!!control, "sanity: " + label + " exists before rebuild");
@@ -176,7 +277,7 @@ async function testAskDockPreservesEnabledControlFocusAcrossRebuilds() {
     }
     const rebuiltDock = dock(window);
     const rebuiltScope = selector === "[data-ask-send-btn]"
-      ? rebuiltDock
+      ? window.document.querySelector("form[data-input-form]")
       : rebuiltDock && rebuiltDock.querySelector('[data-ask-question][data-ask-key="' + originalKey + '"]');
     const replacement = rebuiltScope && rebuiltScope.querySelectorAll(selector)[index];
     pass(window.document.activeElement === replacement,
@@ -196,6 +297,23 @@ async function testAskDockPreservesEnabledControlFocusAcrossRebuilds() {
   R.renderPendingAskDock();
   pass(window.document.activeElement !== dock(window).querySelector('[data-ask-question][data-ask-key="' + originalKey + '"] [data-ask-fallback-btn]'),
     "a removed dock control is not refocused during a rebuild");
+}
+
+async function testAlternativeRadiosToggleOff() {
+  const { window, R } = newHarness();
+  await settle();
+  for (const [kind, data] of askCallEvents("call_toggle", [{ header: "Choice", question: "Choose", options: [{ label: "A", detail: "" }] }])) R.handleData(kind, data);
+  const qEl = questionEls(window)[0];
+  for (const kind of ["free", "decide"]) {
+    const input = qEl.querySelector('[data-ask-option][data-option-kind="' + kind + '"] input');
+    pass(!!input, kind + " alternative is rendered as a native radio");
+    if (!input) continue;
+    input.click();
+    pass(input.checked && R.pendingAsk.items[0].resolution.kind === kind, kind + " radio selects its resolution");
+    input.click();
+    await Promise.resolve();
+    pass(!input.checked && R.pendingAsk.items[0].resolution === null, "clicking a checked " + kind + " radio clears it");
+  }
 }
 
 async function testPendingAskBlocksNormalComposerSubmission() {
@@ -300,7 +418,7 @@ async function testDockSendsAnswersWhileComposerIsGated() {
   pickOption(responseDock, "Postgres");
   const calls = [];
   window.SerfAppwire = { startTurn: (ref, text) => { calls.push({ ref, text }); return Promise.resolve({ turn: { id: "t1" } }); } };
-  responseDock.querySelector("[data-ask-send-btn]").click();
+  window.document.querySelector("[data-ask-send-btn]").click();
   await settle();
 
   pass(calls.length === 1, "the dock's shared Send answers action invokes the normal startTurn path once");
@@ -319,7 +437,7 @@ async function testMultiSelectAccumulatesCheckedLabels() {
     return;
   }
   const qEl = questionEls(window)[0];
-  const inputs = Array.from(qEl.querySelectorAll("[data-ask-option-input]"));
+  const inputs = Array.from(qEl.querySelectorAll('[data-ask-option][data-option-label] [data-ask-option-input]'));
   pass(inputs.every((input) => input.type === "checkbox"), "multi_select renders checkboxes, got " + inputs.map((input) => input.type).join(","));
 
   const check = (label, value) => {
@@ -392,7 +510,10 @@ async function testColdAttachPendingResolvedInterruptedDenied() {
 (async () => {
   await testPendingDockRenders();
   await testAskDockFocusAnnouncementsAndInputNames();
+  await testOptionLabelIDsRemainUniqueAcrossCollidingLabels();
+  await testQuestionIDsRemainUniqueAcrossCollidingKeys();
   await testAskDockPreservesEnabledControlFocusAcrossRebuilds();
+  await testAlternativeRadiosToggleOff();
   await testPendingAskBlocksNormalComposerSubmission();
   await testReplayAndSessionReplacementTearDownAskDock();
   await testNoFallbackWithoutIfUnanswered();
