@@ -230,11 +230,10 @@
   }
 
   // Same signal the composer's interrupt/steer buttons and the header model
-  // chip key off: Status.Type == "active" AND ActiveTurnID set. NOT
-  // activeFlags, which serf daemons never populate.
+  // chip key off; the predicate lives in thread-state.js.
   function isThreadBusy() {
     const conv = document.getElementById("conversation");
-    return !!conv && conv.getAttribute("data-state") === "active" && !!conv.getAttribute("data-active-turn-id");
+    return !!conv && window.SerfThreadState.isBusy(conv.getAttribute("data-state"), conv.getAttribute("data-active-turn-id"));
   }
 
   function showTurnActionUnavailable(message) {
@@ -249,7 +248,14 @@
     // "provider/model" so the daemon can route across providers.
     const modelsPromise = window.SerfAppwire
       ? window.SerfAppwire.listModels()
-      : fetch("/api/models").then(r => r.ok ? r.json() : []);
+      : fetch("/api/models").then(r => {
+          if (!r.ok) throw new Error("models fetch failed: " + r.status);
+          return r.json();
+        });
+    // Deliberately does NOT swallow errors into an empty list: a load failure
+    // must reach the enum picker's rejection path so it can surface an error
+    // row rather than showing "No matches" (indistinguishable from an empty
+    // catalog). Mirrors the header chip picker's error surfacing.
     return modelsPromise.then(list => {
       if (!Array.isArray(list)) return [];
       return list.map(m => ({
@@ -257,7 +263,7 @@
         label: m.display_name || m.model,
         hint: m.provider,
       }));
-    }).catch(() => []);
+    });
   }
 
   function upgradeSerf(requested) {
@@ -759,7 +765,13 @@
       items = [];
       active = -1;
       val.then(list => { argsEnumLoaded = true; resolved(list); })
-         .catch(() => { argsEnumLoaded = true; resolved([]); });
+         .catch(() => {
+           argsEnumLoaded = true;
+           items = [];
+           active = -1;
+           results.innerHTML = '<div class="empty-state empty-state-search"><p class="empty-state-title">Couldn\'t load options</p><p class="empty-state-body">Something went wrong. Close and reopen to retry.</p></div>';
+           updateActive();
+         });
     } else {
       argsEnumLoaded = true;
       resolved(val);

@@ -52,7 +52,7 @@
   }
 
   function isBusy() {
-    return busy.status === "active" && !!busy.activeTurnId;
+    return window.SerfThreadState.isBusy(busy.status, busy.activeTurnId);
   }
 
   function syncTriggerDisabled() {

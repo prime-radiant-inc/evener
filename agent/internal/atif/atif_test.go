@@ -662,6 +662,49 @@ func TestConvertToATIF_CheckpointAndSummary(t *testing.T) {
 	}
 }
 
+func TestConvertToATIF_ModelSwitch(t *testing.T) {
+	ts := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
+
+	header := transcript.Header{
+		SessionID:    "sess-switch",
+		Model:        "gpt-5.5",
+		BuildVersion: "v0.3.0",
+		ProfileID:    "openai",
+	}
+
+	entries := []transcript.Entry{
+		{
+			Kind: "entry",
+			Seq:  0,
+			Turn: schema.Turn{
+				Kind:      schema.TurnModelSwitch,
+				Message:   llm.User("Switched model: anthropic/claude-opus-4-6 → openai/gpt-5.5"),
+				Timestamp: ts,
+			},
+		},
+	}
+
+	traj := Convert(header, entries)
+
+	if len(traj.Steps) != 1 {
+		t.Fatalf("len(Steps) = %d, want 1", len(traj.Steps))
+	}
+
+	step := traj.Steps[0]
+	if step.StepID != 1 {
+		t.Errorf("model-switch StepID = %d, want 1", step.StepID)
+	}
+	if step.Source != "system" {
+		t.Errorf("model-switch Source = %q, want %q", step.Source, "system")
+	}
+	if step.Extra["serf_kind"] != "model_switch" {
+		t.Errorf("model-switch Extra[serf_kind] = %v, want %q", step.Extra["serf_kind"], "model_switch")
+	}
+	if step.Message != "Switched model: anthropic/claude-opus-4-6 → openai/gpt-5.5" {
+		t.Errorf("model-switch Message = %q, want marker text", step.Message)
+	}
+}
+
 func TestConvertToATIF_EmptyTranscript(t *testing.T) {
 	header := transcript.Header{
 		SessionID:    "sess-empty",

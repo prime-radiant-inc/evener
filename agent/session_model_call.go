@@ -1079,6 +1079,13 @@ func (rs replayScope) active() bool { return strings.TrimSpace(rs.BehaviorTag) !
 // the thinking rule is scoped per family (exact-model for anthropic, same-
 // provider for google). An unrecognized tag maps to itself so an unknown
 // provider never silently shares a family with a known one.
+//
+// Sibling tags collapse to one family because they emit the *same* raw block
+// shape on the wire: kimi-anthropic/openrouter-anthropic/minimax all speak the
+// anthropic wire format, so an anthropic-produced web_search raw block is
+// byte-compatible when replayed into any of them (and vice versa). Grouping
+// them here is what lets those cross-tag hops replay web_search verbatim
+// instead of dropping it as foreign JSON.
 func builderFamily(tag string) string {
 	switch strings.TrimSpace(tag) {
 	case "anthropic", "kimi-anthropic", "openrouter-anthropic", "minimax":

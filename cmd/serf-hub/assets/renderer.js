@@ -434,13 +434,14 @@
     },
 
     syncTurnActionControls() {
-      const hasActiveTurn = !!this.activeTurnId;
-      const turnIsRunning = this.turnIsRunning(this.state);
+      // Busy == an in-flight turn: ActiveTurnID set AND state active. Shared
+      // with the header model chip and command palette via thread-state.js.
+      const busy = window.SerfThreadState.isBusy(this.state, this.activeTurnId);
       const interrupt = document.querySelector('[data-action-trigger="interrupt"]');
       if (interrupt) {
         const canInterrupt = typeof this.liveInterruptCap === "boolean" ? this.liveInterruptCap : interrupt.getAttribute("data-capability-interrupt") !== "false";
         interrupt.setAttribute("data-capability-interrupt", canInterrupt ? "true" : "false");
-        interrupt.disabled = !canInterrupt || !hasActiveTurn || !turnIsRunning;
+        interrupt.disabled = !canInterrupt || !busy;
       }
       const steer = document.querySelector("[data-steer-trigger]");
       if (steer) {
@@ -450,7 +451,7 @@
         // with just textarea text falls back to the classic steer path.
         const canSteer = typeof this.liveSteerCap === "boolean" ? this.liveSteerCap : steer.getAttribute("data-capability-steer") !== "false";
         steer.setAttribute("data-capability-steer", canSteer ? "true" : "false");
-        steer.disabled = !canSteer || !hasActiveTurn || !turnIsRunning;
+        steer.disabled = !canSteer || !busy;
       }
     },
 

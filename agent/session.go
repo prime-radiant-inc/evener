@@ -742,7 +742,13 @@ func (s *Session) SetModel(model string) error {
 			contextWarningPct = int(pressure*100 + 0.5)
 		}
 	}
-	markerText := buildModelSwitchMarkerText(oldProfile, nextProfile, contextWarning, contextWarningPct, s.lastDroppedModelFallbacks)
+	markerText := buildModelSwitchMarkerText(modelSwitchMarkerParams{
+		oldProfile:        oldProfile,
+		nextProfile:       nextProfile,
+		contextWarning:    contextWarning,
+		contextWarningPct: contextWarningPct,
+		droppedFallbacks:  s.lastDroppedModelFallbacks,
+	})
 	s.mu.Unlock()
 	// Persisted marker turn (N5): a new schema.Turn kind rendered as a
 	// systemMessage by both projection paths and excluded from
@@ -771,13 +777,23 @@ func (s *Session) SetModel(model string) error {
 // profile's compaction threshold and/or the switch dropped now-invalid
 // cfg.ModelFallbacks entries (N5, decision rows "Transcript marker" /
 // "Context-window shrink" / "Model-fallbacks after a switch").
-func buildModelSwitchMarkerText(oldProfile, nextProfile *provider.Profile, contextWarning bool, contextWarningPct int, droppedFallbacks []string) string {
-	lines := []string{fmt.Sprintf("Switched model: %s/%s → %s/%s", oldProfile.ID(), oldProfile.Model(), nextProfile.ID(), nextProfile.Model())}
-	if contextWarning {
-		lines = append(lines, fmt.Sprintf("Warning: context usage is at ~%d%% of %s's context window, over the compaction threshold.", contextWarningPct, nextProfile.ID()))
+// modelSwitchMarkerParams collects the inputs to buildModelSwitchMarkerText so
+// the call site names each field rather than relying on positional order.
+type modelSwitchMarkerParams struct {
+	oldProfile        *provider.Profile
+	nextProfile       *provider.Profile
+	contextWarning    bool
+	contextWarningPct int
+	droppedFallbacks  []string
+}
+
+func buildModelSwitchMarkerText(p modelSwitchMarkerParams) string {
+	lines := []string{fmt.Sprintf("Switched model: %s/%s → %s/%s", p.oldProfile.ID(), p.oldProfile.Model(), p.nextProfile.ID(), p.nextProfile.Model())}
+	if p.contextWarning {
+		lines = append(lines, fmt.Sprintf("Warning: context usage is at ~%d%% of %s's context window, over the compaction threshold.", p.contextWarningPct, p.nextProfile.ID()))
 	}
-	if len(droppedFallbacks) > 0 {
-		lines = append(lines, fmt.Sprintf("Warning: dropped model fallbacks no longer valid for %s: %s", nextProfile.ID(), strings.Join(droppedFallbacks, ", ")))
+	if len(p.droppedFallbacks) > 0 {
+		lines = append(lines, fmt.Sprintf("Warning: dropped model fallbacks no longer valid for %s: %s", p.nextProfile.ID(), strings.Join(p.droppedFallbacks, ", ")))
 	}
 	return strings.Join(lines, "\n")
 }

@@ -367,6 +367,13 @@ func (m *hubModel) applyQueueState(ref string, queue appwire.QueueState) {
 // updateDashboardRowModel keeps the dashboard's session-row Model column
 // live: thread/model/changed fires while the daemon still holds the row list
 // (m.rows), which is otherwise only rebuilt from a fresh tree fetch.
+//
+// Deliberately lazy: this only fires for the currently-viewed session, because
+// applyHubNotification gates every row-mutating notification behind
+// notificationMatchesCurrentSession. A model switch on a background session is
+// not reflected in its dashboard row until the next tree fetch rebuilds m.rows.
+// This matches how all other per-row state (queue, activity) updates — we do
+// not fan notifications out to non-viewed rows.
 func (m *hubModel) updateDashboardRowModel(ref, model string) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" || model == "" {

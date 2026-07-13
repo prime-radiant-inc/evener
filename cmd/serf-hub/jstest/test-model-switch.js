@@ -8,7 +8,11 @@ const vm = require("vm");
 const { JSDOM } = require("jsdom");
 
 const appwireSrc = fs.readFileSync(path.resolve(__dirname, "../assets/appwire.js"), "utf8");
-const modelSwitchSrc = fs.readFileSync(path.resolve(__dirname, "../assets/model-switch.js"), "utf8");
+// thread-state.js defines window.SerfThreadState, which model-switch.js's isBusy
+// and search.js's isThreadBusy depend on; production loads it first
+// (templates/app.html), so prepend it to both bundles under test.
+const threadStateSrc = fs.readFileSync(path.resolve(__dirname, "../assets/thread-state.js"), "utf8");
+const modelSwitchSrc = threadStateSrc + "\n" + fs.readFileSync(path.resolve(__dirname, "../assets/model-switch.js"), "utf8");
 const sidebarSrc = fs.readFileSync(path.resolve(__dirname, "../assets/sidebar.js"), "utf8");
 
 const failures = [];
@@ -252,7 +256,7 @@ async function scenarioEffortLevelListSemantics() {
 // ---------- (task 8 c) after thread/model/changed the search.js palette
 // effort picker re-keys to the new model's levels, not a hardcoded vocabulary ----------
 async function scenarioPaletteEffortReKeys() {
-  const searchSrc = fs.readFileSync(path.resolve(__dirname, "../assets/search.js"), "utf8");
+  const searchSrc = threadStateSrc + "\n" + fs.readFileSync(path.resolve(__dirname, "../assets/search.js"), "utf8");
   const dom = new JSDOM(`<!DOCTYPE html><html><body>
     <dialog id="search-dialog"><div class="search-dialog-inner"><header class="search-dialog-header">
     <input id="search-input" type="text"></header><div id="search-results"></div></div></dialog>
@@ -342,7 +346,7 @@ async function scenarioRunStateDisable() {
 
 // (d, continued) — the palette "Switch model" action also refuses while busy.
 async function scenarioPaletteRefusesWhileBusy() {
-  const searchSrc = fs.readFileSync(path.resolve(__dirname, "../assets/search.js"), "utf8");
+  const searchSrc = threadStateSrc + "\n" + fs.readFileSync(path.resolve(__dirname, "../assets/search.js"), "utf8");
   const dom = new JSDOM(`<!DOCTYPE html><html><body>
     <dialog id="search-dialog"><div class="search-dialog-inner"><header class="search-dialog-header">
     <input id="search-input" type="text"></header><div id="search-results"></div></div></dialog>

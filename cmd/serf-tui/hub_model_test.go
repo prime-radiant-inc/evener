@@ -3551,7 +3551,7 @@ func TestHubModelHelpAndPaletteShareSessionCommands(t *testing.T) {
 	}
 	palette := m.commandPalette.View()
 
-	for _, command := range []string{"/help", "/tasks", "/agents", "/auth", "/login", "/logout", "/model", "/clear", "/fork", "/shutdown", "/theme", "/dashboard", "/project"} {
+	for _, command := range []string{"/help", "/tasks", "/agents", "/auth", "/login", "/logout", "/model", "/effort", "/clear", "/fork", "/shutdown", "/theme", "/dashboard", "/project"} {
 		if !strings.Contains(help, command) {
 			t.Fatalf("help missing command %q:\n%s", command, help)
 		}
