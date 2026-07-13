@@ -39,13 +39,21 @@ func resolvePolicy(t *testing.T, mode sandbox.Mode, home, cwd string) *sandbox.R
 	return &rp
 }
 
+// realTempDir returns a fresh existing temp directory through its canonical
+// path, so sandbox tests do not accidentally include a host-system symlink such
+// as macOS /var in cases that are not testing symlink refusal.
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	return evalSym(t, t.TempDir())
+}
+
 // newSB builds a sandboxFS for mode over a fresh worktree beneath a fake home,
 // returning the fs, the home dir, and the worktree root. The worktree is NOT a
 // git repo (NonGit layout) so the whole temp tree is the writable/readable root
 // without git-metadata carve-outs muddying the base cases.
 func newSB(t *testing.T, mode sandbox.Mode) (*sandboxFS, string, string) {
 	t.Helper()
-	home := t.TempDir()
+	home := realTempDir(t)
 	worktree := filepath.Join(home, "project")
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
 		t.Fatal(err)

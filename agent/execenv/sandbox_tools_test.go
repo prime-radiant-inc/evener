@@ -20,7 +20,7 @@ import (
 // whole tree is the read/write root without git-metadata carve-outs.
 func sandboxedEnv(t *testing.T, mode sandbox.Mode) (env *LocalExecutionEnvironment, home, worktree string) {
 	t.Helper()
-	home = t.TempDir()
+	home = realTempDir(t)
 	worktree = filepath.Join(home, "project")
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
 		t.Fatal(err)
@@ -40,7 +40,7 @@ var sandboxedModes = []sandbox.Mode{sandbox.ModeReadOnly, sandbox.ModeWorkspaceW
 // independently of grepNative's separate hidden-dotfile skip.
 func sandboxedEnvWithDenylist(t *testing.T, mode sandbox.Mode, extraDeny ...string) (env *LocalExecutionEnvironment, home, worktree string) {
 	t.Helper()
-	home = t.TempDir()
+	home = realTempDir(t)
 	worktree = filepath.Join(home, "project")
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
 		t.Fatal(err)
