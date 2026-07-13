@@ -257,6 +257,48 @@ func Merged(run GitRunner, tipSHA, mergeTarget, baseSHA string) (MergedResult, e
 	return MergedResult{Merged: false, TargetRef: candidates[0].ref}, nil
 }
 
+// MergedAncestryLocal is the automatic-disposal-safe tier of the merged
+// predicate (spec §D0 two tiers / "remote-tracking evidence is not
+// auto-trustworthy"): a lane counts as merged only when its tip is a git
+// ancestor of the LOCAL branch refs/heads/<mergeTarget>.
+//
+// It deliberately restricts the evidence Merged accepts on two axes, because
+// automatic disposal deletes branches without a human in the loop:
+//
+//   - No remote-tracking refs. A stale refs/remotes/*/<target> left behind by
+//     an upstream force-push can still contain the lane tip while the
+//     recreated upstream branch does not — trusting it would delete unmerged
+//     work. There is also no `git fetch` here, so a tracking ref's freshness
+//     is unknown. Only refs/heads/* is consulted.
+//   - No cherry/patch-equivalence arm. That arm recognizes commits that are
+//     patch-equal to the target's history but not reachable from it;
+//     automatic disposal must not treat unreachable commits as merged.
+//
+// Both looser signals remain available through Merged for interactive,
+// human-confirmed disposal. An empty mergeTarget, or one with no local
+// branch, disables the merged arm: TargetUnknown is true and Merged is false
+// (the caller falls back to Unchanged).
+func MergedAncestryLocal(run GitRunner, tipSHA, mergeTarget string) (MergedResult, error) {
+	if mergeTarget == "" {
+		return MergedResult{TargetUnknown: true}, nil
+	}
+
+	localRef := "refs/heads/" + mergeTarget
+	localSHA, ok := resolveRef(run, localRef)
+	if !ok {
+		return MergedResult{TargetUnknown: true}, nil
+	}
+
+	anc, err := isAncestor(run, tipSHA, localSHA)
+	if err != nil {
+		return MergedResult{}, err
+	}
+	if anc {
+		return MergedResult{Merged: true, Arm: "ancestry", TargetRef: localRef}, nil
+	}
+	return MergedResult{Merged: false, TargetRef: localRef}, nil
+}
+
 // Adopted implements the two-SHA rule of spec §5 sweep 2: a surviving
 // branch counts as adopted (the user built on it after serf's `remove`)
 // when its tip is neither the recorded base SHA nor the tip serf recorded

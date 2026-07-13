@@ -797,6 +797,165 @@ func TestMerged_PropagatesCheckMergedError(t *testing.T) {
 	}
 }
 
+// --- MergedAncestryLocal: the automatic-disposal-safe tier (local
+// refs/heads ancestry only; no remote-tracking evidence, no cherry arm) ---
+
+// loggingRunner wraps inner, appending each invocation's joined args to log,
+// so a test can assert which git subcommands ran (e.g. that `git cherry`
+// never executed).
+func loggingRunner(inner GitRunner, log *[]string) GitRunner {
+	return func(args ...string) (string, error) {
+		*log = append(*log, strings.Join(args, " "))
+		return inner(args...)
+	}
+}
+
+// (a) lane merged into the LOCAL branch target → true, ancestry arm.
+func TestMergedAncestryLocal_MergedIntoLocalBranch_True(t *testing.T) {
+	t.Parallel()
+	root, base := initRepo(t)
+	wt := addWorktree(t, root, "lane", base)
+	tip := commitFile(t, wt, "lane.txt", "lane work\n", "lane commit")
+	runGit(t, root, "merge", "-q", "--no-ff", "-m", "merge lane", "lane")
+
+	run := makeGitRunner(t, root)
+	result, err := MergedAncestryLocal(run, tip, "main")
+	if err != nil {
+		t.Fatalf("MergedAncestryLocal: %v", err)
+	}
+	if !result.Merged || result.Arm != "ancestry" {
+		t.Fatalf("expected merged=true arm=ancestry, got %+v", result)
+	}
+	if result.TargetRef != "refs/heads/main" {
+		t.Fatalf("expected TargetRef=refs/heads/main, got %+v", result)
+	}
+}
+
+// (b) merge_target resolves ONLY to refs/remotes/* and ancestry against that
+// tracking tip holds — MergedAncestryLocal must still return false (a stale
+// tracking ref left by an upstream force-push can contain the lane tip while
+// the recreated upstream branch does not, so it is not auto-trustworthy).
+// Also asserts `git cherry` never ran: the patch-equivalence arm is excluded
+// entirely from the automatic tier.
+func TestMergedAncestryLocal_RemoteTrackingOnly_FalseNoCherry(t *testing.T) {
+	t.Parallel()
+	root, base := initRepo(t)
+	wt := addWorktree(t, root, "lane", base)
+	tip := commitFile(t, wt, "lane.txt", "lane work\n", "lane commit")
+
+	// Build "feature" on a scratch clone, merge lane into it, push to a bare
+	// remote as origin/feature — never create a local "feature" branch, so
+	// only refs/remotes/origin/feature exists and it DOES contain the merge.
+	remoteDir := filepath.Join(t.TempDir(), "origin.git")
+	runGit(t, root, "init", "-q", "--bare", remoteDir)
+	runGit(t, root, "remote", "add", "origin", remoteDir)
+	runGit(t, root, "push", "-q", "origin", "main:feature")
+
+	scratch := filepath.Join(t.TempDir(), "scratch")
+	runGit(t, root, "clone", "-q", remoteDir, scratch)
+	runGit(t, scratch, "config", "user.email", "test@example.com")
+	runGit(t, scratch, "config", "user.name", "Test")
+	runGit(t, scratch, "checkout", "-q", "-B", "feature", "origin/feature")
+	runGit(t, scratch, "fetch", "-q", root, "lane:lane")
+	runGit(t, scratch, "merge", "-q", "--no-ff", "-m", "merge lane", "lane")
+	runGit(t, scratch, "push", "-q", "origin", "feature")
+	runGit(t, root, "fetch", "-q", "origin")
+
+	// Sanity: the loose two-arm Merged WOULD accept this via the remote tip.
+	loose, err := Merged(makeGitRunner(t, root), tip, "feature", base)
+	if err != nil {
+		t.Fatalf("Merged (sanity): %v", err)
+	}
+	if !loose.Merged || loose.TargetRef != "refs/remotes/origin/feature" {
+		t.Fatalf("fixture sanity: expected loose Merged via remote tip, got %+v", loose)
+	}
+
+	var log []string
+	run := loggingRunner(makeGitRunner(t, root), &log)
+	result, err := MergedAncestryLocal(run, tip, "feature")
+	if err != nil {
+		t.Fatalf("MergedAncestryLocal: %v", err)
+	}
+	if result.Merged {
+		t.Fatalf("expected merged=false (remote-tracking evidence is not auto-trustworthy), got %+v", result)
+	}
+	if !result.TargetUnknown {
+		t.Fatalf("expected TargetUnknown=true (no local branch), got %+v", result)
+	}
+	for _, call := range log {
+		if strings.HasPrefix(call, "cherry ") || call == "cherry" {
+			t.Fatalf("git cherry must never run in the automatic tier; call log: %v", log)
+		}
+	}
+}
+
+// (c) unmerged lane → false.
+func TestMergedAncestryLocal_Unmerged_False(t *testing.T) {
+	t.Parallel()
+	root, base := initRepo(t)
+	wt := addWorktree(t, root, "lane", base)
+	tip := commitFile(t, wt, "lane.txt", "lane work\n", "lane commit")
+
+	run := makeGitRunner(t, root)
+	result, err := MergedAncestryLocal(run, tip, "main")
+	if err != nil {
+		t.Fatalf("MergedAncestryLocal: %v", err)
+	}
+	if result.Merged {
+		t.Fatalf("expected merged=false (lane never merged), got %+v", result)
+	}
+	if result.TargetRef != "refs/heads/main" {
+		t.Fatalf("expected TargetRef=refs/heads/main, got %+v", result)
+	}
+}
+
+// (d) empty target → TargetUnknown, merged=false.
+func TestMergedAncestryLocal_EmptyTarget_TargetUnknown(t *testing.T) {
+	t.Parallel()
+	root, base := initRepo(t)
+	wt := addWorktree(t, root, "lane", base)
+	tip := commitFile(t, wt, "lane.txt", "lane work\n", "lane commit")
+
+	run := makeGitRunner(t, root)
+	result, err := MergedAncestryLocal(run, tip, "")
+	if err != nil {
+		t.Fatalf("MergedAncestryLocal: %v", err)
+	}
+	if result.Merged || !result.TargetUnknown {
+		t.Fatalf("expected merged=false TargetUnknown=true, got %+v", result)
+	}
+}
+
+// (d) deleted target (no local branch, no remote tip) → TargetUnknown.
+func TestMergedAncestryLocal_DeletedTarget_TargetUnknown(t *testing.T) {
+	t.Parallel()
+	root, base := initRepo(t)
+	wt := addWorktree(t, root, "lane", base)
+	tip := commitFile(t, wt, "lane.txt", "lane work\n", "lane commit")
+
+	run := makeGitRunner(t, root)
+	result, err := MergedAncestryLocal(run, tip, "does-not-exist")
+	if err != nil {
+		t.Fatalf("MergedAncestryLocal: %v", err)
+	}
+	if result.Merged || !result.TargetUnknown {
+		t.Fatalf("expected merged=false TargetUnknown=true, got %+v", result)
+	}
+}
+
+// Error propagation: an unknown tip object makes isAncestor genuinely fail
+// (exit 128, not the exit-1 negative result), which must surface as an error.
+func TestMergedAncestryLocal_PropagatesIsAncestorError(t *testing.T) {
+	t.Parallel()
+	root, _ := initRepo(t)
+	run := makeGitRunner(t, root)
+
+	_, err := MergedAncestryLocal(run, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "main")
+	if err == nil {
+		t.Fatalf("MergedAncestryLocal with an unknown tip = nil error, want a genuine failure")
+	}
+}
+
 // --- Adopted: truth table ---
 
 func TestAdopted_TruthTable(t *testing.T) {
