@@ -2009,11 +2009,11 @@ func (s *Session) worktreePrune(ctx context.Context) (WorktreePruneResult, error
 	}
 	managed := managedPorcelainEntries(worktree.ParsePorcelain(out), projectDir)
 
-	removed1, skipped1, err := s.worktreePruneSweep1(run, managed, metaDir)
+	removed1, skipped1, err := s.worktreePruneSweep1(context.Background(), run, managed, metaDir, prunePolicy())
 	if err != nil {
 		return WorktreePruneResult{}, err
 	}
-	removed2, skipped2, err := s.worktreePruneSweep2(run, managed, metaDir)
+	removed2, skipped2, err := s.worktreePruneSweep2(context.Background(), run, managed, metaDir, prunePolicy())
 	if err != nil {
 		return WorktreePruneResult{}, err
 	}
@@ -2033,16 +2033,87 @@ func (s *Session) worktreePrune(ctx context.Context) (WorktreePruneResult, error
 	return result, nil
 }
 
+// laneSweepPolicy parameterizes the shared collection sweeps (spec §P3
+// "Implementation parameterizes both prune sweeps"). The model-facing `prune`
+// op passes prunePolicy() (unchanged behavior — abort on the first mutation
+// failure, no grace, every managed worktree in scope, the full unchanged/merged
+// disposability test). The no-model-in-the-loop P3 residue collector passes a
+// policy that narrows scope to delegate lanes past a grace window, swaps in the
+// local-refs-only D0-auto predicate, appends a Disposed mark for its own store's
+// records, and — critically — treats every per-lane mutation failure as a lost
+// race (skip-and-continue) rather than aborting the whole pass.
+type laneSweepPolicy struct {
+	// delegateOnly restricts collection to sidecars carrying a DelegateID (P3
+	// residue collection); prune collects any managed lane.
+	delegateOnly bool
+	// grace, when > 0, skips any sidecar whose file mtime is younger than it
+	// (P3's revival/hand-off window, keyed on the touched-on-KEEP mtime). Prune
+	// sweep 1 disables it (0); prune sweep 2 keeps worktree.ReconcileGrace.
+	grace time.Duration
+	// disposableAt judges an entry that still has a live worktree (sweep 1): it
+	// runs any cleanliness/tip checks itself and returns (ok, reasonTag, err).
+	// A non-nil err is always a soft per-lane skip in BOTH policies.
+	disposableAt func(run worktree.GitRunner, lanePath string, sc worktree.Sidecar) (ok bool, reason string, err error)
+	// disposableBranch judges a branch with no registered worktree (sweep 2).
+	disposableBranch func(run worktree.GitRunner, tip, baseSHA, mergeTarget string) (ok bool, reason string, err error)
+	// abortOnError selects the mutation-failure contract: true → the sweep
+	// returns the error and aborts (prune); false → the lane is reported skipped
+	// and the sweep continues (P3: refusal/ENOENT is a normal race loss).
+	abortOnError bool
+	// markDisposed, when non-nil, is invoked with a collected lane's delegate id
+	// just before its branch/sidecar are deleted (P3 own-store Disposed mark).
+	markDisposed func(delegateID string)
+}
+
+// prunePolicy reproduces the model-facing `prune` sweep behavior exactly (spec
+// §5): every managed lane in scope, no grace, abort on the first mutation
+// failure, the full unchanged-or-merged disposability test (both the ancestry
+// and cherry arms), and no Disposed mark.
+func prunePolicy() laneSweepPolicy {
+	return laneSweepPolicy{
+		abortOnError: true,
+		disposableAt: func(run worktree.GitRunner, lanePath string, sc worktree.Sidecar) (bool, string, error) {
+			clean, offending, cErr := worktree.CleanTree(run, lanePath)
+			if cErr != nil {
+				return false, "status check failed: " + cErr.Error(), cErr
+			}
+			if !clean {
+				return false, "dirty: " + strings.Join(offending, ", "), nil
+			}
+			tipOut, tErr := run("-C", lanePath, "rev-parse", "HEAD")
+			if tErr != nil {
+				return false, "rev-parse HEAD failed: " + tErr.Error(), tErr
+			}
+			disposable, reasonTag, dErr := disposableReason(run, strings.TrimSpace(tipOut), sc.BaseSHA, sc.MergeTarget)
+			if dErr != nil {
+				return false, "merge check failed: " + dErr.Error(), dErr
+			}
+			return disposable, reasonTag, nil
+		},
+		disposableBranch: func(run worktree.GitRunner, tip, baseSHA, mergeTarget string) (bool, string, error) {
+			disposable, reasonTag, dErr := disposableReason(run, tip, baseSHA, mergeTarget)
+			if dErr != nil {
+				return false, "merge check failed: " + dErr.Error(), dErr
+			}
+			return disposable, reasonTag, nil
+		},
+	}
+}
+
 // worktreePruneSweep1 disposes of registered managed worktrees (spec §5
 // prune sweep 1): a worktree is collected (dir + branch + sidecar removed)
-// iff it is unlocked, has no live work under it, has a sidecar, is clean, and
-// is disposable (unchanged or merged per the recorded merge_target). Every
-// entry that fails one of those tests is reported skipped with the reason;
-// any per-entry git query failure is treated as a soft skip rather than
-// aborting the whole sweep, so one bad entry cannot block every other
-// collectible worktree.
-func (s *Session) worktreePruneSweep1(run worktree.GitRunner, managed []managedEntry, metaDir string) (removed, skipped []WorktreePruneEntry, err error) {
+// iff it is unlocked, has no live work under it, has a sidecar, passes the
+// policy's grace/delegate filters, and is disposable per the policy predicate.
+// Every entry that fails one of those tests is reported skipped with the reason;
+// any per-entry git query failure is treated as a soft skip. A mutation failure
+// aborts (prune) or is reported as a lost race and the sweep continues (P3),
+// per policy.abortOnError. The sweep stops early once ctx is cancelled (the P3
+// close pass's shared budget); prune passes a background ctx.
+func (s *Session) worktreePruneSweep1(ctx context.Context, run worktree.GitRunner, managed []managedEntry, metaDir string, policy laneSweepPolicy) (removed, skipped []WorktreePruneEntry, err error) {
 	for _, e := range managed {
+		if ctx.Err() != nil {
+			break
+		}
 		// Not locked: the occupancy rule, owner-independent (spec §5 sweep 1;
 		// EvPruneCandidate skips any locked state regardless of whose marker).
 		lockSt := worktree.Unlocked
@@ -2071,29 +2142,20 @@ func (s *Session) worktreePruneSweep1(run worktree.GitRunner, managed []managedE
 			continue
 		}
 
-		// Clean.
-		clean, offending, cErr := worktree.CleanTree(run, e.Path)
-		if cErr != nil {
-			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "status check failed: " + cErr.Error()})
+		if policy.delegateOnly && sc.DelegateID == "" {
+			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "not a delegate lane"})
 			continue
 		}
-		if !clean {
-			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "dirty: " + strings.Join(offending, ", ")})
-			continue
+		if policy.grace > 0 {
+			if age, ageErr := worktree.SidecarAge(metaDir, e.Name); ageErr == nil && age < policy.grace {
+				skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "in-grace"})
+				continue
+			}
 		}
 
-		// Disposable: unchanged (tip == base) or merged (per the recorded
-		// merge_target, never HEAD).
-		tipOut, tErr := run("-C", e.Path, "rev-parse", "HEAD")
-		if tErr != nil {
-			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "rev-parse HEAD failed: " + tErr.Error()})
-			continue
-		}
-		tip := strings.TrimSpace(tipOut)
-
-		disposable, reasonTag, dErr := disposableReason(run, tip, sc.BaseSHA, sc.MergeTarget)
+		disposable, reasonTag, dErr := policy.disposableAt(run, e.Path, sc)
 		if dErr != nil {
-			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "merge check failed: " + dErr.Error()})
+			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: reasonTag})
 			continue
 		}
 		if !disposable {
@@ -2103,15 +2165,15 @@ func (s *Session) worktreePruneSweep1(run worktree.GitRunner, managed []managedE
 
 		// Collect: remove the worktree, delete the branch (-D, the merge gate
 		// above already passed — spec §5 sweep 1's closing note, remove step 9's
-		// rationale for never trusting `-d`), delete the sidecar.
-		if _, err := run("worktree", "remove", "--", e.Path); err != nil {
-			return nil, nil, fmt.Errorf("manage_worktree prune: removing %s: %w", e.Path, err)
-		}
-		if _, err := run("branch", "-D", e.Name); err != nil {
-			return nil, nil, fmt.Errorf("manage_worktree prune: deleting branch %q: %w", e.Name, err)
-		}
-		if err := s.deleteWorktreeSidecar(metaDir, e.Name); err != nil && !os.IsNotExist(err) {
-			return nil, nil, fmt.Errorf("manage_worktree prune: deleting sidecar for %q: %w", e.Name, err)
+		// rationale for never trusting `-d`), delete the sidecar. The optional
+		// Disposed mark is appended after the remove and before the branch delete
+		// (spec §P3: own-store records only).
+		if cErr := s.collectLane(run, metaDir, e.Name, e.Path, true, policy); cErr != nil {
+			if policy.abortOnError {
+				return nil, nil, cErr
+			}
+			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "collect race: " + cErr.Error()})
+			continue
 		}
 		removed = append(removed, WorktreePruneEntry{
 			Name: e.Name, Path: e.Path,
@@ -2121,6 +2183,30 @@ func (s *Session) worktreePruneSweep1(run worktree.GitRunner, managed []managedE
 	}
 
 	return removed, skipped, nil
+}
+
+// collectLane runs the collection mechanics for one lane (spec §5 sweep 1 /
+// §P3): `git worktree remove` (only when a worktree is registered), then — for
+// a policy that marks — the own-store Disposed mark, then `branch -D`, then the
+// sidecar delete. Any failure is returned wrapped; the caller decides whether to
+// abort (prune) or treat it as a lost race (P3). The mark is best-effort inside
+// markDisposed itself, so it never blocks the branch/sidecar cleanup.
+func (s *Session) collectLane(run worktree.GitRunner, metaDir, name, path string, hasWorktree bool, policy laneSweepPolicy) error {
+	if hasWorktree {
+		if _, err := run("worktree", "remove", "--", path); err != nil {
+			return fmt.Errorf("removing %s: %w", path, err)
+		}
+	}
+	if policy.markDisposed != nil {
+		policy.markDisposed(name)
+	}
+	if _, err := run("branch", "-D", name); err != nil {
+		return fmt.Errorf("deleting branch %q: %w", name, err)
+	}
+	if err := s.deleteWorktreeSidecar(metaDir, name); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("deleting sidecar for %q: %w", name, err)
+	}
+	return nil
 }
 
 // disposableReason judges whether tip is disposable per spec §5's shared
@@ -2154,7 +2240,7 @@ func disposableReason(run worktree.GitRunner, tip, baseSHA, mergeTarget string) 
 // current state (gone → stale, adopted → sidecar dropped, disposable →
 // branch+sidecar deleted, checked out elsewhere → skipped, unmerged →
 // kept as residue).
-func (s *Session) worktreePruneSweep2(run worktree.GitRunner, managed []managedEntry, metaDir string) (removed, skipped []WorktreePruneEntry, err error) {
+func (s *Session) worktreePruneSweep2(ctx context.Context, run worktree.GitRunner, managed []managedEntry, metaDir string, policy laneSweepPolicy) (removed, skipped []WorktreePruneEntry, err error) {
 	registered := make(map[string]bool)
 	for _, e := range managed {
 		registered[e.Name] = true
@@ -2168,20 +2254,38 @@ func (s *Session) worktreePruneSweep2(run worktree.GitRunner, managed []managedE
 		return nil, nil, fmt.Errorf("manage_worktree prune: listing metadata: %w", err)
 	}
 
+	// grace defaults to worktree.ReconcileGrace (prune's racing-create window);
+	// P3 overrides it with laneGrace.
+	grace := policy.grace
+	if grace == 0 {
+		grace = worktree.ReconcileGrace
+	}
+
 	for _, sc := range sidecars {
+		if ctx.Err() != nil {
+			break
+		}
 		if registered[sc.Name] {
 			continue // a live registered worktree exists; sweep 1's job, not reconciliation's
 		}
+		if policy.delegateOnly && sc.DelegateID == "" {
+			skipped = append(skipped, WorktreePruneEntry{Name: sc.Name, Reason: "not a delegate lane"})
+			continue
+		}
 
 		age, ageErr := worktree.SidecarAge(metaDir, sc.Name)
-		if ageErr == nil && age < worktree.ReconcileGrace {
+		if ageErr == nil && age < grace {
 			skipped = append(skipped, WorktreePruneEntry{Name: sc.Name, Reason: "in-grace"})
 			continue
 		}
 
 		if !branchExists(run, sc.Name) {
 			if err := s.deleteWorktreeSidecar(metaDir, sc.Name); err != nil && !os.IsNotExist(err) {
-				return nil, nil, fmt.Errorf("manage_worktree prune: deleting stale sidecar %q: %w", sc.Name, err)
+				if policy.abortOnError {
+					return nil, nil, fmt.Errorf("manage_worktree prune: deleting stale sidecar %q: %w", sc.Name, err)
+				}
+				skipped = append(skipped, WorktreePruneEntry{Name: sc.Name, Reason: "collect race: " + err.Error()})
+				continue
 			}
 			removed = append(removed, WorktreePruneEntry{Name: sc.Name, SidecarRemoved: true, Reason: "stale sidecar (no worktree, no branch)"})
 			continue
@@ -2199,7 +2303,11 @@ func (s *Session) worktreePruneSweep2(run worktree.GitRunner, managed []managedE
 		// the tip serf recorded at removal time) — serf's claim expires.
 		if sc.WorktreeRemoved && worktree.Adopted(tip, sc.BaseSHA, sc.TipSHAAtRemoval) {
 			if err := s.deleteWorktreeSidecar(metaDir, sc.Name); err != nil && !os.IsNotExist(err) {
-				return nil, nil, fmt.Errorf("manage_worktree prune: deleting adopted sidecar %q: %w", sc.Name, err)
+				if policy.abortOnError {
+					return nil, nil, fmt.Errorf("manage_worktree prune: deleting adopted sidecar %q: %w", sc.Name, err)
+				}
+				skipped = append(skipped, WorktreePruneEntry{Name: sc.Name, Reason: "collect race: " + err.Error()})
+				continue
 			}
 			removed = append(removed, WorktreePruneEntry{Name: sc.Name, SidecarRemoved: true, Reason: "adopted"})
 			continue
@@ -2207,9 +2315,9 @@ func (s *Session) worktreePruneSweep2(run worktree.GitRunner, managed []managedE
 
 		// Not adopted (tip == base_sha, tip == tip_sha_at_removal, or no
 		// removal record): eligible for the merge-gated branch deletion.
-		disposable, reasonTag, dErr := disposableReason(run, tip, sc.BaseSHA, sc.MergeTarget)
+		disposable, reasonTag, dErr := policy.disposableBranch(run, tip, sc.BaseSHA, sc.MergeTarget)
 		if dErr != nil {
-			skipped = append(skipped, WorktreePruneEntry{Name: sc.Name, Reason: "merge check failed: " + dErr.Error()})
+			skipped = append(skipped, WorktreePruneEntry{Name: sc.Name, Reason: reasonTag})
 			continue
 		}
 		if !disposable {
@@ -2217,6 +2325,11 @@ func (s *Session) worktreePruneSweep2(run worktree.GitRunner, managed []managedE
 			continue
 		}
 
+		// The branch is disposable — an orphan branch+sidecar left when a crash
+		// interrupted a prior collection between the worktree remove and branch
+		// -D. The branch delete is the destructive step here (no worktree remains
+		// to remove), so it can legitimately be refused (checked out elsewhere);
+		// the own-store Disposed mark is therefore appended only once it succeeds.
 		if _, err := run("branch", "-D", sc.Name); err != nil {
 			reason := "checked out"
 			if loc, ok := checkoutLocationOf(run, sc.Name); ok {
@@ -2225,8 +2338,15 @@ func (s *Session) worktreePruneSweep2(run worktree.GitRunner, managed []managedE
 			skipped = append(skipped, WorktreePruneEntry{Name: sc.Name, Reason: reason})
 			continue
 		}
+		if policy.markDisposed != nil {
+			policy.markDisposed(sc.Name)
+		}
 		if err := s.deleteWorktreeSidecar(metaDir, sc.Name); err != nil && !os.IsNotExist(err) {
-			return nil, nil, fmt.Errorf("manage_worktree prune: deleting sidecar %q: %w", sc.Name, err)
+			if policy.abortOnError {
+				return nil, nil, fmt.Errorf("manage_worktree prune: deleting sidecar %q: %w", sc.Name, err)
+			}
+			skipped = append(skipped, WorktreePruneEntry{Name: sc.Name, Reason: "collect race: " + err.Error()})
+			continue
 		}
 		removed = append(removed, WorktreePruneEntry{Name: sc.Name, BranchRemoved: true, SidecarRemoved: true, Reason: reasonTag})
 	}

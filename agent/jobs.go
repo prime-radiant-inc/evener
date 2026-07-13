@@ -122,10 +122,7 @@ var defaultCloseGrace = 5 * time.Second
 
 // Delegate-lane disposal tunables (auto-delegate-lane-disposal spec §Constants).
 // Package vars, not consts, so tests can override and restore them without
-// waiting wall-clock time. The spec also defines laneSweepDelay (10m) and
-// laneGrace (30m) for the P3 residue-collection passes; those are omitted here
-// until a later task consumes them, because golangci-lint rejects unused
-// package-level vars.
+// waiting wall-clock time.
 var (
 	// laneClosePassBudget bounds the P0 close disposal and the P3 close pass
 	// TOGETHER — one shared deadline per close cascade. It bounds git/history
@@ -136,6 +133,15 @@ var (
 	// touch+unlock tail earns a second aggregated warning (a pathological
 	// session leaked far more lanes than a close pass can collect).
 	laneTailWarnThreshold = 50
+	// laneSweepDelay is how long after a top-level session opens its one-shot
+	// P3 residue-collection sweep fires (spec §P3): long enough to clear the
+	// revival races a just-restored owner needs to re-lock its own lanes.
+	laneSweepDelay = 10 * time.Minute
+	// laneGrace is the minimum sidecar mtime age (spec §P3 "Grace = sidecar
+	// mtime") before the P3 sweep will collect an unlocked delegate lane. Every
+	// KEEP path touches the sidecar first, so a lane a close pass just released
+	// stays untouched until the hand-off window has passed.
+	laneGrace = 30 * time.Minute
 )
 
 func (jm *jobManager) setParentJobID(jobID string) {
