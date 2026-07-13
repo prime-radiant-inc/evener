@@ -1,0 +1,5 @@
+go test fuzz v1
+byte('\x1c')
+string("0")
+string("0")
+string("0")

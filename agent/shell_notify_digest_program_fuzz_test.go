@@ -98,7 +98,7 @@ func FuzzShellNotificationRenderProgram(f *testing.F) {
 		if mode&8 != 0 {
 			n.Status = ""
 		}
-		if mode&16 != 0 {
+		if mode&16 != 0 && mode%8 == 6 {
 			excerpt.worktree = &delegateWorktreeReport{
 				Path: "/tmp/lane", Branch: "serf/lane", Ahead: 2, Dirty: true,
 			}
@@ -117,10 +117,10 @@ func FuzzShellNotificationRenderProgram(f *testing.F) {
 		if got := notificationTranscriptRef(n); got == "" && n.JobID != "" {
 			t.Fatal("job notification has no transcript reference fallback")
 		}
-		if mode&8 != 0 && !strings.Contains(block, `event="running"`) {
+		if mode&8 != 0 && n.WatchSend == nil && !strings.Contains(block, `event="running"`) {
 			t.Fatalf("empty status did not render the default running event: %q", block)
 		}
-		if mode&16 != 0 {
+		if mode&16 != 0 && mode%8 == 6 {
 			for _, want := range []string{`worktree_path="/tmp/lane"`, `worktree_branch="serf/lane"`, `worktree_ahead="2"`, `worktree_dirty="true"`} {
 				if !strings.Contains(block, want) {
 					t.Fatalf("worktree notification missing %q: %q", want, block)

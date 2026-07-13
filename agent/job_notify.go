@@ -106,7 +106,7 @@ func (s *Session) terminalNotificationExcerpt(n jobNotification) notificationExc
 	if err != nil || excerpt == "" {
 		return notificationExcerpt{worktree: worktreeReport}
 	}
-	rendered := limitWatchText(excerpt, terminalExcerptMaxChars)
+	rendered := limitWatchText(strings.ToValidUTF8(excerpt, "\uFFFD"), terminalExcerptMaxChars)
 	if truncated {
 		rendered += "\n[excerpt truncated]"
 	}
@@ -136,7 +136,7 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt) 
 			fmt.Sprintf("trigger=%q", n.Reason),
 		}
 		return fmt.Sprintf("<job-notification %s>\n%s\n</job-notification>",
-			strings.Join(attrs, " "), n.watchSendFrame)
+			strings.Join(attrs, " "), strings.ToValidUTF8(n.watchSendFrame, "\uFFFD"))
 	}
 
 	event := n.Status
@@ -177,7 +177,7 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt) 
 				"Watch event triggered: %s.\n"+
 				"</job-notification>",
 			strings.Join(attrs, " "),
-			n.Reason,
+			strings.ToValidUTF8(n.Reason, "\uFFFD"),
 		)
 	}
 
