@@ -253,15 +253,11 @@ function tick(ms) { return new Promise(r => setTimeout(r, ms)); }
     const dom = makeDom(`<div id="conversation" data-session-id="01S" data-state="live"></div>`,
       { url: "http://localhost/s/01S" });
     const ctx = await loadAndOpen(dom);
-    // Provide /api/models response so the model command's enum source resolves.
-    ctx.window.fetch = (url) => {
-      if (url === "/api/models") {
-        return Promise.resolve({ ok: true, json: () => Promise.resolve([
-          { provider: "anthropic", model: "claude-opus-4-7", display_name: "Opus 4.7" },
-          { provider: "anthropic", model: "claude-sonnet-4-6", display_name: "Sonnet 4.6" },
-        ])});
-      }
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    ctx.window.SerfAppwire = {
+      listModels: () => Promise.resolve([
+        { provider: "anthropic", model: "claude-opus-4-7", display_name: "Opus 4.7" },
+        { provider: "anthropic", model: "claude-sonnet-4-6", display_name: "Sonnet 4.6" },
+      ]),
     };
     ctx.window.SerfSearch.open();
     ctx.input.value = "/model";
@@ -290,11 +286,8 @@ function tick(ms) { return new Promise(r => setTimeout(r, ms)); }
     const dom = makeDom(`<div id="conversation" data-session-id="01S" data-state="live"></div>`,
       { url: "http://localhost/s/01S" });
     const ctx = await loadAndOpen(dom);
-    ctx.window.fetch = (url) => {
-      if (url === "/api/models") {
-        return Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({}) });
-      }
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    ctx.window.SerfAppwire = {
+      listModels: () => Promise.reject(new Error("models unavailable")),
     };
     ctx.window.SerfSearch.open();
     ctx.input.value = "/model";
@@ -307,22 +300,50 @@ function tick(ms) { return new Promise(r => setTimeout(r, ms)); }
     pass(!/No matches/.test(html), "model fetch failure is NOT shown as 'No matches'");
   }
 
-  // -------- Scenario 9: Selecting an enum item POSTs to /s/<id>/model --------
+  // -------- Scenario 8c: Model command requires AppWire and does not use REST fallback --------
   {
     const dom = makeDom(`<div id="conversation" data-session-id="01S" data-state="live"></div>`,
       { url: "http://localhost/s/01S" });
     const ctx = await loadAndOpen(dom);
-    let postedPath = null;
-    let postedBody = null;
-    ctx.window.fetch = (url, opts) => {
-      if (url === "/api/models") {
-        return Promise.resolve({ ok: true, json: () => Promise.resolve([
-          { provider: "anthropic", model: "claude-opus-4-7", display_name: "Opus 4.7" },
-        ])});
-      }
-      postedPath = url;
-      postedBody = opts && opts.body;
+    let fetchCalls = 0;
+    ctx.window.fetch = () => {
+      fetchCalls += 1;
+      return Promise.resolve({ ok: true, json: () => Promise.resolve([
+        { provider: "anthropic", model: "claude-opus-4-7", display_name: "Opus 4.7" },
+      ])});
+    };
+    ctx.window.SerfSearch.open();
+    ctx.input.value = "/model";
+    ctx.input.dispatchEvent(new ctx.window.Event("input", { bubbles: true }));
+    await tick(20);
+    ctx.input.dispatchEvent(new ctx.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await tick(30);
+    const html = ctx.results.innerHTML;
+    pass(fetchCalls === 0, "model command does not call REST model-list fallback when AppWire is absent");
+    pass(/Couldn't load options/.test(html), "missing AppWire surfaces an options error");
+  }
+
+  // -------- Scenario 9: Selecting an enum item sends thread/model/set through AppWire --------
+  {
+    const dom = makeDom(`<div id="conversation" data-session-id="01S" data-state="live"></div>`,
+      { url: "http://localhost/s/01S" });
+    const ctx = await loadAndOpen(dom);
+    let selectedSession = "";
+    let selectedModel = "";
+    let fetchCalls = 0;
+    ctx.window.fetch = () => {
+      fetchCalls += 1;
       return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    };
+    ctx.window.SerfAppwire = {
+      listModels: () => Promise.resolve([
+        { provider: "anthropic", model: "claude-opus-4-7", display_name: "Opus 4.7" },
+      ]),
+      setModel: (sessionId, model) => {
+        selectedSession = sessionId;
+        selectedModel = model;
+        return Promise.resolve({});
+      },
     };
     ctx.window.SerfSearch.open();
     ctx.input.value = "/model";
@@ -332,8 +353,9 @@ function tick(ms) { return new Promise(r => setTimeout(r, ms)); }
     await tick(30);
     ctx.input.dispatchEvent(new ctx.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     await tick(10);
-    pass(postedPath === "/s/01S/model", "selecting a model POSTs to /s/<id>/model (got " + postedPath + ")");
-    pass(/anthropic\/claude-opus-4-7/.test(String(postedBody)), "POST body contains provider/model id");
+    pass(fetchCalls === 0, "selecting a model does not use REST fallback");
+    pass(selectedSession === "01S", "setModel receives current session id (got " + selectedSession + ")");
+    pass(selectedModel === "anthropic/claude-opus-4-7", "setModel receives provider/model id (got " + selectedModel + ")");
     pass(ctx.dialog.open === false, "dialog closes after selecting a model");
   }
 
@@ -497,10 +519,11 @@ async function commandSweep() {
     { name: "model", page: "session", query: "/model", argEntry: "opus",
       modelsResponse: [{ provider: "anthropic", model: "claude-opus-4-7", display_name: "Opus 4.7" }],
       expect: (c) => {
-        const hit = c.calls.fetches.find(f => f.url === "/s/01S/model");
-        assertCS(c, !!hit, "POST /s/01S/model");
-        const body = String(hit && hit.opts && hit.opts.body || "");
-        assertCS(c, body.indexOf("anthropic/claude-opus-4-7") >= 0, "body carries provider/model id (got " + body + ")");
+        assertCS(c, c.calls.modelSets.length === 1, "called SerfAppwire.setModel once");
+        const hit = c.calls.modelSets[0] || {};
+        assertCS(c, hit.sessionId === "01S", "setModel carries session id (got " + hit.sessionId + ")");
+        assertCS(c, hit.model === "anthropic/claude-opus-4-7", "setModel carries provider/model id (got " + hit.model + ")");
+        assertCS(c, !c.calls.fetches.some(f => f.url === "/s/01S/model"), "no REST model fallback");
       } },
     { name: "reasoning-effort", page: "session", query: "/effort", argEntry: "high",
       expect: (c) => {
@@ -600,6 +623,7 @@ async function runCaseCS(tc) {
     panelClicks: { tasks: 0, details: 0 },
     scrolledSections: [],
     banners: [],
+    modelSets: [],
   };
 
   window.fetch = (u, opts) => {
@@ -632,6 +656,15 @@ async function runCaseCS(tc) {
   // vocabulary; stub it here so command-sweep cases exercising /effort still
   // have levels to select from. tc.effortLevels lets a case narrow/empty it.
   window.SerfModelSwitch = { effortLevels: () => (tc.effortLevels || ["minimal", "low", "medium", "high", "xhigh", "max"]) };
+  if (tc.name === "model") {
+    window.SerfAppwire = {
+      listModels: () => Promise.resolve(tc.modelsResponse || []),
+      setModel: (sessionId, model) => {
+        calls.modelSets.push({ sessionId, model });
+        return Promise.resolve({});
+      },
+    };
+  }
 
   window.eval(searchSrc);
   await new Promise(r => setTimeout(r, 30));

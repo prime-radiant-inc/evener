@@ -243,20 +243,14 @@
   }
 
   function fetchModels() {
-    // /api/models returns an array of { provider, model, display_name, ... }.
-    // The session /model POST mirrors the spawn picker convention by sending
-    // "provider/model" so the daemon can route across providers.
-    const modelsPromise = window.SerfAppwire
-      ? window.SerfAppwire.listModels()
-      : fetch("/api/models").then(r => {
-          if (!r.ok) throw new Error("models fetch failed: " + r.status);
-          return r.json();
-        });
+    if (!window.SerfAppwire || typeof window.SerfAppwire.listModels !== "function") {
+      return Promise.reject(new Error("appwire unavailable"));
+    }
     // Deliberately does NOT swallow errors into an empty list: a load failure
     // must reach the enum picker's rejection path so it can surface an error
     // row rather than showing "No matches" (indistinguishable from an empty
     // catalog). Mirrors the header chip picker's error surfacing.
-    return modelsPromise.then(list => {
+    return window.SerfAppwire.listModels().then(list => {
       if (!Array.isArray(list)) return [];
       return list.map(m => ({
         id: m.provider + "/" + m.model,
@@ -357,10 +351,10 @@
               showTurnActionUnavailable(msg);
               return blocked(msg);
             }
-            const p = window.SerfAppwire ? window.SerfAppwire.setModel(ctx.sessionId, item.id) : fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/model", {
-              method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ model: item.id }),
-            });
+            if (!window.SerfAppwire || typeof window.SerfAppwire.setModel !== "function") {
+              return Promise.reject(new Error("appwire unavailable"));
+            }
+            const p = window.SerfAppwire.setModel(ctx.sessionId, item.id);
             return Promise.resolve(p).then((r) => {
               if (r && typeof r.ok !== "undefined" && !r.ok) {
                 return blockedFromResponse("model change failed", r);

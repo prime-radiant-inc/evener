@@ -2794,6 +2794,82 @@ func TestHubRPCThreadCompactStartResumesPastThread(t *testing.T) {
 	}
 }
 
+func TestHubRPCThreadModelSetResumesPastThread(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "past")
+	sessionID := buildRPCParentSession(t, stateDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Source:    "local",
+			Serf: appwire.SerfThread{
+				Ref:          params.Ref,
+				Capabilities: appwire.ThreadCapabilities{ChangeModel: true},
+			},
+		}}, nil
+	})
+	modelCalled := ""
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+		if params.Ref != "local:"+sessionID {
+			t.Fatalf("model ref=%q", params.Ref)
+		}
+		modelCalled = params.ModelProvider + "/" + params.Model
+		return appwire.EmptyResponse{}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	resumeCalls := 0
+	spawner := &fakeRPCSpawner{
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			if req.SessionID != sessionID || req.StateDir != stateDir || req.WorkingDir != "/tmp/project" {
+				t.Fatalf("resume request=%+v", req)
+			}
+			resumeCalls++
+			entry := rendezvous.Entry{
+				PID:       106,
+				Protocol:  appwire.ProtocolVersion,
+				Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:  "local",
+				ThreadID:  sessionID,
+				SessionID: sessionID,
+			}
+			writeRendezvous(t, runDir, entry)
+			return entry, nil
+		},
+	}
+	roster := hubcore.NewRoster(runDir, nil)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if err := client.ThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
+		Ref:           "local:" + sessionID,
+		ModelProvider: "openai",
+		Model:         "gpt-5.6-sol",
+	}); err != nil {
+		t.Fatalf("ThreadModelSet: %v", err)
+	}
+	if resumeCalls != 1 {
+		t.Fatalf("resume calls=%d, want 1", resumeCalls)
+	}
+	if modelCalled != "openai/gpt-5.6-sol" {
+		t.Fatalf("modelCalled=%q", modelCalled)
+	}
+}
+
 func TestHubRPCUnsupportedThreadActionReturnsStructuredUnavailable(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	shutdownCalled := false
