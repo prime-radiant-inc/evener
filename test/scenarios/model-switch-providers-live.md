@@ -69,7 +69,7 @@ no hub, no browser — so the switch path under test is exactly
 
    ```sh
    /tmp/serf-msw serve --addr 127.0.0.1:9331 \
-     --model anthropic/claude-opus-4-6 --reasoning-effort high \
+     --model anthropic/claude-opus-4-6 --reasoning-effort none \
      --state-dir /tmp/msw-state --non-interactive --no-project-prompts \
      --dir /tmp &
    curl -s http://127.0.0.1:9331/status   # capture session_id (SID)
@@ -101,10 +101,11 @@ no hub, no browser — so the switch path under test is exactly
    `POST /model {"model":"kimi/kimi-for-coding"}`. Assert the marker
    `Switched model: openai/gpt-5.5 → kimi/kimi-for-coding`. Send a
    tool-using turn (`echo LEG3`), poll to idle, assert `response_model ==
-   "kimi-for-coding"`. **Thinking-absence assertion**: with
-   `--reasoning-effort none` in effect for this leg (switch effort down via
-   the effort control before or after the model switch, per the surface
-   under test), inspect `sessions/<SID>.api-raw.jsonl`'s last
+   "kimi-for-coding"`. **Thinking-absence assertion**: effort is fixed at
+   `none` for the whole run by step 1's `--reasoning-effort none` launch
+   flag — this HTTP surface (`POST /input`, `/model`, `/status`) has **no**
+   mid-session effort RPC, so there is nothing to toggle per leg and no
+   effort call to make here. Inspect `sessions/<SID>.api-raw.jsonl`'s last
    `request_body` for this leg — assert it carries **no** `thinking` key
    (the default `sessions/<SID>.api.jsonl` records metadata only, no
    bodies — `llm/apilog.go:176-197` — so the raw log is the only file that
@@ -159,10 +160,16 @@ no hub, no browser — so the switch path under test is exactly
   marker/ladder contract directly, but does NOT exercise the hub's
   turn-active/queue-drain rejection semantics; those are covered by
   `web-model-switch-mid-session.md` and are out of scope here.
-- Pick a `--reasoning-effort` (or per-leg effort control call) explicitly
-  for every leg — don't rely on provider defaults. Some anthropic-family
-  coding-plan backends have been observed defaulting extended thinking on
-  server-side regardless of the request; see Results below.
+- Effort is a **launch-only** flag on this HTTP surface — there is no
+  `/effort` route and `POST /model`'s body (`ModelRequest`) carries only
+  `model`, so effort cannot change mid-session here. The whole ladder runs
+  at step 1's `--reasoning-effort none`; the effort-ladder re-derivation
+  checked in step 3 is about the per-model `reasoningEffortLevels` **array**
+  (a catalog-intrinsic property that changes by model regardless of the
+  current effort value), not about the current effort clamping. Some
+  anthropic-family coding-plan backends have been observed defaulting
+  extended thinking on server-side regardless of the request; see Results
+  below.
 
 ## Results (this run — 2026-07-13, worktree `model-switching` @ 3668f093)
 
