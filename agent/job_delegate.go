@@ -653,7 +653,16 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		sub.mu.Lock()
 		running := sub.running
 		driving := sub.driving
+		gated := sub.disposeGated
 		sub.mu.Unlock()
+		if gated {
+			// The child is frozen for disposal (spec §P1 step 4): refuse the send
+			// rather than resurrect it mid-eviction. A watch-originated send MUST be
+			// classified watchSendBusy so the frame is retried at the next boundary,
+			// not permanently dropped by sendMessageFailed's watchSendHardFailure
+			// (finding N2).
+			return disposeGatedSendRefusal(target, rec, args.FromWatch)
+		}
 		if driving && !running {
 			return s.sendRunningDelegateMessage(target, message, rec, args.FromWatch, args.Provenance)
 		}
@@ -1622,6 +1631,31 @@ func relinkDelegateChildToJob(child *Session, jobID string) {
 	if child.jobManager != nil {
 		child.jobManager.setParentJobID(jobID)
 	}
+}
+
+// disposeGatedSendRefusal refuses a send to a delegate frozen for disposal
+// (spec §P1 step 4). A watch-originated send is refused as watchSendBusy — a
+// retryable classification that leaves the pending frame for the next drain
+// boundary — because sendMessageFailed would stamp watchSendHardFailure and
+// permanently dropWatchSend the frame (finding N2; construction pattern copied
+// from the undelivered-steer busy site above). A plain model send gets a normal
+// error naming the state.
+func disposeGatedSendRefusal(target string, rec *jobstore.JobRecord, fromWatch bool) sendMessageResult {
+	if fromWatch {
+		return sendMessageResult{
+			Target:                    target,
+			DelegateID:                rec.DelegateID,
+			JobID:                     rec.JobID,
+			LatestJobID:               rec.JobID,
+			Type:                      string(jobstore.JobDelegate),
+			Status:                    rec.Status,
+			Action:                    "refused",
+			Delivered:                 false,
+			WatchSendDeliveryClass:    watchSendBusy,
+			WatchSendDeliveryClassSet: true,
+		}
+	}
+	return sendMessageFailed(target, fmt.Errorf("target_busy: delegate %q is being disposed; retry or start a new delegate", target))
 }
 
 func sendMessageFailed(target string, err error) sendMessageResult {

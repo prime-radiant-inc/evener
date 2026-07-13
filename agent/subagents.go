@@ -97,6 +97,13 @@ type subagent struct {
 	closed          bool               // session torn down; record retained as terminal history
 	closeTimedOut   bool               // session-close wait exceeded its bound; close not confirmed
 	driving         bool               // a drive-down notification turn (§3) is in flight on this idle child
+	// disposeGated freezes a quiescent, retained TERMINAL child while a dispose op
+	// (spec §P1 step 4) evaluates and evicts it: no wake-edge drive may launch and
+	// no delegate_send may resume the child while it is set. Guarded by sub.mu; set
+	// only after re-verifying !running && !driving under the same hold, so a drive
+	// or resume that raced ahead wins and the gate is refused. Reversed on every
+	// pre-eviction dispose refusal/failure exit.
+	disposeGated bool
 	// ownsEnv is true when prepareSubagentRun built the child a FRESH execution env
 	// (a working-dir re-root and/or a per-delegate sandbox) rather than sharing the
 	// parent's. Such an env may own a sandbox scratch dir + file-tool fds that the
@@ -904,6 +911,31 @@ func (s *Session) startOrSteerSubagentRun(sub *subagent, input string) (bool, er
 	return true, nil
 }
 
+// trySetDisposeGate arms the dispose gate on a quiescent retained child, but only
+// after re-verifying under sub.mu that no run or drive turn is live. It returns
+// false (gate NOT set) when the child is running or driving — a drive/resume that
+// raced the dispose op wins, and the caller must refuse the dispose. On success
+// the child is frozen: driveSubagentNotificationTurn and the retained delegate_send
+// path refuse until clearDisposeGate reverses it.
+func (a *subagent) trySetDisposeGate() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.running || a.driving {
+		return false
+	}
+	a.disposeGated = true
+	return true
+}
+
+// clearDisposeGate reverses trySetDisposeGate. The dispose op calls it on every
+// pre-eviction refusal/failure exit so a child that survives disposal is drivable
+// and resumable again.
+func (a *subagent) clearDisposeGate() {
+	a.mu.Lock()
+	a.disposeGated = false
+	a.mu.Unlock()
+}
+
 // driveSubagentNotificationTurn launches ONE EntryNotification turn on a live,
 // idle direct child whose own loop has undelivered attention (spec §3 drive-down:
 // a parent never renders a non-owned job's notification; it runs the child whose
@@ -929,7 +961,7 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		return false
 	}
 	sub.mu.Lock()
-	if sub.sess == nil || sub.closed || sub.running || sub.driving {
+	if sub.sess == nil || sub.closed || sub.running || sub.driving || sub.disposeGated {
 		sub.mu.Unlock()
 		return false
 	}
