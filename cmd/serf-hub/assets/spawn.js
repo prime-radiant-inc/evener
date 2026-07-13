@@ -314,11 +314,14 @@
     return s;
   }
 
+  function chipValueDisplays(name) {
+    return Array.from(document.querySelectorAll('[data-chip-value-' + name + ']'));
+  }
+
   function setModelValue(value, displayValue) {
-    const display = document.querySelector("[data-chip-value-model]");
     const hidden = document.querySelector('input[type=hidden][name="model"]');
     var shown = displayValue || (value ? abbreviateModel(value) : null) || modelPlaceholder(currentHarness());
-    if (display) display.textContent = shown;
+    chipValueDisplays("model").forEach(display => { display.textContent = shown; });
     if (hidden) hidden.value = value || "";
   }
 
@@ -330,9 +333,8 @@
       if (value) clearModelPrefillNotice();
       return;
     }
-    const display = document.querySelector('[data-chip-value-' + name + ']');
     const hidden = document.querySelector('input[type=hidden][name="' + name + '"]');
-    if (display) display.textContent = value || "(default)";
+    chipValueDisplays(name).forEach(display => { display.textContent = value || "(default)"; });
     if (hidden) hidden.value = value || "";
     // When working_dir changes, resolve and display the git HEAD branch
     // in the branch chip if no explicit branch has been chosen.
@@ -353,14 +355,15 @@
     if (!url) return;
     fetch(url).then(r => r.json()).then(data => {
       const branch = (data && data.branch) ? data.branch : "";
-      const display = document.querySelector("[data-chip-value-branch]");
       // Only update if the user still hasn't chosen an explicit branch.
       const hiddenNow = document.querySelector('input[type=hidden][name="branch"]');
-      if (display && hiddenNow && !hiddenNow.value) {
-        display.textContent = branch || "(default)";
-        // Store the resolved head in a data attribute so the chip can tell
-        // the user what "(default)" actually means.
-        display.dataset.resolvedHead = branch;
+      if (hiddenNow && !hiddenNow.value) {
+        chipValueDisplays("branch").forEach(display => {
+          display.textContent = branch || "(default)";
+          // Store the resolved head in a data attribute so the chip can tell
+          // the user what "(default)" actually means.
+          display.dataset.resolvedHead = branch;
+        });
       }
     }).catch(() => {});
   }

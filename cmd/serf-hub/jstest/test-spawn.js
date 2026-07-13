@@ -713,11 +713,33 @@ const expandDom = new JSDOM(`<!DOCTYPE html><html><body>
 
 const mobileRowsDom = new JSDOM(`<!DOCTYPE html><html><body>
   <form data-spawn-form>
+    <div class="spawn-chips">
+      <button class="btn btn-chip" type="button" data-chip="harness">
+        <span class="chip-value" data-chip-value-harness>serf</span>
+      </button>
+      <button class="btn btn-chip" type="button" data-chip="model">
+        <span class="chip-value" data-chip-value-model>(pick a model)</span>
+      </button>
+      <button class="btn btn-chip" type="button" data-chip="branch">
+        <span class="chip-value" data-chip-value-branch>(default)</span>
+      </button>
+      <button class="btn btn-chip" type="button" data-chip="access_mode">
+        <span class="chip-value" data-chip-value-access_mode>full</span>
+      </button>
+    </div>
     <div class="spawn-mobile-rows">
       <button class="btn spawn-row" type="button" data-chip="harness" data-spawn-row>
         <span class="spawn-row-label">Harness</span>
         <span class="spawn-row-value" data-chip-value-harness>serf</span>
         <span class="spawn-row-caret">▾</span>
+      </button>
+      <button class="btn spawn-row" type="button" data-chip="model" data-spawn-row>
+        <span class="spawn-row-label">Model</span>
+        <span class="spawn-row-value" data-chip-value-model>(pick a model)</span>
+      </button>
+      <button class="btn spawn-row" type="button" data-chip="branch" data-spawn-row>
+        <span class="spawn-row-label">Branch</span>
+        <span class="spawn-row-value" data-chip-value-branch>(default)</span>
       </button>
       <button class="btn spawn-row" type="button" data-chip="access_mode" data-spawn-row>
         <span class="spawn-row-label">Mode</span>
@@ -729,6 +751,8 @@ const mobileRowsDom = new JSDOM(`<!DOCTYPE html><html><body>
     <input type="hidden" data-harness-option value="openai" data-label="OpenAI">
     <input type="hidden" name="access_mode" value="full">
     <input type="hidden" name="model" value="">
+    <input type="hidden" name="working_dir" value="/tmp/mobile-rows">
+    <input type="hidden" name="branch" value="">
   </form>
 </body></html>`, {
   runScripts: "outside-only",
@@ -736,22 +760,40 @@ const mobileRowsDom = new JSDOM(`<!DOCTYPE html><html><body>
   url: "http://127.0.0.1:9180/new",
 });
   mobileRowsDom.window.matchMedia = () => ({ matches: true, addListener: () => {}, removeListener: () => {} });
-  mobileRowsDom.window.fetch = () => Promise.resolve({ ok: true, text: () => Promise.resolve('{"branch":"main"}') });
+  mobileRowsDom.window.fetch = (url) => {
+    if (String(url).startsWith("/api/git/head")) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ branch: "main" }) });
+    }
+    return Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ models: [{ provider: "openai", model: "gpt-5.5" }], diagnostics: [], recent: [] }),
+      text: () => Promise.resolve("{}"),
+    });
+  };
   mobileRowsDom.window.eval(dirPickerSrc);
   mobileRowsDom.window.eval(spawnSrc);
   mobileRowsDom.window.document.dispatchEvent(new mobileRowsDom.window.Event("DOMContentLoaded", { bubbles: true }));
   const harnessRow = mobileRowsDom.window.document.querySelector('[data-chip="harness"][data-spawn-row]');
   harnessRow.click();
   assert(mobileRowsDom.window.document.querySelector(".chip-picker"), "tapping a mobile harness row should open a picker");
+  const openAIOption = Array.from(mobileRowsDom.window.document.querySelectorAll(".chip-picker-option"))
+    .find((row) => row.textContent === "OpenAI");
+  assert(openAIOption, "mobile harness picker should include OpenAI option");
+  openAIOption.click();
+  const mobileModelDisplay = mobileRowsDom.window.document.querySelector('[data-chip="model"][data-spawn-row] [data-chip-value-model]');
+  assert(mobileModelDisplay.textContent === "openai default", "changing harness should update the visible mobile model row");
   const accessRow = mobileRowsDom.window.document.querySelector('[data-chip="access_mode"][data-spawn-row]');
   accessRow.click();
   const accessHidden = mobileRowsDom.window.document.querySelector('input[type=hidden][name="access_mode"]');
-  const accessDisplay = mobileRowsDom.window.document.querySelector('[data-chip-value-access_mode]');
+  const accessDisplay = accessRow.querySelector('[data-chip-value-access_mode]');
   assert(accessHidden.value === "read-only", "tapping mobile access_mode row should toggle hidden input to read-only");
   assert(accessDisplay.textContent === "read-only", "tapping mobile access_mode row should update row display to read-only");
   accessRow.click();
   assert(accessHidden.value === "full", "tapping mobile access_mode row again should toggle hidden input back to full");
   assert(accessDisplay.textContent === "full", "tapping mobile access_mode row again should update row display back to full");
+  await new Promise((r) => setTimeout(r, 0));
+  const branchDisplay = mobileRowsDom.window.document.querySelector('[data-chip="branch"][data-spawn-row] [data-chip-value-branch]');
+  assert(branchDisplay.textContent === "main", "resolved HEAD branch should update the visible mobile branch row");
 
 const advancedDom = new JSDOM(`<!DOCTYPE html><html><body>
   <form data-spawn-form>

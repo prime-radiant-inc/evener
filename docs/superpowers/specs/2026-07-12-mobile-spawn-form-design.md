@@ -1,8 +1,8 @@
 # Mobile spawn form — design spec
 
-Status: **approved** (Treatment A with auto-expanding textarea).  
-Scope: the `/new` session creation form in `cmd/serf-hub`.  
-Date: 2026-07-12.  
+Status: **approved** (Treatment A with auto-expanding textarea).
+Scope: the `/new` session creation form in `cmd/serf-hub`.
+Date: 2026-07-12.
 Companion: [`docs/web-ui/mockups/22-mobile-spawn-treatments.html`](../../web-ui/mockups/22-mobile-spawn-treatments.html).
 
 ---
