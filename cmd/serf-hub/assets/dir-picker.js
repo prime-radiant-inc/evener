@@ -55,10 +55,13 @@
     }
   }
 
-  function dismissOnOutsideClick(picker, close) {
+  function dismissOnOutsideClick(picker, close, insideEls) {
     setTimeout(() => {
       if (!picker.parentNode) return;
       const offClick = (e) => {
+        if (Array.isArray(insideEls) && insideEls.some((el) => el && el.contains && el.contains(e.target))) {
+          return;
+        }
         if (!picker.contains(e.target)) {
           close();
         }
@@ -79,6 +82,38 @@
     }).filter((item) => item.path);
   }
 
+  function trimTrailingSlash(value) {
+    const path = String(value || "").trim();
+    if (path === "/") return "/";
+    return path.replace(/\/+$/, "");
+  }
+
+  function withTrailingSlash(value) {
+    const path = trimTrailingSlash(value);
+    if (!path || path === "/") return path;
+    return path + "/";
+  }
+
+  function parentDir(value) {
+    const path = trimTrailingSlash(value);
+    if (!path || path === "/") return "";
+    const i = path.lastIndexOf("/");
+    if (i <= 0) return "/";
+    return path.slice(0, i);
+  }
+
+  function baseName(value) {
+    const path = trimTrailingSlash(value);
+    if (!path || path === "/") return path || "/";
+    const i = path.lastIndexOf("/");
+    return i >= 0 ? path.slice(i + 1) : path;
+  }
+
+  function checkIcon() {
+    if (global.SerfIcons && global.SerfIcons.ended) return global.SerfIcons.ended;
+    return "&#10003;";
+  }
+
   function openDirPicker(options) {
     options = options || {};
     const anchor = options.anchor;
@@ -91,12 +126,26 @@
 
     const inlineInput = options.inlineInput || null;
     const input = inlineInput || document.createElement("input");
+    let currentDir = trimTrailingSlash(options.currentValue || input.value || "");
     if (!inlineInput) {
       input.className = "chip-picker-search";
       input.placeholder = options.placeholder || "/path/to/repo";
-      input.value = options.currentValue || "";
-      picker.appendChild(input);
+      input.value = currentDir;
     }
+
+    const pathBar = document.createElement("div");
+    pathBar.className = "chip-picker-dir-bar";
+    if (!inlineInput) {
+      pathBar.appendChild(input);
+    }
+    const useButton = document.createElement("button");
+    useButton.type = "button";
+    useButton.className = "chip-picker-dir-use";
+    useButton.setAttribute("aria-label", "Use current directory");
+    useButton.title = "Use current directory";
+    useButton.innerHTML = checkIcon();
+    pathBar.appendChild(useButton);
+    picker.appendChild(pathBar);
 
     const results = document.createElement("div");
     results.className = "chip-picker-results";
@@ -106,6 +155,10 @@
     let requestID = 0;
 
     function close() {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
       if (typeof picker.__serfDirPickerCleanup === "function") {
         picker.__serfDirPickerCleanup();
       }
@@ -119,64 +172,84 @@
       close();
     }
 
-    function fetchDirs(prefix) {
+    function setInputValue(value) {
+      input.value = value;
+    }
+
+    function browseTo(path) {
+      currentDir = trimTrailingSlash(path);
+      setInputValue(currentDir);
+      fetchDirs(currentDir);
+    }
+
+    function appendParentRow() {
+      const parent = parentDir(currentDir);
+      if (!parent && currentDir !== "/") return;
+      if (currentDir === "/") return;
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "chip-picker-dir-parent";
+      row.innerHTML = '<span class="chip-picker-dir-name">..</span><span class="chip-picker-dir-path"></span>';
+      row.querySelector(".chip-picker-dir-path").textContent = parent || "/";
+      row.addEventListener("click", () => browseTo(parent || "/"));
+      results.appendChild(row);
+    }
+
+    function appendDirRow(r) {
+      const el = document.createElement("button");
+      el.type = "button";
+      el.className = "chip-picker-dir-row";
+      el.dataset.dirPath = r.path;
+      const name = document.createElement("span");
+      name.className = "chip-picker-dir-name";
+      name.textContent = baseName(r.path);
+      el.appendChild(name);
+      const path = document.createElement("span");
+      path.className = "chip-picker-dir-path";
+      path.textContent = r.path;
+      el.appendChild(path);
+      if (r.is_git) {
+        const tag = document.createElement("span");
+        tag.className = "chip-picker-dir-tag";
+        tag.textContent = "git";
+        el.appendChild(tag);
+      }
+      el.addEventListener("click", () => browseTo(r.path));
+      results.appendChild(el);
+    }
+
+    function fetchDirs(dir) {
       const currentRequestID = ++requestID;
-      const dirsPromise = completeDirs(prefix);
+      const dirsPromise = completeDirs(withTrailingSlash(dir));
       dirsPromise.then((data) => {
         if (currentRequestID !== requestID || !picker.parentNode) return;
         results.innerHTML = "";
+        appendParentRow();
         const list = normalizedResults(data);
         if (list.length === 0) {
           const empty = document.createElement("div");
           empty.className = "empty-state empty-state-picker";
-          empty.innerHTML = '<p class="empty-state-body">No matching directories</p>';
+          empty.innerHTML = '<p class="empty-state-body">No directories here</p>';
           results.appendChild(empty);
           return;
         }
-        list.forEach((r) => {
-          const el = document.createElement("div");
-          el.className = "chip-picker-dir-row";
-          const path = document.createElement("span");
-          path.className = "chip-picker-dir-path";
-          path.textContent = r.path;
-          el.appendChild(path);
-          if (r.is_git) {
-            const tag = document.createElement("span");
-            tag.className = "chip-picker-dir-tag";
-            tag.textContent = "git";
-            el.appendChild(tag);
-          }
-          el.addEventListener("click", () => accept(r.path));
-          results.appendChild(el);
-        });
+        list.forEach(appendDirRow);
       }).catch(() => {});
     }
 
+    useButton.addEventListener("click", () => accept(input.value || currentDir));
+
     input.addEventListener("input", () => {
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => fetchDirs(input.value), 150);
+      timer = setTimeout(() => browseTo(input.value), 150);
     });
 
-    // Tab autocompletes to first result + "/". Enter prefers an exact
-    // match and otherwise commits the typed literal so the UI does not
-    // silently choose the wrong directory.
+    // Enter commits the typed literal so manual paths stay available; clicks in
+    // the list are reserved for browsing.
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
-        const typed = input.value;
-        if (!typed.trim()) return;
-        const rows = results.querySelectorAll(".chip-picker-dir-row");
-        let exact = null;
-        for (const row of rows) {
-          const p = row.querySelector(".chip-picker-dir-path");
-          if (p && p.textContent === typed) { exact = row; break; }
-        }
-        if (exact) exact.click();
-        else accept(typed);
-      } else if (e.key === "Tab") {
-        e.preventDefault();
-        const first = results.querySelector(".chip-picker-dir-path");
-        if (first) input.value = first.textContent + "/";
+        accept(input.value);
       } else if (e.key === "Escape") {
         e.preventDefault();
         close();
@@ -190,8 +263,9 @@
     if (options.minWidth) picker.style.minWidth = options.minWidth;
 
     if (!inlineInput) input.focus();
-    fetchDirs(input.value);
-    dismissOnOutsideClick(picker, close);
+    setInputValue(currentDir);
+    fetchDirs(currentDir);
+    dismissOnOutsideClick(picker, close, [anchor, inlineInput]);
     return picker;
   }
 

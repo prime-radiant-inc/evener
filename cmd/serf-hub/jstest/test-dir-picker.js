@@ -31,6 +31,13 @@ function deferred() {
   dom.window.SerfAppwire = {
     completeDirs(prefix) {
       calls.push(prefix);
+      if (prefix === "/tmp/project/") {
+        return Promise.resolve({
+          results: [
+            { path: "/tmp/project/src", is_git: false },
+          ],
+        });
+      }
       return Promise.resolve({
         results: [
           { path: "/tmp/project", is_git: true },
@@ -59,20 +66,30 @@ function deferred() {
   const input = picker.querySelector(".chip-picker-search");
   assert(picker.querySelector(".chip-picker-results"), "shared picker should render .chip-picker-results");
   assert(input && input.value === "/tmp", "picker input should use current value");
-  assert(calls[0] === "/tmp", "picker should fetch initial suggestions for current value");
+  assert(calls[0] === "/tmp/", "picker should list children of the current directory");
+  assert(picker.querySelector(".chip-picker-dir-use"), "picker should render a compact accept control");
+  assert(picker.querySelector(".chip-picker-dir-parent"), "picker should render a parent navigation row");
   assert(picker.querySelectorAll(".chip-picker-dir-row").length === 2,
-    "picker should render directory rows");
-  assert(picker.querySelector(".chip-picker-dir-path"), "picker should render directory path text");
+    "picker should render child directory rows");
+  assert(picker.querySelector(".chip-picker-dir-name"), "picker should render directory basename text");
   assert(picker.querySelector(".chip-picker-dir-tag").textContent === "git",
     "picker should render git tag");
 
-  input.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
-  assert(input.value === "/tmp/project/", "Tab should autocomplete to first result plus slash");
+  picker.querySelector('[data-dir-path="/tmp/project"]').click();
+  await new Promise((r) => setTimeout(r, 0));
+  assert(input.value === "/tmp/project", "clicking a directory row should browse into that directory");
+  assert(calls.includes("/tmp/project/"), "browsing into a directory should list that directory's children");
+  assert(accepted.length === 0, "clicking a directory row should not accept the path");
 
-  input.value = "/tmp/project";
-  input.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
-  assert(accepted[0] === "/tmp/project", "Enter on exact match should accept matching suggestion");
-  assert(!dom.window.document.querySelector(".chip-picker-dir"), "picker should close after exact accept");
+  picker.querySelector(".chip-picker-dir-parent").click();
+  await new Promise((r) => setTimeout(r, 0));
+  assert(input.value === "/tmp", "clicking the parent row should browse up");
+
+  picker.querySelector('[data-dir-path="/tmp/project"]').click();
+  await new Promise((r) => setTimeout(r, 0));
+  picker.querySelector(".chip-picker-dir-use").click();
+  assert(accepted[0] === "/tmp/project", "compact accept control should accept the browsed directory");
+  assert(!dom.window.document.querySelector(".chip-picker-dir"), "picker should close after accepting current directory");
 
   dom.window.SerfDirPicker.open({
     anchor,
@@ -87,17 +104,6 @@ function deferred() {
   input2.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
   assert(accepted[1] === "/custom/literal", "Enter on non-exact value should accept typed literal");
   assert(!dom.window.document.querySelector(".chip-picker-dir"), "picker should close after literal accept");
-
-  dom.window.SerfDirPicker.open({
-    anchor,
-    currentValue: "",
-    placeholder: "/path/to/repo",
-    onAccept(value) { accepted.push(value); },
-  });
-  await new Promise((r) => setTimeout(r, 0));
-  const picker3 = dom.window.document.querySelector(".chip-picker-dir");
-  picker3.querySelector(".chip-picker-dir-row").click();
-  assert(accepted[2] === "/tmp/project", "clicking a row should accept that path");
 
   const slow = deferred();
   dom.window.SerfAppwire.completeDirs = (prefix) => {
@@ -119,8 +125,8 @@ function deferred() {
   const raceOld = deferred();
   const raceNew = deferred();
   dom.window.SerfAppwire.completeDirs = (prefix) => {
-    if (prefix === "/race/old") return raceOld.promise;
-    if (prefix === "/race/new") return raceNew.promise;
+    if (prefix === "/race/old/") return raceOld.promise;
+    if (prefix === "/race/new/") return raceNew.promise;
     return Promise.resolve({ results: [] });
   };
   dom.window.SerfDirPicker.open({
@@ -136,11 +142,11 @@ function deferred() {
   await new Promise((r) => setTimeout(r, 170));
   raceNew.resolve({ results: [{ path: "/race/newest", is_git: false }] });
   await new Promise((r) => setTimeout(r, 0));
-  assert(racePicker.querySelector(".chip-picker-dir-path").textContent === "/race/newest",
+  assert(racePicker.querySelector('[data-dir-path="/race/newest"] .chip-picker-dir-path').textContent === "/race/newest",
     "newer directory results should render first");
   raceOld.resolve({ results: [{ path: "/race/old-stale", is_git: false }] });
   await new Promise((r) => setTimeout(r, 0));
-  assert(racePicker.querySelector(".chip-picker-dir-path").textContent === "/race/newest",
+  assert(racePicker.querySelector('[data-dir-path="/race/newest"] .chip-picker-dir-path').textContent === "/race/newest",
     "stale directory results should not overwrite newer results");
 
   const cleanupDom = new JSDOM(`<!DOCTYPE html><html><body>

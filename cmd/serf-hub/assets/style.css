@@ -3492,10 +3492,42 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
 
 /* ── Directory picker ────────────────────────────────────────────────────── */
 .chip-picker-dir { width: 480px; max-height: 360px; display: flex; flex-direction: column; }
+.chip-picker-dir-bar { display: flex; align-items: stretch; border-bottom: 1px solid var(--rule); }
+.chip-picker-dir-bar .chip-picker-search { flex: 1; min-width: 0; border-bottom: 0; }
+.chip-picker-dir-use {
+  width: 44px;
+  flex: 0 0 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--rule);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--text-md);
+}
+.chip-picker-dir-use:hover { background: var(--rule); color: var(--text); }
+.chip-picker-dir-use svg { width: 1em; height: 1em; }
 .chip-picker-results { flex: 1; overflow-y: auto; padding: var(--space-2) 0; }
-.chip-picker-dir-row { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); cursor: pointer; font-family: var(--font-mono); font-size: var(--text-sm); }
-.chip-picker-dir-row:hover { background: var(--rule); }
-.chip-picker-dir-path { color: var(--text); flex: 1; word-break: break-all; }
+.chip-picker-dir-row,
+.chip-picker-dir-parent {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(84px, max-content) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.chip-picker-dir-row:hover,
+.chip-picker-dir-parent:hover { background: var(--rule); }
+.chip-picker-dir-name { color: var(--text); font-family: var(--font-mono); font-size: var(--text-sm); min-width: 0; overflow-wrap: anywhere; }
+.chip-picker-dir-path { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); min-width: 0; word-break: break-all; }
 .chip-picker-dir-tag { color: var(--state-warning); font-family: var(--font-mono); font-size: var(--text-2xs); padding: var(--space-1) var(--space-3); border: 1px solid var(--state-warning); border-radius: var(--radius-md); flex-shrink: 0; }
 
 
@@ -4673,10 +4705,17 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
     padding: var(--space-3) var(--space-5);
     margin: var(--space-2) 0 0;
   }
+  .chip-picker-sheet .chip-picker-dir-bar { margin-top: var(--space-2); }
+  .chip-picker-sheet .chip-picker-dir-use {
+    width: 56px;
+    flex-basis: 56px;
+    min-height: var(--tap-min);
+  }
   /* Touch-sized rows with comfortable padding. */
   .chip-picker-option,
   .chip-picker-model,
-  .chip-picker-dir-row {
+  .chip-picker-dir-row,
+  .chip-picker-dir-parent {
     min-height: var(--tap-min);
     display: flex;
     flex-direction: column;
