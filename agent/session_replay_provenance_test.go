@@ -221,6 +221,23 @@ func TestExpandHistory_WebSearch_SameFamilyReplays(t *testing.T) {
 	}
 }
 
+// TestExpandHistory_WebSearch_AnthropicSiblingTagReplays pins that distinct
+// anthropic-wire behavior tags (anthropic and kimi-anthropic) share the
+// anthropic family, so an anthropic-produced raw web_search block replays
+// verbatim into a kimi-anthropic request — the raw block shape is identical.
+func TestExpandHistory_WebSearch_AnthropicSiblingTagReplays(t *testing.T) {
+	t.Parallel()
+	turns := []schema.Turn{assistantWebSearchTurn("anthropic", "claude-opus-4-6")}
+	out := expandHistory(turns, replayScope{
+		Provider: "kimi", Model: "kimi-for-coding", BehaviorTag: "kimi-anthropic",
+		InFlightFrom:  len(turns),
+		behaviorTagOf: tagResolver(map[string]string{"anthropic": "anthropic", "kimi": "kimi-anthropic"}),
+	})
+	if !hasContentKind(out, llm.ContentWebSearch) {
+		t.Fatal("anthropic→kimi-anthropic web_search must replay verbatim (same anthropic-wire family)")
+	}
+}
+
 // TestExpandHistory_WebSearch_CrossFamilyDropped is the G13 case: an
 // anthropic-produced raw web_search block must not land in an openai request.
 func TestExpandHistory_WebSearch_CrossFamilyDropped(t *testing.T) {
