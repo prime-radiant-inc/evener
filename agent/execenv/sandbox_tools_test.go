@@ -617,6 +617,9 @@ func TestSandboxWritePreservesMode(t *testing.T) {
 	if err := os.WriteFile(script, []byte("#!/bin/sh\necho hi\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(script, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := env.EditFile(script, "echo hi", "echo bye", false); err != nil {
 		t.Fatalf("edit_file: %v", err)
 	}
@@ -636,7 +639,7 @@ func TestSandboxWritePreservesMode(t *testing.T) {
 		t.Errorf("write_file over existing file changed the mode: got %o, want 0755", info.Mode().Perm())
 	}
 
-	// A fresh file gets the default 0644.
+	// A fresh file gets the default 0644 independent of the process umask.
 	fresh := filepath.Join(worktree, "new.txt")
 	if _, err := env.WriteFile(fresh, "hello"); err != nil {
 		t.Fatalf("write_file new: %v", err)

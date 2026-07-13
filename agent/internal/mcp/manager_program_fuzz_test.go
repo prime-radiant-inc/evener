@@ -141,12 +141,12 @@ func mcpProgramLifecycle(t *testing.T, payload string, variant uint8) {
 	}
 
 	env := &agenttest.DenyEnv{WorkDir: t.TempDir(), Seed: uint64(variant)}
-	first := mcpProgramExecute(t, ctx, reg, env, toolPrefix+"echo", payload)
+	first := mcpProgramExecute(ctx, t, reg, env, toolPrefix+"echo", payload)
 	if first.IsError || first.Output != "first:"+payload {
 		t.Fatalf("first routed call = %+v, want first server reply", first)
 	}
 
-	channelB := mcpProgramExecute(t, ctx, reg, env, toolPrefix+"report_error", payload)
+	channelB := mcpProgramExecute(ctx, t, reg, env, toolPrefix+"report_error", payload)
 	if !channelB.IsError || channelB.Err == nil || channelB.Output != "[MCP Error] upstream:"+payload {
 		t.Fatalf("Channel-B result = %+v, want typed upstream error", channelB)
 	}
@@ -158,7 +158,7 @@ func mcpProgramLifecycle(t *testing.T, payload string, variant uint8) {
 	if err := firstServer.Close(); err != nil {
 		t.Fatalf("close first in-memory server: %v", err)
 	}
-	retried := mcpProgramExecute(t, ctx, reg, env, toolPrefix+"echo", payload)
+	retried := mcpProgramExecute(ctx, t, reg, env, toolPrefix+"echo", payload)
 	if retried.IsError || retried.Output != "second:"+payload {
 		t.Fatalf("reconnect retry = %+v, want second server reply", retried)
 	}
@@ -234,7 +234,6 @@ func mcpProgramServerWithTools(t *testing.T, replies map[string]string) (*mcpsdk
 	t.Helper()
 	server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "fuzz-manager", Version: "v1"}, nil)
 	for name, prefix := range replies {
-		name, prefix := name, prefix
 		server.AddTool(&mcpsdk.Tool{
 			Name:        name,
 			Description: "fuzz manager " + name,
@@ -265,7 +264,7 @@ func mcpProgramServerWithTools(t *testing.T, replies map[string]string) (*mcpsdk
 	return session, clientTransport
 }
 
-func mcpProgramExecute(t *testing.T, ctx context.Context, reg *tool.Registry, env *agenttest.DenyEnv, name, message string) tool.ExecResult {
+func mcpProgramExecute(ctx context.Context, t *testing.T, reg *tool.Registry, env *agenttest.DenyEnv, name, message string) tool.ExecResult {
 	t.Helper()
 	raw, err := json.Marshal(map[string]string{"message": message, "purpose": "fuzz manager routing"})
 	if err != nil {

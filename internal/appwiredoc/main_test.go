@@ -18,7 +18,6 @@ func FuzzFieldsOf(f *testing.F) {
 		Visible string `json:"visible,omitempty"`
 		Ignored string `json:"-"`
 		Default int
-		hidden  bool
 	}
 	f.Fuzz(func(t *testing.T, which uint8) {
 		var typ reflect.Type

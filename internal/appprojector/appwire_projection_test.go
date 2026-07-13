@@ -1134,35 +1134,41 @@ func TestAppEventProjectorDoesNotInferSkillActivationAcrossAssistantText(t *test
 
 func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testing.T) {
 	tests := []struct {
-		name        string
-		event       events.SessionEvent
-		description string
-		contains    []string
-		notContains []string
-		singleLine  bool
+		name         string
+		event        events.SessionEvent
+		description  string
+		kind         string
+		noDisclosure bool
+		contains     []string
+		notContains  []string
+		singleLine   bool
 	}{
 		{
 			name:        "turn limit max turns",
 			event:       events.SessionEvent{Kind: events.EventTurnLimit, SessionID: "th_1", Data: events.TurnLimitData{MaxTurns: 3}},
 			description: "Turn limit",
+			kind:        appwire.ThreadItemKindTurnLimit,
 			contains:    []string{"Maximum turns reached: 3"},
 		},
 		{
 			name:        "turn limit tool rounds",
 			event:       events.SessionEvent{Kind: events.EventTurnLimit, SessionID: "th_1", Data: events.TurnLimitData{MaxToolRoundsPerInput: 7}},
 			description: "Turn limit",
+			kind:        appwire.ThreadItemKindTurnLimit,
 			contains:    []string{"Maximum tool rounds per input reached: 7"},
 		},
 		{
 			name:        "loop detection",
 			event:       events.SessionEvent{Kind: events.EventLoopDetection, SessionID: "th_1", Data: events.LoopDetectionData{Message: "Repeated tool pattern detected"}},
 			description: "Loop detection",
+			kind:        appwire.ThreadItemKindLoopDetection,
 			contains:    []string{"Repeated tool pattern detected"},
 		},
 		{
 			name:        "skill activated",
 			event:       events.SessionEvent{Kind: events.EventSkillActivated, SessionID: "th_1", Data: events.SkillActivatedData{Name: "using-superpowers"}},
 			description: "Skill activated",
+			kind:        appwire.ThreadItemKindSkill,
 			contains:    []string{"using-superpowers"},
 		},
 		{
@@ -1175,6 +1181,7 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 				EstTokensAfter:  23000,
 			}},
 			description: "Context compaction",
+			kind:        appwire.ThreadItemKindContextCompaction,
 			contains:    []string{"Layer: L4", "Turns: 42 -> 8", "Estimated tokens: 120000 -> 23000"},
 		},
 		{
@@ -1182,8 +1189,21 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 			event: events.SessionEvent{Kind: events.EventPluginLoaded, SessionID: "th_1", Data: events.PluginLoadedData{
 				Name: "superpowers", SkillCount: 5, AgentCount: 2, MCPCount: 1,
 			}},
-			description: "Plugin loaded",
-			contains:    []string{"superpowers", "5 skills", "2 agents", "1 MCP"},
+			description:  "Plugin loaded",
+			kind:         appwire.ThreadItemKindPlugin,
+			noDisclosure: true,
+			contains:     []string{"superpowers", "5 skills", "2 agents", "1 MCP"},
+		},
+		{
+			name: "plugin loaded without name",
+			event: events.SessionEvent{Kind: events.EventPluginLoaded, SessionID: "th_1", Data: events.PluginLoadedData{
+				SkillCount: 3, AgentCount: 0, MCPCount: 0,
+			}},
+			description:  "Plugin loaded",
+			kind:         appwire.ThreadItemKindPlugin,
+			noDisclosure: true,
+			contains:     []string{"Loaded plugin (3 skills, 0 agents, 0 MCP servers)"},
+			notContains:  []string{"Loaded plugin plugin"},
 		},
 		{
 			name: "hook end",
@@ -1191,6 +1211,7 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 				Event: "SessionStart", HookType: "command", Matcher: "using-superpowers", PluginName: "superpowers", ExitCode: 0, DurationMS: 37,
 			}},
 			description: "Hook",
+			kind:        appwire.ThreadItemKindHook,
 			contains:    []string{"SessionStart hook", "using-superpowers", "superpowers", "command", "exit 0"},
 			notContains: []string{"37ms"},
 			singleLine:  true,
@@ -1199,12 +1220,14 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 			name:        "fork summary",
 			event:       events.SessionEvent{Kind: events.EventForkSummary, SessionID: "th_1", Data: events.ForkSummaryData{Turn: 12}},
 			description: "Fork summary",
+			kind:        appwire.ThreadItemKindForkSummary,
 			contains:    []string{"turn 12"},
 		},
 		{
 			name:        "prompt loaded",
 			event:       events.SessionEvent{Kind: events.EventPromptLoaded, SessionID: "th_1", Data: events.PromptLoadedData{Label: "system.md", Size: 2048}},
 			description: "Prompt loaded",
+			kind:        appwire.ThreadItemKindPrompt,
 			contains:    []string{"system.md", "2048 B"},
 		},
 		{
@@ -1218,6 +1241,7 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 				LoopOverhead: 5 * time.Millisecond,
 			}},
 			description: "Round timings",
+			kind:        appwire.ThreadItemKindRoundTimings,
 			contains:    []string{"Round 2", "total=1.5s", "llm=1.2s", "context=25ms", "tools=40ms"},
 		},
 		{
@@ -1228,6 +1252,7 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 				Changes:  []string{"alias:old_string:old_str→old_string"},
 			}},
 			description: "Tool call repaired",
+			kind:        appwire.ThreadItemKindToolRepair,
 			contains:    []string{"edit_file", "alias:old_string:old_str→old_string"},
 		},
 	}
@@ -1245,7 +1270,7 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 				t.Fatalf("turn=%+v", turn)
 			}
 			item := turn.Items[0]
-			if item.Type != "systemMessage" || item.Description != tt.description || item.Status != appwire.TurnStatusCompleted {
+			if item.Type != "systemMessage" || item.Description != tt.description || item.Status != appwire.TurnStatusCompleted || item.Kind != tt.kind || item.NoDisclosure != tt.noDisclosure {
 				t.Fatalf("item=%+v", item)
 			}
 			for _, want := range tt.contains {
@@ -1262,6 +1287,45 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 				t.Fatalf("item text %q should be one line", item.Text)
 			}
 		})
+	}
+}
+
+// A plugin-loaded announcement must carry structured plugin metadata in Raw so
+// the web can surface the plugin name without re-parsing the prose.
+func TestAppEventProjectorPluginLoadedCarriesStructuredMetadata(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	out := projector.Project(events.SessionEvent{Kind: events.EventPluginLoaded, SessionID: "th_1", Data: events.PluginLoadedData{
+		Name: "superpowers", SkillCount: 14, AgentCount: 0, MCPCount: 0,
+	}})
+
+	if len(out) != 1 || out[0].Method != appwire.NotifyTurnCompleted {
+		t.Fatalf("notifications=%+v", out)
+	}
+	turn := notificationTurn(t, out, appwire.NotifyTurnCompleted)
+	if len(turn.Items) != 1 {
+		t.Fatalf("turn=%+v", turn)
+	}
+	item := turn.Items[0]
+	if item.Kind != appwire.ThreadItemKindPlugin {
+		t.Fatalf("plugin-loaded item should have kind %q, got %q", appwire.ThreadItemKindPlugin, item.Kind)
+	}
+	if !item.NoDisclosure {
+		t.Fatalf("plugin-loaded item should be marked NoDisclosure")
+	}
+	if len(item.Raw) == 0 {
+		t.Fatalf("plugin-loaded item should carry structured metadata in Raw, got none: %+v", item)
+	}
+	var got struct {
+		Plugin *events.PluginLoadedData `json:"plugin"`
+	}
+	if err := json.Unmarshal(item.Raw, &got); err != nil {
+		t.Fatalf("Raw is not valid JSON: %v (%s)", err, item.Raw)
+	}
+	if got.Plugin == nil {
+		t.Fatalf("Raw should carry a plugin object, got %s", item.Raw)
+	}
+	if got.Plugin.Name != "superpowers" || got.Plugin.SkillCount != 14 {
+		t.Fatalf("Raw plugin metadata wrong: %+v", got.Plugin)
 	}
 }
 

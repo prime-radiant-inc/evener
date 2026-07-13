@@ -74,7 +74,7 @@ func main() {
 	if err != nil {
 		fatal("open registry: %v", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	registered, err := ParseRegistry(file)
 	if err != nil {

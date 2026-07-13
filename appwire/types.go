@@ -455,6 +455,23 @@ type DiagnosticCause struct {
 	Status   int    `json:"status,omitempty"`
 }
 
+// Stable semantic categories for ThreadItem.Kind, used by system announcements
+// so the frontend can branch on event type without matching user-facing titles.
+const (
+	ThreadItemKindPlugin            = "plugin"
+	ThreadItemKindSkill             = "skill"
+	ThreadItemKindHook              = "hook"
+	ThreadItemKindPrompt            = "prompt"
+	ThreadItemKindContextCompaction = "context_compaction"
+	ThreadItemKindCompaction        = "compaction"
+	ThreadItemKindTurnLimit         = "turn_limit"
+	ThreadItemKindLoopDetection     = "loop_detection"
+	ThreadItemKindGoal              = "goal"
+	ThreadItemKindForkSummary       = "fork_summary"
+	ThreadItemKindRoundTimings      = "round_timings"
+	ThreadItemKindToolRepair        = "tool_repair"
+)
+
 type ThreadItem struct {
 	Type                 string          `json:"type"`
 	ID                   string          `json:"id"`
@@ -474,6 +491,16 @@ type ThreadItem struct {
 	StartedAt            *int64          `json:"startedAt,omitempty"`
 	CompletedAt          *int64          `json:"completedAt,omitempty"`
 	Raw                  json.RawMessage `json:"raw,omitempty"`
+	// Kind is a stable semantic category for the item, populated by the backend
+	// for system announcements (e.g. ThreadItemKindPlugin, ThreadItemKindSkill)
+	// so the frontend can branch on event type without matching user-facing
+	// title strings.
+	Kind string `json:"kind,omitempty"`
+	// NoDisclosure is true when the item's text is self-describing and should be
+	// rendered inline rather than hidden behind a disclosure toggle. Populated by
+	// the backend for events like plugin-loaded where the text itself carries the
+	// salient detail (e.g. "Loaded plugin superpowers ...").
+	NoDisclosure bool `json:"noDisclosure,omitempty"`
 }
 
 type OutputImage struct {

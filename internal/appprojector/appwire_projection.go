@@ -448,7 +448,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// out-of-band, no-item-state events (hook end, plugin loaded, ...)
 		// are surfaced.
 		data := eventData[events.ToolCallRepairedData](event.Data)
-		return p.systemAnnouncement("tool_repair", "Tool call repaired", toolCallRepairedAnnouncement(data))
+		return p.systemAnnouncement(appwire.ThreadItemKindToolRepair, "Tool call repaired", toolCallRepairedAnnouncement(data))
 	case events.EventWarning:
 		p.clearSkillCandidate()
 		data := eventData[events.WarningData](event.Data)
@@ -545,19 +545,19 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	case events.EventCompactionTurn:
 		p.clearSkillCandidate()
 		data := eventData[events.CompactionTurnData](event.Data)
-		return p.systemAnnouncement("compaction", apptranscript.CompactionDescription(data.Kind), data.Text)
+		return p.systemAnnouncement(appwire.ThreadItemKindCompaction, apptranscript.CompactionDescription(data.Kind), data.Text)
 	case events.EventTurnLimit:
 		p.clearSkillCandidate()
 		data := eventData[events.TurnLimitData](event.Data)
-		return p.systemAnnouncement("turn_limit", "Turn limit", turnLimitAnnouncement(data))
+		return p.systemAnnouncement(appwire.ThreadItemKindTurnLimit, "Turn limit", turnLimitAnnouncement(data))
 	case events.EventLoopDetection:
 		p.clearSkillCandidate()
 		data := eventData[events.LoopDetectionData](event.Data)
-		return p.systemAnnouncement("loop_detection", "Loop detection", data.Message)
+		return p.systemAnnouncement(appwire.ThreadItemKindLoopDetection, "Loop detection", data.Message)
 	case events.EventGoalEnded:
 		p.clearSkillCandidate()
 		data := eventData[events.GoalEndedData](event.Data)
-		return p.systemAnnouncement("goal", "Goal", goalEndText(data))
+		return p.systemAnnouncement(appwire.ThreadItemKindGoal, "Goal", goalEndText(data))
 	case events.EventSkillActivated:
 		data := eventData[events.SkillActivatedData](event.Data)
 		name := strings.TrimSpace(data.Name)
@@ -585,33 +585,33 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			})}
 		}
 		p.skillCandidate = skillActivationCandidate{}
-		return p.systemAnnouncement("skill", "Skill activated", "Activated skill: "+data.Name)
+		return p.systemAnnouncement(appwire.ThreadItemKindSkill, "Skill activated", "Activated skill: "+data.Name)
 	case events.EventContextCompaction:
 		p.clearSkillCandidate()
 		data := eventData[events.ContextCompactionData](event.Data)
-		return p.systemAnnouncementWithRaw("context_compaction", "Context compaction", contextCompactionAnnouncement(data), contextCompactionRaw(data))
+		return p.systemAnnouncementWithRaw(appwire.ThreadItemKindContextCompaction, "Context compaction", contextCompactionAnnouncement(data), contextCompactionRaw(data), false)
 	case events.EventPluginLoaded:
 		p.clearSkillCandidate()
 		data := eventData[events.PluginLoadedData](event.Data)
-		return p.systemAnnouncement("plugin", "Plugin loaded", pluginLoadedAnnouncement(data))
+		return p.systemAnnouncementWithRaw(appwire.ThreadItemKindPlugin, "Plugin loaded", pluginLoadedAnnouncement(data), pluginLoadedRaw(data), true)
 	case events.EventHookStart:
 		return nil
 	case events.EventHookEnd:
 		p.clearSkillCandidate()
 		data := eventData[events.HookEndData](event.Data)
-		return p.systemAnnouncement("hook", "Hook", hookEndAnnouncement(data))
+		return p.systemAnnouncement(appwire.ThreadItemKindHook, "Hook", hookEndAnnouncement(data))
 	case events.EventForkSummary:
 		p.clearSkillCandidate()
 		data := eventData[events.ForkSummaryData](event.Data)
-		return p.systemAnnouncement("fork_summary", "Fork summary", forkSummaryAnnouncement(data))
+		return p.systemAnnouncement(appwire.ThreadItemKindForkSummary, "Fork summary", forkSummaryAnnouncement(data))
 	case events.EventPromptLoaded:
 		p.clearSkillCandidate()
 		data := eventData[events.PromptLoadedData](event.Data)
-		return p.systemAnnouncement("prompt", "Prompt loaded", promptLoadedAnnouncement(data))
+		return p.systemAnnouncement(appwire.ThreadItemKindPrompt, "Prompt loaded", promptLoadedAnnouncement(data))
 	case events.EventRoundTimings:
 		p.clearSkillCandidate()
 		data := eventData[events.RoundTimings](event.Data)
-		return p.systemAnnouncement("round_timings", "Round timings", roundTimingsAnnouncement(data))
+		return p.systemAnnouncement(appwire.ThreadItemKindRoundTimings, "Round timings", roundTimingsAnnouncement(data))
 	case events.EventQueueChanged:
 		p.clearSkillCandidate()
 		data := eventData[events.QueueChangedData](event.Data)
@@ -840,16 +840,17 @@ func (p *AppEventProjector) stampTurnUsage(turn *appwire.Turn) {
 	turn.Cost = appwire.EstimateCost(p.activeTurnModel, usage)
 }
 
-func (p *AppEventProjector) systemAnnouncement(prefix, description, text string) []AppNotification {
-	return p.systemAnnouncementWithRaw(prefix, description, text, nil)
+func (p *AppEventProjector) systemAnnouncement(kind, description, text string) []AppNotification {
+	return p.systemAnnouncementWithRaw(kind, description, text, nil, false)
 }
 
 // systemAnnouncementWithRaw renders a lifecycle system one-liner like
 // systemAnnouncement, additionally attaching structured detail to the item's
 // Raw field. The web can then surface that detail (e.g. a compaction
 // before→after expand, mockup #17 Alt A) from real numbers instead of
-// re-parsing the prose text.
-func (p *AppEventProjector) systemAnnouncementWithRaw(prefix, description, text string, raw json.RawMessage) []AppNotification {
+// re-parsing the prose text. Set noDisclosure when the item's text is self-
+// describing and should render inline without a disclosure toggle.
+func (p *AppEventProjector) systemAnnouncementWithRaw(kind, description, text string, raw json.RawMessage, noDisclosure bool) []AppNotification {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil
@@ -860,13 +861,15 @@ func (p *AppEventProjector) systemAnnouncementWithRaw(prefix, description, text 
 		turnID = fmt.Sprintf("turn_%d", p.nextTurn)
 	}
 	item := appwire.ThreadItem{
-		Type:        "systemMessage",
-		ID:          p.nextItemID(prefix),
-		TurnID:      turnID,
-		Description: strings.TrimSpace(description),
-		Text:        text,
-		Status:      appwire.TurnStatusCompleted,
-		Raw:         raw,
+		Type:         "systemMessage",
+		ID:           p.nextItemID(kind),
+		TurnID:       turnID,
+		Description:  strings.TrimSpace(description),
+		Text:         text,
+		Status:       appwire.TurnStatusCompleted,
+		Raw:          raw,
+		Kind:         kind,
+		NoDisclosure: noDisclosure,
 	}
 	if p.activeTurnID == "" {
 		return []AppNotification{p.notification(appwire.NotifyTurnCompleted, map[string]any{
@@ -1003,10 +1006,22 @@ func contextCompactionAnnouncement(data events.ContextCompactionData) string {
 	return strings.Join(lines, "\n")
 }
 
+func pluginLoadedRaw(data events.PluginLoadedData) json.RawMessage {
+	raw, err := json.Marshal(map[string]any{"plugin": data})
+	if err != nil {
+		// Marshal of a simple struct with basic-typed fields cannot fail in
+		// practice; returning nil means the renderer gets no structured
+		// metadata, but the user-facing announcement text still renders.
+		invariant.Hold(false, "pluginLoadedRaw: marshal failed: %v", err)
+		return nil
+	}
+	return raw
+}
+
 func pluginLoadedAnnouncement(data events.PluginLoadedData) string {
 	name := strings.TrimSpace(data.Name)
 	if name == "" {
-		name = "plugin"
+		return fmt.Sprintf("Loaded plugin (%d skills, %d agents, %d MCP servers)", data.SkillCount, data.AgentCount, data.MCPCount)
 	}
 	return fmt.Sprintf("Loaded plugin %s (%d skills, %d agents, %d MCP servers)", name, data.SkillCount, data.AgentCount, data.MCPCount)
 }

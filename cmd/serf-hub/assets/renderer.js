@@ -1370,8 +1370,9 @@
     // appendSystemMessage renders a lifecycle event (skill activated, plugin
     // loaded, tools, prompt) as a quiet, dim one-liner — never divider-weight,
     // and without the meaningless "N chars" payload count (mockup #7 alt A).
-    // The full payload stays available behind the disclosure. Adjacent events
-    // coalesce into one collapsed line once a run reaches 3 (alt B).
+    // Plugin-loaded events are split into their own disclosure run; other
+    // self-describing events render inline. Adjacent non-plugin events coalesce
+    // into one collapsed line once a run reaches 3 (alt B).
     appendSystemMessage(data) {
       data = data || {};
       const text = String(data.text || "");
@@ -1379,6 +1380,30 @@
       this.endCheapCluster();
       this.closeSubagentModule();
       const title = systemMessageDisplayTitle(data.title || "System");
+
+      const isPluginLoaded = data.kind === "plugin" || (data.raw && data.raw.plugin);
+      if (isPluginLoaded) {
+        const pluginName = String(data.raw && data.raw.plugin && data.raw.plugin.name || "").trim();
+        this.appendPluginLoadedMessage(data, title, text, pluginName);
+        return;
+      }
+
+      if (data.noDisclosure) {
+        const run = this.ensureSystemRun();
+        const el = document.createElement("div");
+        el.className = "steering system-message system-message-inline";
+        el.dataset.systemTitle = title;
+        el.dataset.systemText = text;
+        const verb = document.createElement("span");
+        verb.className = "steering-verb";
+        verb.textContent = text;
+        el.appendChild(verb);
+        run.querySelector(".system-run-body").appendChild(el);
+        this.coalesceSystemRun(run);
+        return;
+      }
+
+      const run = this.ensureSystemRun();
       const el = document.createElement("details");
       el.className = "steering system-message";
       el.dataset.systemTitle = title;
@@ -1394,9 +1419,23 @@
       body.textContent = text;
       el.append(summary, body);
 
-      const run = this.ensureSystemRun();
       run.querySelector(".system-run-body").appendChild(el);
       this.coalesceSystemRun(run);
+    },
+
+    appendPluginLoadedMessage(data, title, text, pluginName) {
+      const run = this.ensurePluginRun();
+      const el = document.createElement("div");
+      el.className = "steering system-message system-message-inline";
+      el.dataset.systemTitle = title;
+      el.dataset.systemText = text;
+      el.dataset.systemPluginName = pluginName;
+      const verb = document.createElement("span");
+      verb.className = "steering-verb";
+      verb.textContent = text;
+      el.appendChild(verb);
+      run.querySelector(".system-run-body").appendChild(el);
+      this.updatePluginRun(run);
     },
 
     // ensureSystemRun returns the open lifecycle run if the last transcript
@@ -1405,9 +1444,11 @@
     // the next lifecycle event opens a fresh run (mockup #7 alt B).
     ensureSystemRun() {
       const last = this.conversation.lastElementChild;
-      if (last && last.classList.contains("system-run")) return last;
+      if (last && last.classList.contains("system-run") && !last.classList.contains("plugin-run")) return last;
       const run = document.createElement("div");
       run.className = "system-run";
+      run.setAttribute("aria-live", "polite");
+      run.setAttribute("aria-atomic", "true");
       const toggle = document.createElement("button");
       toggle.type = "button";
       toggle.className = "system-run-toggle";
@@ -1417,6 +1458,51 @@
       run.append(toggle, inner);
       this.conversation.appendChild(run);
       return run;
+    },
+
+    ensurePluginRun() {
+      const last = this.conversation.lastElementChild;
+      if (last && last.classList.contains("plugin-run")) return last;
+      const run = document.createElement("div");
+      run.className = "system-run plugin-run coalesced";
+      run.setAttribute("aria-live", "polite");
+      run.setAttribute("aria-atomic", "true");
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "system-run-toggle";
+      bindDisclosureToggle(toggle, run);
+      const inner = document.createElement("div");
+      inner.className = "system-run-body";
+      run.append(toggle, inner);
+      this.conversation.appendChild(run);
+      return run;
+    },
+
+    updatePluginRun(run) {
+      const blocks = run.querySelectorAll(".system-run-body > .system-message");
+      const names = [];
+      for (const block of blocks) {
+        const name = block.dataset.systemPluginName;
+        if (name) names.push(name);
+      }
+      const toggle = run.querySelector(".system-run-toggle");
+      if (!toggle) return;
+      toggle.textContent = "";
+      const glyph = document.createElement("span");
+      glyph.className = "summary-glyph";
+      glyph.textContent = "✦";
+      toggle.appendChild(glyph);
+      let label;
+      if (names.length === 0) {
+        label = blocks.length === 1 ? "Loaded plugin" : "Loaded " + blocks.length + " plugins";
+      } else if (blocks.length === 1) {
+        label = "Loaded plugin: " + names[0];
+      } else if (names.length === blocks.length) {
+        label = "Loaded plugins: " + names.join(", ");
+      } else {
+        label = "Loaded plugins: " + names.join(", ") + " + " + (blocks.length - names.length) + " more";
+      }
+      toggle.appendChild(document.createTextNode(label));
     },
 
     // coalesceSystemRun folds a run of 3+ adjacent lifecycle events into one
@@ -1431,7 +1517,8 @@
         return;
       }
       run.classList.add("coalesced");
-      const first = blocks[0] && blocks[0].dataset.systemTitle || "system event";
+      const firstBlock = blocks[0];
+      const firstTitle = (firstBlock && firstBlock.dataset.systemTitle) || "system event";
       const more = n - 1;
       // Glyph spanned off so it hangs in the marker gutter (one text column).
       toggle.textContent = "";
@@ -1439,7 +1526,7 @@
       glyph.className = "summary-glyph";
       glyph.textContent = "✦";
       toggle.appendChild(glyph);
-      toggle.appendChild(document.createTextNode(n + " system events · " + first + (more > 0 ? " + " + more + " more" : "")));
+      toggle.appendChild(document.createTextNode(n + " system events · " + firstTitle + (more > 0 ? " + " + more + " more" : "")));
     },
 
     appendSystemLine(text) {

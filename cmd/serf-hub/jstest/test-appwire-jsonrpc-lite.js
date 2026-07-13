@@ -174,6 +174,16 @@ vm.runInContext(SRC, context);
   });
   const systemEvent = replayedSystemEvents.find(([kind]) => kind === "SYSTEM_MESSAGE");
   assert(systemEvent && systemEvent[1].title === "System prompt" && systemEvent[1].text === "You are Serf.", "browser appwire replay should preserve system transcript blocks");
+  const replayedPluginEvents = context.window.SerfAppwire.eventsFromThread({
+    id: "th_serf",
+    sessionId: "th_serf",
+    serf: { ref: "local:th_serf" },
+    turns: [{ items: [{ type: "systemMessage", kind: "plugin", noDisclosure: true, description: "Plugin loaded", text: "Loaded plugin superpowers (14 skills, 0 agents, 0 MCP servers)", raw: { plugin: { name: "superpowers", skill_count: 14, agent_count: 0, mcp_count: 0 } } }] }],
+  });
+  const pluginEvent = replayedPluginEvents.find(([kind]) => kind === "SYSTEM_MESSAGE");
+  assert(pluginEvent && pluginEvent[1].kind === "plugin", "browser appwire replay should forward system message kind for plugin-loaded events");
+  assert(pluginEvent && pluginEvent[1].noDisclosure === true, "browser appwire replay should forward noDisclosure for plugin-loaded events");
+  assert(pluginEvent && pluginEvent[1].raw && pluginEvent[1].raw.plugin && pluginEvent[1].raw.plugin.name === "superpowers", "browser appwire replay should preserve plugin raw data");
   const replayedHookEvents = context.window.SerfAppwire.eventsFromThread({
     id: "th_serf",
     sessionId: "th_serf",

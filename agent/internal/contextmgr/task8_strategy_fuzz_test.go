@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -75,14 +76,14 @@ func t8RunStrategyProgram(t *testing.T, program []byte, evidence string) {
 	client.Register(adapter)
 	history := t8StrategyHistory(userEvidence, terminalEvidence, 72)
 
-	t8RunMemoryCrystals(t, ctx, profile, client, history, program, userEvidence, terminalEvidence)
-	t8RunRecursiveDistill(t, ctx, profile, client, history, program, userEvidence, terminalEvidence)
-	t8RunOODA(t, ctx, profile, client, history, userEvidence, terminalEvidence)
+	t8RunMemoryCrystals(ctx, t, profile, client, history, program, userEvidence, terminalEvidence)
+	t8RunRecursiveDistill(ctx, t, profile, client, history, program, userEvidence, terminalEvidence)
+	t8RunOODA(ctx, t, profile, client, history, userEvidence, terminalEvidence)
 	t8AssertUsageAndMetrics(t, profile, history[:8], program)
 	t8AssertCheapRouting(t, profile, adapter, userEvidence, terminalEvidence)
 }
 
-func t8RunMemoryCrystals(t *testing.T, ctx context.Context, profile *provider.Profile, client *llm.Client, history []schema.Turn, program []byte, userEvidence, terminalEvidence string) {
+func t8RunMemoryCrystals(ctx context.Context, t *testing.T, profile *provider.Profile, client *llm.Client, history []schema.Turn, program []byte, userEvidence, terminalEvidence string) {
 	t.Helper()
 	strategy := NewMemoryCrystalsStrategy(NewManager(profile, client))
 	steps := 1 + int(t8ProgramByte(program, 0)%24)
@@ -110,7 +111,7 @@ func t8RunMemoryCrystals(t *testing.T, ctx context.Context, profile *provider.Pr
 	t8AssertHistoryEvidence(t, managed, userEvidence, terminalEvidence)
 }
 
-func t8RunRecursiveDistill(t *testing.T, ctx context.Context, profile *provider.Profile, client *llm.Client, history []schema.Turn, program []byte, userEvidence, terminalEvidence string) {
+func t8RunRecursiveDistill(ctx context.Context, t *testing.T, profile *provider.Profile, client *llm.Client, history []schema.Turn, program []byte, userEvidence, terminalEvidence string) {
 	t.Helper()
 	strategy := NewRecursiveDistillStrategy(NewManager(profile, client))
 	steps := 1 + int(t8ProgramByte(program, 1)%6)
@@ -143,7 +144,7 @@ func t8RunRecursiveDistill(t *testing.T, ctx context.Context, profile *provider.
 	t8AssertHistoryEvidence(t, managed, userEvidence, terminalEvidence)
 }
 
-func t8RunOODA(t *testing.T, ctx context.Context, profile *provider.Profile, client *llm.Client, history []schema.Turn, userEvidence, terminalEvidence string) {
+func t8RunOODA(ctx context.Context, t *testing.T, profile *provider.Profile, client *llm.Client, history []schema.Turn, userEvidence, terminalEvidence string) {
 	t.Helper()
 	host := &fakeStrategyHost{stateDir: t.TempDir(), id: "task8-ooda", profile: profile}
 	strategy, err := NewOODAStrategy(NewManager(profile, client), host)
@@ -258,9 +259,9 @@ func t8StrategyHistory(userEvidence, terminalEvidence string, n int) []schema.Tu
 			history = append(history, schema.NewTurn(schema.TurnAssistant, llm.Assistant("working task8 step")))
 		default:
 			if i%3 == 0 {
-				history = append(history, schema.NewTurn(schema.TurnAssistant, llm.Assistant("assistant step "+fmt.Sprint(i))))
+				history = append(history, schema.NewTurn(schema.TurnAssistant, llm.Assistant("assistant step "+strconv.Itoa(i))))
 			} else {
-				history = append(history, schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(fmt.Sprintf("task8-%d", i), "shell", "step output "+fmt.Sprint(i), false)))
+				history = append(history, schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(fmt.Sprintf("task8-%d", i), "shell", "step output "+strconv.Itoa(i), false)))
 			}
 		}
 	}

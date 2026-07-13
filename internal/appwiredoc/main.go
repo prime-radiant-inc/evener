@@ -77,7 +77,7 @@ func run(args []string, stderr *os.File, writeFile func(string, []byte, os.FileM
 		return 2
 	}
 	if *out == "" {
-		fmt.Fprintln(stderr, "appwiredoc: -out is required")
+		_, _ = fmt.Fprintln(stderr, "appwiredoc: -out is required")
 		return 2
 	}
 
@@ -93,11 +93,11 @@ func run(args []string, stderr *os.File, writeFile func(string, []byte, os.FileM
 
 	var buf strings.Builder
 	if err := executeTemplate(tmpl, &buf, data); err != nil {
-		fmt.Fprintln(stderr, "appwiredoc: render:", err)
+		_, _ = fmt.Fprintln(stderr, "appwiredoc: render:", err)
 		return 1
 	}
 	if err := writeFile(*out, []byte(buf.String()), 0o644); err != nil {
-		fmt.Fprintln(stderr, "appwiredoc: write:", err)
+		_, _ = fmt.Fprintln(stderr, "appwiredoc: write:", err)
 		return 1
 	}
 	return 0

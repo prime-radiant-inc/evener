@@ -638,6 +638,11 @@
       // raw.compaction) so the renderer can draw an honest, inspectable expand
       // from real numbers rather than re-parsing the prose (mockup #17 Alt A).
       if (item.raw != null && item.raw !== "") payload.raw = item.raw;
+      // Forward the stable semantic kind and the no-disclosure flag so the
+      // renderer can branch on event category and render self-describing events
+      // inline without matching user-facing title strings.
+      if (item.kind) payload.kind = item.kind;
+      if (item.noDisclosure) payload.noDisclosure = true;
       return [["SYSTEM_MESSAGE", payload]];
     }
     if (type === "agentMessage") {

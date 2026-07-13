@@ -697,6 +697,11 @@ func atomicWriteAt(dirFd int, leaf string, data []byte, perm os.FileMode) error 
 	if err != nil {
 		return err
 	}
+	if chmodErr := unix.Fchmod(fd, uint32(perm.Perm())); chmodErr != nil {
+		_ = unix.Close(fd)
+		_ = unix.Unlinkat(dirFd, tmp, 0)
+		return chmodErr
+	}
 	if werr := writeAllFd(fd, data); werr != nil {
 		_ = unix.Close(fd)
 		_ = unix.Unlinkat(dirFd, tmp, 0)

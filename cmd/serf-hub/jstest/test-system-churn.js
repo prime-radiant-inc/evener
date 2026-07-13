@@ -58,7 +58,7 @@ async function scenario(name, fn) {
   // collapsible line; the individual blocks are hidden until expanded.
   await scenario("3+ adjacent lifecycle events coalesce into one line", async ({ conv, R }) => {
     R.handleData("SYSTEM_MESSAGE", { title: "Skill activated", text: "release skill" });
-    R.handleData("SYSTEM_MESSAGE", { title: "Plugin loaded", text: "primeradiant-ops" });
+    R.handleData("SYSTEM_MESSAGE", { title: "Hook completed", text: "pre-tool hook" });
     R.handleData("SYSTEM_MESSAGE", { title: "Tools (2)", text: "- read_file\n- apply_patch" });
     const runs = conv.querySelectorAll(".system-run");
     if (runs.length !== 1) return { ok: false, detail: "expected one .system-run, got " + runs.length };
@@ -92,7 +92,7 @@ async function scenario(name, fn) {
     R.handleData("SYSTEM_MESSAGE", { title: "Skill activated", text: "a" });
     R.handleData("ASSISTANT_TEXT_START", {});
     R.handleData("ASSISTANT_TEXT_DELTA", { delta: "Working on it." });
-    R.handleData("SYSTEM_MESSAGE", { title: "Plugin loaded", text: "b" });
+    R.handleData("SYSTEM_MESSAGE", { title: "Prompt loaded", text: "b" });
     R.handleData("SYSTEM_MESSAGE", { title: "Tools (2)", text: "c" });
     const runs = conv.querySelectorAll(".system-run");
     // Two separate runs (one before the prose, one after) — neither coalesced
@@ -100,6 +100,66 @@ async function scenario(name, fn) {
     for (const run of runs) {
       if (run.classList.contains("coalesced")) return { ok: false, detail: "interleaved prose must break the run" };
     }
+    return { ok: true };
+  });
+
+  // Plugin-loaded events form their own disclosure run. The collapsed line names
+  // the plugins; expanding reveals the per-plugin loaded details.
+  await scenario("consecutive plugin-loaded events group into plugin disclosure", async ({ conv, R }) => {
+    R.handleData("SYSTEM_MESSAGE", { title: "Plugin loaded", noDisclosure: true, text: "Loaded plugin slack (2 skills, 0 agents, 1 MCP server)", raw: { plugin: { name: "slack", skill_count: 2, agent_count: 0, mcp_count: 1 } } });
+    R.handleData("SYSTEM_MESSAGE", { title: "Plugin loaded", noDisclosure: true, text: "Loaded plugin github (3 skills, 1 agent, 0 MCP servers)", raw: { plugin: { name: "github", skill_count: 3, agent_count: 1, mcp_count: 0 } } });
+    R.handleData("SYSTEM_MESSAGE", { title: "Plugin loaded", noDisclosure: true, text: "Loaded plugin superpowers (14 skills, 0 agents, 0 MCP servers)", raw: { plugin: { name: "superpowers", skill_count: 14, agent_count: 0, mcp_count: 0 } } });
+    const pluginRun = conv.querySelector(".plugin-run");
+    if (!pluginRun) return { ok: false, detail: "no plugin-run disclosure" };
+    const toggle = pluginRun.querySelector(".system-run-toggle");
+    if (!toggle) return { ok: false, detail: "no plugin disclosure toggle" };
+    const want = "Loaded plugins: slack, github, superpowers";
+    if (!toggle.textContent.includes(want)) return { ok: false, detail: "toggle should read " + JSON.stringify(want) + ": " + toggle.textContent };
+    const blocks = pluginRun.querySelectorAll(".system-message");
+    if (blocks.length !== 3) return { ok: false, detail: "expected 3 plugin detail rows, got " + blocks.length };
+    toggle.click();
+    if (!pluginRun.classList.contains("open")) return { ok: false, detail: "click should open the plugin disclosure" };
+    for (const name of ["slack", "github", "superpowers"]) {
+      if (!pluginRun.textContent.includes("Loaded plugin " + name)) return { ok: false, detail: "expanded details should include " + name + ": " + pluginRun.textContent };
+    }
+    return { ok: true };
+  });
+
+  // Plugin-loaded runs are split from surrounding lifecycle runs instead of
+  // being folded into "N system events".
+  await scenario("plugin-loaded events break out from surrounding system events", async ({ conv, R }) => {
+    R.handleData("SYSTEM_MESSAGE", { title: "Skill activated", text: "release skill" });
+    R.handleData("SYSTEM_MESSAGE", { title: "Plugin loaded", noDisclosure: true, text: "Loaded plugin slack (2 skills, 0 agents, 1 MCP server)", raw: { plugin: { name: "slack" } } });
+    R.handleData("SYSTEM_MESSAGE", { title: "Tools (2)", text: "- read_file\n- apply_patch" });
+    R.handleData("SYSTEM_MESSAGE", { title: "Plugin loaded", noDisclosure: true, text: "Loaded plugin github (3 skills, 1 agent, 0 MCP servers)", raw: { plugin: { name: "github" } } });
+    R.handleData("SYSTEM_MESSAGE", { title: "Plugin loaded", noDisclosure: true, text: "Loaded plugin superpowers (14 skills, 0 agents, 0 MCP servers)", raw: { plugin: { name: "superpowers" } } });
+    R.handleData("SYSTEM_MESSAGE", { title: "Hook completed", text: "post-plugin hook" });
+    const pluginRuns = Array.from(conv.querySelectorAll(".plugin-run"));
+    if (pluginRuns.length !== 2) return { ok: false, detail: "expected two plugin runs split by system events, got " + pluginRuns.length };
+    const systemRuns = Array.from(conv.querySelectorAll(".system-run:not(.plugin-run)"));
+    if (systemRuns.length !== 3) return { ok: false, detail: "expected three non-plugin system runs, got " + systemRuns.length };
+    const firstToggle = pluginRuns[0].querySelector(".system-run-toggle");
+    const secondToggle = pluginRuns[1].querySelector(".system-run-toggle");
+    if (!firstToggle || !firstToggle.textContent.includes("Loaded plugin: slack")) return { ok: false, detail: "single-plugin toggle wrong: " + (firstToggle && firstToggle.textContent) };
+    if (!secondToggle || !secondToggle.textContent.includes("Loaded plugins: github, superpowers")) return { ok: false, detail: "multi-plugin toggle wrong: " + (secondToggle && secondToggle.textContent) };
+    for (const run of systemRuns) {
+      if (run.querySelector("[data-system-plugin-name]")) return { ok: false, detail: "plugin row leaked into system run: " + run.innerHTML };
+    }
+    return { ok: true };
+  });
+
+  // The renderer must use structured plugin metadata, not a non-empty display
+  // name, to keep plugin-loaded events out of generic system-event runs.
+  await scenario("plugin-loaded event without a name still gets plugin disclosure", async ({ conv, R }) => {
+    R.handleData("SYSTEM_MESSAGE", { title: "Skill activated", text: "release skill" });
+    R.handleData("SYSTEM_MESSAGE", { kind: "plugin", noDisclosure: true, text: "Loaded plugin (3 skills, 0 agents, 0 MCP servers)", raw: { plugin: { name: "" } } });
+    R.handleData("SYSTEM_MESSAGE", { title: "Tools (2)", text: "- read_file\n- apply_patch" });
+    const pluginRuns = conv.querySelectorAll(".plugin-run");
+    if (pluginRuns.length !== 1) return { ok: false, detail: "expected one nameless plugin run, got " + pluginRuns.length };
+    const toggle = pluginRuns[0].querySelector(".system-run-toggle");
+    if (!toggle || !toggle.textContent.includes("Loaded plugin")) return { ok: false, detail: "nameless plugin toggle wrong: " + (toggle && toggle.textContent) };
+    const systemRuns = conv.querySelectorAll(".system-run:not(.plugin-run)");
+    if (systemRuns.length !== 2) return { ok: false, detail: "expected plugin load to split surrounding system events, got " + systemRuns.length + " system runs" };
     return { ok: true };
   });
 

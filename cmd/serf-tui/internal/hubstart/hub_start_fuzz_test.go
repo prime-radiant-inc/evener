@@ -272,7 +272,7 @@ func fuzzStartLocalHub(t *testing.T) {
 	if err := StartLocalHub(HubStartRequest{Binary: filepath.Join(dir, "missing"), BindAddr: "127.0.0.1:0"}); err == nil {
 		t.Fatal("missing executable started")
 	}
-	_ = StartLocalHub(HubStartRequest{Binary: bin, BindAddr: "127.0.0.1:0", LogFile: filepath.Join("/dev/null", "hub.log")})
+	_ = StartLocalHub(HubStartRequest{Binary: bin, BindAddr: "127.0.0.1:0", LogFile: filepath.Join(dir, "missing", "hub.log")})
 	_ = StartLocalHub(HubStartRequest{Binary: bin, BindAddr: "127.0.0.1:0", LogFile: dir})
 	silent := filepath.Join(dir, "silent")
 	if err := os.WriteFile(silent, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {

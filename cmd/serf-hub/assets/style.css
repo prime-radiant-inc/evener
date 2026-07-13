@@ -3342,6 +3342,12 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
 .system-message[open] > summary::before { transform: rotate(90deg); }
 .system-message .steering-verb { color: var(--text-muted); font-style: italic; }
 
+/* Inline variant of a system-message (e.g. plugin-loaded) renders the full text
+   directly without a disclosure marker. It is a plain block so the
+   summary-specific rules above do not apply; the base .system-message spacing
+   and .steering-verb styling are sufficient. */
+.system-message-inline { display: block; }
+
 /* Coalesced lifecycle run (mockup #7 alt B): 3+ adjacent events fold to one
    quiet collapsible line. Below the threshold the toggle is hidden and the
    blocks render inline. */

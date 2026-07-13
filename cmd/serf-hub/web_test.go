@@ -230,7 +230,7 @@ func TestWeb_AppShellScopesHtmxHistoryToWorkspace(t *testing.T) {
 	if start == -1 {
 		t.Fatalf("body missing <main id=\"workspace\">")
 	}
-	tag := body[start:strings.Index(body[start:], ">")+start+1]
+	tag := body[start : strings.Index(body[start:], ">")+start+1]
 	if !strings.Contains(tag, "hx-history-elt") {
 		t.Errorf("#workspace must carry hx-history-elt so history restores never re-run body scripts; got tag %q", tag)
 	}

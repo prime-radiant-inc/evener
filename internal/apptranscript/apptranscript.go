@@ -226,6 +226,8 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 			TranscriptEntryIndex: turnIndex,
 			Description:          CompactionDescription(string(turn.Kind)),
 			Text:                 text,
+			Kind:                 appwire.ThreadItemKindCompaction,
+			NoDisclosure:         false,
 			Status:               appwire.TurnStatusCompleted,
 		}}
 	case schema.TurnUserInput:
