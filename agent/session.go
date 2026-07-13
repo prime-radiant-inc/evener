@@ -145,6 +145,7 @@ type Session struct {
 	responseSideEffectsMu         sync.Mutex
 	toolEventsWG                  sync.WaitGroup // in-flight ToolCallStart/End emit pairs; Close() joins before closing events
 	sendersWG                     sync.WaitGroup // detached event emitters (subagent runs, session namer); Add happens under mu gated on closing so it happens-before Close()'s join
+	disposeWG                     sync.WaitGroup // in-flight in-turn dispose ops (manage_worktree op=dispose); admitted via beginDispose() under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before draining (spec §P1)
 	state                         SessionState
 	closing                       bool
 	turns                         int       // user input count (for MaxTurns enforcement)

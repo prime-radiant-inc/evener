@@ -81,6 +81,27 @@ func (s *Session) Close() {
 	s.close(context.Background(), true)
 }
 
+// beginDispose admits an in-turn dispose op iff the session is not yet closing,
+// registering it on disposeWG under a single s.mu hold — the sendersWG idiom
+// (session.go): the closing check AND the WaitGroup Add happen atomically, so a
+// successful Add happens-before Close()'s disposeWG.Wait() join. A check
+// followed by an Add outside the lock would reopen the race (spec §P1, rev-9.1
+// finding O5). A true return MUST be paired with a (deferred) endDispose().
+func (s *Session) beginDispose() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return false
+	}
+	s.disposeWG.Add(1)
+	return true
+}
+
+// endDispose releases a dispose admission obtained from beginDispose().
+func (s *Session) endDispose() {
+	s.disposeWG.Done()
+}
+
 func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 	s.closeOnce.Do(func() {
 		// One budget per close cascade (spec §P0, Implementation-order item 4):
@@ -88,6 +109,19 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		// close(budgetCtx, false) reuse it rather than minting their own.
 		budgetCtx, cancelBudget := ensureCloseBudget(ctx)
 		defer cancelBudget()
+		// Dispose-turn vs own-close protocol (spec §P1, Implementation-order
+		// items 1-2): set-flag → cancel → join → drain. An in-turn dispose op
+		// admitted via beginDispose() holds disposeWG; close must not begin
+		// draining/teardown while one runs (its dispose steps need s.mu, which
+		// drainForClose holds — joining at the drain point would deadlock).
+		//
+		// Step 1: set the monotonic refuse-new-work flags under the documented
+		// lock pair (responseSideEffectsMu then mu, session.go), then release
+		// BOTH before the join. Holding responseSideEffectsMu across the join
+		// would stall every tool's side-effect section on one dispose (rev-9.1
+		// finding O4). `closing` is monotonic and every reader treats it as a
+		// refuse-new-work flag, so splitting today's single critical section is
+		// safe.
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
 		turns := s.modelResponses
@@ -98,11 +132,30 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		}
 		s.closing = true
 		s.state = SessionClosed
-		// Mark closing BEFORE draining so a spawn or namer launch racing teardown
-		// is either registered here (and cancelled below) or observes closing and
-		// refuses — there is no window for a late goroutine to escape the drain.
-		// The map is cleared under the lock; children are closed OUTSIDE the lock
+		s.mu.Unlock()
+		s.responseSideEffectsMu.Unlock()
+
+		// Step 2: cancel the turn ctx BEFORE the join so a mid-dispose git op is
+		// actually interruptible — the git runners are ctx-aware, which is what
+		// bounds the join (rev-9.1 finding O1: joining before cancelling makes
+		// the "observes ctx cancellation" mitigation unreachable). `closing` is
+		// already set above, so beginDispose() refuses any new admission past
+		// this point; only ops admitted before it are joined here.
+		if s.cancelFunc != nil {
+			s.cancelFunc()
+		}
+
+		// Step 3: join the in-flight-dispose WaitGroup with NO locks held.
+		s.disposeWG.Wait()
+
+		// Step 4: reacquire the pair and drain the subagent map. Marking closing
+		// BEFORE draining means a spawn or namer launch racing teardown is either
+		// registered here (and cancelled below) or observes closing and refuses —
+		// there is no window for a late goroutine to escape the drain. The map is
+		// cleared under the lock; children are closed OUTSIDE the lock
 		// (sub.sess.Close() acquires its own mu).
+		s.responseSideEffectsMu.Lock()
+		s.mu.Lock()
 		subs := s.subagents.drainForClose()
 		s.mu.Unlock()
 		s.responseSideEffectsMu.Unlock()
@@ -125,10 +178,9 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		s.subagents.waitForReconstructionSideEffects()
 
 		// Spec Appendix B graceful shutdown ordering:
-		// 1. Cancel in-flight LLM calls.
-		if s.cancelFunc != nil {
-			s.cancelFunc()
-		}
+		// 1. In-flight LLM calls were already cancelled in the set-flag → cancel
+		// → join preamble above; the dispose protocol requires the cancel to
+		// precede the join, which is earlier than this point.
 
 		// 2. Mark and stop durable jobs before environment cleanup can reap
 		// process handles and make deliberate shutdown look like runtime failure.
