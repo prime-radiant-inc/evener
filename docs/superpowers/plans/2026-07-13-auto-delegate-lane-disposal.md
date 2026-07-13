@@ -1,7 +1,8 @@
 # Delegate-lane disposal: dispose operation + nudge + automatic residue collection
 
-**Status:** draft spec, rev 9.1 (seven adversarial review rounds, 7×2
-competing reviewers; history in §Review log)
+**Status:** draft spec, rev 10 (eight adversarial review rounds, 8×2
+competing reviewers; history in §Review log). **Review campaign closed —
+ready for implementation go/no-go.**
 **Problem owner:** Jesse
 **Date:** 2026-07-13
 
@@ -109,9 +110,12 @@ so removal + `branch -D` loses nothing. Consequences:
 - The owner appends `EventDelegateDisposed` in its **own** store — later
   resumes get the clear disposed refusal.
 - The KEEP set shrinks to unmerged / cherry-only-merged / dirty /
-  state-unverifiable lanes; the close-time KEEP warning copy is updated
-  accordingly (today it says "with unmerged work",
-  `session_worktree_close.go:92` — rev-8 finding M4).
+  state-unverifiable lanes. The KEEP warning copy is updated (today it says
+  "with unmerged work", `session_worktree_close.go:92`) — but **close
+  cannot distinguish cherry-merged from unmerged without running the cherry
+  test M1 bans from close** (rev-9.1 finding O3), so the copy lumps them:
+  "not collected automatically (unmerged or squash-merged), dirty, or
+  unverifiable" — no per-lane cherry classification at close, ever.
 - **Every KEEP path touches the sidecar before unlocking** (changed,
   late-dirty downgrade, state-unverifiable); the touch is what P3's grace
   keys on. The rev-8 claim "own merged lanes never reach KEEP" holds only
@@ -123,12 +127,17 @@ so removal + `branch -D` loses nothing. Consequences:
   record** — the "no mark (foreign store)" rule is scoped to genuinely
   foreign lanes.
 - **P0 shares the close-time budget**: `laneClosePassBudget` (30s) covers
-  P0 disposal **and** the P3 close pass together (rev-8 finding M1 — rev 8
-  budgeted only the latter). Lanes not reached are KEPT exactly as today
-  (touch + unlock), with one warning. P0's git ops run before
-  `env.Cleanup()` kills residual lane processes, so a stale `index.lock`
-  can stall an op — the budget is the mitigation; each op is best-effort
-  skip-on-error as today.
+  P0 disposal **and** the P3 close pass together. **What the budget bounds
+  is the evaluation + disposal work** (predicate git calls, remove,
+  branch-D) — not the KEEP tail: lanes not reached get a **mandatory
+  budget-exempt touch + unlock** (two cheap constant-cost ops per lane, no
+  history walks), because skipping the unlock would strand them under a
+  dead session's lock — the exact "collectable by nothing" class of the N1
+  limitation (rev-9.1 finding O2). A wedged unlock is skipped after the
+  op-level cancellation below; that residual is accepted and warned. P0's
+  git ops run before `env.Cleanup()`, so a stale `index.lock` can stall an
+  op — the budget plus ctx-aware git runners are the mitigation; each op is
+  best-effort skip-on-error as today.
 
 ### P1. `dispose` operation on `manage_worktree` (new)
 
@@ -158,9 +167,13 @@ Non-isolated coordinators: full tool.
 2. **Delivery quiescence:** refuse on armed watches routing `send_to` this
    delegate or pending watch-sends targeting it (self + retained children).
 3. **Subtree quiescence:** drain-style check (`treeHasOutstandingWork`) AND
-   live shells tree-wide via the recursive `liveWorkHandles` walk across
-   retained descendants. Companion fix: `liveWorkUnder`'s subagent label
-   becomes `"(subagent, retained — idle)"` when quiescent.
+   live shells tree-wide. The recursive walk is a **`Session`-level helper**
+   (walk `s.subagents` → `sub.sess.jobManager.liveWorkHandles()`, per level,
+   releasing each `sub.mu` before recursing per the `treeHasOutstandingWork`
+   pattern) — `jobManager` holds no session/subagent reference, so the
+   recursion cannot live in `jobs.go` (rev-9.1 finding P4). Companion fix:
+   `liveWorkUnder`'s subagent label becomes `"(subagent, retained — idle)"`
+   when quiescent.
 4. **Dispose-gate the child:** `sub.disposeGated` under `sub.mu` after
    re-verifying `!running && !driving`; `driveSubagentNotificationTurn`
    refuses while set. **The retained-path refusal for a watch-originated
@@ -169,15 +182,32 @@ Non-isolated coordinators: full tool.
    `dropWatchSend`s the frame (rev-8 finding N2; the one existing busy
    construction site, `job_delegate.go:1532-1546`, is the pattern; this
    lands in `job_delegate.go`, not `job_watch.go`). Reversal mandatory on
-   every later refusal/failure exit.
+   every later refusal/failure exit **up to and including step 6; step 8's
+   late-dirty KEEP is exempt** — by then step 7 has destroyed the child, so
+   the gate cannot be "reversed"; the intended outcome is
+   **KEPT-after-eviction**: lane re-locked and resumable via the
+   `delegate_send` restore path (no Disposed mark was appended). Do NOT
+   "fix" this by reordering remove-before-evict — the live child's env
+   holds the lane (rev-9.1 finding P6).
 5. **Foreign locks refused** per `worktree.ClassifyReason`/`Decide`.
 6. **Evaluate:** D0-model collectible → proceed; unmerged → refuse, `force`
    overrides; dirty → refuse, `force_dirty` overrides (orthogonal); lane
    dir missing but record+branch+sidecar remain → judge branch tip via the
    `OriginalRoot` env; collectible → step 8 mark/branch-delete/
    sidecar-delete; unmerged → refuse naming the state.
-7. **Evict the retained child:** close, remove from table,
-   `DisposeSandboxScratch`.
+7. **Evict the retained child:** `sub.sess.close(false)` (the parent-close
+   pattern), remove from table, then for an **owned** env full
+   `env.Cleanup()` — not just `DisposeSandboxScratch` — so residual lane
+   processes are killed before step 8's `git worktree remove` (rev-9.1
+   finding P1; a shared-env child has no separate processes to kill —
+   lane shells are jm-tracked and already refused by step 3).
+   **Nested-coordinator cascade — intended and bounded** (rev-9.1 finding
+   P2): closing a coordinator child runs *its* `disposeDelegateLanesAtClose`
+   — its ancestry-merged grandchild lanes are collected right there, its
+   unmerged ones KEPT+touched+unlocked, exactly as at any close; the
+   child's close-time work runs under its own `laneClosePassBudget`, so the
+   cascade adds at most one budget's worth of git work to the dispose turn.
+   KEEP warnings from the cascade surface as events.
 8. **Unlock → `git worktree remove` → `EventDelegateDisposed` →
    `git branch -D` → delete sidecar.** Remove refused → stat: gone →
    mark + clean remnants + report disposed; present (late dirty) → re-lock
@@ -189,15 +219,29 @@ Non-isolated coordinators: full tool.
 or, joined earlier, a reopened race). The protocol is
 **set-flag → join → drain**, restructuring the top of `close()`:
 
-1. lock `s.mu`, set `closing = true`, unlock;
-2. **join the in-flight-dispose WaitGroup** (no locks held) — new
-   `wg.Add`s are impossible because dispose's step 1 refuses when
-   `closing` is set, checked under the same `s.mu`;
-3. lock and proceed with `drainForClose` and the rest of close as today.
+1. acquire the existing lock pair (`responseSideEffectsMu` then `s.mu`,
+   preserving the documented order, `session.go:144`), set
+   `closing = true`, release both — the split of today's single critical
+   section is safe because `closing` is monotonic and every current reader
+   treats it as a refuse-new-work flag (rev-9.1 finding O4: the spec must
+   say where `responseSideEffectsMu` goes; holding it across the join would
+   stall every tool's side-effect section on one dispose);
+2. **cancel the turn ctx** (`s.cancelFunc()`) — before the join, so a
+   mid-dispose git op is actually interruptible; the git runners are
+   ctx-aware, which is what bounds the join (rev-9.1 finding O1: rev 9
+   joined before cancelling, making its own "observes ctx cancellation"
+   mitigation unreachable);
+3. **join the in-flight-dispose WaitGroup** (no locks held);
+4. reacquire the pair and proceed with `drainForClose` and the rest of
+   close as today.
 
-The WG field lives on `Session` (`agent/session.go`). Dispose observes ctx
-cancellation between git ops; each op completes or fails atomically and
-the reversal clause covers failure exits.
+The WG field lives on `Session` (`agent/session.go`). **Admission is
+check-AND-Add under one `s.mu` hold** — the `sendersWG` idiom the codebase
+already documents ("Add happens under mu gated on closing so it
+happens-before Close()'s join", `session.go:147`); a check followed by an
+Add outside the lock reopens the race (rev-9.1 finding O5). Dispose
+observes ctx cancellation between git ops; each op completes or fails
+atomically and the reversal clause covers failure exits.
 
 Post-disposal `delegate_send` takes the restore path where the Disposed
 check lives; the check is also added to the retained path as
@@ -218,7 +262,11 @@ the receiving session **has the op AND owns the delegate**
 `When you're done with this delegate's work (e.g., after merging it),
 dispose its worktree and branch: manage_worktree op=dispose id=<dlg_…>.`
 
-No render-time git. Honest reach: completion-time only — pre-existing
+Surface mechanics (rev-9.1 finding P5): the notification path renders text —
+the sentence is appended there; the inline tool-result path is a typed
+struct (`delegateWorktreeToolResult`), so the sentence ships as a new
+optional field **`disposal_hint string`** (`json:"disposal_hint,omitempty"`)
+— additive, hub consumers ignore unknown fields. No render-time git. Honest reach: completion-time only — pre-existing
 completed delegates' lanes are P0's job (or spontaneous model action), not
 P2's. Note the nudge is now the **primary** path for rebase/squash-merge
 workflows (D0-auto excludes them), which raises its importance — the eval
@@ -247,7 +295,13 @@ prune sweeps — sweep 1 (list-driven collection) and sweep 2's
 orphan-sidecar reconciliation restricted to delegate sidecars (crash
 between remove and `branch -D` otherwise strands branch+sidecar orphans
 forever); this requires extracting the sweeps for reuse
-(`session_tools_worktree.go` refactor, budgeted). Skip-and-continue; the
+(`session_tools_worktree.go` refactor, budgeted) **with an explicit
+error-policy parameter**: the sweeps as they exist abort the whole pass on
+the first remove/branch-D/sidecar failure (`:1965-1974` etc.), which
+contradicts P3's skip-and-continue — the extraction adds the policy knob
+(plus the grace check and DelegateID filter), and **model-facing `prune`
+keeps its existing abort behavior unchanged** (rev-9.1 finding P3).
+Skip-and-continue; the
 disposed mark is appended **iff the lane's record is in the collector's own
 store** (own transiently-unverifiable KEEPs), otherwise skipped (foreign
 store; stat net covers revival); never re-lock on failure.
@@ -297,9 +351,12 @@ P0 unit:
 2. **Cherry-only-merged (rebase/squash) lane at close → KEPT** (auto tier
    never uses the cherry arm), sidecar touched, unlocked.
 3. Unmerged / dirty / state-unverifiable → KEPT, touch-before-unlock on all
-   paths; KEEP warning copy names the actual mix (not "unmerged work").
+   paths; KEEP warning uses the lumped copy ("not collected automatically
+   (unmerged or squash-merged), dirty, or unverifiable") — **no cherry
+   classification runs at close** (assert no `git cherry` invocation).
 4. Budget: many-lane close exhausts `laneClosePassBudget` → remaining lanes
-   KEPT as today with one warning; close proceeds.
+   get the budget-exempt touch+unlock (never left locked), evaluation
+   skipped, one warning; close proceeds.
 5. Resume after P0 disposal → clear disposed refusal.
 
 P1 unit:
@@ -319,9 +376,15 @@ P1 unit:
     walk). Grandchild delegate / attention → refused. Armed watch →
     refused, named. Pending watch-send (child-manager; post-budget-clear
     restore) → refused.
-12. Retained quiescent child → gated, evicted, removed; `delegate_send`
-    disposed refusal (restore path); retained-path check vs constructed
-    state; copy doesn't claim "at session close".
+12. Retained quiescent child → gated, evicted (`close(false)` + owned-env
+    `Cleanup()`), removed; `delegate_send` disposed refusal (restore path);
+    retained-path check vs constructed state; copy doesn't claim "at
+    session close".
+12a. **Nested coordinator eviction cascade:** disposing a coordinator
+    delegate runs the child's own close-time disposal — ancestry-merged
+    grandchild lanes collected, unmerged ones KEPT+touched+unlocked, under
+    the child's own budget; step-8 late-dirty KEEP after eviction →
+    KEPT-after-eviction, resumable via restore path (gate-reversal exempt).
 13. Remove-refused: present+dirty → re-locked, KEPT; gone → marked +
     remnants cleaned; re-lock failure warns.
 14. Half-removed residue: control env via `OriginalRoot`; merged tip →
@@ -381,7 +444,8 @@ delay+grace; resume refusals: disposed-mark for (b), stat-net for (c).
 - `agent/session_worktree_sweep.go` (new) — P3 over extracted sweeps 1+2;
   open timer + close pass; own-store mark rule (~150 loc)
 - `agent/session.go` — in-flight-dispose WG field (~5 loc)
-- `agent/jobs.go` — recursive tree-wide `liveWorkHandles` (~25 loc)
+- `agent/subagents.go` — Session-level recursive tree-wide live-shell walk
+  (jobManager has no session reference; cannot live in `jobs.go`) (~30 loc)
 - `agent/subagents.go` / `agent/job_watch.go` — `sub.disposeGated`;
   drive-launch check (~20 loc)
 - `agent/job_delegate.go` — retained-path Disposed check; refusal copy;
@@ -443,7 +507,42 @@ file's git history (`main` branch, `1be4dce9..5f68e415`).
 - **M4 (minor):** KEEP warning copy ("unmerged work") now wrong → updated.
 - **M5 (minor):** no-fetch property stated as a load-bearing invariant.
 
-Foundations positively verified across rounds 4–7: sweep reuse; pending-
+**Rev 9.1 → rev 10** (O, P — final round; all findings
+precision/implementability, none structural):
+
+- **O1 (major):** the WG join ran before the turn-ctx cancel it depends on
+  → close protocol reordered: set-flag → cancel → join → drain.
+- **O2 (major):** budget-exhaustion "KEEP as today" still cost 2N git ops
+  post-budget (and skipping the unlock recreates the N1 black hole) →
+  budget bounds evaluation+disposal; touch+unlock is a mandatory
+  budget-exempt cheap tail.
+- **O3 (major):** naming cherry-merged lanes in the KEEP warning requires
+  the cherry test M1 bans from close → lumped copy, no per-lane
+  classification at close; test 3 asserts no `git cherry` runs.
+- **O4 (major):** the restructure was silent on `responseSideEffectsMu`
+  (documented lock order at stake; holding it across the join stalls the
+  session) → acquisition/release pinned per step; monotonic-closing
+  argument stated.
+- **O5 (minor):** admission must be check-AND-Add under one `s.mu` hold
+  (the documented `sendersWG` idiom), not check-then-Add.
+- **P1 (major):** eviction variant unspecified and residual lane processes
+  unkilled → `close(false)` + owned-env full `Cleanup()` before step 8.
+- **P2 (major):** evicting a nested coordinator cascades its own close-time
+  disposal inside the dispose turn, unstated → declared intended, bounded
+  by the child's own budget, surfaced as events; test 12a.
+- **P3 (major):** the sweeps abort-on-first-error, contradicting P3's
+  skip-and-continue → extraction adds an error-policy knob; model-facing
+  `prune` keeps abort behavior.
+- **P4 (minor):** recursive walk budgeted in `jobs.go`, which has no
+  session reference → Session-level helper in `subagents.go`.
+- **P5 (minor):** the inline tool-result surface is typed JSON, no home for
+  a prose nudge → additive `disposal_hint` field; notification path appends
+  text.
+- **P6 (minor):** gate reversal unsatisfiable after step-7 eviction →
+  step 8 exempted; KEPT-after-eviction declared the intended outcome;
+  remove-before-evict reorder explicitly forbidden.
+
+Foundations positively verified across rounds 4–8: sweep reuse; pending-
 send enumerability; `EvDelegateRevive`; forwarded-descriptor ownership;
 lane-rooted coordinator control env; per-session registry variants; sidecar
 machinery; `OriginalRoot` on every delegate sidecar, resolving to the main
