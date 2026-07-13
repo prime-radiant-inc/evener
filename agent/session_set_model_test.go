@@ -6,7 +6,9 @@ package agent
 // round trip through the flushed meta.json.
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -249,7 +251,7 @@ func TestSetModel_EnumerationFailure_FailsOpenUnconditionally(t *testing.T) {
 		withAdapter(&fakeAdapter{name: "openai"}),
 		withAdapter(&fakeUnenumerableAdapter{
 			fakeAdapter: fakeAdapter{name: "anthropic"},
-			err:         fmt.Errorf("401 unauthorized: invalid api key"), // not on launchcheck's allowlist
+			err:         errors.New("401 unauthorized: invalid api key"), // not on launchcheck's allowlist
 		}),
 		withConfig(SessionConfig{
 			NoProjectPrompts: true,
@@ -291,7 +293,6 @@ func TestSetModel_DocumentInHistory_RejectedForHardErrorAndCompatTargets(t *test
 	t.Parallel()
 	targets := []string{"anthropic/claude-opus-4-6", "google/gemini-3-pro", "kimi/kimi-k3"}
 	for _, target := range targets {
-		target := target
 		t.Run(target, func(t *testing.T) {
 			t.Parallel()
 			sess := newSession(t,
@@ -355,7 +356,6 @@ func TestSetModel_AudioInHistory_RejectedForAllTargetsIncludingResponses(t *test
 		{"openai-responses-same-provider", "gpt-4.1-mini"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			sess := newSession(t,
@@ -465,7 +465,6 @@ func TestSetModel_DocumentInHistory_RejectedForNewlyClassifiedTargets(t *testing
 		"minimax/MiniMax-M2.7",
 	}
 	for _, target := range targets {
-		target := target
 		t.Run(target, func(t *testing.T) {
 			t.Parallel()
 			sess := newSession(t,
@@ -498,7 +497,6 @@ func TestSetModel_AudioInHistory_RejectedForAnthropicBuilderTargets(t *testing.T
 	t.Parallel()
 	targets := []string{"kimi-anthropic/kimi-k3", "minimax/MiniMax-M2.7"}
 	for _, target := range targets {
-		target := target
 		t.Run(target, func(t *testing.T) {
 			t.Parallel()
 			sess := newSession(t,
@@ -596,7 +594,6 @@ func TestSetModel_RejectionLeavesProfileMetaAndHistoryUnchanged(t *testing.T) {
 	}
 
 	for _, rc := range rejections {
-		rc := rc
 		t.Run(rc.name, func(t *testing.T) {
 			t.Parallel()
 			sess := newRejectionSession(t)
@@ -622,7 +619,7 @@ func TestSetModel_RejectionLeavesProfileMetaAndHistoryUnchanged(t *testing.T) {
 			}
 
 			afterMeta := readMeta(t, sess)
-			if string(afterMeta) != string(beforeMeta) {
+			if !bytes.Equal(afterMeta, beforeMeta) {
 				t.Fatalf("meta.json changed on rejection:\nbefore=%s\nafter=%s", beforeMeta, afterMeta)
 			}
 
