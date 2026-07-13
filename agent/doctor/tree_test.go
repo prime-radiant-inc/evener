@@ -121,6 +121,35 @@ func TestTree_DepthLimit(t *testing.T) {
 	}
 }
 
+// TestTree_DisposedDelegate covers delegate-lane disposal spec §P1 doctor
+// visibility: a delegate whose lane was disposed renders with the "disposed"
+// note so it reads as non-resumable in the tree.
+func TestTree_DisposedDelegate(t *testing.T) {
+	base, rootSID := treeFixture(t)
+
+	// Append a mid-life disposal for the fixture's delegate.
+	rootBucket := stateHomeBucket(base, hash1)
+	rootJobs := filepath.Join(rootBucket, "sessions", rootSID, "jobs.jsonl")
+	writeJobsEvents(t, rootJobs, []jobstore.Event{
+		{Kind: jobstore.EventDelegateDisposed, DelegateID: "del1"},
+	})
+
+	root, err := Tree(base, rootSID, TreeOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(root.Children) != 1 {
+		t.Fatalf("root should have 1 delegate child, got %d", len(root.Children))
+	}
+	child := root.Children[0]
+	if !strings.Contains(child.Note, "disposed") {
+		t.Errorf("disposed delegate child note = %q, want it to mention disposed", child.Note)
+	}
+	if !strings.Contains(RenderTree(root), "disposed") {
+		t.Errorf("render should surface disposed marker:\n%s", RenderTree(root))
+	}
+}
+
 func TestTree_Render(t *testing.T) {
 	base, rootSID := treeFixture(t)
 	root, _ := Tree(base, rootSID, TreeOpts{Observers: true})

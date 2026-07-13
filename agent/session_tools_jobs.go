@@ -2434,14 +2434,23 @@ func projectDelegateRecord(rec *jobstore.DelegateRecord) delegateListEntry {
 	if rec == nil {
 		return delegateListEntry{}
 	}
+	// A disposed delegate is never resumable regardless of the durably-recorded
+	// Resumable flag (delegate-lane disposal spec §P1): its isolation lane is
+	// gone, so present it as not-resumable with the disposal reason.
+	resumable := rec.Resumable
+	notResumableWhy := rec.NotResumableWhy
+	if rec.Disposed {
+		resumable = false
+		notResumableWhy = notResumableWorktreeDisposed
+	}
 	return delegateListEntry{
 		DelegateID:       rec.DelegateID,
 		Status:           string(rec.Status),
 		CurrentJobID:     rec.CurrentJobID,
 		LatestJobID:      rec.LatestJobID,
 		TranscriptRef:    rec.TranscriptRef,
-		Resumable:        rec.Resumable,
-		NotResumableWhy:  rec.NotResumableWhy,
+		Resumable:        resumable,
+		NotResumableWhy:  notResumableWhy,
 		ParentDelegateID: rec.ParentDelegateID,
 	}
 }

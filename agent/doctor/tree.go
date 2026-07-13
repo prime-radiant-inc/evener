@@ -93,6 +93,9 @@ func delegateChildren(stateBase string, events []jobstore.Event, opts TreeOpts, 
 		childPaths, err := Locate(stateBase, childSel)
 		if err != nil {
 			child.Note = "transcript not found"
+			if d.Disposed {
+				child.Note = withDisposedNote(child.Note)
+			}
 			children = append(children, child)
 			continue
 		}
@@ -104,9 +107,22 @@ func delegateChildren(stateBase string, events []jobstore.Event, opts TreeOpts, 
 		} else {
 			child.Note = depthLimitNote(childPaths)
 		}
+		if d.Disposed {
+			child.Note = withDisposedNote(child.Note)
+		}
 		children = append(children, child)
 	}
 	return children
+}
+
+// withDisposedNote prepends the disposed marker to a tree node's note so a
+// disposed delegate reads as non-resumable in the rendered tree, preserving any
+// existing note (depth limit, transcript not found).
+func withDisposedNote(existing string) string {
+	if existing == "" {
+		return "disposed"
+	}
+	return "disposed; " + existing
 }
 
 // depthLimitNote reports a "children not expanded" note when a node sits at the
