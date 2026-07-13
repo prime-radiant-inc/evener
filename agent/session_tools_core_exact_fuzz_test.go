@@ -189,7 +189,7 @@ func stceCompaction(t *testing.T) {
 	s.hookRunner = runner
 	s.runPreCompactHook(context.Background(), &history)
 
-	emit, flush := s.compactionEmitFunc(context.Background(), &history)
+	_, emit, flush := s.compactionEmitFunc(context.Background(), &history)
 	emit(events.EventWarning, events.WarningData{Message: "unrelated"})
 	emit(events.EventContextCompaction, events.ContextCompactionData{})
 	emit(events.EventContextCompaction, events.ContextCompactionData{})

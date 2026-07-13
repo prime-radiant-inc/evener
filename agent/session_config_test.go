@@ -714,22 +714,53 @@ func TestSession_CompactEmitsCompactionTurnEvent(t *testing.T) {
 			got = append(got, data)
 		}
 	}
-	if len(got) == 0 {
-		t.Fatalf("missing %s event in %+v", events.EventCompactionTurn, *eventsPtr)
+	if len(got) != 2 {
+		t.Fatalf("compaction turn events = %d, want checkpoint and summary; events=%+v", len(got), *eventsPtr)
 	}
 	if got[0].Kind != string(schema.TurnCheckpoint) || !strings.Contains(got[0].Text, "[CONTEXT CHECKPOINT]") {
 		t.Fatalf("first compaction event=%+v", got[0])
 	}
+	if got[1].Kind != string(schema.TurnSummary) || !strings.HasPrefix(got[1].Text, "[CONTEXT SUMMARY]\n") || !strings.HasSuffix(got[1].Text, "\n[END SUMMARY]") {
+		t.Fatalf("second compaction event=%+v", got[1])
+	}
 }
 
-func TestSession_CompactQueuesOneTranscriptReminder(t *testing.T) {
+func compactionReminderWant(sessionID string) string {
+	ref := "local:" + sessionID
+	return "<SYSTEM-REMINDER>If you need the exact transcript of this session before compaction, use the transcript tool instead of reading raw transcript files directly. Default read: read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"format\": \"markdown\"}). For long sessions, first get a turn map with read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"format\": \"outline\"}), then read a focused range with read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"range\": \"A-B\"}).</SYSTEM-REMINDER>"
+}
+
+func compactionReminders(sess *Session) []string {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	var reminders []string
+	for _, message := range sess.steeringQueue {
+		if strings.Contains(message.Text, "If you need the exact transcript of this session before compaction") {
+			reminders = append(reminders, message.Text)
+		}
+	}
+	return reminders
+}
+
+func setCompactionTestHistory(sess *Session) {
+	sess.contextMgr.PreserveRecentTurns = 1
+	sess.history = []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first task")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("I will inspect the project and report enough detail to summarize.")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("second task")),
+	}
+	// A user-set name is not eligible for compaction refresh. This keeps the
+	// scripted provider dedicated to summarization rather than asynchronous naming.
+	sess.naming.value = "compaction test"
+	sess.naming.source = sessionNameSourceUser
+}
+
+func TestSession_CompactQueuesOneExactTranscriptReminder(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response {
-			return finalResponse("forced summary")
-		},
+		func(req llm.Request) llm.Response { return finalResponse("forced summary") },
 	}})
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
@@ -737,34 +768,158 @@ func TestSession_CompactQueuesOneTranscriptReminder(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	sess.contextMgr.PreserveRecentTurns = 1
-	sess.history = []schema.Turn{
-		schema.NewTurn(schema.TurnUserInput, llm.User("first task")),
-		schema.NewTurn(schema.TurnAssistant, llm.Assistant("I will inspect the project and report enough detail to summarize.")),
-		schema.NewTurn(schema.TurnUserInput, llm.User("second task")),
-	}
+	setCompactionTestHistory(sess)
 
 	if err := sess.Compact(context.Background()); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
 
-	sess.mu.Lock()
-	queue := append([]steeringMessage(nil), sess.steeringQueue...)
-	sess.mu.Unlock()
+	reminders := compactionReminders(sess)
+	if len(reminders) != 1 {
+		t.Fatalf("compaction transcript reminders = %d, want 1; reminders=%q", len(reminders), reminders)
+	}
+	if got, want := reminders[0], compactionReminderWant(sess.ID()); got != want {
+		t.Fatalf("compaction transcript reminder mismatch\n got: %q\nwant: %q", got, want)
+	}
+}
 
-	const reminderNeedle = "If you need the exact transcript of this session before compaction"
-	var reminders []string
-	for _, message := range queue {
-		if strings.Contains(message.Text, reminderNeedle) {
-			reminders = append(reminders, message.Text)
+func TestSession_CompactNoArtifactQueuesNoTranscriptReminder(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		history []schema.Turn
+	}{
+		{name: "short", history: []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("only turn"))}},
+		{name: "pre-existing checkpoint", history: []schema.Turn{
+			schema.NewTurn(schema.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]\nprior")),
+		}},
+		{name: "pre-existing summary", history: []schema.Turn{
+			schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\nprior\n[END SUMMARY]")),
+		}},
+		{name: "no safe cutoff", history: []schema.Turn{
+			schema.NewTurn(schema.TurnUserInput, llm.User("keep")),
+			schema.NewTurn(schema.TurnSteering, llm.User("protected tail")),
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			c := llm.NewClient()
+			c.Register(&fakeAdapter{name: "openai"})
+			sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			defer sess.Close()
+			sess.contextMgr.PreserveRecentTurns = 1
+			sess.history = tc.history
+
+			if err := sess.Compact(context.Background()); err != nil {
+				t.Fatalf("Compact: %v", err)
+			}
+			if got := compactionReminders(sess); len(got) != 0 {
+				t.Fatalf("compaction transcript reminders = %q, want none", got)
+			}
+		})
+	}
+}
+
+func TestSession_DistinctCompactionsQueueOneTranscriptReminderEach(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return finalResponse("first summary") },
+		func(req llm.Request) llm.Response { return finalResponse("second summary") },
+	}})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	setCompactionTestHistory(sess)
+
+	for i := 0; i < 2; i++ {
+		if err := sess.Compact(context.Background()); err != nil {
+			t.Fatalf("Compact %d: %v", i+1, err)
 		}
 	}
-	if len(reminders) != 1 {
-		t.Fatalf("compaction transcript reminders = %d, want 1; queue=%v", len(reminders), queue)
+	reminders := compactionReminders(sess)
+	if len(reminders) != 2 {
+		t.Fatalf("compaction transcript reminders = %d, want 2; reminders=%q", len(reminders), reminders)
 	}
-	wantCall := `read_session_transcript({"transcript_ref": "local:` + sess.ID() + `", "format": "markdown"})`
-	if !strings.Contains(reminders[0], wantCall) {
-		t.Fatalf("compaction transcript reminder missing %q; got:\n%s", wantCall, reminders[0])
+	for i, got := range reminders {
+		if want := compactionReminderWant(sess.ID()); got != want {
+			t.Fatalf("reminder %d mismatch\n got: %q\nwant: %q", i, got, want)
+		}
+	}
+}
+
+func TestSession_SummaryFailureAfterCheckpointQueuesOneTranscriptReminder(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 400, "summary rejected", nil, nil)
+		},
+	}})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	setCompactionTestHistory(sess)
+
+	if err := sess.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	reminders := compactionReminders(sess)
+	if len(reminders) != 1 || reminders[0] != compactionReminderWant(sess.ID()) {
+		t.Fatalf("compaction transcript reminders = %q, want one exact reminder", reminders)
+	}
+}
+
+func TestSession_ObservationMaskOnlyQueuesNoTranscriptReminder(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, ContextStrategy: "obs-mask"})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	sess.contextMgr.ObservationMaskThreshold = 0
+	sess.contextMgr.CheckpointThreshold = 2
+	history := []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("observation-only operation"))}
+	compactionCtx, emitFn, flush := sess.compactionEmitFunc(context.Background(), &history)
+	if err := sess.strategy.ManageContext(compactionCtx, &history, 0, emitFn); err != nil {
+		t.Fatalf("ManageContext: %v", err)
+	}
+	flush()
+	if got := compactionReminders(sess); len(got) != 0 {
+		t.Fatalf("compaction transcript reminders = %q, want none", got)
+	}
+}
+
+func TestSession_NonPersistentCompactionQueuesNoTranscriptReminder(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return finalResponse("forced summary") },
+	}})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	setCompactionTestHistory(sess)
+	if err := sess.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if got := compactionReminders(sess); len(got) != 0 {
+		t.Fatalf("compaction transcript reminders = %q, want none", got)
 	}
 }
 
@@ -790,22 +945,8 @@ func TestSession_CompactionReminderUsesTranscriptTool(t *testing.T) {
 		t.Fatal("expected compaction transcript steering reminder")
 	}
 	got := queue[len(queue)-1].Text
-	wantCall := `read_session_transcript({"transcript_ref": "local:` + sess.ID() + `", "format": "markdown"})`
-	wantOutlineCall := `read_session_transcript({"transcript_ref": "local:` + sess.ID() + `", "format": "outline"})`
-	wantRangeCall := `read_session_transcript({"transcript_ref": "local:` + sess.ID() + `", "range": "A-B"})`
-	for _, want := range []string{
-		"<SYSTEM-REMINDER>",
-		"If you need the exact transcript of this session before compaction",
-		"use the transcript tool instead of reading raw transcript files directly",
-		wantCall,
-		"For long sessions, first get a turn map",
-		wantOutlineCall,
-		wantRangeCall,
-		"</SYSTEM-REMINDER>",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("compaction transcript reminder missing %q; got:\n%s", want, got)
-		}
+	if want := compactionReminderWant(sess.ID()); got != want {
+		t.Fatalf("compaction transcript reminder mismatch\n got: %q\nwant: %q", got, want)
 	}
 	if strings.Contains(got, ".transcript.jsonl") || strings.Contains(got, dir) {
 		t.Fatalf("compaction transcript reminder should not expose raw transcript path; got:\n%s", got)

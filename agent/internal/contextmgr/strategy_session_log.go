@@ -120,8 +120,8 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 			EstTokensBefore: before,
 			EstTokensAfter:  after,
 		})
-		if s.cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == schema.TurnCheckpoint {
-			s.cm.OnCompactionTurn((*history)[0])
+		if len(*history) > 0 && (*history)[0].Kind == schema.TurnCheckpoint {
+			s.cm.handleCompactionTurn(ctx, (*history)[0])
 		}
 		compacted = true
 		p = estimatePressure()
@@ -146,8 +146,8 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 				EstTokensBefore: before,
 				EstTokensAfter:  after,
 			})
-			if s.cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == schema.TurnSummary {
-				s.cm.OnCompactionTurn((*history)[0])
+			if len(*history) > 0 && (*history)[0].Kind == schema.TurnSummary {
+				s.cm.handleCompactionTurn(ctx, (*history)[0])
 			}
 			compacted = true
 		}

@@ -227,8 +227,8 @@ func (s *Session) prepareModelRequest(ctx context.Context, round int, t *events.
 		// re-stamped verbatim rather than decaying through successive summaries.
 		s.maybeElicitNoteBeforeCompaction(ctx, historyTurns, len(sys))
 
-		emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &historyTurns)
-		if err := s.strategy.ManageContext(ctx, &historyTurns, len(sys), emitFn); err != nil {
+		compactionCtx, emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &historyTurns)
+		if err := s.strategy.ManageContext(compactionCtx, &historyTurns, len(sys), emitFn); err != nil {
 			s.emit(events.EventWarning, warningDataFromError("context strategy error: "+err.Error(), err))
 		}
 		flushCompactionHooks()
@@ -547,8 +547,8 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 		s.mu.Lock()
 		histCopy := append([]schema.Turn{}, s.history...)
 		s.mu.Unlock()
-		emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &histCopy)
-		s.contextMgr.ForceCompact(ctx, &histCopy, "", emitFn)
+		compactionCtx, emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &histCopy)
+		s.contextMgr.ForceCompact(compactionCtx, &histCopy, "", emitFn)
 		flushCompactionHooks()
 		s.mu.Lock()
 		s.history = histCopy

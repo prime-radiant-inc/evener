@@ -262,7 +262,7 @@ func TestNudge_ResetsOnAutomaticCompaction(t *testing.T) {
 	// This is the shared emit site that all compaction paths (auto, content-filter,
 	// and force) route through; the latch reset must live here.
 	hist := makeSteeringSeed(2)
-	emitFn, flush := s.compactionEmitFunc(context.Background(), &hist)
+	_, emitFn, flush := s.compactionEmitFunc(context.Background(), &hist)
 	emitFn(events.EventContextCompaction, events.ContextCompactionData{Layer: "test"})
 	flush()
 
