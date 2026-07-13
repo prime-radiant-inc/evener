@@ -74,6 +74,65 @@ func TestLiveShellsUnderTree_FindsGrandchildShell_ParentScanMisses(t *testing.T)
 	}
 }
 
+// TestLiveWorkUnder_LabelsRetainedIdleVsRunning covers the brief's honest-label
+// deliverable (spec §P1 step 3): a retained child that is neither running nor
+// driving is labeled "(subagent, retained — idle)", while a genuinely running
+// child keeps "(subagent, running)". The false "running" label on idle retained
+// children is what dead-ends models trying to remove a clean, merged lane.
+func TestLiveWorkUnder_LabelsRetainedIdleVsRunning(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	lane := filepath.Join(base, "lane")
+	idleDir := filepath.Join(lane, "idle")
+	runningDir := filepath.Join(lane, "running")
+	for _, d := range []string{idleDir, runningDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+
+	parent := newSession(t, withDir(base))
+	idleChild := newSession(t, withDir(idleDir))
+	runningChild := newSession(t, withDir(runningDir))
+	parent.subagents.track(&subagent{id: idleChild.id, sess: idleChild, running: false})
+	parent.subagents.track(&subagent{id: runningChild.id, sess: runningChild, running: true})
+
+	live := parent.liveWorkUnder(lane)
+	var idleLabel, runningLabel string
+	for _, l := range live {
+		if strings.HasPrefix(l, idleChild.id) {
+			idleLabel = l
+		}
+		if strings.HasPrefix(l, runningChild.id) {
+			runningLabel = l
+		}
+	}
+	if idleLabel != idleChild.id+" (subagent, retained — idle)" {
+		t.Errorf("idle child label = %q, want retained — idle", idleLabel)
+	}
+	if runningLabel != runningChild.id+" (subagent, running)" {
+		t.Errorf("running child label = %q, want running", runningLabel)
+	}
+
+	// A driving (mid-drive) child is in flight just like a running one.
+	drivingDir := filepath.Join(lane, "driving")
+	if err := os.MkdirAll(drivingDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	drivingChild := newSession(t, withDir(drivingDir))
+	parent.subagents.track(&subagent{id: drivingChild.id, sess: drivingChild, driving: true})
+	live = parent.liveWorkUnder(lane)
+	var drivingLabel string
+	for _, l := range live {
+		if strings.HasPrefix(l, drivingChild.id) {
+			drivingLabel = l
+		}
+	}
+	if drivingLabel != drivingChild.id+" (subagent, running)" {
+		t.Errorf("driving child label = %q, want running", drivingLabel)
+	}
+}
+
 // TestLiveShellsUnderTree_FiltersByPathAndType confirms the walk excludes a
 // grandchild shell rooted OUTSIDE the target path and ignores delegate job
 // records (shell-only), so it neither over- nor under-reports.

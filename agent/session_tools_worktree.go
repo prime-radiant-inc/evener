@@ -645,7 +645,8 @@ func (s *Session) liveWorkUnder(path string) []string {
 	}
 
 	if s.subagents != nil {
-		for _, child := range s.subagents.sessions() {
+		for _, sub := range s.subagents.directSubagents() {
+			child := sub.sess
 			env := child.currentEnv()
 			if env == nil {
 				// Defensive: every *Session's env is set at construction and
@@ -661,14 +662,37 @@ func (s *Session) liveWorkUnder(path string) []string {
 			if wd == "" {
 				continue
 			}
-			if pathEqualOrUnder(canonicalOrClean(wd), target) {
-				live = append(live, child.id+" (subagent, running)")
+			if !pathEqualOrUnder(canonicalOrClean(wd), target) {
+				continue
+			}
+			// Honest label (spec §P1 step 3): a retained child that is neither
+			// running a task nor mid-drive holds no live work of its own — it is
+			// idle terminal history the dispose op can reclaim. Labeling it
+			// "running" (as this scan once did unconditionally) dead-ends a model
+			// trying to remove a clean, merged lane, because it correctly refuses
+			// to bypass what looks like a live-work guard.
+			sub.mu.Lock()
+			active := sub.running || sub.driving
+			sub.mu.Unlock()
+			if active {
+				live = append(live, child.id+subagentRunningLabel)
+			} else {
+				live = append(live, child.id+subagentRetainedIdleLabel)
 			}
 		}
 	}
 
 	return live
 }
+
+// subagentRunningLabel and subagentRetainedIdleLabel are the two live-work
+// labels liveWorkUnder attaches to a child session rooted under a target path.
+// The retained-idle label is also the signal the remove refusal keys on to
+// offer a dispose suggestion (disposeHintForRetainedIdle).
+const (
+	subagentRunningLabel      = " (subagent, running)"
+	subagentRetainedIdleLabel = " (subagent, retained — idle)"
+)
 
 // pathEqualOrUnder reports whether candidate is target itself or nested under
 // it, both already canonicalized by the caller (canonicalOrClean). This is
