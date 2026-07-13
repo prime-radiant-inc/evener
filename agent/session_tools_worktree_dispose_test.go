@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,10 +13,10 @@ import (
 )
 
 // These are REAL-git unit tests for the model-facing dispose operation's
-// validation ladder (spec §P1 steps 1-6). They build on the wtRepo /
-// seedIsolationLane harness. This task ends at evaluation: a clean, collectible
-// lane returns errDisposeExecutionNotImplemented (execution lands in the
-// follow-up task); every refusal rung returns its precise error.
+// validation ladder (spec §P1 steps 1-6) and its execution (steps 7-8). They
+// build on the wtRepo / seedIsolationLane harness. Every refusal rung returns its
+// precise error; a collectible lane is evicted, removed, marked disposed, and its
+// branch + sidecar deleted.
 
 func disposeErr(t *testing.T, r *wtRepo, id string, force, forceDirty bool) error {
 	t.Helper()
@@ -25,13 +24,24 @@ func disposeErr(t *testing.T, r *wtRepo, id string, force, forceDirty bool) erro
 	return err
 }
 
-// requireStub asserts the dispose reached a collectible evaluation and returned
-// the execution stub — i.e. every refusal rung passed.
-func requireStub(t *testing.T, err error) {
+// requireDisposed asserts the dispose ran to completion: no error, the lane
+// directory removed, the disposed mark durably present, and the branch deleted.
+func requireDisposed(t *testing.T, r *wtRepo, id, lanePath string, force, forceDirty bool) WorktreeDisposeResult {
 	t.Helper()
-	if !errors.Is(err, errDisposeExecutionNotImplemented) {
-		t.Fatalf("expected execution stub, got: %v", err)
+	res, err := r.s.worktreeDispose(context.Background(), id, force, forceDirty)
+	if err != nil {
+		t.Fatalf("expected disposal, got error: %v", err)
 	}
+	if laneWorktreePresent(lanePath) {
+		t.Fatalf("lane %s not removed after dispose", lanePath)
+	}
+	if !r.disposedEventPresent(t, id) {
+		t.Fatalf("disposed mark not present for %s", id)
+	}
+	if r.branchExists(t, id) {
+		t.Fatalf("branch %s not deleted after dispose", id)
+	}
+	return res
 }
 
 func requireRefusalContains(t *testing.T, err error, want string) {
@@ -163,11 +173,17 @@ func TestDispose_ForeignLock_Refused(t *testing.T) {
 	requireRefusalContains(t, err, "locked by another owner")
 }
 
-func TestDispose_UnchangedLane_ReachesStub(t *testing.T) {
+func TestDispose_UnchangedLane_Disposed(t *testing.T) {
 	r := newWorktreeRepo(t)
-	id, _, _ := r.seedIsolationLane(t)
+	id, lanePath, _ := r.seedIsolationLane(t)
 	// A freshly cut lane is Unchanged (tip == base) and clean → collectible.
-	requireStub(t, disposeErr(t, r, id, false, false))
+	res := requireDisposed(t, r, id, lanePath, false, false)
+	if res.AlreadyDisposed {
+		t.Fatal("first disposal should not report already-disposed")
+	}
+	if res.LanePath != lanePath || res.Branch != id {
+		t.Fatalf("result = %+v, want lane %s branch %s", res, lanePath, id)
+	}
 }
 
 func TestDispose_UnmergedRefusedForceOverrides(t *testing.T) {
@@ -180,8 +196,8 @@ func TestDispose_UnmergedRefusedForceOverrides(t *testing.T) {
 	requireRefusalContains(t, err, "unmerged commit")
 	// force_dirty alone does NOT override an unmerged refusal.
 	requireRefusalContains(t, disposeErr(t, r, id, false, true), "unmerged commit")
-	// force overrides → reaches the stub.
-	requireStub(t, disposeErr(t, r, id, true, false))
+	// force overrides → disposed (branch -D force-deletes the unmerged commits).
+	requireDisposed(t, r, id, lanePath, true, false)
 }
 
 func TestDispose_DirtyRefusedForceDirtyOverrides(t *testing.T) {
@@ -193,12 +209,11 @@ func TestDispose_DirtyRefusedForceDirtyOverrides(t *testing.T) {
 	requireRefusalContains(t, disposeErr(t, r, id, false, false), "uncommitted changes")
 	// force alone does NOT override a dirty refusal.
 	requireRefusalContains(t, disposeErr(t, r, id, true, false), "uncommitted changes")
-	// force_dirty overrides. The dirty (unchanged-otherwise) lane is then
-	// collectible → stub.
-	requireStub(t, disposeErr(t, r, id, false, true))
+	// force_dirty overrides → the dirty lane is force-removed and disposed.
+	requireDisposed(t, r, id, lanePath, false, true)
 }
 
-func TestDispose_HalfRemoved_MergedStub_UnmergedRefused(t *testing.T) {
+func TestDispose_HalfRemoved_MergedDisposed_UnmergedRefused(t *testing.T) {
 	// Unmerged half-removed: commit on the branch, then remove only the worktree
 	// dir (branch + record + sidecar remain).
 	r := newWorktreeRepo(t)
@@ -212,17 +227,17 @@ func TestDispose_HalfRemoved_MergedStub_UnmergedRefused(t *testing.T) {
 	}
 	err := disposeErr(t, r, id, false, false)
 	requireRefusalContains(t, err, "half-removed")
-	// force overrides the unmerged half-removed refusal → stub.
-	requireStub(t, disposeErr(t, r, id, true, false))
+	// force overrides the unmerged half-removed refusal → branch + sidecar deleted.
+	requireDisposed(t, r, id, lanePath, true, false)
 }
 
-func TestDispose_HalfRemovedUnchanged_Stub(t *testing.T) {
+func TestDispose_HalfRemovedUnchanged_Disposed(t *testing.T) {
 	// A half-removed lane whose branch tip == base (unchanged) is collectible.
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedIsolationLane(t)
 	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
 	wtGit(t, r.mainRoot, "worktree", "remove", "--force", lanePath)
-	requireStub(t, disposeErr(t, r, id, false, false))
+	requireDisposed(t, r, id, lanePath, false, false)
 }
 
 func TestDispose_AlreadyDisposed_IdempotentCleanup(t *testing.T) {

@@ -680,9 +680,9 @@ func TestDisposeUnchangedLaneMechanics_RelockPolicy(t *testing.T) {
 		_ = os.WriteFile(filepath.Join(p, "raced.txt"), []byte("late\n"), 0o644)
 	}
 
-	note, kept := r.s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeRelockKeep)
+	outcome, note := r.s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeRelockKeep, false)
 
-	if !kept {
+	if outcome != laneKeptDirty {
 		t.Fatal("relock policy: lane not kept after refused remove")
 	}
 	if !strings.Contains(note, "re-locked") {
@@ -717,9 +717,9 @@ func TestDisposeUnchangedLaneMechanics_UnlockPolicy(t *testing.T) {
 		_ = os.WriteFile(filepath.Join(p, "raced.txt"), []byte("late\n"), 0o644)
 	}
 
-	note, kept := r.s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeUnlockKeep)
+	outcome, note := r.s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeUnlockKeep, false)
 
-	if !kept {
+	if outcome != laneKeptDirty {
 		t.Fatal("unlock policy: lane not kept after refused remove")
 	}
 	if !strings.Contains(note, "kept unlocked") {

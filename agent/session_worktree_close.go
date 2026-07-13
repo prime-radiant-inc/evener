@@ -122,6 +122,12 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 	}
 }
 
+// closeBudgetMintHook is a test-only seam invoked exactly when ensureCloseBudget
+// MINTS a fresh deadline (not when it reuses an inherited one), so a cascade test
+// can assert the whole close/dispose cascade minted a single shared budget. It is
+// nil in production.
+var closeBudgetMintHook func()
+
 // ensureCloseBudget returns a context carrying the shared close-cascade deadline.
 // When ctx already carries a deadline (a descendant reached through the close
 // cascade), it is reused unchanged so per-session budgets never stack; otherwise
@@ -129,6 +135,9 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 func ensureCloseBudget(ctx context.Context) (context.Context, context.CancelFunc) {
 	if _, ok := ctx.Deadline(); ok {
 		return ctx, func() {}
+	}
+	if closeBudgetMintHook != nil {
+		closeBudgetMintHook()
 	}
 	return context.WithTimeout(ctx, laneClosePassBudget)
 }
@@ -248,7 +257,8 @@ func (s *Session) disposeOneDelegateLane(ctx context.Context, local *execenv.Loc
 	// descriptor disposed, then delete branch + sidecar. A late-dirty refusal
 	// downgrades back to KEEP; at close the dead owner's lock is left released
 	// (downgradeUnlockKeep) rather than re-locked.
-	return s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeUnlockKeep)
+	outcome, note := s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeUnlockKeep, false)
+	return note, outcome == laneKeptDirty
 }
 
 // laneAutoCollectible applies the D0-auto disposal predicate (spec §D0): a lane
@@ -306,15 +316,36 @@ const (
 	downgradeUnlockKeep
 )
 
+// laneDisposalOutcome distinguishes how disposeUnchangedLaneMechanics ended, so
+// the model-facing dispose op can report an honest result (the close path only
+// needs the kept/not-kept bit). laneDisposed covers both a clean remove and a
+// concurrent-collector race where the lane was already gone when git refused
+// the remove — either way the descriptor is marked Disposed and remnants are
+// cleaned. laneKeptDirty is the late-dirty downgrade (lane preserved, KEEP).
+// laneDeclined is a lane the mechanics would not touch (foreign/session lock, or
+// its own unlock failed) — left for prune, never marked.
+type laneDisposalOutcome int
+
+const (
+	laneDisposed laneDisposalOutcome = iota
+	laneKeptDirty
+	laneDeclined
+)
+
 // disposeUnchangedLaneMechanics runs the unlock → `git worktree remove`
 // (non-force) → mark disposed → `branch -D` → sidecar-delete sequence for an
 // UNCHANGED lane already judged collectible. It is the shared core of close-time
-// disposal and the live `dispose` op. It returns kept=false when the lane is
-// removed (disposed) and for a foreign / session-locked lane it declines to
-// touch (ActRefuse); it returns kept=true with a note when git refuses the
-// non-force remove (a late dirty write raced the clean check) and the lane is
-// downgraded back to KEEP per the downgrade policy.
-func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st worktree.LockState, lane isolationLane, metaDir string, downgrade downgradePolicy) (note string, kept bool) {
+// disposal and the live `dispose` op. It returns laneDisposed when the lane is
+// removed (or was already gone to a concurrent collector) and marked, laneDeclined
+// for a foreign / session-locked lane it will not touch (ActRefuse) or one whose
+// own unlock failed, and laneKeptDirty with a note when git refuses the non-force
+// remove because the lane is still present with a late dirty write — then the lane
+// is downgraded back to KEEP per the downgrade policy.
+// forceRemove uses `git worktree remove --force` (spec §P1 step 8 "non-force
+// unless dirty-forced"): the model-facing dispose op sets it when `force_dirty`
+// discards a dirty lane, which a non-force remove would refuse. The close path
+// never forces — a late dirty write there downgrades back to KEEP instead.
+func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st worktree.LockState, lane isolationLane, metaDir string, downgrade downgradePolicy, forceRemove bool) (outcome laneDisposalOutcome, note string) {
 	lanePath := filepath.Clean(lane.path)
 	switch worktree.Decide(worktree.EvDisposeUnchanged, st) {
 	case worktree.ActUnlock:
@@ -323,30 +354,41 @@ func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st workt
 		// on the common success path the sidecar is deleted anyway.
 		touchSidecar(metaDir, lane.delegateID)
 		if _, err := run("worktree", "unlock", lanePath); err != nil {
-			return "", false // cannot release our lock; leave the lane for prune
+			return laneDeclined, "" // cannot release our lock; leave the lane for prune
 		}
 	case worktree.ActNone:
 		// Crash residue: already unlocked. The unlock is vacuous (running it on
 		// an unlocked tree is fatal on git), so proceed straight to remove.
 	default:
-		return "", false // ActRefuse: not the disposer's dlg lock — leave it
+		return laneDeclined, "" // ActRefuse: not the disposer's dlg lock — leave it
 	}
 
 	if s.worktreeDisposeBeforeRemove != nil {
 		s.worktreeDisposeBeforeRemove(lanePath)
 	}
-	if _, err := run("worktree", "remove", "--", lanePath); err != nil {
-		// A late dirty write raced the clean check and git refused the
-		// non-force remove: downgrade back to KEEP so the lane is preserved and
-		// resumable again. The policy decides whether to re-lock our own marker.
-		switch downgrade {
-		case downgradeRelockKeep:
-			marker := worktree.FormatDelegateMarker(lane.delegateID, s.id)
-			_, _ = run("worktree", "lock", "--reason", marker, lanePath)
-			return lane.delegateID + " at " + lanePath + " (dirty at removal; re-locked)", true
-		default: // downgradeUnlockKeep
-			return lane.delegateID + " at " + lanePath + " (dirty at removal; kept unlocked)", true
+	removeArgs := []string{"worktree", "remove", "--", lanePath}
+	if forceRemove {
+		removeArgs = []string{"worktree", "remove", "--force", "--", lanePath}
+	}
+	if _, err := run(removeArgs...); err != nil {
+		// The non-force remove was refused. Distinguish a concurrent collector
+		// (the lane directory is already gone — someone else won the remove) from
+		// a late dirty write (the lane is still present). A present lane downgrades
+		// back to KEEP; a gone lane falls through to finish the disposal
+		// bookkeeping so the mark/branch/sidecar cleanup happens exactly once.
+		if _, statErr := os.Stat(filepath.Join(lanePath, ".git")); statErr == nil {
+			switch downgrade {
+			case downgradeRelockKeep:
+				marker := worktree.FormatDelegateMarker(lane.delegateID, s.id)
+				if _, lockErr := run("worktree", "lock", "--reason", marker, lanePath); lockErr != nil {
+					s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane %s kept after eviction but its lock could not be re-acquired at %s: %v", lane.delegateID, lanePath, lockErr)})
+				}
+				return laneKeptDirty, lane.delegateID + " at " + lanePath + " (dirty at removal; re-locked)"
+			default: // downgradeUnlockKeep
+				return laneKeptDirty, lane.delegateID + " at " + lanePath + " (dirty at removal; kept unlocked)"
+			}
 		}
+		// Lane gone to a concurrent collector: fall through to mark + remnants.
 	}
 
 	// The worktree is gone. Mark the descriptor disposed BEFORE deleting the
@@ -366,7 +408,7 @@ func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st workt
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane branch delete failed for %s: %v", lane.delegateID, err)})
 	}
 	_ = worktree.DeleteSidecar(metaDir, lane.delegateID)
-	return "", false
+	return laneDisposed, ""
 }
 
 // unlockLaneIfOwn routes a changed-lane / unverifiable-lane unlock through the
