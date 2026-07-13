@@ -4072,6 +4072,11 @@
       // The frontier — always visible: the active task (it breathes blue via the
       // shared plan grammar), or a quiet "all done" line when the plan is finished.
       if (active) {
+        const currentLabel = document.createElement("div");
+        currentLabel.className = "task-card-group task-card-current-label";
+        currentLabel.textContent = "Up next";
+        card.appendChild(currentLabel);
+
         const row = buildTaskRowLine(active);
         row.classList.add("task-card-row", "task-card-active");
         card.appendChild(row);
@@ -4095,7 +4100,7 @@
       const summaryBits = [];
       if (done.length) summaryBits.push("✓ " + done.length + " done");
       if (cancelled.length) summaryBits.push("✕ " + cancelled.length + " cancelled");
-      if (open.length) summaryBits.push(open.length + " up next");
+      if (open.length && !active) summaryBits.push(open.length + " up next");
       if (summaryBits.length) {
         const summary = document.createElement("div");
         summary.className = "task-card-summary-line";
