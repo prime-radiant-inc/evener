@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -101,7 +102,7 @@ func TestHandleModel_RejectsWhileTurnActive(t *testing.T) {
 	s.SetModelFunc(func(string) error { called = true; return nil })
 	s.SetProcessing(true)
 
-	req := httptest.NewRequest("POST", "/model", strings.NewReader(`{"model":"claude-x"}`))
+	req := httptest.NewRequest(http.MethodPost, "/model", strings.NewReader(`{"model":"claude-x"}`))
 	w := httptest.NewRecorder()
 	s.handleModel(w, req)
 
@@ -118,7 +119,7 @@ func TestHandleModel_HookErrorReturnsError(t *testing.T) {
 	hookErr := errors.New("unknown instance: nope")
 	s.SetModelFunc(func(string) error { return hookErr })
 
-	req := httptest.NewRequest("POST", "/model", strings.NewReader(`{"model":"claude-x"}`))
+	req := httptest.NewRequest(http.MethodPost, "/model", strings.NewReader(`{"model":"claude-x"}`))
 	w := httptest.NewRecorder()
 	s.handleModel(w, req)
 
@@ -136,7 +137,7 @@ func TestHandleModel_SuccessReturnsNoContent(t *testing.T) {
 	called := false
 	s.SetModelFunc(func(m string) error { got = m; called = true; return nil })
 
-	req := httptest.NewRequest("POST", "/model", strings.NewReader(`{"model":"claude-x"}`))
+	req := httptest.NewRequest(http.MethodPost, "/model", strings.NewReader(`{"model":"claude-x"}`))
 	w := httptest.NewRecorder()
 	s.handleModel(w, req)
 
