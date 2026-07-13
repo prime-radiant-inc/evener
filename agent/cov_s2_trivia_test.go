@@ -73,9 +73,12 @@ func TestS2Cov_SanitizeSessionName(t *testing.T) {
 	}{
 		{"  Fix Flaky Test  ", "Fix Flaky Test"},
 		{`"Quoted Title"`, "Quoted Title"},
+		{`" "0`, "0"},
 		{"Trailing Punctuation!!!", "Trailing Punctuation"},
+		{"0`!", "0"},
 		{"a  b   c", "a b c"},
 		{strings.Repeat("A", 80), strings.Repeat("A", sessionNameMaxRunes)},
+		{strings.Repeat("0", sessionNameMaxRunes-1) + "`0", strings.Repeat("0", sessionNameMaxRunes-1)},
 	}
 	for _, tc := range cases {
 		if got := sanitizeSessionName(tc.in); got != tc.want {

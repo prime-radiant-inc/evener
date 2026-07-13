@@ -172,18 +172,23 @@ func trimForSessionNamer(text string) string {
 }
 
 func sanitizeSessionName(name string) string {
+	const boundaryQuotes = "\"'`“”‘’"
+	trimTrailingBoundary := func(r rune) bool {
+		return unicode.IsPunct(r) || unicode.IsSpace(r) || strings.ContainsRune(boundaryQuotes, r)
+	}
+	trimLeadingBoundary := func(r rune) bool {
+		return unicode.IsSpace(r) || strings.ContainsRune(boundaryQuotes, r)
+	}
+
 	name = strings.TrimSpace(name)
-	name = strings.Trim(name, "\"'`“”‘’")
+	name = strings.Trim(name, boundaryQuotes)
 	name = strings.Join(strings.Fields(name), " ")
-	name = strings.TrimRightFunc(name, func(r rune) bool {
-		return unicode.IsPunct(r) || unicode.IsSpace(r)
-	})
+	name = strings.TrimLeftFunc(name, trimLeadingBoundary)
+	name = strings.TrimRightFunc(name, trimTrailingBoundary)
 	if utf8.RuneCountInString(name) > sessionNameMaxRunes {
 		runes := []rune(name)
 		name = strings.TrimSpace(string(runes[:sessionNameMaxRunes]))
-		name = strings.TrimRightFunc(name, func(r rune) bool {
-			return unicode.IsPunct(r) || unicode.IsSpace(r)
-		})
+		name = strings.TrimRightFunc(name, trimTrailingBoundary)
 	}
 	return name
 }
