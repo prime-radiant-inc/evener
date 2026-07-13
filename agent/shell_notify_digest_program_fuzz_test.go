@@ -33,6 +33,7 @@ func FuzzShellNotificationRenderProgram(f *testing.F) {
 	f.Add(uint8(8), "", "empty_output", "")
 	f.Add(uint8(9), "default event", "", "")
 	f.Add(uint8(16), "lane output", "completed", "")
+	f.Add(uint8(22), "lane output", "completed", "")
 
 	f.Fuzz(func(t *testing.T, mode uint8, content, reason, transcriptRef string) {
 		if len(content) > terminalExcerptBytes*2 {
