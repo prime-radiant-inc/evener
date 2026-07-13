@@ -229,6 +229,14 @@
     return (window.SerfRenderer && window.SerfRenderer.activeTurnId) || (conv && conv.getAttribute("data-active-turn-id")) || "";
   }
 
+  // Same signal the composer's interrupt/steer buttons and the header model
+  // chip key off: Status.Type == "active" AND ActiveTurnID set. NOT
+  // activeFlags, which serf daemons never populate.
+  function isThreadBusy() {
+    const conv = document.getElementById("conversation");
+    return !!conv && conv.getAttribute("data-state") === "active" && !!conv.getAttribute("data-active-turn-id");
+  }
+
   function showTurnActionUnavailable(message) {
     if (window.SerfRenderer && window.SerfRenderer.appendBanner) {
       window.SerfRenderer.appendBanner("error", message, { source: "hub", title: "Hub action error" });
@@ -338,6 +346,11 @@
         args: { kind: "enum", placeholder: "choose a model…",
           source: () => fetchModels(),
           run: (ctx, item) => {
+            if (isThreadBusy()) {
+              const msg = "model change failed: turn in progress";
+              showTurnActionUnavailable(msg);
+              return blocked(msg);
+            }
             const p = window.SerfAppwire ? window.SerfAppwire.setModel(ctx.sessionId, item.id) : fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/model", {
               method: "POST", headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ model: item.id }),
@@ -1037,5 +1050,5 @@
     init();
   }
 
-  window.SerfSearch = { open: open, close: close, openWith: openWith, Nav: Nav };
+  window.SerfSearch = { open: open, close: close, openWith: openWith, Nav: Nav, _commands: commands };
 })();
