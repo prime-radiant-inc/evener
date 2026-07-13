@@ -260,6 +260,19 @@
     }
   }
 
+  // Sibling nav (renderer.js autoInit, model-display.js) swaps
+  // #workspace/#conversation in place via htmx:afterSwap rather than a full
+  // page reload; without resyncing here, busy/picker/cache state stays keyed
+  // to the session that was on-screen before the swap.
+  function resyncAfterSwap() {
+    initBusyFromDom();
+    syncTriggerDisabled();
+    closePicker();
+    modelsCache = null;
+  }
+
+  var afterSwapHandlerInstalled = false;
+
   function init() {
     initBusyFromDom();
     syncTriggerDisabled();
@@ -272,6 +285,10 @@
     });
     if (window.SerfAppwire && typeof window.SerfAppwire.onNotification === "function") {
       window.SerfAppwire.onNotification(handleNotification);
+    }
+    if (!afterSwapHandlerInstalled) {
+      afterSwapHandlerInstalled = true;
+      document.body.addEventListener("htmx:afterSwap", resyncAfterSwap);
     }
   }
 

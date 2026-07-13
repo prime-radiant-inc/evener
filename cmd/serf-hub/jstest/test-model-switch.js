@@ -300,6 +300,61 @@ function scenarioEventsFromNotificationMapping() {
   pass(effortEvents[0][1].reasoningEffort === "high", "REASONING_EFFORT_CHANGED carries the reasoningEffort field");
 }
 
+// ---------- (h) htmx:afterSwap resyncs busy state + picker/cache to the
+// freshly server-rendered NEW session, instead of staying keyed to the OLD
+// session's stale busy state ----------
+async function scenarioHtmxAfterSwapResync() {
+  // Start on a BUSY session (mid-turn): trigger should be disabled.
+  const window = makeWindow(workspaceHTML({ state: "active", activeTurnId: "T1" }));
+  let listModelsCalls = 0;
+  window.SerfAppwire = {
+    listModels: () => { listModelsCalls++; return Promise.resolve([{ provider: "anthropic", model: "claude-haiku-4-5", display_name: "Haiku" }]); },
+    setModel: () => Promise.resolve({}),
+    onNotification: () => () => {},
+    refForSession: (id) => "local:" + id,
+  };
+  window.eval(modelSwitchSrc);
+  window.document.dispatchEvent(new window.Event("DOMContentLoaded", { bubbles: true }));
+
+  let trigger = window.document.querySelector("[data-model-trigger]");
+  pass(trigger.disabled, "trigger starts disabled on the busy session");
+
+  // Navigate (sidebar htmx swap) to an IDLE session — simulate htmx replacing
+  // #workspace/#conversation with the new session's server-rendered DOM.
+  window.document.body.innerHTML = workspaceHTML({ state: "idle", activeTurnId: "" });
+  window.document.body.dispatchEvent(new window.Event("htmx:afterSwap", { bubbles: true }));
+  await flush();
+
+  trigger = window.document.querySelector("[data-model-trigger]");
+  pass(!trigger.disabled, "after swapping to an idle session, trigger resyncs to enabled");
+
+  // Open the picker on the idle session, then swap to a BUSY session — the
+  // picker must close rather than staying open over stale content, and the
+  // model cache must be dropped so the new session's picker refetches.
+  trigger.click();
+  await flush();
+  pass(!!window.document.querySelector(".model-switch-picker"), "picker opens on the idle session");
+  const callsBeforeSwap = listModelsCalls;
+
+  window.document.body.innerHTML = workspaceHTML({ state: "active", activeTurnId: "T2" });
+  window.document.body.dispatchEvent(new window.Event("htmx:afterSwap", { bubbles: true }));
+  await flush();
+
+  pass(!window.document.querySelector(".model-switch-picker"), "picker closes across the swap to a busy session");
+  trigger = window.document.querySelector("[data-model-trigger]");
+  pass(trigger.disabled, "after swapping to a busy session, trigger resyncs to disabled");
+
+  // Swap back to idle and open the picker again: cache must have been
+  // cleared by the swap, so listModels is called again (not served stale).
+  window.document.body.innerHTML = workspaceHTML({ state: "idle", activeTurnId: "" });
+  window.document.body.dispatchEvent(new window.Event("htmx:afterSwap", { bubbles: true }));
+  await flush();
+  trigger = window.document.querySelector("[data-model-trigger]");
+  trigger.click();
+  await flush();
+  pass(listModelsCalls > callsBeforeSwap, "model cache is cleared across the swap, so the picker refetches on next open");
+}
+
 (async () => {
   await scenarioOpenAndSelect();
   await scenarioFirstSlashSplitAppwire();
@@ -308,6 +363,7 @@ function scenarioEventsFromNotificationMapping() {
   await scenarioPaletteRefusesWhileBusy();
   await scenarioSetModelError();
   await scenarioModelListFetchError();
+  await scenarioHtmxAfterSwapResync();
   scenarioSidebarQualifying();
   scenarioEventsFromNotificationMapping();
 
