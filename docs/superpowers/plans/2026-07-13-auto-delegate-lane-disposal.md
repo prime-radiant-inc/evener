@@ -98,11 +98,18 @@ A lane is clean iff `worktree.CleanTree` holds. Then:
 
 **No-fetch invariant** (rev-8 finding M5): `worktree.Merged` resolves only
 local refs (`rev-parse`, `for-each-ref`; `predicates.go:96-130`) — no
-network at close or in sweeps, ever. **Stale-ref acceptance statement**
-(roborev 2718): a stale remote-tracking ref makes ancestry judge against an
-*older* target tip; a commit reachable from the old tip is reachable from
-every newer tip, so staleness can only produce false *unmerged* (lane
-kept), never false *merged* — safe by construction, accepted.
+network at close or in sweeps, ever. **Remote-tracking evidence is not
+auto-trustworthy** (roborev 2720, superseding the unsound 2718 statement):
+the "older tip ⇒ only false-unmerged" argument holds only for fast-forward
+upstream history — after an upstream force-push, deletion, or branch
+recreation, a stale tracking ref can contain the lane while the real target
+no longer does, and auto-deleting the branch on that evidence loses the
+commits at the next fetch+gc. Rule: **D0-auto accepts ancestry evidence
+only from local branch refs** (`refs/heads/*`); when the merge_target
+resolves solely to a remote-tracking ref (`refs/remotes/*`), the lane is
+NOT auto-collectible — kept for D0-model, where the model can verify the
+live upstream before disposing. Local branches move only by local actions,
+so their staleness argument is sound.
 
 ### P0. Close-time disposal collects ancestry-merged lanes
 
@@ -136,13 +143,14 @@ so removal + `branch -D` loses nothing. Consequences:
   budget-exempt touch + unlock** (two cheap constant-cost ops per lane, no
   history walks), because skipping the unlock would strand them under a
   dead session's lock — the exact "collectable by nothing" class of the N1
-  limitation (rev-9.1 finding O2). The tail is O(lanes) with ~ms-scale ops
-  and lane count is bounded by the delegates one session spawned (flagship
-  worst case 21 ≈ well under a second) — accepted without a second cap; if
-  a pathological count ever appears, cap the tail and warn (roborev
-  2718-3). A wedged unlock is skipped after the op-level cancellation
-  below; the residual is reported in one aggregated warning naming the
-  still-locked lanes. P0's
+  limitation (rev-9.1 finding O2). The tail is **deliberately unbounded**
+  (roborev 2720: "delegates one session spawned" is not a hard invariant):
+  O(lanes) at ~ms per op, never skipped — stranding locks is strictly worse
+  than slow closes — with **one aggregated warning whenever the tail
+  exceeds `laneTailWarnThreshold` (50 lanes)** so a pathological session is
+  visible before it hurts. A wedged unlock is skipped after the op-level
+  cancellation below; the residual is reported in the same aggregated
+  warning naming the still-locked lanes. P0's
   git ops run before `env.Cleanup()`, so a stale `index.lock` can stall an
   op — the budget plus ctx-aware git runners are the mitigation; each op is
   best-effort skip-on-error as today.
@@ -354,7 +362,8 @@ staleness-based lock reclaim).
 |---|---|---|
 | `laneSweepDelay` | 10m | P3 open-pass delay past revival races; re-lock retry point |
 | `laneGrace` | 30m | sidecar-mtime grace covering close and hand-off windows |
-| `laneClosePassBudget` | 30s | bounds P0 **and** the P3 close pass together; shutdown must not block on git work |
+| `laneClosePassBudget` | 30s | bounds P0 **and** the P3 close pass together; one shared deadline per cascade; shutdown must not block on git work |
+| `laneTailWarnThreshold` | 50 | aggregated warning when the budget-exempt touch+unlock tail exceeds this |
 
 All three test-overridable.
 
@@ -366,7 +375,14 @@ ordered commits, each red→green; roborev 2718)
    `responseSideEffectsMu` placement pinned above.
 3. Ctx-aware git runners on the dispose/close paths (cancellation actually
    interrupts ops).
-4. Budget ctx propagation through the close cascade.
+4. Budget ctx propagation through the close cascade — three explicit
+   sub-tasks (roborev 2720): (a) the initiating actor (dispose step 7, or a
+   top-level close) is the **budget owner** and mints the single deadline
+   ctx; (b) the handoff point is a ctx parameter threaded through
+   `close(false)` → `disposeDelegateLanesAtClose`; (c) **rule: a
+   descendant's close-time disposal must NOT mint a fresh per-session
+   budget when the incoming ctx already carries a cascade deadline** —
+   asserted by the depth-2 test (12a).
 5. In-flight-dispose cancellation tests (test 15) last, over the assembled
    protocol.
 
@@ -378,6 +394,11 @@ P0 unit:
    own store, branch+sidecar gone. Unchanged lane → still collected.
 2. **Cherry-only-merged (rebase/squash) lane at close → KEPT** (auto tier
    never uses the cherry arm), sidecar touched, unlocked.
+2a. **Remote-tracking-only merge_target → KEPT by P0 and P3** even when
+   ancestry against the tracking ref says merged (force-push safety);
+   model-tier `dispose` may still collect it. Simulated force-push fixture:
+   stale tracking ref contains the lane, recreated upstream doesn't —
+   assert no auto branch deletion.
 3. Unmerged / dirty / state-unverifiable → KEPT, touch-before-unlock on all
    paths; KEEP warning uses the lumped copy ("not collected automatically
    (unmerged or squash-merged), dirty, or unverifiable") — **no cherry
