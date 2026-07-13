@@ -68,7 +68,11 @@ func taskFaultHealthyRoundTrip(t *testing.T, input TaskInput) {
 		t.Fatalf("healthy Load: %v", err)
 	}
 	view := reloaded.View()
-	if len(view) != 1 || view[0].Description != input.Description || view[0].Status != TaskDone || view[0].CompletedAt == nil || len(view[0].Notes) != 1 {
+	// encoding/json replaces each invalid UTF-8 byte with U+FFFD while encoding
+	// strings. Converting through []rune computes the same durable value without
+	// excluding malformed strings from the fuzz input space.
+	durableDescription := string([]rune(input.Description))
+	if len(view) != 1 || view[0].Description != durableDescription || view[0].Status != TaskDone || view[0].CompletedAt == nil || len(view[0].Notes) != 1 {
 		t.Fatalf("healthy reload = %#v", view)
 	}
 }
