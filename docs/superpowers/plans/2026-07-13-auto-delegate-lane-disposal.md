@@ -77,9 +77,34 @@ no work exists; merged → reachable from the merge target.
 ### P1. `dispose` operation on `manage_worktree` (new)
 
 `manage_worktree` gains a `dispose` op taking a delegate id (`dlg_*`).
-Synchronous, in-turn, on the owning session (the tool is root-only —
-`rootOnlyWorktreeTools` — so only top-level sessions can invoke it; see P2
-for the nudge implication). Steps:
+Synchronous, in-turn, on the owning session.
+
+**Availability (who has the op).** Despite the `rootOnlyWorktreeTools` name,
+`manage_worktree` is not strictly root-only today; two independent strips
+apply (`session_init.go:770-780`):
+
+- a child with `delegationAllowance <= 0` (leaf delegate) loses all
+  root-only tools — correct and unchanged: a leaf has no delegates, so it
+  never needs `dispose`;
+- a child with `isolation: "worktree"` loses `manage_worktree`
+  unconditionally, even with a delegation allowance, because a session
+  living inside a lane could `remove`/`prune`/`switch` sibling worktrees the
+  parent owns.
+
+The second strip is right for the repo-wide ops but too coarse for
+`dispose`, which is ownership-safe by construction: it acts only on
+delegates whose record is in **this** session's jobstore with
+`ParentSessionID == s.id` (step 1) and whose lane carries **this** session's
+own `serf:dlg:` marker (step 5) — an isolated coordinator cannot reach a
+sibling's lane through it. Therefore: **worktree-isolated children with a
+delegation allowance get a dispose-only `manage_worktree` surface** (all
+other ops refused with the existing isolation rationale). This shrinks the
+accepted rev-3 "mid-tree coordinator gap" (C7): an isolated coordinator's
+grandchild lanes become collectible whenever its model follows the P2 nudge,
+instead of only at coordinator close. Non-isolated coordinators already have
+the full tool and simply gain the new op.
+
+Steps:
 
 1. **Validate ownership + record quiescence** (under `s.mu`): this session
    owns the delegate (its jobstore holds the record with
@@ -144,8 +169,10 @@ clear error.
 The terminal lane report a finished isolated delegate already carries
 (`delegateWorktreeReport` — inline tool result AND background `job_finished`
 notification) gains one conditional sentence, rendered **only in sessions
-that have `manage_worktree`** (root-only — a mid-tree session must not be
-nudged toward a tool it lacks):
+that have the `dispose` op** — top-level sessions, non-isolated
+coordinators, and (per P1's availability rule) isolated coordinators with a
+delegation allowance; leaf delegates must not be nudged toward a tool they
+lack:
 
 - lane collectible per D0 (evaluated at render time, best-effort — the
   report path already runs git via a control env; on error, omit):
@@ -251,6 +278,11 @@ P1 unit (real-git fixtures via the existing worktree test harness):
 13. `remove` blocked only by a retained terminal delegate → refusal names the
     delegate and suggests `dispose`.
 14. Sandboxed session: control-env dance; unsatisfiable → clear error.
+14a. Availability: leaf delegate (no allowance) has no `manage_worktree`;
+    non-isolated coordinator has the full tool incl. `dispose`; isolated
+    coordinator with allowance gets `dispose` only (other ops refused with
+    the isolation rationale); its `dispose` works on an own grandchild lane,
+    refuses a sibling's lane (ownership).
 
 P2: nudge present iff collectible (both arms) AND session has the tool;
 absent for unmerged lanes and in subagent sessions; copy pinned; render-time
@@ -282,6 +314,8 @@ working-directory-missing refusal.
 ## Files touched (est.)
 
 - `agent/internal/tool/definitions.go` — `dispose` in the op enum + arg docs (~15 loc)
+- `agent/session_init.go` + `agent/subagents.go` — dispose-only surface for
+  isolated coordinators with allowance (~20 loc)
 - `agent/session_tools_worktree.go` — dispose op + validation + remove-refusal legibility (~160 loc)
 - `agent/session_worktree_close.go` — factor mechanics; downgrade no-relock (~45 loc)
 - `agent/session_worktree_sweep.go` (new) — P3 pass parameterizing sweep1 (~90 loc)
@@ -349,3 +383,9 @@ code):
   with rationale.
 - **Field evidence (Jesse):** `remove` blocked by retained terminal delegate →
   problem statement §2 + the remove-refusal legibility companion fix.
+
+**Rev 5 → rev 5.1** (Jesse): rev 5 misdescribed `manage_worktree` as strictly
+root-only; the real policy is two strips (allowance and isolation). Isolated
+coordinators with a delegation allowance now get a dispose-only surface
+(ownership-safe by construction), shrinking the C7 coordinator gap; P2 nudge
+gating restated in terms of op availability; leaf delegates unchanged.
