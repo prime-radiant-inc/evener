@@ -171,7 +171,7 @@ func covDocServeSeed(t *testing.T) {
 	} {
 		web.handleDocImage(httptest.NewRecorder(), req)
 	}
-	files := map[string][]byte{"x.txt": []byte("text"), "x.md": []byte("# md"), "x.markdown": []byte("# md"), "x.bin": []byte{0}, "x.svg": []byte("svg")}
+	files := map[string][]byte{"x.txt": []byte("text"), "x.md": []byte("# md"), "x.markdown": []byte("# md"), "x.bin": {0}, "x.svg": []byte("svg")}
 	for name, data := range files {
 		if err := os.WriteFile(filepath.Join(cwd, name), data, 0o644); err != nil {
 			t.Fatal(err)

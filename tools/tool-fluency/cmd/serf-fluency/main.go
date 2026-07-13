@@ -955,9 +955,7 @@ func writeSummary(outDir string, results []probeResult) error {
 	return os.WriteFile(filepath.Join(outDir, "summary.json"), append(data, '\n'), 0o644)
 }
 
-var runnerMarshalSummary = func(v any, prefix, indent string) ([]byte, error) {
-	return json.MarshalIndent(v, prefix, indent)
-}
+var runnerMarshalSummary = json.MarshalIndent
 
 func formatCounts(counts map[string]int) string {
 	if len(counts) == 0 {

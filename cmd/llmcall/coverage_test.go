@@ -52,7 +52,8 @@ func TestLLMCallMainParserBranches(t *testing.T) {
 	old := os.Stdin
 	os.Stdin = r
 	t.Cleanup(func() { os.Stdin = old; _ = r.Close() })
-	if err := llmcallMain(nil, &out, &errOut); err == nil { /* client setup is expected; prompt path was traversed */
+	if err := llmcallMain(nil, &out, &errOut); err == nil {
+		t.Fatal("stdin prompt reached client setup without a client")
 	}
 	// Empty pipe traverses usage/no-prompt.
 	r2, w2, _ := os.Pipe()

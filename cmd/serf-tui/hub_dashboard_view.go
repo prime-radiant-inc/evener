@@ -422,15 +422,6 @@ func dashboardFooter(width int) string {
 	return tuiprim.ActionBarForWidth(width, tokens...)
 }
 
-func emptyDashboardFooter(width int) string {
-	items := []string{"n new session"}
-	items = append(items, "/ palette", "q quit")
-	if width <= 72 {
-		return strings.Join(items, "\n")
-	}
-	return strings.Join(items, "  ")
-}
-
 func (m hubModel) dashboardDetailsView(rows []hubRow, width int) string {
 	if m.err != nil {
 		return renderDetailsPane(strings.Join([]string{

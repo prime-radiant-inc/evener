@@ -164,9 +164,10 @@ func TestNoBody(t *T)
 	var marked, noBody *ast.FuncDecl
 	for _, d := range f.Decls {
 		if fn, ok := d.(*ast.FuncDecl); ok {
-			if fn.Name.Name == "TestMarked" {
+			switch fn.Name.Name {
+			case "TestMarked":
 				marked = fn
-			} else if fn.Name.Name == "TestNoBody" {
+			case "TestNoBody":
 				noBody = fn
 			}
 		}

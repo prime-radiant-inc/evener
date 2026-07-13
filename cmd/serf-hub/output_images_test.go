@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/appwire"
@@ -42,11 +43,13 @@ local after ./after.webp
 }
 
 func TestShellOutputImageCandidatesCapsResults(t *testing.T) {
-	var out string
+	var out strings.Builder
 	for i := 0; i < 40; i++ {
-		out += "img" + strconv.Itoa(i) + ".png\n"
+		out.WriteString("img")
+		out.WriteString(strconv.Itoa(i))
+		out.WriteString(".png\n")
 	}
-	got := shellOutputImageCandidates(out)
+	got := shellOutputImageCandidates(out.String())
 	if len(got) != 20 {
 		t.Fatalf("candidate count=%d, want cap 20", len(got))
 	}
@@ -275,16 +278,18 @@ func TestOutputImagesForToolCallShellOutput(t *testing.T) {
 func TestOutputImagesForToolCallCapsRenderedShellImages(t *testing.T) {
 	cwd := t.TempDir()
 	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
-	var output string
+	var output strings.Builder
 	for i := 0; i < outputImageMaxRendered+3; i++ {
 		name := "plot" + strconv.Itoa(i) + ".png"
 		if err := os.WriteFile(filepath.Join(cwd, name), png, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		output += "created " + name + "\n"
+		output.WriteString("created ")
+		output.WriteString(name)
+		output.WriteString("\n")
 	}
 
-	imgs := outputImagesForToolCall("01DOC", cwd, "exec_command", `{}`, output)
+	imgs := outputImagesForToolCall("01DOC", cwd, "exec_command", `{}`, output.String())
 	if len(imgs) != outputImageMaxRendered {
 		t.Fatalf("outputImagesForToolCall returned %d images, want cap %d: %+v", len(imgs), outputImageMaxRendered, imgs)
 	}

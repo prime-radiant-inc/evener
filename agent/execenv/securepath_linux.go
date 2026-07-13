@@ -3,6 +3,7 @@
 package execenv
 
 import (
+	"errors"
 	"os"
 	"strconv"
 
@@ -66,7 +67,7 @@ func openRootDir(path string) (int, error) {
 func openat2Retry(dirfd int, path string, how *unix.OpenHow) (int, error) {
 	for {
 		fd, err := secureOpenat2(dirfd, path, how)
-		if err == unix.EINTR || err == unix.EAGAIN {
+		if errors.Is(err, unix.EINTR) || errors.Is(err, unix.EAGAIN) {
 			continue
 		}
 		return fd, err

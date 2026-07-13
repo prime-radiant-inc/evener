@@ -123,8 +123,8 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 				t.Fatal("asset roots unavailable")
 			}
 			rr := httptest.NewRecorder()
-			noStore(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(201) })).ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
-			if rr.Code != 201 || rr.Header().Get("Cache-Control") != "no-store" {
+			noStore(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusCreated) })).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+			if rr.Code != http.StatusCreated || rr.Header().Get("Cache-Control") != "no-store" {
 				t.Fatal("no-store wrapper failed")
 			}
 			if !strings.HasPrefix(assetVersionQuery(), "?v=") {

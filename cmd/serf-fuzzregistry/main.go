@@ -91,7 +91,7 @@ func runRegistry(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return registryError(stderr, "open registry: %v", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	registered, err := ParseRegistry(file)
 	if err != nil {
@@ -119,7 +119,7 @@ func runRegistry(args []string, stdout, stderr io.Writer) int {
 }
 
 func registryError(w io.Writer, format string, args ...any) int {
-	fmt.Fprintf(w, "serf-fuzzregistry: "+format+"\n", args...)
+	_, _ = fmt.Fprintf(w, "serf-fuzzregistry: "+format+"\n", args...)
 	return 1
 }
 

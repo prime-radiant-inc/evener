@@ -108,7 +108,7 @@ func NewCodexLauncher(configs []CodexLaunchConfig) *CodexLauncher {
 		Sources: map[string]appsource.Source{},
 		client:  http.DefaultClient,
 		process: func(name string, args ...string) launchProcess {
-			return &execLaunchProcess{cmd: exec.Command(name, args...)}
+			return &execLaunchProcess{cmd: exec.CommandContext(context.Background(), name, args...)}
 		},
 		newTicker: func(d time.Duration) launchTicker {
 			return &realLaunchTicker{ticker: time.NewTicker(d)}

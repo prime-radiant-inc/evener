@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -673,7 +674,7 @@ func ds_checkStore(root *Session, m *ds_model, art ds_artifact, step int) *promo
 func ds_seedStoppedDelegateRestore(root *Session) (*jobstore.JobRecord, *Session, error) {
 	childEnv := root.currentEnv()
 	if childEnv == nil || strings.TrimSpace(childEnv.WorkingDirectory()) == "" {
-		return nil, nil, fmt.Errorf("missing deterministic child execution environment")
+		return nil, nil, errors.New("missing deterministic child execution environment")
 	}
 	childWorkDir := childEnv.WorkingDirectory()
 	cfg := SessionConfig{

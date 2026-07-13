@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/build"
@@ -146,7 +147,7 @@ func ReadGlobalProfiles(r io.Reader) ([]GlobalProfile, error) {
 		return nil, err
 	}
 	if len(profiles) == 0 {
-		return nil, fmt.Errorf("global profile manifest contains no profiles")
+		return nil, errors.New("global profile manifest contains no profiles")
 	}
 	return profiles, nil
 }
@@ -295,7 +296,7 @@ func ReportGlobal(profiles []GlobalProfile, exclusions []Exclusion, minimum floa
 		return GlobalReport{}, err
 	}
 	if len(profiles) == 0 {
-		return GlobalReport{}, fmt.Errorf("cannot report global coverage without profiles")
+		return GlobalReport{}, errors.New("cannot report global coverage without profiles")
 	}
 
 	packages := map[globalPackageKey]map[string]globalBlock{}
@@ -626,7 +627,7 @@ func writeGlobalFloorsFile(filename string, floors map[string]globalFloor) error
 	out.WriteString("# Legacy decimal percentages are accepted; blessed floors use exact covered/total ratios.\n")
 	out.WriteString("# A blessing never lowers an existing floor.\n")
 	for _, module := range modules {
-		fmt.Fprintf(&out, "%s %s\n", module, globalFloorText(floors[module]))
+		_, _ = fmt.Fprintf(&out, "%s %s\n", module, globalFloorText(floors[module]))
 	}
 	return fuzzcovSystem.writeFile(filename, []byte(out.String()), 0o644)
 }
@@ -634,25 +635,25 @@ func writeGlobalFloorsFile(filename string, floors map[string]globalFloor) error
 // PrintGlobalReport emits the human-readable companion to WriteGlobalReportJSON.
 // Both forms retain every applied exclusion rather than silently changing totals.
 func PrintGlobalReport(w io.Writer, report GlobalReport) {
-	fmt.Fprintf(w, "GLOBAL FUZZ-REACHABLE COVERAGE (raw threshold >%.4f%%)\n\n", report.Minimum)
-	fmt.Fprintf(w, "  %-12s %12s %12s %10s %8s\n", "MODULE", "COVERED", "TOTAL", "RAW %", "STATUS")
+	_, _ = fmt.Fprintf(w, "GLOBAL FUZZ-REACHABLE COVERAGE (raw threshold >%.4f%%)\n\n", report.Minimum)
+	_, _ = fmt.Fprintf(w, "  %-12s %12s %12s %10s %8s\n", "MODULE", "COVERED", "TOTAL", "RAW %", "STATUS")
 	for _, module := range report.Modules {
 		status := "FAIL"
 		if module.Pass {
 			status = "PASS"
 		}
-		fmt.Fprintf(w, "  %-12s %12d %12d %9.4f%% %8s\n", module.Module, module.Covered, module.Total, module.Percent, status)
+		_, _ = fmt.Fprintf(w, "  %-12s %12d %12d %9.4f%% %8s\n", module.Module, module.Covered, module.Total, module.Percent, status)
 		for _, pkg := range module.Packages {
-			fmt.Fprintf(w, "    %-10s %-32s %8d/%-8d %9.4f%%\n", "package", pkg.Package, pkg.Covered, pkg.Total, pkg.Percent)
+			_, _ = fmt.Fprintf(w, "    %-10s %-32s %8d/%-8d %9.4f%%\n", "package", pkg.Package, pkg.Covered, pkg.Total, pkg.Percent)
 		}
 	}
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 	if len(report.AppliedExclusions) == 0 {
-		fmt.Fprintln(w, "APPLIED EXCLUSIONS: none")
+		_, _ = fmt.Fprintln(w, "APPLIED EXCLUSIONS: none")
 	} else {
-		fmt.Fprintln(w, "APPLIED EXCLUSIONS")
+		_, _ = fmt.Fprintln(w, "APPLIED EXCLUSIONS")
 		for _, exclusion := range report.AppliedExclusions {
-			fmt.Fprintf(w, "  %s:%s/%s [%s] %d statement(s), %d block(s): %s\n",
+			_, _ = fmt.Fprintf(w, "  %s:%s/%s [%s] %d statement(s), %d block(s): %s\n",
 				exclusion.Module, exclusion.Package, exclusion.File, exclusion.Kind,
 				exclusion.Statements, exclusion.Blocks, exclusion.Reason)
 		}
@@ -661,7 +662,7 @@ func PrintGlobalReport(w io.Writer, report GlobalReport) {
 	if report.RawPass {
 		status = "PASS"
 	}
-	fmt.Fprintf(w, "\nRAW GLOBAL THRESHOLD: %s\n", status)
+	_, _ = fmt.Fprintf(w, "\nRAW GLOBAL THRESHOLD: %s\n", status)
 }
 
 // WriteGlobalReportJSON emits the same raw totals and applied exclusions as the
@@ -723,7 +724,7 @@ func runGlobalMode(options globalModeOptions, stdout, stderr io.Writer) (int, er
 
 	code := 0
 	if options.check && !report.RawPass {
-		fmt.Fprintf(stderr, "serf-fuzzcov: RAW THRESHOLD BREACH: every module must be strictly above %.4f%%\n", options.minimum)
+		_, _ = fmt.Fprintf(stderr, "serf-fuzzcov: RAW THRESHOLD BREACH: every module must be strictly above %.4f%%\n", options.minimum)
 		code = 1
 	}
 	if options.check || options.bless {
@@ -732,22 +733,22 @@ func runGlobalMode(options globalModeOptions, stdout, stderr io.Writer) (int, er
 			if !ok || globalMeetsFloor(module.Covered, module.Total, floor) {
 				continue
 			}
-			fmt.Fprintf(stderr, "serf-fuzzcov: REGRESSION %s: raw %.4f%% < floor %.4f%%\n", module.Module, module.Percent, globalFloorPercent(floor))
+			_, _ = fmt.Fprintf(stderr, "serf-fuzzcov: REGRESSION %s: raw %.4f%% < floor %.4f%%\n", module.Module, module.Percent, globalFloorPercent(floor))
 			code = 1
 		}
 	}
 	if options.bless {
 		if !report.RawPass {
-			fmt.Fprintf(stderr, "serf-fuzzcov: refusing to bless: every module must be strictly above %.4f%%\n", options.minimum)
+			_, _ = fmt.Fprintf(stderr, "serf-fuzzcov: refusing to bless: every module must be strictly above %.4f%%\n", options.minimum)
 			return 1, nil
 		}
 		if err := writeGlobalFloorsFile(options.floorsPath, RaiseGlobalFloors(floors, report)); err != nil {
 			return 0, fmt.Errorf("write global floors: %w", err)
 		}
 		if options.json {
-			fmt.Fprintf(stderr, "serf-fuzzcov: raised global floors in %s\n", options.floorsPath)
+			_, _ = fmt.Fprintf(stderr, "serf-fuzzcov: raised global floors in %s\n", options.floorsPath)
 		} else {
-			fmt.Fprintf(stdout, "serf-fuzzcov: raised global floors in %s\n", options.floorsPath)
+			_, _ = fmt.Fprintf(stdout, "serf-fuzzcov: raised global floors in %s\n", options.floorsPath)
 		}
 	}
 	return code, nil
@@ -762,7 +763,7 @@ func readGlobalCoverageProfile(filename string) ([]globalBlock, error) {
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<24)
 	if !sc.Scan() {
-		return nil, fmt.Errorf("empty profile")
+		return nil, errors.New("empty profile")
 	}
 	if mode := strings.TrimSpace(sc.Text()); mode != "mode: set" {
 		return nil, fmt.Errorf("profile has mode %q; only \"mode: set\" is supported", mode)
@@ -829,7 +830,7 @@ func parseGlobalBlock(line string) (globalBlock, error) {
 func parseGlobalPosition(value string) (int, int, error) {
 	line, column, ok := strings.Cut(value, ".")
 	if !ok || line == "" || column == "" {
-		return 0, 0, fmt.Errorf("want line.column")
+		return 0, 0, errors.New("want line.column")
 	}
 	lineNumber, err := strconv.Atoi(line)
 	if err != nil || lineNumber <= 0 {
@@ -880,7 +881,7 @@ func resolveGlobalExclusion(repoRoot, module, pkg, file, kind, reason string) (E
 // from presenting an ordinary production file as a hand-built Exclusion.
 func validateResolvedExclusion(exclusion Exclusion) error {
 	if exclusion.SourcePath == "" || exclusion.ProfileFile == "" {
-		return fmt.Errorf("exclusion is not resolved to one production source file")
+		return errors.New("exclusion is not resolved to one production source file")
 	}
 	if filepath.Base(exclusion.SourcePath) != exclusion.File {
 		return fmt.Errorf("resolved source %s does not match manifest file %s", exclusion.SourcePath, exclusion.File)
@@ -1147,7 +1148,7 @@ func validateGlobalBlockOwnership(block globalBlock, modulePath, pkg string) err
 
 func cleanGlobalModule(module string) (string, error) {
 	if module == "" {
-		return "", fmt.Errorf("module is empty")
+		return "", errors.New("module is empty")
 	}
 	if module == "." {
 		return module, nil
@@ -1165,7 +1166,7 @@ func cleanGlobalModule(module string) (string, error) {
 func cleanGlobalModulePath(modulePath string) (string, error) {
 	modulePath = strings.TrimSpace(modulePath)
 	if modulePath == "" {
-		return "", fmt.Errorf("module path is empty")
+		return "", errors.New("module path is empty")
 	}
 	if strings.Contains(modulePath, `\`) || strings.HasPrefix(modulePath, "/") {
 		return "", fmt.Errorf("invalid module path %q", modulePath)
@@ -1194,7 +1195,7 @@ func cleanGlobalPackage(pkg string) (string, error) {
 
 func validateExclusionFilename(file string) error {
 	if file == "" {
-		return fmt.Errorf("file is empty")
+		return errors.New("file is empty")
 	}
 	if strings.ContainsAny(file, `/\\`) || filepath.Base(file) != file {
 		return fmt.Errorf("file %q must name one file directly in its package", file)

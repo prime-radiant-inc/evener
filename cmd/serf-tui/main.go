@@ -61,11 +61,11 @@ func run() int {
 			// Usage has already been printed by the flag package via fs.Usage.
 			return 0
 		}
-		fmt.Fprintf(standardError, "serf-tui: %v\n", err)
+		_, _ = fmt.Fprintf(standardError, "serf-tui: %v\n", err)
 		return 2
 	}
 	if err := ensureUserConfigDirs(); err != nil {
-		fmt.Fprintf(standardError, "serf-tui: %v\n", err)
+		_, _ = fmt.Fprintf(standardError, "serf-tui: %v\n", err)
 		return 1
 	}
 
@@ -86,7 +86,7 @@ func run() int {
 		HealthTimeout:     5 * time.Second,
 	})
 	if err != nil {
-		fmt.Fprint(standardError, hubstart.StartupErrorScreen(err))
+		_, _ = fmt.Fprint(standardError, hubstart.StartupErrorScreen(err))
 		return 1
 	}
 
@@ -109,7 +109,7 @@ func run() int {
 	}
 	finalModel, err := program.Run()
 	if err != nil {
-		fmt.Fprintf(standardError, "serf-tui: %v\n", err)
+		_, _ = fmt.Fprintf(standardError, "serf-tui: %v\n", err)
 		return 1
 	}
 	if message := postQuitMessageFromModel(finalModel); message != "" {

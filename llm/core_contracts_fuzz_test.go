@@ -172,12 +172,12 @@ func fuzzErrorContracts(t *testing.T, seed uint8) {
 func fuzzMiddlewareContracts(t *testing.T) {
 	ctx := context.Background()
 	base := CompleteFunc(func(context.Context, Request) (Response, error) { return Response{ID: "ok"}, nil })
-	streamBase := StreamFunc(func(context.Context, Request) (Stream, error) { return nil, causeSentinel })
+	streamBase := StreamFunc(func(context.Context, Request) (Stream, error) { return nil, errCauseSentinel })
 	pass := MiddlewareFunc{}
 	if got, _ := pass.WrapComplete(base)(ctx, Request{}); got.ID != "ok" {
 		t.Fatal("nil complete middleware did not pass through")
 	}
-	if _, err := pass.WrapStream(streamBase)(ctx, Request{}); !errors.Is(err, causeSentinel) {
+	if _, err := pass.WrapStream(streamBase)(ctx, Request{}); !errors.Is(err, errCauseSentinel) {
 		t.Fatal("nil stream middleware did not pass through")
 	}
 	m := MiddlewareFunc{
@@ -187,12 +187,12 @@ func fuzzMiddlewareContracts(t *testing.T) {
 	if got, _ := applyMiddlewareComplete(base, []Middleware{nil, m})(ctx, Request{}); got.ID != "ok" {
 		t.Fatal("complete middleware chain failed")
 	}
-	if _, err := applyMiddlewareStream(streamBase, []Middleware{nil, m})(ctx, Request{}); !errors.Is(err, causeSentinel) {
+	if _, err := applyMiddlewareStream(streamBase, []Middleware{nil, m})(ctx, Request{}); !errors.Is(err, errCauseSentinel) {
 		t.Fatal("stream middleware chain failed")
 	}
 }
 
-var causeSentinel = errors.New("sentinel")
+var errCauseSentinel = errors.New("sentinel")
 
 func fuzzTypeContracts(t *testing.T) {
 	if Developer("d").Role != RoleDeveloper || ToolResult("id", "out", true).Role != RoleTool {

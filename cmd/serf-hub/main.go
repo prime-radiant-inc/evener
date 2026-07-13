@@ -109,23 +109,23 @@ func main() {
 func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	opts, err := parseHubOptions(args, stderr)
 	if err != nil {
-		if err == flag.ErrHelp {
+		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
-		fmt.Fprintf(stderr, "[hub] %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
 
 	cfg, err := deps.loadConfig(opts.configPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "[hub] config: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "[hub] config: %v\n", err)
 		return err
 	}
 	if opts.addr != "" {
 		cfg.Addr = opts.addr
 	}
 	if err := deps.ensureDirs(); err != nil {
-		fmt.Fprintf(stderr, "[hub] %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
 
@@ -134,7 +134,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	lockPath := filepath.Join(home, ".serf", "hub.lock")
 	release, err := deps.acquireLock(lockPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "[hub] %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
 	defer release()
@@ -159,7 +159,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 
 	past := hubcore.NewPastIndexWithDB(stateGlob, pastIndexDB)
 	if err := past.Rebuild(); err != nil {
-		fmt.Fprintf(os.Stderr, "[hub] past index rebuild: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "[hub] past index rebuild: %v\n", err)
 	}
 	archive := hubcore.NewArchiveStore(pastIndexDB)
 	favorite := hubcore.NewFavoriteStore(pastIndexDB)
@@ -167,18 +167,18 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// Spawner
 	hubToken, err := deps.newToken()
 	if err != nil {
-		fmt.Fprintf(stderr, "[hub] %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
 	hubStateRoot := cfg.HubStateRoot
 	authToken, err := deps.loadAuthToken(hubStateRoot)
 	if err != nil {
-		fmt.Fprintf(stderr, "[hub] auth token: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "[hub] auth token: %v\n", err)
 		return err
 	}
 	credsStore, err := deps.loadCredentials(filepath.Join(hubStateRoot, "credentials.toml"))
 	if err != nil {
-		fmt.Fprintf(stderr, "[hub] credentials store: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "[hub] credentials store: %v\n", err)
 		return err
 	}
 	providersConfigPath := envvars.SERFProvidersConfig.Getenv()
@@ -187,7 +187,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	var loadedProviderConfig *providercfg.Config
 	if pcfg, exists, pcfgErr := deps.loadProviderConfig(providersConfigPath); pcfgErr != nil {
-		fmt.Fprintf(stderr, "[hub] providers config: %v\n", pcfgErr)
+		_, _ = fmt.Fprintf(stderr, "[hub] providers config: %v\n", pcfgErr)
 		return pcfgErr
 	} else if exists {
 		loadedProviderConfig = &pcfg
@@ -197,15 +197,15 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		// children load the same file via SERF_PROVIDERS_CONFIG.
 		materialized, matErr := deps.materializeConfig(providersConfigPath)
 		if matErr != nil {
-			fmt.Fprintf(stderr, "[hub] materialize providers config: %v\n", matErr)
+			_, _ = fmt.Fprintf(stderr, "[hub] materialize providers config: %v\n", matErr)
 			return matErr
 		}
 		loadedProviderConfig = &materialized
-		fmt.Fprintf(os.Stderr, "[hub] materialized %s\n", providersConfigPath)
+		_, _ = fmt.Fprintf(os.Stderr, "[hub] materialized %s\n", providersConfigPath)
 	}
 	resolvedSerfBinary := resolveSerfBinaryPath(opts.serfBinary, currentExecutable(), exec.LookPath)
 	if opts.serfBinary == "" && resolvedSerfBinary != "" && resolvedSerfBinary != "serf" {
-		fmt.Fprintf(os.Stderr, "[hub] resolved serf at %s\n", resolvedSerfBinary)
+		_, _ = fmt.Fprintf(os.Stderr, "[hub] resolved serf at %s\n", resolvedSerfBinary)
 	}
 	spawner := &HubSpawner{
 		Cfg:                 cfg,
@@ -378,14 +378,14 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		Handler: web.Handler(),
 	}
 
-	fmt.Fprintf(os.Stderr, "[hub] serf-hub %s listening on %s (run_dir=%s)\n", Version, cfg.Addr, runDir)
+	_, _ = fmt.Fprintf(os.Stderr, "[hub] serf-hub %s listening on %s (run_dir=%s)\n", Version, cfg.Addr, runDir)
 	// Build a usable auth URL. If the bind addr is 0.0.0.0 or ::, replace
 	// it with a hostname the operator can reach the hub at.
 	authHost := advertisedHubHost(cfg.Addr, hubHostname)
-	fmt.Fprintf(os.Stderr, "[hub] auth URL (visit once per browser): http://%s/auth?token=%s\n", authHost, authToken)
-	fmt.Fprintf(os.Stderr, "[hub] auth token also at %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
+	_, _ = fmt.Fprintf(os.Stderr, "[hub] auth URL (visit once per browser): http://%s/auth?token=%s\n", authHost, authToken)
+	_, _ = fmt.Fprintf(os.Stderr, "[hub] auth token also at %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
 	if err := deps.serve(ctx, srv, codexLauncher); err != nil {
-		fmt.Fprintf(stderr, "[hub] %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
 	return nil
@@ -399,9 +399,9 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 	fs.StringVar(&opts.addr, "addr", "", "override hub listen address")
 	fs.StringVar(&opts.serfBinary, "serf", "", "path to serf binary (default: 'serf' on PATH)")
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "Usage: serf-hub [flags]\n\nMulti-session web orchestrator for serf serve daemons.\n\n")
+		_, _ = fmt.Fprintf(stderr, "Usage: serf-hub [flags]\n\nMulti-session web orchestrator for serf serve daemons.\n\n")
 		fs.PrintDefaults()
-		fmt.Fprintf(stderr, "\nEnvironment variables:\n")
+		_, _ = fmt.Fprintf(stderr, "\nEnvironment variables:\n")
 		printHubEnvVars(stderr)
 	}
 	err := fs.Parse(args)
@@ -439,7 +439,7 @@ func serveHub(ctx context.Context, srv hubHTTPServer, companion hubShutdowner) e
 	if ctx.Err() != nil {
 		<-shutdownDone
 	}
-	if err == nil || err == http.ErrServerClosed {
+	if err == nil || errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
 	return err

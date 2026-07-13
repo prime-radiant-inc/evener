@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -45,7 +46,7 @@ func acquireLock(lockPath string, timeout time.Duration) (func(), error) {
 				_ = f.Close()
 			}, nil
 		}
-		if err != unix.EWOULDBLOCK && err != unix.EAGAIN {
+		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
 			_ = f.Close()
 			return nil, fmt.Errorf("flock %s: %w", lockPath, err)
 		}

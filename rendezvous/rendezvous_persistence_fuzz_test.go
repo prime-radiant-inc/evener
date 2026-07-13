@@ -108,7 +108,8 @@ func exerciseRendezvousBranches(t testing.TB) {
 	if got := defaultDir(func() (string, error) { return "", os.ErrNotExist }); got != filepath.Join(".", ".serf", "run") {
 		t.Fatalf("DefaultDir fallback = %q", got)
 	}
-	if got := defaultDir(func() (string, error) { return "/home/test", nil }); got != filepath.Join("/home/test", ".serf", "run") {
+	home := filepath.Join(string(filepath.Separator), "home", "test")
+	if got := defaultDir(func() (string, error) { return home, nil }); got != filepath.Join(home, ".serf", "run") {
 		t.Fatalf("DefaultDir home = %q", got)
 	}
 	_ = DefaultDir()
