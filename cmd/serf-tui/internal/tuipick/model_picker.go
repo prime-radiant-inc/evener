@@ -174,10 +174,11 @@ func (m ModelPicker) renderBody() string {
 			}
 			cursor := "  "
 			style := tuitheme.MpNormalStyle
+			isActive := modelIDMatchesActive(item.ID, m.active)
 			if i == m.cursor {
 				cursor = "> "
 				style = tuitheme.MpCursorStyle
-			} else if item.ID == m.active {
+			} else if isActive {
 				style = tuitheme.MpActiveStyle
 			}
 			line := cursor + style.Render(item.Display)
@@ -187,7 +188,7 @@ func (m ModelPicker) renderBody() string {
 			if item.Meta != "" {
 				line += "  " + tuitheme.MpDimStyle.Render(item.Meta)
 			}
-			if item.ID == m.active {
+			if isActive {
 				line += "  " + tuitheme.MpActiveTag.Render("(active)")
 			}
 			if item.DisabledReason != "" {
@@ -203,6 +204,23 @@ func (m ModelPicker) renderBody() string {
 		}
 	}
 	return b.String()
+}
+
+// modelIDMatchesActive reports whether a picker item ID names the same model
+// as the active model, tolerating the provider-qualified "provider/model"
+// item ID format (buildModelPickerItems) against a bare active model name
+// (hubSessionDetail.Model — the daemon's status.Model, no provider prefix).
+func modelIDMatchesActive(id, active string) bool {
+	if active == "" {
+		return false
+	}
+	if id == active {
+		return true
+	}
+	if _, model, ok := strings.Cut(id, "/"); ok && model == active {
+		return true
+	}
+	return false
 }
 
 // SetTitle overrides the picker's heading.

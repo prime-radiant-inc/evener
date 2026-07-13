@@ -99,6 +99,26 @@ the area they exercise.
 - `tui-steer-success-reconciles.md` — TUI counterpart of the success
   reconcile; spinner prefix replaced by authoritative steering.
 
+## Model switching
+
+- `web-model-switch-mid-session.md` — two web clients converge on a
+  live `thread/model/set` switch without reload; mid-turn and
+  queued-input switches stay rejected with no state change.
+- `tui-model-switch.md` — serf-tui `/model` switches live, header
+  and dashboard row update from `thread/model/changed`, and the
+  switch marker (`Switched model: <old> → <new>`) survives a fresh
+  attach.
+- `model-switch-resume.md` — switch → kill the daemon → resume runs
+  the next turn on the switched model (N3 persistence).
+- `tui-effort-command.md` — serf-tui `/effort` and the web `⌘K`
+  "Set reasoning effort" command both show only the current model's
+  levels; both surfaces render current model + effort on a cold
+  attach.
+- `model-switch-providers-live.md` — live cross-provider switch
+  ladder against the `serf serve` daemon's own HTTP surface (marker
+  persistence, `response_model` per leg, effort-ladder
+  re-derivation, thinking-absence on the wire); AC 8.
+
 ## Goal engine (`/goal`)
 
 - `web-goal-set-and-complete.md` — set a `/goal` from the ⌘K palette

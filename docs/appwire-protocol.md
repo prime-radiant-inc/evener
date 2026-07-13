@@ -160,6 +160,8 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `thread/status/changed` | `ThreadStatusChangedParams` | Thread status (type + active flags) changed. |
 | `thread/queueChanged` | `ThreadQueueChangedParams` | The per-session input queue depth/preview changed. |
 | `serf/thread/name/changed` | `ThreadNameChangedParams` | The session title changed (generated or user-renamed). |
+| `thread/model/changed` | `ThreadModelChangedParams` | The session's model/provider changed mid-session (thread/model/set or an equivalent switch). |
+| `thread/reasoning-effort/changed` | `ThreadReasoningEffortChangedParams` | The session's reasoning effort changed mid-session (thread/reasoning-effort/set). |
 | `turn/started` | `(inline)` | A new turn began (inProgress); inline {threadId, ref, turn}. |
 | `turn/completed` | `TurnCompletedParams` | A turn reached a terminal state (completed/failed/interrupted). |
 | `item/started` | `(inline)` | A thread item began streaming; inline {threadId, ref, turnId, item}. |
@@ -788,6 +790,18 @@ _(no fields)_
 | `backwardsCursor` | `string` | yes |  |
 
 
+### `ThreadModelChangedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `modelProvider` | `string` |  |  |
+| `model` | `string` |  |  |
+| `reasoningEffortLevels` | `[]string` | yes |  |
+| `supportsReasoning` | `bool` | yes |  |
+
+
 ### `ThreadModelSetParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -843,6 +857,15 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `thread` | `appwire.Thread` |  |  |
 | `olderCursor` | `string` | yes |  |
+
+
+### `ThreadReasoningEffortChangedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `reasoningEffort` | `string` | yes |  |
 
 
 ### `ThreadReasoningEffortSetParams`

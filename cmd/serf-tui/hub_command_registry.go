@@ -328,6 +328,52 @@ var hubCommandRegistry = []hubCommandDefinition{
 		},
 	},
 	{
+		// There is NO effort thread capability on the wire (cmd/serf-hub/app_rpc.go
+		// MethodThreadReasoningEffortSet has no capability gate — the daemon rejects
+		// unsupported calls itself). /effort documents-and-reuses ChangeModel,
+		// the same capability /model gates on, since a source that can't switch
+		// models has no business exposing a reasoning-effort picker either.
+		Name:               "effort",
+		Summary:            "Set reasoning effort (picker) or /effort <level>",
+		PaletteLabel:       "/effort",
+		PaletteDetail:      "set reasoning effort",
+		Scopes:             hubCommandSession,
+		UnavailableAction:  "change reasoning effort",
+		UnavailableSummary: "Reasoning effort is not available for this session.",
+		Available:          capabilityAvailable(func(c hubSessionCapabilities) bool { return c.ChangeModel }, "source does not advertise change model"),
+		Run: func(m *hubModel, args string) tea.Cmd {
+			level := strings.TrimSpace(args)
+			if level == "" {
+				if !m.detail.SupportsReasoning {
+					m.addSessionSystem("This model does not support reasoning effort.")
+					return nil
+				}
+				if len(m.detail.ReasoningEffortLevels) == 0 {
+					m.addSessionSystem("No reasoning effort levels available for this model.")
+					return nil
+				}
+				items := make([]tuipick.ModelPickerItem, 0, len(m.detail.ReasoningEffortLevels))
+				for _, l := range m.detail.ReasoningEffortLevels {
+					items = append(items, tuipick.ModelPickerItem{ID: l, Display: l})
+				}
+				picker := tuipick.NewModelPicker(items, m.detail.ReasoningEffort, m.width)
+				picker.SetTitle("Select reasoning effort")
+				m.sessionEffortPicker = &picker
+				return nil
+			}
+			if !reasoningEffortLevelKnown(m.detail.ReasoningEffortLevels, level) {
+				m.addSessionSystem(fmt.Sprintf("Unknown reasoning effort %q. Available: %s", level, strings.Join(m.detail.ReasoningEffortLevels, ", ")))
+				return nil
+			}
+			ref, ok := m.currentRef()
+			if !ok {
+				m.addSessionSystem("Session ref is invalid.")
+				return nil
+			}
+			return sendHubEffortAction(m.client, ref, level)
+		},
+	},
+	{
 		Name:          "theme",
 		Summary:       "Pick a theme (system/dark/light)",
 		PaletteLabel:  "/theme",

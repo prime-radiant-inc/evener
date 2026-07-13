@@ -178,10 +178,17 @@ type Server struct {
 	// accumulated wall-clock work time, cumulative token usage (nil when
 	// there is none to report), and the in-flight turn's start time (0 when
 	// idle). Read by both /status and the appwire appThread() projection.
-	workMetricsFn       func() (workMillis int64, usage *appwire.SerfUsage, activeTurnStartedAt int64)
+	workMetricsFn func() (workMillis int64, usage *appwire.SerfUsage, activeTurnStartedAt int64)
+	// reasoningInfoFn returns the live reasoning-effort settings for the
+	// session's current profile: the configured effort, the profile's valid
+	// effort levels, and whether the profile supports reasoning control at
+	// all. Read by the appwire thread projection (appThread) so a
+	// cold-attached client can render both settings and populate pickers
+	// with no prior notification.
+	reasoningInfoFn     func() (effort string, levels []string, supportsReasoning bool)
 	sessionMetaFn       func() schema.SessionMeta
 	detailedStatusFn    func() DetailedStatus
-	modelFunc           func(string)
+	modelFunc           func(string) error
 	nameFunc            func(string)
 	reasoningEffortFunc func(string)
 	listModelsFunc      func(context.Context) ([]ModelsResponseItem, error)
@@ -457,6 +464,17 @@ func (s *Server) SetWorkMetricsFunc(fn func() (workMillis int64, usage *appwire.
 	s.mu.Unlock()
 }
 
+// SetReasoningInfoFunc sets a callback to retrieve the live reasoning-effort
+// settings for the session's current profile (configured effort, valid effort
+// levels, and whether the profile supports reasoning at all). Read by the
+// appwire thread projection (appThread) so a cold-attached client can render
+// both settings and populate pickers with no prior notification.
+func (s *Server) SetReasoningInfoFunc(fn func() (effort string, levels []string, supportsReasoning bool)) {
+	s.mu.Lock()
+	s.reasoningInfoFn = fn
+	s.mu.Unlock()
+}
+
 // SetSessionMetaFunc sets a callback returning current session metadata for
 // appwire thread snapshots, including generated/user-chosen display titles.
 func (s *Server) SetSessionMetaFunc(fn func() schema.SessionMeta) {
@@ -494,7 +512,7 @@ func (s *Server) SetClearFunc(fn func(context.Context) error) {
 }
 
 // SetModelFunc sets the function called by POST /model.
-func (s *Server) SetModelFunc(fn func(string)) {
+func (s *Server) SetModelFunc(fn func(string) error) {
 	s.mu.Lock()
 	s.modelFunc = fn
 	s.mu.Unlock()

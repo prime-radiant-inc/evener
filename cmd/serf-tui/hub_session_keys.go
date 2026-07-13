@@ -114,6 +114,27 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	if m.sessionEffortPicker != nil {
+		updated, cmd := m.sessionEffortPicker.Update(msg)
+		picker := updated.(tuipick.ModelPicker)
+		m.sessionEffortPicker = &picker
+		if picker.Done() {
+			selected := picker.Selected()
+			m.sessionEffortPicker = nil
+			if selected != "" {
+				ref, ok := m.currentRef()
+				if !ok {
+					m.addSessionSystem("Session ref is invalid.")
+					return m, nil
+				}
+				m.addSessionSystem(fmt.Sprintf("Setting reasoning effort to %s...", selected))
+				return m, sendHubEffortAction(m.client, ref, selected)
+			}
+			m.session.refreshViewport()
+		}
+		return m, cmd
+	}
+
 	if m.sessionTranscriptPicker != nil {
 		updated, cmd := m.sessionTranscriptPicker.Update(msg)
 		picker := updated.(tuipick.ModelPicker)

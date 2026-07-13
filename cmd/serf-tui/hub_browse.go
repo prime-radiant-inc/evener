@@ -46,6 +46,7 @@ func (m *hubModel) returnToDashboard() {
 	m.commandPalette = nil
 	m.sessionThemePicker = nil
 	m.sessionModelPicker = nil
+	m.sessionEffortPicker = nil
 	m.sessionTranscriptPicker = nil
 	m.transcriptTargets = nil
 	m.transcriptView = nil

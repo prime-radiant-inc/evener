@@ -478,8 +478,9 @@ func TestModelEndpoint(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 
 	var gotModel string
-	srv.SetModelFunc(func(model string) {
+	srv.SetModelFunc(func(model string) error {
 		gotModel = model
+		return nil
 	})
 
 	body := strings.NewReader(`{"model":"gpt-4o-mini"}`)
@@ -498,7 +499,7 @@ func TestModelEndpoint(t *testing.T) {
 
 func TestModelEndpoint_EmptyModel(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetModelFunc(func(model string) {})
+	srv.SetModelFunc(func(model string) error { return nil })
 
 	body := strings.NewReader(`{"model":""}`)
 	req := httptest.NewRequest(http.MethodPost, "/model", body)
@@ -1251,7 +1252,7 @@ func TestDrainAsSteerEndpoint_InvalidJSON(t *testing.T) {
 
 func TestModelEndpoint_InvalidJSON(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetModelFunc(func(string) {})
+	srv.SetModelFunc(func(string) error { return nil })
 
 	req := httptest.NewRequest(http.MethodPost, "/model", strings.NewReader(`{bad`))
 	req.Header.Set("Content-Type", "application/json")

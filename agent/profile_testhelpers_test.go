@@ -50,6 +50,10 @@ func newOpenRouterAnthropicProfile(model string) *provider.Profile {
 	return resolveTestProfile(providercfg.InstanceConfig{Name: "openrouter-anthropic", Type: "openrouter-anthropic"}, model)
 }
 
+func newKimiAnthropicProfile(model string) *provider.Profile {
+	return resolveTestProfile(providercfg.InstanceConfig{Name: "kimi-anthropic", Type: "kimi-anthropic"}, model)
+}
+
 func newOpenAICompatProfile(id, model string, _ int) *provider.Profile {
 	inst := providercfg.InstanceConfig{Name: id, Type: providercfg.Type(id)}
 	if id == "openai-compatible" {

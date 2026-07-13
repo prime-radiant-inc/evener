@@ -187,6 +187,32 @@ type SessionNameChangedData struct {
 	Source string `json:"source,omitempty"`
 }
 
+// ModelChangedData is the payload for an EventModelChanged event: SetModel
+// committed a provider/model switch. OldProvider/OldModel and
+// NewProvider/NewModel let subscribers diff the change; ReasoningEffortLevels
+// and SupportsReasoning describe the NEW profile so pickers re-key without a
+// separate model/list round trip.
+type ModelChangedData struct {
+	OldProvider           string   `json:"old_provider"`
+	OldModel              string   `json:"old_model"`
+	NewProvider           string   `json:"new_provider"`
+	NewModel              string   `json:"new_model"`
+	ReasoningEffortLevels []string `json:"reasoning_effort_levels,omitempty"`
+	SupportsReasoning     bool     `json:"supports_reasoning,omitempty"`
+	// MarkerText is the persisted switch-marker text ("Switched model: <old>
+	// → <new>", plus any warning lines) — the exact text SetModel wrote to
+	// the transcript's TurnModelSwitch turn. The live projector renders it
+	// verbatim as a systemMessage item so live and replay stay byte-identical.
+	MarkerText string `json:"marker_text,omitempty"`
+}
+
+// ReasoningEffortChangedData is the payload for an EventReasoningEffortChanged
+// event: SetReasoningEffort committed a new effort value (already normalized;
+// empty means unset/default).
+type ReasoningEffortChangedData struct {
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+}
+
 // TurnLimitData is the payload for an EventTurnLimit event.
 type TurnLimitData struct {
 	MaxTurns              int `json:"max_turns,omitempty"`

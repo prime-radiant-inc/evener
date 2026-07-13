@@ -312,6 +312,8 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addSessionSystem("Stop requested.")
 		case "model":
 			m.addSessionSystem("Model updated.")
+		case "effort":
+			m.addSessionSystem("Reasoning effort updated.")
 		case "steer":
 			m.addSessionSystem("Steering sent.")
 		}

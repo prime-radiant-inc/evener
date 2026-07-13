@@ -660,6 +660,33 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Name:     data.Name,
 			Source:   data.Source,
 		})}
+	case events.EventModelChanged:
+		p.clearSkillCandidate()
+		data := eventData[events.ModelChangedData](event.Data)
+		out := []AppNotification{p.notification(appwire.NotifyThreadModelChanged, appwire.ThreadModelChangedParams{
+			ThreadID:              p.threadID,
+			Ref:                   p.ref,
+			ModelProvider:         data.NewProvider,
+			Model:                 data.NewModel,
+			ReasoningEffortLevels: data.ReasoningEffortLevels,
+			SupportsReasoning:     data.SupportsReasoning,
+		})}
+		// Live-only echo of the persisted TurnModelSwitch marker (N5): the
+		// same text SetModel wrote to the transcript, rendered as a
+		// systemMessage item so an already-connected client sees the marker
+		// immediately rather than waiting for a reload. thread/read prefers
+		// transcript turns on reload/restart, so this notification alone is
+		// not the source of truth — the persisted turn is.
+		out = append(out, p.systemAnnouncement("model_switch", "Model switch", data.MarkerText)...)
+		return out
+	case events.EventReasoningEffortChanged:
+		p.clearSkillCandidate()
+		data := eventData[events.ReasoningEffortChangedData](event.Data)
+		return []AppNotification{p.notification(appwire.NotifyThreadReasoningEffortChanged, appwire.ThreadReasoningEffortChangedParams{
+			ThreadID:        p.threadID,
+			Ref:             p.ref,
+			ReasoningEffort: data.ReasoningEffort,
+		})}
 	case events.EventJobStarted:
 		p.clearSkillCandidate()
 		data := eventData[events.JobStartedData](event.Data)

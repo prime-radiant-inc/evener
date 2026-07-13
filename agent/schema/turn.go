@@ -26,6 +26,11 @@ const (
 	TurnCheckpoint TurnKind = "CHECKPOINT" // Deterministic checkpoint from compaction Layer 3.
 	// TurnSummary is a turn carrying an LLM-generated summary from compaction Layer 4.
 	TurnSummary TurnKind = "SUMMARY" // LLM-generated summary from compaction Layer 4.
+	// TurnModelSwitch is a turn carrying a persisted marker for a successful
+	// mid-session model switch. Presentational only: rendered as a
+	// systemMessage item by both projection paths, and excluded from
+	// expandHistory (never sent to the model).
+	TurnModelSwitch TurnKind = "MODEL_SWITCH"
 )
 
 // Turn is the Session's typed history item. Steering turns are kept distinct for observability,

@@ -75,30 +75,36 @@ const (
 )
 
 const (
-	NotifyThreadStarted          = "thread/started"
-	NotifyThreadClosed           = "thread/closed"
-	NotifyThreadStatusChanged    = "thread/status/changed"
-	NotifyThreadQueueChanged     = "thread/queueChanged"
-	NotifyThreadNameChanged      = "serf/thread/name/changed"
-	NotifyTurnStarted            = "turn/started"
-	NotifyTurnCompleted          = "turn/completed"
-	NotifyItemStarted            = "item/started"
-	NotifyItemCompleted          = "item/completed"
-	NotifyAgentMessageDelta      = "item/agentMessage/delta"
-	NotifyAgentMessageReset      = "item/agentMessage/reset"
-	NotifyReasoningSummaryDelta  = "item/reasoning/summaryTextDelta"
-	NotifyToolOutputDelta        = "item/toolOutput/delta"
-	NotifyWarning                = "warning"
-	NotifySerfContextPressure    = "serf/thread/contextPressure/updated"
-	NotifySerfTaskUpdated        = "serf/task/updated"
-	NotifySerfSteeringInjected   = "serf/steering/injected"
-	NotifySerfJobStarted         = "serf/job/started"
-	NotifySerfJobFinished        = "serf/job/finished"
-	NotifySerfAuthUpdated        = "serf/auth/updated"
-	NotifySerfLaunchUpdated      = "serf/launch/updated"
-	NotifySerfAttentionChanged   = "serf/attention/changed"
-	NotifySerfMarketplaceUpdated = "serf/marketplace/updated"
-	NotifySerfPluginUpdated      = "serf/plugin/updated"
+	NotifyThreadStarted       = "thread/started"
+	NotifyThreadClosed        = "thread/closed"
+	NotifyThreadStatusChanged = "thread/status/changed"
+	NotifyThreadQueueChanged  = "thread/queueChanged"
+	NotifyThreadNameChanged   = "serf/thread/name/changed"
+	// NotifyThreadModelChanged pushes a mid-session model/provider switch so
+	// clients converge without re-reading the thread. See ThreadModelChangedParams.
+	NotifyThreadModelChanged = "thread/model/changed"
+	// NotifyThreadReasoningEffortChanged pushes a mid-session reasoning-effort
+	// change. See ThreadReasoningEffortChangedParams.
+	NotifyThreadReasoningEffortChanged = "thread/reasoning-effort/changed"
+	NotifyTurnStarted                  = "turn/started"
+	NotifyTurnCompleted                = "turn/completed"
+	NotifyItemStarted                  = "item/started"
+	NotifyItemCompleted                = "item/completed"
+	NotifyAgentMessageDelta            = "item/agentMessage/delta"
+	NotifyAgentMessageReset            = "item/agentMessage/reset"
+	NotifyReasoningSummaryDelta        = "item/reasoning/summaryTextDelta"
+	NotifyToolOutputDelta              = "item/toolOutput/delta"
+	NotifyWarning                      = "warning"
+	NotifySerfContextPressure          = "serf/thread/contextPressure/updated"
+	NotifySerfTaskUpdated              = "serf/task/updated"
+	NotifySerfSteeringInjected         = "serf/steering/injected"
+	NotifySerfJobStarted               = "serf/job/started"
+	NotifySerfJobFinished              = "serf/job/finished"
+	NotifySerfAuthUpdated              = "serf/auth/updated"
+	NotifySerfLaunchUpdated            = "serf/launch/updated"
+	NotifySerfAttentionChanged         = "serf/attention/changed"
+	NotifySerfMarketplaceUpdated       = "serf/marketplace/updated"
+	NotifySerfPluginUpdated            = "serf/plugin/updated"
 	// NotifySerfSandboxEscalationRequested pushes a harness-raised, human-gated
 	// sandbox-exemption approval card to the client (M7). The tool-exec goroutine
 	// blocks until the client answers with MethodSerfSandboxEscalationResolve.
@@ -241,6 +247,14 @@ type SerfThread struct {
 	// model's transcript or any model-visible projection. Absent on old daemons /
 	// Codex threads.
 	PendingEscalations []SandboxEscalationRequested `json:"pendingEscalations,omitempty"`
+	// ReasoningEffort, ReasoningEffortLevels, and SupportsReasoning are the
+	// live reasoning-effort settings for the session's current profile, so a
+	// cold-attached client can render both settings and populate pickers
+	// with no prior thread/model/changed or thread/reasoning-effort/changed
+	// notification. ModelProvider (on Thread, not here) stays the model field.
+	ReasoningEffort       string   `json:"reasoningEffort,omitempty"`
+	ReasoningEffortLevels []string `json:"reasoningEffortLevels,omitempty"`
+	SupportsReasoning     bool     `json:"supportsReasoning,omitempty"`
 }
 
 // GoalState is the wire representation of a session's /goal. Status is the
@@ -723,6 +737,26 @@ type ThreadNameChangedParams struct {
 	Ref      string `json:"ref"`
 	Name     string `json:"name"`
 	Source   string `json:"source,omitempty"`
+}
+
+// ThreadModelChangedParams reports a mid-session model/provider switch.
+// ReasoningEffortLevels and SupportsReasoning describe the NEW profile so a
+// client's effort picker re-keys without a separate model/list round trip.
+type ThreadModelChangedParams struct {
+	ThreadID              string   `json:"threadId"`
+	Ref                   string   `json:"ref"`
+	ModelProvider         string   `json:"modelProvider"`
+	Model                 string   `json:"model"`
+	ReasoningEffortLevels []string `json:"reasoningEffortLevels,omitempty"`
+	SupportsReasoning     bool     `json:"supportsReasoning,omitempty"`
+}
+
+// ThreadReasoningEffortChangedParams reports a mid-session reasoning-effort
+// change.
+type ThreadReasoningEffortChangedParams struct {
+	ThreadID        string `json:"threadId"`
+	Ref             string `json:"ref"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 }
 
 // ThreadReasoningEffortSetParams sets the reasoning effort on a running session.

@@ -39,7 +39,7 @@ func topmostOverlayName(m hubModel) string {
 	if m.commandPalette != nil {
 		return "command-palette"
 	}
-	if m.sessionModelPicker != nil || m.sessionThemePicker != nil || m.sessionTranscriptPicker != nil {
+	if m.sessionModelPicker != nil || m.sessionEffortPicker != nil || m.sessionThemePicker != nil || m.sessionTranscriptPicker != nil {
 		return "picker"
 	}
 	return ""

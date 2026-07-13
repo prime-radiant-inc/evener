@@ -566,6 +566,25 @@ func sendHubAction(client *appwire.Client, ref appwire.Ref, action string, turnI
 	}
 }
 
+// reasoningEffortLevelKnown reports whether level (case-insensitively)
+// appears in the session's snapshot-cached reasoning-effort levels, so
+// /effort <level> can be rejected client-side without a wire round trip.
+func reasoningEffortLevelKnown(levels []string, level string) bool {
+	for _, l := range levels {
+		if strings.EqualFold(l, level) {
+			return true
+		}
+	}
+	return false
+}
+
+func sendHubEffortAction(client *appwire.Client, ref appwire.Ref, level string) tea.Cmd {
+	return func() tea.Msg {
+		err := client.ThreadReasoningEffortSet(context.Background(), appwire.ThreadReasoningEffortSetParams{Ref: ref.String(), ReasoningEffort: level})
+		return hubActionMsg{action: "effort", err: err}
+	}
+}
+
 func sendHubUpgrade(client *appwire.Client, requested string) tea.Cmd {
 	requested = strings.TrimSpace(requested)
 	return func() tea.Msg {

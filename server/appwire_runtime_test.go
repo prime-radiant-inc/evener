@@ -125,6 +125,29 @@ func TestAppThread_OverlaysPendingAskFunc(t *testing.T) {
 	}
 }
 
+// TestAppThread_CarriesReasoningInfoFromLiveSessionState verifies (Task 4e)
+// that a cold-attached client's thread snapshot carries reasoningEffort,
+// reasoningEffortLevels, and supportsReasoning from reasoningInfoFn with no
+// prior thread/model/changed or thread/reasoning-effort/changed notification.
+func TestAppThread_CarriesReasoningInfoFromLiveSessionState(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetStatus(StatusInfo{SessionID: "s1", State: "idle"})
+	srv.SetReasoningInfoFunc(func() (string, []string, bool) {
+		return "high", []string{"low", "medium", "high"}, true
+	})
+
+	thread := srv.appThread()
+	if thread.Serf.ReasoningEffort != "high" {
+		t.Fatalf("ReasoningEffort = %q, want high", thread.Serf.ReasoningEffort)
+	}
+	if len(thread.Serf.ReasoningEffortLevels) != 3 {
+		t.Fatalf("ReasoningEffortLevels = %v, want 3 levels", thread.Serf.ReasoningEffortLevels)
+	}
+	if !thread.Serf.SupportsReasoning {
+		t.Fatal("SupportsReasoning = false, want true")
+	}
+}
+
 func TestAppThread_UsesGeneratedSessionNameFromMeta(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetStatus(StatusInfo{

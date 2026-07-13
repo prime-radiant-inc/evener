@@ -720,8 +720,9 @@ func TestServerAppWireThreadModelSetQualifiesProvider(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	var got string
-	srv.SetModelFunc(func(model string) {
+	srv.SetModelFunc(func(model string) error {
 		got = model
+		return nil
 	})
 
 	conn := srv.AppServer().NewConnection("test")

@@ -850,6 +850,25 @@
         source: params.source || "",
       }]];
     }
+    if (method === "thread/model/changed") {
+      return [["MODEL_CHANGED", {
+        threadId: firstNonEmpty(params.threadId, params.threadID),
+        ref: params.ref || "",
+        modelProvider: params.modelProvider || "",
+        model: params.model || "",
+        reasoningEffortLevels: Array.isArray(params.reasoningEffortLevels) ? params.reasoningEffortLevels.slice() : [],
+        supportsReasoning: !!params.supportsReasoning,
+      }]];
+    }
+    // Task 8 (effort chip) reads this event; the mapping lives here so both
+    // the header chip and the effort picker share one notification->event seam.
+    if (method === "thread/reasoning-effort/changed") {
+      return [["REASONING_EFFORT_CHANGED", {
+        threadId: firstNonEmpty(params.threadId, params.threadID),
+        ref: params.ref || "",
+        reasoningEffort: params.reasoningEffort || "",
+      }]];
+    }
     if (method === "thread/queueChanged") {
       const q = params.queue || {};
       return [["QUEUE_CHANGED", {

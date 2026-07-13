@@ -662,8 +662,19 @@ otherwise).
 
 **Setting it.** Launch: `--reasoning-effort`, `SERF_REASONING_EFFORT`,
 `reasoning_effort` in `launch.toml`, or the spawn-form effort chip (per-model
-levels). Runtime: the `/effort` command (web/TUI) → the
-`thread/reasoning-effort/set` appwire method → `Session.SetReasoningEffort`.
+levels). Runtime: the `/effort` command (TUI) or the web `⌘K` "Set reasoning
+effort" command → the `thread/reasoning-effort/set` appwire method →
+`Session.SetReasoningEffort`, validated and clamped against the *current*
+model's ladder before it's applied. A successful change broadcasts
+`thread/reasoning-effort/changed` (mirrored by `thread/model/set` →
+`thread/model/changed` for a runtime model switch itself) so every
+subscribed client's chip/header updates without re-reading the thread; the
+daemon also refreshes the thread snapshot synchronously, so a client that
+missed the notification still hydrates the current value on its next
+`thread/read`. Unlike a model switch, a reasoning-effort change does not
+append a transcript marker — a runtime model switch does: a persisted
+`systemMessage` turn reading `Switched model: <old provider/model> → <new
+provider/model>`, surviving reload and daemon restart.
 
 ## What keys on what (the map to consult before touching identity)
 

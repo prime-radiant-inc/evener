@@ -55,6 +55,11 @@ const (
 	EventTaskUpdated EventKind = "TASK_UPDATED"
 	// EventSessionNameChanged reports that the session's display title changed.
 	EventSessionNameChanged EventKind = "SESSION_NAME_CHANGED"
+	// EventModelChanged reports that SetModel committed a provider/model switch.
+	EventModelChanged EventKind = "MODEL_CHANGED"
+	// EventReasoningEffortChanged reports that SetReasoningEffort committed a
+	// reasoning-effort change.
+	EventReasoningEffortChanged EventKind = "REASONING_EFFORT_CHANGED"
 	// EventTurnLimit reports turn or tool-round limits.
 	EventTurnLimit EventKind = "TURN_LIMIT"
 	// EventLoopDetection reports detection of a loop.

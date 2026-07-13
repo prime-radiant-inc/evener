@@ -71,11 +71,14 @@
         <div class="composer-model" title="{{if .Model}}{{.Model}}{{else}}model unavailable{{end}}">
           <span class="composer-model-key">model</span>
           {{if .Capabilities.ChangeModel}}
-          <button type="button" class="composer-model-value" data-model-trigger{{if .Model}} title="{{.Model}}"{{end}}>
+          <button type="button" class="composer-model-value" data-model-trigger{{if .Model}} title="{{.Model}}"{{end}}{{if and (ne .ActiveTurnID "") (eq .State "active")}} disabled{{end}}>
             <span data-model-display>{{if .Model}}{{.Model}}{{else}}—{{end}}</span><span class="caret">▾</span>
           </button>
           {{else}}
           <span class="composer-model-value" data-model-display>{{if .Model}}{{.Model}}{{else}}—{{end}}</span>
+          {{end}}
+          {{if .Capabilities.ChangeModel}}
+          <span class="composer-effort-value" data-effort-display hidden></span>
           {{end}}
         </div>
       </div>

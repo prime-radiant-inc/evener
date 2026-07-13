@@ -39,6 +39,12 @@ type Session struct {
 	client         *llm.Client
 	profile        *provider.Profile
 	resolveProfile func(ref string) (*provider.Profile, error) // cross-provider resolver; may be nil
+	// lastDroppedModelFallbacks records the cfg.ModelFallbacks entries dropped
+	// by the most recent SetModel's post-switch revalidation (entries that no
+	// longer validate against the new profile). Nil until a switch drops any.
+	// Surfaced via DroppedModelFallbacksFromLastSwitch for a later marker
+	// warning line; this type does not build that marker itself.
+	lastDroppedModelFallbacks []string
 	// httpClient issues the web_fetch HTTP GET. Nil means the production default
 	// (http.DefaultClient); tests set it on their own session to serve a fabricated
 	// response through an injected transport without touching the network.
@@ -146,6 +152,7 @@ type Session struct {
 	createdAt                     time.Time // stamped once at construction/restore; Meta() reads it rather than re-stamping "now" on every call
 	workMillis                    int64     // accumulated wall-clock work time across turns; seeded from SessionMeta on restore, mapped out via Meta()
 	turnStartedAt                 time.Time // wall-clock instant the current turn began (stamped at the processing-begin transition); zero when no turn is in flight. Guarded by mu, like workMillis.
+	turnHistoryBaseline           int       // history index of the first turn belonging to the in-flight turn (captured at round 0, adjusted for mid-turn compaction). Turns at or after it are exempt from N4 replay-provenance filtering (fallback rounds keep today's replay semantics). Guarded by mu.
 	history                       []schema.Turn
 	responsesContinuationDisabled map[responsesContinuationDisabledKey]bool
 
@@ -557,6 +564,14 @@ func (s *Session) StateDir() string { return s.stateDir }
 // Profile returns the session's current provider profile.
 func (s *Session) Profile() *provider.Profile { return s.currentProfile() }
 
+// ReasoningEffort returns the session's current reasoning-effort configuration
+// (already normalized by SetReasoningEffort; empty means unset/default).
+func (s *Session) ReasoningEffort() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg.ReasoningEffort
+}
+
 // currentProfile returns the active profile under s.mu so reads never race
 // SetModel's swap (s.profile is reassigned under s.mu). Callers that already
 // hold s.mu must read s.profile directly instead of calling this.
@@ -591,7 +606,9 @@ func (s *Session) SetReasoningEffort(effort string) {
 	// reasoning effort rather than forwarding the literal to the provider, matching
 	// the CLI resolver.
 	s.cfg.ReasoningEffort = llm.NormalizeReasoningEffort(effort)
+	normalized := s.cfg.ReasoningEffort
 	s.mu.Unlock()
+	s.emit(events.EventReasoningEffortChanged, events.ReasoningEffortChangedData{ReasoningEffort: normalized})
 	// Flush meta.json so a daemon crash before the next happy-path turn
 	// boundary doesn't leave on-disk cfg stale. Kata wnfz. maybeAutoSave
 	// re-acquires s.mu via s.Meta(), so the lock must be released first.
@@ -647,31 +664,51 @@ func (s *Session) reapplyProviderSpecificTools(oldTag, newTag string) {
 }
 
 // SetModel changes the model used for future LLM calls.
-// Takes effect on the next request.
-func (s *Session) SetModel(model string) {
+// Takes effect on the next request. Returns an error (without changing any
+// session state) when the model ref cannot be resolved to a profile, when the
+// current history contains content the target can't represent (see
+// unrepresentableHistoryKinds), or when the target model fails live
+// membership validation (see validateModelSwitchMembership). On a successful
+// switch, cfg.ModelFallbacks entries that no longer validate against the new
+// profile are dropped; see DroppedModelFallbacksFromLastSwitch.
+func (s *Session) SetModel(model string) error {
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
-		return
+		return nil
 	}
+	oldProfile := s.profile
 	oldTag := s.profile.BehaviorTag()
 	nextProfile, crossProvider, err := s.resolveProfileForRef(s.profile, model)
 	if err != nil {
 		s.mu.Unlock()
-		return
+		return err
 	}
 	if crossProvider {
 		nextProfile = nextProfile.WithCommunicateOverridesFrom(s.profile)
 	}
+	// Unrepresentable-history preflight: reject before any state changes when
+	// the target can't faithfully carry content kinds already in history.
+	if kinds := unrepresentableHistoryKinds(s.history, nextProfile.BehaviorTag()); len(kinds) > 0 {
+		s.mu.Unlock()
+		return fmt.Errorf("cannot switch to %s: history contains content unrepresentable by that target (%s)", nextProfile.ID(), formatContentKinds(kinds))
+	}
 	client := s.client
 	s.mu.Unlock()
 
-	nextProfile = resolveLiveModelProfileWithTimeout(client, nextProfile)
+	// Live model list is fetched once and reused for both metadata fill and
+	// the membership preflight below (see resolveModelSwitchTarget) — this
+	// rejects before any state changes when the target instance can
+	// enumerate its models and the requested model isn't among them.
+	nextProfile, err = resolveModelSwitchTarget(client, nextProfile)
+	if err != nil {
+		return err
+	}
 
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
-		return
+		return nil
 	}
 	newTag := nextProfile.BehaviorTag()
 	s.profile = nextProfile
@@ -682,12 +719,77 @@ func (s *Session) SetModel(model string) {
 		s.reapplyProviderSpecificTools(oldTag, newTag)
 	}
 	s.rebuildToolDefsCache()
+	// Knowledge cutoff must be recomputed BEFORE the prompt-cache refresh
+	// below, or the cached prompt keeps claiming the launch model's cutoff
+	// forever (G15).
+	s.envInfo.KnowledgeCutoff = nextProfile.KnowledgeCutoff()
 	s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
+	// Post-swap fallback re-validation: cfg.ModelFallbacks entries that no
+	// longer validate against the new profile are dropped; their names are
+	// surfaced in the switch marker's warning line below.
+	s.lastDroppedModelFallbacks = s.revalidateModelFallbacksLocked()
+	// Context-window-shrink warning: the new profile may have a smaller
+	// window than the old one, so estimated usage against the just-applied
+	// profile (contextMgr.SetProfile above) may already exceed its
+	// compaction threshold. Blocking the switch would strand users on
+	// expensive models; the marker just warns.
+	contextWarningPct := 0
+	contextWarning := false
+	if s.contextMgr != nil {
+		pressure := s.contextMgr.EstimatePressure(s.history, len(s.cachedSystemPrompt))
+		if pressure >= s.contextMgr.CheckpointThreshold {
+			contextWarning = true
+			contextWarningPct = int(pressure*100 + 0.5)
+		}
+	}
+	markerText := buildModelSwitchMarkerText(oldProfile, nextProfile, contextWarning, contextWarningPct, s.lastDroppedModelFallbacks)
 	s.mu.Unlock()
+	// Persisted marker turn (N5): a new schema.Turn kind rendered as a
+	// systemMessage by both projection paths and excluded from
+	// expandHistory. Must be appended (and thus visible to a replaying
+	// client) before the live-only EventModelChanged notification below.
+	s.appendTurn(schema.TurnModelSwitch, llm.System(markerText))
+	s.emit(events.EventModelChanged, events.ModelChangedData{
+		OldProvider:           oldProfile.ID(),
+		OldModel:              oldProfile.Model(),
+		NewProvider:           nextProfile.ID(),
+		NewModel:              nextProfile.Model(),
+		ReasoningEffortLevels: nextProfile.ReasoningEffortLevels(),
+		SupportsReasoning:     nextProfile.SupportsReasoning(),
+		MarkerText:            markerText,
+	})
 	// Flush meta.json so a daemon crash before the next happy-path turn
 	// boundary doesn't leave on-disk model stale. Kata wnfz. maybeAutoSave
 	// re-acquires s.mu via s.Meta(), so the lock must be released first.
 	s.maybeAutoSave()
+	return nil
+}
+
+// buildModelSwitchMarkerText renders the persisted model-switch marker text:
+// "Switched model: <old provider/model> → <new provider/model>", with
+// warning lines appended when estimated context usage exceeds the new
+// profile's compaction threshold and/or the switch dropped now-invalid
+// cfg.ModelFallbacks entries (N5, decision rows "Transcript marker" /
+// "Context-window shrink" / "Model-fallbacks after a switch").
+func buildModelSwitchMarkerText(oldProfile, nextProfile *provider.Profile, contextWarning bool, contextWarningPct int, droppedFallbacks []string) string {
+	lines := []string{fmt.Sprintf("Switched model: %s/%s → %s/%s", oldProfile.ID(), oldProfile.Model(), nextProfile.ID(), nextProfile.Model())}
+	if contextWarning {
+		lines = append(lines, fmt.Sprintf("Warning: context usage is at ~%d%% of %s's context window, over the compaction threshold.", contextWarningPct, nextProfile.ID()))
+	}
+	if len(droppedFallbacks) > 0 {
+		lines = append(lines, fmt.Sprintf("Warning: dropped model fallbacks no longer valid for %s: %s", nextProfile.ID(), strings.Join(droppedFallbacks, ", ")))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// DroppedModelFallbacksFromLastSwitch returns the cfg.ModelFallbacks entries
+// dropped by the most recent SetModel call's post-switch revalidation (nil if
+// none were dropped, or no switch has occurred yet). A later marker (Task 5)
+// surfaces this as a warning line; this method only exposes the names.
+func (s *Session) DroppedModelFallbacksFromLastSwitch() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastDroppedModelFallbacks
 }
 
 // SetTimeout changes the default command timeout for shell tool invocations.

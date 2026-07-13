@@ -768,3 +768,44 @@ func mustJSON(s string) string {
 	}
 	return string(b)
 }
+
+// TestProjectTurnRendersModelSwitchMarker verifies (a): a persisted
+// TurnModelSwitch turn projects to a systemMessage item reading
+// "Switched model: <old> → <new>", extending the TurnCheckpoint/TurnSummary
+// systemMessage projection pattern above.
+func TestProjectTurnRendersModelSwitchMarker(t *testing.T) {
+	out := ProjectTurn("turn_9", 9, schema.Turn{
+		Kind:    schema.TurnModelSwitch,
+		Message: llm.System("Switched model: openai/gpt-5.4 → anthropic/claude-opus-4-6"),
+	}, nil, nil, nil)
+
+	if len(out) != 1 {
+		t.Fatalf("items=%+v, want exactly one", out)
+	}
+	item := out[0]
+	if item.Type != "systemMessage" {
+		t.Fatalf("Type = %q, want systemMessage", item.Type)
+	}
+	if item.TurnID != "turn_9" || item.TranscriptEntryIndex != 9 {
+		t.Fatalf("TurnID/TranscriptEntryIndex = %q/%d, want turn_9/9", item.TurnID, item.TranscriptEntryIndex)
+	}
+	if item.Text != "Switched model: openai/gpt-5.4 → anthropic/claude-opus-4-6" {
+		t.Fatalf("Text = %q", item.Text)
+	}
+	if item.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("Status = %q, want completed", item.Status)
+	}
+}
+
+// TestProjectTurnModelSwitchMarkerEmptyTextOmitted mirrors the
+// TurnCheckpoint/TurnSummary empty-text no-op behavior: a marker turn with
+// blank text projects to nothing rather than an empty systemMessage.
+func TestProjectTurnModelSwitchMarkerEmptyTextOmitted(t *testing.T) {
+	out := ProjectTurn("turn_9", 9, schema.Turn{
+		Kind:    schema.TurnModelSwitch,
+		Message: llm.System("   "),
+	}, nil, nil, nil)
+	if out != nil {
+		t.Fatalf("items=%+v, want nil for blank marker text", out)
+	}
+}
