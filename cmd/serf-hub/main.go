@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -100,7 +101,7 @@ func defaultMainDeps() mainDeps {
 }
 
 func main() {
-	if hubRunMain(os.Args[1:], os.Stderr, defaultMainDeps()) != nil {
+	if err := hubRunMain(os.Args[1:], os.Stderr, defaultMainDeps()); err != nil && !errors.Is(err, flag.ErrHelp) {
 		hubExit(1)
 	}
 }
