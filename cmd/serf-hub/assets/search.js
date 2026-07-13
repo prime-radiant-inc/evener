@@ -368,18 +368,20 @@
           } } },
       { id: "reasoning-effort", title: "Set reasoning effort", hint: "", keywords: ["effort", "reasoning", "thinking"], scope: "session",
         args: { kind: "enum", placeholder: "choose effort…",
-          // The daemon clamps to what the active model supports, so offering the
-          // full vocabulary here is safe. "none" is omitted: it normalizes to
-          // "" (same as default), so it is not a distinct option.
-          source: () => Promise.resolve([
-            { id: "", label: "(default)" },
-            { id: "minimal", label: "minimal" },
-            { id: "low", label: "low" },
-            { id: "medium", label: "medium" },
-            { id: "high", label: "high" },
-            { id: "xhigh", label: "xhigh" },
-            { id: "max", label: "max" },
-          ]),
+          // The live picker lists exactly the current model's levels (task 8,
+          // G8), sourced snapshot-first via SerfModelSwitch.effortLevels()
+          // (reasoningEffortLevels/supportsReasoning from the thread
+          // snapshot/notifications — not /api/models, which the live surface
+          // shouldn't need). A model the hub reports as non-reasoning
+          // (supportsReasoning === false) yields a known-empty ladder — no
+          // options at all. "none" is omitted from a non-empty list: it
+          // normalizes to "" (same as default), so it is not a distinct
+          // option.
+          source: () => {
+            const levels = (window.SerfModelSwitch && window.SerfModelSwitch.effortLevels) ? window.SerfModelSwitch.effortLevels() : [];
+            if (!levels.length) return Promise.resolve([]);
+            return Promise.resolve([{ id: "", label: "(default)" }].concat(levels.map((l) => ({ id: l, label: l }))));
+          },
           run: (ctx, item) => {
             const eff = item.id || "";
             const p = window.SerfAppwire ? window.SerfAppwire.setReasoningEffort(ctx.sessionId, eff) : fetch("/api/sessions/" + encodeURIComponent(ctx.sessionId) + "/reasoning-effort", {

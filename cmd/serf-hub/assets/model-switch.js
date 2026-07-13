@@ -15,10 +15,32 @@
   // reasoningEffortLevels/supportsReasoning ride the thread/model/changed
   // notification because a model switch invalidates the previously cached
   // effort vocabulary. Exposed via SerfModelSwitch.getEffortState() as the
-  // seam Task 8 (the effort chip) reads from.
-  var effortState = { reasoningEffortLevels: [], supportsReasoning: false };
+  // seam Task 8 (the effort chip) reads from. supportsReasoning starts
+  // undefined (distinct from false): until a snapshot or notification tells
+  // us otherwise, the model is UNKNOWN, not known-non-reasoning.
+  var effortState = { reasoningEffortLevels: [], supportsReasoning: undefined };
+  var currentEffort = "";
   var busy = { status: "", activeTurnId: "" };
   var modelsCache = null;
+
+  // Fallback effort levels for a model whose ladder the hub doesn't know
+  // (task 8, G8) — ported verbatim from spawn.js:1605 DEFAULT_EFFORT_LEVELS
+  // so the live picker and the spawn form agree. The daemon clamps to what
+  // the model actually accepts, so an over-broad list here is safe.
+  var DEFAULT_EFFORT_LEVELS = ["minimal", "low", "medium", "high"];
+
+  // effortLevels ports the spawn-form option logic (spawn.js:1608-1633):
+  // supportsReasoning === false is a KNOWN answer of "no levels" (the model
+  // doesn't reason at all); an absent/empty ladder on a model that DOES
+  // reason (or whose support is still unknown) falls back to the default
+  // vocabulary, since the daemon clamps to what's actually accepted.
+  function effortLevels() {
+    if (effortState.supportsReasoning === false) return [];
+    if (Array.isArray(effortState.reasoningEffortLevels) && effortState.reasoningEffortLevels.length > 0) {
+      return effortState.reasoningEffortLevels.slice();
+    }
+    return DEFAULT_EFFORT_LEVELS.slice();
+  }
 
   function conversationEl() {
     return document.getElementById("conversation");
@@ -213,6 +235,50 @@
     attachDismiss(picker);
   }
 
+  function renderEffortChip() {
+    document.querySelectorAll("[data-effort-display]").forEach(function (el) {
+      if (!currentEffort) {
+        el.textContent = "";
+        el.hidden = true;
+        return;
+      }
+      el.textContent = currentEffort;
+      el.hidden = false;
+    });
+  }
+
+  // applySnapshot seeds effortState/currentEffort/the chip from a thread
+  // snapshot (either the cold-attach thread/read below, or, in the future,
+  // any other snapshot source) — the SerfThread.serf fields Task 4 added,
+  // never /api/models or the appwire model/list (which carries only
+  // provider+model).
+  function applySnapshot(serf) {
+    serf = serf || {};
+    effortState.reasoningEffortLevels = Array.isArray(serf.reasoningEffortLevels) ? serf.reasoningEffortLevels.slice() : [];
+    effortState.supportsReasoning = typeof serf.supportsReasoning === "boolean" ? serf.supportsReasoning : undefined;
+    currentEffort = serf.reasoningEffort || "";
+    renderEffortChip();
+  }
+
+  // loadEffortSnapshot cold-attaches the effort chip + vocabulary: a client
+  // that just loaded the page has received no notifications yet, so the
+  // only way to know the current effort/levels is to read the thread
+  // snapshot once at init (task 8; spec N6 "cold-attached clients must be
+  // able to render both settings ... with no prior notification").
+  function loadEffortSnapshot() {
+    if (!window.SerfAppwire || typeof window.SerfAppwire.readThread !== "function") return;
+    var sessionId = sessionIdFromDom();
+    if (!sessionId) return;
+    window.SerfAppwire.readThread(sessionId, false, false).then(function (resp) {
+      if (sessionIdFromDom() !== sessionId) return; // navigated away while in flight
+      var thread = (resp && resp.thread) || {};
+      applySnapshot(thread.serf);
+    }).catch(function () {
+      // No snapshot available (e.g. transport hiccup): leave the chip hidden
+      // rather than showing a stale/wrong value.
+    });
+  }
+
   function applyModelChanged(data) {
     var full = data.modelProvider && data.model ? (data.modelProvider + "/" + data.model) : (data.model || "");
     document.querySelectorAll("[data-model-display]").forEach(function (el) {
@@ -223,6 +289,7 @@
     });
     effortState.reasoningEffortLevels = Array.isArray(data.reasoningEffortLevels) ? data.reasoningEffortLevels.slice() : [];
     effortState.supportsReasoning = !!data.supportsReasoning;
+    renderEffortChip();
   }
 
   function paramsMatchSession(params, sessionId) {
@@ -258,6 +325,11 @@
       applyModelChanged(params);
       return;
     }
+    if (method === "thread/reasoning-effort/changed") {
+      currentEffort = params.reasoningEffort || "";
+      renderEffortChip();
+      return;
+    }
   }
 
   // Sibling nav (renderer.js autoInit, model-display.js) swaps
@@ -269,13 +341,18 @@
     syncTriggerDisabled();
     closePicker();
     modelsCache = null;
+    loadEffortSnapshot();
   }
 
   var afterSwapHandlerInstalled = false;
+  var inited = false;
 
   function init() {
+    if (inited) return;
+    inited = true;
     initBusyFromDom();
     syncTriggerDisabled();
+    loadEffortSnapshot();
     document.addEventListener("click", function (e) {
       var trigger = e.target.closest && e.target.closest("[data-model-trigger]");
       if (!trigger) return;
@@ -296,6 +373,9 @@
     getEffortState: function () {
       return { levels: effortState.reasoningEffortLevels.slice(), supportsReasoning: effortState.supportsReasoning };
     },
+    // effortLevels is the seam search.js's "Set reasoning effort" palette
+    // command reads from (task 8, G8) instead of a hardcoded vocabulary.
+    effortLevels: effortLevels,
   };
 
   if (document.readyState === "loading") {

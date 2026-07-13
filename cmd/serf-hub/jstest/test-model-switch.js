@@ -27,6 +27,7 @@ function workspaceHTML(opts) {
       <button type="button" class="composer-model-value" data-model-trigger title="anthropic/claude-opus-4-7"${disabledAttr}>
         <span data-model-display>anthropic/claude-opus-4-7</span><span class="caret">▾</span>
       </button>
+      <span class="composer-effort-value" data-effort-display hidden></span>
     </div>`;
 }
 
@@ -145,6 +146,8 @@ async function scenarioModelChangedNotification() {
   };
   window.eval(modelSwitchSrc);
   window.document.dispatchEvent(new window.Event("DOMContentLoaded", { bubbles: true }));
+  await flush();
+  readThreadCalled = false; // init()'s own cold-attach snapshot read doesn't count
 
   pass(typeof handler === "function", "model-switch.js subscribes to notifications");
 
@@ -165,6 +168,148 @@ async function scenarioModelChangedNotification() {
   const effortState = window.SerfModelSwitch.getEffortState();
   pass(JSON.stringify(effortState.levels) === JSON.stringify(["low", "high"]), "cached effort levels re-key to the new model's levels, got " + JSON.stringify(effortState.levels));
   pass(effortState.supportsReasoning === true, "supportsReasoning re-keys from the notification");
+}
+
+// ---------- (task 8 a/d) cold-attach: with NO prior notification, init()
+// reads the thread snapshot and renders both the effort chip and the cached
+// effort vocabulary from reasoningEffort/reasoningEffortLevels/supportsReasoning
+// (never from /api/models or appwire model/list). ----------
+async function scenarioColdAttachEffortSnapshot() {
+  const window = makeWindow(workspaceHTML());
+  let readThreadCalls = 0;
+  window.SerfAppwire = {
+    listModels: () => Promise.resolve([]),
+    setModel: () => Promise.resolve({}),
+    onNotification: () => () => {},
+    refForSession: (id) => "local:" + id,
+    readThread: (sessionId, includeTurns, subscribe) => {
+      readThreadCalls++;
+      pass(!includeTurns, "cold-attach snapshot read does not request turns");
+      pass(!subscribe, "cold-attach snapshot read does not itself subscribe");
+      return Promise.resolve({
+        thread: {
+          serf: {
+            reasoningEffort: "high",
+            reasoningEffortLevels: ["low", "medium", "high"],
+            supportsReasoning: true,
+          },
+        },
+      });
+    },
+  };
+  window.eval(modelSwitchSrc);
+  window.document.dispatchEvent(new window.Event("DOMContentLoaded", { bubbles: true }));
+  await flush();
+
+  pass(readThreadCalls === 1, "init() fetches the thread snapshot exactly once, got " + readThreadCalls);
+  const chip = window.document.querySelector("[data-effort-display]");
+  pass(!!chip && !chip.hidden, "effort chip is visible after cold-attach snapshot load");
+  pass(chip && chip.textContent === "high", "effort chip shows the snapshot's reasoningEffort with no prior notification, got " + (chip && chip.textContent));
+
+  const effortState = window.SerfModelSwitch.getEffortState();
+  pass(JSON.stringify(effortState.levels) === JSON.stringify(["low", "medium", "high"]), "cold-attach seeds the effort levels from the snapshot, got " + JSON.stringify(effortState.levels));
+  pass(effortState.supportsReasoning === true, "cold-attach seeds supportsReasoning from the snapshot");
+}
+
+// ---------- (task 8 b) level-list semantics port spawn.js:1608-1633 ----------
+async function scenarioEffortLevelListSemantics() {
+  const window = makeWindow(workspaceHTML());
+  let handler = null;
+  window.SerfAppwire = {
+    listModels: () => Promise.resolve([]),
+    setModel: () => Promise.resolve({}),
+    onNotification: (h) => { handler = h; return () => {}; },
+    refForSession: (id) => "local:" + id,
+  };
+  window.eval(modelSwitchSrc);
+  window.document.dispatchEvent(new window.Event("DOMContentLoaded", { bubbles: true }));
+
+  // Known non-reasoning model: supportsReasoning === false => NO options.
+  handler("thread/model/changed", {
+    threadId: "01SESSION", ref: "local:01SESSION", modelProvider: "openrouter", model: "no-reasoning-model",
+    reasoningEffortLevels: [], supportsReasoning: false,
+  });
+  pass(JSON.stringify(window.SerfModelSwitch.effortLevels()) === "[]", "supportsReasoning === false yields a known-empty ladder, got " + JSON.stringify(window.SerfModelSwitch.effortLevels()));
+
+  // Unknown model: absent/empty levels but supportsReasoning true => fall
+  // back to the full vocabulary (same fallback list as spawn.js:1605).
+  handler("thread/model/changed", {
+    threadId: "01SESSION", ref: "local:01SESSION", modelProvider: "custom", model: "unknown-model",
+    reasoningEffortLevels: [], supportsReasoning: true,
+  });
+  pass(JSON.stringify(window.SerfModelSwitch.effortLevels()) === JSON.stringify(["minimal", "low", "medium", "high"]),
+    "absent ladder on an unknown-but-reasoning model falls back to the full vocabulary, got " + JSON.stringify(window.SerfModelSwitch.effortLevels()));
+
+  // Known model with an explicit ladder: exactly that ladder, nothing more.
+  handler("thread/model/changed", {
+    threadId: "01SESSION", ref: "local:01SESSION", modelProvider: "anthropic", model: "claude-haiku-4-5",
+    reasoningEffortLevels: ["low", "high"], supportsReasoning: true,
+  });
+  pass(JSON.stringify(window.SerfModelSwitch.effortLevels()) === JSON.stringify(["low", "high"]),
+    "a known model lists exactly its own levels, got " + JSON.stringify(window.SerfModelSwitch.effortLevels()));
+}
+
+// ---------- (task 8 c) after thread/model/changed the search.js palette
+// effort picker re-keys to the new model's levels, not a hardcoded vocabulary ----------
+async function scenarioPaletteEffortReKeys() {
+  const searchSrc = fs.readFileSync(path.resolve(__dirname, "../assets/search.js"), "utf8");
+  const dom = new JSDOM(`<!DOCTYPE html><html><body>
+    <dialog id="search-dialog"><div class="search-dialog-inner"><header class="search-dialog-header">
+    <input id="search-input" type="text"></header><div id="search-results"></div></div></dialog>
+    ${workspaceHTML()}
+  </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true, url: "http://127.0.0.1:9180/s/01SESSION" });
+  const { window } = dom;
+  const dlg = window.document.getElementById("search-dialog");
+  dlg.showModal = function () { this.setAttribute("open", ""); this.open = true; };
+  dlg.close = function () { this.removeAttribute("open"); this.open = false; };
+  let handler = null;
+  window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({ live: [], past: [] }) });
+  window.SerfAppwire = {
+    listModels: () => Promise.resolve([]),
+    setModel: () => Promise.resolve({}),
+    setReasoningEffort: () => Promise.resolve({}),
+    onNotification: (h) => { handler = h; return () => {}; },
+    refForSession: (id) => "local:" + id,
+  };
+  window.eval(modelSwitchSrc);
+  window.eval(searchSrc);
+  window.document.dispatchEvent(new window.Event("DOMContentLoaded", { bubbles: true }));
+  await flush();
+
+  handler("thread/model/changed", {
+    threadId: "01SESSION", ref: "local:01SESSION", modelProvider: "anthropic", model: "claude-haiku-4-5",
+    reasoningEffortLevels: ["low", "high"], supportsReasoning: true,
+  });
+
+  const commands = window.SerfSearch._commands();
+  const effortCmd = commands.find((c) => c.id === "reasoning-effort");
+  const options = await Promise.resolve(effortCmd.args.source());
+  const ids = options.map((o) => o.id).filter((id) => id !== "");
+  pass(JSON.stringify(ids) === JSON.stringify(["low", "high"]),
+    "the live effort picker lists exactly the current model's levels (G8), got " + JSON.stringify(ids));
+}
+
+// ---------- (task 8 d) thread/reasoning-effort/changed updates the chip live ----------
+async function scenarioReasoningEffortChangedUpdatesChip() {
+  const window = makeWindow(workspaceHTML());
+  let handler = null;
+  window.SerfAppwire = {
+    listModels: () => Promise.resolve([]),
+    setModel: () => Promise.resolve({}),
+    onNotification: (h) => { handler = h; return () => {}; },
+    refForSession: (id) => "local:" + id,
+  };
+  window.eval(modelSwitchSrc);
+  window.document.dispatchEvent(new window.Event("DOMContentLoaded", { bubbles: true }));
+  await flush();
+
+  handler("thread/reasoning-effort/changed", {
+    threadId: "01SESSION", ref: "local:01SESSION", reasoningEffort: "xhigh",
+  });
+
+  const chip = window.document.querySelector("[data-effort-display]");
+  pass(chip && chip.textContent === "xhigh", "effort chip updates from thread/reasoning-effort/changed, got " + (chip && chip.textContent));
+  pass(chip && !chip.hidden, "effort chip is visible once an effort value is known");
 }
 
 // ---------- (d) trigger disabled + palette refusal while Status.Type=="active" ----------
@@ -359,6 +504,10 @@ async function scenarioHtmxAfterSwapResync() {
   await scenarioOpenAndSelect();
   await scenarioFirstSlashSplitAppwire();
   await scenarioModelChangedNotification();
+  await scenarioColdAttachEffortSnapshot();
+  await scenarioEffortLevelListSemantics();
+  await scenarioPaletteEffortReKeys();
+  await scenarioReasoningEffortChangedUpdatesChip();
   await scenarioRunStateDisable();
   await scenarioPaletteRefusesWhileBusy();
   await scenarioSetModelError();
