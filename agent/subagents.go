@@ -320,6 +320,39 @@ func restoreFrozenSkillBodies(skillNames, skillBodies []string) ([]string, error
 	return bodies, nil
 }
 
+// liveShellsUnderTree collects the handles of every live background-shell job
+// rooted at or under path, across THIS session and every retained descendant
+// session in its subagent tree (spec §P1 step 3). It exists because each
+// session's jobManager.liveShellHandles() only sees its own running map: a shell
+// launched inside a grandchild lives in the grandchild's manager and is
+// invisible to a parent-only scan. The disposal op consumes this to distinguish
+// a lane with genuine running work from one held open only by retained, idle
+// delegate children (which liveWorkUnder labels honestly).
+//
+// The walk follows treeHasOutstandingWork's leaf-lock discipline: it enumerates
+// direct children via liveDirectSubagents (which releases each sub.mu before
+// returning), then descends into each child's Session, so no sub.mu (or
+// jobManager mutex) is ever held across the recursion.
+func (s *Session) liveShellsUnderTree(path string) []string {
+	target := canonicalOrClean(path)
+	var out []string
+	s.collectLiveShellsUnderTree(target, &out)
+	return out
+}
+
+func (s *Session) collectLiveShellsUnderTree(target string, out *[]string) {
+	if s.jobManager != nil {
+		for _, h := range s.jobManager.liveShellHandles() {
+			if pathEqualOrUnder(canonicalOrClean(h.dir), target) {
+				*out = append(*out, h.handle)
+			}
+		}
+	}
+	for _, sub := range s.liveDirectSubagents() {
+		sub.sess.collectLiveShellsUnderTree(target, out)
+	}
+}
+
 func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string, reasoningEffort string, parentTasks []taskpkg.TaskTemplate, grantTools []string) (any, error) {
 	prepared, err := s.prepareSubagentRun(ctx, task, model, workingDir, maxTurns, agentType, reasoningEffort, parentTasks, grantTools)
 	if err != nil {

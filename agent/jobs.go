@@ -318,6 +318,28 @@ func (jm *jobManager) liveWorkHandles() []liveWorkHandle {
 	return out
 }
 
+// liveShellHandles returns the launch-time working directory of every
+// background SHELL job still in jm.running, paired with a handle describing it.
+// It is the shell-only projection of liveWorkHandles, used by the tree-wide
+// disposal walk (liveShellsUnderTree): delegate job records are excluded there
+// because a retained delegate child is enumerated (and honestly labeled)
+// through the subagent-tree scan instead. A shell job with no recorded working
+// dir is omitted (the guard is best-effort, not a source of false refusals).
+func (jm *jobManager) liveShellHandles() []liveWorkHandle {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	var out []liveWorkHandle
+	for _, run := range jm.running {
+		if run == nil || run.rec == nil {
+			continue
+		}
+		if run.rec.Type == jobstore.JobShell && run.rec.WorkingDir != "" {
+			out = append(out, liveWorkHandle{dir: run.rec.WorkingDir, handle: run.rec.JobID + " (shell, running)"})
+		}
+	}
+	return out
+}
+
 type terminalJob struct {
 	status                       jobstore.Status
 	reason                       string
