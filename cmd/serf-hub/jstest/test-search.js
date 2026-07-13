@@ -3,7 +3,11 @@ const fs = require("fs");
 const { JSDOM } = require("jsdom");
 
 const SEARCH_PATH = "../assets/search.js";
-const searchSrc = fs.readFileSync(SEARCH_PATH, "utf8");
+const path = require("path");
+// thread-state.js defines window.SerfThreadState, which search.js's isThreadBusy
+// depends on; production loads it first (templates/app.html), so prepend it here.
+const threadStateSrc = fs.readFileSync(path.resolve(__dirname, "../assets/thread-state.js"), "utf8");
+const searchSrc = threadStateSrc + "\n" + fs.readFileSync(SEARCH_PATH, "utf8");
 
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
