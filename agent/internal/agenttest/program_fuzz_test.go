@@ -175,9 +175,23 @@ func assertAgenttestCommunicateCall(t *testing.T, call llm.ToolCallData, wantMes
 	if err := json.Unmarshal(call.Arguments, &args); err != nil {
 		t.Fatalf("communicate arguments: %v", err)
 	}
+	wantMessage = agenttestJSONRoundTripString(t, wantMessage)
 	if args.Message != wantMessage || args.EndTurn != wantEndTurn || args.Output == nil {
 		t.Fatalf("communicate args = %#v, want message=%q endTurn=%v output", args, wantMessage, wantEndTurn)
 	}
+}
+
+func agenttestJSONRoundTripString(t *testing.T, value string) string {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal expected string: %v", err)
+	}
+	var normalized string
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		t.Fatalf("unmarshal expected string: %v", err)
+	}
+	return normalized
 }
 
 func assertAgenttestFakeEnv(t *testing.T, root string) {
@@ -285,7 +299,7 @@ func FuzzDenyEnvProgram(f *testing.F) {
 		}
 		grepMatch := agenttestDenyForRemainder(t, seed, 2, 0, "grep", content, path, "files_with_matches")
 		grepMiss := agenttestDenyForRemainder(t, seed, 2, 1, "grep", content, path, "files_with_matches")
-		if got, err := grepMatch.Grep(content, path, "", false, 1, "files_with_matches"); err != nil || got != path {
+		if got, err := grepMatch.Grep(content, path, "", false, 1, "files_with_matches"); err != nil || got != boundedDenyResult(path) {
 			t.Fatalf("DenyEnv.Grep files match = %q, %v", got, err)
 		}
 		if got, err := grepMiss.Grep(content, path, "", false, 1, "files_with_matches"); err != nil || got != "" {

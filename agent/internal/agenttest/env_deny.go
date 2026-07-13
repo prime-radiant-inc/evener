@@ -68,6 +68,13 @@ func (d *DenyEnv) boundedText(h uint64) string {
 	return string(b)
 }
 
+func boundedDenyResult(s string) string {
+	if len(s) > denyMaxBytes {
+		return s[:denyMaxBytes]
+	}
+	return s
+}
+
 func (d *DenyEnv) ReadFile(path string, _ *int, _ *int) (string, error) {
 	h := d.draw("read", path)
 	if h%5 == 0 {
@@ -109,7 +116,7 @@ func (d *DenyEnv) Grep(pattern string, path string, _ string, _ bool, _ int, out
 		return strconv.Itoa(int(h % 10)), nil
 	case "files_with_matches":
 		if h%2 == 0 {
-			return path, nil
+			return boundedDenyResult(path), nil
 		}
 		return "", nil
 	default:
