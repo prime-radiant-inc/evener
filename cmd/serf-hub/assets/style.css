@@ -3411,7 +3411,7 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
 .spawn-confirm-message { color: var(--text); line-height: var(--leading-snug); }
 .spawn-confirm-path { font-family: var(--font-mono); color: var(--text); overflow-wrap: anywhere; }
 .spawn-confirm-actions { display: flex; gap: var(--space-3); justify-content: flex-end; }
-/* Spawn-advanced — the <details> toggle for the per-launch override panel. */
+/* Spawn-advanced — plain text toggle for the per-launch override panel. */
 .spawn-advanced { color: var(--text-muted); font-size: var(--text-sm); }
 .spawn-advanced-summary {
   cursor: pointer;
@@ -3421,7 +3421,9 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
   color: var(--text-muted);
   background: transparent;
   border: none;
+  text-align: left;
 }
+.spawn-advanced-summary:hover { background: transparent; }
 .spawn-advanced.is-open .spawn-advanced-summary { color: var(--text); }
 .spawn-advanced-body { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4) 0; border-top: 1px solid var(--rule); }
 .spawn-advanced:not(.is-open) .spawn-advanced-body { display: none; }
@@ -4579,7 +4581,7 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
     cursor: pointer;
   }
   .spawn-row:first-child { border-top: 1px solid var(--rule); }
-  .spawn-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .spawn-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; box-shadow: none; }
   .spawn-row-label {
     font-weight: 500;
     color: var(--text);

@@ -93,8 +93,8 @@
     <input type="hidden" name="agent" value="default">
     <input type="hidden" name="reasoning_effort" value="">
     <div class="spawn-advanced">
-      <button type="button" class="btn spawn-advanced-summary" data-spawn-advanced-toggle>Advanced options</button>
-      <div class="spawn-advanced-body">
+      <button type="button" class="btn spawn-advanced-summary" data-spawn-advanced-toggle aria-expanded="false" aria-controls="spawn-advanced-body">Advanced options</button>
+      <div class="spawn-advanced-body" id="spawn-advanced-body">
         <p class="settings-help spawn-advanced-note">
           Per-launch overrides for this thread only. Defaults come from
           <a href="/settings/launch">Launch defaults</a> and any per-project layers.

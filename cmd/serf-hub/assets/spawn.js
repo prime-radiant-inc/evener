@@ -1131,7 +1131,9 @@
     if (advancedDetails && advancedToggle) {
       advancedToggle.addEventListener("click", () => {
         advancedDetails.classList.toggle("is-open");
-        if (advancedDetails.classList.contains("is-open") && advancedDetails.scrollIntoView) {
+        const isOpen = advancedDetails.classList.contains("is-open");
+        advancedToggle.setAttribute("aria-expanded", String(isOpen));
+        if (isOpen && advancedDetails.scrollIntoView) {
           advancedDetails.scrollIntoView({ block: "nearest", behavior: "smooth" });
         }
       });
@@ -1178,9 +1180,11 @@
     }
 
     // Auto-expand the prompt textarea as the user types; CSS max-height caps growth.
-    if (promptTa && shouldAutoExpand()) {
-      promptTa.addEventListener("input", () => autoExpandTextarea(promptTa));
-      autoExpandTextarea(promptTa);
+    if (promptTa) {
+      promptTa.addEventListener("input", () => {
+        if (shouldAutoExpand()) autoExpandTextarea(promptTa);
+      });
+      if (shouldAutoExpand()) autoExpandTextarea(promptTa);
     }
 
     // Wire the shared composer-attachments helpers (paste from r6a1; drag-

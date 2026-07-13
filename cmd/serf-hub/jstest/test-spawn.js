@@ -40,8 +40,8 @@ assert(spawnPromptIndex < spawnInputIndex, "prompt heading should appear before 
 assert(spawnInputIndex < spawnMobileRowsIndex, "mobile rows should appear after textarea");
 assert(spawnTemplateSrc.indexOf('spawn-advanced-summary') !== -1, "spawn template should use sentence-case advanced summary");
 assert(!spawnTemplateSrc.includes("<summary>advanced</summary>"), "spawn template should not use the old lowercase mono summary");
-  assert(!spawnTemplateSrc.includes('<details class="spawn-advanced">'), "spawn template should not use details element for advanced options");
-  assert(spawnTemplateSrc.indexOf('data-spawn-advanced-toggle') !== -1, "spawn template should include an advanced toggle button");
+assert(!spawnTemplateSrc.includes('<details class="spawn-advanced">'), "spawn template should not use details element for advanced options");
+assert(spawnTemplateSrc.indexOf('data-spawn-advanced-toggle') !== -1, "spawn template should include an advanced toggle button");
 
 (async function main() {
 const dom = new JSDOM(`<!DOCTYPE html><html><body></body></html>`, {
@@ -779,8 +779,10 @@ const advancedDom = new JSDOM(`<!DOCTYPE html><html><body>
   const advancedBody = advancedEl.querySelector(".spawn-advanced-body");
   advancedToggle.click();
   assert(advancedEl.classList.contains("is-open"), "clicking advanced toggle should open the advanced panel");
+  assert(advancedToggle.getAttribute("aria-expanded") === "true", "advanced toggle aria-expanded should be true when open");
   advancedToggle.click();
   assert(!advancedEl.classList.contains("is-open"), "clicking advanced toggle again should close the advanced panel");
+  assert(advancedToggle.getAttribute("aria-expanded") === "false", "advanced toggle aria-expanded should be false when closed");
 
 let alertCalled = false;
 formDom.window.alert = () => { alertCalled = true; };
