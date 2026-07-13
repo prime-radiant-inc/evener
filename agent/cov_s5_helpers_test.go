@@ -70,6 +70,18 @@ func TestS5Cov_LiveModelInfoFor(t *testing.T) {
 	}
 }
 
+func TestLiveModelInfoFor_PrefersExactIDBeforeWhitespaceNormalization(t *testing.T) {
+	models := []llm.ModelInfo{
+		{ID: "gpt-5", DisplayName: "normalized"},
+		{ID: "gpt-5 ", DisplayName: "exact"},
+	}
+
+	info, ok := liveModelInfoFor(models, "gpt-5 ")
+	if !ok || info.DisplayName != "exact" {
+		t.Fatalf("liveModelInfoFor exact match = (%+v, %v), want exact raw ID", info, ok)
+	}
+}
+
 func TestS5Cov_ResolveLiveModelProfile_NilGuards(t *testing.T) {
 	if got := resolveLiveModelProfile(context.TODO(), nil, nil); got != nil {
 		t.Error("nil client+profile should return the (nil) profile")

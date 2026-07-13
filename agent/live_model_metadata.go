@@ -33,17 +33,22 @@ func resolveLiveModelProfile(ctx context.Context, client *llm.Client, profile *p
 }
 
 func liveModelInfoFor(models []llm.ModelInfo, model string) (llm.ModelInfo, bool) {
-	model = strings.TrimSpace(model)
-	if model == "" {
+	trimmedModel := strings.TrimSpace(model)
+	if trimmedModel == "" {
 		return llm.ModelInfo{}, false
 	}
 	for _, info := range models {
-		if strings.TrimSpace(info.ID) == model {
+		if info.ID == model {
 			return info, true
 		}
 	}
 	for _, info := range models {
-		if strings.EqualFold(strings.TrimSpace(info.ID), model) {
+		if strings.TrimSpace(info.ID) == trimmedModel {
+			return info, true
+		}
+	}
+	for _, info := range models {
+		if strings.EqualFold(strings.TrimSpace(info.ID), trimmedModel) {
 			return info, true
 		}
 	}
