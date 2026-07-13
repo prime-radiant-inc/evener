@@ -146,8 +146,8 @@ func (s *Session) applyPendingForceCompact(ctx context.Context) {
 	histCopy := append([]schema.Turn{}, s.history...)
 	s.mu.Unlock()
 
-	emitFn, flush := s.compactionEmitFunc(ctx, &histCopy)
-	s.contextMgr.ForceCompact(ctx, &histCopy, instructions, emitFn)
+	compactionCtx, emitFn, flush := s.compactionEmitFunc(ctx, &histCopy)
+	s.contextMgr.ForceCompact(compactionCtx, &histCopy, instructions, emitFn)
 	flush()
 
 	s.mu.Lock()

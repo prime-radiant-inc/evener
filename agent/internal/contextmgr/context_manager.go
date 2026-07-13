@@ -29,6 +29,15 @@ type CompactionMeta struct {
 	ActivatedSkills []string // skill names activated during this session
 }
 
+type compactionTurnCallbackKey struct{}
+
+// WithCompactionTurnCallback returns a context whose callback handles each
+// checkpoint or summary created during that operation. Manager.OnCompactionTurn
+// remains the fallback for callers that do not install an operation callback.
+func WithCompactionTurnCallback(ctx context.Context, callback func(schema.Turn)) context.Context {
+	return context.WithValue(ctx, compactionTurnCallbackKey{}, callback)
+}
+
 // Manager tracks cumulative token usage and applies progressive compaction
 // layers to conversation history as context fills up.
 type Manager struct {
@@ -70,6 +79,16 @@ type Manager struct {
 	// Meta holds session-level metadata for enriching compaction summaries.
 	// Set by the session before each ManageContext call.
 	Meta CompactionMeta
+}
+
+func (cm *Manager) handleCompactionTurn(ctx context.Context, turn schema.Turn) {
+	if callback, ok := ctx.Value(compactionTurnCallbackKey{}).(func(schema.Turn)); ok {
+		callback(turn)
+		return
+	}
+	if cm.OnCompactionTurn != nil {
+		cm.OnCompactionTurn(turn)
+	}
 }
 
 // NewManager creates a Manager with default thresholds.
@@ -289,8 +308,8 @@ func (cm *Manager) MaybeCompact(
 			EstTokensBefore: before,
 			EstTokensAfter:  after,
 		})
-		if cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == schema.TurnCheckpoint {
-			cm.OnCompactionTurn((*history)[0])
+		if len(*history) > 0 && (*history)[0].Kind == schema.TurnCheckpoint {
+			cm.handleCompactionTurn(ctx, (*history)[0])
 		}
 		compacted = true
 		p = pressure()
@@ -316,8 +335,8 @@ func (cm *Manager) MaybeCompact(
 				EstTokensBefore: before,
 				EstTokensAfter:  after,
 			})
-			if cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == schema.TurnSummary {
-				cm.OnCompactionTurn((*history)[0])
+			if len(*history) > 0 && (*history)[0].Kind == schema.TurnSummary {
+				cm.handleCompactionTurn(ctx, (*history)[0])
 			}
 			compacted = true
 		}
@@ -360,8 +379,8 @@ func (cm *Manager) ForceCompact(
 		EstTokensBefore: before,
 		EstTokensAfter:  after,
 	})
-	if cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == schema.TurnCheckpoint {
-		cm.OnCompactionTurn((*history)[0])
+	if len(*history) > 0 && (*history)[0].Kind == schema.TurnCheckpoint {
+		cm.handleCompactionTurn(ctx, (*history)[0])
 	}
 
 	// Layer 2: LLM summarization (only if client is available).
@@ -387,8 +406,8 @@ func (cm *Manager) ForceCompact(
 				EstTokensBefore: before,
 				EstTokensAfter:  after,
 			})
-			if cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == schema.TurnSummary {
-				cm.OnCompactionTurn((*history)[0])
+			if len(*history) > 0 && (*history)[0].Kind == schema.TurnSummary {
+				cm.handleCompactionTurn(ctx, (*history)[0])
 			}
 		}
 	}

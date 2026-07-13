@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
@@ -10,13 +9,21 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// TestS2Cov_HandleCompactionTurn_SteersTranscriptRef covers handleCompactionTurn:
-// a SUMMARY turn is written, emits EventCompactionTurn, and steers the
-// pre-compaction transcript-reference reminder when a state dir and id exist.
-func TestS2Cov_HandleCompactionTurn_SteersTranscriptRef(t *testing.T) {
+// TestS2Cov_HandleCompactionTurn_WritesTranscriptAndEmitsEvent covers the
+// handleCompactionTurn artifact contract: a SUMMARY turn is appended to the
+// transcript and emits EventCompactionTurn.
+func TestS2Cov_HandleCompactionTurn_WritesTranscriptAndEmitsEvent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sess := newSession(t, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir}))
+	path := transcriptPath(dir, sess.ID())
+	before, err := readTranscriptFull(path)
+	if err != nil {
+		t.Fatalf("read transcript before compaction: %v", err)
+	}
+	if got := len(before.Entries); got != 0 {
+		t.Fatalf("pre-compaction transcript entries = %d, want 0", got)
+	}
 
 	var sawCompactionEvent bool
 	done := make(chan struct{})
@@ -31,15 +38,19 @@ func TestS2Cov_HandleCompactionTurn_SteersTranscriptRef(t *testing.T) {
 
 	sess.handleCompactionTurn(schema.NewTurn(schema.TurnSummary, llm.Assistant("a compaction summary")))
 
-	steered := sess.drainSteering()
-	var sawRef bool
-	for _, m := range steered {
-		if strings.Contains(m.Text, "read_session_transcript") {
-			sawRef = true
-		}
+	after, err := readTranscriptFull(path)
+	if err != nil {
+		t.Fatalf("read transcript after compaction: %v", err)
 	}
-	if !sawRef {
-		t.Fatalf("no transcript-ref steering; steered = %+v", steered)
+	if got := len(after.Entries); got != len(before.Entries)+1 {
+		t.Fatalf("post-compaction transcript entries = %d, want %d", got, len(before.Entries)+1)
+	}
+	entry := after.Entries[len(after.Entries)-1]
+	if entry.Turn.Kind != schema.TurnSummary {
+		t.Fatalf("appended turn kind = %v, want %v", entry.Turn.Kind, schema.TurnSummary)
+	}
+	if got, want := entry.Turn.Message.Text(), "a compaction summary"; got != want {
+		t.Fatalf("appended turn text = %q, want %q", got, want)
 	}
 
 	sess.Close()
@@ -75,7 +86,7 @@ func TestS2Cov_AcceptContinuationInput_AppendsSteeringAndMarker(t *testing.T) {
 	sess.mu.Lock()
 	var sawInput bool
 	for _, turn := range sess.history {
-		if turn.Kind == schema.TurnSteering && strings.Contains(turn.Message.Text(), "keep going toward the objective") {
+		if turn.Kind == schema.TurnSteering && turn.Message.Text() == "keep going toward the objective" {
 			sawInput = true
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"primeradiant.com/serf/agent/events"
@@ -44,8 +45,8 @@ func (s *Session) Compact(ctx context.Context) error {
 	histCopy := append([]schema.Turn{}, s.history...)
 	s.mu.Unlock()
 
-	emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &histCopy)
-	s.contextMgr.ForceCompact(ctx, &histCopy, "", emitFn)
+	compactionCtx, emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &histCopy)
+	s.contextMgr.ForceCompact(compactionCtx, &histCopy, "", emitFn)
 	flushCompactionHooks()
 
 	s.mu.Lock()
@@ -69,23 +70,61 @@ type steeringTurnRecord struct {
 	text string
 }
 
-func (s *Session) compactionEmitFunc(ctx context.Context, history *[]schema.Turn) (func(events.EventKind, events.EventData), func()) {
+func (s *Session) steerCompactionTranscriptReminder() {
+	if s.stateDir == "" || s.id == "" {
+		return
+	}
+	ref := encodeRef("", s.id)
+	s.Steer("<SYSTEM-REMINDER>If you need the exact transcript of this session before compaction, use the transcript tool instead of reading raw transcript files directly. Default read: read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"format\": \"markdown\"}). For long sessions, first get a turn map with read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"format\": \"outline\"}), then read a focused range with read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"range\": \"A-B\"}).</SYSTEM-REMINDER>")
+}
+
+func (s *Session) compactionEmitFunc(ctx context.Context, history *[]schema.Turn) (context.Context, func(events.EventKind, events.EventData), func()) {
 	preCompactRan := false
+	artifactProduced := false
+	var existingArtifacts []schema.Turn
+	if history != nil {
+		for _, turn := range *history {
+			if isSessionNameCompactionTurn(turn) {
+				existingArtifacts = append(existingArtifacts, turn)
+			}
+		}
+	}
 	var pendingSteering []steeringTurnRecord
+	ctx = contextmgr.WithCompactionTurnCallback(ctx, func(turn schema.Turn) {
+		s.handleCompactionTurn(turn)
+		if isSessionNameCompactionTurn(turn) && !consumeMatchingCompactionArtifact(&existingArtifacts, turn) {
+			artifactProduced = true
+		}
+	})
 	emitFn := func(kind events.EventKind, data events.EventData) {
-		if kind == events.EventContextCompaction && !preCompactRan {
-			preCompactRan = true
-			pendingSteering = append(pendingSteering, s.runPreCompactHook(ctx, history)...)
-			s.mu.Lock()
-			s.nudgedSinceCompact = false // reset nudge latch on ANY compaction
-			s.mu.Unlock()
+		if kind == events.EventContextCompaction {
+			if !preCompactRan {
+				preCompactRan = true
+				pendingSteering = append(pendingSteering, s.runPreCompactHook(ctx, history)...)
+				s.mu.Lock()
+				s.nudgedSinceCompact = false // reset nudge latch on ANY compaction
+				s.mu.Unlock()
+			}
 		}
 		s.emit(kind, data)
 	}
 	flush := func() {
 		s.flushSteeringTurnRecords(pendingSteering)
+		if artifactProduced {
+			s.steerCompactionTranscriptReminder()
+		}
 	}
-	return emitFn, flush
+	return ctx, emitFn, flush
+}
+
+func consumeMatchingCompactionArtifact(existing *[]schema.Turn, turn schema.Turn) bool {
+	for i, candidate := range *existing {
+		if reflect.DeepEqual(candidate, turn) {
+			*existing = append((*existing)[:i], (*existing)[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // runPreCompactHook gathers the steering messages re-injected once per

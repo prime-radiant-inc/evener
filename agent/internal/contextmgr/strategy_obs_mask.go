@@ -102,8 +102,8 @@ func (s *ObsMaskStrategy) ManageContext(ctx context.Context, history *[]schema.T
 			EstTokensBefore: before,
 			EstTokensAfter:  after,
 		})
-		if s.cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == schema.TurnCheckpoint {
-			s.cm.OnCompactionTurn((*history)[0])
+		if len(*history) > 0 && (*history)[0].Kind == schema.TurnCheckpoint {
+			s.cm.handleCompactionTurn(ctx, (*history)[0])
 		}
 		compacted = true
 	}
