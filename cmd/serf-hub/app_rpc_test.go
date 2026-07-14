@@ -371,10 +371,10 @@ func TestHubRPCThreadListUsesRosterStatusAndSessionID(t *testing.T) {
 		Protocol:  appwire.ProtocolVersion,
 		Endpoint:  "ws://127.0.0.1:1/rpc",
 		SourceID:  "local",
-		ThreadID:  "01OLD",
-		SessionID: "01OLD",
+		ThreadID:  "02wMz5Txv2enqVTitaig6F",
+		SessionID: "02wMz5Txv2enqVTitaig6F",
 	})
-	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: "01NEW", status: appwire.ThreadStatusAwaiting})
+	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: "02wMz5Txv1C3Hut0M8GCeB", status: appwire.ThreadStatusAwaiting})
 	roster.Refresh()
 
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
@@ -398,7 +398,7 @@ func TestHubRPCThreadListUsesRosterStatusAndSessionID(t *testing.T) {
 		t.Fatalf("threads=%+v", resp.Data)
 	}
 	thread := resp.Data[0]
-	if thread.ID != "01NEW" || thread.SessionID != "01NEW" || thread.Serf.Ref != "local:01NEW" {
+	if thread.ID != "02wMz5Txv1C3Hut0M8GCeB" || thread.SessionID != "02wMz5Txv1C3Hut0M8GCeB" || thread.Serf.Ref != "local:02wMz5Txv1C3Hut0M8GCeB" {
 		t.Fatalf("thread identity=%+v", thread)
 	}
 	if thread.Status.Type != appwire.ThreadStatusAwaiting {
@@ -408,7 +408,7 @@ func TestHubRPCThreadListUsesRosterStatusAndSessionID(t *testing.T) {
 
 func TestHubRPCThreadListIncludesPastThreads(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "past")
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
@@ -439,8 +439,8 @@ func TestHubRPCThreadListOrdersLiveThreadsDeterministically(t *testing.T) {
 		Protocol:  appwire.ProtocolVersion,
 		Endpoint:  "ws://127.0.0.1:1/rpc",
 		SourceID:  "local",
-		ThreadID:  "01OLD",
-		SessionID: "01OLD",
+		ThreadID:  "02wMz5Txv2enqVTitaig6F",
+		SessionID: "02wMz5Txv2enqVTitaig6F",
 		StartedAt: base.Add(-time.Hour),
 	})
 	writeRendezvous(t, runDir, rendezvous.Entry{
@@ -448,8 +448,8 @@ func TestHubRPCThreadListOrdersLiveThreadsDeterministically(t *testing.T) {
 		Protocol:  appwire.ProtocolVersion,
 		Endpoint:  "ws://127.0.0.1:2/rpc",
 		SourceID:  "local",
-		ThreadID:  "02NEW",
-		SessionID: "02NEW",
+		ThreadID:  "02wMz5Txv47YP64RR3B9YJ",
+		SessionID: "02wMz5Txv47YP64RR3B9YJ",
 		StartedAt: base,
 	})
 
@@ -468,7 +468,7 @@ func TestHubRPCThreadListOrdersLiveThreadsDeterministically(t *testing.T) {
 	if len(resp.Data) != 2 {
 		t.Fatalf("threads=%+v", resp.Data)
 	}
-	if resp.Data[0].ID != "02NEW" || resp.Data[1].ID != "01OLD" {
+	if resp.Data[0].ID != "02wMz5Txv47YP64RR3B9YJ" || resp.Data[1].ID != "02wMz5Txv2enqVTitaig6F" {
 		t.Fatalf("order=%s,%s", resp.Data[0].ID, resp.Data[1].ID)
 	}
 }
@@ -648,16 +648,16 @@ func TestNewHubSourceRegistryAddsConfiguredCodexSources(t *testing.T) {
 
 func TestHubThreadListOrdersPastSearchByUpdatedCreatedTitleAndID(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "x")
+	stateDir := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	updated := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	for _, meta := range []schema.SessionMeta{
-		{ID: "02OLD", CreatedAt: updated.Add(-2 * time.Hour), UpdatedAt: updated, OriginalPrompt: "beta task"},
-		{ID: "01NEW", CreatedAt: updated.Add(-time.Hour), UpdatedAt: updated, OriginalPrompt: "alpha task"},
-		{ID: "04TITLEB", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalPrompt: "bravo task"},
-		{ID: "03TITLEA", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalPrompt: "alpha task"},
+		{ID: "02wMz5Txv5aIxgf9yVdd0N", CreatedAt: updated.Add(-2 * time.Hour), UpdatedAt: updated, OriginalPrompt: "beta task"},
+		{ID: "02wMz5Txv1C3Hut0M8GCeB", CreatedAt: updated.Add(-time.Hour), UpdatedAt: updated, OriginalPrompt: "alpha task"},
+		{ID: "02wMz5Txv8Vo4rqb3QYZuV", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalPrompt: "bravo task"},
+		{ID: "02wMz5Txv733WHFsVy66SR", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalPrompt: "alpha task"},
 	} {
 		if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
 			t.Fatal(err)
@@ -677,7 +677,7 @@ func TestHubThreadListOrdersPastSearchByUpdatedCreatedTitleAndID(t *testing.T) {
 	for _, thread := range resp.Data {
 		got = append(got, thread.ID)
 	}
-	want := []string{"01NEW", "02OLD", "03TITLEA", "04TITLEB"}
+	want := []string{"02wMz5Txv1C3Hut0M8GCeB", "02wMz5Txv5aIxgf9yVdd0N", "02wMz5Txv733WHFsVy66SR", "02wMz5Txv8Vo4rqb3QYZuV"}
 	if len(got) != len(want) {
 		t.Fatalf("order=%v, want %v", got, want)
 	}
@@ -713,7 +713,7 @@ func TestHubThreadListSearchMatchesProviderOnlyProfile(t *testing.T) {
 
 func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "x")
+	stateDir := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -724,7 +724,7 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 	liveStarted := base.Add(-24 * time.Hour)
 
 	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
-		ID:             "01LIVE",
+		ID:             "02wMz5Txv9yYdSRJat13MZ",
 		CreatedAt:      base.Add(-2 * time.Hour),
 		UpdatedAt:      liveUpdated,
 		OriginalPrompt: "live task",
@@ -732,7 +732,7 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
-		ID:             "02PAST",
+		ID:             "02wMz5TxvBRJC3228LTWod",
 		CreatedAt:      base.Add(-3 * time.Hour),
 		UpdatedAt:      pastUpdated,
 		OriginalPrompt: "past task",
@@ -744,8 +744,8 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 		Protocol:  appwire.ProtocolVersion,
 		Endpoint:  "ws://127.0.0.1:501/rpc",
 		SourceID:  "local",
-		ThreadID:  "01LIVE",
-		SessionID: "01LIVE",
+		ThreadID:  "02wMz5Txv9yYdSRJat13MZ",
+		SessionID: "02wMz5Txv9yYdSRJat13MZ",
 		StartedAt: liveStarted,
 	})
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
@@ -761,7 +761,7 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 	if len(resp.Data) != 2 {
 		t.Fatalf("threads=%+v", resp.Data)
 	}
-	if resp.Data[0].ID != "01LIVE" || resp.Data[1].ID != "02PAST" {
+	if resp.Data[0].ID != "02wMz5Txv9yYdSRJat13MZ" || resp.Data[1].ID != "02wMz5TxvBRJC3228LTWod" {
 		t.Fatalf("order=%s,%s", resp.Data[0].ID, resp.Data[1].ID)
 	}
 	if resp.Data[0].UpdatedAt != liveUpdated.Unix() || resp.Data[0].CreatedAt != base.Add(-2*time.Hour).Unix() {
@@ -816,7 +816,7 @@ func TestHubRPCThreadReadRoutesToDaemon(t *testing.T) {
 
 func TestHubRPCThreadReadReturnsPastTranscript(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "past")
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
@@ -847,9 +847,9 @@ func TestHubRPCThreadReadReturnsPastTranscript(t *testing.T) {
 
 func TestHubRPCThreadReadEnrichesReplayToolOutputImagesFromFiles(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "images")
+	stateDir := filepath.Join(root, "projects", "project-images-0000000000")
 	cwd := filepath.Join(root, "work")
-	sessionID := "01FILEIMG00000000000001"
+	sessionID := "02wMz5TxvCu3kdckfnw0Gh"
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -951,7 +951,7 @@ func TestHubRPCThreadReadEnrichesLiveToolOutputImagesFromFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cwd, "plot.png"), png, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	sessionID := "01LIVEFILEIMG"
+	sessionID := "02wMz5Txv9yYdSRJat13MZ"
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
@@ -1013,8 +1013,8 @@ func TestHubRPCThreadReadEnrichesLiveToolOutputImagesFromFiles(t *testing.T) {
 
 func TestHubRPCThreadReadIncludesTranscriptPrelude(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "prelude")
-	sessionID := "01PRELUDE00000000000001"
+	stateDir := filepath.Join(root, "projects", "project-prelude-0000000000")
+	sessionID := "02wMz5TxvEMoJEDTDGOTil"
 	transcriptPath := filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl")
 	writer, err := transcript.NewWriter(transcriptPath, transcript.Header{
 		SessionID:    sessionID,
@@ -1109,7 +1109,7 @@ func TestHubRPCThreadReadIncludesTranscriptPrelude(t *testing.T) {
 
 func TestHubRPCThreadReadIncludesAPICallErrorAsFailedTurn(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "failed")
+	stateDir := filepath.Join(root, "projects", "project-failed-0000000000")
 	sessionID := buildRPCFailedSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
@@ -1141,7 +1141,7 @@ func TestHubRPCThreadReadIncludesAPICallErrorAsFailedTurn(t *testing.T) {
 
 func TestHubRPCThreadReadUsesStructuredAPICallDiagnostic(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "failed")
+	stateDir := filepath.Join(root, "projects", "project-failed-0000000000")
 	sessionID := buildRPCStructuredFailedSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
@@ -1173,7 +1173,7 @@ func TestHubRPCThreadReadUsesStructuredAPICallDiagnostic(t *testing.T) {
 
 func TestSanitizeStaleProcessingStatusFlipsFailedAPICallToError(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "stuck")
+	stateDir := filepath.Join(root, "projects", "project-stuck-0000000000")
 	sessionID := buildRPCFailedSession(t, stateDir) // tail = api_call with Error
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
@@ -1194,7 +1194,7 @@ func TestSanitizeStaleProcessingStatusFlipsFailedAPICallToError(t *testing.T) {
 
 func TestSanitizeStaleProcessingStatusLeavesCompletedAssistantTailAlone(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "midflight")
+	stateDir := filepath.Join(root, "projects", "project-midflight-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir)
 	// buildRPCParentSession's tail is a USER_INPUT entry. Append an
 	// ASSISTANT turn so the tail is a successful assistant message.
@@ -1221,7 +1221,7 @@ func TestSanitizeStaleProcessingStatusLeavesUserInputTailAlone(t *testing.T) {
 	// USER_INPUT with no api_call yet could mean the agent is genuinely
 	// preparing the first LLM call. Conservatively leave processing as-is.
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "userin")
+	stateDir := filepath.Join(root, "projects", "project-userin-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir) // tail is USER_INPUT
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
@@ -1242,7 +1242,7 @@ func TestSanitizeStaleProcessingStatusLeavesUserInputTailAlone(t *testing.T) {
 
 func TestSanitizeStaleProcessingStatusIgnoresNonLocalSources(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "codex")
+	stateDir := filepath.Join(root, "projects", "project-codex-0000000000")
 	sessionID := buildRPCFailedSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
@@ -1263,7 +1263,7 @@ func TestSanitizeStaleProcessingStatusIgnoresNonLocalSources(t *testing.T) {
 
 func TestSanitizeStaleProcessingStatusLeavesNonProcessingAlone(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "idle")
+	stateDir := filepath.Join(root, "projects", "project-idle-0000000000")
 	sessionID := buildRPCFailedSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
@@ -1291,7 +1291,7 @@ func TestHubRPCThreadReadFlipsStuckProcessingToError(t *testing.T) {
 	// api_call. MethodThreadRead must report error so the hub UI doesn't
 	// disable steer/send forever (kata r6y9).
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "stuck")
+	stateDir := filepath.Join(root, "projects", "project-stuck-0000000000")
 	sessionID := buildRPCFailedSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
@@ -1353,7 +1353,7 @@ func appendAssistantToTranscript(t *testing.T, path string) {
 
 func TestHubRPCThreadReadMergesPastTurnsForLiveDaemon(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "past")
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
@@ -1410,7 +1410,7 @@ func TestHubRPCThreadReadMergesPastTurnsForLiveDaemon(t *testing.T) {
 
 func TestHubRPCThreadReadDoesNotReturnLocalPastForNonLocalMissingSource(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "local")
+	stateDir := filepath.Join(root, "projects", "project-local-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
@@ -1433,7 +1433,7 @@ func TestHubRPCThreadReadDoesNotReturnLocalPastForNonLocalMissingSource(t *testi
 
 func TestHubRPCThreadReadDoesNotMergeLocalPastIntoNonLocalLiveThread(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "local")
+	stateDir := filepath.Join(root, "projects", "project-local-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
@@ -2210,7 +2210,7 @@ func TestHubRPCThreadReadSubscribeFailureDoesNotLeaveClientSubscribed(t *testing
 
 func TestHubThreadListKeepsLocalPastWhenNonLocalLiveIDCollides(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "local")
+	stateDir := filepath.Join(root, "projects", "project-local-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
@@ -2722,8 +2722,9 @@ func TestHubRPCThreadActionsRouteToDaemon(t *testing.T) {
 
 func TestHubRPCThreadCompactStartResumesPastThread(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "past")
-	sessionID := buildRPCParentSession(t, stateDir)
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
@@ -2760,12 +2761,13 @@ func TestHubRPCThreadCompactStartResumesPastThread(t *testing.T) {
 			gotReq = req
 			resumeCalls++
 			entry := rendezvous.Entry{
-				PID:       106,
-				Protocol:  appwire.ProtocolVersion,
-				Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
-				SourceID:  "local",
-				ThreadID:  sessionID,
-				SessionID: sessionID,
+				PID:        106,
+				Protocol:   appwire.ProtocolVersion,
+				Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:   "local",
+				ThreadID:   sessionID,
+				SessionID:  sessionID,
+				WorkingDir: workingDir,
 			}
 			writeRendezvous(t, runDir, entry)
 			return entry, nil
@@ -2786,7 +2788,7 @@ func TestHubRPCThreadCompactStartResumesPastThread(t *testing.T) {
 	if resumeCalls != 1 {
 		t.Fatalf("resume calls=%d, want 1", resumeCalls)
 	}
-	if gotReq.SessionID != sessionID || gotReq.StateDir != stateDir || gotReq.WorkingDir != "/tmp/project" {
+	if gotReq.SessionID != sessionID || gotReq.StateDir != stateDir || gotReq.WorkingDir != workingDir {
 		t.Fatalf("resume request=%+v", gotReq)
 	}
 	if !compactCalled {
@@ -2796,8 +2798,9 @@ func TestHubRPCThreadCompactStartResumesPastThread(t *testing.T) {
 
 func TestHubRPCThreadModelSetResumesPastThread(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "past")
-	sessionID := buildRPCParentSession(t, stateDir)
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
@@ -2830,17 +2833,18 @@ func TestHubRPCThreadModelSetResumesPastThread(t *testing.T) {
 	resumeCalls := 0
 	spawner := &fakeRPCSpawner{
 		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
-			if req.SessionID != sessionID || req.StateDir != stateDir || req.WorkingDir != "/tmp/project" {
+			if req.SessionID != sessionID || req.StateDir != stateDir || req.WorkingDir != workingDir {
 				t.Fatalf("resume request=%+v", req)
 			}
 			resumeCalls++
 			entry := rendezvous.Entry{
-				PID:       106,
-				Protocol:  appwire.ProtocolVersion,
-				Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
-				SourceID:  "local",
-				ThreadID:  sessionID,
-				SessionID: sessionID,
+				PID:        106,
+				Protocol:   appwire.ProtocolVersion,
+				Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:   "local",
+				ThreadID:   sessionID,
+				SessionID:  sessionID,
+				WorkingDir: workingDir,
 			}
 			writeRendezvous(t, runDir, entry)
 			return entry, nil
@@ -4121,12 +4125,13 @@ func TestHubRPCTurnStartEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
 
 func makeResumeSession(t *testing.T, root, sessionID, profileID, model string) (string, *hubcore.PastIndex) {
 	t.Helper()
-	stateDir := filepath.Join(root, "projects", sessionID)
+	stateDir := filepath.Join(root, "projects", "project-resume-0000000000")
+	workingDir := t.TempDir()
 	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
 		ID:        sessionID,
 		ProfileID: profileID,
 		Model:     model,
-		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/tmp/project"},
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: workingDir},
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	}); err != nil {
@@ -4141,7 +4146,7 @@ func makeResumeSession(t *testing.T, root, sessionID, profileID, model string) (
 
 func TestResumeRequestForConfigPassesThroughOpenAIProfileID(t *testing.T) {
 	root := t.TempDir()
-	sessionID := "01PROFILE0000000000000001"
+	sessionID := "02wMz5Txv1C3Hut0M8GCeB"
 	stateDir, past := makeResumeSession(t, root, sessionID, "openai", "gpt-4o")
 
 	req, err := resumeRequestForConfig(hubcore.WebConfig{Past: past}, sessionID)
@@ -4154,14 +4159,14 @@ func TestResumeRequestForConfigPassesThroughOpenAIProfileID(t *testing.T) {
 	if req.Resolved.Effective.Model != "openai/gpt-4o" {
 		t.Fatalf("model=%q, want %q", req.Resolved.Effective.Model, "openai/gpt-4o")
 	}
-	if req.WorkingDir != "/tmp/project" || req.StateDir != stateDir {
+	if req.WorkingDir == "" || req.StateDir != stateDir {
 		t.Fatalf("resume request=%+v", req)
 	}
 }
 
 func TestResumeRequestForConfigPassesThroughCustomProfileID(t *testing.T) {
 	root := t.TempDir()
-	sessionID := "01PROFILE0000000000000002"
+	sessionID := "02wMz5Txv2enqVTitaig6F"
 	_, past := makeResumeSession(t, root, sessionID, "work", "gpt-4o")
 
 	req, err := resumeRequestForConfig(hubcore.WebConfig{Past: past}, sessionID)
@@ -4178,7 +4183,7 @@ func TestResumeRequestForConfigPassesThroughCustomProfileID(t *testing.T) {
 
 func TestResumeRequestForConfigErrorsOnEmptyProfileID(t *testing.T) {
 	root := t.TempDir()
-	sessionID := "01PROFILE0000000000000003"
+	sessionID := "02wMz5Txv47YP64RR3B9YJ"
 	_, past := makeResumeSession(t, root, sessionID, "", "gpt-4o")
 
 	_, err := resumeRequestForConfig(hubcore.WebConfig{Past: past}, sessionID)
@@ -4196,16 +4201,18 @@ func TestResumeRequestForConfigErrorsOnEmptyProfileID(t *testing.T) {
 // validation rules.
 func TestResumeRequestForConfigUsesRestoreRootWhenWorktreeActive(t *testing.T) {
 	root := t.TempDir()
-	sessionID := "01PROFILE0000000000000004"
-	stateDir := filepath.Join(root, "projects", sessionID)
+	sessionID := "02wMz5Txv5aIxgf9yVdd0N"
+	stateDir := filepath.Join(root, "projects", "project-resume-0000000000")
+	restoreRoot := t.TempDir()
+	worktreePath := t.TempDir()
 	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
 		ID:                  sessionID,
 		ProfileID:           "openai",
 		Model:               "gpt-4o",
-		EnvInfo:             schema.EnvironmentInfo{WorkingDir: "/state/worktrees/serf-hub/dlg_01H"},
-		WorktreePath:        "/state/worktrees/serf-hub/dlg_01H",
+		EnvInfo:             schema.EnvironmentInfo{WorkingDir: worktreePath},
+		WorktreePath:        worktreePath,
 		WorktreeManaged:     true,
-		WorktreeRestoreRoot: "/tmp/project",
+		WorktreeRestoreRoot: restoreRoot,
 		CreatedAt:           time.Now().UTC(),
 		UpdatedAt:           time.Now().UTC(),
 	}); err != nil {
@@ -4220,8 +4227,8 @@ func TestResumeRequestForConfigUsesRestoreRootWhenWorktreeActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if req.WorkingDir != "/tmp/project" {
-		t.Fatalf("resume dir=%q, want restore root %q (not the worktree path)", req.WorkingDir, "/tmp/project")
+	if req.WorkingDir != restoreRoot {
+		t.Fatalf("resume dir=%q, want restore root %q (not the worktree path)", req.WorkingDir, restoreRoot)
 	}
 }
 
@@ -4707,8 +4714,9 @@ func TestHubRPCThreadResumeRelaysReturnedSourceThread(t *testing.T) {
 }
 func TestHubRPCTurnStartResumesPastThread(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "past")
-	sessionID := buildRPCParentSession(t, stateDir)
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
@@ -4728,14 +4736,18 @@ func TestHubRPCTurnStartResumesPastThread(t *testing.T) {
 
 	runDir := t.TempDir()
 	spawner := &fakeRPCSpawner{
-		resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			if req.WorkingDir != workingDir {
+				t.Fatalf("resume request=%+v", req)
+			}
 			entry := rendezvous.Entry{
-				PID:       106,
-				Protocol:  appwire.ProtocolVersion,
-				Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
-				SourceID:  "local",
-				ThreadID:  sessionID,
-				SessionID: sessionID,
+				PID:        106,
+				Protocol:   appwire.ProtocolVersion,
+				Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:   "local",
+				ThreadID:   sessionID,
+				SessionID:  sessionID,
+				WorkingDir: workingDir,
 			}
 			writeRendezvous(t, runDir, entry)
 			return entry, nil
@@ -4760,8 +4772,9 @@ func TestHubRPCTurnStartResumesPastThread(t *testing.T) {
 
 func TestHubRPCTurnStartResumesPastThreadAfterRelaySubscribeUnavailable(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "past")
-	sessionID := buildRPCParentSession(t, stateDir)
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
@@ -4779,12 +4792,16 @@ func TestHubRPCTurnStartResumesPastThreadAfterRelaySubscribeUnavailable(t *testi
 		},
 	}
 	spawner := &fakeRPCSpawner{
-		resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			if req.WorkingDir != workingDir {
+				t.Fatalf("resume request=%+v", req)
+			}
 			return rendezvous.Entry{
-				Protocol:  appwire.ProtocolVersion,
-				SourceID:  "local",
-				ThreadID:  sessionID,
-				SessionID: sessionID,
+				Protocol:   appwire.ProtocolVersion,
+				SourceID:   "local",
+				ThreadID:   sessionID,
+				SessionID:  sessionID,
+				WorkingDir: workingDir,
 			}, nil
 		},
 	}
@@ -4813,7 +4830,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterRelaySubscribeUnavailable(t *testi
 
 func TestHubRPCTurnStartDoesNotResumePastThreadOnLiveStartError(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "past")
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
@@ -4868,7 +4885,7 @@ func TestHubRPCTurnStartDoesNotResumePastThreadOnLiveStartError(t *testing.T) {
 
 func TestHubRPCTurnStartDoesNotResumePastThreadOnGenericSubstringError(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "past")
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
@@ -4923,8 +4940,9 @@ func TestHubRPCTurnStartDoesNotResumePastThreadOnGenericSubstringError(t *testin
 
 func TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "past")
-	sessionID := buildRPCParentSession(t, stateDir)
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
@@ -4943,14 +4961,18 @@ func TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications(t *testing.T) {
 
 	runDir := t.TempDir()
 	spawner := &fakeRPCSpawner{
-		resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			if req.WorkingDir != workingDir {
+				t.Fatalf("resume request=%+v", req)
+			}
 			entry := rendezvous.Entry{
-				PID:       107,
-				Protocol:  appwire.ProtocolVersion,
-				Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
-				SourceID:  "local",
-				ThreadID:  sessionID,
-				SessionID: sessionID,
+				PID:        107,
+				Protocol:   appwire.ProtocolVersion,
+				Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:   "local",
+				ThreadID:   sessionID,
+				SessionID:  sessionID,
+				WorkingDir: workingDir,
 			}
 			writeRendezvous(t, runDir, entry)
 			return entry, nil
@@ -4992,8 +5014,9 @@ func TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications(t *testing.T) {
 
 func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "past")
-	sessionID := buildRPCParentSession(t, stateDir)
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
@@ -5032,15 +5055,19 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 	roster.Refresh()
 	resumeCalled := false
 	spawner := &fakeRPCSpawner{
-		resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			if req.WorkingDir != workingDir {
+				t.Fatalf("resume request=%+v", req)
+			}
 			resumeCalled = true
 			entry := rendezvous.Entry{
-				PID:       110,
-				Protocol:  appwire.ProtocolVersion,
-				Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
-				SourceID:  "local",
-				ThreadID:  sessionID,
-				SessionID: sessionID,
+				PID:        110,
+				Protocol:   appwire.ProtocolVersion,
+				Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:   "local",
+				ThreadID:   sessionID,
+				SessionID:  sessionID,
+				WorkingDir: workingDir,
 			}
 			writeRendezvous(t, runDir, entry)
 			roster.Refresh()
@@ -5462,7 +5489,7 @@ func TestHubRPCThreadForkReturnsUnavailableWhenNonLocalSourceCannotFork(t *testi
 
 func TestHubRPCThreadForkCreatesForkedThread(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "fork")
+	stateDir := filepath.Join(root, "projects", "project-fork-0000000000")
 	parentID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
@@ -5557,7 +5584,12 @@ func (f *fakeRPCSpawner) ListLaunchModels(ctx context.Context) ([]appwire.ModelD
 
 func buildRPCParentSession(t *testing.T, stateDir string) string {
 	t.Helper()
-	parentID := "01PARENT00000000000000001"
+	return buildRPCParentSessionWithWorkingDir(t, stateDir, t.TempDir())
+}
+
+func buildRPCParentSessionWithWorkingDir(t *testing.T, stateDir, workingDir string) string {
+	t.Helper()
+	parentID := "02wMz5Txv1C3Hut0M8GCeB"
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -5566,7 +5598,7 @@ func buildRPCParentSession(t *testing.T, stateDir string) string {
 		CreatedAt:  time.Now().UTC(),
 		ProfileID:  "openai",
 		Model:      "gpt-5",
-		WorkingDir: "/tmp/project",
+		WorkingDir: workingDir,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -5587,7 +5619,7 @@ func buildRPCParentSession(t *testing.T, stateDir string) string {
 		ID:             parentID,
 		ProfileID:      "openai",
 		Model:          "gpt-5",
-		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/tmp/project"},
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: workingDir},
 		CreatedAt:      time.Now().UTC(),
 		UpdatedAt:      time.Now().UTC(),
 		TurnCount:      2,
@@ -5600,7 +5632,7 @@ func buildRPCParentSession(t *testing.T, stateDir string) string {
 
 func buildRPCFailedSession(t *testing.T, stateDir string) string {
 	t.Helper()
-	sessionID := "01FAILED0000000000000001"
+	sessionID := "02wMz5Txv2enqVTitaig6F"
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -5648,7 +5680,7 @@ func buildRPCFailedSession(t *testing.T, stateDir string) string {
 
 func buildRPCStructuredFailedSession(t *testing.T, stateDir string) string {
 	t.Helper()
-	sessionID := "01FAILED0000000000000002"
+	sessionID := "02wMz5Txv47YP64RR3B9YJ"
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}

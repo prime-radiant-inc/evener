@@ -131,6 +131,7 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 				t.Fatal("bad asset version")
 			}
 		case 4:
+			workDir := t.TempDir()
 			resolved := launchconfig.Resolved{}
 			if data == "args" {
 				resolved.Effective.Model = "model"
@@ -145,8 +146,8 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 			if got, _ := resolveSerfStateDirWithStateHome("/a/b", "/override", "/xdg"); got != "/override" {
 				t.Fatal(got)
 			}
-			if got, _ := resolveSerfStateDirWithStateHome("/a/b", "", "/xdg"); !strings.Contains(got, "serf") {
-				t.Fatal(got)
+			if got, err := resolveSerfStateDirWithStateHome(workDir, "", "/xdg"); err != nil || !strings.Contains(got, "serf") {
+				t.Fatalf("valid project state dir = %q, %v", got, err)
 			}
 		case 5:
 			var envHelp bytes.Buffer

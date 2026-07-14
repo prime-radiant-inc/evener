@@ -161,10 +161,10 @@ func TestCovWebCoreAPIDecisionValidation(t *testing.T) {
 	}
 	_ = covWebRequest(t, NewWebServer(hubcore.WebConfig{}), http.MethodPost, "/api/archive", `{"kind":"session","id":"x","archived":true}`)
 	_ = covWebRequest(t, NewWebServer(hubcore.WebConfig{}), http.MethodPost, "/api/favorite", `{"kind":"project","id":"x","favorited":true}`)
-	_ = covWebRequest(t, web, http.MethodPost, "/api/archive", `{"kind":"session","id":"x","archived":true}`)
+	_ = covWebRequest(t, web, http.MethodPost, "/api/archive", `{"kind":"session","id":"02wMz5Txv1C3Hut0M8GCeB","archived":true}`)
 	_ = covWebRequest(t, web, http.MethodPost, "/api/archive", `{"kind":"project","id":"/a/proj","archived":false}`)
-	_ = covWebRequest(t, web, http.MethodPost, "/api/favorite", `{"kind":"project","id":"x","favorited":true}`)
-	if poked != 3 {
+	_ = covWebRequest(t, web, http.MethodPost, "/api/favorite", `{"kind":"project","id":"project-test-0123456789","favorited":true}`)
+	if poked != 2 {
 		t.Fatalf("pokes=%d", poked)
 	}
 

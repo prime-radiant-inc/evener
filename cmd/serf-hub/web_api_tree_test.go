@@ -114,12 +114,13 @@ func TestArchiveDecisionsHelperWithStore(t *testing.T) {
 // WorkMillis and flattened Usage fields (WS2 B2).
 func TestAPISessionDetailCarriesWorkMetricsForEndedSession(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-metrics-0000000000")
+	sessionID := "02wMz5Txv47YP64RR3B9YJ"
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID:             "01WORKMETRICS",
+		ID:             sessionID,
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "work metrics task",
 		Model:          "gpt-5",
@@ -142,7 +143,7 @@ func TestAPISessionDetailCarriesWorkMetricsForEndedSession(t *testing.T) {
 	}
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Past: idx})
 
-	detail, ok := web.apiSessionDetail("01WORKMETRICS")
+	detail, ok := web.apiSessionDetail(sessionID)
 	if !ok {
 		t.Fatal("apiSessionDetail: session not found")
 	}
@@ -400,12 +401,13 @@ func TestAPITree_NeedsYouCarriesAskPending(t *testing.T) {
 
 func TestAPISessionDetailHonorsRenamedMetaForLiveThread(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-renamed-0000000000")
+	sessionID := "02wMz5Txv5aIxgf9yVdd0N"
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01RENAMED", UpdatedAt: time.Now(),
+		ID: sessionID, UpdatedAt: time.Now(),
 		Name: "my chosen name", NameSource: "user",
 		Model: "gpt-5", EnvInfo: schema.EnvironmentInfo{WorkingDir: proj},
 	}); err != nil {
@@ -417,19 +419,19 @@ func TestAPISessionDetailHonorsRenamedMetaForLiveThread(t *testing.T) {
 	}
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 88, Address: "127.0.0.1:4588", WorkingDir: proj, Model: "gpt-5"})
-	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01RENAMED", status: appwire.ThreadStatusIdle})
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusIdle})
 	r.Refresh()
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
 	// Live daemon thread reports NO name (the rename lives only in meta).
 	web.sources.Add(&scriptedAppSource{
 		id: "local",
 		thread: appwire.Thread{
-			ID: "01RENAMED", SessionID: "01RENAMED", Source: "local",
+			ID: sessionID, SessionID: sessionID, Source: "local",
 			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}, CWD: proj,
-			Serf: appwire.SerfThread{Ref: "local:01RENAMED", Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Serf: appwire.SerfThread{Ref: "local:" + sessionID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 	})
-	detail, ok := web.apiSessionDetail("01RENAMED")
+	detail, ok := web.apiSessionDetail(sessionID)
 	if !ok {
 		t.Fatal("apiSessionDetail: not found")
 	}

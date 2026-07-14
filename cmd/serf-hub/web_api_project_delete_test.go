@@ -15,6 +15,8 @@ import (
 	"primeradiant.com/serf/identifier"
 )
 
+const webTestSessionID = "02wMz5Txv1C3Hut0M8GCeB"
+
 func TestProjectDeleteRejectsRecomputedIDMismatchAndNoProject(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "project")
@@ -72,18 +74,18 @@ func TestProjectDeleteRemovesFilesAndScrubs(t *testing.T) {
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	stateDir := filepath.Join(root, "projects", "sha1")
+	stateDir := filepath.Join(root, "projects", "project-delete-0123456789")
 	project, err := identifier.ResolveProject(projectDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeSession(t, stateDir, "01A", project.CanonicalPath)
+	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
 	dbPath := filepath.Join(root, "index.db")
 	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
 	_ = past.Rebuild()
 	archive := hubcore.NewArchiveStore(dbPath)
 	favorite := hubcore.NewFavoriteStore(dbPath)
-	_ = archive.Set("session", "01A", true, time.Unix(1_700_000_000, 0))
+	_ = archive.Set("session", webTestSessionID, true, time.Unix(1_700_000_000, 0))
 	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
 
 	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
@@ -103,15 +105,15 @@ func TestProjectDeleteRemovesFilesAndScrubs(t *testing.T) {
 		t.Fatalf("want 1 deleted ref, got %+v", resp)
 	}
 	for _, suffix := range []string{".transcript.jsonl", ".log.jsonl", ".api.jsonl", ".api-raw.jsonl"} {
-		if _, err := os.Stat(filepath.Join(stateDir, "sessions", "01A"+suffix)); !os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+suffix)); !os.IsNotExist(err) {
 			t.Fatalf("%s should be removed", suffix)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(stateDir, "sessions", "01A")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID)); !os.IsNotExist(err) {
 		t.Fatal("per-session dir should be removed")
 	}
 	d, _ := archive.Decisions()
-	if _, present := d[hubcore.ArchiveKey{Kind: "session", ID: "01A"}]; present {
+	if _, present := d[hubcore.ArchiveKey{Kind: "session", ID: webTestSessionID}]; present {
 		t.Fatalf("session archive row should be scrubbed: %v", d)
 	}
 }
@@ -126,12 +128,12 @@ func TestProjectDeleteRejectsKeyWorkingDirMismatch(t *testing.T) {
 	if err := os.MkdirAll(wrongDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	stateDir := filepath.Join(root, "projects", "sha1")
+	stateDir := filepath.Join(root, "projects", "project-delete-0123456789")
 	project, err := identifier.ResolveProject(projectDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeSession(t, stateDir, "01A", project.CanonicalPath)
+	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	_ = past.Rebuild()
 	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
@@ -151,15 +153,15 @@ func TestProjectDeleteRefusesWhenLive(t *testing.T) {
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	stateDir := filepath.Join(root, "projects", "sha1")
+	stateDir := filepath.Join(root, "projects", "project-delete-0123456789")
 	project, err := identifier.ResolveProject(projectDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeSession(t, stateDir, "01A", project.CanonicalPath)
+	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	_ = past.Rebuild()
-	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{SessionID: "01A", Status: "active"})
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{SessionID: webTestSessionID, Status: "active"})
 	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster})
 	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
@@ -169,7 +171,7 @@ func TestProjectDeleteRefusesWhenLive(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("live project delete must 409, got %d", rec.Code)
 	}
-	if _, err := os.Stat(filepath.Join(stateDir, "sessions", "01A.meta.json")); os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+".meta.json")); os.IsNotExist(err) {
 		t.Fatal("nothing should be removed when refused")
 	}
 }
@@ -188,19 +190,19 @@ func TestProjectDeleteSkipsOnRemoveFailure(t *testing.T) {
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	stateDir := filepath.Join(root, "projects", "sha1")
+	stateDir := filepath.Join(root, "projects", "project-delete-0123456789")
 	project, err := identifier.ResolveProject(projectDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeSession(t, stateDir, "01A", project.CanonicalPath)
+	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
 	dbPath := filepath.Join(root, "index.db")
 	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
 	_ = past.Rebuild()
 	archive := hubcore.NewArchiveStore(dbPath)
 	favorite := hubcore.NewFavoriteStore(dbPath)
-	_ = archive.Set("session", "01A", true, time.Unix(1_700_000_000, 0))
-	_ = favorite.Set("session", "01A", true, time.Unix(1_700_000_000, 0))
+	_ = archive.Set("session", webTestSessionID, true, time.Unix(1_700_000_000, 0))
+	_ = favorite.Set("session", webTestSessionID, true, time.Unix(1_700_000_000, 0))
 	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
 
 	sessDir := filepath.Join(stateDir, "sessions")
@@ -230,29 +232,29 @@ func TestProjectDeleteSkipsOnRemoveFailure(t *testing.T) {
 		t.Fatalf("unmarshal response: %v", err)
 	}
 	for _, id := range resp.Deleted {
-		if id == "01A" {
-			t.Fatalf("01A must not appear in deleted when its files could not be removed: %+v", resp)
+		if id == webTestSessionID {
+			t.Fatalf("webTestSessionID must not appear in deleted when its files could not be removed: %+v", resp)
 		}
 	}
 	skippedCount := 0
 	for _, sk := range resp.Skipped {
-		if sk.ID == "01A" {
+		if sk.ID == webTestSessionID {
 			skippedCount++
 		}
 	}
 	if skippedCount != 1 {
-		t.Fatalf("want exactly 1 skipped entry for 01A, got %d: %+v", skippedCount, resp)
+		t.Fatalf("want exactly 1 skipped entry for webTestSessionID, got %d: %+v", skippedCount, resp)
 	}
 
 	ad, _ := archive.Decisions()
-	if _, present := ad[hubcore.ArchiveKey{Kind: "session", ID: "01A"}]; !present {
+	if _, present := ad[hubcore.ArchiveKey{Kind: "session", ID: webTestSessionID}]; !present {
 		t.Fatal("session archive row must survive a failed removal (retriable)")
 	}
 	fd, _ := favorite.Favorites()
-	if _, present := fd[hubcore.ArchiveKey{Kind: "session", ID: "01A"}]; !present {
+	if _, present := fd[hubcore.ArchiveKey{Kind: "session", ID: webTestSessionID}]; !present {
 		t.Fatal("session favorite row must survive a failed removal (retriable)")
 	}
-	if _, err := os.Stat(filepath.Join(sessDir, "01A.meta.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(sessDir, webTestSessionID+".meta.json")); err != nil {
 		t.Fatalf(".meta.json must still exist after a failed removal: %v", err)
 	}
 }

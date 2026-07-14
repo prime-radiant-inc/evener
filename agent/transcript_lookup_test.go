@@ -7,6 +7,11 @@ import (
 	"testing"
 )
 
+const (
+	cleanBreakProjectID = "Users-jesse-serf-0123456789"
+	cleanBreakSessionID = "02wMz5TxvEMoJEDTDGOTil"
+)
+
 // newStateHome creates a shared stateHome temp dir for all buckets in a test.
 // Returns the stateHome path.
 func newStateHome(t *testing.T) string {
@@ -14,14 +19,14 @@ func newStateHome(t *testing.T) string {
 	return t.TempDir()
 }
 
-// newBucketUnder creates a new bucket state dir under the given stateHome.
-// Returns the bucket state dir (i.e. <stateHome>/serf/projects/<hash>).
+// newBucketUnder creates a new project state dir under the given stateHome.
+// Returns the bucket state dir (i.e. <stateHome>/serf/projects/<projectID>).
 func newBucketUnder(t *testing.T, stateHome string) string {
 	t.Helper()
 	// Use a unique name based on a random temp dir suffix to avoid collisions.
 	tmp := t.TempDir()
-	hash := hexHash(tmp) // reuse the same hexHash as runtime_dir.go
-	dir := filepath.Join(stateHome, "serf", "projects", hash)
+	projectID := "test-" + hexHash(tmp)[:10]
+	dir := filepath.Join(stateHome, "serf", "projects", projectID)
 	if err := os.MkdirAll(filepath.Join(dir, "sessions"), 0o755); err != nil {
 		t.Fatalf("newBucketUnder: %v", err)
 	}
@@ -123,9 +128,9 @@ func TestEnumerateBuckets_EmptyStaleHome(t *testing.T) {
 func TestResolveTranscript_Current(t *testing.T) {
 	t.Parallel()
 	dir := newBucket(t)
-	writeTranscript(t, dir, "01CUR")
-	path, ref, err := resolveTranscript("", dir, "01CUR")
-	if err != nil || ref != "local:01CUR" || !strings.HasSuffix(path, "01CUR.transcript.jsonl") {
+	writeTranscript(t, dir, "02wMz5TxvEMoJEDTDGOTil")
+	path, ref, err := resolveTranscript("", dir, "02wMz5TxvEMoJEDTDGOTil")
+	if err != nil || ref != "local:02wMz5TxvEMoJEDTDGOTil" || !strings.HasSuffix(path, "02wMz5TxvEMoJEDTDGOTil.transcript.jsonl") {
 		t.Fatalf("path=%q ref=%q err=%v", path, ref, err)
 	}
 }
@@ -133,9 +138,9 @@ func TestResolveTranscript_Current(t *testing.T) {
 func TestResolveTranscript_CurrentKeyword(t *testing.T) {
 	t.Parallel()
 	dir := newBucket(t)
-	writeTranscript(t, dir, "01CUR")
-	path, ref, err := resolveTranscript("current", dir, "01CUR")
-	if err != nil || ref != "local:01CUR" || !strings.HasSuffix(path, "01CUR.transcript.jsonl") {
+	writeTranscript(t, dir, "02wMz5TxvEMoJEDTDGOTil")
+	path, ref, err := resolveTranscript("current", dir, "02wMz5TxvEMoJEDTDGOTil")
+	if err != nil || ref != "local:02wMz5TxvEMoJEDTDGOTil" || !strings.HasSuffix(path, "02wMz5TxvEMoJEDTDGOTil.transcript.jsonl") {
 		t.Fatalf("path=%q ref=%q err=%v", path, ref, err)
 	}
 }
@@ -150,15 +155,15 @@ func TestResolveTranscript_LocalRefVariants(t *testing.T) {
 	}{
 		{
 			name:      "ExplicitLocalRef",
-			sessionID: "01ABC",
-			selector:  "local:01ABC",
-			wantRef:   "local:01ABC",
+			sessionID: "02wMz5Txv2enqVTitaig6F",
+			selector:  "local:02wMz5Txv2enqVTitaig6F",
+			wantRef:   "local:02wMz5Txv2enqVTitaig6F",
 		},
 		{
 			name:      "BareIDInCurrentBucket",
-			sessionID: "01BARE",
-			selector:  "01BARE",
-			wantRef:   "local:01BARE",
+			sessionID: "02wMz5Txv47YP64RR3B9YJ",
+			selector:  "02wMz5Txv47YP64RR3B9YJ",
+			wantRef:   "local:02wMz5Txv47YP64RR3B9YJ",
 		},
 	}
 	for _, c := range cases {
@@ -166,7 +171,7 @@ func TestResolveTranscript_LocalRefVariants(t *testing.T) {
 			t.Parallel()
 			dir := newBucket(t)
 			writeTranscript(t, dir, c.sessionID)
-			path, ref, err := resolveTranscript(c.selector, dir, "01CUR")
+			path, ref, err := resolveTranscript(c.selector, dir, "02wMz5TxvEMoJEDTDGOTil")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -186,18 +191,18 @@ func TestResolveTranscript_BareIDInOtherBucket(t *testing.T) {
 	a := newBucketUnder(t, sh)
 	b := newBucketUnder(t, sh)
 	// Only write the transcript in b, not in a.
-	writeTranscript(t, b, "01OTHER")
+	writeTranscript(t, b, "02wMz5Txv5aIxgf9yVdd0N")
 
-	path, ref, err := resolveTranscript("01OTHER", a, "01CUR")
+	path, ref, err := resolveTranscript("02wMz5Txv5aIxgf9yVdd0N", a, "02wMz5TxvEMoJEDTDGOTil")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	bHash := filepath.Base(b)
-	expectedRef := "proj:" + bHash + ":01OTHER"
+	expectedRef := "proj:" + bHash + ":02wMz5Txv5aIxgf9yVdd0N"
 	if ref != expectedRef {
 		t.Fatalf("expected ref %q, got %q", expectedRef, ref)
 	}
-	if !strings.HasSuffix(path, "01OTHER.transcript.jsonl") {
+	if !strings.HasSuffix(path, "02wMz5Txv5aIxgf9yVdd0N.transcript.jsonl") {
 		t.Fatalf("unexpected path %q", path)
 	}
 }
@@ -207,20 +212,20 @@ func TestResolveTranscript_AmbiguousBareID(t *testing.T) {
 	sh := newStateHome(t)
 	a := newBucketUnder(t, sh)
 	b := newBucketUnder(t, sh)
-	writeTranscript(t, a, "01DUP")
-	writeTranscript(t, b, "01DUP")
-	_, _, err := resolveTranscript("01DUP", a, "01CUR")
+	writeTranscript(t, a, "02wMz5Txv733WHFsVy66SR")
+	writeTranscript(t, b, "02wMz5Txv733WHFsVy66SR")
+	_, _, err := resolveTranscript("02wMz5Txv733WHFsVy66SR", a, "02wMz5TxvEMoJEDTDGOTil")
 	bHash := filepath.Base(b)
-	expectedBRef := "proj:" + bHash + ":01DUP"
-	if err == nil || !strings.Contains(err.Error(), "local:01DUP") || !strings.Contains(err.Error(), expectedBRef) {
-		t.Fatalf("expected ambiguity error with candidates local:01DUP and %s, got %v", expectedBRef, err)
+	expectedBRef := "proj:" + bHash + ":02wMz5Txv733WHFsVy66SR"
+	if err == nil || !strings.Contains(err.Error(), "local:02wMz5Txv733WHFsVy66SR") || !strings.Contains(err.Error(), expectedBRef) {
+		t.Fatalf("expected ambiguity error with candidates local:02wMz5Txv733WHFsVy66SR and %s, got %v", expectedBRef, err)
 	}
 }
 
 func TestResolveTranscript_UnknownBareID(t *testing.T) {
 	t.Parallel()
 	dir := newBucket(t)
-	_, _, err := resolveTranscript("01NOTEXIST", dir, "01CUR")
+	_, _, err := resolveTranscript("02wMz5TxvEMoJEDTDGOTil", dir, "02wMz5TxvEMoJEDTDGOTil")
 	if err == nil {
 		t.Fatal("expected error for unknown session id")
 	}
@@ -232,7 +237,7 @@ func TestResolveTranscript_UnknownBareID(t *testing.T) {
 func TestResolveTranscript_TraversalSelector(t *testing.T) {
 	t.Parallel()
 	dir := newBucket(t)
-	_, _, err := resolveTranscript("../etc/passwd", dir, "01CUR")
+	_, _, err := resolveTranscript("../etc/passwd", dir, "02wMz5TxvEMoJEDTDGOTil")
 	if err == nil {
 		t.Fatal("expected error for traversal-like selector")
 	}
@@ -242,7 +247,7 @@ func TestResolveTranscript_ExplicitLocalRefMissing(t *testing.T) {
 	t.Parallel()
 	dir := newBucket(t)
 	// local: ref for a session that doesn't exist
-	_, _, err := resolveTranscript("local:01NOTEXIST", dir, "01CUR")
+	_, _, err := resolveTranscript("local:02wMz5Txv8Vo4rqb3QYZuV", dir, "02wMz5TxvEMoJEDTDGOTil")
 	if err == nil {
 		t.Fatal("expected error for missing local ref")
 	}
@@ -253,17 +258,17 @@ func TestResolveTranscript_ExplicitProjRef(t *testing.T) {
 	sh := newStateHome(t)
 	a := newBucketUnder(t, sh)
 	b := newBucketUnder(t, sh)
-	writeTranscript(t, b, "01PROJ")
+	writeTranscript(t, b, "02wMz5Txv9yYdSRJat13MZ")
 	bHash := filepath.Base(b)
-	ref := "proj:" + bHash + ":01PROJ"
-	path, gotRef, err := resolveTranscript(ref, a, "01CUR")
+	ref := "proj:" + bHash + ":02wMz5Txv9yYdSRJat13MZ"
+	path, gotRef, err := resolveTranscript(ref, a, "02wMz5TxvEMoJEDTDGOTil")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if gotRef != ref {
 		t.Fatalf("expected ref %q, got %q", ref, gotRef)
 	}
-	if !strings.HasSuffix(path, "01PROJ.transcript.jsonl") {
+	if !strings.HasSuffix(path, "02wMz5Txv9yYdSRJat13MZ.transcript.jsonl") {
 		t.Fatalf("unexpected path %q", path)
 	}
 }
@@ -276,7 +281,7 @@ func TestResolveTranscript_ProjRefFlatStateDir(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(flat, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := resolveTranscript("proj:deadbeef:01SESS", flat, "01CUR")
+	_, _, err := resolveTranscript("proj:project-a-0123456789:02wMz5TxvBRJC3228LTWod", flat, "02wMz5TxvEMoJEDTDGOTil")
 	if err == nil || !strings.Contains(err.Error(), "no project root") {
 		t.Fatalf("expected 'no project root' error for proj ref in flat dir, got %v", err)
 	}
@@ -290,15 +295,78 @@ func TestResolveTranscript_FlatStateDirBareIDOnly(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(flat, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeTranscript(t, flat, "01FLAT")
-	path, ref, err := resolveTranscript("01FLAT", flat, "01CUR")
+	writeTranscript(t, flat, "02wMz5TxvCu3kdckfnw0Gh")
+	path, ref, err := resolveTranscript("02wMz5TxvCu3kdckfnw0Gh", flat, "02wMz5TxvEMoJEDTDGOTil")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if ref != "local:01FLAT" {
+	if ref != "local:02wMz5TxvCu3kdckfnw0Gh" {
 		t.Fatalf("expected local ref, got %q", ref)
 	}
-	if !strings.HasSuffix(path, "01FLAT.transcript.jsonl") {
+	if !strings.HasSuffix(path, "02wMz5TxvCu3kdckfnw0Gh.transcript.jsonl") {
 		t.Fatalf("unexpected path %q", path)
+	}
+}
+
+func TestResolveTranscript_CleanBreakSkipsLegacyLocalState(t *testing.T) {
+	t.Parallel()
+	stateHome := t.TempDir()
+	legacyBucket := filepath.Join(stateHome, "serf", "projects", "0123456789abcdef")
+	newBucket := filepath.Join(stateHome, "serf", "projects", cleanBreakProjectID)
+	if err := os.MkdirAll(filepath.Join(legacyBucket, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(newBucket, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacyPath := filepath.Join(legacyBucket, "sessions", "01ARZ3NDEKTSV4RRFFQ69G5FAV.transcript.jsonl")
+	legacyBytes := []byte("legacy transcript\n")
+	if err := os.WriteFile(legacyPath, legacyBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	legacyInfo, err := os.Stat(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTranscript(t, legacyBucket, cleanBreakSessionID)
+	writeTranscript(t, newBucket, cleanBreakSessionID)
+
+	if _, _, err := resolveTranscript("local:01ARZ3NDEKTSV4RRFFQ69G5FAV", legacyBucket, cleanBreakSessionID); err == nil {
+		t.Fatal("legacy local session unexpectedly resolved")
+	}
+	path, ref, err := resolveTranscript("proj:"+cleanBreakProjectID+":"+cleanBreakSessionID, newBucket, "")
+	if err != nil {
+		t.Fatalf("new local session did not resolve: %v", err)
+	} else if path == "" || ref != "proj:"+cleanBreakProjectID+":"+cleanBreakSessionID {
+		t.Fatalf("resolved path/ref = %q/%q", path, ref)
+	}
+
+	gotBytes, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotInfo, err := os.Stat(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotBytes) != string(legacyBytes) || !gotInfo.ModTime().Equal(legacyInfo.ModTime()) {
+		t.Fatalf("legacy fixture changed: bytes=%q mtime=%v want bytes=%q mtime=%v", gotBytes, gotInfo.ModTime(), legacyBytes, legacyInfo.ModTime())
+	}
+}
+
+func TestEnumerateBuckets_CleanBreakSkipsLegacyProjectBucket(t *testing.T) {
+	t.Parallel()
+	stateHome := t.TempDir()
+	for _, projectID := range []string{"0123456789abcdef", cleanBreakProjectID} {
+		if err := os.MkdirAll(filepath.Join(stateHome, "serf", "projects", projectID, "sessions"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	buckets, err := enumerateBuckets(stateHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 1 || filepath.Base(buckets[0]) != cleanBreakProjectID {
+		t.Fatalf("buckets = %v, want only %q", buckets, cleanBreakProjectID)
 	}
 }

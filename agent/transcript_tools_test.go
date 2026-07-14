@@ -220,13 +220,13 @@ func TestFind_CurrentSessionUsesLiveTurnCount(t *testing.T) {
 	// The current session's on-disk meta is stale mid-run (turnCount 0 here); its
 	// live count is only in memory. find must report the live count for the current
 	// session, not the stale disk value.
-	writeFindSession(t, dir, findMetaSpec{id: "LIVE0000", name: "current session", updated: now, turnCount: 0}, "hello world")
+	writeFindSession(t, dir, findMetaSpec{id: "02wMz5TxvEMoJEDTDGOTil", name: "current session", updated: now, turnCount: 0}, "hello world")
 
 	deps := &toolDeps{
 		stateDir:  dir,
-		sessionID: "LIVE0000",
+		sessionID: "02wMz5TxvEMoJEDTDGOTil",
 		currentMeta: func() schema.SessionMeta {
-			return schema.SessionMeta{ID: "LIVE0000", Name: "current session", TurnCount: 7, UpdatedAt: now}
+			return schema.SessionMeta{ID: "02wMz5TxvEMoJEDTDGOTil", Name: "current session", TurnCount: 7, UpdatedAt: now}
 		},
 	}
 
@@ -255,23 +255,23 @@ func TestFind_CatalogTrimmedAndOrdered(t *testing.T) {
 	// But the current session should sort LAST per spec.
 	//
 	// We write:
-	//   A00OLDER: updated now-2h (not current)
-	//   A00NEWER: updated now-1h (not current; this is newest non-current)
-	//   LIVE0000: updated now (this is current; must sort last)
+	//   02wMz5Txv1C3Hut0M8GCeB: updated now-2h (not current)
+	//   02wMz5Txv2enqVTitaig6F: updated now-1h (not current; this is newest non-current)
+	//   02wMz5TxvEMoJEDTDGOTil: updated now (this is current; must sort last)
 	//
-	// Expected order: A00NEWER (newest non-current), A00OLDER, LIVE0000 (current last).
+	// Expected order: 02wMz5Txv2enqVTitaig6F (newest non-current), 02wMz5Txv1C3Hut0M8GCeB, 02wMz5TxvEMoJEDTDGOTil (current last).
 	specOlder := findMetaSpec{
-		id:      "A00OLDER",
+		id:      "02wMz5Txv1C3Hut0M8GCeB",
 		name:    "older session",
 		updated: now.Add(-2 * time.Hour),
 	}
 	specNewer := findMetaSpec{
-		id:      "A00NEWER",
+		id:      "02wMz5Txv2enqVTitaig6F",
 		name:    "newer session",
 		updated: now.Add(-1 * time.Hour),
 	}
 	specCurrent := findMetaSpec{
-		id:      "LIVE0000",
+		id:      "02wMz5TxvEMoJEDTDGOTil",
 		name:    "current session",
 		updated: now,
 	}
@@ -280,7 +280,7 @@ func TestFind_CatalogTrimmedAndOrdered(t *testing.T) {
 	writeFindSession(t, dir, specNewer, "newer text")
 	writeFindSession(t, dir, specCurrent, "current text")
 
-	deps := &toolDeps{stateDir: dir, sessionID: "LIVE0000"}
+	deps := &toolDeps{stateDir: dir, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
 	b := marshalFind(t, deps, map[string]any{})
 	env := decodeEnvelope(t, b)
 
@@ -290,14 +290,14 @@ func TestFind_CatalogTrimmedAndOrdered(t *testing.T) {
 	}
 
 	// Verify ordering: newest non-current first, current last.
-	if matches[0]["transcript_ref"] != "local:A00NEWER" {
-		t.Errorf("match[0] should be A00NEWER (newest non-current), got %v", matches[0]["transcript_ref"])
+	if matches[0]["transcript_ref"] != "local:02wMz5Txv2enqVTitaig6F" {
+		t.Errorf("match[0] should be 02wMz5Txv2enqVTitaig6F (newest non-current), got %v", matches[0]["transcript_ref"])
 	}
-	if matches[1]["transcript_ref"] != "local:A00OLDER" {
-		t.Errorf("match[1] should be A00OLDER, got %v", matches[1]["transcript_ref"])
+	if matches[1]["transcript_ref"] != "local:02wMz5Txv1C3Hut0M8GCeB" {
+		t.Errorf("match[1] should be 02wMz5Txv1C3Hut0M8GCeB, got %v", matches[1]["transcript_ref"])
 	}
-	if matches[2]["transcript_ref"] != "local:LIVE0000" {
-		t.Errorf("match[2] should be LIVE0000 (current, sorts last), got %v", matches[2]["transcript_ref"])
+	if matches[2]["transcript_ref"] != "local:02wMz5TxvEMoJEDTDGOTil" {
+		t.Errorf("match[2] should be 02wMz5TxvEMoJEDTDGOTil (current, sorts last), got %v", matches[2]["transcript_ref"])
 	}
 
 	// Verify is_current is set only on the live session.
@@ -337,21 +337,21 @@ func TestFind_QuerySearch(t *testing.T) {
 	dir := newBucket(t)
 	now := time.Now().UTC().Truncate(time.Second)
 
-	// META0001: matches via name (metadata match — should not require content scan).
+	// 02wMz5Txv47YP64RR3B9YJ: matches via name (metadata match — should not require content scan).
 	writeFindSession(t, dir, findMetaSpec{
-		id:      "META0001",
+		id:      "02wMz5Txv47YP64RR3B9YJ",
 		name:    "uniqueMetaToken session",
 		updated: now.Add(-2 * time.Hour),
 	}, "unrelated content")
 
-	// CONT0002: matches only in transcript content (title/prompt has no match).
+	// 02wMz5Txv5aIxgf9yVdd0N: matches only in transcript content (title/prompt has no match).
 	writeFindSession(t, dir, findMetaSpec{
-		id:      "CONT0002",
+		id:      "02wMz5Txv5aIxgf9yVdd0N",
 		name:    "plain session",
 		updated: now.Add(-1 * time.Hour),
 	}, "the uniqueContentToken lives here")
 
-	deps := &toolDeps{stateDir: dir, sessionID: "LIVE0000"}
+	deps := &toolDeps{stateDir: dir, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
 	b := marshalFind(t, deps, map[string]any{"query": "uniqueContentToken"})
 	env := decodeEnvelope(t, b)
 
@@ -359,8 +359,8 @@ func TestFind_QuerySearch(t *testing.T) {
 	if len(matches) != 1 {
 		t.Fatalf("expected 1 match, got %d: %v", len(matches), matches)
 	}
-	if matches[0]["transcript_ref"] != "local:CONT0002" {
-		t.Errorf("expected CONT0002 match, got %v", matches[0]["transcript_ref"])
+	if matches[0]["transcript_ref"] != "local:02wMz5Txv5aIxgf9yVdd0N" {
+		t.Errorf("expected 02wMz5Txv5aIxgf9yVdd0N match, got %v", matches[0]["transcript_ref"])
 	}
 
 	// Content match should have snippets.
@@ -381,15 +381,15 @@ func TestFind_QuerySearch(t *testing.T) {
 	if len(matches2) != 1 {
 		t.Fatalf("expected 1 meta match, got %d", len(matches2))
 	}
-	if matches2[0]["transcript_ref"] != "local:META0001" {
-		t.Errorf("expected META0001 meta match, got %v", matches2[0]["transcript_ref"])
+	if matches2[0]["transcript_ref"] != "local:02wMz5Txv47YP64RR3B9YJ" {
+		t.Errorf("expected 02wMz5Txv47YP64RR3B9YJ meta match, got %v", matches2[0]["transcript_ref"])
 	}
 }
 
 // --- TestFind_ChildrenOf ---
 
 // TestFind_ChildrenOf verifies that:
-//   - find({children_of:"local:PARENT01"}) returns exactly the two children
+//   - find({children_of:"local:02wMz5Txv733WHFsVy66SR"}) returns exactly the two children
 //   - children is metadata-only (no transcript files required for the parent or children)
 //   - unrelated sessions are excluded
 func TestFind_ChildrenOf(t *testing.T) {
@@ -400,43 +400,43 @@ func TestFind_ChildrenOf(t *testing.T) {
 	// Parent: meta only, no transcript — proves the parent's transcript is never
 	// opened to resolve its children.
 	saveFindMeta(t, dir, findMetaSpec{
-		id:      "PARENT01",
+		id:      "02wMz5Txv733WHFsVy66SR",
 		name:    "the parent",
 		updated: now.Add(-4 * time.Hour),
 	})
 
 	// Two real children, each with a transcript so each is a read-able ref.
 	writeFindSession(t, dir, findMetaSpec{
-		id:              "CHILD001",
+		id:              "02wMz5Txv8Vo4rqb3QYZuV",
 		name:            "first child",
-		parentSessionID: "PARENT01",
+		parentSessionID: "02wMz5Txv733WHFsVy66SR",
 		updated:         now.Add(-3 * time.Hour),
 	}, "first child work")
 	writeFindSession(t, dir, findMetaSpec{
-		id:              "CHILD002",
+		id:              "02wMz5Txv9yYdSRJat13MZ",
 		name:            "second child",
-		parentSessionID: "PARENT01",
+		parentSessionID: "02wMz5Txv733WHFsVy66SR",
 		updated:         now.Add(-2 * time.Hour),
 	}, "second child work")
 
 	// A child by metadata whose transcript was never flushed: not read-able, so
 	// children_of must exclude it (the readable-only invariant applies to every mode).
 	saveFindMeta(t, dir, findMetaSpec{
-		id:              "CHILD003",
+		id:              "02wMz5TxvBRJC3228LTWod",
 		name:            "unflushed child",
-		parentSessionID: "PARENT01",
+		parentSessionID: "02wMz5Txv733WHFsVy66SR",
 		updated:         now.Add(-1 * time.Hour),
 	})
 
 	// Unrelated session (no parent).
 	writeFindSession(t, dir, findMetaSpec{
-		id:      "UNRELAT0",
+		id:      "02wMz5TxvCu3kdckfnw0Gh",
 		name:    "unrelated",
 		updated: now,
 	}, "unrelated work")
 
-	deps := &toolDeps{stateDir: dir, sessionID: "LIVE0000"}
-	b := marshalFind(t, deps, map[string]any{"children_of": "local:PARENT01"})
+	deps := &toolDeps{stateDir: dir, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
+	b := marshalFind(t, deps, map[string]any{"children_of": "local:02wMz5Txv733WHFsVy66SR"})
 	env := decodeEnvelope(t, b)
 
 	matches := matchesFromEnvelope(t, env)
@@ -445,13 +445,13 @@ func TestFind_ChildrenOf(t *testing.T) {
 		ref, _ := m["transcript_ref"].(string)
 		ids[ref] = true
 	}
-	if !ids["local:CHILD001"] || !ids["local:CHILD002"] {
+	if !ids["local:02wMz5Txv8Vo4rqb3QYZuV"] || !ids["local:02wMz5Txv9yYdSRJat13MZ"] {
 		t.Errorf("expected both readable children, got %v", ids)
 	}
-	if ids["local:CHILD003"] {
-		t.Errorf("CHILD003 has no transcript and must be excluded (readable-only): %v", ids)
+	if ids["local:02wMz5TxvBRJC3228LTWod"] {
+		t.Errorf("02wMz5TxvBRJC3228LTWod has no transcript and must be excluded (readable-only): %v", ids)
 	}
-	if ids["local:UNRELAT0"] {
+	if ids["local:02wMz5TxvCu3kdckfnw0Gh"] {
 		t.Errorf("unrelated session must not appear: %v", ids)
 	}
 	if len(matches) != 2 {
@@ -609,7 +609,7 @@ func TestRead_DefaultMarkdownWindow(t *testing.T) {
 	t.Parallel()
 	dir := newBucket(t)
 	now := time.Now().UTC().Truncate(time.Second)
-	const sessionID = "WINDW001"
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
 	const totalTurns = 50 // more than the 40-turn default window
 
 	writeMultiTurnSession(t, dir, findMetaSpec{
@@ -618,7 +618,7 @@ func TestRead_DefaultMarkdownWindow(t *testing.T) {
 		updated: now,
 	}, totalTurns)
 
-	deps := &toolDeps{stateDir: dir, sessionID: "OTHER000"}
+	deps := &toolDeps{stateDir: dir, sessionID: "02wMz5TxvFpYrooBkiqxAp"}
 	b := marshalRead(t, deps, map[string]any{
 		"transcript_ref": "local:" + sessionID,
 	})
@@ -667,12 +667,12 @@ func TestRead_WindowHonest(t *testing.T) {
 	t.Parallel()
 	dir := newBucket(t)
 	now := time.Now().UTC().Truncate(time.Second)
-	const sessionID = "WINHON01"
+	const sessionID = "02wMz5Txv2enqVTitaig6F"
 	const totalTurns = 10
 
 	writeMultiTurnSession(t, dir, findMetaSpec{id: sessionID, name: "honest window", updated: now}, totalTurns)
 
-	deps := &toolDeps{stateDir: dir, sessionID: "OTHER000"}
+	deps := &toolDeps{stateDir: dir, sessionID: "02wMz5TxvFpYrooBkiqxAp"}
 	b := marshalRead(t, deps, map[string]any{
 		"transcript_ref": "local:" + sessionID,
 		"range":          "50-100", // entirely out of bounds; clamps to the last turn
@@ -697,7 +697,7 @@ func TestRead_ExplicitRange(t *testing.T) {
 	t.Parallel()
 	dir := newBucket(t)
 	now := time.Now().UTC().Truncate(time.Second)
-	const sessionID = "RANGE001"
+	const sessionID = "02wMz5Txv47YP64RR3B9YJ"
 	const totalTurns = 10
 
 	writeMultiTurnSession(t, dir, findMetaSpec{
@@ -706,7 +706,7 @@ func TestRead_ExplicitRange(t *testing.T) {
 		updated: now,
 	}, totalTurns)
 
-	deps := &toolDeps{stateDir: dir, sessionID: "OTHER000"}
+	deps := &toolDeps{stateDir: dir, sessionID: "02wMz5TxvFpYrooBkiqxAp"}
 	b := marshalRead(t, deps, map[string]any{
 		"transcript_ref": "local:" + sessionID,
 		"range":          "2-4",
@@ -754,7 +754,7 @@ func TestRead_MalformedRangeWarns(t *testing.T) {
 	t.Parallel()
 	dir := newBucket(t)
 	now := time.Now().UTC().Truncate(time.Second)
-	const sessionID = "BADRANGE"
+	const sessionID = "02wMz5Txv5aIxgf9yVdd0N"
 
 	writeMultiTurnSession(t, dir, findMetaSpec{
 		id:      sessionID,
@@ -762,7 +762,7 @@ func TestRead_MalformedRangeWarns(t *testing.T) {
 		updated: now,
 	}, 5)
 
-	deps := &toolDeps{stateDir: dir, sessionID: "OTHER000"}
+	deps := &toolDeps{stateDir: dir, sessionID: "02wMz5TxvFpYrooBkiqxAp"}
 	b := marshalRead(t, deps, map[string]any{
 		"transcript_ref": "local:" + sessionID,
 		"range":          "not-a-valid-range!!",
@@ -791,7 +791,7 @@ func TestRead_ExpandTurn(t *testing.T) {
 	t.Parallel()
 	dir := newBucket(t)
 	now := time.Now().UTC().Truncate(time.Second)
-	const sessionID = "EXPAND01"
+	const sessionID = "02wMz5Txv733WHFsVy66SR"
 
 	assistantSeq := writeSessionWithToolTurn(t, dir, findMetaSpec{
 		id:      sessionID,
@@ -799,7 +799,7 @@ func TestRead_ExpandTurn(t *testing.T) {
 		updated: now,
 	})
 
-	deps := &toolDeps{stateDir: dir, sessionID: "OTHER000"}
+	deps := &toolDeps{stateDir: dir, sessionID: "02wMz5TxvFpYrooBkiqxAp"}
 
 	// Without expand_turn, the middle lines of the 60-line result should be elided.
 	bNoExpand := marshalRead(t, deps, map[string]any{
@@ -846,7 +846,7 @@ func TestRead_MetaTrimmed(t *testing.T) {
 	t.Parallel()
 	dir := newBucket(t)
 	now := time.Now().UTC().Truncate(time.Second)
-	const sessionID = "METATRIM"
+	const sessionID = "02wMz5TxvHIJQPOuIBJQct"
 
 	writeFindSession(t, dir, findMetaSpec{
 		id:      sessionID,
@@ -854,7 +854,7 @@ func TestRead_MetaTrimmed(t *testing.T) {
 		updated: now,
 	}, "some text")
 
-	deps := &toolDeps{stateDir: dir, sessionID: "OTHER000"}
+	deps := &toolDeps{stateDir: dir, sessionID: "02wMz5TxvFpYrooBkiqxAp"}
 	b := marshalRead(t, deps, map[string]any{
 		"transcript_ref": "local:" + sessionID,
 	})
@@ -884,10 +884,10 @@ func TestRead_JSONL(t *testing.T) {
 	t.Parallel()
 	dir := newBucket(t)
 	now := time.Now().UTC().Truncate(time.Second)
-	const sessionID = "JSONL001"
+	const sessionID = "02wMz5Txv8Vo4rqb3QYZuV"
 	writeMultiTurnSession(t, dir, findMetaSpec{id: sessionID, name: "jsonl session", updated: now}, 5)
 
-	deps := &toolDeps{stateDir: dir, sessionID: "OTHER000"}
+	deps := &toolDeps{stateDir: dir, sessionID: "02wMz5TxvFpYrooBkiqxAp"}
 	b := marshalRead(t, deps, map[string]any{
 		"transcript_ref": "local:" + sessionID,
 		"format":         "jsonl",
@@ -932,7 +932,7 @@ func TestRead_OutlineBasic(t *testing.T) {
 	t.Parallel()
 	dir := newBucket(t)
 	now := time.Now().UTC().Truncate(time.Second)
-	const sessionID = "OUTLINE1"
+	const sessionID = "02wMz5Txv9yYdSRJat13MZ"
 	const nTurns = 6
 
 	writeMultiTurnSession(t, dir, findMetaSpec{
@@ -941,7 +941,7 @@ func TestRead_OutlineBasic(t *testing.T) {
 		updated: now,
 	}, nTurns)
 
-	deps := &toolDeps{stateDir: dir, sessionID: "OTHER000"}
+	deps := &toolDeps{stateDir: dir, sessionID: "02wMz5TxvFpYrooBkiqxAp"}
 	b := marshalRead(t, deps, map[string]any{
 		"transcript_ref": "local:" + sessionID,
 		"format":         "outline",
@@ -996,7 +996,7 @@ func TestRead_OutlineRange(t *testing.T) {
 	t.Parallel()
 	dir := newBucket(t)
 	now := time.Now().UTC().Truncate(time.Second)
-	const sessionID = "OUTRANGE"
+	const sessionID = "02wMz5TxvBRJC3228LTWod"
 	const nTurns = 12
 
 	writeMultiTurnSession(t, dir, findMetaSpec{
@@ -1005,7 +1005,7 @@ func TestRead_OutlineRange(t *testing.T) {
 		updated: now,
 	}, nTurns)
 
-	deps := &toolDeps{stateDir: dir, sessionID: "OTHER000"}
+	deps := &toolDeps{stateDir: dir, sessionID: "02wMz5TxvFpYrooBkiqxAp"}
 	b := marshalRead(t, deps, map[string]any{
 		"transcript_ref": "local:" + sessionID,
 		"format":         "outline",
@@ -1054,23 +1054,23 @@ func TestFind_ChildrenOf_ProjBucket(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 
 	// Parent (meta only) + one readable child, both in the SIBLING bucket.
-	saveFindMeta(t, siblingBucket, findMetaSpec{id: "PARENTB0", name: "sibling parent", updated: now.Add(-time.Hour)})
+	saveFindMeta(t, siblingBucket, findMetaSpec{id: "02wMz5TxvIl3yzzcpdlu4x", name: "sibling parent", updated: now.Add(-time.Hour)})
 	writeFindSession(t, siblingBucket, findMetaSpec{
-		id:              "CHILDB01",
+		id:              "02wMz5TxvKDoXaaLN6ENX1",
 		name:            "sibling child",
-		parentSessionID: "PARENTB0",
+		parentSessionID: "02wMz5TxvIl3yzzcpdlu4x",
 		updated:         now,
 	}, "sibling child work")
 
-	deps := &toolDeps{stateDir: currentBucket, sessionID: "LIVE0000"}
-	b := marshalFind(t, deps, map[string]any{"children_of": "proj:" + hash + ":PARENTB0"})
+	deps := &toolDeps{stateDir: currentBucket, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
+	b := marshalFind(t, deps, map[string]any{"children_of": "proj:" + hash + ":02wMz5TxvIl3yzzcpdlu4x"})
 	env := decodeEnvelope(t, b)
 
 	matches := matchesFromEnvelope(t, env)
 	if len(matches) != 1 {
 		t.Fatalf("expected 1 sibling-project child, got %d", len(matches))
 	}
-	wantRef := "proj:" + hash + ":CHILDB01"
+	wantRef := "proj:" + hash + ":02wMz5TxvKDoXaaLN6ENX1"
 	if ref, _ := matches[0]["transcript_ref"].(string); ref != wantRef {
 		t.Errorf("child ref = %q, want %q", ref, wantRef)
 	}

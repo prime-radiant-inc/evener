@@ -29,12 +29,13 @@ func docServeTestServer(t *testing.T) (*WebServer, string, string) {
 	t.Helper()
 	root := t.TempDir()
 	cwd := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-docs-0000000000")
+	sessionID := "02wMz5Txv1C3Hut0M8GCeB"
 	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01DOC", UpdatedAt: time.Now(), OriginalPrompt: "doc session",
+		ID: sessionID, UpdatedAt: time.Now(), OriginalPrompt: "doc session",
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: cwd},
 	}); err != nil {
 		t.Fatal(err)
@@ -44,7 +45,7 @@ func docServeTestServer(t *testing.T) (*WebServer, string, string) {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Past: idx})
-	return web, cwd, "01DOC"
+	return web, cwd, sessionID
 }
 
 func docRequest(t *testing.T, web *WebServer, session, path string) *httptest.ResponseRecorder {
@@ -92,7 +93,7 @@ func TestDocImageServesLiveDescriptorURLWithoutPast(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cwd, "plot.png"), png, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	sessionID := "01LIVEIMG"
+	sessionID := "02wMz5Txv2enqVTitaig6F"
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
 		Entry: rendezvous.Entry{
 			PID:        91,

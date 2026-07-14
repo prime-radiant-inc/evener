@@ -21,12 +21,12 @@ import (
 func covThreadreadServer(t *testing.T) (*WebServer, string, string) {
 	t.Helper()
 	root, cwd := t.TempDir(), t.TempDir()
-	stateDir := filepath.Join(root, "projects", "x")
+	stateDir := filepath.Join(root, "projects", "project-images-0123456789")
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
-		ID: "01COV", UpdatedAt: time.Unix(1, 0),
+		ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: time.Unix(1, 0),
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: cwd},
 	}); err != nil {
 		t.Fatal(err)
@@ -35,7 +35,7 @@ func covThreadreadServer(t *testing.T) (*WebServer, string, string) {
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	return NewWebServer(hubcore.WebConfig{Past: idx}), cwd, "01COV"
+	return NewWebServer(hubcore.WebConfig{Past: idx}), cwd, "02wMz5Txv1C3Hut0M8GCeB"
 }
 
 func FuzzCovThreadreadImagesSeed100(f *testing.F) {

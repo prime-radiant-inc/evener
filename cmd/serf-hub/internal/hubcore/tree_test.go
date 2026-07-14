@@ -270,13 +270,13 @@ func fuzzScenarioBuildTree_AttentionSortsLive(t *testing.T) {
 func fuzzScenarioBuildTree_OrdersProjectSessionsByUpdatedCreatedTitleAndID(t *testing.T) {
 	updated := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{
-		{ID: "02OLD", CreatedAt: updated.Add(-2 * time.Hour), UpdatedAt: updated, OriginalPrompt: "beta task",
+		{ID: "02wMz5Txv2enqVTitaig6F", CreatedAt: updated.Add(-2 * time.Hour), UpdatedAt: updated, OriginalPrompt: "beta task",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
-		{ID: "01NEW", CreatedAt: updated.Add(-time.Hour), UpdatedAt: updated, OriginalPrompt: "alpha task",
+		{ID: "02wMz5Txv1C3Hut0M8GCeB", CreatedAt: updated.Add(-time.Hour), UpdatedAt: updated, OriginalPrompt: "alpha task",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
-		{ID: "03TITLEB", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalPrompt: "bravo task",
+		{ID: "02wMz5Txv47YP64RR3B9YJ", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalPrompt: "bravo task",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
-		{ID: "04TITLEA", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalPrompt: "alpha task",
+		{ID: "02wMz5Txv5aIxgf9yVdd0N", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalPrompt: "alpha task",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
 	}
 
@@ -291,7 +291,7 @@ func fuzzScenarioBuildTree_OrdersProjectSessionsByUpdatedCreatedTitleAndID(t *te
 	for _, node := range sessions {
 		got = append(got, node.ID)
 	}
-	want := []string{"01NEW", "02OLD", "04TITLEA", "03TITLEB"}
+	want := []string{"02wMz5Txv1C3Hut0M8GCeB", "02wMz5Txv2enqVTitaig6F", "02wMz5Txv5aIxgf9yVdd0N", "02wMz5Txv47YP64RR3B9YJ"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("order=%v, want %v", got, want)
 	}
@@ -300,10 +300,10 @@ func fuzzScenarioBuildTree_OrdersProjectSessionsByUpdatedCreatedTitleAndID(t *te
 func fuzzScenarioBuildTree_OrdersLiveRowsWithoutMetasByStartedAtAndID(t *testing.T) {
 	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1, StartedAt: base.Add(-time.Hour)}, SessionID: "02OLD", Status: appwire.ThreadStatusIdle},
-		{Entry: rendezvous.Entry{PID: 2, StartedAt: base}, SessionID: "01NEW", Status: appwire.ThreadStatusIdle},
-		{Entry: rendezvous.Entry{PID: 3, StartedAt: base.Add(-2 * time.Hour)}, SessionID: "04TIEA", Status: appwire.ThreadStatusIdle},
-		{Entry: rendezvous.Entry{PID: 4, StartedAt: base.Add(-2 * time.Hour)}, SessionID: "03TIEB", Status: appwire.ThreadStatusIdle},
+		{Entry: rendezvous.Entry{PID: 1, StartedAt: base.Add(-time.Hour)}, SessionID: "02wMz5Txv2enqVTitaig6F", Status: appwire.ThreadStatusIdle},
+		{Entry: rendezvous.Entry{PID: 2, StartedAt: base}, SessionID: "02wMz5Txv1C3Hut0M8GCeB", Status: appwire.ThreadStatusIdle},
+		{Entry: rendezvous.Entry{PID: 3, StartedAt: base.Add(-2 * time.Hour)}, SessionID: "02wMz5Txv8Vo4rqb3QYZuV", Status: appwire.ThreadStatusIdle},
+		{Entry: rendezvous.Entry{PID: 4, StartedAt: base.Add(-2 * time.Hour)}, SessionID: "02wMz5Txv733WHFsVy66SR", Status: appwire.ThreadStatusIdle},
 	}
 
 	tree := buildTree(nil, live)
@@ -311,7 +311,7 @@ func fuzzScenarioBuildTree_OrdersLiveRowsWithoutMetasByStartedAtAndID(t *testing
 	for _, node := range tree.Live {
 		got = append(got, node.ID)
 	}
-	want := []string{"01NEW", "02OLD", "03TIEB", "04TIEA"}
+	want := []string{"02wMz5Txv1C3Hut0M8GCeB", "02wMz5Txv2enqVTitaig6F", "02wMz5Txv733WHFsVy66SR", "02wMz5Txv8Vo4rqb3QYZuV"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("live order=%v, want %v", got, want)
 	}
@@ -847,7 +847,7 @@ func fuzzScenarioBuildTree_OrdersProjectsByLastActivityNotCreatedAt(t *testing.T
 		// old-but-touched: session started 30 days ago, touched 1 minute ago.
 		mk("01OLD", "old-but-touched", 30*24*time.Hour, 1*time.Minute),
 		// new-but-stale: session started 10 minutes ago, never touched since.
-		mk("01NEW", "new-but-stale", 10*time.Minute, 10*time.Minute),
+		mk("02wMz5Txv1C3Hut0M8GCeB", "new-but-stale", 10*time.Minute, 10*time.Minute),
 	}
 	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
 	got := projectNames(tree.Projects)

@@ -56,10 +56,10 @@ func fuzzScenarioRoster_FindBySessionID(t *testing.T) {
 		Address: "127.0.0.1:50001",
 	})
 	r := NewRoster(dir, fakeProber{
-		sessionID: "01SESS001",
+		sessionID: "02wMz5Txv1C3Hut0M8GCeB",
 	})
 	r.Refresh()
-	got, ok := r.Find("01SESS001")
+	got, ok := r.Find("02wMz5Txv1C3Hut0M8GCeB")
 	if !ok {
 		t.Fatal("expected to find session")
 	}
@@ -189,7 +189,7 @@ func fuzzScenarioRoster_DefaultRunDir(t *testing.T) {
 
 func fuzzScenarioRoster_Watch_PicksUpNewFile(t *testing.T) {
 	dir := t.TempDir()
-	r := NewRoster(dir, fakeProber{sessionID: "01SESS001"})
+	r := NewRoster(dir, fakeProber{sessionID: "02wMz5Txv1C3Hut0M8GCeB"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -210,7 +210,7 @@ func fuzzScenarioRoster_Watch_PicksUpNewFile(t *testing.T) {
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if _, ok := r.Find("01SESS001"); ok {
+		if _, ok := r.Find("02wMz5Txv1C3Hut0M8GCeB"); ok {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -416,7 +416,7 @@ func fuzzScenarioRoster_OnStatusChangeFiresForTransitioningSession(t *testing.T)
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:50001"})
 
-	prober := &statusProber{sessionID: "01SESS", status: "working"}
+	prober := &statusProber{sessionID: "02wMz5Txv2enqVTitaig6F", status: "working"}
 	r := NewRoster(dir, prober)
 	r.Refresh() // seed: no prior snapshot, so no transition to report
 
@@ -426,8 +426,8 @@ func fuzzScenarioRoster_OnStatusChangeFiresForTransitioningSession(t *testing.T)
 	prober.status = "idle"
 	r.Refresh()
 
-	if len(got) != 1 || got[0] != "01SESS" {
-		t.Fatalf("expected onStatusChange(01SESS) once, got %v", got)
+	if len(got) != 1 || got[0] != "02wMz5Txv2enqVTitaig6F" {
+		t.Fatalf("expected onStatusChange(02wMz5Txv2enqVTitaig6F) once, got %v", got)
 	}
 }
 
@@ -439,7 +439,7 @@ func fuzzScenarioRoster_OnStatusChangeNotFiredWhenStatusUnchanged(t *testing.T) 
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:50001"})
 
-	prober := &statusProber{sessionID: "01SESS", status: "working"}
+	prober := &statusProber{sessionID: "02wMz5Txv2enqVTitaig6F", status: "working"}
 	r := NewRoster(dir, prober)
 	r.Refresh()
 
@@ -461,10 +461,10 @@ func fuzzScenarioRoster_OnStatusChangeNotFiredWhenStatusUnchanged(t *testing.T) 
 // bump only happened on PastIndex's own 60s Rebuild ticker.
 func fuzzScenarioRoster_StatusChangeDrivesPastIndexRefreshAndVersionBump(t *testing.T) {
 	stateRoot := t.TempDir()
-	proj := filepath.Join(stateRoot, "proj")
+	proj := filepath.Join(stateRoot, "project-test-0123456789")
 	base := time.Unix(1_700_000_000, 0)
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:        "01SESS",
+		ID:        "02wMz5Txv2enqVTitaig6F",
 		UpdatedAt: base,
 		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/w"},
 	})
@@ -476,7 +476,7 @@ func fuzzScenarioRoster_StatusChangeDrivesPastIndexRefreshAndVersionBump(t *test
 
 	rendezvousDir := t.TempDir()
 	writeRendezvous(t, rendezvousDir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:50001"})
-	prober := &statusProber{sessionID: "01SESS", status: "working"}
+	prober := &statusProber{sessionID: "02wMz5Txv2enqVTitaig6F", status: "working"}
 	roster := NewRoster(rendezvousDir, prober)
 
 	inputs := &InputsVersion{}
@@ -493,7 +493,7 @@ func fuzzScenarioRoster_StatusChangeDrivesPastIndexRefreshAndVersionBump(t *test
 	// Out-of-process rewrite of the daemon's own meta.json, exactly like
 	// maybeAutoSave, paired with the daemon's status transitioning.
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:        "01SESS",
+		ID:        "02wMz5Txv2enqVTitaig6F",
 		UpdatedAt: base.Add(time.Minute),
 		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/w"},
 	})
@@ -504,9 +504,9 @@ func fuzzScenarioRoster_StatusChangeDrivesPastIndexRefreshAndVersionBump(t *test
 	if got := inputs.Load(); got <= seeded {
 		t.Fatalf("expected version to bump again after the status transition, got %d (seeded=%d)", got, seeded)
 	}
-	entry, ok := past.Find("01SESS")
+	entry, ok := past.Find("02wMz5Txv2enqVTitaig6F")
 	if !ok {
-		t.Fatal("expected 01SESS to remain indexed")
+		t.Fatal("expected 02wMz5Txv2enqVTitaig6F to remain indexed")
 	}
 	if !entry.Meta.UpdatedAt.Equal(base.Add(time.Minute)) {
 		t.Fatalf("expected the past index to reflect the re-read UpdatedAt, got %v", entry.Meta.UpdatedAt)

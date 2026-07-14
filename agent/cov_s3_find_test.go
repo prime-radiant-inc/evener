@@ -17,8 +17,8 @@ func TestS3Cov_FindBuckets_AllProjects(t *testing.T) {
 	home := t.TempDir()
 	// Construct the <home>/serf/projects/<hash> layout stateHomeFor recognizes.
 	projects := filepath.Join(home, "serf", "projects")
-	current := filepath.Join(projects, "aaaa")
-	sibling := filepath.Join(projects, "bbbb")
+	current := filepath.Join(projects, "project-a-0123456789")
+	sibling := filepath.Join(projects, "project-b-0123456789")
 	for _, d := range []string{current, sibling} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)

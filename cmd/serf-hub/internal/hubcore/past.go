@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/identifier"
 )
 
 // PastEntry is one indexed past session.
@@ -133,11 +134,17 @@ func (i *PastIndex) Rebuild() error {
 	byID := make(map[string]PastEntry)
 	observers := make(map[string][]string)
 	for _, project := range matches {
+		if identifier.ValidateProjectID(filepath.Base(project)) != nil {
+			continue
+		}
 		metas, err := schema.ListSessionMetas(project)
 		if err != nil {
 			continue
 		}
 		for _, m := range metas {
+			if identifier.ValidateSessionID(m.ID) != nil {
+				continue
+			}
 			pe := PastEntry{ID: m.ID, Meta: m, StateDir: project}
 			all = append(all, pe)
 			byID[m.ID] = pe
@@ -571,6 +578,9 @@ func foldProjectObserverGrants(into map[string][]string, fs afero.Fs, project st
 		if !e.IsDir() {
 			continue
 		}
+		if identifier.ValidateSessionID(e.Name()) != nil {
+			continue
+		}
 		perWorker, err := agent.LoadSessionObserverGrants(project, e.Name())
 		if err != nil {
 			continue
@@ -602,6 +612,9 @@ func dedupObserverLists(observers map[string][]string) {
 
 // Find returns the entry for a given session_id.
 func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
+	if identifier.ValidateSessionID(sessionID) != nil {
+		return PastEntry{}, false
+	}
 	if e, ok := i.findCached(sessionID); ok {
 		return e, true
 	}

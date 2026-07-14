@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"primeradiant.com/serf/identifier"
 )
 
 var transcriptBucketGlob = filepath.Glob
@@ -19,23 +21,37 @@ var transcriptBucketGlob = filepath.Glob
 //   - bare session ID  → search current bucket first, then sibling buckets;
 //     ambiguous (found in >1 bucket) → error with candidate refs
 func resolveTranscript(selector, currentStateDir, currentSessionID string) (path, ref string, err error) {
+	if !validLocalBucketDir(currentStateDir) {
+		return "", "", fmt.Errorf("invalid local project bucket %q", filepath.Base(currentStateDir))
+	}
 	// Empty or "current" → current session.
 	// Intentionally no os.Stat: the current session's transcript file may not
 	// yet exist (writing is in-progress). Callers must handle a missing file
 	// gracefully. (spec §"Lookup and Storage", current-session freshness)
 	if selector == "" || selector == "current" {
+		if err := identifier.ValidateSessionID(currentSessionID); err != nil {
+			return "", "", fmt.Errorf("invalid current session ID: %w", err)
+		}
 		p := transcriptPath(currentStateDir, currentSessionID)
 		return p, encodeRef("", currentSessionID), nil
 	}
 
 	// Try explicit ref (local: or proj:).
 	if strings.HasPrefix(selector, "local:") || strings.HasPrefix(selector, "proj:") {
-		bucketHash, sessionID, decErr := decodeRef(selector)
+		projectID, sessionID, decErr := decodeRef(selector)
 		if decErr != nil {
 			return "", "", decErr
 		}
+		if err := identifier.ValidateSessionID(sessionID); err != nil {
+			return "", "", fmt.Errorf("transcript ref %q: %w", selector, err)
+		}
+		if projectID != "" {
+			if err := identifier.ValidateProjectID(projectID); err != nil {
+				return "", "", fmt.Errorf("transcript ref %q: %w", selector, err)
+			}
+		}
 		var bucketDir string
-		if bucketHash == "" {
+		if projectID == "" {
 			// local: — use current bucket
 			bucketDir = currentStateDir
 		} else {
@@ -44,13 +60,13 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 			if sh == "" {
 				return "", "", fmt.Errorf("transcript ref %q: no project root (flat state dir)", selector)
 			}
-			bucketDir = filepath.Join(sh, "serf", "projects", bucketHash)
+			bucketDir = filepath.Join(sh, "serf", "projects", projectID)
 		}
 		p := transcriptPath(bucketDir, sessionID)
 		if _, statErr := os.Stat(p); statErr != nil {
 			return "", "", fmt.Errorf("transcript ref %q: transcript not found: %w", selector, statErr)
 		}
-		return p, encodeRef(bucketHash, sessionID), nil
+		return p, encodeRef(projectID, sessionID), nil
 	}
 
 	// Reject anything with path separators (traversal guard) that wasn't a valid ref.
@@ -59,7 +75,7 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 	}
 
 	// Bare session ID — validate as an ID token.
-	if err := validIDToken(selector); err != nil {
+	if err := identifier.ValidateSessionID(selector); err != nil {
 		return "", "", fmt.Errorf("invalid session selector: %w", err)
 	}
 
@@ -115,9 +131,9 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 	default:
 		// Exactly one match in a sibling bucket.
 		bucket := otherMatches[0]
-		bucketHash := filepath.Base(bucket)
+		projectID := filepath.Base(bucket)
 		p := transcriptPath(bucket, selector)
-		return p, encodeRef(bucketHash, selector), nil
+		return p, encodeRef(projectID, selector), nil
 	}
 }
 
@@ -136,9 +152,19 @@ func enumerateBuckets(stateHome string) ([]string, error) {
 		if statErr != nil || !info.IsDir() {
 			continue
 		}
+		if identifier.ValidateProjectID(filepath.Base(m)) != nil {
+			continue
+		}
 		dirs = append(dirs, m)
 	}
 	return dirs, nil
+}
+
+func validLocalBucketDir(stateDir string) bool {
+	if stateHomeFor(stateDir) == "" {
+		return true // flat override/scratch layout
+	}
+	return identifier.ValidateProjectID(filepath.Base(stateDir)) == nil
 }
 
 // stateHomeFor returns the stateHome (the <base> parent two levels above the
@@ -175,23 +201,37 @@ func transcriptPath(bucketDir, sessionID string) string {
 // applies (current_project or all_projects), and any parse error.
 func parentBucketAndID(selector, currentStateDir, currentSessionID string) (bucketDir, parentID, scopeApplied string, err error) {
 	if selector == "" || selector == "current" {
+		if err := identifier.ValidateSessionID(currentSessionID); err != nil {
+			return "", "", "", fmt.Errorf("invalid current session ID: %w", err)
+		}
+		if !validLocalBucketDir(currentStateDir) {
+			return "", "", "", fmt.Errorf("invalid local project bucket %q", filepath.Base(currentStateDir))
+		}
 		return currentStateDir, currentSessionID, scopeCurrentProject, nil
 	}
 	if strings.HasPrefix(selector, "local:") || strings.HasPrefix(selector, "proj:") {
-		hash, id, decErr := decodeRef(selector)
+		projectID, id, decErr := decodeRef(selector)
 		if decErr != nil {
 			return "", "", "", decErr
 		}
-		if hash == "" {
+		if err := identifier.ValidateSessionID(id); err != nil {
+			return "", "", "", fmt.Errorf("invalid session selector: %w", err)
+		}
+		if projectID != "" {
+			if err := identifier.ValidateProjectID(projectID); err != nil {
+				return "", "", "", fmt.Errorf("invalid project selector: %w", err)
+			}
+		}
+		if projectID == "" {
 			return currentStateDir, id, scopeCurrentProject, nil
 		}
 		sh := stateHomeFor(currentStateDir)
 		if sh == "" {
 			return "", "", "", fmt.Errorf("transcript ref %q: no project root (flat state dir)", selector)
 		}
-		return filepath.Join(sh, "serf", "projects", hash), id, scopeAllProjects, nil
+		return filepath.Join(sh, "serf", "projects", projectID), id, scopeAllProjects, nil
 	}
-	if err := validIDToken(selector); err != nil {
+	if err := identifier.ValidateSessionID(selector); err != nil {
 		return "", "", "", fmt.Errorf("invalid session selector: %w", err)
 	}
 	return currentStateDir, selector, scopeCurrentProject, nil
