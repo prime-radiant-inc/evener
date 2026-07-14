@@ -322,6 +322,10 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			if res != "" {
 				lastResult = res
 			}
+			// A delivered notification is real drain progress: reset the stall
+			// clock so the watchdog measures only continuous stall, never a stall
+			// episode punctuated by deliveries.
+			stallStart = time.Time{}
 			continue
 		}
 		outstanding, err := s.treeHasOutstandingWork()
