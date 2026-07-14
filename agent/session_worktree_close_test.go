@@ -456,12 +456,20 @@ func assertNoGitCherry(t *testing.T, logPath string) {
 	t.Helper()
 	b, err := os.ReadFile(logPath)
 	if err != nil {
-		return // no calls logged at all
+		t.Fatalf("git call log %s missing; the git shim intercepted no calls, so the no-cherry assertion is vacuous: %v", logPath, err)
 	}
+	sawCall := false
 	for _, line := range strings.Split(string(b), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		sawCall = true
 		if line == "cherry" || strings.HasPrefix(line, "cherry ") {
 			t.Fatalf("git cherry must never run at close; call log:\n%s", string(b))
 		}
+	}
+	if !sawCall {
+		t.Fatalf("git call log %s is empty; the git shim intercepted no calls, so the no-cherry assertion is vacuous", logPath)
 	}
 }
 
@@ -1224,9 +1232,9 @@ func TestCloseBudget_ExhaustedMidPass_LanesLeftSafe(t *testing.T) {
 
 	// The first lane reached sleeps past the deadline, spending the shared budget
 	// so the remaining lane is reached only after expiry.
-	r.s.worktreeDisposeBeforeRemove = func(string) { time.Sleep(120 * time.Millisecond) }
+	r.s.worktreeDisposeBeforeRemove = func(string) { time.Sleep(time.Second) }
 
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	r.s.disposeDelegateLanesAtClose(ctx)
 

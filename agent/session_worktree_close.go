@@ -332,6 +332,17 @@ const (
 	laneDeclined
 )
 
+// statLaneGitDir stats <lanePath>/.git through the worktreeLaneStat test seam
+// when set, else os.Stat. It is the classifier's view of whether a lane the
+// non-force remove refused is still present.
+func (s *Session) statLaneGitDir(lanePath string) (os.FileInfo, error) {
+	gitPath := filepath.Join(lanePath, ".git")
+	if s.worktreeLaneStat != nil {
+		return s.worktreeLaneStat(gitPath)
+	}
+	return os.Stat(gitPath)
+}
+
 // disposeUnchangedLaneMechanics runs the unlock → `git worktree remove`
 // (non-force) → mark disposed → `branch -D` → sidecar-delete sequence for an
 // UNCHANGED lane already judged collectible. It is the shared core of close-time
@@ -345,17 +356,6 @@ const (
 // unless dirty-forced"): the model-facing dispose op sets it when `force_dirty`
 // discards a dirty lane, which a non-force remove would refuse. The close path
 // never forces — a late dirty write there downgrades back to KEEP instead.
-// statLaneGitDir stats <lanePath>/.git through the worktreeLaneStat test seam
-// when set, else os.Stat. It is the classifier's view of whether a lane the
-// non-force remove refused is still present.
-func (s *Session) statLaneGitDir(lanePath string) (os.FileInfo, error) {
-	gitPath := filepath.Join(lanePath, ".git")
-	if s.worktreeLaneStat != nil {
-		return s.worktreeLaneStat(gitPath)
-	}
-	return os.Stat(gitPath)
-}
-
 func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st worktree.LockState, lane isolationLane, metaDir string, downgrade downgradePolicy, forceRemove bool) (outcome laneDisposalOutcome, note string) {
 	lanePath := filepath.Clean(lane.path)
 	switch worktree.Decide(worktree.EvDisposeUnchanged, st) {

@@ -2177,7 +2177,7 @@ func (s *Session) worktreePruneSweep1(ctx context.Context, run worktree.GitRunne
 		// (spec §P3: own-store records only).
 		if cErr := s.collectLane(run, metaDir, e.Name, e.Path, true, policy); cErr != nil {
 			if policy.abortOnError {
-				return nil, nil, cErr
+				return nil, nil, fmt.Errorf("manage_worktree prune: %w", cErr)
 			}
 			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "collect race: " + cErr.Error()})
 			continue
