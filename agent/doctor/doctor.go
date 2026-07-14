@@ -17,7 +17,7 @@ package doctor
 // per-session SUBDIR (sessions/<sid>/jobs.jsonl).
 type Paths struct {
 	SessionID      string `json:"session_id"`
-	TranscriptRef  string `json:"transcript_ref"`  // proj:<hash>:<sid>, or local:<sid> in an override/scratch root
+	TranscriptRef  string `json:"transcript_ref"`  // proj:<project-id>:<sid>, or local:<sid> in an override/scratch root
 	ProjectID      string `json:"project_id"`      // project dir name under serf/projects/, else ""
 	BucketDir      string `json:"-"`               // absolute bucket dir (internal pivot for other subcommands)
 	TranscriptPath string `json:"transcript_path"` // <bucket>/sessions/<sid>.transcript.jsonl

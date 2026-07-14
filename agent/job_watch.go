@@ -3167,8 +3167,8 @@ func (jm *jobManager) watchedWorkerSessionID(watchedJobID string) (workerSession
 	if err != nil || rec.Type != jobstore.JobDelegate {
 		return "", false
 	}
-	bucketHash, childID, err := decodeRef(rec.TranscriptRef)
-	if err != nil || bucketHash != "" {
+	projectID, childID, err := decodeRef(rec.TranscriptRef)
+	if err != nil || projectID != "" {
 		// Undecodable, or a cross-project worker whose meta the hub cannot read.
 		return "", false
 	}

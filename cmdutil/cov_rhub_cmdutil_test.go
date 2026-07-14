@@ -103,7 +103,7 @@ func TestResolveSessionMeta(t *testing.T) {
 		t.Fatal("expected error loading unknown session")
 	}
 
-	meta := schema.SessionMeta{ID: "01SESSIONAAAAAAAAAAAAAAAAAA"}
+	meta := schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeB"}
 	if err := schema.SaveSessionMeta(dir, meta); err != nil {
 		t.Fatalf("SaveSessionMeta: %v", err)
 	}
@@ -122,6 +122,14 @@ func TestResolveSessionMeta(t *testing.T) {
 	}
 	if last.ID != meta.ID {
 		t.Fatalf("resumeLast got %q, want %q", last.ID, meta.ID)
+	}
+
+	legacy := schema.SessionMeta{ID: "01LEGACYRESUME"}
+	if err := schema.SaveSessionMeta(dir, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveSessionMeta(dir, legacy.ID, false); err == nil {
+		t.Fatal("legacy local direct resume must be rejected")
 	}
 }
 

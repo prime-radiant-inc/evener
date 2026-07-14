@@ -382,7 +382,7 @@ type findCandidate struct {
 
 // collectCandidates lists SessionMetas (cheap, meta-only) over each bucket and
 // pairs each with its bucket. The projectID is "" for the bucket that IS the
-// current state dir (so its refs are local:), and the bucket's basename hash for
+// current state dir (so its refs are local:), and the bucket's project ID for
 // every sibling (proj: refs). The current bucket is identified by absolute-path
 // equality, not list position, because enumerateBuckets returns buckets in
 // arbitrary glob order.

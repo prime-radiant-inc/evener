@@ -895,15 +895,15 @@ func TestListSessionMetas_SortedByUpdatedAt(t *testing.T) {
 	dir := t.TempDir()
 
 	meta1 := testSessionMeta()
-	meta1.ID = "01JTEST_META_00000000001"
+	meta1.ID = "02wMz5Txv1C3Hut0M8GCeB"
 	meta1.UpdatedAt = time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC)
 
 	meta2 := testSessionMeta()
-	meta2.ID = "01JTEST_META_00000000002"
+	meta2.ID = "02wMz5Txv2enqVTitaig6F"
 	meta2.UpdatedAt = time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 
 	meta3 := testSessionMeta()
-	meta3.ID = "01JTEST_META_00000000003"
+	meta3.ID = "02wMz5TxvEMoJEDTDGOTil"
 	meta3.UpdatedAt = time.Date(2025, 1, 15, 11, 0, 0, 0, time.UTC)
 
 	for _, m := range []schema.SessionMeta{meta1, meta2, meta3} {

@@ -2,8 +2,11 @@ package schema
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/afero"
 )
@@ -77,14 +80,79 @@ func TestCov_ListSessionMetasFS(t *testing.T) {
 	if err != nil || metas != nil {
 		t.Errorf("missing dir should yield (nil,nil), got %v %v", metas, err)
 	}
-	if err := saveSessionMetaFS(mem, "/state", SessionMeta{ID: "01AAA"}); err != nil {
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	if err := saveSessionMetaFS(mem, "/state", SessionMeta{ID: sessionID}); err != nil {
 		t.Fatal(err)
 	}
 	metas, err = listSessionMetasFS(mem, "/state")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(metas) != 1 || metas[0].ID != "01AAA" {
-		t.Errorf("list = %+v, want one meta 01AAA", metas)
+	if len(metas) != 1 || metas[0].ID != sessionID {
+		t.Errorf("list = %+v, want one meta %s", metas, sessionID)
+	}
+}
+
+func TestListSessionMetas_CleanBreakValidatesFilenameAndMetadataID(t *testing.T) {
+	dir := t.TempDir()
+	sessionsDir := filepath.Join(dir, sessionsSubdir)
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const validID = "02wMz5Txv1C3Hut0M8GCeB"
+	const otherValidID = "02wMz5Txv2enqVTitaig6F"
+	legacyPath := filepath.Join(sessionsDir, "01LEGACY.meta.json")
+	mismatchPath := filepath.Join(sessionsDir, otherValidID+".meta.json")
+	validPath := filepath.Join(sessionsDir, validID+".meta.json")
+	write := func(path, id string) {
+		t.Helper()
+		data, err := json.Marshal(SessionMeta{ID: id, UpdatedAt: time.Unix(1, 0)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(legacyPath, validID)
+	write(mismatchPath, validID)
+	write(validPath, validID)
+	oldTime := time.Unix(1_600_000_000, 0)
+	for _, path := range []string{legacyPath, mismatchPath} {
+		if err := os.Chtimes(path, oldTime, oldTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	legacyBytes, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mismatchBytes, err := os.ReadFile(mismatchPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	metas, err := ListSessionMetas(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metas) != 1 || metas[0].ID != validID {
+		t.Fatalf("metas=%+v, want only matching valid filename/id", metas)
+	}
+	for path, want := range map[string][]byte{legacyPath: legacyBytes, mismatchPath: mismatchBytes} {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != string(want) {
+			t.Fatalf("legacy fixture %s was modified", path)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.ModTime().Equal(oldTime) {
+			t.Fatalf("legacy fixture %s mtime=%v, want %v", path, info.ModTime(), oldTime)
+		}
 	}
 }

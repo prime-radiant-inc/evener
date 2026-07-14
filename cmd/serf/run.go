@@ -435,6 +435,9 @@ func listSessions(cfg runConfig, stateDir string) error {
 		return nil
 	}
 	for _, m := range list {
+		if identifier.ValidateSessionID(m.ID) != nil {
+			continue
+		}
 		branch := m.EnvInfo.GitBranch
 		if branch == "" {
 			branch = "-"

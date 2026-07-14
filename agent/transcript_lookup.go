@@ -17,7 +17,7 @@ var transcriptBucketGlob = filepath.Glob
 // selector:
 //   - "" or "current"  → the current session (currentStateDir/sessions/currentSessionID.transcript.jsonl)
 //   - "local:<id>"     → the session in the current bucket
-//   - "proj:<hash>:<id>" → the session in the named sibling bucket
+//   - "proj:<project-id>:<id>" → the session in the named sibling bucket
 //   - bare session ID  → search current bucket first, then sibling buckets;
 //     ambiguous (found in >1 bucket) → error with candidate refs
 func resolveTranscript(selector, currentStateDir, currentSessionID string) (path, ref string, err error) {
@@ -168,10 +168,10 @@ func validLocalBucketDir(stateDir string) bool {
 }
 
 // stateHomeFor returns the stateHome (the <base> parent two levels above the
-// serf/projects/<hash> path) for a bucket state dir, or "" if the state dir is
-// not under serf/projects/<hash>.
+// serf/projects/<project-id> path) for a bucket state dir, or "" if the state dir is
+// not under serf/projects/<project-id>.
 func stateHomeFor(stateDir string) string {
-	// Expect the layout: <stateHome>/serf/projects/<hash>
+	// Expect the layout: <stateHome>/serf/projects/<project-id>
 	// filepath.Dir(stateDir) == <stateHome>/serf/projects
 	// filepath.Dir(that)     == <stateHome>/serf
 	// filepath.Dir(that)     == <stateHome>

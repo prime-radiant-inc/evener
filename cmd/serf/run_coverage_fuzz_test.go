@@ -87,11 +87,11 @@ func FuzzRunCoverage(f *testing.F) {
 			if err := run(context.Background(), runConfig{workDir: dir, stateDir: dir, listSessions: true, noDefaultMarketplaces: true, stdout: &out, stderr: io.Discard}); err != nil {
 				t.Fatal(err)
 			}
-			meta := schema.SessionMeta{ID: "session", Model: "model", UpdatedAt: time.Unix(1, 0), TurnCount: 2, EnvInfo: schema.EnvironmentInfo{GitBranch: "main"}}
+			meta := schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeB", Model: "model", UpdatedAt: time.Unix(1, 0), TurnCount: 2, EnvInfo: schema.EnvironmentInfo{GitBranch: "main"}}
 			if err := schema.SaveSessionMeta(dir, meta); err != nil {
 				t.Fatal(err)
 			}
-			meta.ID = "session-no-branch"
+			meta.ID = "02wMz5Txv2enqVTitaig6F"
 			meta.EnvInfo.GitBranch = ""
 			if err := schema.SaveSessionMeta(dir, meta); err != nil {
 				t.Fatal(err)
@@ -99,6 +99,17 @@ func FuzzRunCoverage(f *testing.F) {
 			out.Reset()
 			if err := listSessions(runConfig{stdout: &out}, dir); err != nil || !strings.Contains(out.String(), "main") {
 				t.Fatalf("out=%q err=%v", out.String(), err)
+			}
+			legacy := schema.SessionMeta{ID: "01LEGACYLIST", Model: "legacy"}
+			if err := schema.SaveSessionMeta(dir, legacy); err != nil {
+				t.Fatal(err)
+			}
+			out.Reset()
+			if err := listSessions(runConfig{stdout: &out}, dir); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(out.String(), legacy.ID) || !strings.Contains(out.String(), meta.ID) {
+				t.Fatalf("legacy list filtering output=%q", out.String())
 			}
 			bad := filepath.Join(t.TempDir(), "file")
 			if err := os.WriteFile(bad, []byte("x"), 0600); err != nil {

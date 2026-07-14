@@ -69,6 +69,31 @@ func TestLocalRouteID_CleanBreakAndExternalRefs(t *testing.T) {
 	if got := appRefFromRouteID("codex:thread_abc"); got != "codex:thread_abc" {
 		t.Fatalf("external ref was rewritten: %q", got)
 	}
+
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
+	source := &scriptedAppSource{
+		id: "codex",
+		thread: appwire.Thread{
+			ID: "thread_abc", SessionID: "thread_abc", Name: "opaque external thread", Source: "codex",
+			Serf: appwire.SerfThread{Ref: "codex:thread_abc"},
+		},
+	}
+	web.sources.Add(source)
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/codex:thread_abc", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("external source-specific session route status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if len(source.readParams) == 0 {
+		t.Fatalf("external source received read params %+v", source.readParams)
+	}
+	for _, params := range source.readParams {
+		if params.Ref != "codex:thread_abc" {
+			t.Fatalf("external source received rewritten ref in read params %+v", source.readParams)
+		}
+	}
 }
 
 // controlTag returns the opening <button …> tag whose attributes contain the

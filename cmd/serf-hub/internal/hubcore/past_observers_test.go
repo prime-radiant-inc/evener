@@ -93,19 +93,22 @@ func fuzzScenarioPastIndex_ObserversOf_SkipsCrossProjectRef(t *testing.T) {
 func fuzzScenarioPastIndex_ObserversOf_MultipleObservers(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "project-p-0123456789")
-	writeMeta(t, proj, schema.SessionMeta{ID: "02wMz5TxvFpYrooBkiqxAp", UpdatedAt: time.Now()})
-	writeMeta(t, proj, schema.SessionMeta{ID: "02wMz5TxvHIJQPOuIBJQct", UpdatedAt: time.Now()})
-	writeGrantLog(t, proj, "02wMz5TxvFpYrooBkiqxAp", "job_w1", "local:02wMz5TxvCu3kdckfnw0Gh", "OBS1")
-	writeGrantLog(t, proj, "02wMz5TxvHIJQPOuIBJQct", "job_w2", "local:02wMz5TxvCu3kdckfnw0Gh", "OBS2")
+	const workerID = "02wMz5TxvCu3kdckfnw0Gh"
+	const observer1ID = "02wMz5TxvFpYrooBkiqxAp"
+	const observer2ID = "02wMz5TxvHIJQPOuIBJQct"
+	writeMeta(t, proj, schema.SessionMeta{ID: observer1ID, UpdatedAt: time.Now()})
+	writeMeta(t, proj, schema.SessionMeta{ID: observer2ID, UpdatedAt: time.Now()})
+	writeGrantLog(t, proj, observer1ID, "job_w1", "local:"+workerID, observer1ID)
+	writeGrantLog(t, proj, observer2ID, "job_w2", "local:"+workerID, observer2ID)
 
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
-	got := idx.ObserversOf("02wMz5TxvCu3kdckfnw0Gh")
-	want := map[string]bool{"OBS1": true, "OBS2": true}
+	got := idx.ObserversOf(workerID)
+	want := map[string]bool{observer1ID: true, observer2ID: true}
 	if len(got) != 2 || !want[got[0]] || !want[got[1]] || got[0] == got[1] {
-		t.Fatalf("ObserversOf(worker) = %v, want OBS1+OBS2", got)
+		t.Fatalf("ObserversOf(worker) = %v, want %s+%s", got, observer1ID, observer2ID)
 	}
 }
 

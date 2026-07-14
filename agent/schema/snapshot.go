@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
+	"primeradiant.com/serf/identifier"
 )
 
 var marshalSessionMeta = json.Marshal
@@ -250,8 +251,11 @@ func listSessionMetasFS(fs afero.Fs, dir string) ([]SessionMeta, error) {
 			continue
 		}
 		id := strings.TrimSuffix(e.Name(), ".meta.json")
+		if identifier.ValidateSessionID(id) != nil {
+			continue
+		}
 		meta, err := loadSessionMetaFS(fs, dir, id)
-		if err != nil {
+		if err != nil || identifier.ValidateSessionID(meta.ID) != nil || meta.ID != id {
 			continue // skip corrupt files
 		}
 		metas = append(metas, meta)
