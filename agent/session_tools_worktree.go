@@ -2065,6 +2065,13 @@ type laneSweepPolicy struct {
 	markDisposed func(delegateID string)
 }
 
+// ctxCancelled reports whether ctx's deadline/cancellation has fired. It exists
+// as a named predicate so the sweeps' per-lane budget check reads as a control
+// decision rather than an error inspection preceding a nil-error return.
+func ctxCancelled(ctx context.Context) bool {
+	return ctx.Err() != nil
+}
+
 // prunePolicy reproduces the model-facing `prune` sweep behavior exactly (spec
 // §5): every managed lane in scope, no grace, abort on the first mutation
 // failure, the full unchanged-or-merged disposability test (both the ancestry
@@ -2111,7 +2118,7 @@ func prunePolicy() laneSweepPolicy {
 // close pass's shared budget); prune passes a background ctx.
 func (s *Session) worktreePruneSweep1(ctx context.Context, run worktree.GitRunner, managed []managedEntry, metaDir string, policy laneSweepPolicy) (removed, skipped []WorktreePruneEntry, err error) {
 	for _, e := range managed {
-		if ctx.Err() != nil {
+		if ctxCancelled(ctx) {
 			break
 		}
 		// Not locked: the occupancy rule, owner-independent (spec §5 sweep 1;
@@ -2262,7 +2269,7 @@ func (s *Session) worktreePruneSweep2(ctx context.Context, run worktree.GitRunne
 	}
 
 	for _, sc := range sidecars {
-		if ctx.Err() != nil {
+		if ctxCancelled(ctx) {
 			break
 		}
 		if registered[sc.Name] {

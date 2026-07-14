@@ -144,9 +144,16 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		if s.cancelFunc != nil {
 			s.cancelFunc()
 		}
+		// A close that begins before the P3 open-pass delay elapses cancels the
+		// pass outright; stop the timer now that `closing` is set (a timer that
+		// already fired is joined below via sweepWG instead — spec §P3).
+		s.stopLaneResidueSweepTimer()
 
-		// Step 3: join the in-flight-dispose WaitGroup with NO locks held.
+		// Step 3: join the in-flight-dispose WaitGroup with NO locks held, then
+		// join any in-flight P3 open-pass residue sweep before this session's own
+		// disposal runs, so the two never race on the same lane's git ops.
 		s.disposeWG.Wait()
+		s.sweepWG.Wait()
 
 		// Step 4: reacquire the pair and drain the subagent map. Marking closing
 		// BEFORE draining means a spawn or namer launch racing teardown is either
@@ -219,6 +226,11 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		// self-healing since disposal's `git worktree remove` runs without
 		// --force and downgrades to keep on a dirty refusal.
 		s.disposeDelegateLanesAtClose(budgetCtx)
+		// P3 close pass (spec §P3): after this session's own P0 disposal, collect
+		// foreign residue (other cleanly-closed sessions' unlocked, merged
+		// delegate lanes) over the SAME shared close budget. Store must still be
+		// open (the own-store Disposed mark is a durable append); it closes below.
+		s.disposeLaneResidueAtClose(budgetCtx)
 		s.unlockOwnManagedWorktreeAtClose()
 
 		if s.jobManager != nil {

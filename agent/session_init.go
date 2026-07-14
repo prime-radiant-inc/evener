@@ -284,6 +284,10 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// Write the initial meta.json so the hub's past index can discover this
 	// session immediately (without waiting for the first completed turn).
 	s.maybeAutoSave()
+	// Arm the P3 residue-collection open pass (spec §P3): a top-level session on
+	// a local exec env sweeps foreign lane residue laneSweepDelay after it opens.
+	// The method itself no-ops for subagent sessions and non-local envs.
+	s.armLaneResidueSweepTimer()
 	closeJobManagerOnError = false
 	closeMCPManagerOnError = false
 	return s, nil
@@ -635,6 +639,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// flight resumes awaiting rather than idle (spec v5, round-3 A2).
 	if !restoreCfg.deferRestoreSideEffects {
 		s.recomputeRestoredState()
+		// Arm the P3 residue-collection open pass for a restored top-level session
+		// (spec §P3). Deferred reconstructions (nested delegate restore) are never
+		// top-level, so they never run P3; arming only on the real-side-effects
+		// path keeps that guarantee explicit.
+		s.armLaneResidueSweepTimer()
 	}
 	closeJobManagerOnError = false
 	closeMCPManagerOnError = false
