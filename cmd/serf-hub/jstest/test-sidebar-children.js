@@ -5,6 +5,7 @@
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
 const src = fs.readFileSync(__dirname + "/../assets/sidebar.js", "utf8");
+const iconsSrc = fs.readFileSync(__dirname + "/../assets/icons.js", "utf8");
 const css = fs.readFileSync(__dirname + "/../assets/style.css", "utf8");
 
 function boot(url) {
@@ -19,6 +20,7 @@ function boot(url) {
   };
   w.htmx = { process() {} };
   w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
+  w.eval(iconsSrc);
   w.eval(src);
   return { w, posts };
 }
@@ -76,7 +78,7 @@ if (w.document.querySelector('[data-row-id="project:p1:local:GRAND-ENDED"]')) {
 if (w.document.querySelector('[data-row-id="project:p1:local:CHILD-ERROR"]')) {
   throw new Error("errored direct child must stay behind main inactive disclosure");
 }
-if (mainInactive.getAttribute("aria-controls") !== "inactive-rows-project-p1-local-MAIN") {
+if (mainInactive.getAttribute("aria-controls") !== "inactive-rows-project:p1:local:MAIN") {
   throw new Error("inactive disclosure must expose a stable aria-controls target");
 }
 
@@ -108,8 +110,8 @@ if (!retainedAfter || retainedAfter.__probe !== true) throw new Error("resync mu
 if (w.document.querySelector('[data-row-id="project:p1:local:GRAND-ENDED"]') !== grandEnded) {
   throw new Error("resync must preserve keyed inactive child row identity");
 }
-if (w.document.querySelector('[data-row-id="inactive:project:p1:local:MAIN"] button').getAttribute("aria-expanded") !== "true" ||
-    w.document.querySelector('[data-row-id="inactive:project:p1:local:CHILD-RUNNING"] button').getAttribute("aria-expanded") !== "true") {
+if (w.document.querySelector('[data-row-id="inactive:project:p1:local:MAIN"]').getAttribute("aria-expanded") !== "true" ||
+    w.document.querySelector('[data-row-id="inactive:project:p1:local:CHILD-RUNNING"]').getAttribute("aria-expanded") !== "true") {
   throw new Error("resync must preserve each parent's inactive expansion state");
 }
 
@@ -158,7 +160,7 @@ const revealed = w2.document.querySelector('[data-row-id="project:p2:local:CHILD
 if (!revealed) throw new Error("auto-reveal must expand the project + current/inactive chain so the deep-linked child renders");
 if (!revealed.hasAttribute("data-active")) throw new Error("the auto-revealed row must be marked data-active");
 if (w2.localStorage.getItem("serf-hub.sidebar.expanded.p2") !== "true") throw new Error("auto-reveal must persist the enclosing project's expansion key");
-if (w2.localStorage.getItem("serf-hub.sidebar.expanded.inactive:project:p2:local:PARENT2") !== "true") throw new Error("auto-reveal must persist the parent's inactive disclosure key");
+if (w2.localStorage.getItem("serf-hub.sidebar.expanded.inactive:project:p2:local:01PARENT2") !== "true") throw new Error("auto-reveal must persist the parent's inactive disclosure key");
 
 let expandWrites = 0;
 const realSetItem = w2.localStorage.setItem.bind(w2.localStorage);
