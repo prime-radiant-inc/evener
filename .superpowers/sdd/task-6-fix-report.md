@@ -149,3 +149,75 @@ ok  	primeradiant.com/serf/cmd/serf-hub	2.578s
 $ git diff HEAD^ HEAD --check
 PASS
 ```
+
+# Re-review remediation (follow-up commit)
+
+## Blocking gaps addressed
+
+- Migrated `agent/workspace_prompt_program_fuzz_test.go:wppRuntimePaths` to the current `RuntimeDir` / `RuntimeDirWithStateHome` `(identifier.Project, stateDir, error)` contract. Assertions now use `Project.ID`, preserve explicit override semantics, and compare cache signatures against `nonProjectHash`; no stale origin/hash or old arity calls remain in that tagged caller.
+- Added `agent.RuntimeDirForProjectWithStateHome`, which derives state storage from an already-resolved Project without filesystem or Git resolution.
+- Refactored `HubSpawner.Spawn` and `HubSpawner.Resume` to consume a carried `req.Project` when present. The normal launch flow therefore does not resolve `req.WorkingDir` a second time. Direct/test requests with no Project retain one explicit fallback behavior: resolve from WorkingDir; explicit `SERF_STATE_DIR` still wins and bypasses resolution.
+- Added `cmd/serf-hub/spawn_project_identity_test.go` covering carried Project state derivation from a nonexistent active cwd and explicit state-dir override behavior.
+
+## Follow-up RED evidence
+
+Tests were added before the follow-up implementation:
+
+```text
+$ go test -tags serffuzz ./agent -run '^$' -count=1
+agent/session_engine_coverage_fuzz_test.go:37:24: undefined: TestS2Cov_HandleCompactionTurn_SteersTranscriptRef
+FAIL
+
+$ go test ./cmd/serf-hub -run 'TestResolveStateDirForProject' -count=1
+spawn_project_identity_test.go:15:14: undefined: resolveStateDirForProject
+FAIL
+```
+
+The tagged compile failure is the documented pre-existing unrelated fuzz-test failure. Crucially, the output contained no stale RuntimeDir arity/signature or origin/hash errors after the tagged caller migration.
+
+## Follow-up GREEN evidence
+
+```text
+$ (cd agent && go test . -run 'TestRuntimeDir' -count=1)
+ok   primeradiant.com/serf/agent  0.304s
+
+$ go test ./cmd/serf-hub -run 'TestResolveStateDirForProject' -count=1
+ok   primeradiant.com/serf/cmd/serf-hub  0.359s
+
+$ go test ./agent ./cmdutil ./cmd/serf ./cmd/serf-hub/internal/launchconfig ./cmd/serf-hub -run 'TestRuntimeDir|TestDefaultProjectStateDir|TestResolveStateKeyDir|TestProject|TestPathsFor|TestSpawn|TestStateDir|TestLaunch|TestResolveStateDirForProject' -count=1
+all affected packages passed
+
+$ git diff --check
+passed
+```
+
+Tagged verification remains blocked solely by the pre-existing undefined `TestS2Cov_HandleCompactionTurn_SteersTranscriptRef`:
+
+```text
+$ go test -tags serffuzz ./agent -run '^$' -count=1
+FAIL: undefined: TestS2Cov_HandleCompactionTurn_SteersTranscriptRef
+
+$ go test -tags serffuzz ./agent -run 'TestRuntimeDir' -count=1
+FAIL: same pre-existing undefined test symbol
+```
+
+The required full affected command again passed `cmdutil`, `cmd/serf`, and `cmd/serf-hub/internal/launchconfig`; `cmd/serf-hub` was blocked by the known unrelated `threads=[]` failure and prohibited IPv6 loopback bind.
+
+## Follow-up changed files
+
+- `agent/runtime_dir.go`
+- `agent/workspace_prompt_program_fuzz_test.go`
+- `cmd/serf-hub/spawn.go`
+- `cmd/serf-hub/spawn_project_identity_test.go`
+- `.superpowers/sdd/task-6-fix-report.md`
+
+## Follow-up self-review and concerns
+
+- Normal hub spawn/resume requests carrying Project no longer call `ResolveProject` through state-dir derivation; active `WorkingDir` remains unchanged.
+- Direct zero-Project callers retain an explicit fallback resolution path; explicit state-dir overrides bypass resolution.
+- `.superpowers/sdd/task-1-report.md` remains untouched and unstaged; `.superpowers/sdd/progress.md` was not touched.
+- Concern: tagged serffuzz compile/test commands cannot complete until the pre-existing undefined `TestS2Cov_HandleCompactionTurn_SteersTranscriptRef` is repaired outside this scoped Task 6 follow-up.
+
+## Follow-up commit
+
+Pending new non-amended commit: `fix: complete project identity propagation`.

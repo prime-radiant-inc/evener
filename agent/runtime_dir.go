@@ -36,6 +36,18 @@ func RuntimeDirWithStateHome(workDir, overrideDir, stateHome string) (identifier
 	return project, filepath.Join(base, "serf", "projects", project.ID), nil
 }
 
+// RuntimeDirForProjectWithStateHome returns the state directory for an
+// already-resolved project without performing filesystem or Git resolution.
+// Callers that have a Project from an earlier launch-resolution boundary use
+// this to carry identity forward without resolving the active cwd again.
+func RuntimeDirForProjectWithStateHome(project identifier.Project, stateHome string) string {
+	base := stateHome
+	if base == "" {
+		base = xdgStateHome()
+	}
+	return filepath.Join(base, "serf", "projects", project.ID)
+}
+
 // CacheDir returns the global cache directory: $XDG_CACHE_HOME/serf/
 func CacheDir() string {
 	return filepath.Join(xdgCacheHome(), "serf")

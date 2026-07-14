@@ -111,7 +111,11 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 	}
 	if req.StateDir == "" {
 		var err error
-		req.Project, req.StateDir, err = resolveSerfLaunchProjectStateDir(req.WorkingDir, req.Resolved.Effective.Env)
+		if req.Project.ID != "" {
+			req.StateDir, err = resolveStateDirForProject(req.Project, req.WorkingDir, req.Resolved.Effective.Env)
+		} else {
+			req.Project, req.StateDir, err = resolveSerfLaunchProjectStateDir(req.WorkingDir, req.Resolved.Effective.Env)
+		}
 		if err != nil {
 			return rendezvous.Entry{}, err
 		}
@@ -152,7 +156,11 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 	}
 	if req.StateDir == "" {
 		var err error
-		req.Project, req.StateDir, err = resolveSerfLaunchProjectStateDir(req.WorkingDir, req.Resolved.Effective.Env)
+		if req.Project.ID != "" {
+			req.StateDir, err = resolveStateDirForProject(req.Project, req.WorkingDir, req.Resolved.Effective.Env)
+		} else {
+			req.Project, req.StateDir, err = resolveSerfLaunchProjectStateDir(req.WorkingDir, req.Resolved.Effective.Env)
+		}
 		if err != nil {
 			return rendezvous.Entry{}, err
 		}
@@ -453,6 +461,27 @@ func resolveSerfLaunchProjectStateDir(workDir string, env map[string]string) (id
 		return resolveSerfStateDirWithProject(workDir, "", "")
 	}
 	return resolveSerfStateDirWithProject(workDir, env[envvars.SERFStateDir.Name], env[envvars.XDGStateHome.Name])
+}
+
+// resolveStateDirForProject derives state storage from an identity that was
+// already resolved by the launch entry point. An explicit SERF_STATE_DIR
+// remains authoritative; the active working directory is intentionally unused
+// in that case and is retained only for the direct-call fallback contract.
+func resolveStateDirForProject(project identifier.Project, workDir string, env map[string]string) (string, error) {
+	override := ""
+	stateHome := ""
+	if env != nil {
+		override = env[envvars.SERFStateDir.Name]
+		stateHome = env[envvars.XDGStateHome.Name]
+	}
+	if strings.TrimSpace(override) != "" {
+		return override, nil
+	}
+	if project.ID == "" {
+		_, stateDir, err := resolveSerfStateDirWithProject(workDir, override, stateHome)
+		return stateDir, err
+	}
+	return agent.RuntimeDirForProjectWithStateHome(project, strings.TrimSpace(stateHome)), nil
 }
 
 func resolveSerfStateDirWithStateHome(workDir, override, stateHome string) (string, error) {
