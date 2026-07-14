@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"primeradiant.com/serf/identifier"
@@ -15,18 +16,34 @@ import (
 // environment. The identifier package remains the policy owner; this adapter
 // only supplies path and Git operations through env.
 func NewProjectResolver(env ExecutionEnvironment) identifier.Resolver {
-	return projectResolver{env: env}
+	if isNilExecutionEnvironment(env) {
+		return (*projectResolver)(nil)
+	}
+	return &projectResolver{env: env}
 }
 
 type projectResolver struct{ env ExecutionEnvironment }
 
-func (r projectResolver) Abs(path string) (string, error) {
+func isNilExecutionEnvironment(env ExecutionEnvironment) bool {
+	if env == nil {
+		return true
+	}
+	value := reflect.ValueOf(env)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
+func (r *projectResolver) Abs(path string) (string, error) {
 	if filepath.IsAbs(path) {
 		return filepath.Clean(path), nil
 	}
 	base := r.env.WorkingDirectory()
 	if base == "" {
-		return filepath.Abs(path)
+		return "", errors.New("resolve project relative path: execution environment working directory is empty")
 	}
 	absolute, err := filepath.Abs(filepath.Join(base, path))
 	if err != nil {
@@ -35,7 +52,7 @@ func (r projectResolver) Abs(path string) (string, error) {
 	return filepath.Clean(absolute), nil
 }
 
-func (r projectResolver) EvalSymlinks(path string) (string, error) {
+func (r *projectResolver) EvalSymlinks(path string) (string, error) {
 	if _, local := r.env.(*LocalExecutionEnvironment); local {
 		return filepath.EvalSymlinks(path)
 	}
@@ -55,7 +72,7 @@ func (r projectResolver) EvalSymlinks(path string) (string, error) {
 	return filepath.Clean(resolved), nil
 }
 
-func (r projectResolver) MainCheckout(path string) (string, bool, error) {
+func (r *projectResolver) MainCheckout(path string) (string, bool, error) {
 	return resolveMainRepoRoot(r.env, path)
 }
 
@@ -210,7 +227,10 @@ func gitBinaryMainRootStrict(env ExecutionEnvironment, cwd string) (string, bool
 	if isSubmoduleGitDirShape(common) {
 		return resolveCleanForEnv(env, top), true, nil
 	}
-	if candidate == "" || !pathContains(candidate, top, isLocalEnv(env)) {
+	if !isLocalEnv(env) && candidate != "" && env.FileExists(filepath.Join(candidate, ".git")) && filepath.Clean(common) == filepath.Join(filepath.Clean(candidate), ".git") {
+		return filepath.Clean(candidate), true, nil
+	}
+	if candidate == "" || (isLocalEnv(env) && !pathContains(candidate, top, true)) {
 		return "", true, fmt.Errorf("Git common directory %q does not identify checkout root %q", common, top)
 	}
 	return resolveCleanForEnv(env, candidate), true, nil

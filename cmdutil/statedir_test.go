@@ -79,3 +79,14 @@ func TestDefaultProjectStateDir_NotInRepo_FallsBackToWorkDir(t *testing.T) {
 		t.Errorf("DefaultProjectStateDir collided for distinct non-repo workDirs %q and %q: %q", workDir, other, got)
 	}
 }
+
+func TestResolveStateKeyDir_NonGitSymlinkPreservesOriginalPath(t *testing.T) {
+	target := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(target, alias); err != nil {
+		t.Fatal(err)
+	}
+	if got := ResolveStateKeyDir(alias); got != alias {
+		t.Fatalf("ResolveStateKeyDir(%q) = %q, want original path", alias, got)
+	}
+}

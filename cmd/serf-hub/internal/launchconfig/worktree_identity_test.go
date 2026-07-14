@@ -73,6 +73,20 @@ func checkPathsFor_MetaAndLegacyProjectKeyedByStableRoot(t *testing.T) {
 	}
 }
 
+func TestPathsFor_NonGitSymlinkPreservesOriginalIdentityPath(t *testing.T) {
+	target := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(target, alias); err != nil {
+		t.Fatal(err)
+	}
+	stateRoot := filepath.Join(t.TempDir(), "state")
+	paths := PathsFor(stateRoot, alias)
+	want := filepath.Join(stateRoot, "projects", ProjectID(alias))
+	if paths.Meta != filepath.Join(want, "meta.toml") {
+		t.Fatalf("Meta = %q, want original alias key %q", paths.Meta, want)
+	}
+}
+
 // TestResolve_TrustFromMainRootAppliesInLinkedWorktree drives the same
 // scenario through the full Resolve() path: a repo layer trusted while
 // launched from the main root must be honored when the identical content is

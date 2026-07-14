@@ -95,6 +95,10 @@ func TestMainRootCandidateFromCommonDir(t *testing.T) {
 	if got := MainRootCandidateFromCommonDir("", ""); got != "" {
 		t.Fatalf("empty common = %q", got)
 	}
+	missing := filepath.Join(t.TempDir(), "missing", ".git")
+	if got := MainRootCandidateFromCommonDir(filepath.Dir(missing), missing); got != filepath.Dir(missing) {
+		t.Fatalf("missing common changed lexically: got %q, want %q", got, filepath.Dir(missing))
+	}
 }
 
 func TestGitEntryResolvesToCommon(t *testing.T) {

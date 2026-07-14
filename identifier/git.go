@@ -49,7 +49,7 @@ func MainRootCandidateFromCommonDir(cwd, common string) string {
 	if !filepath.IsAbs(common) {
 		common = filepath.Join(cwd, common)
 	}
-	common = resolveClean(common)
+	common = filepath.Clean(common)
 	root := filepath.Dir(common)
 	if root == "" || root == "." {
 		return ""

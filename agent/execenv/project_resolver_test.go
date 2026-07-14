@@ -4,11 +4,98 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"primeradiant.com/serf/identifier"
 )
+
+func TestProjectResolver_NilEnvironment(t *testing.T) {
+	for name, env := range map[string]ExecutionEnvironment{
+		"nil interface": nil,
+		"typed nil":     (*fakeExecEnv)(nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					t.Fatalf("panicked: %v", recovered)
+				}
+			}()
+			if _, err := identifier.ResolveProjectWith(filepath.Join(t.TempDir(), "project"), NewProjectResolver(env)); err == nil {
+				t.Fatal("nil environment accepted")
+			}
+		})
+	}
+	if reflect.TypeOf(NewProjectResolver(nil)).Kind() != reflect.Ptr {
+		t.Fatal("nil environment resolver is not a pointer nil-resolver")
+	}
+}
+
+func TestProjectResolver_EmptyEnvironmentWorkingDirectoryRejectsRelative(t *testing.T) {
+	env := &fakeExecEnv{workDir: "", exec: func(context.Context, string, int, string, map[string]string) (ExecResult, error) {
+		return ExecResult{}, nil
+	}}
+	_, err := identifier.ResolveProjectWith("relative", NewProjectResolver(env))
+	if err == nil || !strings.Contains(err.Error(), "working directory") {
+		t.Fatalf("relative path with empty environment cwd error = %v, want contextual error", err)
+	}
+}
+
+func TestProjectResolver_GenericLinkedWorktreeUsesMainRoot(t *testing.T) {
+	base := t.TempDir()
+	main := filepath.Join(base, "main")
+	worktree := filepath.Join(base, "worktree")
+	cwd := filepath.Join(worktree, "nested")
+	common := filepath.Join(main, ".git")
+	if err := os.MkdirAll(filepath.Join(main, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	commands := []string{}
+	env := &fakeExecEnv{workDir: cwd, exists: func(path string) bool {
+		return path == filepath.Join(main, ".git")
+	}, exec: func(_ context.Context, command string, _ int, workingDir string, _ map[string]string) (ExecResult, error) {
+		commands = append(commands, command+" @ "+workingDir)
+		switch command {
+		case "pwd -P":
+			return ExecResult{Stdout: workingDir + "\n", ExitCode: 0}, nil
+		case "git rev-parse --git-common-dir":
+			return ExecResult{Stdout: common + "\n", ExitCode: 0}, nil
+		case "git rev-parse --show-toplevel":
+			return ExecResult{Stdout: worktree + "\n", ExitCode: 0}, nil
+		default:
+			t.Fatalf("unexpected command %q", command)
+			return ExecResult{}, nil
+		}
+	}}
+	project, err := identifier.ResolveProjectWith(".", NewProjectResolver(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if project.CanonicalPath != main {
+		t.Fatalf("canonical path = %q, want %q", project.CanonicalPath, main)
+	}
+	if len(commands) != 4 || commands[0] != "pwd -P @ "+cwd || commands[1] != "git rev-parse --git-common-dir @ "+cwd || commands[2] != "git rev-parse --show-toplevel @ "+cwd {
+		t.Fatalf("generic command evidence = %v, want pwd, both Git commands, and final main-root pwd", commands)
+	}
+}
+
+func TestResolveMainRepoRootStrict_GenericDefiniteNonGit(t *testing.T) {
+	dir := t.TempDir()
+	env := &fakeExecEnv{workDir: dir, exec: func(_ context.Context, command string, _ int, _ string, _ map[string]string) (ExecResult, error) {
+		if command != "git rev-parse --git-common-dir" {
+			t.Fatalf("unexpected command %q", command)
+		}
+		return ExecResult{ExitCode: 128}, nil
+	}}
+	root, isGit, err := resolveMainRepoRoot(env, dir)
+	if root != "" || isGit || err != nil {
+		t.Fatalf("generic non-Git = (%q, %v, %v), want (empty, false, nil)", root, isGit, err)
+	}
+}
 
 func TestProjectResolver_LocalRepository(t *testing.T) {
 	repo := t.TempDir()

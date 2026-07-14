@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/identifier"
 )
 
 // DefaultStateRoot returns the serf state root: $SERF_STATE_DIR when set,
@@ -43,8 +43,8 @@ func DefaultStateRoot() string {
 // cmd/serf-hub's spawn-time resolver — must route through this helper so
 // they agree on the same directory.
 func ResolveStateKeyDir(workDir string) string {
-	if project, err := identifier.ResolveProject(workDir); err == nil && project.CanonicalPath != "" {
-		return project.CanonicalPath
+	if keyDir := execenv.ResolveMainRepoRoot(execenv.NewLocalExecutionEnvironment(workDir), workDir); keyDir != "" {
+		return keyDir
 	}
 	return workDir
 }
