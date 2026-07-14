@@ -48,7 +48,7 @@ that counter is never shown to the agent.)
 **Transcript refs.** Sessions are named by opaque, traversal-safe refs:
 
 - `local:<sessionID>` — a session in the **current** project bucket.
-- `proj:<bucketHash>:<sessionID>` — a session in a **sibling** bucket.
+- `proj:<project-id>:<sessionID>` — a session in a **sibling** bucket.
 
 Refs are the only session handle the model is given; raw filesystem paths and bare
 session IDs are never required. A bare session ID and `"current"`/omitted (the live
@@ -56,8 +56,9 @@ session) are also accepted wherever a ref is. The ref parameter is `transcript_r
 wherever a session is read; ref-valued *filters* on `find` (`children_of`) are documented
 as taking a `transcript_ref` too, for one consistent ref vocabulary.
 
-**Buckets and scope.** Each project gets a state-dir *bucket* keyed by a hash of its git
-origin. Discovery scope is `current_project` (this bucket; the default) or `all_projects`
+**Buckets and scope.** Each project gets a state-dir *bucket* keyed by its readable
+canonical project ID. The main checkout and linked worktrees share a bucket; a distinct
+clone gets a distinct bucket. Discovery scope is `current_project` (this bucket; the default) or `all_projects`
 (sibling buckets). Under a flat state dir with no project root, `all_projects` degrades to
 `current_project` and says so via `scope_applied`.
 

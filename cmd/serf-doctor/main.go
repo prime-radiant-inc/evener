@@ -175,7 +175,7 @@ func cmdLocate(args []string, stdout, stderr io.Writer) int {
 	if *asJSON {
 		return emitJSON(stdout, paths)
 	}
-	bucket := paths.BucketHash
+	bucket := paths.ProjectID
 	if bucket == "" {
 		bucket = "(override root)"
 	}

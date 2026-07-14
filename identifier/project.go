@@ -11,7 +11,8 @@ import (
 	"strings"
 )
 
-// Project is the stable identity of a canonical project directory.
+// Project is the stable identity of a canonical project directory. ID is a
+// readable path-derived name with a fixed 10-character base62 suffix.
 type Project struct {
 	ID            string
 	CanonicalPath string
@@ -113,7 +114,7 @@ func existingDirectory(path string) error {
 	return nil
 }
 
-// ProjectID resolves path before rendering its identifier.
+// ProjectID resolves path before rendering its readable canonical identifier.
 func ProjectID(path string) (string, error) {
 	project, err := ResolveProject(path)
 	if err != nil {

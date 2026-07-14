@@ -5,7 +5,7 @@ sibling-bucket ref form (`docs/tools/transcripts.md` §"Buckets and
 scope"). By default `find_session_transcripts` searches only the
 **current_project** bucket. `scope:"all_projects"` widens to sibling
 buckets under the same state root, and a match in another project comes
-back as a `proj:<bucketHash>:<sessionID>` ref (vs the `local:<id>` form
+back as a `proj:<project-id>:<sessionID>` ref (vs the `local:<id>` form
 for same-bucket hits). This scenario creates a session in project dir X,
 then from a serf run in a **different** project dir Y (sharing the same
 `--state-dir`) shows that the default scope does NOT see X but
@@ -74,7 +74,7 @@ root ⇒ `all_projects` can reach X from Y.
   visible by default.
 - After step 3 (`all_projects` from Y):
   - At least one match for the marker.
-  - The match's `transcript_ref` is a **`proj:<bucketHash>:<id>`** ref —
+  - The match's `transcript_ref` is a **`proj:<project-id>:<id>`** ref —
     NOT `local:` — because it lives in a sibling bucket.
   - `scope_applied` is `"all_projects"`.
   - The follow-up `read_session_transcript` on that `proj:` ref returns
@@ -90,7 +90,7 @@ root ⇒ `all_projects` can reach X from Y.
   - `scope_applied` is not `"all_projects"` when `all_projects` was
     requested and a project root exists → scope reporting regressed.
   - `read_session_transcript` on the `proj:` ref fails to open X → the
-    `proj:<bucketHash>:<id>` ref isn't traversing to the sibling bucket.
+    `proj:<project-id>:<id>` ref isn't traversing to the sibling bucket.
 
 ## Cleanup
 

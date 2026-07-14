@@ -109,7 +109,7 @@ resp=$(curl -s -X POST -H "Content-Type: application/json" \
 SID=$(echo "$resp" | jq -r '.session_id')
 ```
 
-`SID` is a ULID like `01KRYW3VGR1J5XJH131A9KMDGR`. The session's
+`SID` is a 22-character UUIDv7 base62 payload. The session's
 appwire ref is `local:$SID`.
 
 ### Polling for state transitions
@@ -342,7 +342,7 @@ TUI uses faint vs bold-red glyphs to signal pending vs failed —
 ## Inspecting transcript and meta on disk
 
 Every session writes a JSONL transcript and meta sidecar under
-`~/.local/state/serf/projects/<project-hash>/sessions/`:
+`~/.local/state/serf/projects/<project-id>/sessions/`:
 
 ```bash
 TS=$(find ~/.local/state/serf/projects -name "$SID.transcript.jsonl")
@@ -509,7 +509,7 @@ file a kata. Don't try to drive past the gate from the scenario.
 - **Auth token**: `~/.serf/auth-token`
 - **Follow-up turn** (after the initial spawn prompt): `POST /s/<SID>/send` with body `{"text":"..."}` (the spawn only starts turn 1; subsequent user turns go here).
 - **Recursion opt-in** (delegate subagents that can themselves delegate): per-spawn `launch_overrides.maxSubagentDepth:N` raises the root's own delegation allowance to N. Omitted/default is 1 (a root may delegate, but its delegates are leaves) — recursion is dark without this.
-- **Per-session transcript**: `~/.local/state/serf/projects/<hash>/sessions/<SID>.transcript.jsonl`
+- **Per-session transcript**: `~/.local/state/serf/projects/<project-id>/sessions/<SID>.transcript.jsonl`
 - **Per-session meta**: same dir, `<SID>.meta.json`
 - **TUI debug stderr** (when launched with `--debug`): redirect via `tmux new-session -d -s <name> "/tmp/serf-tui-test --hub-addr 127.0.0.1:9180 --debug 2>$LOG"`
 - **Browser console capture**: `~/.cache/superpowers/browser/<date>/<session>/<NNN>-<action>-console.txt`

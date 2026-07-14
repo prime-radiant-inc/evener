@@ -85,6 +85,11 @@ directory containing `sessions/*.meta.json` and transcript JSONL files. When
 `state_glob` is omitted, Hub uses `$XDG_STATE_HOME/serf/projects/*`, falling
 back to `~/.local/state/serf/projects/*`.
 
+Each directory under `projects/` is keyed by a readable canonical project ID,
+not a legacy fixed-width hash. The main checkout and its linked worktrees share
+that bucket; a distinct clone has a distinct bucket. The identifier migration
+is a clean break: Hub leaves inert old state untouched for manual removal.
+
 `past_index_db` is the SQLite FTS search index. When omitted, Hub uses
 `~/.serf/index.db`. The in-memory past index remains the source of truth; if the
 SQLite index cannot be opened or rebuilt, Hub falls back to substring search

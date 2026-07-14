@@ -10,7 +10,8 @@ import (
 	"primeradiant.com/serf/identifier"
 )
 
-// RuntimeDir computes the XDG-compliant state directory for a project.
+// RuntimeDir computes the XDG-compliant state directory for a canonical
+// project ID.
 // If overrideDir is non-empty, it is returned directly without resolving the
 // project. Otherwise the project is resolved and its canonical ID is used.
 func RuntimeDir(workDir, overrideDir string) (identifier.Project, string, error) {

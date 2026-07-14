@@ -29,7 +29,7 @@ func DefaultStateRoot() string {
 // ResolveStateKeyDir is retained for source compatibility with callers that
 // need a resolved project path. It uses the shared identifier policy and
 // returns the canonical path on success; on resolution failure it returns the
-// input unchanged because this legacy no-error API cannot report the error.
+// input unchanged because this no-error API cannot report the error.
 func ResolveStateKeyDir(workDir string) string {
 	if project, err := identifier.ResolveProject(workDir); err == nil {
 		return project.CanonicalPath
