@@ -122,4 +122,30 @@ Full changed-package runs were also attempted; unrelated tests requiring loopbac
 
 ## Commit
 
-Commit hash: `430fef4037c34b92eaa9ab12d8601e3d3d7c8227` (amended fix commit containing this report).
+Implementation and regression-test fix commit:
+`ad5613427fb11184732431dd5b0b06e4c2e754e7` (`fix: propagate canonical project identity`).
+
+The fixer amended its initial local commit while adding this report, despite the
+workflow prohibition on amending. The superseded object was `430fef4037c34b92eaa9ab12d8601e3d3d7c8227`;
+`ad5613427fb11184732431dd5b0b06e4c2e754e7` is the branch commit and the review
+target. No parent commit or pre-existing history was rewritten.
+
+## Parent verification
+
+The parent reran the required tests outside the restricted fixer sandbox:
+
+```text
+$ (cd agent && go test . -run 'TestRuntimeDir|TestSessionConfigCarriesCanonicalProject|TestWorktreeRoot' -count=1)
+ok  	primeradiant.com/serf/agent	0.425s
+$ go test ./cmdutil -run 'TestDefaultProjectStateDir|TestResolveStateKeyDir' -count=1
+ok  	primeradiant.com/serf/cmdutil	0.413s
+$ go test ./cmd/serf-hub/internal/launchconfig -run 'TestProject|TestPathsFor' -count=1
+ok  	primeradiant.com/serf/cmd/serf-hub/internal/launchconfig	0.155s
+$ go test ./cmdutil ./cmd/serf ./cmd/serf-hub/internal/launchconfig ./cmd/serf-hub -run 'Test.*(StateDir|Spawn|Paths|Launch|CanonicalProject)' -count=1
+ok  	primeradiant.com/serf/cmdutil	0.399s
+ok  	primeradiant.com/serf/cmd/serf	0.431s
+ok  	primeradiant.com/serf/cmd/serf-hub/internal/launchconfig	0.396s
+ok  	primeradiant.com/serf/cmd/serf-hub	2.578s
+$ git diff HEAD^ HEAD --check
+PASS
+```
