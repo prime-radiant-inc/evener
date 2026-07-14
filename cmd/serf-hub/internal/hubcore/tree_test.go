@@ -720,6 +720,53 @@ func fuzzScenarioBuildTree_KeepsSubagentStateWhenParentLive(t *testing.T) {
 	}
 }
 
+func TestBuildTree_GuardsMalformedSubagentLineage(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{
+		{ID: "root", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "a", ParentSessionID: "root", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "b", ParentSessionID: "a", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		// Duplicate a closes a malformed a -> b -> a cycle if the builder
+		// follows lineage blindly. It must not emit a twice.
+		{ID: "a", ParentSessionID: "b", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		// An orphan remains absent rather than being hoisted to the project root.
+		{ID: "orphan", ParentSessionID: "missing", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+	}
+
+	tree := BuildTreeAt(metas, nil, nil, now)
+	if len(tree.Projects) != 1 || len(tree.Projects[0].Current) != 1 {
+		t.Fatalf("tree = %#v, want one current root", tree)
+	}
+	root := tree.Projects[0].Current[0]
+	if len(root.Children) != 1 || root.Children[0].ID != "a" {
+		t.Fatalf("root children = %#v, want one direct a", root.Children)
+	}
+	if len(root.Children[0].Children) != 1 || root.Children[0].Children[0].ID != "b" {
+		t.Fatalf("a children = %#v, want one direct b", root.Children[0].Children)
+	}
+	if got := root.Children[0].Children[0].Children; len(got) != 0 {
+		t.Fatalf("cycle should terminate at b, got children %#v", got)
+	}
+
+	var count func(TreeNode, string) int
+	count = func(node TreeNode, id string) int {
+		n := 0
+		if node.ID == id {
+			n++
+		}
+		for _, child := range node.Children {
+			n += count(child, id)
+		}
+		return n
+	}
+	if got := count(root, "a"); got != 1 {
+		t.Fatalf("malformed cycle duplicated a %d times", got)
+	}
+	if got := count(root, "orphan"); got != 0 {
+		t.Fatalf("orphan was hoisted into tree %d times", got)
+	}
+}
+
 func fuzzScenarioBuildTree_OrdersProjectsByLastActivity(t *testing.T) {
 	// Active projects are emitted newest-first by their most recent
 	// last-activity (max last-activity across the project's sessions), not by

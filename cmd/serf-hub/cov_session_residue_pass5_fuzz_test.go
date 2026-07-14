@@ -27,8 +27,8 @@ type pass5ReadSource struct {
 
 type pass5Prober struct{}
 
-func (pass5Prober) Probe(e rendezvous.Entry) (string, string, bool, bool, bool) {
-	return e.SessionID, "active", false, false, true
+func (pass5Prober) Probe(e rendezvous.Entry) hubcore.ProbeResult {
+	return hubcore.ProbeResult{SessionID: e.SessionID, Status: "active", OK: true}
 }
 
 func (s *pass5ReadSource) ReadThread(ctx context.Context, p appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {

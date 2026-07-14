@@ -333,6 +333,18 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		return liveMap[id].PendingAsk
 	}
 
+	// runningChildIDs is deliberately built from the live entries supplied to
+	// this tree build. A child can be running in-process without having its own
+	// rendezvous/live entry, so the child row must not rely on liveMap alone.
+	runningChildIDs := make(map[string]struct{})
+	for _, le := range live {
+		for _, childID := range le.RunningSubagentIDs {
+			if childID != "" {
+				runningChildIDs[childID] = struct{}{}
+			}
+		}
+	}
+
 	// Group metas by project name.
 	type projectAccum struct {
 		name       string // basename for display
@@ -397,6 +409,75 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		}
 	}
 
+	// buildNode is the single recursive path for top-level rows and their
+	// children. The path-local visited set prevents malformed lineage cycles
+	// from recursing forever or hoisting a cycle member elsewhere.
+	var buildNode func(schema.SessionMeta, string, *projectAccum, map[string]bool, bool) TreeNode
+	buildNode = func(m schema.SessionMeta, kind string, acc *projectAccum, path map[string]bool, parentDead bool) TreeNode {
+		path[m.ID] = true
+		defer delete(path, m.ID)
+
+		state := stateFor(m.ID)
+		askPending := askPendingFor(m.ID)
+		if parentDead {
+			state = "ended"
+			askPending = false
+		} else if kind == "subagent" {
+			if _, ok := runningChildIDs[m.ID]; ok {
+				state = "active"
+			}
+		}
+		node := TreeNode{
+			ID:         m.ID,
+			Title:      nodeTitle(m, kind),
+			Project:    projectName(m),
+			Branch:     m.EnvInfo.GitBranch,
+			State:      state,
+			AskPending: askPending,
+			Kind:       kind,
+			CreatedAt:  OrderCreatedAt(m.CreatedAt, m.UpdatedAt),
+			UpdatedAt:  OrderUpdatedAt(m.UpdatedAt, m.CreatedAt),
+			Age:        AgeString(OrderUpdatedAt(m.UpdatedAt, m.CreatedAt)),
+		}
+
+		childMetas := acc.children[m.ID]
+		var subagents, forks []schema.SessionMeta
+		for _, c := range childMetas {
+			if c.IsSubagent {
+				subagents = append(subagents, c)
+			} else if c.ForkLabel != "" {
+				forks = append(forks, c)
+			}
+		}
+		sort.SliceStable(subagents, func(i, j int) bool {
+			return sessionMetaLess(subagents[i], subagents[j])
+		})
+		if len(subagents) > maxSidebarSessionsPerTier {
+			subagents = subagents[:maxSidebarSessionsPerTier]
+		}
+		sort.SliceStable(forks, func(i, j int) bool {
+			return sessionMetaLess(forks[i], forks[j])
+		})
+
+		seenChildren := make(map[string]struct{}, len(subagents)+len(forks))
+		appendChildren := func(children []schema.SessionMeta, childKind string) {
+			for _, c := range children {
+				if path[c.ID] {
+					continue
+				}
+				if _, seen := seenChildren[c.ID]; seen {
+					continue
+				}
+				seenChildren[c.ID] = struct{}{}
+				childParentDead := childKind == "subagent" && node.State == "ended"
+				node.Children = append(node.Children, buildNode(c, childKind, acc, path, childParentDead))
+			}
+		}
+		appendChildren(subagents, "subagent")
+		appendChildren(forks, "fork")
+		return node
+	}
+
 	// Build the Projects slice.
 	treeProjects := make([]TreeProject, 0, len(projectOrder))
 	for _, path := range projectOrder {
@@ -410,83 +491,7 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		sessions := make([]TreeNode, 0, len(acc.topLevel))
 		for _, m := range acc.topLevel {
 			kind := nodeKind(m)
-			node := TreeNode{
-				ID:         m.ID,
-				Title:      nodeTitle(m, kind),
-				Project:    acc.name,
-				Branch:     m.EnvInfo.GitBranch,
-				State:      stateFor(m.ID),
-				AskPending: askPendingFor(m.ID),
-				Kind:       kind,
-				CreatedAt:  OrderCreatedAt(m.CreatedAt, m.UpdatedAt),
-				UpdatedAt:  OrderUpdatedAt(m.UpdatedAt, m.CreatedAt),
-				Age:        AgeString(OrderUpdatedAt(m.UpdatedAt, m.CreatedAt)),
-			}
-
-			// Build children: subagents first, then forks, each sorted by UpdatedAt desc.
-			childMetas := acc.children[m.ID]
-			var subagents, forks []schema.SessionMeta
-			for _, c := range childMetas {
-				if c.IsSubagent {
-					subagents = append(subagents, c)
-				} else if c.ForkLabel != "" {
-					// Snapshotted original of a fork.
-					forks = append(forks, c)
-				}
-				// Other children of m (e.g., active branches of forks where
-				// m IS the original) are not displayed under m — they're
-				// top-level. Defensive: ignore any other category.
-			}
-			sort.SliceStable(subagents, func(i, j int) bool {
-				return sessionMetaLess(subagents[i], subagents[j])
-			})
-			if len(subagents) > maxSidebarSessionsPerTier {
-				subagents = subagents[:maxSidebarSessionsPerTier]
-			}
-			sort.SliceStable(forks, func(i, j int) bool {
-				return sessionMetaLess(forks[i], forks[j])
-			})
-
-			// A subagent cannot legitimately be live once its parent session
-			// has ended: the worker process died with the parent, but a stale
-			// "active"/"awaiting" entry can linger in the live map and would
-			// otherwise spin ⟳ forever. Clamp the child to "ended" when the
-			// parent is not live.
-			parentDead := node.State == "ended"
-			for _, c := range subagents {
-				childState := stateFor(c.ID)
-				childAskPending := askPendingFor(c.ID)
-				if parentDead {
-					childState = "ended"
-					childAskPending = false
-				}
-				node.Children = append(node.Children, TreeNode{
-					ID:         c.ID,
-					Title:      nodeTitle(c, "subagent"),
-					Project:    acc.name,
-					State:      childState,
-					AskPending: childAskPending,
-					Kind:       "subagent",
-					CreatedAt:  OrderCreatedAt(c.CreatedAt, c.UpdatedAt),
-					UpdatedAt:  OrderUpdatedAt(c.UpdatedAt, c.CreatedAt),
-					Age:        AgeString(OrderUpdatedAt(c.UpdatedAt, c.CreatedAt)),
-				})
-			}
-			for _, c := range forks {
-				node.Children = append(node.Children, TreeNode{
-					ID:         c.ID,
-					Title:      nodeTitle(c, "fork"),
-					Project:    acc.name,
-					State:      stateFor(c.ID),
-					AskPending: askPendingFor(c.ID),
-					Kind:       "fork",
-					CreatedAt:  OrderCreatedAt(c.CreatedAt, c.UpdatedAt),
-					UpdatedAt:  OrderUpdatedAt(c.UpdatedAt, c.CreatedAt),
-					Age:        AgeString(OrderUpdatedAt(c.UpdatedAt, c.CreatedAt)),
-				})
-			}
-
-			sessions = append(sessions, node)
+			sessions = append(sessions, buildNode(m, kind, acc, map[string]bool{}, false))
 		}
 
 		// Rollup: highest-attention state (for the dot fallback) plus the
@@ -496,10 +501,21 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		rollup := ""
 		rollupLive, rollupAttn := 0, 0
 		for _, s := range sessions {
-			if hubapi.RollupRank(s.State) > hubapi.RollupRank(rollup) {
-				rollup = s.State
+			taskState := s.State
+			var includeDescendants func(TreeNode)
+			includeDescendants = func(node TreeNode) {
+				for _, child := range node.Children {
+					if hubapi.RollupRank(child.State) > hubapi.RollupRank(taskState) {
+						taskState = child.State
+					}
+					includeDescendants(child)
+				}
 			}
-			switch s.State {
+			includeDescendants(s)
+			if hubapi.RollupRank(taskState) > hubapi.RollupRank(rollup) {
+				rollup = taskState
+			}
+			switch taskState {
 			case "awaiting", "warning", "errored":
 				rollupAttn++
 			case "active":
