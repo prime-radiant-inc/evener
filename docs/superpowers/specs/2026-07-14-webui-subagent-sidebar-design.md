@@ -38,7 +38,9 @@ Add one focused prototype at:
 
 `docs/web-ui/mockups/23-subagent-sidebar.html`
 
-The document will import `docs/web-ui/mockups/tokens.css`, use realistic fixture data, and contain its own small interaction controller. It will resemble the production sidebar and pane workspace without depending on production JavaScript or APIs.
+The document will import `docs/web-ui/mockups/tokens.css`, use fixture data that covers every required status and scenario below, and contain its own small interaction controller. It will resemble the production sidebar and pane workspace without depending on production JavaScript or APIs.
+
+Standalone means the HTML works when opened directly and depends only on existing static assets under `docs/web-ui/mockups`. It requires no build, server, production JavaScript, or API.
 
 This approach provides enough fidelity to test hierarchy and interactions while keeping design work separate from production behavior.
 
@@ -48,20 +50,20 @@ This approach provides enough fidelity to test hierarchy and interactions while 
 
 A parent session renders each non-terminal direct child immediately beneath its row. Current children do not sit behind a group disclosure.
 
-These statuses remain current:
+The only current statuses are:
 
-- running or active;
-- awaiting input;
-- retained-idle and resumable; and
-- unknown.
+- `running`, displayed as `Running`;
+- `awaiting`, displayed as `Awaiting input`;
+- `retained-idle`, displayed as `Idle · resumable`; and
+- `unknown`, displayed as `Unknown`.
 
 Retained-idle rows use the label `Idle · resumable`. Unknown rows use a neutral `Unknown` treatment. Neither status moves into inactive history merely because it is not working at that moment.
 
 ### Inactive subagents
 
-A parent with terminal direct children renders `Inactive subagents (N)` after its current children. The disclosure starts collapsed.
+A parent with terminal direct children renders `Inactive subagents (N)` after its current children. `N` counts only that parent's terminal direct children. The disclosure starts collapsed.
 
-These statuses are terminal:
+The only terminal statuses are:
 
 - completed;
 - failed;
@@ -74,9 +76,7 @@ A parent with no terminal children renders no inactive disclosure. A parent with
 
 ### Recursive nesting
 
-The sidebar preserves direct parentage. A subagent's children appear beneath that subagent, using the same current and inactive rules. The mockup does not flatten descendants under the main session.
-
-Each inactive disclosure belongs to one parent. Expanding a parent's history never reveals terminal siblings or descendants owned by another parent.
+The sidebar partitions only direct children at each parent. A current direct child and its recursively rendered subtree appear directly beneath that parent. A terminal direct child's row and recursively rendered subtree appear inside that parent's inactive disclosure. Within either subtree, every descendant remains nested under its direct parent, and that parent independently partitions its direct children. Expanding a disclosure never hoists a sibling or descendant into the wrong parent's group.
 
 ## Components
 
@@ -106,7 +106,7 @@ Rows include:
 
 ### Pane workspace
 
-The workspace renders a horizontal sequence of thread panes. The main session remains leftmost and cannot close. Child panes show a title, status, representative transcript content, and a close control.
+The workspace renders a horizontal sequence of thread panes. The main session remains leftmost and cannot close. Child panes show a title, status, fixed mock transcript text labelled as fixture content, and a close control. Transcript behavior is not under review.
 
 ### Interaction controller
 
@@ -125,9 +125,7 @@ The controller remains independent of production sidebar and pane modules.
 
 ### Open a child
 
-Clicking or keyboard-activating a child row opens that session beside its direct parent pane.
-
-Before opening the child, the controller walks its ancestry and ensures that each required parent pane is open. The new pane appears immediately after the direct parent's currently open descendant block. This keeps each subtree contiguous and preserves ancestry from left to right.
+Activating a child that does not already have a pane recursively opens any missing ancestor panes, then inserts the child pane immediately to the right of its direct parent pane and shifts later panes right.
 
 ### Focus an existing child
 
@@ -136,7 +134,7 @@ If the child already has a pane, activation does not create another pane. The co
 1. selects the existing pane;
 2. selects its sidebar row;
 3. scrolls the pane into view; and
-4. moves focus into that pane.
+4. focuses the pane root, which has `tabindex="-1"`, an accessible name derived from the session title, and a visible focus indicator.
 
 A session ID identifies one pane.
 
@@ -150,7 +148,9 @@ After the close, focus returns to the closed pane's originating sidebar row. If 
 
 Preset scenario buttons change fixture statuses synchronously. The mockup uses no timers.
 
-A state change re-partitions the affected parent's direct children. A child that becomes terminal moves under that parent's inactive disclosure without changing its session identity. A terminal child that becomes resumable returns to the visible current rows.
+A state change re-partitions the affected parent's direct children. A child that becomes terminal moves under that parent's inactive disclosure without changing its session identity. A `completed`, `failed`, `cancelled`, or `stopped` child that changes to `retained-idle` returns to the current rows.
+
+Disclosure state is independent per parent. A disclosure created when its count changes from zero to nonzero starts collapsed. An existing disclosure retains its own expanded or collapsed state while its nonzero count changes. Removing the disclosure at count zero discards that state.
 
 Open panes remain open across status changes. The sidebar location and status presentation update without duplicating the pane.
 
@@ -162,7 +162,6 @@ Open panes remain open across status changes. The sidebar location and status pr
 - Failed, cancelled, and stopped rows remain distinguishable.
 - Retained-idle rows remain current and state that they are resumable.
 - Unknown status remains current and uses neutral text and color.
-- Fixture inconsistencies, such as a missing parent, render a visible mockup diagnostic instead of silently dropping the row.
 
 ## Accessibility
 
@@ -172,7 +171,8 @@ The mockup will use semantic controls and explicit state:
 - session rows support keyboard activation;
 - status meaning appears in text as well as color;
 - focus indicators remain visible;
-- selected rows and panes expose their selected state;
+- the active sidebar row exposes `aria-current="true"`;
+- each pane root is labelled by its visible title;
 - pane close controls have specific accessible names; and
 - closing a pane restores focus to its sidebar row.
 
@@ -183,23 +183,21 @@ The prototype follows the existing web UI token system and the selected hierarch
 - current child rows appear directly under the parent;
 - a subtle branch line or indentation communicates lineage;
 - the inactive disclosure is visually quieter than current rows;
-- active, awaiting, failed, cancelled, stopped, idle, and unknown states use the existing status vocabulary where possible; and
+- `running`, `awaiting`, `retained-idle`, `unknown`, `completed`, `failed`, `cancelled`, and `stopped` use the exact labels defined above; and
 - the main session remains visually dominant over its children.
 
 The mockup should look production-shaped, not like a new design system.
 
 ## Deterministic Scenarios
 
-The mockup will include controls for at least these fixtures:
+The mockup will include controls sufficient to demonstrate exactly these required scenarios; additional scenarios are out of scope:
 
-1. mixed current and inactive direct children;
-2. nested subagents with separate inactive disclosures;
-3. a retained-idle child that remains current;
-4. failed, cancelled, and stopped inactive rows;
-5. transition from running to completed;
-6. transition from terminal to resumable;
-7. a child already open in a pane; and
-8. a parent pane with open descendants that closes as a subtree.
+1. one parent with `running`, `awaiting`, `retained-idle`, and `unknown` direct children plus `completed`, `failed`, `cancelled`, and `stopped` direct children;
+2. nested subagents, including a terminal child with its own current and terminal children and independent inactive disclosures;
+3. transition from `running` to `completed`;
+4. transition from `completed` to `retained-idle`;
+5. a child already open in a pane; and
+6. a parent pane with open descendants that closes as a subtree.
 
 ## Verification
 
@@ -211,10 +209,14 @@ The checks will verify:
 - inactive disclosures start collapsed;
 - each parent owns only its terminal direct children;
 - recursive nesting preserves parentage;
-- a child opens beside its direct parent;
+- a child opens immediately to the right of its direct parent;
 - reopening a child creates no duplicate pane;
 - closing a pane closes its descendants;
 - status changes move rows without changing session identity;
+- the current set equals exactly `{running, awaiting, retained-idle, unknown}`;
+- the terminal set equals exactly `{completed, failed, cancelled, stopped}`;
+- inactive counts include terminal direct children only;
+- a new inactive disclosure starts collapsed, existing nonempty disclosure state persists, and removal at zero clears that state;
 - empty disclosures disappear;
 - keyboard disclosure and row activation work;
 - focus returns to the originating row after close; and
@@ -222,33 +224,26 @@ The checks will verify:
 
 Implementation verification will also:
 
-- validate the HTML structure with an available validator or parser;
-- inspect the page in a browser at desktop and narrow widths;
+- load the file with zero console errors and run self-check assertions for required controls, ARIA relationships, and unique session and pane IDs;
+- inspect the page at 1280×800 and 390×844 CSS pixels;
 - confirm the self-check panel passes; and
 - confirm that only the mockup and its approved design or plan documents changed.
 
 ## Acceptance Criteria
 
-The mockup is complete when a reviewer can:
+The mockup is complete when:
 
-1. see current subagents directly below each parent;
-2. expand each parent's inactive subagents independently;
-3. follow nested lineage in the sidebar;
-4. open a child beside its direct parent;
-5. click an already-open child and focus its existing pane;
-6. close a parent pane and observe descendant panes close;
-7. run lifecycle scenarios and see rows move between current and inactive groups; and
-8. complete the accessibility and deterministic self-checks without production data.
+1. `docs/web-ui/mockups/23-subagent-sidebar.html` works when opened directly, without a server, API, or production JavaScript.
+2. For every parent, direct children in exactly `running`, `awaiting`, `retained-idle`, and `unknown` render as unwrapped current rows; direct children in exactly `completed`, `failed`, `cancelled`, and `stopped` render only inside that parent's initially collapsed inactive disclosure.
+3. `Inactive subagents (N)` counts terminal direct children only, is absent at zero, and expands independently per parent.
+4. Recursive fixtures preserve every direct-parent relationship, including descendants of a terminal child; no descendant is flattened or hoisted.
+5. Activating an unopened child inserts its pane immediately to the right of its direct parent pane and opens missing ancestors first.
+6. Pointer or keyboard activation of an already-open child leaves one pane for that session ID, scrolls it into view, and focuses its pane root.
+7. Closing a pane closes its open descendants and restores focus to the originating sidebar row.
+8. The `running` to `completed` and `completed` to `retained-idle` scenarios move only the affected row, preserve recursive parentage and pane identity, and apply the disclosure-state rules.
+9. Status appears in text as well as color, disclosure buttons expose `aria-expanded`, keyboard operation works, and focus indicators remain visible.
+10. All deterministic self-checks pass, and the implementation changes no production code or assets.
 
 ## Follow-up Production Work
 
-After the mockup is approved, implementation planning should compare the prototype with the production paths in:
-
-- `cmd/serf-hub/assets/sidebar.js`;
-- `cmd/serf-hub/assets/panes.js`;
-- `cmd/serf-hub/assets/style.css`;
-- `cmd/serf-hub/web_api_tree.go`;
-- `cmd/serf-hub/internal/hubcore/tree.go`; and
-- existing sidebar child and pane tests.
-
-The plan should also assess the unmerged commits that retain running in-process subagent status and display running subagents on their own rows. Those changes may solve part of the regression, but they do not replace review against this approved interaction model.
+Production integration and regression analysis form a separate post-approval phase. They are not part of this mockup's implementation or acceptance.
