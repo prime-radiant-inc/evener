@@ -226,11 +226,11 @@ type fakeProber struct {
 	shouldFail bool
 }
 
-func (p fakeProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, pendingEscalation, ok bool) {
+func (p fakeProber) Probe(rendezvous.Entry) ProbeResult {
 	if p.shouldFail {
-		return "", "", false, false, false
+		return ProbeResult{}
 	}
-	return p.sessionID, p.status, p.pendingAsk, false, true
+	return ProbeResult{SessionID: p.sessionID, Status: p.status, PendingAsk: p.pendingAsk, OK: true}
 }
 
 func fuzzScenarioRoster_CarriesPendingAskFromProber(t *testing.T) {
@@ -248,6 +248,64 @@ func fuzzScenarioRoster_CarriesPendingAskFromProber(t *testing.T) {
 	}
 }
 
+func fuzzScenarioRoster_CarriesRunningSubagentsWithoutRoutingThem(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:50001"})
+	prober := &runningSubagentProber{result: ProbeResult{
+		SessionID:          "parent",
+		Status:             "idle",
+		RunningSubagentIDs: []string{"child"},
+		OK:                 true,
+	}}
+	r := NewRoster(dir, prober)
+	r.Refresh()
+
+	entries := r.List()
+	if len(entries) != 1 || len(entries[0].RunningSubagentIDs) != 1 || entries[0].RunningSubagentIDs[0] != "child" {
+		t.Fatalf("roster entries = %+v, want parent carrying child", entries)
+	}
+	if !r.IsSubagentActive("child") {
+		t.Fatal("running child must be discoverable as active")
+	}
+	if _, ok := r.Find("child"); ok {
+		t.Fatal("running child must not become a routable daemon entry")
+	}
+}
+
+func TestRosterRunningSubagent(t *testing.T) {
+	fuzzScenarioRoster_CarriesRunningSubagentsWithoutRoutingThem(t)
+}
+
+type runningSubagentProber struct{ result ProbeResult }
+
+func (p *runningSubagentProber) Probe(rendezvous.Entry) ProbeResult { return p.result }
+
+func fuzzScenarioRoster_ListReturnsDefensiveRunningIDs(t *testing.T) {
+	r := NewRosterWithEntries(LiveEntry{
+		SessionID:          "parent",
+		RunningSubagentIDs: []string{"child"},
+	})
+	got := r.List()
+	got[0].RunningSubagentIDs[0] = "mutated"
+	if r.List()[0].RunningSubagentIDs[0] != "child" {
+		t.Fatal("List must return a defensive copy of running subagent IDs")
+	}
+}
+
+func TestRosterListReturnsDefensiveSubagentIDs(t *testing.T) {
+	fuzzScenarioRoster_ListReturnsDefensiveRunningIDs(t)
+}
+
+func fuzzScenarioRoster_FingerprintIncludesRunningIDs(t *testing.T) {
+	base := map[string]LiveEntry{"parent": {RunningSubagentIDs: []string{"child-a"}}}
+	changed := map[string]LiveEntry{"parent": {RunningSubagentIDs: []string{"child-b"}}}
+	if rosterFingerprint(base) == rosterFingerprint(changed) {
+		t.Fatal("roster fingerprint must change when only running IDs change")
+	}
+}
+
+func TestRosterFingerprint(t *testing.T) { fuzzScenarioRoster_FingerprintIncludesRunningIDs(t) }
+
 // gateProber blocks each probe on a channel, so a test can hold a Refresh in
 // the middle of its probe pass and assert List() stays responsive.
 type gateProber struct {
@@ -256,13 +314,13 @@ type gateProber struct {
 	started   chan struct{}
 }
 
-func (p *gateProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, pendingEscalation, ok bool) {
+func (p *gateProber) Probe(rendezvous.Entry) ProbeResult {
 	select {
 	case p.started <- struct{}{}:
 	default:
 	}
 	<-p.gate
-	return p.sessionID, "", false, false, true
+	return ProbeResult{SessionID: p.sessionID, OK: true}
 }
 
 // TestRoster_ListStaysResponsiveDuringSlowProbe is the regression test for the
@@ -310,11 +368,11 @@ type flakyProber struct {
 	fail      bool
 }
 
-func (p *flakyProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, pendingEscalation, ok bool) {
+func (p *flakyProber) Probe(rendezvous.Entry) ProbeResult {
 	if p.fail {
-		return "", "", false, false, false
+		return ProbeResult{}
 	}
-	return p.sessionID, p.status, false, false, true
+	return ProbeResult{SessionID: p.sessionID, Status: p.status, OK: true}
 }
 
 func fuzzScenarioPreferLiveEntry(t *testing.T) {
@@ -403,8 +461,8 @@ type statusProber struct {
 	status    string
 }
 
-func (p *statusProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, pendingEscalation, ok bool) {
-	return p.sessionID, p.status, false, false, true
+func (p *statusProber) Probe(rendezvous.Entry) ProbeResult {
+	return ProbeResult{SessionID: p.sessionID, Status: p.status, OK: true}
 }
 
 // TestRoster_OnStatusChangeFiresForTransitioningSession is the regression

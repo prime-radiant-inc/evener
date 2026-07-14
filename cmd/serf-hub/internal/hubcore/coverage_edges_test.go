@@ -260,17 +260,17 @@ func fuzzScenarioCoverageHTTPFailures(t *testing.T) {
 	} {
 		s := httptest.NewServer(h)
 		addr := strings.TrimPrefix(s.URL, "http://")
-		_, _, _, _, ok := (&StatusProber{}).Probe(rendezvous.Entry{Address: addr})
+		ok := (&StatusProber{}).Probe(rendezvous.Entry{Address: addr}).OK
 		s.Close()
 		if ok {
 			t.Fatal("probe unexpectedly succeeded")
 		}
 	}
-	_, _, _, _, ok := (&StatusProber{Timeout: time.Nanosecond}).Probe(rendezvous.Entry{Address: "127.0.0.1:1"})
+	ok := (&StatusProber{Timeout: time.Nanosecond}).Probe(rendezvous.Entry{Address: "127.0.0.1:1"}).OK
 	if ok {
 		t.Fatal("probe unexpectedly succeeded")
 	}
-	_, _, _, _, ok = (&StatusProber{}).Probe(rendezvous.Entry{Address: "%"})
+	ok = (&StatusProber{}).Probe(rendezvous.Entry{Address: "%"}).OK
 	if ok {
 		t.Fatal("invalid URL unexpectedly succeeded")
 	}
