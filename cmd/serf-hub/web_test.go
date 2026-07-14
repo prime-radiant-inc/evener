@@ -29,6 +29,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/hubapi"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/selfupdate"
 	"primeradiant.com/serf/llm"
@@ -5762,9 +5763,17 @@ func TestWeb_APITreeReturnsRefsAndNormalizesAwaitingInput(t *testing.T) {
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	workingDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(workingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01TREE", UpdatedAt: time.Now(), OriginalPrompt: "tree task",
-		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"},
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: project.CanonicalPath},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -5774,7 +5783,7 @@ func TestWeb_APITreeReturnsRefsAndNormalizesAwaitingInput(t *testing.T) {
 	}
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{
-		PID: 44, Address: "127.0.0.1:4444", WorkingDir: "/projects/serf", Model: "gpt-5",
+		PID: 44, Address: "127.0.0.1:4444", WorkingDir: project.CanonicalPath, Model: "gpt-5",
 	})
 	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01TREE", status: appwire.ThreadStatusAwaiting})
 	r.Refresh()
@@ -5806,9 +5815,17 @@ func TestWeb_APITreeReturnsRefsAndNormalizesAwaitingInput(t *testing.T) {
 }
 
 func TestWeb_APITreeGroupsLiveOnlySessionsByProject(t *testing.T) {
+	workingDir := filepath.Join(t.TempDir(), "serf")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(workingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 50, Address: "127.0.0.1:4050", WorkingDir: "/projects/serf", Model: "gpt-5"})
-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 51, Address: "127.0.0.1:4051", WorkingDir: "/projects/serf", Model: "gpt-5"})
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 50, Address: "127.0.0.1:4050", WorkingDir: project.CanonicalPath, Model: "gpt-5"})
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 51, Address: "127.0.0.1:4051", WorkingDir: project.CanonicalPath, Model: "gpt-5"})
 	r := hubcore.NewRoster(runDir, perAddrProber{byAddr: map[string]struct{ SessionID, Status string }{
 		"127.0.0.1:4050": {SessionID: "01LIVEA", Status: appwire.ThreadStatusIdle},
 		"127.0.0.1:4051": {SessionID: "01LIVEB", Status: appwire.ThreadStatusAwaiting},
@@ -5839,14 +5856,22 @@ func TestWeb_APITreeGroupsLiveOnlySessionsByProject(t *testing.T) {
 	if len(serfProjects[0].Sessions) != 2 || serfProjects[0].RollupState != "awaiting" {
 		t.Fatalf("unexpected serf project: %+v", serfProjects[0])
 	}
-	if serfProjects[0].WorkingDir != "/projects/serf" {
-		t.Fatalf("working_dir=%q, want /projects/serf", serfProjects[0].WorkingDir)
+	if serfProjects[0].WorkingDir != project.CanonicalPath {
+		t.Fatalf("working_dir=%q, want %q", serfProjects[0].WorkingDir, project.CanonicalPath)
 	}
 }
 
 func TestWeb_APITreeSkipsLiveEntriesUntilSessionIDKnown(t *testing.T) {
+	workingDir := filepath.Join(t.TempDir(), "serf")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(workingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 52, Address: "127.0.0.1:4052", WorkingDir: "/projects/serf", Model: "gpt-5"})
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 52, Address: "127.0.0.1:4052", WorkingDir: project.CanonicalPath, Model: "gpt-5"})
 	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "", status: appwire.ThreadStatusIdle})
 	r.Refresh()
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})

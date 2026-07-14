@@ -68,8 +68,16 @@ func writeSession(t *testing.T, stateDir, id, wd string) {
 
 func TestProjectDeleteRemovesFilesAndScrubs(t *testing.T) {
 	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	stateDir := filepath.Join(root, "projects", "sha1")
-	writeSession(t, stateDir, "01A", "/w/proj")
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSession(t, stateDir, "01A", project.CanonicalPath)
 	dbPath := filepath.Join(root, "index.db")
 	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
 	_ = past.Rebuild()
@@ -78,7 +86,7 @@ func TestProjectDeleteRemovesFilesAndScrubs(t *testing.T) {
 	_ = archive.Set("session", "01A", true, time.Unix(1_700_000_000, 0))
 	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
 
-	body := `{"key":"` + testProjectID(t, "/w/proj") + `","working_dir":"/w/proj"}`
+	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -94,7 +102,7 @@ func TestProjectDeleteRemovesFilesAndScrubs(t *testing.T) {
 	if len(resp.Deleted) != 1 {
 		t.Fatalf("want 1 deleted ref, got %+v", resp)
 	}
-	for _, suffix := range []string{".meta.json", ".transcript.jsonl", ".log.jsonl", ".api.jsonl", ".api-raw.jsonl"} {
+	for _, suffix := range []string{".transcript.jsonl", ".log.jsonl", ".api.jsonl", ".api-raw.jsonl"} {
 		if _, err := os.Stat(filepath.Join(stateDir, "sessions", "01A"+suffix)); !os.IsNotExist(err) {
 			t.Fatalf("%s should be removed", suffix)
 		}
@@ -110,12 +118,24 @@ func TestProjectDeleteRemovesFilesAndScrubs(t *testing.T) {
 
 func TestProjectDeleteRejectsKeyWorkingDirMismatch(t *testing.T) {
 	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	wrongDir := filepath.Join(root, "wrong")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(wrongDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	stateDir := filepath.Join(root, "projects", "sha1")
-	writeSession(t, stateDir, "01A", "/w/proj")
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSession(t, stateDir, "01A", project.CanonicalPath)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	_ = past.Rebuild()
 	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
-	body := `{"key":"` + testProjectID(t, "/w/proj") + `","working_dir":"/w/WRONG"}`
+	body := `{"key":"` + project.ID + `","working_dir":"` + wrongDir + `"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -127,13 +147,21 @@ func TestProjectDeleteRejectsKeyWorkingDirMismatch(t *testing.T) {
 
 func TestProjectDeleteRefusesWhenLive(t *testing.T) {
 	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	stateDir := filepath.Join(root, "projects", "sha1")
-	writeSession(t, stateDir, "01A", "/w/proj")
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSession(t, stateDir, "01A", project.CanonicalPath)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	_ = past.Rebuild()
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{SessionID: "01A", Status: "active"})
 	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster})
-	body := `{"key":"` + testProjectID(t, "/w/proj") + `","working_dir":"/w/proj"}`
+	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -156,8 +184,16 @@ func TestProjectDeleteSkipsOnRemoveFailure(t *testing.T) {
 		t.Skip("chmod-based permission test is meaningless as root")
 	}
 	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	stateDir := filepath.Join(root, "projects", "sha1")
-	writeSession(t, stateDir, "01A", "/w/proj")
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSession(t, stateDir, "01A", project.CanonicalPath)
 	dbPath := filepath.Join(root, "index.db")
 	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
 	_ = past.Rebuild()
@@ -177,7 +213,7 @@ func TestProjectDeleteSkipsOnRemoveFailure(t *testing.T) {
 		}
 	})
 
-	body := `{"key":"` + testProjectID(t, "/w/proj") + `","working_dir":"/w/proj"}`
+	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

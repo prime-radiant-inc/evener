@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
+	"primeradiant.com/serf/identifier"
 )
 
 var ensureManagedCodexSourcesForList = ensureManagedCodexSources
@@ -65,7 +66,37 @@ func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	if params.Limit > 0 && len(threads) > params.Limit {
 		threads = threads[:params.Limit]
 	}
+	annotateThreadProjects(threads)
 	return appwire.ThreadListResponse{Data: threads}, nil
+}
+
+// annotateThreadProjects carries the hub's canonical project identity across
+// the appwire boundary. The TUI must consume these server keys; it must not
+// derive an action key from a display name or basename. Resolve each distinct
+// source path once because a list commonly contains many sessions per project.
+func annotateThreadProjects(threads []appwire.Thread) {
+	projects := make(map[string]identifier.Project)
+	for i := range threads {
+		path := strings.TrimSpace(threads[i].CWD)
+		if path == "" {
+			continue
+		}
+		project, ok := projects[path]
+		if !ok {
+			var err error
+			project, err = identifier.ResolveProject(path)
+			if err != nil {
+				projects[path] = identifier.Project{}
+				continue
+			}
+			projects[path] = project
+		}
+		if project.ID == "" {
+			continue
+		}
+		threads[i].ProjectID = project.ID
+		threads[i].ProjectPath = project.CanonicalPath
+	}
 }
 
 func ensureManagedCodexSources(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadListParams) error {

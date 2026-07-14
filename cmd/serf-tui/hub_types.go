@@ -160,15 +160,24 @@ func hubTreeFromThreads(threads []appwire.Thread) hubTreeResponse {
 		node := hubNodeFromThread(thread)
 		out.Live = append(out.Live, node)
 		projectName := node.Project
-		identity := thread.CWD
+		workingDir := thread.ProjectPath
+		if workingDir == "" {
+			workingDir = thread.CWD
+		}
+		identity := thread.ProjectID
 		if identity == "" {
-			identity = "no-project"
+			// Presentation grouping for an unresolved path is allowed, but the
+			// empty ProjectID keeps the resulting row non-actionable.
+			identity = workingDir
+			if identity == "" {
+				identity = "no-project"
+			}
 		}
 		idx, ok := projectIndexes[identity]
 		if !ok {
 			idx = len(out.Projects)
 			projectIndexes[identity] = idx
-			out.Projects = append(out.Projects, hubTreeProject{Name: projectName, WorkingDir: thread.CWD, RollupState: node.State, identity: identity})
+			out.Projects = append(out.Projects, hubTreeProject{Key: thread.ProjectID, Name: projectName, WorkingDir: workingDir, RollupState: node.State, identity: identity})
 		}
 		out.Projects[idx].Sessions = append(out.Projects[idx].Sessions, node)
 	}

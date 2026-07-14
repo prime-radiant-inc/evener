@@ -173,6 +173,7 @@ func pastEntryThread(entry hubcore.PastEntry, includeTurns bool) appwire.Thread 
 		}
 		thread = enrichThreadFileBackedOutputImages(thread)
 	}
+	annotateThreadProjects([]appwire.Thread{thread})
 	return thread
 }
 

@@ -145,7 +145,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		if entry.ThreadID == "" {
 			return appwire.ThreadStartResponse{}, err
 		}
-		return appwire.ThreadStartResponse{Thread: appwire.Thread{
+		thread := appwire.Thread{
 			ID:            entry.ThreadID,
 			SessionID:     entry.SessionID,
 			Preview:       entry.SessionID,
@@ -154,12 +154,18 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			Source:        "local",
 			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
 			Serf:          appwire.SerfThread{Ref: ref},
-		}}, nil
+		}
+		annotateThreadProjects([]appwire.Thread{thread})
+		return appwire.ThreadStartResponse{Thread: thread}, nil
 	}
 	threadResp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref})
 	if err != nil {
-		threadResp.Thread = appwire.Thread{ID: entry.ThreadID, SessionID: entry.SessionID, Source: "local", Serf: appwire.SerfThread{Ref: ref}}
+		threadResp.Thread = appwire.Thread{
+			ID: entry.ThreadID, SessionID: entry.SessionID, CWD: workingDir,
+			Source: "local", Serf: appwire.SerfThread{Ref: ref},
+		}
 	}
+	annotateThreadProjects([]appwire.Thread{threadResp.Thread})
 	turn := appwire.Turn{}
 	if len(params.Input) > 0 {
 		turnResp, err := source.StartTurn(ctx, appwire.TurnStartParams{Ref: ref, Input: params.Input})
@@ -249,6 +255,7 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 	if err != nil {
 		return appwire.ThreadResumeResponse{}, err
 	}
+	annotateThreadProjects([]appwire.Thread{threadResp.Thread})
 	return appwire.ThreadResumeResponse{Thread: threadResp.Thread}, nil
 }
 

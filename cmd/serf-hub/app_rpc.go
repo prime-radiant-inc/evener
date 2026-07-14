@@ -357,6 +357,7 @@ func registerThreadHandlers(
 		resp.Thread = mergePastThreadForRead(cfg, params, resp.Thread)
 		resp.Thread = sanitizeStaleProcessingStatus(cfg, resp.Thread)
 		resp.Thread = enrichThreadFileBackedOutputImages(resp.Thread)
+		annotateThreadProjects([]appwire.Thread{resp.Thread})
 		// Window any turns the source itself didn't (Codex thread/read and the
 		// past-merge return the full transcript); a daemon read already set
 		// OlderCursor, so this is a no-op there.

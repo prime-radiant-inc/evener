@@ -122,15 +122,19 @@ func TestArchiveEndpointRejectsEmptyID(t *testing.T) {
 
 func TestArchiveEndpointProjectKind(t *testing.T) {
 	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	store := hubcore.NewArchiveStore(filepath.Join(dir, "index.db"))
 	web := NewWebServer(hubcore.WebConfig{Archive: store, Past: hubcore.NewPastIndex("")})
 
-	// id is path-shaped (like a real project id — see projectArchivedDecision in
-	// tree.go, which always distinguishes a path row from its basename row) so
-	// it doesn't alias the handler's legacy-basename cleanup (web_api_archive.go
-	// handleAPIArchive: filepath.Base(body.ID)), which would otherwise delete
-	// the very row this test just set when the id itself has no path separator.
-	req := httptest.NewRequest(http.MethodPost, "/api/archive", strings.NewReader(`{"kind":"project","id":"/repo/my-proj","archived":false}`))
+	body := `{"kind":"project","id":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `","archived":false}`
+	req := httptest.NewRequest(http.MethodPost, "/api/archive", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
@@ -142,23 +146,31 @@ func TestArchiveEndpointProjectKind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decisions() error: %v", err)
 	}
-	if _, ok := d[hubcore.ArchiveKey{Kind: "project", ID: "/repo/my-proj"}]; !ok {
+	if _, ok := d[hubcore.ArchiveKey{Kind: "project", ID: project.ID}]; !ok {
 		t.Fatalf("project decision not persisted; decisions=%v", d)
 	}
-	if d[hubcore.ArchiveKey{Kind: "project", ID: "/repo/my-proj"}] {
+	if d[hubcore.ArchiveKey{Kind: "project", ID: project.ID}] {
 		t.Fatalf("archived should be false; decisions=%v", d)
 	}
 }
 
-func TestArchiveUnarchiveSkipsRedundantLegacyDeleteForBasenameID(t *testing.T) {
+func TestArchiveUnarchiveUsesCanonicalProjectID(t *testing.T) {
 	dir := t.TempDir()
-	store := hubcore.NewArchiveStore(filepath.Join(dir, "index.db"))
-	web := NewWebServer(hubcore.WebConfig{Archive: store, Past: hubcore.NewPastIndex("")})
-	// Pre-archive a basename-shaped project id (no path separator).
-	if err := store.Set("project", "proj", true, time.Now()); err != nil {
+	projectDir := filepath.Join(dir, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/api/archive", strings.NewReader(`{"kind":"project","id":"proj","archived":false}`))
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := hubcore.NewArchiveStore(filepath.Join(dir, "index.db"))
+	web := NewWebServer(hubcore.WebConfig{Archive: store, Past: hubcore.NewPastIndex("")})
+	if err := store.Set("project", project.ID, true, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"kind":"project","id":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `","archived":false}`
+	req := httptest.NewRequest(http.MethodPost, "/api/archive", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
@@ -169,7 +181,7 @@ func TestArchiveUnarchiveSkipsRedundantLegacyDeleteForBasenameID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d[hubcore.ArchiveKey{Kind: "project", ID: "proj"}] {
+	if d[hubcore.ArchiveKey{Kind: "project", ID: project.ID}] {
 		t.Fatalf("un-archive must clear the row; decisions=%v", d)
 	}
 }
