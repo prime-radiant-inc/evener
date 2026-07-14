@@ -178,15 +178,22 @@ func TestWireState_LiveChildDoesNotMakeIdleParentActive(t *testing.T) {
 }
 
 func TestWireState_PendingParentWorkMakesIdleParentActive(t *testing.T) {
-	sess := newTestSessionForState(t)
+	withNotification := newTestSessionForState(t)
 	// Idle with no autonomy: wire state == raw state.
-	if got := sess.WireState(); got != string(SessionIdle) {
+	if got := withNotification.WireState(); got != string(SessionIdle) {
 		t.Fatalf("WireState idle = %q", got)
 	}
-	// Simulate a pending job notification (autonomy in flight while idle):
-	sess.enqueueJobNotification(jobNotification{})
-	if got := sess.WireState(); got != string(SessionProcessing) {
+	withNotification.enqueueJobNotification(jobNotification{})
+	if got := withNotification.WireState(); got != string(SessionProcessing) {
 		t.Fatalf("WireState with pending notification = %q, want %q", got, SessionProcessing)
+	}
+
+	withQueuedInput := newTestSessionForState(t)
+	if err := withQueuedInput.Enqueue(context.Background(), "queued follow-up"); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	if got := withQueuedInput.WireState(); got != string(SessionProcessing) {
+		t.Fatalf("WireState with queued input = %q, want %q", got, SessionProcessing)
 	}
 }
 
