@@ -108,8 +108,8 @@ The full `agent/internal/worktree` suite cannot complete in this sandbox because
 
 ## Commit
 
-Pending exact-path staging and commit with subject:
+Task 7 migration commit:
 
 ```text
-refactor(worktree): use canonical project IDs
+5cc5bd2e853e03071f74d44c2b5e82df8c185d83 refactor(worktree): use canonical project IDs
 ```
