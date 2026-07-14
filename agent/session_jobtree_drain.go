@@ -207,6 +207,59 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 	}
 }
 
+// rematerializeDurablePendings re-enqueues this session's OWN durable terminal
+// notifications that are NotifyPending but absent from the in-memory queue, so
+// the next notification/drive turn can deliver and settle them.
+//
+// It closes a gap between the drain's two signals: quiescence is measured on the
+// durable ledger (outstandingDelegateCount reads NotifyPending records) while
+// delivery is driven off the in-memory queue (the loop's peekNotifications gate,
+// and driveChildrenWithUndeliveredAttention only drives a child whose queue is
+// non-empty). A pending that survives only in the durable store — a revived
+// delegate whose deferred restore side effects were interrupted before
+// arm_notifications ran, or a finalize whose in-memory enqueue never landed —
+// would otherwise hold the drain open forever: counted as outstanding, but never
+// materialized for any turn to deliver.
+//
+// It mirrors armPendingTerminalNotifications' re-enqueue but appends no event and
+// re-enqueues nothing that is already queued (peek>0) or already injected into
+// history, so repeated drain kicks stay idempotent and never pile duplicates. The
+// owned-record filter matches outstandingDelegateCount exactly, so it re-arms
+// precisely the records that hold this session's drain open.
+func (s *Session) rematerializeDurablePendings() error {
+	if s == nil || s.jobManager == nil {
+		return nil
+	}
+	// A non-empty queue is already on the delivery path; only a stranded durable
+	// pending (nothing queued to deliver it) needs re-materializing.
+	if s.peekNotifications() > 0 {
+		return nil
+	}
+	jm := s.jobManager
+	recs, err := jm.store.Load()
+	if err != nil {
+		return err
+	}
+	for _, rec := range recs {
+		if rec == nil || rec.Type != jobstore.JobDelegate {
+			continue
+		}
+		if rec.OwnerSessionID != "" && rec.OwnerSessionID != jm.sessionID {
+			continue
+		}
+		if rec.NotifyState != jobstore.NotifyPending || rec.TerminalGen == "" {
+			continue
+		}
+		if s.jobNotificationAlreadyInjected(rec.JobID) {
+			continue
+		}
+		if jm.enqueue != nil {
+			jm.enqueue(jobNotificationFromRecord(rec))
+		}
+	}
+	return nil
+}
+
 func newDrainWake() (chan struct{}, func()) {
 	wake := make(chan struct{}, 1)
 	return wake, func() {
@@ -243,6 +296,9 @@ func (s *Session) kickDriveTree(ctx context.Context) error {
 }
 
 func (s *Session) kickDriveTreeWith(ctx context.Context, drain func(*Session, context.Context) error) error {
+	if err := s.rematerializeDurablePendings(); err != nil {
+		return err
+	}
 	if err := drain(s, ctx); err != nil {
 		return err
 	}

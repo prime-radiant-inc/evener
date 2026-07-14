@@ -238,6 +238,118 @@ func TestOutstandingDelegateCountIgnoresForwardedDescendantPending(t *testing.T)
 	}
 }
 
+// TestDrainSettlesRootDurableOnlyPending is the kata h8mq regression: a
+// delegate whose owner notification survives ONLY in the durable ledger
+// (NotifyState==NotifyPending) with nothing queued in memory (peek==0) must not
+// wedge the drain. outstandingDelegateCount reads the durable ledger, so it
+// counts the delegate as outstanding forever; but the loop's delivery gate is
+// the in-memory queue, so without re-materializing the durable pending the drain
+// never runs a notification turn and blocks until ctx cancellation. This state
+// arises when a finalize's in-memory enqueue never lands or a revived delegate's
+// deferred restore side effects are interrupted before arm_notifications.
+func TestDrainSettlesRootDurableOnlyPending(t *testing.T) {
+	t.Parallel()
+	steps := make([]func(llm.Request) llm.Response, 6)
+	for i := range steps {
+		steps[i] = func(llm.Request) llm.Response { return finalResponse("ack") }
+	}
+	sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{NoProjectPrompts: true}))
+	jm := sess.jobManager
+
+	// Durable owned delegate whose notification is Pending, absent from memory.
+	started := frozenTestTime.Add(-time.Second)
+	ended := frozenTestTime
+	for _, ev := range []jobstore.Event{
+		{Kind: jobstore.EventJobStarted, TS: started, JobID: "del-r", Type: jobstore.JobDelegate, OwnerSessionID: sess.ID(), VisibleToSession: sess.ID(), StartedAt: &started},
+		{Kind: jobstore.EventJobFinished, TS: ended, JobID: "del-r", Status: jobstore.StatusCompleted, Reason: "communicated", EndedAt: &ended, TerminalGen: "rgen"},
+		{Kind: jobstore.EventJobNotificationPending, TS: ended, JobID: "del-r", TerminalGen: "rgen"},
+	} {
+		if err := jm.appendEvent(ev); err != nil {
+			t.Fatalf("append %s: %v", ev.Kind, err)
+		}
+	}
+	if p := sess.peekNotifications(); p != 0 {
+		t.Fatalf("precondition: expected empty in-memory queue, got %d", p)
+	}
+	if n, err := jm.outstandingDelegateCount(); err != nil || n != 1 {
+		t.Fatalf("precondition: expected 1 outstanding, got %d (err %v)", n, err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.DrainJobTree(ctx); err != nil {
+		t.Fatalf("DrainJobTree wedged on a durable-only pending: %v", err)
+	}
+	if n, err := jm.outstandingDelegateCount(); err != nil || n != 0 {
+		t.Fatalf("expected 0 outstanding after drain, got %d (err %v)", n, err)
+	}
+	if p := sess.peekNotifications(); p != 0 {
+		t.Fatalf("expected 0 pending notifications after drain, got %d", p)
+	}
+}
+
+// TestDrainSettlesChildDurableOnlyPending is the recursive (isolation-delegate)
+// form of kata h8mq: a live retained child whose OWN subtree carries a durable-
+// only pending (peek==0) must not wedge the root drain. treeHasOutstandingWork
+// recurses into the child and counts its durable pending, but
+// driveChildrenWithUndeliveredAttention only drives a child whose in-memory queue
+// is non-empty — so the child is never driven to settle it. The drain kick must
+// re-materialize the child's stranded pending so the existing drive-down path
+// delivers it.
+func TestDrainSettlesChildDurableOnlyPending(t *testing.T) {
+	t.Parallel()
+	rootSteps := make([]func(llm.Request) llm.Response, 8)
+	for i := range rootSteps {
+		rootSteps[i] = func(llm.Request) llm.Response { return finalResponse("root-ack") }
+	}
+	root := newSession(t, withSteps(rootSteps...), withConfig(SessionConfig{NoProjectPrompts: true}))
+
+	childSteps := make([]func(llm.Request) llm.Response, 8)
+	for i := range childSteps {
+		childSteps[i] = func(llm.Request) llm.Response { return finalResponse("child-ack") }
+	}
+	child := newSession(t, withSteps(childSteps...), withConfig(SessionConfig{NoProjectPrompts: true}))
+	childID := child.ID()
+
+	root.subagents.mu.Lock()
+	root.subagents.subs[childID] = &subagent{id: childID, sess: child}
+	root.subagents.mu.Unlock()
+	defer func() {
+		root.subagents.mu.Lock()
+		delete(root.subagents.subs, childID)
+		root.subagents.mu.Unlock()
+	}()
+
+	// The child owns a durable delegate whose notification is Pending, absent
+	// from the child's in-memory queue.
+	started := frozenTestTime.Add(-time.Second)
+	ended := frozenTestTime
+	for _, ev := range []jobstore.Event{
+		{Kind: jobstore.EventJobStarted, TS: started, JobID: "gc-job", Type: jobstore.JobDelegate, OwnerSessionID: child.ID(), VisibleToSession: child.ID(), StartedAt: &started},
+		{Kind: jobstore.EventJobFinished, TS: ended, JobID: "gc-job", Status: jobstore.StatusCompleted, Reason: "communicated", EndedAt: &ended, TerminalGen: "gcgen"},
+		{Kind: jobstore.EventJobNotificationPending, TS: ended, JobID: "gc-job", TerminalGen: "gcgen"},
+	} {
+		if err := child.jobManager.appendEvent(ev); err != nil {
+			t.Fatalf("append %s: %v", ev.Kind, err)
+		}
+	}
+	if p := child.peekNotifications(); p != 0 {
+		t.Fatalf("precondition: child in-memory queue must be empty, got %d", p)
+	}
+	if out, err := root.treeHasOutstandingWork(); err != nil || !out {
+		t.Fatalf("precondition: expected outstanding work from child durable pending, got out=%v err=%v", out, err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := root.DrainJobTree(ctx); err != nil {
+		t.Fatalf("DrainJobTree wedged on a child's durable-only pending: %v", err)
+	}
+	if n, err := child.jobManager.outstandingDelegateCount(); err != nil || n != 0 {
+		t.Fatalf("expected child's pending settled after drain, got %d (err %v)", n, err)
+	}
+}
+
 // TestDrainJobTreeWaitsForRunningDelegate verifies the drain re-drives the
 // coordinator when a backgrounded delegate completes, rather than returning
 // while the child is still running.
