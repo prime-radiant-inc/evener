@@ -1,7 +1,11 @@
 package installid
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/spf13/afero"
@@ -86,4 +90,209 @@ func TestLoadOrCreateInstallationID_EmptyStateDirAndFilesystemFailure(t *testing
 	if got := LoadOrCreateInstallationIDWithFS(afero.NewReadOnlyFs(afero.NewMemMapFs()), "/state"); got != "" {
 		t.Fatalf("read-only fs = %q, want empty", got)
 	}
+}
+
+func TestLoadOrCreateInstallationID_ConcurrentCallersShareSingleton(t *testing.T) {
+	const callers = 8
+	fs := newInstallationIDOverlapFS(afero.NewMemMapFs(), callers)
+	const dir = "/state"
+	start := make(chan struct{})
+	results := make(chan string, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			results <- LoadOrCreateInstallationIDWithFS(fs, dir)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	var want string
+	for got := range results {
+		if err := identifier.ValidateInstallationID(got); err != nil {
+			t.Fatalf("caller returned invalid ID %q: %v", got, err)
+		}
+		if want == "" {
+			want = got
+		} else if got != want {
+			t.Fatalf("callers returned different IDs: first %q, got %q", want, got)
+		}
+	}
+	stored, err := afero.ReadFile(fs, filepath.Join(dir, "installation_id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(stored)); got != want {
+		t.Fatalf("stored singleton %q, want %q", got, want)
+	}
+	if fs.tempWrites < 1 {
+		t.Fatal("concurrency seam did not observe a temporary write")
+	}
+}
+
+func TestLoadOrCreateInstallationID_ContentionWinnerIsReread(t *testing.T) {
+	fs := installationIDContentionFS{Fs: afero.NewMemMapFs(), winner: identifier.MustNewInstallationID()}
+	got := LoadOrCreateInstallationIDWithFS(fs, "/state")
+	if got != fs.winner {
+		t.Fatalf("contention winner = %q, want %q", got, fs.winner)
+	}
+	if _, err := fs.Stat("/state/installation_id.lock"); !os.IsNotExist(err) {
+		t.Fatalf("unowned lock remains: %v", err)
+	}
+}
+
+func TestLoadOrCreateInstallationID_CleansOwnedLockAfterWriteAndRenameFailure(t *testing.T) {
+	for name, failRename := range map[string]bool{"write": false, "rename": true} {
+		t.Run(name, func(t *testing.T) {
+			fs := installationIDPhaseFailFS{Fs: afero.NewMemMapFs(), failRename: failRename, failWrite: !failRename}
+			if got := LoadOrCreateInstallationIDWithFS(fs, "/state"); got != "" {
+				t.Fatalf("failed persistence returned %q", got)
+			}
+			if _, err := fs.Stat("/state/installation_id.lock"); !os.IsNotExist(err) {
+				t.Fatalf("owned lock remains: %v", err)
+			}
+			entries, err := afero.ReadDir(fs, "/state")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), ".installation_id.") {
+					t.Fatalf("temporary file remains: %q", entry.Name())
+				}
+			}
+		})
+	}
+}
+
+type installationIDOverlapFS struct {
+	afero.Fs
+	callers      int
+	mu           sync.Mutex
+	initialReads int
+	initialReady chan struct{}
+	tempWrites   int
+	tempReady    chan struct{}
+	lockSeen     bool
+	renameCount  int
+	renameReady  chan struct{}
+	renameTurn   chan struct{}
+	postReadAcks chan struct{}
+}
+
+func newInstallationIDOverlapFS(base afero.Fs, callers int) *installationIDOverlapFS {
+	fs := &installationIDOverlapFS{
+		Fs:           base,
+		callers:      callers,
+		initialReady: make(chan struct{}),
+		tempReady:    make(chan struct{}),
+		renameReady:  make(chan struct{}),
+		renameTurn:   make(chan struct{}, 1),
+		postReadAcks: make(chan struct{}, callers),
+	}
+	fs.renameTurn <- struct{}{}
+	return fs
+}
+
+func (fs *installationIDOverlapFS) Open(name string) (afero.File, error) {
+	if filepath.Base(name) == "installation_id" {
+		fs.mu.Lock()
+		if fs.initialReads < fs.callers {
+			fs.initialReads++
+			if fs.initialReads == fs.callers {
+				close(fs.initialReady)
+			}
+			fs.mu.Unlock()
+			<-fs.initialReady
+		} else {
+			control := !fs.lockSeen
+			fs.mu.Unlock()
+			if control {
+				fs.postReadAcks <- struct{}{}
+				fs.renameTurn <- struct{}{}
+			}
+		}
+	}
+	return fs.Fs.Open(name)
+}
+
+func (fs *installationIDOverlapFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	base := filepath.Base(name)
+	if base == "installation_id.lock" {
+		fs.mu.Lock()
+		fs.lockSeen = true
+		fs.mu.Unlock()
+	}
+	if strings.HasPrefix(base, ".installation_id.") && flag&os.O_CREATE != 0 {
+		fs.mu.Lock()
+		control := !fs.lockSeen
+		fs.tempWrites++
+		if control {
+			if fs.tempWrites == fs.callers {
+				close(fs.tempReady)
+			}
+		}
+		fs.mu.Unlock()
+		if control {
+			<-fs.tempReady
+		}
+	}
+	return fs.Fs.OpenFile(name, flag, perm)
+}
+
+func (fs *installationIDOverlapFS) Rename(oldname, newname string) error {
+	if strings.HasPrefix(filepath.Base(oldname), ".installation_id.") {
+		fs.mu.Lock()
+		control := !fs.lockSeen
+		fs.mu.Unlock()
+		if control {
+			<-fs.renameTurn
+			if err := fs.Fs.Rename(oldname, newname); err != nil {
+				return err
+			}
+			return nil
+		}
+	}
+	return fs.Fs.Rename(oldname, newname)
+}
+
+type installationIDContentionFS struct {
+	afero.Fs
+	winner string
+}
+
+func (fs installationIDContentionFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	if filepath.Base(name) == "installation_id.lock" && flag&os.O_EXCL != 0 {
+		if err := fs.MkdirAll(filepath.Dir(name), 0o700); err != nil {
+			return nil, err
+		}
+		if err := afero.WriteFile(fs.Fs, filepath.Join(filepath.Dir(name), "installation_id"), []byte(fs.winner+"\n"), 0o600); err != nil {
+			return nil, err
+		}
+		return nil, os.ErrExist
+	}
+	return fs.Fs.OpenFile(name, flag, perm)
+}
+
+type installationIDPhaseFailFS struct {
+	afero.Fs
+	failWrite  bool
+	failRename bool
+}
+
+func (fs installationIDPhaseFailFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	if fs.failWrite && strings.HasPrefix(filepath.Base(name), ".installation_id.") && flag&os.O_CREATE != 0 {
+		return nil, errors.New("injected temporary write failure")
+	}
+	return fs.Fs.OpenFile(name, flag, perm)
+}
+
+func (fs installationIDPhaseFailFS) Rename(oldname, newname string) error {
+	if fs.failRename && filepath.Base(newname) == "installation_id" {
+		return errors.New("injected installation rename failure")
+	}
+	return fs.Fs.Rename(oldname, newname)
 }
