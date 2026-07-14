@@ -84,6 +84,96 @@ Sidebar JavaScript tests were attempted but could not run because the environmen
 
 ## Self-review and concerns
 
-The implementation is focused on Task 8 and uses canonical IDs at destructive boundaries. The remaining verification concerns are environmental, not observed code failures: IPv6 loopback binding is prohibited by the sandbox, and Node `jsdom` dependencies are unavailable. The required tagged compile and deterministic focused migration checks pass.
+The implementation is focused on Task 8 and uses canonical IDs at destructive boundaries. Parent verification exposed stale `/w/...` and basename fixtures; those are now real temporary directories resolved through `identifier.ResolveProject`, and the shared TUI mock provides explicit canonical server keys. The appwire Thread boundary now carries `ProjectID`/`ProjectPath`; TUI grouping uses those fields and leaves unresolved rows non-actionable.
 
-Commit: `PENDING`
+## Parent-verification review fixes
+
+### Exact RED evidence
+
+The parent-required focused command reproduced these stale-fixture failures before the fixes:
+
+```text
+TestArchiveEndpointProjectKind: status=400 invalid project ID
+TestArchiveUnarchiveSkipsRedundantLegacyDeleteForBasenameID: status=400 invalid project ID
+TestProjectDeleteRemovesFilesAndScrubs: resolve project: lstat /w: no such file or directory
+TestProjectDeleteRefusesWhenLive: got 400 (expected 409)
+TestProjectDeleteSkipsOnRemoveFailure: resolve project: lstat /w: no such file or directory
+TestArchiveDecisionsFlowIntoTree: alpha grouped as no-project
+TestAPITreeProjectServedFromTree: status=404 project not found
+TestAPITree_ArchivedProjectsAreStubs: archived project list empty
+TestWeb_APITreeGroupsLiveOnlySessionsByProject: serf projects=0; rows grouped under no-project
+TestHubDashboardSpawnWaitsForSlowHubSpawn: fixture path/key was not an actionable canonical server row
+```
+
+The same required suite also reaches unrelated existing HTTP tests that panic in this sandbox because `httptest` cannot bind IPv6 loopback:
+
+```text
+listen tcp6 [::1]:0: bind: operation not permitted
+```
+
+### Review-fix implementation and GREEN evidence
+
+- Migrated archive, delete, and tree web fixtures to real temporary directories and `identifier.ResolveProject`, asserting canonical IDs and paths.
+- Added canonical `ProjectID`/`ProjectPath` to appwire thread responses at hub list/read/start/resume boundaries; TUI consumes only those server fields and preserves keyless presentation-only groups.
+- Migrated the shared tmux fixture and slow-spawn fixture to explicit canonical server keys and canonical paths.
+- Deterministic migrated tests pass:
+
+```text
+go test ./cmd/serf-hub/internal/hubcore -run 'Test.*(Tree|Project|Archive|Delete|Spawn)' -count=1
+ok   primeradiant.com/serf/cmd/serf-hub/internal/hubcore
+
+go test ./cmd/serf-hub -run '^(TestArchive|TestProjectDelete|TestOrphan|TestTreeResponse|TestAPITree_|TestWeb_APITreeGroupsLiveOnlySessionsByProject|TestWeb_APITreeReturnsRefsAndNormalizesAwaiting|TestWeb_APITreeSkipsLiveEntriesUntilSessionIDKnown|TestSpawnAndResumeRequestsCarryCanonicalProjectSeparatelyFromWorkingDir|TestResolveStateDirForProjectUsesCarriedProjectWithoutResolvingWorkingDir)$' -count=1
+ok   primeradiant.com/serf/cmd/serf-hub
+```
+
+- Tagged compile passed: `go test -tags serffuzz ./cmd/serf-hub ./cmd/serf-hub/internal/hubcore ./cmd/serf-tui -run '^$' -count=1` (all three packages, no tests to run). Ordinary compile passed for the same three packages. `git diff --check` passed.
+- Parent reran the exact focused command outside the delegate sandbox after the fixes:
+
+```text
+go test ./cmd/serf-hub/internal/hubcore ./cmd/serf-hub ./cmd/serf-tui -run 'Test.*(Tree|Project|Archive|Delete|Spawn|Dashboard)' -count=1
+ok   primeradiant.com/serf/cmd/serf-hub/internal/hubcore  0.486s
+ok   primeradiant.com/serf/cmd/serf-hub                   3.013s
+ok   primeradiant.com/serf/cmd/serf-tui                   2.264s
+```
+
+- The documented sidebar setup was attempted with `npm init -y && npm install jsdom`; installation failed offline with `npm ERR! code ENOTFOUND` for `registry.npmjs.org`, so `node test-sidebar-migration.js` could not run.
+
+Implementation commit: `606eb6ead2190d0f5c92446e0e9b2b82b65555a6`
+Fix commit: `b0096985f`
+
+## Parent follow-up: TUI E2E fixture fixes
+
+Parent verification initially reduced the failures to three TUI E2Es. The shared fixture had two stale assumptions:
+
+- Its literal `/tmp/serf-tui-e2e/serf` expectation did not account for Darwin canonicalizing `/tmp` to `/private/tmp`. The fixture now canonicalizes the original short `/tmp` root with `filepath.EvalSymlinks` before joining the suffix. This preserves Linux behavior and avoids the UI truncation caused by switching to the much longer ambient Darwin `TMPDIR`.
+- Dashboard and Codex spawn tests used `Tab` while focused on the directory field. That invokes directory completion; subsequent prompt text was appended to the path. Both tests now use the form's explicit `Enter` transition from directory to prompt.
+
+Each reproduced TUI failure passed in a focused rerun, and the exact three-package command above then passed in full. The parent tagged compile also passed for all three packages. `git diff --check` and the forbidden-key audit pass.
+
+## Independent review fix: remote appwire project identity
+
+The first independent review found one Important defect: remote appwire threads carried `ProjectID`/`ProjectPath`, but web-tree ingestion discarded those fields and attempted to resolve only the remote `CWD` on the local filesystem. A TDD regression reproduced the empty carried identity when the remote CWD was not locally resolvable. `appThreadTreeEntries` now validates the supplied project ID and preserves the pair in `LiveEntry.Project`, allowing `ResolveProjectMap` to reuse the remote hub's canonical identity.
+
+Fresh verification after this fix:
+
+```text
+go test ./cmd/serf-hub/internal/hubcore ./cmd/serf-hub ./cmd/serf-tui -run 'Test.*(Tree|Project|Archive|Delete|Spawn|Dashboard)' -count=1
+ok   primeradiant.com/serf/cmd/serf-hub/internal/hubcore  0.416s
+ok   primeradiant.com/serf/cmd/serf-hub                   2.497s
+ok   primeradiant.com/serf/cmd/serf-tui                   2.153s
+
+go test -tags serffuzz ./cmd/serf-hub ./cmd/serf-hub/internal/hubcore ./cmd/serf-tui -run '^$' -count=1
+ok   all three packages; no tests to run
+
+git diff --check
+pass
+```
+
+Review-fix commit: `de042d413`
+
+## Final independent re-review
+
+A fresh independent review of `2eb33dcae..de042d413` found no Critical, Important, or Minor issues.
+
+- Spec compliance: ✅
+- Task quality: Approved
