@@ -94,8 +94,8 @@ func TestLoadOrCreateInstallationID_EmptyStateDirAndFilesystemFailure(t *testing
 
 func TestLoadOrCreateInstallationID_ConcurrentCallersShareSingleton(t *testing.T) {
 	const callers = 8
-	fs := newInstallationIDOverlapFS(afero.NewMemMapFs(), callers)
-	const dir = "/state"
+	fs := newInstallationIDOverlapFS(afero.NewOsFs(), callers)
+	dir := t.TempDir()
 	start := make(chan struct{})
 	results := make(chan string, callers)
 	var wg sync.WaitGroup
@@ -145,6 +145,47 @@ func TestLoadOrCreateInstallationID_ContentionWinnerIsReread(t *testing.T) {
 	}
 }
 
+func TestLoadOrCreateInstallationID_WaitsForHeldLockOwner(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	const dir = "/state"
+	if err := fs.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(dir, "installation_id.lock")
+	if err := afero.WriteFile(fs, lockPath, []byte("owner\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	winner := identifier.MustNewInstallationID()
+	waiterObserved := make(chan struct{})
+	ownerRelease := make(chan struct{})
+	var observed sync.Once
+	previousWait := installationIDContentionWait
+	installationIDContentionWait = func(int) {
+		observed.Do(func() { close(waiterObserved) })
+		<-ownerRelease
+	}
+	defer func() { installationIDContentionWait = previousWait }()
+
+	result := make(chan string, 1)
+	go func() { result <- LoadOrCreateInstallationIDWithFS(fs, dir) }()
+	<-waiterObserved
+	if err := afero.WriteFile(fs, filepath.Join(dir, "installation_id"), []byte(winner+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Remove(lockPath); err != nil {
+		t.Fatal(err)
+	}
+	close(ownerRelease)
+
+	got := <-result
+	if got != winner {
+		t.Fatalf("waiter returned %q, want owner winner %q", got, winner)
+	}
+	if got := readValidInstallationID(fs, filepath.Join(dir, "installation_id")); got != winner {
+		t.Fatalf("stored singleton = %q, want %q", got, winner)
+	}
+}
+
 func TestLoadOrCreateInstallationID_CleansOwnedLockAfterWriteAndRenameFailure(t *testing.T) {
 	for name, failRename := range map[string]bool{"write": false, "rename": true} {
 		t.Run(name, func(t *testing.T) {
@@ -176,7 +217,6 @@ type installationIDOverlapFS struct {
 	initialReady chan struct{}
 	tempWrites   int
 	tempReady    chan struct{}
-	lockSeen     bool
 	renameCount  int
 	renameReady  chan struct{}
 	renameTurn   chan struct{}
@@ -208,11 +248,9 @@ func (fs *installationIDOverlapFS) Open(name string) (afero.File, error) {
 			fs.mu.Unlock()
 			<-fs.initialReady
 		} else {
-			control := !fs.lockSeen
 			fs.mu.Unlock()
-			if control {
+			if _, err := fs.Fs.Stat(filepath.Join(filepath.Dir(name), "installation_id.lock")); os.IsNotExist(err) {
 				fs.postReadAcks <- struct{}{}
-				fs.renameTurn <- struct{}{}
 			}
 		}
 	}
@@ -221,21 +259,19 @@ func (fs *installationIDOverlapFS) Open(name string) (afero.File, error) {
 
 func (fs *installationIDOverlapFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
 	base := filepath.Base(name)
-	if base == "installation_id.lock" {
-		fs.mu.Lock()
-		fs.lockSeen = true
-		fs.mu.Unlock()
-	}
 	if strings.HasPrefix(base, ".installation_id.") && flag&os.O_CREATE != 0 {
 		fs.mu.Lock()
-		control := !fs.lockSeen
 		fs.tempWrites++
+		fs.mu.Unlock()
+		_, lockErr := fs.Fs.Stat(filepath.Join(filepath.Dir(name), "installation_id.lock"))
+		control := os.IsNotExist(lockErr)
 		if control {
+			fs.mu.Lock()
 			if fs.tempWrites == fs.callers {
 				close(fs.tempReady)
 			}
+			fs.mu.Unlock()
 		}
-		fs.mu.Unlock()
 		if control {
 			<-fs.tempReady
 		}
@@ -245,9 +281,8 @@ func (fs *installationIDOverlapFS) OpenFile(name string, flag int, perm os.FileM
 
 func (fs *installationIDOverlapFS) Rename(oldname, newname string) error {
 	if strings.HasPrefix(filepath.Base(oldname), ".installation_id.") {
-		fs.mu.Lock()
-		control := !fs.lockSeen
-		fs.mu.Unlock()
+		_, lockErr := fs.Fs.Stat(filepath.Join(filepath.Dir(newname), "installation_id.lock"))
+		control := os.IsNotExist(lockErr)
 		if control {
 			<-fs.renameTurn
 			if err := fs.Fs.Rename(oldname, newname); err != nil {

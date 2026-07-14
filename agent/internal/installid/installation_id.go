@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/afero"
 	"primeradiant.com/serf/identifier"
@@ -11,7 +12,17 @@ import (
 
 const CodexInstallationIDMetadataKey = "x-codex-installation-id"
 
-const installationIDLockAttempts = 32
+const (
+	installationIDLockAttempts = 100
+	installationIDLockWait     = 5 * time.Millisecond
+)
+
+// installationIDContentionWait bounds lock contention to 500ms total (100
+// attempts at 5ms each). Tests replace this seam to release a deterministic
+// lock owner without relying on sleeps.
+var installationIDContentionWait = func(int) {
+	time.Sleep(installationIDLockWait)
+}
 
 func LoadOrCreateInstallationID(stateDir string) string {
 	return LoadOrCreateInstallationIDWithFS(afero.NewOsFs(), stateDir)
@@ -39,6 +50,7 @@ func LoadOrCreateInstallationIDWithFS(fs afero.Fs, stateDir string) string {
 				return winner
 			}
 			if os.IsExist(err) {
+				installationIDContentionWait(attempt)
 				continue
 			}
 			return ""
