@@ -40,7 +40,7 @@ function treeWithChildren() {
     sessions: [{
       row_id: "project:p1:local:MAIN", ref: "local:MAIN", session_id: "MAIN",
       title: "main", state: "active", kind: "session", tier: "current",
-      children: [runningChild, node("CHILD-IDLE", "idle retained child", "idle"), node("CHILD-ERROR", "errored child", "errored"), node("CHILD-ENDED", "ended child", "ended")],
+      children: [runningChild, node("CHILD-IDLE", "idle retained child", "idle"), node("CHILD-UNKNOWN", "unknown retained child", "mystery"), node("CHILD-ERROR", "errored child", "errored"), node("CHILD-ENDED", "ended child", "ended")],
     }],
   }];
   return t;
@@ -54,6 +54,12 @@ if (!mainRow) throw new Error("main row must render");
 const running = w.document.querySelector('[data-row-id="project:p1:local:CHILD-RUNNING"]');
 const retained = w.document.querySelector('[data-row-id="project:p1:local:CHILD-IDLE"]');
 if (!running || !retained) throw new Error("running and idle direct children must render automatically");
+const unknownSource = tree.projects[0].sessions[0].children[2];
+const unknownRow = w.document.querySelector('[data-row-id="project:p1:local:CHILD-UNKNOWN"]');
+if (!unknownRow || !unknownRow.classList.contains("subagent-row")) throw new Error("unknown child state must remain visible as a current child");
+if (unknownRow.getAttribute("data-state") !== "notLoaded") throw new Error("unknown child state must use neutral notLoaded presentation");
+if (unknownSource.state !== "mystery") throw new Error("unknown state normalization must not mutate the source node");
+if (unknownSource.row_id !== "project:p1:local:CHILD-UNKNOWN" || unknownSource.ref !== "local:CHILD-UNKNOWN") throw new Error("unknown state normalization must not mutate server identity fields");
 if (!running.classList.contains("subagent-row") || !retained.classList.contains("subagent-row")) {
   throw new Error("current direct children must be indented subagent rows");
 }
@@ -78,6 +84,8 @@ if (w.document.querySelector('[data-row-id="project:p1:local:GRAND-ENDED"]')) {
 if (w.document.querySelector('[data-row-id="project:p1:local:CHILD-ERROR"]')) {
   throw new Error("errored direct child must stay behind main inactive disclosure");
 }
+const controlled = w.document.getElementById(mainInactive.getAttribute("aria-controls"));
+if (!controlled) throw new Error("inactive disclosure must expose a stable aria-controls target");
 if (mainInactive.getAttribute("aria-controls") !== "inactive-rows-project:p1:local:MAIN") {
   throw new Error("inactive disclosure must expose a stable aria-controls target");
 }
@@ -87,6 +95,11 @@ if (mainInactive.getAttribute("aria-controls") !== "inactive-rows-project:p1:loc
 mainInactive.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
 if (!w.document.querySelector('[data-row-id="project:p1:local:CHILD-ERROR"]') || !w.document.querySelector('[data-row-id="project:p1:local:CHILD-ENDED"]')) {
   throw new Error("expanding main inactive must reveal its two direct terminal children");
+}
+const expandedControlled = w.document.getElementById(mainInactive.getAttribute("aria-controls"));
+if (!expandedControlled || !expandedControlled.contains(w.document.querySelector('[data-row-id="project:p1:local:CHILD-ERROR"]')) ||
+    !expandedControlled.contains(w.document.querySelector('[data-row-id="project:p1:local:CHILD-ENDED"]'))) {
+  throw new Error("inactive disclosure controlled region must contain its inactive direct child rows");
 }
 if (w.document.querySelector('[data-row-id="project:p1:local:GRAND-ENDED"]')) {
   throw new Error("expanding main inactive must not flatten grandchildren");
@@ -117,7 +130,13 @@ if (w.document.querySelector('[data-row-id="inactive:project:p1:local:MAIN"]').g
 
 // The visual contract is indentation + spacing only: no lineage rail and no
 // left-edge active/selected stripe for subagent rows.
-if (/\.subagent-row[^{}]*\{[^}]*border-left|\.subagent-row[^{}]*::before/.test(css)) {
+const stampedRule = /\.sb-row\[data-subagent-depth\]\s*\{([^}]*)\}/.exec(css);
+const stampedBody = stampedRule && stampedRule[1];
+const stampedBorderColor = stampedBody && /(?:^|;)\s*border-left-color\s*:\s*([^;}]*)/.exec(stampedBody);
+const stampedBorder = stampedBody && /(?:^|;)\s*border-left\s*:\s*([^;}]*)/.exec(stampedBody);
+if (!stampedRule || (stampedBorder && stampedBorder[1].trim() !== "none") ||
+    !stampedBorderColor || stampedBorderColor[1].trim() !== "transparent" ||
+    /\.sb-row\[data-subagent-depth\]\s*::?(?:before|after)/.test(css)) {
   throw new Error("subagent styling must not add a lineage rail or left-edge pseudo stripe");
 }
 

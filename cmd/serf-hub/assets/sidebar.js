@@ -144,13 +144,19 @@
   // Current children are emitted directly below their parent. Terminal
   // children are emitted below one independent disclosure belonging to that
   // parent, so expanding one parent never flattens another subtree.
+  var CURRENT_SUBAGENT_STATES = { active: true, awaiting: true, idle: true, warning: true, notLoaded: true };
+  var INACTIVE_SUBAGENT_STATES = { ended: true, closed: true, errored: true };
   function isInactiveSubagent(n) {
-    return !!n && (n.state === "ended" || n.state === "closed" || n.state === "errored");
+    return !!n && INACTIVE_SUBAGENT_STATES[n.state] === true;
+  }
+  function isCurrentSubagent(n) {
+    return !!n && INACTIVE_SUBAGENT_STATES[n.state] !== true;
   }
   function inactiveKey(n) { return "inactive:" + n.row_id; }
   function inactiveRowsID(n) { return "inactive-rows-" + n.row_id; }
   function childDescriptor(child, parent, ancestry) {
     var descriptor = Object.assign({}, child);
+    if (isCurrentSubagent(descriptor) && CURRENT_SUBAGENT_STATES[descriptor.state] !== true) descriptor.state = "notLoaded";
     descriptor.__child = true;
     descriptor.__parentNode = parent;
     descriptor.__ancestry = (ancestry || []).concat([parent]);
@@ -191,10 +197,12 @@
     d.id = inactiveRowsID(n.__inactiveParent);
     d.setAttribute("data-row-id", n.row_id);
     d.hidden = !model.expanded.has(inactiveKey(n.__inactiveParent));
+    reconcile(d, n.__nodes || [], buildRowOrSection, patchRowOrSection);
     return d;
   }
   function patchInactiveRows(el, n) {
     el.hidden = !model.expanded.has(inactiveKey(n.__inactiveParent));
+    reconcile(el, n.__nodes || [], buildRowOrSection, patchRowOrSection);
   }
 
   // --- Row menu (⋯ popover) ----------------------------------------------------
@@ -372,33 +380,35 @@
     });
   }
 
-  // Subagent children: emitted right after their parent row, once the
-  // parent's own disclosure (childrenKey) is expanded. Any tier's node may
-  // carry children — apiTreeNode recurses the same way for NeedsYou/Pinned
-  // and project sessions alike — so this is called from every push site
-  // above, not just pushProject. Children render via buildRow itself
-  // (buildRowOrSection stamps the .subagent-row indent class from __child).
+  // Subagent children: current descendants are emitted directly after their
+  // parent. Terminal descendants stay inside that parent's keyed inactive
+  // region, so each disclosure owns only its direct inactive children while
+  // nested regions retain their own independent state.
   function pushChildren(out, n, ancestry) {
     var children = n.children || [];
     if (!children.length) return;
-    var current = children.filter(function (c) { return !c.__drop && !isInactiveSubagent(c); });
-    var inactive = children.filter(function (c) { return !c.__drop && isInactiveSubagent(c); });
+    var current = children.filter(function (c) { return !c.__drop && isCurrentSubagent(c); });
     current.forEach(function (c) {
       var descriptor = childDescriptor(c, n, ancestry);
       out.push(descriptor);
       pushChildren(out, descriptor, (ancestry || []).concat([n]));
     });
+    var inactive = children.filter(function (c) { return !c.__drop && isInactiveSubagent(c); });
     if (!inactive.length) return;
     var disclosure = { row_id: inactiveKey(n), __inactiveDisclosure: true, __inactiveParent: n, __child: true, __ancestry: ancestry || [], __subagentDepth: (ancestry || []).length + 1 };
     out.push(disclosure);
-    var inactiveRows = { row_id: inactiveRowsID(n), __inactiveRows: true, __inactiveParent: n };
+    var inactiveRows = { row_id: inactiveRowsID(n), __inactiveRows: true, __inactiveParent: n, __nodes: model.expanded.has(inactiveKey(n)) ? inactiveRegionNodes(n, ancestry) : [] };
     out.push(inactiveRows);
-    if (!model.expanded.has(inactiveKey(n))) return;
-    inactive.forEach(function (c) {
-      var descriptor = childDescriptor(c, n, ancestry);
+  }
+  function inactiveRegionNodes(parent, ancestry) {
+    var out = [];
+    (parent.children || []).forEach(function (c) {
+      if (c.__drop || !isInactiveSubagent(c)) return;
+      var descriptor = childDescriptor(c, parent, ancestry);
       out.push(descriptor);
-      pushChildren(out, descriptor, (ancestry || []).concat([n]));
+      pushChildren(out, descriptor, (ancestry || []).concat([parent]));
     });
+    return out;
   }
 
   // Cluster fold: a T5 synthetic kind:"cluster" node folding a run of
