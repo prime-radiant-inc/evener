@@ -310,6 +310,7 @@ func (s *Session) discardRestoredCandidate() {
 		if s.cancelFunc != nil {
 			s.cancelFunc()
 		}
+		s.stopLaneResidueSweepTimer()
 
 		if s.jobManager != nil && s.jobManager.store != nil {
 			_ = s.jobManager.store.Close()
