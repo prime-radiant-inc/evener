@@ -5802,6 +5802,27 @@ body.doc-page {
    selectors already existed from Tasks 21/23.) */
 .sb-tree .project-header .sb-menu-btn, .sb-tree .project-header button { min-width: 24px; min-height: 24px; }
 .subagent-row, .subagent-toggle { min-height: 24px; }
+.subagent-row { padding-top: 2px; padding-bottom: 2px; }
+.sb-row[data-subagent-depth] { border-left-color: transparent; }
+.subagent-inactive-disclosure {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 24px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--text-xs);
+  text-align: left;
+  cursor: pointer;
+}
+.subagent-inactive-disclosure:hover { color: var(--text); }
+.subagent-inactive-disclosure[aria-expanded="true"] .sb-children-chevron { transform: rotate(90deg); }
+.subagent-inactive-rows[hidden] { display: none; }
 @media (min-width: 768px) {
   .sb-row [role="button"], .sb-menu-btn { min-height: 24px; min-width: 24px; }
 }
