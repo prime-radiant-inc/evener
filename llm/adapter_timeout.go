@@ -24,7 +24,8 @@ func ApplyAdapterTimeout(ctx context.Context, at *AdapterTimeout, streaming bool
 
 // AdapterTransport returns a configured clone of http.DefaultTransport. Connect
 // bounds context-aware dialing without replacing caller hooks, and Request bounds
-// the wait for response headers. Returns nil when neither is configured.
+// the wait for response headers. Context-free Dial and DialTLS remain
+// caller-authoritative. Returns nil when neither timeout is configured.
 func AdapterTransport(at *AdapterTimeout) *http.Transport {
 	return configuredAdapterTransport(http.DefaultTransport.(*http.Transport), at)
 }
@@ -37,13 +38,15 @@ func configuredAdapterTransport(base *http.Transport, at *AdapterTimeout) *http.
 	if at.Connect > 0 {
 		connectTimeout := at.Connect
 		dialContext := transport.DialContext
-		if dialContext == nil {
+		if dialContext == nil && transport.Dial == nil {
 			dialContext = (&net.Dialer{}).DialContext
 		}
-		transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-			ctx, cancel := context.WithTimeout(ctx, connectTimeout)
-			defer cancel()
-			return dialContext(ctx, network, address)
+		if dialContext != nil {
+			transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+				ctx, cancel := context.WithTimeout(ctx, connectTimeout)
+				defer cancel()
+				return dialContext(ctx, network, address)
+			}
 		}
 
 		if dialTLSContext := transport.DialTLSContext; dialTLSContext != nil {
@@ -53,8 +56,8 @@ func configuredAdapterTransport(base *http.Transport, at *AdapterTimeout) *http.
 				return dialTLSContext(ctx, network, address)
 			}
 		}
-		// DialTLS has no context to bound safely without a goroutine that may leak.
-		// Preserve it unchanged as caller-authoritative transport policy.
+		// Dial and DialTLS have no contexts to bound safely without goroutines that
+		// may leak. Preserve them unchanged as caller-authoritative transport policy.
 	}
 	if at.Request > 0 {
 		transport.ResponseHeaderTimeout = at.Request

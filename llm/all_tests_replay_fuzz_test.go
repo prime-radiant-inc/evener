@@ -13,6 +13,7 @@ func FuzzRootScenarioReplay(f *testing.F) {
 		TestAdapterTransport_NoTransportTimeoutReturnsNil(t)
 		TestClientWithAdapterTimeout_ConfiguresStandardTransport(t)
 		TestClientWithAdapterTimeout_WrapsDialContextWithConnectDeadline(t)
+		TestClientWithAdapterTimeout_PreservesDialAuthority(t)
 		TestClientWithAdapterTimeout_WrapsDialTLSContextWithConnectDeadline(t)
 		TestClientWithAdapterTimeout_PreservesDialTLSAuthority(t)
 		TestClientWithAdapterTimeout_ClonesDefaultTransport(t)

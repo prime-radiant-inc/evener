@@ -94,15 +94,18 @@ underlying transport is the standard `*http.Transport`, the helper:
 
 1. Clone the transport.
 2. When `AdapterTimeout.Connect` is non-zero, wrap an existing `DialContext`
-   with a Connect-bounded context, or use the normal zero-value `net.Dialer`
-   behavior under that context when the hook is nil.
-3. Likewise wrap an existing `DialTLSContext`, which owns non-proxied HTTPS
-   dialing and otherwise bypasses `DialContext`.
-4. Preserve deprecated context-free `DialTLS` unchanged and caller-authoritative;
+   with a Connect-bounded context. If both `DialContext` and deprecated `Dial`
+   are nil, use the normal zero-value `net.Dialer` behavior under that context.
+3. Preserve deprecated context-free `Dial` unchanged and caller-authoritative;
    safely imposing a context deadline would require a goroutine whose dial could
    outlive cancellation and leak.
-5. Set `ResponseHeaderTimeout` from `AdapterTimeout.Request` when non-zero.
-6. Install the cloned transport on the copied client.
+4. Likewise wrap an existing `DialTLSContext`, which owns non-proxied HTTPS
+   dialing and otherwise bypasses `DialContext`.
+5. Preserve deprecated context-free `DialTLS` unchanged and caller-authoritative;
+   safely imposing a context deadline would require a goroutine whose dial could
+   outlive cancellation and leak.
+6. Set `ResponseHeaderTimeout` from `AdapterTimeout.Request` when non-zero.
+7. Install the cloned transport on the copied client.
 
 When the client has no explicit transport, the helper will clone
 `http.DefaultTransport`, which is a `*http.Transport`. It must not construct a
@@ -197,9 +200,9 @@ The implementation must cover these contracts:
    receives a clone of `http.DefaultTransport`, not a zero-value transport.
 5. **Opaque transports remain authoritative.** A custom scripted
    `RoundTripper` remains installed and usable rather than being replaced.
-6. **Deprecated `DialTLS` remains authoritative.** Its context-free signature
-   prevents safe deadline wrapping, so it remains unchanged and controls the
-   non-proxied HTTPS dial when installed without `DialTLSContext`.
+6. **Deprecated `Dial` and `DialTLS` remain authoritative.** Their context-free
+   signatures prevent safe deadline wrapping, so they remain unchanged and
+   control their respective dials when the context-aware hook is absent.
 7. **Explicit client timeouts remain authoritative.** The copied client retains
    caller-supplied `http.Client.Timeout`, even though that policy may bound the
    total lifetime of a stream.

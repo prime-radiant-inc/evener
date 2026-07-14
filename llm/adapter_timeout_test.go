@@ -236,6 +236,39 @@ func TestClientWithAdapterTimeout_WrapsDialContextWithConnectDeadline(t *testing
 	}
 }
 
+func TestClientWithAdapterTimeout_PreservesDialAuthority(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	called := make(chan struct{}, 1)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = nil
+	transport.Dial = func(network, address string) (net.Conn, error) {
+		called <- struct{}{}
+		var dialer net.Dialer
+		return dialer.Dial(network, address)
+	}
+
+	client := ClientWithAdapterTimeout(&http.Client{Transport: transport}, &AdapterTimeout{Connect: time.Second})
+	req, err := http.NewRequest(http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	_ = resp.Body.Close()
+	select {
+	case <-called:
+	default:
+		t.Fatal("custom Dial was not called")
+	}
+}
+
 func TestClientWithAdapterTimeout_WrapsDialTLSContextWithConnectDeadline(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
