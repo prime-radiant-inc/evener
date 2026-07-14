@@ -720,6 +720,65 @@ func fuzzScenarioBuildTree_KeepsSubagentStateWhenParentLive(t *testing.T) {
 	}
 }
 
+func TestBuildTree_ExcludesNestedForkFromNeedsYou(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{
+		{ID: "branch", ParentSessionID: "fork", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "fork", ForkLabel: "before edit", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+	}
+	live := []LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "branch", Status: appwire.ThreadStatusActive},
+		{Entry: rendezvous.Entry{PID: 2}, SessionID: "fork", Status: appwire.ThreadStatusAwaiting},
+	}
+
+	tree := BuildTreeAt(metas, live, nil, now)
+	if len(tree.NeedsYou) != 0 {
+		t.Fatalf("nested fork leaked into NeedsYou: %#v", tree.NeedsYou)
+	}
+	if len(tree.Projects) != 1 || len(tree.Projects[0].Current) != 1 {
+		t.Fatalf("tree = %#v, want one top-level branch", tree)
+	}
+	children := tree.Projects[0].Current[0].Children
+	if len(children) != 1 || children[0].ID != "fork" || children[0].Kind != "fork" {
+		t.Fatalf("branch children = %#v, want nested fork", children)
+	}
+}
+
+func TestBuildTree_CanonicalizesDuplicateMetadataIDs(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{
+		{ID: "root-a", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "root-b", UpdatedAt: now.Add(-time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		// The newer duplicate is canonically retained, so dup remains a direct
+		// child of root-a and is not emitted again under root-b or top-level.
+		{ID: "dup", ParentSessionID: "root-a", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "dup", ParentSessionID: "root-b", UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+	}
+
+	tree := BuildTreeAt(metas, nil, nil, now)
+	var count func([]TreeNode, string) int
+	count = func(nodes []TreeNode, id string) int {
+		n := 0
+		for _, node := range nodes {
+			if node.ID == id {
+				n++
+			}
+			n += count(node.Children, id)
+		}
+		return n
+	}
+	var top []TreeNode
+	for _, project := range append(append([]TreeProject(nil), tree.Projects...), tree.ArchivedProjects...) {
+		top = append(top, allSessions(project)...)
+	}
+	if got := count(top, "dup"); got != 1 {
+		t.Fatalf("duplicate metadata ID emitted %d times, want once: %#v", got, tree)
+	}
+	if len(top) == 0 || len(top[0].Children) != 1 || top[0].Children[0].ID != "dup" {
+		t.Fatalf("canonical duplicate parentage = %#v, want root-a child", top)
+	}
+}
+
 func TestBuildTree_GuardsMalformedSubagentLineage(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{

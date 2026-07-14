@@ -302,6 +302,20 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 	sort.SliceStable(metas, func(i, j int) bool {
 		return sessionMetaLess(metas[i], metas[j])
 	})
+	// Metadata can be malformed or concurrently assembled with duplicate IDs.
+	// The sorted (newest-first) order makes the canonical policy deterministic:
+	// retain the first record for each ID, then build all lineage indexes from
+	// that canonical set so a duplicate cannot be emitted or hoisted elsewhere.
+	canonicalMetas := metas[:0]
+	seenMetaIDs := make(map[string]struct{}, len(metas))
+	for _, m := range metas {
+		if _, seen := seenMetaIDs[m.ID]; seen {
+			continue
+		}
+		seenMetaIDs[m.ID] = struct{}{}
+		canonicalMetas = append(canonicalMetas, m)
+	}
+	metas = canonicalMetas
 
 	// Index live entries by SessionID.
 	liveMap := make(map[string]LiveEntry, len(live))
@@ -357,6 +371,7 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 	}
 	projects := make(map[string]*projectAccum) // keyed by EffectiveWorkingDir path
 	projectOrder := []string{}                 // insertion order (paths) for stable output
+	nestedMetaIDs := make(map[string]struct{}) // IDs attached below a top-level row
 
 	// Build a reverse-lookup index: which session forked from each origin?
 	// Used to attach a "snapshotted original" (the parent meta with ForkLabel
@@ -392,12 +407,14 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		case m.IsSubagent && m.ParentSessionID != "":
 			// Subagents nest under their origin.
 			acc.children[m.ParentSessionID] = append(acc.children[m.ParentSessionID], m)
+			nestedMetaIDs[m.ID] = struct{}{}
 		case m.ForkLabel != "":
 			// This meta is the snapshotted original of a fork. The active
 			// branch (the meta whose ParentSessionID == m.ID) is top-level;
 			// this one becomes the dim child of that active branch.
 			if newID, ok := forkChildren[m.ID]; ok {
 				acc.children[newID] = append(acc.children[newID], m)
+				nestedMetaIDs[m.ID] = struct{}{}
 			} else {
 				// No active branch references this — keep top-level.
 				acc.topLevel = append(acc.topLevel, m)
@@ -683,6 +700,12 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		}
 		// Only top-level sessions surface in triage — a subagent's parent is
 		// the actionable unit.
+		if meta != nil {
+			_, nested := nestedMetaIDs[meta.ID]
+			if nested {
+				continue
+			}
+		}
 		if meta != nil && meta.IsSubagent {
 			continue
 		}

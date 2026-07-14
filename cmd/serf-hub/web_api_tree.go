@@ -85,14 +85,14 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	for _, p := range append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...) {
 		if p.IsTestRun {
 			for _, n := range projectSessions(p) {
-				seenProjectRefs[n.ID] = true
+				markTreeNodeIDs(seenProjectRefs, n)
 			}
 			resp.TestRuns = append(resp.TestRuns, s.apiTreeProject("project", favs, p))
 			continue
 		}
 		if p.IsArchived {
 			for _, n := range projectSessions(p) {
-				seenProjectRefs[n.ID] = true
+				markTreeNodeIDs(seenProjectRefs, n)
 			}
 			// Archived projects ship as stubs: the archive is unbounded, so its
 			// sessions never ride in the snapshot. Sessions stays nil (wire:
@@ -107,7 +107,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		projectIndexes[p.Key] = len(resp.Projects)
 		ap := s.apiTreeProject("project", favs, p)
 		for _, n := range projectSessions(p) {
-			seenProjectRefs[n.ID] = true
+			markTreeNodeIDs(seenProjectRefs, n)
 		}
 		resp.Projects = append(resp.Projects, ap)
 	}
@@ -528,6 +528,18 @@ func projectSessions(p hubcore.TreeProject) []hubcore.TreeNode {
 	out = append(out, p.Recent...)
 	out = append(out, p.Archived...)
 	return out
+}
+
+// markTreeNodeIDs records a top-level row and every direct descendant already
+// projected inside it. Live child daemons are not independently routable, and
+// must not be re-added by the orphan-live fallback as separate project rows.
+func markTreeNodeIDs(seen map[string]bool, n hubcore.TreeNode) {
+	if n.ID != "" {
+		seen[n.ID] = true
+	}
+	for _, child := range n.Children {
+		markTreeNodeIDs(seen, child)
+	}
 }
 
 // apiTreeProject projects a hubcore.TreeProject onto the wire TreeProject,
