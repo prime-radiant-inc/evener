@@ -149,8 +149,10 @@ type notFoundError struct{ httpBaseError }
 type requestTimeoutError struct{ httpBaseError }
 
 // responseHeaderTimeoutError reports that a fully written request timed out
-// before response headers arrived. It is not retryable because the provider may
-// already be processing the request. Its category is [KindTimeout].
+// before response headers arrived. It is retryable so a bounded stuck attempt
+// advances through the configured retry policy. Provider work may still
+// complete, so the duplicate-generation risk is accepted by the approved
+// design. Its category is [KindTimeout].
 type responseHeaderTimeoutError struct{ httpBaseError }
 
 // contextLengthError reports that the request exceeded the model's context
@@ -389,7 +391,7 @@ func newResponseHeaderTimeoutError(provider string, message string, cause error)
 		provider:   strings.TrimSpace(provider),
 		statusCode: 0,
 		message:    message,
-		retryable:  false,
+		retryable:  true,
 		cause:      cause,
 	}
 	return &responseHeaderTimeoutError{base}
