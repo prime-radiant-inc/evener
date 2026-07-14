@@ -338,7 +338,7 @@ func (r *Roster) IsSubagentActive(sessionID string) bool {
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	for _, entry := range r.bySess {
+	for _, entry := range r.byPID {
 		for _, childID := range entry.RunningSubagentIDs {
 			if childID == sessionID {
 				return true

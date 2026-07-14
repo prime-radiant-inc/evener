@@ -276,6 +276,15 @@ func TestRosterRunningSubagent(t *testing.T) {
 	fuzzScenarioRoster_CarriesRunningSubagentsWithoutRoutingThem(t)
 }
 
+func TestRosterSubagentUnresolvedOwner(t *testing.T) {
+	r := NewRosterWithEntries(LiveEntry{
+		RunningSubagentIDs: []string{"child-unresolved-owner"},
+	})
+	if !r.IsSubagentActive("child-unresolved-owner") {
+		t.Fatal("running child must be active even when its owner has no resolved session ID")
+	}
+}
+
 type runningSubagentProber struct{ result ProbeResult }
 
 func (p *runningSubagentProber) Probe(rendezvous.Entry) ProbeResult { return p.result }

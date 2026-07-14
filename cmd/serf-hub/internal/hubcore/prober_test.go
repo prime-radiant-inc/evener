@@ -161,3 +161,14 @@ func fuzzScenarioStatusProber_DecodesRunningSubagentIDs(t *testing.T) {
 }
 
 func TestProbeRunningSubagent(t *testing.T) { fuzzScenarioStatusProber_DecodesRunningSubagentIDs(t) }
+
+func TestProbeSubagentTypeFallback(t *testing.T) {
+	payload := `{"session_id":"parent","state":"idle","detailed":{"jobs":[{"type":"delegate","status":"running","transcript_ref":"local:child-type"}]}}`
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(payload)), Header: make(http.Header)}, nil
+	})}
+	result := (&StatusProber{client: client}).Probe(rendezvous.Entry{Address: "status.test"})
+	if !reflect.DeepEqual(result.RunningSubagentIDs, []string{"child-type"}) {
+		t.Fatalf("type fallback running subagent IDs = %v, want [child-type]", result.RunningSubagentIDs)
+	}
+}
