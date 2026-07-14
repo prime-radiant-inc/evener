@@ -216,6 +216,11 @@ func gitBinaryMainRootStrict(env ExecutionEnvironment, cwd string) (string, bool
 	if candidate != "" && isLocalEnv(env) && identifier.GitEntryResolvesToCommon(candidate, common) {
 		return candidate, true, nil
 	}
+	commonPath := common
+	if !filepath.IsAbs(commonPath) {
+		commonPath = filepath.Join(cwd, commonPath)
+	}
+	commonPath = filepath.Clean(commonPath)
 
 	top, err := execGitOutput(env, cwd, "git rev-parse --show-toplevel")
 	if err != nil {
@@ -224,13 +229,16 @@ func gitBinaryMainRootStrict(env ExecutionEnvironment, cwd string) (string, bool
 	if !pathContains(top, cwd, isLocalEnv(env)) {
 		return "", true, fmt.Errorf("Git checkout root %q does not contain %q", top, cwd)
 	}
-	if isSubmoduleGitDirShape(common) {
+	if isSubmoduleGitDirShape(commonPath) {
 		return resolveCleanForEnv(env, top), true, nil
 	}
-	if !isLocalEnv(env) && candidate != "" && env.FileExists(filepath.Join(candidate, ".git")) && filepath.Clean(common) == filepath.Join(filepath.Clean(candidate), ".git") {
+	if !isLocalEnv(env) {
+		if candidate == "" || !env.FileExists(filepath.Join(candidate, ".git")) || commonPath != filepath.Join(filepath.Clean(candidate), ".git") {
+			return "", true, fmt.Errorf("Git common directory %q does not identify a validated checkout root", common)
+		}
 		return filepath.Clean(candidate), true, nil
 	}
-	if candidate == "" || (isLocalEnv(env) && !pathContains(candidate, top, true)) {
+	if candidate == "" || !pathContains(candidate, top, true) {
 		return "", true, fmt.Errorf("Git common directory %q does not identify checkout root %q", common, top)
 	}
 	return resolveCleanForEnv(env, candidate), true, nil

@@ -411,6 +411,7 @@ func TestResolveMainRepoRoot_PrimaryGitBinaryCandidateSucceeds(t *testing.T) {
 
 	env := &fakeExecEnv{
 		workDir: cwd,
+		exists:  func(path string) bool { return path == filepath.Join(candidate, ".git") },
 		exec: func(_ context.Context, command string, _ int, _ string, _ map[string]string) (ExecResult, error) {
 			if strings.Contains(command, "--git-common-dir") {
 				return ExecResult{Stdout: common, ExitCode: 0}, nil

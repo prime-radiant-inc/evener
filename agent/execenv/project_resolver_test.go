@@ -97,6 +97,50 @@ func TestResolveMainRepoRootStrict_GenericDefiniteNonGit(t *testing.T) {
 	}
 }
 
+func TestResolveMainRepoRootStrict_GenericBogusCandidateRejected(t *testing.T) {
+	cwd := t.TempDir()
+	bogus := filepath.Join(t.TempDir(), "bogus")
+	env := &fakeExecEnv{workDir: cwd, exec: func(_ context.Context, command string, _ int, _ string, _ map[string]string) (ExecResult, error) {
+		switch command {
+		case "git rev-parse --git-common-dir":
+			return ExecResult{Stdout: filepath.Join(bogus, ".git") + "\n", ExitCode: 0}, nil
+		case "git rev-parse --show-toplevel":
+			return ExecResult{Stdout: cwd + "\n", ExitCode: 0}, nil
+		default:
+			t.Fatalf("unexpected command %q", command)
+			return ExecResult{}, nil
+		}
+	}}
+	root, isGit, err := resolveMainRepoRoot(env, cwd)
+	if root != "" || !isGit || err == nil {
+		t.Fatalf("bogus generic candidate = (%q, %v, %v), want (empty, true, error)", root, isGit, err)
+	}
+}
+
+func TestResolveMainRepoRootStrict_GenericRelativeCommonDir(t *testing.T) {
+	cwd := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwd, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := &fakeExecEnv{workDir: cwd, exists: func(path string) bool {
+		return path == filepath.Join(cwd, ".git")
+	}, exec: func(_ context.Context, command string, _ int, _ string, _ map[string]string) (ExecResult, error) {
+		switch command {
+		case "git rev-parse --git-common-dir":
+			return ExecResult{Stdout: ".git\n", ExitCode: 0}, nil
+		case "git rev-parse --show-toplevel":
+			return ExecResult{Stdout: cwd + "\n", ExitCode: 0}, nil
+		default:
+			t.Fatalf("unexpected command %q", command)
+			return ExecResult{}, nil
+		}
+	}}
+	root, isGit, err := resolveMainRepoRoot(env, cwd)
+	if err != nil || !isGit || root != cwd {
+		t.Fatalf("relative common generic = (%q, %v, %v), want (%q, true, nil)", root, isGit, err, cwd)
+	}
+}
+
 func TestProjectResolver_LocalRepository(t *testing.T) {
 	repo := t.TempDir()
 	gitInit(t, repo)

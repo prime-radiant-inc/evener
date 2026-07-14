@@ -172,8 +172,8 @@ func parseGitdirPointer(content string) (string, bool) {
 // into a candidate main repo root: the parent of the common .git dir. The output
 // is relative from a main checkout but absolute from a linked worktree, so cwd
 // is joined only for the relative case (joining an absolute common with cwd
-// would mangle it into "<cwd>/<abs>"). Symlinks in the result are resolved
-// best-effort.
+// would mangle it into "<cwd>/<abs>"). The shared helper performs lexical
+// normalization only; local callers validate symlinks separately.
 //
 // Compatibility wrapper around the shared identifier helper.
 func mainRootCandidateFromCommonDir(cwd, common string) string {
