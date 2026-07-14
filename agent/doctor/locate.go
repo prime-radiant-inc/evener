@@ -26,7 +26,7 @@ type bucket struct {
 //
 // stateBase is the already-resolved state root (the cmd layer applies the
 // --state-dir / SERF_STATE_DIR / XDG precedence). Locate auto-detects whether
-// stateBase is an XDG state home (it contains serf/projects/<hash> buckets) or
+// stateBase is an XDG state home (it contains serf/projects/<project-id> buckets) or
 // is itself a single bucket (an override / E2E scratch root with sessions/
 // directly under it). It resolves by globbing the on-disk layout — it never
 // recomputes a project ID.
@@ -46,7 +46,7 @@ func Locate(stateBase, selector string) (Paths, error) {
 	return locateAcrossBuckets(stateBase, buckets, sel)
 }
 
-// locateInBucket resolves a proj:<hash>:<sid> selector to its named bucket.
+// locateInBucket resolves a proj:<project-id>:<sid> selector to its named bucket.
 func locateInBucket(stateBase string, buckets []bucket, sel selector) (Paths, error) {
 	for _, b := range buckets {
 		if b.projectID == sel.projectID {
@@ -80,13 +80,13 @@ func locateAcrossBuckets(stateBase string, buckets []bucket, sel selector) (Path
 	case 1:
 		return pathsFor(found[0], sel.sid), nil
 	default:
-		hashes := make([]string, 0, len(found))
+		projectIDs := make([]string, 0, len(found))
 		for _, b := range found {
-			hashes = append(hashes, b.projectID)
+			projectIDs = append(projectIDs, b.projectID)
 		}
-		sort.Strings(hashes)
-		return Paths{}, fmt.Errorf("session %s is ambiguous across %d buckets: %s (disambiguate with proj:<hash>:%s)",
-			sel.sid, len(found), strings.Join(hashes, ", "), sel.sid)
+		sort.Strings(projectIDs)
+		return Paths{}, fmt.Errorf("session %s is ambiguous across %d buckets: %s (disambiguate with proj:<project-id>:%s)",
+			sel.sid, len(found), strings.Join(projectIDs, ", "), sel.sid)
 	}
 }
 
@@ -132,8 +132,8 @@ func pathsFor(b bucket, sid string) Paths {
 	}
 }
 
-// refFor builds the transcript ref: proj:<hash>:<sid> when the bucket is hashed,
-// else local:<sid> for an override / scratch root.
+// refFor builds the transcript ref: proj:<project-id>:<sid> for a project bucket,
+// or local:<sid> for an override / scratch root.
 func refFor(projectID, sid string) string {
 	if projectID == "" {
 		return "local:" + sid

@@ -15,13 +15,13 @@ type selector struct {
 }
 
 // parseSelector parses a session selector in the dialect read_session_transcript
-// accepts: local:<sid>, proj:<hash>:<sid>, or a bare <sid>. The empty selector
+// accepts: local:<sid>, proj:<project-id>:<sid>, or a bare <sid>. The empty selector
 // and "current" are rejected: a standalone forensic tool has no current session,
 // so the caller must name one. All tokens are validated to be bare identifiers
 // (no path separators or dots) to reject traversal.
 func parseSelector(s string) (selector, error) {
 	if s == "" || s == "current" {
-		return selector{}, fmt.Errorf("no session selector: pass a session id, local:<id>, or proj:<hash>:<id> (a standalone forensic tool has no %q session)", "current")
+		return selector{}, fmt.Errorf("no session selector: pass a session id, local:<id>, or proj:<project-id>:<id> (a standalone forensic tool has no %q session)", "current")
 	}
 	if strings.HasPrefix(s, "local:") {
 		sid := strings.TrimPrefix(s, "local:")
@@ -34,7 +34,7 @@ func parseSelector(s string) (selector, error) {
 		rest := strings.TrimPrefix(s, "proj:")
 		projectID, sid, ok := strings.Cut(rest, ":")
 		if !ok {
-			return selector{}, fmt.Errorf("malformed proj ref %q (want proj:<hash>:<id>)", s)
+			return selector{}, fmt.Errorf("malformed proj ref %q (want proj:<project-id>:<id>)", s)
 		}
 		if identifier.ValidateProjectID(projectID) != nil || identifier.ValidateSessionID(sid) != nil {
 			return selector{}, fmt.Errorf("invalid token in selector %q", s)
