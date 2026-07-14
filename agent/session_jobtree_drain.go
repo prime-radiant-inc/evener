@@ -2,10 +2,25 @@ package agent
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
+
+// drainStallTimeout bounds how long the one-shot drain will keep blocking on a
+// subtree that is outstanding but has NO live or deliverable component anywhere
+// (a genuine stall — see drainSubtreeIsStalled). It is a defense-in-depth
+// backstop for an unknown future stranding class: in a correct build the drain
+// self-heals (rematerializeDurablePendings) and this predicate is never true for
+// long, so the timeout only bites a regression. It is deliberately GENEROUS —
+// a stalled tree owes no live work, so waiting two minutes before giving up
+// costs nothing but guarantees an otherwise-forever hang cannot survive it.
+// A package var (not a const) so tests override and restore it without wall
+// time, matching laneClosePassBudget in jobs.go.
+var drainStallTimeout = 2 * time.Minute
 
 // drainRecheckInterval bounds how long DrainJobTree blocks between explicit
 // completion wakes. The outstanding count is race-free, so a re-check can never
@@ -40,18 +55,28 @@ const drainRecheckInterval = 250 * time.Millisecond
 // consistent order with no inverse. A store read error is returned, never
 // folded into a zero count: an unreadable store is not quiescence.
 func (jm *jobManager) outstandingDelegateCount() (int, error) {
+	ids, err := jm.outstandingDelegateIDs()
+	return len(ids), err
+}
+
+// outstandingDelegateIDs lists the job ids outstandingDelegateCount counts: this
+// session's own delegates still in the running map, plus its own delegates
+// recorded terminal with a NotifyPending owner notification. The stall watchdog
+// uses the ids to name the stuck delegate(s) in its warning; the count is just
+// len() of this list, so the two can never disagree.
+func (jm *jobManager) outstandingDelegateIDs() ([]string, error) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	recs, err := jm.store.Load()
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	counted := make(map[string]bool)
-	n := 0
+	var ids []string
 	for id, run := range jm.running {
 		if run.rec != nil && run.rec.Type == jobstore.JobDelegate {
 			counted[id] = true
-			n++
+			ids = append(ids, id)
 		}
 	}
 	for id, rec := range recs {
@@ -69,10 +94,25 @@ func (jm *jobManager) outstandingDelegateCount() (int, error) {
 			continue
 		}
 		if rec.Type == jobstore.JobDelegate && rec.NotifyState == jobstore.NotifyPending {
-			n++
+			ids = append(ids, id)
 		}
 	}
-	return n, nil
+	return ids, nil
+}
+
+// hasRunningDelegate reports whether any delegate job is still in the running
+// map — a delegate that has not finalized is LIVE work (a long build, a slow
+// tool), never a stall. The drain stall watchdog treats a running delegate
+// anywhere in the subtree as a reason to keep waiting.
+func (jm *jobManager) hasRunningDelegate() bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	for _, run := range jm.running {
+		if run.rec != nil && run.rec.Type == jobstore.JobDelegate {
+			return true
+		}
+	}
+	return false
 }
 
 // treeHasOutstandingWork reports whether this session or any live descendant in
@@ -129,6 +169,99 @@ func (s *Session) treeHasOutstandingWork() (bool, error) {
 	return false, nil
 }
 
+// drainSubtreeIsStalled reports whether the subtree is GENUINELY WEDGED: it
+// still owes drain work (treeHasOutstandingWork) yet contains NO live or
+// deliverable component anywhere. This is the only condition under which the
+// stall watchdog is allowed to give up, and it is deliberately narrow so it can
+// never cut legitimate work.
+//
+// The four live/deliverable components — any of them anywhere in the subtree
+// means NOT stalled — are:
+//   - a delegate still in some jm.running (hasRunningDelegate): live work such
+//     as a long build produces no drain progress for minutes yet is not wedged;
+//   - a driving child (sub.driving): a drive turn is in flight;
+//   - a pending caller-targeted watch send (hasPendingWatchSends): deliverable;
+//   - a queued notification at any level (peekNotifications > 0): deliverable now.
+//
+// When outstanding is true but none of those exist, the outstanding work is
+// composed entirely of terminal-but-undelivered notifications that the
+// drive/recheck machinery is not converting — a stranded wedge. It walks the
+// same liveDirectSubagents / childStopGated path treeHasOutstandingWork does,
+// skipping stop-gated children identically (they are never driven, so their
+// leftover state is not a stall the drain can act on).
+func (s *Session) drainSubtreeIsStalled() (bool, error) {
+	outstanding, err := s.treeHasOutstandingWork()
+	if err != nil {
+		return false, err
+	}
+	if !outstanding {
+		return false, nil
+	}
+	live, err := s.subtreeHasLiveComponent()
+	if err != nil {
+		return false, err
+	}
+	return !live, nil
+}
+
+// subtreeHasLiveComponent reports whether any live or deliverable drain
+// component (see drainSubtreeIsStalled) exists in this session or any live,
+// non-stop-gated descendant.
+func (s *Session) subtreeHasLiveComponent() (bool, error) {
+	if s.jobManager != nil {
+		if s.jobManager.hasRunningDelegate() || s.jobManager.hasPendingWatchSends() {
+			return true, nil
+		}
+	}
+	if s.peekNotifications() > 0 {
+		return true, nil
+	}
+	for _, sub := range s.liveDirectSubagents() {
+		sub.mu.Lock()
+		driving := sub.driving
+		child := sub.sess
+		sub.mu.Unlock()
+		if child != nil && s.childStopGated(child.id) {
+			continue
+		}
+		if driving {
+			return true, nil
+		}
+		if child != nil {
+			live, err := child.subtreeHasLiveComponent()
+			if err != nil {
+				return false, err
+			}
+			if live {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// subtreeOutstandingDelegateIDs collects the outstanding delegate job ids across
+// this session and every live, non-stop-gated descendant, so a stall warning can
+// name the stuck delegate(s). It walks the same path as treeHasOutstandingWork.
+func (s *Session) subtreeOutstandingDelegateIDs() []string {
+	var ids []string
+	if s.jobManager != nil {
+		if got, err := s.jobManager.outstandingDelegateIDs(); err == nil {
+			ids = append(ids, got...)
+		}
+	}
+	for _, sub := range s.liveDirectSubagents() {
+		sub.mu.Lock()
+		child := sub.sess
+		sub.mu.Unlock()
+		if child == nil || s.childStopGated(child.id) {
+			continue
+		}
+		ids = append(ids, child.subtreeOutstandingDelegateIDs()...)
+	}
+	return ids
+}
+
 // DrainJobTree keeps re-driving the coordinator on delegate completions until no
 // delegate anywhere in the subtree still owes a notification turn, then returns
 // the last notification turn's result (empty when no drain turn ran). It is the
@@ -164,6 +297,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 	defer s.SetNotifyFunc(nil)
 
 	lastResult := ""
+	var stallStart time.Time
 	for {
 		// Deliver pending watch sends and kick drive-down at EVERY level of the
 		// subtree, not just direct children: outstanding work isolated in a
@@ -188,6 +322,10 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			if res != "" {
 				lastResult = res
 			}
+			// A delivered notification is real drain progress: reset the stall
+			// clock so the watchdog measures only continuous stall, never a stall
+			// episode punctuated by deliveries.
+			stallStart = time.Time{}
 			continue
 		}
 		outstanding, err := s.treeHasOutstandingWork()
@@ -197,6 +335,34 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		if !outstanding {
 			// Nothing pending and nothing outstanding anywhere in the subtree.
 			return lastResult, nil
+		}
+		// Defense-in-depth stall watchdog. Outstanding work with NO live or
+		// deliverable component anywhere is a genuine wedge (drainSubtreeIsStalled);
+		// track how long that condition holds continuously on the injected clock and
+		// give up once it exceeds drainStallTimeout so Close() can proceed. Live work
+		// (a running delegate, a driving child, a pending watch send, a queued
+		// notification) resets the stall clock, so legitimate long work is never cut.
+		stalled, err := s.drainSubtreeIsStalled()
+		if err != nil {
+			return lastResult, err
+		}
+		if !stalled {
+			stallStart = time.Time{}
+		} else {
+			now := s.sclock().Now()
+			if stallStart.IsZero() {
+				stallStart = now
+			} else if now.Sub(stallStart) >= drainStallTimeout {
+				// The drain is wedged on undelivered work the machinery is not
+				// converting. Warn (naming the stuck delegate(s)) and return the last
+				// result with nil error so cmd/serf/run.go prints the coordinator's
+				// last answer and proceeds to Close(), rather than aborting the run.
+				ids := s.subtreeOutstandingDelegateIDs()
+				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+					"job-tree drain stalled for %s with no live work; giving up so shutdown can proceed (stuck delegates: %s)",
+					drainStallTimeout, strings.Join(ids, ", "))})
+				return lastResult, nil
+			}
 		}
 		// Work is still in flight in the subtree but this rail has not been
 		// signalled yet. Block until a completion wakes us, the periodic re-check
