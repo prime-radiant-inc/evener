@@ -221,11 +221,18 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 // would otherwise hold the drain open forever: counted as outstanding, but never
 // materialized for any turn to deliver.
 //
-// It mirrors armPendingTerminalNotifications' re-enqueue but appends no event and
-// re-enqueues nothing that is already queued (peek>0) or already injected into
-// history, so repeated drain kicks stay idempotent and never pile duplicates. The
-// owned-record filter matches outstandingDelegateCount exactly, so it re-arms
-// precisely the records that hold this session's drain open.
+// It re-enqueues exactly the records outstandingDelegateCount holds the drain
+// open on (same owned-record filter), so counted == re-materializable and no
+// stranded pending is left behind. Like armPendingTerminalNotifications it does
+// NOT skip an already-injected record: an owned pending whose <job-notification>
+// block is already in history but was never marked Delivered (e.g. a crash
+// between appendTurnDurably and markJobNotificationsDelivered, or an interrupted
+// deferred restore) still counts as outstanding, and re-enqueuing it settles it —
+// the delivery path routes an already-injected record to injectedJobNotifs, which
+// marks it Delivered WITHOUT re-appending to history. Unlike arm it appends no
+// event, and the empty-queue guard keeps repeated drain kicks idempotent: once a
+// re-enqueued notification is delivered the record is Delivered and no longer
+// re-materializes.
 func (s *Session) rematerializeDurablePendings() error {
 	if s == nil || s.jobManager == nil {
 		return nil
@@ -248,9 +255,6 @@ func (s *Session) rematerializeDurablePendings() error {
 			continue
 		}
 		if rec.NotifyState != jobstore.NotifyPending || rec.TerminalGen == "" {
-			continue
-		}
-		if s.jobNotificationAlreadyInjected(rec.JobID) {
 			continue
 		}
 		if jm.enqueue != nil {

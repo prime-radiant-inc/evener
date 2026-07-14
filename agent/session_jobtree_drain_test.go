@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -286,6 +288,75 @@ func TestDrainSettlesRootDurableOnlyPending(t *testing.T) {
 	if p := sess.peekNotifications(); p != 0 {
 		t.Fatalf("expected 0 pending notifications after drain, got %d", p)
 	}
+}
+
+// TestDrainSettlesAlreadyInjectedDurablePending is the adversarial-review
+// regression for kata h8mq: an owned NotifyPending delegate whose
+// <job-notification> block is ALREADY in history (a crash between
+// appendTurnDurably and markJobNotificationsDelivered left it injected but
+// unmarked) with an empty in-memory queue is still counted outstanding, so the
+// drain must re-materialize it. The already-injected record settles through the
+// injectedJobNotifs path, which marks it Delivered WITHOUT re-appending to
+// history — so the drain settles and the block is not duplicated.
+func TestDrainSettlesAlreadyInjectedDurablePending(t *testing.T) {
+	t.Parallel()
+	steps := make([]func(llm.Request) llm.Response, 6)
+	for i := range steps {
+		steps[i] = func(llm.Request) llm.Response { return finalResponse("ack") }
+	}
+	sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{NoProjectPrompts: true}))
+	jm := sess.jobManager
+
+	started := frozenTestTime.Add(-time.Second)
+	ended := frozenTestTime
+	for _, ev := range []jobstore.Event{
+		{Kind: jobstore.EventJobStarted, TS: started, JobID: "del-r", Type: jobstore.JobDelegate, OwnerSessionID: sess.ID(), VisibleToSession: sess.ID(), StartedAt: &started},
+		{Kind: jobstore.EventJobFinished, TS: ended, JobID: "del-r", Status: jobstore.StatusCompleted, Reason: "communicated", EndedAt: &ended, TerminalGen: "rgen"},
+		{Kind: jobstore.EventJobNotificationPending, TS: ended, JobID: "del-r", TerminalGen: "rgen"},
+	} {
+		if err := jm.appendEvent(ev); err != nil {
+			t.Fatalf("append %s: %v", ev.Kind, err)
+		}
+	}
+
+	// The notification block is already in history but was never marked Delivered.
+	injected := `<job-notification job_id="del-r" status="completed">\ndelegate del-r completed\n</job-notification>`
+	sess.appendTurn(schema.TurnSteering, llm.User(injected))
+	if !sess.jobNotificationAlreadyInjected("del-r") {
+		t.Fatal("precondition: del-r must be detected as already injected in history")
+	}
+	if p := sess.peekNotifications(); p != 0 {
+		t.Fatalf("precondition: expected empty in-memory queue, got %d", p)
+	}
+	if n, err := jm.outstandingDelegateCount(); err != nil || n != 1 {
+		t.Fatalf("precondition: expected 1 outstanding, got %d (err %v)", n, err)
+	}
+
+	blocksBefore := countHistoryNeedle(sess, `job_id="del-r"`)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.DrainJobTree(ctx); err != nil {
+		t.Fatalf("DrainJobTree wedged on an already-injected durable pending: %v", err)
+	}
+	if n, err := jm.outstandingDelegateCount(); err != nil || n != 0 {
+		t.Fatalf("expected 0 outstanding after drain, got %d (err %v)", n, err)
+	}
+	if blocksAfter := countHistoryNeedle(sess, `job_id="del-r"`); blocksAfter != blocksBefore {
+		t.Fatalf("already-injected block must not be re-appended: had %d, now %d", blocksBefore, blocksAfter)
+	}
+}
+
+func countHistoryNeedle(s *Session, needle string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, turn := range s.history {
+		if strings.Contains(turn.Message.Text(), needle) {
+			n++
+		}
+	}
+	return n
 }
 
 // TestDrainSettlesChildDurableOnlyPending is the recursive (isolation-delegate)
