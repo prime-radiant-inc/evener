@@ -2,16 +2,16 @@
 
 **Date:** 2026-07-13
 **Status:** Approved
+**Revised:** 2026-07-14 — retain retries after bounded response-header timeouts
 
 ## Problem
 
-Serf now bounds the wait for streaming response headers, but the resulting
-timeout is classified like a retryable timeout. The session retry policy can
-therefore submit the same model-generation request again after the first POST
-was fully written and the provider spent ten minutes processing it. That is an
-ambiguous outcome: the provider may have accepted the generation even though
-Serf never received its headers. Replaying it can multiply a single stall into
-many ten-minute waits and can create duplicate generations.
+Serf must bound the wait for streaming response headers so one completely stuck
+provider response cannot hang an attempt forever. The timeout happens after the
+POST may have been fully written, so retrying is ambiguous: the provider may be
+processing the generation even though Serf received no headers. Jesse accepts
+that duplicate-generation risk and wants the existing retry policy to recover
+autonomously from a stuck attempt.
 
 Session `01KXF0CAQQYX73BMT40NJKPXZN` establishes the useful bound and the
 failure mode. One private Codex request returned usable output after about
@@ -31,10 +31,10 @@ that both symptoms share one cause.
 ## Goals
 
 - Preserve one ten-minute response-header window for a streaming model call.
-- Never automatically replay a model-generation POST after it was fully written
-  and then timed out waiting for response headers.
-- Preserve retries for failures known to be safe under the existing contract,
-  including HTTP 429 and retryable 5xx responses.
+- Cancel each attempt that produces no response headers within that window.
+- Retry a response-header timeout under the existing retry policy, including
+  its default ten-retry budget and exponential backoff.
+- Preserve retries for HTTP 429 and retryable 5xx responses.
 - Preserve caller cancellation, connection timeout, total request timeout, and
   per-stream-read timeout semantics.
 - Keep provider waits interruptible and return the session to a truthful
@@ -48,7 +48,8 @@ that both symptoms share one cause.
 
 - Adding public Responses API background mode to the private Codex endpoint.
 - Shortening the ten-minute response-header window without new latency data.
-- Removing ordinary retries or changing their backoff policy.
+- Adding a separate whole-chain deadline or changing the retry budget/backoff.
+- Preventing duplicate generations after an ambiguous response-header timeout.
 - Preempting a healthy model call when a child job completes.
 - Treating an `ended` label or a `Working` label as sufficient evidence of the
   faulty layer.
@@ -59,9 +60,9 @@ that both symptoms share one cause.
 ### Decision
 
 Keep `AdapterTimeout.Request` as the streaming response-header timeout described
-by the existing streaming timeout design. Change only the classification of the
-specific failure that occurs after the request was written and before response
-headers arrived.
+by the existing streaming timeout design. Preserve the distinct classification
+of the failure that occurs after the request was written and before response
+headers arrived, but make that timeout retryable.
 
 The standard HTTP transport wrapper will observe the request lifecycle with
 `httptrace`:
@@ -78,8 +79,8 @@ context deadline remains caller-owned because its context is no longer live at
 classification time. An opaque injected `RoundTripper` remains authoritative,
 as in the existing timeout contract.
 
-The response-header timeout is an `llm` timeout error but is not retryable. It
-is intentionally distinct from:
+The response-header timeout is a retryable `llm` timeout error. It remains a
+distinct error type for phase-aware diagnostics and caller-deadline protection:
 
 | Failure | Existing retry behavior |
 |---|---|
@@ -88,19 +89,27 @@ is intentionally distinct from:
 | HTTP 408 response | Retry |
 | HTTP 429 response | Retry |
 | Retryable HTTP 5xx response | Retry |
-| Written request times out before response headers | Do not retry |
+| Written request times out before response headers | Retry |
 | Stream fails after headers | Preserve current partial-stream behavior |
 
-`WrapContextError` must preserve an already-classified `llm.Error` rather than
-turning the new response-header timeout back into the generic retryable timeout.
-This keeps retry policy centralized in the existing `llm.Error` contract.
+`WrapContextError` must preserve an already-classified response-header timeout
+rather than losing its phase information. Retry policy remains centralized in
+the existing `llm.Error` contract.
+
+There is deliberately no additional deadline for the full retry chain. With the
+default policy, a permanently stuck provider may consume eleven ten-minute
+attempts plus exponential backoff and connection setup (roughly two hours).
+Each attempt still makes bounded progress by terminating, and caller
+cancellation stops the active attempt, backoff, and remaining retries
+immediately.
 
 ### Session outcome
 
-When the timeout surfaces, the current model attempt ends once. The normal
-session error boundary records it, clears the active processing state, and
-leaves the session interruptible throughout the wait. No special session-loop
-retry or status workaround is added.
+When the timeout surfaces, the current model attempt ends and the shared stream
+retry loop schedules the next attempt under `RetryPolicy`. If an attempt
+succeeds, the turn continues normally. If all retries fail, the normal session
+error boundary records the final timeout and clears active processing state. No
+special session-loop retry or status workaround is added.
 
 ## Phase 2: Status Integrity
 
@@ -181,15 +190,16 @@ network calls, arbitrary long sleeps, or large rendered-string assertions.
 
 Phase 1 must prove:
 
-1. A streaming POST received by a local server and held before headers times out
-   once and returns a non-retryable timeout error.
-2. The generation retry loop submits exactly one request for that failure.
+1. A streaming POST received by a local server and held before headers is
+   canceled at its per-attempt deadline and returns a retryable timeout error.
+2. The generation retry loop submits the initial request plus the configured
+   number of retries, without waiting for real ten-minute intervals in tests.
 3. A response-header timeout remains identifiable through error wrapping and
    still unwraps to the underlying timeout.
 4. HTTP 408, 429, and retryable 5xx behavior remains retryable.
 5. A healthy stream is not subject to the response-header timer after headers.
-6. Caller cancellation and total-budget deadlines retain their existing types
-   and do not become response-header timeouts.
+6. Caller cancellation and total-budget deadlines retain their existing types,
+   stop the retry chain, and do not become response-header timeouts.
 
 Phase 2 must prove the contracts at the first faulty boundary and at one
 end-to-end projection boundary:
