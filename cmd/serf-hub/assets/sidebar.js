@@ -473,6 +473,8 @@
       row.setAttribute("data-subagent-depth", String((n.__ancestry || []).length + 1));
       row.style.paddingLeft = "calc(var(--space-4) * " + ((n.__ancestry || []).length + 2) + ")";
       bindChildActivation(row, n);
+    } else {
+      row.__childDescriptor = null;
     }
     return row;
   }
@@ -483,9 +485,15 @@
     if (n.__inactiveRows) { patchInactiveRows(el, n); return; }
     if (n.__project) patchProjectHeader(el, n.__project); else patchRow(el, n);
     if (n.__child) {
+      el.classList.add("subagent-row");
       el.setAttribute("data-subagent-depth", String((n.__ancestry || []).length + 1));
       el.style.paddingLeft = "calc(var(--space-4) * " + ((n.__ancestry || []).length + 2) + ")";
-      el.__childDescriptor = n;
+      bindChildActivation(el, n);
+    } else {
+      el.__childDescriptor = null;
+      el.classList.remove("subagent-row");
+      el.removeAttribute("data-subagent-depth");
+      el.style.removeProperty("padding-left");
     }
   }
 
@@ -494,20 +502,29 @@
   }
   function bindChildActivation(row, n) {
     row.__childDescriptor = n;
+    if (row.__childActivationBound) return;
+    row.__childActivationBound = true;
     row.addEventListener("click", function (e) {
       var descriptor = row.__childDescriptor;
       if (!descriptor || !descriptor.__child || !window.SerfPanes || typeof window.SerfPanes.openAfter !== "function") return;
       e.preventDefault();
       var chain = (descriptor.__ancestry || []).concat([descriptor]);
       var previousHref = null;
-      var openHrefs = typeof window.SerfPanes.openHrefs === "function" ? window.SerfPanes.openHrefs() : null;
-      chain.forEach(function (ancestor) {
+      var openHrefs = typeof window.SerfPanes.openHrefs === "function" ? window.SerfPanes.openHrefs() : [];
+      for (var i = 0; i < chain.length; i++) {
+        var ancestor = chain[i];
         var href = childThreadHref(ancestor);
         var isTarget = ancestor === descriptor;
-        var alreadyOpen = openHrefs && openHrefs.indexOf(href) !== -1;
-        if (isTarget || !alreadyOpen) window.SerfPanes.openAfter(href, ancestor.title, previousHref);
+        var alreadyOpen = openHrefs.indexOf(href) !== -1;
+        if (!alreadyOpen) {
+          var opened = window.SerfPanes.openAfter(href, ancestor.title, previousHref);
+          if (!opened) break;
+          openHrefs = typeof window.SerfPanes.openHrefs === "function" ? window.SerfPanes.openHrefs() : openHrefs.concat([href]);
+        } else if (isTarget && typeof window.SerfPanes.openAfter === "function") {
+          window.SerfPanes.openAfter(href, ancestor.title, previousHref);
+        }
         previousHref = href;
-      });
+      }
     });
   }
 

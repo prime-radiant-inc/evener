@@ -44,11 +44,12 @@
   }
 
   function paneFor(href) {
+    href = normalizePaneHref(href);
     var r = region();
     if (!r) return null;
     var frames = r.querySelectorAll(".pane-frame");
     for (var i = 0; i < frames.length; i++) {
-      if (frames[i].getAttribute("src") === href) return frames[i].closest(".pane");
+      if (normalizePaneHref(frames[i].getAttribute("src")) === href) return frames[i].closest(".pane");
     }
     return null;
   }
@@ -138,18 +139,19 @@
     }
   }
 
-  function openFromChild(source, href, title) {
+  function openFromChild(source, href, title, afterHref) {
     href = normalizePaneHref(href);
+    afterHref = afterHref == null ? null : normalizePaneHref(afterHref);
     if (!isKnownPaneSource(source)) return null;
     if (!isPaneSafeHref(href)) return null;
-    return open(href, String(title || href));
+    return afterHref == null ? open(href, String(title || href)) : openAfter(href, String(title || href), afterHref);
   }
 
   function onMessage(e) {
     if (!e || e.origin !== window.location.origin) return;
     var data = e.data || {};
     if (data.type !== "serf:open-beside") return;
-    openFromChild(e.source, data.href, data.title);
+    openFromChild(e.source, data.href, data.title, data.afterHref);
   }
 
   function showRegion(show) {
@@ -210,8 +212,8 @@
       else r.appendChild(pane);
     } else {
       var parent = paneFor(normalizePaneHref(afterHref));
-      if (parent) r.insertBefore(pane, parent.nextSibling);
-      else r.appendChild(pane);
+      if (!parent) return null;
+      r.insertBefore(pane, parent.nextSibling);
     }
     showRegion(true);
     applyPaneMinWidth();

@@ -38,6 +38,7 @@ const P = dom.window.SerfPanes;
   if (hrefs().filter(function (h) { return h === "/thread/grandchild"; }).length !== 1) throw new Error("existing href must not duplicate");
   if (!frameFocus) throw new Error("existing href must focus its iframe");
   if (hrefs().join("|") !== "/thread/sibling|/thread/child|/thread/grandchild") throw new Error("existing href must not reorder panes");
+  if (POrder.openAfter("/thread/orphan", "orphan", "/thread/missing") !== null || hrefs().indexOf("/thread/orphan") !== -1) throw new Error("missing non-null parent must fail closed");
   var storedOrder = JSON.parse(domOrder.window.localStorage.getItem("serf-hub.panes") || "[]").map(function (p) { return p.href; });
   if (storedOrder.join("|") !== hrefs().join("|")) throw new Error("localStorage order must match DOM order");
   var urlOrder = new domOrder.window.URLSearchParams(domOrder.window.location.search).getAll("pane");
@@ -46,6 +47,22 @@ const P = dom.window.SerfPanes;
   if (hrefs().length !== POrder.MAX_SIDE_PANES) throw new Error("openAfter must enforce MAX_SIDE_PANES");
   console.log("test-panes parent-relative insertion: ok");
   global.window = savedWindow; global.document = savedDocument;
+}());
+
+// Equivalent /s and /thread hrefs identify one pane; message activation keeps
+// its parent-relative placement through the host bridge.
+(function () {
+  var domMsg = new JSDOM(`<!DOCTYPE html><body><main id="workspace"></main><div id="pane-splitter"></div><aside id="side-panes"></aside></body>`, { url: "http://localhost/" });
+  global.window = domMsg.window; global.document = domMsg.window.document;
+  eval(fs.readFileSync(path.join(__dirname, "..", "assets", "panes.js"), "utf8"));
+  var PM = domMsg.window.SerfPanes;
+  var parent = PM.open("/s/parent", "parent");
+  var source = parent.querySelector(".pane-frame").contentWindow;
+  PM.open("/thread/child", "child");
+  if (PM.open("/s/parent", "parent") !== parent || PM.openHrefs().length !== 2) throw new Error("equivalent pane hrefs must not duplicate");
+  domMsg.window.dispatchEvent(new domMsg.window.MessageEvent("message", { origin: "http://localhost", source: source, data: { type: "serf:open-beside", href: "/s/grand", title: "grand", afterHref: "/s/parent" } }));
+  if (PM.openHrefs().join("|") !== "/thread/parent|/thread/grand|/thread/child") throw new Error("host message must preserve normalized afterHref placement: " + PM.openHrefs().join("|"));
+  global.window = dom.window; global.document = dom.window.document;
 }());
 
 // open one pane

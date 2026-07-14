@@ -50,6 +50,7 @@ const { w, posts } = boot();
 const tree = treeWithChildren();
 w.SerfPanes = { calls: [], openAfter: function (href, title, afterHref) {
   this.calls.push({ href, title, afterHref });
+  return {};
 } };
 w.SerfSidebar.renderTree(tree);
 const mainRow = w.document.querySelector('[data-row-id="project:p1:local:MAIN"]');
@@ -88,6 +89,28 @@ if (w.SerfPanes.calls.length !== 5 ||
     w.SerfPanes.calls[4].href !== "/thread/local%3AGRAND-IDLE" || w.SerfPanes.calls[4].afterHref !== "/thread/local%3ACHILD-RUNNING") {
   throw new Error("nested child activation must use source-qualified parent-to-child calls: " + JSON.stringify(w.SerfPanes.calls));
 }
+// Keyed rows must retain identity while transitioning child -> ordinary and
+// ordinary -> child; only the current descriptor controls interception.
+const promoted = w.document.querySelector('[data-row-id="project:p1:local:CHILD-IDLE"]');
+promoted.__identity = true;
+const promotedNode = JSON.parse(JSON.stringify(tree));
+promotedNode.projects[0].sessions[0].children = promotedNode.projects[0].sessions[0].children.filter(function (n) { return n.row_id !== "project:p1:local:CHILD-IDLE"; });
+promotedNode.projects[0].sessions.push({ row_id: "project:p1:local:CHILD-IDLE", ref: "local:CHILD-IDLE", session_id: "CHILD-IDLE", title: "idle retained child", state: "active", kind: "session", tier: "current" });
+w.SerfSidebar.renderTree(promotedNode);
+const promotedAfter = w.document.querySelector('[data-row-id="project:p1:local:CHILD-IDLE"]');
+if (promotedAfter !== promoted || promotedAfter.__identity !== true || promotedAfter.classList.contains("subagent-row") || promotedAfter.getAttribute("data-subagent-depth") !== null) throw new Error("child -> ordinary patch must preserve row identity and clear child stamping");
+const ordinaryTransitionClick = new w.MouseEvent("click", { bubbles: true, cancelable: true });
+promotedAfter.dispatchEvent(ordinaryTransitionClick);
+if (ordinaryTransitionClick.defaultPrevented) throw new Error("demoted row must retain ordinary navigation");
+const demotedNode = JSON.parse(JSON.stringify(tree));
+demotedNode.projects[0].sessions = demotedNode.projects[0].sessions.filter(function (n) { return n.row_id !== "project:p1:local:CHILD-IDLE"; });
+demotedNode.projects[0].sessions[0].children.push({ row_id: "project:p1:local:CHILD-IDLE", ref: "local:CHILD-IDLE", session_id: "CHILD-IDLE", title: "idle retained child", state: "idle", kind: "session", tier: "current" });
+w.SerfSidebar.renderTree(demotedNode);
+const demotedAfter = w.document.querySelector('[data-row-id="project:p1:local:CHILD-IDLE"]');
+if (demotedAfter !== promoted || !demotedAfter.classList.contains("subagent-row")) throw new Error("ordinary -> child patch must preserve identity and child styling");
+const promotedClick = new w.MouseEvent("click", { bubbles: true, cancelable: true });
+demotedAfter.dispatchEvent(promotedClick);
+if (!promotedClick.defaultPrevented) throw new Error("promoted child must intercept activation");
 const mainInactive = w.document.querySelector('[data-row-id="inactive:project:p1:local:MAIN"]');
 if (!mainInactive) throw new Error("main must have an inactive disclosure row");
 if (mainInactive.textContent.indexOf("Inactive subagents (2)") === -1) {
@@ -130,10 +153,11 @@ if (w.localStorage.getItem("serf-hub.sidebar.expanded.inactive:project:p1:local:
   throw new Error("main inactive expansion must persist under inactive:<row_id>");
 }
 const inactiveChild = w.document.querySelector('[data-row-id="project:p1:local:CHILD-ERROR"]');
+w.SerfPanes.calls.length = 0;
 inactiveChild.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
-if (w.SerfPanes.calls.length !== 7 ||
-    w.SerfPanes.calls[5].href !== "/thread/local%3AMAIN" || w.SerfPanes.calls[5].afterHref !== null ||
-    w.SerfPanes.calls[6].href !== "/thread/local%3ACHILD-ERROR" || w.SerfPanes.calls[6].afterHref !== "/thread/local%3AMAIN") {
+if (w.SerfPanes.calls.length !== 2 ||
+    w.SerfPanes.calls[0].href !== "/thread/local%3AMAIN" || w.SerfPanes.calls[0].afterHref !== null ||
+    w.SerfPanes.calls[1].href !== "/thread/local%3ACHILD-ERROR" || w.SerfPanes.calls[1].afterHref !== "/thread/local%3AMAIN") {
   throw new Error("revealed inactive child activation must open ancestry in order: " + JSON.stringify(w.SerfPanes.calls));
 }
 
@@ -168,6 +192,8 @@ if (!stampedRule || (stampedBorder && stampedBorder[1].trim() !== "none") ||
     /\.sb-row\[data-subagent-depth\]\s*::?(?:before|after)/.test(css)) {
   throw new Error("subagent styling must not add a lineage rail or left-edge pseudo stripe");
 }
+running.setAttribute("data-active", "");
+if (!stampedBorderColor || stampedBorderColor[1].trim() !== "transparent") throw new Error("active child must retain transparent left border while selected background remains generic");
 
 // Existing recursive pending overlay and ordinary row navigation remain intact.
 w.SerfSidebar.favorite("local:GRAND-ENDED", true);
