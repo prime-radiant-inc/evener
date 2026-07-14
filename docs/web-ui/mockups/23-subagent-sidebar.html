@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf — Recursive subagent sidebar</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  body { overflow: auto; }
+  .mockup-page { max-width: 1500px; margin: 0 auto; padding: var(--s5); }
+  .mockup-intro { margin-bottom: var(--s5); }
+  .eyebrow { color: var(--accent); font-size: var(--fs-xs); letter-spacing: .08em; text-transform: uppercase; }
+  h1 { margin-top: var(--s2); font-size: clamp(24px, 4vw, 38px); line-height: 1.1; }
+  .mockup-intro > p:last-child { max-width: 660px; margin-top: var(--s3); color: var(--ink-2); font-size: var(--fs-md); }
+  .scenario-bar { display: flex; flex-wrap: wrap; gap: var(--s2); margin-bottom: var(--s4); }
+  .scenario-bar button { padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--r); color: var(--ink-2); }
+  .scenario-bar button[aria-pressed="true"] { border-color: var(--accent); color: var(--ink); background: var(--accent-soft); }
+  .app-frame { display: grid; grid-template-columns: 292px minmax(0, 1fr); min-height: 620px; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; background: var(--bg); }
+  .prototype-sidebar { border-right: 1px solid var(--line); background: var(--bg-1, #101117); padding: var(--s3) var(--s2); overflow: auto; }
+  .sidebar-project { display: flex; align-items: center; gap: var(--s2); padding: 0 var(--s2) var(--s3); color: var(--ink-2); font-size: var(--fs-sm); font-weight: 600; }
+  #session-tree { display: flex; flex-direction: column; gap: 2px; }
+  .session-branch { position: relative; }
+  .session-branch > .session-branch::before { content: ""; position: absolute; left: calc((var(--depth) * 14px) + 7px); top: 0; bottom: 0; width: 1px; background: var(--hair); }
+  .session-row, .inactive-toggle { width: calc(100% - (var(--depth) * 14px)); margin-left: calc(var(--depth) * 14px); }
+  .session-row { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: var(--s2); align-items: center; min-height: 34px; padding: 0 var(--s2); border-radius: var(--r); text-align: left; }
+  .session-row:hover { background: var(--surface); }
+  .session-row[aria-current="true"] { background: var(--surface); box-shadow: inset 2px 0 0 var(--accent); }
+  .session-row:focus-visible, .inactive-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .session-glyph { font-family: var(--mono); font-size: var(--fs-sm); text-align: center; }
+  .session-title { min-width: 0; overflow: hidden; color: var(--ink); font-size: var(--fs-sm); text-overflow: ellipsis; white-space: nowrap; }
+  .session-status { min-width: 0; overflow: hidden; color: var(--ink-3); font-size: var(--fs-xs); text-overflow: ellipsis; white-space: nowrap; }
+  .inactive-group { position: relative; }
+  .inactive-toggle { color: var(--ink-3); font-size: var(--fs-xs); padding: var(--s2); text-align: left; }
+  .inactive-toggle:hover { color: var(--ink-2); }
+  .inactive-region { padding-top: 2px; }
+  [data-tone="live"] { color: var(--accent); }
+  [data-tone="attention"] { color: var(--attention); }
+  [data-tone="error"] { color: var(--error); }
+  [data-tone="done"], [data-tone="neutral"] { color: var(--ink-3); }
+  .pane-strip { min-width: 0; padding: var(--s5); background: var(--bg); }
+  .pane-placeholder { max-width: 600px; padding-top: var(--s4); color: var(--ink-3); }
+  .pane-placeholder strong { display: block; margin-bottom: var(--s2); color: var(--ink-2); }
+  .self-checks { margin-top: var(--s5); padding: var(--s4); border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); }
+  .self-checks h2 { font-size: var(--fs-md); }
+  #self-check-summary { margin-top: var(--s2); color: var(--ink-2); }
+  #self-check-list { display: grid; gap: var(--s1); margin-top: var(--s3); padding-left: var(--s5); color: var(--ink-2); font-size: var(--fs-sm); }
+  #self-check-list .pass { color: var(--success); }
+  #self-check-list .fail { color: var(--error); }
+  @media (max-width: 760px) {
+    .mockup-page { padding: var(--s3); }
+    .app-frame { grid-template-columns: minmax(220px, 40%) minmax(0, 1fr); }
+  }
+</style>
+</head>
+<body>
+<main class="mockup-page">
+  <header class="mockup-intro">
+    <p class="eyebrow">Web UI navigation prototype</p>
+    <h1>Subagents stay attached to their session</h1>
+    <p>Current work remains visible. Terminal work folds into each parent's inactive disclosure.</p>
+  </header>
+
+  <section class="scenario-bar" aria-label="Mockup scenarios">
+    <button type="button" data-scenario="baseline" aria-pressed="true">Mixed status tree</button>
+    <button type="button" data-scenario="complete-audit" aria-pressed="false">Audit completes</button>
+    <button type="button" data-scenario="resume-audit" aria-pressed="false">Audit resumes</button>
+  </section>
+
+  <section class="app-frame" aria-label="Subagent sidebar and pane workspace">
+    <aside class="prototype-sidebar" aria-label="Sessions">
+      <div class="sidebar-project"><span aria-hidden="true">⌄</span><span>serf</span></div>
+      <nav id="session-tree" aria-label="Session tree"></nav>
+    </aside>
+    <section id="pane-strip" class="pane-strip" aria-label="Open agent sessions"></section>
+  </section>
+
+  <section class="self-checks" aria-labelledby="self-check-title">
+    <h2 id="self-check-title">Prototype checks</h2>
+    <p id="self-check-summary" aria-live="polite">Not run</p>
+    <ol id="self-check-list"></ol>
+  </section>
+</main>
+<script>
+function runSelfChecks() {
+  const results = [];
+  function check(name, condition) {
+    results.push({ name, pass: Boolean(condition) });
+  }
+
+  const current = partitionChildren("main").current.map((item) => item.status);
+  const terminal = partitionChildren("main").terminal.map((item) => item.status);
+  check("current status set is exact", sameSet(current, CURRENT_STATUSES));
+  check("terminal status set is exact", sameSet(terminal, TERMINAL_STATUSES));
+  check("current children render without a wrapper", document.querySelectorAll('[data-session-row="audit"]').length === 1);
+  check("inactive disclosure starts collapsed", document.querySelector('[data-inactive-toggle="main"]')?.getAttribute("aria-expanded") === "false");
+  check("inactive count uses direct terminal children", document.querySelector('[data-inactive-toggle="main"]')?.textContent.includes("4"));
+  check("terminal descendants keep direct parentage", document.querySelector('[data-inactive-region="main"] [data-session-row="archive"] [data-session-row="archive-child"]') !== null);
+
+  renderCheckResults(results);
+  return results;
+}
+
+function sameSet(values, expectedSet) {
+  return values.length === expectedSet.size && values.every((value) => expectedSet.has(value));
+}
+
+function renderCheckResults(results) {
+  const list = document.getElementById("self-check-list");
+  list.replaceChildren(...results.map(({ name, pass }) => {
+    const item = document.createElement("li");
+    item.className = pass ? "pass" : "fail";
+    item.textContent = `${pass ? "PASS" : "FAIL"}: ${name}`;
+    return item;
+  }));
+  const passed = results.filter((result) => result.pass).length;
+  document.getElementById("self-check-summary").textContent = `${passed}/${results.length} checks passing`;
+}
+
+const STATUS_META = Object.freeze({
+  running:       { label: "Running", tone: "live", glyph: "⟳", terminal: false },
+  awaiting:      { label: "Awaiting input", tone: "attention", glyph: "!", terminal: false },
+  "retained-idle": { label: "Idle · resumable", tone: "neutral", glyph: "•", terminal: false },
+  unknown:       { label: "Unknown", tone: "neutral", glyph: "?", terminal: false },
+  completed:     { label: "Completed", tone: "done", glyph: "✓", terminal: true },
+  failed:        { label: "Failed", tone: "error", glyph: "×", terminal: true },
+  cancelled:    { label: "Cancelled", tone: "neutral", glyph: "–", terminal: true },
+  stopped:       { label: "Stopped", tone: "neutral", glyph: "■", terminal: true },
+});
+const CURRENT_STATUSES = new Set(["running", "awaiting", "retained-idle", "unknown"]);
+const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled", "stopped"]);
+
+const BASELINE_SESSIONS = [
+  { id: "main", parentId: null, title: "Restore subagent navigation", status: "running" },
+  { id: "audit", parentId: "main", title: "Audit sidebar data flow", status: "running" },
+  { id: "review", parentId: "main", title: "Review interaction model", status: "awaiting" },
+  { id: "retained", parentId: "main", title: "Retained implementation agent", status: "retained-idle" },
+  { id: "mystery", parentId: "main", title: "Recover remote worker", status: "unknown" },
+  { id: "archive", parentId: "main", title: "Inspect session history", status: "completed" },
+  { id: "failed", parentId: "main", title: "Probe stale roster", status: "failed" },
+  { id: "cancelled", parentId: "main", title: "Compare discarded direction", status: "cancelled" },
+  { id: "stopped", parentId: "main", title: "Stop redundant scan", status: "stopped" },
+  { id: "audit-live", parentId: "audit", title: "Trace live roster", status: "running" },
+  { id: "audit-done", parentId: "audit", title: "Read sidebar renderer", status: "completed" },
+  { id: "archive-child", parentId: "archive", title: "Summarize prior behavior", status: "running" },
+  { id: "archive-child-done", parentId: "archive", title: "Catalog old tests", status: "completed" },
+];
+
+const sessions = new Map(BASELINE_SESSIONS.map((session) => [session.id, { ...session }]));
+const state = {
+  sessions,
+  inactiveExpanded: new Set(),
+  openPaneIds: ["main"],
+  activePaneId: "main",
+  returnFocusByPane: new Map(),
+};
+
+function childrenOf(parentId) {
+  return Array.from(state.sessions.values()).filter((session) => session.parentId === parentId);
+}
+
+function partitionChildren(parentId) {
+  return childrenOf(parentId).reduce((groups, session) => {
+    const meta = STATUS_META[session.status];
+    if (!meta) throw new Error(`Unknown fixture status: ${session.status}`);
+    groups[meta.terminal ? "terminal" : "current"].push(session);
+    return groups;
+  }, { current: [], terminal: [] });
+}
+
+function render() {
+  renderSidebar();
+  renderPanes();
+  syncScenarioButtons();
+}
+
+function renderSidebar() {
+  const tree = document.getElementById("session-tree");
+  tree.replaceChildren();
+  renderSessionBranch("main", 0, tree);
+}
+
+function renderSessionBranch(sessionId, depth, container) {
+  const session = state.sessions.get(sessionId);
+  const branch = document.createElement("div");
+  branch.className = "session-branch";
+  branch.dataset.sessionBranch = session.id;
+  branch.style.setProperty("--depth", depth);
+  const row = buildSessionRow(session, depth);
+  branch.append(row);
+  const childContainer = STATUS_META[session.status].terminal ? row : branch;
+
+  const { current, terminal } = partitionChildren(session.id);
+  current.forEach((child) => renderSessionBranch(child.id, depth + 1, childContainer));
+  if (terminal.length) renderInactiveGroup(session.id, terminal, depth + 1, childContainer);
+  container.append(branch);
+}
+
+function renderInactiveGroup(parentId, terminalChildren, depth, container) {
+  const group = document.createElement("div");
+  group.className = "inactive-group";
+  group.style.setProperty("--depth", depth);
+
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "inactive-toggle";
+  toggle.dataset.inactiveToggle = parentId;
+  toggle.setAttribute("aria-expanded", String(state.inactiveExpanded.has(parentId)));
+  toggle.setAttribute("aria-controls", `inactive-${parentId}`);
+  toggle.textContent = `Inactive subagents (${terminalChildren.length})`;
+  toggle.addEventListener("click", () => toggleInactive(parentId));
+
+  const region = document.createElement("div");
+  region.id = `inactive-${parentId}`;
+  region.className = "inactive-region";
+  region.dataset.inactiveRegion = parentId;
+  region.hidden = !state.inactiveExpanded.has(parentId);
+  terminalChildren.forEach((child) => renderSessionBranch(child.id, depth, region));
+  group.append(toggle, region);
+  container.append(group);
+}
+
+function toggleInactive(parentId) {
+  if (state.inactiveExpanded.has(parentId)) state.inactiveExpanded.delete(parentId);
+  else state.inactiveExpanded.add(parentId);
+  renderSidebar();
+  const escapedParentId = window.CSS?.escape?.(parentId) ?? parentId;
+  document.querySelector(`[data-inactive-toggle="${escapedParentId}"]`)?.focus();
+}
+
+function buildSessionRow(session, depth) {
+  const meta = STATUS_META[session.status];
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "session-row";
+  row.dataset.sessionRow = session.id;
+  row.dataset.status = session.status;
+  row.style.setProperty("--depth", depth);
+  row.setAttribute("aria-current", state.activePaneId === session.id ? "true" : "false");
+  row.addEventListener("click", (event) => {
+    event.stopPropagation();
+    activateSession(session.id, row);
+  });
+
+  const glyph = document.createElement("span");
+  glyph.className = "session-glyph";
+  glyph.dataset.tone = meta.tone;
+  glyph.textContent = meta.glyph;
+  glyph.setAttribute("aria-hidden", "true");
+
+  const title = document.createElement("span");
+  title.className = "session-title";
+  title.textContent = session.title;
+
+  const status = document.createElement("span");
+  status.className = "session-status";
+  status.dataset.statusText = "";
+  status.dataset.tone = meta.tone;
+  status.textContent = meta.label;
+  row.append(glyph, title, status);
+  return row;
+}
+
+function activateSession(sessionId, row) {
+  state.activePaneId = sessionId;
+  if (!state.openPaneIds.includes(sessionId)) state.openPaneIds.push(sessionId);
+  document.querySelector('[data-session-row][aria-current="true"]')?.setAttribute("aria-current", "false");
+  row.setAttribute("aria-current", "true");
+  renderPanes();
+}
+
+function renderPanes() {
+  const panes = document.getElementById("pane-strip");
+  panes.replaceChildren();
+  const active = state.sessions.get(state.activePaneId);
+  const placeholder = document.createElement("div");
+  placeholder.className = "pane-placeholder";
+  const title = document.createElement("strong");
+  title.textContent = active ? active.title : "No session selected";
+  const copy = document.createElement("span");
+  copy.textContent = "The session workspace is reserved for the next mockup slice.";
+  placeholder.append(title, copy);
+  panes.append(placeholder);
+}
+
+function syncScenarioButtons() {
+  document.querySelectorAll("[data-scenario]").forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset.scenario === "baseline"));
+  });
+}
+
+render(); runSelfChecks();
+</script>
+</body>
+</html>
