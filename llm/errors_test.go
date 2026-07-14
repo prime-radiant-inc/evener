@@ -345,21 +345,24 @@ func TestNewRequestTimeoutError_IsRetryable(t *testing.T) {
 	}
 }
 
-func TestResponseHeaderTimeoutError_IsNonRetryable(t *testing.T) {
+func TestResponseHeaderTimeoutError_IsRetryable(t *testing.T) {
 	err := newResponseHeaderTimeoutError("openai", "timed out awaiting response headers", context.DeadlineExceeded)
 
 	if got := Kind(err); got != KindTimeout {
 		t.Fatalf("Kind(error) = %v, want %v", got, KindTimeout)
 	}
-	if got := Classify(err); got != ErrorClassPermanent {
-		t.Fatalf("Classify(error) = %v, want %v", got, ErrorClassPermanent)
+	if got := Classify(err); got != ErrorClassRetryable {
+		t.Fatalf("Classify(error) = %v, want %v", got, ErrorClassRetryable)
 	}
 	var providerErr Error
 	if !errors.As(err, &providerErr) {
 		t.Fatalf("error = %T, want llm.Error", err)
 	}
-	if providerErr.Retryable() {
-		t.Fatal("response-header timeout must not be retryable")
+	if !providerErr.Retryable() {
+		t.Fatal("response-header timeout must be retryable")
+	}
+	if !retryableError(err) {
+		t.Fatal("retryableError(response-header timeout) = false, want true")
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error = %v, want context deadline cause", err)

@@ -32,6 +32,36 @@ func TestWrapContextError_TimeoutUnwrapsToDeadline(t *testing.T) {
 	}
 }
 
+func TestWrapContextError_ResponseHeaderTimeoutPreservesRetryability(t *testing.T) {
+	original := newResponseHeaderTimeoutError(
+		"",
+		"timed out awaiting response headers",
+		context.DeadlineExceeded,
+	)
+	wrapped := WrapContextError("openai", original)
+
+	var timeout *responseHeaderTimeoutError
+	if !errors.As(wrapped, &timeout) {
+		t.Fatalf("WrapContextError(response-header timeout) = %T, want *responseHeaderTimeoutError", wrapped)
+	}
+	var providerErr Error
+	if !errors.As(wrapped, &providerErr) {
+		t.Fatalf("wrapped error = %T, want llm.Error", wrapped)
+	}
+	if providerErr.Provider() != "openai" {
+		t.Fatalf("Provider() = %q, want %q", providerErr.Provider(), "openai")
+	}
+	if !providerErr.Retryable() {
+		t.Fatal("wrapped response-header timeout must remain retryable")
+	}
+	if got := Classify(wrapped); got != ErrorClassRetryable {
+		t.Fatalf("Classify(wrapped) = %v, want %v", got, ErrorClassRetryable)
+	}
+	if !errors.Is(wrapped, context.DeadlineExceeded) {
+		t.Fatalf("wrapped error = %v, want context deadline cause", wrapped)
+	}
+}
+
 func TestWrapContextError_WrappedCanceledUnwraps(t *testing.T) {
 	wrapped := fmt.Errorf("dialing upstream: %w", context.Canceled)
 	err := WrapContextError("openai", wrapped)

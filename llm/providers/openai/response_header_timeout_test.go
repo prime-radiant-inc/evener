@@ -14,24 +14,51 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-func TestAdapter_Stream_ResponseHeaderTimeout(t *testing.T) {
-	requestStarted := make(chan struct{})
-	releaseHandler := make(chan struct{})
-	var releaseOnce sync.Once
-	release := func() {
-		releaseOnce.Do(func() { close(releaseHandler) })
-	}
+type withheldHeadersFixture struct {
+	server       *httptest.Server
+	firstRequest <-chan struct{}
+	requests     *atomic.Int32
+}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		close(requestStarted)
-		<-releaseHandler
+func newWithheldHeadersFixture(t *testing.T) withheldHeadersFixture {
+	t.Helper()
+
+	firstRequest := make(chan struct{})
+	releaseHandlers := make(chan struct{})
+	requests := &atomic.Int32{}
+	var firstRequestOnce sync.Once
+	var releaseOnce sync.Once
+
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests.Add(1)
+		firstRequestOnce.Do(func() { close(firstRequest) })
+		<-releaseHandlers
 	}))
 	t.Cleanup(func() {
-		release()
-		srv.Close()
+		releaseOnce.Do(func() { close(releaseHandlers) })
+		server.Close()
 	})
 
-	adapter := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	return withheldHeadersFixture{
+		server:       server,
+		firstRequest: firstRequest,
+		requests:     requests,
+	}
+}
+
+func (f withheldHeadersFixture) waitForFirstRequest(t *testing.T) {
+	t.Helper()
+	select {
+	case <-f.firstRequest:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not receive the streaming request")
+	}
+}
+
+func TestAdapter_Stream_ResponseHeaderTimeout(t *testing.T) {
+	fixture := newWithheldHeadersFixture(t)
+
+	adapter := &Adapter{APIKey: "test-key", BaseURL: fixture.server.URL, Client: fixture.server.Client()}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	result := make(chan error, 1)
@@ -47,11 +74,7 @@ func TestAdapter_Stream_ResponseHeaderTimeout(t *testing.T) {
 		result <- err
 	}()
 
-	select {
-	case <-requestStarted:
-	case <-time.After(2 * time.Second):
-		t.Fatal("server did not receive the streaming request")
-	}
+	fixture.waitForFirstRequest(t)
 
 	select {
 	case err := <-result:
@@ -68,38 +91,24 @@ func TestAdapter_Stream_ResponseHeaderTimeout(t *testing.T) {
 		if !errors.As(err, &providerErr) {
 			t.Fatalf("error = %T, want llm.Error", err)
 		}
-		if providerErr.Retryable() {
-			t.Fatal("response-header timeout must not be retryable after the request was written")
+		if !providerErr.Retryable() {
+			t.Fatal("response-header timeout must be retryable after the watchdog ends the attempt")
 		}
-		if got := llm.Classify(err); got != llm.ErrorClassPermanent {
-			t.Fatalf("Classify(error) = %v, want %v", got, llm.ErrorClassPermanent)
+		if got := llm.Classify(err); got != llm.ErrorClassRetryable {
+			t.Fatalf("Classify(error) = %v, want %v", got, llm.ErrorClassRetryable)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Stream did not return after AdapterTimeout.Request")
 	}
 }
 
-func TestStreamGenerate_ResponseHeaderTimeoutDoesNotRetry(t *testing.T) {
-	requestStarted := make(chan struct{})
-	releaseHandler := make(chan struct{})
-	var startOnce sync.Once
-	var releaseOnce sync.Once
-	var requests atomic.Int32
-	release := func() {
-		releaseOnce.Do(func() { close(releaseHandler) })
+func TestStreamGenerate_ResponseHeaderTimeoutRetriesConfiguredAttempts(t *testing.T) {
+	fixture := newWithheldHeadersFixture(t)
+	adapter := &Adapter{
+		APIKey:  "test-key",
+		BaseURL: fixture.server.URL,
+		Client:  fixture.server.Client(),
 	}
-
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		requests.Add(1)
-		startOnce.Do(func() { close(requestStarted) })
-		<-releaseHandler
-	}))
-	t.Cleanup(func() {
-		release()
-		srv.Close()
-	})
-
-	adapter := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
 	client := llm.NewClient()
 	client.Register(adapter)
 	prompt := "hello"
@@ -110,7 +119,7 @@ func TestStreamGenerate_ResponseHeaderTimeoutDoesNotRetry(t *testing.T) {
 		Prompt:         &prompt,
 		AdapterTimeout: &llm.AdapterTimeout{Request: 50 * time.Millisecond, StreamRead: time.Second},
 		RetryPolicy: &llm.RetryPolicy{
-			MaxRetries: 1,
+			MaxRetries: 2,
 			BaseDelay:  time.Millisecond,
 			MaxDelay:   time.Millisecond,
 			Jitter:     false,
@@ -122,11 +131,7 @@ func TestStreamGenerate_ResponseHeaderTimeoutDoesNotRetry(t *testing.T) {
 	}
 	defer func() { _ = result.Close() }()
 
-	select {
-	case <-requestStarted:
-	case <-time.After(2 * time.Second):
-		t.Fatal("server did not receive the streaming request")
-	}
+	fixture.waitForFirstRequest(t)
 
 	for range result.Events() {
 	}
@@ -134,8 +139,60 @@ func TestStreamGenerate_ResponseHeaderTimeoutDoesNotRetry(t *testing.T) {
 	if resultErr == nil || llm.Kind(resultErr) != llm.KindTimeout {
 		t.Fatalf("error = %v, want timeout", resultErr)
 	}
-	if got := requests.Load(); got != 1 {
-		t.Fatalf("requests = %d, want 1", got)
+	if got := fixture.requests.Load(); got != 3 {
+		t.Fatalf("requests = %d, want 3 (initial request plus two retries)", got)
+	}
+}
+
+func TestStreamGenerate_ResponseHeaderTimeoutRetryStopsOnCancellation(t *testing.T) {
+	fixture := newWithheldHeadersFixture(t)
+	adapter := &Adapter{
+		APIKey:  "test-key",
+		BaseURL: fixture.server.URL,
+		Client:  fixture.server.Client(),
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	prompt := "hello"
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var sleepCalls atomic.Int32
+
+	result, err := llm.StreamGenerate(ctx, llm.GenerateOptions{
+		Client:         client,
+		Model:          "gpt-5",
+		Provider:       "openai",
+		Prompt:         &prompt,
+		AdapterTimeout: &llm.AdapterTimeout{Request: 50 * time.Millisecond, StreamRead: time.Second},
+		RetryPolicy: &llm.RetryPolicy{
+			MaxRetries: 10,
+			BaseDelay:  time.Second,
+			MaxDelay:   time.Second,
+			Jitter:     false,
+		},
+		Sleep: func(ctx context.Context, _ time.Duration) error {
+			sleepCalls.Add(1)
+			cancel()
+			return ctx.Err()
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamGenerate: %v", err)
+	}
+	defer func() { _ = result.Close() }()
+
+	fixture.waitForFirstRequest(t)
+	for range result.Events() {
+	}
+	_, resultErr := result.Response()
+	if !errors.Is(resultErr, context.Canceled) {
+		t.Fatalf("error = %v, want context canceled", resultErr)
+	}
+	if got := fixture.requests.Load(); got != 1 {
+		t.Fatalf("requests = %d, want 1 after cancellation", got)
+	}
+	if got := sleepCalls.Load(); got != 1 {
+		t.Fatalf("sleep calls = %d, want 1", got)
 	}
 }
 
