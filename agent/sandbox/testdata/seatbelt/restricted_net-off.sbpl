@@ -369,3 +369,7 @@
 (deny file-write* (literal (param "PROTECTED_1_ALIAS")) (subpath (param "PROTECTED_1_ALIAS")))
 (deny file-write* (literal (param "PROTECTED_2")) (subpath (param "PROTECTED_2")))
 (deny file-write* (literal (param "PROTECTED_2_ALIAS")) (subpath (param "PROTECTED_2_ALIAS")))
+(deny file-write* (literal (param "PROTECTED_3")) (subpath (param "PROTECTED_3")))
+(deny file-write* (literal (param "PROTECTED_3_ALIAS")) (subpath (param "PROTECTED_3_ALIAS")))
+(deny file-write* (literal (param "PROTECTED_4")) (subpath (param "PROTECTED_4")))
+(deny file-write* (literal (param "PROTECTED_4_ALIAS")) (subpath (param "PROTECTED_4_ALIAS")))

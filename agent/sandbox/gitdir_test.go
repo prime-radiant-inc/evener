@@ -125,6 +125,11 @@ func TestClassifyLinkedWorktree(t *testing.T) {
 	mustContain(t, got.ProtectedPaths, filepath.Join(commonDir, "config"), "ProtectedPaths")
 	mustContain(t, got.ProtectedPaths, filepath.Join(commonDir, "hooks"), "ProtectedPaths")
 	mustContain(t, got.ProtectedPaths, filepath.Join(got.GitDir, "config.worktree"), "ProtectedPaths")
+	// The per-worktree redirect files (commondir → common git dir, gitdir →
+	// back-pointer) stay write-protected: repointing commondir swaps in an
+	// attacker-controlled common dir whose config carries core.hooksPath.
+	mustContain(t, got.ProtectedPaths, filepath.Join(got.GitDir, "commondir"), "ProtectedPaths")
+	mustContain(t, got.ProtectedPaths, filepath.Join(got.GitDir, "gitdir"), "ProtectedPaths")
 	// Shared objects writable; the per-worktree dir granted whole (so index, its
 	// lockfile, COMMIT_EDITMSG, ORIG_HEAD written directly in it all succeed).
 	mustContain(t, got.WritablePaths, filepath.Join(commonDir, "objects"), "WritablePaths")

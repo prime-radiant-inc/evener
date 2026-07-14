@@ -183,6 +183,11 @@ func laneCommitScript(lane string) string {
 		// must still be re-bound read-only ON TOP (the fix must not expose them).
 		`echo "wt-config-write=$(echo x > '` + gitDirOf(lane) + `/config.worktree' 2>&1; echo exit=$?)"`,
 		`echo "wt-hook-write=$(echo x > '` + gitDirOf(lane) + `/hooks/pre-commit' 2>&1; echo exit=$?)"`,
+		// The per-worktree redirect files sit DIRECTLY in the whole-writable git dir;
+		// they must be re-bound read-only ON TOP. Rewriting commondir repoints git at
+		// an attacker-controlled common dir (its config carries core.hooksPath).
+		`echo "commondir-write=$(echo x > '` + gitDirOf(lane) + `/commondir' 2>&1; echo exit=$?)"`,
+		`echo "gitdir-write=$(echo x > '` + gitDirOf(lane) + `/gitdir' 2>&1; echo exit=$?)"`,
 	}, "; ")
 }
 
@@ -246,6 +251,12 @@ func TestBwrapWorkspaceWriteDelegateCanCommitInLane(t *testing.T) {
 	}
 	if strings.Contains(out, "wt-hook-write=exit=0") {
 		t.Errorf("delegate WROTE a per-worktree hook — whole-dir grant leaked a protected surface:\n%s", out)
+	}
+	if strings.Contains(out, "commondir-write=exit=0") {
+		t.Errorf("delegate WROTE the per-worktree commondir — a redirect surface leaked through the whole-dir grant:\n%s", out)
+	}
+	if strings.Contains(out, "gitdir-write=exit=0") {
+		t.Errorf("delegate WROTE the per-worktree gitdir back-pointer — a redirect surface leaked through the whole-dir grant:\n%s", out)
 	}
 }
 

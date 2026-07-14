@@ -82,8 +82,13 @@ type GitLayout struct {
 // writable modes so commit/add/checkout still function.
 var gitWritableLeaves = []string{"objects", "refs", "index", "logs", "packed-refs"}
 
-// gitProtectedLeaves are the per-git-dir config + hook surfaces kept write-denied.
-var gitProtectedLeaves = []string{"config", "config.worktree", "hooks"}
+// gitProtectedLeaves are the per-git-dir config + hook surfaces kept write-denied,
+// plus the two redirect files a linked-worktree git dir carries directly:
+// commondir (points at the shared common dir — repointing it makes git read an
+// attacker-controlled common dir's config, incl. core.hooksPath) and gitdir (the
+// worktree back-pointer). Both are set once at `git worktree add` and never
+// rewritten by a commit, so protecting them cannot regress the commit path.
+var gitProtectedLeaves = []string{"config", "config.worktree", "hooks", "commondir", "gitdir"}
 
 // resolveCleanPath is the package's symlink-resolving path normalizer, shared by
 // the classifier and its tests so expected and actual paths normalize identically.
