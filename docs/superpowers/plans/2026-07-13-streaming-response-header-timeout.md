@@ -2,9 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Bound each HTTP streaming attempt while it waits for response headers without imposing an overall deadline on a healthy response stream.
+**Status:** Implemented
 
-**Architecture:** Replace the connect-only client helper with shared adapter-timeout client construction that clones a standard `http.Transport`, applies `Connect` to dialing, and applies `Request` to `ResponseHeaderTimeout`. Keep opaque `RoundTripper` implementations authoritative, keep streaming request contexts deadline-free, and continue applying `StreamRead` only while consuming SSE lines.
+**Goal:** Bound each HTTP streaming attempt while it waits for response headers without adding a Serf-owned overall deadline to a healthy response stream.
+
+**Architecture:** Replace the connect-only client helper with shared adapter-timeout client construction that clones a standard `http.Transport`, wraps context-aware dial hooks with `Connect`, and applies `Request` to `ResponseHeaderTimeout`. Keep context-free `DialTLS`, opaque `RoundTripper` implementations, and caller `http.Client.Timeout` policy authoritative; do not add a streaming request-context deadline; continue applying `StreamRead` only while consuming SSE lines.
 
 **Tech Stack:** Go 1.26, `net/http`, `httptest`, Serf's `llm` timeout/error abstractions, and deterministic Go tests.
 
@@ -15,9 +17,14 @@
 - Follow `docs/testing.md`: default tests must be deterministic and must not use provider credentials, external network access, quota, current model behavior, arbitrary sleeps, or polling races.
 - `AdapterTimeout.Request` continues to bound the entire request/response cycle for non-streaming calls.
 - For streaming calls, `AdapterTimeout.Request` bounds only the wait for response headers after the request body is written.
-- Streaming calls must retain no overall request-context or `http.Client.Timeout` deadline after response headers arrive.
+- Serf must not add an overall streaming request-context or `http.Client.Timeout`
+  deadline. Caller-supplied contexts and explicit client timeouts remain
+  unchanged and authoritative after response headers arrive.
 - `AdapterTimeout.StreamRead` continues to bound the wait between SSE lines after headers arrive.
 - Clone `http.DefaultTransport` or a caller-supplied `*http.Transport`; never replace either with a bare `http.Transport`.
+- Wrap caller `DialContext` and `DialTLSContext` hooks with the Connect-bounded
+  context rather than replacing them. Preserve context-free `DialTLS` unchanged
+  as caller-authoritative because it cannot be safely deadline-wrapped.
 - Preserve opaque caller-supplied `http.RoundTripper` implementations and treat their timeout behavior as authoritative.
 - Do not add a timeout setting, provider-specific timer, goroutine/body-wrapper timeout, WebSocket path, compatibility alias, or notification-preemption behavior.
 - Do not change stream retry counts, backoff, partial-output retry behavior, session scheduling, or job-notification delivery.
@@ -28,8 +35,8 @@
 
 | File | Responsibility in this change |
 |---|---|
-| `llm/adapter_timeout.go` | Define the shared standard-transport cloning and adapter-timeout client contract. |
-| `llm/adapter_timeout_test.go` | Exercise cloned/default/custom transports, response-header configuration, and unchanged context behavior. |
+| `llm/adapter_timeout.go` | Define the shared standard-transport cloning, dial-hook wrapping, and adapter-timeout client contract. |
+| `llm/adapter_timeout_test.go` | Exercise cloned/default/custom transports, context-aware dial-hook deadlines, deprecated DialTLS authority, response-header configuration, and unchanged context behavior. |
 | `llm/types.go` | Document the phase-dependent meaning of `AdapterTimeout.Request`. |
 | `llm/client.go` | Document the bounded network phases applied by `Complete` and `Stream`. |
 | `llm/all_tests_replay_fuzz_test.go` | Keep the root replay suite calling the renamed timeout contract tests. |
@@ -274,6 +281,12 @@ func TestClientWithAdapterTimeout_NoTransportTimeoutReturnsOriginal(t *testing.T
 }
 ```
 
+Final review adds three focused client-construction contracts in the same test
+file: a custom `DialContext` HTTP request and custom `DialTLSContext` HTTPS
+request must both run through real `http.Client.Do` calls with the Connect
+deadline on their contexts, while deprecated context-free `DialTLS` remains
+unchanged and caller-authoritative.
+
 - [ ] **Step 2: Add failing OpenAI Responses lifecycle tests**
 
 Create `llm/providers/openai/response_header_timeout_test.go`:
@@ -450,8 +463,9 @@ comments and transport/client helpers with:
 ```go
 // ApplyAdapterTimeout creates a context with the appropriate deadline from AdapterTimeout.
 // For non-streaming requests, it uses the Request timeout for the whole call.
-// Streaming requests have no overall context deadline: Request is applied while
-// waiting for HTTP response headers, and StreamRead is checked per SSE line.
+// Streaming requests get no additional overall context deadline: Request is
+// applied while waiting for HTTP response headers, and StreamRead is checked per
+// SSE line. Caller-supplied context and HTTP client policies remain authoritative.
 // If at is nil, returns the context unchanged.
 func ApplyAdapterTimeout(ctx context.Context, at *AdapterTimeout, streaming bool) (context.Context, context.CancelFunc) {
 	if at == nil {
@@ -463,9 +477,9 @@ func ApplyAdapterTimeout(ctx context.Context, at *AdapterTimeout, streaming bool
 	return ctx, func() {}
 }
 
-// AdapterTransport returns a configured clone of http.DefaultTransport.
-// Connect bounds dialing and Request bounds the wait for response headers.
-// Returns nil when neither transport timeout is configured.
+// AdapterTransport returns a configured clone of http.DefaultTransport. Connect
+// bounds context-aware dialing without replacing caller hooks, and Request bounds
+// the wait for response headers. Returns nil when neither is configured.
 func AdapterTransport(at *AdapterTimeout) *http.Transport {
 	return configuredAdapterTransport(http.DefaultTransport.(*http.Transport), at)
 }
@@ -476,8 +490,26 @@ func configuredAdapterTransport(base *http.Transport, at *AdapterTimeout) *http.
 	}
 	transport := base.Clone()
 	if at.Connect > 0 {
-		dialer := &net.Dialer{Timeout: at.Connect}
-		transport.DialContext = dialer.DialContext
+		connectTimeout := at.Connect
+		dialContext := transport.DialContext
+		if dialContext == nil {
+			dialContext = (&net.Dialer{}).DialContext
+		}
+		transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+			ctx, cancel := context.WithTimeout(ctx, connectTimeout)
+			defer cancel()
+			return dialContext(ctx, network, address)
+		}
+
+		if dialTLSContext := transport.DialTLSContext; dialTLSContext != nil {
+			transport.DialTLSContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+				ctx, cancel := context.WithTimeout(ctx, connectTimeout)
+				defer cancel()
+				return dialTLSContext(ctx, network, address)
+			}
+		}
+		// DialTLS has no context to bound safely without a goroutine that may leak.
+		// Preserve it unchanged as caller-authoritative transport policy.
 	}
 	if at.Request > 0 {
 		transport.ResponseHeaderTimeout = at.Request
@@ -486,8 +518,8 @@ func configuredAdapterTransport(base *http.Transport, at *AdapterTimeout) *http.
 }
 
 // ClientWithAdapterTimeout returns a copy of client configured with adapter
-// transport timeouts. Standard transports are cloned; opaque RoundTrippers are
-// preserved and remain responsible for their own timeout behavior.
+// transport timeouts. Standard transports are cloned; opaque RoundTrippers and
+// caller client policy, including Timeout, remain authoritative.
 func ClientWithAdapterTimeout(client *http.Client, at *AdapterTimeout) *http.Client {
 	if at == nil || (at.Connect <= 0 && at.Request <= 0) {
 		return client
@@ -532,7 +564,8 @@ In `llm/client.go`, use these exact comments above the default timeout blocks:
 
 ```go
 // Stream defaults to phase-bounded connection, response-header, and per-line
-// stream-read timeouts without an overall stream deadline.
+// stream-read timeouts without adding an overall stream deadline. Caller-supplied
+// context and HTTP client policies remain authoritative.
 ```
 
 In `llm/all_tests_replay_fuzz_test.go`, replace timeout test calls with:
@@ -544,6 +577,9 @@ In `llm/all_tests_replay_fuzz_test.go`, replace timeout test calls with:
 		TestAdapterTransport_ConfiguresDefaultTransport(t)
 		TestAdapterTransport_NoTransportTimeoutReturnsNil(t)
 		TestClientWithAdapterTimeout_ConfiguresStandardTransport(t)
+		TestClientWithAdapterTimeout_WrapsDialContextWithConnectDeadline(t)
+		TestClientWithAdapterTimeout_WrapsDialTLSContextWithConnectDeadline(t)
+		TestClientWithAdapterTimeout_PreservesDialTLSAuthority(t)
 		TestClientWithAdapterTimeout_ClonesDefaultTransport(t)
 		TestClientWithAdapterTimeout_PreservesOpaqueTransport(t)
 		TestClientWithAdapterTimeout_NoTransportTimeoutReturnsOriginal(t)
@@ -651,7 +687,7 @@ task:
 git status --short
 git add llm/adapter_timeout.go llm/adapter_timeout_test.go llm/types.go llm/client.go llm/all_tests_replay_fuzz_test.go llm/core_contracts_fuzz_test.go llm/providers/openai/response_header_timeout_test.go llm/providers/openai/adapter.go llm/providers/openai/responses.go llm/providers/openai/chatcompletions.go llm/providers/openai/token_count.go llm/providers/anthropic/adapter.go llm/providers/google/adapter.go llm/providers/openaicompat/adapter.go llm/providers/kimi/adapter.go llm/providers/openai/complete_roundtrip_fuzz_test.go llm/providers/anthropic/complete_roundtrip_fuzz_test.go llm/providers/google/complete_roundtrip_fuzz_test.go llm/providers/openaicompat/complete_roundtrip_fuzz_test.go
 git diff --cached --check
-git commit -m "fix: bound streaming response-header waits" -m "Apply AdapterTimeout.Request as the standard HTTP transport response-header timeout while leaving healthy response bodies without an overall deadline. Clone standard transports so proxy, TLS, HTTP/2, and pool behavior survive, and preserve opaque injected RoundTrippers as authoritative test and integration seams.\n\nMigrate every HTTP provider to the shared helper and add deterministic regressions for stalled headers, retryable timeout classification, and a stream that remains healthy beyond the request timeout after headers arrive."
+git commit -m "fix: bound streaming response-header waits" -m "Apply AdapterTimeout.Request as the standard HTTP transport response-header timeout without adding an overall stream deadline. Preserve caller-supplied context and HTTP client policy. Clone standard transports so proxy, TLS, HTTP/2, pool behavior, and context-aware dial hooks survive, and preserve context-free DialTLS and opaque injected RoundTrippers as authoritative seams.\n\nMigrate every HTTP provider to the shared helper and add deterministic regressions for stalled headers, retryable timeout classification, and a stream that remains healthy beyond the request timeout after headers arrive."
 ```
 
 Expected: the commit succeeds without bypassing hooks, and `git status --short`

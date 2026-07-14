@@ -146,7 +146,8 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 		return nil, err
 	}
 	// Stream defaults to phase-bounded connection, response-header, and per-line
-	// stream-read timeouts without an overall stream deadline.
+	// stream-read timeouts without adding an overall stream deadline. Caller-supplied
+	// context and HTTP client policies remain authoritative.
 	if req.AdapterTimeout == nil {
 		at := DefaultAdapterTimeout()
 		req.AdapterTimeout = &at

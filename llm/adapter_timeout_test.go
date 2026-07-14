@@ -2,8 +2,11 @@ package llm
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -56,6 +59,29 @@ func TestApplyAdapterTimeout_Streaming(t *testing.T) {
 
 type adapterTimeoutRoundTripper struct {
 	called bool
+}
+
+type adapterTimeoutDialObservation struct {
+	hasDeadline bool
+	remaining   time.Duration
+}
+
+func observeAdapterTimeoutDial(ctx context.Context) adapterTimeoutDialObservation {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return adapterTimeoutDialObservation{}
+	}
+	return adapterTimeoutDialObservation{hasDeadline: true, remaining: time.Until(deadline)}
+}
+
+func assertAdapterTimeoutDialObservation(t *testing.T, observation adapterTimeoutDialObservation, connectTimeout time.Duration) {
+	t.Helper()
+	if !observation.hasDeadline {
+		t.Fatal("custom dial hook received no Connect deadline")
+	}
+	if observation.remaining < connectTimeout-time.Second || observation.remaining > connectTimeout {
+		t.Fatalf("custom dial hook deadline remaining = %v, want approximately %v", observation.remaining, connectTimeout)
+	}
 }
 
 func (rt *adapterTimeoutRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -169,6 +195,125 @@ func TestClientWithAdapterTimeout_ConfiguresStandardTransport(t *testing.T) {
 	}
 	if originalTransport.ResponseHeaderTimeout != 3*time.Second {
 		t.Fatalf("original ResponseHeaderTimeout mutated to %v", originalTransport.ResponseHeaderTimeout)
+	}
+}
+
+func TestClientWithAdapterTimeout_WrapsDialContextWithConnectDeadline(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	observations := make(chan adapterTimeoutDialObservation, 1)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		select {
+		case observations <- observeAdapterTimeoutDial(ctx):
+		default:
+		}
+		var dialer net.Dialer
+		return dialer.DialContext(ctx, network, address)
+	}
+
+	const connectTimeout = 5 * time.Second
+	client := ClientWithAdapterTimeout(&http.Client{Transport: transport}, &AdapterTimeout{Connect: connectTimeout})
+	req, err := http.NewRequest(http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	select {
+	case observation := <-observations:
+		assertAdapterTimeoutDialObservation(t, observation, connectTimeout)
+	default:
+		t.Fatal("custom DialContext was not called")
+	}
+}
+
+func TestClientWithAdapterTimeout_WrapsDialTLSContextWithConnectDeadline(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	observations := make(chan adapterTimeoutDialObservation, 1)
+	transport := srv.Client().Transport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	tlsConfig := transport.TLSClientConfig.Clone()
+	transport.DialTLSContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		select {
+		case observations <- observeAdapterTimeoutDial(ctx):
+		default:
+		}
+		var dialer net.Dialer
+		conn, err := dialer.DialContext(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		config := tlsConfig.Clone()
+		config.ServerName, _, err = net.SplitHostPort(address)
+		if err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		tlsConn := tls.Client(conn, config)
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		return tlsConn, nil
+	}
+
+	const connectTimeout = 5 * time.Second
+	client := ClientWithAdapterTimeout(&http.Client{Transport: transport}, &AdapterTimeout{Connect: connectTimeout})
+	req, err := http.NewRequest(http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	select {
+	case observation := <-observations:
+		assertAdapterTimeoutDialObservation(t, observation, connectTimeout)
+	default:
+		t.Fatal("custom DialTLSContext was not called")
+	}
+}
+
+func TestClientWithAdapterTimeout_PreservesDialTLSAuthority(t *testing.T) {
+	dialErr := errors.New("caller DialTLS result")
+	called := make(chan struct{}, 1)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialTLSContext = nil
+	transport.DialTLS = func(string, string) (net.Conn, error) {
+		called <- struct{}{}
+		return nil, dialErr
+	}
+
+	client := ClientWithAdapterTimeout(&http.Client{Transport: transport}, &AdapterTimeout{Connect: time.Second})
+	req, err := http.NewRequest(http.MethodGet, "https://example.invalid", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Do(req)
+	if !errors.Is(err, dialErr) {
+		t.Fatalf("Do error = %v, want caller DialTLS error", err)
+	}
+	select {
+	case <-called:
+	default:
+		t.Fatal("custom DialTLS was not called")
 	}
 }
 

@@ -1,7 +1,7 @@
 # Streaming Response-Header Timeout Design
 
 **Date:** 2026-07-13
-**Status:** Draft for written review
+**Status:** Implemented
 
 ## Problem
 
@@ -12,7 +12,8 @@ The streaming timeout path currently has three parts:
 
 1. `AdapterTimeout.Connect` bounds connection establishment.
 2. `AdapterTimeout.Request` is deliberately omitted from the request context so
-   that a healthy long-running stream is not given an overall deadline.
+   that Serf does not add an overall deadline to a healthy long-running stream.
+   Any caller-supplied context or `http.Client.Timeout` remains authoritative.
 3. `AdapterTimeout.StreamRead` begins only after `client.Do` returns a response
    and bounds the time between SSE lines.
 
@@ -33,7 +34,8 @@ pre-header wait, not a lost notification.
 ## Goals
 
 - Bound streaming requests while they wait for response headers.
-- Preserve unlimited total stream duration after headers arrive.
+- Avoid adding a Serf-owned total stream deadline after headers arrive while
+  preserving caller-supplied context and HTTP client policy.
 - Preserve the existing per-SSE-line idle timeout.
 - Apply the behavior through shared HTTP client construction so all HTTP
   streaming providers receive the same contract.
@@ -85,14 +87,22 @@ ten-minute lifetime on a healthy stream.
 Replace `ClientWithConnectTimeout` with `ClientWithAdapterTimeout`, whose name
 reflects the full adapter timeout contract.
 
-The helper will return a shallow copy of the supplied `http.Client` and will
-not mutate the caller's client or transport. When the underlying transport is
-the standard `*http.Transport`, it will:
+The helper returns a shallow copy of the supplied `http.Client` and does not
+mutate the caller's client or transport. Caller client fields, including an
+explicit `http.Client.Timeout`, remain unchanged and authoritative. When the
+underlying transport is the standard `*http.Transport`, the helper:
 
 1. Clone the transport.
-2. Configure its dialer from `AdapterTimeout.Connect` when non-zero.
-3. Set `ResponseHeaderTimeout` from `AdapterTimeout.Request` when non-zero.
-4. Install the cloned transport on the copied client.
+2. When `AdapterTimeout.Connect` is non-zero, wrap an existing `DialContext`
+   with a Connect-bounded context, or use the normal zero-value `net.Dialer`
+   behavior under that context when the hook is nil.
+3. Likewise wrap an existing `DialTLSContext`, which owns non-proxied HTTPS
+   dialing and otherwise bypasses `DialContext`.
+4. Preserve deprecated context-free `DialTLS` unchanged and caller-authoritative;
+   safely imposing a context deadline would require a goroutine whose dial could
+   outlive cancellation and leak.
+5. Set `ResponseHeaderTimeout` from `AdapterTimeout.Request` when non-zero.
+6. Install the cloned transport on the copied client.
 
 When the client has no explicit transport, the helper will clone
 `http.DefaultTransport`, which is a `*http.Transport`. It must not construct a
@@ -111,18 +121,20 @@ HTTP adapters.
 
 ## Request and Stream Behavior
 
-`ApplyAdapterTimeout` will continue to avoid a request-context deadline for
-streaming calls. A context deadline based on `Request` would remain active
-after headers and incorrectly terminate a healthy stream.
+`ApplyAdapterTimeout` continues to avoid adding a `Request`-based context
+deadline for streaming calls. Such a deadline would remain active after headers
+and incorrectly terminate a healthy stream. Existing caller context deadlines
+and caller-supplied `http.Client.Timeout` values remain active and authoritative.
 
 For a standard HTTP transport, `ResponseHeaderTimeout` starts after the request
 body is fully written and applies only until response headers are received.
 After `client.Do` returns:
 
 - the response-header timer is no longer relevant;
-- the response body remains readable for an unlimited total duration;
+- Serf adds no total-duration bound while the response body is read;
 - the SSE reader continues applying `StreamRead` independently to each line;
-- normal caller cancellation still terminates the request and stream.
+- normal caller cancellation and caller HTTP client policy still terminate the
+  request and stream.
 
 No provider adapter needs an additional goroutine, timer, or body wrapper for
 this behavior.
@@ -172,20 +184,28 @@ The implementation must cover these contracts:
    signals that its handler is running, and withholds headers. The streaming
    call returns a typed retryable request-timeout error. The test coordinates
    the handler with channels and does not use an arbitrary sleep.
-2. **A healthy stream has no overall request deadline.** Headers are returned,
-   then the response body is held open under test control. The stream remains
-   usable after establishment and is governed by `StreamRead`, not by a
-   lingering `Request` context deadline.
+2. **Serf adds no overall request deadline to a healthy stream.** Headers are
+   returned, then the response body is held open under test control. The stream
+   remains usable after establishment and is governed by `StreamRead`, not by a
+   lingering `Request` context deadline. Caller context and HTTP client policy
+   remain authoritative.
 3. **Standard transport settings are preserved.** Client construction clones
-   the original standard transport, retains unrelated settings, sets the dial
-   and response-header timeouts, and does not mutate the original.
+   the original standard transport, retains unrelated settings, wraps custom
+   context-aware dial hooks with the Connect deadline, sets the response-header
+   timeout, and does not mutate the original.
 4. **Default transport behavior is preserved.** A client with a nil transport
    receives a clone of `http.DefaultTransport`, not a zero-value transport.
 5. **Opaque transports remain authoritative.** A custom scripted
    `RoundTripper` remains installed and usable rather than being replaced.
-6. **Non-streaming semantics do not change.** `Request` remains the overall
+6. **Deprecated `DialTLS` remains authoritative.** Its context-free signature
+   prevents safe deadline wrapping, so it remains unchanged and controls the
+   non-proxied HTTPS dial when installed without `DialTLSContext`.
+7. **Explicit client timeouts remain authoritative.** The copied client retains
+   caller-supplied `http.Client.Timeout`, even though that policy may bound the
+   total lifetime of a stream.
+8. **Non-streaming semantics do not change.** `Request` remains the overall
    request deadline for ordinary completion calls.
-7. **Provider plumbing uses the shared contract.** At least one representative
+9. **Provider plumbing uses the shared contract.** At least one representative
    streaming adapter test exercises the standard-client response-header
    timeout, while helper-focused tests establish the behavior shared by the
    other adapters.
@@ -196,10 +216,12 @@ subagent or live provider scenario.
 
 ## Alternatives Rejected
 
-### Set `http.Client.Timeout`
+### Set or overwrite `http.Client.Timeout`
 
 `http.Client.Timeout` includes reading the response body. It would impose an
 overall lifetime on a streaming request and terminate healthy long responses.
+Serf therefore does not set or clear it; an existing caller value is preserved
+as authoritative policy.
 
 ### Apply `AdapterTimeout.Request` as a streaming context deadline
 
