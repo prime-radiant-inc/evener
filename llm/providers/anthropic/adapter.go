@@ -137,7 +137,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	}
 	a.setAnthropicHeaders(httpReq, req.ProviderOptions)
 
-	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return llm.Response{}, llm.WrapContextError("anthropic", err)
@@ -194,7 +194,7 @@ func (a *Adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 	}
 	a.setAnthropicHeaders(httpReq, req.ProviderOptions)
 
-	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return llm.InputTokenCount{}, llm.WrapContextError("anthropic", err)
@@ -264,7 +264,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	}
 	a.setAnthropicHeaders(httpReq, req.ProviderOptions)
 
-	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		cancel()

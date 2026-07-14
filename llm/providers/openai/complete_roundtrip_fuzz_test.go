@@ -51,11 +51,7 @@ func (rt *captureRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	}, nil
 }
 
-// fuzzRoundTripRequest assembles an llm.Request from fuzzed scalars. It never
-// sets AdapterTimeout: a positive connect timeout would make
-// ClientWithConnectTimeout swap our fake transport for a real dialing one, so the
-// round-trip harnesses deliberately leave it nil to keep the injected transport
-// live.
+// fuzzRoundTripRequest assembles an llm.Request from fuzzed scalars.
 func fuzzRoundTripRequest(model, sys, user, toolName string, effortSel byte, temp float64) llm.Request {
 	req := llm.Request{Model: model}
 	if sys != "" {

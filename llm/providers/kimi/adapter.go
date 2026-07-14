@@ -117,7 +117,7 @@ func (a *adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 		httpReq.Header.Set("Authorization", "Bearer "+a.APIKey)
 	}
 
-	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return llm.InputTokenCount{}, llm.WrapContextError(providerName, err)

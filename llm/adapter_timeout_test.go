@@ -54,87 +54,192 @@ func TestApplyAdapterTimeout_Streaming(t *testing.T) {
 	}
 }
 
-func TestAdapterTransport_ConnectTimeout_ReturnsTransport(t *testing.T) {
-	at := &AdapterTimeout{Connect: 5 * time.Second}
+type adapterTimeoutRoundTripper struct {
+	called bool
+}
+
+func (rt *adapterTimeoutRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	rt.called = true
+	return &http.Response{
+		StatusCode: http.StatusNoContent,
+		Status:     "204 No Content",
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    req,
+	}, nil
+}
+
+func TestAdapterTransport_ConfiguresDefaultTransport(t *testing.T) {
+	at := &AdapterTimeout{Connect: 5 * time.Second, Request: 7 * time.Second}
 	transport := AdapterTransport(at)
 	if transport == nil {
-		t.Fatal("expected non-nil transport")
+		t.Fatal("expected configured transport")
+	}
+
+	defaultTransport := http.DefaultTransport.(*http.Transport)
+	if transport == defaultTransport {
+		t.Fatal("expected a clone of http.DefaultTransport")
+	}
+	if transport.ResponseHeaderTimeout != 7*time.Second {
+		t.Fatalf("ResponseHeaderTimeout = %v, want 7s", transport.ResponseHeaderTimeout)
 	}
 	if transport.DialContext == nil {
-		t.Fatal("transport should have a DialContext with timeout")
+		t.Fatal("DialContext is nil; connect timeout would not be enforced")
 	}
-	// Verify the DialContext is a real working dialer that can establish connections,
-	// not merely a non-nil function pointer.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if transport.TLSHandshakeTimeout != defaultTransport.TLSHandshakeTimeout {
+		t.Fatalf("TLSHandshakeTimeout = %v, want %v", transport.TLSHandshakeTimeout, defaultTransport.TLSHandshakeTimeout)
+	}
+	if transport.ForceAttemptHTTP2 != defaultTransport.ForceAttemptHTTP2 {
+		t.Fatalf("ForceAttemptHTTP2 = %v, want %v", transport.ForceAttemptHTTP2, defaultTransport.ForceAttemptHTTP2)
+	}
+	if (transport.Proxy == nil) != (defaultTransport.Proxy == nil) {
+		t.Fatal("default proxy behavior was not preserved")
+	}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer listener.Close()
+	accepted := make(chan struct{})
 	go func() {
-		c, err := ln.Accept()
-		if err == nil {
-			c.Close()
+		defer close(accepted)
+		conn, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			_ = conn.Close()
 		}
 	}()
-	conn, err := transport.DialContext(context.Background(), "tcp", ln.Addr().String())
+	conn, err := transport.DialContext(context.Background(), "tcp", listener.Addr().String())
 	if err != nil {
 		t.Fatalf("DialContext to local listener failed: %v", err)
 	}
-	conn.Close()
+	_ = conn.Close()
+	<-accepted
 }
 
-func TestAdapterTransport_NilTimeout_ReturnsNil(t *testing.T) {
-	transport := AdapterTransport(nil)
-	if transport != nil {
-		t.Error("expected nil transport for nil AdapterTimeout")
+func TestAdapterTransport_NoTransportTimeoutReturnsNil(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		at   *AdapterTimeout
+	}{
+		{name: "nil", at: nil},
+		{name: "zero", at: &AdapterTimeout{}},
+		{name: "stream read only", at: &AdapterTimeout{StreamRead: time.Second}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if transport := AdapterTransport(tc.at); transport != nil {
+				t.Fatalf("AdapterTransport() = %T, want nil", transport)
+			}
+		})
 	}
 }
 
-func TestAdapterTransport_ZeroConnect_ReturnsNil(t *testing.T) {
-	at := &AdapterTimeout{Connect: 0}
-	transport := AdapterTransport(at)
-	if transport != nil {
-		t.Error("expected nil transport for zero Connect timeout")
-	}
-}
+func TestClientWithAdapterTimeout_ConfiguresStandardTransport(t *testing.T) {
+	originalTransport := http.DefaultTransport.(*http.Transport).Clone()
+	originalTransport.MaxIdleConnsPerHost = 23
+	originalTransport.ResponseHeaderTimeout = 3 * time.Second
+	original := &http.Client{Transport: originalTransport, Timeout: 30 * time.Second}
 
-func TestClientWithConnectTimeout_AppliesTransport(t *testing.T) {
-	orig := &http.Client{Timeout: 30 * time.Second}
-	at := &AdapterTimeout{Connect: 5 * time.Second}
-	client := ClientWithConnectTimeout(orig, at)
-	if client == orig {
-		t.Error("expected a new client copy, not the original")
+	client := ClientWithAdapterTimeout(original, &AdapterTimeout{
+		Connect: 5 * time.Second,
+		Request: 7 * time.Second,
+	})
+	if client == original {
+		t.Fatal("expected a copied client")
 	}
-	if client.Transport == nil {
-		t.Fatal("expected Transport to be set")
+	if client.Timeout != original.Timeout {
+		t.Fatalf("client Timeout = %v, want %v", client.Timeout, original.Timeout)
 	}
-	if client.Timeout != 30*time.Second {
-		t.Errorf("expected original timeout preserved, got %v", client.Timeout)
-	}
-	// Verify the transport carries the connect-timeout dialer.
-	// A bare &http.Transport{} (no dialer) would have nil DialContext.
-	ht, ok := client.Transport.(*http.Transport)
+
+	transport, ok := client.Transport.(*http.Transport)
 	if !ok {
-		t.Fatalf("expected *http.Transport, got %T", client.Transport)
+		t.Fatalf("Transport = %T, want *http.Transport", client.Transport)
 	}
-	if ht.DialContext == nil {
-		t.Error("transport DialContext is nil; connect timeout would not be enforced")
+	if transport == originalTransport {
+		t.Fatal("expected a cloned transport")
+	}
+	if transport.ResponseHeaderTimeout != 7*time.Second {
+		t.Fatalf("ResponseHeaderTimeout = %v, want 7s", transport.ResponseHeaderTimeout)
+	}
+	if transport.MaxIdleConnsPerHost != 23 {
+		t.Fatalf("MaxIdleConnsPerHost = %d, want 23", transport.MaxIdleConnsPerHost)
+	}
+	if transport.DialContext == nil {
+		t.Fatal("DialContext is nil; connect timeout would not be enforced")
+	}
+	if originalTransport.ResponseHeaderTimeout != 3*time.Second {
+		t.Fatalf("original ResponseHeaderTimeout mutated to %v", originalTransport.ResponseHeaderTimeout)
 	}
 }
 
-func TestClientWithConnectTimeout_NilTimeout_ReturnsOriginal(t *testing.T) {
-	orig := &http.Client{Timeout: 30 * time.Second}
-	client := ClientWithConnectTimeout(orig, nil)
-	if client != orig {
-		t.Error("expected the original client when AdapterTimeout is nil")
+func TestClientWithAdapterTimeout_ClonesDefaultTransport(t *testing.T) {
+	original := &http.Client{Timeout: 30 * time.Second}
+	client := ClientWithAdapterTimeout(original, &AdapterTimeout{Request: 7 * time.Second})
+	if client == original {
+		t.Fatal("expected a copied client")
+	}
+
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport = %T, want *http.Transport", client.Transport)
+	}
+	defaultTransport := http.DefaultTransport.(*http.Transport)
+	if transport == defaultTransport {
+		t.Fatal("expected a clone of http.DefaultTransport")
+	}
+	if transport.ResponseHeaderTimeout != 7*time.Second {
+		t.Fatalf("ResponseHeaderTimeout = %v, want 7s", transport.ResponseHeaderTimeout)
+	}
+	if transport.TLSHandshakeTimeout != defaultTransport.TLSHandshakeTimeout {
+		t.Fatalf("TLSHandshakeTimeout = %v, want %v", transport.TLSHandshakeTimeout, defaultTransport.TLSHandshakeTimeout)
+	}
+	if (transport.Proxy == nil) != (defaultTransport.Proxy == nil) {
+		t.Fatal("default proxy behavior was not preserved")
 	}
 }
 
-func TestClientWithConnectTimeout_ZeroConnect_ReturnsOriginal(t *testing.T) {
-	orig := &http.Client{Timeout: 30 * time.Second}
-	at := &AdapterTimeout{Connect: 0}
-	client := ClientWithConnectTimeout(orig, at)
-	if client != orig {
-		t.Error("expected the original client when Connect is zero")
+func TestClientWithAdapterTimeout_PreservesOpaqueTransport(t *testing.T) {
+	transport := &adapterTimeoutRoundTripper{}
+	original := &http.Client{Transport: transport}
+	client := ClientWithAdapterTimeout(original, &AdapterTimeout{
+		Connect: time.Second,
+		Request: time.Second,
+	})
+
+	if client == original {
+		t.Fatal("expected a copied client")
+	}
+	if client.Transport != transport {
+		t.Fatalf("Transport = %T, want original opaque transport", client.Transport)
+	}
+	req, err := http.NewRequest(http.MethodGet, "http://example.invalid", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	_ = resp.Body.Close()
+	if !transport.called {
+		t.Fatal("opaque transport was not called")
+	}
+}
+
+func TestClientWithAdapterTimeout_NoTransportTimeoutReturnsOriginal(t *testing.T) {
+	original := &http.Client{Timeout: 30 * time.Second}
+	for _, tc := range []struct {
+		name string
+		at   *AdapterTimeout
+	}{
+		{name: "nil", at: nil},
+		{name: "zero", at: &AdapterTimeout{}},
+		{name: "stream read only", at: &AdapterTimeout{StreamRead: time.Second}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if client := ClientWithAdapterTimeout(original, tc.at); client != original {
+				t.Fatal("client copied without a connect or request timeout")
+			}
+		})
 	}
 }

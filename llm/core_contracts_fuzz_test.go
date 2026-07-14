@@ -102,11 +102,11 @@ func fuzzTimeoutAndHeaders(t *testing.T, seed uint8) {
 		t.Fatal("positive adapter timeout contract failed")
 	}
 	client := &http.Client{}
-	if ClientWithConnectTimeout(client, nil) != client {
-		t.Fatal("client copied without connect timeout")
+	if ClientWithAdapterTimeout(client, nil) != client {
+		t.Fatal("client copied without transport timeouts")
 	}
-	if cp := ClientWithConnectTimeout(client, at); cp == client || cp.Transport == nil {
-		t.Fatal("client connect transport not copied")
+	if cp := ClientWithAdapterTimeout(client, at); cp == client || cp.Transport == nil {
+		t.Fatal("client transport was not copied and configured")
 	}
 	if MergeHeaders(nil, nil) != nil {
 		t.Fatal("empty headers must remain nil")
