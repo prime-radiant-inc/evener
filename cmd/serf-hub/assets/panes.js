@@ -139,19 +139,19 @@
     }
   }
 
-  function openFromChild(source, href, title, afterHref) {
+  function openFromChild(source, href, title, afterHref, explicitAfter) {
     href = normalizePaneHref(href);
     afterHref = afterHref == null ? null : normalizePaneHref(afterHref);
     if (!isKnownPaneSource(source)) return null;
     if (!isPaneSafeHref(href)) return null;
-    return afterHref == null ? open(href, String(title || href)) : openAfter(href, String(title || href), afterHref);
+    return explicitAfter ? openAfter(href, String(title || href), afterHref) : open(href, String(title || href));
   }
 
   function onMessage(e) {
     if (!e || e.origin !== window.location.origin) return;
     var data = e.data || {};
     if (data.type !== "serf:open-beside") return;
-    openFromChild(e.source, data.href, data.title, data.afterHref);
+    openFromChild(e.source, data.href, data.title, data.afterHref, Object.prototype.hasOwnProperty.call(data, "afterHref"));
   }
 
   function showRegion(show) {
@@ -164,10 +164,11 @@
     href = normalizePaneHref(href);
     if (!href) return null;
     var r = region();
+    if (afterHref != null && !paneFor(normalizePaneHref(afterHref))) return null;
     if (!r) {
       if (window.parent && window.parent !== window) {
         var message = { type: "serf:open-beside", href: href, title: title || href };
-        if (afterHref != null) message.afterHref = normalizePaneHref(afterHref);
+        message.afterHref = afterHref == null && prepend ? null : normalizePaneHref(afterHref);
         window.parent.postMessage(message, window.location.origin);
       }
       return null;

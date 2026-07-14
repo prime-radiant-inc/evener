@@ -60,8 +60,17 @@ const P = dom.window.SerfPanes;
   var source = parent.querySelector(".pane-frame").contentWindow;
   PM.open("/thread/child", "child");
   if (PM.open("/s/parent", "parent") !== parent || PM.openHrefs().length !== 2) throw new Error("equivalent pane hrefs must not duplicate");
-  domMsg.window.dispatchEvent(new domMsg.window.MessageEvent("message", { origin: "http://localhost", source: source, data: { type: "serf:open-beside", href: "/s/grand", title: "grand", afterHref: "/s/parent" } }));
+  PM.openFromChild(source, "/s/grand", "grand", "/s/parent", true);
   if (PM.openHrefs().join("|") !== "/thread/parent|/thread/grand|/thread/child") throw new Error("host message must preserve normalized afterHref placement: " + PM.openHrefs().join("|"));
+  PM.close("/thread/child");
+  PM.openFromChild(source, "/s/prepended", "prepended", null, true);
+  if (PM.openHrefs()[0] !== "/thread/prepended") throw new Error("null-parent host bridge must prepend: " + PM.openHrefs().join("|"));
+  PM.openFromChild(source, "/s/untrusted", "untrusted", "/thread/not-a-pane", true);
+  if (PM.openHrefs().indexOf("/thread/untrusted") !== -1) throw new Error("untrusted afterHref must fail closed");
+  var beforeTimers = domMsg.window.setTimeout;
+  var timerCalls = 0;
+  domMsg.window.setTimeout = function () { timerCalls++; return beforeTimers.apply(this, arguments); };
+  if (PM.openAfter("/thread/orphan", "orphan", "/thread/not-a-pane") !== null || timerCalls !== 0) throw new Error("missing parent must not create a pane or loading timer");
   global.window = dom.window; global.document = dom.window.document;
 }());
 

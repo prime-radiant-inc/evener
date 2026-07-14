@@ -48,9 +48,11 @@ function treeWithChildren() {
 
 const { w, posts } = boot();
 const tree = treeWithChildren();
-w.SerfPanes = { calls: [], openAfter: function (href, title, afterHref) {
+w.SerfPanes = { calls: [], state: [], openHrefs: function () { return this.state.slice(); }, openAfter: function (href, title, afterHref) {
   this.calls.push({ href, title, afterHref });
-  return {};
+  if (href.indexOf("CHILD-ERROR") !== -1) return null;
+  if (this.state.indexOf(href) === -1) this.state.push(href);
+  return { href: href };
 } };
 w.SerfSidebar.renderTree(tree);
 const mainRow = w.document.querySelector('[data-row-id="project:p1:local:MAIN"]');
@@ -81,12 +83,19 @@ if (w.SerfPanes.calls.length !== 2 ||
     w.SerfPanes.calls[1].href !== "/thread/local%3ACHILD-RUNNING" || w.SerfPanes.calls[1].afterHref !== "/thread/local%3AMAIN") {
   throw new Error("current child activation must open source-qualified ancestry in order: " + JSON.stringify(w.SerfPanes.calls));
 }
+// Existing ancestors are skipped; duplicate target activation makes one
+// openAfter call and leaves the pane order to the pane manager.
+w.SerfPanes.calls.length = 0;
+w.SerfPanes.state = ["/thread/local%3AMAIN", "/thread/local%3ACHILD-RUNNING"];
+running.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
+if (w.SerfPanes.calls.length !== 1 || w.SerfPanes.calls[0].href !== "/thread/local%3ACHILD-RUNNING") throw new Error("existing ancestors must be skipped and duplicate target must use one openAfter call");
 const grandchildCurrent = w.document.querySelector('[data-row-id="project:p1:local:GRAND-IDLE"]');
+w.SerfPanes.calls.length = 0; w.SerfPanes.state = [];
 grandchildCurrent.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
-if (w.SerfPanes.calls.length !== 5 ||
-    w.SerfPanes.calls[2].href !== "/thread/local%3AMAIN" || w.SerfPanes.calls[2].afterHref !== null ||
-    w.SerfPanes.calls[3].href !== "/thread/local%3ACHILD-RUNNING" || w.SerfPanes.calls[3].afterHref !== "/thread/local%3AMAIN" ||
-    w.SerfPanes.calls[4].href !== "/thread/local%3AGRAND-IDLE" || w.SerfPanes.calls[4].afterHref !== "/thread/local%3ACHILD-RUNNING") {
+if (w.SerfPanes.calls.length !== 3 ||
+    w.SerfPanes.calls[0].href !== "/thread/local%3AMAIN" || w.SerfPanes.calls[0].afterHref !== null ||
+    w.SerfPanes.calls[1].href !== "/thread/local%3ACHILD-RUNNING" || w.SerfPanes.calls[1].afterHref !== "/thread/local%3AMAIN" ||
+    w.SerfPanes.calls[2].href !== "/thread/local%3AGRAND-IDLE" || w.SerfPanes.calls[2].afterHref !== "/thread/local%3ACHILD-RUNNING") {
   throw new Error("nested child activation must use source-qualified parent-to-child calls: " + JSON.stringify(w.SerfPanes.calls));
 }
 // Keyed rows must retain identity while transitioning child -> ordinary and
@@ -153,7 +162,7 @@ if (w.localStorage.getItem("serf-hub.sidebar.expanded.inactive:project:p1:local:
   throw new Error("main inactive expansion must persist under inactive:<row_id>");
 }
 const inactiveChild = w.document.querySelector('[data-row-id="project:p1:local:CHILD-ERROR"]');
-w.SerfPanes.calls.length = 0;
+w.SerfPanes.calls.length = 0; w.SerfPanes.state = [];
 inactiveChild.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
 if (w.SerfPanes.calls.length !== 2 ||
     w.SerfPanes.calls[0].href !== "/thread/local%3AMAIN" || w.SerfPanes.calls[0].afterHref !== null ||
