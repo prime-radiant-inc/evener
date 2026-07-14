@@ -55,6 +55,9 @@ The fixture seam is a temporary directory containing `func ProjectSlug(path stri
 - `cmd/serf-doctor/main.go`
 - `cmdutil/statedir.go`
 - `identifier/project.go`
+- `cmd/serf-doctor/main_test.go`
+- `go.work`
+- `identifier/go.sum`
 
 The pre-existing `.superpowers/sdd/task-1-report.md` modification was not edited, staged, or committed.
 
@@ -68,7 +71,53 @@ Reviewed the complete diff from base `fe91559ba9f05e2a5b635477949fa68d19827e9d`,
 - The exact module tidy sequence cannot complete because the environment cannot write the Go module cache and has no network. No unrelated dependency upgrades were accepted.
 - Historical SDD plans/specs retain historical hash/ULID examples; published operational/testing documentation was updated, while historical records were intentionally left unchanged.
 
+## Follow-up fixes and verification
+
+The parent follow-up exposed two clean-break verification gaps. First, `go.work`
+now carries the minimal additional exact replacement:
+
+```text
+replace primeradiant.com/serf/auth v0.1.0 => ./auth
+```
+
+This matches `llm/go.mod` while preserving the existing `auth v0.0.0` replacement.
+`go work sync` succeeds with the corrected workspace. The full required sequence
+was rerun verbatim:
+
+```bash
+go work sync && (cd identifier && go mod tidy) && (cd agent && go mod tidy) && (cd llm && go mod tidy) && go mod tidy
+```
+
+It remains environment-blocked after `go work sync`: the Go tool cannot write
+`/Users/jesse/go/pkg/mod/cache/download/.../*.lock` and then cannot resolve the
+local module path through `proxy.golang.org` because network is disabled. The
+workspace replacement itself is therefore verified; no dependency upgrades or
+ULID removals were made. The only tidy artifact retained is the expected
+`identifier/go.sum` for its existing `github.com/google/uuid v1.6.0` dependency.
+The `go.work` ordering change is the normalizer output from `go work sync`.
+
+Second, `go test ./cmd/serf-doctor -count=1` initially failed on the stale local
+fixture ID `01CMDTESTSESSIONXXXXXXXXXXX`. The fixture migration was test-first:
+the unfiltered package command failed with `invalid session id`, then all root,
+child, grandchild, and observer fixture IDs were replaced with deterministic
+22-character base62 encodings of valid UUIDv7 values, and the legacy
+`00aa00bb00cc00dd` project bucket was replaced with
+`project-test-0123456789`. The unfiltered doctor package now passes.
+
+Final follow-up commands:
+
+```text
+go test . -run 'Test.*Identifier.*Audit' -count=1    PASS
+make lint-docs                                      PASS
+go test ./identifier -count=1                      PASS
+go test ./cmd/serf-doctor -count=1                 PASS
+git diff --check                                    PASS
+```
+
+The root/install listener tests remain blocked by the sandbox's
+`listen tcp 127.0.0.1:0: bind: operation not permitted` restriction.
+
 ## Commit hash(es)
 
 - Implementation commit: `3878f6e9a7be2876f06e95b98a405bc733a17352` — `docs: document unified identifier formats`
-- Report commit: recorded in the final report update commit after this implementation commit.
+- Follow-up fix/report commit: recorded after the follow-up verification commit.

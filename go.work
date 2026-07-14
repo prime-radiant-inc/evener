@@ -6,12 +6,14 @@ use (
 	./auth
 	./envvars
 	./fuzz
-	./invariant
 	./identifier
+	./invariant
 	./llm
 )
 
 replace primeradiant.com/serf/auth v0.0.0 => ./auth
+
+replace primeradiant.com/serf/auth v0.1.0 => ./auth
 
 replace primeradiant.com/serf/llm v0.0.0 => ./llm
 
