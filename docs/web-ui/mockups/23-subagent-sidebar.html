@@ -37,10 +37,20 @@
   [data-tone="attention"] { color: var(--attention); }
   [data-tone="error"] { color: var(--error); }
   [data-tone="done"], [data-tone="neutral"] { color: var(--ink-3); }
-  .pane-strip { min-width: 0; padding: var(--s5); background: var(--bg); }
-  .pane-placeholder { max-width: 600px; padding-top: var(--s4); color: var(--ink-3); }
-  .pane-placeholder strong { display: block; margin-bottom: var(--s2); color: var(--ink-2); }
-  .self-checks { margin-top: var(--s5); padding: var(--s4); border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); }
+  .pane-strip { display: flex; min-width: 0; overflow-x: auto; scroll-snap-type: x proximity; background: var(--bg); }
+  .thread-pane { flex: 0 0 clamp(360px, 48vw, 680px); min-height: 620px; border-right: 1px solid var(--line); scroll-snap-align: start; outline: none; }
+  .thread-pane[data-active="true"] { box-shadow: inset 0 2px 0 var(--accent); }
+  .thread-pane:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+  .thread-pane > header { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: var(--s3); align-items: center; min-height: 48px; padding: 0 var(--s4); border-bottom: 1px solid var(--line); }
+  .pane-body { max-width: 68ch; padding: var(--s5); color: var(--ink-2); line-height: 1.65; }
+  .pane-body .fixture-label { margin: 0 0 var(--s2); color: var(--ink-3); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .08em; }
+  .thread-pane button { padding: var(--s1) var(--s2); color: var(--ink-2); font-size: var(--fs-lg); line-height: 1; }
+  .thread-pane button:hover { color: var(--ink); background: var(--surface); }
+  @media (max-width: 700px) {
+    .mockup-page { padding: 0; }
+    .app-frame { grid-template-columns: minmax(210px, 44vw) minmax(0, 1fr); border-radius: 0; }
+    .thread-pane { flex-basis: calc(100vw - min(44vw, 292px)); }
+  }
   .self-checks h2 { font-size: var(--fs-md); }
   #self-check-summary { margin-top: var(--s2); color: var(--ink-2); }
   #self-check-list { display: grid; gap: var(--s1); margin-top: var(--s3); padding-left: var(--s5); color: var(--ink-2); font-size: var(--fs-sm); }
@@ -96,6 +106,31 @@ function runSelfChecks() {
   check("inactive count uses direct terminal children", document.querySelector('[data-inactive-toggle="main"]')?.textContent.includes("4"));
   check("terminal descendants keep branch ancestry", document.querySelector('[data-inactive-region="main"] [data-session-branch="archive"] [data-session-branch="archive-child"]') !== null);
   check("session rows never nest interactive buttons", document.querySelectorAll("button button").length === 0);
+
+  const paneSnapshot = {
+    openPaneIds: [...state.openPaneIds],
+    activePaneId: state.activePaneId,
+    expanded: new Set(state.inactiveExpanded),
+  };
+
+  activateSession("audit-live", document.querySelector('[data-session-row="audit-live"]'));
+  check("missing ancestor opens first", state.openPaneIds.includes("audit"));
+  check("nested child sits immediately right of direct parent", state.openPaneIds.indexOf("audit-live") === state.openPaneIds.indexOf("audit") + 1);
+  const countBeforeReopen = state.openPaneIds.filter((id) => id === "audit-live").length;
+  activateSession("audit-live", document.querySelector('[data-session-row="audit-live"]'));
+  check("reopening creates no duplicate", countBeforeReopen === 1 && state.openPaneIds.filter((id) => id === "audit-live").length === 1);
+  check("existing pane root receives focus", document.activeElement?.dataset.paneId === "audit-live");
+
+  activateSession("review", document.querySelector('[data-session-row="review"]'));
+  activateSession("audit-live", document.querySelector('[data-session-row="audit-live"]'));
+  closePane("audit");
+  check("closing parent removes descendant panes", !state.openPaneIds.includes("audit") && !state.openPaneIds.includes("audit-live"));
+  check("closing parent preserves unrelated sibling pane", state.openPaneIds.includes("review"));
+
+  state.openPaneIds = paneSnapshot.openPaneIds;
+  state.activePaneId = paneSnapshot.activePaneId;
+  state.inactiveExpanded = paneSnapshot.expanded;
+  render();
 
   renderCheckResults(results);
   return results;
@@ -260,27 +295,94 @@ function buildSessionRow(session, depth) {
   return row;
 }
 
-function activateSession(sessionId, row) {
+function activateSession(sessionId, originRow) {
+  if (originRow) state.returnFocusByPane.set(sessionId, originRow.dataset.sessionRow);
+  ensurePane(sessionId);
   state.activePaneId = sessionId;
-  if (!state.openPaneIds.includes(sessionId)) state.openPaneIds.push(sessionId);
-  document.querySelector('[data-session-row][aria-current="true"]')?.setAttribute("aria-current", "false");
-  row.setAttribute("aria-current", "true");
-  renderPanes();
+  render();
+  focusPane(sessionId);
+}
+
+function ensurePane(sessionId) {
+  if (state.openPaneIds.includes(sessionId)) return;
+  const session = state.sessions.get(sessionId);
+  if (!session) throw new Error(`Missing session: ${sessionId}`);
+  if (session.parentId && !state.openPaneIds.includes(session.parentId)) ensurePane(session.parentId);
+  if (!session.parentId) return;
+  const parentIndex = state.openPaneIds.indexOf(session.parentId);
+  state.openPaneIds.splice(parentIndex + 1, 0, sessionId);
+}
+
+function focusPane(sessionId) {
+  const pane = document.querySelector(`[data-pane-id="${CSS.escape(sessionId)}"]`);
+  pane?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+  pane?.focus({ preventScroll: true });
 }
 
 function renderPanes() {
-  const panes = document.getElementById("pane-strip");
-  panes.replaceChildren();
-  const active = state.sessions.get(state.activePaneId);
-  const placeholder = document.createElement("div");
-  placeholder.className = "pane-placeholder";
-  const title = document.createElement("strong");
-  title.textContent = active ? active.title : "No session selected";
-  const copy = document.createElement("span");
-  copy.textContent = "The session workspace is reserved for the next mockup slice.";
-  placeholder.append(title, copy);
-  panes.append(placeholder);
+  const strip = document.getElementById("pane-strip");
+  strip.replaceChildren(...state.openPaneIds.map((id) => buildPane(state.sessions.get(id))));
 }
+
+function buildPane(session) {
+  const pane = document.createElement("article");
+  pane.className = "thread-pane";
+  pane.dataset.paneId = session.id;
+  pane.tabIndex = -1;
+  pane.setAttribute("aria-labelledby", `pane-title-${session.id}`);
+  if (state.activePaneId === session.id) pane.dataset.active = "true";
+
+  const header = document.createElement("header");
+  const heading = document.createElement("h2");
+  heading.id = `pane-title-${session.id}`;
+  heading.textContent = session.title;
+  const status = document.createElement("span");
+  status.textContent = STATUS_META[session.status].label;
+  status.dataset.tone = STATUS_META[session.status].tone;
+  header.append(heading, status);
+
+  if (session.id !== "main") {
+    const close = document.createElement("button");
+    close.type = "button";
+    close.dataset.closePane = session.id;
+    close.setAttribute("aria-label", `Close ${session.title}`);
+    close.textContent = "×";
+    close.addEventListener("click", () => closePane(session.id));
+    header.append(close);
+  }
+
+  const body = document.createElement("div");
+  body.className = "pane-body";
+  body.innerHTML = '<p class="fixture-label">Fixture transcript</p><p>This pane represents the selected agent session. Transcript streaming is outside this mockup.</p>';
+  pane.append(header, body);
+  return pane;
+}
+
+function isDescendantOf(sessionId, ancestorId) {
+  let current = state.sessions.get(sessionId);
+  while (current?.parentId) {
+    if (current.parentId === ancestorId) return true;
+    current = state.sessions.get(current.parentId);
+  }
+  return false;
+}
+
+function closePane(sessionId) {
+  if (sessionId === "main") return;
+  const closedIds = new Set(state.openPaneIds.filter((id) => id === sessionId || isDescendantOf(id, sessionId)));
+  state.openPaneIds = state.openPaneIds.filter((id) => !closedIds.has(id));
+  state.activePaneId = state.sessions.get(sessionId)?.parentId || "main";
+
+  const session = state.sessions.get(sessionId);
+  if (session && STATUS_META[session.status].terminal && session.parentId) {
+    state.inactiveExpanded.add(session.parentId);
+  }
+  render();
+
+  const rowId = state.returnFocusByPane.get(sessionId) || sessionId;
+  document.querySelector(`[data-session-row="${CSS.escape(rowId)}"]`)?.focus();
+}
+
 
 function syncScenarioButtons() {
   document.querySelectorAll("[data-scenario]").forEach((button) => {
