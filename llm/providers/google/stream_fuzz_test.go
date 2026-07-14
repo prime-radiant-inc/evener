@@ -63,10 +63,10 @@ func accumulateGeminiSSE(a *Adapter, sse []byte, chunkOneByte bool) (*llm.Respon
 // normalizeGeminiResponse clears the framing-dependent raw-body fields (the
 // semantics-preserving transforms legitimately alter the verbatim SSE bytes) and
 // blanks every synthetic tool-call ID. Gemini does not carry a tool-call ID on
-// the wire, so the decoder mints a random ULID per call ("call_" + ulid.Make());
-// that value is random by construction and cannot be compared across two parses
-// of the same bytes. Everything else (text, tool name/args, reasoning, finish,
-// usage, Raw) must match.
+// the wire, so the decoder mints a compact identifier-domain ID per call
+// ("call_" plus a fixed-width payload); that value is random by construction
+// and cannot be compared across two parses of the same bytes. Everything else
+// (text, tool name/args, reasoning, finish, usage, Raw) must match.
 func normalizeGeminiResponse(r *llm.Response) *llm.Response {
 	if r == nil {
 		return nil
