@@ -14,11 +14,12 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
 	"primeradiant.com/serf/hubapi"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/rendezvous"
 )
 
 var (
-	hubBuildNavigationTree       = hubcore.BuildTree
+	hubBuildNavigationTree       = hubcore.BuildTreeWithProjects
 	hubDeriveNavigationAttention = hubcore.DeriveAttention
 	hubNormalizeTreeState        = hubcore.NormalizeState
 	hubAppThreadRef              = hubRefFromAppThread
@@ -59,9 +60,8 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		}{time.Now().UTC(), hubAttentionSummaryFromCore(attentionSummary)})
 		return
 	}
-	_, live := hubNavigationInputs(s, r.Context())
 	favs := s.favoriteDecisions()
-	tree, attentionSummary := s.memoTree(r.Context())
+	tree, attentionSummary, live := s.memoTreeWithLive(r.Context())
 	resp := hubapi.TreeResponse{
 		GeneratedAt:      time.Now().UTC(),
 		Sources:          s.apiTreeSources(),
@@ -118,15 +118,18 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		if le.SessionID == "" || seenProjectRefs[le.SessionID] {
 			continue
 		}
-		project := filepath.Base(le.WorkingDir)
-		if le.WorkingDir == "" || project == "." {
-			project = "(no project)"
+		projectName := "(no project)"
+		key := "no-project"
+		workingDir := ""
+		if le.Project.ID != "" {
+			key = le.Project.ID
+			workingDir = le.Project.CanonicalPath
+			projectName = filepath.Base(workingDir)
 		}
-		key := hubcore.ProjectSlug(le.WorkingDir)
 		node := hubcore.TreeNode{
 			ID:        le.SessionID,
 			Title:     hubLiveTreeTitle(le.SessionID, le, s.cfg.Past),
-			Project:   project,
+			Project:   projectName,
 			State:     hubNormalizeTreeState(le.Status),
 			Kind:      "session",
 			CreatedAt: le.StartedAt,
@@ -145,8 +148,8 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		projectIndexes[key] = len(resp.Projects)
 		resp.Projects = append(resp.Projects, hubapi.TreeProject{
 			Key:         key,
-			Name:        project,
-			WorkingDir:  le.WorkingDir,
+			Name:        projectName,
+			WorkingDir:  workingDir,
 			RollupState: node.State,
 			Sessions:    []hubapi.TreeNode{apiNode},
 		})
@@ -184,17 +187,23 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 // themselves, since memoTree's return shape only carries what treeCache
 // stores.
 func (s *WebServer) memoTree(ctx context.Context) (hubcore.Tree, hubcore.AttentionSummary) {
-	metas, live := hubNavigationInputs(s, ctx)
+	tree, summary, _ := s.memoTreeWithLive(ctx)
+	return tree, summary
+}
+
+func (s *WebServer) memoTreeWithLive(ctx context.Context) (hubcore.Tree, hubcore.AttentionSummary, []hubcore.LiveEntry) {
+	metas, live, projects := hubNavigationInputs(s, ctx)
 	decisions := s.archiveDecisions()
 	var version uint64
 	if s.cfg.Inputs != nil {
 		version = s.cfg.Inputs.Load()
 	}
-	return s.treeCache.Get(version, time.Now(), func() (hubcore.Tree, hubcore.AttentionSummary) {
-		t := hubBuildNavigationTree(metas, live, decisions)
+	tree, summary := s.treeCache.Get(version, time.Now(), func() (hubcore.Tree, hubcore.AttentionSummary) {
+		t := hubBuildNavigationTree(metas, live, decisions, projects)
 		_, sum := hubDeriveNavigationAttention(metas, live, decisions)
 		return t, sum
 	})
+	return tree, summary, live
 }
 
 // handleAPITreeProject serves a single project's node by indexing the
@@ -221,7 +230,7 @@ func (s *WebServer) handleAPITreeProject(w http.ResponseWriter, r *http.Request)
 	writeAPIError(w, http.StatusNotFound, "project not found")
 }
 
-func (s *WebServer) navigationTreeInputs(ctx context.Context) ([]schema.SessionMeta, []hubcore.LiveEntry) {
+func (s *WebServer) navigationTreeInputs(ctx context.Context) ([]schema.SessionMeta, []hubcore.LiveEntry, map[string]identifier.Project) {
 	var live []hubcore.LiveEntry
 	if s.cfg.Roster != nil {
 		live = s.cfg.Roster.List()
@@ -240,7 +249,16 @@ func (s *WebServer) navigationTreeInputs(ctx context.Context) ([]schema.SessionM
 			live = append(live, entry)
 		}
 	}
-	return metas, live
+	// Resolve live working directories once at ingestion. BuildTree and the
+	// orphan-live projection reuse this carried identity rather than resolving
+	// in grouping or rendering loops.
+	projects := hubcore.ResolveProjectMap(metas, live)
+	for i := range live {
+		if project, ok := projects[live[i].WorkingDir]; ok {
+			live[i].Project = project
+		}
+	}
+	return metas, live, projects
 }
 
 // remoteTreeThreads returns the remote-source thread list the tree walk

@@ -131,7 +131,7 @@ func FuzzFinalSessionTree(f *testing.F) {
 			past := hubcore.NewPastIndex("")
 			past.SeedForTest([]schema.SessionMeta{{ID: "p", CreatedAt: now, UpdatedAt: now}})
 			web := NewWebServer(hubcore.WebConfig{Past: past, RemoteThreadCache: cache})
-			_, _ = web.navigationTreeInputs(context.Background())
+			_, _, _ = web.navigationTreeInputs(context.Background())
 		case 9:
 			web := NewWebServer(hubcore.WebConfig{})
 			web.sources = appsource.NewRegistry()

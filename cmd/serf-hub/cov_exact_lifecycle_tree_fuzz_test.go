@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/hubapi"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -129,11 +130,11 @@ func FuzzExactLifecycleTree(f *testing.F) {
 			hubTreeWorkspaceData = oldWorkspace
 			hubTreeAttentionRank = oldRank
 		})
-		key := hubcore.ProjectSlug("/work/p")
+		key := testProjectID(t, "/work/p")
 		node := func(id, kind, state string, updated time.Time) hubcore.TreeNode {
 			return hubcore.TreeNode{ID: id, Kind: kind, State: state, Title: id, UpdatedAt: updated, CreatedAt: updated}
 		}
-		hubBuildNavigationTree = func([]schema.SessionMeta, []hubcore.LiveEntry, map[hubcore.ArchiveKey]bool) hubcore.Tree {
+		hubBuildNavigationTree = func([]schema.SessionMeta, []hubcore.LiveEntry, map[hubcore.ArchiveKey]bool, map[string]identifier.Project) hubcore.Tree {
 			return hubcore.Tree{
 				NeedsYou: []hubcore.TreeNode{node("active", "session", "waiting", now)},
 				Projects: []hubcore.TreeProject{{Key: key, Name: "p", WorkingDir: "/work/p", RollupState: "idle", Current: []hubcore.TreeNode{
@@ -147,12 +148,12 @@ func FuzzExactLifecycleTree(f *testing.F) {
 			hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "orphan", WorkingDir: "/work/p", StartedAt: now}, SessionID: "orphan", Status: "error"},
 			hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "pathless", StartedAt: now}, SessionID: "pathless", Status: "idle"},
 		)
-		hubNavigationInputs = func(*WebServer, context.Context) ([]schema.SessionMeta, []hubcore.LiveEntry) {
+		hubNavigationInputs = func(*WebServer, context.Context) ([]schema.SessionMeta, []hubcore.LiveEntry, map[string]identifier.Project) {
 			return nil, []hubcore.LiveEntry{
 				{Entry: rendezvous.Entry{SessionID: "active", WorkingDir: "/work/p", StartedAt: now}, SessionID: "active", Status: "waiting"},
 				{Entry: rendezvous.Entry{SessionID: "orphan", WorkingDir: "/work/p", StartedAt: now}, SessionID: "orphan", Status: "errored"},
 				{Entry: rendezvous.Entry{SessionID: "pathless", StartedAt: now}, SessionID: "pathless", Status: "idle"},
-			}
+			}, nil
 		}
 		rankCalls := 0
 		hubTreeAttentionRank = func(string) int {
@@ -174,7 +175,7 @@ func FuzzExactLifecycleTree(f *testing.F) {
 
 		invalidCache := &hubcore.RemoteThreadCache{}
 		invalidCache.Store([]appwire.Thread{{}})
-		_, _ = NewWebServer(hubcore.WebConfig{RemoteThreadCache: invalidCache}).navigationTreeInputs(ctx)
+		_, _, _ = NewWebServer(hubcore.WebConfig{RemoteThreadCache: invalidCache}).navigationTreeInputs(ctx)
 
 		detailPast := hubcore.NewPastIndex("")
 		detailPast.SeedForTest([]schema.SessionMeta{{ID: "r", Name: "past title", TurnCount: 3, CreatedAt: now, UpdatedAt: now}})

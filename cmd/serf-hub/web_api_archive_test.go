@@ -3,13 +3,43 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/serf/identifier"
 )
+
+func TestArchiveEndpointRejectsProjectIDPathMismatchAndNoProject(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := hubcore.NewArchiveStore(filepath.Join(root, "index.db"))
+	web := NewWebServer(hubcore.WebConfig{Archive: store, Past: hubcore.NewPastIndex("")})
+	for name, body := range map[string]string{
+		"mismatch":   `{"kind":"project","id":"` + project.ID + `","working_dir":"` + filepath.Join(root, "other") + `","archived":true}`,
+		"no-project": `{"kind":"project","id":"no-project","working_dir":"` + projectDir + `","archived":true}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/archive", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			web.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
 
 func TestArchiveEndpointSetsDecision(t *testing.T) {
 	dir := t.TempDir()

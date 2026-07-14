@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/afero"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -23,9 +24,10 @@ import (
 type LiveEntry struct {
 	rendezvous.Entry
 	SessionID         string
-	Status            string // most-recent daemon state ("active", "idle", "awaiting", etc.)
-	PendingAsk        bool   // true while the daemon reports an unanswered ask_user question
-	PendingEscalation bool   // true while the daemon reports a blocked sandbox-exemption escalation (M7)
+	Status            string             // most-recent daemon state ("active", "idle", "awaiting", etc.)
+	PendingAsk        bool               // true while the daemon reports an unanswered ask_user question
+	PendingEscalation bool               // true while the daemon reports a blocked sandbox-exemption escalation (M7)
+	Project           identifier.Project // canonical identity resolved at hub ingestion, when available
 }
 
 // Prober is implemented by liveness-checking strategies.

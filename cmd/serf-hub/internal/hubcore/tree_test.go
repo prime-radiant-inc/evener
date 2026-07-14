@@ -2,6 +2,9 @@ package hubcore
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -9,8 +12,66 @@ import (
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/hubapi"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/rendezvous"
 )
+
+func TestBuildTreeCanonicalProjectAggregation(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "shared")
+	initHubTestRepo(t, main)
+	linked := filepath.Join(root, "linked")
+	runHubTestGit(t, main, "worktree", "add", "-q", linked, "-b", "feature")
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(linked, alias); err != nil {
+		t.Fatal(err)
+	}
+	clone := filepath.Join(root, "other", "shared")
+	if err := os.MkdirAll(filepath.Dir(clone), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runHubTestGit(t, root, "clone", "-q", main, clone)
+	now := time.Unix(1_700_000_000, 0)
+	paths := []string{main, linked, alias, clone}
+	metas := make([]schema.SessionMeta, 0, len(paths))
+	for i, path := range paths {
+		metas = append(metas, schema.SessionMeta{
+			ID: fmt.Sprintf("canonical-%d", i), CreatedAt: now, UpdatedAt: now,
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: path},
+		})
+	}
+	tree := BuildTreeAt(metas, nil, nil, now)
+	if len(tree.Projects) != 2 {
+		t.Fatalf("projects=%d, want shared main/worktree/symlink plus distinct clone: %+v", len(tree.Projects), tree)
+	}
+	for _, project := range tree.Projects {
+		if err := identifier.ValidateProjectID(project.Key); err != nil {
+			t.Fatalf("project key %q is not canonical: %v", project.Key, err)
+		}
+		if project.WorkingDir == main && len(allSessions(project)) != 3 {
+			t.Fatalf("shared project sessions=%d, want 3: %+v", len(allSessions(project)), project)
+		}
+	}
+}
+
+func initHubTestRepo(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runHubTestGit(t, filepath.Dir(dir), "init", "-q", filepath.Base(dir))
+	runHubTestGit(t, dir, "add", ".")
+	runHubTestGit(t, dir, "-c", "user.name=serf-test", "-c", "user.email=serf-test@example.invalid", "commit", "-q", "--allow-empty", "-m", "init")
+}
+
+func runHubTestGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
 
 func fuzzScenarioBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 	now := time.Now()
@@ -326,12 +387,22 @@ func fuzzScenarioBuildTree_NoProjectFallback(t *testing.T) {
 // (e.g. "dlg_01H...").
 func fuzzScenarioBuildTree_GroupsByRestoreRootWhenWorktreeActive(t *testing.T) {
 	now := time.Now()
+	root := t.TempDir()
+	restoreRoot := filepath.Join(root, "serf-hub")
+	worktree := filepath.Join(root, "state", "worktrees", "serf-hub", "dlg_01H")
+	if err := os.MkdirAll(restoreRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	canonicalRestoreRoot, err := identifier.ResolveProject(restoreRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
 	metas := []schema.SessionMeta{
 		{ID: "01WT", UpdatedAt: now, OriginalPrompt: "work in lane",
-			EnvInfo:             schema.EnvironmentInfo{WorkingDir: "/state/worktrees/serf-hub/dlg_01H"},
-			WorktreePath:        "/state/worktrees/serf-hub/dlg_01H",
+			EnvInfo:             schema.EnvironmentInfo{WorkingDir: worktree},
+			WorktreePath:        worktree,
 			WorktreeManaged:     true,
-			WorktreeRestoreRoot: "/projects/serf-hub"},
+			WorktreeRestoreRoot: restoreRoot},
 	}
 
 	tree := buildTree(metas, nil)
@@ -343,8 +414,8 @@ func fuzzScenarioBuildTree_GroupsByRestoreRootWhenWorktreeActive(t *testing.T) {
 	if proj.Name != "serf-hub" {
 		t.Errorf("name: %q, want restore-root basename %q", proj.Name, "serf-hub")
 	}
-	if proj.WorkingDir != "/projects/serf-hub" {
-		t.Errorf("workingDir: %q, want restore root %q", proj.WorkingDir, "/projects/serf-hub")
+	if proj.WorkingDir != canonicalRestoreRoot.CanonicalPath {
+		t.Errorf("workingDir: %q, want canonical restore root %q", proj.WorkingDir, canonicalRestoreRoot.CanonicalPath)
 	}
 }
 
@@ -353,12 +424,18 @@ func fuzzScenarioBuildTree_GroupsByRestoreRootWhenWorktreeActive(t *testing.T) {
 // switch modes swap the env and so must both use the restore root.
 func fuzzScenarioBuildTree_PathEnteredNonManagedWorktreeAlsoGroupsByRestoreRoot(t *testing.T) {
 	now := time.Now()
+	root := t.TempDir()
+	restoreRoot := filepath.Join(root, "serf-hub")
+	worktree := filepath.Join(root, "other-checkout")
+	if err := os.MkdirAll(restoreRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	metas := []schema.SessionMeta{
 		{ID: "01PATHWT", UpdatedAt: now, OriginalPrompt: "poke around a sibling checkout",
-			EnvInfo:             schema.EnvironmentInfo{WorkingDir: "/home/jesse/other-checkout"},
-			WorktreePath:        "/home/jesse/other-checkout",
+			EnvInfo:             schema.EnvironmentInfo{WorkingDir: worktree},
+			WorktreePath:        worktree,
 			WorktreeManaged:     false,
-			WorktreeRestoreRoot: "/projects/serf-hub"},
+			WorktreeRestoreRoot: restoreRoot},
 	}
 
 	tree := buildTree(metas, nil)
@@ -463,8 +540,16 @@ func fuzzScenarioBuildTreeArchivedProjectPlacement(t *testing.T) {
 	}
 
 	// manual project archive forces delta to ArchivedProjects even though it's fresh.
-	metas2 := []schema.SessionMeta{mk("d1", "delta", 1*time.Hour)}
-	tree2 := BuildTreeAt(metas2, nil, map[ArchiveKey]bool{{Kind: "project", ID: "delta"}: true}, now)
+	deltaDir := filepath.Join(t.TempDir(), "delta")
+	if err := os.MkdirAll(deltaDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	delta, err := identifier.ResolveProject(deltaDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metas2 := []schema.SessionMeta{{ID: "d1", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: deltaDir}}}
+	tree2 := BuildTreeAt(metas2, nil, map[ArchiveKey]bool{{Kind: "project", ID: delta.ID}: true}, now)
 	if len(tree2.Projects) != 0 || len(tree2.ArchivedProjects) != 1 {
 		t.Fatalf("delta manual-archived should be in ArchivedProjects")
 	}
@@ -872,22 +957,35 @@ func fuzzScenarioBuildTree_NoOverflowWhenUnderCap(t *testing.T) {
 }
 
 func fuzzScenarioBuildProjectTree_ReturnsSingleProjectTiers(t *testing.T) {
-	// The lazy-load helper rebuilds one named project's tiers from the full meta
+	// The lazy-load helper rebuilds one canonical project's tiers from the full meta
 	// set, ignoring sessions from other projects.
 	now := time.Unix(1_700_000_000, 0)
-	mk := func(id, proj string, updatedAgo time.Duration) schema.SessionMeta {
+	root := t.TempDir()
+	wantedDir := filepath.Join(root, "wanted")
+	otherDir := filepath.Join(root, "other")
+	if err := os.MkdirAll(wantedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(otherDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wanted, err := identifier.ResolveProject(wantedDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mk := func(id string, dir string, updatedAgo time.Duration) schema.SessionMeta {
 		return schema.SessionMeta{ID: id, OriginalPrompt: id,
 			CreatedAt: now.Add(-updatedAgo), UpdatedAt: now.Add(-updatedAgo),
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/" + proj}}
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: dir}}
 	}
 	metas := []schema.SessionMeta{
-		mk("wanted-cur", "wanted", 1*time.Hour),
-		mk("wanted-rec", "wanted", 48*time.Hour),
-		mk("other-cur", "other", 1*time.Hour),
+		mk("wanted-cur", wantedDir, 1*time.Hour),
+		mk("wanted-rec", wantedDir, 48*time.Hour),
+		mk("other-cur", otherDir, 1*time.Hour),
 	}
-	proj, ok := BuildProjectTreeAt(metas, nil, map[ArchiveKey]bool{}, now, "wanted")
+	proj, ok := BuildProjectTreeAt(metas, nil, map[ArchiveKey]bool{}, now, wanted.ID)
 	if !ok {
-		t.Fatalf("BuildProjectTreeAt should find project 'wanted'")
+		t.Fatalf("BuildProjectTreeAt should find project %q", wanted.ID)
 	}
 	if proj.Name != "wanted" {
 		t.Fatalf("got project %q, want 'wanted'", proj.Name)
@@ -908,40 +1006,61 @@ func fuzzScenarioBuildProjectTree_ReturnsSingleProjectTiers(t *testing.T) {
 
 func fuzzScenarioBuildProjectTree_FindsArchivedProject(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
+	gammaDir := filepath.Join(t.TempDir(), "gamma")
+	if err := os.MkdirAll(gammaDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gamma, err := identifier.ResolveProject(gammaDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	metas := []schema.SessionMeta{
 		{ID: "g1", OriginalPrompt: "g1", CreatedAt: now.Add(-30 * 24 * time.Hour),
 			UpdatedAt: now.Add(-30 * 24 * time.Hour),
-			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/gamma"}},
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: gammaDir}},
 	}
-	proj, ok := BuildProjectTreeAt(metas, nil, map[ArchiveKey]bool{}, now, "gamma")
+	proj, ok := BuildProjectTreeAt(metas, nil, map[ArchiveKey]bool{}, now, gamma.ID)
 	if !ok {
-		t.Fatalf("BuildProjectTreeAt should find archived project 'gamma'")
+		t.Fatalf("BuildProjectTreeAt should find archived project %q", gamma.ID)
 	}
 	if len(proj.Archived) != 1 || proj.Archived[0].ID != "g1" {
 		t.Errorf("gamma Archived = %v, want [g1]", proj.Archived)
 	}
 }
 
-func fuzzScenarioBuildProjectTree_PrefersFirstActiveSameNameProject(t *testing.T) {
+func fuzzScenarioBuildProjectTree_UsesCanonicalIDForSameBasename(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
+	root := t.TempDir()
+	olderDir := filepath.Join(root, "older", "shared")
+	archivedDir := filepath.Join(root, "archived", "shared")
+	newestDir := filepath.Join(root, "newest", "shared")
+	for _, dir := range []string{olderDir, archivedDir, newestDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	newest, err := identifier.ResolveProject(newestDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	metas := []schema.SessionMeta{
 		{ID: "active-older", OriginalPrompt: "active older", CreatedAt: now.Add(-2 * time.Hour),
 			UpdatedAt: now.Add(-2 * time.Hour),
-			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/work/older/shared"}},
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: olderDir}},
 		{ID: "archived", OriginalPrompt: "archived", CreatedAt: now.Add(-30 * 24 * time.Hour),
 			UpdatedAt: now.Add(-30 * 24 * time.Hour),
-			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/work/archived/shared"}},
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: archivedDir}},
 		{ID: "active-newest", OriginalPrompt: "active newest", CreatedAt: now.Add(-time.Hour),
 			UpdatedAt: now.Add(-time.Hour),
-			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/work/newest/shared"}},
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: newestDir}},
 	}
 
-	proj, ok := BuildProjectTreeAt(metas, nil, map[ArchiveKey]bool{}, now, "shared")
+	proj, ok := BuildProjectTreeAt(metas, nil, map[ArchiveKey]bool{}, now, newest.ID)
 	if !ok {
-		t.Fatal("BuildProjectTreeAt should find project 'shared'")
+		t.Fatalf("BuildProjectTreeAt should find project %q", newest.ID)
 	}
-	if proj.WorkingDir != "/work/newest/shared" {
-		t.Fatalf("WorkingDir = %q, want first active same-name project", proj.WorkingDir)
+	if proj.WorkingDir != newest.CanonicalPath {
+		t.Fatalf("WorkingDir = %q, want canonical path %q", proj.WorkingDir, newest.CanonicalPath)
 	}
 }
 
@@ -1180,9 +1299,18 @@ func fuzzScenarioNeedsYou_ArchivedLiveAwaitingExcluded(t *testing.T) {
 
 func fuzzScenarioCoBasenameProjectsAreDistinctNodes(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
+	root := t.TempDir()
+	aFoo := filepath.Join(root, "a", "foo")
+	bFoo := filepath.Join(root, "b", "foo")
+	if err := os.MkdirAll(aFoo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(bFoo, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	metas := []schema.SessionMeta{
-		{ID: "01A", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/a/foo"}},
-		{ID: "01B", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/b/foo"}},
+		{ID: "01A", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: aFoo}},
+		{ID: "01B", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: bFoo}},
 	}
 	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
 	if len(tree.Projects) != 2 {
@@ -1198,8 +1326,10 @@ func fuzzScenarioCoBasenameProjectsAreDistinctNodes(t *testing.T) {
 	if len(keys) != 2 {
 		t.Fatalf("want 2 distinct Keys, got %v", keys)
 	}
-	if keys["no-project"] != "" {
-		t.Fatalf("no session should land under no-project key: %v", keys)
+	for key := range keys {
+		if err := identifier.ValidateProjectID(key); err != nil {
+			t.Fatalf("project key %q is not canonical: %v", key, err)
+		}
 	}
 }
 
@@ -1212,22 +1342,31 @@ func fuzzScenarioNoProjectKeyIsStable(t *testing.T) {
 	}
 }
 
-func fuzzScenarioProjectArchiveDecisionPathKeyedWithLegacyFallback(t *testing.T) {
+func fuzzScenarioProjectArchiveDecisionUsesCanonicalID(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
+	root := t.TempDir()
+	aFoo := filepath.Join(root, "a", "foo")
+	bFoo := filepath.Join(root, "b", "foo")
+	if err := os.MkdirAll(aFoo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(bFoo, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	mk := func(id, wd string) schema.SessionMeta {
 		return schema.SessionMeta{ID: id, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: wd}}
 	}
-	// Legacy basename row archives BOTH co-basename projects (read fallback).
-	legacy := map[ArchiveKey]bool{{Kind: "project", ID: "foo"}: true}
-	tree := BuildTreeAt([]schema.SessionMeta{mk("01A", "/a/foo"), mk("01B", "/b/foo")}, nil, legacy, now)
-	if len(tree.Projects) != 0 || len(tree.ArchivedProjects) != 2 {
-		t.Fatalf("legacy basename row should archive both; got projects=%d archived=%d", len(tree.Projects), len(tree.ArchivedProjects))
+	projects := ResolveProjectMap([]schema.SessionMeta{mk("01A", aFoo), mk("01B", bFoo)}, nil)
+	aID := projects[aFoo].ID
+	legacy := map[ArchiveKey]bool{{Kind: "project", ID: aID}: true}
+	tree := BuildTreeAtWithProjects([]schema.SessionMeta{mk("01A", aFoo), mk("01B", bFoo)}, nil, legacy, now, projects)
+	if len(tree.Projects) != 1 || len(tree.ArchivedProjects) != 1 {
+		t.Fatalf("canonical row should archive only one clone; got projects=%d archived=%d", len(tree.Projects), len(tree.ArchivedProjects))
 	}
-	// A path-keyed row wins over the legacy row: /a/foo explicitly unarchived.
-	precedence := map[ArchiveKey]bool{{Kind: "project", ID: "foo"}: true, {Kind: "project", ID: "/a/foo"}: false}
-	tree = BuildTreeAt([]schema.SessionMeta{mk("01A", "/a/foo"), mk("01B", "/b/foo")}, nil, precedence, now)
-	if len(tree.Projects) != 1 || tree.Projects[0].WorkingDir != "/a/foo" {
-		t.Fatalf("path row false must win over legacy true; got %+v", tree.Projects)
+	precedence := map[ArchiveKey]bool{{Kind: "project", ID: aID}: false}
+	tree = BuildTreeAtWithProjects([]schema.SessionMeta{mk("01A", aFoo), mk("01B", bFoo)}, nil, precedence, now, projects)
+	if len(tree.Projects) != 2 {
+		t.Fatalf("canonical unarchive should leave both active; got %+v", tree)
 	}
 }
 

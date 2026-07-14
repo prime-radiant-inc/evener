@@ -12,7 +12,36 @@ import (
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/serf/identifier"
 )
+
+func TestProjectDeleteRejectsRecomputedIDMismatchAndNoProject(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
+	for name, body := range map[string]string{
+		"mismatch":   `{"key":"` + project.ID + `","working_dir":"` + filepath.Join(root, "other") + `"}`,
+		"no-project": `{"key":"no-project","working_dir":"` + projectDir + `"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			web.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
 
 // newBody returns an io.Reader suitable for httptest.NewRequest's body
 // argument from a raw JSON string.
@@ -49,7 +78,7 @@ func TestProjectDeleteRemovesFilesAndScrubs(t *testing.T) {
 	_ = archive.Set("session", "01A", true, time.Unix(1_700_000_000, 0))
 	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
 
-	body := `{"key":"` + hubcore.ProjectSlug("/w/proj") + `","working_dir":"/w/proj"}`
+	body := `{"key":"` + testProjectID(t, "/w/proj") + `","working_dir":"/w/proj"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -86,7 +115,7 @@ func TestProjectDeleteRejectsKeyWorkingDirMismatch(t *testing.T) {
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	_ = past.Rebuild()
 	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
-	body := `{"key":"` + hubcore.ProjectSlug("/w/proj") + `","working_dir":"/w/WRONG"}`
+	body := `{"key":"` + testProjectID(t, "/w/proj") + `","working_dir":"/w/WRONG"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -104,7 +133,7 @@ func TestProjectDeleteRefusesWhenLive(t *testing.T) {
 	_ = past.Rebuild()
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{SessionID: "01A", Status: "active"})
 	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster})
-	body := `{"key":"` + hubcore.ProjectSlug("/w/proj") + `","working_dir":"/w/proj"}`
+	body := `{"key":"` + testProjectID(t, "/w/proj") + `","working_dir":"/w/proj"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -148,7 +177,7 @@ func TestProjectDeleteSkipsOnRemoveFailure(t *testing.T) {
 		}
 	})
 
-	body := `{"key":"` + hubcore.ProjectSlug("/w/proj") + `","working_dir":"/w/proj"}`
+	body := `{"key":"` + testProjectID(t, "/w/proj") + `","working_dir":"/w/proj"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

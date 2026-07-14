@@ -158,7 +158,7 @@ func FuzzCoreAPIPass4(f *testing.F) {
 		call(http.MethodPost, "/api/project/delete", `{`)
 		call(http.MethodPost, "/api/project/delete", `{}`)
 		call(http.MethodGet, "/api/project/delete", "")
-		projectBody := `{"key":"` + hubcore.ProjectSlug(workingDir) + `","working_dir":"` + workingDir + `"}`
+		projectBody := `{"key":"` + testProjectID(t, workingDir) + `","working_dir":"` + workingDir + `"}`
 		web.cfg.Roster = hubcore.NewRosterWithEntries(hubcore.LiveEntry{SessionID: "ended", Status: "active"})
 		direct(web.handleAPIProjectDelete, http.MethodPost, "/api/project/delete", projectBody)
 		web.cfg.Roster = hubcore.NewRosterWithEntries()

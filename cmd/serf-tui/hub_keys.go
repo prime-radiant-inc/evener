@@ -149,11 +149,17 @@ func (m hubModel) activateDashboardRow(rows []hubRow) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case hubRowRecentToggle:
-		m.toggleDashboardRecent(row.projectKey)
+		if row.projectKey == "" {
+			return m, nil
+		}
+		m.toggleDashboardRecent(dashboardGroupKey(row))
 		m.clampSelection()
 		return m, nil
 	case hubRowProject:
-		m.toggleDashboardProject(row.projectKey)
+		if row.projectKey == "" {
+			return m, nil
+		}
+		m.toggleDashboardProject(dashboardGroupKey(row))
 		m.clampSelection()
 		return m, nil
 	}

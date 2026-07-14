@@ -19,6 +19,7 @@ type hubTreeProject struct {
 	WorkingDir  string
 	RollupState string
 	Sessions    []hubTreeNode
+	identity    string // presentation grouping only; never used as an action key
 }
 
 type hubTreeNode struct {
@@ -159,12 +160,15 @@ func hubTreeFromThreads(threads []appwire.Thread) hubTreeResponse {
 		node := hubNodeFromThread(thread)
 		out.Live = append(out.Live, node)
 		projectName := node.Project
-		key := hubProjectKey(projectName)
-		idx, ok := projectIndexes[key]
+		identity := thread.CWD
+		if identity == "" {
+			identity = "no-project"
+		}
+		idx, ok := projectIndexes[identity]
 		if !ok {
 			idx = len(out.Projects)
-			projectIndexes[key] = idx
-			out.Projects = append(out.Projects, hubTreeProject{Key: key, Name: projectName, WorkingDir: thread.CWD, RollupState: node.State})
+			projectIndexes[identity] = idx
+			out.Projects = append(out.Projects, hubTreeProject{Name: projectName, WorkingDir: thread.CWD, RollupState: node.State, identity: identity})
 		}
 		out.Projects[idx].Sessions = append(out.Projects[idx].Sessions, node)
 	}
@@ -193,7 +197,7 @@ func hubNodeFromThread(thread appwire.Thread) hubTreeNode {
 		State:       thread.Status.Type,
 		AskPending:  thread.Serf.AskPending,
 		Model:       hubThreadModelLabel(thread),
-		RowID:       "project:" + hubProjectKey(project) + ":" + ref,
+		RowID:       "project:" + ref,
 		CreatedAt:   thread.CreatedAt,
 		UpdatedAt:   thread.UpdatedAt,
 		Live:        thread.Status.Type != appwire.ThreadStatusClosed && thread.Status.Type != appwire.ThreadStatusNotLoaded,

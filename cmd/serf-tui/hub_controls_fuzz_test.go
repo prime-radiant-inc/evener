@@ -84,8 +84,6 @@ func runHubControlProgram(t *testing.T) {
 	_ = buildProjectRows(tree.Projects[0])
 	_ = buildProjectRows(tree.Projects[1])
 	_ = buildProjectRows(tree.Projects[2])
-	_ = hubProjectKey("")
-	_ = hubProjectKey("a/b:c d")
 	_, _ = m.selectedDashboardRow()
 	m.selected = -1
 	_, _ = m.selectedDashboardRow()

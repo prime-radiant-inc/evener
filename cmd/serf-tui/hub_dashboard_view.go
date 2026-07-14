@@ -382,12 +382,12 @@ func dashboardRecentExpanded(rows []hubRow, index int) bool {
 	if index < 0 || index >= len(rows) || rows[index].kind != hubRowRecentToggle {
 		return false
 	}
-	projectKey := rows[index].projectKey
+	groupKey := dashboardGroupKey(rows[index])
 	for i := index + 1; i < len(rows); i++ {
 		if rows[i].kind == hubRowProject || rows[i].kind == hubRowRecentToggle {
 			return false
 		}
-		if rows[i].kind == hubRowSession && rows[i].projectKey == projectKey && (!rows[i].live || stateLabel(rows[i].state) == "ended") {
+		if rows[i].kind == hubRowSession && dashboardGroupKey(rows[i]) == groupKey && (!rows[i].live || stateLabel(rows[i].state) == "ended") {
 			return true
 		}
 	}
@@ -398,12 +398,12 @@ func dashboardProjectExpanded(rows []hubRow, index int) bool {
 	if index < 0 || index >= len(rows) || rows[index].kind != hubRowProject {
 		return false
 	}
-	projectKey := rows[index].projectKey
+	groupKey := dashboardGroupKey(rows[index])
 	for i := index + 1; i < len(rows); i++ {
 		if rows[i].kind == hubRowProject {
 			return false
 		}
-		if rows[i].projectKey == projectKey {
+		if dashboardGroupKey(rows[i]) == groupKey {
 			return true
 		}
 	}
@@ -520,7 +520,7 @@ func projectSessionCounts(project hubRow, rows []hubRow) (int, int) {
 	count := 0
 	recent := 0
 	for _, row := range rows {
-		if row.kind == hubRowSession && row.projectKey == project.projectKey {
+		if row.kind == hubRowSession && dashboardGroupKey(row) == dashboardGroupKey(project) {
 			if row.live && stateLabel(row.state) != "ended" {
 				count++
 			} else {
@@ -585,7 +585,7 @@ func projectSummary(project hubRow, rows []hubRow) string {
 	worstState := project.state
 	worstAsk := project.askPending
 	for _, row := range rows {
-		if row.kind != hubRowSession || row.projectKey != project.projectKey {
+		if row.kind != hubRowSession || dashboardGroupKey(row) != dashboardGroupKey(project) {
 			continue
 		}
 		if attentionRankLabel(row.state) > attentionRankLabel(worstState) {

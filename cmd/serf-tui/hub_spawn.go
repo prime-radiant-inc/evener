@@ -448,7 +448,7 @@ func (m hubModel) spawnWorkingDir() string {
 
 func (m hubModel) spawnProjectName() string {
 	row, ok := m.selectedDashboardRow()
-	if !ok || row.kind == hubRowLaunch {
+	if !ok || row.kind == hubRowLaunch || row.projectKey == "" {
 		return ""
 	}
 	return row.project

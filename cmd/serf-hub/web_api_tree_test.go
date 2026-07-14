@@ -13,8 +13,20 @@ import (
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/hubapi"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/rendezvous"
 )
+
+func testProjectID(t *testing.T, path string) string {
+	t.Helper()
+	project, err := identifier.ResolveProject(path)
+	if err != nil {
+		// Fuzz/coverage callers use synthetic paths only to exercise request
+		// decoding; ordinary endpoint tests use real temp directories.
+		return "test-project-0000000000"
+	}
+	return project.ID
+}
 
 func TestArchiveDecisionsFlowIntoTree(t *testing.T) {
 	// Verify that an ArchiveStore decision actually changes where a project lands
@@ -142,7 +154,7 @@ func TestOrphanLiveGroupingUsesPathSlug(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if len(resp.Projects) != 1 || resp.Projects[0].Key != hubcore.ProjectSlug("/a/foo") {
+	if len(resp.Projects) != 1 || resp.Projects[0].Key != testProjectID(t, "/a/foo") {
 		t.Fatalf("orphan-live must use the path slug; got %+v", resp.Projects)
 	}
 }
@@ -185,7 +197,7 @@ func TestAPITreeProjectServedFromTree(t *testing.T) {
 	}
 	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
 	web.injectMetasForTest(metas)
-	key := hubcore.ProjectSlug("/w/proj")
+	key := testProjectID(t, "/w/proj")
 	req := httptest.NewRequest(http.MethodGet, "/api/tree/project?key="+key, nil)
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)

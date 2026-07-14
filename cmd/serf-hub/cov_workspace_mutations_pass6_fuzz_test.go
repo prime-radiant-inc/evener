@@ -163,7 +163,7 @@ func FuzzWorkspaceMutationsPass6(f *testing.F) {
 			NewWebServer(hubcore.WebConfig{}).handleAPIProjectDelete(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"key":"x","working_dir":"x"}`)))
 			call(web.handleAPIProjectDelete, http.MethodPost, "/", `{"key":"wrong","working_dir":"`+work+`"}`)
 		case 8:
-			body := `{"key":"` + hubcore.ProjectSlug(work) + `","working_dir":"` + work + `"}`
+			body := `{"key":"` + testProjectID(t, work) + `","working_dir":"` + work + `"}`
 			live := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{SessionID: "ended", Status: "active"})})
 			call = func(fn func(http.ResponseWriter, *http.Request), method, target, b string) *httptest.ResponseRecorder {
 				rr := httptest.NewRecorder()
@@ -175,7 +175,7 @@ func FuzzWorkspaceMutationsPass6(f *testing.F) {
 			t.Cleanup(func() { removeProjectSessionFile = os.Remove })
 			call(web.handleAPIProjectDelete, http.MethodPost, "/", body)
 		case 9:
-			body := `{"key":"` + hubcore.ProjectSlug(work) + `","working_dir":"` + work + `"}`
+			body := `{"key":"` + testProjectID(t, work) + `","working_dir":"` + work + `"}`
 			removeProjectSessionDir = func(string) error { return errors.New("ignored") }
 			t.Cleanup(func() { removeProjectSessionDir = os.RemoveAll })
 			call(web.handleAPIProjectDelete, http.MethodPost, "/", body)
