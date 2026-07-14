@@ -28,7 +28,7 @@ func DefaultStateRoot() string {
 
 // ResolveStateKeyDir returns the directory that state-dir keying should use
 // in place of a raw workDir: the resolved main repository root
-// (identifier.ResolveProject) when workDir is inside a git repo,
+// (execenv.ResolveMainRepoRoot) when workDir is inside a git repo,
 // otherwise workDir itself unchanged.
 //
 // Keying on the main root rather than the raw workDir matters for
