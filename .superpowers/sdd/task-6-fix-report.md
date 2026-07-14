@@ -221,3 +221,44 @@ The required full affected command again passed `cmdutil`, `cmd/serf`, and `cmd/
 ## Follow-up commit
 
 Pending new non-amended commit: `fix: complete project identity propagation`.
+
+# Tagged compaction replay repair
+
+## Root cause
+
+`agent/session_engine_coverage_fuzz_test.go` still referenced the removed `TestS2Cov_HandleCompactionTurn_SteersTranscriptRef` symbol. Commit `47a22ac8e` replaced it with `TestS2Cov_HandleCompactionTurn_WritesTranscriptAndEmitsEvent`, but the serffuzz replay table was not updated.
+
+## RED evidence
+
+```text
+$ go test -tags serffuzz ./agent -run '^$' -count=1
+agent/session_engine_coverage_fuzz_test.go:37:24: undefined: TestS2Cov_HandleCompactionTurn_SteersTranscriptRef
+FAIL
+```
+
+## GREEN evidence
+
+```text
+$ go test -tags serffuzz ./agent -run '^$' -count=1
+ok   primeradiant.com/serf/agent  0.501s [no tests to run]
+
+$ go test ./agent -run 'TestS2Cov_HandleCompactionTurn_WritesTranscriptAndEmitsEvent' -count=1
+ok   primeradiant.com/serf/agent  0.407s
+
+$ go test -tags serffuzz ./agent -run '^FuzzSessionEngineCoverage$' -fuzz '^FuzzSessionEngineCoverage$' -fuzztime=1s -count=1
+PASS
+ok   primeradiant.com/serf/agent  2.207s
+
+$ git diff --check
+passed
+```
+
+## Changed files
+
+- `agent/session_engine_coverage_fuzz_test.go`
+- `.superpowers/sdd/task-6-fix-report.md`
+
+## Commit
+
+Prior follow-up project-identity commit: `049969172da3a87434edf58ca3c87e521a3305a3`.
+This tagged replay repair is committed separately with subject `test(agent): repair tagged compaction replay`.
