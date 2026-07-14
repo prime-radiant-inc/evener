@@ -83,6 +83,7 @@ type worktreeState struct {
 	mainRepoRoot    string
 	worktreeRoot    string
 	currentWorktree string
+	err             error
 }
 
 // WorktreeResult is what a successful create returns to the handler and, via
@@ -524,25 +525,32 @@ func (s *Session) worktreeStateSnapshot() worktreeState {
 			if resolved, evErr := filepath.EvalSymlinks(st.mainRepoRoot); evErr == nil {
 				st.mainRepoRoot = resolved
 			}
-			st.worktreeRoot = s.worktreeRootFor(local, stateDir, st.mainRepoRoot)
+			st.worktreeRoot, st.err = s.worktreeRootFor(local, stateDir, st.mainRepoRoot)
 		}
 	}
 	return st
+}
+
+func (st worktreeState) resolutionError(operation string) error {
+	if st.err == nil {
+		return nil
+	}
+	return fmt.Errorf("manage_worktree %s: %w", operation, st.err)
 }
 
 // worktreeRootFor derives the directory managed worktrees live under (spec §6
 // "worktreeRoot derivation"): <stateDir>/worktrees when a runtime state dir
 // launched the session, else the agent-owned project state dir for the main
 // repo root plus /worktrees. It never imports cmdutil (spec §6).
-func (s *Session) worktreeRootFor(env execenv.ExecutionEnvironment, stateDir, mainRepoRoot string) string {
+func (s *Session) worktreeRootFor(env execenv.ExecutionEnvironment, stateDir, mainRepoRoot string) (string, error) {
 	if stateDir != "" {
-		return filepath.Join(stateDir, "worktrees")
+		return filepath.Join(stateDir, "worktrees"), nil
 	}
 	_, projectStateDir, err := RuntimeDir(mainRepoRoot, "")
 	if err != nil {
-		return filepath.Join(mainRepoRoot, ".serf", "worktrees")
+		return "", fmt.Errorf("resolve managed worktree state: %w", err)
 	}
-	return filepath.Join(projectStateDir, "worktrees")
+	return filepath.Join(projectStateDir, "worktrees"), nil
 }
 
 // enterWorktree implements worktreeGuard.enterWorktree() (spec §7): swap s.env
@@ -744,7 +752,10 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 	projectID := worktree.ProjectID(canonicalMain)
 
 	// Step 3: worktree path under <worktreeRoot>/<projectid>/<name>.
-	worktreeRoot := s.worktreeRootFor(active, s.currentStateDir(), canonicalMain)
+	worktreeRoot, err := s.worktreeRootFor(active, s.currentStateDir(), canonicalMain)
+	if err != nil {
+		return worktreeCreateCoreResult{}, err
+	}
 	projectDir := filepath.Join(worktreeRoot, projectID)
 	worktreePath := filepath.Join(projectDir, filepath.FromSlash(name))
 	metaDir := metaDirForProject(projectDir)
@@ -1242,6 +1253,9 @@ func (s *Session) worktreeSwitchByName(ctx context.Context, name string) (Worktr
 		return WorktreeSwitchResult{}, fmt.Errorf("manage_worktree switch: %w", err)
 	}
 	st := s.worktreeStateSnapshot()
+	if err := st.resolutionError("switch"); err != nil {
+		return WorktreeSwitchResult{}, err
+	}
 	if st.env == nil {
 		return WorktreeSwitchResult{}, errors.New("manage_worktree requires a local execution environment")
 	}
@@ -1263,6 +1277,9 @@ func (s *Session) worktreeSwitchByName(ctx context.Context, name string) (Worktr
 // all (serf does not manage locks on worktrees it did not create).
 func (s *Session) worktreeSwitchByPath(ctx context.Context, rawPath string) (WorktreeSwitchResult, error) {
 	st := s.worktreeStateSnapshot()
+	if err := st.resolutionError("switch"); err != nil {
+		return WorktreeSwitchResult{}, err
+	}
 	if st.env == nil {
 		return WorktreeSwitchResult{}, errors.New("manage_worktree requires a local execution environment")
 	}
@@ -1358,6 +1375,9 @@ func (s *Session) relockRestoreTargetWithLockState(run worktree.GitRunner, path 
 // worktreeExit performs the exit operation (spec §4 "exit", all six steps).
 func (s *Session) worktreeExit(ctx context.Context) (WorktreeExitResult, error) {
 	st := s.worktreeStateSnapshot()
+	if err := st.resolutionError("exit"); err != nil {
+		return WorktreeExitResult{}, err
+	}
 
 	// Step 1: not in a worktree entered via this tool → clear, non-destructive
 	// error, no side effects.
@@ -1446,6 +1466,9 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 		return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: %w", err)
 	}
 	st := s.worktreeStateSnapshot()
+	if err := st.resolutionError("remove"); err != nil {
+		return WorktreeRemoveResult{}, err
+	}
 	if st.env == nil {
 		return WorktreeRemoveResult{}, errors.New("manage_worktree requires a local execution environment")
 	}
@@ -1764,6 +1787,9 @@ func worktreePruneEntryToMap(e WorktreePruneEntry) map[string]any {
 // metadata sidecar and cheap git queries.
 func (s *Session) worktreeList(ctx context.Context) ([]WorktreeListEntry, error) {
 	st := s.worktreeStateSnapshot()
+	if err := st.resolutionError("list"); err != nil {
+		return nil, err
+	}
 	if st.env == nil {
 		return nil, errors.New("manage_worktree requires a local execution environment")
 	}
@@ -1850,6 +1876,9 @@ func (s *Session) worktreeList(ctx context.Context) ([]WorktreeListEntry, error)
 // then git registry hygiene.
 func (s *Session) worktreePrune(ctx context.Context) (WorktreePruneResult, error) {
 	st := s.worktreeStateSnapshot()
+	if err := st.resolutionError("prune"); err != nil {
+		return WorktreePruneResult{}, err
+	}
 	if st.env == nil {
 		return WorktreePruneResult{}, errors.New("manage_worktree requires a local execution environment")
 	}

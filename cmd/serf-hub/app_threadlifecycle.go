@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
 	"primeradiant.com/serf/cmdutil"
+	"primeradiant.com/serf/identifier"
 )
 
 var (
@@ -114,6 +115,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		return appwire.ThreadStartResponse{}, err
 	}
 	entry, err := cfg.Spawner.Spawn(ctx, hubcore.SpawnRequest{
+		Project:    spawnResolved.Project,
 		Resolved:   spawnResolved,
 		WorkingDir: workingDir,
 		Provider:   modelRef.Provider,
@@ -265,6 +267,11 @@ func resumeRequestForConfig(cfg hubcore.WebConfig, id string) (hubcore.ResumeReq
 			if provider == "" {
 				return hubcore.ResumeRequest{}, fmt.Errorf("session %s has no provider profile: cannot resume", id)
 			}
+			project, projectErr := identifier.ResolveProject(req.WorkingDir)
+			if projectErr != nil {
+				return hubcore.ResumeRequest{}, fmt.Errorf("resolve resume project: %w", projectErr)
+			}
+			req.Project = project
 			if pe.Meta.Model != "" {
 				req.Provider = provider
 				req.Resolved = launchconfig.Resolved{Effective: launchconfig.Layer{

@@ -27,6 +27,7 @@ import (
 	"primeradiant.com/serf/cmd/serf/internal/rvreg"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/envvars"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/internal/plugins"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
@@ -258,13 +259,14 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 
 	// Resolve state directory.
 	// Priority: --state-dir flag > SERF_STATE_DIR env > XDG-computed default.
+	var project identifier.Project
 	sd := *stateDir
 	if sd == "" {
 		sd = envvars.SERFStateDir.Getenv()
 	}
 	if sd == "" {
 		var err error
-		_, sd, err = cmdutil.DefaultProjectStateDir(wd)
+		project, sd, err = cmdutil.DefaultProjectStateDir(wd)
 		if err != nil {
 			return fmt.Errorf("resolve project state: %w", err)
 		}
@@ -321,6 +323,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		ShareTasksWithChildren:      *shareTaskStore,
 		ResultToolName:              *resultToolName,
 		StateDir:                    sd,
+		Project:                     project,
 		SystemPromptFile:            *systemPrompt,
 		SystemPromptAppend:          []string(systemPromptAppend),
 		NoProjectPrompts:            *noProjectPrompts,
@@ -361,6 +364,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if resuming {
 		sess, err = deps.restoreSession(client, profile, env, resumedMeta, agent.RestoreSessionConfig{
 			StateDir:                    sd,
+			Project:                     project,
 			ResolveProfile:              sessionCfg.ResolveProfile,
 			ModelFallbacks:              sessionCfg.ModelFallbacks,
 			OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,

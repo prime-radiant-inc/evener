@@ -26,7 +26,7 @@ func worktreeSeed100ExactProgram(t *testing.T) {
 
 	t.Run("derived runtime root", func(t *testing.T) {
 		h, _ := newWorktreeFaultSession(t)
-		if got := h.s.worktreeRootFor(h.s.currentEnv(), "", h.root); got == "" {
+		if got, err := h.s.worktreeRootFor(h.s.currentEnv(), "", h.root); err != nil || got == "" {
 			t.Fatal("empty derived worktree root")
 		}
 	})

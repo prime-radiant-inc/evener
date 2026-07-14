@@ -9,7 +9,7 @@ import (
 	"primeradiant.com/serf/identifier"
 )
 
-func TestProjectHash_Deterministic(t *testing.T) {
+func TestNonProjectHash_Deterministic(t *testing.T) {
 	h1 := hexHash("https://github.com/example/repo.git")
 	h2 := hexHash("https://github.com/example/repo.git")
 	if h1 != h2 {
@@ -17,7 +17,7 @@ func TestProjectHash_Deterministic(t *testing.T) {
 	}
 }
 
-func TestProjectHash_DifferentInputs(t *testing.T) {
+func TestNonProjectHash_DifferentInputs(t *testing.T) {
 	h1 := hexHash("https://github.com/example/repo.git")
 	h2 := hexHash("https://github.com/other/repo.git")
 	if h1 == h2 {
@@ -25,7 +25,7 @@ func TestProjectHash_DifferentInputs(t *testing.T) {
 	}
 }
 
-func TestProjectHash_Length(t *testing.T) {
+func TestNonProjectHash_Length(t *testing.T) {
 	h := hexHash("any-string")
 	if len(h) != 16 {
 		t.Fatalf("expected 16-char hex hash, got %d chars: %q", len(h), h)

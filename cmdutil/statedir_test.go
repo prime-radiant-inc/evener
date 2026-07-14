@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/identifier"
 )
 
 // runGit runs a git command in dir with a fixed identity, failing the test on
@@ -118,13 +120,17 @@ func TestDefaultProjectStateDir_NotInRepo_FallsBackToWorkDir(t *testing.T) {
 	}
 }
 
-func TestResolveStateKeyDir_NonGitSymlinkPreservesOriginalPath(t *testing.T) {
+func TestResolveStateKeyDir_NonGitSymlinkUsesSharedCanonicalPath(t *testing.T) {
 	target := t.TempDir()
 	alias := filepath.Join(t.TempDir(), "alias")
 	if err := os.Symlink(target, alias); err != nil {
 		t.Fatal(err)
 	}
-	if got := ResolveStateKeyDir(alias); got != alias {
-		t.Fatalf("ResolveStateKeyDir(%q) = %q, want original path", alias, got)
+	project, err := identifier.ResolveProject(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ResolveStateKeyDir(alias); got != project.CanonicalPath {
+		t.Fatalf("ResolveStateKeyDir(%q) = %q, want shared canonical path %q", alias, got, project.CanonicalPath)
 	}
 }

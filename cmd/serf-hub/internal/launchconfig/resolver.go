@@ -48,6 +48,7 @@ func resolveFS(fs afero.Fs, stateRoot, cwd string, overrides Layer) (Resolved, e
 	layers[LayerLaunch] = overrides
 
 	resolved, _ := mergeLayers(layers)
+	resolved.Project = paths.Project
 	resolved.Repo = repoStatus
 	resolved.Diagnostics = append(resolved.Diagnostics, pathDiags...)
 	resolved.Diagnostics = append(resolved.Diagnostics, repoDiags...)

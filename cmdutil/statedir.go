@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 
 	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/identifier"
 )
@@ -27,30 +26,20 @@ func DefaultStateRoot() string {
 	return ".serf"
 }
 
-// ResolveStateKeyDir returns the directory that state-dir keying should use
-// in place of a raw workDir: the resolved main repository root
-// (execenv.ResolveMainRepoRoot) when workDir is inside a git repo,
-// otherwise workDir itself unchanged.
-//
-// Keying on the main root rather than the raw workDir matters for
-// launching from a linked worktree must compute the same project state dir as
-// launching from the main checkout. See
-// docs/superpowers/specs/2026-07-02-native-worktree-tools-design.md §1
-// ("Runtime state keying at launch"). Every caller that derives a session
-// state dir from a workDir — cmd/serf's DefaultProjectStateDir and
-// cmd/serf-hub's spawn-time resolver — must route through this helper so
-// they agree on the same directory.
+// ResolveStateKeyDir is retained for source compatibility with callers that
+// need a resolved project path. It uses the shared identifier policy and
+// returns the canonical path on success; on resolution failure it returns the
+// input unchanged because this legacy no-error API cannot report the error.
 func ResolveStateKeyDir(workDir string) string {
-	if keyDir := execenv.ResolveMainRepoRoot(execenv.NewLocalExecutionEnvironment(workDir), workDir); keyDir != "" {
-		return keyDir
+	if project, err := identifier.ResolveProject(workDir); err == nil {
+		return project.CanonicalPath
 	}
 	return workDir
 }
 
 // DefaultProjectStateDir computes the default per-project runtime state
 // directory for workDir, for use when no explicit --state-dir flag or
-// SERF_STATE_DIR override is set: $XDG_STATE_HOME/serf/projects/<hash>/,
-// keyed by the git origin URL when present, otherwise by ResolveStateKeyDir.
+// SERF_STATE_DIR override is set: $XDG_STATE_HOME/serf/projects/<Project.ID>/.
 func DefaultProjectStateDir(workDir string) (identifier.Project, string, error) {
 	return agent.RuntimeDir(workDir, "")
 }

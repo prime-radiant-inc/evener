@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
 	"primeradiant.com/serf/envvars"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/rendezvous"
@@ -110,7 +111,7 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 	}
 	if req.StateDir == "" {
 		var err error
-		req.StateDir, err = resolveSerfLaunchStateDir(req.WorkingDir, req.Resolved.Effective.Env)
+		req.Project, req.StateDir, err = resolveSerfLaunchProjectStateDir(req.WorkingDir, req.Resolved.Effective.Env)
 		if err != nil {
 			return rendezvous.Entry{}, err
 		}
@@ -151,7 +152,7 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 	}
 	if req.StateDir == "" {
 		var err error
-		req.StateDir, err = resolveSerfLaunchStateDir(req.WorkingDir, req.Resolved.Effective.Env)
+		req.Project, req.StateDir, err = resolveSerfLaunchProjectStateDir(req.WorkingDir, req.Resolved.Effective.Env)
 		if err != nil {
 			return rendezvous.Entry{}, err
 		}
@@ -443,15 +444,25 @@ func resolveSerfStateDir(workDir, override string) (string, error) {
 }
 
 func resolveSerfLaunchStateDir(workDir string, env map[string]string) (string, error) {
+	_, stateDir, err := resolveSerfLaunchProjectStateDir(workDir, env)
+	return stateDir, err
+}
+
+func resolveSerfLaunchProjectStateDir(workDir string, env map[string]string) (identifier.Project, string, error) {
 	if env == nil {
-		return resolveSerfStateDir(workDir, "")
+		return resolveSerfStateDirWithProject(workDir, "", "")
 	}
-	return resolveSerfStateDirWithStateHome(workDir, env[envvars.SERFStateDir.Name], env[envvars.XDGStateHome.Name])
+	return resolveSerfStateDirWithProject(workDir, env[envvars.SERFStateDir.Name], env[envvars.XDGStateHome.Name])
 }
 
 func resolveSerfStateDirWithStateHome(workDir, override, stateHome string) (string, error) {
+	_, stateDir, err := resolveSerfStateDirWithProject(workDir, override, stateHome)
+	return stateDir, err
+}
+
+func resolveSerfStateDirWithProject(workDir, override, stateHome string) (identifier.Project, string, error) {
 	if strings.TrimSpace(override) != "" {
-		return override, nil
+		return identifier.Project{}, override, nil
 	}
 	wd := strings.TrimSpace(workDir)
 	if wd == "" {
@@ -464,11 +475,11 @@ func resolveSerfStateDirWithStateHome(workDir, override, stateHome string) (stri
 	// state dir as spawning from the main checkout. See
 	// cmdutil.ResolveStateKeyDir and
 	// docs/superpowers/specs/2026-07-02-native-worktree-tools-design.md §1.
-	_, stateDir, err := agent.RuntimeDirWithStateHome(wd, "", strings.TrimSpace(stateHome))
+	project, stateDir, err := agent.RuntimeDirWithStateHome(wd, "", strings.TrimSpace(stateHome))
 	if err != nil {
-		return "", fmt.Errorf("resolve project state: %w", err)
+		return identifier.Project{}, "", fmt.Errorf("resolve project state: %w", err)
 	}
-	return stateDir, nil
+	return project, stateDir, nil
 }
 
 // validateProviderCredentials checks that the credentials store has a value

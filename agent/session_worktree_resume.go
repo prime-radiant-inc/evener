@@ -30,14 +30,14 @@ import (
 // env` assignment a few lines above the call site), and swapEnvAndRefresh's
 // cache rebuild (tool defs, rendered system prompt) depends on state
 // initSessionState has not built yet.
-func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) {
+func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	path := strings.TrimSpace(meta.WorktreePath)
 	if path == "" {
-		return
+		return nil
 	}
 	local, ok := s.env.(*execenv.LocalExecutionEnvironment)
 	if !ok {
-		return // worktree re-entry is a local-execution-environment-only feature
+		return nil // worktree re-entry is a local-execution-environment-only feature
 	}
 	restoreRoot := strings.TrimSpace(meta.WorktreeRestoreRoot)
 	target := filepath.Clean(path)
@@ -57,7 +57,7 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) {
 	// The path must still exist and still be a real (linked) worktree.
 	if _, err := os.Stat(filepath.Join(target, ".git")); err != nil {
 		notice(fmt.Sprintf("previous working directory %s no longer exists", target))
-		return
+		return nil
 	}
 
 	// Resolve the main repo root FROM the target (not from the launch env's
@@ -69,7 +69,7 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) {
 	mainRoot := execenv.ResolveMainRepoRoot(rootedAtTarget, target)
 	if mainRoot == "" {
 		notice(fmt.Sprintf("previous working directory %s is no longer part of a git repository", target))
-		return
+		return nil
 	}
 	controlEnv := local.WithWorkingDirectory(mainRoot)
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
@@ -79,7 +79,7 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) {
 	out, err := run("worktree", "list", "--porcelain")
 	if err != nil {
 		notice(fmt.Sprintf("previous working directory %s could not be verified as a worktree (%v)", target, err))
-		return
+		return nil
 	}
 	registered := false
 	for _, e := range worktree.ParsePorcelain(out) {
@@ -90,7 +90,7 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) {
 	}
 	if !registered {
 		notice(fmt.Sprintf("previous working directory %s is no longer a registered worktree", target))
-		return
+		return nil
 	}
 
 	// Managed only: apply the idempotent EvResumeReenter lock rule (spec §5
@@ -103,7 +103,7 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) {
 		locked, reason, lsErr := lockStateOf(run, target)
 		if lsErr != nil {
 			notice(fmt.Sprintf("previous worktree %s lock state could not be verified (%v)", target, lsErr))
-			return
+			return nil
 		}
 		st := worktree.Unlocked
 		if locked {
@@ -114,7 +114,7 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) {
 			marker := worktree.FormatSessionMarker(s.id)
 			if _, err := run("worktree", "lock", "--reason", marker, target); err != nil {
 				notice(fmt.Sprintf("failed to re-lock previous worktree %s (%v)", target, err))
-				return
+				return nil
 			}
 		case worktree.ActAdopt:
 			// Crash-resume case: the stale lock already carries this
@@ -126,7 +126,7 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) {
 				occupant = "an unknown owner"
 			}
 			notice(fmt.Sprintf("previous worktree %s is now locked by %s", target, occupant))
-			return
+			return nil
 		}
 	}
 
@@ -138,6 +138,7 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) {
 	if restoreRoot != "" {
 		s.worktreeRestoreEnv = local.WithWorkingDirectory(restoreRoot)
 	}
+	return nil
 }
 
 // applyInitInsideWorktreeLock implements the native worktree tools spec §5
@@ -203,7 +204,11 @@ func (s *Session) applyInitInsideWorktreeLock(isGitRepo bool) {
 	if resolved, err := filepath.EvalSymlinks(mainRoot); err == nil {
 		canonicalMain = resolved
 	}
-	worktreeRoot := s.worktreeRootFor(local, s.currentStateDir(), canonicalMain)
+	worktreeRoot, err := s.worktreeRootFor(local, s.currentStateDir(), canonicalMain)
+	if err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("could not resolve managed worktree state: %v", err)})
+		return
+	}
 	projectDir := filepath.Join(worktreeRoot, worktree.ProjectID(canonicalMain))
 
 	if !isUnderManagedDir(activeRoot, projectDir) {

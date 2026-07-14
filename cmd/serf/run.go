@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/envvars"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/internal/plugins"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
@@ -123,13 +124,14 @@ func run(ctx context.Context, cfg runConfig) error {
 
 	// Compute runtime state directory.
 	// Priority: --state-dir flag > SERF_STATE_DIR env > XDG-computed default.
+	var project identifier.Project
 	stateDir := cfg.stateDir
 	if stateDir == "" {
 		stateDir = envvars.SERFStateDir.Getenv()
 	}
 	if stateDir == "" {
 		var err error
-		_, stateDir, err = cmdutil.DefaultProjectStateDir(cfg.workDir)
+		project, stateDir, err = cmdutil.DefaultProjectStateDir(cfg.workDir)
 		if err != nil {
 			return fmt.Errorf("resolve project state: %w", err)
 		}
@@ -208,6 +210,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		ShareTasksWithChildren:      cfg.shareTaskStore,
 		ResultToolName:              cfg.resultToolName,
 		StateDir:                    stateDir,
+		Project:                     project,
 		SystemPromptFile:            cfg.systemPrompt,
 		SystemPromptAppend:          cfg.systemPromptAppend,
 		NoProjectPrompts:            cfg.noProjectPrompts,
@@ -245,6 +248,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	if meta != nil {
 		sess, err = runRestoreSession(client, profile, env, *meta, agent.RestoreSessionConfig{
 			StateDir:                    stateDir,
+			Project:                     project,
 			ResolveProfile:              baseSessionCfg.ResolveProfile,
 			OpenAIResponsesContinuation: openAIResponsesContinuation,
 		})

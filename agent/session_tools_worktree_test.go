@@ -3,12 +3,30 @@ package agent
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
 )
+
+// TestWorktreeRootResolutionErrorDoesNotSelectFallbackIdentity ensures a
+// RuntimeDir failure is returned to the worktree caller rather than silently
+// switching storage to <mainRepoRoot>/.serf/worktrees.
+func TestWorktreeRootResolutionErrorDoesNotSelectFallbackIdentity(t *testing.T) {
+	s := newSession(t)
+	missingRoot := filepath.Join(t.TempDir(), "missing-main-checkout")
+
+	got, err := s.worktreeRootFor(s.currentEnv(), "", missingRoot)
+	if err == nil {
+		t.Fatal("worktreeRootFor returned nil error for an unresolvable project")
+	}
+	fallback := filepath.Join(missingRoot, ".serf", "worktrees")
+	if got == fallback {
+		t.Fatalf("worktreeRootFor selected fallback identity %q after resolution error", got)
+	}
+}
 
 // TestManageWorktreeToolRegisteredRegistryOnlyNonReadOnly asserts spec §2's
 // registration shape (mirroring session_init_registry_test.go's registry-tool

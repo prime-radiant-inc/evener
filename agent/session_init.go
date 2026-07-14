@@ -297,6 +297,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 // struct layers non-serialized values such as StateDir and ResolveProfile.
 type RestoreSessionConfig struct {
 	StateDir                    string
+	Project                     identifier.Project
 	ResolveProfile              func(ref string) (*provider.Profile, error)
 	ModelFallbacks              []string
 	OpenAIResponsesContinuation string
@@ -324,6 +325,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile *provider.Profile, env e
 func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, meta schema.SessionMeta, restoreCfg RestoreSessionConfig) (*Session, error) {
 	cfg := configFromSnapshot(meta.Config)
 	cfg.StateDir = restoreCfg.StateDir
+	cfg.Project = restoreCfg.Project
 	cfg.ResolveProfile = restoreCfg.ResolveProfile
 	if restoreCfg.spawn.parentSessionID != "" {
 		cfg.spawn = restoreCfg.spawn
@@ -502,7 +504,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// the session is rooted in it before the environment snapshot, system
 	// prompt, and tool registry are built (native worktree tools spec §7
 	// "Persistence and resume": this ordering is load-bearing).
-	s.resumeWorktreeReentry(meta)
+	if err := s.resumeWorktreeReentry(meta); err != nil {
+		return nil, err
+	}
 
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, !restoreCfg.deferRestoreSideEffects)
 	if err != nil {
