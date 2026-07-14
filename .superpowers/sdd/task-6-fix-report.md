@@ -191,15 +191,8 @@ $ git diff --check
 passed
 ```
 
-Tagged verification remains blocked solely by the pre-existing undefined `TestS2Cov_HandleCompactionTurn_SteersTranscriptRef`:
-
-```text
-$ go test -tags serffuzz ./agent -run '^$' -count=1
-FAIL: undefined: TestS2Cov_HandleCompactionTurn_SteersTranscriptRef
-
-$ go test -tags serffuzz ./agent -run 'TestRuntimeDir' -count=1
-FAIL: same pre-existing undefined test symbol
-```
+The initially separate tagged verification blocker is resolved in the later
+“Tagged compaction replay repair” section below.
 
 The required full affected command again passed `cmdutil`, `cmd/serf`, and `cmd/serf-hub/internal/launchconfig`; `cmd/serf-hub` was blocked by the known unrelated `threads=[]` failure and prohibited IPv6 loopback bind.
 
@@ -216,11 +209,13 @@ The required full affected command again passed `cmdutil`, `cmd/serf`, and `cmd/
 - Normal hub spawn/resume requests carrying Project no longer call `ResolveProject` through state-dir derivation; active `WorkingDir` remains unchanged.
 - Direct zero-Project callers retain an explicit fallback resolution path; explicit state-dir overrides bypass resolution.
 - `.superpowers/sdd/task-1-report.md` remains untouched and unstaged; `.superpowers/sdd/progress.md` was not touched.
-- Concern: tagged serffuzz compile/test commands cannot complete until the pre-existing undefined `TestS2Cov_HandleCompactionTurn_SteersTranscriptRef` is repaired outside this scoped Task 6 follow-up.
+- Tagged `serffuzz` compile/test verification is complete after the replay-table
+  repair below.
 
 ## Follow-up commit
 
-Pending new non-amended commit: `fix: complete project identity propagation`.
+Commit `049969172da3a87434edf58ca3c87e521a3305a3`
+(`fix: complete project identity propagation`).
 
 # Tagged compaction replay repair
 
@@ -261,4 +256,19 @@ passed
 ## Commit
 
 Prior follow-up project-identity commit: `049969172da3a87434edf58ca3c87e521a3305a3`.
-This tagged replay repair is committed separately with subject `test(agent): repair tagged compaction replay`.
+Tagged replay repair commit: `0893a501c781984ef75b0fe290144177ffa1717c`
+(`test(agent): repair tagged compaction replay`).
+
+## Parent verification after tagged repair
+
+```text
+$ go test -tags serffuzz ./agent -run '^$' -count=1
+ok  	primeradiant.com/serf/agent	0.493s [no tests to run]
+$ go test ./agent -run 'TestS2Cov_HandleCompactionTurn_WritesTranscriptAndEmitsEvent' -count=1
+ok  	primeradiant.com/serf/agent	0.606s
+$ go test -tags serffuzz ./agent -run '^$' -fuzz '^FuzzSessionEngineCoverage$' -fuzztime=1x
+PASS
+ok  	primeradiant.com/serf/agent	0.882s
+$ git diff HEAD^ HEAD --check
+PASS
+```
