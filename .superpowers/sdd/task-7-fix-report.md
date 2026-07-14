@@ -109,4 +109,4 @@ The full `agent/internal/worktree` suite cannot complete in this sandbox because
 
 ## Commit
 
-Commit hash: pending final non-amending commit.
+Commit hash: f71203415389051d97316e78b19c06ac61b84db3.
