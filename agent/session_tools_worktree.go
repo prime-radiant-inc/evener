@@ -1167,9 +1167,9 @@ func readWorktreePorcelain(run worktree.GitRunner) ([]worktree.PorcelainEntry, e
 }
 
 func lockStateFromPorcelain(porcelain []worktree.PorcelainEntry, path string) (locked bool, reason string) {
-	target := filepath.Clean(path)
+	target := canonicalOrClean(path)
 	for _, e := range porcelain {
-		if filepath.Clean(e.Path) == target {
+		if canonicalOrClean(e.Path) == target {
 			return e.Locked, e.LockReason
 		}
 	}

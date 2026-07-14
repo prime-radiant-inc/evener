@@ -1219,23 +1219,32 @@ func lanePresent(lanePath string) bool {
 }
 
 // TestCloseBudget_ExhaustedMidPass_LanesLeftSafe: when the shared deadline
-// expires while the pass is running (the first lane's dispose sleeps past it),
+// context is cancelled while the pass is running (during the first lane's
+// initial git query),
 // every lane is left SAFE — present, unlocked (never left locked), and not
 // disposed — and the close emits one aggregated tail warning. A budget that
-// expires mid-dispose downgrades that lane back to an unlocked KEEP rather than a
-// half-removed tree; the remaining lanes hit the budget-exempt touch+unlock tail.
+// expires mid-dispose routes that lane through the budget-exempt touch+unlock
+// tail rather than leaving it locked; the remaining lanes hit the same tail.
 func TestCloseBudget_ExhaustedMidPass_LanesLeftSafe(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	idA, pathA, _ := r.seedIsolationLane(t)
 	idB, pathB, _ := r.seedIsolationLane(t)
 
-	// The first lane reached sleeps past the deadline, spending the shared budget
-	// so the remaining lane is reached only after expiry.
-	r.s.worktreeDisposeBeforeRemove = func(string) { time.Sleep(time.Second) }
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 	defer cancel()
+	cancelled := false
+	r.s.cfg.testOnly.worktreeGitRunner = func(runCtx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		run := gitRunner(runCtx, env)
+		return func(args ...string) (string, error) {
+			if !cancelled && len(args) == 3 && args[0] == "worktree" && args[1] == "list" && args[2] == "--porcelain" {
+				cancelled = true
+				cancel()
+				return "", runCtx.Err()
+			}
+			return run(args...)
+		}
+	}
 	r.s.disposeDelegateLanesAtClose(ctx)
 
 	for id, path := range map[string]string{idA: pathA, idB: pathB} {

@@ -101,7 +101,18 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 			}
 			continue
 		}
-		if note, wasKept := s.disposeOneDelegateLane(budgetCtx, local, lane); wasKept {
+		note, wasKept := s.disposeOneDelegateLane(budgetCtx, local, lane)
+		// The budget can expire inside a git operation after the top-of-loop
+		// check. Route that lane through the same non-expiring safety tail as all
+		// later lanes so an interrupted lock query or unlock never strands it
+		// locked.
+		if budgetCtx.Err() != nil {
+			if tailNote := s.touchUnlockLaneTail(local, lane); tailNote != "" {
+				tail = append(tail, tailNote)
+			}
+			continue
+		}
+		if wasKept {
 			kept = append(kept, note)
 		}
 	}

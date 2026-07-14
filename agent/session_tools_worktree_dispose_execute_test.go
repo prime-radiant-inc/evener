@@ -374,8 +374,14 @@ func TestDispose_Depth2Cascade_SharedBudget(t *testing.T) {
 	coordID, coordLanePath, _ := r.seedIsolationLane(t)
 
 	// The coordinator child is a real session rooted at its lane, with its own
-	// state dir so its grandchild lanes live in an isolated worktree root.
-	childCfg := SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 2, NoProjectPrompts: true}
+	// state dir so its grandchild lanes live in an isolated worktree root. Reach
+	// that state dir through a symlink to ensure Git's canonical porcelain path
+	// still matches the path Serf recorded for the lane.
+	childStateDir := filepath.Join(t.TempDir(), "state")
+	if err := os.Symlink(t.TempDir(), childStateDir); err != nil {
+		t.Fatalf("symlink child state dir: %v", err)
+	}
+	childCfg := SessionConfig{StateDir: childStateDir, MaxSubagentDepth: 2, NoProjectPrompts: true}
 	child := newSession(t, withDir(coordLanePath), withConfig(childCfg), withoutGitSnapshot())
 	r.s.subagents.track(&subagent{id: coordID, sess: child, ownsEnv: true, done: make(chan struct{})})
 
