@@ -57,6 +57,10 @@ func (s *Session) fireOpenLaneResidueSweep() {
 	s.sweepWG.Add(1)
 	s.mu.Unlock()
 	defer s.sweepWG.Done()
+	// A top-level resumed session's re-lock failures piggyback on this timer:
+	// retry any still-exposed own lanes before the sweep, so the sweep never
+	// races collection against a lane this session is trying to reclaim.
+	s.retryPendingReLocks()
 	s.runLaneResidueSweep(context.Background())
 }
 

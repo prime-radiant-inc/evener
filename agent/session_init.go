@@ -639,6 +639,14 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// flight resumes awaiting rather than idle (spec v5, round-3 A2).
 	if !restoreCfg.deferRestoreSideEffects {
 		s.recomputeRestoredState()
+		// Re-lock this session's own undisposed isolation lanes (spec §P3 resume
+		// re-lock). A clean close unlocked its KEPT lanes; leaving them unlocked
+		// would expose them to another session's P3 residue sweep. This is a
+		// post-init step because it enumerates owned lanes from the jobstore (which
+		// exists only now); resumeWorktreeReentry runs pre-init and cannot host it.
+		// Any re-lock failure is queued for one retry — via the P3 open timer armed
+		// just below (top-level) or a dedicated one-shot (subagent coordinator).
+		s.resumeReLockOwnLanes()
 		// Arm the P3 residue-collection open pass for a restored top-level session
 		// (spec §P3). Deferred reconstructions (nested delegate restore) are never
 		// top-level, so they never run P3; arming only on the real-side-effects
