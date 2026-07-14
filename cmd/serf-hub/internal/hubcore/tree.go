@@ -305,9 +305,15 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 
 	// Index live entries by SessionID.
 	liveMap := make(map[string]LiveEntry, len(live))
+	runningSubagentIDs := make(map[string]bool)
 	for _, le := range live {
 		if le.SessionID != "" {
 			liveMap[le.SessionID] = le
+		}
+		for _, childID := range le.RunningSubagentIDs {
+			if childID != "" {
+				runningSubagentIDs[childID] = true
+			}
 		}
 	}
 	metaMap := make(map[string]schema.SessionMeta, len(metas))
@@ -321,6 +327,9 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 	stateFor := func(id string) string {
 		if le, ok := liveMap[id]; ok {
 			return NormalizeState(le.Status)
+		}
+		if runningSubagentIDs[id] {
+			return "active"
 		}
 		return "ended"
 	}
@@ -490,16 +499,22 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		}
 
 		// Rollup: highest-attention state (for the dot fallback) plus the
-		// magnitude counts the header renders. Counts run over the project's own
-		// top-level sessions so subagents don't inflate the "how many need me"
-		// answer.
+		// magnitude counts the header renders. Each top-level session and its
+		// children form one task tree: child activity keeps the project working,
+		// but cannot inflate the count beyond one for that task tree.
 		rollup := ""
 		rollupLive, rollupAttn := 0, 0
 		for _, s := range sessions {
-			if hubapi.RollupRank(s.State) > hubapi.RollupRank(rollup) {
-				rollup = s.State
+			taskState := s.State
+			for _, child := range s.Children {
+				if hubapi.RollupRank(child.State) > hubapi.RollupRank(taskState) {
+					taskState = child.State
+				}
 			}
-			switch s.State {
+			if hubapi.RollupRank(taskState) > hubapi.RollupRank(rollup) {
+				rollup = taskState
+			}
+			switch taskState {
 			case "awaiting", "warning", "errored":
 				rollupAttn++
 			case "active":

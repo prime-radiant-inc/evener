@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/rendezvous"
 )
 
 func TestThreadReadReconcilesDelegateRawWithTerminalJobstoreState(t *testing.T) {
@@ -322,7 +323,7 @@ func TestPastEntryThread_CarriesWorkMetrics(t *testing.T) {
 		},
 	}
 
-	thread := pastEntryThread(entry, false)
+	thread := pastEntryThread(hubcore.WebConfig{}, entry, false)
 
 	if thread.Serf.WorkMillis != 5000 {
 		t.Fatalf("thread.Serf.WorkMillis = %d, want 5000", thread.Serf.WorkMillis)
@@ -335,6 +336,45 @@ func TestPastEntryThread_CarriesWorkMetrics(t *testing.T) {
 	}
 	if thread.Serf.ActiveTurnStartedAt != 0 {
 		t.Fatalf("thread.Serf.ActiveTurnStartedAt = %d, want 0 (ended session)", thread.Serf.ActiveTurnStartedAt)
+	}
+}
+
+func runningSubagentProjectionConfig(t *testing.T) (hubcore.WebConfig, string) {
+	t.Helper()
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "serf")
+	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
+	parentID := "01PARENT"
+	childID := "01CHILD"
+	for _, meta := range []schema.SessionMeta{
+		{ID: parentID, CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: childID, CreatedAt: now, UpdatedAt: now, ParentSessionID: parentID, IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+	} {
+		if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:              rendezvous.Entry{PID: 1, SessionID: parentID},
+		SessionID:          parentID,
+		Status:             appwire.ThreadStatusIdle,
+		RunningSubagentIDs: []string{childID},
+	})
+	return hubcore.WebConfig{Past: past, Roster: roster}, childID
+}
+
+func TestPastThreadReadProjectsRunningSubagentActive(t *testing.T) {
+	cfg, childID := runningSubagentProjectionConfig(t)
+	thread, ok := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: "local:" + childID})
+	if !ok {
+		t.Fatal("running subagent not found in past index")
+	}
+	if thread.Status.Type != appwire.ThreadStatusActive {
+		t.Fatalf("running subagent status = %q, want %q", thread.Status.Type, appwire.ThreadStatusActive)
 	}
 }
 

@@ -93,6 +93,46 @@ func fuzzScenarioBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 	}
 }
 
+func fuzzScenarioBuildTree_ProjectsRunningSubagentOnChild(t *testing.T) {
+	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{
+		{ID: "01PARENT", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "01CHILD", CreatedAt: now, UpdatedAt: now, ParentSessionID: "01PARENT", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+	}
+	live := []LiveEntry{{
+		Entry:              rendezvous.Entry{PID: 1},
+		SessionID:          "01PARENT",
+		Status:             appwire.ThreadStatusIdle,
+		RunningSubagentIDs: []string{"01CHILD"},
+	}}
+
+	tree := BuildTreeAt(metas, live, nil, now)
+	if len(tree.Projects) != 1 {
+		t.Fatalf("projects = %d, want 1", len(tree.Projects))
+	}
+	project := tree.Projects[0]
+	sessions := allSessions(project)
+	if len(sessions) != 1 || len(sessions[0].Children) != 1 {
+		t.Fatalf("sessions = %+v, want one parent with one child", sessions)
+	}
+	if sessions[0].State != "idle" {
+		t.Fatalf("parent state = %q, want idle", sessions[0].State)
+	}
+	if sessions[0].Children[0].State != "active" {
+		t.Fatalf("child state = %q, want active", sessions[0].Children[0].State)
+	}
+	if project.RollupState != "active" || project.RollupLive != 1 || !project.Expanded {
+		t.Fatalf("project rollup = state %q live %d expanded %v, want active/1/true", project.RollupState, project.RollupLive, project.Expanded)
+	}
+
+	tree = BuildTreeAt(metas, []LiveEntry{{Entry: rendezvous.Entry{PID: 1}, SessionID: "01PARENT", Status: appwire.ThreadStatusIdle}}, nil, now)
+	project = tree.Projects[0]
+	sessions = allSessions(project)
+	if sessions[0].Children[0].State != "ended" || project.RollupState != "idle" || project.RollupLive != 0 || project.Expanded {
+		t.Fatalf("stopped child projection = child %q rollup %q/%d expanded %v", sessions[0].Children[0].State, project.RollupState, project.RollupLive, project.Expanded)
+	}
+}
+
 func fuzzScenarioBuildTree_UsesGeneratedNameForSessionTitle(t *testing.T) {
 	tree := buildTree([]schema.SessionMeta{{
 		ID:             "01NAMED",

@@ -51,6 +51,7 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioBuildTree_OrdersProjectsByLastActivity,
 		fuzzScenarioBuildTree_OrdersProjectsByLastActivityNotCreatedAt,
 		fuzzScenarioBuildTree_PathEnteredNonManagedWorktreeAlsoGroupsByRestoreRoot,
+		fuzzScenarioBuildTree_ProjectsRunningSubagentOnChild,
 		fuzzScenarioBuildTree_RollupMagnitudeCountsLiveAndAttention,
 		fuzzScenarioBuildTree_ShortTitleNotTruncated,
 		fuzzScenarioBuildTree_TruncatesLongForkBaseTitleKeepingLabel,

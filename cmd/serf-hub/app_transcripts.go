@@ -81,7 +81,7 @@ func hubThreadTranscriptList(ctx context.Context, cfg hubcore.WebConfig, sources
 	if cfg.Past != nil {
 		_ = cfg.Past.Rebuild()
 		for _, entry := range cfg.Past.All() {
-			addTarget(pastEntryThread(entry, false), entry.Meta.TurnCount)
+			addTarget(pastEntryThread(cfg, entry, false), entry.Meta.TurnCount)
 		}
 	}
 

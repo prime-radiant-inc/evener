@@ -71,15 +71,15 @@ func covThreadReadSeed(t *testing.T) {
 	_, _ = pastThreadForRead(web.cfg, appwire.ThreadReadParams{ThreadID: "missing"})
 	_, _ = pastThreadForRead(web.cfg, appwire.ThreadReadParams{ThreadID: session})
 	past, _ := pastThreadForRead(web.cfg, appwire.ThreadReadParams{Ref: "local:" + session, IncludeTurns: true})
-	_ = pastEntryThread(entry, false)
-	_ = pastEntryThread(entry, true)
+	_ = pastEntryThread(hubcore.WebConfig{}, entry, false)
+	_ = pastEntryThread(hubcore.WebConfig{}, entry, true)
 	variants := []schema.SessionMeta{
 		{},
 		{ID: "fallback", ParentSessionID: "parent", EnvInfo: schema.EnvironmentInfo{WorkingDir: cwd}},
 		{ID: "sub", IsSubagent: true, ParentSessionID: "parent", EnvInfo: schema.EnvironmentInfo{WorkingDir: cwd}},
 	}
 	for _, meta := range variants {
-		_ = pastEntryThread(hubcore.PastEntry{Meta: meta, StateDir: t.TempDir()}, false)
+		_ = pastEntryThread(hubcore.WebConfig{}, hubcore.PastEntry{Meta: meta, StateDir: t.TempDir()}, false)
 	}
 	_ = windowedReadResponse(past, 1)
 	_ = pastEntryTurns(entry)

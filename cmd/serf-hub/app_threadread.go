@@ -27,7 +27,7 @@ func pastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (
 	if !ok {
 		return appwire.Thread{}, false
 	}
-	return pastEntryThread(entry, params.IncludeTurns), true
+	return pastEntryThread(cfg, entry, params.IncludeTurns), true
 }
 
 func localPastThreadID(params appwire.ThreadReadParams) (string, bool) {
@@ -119,7 +119,7 @@ func mergePastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 	return live
 }
 
-func pastEntryThread(entry hubcore.PastEntry, includeTurns bool) appwire.Thread {
+func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurns bool) appwire.Thread {
 	title := schema.SessionDisplayName(entry.Meta)
 	if title == "" {
 		title = entry.Meta.ID
@@ -138,6 +138,10 @@ func pastEntryThread(entry hubcore.PastEntry, includeTurns bool) appwire.Thread 
 	}
 	createdAt := hubcore.OrderCreatedAt(entry.Meta.CreatedAt, entry.Meta.UpdatedAt)
 	updatedAt := hubcore.OrderUpdatedAt(entry.Meta.UpdatedAt, entry.Meta.CreatedAt)
+	status := appwire.ThreadStatusNotLoaded
+	if cfg.Roster != nil && cfg.Roster.IsSubagentActive(entry.Meta.ID) {
+		status = appwire.ThreadStatusActive
+	}
 	thread := appwire.Thread{
 		ID:            entry.Meta.ID,
 		SessionID:     entry.Meta.ID,
@@ -146,7 +150,7 @@ func pastEntryThread(entry hubcore.PastEntry, includeTurns bool) appwire.Thread 
 		ModelProvider: entry.Meta.Model,
 		CreatedAt:     hubcore.UnixSeconds(createdAt),
 		UpdatedAt:     hubcore.UnixSeconds(updatedAt),
-		Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusNotLoaded},
+		Status:        appwire.ThreadStatus{Type: status},
 		Path:          filepath.Base(cwd),
 		CWD:           cwd,
 		Source:        "local",
@@ -163,7 +167,8 @@ func pastEntryThread(entry hubcore.PastEntry, includeTurns bool) appwire.Thread 
 			},
 			WorkMillis: entry.Meta.WorkMillis,
 			Usage:      serfUsageFromCumulative(entry.Meta.CumulativeUsage),
-			// ActiveTurnStartedAt stays 0 — an ended session has no turn in flight.
+			// ActiveTurnStartedAt stays 0 because the parent status payload does not
+			// expose the in-process child's turn start time.
 		},
 	}
 	if includeTurns {
