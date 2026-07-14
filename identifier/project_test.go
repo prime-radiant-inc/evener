@@ -22,6 +22,12 @@ type pipelineResolver struct {
 	mainErr   error
 }
 
+type nilMapResolver map[string]string
+
+func (nilMapResolver) Abs(string) (string, error)                { panic("nil map resolver called") }
+func (nilMapResolver) EvalSymlinks(string) (string, error)       { panic("nil map resolver called") }
+func (nilMapResolver) MainCheckout(string) (string, bool, error) { panic("nil map resolver called") }
+
 func (r *pipelineResolver) Abs(path string) (string, error) {
 	r.calls = append(r.calls, "Abs")
 	if r.absErr != nil {
@@ -137,6 +143,12 @@ func TestResolveProjectWithPipeline_ErrorsAndValidation(t *testing.T) {
 		var resolver *pipelineResolver
 		if _, err := ResolveProjectWith(t.TempDir(), resolver); err == nil {
 			t.Fatal("typed nil resolver accepted")
+		}
+	})
+	t.Run("typed nil map resolver", func(t *testing.T) {
+		var resolver nilMapResolver
+		if _, err := ResolveProjectWith(t.TempDir(), resolver); !errors.Is(err, errNilResolver) {
+			t.Fatalf("error = %v, want nil resolver error", err)
 		}
 	})
 	t.Run("Abs error", func(t *testing.T) {

@@ -2,7 +2,6 @@ package identifier
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -90,19 +89,43 @@ func TestResolveProjectLocalErrors(t *testing.T) {
 func TestResolveProjectLocalMalformedDetectedWorktreePointerNoFallback(t *testing.T) {
 	main, worktree := newLinkedWorktree(t)
 	pointerPath := filepath.Join(worktree, ".git")
-	if err := os.WriteFile(pointerPath, []byte("gitdir: /definitely/not/a/worktree\n"), 0o644); err != nil {
+	missing := filepath.Join(main, ".git", "worktrees", "missing")
+	if err := os.WriteFile(pointerPath, []byte("gitdir: "+missing+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ResolveProject(worktree); err == nil {
-		t.Fatal("malformed detected worktree pointer silently fell back")
+		t.Fatal("missing linked-worktree target silently fell back")
 	}
 	if _, err := os.Stat(filepath.Join(main, ".git")); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestResolveProjectLocalGitAvailable(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
+func TestResolveProjectLocalIgnoresHostileGitEnvironment(t *testing.T) {
+	base := t.TempDir()
+	sub := filepath.Join(base, "sub")
+	super := filepath.Join(base, "super")
+	for _, dir := range []string{sub, super} {
+		runGit(t, base, "init", "-q", filepath.Base(dir))
+		runGit(t, dir, "commit", "-q", "--allow-empty", "-m", "seed")
+	}
+	runGit(t, super, "submodule", "add", "-q", "../sub", "sub")
+	subRoot := evalSym(t, filepath.Join(super, "sub"))
+	for _, name := range []string{
+		"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
+		"GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+		"GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+	} {
+		t.Setenv(name, filepath.Join(t.TempDir(), "hostile"))
+	}
+	got, err := ResolveProject(filepath.Join(super, "sub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CanonicalPath != subRoot {
+		t.Fatalf("CanonicalPath = %q, want submodule root %q", got.CanonicalPath, subRoot)
+	}
+	if got.CanonicalPath == evalSym(t, super) {
+		t.Fatalf("CanonicalPath = %q, unexpectedly resolved to superproject", got.CanonicalPath)
 	}
 }

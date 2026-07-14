@@ -50,7 +50,7 @@ func ResolveProjectWith(path string, resolver Resolver) (Project, error) {
 	if path == "" {
 		return Project{}, errEmptyProjectPath
 	}
-	if resolver == nil || (reflect.ValueOf(resolver).Kind() == reflect.Ptr && reflect.ValueOf(resolver).IsNil()) {
+	if isNilResolver(resolver) {
 		return Project{}, errNilResolver
 	}
 
@@ -87,6 +87,19 @@ func ResolveProjectWith(path string, resolver Resolver) (Project, error) {
 		return Project{}, fmt.Errorf("resolve project identity path: %w", err)
 	}
 	return Project{ID: projectID(canonical), CanonicalPath: canonical}, nil
+}
+
+func isNilResolver(resolver Resolver) bool {
+	if resolver == nil {
+		return true
+	}
+	value := reflect.ValueOf(resolver)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func existingDirectory(path string) error {
@@ -190,13 +203,12 @@ func base62Digest(path string, width int) string {
 	n := new(big.Int).SetBytes(digest[:])
 	modulus := new(big.Int).Exp(big.NewInt(62), big.NewInt(int64(width)), nil)
 	n.Mod(n, modulus)
-	const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 	result := make([]byte, width)
 	base := big.NewInt(62)
 	for i := len(result) - 1; i >= 0; i-- {
 		var remainder big.Int
 		n.QuoRem(n, base, &remainder)
-		result[i] = alphabet[remainder.Int64()]
+		result[i] = base62Alphabet[remainder.Int64()]
 	}
 	return string(result)
 }

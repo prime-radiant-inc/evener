@@ -103,10 +103,16 @@ func mainCheckoutLocal(cwd string) (string, bool, error) {
 				return "", true, fmt.Errorf("read Git pointer %q: %w", gitPath, readErr)
 			}
 			if root, ok := MainRootFromGitdirPointer(string(content), dir); ok {
+				if err := validateLinkedWorktreePointer(string(content), dir, root); err != nil {
+					return "", true, err
+				}
 				return root, true, nil
 			}
 			if _, ok := ParseGitdirPointer(string(content)); !ok {
 				return "", true, errors.New("malformed Git worktree pointer")
+			}
+			if err := validateSubmodulePointer(string(content), dir); err != nil {
+				return "", true, err
 			}
 			return gitBinaryMainRootLocal(cwd)
 		}
@@ -115,6 +121,71 @@ func mainCheckoutLocal(cwd string) (string, bool, error) {
 			return "", false, nil
 		}
 		dir = parent
+	}
+}
+
+func pointerTarget(content, ancestor string) (string, bool) {
+	gitdir, ok := ParseGitdirPointer(content)
+	if !ok {
+		return "", false
+	}
+	if !filepath.IsAbs(gitdir) {
+		gitdir = filepath.Join(ancestor, gitdir)
+	}
+	return filepath.Clean(gitdir), true
+}
+
+func validateLinkedWorktreePointer(content, ancestor, root string) error {
+	target, ok := pointerTarget(content, ancestor)
+	if !ok {
+		return errors.New("malformed Git worktree pointer")
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		return fmt.Errorf("linked worktree Git directory %q: %w", target, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("linked worktree Git directory %q is not a directory", target)
+	}
+	common := filepath.Dir(filepath.Dir(target))
+	mainGit := filepath.Join(root, ".git")
+	mainInfo, err := os.Stat(mainGit)
+	if err != nil {
+		return fmt.Errorf("main checkout Git directory %q: %w", mainGit, err)
+	}
+	if !mainInfo.IsDir() || resolveClean(mainGit) != resolveClean(common) {
+		return fmt.Errorf("linked worktree Git directory %q does not match main checkout %q", target, mainGit)
+	}
+	return nil
+}
+
+func validateSubmodulePointer(content, ancestor string) error {
+	target, ok := pointerTarget(content, ancestor)
+	if !ok {
+		return errors.New("malformed Git pointer")
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		return fmt.Errorf("Git pointer target %q: %w", target, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("Git pointer target %q is not a directory", target)
+	}
+	if !isSubmoduleGitDirShape(target) {
+		return fmt.Errorf("Git pointer target %q is not a submodule Git directory", target)
+	}
+	return nil
+}
+
+func isSubmoduleGitDirShape(target string) bool {
+	for current := filepath.Clean(target); ; current = filepath.Dir(current) {
+		parent := filepath.Dir(current)
+		if filepath.Base(parent) == "modules" && filepath.Base(filepath.Dir(parent)) == ".git" {
+			return true
+		}
+		if parent == current {
+			return false
+		}
 	}
 }
 
@@ -139,9 +210,34 @@ func gitBinaryMainRootLocal(cwd string) (string, bool, error) {
 func runGitCmd(ctx context.Context, dir string, args ...string) (string, bool) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
+	cmd.Env = filteredGitEnvironment(os.Environ())
 	out, err := cmd.Output()
 	if err != nil {
 		return "", false
 	}
 	return strings.TrimSpace(string(out)), true
+}
+
+var repositorySelectionEnvironment = map[string]struct{}{
+	"GIT_DIR": {}, "GIT_WORK_TREE": {}, "GIT_COMMON_DIR": {}, "GIT_INDEX_FILE": {},
+	"GIT_OBJECT_DIRECTORY": {}, "GIT_ALTERNATE_OBJECT_DIRECTORIES": {},
+	"GIT_CEILING_DIRECTORIES": {}, "GIT_DISCOVERY_ACROSS_FILESYSTEM": {},
+}
+
+func filteredGitEnvironment(environment []string) []string {
+	filtered := make([]string, 0, len(environment))
+	for _, entry := range environment {
+		key, _, _ := strings.Cut(entry, "=")
+		blocked := false
+		for repositoryKey := range repositorySelectionEnvironment {
+			if strings.EqualFold(key, repositoryKey) {
+				blocked = true
+				break
+			}
+		}
+		if !blocked {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
 }

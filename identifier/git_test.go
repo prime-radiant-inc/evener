@@ -139,3 +139,50 @@ func TestMainCheckoutLocal_MalformedPointer(t *testing.T) {
 		t.Fatal("malformed pointer did not return an error")
 	}
 }
+
+func TestFilteredGitEnvironmentCaseInsensitive(t *testing.T) {
+	input := []string{
+		"PATH=/bin", "gIt_DiR=/hostile/dir", "git_work_tree=/hostile/tree",
+		"Git_Common_Dir=/hostile/common", "GIT_INDEX_FILE=/hostile/index",
+		"gIt_oBjEcT_dIrEcToRy=/hostile/objects",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES=/hostile/alternates",
+		"git_ceiling_directories=/hostile/ceiling",
+		"GIT_DISCOVERY_ACROSS_FILESYSTEM=1", "SERF_UNRELATED=value",
+	}
+	got := filteredGitEnvironment(input)
+	joined := strings.Join(got, "\n")
+	for _, key := range []string{
+		"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
+		"GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+		"GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+	} {
+		if strings.Contains(strings.ToUpper(joined), key+"=") {
+			t.Fatalf("filtered environment retained %s: %v", key, got)
+		}
+	}
+	for _, entry := range []string{"PATH=/bin", "SERF_UNRELATED=value"} {
+		if !strings.Contains(joined, entry) {
+			t.Fatalf("filtered environment removed %s: %v", entry, got)
+		}
+	}
+}
+
+func TestSubmoduleGitDirShape(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join("/repo", ".git", "modules", "sub"),
+		filepath.Join("/repo", ".git", "modules", "sub", "modules", "nested"),
+	} {
+		if !isSubmoduleGitDirShape(path) {
+			t.Fatalf("isSubmoduleGitDirShape(%q) = false", path)
+		}
+	}
+	for _, path := range []string{
+		filepath.Join("/repo", ".git"),
+		filepath.Join("/repo", ".git", "worktrees", "wt"),
+		filepath.Join("/repo", "other", "modules", "sub"),
+	} {
+		if isSubmoduleGitDirShape(path) {
+			t.Fatalf("isSubmoduleGitDirShape(%q) = true", path)
+		}
+	}
+}
