@@ -160,15 +160,14 @@
     if (s) s.hidden = !show;
   }
 
-  function openPane(href, title, afterHref, prepend) {
+  function openPane(href, title, afterHref, prepend, explicitAfter) {
     href = normalizePaneHref(href);
     if (!href) return null;
     var r = region();
-    if (afterHref != null && !paneFor(normalizePaneHref(afterHref))) return null;
     if (!r) {
       if (window.parent && window.parent !== window) {
         var message = { type: "serf:open-beside", href: href, title: title || href };
-        message.afterHref = afterHref == null && prepend ? null : normalizePaneHref(afterHref);
+        if (explicitAfter) message.afterHref = afterHref == null ? null : normalizePaneHref(afterHref);
         window.parent.postMessage(message, window.location.origin);
       }
       return null;
@@ -178,6 +177,7 @@
     unsuppress(href);
     var existing = paneFor(href);
     if (existing) { existing.querySelector(".pane-frame").focus(); return existing; }
+    if (afterHref != null && !paneFor(normalizePaneHref(afterHref))) return null;
     if (r.querySelectorAll(".pane").length >= MAX_SIDE_PANES) return null;
 
     var pane = document.createElement("section");
@@ -223,11 +223,11 @@
   }
 
   function open(href, title) {
-    return openPane(href, title, null, false);
+    return openPane(href, title, null, false, false);
   }
 
   function openAfter(href, title, afterHref) {
-    return openPane(href, title, afterHref, true);
+    return openPane(href, title, afterHref, true, true);
   }
 
   function close(href) {
