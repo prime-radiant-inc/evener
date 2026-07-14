@@ -153,4 +153,3 @@ Expected: PASS.
 git add llm/adapter_timeout.go llm/adapter_timeout_test.go llm/errors.go llm/errors_test.go llm/context_errors.go llm/classify.go llm/errorkind.go llm/providers/openai/response_header_timeout_test.go
 git commit -m "fix(llm): do not replay response-header timeouts"
 ```
-
