@@ -120,20 +120,57 @@ appwire thread/job projection
 hub roster and visible labels
 ```
 
-For the root session, `Working` is valid only while the session is processing or
-while autonomous work can still move it without user input. Once the turn has
-settled and no live child, pending notification, or queued input remains, its
-wire state must not remain active.
+For the root session, `Working` is valid while that session is processing or
+has queued work ready to resume it. A live child is work by the child, not by
+the settled parent. Once the root turn has settled, a live child alone must not
+keep the root row active; a pending completion notification or queued input may
+still upgrade it because those are root work waiting to run.
 
 For a subagent, `ended` is valid only after the authoritative child lifecycle is
 terminal. A missing daemon attachment, a historical transcript boundary, or a
 stale projected snapshot must not override evidence that the child job/session
 is still running.
 
-The investigation will reproduce both contradictions using the saved session
-artifacts and current daemon/hub output, identify the first layer at which each
-state becomes false, and change only that layer. If the two symptoms have
-different causes, they receive separate small fixes and regression tests.
+### Observed root causes
+
+The saved artifacts and live daemon projection locate both contradictions:
+
+1. The running delegate job `job_01KXFF39FMYA691F9H8JFD52JY` reported
+   `status: running` and transcript ref
+   `local:01KXFF39S6STGMB2EKGNBRBBDJ` in the parent daemon's `/status` result.
+   The child transcript and meta continued updating, but the child had no
+   rendezvous entry because delegate sessions run inside the parent process.
+   `BuildTreeAt.stateFor` treats every session ID absent from the rendezvous
+   live map as `ended`, so a running in-process child was necessarily rendered
+   terminal.
+2. The parent's internal turn had settled, but `Session.WireState` upgraded an
+   idle session to `active` whenever `autonomyInFlight` found a live child.
+   That intentionally assigned the child's activity to the parent row, which
+   is why the root reported `Working` without an active root turn.
+
+### Decision
+
+Transfer the activity signal to the actor that owns it:
+
+- Extend the hub's existing `/status` probe result with running delegate
+  transcript session IDs. The data already exists in `detailed.jobs`; only
+  delegate jobs in the non-terminal `running` state with valid local transcript
+  refs qualify.
+- Carry those IDs on the parent `LiveEntry`. Tree and past-thread projections
+  use that parent-owned evidence to mark the corresponding in-process child
+  `active`; they do not invent a child daemon or route child actions to the
+  parent's endpoint.
+- Stop upgrading an idle parent's wire state solely for a live child. Keep the
+  active override for pending job notifications and queued input, and retain
+  live children in the broader settle/restore autonomy checks.
+- Preserve a project's working rollup while any displayed child is active,
+  counting the parent task tree once rather than inflating the rollup by the
+  number of children.
+
+When the child reaches a terminal job state it disappears from the next probe's
+running-child set. The child then projects from persisted history as ended, and
+the parent becomes active only if its completion notification is waiting or its
+next turn has begun.
 
 ## Testing
 
@@ -159,9 +196,10 @@ end-to-end projection boundary:
 
 1. A running subagent remains non-terminal until its authoritative terminal
    transition.
-2. A settled root with no autonomy in flight is not projected as active.
-3. A root with a genuinely live child or pending notification remains active.
-4. Event or snapshot ordering cannot regress a newer lifecycle state.
+2. A settled root with only a live child is idle while that child is active.
+3. A pending notification or queued input still upgrades an idle root to active.
+4. Tree, thread-list, and thread-read projections agree on the child's active
+   state, while project rollups count its parent task tree once.
 
 Focused package tests run first after each phase. The final verification runs
 the relevant `llm`, `agent`, daemon/appwire, and hub tests, followed by the
@@ -178,4 +216,3 @@ The work is committed in small units:
 
 The handoff reports the exact commits, test commands and results, the live or
 saved-artifact evidence locating each root cause, and any remaining limitation.
-
