@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"primeradiant.com/serf/internal/gitpath"
+	"primeradiant.com/serf/identifier"
 )
 
 // ProjectID returns the 16-hex-char stable identifier used for the
@@ -52,8 +52,10 @@ func PathsFor(stateRoot, cwd string) Paths {
 // trust record and one legacy-project state directory), falling back to cwd
 // itself when it is not inside a git repository.
 func identityProjectDir(stateRoot, cwd string) string {
-	identityRoot := gitpath.ResolveMainRepoRootLocal(cwd)
-	if identityRoot == "" {
+	identityRoot := cwd
+	if project, err := identifier.ResolveProject(cwd); err == nil && project.CanonicalPath != "" {
+		identityRoot = project.CanonicalPath
+	} else {
 		identityRoot = cwd
 	}
 	return filepath.Join(stateRoot, "projects", ProjectID(identityRoot))

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"primeradiant.com/serf/internal/gitpath"
+	"primeradiant.com/serf/identifier"
 )
 
 var (
@@ -87,7 +87,12 @@ var gitProtectedLeaves = []string{"config", "config.worktree", "hooks"}
 
 // resolveCleanPath is the package's symlink-resolving path normalizer, shared by
 // the classifier and its tests so expected and actual paths normalize identically.
-func resolveCleanPath(p string) string { return gitpath.ResolveClean(p) }
+func resolveCleanPath(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(p)
+}
 
 // ClassifyWorkspace resolves cwd's git layout structurally (reading .git entries
 // directly; it never forks the git binary) into a GitLayout. It returns an error
@@ -122,7 +127,7 @@ func ClassifyWorkspace(cwd string) (GitLayout, error) {
 	if err != nil {
 		return GitLayout{}, fmt.Errorf("reading .git pointer at %s: %w", holder, err)
 	}
-	pointer, ok := gitpath.ParseGitdirPointer(string(content))
+	pointer, ok := identifier.ParseGitdirPointer(string(content))
 	if !ok {
 		return GitLayout{}, fmt.Errorf("unrecognized .git pointer at %s", holder)
 	}

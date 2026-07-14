@@ -6,7 +6,7 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/internal/gitpath"
+	"primeradiant.com/serf/identifier"
 )
 
 // DefaultStateRoot returns the serf state root: $SERF_STATE_DIR when set,
@@ -28,7 +28,7 @@ func DefaultStateRoot() string {
 
 // ResolveStateKeyDir returns the directory that state-dir keying should use
 // in place of a raw workDir: the resolved main repository root
-// (gitpath.ResolveMainRepoRootLocal) when workDir is inside a git repo,
+// (identifier.ResolveProject) when workDir is inside a git repo,
 // otherwise workDir itself unchanged.
 //
 // Keying on the main root rather than the raw workDir matters for
@@ -43,8 +43,8 @@ func DefaultStateRoot() string {
 // cmd/serf-hub's spawn-time resolver — must route through this helper so
 // they agree on the same directory.
 func ResolveStateKeyDir(workDir string) string {
-	if keyDir := gitpath.ResolveMainRepoRootLocal(workDir); keyDir != "" {
-		return keyDir
+	if project, err := identifier.ResolveProject(workDir); err == nil && project.CanonicalPath != "" {
+		return project.CanonicalPath
 	}
 	return workDir
 }
