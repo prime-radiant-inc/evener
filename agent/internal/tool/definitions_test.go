@@ -550,7 +550,7 @@ func TestDefManageWorktreeShape(t *testing.T) {
 	if !ok {
 		t.Fatalf("operation enum = %T, want []string", opProp["enum"])
 	}
-	wantEnum := map[string]bool{"create": true, "list": true, "switch": true, "exit": true, "remove": true, "prune": true}
+	wantEnum := map[string]bool{"create": true, "list": true, "switch": true, "exit": true, "remove": true, "prune": true, "dispose": true}
 	if len(opEnum) != len(wantEnum) {
 		t.Errorf("operation enum = %v, want exactly %v", opEnum, wantEnum)
 	}
@@ -561,7 +561,7 @@ func TestDefManageWorktreeShape(t *testing.T) {
 	}
 
 	// Per-operation args from spec §2's table, flattened.
-	for _, k := range []string{"name", "base_ref", "path", "force", "delete_branch"} {
+	for _, k := range []string{"name", "base_ref", "path", "force", "force_dirty", "delete_branch", "id"} {
 		if _, ok := props[k]; !ok {
 			t.Errorf("manage_worktree missing param %q", k)
 		}

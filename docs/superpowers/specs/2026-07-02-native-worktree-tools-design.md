@@ -1165,9 +1165,14 @@ ever added, it and `isolation` must be mutually exclusive.)
    restore descriptor gains an `Isolation` field; both the spawn path and the
    restore path check it and exclude `manage_worktree` from the child's
    registry unconditionally — after and regardless of `baseSubagentToolPolicy`,
-   including all-tools agent types. Per-operation gating stays out of scope;
-   the child can still run read-only `git worktree list` through its shell if
-   it is curious.
+   including all-tools agent types. Per-operation gating stays out of scope for
+   the deny path; the child can still run read-only `git worktree list` through
+   its shell if it is curious. (Refined by the delegate-lane disposal work: a
+   child that is itself a **worktree-isolated coordinator** — one carrying a
+   delegation allowance so it can fan out its own isolated sub-delegates — is
+   instead given a **dispose-only** `manage_worktree` variant, exposing only the
+   `dispose` operation so it can retire its sub-delegates' lanes; it still
+   cannot create/switch/remove, including its own lane, which its parent owns.)
 3. **Per-job reporting:** every terminal job result from an isolated delegate
    carries the worktree path, branch, commits-ahead-of-base count, and dirty
    state, so the parent can merge a lane's commits **from the main root** at
@@ -1217,6 +1222,27 @@ ever added, it and `isolation` must be mutually exclusive.)
    descriptor pointing at a deleted directory → step 5's `WorkingDir` stat
    refuses revival with a clear error. The mark is the fast, explicit
    refusal; the stat is the crash net.
+
+   **Widened and made continuous by the delegate-lane disposal work** (see
+   `docs/superpowers/plans/2026-07-13-auto-delegate-lane-disposal.md`):
+   disposal is **no longer close-only**, and the close-time predicate is no
+   longer `unchanged`-only. (a) The close pass now also collects
+   **ancestry-merged** lanes (commits reachable from the branch they were cut
+   from — removal loses nothing), so the KEEP set shrinks to unmerged,
+   rebase/squash-merged, dirty, and state-unverifiable lanes; automatic
+   collectors deliberately never use the cherry/patch-equivalence arm, and
+   ancestry evidence is trusted only from local `refs/heads/*`. (b) A
+   synchronous `dispose` operation lets the owning session retire a lane
+   **mid-life**, the moment its work merges — including rebase/squash merges,
+   under the model's judgment (`force`/`force_dirty` override the merge/dirty
+   refusals). (c) **Automatic residue sweeps**: a later top-level session
+   collects unlocked, ancestry-merged delegate residue past a grace window —
+   once shortly after it opens and once at its own close — so lanes left by a
+   crashed or already-closed owner don't accumulate. (d) A resumed session
+   re-locks its own still-kept lanes at startup, so its own residue isn't swept
+   as foreign. The step-5 revival defenses (Disposed mark + `WorkingDir` stat)
+   are unchanged, except that the Disposed **mark can now be appended mid-life**
+   by `dispose`, not only at close.
 5. **Disposal must invalidate durability** (rev-6 review finding — the
    BLOCKER: rev 6 deleted the worktree but left the delegate's persisted
    restore descriptor intact, and the restore path never checks the directory
@@ -1228,8 +1254,9 @@ ever added, it and `isolation` must be mutually exclusive.)
    step-4 mark refers to):
    - the disposed flag from step 4: `assessDelegateResumability` treats it as
      not-resumable, and `delegate_send` returns a clear error ("this
-     delegate's isolation worktree was disposed at session close; start a new
-     delegate");
+     delegate's isolation worktree was disposed; start a new delegate" —
+     generalized from the original "at session close" wording now that
+     `dispose` can retire a lane mid-life);
    - independent of disposal, `assessDelegateResumability` must **stat
      `desc.WorkingDir`** and refuse restoration into a nonexistent directory
      (hardening that also covers out-of-band deletion, for all delegates, not

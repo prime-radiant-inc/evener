@@ -185,6 +185,24 @@ func (m *subagentManager) sessions() []*Session {
 	return sessions
 }
 
+// directSubagents returns every tracked direct-child subagent (matching
+// sessions()' membership: sub != nil && sub.sess != nil), so a caller that needs
+// the *subagent — its running/driving flags, not just its Session — can read
+// them under each sub's own lock. Unlike liveDirectSubagents it does NOT filter
+// closed children, so the set it yields is exactly what sessions() yields; the
+// caller decides how to label each state.
+func (m *subagentManager) directSubagents() []*subagent {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	subs := make([]*subagent, 0, len(m.subs))
+	for _, sub := range m.subs {
+		if sub != nil && sub.sess != nil {
+			subs = append(subs, sub)
+		}
+	}
+	return subs
+}
+
 // drainForClose collects all tracked subagents and clears the map under the
 // mutex, returning the collected slice. The caller closes each child OUTSIDE
 // the lock (the manager mutex must not be held while a child *Session closes).

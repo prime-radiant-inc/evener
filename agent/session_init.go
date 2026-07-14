@@ -284,6 +284,10 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// Write the initial meta.json so the hub's past index can discover this
 	// session immediately (without waiting for the first completed turn).
 	s.maybeAutoSave()
+	// Arm the P3 residue-collection open pass (spec §P3): a top-level session on
+	// a local exec env sweeps foreign lane residue laneSweepDelay after it opens.
+	// The method itself no-ops for subagent sessions and non-local envs.
+	s.armLaneResidueSweepTimer()
 	closeJobManagerOnError = false
 	closeMCPManagerOnError = false
 	return s, nil
@@ -635,6 +639,19 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// flight resumes awaiting rather than idle (spec v5, round-3 A2).
 	if !restoreCfg.deferRestoreSideEffects {
 		s.recomputeRestoredState()
+		// Re-lock this session's own undisposed isolation lanes (spec §P3 resume
+		// re-lock). A clean close unlocked its KEPT lanes; leaving them unlocked
+		// would expose them to another session's P3 residue sweep. This is a
+		// post-init step because it enumerates owned lanes from the jobstore (which
+		// exists only now); resumeWorktreeReentry runs pre-init and cannot host it.
+		// Any re-lock failure is queued for one retry — via the P3 open timer armed
+		// just below (top-level) or a dedicated one-shot (subagent coordinator).
+		s.resumeReLockOwnLanes()
+		// Arm the P3 residue-collection open pass for a restored top-level session
+		// (spec §P3). Deferred reconstructions (nested delegate restore) are never
+		// top-level, so they never run P3; arming only on the real-side-effects
+		// path keeps that guarantee explicit.
+		s.armLaneResidueSweepTimer()
 	}
 	closeJobManagerOnError = false
 	closeMCPManagerOnError = false
@@ -768,7 +785,16 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// deny list (which frozenSubagentToolNames drops on restore, and which
 	// the allTools branch skips entirely).
 	if s.cfg.spawn.isolation == "worktree" {
-		s.reg.Remove("manage_worktree")
+		if s.delegationAllowance > 0 {
+			// A worktree-isolated coordinator keeps manage_worktree, but only its
+			// dispose operation, so it can retire its own sub-delegates' lanes
+			// (spec §P1 "Availability"). The registry serves whole tools, so the
+			// full definition is swapped for the dispose-only variant and the
+			// handler gates the other ops via worktreeDisposeOnlySurface().
+			s.serveDisposeOnlyWorktreeTool()
+		} else {
+			s.reg.Remove("manage_worktree")
+		}
 	}
 	if s.delegationAllowance <= 0 {
 		for _, name := range rootOnlySubagentTools() {

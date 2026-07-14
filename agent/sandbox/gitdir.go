@@ -82,8 +82,13 @@ type GitLayout struct {
 // writable modes so commit/add/checkout still function.
 var gitWritableLeaves = []string{"objects", "refs", "index", "logs", "packed-refs"}
 
-// gitProtectedLeaves are the per-git-dir config + hook surfaces kept write-denied.
-var gitProtectedLeaves = []string{"config", "config.worktree", "hooks"}
+// gitProtectedLeaves are the per-git-dir config + hook surfaces kept write-denied,
+// plus the two redirect files a linked-worktree git dir carries directly:
+// commondir (points at the shared common dir — repointing it makes git read an
+// attacker-controlled common dir's config, incl. core.hooksPath) and gitdir (the
+// worktree back-pointer). Both are set once at `git worktree add` and never
+// rewritten by a commit, so protecting them cannot regress the commit path.
+var gitProtectedLeaves = []string{"config", "config.worktree", "hooks", "commondir", "gitdir"}
 
 // resolveCleanPath is the package's symlink-resolving path normalizer, shared by
 // the classifier and its tests so expected and actual paths normalize identically.
@@ -211,15 +216,20 @@ func newLayout(kind WorkspaceKind, worktreeRoot, gitDir, commonDir string) GitLa
 	}
 
 	// Writable metadata lives in the common dir (shared objects/refs/packed-refs/
-	// logs) and, for a linked worktree, the per-worktree dir (index, logs, HEAD).
-	writeDirs := []string{commonDir}
-	if gitDir != commonDir {
-		writeDirs = append(writeDirs, gitDir)
+	// logs). A commit writes lockfiles (packed-refs.lock) and loose refs UNDER
+	// these leaves, so granting the leaf dirs suffices for the common dir; its
+	// config/hooks stay protected (re-bound read-only over these grants).
+	for _, leaf := range gitWritableLeaves {
+		l.WritablePaths = appendUnique(l.WritablePaths, filepath.Join(commonDir, leaf))
 	}
-	for _, d := range writeDirs {
-		for _, leaf := range gitWritableLeaves {
-			l.WritablePaths = appendUnique(l.WritablePaths, filepath.Join(d, leaf))
-		}
+	// For a linked worktree the per-worktree dir is granted WHOLE: a commit writes
+	// files DIRECTLY in it (index.lock beside index, COMMIT_EDITMSG, ORIG_HEAD,
+	// HEAD, MERGE_MSG) — grants on individual leaves like `index` leave the sibling
+	// `index.lock` on a read-only parent (the vmm6 failure). Its config.worktree +
+	// config + hooks stay in ProtectedPaths and are re-bound read-only ON TOP of
+	// this grant, mirroring ControlPolicy's writable-registry treatment.
+	if gitDir != commonDir {
+		l.WritablePaths = appendUnique(l.WritablePaths, gitDir)
 	}
 
 	// Protected config + hook surfaces on the common dir and the per-worktree dir,

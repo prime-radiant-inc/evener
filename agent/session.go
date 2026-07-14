@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -132,19 +133,31 @@ type Session struct {
 	// the lane path immediately before the non-force `git worktree remove`, so a
 	// test can dirty the lane and exercise the racing-dirty-write downgrade.
 	// Nothing in production code ever sets this field.
+	//
+	// worktreeLaneStat is a test-only seam for the post-refusal present/gone
+	// classification in disposeUnchangedLaneMechanics: when set, that stat of
+	// <lanePath>/.git routes through it, so a test can inject a non-ENOENT stat
+	// failure (EIO/EACCES) and prove a transient error takes the conservative
+	// KEEP path rather than being misread as a gone lane. Nil in production.
 	worktreeRestoreEnv          *execenv.LocalExecutionEnvironment
 	worktreeCurrentPath         string
 	worktreeCurrentManaged      bool
 	worktreeGitVersionOK        bool
 	worktreeLiveWorkStub        func(path string) []string
 	worktreeDisposeBeforeRemove func(lanePath string)
+	worktreeLaneStat            func(path string) (os.FileInfo, error)
 
 	// responseSideEffectsMu serializes a response's user-visible side-effect
 	// bundle (emit + appendTurn + counter bump) against teardown.
 	// LOCK ORDER: responseSideEffectsMu > mu (Close acquires it before mu).
 	responseSideEffectsMu         sync.Mutex
-	toolEventsWG                  sync.WaitGroup // in-flight ToolCallStart/End emit pairs; Close() joins before closing events
-	sendersWG                     sync.WaitGroup // detached event emitters (subagent runs, session namer); Add happens under mu gated on closing so it happens-before Close()'s join
+	toolEventsWG                  sync.WaitGroup  // in-flight ToolCallStart/End emit pairs; Close() joins before closing events
+	sendersWG                     sync.WaitGroup  // detached event emitters (subagent runs, session namer); Add happens under mu gated on closing so it happens-before Close()'s join
+	disposeWG                     sync.WaitGroup  // in-flight in-turn dispose ops (manage_worktree op=dispose); admitted via beginDispose() under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before draining (spec §P1)
+	sweepWG                       sync.WaitGroup  // in-flight P3 open-pass residue sweeps; the open timer callback Adds under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before its own disposal (spec §P3)
+	laneSweepTimer                clock.Timer     // one-shot P3 open-pass timer (top-level local sessions only), armed at open and stopped at close; guarded by mu
+	laneReLockRetryTimer          clock.Timer     // one-shot resume re-lock retry timer for a restored subagent coordinator (which has no P3 open timer to piggyback on); armed at resume when a re-lock failed, stopped at close; guarded by mu
+	pendingReLock                 []isolationLane // own undisposed lanes whose resume re-lock failed and await one retry (P3 open timer for top-level, laneReLockRetryTimer for a subagent coordinator); guarded by mu
 	state                         SessionState
 	closing                       bool
 	turns                         int       // user input count (for MaxTurns enforcement)
@@ -309,6 +322,14 @@ type Session struct {
 
 	// Tool names registered during session initialization (not custom).
 	coreToolNames map[string]bool
+
+	// worktreeDisposeOnly is set at session init for a worktree-isolated
+	// coordinator (delegate spawned isolation:"worktree" that itself carries a
+	// delegation allowance): the manage_worktree tool is served as the
+	// dispose-only variant and the handler refuses every op except dispose
+	// (delegate-lane disposal spec §P1 "Availability"). Write-once during init,
+	// before the session serves any tool call.
+	worktreeDisposeOnly bool
 
 	// Project docs loaded once at session init and cached for lifetime.
 	projectDocs          []ProjectDoc

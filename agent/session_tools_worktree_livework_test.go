@@ -339,6 +339,122 @@ func TestWorktreeLiveWorkUnder_SkipsSubagentEmptyWorkingDirectory(t *testing.T) 
 	}
 }
 
+// --- remove refusal legibility: dispose hint ---
+
+// seedRetainedDelegate appends a delegate-created record mapping delegateID to
+// childID in the session's own store, so LoadDelegates resolves the child
+// session id (what liveWorkUnder surfaces) back to a dlg_ id for the refusal.
+func seedRetainedDelegate(t *testing.T, s *Session, delegateID, childID string) {
+	t.Helper()
+	jm := s.jobManager
+	now := jm.now()
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateCreated,
+		TS:         now,
+		DelegateID: delegateID,
+		Delegate: &jobstore.DelegateEvent{
+			ChildSessionID:   childID,
+			TranscriptRef:    encodeRef("", childID),
+			OwnerSessionID:   jm.sessionID,
+			VisibleSessionID: jm.sessionID,
+			Generation:       "dg_1",
+			Resumable:        true,
+		},
+	}); err != nil {
+		t.Fatalf("append delegate: %v", err)
+	}
+}
+
+// TestWorktreeRemove_RetainedIdleDelegate_SuggestsDispose covers the brief's
+// refusal-copy deliverable (spec §P1 step 3): when remove is blocked ONLY by
+// retained, idle delegate children, the refusal names the delegate id and
+// suggests `manage_worktree op=dispose id=<dlg_…>` instead of dead-ending the
+// caller with an opaque "live work" refusal it (correctly) will not bypass.
+func TestWorktreeRemove_RetainedIdleDelegate_SuggestsDispose(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	nested := filepath.Join(path, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+
+	child := newSession(t, withDir(nested), withConfig(worktreeTestSessionConfig()))
+	// A retained, idle delegate child: running=false, driving=false.
+	r.s.subagents.track(&subagent{id: child.id, sess: child})
+	seedRetainedDelegate(t, r.s, "dlg_retained", child.id)
+
+	_, err = r.removeOp(t, map[string]any{"name": "lane", "force": true})
+	if err == nil {
+		t.Fatal("expected remove to be refused by the retained idle delegate")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, child.id) {
+		t.Errorf("refusal should still name the blocker %q, got: %v", child.id, msg)
+	}
+	if !strings.Contains(msg, "dlg_retained") {
+		t.Errorf("refusal should name the delegate id dlg_retained, got: %v", msg)
+	}
+	if !strings.Contains(msg, "op=dispose") {
+		t.Errorf("refusal should suggest op=dispose, got: %v", msg)
+	}
+}
+
+// TestWorktreeRemove_RunningBlocker_NoDisposeHint confirms the hint fires ONLY
+// when every blocker is a retained idle delegate: a genuine running shell under
+// the lane (alongside the retained delegate) leaves the generic refusal in
+// place, since disposing the idle delegate would not clear the running work.
+func TestWorktreeRemove_RunningBlocker_NoDisposeHint(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	nested := filepath.Join(path, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+
+	env := r.s.currentEnv()
+	se, ok := env.(execenv.StreamingExecutor)
+	if !ok {
+		t.Fatal("session env does not support streaming")
+	}
+	shellRes := runShell(context.Background(), r.s.jobManager, se, shellArgs{
+		Command:    "sleep 30",
+		Background: true,
+		WorkingDir: env.WorkingDirectory(),
+	})
+	if shellRes.JobID == "" || !shellRes.RunningInBackground {
+		t.Fatalf("shell result = %+v, want a running background job", shellRes)
+	}
+	t.Cleanup(func() { _, _ = r.s.jobManager.stop(shellRes.JobID) })
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+
+	child := newSession(t, withDir(nested), withConfig(worktreeTestSessionConfig()))
+	r.s.subagents.track(&subagent{id: child.id, sess: child})
+	seedRetainedDelegate(t, r.s, "dlg_retained", child.id)
+
+	_, err = r.removeOp(t, map[string]any{"name": "lane", "force": true})
+	if err == nil {
+		t.Fatal("expected remove to be refused")
+	}
+	if strings.Contains(err.Error(), "op=dispose") {
+		t.Errorf("running shell blocker must NOT get a dispose hint, got: %v", err)
+	}
+}
+
 // --- real prune plumbing (not the stub) ---
 
 // TestWorktreePrune_Sweep1_SkipsLiveRealBackgroundShellJob mirrors

@@ -97,6 +97,13 @@ type subagent struct {
 	closed          bool               // session torn down; record retained as terminal history
 	closeTimedOut   bool               // session-close wait exceeded its bound; close not confirmed
 	driving         bool               // a drive-down notification turn (§3) is in flight on this idle child
+	// disposeGated freezes a quiescent, retained TERMINAL child while a dispose op
+	// (spec §P1 step 4) evaluates and evicts it: no wake-edge drive may launch and
+	// no delegate_send may resume the child while it is set. Guarded by sub.mu; set
+	// only after re-verifying !running && !driving under the same hold, so a drive
+	// or resume that raced ahead wins and the gate is refused. Reversed on every
+	// pre-eviction dispose refusal/failure exit.
+	disposeGated bool
 	// ownsEnv is true when prepareSubagentRun built the child a FRESH execution env
 	// (a working-dir re-root and/or a per-delegate sandbox) rather than sharing the
 	// parent's. Such an env may own a sandbox scratch dir + file-tool fds that the
@@ -318,6 +325,39 @@ func restoreFrozenSkillBodies(skillNames, skillBodies []string) ([]string, error
 		bodies = append(bodies, body)
 	}
 	return bodies, nil
+}
+
+// liveShellsUnderTree collects the handles of every live background-shell job
+// rooted at or under path, across THIS session and every retained descendant
+// session in its subagent tree (spec §P1 step 3). It exists because each
+// session's jobManager.liveShellHandles() only sees its own running map: a shell
+// launched inside a grandchild lives in the grandchild's manager and is
+// invisible to a parent-only scan. The disposal op consumes this to distinguish
+// a lane with genuine running work from one held open only by retained, idle
+// delegate children (which liveWorkUnder labels honestly).
+//
+// The walk follows treeHasOutstandingWork's leaf-lock discipline: it enumerates
+// direct children via liveDirectSubagents (which releases each sub.mu before
+// returning), then descends into each child's Session, so no sub.mu (or
+// jobManager mutex) is ever held across the recursion.
+func (s *Session) liveShellsUnderTree(path string) []string {
+	target := canonicalOrClean(path)
+	var out []string
+	s.collectLiveShellsUnderTree(target, &out)
+	return out
+}
+
+func (s *Session) collectLiveShellsUnderTree(target string, out *[]string) {
+	if s.jobManager != nil {
+		for _, h := range s.jobManager.liveShellHandles() {
+			if pathEqualOrUnder(canonicalOrClean(h.dir), target) {
+				*out = append(*out, h.handle)
+			}
+		}
+	}
+	for _, sub := range s.liveDirectSubagents() {
+		sub.sess.collectLiveShellsUnderTree(target, out)
+	}
 }
 
 func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string, reasoningEffort string, parentTasks []taskpkg.TaskTemplate, grantTools []string) (any, error) {
@@ -871,6 +911,31 @@ func (s *Session) startOrSteerSubagentRun(sub *subagent, input string) (bool, er
 	return true, nil
 }
 
+// trySetDisposeGate arms the dispose gate on a quiescent retained child, but only
+// after re-verifying under sub.mu that no run or drive turn is live. It returns
+// false (gate NOT set) when the child is running or driving — a drive/resume that
+// raced the dispose op wins, and the caller must refuse the dispose. On success
+// the child is frozen: driveSubagentNotificationTurn and the retained delegate_send
+// path refuse until clearDisposeGate reverses it.
+func (a *subagent) trySetDisposeGate() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.running || a.driving {
+		return false
+	}
+	a.disposeGated = true
+	return true
+}
+
+// clearDisposeGate reverses trySetDisposeGate. The dispose op calls it on every
+// pre-eviction refusal/failure exit so a child that survives disposal is drivable
+// and resumable again.
+func (a *subagent) clearDisposeGate() {
+	a.mu.Lock()
+	a.disposeGated = false
+	a.mu.Unlock()
+}
+
 // driveSubagentNotificationTurn launches ONE EntryNotification turn on a live,
 // idle direct child whose own loop has undelivered attention (spec §3 drive-down:
 // a parent never renders a non-owned job's notification; it runs the child whose
@@ -896,7 +961,7 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		return false
 	}
 	sub.mu.Lock()
-	if sub.sess == nil || sub.closed || sub.running || sub.driving {
+	if sub.sess == nil || sub.closed || sub.running || sub.driving || sub.disposeGated {
 		sub.mu.Unlock()
 		return false
 	}

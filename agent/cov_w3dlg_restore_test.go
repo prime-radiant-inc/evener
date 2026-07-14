@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -27,7 +28,7 @@ func w3dlg_restoreFixture(t *testing.T) (*Session, *jobstore.JobRecord, string, 
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	t.Cleanup(func() { s.close(false) })
+	t.Cleanup(func() { s.close(context.Background(), false) })
 	rec := seedStoppedDelegateRestoreRecord(t, s)
 	rec.DelegateRestore.WorkingDir = workDir
 	replaceStoredDelegateRecord(t, s, rec)

@@ -78,11 +78,50 @@ type retryTracker struct {
 // when configured for the root session, removes any embedded skills directory,
 // waits for in-flight event emitters to finish, and closes the events channel.
 func (s *Session) Close() {
-	s.close(true)
+	s.close(context.Background(), true)
 }
 
-func (s *Session) close(cleanupEnv bool) {
+// beginDispose admits an in-turn dispose op iff the session is not yet closing,
+// registering it on disposeWG under a single s.mu hold — the sendersWG idiom
+// (session.go): the closing check AND the WaitGroup Add happen atomically, so a
+// successful Add happens-before Close()'s disposeWG.Wait() join. A check
+// followed by an Add outside the lock would reopen the race (spec §P1, rev-9.1
+// finding O5). A true return MUST be paired with a (deferred) endDispose().
+func (s *Session) beginDispose() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return false
+	}
+	s.disposeWG.Add(1)
+	return true
+}
+
+// endDispose releases a dispose admission obtained from beginDispose().
+func (s *Session) endDispose() {
+	s.disposeWG.Done()
+}
+
+func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 	s.closeOnce.Do(func() {
+		// One budget per close cascade (spec §P0, Implementation-order item 4):
+		// the initiating close mints the deadline; descendants reached below via
+		// close(budgetCtx, false) reuse it rather than minting their own.
+		budgetCtx, cancelBudget := ensureCloseBudget(ctx)
+		defer cancelBudget()
+		// Dispose-turn vs own-close protocol (spec §P1, Implementation-order
+		// items 1-2): set-flag → cancel → join → drain. An in-turn dispose op
+		// admitted via beginDispose() holds disposeWG; close must not begin
+		// draining/teardown while one runs (its dispose steps need s.mu, which
+		// drainForClose holds — joining at the drain point would deadlock).
+		//
+		// Step 1: set the monotonic refuse-new-work flags under the documented
+		// lock pair (responseSideEffectsMu then mu, session.go), then release
+		// BOTH before the join. Holding responseSideEffectsMu across the join
+		// would stall every tool's side-effect section on one dispose (rev-9.1
+		// finding O4). `closing` is monotonic and every reader treats it as a
+		// refuse-new-work flag, so splitting today's single critical section is
+		// safe.
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
 		turns := s.modelResponses
@@ -93,11 +132,38 @@ func (s *Session) close(cleanupEnv bool) {
 		}
 		s.closing = true
 		s.state = SessionClosed
-		// Mark closing BEFORE draining so a spawn or namer launch racing teardown
-		// is either registered here (and cancelled below) or observes closing and
-		// refuses — there is no window for a late goroutine to escape the drain.
-		// The map is cleared under the lock; children are closed OUTSIDE the lock
+		s.mu.Unlock()
+		s.responseSideEffectsMu.Unlock()
+
+		// Step 2: cancel the turn ctx BEFORE the join so a mid-dispose git op is
+		// actually interruptible — the git runners are ctx-aware, which is what
+		// bounds the join (rev-9.1 finding O1: joining before cancelling makes
+		// the "observes ctx cancellation" mitigation unreachable). `closing` is
+		// already set above, so beginDispose() refuses any new admission past
+		// this point; only ops admitted before it are joined here.
+		if s.cancelFunc != nil {
+			s.cancelFunc()
+		}
+		// A close that begins before the P3 open-pass delay elapses cancels the
+		// pass outright; stop the timer now that `closing` is set (a timer that
+		// already fired is joined below via sweepWG instead — spec §P3).
+		s.stopLaneResidueSweepTimer()
+		s.stopLaneReLockRetryTimer()
+
+		// Step 3: join the in-flight-dispose WaitGroup with NO locks held, then
+		// join any in-flight P3 open-pass residue sweep before this session's own
+		// disposal runs, so the two never race on the same lane's git ops.
+		s.disposeWG.Wait()
+		s.sweepWG.Wait()
+
+		// Step 4: reacquire the pair and drain the subagent map. Marking closing
+		// BEFORE draining means a spawn or namer launch racing teardown is either
+		// registered here (and cancelled below) or observes closing and refuses —
+		// there is no window for a late goroutine to escape the drain. The map is
+		// cleared under the lock; children are closed OUTSIDE the lock
 		// (sub.sess.Close() acquires its own mu).
+		s.responseSideEffectsMu.Lock()
+		s.mu.Lock()
 		subs := s.subagents.drainForClose()
 		s.mu.Unlock()
 		s.responseSideEffectsMu.Unlock()
@@ -120,10 +186,9 @@ func (s *Session) close(cleanupEnv bool) {
 		s.subagents.waitForReconstructionSideEffects()
 
 		// Spec Appendix B graceful shutdown ordering:
-		// 1. Cancel in-flight LLM calls.
-		if s.cancelFunc != nil {
-			s.cancelFunc()
-		}
+		// 1. In-flight LLM calls were already cancelled in the set-flag → cancel
+		// → join preamble above; the dispose protocol requires the cancel to
+		// precede the join, which is earlier than this point.
 
 		// 2. Mark and stop durable jobs before environment cleanup can reap
 		// process handles and make deliberate shutdown look like runtime failure.
@@ -138,7 +203,7 @@ func (s *Session) close(cleanupEnv bool) {
 		// can own durable jobs whose process handles live in the parent env. The
 		// parent owns cleanup of the shared env, so child closes skip env cleanup.
 		for _, sub := range subs {
-			sub.sess.close(false)
+			sub.sess.close(budgetCtx, false)
 			// A child that owns a FRESH env (a per-delegate sandbox and/or a lane
 			// re-root) may hold a sandbox scratch dir + file-tool fds that close(false)
 			// deliberately skips (child env cleanup is the parent's job because children
@@ -161,7 +226,12 @@ func (s *Session) close(cleanupEnv bool) {
 		// residual lane process; a residual writer racing the clean check is
 		// self-healing since disposal's `git worktree remove` runs without
 		// --force and downgrades to keep on a dirty refusal.
-		s.disposeDelegateLanesAtClose()
+		s.disposeDelegateLanesAtClose(budgetCtx)
+		// P3 close pass (spec §P3): after this session's own P0 disposal, collect
+		// foreign residue (other cleanly-closed sessions' unlocked, merged
+		// delegate lanes) over the SAME shared close budget. Store must still be
+		// open (the own-store Disposed mark is a durable append); it closes below.
+		s.disposeLaneResidueAtClose(budgetCtx)
 		s.unlockOwnManagedWorktreeAtClose()
 
 		if s.jobManager != nil {
@@ -241,6 +311,8 @@ func (s *Session) discardRestoredCandidate() {
 		if s.cancelFunc != nil {
 			s.cancelFunc()
 		}
+		s.stopLaneResidueSweepTimer()
+		s.stopLaneReLockRetryTimer()
 
 		if s.jobManager != nil && s.jobManager.store != nil {
 			_ = s.jobManager.store.Close()

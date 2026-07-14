@@ -120,6 +120,30 @@ type jobManager struct {
 // teardown of jobs that never naturally terminate from costing real seconds.
 var defaultCloseGrace = 5 * time.Second
 
+// Delegate-lane disposal tunables (auto-delegate-lane-disposal spec §Constants).
+// Package vars, not consts, so tests can override and restore them without
+// waiting wall-clock time.
+var (
+	// laneClosePassBudget bounds the P0 close disposal and the P3 close pass
+	// TOGETHER — one shared deadline per close cascade. It bounds git/history
+	// work only; the budget-exempt touch+unlock tail runs after expiry, so
+	// shutdown never blocks on git yet no lane is left locked.
+	laneClosePassBudget = 30 * time.Second
+	// laneTailWarnThreshold is the lane count above which the budget-exempt
+	// touch+unlock tail earns a second aggregated warning (a pathological
+	// session leaked far more lanes than a close pass can collect).
+	laneTailWarnThreshold = 50
+	// laneSweepDelay is how long after a top-level session opens its one-shot
+	// P3 residue-collection sweep fires (spec §P3): long enough to clear the
+	// revival races a just-restored owner needs to re-lock its own lanes.
+	laneSweepDelay = 10 * time.Minute
+	// laneGrace is the minimum sidecar mtime age (spec §P3 "Grace = sidecar
+	// mtime") before the P3 sweep will collect an unlocked delegate lane. Every
+	// KEEP path touches the sidecar first, so a lane a close pass just released
+	// stays untouched until the hand-off window has passed.
+	laneGrace = 30 * time.Minute
+)
+
 func (jm *jobManager) setParentJobID(jobID string) {
 	jm.mu.Lock()
 	jm.parentJobID = jobID
@@ -295,6 +319,28 @@ func (jm *jobManager) liveWorkHandles() []liveWorkHandle {
 			if run.rec.DelegateRestore != nil && run.rec.DelegateRestore.WorkingDir != "" {
 				out = append(out, liveWorkHandle{dir: run.rec.DelegateRestore.WorkingDir, handle: run.rec.JobID + " (delegate, running)"})
 			}
+		}
+	}
+	return out
+}
+
+// liveShellHandles returns the launch-time working directory of every
+// background SHELL job still in jm.running, paired with a handle describing it.
+// It is the shell-only projection of liveWorkHandles, used by the tree-wide
+// disposal walk (liveShellsUnderTree): delegate job records are excluded there
+// because a retained delegate child is enumerated (and honestly labeled)
+// through the subagent-tree scan instead. A shell job with no recorded working
+// dir is omitted (the guard is best-effort, not a source of false refusals).
+func (jm *jobManager) liveShellHandles() []liveWorkHandle {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	var out []liveWorkHandle
+	for _, run := range jm.running {
+		if run == nil || run.rec == nil {
+			continue
+		}
+		if run.rec.Type == jobstore.JobShell && run.rec.WorkingDir != "" {
+			out = append(out, liveWorkHandle{dir: run.rec.WorkingDir, handle: run.rec.JobID + " (shell, running)"})
 		}
 	}
 	return out

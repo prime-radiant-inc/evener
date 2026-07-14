@@ -137,6 +137,12 @@ type DelegateRecord struct {
 	Generation          string         `json:"generation,omitempty"`
 	StopGateClosed      bool           `json:"stop_gate_closed,omitempty"`
 	StopGateClosedJobID string         `json:"stop_gate_closed_job_id,omitempty"`
+	// Disposed is set when this delegate's isolation worktree lane was disposed
+	// mid-life or at its creator session's close (delegate-lane disposal spec §P1).
+	// It is additive and monotonic: folded from a delegate_disposed event keyed by
+	// delegate id, no event un-disposes a delegate. Consumers (doctor tree, job
+	// listing) treat a disposed delegate as non-resumable.
+	Disposed bool `json:"disposed,omitempty"`
 }
 
 type WatchRecord struct {

@@ -164,6 +164,102 @@ func TestBwrapWorkspaceWriteDelegateCannotWriteOtherLanes(t *testing.T) {
 	}
 }
 
+// laneCommitScript writes a file in the lane, then git add + git commit it —
+// exactly what an isolation=worktree delegate does in its lane. The lane's git dir
+// lives in the MAIN repo's .git/worktrees/<id> (a different tree from the lane
+// cwd), so this exercises whether the resolved policy grants the pointer target's
+// per-worktree dir + common-dir subpaths a commit needs. It also probes that the
+// config/hook protected surfaces stay write-denied.
+func laneCommitScript(lane string) string {
+	return strings.Join([]string{
+		`export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e`,
+		`export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null`,
+		`cd '` + lane + `'`,
+		`echo change > lanefile.txt`,
+		`echo "add=$(git add lanefile.txt 2>&1; echo exit=$?)"`,
+		`echo "commit=$(git commit -q -m lanec 2>&1; echo exit=$?)"`,
+		`echo "config-write=$(git config core.hooksPath /evil 2>&1; echo exit=$?)"`,
+		// The per-worktree dir is granted whole-writable; its config.worktree + hooks
+		// must still be re-bound read-only ON TOP (the fix must not expose them).
+		`echo "wt-config-write=$(echo x > '` + gitDirOf(lane) + `/config.worktree' 2>&1; echo exit=$?)"`,
+		`echo "wt-hook-write=$(echo x > '` + gitDirOf(lane) + `/hooks/pre-commit' 2>&1; echo exit=$?)"`,
+		// The per-worktree redirect files sit DIRECTLY in the whole-writable git dir;
+		// they must be re-bound read-only ON TOP. Rewriting commondir repoints git at
+		// an attacker-controlled common dir (its config carries core.hooksPath).
+		`echo "commondir-write=$(echo x > '` + gitDirOf(lane) + `/commondir' 2>&1; echo exit=$?)"`,
+		`echo "gitdir-write=$(echo x > '` + gitDirOf(lane) + `/gitdir' 2>&1; echo exit=$?)"`,
+	}, "; ")
+}
+
+// gitDirOf returns a lane's linked per-worktree git dir (main/.git/worktrees/<id>),
+// reading the lane's .git pointer file the same way the classifier does.
+func gitDirOf(lane string) string {
+	data, err := os.ReadFile(filepath.Join(lane, ".git"))
+	if err != nil {
+		return filepath.Join(lane, ".git-unresolved")
+	}
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(data)), "gitdir:"))
+}
+
+// TestBwrapWorkspaceWriteDelegateCanCommitInLane is the vmm6 regression test: an
+// isolation=worktree delegate re-rooted to its lane must be able to `git add` +
+// `git commit` inside that lane — the lane's git dir lives in the main repo's
+// .git/worktrees/<id>, a separate tree from the lane cwd. The config/hook
+// protected surfaces must STILL be write-denied (the fix must not blanket-mount
+// .git writable).
+func TestBwrapWorkspaceWriteDelegateCanCommitInLane(t *testing.T) {
+	facts := requireRealBwrap(t)
+	facts.Home = t.TempDir()
+	_, lanes := nonTmpMainAndLanes(t, 2)
+	parent, child := lanes[0], lanes[1]
+	sessionTmp := t.TempDir()
+
+	net := true
+	rpParent, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: &net}, facts, parent)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	rpChild, err := rpParent.ReRoot(child)
+	if err != nil {
+		t.Fatalf("re-root: %v", err)
+	}
+	wParent, err := NewWrapper(rpParent, facts.BwrapPath, sessionTmp)
+	if err != nil {
+		t.Fatalf("wrapper: %v", err)
+	}
+	wChild, err := wParent.ReRoot(child)
+	if err != nil {
+		t.Fatalf("re-root wrapper: %v", err)
+	}
+
+	argv := wChild.Wrap([]string{"/bin/bash", "-c", laneCommitScript(child)}, child)
+	out, err := runArgv(t, argv, *rpChild, sessionTmp)
+	if err != nil {
+		t.Fatalf("lane commit command failed to run: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "add=exit=0") {
+		t.Errorf("delegate must be able to `git add` in its lane:\n%s", out)
+	}
+	if !strings.Contains(out, "commit=exit=0") {
+		t.Errorf("delegate must be able to `git commit` in its lane:\n%s", out)
+	}
+	if strings.Contains(out, "config-write=exit=0") {
+		t.Errorf("delegate WROTE the common git config — protected surfaces must stay guarded:\n%s", out)
+	}
+	if strings.Contains(out, "wt-config-write=exit=0") {
+		t.Errorf("delegate WROTE the per-worktree config.worktree — whole-dir grant leaked a protected surface:\n%s", out)
+	}
+	if strings.Contains(out, "wt-hook-write=exit=0") {
+		t.Errorf("delegate WROTE a per-worktree hook — whole-dir grant leaked a protected surface:\n%s", out)
+	}
+	if strings.Contains(out, "commondir-write=exit=0") {
+		t.Errorf("delegate WROTE the per-worktree commondir — a redirect surface leaked through the whole-dir grant:\n%s", out)
+	}
+	if strings.Contains(out, "gitdir-write=exit=0") {
+		t.Errorf("delegate WROTE the per-worktree gitdir back-pointer — a redirect surface leaked through the whole-dir grant:\n%s", out)
+	}
+}
+
 // TestBwrapResumedDelegateReconfined: a RESTORED delegate re-resolves its persisted
 // policy inputs against its lane (as job_delegate's restore path does) and the
 // kernel re-applies confinement — a write outside the lane is denied.

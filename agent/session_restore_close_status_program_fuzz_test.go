@@ -274,7 +274,7 @@ func srspCloseWorktree(t *testing.T, mode byte) {
 			}
 		}
 	}
-	note, kept := h2.s.disposeOneDelegateLane(h2.s.currentEnv().(*execenv.LocalExecutionEnvironment), isolationLane{
+	note, kept := h2.s.disposeOneDelegateLane(context.Background(), h2.s.currentEnv().(*execenv.LocalExecutionEnvironment), isolationLane{
 		delegateID: "srsp-delegate",
 		path:       lane,
 	})

@@ -269,6 +269,52 @@ func TestFoldDelegatesAppliesSessionAssignedResumability(t *testing.T) {
 	}
 }
 
+// TestFoldDelegatesMarksDisposed covers delegate-lane disposal spec §P1: a
+// mid-life delegate_disposed event marks the DelegateRecord Disposed, and the
+// mark survives regardless of whether the disposal event precedes or follows the
+// other events for the same delegate (additive, monotonic — nothing un-disposes).
+func TestFoldDelegatesMarksDisposed(t *testing.T) {
+	start := time.Unix(1, 0).UTC()
+	makeEvents := func(disposeSeq int64) []Event {
+		return []Event{
+			ev(EventDelegateCreated, 2, "", func(e *Event) {
+				e.DelegateID = "dlg_A"
+				e.Delegate = &DelegateEvent{
+					ChildSessionID: "child_A",
+					TranscriptRef:  "local:child_A",
+					Generation:     "dg_1",
+					Resumable:      true,
+				}
+			}),
+			ev(EventJobStarted, 3, "job_1", func(e *Event) {
+				e.Type = JobDelegate
+				e.DelegateID = "dlg_A"
+				e.TranscriptRef = "local:child_A"
+				e.StartedAt = &start
+			}),
+			ev(EventDelegateDisposed, disposeSeq, "", func(e *Event) {
+				e.DelegateID = "dlg_A"
+			}),
+		}
+	}
+
+	// Disposal after the delegate's other events.
+	after := FoldDelegates(makeEvents(4))["dlg_A"]
+	if after == nil || !after.Disposed {
+		t.Fatalf("disposed-after: Disposed = %v, want true (%+v)", after != nil && after.Disposed, after)
+	}
+
+	// Disposal before delegate_created (lower seq) — the record is pre-marked and
+	// the later creation/start events must not clear it.
+	before := FoldDelegates(makeEvents(1))["dlg_A"]
+	if before == nil || !before.Disposed {
+		t.Fatalf("disposed-before: Disposed = %v, want true (%+v)", before != nil && before.Disposed, before)
+	}
+	if before.ChildSessionID != "child_A" {
+		t.Fatalf("disposed-before: identity dropped, got %+v", before)
+	}
+}
+
 func TestFoldDelegatesClosesStopGateForCurrentJob(t *testing.T) {
 	start := time.Unix(1, 0).UTC()
 	end := time.Unix(2, 0).UTC()

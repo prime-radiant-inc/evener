@@ -1456,13 +1456,18 @@ type delegateWorktreeToolResult struct {
 	Branch string `json:"branch"`
 	Ahead  int    `json:"ahead_commits"`
 	Dirty  bool   `json:"dirty"`
+	// DisposalHint carries the spec §P2 completion nudge. It MUST be exported —
+	// an unexported field is silently dropped by encoding/json (roborev finding
+	// 2718-2). Empty (and omitted) unless the receiving session has the dispose
+	// op and owns the delegate.
+	DisposalHint string `json:"disposal_hint,omitempty"`
 }
 
 func delegateWorktreeToolResultFrom(wt *delegateWorktreeReport) *delegateWorktreeToolResult {
 	if wt == nil {
 		return nil
 	}
-	return &delegateWorktreeToolResult{Path: wt.Path, Branch: wt.Branch, Ahead: wt.Ahead, Dirty: wt.Dirty}
+	return &delegateWorktreeToolResult{Path: wt.Path, Branch: wt.Branch, Ahead: wt.Ahead, Dirty: wt.Dirty, DisposalHint: wt.DisposalHint}
 }
 
 type delegateSandboxToolResult struct {
@@ -2434,14 +2439,23 @@ func projectDelegateRecord(rec *jobstore.DelegateRecord) delegateListEntry {
 	if rec == nil {
 		return delegateListEntry{}
 	}
+	// A disposed delegate is never resumable regardless of the durably-recorded
+	// Resumable flag (delegate-lane disposal spec §P1): its isolation lane is
+	// gone, so present it as not-resumable with the disposal reason.
+	resumable := rec.Resumable
+	notResumableWhy := rec.NotResumableWhy
+	if rec.Disposed {
+		resumable = false
+		notResumableWhy = notResumableWorktreeDisposed
+	}
 	return delegateListEntry{
 		DelegateID:       rec.DelegateID,
 		Status:           string(rec.Status),
 		CurrentJobID:     rec.CurrentJobID,
 		LatestJobID:      rec.LatestJobID,
 		TranscriptRef:    rec.TranscriptRef,
-		Resumable:        rec.Resumable,
-		NotResumableWhy:  rec.NotResumableWhy,
+		Resumable:        resumable,
+		NotResumableWhy:  notResumableWhy,
 		ParentDelegateID: rec.ParentDelegateID,
 	}
 }

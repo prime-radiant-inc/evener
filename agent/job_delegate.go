@@ -135,6 +135,12 @@ type delegateWorktreeReport struct {
 	Branch string
 	Ahead  int
 	Dirty  bool
+	// DisposalHint is the spec §P2 completion nudge, rendered verbatim on both
+	// surfaces (inline tool result and background notification) iff the
+	// receiving session has the dispose op AND owns the delegate. Empty when
+	// either gate fails (a forwarded descendant copy in an ancestor, or a leaf
+	// delegate whose manage_worktree was stripped). Computed git-free.
+	DisposalHint string
 }
 
 // delegateSandboxReport is the delegate's enforced sandbox box (mode + network),
@@ -644,6 +650,14 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	if !rec.Status.IsTerminal() {
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate job %q has status %q", target, rec.Status))
 	}
+	// A disposed delegate refuses every send, including on the retained path
+	// (spec §P1 "Post-disposal delegate_send"). assessDelegateResumability also
+	// checks Disposed, but that runs only on the restore path; a still-tracked
+	// child would otherwise resume past it. Checking here — before we split into
+	// retained vs restore — keeps the child tracked (no restore side effects).
+	if rec.Disposed {
+		return sendMessageFailed(target, notResumableSendError(notResumableWorktreeDisposed))
+	}
 	_, childID, err := decodeRef(rec.TranscriptRef)
 	if err != nil {
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: invalid transcript_ref for job %q: %w", target, err))
@@ -653,7 +667,16 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		sub.mu.Lock()
 		running := sub.running
 		driving := sub.driving
+		gated := sub.disposeGated
 		sub.mu.Unlock()
+		if gated {
+			// The child is frozen for disposal (spec §P1 step 4): refuse the send
+			// rather than resurrect it mid-eviction. A watch-originated send MUST be
+			// classified watchSendBusy so the frame is retried at the next boundary,
+			// not permanently dropped by sendMessageFailed's watchSendHardFailure
+			// (finding N2).
+			return disposeGatedSendRefusal(target, rec, args.FromWatch)
+		}
 		if driving && !running {
 			return s.sendRunningDelegateMessage(target, message, rec, args.FromWatch, args.Provenance)
 		}
@@ -765,7 +788,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 func notResumableSendError(reason string) error {
 	switch reason {
 	case notResumableWorktreeDisposed:
-		return errors.New("target_not_resumable: this delegate's isolation worktree was disposed at session close; start a new delegate")
+		return errors.New("target_not_resumable: this delegate's isolation worktree was disposed; start a new delegate")
 	case notResumableWorkingDirMissing:
 		return errors.New("target_not_resumable: this delegate's working directory no longer exists; start a new delegate")
 	default:
@@ -1622,6 +1645,31 @@ func relinkDelegateChildToJob(child *Session, jobID string) {
 	if child.jobManager != nil {
 		child.jobManager.setParentJobID(jobID)
 	}
+}
+
+// disposeGatedSendRefusal refuses a send to a delegate frozen for disposal
+// (spec §P1 step 4). A watch-originated send is refused as watchSendBusy — a
+// retryable classification that leaves the pending frame for the next drain
+// boundary — because sendMessageFailed would stamp watchSendHardFailure and
+// permanently dropWatchSend the frame (finding N2; construction pattern copied
+// from the undelivered-steer busy site above). A plain model send gets a normal
+// error naming the state.
+func disposeGatedSendRefusal(target string, rec *jobstore.JobRecord, fromWatch bool) sendMessageResult {
+	if fromWatch {
+		return sendMessageResult{
+			Target:                    target,
+			DelegateID:                rec.DelegateID,
+			JobID:                     rec.JobID,
+			LatestJobID:               rec.JobID,
+			Type:                      string(jobstore.JobDelegate),
+			Status:                    rec.Status,
+			Action:                    "refused",
+			Delivered:                 false,
+			WatchSendDeliveryClass:    watchSendBusy,
+			WatchSendDeliveryClassSet: true,
+		}
+	}
+	return sendMessageFailed(target, fmt.Errorf("target_busy: delegate %q is being disposed; retry or start a new delegate", target))
 }
 
 func sendMessageFailed(target string, err error) sendMessageResult {
@@ -2485,11 +2533,35 @@ func (s *Session) isolatedDelegateWorktreeReport(desc *jobstore.DelegateRestoreD
 		return nil
 	}
 	return &delegateWorktreeReport{
-		Path:   lanePath,
-		Branch: sc.Branch,
-		Ahead:  ahead,
-		Dirty:  !clean,
+		Path:         lanePath,
+		Branch:       sc.Branch,
+		Ahead:        ahead,
+		Dirty:        !clean,
+		DisposalHint: s.delegateDisposalHint(desc, filepath.Base(lanePath)),
 	}
+}
+
+// delegateDisposalHint returns the spec §P2 completion nudge for a finished
+// isolated delegate, or "" when the receiving session s cannot act on it: the
+// session lacks the dispose op (manage_worktree is not in its registry — leaf
+// delegates have it stripped), or it does not own the delegate
+// (desc.ParentSessionID != s.id — a forwarded descendant copy in an ancestor).
+// The gate consults only the registry and the descriptor; no git runs here, so
+// both render surfaces stay git-free (spec §P2 "no git at render").
+func (s *Session) delegateDisposalHint(desc *jobstore.DelegateRestoreDescriptor, id string) string {
+	if s == nil || desc == nil {
+		return ""
+	}
+	if desc.ParentSessionID != s.id {
+		return ""
+	}
+	if s.reg == nil || s.reg.Get("manage_worktree") == nil {
+		return ""
+	}
+	if !isDelegateID(id) {
+		return ""
+	}
+	return fmt.Sprintf("When you're done with this delegate's work (e.g., after merging it), dispose its worktree and branch: manage_worktree op=dispose id=%s.", id)
 }
 
 func (s *Session) useDelegateWorktreeControlPolicy(env *execenv.LocalExecutionEnvironment, mainRoot string) error {

@@ -133,7 +133,7 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 				"isolation": map[string]any{
 					"type":        "string",
 					"enum":        []string{"worktree"},
-					"description": "Absent (default): the delegate runs in your current directory. \"worktree\": give the delegate its own managed git worktree lane (branched from your current HEAD), isolated from your checkout and every other lane; only valid when you are in a local git checkout. The delegate cannot use manage_worktree itself.",
+					"description": "Absent (default): the delegate runs in your current directory. \"worktree\": give the delegate its own managed git worktree lane (branched from your current HEAD), isolated from your checkout and every other lane; only valid when you are in a local git checkout. The delegate cannot create, switch, or remove worktrees itself; if it also carries a delegation_allowance it gets a dispose-only manage_worktree to retire its own sub-delegates' isolation lanes.",
 				},
 				"sandbox": map[string]any{
 					"type":        "string",
@@ -654,7 +654,10 @@ func DefManageWorktree() llm.ToolDefinition {
 		"exit (return to the main checkout); remove (delete a worktree by `name`; `delete_branch` also deletes its branch, " +
 		"`force` overrides provenance/merge gating, `force_dirty` overrides the refusal to discard uncommitted changes); " +
 		"prune (remove worktrees that have no unmerged work — unchanged or already-merged lanes, including ones left behind " +
-		"by finished sessions — the one-call way to clean up). " +
+		"by finished sessions — the one-call way to clean up); " +
+		"dispose (retire a delegate's isolation worktree lane by its delegate `id` once you are done with its work — unlocks, " +
+		"removes the worktree, deletes its branch, and marks the delegate disposed; `force` overrides the refusal to discard " +
+		"unmerged commits, `force_dirty` overrides the refusal to discard uncommitted changes). " +
 		"Subsequent tool calls after create/switch/exit operate inside the resulting checkout. There is no merge operation: " +
 		"to land a lane's work, exit and merge its branch from the main checkout with plain git."
 	return llm.ToolDefinition{
@@ -666,12 +669,16 @@ func DefManageWorktree() llm.ToolDefinition {
 			"properties": map[string]any{
 				"operation": map[string]any{
 					"type":        "string",
-					"description": "create, list, switch, exit, remove, or prune.",
-					"enum":        []string{"create", "list", "switch", "exit", "remove", "prune"},
+					"description": "create, list, switch, exit, remove, prune, or dispose.",
+					"enum":        []string{"create", "list", "switch", "exit", "remove", "prune", "dispose"},
 				},
 				"name": map[string]any{
 					"type":        "string",
 					"description": "Worktree name; also used as the branch name. Required for create; for switch, exactly one of name/path; required for remove.",
+				},
+				"id": map[string]any{
+					"type":        "string",
+					"description": "For dispose: the delegate id (dlg_…) whose isolation worktree lane to retire.",
 				},
 				"base_ref": map[string]any{
 					"type":        "string",
@@ -683,15 +690,62 @@ func DefManageWorktree() llm.ToolDefinition {
 				},
 				"force": map[string]any{
 					"type":        "boolean",
-					"description": "For remove: override provenance and merge-safety gating (unmanaged sidecar, unmerged branch deletion). Does NOT discard uncommitted changes — use force_dirty for that. Default false.",
+					"description": "For remove/dispose: override the merge-safety gating (unmanaged sidecar or unmerged branch deletion for remove; a lane with unmerged commits for dispose). Does NOT discard uncommitted changes — use force_dirty for that. Default false.",
 				},
 				"force_dirty": map[string]any{
 					"type":        "boolean",
-					"description": "For remove: remove a worktree even if it has uncommitted changes (they are discarded). Separate from force so overriding a provenance/merge refusal cannot silently discard an edit. Default false.",
+					"description": "For remove/dispose: proceed even if the worktree has uncommitted changes (they are discarded). Separate from force so overriding a merge refusal cannot silently discard an edit, and vice versa. Default false.",
 				},
 				"delete_branch": map[string]any{
 					"type":        "boolean",
 					"description": "For remove: also delete the worktree's branch. Default false.",
+				},
+			},
+			"required": []string{"operation"},
+		},
+	}
+}
+
+// DefManageWorktreeDisposeOnly is the dispose-only variant of manage_worktree
+// (delegate-lane disposal spec §P1 "Availability"). It is served — under the
+// same tool name — to a worktree-isolated coordinator: a delegate spawned with
+// isolation:"worktree" that itself carries a delegation allowance. Such a
+// session lives inside its own lane; letting it create/switch/remove/prune
+// worktrees would let it disturb the sibling lanes its parent created (see
+// rootOnlyWorktreeTools), so the schema exposes only the dispose operation —
+// retiring its OWN sub-delegates' lanes. The registry can add or remove only
+// whole tools, not individual operations, so the handler enforces the same
+// restriction in-line (session_tools_worktree.go).
+func DefManageWorktreeDisposeOnly() llm.ToolDefinition {
+	desc := "Retire one of YOUR OWN delegates' isolation worktree lanes once you are done with its work: " +
+		"unlocks the lane, removes the worktree, deletes its branch, and marks the delegate disposed. " +
+		"Target it by the delegate `id` (dlg_…); `force` overrides the refusal to discard unmerged commits, " +
+		"`force_dirty` overrides the refusal to discard uncommitted changes. " +
+		"dispose is the ONLY worktree operation available to you: you run inside your own isolation worktree lane, " +
+		"so you cannot create, switch, list, remove, or prune worktrees (that could disturb sibling lanes)."
+	return llm.ToolDefinition{
+		Name:        "manage_worktree",
+		Description: desc,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"operation": map[string]any{
+					"type":        "string",
+					"description": "Only dispose is available on this surface.",
+					"enum":        []string{"dispose"},
+				},
+				"id": map[string]any{
+					"type":        "string",
+					"description": "The delegate id (dlg_…) whose isolation worktree lane to retire.",
+				},
+				"force": map[string]any{
+					"type":        "boolean",
+					"description": "Override the refusal to dispose a lane with unmerged commits (they are discarded). Does NOT discard uncommitted changes — use force_dirty for that. Default false.",
+				},
+				"force_dirty": map[string]any{
+					"type":        "boolean",
+					"description": "Proceed even if the lane has uncommitted changes (they are discarded). Separate from force so overriding a merge refusal cannot silently discard an edit, and vice versa. Default false.",
 				},
 			},
 			"required": []string{"operation"},

@@ -24,7 +24,7 @@ up in `git status` in the main checkout, need no `.gitignore` entries, and survi
 
 ## The `manage_worktree` tool
 
-One tool, six operations, selected by `operation`:
+One tool, seven operations, selected by `operation`:
 
 | Operation | What it does | Key arguments |
 | --- | --- | --- |
@@ -34,6 +34,7 @@ One tool, six operations, selected by `operation`:
 | `list` | Reports every managed worktree: path, branch, lock/occupant state, and how stale it is (age, dirty, commits ahead, merged). | none |
 | `remove` | Deletes a worktree (and, optionally, its branch). | `name` (required), `force` (skip the dirty-tree safety check), `delete_branch` (also delete the branch, if it's safe to) |
 | `prune` | Sweeps every managed worktree in one call and removes the ones that are safe to remove. | none |
+| `dispose` | Retires one finished delegate isolation lane by its delegate id — unlocks it, removes the worktree, deletes its branch, and marks the delegate disposed. | `id` (required — the `dlg_…` delegate id), `force` (discard unmerged commits), `force_dirty` (discard uncommitted changes) |
 
 Because entering or leaving a worktree changes where every later tool call runs,
 `create`/`switch`/`exit`/`remove` are ordered against other tool calls in the same
@@ -73,7 +74,7 @@ What this means day to day:
   resumes later, it recognizes its own lock and picks the worktree back up rather than
   erroring.
 
-## Disposal: `remove` and `prune`
+## Disposal: `remove`, `prune`, and `dispose`
 
 `remove` deletes one named worktree. Before it does, it checks that removal is safe:
 uncommitted changes block it unless you pass `force`; commits that were never merged
@@ -95,6 +96,25 @@ locked, dirty, unmerged, checked out somewhere else, or too new to judge yet. `p
 never takes `force`; anything it declines to remove is `remove`'s job, or a deliberate
 unlock.
 
+`dispose` retires one finished **delegate isolation lane** by its delegate id — the
+synchronous move a live session makes the moment it finishes a lane's work, rather
+than waiting for a close or a `prune`. It unlocks the lane, removes its worktree,
+deletes its branch, and marks the delegate disposed, so a later `delegate_send` to
+that delegate gets a clear refusal instead of reviving into a deleted checkout. Like
+`remove`, it refuses a lane whose commits aren't merged (pass `force` to discard them)
+or whose tree is dirty (pass `force_dirty`) — but unlike the automatic collectors
+below, `dispose` *will* retire a rebase- or squash-merged lane, on the model's
+judgment that the work actually landed.
+
+**Behavior change: a session's own merged delegate lanes no longer survive its
+close.** A session now disposes the isolation lanes it created whose commits are
+reachable from the branch they were cut from — collecting them at its own close
+instead of leaving them for a later `prune`. Every such commit stays reachable from
+the merge target, so nothing is lost; but a merged lane's worktree and branch ref are
+gone once its owner closes, rather than lingering for post-close inspection. Lanes
+that are unmerged, only rebase/squash-merged, or dirty are still kept (see *Delegate
+worktree isolation* below).
+
 Two safety rules worth knowing:
 
 - **Dirty or unmerged worktrees are never silently destroyed.** Both `remove` (without
@@ -108,8 +128,10 @@ Two safety rules worth knowing:
 One honest gap: if a lane's work lands via a **multi-commit squash merge**, serf can't
 prove the merge happened (the squash commit is the sum of several lane commits, so
 there's no single commit to match against). Such lanes are reported `unmerged` even
-though the work is safely merged; dispose of them with a manual `remove` at merge
-time, informed by `list`'s staleness report.
+though the work is safely merged, and the automatic collectors leave them alone. Once
+you've verified the squash landed, retire such a lane with `dispose` and `force` — the
+merge check refuses it without `force`, and the `force` is your attestation that the
+work is safely captured — informed by `list`'s staleness report.
 
 ## Delegate worktree isolation
 
@@ -118,9 +140,16 @@ automatically, for its entire lifetime — not just its first job. The lane is n
 after the delegate's own id, so it never collides with a sibling delegate or with the
 main checkout, and the delegate's file/shell tools are confined to it: there is no way
 for the delegate to wander back into the main checkout or into another delegate's
-lane. The delegate does not get `manage_worktree` itself — it can look around with
+lane. A leaf delegate does not get `manage_worktree` itself — it can look around with
 read-only git commands via its shell tool, but it can't create, switch, or remove
 worktrees.
+
+A delegate that is itself a coordinator — spawned with a delegation allowance so it
+can fan out its *own* isolated sub-delegates — gets a **dispose-only** `manage_worktree`:
+the single `dispose` operation, nothing else. That lets it retire its sub-delegates'
+lanes as their work merges (the same automatic disposal a top-level session does at
+close, but reachable mid-life), while it still can't create, switch, or remove
+worktrees — including its own lane, which its parent owns and disposes.
 
 Every job result from an isolated delegate reports the lane's path, its branch, how
 many commits it's ahead of where it started, and whether it's dirty. That's enough for
@@ -133,19 +162,31 @@ What happens to the lane depends on whether the delegate did anything:
 
 - **Unchanged** (no commits, no uncommitted files) — the lane is deleted automatically
   when the parent session closes.
-- **Changed** — the lane is kept and unlocked, so it survives the parent closing and
-  is inspectable/mergeable/`switch`-able afterward. `list` and `prune` will eventually
-  offer to collect it once its work is merged.
+- **Merged** (its commits are reachable from the branch it was cut from) — collected
+  automatically at the parent's close: worktree removed, branch deleted, delegate
+  marked disposed. This is the behavior change noted under *Disposal* above — a merged
+  lane no longer lingers past close for inspection, though every commit remains
+  reachable from the merge target.
+- **Kept** (unmerged, only rebase/squash-merged, or dirty) — the lane is kept and
+  unlocked, so it survives the parent closing and is inspectable/mergeable/`switch`-able
+  afterward. Merged residue a session leaves behind — an owner that crashed, or a lane
+  whose branch merged only after its owner closed — is swept automatically by later
+  top-level sessions: once about ten minutes after such a session opens, and once at
+  its close, collecting only lanes that are unlocked and ancestry-merged and only after
+  a thirty-minute grace. Unmerged, dirty, and squash-only lanes are never swept
+  automatically — retire them with `dispose` (or `remove`) once their work lands.
 - If the delegate is later revived (a follow-up `delegate_send` on a kept lane), it
   re-locks its lane before resuming work in it — so a revived delegate is protected
-  the same way a fresh one is.
+  the same way a fresh one is. A resumed session likewise re-locks its own still-kept
+  lanes at startup, so they aren't swept out from under it as foreign residue.
 
 ## Limitations
 
 These are documented trade-offs, not bugs:
 
-- **Multi-commit squash merges aren't auto-detected** (see above) — the agent disposes
-  of such lanes with an explicit `remove` at merge time.
+- **Multi-commit squash merges aren't auto-detected** (see above) — neither close-time
+  collection nor the automatic sweeps touch such a lane; the agent disposes of it with
+  an explicit `dispose force` (or `remove`) at merge time.
 - **The live-work guard is best-effort.** `remove`/`prune` check for shell jobs and
   delegates whose *recorded* working directory is under the target worktree. A shell
   command that `cd`s elsewhere after it launches is invisible to that check — don't

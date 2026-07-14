@@ -178,6 +178,19 @@ func FoldDelegates(events []Event) map[string]*DelegateRecord {
 			} else {
 				d.Status = DelegateNotResumable
 			}
+		case EventDelegateDisposed:
+			if e.DelegateID == "" {
+				continue
+			}
+			d := delegates[e.DelegateID]
+			if d == nil {
+				d = &DelegateRecord{DelegateID: e.DelegateID}
+				delegates[e.DelegateID] = d
+			}
+			// Additive and monotonic: disposal keyed by delegate id, order-
+			// independent (a disposed event before delegate_created leaves the
+			// record pre-marked; later events never clear it).
+			d.Disposed = true
 		case EventDelegateStopGateClosed:
 			if e.DelegateID == "" || e.Delegate == nil {
 				continue

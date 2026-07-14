@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/worktree"
 )
@@ -246,7 +247,7 @@ func TestDisposeUnchangedLane_RemovedAndMarked(t *testing.T) {
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	metaDir := r.metaDir(r.canonicalMain(t))
 
-	r.s.disposeDelegateLanesAtClose()
+	r.s.disposeDelegateLanesAtClose(context.Background())
 
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); !os.IsNotExist(err) {
 		t.Errorf("lane worktree still present after disposal: err=%v", err)
@@ -302,7 +303,7 @@ func TestDisposeChangedLane_UnlockedKept(t *testing.T) {
 	wtGit(t, lanePath, "add", "work2.txt")
 	wtGit(t, lanePath, "commit", "-m", "lane work 2")
 
-	r.s.disposeDelegateLanesAtClose()
+	r.s.disposeDelegateLanesAtClose(context.Background())
 
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
 		t.Errorf("changed lane wrongly removed: %v", err)
@@ -344,7 +345,7 @@ func TestDisposeDirtyLane_Kept(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	r.s.disposeDelegateLanesAtClose()
+	r.s.disposeDelegateLanesAtClose(context.Background())
 
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
 		t.Errorf("dirty lane wrongly removed: %v", err)
@@ -357,9 +358,11 @@ func TestDisposeDirtyLane_Kept(t *testing.T) {
 	}
 }
 
-// TestDisposeRacingDirtyWrite_DowngradesToKeep: the non-force remove refuses
-// because a write raced the clean check → downgrade to keep + re-lock.
-func TestDisposeRacingDirtyWrite_DowngradesToKeep(t *testing.T) {
+// TestDisposeRacingDirtyWrite_DowngradesToKeepUnlocked: the non-force remove
+// refuses because a write raced the clean check → downgrade to keep. At CLOSE
+// the policy is downgradeUnlockKeep (spec §P0: a dead owner whose lock nobody
+// would ever release again), so the kept lane is left UNLOCKED, not re-locked.
+func TestDisposeRacingDirtyWrite_DowngradesToKeepUnlocked(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
@@ -369,23 +372,379 @@ func TestDisposeRacingDirtyWrite_DowngradesToKeep(t *testing.T) {
 		_ = os.WriteFile(filepath.Join(p, "raced.txt"), []byte("late\n"), 0o644)
 	}
 
-	r.s.disposeDelegateLanesAtClose()
+	r.s.disposeDelegateLanesAtClose(context.Background())
 
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
 		t.Errorf("lane removed despite racing dirty write: %v", err)
 	}
-	reg, locked, reason := r.laneLocked(t, lanePath)
+	reg, locked, _ := r.laneLocked(t, lanePath)
 	if !reg {
 		t.Fatal("lane deregistered after downgrade")
 	}
-	if !locked {
-		t.Error("downgraded lane not re-locked")
+	if locked {
+		t.Error("close-path downgrade must leave the lane UNLOCKED (dead owner), not re-locked")
 	}
-	if m, ok := worktree.ParseMarker(reason); !ok || m.DelegateID != delegateID {
-		t.Errorf("re-lock reason = %q, want serf:dlg marker for %s", reason, delegateID)
+	if !r.branchExists(t, delegateID) {
+		t.Error("downgraded lane branch deleted; must stay resumable")
 	}
 	if r.disposedEventPresent(t, delegateID) {
 		t.Error("downgraded lane wrongly marked disposed")
+	}
+}
+
+// TestDisposeAncestryMergedLane_Collected: a lane with commits that are an
+// ancestor of the LOCAL merge_target branch (a real merge) is auto-collectible
+// at close (spec §P0 / §D0-auto): removed, disposed-marked, branch + sidecar
+// gone. An unchanged lane in the same close pass is still collected.
+func TestDisposeAncestryMergedLane_Collected(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	mergedID, mergedPath, _ := r.seedIsolationLane(t)
+	unchangedID, unchangedPath, _ := r.seedIsolationLane(t)
+	metaDir := r.metaDir(r.canonicalMain(t))
+
+	// Commit twice in the merged lane, then fast-forward main to the lane tip so
+	// the lane's commits are reachable from refs/heads/main (ancestry-merged).
+	if err := os.WriteFile(filepath.Join(mergedPath, "work.txt"), []byte("done\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	wtGit(t, mergedPath, "add", "work.txt")
+	wtGit(t, mergedPath, "commit", "-m", "merged lane work")
+	wtGit(t, r.mainRoot, "merge", "--ff-only", mergedID)
+
+	r.s.disposeDelegateLanesAtClose(context.Background())
+
+	// Merged lane collected.
+	if _, err := os.Stat(filepath.Join(mergedPath, ".git")); !os.IsNotExist(err) {
+		t.Errorf("ancestry-merged lane still present after disposal: err=%v", err)
+	}
+	if r.branchExists(t, mergedID) {
+		t.Error("ancestry-merged lane branch still exists after disposal")
+	}
+	if _, err := worktree.ReadSidecar(metaDir, mergedID); err == nil {
+		t.Error("ancestry-merged lane sidecar still present after disposal")
+	}
+	if !r.disposedEventPresent(t, mergedID) {
+		t.Error("ancestry-merged lane not marked disposed")
+	}
+	// Unchanged lane still collected in the same pass.
+	if _, err := os.Stat(filepath.Join(unchangedPath, ".git")); !os.IsNotExist(err) {
+		t.Errorf("unchanged lane still present after disposal: err=%v", err)
+	}
+	if !r.disposedEventPresent(t, unchangedID) {
+		t.Error("unchanged lane not marked disposed")
+	}
+}
+
+// gitLogRepoShim installs a git shim that appends every invocation's argv to a
+// log file and execs real git, so a test can assert which subcommands ran.
+func gitLogRepoShim(t *testing.T, repoRoot string) string {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available")
+	}
+	logPath := filepath.Join(t.TempDir(), "gitcalls.log")
+	script := "#!/bin/sh\n" +
+		"echo \"$*\" >> '" + logPath + "'\n" +
+		"exec '" + realGit + "' \"$@\"\n"
+	writeRepoGitShim(t, repoRoot, script)
+	return logPath
+}
+
+func assertNoGitCherry(t *testing.T, logPath string) {
+	t.Helper()
+	b, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("git call log %s missing; the git shim intercepted no calls, so the no-cherry assertion is vacuous: %v", logPath, err)
+	}
+	sawCall := false
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		sawCall = true
+		if line == "cherry" || strings.HasPrefix(line, "cherry ") {
+			t.Fatalf("git cherry must never run at close; call log:\n%s", string(b))
+		}
+	}
+	if !sawCall {
+		t.Fatalf("git call log %s is empty; the git shim intercepted no calls, so the no-cherry assertion is vacuous", logPath)
+	}
+}
+
+// TestDisposeCherryOnlyMergedLane_KeptNoCherry: a lane whose commit is
+// patch-equivalent to a commit on main but NOT an ancestor of it (a
+// cherry-pick / squash) is NOT auto-collectible (spec §D0-auto: ancestry arm
+// only). It is KEPT, and close never runs `git cherry`.
+func TestDisposeCherryOnlyMergedLane_KeptNoCherry(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	delegateID, lanePath, _ := r.seedIsolationLane(t)
+
+	if err := os.WriteFile(filepath.Join(lanePath, "work.txt"), []byte("patch\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	wtGit(t, lanePath, "add", "work.txt")
+	wtGit(t, lanePath, "commit", "-m", "lane work")
+	laneTip := strings.TrimSpace(wtGit(t, lanePath, "rev-parse", "HEAD"))
+	// Diverge main with its own commit first, then cherry-pick the lane commit
+	// onto it: main gains a patch-equivalent commit with a DIFFERENT parent (and
+	// SHA), so the lane tip is patch-equal-but-NOT-an-ancestor of main.
+	if err := os.WriteFile(filepath.Join(r.mainRoot, "other.txt"), []byte("other\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	wtGit(t, r.mainRoot, "add", "other.txt")
+	wtGit(t, r.mainRoot, "commit", "-m", "diverge main")
+	wtGit(t, r.mainRoot, "cherry-pick", laneTip)
+
+	logPath := gitLogRepoShim(t, r.mainRoot)
+	r.s.disposeDelegateLanesAtClose(context.Background())
+
+	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
+		t.Errorf("cherry-only-merged lane wrongly removed: %v", err)
+	}
+	if !r.branchExists(t, delegateID) {
+		t.Error("cherry-only-merged lane branch deleted; must stay resumable")
+	}
+	if r.disposedEventPresent(t, delegateID) {
+		t.Error("cherry-only-merged lane wrongly marked disposed")
+	}
+	assertNoGitCherry(t, logPath)
+}
+
+// TestDisposeRemoteTrackingOnlyMergeTarget_Kept: a lane whose merge_target
+// resolves ONLY to a remote-tracking ref (no local branch) is NOT
+// auto-collectible (spec §D0-auto: remote-tracking evidence is not
+// auto-trustworthy) — KEPT, and `git cherry` never runs.
+func TestDisposeRemoteTrackingOnlyMergeTarget_Kept(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	delegateID, lanePath, _ := r.seedIsolationLane(t)
+	metaDir := r.metaDir(r.canonicalMain(t))
+
+	if err := os.WriteFile(filepath.Join(lanePath, "work.txt"), []byte("feat\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	wtGit(t, lanePath, "add", "work.txt")
+	wtGit(t, lanePath, "commit", "-m", "lane work")
+	// Publish the lane tip as origin/feature (a remote-tracking ref that
+	// contains the lane) with NO local refs/heads/feature branch.
+	remoteDir := filepath.Join(t.TempDir(), "origin.git")
+	wtGit(t, r.mainRoot, "init", "-q", "--bare", remoteDir)
+	wtGit(t, r.mainRoot, "remote", "add", "origin", remoteDir)
+	wtGit(t, r.mainRoot, "push", "-q", "origin", delegateID+":feature")
+	wtGit(t, r.mainRoot, "fetch", "-q", "origin")
+	if err := worktree.UpdateSidecar(metaDir, delegateID, func(sc *worktree.Sidecar) {
+		sc.MergeTarget = "feature"
+	}); err != nil {
+		t.Fatalf("update sidecar merge_target: %v", err)
+	}
+
+	logPath := gitLogRepoShim(t, r.mainRoot)
+	r.s.disposeDelegateLanesAtClose(context.Background())
+
+	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
+		t.Errorf("remote-tracking-only merge_target lane wrongly removed: %v", err)
+	}
+	if !r.branchExists(t, delegateID) {
+		t.Error("remote-tracking-only lane branch deleted; must stay resumable")
+	}
+	if r.disposedEventPresent(t, delegateID) {
+		t.Error("remote-tracking-only lane wrongly marked disposed")
+	}
+	assertNoGitCherry(t, logPath)
+}
+
+// TestKeepWarningCopy_LumpedWording: the close-time KEEP warning uses the
+// lumped wording (spec §P0: close cannot distinguish cherry-merged from
+// unmerged without the banned cherry test).
+func TestKeepWarningCopy_LumpedWording(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	_, lanePath, _ := r.seedIsolationLane(t)
+	// A dirty (unmerged) lane so it is KEPT and listed in the warning.
+	if err := os.WriteFile(filepath.Join(lanePath, "dirty.txt"), []byte("wip\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	r.s.disposeDelegateLanesAtClose(context.Background())
+
+	msgs := warningMessages(r.s)
+	if !anyContainsAll(msgs, "not collected automatically (unmerged or squash-merged), dirty, or unverifiable") {
+		t.Errorf("KEEP warning does not use the lumped wording: %v", msgs)
+	}
+}
+
+// TestDisposeKeptLane_TouchesSidecarBeforeUnlock: every KEEP path refreshes the
+// lane's sidecar (spec §P0: P3's residue-collection grace keys on the touch)
+// before releasing the lock. A changed lane exercises the changed-keep path.
+func TestDisposeKeptLane_TouchesSidecarBeforeUnlock(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	delegateID, lanePath, _ := r.seedIsolationLane(t)
+	metaDir := r.metaDir(r.canonicalMain(t))
+	if err := os.WriteFile(filepath.Join(lanePath, "work.txt"), []byte("wip\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	wtGit(t, lanePath, "add", "work.txt")
+	wtGit(t, lanePath, "commit", "-m", "lane work")
+	// Backdate the sidecar so a fresh touch is unambiguously detectable.
+	scPath := filepath.Join(metaDir, worktree.EncodeSidecarName(delegateID)+".json")
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(scPath, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	r.s.disposeDelegateLanesAtClose(context.Background())
+
+	info, err := os.Stat(scPath)
+	if err != nil {
+		t.Fatalf("stat sidecar: %v", err)
+	}
+	if !info.ModTime().After(old) {
+		t.Errorf("kept lane's sidecar was not touched (mtime %v not after %v)", info.ModTime(), old)
+	}
+	// And the lane is still unlocked + resumable.
+	if _, locked, _ := r.laneLocked(t, lanePath); locked {
+		t.Error("kept changed lane still locked")
+	}
+}
+
+// TestResumeAfterP0Disposal_Refused: after P0 collects an ancestry-merged lane,
+// a later resume of that delegate hits the disposed refusal (spec §P0 → the
+// existing assessDelegateResumability path).
+func TestResumeAfterP0Disposal_Refused(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	delegateID, lanePath, _ := r.seedIsolationLane(t)
+
+	if err := os.WriteFile(filepath.Join(lanePath, "work.txt"), []byte("done\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	wtGit(t, lanePath, "add", "work.txt")
+	wtGit(t, lanePath, "commit", "-m", "merged lane work")
+	wtGit(t, r.mainRoot, "merge", "--ff-only", delegateID)
+
+	r.s.disposeDelegateLanesAtClose(context.Background())
+
+	recs, err := r.s.jobManager.store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	var rec *jobstore.JobRecord
+	for _, candidate := range recs {
+		if candidate.DelegateID == delegateID {
+			rec = candidate
+		}
+	}
+	if rec == nil {
+		t.Fatal("no job record for the disposed delegate")
+	}
+	a := r.s.assessDelegateResumability(rec, delegateResumabilityProjection)
+	if a.Resumable || a.Reason != notResumableWorktreeDisposed {
+		t.Fatalf("assessment = %+v, want not-resumable with %s", a, notResumableWorktreeDisposed)
+	}
+}
+
+// laneDisposalRunner builds the git control runner and observed lock state for
+// a seeded lane, mirroring disposeOneDelegateLane's setup, so a test can drive
+// disposeUnchangedLaneMechanics directly with either downgrade policy.
+func (r *wtRepo) laneDisposalRunner(t *testing.T, lane isolationLane) (worktree.GitRunner, worktree.LockState) {
+	t.Helper()
+	local, ok := r.s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("session env is not a LocalExecutionEnvironment")
+	}
+	lanePath := filepath.Clean(lane.path)
+	rootedAtLane := local.WithWorkingDirectory(lanePath)
+	mainRoot := execenv.ResolveMainRepoRoot(rootedAtLane, lanePath)
+	if mainRoot == "" {
+		t.Fatal("could not resolve main repo root for lane")
+	}
+	run := r.s.newWorktreeGitRunner(context.Background(), local.WithWorkingDirectory(mainRoot))
+	locked, reason, err := lockStateOf(run, lanePath)
+	if err != nil {
+		t.Fatalf("lockStateOf: %v", err)
+	}
+	st := worktree.Unlocked
+	if locked {
+		st = worktree.ClassifyReason(reason, r.s.id, lane.delegateID)
+	}
+	return run, st
+}
+
+// TestDisposeUnchangedLaneMechanics_RelockPolicy: a late dirty write races the
+// clean check so git refuses the non-force remove; under downgradeRelockKeep the
+// helper re-locks the lane with the disposer's own serf:dlg marker and keeps it.
+func TestDisposeUnchangedLaneMechanics_RelockPolicy(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	delegateID, lanePath, _ := r.seedIsolationLane(t)
+	lane := isolationLane{delegateID: delegateID, path: lanePath}
+	metaDir := r.metaDir(r.canonicalMain(t))
+	run, st := r.laneDisposalRunner(t, lane)
+	r.s.worktreeDisposeBeforeRemove = func(p string) {
+		_ = os.WriteFile(filepath.Join(p, "raced.txt"), []byte("late\n"), 0o644)
+	}
+
+	outcome, note := r.s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeRelockKeep, false)
+
+	if outcome != laneKeptDirty {
+		t.Fatal("relock policy: lane not kept after refused remove")
+	}
+	if !strings.Contains(note, "re-locked") {
+		t.Errorf("relock policy note = %q, want it to mention re-locked", note)
+	}
+	reg, locked, reason := r.laneLocked(t, lanePath)
+	if !reg {
+		t.Fatal("relock policy: lane deregistered")
+	}
+	if !locked {
+		t.Error("relock policy: lane not re-locked")
+	}
+	if m, ok := worktree.ParseMarker(reason); !ok || m.DelegateID != delegateID {
+		t.Errorf("relock policy: reason = %q, want serf:dlg marker for %s", reason, delegateID)
+	}
+	if r.disposedEventPresent(t, delegateID) {
+		t.Error("relock policy: lane wrongly marked disposed")
+	}
+}
+
+// TestDisposeUnchangedLaneMechanics_UnlockPolicy: same refused-remove race, but
+// under downgradeUnlockKeep the helper leaves the kept lane UNLOCKED (a dead
+// owner at close whose lock nobody would ever release) and never marks disposed.
+func TestDisposeUnchangedLaneMechanics_UnlockPolicy(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	delegateID, lanePath, _ := r.seedIsolationLane(t)
+	lane := isolationLane{delegateID: delegateID, path: lanePath}
+	metaDir := r.metaDir(r.canonicalMain(t))
+	run, st := r.laneDisposalRunner(t, lane)
+	r.s.worktreeDisposeBeforeRemove = func(p string) {
+		_ = os.WriteFile(filepath.Join(p, "raced.txt"), []byte("late\n"), 0o644)
+	}
+
+	outcome, note := r.s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeUnlockKeep, false)
+
+	if outcome != laneKeptDirty {
+		t.Fatal("unlock policy: lane not kept after refused remove")
+	}
+	if !strings.Contains(note, "kept unlocked") {
+		t.Errorf("unlock policy note = %q, want it to mention kept unlocked", note)
+	}
+	reg, locked, _ := r.laneLocked(t, lanePath)
+	if !reg {
+		t.Fatal("unlock policy: lane deregistered")
+	}
+	if locked {
+		t.Error("unlock policy: lane still locked; a dead owner's lane must be left unlocked")
+	}
+	if !r.branchExists(t, delegateID) {
+		t.Error("unlock policy: lane branch deleted; must stay resumable")
+	}
+	if r.disposedEventPresent(t, delegateID) {
+		t.Error("unlock policy: lane wrongly marked disposed")
 	}
 }
 
@@ -456,8 +815,12 @@ func TestResumability_RefusesDisposedDelegate(t *testing.T) {
 	}
 	// The delegate_send message is clear and actionable.
 	err := notResumableSendError(a.Reason)
-	if err == nil || !containsAll(err.Error(), "disposed at session close", "start a new delegate") {
+	if err == nil || !containsAll(err.Error(), "disposed", "start a new delegate") {
 		t.Errorf("send error = %v, want a clear disposed message", err)
+	}
+	// Mid-life dispose exists now, so the copy must not claim WHEN it happened.
+	if strings.Contains(err.Error(), "at session close") {
+		t.Errorf("send error = %q, must not claim disposal happened at session close", err.Error())
 	}
 }
 
@@ -522,7 +885,7 @@ func TestDisposeOneDelegateLane_MissingSidecarLeavesLane(t *testing.T) {
 		t.Fatalf("delete sidecar: %v", err)
 	}
 
-	r.s.disposeDelegateLanesAtClose()
+	r.s.disposeDelegateLanesAtClose(context.Background())
 
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
 		t.Errorf("lane wrongly removed without a sidecar: %v", err)
@@ -548,7 +911,7 @@ func TestDisposeOneDelegateLane_LockStateUnverifiableLeavesLane(t *testing.T) {
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	restore := hideGitInRepo(t, r.mainRoot)
 
-	r.s.disposeDelegateLanesAtClose()
+	r.s.disposeDelegateLanesAtClose(context.Background())
 
 	restore()
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
@@ -572,7 +935,7 @@ func TestDisposeOneDelegateLane_UnresolvableMainRootLeavesLane(t *testing.T) {
 	}
 	restore := hideGitInRepo(t, r.mainRoot)
 
-	r.s.disposeDelegateLanesAtClose()
+	r.s.disposeDelegateLanesAtClose(context.Background())
 
 	restore()
 	if !r.branchExists(t, delegateID) {
@@ -594,7 +957,7 @@ func TestDisposeOneDelegateLane_UnchangedCheckFailsKeepsAndUnlocks(t *testing.T)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	gitFailOnArgsRepoShim(t, r.mainRoot, "-C", lanePath, "status", "--porcelain=v1", "--untracked-files=all")
 
-	r.s.disposeDelegateLanesAtClose()
+	r.s.disposeDelegateLanesAtClose(context.Background())
 
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
 		t.Errorf("lane wrongly removed when Unchanged could not be evaluated: %v", err)
@@ -626,7 +989,7 @@ func TestDisposeOneDelegateLane_ChangedForeignLockDeclinedNotTouched(t *testing.
 	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
 	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", "serf:someone-else-session", lanePath)
 
-	r.s.disposeDelegateLanesAtClose()
+	r.s.disposeDelegateLanesAtClose(context.Background())
 
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
 		t.Errorf("foreign-locked changed lane wrongly removed: %v", err)
@@ -659,7 +1022,7 @@ func TestDisposeOneDelegateLane_ChangedLaneUnlockFailsLeavesLocked(t *testing.T)
 	internalDir := worktreeInternalDir(t, r.canonicalMain(t), lanePath)
 	chmodReadOnly(t, internalDir)
 
-	r.s.disposeDelegateLanesAtClose()
+	r.s.disposeDelegateLanesAtClose(context.Background())
 
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
 		t.Errorf("changed lane wrongly removed when unlock failed: %v", err)
@@ -686,7 +1049,7 @@ func TestDisposeOneDelegateLane_UnchangedUnlockFailsLeavesLocked(t *testing.T) {
 	internalDir := worktreeInternalDir(t, r.canonicalMain(t), lanePath)
 	chmodReadOnly(t, internalDir)
 
-	r.s.disposeDelegateLanesAtClose()
+	r.s.disposeDelegateLanesAtClose(context.Background())
 
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
 		t.Errorf("unchanged lane wrongly removed when its unlock failed: %v", err)
@@ -726,7 +1089,7 @@ func TestDisposeOneDelegateLane_DisposedMarkAppendFailureWarnsButStillRemoves(t 
 	}
 	defer func() { r.s.jobManager.appendEvent = origAppend }()
 
-	r.s.disposeDelegateLanesAtClose()
+	r.s.disposeDelegateLanesAtClose(context.Background())
 
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); !os.IsNotExist(err) {
 		t.Errorf("lane worktree still present after removal: err=%v", err)
@@ -754,7 +1117,7 @@ func TestDisposeOneDelegateLane_BranchDeleteFailureWarnsButLaneStillGone(t *test
 	metaDir := r.metaDir(r.canonicalMain(t))
 	gitFailOnArgsRepoShim(t, r.mainRoot, "branch", "-D", delegateID)
 
-	r.s.disposeDelegateLanesAtClose()
+	r.s.disposeDelegateLanesAtClose(context.Background())
 
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); !os.IsNotExist(err) {
 		t.Errorf("lane worktree still present after removal: err=%v", err)
@@ -844,5 +1207,120 @@ func TestUnlockOwnManagedWorktreeAtClose_LeaveFailsWarns(t *testing.T) {
 	msgs := warningMessages(r.s)
 	if !anyContainsAll(msgs, path, "unlocking own worktree", "failed") {
 		t.Errorf("no warning about the failed close-unlock: %v", msgs)
+	}
+}
+
+// --- Budget + budget-exempt tail (spec §P0, Constants, test 4) ---
+
+// lanePresent reports whether the lane's linked worktree is still on disk.
+func lanePresent(lanePath string) bool {
+	_, err := os.Stat(filepath.Join(lanePath, ".git"))
+	return err == nil
+}
+
+// TestCloseBudget_ExhaustedMidPass_LanesLeftSafe: when the shared deadline
+// expires while the pass is running (the first lane's dispose sleeps past it),
+// every lane is left SAFE — present, unlocked (never left locked), and not
+// disposed — and the close emits one aggregated tail warning. A budget that
+// expires mid-dispose downgrades that lane back to an unlocked KEEP rather than a
+// half-removed tree; the remaining lanes hit the budget-exempt touch+unlock tail.
+func TestCloseBudget_ExhaustedMidPass_LanesLeftSafe(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	idA, pathA, _ := r.seedIsolationLane(t)
+	idB, pathB, _ := r.seedIsolationLane(t)
+
+	// The first lane reached sleeps past the deadline, spending the shared budget
+	// so the remaining lane is reached only after expiry.
+	r.s.worktreeDisposeBeforeRemove = func(string) { time.Sleep(time.Second) }
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	r.s.disposeDelegateLanesAtClose(ctx)
+
+	for id, path := range map[string]string{idA: pathA, idB: pathB} {
+		if !lanePresent(path) {
+			t.Errorf("lane %s removed under an expiring budget; expected a safe KEEP/tail", id)
+			continue
+		}
+		if _, locked, _ := r.laneLocked(t, path); locked {
+			t.Errorf("lane %s left LOCKED; budget expiry must never leave a lane locked", id)
+		}
+		if r.disposedEventPresent(t, id) {
+			t.Errorf("lane %s wrongly marked disposed under budget expiry", id)
+		}
+	}
+	msgs := warningMessages(r.s)
+	if !anyContainsAll(msgs, "close budget exhausted", "touched+unlocked without disposal") {
+		t.Errorf("no aggregated tail warning: %v", msgs)
+	}
+}
+
+// TestCloseBudget_AlreadyExpired_AllTailedNoDisposal: an incoming ctx whose
+// deadline is already in the past (a cascade whose budget was spent by an
+// ancestor) is reused, never re-minted, so no lane is evaluated or removed — all
+// are touch+unlocked.
+func TestCloseBudget_AlreadyExpired_AllTailedNoDisposal(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	idA, pathA, _ := r.seedIsolationLane(t)
+	idB, pathB, _ := r.seedIsolationLane(t)
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
+	defer cancel()
+	r.s.disposeDelegateLanesAtClose(ctx)
+
+	for id, path := range map[string]string{idA: pathA, idB: pathB} {
+		if !lanePresent(path) {
+			t.Errorf("lane %s removed despite an already-expired budget", id)
+		}
+		if _, locked, _ := r.laneLocked(t, path); locked {
+			t.Errorf("lane %s left locked; the tail must unlock", id)
+		}
+		if r.disposedEventPresent(t, id) {
+			t.Errorf("lane %s wrongly disposed under an expired budget", id)
+		}
+	}
+	if !anyContainsAll(warningMessages(r.s), "close budget exhausted") {
+		t.Errorf("no tail warning under an expired budget: %v", warningMessages(r.s))
+	}
+}
+
+// TestCloseBudget_TailExceedsThreshold_Warns: when the touch+unlock tail is
+// larger than laneTailWarnThreshold, a second aggregated warning fires. Not
+// parallel: it overrides the package-var threshold (parallel tests are paused
+// while non-parallel tests run, so the shared var is safe to mutate here).
+func TestCloseBudget_TailExceedsThreshold_Warns(t *testing.T) {
+	saved := laneTailWarnThreshold
+	laneTailWarnThreshold = 1
+	defer func() { laneTailWarnThreshold = saved }()
+
+	r := newWorktreeRepo(t)
+	r.seedIsolationLane(t)
+	r.seedIsolationLane(t)
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
+	defer cancel()
+	r.s.disposeDelegateLanesAtClose(ctx)
+
+	if !anyContainsAll(warningMessages(r.s), "exceeded threshold") {
+		t.Errorf("tail of 2 over threshold 1 did not emit the threshold warning: %v", warningMessages(r.s))
+	}
+}
+
+// TestCloseBudget_Unexpired_NoTailWarning: with the default (ample) budget, an
+// unchanged lane is disposed normally and NO tail warning is emitted.
+func TestCloseBudget_Unexpired_NoTailWarning(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	_, lanePath, _ := r.seedIsolationLane(t)
+
+	r.s.disposeDelegateLanesAtClose(context.Background())
+
+	if lanePresent(lanePath) {
+		t.Error("unchanged lane not disposed under an unexpired budget")
+	}
+	if anyContainsAll(warningMessages(r.s), "close budget exhausted") {
+		t.Errorf("tail warning emitted under an unexpired budget: %v", warningMessages(r.s))
 	}
 }
