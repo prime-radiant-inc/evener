@@ -2,8 +2,11 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
+	"net/http/httptrace"
+	"sync/atomic"
 )
 
 // ApplyAdapterTimeout creates a context with the appropriate deadline from AdapterTimeout.
@@ -65,6 +68,39 @@ func configuredAdapterTransport(base *http.Transport, at *AdapterTimeout) *http.
 	return transport
 }
 
+// responseHeaderTimeoutTransport identifies the ambiguous timeout after a
+// request was fully written but before response headers arrived. The standard
+// transport owns the timer; this wrapper records the completed write phase so
+// retry policy can avoid replaying a request the provider may have accepted.
+type responseHeaderTimeoutTransport struct {
+	base *http.Transport
+}
+
+func (t *responseHeaderTimeoutTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	var wroteRequest atomic.Bool
+	trace := &httptrace.ClientTrace{
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			if info.Err == nil {
+				wroteRequest.Store(true)
+			}
+		},
+	}
+	ctx := httptrace.WithClientTrace(req.Context(), trace)
+	resp, err := t.base.RoundTrip(req.WithContext(ctx))
+	if err == nil || !wroteRequest.Load() || req.Context().Err() != nil {
+		return resp, err
+	}
+	var timeout net.Error
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		return nil, newResponseHeaderTimeoutError("", err.Error(), err)
+	}
+	return resp, err
+}
+
+func (t *responseHeaderTimeoutTransport) CloseIdleConnections() {
+	t.base.CloseIdleConnections()
+}
+
 // ClientWithAdapterTimeout returns a copy of client configured with adapter
 // transport timeouts. Standard transports are cloned; opaque RoundTrippers and
 // caller client policy, including Timeout, remain authoritative.
@@ -82,7 +118,11 @@ func ClientWithAdapterTimeout(client *http.Client, at *AdapterTimeout) *http.Cli
 	if !ok {
 		return &copy
 	}
-	copy.Transport = configuredAdapterTransport(transport, at)
+	configured := configuredAdapterTransport(transport, at)
+	copy.Transport = configured
+	if at.Request > 0 {
+		copy.Transport = &responseHeaderTimeoutTransport{base: configured}
+	}
 	return &copy
 }
 

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -67,11 +68,74 @@ func TestAdapter_Stream_ResponseHeaderTimeout(t *testing.T) {
 		if !errors.As(err, &providerErr) {
 			t.Fatalf("error = %T, want llm.Error", err)
 		}
-		if !providerErr.Retryable() {
-			t.Fatal("response-header timeout must be retryable")
+		if providerErr.Retryable() {
+			t.Fatal("response-header timeout must not be retryable after the request was written")
+		}
+		if got := llm.Classify(err); got != llm.ErrorClassPermanent {
+			t.Fatalf("Classify(error) = %v, want %v", got, llm.ErrorClassPermanent)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Stream did not return after AdapterTimeout.Request")
+	}
+}
+
+func TestStreamGenerate_ResponseHeaderTimeoutDoesNotRetry(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	var startOnce sync.Once
+	var releaseOnce sync.Once
+	var requests atomic.Int32
+	release := func() {
+		releaseOnce.Do(func() { close(releaseHandler) })
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests.Add(1)
+		startOnce.Do(func() { close(requestStarted) })
+		<-releaseHandler
+	}))
+	t.Cleanup(func() {
+		release()
+		srv.Close()
+	})
+
+	adapter := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	client := llm.NewClient()
+	client.Register(adapter)
+	prompt := "hello"
+	result, err := llm.StreamGenerate(context.Background(), llm.GenerateOptions{
+		Client:         client,
+		Model:          "gpt-5",
+		Provider:       "openai",
+		Prompt:         &prompt,
+		AdapterTimeout: &llm.AdapterTimeout{Request: 50 * time.Millisecond, StreamRead: time.Second},
+		RetryPolicy: &llm.RetryPolicy{
+			MaxRetries: 1,
+			BaseDelay:  time.Millisecond,
+			MaxDelay:   time.Millisecond,
+			Jitter:     false,
+		},
+		Sleep: func(context.Context, time.Duration) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("StreamGenerate: %v", err)
+	}
+	defer func() { _ = result.Close() }()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not receive the streaming request")
+	}
+
+	for range result.Events() {
+	}
+	_, resultErr := result.Response()
+	if resultErr == nil || llm.Kind(resultErr) != llm.KindTimeout {
+		t.Fatalf("error = %v, want timeout", resultErr)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests = %d, want 1", got)
 	}
 }
 

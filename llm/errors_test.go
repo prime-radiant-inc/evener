@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -341,6 +342,27 @@ func TestNewRequestTimeoutError_IsRetryable(t *testing.T) {
 	// Verify the retry util also considers it retryable.
 	if !retryableError(err) {
 		t.Fatal("retryableError() should return true for NewRequestTimeoutError")
+	}
+}
+
+func TestResponseHeaderTimeoutError_IsNonRetryable(t *testing.T) {
+	err := newResponseHeaderTimeoutError("openai", "timed out awaiting response headers", context.DeadlineExceeded)
+
+	if got := Kind(err); got != KindTimeout {
+		t.Fatalf("Kind(error) = %v, want %v", got, KindTimeout)
+	}
+	if got := Classify(err); got != ErrorClassPermanent {
+		t.Fatalf("Classify(error) = %v, want %v", got, ErrorClassPermanent)
+	}
+	var providerErr Error
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("error = %T, want llm.Error", err)
+	}
+	if providerErr.Retryable() {
+		t.Fatal("response-header timeout must not be retryable")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context deadline cause", err)
 	}
 }
 

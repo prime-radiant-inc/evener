@@ -54,12 +54,12 @@ func (c ErrorClass) String() string {
 //
 // Order of checks:
 //  1. User cancellation (context.Canceled, *AbortError) → Permanent.
-//  2. Context deadline (context.DeadlineExceeded) → Retryable.
-//  3. llm.Error with an HTTP status code → classified by status.
+//  2. llm.Error with an HTTP status code → classified by status.
 //     A status carrying Retryable()==true (e.g. 403 cyber_policy_violation
 //     which is a temporary account ban) stays Retryable even if the bare
 //     status would normally be Permanent.
-//  4. Any other llm.Error → use its Retryable() bit.
+//  3. Any other llm.Error → use its Retryable() bit.
+//  4. Bare context deadline (context.DeadlineExceeded) → Retryable.
 //  5. Default → Retryable (conservative).
 //
 // This mirrors the retryableError helper but exposes the classification
@@ -77,11 +77,6 @@ func Classify(err error) ErrorClass {
 	var abort *AbortError
 	if errors.As(err, &abort) {
 		return ErrorClassPermanent
-	}
-
-	// Deadline exceeded: retryable (server may not have received the request).
-	if errors.Is(err, context.DeadlineExceeded) {
-		return ErrorClassRetryable
 	}
 
 	var le Error
@@ -104,6 +99,12 @@ func Classify(err error) ErrorClass {
 		// above, NoObjectGeneratedError, UnsupportedToolChoiceError, etc.):
 		// treat as Permanent.
 		return ErrorClassPermanent
+	}
+
+	// An unclassified deadline is retryable because the server may not have
+	// received the request. Phase-specific typed timeouts decide above.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return ErrorClassRetryable
 	}
 
 	// Unknown / unwrapped error: default to Retryable (conservative — when

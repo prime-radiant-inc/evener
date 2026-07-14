@@ -90,6 +90,8 @@ func Kind(err error) ErrorKind {
 		return KindQuotaExceeded
 	case errorIs[*rateLimitError](err):
 		return KindRateLimit
+	case errorIs[*responseHeaderTimeoutError](err):
+		return KindTimeout
 	case errorIs[*requestTimeoutError](err):
 		return KindTimeout
 	case errorIs[*authenticationError](err):

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -59,6 +60,31 @@ func TestApplyAdapterTimeout_Streaming(t *testing.T) {
 
 type adapterTimeoutRoundTripper struct {
 	called bool
+}
+
+type controlledDeadlineContext struct {
+	context.Context
+	done <-chan struct{}
+}
+
+func (c controlledDeadlineContext) Done() <-chan struct{} { return c.done }
+
+func (c controlledDeadlineContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+func clientStandardTransport(t *testing.T, client *http.Client) *http.Transport {
+	t.Helper()
+	wrapper, ok := client.Transport.(*responseHeaderTimeoutTransport)
+	if !ok {
+		t.Fatalf("Transport = %T, want *responseHeaderTimeoutTransport", client.Transport)
+	}
+	return wrapper.base
 }
 
 type adapterTimeoutDialObservation struct {
@@ -177,10 +203,7 @@ func TestClientWithAdapterTimeout_ConfiguresStandardTransport(t *testing.T) {
 		t.Fatalf("client Timeout = %v, want %v", client.Timeout, original.Timeout)
 	}
 
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("Transport = %T, want *http.Transport", client.Transport)
-	}
+	transport := clientStandardTransport(t, client)
 	if transport == originalTransport {
 		t.Fatal("expected a cloned transport")
 	}
@@ -357,10 +380,7 @@ func TestClientWithAdapterTimeout_ClonesDefaultTransport(t *testing.T) {
 		t.Fatal("expected a copied client")
 	}
 
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("Transport = %T, want *http.Transport", client.Transport)
-	}
+	transport := clientStandardTransport(t, client)
 	defaultTransport := http.DefaultTransport.(*http.Transport)
 	if transport == defaultTransport {
 		t.Fatal("expected a clone of http.DefaultTransport")
@@ -373,6 +393,50 @@ func TestClientWithAdapterTimeout_ClonesDefaultTransport(t *testing.T) {
 	}
 	if (transport.Proxy == nil) != (defaultTransport.Proxy == nil) {
 		t.Fatal("default proxy behavior was not preserved")
+	}
+}
+
+func TestClientWithAdapterTimeout_PreservesCallerDeadline(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		close(requestStarted)
+		<-releaseHandler
+	}))
+	defer srv.Close()
+	defer close(releaseHandler)
+
+	done := make(chan struct{})
+	ctx := controlledDeadlineContext{Context: context.Background(), done: done}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL, strings.NewReader("request"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := ClientWithAdapterTimeout(srv.Client(), &AdapterTimeout{Request: time.Second})
+	result := make(chan error, 1)
+	go func() {
+		_, doErr := client.Do(req)
+		result <- doErr
+	}()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not receive request")
+	}
+	close(done)
+
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Do error = %v, want caller deadline", err)
+		}
+		var responseHeaderTimeout *responseHeaderTimeoutError
+		if errors.As(err, &responseHeaderTimeout) {
+			t.Fatalf("caller deadline was reclassified as response-header timeout: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("request did not return after caller deadline")
 	}
 }
 
