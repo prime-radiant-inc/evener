@@ -65,13 +65,20 @@ Stale audits passed:
 - No rollback `ResolveMainRepoRoot` call remains.
 - `git diff --check` passed.
 
-The required full internal suite was attempted:
+The required full internal suite was blocked in the fixer sandbox by Apple Git/xcrun cache permissions, but parent verification outside that sandbox passed:
 
 ```text
-(cd agent && go test ./internal/worktree -count=1)
+$ (cd agent && go test ./internal/worktree -count=1)
+ok  	primeradiant.com/serf/agent/internal/worktree	2.907s
+$ go test ./agent -run 'TestResumeWorktreeReentry_Managed(RegisteredOutsideProject|SymlinkCanonicalizesBeforeContainment)|TestRollbackFreshDelegateWorktreeUsesCarriedProjectMetadataDir' -count=1
+ok  	primeradiant.com/serf/agent	0.837s
+$ (cd agent && go test . -run 'Test.*(Worktree|Isolation|Resume|Rollback)' -count=1)
+ok  	primeradiant.com/serf/agent	10.186s
+$ go test -tags serffuzz ./agent -run '^$' -count=1
+ok  	primeradiant.com/serf/agent	0.376s [no tests to run]
 ```
 
-It remains blocked by the sandbox environment's Apple Git/xcrun cache permissions in unrelated real-Git predicate tests, including `TestUnchanged_DirtyButTipEqualsBase`:
+The fixer’s sandbox failure was environmental and included:
 
 ```text
 git: error: couldn't create cache file '/tmp/xcrun_db-...' (errno=Operation not permitted)
@@ -105,7 +112,7 @@ The pre-existing `.superpowers/sdd/task-1-report.md` modification was preserved 
 
 ## Concerns
 
-The full `agent/internal/worktree` suite cannot complete in this sandbox because Apple Git invokes xcrun and cannot create its cache file under `/tmp`; deterministic focused and required agent/tagged suites pass.
+The fixer sandbox could not run the full `agent/internal/worktree` suite because Apple Git could not create its xcrun cache under `/tmp`. Parent verification ran that suite successfully, so no test concern remains.
 
 ## Commit
 
