@@ -1,12 +1,12 @@
 package jobstore
 
-import "github.com/oklog/ulid/v2"
+import "primeradiant.com/serf/identifier"
 
 // NewTerminalGeneration mints the stable identity of a job's first terminal
 // event. It is minted once at finalize and copied verbatim onto the job's
 // pending/delivered notification events (never re-derived from the event seq).
 func NewTerminalGeneration() string {
-	return ulid.Make().String()
+	return identifier.MustNewTerminalGeneration()
 }
 
 // DedupeKey is the durable terminal-notification dedupe identity.

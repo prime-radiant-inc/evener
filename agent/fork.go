@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/oklog/ulid/v2"
 	"github.com/spf13/afero"
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
 
@@ -151,7 +151,10 @@ func forkSessionWithDeps(fs afero.Fs, stateDir, parentID string, divergenceTurn 
 	}
 
 	// Mint a new child session ID.
-	childID := ulid.Make().String()
+	childID, err := identifier.NewSessionID()
+	if err != nil {
+		return "", fmt.Errorf("generate child session ID: %w", err)
+	}
 
 	// Build the child transcript header from the parent's fields.
 	now := time.Now().UTC()

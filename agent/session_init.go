@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/oklog/ulid/v2"
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/clock"
@@ -32,6 +31,7 @@ import (
 	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/envvars"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
 
@@ -118,8 +118,12 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// subCfg := s.cfg, so the mirror is what carries the root's minted counter
 	// down the tree.
 	cfg.spawn.treeCounter = tc
+	sessionID, err := identifier.NewSessionID()
+	if err != nil {
+		return nil, fmt.Errorf("generate session ID: %w", err)
+	}
 	s := &Session{
-		id:                            ulid.Make().String(),
+		id:                            sessionID,
 		cfg:                           cfg,
 		client:                        client,
 		profile:                       profile,
@@ -146,7 +150,6 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		newJM = newJobManagerNoSync
 	}
 	var jm *jobManager
-	var err error
 	if fault := s.sessionInitFault("new_job_manager"); fault != nil {
 		err = fault
 	} else {

@@ -4,9 +4,8 @@ package jobstore
 import (
 	"time"
 
-	"github.com/oklog/ulid/v2"
-
 	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/serf/identifier"
 )
 
 // JobType identifies the runtime that owns a job.
@@ -266,25 +265,25 @@ type JobRecord struct {
 }
 
 func NewJobID() string {
-	return "job_" + ulid.Make().String()
+	return identifier.MustNewJobID()
 }
 
 func NewDelegateID() string {
-	return "dlg_" + ulid.Make().String()
+	return identifier.MustNewDelegateID()
 }
 
 func NewDelegateGeneration() string {
-	return "dg_" + ulid.Make().String()
+	return identifier.MustNewDelegateGeneration()
 }
 
 func NewWatchID() string {
-	return "watch_" + ulid.Make().String()
+	return identifier.MustNewWatchID()
 }
 
 func NewWatchGeneration() string {
-	return "wg_" + ulid.Make().String()
+	return identifier.MustNewWatchGeneration()
 }
 
 func NewWatchSendDeliveryID() string {
-	return "wd_" + ulid.Make().String()
+	return identifier.MustNewWatchDeliveryID()
 }

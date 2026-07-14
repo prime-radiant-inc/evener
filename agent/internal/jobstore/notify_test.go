@@ -1,12 +1,22 @@
 package jobstore
 
-import "testing"
+import (
+	"testing"
+
+	"primeradiant.com/serf/identifier"
+)
 
 func TestNewTerminalGenerationUnique(t *testing.T) {
 	a := NewTerminalGeneration()
 	b := NewTerminalGeneration()
 	if a == "" || b == "" || a == b {
 		t.Errorf("terminal generations should be non-empty and unique: %q %q", a, b)
+	}
+	if len(a) != 22 || len(b) != 22 {
+		t.Fatalf("terminal generations should be 22 characters: %q %q", a, b)
+	}
+	if err := identifier.ValidateTerminalGeneration(a); err != nil {
+		t.Fatalf("terminal generation %q: %v", a, err)
 	}
 }
 

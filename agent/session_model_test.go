@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
 
@@ -1809,6 +1810,9 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 	}
 	if !strings.HasPrefix(call.AttemptGroupID, "ag_") {
 		t.Fatalf("AttemptGroupID = %q", call.AttemptGroupID)
+	}
+	if err := identifier.ValidateAgentCallID(call.AttemptGroupID); err != nil {
+		t.Fatalf("AttemptGroupID %q: %v", call.AttemptGroupID, err)
 	}
 	if call.FinalAttemptCount == nil || *call.FinalAttemptCount != 1 {
 		t.Fatalf("FinalAttemptCount = %v", call.FinalAttemptCount)

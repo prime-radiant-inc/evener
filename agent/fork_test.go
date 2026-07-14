@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
 
@@ -75,6 +76,9 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 	childID, err := ForkSession(stateDir, parentID, 3, "second task, table-driven", "before TDD")
 	if err != nil {
 		t.Fatalf("ForkSession: %v", err)
+	}
+	if err := identifier.ValidateSessionID(childID); err != nil {
+		t.Fatalf("child session ID %q: %v", childID, err)
 	}
 
 	// childID must be non-empty and distinct from parentID.

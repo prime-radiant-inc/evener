@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"regexp"
 	"testing"
 	"time"
 
@@ -11,6 +10,7 @@ import (
 	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/task"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
 
@@ -298,7 +298,7 @@ func TestSessionConfig_SpawnFieldsDropOnPersist(t *testing.T) {
 	}
 }
 
-func TestSession_ID_ReturnsULID(t *testing.T) {
+func TestSession_ID_ReturnsCompactSessionID(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -312,8 +312,7 @@ func TestSession_ID_ReturnsULID(t *testing.T) {
 	if id == "" {
 		t.Fatalf("ID() returned empty string")
 	}
-	// ULID is 26 uppercase alphanumeric characters.
-	if !regexp.MustCompile(`^[0-9A-Z]{26}$`).MatchString(id) {
-		t.Fatalf("ID() %q is not a valid ULID", id)
+	if err := identifier.ValidateSessionID(id); err != nil {
+		t.Fatalf("ID() %q is not a valid session ID: %v", id, err)
 	}
 }
