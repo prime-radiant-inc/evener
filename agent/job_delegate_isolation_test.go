@@ -22,7 +22,7 @@ import (
 
 // wtDlgRepo is a real git repo plus a parent session rooted at it, wired for
 // delegate-isolation tests: a real StateDir (so isolation lanes land under
-// <stateDir>/worktrees/<projectid>/<delegate_id>, mirroring manage_worktree's
+// <stateDir>/worktrees/<Project.ID>/<delegate_id>, mirroring manage_worktree's
 // own layout — session_tools_worktree_create_test.go's wtRepo) and a client
 // the caller scripts per test.
 type wtDlgRepo struct {
@@ -54,12 +54,12 @@ func newWtDlgRepo(t *testing.T, c *llm.Client) *wtDlgRepo {
 	return &wtDlgRepo{s: s, mainRoot: root, stateDir: stateDir}
 }
 
-func (r *wtDlgRepo) metaDir() string {
-	return filepath.Join(r.stateDir, "worktrees", worktree.ProjectID(r.mainRoot), ".meta")
+func (r *wtDlgRepo) metaDir(t *testing.T) string {
+	return filepath.Join(r.stateDir, "worktrees", resolvedProjectID(t, r.s.currentEnv(), r.mainRoot), ".meta")
 }
 
-func (r *wtDlgRepo) lanePath(delegateID string) string {
-	return filepath.Join(r.stateDir, "worktrees", worktree.ProjectID(r.mainRoot), delegateID)
+func (r *wtDlgRepo) lanePath(t *testing.T, delegateID string) string {
+	return filepath.Join(r.stateDir, "worktrees", resolvedProjectID(t, r.s.currentEnv(), r.mainRoot), delegateID)
 }
 
 // commitWorkInLane makes a real commit in the lane so it is a CHANGED lane
@@ -117,7 +117,7 @@ func TestDelegateIsolation_SpawnCreatesLockedManagedWorktree(t *testing.T) {
 		t.Fatal("createDelegate returned no delegate_id")
 	}
 
-	lane := r.lanePath(res.DelegateID)
+	lane := r.lanePath(t, res.DelegateID)
 	info, err := os.Stat(filepath.Join(lane, ".git"))
 	if err != nil {
 		t.Fatalf("stat lane .git pointer: %v", err)
@@ -127,7 +127,7 @@ func TestDelegateIsolation_SpawnCreatesLockedManagedWorktree(t *testing.T) {
 	}
 
 	// Sidecar carries delegate_id and the parent's session id (spec §9 step 1).
-	sc, err := worktree.ReadSidecar(r.metaDir(), res.DelegateID)
+	sc, err := worktree.ReadSidecar(r.metaDir(t), res.DelegateID)
 	if err != nil {
 		t.Fatalf("ReadSidecar: %v", err)
 	}
@@ -245,11 +245,11 @@ func TestDelegateIsolation_SpawnFailureAfterWorktreeCreateRollsBackLane(t *testi
 	if res.DelegateID == "" {
 		t.Fatal("createDelegate did not report the delegate_id it minted before failing")
 	}
-	lane := r.lanePath(res.DelegateID)
+	lane := r.lanePath(t, res.DelegateID)
 	if _, err := os.Stat(lane); !os.IsNotExist(err) {
 		t.Fatalf("stat lane after rollback = (%v), want it removed", err)
 	}
-	if _, err := worktree.ReadSidecar(r.metaDir(), res.DelegateID); err == nil {
+	if _, err := worktree.ReadSidecar(r.metaDir(t), res.DelegateID); err == nil {
 		t.Fatal("expected the sidecar to be removed by rollback")
 	}
 }
@@ -300,11 +300,11 @@ func TestDelegateIsolation_AttachFailureAfterWorktreeCreateRollsBackLane(t *test
 	if err := os.Chmod(jobsDir, 0o755); err != nil {
 		t.Fatalf("restore jobs dir permissions: %v", err)
 	}
-	lane := r.lanePath(res.DelegateID)
+	lane := r.lanePath(t, res.DelegateID)
 	if _, err := os.Stat(lane); !os.IsNotExist(err) {
 		t.Fatalf("stat lane after rollback = (%v), want it removed", err)
 	}
-	if _, err := worktree.ReadSidecar(r.metaDir(), res.DelegateID); err == nil {
+	if _, err := worktree.ReadSidecar(r.metaDir(t), res.DelegateID); err == nil {
 		t.Fatal("expected the sidecar to be removed by rollback")
 	}
 }
@@ -355,7 +355,7 @@ func TestDelegateIsolation_ManageWorktreeDeniedAfterRestoreAllTools(t *testing.T
 
 	// Give the lane genuine work so close-time disposal (spec §9 step 4) keeps
 	// it — an unchanged lane is removed at close and cannot be revived.
-	r.commitWorkInLane(t, r.lanePath(res.DelegateID))
+	r.commitWorkInLane(t, r.lanePath(t, res.DelegateID))
 
 	parentMeta := r.s.Meta()
 	stateDir := r.s.stateDir
@@ -400,7 +400,7 @@ func TestDelegateIsolation_ManageWorktreeDeniedAfterRestoreAllTools(t *testing.T
 		t.Error("all-tools child should still have shell after restore")
 	}
 
-	entry := r.porcelainEntryFor(t, r.lanePath(res.DelegateID))
+	entry := r.porcelainEntryFor(t, r.lanePath(t, res.DelegateID))
 	wantReason := worktree.FormatDelegateMarker(res.DelegateID, restored.id)
 	if !entry.Locked {
 		t.Fatal("revival must re-lock a kept changed lane")
@@ -426,7 +426,7 @@ func TestDelegateIsolation_SecondJobViaDelegateSendRunsInSameLaneAndReportsWorkt
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v", res.Err)
 	}
-	lane := r.lanePath(res.DelegateID)
+	lane := r.lanePath(t, res.DelegateID)
 	if res.Worktree == nil {
 		t.Fatal("first job result missing worktree report")
 	}
@@ -493,7 +493,7 @@ func TestDelegateIsolation_BackgroundCompletionNotificationCarriesWorktreeReport
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v", res.Err)
 	}
-	lane := r.lanePath(res.DelegateID)
+	lane := r.lanePath(t, res.DelegateID)
 
 	// The child finishes asynchronously and arms the parent's completion
 	// notification; drive the parent's notification turn so the block is
@@ -586,7 +586,7 @@ func TestDelegateIsolation_RevivalOnForeignLockedLaneRefuses(t *testing.T) {
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v", res.Err)
 	}
-	lane := r.lanePath(res.DelegateID)
+	lane := r.lanePath(t, res.DelegateID)
 	_, childID, err := decodeRef(res.TranscriptRef)
 	if err != nil {
 		t.Fatalf("decodeRef: %v", err)

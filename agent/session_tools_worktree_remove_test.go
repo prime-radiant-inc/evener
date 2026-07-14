@@ -128,7 +128,7 @@ func TestWorktreeRemove_SidecarGarbageJSONErrors(t *testing.T) {
 	r := newWorktreeRepo(t)
 	path := r.addManagedWorktreeFixture(t, "lane")
 	canonicalMain := r.canonicalMain(t)
-	metaDir := r.metaDir(canonicalMain)
+	metaDir := r.metaDir(t, canonicalMain)
 	sidecarPath := filepath.Join(metaDir, worktree.EncodeSidecarName("lane")+".json")
 	if err := os.WriteFile(sidecarPath, []byte("not valid json{{{"), 0o644); err != nil {
 		t.Fatalf("corrupt sidecar: %v", err)
@@ -166,7 +166,7 @@ func TestWorktreeRemove_BasicDispositionMatrix(t *testing.T) {
 		t.Parallel()
 		r := newWorktreeRepo(t)
 		canonicalMain := r.canonicalMain(t)
-		metaDir := r.metaDir(canonicalMain)
+		metaDir := r.metaDir(t, canonicalMain)
 		res, err := r.create(t, map[string]any{"name": "clean-lane"})
 		if err != nil {
 			t.Fatalf("create clean-lane: %v", err)
@@ -285,7 +285,7 @@ func TestWorktreeRemove_DeleteBranchMergedDeletesAfterGate(t *testing.T) {
 		t.Error("branch survived a merged delete_branch remove")
 	}
 	canonicalMain := r.canonicalMain(t)
-	if _, scErr := worktree.ReadSidecar(r.metaDir(canonicalMain), "lane"); !os.IsNotExist(scErr) {
+	if _, scErr := worktree.ReadSidecar(r.metaDir(t, canonicalMain), "lane"); !os.IsNotExist(scErr) {
 		t.Errorf("sidecar survived: err=%v", scErr)
 	}
 }
@@ -341,7 +341,7 @@ func TestWorktreeRemove_DeleteBranchMergeTargetUnknownRefusesWithEvidence(t *tes
 	wtGit(t, r.mainRoot, "branch", "-D", "feature")
 
 	canonicalMain := r.canonicalMain(t)
-	sc, scErr := worktree.ReadSidecar(r.metaDir(canonicalMain), "lane")
+	sc, scErr := worktree.ReadSidecar(r.metaDir(t, canonicalMain), "lane")
 	if scErr != nil {
 		t.Fatalf("read sidecar: %v", scErr)
 	}
@@ -382,7 +382,7 @@ func TestWorktreeRemove_DeleteSidecarFailsOnPermissionDenied(t *testing.T) {
 	wtGit(t, r.mainRoot, "merge", "--ff-only", "lane")
 
 	canonicalMain := r.canonicalMain(t)
-	metaDir := r.metaDir(canonicalMain)
+	metaDir := r.metaDir(t, canonicalMain)
 	chmodReadOnly(t, metaDir)
 
 	_, err := r.removeOp(t, map[string]any{"name": "lane", "delete_branch": true})
@@ -406,7 +406,7 @@ func TestWorktreeRemove_MarkSidecarRemovedFailsOnPermissionDenied(t *testing.T) 
 	path := r.addManagedWorktreeFixture(t, "lane")
 
 	canonicalMain := r.canonicalMain(t)
-	metaDir := r.metaDir(canonicalMain)
+	metaDir := r.metaDir(t, canonicalMain)
 	sidecarPath := filepath.Join(metaDir, worktree.EncodeSidecarName("lane")+".json")
 	if os.Getuid() == 0 {
 		t.Skip("running as root: file permissions do not restrict writes")
@@ -473,7 +473,7 @@ func TestWorktreeRemove_DeleteBranchUnmergedRefusesEvidenceSidecarKept(t *testin
 	}
 
 	canonicalMain := r.canonicalMain(t)
-	sc, scErr := worktree.ReadSidecar(r.metaDir(canonicalMain), "lane")
+	sc, scErr := worktree.ReadSidecar(r.metaDir(t, canonicalMain), "lane")
 	if scErr != nil {
 		t.Fatalf("sidecar deleted despite the unmerged refusal: %v", scErr)
 	}
@@ -707,7 +707,7 @@ func TestWorktreeRemove_RemoveCurrentNoSafeRestoreEnvRefuses(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	canonicalMain := r.canonicalMain(t)
-	launchPath := r.managedPath(canonicalMain, "launch")
+	launchPath := r.managedPath(t, canonicalMain, "launch")
 	if err := os.MkdirAll(filepath.Dir(launchPath), 0o755); err != nil {
 		t.Fatalf("mkdir launch parent: %v", err)
 	}
@@ -721,7 +721,7 @@ func TestWorktreeRemove_RemoveCurrentNoSafeRestoreEnvRefuses(t *testing.T) {
 	s2 := newSession(t, withDir(launchPath), withConfig(worktreeTestSessionConfig()))
 	s2.stateDir = r.stateDir
 	r2 := &wtRepo{s: s2, mainRoot: r.mainRoot, stateDir: r.stateDir, head: r.head}
-	metaDir := r2.metaDir(canonicalMain)
+	metaDir := r2.metaDir(t, canonicalMain)
 	if err := os.MkdirAll(metaDir, 0o755); err != nil {
 		t.Fatalf("mkdir metaDir: %v", err)
 	}
@@ -766,7 +766,7 @@ func TestWorktreeRemove_RemoveCurrentNoSafeRestoreEnvRefusesThroughSymlinkedLaun
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	canonicalMain := r.canonicalMain(t)
-	launchPath := r.managedPath(canonicalMain, "launch")
+	launchPath := r.managedPath(t, canonicalMain, "launch")
 	if err := os.MkdirAll(filepath.Dir(launchPath), 0o755); err != nil {
 		t.Fatalf("mkdir launch parent: %v", err)
 	}
@@ -788,7 +788,7 @@ func TestWorktreeRemove_RemoveCurrentNoSafeRestoreEnvRefusesThroughSymlinkedLaun
 	s2 := newSession(t, withDir(aliasPath), withConfig(worktreeTestSessionConfig()))
 	s2.stateDir = r.stateDir
 	r2 := &wtRepo{s: s2, mainRoot: r.mainRoot, stateDir: r.stateDir, head: r.head}
-	metaDir := r2.metaDir(canonicalMain)
+	metaDir := r2.metaDir(t, canonicalMain)
 	if err := os.MkdirAll(metaDir, 0o755); err != nil {
 		t.Fatalf("mkdir metaDir: %v", err)
 	}

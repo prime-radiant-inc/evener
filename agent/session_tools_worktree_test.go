@@ -9,7 +9,17 @@ import (
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/identifier"
 )
+
+func resolvedProjectID(t *testing.T, env execenv.ExecutionEnvironment, path string) string {
+	t.Helper()
+	project, err := identifier.ResolveProjectWith(path, execenv.NewProjectResolver(env))
+	if err != nil {
+		t.Fatalf("resolve project %q: %v", path, err)
+	}
+	return project.ID
+}
 
 // TestWorktreeRootResolutionErrorDoesNotSelectFallbackIdentity ensures a
 // RuntimeDir failure is returned to the worktree caller rather than silently

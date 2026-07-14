@@ -249,7 +249,7 @@ func jdTailRestoreWorktreeReacquire(t *testing.T) {
 	if res.Err != nil {
 		t.Fatalf("create isolated delegate: %v", res.Err)
 	}
-	lane := rig.lanePath(res.DelegateID)
+	lane := rig.lanePath(t, res.DelegateID)
 	if err := rig.s.reacquireDelegateWorktreeLock(lane, res.DelegateID); err != nil {
 		t.Fatalf("adopt own lane: %v", err)
 	}

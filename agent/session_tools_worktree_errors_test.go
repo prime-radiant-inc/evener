@@ -307,7 +307,7 @@ func TestWorktreeErrors_RemoveTargetResolvesOutsideManagedDir(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	canonicalMain := r.canonicalMain(t)
-	target := r.managedPath(canonicalMain, "escape")
+	target := r.managedPath(t, canonicalMain, "escape")
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		t.Fatalf("mkdir managed dir: %v", err)
 	}
@@ -441,7 +441,7 @@ func TestWorktreeErrors_RemoveCurrentNoSafeRestoreEnv(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	canonicalMain := r.canonicalMain(t)
-	launchPath := r.managedPath(canonicalMain, "launch")
+	launchPath := r.managedPath(t, canonicalMain, "launch")
 	if err := os.MkdirAll(filepath.Dir(launchPath), 0o755); err != nil {
 		t.Fatalf("mkdir launch parent: %v", err)
 	}
@@ -452,7 +452,7 @@ func TestWorktreeErrors_RemoveCurrentNoSafeRestoreEnv(t *testing.T) {
 	s2 := newSession(t, withDir(launchPath), withConfig(worktreeTestSessionConfig()))
 	s2.stateDir = r.stateDir
 	r2 := &wtRepo{s: s2, mainRoot: r.mainRoot, stateDir: r.stateDir, head: r.head}
-	metaDir := r2.metaDir(canonicalMain)
+	metaDir := r2.metaDir(t, canonicalMain)
 	if err := os.MkdirAll(metaDir, 0o755); err != nil {
 		t.Fatalf("mkdir metaDir: %v", err)
 	}

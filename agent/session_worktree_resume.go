@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/worktree"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/identifier"
 )
 
 // resumeWorktreeReentry re-enters the persisted active worktree BEFORE
@@ -60,17 +61,17 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 		return nil
 	}
 
-	// Resolve the main repo root FROM the target (not from the launch env's
-	// cwd, which may be unrelated to it) — mirrors worktreeEnterManaged's own
-	// resolution. Reroot via WithWorkingDirectory first: ExecCommand confines
-	// a workingDir override to the env's own RootDir, and local is rooted at
-	// the launch cwd, not at target.
+	// Resolve the canonical Project FROM the target (not from the launch env's
+	// cwd, which may be unrelated to it). Reroot via WithWorkingDirectory first:
+	// ExecCommand confines a workingDir override to the env's own RootDir, and
+	// local is rooted at the launch cwd, not at target.
 	rootedAtTarget := local.WithWorkingDirectory(target)
-	mainRoot := execenv.ResolveMainRepoRoot(rootedAtTarget, target)
-	if mainRoot == "" {
-		notice(fmt.Sprintf("previous working directory %s is no longer part of a git repository", target))
+	project, err := identifier.ResolveProjectWith(target, execenv.NewProjectResolver(rootedAtTarget))
+	if err != nil {
+		notice(fmt.Sprintf("previous working directory %s is no longer part of a git repository (%v)", target, err))
 		return nil
 	}
+	mainRoot := project.CanonicalPath
 	controlEnv := local.WithWorkingDirectory(mainRoot)
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 
@@ -196,26 +197,22 @@ func (s *Session) applyInitInsideWorktreeLock(isGitRepo bool) {
 	if resolved, err := filepath.EvalSymlinks(activeRoot); err == nil {
 		activeRoot = resolved
 	}
-	mainRoot := execenv.ResolveMainRepoRoot(local, activeRoot)
-	if mainRoot == "" {
+	project, err := identifier.ResolveProjectWith(activeRoot, execenv.NewProjectResolver(local))
+	if err != nil || !projectIsGitCheckout(project) {
 		return
 	}
-	canonicalMain := mainRoot
-	if resolved, err := filepath.EvalSymlinks(mainRoot); err == nil {
-		canonicalMain = resolved
-	}
-	worktreeRoot, err := s.worktreeRootFor(local, s.currentStateDir(), canonicalMain)
+	worktreeRoot, err := s.worktreeRootForProject(s.currentStateDir(), project)
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("could not resolve managed worktree state: %v", err)})
 		return
 	}
-	projectDir := filepath.Join(worktreeRoot, worktree.ProjectID(canonicalMain))
+	projectDir := filepath.Join(worktreeRoot, project.ID)
 
 	if !isUnderManagedDir(activeRoot, projectDir) {
 		return
 	}
 
-	controlEnv := local.WithWorkingDirectory(canonicalMain)
+	controlEnv := local.WithWorkingDirectory(project.CanonicalPath)
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 	locked, reason, err := lockStateOf(run, activeRoot)
 	if err != nil {

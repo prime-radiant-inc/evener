@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/internal/worktree"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
 
@@ -73,13 +74,14 @@ func (s *Session) updateWorktreeSidecar(dir, name string, mutate func(*worktree.
 }
 
 // worktreeState is the snapshot worktreeGuard.state() returns (spec §7): the
-// current env, the saved restore env, the resolved main repo root, the derived
-// worktree root, and the managed worktree path the session currently occupies
-// (empty when none). env and restoreEnv are nil when the session env is not a
-// LocalExecutionEnvironment.
+// current env, the saved restore env, the resolved canonical Project, the
+// derived worktree root, and the managed worktree path the session currently
+// occupies (empty when none). env and restoreEnv are nil when the session env
+// is not a LocalExecutionEnvironment.
 type worktreeState struct {
 	env             *execenv.LocalExecutionEnvironment
 	restoreEnv      *execenv.LocalExecutionEnvironment
+	project         identifier.Project
 	mainRepoRoot    string
 	worktreeRoot    string
 	currentWorktree string
@@ -503,8 +505,8 @@ func (s *Session) worktreeControlEnv(mainRepoRoot string) (execenv.ExecutionEnvi
 }
 
 // worktreeStateSnapshot implements worktreeGuard.state() (spec §7). It reads the
-// mutable occupancy fields under s.mu, then resolves the main repo root and
-// worktree root OUTSIDE the lock (ResolveMainRepoRoot may fork git; s.mu must
+// mutable occupancy fields under s.mu, then resolves the canonical Project and
+// worktree root OUTSIDE the lock (project resolution may fork git; s.mu must
 // never be held across a subprocess — spec §7).
 func (s *Session) worktreeStateSnapshot() worktreeState {
 	s.mu.Lock()
@@ -516,16 +518,15 @@ func (s *Session) worktreeStateSnapshot() worktreeState {
 
 	st := worktreeState{env: local, restoreEnv: restore, currentWorktree: current}
 	if local != nil {
-		st.mainRepoRoot = execenv.ResolveMainRepoRoot(local, local.WorkingDirectory())
-		if st.mainRepoRoot != "" {
-			// Canonicalize before deriving worktreeRoot/projectid, matching
-			// worktreeCreate's canonicalMain — a symlinked state home or macOS
-			// /var → /private/var must not split one repo's managed worktrees
-			// across two different worktreeRoot/projectid values.
-			if resolved, evErr := filepath.EvalSymlinks(st.mainRepoRoot); evErr == nil {
-				st.mainRepoRoot = resolved
-			}
-			st.worktreeRoot, st.err = s.worktreeRootFor(local, stateDir, st.mainRepoRoot)
+		project, err := resolveWorktreeProject(local, local.WorkingDirectory())
+		if err != nil {
+			st.err = err
+			return st
+		}
+		st.project = project
+		if projectIsGitCheckout(project) {
+			st.mainRepoRoot = project.CanonicalPath
+			st.worktreeRoot, st.err = s.worktreeRootForProject(stateDir, project)
 		}
 	}
 	return st
@@ -538,19 +539,43 @@ func (st worktreeState) resolutionError(operation string) error {
 	return fmt.Errorf("manage_worktree %s: %w", operation, st.err)
 }
 
-// worktreeRootFor derives the directory managed worktrees live under (spec §6
+// worktreeRootFor resolves a project path and derives the directory managed
+// worktrees live under (spec §6
 // "worktreeRoot derivation"): <stateDir>/worktrees when a runtime state dir
 // launched the session, else the agent-owned project state dir for the main
 // repo root plus /worktrees. It never imports cmdutil (spec §6).
 func (s *Session) worktreeRootFor(env execenv.ExecutionEnvironment, stateDir, mainRepoRoot string) (string, error) {
+	project, err := resolveWorktreeProject(env, mainRepoRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve managed worktree project: %w", err)
+	}
+	return s.worktreeRootForProject(stateDir, project)
+}
+
+func (s *Session) worktreeRootForProject(stateDir string, project identifier.Project) (string, error) {
 	if stateDir != "" {
 		return filepath.Join(stateDir, "worktrees"), nil
 	}
-	_, projectStateDir, err := RuntimeDir(mainRepoRoot, "")
-	if err != nil {
-		return "", fmt.Errorf("resolve managed worktree state: %w", err)
+	if project.ID == "" || project.CanonicalPath == "" {
+		return "", errors.New("resolve managed worktree state: project identity is empty")
 	}
-	return filepath.Join(projectStateDir, "worktrees"), nil
+	return filepath.Join(RuntimeDirForProjectWithStateHome(project, ""), "worktrees"), nil
+}
+
+// resolveWorktreeProject is the single project-identity boundary for a
+// managed-worktree operation. The shared identifier resolver follows linked
+// worktree metadata and returns the canonical main checkout for both the main
+// checkout and every linked checkout.
+func resolveWorktreeProject(env execenv.ExecutionEnvironment, path string) (identifier.Project, error) {
+	return identifier.ResolveProjectWith(path, execenv.NewProjectResolver(env))
+}
+
+func projectIsGitCheckout(project identifier.Project) bool {
+	if project.CanonicalPath == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(project.CanonicalPath, ".git"))
+	return err == nil
 }
 
 // enterWorktree implements worktreeGuard.enterWorktree() (spec §7): swap s.env
@@ -730,11 +755,17 @@ type worktreeCreateCoreResult struct {
 func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalExecutionEnvironment, name, baseRef string, ev worktree.LockEvent, lockReason, errPrefix string, sidecarMutate func(*worktree.Sidecar)) (worktreeCreateCoreResult, error) {
 	activeRoot := active.WorkingDirectory()
 
-	// Step 1: resolve the main repo root through linked-worktree pointers.
-	mr := execenv.ResolveMainRepoRoot(active, activeRoot)
-	if mr == "" {
+	// Step 1: resolve the shared canonical Project through linked-worktree
+	// pointers. This is deliberately the only identity resolution in the create
+	// operation; every path below is derived from this value.
+	project, err := resolveWorktreeProject(active, activeRoot)
+	if err != nil {
+		return worktreeCreateCoreResult{}, fmt.Errorf("%s: resolve project: %w", errPrefix, err)
+	}
+	if !projectIsGitCheckout(project) {
 		return worktreeCreateCoreResult{}, fmt.Errorf("%s: not in a git repository", errPrefix)
 	}
+	mr := project.CanonicalPath
 
 	// Control env rooted at the main repo root; every lifecycle git command runs
 	// through it (spec §2 "Git control environment").
@@ -744,19 +775,12 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 	}
 	run := s.newWorktreeGitRunner(ctx, controlEnv)
 
-	// Step 2: projectid over the canonical main repo root.
-	canonicalMain := mr
-	if resolved, evErr := filepath.EvalSymlinks(mr); evErr == nil {
-		canonicalMain = resolved
-	}
-	projectID := worktree.ProjectID(canonicalMain)
-
-	// Step 3: worktree path under <worktreeRoot>/<projectid>/<name>.
-	worktreeRoot, err := s.worktreeRootFor(active, s.currentStateDir(), canonicalMain)
+	// Step 3: worktree path under <worktreeRoot>/<Project.ID>/<name>.
+	worktreeRoot, err := s.worktreeRootForProject(s.currentStateDir(), project)
 	if err != nil {
 		return worktreeCreateCoreResult{}, err
 	}
-	projectDir := filepath.Join(worktreeRoot, projectID)
+	projectDir := filepath.Join(worktreeRoot, project.ID)
 	worktreePath := filepath.Join(projectDir, filepath.FromSlash(name))
 	metaDir := metaDirForProject(projectDir)
 
@@ -801,7 +825,7 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 		Branch:         name,
 		BaseSHA:        baseSHA,
 		MergeTarget:    mergeTarget,
-		OriginalRoot:   canonicalMain,
+		OriginalRoot:   project.CanonicalPath,
 		CreatorSession: s.id,
 		CreatedAt:      s.sclock().Now().UTC().Format(time.RFC3339),
 	}
@@ -847,7 +871,7 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 		Path:     worktreePath,
 		Branch:   name,
 		BaseSHA:  baseSHA,
-		MainRoot: canonicalMain,
+		MainRoot: project.CanonicalPath,
 		Run:      run,
 	}, nil
 }
@@ -1070,7 +1094,7 @@ func (s *Session) worktreeControlRun(ctx context.Context, mainRepoRoot string) (
 // resolve, so this correctly reports ok=false rather than panicking or
 // guessing. Shared by isUnderManagedDir (spec §4 switch by-path step 2) and
 // the list/prune managed-entry enumeration (spec §5 list step 2's "not bare
-// HasPrefix" rule — a bare string-prefix compare collides when one projectid
+// HasPrefix" rule — a bare string-prefix compare collides when one Project.ID
 // string prefixes another).
 func relPathUnderManagedDir(canonicalPath, projectDir string) (rel string, ok bool) {
 	canonicalProjectDir := filepath.Clean(projectDir)
@@ -1266,7 +1290,7 @@ func (s *Session) worktreeSwitchByName(ctx context.Context, name string) (Worktr
 	if err != nil {
 		return WorktreeSwitchResult{}, err
 	}
-	path := filepath.Join(st.worktreeRoot, worktree.ProjectID(st.mainRepoRoot), filepath.FromSlash(name))
+	path := filepath.Join(st.worktreeRoot, st.project.ID, filepath.FromSlash(name))
 	return s.worktreeEnterManaged(st, run, path)
 }
 
@@ -1321,7 +1345,7 @@ func (s *Session) worktreeSwitchByPath(ctx context.Context, rawPath string) (Wor
 
 	// Step 2: reroute through the by-name choreography when the target
 	// resolves inside the managed directory (full lock guard + choreography).
-	projectDir := filepath.Join(st.worktreeRoot, worktree.ProjectID(st.mainRepoRoot))
+	projectDir := filepath.Join(st.worktreeRoot, st.project.ID)
 	if isUnderManagedDir(canonicalArg, projectDir) {
 		return s.worktreeEnterManagedWithPorcelain(st, run, matchedPath, porcelain)
 	}
@@ -1415,7 +1439,7 @@ func (s *Session) worktreeExit(ctx context.Context) (WorktreeExitResult, error) 
 	// was launched inside one before entering others), apply the idempotent
 	// lock rule to it.
 	if run != nil {
-		projectDir := filepath.Join(st.worktreeRoot, worktree.ProjectID(st.mainRepoRoot))
+		projectDir := filepath.Join(st.worktreeRoot, st.project.ID)
 		warning, err := s.applyRestoreLandRelockFromPorcelain(run, restoredRoot, projectDir, porcelain)
 		if err != nil {
 			return WorktreeExitResult{}, err
@@ -1475,11 +1499,11 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	if st.mainRepoRoot == "" {
 		return WorktreeRemoveResult{}, errors.New("manage_worktree remove: not in a git repository")
 	}
-	projectDir := filepath.Join(st.worktreeRoot, worktree.ProjectID(st.mainRepoRoot))
+	projectDir := filepath.Join(st.worktreeRoot, st.project.ID)
 	metaDir := metaDirForProject(projectDir)
 	target := filepath.Clean(filepath.Join(projectDir, filepath.FromSlash(name)))
 
-	// Step 2: the target must be under <worktreeRoot>/<projectid>/, canonicalized
+	// Step 2: the target must be under <worktreeRoot>/<Project.ID>, canonicalized
 	// as in `list` (spec §5 `list` step 2) — never remove an arbitrary path by
 	// name. Structurally guaranteed already (ValidateName rejects ".."; target
 	// is built by joining under projectDir), but checked explicitly for
@@ -1808,7 +1832,7 @@ func (s *Session) worktreeList(ctx context.Context) ([]WorktreeListEntry, error)
 	}
 
 	// Step 2: filter to serf-managed worktrees, canonicalized comparison.
-	projectDir := filepath.Join(st.worktreeRoot, worktree.ProjectID(st.mainRepoRoot))
+	projectDir := filepath.Join(st.worktreeRoot, st.project.ID)
 	metaDir := metaDirForProject(projectDir)
 	managed := managedPorcelainEntries(worktree.ParsePorcelain(out), projectDir)
 
@@ -1890,7 +1914,7 @@ func (s *Session) worktreePrune(ctx context.Context) (WorktreePruneResult, error
 		return WorktreePruneResult{}, err
 	}
 
-	projectDir := filepath.Join(st.worktreeRoot, worktree.ProjectID(st.mainRepoRoot))
+	projectDir := filepath.Join(st.worktreeRoot, st.project.ID)
 	metaDir := metaDirForProject(projectDir)
 
 	out, err := run("worktree", "list", "--porcelain")

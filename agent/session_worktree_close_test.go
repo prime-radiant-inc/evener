@@ -244,7 +244,7 @@ func TestDisposeUnchangedLane_RemovedAndMarked(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
-	metaDir := r.metaDir(r.canonicalMain(t))
+	metaDir := r.metaDir(t, r.canonicalMain(t))
 
 	r.s.disposeDelegateLanesAtClose()
 
@@ -517,7 +517,7 @@ func TestDisposeOneDelegateLane_MissingSidecarLeavesLane(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
-	metaDir := r.metaDir(r.canonicalMain(t))
+	metaDir := r.metaDir(t, r.canonicalMain(t))
 	if err := worktree.DeleteSidecar(metaDir, delegateID); err != nil {
 		t.Fatalf("delete sidecar: %v", err)
 	}
@@ -715,7 +715,7 @@ func TestDisposeOneDelegateLane_DisposedMarkAppendFailureWarnsButStillRemoves(t 
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
-	metaDir := r.metaDir(r.canonicalMain(t))
+	metaDir := r.metaDir(t, r.canonicalMain(t))
 	origAppend := r.s.jobManager.appendEvent
 	markErr := errors.New("disk full")
 	r.s.jobManager.appendEvent = func(e jobstore.Event) error {
@@ -751,7 +751,7 @@ func TestDisposeOneDelegateLane_BranchDeleteFailureWarnsButLaneStillGone(t *test
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
-	metaDir := r.metaDir(r.canonicalMain(t))
+	metaDir := r.metaDir(t, r.canonicalMain(t))
 	gitFailOnArgsRepoShim(t, r.mainRoot, "branch", "-D", delegateID)
 
 	r.s.disposeDelegateLanesAtClose()

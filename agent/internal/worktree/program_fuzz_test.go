@@ -8,7 +8,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -473,12 +472,6 @@ func assertWorktreeDecisionAndVersionPrograms(t *testing.T, target string) {
 		t.Fatalf("CUnquote unknown escape = %q", got)
 	}
 
-	for _, root := range []string{"/fixture/" + target, "/fixture/name with space", "/", "/fixture/" + strings.Repeat("x", maxBasenameBytes+8)} {
-		id := ProjectID(root)
-		if id == "" || len(id) < 17 {
-			t.Fatalf("ProjectID(%q) = %q", root, id)
-		}
-	}
 	if err := CheckGitVersion(func(args ...string) (string, error) { return "git version 2.33.0\n", nil }); err != nil {
 		t.Fatalf("supported CheckGitVersion: %v", err)
 	}

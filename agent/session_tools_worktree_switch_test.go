@@ -18,8 +18,8 @@ import (
 
 // managedPath returns the path a managed worktree named name would live at
 // for canonicalMain, matching worktreeRootFor's derivation (stateDir set).
-func (r *wtRepo) managedPath(canonicalMain, name string) string {
-	return filepath.Join(r.stateDir, "worktrees", worktree.ProjectID(canonicalMain), name)
+func (r *wtRepo) managedPath(t *testing.T, canonicalMain, name string) string {
+	return filepath.Join(r.stateDir, "worktrees", resolvedProjectID(t, r.s.currentEnv(), canonicalMain), name)
 }
 
 // canonicalMain returns the symlink-resolved main repo root.
@@ -660,7 +660,7 @@ func TestWorktreeExit_RestoresEnvClearsSavedEnvUnlocks(t *testing.T) {
 	if !branchExistsInRepo(t, r.mainRoot, "lane") {
 		t.Error("branch removed by exit")
 	}
-	if _, scErr := worktree.ReadSidecar(r.metaDir(canonicalMain), "lane"); scErr != nil {
+	if _, scErr := worktree.ReadSidecar(r.metaDir(t, canonicalMain), "lane"); scErr != nil {
 		t.Errorf("sidecar removed by exit: %v", scErr)
 	}
 
@@ -739,7 +739,7 @@ func TestWorktreeExit_RestoringIntoManagedLaunchRootIdempotentRelockForeignWarns
 func wtLaunchSession(t *testing.T, r *wtRepo) (s2 *Session, r2 *wtRepo, launchPath, workPath string) {
 	t.Helper()
 	canonicalMain := r.canonicalMain(t)
-	launchPath = r.managedPath(canonicalMain, "launch")
+	launchPath = r.managedPath(t, canonicalMain, "launch")
 
 	if err := os.MkdirAll(filepath.Dir(launchPath), 0o755); err != nil {
 		t.Fatalf("mkdir launch parent: %v", err)

@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/worktree"
 	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/serf/identifier"
 )
 
 func FuzzWorktreeSeed100ExactProgram(f *testing.F) {
@@ -26,7 +27,11 @@ func worktreeSeed100ExactProgram(t *testing.T) {
 
 	t.Run("derived runtime root", func(t *testing.T) {
 		h, _ := newWorktreeFaultSession(t)
-		if got, err := h.s.worktreeRootFor(h.s.currentEnv(), "", h.root); err != nil || got == "" {
+		project, err := identifier.ResolveProjectWith(h.root, execenv.NewProjectResolver(h.s.currentEnv()))
+		if err != nil {
+			t.Fatalf("resolve project: %v", err)
+		}
+		if got, err := h.s.worktreeRootForProject("", project); err != nil || got == "" {
 			t.Fatal("empty derived worktree root")
 		}
 	})
