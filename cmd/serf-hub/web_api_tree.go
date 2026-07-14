@@ -342,6 +342,10 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 	if !ok {
 		return schema.SessionMeta{}, hubcore.LiveEntry{}, false
 	}
+	project := identifier.Project{}
+	if thread.ProjectPath != "" && identifier.ValidateProjectID(thread.ProjectID) == nil {
+		project = identifier.Project{ID: thread.ProjectID, CanonicalPath: thread.ProjectPath}
+	}
 	refText := ref.String()
 	title := strutil.FirstNonEmpty(thread.Name, thread.Preview, thread.SessionID, thread.ID, refText)
 	createdAt := hubcore.UnixTime(thread.CreatedAt)
@@ -372,6 +376,7 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 		},
 		SessionID: refText,
 		Status:    thread.Status.Type,
+		Project:   project,
 	}
 	return meta, entry, true
 }

@@ -183,6 +183,35 @@ func TestOrphanLiveGroupingUsesCanonicalProjectID(t *testing.T) {
 	}
 }
 
+func TestNavigationTreeInputsUsesRemoteCarriedProject(t *testing.T) {
+	projectDir := filepath.Join(t.TempDir(), "remote-project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := &hubcore.RemoteThreadCache{}
+	cache.Store([]appwire.Thread{{
+		ID:          "remote-thread",
+		Source:      "remote",
+		CWD:         filepath.Join(project.CanonicalPath, "linked-worktree"),
+		ProjectID:   project.ID,
+		ProjectPath: project.CanonicalPath,
+		Status:      appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+	}})
+	web := NewWebServer(hubcore.WebConfig{RemoteThreadCache: cache})
+
+	_, live, _ := web.navigationTreeInputs(t.Context())
+	if len(live) != 1 {
+		t.Fatalf("live entries = %d, want 1", len(live))
+	}
+	if live[0].Project != project {
+		t.Fatalf("remote carried project = %+v, want %+v", live[0].Project, project)
+	}
+}
+
 func TestTreeResponseProjectsCarryAdditiveFields(t *testing.T) {
 	now := time.Now()
 	projectDir := filepath.Join(t.TempDir(), "proj")
