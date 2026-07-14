@@ -94,7 +94,8 @@ function runSelfChecks() {
   check("current children render without a wrapper", document.querySelectorAll('[data-session-row="audit"]').length === 1);
   check("inactive disclosure starts collapsed", document.querySelector('[data-inactive-toggle="main"]')?.getAttribute("aria-expanded") === "false");
   check("inactive count uses direct terminal children", document.querySelector('[data-inactive-toggle="main"]')?.textContent.includes("4"));
-  check("terminal descendants keep direct parentage", document.querySelector('[data-inactive-region="main"] [data-session-row="archive"] [data-session-row="archive-child"]') !== null);
+  check("terminal descendants keep branch ancestry", document.querySelector('[data-inactive-region="main"] [data-session-branch="archive"] [data-session-branch="archive-child"]') !== null);
+  check("session rows never nest interactive buttons", document.querySelectorAll("button button").length === 0);
 
   renderCheckResults(results);
   return results;
@@ -187,11 +188,10 @@ function renderSessionBranch(sessionId, depth, container) {
   branch.style.setProperty("--depth", depth);
   const row = buildSessionRow(session, depth);
   branch.append(row);
-  const childContainer = STATUS_META[session.status].terminal ? row : branch;
 
   const { current, terminal } = partitionChildren(session.id);
-  current.forEach((child) => renderSessionBranch(child.id, depth + 1, childContainer));
-  if (terminal.length) renderInactiveGroup(session.id, terminal, depth + 1, childContainer);
+  current.forEach((child) => renderSessionBranch(child.id, depth + 1, branch));
+  if (terminal.length) renderInactiveGroup(session.id, terminal, depth + 1, branch);
   container.append(branch);
 }
 
