@@ -141,6 +141,51 @@ func TestResolveMainRepoRootStrict_GenericRelativeCommonDir(t *testing.T) {
 	}
 }
 
+func TestResolveMainRepoRootStrict_GenericSubmoduleCommonDirRequiresExistence(t *testing.T) {
+	cases := []struct {
+		name      string
+		common    string
+		exists    bool
+		wantRoot  bool
+		expectErr bool
+	}{
+		{name: "missing", common: "/bogus/.git/modules/name", exists: false, expectErr: true},
+		{name: "ordinary", common: "/super/.git/modules/name", exists: true, wantRoot: true},
+		{name: "nested", common: "/super/.git/modules/outer/modules/inner", exists: true, wantRoot: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cwd := filepath.Join(t.TempDir(), "worktree")
+			if err := os.MkdirAll(cwd, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			env := &fakeExecEnv{workDir: cwd, exists: func(path string) bool {
+				return tc.exists && path == filepath.Clean(tc.common)
+			}, exec: func(_ context.Context, command string, _ int, _ string, _ map[string]string) (ExecResult, error) {
+				switch command {
+				case "git rev-parse --git-common-dir":
+					return ExecResult{Stdout: tc.common + "\n", ExitCode: 0}, nil
+				case "git rev-parse --show-toplevel":
+					return ExecResult{Stdout: filepath.Dir(cwd) + "\n", ExitCode: 0}, nil
+				default:
+					t.Fatalf("unexpected command %q", command)
+					return ExecResult{}, nil
+				}
+			}}
+			root, isGit, err := resolveMainRepoRoot(env, cwd)
+			if tc.expectErr {
+				if root != "" || !isGit || err == nil {
+					t.Fatalf("missing submodule common = (%q, %v, %v), want (empty, true, error)", root, isGit, err)
+				}
+				return
+			}
+			if !tc.wantRoot || err != nil || !isGit || root != filepath.Dir(cwd) {
+				t.Fatalf("valid submodule common = (%q, %v, %v), want (%q, true, nil)", root, isGit, err, filepath.Dir(cwd))
+			}
+		})
+	}
+}
+
 func TestProjectResolver_LocalRepository(t *testing.T) {
 	repo := t.TempDir()
 	gitInit(t, repo)

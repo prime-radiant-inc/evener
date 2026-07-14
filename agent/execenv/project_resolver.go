@@ -230,6 +230,9 @@ func gitBinaryMainRootStrict(env ExecutionEnvironment, cwd string) (string, bool
 		return "", true, fmt.Errorf("Git checkout root %q does not contain %q", top, cwd)
 	}
 	if isSubmoduleGitDirShape(commonPath) {
+		if !isLocalEnv(env) && !env.FileExists(commonPath) {
+			return "", true, fmt.Errorf("Git submodule common directory %q does not exist", commonPath)
+		}
 		return resolveCleanForEnv(env, top), true, nil
 	}
 	if !isLocalEnv(env) {
