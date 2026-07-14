@@ -78,9 +78,7 @@ func newRoundTripAdapter(rt *captureRoundTripper) *Adapter {
 // non-streaming Complete round-trip — request build -> HTTP transport ->
 // response/error decode — over a fake http.RoundTripper injected via the exported
 // Adapter.Client field (the established stdlib seam; no new production interface).
-// Both the llm.Request and the wire response are fuzzed. req.AdapterTimeout is
-// never set, so ClientWithConnectTimeout keeps the injected transport live rather
-// than swapping in a real dialing one.
+// Both the llm.Request and the wire response are fuzzed.
 //
 // Oracles:
 //   - Behavior preservation (differential): when the request is buildable, the

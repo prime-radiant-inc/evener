@@ -251,7 +251,7 @@ func (a *Adapter) streamResponses(ctx context.Context, req llm.Request) (llm.Str
 	}
 	a.setRequestHeaders(httpReq, req)
 
-	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		cancel()

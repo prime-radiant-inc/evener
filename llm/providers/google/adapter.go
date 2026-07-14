@@ -153,7 +153,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	}
 	a.setJSONHeaders(httpReq)
 
-	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return llm.Response{}, llm.WrapContextError("google", err)
@@ -219,7 +219,7 @@ func (a *Adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 	}
 	a.setJSONHeaders(httpReq)
 
-	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return llm.InputTokenCount{}, llm.WrapContextError("google", err)
@@ -307,7 +307,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	}
 	a.setJSONHeaders(httpReq)
 
-	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		cancel()

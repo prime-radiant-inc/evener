@@ -282,7 +282,7 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 	}
 	a.setChatHeaders(httpReq, req)
 
-	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, llm.WrapContextError("openai-compatible", err)
@@ -653,7 +653,7 @@ func (a *Adapter) doHTTP(ctx context.Context, req llm.Request, body map[string]a
 	}
 	a.setChatHeaders(httpReq, req)
 
-	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, nil, nil, 0, nil, llm.WrapContextError("openai-compatible", err)

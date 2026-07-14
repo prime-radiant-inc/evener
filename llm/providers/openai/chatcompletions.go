@@ -56,7 +56,7 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 	// setHeaders already sets it from a.ChatGPTAccountID; we leave it for compatibility
 	// with non-standard deployments.
 
-	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		cancel()
