@@ -125,9 +125,10 @@ func TestClassifyLinkedWorktree(t *testing.T) {
 	mustContain(t, got.ProtectedPaths, filepath.Join(commonDir, "config"), "ProtectedPaths")
 	mustContain(t, got.ProtectedPaths, filepath.Join(commonDir, "hooks"), "ProtectedPaths")
 	mustContain(t, got.ProtectedPaths, filepath.Join(got.GitDir, "config.worktree"), "ProtectedPaths")
-	// Shared objects writable; per-worktree index writable.
+	// Shared objects writable; the per-worktree dir granted whole (so index, its
+	// lockfile, COMMIT_EDITMSG, ORIG_HEAD written directly in it all succeed).
 	mustContain(t, got.WritablePaths, filepath.Join(commonDir, "objects"), "WritablePaths")
-	mustContain(t, got.WritablePaths, filepath.Join(got.GitDir, "index"), "WritablePaths")
+	mustContain(t, got.WritablePaths, got.GitDir, "WritablePaths")
 
 	assertNoWritableProtected(t, got)
 }
@@ -407,6 +408,15 @@ func assertNoWritableProtected(t *testing.T, l GitLayout) {
 	t.Helper()
 	for _, prot := range l.ProtectedPaths {
 		for _, w := range l.WritablePaths {
+			// The per-worktree GitDir is granted WHOLE-writable (a commit writes
+			// lockfiles + COMMIT_EDITMSG directly in it), mirroring ControlPolicy's
+			// writable-registry grant; its config.worktree/config/hooks stay protected
+			// and are enforced by the file-tool underProtected check + the backend's
+			// read-only re-bind ON TOP, not by set-disjointness. So a protected surface
+			// nested under the GitDir grant is expected and safe.
+			if l.Kind == LinkedWorktree && w == l.GitDir && isUnder(prot, w) {
+				continue
+			}
 			if prot == w || isUnder(prot, w) {
 				t.Errorf("protected path %q is reachable through writable root %q", prot, w)
 			}
