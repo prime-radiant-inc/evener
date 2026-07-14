@@ -55,13 +55,14 @@ go test ./... -run '^$' -count=1
 ok   all default packages [no tests to run]
 ```
 
-The required full internal package command was attempted:
+The required full internal package command was blocked in the implementer sandbox by Apple Git/xcrun cache restrictions, but parent verification outside that sandbox passed:
 
 ```text
-(cd agent && go test ./internal/worktree -count=1)
+$ (cd agent && go test ./internal/worktree -count=1)
+ok  	primeradiant.com/serf/agent/internal/worktree	2.151s
 ```
 
-It remained blocked by the sandbox's Apple Git/xcrun cache restriction in unrelated real-Git predicate tests, with errors such as:
+The implementer’s sandbox failures had errors such as:
 
 ```text
 git: error: couldn't create cache file '/tmp/xcrun_db-*' (errno=Operation not permitted)
