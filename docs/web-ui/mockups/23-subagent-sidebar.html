@@ -12,9 +12,9 @@
   .eyebrow { color: var(--accent); font-size: var(--fs-xs); letter-spacing: .08em; text-transform: uppercase; }
   h1 { margin-top: var(--s2); font-size: clamp(24px, 4vw, 38px); line-height: 1.1; }
   .mockup-intro > p:last-child { max-width: 660px; margin-top: var(--s3); color: var(--ink-2); font-size: var(--fs-md); }
-  .scenario-bar { display: flex; flex-wrap: wrap; gap: var(--s2); margin-bottom: var(--s4); }
+  .scenario-bar { display: flex; flex-wrap: wrap; gap: var(--s2); align-items: center; margin: var(--s4) 0; }
   .scenario-bar button { padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--r); color: var(--ink-2); }
-  .scenario-bar button[aria-pressed="true"] { border-color: var(--accent); color: var(--ink); background: var(--accent-soft); }
+  .scenario-bar button[aria-pressed="true"] { color: var(--bg); background: var(--accent); }
   .app-frame { display: grid; grid-template-columns: 292px minmax(0, 1fr); min-height: 620px; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; background: var(--bg); }
   .prototype-sidebar { border-right: 1px solid var(--line); background: var(--bg-1, #101117); padding: var(--s3) var(--s2); overflow: auto; }
   .sidebar-project { display: flex; align-items: center; gap: var(--s2); padding: 0 var(--s2) var(--s3); color: var(--ink-2); font-size: var(--fs-sm); font-weight: 600; }
@@ -50,11 +50,16 @@
     .app-frame { grid-template-columns: minmax(210px, 44vw) minmax(0, 1fr); border-radius: 0; }
     .thread-pane { flex-basis: calc(100vw - min(44vw, 292px)); }
   }
+  .self-checks { margin-top: var(--s5); border: 1px solid var(--line); border-radius: var(--r); padding: var(--s4); }
   .self-checks h2 { font-size: var(--fs-md); }
   #self-check-summary { margin-top: var(--s2); color: var(--ink-2); }
   #self-check-list { display: grid; gap: var(--s1); margin-top: var(--s3); padding-left: var(--s5); color: var(--ink-2); font-size: var(--fs-sm); }
-  #self-check-list .pass { color: var(--success); }
-  #self-check-list .fail { color: var(--error); }
+  .self-checks .pass { color: var(--done); }
+  .self-checks .fail { color: var(--error); }
+  .fixture-label { color: var(--ink-3); font-size: var(--fs-xs); letter-spacing: .04em; text-transform: uppercase; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+  }
   @media (max-width: 760px) {
     .mockup-page { padding: var(--s3); }
     .app-frame { grid-template-columns: minmax(220px, 40%) minmax(0, 1fr); }
@@ -73,6 +78,7 @@
     <button type="button" data-scenario="baseline" aria-pressed="true">Mixed status tree</button>
     <button type="button" data-scenario="complete-audit" aria-pressed="false">Audit completes</button>
     <button type="button" data-scenario="resume-audit" aria-pressed="false">Audit resumes</button>
+    <p class="fixture-label">All content is deterministic fixture data. No live sessions or APIs are used.</p>
   </section>
 
   <section class="app-frame" aria-label="Subagent sidebar and pane workspace">
@@ -90,11 +96,33 @@
   </section>
 </main>
 <script>
-function runSelfChecks() {
+let checking = false;
+
+function runSelfChecks(options = {}) {
   const results = [];
   function check(name, condition) {
     results.push({ name, pass: Boolean(condition) });
   }
+
+  if (checking) return results;
+  checking = true;
+
+  const sessionSnapshot = new Map(Array.from(state.sessions, ([id, session]) => [id, { ...session }]));
+  const scenarioSnapshot = activeScenario;
+  const paneSnapshot = {
+    openPaneIds: [...state.openPaneIds],
+    activePaneId: state.activePaneId,
+    expanded: new Set(state.inactiveExpanded),
+    returnFocusByPane: new Map(state.returnFocusByPane),
+  };
+
+  resetSessions(SCENARIOS.baseline);
+  activeScenario = "baseline";
+  state.inactiveExpanded = new Set();
+  state.openPaneIds = ["main"];
+  state.activePaneId = "main";
+  state.returnFocusByPane = new Map();
+  render();
 
   const current = partitionChildren("main").current.map((item) => item.status);
   const terminal = partitionChildren("main").terminal.map((item) => item.status);
@@ -106,11 +134,24 @@ function runSelfChecks() {
   check("terminal descendants keep branch ancestry", document.querySelector('[data-inactive-region="main"] [data-session-branch="archive"] [data-session-branch="archive-child"]') !== null);
   check("session rows never nest interactive buttons", document.querySelectorAll("button button").length === 0);
 
-  const paneSnapshot = {
-    openPaneIds: [...state.openPaneIds],
-    activePaneId: state.activePaneId,
-    expanded: new Set(state.inactiveExpanded),
-  };
+  state.inactiveExpanded.delete("audit");
+  applyScenario("complete-audit");
+  check("running to completed moves the row into inactive", !document.querySelector('[data-session-row="audit"]') && document.querySelector('[data-inactive-toggle="main"]')?.textContent.includes("5"));
+  check("new inactive disclosure starts collapsed", document.querySelector('[data-inactive-toggle="audit"]') === null || document.querySelector('[data-inactive-toggle="audit"]')?.getAttribute("aria-expanded") === "false");
+
+  state.inactiveExpanded.add("main");
+  applyScenario("resume-audit");
+  check("completed to retained-idle returns the row to current", document.querySelector('[data-session-row="audit"][data-status="retained-idle"]') !== null);
+  check("nonempty disclosure preserves expansion", document.querySelector('[data-inactive-toggle="main"]')?.getAttribute("aria-expanded") === "true");
+
+  applyScenario("baseline");
+
+  check("status always has visible text", Array.from(document.querySelectorAll("[data-status-text]")).every((node) => node.textContent.trim().length > 0));
+  check("disclosures expose aria-expanded", Array.from(document.querySelectorAll("[data-inactive-toggle]")).every((node) => ["true", "false"].includes(node.getAttribute("aria-expanded"))));
+  check("one pane per session ID", new Set(state.openPaneIds).size === state.openPaneIds.length);
+  check("pane IDs are unique", document.querySelectorAll("[data-pane-id]").length === new Set(Array.from(document.querySelectorAll("[data-pane-id]"), (node) => node.dataset.paneId)).size);
+  check("pane roots are labelled", Array.from(document.querySelectorAll("[data-pane-id]")).every((pane) => pane.getAttribute("aria-labelledby") && document.getElementById(pane.getAttribute("aria-labelledby"))));
+  check("active row exposes aria-current", document.querySelectorAll('[data-session-row][aria-current="true"]').length === 1);
 
   activateSession("audit-live", document.querySelector('[data-session-row="audit-live"]'));
   check("missing ancestor opens first", state.openPaneIds.includes("audit"));
@@ -126,11 +167,15 @@ function runSelfChecks() {
   check("closing parent removes descendant panes", !state.openPaneIds.includes("audit") && !state.openPaneIds.includes("audit-live"));
   check("closing parent preserves unrelated sibling pane", state.openPaneIds.includes("review"));
 
+  state.sessions = sessionSnapshot;
+  activeScenario = scenarioSnapshot;
   state.openPaneIds = paneSnapshot.openPaneIds;
   state.activePaneId = paneSnapshot.activePaneId;
   state.inactiveExpanded = paneSnapshot.expanded;
+  state.returnFocusByPane = paneSnapshot.returnFocusByPane;
   render();
 
+  checking = false;
   renderCheckResults(results);
   return results;
 }
@@ -179,6 +224,14 @@ const BASELINE_SESSIONS = [
   { id: "archive-child", parentId: "archive", title: "Summarize prior behavior", status: "running" },
   { id: "archive-child-done", parentId: "archive", title: "Catalog old tests", status: "completed" },
 ];
+
+const SCENARIOS = Object.freeze({
+  baseline: {},
+  "complete-audit": { audit: "completed" },
+  "resume-audit": { audit: "retained-idle" },
+});
+
+let activeScenario = "baseline";
 
 const sessions = new Map(BASELINE_SESSIONS.map((session) => [session.id, { ...session }]));
 const state = {
@@ -336,6 +389,7 @@ function buildPane(session) {
   heading.id = `pane-title-${session.id}`;
   heading.textContent = session.title;
   const status = document.createElement("span");
+  status.dataset.statusText = "";
   status.textContent = STATUS_META[session.status].label;
   status.dataset.tone = STATUS_META[session.status].tone;
   header.append(heading, status);
@@ -382,12 +436,43 @@ function closePane(sessionId) {
   document.querySelector(`[data-session-row="${CSS.escape(rowId)}"]`)?.focus();
 }
 
+function resetSessions(statusOverrides) {
+  state.sessions = new Map(BASELINE_SESSIONS.map((session) => [
+    session.id,
+    { ...session, status: statusOverrides[session.id] || session.status },
+  ]));
+}
+
+function applyScenario(name) {
+  const overrides = SCENARIOS[name];
+  if (!overrides) throw new Error(`Unknown scenario: ${name}`);
+  const beforeCounts = new Map(Array.from(state.sessions.keys(), (id) => [id, partitionChildren(id).terminal.length]));
+  resetSessions(overrides);
+
+  state.sessions.forEach((session) => {
+    const before = beforeCounts.get(session.id) || 0;
+    const after = partitionChildren(session.id).terminal.length;
+    if (before === 0 && after > 0) state.inactiveExpanded.delete(session.id);
+    if (after === 0) state.inactiveExpanded.delete(session.id);
+  });
+
+  activeScenario = name;
+  render();
+  if (!checking) runSelfChecks({ preserveScenario: true });
+}
+
 
 function syncScenarioButtons() {
   document.querySelectorAll("[data-scenario]").forEach((button) => {
-    button.setAttribute("aria-pressed", String(button.dataset.scenario === "baseline"));
+    button.setAttribute("aria-pressed", String(button.dataset.scenario === activeScenario));
   });
 }
+
+document.querySelectorAll("[data-scenario]").forEach((button) => {
+  button.addEventListener("click", () => applyScenario(button.dataset.scenario));
+});
+
+window.SubagentSidebarMockup = Object.freeze({ runSelfChecks, applyScenario, resetSessions, SCENARIOS });
 
 render(); runSelfChecks();
 </script>
