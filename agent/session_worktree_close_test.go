@@ -29,7 +29,7 @@ import (
 func (r *wtRepo) seedIsolationLane(t *testing.T) (delegateID, lanePath, baseSHA string) {
 	t.Helper()
 	delegateID = jobstore.NewDelegateID()
-	path, _, base, _, err := r.s.createDelegateWorktree(context.Background(), delegateID)
+	path, _, base, _, _, err := r.s.createDelegateWorktree(context.Background(), delegateID)
 	if err != nil {
 		t.Fatalf("createDelegateWorktree: %v", err)
 	}

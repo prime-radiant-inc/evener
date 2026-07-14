@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/internal/worktree"
 	"primeradiant.com/serf/identifier"
 )
 
@@ -35,6 +36,39 @@ func TestWorktreeRootResolutionErrorDoesNotSelectFallbackIdentity(t *testing.T) 
 	fallback := filepath.Join(missingRoot, ".serf", "worktrees")
 	if got == fallback {
 		t.Fatalf("worktreeRootFor selected fallback identity %q after resolution error", got)
+	}
+}
+
+func TestRollbackFreshDelegateWorktreeUsesCarriedProjectMetadataDir(t *testing.T) {
+	root := t.TempDir()
+	stateDir := t.TempDir()
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}))
+	project := identifier.Project{ID: "carried-project", CanonicalPath: root}
+	lanePath := filepath.Join(t.TempDir(), "alternate-project", "delegate")
+
+	var gotMetaDir string
+	worktreeSeams.Store(s, worktreeTestSeams{
+		useControlPolicy: func(*execenv.LocalExecutionEnvironment, string) error { return nil },
+		deleteSidecar: func(dir, _ string) error {
+			gotMetaDir = dir
+			return nil
+		},
+	})
+	t.Cleanup(func() {
+		worktreeSeams.Delete(s)
+	})
+	s.cfg.testOnly.worktreeGitRunner = func(context.Context, execenv.ExecutionEnvironment) worktree.GitRunner {
+		return func(...string) (string, error) { return "", nil }
+	}
+
+	s.rollbackFreshDelegateWorktree("delegate", lanePath, project)
+
+	want := filepath.Join(stateDir, "worktrees", project.ID, ".meta")
+	if gotMetaDir != want {
+		t.Fatalf("rollback metadata dir = %q, want carried Project dir %q", gotMetaDir, want)
+	}
+	if gotMetaDir == metaDirForLane(lanePath) {
+		t.Fatalf("rollback metadata dir was derived from lane path: %q", gotMetaDir)
 	}
 }
 

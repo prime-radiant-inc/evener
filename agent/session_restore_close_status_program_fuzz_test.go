@@ -230,7 +230,7 @@ func srspCloseWorktree(t *testing.T, mode byte) {
 	}
 
 	h2, faults := newWorktreeFaultSession(t)
-	lane, branch, _, _, err := h2.s.createDelegateWorktree(context.Background(), "srsp-delegate")
+	lane, branch, _, _, _, err := h2.s.createDelegateWorktree(context.Background(), "srsp-delegate")
 	if err != nil {
 		t.Fatalf("create delegate worktree: %v", err)
 	}

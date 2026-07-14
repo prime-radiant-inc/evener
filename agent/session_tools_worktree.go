@@ -553,11 +553,11 @@ func (s *Session) worktreeRootFor(env execenv.ExecutionEnvironment, stateDir, ma
 }
 
 func (s *Session) worktreeRootForProject(stateDir string, project identifier.Project) (string, error) {
-	if stateDir != "" {
-		return filepath.Join(stateDir, "worktrees"), nil
-	}
 	if project.ID == "" || project.CanonicalPath == "" {
 		return "", errors.New("resolve managed worktree state: project identity is empty")
+	}
+	if stateDir != "" {
+		return filepath.Join(stateDir, "worktrees"), nil
 	}
 	return filepath.Join(RuntimeDirForProjectWithStateHome(project, ""), "worktrees"), nil
 }
@@ -732,6 +732,7 @@ func metaDirForLane(lanePath string) string { return filepath.Join(filepath.Dir(
 // rather than four positional strings so callers can't transpose them.
 type worktreeCreateCoreResult struct {
 	Path, Branch, BaseSHA, MainRoot string
+	Project                         identifier.Project
 	Run                             worktree.GitRunner
 }
 
@@ -872,6 +873,7 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 		Branch:   name,
 		BaseSHA:  baseSHA,
 		MainRoot: project.CanonicalPath,
+		Project:  project,
 		Run:      run,
 	}, nil
 }
@@ -923,19 +925,19 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 // roots the CHILD env at the returned path via prepareSubagentRun's
 // workingDir override. Only valid for a local execution environment; errors
 // clearly otherwise (spec §9 "Tool surface").
-func (s *Session) createDelegateWorktree(ctx context.Context, delegateID string) (path, branch, baseSHA, mainRoot string, err error) {
+func (s *Session) createDelegateWorktree(ctx context.Context, delegateID string) (path, branch, baseSHA, mainRoot string, project identifier.Project, err error) {
 	active, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
-		return "", "", "", "", errors.New(`delegate isolation:"worktree" requires a local execution environment`)
+		return "", "", "", "", identifier.Project{}, errors.New(`delegate isolation:"worktree" requires a local execution environment`)
 	}
 	lockReason := worktree.FormatDelegateMarker(delegateID, s.id)
 	res, err := s.worktreeCreateCore(ctx, active, delegateID, "", worktree.EvDelegateCreate, lockReason, `delegate isolation:"worktree"`, func(sc *worktree.Sidecar) {
 		sc.DelegateID = delegateID
 	})
 	if err != nil {
-		return "", "", "", "", err
+		return "", "", "", "", identifier.Project{}, err
 	}
-	return res.Path, res.Branch, res.BaseSHA, res.MainRoot, nil
+	return res.Path, res.Branch, res.BaseSHA, res.MainRoot, res.Project, nil
 }
 
 // rollbackFreshDelegateWorktree best-effort removes a just-created, still-empty
@@ -947,27 +949,30 @@ func (s *Session) createDelegateWorktree(ctx context.Context, delegateID string)
 // is a `manage_worktree list`-visible annoyance an operator can clean up by
 // hand, never data loss, and failing the caller's already-failed spawn on a
 // cleanup error would only obscure the original error.
-func (s *Session) rollbackFreshDelegateWorktree(delegateID, lanePath string) {
+func (s *Session) rollbackFreshDelegateWorktree(delegateID, lanePath string, project identifier.Project) {
+	if project.ID == "" || project.CanonicalPath == "" {
+		return
+	}
 	active, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		return
 	}
-	mainRoot := execenv.ResolveMainRepoRoot(active, active.WorkingDirectory())
-	if mainRoot == "" {
+	worktreeRoot, err := s.worktreeRootForProject(s.currentStateDir(), project)
+	if err != nil {
 		return
 	}
-	controlEnv := active.WithWorkingDirectory(mainRoot)
+	controlEnv := active.WithWorkingDirectory(project.CanonicalPath)
 	if controlEnv.SandboxReRootError() != nil {
 		return // best-effort: cannot build a confined control env for this lane
 	}
-	if err := s.useWorktreeControlPolicy(controlEnv, mainRoot); err != nil {
+	if err := s.useWorktreeControlPolicy(controlEnv, project.CanonicalPath); err != nil {
 		return // best-effort: skip when the control policy is unsatisfiable
 	}
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 	_, _ = run("worktree", "unlock", lanePath)
 	_, _ = run("worktree", "remove", "--force", "--", lanePath)
 	_, _ = run("branch", "-D", delegateID)
-	metaDir := metaDirForLane(lanePath)
+	metaDir := metaDirForProject(filepath.Join(worktreeRoot, project.ID))
 	_ = s.deleteWorktreeSidecar(metaDir, delegateID)
 }
 

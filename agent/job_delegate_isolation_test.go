@@ -527,7 +527,7 @@ func TestDelegateIsolation_WorktreeReportDetectsAheadAndDirty(t *testing.T) {
 	r := newWtDlgRepo(t, c)
 
 	delegateID := "dlg_01ISOREPORTTESTLANE00001"
-	lane, branch, baseSHA, _, err := r.s.createDelegateWorktree(context.Background(), delegateID)
+	lane, branch, baseSHA, _, _, err := r.s.createDelegateWorktree(context.Background(), delegateID)
 	if err != nil {
 		t.Fatalf("createDelegateWorktree: %v", err)
 	}

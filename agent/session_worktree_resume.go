@@ -71,6 +71,22 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 		notice(fmt.Sprintf("previous working directory %s is no longer part of a git repository (%v)", target, err))
 		return nil
 	}
+	if meta.WorktreeManaged {
+		worktreeRoot, rootErr := s.worktreeRootForProject(s.currentStateDir(), project)
+		if rootErr != nil {
+			notice(fmt.Sprintf("previous managed worktree %s could not be resolved (%v)", target, rootErr))
+			return nil
+		}
+		canonicalTarget := canonicalOrClean(target)
+		canonicalProjectDir := canonicalOrClean(filepath.Join(worktreeRoot, project.ID))
+		if !isUnderManagedDir(canonicalTarget, canonicalProjectDir) {
+			notice(fmt.Sprintf("previous managed worktree %s is outside project lane %s", target, canonicalProjectDir))
+			return nil
+		}
+		// Use the canonical target for registry, lock, and re-entry operations;
+		// persisted paths may be symlink aliases of the registered worktree.
+		target = canonicalTarget
+	}
 	mainRoot := project.CanonicalPath
 	controlEnv := local.WithWorkingDirectory(mainRoot)
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
@@ -84,7 +100,7 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	}
 	registered := false
 	for _, e := range worktree.ParsePorcelain(out) {
-		if filepath.Clean(e.Path) == target {
+		if canonicalOrClean(e.Path) == target {
 			registered = true
 			break
 		}

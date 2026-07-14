@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
 
@@ -324,12 +325,14 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	// descriptor's WorkingDir then simply IS the lane (prepareSubagentRun's
 	// workingDir override roots the child env there via WithWorkingDirectory).
 	workingDir := ""
+	var worktreeProject identifier.Project
 	if isolation == "worktree" {
-		lanePath, _, _, _, wtErr := s.createDelegateWorktree(ctx, delegateID)
+		lanePath, _, _, _, project, wtErr := s.createDelegateWorktree(ctx, delegateID)
 		if wtErr != nil {
 			return delegateStartFailedWithIDs(delegateID, jobID, wtErr)
 		}
 		workingDir = lanePath
+		worktreeProject = project
 		ctx = context.WithValue(ctx, ctxIsolation, isolation)
 	}
 	if requestedSandbox != nil {
@@ -338,7 +341,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	prepared, err := s.prepareSubagentRun(ctx, task, args.Model, workingDir, 0, args.AgentType, args.ReasoningEffort, nil, nil)
 	if err != nil {
 		if workingDir != "" {
-			s.rollbackFreshDelegateWorktree(delegateID, workingDir)
+			s.rollbackFreshDelegateWorktree(delegateID, workingDir, worktreeProject)
 		}
 		return delegateStartFailedWithIDs(delegateID, jobID, err)
 	}
@@ -356,7 +359,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 		prepared.runCancel()
 		sub.sess.Close()
 		if workingDir != "" {
-			s.rollbackFreshDelegateWorktree(delegateID, workingDir)
+			s.rollbackFreshDelegateWorktree(delegateID, workingDir, worktreeProject)
 		}
 		return delegateStartFailedWithIDs(delegateID, jobID, err)
 	}
@@ -376,7 +379,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 		sub.sess.Close()
 		_ = jm.finalize(run.rec.JobID, jobstore.StatusFailed, "start_failed", nil)
 		if workingDir != "" {
-			s.rollbackFreshDelegateWorktree(delegateID, workingDir)
+			s.rollbackFreshDelegateWorktree(delegateID, workingDir, worktreeProject)
 		}
 		return delegateStartFailedWithIDs(delegateID, run.rec.JobID, err)
 	}
