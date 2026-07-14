@@ -53,8 +53,15 @@ func checkPathsFor_MetaAndLegacyProjectKeyedByStableRoot(t *testing.T) {
 	main, wt := newLinkedWorktree(t)
 	stateRoot := t.TempDir()
 
-	mainPaths := PathsFor(stateRoot, main)
-	wtPaths := PathsFor(stateRoot, wt)
+	mainPaths, err := PathsFor(stateRoot, main)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	wtPaths, err := PathsFor(stateRoot, wt)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if mainPaths.Meta != wtPaths.Meta {
 		t.Errorf("Meta path differs between main root and linked worktree:\n  main = %q\n  wt   = %q", mainPaths.Meta, wtPaths.Meta)
@@ -68,8 +75,8 @@ func checkPathsFor_MetaAndLegacyProjectKeyedByStableRoot(t *testing.T) {
 	if mainPaths.Repo == wtPaths.Repo {
 		t.Errorf("Repo path must differ between main root and worktree (active content), got the same %q for both", mainPaths.Repo)
 	}
-	if mainPaths.Project == wtPaths.Project {
-		t.Errorf("Project path must differ between main root and worktree (active content), got the same %q for both", mainPaths.Project)
+	if mainPaths.ProjectFile == wtPaths.ProjectFile {
+		t.Errorf("Project path must differ between main root and worktree (active content), got the same %q for both", mainPaths.ProjectFile)
 	}
 }
 
@@ -80,8 +87,11 @@ func TestPathsFor_NonGitSymlinkPreservesOriginalIdentityPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	stateRoot := filepath.Join(t.TempDir(), "state")
-	paths := PathsFor(stateRoot, alias)
-	want := filepath.Join(stateRoot, "projects", ProjectID(alias))
+	paths, err := PathsFor(stateRoot, alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(stateRoot, "projects", paths.Project.ID)
 	if paths.Meta != filepath.Join(want, "meta.toml") {
 		t.Fatalf("Meta = %q, want original alias key %q", paths.Meta, want)
 	}
@@ -108,7 +118,10 @@ func checkResolve_TrustFromMainRootAppliesInLinkedWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CanonicalHashTOML: %v", err)
 	}
-	mainPaths := PathsFor(stateRoot, main)
+	mainPaths, err := PathsFor(stateRoot, main)
+	if err != nil {
+		t.Fatal(err)
+	}
 	writeFile(t, mainPaths.Meta, `schema = 1
 cwd = "`+main+`"
 [trust]

@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"syscall"
 	"testing"
+
+	"primeradiant.com/serf/identifier"
 )
 
 func writeFile(t *testing.T, path, content string) {
@@ -28,7 +30,11 @@ skills_dirs = ["/g"]
 	// Trusted in-repo file.
 	writeFile(t, filepath.Join(cwd, ".serf", "launch.toml"), `skills_dirs = ["sub"]`)
 	repoHash, _ := CanonicalHashTOML([]byte(`skills_dirs = ["sub"]`))
-	pid := ProjectID(cwd)
+	project, err := identifier.ResolveProject(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid := project.ID
 	writeFile(t, filepath.Join(stateRoot, "projects", pid, "meta.toml"), `schema = 1
 cwd = "`+cwd+`"
 [trust]
@@ -58,7 +64,10 @@ decision = "trusted"
 func checkResolve_LegacyProjectLayerFallback(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()
-	paths := PathsFor(stateRoot, cwd)
+	paths, err := PathsFor(stateRoot, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
 	writeFile(t, paths.LegacyProject, `model = "legacy-project"`)
 
 	got, err := Resolve(stateRoot, cwd, Layer{})
@@ -76,9 +85,12 @@ func checkResolve_LegacyProjectLayerFallback(t *testing.T) {
 func checkResolve_ProjectLayerPrefersLocalFileOverLegacy(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()
-	paths := PathsFor(stateRoot, cwd)
+	paths, err := PathsFor(stateRoot, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
 	writeFile(t, paths.LegacyProject, `model = "legacy-project"`)
-	writeFile(t, paths.Project, `model = "local-project"`)
+	writeFile(t, paths.ProjectFile, `model = "local-project"`)
 
 	got, err := Resolve(stateRoot, cwd, Layer{})
 	if err != nil {
@@ -118,7 +130,11 @@ func checkResolve_RejectedRepoSkippedSilently(t *testing.T) {
 	cwd := t.TempDir()
 	writeFile(t, filepath.Join(cwd, ".serf", "launch.toml"), `model = "from-repo"`)
 	hash, _ := CanonicalHashTOML([]byte(`model = "from-repo"`))
-	pid := ProjectID(cwd)
+	project, err := identifier.ResolveProject(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid := project.ID
 	writeFile(t, filepath.Join(stateRoot, "projects", pid, "meta.toml"), `schema = 1
 cwd = "`+cwd+`"
 [trust]
@@ -140,7 +156,11 @@ func checkResolve_RepoPathsExpandedAndValidated(t *testing.T) {
 	writeFile(t, filepath.Join(cwd, ".serf", "launch.toml"), `skills_dirs = ["../outside", "good/dir"]`)
 	// Pre-trust whatever the file currently is.
 	hash, _ := CanonicalHashTOML([]byte(`skills_dirs = ["../outside", "good/dir"]`))
-	pid := ProjectID(cwd)
+	project, err := identifier.ResolveProject(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid := project.ID
 	writeFile(t, filepath.Join(stateRoot, "projects", pid, "meta.toml"), `schema = 1
 cwd = "`+cwd+`"
 [trust]
@@ -166,7 +186,11 @@ decision = "trusted"
 func checkResolve_GlobalProjectInvalidPathsReportDiagnostics(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()
-	pid := ProjectID(cwd)
+	project, err := identifier.ResolveProject(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid := project.ID
 	writeFile(t, filepath.Join(stateRoot, "launch.toml"), `skills_dirs = ["relative-skills", "/global-ok"]
 system_prompt_mode = "file"
 system_prompt_file = "relative-system.md"
@@ -214,15 +238,18 @@ func hasDiagnostic(diags []Diagnostic, layer LayerName, field string) bool {
 func checkLoadProjectLayer_StatError(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()
-	paths := PathsFor(stateRoot, cwd)
-	// Make the parent component of paths.Project (<cwd>/.serf) a regular file
-	// so os.Stat on paths.Project fails with ENOTDIR. This is root-proof:
-	// ENOTDIR is returned regardless of uid, unlike chmod-based permission
-	// bits, which root bypasses (and which would not make Stat itself fail).
-	if err := os.WriteFile(filepath.Dir(paths.Project), []byte("x"), 0o600); err != nil {
+	paths, err := PathsFor(stateRoot, cwd)
+	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := LoadProjectLayer(paths)
+	// Make the parent component of paths.ProjectFile (<cwd>/.serf) a regular file
+	// so os.Stat on paths.ProjectFile fails with ENOTDIR. This is root-proof:
+	// ENOTDIR is returned regardless of uid, unlike chmod-based permission
+	// bits, which root bypasses (and which would not make Stat itself fail).
+	if err := os.WriteFile(filepath.Dir(paths.ProjectFile), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = LoadProjectLayer(paths)
 	if err == nil {
 		t.Fatal("expected error when Stat on project path fails")
 	}
@@ -237,7 +264,10 @@ func checkLoadProjectLayer_StatError(t *testing.T) {
 func checkLoadProjectLayer_LegacyLoadError(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()
-	paths := PathsFor(stateRoot, cwd)
+	paths, err := PathsFor(stateRoot, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// Create legacy path with invalid TOML so LoadLayer fails.
 	if err := os.MkdirAll(filepath.Dir(paths.LegacyProject), 0o755); err != nil {
 		t.Fatal(err)
@@ -245,7 +275,7 @@ func checkLoadProjectLayer_LegacyLoadError(t *testing.T) {
 	if err := os.WriteFile(paths.LegacyProject, []byte("invalid {{{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := LoadProjectLayer(paths)
+	_, _, err = LoadProjectLayer(paths)
 	if err == nil {
 		t.Fatal("expected error when legacy project layer is malformed")
 	}

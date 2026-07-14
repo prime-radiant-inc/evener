@@ -159,25 +159,32 @@ func checkMergeAdditionalLaunchFields(t *testing.T) {
 
 func checkResolveProjectLoadError(t *testing.T) {
 	fs := afero.NewMemMapFs()
-	stateRoot := "/state"
-	cwd := "/repo"
-	path := PathsFor(stateRoot, cwd).Project
+	stateRoot := t.TempDir()
+	cwd := t.TempDir()
+	paths, err := PathsFor(stateRoot, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := paths.ProjectFile
 	if err := afero.WriteFile(fs, path, []byte("invalid {{{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := resolveFS(fs, stateRoot, cwd, Layer{})
+	_, err = resolveFS(fs, stateRoot, cwd, Layer{})
 	if err == nil || !strings.Contains(err.Error(), "project: launchconfig: parse") {
 		t.Fatalf("Resolve error = %v", err)
 	}
 }
 
 func checkLoadProjectLayerLegacyStatError(t *testing.T) {
-	stateRoot := "/state"
-	cwd := "/repo"
-	paths := PathsFor(stateRoot, cwd)
+	stateRoot := t.TempDir()
+	cwd := t.TempDir()
+	paths, err := PathsFor(stateRoot, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
 	sentinel := errors.New("legacy stat failed")
 	fs := &statFailureFS{Fs: afero.NewMemMapFs(), path: paths.LegacyProject, err: sentinel}
-	_, _, err := loadProjectLayerFS(fs, paths)
+	_, _, err = loadProjectLayerFS(fs, paths)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("loadProjectLayerFS error = %v, want legacy stat failure", err)
 	}

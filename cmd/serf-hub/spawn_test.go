@@ -822,7 +822,10 @@ func TestRedactEnvSecretsKeepsShortSensitiveValues(t *testing.T) {
 
 func TestResolveSerfStateDirMatchesServeDefaultForWorkingDir(t *testing.T) {
 	dir := t.TempDir()
-	got := resolveSerfStateDir(dir, "")
+	got, err := resolveSerfStateDir(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	wantPrefix := filepath.Join(os.Getenv("XDG_STATE_HOME"), "serf", "projects")
 	if !strings.HasPrefix(got, wantPrefix) {
 		t.Fatalf("state dir=%q, want prefix %q", got, wantPrefix)
@@ -876,8 +879,14 @@ func newLinkedWorktreeForSpawn(t *testing.T) (main, wt string) {
 func TestResolveSerfStateDirLinkedWorktreeSameAsMain(t *testing.T) {
 	main, wt := newLinkedWorktreeForSpawn(t)
 
-	mainDir := resolveSerfStateDir(main, "")
-	wtDir := resolveSerfStateDir(wt, "")
+	mainDir, err := resolveSerfStateDir(main, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wtDir, err := resolveSerfStateDir(wt, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if mainDir != wtDir {
 		t.Errorf("state dir differs between main root and linked worktree:\n  main = %q\n  wt   = %q", mainDir, wtDir)
@@ -892,11 +901,22 @@ func TestResolveSerfStateDirNotInRepoFallsBackToWorkDir(t *testing.T) {
 	workDir := t.TempDir()
 	other := t.TempDir()
 
-	got := resolveSerfStateDir(workDir, "")
-	if got != resolveSerfStateDir(workDir, "") {
+	got, err := resolveSerfStateDir(workDir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := resolveSerfStateDir(workDir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
 		t.Fatalf("resolveSerfStateDir(%q) not deterministic", workDir)
 	}
-	if got == resolveSerfStateDir(other, "") {
+	otherDir, err := resolveSerfStateDir(other, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == otherDir {
 		t.Errorf("resolveSerfStateDir collided for distinct non-repo workDirs %q and %q: %q", workDir, other, got)
 	}
 }

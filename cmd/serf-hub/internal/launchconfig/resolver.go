@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/afero"
+	"primeradiant.com/serf/identifier"
 )
 
 // Resolve loads and merges every layer for the given cwd, applying the
@@ -17,7 +18,10 @@ func Resolve(stateRoot, cwd string, overrides Layer) (Resolved, error) {
 }
 
 func resolveFS(fs afero.Fs, stateRoot, cwd string, overrides Layer) (Resolved, error) {
-	paths := PathsFor(stateRoot, cwd)
+	paths, err := PathsFor(stateRoot, cwd)
+	if err != nil {
+		return Resolved{}, fmt.Errorf("resolve project: %w", err)
+	}
 	layers := map[LayerName]Layer{}
 	var pathDiags []Diagnostic
 
@@ -29,7 +33,7 @@ func resolveFS(fs afero.Fs, stateRoot, cwd string, overrides Layer) (Resolved, e
 	layers[LayerGlobal] = g
 
 	// In-repo: load + hash + trust check.
-	repoStatus, repoLayer, repoDiags := loadRepoLayerFS(fs, cwd, stateRoot)
+	repoStatus, repoLayer, repoDiags := loadRepoLayerFS(fs, cwd, stateRoot, paths.Project)
 	if repoStatus != nil && repoStatus.Trust == TrustTrusted {
 		layers[LayerRepo] = repoLayer
 	}
@@ -60,8 +64,8 @@ func LoadProjectLayer(paths Paths) (Layer, []Diagnostic, error) {
 }
 
 func loadProjectLayerFS(fs afero.Fs, paths Paths) (Layer, []Diagnostic, error) {
-	if _, err := fs.Stat(paths.Project); err == nil {
-		layer, err := loadLayerFS(fs, paths.Project)
+	if _, err := fs.Stat(paths.ProjectFile); err == nil {
+		layer, err := loadLayerFS(fs, paths.ProjectFile)
 		return layer, nil, err
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Layer{}, nil, err
@@ -75,7 +79,7 @@ func loadProjectLayerFS(fs afero.Fs, paths Paths) (Layer, []Diagnostic, error) {
 		return layer, []Diagnostic{{
 			Layer:   LayerProject,
 			Field:   "launch.local.toml",
-			Message: fmt.Sprintf("using legacy project launch config at %s; save the project layer to migrate to %s", paths.LegacyProject, paths.Project),
+			Message: fmt.Sprintf("using legacy project launch config at %s; save the project layer to migrate to %s", paths.LegacyProject, paths.ProjectFile),
 		}}, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Layer{}, nil, err
@@ -85,10 +89,14 @@ func loadProjectLayerFS(fs afero.Fs, paths Paths) (Layer, []Diagnostic, error) {
 }
 
 func loadRepoLayer(cwd, stateRoot string) (*RepoStatus, Layer, []Diagnostic) {
-	return loadRepoLayerFS(afero.NewOsFs(), cwd, stateRoot)
+	project, err := identifier.ResolveProject(cwd)
+	if err != nil {
+		return &RepoStatus{Path: filepath.Join(cwd, ".serf", "launch.toml"), Trust: TrustUntrusted}, Layer{}, []Diagnostic{{Layer: LayerRepo, Field: ".serf/launch.toml", Message: err.Error()}}
+	}
+	return loadRepoLayerFS(afero.NewOsFs(), cwd, stateRoot, project)
 }
 
-func loadRepoLayerFS(fs afero.Fs, cwd, stateRoot string) (*RepoStatus, Layer, []Diagnostic) {
+func loadRepoLayerFS(fs afero.Fs, cwd, stateRoot string, project identifier.Project) (*RepoStatus, Layer, []Diagnostic) {
 	repoPath := filepath.Join(cwd, ".serf", "launch.toml")
 	data, err := afero.ReadFile(fs, repoPath)
 	if err != nil {
@@ -107,7 +115,7 @@ func loadRepoLayerFS(fs afero.Fs, cwd, stateRoot string) (*RepoStatus, Layer, []
 			Message: fmt.Sprintf("hash: %v", err),
 		}}
 	}
-	meta, _ := loadMetaFS(fs, filepath.Join(identityProjectDir(stateRoot, cwd), "meta.toml"))
+	meta, _ := loadMetaFS(fs, filepath.Join(stateRoot, "projects", project.ID, "meta.toml"))
 	state := ComputeTrustState(hash, meta)
 
 	status := &RepoStatus{Path: repoPath, Hash: hash, Trust: state}

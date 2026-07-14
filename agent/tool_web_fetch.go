@@ -24,7 +24,7 @@ const (
 
 // webFetchCacheKey returns a deterministic 16-char hex key for a URL.
 func webFetchCacheKey(rawURL string) string {
-	return hexHash(rawURL)
+	return nonProjectHash(rawURL)
 }
 
 // htmlToMarkdown converts an HTML string to markdown.

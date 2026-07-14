@@ -91,7 +91,10 @@ func (c *hubLaunchController) GetLayer(ctx context.Context, params appwire.Launc
 	if err != nil {
 		return appwire.LaunchConfigLayer{}, appwire.InvalidParams("cwd: " + err.Error())
 	}
-	paths := launchconfig.PathsFor(c.stateRoot, cwd)
+	paths, err := launchconfig.PathsFor(c.stateRoot, cwd)
+	if err != nil {
+		return appwire.LaunchConfigLayer{}, err
+	}
 	var path string
 	switch params.Layer {
 	case "global":
@@ -117,13 +120,16 @@ func (c *hubLaunchController) SetLayer(ctx context.Context, params appwire.Launc
 	if err != nil {
 		return appwire.LaunchConfigResolved{}, appwire.InvalidParams("cwd: " + err.Error())
 	}
-	paths := launchconfig.PathsFor(c.stateRoot, cwd)
+	paths, err := launchconfig.PathsFor(c.stateRoot, cwd)
+	if err != nil {
+		return appwire.LaunchConfigResolved{}, err
+	}
 	var path string
 	switch params.Layer {
 	case "global":
 		path = paths.Global
 	case "project":
-		path = paths.Project
+		path = paths.ProjectFile
 	default:
 		return appwire.LaunchConfigResolved{}, appwire.InvalidParams(fmt.Sprintf("layer %q is not writable", params.Layer))
 	}
@@ -159,7 +165,10 @@ func (c *hubLaunchController) TrustRepo(ctx context.Context, params appwire.Laun
 	if resolved.Repo.Hash != params.Hash {
 		return appwire.LaunchConfigResolved{}, appwire.WireError{Code: -32009, Message: "file changed since review"}
 	}
-	paths := launchconfig.PathsFor(c.stateRoot, cwd)
+	paths, err := launchconfig.PathsFor(c.stateRoot, cwd)
+	if err != nil {
+		return appwire.LaunchConfigResolved{}, err
+	}
 	meta, _ := launchconfig.LoadMeta(paths.Meta)
 	if meta.Schema == 0 {
 		meta = launchconfig.Meta{Schema: 1, CWD: cwd, CreatedAt: c.now()}

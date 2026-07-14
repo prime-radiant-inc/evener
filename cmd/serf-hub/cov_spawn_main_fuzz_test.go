@@ -142,10 +142,10 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 			if len(buildSpawnArgs(s)) < 2 || len(buildResumeArgs(r)) < 5 {
 				t.Fatal("short launch args")
 			}
-			if got := resolveSerfStateDirWithStateHome("/a/b", "/override", "/xdg"); got != "/override" {
+			if got, _ := resolveSerfStateDirWithStateHome("/a/b", "/override", "/xdg"); got != "/override" {
 				t.Fatal(got)
 			}
-			if got := resolveSerfStateDirWithStateHome("/a/b", "", "/xdg"); !strings.Contains(got, "serf") {
+			if got, _ := resolveSerfStateDirWithStateHome("/a/b", "", "/xdg"); !strings.Contains(got, "serf") {
 				t.Fatal(got)
 			}
 		case 5:

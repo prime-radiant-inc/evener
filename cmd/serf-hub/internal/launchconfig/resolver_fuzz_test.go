@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/fuzz/edgeseeds"
+	"primeradiant.com/serf/identifier"
 )
 
 // FuzzLaunchConfigResolve promotes the decode-only corpus to drive the real
@@ -117,7 +118,11 @@ func plantRepoLayer(t *testing.T, stateRoot, cwd string, raw []byte) {
 			DecidedAt: time.Unix(0, 0).UTC(),
 		},
 	}
-	metaPath := filepath.Join(stateRoot, "projects", ProjectID(cwd), "meta.toml")
+	project, err := identifier.ResolveProject(cwd)
+	if err != nil {
+		t.Fatalf("resolve project: %v", err)
+	}
+	metaPath := filepath.Join(stateRoot, "projects", project.ID, "meta.toml")
 	if err := SaveMeta(metaPath, meta); err != nil {
 		t.Fatalf("save meta: %v", err)
 	}

@@ -75,8 +75,8 @@ func FuzzSpawnLiveContracts(f *testing.F) {
 		rreq := hubcore.ResumeRequest{SessionID: "old", WorkingDir: dir, StateDir: dir, RunDir: dir, AppReplaySize: 2, Resolved: r}
 		_ = buildSpawnArgs(sreq)
 		_ = buildResumeArgs(rreq)
-		_ = resolveSerfLaunchStateDir(dir, map[string]string{})
-		_ = resolveSerfLaunchStateDir(dir, nil)
+		_, _ = resolveSerfLaunchStateDir(dir, map[string]string{})
+		_, _ = resolveSerfLaunchStateDir(dir, nil)
 
 		store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
 		for _, provider := range []string{"", "unknown", "openai", "openai-compatible", "ollama"} {

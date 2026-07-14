@@ -263,7 +263,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		sd = envvars.SERFStateDir.Getenv()
 	}
 	if sd == "" {
-		sd = cmdutil.DefaultProjectStateDir(wd)
+		var err error
+		_, sd, err = cmdutil.DefaultProjectStateDir(wd)
+		if err != nil {
+			return fmt.Errorf("resolve project state: %w", err)
+		}
 	}
 
 	resuming := *resume != "" || *resumeLast

@@ -7,6 +7,7 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/envvars"
+	"primeradiant.com/serf/identifier"
 )
 
 // DefaultStateRoot returns the serf state root: $SERF_STATE_DIR when set,
@@ -32,11 +33,8 @@ func DefaultStateRoot() string {
 // otherwise workDir itself unchanged.
 //
 // Keying on the main root rather than the raw workDir matters for
-// origin-less repos: RuntimeDir(WithStateHome) falls back to its workDir
-// argument when originURL is empty, so without this resolution step,
-// launching from a linked worktree would compute a different project state
-// dir (and hence a different worktreeRoot) than launching from the main
-// checkout. See
+// launching from a linked worktree must compute the same project state dir as
+// launching from the main checkout. See
 // docs/superpowers/specs/2026-07-02-native-worktree-tools-design.md §1
 // ("Runtime state keying at launch"). Every caller that derives a session
 // state dir from a workDir — cmd/serf's DefaultProjectStateDir and
@@ -53,7 +51,6 @@ func ResolveStateKeyDir(workDir string) string {
 // directory for workDir, for use when no explicit --state-dir flag or
 // SERF_STATE_DIR override is set: $XDG_STATE_HOME/serf/projects/<hash>/,
 // keyed by the git origin URL when present, otherwise by ResolveStateKeyDir.
-func DefaultProjectStateDir(workDir string) string {
-	originURL := GitOriginURLFromDir(workDir)
-	return agent.RuntimeDir(originURL, ResolveStateKeyDir(workDir), "")
+func DefaultProjectStateDir(workDir string) (identifier.Project, string, error) {
+	return agent.RuntimeDir(workDir, "")
 }

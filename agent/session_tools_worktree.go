@@ -538,7 +538,11 @@ func (s *Session) worktreeRootFor(env execenv.ExecutionEnvironment, stateDir, ma
 	if stateDir != "" {
 		return filepath.Join(stateDir, "worktrees")
 	}
-	return filepath.Join(RuntimeDir(gitOriginURL(env, mainRepoRoot), mainRepoRoot, ""), "worktrees")
+	_, projectStateDir, err := RuntimeDir(mainRepoRoot, "")
+	if err != nil {
+		return filepath.Join(mainRepoRoot, ".serf", "worktrees")
+	}
+	return filepath.Join(projectStateDir, "worktrees")
 }
 
 // enterWorktree implements worktreeGuard.enterWorktree() (spec §7): swap s.env

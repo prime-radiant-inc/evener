@@ -51,11 +51,39 @@ func newLinkedWorktree(t *testing.T) (main, wt string) {
 func TestDefaultProjectStateDir_LinkedWorktreeSameAsMain(t *testing.T) {
 	main, wt := newLinkedWorktree(t)
 
-	mainDir := DefaultProjectStateDir(main)
-	wtDir := DefaultProjectStateDir(wt)
+	_, mainDir, err := DefaultProjectStateDir(main)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, wtDir, err := DefaultProjectStateDir(wt)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if mainDir != wtDir {
 		t.Errorf("state dir differs between main root and linked worktree:\n  main = %q\n  wt   = %q", mainDir, wtDir)
+	}
+}
+
+func TestDefaultProjectStateDir_ClonesWithSameOriginDiffer(t *testing.T) {
+	base := t.TempDir()
+	remote := filepath.Join(base, "remote.git")
+	runGit(t, base, "init", "-q", "--bare", remote)
+	first := filepath.Join(base, "first")
+	second := filepath.Join(base, "second")
+	runGit(t, base, "clone", "-q", remote, first)
+	runGit(t, base, "clone", "-q", remote, second)
+
+	_, firstDir, err := DefaultProjectStateDir(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, secondDir, err := DefaultProjectStateDir(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDir == secondDir {
+		t.Fatalf("same-origin clones share project state dir: %q", firstDir)
 	}
 }
 
@@ -66,8 +94,14 @@ func TestDefaultProjectStateDir_LinkedWorktreeSameAsMain(t *testing.T) {
 func TestDefaultProjectStateDir_NotInRepo_FallsBackToWorkDir(t *testing.T) {
 	workDir := t.TempDir()
 
-	got := DefaultProjectStateDir(workDir)
-	want := DefaultProjectStateDir(workDir) // deterministic given the same input
+	_, got, err := DefaultProjectStateDir(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, want, err := DefaultProjectStateDir(workDir) // deterministic given the same input
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if got != want {
 		t.Errorf("DefaultProjectStateDir(%q) not deterministic: %q vs %q", workDir, got, want)
@@ -75,7 +109,11 @@ func TestDefaultProjectStateDir_NotInRepo_FallsBackToWorkDir(t *testing.T) {
 	// The state dir must be keyed by workDir itself (no git ancestor to
 	// resolve), i.e. it must differ across two distinct non-repo dirs.
 	other := t.TempDir()
-	if got == DefaultProjectStateDir(other) {
+	_, otherDir, err := DefaultProjectStateDir(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == otherDir {
 		t.Errorf("DefaultProjectStateDir collided for distinct non-repo workDirs %q and %q: %q", workDir, other, got)
 	}
 }

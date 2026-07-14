@@ -128,7 +128,11 @@ func run(ctx context.Context, cfg runConfig) error {
 		stateDir = envvars.SERFStateDir.Getenv()
 	}
 	if stateDir == "" {
-		stateDir = cmdutil.DefaultProjectStateDir(cfg.workDir)
+		var err error
+		_, stateDir, err = cmdutil.DefaultProjectStateDir(cfg.workDir)
+		if err != nil {
+			return fmt.Errorf("resolve project state: %w", err)
+		}
 	}
 
 	// --list-sessions: print and exit.

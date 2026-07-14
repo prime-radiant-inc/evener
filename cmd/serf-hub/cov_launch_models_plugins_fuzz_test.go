@@ -87,7 +87,8 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 		if err != nil || resolved.Repo == nil {
 			t.Fatalf("resolve repo: %+v %v", resolved, err)
 		}
-		paths := launchconfig.PathsFor(trustRoot, trustCWD)
+		paths, err := launchconfig.PathsFor(trustRoot, trustCWD)
+		if err != nil { t.Fatal(err) }
 		if err := os.MkdirAll(filepath.Dir(paths.Meta), 0o755); err != nil {
 			t.Fatal(err)
 		}
