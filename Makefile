@@ -76,7 +76,7 @@ test-install:
 # per-module, so gates and lint must loop modules explicitly. Fuzz targets and
 # the fuzz toolkit module run through the explicit fuzz targets below, not the
 # regular test gate.
-GO_MODULES := . agent llm auth envvars invariant
+GO_MODULES := . agent llm auth envvars invariant identifier
 FUZZ_GO_MODULES := $(GO_MODULES) fuzz
 
 # MEMCAP runs a recipe under a hard per-run memory ceiling (a systemd user scope)
