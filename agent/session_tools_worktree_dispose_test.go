@@ -266,6 +266,35 @@ func TestDispose_AlreadyDisposed_IdempotentCleanup(t *testing.T) {
 	}
 }
 
+func TestDispose_ReissuedAfterDisposal_CleanAlreadyDisposed(t *testing.T) {
+	// A successful dispose deletes the sidecar (step 8). Re-issuing dispose on the
+	// same id must reach the idempotent already-disposed short-circuit and report a
+	// clean no-op — NOT fail the sidecar read with "sidecar unreadable" (the live
+	// eval's product bug #1). RED before the fix: the disposed short-circuit sat
+	// after the hard sidecar-read error, so the gone sidecar erred.
+	r := newWorktreeRepo(t)
+	id, lanePath, _ := r.seedIsolationLane(t)
+
+	// First dispose a real unchanged lane to completion.
+	requireDisposed(t, r, id, lanePath, false, false)
+	metaDir := metaDirForLane(lanePath)
+	if _, err := worktree.ReadSidecar(metaDir, id); !os.IsNotExist(err) {
+		t.Fatalf("expected sidecar gone after dispose, got err=%v", err)
+	}
+
+	// Re-issue dispose: clean already-disposed, no error, no "unreadable".
+	res, err := r.s.worktreeDispose(context.Background(), id, false, false)
+	if err != nil {
+		t.Fatalf("re-issued dispose returned error: %v", err)
+	}
+	if !res.AlreadyDisposed {
+		t.Fatalf("expected AlreadyDisposed, got %+v", res)
+	}
+	if strings.Contains(res.Message, "unreadable") {
+		t.Fatalf("re-issued dispose message reports unreadable: %q", res.Message)
+	}
+}
+
 func TestDispose_SessionClosing_Refused(t *testing.T) {
 	r := newWorktreeRepo(t)
 	id, _, _ := r.seedIsolationLane(t)

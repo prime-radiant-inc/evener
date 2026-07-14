@@ -92,6 +92,17 @@ func (s *Session) disposeDelegateLane(ctx context.Context, id string, force, for
 	// from the lane path (the lane may be gone). The sidecar lives beside the lane.
 	metaDir := metaDirForLane(lanePath)
 	sc, scErr := worktree.ReadSidecar(metaDir, id)
+
+	// Idempotent already-disposed with a gone/unreadable sidecar (spec §P1 step 1):
+	// a completed dispose deletes the sidecar (and branch) in step 8, so a re-issued
+	// dispose on a fully-torn-down lane cannot read it. The durable disposed mark is
+	// ground truth — there is nothing left to clean and no control env to resolve —
+	// so report a clean already-disposed no-op rather than erroring on the sidecar.
+	// This short-circuit MUST precede the sidecar-unreadable hard error below, which
+	// only a NOT-disposed lane (still needing a control env to do work) falls into.
+	if scErr != nil && rec != nil && rec.Disposed {
+		return disposeAlreadyDisposedGone(id, lanePath, scErr), nil
+	}
 	if scErr != nil {
 		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s sidecar unreadable; cannot resolve its git control environment: %w", id, scErr)
 	}
@@ -392,6 +403,27 @@ func (s *Session) disposeAlreadyDisposedRemnants(run worktree.GitRunner, id, lan
 	msg := fmt.Sprintf("Delegate %s was already disposed; cleaned up remnants.", id)
 	if branchDeleted {
 		msg = fmt.Sprintf("Delegate %s was already disposed; deleted its leftover branch and sidecar.", id)
+	}
+	return WorktreeDisposeResult{
+		DelegateID:      id,
+		LanePath:        lanePath,
+		Branch:          id,
+		AlreadyDisposed: true,
+		Message:         msg,
+	}
+}
+
+// disposeAlreadyDisposedGone reports the idempotent already-disposed no-op for a
+// lane whose sidecar is already gone (spec §P1 step 1): a completed dispose
+// deleted the branch and sidecar, so there is nothing left to clean and no
+// control env to resolve. A not-exist sidecar is the ordinary fully-torn-down
+// case; any other read error means the durable disposed mark is still ground
+// truth but cleanup was degraded (permissions/corruption), which the message
+// notes. It never refuses — the durable Disposed mark is authoritative.
+func disposeAlreadyDisposedGone(id, lanePath string, scErr error) WorktreeDisposeResult {
+	msg := fmt.Sprintf("Delegate %s was already disposed; its lane and sidecar are already gone.", id)
+	if !os.IsNotExist(scErr) {
+		msg = fmt.Sprintf("Delegate %s was already disposed; its sidecar could not be read (%v), but the durable disposed mark is authoritative and its lane is gone.", id, scErr)
 	}
 	return WorktreeDisposeResult{
 		DelegateID:      id,
