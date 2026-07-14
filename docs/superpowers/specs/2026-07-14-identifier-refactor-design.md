@@ -44,7 +44,7 @@ Add a leaf module:
 primeradiant.com/serf/identifier
 ```
 
-All repository modules may depend on it. It depends only on the standard library and the selected UUID implementation. It must not import the root, `agent`, or `llm` modules.
+All repository modules may depend on it. It depends only on the standard library and `github.com/google/uuid` v1.6.0. It must not import the root, `agent`, or `llm` modules. The repository already uses this UUID version indirectly; the new module makes it a direct dependency and uses its process-monotonic `NewV7` implementation.
 
 Use separate files and focused APIs:
 
@@ -86,7 +86,7 @@ type Resolver interface {
 func ResolveProjectWith(path string, resolver Resolver) (Project, error)
 ```
 
-The exact interface may change during planning if existing environment abstractions require a different shape. The invariant may not change: the `identifier` module controls the pipeline order, validation, rendering, and hashing. Resolvers perform only environment-specific I/O.
+This interface is part of the design. The default resolver lives in `identifier` and owns local filesystem and Git I/O. Move the reusable Git-resolution core from `internal/gitpath` into `identifier`; do not leave a second implementation behind. The `agent/execenv` package provides an adapter that implements these three operations with its execution environment. The `identifier` module controls the pipeline order, validation, rendering, and hashing. Resolvers perform only environment-specific I/O.
 
 Do not export a renderer that accepts an allegedly canonical string. Ordinary callers must not bypass canonicalization.
 
@@ -123,7 +123,7 @@ Rules:
 4. Trim hyphens from each component and omit empty components.
 5. Join components with hyphens.
 6. Use `project` if no readable characters remain.
-7. Compute SHA-256 over the exact canonical path and encode a uniform 10-character base62 suffix.
+7. Compute SHA-256 over the exact canonical path. Interpret the full 32-byte digest as one unsigned, big-endian integer, reduce it modulo `62^10`, encode the result with the base62 alphabet defined below, and left-pad it with `0` to exactly 10 characters.
 8. If the full ID would exceed 80 ASCII characters, remove characters from the left of the readable portion. Trim any newly exposed hyphen. Never truncate the suffix.
 9. Do not pad short project IDs.
 
@@ -134,7 +134,7 @@ Example shape:
 → Users-jesse-git-prime-radiant-serf-<10 chars>
 ```
 
-The suffix provides about 59.5 bits of collision resistance. It distinguishes paths that sanitize to the same text and paths that share the same retained tail. The ID is recognizable but not reversible.
+The suffix has a 59.5-bit namespace. For independently distributed digests, a particular pair of paths collides in the suffix with probability `1/62^10`; birthday-bound collision probability becomes material at roughly `sqrt(62^10)` projects. The suffix distinguishes paths that sanitize to the same text and paths that share the same retained tail with that probabilistic guarantee. The ID is recognizable but not reversible.
 
 ### Authority and Safety
 
@@ -195,7 +195,7 @@ Named constructors and validators preserve current prefixes while replacing each
 | Watch delivery | `wd_<payload>` |
 | Agent call | `ag_<payload>` |
 | Synthetic provider call | `call_<payload>` |
-| Unprefixed internal notification/delivery IDs | `<payload>` |
+| Terminal generation | `<payload>` |
 
 The implementation plan must inventory every production `ulid.Make` or `ulid.New` call before editing. If a Serf-owned domain is missing from this table, add a named constructor rather than calling the payload generator directly.
 
@@ -226,7 +226,7 @@ The implementation plan must search again from the target commit and include any
 
 ### Generated-ID Consumers
 
-All Serf-owned generation sites call named constructors from the shared module. At minimum, update:
+All Serf-owned generation sites call named constructors from the shared module. Update:
 
 - fresh sessions in `agent/session_init.go`;
 - forked sessions in `agent/fork.go`;
