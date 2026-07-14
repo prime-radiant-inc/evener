@@ -26,8 +26,11 @@ Live end-to-end, real provider (billed). Session must own `manage_worktree`.
 ## Steps — scripted user turns
 
 1. `"Delegate a task to a subagent WITH worktree isolation: have it add a
-   function Greet() to main.go and git-commit it inside its isolated worktree.
+   function Greet() to main.go and git-commit it, then add a doc comment to
+   Greet() as a SECOND separate commit, both inside its isolated worktree.
    Wait for it to finish, then report the delegate's worktree path and branch."`
+   (Two commits are load-bearing: a single-commit squash is patch-equivalent
+   and the model-tier dispose accepts it WITHOUT force — see Sharp edges.)
 2. `"Squash-merge that delegate's branch into main (git merge --squash then
    commit, so main gets ONE new commit with the delegate's changes but the
    delegate's original commit is NOT an ancestor of main). Confirm main now
@@ -61,9 +64,14 @@ Remove the scratch state + demo repo (unique temp paths).
 
 - Do NOT expect auto-collection here — a squash-merged lane is intentionally
   kept by both the close-time (P0) and background (P3) collectors. Only the
-  model-tier dispose op can retire it, and only with `force`. If you see it
-  auto-collected, that is a SEPARATE (and serious) bug in D0-auto, not a §P2
-  pass.
+  model-tier dispose op can retire it. If you see it auto-collected, that is a
+  SEPARATE (and serious) bug in D0-auto, not a §P2 pass.
+- **Single-commit squashes dispose WITHOUT `force`** (observed live 2026-07-14,
+  gpt-5.5 and kimi, 4/6 squash runs): the model-tier predicate's cherry arm
+  accepts a patch-equivalent lane, so the refusal in Expected only fires when
+  cherry can't match — hence the two-commit fixture in step 1. If the delegate
+  only made one commit, a no-force dispose success after a verified merge is a
+  PASS (grade via pass path (i) with force=false), not an anomaly.
 - The close-time KEEP warning for such a lane uses the lumped wording ("not
   collected automatically (unmerged or squash-merged), dirty, or unverifiable").
   That is expected and is not a scold against the model.
