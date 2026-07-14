@@ -71,7 +71,8 @@ func configuredAdapterTransport(base *http.Transport, at *AdapterTimeout) *http.
 // responseHeaderTimeoutTransport identifies the ambiguous timeout after a
 // request was fully written but before response headers arrived. The standard
 // transport owns the timer; this wrapper records the completed write phase so
-// retry policy can avoid replaying a request the provider may have accepted.
+// retry policy can classify the bounded timeout as retryable despite the risk
+// that the provider already accepted the request.
 type responseHeaderTimeoutTransport struct {
 	base *http.Transport
 }
