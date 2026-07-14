@@ -30,7 +30,10 @@ func FuzzSanitizeDirPrefix(f *testing.F) {
 }
 
 func FuzzResolveInRoot(f *testing.F) {
-	root := f.TempDir()
+	root, err := filepath.EvalSymlinks(f.TempDir())
+	if err != nil {
+		f.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(root, "inside"), []byte("x"), 0o600); err != nil {
 		f.Fatal(err)
 	}

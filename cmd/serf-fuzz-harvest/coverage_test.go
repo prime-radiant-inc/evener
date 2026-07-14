@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,7 +10,9 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -114,18 +117,38 @@ func scenarioGitleaksScanOutcomes(t *testing.T) {
 	if clean, avail := gitleaksScan(".", &stderr); clean || avail {
 		t.Fatal("missing")
 	}
-	gitleaksLookPath = func(string) (string, error) { return "/bin/true", nil }
+	gitleaksLookPath = func(string) (string, error) { return "test-gitleaks", nil }
+	gitleaksCommandContext = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		return gitleaksTestCommandContext(ctx, 0)
+	}
 	if clean, avail := gitleaksScan(".", &stderr); !clean || !avail {
 		t.Fatal("clean")
 	}
-	gitleaksLookPath = func(string) (string, error) { return "/bin/false", nil }
+	gitleaksCommandContext = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		return gitleaksTestCommandContext(ctx, 1)
+	}
 	if clean, avail := gitleaksScan(".", &stderr); clean || !avail {
 		t.Fatal("leak")
 	}
 	gitleaksLookPath = func(string) (string, error) { return "/missing", nil }
+	gitleaksCommandContext = oldCmd
 	if clean, avail := gitleaksScan(".", &stderr); clean || avail {
 		t.Fatal("run error")
 	}
+}
+
+func gitleaksTestCommandContext(ctx context.Context, exitCode int) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestGitleaksCommandHelper$")
+	cmd.Env = append(os.Environ(), "SERF_GITLEAKS_TEST_EXIT_CODE="+strconv.Itoa(exitCode))
+	return cmd
+}
+
+func TestGitleaksCommandHelper(t *testing.T) {
+	exitCode, err := strconv.Atoi(os.Getenv("SERF_GITLEAKS_TEST_EXIT_CODE"))
+	if err != nil {
+		return
+	}
+	os.Exit(exitCode)
 }
 
 func scenarioHarvestLeakExitAndSmallHelpers(t *testing.T) {
