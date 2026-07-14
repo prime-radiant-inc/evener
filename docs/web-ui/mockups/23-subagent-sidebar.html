@@ -20,11 +20,10 @@
   .sidebar-project { display: flex; align-items: center; gap: var(--s2); padding: 0 var(--s2) var(--s3); color: var(--ink-2); font-size: var(--fs-sm); font-weight: 600; }
   #session-tree { display: flex; flex-direction: column; gap: 2px; }
   .session-branch { position: relative; }
-  .session-branch > .session-branch::before { content: ""; position: absolute; left: calc((var(--depth) * 14px) + 7px); top: 0; bottom: 0; width: 1px; background: var(--hair); }
   .session-row, .inactive-toggle { width: calc(100% - (var(--depth) * 14px)); margin-left: calc(var(--depth) * 14px); }
   .session-row { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: var(--s2); align-items: center; min-height: 34px; padding: 0 var(--s2); border-radius: var(--r); text-align: left; }
   .session-row:hover { background: var(--surface); }
-  .session-row[aria-current="true"] { background: var(--surface); box-shadow: inset 2px 0 0 var(--accent); }
+  .session-row[aria-current="true"] { background: var(--surface); outline: 1px solid var(--line); outline-offset: -1px; }
   .session-row:focus-visible, .inactive-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .session-glyph { font-family: var(--mono); font-size: var(--fs-sm); text-align: center; }
   .session-title { min-width: 0; overflow: hidden; color: var(--ink); font-size: var(--fs-sm); text-overflow: ellipsis; white-space: nowrap; }
