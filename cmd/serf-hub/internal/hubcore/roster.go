@@ -22,10 +22,21 @@ import (
 // rendezvous-file metadata with the dynamic SessionID resolved via /status.
 type LiveEntry struct {
 	rendezvous.Entry
-	SessionID         string
-	Status            string // most-recent daemon state ("active", "idle", "awaiting", etc.)
-	PendingAsk        bool   // true while the daemon reports an unanswered ask_user question
-	PendingEscalation bool   // true while the daemon reports a blocked sandbox-exemption escalation (M7)
+	SessionID          string
+	Status             string   // most-recent daemon state ("active", "idle", "awaiting", etc.)
+	PendingAsk         bool     // true while the daemon reports an unanswered ask_user question
+	PendingEscalation  bool     // true while the daemon reports a blocked sandbox-exemption escalation (M7)
+	RunningSubagentIDs []string // in-process children reported by this daemon; not independently routable
+}
+
+// ProbeResult is the dynamic session state returned by a daemon liveness probe.
+type ProbeResult struct {
+	SessionID          string
+	Status             string
+	PendingAsk         bool
+	PendingEscalation  bool
+	RunningSubagentIDs []string
+	OK                 bool
 }
 
 // Prober is implemented by liveness-checking strategies.
@@ -34,7 +45,7 @@ type LiveEntry struct {
 // session_id (which may have changed under POST /clear since the
 // rendezvous file was written) and the daemon's current state.
 type Prober interface {
-	Probe(entry rendezvous.Entry) (sessionID, status string, pendingAsk, pendingEscalation, ok bool)
+	Probe(entry rendezvous.Entry) ProbeResult
 }
 
 type rosterWatcher interface {
@@ -88,7 +99,7 @@ type Roster struct {
 	newTicker    func(time.Duration) rosterTicker
 
 	// onChange, when set via SetOnChange, is fired by Refresh only when the
-	// live set's membership or per-session status actually changes.
+	// live set's membership, per-session status, or running-child set changes.
 	onChange func()
 	// fingerprint is the live-set hash from the most recent Refresh (see
 	// rosterFingerprint), used to gate onChange against no-op refreshes.
@@ -183,6 +194,13 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 			_, _ = h.Write([]byte{1})
 		}
 		_, _ = h.Write([]byte{0})
+		runningSubagentIDs := append([]string(nil), bySess[id].RunningSubagentIDs...)
+		sort.Strings(runningSubagentIDs)
+		for _, childID := range runningSubagentIDs {
+			_, _ = h.Write([]byte(childID))
+			_, _ = h.Write([]byte{0})
+		}
+		_, _ = h.Write([]byte{0})
 	}
 	return h.Sum64()
 }
@@ -211,25 +229,20 @@ func (r *Roster) Refresh() {
 	r.mu.RUnlock()
 
 	type probeResult struct {
-		entry             rendezvous.Entry
-		sessID            string
-		status            string
-		pendingAsk        bool
-		pendingEscalation bool
-		ok                bool
+		entry rendezvous.Entry
+		ProbeResult
 	}
 	results := make([]probeResult, len(entries))
 	var wg sync.WaitGroup
 	for i, e := range entries {
 		if r.prober == nil {
-			results[i] = probeResult{entry: e, ok: true}
+			results[i] = probeResult{entry: e, ProbeResult: ProbeResult{OK: true}}
 			continue
 		}
 		wg.Add(1)
 		go func(i int, e rendezvous.Entry) {
 			defer wg.Done()
-			sessID, status, pendingAsk, pendingEscalation, ok := r.prober.Probe(e)
-			results[i] = probeResult{entry: e, sessID: sessID, status: status, pendingAsk: pendingAsk, pendingEscalation: pendingEscalation, ok: ok}
+			results[i] = probeResult{entry: e, ProbeResult: r.prober.Probe(e)}
 		}(i, e)
 	}
 	wg.Wait()
@@ -238,7 +251,7 @@ func (r *Roster) Refresh() {
 	byPID := make(map[int]LiveEntry, len(entries))
 	for _, res := range results {
 		e := res.entry
-		if !res.ok {
+		if !res.OK {
 			// The rendezvous file plus a live PID are the authoritative "this
 			// session exists" signal; keep the previously-seen entry while its
 			// process is alive, and prune only when the process is gone.
@@ -250,10 +263,17 @@ func (r *Roster) Refresh() {
 			}
 			continue
 		}
-		live := LiveEntry{Entry: e, SessionID: res.sessID, Status: res.status, PendingAsk: res.pendingAsk, PendingEscalation: res.pendingEscalation}
-		if res.sessID != "" {
-			if prev, ok := bySess[res.sessID]; !ok || preferLiveEntry(live, prev) {
-				bySess[res.sessID] = live
+		live := LiveEntry{
+			Entry:              e,
+			SessionID:          res.SessionID,
+			Status:             res.Status,
+			PendingAsk:         res.PendingAsk,
+			PendingEscalation:  res.PendingEscalation,
+			RunningSubagentIDs: append([]string(nil), res.RunningSubagentIDs...),
+		}
+		if res.SessionID != "" {
+			if prev, ok := bySess[res.SessionID]; !ok || preferLiveEntry(live, prev) {
+				bySess[res.SessionID] = live
 			}
 		}
 		byPID[e.PID] = live
@@ -305,6 +325,25 @@ func (r *Roster) List() []LiveEntry {
 		return liveEntryLess(out[i], out[j])
 	})
 	return out
+}
+
+// IsSubagentActive reports whether a live parent daemon currently owns a
+// running in-process child. Child IDs remain outside bySess so callers cannot
+// mistake the parent's endpoint for an independently routable child daemon.
+func (r *Roster) IsSubagentActive(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, entry := range r.bySess {
+		for _, childID := range entry.RunningSubagentIDs {
+			if childID == sessionID {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func preferLiveEntry(candidate, current LiveEntry) bool {

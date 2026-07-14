@@ -226,11 +226,54 @@ type fakeProber struct {
 	shouldFail bool
 }
 
-func (p fakeProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, pendingEscalation, ok bool) {
-	if p.shouldFail {
-		return "", "", false, false, false
+type runningSubagentProber struct {
+	result ProbeResult
+}
+
+func (p *runningSubagentProber) Probe(rendezvous.Entry) ProbeResult {
+	return p.result
+}
+
+func fuzzScenarioRoster_CarriesRunningSubagentsWithoutRoutingThem(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:50001"})
+	prober := &runningSubagentProber{result: ProbeResult{
+		SessionID:          "01PARENT",
+		Status:             "idle",
+		RunningSubagentIDs: []string{"01CHILD"},
+		OK:                 true,
+	}}
+	r := NewRoster(dir, prober)
+	r.Refresh()
+
+	entries := r.List()
+	if len(entries) != 1 || len(entries[0].RunningSubagentIDs) != 1 || entries[0].RunningSubagentIDs[0] != "01CHILD" {
+		t.Fatalf("roster entries = %+v, want parent carrying 01CHILD", entries)
 	}
-	return p.sessionID, p.status, p.pendingAsk, false, true
+	if !r.IsSubagentActive("01CHILD") {
+		t.Fatal("running child must be discoverable as active")
+	}
+	if _, ok := r.Find("01CHILD"); ok {
+		t.Fatal("running child must not become a routable daemon entry")
+	}
+
+	changes := 0
+	r.SetOnChange(func() { changes++ })
+	prober.result.RunningSubagentIDs = nil
+	r.Refresh()
+	if changes != 1 {
+		t.Fatalf("onChange calls after child stopped = %d, want 1", changes)
+	}
+	if r.IsSubagentActive("01CHILD") {
+		t.Fatal("stopped child must no longer be active")
+	}
+}
+
+func (p fakeProber) Probe(rendezvous.Entry) ProbeResult {
+	if p.shouldFail {
+		return ProbeResult{}
+	}
+	return ProbeResult{SessionID: p.sessionID, Status: p.status, PendingAsk: p.pendingAsk, OK: true}
 }
 
 func fuzzScenarioRoster_CarriesPendingAskFromProber(t *testing.T) {
@@ -256,13 +299,13 @@ type gateProber struct {
 	started   chan struct{}
 }
 
-func (p *gateProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, pendingEscalation, ok bool) {
+func (p *gateProber) Probe(rendezvous.Entry) ProbeResult {
 	select {
 	case p.started <- struct{}{}:
 	default:
 	}
 	<-p.gate
-	return p.sessionID, "", false, false, true
+	return ProbeResult{SessionID: p.sessionID, OK: true}
 }
 
 // TestRoster_ListStaysResponsiveDuringSlowProbe is the regression test for the
@@ -310,11 +353,11 @@ type flakyProber struct {
 	fail      bool
 }
 
-func (p *flakyProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, pendingEscalation, ok bool) {
+func (p *flakyProber) Probe(rendezvous.Entry) ProbeResult {
 	if p.fail {
-		return "", "", false, false, false
+		return ProbeResult{}
 	}
-	return p.sessionID, p.status, false, false, true
+	return ProbeResult{SessionID: p.sessionID, Status: p.status, OK: true}
 }
 
 func fuzzScenarioPreferLiveEntry(t *testing.T) {
@@ -403,8 +446,8 @@ type statusProber struct {
 	status    string
 }
 
-func (p *statusProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, pendingEscalation, ok bool) {
-	return p.sessionID, p.status, false, false, true
+func (p *statusProber) Probe(rendezvous.Entry) ProbeResult {
+	return ProbeResult{SessionID: p.sessionID, Status: p.status, OK: true}
 }
 
 // TestRoster_OnStatusChangeFiresForTransitioningSession is the regression

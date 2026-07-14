@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"time"
 
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -15,17 +17,24 @@ type StatusProber struct {
 	Timeout time.Duration
 }
 
-// statusInfo is a partial mirror of server.StatusInfo (we only need
-// session_id, state, and pending_ask).
+// statusInfo is a partial mirror of server.StatusInfo containing the fields
+// the hub needs for session and in-process child lifecycle projection.
 type statusInfo struct {
 	SessionID         string `json:"session_id"`
 	State             string `json:"state"`
 	PendingAsk        bool   `json:"pending_ask"`
 	PendingEscalation bool   `json:"pending_escalation"`
+	Detailed          *struct {
+		Jobs []struct {
+			JobType       string `json:"job_type"`
+			Status        string `json:"status"`
+			TranscriptRef string `json:"transcript_ref"`
+		} `json:"jobs"`
+	} `json:"detailed"`
 }
 
 // Probe implements Prober.
-func (p *StatusProber) Probe(entry rendezvous.Entry) (sessionID, status string, pendingAsk, pendingEscalation, ok bool) {
+func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	timeout := p.Timeout
 	if timeout == 0 {
 		timeout = 500 * time.Millisecond
@@ -35,20 +44,43 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) (sessionID, status string, 
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+entry.Address+"/status", nil)
 	if err != nil {
-		return "", "", false, false, false
+		return ProbeResult{}
 	}
 	SetDaemonAuthorization(req.Header, entry.HubToken)
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", "", false, false, false
+		return ProbeResult{}
 	}
 	defer resp.Body.Close() //nolint:errcheck // response body close on read path; error is not actionable
 	if resp.StatusCode != http.StatusOK {
-		return "", "", false, false, false
+		return ProbeResult{}
 	}
 	var s statusInfo
 	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
-		return "", "", false, false, false
+		return ProbeResult{}
 	}
-	return s.SessionID, s.State, s.PendingAsk, s.PendingEscalation, true
+	seen := make(map[string]bool)
+	var runningSubagentIDs []string
+	if s.Detailed != nil {
+		for _, job := range s.Detailed.Jobs {
+			if job.JobType != "delegate" || job.Status != "running" {
+				continue
+			}
+			ref, err := appwire.ParseRef(job.TranscriptRef)
+			if err != nil || ref.SourceID != "local" || seen[ref.ThreadID] {
+				continue
+			}
+			seen[ref.ThreadID] = true
+			runningSubagentIDs = append(runningSubagentIDs, ref.ThreadID)
+		}
+	}
+	sort.Strings(runningSubagentIDs)
+	return ProbeResult{
+		SessionID:          s.SessionID,
+		Status:             s.State,
+		PendingAsk:         s.PendingAsk,
+		PendingEscalation:  s.PendingEscalation,
+		RunningSubagentIDs: runningSubagentIDs,
+		OK:                 true,
+	}
 }

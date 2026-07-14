@@ -5423,12 +5423,12 @@ type perAddrProber struct {
 	byAddr map[string]struct{ SessionID, Status string }
 }
 
-func (p perAddrProber) Probe(entry rendezvous.Entry) (sessionID, status string, pendingAsk, pendingEscalation, ok bool) {
+func (p perAddrProber) Probe(entry rendezvous.Entry) hubcore.ProbeResult {
 	v, present := p.byAddr[entry.Address]
 	if !present {
-		return "", "", false, false, false
+		return hubcore.ProbeResult{}
 	}
-	return v.SessionID, v.Status, false, false, true
+	return hubcore.ProbeResult{SessionID: v.SessionID, Status: v.Status, OK: true}
 }
 
 // settingsRequest is a small helper for the settings pane tests.

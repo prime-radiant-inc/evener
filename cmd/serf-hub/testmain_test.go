@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -74,9 +75,9 @@ type fakeProber struct {
 	shouldFail bool
 }
 
-func (p fakeProber) Probe(rendezvous.Entry) (sessionID, status string, pendingAsk, pendingEscalation, ok bool) {
+func (p fakeProber) Probe(rendezvous.Entry) hubcore.ProbeResult {
 	if p.shouldFail {
-		return "", "", false, false, false
+		return hubcore.ProbeResult{}
 	}
-	return p.sessionID, p.status, p.pendingAsk, false, true
+	return hubcore.ProbeResult{SessionID: p.sessionID, Status: p.status, PendingAsk: p.pendingAsk, OK: true}
 }
