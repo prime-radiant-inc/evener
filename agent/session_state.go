@@ -40,10 +40,10 @@ func (s *Session) State() SessionState {
 }
 
 // WireState is the externally-reported session state. It equals State()
-// except for one honest override: an idle session whose autonomy is still in
-// flight (live child subagents, undelivered job notifications, queued input)
-// reads as "active" — a delegating parent is working through its children,
-// not settled (spec v5, round-4 A6).
+// except for one override: an idle session with undelivered job notifications
+// or queued input reads as "active" because parent-owned work can resume it
+// without user input. Live child activity belongs to the child's wire state,
+// not the settled parent's.
 //
 // Precedence: the override upgrades idle ONLY. awaiting always projects as
 // awaiting, even with autonomy in flight — a session that asked its user
@@ -53,10 +53,17 @@ func (s *Session) State() SessionState {
 // TestWireState_AwaitingOutranksAutonomy pins this.
 func (s *Session) WireState() string {
 	state := s.State()
-	if state == SessionIdle && s.autonomyInFlight() {
+	if state == SessionIdle && s.sessionWorkPending() {
 		return string(SessionProcessing)
 	}
 	return string(state)
+}
+
+// sessionWorkPending reports whether work owned by this session can resume it
+// without user input. Child activity is excluded because it is projected on
+// the child session, while its eventual notification is included once queued.
+func (s *Session) sessionWorkPending() bool {
+	return s.peekNotifications() > 0 || s.QueueDepth() > 0
 }
 
 // autonomyInFlight reports whether autonomous work will move this session
@@ -66,10 +73,7 @@ func (s *Session) WireState() string {
 // deliberately NOT autonomy: nothing will move until the user acts, and amber
 // is what surfaces that stall.
 func (s *Session) autonomyInFlight() bool {
-	if s.peekNotifications() > 0 {
-		return true
-	}
-	if s.QueueDepth() > 0 {
+	if s.sessionWorkPending() {
 		return true
 	}
 	return len(s.liveSubagentSessions()) > 0

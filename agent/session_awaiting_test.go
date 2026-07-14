@@ -162,7 +162,22 @@ func TestProcessInput_NextInputClearsAwaiting(t *testing.T) {
 	}
 }
 
-func TestWireState_ChildrenInFlightReadsActive(t *testing.T) {
+func TestWireState_LiveChildDoesNotMakeIdleParentActive(t *testing.T) {
+	parent := newTestSessionForState(t)
+	child := newTestSessionForState(t)
+	parent.subagents.mu.Lock()
+	parent.subagents.subs[child.ID()] = &subagent{id: child.ID(), sess: child}
+	parent.subagents.mu.Unlock()
+
+	if got := parent.WireState(); got != string(SessionIdle) {
+		t.Fatalf("WireState with only live child = %q, want %q", got, SessionIdle)
+	}
+	if !parent.autonomyInFlight() {
+		t.Fatal("live child must remain autonomy in flight for settle and restore")
+	}
+}
+
+func TestWireState_PendingParentWorkMakesIdleParentActive(t *testing.T) {
 	sess := newTestSessionForState(t)
 	// Idle with no autonomy: wire state == raw state.
 	if got := sess.WireState(); got != string(SessionIdle) {
