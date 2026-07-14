@@ -13,6 +13,41 @@ global.window = dom.window; global.document = dom.window.document;
 eval(fs.readFileSync(path.join(__dirname, "..", "assets", "panes.js"), "utf8"));
 const P = dom.window.SerfPanes;
 
+// Parent-relative insertion keeps the side-pane order aligned with the DOM,
+// URL, and persisted state while existing hrefs remain focused in place.
+(function () {
+  var savedWindow = global.window, savedDocument = global.document;
+  var domOrder = new JSDOM(`<!DOCTYPE html><body class="app">
+    <main id="workspace"></main>
+    <div id="pane-splitter" hidden></div>
+    <aside id="side-panes" hidden></aside>
+  </body>`, { url: "http://localhost/" });
+  global.window = domOrder.window; global.document = domOrder.window.document;
+  eval(fs.readFileSync(path.join(__dirname, "..", "assets", "panes.js"), "utf8"));
+  var POrder = domOrder.window.SerfPanes;
+  var hrefs = function () { return POrder.openHrefs(); };
+  var frameFocus = false;
+  POrder.openAfter("/thread/child", "child", null);
+  POrder.openAfter("/thread/sibling", "sibling", null);
+  if (hrefs().join("|") !== "/thread/sibling|/thread/child") throw new Error("null parent must prepend side pane");
+  POrder.openAfter("/thread/grandchild", "grandchild", "/thread/child");
+  if (hrefs().join("|") !== "/thread/sibling|/thread/child|/thread/grandchild") throw new Error("child pane must insert after normalized parent");
+  var grandchild = document.querySelector('[src="/thread/grandchild"]');
+  grandchild.focus = function () { frameFocus = true; };
+  POrder.openAfter("/thread/grandchild", "grandchild", "/s/grandchild");
+  if (hrefs().filter(function (h) { return h === "/thread/grandchild"; }).length !== 1) throw new Error("existing href must not duplicate");
+  if (!frameFocus) throw new Error("existing href must focus its iframe");
+  if (hrefs().join("|") !== "/thread/sibling|/thread/child|/thread/grandchild") throw new Error("existing href must not reorder panes");
+  var storedOrder = JSON.parse(domOrder.window.localStorage.getItem("serf-hub.panes") || "[]").map(function (p) { return p.href; });
+  if (storedOrder.join("|") !== hrefs().join("|")) throw new Error("localStorage order must match DOM order");
+  var urlOrder = new domOrder.window.URLSearchParams(domOrder.window.location.search).getAll("pane");
+  if (urlOrder.join("|") !== hrefs().join("|")) throw new Error("URL order must match DOM order");
+  POrder.openAfter("/thread/fourth", "fourth", null);
+  if (hrefs().length !== POrder.MAX_SIDE_PANES) throw new Error("openAfter must enforce MAX_SIDE_PANES");
+  console.log("test-panes parent-relative insertion: ok");
+  global.window = savedWindow; global.document = savedDocument;
+}());
+
 // open one pane
 const pane = P.open("/s/sub-1", "Subagent 1");
 if (!pane) throw new Error("open returned null");

@@ -472,6 +472,7 @@
       row.classList.add("subagent-row");
       row.setAttribute("data-subagent-depth", String((n.__ancestry || []).length + 1));
       row.style.paddingLeft = "calc(var(--space-4) * " + ((n.__ancestry || []).length + 2) + ")";
+      bindChildActivation(row, n);
     }
     return row;
   }
@@ -484,7 +485,30 @@
     if (n.__child) {
       el.setAttribute("data-subagent-depth", String((n.__ancestry || []).length + 1));
       el.style.paddingLeft = "calc(var(--space-4) * " + ((n.__ancestry || []).length + 2) + ")";
+      el.__childDescriptor = n;
     }
+  }
+
+  function childThreadHref(n) {
+    return "/thread/" + encodeURIComponent(n && n.ref || "");
+  }
+  function bindChildActivation(row, n) {
+    row.__childDescriptor = n;
+    row.addEventListener("click", function (e) {
+      var descriptor = row.__childDescriptor;
+      if (!descriptor || !descriptor.__child || !window.SerfPanes || typeof window.SerfPanes.openAfter !== "function") return;
+      e.preventDefault();
+      var chain = (descriptor.__ancestry || []).concat([descriptor]);
+      var previousHref = null;
+      var openHrefs = typeof window.SerfPanes.openHrefs === "function" ? window.SerfPanes.openHrefs() : null;
+      chain.forEach(function (ancestor) {
+        var href = childThreadHref(ancestor);
+        var isTarget = ancestor === descriptor;
+        var alreadyOpen = openHrefs && openHrefs.indexOf(href) !== -1;
+        if (isTarget || !alreadyOpen) window.SerfPanes.openAfter(href, ancestor.title, previousHref);
+        previousHref = href;
+      });
+    });
   }
 
   // A cluster fold is a button-like row — NOT a session link, it has no

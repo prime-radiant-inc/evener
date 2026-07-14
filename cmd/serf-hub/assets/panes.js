@@ -158,13 +158,15 @@
     if (s) s.hidden = !show;
   }
 
-  function open(href, title) {
+  function openPane(href, title, afterHref, prepend) {
     href = normalizePaneHref(href);
     if (!href) return null;
     var r = region();
     if (!r) {
       if (window.parent && window.parent !== window) {
-        window.parent.postMessage({ type: "serf:open-beside", href: href, title: title || href }, window.location.origin);
+        var message = { type: "serf:open-beside", href: href, title: title || href };
+        if (afterHref != null) message.afterHref = normalizePaneHref(afterHref);
+        window.parent.postMessage(message, window.location.origin);
       }
       return null;
     }
@@ -203,11 +205,26 @@
     });
     markLoading(pane, href);
     pane.appendChild(head); pane.appendChild(frame);
-    r.appendChild(pane);
+    if (afterHref == null) {
+      if (prepend) r.insertBefore(pane, r.firstChild);
+      else r.appendChild(pane);
+    } else {
+      var parent = paneFor(normalizePaneHref(afterHref));
+      if (parent) r.insertBefore(pane, parent.nextSibling);
+      else r.appendChild(pane);
+    }
     showRegion(true);
     applyPaneMinWidth();
     persist();
     return pane;
+  }
+
+  function open(href, title) {
+    return openPane(href, title, null, false);
+  }
+
+  function openAfter(href, title, afterHref) {
+    return openPane(href, title, afterHref, true);
   }
 
   function close(href) {
@@ -431,7 +448,7 @@
     data.forEach(function (p) { if (p && p.href) open(normalizePaneHref(p.href), p.title); });
   }
 
-  window.SerfPanes = { open: open, close: close, openHrefs: openHrefs, restore: restore, isSuppressed: isSuppressed, setSidePanesWidth: setSidePanesWidth, threadHref: threadHref, normalizePaneHref: normalizePaneHref, openFromChild: openFromChild, isPaneSafeHref: isPaneSafeHref, markError: markError, MAX_SIDE_PANES: MAX_SIDE_PANES, PANE_MIN: PANE_MIN, _persist: persist };
+  window.SerfPanes = { open: open, openAfter: openAfter, close: close, openHrefs: openHrefs, restore: restore, isSuppressed: isSuppressed, setSidePanesWidth: setSidePanesWidth, threadHref: threadHref, normalizePaneHref: normalizePaneHref, openFromChild: openFromChild, isPaneSafeHref: isPaneSafeHref, markError: markError, MAX_SIDE_PANES: MAX_SIDE_PANES, PANE_MIN: PANE_MIN, _persist: persist };
   window.addEventListener("message", onMessage);
 
   function onLoad() { restore(); bindSplitter(); bindSidebarResizer(); restoreWidth(); }

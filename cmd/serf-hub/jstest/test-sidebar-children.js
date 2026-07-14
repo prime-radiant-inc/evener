@@ -48,6 +48,9 @@ function treeWithChildren() {
 
 const { w, posts } = boot();
 const tree = treeWithChildren();
+w.SerfPanes = { calls: [], openAfter: function (href, title, afterHref) {
+  this.calls.push({ href, title, afterHref });
+} };
 w.SerfSidebar.renderTree(tree);
 const mainRow = w.document.querySelector('[data-row-id="project:p1:local:MAIN"]');
 if (!mainRow) throw new Error("main row must render");
@@ -65,6 +68,25 @@ if (!running.classList.contains("subagent-row") || !retained.classList.contains(
 }
 if (!w.document.querySelector('[data-row-id="project:p1:local:GRAND-IDLE"]')) {
   throw new Error("current grandchild must render under its direct parent");
+}
+const ordinaryClick = new w.MouseEvent("click", { bubbles: true, cancelable: true });
+mainRow.dispatchEvent(ordinaryClick);
+if (ordinaryClick.defaultPrevented) throw new Error("ordinary main-session rows must retain HTMX navigation");
+const runningClick = new w.MouseEvent("click", { bubbles: true, cancelable: true });
+running.dispatchEvent(runningClick);
+if (!runningClick.defaultPrevented) throw new Error("current child activation must prevent ordinary navigation");
+if (w.SerfPanes.calls.length !== 2 ||
+    w.SerfPanes.calls[0].href !== "/thread/local%3AMAIN" || w.SerfPanes.calls[0].afterHref !== null ||
+    w.SerfPanes.calls[1].href !== "/thread/local%3ACHILD-RUNNING" || w.SerfPanes.calls[1].afterHref !== "/thread/local%3AMAIN") {
+  throw new Error("current child activation must open source-qualified ancestry in order: " + JSON.stringify(w.SerfPanes.calls));
+}
+const grandchildCurrent = w.document.querySelector('[data-row-id="project:p1:local:GRAND-IDLE"]');
+grandchildCurrent.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
+if (w.SerfPanes.calls.length !== 5 ||
+    w.SerfPanes.calls[2].href !== "/thread/local%3AMAIN" || w.SerfPanes.calls[2].afterHref !== null ||
+    w.SerfPanes.calls[3].href !== "/thread/local%3ACHILD-RUNNING" || w.SerfPanes.calls[3].afterHref !== "/thread/local%3AMAIN" ||
+    w.SerfPanes.calls[4].href !== "/thread/local%3AGRAND-IDLE" || w.SerfPanes.calls[4].afterHref !== "/thread/local%3ACHILD-RUNNING") {
+  throw new Error("nested child activation must use source-qualified parent-to-child calls: " + JSON.stringify(w.SerfPanes.calls));
 }
 const mainInactive = w.document.querySelector('[data-row-id="inactive:project:p1:local:MAIN"]');
 if (!mainInactive) throw new Error("main must have an inactive disclosure row");
@@ -106,6 +128,13 @@ if (w.document.querySelector('[data-row-id="project:p1:local:GRAND-ENDED"]')) {
 }
 if (w.localStorage.getItem("serf-hub.sidebar.expanded.inactive:project:p1:local:MAIN") !== "true") {
   throw new Error("main inactive expansion must persist under inactive:<row_id>");
+}
+const inactiveChild = w.document.querySelector('[data-row-id="project:p1:local:CHILD-ERROR"]');
+inactiveChild.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
+if (w.SerfPanes.calls.length !== 7 ||
+    w.SerfPanes.calls[5].href !== "/thread/local%3AMAIN" || w.SerfPanes.calls[5].afterHref !== null ||
+    w.SerfPanes.calls[6].href !== "/thread/local%3ACHILD-ERROR" || w.SerfPanes.calls[6].afterHref !== "/thread/local%3AMAIN") {
+  throw new Error("revealed inactive child activation must open ancestry in order: " + JSON.stringify(w.SerfPanes.calls));
 }
 
 // Expand the child's independent disclosure, then prove all state survives a
