@@ -233,7 +233,7 @@ func NewServer(cfg ServerConfig) *Server {
 		}),
 		appNotifier: appserver.NewNotifier(replaySize),
 		appSourceID: "local",
-		appTurns:    &appTurnSnapshot{},
+		appTurns:    &appTurnSnapshot{limit: replaySize},
 		inputCh:     make(chan InputMessage, 1),
 		hubToken:    strings.TrimSpace(cfg.HubToken),
 		sameOrigin:  httpguard.NewSameOriginPolicy(cfg.AllowedHost),

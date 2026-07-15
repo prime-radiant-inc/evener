@@ -1,9 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -150,8 +154,8 @@ func TestServerAppWireBoundedReadsDoNotProjectFullTranscript(t *testing.T) {
 	if !reflect.DeepEqual(page, wantPage) {
 		t.Fatalf("bounded page differs from full reference")
 	}
-	if !reflect.DeepEqual(projected, []int{30}) {
-		t.Fatalf("page read used legacy full projection of %d turns; bounded projection reports = %v, want [30]", len(all), projected)
+	if !reflect.DeepEqual(projected, []int{30, 0}) {
+		t.Fatalf("page read used legacy full projection of %d turns; bounded projection reports = %v, want page plus zero-projection count [30 0]", len(all), projected)
 	}
 }
 
@@ -228,5 +232,198 @@ func TestServerAppWireDirectPageUsesExactTranscriptAuthority(t *testing.T) {
 	}
 	if !reflect.DeepEqual(projected, []int{30, 0}) {
 		t.Fatalf("direct page projection reports = %v, want requested page plus zero-projection count [30 0]", projected)
+	}
+}
+
+func TestServerAppWireNotificationSnapshotMatchesRetainedWindowAfterEviction(t *testing.T) {
+	srv := NewServer(ServerConfig{AppReplaySize: 5})
+	srv.SetAppIdentity("local", "th_1")
+	for _, text := range []string{"first", "second", "third"} {
+		srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: text}})
+		srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{Text: text + " reply"}})
+		srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}})
+	}
+
+	wantAll := appTurnsFromNotifications(srv.AppNotificationsAfter(0, "th_1"))
+	want, wantCursor := appwire.WindowTurns(wantAll, 40)
+	got, gotCursor := srv.appLatestTurns("th_1", 40)
+	if !reflect.DeepEqual(got, want) || gotCursor != wantCursor {
+		t.Fatalf("bounded notification snapshot retained evicted state\n got: %v cursor=%q\nwant: %v cursor=%q", turnIDs(got), gotCursor, turnIDs(want), wantCursor)
+	}
+	for _, turn := range got {
+		for _, item := range turn.Items {
+			if item.Text == "first" || item.Text == "first reply" {
+				t.Fatalf("evicted item survived retained snapshot: %+v", item)
+			}
+		}
+	}
+}
+
+func appendTranscriptTurns(t *testing.T, path string, count int) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	for i := 0; i < count; i++ {
+		line, err := json.Marshal(transcript.Entry{Kind: "entry", Seq: 100 + i, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("appended"))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.Write(append(line, '\n')); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func recordNotificationTurns(t *testing.T, srv *Server, count int) {
+	t.Helper()
+	for i := 0; i < count; i++ {
+		srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "notification"}})
+		srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{Text: "reply"}})
+		srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}})
+	}
+}
+
+func TestServerAppWirePageRecomputesTranscriptAuthorityAfterInputsChange(t *testing.T) {
+	t.Run("transcript append reverses notification authority", func(t *testing.T) {
+		srv := seedTranscriptServer(t, 1)
+		recordNotificationTurns(t, srv, 4)
+		_, _ = srv.appLatestTurns("th_1", 1)
+		appendTranscriptTurns(t, srv.transcriptPath(), 8)
+
+		want := appwire.PageTurns(srv.appAllTurns("th_1"), "8", 2)
+		var projected []int
+		restore := apptranscript.InstallReadObserverForTesting(func(stats apptranscript.ReadStats) { projected = append(projected, stats.ProjectedTurns) })
+		t.Cleanup(restore)
+		got := srv.appPageTurns("th_1", "8", 2)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("page retained stale notification authority\n got: %v\nwant: %v", turnIDs(got.Data), turnIDs(want.Data))
+		}
+		if !reflect.DeepEqual(projected, []int{2, 0}) {
+			t.Fatalf("projection reports = %v, want page plus zero-projection count [2 0]", projected)
+		}
+	})
+
+	t.Run("notification growth reverses transcript authority", func(t *testing.T) {
+		srv := seedTranscriptServer(t, 2)
+		_, _ = srv.appLatestTurns("th_1", 1)
+		recordNotificationTurns(t, srv, 4)
+
+		want := appwire.PageTurns(srv.appAllTurns("th_1"), "4", 2)
+		var projected []int
+		restore := apptranscript.InstallReadObserverForTesting(func(stats apptranscript.ReadStats) { projected = append(projected, stats.ProjectedTurns) })
+		t.Cleanup(restore)
+		got := srv.appPageTurns("th_1", "4", 2)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("page retained stale transcript authority\n got: %v\nwant: %v", turnIDs(got.Data), turnIDs(want.Data))
+		}
+		if !reflect.DeepEqual(projected, []int{2, 0}) {
+			t.Fatalf("projection reports = %v, want page plus zero-projection count [2 0]", projected)
+		}
+	})
+}
+
+func TestServerAppWireOldIdentityReplayCannotPopulateNewSnapshot(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "old")
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "old", Data: events.UserInputData{Text: "old turn"}})
+	oldThreadID := srv.appThread().ID
+
+	srv.SetAppIdentity("local", "new")
+	oldTurns, _ := srv.appNotificationTurns(oldThreadID)
+	if len(oldTurns) != 0 {
+		t.Fatalf("old identity read returned turns after switch: %v", turnIDs(oldTurns))
+	}
+	newTurns, _ := srv.appNotificationTurns("new")
+	if len(newTurns) != 0 {
+		t.Fatalf("old identity replay populated new snapshot: %v", turnIDs(newTurns))
+	}
+}
+
+func TestAppTurnSnapshotIsDeepDefensiveCopy(t *testing.T) {
+	started, completed, duration := int64(10), int64(20), int64(30)
+	itemStarted, itemCompleted := int64(11), int64(19)
+	retained := appwire.Turn{
+		ID: "turn_1", ItemsView: "full", Status: appwire.TurnStatusCompleted,
+		StartedAt: &started, CompletedAt: &completed, DurationMS: &duration,
+		Usage: &appwire.SerfUsage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
+		Error: &appwire.TurnError{
+			Message: "boom", Cause: &appwire.DiagnosticCause{Kind: "provider", Provider: "openai"},
+			CodexErrorInfo: map[string]any{"nested": map[string]any{"code": "original"}, "items": []any{"first"}},
+		},
+		Items: []appwire.ThreadItem{{
+			Type: "userMessage", ID: "item_1", TurnID: "turn_1", Status: appwire.TurnStatusCompleted,
+			StartedAt: &itemStarted, CompletedAt: &itemCompleted,
+			Raw:          json.RawMessage(`{"state":{"value":"original"}}`),
+			Images:       []appwire.InputItem{{Type: "image", Data: []byte("original"), Metadata: map[string]string{"name": "original"}}},
+			OutputImages: []appwire.OutputImage{{Name: "original", SHA: "sha"}},
+		}},
+	}
+	snapshot := &appTurnSnapshot{limit: 100, cursor: 1, turns: []appwire.Turn{retained}, turnIndex: map[string]int{"turn_1": 0}}
+
+	first := snapshot.Snapshot()
+	want, err := json.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	*first[0].StartedAt = 100
+	*first[0].CompletedAt = 200
+	*first[0].DurationMS = 300
+	first[0].Usage.InputTokens = 100
+	first[0].Error.Message = "mutated"
+	first[0].Error.Cause.Provider = "mutated"
+	info := first[0].Error.CodexErrorInfo.(map[string]any)
+	info["nested"].(map[string]any)["code"] = "mutated"
+	info["items"].([]any)[0] = "mutated"
+	item := &first[0].Items[0]
+	*item.StartedAt = 110
+	*item.CompletedAt = 190
+	item.Raw[bytes.Index(item.Raw, []byte("original"))] = 'X'
+	item.Images[0].Data[0] = 'x'
+	item.Images[0].Metadata["name"] = "mutated"
+	item.OutputImages[0].Name = "mutated"
+
+	got, err := json.Marshal(snapshot.Snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("snapshot aliases returned mutable state\n got: %s\nwant: %s", got, want)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			_ = snapshot.Snapshot()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			delta, err := json.Marshal(appwire.AgentMessageDeltaParams{TurnID: "turn_1", ItemID: "item_delta", Delta: "x"})
+			if err != nil {
+				panic(err)
+			}
+			snapshot.Apply([]appserver.SequencedNotification{{Seq: uint64(i + 2), Notification: appwire.Notification{Method: appwire.NotifyAgentMessageDelta, Params: delta}}})
+		}
+	}()
+	wg.Wait()
+}
+
+func TestAppTurnsFromNotificationsPreservesInputOrderWithMixedSequences(t *testing.T) {
+	record := func(seq uint64, text string) appserver.SequencedNotification {
+		params, err := json.Marshal(appwire.AgentMessageDeltaParams{TurnID: "turn_1", ItemID: "item_1", Delta: text})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return appserver.SequencedNotification{Seq: seq, Notification: appwire.Notification{Method: appwire.NotifyAgentMessageDelta, Params: params}}
+	}
+	turns := appTurnsFromNotifications([]appserver.SequencedNotification{record(10, "first"), record(0, " second")})
+	if len(turns) != 1 || len(turns[0].Items) != 1 || turns[0].Items[0].Text != "first second" {
+		t.Fatalf("mixed-sequence legacy projection = %+v, want both input-order deltas", turns)
 	}
 }

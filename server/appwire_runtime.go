@@ -27,7 +27,7 @@ func (s *Server) SetAppIdentity(sourceID, threadID string) {
 	s.appSourceID = sourceID
 	s.appThreadID = threadID
 	s.appProjector = appprojector.NewAppEventProjector(threadID, ref)
-	s.appTurns = &appTurnSnapshot{}
+	s.appTurns = &appTurnSnapshot{threadID: threadID, limit: s.appTurns.limit}
 	s.appActiveTurnID = ""
 	s.appReservedTurnID = ""
 	s.mu.Unlock()
@@ -138,8 +138,18 @@ func (s *Server) appAllTurns(threadID string) []appwire.Turn {
 func (s *Server) appNotificationTurns(threadID string) ([]appwire.Turn, *appTurnSnapshot) {
 	s.mu.RLock()
 	snapshot := s.appTurns
+	currentThreadID := s.appThreadID
 	s.mu.RUnlock()
+	if snapshot == nil || threadID != currentThreadID || snapshot.threadID != threadID {
+		return nil, snapshot
+	}
 	snapshot.Apply(s.AppNotificationsAfter(snapshot.Cursor(), threadID))
+	s.mu.RLock()
+	stillCurrent := s.appTurns == snapshot && s.appThreadID == threadID
+	s.mu.RUnlock()
+	if !stillCurrent {
+		return nil, snapshot
+	}
 	return snapshot.Snapshot(), snapshot
 }
 
@@ -157,7 +167,7 @@ func (s *Server) appLatestTurns(threadID string, limit int) ([]appwire.Turn, str
 	if limit <= 0 {
 		return appwire.WindowTurns(s.appAllTurns(threadID), limit)
 	}
-	notificationTurns, snapshot := s.appNotificationTurns(threadID)
+	notificationTurns, _ := s.appNotificationTurns(threadID)
 	path := s.transcriptPath()
 	if path == "" {
 		return appwire.WindowTurns(notificationTurns, limit)
@@ -170,7 +180,6 @@ func (s *Server) appLatestTurns(threadID string, limit int) ([]appwire.Turn, str
 		}
 	}
 	authoritative := transcriptCount > 0 && (len(notificationTurns) == 0 || transcriptCount > len(notificationTurns) || notificationTurns[0].ID != "turn_1")
-	snapshot.SetTranscriptAuthority(authoritative)
 	if authoritative {
 		return transcriptTurns, cursor
 	}
@@ -181,18 +190,14 @@ func (s *Server) appPageTurns(threadID, cursor string, limit int) appwire.Thread
 	if limit <= 0 {
 		return appwire.PageTurns(s.appAllTurns(threadID), cursor, limit)
 	}
-	notificationTurns, snapshot := s.appNotificationTurns(threadID)
+	notificationTurns, _ := s.appNotificationTurns(threadID)
 	path := s.transcriptPath()
 	if path == "" {
 		return appwire.PageTurns(notificationTurns, cursor, limit)
 	}
 	page := transcriptTurnCache.PageFromFile(path, 128<<20, cursor, limit, projectBoundedDaemonTranscriptTurn)
-	authoritative, known := snapshot.TranscriptAuthority()
-	if !known {
-		transcriptCount := transcriptTurnCache.TurnCountFromFile(path, 128<<20, projectBoundedDaemonTranscriptTurn)
-		authoritative = transcriptCount > 0 && (len(notificationTurns) == 0 || transcriptCount > len(notificationTurns) || notificationTurns[0].ID != "turn_1")
-		snapshot.SetTranscriptAuthority(authoritative)
-	}
+	transcriptCount := transcriptTurnCache.TurnCountFromFile(path, 128<<20, projectBoundedDaemonTranscriptTurn)
+	authoritative := transcriptCount > 0 && (len(notificationTurns) == 0 || transcriptCount > len(notificationTurns) || notificationTurns[0].ID != "turn_1")
 	if authoritative {
 		return appwire.ThreadTurnsListResponse{Data: page.Turns, NextCursor: page.NextCursor}
 	}
