@@ -248,6 +248,271 @@ func TestTurnCacheIndexesOnlyAppendedSuffixAndBoundsProjection(t *testing.T) {
 	}
 }
 
+func TestTurnCacheAppendIndexWorkIsBoundedBySuffix(t *testing.T) {
+	type observedWork struct {
+		count int
+		line  int
+		stat  ReadStats
+	}
+	var work []observedWork
+	for _, count := range []int{100, 1_000, 10_000} {
+		path := writeNumberedTranscript(t, count)
+		cache := NewTurnCache()
+		cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
+		basePath := path + ".appwire-index.json"
+		baseBefore, err := os.ReadFile(basePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		line := numberedEntryLine(t, count+1, "appended")
+		appendFile(t, path, line)
+		var stat ReadStats
+		previous := observeTurnIndexRead
+		observeTurnIndexRead = func(got ReadStats) { stat = got }
+		cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
+		observeTurnIndexRead = previous
+
+		baseAfter, err := os.ReadFile(basePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(baseAfter, baseBefore) {
+			t.Fatalf("entries=%d: append rewrote the base snapshot (%d bytes before, %d after)", count, len(baseBefore), len(baseAfter))
+		}
+		if stat.IndexedBytes != int64(len(line)) || stat.ProjectedTurns != 40 {
+			t.Fatalf("entries=%d: read stats=%+v want indexed=%d projected=40", count, stat, len(line))
+		}
+		if stat.indexBytesCopied > 8<<10 {
+			t.Fatalf("entries=%d: copied %d index bytes, want <= %d suffix-bounded bytes", count, stat.indexBytesCopied, 8<<10)
+		}
+		if stat.indexBytesSerialized <= 0 || stat.indexBytesSerialized > 32<<10 {
+			t.Fatalf("entries=%d: serialized %d index bytes, want 1..%d suffix-bounded bytes", count, stat.indexBytesSerialized, 32<<10)
+		}
+		if stat.indexBytesPersisted <= 0 || stat.indexBytesPersisted > 16<<10 {
+			t.Fatalf("entries=%d: persisted %d index bytes, want 1..%d suffix-bounded bytes", count, stat.indexBytesPersisted, 16<<10)
+		}
+		work = append(work, observedWork{count: count, line: len(line), stat: stat})
+	}
+
+	baseline := work[0].stat
+	for _, got := range work[1:] {
+		if got.stat.indexBytesCopied > baseline.indexBytesCopied+8<<10 ||
+			got.stat.indexBytesSerialized > baseline.indexBytesSerialized+8<<10 ||
+			got.stat.indexBytesPersisted > baseline.indexBytesPersisted+8<<10 {
+			t.Fatalf("entries=%d: append index work grew with history: baseline=%+v got=%+v", got.count, baseline, got.stat)
+		}
+	}
+}
+
+func TestTurnCacheSuffixAdvancementDoesNotMutatePublishedHistory(t *testing.T) {
+	path := writeNumberedTranscript(t, 100)
+	cache := NewTurnCache()
+	cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
+
+	cache.mu.Lock()
+	published := *cache.entries[path].turnIndex
+	cache.mu.Unlock()
+	if published.recordCount() != 100 {
+		t.Fatalf("published record count=%d want=100", published.recordCount())
+	}
+
+	appendFile(t, path, numberedEntryLine(t, 101, "appended"))
+	advanced := make(chan struct{})
+	go func() {
+		cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
+		close(advanced)
+	}()
+
+	oldTurns, oldProjected := projectIndexedRange(path, published, 60, 100, boundedTestProjector)
+	<-advanced
+	if published.recordCount() != 100 || published.logicalTurnCount() != 100 {
+		t.Fatalf("suffix advancement mutated published history: records=%d turns=%d", published.recordCount(), published.logicalTurnCount())
+	}
+	if oldProjected != 40 || len(oldTurns) != 40 || turnText(oldTurns[len(oldTurns)-1]) != "entry-100" {
+		t.Fatalf("published snapshot changed during advancement: projected=%d turns=%d tail=%q", oldProjected, len(oldTurns), turnText(oldTurns[len(oldTurns)-1]))
+	}
+
+	cache.mu.Lock()
+	current := *cache.entries[path].turnIndex
+	cache.mu.Unlock()
+	if current.recordCount() != 101 || current.logicalTurnCount() != 101 {
+		t.Fatalf("advanced index=(records=%d turns=%d) want=(101,101)", current.recordCount(), current.logicalTurnCount())
+	}
+}
+
+func TestTurnCacheRestartLoadsBasePlusValidJournalDeltas(t *testing.T) {
+	path := writeNumberedTranscript(t, 100)
+	cache := NewTurnCache()
+	cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
+	basePath := path + ".appwire-index.json"
+	baseBefore, err := os.ReadFile(basePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendFile(t, path, numberedEntryLine(t, 101, "delta-one"))
+	appendFile(t, path, assistantToolCallLine(t, 102, "restart-call", "restart_tool"))
+	appendFile(t, path, toolResultLine(t, 103, "restart-call", "", "restart output"))
+	cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
+
+	baseAfter, err := os.ReadFile(basePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(baseAfter, baseBefore) {
+		t.Fatalf("append rewrote base snapshot: before=%d bytes after=%d", len(baseBefore), len(baseAfter))
+	}
+	journalPath := basePath + ".journal"
+	journal, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatalf("read delta journal: %v", err)
+	}
+	if len(journal) == 0 || journal[len(journal)-1] != '\n' {
+		t.Fatalf("delta journal is not a complete durable frame: %q", journal)
+	}
+
+	var stat ReadStats
+	previous := observeTurnIndexRead
+	observeTurnIndexRead = func(got ReadStats) { stat = got }
+	t.Cleanup(func() { observeTurnIndexRead = previous })
+	got, cursor := NewTurnCache().LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
+	want, wantCursor := appwire.WindowTurns(TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector()), 40)
+	if !reflect.DeepEqual(got, want) || cursor != wantCursor {
+		t.Fatalf("restart got=(%#v,%q) want=(%#v,%q)", got, cursor, want, wantCursor)
+	}
+	if stat.IndexedBytes != 0 {
+		t.Fatalf("restart rescanned authoritative transcript: stats=%+v", stat)
+	}
+	if got[len(got)-1].Items[0].ToolName != "restart_tool" {
+		t.Fatalf("restart lost historical tool state: turn=%#v", got[len(got)-1])
+	}
+}
+
+func TestTurnCacheTruncatedFinalJournalAcceptsPrefixAndRepairsSuffix(t *testing.T) {
+	path := writeNumberedTranscript(t, 20)
+	cache := NewTurnCache()
+	cache.LatestFromFile(path, testMaxLineBytes, 10, boundedTestProjector)
+	line21 := numberedEntryLine(t, 21, "delta-21")
+	appendFile(t, path, line21)
+	cache.LatestFromFile(path, testMaxLineBytes, 10, boundedTestProjector)
+	line22 := numberedEntryLine(t, 22, "delta-22")
+	appendFile(t, path, line22)
+	cache.LatestFromFile(path, testMaxLineBytes, 10, boundedTestProjector)
+
+	journalPath := path + ".appwire-index.json.journal"
+	journal, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatalf("read delta journal: %v", err)
+	}
+	if len(journal) == 0 || journal[len(journal)-1] != '\n' {
+		t.Fatalf("journal fixture is not complete: %q", journal)
+	}
+	previousNewline := bytes.LastIndexByte(journal[:len(journal)-1], '\n')
+	if previousNewline < 0 {
+		t.Fatalf("journal has fewer than two frames: %q", journal)
+	}
+	validPrefixSize := previousNewline + 1
+	truncatedSize := validPrefixSize + (len(journal)-validPrefixSize)/2
+	if err := os.WriteFile(journalPath, journal[:truncatedSize], 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stat ReadStats
+	previous := observeTurnIndexRead
+	observeTurnIndexRead = func(got ReadStats) { stat = got }
+	t.Cleanup(func() { observeTurnIndexRead = previous })
+	got, cursor := NewTurnCache().LatestFromFile(path, testMaxLineBytes, 10, boundedTestProjector)
+	want, wantCursor := appwire.WindowTurns(TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector()), 10)
+	if !reflect.DeepEqual(got, want) || cursor != wantCursor {
+		t.Fatalf("truncated-journal recovery got=(%#v,%q) want=(%#v,%q)", got, cursor, want, wantCursor)
+	}
+	if stat.IndexedBytes != int64(len(line22)) {
+		t.Fatalf("truncated-journal recovery stats=%+v want suffix indexed=%d", stat, len(line22))
+	}
+	repaired, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repaired) == 0 || repaired[len(repaired)-1] != '\n' {
+		t.Fatalf("repaired journal does not end at a complete frame: %q", repaired)
+	}
+
+	stat = ReadStats{}
+	got, cursor = NewTurnCache().LatestFromFile(path, testMaxLineBytes, 10, boundedTestProjector)
+	if !reflect.DeepEqual(got, want) || cursor != wantCursor || stat.IndexedBytes != 0 {
+		t.Fatalf("second restart got=(%#v,%q) stats=%+v want=(%#v,%q) with no scan", got, cursor, stat, want, wantCursor)
+	}
+}
+
+func TestTurnCacheRejectsCorruptOrChainMismatchedJournal(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, []byte) []byte
+	}{
+		{name: "corrupt JSON", mutate: func(t *testing.T, journal []byte) []byte {
+			t.Helper()
+			journal = append([]byte(nil), journal...)
+			journal[0] = '!'
+			return journal
+		}},
+		{name: "integrity chain mismatch", mutate: func(t *testing.T, journal []byte) []byte {
+			t.Helper()
+			journal = append([]byte(nil), journal...)
+			const marker = `"previous_stamp":"`
+			start := bytes.Index(journal, []byte(marker))
+			if start < 0 {
+				t.Fatalf("journal has no previous stamp: %q", journal)
+			}
+			start += len(marker)
+			if journal[start] == '0' {
+				journal[start] = '1'
+			} else {
+				journal[start] = '0'
+			}
+			return journal
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeNumberedTranscript(t, 20)
+			cache := NewTurnCache()
+			cache.LatestFromFile(path, testMaxLineBytes, 10, boundedTestProjector)
+			appendFile(t, path, numberedEntryLine(t, 21, "durable delta"))
+			cache.LatestFromFile(path, testMaxLineBytes, 10, boundedTestProjector)
+			journalPath := path + ".appwire-index.json.journal"
+			journal, err := os.ReadFile(journalPath)
+			if err != nil {
+				t.Fatalf("read delta journal: %v", err)
+			}
+			if err := os.WriteFile(journalPath, test.mutate(t, journal), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			var stat ReadStats
+			previous := observeTurnIndexRead
+			observeTurnIndexRead = func(got ReadStats) { stat = got }
+			t.Cleanup(func() { observeTurnIndexRead = previous })
+			got, cursor := NewTurnCache().LatestFromFile(path, testMaxLineBytes, 10, boundedTestProjector)
+			want, wantCursor := appwire.WindowTurns(TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector()), 10)
+			if !reflect.DeepEqual(got, want) || cursor != wantCursor {
+				t.Fatalf("journal recovery got=(%#v,%q) want=(%#v,%q)", got, cursor, want, wantCursor)
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stat.IndexedBytes != info.Size() {
+				t.Fatalf("corrupt journal was partly trusted: stats=%+v want authoritative rebuild bytes=%d", stat, info.Size())
+			}
+
+			stat = ReadStats{}
+			got, cursor = NewTurnCache().LatestFromFile(path, testMaxLineBytes, 10, boundedTestProjector)
+			if !reflect.DeepEqual(got, want) || cursor != wantCursor || stat.IndexedBytes != 0 {
+				t.Fatalf("post-rebuild restart got=(%#v,%q) stats=%+v want=(%#v,%q) with no scan", got, cursor, stat, want, wantCursor)
+			}
+		})
+	}
+}
+
 func TestTurnCacheRebuildsIndexAfterTranscriptReplacement(t *testing.T) {
 	path := writeNumberedTranscript(t, 4)
 	cache := NewTurnCache()
@@ -558,10 +823,16 @@ func BenchmarkTurnCacheLatest40AfterAppend(b *testing.B) {
 			cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
 			var indexedBytes int64
 			var projectedTurns int64
+			var indexBytesCopied int64
+			var indexBytesSerialized int64
+			var indexBytesPersisted int64
 			previous := observeTurnIndexRead
 			observeTurnIndexRead = func(stat ReadStats) {
 				indexedBytes += stat.IndexedBytes
 				projectedTurns += int64(stat.ProjectedTurns)
+				indexBytesCopied += stat.indexBytesCopied
+				indexBytesSerialized += stat.indexBytesSerialized
+				indexBytesPersisted += stat.indexBytesPersisted
 			}
 			defer func() { observeTurnIndexRead = previous }()
 			b.ReportAllocs()
@@ -571,6 +842,7 @@ func BenchmarkTurnCacheLatest40AfterAppend(b *testing.B) {
 				cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
 			}
 			reportReadMetrics(b, indexedBytes, projectedTurns)
+			reportIndexWriteMetrics(b, indexBytesCopied, indexBytesSerialized, indexBytesPersisted)
 		})
 	}
 }
@@ -605,6 +877,15 @@ func reportReadMetrics(b *testing.B, indexedBytes int64, projectedTurns int64) {
 	}
 	b.ReportMetric(float64(indexedBytes)/float64(b.N), "indexed_bytes/op")
 	b.ReportMetric(float64(projectedTurns)/float64(b.N), "projected_turns/op")
+}
+
+func reportIndexWriteMetrics(b *testing.B, copied, serialized, persisted int64) {
+	if b.N == 0 {
+		return
+	}
+	b.ReportMetric(float64(copied)/float64(b.N), "index_copied_bytes/op")
+	b.ReportMetric(float64(serialized)/float64(b.N), "index_serialized_bytes/op")
+	b.ReportMetric(float64(persisted)/float64(b.N), "index_persisted_bytes/op")
 }
 
 func sequentialTestProjector() EntryProjector {
@@ -664,8 +945,18 @@ func assistantToolCallEntry(seq int, id, name, arguments string) transcript.Entr
 	return transcript.Entry{Kind: "entry", Seq: seq, Turn: schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: id, Name: name, Arguments: json.RawMessage(arguments)}}}}}}
 }
 
+func assistantToolCallLine(t testing.TB, seq int, id, name string) []byte {
+	t.Helper()
+	return marshalEntryLine(t, assistantToolCallEntry(seq, id, name, `{}`))
+}
+
 func toolResultEntry(seq int, id, name, content string) transcript.Entry {
 	return transcript.Entry{Kind: "entry", Seq: seq, Turn: schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: id, Name: name, Content: content}}}}}}
+}
+
+func toolResultLine(t testing.TB, seq int, id, name, content string) []byte {
+	t.Helper()
+	return marshalEntryLine(t, toolResultEntry(seq, id, name, content))
 }
 
 func writeBoundedFixture(t *testing.T) boundedFixture {

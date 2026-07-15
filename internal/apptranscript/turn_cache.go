@@ -20,6 +20,7 @@ const defaultTurnCacheSize = 32
 // assumes a single EntryProjector, so give each call site its own cache.
 type TurnCache struct {
 	mu      sync.Mutex
+	indexMu sync.Mutex // serializes suffix advancement and journal appends
 	entries map[string]turnCacheEntry
 	order   []string // least-recently-used first, for bounded eviction
 	max     int
