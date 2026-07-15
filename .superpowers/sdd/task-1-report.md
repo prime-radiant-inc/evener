@@ -1,236 +1,124 @@
-# Task 1: Deterministic Fork Failure Tests
+# Task 1 Report: Inline task update cards
 
-## Scope
+## Status
 
-Repair the two pre-existing deterministic agent baseline failures reported by
-`make test`:
+DONE
 
-- `TestW3Init_ForkSession_OpenError`
-- `TestW3Init_ForkSession_NewWriterError`
+## Files changed
 
-No commit was created.
+- `cmd/serf-hub/assets/renderer.js`
+  - Failed `task_list` calls are deleted from pending state and render no card.
+  - Successful mutations route to a new per-call card.
+  - The persistent living-plan card and fold implementation were removed.
+  - Cards use authoritative state when available, detect only additions/status transitions, add completion auto-activation only from authoritative state, render the progress meter, and include only touched rows.
+- `cmd/serf-hub/jstest/test-renderer-plan.js`
+  - Replaced living-plan scenarios with the seven required per-call scenarios and direct DOM assertions.
+- `cmd/serf-hub/jstest/test-realistic-flow.js`
+  - Updated only the superseded living-card assertions: 4 per-call cards and 12 top-level conversation children.
 
-## Root Cause
+No other source or test files were changed. The pre-existing `.superpowers/sdd/progress.md` was not modified or used as requirements.
 
-Both tests attempted to induce filesystem errors through Unix permission bits:
+## Commits
 
-- The open-error test set the transcript file to mode `000`.
-- The new-writer-error test set the sessions directory to mode `0500`.
+- `d27f49c28` — `fix(hub): show inline task changes`
 
-The test process runs as UID 0 in this environment. Root can read the mode-000
-file and create a child file in the mode-0500 directory, so neither intended
-fault occurred. The successful open then advanced to `LoadSessionMeta`; because
-the open-error test had not created parent metadata, it failed with a
-missing-meta error instead. The writer path completed successfully and returned
-`nil`.
+## Tests
 
-This was an ambient-machine-state test design error, not a production fork
-behavior bug.
-
-## Design
-
-`ForkSession` now delegates to an unexported `forkSessionFS` helper supplied
-with an `afero.Fs`. The public path passes `afero.NewOsFs()`, preserving normal
-production behavior. The helper sends transcript reads/writes and session-meta
-reads/writes through that same filesystem.
-
-The existing private filesystem implementations were exposed as narrow public
-wrappers:
-
-- `transcript.NewWriterWithFS`
-- `schema.SaveSessionMetaWithFS`
-- `schema.LoadSessionMetaWithFS`
-
-The repaired tests use real Serf persistence below a fake external filesystem
-boundary:
-
-- `fault.FS` injects the parent transcript open failure.
-- `afero.NewReadOnlyFs` permits loading a seeded parent but rejects child
-  transcript creation.
-
-This avoids global hooks, permission assumptions, and mocks of Serf internals.
-
-## TDD Evidence
-
-### Initial Reproduction
-
-Command:
-
-```sh
-go test ./agent -run '^(TestW3Init_ForkSession_OpenError|TestW3Init_ForkSession_NewWriterError)$' -count=1 -v
-```
-
-Result: failed deterministically.
-
-- `TestW3Init_ForkSession_OpenError`: received `load parent session meta: ... no
-  such file or directory`, not `open parent transcript`.
-- `TestW3Init_ForkSession_NewWriterError`: received `err = <nil>`.
-
-### Red
-
-The tests were rewritten first to require the real filesystem seam. Before the
-seam existed, the same focused command failed to build with:
+TDD red baseline:
 
 ```text
-undefined: forkSessionFS
-undefined: schema.SaveSessionMetaWithFS
+cd cmd/serf-hub/jstest
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
 ```
 
-### Green
+Result: failed as expected against the old living-card implementation because aggregate/disclosure UI remained and update-only cards were not independent.
 
-After implementing the filesystem seam, the focused command passed both tests:
-
-```sh
-go test ./agent -run '^(TestW3Init_ForkSession_OpenError|TestW3Init_ForkSession_NewWriterError)$' -count=1 -v
-```
-
-Result:
+Final focused and related commands:
 
 ```text
-PASS
-ok   primeradiant.com/serf/agent  0.016s
+cd cmd/serf-hub/jstest
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-realistic-flow.js
 ```
 
-## Files Changed
+Result: all passed, exit 0.
 
-- `agent/fork.go`
-  - Added `forkSessionFS` and routed the public `ForkSession` through an OS
-    filesystem instance.
-  - Routed transcript and metadata persistence through the supplied filesystem.
-- `agent/cov_w3init_fork_test.go`
-  - Replaced chmod-based fault simulation with deterministic faulting/read-only
-    `afero` filesystems.
-- `agent/schema/snapshot.go`
-  - Added thin `SaveSessionMetaWithFS` and `LoadSessionMetaWithFS` wrappers over
-    existing filesystem-injecting implementations.
-- `agent/transcript/transcript.go`
-  - Added thin `NewWriterWithFS` wrapper over the existing
-    filesystem-injecting writer implementation.
+- Focused renderer test: CSS contract plus all 7 per-call scenarios passed.
+- Subscription test: `PASS test-task-updated-subscription.js`.
+- Realistic flow: `PASS realistic-flow — user message, assistant text (×2), tool cluster, task card, steering suppression`.
+- `git diff --check`: passed before commit.
+- Final `git status --short` after commit: clean before this report was written.
 
-## Verification
+## Self-review
 
-All commands ran from the coverage worktree unless noted otherwise.
+- Confirmed `livePlanCard`, `renderLivePlan`, and `taskFoldGroup` plus living-plan comments are absent from `renderer.js`.
+- Confirmed failed calls are silent and pending entries are removed.
+- Confirmed view calls return without rendering or refreshing.
+- Confirmed non-status updates with authoritative tasks render a header with zero rows.
+- Confirmed completion auto-activation is inferred only from authoritative state.
+- Confirmed degraded replay does not invent auto-activation.
+- Confirmed cards are appended independently and contain no summary, toggle, show-all, hidden-row, neighboring-row, or completion-prose UI.
+- Confirmed the staged commit contained only the three intended Task 1 behavior/test files.
 
-```sh
-go test ./agent -run '^(TestW3Init_ForkSession_OpenError|TestW3Init_ForkSession_NewWriterError)$' -count=1 -v
-```
+## Concerns
 
-Passed both repaired tests.
+The commit command printed an `Operation not permitted` warning while attempting to create the repository-level `packed-refs.lock`, but it exited 0 and produced commit `d27f49c28`; `git log`, `git show`, and `git status --short` confirmed the commit and clean tracked worktree. This is an environment warning only, not a test or implementation failure.
 
-```sh
-cd agent && go test ./... -count=1
-```
+## Review fix: malformed successful mutations
 
-Passed all agent-module packages (exit 0).
+### Status
 
-```sh
-go test ./agent -run '^(TestForkSession_|TestS2Cov_ForkSession_|TestW3Init_ForkSession_)' -count=1 -v
-```
+DONE
 
-Passed the complete fork-focused suite, including existing happy paths and all
-fault arms.
+### Changes
 
-```sh
-git diff --check -- agent/fork.go agent/cov_w3init_fork_test.go agent/schema/snapshot.go agent/transcript/transcript.go
-```
+- `cmd/serf-hub/jstest/test-renderer-plan.js`
+  - Added red regression coverage for invalid JSON, an unknown action, malformed append payload, and malformed update payload on successful task calls.
+  - Strengthened the append scenario with a seeded known task plus new tasks, asserting only six newly added rows and directly asserting the `Tasks` title.
+- `cmd/serf-hub/assets/renderer.js`
+  - Validates that only `append` with an array `tasks` or `update` with an array `updates` is eligible to render or refresh.
+  - Keeps empty append silent, including when cached tasks exist.
+  - Safely handles a JSON `null` argument payload.
+  - Refreshes the task badge only when a valid mutation renders a card.
 
-Passed with no whitespace errors.
+### Review-fix tests
 
-```sh
-make test
-```
-
-Passed with exit code 0:
+TDD regression command (failed before the implementation fix):
 
 ```text
-PASS  .        12.48s
-PASS  agent    7.39s
-PASS  llm      2.03s
-PASS  auth     1.11s
-PASS  envvars  0.18s
-PASS  invariant 0.16s
+cd cmd/serf-hub/jstest
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
 ```
 
-## Self-Review
+Result: failed at `malformed successful task mutations render and refresh no card`; the old path rendered four false cards.
 
-- The fault injection is per-call and carries no mutable global state, so the
-  existing `t.Parallel()` tests remain race-safe.
-- The tests exercise the real scanner, header parsing, metadata load, and
-  transcript writer paths. Only the external filesystem behavior is controlled.
-- Production still uses the OS filesystem. The new public wrappers only expose
-  existing implementations and do not alter serialization, paths, or error
-  wrapping.
-- No known remaining concern for this repair. The deliberately expanded
-  filesystem seam is also useful for deterministic persistence fuzzing.
-
-## Review Fix: Child Transcript Create Fixture
-
-### Root Cause
-
-`TestW3Init_ForkSession_NewWriterError` wrapped the seeded in-memory filesystem
-in `afero.NewReadOnlyFs`. `transcript.NewWriterWithFS` calls `MkdirAll` before
-`Create`, so the fixture deterministically failed at `create transcript dir`
-rather than reaching the intended child transcript `Create` boundary. Its old
-error-text-only assertion accepted that wrong failure.
-
-### TDD Evidence
-
-The test assertion was strengthened first to require that the returned error
-wrap `fault.ErrInjected`, while retaining the read-only fixture. The focused
-test then failed for the intended diagnostic reason:
-
-```sh
-go test ./agent -run '^TestW3Init_ForkSession_NewWriterError$' -count=1 -v
-```
+Final review-fix commands:
 
 ```text
-cov_w3init_fork_test.go:108: err = create child transcript: create transcript dir: operation not permitted, want wrapped injected child transcript create error
-FAIL
+cd cmd/serf-hub/jstest
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-realistic-flow.js
 ```
 
-The fixture was then replaced with a test-only Afero wrapper that delegates all
-operations except `Create` for a sibling `.transcript.jsonl` path other than
-the seeded parent. It returns an `os.PathError` wrapping `fault.ErrInjected`.
-That permits the parent transcript/meta reads and writer `MkdirAll`, while
-failing precisely the generated child transcript creation.
+Result: all passed, exit 0.
 
-```sh
-go test ./agent -run '^TestW3Init_ForkSession_NewWriterError$' -count=1 -v
-```
+- Focused test: CSS contract, mixed known/new append filtering, malformed mutation silence, and all valid per-call scenarios passed.
+- Subscription test: `PASS test-task-updated-subscription.js`.
+- Realistic flow: `PASS realistic-flow — user message, assistant text (×2), tool cluster, task card, steering suppression`.
+- `git diff --check`: passed before the review-fix commit.
 
-```text
-PASS
-ok   primeradiant.com/serf/agent  0.016s
-```
+### Review-fix self-review
 
-### Files
+- Invalid JSON becomes an empty argument object and cannot pass mutation validation.
+- Unknown actions cannot render or refresh.
+- Append/update payloads must have the required array shape.
+- Empty append returns before cache-based fallback can create a card.
+- Valid non-status updates still render their authoritative progress header with zero rows.
+- Failed calls still clear pending state and remain silent.
+- The append test proves known IDs are excluded while new IDs render, and verifies the exact `Tasks` title.
 
-- `agent/cov_w3init_fork_test.go`: replaced only the broad read-only fixture,
-  and asserted the wrapped injected cause.
-- `.superpowers/sdd/task-1-report.md`: appended this review-fix record.
+### Review-fix concerns
 
-No production files changed.
-
-### Verification
-
-```sh
-go test ./agent -run '^(TestW3Init_ForkSession_OpenError|TestW3Init_ForkSession_NewWriterError)$' -count=1 -v
-```
-
-Result: both tests passed (`ok primeradiant.com/serf/agent 0.015s`).
-
-```sh
-go test ./agent -run '^(TestForkSession_|TestS2Cov_ForkSession_|TestW3Init_ForkSession_)' -count=1 -v
-```
-
-Result: the complete fork family passed (`ok primeradiant.com/serf/agent 0.151s`).
-
-```sh
-git diff --check -- agent/cov_w3init_fork_test.go
-```
-
-Result: passed with no whitespace errors.
-
-### Concerns
-
-None.
+None. The existing packed-refs warning was not reproduced by the tests; it remains an environment concern from the prior commit operation.

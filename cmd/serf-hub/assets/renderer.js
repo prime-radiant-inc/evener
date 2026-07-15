@@ -1195,7 +1195,7 @@
             // which tasks an append newly created. Seed the description cache on
             // append calls.
             this.suppressedToolCalls.add(data.call_id);
-            const args = parseArgs(data.arguments_json);
+            const args = parseArgs(data.arguments_json) || {};
             const priorIds = new Set(taskDetails.keys());
             if (args.action === "append" && Array.isArray(args.tasks)) {
               for (const t of args.tasks) {
@@ -4044,7 +4044,11 @@
     // read and renders nothing. Every successful mutation appends its own card;
     // after rendering, an immediate /tasks fetch refreshes the sidebar.
     appendTaskListSystemLine(args, stateTasks, priorIds) {
-      if (!args || args.action === "view") return;
+      if (!args || args.action === "view") return false;
+      const validAppend = args.action === "append" && Array.isArray(args.tasks);
+      const validUpdate = args.action === "update" && Array.isArray(args.updates);
+      if (!validAppend && !validUpdate) return false;
+      if (validAppend && args.tasks.length === 0) return false;
       if (args.action === "append" && Array.isArray(args.tasks)) {
         for (const t of args.tasks) rememberTask(t);
       }
@@ -4054,8 +4058,9 @@
       if (Array.isArray(stateTasks)) {
         for (const t of stateTasks) rememberTask(t);
       }
-      this.appendTaskUpdateCard(args, stateTasks, priorIds);
-      this.refreshTaskBadgeSoon();
+      const rendered = this.appendTaskUpdateCard(args, stateTasks, priorIds);
+      if (rendered) this.refreshTaskBadgeSoon();
+      return rendered;
     },
 
     // appendTaskUpdateCard renders one card for the changes established by one
@@ -4076,7 +4081,7 @@
           .map(u => ({ id: Number(u.id), status: u.status }));
       }
       tasks = tasks.sort((a, b) => Number(a.id) - Number(b.id));
-      if (!tasks.length) return;
+      if (!tasks.length) return false;
 
       const touched = new Map(); // id -> { kind, note }
       if (args.action === "update" && Array.isArray(args.updates)) {
@@ -4146,6 +4151,7 @@
       card.appendChild(rows);
 
       this.conversation.appendChild(card);
+      return true;
     },
 
     refreshTaskBadgeSoon() {

@@ -96,6 +96,22 @@ function taskCall(callId, args, stateTasks, error) {
   ];
 }
 
+function rawTaskCall(callId, argumentsJson, stateTasks) {
+  return [
+    ["TOOL_CALL_START", {
+      call_id: callId,
+      tool_name: "task_list",
+      arguments_json: argumentsJson,
+    }],
+    ["TOOL_CALL_END", {
+      call_id: callId,
+      tool_name: "task_list",
+      output: "ok",
+      tool_state: stateTasks === undefined ? undefined : JSON.stringify(stateTasks),
+    }],
+  ];
+}
+
 function cardRows(card) {
   return Array.from(card.querySelectorAll(".task-card-row"));
 }
@@ -122,20 +138,35 @@ function stateWith(changes) {
 
 await scenario("append shows only newly added tasks with progress", [
   sessionStart(),
+  ...taskCall("seed", { action: "append", tasks: [PLAN[0]] }, [PLAN[0]]),
   ...taskCall("t1", { action: "append", tasks: PLAN }, PLAN),
 ], ({ conv }) => {
   const cards = conv.querySelectorAll(".task-card");
-  if (cards.length !== 1) return { ok: false, detail: "expected one card, got " + cards.length };
-  const card = cards[0];
+  if (cards.length !== 2) return { ok: false, detail: "expected two cards, got " + cards.length };
+  const card = cards[1];
+  const title = card.querySelector(".task-card-title");
+  if (!title || title.textContent !== "Tasks") return { ok: false, detail: "expected Tasks title" };
   const prog = card.querySelector(".task-card-progress");
   if (!prog || !/3\s*\/\s*7/.test(prog.textContent)) return { ok: false, detail: "expected 3 / 7 progress" };
   const fill = card.querySelector(".task-card-meter-fill");
   if (!fill || fill.style.width !== "43%") return { ok: false, detail: "expected 43% meter fill, got " + (fill && fill.style.width) };
-  if (cardRows(card).length !== 7) return { ok: false, detail: "expected seven rows" };
+  if (cardRows(card).length !== 6) return { ok: false, detail: "expected six newly added rows" };
+  if (card.textContent.includes(PLAN[0].description)) return { ok: false, detail: "known task must not be repeated" };
   if (card.querySelector(".task-card-summary-line, .task-card-toggle, .task-card-showall")) {
     return { ok: false, detail: "aggregate or disclosure UI must be absent" };
   }
   if (/show all|more/i.test(card.textContent)) return { ok: false, detail: "card must not mention show all or more" };
+  return { ok: true };
+});
+
+await scenario("malformed successful task mutations render and refresh no card", [
+  sessionStart(),
+  ...rawTaskCall("bad-json", "{not valid json", PLAN),
+  ...rawTaskCall("unknown-action", JSON.stringify({ action: "replace", tasks: PLAN }), PLAN),
+  ...rawTaskCall("bad-append", JSON.stringify({ action: "append", tasks: {} }), PLAN),
+  ...rawTaskCall("bad-update", JSON.stringify({ action: "update", updates: {} }), PLAN),
+], ({ conv, window }) => {
+  if (conv.querySelector(".task-card")) return { ok: false, detail: "malformed successful mutations must not render cards" };
   return { ok: true };
 });
 
