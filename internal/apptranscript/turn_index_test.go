@@ -626,6 +626,53 @@ func TestTurnCacheGrowthRewriteAnchorMismatchRebuilds(t *testing.T) {
 	}
 }
 
+func TestTurnCacheGrowthRewriteOutsideAnchorsRebuilds(t *testing.T) {
+	for _, fresh := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fresh=%v", fresh), func(t *testing.T) {
+			path := writeNumberedTranscript(t, 120)
+			cache := NewTurnCache()
+			cache.LatestFromFile(path, testMaxLineBytes, 5, boundedTestProjector)
+
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			oldKind := []byte(`"kind":"USER_INPUT"`)
+			replacementKind := []byte(`"kind":"CHECKPOINT"`)
+			oldText := []byte("entry-60")
+			replacementText := []byte("        ")
+			if len(oldKind) != len(replacementKind) || len(oldText) != len(replacementText) {
+				t.Fatal("invalid same-size replacement fixture")
+			}
+			entryStart := bytes.Index(data, oldText)
+			kindStart := bytes.LastIndex(data[:entryStart], oldKind)
+			if entryStart < turnIndexAnchorBytes || kindStart < turnIndexAnchorBytes || entryStart >= len(data)-turnIndexAnchorBytes {
+				t.Fatalf("replacement is not strictly between anchors: kind=%d text=%d size=%d", kindStart, entryStart, len(data))
+			}
+			copy(data[kindStart:kindStart+len(oldKind)], replacementKind)
+			copy(data[entryStart:entryStart+len(oldText)], replacementText)
+			data = append(data, numberedEntryLine(t, 121, "appended-after-middle-rewrite")...)
+			if err := os.WriteFile(path, data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if fresh {
+				cache = NewTurnCache()
+			}
+
+			var stat ReadStats
+			previous := observeTurnIndexRead
+			observeTurnIndexRead = func(got ReadStats) { stat = got }
+			t.Cleanup(func() { observeTurnIndexRead = previous })
+			full := TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
+			got, cursor := cache.LatestFromFile(path, testMaxLineBytes, 62, boundedTestProjector)
+			want, wantCursor := appwire.WindowTurns(full, 62)
+			if !reflect.DeepEqual(got, want) || cursor != wantCursor || !stat.rebuilt {
+				t.Fatalf("middle-prefix recovery got=(%v,%q) stats=%+v want=(%v,%q) rebuild", turnIDs(got), cursor, stat, turnIDs(want), wantCursor)
+			}
+		})
+	}
+}
+
 func TestTurnCacheSidecarStoresRecordSeedsAndBoundedAnchors(t *testing.T) {
 	path := writeEntries(t,
 		assistantToolCallEntry(1, "call", "read_file", `{}`),
@@ -1061,6 +1108,77 @@ func TestTurnCacheRebuildsMissingOrCorruptSidecar(t *testing.T) {
 				t.Fatalf("rebuilt sidecar: %v", err)
 			}
 		})
+	}
+}
+
+func TestTurnCacheRebuildsOversizedBaseSidecar(t *testing.T) {
+	path := writeNumberedTranscript(t, 8)
+	indexPath := path + ".appwire-index.json"
+	NewTurnCache().LatestFromFile(path, testMaxLineBytes, 3, boundedTestProjector)
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oversized := turnIndexSidecarLimit(info.Size()) + 1
+	if int64(len(data)) >= oversized {
+		t.Fatalf("valid fixture sidecar bytes=%d unexpectedly exceeds limit=%d", len(data), oversized-1)
+	}
+	data = append(data, bytes.Repeat([]byte{' '}, int(oversized)-len(data))...)
+	if err := os.WriteFile(indexPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stat ReadStats
+	previous := observeTurnIndexRead
+	observeTurnIndexRead = func(got ReadStats) { stat = got }
+	t.Cleanup(func() { observeTurnIndexRead = previous })
+	got, cursor := NewTurnCache().LatestFromFile(path, testMaxLineBytes, 3, boundedTestProjector)
+	if cursor != "5" || len(got) != 3 || turnText(got[2]) != "entry-8" || !stat.rebuilt {
+		t.Fatalf("oversized-base recovery=(%d,%q,%q) stats=%+v want authoritative rebuild", len(got), cursor, turnText(got[2]), stat)
+	}
+}
+
+func TestTurnCacheRebuildsOversizedJournalFrame(t *testing.T) {
+	path := writeNumberedTranscript(t, 8)
+	cache := NewTurnCache()
+	cache.LatestFromFile(path, testMaxLineBytes, 3, boundedTestProjector)
+	appendFile(t, path, numberedEntryLine(t, 9, "journal-delta"))
+	cache.LatestFromFile(path, testMaxLineBytes, 3, boundedTestProjector)
+
+	journalPath := path + ".appwire-index.json.journal"
+	frame, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frame) == 0 || frame[len(frame)-1] != '\n' {
+		t.Fatalf("journal fixture is not one complete frame: %q", frame)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oversized := turnIndexSidecarLimit(info.Size()) + 1
+	if int64(len(frame)) >= oversized {
+		t.Fatalf("valid fixture frame bytes=%d unexpectedly exceeds limit=%d", len(frame), oversized-1)
+	}
+	frame = frame[:len(frame)-1]
+	frame = append(frame, bytes.Repeat([]byte{' '}, int(oversized)-len(frame))...)
+	frame = append(frame, '\n')
+	if err := os.WriteFile(journalPath, frame, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stat ReadStats
+	previous := observeTurnIndexRead
+	observeTurnIndexRead = func(got ReadStats) { stat = got }
+	t.Cleanup(func() { observeTurnIndexRead = previous })
+	got, cursor := NewTurnCache().LatestFromFile(path, testMaxLineBytes, 3, boundedTestProjector)
+	if cursor != "6" || len(got) != 3 || turnText(got[2]) != "journal-delta" || !stat.rebuilt {
+		t.Fatalf("oversized-journal recovery=(%d,%q,%q) stats=%+v want authoritative rebuild", len(got), cursor, turnText(got[2]), stat)
 	}
 }
 

@@ -28,6 +28,13 @@ const (
 	turnIndexVersion        = 6
 	turnIndexJournalVersion = 2
 	turnIndexAnchorBytes    = 256
+
+	// Index records contain fixed metadata plus a bounded expansion of fields
+	// already present in the authoritative transcript. This allowance and ratio
+	// cover that representation (including tool seeds) without imposing a fixed
+	// cap on large legitimate transcripts.
+	turnIndexSidecarAllowance = int64(1 << 20)
+	turnIndexSidecarRatio     = int64(8)
 )
 
 // FilePage is one bounded page read directly from a transcript file.
@@ -433,7 +440,7 @@ func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int, project Bounded
 	}
 	c.mu.Unlock()
 	if candidate == nil {
-		if disk, err := readTurnIndexWithJournal(path + ".appwire-index.json"); err == nil {
+		if disk, err := readTurnIndexWithJournal(path+".appwire-index.json", info.Size()); err == nil {
 			candidate = &disk
 		}
 	}
@@ -539,6 +546,17 @@ func usableTurnIndex(file *os.File, size int64, maxLineBytes int, projectionID s
 	validatedBytes := int64(0)
 	if appendOnly && !anchorsMatchObserved(file, stats, candidate.FirstAnchor, candidate.TailAnchor) {
 		return turnIndexDisk{}, -1, validatedBytes
+	}
+	if appendOnly {
+		// Same-inode growth alone does not prove append-only history: a writer can
+		// rewrite any complete historical record and then append. Anchors reject
+		// common replacements cheaply, while the persisted prefix stamp makes every
+		// historical byte authoritative. Validation deliberately does not contribute
+		// to IndexedBytes: accepted growth still indexes and projects only the suffix.
+		stamp, _ := prefixStamp(file, candidate.CompleteSize)
+		if candidate.PrefixStamp == "" || candidate.PrefixStamp != stamp {
+			return turnIndexDisk{}, -1, validatedBytes
+		}
 	}
 	if !identityMatches && !appendOnly {
 		stamp, readBytes := prefixStamp(file, candidate.CompleteSize)
@@ -899,7 +917,16 @@ func failedAPICallTurn(raw []byte, index int) (appwire.Turn, bool) {
 }
 
 func readTurnIndex(path string) (turnIndexDisk, error) {
-	data, err := os.ReadFile(path)
+	transcriptPath := strings.TrimSuffix(path, ".appwire-index.json")
+	info, err := os.Stat(transcriptPath)
+	if err != nil {
+		return turnIndexDisk{}, err
+	}
+	return readTurnIndexBounded(path, info.Size())
+}
+
+func readTurnIndexBounded(path string, transcriptSize int64) (turnIndexDisk, error) {
+	data, err := readFileBounded(path, turnIndexSidecarLimit(transcriptSize))
 	if err != nil {
 		return turnIndexDisk{}, err
 	}
@@ -910,8 +937,8 @@ func readTurnIndex(path string) (turnIndexDisk, error) {
 	return index, nil
 }
 
-func readTurnIndexWithJournal(path string) (turnIndexDisk, error) {
-	index, err := readTurnIndex(path)
+func readTurnIndexWithJournal(path string, transcriptSize int64) (turnIndexDisk, error) {
+	index, err := readTurnIndexBounded(path, transcriptSize)
 	if err != nil {
 		return turnIndexDisk{}, err
 	}
@@ -926,12 +953,26 @@ func readTurnIndexWithJournal(path string) (turnIndexDisk, error) {
 		return turnIndexDisk{}, err
 	}
 	defer journal.Close() //nolint:errcheck // read-only file
+	journalInfo, err := journal.Stat()
+	if err != nil {
+		return turnIndexDisk{}, err
+	}
+	journalLimit := turnIndexJournalLimit(transcriptSize)
+	if journalInfo.Size() > journalLimit {
+		return turnIndexDisk{}, errors.New("index journal exceeds transcript-derived limit")
+	}
 
 	reader := bufio.NewReader(journal)
+	frameLimit := turnIndexSidecarLimit(transcriptSize)
 	validBytes := int64(0)
+	readBytes := int64(0)
 	for {
-		line, readErr := reader.ReadBytes('\n')
-		if readErr == io.EOF {
+		line, readErr := readBoundedJournalFrame(reader, frameLimit)
+		if int64(len(line)) > journalLimit-readBytes {
+			return turnIndexDisk{}, errors.New("index journal grew beyond transcript-derived limit")
+		}
+		readBytes += int64(len(line))
+		if errors.Is(readErr, io.EOF) {
 			if len(line) > 0 {
 				index.journalNeedsRepair = true
 			}
@@ -970,6 +1011,74 @@ func readTurnIndexWithJournal(path string) (turnIndexDisk, error) {
 	}
 	index.journalValidBytes = validBytes
 	return index, nil
+}
+
+func turnIndexSidecarLimit(transcriptSize int64) int64 {
+	if transcriptSize < 0 {
+		transcriptSize = 0
+	}
+	maxInt64 := int64(^uint64(0) >> 1)
+	maxLimit := maxInt64 - 1 // leave room for the LimitReader sentinel byte
+	if transcriptSize > (maxLimit-turnIndexSidecarAllowance)/turnIndexSidecarRatio {
+		return maxLimit
+	}
+	return turnIndexSidecarAllowance + turnIndexSidecarRatio*transcriptSize
+}
+
+func turnIndexJournalLimit(transcriptSize int64) int64 {
+	limit := turnIndexSidecarLimit(transcriptSize)
+	maxInt64 := int64(^uint64(0) >> 1)
+	maxLimit := maxInt64 - 1
+	if limit > maxLimit/2 {
+		return maxLimit
+	}
+	// A journal may have per-append framing overhead absent from the compact base,
+	// but its record payload is still derived from the same authoritative bytes.
+	return 2 * limit
+}
+
+func readFileBounded(path string, limit int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close() //nolint:errcheck // read-only file
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > limit {
+		return nil, errors.New("index sidecar exceeds transcript-derived limit")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, errors.New("index sidecar grew beyond transcript-derived limit")
+	}
+	return data, nil
+}
+
+func readBoundedJournalFrame(reader *bufio.Reader, limit int64) ([]byte, error) {
+	var frame []byte
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if int64(len(fragment)) > limit-int64(len(frame)) {
+			return nil, errors.New("index journal frame exceeds transcript-derived limit")
+		}
+		frame = append(frame, fragment...)
+		switch {
+		case err == nil:
+			return frame, nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		case errors.Is(err, io.EOF):
+			return frame, io.EOF
+		default:
+			return nil, err
+		}
+	}
 }
 
 func appendTurnIndexJournal(path string, previous turnIndexDisk, index *turnIndexDisk, stats *ReadStats) error {
@@ -1119,18 +1228,43 @@ func prefixStamp(file *os.File, completeSize int64) (string, int64) {
 	if completeSize < 0 {
 		return "", 0
 	}
-	reader := bufio.NewReader(io.NewSectionReader(file, 0, completeSize))
-	stamp := initialPrefixStamp()
+	previous := sha256.Sum256([]byte("serf-apptranscript-prefix-v1"))
+	if completeSize == 0 {
+		return hex.EncodeToString(previous[:]), 0
+	}
+	hash := sha256.New()
+	_, _ = hash.Write(previous[:])
+	reader := io.NewSectionReader(file, 0, completeSize)
+	buffer := make([]byte, 8<<10)
 	var readBytes int64
+	endedAtNewline := false
 	for readBytes < completeSize {
-		line, err := reader.ReadBytes('\n')
-		readBytes += int64(len(line))
-		if err != nil {
+		n, err := reader.Read(buffer)
+		readBytes += int64(n)
+		fragment := buffer[:n]
+		for len(fragment) > 0 {
+			newline := bytes.IndexByte(fragment, '\n')
+			if newline < 0 {
+				_, _ = hash.Write(fragment)
+				endedAtNewline = false
+				break
+			}
+			_, _ = hash.Write(fragment[:newline+1])
+			sum := hash.Sum(previous[:0])
+			copy(previous[:], sum)
+			hash.Reset()
+			_, _ = hash.Write(previous[:])
+			fragment = fragment[newline+1:]
+			endedAtNewline = true
+		}
+		if err != nil && (!errors.Is(err, io.EOF) || readBytes != completeSize) {
 			return "", readBytes
 		}
-		stamp = extendPrefixStamp(stamp, line)
 	}
-	return stamp, readBytes
+	if !endedAtNewline {
+		return "", readBytes
+	}
+	return hex.EncodeToString(previous[:]), readBytes
 }
 
 func turnIndexIntegrityStamp(index turnIndexDisk) string {
