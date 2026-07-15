@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,7 +23,7 @@ import (
 )
 
 const (
-	turnIndexVersion = 2
+	turnIndexVersion = 3
 )
 
 // FilePage is one bounded page read directly from a transcript file.
@@ -50,8 +51,10 @@ type turnIndexDisk struct {
 	VisibleRecords int                 `json:"visible_records"`
 	ToolNames      map[string]string   `json:"tool_names,omitempty"`
 	MaxLineBytes   int                 `json:"max_line_bytes"`
+	ProjectionID   string              `json:"projection_identity"`
 	PrefixStamp    string              `json:"prefix_stamp"`
 	FileIdentity   string              `json:"file_identity"`
+	ChangeIdentity string              `json:"change_identity"`
 	ModTimeUnixNS  int64               `json:"mod_time_unix_ns"`
 	IntegrityStamp string              `json:"integrity_stamp"`
 }
@@ -82,7 +85,7 @@ func (c *TurnCache) LatestFromFile(path string, maxLineBytes int, limit int, pro
 		all := c.TurnsFromFile(path, maxLineBytes, fullProjector(project))
 		return appwire.WindowTurns(all, limit)
 	}
-	index, indexedBytes := c.loadTurnIndex(path, maxLineBytes, project)
+	index, indexedBytes, validatedBytes := c.loadTurnIndex(path, maxLineBytes, project)
 	count := index.logicalTurnCount()
 	lo := 0
 	if count > limit {
@@ -90,7 +93,7 @@ func (c *TurnCache) LatestFromFile(path string, maxLineBytes int, limit int, pro
 		olderCursor = strconv.Itoa(lo)
 	}
 	turns, projected := projectIndexedRange(path, index, lo, count, project)
-	observeIndexRead(ReadStats{IndexedBytes: indexedBytes, ProjectedTurns: projected})
+	observeIndexRead(ReadStats{IndexedBytes: indexedBytes + validatedBytes, ProjectedTurns: projected})
 	return turns, olderCursor
 }
 
@@ -102,7 +105,7 @@ func (c *TurnCache) PageFromFile(path string, maxLineBytes int, cursor string, l
 		page := appwire.PageTurns(all, cursor, limit)
 		return FilePage{Turns: page.Data, NextCursor: page.NextCursor}
 	}
-	index, indexedBytes := c.loadTurnIndex(path, maxLineBytes, project)
+	index, indexedBytes, validatedBytes := c.loadTurnIndex(path, maxLineBytes, project)
 	hi := index.logicalTurnCount()
 	if cursor != "" {
 		if parsed, err := strconv.Atoi(cursor); err == nil {
@@ -124,7 +127,7 @@ func (c *TurnCache) PageFromFile(path string, maxLineBytes int, cursor string, l
 		next = strconv.Itoa(lo)
 	}
 	turns, projected := projectIndexedRange(path, index, lo, hi, project)
-	observeIndexRead(ReadStats{IndexedBytes: indexedBytes, ProjectedTurns: projected})
+	observeIndexRead(ReadStats{IndexedBytes: indexedBytes + validatedBytes, ProjectedTurns: projected})
 	return FilePage{Turns: turns, NextCursor: next}
 }
 
@@ -152,25 +155,29 @@ func (d turnIndexDisk) logicalTurnCount() int {
 	return count
 }
 
-func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int, project BoundedEntryProjector) (turnIndexDisk, int64) {
+func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int, project BoundedEntryProjector) (turnIndexDisk, int64, int64) {
 	file, err := os.Open(path)
 	if err != nil {
-		return turnIndexDisk{}, 0
+		return turnIndexDisk{}, 0, 0
 	}
 	defer file.Close() //nolint:errcheck // read-only file; close errors are not actionable
 	info, err := file.Stat()
 	if err != nil {
-		return turnIndexDisk{}, 0
+		return turnIndexDisk{}, 0, 0
 	}
+	projectionID := projectionIdentity(project)
+	currentFileIdentity := fileIdentity(info)
+	currentChangeIdentity := fileChangeIdentity(info)
 
 	var candidate *turnIndexDisk
 	fromCache := false
-	cachedIdentityMatches := false
+	identityMatches := false
 	c.mu.Lock()
 	if entry, ok := c.entries[path]; ok && entry.turnIndex != nil {
 		candidate = entry.turnIndex
 		fromCache = true
-		cachedIdentityMatches = entry.size == info.Size() && entry.mod.Equal(info.ModTime()) && candidate.FileIdentity == fileIdentity(info)
+		identityMatches = entry.size == info.Size() && entry.mod.Equal(info.ModTime()) &&
+			entry.fileIdentity == currentFileIdentity && entry.changeIdentity == currentChangeIdentity
 	}
 	c.mu.Unlock()
 	if candidate == nil {
@@ -179,87 +186,123 @@ func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int, project Bounded
 		}
 	}
 
-	identityMatches := cachedIdentityMatches
 	if candidate != nil && !fromCache {
-		identityMatches = candidate.TranscriptSize == info.Size() && candidate.ModTimeUnixNS == info.ModTime().UnixNano() && candidate.FileIdentity == fileIdentity(info)
+		identityMatches = candidate.TranscriptSize == info.Size() && candidate.ModTimeUnixNS == info.ModTime().UnixNano() &&
+			candidate.FileIdentity == currentFileIdentity && candidate.ChangeIdentity == currentChangeIdentity
 	}
-	index, start := usableTurnIndex(file, info.Size(), maxLineBytes, candidate, identityMatches, fromCache && cachedIdentityMatches)
+	sameFile := candidate != nil && currentFileIdentity != "" && candidate.FileIdentity == currentFileIdentity
+	appendOnly := sameFile && candidate.TranscriptSize < info.Size()
+	index, start, validatedBytes := usableTurnIndex(file, info.Size(), maxLineBytes, projectionID, candidate, identityMatches, appendOnly, fromCache)
+	rebuilt := start < 0
 	if start < 0 {
 		index = turnIndexDisk{
 			Version:      turnIndexVersion,
 			ToolNames:    map[string]string{},
 			MaxLineBytes: maxLineBytes,
+			ProjectionID: projectionID,
+			PrefixStamp:  initialPrefixStamp(),
 		}
 		start = 0
 	} else if fromCache && start == info.Size() {
 		c.mu.Lock()
 		c.touch(path)
 		c.mu.Unlock()
-		return index, 0
+		return index, 0, 0
 	}
 	index = cloneTurnIndex(index)
 	indexedBytes := scanTurnIndex(file, info.Size(), start, maxLineBytes, &index, project)
 	index.TranscriptSize = info.Size()
 	index.MaxLineBytes = maxLineBytes
-	index.PrefixStamp = prefixStamp(file, index.CompleteSize)
-	index.FileIdentity = fileIdentity(info)
+	index.ProjectionID = projectionID
+	index.FileIdentity = currentFileIdentity
+	index.ChangeIdentity = currentChangeIdentity
 	index.ModTimeUnixNS = info.ModTime().UnixNano()
 	index.IntegrityStamp = turnIndexIntegrityStamp(index)
 
 	stored := cloneTurnIndex(index)
 	c.mu.Lock()
 	entry := c.entries[path]
-	if entry.size != info.Size() || !entry.mod.Equal(info.ModTime()) {
+	if entry.size != info.Size() || !entry.mod.Equal(info.ModTime()) || entry.fileIdentity != currentFileIdentity || entry.changeIdentity != currentChangeIdentity {
 		entry.turns = nil
 		entry.full = false
 	}
 	entry.size = info.Size()
 	entry.mod = info.ModTime()
+	entry.fileIdentity = currentFileIdentity
+	entry.changeIdentity = currentChangeIdentity
 	entry.turnIndex = &stored
 	c.entries[path] = entry
 	c.touch(path)
 	c.evictLocked()
 	c.mu.Unlock()
 
-	if indexedBytes > 0 || candidate == nil {
+	if rebuilt || indexedBytes > 0 || !identityMatches {
 		_ = writeTurnIndex(path+".appwire-index.json", index)
 	}
-	return index, indexedBytes
+	return index, indexedBytes, validatedBytes
 }
 
-func usableTurnIndex(file *os.File, size int64, maxLineBytes int, candidate *turnIndexDisk, identityMatches bool, trustedMemory bool) (turnIndexDisk, int64) {
-	if candidate == nil || candidate.Version != turnIndexVersion || candidate.MaxLineBytes != maxLineBytes {
-		return turnIndexDisk{}, -1
+func usableTurnIndex(file *os.File, size int64, maxLineBytes int, projectionID string, candidate *turnIndexDisk, identityMatches bool, appendOnly bool, trustedMemory bool) (turnIndexDisk, int64, int64) {
+	if candidate == nil || candidate.Version != turnIndexVersion || candidate.MaxLineBytes != maxLineBytes || candidate.ProjectionID != projectionID {
+		return turnIndexDisk{}, -1, 0
 	}
 	if !trustedMemory && (candidate.IntegrityStamp == "" || candidate.IntegrityStamp != turnIndexIntegrityStamp(*candidate)) {
-		return turnIndexDisk{}, -1
+		return turnIndexDisk{}, -1, 0
 	}
 	if candidate.TranscriptSize > size || candidate.CompleteSize < 0 || candidate.CompleteSize > candidate.TranscriptSize {
-		return turnIndexDisk{}, -1
+		return turnIndexDisk{}, -1, 0
 	}
-	if !identityMatches && (candidate.PrefixStamp == "" || candidate.PrefixStamp != prefixStamp(file, candidate.CompleteSize)) {
-		return turnIndexDisk{}, -1
+	validatedBytes := int64(0)
+	if !identityMatches && !appendOnly {
+		stamp, readBytes := prefixStamp(file, candidate.CompleteSize)
+		validatedBytes = readBytes
+		if candidate.PrefixStamp == "" || candidate.PrefixStamp != stamp {
+			return turnIndexDisk{}, -1, validatedBytes
+		}
+	}
+	if trustedMemory {
+		return *candidate, candidate.CompleteSize, validatedBytes
 	}
 	previousEnd := int64(0)
 	previousIndex := 0
 	visibleRecords := 0
-	for _, record := range candidate.Records {
-		if record.Offset < previousEnd || record.Length <= 0 || record.Offset+record.Length > candidate.CompleteSize || record.Index <= previousIndex {
-			return turnIndexDisk{}, -1
+	toolNames := map[string]string{}
+	for i, record := range candidate.Records {
+		if record.Offset < previousEnd || record.Length <= 0 || record.Offset > candidate.CompleteSize-record.Length || record.Index != previousIndex+1 {
+			return turnIndexDisk{}, -1, validatedBytes
+		}
+		if record.Kind != "entry" && record.Kind != "api_call" {
+			return turnIndexDisk{}, -1, validatedBytes
+		}
+		if record.Kind == "api_call" && (!record.Visible || len(record.ToolChanges) > 0 || len(record.ToolNamesBefore) > 0) {
+			return turnIndexDisk{}, -1, validatedBytes
+		}
+		if record.Kind == "entry" && i%toolNameCheckpointInterval == 0 {
+			if !equalToolNames(record.ToolNamesBefore, toolNames) {
+				return turnIndexDisk{}, -1, validatedBytes
+			}
+		} else if len(record.ToolNamesBefore) > 0 {
+			return turnIndexDisk{}, -1, validatedBytes
+		}
+		for _, change := range record.ToolChanges {
+			if change.ID == "" {
+				return turnIndexDisk{}, -1, validatedBytes
+			}
 		}
 		if record.Visible {
 			visibleRecords++
 		}
 		if record.VisibleIndex != visibleRecords {
-			return turnIndexDisk{}, -1
+			return turnIndexDisk{}, -1, validatedBytes
 		}
+		applyToolNameChanges(toolNames, record.ToolChanges)
 		previousEnd = record.Offset + record.Length
 		previousIndex = record.Index
 	}
-	if visibleRecords != candidate.VisibleRecords {
-		return turnIndexDisk{}, -1
+	if visibleRecords != candidate.VisibleRecords || !equalToolNames(candidate.ToolNames, toolNames) {
+		return turnIndexDisk{}, -1, validatedBytes
 	}
-	return *candidate, candidate.CompleteSize
+	return *candidate, candidate.CompleteSize, validatedBytes
 }
 
 func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineBytes int, index *turnIndexDisk, project BoundedEntryProjector) int64 {
@@ -334,6 +377,7 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 		}
 		offset += length
 		index.CompleteSize = offset
+		index.PrefixStamp = extendPrefixStamp(index.PrefixStamp, line)
 	}
 	index.VisibleRecords = visibleRecords
 	return readBytes
@@ -525,14 +569,38 @@ func writeTurnIndex(path string, index turnIndexDisk) error {
 	return os.Rename(tempPath, path)
 }
 
-func prefixStamp(file *os.File, completeSize int64) string {
-	if completeSize < 0 {
+func initialPrefixStamp() string {
+	sum := sha256.Sum256([]byte("serf-apptranscript-prefix-v1"))
+	return hex.EncodeToString(sum[:])
+}
+
+func extendPrefixStamp(stamp string, line []byte) string {
+	previous, err := hex.DecodeString(stamp)
+	if err != nil || len(previous) != sha256.Size {
 		return ""
 	}
 	hash := sha256.New()
-	_, _ = fmt.Fprintf(hash, "%d:", completeSize)
-	copyRange(hash, file, 0, completeSize)
+	_, _ = hash.Write(previous)
+	_, _ = hash.Write(line)
 	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func prefixStamp(file *os.File, completeSize int64) (string, int64) {
+	if completeSize < 0 {
+		return "", 0
+	}
+	reader := bufio.NewReader(io.NewSectionReader(file, 0, completeSize))
+	stamp := initialPrefixStamp()
+	var readBytes int64
+	for readBytes < completeSize {
+		line, err := reader.ReadBytes('\n')
+		readBytes += int64(len(line))
+		if err != nil {
+			return "", readBytes
+		}
+		stamp = extendPrefixStamp(stamp, line)
+	}
+	return stamp, readBytes
 }
 
 func turnIndexIntegrityStamp(index turnIndexDisk) string {
@@ -575,27 +643,113 @@ func fileIdentity(info os.FileInfo) string {
 	volume, volumeOK := field("VolumeSerialNumber")
 	high, highOK := field("FileIndexHigh")
 	low, lowOK := field("FileIndexLow")
+	if !volumeOK {
+		volume, volumeOK = field("vol")
+	}
+	if !highOK {
+		high, highOK = field("idxhi")
+	}
+	if !lowOK {
+		low, lowOK = field("idxlo")
+	}
 	if volumeOK && highOK && lowOK {
 		return fmt.Sprintf("volume:%d:index:%d", volume, high<<32|low)
 	}
 	return ""
 }
 
-func copyRange(dst io.Writer, file *os.File, offset int64, length int64) {
-	if length <= 0 {
-		return
+func fileChangeIdentity(info os.FileInfo) string {
+	if info == nil || info.Sys() == nil {
+		return ""
 	}
-	_, _ = io.Copy(dst, io.NewSectionReader(file, offset, length))
+	value := reflect.Indirect(reflect.ValueOf(info.Sys()))
+	if !value.IsValid() || value.Kind() != reflect.Struct {
+		return ""
+	}
+	for _, name := range []string{"Ctim", "Ctimespec", "Ctime", "ChangeTime"} {
+		if field := value.FieldByName(name); field.IsValid() {
+			if identity := reflectedTimeIdentity(field); identity != "" {
+				return name + ":" + identity
+			}
+		}
+	}
+	high := value.FieldByName("ChangeTimeHigh")
+	low := value.FieldByName("ChangeTimeLow")
+	if high.IsValid() && low.IsValid() {
+		return fmt.Sprintf("ChangeTime:%d:%d", reflectedUint(high), reflectedUint(low))
+	}
+	return ""
+}
+
+func reflectedTimeIdentity(value reflect.Value) string {
+	value = reflect.Indirect(value)
+	if !value.IsValid() {
+		return ""
+	}
+	switch value.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return strconv.FormatInt(value.Int(), 10)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return strconv.FormatUint(value.Uint(), 10)
+	case reflect.Struct:
+		for _, fields := range [][2]string{{"Sec", "Nsec"}, {"Tv_sec", "Tv_nsec"}, {"HighDateTime", "LowDateTime"}} {
+			first := value.FieldByName(fields[0])
+			second := value.FieldByName(fields[1])
+			if first.IsValid() && second.IsValid() {
+				return fmt.Sprintf("%d:%d", reflectedUint(first), reflectedUint(second))
+			}
+		}
+	}
+	return ""
+}
+
+func reflectedUint(value reflect.Value) uint64 {
+	switch value.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return uint64(value.Int())
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return value.Uint()
+	default:
+		return 0
+	}
+}
+
+func projectionIdentity(project BoundedEntryProjector) string {
+	name := "<nil>"
+	if project != nil {
+		if function := runtime.FuncForPC(reflect.ValueOf(project).Pointer()); function != nil {
+			name = function.Name()
+		} else {
+			name = "<unknown>"
+		}
+	}
+	return fmt.Sprintf("turn-index-v%d:%s", turnIndexVersion, name)
 }
 
 func cloneTurnIndex(index turnIndexDisk) turnIndexDisk {
 	index.Records = append([]indexedTurn(nil), index.Records...)
+	for i := range index.Records {
+		index.Records[i].ToolNamesBefore = cloneToolNames(index.Records[i].ToolNamesBefore)
+		index.Records[i].ToolChanges = append([]toolNameChange(nil), index.Records[i].ToolChanges...)
+	}
 	index.ToolNames = cloneToolNames(index.ToolNames)
 	if index.FirstCall != nil {
 		copy := *index.FirstCall
 		index.FirstCall = &copy
 	}
 	return index
+}
+
+func equalToolNames(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for id, name := range a {
+		if b[id] != name {
+			return false
+		}
+	}
+	return true
 }
 
 func cloneToolNames(names map[string]string) map[string]string {

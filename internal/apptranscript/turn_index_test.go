@@ -221,6 +221,13 @@ func TestTurnCacheIndexesOnlyAppendedSuffixAndBoundsProjection(t *testing.T) {
 	if got := stats[len(stats)-1]; got.IndexedBytes <= 0 || got.ProjectedTurns != 40 {
 		t.Fatalf("cold stats=%+v want positive indexed bytes and 40 projected", got)
 	}
+	latest, cursor = cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
+	if len(latest) != 40 || cursor != "60" {
+		t.Fatalf("warm latest=(%d,%q) want=(40,%q)", len(latest), cursor, "60")
+	}
+	if got := stats[len(stats)-1]; got.IndexedBytes != 0 || got.ProjectedTurns != 40 {
+		t.Fatalf("warm latest stats=%+v want indexed=0 projected=40", got)
+	}
 
 	line := numberedEntryLine(t, 101, strings.Repeat("x", 257))
 	appendFile(t, path, line)
@@ -262,7 +269,7 @@ func TestTurnCacheRebuildsIndexAfterTranscriptReplacement(t *testing.T) {
 	}
 }
 
-func TestTurnCacheRebuildsIndexAfterSameSizeMiddleReplacement(t *testing.T) {
+func TestTurnCacheRebuildsIndexAfterSameSizeMiddleReplacementWithRestoredModTime(t *testing.T) {
 	path := writeNumberedTranscript(t, 120)
 	cache := NewTurnCache()
 	cache.LatestFromFile(path, testMaxLineBytes, 3, boundedTestProjector)
@@ -292,9 +299,18 @@ func TestTurnCacheRebuildsIndexAfterSameSizeMiddleReplacement(t *testing.T) {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	changedMod := before.ModTime().Add(time.Second)
-	if err := os.Chtimes(path, changedMod, changedMod); err != nil {
+	if err := os.Chtimes(path, before.ModTime(), before.ModTime()); err != nil {
 		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("rewrite identity=(size=%d, mod=%v) want=(size=%d, mod=%v)", after.Size(), after.ModTime(), before.Size(), before.ModTime())
+	}
+	if fileIdentity(after) != fileIdentity(before) {
+		t.Fatalf("rewrite replaced inode: before=%q after=%q", fileIdentity(before), fileIdentity(after))
 	}
 
 	full := TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
@@ -322,9 +338,80 @@ func TestTurnCacheRebuildsStructurallyValidMutatedSidecar(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	var stat ReadStats
+	previous := observeTurnIndexRead
+	observeTurnIndexRead = func(got ReadStats) { stat = got }
+	t.Cleanup(func() { observeTurnIndexRead = previous })
 	got, cursor := NewTurnCache().LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
 	if cursor != "7" || !reflect.DeepEqual(turnIDs(got), []string{"turn_8"}) || turnText(got[0]) != "entry-8" {
 		t.Fatalf("mutated sidecar latest=(%v,%q,%q)", turnIDs(got), cursor, turnText(got[0]))
+	}
+	if stat.IndexedBytes <= 0 {
+		t.Fatalf("mutated sidecar was reused instead of rebuilt: stats=%+v", stat)
+	}
+}
+
+func TestTurnCacheRebuildsIndexWhenProjectionIdentityChanges(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		secondCache func(*TurnCache) *TurnCache
+	}{
+		{name: "memory", secondCache: func(cache *TurnCache) *TurnCache { return cache }},
+		{name: "disk", secondCache: func(*TurnCache) *TurnCache { return NewTurnCache() }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeNumberedTranscript(t, 4)
+			cache := NewTurnCache()
+			first, cursor := cache.LatestFromFile(path, testMaxLineBytes, 3, projectionKeepingAllEntries)
+			if cursor != "1" || !reflect.DeepEqual(turnIDs(first), []string{"turn_2", "turn_3", "turn_4"}) {
+				t.Fatalf("first projection=(%v,%q)", turnIDs(first), cursor)
+			}
+
+			var stat ReadStats
+			previous := observeTurnIndexRead
+			observeTurnIndexRead = func(got ReadStats) { stat = got }
+			t.Cleanup(func() { observeTurnIndexRead = previous })
+			got, cursor := test.secondCache(cache).LatestFromFile(path, testMaxLineBytes, 3, projectionKeepingOddEntries)
+			if cursor != "" || !reflect.DeepEqual(turnIDs(got), []string{"turn_1", "turn_3"}) {
+				t.Fatalf("changed projection=(%v,%q) want=([turn_1 turn_3], empty)", turnIDs(got), cursor)
+			}
+			if stat.IndexedBytes <= 0 {
+				t.Fatalf("changed projection reused persisted visibility: stats=%+v", stat)
+			}
+		})
+	}
+}
+
+func TestTurnCacheRebuildsSidecarWithInvalidToolCheckpoint(t *testing.T) {
+	entries := []transcript.Entry{assistantToolCallEntry(1, "shared", "correct_tool", `{}`)}
+	for seq := 2; seq <= toolNameCheckpointInterval; seq++ {
+		entries = append(entries, userEntry(seq, fmt.Sprintf("entry-%d", seq)))
+	}
+	entries = append(entries, toolResultEntry(toolNameCheckpointInterval+1, "shared", "", "done"))
+	path := writeEntries(t, entries...)
+	indexPath := path + ".appwire-index.json"
+	NewTurnCache().LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
+	index, err := readTurnIndex(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := &index.Records[toolNameCheckpointInterval]
+	if record.ToolNamesBefore["shared"] != "correct_tool" {
+		t.Fatalf("checkpoint fixture=%v", record.ToolNamesBefore)
+	}
+	record.ToolNamesBefore["shared"] = "wrong_tool"
+	index.IntegrityStamp = turnIndexIntegrityStamp(index)
+	data, err := json.Marshal(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(indexPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := NewTurnCache().LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
+	if len(got) != 1 || len(got[0].Items) != 1 || got[0].Items[0].ToolName != "correct_tool" {
+		t.Fatalf("invalid checkpoint was reused: turns=%#v", got)
 	}
 }
 
@@ -533,6 +620,17 @@ func boundedTestProjector(raw json.RawMessage, turnID string, turnIndex int, too
 		return nil
 	}
 	return ProjectTurn(turnID, turnIndex, entry.Turn, toolNames, nil, nil)
+}
+
+func projectionKeepingAllEntries(raw json.RawMessage, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
+	return boundedTestProjector(raw, turnID, turnIndex, toolNames)
+}
+
+func projectionKeepingOddEntries(raw json.RawMessage, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
+	if turnIndex%2 == 0 {
+		return nil
+	}
+	return boundedTestProjector(raw, turnID, turnIndex, toolNames)
 }
 
 func assertBoundedLatestMatchesFull(t *testing.T, path string, limit int) {
