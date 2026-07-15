@@ -1,6 +1,7 @@
 package apptranscript
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -57,28 +58,27 @@ func TestTurnCacheMissingFileParsesUncached(t *testing.T) {
 func TestTurnCacheEvictsBeyondBound(t *testing.T) {
 	dir := t.TempDir()
 	cache := NewTurnCache()
-	cache.max = 2
-	paths := make([]string, 3)
-	for i := 0; i < 3; i++ {
-		p := filepath.Join(dir, string(rune('a'+i))+".jsonl")
+	paths := make([]string, defaultTurnCacheSize+1)
+	for i := range paths {
+		p := filepath.Join(dir, fmt.Sprintf("%02d.jsonl", i))
 		paths[i] = p
 		if err := os.WriteFile(p, []byte("x\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		cache.load(p, func() []appwire.Turn { return nil })
 	}
-	if len(cache.entries) != 2 {
-		t.Fatalf("cache holds %d entries, want 2 (bounded)", len(cache.entries))
+	if len(cache.entries) != defaultTurnCacheSize {
+		t.Fatalf("cache holds %d entries, want %d (bounded)", len(cache.entries), defaultTurnCacheSize)
 	}
-	// LRU policy: a.jsonl was loaded first and must be the evicted entry;
-	// b.jsonl and c.jsonl are the two most-recently-used and must survive.
+	// LRU policy: the first path was loaded first and must be evicted, while
+	// the remaining defaultTurnCacheSize paths survive.
 	if _, ok := cache.entries[paths[0]]; ok {
-		t.Fatalf("a.jsonl should have been evicted (LRU oldest) but is still cached")
+		t.Fatalf("oldest path should have been evicted but is still cached")
 	}
 	if _, ok := cache.entries[paths[1]]; !ok {
-		t.Fatalf("b.jsonl should still be cached (second-most-recent) but was evicted")
+		t.Fatalf("second-oldest path should still be cached but was evicted")
 	}
-	if _, ok := cache.entries[paths[2]]; !ok {
-		t.Fatalf("c.jsonl should still be cached (most recent) but was evicted")
+	if _, ok := cache.entries[paths[len(paths)-1]]; !ok {
+		t.Fatalf("newest path should still be cached but was evicted")
 	}
 }

@@ -10,27 +10,33 @@ import (
 
 const defaultTurnCacheSize = 32
 
-// TurnCache memoizes TurnsFromFile by file identity (path + size + modtime).
-// Transcript files are append-only, so a matching size+modtime means the parse
-// is unchanged — a cache hit returns the previously parsed turns without
-// re-reading and re-projecting the whole file. This makes repeated reads of one
-// session (lazy paging scrolls back through its transcript, re-requesting it per
-// page) O(1) instead of re-parsing the entire transcript each time.
+// TurnCache memoizes TurnsFromFile by path and authoritative file metadata.
+// Transcript files are append-only, so matching object identity, size, mtime,
+// and platform change time means the parse is unchanged — a cache hit returns
+// the previously parsed turns without re-reading and re-projecting the file.
 //
 // The returned slice is shared and MUST be treated as read-only by callers
 // (WindowTurns/PageTurns slice it without mutating elements). A cache instance
 // assumes a single EntryProjector, so give each call site its own cache.
 type TurnCache struct {
 	mu      sync.Mutex
+	indexMu sync.Mutex // serializes suffix advancement and journal appends
 	entries map[string]turnCacheEntry
 	order   []string // least-recently-used first, for bounded eviction
 	max     int
 }
 
 type turnCacheEntry struct {
-	size  int64
-	mod   time.Time
-	turns []appwire.Turn
+	size           int64
+	mod            time.Time
+	fileIdentity   string
+	changeIdentity string
+	turns          []appwire.Turn
+	full           bool
+	turnIndex      *turnIndexDisk
+	// toolResolver is private scanning state. indexMu protects it; published
+	// turnIndex snapshots never reference this mutable map.
+	toolResolver map[string]string
 }
 
 // NewTurnCache returns a TurnCache bounded to a default number of transcripts.
@@ -55,7 +61,8 @@ func (c *TurnCache) load(path string, parse func() []appwire.Turn) []appwire.Tur
 		return parse()
 	}
 	c.mu.Lock()
-	if e, ok := c.entries[path]; ok && e.size == fi.Size() && e.mod.Equal(fi.ModTime()) {
+	if e, ok := c.entries[path]; ok && e.full && e.size == fi.Size() && e.mod.Equal(fi.ModTime()) &&
+		e.fileIdentity == fileIdentity(fi) && e.changeIdentity == fileChangeIdentity(fi) {
 		c.touch(path)
 		turns := e.turns
 		c.mu.Unlock()
@@ -67,7 +74,14 @@ func (c *TurnCache) load(path string, parse func() []appwire.Turn) []appwire.Tur
 	turns := parse()
 
 	c.mu.Lock()
-	c.entries[path] = turnCacheEntry{size: fi.Size(), mod: fi.ModTime(), turns: turns}
+	entry := c.entries[path]
+	entry.size = fi.Size()
+	entry.mod = fi.ModTime()
+	entry.fileIdentity = fileIdentity(fi)
+	entry.changeIdentity = fileChangeIdentity(fi)
+	entry.turns = turns
+	entry.full = true
+	c.entries[path] = entry
 	c.touch(path)
 	c.evictLocked()
 	c.mu.Unlock()

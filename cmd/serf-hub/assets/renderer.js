@@ -189,6 +189,8 @@
       this.liveInterruptCap = null;
       this.liveCapabilitiesStatus = "";
       this.statusUpdateSeq = 0;
+      if (!Number.isFinite(this.taskRequestGeneration)) this.taskRequestGeneration = 0;
+      this.taskDescriptionsForRows = new Map();
 
       this.activeMessages = new Map();   // messageId -> {el, textBuf, markdownTimer}
       this.activeTools = new Map();      // callId -> {el, outputBuf}
@@ -207,7 +209,7 @@
       // re-parsing the END event.
       this.pendingAskCalls = new Map(); // callId -> parsed questions[]
       this.lastCurrentTaskId = null;     // dedupe state for "now on X" system-line
-      this.eventBuffer = [];             // queued until cold-load /tasks fetch resolves
+      this.eventBuffer = [];             // queued until initialization enables transcript replay
       this.descriptionsReady = false;
       // Description cache is per-session: clear before entering this conversation
       // so a stale id→title mapping from a prior session can't bleed in.
@@ -284,21 +286,18 @@
       this.bindAskCardEscape();
       this.ensureLivenessEl();
       this.startLivenessTimer();
-      // Cold-load hydration: fetch the task list ONCE before processing any
-      // events so the first transition (system-line) renders with task
-      // descriptions instead of a #N → title flash a few seconds later.
-      // After this lands, descriptionsReady flips and any buffered events
-      // get drained through handle().
-      this.hydrateDescriptions().then(() => {
-        this.descriptionsReady = true;
-        const buffered = this.eventBuffer || [];
-        this.eventBuffer = null;
-        for (const [kind, ev] of buffered) this.handle(kind, ev);
-        // Cold start (mockup #21 Alt C): a session that hydrated with no
-        // transcript content is a crafted welcome, not a void. Shown only
-        // once nothing has rendered, so resumed/active sessions never see it.
-        this.maybeShowWelcome();
-      });
+      // Fetch task descriptions independently; transcript replay must not wait
+      // for this auxiliary metadata. applyTasks refreshes any numeric labels
+      // when the task promise resolves.
+      this.hydrateDescriptions();
+      this.descriptionsReady = true;
+      const buffered = this.eventBuffer || [];
+      this.eventBuffer = null;
+      for (const [kind, ev] of buffered) this.handle(kind, ev);
+      // Cold start (mockup #21 Alt C): a session that hydrated with no
+      // transcript content is a crafted welcome, not a void. Shown only
+      // once nothing has rendered, so resumed/active sessions never see it.
+      this.maybeShowWelcome();
       this.autoOpenObservers(conversationEl);
     },
 
@@ -519,22 +518,47 @@
 
     hydrateDescriptions() {
       if (!this.sessionId) return Promise.resolve();
+      return this.requestTasks();
+    },
+
+    requestTasks() {
+      if (!this.sessionId) return Promise.resolve();
+      const sessionId = this.sessionId;
+      const conversation = this.conversation;
+      const generation = ++this.taskRequestGeneration;
+      let request;
       if (window.SerfAppwire) {
-        return window.SerfAppwire.tasks(this.sessionId)
-          .then(tasks => this.applyTasks(tasks))
-          .catch(() => {});
+        request = window.SerfAppwire.tasks(sessionId);
+      } else {
+        request = partialFetch(sessionPartialPath(sessionId, "tasks"))
+          .then(r => r.ok ? r.json() : []);
       }
-      return partialFetch(sessionPartialPath(this.sessionId, "tasks"))
-        .then(r => r.ok ? r.json() : [])
-        .then(tasks => this.applyTasks(tasks)).catch(() => {});
+      return request.then((tasks) => {
+        if (this.sessionId !== sessionId || this.conversation !== conversation) return;
+        if (generation !== this.taskRequestGeneration) return;
+        this.applyTasks(tasks);
+      }).catch(() => {});
     },
 
     applyTasks(tasks) {
       if (!Array.isArray(tasks)) return;
       for (const t of tasks) {
         if (t && t.id != null && t.description) {
+          this.taskDescriptionsForRows.set(Number(t.id), t.description);
           rememberTask(t);
         }
+      }
+      if (tasks.length && this.conversation) {
+        const descriptions = new Map();
+        for (const task of tasks) {
+          if (task && task.id != null && task.description) descriptions.set(String(task.id), task.description);
+        }
+        this.conversation.querySelectorAll(".plan-step").forEach((step) => {
+          if (step.dataset.taskLabelUnresolved === "true" && descriptions.has(step.dataset.taskId)) {
+            step.textContent = descriptions.get(step.dataset.taskId);
+            delete step.dataset.taskLabelUnresolved;
+          }
+        });
       }
       const done = tasks.filter(t => t.status === "done").length;
       updateTasksBadge(done, tasks.length, currentTaskSummary(tasks));
@@ -1004,9 +1028,8 @@
     handle(kind, ev) {
       // Every frame from the daemon (incl. reasoning) resets the liveness clock.
       this.lastFrameAt = Date.now();
-      // Buffer events until the cold-load /tasks fetch resolves, so the
-      // first batch of system-lines renders with task descriptions and
-      // never shows the #N → title flash on resume.
+      // Buffer only during synchronous initialization. Task descriptions are
+      // auxiliary metadata and must never gate transcript replay.
       if (!this.descriptionsReady && this.eventBuffer) {
         this.eventBuffer.push([kind, ev]);
         return;
@@ -1164,9 +1187,7 @@
           // pushed counts, then refetch the full list once to refresh the
           // panel's per-row detail. This replaces the old 5s poll.
           updateTasksBadge(data.done, data.total, "");
-          if (window.SerfAppwire) {
-            window.SerfAppwire.tasks(this.sessionId).then(tasks => this.applyTasks(tasks)).catch(() => {});
-          }
+          this.requestTasks();
           break;
         case "SANDBOX_ESCALATION_REQUESTED":
           this.appendSandboxEscalation(data);
@@ -4110,9 +4131,192 @@
       return rendered;
     },
 
-    // appendTaskUpdateCard renders one card for the changes established by one
-    // task_list mutation. The authoritative task set is the tool's State
-    // snapshot; the description cache is the fallback when no State rode along.
+    buildPlanTaskRow(task) {
+      const taskID = String(task.id);
+      const cachedDescription = this.taskDescriptionsForRows.get(Number(task.id));
+      const hasOwnLabel = !!(task.description || task.title);
+      const rowTask = !hasOwnLabel && cachedDescription
+        ? Object.assign({}, task, { description: cachedDescription })
+        : task;
+      const row = buildTaskRowLine(rowTask);
+      const step = row.querySelector(".plan-step");
+      if (step) {
+        step.dataset.taskId = taskID;
+        if (!hasOwnLabel && !cachedDescription) step.dataset.taskLabelUnresolved = "true";
+      }
+      return row;
+    },
+
+    // renderLivePlan maintains ONE living plan card for the session (Design B):
+    // instead of a fresh "Tasks" card on every edit, a single card is rebuilt to
+    // the current plan state and floated to the live frontier (the bottom). It
+    // leads with progress + the active task; the done pile recedes to a count;
+    // the rest folds away. The full list lives in the sidebar. This kills the
+    // wall of repeated near-identical cards the per-edit model produced.
+    renderLivePlan(tasks) {
+      tasks = (Array.isArray(tasks) ? tasks : [])
+        .filter(t => t && t.id != null)
+        .sort((a, b) => Number(a.id) - Number(b.id));
+      if (!tasks.length) return;
+
+      const active = tasks.find(t => t.status === "in_progress");
+      const open = tasks.filter(t => t.status === "open");
+      const done = tasks.filter(t => t.status === "done");
+      const cancelled = tasks.filter(t => t.status === "cancelled");
+      const total = tasks.length;
+      const settled = done.length + cancelled.length;
+
+      // Reuse the one card (preserving its expanded state); rebuild its content.
+      let card = this.livePlanCard;
+      const wasOpen = !!card && card.dataset.expanded === "true";
+      if (!card) {
+        card = document.createElement("div");
+        card.className = "task-card";
+        this.livePlanCard = card;
+      }
+      card.textContent = "";
+      card.dataset.expanded = wasOpen ? "true" : "false";
+
+      // Head: title · progress · a thin neutral meter (done recedes, so the fill
+      // is neutral — the live blue is spent only on the active task below).
+      const head = document.createElement("div");
+      head.className = "task-card-head";
+      const title = document.createElement("span");
+      title.className = "task-card-title";
+      title.textContent = "Tasks";
+      const prog = document.createElement("span");
+      prog.className = "task-card-progress";
+      prog.textContent = settled + " / " + total;
+      const meter = document.createElement("div");
+      meter.className = "task-card-meter";
+      const fill = document.createElement("div");
+      fill.className = "task-card-meter-fill";
+      fill.style.width = (total ? Math.round((settled / total) * 100) : 0) + "%";
+      meter.appendChild(fill);
+      head.appendChild(title);
+      head.appendChild(prog);
+      head.appendChild(meter);
+      card.appendChild(head);
+
+      // The frontier — always visible: the active task (it breathes blue via the
+      // shared plan grammar), or a quiet "all done" line when the plan is finished.
+      if (active) {
+        const currentLabel = document.createElement("div");
+        currentLabel.className = "task-card-group task-card-current-label";
+        currentLabel.textContent = "Up next";
+        card.appendChild(currentLabel);
+
+        const row = this.buildPlanTaskRow(active);
+        row.classList.add("task-card-row", "task-card-active");
+        card.appendChild(row);
+        const note = Array.isArray(active.notes)
+          ? String(active.notes.find(n => String(n || "").trim()) || "").trim()
+          : String(active.notes || "").trim();
+        if (note) {
+          const noteEl = document.createElement("div");
+          noteEl.className = "task-card-note";
+          noteEl.textContent = note;
+          card.appendChild(noteEl);
+        }
+      } else if (done.length && !open.length && !cancelled.length) {
+        const complete = document.createElement("div");
+        complete.className = "task-card-complete";
+        complete.textContent = "✓ all " + total + " done";
+        card.appendChild(complete);
+      }
+
+      // Collapsed summary — the recede pile + what's left, one quiet line.
+      const summaryBits = [];
+      if (done.length) summaryBits.push("✓ " + done.length + " done");
+      if (cancelled.length) summaryBits.push("✕ " + cancelled.length + " cancelled");
+      if (open.length && !active) summaryBits.push(open.length + " up next");
+      if (summaryBits.length) {
+        const summary = document.createElement("div");
+        summary.className = "task-card-summary-line";
+        summary.textContent = summaryBits.join(" · ");
+        card.appendChild(summary);
+      }
+
+      // Expanded body: Up next in full, the done/cancelled piles folded behind
+      // their counts so they stay recessive even when the card is open.
+      const hasDetail = open.length || done.length || cancelled.length;
+      if (hasDetail) {
+        const body = document.createElement("div");
+        body.className = "task-card-body";
+        if (open.length) {
+          const g = document.createElement("div");
+          g.className = "task-card-group";
+          g.textContent = "Up next · " + open.length;
+          body.appendChild(g);
+          for (const t of open) {
+            const row = this.buildPlanTaskRow(t);
+            row.classList.add("task-card-row");
+            body.appendChild(row);
+          }
+        }
+        if (done.length) body.appendChild(this.taskFoldGroup("✓ " + done.length + " done", done));
+        if (cancelled.length) body.appendChild(this.taskFoldGroup("✕ " + cancelled.length + " cancelled", cancelled));
+        card.appendChild(body);
+
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "task-card-toggle";
+        const setLabel = () => {
+          toggle.innerHTML = card.dataset.expanded === "true"
+            ? 'collapse <span class="fold-chevron open">›</span>'
+            : 'show all <span class="fold-chevron">›</span>';
+        };
+        setLabel();
+        toggle.addEventListener("click", () => {
+          card.dataset.expanded = card.dataset.expanded === "true" ? "false" : "true";
+          setLabel();
+        });
+        card.appendChild(toggle);
+      }
+
+      // Float the single card to the live frontier (moves the existing node;
+      // there is only ever one task card in the transcript).
+      this.conversation.appendChild(card);
+    },
+
+    // taskFoldGroup builds a count line that reveals its rows on click — used for
+    // the done/cancelled piles so they stay folded (recessive) even when the
+    // whole plan card is expanded.
+    taskFoldGroup(label, items) {
+      const wrap = document.createElement("div");
+      wrap.className = "task-card-fold";
+      const head = document.createElement("button");
+      head.type = "button";
+      head.className = "task-card-fold-head";
+      head.textContent = label + " ";
+      const chev = document.createElement("span");
+      chev.className = "fold-chevron";
+      chev.textContent = "›";
+      head.appendChild(chev);
+      const rows = document.createElement("div");
+      rows.className = "task-card-fold-rows";
+      for (const t of items) {
+        const row = this.buildPlanTaskRow(t);
+        row.classList.add("task-card-row");
+        rows.appendChild(row);
+      }
+      head.addEventListener("click", () => {
+        const open = wrap.classList.toggle("open");
+        chev.classList.toggle("open", open);
+      });
+      wrap.appendChild(head);
+      wrap.appendChild(rows);
+      return wrap;
+    },
+
+    // appendTaskUpdateCard renders one coherent card for a task_list change:
+    // what the agent just edited (the changed rows, flagged, with their notes
+    // and — for completed tasks — when they were checked off), the now-current
+    // task, and a little surrounding context (the tasks immediately before and
+    // after the current one, shown in sequence). The rest of the plan folds
+    // behind "show all". The authoritative task set is the tool's State
+    // snapshot (it carries statuses + minted timestamps); the description cache
+    // is the fallback when no State rode along (e.g. older transcripts).
     appendTaskUpdateCard(args, stateTasks, priorIds) {
       const hasAuthoritativeState = Array.isArray(stateTasks);
       let tasks = hasAuthoritativeState && stateTasks.length
@@ -4184,7 +4388,8 @@
         const id = Number(t.id);
         const flag = touched.get(id);
         if (!flag) continue;
-        const row = buildTaskRowLine(t);
+        // Shared row widget; the card adds its own flag classes on top.
+        const row = this.buildPlanTaskRow(t);
         row.classList.add("task-card-row");
         row.classList.add("touched", flag.kind);
         rows.appendChild(row);
@@ -4203,15 +4408,7 @@
 
     refreshTaskBadgeSoon() {
       if (!this.sessionId) return;
-      if (window.SerfAppwire) {
-        window.SerfAppwire.tasks(this.sessionId)
-          .then(tasks => this.applyTasks(tasks))
-          .catch(() => {});
-        return;
-      }
-      partialFetch(sessionPartialPath(this.sessionId, "tasks"))
-        .then(r => r.ok ? r.json() : [])
-        .then(tasks => this.applyTasks(tasks)).catch(() => {});
+      this.requestTasks();
     },
 
     scrollToBottom() {

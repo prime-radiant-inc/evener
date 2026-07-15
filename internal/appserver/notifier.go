@@ -12,6 +12,14 @@ type SequencedNotification struct {
 	Notification appwire.Notification `json:"notification"`
 }
 
+// RetainedNotificationWindow is an atomic view of the notifier's globally
+// retained sequence boundary and the retained records for one thread.
+type RetainedNotificationWindow struct {
+	LowerSeq uint64
+	UpperSeq uint64
+	Records  []SequencedNotification
+}
+
 type Notifier struct {
 	mu      sync.RWMutex
 	nextSeq uint64
@@ -57,4 +65,31 @@ func (n *Notifier) ReplayAfter(cursor uint64, threadID string) []SequencedNotifi
 		out = append(out, record)
 	}
 	return out
+}
+
+func (n *Notifier) RetainedWindow(threadID string) RetainedNotificationWindow {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	window := RetainedNotificationWindow{UpperSeq: n.nextSeq}
+	if len(n.history) > 0 {
+		window.LowerSeq = n.history[0].Seq
+	} else if n.nextSeq > 0 {
+		window.LowerSeq = n.nextSeq + 1
+	}
+	window.Records = make([]SequencedNotification, 0, len(n.history))
+	for _, record := range n.history {
+		if threadID != "" && record.ThreadID != threadID {
+			continue
+		}
+		window.Records = append(window.Records, record)
+	}
+	return window
+}
+
+// RetainedWindowCurrent reports whether no notification has been recorded
+// since a RetainedWindow carrying upperSeq was captured.
+func (n *Notifier) RetainedWindowCurrent(upperSeq uint64) bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.nextSeq == upperSeq
 }

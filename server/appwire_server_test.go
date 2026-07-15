@@ -1172,11 +1172,21 @@ func TestServerAppWireThreadReadSubscribesForNotifications(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 
-	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1", Subscribe: true}))
-	if resp.Kind() != appwire.MessageResponse {
-		t.Fatalf("resp=%v", resp.Kind())
+	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
+	defer httpServer.Close()
+	ctx := context.Background()
+	transport, err := appwire.DialWebSocket(ctx, "ws"+httpServer.URL[len("http"):], httpServer.Client())
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer transport.Close() //nolint:errcheck // test cleanup
+	client := appwire.NewClient(transport)
+	client.Start(ctx)
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_1", Subscribe: true}); err != nil {
+		t.Fatalf("thread read: %v", err)
 	}
 	if got := srv.AppServer().SubscriberCount("th_1"); got != 1 {
 		t.Fatalf("subscriber count=%d, want 1", got)

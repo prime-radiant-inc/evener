@@ -184,10 +184,11 @@ func (h *msHarness) apply(rt *rapid.T, step int, op msOp) {
 		h.model[op.conn] = map[string]bool{}
 
 	case opMSDisconnect:
-		if _, ok := h.live[op.conn]; !ok {
+		conn, ok := h.live[op.conn]
+		if !ok {
 			return
 		}
-		h.server.unregisterConnection(op.conn)
+		h.server.unregisterConnection(conn)
 		delete(h.live, op.conn)
 		delete(h.model, op.conn)
 

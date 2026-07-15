@@ -225,6 +225,14 @@ var identifierSHA256Inventory = map[string]map[string]map[string]bool{
 	"cmd/serf-hub/internal/launchconfig/trust.go": {"canonicalHashTOML": {"Sum256(buf.Bytes())": true}},
 	"cmd/serf-hub/output_images.go":               {"outputImageSHA": {"Sum256(data)": true}},
 	"fuzz/promoter/emit_go.go":                    {"ShortHash": {"New()": true}},
+	"internal/apptranscript/turn_index.go": {
+		"anchorAt":                        {"Sum256(data[:n])": true},
+		"anchorsMatchObserved":            {"Sum256(data[:n])": true},
+		"extendPrefixStamp":               {"New()": true, "Size": true},
+		"initialPrefixStamp":              {"Sum256([]byte(\"serf-apptranscript-prefix-v1\"))": true},
+		"turnIndexIntegrityStampObserved": {"Sum256(data)": true},
+		"turnIndexJournalStampObserved":   {"Sum256(data)": true},
+	},
 	"llm/providers/openai/responses_continuation_fingerprint.go": {
 		"requestFingerprintForResponsesBody": {"Sum256(b)": true},
 	},

@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
-	"time"
 
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/appwire"
@@ -52,24 +50,6 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 	return registry
 }
 
-type hubRelayHandle struct {
-	ready  chan struct{}
-	err    error
-	cancel context.CancelFunc
-}
-
-var hubRelayIdleInterval = 250 * time.Millisecond
-
-type hubRelayFunctions struct {
-	startRelay          func(context.Context, appsource.Source, appwire.ThreadReadParams, appwire.Thread) error
-	startTurn           func(context.Context, appsource.Source, appwire.TurnStartParams) (appwire.TurnStartResponse, error)
-	startRelayForThread func(context.Context, appwire.Thread) error
-	stopRelay           func(string)
-}
-
-var observeHubRelayFunctions func(hubRelayFunctions)
-var observeHubRelayWait func()
-
 var (
 	resolveTurnStartSource = sourceForThreadWithManagedLaunch
 	resumeTurnStartThread  = hubThreadResume
@@ -96,7 +76,6 @@ func relayOnThreadRead(source appsource.Source) bool {
 }
 
 func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appserver.Server {
-	relayIdleInterval := hubRelayIdleInterval
 	server := appserver.NewServer(appserver.ServerConfig{
 		ServerName: "serf-hub",
 		Version:    Version,
@@ -133,186 +112,11 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 			auth:                authController,
 		}
 	}
-	var relayMu sync.Mutex
-	relayedThreads := map[string]*hubRelayHandle{}
-	startRelay := func(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams, thread appwire.Thread) error {
-		threadID := thread.ID
-		if threadID == "" {
-			return nil
-		}
-		relayKey := source.ID() + ":" + threadID
-
-		subscribeParams := params
-		if subscribeParams.Ref == "" {
-			subscribeParams.Ref = thread.Serf.Ref
-		}
-		if subscribeParams.Ref == "" {
-			subscribeParams.Ref = appwire.Ref{SourceID: source.ID(), ThreadID: threadID}.String()
-		}
-
-		var relayHandle *hubRelayHandle
-		for {
-			relayMu.Lock()
-			existing := relayedThreads[relayKey]
-			if existing == nil {
-				relayHandle = &hubRelayHandle{ready: make(chan struct{})}
-				relayedThreads[relayKey] = relayHandle
-				relayMu.Unlock()
-				break
-			}
-			ready := existing.ready
-			relayMu.Unlock()
-			if observeHubRelayWait != nil {
-				observeHubRelayWait()
-			}
-
-			select {
-			case <-ready:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-
-			relayMu.Lock()
-			active := relayedThreads[relayKey] == existing
-			err := existing.err
-			relayMu.Unlock()
-			if active && err == nil {
-				if subscribeParams.ReplaceSubscription {
-					appserver.ReplaceSubscriptions(ctx, relayKey)
-				} else {
-					appserver.Subscribe(ctx, relayKey)
-				}
-				return nil
-			}
-			if err != nil {
-				return err
-			}
-		}
-
-		relayCtx, cancelRelay := context.WithCancel(context.WithoutCancel(ctx))
-		relayHandle.cancel = cancelRelay
-		notifications, err := source.SubscribeThread(relayCtx, subscribeParams)
-		if err != nil {
-			cancelRelay()
-			relayMu.Lock()
-			if relayedThreads[relayKey] == relayHandle {
-				delete(relayedThreads, relayKey)
-			}
-			relayHandle.err = err
-			close(relayHandle.ready)
-			relayMu.Unlock()
-			return err
-		}
-		if subscribeParams.ReplaceSubscription {
-			appserver.ReplaceSubscriptions(ctx, relayKey)
-		} else {
-			appserver.Subscribe(ctx, relayKey)
-		}
-		relayMu.Lock()
-		close(relayHandle.ready)
-		relayMu.Unlock()
-		go func() {
-			ticker := time.NewTicker(relayIdleInterval)
-			cleanupRelay := func() {
-				cancelRelay()
-				relayMu.Lock()
-				if relayedThreads[relayKey] == relayHandle {
-					delete(relayedThreads, relayKey)
-				}
-				relayMu.Unlock()
-			}
-			defer ticker.Stop()
-			defer cleanupRelay()
-			argsByCallID := map[string]string{}
-			for {
-				select {
-				case <-relayCtx.Done():
-					return
-				case <-ticker.C:
-					if server.SubscriberCount(relayKey) == 0 {
-						if cfg.RelayHooks.IdleExit != nil {
-							cfg.RelayHooks.IdleExit(threadID)
-						}
-						relayMu.Lock()
-						if server.SubscriberCount(relayKey) == 0 {
-							if relayedThreads[relayKey] == relayHandle {
-								delete(relayedThreads, relayKey)
-							}
-							relayMu.Unlock()
-							if cfg.RelayHooks.AfterIdleDelete != nil {
-								cfg.RelayHooks.AfterIdleDelete(threadID)
-							}
-							cancelRelay()
-							return
-						}
-						relayMu.Unlock()
-					}
-				case notification, ok := <-notifications:
-					if !ok {
-						return
-					}
-					if source.ID() == "local" {
-						notification = enrichOutputImageNotification(thread.SessionID, thread.CWD, argsByCallID, notification)
-					}
-					server.Broadcast(relayKey, notification.Method, notification.Params)
-				}
-			}
-		}()
-		return nil
-	}
-	startTurn := func(ctx context.Context, source appsource.Source, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-		readParams := appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: false}
-		threadResp, err := source.ReadThread(ctx, readParams)
-		if err != nil {
-			return appwire.TurnStartResponse{}, err
-		}
-		if !threadActionAvailable(threadResp.Thread.Serf.Capabilities, "send") {
-			return appwire.TurnStartResponse{}, appwire.Unavailable("send is not available for this session")
-		}
-		if err := startRelay(ctx, source, readParams, threadResp.Thread); err != nil {
-			return appwire.TurnStartResponse{}, err
-		}
-		return source.StartTurn(ctx, params)
-	}
-	startRelayForThread := func(ctx context.Context, thread appwire.Thread) error {
-		if thread.ID == "" {
-			thread.ID = thread.SessionID
-		}
-		if thread.ID == "" {
-			return nil
-		}
-		ref := thread.Serf.Ref
-		if ref == "" {
-			sourceID := strings.TrimSpace(thread.Source)
-			if sourceID == "" {
-				sourceID = "local"
-			}
-			ref = appwire.Ref{SourceID: sourceID, ThreadID: thread.ID}.String()
-		}
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, ref, thread.ID)
-		if err != nil {
-			return nil //nolint:nilerr // best-effort relay: an unresolvable source means nothing to relay, not a caller error
-		}
-		if err := startRelay(ctx, source, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false}, thread); err != nil {
-			if isSessionUnavailableError(err) {
-				return nil
-			}
-			return err
-		}
-		return nil
-	}
-	stopRelay := func(key string) {
-		relayMu.Lock()
-		handle := relayedThreads[key]
-		relayMu.Unlock()
-		if handle != nil && handle.cancel != nil {
-			handle.cancel()
-		}
-	}
+	relayFunctions := newHubRelayFunctions(server, cfg, sources)
 	if observeHubRelayFunctions != nil {
-		observeHubRelayFunctions(hubRelayFunctions{startRelay, startTurn, startRelayForThread, stopRelay})
+		observeHubRelayFunctions(relayFunctions)
 	}
-	registerThreadHandlers(server, cfg, sources, startRelay, startTurn, startRelayForThread)
+	registerThreadHandlers(server, cfg, sources, relayFunctions.startRelay, relayFunctions.startTurn, relayFunctions.startRelayForThread)
 	registerAuthHandlers(server, authController)
 	registerInstanceHandlers(server, instancesController)
 	launchController := newHubLaunchController(hubStateRoot)
@@ -342,15 +146,15 @@ func registerThreadHandlers(
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if err != nil {
-			if thread, ok := pastThreadForRead(cfg, params); ok {
-				return windowedReadResponse(thread, params.TurnLimit), nil
+			if resp, ok := pastThreadReadResponse(cfg, params); ok {
+				return resp, nil
 			}
 			return appwire.ThreadReadResponse{}, err
 		}
 		resp, err := source.ReadThread(ctx, params)
 		if err != nil {
-			if thread, ok := pastThreadForRead(cfg, params); ok {
-				return windowedReadResponse(thread, params.TurnLimit), nil
+			if saved, ok := pastThreadReadResponse(cfg, params); ok {
+				return saved, nil
 			}
 			return appwire.ThreadReadResponse{}, err
 		}
@@ -395,9 +199,8 @@ func registerThreadHandlers(
 				return live, nil
 			}
 		}
-		readParams := appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: true}
-		if thread, ok := pastThreadForRead(cfg, readParams); ok {
-			return appwire.PageTurns(thread.Turns, params.Cursor, params.Limit), nil
+		if saved, ok := pastThreadTurnsList(cfg, params); ok {
+			return saved, nil
 		}
 		if srcErr != nil {
 			return appwire.ThreadTurnsListResponse{}, srcErr

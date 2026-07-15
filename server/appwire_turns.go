@@ -2,7 +2,9 @@ package server
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
+	"sync"
 
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
@@ -48,9 +50,71 @@ func projectTranscriptTurn(raw json.RawMessage, turnID string, entryIndex int, t
 	return apptranscript.ProjectTurn(turnID, entryIndex, entry.Turn, toolNames, nil, nil)
 }
 
-func appTurnsFromNotifications(records []appserver.SequencedNotification) []appwire.Turn {
-	var turns []appwire.Turn
-	turnIndex := map[string]int{}
+func projectBoundedDaemonTranscriptTurn(raw json.RawMessage, turnID string, entryIndex int, toolNames map[string]string) []appwire.ThreadItem {
+	return projectTranscriptTurn(raw, turnID, entryIndex, toolNames)
+}
+
+type appTurnSnapshot struct {
+	mu            sync.Mutex
+	threadID      string
+	limit         int
+	cursor        uint64
+	retainedLower uint64
+	records       []appserver.SequencedNotification
+	turns         []appwire.Turn
+	turnIndex     map[string]int
+}
+
+func (s *appTurnSnapshot) Apply(records []appserver.SequencedNotification) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.applyLocked(records)
+}
+
+func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification) {
+	var appended []appserver.SequencedNotification
+	rebuild := false
+	for _, record := range records {
+		if s.retainedLower > 0 && record.Seq < s.retainedLower {
+			continue
+		}
+		if record.Seq <= s.cursor {
+			found := false
+			for _, retained := range s.records {
+				if retained.Seq == record.Seq {
+					found = true
+					break
+				}
+			}
+			if found {
+				continue
+			}
+			rebuild = true
+		} else {
+			s.cursor = record.Seq
+		}
+		s.records = append(s.records, record)
+		appended = append(appended, record)
+	}
+	if len(appended) == 0 {
+		return
+	}
+	apply := appended
+	if rebuild {
+		sort.Slice(s.records, func(i, j int) bool { return s.records[i].Seq < s.records[j].Seq })
+		s.turns = nil
+		s.turnIndex = nil
+		apply = s.records
+	}
+	if s.limit > 0 && len(s.records) > s.limit {
+		s.records = append([]appserver.SequencedNotification(nil), s.records[len(s.records)-s.limit:]...)
+		s.turns = nil
+		s.turnIndex = nil
+		apply = s.records
+	}
+	if s.turnIndex == nil {
+		s.turnIndex = map[string]int{}
+	}
 
 	ensureTurn := func(id string) *appwire.Turn {
 		if strings.TrimSpace(id) == "" {
@@ -59,12 +123,12 @@ func appTurnsFromNotifications(records []appserver.SequencedNotification) []appw
 		if appTurnsEnsureTurnHook != nil && appTurnsEnsureTurnHook(id) {
 			return nil
 		}
-		if idx, ok := turnIndex[id]; ok {
-			return &turns[idx]
+		if idx, ok := s.turnIndex[id]; ok {
+			return &s.turns[idx]
 		}
-		turns = append(turns, appwire.Turn{ID: id, ItemsView: "full", Status: appwire.TurnStatusInProgress})
-		turnIndex[id] = len(turns) - 1
-		return &turns[len(turns)-1]
+		s.turns = append(s.turns, appwire.Turn{ID: id, ItemsView: "full", Status: appwire.TurnStatusInProgress})
+		s.turnIndex[id] = len(s.turns) - 1
+		return &s.turns[len(s.turns)-1]
 	}
 	upsertItem := func(turnID string, item appwire.ThreadItem) {
 		if item.ID == "" {
@@ -110,16 +174,11 @@ func appTurnsFromNotifications(records []appserver.SequencedNotification) []appw
 				return &turn.Items[i]
 			}
 		}
-		turn.Items = append(turn.Items, appwire.ThreadItem{
-			Type:   itemType,
-			ID:     itemID,
-			TurnID: turnID,
-			Status: appwire.TurnStatusInProgress,
-		})
+		turn.Items = append(turn.Items, appwire.ThreadItem{Type: itemType, ID: itemID, TurnID: turnID, Status: appwire.TurnStatusInProgress})
 		return &turn.Items[len(turn.Items)-1]
 	}
 
-	for _, record := range records {
+	for _, record := range apply {
 		switch record.Notification.Method {
 		case appwire.NotifyTurnStarted:
 			var params struct {
@@ -146,27 +205,22 @@ func appTurnsFromNotifications(records []appserver.SequencedNotification) []appw
 				TurnID string             `json:"turnId"`
 				Item   appwire.ThreadItem `json:"item"`
 			}
-			if json.Unmarshal(record.Notification.Params, &params) != nil {
-				continue
+			if json.Unmarshal(record.Notification.Params, &params) == nil {
+				upsertItem(params.TurnID, params.Item)
 			}
-			upsertItem(params.TurnID, params.Item)
 		case appwire.NotifyAgentMessageDelta:
 			var params appwire.AgentMessageDeltaParams
-			if json.Unmarshal(record.Notification.Params, &params) != nil {
-				continue
-			}
-			item := itemForDelta(params.TurnID, params.ItemID, "agentMessage")
-			if item != nil {
-				item.Text += params.Delta
+			if json.Unmarshal(record.Notification.Params, &params) == nil {
+				if item := itemForDelta(params.TurnID, params.ItemID, "agentMessage"); item != nil {
+					item.Text += params.Delta
+				}
 			}
 		case appwire.NotifyReasoningSummaryDelta:
 			var params appwire.ReasoningSummaryDeltaParams
-			if json.Unmarshal(record.Notification.Params, &params) != nil {
-				continue
-			}
-			item := itemForDelta(params.TurnID, params.ItemID, "reasoning")
-			if item != nil {
-				item.Text += params.Delta
+			if json.Unmarshal(record.Notification.Params, &params) == nil {
+				if item := itemForDelta(params.TurnID, params.ItemID, "reasoning"); item != nil {
+					item.Text += params.Delta
+				}
 			}
 		case appwire.NotifyToolOutputDelta:
 			var params struct {
@@ -182,8 +236,7 @@ func appTurnsFromNotifications(records []appserver.SequencedNotification) []appw
 			if itemID == "" {
 				itemID = params.CallID
 			}
-			item := itemForDelta(params.TurnID, itemID, "commandExecution")
-			if item != nil {
+			if item := itemForDelta(params.TurnID, itemID, "commandExecution"); item != nil {
 				if item.CallID == "" {
 					item.CallID = params.CallID
 				}
@@ -218,7 +271,129 @@ func appTurnsFromNotifications(records []appserver.SequencedNotification) []appw
 			}
 		}
 	}
+}
+
+func (s *appTurnSnapshot) Cursor() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cursor
+}
+
+func (s *appTurnSnapshot) ReconcileAndSnapshot(lowerSeq uint64, records []appserver.SequencedNotification) []appwire.Turn {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.retainedLower = lowerSeq
+	exact := len(s.records) == len(records)
+	if exact {
+		for i := range records {
+			if s.records[i].Seq != records[i].Seq {
+				exact = false
+				break
+			}
+		}
+	}
+	if !exact {
+		s.cursor = 0
+		s.records = nil
+		s.turns = nil
+		s.turnIndex = nil
+		s.applyLocked(records)
+	}
+	return s.snapshotLocked()
+}
+
+func (s *appTurnSnapshot) Snapshot() []appwire.Turn {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.snapshotLocked()
+}
+
+func (s *appTurnSnapshot) snapshotLocked() []appwire.Turn {
+	turns := make([]appwire.Turn, len(s.turns))
+	for i := range turns {
+		turns[i] = cloneAppTurn(s.turns[i])
+	}
 	return turns
+}
+
+func cloneAppTurn(turn appwire.Turn) appwire.Turn {
+	clone := turn
+	clone.StartedAt = cloneInt64(turn.StartedAt)
+	clone.CompletedAt = cloneInt64(turn.CompletedAt)
+	clone.DurationMS = cloneInt64(turn.DurationMS)
+	if turn.Usage != nil {
+		usage := *turn.Usage
+		clone.Usage = &usage
+	}
+	if turn.Error != nil {
+		errorCopy := *turn.Error
+		if turn.Error.Cause != nil {
+			cause := *turn.Error.Cause
+			errorCopy.Cause = &cause
+		}
+		errorCopy.CodexErrorInfo = cloneJSONCompatible(turn.Error.CodexErrorInfo)
+		clone.Error = &errorCopy
+	}
+	clone.Items = make([]appwire.ThreadItem, len(turn.Items))
+	for i := range turn.Items {
+		clone.Items[i] = cloneAppThreadItem(turn.Items[i])
+	}
+	return clone
+}
+
+func cloneAppThreadItem(item appwire.ThreadItem) appwire.ThreadItem {
+	clone := item
+	clone.StartedAt = cloneInt64(item.StartedAt)
+	clone.CompletedAt = cloneInt64(item.CompletedAt)
+	clone.Raw = append(json.RawMessage(nil), item.Raw...)
+	clone.OutputImages = append([]appwire.OutputImage(nil), item.OutputImages...)
+	clone.Images = make([]appwire.InputItem, len(item.Images))
+	for i := range item.Images {
+		clone.Images[i] = item.Images[i]
+		clone.Images[i].Data = append([]byte(nil), item.Images[i].Data...)
+		if item.Images[i].Metadata != nil {
+			clone.Images[i].Metadata = make(map[string]string, len(item.Images[i].Metadata))
+			for key, value := range item.Images[i].Metadata {
+				clone.Images[i].Metadata[key] = value
+			}
+		}
+	}
+	return clone
+}
+
+func cloneInt64(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
+}
+
+func cloneJSONCompatible(value any) any {
+	if value == nil {
+		return nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+	var clone any
+	if json.Unmarshal(data, &clone) != nil {
+		return value
+	}
+	return clone
+}
+
+func appTurnsFromNotifications(records []appserver.SequencedNotification) []appwire.Turn {
+	// This is the legacy/reference input-order projector. Supplied sequence values
+	// are irrelevant here; production sequenced reduction uses Apply directly.
+	sequenced := append([]appserver.SequencedNotification(nil), records...)
+	for i := range sequenced {
+		sequenced[i].Seq = uint64(i + 1)
+	}
+	snapshot := &appTurnSnapshot{}
+	snapshot.Apply(sequenced)
+	return snapshot.Snapshot()
 }
 
 func mergeAppThreadItem(existing, incoming appwire.ThreadItem) appwire.ThreadItem {

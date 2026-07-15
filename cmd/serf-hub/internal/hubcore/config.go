@@ -3,6 +3,7 @@ package hubcore
 import (
 	"context"
 	"os"
+	"time"
 
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
@@ -18,8 +19,15 @@ import (
 // WebConfig at construction (never mutated after a relay goroutine starts), so
 // each hub server instance carries its own — no shared global, no data race.
 type RelayLifecycleHooks struct {
-	IdleExit        func(threadID string)
-	AfterIdleDelete func(threadID string)
+	IdleExit                   func(threadID string)
+	AfterIdleDelete            func(threadID string)
+	RetryWait                  func(context.Context, time.Duration) error
+	AfterPlaceholder           func(threadID string)
+	AfterReady                 func(threadID string)
+	BeforeExistingRegistration func(threadID string)
+	RegisterSubscription       func(context.Context, string, bool) bool
+	BeforeSupervisor           func(threadID string)
+	BeforeLaunchCommit         func(threadID string)
 }
 
 // WebConfig is everything the web server needs.

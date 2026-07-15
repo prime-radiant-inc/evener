@@ -496,20 +496,25 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 	}
 	if s.cfg.Past != nil {
 		if pe, ok := s.cfg.Past.Find(id); ok {
+			state := "ended"
+			if s.cfg.Roster != nil && s.cfg.Roster.IsSubagentActive(id) {
+				state = "active"
+			}
 			data := WorkspaceData{
 				ID:           id,
 				SourceLabel:  "serf",
 				Title:        pastTitle(pe),
-				State:        "ended",
-				StateLabel:   stateLabel("ended", false),
+				State:        state,
+				StateLabel:   stateLabel(state, false),
 				TurnCount:    pe.Meta.TurnCount,
 				Model:        pe.Meta.Model,
 				WorkingDir:   pe.Meta.EnvInfo.WorkingDir,
 				Branch:       pe.Meta.EnvInfo.GitBranch,
 				Worktree:     worktreeLabel(pe.Meta.WorktreePath),
 				Capabilities: s.apiSessionCapabilities(id, false),
-				// ActiveTurnStartedAt stays 0: the session has ended, so no
-				// turn is in flight.
+				// ActiveTurnStartedAt stays 0: archived child metadata does not
+				// expose the current turn's start time, even when the parent roster
+				// projects this child as active.
 				WorkMillis: pe.Meta.WorkMillis,
 				Usage:      serfUsageFromCumulative(pe.Meta.CumulativeUsage),
 			}
@@ -571,7 +576,7 @@ func (s *WebServer) liveWorkspaceSnapshot(id string, fallback hubapi.SessionCapa
 	if err != nil {
 		return fallback, ""
 	}
-	resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true})
+	resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false})
 	if err != nil {
 		return fallback, ""
 	}

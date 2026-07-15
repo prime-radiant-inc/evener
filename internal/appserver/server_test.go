@@ -143,7 +143,7 @@ func TestConnectionEnqueueAfterUnregisterDoesNotPanic(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
 	conn := server.NewConnection("conn-1")
 	server.registerConnection(conn)
-	server.unregisterConnection(conn.ID())
+	server.unregisterConnection(conn)
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -151,6 +151,91 @@ func TestConnectionEnqueueAfterUnregisterDoesNotPanic(t *testing.T) {
 		}
 	}()
 	conn.enqueue(appwire.NotificationMessage("notice", nil))
+}
+
+func TestStaleConnectionTeardownPreservesSameIDReplacement(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	stale := server.NewConnection("conn-shared")
+	replacement := server.NewConnection("conn-shared")
+	replacementCanceled := make(chan struct{})
+	replacement.setCancel(func() { close(replacementCanceled) })
+	server.registerConnection(stale)
+	server.registerConnection(replacement)
+	replacement.Subscribe("th_replacement")
+
+	server.unregisterConnection(stale)
+
+	server.mu.RLock()
+	registered := server.conns[replacement.ID()]
+	server.mu.RUnlock()
+	if registered != replacement {
+		t.Fatal("stale teardown removed same-ID replacement")
+	}
+	if !server.subs.IsSubscribed(replacement.ID(), "th_replacement") {
+		t.Fatal("stale teardown removed replacement subscription")
+	}
+	select {
+	case <-replacementCanceled:
+		t.Fatal("stale teardown canceled same-ID replacement")
+	default:
+	}
+	if !replacement.enqueue(appwire.NotificationMessage("notice", nil)) {
+		t.Fatal("stale teardown closed same-ID replacement send channel")
+	}
+}
+
+func TestStaleBroadcastFailurePreservesSameIDReplacement(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	stale := server.NewConnection("conn-shared")
+	replacement := server.NewConnection("conn-shared")
+	replacementCanceled := make(chan struct{})
+	replacement.setCancel(func() { close(replacementCanceled) })
+	server.registerConnection(stale)
+	stale.Subscribe("th_broadcast")
+
+	broadcastSelected := make(chan struct{})
+	releaseBroadcast := make(chan struct{})
+	server.afterBroadcastConnectionLookup = func(got *Connection) {
+		if got == stale {
+			close(broadcastSelected)
+			<-releaseBroadcast
+		}
+	}
+	broadcastDone := make(chan struct{})
+	go func() {
+		server.Broadcast("th_broadcast", "notice", nil)
+		close(broadcastDone)
+	}()
+	select {
+	case <-broadcastSelected:
+	case <-time.After(time.Second):
+		t.Fatal("broadcast did not retain stale concrete connection")
+	}
+
+	server.registerConnection(replacement)
+	replacement.Subscribe("th_broadcast")
+	stale.closeSend()
+	close(releaseBroadcast)
+	select {
+	case <-broadcastDone:
+	case <-time.After(time.Second):
+		t.Fatal("stale broadcast failure did not return")
+	}
+
+	server.mu.RLock()
+	registered := server.conns[replacement.ID()]
+	server.mu.RUnlock()
+	if registered != replacement {
+		t.Fatal("stale broadcast failure removed same-ID replacement")
+	}
+	if !server.subs.IsSubscribed(replacement.ID(), "th_broadcast") {
+		t.Fatal("stale broadcast failure removed replacement subscription")
+	}
+	select {
+	case <-replacementCanceled:
+		t.Fatal("stale broadcast failure canceled same-ID replacement")
+	default:
+	}
 }
 
 func TestServer_BroadcastAll(t *testing.T) {
@@ -231,5 +316,115 @@ func TestReplaceSubscriptionsScopesConnectionToLatestThread(t *testing.T) {
 	}
 	if !conn.server.subs.IsSubscribed(conn.ID(), "th_new") {
 		t.Fatal("connection was not subscribed to new thread")
+	}
+}
+
+func TestContextSubscriptionRegistrationRejectsRemovedConnection(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		register func(context.Context, string) bool
+	}{
+		{name: "subscribe", register: Subscribe},
+		{name: "replace", register: ReplaceSubscriptions},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+			conn := server.NewConnection("conn-removed")
+			server.registerConnection(conn)
+			ctx := context.WithValue(context.Background(), connectionContextKey{}, conn)
+			server.unregisterConnection(conn)
+
+			if tc.register(ctx, "th_after_remove") {
+				t.Fatal("registration succeeded for removed connection")
+			}
+			if got := server.SubscriberCount("th_after_remove"); got != 0 {
+				t.Fatalf("subscriber count=%d, want no phantom subscriber", got)
+			}
+		})
+	}
+}
+
+func TestContextSubscriptionRegistrationWithoutConnectionRemainsNoop(t *testing.T) {
+	if !Subscribe(context.Background(), "th_no_connection") {
+		t.Fatal("Subscribe without connection should preserve no-op success")
+	}
+	if !ReplaceSubscriptions(context.Background(), "th_no_connection") {
+		t.Fatal("ReplaceSubscriptions without connection should preserve no-op success")
+	}
+}
+
+func TestContextSubscriptionRegistrationSerializesWithConnectionTeardown(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		register func(context.Context, string) bool
+	}{
+		{name: "subscribe", register: Subscribe},
+		{name: "replace", register: ReplaceSubscriptions},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+			conn := server.NewConnection("conn-race")
+			server.registerConnection(conn)
+			conn.Subscribe("th_old")
+			ctx := context.WithValue(context.Background(), connectionContextKey{}, conn)
+
+			connectionDeleted := make(chan struct{})
+			registrationAttempted := make(chan struct{})
+			releaseTeardown := make(chan struct{})
+			server.afterUnregisterDelete = func() {
+				close(connectionDeleted)
+				<-registrationAttempted
+				<-releaseTeardown
+			}
+			server.beforeSubscriptionRegistration = func() {
+				close(registrationAttempted)
+			}
+
+			teardownDone := make(chan struct{})
+			go func() {
+				server.unregisterConnection(conn)
+				close(teardownDone)
+			}()
+			select {
+			case <-connectionDeleted:
+			case <-time.After(time.Second):
+				t.Fatal("connection teardown did not reach registry deletion")
+			}
+
+			registrationResult := make(chan bool, 1)
+			go func() {
+				registrationResult <- tc.register(ctx, "th_new")
+			}()
+			select {
+			case <-registrationAttempted:
+			case <-time.After(time.Second):
+				t.Fatal("subscription registration did not reach teardown interleaving")
+			}
+			select {
+			case result := <-registrationResult:
+				t.Fatalf("registration returned before connection-registry teardown unlocked: %v", result)
+			default:
+			}
+			close(releaseTeardown)
+			select {
+			case <-teardownDone:
+			case <-time.After(time.Second):
+				t.Fatal("connection teardown did not complete")
+			}
+			select {
+			case result := <-registrationResult:
+				if result {
+					t.Fatal("registration succeeded after connection-registry deletion")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("subscription registration did not return after teardown")
+			}
+			if got := server.SubscriberCount("th_old"); got != 0 {
+				t.Fatalf("old subscriber count=%d, want teardown cleanup", got)
+			}
+			if got := server.SubscriberCount("th_new"); got != 0 {
+				t.Fatalf("new subscriber count=%d, want no phantom subscriber", got)
+			}
+		})
 	}
 }

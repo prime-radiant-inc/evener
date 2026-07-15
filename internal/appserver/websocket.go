@@ -60,7 +60,7 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 	s.registerConnection(conn)
 	defer func() {
 		cancel()
-		s.unregisterConnection(conn.ID())
+		s.unregisterConnection(conn)
 	}()
 
 	go func() {
