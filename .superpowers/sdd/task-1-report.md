@@ -1,382 +1,236 @@
-# Task 1 Report: Inline task update cards
+# Task 1: Deterministic Fork Failure Tests
 
-## Status
+## Scope
 
-DONE
+Repair the two pre-existing deterministic agent baseline failures reported by
+`make test`:
 
-## Files changed
+- `TestW3Init_ForkSession_OpenError`
+- `TestW3Init_ForkSession_NewWriterError`
 
-- `cmd/serf-hub/assets/renderer.js`
-  - Failed `task_list` calls are deleted from pending state and render no card.
-  - Successful mutations route to a new per-call card.
-  - The persistent living-plan card and fold implementation were removed.
-  - Cards use authoritative state when available, detect only additions/status transitions, add completion auto-activation only from authoritative state, render the progress meter, and include only touched rows.
-- `cmd/serf-hub/jstest/test-renderer-plan.js`
-  - Replaced living-plan scenarios with the seven required per-call scenarios and direct DOM assertions.
-- `cmd/serf-hub/jstest/test-realistic-flow.js`
-  - Updated only the superseded living-card assertions: 4 per-call cards and 12 top-level conversation children.
+No commit was created.
 
-No other source or test files were changed. The pre-existing `.superpowers/sdd/progress.md` was not modified or used as requirements.
+## Root Cause
 
-## Commits
+Both tests attempted to induce filesystem errors through Unix permission bits:
 
-- `d27f49c28` — `fix(hub): show inline task changes`
+- The open-error test set the transcript file to mode `000`.
+- The new-writer-error test set the sessions directory to mode `0500`.
 
-## Tests
+The test process runs as UID 0 in this environment. Root can read the mode-000
+file and create a child file in the mode-0500 directory, so neither intended
+fault occurred. The successful open then advanced to `LoadSessionMeta`; because
+the open-error test had not created parent metadata, it failed with a
+missing-meta error instead. The writer path completed successfully and returned
+`nil`.
 
-TDD red baseline:
+This was an ambient-machine-state test design error, not a production fork
+behavior bug.
 
-```text
-cd cmd/serf-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
+## Design
+
+`ForkSession` now delegates to an unexported `forkSessionFS` helper supplied
+with an `afero.Fs`. The public path passes `afero.NewOsFs()`, preserving normal
+production behavior. The helper sends transcript reads/writes and session-meta
+reads/writes through that same filesystem.
+
+The existing private filesystem implementations were exposed as narrow public
+wrappers:
+
+- `transcript.NewWriterWithFS`
+- `schema.SaveSessionMetaWithFS`
+- `schema.LoadSessionMetaWithFS`
+
+The repaired tests use real Serf persistence below a fake external filesystem
+boundary:
+
+- `fault.FS` injects the parent transcript open failure.
+- `afero.NewReadOnlyFs` permits loading a seeded parent but rejects child
+  transcript creation.
+
+This avoids global hooks, permission assumptions, and mocks of Serf internals.
+
+## TDD Evidence
+
+### Initial Reproduction
+
+Command:
+
+```sh
+go test ./agent -run '^(TestW3Init_ForkSession_OpenError|TestW3Init_ForkSession_NewWriterError)$' -count=1 -v
 ```
 
-Result: failed as expected against the old living-card implementation because aggregate/disclosure UI remained and update-only cards were not independent.
+Result: failed deterministically.
 
-Final focused and related commands:
+- `TestW3Init_ForkSession_OpenError`: received `load parent session meta: ... no
+  such file or directory`, not `open parent transcript`.
+- `TestW3Init_ForkSession_NewWriterError`: received `err = <nil>`.
 
-```text
-cd cmd/serf-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-realistic-flow.js
-```
+### Red
 
-Result: all passed, exit 0.
-
-- Focused renderer test: CSS contract plus all 7 per-call scenarios passed.
-- Subscription test: `PASS test-task-updated-subscription.js`.
-- Realistic flow: `PASS realistic-flow — user message, assistant text (×2), tool cluster, task card, steering suppression`.
-- `git diff --check`: passed before commit.
-- Final `git status --short` after commit: clean before this report was written.
-
-## Self-review
-
-- Confirmed `livePlanCard`, `renderLivePlan`, and `taskFoldGroup` plus living-plan comments are absent from `renderer.js`.
-- Confirmed failed calls are silent and pending entries are removed.
-- Confirmed view calls return without rendering or refreshing.
-- Confirmed non-status updates with authoritative tasks render a header with zero rows.
-- Confirmed completion auto-activation is inferred only from authoritative state.
-- Confirmed degraded replay does not invent auto-activation.
-- Confirmed cards are appended independently and contain no summary, toggle, show-all, hidden-row, neighboring-row, or completion-prose UI.
-- Confirmed the staged commit contained only the three intended Task 1 behavior/test files.
-
-## Concerns
-
-The commit command printed an `Operation not permitted` warning while attempting to create the repository-level `packed-refs.lock`, but it exited 0 and produced commit `d27f49c28`; `git log`, `git show`, and `git status --short` confirmed the commit and clean tracked worktree. This is an environment warning only, not a test or implementation failure.
-
-## Review fix: malformed successful mutations
-
-### Status
-
-DONE
-
-### Changes
-
-- `cmd/serf-hub/jstest/test-renderer-plan.js`
-  - Added red regression coverage for invalid JSON, an unknown action, malformed append payload, and malformed update payload on successful task calls.
-  - Strengthened the append scenario with a seeded known task plus new tasks, asserting only six newly added rows and directly asserting the `Tasks` title.
-- `cmd/serf-hub/assets/renderer.js`
-  - Validates that only `append` with an array `tasks` or `update` with an array `updates` is eligible to render or refresh.
-  - Keeps empty append silent, including when cached tasks exist.
-  - Safely handles a JSON `null` argument payload.
-  - Refreshes the task badge only when a valid mutation renders a card.
-
-### Review-fix tests
-
-TDD regression command (failed before the implementation fix):
+The tests were rewritten first to require the real filesystem seam. Before the
+seam existed, the same focused command failed to build with:
 
 ```text
-cd cmd/serf-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
+undefined: forkSessionFS
+undefined: schema.SaveSessionMetaWithFS
 ```
 
-Result: failed at `malformed successful task mutations render and refresh no card`; the old path rendered four false cards.
+### Green
 
-Final review-fix commands:
+After implementing the filesystem seam, the focused command passed both tests:
+
+```sh
+go test ./agent -run '^(TestW3Init_ForkSession_OpenError|TestW3Init_ForkSession_NewWriterError)$' -count=1 -v
+```
+
+Result:
 
 ```text
-cd cmd/serf-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-realistic-flow.js
+PASS
+ok   primeradiant.com/serf/agent  0.016s
 ```
 
-Result: all passed, exit 0.
+## Files Changed
 
-- Focused test: CSS contract, mixed known/new append filtering, malformed mutation silence, and all valid per-call scenarios passed.
-- Subscription test: `PASS test-task-updated-subscription.js`.
-- Realistic flow: `PASS realistic-flow — user message, assistant text (×2), tool cluster, task card, steering suppression`.
-- `git diff --check`: passed before the review-fix commit.
+- `agent/fork.go`
+  - Added `forkSessionFS` and routed the public `ForkSession` through an OS
+    filesystem instance.
+  - Routed transcript and metadata persistence through the supplied filesystem.
+- `agent/cov_w3init_fork_test.go`
+  - Replaced chmod-based fault simulation with deterministic faulting/read-only
+    `afero` filesystems.
+- `agent/schema/snapshot.go`
+  - Added thin `SaveSessionMetaWithFS` and `LoadSessionMetaWithFS` wrappers over
+    existing filesystem-injecting implementations.
+- `agent/transcript/transcript.go`
+  - Added thin `NewWriterWithFS` wrapper over the existing
+    filesystem-injecting writer implementation.
 
-### Review-fix self-review
+## Verification
 
-- Invalid JSON becomes an empty argument object and cannot pass mutation validation.
-- Unknown actions cannot render or refresh.
-- Append/update payloads must have the required array shape.
-- Empty append returns before cache-based fallback can create a card.
-- Valid non-status updates still render their authoritative progress header with zero rows.
-- Failed calls still clear pending state and remain silent.
-- The append test proves known IDs are excluded while new IDs render, and verifies the exact `Tasks` title.
+All commands ran from the coverage worktree unless noted otherwise.
 
-### Review-fix concerns
+```sh
+go test ./agent -run '^(TestW3Init_ForkSession_OpenError|TestW3Init_ForkSession_NewWriterError)$' -count=1 -v
+```
 
-None. The existing packed-refs warning was not reproduced by the tests; it remains an environment concern from the prior commit operation.
+Passed both repaired tests.
 
-## Re-review fix: nested mutation entry validation
+```sh
+cd agent && go test ./... -count=1
+```
 
-### Status
+Passed all agent-module packages (exit 0).
 
-DONE
+```sh
+go test ./agent -run '^(TestForkSession_|TestS2Cov_ForkSession_|TestW3Init_ForkSession_)' -count=1 -v
+```
 
-### Changes
+Passed the complete fork-focused suite, including existing happy paths and all
+fault arms.
 
-- `cmd/serf-hub/jstest/test-renderer-plan.js`
-  - Added explicit malformed nested append/update cases for null, primitive, missing-ID, invalid-ID, and invalid-status entries.
-  - Instrumented task fetches and asserted malformed successful mutations produce neither cards nor badge refreshes.
-  - Added a separate fresh append-of-`PLAN` assertion for seven rows while retaining the mixed known/new append assertion.
-- `cmd/serf-hub/assets/renderer.js`
-  - Defines structural mutation validation: each append/update entry must be a non-null object with a positive integer-coercible ID; update statuses, when present, must be `open`, `in_progress`, `done`, or `cancelled`.
-  - Rejects the entire mutation before cache seeding, rendering, or badge refresh if any entry is malformed.
-  - Preserves metadata-only valid updates as header-only cards.
+```sh
+git diff --check -- agent/fork.go agent/cov_w3init_fork_test.go agent/schema/snapshot.go agent/transcript/transcript.go
+```
 
-### Re-review TDD evidence
+Passed with no whitespace errors.
 
-Red command, run before the structural validation change:
+```sh
+make test
+```
+
+Passed with exit code 0:
 
 ```text
-cd cmd/serf-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
+PASS  .        12.48s
+PASS  agent    7.39s
+PASS  llm      2.03s
+PASS  auth     1.11s
+PASS  envvars  0.18s
+PASS  invariant 0.16s
 ```
 
-Result: failed at `malformed nested task mutations render and refresh no card`; malformed nested entries produced cards.
+## Self-Review
 
-Green focused command:
+- The fault injection is per-call and carries no mutable global state, so the
+  existing `t.Parallel()` tests remain race-safe.
+- The tests exercise the real scanner, header parsing, metadata load, and
+  transcript writer paths. Only the external filesystem behavior is controlled.
+- Production still uses the OS filesystem. The new public wrappers only expose
+  existing implementations and do not alter serialization, paths, or error
+  wrapping.
+- No known remaining concern for this repair. The deliberately expanded
+  filesystem seam is also useful for deterministic persistence fuzzing.
+
+## Review Fix: Child Transcript Create Fixture
+
+### Root Cause
+
+`TestW3Init_ForkSession_NewWriterError` wrapped the seeded in-memory filesystem
+in `afero.NewReadOnlyFs`. `transcript.NewWriterWithFS` calls `MkdirAll` before
+`Create`, so the fixture deterministically failed at `create transcript dir`
+rather than reaching the intended child transcript `Create` boundary. Its old
+error-text-only assertion accepted that wrong failure.
+
+### TDD Evidence
+
+The test assertion was strengthened first to require that the returned error
+wrap `fault.ErrInjected`, while retaining the read-only fixture. The focused
+test then failed for the intended diagnostic reason:
+
+```sh
+go test ./agent -run '^TestW3Init_ForkSession_NewWriterError$' -count=1 -v
+```
 
 ```text
-cd cmd/serf-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
+cov_w3init_fork_test.go:108: err = create child transcript: create transcript dir: operation not permitted, want wrapped injected child transcript create error
+FAIL
 ```
 
-Result: all scenarios passed, including malformed nested silence, refresh suppression, fresh seven-row append, mixed known/new filtering, and metadata-only update behavior.
+The fixture was then replaced with a test-only Afero wrapper that delegates all
+operations except `Create` for a sibling `.transcript.jsonl` path other than
+the seeded parent. It returns an `os.PathError` wrapping `fault.ErrInjected`.
+That permits the parent transcript/meta reads and writer `MkdirAll`, while
+failing precisely the generated child transcript creation.
 
-Related commands:
+```sh
+go test ./agent -run '^TestW3Init_ForkSession_NewWriterError$' -count=1 -v
+```
 
 ```text
-cd cmd/serf-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-realistic-flow.js
-cd ../..
-git diff --check
+PASS
+ok   primeradiant.com/serf/agent  0.016s
 ```
 
-Result: all tests passed with exit 0; `git diff --check` passed.
+### Files
 
-### Re-review self-review
+- `agent/cov_w3init_fork_test.go`: replaced only the broad read-only fixture,
+  and asserted the wrapped injected cause.
+- `.superpowers/sdd/task-1-report.md`: appended this review-fix record.
 
-- Validation is applied at TOOL_CALL_START before append cache seeding and again at the render boundary before any badge refresh.
-- One malformed nested element rejects the entire mutation.
-- IDs reject null, empty, booleans, non-numeric values, non-integers, and non-positive values.
-- Status is constrained only when present, so notes/dependency/effort/prompt-only updates remain valid header-only mutations.
-- Empty append remains silent.
-- Existing failed-call suppression and view/unknown-action suppression remain intact.
+No production files changed.
 
-### Re-review concerns
+### Verification
 
-The commit operation may emit the pre-existing environment `packed-refs.lock` permission warning; tests and diff checks are unaffected.
-
-## Re-review fix: accept server-assigned append IDs
-
-### Status
-
-DONE
-
-### Changes
-
-- Confirmed against `agent/session_tools_task.go:80-129` that append inputs are task objects without IDs; the server assigns IDs and returns them in authoritative state.
-- Updated focused append scenarios to send legitimate ID-less fields (`description`, `prompt`, `type`, `depends_on`, and `reasoning_effort`) while `TOOL_CALL_END` state carries IDs.
-- Kept the separate fresh seven-row append assertion and the mixed known/new append filtering assertion.
-- Changed append validation to reject only empty/non-object entries; update validation still requires usable IDs and allows only valid statuses when status is present.
-
-### TDD evidence
-
-Red command, run with corrected ID-less append tests against the prior ID-required append validator:
-
-```text
-cd cmd/serf-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
+```sh
+go test ./agent -run '^(TestW3Init_ForkSession_OpenError|TestW3Init_ForkSession_NewWriterError)$' -count=1 -v
 ```
 
-Result: failed because legitimate append calls rendered zero cards; the fresh append, mixed append, and dependent valid-card scenarios failed, while malformed silence remained passing.
+Result: both tests passed (`ok primeradiant.com/serf/agent 0.015s`).
 
-Green commands after correcting append validation:
-
-```text
-cd cmd/serf-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-realistic-flow.js
-cd ../..
-git diff --check
+```sh
+go test ./agent -run '^(TestForkSession_|TestS2Cov_ForkSession_|TestW3Init_ForkSession_)' -count=1 -v
 ```
 
-Result: all renderer tests passed with exit 0 and `git diff --check` passed.
+Result: the complete fork family passed (`ok primeradiant.com/serf/agent 0.151s`).
 
-### Self-review
+```sh
+git diff --check -- agent/cov_w3init_fork_test.go
+```
 
-- Append validation no longer invents or requires an ID.
-- Valid append input fields are accepted and authoritative state supplies minted IDs/descriptions for rendering and `priorIds` filtering.
-- Null, primitive, and empty append entries remain rejected without card or refresh.
-- Update entries retain structural ID/status validation and metadata-only updates remain header-only.
-- Fresh seven-row and mixed known/new append assertions both pass.
+Result: passed with no whitespace errors.
 
 ### Concerns
 
-The commit operation may again report the pre-existing environment `packed-refs.lock` permission warning; no test or diff-check failure occurred.
-
-## Re-review fix: enforce authoritative append fields and explicit update status
-
-### Status
-
-DONE
-
-### Changes
-
-- Confirmed against `agent/internal/tool/definitions.go:535-556` that append entries require non-empty valid `type`, string `description`, and string `prompt`; IDs remain server-assigned.
-- Added malformed append regressions for missing, wrong-type, invalid, and empty `type`, `description`, and `prompt` values.
-- Added explicit `status: null` and `status: undefined` update regressions; omitted status remains valid for metadata-only header cards.
-- Renderer validation now accepts only append entries with type `research|implement|verify|fix` and non-empty string description/prompt.
-- Update validation distinguishes omitted `status` from an own-property status and rejects explicit null/undefined/invalid values.
-
-### TDD evidence
-
-Red command before the validator change:
-
-```text
-cd cmd/serf-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
-```
-
-Result: failed at `malformed nested task mutations render and refresh no card`; malformed append entries produced cards.
-
-Green commands:
-
-```text
-cd cmd/serf-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-realistic-flow.js
-cd ../..
-git diff --check
-```
-
-Result: focused, subscription, and realistic renderer tests passed with exit 0; `git diff --check` passed.
-
-### Self-review
-
-- Append validation requires every entry to be a non-array object with valid allowed type and non-empty string description/prompt.
-- One malformed append entry rejects the entire mutation before cache seeding, card rendering, or badge refresh.
-- IDs remain optional for append and authoritative state/prior IDs continue to identify minted tasks.
-- Update IDs remain required; omitted status is allowed for metadata-only updates, while explicit null/undefined/invalid status is rejected.
-- Refresh suppression assertions cover all malformed cases.
-
-### Concerns
-
-The recurring `packed-refs.lock` permission warning is an environment-only commit concern; tests and diff checks passed.
-
-## Re-review fix: exact update ID and append text rules
-
-### Status
-
-DONE
-
-### Changes
-
-- Added a malformed string-ID update regression with card and badge-refresh suppression assertions.
-- Added a successful ID-less append regression using empty string `description` and `prompt`, proving the card renders from authoritative returned state.
-- Changed update ID validation to require an actual positive JavaScript integer (`Number.isInteger(id)`), rejecting numeric strings and other coercible values.
-- Changed append validation to require string `description` and `prompt` while allowing empty strings; append `type` enum validation remains enforced.
-
-### TDD evidence
-
-Red command before the production correction:
-
-```text
-cd cmd/serf-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
-```
-
-Result: failed because empty-text append was rejected and malformed nested validation expectations exposed the schema mismatch.
-
-Green commands:
-
-```text
-cd cmd/serf-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-realistic-flow.js
-cd ../..
-git diff --check
-```
-
-Result: focused, subscription, and realistic renderer tests passed with exit 0; `git diff --check` passed.
-
-### Self-review
-
-- Update ID validation is type-strict: only positive integer numbers pass; numeric strings are silent and do not refresh.
-- Append entries remain ID-less and require valid enum type plus string description/prompt, including empty strings.
-- Authoritative returned state supplies the minted append ID and row content.
-- Existing malformed nested silence, refresh suppression, changes-only cards, empty append silence, and metadata-only update behavior remain green.
-
-### Concerns
-
-The recurring `packed-refs.lock` permission warning remains an environment-only commit concern; tests and diff checks passed.
-
-## Re-review fix: reject malformed optional fields and unknown properties
-
-### Status
-
-DONE
-
-### Changes
-
-- Added malformed regressions for append optional `depends_on`/`reasoning_effort` types and unknown properties.
-- Added malformed regressions for update optional `notes`/`depends_on`/`reasoning_effort` types and unknown properties.
-- Added malformed regressions for unknown top-level append/update keys and missing append payload.
-- Renderer now enforces exact top-level keys (`action` plus `tasks` or `updates`), exact allowed entry keys, string optional text/effort fields, and integer-number dependency arrays.
-- Omitted update status remains valid for approved metadata-only updates; explicit status validation remains unchanged.
-
-### TDD evidence
-
-Red command before strict key/optional validation:
-
-```text
-cd cmd/serf-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
-```
-
-Result: failed at `malformed nested task mutations render and refresh no card`; malformed optional/unknown payloads rendered cards.
-
-Green commands:
-
-```text
-cd cmd/serf-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-realistic-flow.js
-cd ../..
-git diff --check
-```
-
-Result: focused, subscription, and realistic renderer tests passed with exit 0; `git diff --check` passed.
-
-### Self-review
-
-- Unknown top-level and nested properties reject the entire mutation before cache seeding, rendering, or badge refresh.
-- Append optional fields accept only their schema types; dependency IDs must be integer numbers.
-- Update optional fields accept only their schema types; omitted status remains supported.
-- Existing malformed silence/refresh suppression and all valid changes-only scenarios remain green.
-
-### Concerns
-
-The recurring `packed-refs.lock` permission warning remains an environment-only commit concern; tests and diff checks passed.
+None.
