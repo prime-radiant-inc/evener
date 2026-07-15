@@ -299,3 +299,40 @@ non-fixture labels were not indiscriminately rewritten.
 
 No changes were made to `.superpowers/sdd/task-1-report.md` or
 `.superpowers/sdd/progress.md`.
+
+## Final full-branch verification
+
+### Focused, static, and repository gates
+
+The exact focused commands from Task 11 passed in dependency order:
+
+- `go test ./identifier/... -count=1` — PASS (`0.775s`).
+- `(cd agent && go test ./execenv ./internal/installid ./internal/jobstore ./internal/worktree . -count=1)` — PASS (`7.211s`, `1.004s`, `4.057s`, `3.775s`, and `47.705s`).
+- `(cd llm && go test ./providers/google/... -count=1)` — PASS (`0.533s`).
+- `go test ./cmdutil ./cmd/serf ./cmd/serf-hub/internal/launchconfig ./cmd/serf-hub/internal/hubcore ./cmd/serf-hub ./cmd/serf-tui -count=1` — PASS (`1.128s`, `5.096s`, `0.985s`, `1.663s`, `48.832s`, and `3.798s`).
+
+The exact static and repository gates also passed:
+
+- `make vet` — PASS, exit 0.
+- `make lint` — PASS, exit 0; all six lint phases reported `0 issues`, and generation completed. The environment reported only the existing non-fatal warning that `gitleaks` was not installed.
+- `make test` — PASS: root `31.48s`, agent `62.38s`, llm `10.06s`, auth `2.33s`, envvars `1.01s`, invariant `0.81s`, identifier `2.31s`. The runner reported that `systemd-run` was unavailable and therefore ran uncapped.
+
+### Race gates and Darwin toolchain diagnosis
+
+The ambient `go1.26.1 darwin/arm64` toolchain could not provide valid full-agent race evidence. The exact agent race command twice left a fork child spinning before `exec`, with the child sampled in ThreadSanitizer's `TraceSwitchPartImpl` and the parent waiting in `syscall.forkExec`. The initially named worktree tests passed independently, passed together for 10 runs, and passed together for 100 runs. The complete agent race suite also passed when serialized with `-parallel=1` (`182.659s`), showing that concurrent fork/exec pressure was required.
+
+This matches Go issue [#79804](https://github.com/golang/go/issues/79804), a Darwin/arm64 `-race` fork/exec regression introduced in Go 1.26. The issue explicitly records both child-side crashes and runaway pre-exec children consuming a core. The approved Go 1.26 backport is [#79806](https://github.com/golang/go/issues/79806), released in Go 1.26.5. Its fix commit, `2055b1a15decdb874718dad06bfe573ae74e10dd`, adds `//go:norace` to Darwin `rawSyscall`, `rawSyscall6`, and `rawSyscall9` because their invalid child-side TSan state caused the failure. Source inspection confirmed those annotations in the downloaded Go 1.26.5 toolchain and their absence in the ambient Go 1.26.1 toolchain.
+
+No Serf code or tests were changed to work around the toolchain defect, and no race coverage was reduced. Under the fixed released Go 1.26.5 toolchain, both exact Task 11 race commands passed:
+
+- `(cd agent && GOTOOLCHAIN=go1.26.5 go test -race ./internal/installid ./internal/jobstore . -count=1)` — PASS: installid `1.492s`, jobstore `9.375s`, agent `92.354s`.
+- `GOTOOLCHAIN=go1.26.5 go test -race ./cmd/serf-hub/internal/hubcore ./cmd/serf-hub -count=1` — PASS: hubcore `6.276s`, hub `115.388s`.
+
+### Final searches and repository state
+
+- The exact production search for `ulid.(Make|New)`, `oklog/ulid`, and duplicate `ProjectID`/`ProjectSlug` definitions returned only the intended shared `identifier/project.go:118` `ProjectID` definition.
+- The exact stale-term search returned only immutable historical plans/specifications, including the approved identifier design and plan where the terms describe the old format, rejected compatibility, clean-break fixtures, or the audit command itself. No current operational documentation or production code uses the stale contracts.
+- `git diff --check` — PASS.
+- Task 11 fix commits before this evidence update are `24a69ccc6`, `abfea7ff9`, `6014c193e`, `90d301a25`, `78b1ce30c`, `9ffc4dd7b`, and `fca76fd51`.
+
+The pre-existing `.superpowers/sdd/task-1-report.md` worktree modification remains the sole protected unrelated exception. It was not edited, staged, reverted, or committed during Task 11.
