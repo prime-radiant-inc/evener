@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"strings"
+	"sync"
 
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
@@ -48,9 +49,25 @@ func projectTranscriptTurn(raw json.RawMessage, turnID string, entryIndex int, t
 	return apptranscript.ProjectTurn(turnID, entryIndex, entry.Turn, toolNames, nil, nil)
 }
 
-func appTurnsFromNotifications(records []appserver.SequencedNotification) []appwire.Turn {
-	var turns []appwire.Turn
-	turnIndex := map[string]int{}
+func projectBoundedDaemonTranscriptTurn(raw json.RawMessage, turnID string, entryIndex int, toolNames map[string]string) []appwire.ThreadItem {
+	return projectTranscriptTurn(raw, turnID, entryIndex, toolNames)
+}
+
+type appTurnSnapshot struct {
+	mu                       sync.Mutex
+	cursor                   uint64
+	turns                    []appwire.Turn
+	turnIndex                map[string]int
+	transcriptAuthorityKnown bool
+	transcriptAuthoritative  bool
+}
+
+func (s *appTurnSnapshot) Apply(records []appserver.SequencedNotification) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.turnIndex == nil {
+		s.turnIndex = map[string]int{}
+	}
 
 	ensureTurn := func(id string) *appwire.Turn {
 		if strings.TrimSpace(id) == "" {
@@ -59,12 +76,12 @@ func appTurnsFromNotifications(records []appserver.SequencedNotification) []appw
 		if appTurnsEnsureTurnHook != nil && appTurnsEnsureTurnHook(id) {
 			return nil
 		}
-		if idx, ok := turnIndex[id]; ok {
-			return &turns[idx]
+		if idx, ok := s.turnIndex[id]; ok {
+			return &s.turns[idx]
 		}
-		turns = append(turns, appwire.Turn{ID: id, ItemsView: "full", Status: appwire.TurnStatusInProgress})
-		turnIndex[id] = len(turns) - 1
-		return &turns[len(turns)-1]
+		s.turns = append(s.turns, appwire.Turn{ID: id, ItemsView: "full", Status: appwire.TurnStatusInProgress})
+		s.turnIndex[id] = len(s.turns) - 1
+		return &s.turns[len(s.turns)-1]
 	}
 	upsertItem := func(turnID string, item appwire.ThreadItem) {
 		if item.ID == "" {
@@ -110,16 +127,15 @@ func appTurnsFromNotifications(records []appserver.SequencedNotification) []appw
 				return &turn.Items[i]
 			}
 		}
-		turn.Items = append(turn.Items, appwire.ThreadItem{
-			Type:   itemType,
-			ID:     itemID,
-			TurnID: turnID,
-			Status: appwire.TurnStatusInProgress,
-		})
+		turn.Items = append(turn.Items, appwire.ThreadItem{Type: itemType, ID: itemID, TurnID: turnID, Status: appwire.TurnStatusInProgress})
 		return &turn.Items[len(turn.Items)-1]
 	}
 
 	for _, record := range records {
+		if record.Seq <= s.cursor {
+			continue
+		}
+		s.cursor = record.Seq
 		switch record.Notification.Method {
 		case appwire.NotifyTurnStarted:
 			var params struct {
@@ -146,27 +162,22 @@ func appTurnsFromNotifications(records []appserver.SequencedNotification) []appw
 				TurnID string             `json:"turnId"`
 				Item   appwire.ThreadItem `json:"item"`
 			}
-			if json.Unmarshal(record.Notification.Params, &params) != nil {
-				continue
+			if json.Unmarshal(record.Notification.Params, &params) == nil {
+				upsertItem(params.TurnID, params.Item)
 			}
-			upsertItem(params.TurnID, params.Item)
 		case appwire.NotifyAgentMessageDelta:
 			var params appwire.AgentMessageDeltaParams
-			if json.Unmarshal(record.Notification.Params, &params) != nil {
-				continue
-			}
-			item := itemForDelta(params.TurnID, params.ItemID, "agentMessage")
-			if item != nil {
-				item.Text += params.Delta
+			if json.Unmarshal(record.Notification.Params, &params) == nil {
+				if item := itemForDelta(params.TurnID, params.ItemID, "agentMessage"); item != nil {
+					item.Text += params.Delta
+				}
 			}
 		case appwire.NotifyReasoningSummaryDelta:
 			var params appwire.ReasoningSummaryDeltaParams
-			if json.Unmarshal(record.Notification.Params, &params) != nil {
-				continue
-			}
-			item := itemForDelta(params.TurnID, params.ItemID, "reasoning")
-			if item != nil {
-				item.Text += params.Delta
+			if json.Unmarshal(record.Notification.Params, &params) == nil {
+				if item := itemForDelta(params.TurnID, params.ItemID, "reasoning"); item != nil {
+					item.Text += params.Delta
+				}
 			}
 		case appwire.NotifyToolOutputDelta:
 			var params struct {
@@ -182,8 +193,7 @@ func appTurnsFromNotifications(records []appserver.SequencedNotification) []appw
 			if itemID == "" {
 				itemID = params.CallID
 			}
-			item := itemForDelta(params.TurnID, itemID, "commandExecution")
-			if item != nil {
+			if item := itemForDelta(params.TurnID, itemID, "commandExecution"); item != nil {
 				if item.CallID == "" {
 					item.CallID = params.CallID
 				}
@@ -218,7 +228,50 @@ func appTurnsFromNotifications(records []appserver.SequencedNotification) []appw
 			}
 		}
 	}
+}
+
+func (s *appTurnSnapshot) Cursor() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cursor
+}
+
+func (s *appTurnSnapshot) Snapshot() []appwire.Turn {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	turns := append([]appwire.Turn(nil), s.turns...)
+	for i := range turns {
+		turns[i].Items = append([]appwire.ThreadItem(nil), turns[i].Items...)
+	}
 	return turns
+}
+
+func (s *appTurnSnapshot) SetTranscriptAuthority(authoritative bool) {
+	s.mu.Lock()
+	s.transcriptAuthorityKnown = true
+	s.transcriptAuthoritative = authoritative
+	s.mu.Unlock()
+}
+
+func (s *appTurnSnapshot) TranscriptAuthority() (bool, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.transcriptAuthoritative, s.transcriptAuthorityKnown
+}
+
+func appTurnsFromNotifications(records []appserver.SequencedNotification) []appwire.Turn {
+	// Unit/reference callers may construct unsequenced records. Production
+	// notifier records start at one; assign equivalent local ordinals here so the
+	// incremental reducer's cursor rule does not change legacy projection.
+	sequenced := append([]appserver.SequencedNotification(nil), records...)
+	for i := range sequenced {
+		if sequenced[i].Seq == 0 {
+			sequenced[i].Seq = uint64(i + 1)
+		}
+	}
+	snapshot := &appTurnSnapshot{}
+	snapshot.Apply(sequenced)
+	return snapshot.Snapshot()
 }
 
 func mergeAppThreadItem(existing, incoming appwire.ThreadItem) appwire.ThreadItem {

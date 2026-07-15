@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/serf/internal/apptranscript"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
 )
@@ -375,6 +377,99 @@ func TestPastThreadReadProjectsRunningSubagentActive(t *testing.T) {
 	}
 	if thread.Status.Type != appwire.ThreadStatusActive {
 		t.Fatalf("running subagent status = %q, want %q", thread.Status.Type, appwire.ThreadStatusActive)
+	}
+}
+
+func seedBoundedPastThread(t *testing.T) (hubcore.WebConfig, appwire.ThreadReadParams) {
+	t.Helper()
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-bounded-0000000000")
+	sessionID := "02wMz5Txv47YP64RR3B9YJ"
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 0).UTC()
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sessionID, ProfileID: "openai", Model: "gpt-5", TurnCount: 200,
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/project"}, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w, err := transcript.NewWriter(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"), transcript.Header{
+		SessionID: sessionID, CreatedAt: now, ProfileID: "openai", Model: "gpt-5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 199; i++ {
+		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("saved turn"))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 'p', 'a', 'y'}
+	if err := w.Append(schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{
+		Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_img", Name: "screenshot", Content: "captured", ImageData: png, ImageMediaType: "image/png"},
+	}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	return hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, TurnLimit: 40}
+}
+
+func TestPastThreadReadUsesBoundedSavedTranscript(t *testing.T) {
+	cfg, params := seedBoundedPastThread(t)
+	full, ok := pastThreadForRead(cfg, params)
+	if !ok || len(full.Turns) != 200 {
+		t.Fatalf("full saved thread found=%v turns=%d, want true/200", ok, len(full.Turns))
+	}
+	wantTurns, wantCursor := appwire.WindowTurns(full.Turns, params.TurnLimit)
+
+	var projected []int
+	restore := apptranscript.InstallReadObserverForTesting(func(stats apptranscript.ReadStats) { projected = append(projected, stats.ProjectedTurns) })
+	t.Cleanup(restore)
+	got, ok := pastThreadReadResponse(cfg, params)
+	if !ok {
+		t.Fatal("past thread not found")
+	}
+	if !reflect.DeepEqual(got.Thread.Turns, wantTurns) || got.OlderCursor != wantCursor {
+		t.Fatal("bounded saved read differs from full reference")
+	}
+	if !reflect.DeepEqual(projected, []int{40}) {
+		t.Fatalf("saved read used legacy full projection of 200 turns; bounded projection reports = %v, want [40]", projected)
+	}
+	last := got.Thread.Turns[len(got.Thread.Turns)-1].Items[0]
+	if len(last.OutputImages) != 1 || last.OutputImages[0].Name != "screenshot" {
+		t.Fatalf("bounded saved projection lost embedded output image: %+v", last)
+	}
+}
+
+func TestPastThreadTurnsListUsesBoundedSavedTranscript(t *testing.T) {
+	cfg, params := seedBoundedPastThread(t)
+	full, ok := pastThreadForRead(cfg, params)
+	if !ok {
+		t.Fatal("past thread not found")
+	}
+	_, cursor := appwire.WindowTurns(full.Turns, params.TurnLimit)
+	want := appwire.PageTurns(full.Turns, cursor, 30)
+
+	var projected []int
+	restore := apptranscript.InstallReadObserverForTesting(func(stats apptranscript.ReadStats) { projected = append(projected, stats.ProjectedTurns) })
+	t.Cleanup(restore)
+	got, ok := pastThreadTurnsList(cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, Cursor: cursor, Limit: 30})
+	if !ok {
+		t.Fatal("past thread not found")
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatal("bounded saved page differs from full reference")
+	}
+	if !reflect.DeepEqual(projected, []int{30}) {
+		t.Fatalf("saved page used legacy full projection of 200 turns; bounded projection reports = %v, want [30]", projected)
 	}
 }
 

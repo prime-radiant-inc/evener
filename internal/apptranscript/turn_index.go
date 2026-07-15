@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
@@ -53,7 +54,25 @@ type ReadStats struct {
 	rebuilt               bool
 }
 
-var observeTurnIndexRead func(ReadStats)
+var (
+	observeTurnIndexReadMu sync.RWMutex
+	observeTurnIndexRead   func(ReadStats)
+)
+
+// InstallReadObserverForTesting installs instrumentation for bounded transcript
+// reads and returns a function that restores the previous observer. The callback
+// is invoked without holding the observer lock.
+func InstallReadObserverForTesting(observer func(ReadStats)) func() {
+	observeTurnIndexReadMu.Lock()
+	previous := observeTurnIndexRead
+	observeTurnIndexRead = observer
+	observeTurnIndexReadMu.Unlock()
+	return func() {
+		observeTurnIndexReadMu.Lock()
+		observeTurnIndexRead = previous
+		observeTurnIndexReadMu.Unlock()
+	}
+}
 
 type turnIndexDisk struct {
 	Version        int                 `json:"version"`
@@ -191,6 +210,16 @@ func (c *TurnCache) PageFromFile(path string, maxLineBytes int, cursor string, l
 	return FilePage{Turns: turns, NextCursor: next}
 }
 
+// TurnCountFromFile returns the indexed logical turn count without projecting
+// any turns. The projector participates in the same visibility and sidecar
+// identity rules as LatestFromFile and PageFromFile.
+func (c *TurnCache) TurnCountFromFile(path string, maxLineBytes int, project BoundedEntryProjector) int {
+	index, stats := c.loadTurnIndex(path, maxLineBytes, project)
+	stats.ProjectedTurns = 0
+	observeIndexRead(stats)
+	return index.logicalTurnCount()
+}
+
 func fullProjector(project BoundedEntryProjector) EntryProjector {
 	toolNames := map[string]string{}
 	return func(raw json.RawMessage, turnID string, turnIndex int) []appwire.ThreadItem {
@@ -202,9 +231,19 @@ func fullProjector(project BoundedEntryProjector) EntryProjector {
 }
 
 func observeIndexRead(stats ReadStats) {
-	if observeTurnIndexRead != nil {
-		observeTurnIndexRead(stats)
+	observeTurnIndexReadMu.RLock()
+	observer := observeTurnIndexRead
+	observeTurnIndexReadMu.RUnlock()
+	if observer != nil {
+		observer(stats)
 	}
+}
+
+func turnIndexReadObserverInstalled() bool {
+	observeTurnIndexReadMu.RLock()
+	installed := observeTurnIndexRead != nil
+	observeTurnIndexReadMu.RUnlock()
+	return installed
 }
 
 func (d turnIndexDisk) logicalTurnCount() int {
@@ -1243,7 +1282,7 @@ func cloneTurnIndexForAppend(index turnIndexDisk) turnIndexDisk {
 }
 
 func cloneTurnIndexObserved(index turnIndexDisk, stats *ReadStats) turnIndexDisk {
-	if stats != nil && observeTurnIndexRead != nil {
+	if stats != nil && turnIndexReadObserverInstalled() {
 		if data, err := json.Marshal(index); err == nil {
 			stats.indexBytesCopied += int64(len(data))
 		}

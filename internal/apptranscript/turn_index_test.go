@@ -26,6 +26,56 @@ type boundedFixture struct {
 	times     []time.Time
 }
 
+func TestInstallReadObserverForTestingObserveAndRestore(t *testing.T) {
+	var observed []ReadStats
+	restore := InstallReadObserverForTesting(func(stats ReadStats) {
+		observed = append(observed, stats)
+	})
+
+	observeIndexRead(ReadStats{ProjectedTurns: 7})
+	if len(observed) != 1 || observed[0].ProjectedTurns != 7 {
+		t.Fatalf("observed = %+v, want one 7-turn report", observed)
+	}
+
+	restore()
+	observeIndexRead(ReadStats{ProjectedTurns: 9})
+	if len(observed) != 1 {
+		t.Fatalf("observer remained installed after restore: %+v", observed)
+	}
+}
+
+func TestTurnCacheTurnCountFromFileUsesIndexedLogicalVisibilityWithoutProjection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "count.transcript.jsonl")
+	header := transcript.Header{Kind: "header", FormatVersion: 1, SessionID: "count", SystemPrompt: "system"}
+	firstCall := transcript.APICall{Kind: "api_call", Seq: 1, Request: llm.APILogRequest{Tools: []llm.ToolDefinition{{Name: "read_file"}}}}
+	visible := transcript.Entry{Kind: "entry", Seq: 2, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("visible"))}
+	hidden := transcript.Entry{Kind: "entry", Seq: 3, Turn: schema.NewTurn(schema.TurnAssistant, llm.Message{})}
+	failed := transcript.APICall{Kind: "api_call", Seq: 4, Error: "failed"}
+	var data []byte
+	for _, record := range []any{header, firstCall, visible, hidden, failed} {
+		line, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data = append(data, line...)
+		data = append(data, '\n')
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var observed []ReadStats
+	restore := InstallReadObserverForTesting(func(stats ReadStats) { observed = append(observed, stats) })
+	t.Cleanup(restore)
+	got := NewTurnCache().TurnCountFromFile(path, testMaxLineBytes, boundedTestProjector)
+	if got != 3 {
+		t.Fatalf("logical count = %d, want prelude + visible entry + failed API call = 3", got)
+	}
+	if len(observed) != 1 || observed[0].ProjectedTurns != 0 {
+		t.Fatalf("observed = %+v, want one zero-projection count read", observed)
+	}
+}
+
 func TestTurnCacheBoundedPagesMatchFullProjection(t *testing.T) {
 	fixture := writeBoundedFixture(t)
 	full := TurnsFromFile(fixture.path, testMaxLineBytes, sequentialTestProjector())

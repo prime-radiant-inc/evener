@@ -342,15 +342,15 @@ func registerThreadHandlers(
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if err != nil {
-			if thread, ok := pastThreadForRead(cfg, params); ok {
-				return windowedReadResponse(thread, params.TurnLimit), nil
+			if resp, ok := pastThreadReadResponse(cfg, params); ok {
+				return resp, nil
 			}
 			return appwire.ThreadReadResponse{}, err
 		}
 		resp, err := source.ReadThread(ctx, params)
 		if err != nil {
-			if thread, ok := pastThreadForRead(cfg, params); ok {
-				return windowedReadResponse(thread, params.TurnLimit), nil
+			if saved, ok := pastThreadReadResponse(cfg, params); ok {
+				return saved, nil
 			}
 			return appwire.ThreadReadResponse{}, err
 		}
@@ -395,9 +395,8 @@ func registerThreadHandlers(
 				return live, nil
 			}
 		}
-		readParams := appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: true}
-		if thread, ok := pastThreadForRead(cfg, readParams); ok {
-			return appwire.PageTurns(thread.Turns, params.Cursor, params.Limit), nil
+		if saved, ok := pastThreadTurnsList(cfg, params); ok {
+			return saved, nil
 		}
 		if srcErr != nil {
 			return appwire.ThreadTurnsListResponse{}, srcErr

@@ -30,6 +30,55 @@ func pastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (
 	return pastEntryThread(cfg, entry, params.IncludeTurns), true
 }
 
+func pastThreadReadResponse(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool) {
+	if !params.IncludeTurns || params.TurnLimit <= 0 {
+		thread, ok := pastThreadForRead(cfg, params)
+		if !ok {
+			return appwire.ThreadReadResponse{}, false
+		}
+		return windowedReadResponse(thread, params.TurnLimit), true
+	}
+	entry, ok := pastEntryForRead(cfg, params)
+	if !ok {
+		return appwire.ThreadReadResponse{}, false
+	}
+	thread := pastEntryThread(cfg, entry, false)
+	var olderCursor string
+	thread.Turns, olderCursor = pastEntryLatestTurns(entry, params.TurnLimit)
+	thread = reconcileAndEnrichPastThread(entry, thread)
+	return appwire.ThreadReadResponse{Thread: thread, OlderCursor: olderCursor}, true
+}
+
+func pastThreadTurnsList(cfg hubcore.WebConfig, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, bool) {
+	readParams := appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: true}
+	if params.Limit <= 0 {
+		thread, ok := pastThreadForRead(cfg, readParams)
+		if !ok {
+			return appwire.ThreadTurnsListResponse{}, false
+		}
+		return appwire.PageTurns(thread.Turns, params.Cursor, params.Limit), true
+	}
+	entry, ok := pastEntryForRead(cfg, readParams)
+	if !ok {
+		return appwire.ThreadTurnsListResponse{}, false
+	}
+	page := pastEntryPageTurns(entry, params.Cursor, params.Limit)
+	thread := reconcileAndEnrichPastThread(entry, appwire.Thread{ID: entry.Meta.ID, SessionID: entry.Meta.ID, CWD: entry.Meta.EnvInfo.WorkingDir, Turns: page.Data})
+	page.Data = thread.Turns
+	return page, true
+}
+
+func pastEntryForRead(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (hubcore.PastEntry, bool) {
+	if cfg.Past == nil {
+		return hubcore.PastEntry{}, false
+	}
+	threadID, ok := localPastThreadID(params)
+	if !ok {
+		return hubcore.PastEntry{}, false
+	}
+	return cfg.Past.Find(threadID)
+}
+
 func localPastThreadID(params appwire.ThreadReadParams) (string, bool) {
 	if params.Ref != "" {
 		ref, err := appwire.ParseRef(params.Ref)
@@ -173,10 +222,7 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 	}
 	if includeTurns {
 		thread.Turns = pastEntryTurns(entry)
-		if jobsByID, err := agent.LoadSessionHistoricalJobRecords(entry.StateDir, entry.Meta.ID); err == nil {
-			thread = reconcileDelegateThreadItems(thread, jobsByID)
-		}
-		thread = enrichThreadFileBackedOutputImages(thread)
+		thread = reconcileAndEnrichPastThread(entry, thread)
 	}
 	annotateThreadProjects([]appwire.Thread{thread})
 	return thread
@@ -216,6 +262,58 @@ func pastEntryTurns(entry hubcore.PastEntry) []appwire.Turn {
 		}
 	}
 	return turns
+}
+
+func projectBoundedPastTranscriptTurn(raw json.RawMessage, turnID string, entryIndex int, toolNames map[string]string) []appwire.ThreadItem {
+	var entryRec hubcore.ReplayEntry
+	if err := json.Unmarshal(raw, &entryRec); err != nil {
+		return nil
+	}
+	return appItemsFromReplayTurn("", turnID, entryIndex, entryRec.Turn, toolNames)
+}
+
+func pastEntryLatestTurns(entry hubcore.PastEntry, limit int) ([]appwire.Turn, string) {
+	path := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
+	turns, cursor := pastTranscriptCache.LatestFromFile(path, transcriptJSONLMaxLineBytes, limit, projectBoundedPastTranscriptTurn)
+	stampPastEmbeddedImageURLs(entry.Meta.ID, turns)
+	stampPastTurnCosts(entry.Meta.Model, turns)
+	return turns, cursor
+}
+
+func pastEntryPageTurns(entry hubcore.PastEntry, cursor string, limit int) appwire.ThreadTurnsListResponse {
+	path := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
+	page := pastTranscriptCache.PageFromFile(path, transcriptJSONLMaxLineBytes, cursor, limit, projectBoundedPastTranscriptTurn)
+	stampPastEmbeddedImageURLs(entry.Meta.ID, page.Turns)
+	stampPastTurnCosts(entry.Meta.Model, page.Turns)
+	return appwire.ThreadTurnsListResponse{Data: page.Turns, NextCursor: page.NextCursor}
+}
+
+func stampPastTurnCosts(model string, turns []appwire.Turn) {
+	for i := range turns {
+		if turns[i].Usage != nil {
+			turns[i].Cost = appwire.EstimateCost(model, turns[i].Usage)
+		}
+	}
+}
+
+func stampPastEmbeddedImageURLs(sessionID string, turns []appwire.Turn) {
+	for ti := range turns {
+		for ii := range turns[ti].Items {
+			for oi := range turns[ti].Items[ii].OutputImages {
+				image := &turns[ti].Items[ii].OutputImages[oi]
+				if image.URL == "/s//images/"+image.SHA {
+					image.URL = "/s/" + url.PathEscape(sessionID) + "/images/" + image.SHA
+				}
+			}
+		}
+	}
+}
+
+func reconcileAndEnrichPastThread(entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
+	if jobsByID, err := agent.LoadSessionHistoricalJobRecords(entry.StateDir, entry.Meta.ID); err == nil {
+		thread = reconcileDelegateThreadItems(thread, jobsByID)
+	}
+	return enrichThreadFileBackedOutputImages(thread)
 }
 
 func appItemsFromReplayTurn(sessionID, turnID string, turnIndex int, turn hubcore.ReplayTurn, toolNames map[string]string) []appwire.ThreadItem {

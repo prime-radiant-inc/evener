@@ -154,6 +154,7 @@ type Server struct {
 	appSourceID                  string
 	appThreadID                  string
 	appProjector                 *appprojector.AppEventProjector
+	appTurns                     *appTurnSnapshot
 	appActiveTurnID              string
 	appReservedTurnID            string
 	cancelFunc                   context.CancelFunc
@@ -232,6 +233,7 @@ func NewServer(cfg ServerConfig) *Server {
 		}),
 		appNotifier: appserver.NewNotifier(replaySize),
 		appSourceID: "local",
+		appTurns:    &appTurnSnapshot{},
 		inputCh:     make(chan InputMessage, 1),
 		hubToken:    strings.TrimSpace(cfg.HubToken),
 		sameOrigin:  httpguard.NewSameOriginPolicy(cfg.AllowedHost),

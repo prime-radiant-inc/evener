@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"primeradiant.com/serf/agent/events"
@@ -26,6 +27,7 @@ func (s *Server) SetAppIdentity(sourceID, threadID string) {
 	s.appSourceID = sourceID
 	s.appThreadID = threadID
 	s.appProjector = appprojector.NewAppEventProjector(threadID, ref)
+	s.appTurns = &appTurnSnapshot{}
 	s.appActiveTurnID = ""
 	s.appReservedTurnID = ""
 	s.mu.Unlock()
@@ -49,11 +51,13 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 	}
 	s.ensureAppProjectorLocked(event.SessionID)
 	projected := s.appProjector.Project(event)
+	snapshot := s.appTurns
 	s.appActiveTurnID = s.appProjector.ActiveTurnID()
 	s.mu.Unlock()
 
 	for _, item := range projected {
-		s.appNotifier.Record(item.ThreadID, item.Method, item.Params)
+		record := s.appNotifier.Record(item.ThreadID, item.Method, item.Params)
+		snapshot.Apply([]appserver.SequencedNotification{record})
 		s.appServer.Broadcast(item.ThreadID, item.Method, item.Params)
 	}
 }
@@ -111,7 +115,11 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 	}
 	var olderCursor string
 	if params.IncludeTurns {
-		thread.Turns, olderCursor = appwire.WindowTurns(s.appAllTurns(thread.ID), params.TurnLimit)
+		if params.TurnLimit <= 0 {
+			thread.Turns, olderCursor = appwire.WindowTurns(s.appAllTurns(thread.ID), params.TurnLimit)
+		} else {
+			thread.Turns, olderCursor = s.appLatestTurns(thread.ID, params.TurnLimit)
+		}
 	}
 	return appwire.ThreadReadResponse{Thread: thread, OlderCursor: olderCursor}, nil
 }
@@ -127,21 +135,79 @@ func (s *Server) appAllTurns(threadID string) []appwire.Turn {
 	return notificationTurns
 }
 
-// handleAppThreadTurnsList pages turns backward (older) for lazy transcript
-// loading. The web client seeds the latest window via thread/read(TurnLimit)
-// and walks back with this as the user scrolls up.
-func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
-	return appwire.PageTurns(s.appAllTurns(s.appThread().ID), params.Cursor, params.Limit), nil
+func (s *Server) appNotificationTurns(threadID string) ([]appwire.Turn, *appTurnSnapshot) {
+	s.mu.RLock()
+	snapshot := s.appTurns
+	s.mu.RUnlock()
+	snapshot.Apply(s.AppNotificationsAfter(snapshot.Cursor(), threadID))
+	return snapshot.Snapshot(), snapshot
 }
 
-func (s *Server) appTurnsFromTranscript() []appwire.Turn {
+func (s *Server) transcriptPath() string {
 	s.mu.RLock()
 	fn := s.transcriptPathFn
 	s.mu.RUnlock()
 	if fn == nil {
-		return nil
+		return ""
 	}
-	path := strings.TrimSpace(fn())
+	return strings.TrimSpace(fn())
+}
+
+func (s *Server) appLatestTurns(threadID string, limit int) ([]appwire.Turn, string) {
+	if limit <= 0 {
+		return appwire.WindowTurns(s.appAllTurns(threadID), limit)
+	}
+	notificationTurns, snapshot := s.appNotificationTurns(threadID)
+	path := s.transcriptPath()
+	if path == "" {
+		return appwire.WindowTurns(notificationTurns, limit)
+	}
+	transcriptTurns, cursor := transcriptTurnCache.LatestFromFile(path, 128<<20, limit, projectBoundedDaemonTranscriptTurn)
+	transcriptCount := len(transcriptTurns)
+	if cursor != "" {
+		if older, err := strconv.Atoi(cursor); err == nil {
+			transcriptCount += older
+		}
+	}
+	authoritative := transcriptCount > 0 && (len(notificationTurns) == 0 || transcriptCount > len(notificationTurns) || notificationTurns[0].ID != "turn_1")
+	snapshot.SetTranscriptAuthority(authoritative)
+	if authoritative {
+		return transcriptTurns, cursor
+	}
+	return appwire.WindowTurns(notificationTurns, limit)
+}
+
+func (s *Server) appPageTurns(threadID, cursor string, limit int) appwire.ThreadTurnsListResponse {
+	if limit <= 0 {
+		return appwire.PageTurns(s.appAllTurns(threadID), cursor, limit)
+	}
+	notificationTurns, snapshot := s.appNotificationTurns(threadID)
+	path := s.transcriptPath()
+	if path == "" {
+		return appwire.PageTurns(notificationTurns, cursor, limit)
+	}
+	page := transcriptTurnCache.PageFromFile(path, 128<<20, cursor, limit, projectBoundedDaemonTranscriptTurn)
+	authoritative, known := snapshot.TranscriptAuthority()
+	if !known {
+		transcriptCount := transcriptTurnCache.TurnCountFromFile(path, 128<<20, projectBoundedDaemonTranscriptTurn)
+		authoritative = transcriptCount > 0 && (len(notificationTurns) == 0 || transcriptCount > len(notificationTurns) || notificationTurns[0].ID != "turn_1")
+		snapshot.SetTranscriptAuthority(authoritative)
+	}
+	if authoritative {
+		return appwire.ThreadTurnsListResponse{Data: page.Turns, NextCursor: page.NextCursor}
+	}
+	return appwire.PageTurns(notificationTurns, cursor, limit)
+}
+
+// handleAppThreadTurnsList pages turns backward (older) for lazy transcript
+// loading. The web client seeds the latest window via thread/read(TurnLimit)
+// and walks back with this as the user scrolls up.
+func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	return s.appPageTurns(s.appThread().ID, params.Cursor, params.Limit), nil
+}
+
+func (s *Server) appTurnsFromTranscript() []appwire.Turn {
+	path := s.transcriptPath()
 	if path == "" {
 		return nil
 	}
