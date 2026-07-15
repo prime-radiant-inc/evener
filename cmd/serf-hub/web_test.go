@@ -3388,6 +3388,69 @@ func TestWeb_WorkspaceDataUsesPersistedWorktree(t *testing.T) {
 	}
 }
 
+func webWithPersistedInProcessSubagent(t *testing.T, childID string, runningSubagentIDs ...string) *WebServer {
+	t.Helper()
+
+	past := hubcore.NewPastIndex("")
+	past.SeedForTest([]schema.SessionMeta{{
+		ID:              childID,
+		IsSubagent:      true,
+		ParentSessionID: "02wMz5TxvEMoJEDTDGOTil",
+	}})
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:              rendezvous.Entry{PID: 41},
+		SessionID:          "02wMz5TxvEMoJEDTDGOTil",
+		Status:             appwire.ThreadStatusIdle,
+		RunningSubagentIDs: append([]string(nil), runningSubagentIDs...),
+	})
+	return NewWebServer(hubcore.WebConfig{Roster: roster, Past: past})
+}
+
+func TestWorkspaceDataProjectsRunningInProcessSubagentActive(t *testing.T) {
+	const childID = "02wMz5TxvFpYrooBkiqxAp"
+	web := webWithPersistedInProcessSubagent(t, childID, childID)
+
+	data := web.workspaceData(childID)
+	if data.State != "active" {
+		t.Fatalf("State = %q, want active", data.State)
+	}
+	if data.StateLabel != stateLabel("active", false) {
+		t.Fatalf("StateLabel = %q, want %q", data.StateLabel, stateLabel("active", false))
+	}
+}
+
+func TestSessionStateProjectsRunningInProcessSubagentActiveButNotLive(t *testing.T) {
+	const childID = "02wMz5TxvHIJQPOuIBJQct"
+	web := webWithPersistedInProcessSubagent(t, childID, childID)
+
+	detail, ok := web.apiSessionState(childID)
+	if !ok {
+		t.Fatal("apiSessionState did not find persisted in-process child")
+	}
+	if detail.State != "active" {
+		t.Fatalf("State = %q, want active", detail.State)
+	}
+	if detail.Live {
+		t.Fatal("in-process child became independently routable")
+	}
+	if detail.Capabilities.Send || detail.Capabilities.Steer || detail.Capabilities.Interrupt {
+		t.Fatal("lifecycle state granted live actions")
+	}
+}
+
+func TestWorkspaceDataProjectsStoppedInProcessSubagentEnded(t *testing.T) {
+	const childID = "02wMz5TxvIl3yzzcpdlu4x"
+	web := webWithPersistedInProcessSubagent(t, childID, "02wMz5TxvKDoXaaLN6ENX1")
+
+	data := web.workspaceData(childID)
+	if data.State != "ended" {
+		t.Fatalf("State = %q, want ended", data.State)
+	}
+	if data.StateLabel != stateLabel("ended", false) {
+		t.Fatalf("StateLabel = %q, want %q", data.StateLabel, stateLabel("ended", false))
+	}
+}
+
 func TestWorkspaceDataUsesDaemonStatusTurnCountForLiveLocalSession(t *testing.T) {
 	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/status" {

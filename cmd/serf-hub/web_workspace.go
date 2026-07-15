@@ -496,12 +496,16 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 	}
 	if s.cfg.Past != nil {
 		if pe, ok := s.cfg.Past.Find(id); ok {
+			state := "ended"
+			if s.cfg.Roster != nil && s.cfg.Roster.IsSubagentActive(id) {
+				state = "active"
+			}
 			data := WorkspaceData{
 				ID:           id,
 				SourceLabel:  "serf",
 				Title:        pastTitle(pe),
-				State:        "ended",
-				StateLabel:   stateLabel("ended", false),
+				State:        state,
+				StateLabel:   stateLabel(state, false),
 				TurnCount:    pe.Meta.TurnCount,
 				Model:        pe.Meta.Model,
 				WorkingDir:   pe.Meta.EnvInfo.WorkingDir,
