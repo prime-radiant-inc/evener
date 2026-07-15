@@ -153,6 +153,7 @@ type Server struct {
 	status                       StatusInfo
 	appSourceID                  string
 	appThreadID                  string
+	appIdentityGeneration        uint64
 	appProjector                 *appprojector.AppEventProjector
 	appTurns                     *appTurnSnapshot
 	appActiveTurnID              string

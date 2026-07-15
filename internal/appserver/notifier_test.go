@@ -34,3 +34,18 @@ func TestNotifierReplaysAfterCursor(t *testing.T) {
 		t.Fatalf("all=%+v", all)
 	}
 }
+
+func TestNotifierRetainedWindowReportsGlobalLowerBoundary(t *testing.T) {
+	notifier := NewNotifier(2)
+	notifier.Record("current", appwire.NotifyAgentMessageDelta, nil)
+	notifier.Record("old", appwire.NotifyAgentMessageDelta, nil)
+	notifier.Record("old", appwire.NotifyAgentMessageDelta, nil)
+
+	window := notifier.RetainedWindow("current")
+	if window.LowerSeq != 2 {
+		t.Fatalf("LowerSeq=%d, want first globally retained sequence 2", window.LowerSeq)
+	}
+	if len(window.Records) != 0 {
+		t.Fatalf("current retained records=%+v, want none", window.Records)
+	}
+}

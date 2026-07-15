@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 	"sync"
 
@@ -67,11 +68,23 @@ func (s *appTurnSnapshot) Apply(records []appserver.SequencedNotification) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var appended []appserver.SequencedNotification
+	rebuild := false
 	for _, record := range records {
 		if record.Seq <= s.cursor {
-			continue
+			found := false
+			for _, retained := range s.records {
+				if retained.Seq == record.Seq {
+					found = true
+					break
+				}
+			}
+			if found {
+				continue
+			}
+			rebuild = true
+		} else {
+			s.cursor = record.Seq
 		}
-		s.cursor = record.Seq
 		s.records = append(s.records, record)
 		appended = append(appended, record)
 	}
@@ -79,6 +92,12 @@ func (s *appTurnSnapshot) Apply(records []appserver.SequencedNotification) {
 		return
 	}
 	apply := appended
+	if rebuild {
+		sort.Slice(s.records, func(i, j int) bool { return s.records[i].Seq < s.records[j].Seq })
+		s.turns = nil
+		s.turnIndex = nil
+		apply = s.records
+	}
 	if s.limit > 0 && len(s.records) > s.limit {
 		s.records = append([]appserver.SequencedNotification(nil), s.records[len(s.records)-s.limit:]...)
 		s.turns = nil
@@ -250,6 +269,21 @@ func (s *appTurnSnapshot) Cursor() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.cursor
+}
+
+func (s *appTurnSnapshot) AlignRetainedWindow(lowerSeq uint64, records []appserver.SequencedNotification) {
+	s.mu.Lock()
+	needsRebuild := len(s.records) > 0 && lowerSeq > s.records[0].Seq
+	if !needsRebuild {
+		s.mu.Unlock()
+		return
+	}
+	s.cursor = 0
+	s.records = nil
+	s.turns = nil
+	s.turnIndex = nil
+	s.mu.Unlock()
+	s.Apply(records)
 }
 
 func (s *appTurnSnapshot) Snapshot() []appwire.Turn {

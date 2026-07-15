@@ -427,3 +427,103 @@ func TestAppTurnsFromNotificationsPreservesInputOrderWithMixedSequences(t *testi
 		t.Fatalf("mixed-sequence legacy projection = %+v, want both input-order deltas", turns)
 	}
 }
+
+func TestAppTurnSnapshotDoesNotDropEarlierConcurrentRecord(t *testing.T) {
+	notifier := appserver.NewNotifier(10)
+	snapshot := &appTurnSnapshot{threadID: "th_1", limit: 10}
+	params := func(delta string) appwire.AgentMessageDeltaParams {
+		return appwire.AgentMessageDeltaParams{TurnID: "turn_1", ItemID: "item_1", Delta: delta}
+	}
+
+	recordedFirst := make(chan appserver.SequencedNotification, 1)
+	releaseFirst := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		first := notifier.Record("th_1", appwire.NotifyAgentMessageDelta, params("first"))
+		recordedFirst <- first
+		<-releaseFirst
+		snapshot.Apply([]appserver.SequencedNotification{first})
+		close(done)
+	}()
+	first := <-recordedFirst
+	second := notifier.Record("th_1", appwire.NotifyAgentMessageDelta, params(" second"))
+	if second.Seq != first.Seq+1 {
+		t.Fatalf("sequences = %d, %d, want consecutive", first.Seq, second.Seq)
+	}
+	snapshot.Apply([]appserver.SequencedNotification{second})
+	close(releaseFirst)
+	<-done
+
+	turns := snapshot.Snapshot()
+	if len(turns) != 1 || len(turns[0].Items) != 1 || turns[0].Items[0].Text != "first second" {
+		t.Fatalf("out-of-order concurrent apply dropped earlier record: %+v", turns)
+	}
+}
+
+func TestServerAppWireCrossThreadEvictionRebuildsCurrentSnapshot(t *testing.T) {
+	srv := NewServer(ServerConfig{AppReplaySize: 2})
+	srv.SetAppIdentity("local", "current")
+	currentParams := appwire.AgentMessageDeltaParams{TurnID: "turn_1", ItemID: "item_1", Delta: "current"}
+	current := srv.appNotifier.Record("current", appwire.NotifyAgentMessageDelta, currentParams)
+	srv.appTurns.Apply([]appserver.SequencedNotification{current})
+	if got := srv.appTurns.Snapshot(); len(got) != 1 {
+		t.Fatalf("initial current snapshot = %+v, want one turn", got)
+	}
+
+	// Model old RecordAppEvent work captured before the identity switch: it can
+	// still record globally afterward, but must not apply into the current snapshot.
+	srv.appNotifier.Record("old", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{TurnID: "old_1", ItemID: "old_item_1", Delta: "old"})
+	srv.appNotifier.Record("old", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{TurnID: "old_2", ItemID: "old_item_2", Delta: "old"})
+	if retained := srv.AppNotificationsAfter(0, "current"); len(retained) != 0 {
+		t.Fatalf("current notifier records were not globally evicted: %+v", retained)
+	}
+
+	got, _ := srv.appNotificationTurns("current")
+	if len(got) != 0 {
+		t.Fatalf("current snapshot retained globally evicted state: %+v", got)
+	}
+}
+
+func TestServerAppWireStaleTranscriptPathCannotCrossIdentity(t *testing.T) {
+	oldPath := seedTranscriptServer(t, 1).transcriptPath()
+	newPath := seedTranscriptServer(t, 2).transcriptPath()
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "old")
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	srv.SetTranscriptPathFunc(func() string {
+		close(entered)
+		<-release
+		return newPath
+	})
+	done := make(chan []appwire.Turn, 1)
+	go func() {
+		turns, _ := srv.appLatestTurns("old", 40)
+		done <- turns
+	}()
+	<-entered
+	srv.SetAppIdentity("local", "new")
+	srv.SetTranscriptPathFunc(func() string { return oldPath })
+	close(release)
+	if turns := <-done; len(turns) != 0 {
+		t.Fatalf("stale old-identity latest returned transcript from switched identity: %v", turnIDs(turns))
+	}
+
+	entered = make(chan struct{})
+	release = make(chan struct{})
+	srv.SetTranscriptPathFunc(func() string {
+		close(entered)
+		<-release
+		return oldPath
+	})
+	pageDone := make(chan appwire.ThreadTurnsListResponse, 1)
+	go func() { pageDone <- srv.appPageTurns("new", "2", 1) }()
+	<-entered
+	srv.SetAppIdentity("local", "newer")
+	srv.SetTranscriptPathFunc(func() string { return newPath })
+	close(release)
+	if page := <-pageDone; len(page.Data) != 0 || page.NextCursor != "" {
+		t.Fatalf("stale page crossed identity generation: %+v", page)
+	}
+}

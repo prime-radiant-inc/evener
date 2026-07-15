@@ -26,6 +26,7 @@ func (s *Server) SetAppIdentity(sourceID, threadID string) {
 	s.mu.Lock()
 	s.appSourceID = sourceID
 	s.appThreadID = threadID
+	s.appIdentityGeneration++
 	s.appProjector = appprojector.NewAppEventProjector(threadID, ref)
 	s.appTurns = &appTurnSnapshot{threadID: threadID, limit: s.appTurns.limit}
 	s.appActiveTurnID = ""
@@ -138,19 +139,47 @@ func (s *Server) appAllTurns(threadID string) []appwire.Turn {
 func (s *Server) appNotificationTurns(threadID string) ([]appwire.Turn, *appTurnSnapshot) {
 	s.mu.RLock()
 	snapshot := s.appTurns
-	currentThreadID := s.appThreadID
+	generation := s.appIdentityGeneration
 	s.mu.RUnlock()
-	if snapshot == nil || threadID != currentThreadID || snapshot.threadID != threadID {
+	return s.appNotificationTurnsForIdentity(threadID, snapshot, generation)
+}
+
+func (s *Server) appNotificationTurnsForIdentity(threadID string, snapshot *appTurnSnapshot, generation uint64) ([]appwire.Turn, *appTurnSnapshot) {
+	if snapshot == nil || snapshot.threadID != threadID || !s.appReadIdentityCurrent(threadID, snapshot, generation) {
 		return nil, snapshot
 	}
-	snapshot.Apply(s.AppNotificationsAfter(snapshot.Cursor(), threadID))
+	window := s.appNotifier.RetainedWindow(threadID)
+	snapshot.AlignRetainedWindow(window.LowerSeq, window.Records)
+	snapshot.Apply(window.Records)
 	s.mu.RLock()
-	stillCurrent := s.appTurns == snapshot && s.appThreadID == threadID
+	stillCurrent := s.appTurns == snapshot && s.appThreadID == threadID && s.appIdentityGeneration == generation
 	s.mu.RUnlock()
 	if !stillCurrent {
 		return nil, snapshot
 	}
 	return snapshot.Snapshot(), snapshot
+}
+
+func (s *Server) appReadIdentity(threadID string) (*appTurnSnapshot, uint64, func() string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.appThreadID != threadID || s.appTurns == nil || s.appTurns.threadID != threadID {
+		return nil, 0, nil, false
+	}
+	return s.appTurns, s.appIdentityGeneration, s.transcriptPathFn, true
+}
+
+func (s *Server) appReadIdentityCurrent(threadID string, snapshot *appTurnSnapshot, generation uint64) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.appThreadID == threadID && s.appTurns == snapshot && s.appIdentityGeneration == generation
+}
+
+func transcriptPathFrom(fn func() string) string {
+	if fn == nil {
+		return ""
+	}
+	return strings.TrimSpace(fn())
 }
 
 func (s *Server) transcriptPath() string {
@@ -167,12 +196,25 @@ func (s *Server) appLatestTurns(threadID string, limit int) ([]appwire.Turn, str
 	if limit <= 0 {
 		return appwire.WindowTurns(s.appAllTurns(threadID), limit)
 	}
-	notificationTurns, _ := s.appNotificationTurns(threadID)
-	path := s.transcriptPath()
+	snapshot, generation, pathFn, ok := s.appReadIdentity(threadID)
+	if !ok {
+		return nil, ""
+	}
+	notificationTurns, _ := s.appNotificationTurnsForIdentity(threadID, snapshot, generation)
+	if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
+		return nil, ""
+	}
+	path := transcriptPathFrom(pathFn)
+	if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
+		return nil, ""
+	}
 	if path == "" {
 		return appwire.WindowTurns(notificationTurns, limit)
 	}
 	transcriptTurns, cursor := transcriptTurnCache.LatestFromFile(path, 128<<20, limit, projectBoundedDaemonTranscriptTurn)
+	if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
+		return nil, ""
+	}
 	transcriptCount := len(transcriptTurns)
 	if cursor != "" {
 		if older, err := strconv.Atoi(cursor); err == nil {
@@ -190,13 +232,26 @@ func (s *Server) appPageTurns(threadID, cursor string, limit int) appwire.Thread
 	if limit <= 0 {
 		return appwire.PageTurns(s.appAllTurns(threadID), cursor, limit)
 	}
-	notificationTurns, _ := s.appNotificationTurns(threadID)
-	path := s.transcriptPath()
+	snapshot, generation, pathFn, ok := s.appReadIdentity(threadID)
+	if !ok {
+		return appwire.ThreadTurnsListResponse{}
+	}
+	notificationTurns, _ := s.appNotificationTurnsForIdentity(threadID, snapshot, generation)
+	if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
+		return appwire.ThreadTurnsListResponse{}
+	}
+	path := transcriptPathFrom(pathFn)
+	if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
+		return appwire.ThreadTurnsListResponse{}
+	}
 	if path == "" {
 		return appwire.PageTurns(notificationTurns, cursor, limit)
 	}
 	page := transcriptTurnCache.PageFromFile(path, 128<<20, cursor, limit, projectBoundedDaemonTranscriptTurn)
 	transcriptCount := transcriptTurnCache.TurnCountFromFile(path, 128<<20, projectBoundedDaemonTranscriptTurn)
+	if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
+		return appwire.ThreadTurnsListResponse{}
+	}
 	authoritative := transcriptCount > 0 && (len(notificationTurns) == 0 || transcriptCount > len(notificationTurns) || notificationTurns[0].ID != "turn_1")
 	if authoritative {
 		return appwire.ThreadTurnsListResponse{Data: page.Turns, NextCursor: page.NextCursor}
