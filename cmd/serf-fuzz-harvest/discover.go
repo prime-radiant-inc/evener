@@ -25,7 +25,7 @@ type recordedSources struct {
 
 // discoverSources walks a state directory and buckets the recorded files by
 // surface. A recursive walk handles every on-disk layout (the XDG
-// serf/projects/<hash> buckets and the override/scratch root alike) without
+// serf/projects/<project-id> buckets and the override/scratch root alike) without
 // re-deriving bucket paths.
 func discoverSources(stateDir string) (recordedSources, error) {
 	var s recordedSources

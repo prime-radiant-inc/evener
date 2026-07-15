@@ -1,12 +1,14 @@
 package serf_test
 
 import (
+	"bytes"
 	"fmt"
+	"go/ast"
+	"go/format"
 	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -30,6 +32,81 @@ func ProjectSlug(path string) string { return path }
 	}
 }
 
+func TestIdentifierAuditRejectsProjectPathHashInAllowlistedFile(t *testing.T) {
+	root := t.TempDir()
+	writeIdentifierAuditFixture(t, root, filepath.Join("agent", "runtime_dir.go"), `package agent
+
+import "crypto/sha256"
+
+func nonProjectHash(path string) string {
+	sum := sha256.Sum256([]byte(path))
+	return string(sum[:])
+}
+`)
+
+	findings, err := identifierAuditFindings(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsIdentifierFinding(findings, "project/path data") {
+		t.Fatalf("project-path SHA fixture was accepted: %v", findings)
+	}
+}
+
+func TestIdentifierAuditAllowsReviewedNonProjectHash(t *testing.T) {
+	root := t.TempDir()
+	writeIdentifierAuditFixture(t, root, filepath.Join("agent", "runtime_dir.go"), `package agent
+
+import "crypto/sha256"
+
+func nonProjectHash(input string) string {
+	sum := sha256.Sum256([]byte(input))
+	return string(sum[:])
+}
+`)
+
+	findings, err := identifierAuditFindings(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("reviewed non-project SHA fixture was rejected: %v", findings)
+	}
+}
+
+func TestIdentifierAuditUsesSyntaxNotCommentsOrStrings(t *testing.T) {
+	root := t.TempDir()
+	writeIdentifierAuditFixture(t, root, "fixture.go", `package fixture
+
+// func ProjectSlug(path string) string { return path }
+var text = "ulid.Make( project-hash sha256.Sum256([]byte(path)) )"
+`)
+
+	findings, err := identifierAuditFindings(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("comments/strings triggered identifier audit: %v", findings)
+	}
+}
+
+func TestIdentifierAuditDoesNotExcludeNestedIdentifierDirectory(t *testing.T) {
+	root := t.TempDir()
+	writeIdentifierAuditFixture(t, root, filepath.Join("cmd", "identifier", "fixture.go"), `package fixture
+
+func ProjectID(path string) string { return path }
+`)
+
+	findings, err := identifierAuditFindings(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) == 0 {
+		t.Fatal("identifier audit excluded a nested cmd/identifier directory")
+	}
+}
+
 func TestIdentifierAudit(t *testing.T) {
 	findings, err := identifierAuditFindings(".")
 	if err != nil {
@@ -40,41 +117,37 @@ func TestIdentifierAudit(t *testing.T) {
 	}
 }
 
-var identifierDuplicatePattern = regexp.MustCompile(`(?m)^\s*func\s+(ProjectID|ProjectSlug|projectSlug)\s*\(`)
-
-// This is intentionally an exact allowlist. These files use SHA-256 for
-// non-project concerns (cache keys, image/content fingerprints, PKCE, and
-// request signatures); a new SHA-256 import must be reviewed here before it
-// can enter production.
-var identifierSHA256Allowlist = map[string]string{
-	"agent/internal/jobstore/output.go":                          "durable output integrity and content keys",
-	"agent/internal/tool/registry.go":                            "tool definition fingerprints",
-	"agent/job_watch.go":                                         "watch payload fingerprints",
-	"agent/runtime_dir.go":                                       "non-project cache/tool-call signatures",
-	"auth/openai/pkce.go":                                        "OAuth PKCE challenge",
-	"cmd/serf-fuzz-harvest/emit.go":                              "fuzz artifact names",
-	"cmd/serf-hub/image_serve.go":                                "image content lookup",
-	"cmd/serf-hub/internal/hubcore/tree.go":                      "synthetic repeated-title cluster IDs",
-	"cmd/serf-hub/internal/launchconfig/trust.go":                "canonical launch configuration digest",
-	"cmd/serf-hub/output_images.go":                              "image content lookup",
-	"fuzz/promoter/emit_go.go":                                   "fuzz corpus fingerprints",
-	"llm/continuation_secret.go":                                 "continuation secret HMAC",
-	"llm/providers/openai/responses_continuation_fingerprint.go": "request fingerprints",
-}
-
-// These files previously contained the removed local project hash/slug
-// implementations. Keep a path-specific guard as well as the generic scan so
-// a later reintroduction is reported at the migration boundary.
-var removedProjectHashImplementations = map[string][]string{
-	"agent/internal/worktree/name.go": {
-		"func ProjectID(",
-		"sha256.Sum256([]byte(canonicalAbsRoot))",
+// This is an exact allowlist of reviewed production files and functions. A
+// new SHA-256 use must be reviewed here, and its call arguments must still be
+// free of project identity/path data.
+var identifierSHA256Allowlist = map[string]map[string]bool{
+	"agent/internal/jobstore/output.go": {
+		"outputFileHasPrefixSHA256": true, "outputFileHasSuffixSHA256": true,
+		"outputFileSHA256": true, "outputBytesSHA256": true,
 	},
-	"cmd/serf-hub/internal/hubcore/tree.go": {
-		"func projectSlug(",
-		"sha256.Sum256([]byte(path))",
+	"agent/internal/tool/registry.go":             {"shortHash": true},
+	"agent/job_watch.go":                          {"normalizedWatchConfigHash": true},
+	"agent/runtime_dir.go":                        {"nonProjectHash": true},
+	"auth/openai/pkce.go":                         {"GeneratePKCE": true},
+	"cmd/serf-fuzz-harvest/emit.go":               {"write": true},
+	"cmd/serf-hub/image_serve.go":                 {"findImageInTranscript": true, "imageSha": true},
+	"cmd/serf-hub/internal/hubcore/tree.go":       {"clusterID": true},
+	"cmd/serf-hub/internal/launchconfig/trust.go": {"canonicalHashTOML": true},
+	"cmd/serf-hub/output_images.go":               {"outputImageSHA": true},
+	"fuzz/promoter/emit_go.go":                    {"ShortHash": true},
+	"llm/continuation_secret.go": {
+		"deriveContinuationSubkey": true, "versionedContinuationHMAC": true,
+	},
+	"llm/providers/openai/responses_continuation_fingerprint.go": {
+		"requestFingerprintForResponsesBody": true,
 	},
 }
+
+// clusterID is the one reviewed non-project hash that receives a project label;
+// it hashes a synthetic sidebar key (project + title), not a project path. Keep
+// the exact expression pinned so a future path hash in this function is not
+// accepted merely because the file/function is allowlisted.
+const reviewedClusterHashArgument = `[]byte(project + "\x00" + title)`
 
 func identifierAuditFindings(root string) ([]string, error) {
 	var findings []string
@@ -84,7 +157,11 @@ func identifierAuditFindings(root string) ([]string, error) {
 			return walkErr
 		}
 		if entry.IsDir() {
-			if path != root && identifierAuditExcludedDir(entry.Name()) {
+			rel, relErr := filepath.Rel(root, path)
+			if relErr != nil {
+				return relErr
+			}
+			if !strings.Contains(filepath.ToSlash(rel), "/") && identifierAuditExcludedRootDir(entry.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -96,34 +173,20 @@ func identifierAuditFindings(root string) ([]string, error) {
 		if readErr != nil {
 			return readErr
 		}
-		if isGeneratedGo(raw) || identifierAuditInExcludedTree(path) {
+		if isGeneratedGo(raw) {
 			return nil
 		}
-		source := string(raw)
 		rel, relErr := filepath.Rel(root, path)
 		if relErr != nil {
 			return relErr
 		}
 		rel = filepath.ToSlash(rel)
-		addIdentifierFindings(&findings, rel, source)
-
 		file, parseErr := parser.ParseFile(fset, path, raw, 0)
 		if parseErr != nil {
 			return fmt.Errorf("parse %s: %w", path, parseErr)
 		}
-		for _, imp := range file.Imports {
-			if imp.Path.Value != `"crypto/sha256"` {
-				continue
-			}
-			if _, allowed := identifierSHA256Allowlist[rel]; !allowed {
-				findings = append(findings, rel+": crypto/sha256 import is not in the reviewed non-project allowlist")
-			}
-		}
-		for _, snippet := range removedProjectHashImplementations[rel] {
-			if strings.Contains(source, snippet) {
-				findings = append(findings, rel+": removed project-hash implementation contains "+snippet)
-			}
-		}
+		addSyntaxIdentifierFindings(&findings, rel, file)
+		checkSHA256Findings(&findings, rel, file, fset)
 		return nil
 	})
 	if err != nil {
@@ -133,37 +196,170 @@ func identifierAuditFindings(root string) ([]string, error) {
 	return findings, nil
 }
 
-func addIdentifierFindings(findings *[]string, path, source string) {
-	for _, forbidden := range []string{
-		"ulid.Make(",
-		"ulid.New(",
-		"github.com/oklog/ulid",
-	} {
-		if strings.Contains(source, forbidden) {
-			*findings = append(*findings, path+": forbidden identifier implementation: "+forbidden)
+func addSyntaxIdentifierFindings(findings *[]string, path string, file *ast.File) {
+	ulidNames := map[string]bool{}
+	for _, imp := range file.Imports {
+		importPath := strings.Trim(imp.Path.Value, `"`)
+		if !strings.HasPrefix(importPath, "github.com/oklog/ulid") {
+			continue
 		}
+		if imp.Name != nil && imp.Name.Name == "." {
+			*findings = append(*findings, path+": forbidden ULID dot import")
+			continue
+		}
+		name := "ulid"
+		if imp.Name != nil {
+			name = imp.Name.Name
+		}
+		ulidNames[name] = true
+		*findings = append(*findings, path+": forbidden ULID import")
 	}
-	if identifierDuplicatePattern.MatchString(source) {
-		*findings = append(*findings, path+": duplicate project identifier implementation")
+	ast.Inspect(file, func(node ast.Node) bool {
+		fn, ok := node.(*ast.FuncDecl)
+		if ok && fn.Name != nil && (fn.Name.Name == "ProjectID" || fn.Name.Name == "ProjectSlug" || fn.Name.Name == "projectSlug") {
+			*findings = append(*findings, fmt.Sprintf("%s: duplicate project identifier declaration %s", path, fn.Name.Name))
+		}
+		call, ok := node.(*ast.CallExpr)
+		if !ok || len(call.Args) != 0 {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != "Make" && selector.Sel.Name != "New" {
+			return true
+		}
+		pkg, ok := selector.X.(*ast.Ident)
+		if ok && ulidNames[pkg.Name] {
+			*findings = append(*findings, path+": forbidden ULID generation call "+selector.Sel.Name)
+		}
+		return true
+	})
+}
+
+func checkSHA256Findings(findings *[]string, path string, file *ast.File, fset *token.FileSet) {
+	var shaNames []string
+	for _, imp := range file.Imports {
+		if strings.Trim(imp.Path.Value, `"`) != "crypto/sha256" {
+			continue
+		}
+		if imp.Name != nil && imp.Name.Name == "." {
+			*findings = append(*findings, path+": crypto/sha256 dot import is not allowed")
+			continue
+		}
+		name := "sha256"
+		if imp.Name != nil {
+			name = imp.Name.Name
+		}
+		shaNames = append(shaNames, name)
+	}
+	if len(shaNames) == 0 {
+		return
+	}
+	allowedFunctions, allowed := identifierSHA256Allowlist[path]
+	if !allowed {
+		*findings = append(*findings, path+": crypto/sha256 import is not in the reviewed non-project allowlist")
+		return
+	}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		functionAllowed := allowedFunctions[fn.Name.Name]
+		ast.Inspect(fn.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok || !isSHA256Call(call, shaNames) {
+				return true
+			}
+			if !functionAllowed {
+				*findings = append(*findings, fmt.Sprintf("%s: SHA-256 call is outside reviewed function %s", path, fn.Name.Name))
+				return true
+			}
+			if fn.Name.Name == "clusterID" && formatSHAArgument(call, fset) == reviewedClusterHashArgument {
+				return true
+			}
+			for _, arg := range call.Args {
+				if expressionContainsProjectPathData(arg) {
+					*findings = append(*findings, path+": SHA-256 call consumes project/path data")
+				}
+			}
+			return true
+		})
 	}
 }
 
-func identifierAuditExcludedDir(name string) bool {
+func isSHA256Call(call *ast.CallExpr, names []string) bool {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "Sum256" && selector.Sel.Name != "New" {
+		return false
+	}
+	pkg, ok := selector.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	for _, name := range names {
+		if pkg.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func formatSHAArgument(call *ast.CallExpr, fset *token.FileSet) string {
+	if len(call.Args) != 1 {
+		return ""
+	}
+	var buf bytes.Buffer
+	if err := format.Node(&buf, fset, call.Args[0]); err != nil {
+		return ""
+	}
+	return buf.String()
+}
+
+func expressionContainsProjectPathData(expr ast.Expr) bool {
+	found := false
+	ast.Inspect(expr, func(node ast.Node) bool {
+		if found {
+			return false
+		}
+		switch n := node.(type) {
+		case *ast.Ident:
+			name := strings.ToLower(n.Name)
+			for _, marker := range []string{"path", "project", "working", "canonical", "root", "repo", "directory", "bucket"} {
+				if strings.Contains(name, marker) {
+					found = true
+					return false
+				}
+			}
+		case *ast.SelectorExpr:
+			field := strings.ToLower(n.Sel.Name)
+			for _, marker := range []string{"id", "path", "project", "working", "canonical", "root", "repo", "directory", "bucket"} {
+				if strings.Contains(field, marker) {
+					found = true
+					return false
+				}
+			}
+		}
+		return true
+	})
+	return found
+}
+
+func containsIdentifierFinding(findings []string, needle string) bool {
+	for _, finding := range findings {
+		if strings.Contains(finding, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func identifierAuditExcludedRootDir(name string) bool {
 	switch name {
 	case ".git", ".superpowers", "docs", "identifier":
 		return true
 	default:
 		return false
 	}
-}
-
-func identifierAuditInExcludedTree(path string) bool {
-	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
-		if part == "identifier" || part == ".superpowers" || part == "docs" {
-			return true
-		}
-	}
-	return false
 }
 
 func isGeneratedGo(raw []byte) bool {
@@ -179,6 +375,9 @@ func isGeneratedGo(raw []byte) bool {
 func writeIdentifierAuditFixture(t *testing.T, root, name, content string) {
 	t.Helper()
 	path := filepath.Join(root, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}

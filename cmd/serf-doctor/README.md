@@ -18,7 +18,7 @@ and `…/2026-06-20-serf-doctor-apilog-design.md`.
 
 ## Subcommands (the tools)
 
-Every subcommand takes a session selector first: `local:<id>`, `proj:<hash>:<id>`,
+Every subcommand takes a session selector first: `local:<id>`, `proj:<project-id>:<id>`,
 or a bare `<id>` (searched across buckets). Common flags: `--state-dir <path>`
 (state root; default `SERF_STATE_DIR` → `XDG_STATE_HOME` → `~/.local/state`) and
 `--json`. Run `serf-doctor <subcommand> -h` for the full flag list.

@@ -12,7 +12,7 @@
 //	serf-doctor watches    <selector> [--watch <id>] [--self-loops]
 //	serf-doctor tree       <selector> [--depth N] [--observers]
 //
-// A selector is "", local:<id>, proj:<hash>:<id>, or a bare <id>. Common flags:
+// A selector is "", local:<id>, proj:<project-id>:<id>, or a bare <id>. Common flags:
 // --state-dir <path> (overrides SERF_STATE_DIR / XDG default) and --json.
 package main
 
@@ -83,7 +83,7 @@ SUBCOMMANDS:
   plugins     plugin-store health check: registry/disk drift, marketplace health, component validity, auto-upgrade sanity (no selector — see "serf-doctor plugins -h")
 
 SELECTOR:
-  "" | current  (rejected — name a session)   local:<id>   proj:<hash>:<id>   <id>
+  "" | current  (rejected — name a session)   local:<id>   proj:<project-id>:<id>   <id>
 
 COMMON FLAGS:
   --state-dir <path>   state root (default: %s, then %s, then ~/.local/state)

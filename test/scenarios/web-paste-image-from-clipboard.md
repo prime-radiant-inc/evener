@@ -104,7 +104,7 @@ Companion scenarios: `web-drag-drop-image.md`, `web-file-picker-image.md`,
      path: location.pathname,
      err: document.querySelector("[data-spawn-error]")?.textContent || "",
    }))
-   // path: "/s/<SID>" (a 26-char ULID)
+   // path: "/s/<SID>" (a 22-character UUIDv7 base62 payload)
    // err:  ""
    ```
 

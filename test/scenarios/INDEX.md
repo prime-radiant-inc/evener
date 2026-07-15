@@ -252,7 +252,7 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
 - `transcript-find-scope-all-projects.md` — `scope:"all_projects"`
   (with a shared `--state-dir`, distinct `--dir`s) finds a session in a
   different project bucket; default scope misses it, the cross-bucket
-  hit comes back as a `proj:<bucketHash>:<id>` ref, and that ref reads.
+  hit comes back as a `proj:<project-id>:<id>` ref, and that ref reads.
 
 ## Job control (CLI)
 

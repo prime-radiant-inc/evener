@@ -5,7 +5,7 @@ Validates that:
 - The sidebar renders a `Live` group (current open daemons) +
   per-project folders.
 - Each project shows its session count and a list of recent
-  sessions with ULID short codes + age (e.g. `2m`, `17h`).
+  sessions with compact session-ID short codes + age (e.g. `2m`, `17h`).
 - Past sessions surface even when their daemon is no longer
   running (the past-index projection works).
 - Live count matches the actual running daemon count.
@@ -57,10 +57,9 @@ Validates that:
   truth; orphan files (daemon dead, file lingers) inflate the
   count until the hub reaps. Worth filing a kata if you see a
   persistent stale count after a clean kill.
-- Project hashes (e.g. `e9671acd244849c5` for `/tmp`) are derived
-  from `working_dir`. Renaming a working dir on disk creates a
-  new project hash; old sessions stay under the old hash. Not a
-  bug, but surprising.
+- Project IDs are readable canonical identifiers with a 10-character base62
+  suffix. Renaming a working dir on disk creates a new project ID; old
+  sessions stay under the old ID. Not a bug, but surprising.
 - The sidebar pulls session titles from the first user input —
   long prompts get truncated in the UI. Some session entries
   show just `session <SHORT_ID>` because the first turn was

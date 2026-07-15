@@ -173,7 +173,7 @@ visible pane.
 
 - `tmux kill-session -t serf-queue-test 2>/dev/null`.
 - `rm -rf "$WORKDIR"`.
-- The spawned session ULID is left on the hub. Optional cleanup
+- The spawned session ID is left on the hub. Optional cleanup
   via `~/go/bin/serf` or manual delete.
 
 ## Sharp edges

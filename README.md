@@ -273,10 +273,10 @@ serf --list-sessions
 serf --resume-last
 
 # Resume a specific session
-serf --resume 01JTEST000000000000000001
+serf --resume 02wLIRxqmq3AUo6vl2OW37
 
 # New prompt, but carry forward a previous session's conversation context
-serf --model openai/gpt-5.2 --resume-with 01JTEST000000000000000001 "now add tests"
+serf --model openai/gpt-5.2 --resume-with 02wLIRxqmq3AUo6vl2OW37 "now add tests"
 ```
 
 When resuming, the provider and model from the original session are used by default. You can override them with `--model <provider/model>`.

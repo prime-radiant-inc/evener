@@ -117,6 +117,37 @@ git diff --check                                    PASS
 The root/install listener tests remain blocked by the sandbox's
 `listen tcp 127.0.0.1:0: bind: operation not permitted` restriction.
 
+## Independent-review fixes
+
+- Reworked `identifier_audit_test.go` to inspect Go ASTs for ULID imports/calls,
+  duplicate project declarations, and SHA-256 calls. Reviewed SHA uses are
+  allowlisted by file and function, while argument expressions containing
+  project/path identity data are rejected. Added fixtures for legitimate and
+  project-path hashes, comment/string false positives, and nested
+  `cmd/identifier` scanning.
+- Removed current operational hash/ULID/26-character claims from production
+  comments, README, and scenario docs. Historical SDD/design documents and
+  generic fuzzing hashes remain intentionally unchanged.
+- Broader operational search found and corrected the remaining current selector
+  and forensic-output examples (`proj:<hash>` and `bucket_hash`). The remaining
+  `ULID`/`hash` matches are generic fuzzing/sanitization terminology or preserved
+  historical design text, not current identifier-format claims.
+- Recorded that the original RED evidence is the exact command output already
+  included above; it is not represented by an intermediate commit and was not
+  reconstructed or rewritten.
+
+Verification for this wave:
+
+```text
+go test . -run 'Test.*Identifier.*Audit' -count=1    PASS
+make lint-docs                                      PASS
+go test ./cmd/serf-hub/internal/hubcore -count=1     BLOCKED: httptest listener bind denied
+go test ./cmd/serf-hub/internal/hubcore -run '^Test' -count=1 PASS
+required forbidden production search                   PASS (only identifier/project.go ProjectID)
+broad operational stale search                         PASS (only intentional generic/history survivors)
+git diff --check                                      PASS
+```
+
 ## Commit hash(es)
 
 - Implementation commit: `3878f6e9a7be2876f06e95b98a405bc733a17352` — `docs: document unified identifier formats`

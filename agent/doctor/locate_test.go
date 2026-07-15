@@ -151,7 +151,7 @@ func TestLocate_AmbiguousBareID(t *testing.T) {
 	}
 }
 
-// A proj:<hash>: ref disambiguates a sid that appears in multiple buckets.
+// A proj:<project-id>: ref disambiguates a sid that appears in multiple buckets.
 func TestLocate_ProjRefDisambiguates(t *testing.T) {
 	base := t.TempDir()
 	writeSession(t, stateHomeBucket(base, hash1), sidA)

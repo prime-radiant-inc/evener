@@ -35,7 +35,7 @@ dirX=$(mktemp -d -t serf-e2e-projX-XXXXX)    # project bucket X
 dirY=$(mktemp -d -t serf-e2e-projY-XXXXX)    # project bucket Y (different)
 ```
 
-Different working dirs ⇒ different bucket hashes ⇒ Y's `current_project`
+Different canonical project paths ⇒ distinct project IDs ⇒ Y's `current_project`
 search will NOT see X. Same `--state-dir` ⇒ both buckets live under one
 root ⇒ `all_projects` can reach X from Y.
 

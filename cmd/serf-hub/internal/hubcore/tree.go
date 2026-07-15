@@ -193,7 +193,7 @@ func projectName(m schema.SessionMeta) string {
 //
 // Older sessions persisted before OriginalPrompt was captured fall back to a
 // short, human-friendlier rendering of the session ID rather than the full
-// 26-character ULID, which clutters the sidebar.
+// 22-character UUIDv7 base62 payload, which clutters the sidebar.
 func nodeTitle(m schema.SessionMeta, kind string) string {
 	base := truncateTitle(schema.SessionDisplayName(m))
 	if base == "" {

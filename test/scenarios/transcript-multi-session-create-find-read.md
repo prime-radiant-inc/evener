@@ -114,7 +114,7 @@ harmless; delete its `sessions/` entries for a hermetic rerun.
 
 - **Same `--dir` is the whole trick.** If you let either run default to a
   different cwd, or `git init` inside `$proj` between runs, the bucket
-  hash changes and B's `current_project` search will not see A. Keep both
+  project ID changes and B's `current_project` search will not see A. Keep both
   runs pointed at the exact same `$proj` with no git origin introduced.
 - B's `find` may surface A via a metadata match (the marker is in A's
   prompt/title) OR via the content scan (the marker is in the files A

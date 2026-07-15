@@ -66,7 +66,7 @@ in `buildLogResponse`. dyph fixed the parallel inline construction in
 ## Cleanup
 
 - Sessions accumulate on disk; not strictly necessary to remove.
-  If you want hermetic re-runs: `rm -rf ~/.local/state/serf/projects/<projectHash>/sessions/<session_id>*`.
+  If you want hermetic re-runs: `rm -rf ~/.local/state/serf/projects/<project-id>/sessions/<session_id>*`.
 
 ## Sharp edges
 
