@@ -48,6 +48,32 @@
   const { currentTaskSummary, updateTasksBadge } =
     window.SerfRendererInternal;
 
+  const VALID_TASK_STATUSES = new Set(["open", "in_progress", "done", "cancelled"]);
+
+  function usableTaskID(id) {
+    if (id == null || id === "" || typeof id === "boolean") return false;
+    const number = Number(id);
+    return Number.isInteger(number) && number > 0;
+  }
+
+  function validTaskMutationEntry(entry, allowStatus) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry) || !usableTaskID(entry.id)) return false;
+    return !allowStatus || entry.status == null || VALID_TASK_STATUSES.has(entry.status);
+  }
+
+  function validTaskMutationArgs(args) {
+    if (!args || typeof args !== "object" || Array.isArray(args)) return false;
+    if (args.action === "append") {
+      return Array.isArray(args.tasks) && args.tasks.length > 0 &&
+        args.tasks.every(task => validTaskMutationEntry(task, false));
+    }
+    if (args.action === "update") {
+      return Array.isArray(args.updates) && args.updates.length > 0 &&
+        args.updates.every(update => validTaskMutationEntry(update, true));
+    }
+    return false;
+  }
+
   // Liveness has two honest thresholds (mockup #13). A short silence is
   // EXPECTED (the model is thinking, a long tool is running), so once we cross
   // QUIET we surface a calm, quantized "quiet ~Nm" line but keep breathing.
@@ -1197,11 +1223,9 @@
             this.suppressedToolCalls.add(data.call_id);
             const args = parseArgs(data.arguments_json) || {};
             const priorIds = new Set(taskDetails.keys());
-            if (args.action === "append" && Array.isArray(args.tasks)) {
+            if (validTaskMutationArgs(args) && args.action === "append") {
               for (const t of args.tasks) {
-                if (t && t.id != null && t.description) {
-                  rememberTask(t);
-                }
+                rememberTask(t);
               }
             }
             this.pendingTaskCalls.set(data.call_id, { args, priorIds });
@@ -4047,9 +4071,8 @@
       if (!args || args.action === "view") return false;
       const validAppend = args.action === "append" && Array.isArray(args.tasks);
       const validUpdate = args.action === "update" && Array.isArray(args.updates);
-      if (!validAppend && !validUpdate) return false;
-      if (validAppend && args.tasks.length === 0) return false;
-      if (args.action === "append" && Array.isArray(args.tasks)) {
+      if ((!validAppend && !validUpdate) || !validTaskMutationArgs(args)) return false;
+      if (validAppend) {
         for (const t of args.tasks) rememberTask(t);
       }
       if (args.action === "update" && Array.isArray(args.updates)) {

@@ -122,3 +122,65 @@ Result: all passed, exit 0.
 ### Review-fix concerns
 
 None. The existing packed-refs warning was not reproduced by the tests; it remains an environment concern from the prior commit operation.
+
+## Re-review fix: nested mutation entry validation
+
+### Status
+
+DONE
+
+### Changes
+
+- `cmd/serf-hub/jstest/test-renderer-plan.js`
+  - Added explicit malformed nested append/update cases for null, primitive, missing-ID, invalid-ID, and invalid-status entries.
+  - Instrumented task fetches and asserted malformed successful mutations produce neither cards nor badge refreshes.
+  - Added a separate fresh append-of-`PLAN` assertion for seven rows while retaining the mixed known/new append assertion.
+- `cmd/serf-hub/assets/renderer.js`
+  - Defines structural mutation validation: each append/update entry must be a non-null object with a positive integer-coercible ID; update statuses, when present, must be `open`, `in_progress`, `done`, or `cancelled`.
+  - Rejects the entire mutation before cache seeding, rendering, or badge refresh if any entry is malformed.
+  - Preserves metadata-only valid updates as header-only cards.
+
+### Re-review TDD evidence
+
+Red command, run before the structural validation change:
+
+```text
+cd cmd/serf-hub/jstest
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
+```
+
+Result: failed at `malformed nested task mutations render and refresh no card`; malformed nested entries produced cards.
+
+Green focused command:
+
+```text
+cd cmd/serf-hub/jstest
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
+```
+
+Result: all scenarios passed, including malformed nested silence, refresh suppression, fresh seven-row append, mixed known/new filtering, and metadata-only update behavior.
+
+Related commands:
+
+```text
+cd cmd/serf-hub/jstest
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-realistic-flow.js
+cd ../..
+git diff --check
+```
+
+Result: all tests passed with exit 0; `git diff --check` passed.
+
+### Re-review self-review
+
+- Validation is applied at TOOL_CALL_START before append cache seeding and again at the render boundary before any badge refresh.
+- One malformed nested element rejects the entire mutation.
+- IDs reject null, empty, booleans, non-numeric values, non-integers, and non-positive values.
+- Status is constrained only when present, so notes/dependency/effort/prompt-only updates remain valid header-only mutations.
+- Empty append remains silent.
+- Existing failed-call suppression and view/unknown-action suppression remain intact.
+
+### Re-review concerns
+
+The commit operation may emit the pre-existing environment `packed-refs.lock` permission warning; tests and diff checks are unaffected.

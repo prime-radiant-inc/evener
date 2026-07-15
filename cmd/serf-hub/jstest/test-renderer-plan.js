@@ -23,7 +23,11 @@ function newHarness() {
   </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
   const { window } = dom;
   window.marked = { parse: t => String(t || "") };
-  window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
+  window.__taskFetches = 0;
+  window.fetch = (url) => {
+    if (String(url).includes("/tasks")) window.__taskFetches++;
+    return Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
+  };
   require("./load-renderer").evalRenderer(window);
   const conv = window.document.getElementById("conversation");
   window.SerfRenderer.init(conv);
@@ -159,14 +163,32 @@ await scenario("append shows only newly added tasks with progress", [
   return { ok: true };
 });
 
-await scenario("malformed successful task mutations render and refresh no card", [
+await scenario("fresh append renders all seven tasks", [
+  sessionStart(),
+  ...taskCall("t1", { action: "append", tasks: PLAN }, PLAN),
+], ({ conv }) => {
+  const cards = conv.querySelectorAll(".task-card");
+  if (cards.length !== 1) return { ok: false, detail: "expected one card, got " + cards.length };
+  if (cardRows(cards[0]).length !== 7) return { ok: false, detail: "expected seven rows" };
+  return { ok: true };
+});
+
+await scenario("malformed nested task mutations render and refresh no card", [
   sessionStart(),
   ...rawTaskCall("bad-json", "{not valid json", PLAN),
+  ...rawTaskCall("bad-append-null", JSON.stringify({ action: "append", tasks: [PLAN[0], null] }), PLAN),
+  ...rawTaskCall("bad-append-primitive", JSON.stringify({ action: "append", tasks: [PLAN[0], "bad"] }), PLAN),
+  ...rawTaskCall("bad-append-id", JSON.stringify({ action: "append", tasks: [PLAN[0], { description: "missing id" }] }), PLAN),
+  ...rawTaskCall("bad-update-null", JSON.stringify({ action: "update", updates: [{ id: 4 }, null] }), PLAN),
+  ...rawTaskCall("bad-update-primitive", JSON.stringify({ action: "update", updates: [{ id: 4 }, "bad"] }), PLAN),
+  ...rawTaskCall("bad-update-id", JSON.stringify({ action: "update", updates: [{ id: 4 }, { status: "done" }] }), PLAN),
+  ...rawTaskCall("bad-update-status", JSON.stringify({ action: "update", updates: [{ id: 4, status: "paused" }] }), PLAN),
   ...rawTaskCall("unknown-action", JSON.stringify({ action: "replace", tasks: PLAN }), PLAN),
   ...rawTaskCall("bad-append", JSON.stringify({ action: "append", tasks: {} }), PLAN),
   ...rawTaskCall("bad-update", JSON.stringify({ action: "update", updates: {} }), PLAN),
 ], ({ conv, window }) => {
   if (conv.querySelector(".task-card")) return { ok: false, detail: "malformed successful mutations must not render cards" };
+  if (window.__taskFetches !== 1) return { ok: false, detail: "malformed mutations must not refresh the task badge; fetches: " + window.__taskFetches };
   return { ok: true };
 });
 
