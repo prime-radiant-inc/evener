@@ -18,6 +18,11 @@ import (
 // EntryProjector converts one transcript entry JSON object into AppWire items.
 type EntryProjector func(raw json.RawMessage, turnID string, turnIndex int) []appwire.ThreadItem
 
+// BoundedEntryProjector converts one transcript entry JSON object into AppWire
+// items while sharing the tool-name state collected by the transcript index.
+// EntryProjector remains the full-read contract for existing callers.
+type BoundedEntryProjector func(raw json.RawMessage, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem
+
 // ImageProjector converts transcript image content into an AppWire image item.
 type ImageProjector func(image llm.ImageData) appwire.InputItem
 

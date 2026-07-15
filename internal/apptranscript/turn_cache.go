@@ -28,9 +28,11 @@ type TurnCache struct {
 }
 
 type turnCacheEntry struct {
-	size  int64
-	mod   time.Time
-	turns []appwire.Turn
+	size      int64
+	mod       time.Time
+	turns     []appwire.Turn
+	full      bool
+	turnIndex *turnIndexDisk
 }
 
 // NewTurnCache returns a TurnCache bounded to a default number of transcripts.
@@ -55,7 +57,7 @@ func (c *TurnCache) load(path string, parse func() []appwire.Turn) []appwire.Tur
 		return parse()
 	}
 	c.mu.Lock()
-	if e, ok := c.entries[path]; ok && e.size == fi.Size() && e.mod.Equal(fi.ModTime()) {
+	if e, ok := c.entries[path]; ok && e.full && e.size == fi.Size() && e.mod.Equal(fi.ModTime()) {
 		c.touch(path)
 		turns := e.turns
 		c.mu.Unlock()
@@ -67,7 +69,12 @@ func (c *TurnCache) load(path string, parse func() []appwire.Turn) []appwire.Tur
 	turns := parse()
 
 	c.mu.Lock()
-	c.entries[path] = turnCacheEntry{size: fi.Size(), mod: fi.ModTime(), turns: turns}
+	entry := c.entries[path]
+	entry.size = fi.Size()
+	entry.mod = fi.ModTime()
+	entry.turns = turns
+	entry.full = true
+	c.entries[path] = entry
 	c.touch(path)
 	c.evictLocked()
 	c.mu.Unlock()
