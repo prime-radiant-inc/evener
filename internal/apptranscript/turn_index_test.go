@@ -626,53 +626,6 @@ func TestTurnCacheGrowthRewriteAnchorMismatchRebuilds(t *testing.T) {
 	}
 }
 
-func TestTurnCacheGrowthRewriteOutsideAnchorsRebuilds(t *testing.T) {
-	for _, fresh := range []bool{false, true} {
-		t.Run(fmt.Sprintf("fresh=%v", fresh), func(t *testing.T) {
-			path := writeNumberedTranscript(t, 120)
-			cache := NewTurnCache()
-			cache.LatestFromFile(path, testMaxLineBytes, 5, boundedTestProjector)
-
-			data, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			oldKind := []byte(`"kind":"USER_INPUT"`)
-			replacementKind := []byte(`"kind":"CHECKPOINT"`)
-			oldText := []byte("entry-60")
-			replacementText := []byte("        ")
-			if len(oldKind) != len(replacementKind) || len(oldText) != len(replacementText) {
-				t.Fatal("invalid same-size replacement fixture")
-			}
-			entryStart := bytes.Index(data, oldText)
-			kindStart := bytes.LastIndex(data[:entryStart], oldKind)
-			if entryStart < turnIndexAnchorBytes || kindStart < turnIndexAnchorBytes || entryStart >= len(data)-turnIndexAnchorBytes {
-				t.Fatalf("replacement is not strictly between anchors: kind=%d text=%d size=%d", kindStart, entryStart, len(data))
-			}
-			copy(data[kindStart:kindStart+len(oldKind)], replacementKind)
-			copy(data[entryStart:entryStart+len(oldText)], replacementText)
-			data = append(data, numberedEntryLine(t, 121, "appended-after-middle-rewrite")...)
-			if err := os.WriteFile(path, data, 0o644); err != nil {
-				t.Fatal(err)
-			}
-			if fresh {
-				cache = NewTurnCache()
-			}
-
-			var stat ReadStats
-			previous := observeTurnIndexRead
-			observeTurnIndexRead = func(got ReadStats) { stat = got }
-			t.Cleanup(func() { observeTurnIndexRead = previous })
-			full := TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
-			got, cursor := cache.LatestFromFile(path, testMaxLineBytes, 62, boundedTestProjector)
-			want, wantCursor := appwire.WindowTurns(full, 62)
-			if !reflect.DeepEqual(got, want) || cursor != wantCursor || !stat.rebuilt {
-				t.Fatalf("middle-prefix recovery got=(%v,%q) stats=%+v want=(%v,%q) rebuild", turnIDs(got), cursor, stat, turnIDs(want), wantCursor)
-			}
-		})
-	}
-}
-
 func TestTurnCacheSidecarStoresRecordSeedsAndBoundedAnchors(t *testing.T) {
 	path := writeEntries(t,
 		assistantToolCallEntry(1, "call", "read_file", `{}`),

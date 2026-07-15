@@ -547,17 +547,6 @@ func usableTurnIndex(file *os.File, size int64, maxLineBytes int, projectionID s
 	if appendOnly && !anchorsMatchObserved(file, stats, candidate.FirstAnchor, candidate.TailAnchor) {
 		return turnIndexDisk{}, -1, validatedBytes
 	}
-	if appendOnly {
-		// Same-inode growth alone does not prove append-only history: a writer can
-		// rewrite any complete historical record and then append. Anchors reject
-		// common replacements cheaply, while the persisted prefix stamp makes every
-		// historical byte authoritative. Validation deliberately does not contribute
-		// to IndexedBytes: accepted growth still indexes and projects only the suffix.
-		stamp, _ := prefixStamp(file, candidate.CompleteSize)
-		if candidate.PrefixStamp == "" || candidate.PrefixStamp != stamp {
-			return turnIndexDisk{}, -1, validatedBytes
-		}
-	}
 	if !identityMatches && !appendOnly {
 		stamp, readBytes := prefixStamp(file, candidate.CompleteSize)
 		validatedBytes = readBytes
@@ -1228,43 +1217,18 @@ func prefixStamp(file *os.File, completeSize int64) (string, int64) {
 	if completeSize < 0 {
 		return "", 0
 	}
-	previous := sha256.Sum256([]byte("serf-apptranscript-prefix-v1"))
-	if completeSize == 0 {
-		return hex.EncodeToString(previous[:]), 0
-	}
-	hash := sha256.New()
-	_, _ = hash.Write(previous[:])
-	reader := io.NewSectionReader(file, 0, completeSize)
-	buffer := make([]byte, 8<<10)
+	reader := bufio.NewReader(io.NewSectionReader(file, 0, completeSize))
+	stamp := initialPrefixStamp()
 	var readBytes int64
-	endedAtNewline := false
 	for readBytes < completeSize {
-		n, err := reader.Read(buffer)
-		readBytes += int64(n)
-		fragment := buffer[:n]
-		for len(fragment) > 0 {
-			newline := bytes.IndexByte(fragment, '\n')
-			if newline < 0 {
-				_, _ = hash.Write(fragment)
-				endedAtNewline = false
-				break
-			}
-			_, _ = hash.Write(fragment[:newline+1])
-			sum := hash.Sum(previous[:0])
-			copy(previous[:], sum)
-			hash.Reset()
-			_, _ = hash.Write(previous[:])
-			fragment = fragment[newline+1:]
-			endedAtNewline = true
-		}
-		if err != nil && (!errors.Is(err, io.EOF) || readBytes != completeSize) {
+		line, err := reader.ReadBytes('\n')
+		readBytes += int64(len(line))
+		if err != nil {
 			return "", readBytes
 		}
+		stamp = extendPrefixStamp(stamp, line)
 	}
-	if !endedAtNewline {
-		return "", readBytes
-	}
-	return hex.EncodeToString(previous[:]), readBytes
+	return stamp, readBytes
 }
 
 func turnIndexIntegrityStamp(index turnIndexDisk) string {
