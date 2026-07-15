@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/diagnostic"
@@ -22,7 +23,7 @@ import (
 )
 
 const (
-	turnIndexVersion        = 4
+	turnIndexVersion        = 5
 	turnIndexJournalVersion = 2
 	turnIndexAnchorBytes    = 256
 )
@@ -646,42 +647,51 @@ func toolProjectionState(raw []byte, names map[string]string) (map[string]string
 	if json.Unmarshal(raw, &entry) != nil {
 		return nil, nil
 	}
+	switch entry.Turn.Kind {
+	case schema.TurnAssistant:
+		var changes []toolNameChange
+		for _, part := range entry.Turn.Message.Content {
+			if part.Kind != llm.ContentToolCall || part.ToolCall == nil || part.ToolCall.ID == "" {
+				continue
+			}
+			changes = append(changes, toolNameChange{ID: part.ToolCall.ID, Name: part.ToolCall.Name})
+		}
+		return nil, changes
+	case schema.TurnTool, schema.TurnToolResults:
+	default:
+		return nil, nil
+	}
 	var seed map[string]string
 	var changes []toolNameChange
 	localNames := map[string]string{}
 	localDeleted := map[string]bool{}
 	touched := map[string]bool{}
 	for _, part := range entry.Turn.Message.Content {
-		switch {
-		case part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.ID != "":
-			changes = append(changes, toolNameChange{ID: part.ToolCall.ID, Name: part.ToolCall.Name})
-			localNames[part.ToolCall.ID] = part.ToolCall.Name
-			delete(localDeleted, part.ToolCall.ID)
-			touched[part.ToolCall.ID] = true
-		case part.Kind == llm.ContentToolResult && part.ToolResult != nil:
-			name := part.ToolResult.Name
-			if name == "" {
-				id := part.ToolResult.ToolCallID
-				if touched[id] {
-					if !localDeleted[id] {
-						name = localNames[id]
-					}
-				} else {
-					name = names[id]
-					if seed == nil {
-						seed = map[string]string{}
-					}
-					// Assignment deliberately preserves an explicitly empty lookup.
-					seed[id] = name
+		if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
+			continue
+		}
+		name := part.ToolResult.Name
+		if name == "" {
+			id := part.ToolResult.ToolCallID
+			if touched[id] {
+				if !localDeleted[id] {
+					name = localNames[id]
 				}
-				changes = append(changes, toolNameChange{ID: id, Name: name, Lookup: true})
+			} else {
+				name = names[id]
+				if seed == nil {
+					seed = map[string]string{}
+				}
+				// Assignment deliberately preserves an explicitly empty lookup.
+				seed[id] = name
 			}
-			if name == "communicate" {
-				changes = append(changes, toolNameChange{ID: part.ToolResult.ToolCallID, Delete: true})
-				delete(localNames, part.ToolResult.ToolCallID)
-				localDeleted[part.ToolResult.ToolCallID] = true
-				touched[part.ToolResult.ToolCallID] = true
-			}
+			changes = append(changes, toolNameChange{ID: id, Name: name, Lookup: true})
+		}
+		if name == "communicate" {
+			changes = append(changes, toolNameChange{ID: part.ToolResult.ToolCallID, Delete: true})
+			delete(localNames, part.ToolResult.ToolCallID)
+			localDeleted[part.ToolResult.ToolCallID] = true
+			touched[part.ToolResult.ToolCallID] = true
 		}
 	}
 	return seed, changes

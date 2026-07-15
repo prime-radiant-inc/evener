@@ -173,6 +173,65 @@ func TestTurnCacheBoundedPageUsesToolNamesAtRangeStart(t *testing.T) {
 	})
 }
 
+func TestTurnCacheIgnoresToolCallsOutsideAssistantTurns(t *testing.T) {
+	for _, kind := range []schema.TurnKind{
+		schema.TurnUserInput,
+		schema.TurnSteering,
+		schema.TurnSystem,
+		schema.TurnCheckpoint,
+		schema.TurnSummary,
+		schema.TurnModelSwitch,
+	} {
+		t.Run(string(kind), func(t *testing.T) {
+			path := writeEntries(t,
+				assistantToolCallEntry(1, "shared", "read_file", `{}`),
+				transcript.Entry{
+					Kind: "entry",
+					Seq:  2,
+					Turn: schema.Turn{Kind: kind, Message: llm.Message{Content: []llm.ContentPart{
+						{Kind: llm.ContentText, Text: "mixed content"},
+						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "shared", Name: "wrong_tool", Arguments: json.RawMessage(`{}`)}},
+					}}},
+				},
+				toolResultEntry(3, "shared", "", "done"),
+			)
+
+			full := TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
+			if got := full[len(full)-1].Items[0].ToolName; got != "read_file" {
+				t.Fatalf("full result tool name=%q want=%q", got, "read_file")
+			}
+
+			assertLatest := func(label string, cache *TurnCache) string {
+				t.Helper()
+				got, cursor := cache.LatestFromFile(path, testMaxLineBytes, 2, boundedTestProjector)
+				want, wantCursor := appwire.WindowTurns(full, 2)
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("%s exact items differ: got IDs=%v result tool=%q; want IDs=%v result tool=%q", label, turnIDs(got), got[len(got)-1].Items[0].ToolName, turnIDs(want), want[len(want)-1].Items[0].ToolName)
+				}
+				if cursor != wantCursor {
+					t.Fatalf("%s cursor=%q want=%q", label, cursor, wantCursor)
+				}
+				if gotName := got[len(got)-1].Items[0].ToolName; gotName != "read_file" {
+					t.Fatalf("%s result tool name=%q want=%q", label, gotName, "read_file")
+				}
+				return cursor
+			}
+
+			cache := NewTurnCache()
+			cursor := assertLatest("latest", cache)
+			assertLatest("warm latest", cache)
+
+			page := cache.PageFromFile(path, testMaxLineBytes, cursor, 2, boundedTestProjector)
+			wantPage := appwire.PageTurns(full, cursor, 2)
+			if !reflect.DeepEqual(page.Turns, wantPage.Data) || page.NextCursor != wantPage.NextCursor {
+				t.Fatalf("page got=(%#v,%q) want=(%#v,%q)", page.Turns, page.NextCursor, wantPage.Data, wantPage.NextCursor)
+			}
+
+			assertLatest("fresh-cache restart", NewTurnCache())
+		})
+	}
+}
+
 func TestTurnCacheBoundedReadCompletesAppendedPartialLine(t *testing.T) {
 	fixture := writeBoundedFixture(t)
 	cache := NewTurnCache()
