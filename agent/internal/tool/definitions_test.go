@@ -276,7 +276,7 @@ func TestDefDelegateHasSandboxParams(t *testing.T) {
 	// Pin the load-bearing semantics (matching the sandbox param's pinning strength):
 	// network-off consequences, inherit-on-omit behavior, and the no-escalation floor.
 	snDesc, _ := sn["description"].(string)
-	for _, want := range []string{"disables all networking", "local network server"} {
+	for _, want := range []string{"disables all IP networking", "local network server"} {
 		if !strings.Contains(snDesc, want) {
 			t.Errorf("sandbox_net must warn that network-off can break local-server tests (missing %q), got %q", want, snDesc)
 		}

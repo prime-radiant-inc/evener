@@ -142,7 +142,7 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 				},
 				"sandbox_net": map[string]any{
 					"type":        "boolean",
-					"description": "Whether the sandboxed delegate may use the network. Setting this to false disables all networking, including local and loopback networking, and may break tests that start or connect to a local network server. Omit to inherit your session's setting. You cannot enable network for a delegate if your own session has it off.",
+					"description": "Whether the sandboxed delegate may use the network. Setting this to false disables all IP networking, including TCP, UDP, DNS, and loopback, and may break tests that start or connect to a local network server. Omit to inherit your session's setting. You cannot enable network for a delegate if your own session has it off.",
 				},
 				"result_schema": map[string]any{
 					"type":                 "object",
