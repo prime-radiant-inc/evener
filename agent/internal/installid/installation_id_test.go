@@ -144,6 +144,9 @@ func TestLoadOrCreateInstallationID_EmptyStateDirAndFilesystemFailure(t *testing
 func TestLoadOrCreateInstallationID_ConcurrentCallersShareSingleton(t *testing.T) {
 	const callers = 8
 	fs := newInstallationIDOverlapFS(afero.NewOsFs(), callers)
+	previousWait := installationIDContentionWait
+	installationIDContentionWait = func(int) { <-fs.winnerReady }
+	t.Cleanup(func() { installationIDContentionWait = previousWait })
 	dir := t.TempDir()
 	start := make(chan struct{})
 	results := make(chan string, callers)
@@ -289,6 +292,8 @@ type installationIDOverlapFS struct {
 	renameReady  chan struct{}
 	renameTurn   chan struct{}
 	postReadAcks chan struct{}
+	winnerReady  chan struct{}
+	winnerOnce   sync.Once
 }
 
 func newInstallationIDOverlapFS(base afero.Fs, callers int) *installationIDOverlapFS {
@@ -300,6 +305,7 @@ func newInstallationIDOverlapFS(base afero.Fs, callers int) *installationIDOverl
 		renameReady:  make(chan struct{}),
 		renameTurn:   make(chan struct{}, 1),
 		postReadAcks: make(chan struct{}, callers),
+		winnerReady:  make(chan struct{}),
 	}
 	fs.renameTurn <- struct{}{}
 	return fs
@@ -356,10 +362,15 @@ func (fs *installationIDOverlapFS) Rename(oldname, newname string) error {
 			if err := fs.Fs.Rename(oldname, newname); err != nil {
 				return err
 			}
+			fs.winnerOnce.Do(func() { close(fs.winnerReady) })
 			return nil
 		}
 	}
-	return fs.Fs.Rename(oldname, newname)
+	err := fs.Fs.Rename(oldname, newname)
+	if err == nil && strings.HasPrefix(filepath.Base(oldname), ".installation_id.") {
+		fs.winnerOnce.Do(func() { close(fs.winnerReady) })
+	}
+	return err
 }
 
 type installationIDContentionFS struct {
