@@ -552,3 +552,129 @@ Task 11 implementation, gate, and review commits are `24a69ccc6`, `abfea7ff9`,
 The pre-existing `.superpowers/sdd/task-1-report.md` modification remains the
 sole protected unrelated worktree exception. It was not edited, staged,
 reverted, or committed during Task 11.
+
+## Merged-main integration and exact-tip verification
+
+### Integration topology
+
+The feature tip `aee92eb622238e3ad54d35233eb946709c70c3a8` was merged into
+local `main` as `9d3f52840ff99b76f392ef873d4ba2e0f06c43a3`. The merge parents
+are `0569c8636ed8d92be35359c521c0cfbc419d5f93` and
+`aee92eb622238e3ad54d35233eb946709c70c3a8`.
+
+Conflict resolution retained both branches' behavior in session initialization
+and hub roster/tree lineage. Integration repairs updated worktree APIs, carried
+canonical project IDs, and replaced stale hub fixtures with valid compact IDs.
+Independent review found no merge-specific defect or lost recursive-subagent
+behavior.
+
+`origin/main` remained an ancestor of the merged branch. No push was performed.
+
+### Merged-main P3 gate failure and fix
+
+The first full gate at merge commit `9d3f52840` stopped in the focused agent
+suite. `TestP3Sweep_TwoConcurrentPassesCollectOnce` removed the lane but left
+its branch behind.
+
+Investigation reproduced a real subprocess/filesystem race. Two residue sweeps
+could start from the same porcelain snapshot. One removed the worktree but lost
+its branch-delete race; the other saw the worktree remove fail because the lane
+was already gone. Both then used the stale registry snapshot, so sweep 2 skipped
+the orphaned branch and sidecar.
+
+Two deterministic regressions established the required behavior:
+
+- `TestP3CollectLane_ConcurrentWinnerCompletesRemoval` forces another collector
+  to finish worktree removal before the current remove reports failure.
+- `TestP3Sweep_Sweep2CollectsSweep1BranchFailure` forces a one-shot branch
+  deletion failure after sweep 1 removes the worktree.
+
+The fix continues cleanup after a remove error only when `<lane>/.git` is
+definitively absent; present lanes and transient stat failures remain
+non-destructive. It also refreshes the porcelain registry between sweeps 1 and
+2. The P3 regressions passed for 100 runs (`71.970s`), the affected agent suite
+passed (`59.942s`), and fixed-Go race repetitions passed before the full gate.
+
+### Final whole-branch review fix wave
+
+The fresh most-capable review of merged main reported 0 Critical, 2 Important,
+and 1 Minor findings:
+
+1. `ResolveProjectWith` performed host `os.Stat` calls after resolver-owned
+   operations, rejecting paths that existed only in an execution environment.
+2. `TestIdentifierAudit` traversed ignored nested worktrees and depended on
+   ambient developer state.
+3. `PastIndex` still described project buckets as `<sha>`.
+
+Commit `200d51e68f6e6fe190becc736bced8c0025a57b4` resolved all three
+findings and the P3 race. Directory validation now stays inside each resolver's
+environment without changing the approved three-method interface. The mandatory
+identifier audit now enumerates tracked Go files with NUL-safe `git ls-files`
+output while retaining a separate filesystem scanner for isolated fixtures. The
+stale comment now says `<project-id>`.
+
+Targeted RED/GREEN coverage, repeated identifier audits, P3 stress, affected
+package suites, vet, and diff checks passed. The same reviewer then re-reviewed
+the exact commit and reported 0 Critical, 0 Important, and 0 Minor findings;
+Spec Compliance PASS; Task Quality PASS; Ready to use Yes.
+
+### Full-gate lint layers
+
+The next exact-gate run exposed one pre-existing SA5011 test control-flow
+finding after all focused suites and vet passed. Commit
+`0ac006541cd414ff7f8aeb33d989010175105716` added an explicit return after a
+fatal nil assertion in `internal/appserver/router_seqfuzz_test.go`. Its focused
+test and package lint passed.
+
+The following run exposed four pre-existing LLM lint findings: a local variable
+named `copy` and intentional uses of deprecated `http.Transport.Dial` and
+`DialTLS` hooks. Commit `9e4076d38ed7707b5e562650606411f5ffb54dec`
+renamed the local and added narrow, justified staticcheck suppressions at the
+legacy-hook compatibility checks and their existing authority tests. Behavior
+did not change. The focused compatibility tests and complete lint gate passed.
+
+The same most-capable reviewer inspected both addenda at their exact tips. Each
+review reported 0 Critical, 0 Important, and 0 Minor findings; Spec Compliance
+PASS; Task Quality PASS; Ready to use Yes.
+
+### Final full gate at `9e4076d38ed7707b5e562650606411f5ffb54dec`
+
+Focused tests passed in dependency order:
+
+- `go test ./identifier/... -count=1` — PASS (`0.916s`).
+- `(cd agent && go test ./execenv ./internal/installid ./internal/jobstore ./internal/worktree . -count=1)` — PASS (`9.575s`, `0.375s`, `7.618s`, `6.789s`, and `62.754s`).
+- `(cd llm && go test ./providers/google/... -count=1)` — PASS (`0.493s`).
+- Hub/CLI/TUI command — PASS: cmdutil `0.928s`, serf `5.603s`, launchconfig
+  `1.041s`, hubcore `2.559s`, hub `49.067s`, and TUI `4.932s`.
+
+Static and repository gates passed:
+
+- `make vet` — PASS.
+- `make lint` — PASS; all seven golangci runs reported `0 issues`, generation
+  completed, and the optional secret scan emitted only the documented warning
+  that `gitleaks` was not installed.
+- `make test` — PASS: root `19.48s`, agent `50.39s`, llm `7.14s`, auth `2.03s`,
+  envvars `0.76s`, invariant `0.57s`, identifier `1.46s`. The runner reported
+  that `systemd-run` was unavailable and ran uncapped.
+
+Fixed Go 1.26.5 race gates passed:
+
+- agent installid `1.387s`, jobstore `5.655s`, agent `88.446s`;
+- hubcore `2.224s`, hub `81.195s`.
+
+Final audits passed:
+
+- The production identifier search returned only the shared
+  `identifier/project.go:121` `ProjectID` definition.
+- No AIX-specific installation-ID files or references exist.
+- The stale-term search returned only historical plans/specifications and the
+  approved design/plan's descriptions of old formats, rejected compatibility,
+  fixtures, or the audit itself.
+- `git diff --check` passed.
+
+The main checkout retained only five pre-existing untracked files: four
+`.private-journal/2026-05-07/17-{55-28-436213,56-57-400020}.{embedding,md}`
+files and `docs/superpowers/plans/2026-05-07-serf-daemon-prereqs.md`. They were
+not staged, edited, or removed. The feature worktree remains at
+`aee92eb622238e3ad54d35233eb946709c70c3a8` because its protected
+`.superpowers/sdd/task-1-report.md` modification must not be discarded.
