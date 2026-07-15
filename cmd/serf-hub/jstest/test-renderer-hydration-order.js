@@ -46,6 +46,7 @@ window.SerfAppwire = {
   readThread: (sessionId) => readThreadImpl(sessionId),
   eventsFromThread: (thread) => {
     const user = thread.turns[0].items[0];
+    const task = thread.testTask || { id: 1, status: "in_progress" };
     return [
       ["USER_INPUT", { text: user.text }],
       ["TOOL_CALL_START", {
@@ -53,15 +54,16 @@ window.SerfAppwire = {
         tool_name: "task_list",
         arguments_json: JSON.stringify({
           action: "update",
-          updates: [{ id: 1, status: "in_progress" }],
+          updates: [{ id: task.id, status: task.status }],
         }),
       }],
       ["TOOL_CALL_END", {
         call_id: "task_update_1",
         tool_name: "task_list",
         output: "Updated.",
-        tool_state: JSON.stringify([{ id: 1, status: "in_progress" }]),
+        tool_state: JSON.stringify([task]),
       }],
+      ...(thread.testTrailingText ? [["USER_INPUT", { text: thread.testTrailingText }]] : []),
     ];
   },
   eventsFromNotification: (method, params) => {
@@ -239,20 +241,80 @@ const renderUnresolvedTask = (callId, taskId) => {
   await drainMicrotasks();
   assert.strictEqual(window.SerfRendererInternal.taskDescriptions.get(1), "Session B task", "stale session A task metadata mutated session B");
 
+  const tasksBeforeRead = deferred();
+  const readAfterTasks = deferred();
+  let tasksFirstReads = 0;
+  tasksImpl = () => (++tasksFirstReads === 1 ? tasksBeforeRead.promise : new Promise(() => {}));
+  readThreadImpl = () => readAfterTasks.promise;
+  const tasksFirstConversation = window.document.createElement("div");
+  tasksFirstConversation.dataset.sessionId = "tasks-first-session";
+  conversationB.replaceWith(tasksFirstConversation);
+  window.SerfRenderer.init(tasksFirstConversation);
+  tasksBeforeRead.resolve([{ id: 301, description: "Cached before transcript", status: "done" }]);
+  await drainMicrotasks();
+  assert.strictEqual(tasksFirstConversation.querySelector(".task-card"), null, "tasks-first fixture created a plan before readThread resolved");
+  readAfterTasks.resolve({
+    thread: {
+      id: "tasks-first-session",
+      sessionId: "tasks-first-session",
+      serf: { ref: "local:tasks-first-session" },
+      turns: [{ items: [{ type: "userMessage", text: "tasks-first snapshot" }] }],
+      testTask: { id: 301, status: "in_progress", notes: ["transcript note"] },
+      testTrailingText: "after plan",
+    },
+  });
+  await drainMicrotasks();
+  const tasksFirstCard = tasksFirstConversation.querySelector(".task-card");
+  const tasksFirstTrailing = Array.from(tasksFirstConversation.querySelectorAll(".user-message"))
+    .find((el) => el.textContent.includes("after plan"));
+  assert(tasksFirstCard, "readThread did not create the tasks-first transcript plan");
+  const tasksFirstLabel = tasksFirstCard.querySelector(".plan-step");
+  assert.strictEqual(tasksFirstLabel.textContent, "Cached before transcript", "cached task description did not hydrate the later transcript plan label");
+  assert.strictEqual(tasksFirstLabel.dataset.taskId, "301", "later transcript row did not retain stable originating task identity");
+  assert.strictEqual(tasksFirstLabel.dataset.taskLabelUnresolved, undefined, "cached description was incorrectly marked unresolved");
+  assert.strictEqual(tasksFirstConversation.querySelector(".task-card"), tasksFirstCard, "tasks-first hydration replaced the transcript plan card node");
+  assert.strictEqual(tasksFirstCard.nextElementSibling, tasksFirstTrailing, "tasks-first hydration changed transcript plan order");
+  assert.strictEqual(tasksFirstCard.querySelector(".task-card-progress").textContent, "0 / 1", "cached metadata replaced transcript-derived progress");
+  assert(tasksFirstCard.querySelector(".task-card-row").classList.contains("current"), "cached metadata replaced transcript-derived task status");
+  assert.strictEqual(tasksFirstCard.querySelector(".task-card-note").textContent, "transcript note", "cached metadata replaced transcript-derived task content");
+
+  const transcriptHashTasks = deferred();
+  const transcriptHashRead = deferred();
+  tasksImpl = () => transcriptHashTasks.promise;
+  readThreadImpl = () => transcriptHashRead.promise;
+  const transcriptHashConversation = window.document.createElement("div");
+  transcriptHashConversation.dataset.sessionId = "transcript-hash-session";
+  tasksFirstConversation.replaceWith(transcriptHashConversation);
+  window.SerfRenderer.init(transcriptHashConversation);
+  transcriptHashRead.resolve({
+    thread: {
+      id: "transcript-hash-session",
+      sessionId: "transcript-hash-session",
+      serf: { ref: "local:transcript-hash-session" },
+      turns: [{ items: [{ type: "userMessage", text: "hash-label snapshot" }] }],
+      testTask: { id: 201, description: "#202", status: "in_progress" },
+    },
+  });
+  await drainMicrotasks();
+  const transcriptHashLabel = transcriptHashConversation.querySelector(".plan-step");
+  assert.strictEqual(transcriptHashLabel.textContent, "#202", "transcript hash-label fixture did not preserve task 201's description");
+  window.SerfRenderer.applyTasks([{ id: 202, description: "Second task", status: "open" }]);
+  assert.strictEqual(transcriptHashLabel.textContent, "#202", "transcript task 201's legitimate #202 description was reinterpreted as task 202's placeholder");
+
   tasksImpl = () => new Promise(() => {});
   const stableLabelConversation = window.document.createElement("div");
   stableLabelConversation.dataset.sessionId = "stable-label-session";
   conversationB.replaceWith(stableLabelConversation);
   window.SerfRenderer.init(stableLabelConversation);
-  window.SerfRendererInternal.taskDescriptions.delete(201);
-  window.SerfRendererInternal.taskDescriptions.delete(202);
-  renderUnresolvedTask("stable_label_task", 201);
+  window.SerfRendererInternal.taskDescriptions.delete(401);
+  window.SerfRendererInternal.taskDescriptions.delete(402);
+  renderUnresolvedTask("stable_label_task", 401);
   const stableLabel = stableLabelConversation.querySelector(".plan-step");
-  assert.strictEqual(stableLabel.textContent, "#201", "stable-label fixture did not render an unresolved task placeholder");
-  window.SerfRenderer.applyTasks([{ id: 201, description: "#202", status: "in_progress" }]);
-  assert.strictEqual(stableLabel.textContent, "#202", "task 201's hash-prefixed description did not hydrate");
-  window.SerfRenderer.applyTasks([{ id: 202, description: "Second task", status: "open" }]);
-  assert.strictEqual(stableLabel.textContent, "#202", "task 201's legitimate #202 description was reinterpreted as task 202's placeholder");
+  assert.strictEqual(stableLabel.textContent, "#401", "stable-label fixture did not render an unresolved task placeholder");
+  window.SerfRenderer.applyTasks([{ id: 401, description: "#402", status: "in_progress" }]);
+  assert.strictEqual(stableLabel.textContent, "#402", "task 401's hash-prefixed description did not hydrate");
+  window.SerfRenderer.applyTasks([{ id: 402, description: "Second task", status: "open" }]);
+  assert.strictEqual(stableLabel.textContent, "#402", "task 401's legitimate #402 description was reinterpreted as task 402's placeholder");
 
   console.log("PASS: transcript paints before task descriptions and task labels hydrate in place");
   process.exit(0);

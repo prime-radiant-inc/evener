@@ -505,13 +505,6 @@
           if (task && task.id != null && task.description) descriptions.set(String(task.id), task.description);
         }
         this.livePlanCard.querySelectorAll(".plan-step").forEach((step) => {
-          if (!step.dataset.taskId) {
-            const match = /^#(.+)$/.exec(String(step.textContent || "").trim());
-            if (match) {
-              step.dataset.taskId = match[1];
-              step.dataset.taskLabelUnresolved = "true";
-            }
-          }
           if (step.dataset.taskLabelUnresolved === "true" && descriptions.has(step.dataset.taskId)) {
             step.textContent = descriptions.get(step.dataset.taskId);
             delete step.dataset.taskLabelUnresolved;
@@ -4089,6 +4082,22 @@
       this.refreshTaskBadgeSoon();
     },
 
+    buildPlanTaskRow(task) {
+      const taskID = String(task.id);
+      const cachedDescription = taskDescriptions.get(Number(task.id));
+      const hasOwnLabel = !!(task.description || task.title);
+      const rowTask = !hasOwnLabel && cachedDescription
+        ? Object.assign({}, task, { description: cachedDescription })
+        : task;
+      const row = buildTaskRowLine(rowTask);
+      const step = row.querySelector(".plan-step");
+      if (step) {
+        step.dataset.taskId = taskID;
+        if (!hasOwnLabel && !cachedDescription) step.dataset.taskLabelUnresolved = "true";
+      }
+      return row;
+    },
+
     // renderLivePlan maintains ONE living plan card for the session (Design B):
     // instead of a fresh "Tasks" card on every edit, a single card is rebuilt to
     // the current plan state and floated to the live frontier (the bottom). It
@@ -4148,7 +4157,7 @@
         currentLabel.textContent = "Up next";
         card.appendChild(currentLabel);
 
-        const row = buildTaskRowLine(active);
+        const row = this.buildPlanTaskRow(active);
         row.classList.add("task-card-row", "task-card-active");
         card.appendChild(row);
         const note = Array.isArray(active.notes)
@@ -4191,7 +4200,7 @@
           g.textContent = "Up next · " + open.length;
           body.appendChild(g);
           for (const t of open) {
-            const row = buildTaskRowLine(t);
+            const row = this.buildPlanTaskRow(t);
             row.classList.add("task-card-row");
             body.appendChild(row);
           }
@@ -4238,7 +4247,7 @@
       const rows = document.createElement("div");
       rows.className = "task-card-fold-rows";
       for (const t of items) {
-        const row = buildTaskRowLine(t);
+        const row = this.buildPlanTaskRow(t);
         row.classList.add("task-card-row");
         rows.appendChild(row);
       }
@@ -4329,7 +4338,7 @@
         if (!shown) hidden++;
         const flag = touched.get(id);
         // Shared row widget; the card adds its own flag/fold classes on top.
-        const row = buildTaskRowLine(t);
+        const row = this.buildPlanTaskRow(t);
         row.classList.add("task-card-row");
         if (flag) row.classList.add("touched", flag.kind);
         if (!shown) row.classList.add("task-card-hidden");
