@@ -13,9 +13,10 @@ import (
 )
 
 type hubRelayHandle struct {
-	ready  chan struct{}
-	err    error
-	cancel context.CancelFunc
+	ready       chan struct{}
+	err         error
+	cancel      context.CancelFunc
+	established bool
 }
 
 type relayRetryClock interface {
@@ -133,6 +134,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		var relayCtx context.Context
 		var relayHandle *hubRelayHandle
 		var cancelRelay context.CancelFunc
+		var stopInitialCancellation func() bool
 		for {
 			relayMu.Lock()
 			existing := relayedThreads[relayKey]
@@ -140,6 +142,19 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				relayCtx, cancelRelay = context.WithCancel(context.WithoutCancel(ctx))
 				relayHandle = &hubRelayHandle{ready: make(chan struct{}), cancel: cancelRelay}
 				relayedThreads[relayKey] = relayHandle
+				stopInitialCancellation = context.AfterFunc(ctx, func() {
+					var cancel context.CancelFunc
+					relayMu.Lock()
+					if relayedThreads[relayKey] == relayHandle && !relayHandle.established {
+						delete(relayedThreads, relayKey)
+						relayHandle.err = ctx.Err()
+						cancel = relayHandle.cancel
+					}
+					relayMu.Unlock()
+					if cancel != nil {
+						cancel()
+					}
+				})
 				relayMu.Unlock()
 				if cfg.RelayHooks.AfterPlaceholder != nil {
 					cfg.RelayHooks.AfterPlaceholder(threadID)
@@ -177,17 +192,20 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				return err
 			}
 		}
+		defer stopInitialCancellation()
 
 		relayMu.Lock()
 		active := relayedThreads[relayKey] == relayHandle && relayCtx.Err() == nil
 		err := relayHandle.err
-		relayMu.Unlock()
 		if !active {
 			if err == nil {
 				err = context.Canceled
 			}
+			finishHandleLocked(relayHandle, err)
+			relayMu.Unlock()
 			return err
 		}
+		relayMu.Unlock()
 		notifications, err := source.SubscribeThread(relayCtx, subscribeParams)
 		if err != nil {
 			cancelRelay()
@@ -203,10 +221,16 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			return err
 		}
 		relayMu.Lock()
-		if relayedThreads[relayKey] != relayHandle || relayCtx.Err() != nil {
+		if relayedThreads[relayKey] != relayHandle || relayCtx.Err() != nil || ctx.Err() != nil {
 			err = relayHandle.err
 			if err == nil {
-				err = context.Canceled
+				err = ctx.Err()
+				if err == nil {
+					err = context.Canceled
+				}
+			}
+			if relayedThreads[relayKey] == relayHandle {
+				delete(relayedThreads, relayKey)
 			}
 			finishHandleLocked(relayHandle, err)
 			relayMu.Unlock()
@@ -221,6 +245,8 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			cancelRelay()
 			return err
 		}
+		relayHandle.established = true
+		stopInitialCancellation()
 		finishHandleLocked(relayHandle, nil)
 		relayMu.Unlock()
 		if cfg.RelayHooks.AfterReady != nil {
