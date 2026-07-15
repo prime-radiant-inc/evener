@@ -138,12 +138,20 @@ function stateWith(changes) {
   return PLAN.map(task => Object.assign({}, task, changes[task.id] || {}));
 }
 
+const APPEND_INPUTS = PLAN.map((task, index) => ({
+  description: task.description,
+  prompt: "Implement " + task.description,
+  type: ["research", "implement", "implement", "implement", "implement", "verify", "implement"][index],
+  depends_on: index > 0 ? [index] : [],
+  reasoning_effort: "medium",
+}));
+
 (async () => {
 
 await scenario("append shows only newly added tasks with progress", [
   sessionStart(),
-  ...taskCall("seed", { action: "append", tasks: [PLAN[0]] }, [PLAN[0]]),
-  ...taskCall("t1", { action: "append", tasks: PLAN }, PLAN),
+  ...taskCall("seed", { action: "append", tasks: [APPEND_INPUTS[0]] }, [PLAN[0]]),
+  ...taskCall("t1", { action: "append", tasks: APPEND_INPUTS }, PLAN),
 ], ({ conv }) => {
   const cards = conv.querySelectorAll(".task-card");
   if (cards.length !== 2) return { ok: false, detail: "expected two cards, got " + cards.length };
@@ -165,7 +173,7 @@ await scenario("append shows only newly added tasks with progress", [
 
 await scenario("fresh append renders all seven tasks", [
   sessionStart(),
-  ...taskCall("t1", { action: "append", tasks: PLAN }, PLAN),
+  ...taskCall("t1", { action: "append", tasks: APPEND_INPUTS }, PLAN),
 ], ({ conv }) => {
   const cards = conv.querySelectorAll(".task-card");
   if (cards.length !== 1) return { ok: false, detail: "expected one card, got " + cards.length };
@@ -176,9 +184,9 @@ await scenario("fresh append renders all seven tasks", [
 await scenario("malformed nested task mutations render and refresh no card", [
   sessionStart(),
   ...rawTaskCall("bad-json", "{not valid json", PLAN),
-  ...rawTaskCall("bad-append-null", JSON.stringify({ action: "append", tasks: [PLAN[0], null] }), PLAN),
-  ...rawTaskCall("bad-append-primitive", JSON.stringify({ action: "append", tasks: [PLAN[0], "bad"] }), PLAN),
-  ...rawTaskCall("bad-append-id", JSON.stringify({ action: "append", tasks: [PLAN[0], { description: "missing id" }] }), PLAN),
+  ...rawTaskCall("bad-append-null", JSON.stringify({ action: "append", tasks: [APPEND_INPUTS[0], null] }), PLAN),
+  ...rawTaskCall("bad-append-primitive", JSON.stringify({ action: "append", tasks: [APPEND_INPUTS[0], "bad"] }), PLAN),
+  ...rawTaskCall("bad-append-empty", JSON.stringify({ action: "append", tasks: [APPEND_INPUTS[0], {}] }), PLAN),
   ...rawTaskCall("bad-update-null", JSON.stringify({ action: "update", updates: [{ id: 4 }, null] }), PLAN),
   ...rawTaskCall("bad-update-primitive", JSON.stringify({ action: "update", updates: [{ id: 4 }, "bad"] }), PLAN),
   ...rawTaskCall("bad-update-id", JSON.stringify({ action: "update", updates: [{ id: 4 }, { status: "done" }] }), PLAN),
@@ -194,7 +202,7 @@ await scenario("malformed nested task mutations render and refresh no card", [
 
 await scenario("completion shows completed and automatically activated tasks", [
   sessionStart(),
-  ...taskCall("t1", { action: "append", tasks: PLAN }, PLAN),
+  ...taskCall("t1", { action: "append", tasks: APPEND_INPUTS }, PLAN),
   ...taskCall("t2", {
     action: "update",
     updates: [{ id: 4, status: "done", notes: "shipped it" }],
@@ -223,7 +231,7 @@ await scenario("completion shows completed and automatically activated tasks", [
 
 await scenario("explicit activation shows only the activated task", [
   sessionStart(),
-  ...taskCall("t1", { action: "append", tasks: PLAN }, PLAN),
+  ...taskCall("t1", { action: "append", tasks: APPEND_INPUTS }, PLAN),
   ...taskCall("t2", {
     action: "update",
     updates: [{ id: 5, status: "in_progress" }],
@@ -242,7 +250,7 @@ await scenario("explicit activation shows only the activated task", [
 
 await scenario("non-status update shows only the progress header", [
   sessionStart(),
-  ...taskCall("t1", { action: "append", tasks: PLAN }, PLAN),
+  ...taskCall("t1", { action: "append", tasks: APPEND_INPUTS }, PLAN),
   ...taskCall("t2", {
     action: "update",
     updates: [{ id: 4, notes: "checkpoint" }],
@@ -260,7 +268,7 @@ await scenario("non-status update shows only the progress header", [
 
 await scenario("consecutive mutations create cards for their own changes", [
   sessionStart(),
-  ...taskCall("t1", { action: "append", tasks: PLAN }, PLAN),
+  ...taskCall("t1", { action: "append", tasks: APPEND_INPUTS }, PLAN),
   ...taskCall("t2", {
     action: "update",
     updates: [{ id: 5, status: "in_progress" }],

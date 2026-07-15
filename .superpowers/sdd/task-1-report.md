@@ -184,3 +184,52 @@ Result: all tests passed with exit 0; `git diff --check` passed.
 ### Re-review concerns
 
 The commit operation may emit the pre-existing environment `packed-refs.lock` permission warning; tests and diff checks are unaffected.
+
+## Re-review fix: accept server-assigned append IDs
+
+### Status
+
+DONE
+
+### Changes
+
+- Confirmed against `agent/session_tools_task.go:80-129` that append inputs are task objects without IDs; the server assigns IDs and returns them in authoritative state.
+- Updated focused append scenarios to send legitimate ID-less fields (`description`, `prompt`, `type`, `depends_on`, and `reasoning_effort`) while `TOOL_CALL_END` state carries IDs.
+- Kept the separate fresh seven-row append assertion and the mixed known/new append filtering assertion.
+- Changed append validation to reject only empty/non-object entries; update validation still requires usable IDs and allows only valid statuses when status is present.
+
+### TDD evidence
+
+Red command, run with corrected ID-less append tests against the prior ID-required append validator:
+
+```text
+cd cmd/serf-hub/jstest
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
+```
+
+Result: failed because legitimate append calls rendered zero cards; the fresh append, mixed append, and dependent valid-card scenarios failed, while malformed silence remained passing.
+
+Green commands after correcting append validation:
+
+```text
+cd cmd/serf-hub/jstest
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-realistic-flow.js
+cd ../..
+git diff --check
+```
+
+Result: all renderer tests passed with exit 0 and `git diff --check` passed.
+
+### Self-review
+
+- Append validation no longer invents or requires an ID.
+- Valid append input fields are accepted and authoritative state supplies minted IDs/descriptions for rendering and `priorIds` filtering.
+- Null, primitive, and empty append entries remain rejected without card or refresh.
+- Update entries retain structural ID/status validation and metadata-only updates remain header-only.
+- Fresh seven-row and mixed known/new append assertions both pass.
+
+### Concerns
+
+The commit operation may again report the pre-existing environment `packed-refs.lock` permission warning; no test or diff-check failure occurred.

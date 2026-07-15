@@ -65,7 +65,8 @@
     if (!args || typeof args !== "object" || Array.isArray(args)) return false;
     if (args.action === "append") {
       return Array.isArray(args.tasks) && args.tasks.length > 0 &&
-        args.tasks.every(task => validTaskMutationEntry(task, false));
+        args.tasks.every(task => task && typeof task === "object" && !Array.isArray(task) &&
+          Object.keys(task).length > 0);
     }
     if (args.action === "update") {
       return Array.isArray(args.updates) && args.updates.length > 0 &&
