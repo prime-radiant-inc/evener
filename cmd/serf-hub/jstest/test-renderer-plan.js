@@ -60,6 +60,18 @@ let allPass = true;
       !/\.task-card\s*\{[^}]*\bborder:\s/.test(styleSrc),
       ".task-card must not draw a full box border",
     ],
+    [
+      !/\.task-card-summary-line\s*\{/.test(styleSrc),
+      "task cards must not retain aggregate summary styles",
+    ],
+    [
+      !/\.task-card-toggle\s*\{/.test(styleSrc),
+      "task cards must not retain full-plan disclosure styles",
+    ],
+    [
+      !/\.task-card-fold(?:\s|\.|\{)/.test(styleSrc),
+      "task cards must not retain done-pile fold styles",
+    ],
   ];
   let ok = true;
   for (const [cond, msg] of checks) {
@@ -164,9 +176,6 @@ await scenario("append shows only newly added tasks with progress", [
   if (!fill || fill.style.width !== "43%") return { ok: false, detail: "expected 43% meter fill, got " + (fill && fill.style.width) };
   if (cardRows(card).length !== 6) return { ok: false, detail: "expected six newly added rows" };
   if (card.textContent.includes(PLAN[0].description)) return { ok: false, detail: "known task must not be repeated" };
-  if (card.querySelector(".task-card-summary-line, .task-card-toggle, .task-card-showall")) {
-    return { ok: false, detail: "aggregate or disclosure UI must be absent" };
-  }
   if (/show all|more/i.test(card.textContent)) return { ok: false, detail: "card must not mention show all or more" };
   return { ok: true };
 });

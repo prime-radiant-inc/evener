@@ -85,7 +85,7 @@ const header3 = w.document.querySelector('[data-row-id="section:archived"]');
 if (!header3 || header3.__probe !== true) throw new Error("section header must keep DOM node identity across re-renders");
 
 // 4. Row menu on an archived project offers Unarchive (not Archive);
-// clicking it POSTs /api/archive with {kind:"project", id:working_dir, archived:false}.
+// clicking it POSTs /api/archive with {kind:"project", id:key, archived:false}.
 const menuBtn = projHeader.querySelector(".sb-menu-btn");
 if (!menuBtn) throw new Error("archived project header must carry a ⋯ menu button");
 menuBtn.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
@@ -101,7 +101,7 @@ unarchiveItem.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
 if (!posts.length) throw new Error("Unarchive must POST /api/archive");
 const last = posts[posts.length - 1];
 if (last.url !== "/api/archive") throw new Error("Unarchive must POST to /api/archive, got " + last.url);
-if (last.body.kind !== "project" || last.body.id !== "/a/arch" || last.body.archived !== false) {
+if (last.body.kind !== "project" || last.body.id !== "apk1" || last.body.archived !== false) {
   throw new Error("Unarchive POST body wrong: " + JSON.stringify(last.body));
 }
 

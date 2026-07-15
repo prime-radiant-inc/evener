@@ -3103,13 +3103,9 @@ details.tool-body[open] > summary::before,
  * log. Task_list changes render as a .task-card, not a system-line. */
 .system-line { margin: var(--space-3) 0; padding: var(--space-2) 0; font-size: var(--text-base); color: var(--text-muted); font-style: italic; line-height: var(--leading-normal); }
 
-/* The living plan card (Design B): ONE card per session, rebuilt on each
-   task_list change and floated to the live frontier — never a fresh card per
-   edit. It reads as a quiet ledger of progress, not speech, so its containment
-   is a single neutral LEFT RAIL (no box — boxes are for needs-you cards; a rail
-   says "status"). It leads with progress + the active task (the one blue mark,
-   breathing via the shared .plan-item grammar); the done pile recedes to a
-   count; the rest folds away. The full list lives in the sidebar. */
+/* One inline card per successful task_list mutation: a progress header followed
+   by changed rows on a neutral left rail. The rail says "status" (no box —
+   boxes are for needs-you cards), while the full plan remains in the sidebar. */
 .task-card {
   margin: var(--space-4) 0 var(--space-4) calc(-1 * var(--gutter));
   max-width: min(720px, 100%);
@@ -3131,8 +3127,7 @@ details.tool-body[open] > summary::before,
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
-/* A thin neutral meter — reference, not a call to action, so the fill is dim
-   (done recedes). The live blue is spent only on the active task. */
+/* A thin neutral meter — reference, not a call to action. */
 .task-card-meter {
   flex: 1;
   max-width: 160px;
@@ -3142,58 +3137,6 @@ details.tool-body[open] > summary::before,
   overflow: hidden;
 }
 .task-card-meter-fill { height: 100%; background: var(--text-dim); }
-/* The frontier row (the active task) and the "all done" line. */
-.task-card-active { margin-top: var(--space-1); }
-.task-card-complete { margin-top: var(--space-1); color: var(--text-muted); }
-/* Collapsed summary: the recede pile + what's left, one quiet dim line. */
-.task-card-summary-line { color: var(--text-dim); font-size: var(--text-xs); }
-/* Expanded body — hidden until the card is opened; then the summary gives way
-   to the grouped buckets. */
-.task-card-body { display: none; flex-direction: column; gap: var(--space-1); margin-top: var(--space-1); }
-.task-card[data-expanded="true"] .task-card-body { display: flex; }
-.task-card[data-expanded="true"] .task-card-summary-line { display: none; }
-.task-card-group {
-  margin-top: var(--space-2);
-  font-size: var(--text-xs);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-}
-/* Done / cancelled piles: folded behind their count even when the card is open,
-   so the settled work stays recessive. */
-.task-card-fold { margin-top: var(--space-2); }
-.task-card-fold-head {
-  background: none;
-  border: 0;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: 24px;
-  font: inherit;
-  font-size: var(--text-xs);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-  cursor: pointer;
-}
-.task-card-fold-head:hover { color: var(--text-muted); }
-.task-card-fold-rows { display: none; flex-direction: column; gap: var(--space-1); margin-top: var(--space-1); }
-.task-card-fold.open .task-card-fold-rows { display: flex; }
-.task-card-toggle {
-  align-self: flex-start;
-  margin-top: var(--space-1);
-  padding: 2px 0;
-  background: transparent;
-  border: none;
-  text-align: left;
-  font-family: var(--font-sans);
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-  cursor: pointer;
-  min-height: 24px;
-}
-.task-card-toggle:hover { color: var(--text); }
 .task-card-note {
   margin-left: calc(14px + var(--space-3));
   font-size: var(--text-xs);

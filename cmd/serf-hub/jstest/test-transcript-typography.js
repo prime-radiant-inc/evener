@@ -100,7 +100,7 @@ pass(/\.assistant-message:hover \.turn-meta,\s*\.assistant-message:focus-within 
 // ── Reduced type scale: transcript text uses lg/base/sm/xs only ───────────
 pass(!/font-family:\s*var\(--font-mono\)/.test(rule(".assistant-message .turn-meta")),
   "durations/tokens chrome is sans (tabular-nums), not mono");
-for (const sized of [".task-list-body .task-type", ".diagnostic-badge", ".diagnostic-detail-pre", ".task-card-fold-head"]) {
+for (const sized of [".task-list-body .task-type", ".diagnostic-badge", ".diagnostic-detail-pre", ".task-card-note"]) {
   pass(!/--text-2xs/.test(rule(sized)),
     sized + " must not use the sub-scale --text-2xs size in the transcript");
 }
