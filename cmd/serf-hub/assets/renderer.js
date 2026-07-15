@@ -52,9 +52,7 @@
   const VALID_TASK_TYPES = new Set(["research", "implement", "verify", "fix"]);
 
   function usableTaskID(id) {
-    if (id == null || id === "" || typeof id === "boolean") return false;
-    const number = Number(id);
-    return Number.isInteger(number) && number > 0;
+    return Number.isInteger(id) && id > 0;
   }
 
   function validTaskMutationEntry(entry, allowStatus) {
@@ -66,8 +64,8 @@
   function validTaskAppendEntry(entry) {
     return entry && typeof entry === "object" && !Array.isArray(entry) &&
       typeof entry.type === "string" && VALID_TASK_TYPES.has(entry.type) &&
-      typeof entry.description === "string" && entry.description.trim() !== "" &&
-      typeof entry.prompt === "string" && entry.prompt.trim() !== "";
+      typeof entry.description === "string" &&
+      typeof entry.prompt === "string";
   }
 
   function validTaskMutationArgs(args) {

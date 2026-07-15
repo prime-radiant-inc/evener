@@ -283,3 +283,51 @@ Result: focused, subscription, and realistic renderer tests passed with exit 0; 
 ### Concerns
 
 The recurring `packed-refs.lock` permission warning is an environment-only commit concern; tests and diff checks passed.
+
+## Re-review fix: exact update ID and append text rules
+
+### Status
+
+DONE
+
+### Changes
+
+- Added a malformed string-ID update regression with card and badge-refresh suppression assertions.
+- Added a successful ID-less append regression using empty string `description` and `prompt`, proving the card renders from authoritative returned state.
+- Changed update ID validation to require an actual positive JavaScript integer (`Number.isInteger(id)`), rejecting numeric strings and other coercible values.
+- Changed append validation to require string `description` and `prompt` while allowing empty strings; append `type` enum validation remains enforced.
+
+### TDD evidence
+
+Red command before the production correction:
+
+```text
+cd cmd/serf-hub/jstest
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
+```
+
+Result: failed because empty-text append was rejected and malformed nested validation expectations exposed the schema mismatch.
+
+Green commands:
+
+```text
+cd cmd/serf-hub/jstest
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-realistic-flow.js
+cd ../..
+git diff --check
+```
+
+Result: focused, subscription, and realistic renderer tests passed with exit 0; `git diff --check` passed.
+
+### Self-review
+
+- Update ID validation is type-strict: only positive integer numbers pass; numeric strings are silent and do not refresh.
+- Append entries remain ID-less and require valid enum type plus string description/prompt, including empty strings.
+- Authoritative returned state supplies the minted append ID and row content.
+- Existing malformed nested silence, refresh suppression, changes-only cards, empty append silence, and metadata-only update behavior remain green.
+
+### Concerns
+
+The recurring `packed-refs.lock` permission warning remains an environment-only commit concern; tests and diff checks passed.
