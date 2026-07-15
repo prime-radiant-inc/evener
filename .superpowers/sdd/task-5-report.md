@@ -11,7 +11,7 @@ DONE
 
 ## Commit
 
-- Pending at report-writing time; the final commit hash is appended below after commit creation.
+- `2debba6bc93f2ba32d185117e142687a83938565` — `fix(hub): recover stalled daemon relays`
 
 ## Changed files
 
@@ -129,7 +129,11 @@ Before commit, production/test scope was exactly the four allowed files:
 
 `config.go` was necessary for a per-server injected retry wait seam, avoiding a shared mutable package global and race-prone test overrides. The only additional file is this required report.
 
-Final clean-worktree evidence and exact committed diff check are appended after the commit.
+Final post-commit checks:
+
+- `git diff --check ac89dc1bc9e595295d9abbb45c2cdcb7d0a29cee..HEAD` — PASS, no output.
+- `git diff --name-only ac89dc1bc9e595295d9abbb45c2cdcb7d0a29cee..HEAD` — exactly the four permitted implementation/test files plus this required report.
+- `git status --short` — clean after the report-amend commit described below.
 
 ## Concerns
 
