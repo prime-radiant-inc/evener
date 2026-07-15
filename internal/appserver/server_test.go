@@ -143,7 +143,7 @@ func TestConnectionEnqueueAfterUnregisterDoesNotPanic(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
 	conn := server.NewConnection("conn-1")
 	server.registerConnection(conn)
-	server.unregisterConnection(conn.ID())
+	server.unregisterConnection(conn)
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -151,6 +151,91 @@ func TestConnectionEnqueueAfterUnregisterDoesNotPanic(t *testing.T) {
 		}
 	}()
 	conn.enqueue(appwire.NotificationMessage("notice", nil))
+}
+
+func TestStaleConnectionTeardownPreservesSameIDReplacement(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	stale := server.NewConnection("conn-shared")
+	replacement := server.NewConnection("conn-shared")
+	replacementCanceled := make(chan struct{})
+	replacement.setCancel(func() { close(replacementCanceled) })
+	server.registerConnection(stale)
+	server.registerConnection(replacement)
+	replacement.Subscribe("th_replacement")
+
+	server.unregisterConnection(stale)
+
+	server.mu.RLock()
+	registered := server.conns[replacement.ID()]
+	server.mu.RUnlock()
+	if registered != replacement {
+		t.Fatal("stale teardown removed same-ID replacement")
+	}
+	if !server.subs.IsSubscribed(replacement.ID(), "th_replacement") {
+		t.Fatal("stale teardown removed replacement subscription")
+	}
+	select {
+	case <-replacementCanceled:
+		t.Fatal("stale teardown canceled same-ID replacement")
+	default:
+	}
+	if !replacement.enqueue(appwire.NotificationMessage("notice", nil)) {
+		t.Fatal("stale teardown closed same-ID replacement send channel")
+	}
+}
+
+func TestStaleBroadcastFailurePreservesSameIDReplacement(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	stale := server.NewConnection("conn-shared")
+	replacement := server.NewConnection("conn-shared")
+	replacementCanceled := make(chan struct{})
+	replacement.setCancel(func() { close(replacementCanceled) })
+	server.registerConnection(stale)
+	stale.Subscribe("th_broadcast")
+
+	broadcastSelected := make(chan struct{})
+	releaseBroadcast := make(chan struct{})
+	server.afterBroadcastConnectionLookup = func(got *Connection) {
+		if got == stale {
+			close(broadcastSelected)
+			<-releaseBroadcast
+		}
+	}
+	broadcastDone := make(chan struct{})
+	go func() {
+		server.Broadcast("th_broadcast", "notice", nil)
+		close(broadcastDone)
+	}()
+	select {
+	case <-broadcastSelected:
+	case <-time.After(time.Second):
+		t.Fatal("broadcast did not retain stale concrete connection")
+	}
+
+	server.registerConnection(replacement)
+	replacement.Subscribe("th_broadcast")
+	stale.closeSend()
+	close(releaseBroadcast)
+	select {
+	case <-broadcastDone:
+	case <-time.After(time.Second):
+		t.Fatal("stale broadcast failure did not return")
+	}
+
+	server.mu.RLock()
+	registered := server.conns[replacement.ID()]
+	server.mu.RUnlock()
+	if registered != replacement {
+		t.Fatal("stale broadcast failure removed same-ID replacement")
+	}
+	if !server.subs.IsSubscribed(replacement.ID(), "th_broadcast") {
+		t.Fatal("stale broadcast failure removed replacement subscription")
+	}
+	select {
+	case <-replacementCanceled:
+		t.Fatal("stale broadcast failure canceled same-ID replacement")
+	default:
+	}
 }
 
 func TestServer_BroadcastAll(t *testing.T) {
@@ -247,7 +332,7 @@ func TestContextSubscriptionRegistrationRejectsRemovedConnection(t *testing.T) {
 			conn := server.NewConnection("conn-removed")
 			server.registerConnection(conn)
 			ctx := context.WithValue(context.Background(), connectionContextKey{}, conn)
-			server.unregisterConnection(conn.ID())
+			server.unregisterConnection(conn)
 
 			if tc.register(ctx, "th_after_remove") {
 				t.Fatal("registration succeeded for removed connection")
@@ -297,7 +382,7 @@ func TestContextSubscriptionRegistrationSerializesWithConnectionTeardown(t *test
 
 			teardownDone := make(chan struct{})
 			go func() {
-				server.unregisterConnection(conn.ID())
+				server.unregisterConnection(conn)
 				close(teardownDone)
 			}()
 			select {

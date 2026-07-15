@@ -237,6 +237,20 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			cancelRelay()
 			return err
 		}
+		if cfg.RelayHooks.BeforeLaunchCommit != nil {
+			cfg.RelayHooks.BeforeLaunchCommit(threadID)
+		}
+		relayMu.Lock()
+		active = relayedThreads[relayKey] == relayHandle && relayCtx.Err() == nil
+		err = relayHandle.err
+		if !active {
+			relayMu.Unlock()
+			if err == nil {
+				err = context.Canceled
+			}
+			cancelRelay()
+			return err
+		}
 		if cfg.RelayHooks.BeforeSupervisor != nil {
 			cfg.RelayHooks.BeforeSupervisor(threadID)
 		}
@@ -381,6 +395,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				}
 			}
 		}()
+		relayMu.Unlock()
 		return nil
 	}
 	startTurn := func(ctx context.Context, source appsource.Source, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {

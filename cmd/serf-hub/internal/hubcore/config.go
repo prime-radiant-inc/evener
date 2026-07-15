@@ -27,6 +27,7 @@ type RelayLifecycleHooks struct {
 	BeforeExistingRegistration func(threadID string)
 	RegisterSubscription       func(context.Context, string, bool) bool
 	BeforeSupervisor           func(threadID string)
+	BeforeLaunchCommit         func(threadID string)
 }
 
 // WebConfig is everything the web server needs.

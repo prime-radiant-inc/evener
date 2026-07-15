@@ -22,6 +22,7 @@ type Server struct {
 	conns                          map[string]*Connection
 	afterUnregisterDelete          func()
 	beforeSubscriptionRegistration func()
+	afterBroadcastConnectionLookup func(*Connection)
 }
 
 func NewServer(cfg ServerConfig) *Server {
@@ -49,18 +50,22 @@ func (s *Server) registerConnection(conn *Connection) {
 	s.conns[conn.id] = conn
 }
 
-func (s *Server) unregisterConnection(id string) {
-	s.mu.Lock()
-	conn := s.conns[id]
-	delete(s.conns, id)
-	if conn != nil {
-		conn.cancelContext()
-		conn.closeSend()
+func (s *Server) unregisterConnection(conn *Connection) {
+	if conn == nil {
+		return
 	}
+	s.mu.Lock()
+	if s.conns[conn.id] != conn {
+		s.mu.Unlock()
+		return
+	}
+	delete(s.conns, conn.id)
+	conn.cancelContext()
+	conn.closeSend()
 	if s.afterUnregisterDelete != nil {
 		s.afterUnregisterDelete()
 	}
-	s.subs.RemoveConnection(id)
+	s.subs.RemoveConnection(conn.id)
 	s.mu.Unlock()
 }
 
@@ -71,8 +76,11 @@ func (s *Server) Broadcast(threadID, method string, params any) {
 		conn := s.conns[connID]
 		s.mu.RUnlock()
 		if conn != nil {
+			if s.afterBroadcastConnectionLookup != nil {
+				s.afterBroadcastConnectionLookup(conn)
+			}
 			if !conn.enqueue(msg) {
-				s.unregisterConnection(connID)
+				s.unregisterConnection(conn)
 			}
 		}
 	}
@@ -91,7 +99,7 @@ func (s *Server) BroadcastAll(method string, params any) {
 	s.mu.RUnlock()
 	for _, conn := range conns {
 		if !conn.enqueue(msg) {
-			s.unregisterConnection(conn.id)
+			s.unregisterConnection(conn)
 		}
 	}
 }

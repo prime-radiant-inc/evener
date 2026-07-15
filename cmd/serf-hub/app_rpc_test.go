@@ -2705,6 +2705,99 @@ func TestHubRelayStopImmediatelyAfterReadinessAllowsFreshStart(t *testing.T) {
 	}
 }
 
+func TestHubRelayStopBeforeLaunchCommitPreventsSupervisorAndAllowsFreshStart(t *testing.T) {
+	const threadID = "th_stop_launch_commit"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	source := &scriptedRelaySource{
+		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		}},
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	launchBoundary := make(chan struct{})
+	releaseLaunch := make(chan struct{})
+	launches := make(chan struct{}, 2)
+	blockFirst := make(chan struct{}, 1)
+	blockFirst <- struct{}{}
+	cfg := hubcore.WebConfig{}
+	cfg.RelayHooks.RegisterSubscription = func(context.Context, string, bool) bool { return true }
+	cfg.RelayHooks.BeforeLaunchCommit = func(gotThreadID string) {
+		if gotThreadID != threadID {
+			return
+		}
+		select {
+		case <-blockFirst:
+			close(launchBoundary)
+			<-releaseLaunch
+		default:
+		}
+	}
+	cfg.RelayHooks.BeforeSupervisor = func(gotThreadID string) {
+		if gotThreadID == threadID {
+			launches <- struct{}{}
+		}
+	}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
+	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+
+	oldResult := make(chan error, 1)
+	go func() {
+		oldResult <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	oldNotifications := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: oldNotifications}
+	select {
+	case <-launchBoundary:
+	case <-time.After(time.Second):
+		t.Fatal("old initializer did not reach post-validation pre-launch boundary")
+	}
+
+	relays.stopRelay("codex:" + threadID)
+	freshResult := make(chan error, 1)
+	go func() {
+		freshResult <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	freshNotifications := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: freshNotifications}
+	select {
+	case err := <-freshResult:
+		if err != nil {
+			t.Fatalf("fresh relay start: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fresh relay did not become ready")
+	}
+	select {
+	case <-launches:
+	case <-time.After(time.Second):
+		t.Fatal("fresh relay supervisor did not launch")
+	}
+
+	close(releaseLaunch)
+	select {
+	case err := <-oldResult:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("old initializer error=%v, want shared context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("old initializer did not return after losing launch commitment")
+	}
+	select {
+	case <-launches:
+		t.Fatal("old initializer launched supervisor after stop won")
+	default:
+	}
+
+	freshNotifications <- relayDeltaNotification(t, threadID, "fresh survives old launch")
+}
+
 func TestHubRelayInitialRegistrationFailureCancelsAndAllowsFreshStart(t *testing.T) {
 	const threadID = "th_registration_initial"
 	source := &relayBroadcastSource{

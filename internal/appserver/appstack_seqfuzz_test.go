@@ -77,7 +77,7 @@ func exerciseAppserverStack(t rapidTB) {
 
 	cancelCtx, cancel := context.WithCancel(context.Background())
 	c.setCancel(cancel)
-	s.unregisterConnection(c.ID())
+	s.unregisterConnection(c)
 	<-cancelCtx.Done()
 	c.cancelContext()
 	_ = c.enqueue(appwire.Message{})
@@ -85,7 +85,7 @@ func exerciseAppserverStack(t rapidTB) {
 		t.Fatalf("closed enqueue response = %v", err)
 	}
 	c.closeSend()
-	s.unregisterConnection("missing")
+	s.unregisterConnection(nil)
 
 	wait := s.NewConnection("wait")
 	for i := 0; i < cap(wait.send); i++ {
