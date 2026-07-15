@@ -233,3 +233,53 @@ Result: all renderer tests passed with exit 0 and `git diff --check` passed.
 ### Concerns
 
 The commit operation may again report the pre-existing environment `packed-refs.lock` permission warning; no test or diff-check failure occurred.
+
+## Re-review fix: enforce authoritative append fields and explicit update status
+
+### Status
+
+DONE
+
+### Changes
+
+- Confirmed against `agent/internal/tool/definitions.go:535-556` that append entries require non-empty valid `type`, string `description`, and string `prompt`; IDs remain server-assigned.
+- Added malformed append regressions for missing, wrong-type, invalid, and empty `type`, `description`, and `prompt` values.
+- Added explicit `status: null` and `status: undefined` update regressions; omitted status remains valid for metadata-only header cards.
+- Renderer validation now accepts only append entries with type `research|implement|verify|fix` and non-empty string description/prompt.
+- Update validation distinguishes omitted `status` from an own-property status and rejects explicit null/undefined/invalid values.
+
+### TDD evidence
+
+Red command before the validator change:
+
+```text
+cd cmd/serf-hub/jstest
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
+```
+
+Result: failed at `malformed nested task mutations render and refresh no card`; malformed append entries produced cards.
+
+Green commands:
+
+```text
+cd cmd/serf-hub/jstest
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-realistic-flow.js
+cd ../..
+git diff --check
+```
+
+Result: focused, subscription, and realistic renderer tests passed with exit 0; `git diff --check` passed.
+
+### Self-review
+
+- Append validation requires every entry to be a non-array object with valid allowed type and non-empty string description/prompt.
+- One malformed append entry rejects the entire mutation before cache seeding, card rendering, or badge refresh.
+- IDs remain optional for append and authoritative state/prior IDs continue to identify minted tasks.
+- Update IDs remain required; omitted status is allowed for metadata-only updates, while explicit null/undefined/invalid status is rejected.
+- Refresh suppression assertions cover all malformed cases.
+
+### Concerns
+
+The recurring `packed-refs.lock` permission warning is an environment-only commit concern; tests and diff checks passed.

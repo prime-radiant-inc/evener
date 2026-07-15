@@ -49,6 +49,7 @@
     window.SerfRendererInternal;
 
   const VALID_TASK_STATUSES = new Set(["open", "in_progress", "done", "cancelled"]);
+  const VALID_TASK_TYPES = new Set(["research", "implement", "verify", "fix"]);
 
   function usableTaskID(id) {
     if (id == null || id === "" || typeof id === "boolean") return false;
@@ -58,15 +59,22 @@
 
   function validTaskMutationEntry(entry, allowStatus) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry) || !usableTaskID(entry.id)) return false;
-    return !allowStatus || entry.status == null || VALID_TASK_STATUSES.has(entry.status);
+    return !allowStatus || !Object.prototype.hasOwnProperty.call(entry, "status") ||
+      VALID_TASK_STATUSES.has(entry.status);
+  }
+
+  function validTaskAppendEntry(entry) {
+    return entry && typeof entry === "object" && !Array.isArray(entry) &&
+      typeof entry.type === "string" && VALID_TASK_TYPES.has(entry.type) &&
+      typeof entry.description === "string" && entry.description.trim() !== "" &&
+      typeof entry.prompt === "string" && entry.prompt.trim() !== "";
   }
 
   function validTaskMutationArgs(args) {
     if (!args || typeof args !== "object" || Array.isArray(args)) return false;
     if (args.action === "append") {
       return Array.isArray(args.tasks) && args.tasks.length > 0 &&
-        args.tasks.every(task => task && typeof task === "object" && !Array.isArray(task) &&
-          Object.keys(task).length > 0);
+        args.tasks.every(validTaskAppendEntry);
     }
     if (args.action === "update") {
       return Array.isArray(args.updates) && args.updates.length > 0 &&

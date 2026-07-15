@@ -184,12 +184,23 @@ await scenario("fresh append renders all seven tasks", [
 await scenario("malformed nested task mutations render and refresh no card", [
   sessionStart(),
   ...rawTaskCall("bad-json", "{not valid json", PLAN),
+  ...rawTaskCall("bad-append-missing-type", JSON.stringify({ action: "append", tasks: [{ description: "desc", prompt: "prompt" }] }), PLAN),
+  ...rawTaskCall("bad-append-type-number", JSON.stringify({ action: "append", tasks: [{ type: 1, description: "desc", prompt: "prompt" }] }), PLAN),
+  ...rawTaskCall("bad-append-type-invalid", JSON.stringify({ action: "append", tasks: [{ type: "plan", description: "desc", prompt: "prompt" }] }), PLAN),
+  ...rawTaskCall("bad-append-type-empty", JSON.stringify({ action: "append", tasks: [{ type: "", description: "desc", prompt: "prompt" }] }), PLAN),
+  ...rawTaskCall("bad-append-description-missing", JSON.stringify({ action: "append", tasks: [{ type: "implement", prompt: "prompt" }] }), PLAN),
+  ...rawTaskCall("bad-append-description-number", JSON.stringify({ action: "append", tasks: [{ type: "implement", description: 1, prompt: "prompt" }] }), PLAN),
+  ...rawTaskCall("bad-append-description-empty", JSON.stringify({ action: "append", tasks: [{ type: "implement", description: "", prompt: "prompt" }] }), PLAN),
+  ...rawTaskCall("bad-append-prompt-missing", JSON.stringify({ action: "append", tasks: [{ type: "implement", description: "desc" }] }), PLAN),
+  ...rawTaskCall("bad-append-prompt-number", JSON.stringify({ action: "append", tasks: [{ type: "implement", description: "desc", prompt: 1 }] }), PLAN),
+  ...rawTaskCall("bad-append-prompt-empty", JSON.stringify({ action: "append", tasks: [{ type: "implement", description: "desc", prompt: "" }] }), PLAN),
   ...rawTaskCall("bad-append-null", JSON.stringify({ action: "append", tasks: [APPEND_INPUTS[0], null] }), PLAN),
   ...rawTaskCall("bad-append-primitive", JSON.stringify({ action: "append", tasks: [APPEND_INPUTS[0], "bad"] }), PLAN),
   ...rawTaskCall("bad-append-empty", JSON.stringify({ action: "append", tasks: [APPEND_INPUTS[0], {}] }), PLAN),
   ...rawTaskCall("bad-update-null", JSON.stringify({ action: "update", updates: [{ id: 4 }, null] }), PLAN),
   ...rawTaskCall("bad-update-primitive", JSON.stringify({ action: "update", updates: [{ id: 4 }, "bad"] }), PLAN),
   ...rawTaskCall("bad-update-id", JSON.stringify({ action: "update", updates: [{ id: 4 }, { status: "done" }] }), PLAN),
+  ...rawTaskCall("bad-update-null-status", JSON.stringify({ action: "update", updates: [{ id: 4, status: null }] }), PLAN),
   ...rawTaskCall("bad-update-status", JSON.stringify({ action: "update", updates: [{ id: 4, status: "paused" }] }), PLAN),
   ...rawTaskCall("unknown-action", JSON.stringify({ action: "replace", tasks: PLAN }), PLAN),
   ...rawTaskCall("bad-append", JSON.stringify({ action: "append", tasks: {} }), PLAN),
@@ -197,6 +208,12 @@ await scenario("malformed nested task mutations render and refresh no card", [
 ], ({ conv, window }) => {
   if (conv.querySelector(".task-card")) return { ok: false, detail: "malformed successful mutations must not render cards" };
   if (window.__taskFetches !== 1) return { ok: false, detail: "malformed mutations must not refresh the task badge; fetches: " + window.__taskFetches };
+  window.SerfRenderer.appendTaskListSystemLine(
+    { action: "update", updates: [{ id: 4, status: undefined }] },
+    PLAN,
+    new Set(),
+  );
+  if (conv.querySelector(".task-card")) return { ok: false, detail: "explicit undefined status must not render a card" };
   return { ok: true };
 });
 
@@ -297,7 +314,7 @@ await scenario("consecutive mutations create cards for their own changes", [
 
 await scenario("degraded replay renders explicit changes without inventing auto-activation", [
   sessionStart(),
-  ...taskCall("t1", { action: "append", tasks: PLAN }, PLAN),
+  ...taskCall("t1", { action: "append", tasks: APPEND_INPUTS }, PLAN),
   ...taskCall("t2", {
     action: "update",
     updates: [{ id: 4, status: "done", notes: "shipped it" }],
