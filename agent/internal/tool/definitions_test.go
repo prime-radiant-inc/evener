@@ -273,9 +273,14 @@ func TestDefDelegateHasSandboxParams(t *testing.T) {
 	if typ, _ := sn["type"].(string); typ != "boolean" {
 		t.Errorf("sandbox_net type = %q, want boolean", sn["type"])
 	}
-	// Pin the load-bearing sentences (matching the sandbox param's pinning strength):
-	// the inherit-on-omit behavior and the network no-escalation floor.
+	// Pin the load-bearing semantics (matching the sandbox param's pinning strength):
+	// network-off consequences, inherit-on-omit behavior, and the no-escalation floor.
 	snDesc, _ := sn["description"].(string)
+	for _, want := range []string{"disables all networking", "local network server"} {
+		if !strings.Contains(snDesc, want) {
+			t.Errorf("sandbox_net must warn that network-off can break local-server tests (missing %q), got %q", want, snDesc)
+		}
+	}
 	if !strings.Contains(snDesc, "Omit to inherit") {
 		t.Errorf("sandbox_net must document inherit-on-omit with the exact contract phrase, got %q", snDesc)
 	}
