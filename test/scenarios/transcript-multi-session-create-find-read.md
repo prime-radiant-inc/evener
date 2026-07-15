@@ -26,8 +26,8 @@ cross-session find/read seam working end to end.
 ## Bucket-sharing precondition (the load-bearing setup)
 
 Sessions are stored in a per-project **bucket** under
-`~/.local/state/serf/projects/<bucketHash>/sessions/`, where
-`<bucketHash>` is derived from the working dir / git origin. **Two serf
+`~/.local/state/serf/projects/<project-id>/sessions/`, where
+`<project-id>` is the readable canonical project ID. **Two serf
 runs invoked with the same `--dir` land in the same bucket.** That shared
 bucket is the entire reason B's `current_project` search can see A.
 This scenario makes that explicit: A and B use one `$proj`, and we assert
@@ -53,13 +53,13 @@ both transcripts live under the same bucket before B searches.
    ```
 
 3. **Confirm the bucket is shared** before B runs. Both A's transcript
-   and (after step 4) B's must sit under the same bucketHash. Capture the
+   and (after step 4) B's must sit under the same project ID. Capture the
    bucket that now contains A's transcript:
    ```bash
    bucket=$(find ~/.local/state/serf/projects -name "*.transcript.jsonl" \
      -newermt "@$(( $(date +%s) - 600 ))" -path "*/sessions/*" \
      -exec grep -l "$marker" {} \; 2>/dev/null | sed -E 's#.*/projects/([^/]+)/sessions/.*#\1#' | sort -u)
-   echo "A is in bucket: $bucket"   # exactly one bucketHash expected
+   echo "A is in bucket: $bucket"   # exactly one project ID expected
    ```
 
 4. **Session B — discover and reconstruct A.** B is given the search
@@ -79,7 +79,7 @@ both transcripts live under the same bucket before B searches.
 
 - After step 2: `$proj/beacon.txt` contains the marker line and
   `summarize.py` prints the uppercased codename.
-- After step 3: exactly one `bucketHash` contains A's transcript.
+- After step 3: exactly one `project-id` contains A's transcript.
 - After step 4, B's report includes:
   - A `transcript_ref` it obtained from `find_session_transcripts`
     (a `local:<id>`), explicitly NOT supplied in B's prompt — the
@@ -114,7 +114,7 @@ harmless; delete its `sessions/` entries for a hermetic rerun.
 
 - **Same `--dir` is the whole trick.** If you let either run default to a
   different cwd, or `git init` inside `$proj` between runs, the bucket
-  hash changes and B's `current_project` search will not see A. Keep both
+  project ID changes and B's `current_project` search will not see A. Keep both
   runs pointed at the exact same `$proj` with no git origin introduced.
 - B's `find` may surface A via a metadata match (the marker is in A's
   prompt/title) OR via the content scan (the marker is in the files A
@@ -128,4 +128,4 @@ harmless; delete its `sessions/` entries for a hermetic rerun.
   starts) so A's transcript is flushed to disk before B searches.
 - For the cross-*project* (different directory) variant of discovery, see
   `transcript-find-scope-all-projects.md`, which exercises
-  `scope:"all_projects"` and the `proj:<bucketHash>:<id>` ref form.
+  `scope:"all_projects"` and the `proj:<project-id>:<id>` ref form.

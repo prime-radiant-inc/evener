@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/envvars"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/internal/plugins"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
@@ -123,12 +124,17 @@ func run(ctx context.Context, cfg runConfig) error {
 
 	// Compute runtime state directory.
 	// Priority: --state-dir flag > SERF_STATE_DIR env > XDG-computed default.
+	var project identifier.Project
 	stateDir := cfg.stateDir
 	if stateDir == "" {
 		stateDir = envvars.SERFStateDir.Getenv()
 	}
 	if stateDir == "" {
-		stateDir = cmdutil.DefaultProjectStateDir(cfg.workDir)
+		var err error
+		project, stateDir, err = cmdutil.DefaultProjectStateDir(cfg.workDir)
+		if err != nil {
+			return fmt.Errorf("resolve project state: %w", err)
+		}
 	}
 
 	// --list-sessions: print and exit.
@@ -204,6 +210,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		ShareTasksWithChildren:      cfg.shareTaskStore,
 		ResultToolName:              cfg.resultToolName,
 		StateDir:                    stateDir,
+		Project:                     project,
 		SystemPromptFile:            cfg.systemPrompt,
 		SystemPromptAppend:          cfg.systemPromptAppend,
 		NoProjectPrompts:            cfg.noProjectPrompts,
@@ -241,6 +248,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	if meta != nil {
 		sess, err = runRestoreSession(client, profile, env, *meta, agent.RestoreSessionConfig{
 			StateDir:                    stateDir,
+			Project:                     project,
 			ResolveProfile:              baseSessionCfg.ResolveProfile,
 			OpenAIResponsesContinuation: openAIResponsesContinuation,
 		})
@@ -427,6 +435,9 @@ func listSessions(cfg runConfig, stateDir string) error {
 		return nil
 	}
 	for _, m := range list {
+		if identifier.ValidateSessionID(m.ID) != nil {
+			continue
+		}
 		branch := m.EnvInfo.GitBranch
 		if branch == "" {
 			branch = "-"

@@ -78,7 +78,7 @@ func jdaf100CreateLaunchRollback(t *testing.T) {
 	if !errors.Is(result.Err, want) {
 		t.Fatalf("create error = %v, want %v", result.Err, want)
 	}
-	if _, err := os.Stat(rig.lanePath(result.DelegateID)); !os.IsNotExist(err) {
+	if _, err := os.Stat(rig.lanePath(t, result.DelegateID)); !os.IsNotExist(err) {
 		t.Fatalf("lane stat after launch rollback = %v, want not exist", err)
 	}
 }
@@ -106,10 +106,10 @@ func jdaf100CreateAttachRollback(t *testing.T) {
 	if result.DelegateID == "" {
 		t.Fatal("failed create did not report delegate id")
 	}
-	if _, err := os.Stat(rig.lanePath(result.DelegateID)); !os.IsNotExist(err) {
+	if _, err := os.Stat(rig.lanePath(t, result.DelegateID)); !os.IsNotExist(err) {
 		t.Fatalf("lane stat after rollback = %v, want not exist", err)
 	}
-	if _, err := worktree.ReadSidecar(rig.metaDir(), result.DelegateID); err == nil {
+	if _, err := worktree.ReadSidecar(rig.metaDir(t), result.DelegateID); err == nil {
 		t.Fatal("delegate sidecar survived attach rollback")
 	}
 }

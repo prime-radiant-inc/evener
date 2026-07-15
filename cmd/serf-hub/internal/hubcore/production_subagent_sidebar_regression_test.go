@@ -1,11 +1,14 @@
 package hubcore
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -85,12 +88,24 @@ func TestBuildTree_AttachesCrossEffectiveDirectorySubagentToParentProject(t *tes
 
 func TestBuildProjectTreeAt_LazyLookupKeepsCrossDirectorySubagent(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
-	metas := []schema.SessionMeta{
-		{ID: "parent", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-		{ID: "isolated-child", ParentSessionID: "parent", IsSubagent: true, UpdatedAt: now,
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/worktrees/isolated-child"}},
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "projects", "serf")
+	isolationDir := filepath.Join(root, "worktrees", "isolated-child")
+	for _, dir := range []string{projectDir, isolationDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
-	project, ok := BuildProjectTreeAt(metas, nil, nil, now, "serf")
+	projectID, err := identifier.ProjectID(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metas := []schema.SessionMeta{
+		{ID: "parent", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: projectDir}},
+		{ID: "isolated-child", ParentSessionID: "parent", IsSubagent: true, UpdatedAt: now,
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: isolationDir}},
+	}
+	project, ok := BuildProjectTreeAt(metas, nil, nil, now, projectID)
 	if !ok || len(project.Current) != 1 || len(project.Current[0].Children) != 1 || project.Current[0].Children[0].ID != "isolated-child" {
 		t.Fatalf("lazy project = %#v, found=%v; want parent and cross-directory child", project, ok)
 	}

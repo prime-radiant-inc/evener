@@ -20,8 +20,10 @@ const canonicalRecheckRequired = true
 // normalization — defeating case/normalization-insensitive masking bypasses.
 func canonicalPathOfFd(fd int) (string, error) {
 	var buf [unix.PathMax]byte
-	if _, _, errno := unix.Syscall(unix.SYS_FCNTL, uintptr(fd), uintptr(unix.F_GETPATH), uintptr(unsafe.Pointer(&buf[0]))); errno != 0 {
-		return "", errno
+	// x/sys does not expose an F_GETPATH-specific wrapper, but its supported
+	// FcntlInt wrapper accepts the Darwin fcntl pointer argument on arm64.
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETPATH, int(uintptr(unsafe.Pointer(&buf[0])))); err != nil {
+		return "", err
 	}
 	n := 0
 	for n < len(buf) && buf[n] != 0 {
@@ -49,7 +51,7 @@ func openAbsNoSymlinks(abs string, flags int, mode uint32) (int, error) {
 	if err != nil {
 		return -1, err
 	}
-	defer unix.Close(rootFd)
+	defer func() { _ = unix.Close(rootFd) }()
 	// abs is cleaned and absolute; its components are the path minus the leading "/".
 	return walkComponents(rootFd, relComponents(abs[1:]), flags, mode)
 }

@@ -3,12 +3,74 @@ package agent
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/internal/worktree"
+	"primeradiant.com/serf/identifier"
 )
+
+func resolvedProjectID(t *testing.T, env execenv.ExecutionEnvironment, path string) string {
+	t.Helper()
+	project, err := identifier.ResolveProjectWith(path, execenv.NewProjectResolver(env))
+	if err != nil {
+		t.Fatalf("resolve project %q: %v", path, err)
+	}
+	return project.ID
+}
+
+// TestWorktreeRootResolutionErrorDoesNotSelectFallbackIdentity ensures a
+// RuntimeDir failure is returned to the worktree caller rather than silently
+// switching storage to <mainRepoRoot>/.serf/worktrees.
+func TestWorktreeRootResolutionErrorDoesNotSelectFallbackIdentity(t *testing.T) {
+	s := newSession(t)
+	missingRoot := filepath.Join(t.TempDir(), "missing-main-checkout")
+
+	got, err := s.worktreeRootFor(s.currentEnv(), "", missingRoot)
+	if err == nil {
+		t.Fatal("worktreeRootFor returned nil error for an unresolvable project")
+	}
+	fallback := filepath.Join(missingRoot, ".serf", "worktrees")
+	if got == fallback {
+		t.Fatalf("worktreeRootFor selected fallback identity %q after resolution error", got)
+	}
+}
+
+func TestRollbackFreshDelegateWorktreeUsesCarriedProjectMetadataDir(t *testing.T) {
+	root := t.TempDir()
+	stateDir := t.TempDir()
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}))
+	project := identifier.Project{ID: "carried-project", CanonicalPath: root}
+	lanePath := filepath.Join(t.TempDir(), "alternate-project", "delegate")
+
+	var gotMetaDir string
+	worktreeSeams.Store(s, worktreeTestSeams{
+		useControlPolicy: func(*execenv.LocalExecutionEnvironment, string) error { return nil },
+		deleteSidecar: func(dir, _ string) error {
+			gotMetaDir = dir
+			return nil
+		},
+	})
+	t.Cleanup(func() {
+		worktreeSeams.Delete(s)
+	})
+	s.cfg.testOnly.worktreeGitRunner = func(context.Context, execenv.ExecutionEnvironment) worktree.GitRunner {
+		return func(...string) (string, error) { return "", nil }
+	}
+
+	s.rollbackFreshDelegateWorktree("delegate", lanePath, project)
+
+	want := filepath.Join(stateDir, "worktrees", project.ID, ".meta")
+	if gotMetaDir != want {
+		t.Fatalf("rollback metadata dir = %q, want carried Project dir %q", gotMetaDir, want)
+	}
+	if gotMetaDir == metaDirForLane(lanePath) {
+		t.Fatalf("rollback metadata dir was derived from lane path: %q", gotMetaDir)
+	}
+}
 
 // TestManageWorktreeToolRegisteredRegistryOnlyNonReadOnly asserts spec §2's
 // registration shape (mirroring session_init_registry_test.go's registry-tool

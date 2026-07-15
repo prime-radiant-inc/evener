@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
 
@@ -216,10 +217,10 @@ func buildSessionRecord(c findCandidate, snips []snippet, currentID string, curr
 	}
 	parentRef := ""
 	if c.meta.ParentSessionID != "" {
-		parentRef = encodeRef(c.bucketHash, c.meta.ParentSessionID)
+		parentRef = encodeRef(c.projectID, c.meta.ParentSessionID)
 	}
 	return sessionRecord{
-		TranscriptRef: encodeRef(c.bucketHash, c.meta.ID),
+		TranscriptRef: encodeRef(c.projectID, c.meta.ID),
 		Kind:          sessionKind(c.meta),
 		Title:         firstLineClamp(schema.SessionDisplayName(c.meta), 120),
 		UpdatedAt:     updatedAt,
@@ -354,6 +355,9 @@ func findBuckets(currentStateDir, scope string) (buckets []string, scopeApplied 
 }
 
 func findBucketsWithEnumerate(currentStateDir, scope string, enumerate func(string) ([]string, error)) (buckets []string, scopeApplied string) {
+	if !validLocalBucketDir(currentStateDir) {
+		return nil, scopeCurrentProject
+	}
 	if scope != scopeAllProjects {
 		return []string{currentStateDir}, scopeCurrentProject
 	}
@@ -371,14 +375,14 @@ func findBucketsWithEnumerate(currentStateDir, scope string, enumerate func(stri
 // findCandidate pairs a session meta with the bucket it lives in, so its ref can
 // be encoded relative to the current bucket and its transcript located.
 type findCandidate struct {
-	meta       schema.SessionMeta
-	bucketDir  string
-	bucketHash string // "" when this is the current bucket (→ local: ref)
+	meta      schema.SessionMeta
+	bucketDir string
+	projectID string // "" when this is the current bucket (→ local: ref)
 }
 
 // collectCandidates lists SessionMetas (cheap, meta-only) over each bucket and
-// pairs each with its bucket. The bucketHash is "" for the bucket that IS the
-// current state dir (so its refs are local:), and the bucket's basename hash for
+// pairs each with its bucket. The projectID is "" for the bucket that IS the
+// current state dir (so its refs are local:), and the bucket's project ID for
 // every sibling (proj: refs). The current bucket is identified by absolute-path
 // equality, not list position, because enumerateBuckets returns buckets in
 // arbitrary glob order.
@@ -386,16 +390,25 @@ func collectCandidates(buckets []string, currentStateDir string) []findCandidate
 	currentAbs, _ := filepath.Abs(currentStateDir)
 	var out []findCandidate
 	for _, bucket := range buckets {
+		if !validLocalBucketDir(bucket) {
+			continue
+		}
 		metas, err := schema.ListSessionMetas(bucket)
 		if err != nil {
 			continue
 		}
-		hash := ""
+		projectID := ""
 		if bucketAbs, _ := filepath.Abs(bucket); bucketAbs != currentAbs {
-			hash = filepath.Base(bucket)
+			projectID = filepath.Base(bucket)
+		}
+		if projectID != "" && identifier.ValidateProjectID(projectID) != nil {
+			continue
 		}
 		for _, m := range metas {
-			out = append(out, findCandidate{meta: m, bucketDir: bucket, bucketHash: hash})
+			if identifier.ValidateSessionID(m.ID) != nil {
+				continue
+			}
+			out = append(out, findCandidate{meta: m, bucketDir: bucket, projectID: projectID})
 		}
 	}
 	return out

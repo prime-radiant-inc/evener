@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/serf/identifier"
 )
 
 type projectDeleteSkip struct {
@@ -42,6 +44,23 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 		writeAPIError(w, http.StatusBadRequest, "key and workingDir are required")
 		return
 	}
+	if body.Key == "no-project" {
+		writeAPIError(w, http.StatusBadRequest, "no-project is not a local project")
+		return
+	}
+	if err := identifier.ValidateProjectID(body.Key); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid project ID: "+err.Error())
+		return
+	}
+	project, err := identifier.ResolveProject(body.WorkingDir)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "resolve project: "+err.Error())
+		return
+	}
+	if project.ID != body.Key {
+		writeAPIError(w, http.StatusBadRequest, "project ID does not match working_dir")
+		return
+	}
 	if s.cfg.Past == nil {
 		writeAPIError(w, http.StatusInternalServerError, "past index not configured")
 		return
@@ -57,15 +76,30 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 			break
 		}
 	}
-	if matched == nil || matched.WorkingDir != body.WorkingDir {
+	if matched == nil || matched.WorkingDir != project.CanonicalPath {
 		writeAPIError(w, http.StatusBadRequest, "key does not match workingDir")
 		return
 	}
 
-	// Resolve the session set from All() (carries StateDir), uncapped.
+	// Resolve every distinct candidate path before deleting anything. This uses
+	// the same canonical identity map as tree building, but fails closed rather
+	// than presenting an unresolvable path in the no-project bucket.
+	all := s.cfg.Past.All()
+	metas := make([]schema.SessionMeta, 0, len(all))
+	for _, e := range all {
+		metas = append(metas, e.Meta)
+	}
+	projects, err := hubcore.ResolveProjectMapStrict(metas, nil)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "resolve project membership: "+err.Error())
+		return
+	}
+
+	// Select the session set from All() (carries StateDir), uncapped.
 	var entries []hubcore.PastEntry
-	for _, e := range s.cfg.Past.All() {
-		if hubcore.EffectiveWorkingDir(e.Meta) == body.WorkingDir {
+	for _, e := range all {
+		workingDir := hubcore.EffectiveWorkingDir(e.Meta)
+		if projects[workingDir].ID == body.Key {
 			entries = append(entries, e)
 		}
 	}
@@ -123,29 +157,13 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 		deleted = append(deleted, e.ID)
 	}
 
-	// Scrub the project-level decision rows: the path row always, and the
-	// legacy basename row only when no other project still uses that basename
-	// (round-3 G3 — otherwise the legacy row re-hides a recreated project).
-	basename := filepath.Base(body.WorkingDir)
-	basenameStillUsed := false
-	for _, e := range s.cfg.Past.All() {
-		wd := hubcore.EffectiveWorkingDir(e.Meta)
-		if wd != body.WorkingDir && filepath.Base(wd) == basename {
-			basenameStillUsed = true
-			break
-		}
-	}
+	// Scrub only the canonical project-level decision rows. Display basenames
+	// are never decision keys.
 	if s.cfg.Archive != nil {
-		_ = s.cfg.Archive.Delete("project", body.WorkingDir)
-		if !basenameStillUsed {
-			_ = s.cfg.Archive.Delete("project", basename)
-		}
+		_ = s.cfg.Archive.Delete("project", project.ID)
 	}
 	if s.cfg.Favorite != nil {
-		_ = s.cfg.Favorite.Delete("project", body.WorkingDir)
-		if !basenameStillUsed {
-			_ = s.cfg.Favorite.Delete("project", basename)
-		}
+		_ = s.cfg.Favorite.Delete("project", project.ID)
 	}
 
 	_ = s.cfg.Past.Rebuild() // also the FTS scrub

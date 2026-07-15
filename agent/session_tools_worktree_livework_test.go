@@ -211,7 +211,7 @@ func TestWorktreeRemove_LiveWorkGuardRefusesLiveDelegateJobRecord(t *testing.T) 
 
 // TestWorktreeRemove_LiveWorkGuardIgnoresUnrelatedWork checks a live shell
 // job rooted in a SIBLING worktree lane (a different worktree under the same
-// projectid), plus a delegate record with no recorded working dir at all,
+// Project.ID), plus a delegate record with no recorded working dir at all,
 // neither block removing the target lane.
 func TestWorktreeRemove_LiveWorkGuardIgnoresUnrelatedWork(t *testing.T) {
 	t.Parallel()

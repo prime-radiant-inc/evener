@@ -8,13 +8,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oklog/ulid/v2"
 	"github.com/spf13/afero"
+	"primeradiant.com/serf/identifier"
 )
 
 // FuzzLoadOrCreateInstallationIDWithFS exercises the installation-ID persistence
 // contract over an in-memory filesystem. A successful first write must be a
-// valid ULID and every later load from the same filesystem must return it.
+// valid compact installation ID and every later load from the same filesystem
+// must return it.
 func FuzzLoadOrCreateInstallationIDWithFS(f *testing.F) {
 	f.Add("default", false, false)
 	f.Add("existing", false, true)
@@ -32,7 +33,7 @@ func FuzzLoadOrCreateInstallationIDWithFS(f *testing.F) {
 		}
 		fs := afero.NewMemMapFs()
 
-		const existingID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+		existingID := identifier.MustNewInstallationID()
 		if preexisting && strings.TrimSpace(stateDir) != "" {
 			if err := fs.MkdirAll(stateDir, 0o700); err != nil {
 				t.Fatalf("seed state directory: %v", err)
@@ -52,8 +53,8 @@ func FuzzLoadOrCreateInstallationIDWithFS(f *testing.F) {
 		if got == "" {
 			t.Fatal("non-empty state directory returned an empty ID")
 		}
-		if _, err := ulid.ParseStrict(got); err != nil {
-			t.Fatalf("installation ID %q is not a ULID: %v", got, err)
+		if err := identifier.ValidateInstallationID(got); err != nil {
+			t.Fatalf("installation ID %q is invalid: %v", got, err)
 		}
 		if preexisting && got != existingID {
 			t.Fatalf("preexisting ID = %q, want %q", got, existingID)
@@ -102,9 +103,10 @@ type installationIDWriteFailFS struct {
 }
 
 func (fs installationIDWriteFailFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
-	if filepath.Base(name) == "installation_id" && flag&os.O_CREATE != 0 {
+	if flag&os.O_CREATE != 0 {
 		if fs.replacement != nil {
-			if err := afero.WriteFile(fs.Fs, name, fs.replacement, perm); err != nil {
+			winner := filepath.Join(filepath.Dir(name), "installation_id")
+			if err := afero.WriteFile(fs.Fs, winner, fs.replacement, perm); err != nil {
 				return nil, err
 			}
 		}

@@ -1,8 +1,6 @@
 package worktree
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"strings"
 	"testing"
 )
@@ -71,101 +69,6 @@ func TestValidateNameNeverPanics(t *testing.T) {
 	inputs := []string{"", "/", "\x00", strings.Repeat("/", 200), "a\x7f"}
 	for _, in := range inputs {
 		_ = ValidateName(in)
-	}
-}
-
-func TestProjectIDDifferentRootsSameBasename(t *testing.T) {
-	a := ProjectID("/home/jesse/git/serf")
-	b := ProjectID("/home/other/work/serf")
-	if a == b {
-		t.Fatalf("ProjectID collided for different roots sharing a basename: %q", a)
-	}
-	if !strings.HasPrefix(a, "serf-") || !strings.HasPrefix(b, "serf-") {
-		t.Fatalf("expected both projectids to keep the shared basename prefix, got %q and %q", a, b)
-	}
-}
-
-func TestProjectIDIsDeterministic(t *testing.T) {
-	root := "/home/jesse/git/prime-radiant/serf"
-	a := ProjectID(root)
-	b := ProjectID(root)
-	if a != b {
-		t.Fatalf("ProjectID(%q) is not deterministic: %q vs %q", root, a, b)
-	}
-}
-
-func TestProjectIDMatchesSpecExample(t *testing.T) {
-	// Spec §6 worked example.
-	got := ProjectID("/home/jesse/git/prime-radiant/serf")
-	sum := sha256.Sum256([]byte("/home/jesse/git/prime-radiant/serf"))
-	want := "serf-" + hex.EncodeToString(sum[:])[:16]
-	if got != want {
-		t.Fatalf("ProjectID = %q, want %q", got, want)
-	}
-}
-
-func TestProjectIDBasenameTruncatedTo48Bytes(t *testing.T) {
-	longBase := strings.Repeat("x", 200)
-	got := ProjectID("/repos/" + longBase)
-	idx := strings.LastIndex(got, "-")
-	if idx == -1 {
-		t.Fatalf("ProjectID(%q) = %q has no hash separator", longBase, got)
-	}
-	basenamePart := got[:idx]
-	if len(basenamePart) != 48 {
-		t.Fatalf("basename part = %q (%d bytes), want 48 bytes", basenamePart, len(basenamePart))
-	}
-	if basenamePart != strings.Repeat("x", 48) {
-		t.Fatalf("basename part = %q, want 48 x's", basenamePart)
-	}
-}
-
-func TestProjectIDUnsafeCharsSanitized(t *testing.T) {
-	got := ProjectID("/repos/my repo!@#$%^&*()+=")
-	idx := strings.LastIndex(got, "-")
-	if idx == -1 {
-		t.Fatalf("ProjectID = %q has no hash separator", got)
-	}
-	basenamePart := got[:idx]
-	const allowed = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-"
-	for _, r := range basenamePart {
-		if !strings.ContainsRune(allowed, r) {
-			t.Fatalf("basename part %q contains disallowed rune %q", basenamePart, r)
-		}
-	}
-}
-
-func TestProjectIDEmptyBasenameFallsBackToRepo(t *testing.T) {
-	// A basename made entirely of leading-trim characters (dots) sanitizes
-	// fine but trims away to nothing.
-	got := ProjectID("/repos/...")
-	if !strings.HasPrefix(got, "repo-") {
-		t.Fatalf("ProjectID(%q) = %q, want repo-<hash> fallback", "/repos/...", got)
-	}
-}
-
-func TestProjectIDFixedLengthHashSuffix(t *testing.T) {
-	roots := []string{
-		"/a",
-		"/home/jesse/git/prime-radiant/serf",
-		"/repos/" + strings.Repeat("y", 300),
-		"/repos/...",
-	}
-	for _, root := range roots {
-		got := ProjectID(root)
-		idx := strings.LastIndex(got, "-")
-		if idx == -1 {
-			t.Fatalf("ProjectID(%q) = %q has no hash separator", root, got)
-		}
-		hashPart := got[idx+1:]
-		if len(hashPart) != 16 {
-			t.Fatalf("ProjectID(%q) hash suffix = %q (%d bytes), want 16", root, hashPart, len(hashPart))
-		}
-		for _, r := range hashPart {
-			if !strings.ContainsRune("0123456789abcdef", r) {
-				t.Fatalf("ProjectID(%q) hash suffix %q contains non-hex rune %q", root, hashPart, r)
-			}
-		}
 	}
 }
 

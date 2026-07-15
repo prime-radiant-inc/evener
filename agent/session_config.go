@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
 
@@ -25,6 +26,10 @@ import (
 // settings, and session persistence. Zero-valued fields are filled in by
 // applyDefaults where defaults apply.
 type SessionConfig struct {
+	// Project is the resolved canonical project identity for this launch. It is
+	// separate from the execution environment's active working directory, which
+	// may be a linked worktree.
+	Project identifier.Project `json:"-"`
 	// MaxToolRoundsPerInput caps how many tool-call rounds a single
 	// ProcessInput may run before the turn stops with a TURN_LIMIT event.
 	// Zero defaults to 200.

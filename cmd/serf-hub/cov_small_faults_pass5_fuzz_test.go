@@ -149,7 +149,7 @@ func FuzzSmallFaultsPass5(f *testing.F) {
 
 		var many strings.Builder
 		for i := 0; i < 25; i++ {
-			many.WriteString(fmt.Sprintf("x%d.png ", i))
+			_, _ = fmt.Fprintf(&many, "x%d.png ", i)
 		}
 		_ = shellOutputImageCandidates(many.String() + ` "q one.jpg" https://x/y.png`)
 		_ = shellOutputImageCandidates("https://example.com/only.png")

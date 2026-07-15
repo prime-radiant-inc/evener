@@ -21,6 +21,7 @@ import (
 type fakeExecEnv struct {
 	workDir string
 	exec    func(ctx context.Context, command string, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error)
+	exists  func(path string) bool
 }
 
 func (f *fakeExecEnv) Initialize() error        { return nil }
@@ -32,8 +33,13 @@ func (f *fakeExecEnv) OSVersion() string        { return "test" }
 func (f *fakeExecEnv) ReadFile(string, *int, *int) (string, error)           { return "", nil }
 func (f *fakeExecEnv) WriteFile(string, string) (string, error)              { return "", nil }
 func (f *fakeExecEnv) EditFile(string, string, string, bool) (string, error) { return "", nil }
-func (f *fakeExecEnv) FileExists(string) bool                                { return false }
-func (f *fakeExecEnv) Glob(string, string) ([]string, error)                 { return nil, nil }
+func (f *fakeExecEnv) FileExists(path string) bool {
+	if f.exists != nil {
+		return f.exists(path)
+	}
+	return false
+}
+func (f *fakeExecEnv) Glob(string, string) ([]string, error) { return nil, nil }
 func (f *fakeExecEnv) Grep(string, string, string, bool, int, string) (string, error) {
 	return "", nil
 }
@@ -389,29 +395,35 @@ func TestResolveMainRepoRoot_CommonDirEmptyStdout(t *testing.T) {
 // gitBinaryMainRoot's primary success arm (candidate resolves without
 // falling to the --show-toplevel submodule recovery): a real ".git"
 // directory at <candidate>/.git, reported as the common dir by a scripted
-// --git-common-dir, with cwd deliberately outside candidate's ancestry so
-// structuralMainRoot's plain directory walk never finds it and defers to
-// the git binary — exactly the "moved worktree" shape gitBinaryMainRoot's
-// doc comment describes.
+// --git-common-dir. The generic environment has no structural local walk, so
+// the fixture still exercises the Git fallback while preserving containment.
 func TestResolveMainRepoRoot_PrimaryGitBinaryCandidateSucceeds(t *testing.T) {
 	candidate := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(candidate, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cwd := t.TempDir() // unrelated to candidate; structural walk finds nothing
+	candidate = evalSym(t, candidate)
+	cwd := filepath.Join(candidate, "worktree")
+	if err := os.Mkdir(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	common := filepath.Join(candidate, ".git")
 
 	env := &fakeExecEnv{
 		workDir: cwd,
+		exists:  func(path string) bool { return path == filepath.Join(candidate, ".git") },
 		exec: func(_ context.Context, command string, _ int, _ string, _ map[string]string) (ExecResult, error) {
 			if strings.Contains(command, "--git-common-dir") {
 				return ExecResult{Stdout: common, ExitCode: 0}, nil
 			}
-			t.Fatalf("unexpected ExecCommand call: %q (want only --git-common-dir)", command)
+			if strings.Contains(command, "--show-toplevel") {
+				return ExecResult{Stdout: candidate, ExitCode: 0}, nil
+			}
+			t.Fatalf("unexpected ExecCommand call: %q", command)
 			return ExecResult{ExitCode: 1}, nil
 		},
 	}
-	want := evalSym(t, candidate)
+	want := candidate
 	if got := ResolveMainRepoRoot(env, cwd); got != want {
 		t.Fatalf("ResolveMainRepoRoot (primary git-binary candidate) = %q, want %q", got, want)
 	}

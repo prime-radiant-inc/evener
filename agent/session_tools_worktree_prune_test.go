@@ -128,7 +128,7 @@ func ageSidecar(t *testing.T, metaDir, name string, age time.Duration) {
 func (r *wtRepo) seedRemovedSidecar(t *testing.T, name, tipAtRemoval string) string {
 	t.Helper()
 	canonicalMain := r.canonicalMain(t)
-	metaDir := r.metaDir(canonicalMain)
+	metaDir := r.metaDir(t, canonicalMain)
 	if err := os.MkdirAll(metaDir, 0o755); err != nil {
 		t.Fatalf("mkdir metaDir: %v", err)
 	}
@@ -369,10 +369,10 @@ func TestWorktreeList_PrefixCollisionFiltering(t *testing.T) {
 	r.addManagedWorktreeFixture(t, "real-lane")
 
 	canonicalMain := r.canonicalMain(t)
-	realProjectDir := filepath.Join(r.stateDir, "worktrees", worktree.ProjectID(canonicalMain))
+	realProjectDir := filepath.Join(r.stateDir, "worktrees", resolvedProjectID(t, r.s.currentEnv(), canonicalMain))
 	// A sibling directory whose name has realProjectDir's basename as a
 	// literal STRING PREFIX (spec §5 list step 2: "not bare HasPrefix, which
-	// collides when one projectid prefixes another").
+	// collides when one Project.ID prefixes another").
 	collidingProjectDir := realProjectDir + "-COLLIDE"
 	collidingPath := filepath.Join(collidingProjectDir, "intruder")
 	if err := os.MkdirAll(filepath.Dir(collidingPath), 0o755); err != nil {
@@ -533,7 +533,7 @@ func TestWorktreePrune_Sweep2_RevParseVerifyFails(t *testing.T) {
 	// sidecar with no matching registered worktree (sweep 2's own target
 	// shape) while the branch itself still exists.
 	wtGit(t, r.mainRoot, "worktree", "remove", "--", path)
-	ageSidecar(t, r.metaDir(r.canonicalMain(t)), "lane", worktree.ReconcileGrace+time.Minute)
+	ageSidecar(t, r.metaDir(t, r.canonicalMain(t)), "lane", worktree.ReconcileGrace+time.Minute)
 
 	gitFailOnArgsRepoShim(t, r.mainRoot, "rev-parse", "--verify", "refs/heads/lane")
 
@@ -561,7 +561,7 @@ func TestWorktreePrune_Sweep2_DeleteStaleSidecarFailsOnPermissionDenied(t *testi
 	path := r.addManagedWorktreeFixture(t, "lane")
 	wtGit(t, r.mainRoot, "worktree", "remove", "--", path)
 	wtGit(t, r.mainRoot, "branch", "-D", "lane")
-	metaDir := r.metaDir(r.canonicalMain(t))
+	metaDir := r.metaDir(t, r.canonicalMain(t))
 	ageSidecar(t, metaDir, "lane", worktree.ReconcileGrace+time.Minute)
 	chmodReadOnly(t, metaDir)
 
@@ -611,7 +611,7 @@ func TestWorktreePrune_Sweep1_RemovesDisposableMatrix(t *testing.T) {
 			t.Parallel()
 			r := newWorktreeRepo(t)
 			canonicalMain := r.canonicalMain(t)
-			metaDir := r.metaDir(canonicalMain)
+			metaDir := r.metaDir(t, canonicalMain)
 
 			path := r.addManagedWorktreeFixture(t, tc.lane)
 			if tc.configure != nil {
@@ -687,7 +687,7 @@ func TestWorktreePrune_Sweep1_SkipsProtectedMatrix(t *testing.T) {
 			reason: "sidecar-less",
 			manualCreate: func(t *testing.T, r *wtRepo) string {
 				canonicalMain := r.canonicalMain(t)
-				path := r.managedPath(canonicalMain, "unmanaged-lane")
+				path := r.managedPath(t, canonicalMain, "unmanaged-lane")
 				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 					t.Fatalf("mkdir unmanaged parent: %v", err)
 				}
@@ -817,7 +817,7 @@ func TestWorktreePrune_Sweep2_StaleSidecarDeletedPostGrace(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	canonicalMain := r.canonicalMain(t)
-	metaDir := r.metaDir(canonicalMain)
+	metaDir := r.metaDir(t, canonicalMain)
 	if err := os.MkdirAll(metaDir, 0o755); err != nil {
 		t.Fatalf("mkdir metaDir: %v", err)
 	}
@@ -852,7 +852,7 @@ func TestWorktreePrune_Sweep2_FreshSidecarSurvivesGrace(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	canonicalMain := r.canonicalMain(t)
-	metaDir := r.metaDir(canonicalMain)
+	metaDir := r.metaDir(t, canonicalMain)
 	if err := os.MkdirAll(metaDir, 0o755); err != nil {
 		t.Fatalf("mkdir metaDir: %v", err)
 	}

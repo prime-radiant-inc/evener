@@ -15,10 +15,15 @@ import (
 	"primeradiant.com/serf/rendezvous"
 )
 
+const (
+	renameSessionID     = "02wMz5Txv1C3Hut0M8GCeB"
+	renameRaceSessionID = "02wMz5Txv2enqVTitaig6F"
+)
+
 func TestRenameEndedSessionEditsMetaAndRefreshesIndex(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "p1")
-	m := schema.SessionMeta{ID: "01A", Name: "old", UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}
+	stateDir := filepath.Join(root, "projects", "project-rename-0123456789")
+	m := schema.SessionMeta{ID: renameSessionID, Name: "old", UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}
 	if err := schema.SaveSessionMeta(stateDir, m); err != nil {
 		t.Fatal(err)
 	}
@@ -26,19 +31,19 @@ func TestRenameEndedSessionEditsMetaAndRefreshesIndex(t *testing.T) {
 	_ = past.Rebuild()
 	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:01A/rename", strings.NewReader(`{"name":"new title"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:"+renameSessionID+"/rename", strings.NewReader(`{"name":"new title"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	got, _ := past.Find("01A")
+	got, _ := past.Find(renameSessionID)
 	if got.Meta.Name != "new title" || got.Meta.NameSource != "user" {
 		t.Fatalf("ended rename must edit meta + refresh index, got %+v", got.Meta)
 	}
 	// The persisted file must also reflect the new name.
-	on, _ := schema.LoadSessionMeta(stateDir, "01A")
+	on, _ := schema.LoadSessionMeta(stateDir, renameSessionID)
 	if on.Name != "new title" {
 		t.Fatalf("meta file not updated: %+v", on)
 	}
@@ -46,11 +51,11 @@ func TestRenameEndedSessionEditsMetaAndRefreshesIndex(t *testing.T) {
 
 func TestRenameLiveRaceDaemonFailureHardFails(t *testing.T) {
 	dir := t.TempDir()
-	proj := filepath.Join(dir, "proj")
+	proj := filepath.Join(dir, "project-rename-race-0123456789")
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{ID: "01RACE", UpdatedAt: time.Now(), EnvInfo: schema.EnvironmentInfo{WorkingDir: proj}}); err != nil {
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{ID: renameRaceSessionID, UpdatedAt: time.Now(), EnvInfo: schema.EnvironmentInfo{WorkingDir: proj}}); err != nil {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(dir, "*"))
@@ -59,12 +64,12 @@ func TestRenameLiveRaceDaemonFailureHardFails(t *testing.T) {
 	}
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 91, Address: "127.0.0.1:4591", WorkingDir: proj})
-	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01RACE", status: appwire.ThreadStatusIdle})
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: renameRaceSessionID, status: appwire.ThreadStatusIdle})
 	r.Refresh() // session reads as live, keyed by the bare session id in the roster
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
 	// scriptedAppSource.SetThreadName returns Unavailable — the daemon rename fails.
-	web.sources.Add(&scriptedAppSource{id: "local", thread: appwire.Thread{ID: "01RACE", SessionID: "01RACE", Source: "local", CWD: proj, Serf: appwire.SerfThread{Ref: "local:01RACE"}}})
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:01RACE/rename", strings.NewReader(`{"name":"new"}`))
+	web.sources.Add(&scriptedAppSource{id: "local", thread: appwire.Thread{ID: renameRaceSessionID, SessionID: renameRaceSessionID, Source: "local", CWD: proj, Serf: appwire.SerfThread{Ref: "local:" + renameRaceSessionID}}})
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:"+renameRaceSessionID+"/rename", strings.NewReader(`{"name":"new"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Host = "127.0.0.1:9180"
 	rec := httptest.NewRecorder()
@@ -81,12 +86,12 @@ func TestRenameLiveRaceDaemonFailureHardFails(t *testing.T) {
 	// so the top-level branch is skipped, while canonicalRouteID strips the
 	// prefix for the ended-path recheck and DOES find the roster entry —
 	// exactly the daemon-races-back-to-live scenario T18 describes.
-	web.handleAPIRename(rec, req, "local:01RACE")
+	web.handleAPIRename(rec, req, "local:"+renameRaceSessionID)
 	if rec.Code == http.StatusNoContent {
 		t.Fatalf("a failed daemon rename on a live-racing session must NOT silently succeed via a meta edit; status=%d", rec.Code)
 	}
 	// The persisted meta must not have been edited behind the live session's back.
-	meta, err := schema.LoadSessionMeta(proj, "01RACE")
+	meta, err := schema.LoadSessionMeta(proj, renameRaceSessionID)
 	if err != nil {
 		t.Fatal(err)
 	}

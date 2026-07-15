@@ -4,7 +4,36 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/identifier"
 )
+
+func TestGeneratedJobstoreIDsUseIdentifierDomains(t *testing.T) {
+	tests := []struct {
+		name     string
+		newID    func() string
+		validate func(string) error
+		prefix   string
+	}{
+		{"job", NewJobID, identifier.ValidateJobID, "job_"},
+		{"delegate", NewDelegateID, identifier.ValidateDelegateID, "dlg_"},
+		{"delegate generation", NewDelegateGeneration, identifier.ValidateDelegateGeneration, "dg_"},
+		{"watch", NewWatchID, identifier.ValidateWatchID, "watch_"},
+		{"watch generation", NewWatchGeneration, identifier.ValidateWatchGeneration, "wg_"},
+		{"watch delivery", NewWatchSendDeliveryID, identifier.ValidateWatchDeliveryID, "wd_"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.newID()
+			if len(got) != len(tt.prefix)+22 || !strings.HasPrefix(got, tt.prefix) {
+				t.Fatalf("ID = %q, want %s plus 22 characters", got, tt.prefix)
+			}
+			if err := tt.validate(got); err != nil {
+				t.Fatalf("validate %q: %v", got, err)
+			}
+		})
+	}
+}
 
 func TestJobRecordJSONRoundTripDelegateRestoreDescriptorAndStructuredReason(t *testing.T) {
 	valid := false
@@ -90,8 +119,8 @@ func TestNewJobIDFormatAndUniqueness(t *testing.T) {
 	if a == b {
 		t.Errorf("two job ids should differ: %q == %q", a, b)
 	}
-	// "job_" + 26-char ULID
-	if len(a) != len("job_")+26 {
+	// "job_" + 22-character compact identifier payload.
+	if len(a) != len("job_")+22 {
 		t.Errorf("job id %q has unexpected length %d", a, len(a))
 	}
 }

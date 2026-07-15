@@ -1,16 +1,18 @@
 package doctor
 
 import (
+	"bytes"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
 const (
-	sidA  = "01TESTSESSIONAAAAAAAAAAAAAA"
-	sidB  = "01TESTSESSIONBBBBBBBBBBBBBB"
-	hash1 = "0123456789abcdef"
-	hash2 = "fedcba9876543210"
+	sidA  = "02wMz5TxvEMoJEDTDGOTil"
+	sidB  = "02wMz5TxvEMoJEDTDGOTim"
+	hash1 = "Project-one-0123456789"
+	hash2 = "Project-two-0123456789"
 )
 
 // writeSession lays out a session under bucketDir: the flat transcript + meta
@@ -50,8 +52,8 @@ func TestLocate_StateHomeLayout_BareID(t *testing.T) {
 	if got.JobsPath != wantJobs {
 		t.Errorf("JobsPath = %q, want %q", got.JobsPath, wantJobs)
 	}
-	if got.BucketHash != hash1 {
-		t.Errorf("BucketHash = %q, want %q", got.BucketHash, hash1)
+	if got.ProjectID != hash1 {
+		t.Errorf("ProjectID = %q, want %q", got.ProjectID, hash1)
 	}
 	if got.TranscriptRef != "proj:"+hash1+":"+sidA {
 		t.Errorf("TranscriptRef = %q, want proj:%s:%s", got.TranscriptRef, hash1, sidA)
@@ -89,8 +91,8 @@ func TestLocate_OverrideLayout_BareID(t *testing.T) {
 	if got.JobsPath != wantJobs {
 		t.Errorf("JobsPath = %q, want %q", got.JobsPath, wantJobs)
 	}
-	if got.BucketHash != "" {
-		t.Errorf("BucketHash = %q, want empty in override layout", got.BucketHash)
+	if got.ProjectID != "" {
+		t.Errorf("ProjectID = %q, want empty in override layout", got.ProjectID)
 	}
 	if got.TranscriptRef != "local:"+sidA {
 		t.Errorf("TranscriptRef = %q, want local:%s", got.TranscriptRef, sidA)
@@ -105,8 +107,8 @@ func TestLocate_ProjRef(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Locate: %v", err)
 	}
-	if got.BucketHash != hash1 || got.SessionID != sidA {
-		t.Errorf("got hash=%q sid=%q, want %q/%q", got.BucketHash, got.SessionID, hash1, sidA)
+	if got.ProjectID != hash1 || got.SessionID != sidA {
+		t.Errorf("got projectID=%q sid=%q, want %q/%q", got.ProjectID, got.SessionID, hash1, sidA)
 	}
 }
 
@@ -127,8 +129,8 @@ func TestLocate_LocalRef(t *testing.T) {
 	if got.TranscriptRef != "proj:"+hash1+":"+sidA {
 		t.Errorf("TranscriptRef = %q, want proj:%s:%s", got.TranscriptRef, hash1, sidA)
 	}
-	if got.BucketHash != hash1 {
-		t.Errorf("BucketHash = %q, want %q", got.BucketHash, hash1)
+	if got.ProjectID != hash1 {
+		t.Errorf("ProjectID = %q, want %q", got.ProjectID, hash1)
 	}
 	wantJobs := filepath.Join(bucket, "sessions", sidA, "jobs.jsonl")
 	if got.JobsPath != wantJobs {
@@ -150,7 +152,7 @@ func TestLocate_AmbiguousBareID(t *testing.T) {
 	}
 }
 
-// A proj:<hash>: ref disambiguates a sid that appears in multiple buckets.
+// A proj:<project-id>: ref disambiguates a sid that appears in multiple buckets.
 func TestLocate_ProjRefDisambiguates(t *testing.T) {
 	base := t.TempDir()
 	writeSession(t, stateHomeBucket(base, hash1), sidA)
@@ -160,8 +162,8 @@ func TestLocate_ProjRefDisambiguates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Locate: %v", err)
 	}
-	if got.BucketHash != hash2 {
-		t.Errorf("BucketHash = %q, want %q", got.BucketHash, hash2)
+	if got.ProjectID != hash2 {
+		t.Errorf("ProjectID = %q, want %q", got.ProjectID, hash2)
 	}
 }
 
@@ -191,5 +193,45 @@ func TestLocate_EmptySelector(t *testing.T) {
 	}
 	if _, err := Locate(base, "current"); err == nil {
 		t.Error("'current' selector should error for a standalone tool")
+	}
+}
+
+func TestLocate_CleanBreakSkipsLegacyProjectAndSession(t *testing.T) {
+	base := t.TempDir()
+	legacyBucket := stateHomeBucket(base, "0123456789abcdef")
+	newBucket := stateHomeBucket(base, "project-new-0123456789")
+	writeSession(t, legacyBucket, sidA)
+	writeSession(t, newBucket, sidB)
+	legacyPath := filepath.Join(legacyBucket, "sessions", sidA+".transcript.jsonl")
+	before, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Locate(base, "proj:0123456789abcdef:"+sidA); err == nil {
+		t.Fatal("legacy project ref unexpectedly resolved")
+	}
+	got, err := Locate(base, "proj:project-new-0123456789:"+sidB)
+	if err != nil {
+		t.Fatalf("new project/session did not resolve: %v", err)
+	}
+	if got.ProjectID != "project-new-0123456789" || got.SessionID != sidB {
+		t.Fatalf("resolved project/session = %q/%q", got.ProjectID, got.SessionID)
+	}
+
+	after, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterInfo, err := os.Stat(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) || !afterInfo.ModTime().Equal(info.ModTime()) {
+		t.Fatal("legacy doctor fixture changed")
 	}
 }

@@ -332,6 +332,48 @@ func (r *wtRepo) create(t *testing.T, args map[string]any) (map[string]any, erro
 	return m, nil
 }
 
+func TestManagedWorktreeStorageUsesOneProjectIDFromMainAndLinkedCheckout(t *testing.T) {
+	r := newWorktreeRepo(t)
+	mainProject := resolvedProjectID(t, r.s.currentEnv(), r.mainRoot)
+
+	mainPath := r.managedPath(t, r.mainRoot, "main-lane")
+	mainResult, err := r.create(t, map[string]any{"name": "main-lane"})
+	if err != nil {
+		t.Fatalf("create from main checkout: %v", err)
+	}
+	if got := mainResult["path"]; got != mainPath {
+		t.Fatalf("main create path = %v, want %s", got, mainPath)
+	}
+	if filepath.Base(filepath.Dir(mainPath)) != mainProject {
+		t.Fatalf("main create project directory = %q, want %q", filepath.Base(filepath.Dir(mainPath)), mainProject)
+	}
+
+	// Return to the main checkout, then create a linked checkout and invoke the
+	// same managed operation from there. The resolver must follow the linked
+	// worktree's Git common directory and select the same canonical Project.ID.
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit main-lane: %v", err)
+	}
+	linkedRoot := r.addSiblingWorktree(t, "linked-checkout", "linked-checkout")
+	linkedEnv := r.s.currentEnv().(*execenv.LocalExecutionEnvironment).WithWorkingDirectory(linkedRoot)
+	r.s.mu.Lock()
+	r.s.env = linkedEnv
+	r.s.mu.Unlock()
+	linkedProject := resolvedProjectID(t, linkedEnv, linkedRoot)
+	if linkedProject != mainProject {
+		t.Fatalf("linked checkout Project.ID = %q, want main checkout ID %q", linkedProject, mainProject)
+	}
+
+	linkedPath := filepath.Join(r.stateDir, "worktrees", mainProject, "linked-lane")
+	linkedResult, err := r.create(t, map[string]any{"name": "linked-lane"})
+	if err != nil {
+		t.Fatalf("create from linked checkout: %v", err)
+	}
+	if got := linkedResult["path"]; got != linkedPath {
+		t.Fatalf("linked create path = %v, want %s", got, linkedPath)
+	}
+}
+
 // porcelainEntry finds the porcelain record for the worktree at path (cleaned
 // comparison), failing if absent.
 func (r *wtRepo) porcelainEntry(t *testing.T, path string) worktree.PorcelainEntry {
@@ -347,15 +389,15 @@ func (r *wtRepo) porcelainEntry(t *testing.T, path string) worktree.PorcelainEnt
 	return worktree.PorcelainEntry{}
 }
 
-func (r *wtRepo) metaDir(canonicalMain string) string {
-	return filepath.Join(r.stateDir, "worktrees", worktree.ProjectID(canonicalMain), ".meta")
+func (r *wtRepo) metaDir(t *testing.T, canonicalMain string) string {
+	return filepath.Join(r.stateDir, "worktrees", resolvedProjectID(t, r.s.currentEnv(), canonicalMain), ".meta")
 }
 
 func (r *wtRepo) addManagedWorktreeFixture(t *testing.T, name string) string {
 	t.Helper()
 	canonicalMain := r.canonicalMain(t)
-	path := r.managedPath(canonicalMain, name)
-	metaDir := r.metaDir(canonicalMain)
+	path := r.managedPath(t, canonicalMain, name)
+	metaDir := r.metaDir(t, canonicalMain)
 	if err := os.MkdirAll(metaDir, 0o755); err != nil {
 		t.Fatalf("mkdir metaDir: %v", err)
 	}
@@ -467,7 +509,7 @@ func TestWorktreeCreate_WritesSidecarProvenance(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	canonicalMain := res["main_repo_root"].(string)
-	sc, err := worktree.ReadSidecar(r.metaDir(canonicalMain), "prov")
+	sc, err := worktree.ReadSidecar(r.metaDir(t, canonicalMain), "prov")
 	if err != nil {
 		t.Fatalf("read sidecar: %v", err)
 	}
@@ -503,7 +545,7 @@ func TestWorktreeCreate_AddFailureCleansSidecarSameCall(t *testing.T) {
 	}
 	canonicalMain, _ := filepath.EvalSymlinks(r.mainRoot)
 	// The sidecar for feature/foo must be gone (same-call cleanup).
-	if _, statErr := worktree.ReadSidecar(r.metaDir(canonicalMain), "feature/foo"); !os.IsNotExist(statErr) {
+	if _, statErr := worktree.ReadSidecar(r.metaDir(t, canonicalMain), "feature/foo"); !os.IsNotExist(statErr) {
 		t.Errorf("sidecar for feature/foo survived a failed add: err=%v", statErr)
 	}
 	// The branch must not have been created.
@@ -772,7 +814,7 @@ func TestWorktreeCreate_MetaDirMkdirFailsWhenProjectDirIsAFile(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	canonicalMain := r.canonicalMain(t)
-	projectDir := filepath.Dir(r.managedPath(canonicalMain, "x"))
+	projectDir := filepath.Dir(r.managedPath(t, canonicalMain, "x"))
 	if err := os.MkdirAll(filepath.Dir(projectDir), 0o755); err != nil {
 		t.Fatalf("mkdir worktreeRoot: %v", err)
 	}
@@ -796,7 +838,7 @@ func TestWorktreeCreate_SidecarAlreadyExistsRace(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	canonicalMain := r.canonicalMain(t)
-	metaDir := r.metaDir(canonicalMain)
+	metaDir := r.metaDir(t, canonicalMain)
 	if err := os.MkdirAll(metaDir, 0o755); err != nil {
 		t.Fatalf("mkdir metaDir: %v", err)
 	}
@@ -839,7 +881,7 @@ func TestWorktreeCreate_WorktreeParentMkdirFailsWhenPathComponentIsAFile(t *test
 	canonicalMain := r.canonicalMain(t)
 	// name "blocked/nested" needs a parent dir at managedPath(.., "blocked");
 	// occupy that exact path with a file instead.
-	blocked := r.managedPath(canonicalMain, "blocked")
+	blocked := r.managedPath(t, canonicalMain, "blocked")
 	if err := os.MkdirAll(filepath.Dir(blocked), 0o755); err != nil {
 		t.Fatalf("mkdir project dir: %v", err)
 	}
@@ -851,7 +893,7 @@ func TestWorktreeCreate_WorktreeParentMkdirFailsWhenPathComponentIsAFile(t *test
 	if err == nil || !strings.Contains(err.Error(), "create worktree parent dir") {
 		t.Fatalf("create with a file blocking the worktree parent dir: err = %v, want a parent-dir creation error", err)
 	}
-	metaDir := r.metaDir(canonicalMain)
+	metaDir := r.metaDir(t, canonicalMain)
 	if _, rerr := worktree.ReadSidecar(metaDir, "blocked/nested"); !os.IsNotExist(rerr) {
 		t.Errorf("sidecar survived a failed worktree-parent mkdir: err=%v, want it cleaned up", rerr)
 	}

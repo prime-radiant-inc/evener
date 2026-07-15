@@ -101,8 +101,9 @@ On first use, Serf creates:
 
 - `~/.serf/run` for live daemon rendezvous files.
 - `~/.serf/auth-token` for the local Hub/TUI bearer token.
-- `${XDG_STATE_HOME:-~/.local/state}/serf/projects/*` for saved per-project
-  session state.
+- `${XDG_STATE_HOME:-~/.local/state}/serf/projects/<project-id>/` for saved
+  per-project session state. The project ID is readable (derived from the
+  canonical project path) and ends with a 10-character base62 suffix.
 - `${XDG_CONFIG_HOME:-~/.config}/serf/skills` for standalone user skills.
 - `${XDG_CONFIG_HOME:-~/.config}/serf/plugins` for user plugins.
 
@@ -248,8 +249,21 @@ NDJSON events include: `SESSION_START`, `ASSISTANT_TEXT_END` (with usage, reason
 ## Session persistence
 
 Serf auto-saves session state under
-`${XDG_STATE_HOME:-~/.local/state}/serf/projects/<project-hash>/sessions/`
+`${XDG_STATE_HOME:-~/.local/state}/serf/projects/<project-id>/sessions/`
 after each assistant turn. This enables resuming interrupted work.
+
+Project IDs are shared by a repository's main checkout and linked worktrees:
+they aggregate into the same project bucket. A distinct clone has a different
+canonical path and therefore gets a distinct project ID and state bucket.
+
+Session IDs are 22-character UUIDv7 base62 payloads. Domain-specific IDs that
+retain a prefix keep that prefix outside the payload (for example, `job_` IDs).
+
+The identifier format change is a clean break. Serf does not migrate or delete
+inert old project/session state; remove obsolete state manually after checking
+that it is no longer needed. Installation IDs are the sole automatic legacy
+replacement: an invalid stored installation ID is replaced when Serf next
+needs one.
 
 ```bash
 # List saved sessions
@@ -259,10 +273,10 @@ serf --list-sessions
 serf --resume-last
 
 # Resume a specific session
-serf --resume 01JTEST000000000000000001
+serf --resume 02wLIRxqmq3AUo6vl2OW37
 
 # New prompt, but carry forward a previous session's conversation context
-serf --model openai/gpt-5.2 --resume-with 01JTEST000000000000000001 "now add tests"
+serf --model openai/gpt-5.2 --resume-with 02wLIRxqmq3AUo6vl2OW37 "now add tests"
 ```
 
 When resuming, the provider and model from the original session are used by default. You can override them with `--model <provider/model>`.

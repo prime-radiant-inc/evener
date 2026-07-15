@@ -3,8 +3,9 @@ package main
 import (
 	"encoding/json"
 	"net/http"
-	"path/filepath"
 	"time"
+
+	"primeradiant.com/serf/identifier"
 )
 
 // handleAPIArchive handles POST /api/archive.
@@ -16,9 +17,10 @@ func (s *WebServer) handleAPIArchive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Kind     string `json:"kind"`
-		ID       string `json:"id"`
-		Archived bool   `json:"archived"`
+		Kind       string `json:"kind"`
+		ID         string `json:"id"`
+		WorkingDir string `json:"working_dir"`
+		Archived   bool   `json:"archived"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeAPIError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -32,6 +34,29 @@ func (s *WebServer) handleAPIArchive(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "id is required")
 		return
 	}
+	if body.Kind == "project" {
+		if body.ID == "no-project" {
+			writeAPIError(w, http.StatusBadRequest, "no-project is not a local project")
+			return
+		}
+		if err := identifier.ValidateProjectID(body.ID); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid project ID: "+err.Error())
+			return
+		}
+		if body.WorkingDir == "" {
+			writeAPIError(w, http.StatusBadRequest, "working_dir is required for project archive")
+			return
+		}
+		project, err := identifier.ResolveProject(body.WorkingDir)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "resolve project: "+err.Error())
+			return
+		}
+		if project.ID != body.ID {
+			writeAPIError(w, http.StatusBadRequest, "project ID does not match working_dir")
+			return
+		}
+	}
 	if s.cfg.Archive == nil {
 		writeAPIError(w, http.StatusInternalServerError, "archive store not configured")
 		return
@@ -39,16 +64,6 @@ func (s *WebServer) handleAPIArchive(w http.ResponseWriter, r *http.Request) {
 	if err := s.cfg.Archive.Set(body.Kind, body.ID, body.Archived, time.Now()); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "archive store error: "+err.Error())
 		return
-	}
-	if body.Kind == "project" && !body.Archived {
-		// Visible-wins: dropping the path row's archive also drops any legacy
-		// basename row that could re-hide this (or a co-basename) project
-		// (round-3 G3). Only meaningful when the id is a real path — a
-		// basename-shaped id equals its own filepath.Base, so Set above already
-		// cleared it and a Delete on the same key would be a no-op (T8).
-		if base := filepath.Base(body.ID); base != body.ID {
-			_ = s.cfg.Archive.Delete("project", base)
-		}
 	}
 	// An archive decision can move a session in or out of tier eligibility;
 	// nudge the attention watcher so the badge/notification state doesn't lag

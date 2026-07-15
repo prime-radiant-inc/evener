@@ -11,9 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oklog/ulid/v2"
-
 	"primeradiant.com/serf/envvars"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/invariant"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
@@ -427,7 +426,7 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 									thoughtSig := geminiThoughtSignature(p, fc)
 									flushTextPart()
 
-									id := "call_" + ulid.Make().String() // synthetic per spec
+									id := identifier.MustNewSyntheticCallID()
 									tc := llm.ToolCallData{
 										ID:               id,
 										Name:             name,

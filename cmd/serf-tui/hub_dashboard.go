@@ -21,11 +21,7 @@ func (m hubModel) workingDirForProjectKey(projectKey string) string {
 		return ""
 	}
 	for _, p := range m.tree.Projects {
-		key := p.Key
-		if key == "" {
-			key = hubProjectKey(p.Name)
-		}
-		if key == projectKey {
+		if p.Key != "" && p.Key == projectKey {
 			return p.WorkingDir
 		}
 	}
@@ -33,59 +29,61 @@ func (m hubModel) workingDirForProjectKey(projectKey string) string {
 }
 
 func (m hubModel) projectKeyForSession() (string, bool) {
-	project := strings.TrimSpace(m.detail.Project)
-	if project == "" || project == "." {
-		if m.detail.WorkingDir != "" {
-			parts := strings.Split(strings.TrimRight(m.detail.WorkingDir, "/"), "/")
-			project = parts[len(parts)-1]
+	if m.detail.Ref != "" {
+		if ref, err := appwire.ParseRef(m.detail.Ref); err == nil {
+			for _, row := range m.rows {
+				if row.kind == hubRowSession && row.ref == ref && row.projectKey != "" {
+					return row.projectKey, true
+				}
+			}
 		}
 	}
-	if project == "" {
+	workingDir := strings.TrimSpace(m.detail.WorkingDir)
+	if workingDir == "" {
 		return "", false
 	}
-	want := hubProjectKey(project)
 	for _, p := range m.tree.Projects {
-		key := p.Key
-		if key == "" {
-			key = hubProjectKey(p.Name)
-		}
-		if key == want || p.Name == project {
-			return key, true
+		if p.Key != "" && p.WorkingDir == workingDir {
+			return p.Key, true
 		}
 	}
-	return want, true
+	return "", false
 }
 
 func buildDashboardRows(tree hubTreeResponse) []hubRow {
 	type dashboardGroup struct {
-		key       string
-		name      string
-		state     string
-		updatedAt int64
-		order     int
-		sessions  []hubRow
+		key        string
+		projectKey string
+		name       string
+		state      string
+		updatedAt  int64
+		order      int
+		sessions   []hubRow
 	}
 
 	seen := map[string]bool{}
 	groups := map[string]*dashboardGroup{}
 	var projectOrder []string
 
-	ensureGroup := func(key, name, state string) *dashboardGroup {
+	ensureGroup := func(groupKey, projectKey, name, state string) *dashboardGroup {
 		if name == "" {
 			name = "(no project)"
 		}
-		if group, ok := groups[key]; ok {
+		if group, ok := groups[groupKey]; ok {
 			if group.name == "" || group.name == "(no project)" {
 				group.name = name
 			}
+			if group.projectKey == "" {
+				group.projectKey = projectKey
+			}
 			return group
 		}
-		group := &dashboardGroup{key: key, name: name, state: state, order: len(projectOrder)}
-		groups[key] = group
-		projectOrder = append(projectOrder, key)
+		group := &dashboardGroup{key: groupKey, projectKey: projectKey, name: name, state: state, order: len(projectOrder)}
+		groups[groupKey] = group
+		projectOrder = append(projectOrder, groupKey)
 		return group
 	}
-	addSession := func(key, project string, n hubTreeNode) {
+	addSession := func(groupKey, projectKey, project string, n hubTreeNode) {
 		ref, err := appwire.ParseRef(n.Ref)
 		if err != nil || seen[n.Ref] {
 			return
@@ -103,7 +101,7 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 		}
 		rowID := n.RowID
 		if rowID == "" {
-			rowID = "project:" + key + ":" + n.Ref
+			rowID = "project:" + n.Ref
 		}
 		sourceLabel := strings.TrimSpace(n.SourceLabel)
 		if sourceLabel == "" {
@@ -115,7 +113,8 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 			sourceLabel: sourceLabel,
 			title:       title,
 			project:     project,
-			projectKey:  key,
+			projectKey:  projectKey,
+			groupKey:    groupKey,
 			state:       n.State,
 			askPending:  n.AskPending,
 			live:        n.Live,
@@ -125,7 +124,7 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 			createdAt:   n.CreatedAt,
 			updatedAt:   n.UpdatedAt,
 		}
-		group := ensureGroup(key, project, n.State)
+		group := ensureGroup(groupKey, projectKey, project, n.State)
 		group.sessions = append(group.sessions, row)
 		if attentionRankLabel(n.State) > attentionRankLabel(group.state) {
 			group.state = stateLabel(n.State)
@@ -139,15 +138,16 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 		if len(p.Sessions) == 0 {
 			continue
 		}
-		key := p.Key
-		if key == "" {
-			key = hubProjectKey(p.Name)
+		projectKey := p.Key
+		groupKey := projectKey
+		if groupKey == "" {
+			groupKey = presentationProjectGroupKey(p)
 		}
-		ensureGroup(key, p.Name, p.RollupState)
+		ensureGroup(groupKey, projectKey, p.Name, p.RollupState)
 		for _, n := range p.Sessions {
-			addSession(key, p.Name, n)
+			addSession(groupKey, projectKey, p.Name, n)
 			for _, child := range n.Children {
-				addSession(key, p.Name, child)
+				addSession(groupKey, projectKey, p.Name, child)
 			}
 		}
 	}
@@ -160,8 +160,7 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 		if project == "" {
 			project = "(no project)"
 		}
-		key := hubProjectKey(project)
-		addSession(key, project, n)
+		addSession("presentation:no-project", "", project, n)
 	}
 
 	ordered := make([]*dashboardGroup, 0, len(projectOrder))
@@ -201,7 +200,8 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 			kind:        hubRowProject,
 			title:       group.name,
 			project:     group.name,
-			projectKey:  group.key,
+			projectKey:  group.projectKey,
+			groupKey:    group.key,
 			state:       group.state,
 			live:        true,
 			rowID:       "project:" + group.key,
@@ -243,9 +243,10 @@ func rowRecency(row hubRow) int64 {
 func buildProjectRows(project hubTreeProject) []hubRow {
 	var liveRows []hubRow
 	var recentRows []hubRow
-	key := project.Key
-	if key == "" {
-		key = hubProjectKey(project.Name)
+	projectKey := project.Key
+	groupKey := projectKey
+	if groupKey == "" {
+		groupKey = presentationProjectGroupKey(project)
 	}
 	add := func(n hubTreeNode) {
 		ref, err := appwire.ParseRef(n.Ref)
@@ -262,7 +263,7 @@ func buildProjectRows(project hubTreeProject) []hubRow {
 		}
 		rowID := n.RowID
 		if rowID == "" {
-			rowID = "project:" + key + ":" + n.Ref
+			rowID = "project:" + n.Ref
 		}
 		sourceLabel := strings.TrimSpace(n.SourceLabel)
 		if sourceLabel == "" {
@@ -274,7 +275,8 @@ func buildProjectRows(project hubTreeProject) []hubRow {
 			sourceLabel: sourceLabel,
 			title:       title,
 			project:     project.Name,
-			projectKey:  key,
+			projectKey:  projectKey,
+			groupKey:    groupKey,
 			state:       state,
 			live:        n.Live,
 			model:       n.Model,
@@ -301,13 +303,6 @@ func buildProjectRows(project hubTreeProject) []hubRow {
 	return rows
 }
 
-func hubProjectKey(name string) string {
-	if name == "" {
-		return "project"
-	}
-	return strings.NewReplacer("/", "_", ":", "_", " ", "_").Replace(name)
-}
-
 func (m hubModel) dashboardRows() []hubRow {
 	if strings.TrimSpace(m.dashboardFilter.Value()) != "" {
 		return filterHubRows(m.rows, m.dashboardFilter.Value())
@@ -329,7 +324,7 @@ func (m hubModel) foldedDashboardRows() []hubRow {
 		}
 		rows = append(rows, project)
 		i++
-		if !m.dashboardProjectExpanded(project.projectKey) {
+		if !m.dashboardProjectExpanded(project.groupKey) {
 			for i < len(m.rows) && m.rows[i].kind != hubRowProject {
 				i++
 			}
@@ -356,11 +351,12 @@ func (m hubModel) foldedDashboardRows() []hubRow {
 			title:       "Ended Sessions",
 			project:     project.project,
 			projectKey:  project.projectKey,
+			groupKey:    project.groupKey,
 			state:       "ended",
-			rowID:       "project:" + project.projectKey + ":recent",
+			rowID:       "project:" + project.groupKey + ":recent",
 			recentCount: len(recent),
 		})
-		if m.dashboardRecentOpen[project.projectKey] {
+		if m.dashboardRecentOpen[project.groupKey] {
 			rows = append(rows, recent...)
 		}
 	}
@@ -379,11 +375,17 @@ func (m *hubModel) setSelectedDashboardProjectExpanded(rows []hubRow, expanded b
 	if row.kind != hubRowProject {
 		return
 	}
-	m.setDashboardProjectExpanded(row.projectKey, expanded)
+	if row.projectKey == "" {
+		return
+	}
+	m.setDashboardProjectExpanded(dashboardGroupKey(row), expanded)
 	m.clampSelection()
 }
 
 func (m *hubModel) toggleDashboardProject(projectKey string) {
+	if projectKey == "" {
+		return
+	}
 	m.setDashboardProjectExpanded(projectKey, !m.dashboardProjectExpanded(projectKey))
 }
 
@@ -444,26 +446,46 @@ func filterHubRows(rows []hubRow, query string) []hubRow {
 	childMatches := map[string]bool{}
 	for _, row := range rows {
 		if rowMatchesFilter(row, query) {
+			groupKey := dashboardGroupKey(row)
 			if row.kind == hubRowProject {
-				projectMatches[row.projectKey] = true
+				projectMatches[groupKey] = true
 			} else {
-				childMatches[row.projectKey] = true
+				childMatches[groupKey] = true
 			}
 		}
 	}
 	filtered := make([]hubRow, 0, len(rows))
 	for _, row := range rows {
+		groupKey := dashboardGroupKey(row)
 		if row.kind == hubRowProject {
-			if projectMatches[row.projectKey] || childMatches[row.projectKey] {
+			if projectMatches[groupKey] || childMatches[groupKey] {
 				filtered = append(filtered, row)
 			}
 			continue
 		}
-		if projectMatches[row.projectKey] || rowMatchesFilter(row, query) {
+		if projectMatches[groupKey] || rowMatchesFilter(row, query) {
 			filtered = append(filtered, row)
 		}
 	}
 	return filtered
+}
+
+func presentationProjectGroupKey(project hubTreeProject) string {
+	identity := project.identity
+	if identity == "" {
+		identity = project.WorkingDir
+	}
+	if identity == "" {
+		identity = "no-project"
+	}
+	return "presentation:" + identity
+}
+
+func dashboardGroupKey(row hubRow) string {
+	if row.groupKey != "" {
+		return row.groupKey
+	}
+	return row.projectKey
 }
 
 func rowMatchesFilter(row hubRow, query string) bool {

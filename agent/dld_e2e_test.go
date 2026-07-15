@@ -100,7 +100,7 @@ func TestE2E_ScriptedDisposeFlow(t *testing.T) {
 		t.Fatalf("createDelegate: %v", res.Err)
 	}
 	id := res.DelegateID
-	lane := r.lanePath(id)
+	lane := r.lanePath(t, id)
 
 	// (1) The completion result carries the spec §P2 disposal nudge naming this
 	// delegate's own dispose invocation.
@@ -127,7 +127,7 @@ func TestE2E_ScriptedDisposeFlow(t *testing.T) {
 	if branchExistsAt(t, r.mainRoot, id) {
 		t.Error("lane branch survived op=dispose")
 	}
-	if _, err := worktree.ReadSidecar(r.metaDir(), id); err == nil {
+	if _, err := worktree.ReadSidecar(r.metaDir(t), id); err == nil {
 		t.Error("lane sidecar survived op=dispose")
 	}
 	if !disposedRawStoreMentions(t, r.s, id) {
@@ -167,7 +167,7 @@ func TestE2E_CloseCollectsMergedLaneThenResumeDisposed(t *testing.T) {
 		t.Fatalf("createDelegate: %v", res.Err)
 	}
 	id := res.DelegateID
-	lane := r.lanePath(id)
+	lane := r.lanePath(t, id)
 
 	// Commit and merge the lane so it is ancestry-merged (P0-collectible at close).
 	laneCommit(t, lane)
@@ -228,7 +228,7 @@ func TestE2E_KeptLaneSweptByForeignSessionThenResumeStatNet(t *testing.T) {
 		t.Fatalf("createDelegate: %v", res.Err)
 	}
 	id := res.DelegateID
-	lane := a.lanePath(id)
+	lane := a.lanePath(t, id)
 
 	// The lane has committed but UNMERGED work: A's close keeps it (unlocked,
 	// resumable), it is not disposed.
@@ -248,7 +248,7 @@ func TestE2E_KeptLaneSweptByForeignSessionThenResumeStatNet(t *testing.T) {
 	// residue.
 	ffMergeLane(t, a.mainRoot, id)
 	// Age the sidecar past the injected tiny grace so B's sweep will collect it.
-	ageSidecar(t, a.metaDir(), id, time.Second)
+	ageSidecar(t, a.metaDir(t), id, time.Second)
 
 	// A foreign top-level session B opens on the SAME repo dir + state dir, with a
 	// fake clock so its armed open-pass P3 timer fires on virtual time only.
@@ -275,7 +275,7 @@ func TestE2E_KeptLaneSweptByForeignSessionThenResumeStatNet(t *testing.T) {
 	// lane was reclaimed without racing the still-running sweep.
 	clk.Advance(laneSweepDelay + time.Second)
 	waitForCondition(t, 3*time.Second, "B's open-pass sweep collects the foreign residue lane", func() bool {
-		_, err := worktree.ReadSidecar(a.metaDir(), id)
+		_, err := worktree.ReadSidecar(a.metaDir(t), id)
 		return err != nil
 	})
 	if laneWorktreePresent(lane) {

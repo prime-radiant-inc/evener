@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
 	"primeradiant.com/serf/cmdutil"
+	"primeradiant.com/serf/identifier"
 )
 
 var (
@@ -114,6 +115,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		return appwire.ThreadStartResponse{}, err
 	}
 	entry, err := cfg.Spawner.Spawn(ctx, hubcore.SpawnRequest{
+		Project:    spawnResolved.Project,
 		Resolved:   spawnResolved,
 		WorkingDir: workingDir,
 		Provider:   modelRef.Provider,
@@ -143,7 +145,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		if entry.ThreadID == "" {
 			return appwire.ThreadStartResponse{}, err
 		}
-		return appwire.ThreadStartResponse{Thread: appwire.Thread{
+		thread := appwire.Thread{
 			ID:            entry.ThreadID,
 			SessionID:     entry.SessionID,
 			Preview:       entry.SessionID,
@@ -152,12 +154,18 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			Source:        "local",
 			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
 			Serf:          appwire.SerfThread{Ref: ref},
-		}}, nil
+		}
+		annotateThreadProjects([]appwire.Thread{thread})
+		return appwire.ThreadStartResponse{Thread: thread}, nil
 	}
 	threadResp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref})
 	if err != nil {
-		threadResp.Thread = appwire.Thread{ID: entry.ThreadID, SessionID: entry.SessionID, Source: "local", Serf: appwire.SerfThread{Ref: ref}}
+		threadResp.Thread = appwire.Thread{
+			ID: entry.ThreadID, SessionID: entry.SessionID, CWD: workingDir,
+			Source: "local", Serf: appwire.SerfThread{Ref: ref},
+		}
 	}
+	annotateThreadProjects([]appwire.Thread{threadResp.Thread})
 	turn := appwire.Turn{}
 	if len(params.Input) > 0 {
 		turnResp, err := source.StartTurn(ctx, appwire.TurnStartParams{Ref: ref, Input: params.Input})
@@ -247,6 +255,7 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 	if err != nil {
 		return appwire.ThreadResumeResponse{}, err
 	}
+	annotateThreadProjects([]appwire.Thread{threadResp.Thread})
 	return appwire.ThreadResumeResponse{Thread: threadResp.Thread}, nil
 }
 
@@ -265,6 +274,11 @@ func resumeRequestForConfig(cfg hubcore.WebConfig, id string) (hubcore.ResumeReq
 			if provider == "" {
 				return hubcore.ResumeRequest{}, fmt.Errorf("session %s has no provider profile: cannot resume", id)
 			}
+			project, projectErr := identifier.ResolveProject(req.WorkingDir)
+			if projectErr != nil {
+				return hubcore.ResumeRequest{}, fmt.Errorf("resolve resume project: %w", projectErr)
+			}
+			req.Project = project
 			if pe.Meta.Model != "" {
 				req.Provider = provider
 				req.Resolved = launchconfig.Resolved{Effective: launchconfig.Layer{

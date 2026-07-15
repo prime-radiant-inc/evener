@@ -19,10 +19,19 @@ import (
 
 	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/internal/appserver"
 )
 
-const tuiE2EProjectDir = "/tmp/serf-tui-e2e/serf"
+var tuiE2EProjectDir = canonicalTUIE2EProjectDir()
+
+func canonicalTUIE2EProjectDir() string {
+	tmp := "/tmp"
+	if canonical, err := filepath.EvalSymlinks(tmp); err == nil {
+		tmp = canonical
+	}
+	return filepath.Join(tmp, "serf-tui-e2e", "serf")
+}
 
 // Generous backstop, not a target: WaitFor returns the instant the expected text
 // appears, so a large timeout costs nothing on the happy path. It is sized to
@@ -117,7 +126,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.SendKeys("Tab", "Tab", "Tab", "C-u")
 	app.TypeText("/tmp/serf-tui-e2e/custom")
 	app.WaitFor("Dir:      /tmp/serf-tui-e2e/custom")
-	app.SendKeys("Tab")
+	app.SendKeys("Enter")
 	app.TypeLine("spawn from dashboard")
 	app.WaitFor("serf / session / spawned session 1")
 	spawns := hub.WaitForSpawns(t, 1)
@@ -330,7 +339,7 @@ func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
 	app.WaitFor("Select codex-local model", "CODEX-LOCAL", "Gpt 5.3 Codex")
 	app.SendKeys("Enter")
 	app.WaitFor("Harness:  codex-local", "Model:    codex-local/gpt-5.3-codex")
-	app.SendKeys("Tab", "Tab")
+	app.SendKeys("Tab", "Enter")
 	app.TypeLine("spawn via codex")
 	app.WaitFor("spawned session 1")
 	spawns := hub.WaitForSpawns(t, 1)
@@ -1037,7 +1046,8 @@ func startTUITmuxSized(t *testing.T, bin, hubURL string, width, height int) *tmu
 	t.Helper()
 	acquireTmuxSlot(t)
 	session := uniqueTmuxSessionName()
-	command := tuiCoverEnvPrefix() + shellQuote(bin) + " -debug -no-auto-start-hub -hub-addr " + shellQuote(hubURL)
+	stateDir := t.TempDir()
+	command := tuiCoverEnvPrefix() + shellQuote(bin) + " -debug -no-auto-start-hub -hub-addr " + shellQuote(hubURL) + " -state-dir " + shellQuote(stateDir)
 	runTmux(t, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
 	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
 	pinTmuxWindowSize(t, session, width, height)
@@ -1050,6 +1060,7 @@ func startTUITmuxAltScreen(t *testing.T, bin, hubURL string, width, height int) 
 	t.Helper()
 	acquireTmuxSlot(t)
 	session := uniqueTmuxSessionName()
+	stateDir := t.TempDir()
 	// Keep the pane's shell alive past serf-tui's own exit. serf-tui leaves the
 	// alternate screen and prints its restore instructions to the normal screen
 	// as the very last thing it does before exiting; if the process then dies
@@ -1058,7 +1069,7 @@ func startTUITmuxAltScreen(t *testing.T, bin, hubURL string, width, height int) 
 	// scrollback comes back blank). Blocking the shell on a read it never
 	// receives holds the pty open so tmux drains and renders the message; the
 	// test reads it via WaitForHistory and Close() tears the session down.
-	command := tuiCoverEnvPrefix() + shellQuote(bin) + " -no-auto-start-hub -hub-addr " + shellQuote(hubURL) + "; read _"
+	command := tuiCoverEnvPrefix() + shellQuote(bin) + " -no-auto-start-hub -hub-addr " + shellQuote(hubURL) + " -state-dir " + shellQuote(stateDir) + "; read _"
 	runTmux(t, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
 	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
 	pinTmuxWindowSize(t, session, width, height)
@@ -1353,6 +1364,7 @@ type tuiE2ESession struct {
 	Title           string
 	State           string
 	Project         string
+	ProjectID       string
 	WorkingDir      string
 	Model           string
 	ContextPressure float64
@@ -1632,6 +1644,17 @@ func (h *tuiE2EHub) AppendToolFinal(threadID string) {
 }
 
 func (h *tuiE2EHub) addSession(s *tuiE2ESession) {
+	if s.WorkingDir != "" {
+		if err := os.MkdirAll(s.WorkingDir, 0o755); err != nil {
+			h.t.Fatalf("create fixture project %q: %v", s.WorkingDir, err)
+		}
+		project, err := identifier.ResolveProject(s.WorkingDir)
+		if err != nil {
+			h.t.Fatalf("resolve fixture project %q: %v", s.WorkingDir, err)
+		}
+		s.WorkingDir = project.CanonicalPath
+		s.ProjectID = project.ID
+	}
 	h.sessions[s.ID] = s
 	h.order = append(h.order, s.ID)
 }
@@ -1913,6 +1936,8 @@ func (h *tuiE2EHub) threadFromSessionLocked(s *tuiE2ESession) appwire.Thread {
 		CreatedAt:     s.CreatedAt,
 		UpdatedAt:     s.UpdatedAt,
 		CWD:           s.WorkingDir,
+		ProjectID:     s.ProjectID,
+		ProjectPath:   s.WorkingDir,
 		Source:        "local",
 		Status:        appwire.ThreadStatus{Type: status},
 		Turns:         append([]appwire.Turn(nil), s.Turns...),

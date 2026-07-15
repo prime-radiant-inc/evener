@@ -289,19 +289,27 @@ func wppRuntimePaths(t *testing.T, token string) {
 	cacheHome := filepath.Join(root, "cache")
 	t.Setenv("XDG_STATE_HOME", stateHome)
 	t.Setenv("XDG_CACHE_HOME", cacheHome)
-	if got, want := RuntimeDir("origin:"+token, "/work", ""), filepath.Join(stateHome, "serf", "projects", hexHash("origin:"+token)); got != want {
+	project, got, err := RuntimeDir(root, "")
+	if err != nil {
+		t.Fatalf("runtime dir: %v", err)
+	}
+	if want := filepath.Join(stateHome, "serf", "projects", project.ID); got != want {
 		t.Fatalf("runtime dir = %q, want %q", got, want)
 	}
-	if got, want := RuntimeDirWithStateHome("", "/work/"+token, "", filepath.Join(root, "explicit")), filepath.Join(root, "explicit", "serf", "projects", hexHash("/work/"+token)); got != want {
+	explicitProject, got, err := RuntimeDirWithStateHome(root, "", filepath.Join(root, "explicit"))
+	if err != nil {
+		t.Fatalf("explicit state runtime dir: %v", err)
+	}
+	if want := filepath.Join(root, "explicit", "serf", "projects", explicitProject.ID); got != want {
 		t.Fatalf("explicit state runtime dir = %q, want %q", got, want)
 	}
-	if got := RuntimeDirWithStateHome("origin", "/work", filepath.Join(root, "override"), stateHome); got != filepath.Join(root, "override") {
+	if overrideProject, got, err := RuntimeDirWithStateHome(filepath.Join(root, "missing"), filepath.Join(root, "override"), stateHome); err != nil || overrideProject.ID != "" || got != filepath.Join(root, "override") {
 		t.Fatalf("runtime override = %q", got)
 	}
 	if got, want := CacheDir(), filepath.Join(cacheHome, "serf"); got != want {
 		t.Fatalf("cache dir = %q, want %q", got, want)
 	}
-	if got := shortHash([]byte(token)); got != hexHash(token) || len(got) != 16 {
+	if got := shortHash([]byte(token)); got != nonProjectHash(token) || len(got) != 16 {
 		t.Fatalf("short hash = %q", got)
 	}
 

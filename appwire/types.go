@@ -171,8 +171,16 @@ type FeatureSet struct {
 }
 
 type Thread struct {
-	ID            string       `json:"id"`
-	SessionID     string       `json:"sessionId"`
+	ID        string `json:"id"`
+	SessionID string `json:"sessionId"`
+	// ProjectID and ProjectPath are hub-resolved identity fields. They are
+	// intentionally separate from CWD: a linked worktree may have a different
+	// working directory while still belonging to the same canonical project.
+	// Empty values mean the source could not resolve a local project (for
+	// example, a pathless external thread), which clients must treat as
+	// presentation-only.
+	ProjectID     string       `json:"projectId,omitempty"`
+	ProjectPath   string       `json:"projectPath,omitempty"`
 	ForkedFromID  string       `json:"forkedFromId,omitempty"`
 	Preview       string       `json:"preview"`
 	Ephemeral     bool         `json:"ephemeral"`

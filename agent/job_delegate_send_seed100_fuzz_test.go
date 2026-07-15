@@ -229,7 +229,7 @@ func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
 				t.Fatalf("create isolated delegate: %v", res.Err)
 			}
 			desc := &jobstore.DelegateRestoreDescriptor{
-				Isolation: "worktree", WorkingDir: rig.lanePath(res.DelegateID), LocalEnvPolicy: "default",
+				Isolation: "worktree", WorkingDir: rig.lanePath(t, res.DelegateID), LocalEnvPolicy: "default",
 			}
 			if _, err := rig.s.restoreDelegateChildEnvironment(desc, "dlg_other"); err == nil {
 				t.Fatal("foreign delegate restored into locked worktree")

@@ -106,7 +106,7 @@ user-visible button (Layer 2).
   rm -f /home/jesse/.serf/run/<original-pid>.json
   ```
 - The session itself stays on disk under
-  `~/.local/state/serf/projects/<hash>/sessions/`. Safe to leave.
+  `~/.local/state/serf/projects/<project-id>/sessions/`. Safe to leave.
 
 ## Sharp edges
 

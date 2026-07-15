@@ -19,8 +19,8 @@ import (
 	authopenai "primeradiant.com/serf/auth/openai"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
-	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/envvars"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/rendezvous"
@@ -71,7 +71,10 @@ func (h *HubSpawner) ListLaunchModels(ctx context.Context) ([]appwire.ModelDescr
 }
 
 func (h *HubSpawner) ListLaunchModelContract(ctx context.Context) (appwire.ModelListResponse, error) {
-	stateDir := resolveSerfLaunchStateDir("", nil)
+	stateDir, err := resolveSerfLaunchStateDir("", nil)
+	if err != nil {
+		return appwire.ModelListResponse{}, err
+	}
 	env := launchconfig.ToEnv(launchconfig.EnvInputs{
 		Resolved:            launchconfig.Resolved{},
 		RunDir:              h.RunDir,
@@ -85,7 +88,10 @@ func (h *HubSpawner) ListLaunchModelContract(ctx context.Context) (appwire.Model
 }
 
 func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, workingDir string) (appwire.ModelListResponse, error) {
-	stateDir := resolveSerfLaunchStateDir(workingDir, nil)
+	stateDir, err := resolveSerfLaunchStateDir(workingDir, nil)
+	if err != nil {
+		return appwire.ModelListResponse{}, err
+	}
 	env := launchconfig.ToEnv(launchconfig.EnvInputs{
 		Resolved:            launchconfig.Resolved{},
 		RunDir:              h.RunDir,
@@ -104,7 +110,15 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 		timeout = 30 * time.Second
 	}
 	if req.StateDir == "" {
-		req.StateDir = resolveSerfLaunchStateDir(req.WorkingDir, req.Resolved.Effective.Env)
+		var err error
+		if req.Project.ID != "" {
+			req.StateDir, err = resolveStateDirForProject(req.Project, req.WorkingDir, req.Resolved.Effective.Env)
+		} else {
+			req.Project, req.StateDir, err = resolveSerfLaunchProjectStateDir(req.WorkingDir, req.Resolved.Effective.Env)
+		}
+		if err != nil {
+			return rendezvous.Entry{}, err
+		}
 	}
 	resolved, cleanup, err := prepareResolvedForSpawn(req.StateDir, req.Resolved)
 	if err != nil {
@@ -141,7 +155,15 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 		timeout = 30 * time.Second
 	}
 	if req.StateDir == "" {
-		req.StateDir = resolveSerfLaunchStateDir(req.WorkingDir, req.Resolved.Effective.Env)
+		var err error
+		if req.Project.ID != "" {
+			req.StateDir, err = resolveStateDirForProject(req.Project, req.WorkingDir, req.Resolved.Effective.Env)
+		} else {
+			req.Project, req.StateDir, err = resolveSerfLaunchProjectStateDir(req.WorkingDir, req.Resolved.Effective.Env)
+		}
+		if err != nil {
+			return rendezvous.Entry{}, err
+		}
 	}
 	resolved, cleanup, err := prepareResolvedForSpawn(req.StateDir, req.Resolved)
 	if err != nil {
@@ -425,20 +447,51 @@ func launchFailureError(prefix string, err error, stderr string) error {
 	return fmt.Errorf("%s: %w: %s", prefix, err, detail)
 }
 
-func resolveSerfStateDir(workDir, override string) string {
+func resolveSerfStateDir(workDir, override string) (string, error) {
 	return resolveSerfStateDirWithStateHome(workDir, override, "")
 }
 
-func resolveSerfLaunchStateDir(workDir string, env map[string]string) string {
-	if env == nil {
-		return resolveSerfStateDir(workDir, "")
-	}
-	return resolveSerfStateDirWithStateHome(workDir, env[envvars.SERFStateDir.Name], env[envvars.XDGStateHome.Name])
+func resolveSerfLaunchStateDir(workDir string, env map[string]string) (string, error) {
+	_, stateDir, err := resolveSerfLaunchProjectStateDir(workDir, env)
+	return stateDir, err
 }
 
-func resolveSerfStateDirWithStateHome(workDir, override, stateHome string) string {
+func resolveSerfLaunchProjectStateDir(workDir string, env map[string]string) (identifier.Project, string, error) {
+	if env == nil {
+		return resolveSerfStateDirWithProject(workDir, "", "")
+	}
+	return resolveSerfStateDirWithProject(workDir, env[envvars.SERFStateDir.Name], env[envvars.XDGStateHome.Name])
+}
+
+// resolveStateDirForProject derives state storage from an identity that was
+// already resolved by the launch entry point. An explicit SERF_STATE_DIR
+// remains authoritative; the active working directory is intentionally unused
+// in that case and is retained only for the direct-call fallback contract.
+func resolveStateDirForProject(project identifier.Project, workDir string, env map[string]string) (string, error) {
+	override := ""
+	stateHome := ""
+	if env != nil {
+		override = env[envvars.SERFStateDir.Name]
+		stateHome = env[envvars.XDGStateHome.Name]
+	}
 	if strings.TrimSpace(override) != "" {
-		return override
+		return override, nil
+	}
+	if project.ID == "" {
+		_, stateDir, err := resolveSerfStateDirWithProject(workDir, override, stateHome)
+		return stateDir, err
+	}
+	return agent.RuntimeDirForProjectWithStateHome(project, strings.TrimSpace(stateHome)), nil
+}
+
+func resolveSerfStateDirWithStateHome(workDir, override, stateHome string) (string, error) {
+	_, stateDir, err := resolveSerfStateDirWithProject(workDir, override, stateHome)
+	return stateDir, err
+}
+
+func resolveSerfStateDirWithProject(workDir, override, stateHome string) (identifier.Project, string, error) {
+	if strings.TrimSpace(override) != "" {
+		return identifier.Project{}, override, nil
 	}
 	wd := strings.TrimSpace(workDir)
 	if wd == "" {
@@ -451,7 +504,11 @@ func resolveSerfStateDirWithStateHome(workDir, override, stateHome string) strin
 	// state dir as spawning from the main checkout. See
 	// cmdutil.ResolveStateKeyDir and
 	// docs/superpowers/specs/2026-07-02-native-worktree-tools-design.md §1.
-	return agent.RuntimeDirWithStateHome(cmdutil.GitOriginURLFromDir(wd), cmdutil.ResolveStateKeyDir(wd), "", strings.TrimSpace(stateHome))
+	project, stateDir, err := agent.RuntimeDirWithStateHome(wd, "", strings.TrimSpace(stateHome))
+	if err != nil {
+		return identifier.Project{}, "", fmt.Errorf("resolve project state: %w", err)
+	}
+	return project, stateDir, nil
 }
 
 // validateProviderCredentials checks that the credentials store has a value

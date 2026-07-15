@@ -13,17 +13,37 @@ import (
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/hubapi"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/rendezvous"
 )
+
+func testProjectID(t *testing.T, path string) string {
+	t.Helper()
+	project, err := identifier.ResolveProject(path)
+	if err != nil {
+		// Fuzz/coverage callers use synthetic paths only to exercise request
+		// decoding; ordinary endpoint tests use real temp directories.
+		return "test-project-0000000000"
+	}
+	return project.ID
+}
 
 func TestArchiveDecisionsFlowIntoTree(t *testing.T) {
 	// Verify that an ArchiveStore decision actually changes where a project lands
 	// in the tree — i.e. the real integration path flows through BuildTreeAt.
 	now := time.Unix(1_700_000_000, 0)
 	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "alpha")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	store := hubcore.NewArchiveStore(filepath.Join(dir, "index.db"))
-	// Manually archive "alpha" even though it has a fresh session.
-	if err := store.Set("project", "alpha", true, now); err != nil {
+	// Manually archive the canonical project even though it has a fresh session.
+	if err := store.Set("project", project.ID, true, now); err != nil {
 		t.Fatal(err)
 	}
 	decisions, err := store.Decisions()
@@ -35,7 +55,7 @@ func TestArchiveDecisionsFlowIntoTree(t *testing.T) {
 		ID:        "01ALPHA",
 		UpdatedAt: now.Add(-time.Hour),
 		CreatedAt: now.Add(-time.Hour),
-		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/alpha"},
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: project.CanonicalPath},
 	}}
 	tree := hubcore.BuildTreeAt(metas, nil, decisions, now)
 	// The manual-archive decision must push alpha out of Projects and into ArchivedProjects.
@@ -69,13 +89,21 @@ func TestArchiveDecisionsHelperNilSafe(t *testing.T) {
 
 func TestArchiveDecisionsHelperWithStore(t *testing.T) {
 	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "beta")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	store := hubcore.NewArchiveStore(filepath.Join(dir, "index.db"))
-	if err := store.Set("project", "beta", true, time.Unix(1_700_000_000, 0)); err != nil {
+	if err := store.Set("project", project.ID, true, time.Unix(1_700_000_000, 0)); err != nil {
 		t.Fatal(err)
 	}
 	s := &WebServer{cfg: hubcore.WebConfig{Archive: store}}
 	got := s.archiveDecisions()
-	if !got[hubcore.ArchiveKey{Kind: "project", ID: "beta"}] {
+	if !got[hubcore.ArchiveKey{Kind: "project", ID: project.ID}] {
 		t.Fatalf("archiveDecisions() missing expected decision; got %v", got)
 	}
 }
@@ -86,12 +114,13 @@ func TestArchiveDecisionsHelperWithStore(t *testing.T) {
 // WorkMillis and flattened Usage fields (WS2 B2).
 func TestAPISessionDetailCarriesWorkMetricsForEndedSession(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-metrics-0000000000")
+	sessionID := "02wMz5Txv47YP64RR3B9YJ"
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID:             "01WORKMETRICS",
+		ID:             sessionID,
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "work metrics task",
 		Model:          "gpt-5",
@@ -114,7 +143,7 @@ func TestAPISessionDetailCarriesWorkMetricsForEndedSession(t *testing.T) {
 	}
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Past: idx})
 
-	detail, ok := web.apiSessionDetail("01WORKMETRICS")
+	detail, ok := web.apiSessionDetail(sessionID)
 	if !ok {
 		t.Fatal("apiSessionDetail: session not found")
 	}
@@ -130,9 +159,17 @@ func TestAPISessionDetailCarriesWorkMetricsForEndedSession(t *testing.T) {
 	}
 }
 
-func TestOrphanLiveGroupingUsesPathSlug(t *testing.T) {
+func TestOrphanLiveGroupingUsesCanonicalProjectID(t *testing.T) {
+	projectDir := filepath.Join(t.TempDir(), "foo")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	roster := hubcore.NewRosterWithEntries(
-		hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "01L", WorkingDir: "/a/foo"}, SessionID: "01L", Status: "active"},
+		hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "01L", WorkingDir: project.CanonicalPath}, SessionID: "01L", Status: "active"},
 	)
 	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), Roster: roster})
 	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
@@ -142,18 +179,51 @@ func TestOrphanLiveGroupingUsesPathSlug(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if len(resp.Projects) != 1 || resp.Projects[0].Key != hubcore.ProjectSlug("/a/foo") {
-		t.Fatalf("orphan-live must use the path slug; got %+v", resp.Projects)
+	if len(resp.Projects) != 1 || resp.Projects[0].Key != project.ID {
+		t.Fatalf("orphan-live must use the canonical project ID; got %+v", resp.Projects)
+	}
+}
+
+func TestNavigationTreeInputsUsesRemoteCarriedProject(t *testing.T) {
+	projectDir := filepath.Join(t.TempDir(), "remote-project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := &hubcore.RemoteThreadCache{}
+	cache.Store([]appwire.Thread{{
+		ID:          "remote-thread",
+		Source:      "remote",
+		CWD:         filepath.Join(project.CanonicalPath, "linked-worktree"),
+		ProjectID:   project.ID,
+		ProjectPath: project.CanonicalPath,
+		Status:      appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+	}})
+	web := NewWebServer(hubcore.WebConfig{RemoteThreadCache: cache})
+
+	_, live, _ := web.navigationTreeInputs(t.Context())
+	if len(live) != 1 {
+		t.Fatalf("live entries = %d, want 1", len(live))
+	}
+	if live[0].Project != project {
+		t.Fatalf("remote carried project = %+v, want %+v", live[0].Project, project)
 	}
 }
 
 func TestTreeResponseProjectsCarryAdditiveFields(t *testing.T) {
 	now := time.Now()
+	projectDir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	metas := []schema.SessionMeta{
 		// 30h old: past the 24h "current" cutoff, well inside the 14-day "recent"
 		// window (see classifySession) — the plan's original "-time.Hour" fixture
 		// landed in "current", not "recent" as asserted below; see Task 4 deviation notes.
-		{ID: "01A", CreatedAt: now.Add(-30 * time.Hour), UpdatedAt: now.Add(-30 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/proj", GitBranch: "main"}},
+		{ID: "01A", CreatedAt: now.Add(-30 * time.Hour), UpdatedAt: now.Add(-30 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: projectDir, GitBranch: "main"}},
 	}
 	past := hubcore.NewPastIndex("")
 	web := NewWebServer(hubcore.WebConfig{Past: past})
@@ -180,12 +250,20 @@ func TestTreeResponseProjectsCarryAdditiveFields(t *testing.T) {
 
 func TestAPITreeProjectServedFromTree(t *testing.T) {
 	now := time.Now()
+	projectDir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	metas := []schema.SessionMeta{
-		{ID: "01A", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/proj"}},
+		{ID: "01A", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: project.CanonicalPath}},
 	}
 	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
 	web.injectMetasForTest(metas)
-	key := hubcore.ProjectSlug("/w/proj")
+	key := project.ID
 	req := httptest.NewRequest(http.MethodGet, "/api/tree/project?key="+key, nil)
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
@@ -279,14 +357,23 @@ func TestAPITree_SummaryOnly(t *testing.T) {
 // expand).
 func TestAPITree_ArchivedProjectsAreStubs(t *testing.T) {
 	now := time.Now()
-	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "index.db"))
-	if err := store.Set("project", "/w/old", true, now); err != nil {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "old")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := hubcore.NewArchiveStore(filepath.Join(root, "index.db"))
+	if err := store.Set("project", project.ID, true, now); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), Archive: store})
 	web.injectMetasForTest([]schema.SessionMeta{
-		{ID: "01OLD1", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/old"}},
-		{ID: "01OLD2", CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now.Add(-2 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/old"}},
+		{ID: "01OLD1", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: project.CanonicalPath}},
+		{ID: "01OLD2", CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now.Add(-2 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: project.CanonicalPath}},
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
 	rec := httptest.NewRecorder()
@@ -305,7 +392,7 @@ func TestAPITree_ArchivedProjectsAreStubs(t *testing.T) {
 	if stub.SessionCount != 2 {
 		t.Fatalf("archived stub session_count=%d, want 2", stub.SessionCount)
 	}
-	if stub.Key == "" || stub.Name == "" || stub.WorkingDir != "/w/old" || !stub.IsArchived {
+	if stub.Key != project.ID || stub.Name == "" || stub.WorkingDir != project.CanonicalPath || !stub.IsArchived {
 		t.Fatalf("archived stub missing metadata: %+v", stub)
 	}
 	// The lazy per-project endpoint still serves the full sessions.
@@ -346,12 +433,13 @@ func TestAPITree_NeedsYouCarriesAskPending(t *testing.T) {
 
 func TestAPISessionDetailHonorsRenamedMetaForLiveThread(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-renamed-0000000000")
+	sessionID := "02wMz5Txv5aIxgf9yVdd0N"
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01RENAMED", UpdatedAt: time.Now(),
+		ID: sessionID, UpdatedAt: time.Now(),
 		Name: "my chosen name", NameSource: "user",
 		Model: "gpt-5", EnvInfo: schema.EnvironmentInfo{WorkingDir: proj},
 	}); err != nil {
@@ -363,19 +451,19 @@ func TestAPISessionDetailHonorsRenamedMetaForLiveThread(t *testing.T) {
 	}
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 88, Address: "127.0.0.1:4588", WorkingDir: proj, Model: "gpt-5"})
-	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01RENAMED", status: appwire.ThreadStatusIdle})
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusIdle})
 	r.Refresh()
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
 	// Live daemon thread reports NO name (the rename lives only in meta).
 	web.sources.Add(&scriptedAppSource{
 		id: "local",
 		thread: appwire.Thread{
-			ID: "01RENAMED", SessionID: "01RENAMED", Source: "local",
+			ID: sessionID, SessionID: sessionID, Source: "local",
 			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}, CWD: proj,
-			Serf: appwire.SerfThread{Ref: "local:01RENAMED", Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Serf: appwire.SerfThread{Ref: "local:" + sessionID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 	})
-	detail, ok := web.apiSessionDetail("01RENAMED")
+	detail, ok := web.apiSessionDetail(sessionID)
 	if !ok {
 		t.Fatal("apiSessionDetail: not found")
 	}

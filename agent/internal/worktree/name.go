@@ -1,19 +1,16 @@
 // Package worktree holds the dependency-light decision cores and metadata
-// codec for serf's native git-worktree management (name validation, project
-// identifiers, metadata-sidecar filename encoding, and the sidecar file
-// format itself). Nothing in this package touches git or a git worktree's
-// working tree; the sidecar codec (sidecar.go) does plain os file I/O
-// against the metadata directory, but the manage_worktree tool
+// codec for serf's native git-worktree management (name validation,
+// metadata-sidecar filename encoding, and the sidecar file format itself).
+// Nothing in this package touches git or a git worktree's working tree; the
+// sidecar codec (sidecar.go) does plain os file I/O against the metadata
+// directory, but the manage_worktree tool
 // (agent/session_tools_worktree.go) owns every other side effect (git
 // invocations, env swaps) and calls these helpers to make its decisions.
 package worktree
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -78,32 +75,6 @@ func ValidateName(name string) error {
 		}
 	}
 	return nil
-}
-
-// maxBasenameBytes caps the human-legible prefix of a projectid (spec §6).
-const maxBasenameBytes = 48
-
-// basenameDisallowed matches every byte outside projectid's safe-basename
-// alphabet.
-var basenameDisallowed = regexp.MustCompile(`[^A-Za-z0-9._-]`)
-
-// ProjectID derives serf's stable per-repo-root identifier from the
-// canonical (symlink-resolved) absolute repo root: a human-legible,
-// filesystem-safe basename prefix plus a fixed-length content hash, so
-// identically-named repos checked out at different paths never collide
-// (spec §6). The hash is computed over the caller-supplied string verbatim;
-// ProjectID does not itself resolve symlinks or canonicalize the path.
-func ProjectID(canonicalAbsRoot string) string {
-	base := basenameDisallowed.ReplaceAllString(filepath.Base(canonicalAbsRoot), "")
-	base = strings.TrimLeft(base, ".-")
-	if len(base) > maxBasenameBytes {
-		base = base[:maxBasenameBytes]
-	}
-	if base == "" {
-		base = "repo"
-	}
-	sum := sha256.Sum256([]byte(canonicalAbsRoot))
-	return base + "-" + hex.EncodeToString(sum[:])[:16]
 }
 
 // sidecarEscape is the sole escape byte used by EncodeSidecarName. It is

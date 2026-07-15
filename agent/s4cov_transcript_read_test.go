@@ -319,33 +319,33 @@ func TestS4covParentBucketAndID(t *testing.T) {
 
 	t.Run("Empty", func(t *testing.T) {
 		t.Parallel()
-		bucket, id, scope, err := parentBucketAndID("", "/state/dir", "01CUR")
+		bucket, id, scope, err := parentBucketAndID("", "/state/dir", "02wMz5TxvEMoJEDTDGOTil")
 		if err != nil {
 			t.Fatalf("err: %v", err)
 		}
-		if bucket != "/state/dir" || id != "01CUR" || scope != scopeCurrentProject {
+		if bucket != "/state/dir" || id != "02wMz5TxvEMoJEDTDGOTil" || scope != scopeCurrentProject {
 			t.Fatalf("got (%q,%q,%q)", bucket, id, scope)
 		}
 	})
 
 	t.Run("Current", func(t *testing.T) {
 		t.Parallel()
-		bucket, id, scope, err := parentBucketAndID("current", "/state/dir", "01CUR")
+		bucket, id, scope, err := parentBucketAndID("current", "/state/dir", "02wMz5TxvEMoJEDTDGOTil")
 		if err != nil {
 			t.Fatalf("err: %v", err)
 		}
-		if bucket != "/state/dir" || id != "01CUR" || scope != scopeCurrentProject {
+		if bucket != "/state/dir" || id != "02wMz5TxvEMoJEDTDGOTil" || scope != scopeCurrentProject {
 			t.Fatalf("got (%q,%q,%q)", bucket, id, scope)
 		}
 	})
 
 	t.Run("LocalRef", func(t *testing.T) {
 		t.Parallel()
-		bucket, id, scope, err := parentBucketAndID("local:01ABC", "/state/dir", "01CUR")
+		bucket, id, scope, err := parentBucketAndID("local:02wMz5Txv2enqVTitaig6F", "/state/dir", "02wMz5TxvEMoJEDTDGOTil")
 		if err != nil {
 			t.Fatalf("err: %v", err)
 		}
-		if bucket != "/state/dir" || id != "01ABC" || scope != scopeCurrentProject {
+		if bucket != "/state/dir" || id != "02wMz5Txv2enqVTitaig6F" || scope != scopeCurrentProject {
 			t.Fatalf("got (%q,%q,%q)", bucket, id, scope)
 		}
 	})
@@ -354,15 +354,15 @@ func TestS4covParentBucketAndID(t *testing.T) {
 		t.Parallel()
 		sh := newStateHome(t)
 		current := newBucketUnder(t, sh)
-		bucket, id, scope, err := parentBucketAndID("proj:abcdef:01PROJ", current, "01CUR")
+		bucket, id, scope, err := parentBucketAndID("proj:project-a-0123456789:02wMz5Txv47YP64RR3B9YJ", current, "02wMz5TxvEMoJEDTDGOTil")
 		if err != nil {
 			t.Fatalf("err: %v", err)
 		}
-		want := filepath.Join(sh, "serf", "projects", "abcdef")
+		want := filepath.Join(sh, "serf", "projects", "project-a-0123456789")
 		if bucket != want {
 			t.Fatalf("bucket = %q, want %q", bucket, want)
 		}
-		if id != "01PROJ" || scope != scopeAllProjects {
+		if id != "02wMz5Txv47YP64RR3B9YJ" || scope != scopeAllProjects {
 			t.Fatalf("id=%q scope=%q", id, scope)
 		}
 	})
@@ -373,7 +373,7 @@ func TestS4covParentBucketAndID(t *testing.T) {
 		if err := os.MkdirAll(flat, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		_, _, _, err := parentBucketAndID("proj:abcdef:01PROJ", flat, "01CUR")
+		_, _, _, err := parentBucketAndID("proj:project-a-0123456789:02wMz5Txv47YP64RR3B9YJ", flat, "02wMz5TxvEMoJEDTDGOTil")
 		if err == nil || !strings.Contains(err.Error(), "no project root") {
 			t.Fatalf("err = %v, want 'no project root'", err)
 		}
@@ -389,11 +389,11 @@ func TestS4covParentBucketAndID(t *testing.T) {
 
 	t.Run("BareValidID", func(t *testing.T) {
 		t.Parallel()
-		bucket, id, scope, err := parentBucketAndID("01BARE", "/state/dir", "01CUR")
+		bucket, id, scope, err := parentBucketAndID("02wMz5Txv5aIxgf9yVdd0N", "/state/dir", "02wMz5TxvEMoJEDTDGOTil")
 		if err != nil {
 			t.Fatalf("err: %v", err)
 		}
-		if bucket != "/state/dir" || id != "01BARE" || scope != scopeCurrentProject {
+		if bucket != "/state/dir" || id != "02wMz5Txv5aIxgf9yVdd0N" || scope != scopeCurrentProject {
 			t.Fatalf("got (%q,%q,%q)", bucket, id, scope)
 		}
 	})

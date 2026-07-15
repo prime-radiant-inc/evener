@@ -36,7 +36,7 @@ Assert the output names: `transcript:` = `<bucket>/sessions/$SID.transcript.json
 `meta:` = `<bucket>/sessions/$SID.meta.json`, and **`jobs:` =
 `<bucket>/sessions/$SID/jobs.jsonl`** (the per-session SUBDIR form — NOT a flat
 `$SID.jobs.jsonl`). `--json` emits `{transcript_ref, transcript_path, meta_path,
-jobs_path, bucket_hash}`.
+jobs_path, project_id}`.
 
 ### 2 — watches collapses coalescing and reads the self-loop verdict
 
@@ -76,9 +76,9 @@ serf-doctor tree $SID --observers
 ```
 
 Assert the caller session roots a tree with its delegate child (`delegate <SID>
-(agent_type) status → proj:<hash>:<sid>`) and, when the worker is observed, an
+(agent_type) status → proj:<project-id>:<sid>`) and, when the worker is observed, an
 `observer <SID>` edge — children resolved by their transcript ref so a
-cross-bucket child still links.
+cross-project child still links.
 
 ### 5 — the doctor agent diagnoses a HEALTHY session (zero findings)
 

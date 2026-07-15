@@ -96,7 +96,7 @@ default markdown read stopped announcing its window.
 rm -rf "$proj"
 ```
 
-Session metadata under `~/.local/state/serf/projects/<bucketHash>/`
+Session metadata under `~/.local/state/serf/projects/<project-id>/`
 lingers but is harmless. To purge: find the bucket for `$proj` and
 delete its `sessions/` entries.
 

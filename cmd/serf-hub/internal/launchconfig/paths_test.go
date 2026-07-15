@@ -3,41 +3,31 @@ package launchconfig
 import (
 	"path/filepath"
 	"testing"
+
+	"primeradiant.com/serf/identifier"
 )
 
-func checkProjectID_Stable(t *testing.T) {
-	a := ProjectID("/home/jesse/git/prime-radiant/serf")
-	b := ProjectID("/home/jesse/git/prime-radiant/serf")
-	if a != b {
-		t.Errorf("ProjectID not stable: %q vs %q", a, b)
-	}
-	if len(a) != 16 {
-		t.Errorf("ProjectID length = %d, want 16", len(a))
-	}
-}
-
-func checkProjectID_Differs(t *testing.T) {
-	a := ProjectID("/a")
-	b := ProjectID("/b")
-	if a == b {
-		t.Errorf("ProjectID collision for /a and /b: %q", a)
-	}
-}
-
 func checkPathsFor(t *testing.T) {
-	root := "/var/serf"
-	cwd := "/proj"
-	p := PathsFor(root, cwd)
+	root := t.TempDir()
+	cwd := t.TempDir()
+	p, err := PathsFor(root, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
 	wantGlobal := filepath.Join(root, "launch.toml")
 	wantProject := filepath.Join(cwd, ".serf", "launch.local.toml")
-	wantLegacyProject := filepath.Join(root, "projects", ProjectID(cwd), "launch.toml")
-	wantMeta := filepath.Join(root, "projects", ProjectID(cwd), "meta.toml")
+	wantLegacyProject := filepath.Join(root, "projects", project.ID, "launch.toml")
+	wantMeta := filepath.Join(root, "projects", project.ID, "meta.toml")
 	wantRepo := filepath.Join(cwd, ".serf", "launch.toml")
 	if p.Global != wantGlobal {
 		t.Errorf("Global = %q, want %q", p.Global, wantGlobal)
 	}
-	if p.Project != wantProject {
-		t.Errorf("Project = %q, want %q", p.Project, wantProject)
+	if p.ProjectFile != wantProject || p.Project != project {
+		t.Errorf("Project = %#v/%q, want %#v/%q", p.Project, p.ProjectFile, project, wantProject)
 	}
 	if p.LegacyProject != wantLegacyProject {
 		t.Errorf("LegacyProject = %q, want %q", p.LegacyProject, wantLegacyProject)
@@ -47,6 +37,27 @@ func checkPathsFor(t *testing.T) {
 	}
 	if p.Repo != wantRepo {
 		t.Errorf("Repo = %q, want %q", p.Repo, wantRepo)
+	}
+}
+
+func TestPathsFor_ResolvesProjectIdentity(t *testing.T) {
+	stateRoot := t.TempDir()
+	cwd := t.TempDir()
+	paths, err := PathsFor(stateRoot, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paths.Project.ID == "" || paths.Project.CanonicalPath == "" {
+		t.Fatalf("Paths.Project = %#v, want resolved project identity", paths.Project)
+	}
+	if filepath.Dir(filepath.Dir(paths.LegacyProject)) != filepath.Join(stateRoot, "projects") {
+		t.Fatalf("LegacyProject = %q, want under state projects", paths.LegacyProject)
+	}
+}
+
+func TestPathsFor_NonexistentPathReturnsError(t *testing.T) {
+	if _, err := PathsFor(t.TempDir(), filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("PathsFor(nonexistent) returned nil error")
 	}
 }
 

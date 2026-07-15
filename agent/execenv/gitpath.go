@@ -2,11 +2,12 @@ package execenv
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/internal/gitpath"
+	"primeradiant.com/serf/identifier"
 )
 
 // gitExecTimeout bounds every git subprocess exec this file runs to resolve a
@@ -51,10 +52,10 @@ func GitRootOrEmpty(env ExecutionEnvironment, cwd string) string {
 
 func gitRootUncached(env ExecutionEnvironment, cwd string) string {
 	if _, ok := env.(*LocalExecutionEnvironment); ok {
-		if root, ok := gitpath.StructuralWorktreeRoot(cwd); ok {
+		if root, ok := structuralWorktreeRoot(cwd); ok {
 			return root
 		}
-		if !gitpath.HasGitEntryAncestor(cwd) {
+		if !hasGitEntryAncestor(cwd) {
 			return ""
 		}
 	}
@@ -102,28 +103,50 @@ func ResolveMainRepoRoot(env ExecutionEnvironment, cwd string) string {
 }
 
 func mainRepoRootUncached(env ExecutionEnvironment, cwd string) string {
-	if root, ok := structuralMainRoot(cwd); ok {
-		return root
+	root, isGit, err := resolveMainRepoRoot(env, cwd)
+	if err != nil || !isGit {
+		return ""
 	}
-	return gitBinaryMainRoot(env, cwd)
+	return root
 }
 
-// structuralMainRoot resolves the main repo root using only direct os calls,
-// walking up from cwd to the nearest .git entry. It handles main checkouts
-// (.git directory) and standard linked worktrees (.git pointer file) without
-// invoking git. It returns ok=false when there is no .git ancestor or the
-// pointer is a non-worktree shape (e.g. a submodule), leaving those to the
-// git-binary fallback.
-//
-// The walk uses os directly, not the env's confined file API: when serf is
-// launched in a repo subdirectory, .git lives above the env RootDir, where the
-// env would reject the read and silently break resolution.
-//
-// This is a thin wrapper around internal/gitpath.StructuralMainRoot, kept
-// under its established local name so this package's tests and fuzz targets
-// can keep referencing it directly.
-func structuralMainRoot(cwd string) (string, bool) {
-	return gitpath.StructuralMainRoot(cwd)
+func structuralWorktreeRoot(cwd string) (string, bool) {
+	dir := filepath.Clean(cwd)
+	for {
+		gitPath := filepath.Join(dir, ".git")
+		info, err := os.Stat(gitPath)
+		if err == nil {
+			if info.IsDir() {
+				return resolveClean(dir), true
+			}
+			content, err := os.ReadFile(gitPath)
+			if err == nil {
+				if _, ok := identifier.ParseGitdirPointer(string(content)); ok {
+					return resolveClean(dir), true
+				}
+			}
+			return "", false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
+func hasGitEntryAncestor(cwd string) bool {
+	dir := filepath.Clean(cwd)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
 }
 
 // mainRootFromGitdirPointer parses a linked worktree's ".git" pointer file
@@ -132,89 +155,40 @@ func structuralMainRoot(cwd string) (string, bool) {
 // are resolved against ancestorDir (the directory holding the .git file). It is
 // a pure function (no filesystem access), so it is trivially fuzzable.
 //
-// Thin wrapper around internal/gitpath.MainRootFromGitdirPointer; see
-// structuralMainRoot for why the wrapper exists.
+// Compatibility wrapper around the shared identifier helper.
 func mainRootFromGitdirPointer(pointerContent, ancestorDir string) (string, bool) {
-	return gitpath.MainRootFromGitdirPointer(pointerContent, ancestorDir)
+	return identifier.MainRootFromGitdirPointer(pointerContent, ancestorDir)
 }
 
 // parseGitdirPointer extracts the path from the first "gitdir: <path>" line of a
 // git pointer file. Returns ok=false when no non-empty gitdir line is present.
 //
-// Thin wrapper around internal/gitpath.ParseGitdirPointer; see
-// structuralMainRoot for why the wrapper exists.
+// Compatibility wrapper around the shared identifier helper.
 func parseGitdirPointer(content string) (string, bool) {
-	return gitpath.ParseGitdirPointer(content)
-}
-
-// gitBinaryMainRoot is the fallback for cases the structural parse misses (moved
-// worktrees, submodules). It derives a candidate main root from
-// `git rev-parse --git-common-dir`, sanity-checks it, and for submodules falls
-// back to `git rev-parse --show-toplevel` (the submodule's own working-tree
-// root). Returns "" when git is unavailable or cwd is not in a repository.
-func gitBinaryMainRoot(env ExecutionEnvironment, cwd string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), gitExecTimeout)
-	defer cancel()
-
-	res, err := env.ExecCommand(ctx, "git rev-parse --git-common-dir", gitExecTimeoutMS(), cwd, nil)
-	if err != nil || res.ExitCode != 0 {
-		return ""
-	}
-	common := strings.TrimSpace(res.Stdout)
-	if common == "" {
-		return ""
-	}
-	candidate := mainRootCandidateFromCommonDir(cwd, common)
-	if candidate != "" && gitEntryResolvesToCommon(candidate, common) {
-		return candidate
-	}
-
-	// Submodule (or otherwise non-worktree) recovery: the common dir is
-	// ".git/modules/<sub>", whose parent is not a working tree and is shared by
-	// every submodule of the superproject. --show-toplevel yields the
-	// submodule's own working-tree root instead.
-	res2, err := env.ExecCommand(ctx, "git rev-parse --show-toplevel", gitExecTimeoutMS(), cwd, nil)
-	if err != nil || res2.ExitCode != 0 {
-		return ""
-	}
-	top := strings.TrimSpace(res2.Stdout)
-	if top == "" {
-		return ""
-	}
-	return resolveClean(top)
+	return identifier.ParseGitdirPointer(content)
 }
 
 // mainRootCandidateFromCommonDir turns a `git rev-parse --git-common-dir` result
 // into a candidate main repo root: the parent of the common .git dir. The output
 // is relative from a main checkout but absolute from a linked worktree, so cwd
 // is joined only for the relative case (joining an absolute common with cwd
-// would mangle it into "<cwd>/<abs>"). Symlinks in the result are resolved
-// best-effort.
+// would mangle it into "<cwd>/<abs>"). The shared helper performs lexical
+// normalization only; local callers validate symlinks separately.
 //
-// Thin wrapper around internal/gitpath.MainRootCandidateFromCommonDir; see
-// structuralMainRoot for why the wrapper exists.
+// Compatibility wrapper around the shared identifier helper.
 func mainRootCandidateFromCommonDir(cwd, common string) string {
-	return gitpath.MainRootCandidateFromCommonDir(cwd, common)
-}
-
-// gitEntryResolvesToCommon reports whether candidate holds a .git entry that
-// resolves back to the given common .git dir. This distinguishes a genuine main
-// repo root (candidate/.git IS the common dir) from a submodule's fake candidate
-// (<super>/.git/modules, which has no .git entry of its own).
-//
-// Thin wrapper around internal/gitpath.GitEntryResolvesToCommon; see
-// structuralMainRoot for why the wrapper exists.
-func gitEntryResolvesToCommon(candidate, common string) bool {
-	return gitpath.GitEntryResolvesToCommon(candidate, common)
+	return identifier.MainRootCandidateFromCommonDir(cwd, common)
 }
 
 // resolveClean returns the symlink-resolved, cleaned form of p, falling back to
 // a plain Clean when the path cannot be resolved (e.g. it does not exist).
 //
-// Thin wrapper around internal/gitpath.ResolveClean; see structuralMainRoot
-// for why the wrapper exists.
+// Compatibility wrapper retaining the old local normalization seam.
 func resolveClean(p string) string {
-	return gitpath.ResolveClean(p)
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(p)
 }
 
 // DirsFromRootToCwd returns the chain of directories from root down to cwd

@@ -29,6 +29,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/hubapi"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/selfupdate"
 	"primeradiant.com/serf/llm"
@@ -49,6 +50,48 @@ func TestAssetsInvalidPathIs404(t *testing.T) {
 		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("GET %s: status=%d, want 404", p, rec.Code)
+		}
+	}
+}
+
+func TestLocalRouteID_CleanBreakAndExternalRefs(t *testing.T) {
+	if !isLocalRouteID("02wMz5TxvEMoJEDTDGOTil") {
+		t.Fatal("valid new session ID should be local")
+	}
+	for _, legacy := range []string{"01ARZ3NDEKTSV4RRFFQ69G5FAV", "local:01ARZ3NDEKTSV4RRFFQ69G5FAV"} {
+		if isLocalRouteID(legacy) {
+			t.Fatalf("legacy local ref %q should not be local", legacy)
+		}
+	}
+	if isLocalRouteID("codex:thread_abc") {
+		t.Fatal("external source-qualified ref should not be classified as local")
+	}
+	if got := appRefFromRouteID("codex:thread_abc"); got != "codex:thread_abc" {
+		t.Fatalf("external ref was rewritten: %q", got)
+	}
+
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
+	source := &scriptedAppSource{
+		id: "codex",
+		thread: appwire.Thread{
+			ID: "thread_abc", SessionID: "thread_abc", Name: "opaque external thread", Source: "codex",
+			Serf: appwire.SerfThread{Ref: "codex:thread_abc"},
+		},
+	}
+	web.sources.Add(source)
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/codex:thread_abc", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("external source-specific session route status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if len(source.readParams) == 0 {
+		t.Fatalf("external source received read params %+v", source.readParams)
+	}
+	for _, params := range source.readParams {
+		if params.Ref != "codex:thread_abc" {
+			t.Fatalf("external source received rewritten ref in read params %+v", source.readParams)
 		}
 	}
 }
@@ -829,6 +872,7 @@ func TestWeb_APITreeMarksConfiguredCodexEndedThreadsRecent(t *testing.T) {
 	}
 	if found == nil {
 		t.Fatalf("ended codex thread missing from project tree: %+v", got.Projects)
+		return
 	}
 	if found.Live || found.State != "ended" {
 		t.Fatalf("ended codex thread live metadata = %+v, want live=false state=ended", *found)
@@ -1257,13 +1301,13 @@ func TestStateLabel_ErroredAndNeedsYou(t *testing.T) {
 
 func TestWeb_ProjectSettingsListEscapesWorkingDir(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "escaped-settings")
+	proj := filepath.Join(root, "projects", "project-settings-0000000000")
 	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	workingDir := "/projects/a&b?c#d"
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01PSET", UpdatedAt: time.Now(), OriginalPrompt: "project settings",
+		ID: "02wMz5TxvFpYrooBkiqxAp", UpdatedAt: time.Now(), OriginalPrompt: "project settings",
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: workingDir},
 	}); err != nil {
 		t.Fatal(err)
@@ -1554,12 +1598,12 @@ func TestWeb_Index_NewRouteForwardsPromptToWorkspace(t *testing.T) {
 // image bytes can be fetched lazily via /s/<id>/images/<sha>.
 func TestWeb_SessionImage_ServesShaReferencedInputImage(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01IMG", UpdatedAt: time.Now(), OriginalPrompt: "image demo",
+		ID: "02wMz5TxvHIJQPOuIBJQct", UpdatedAt: time.Now(), OriginalPrompt: "image demo",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1567,9 +1611,9 @@ func TestWeb_SessionImage_ServesShaReferencedInputImage(t *testing.T) {
 	imgBytes := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 'p', 'a', 'y', 'l', 'o', 'a', 'd'}
 	wantSha := imageSha(imgBytes)
 
-	tpath := filepath.Join(proj, "sessions", "01IMG.transcript.jsonl")
+	tpath := filepath.Join(proj, "sessions", "02wMz5TxvHIJQPOuIBJQct.transcript.jsonl")
 	tw, err := transcript.NewWriter(tpath, transcript.Header{
-		SessionID: "01IMG", ProfileID: "openai", Model: "gpt-5",
+		SessionID: "02wMz5TxvHIJQPOuIBJQct", ProfileID: "openai", Model: "gpt-5",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1595,7 +1639,7 @@ func TestWeb_SessionImage_ServesShaReferencedInputImage(t *testing.T) {
 		Past:    idx,
 	})
 
-	imgReq := httptest.NewRequest(http.MethodGet, "/s/01IMG/images/"+wantSha, nil)
+	imgReq := httptest.NewRequest(http.MethodGet, "/s/02wMz5TxvHIJQPOuIBJQct/images/"+wantSha, nil)
 	imgReq.Host = "127.0.0.1:9180"
 	imgRec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(imgRec, imgReq)
@@ -1612,12 +1656,12 @@ func TestWeb_SessionImage_ServesShaReferencedInputImage(t *testing.T) {
 
 func TestWeb_SessionImage_ServesShaReferencedToolResultImage(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "toolimg")
+	proj := filepath.Join(root, "projects", "project-toolimg-0000000000")
 	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01TOOLIMG", UpdatedAt: time.Now(), OriginalPrompt: "tool image demo",
+		ID: "02wMz5TxvIl3yzzcpdlu4x", UpdatedAt: time.Now(), OriginalPrompt: "tool image demo",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1625,9 +1669,9 @@ func TestWeb_SessionImage_ServesShaReferencedToolResultImage(t *testing.T) {
 	imgBytes := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 't', 'o', 'o', 'l'}
 	wantSha := imageSha(imgBytes)
 
-	tpath := filepath.Join(proj, "sessions", "01TOOLIMG.transcript.jsonl")
+	tpath := filepath.Join(proj, "sessions", "02wMz5TxvIl3yzzcpdlu4x.transcript.jsonl")
 	tw, err := transcript.NewWriter(tpath, transcript.Header{
-		SessionID: "01TOOLIMG", ProfileID: "openai", Model: "gpt-5",
+		SessionID: "02wMz5TxvIl3yzzcpdlu4x", ProfileID: "openai", Model: "gpt-5",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1661,7 +1705,7 @@ func TestWeb_SessionImage_ServesShaReferencedToolResultImage(t *testing.T) {
 		Past:    idx,
 	})
 
-	imgReq := httptest.NewRequest(http.MethodGet, "/s/01TOOLIMG/images/"+wantSha, nil)
+	imgReq := httptest.NewRequest(http.MethodGet, "/s/02wMz5TxvIl3yzzcpdlu4x/images/"+wantSha, nil)
 	imgReq.Host = "127.0.0.1:9180"
 	imgRec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(imgRec, imgReq)
@@ -1696,18 +1740,18 @@ func TestWeb_SessionImage_BadSha(t *testing.T) {
 // USER_INPUT turn for the session.
 func TestWeb_SessionImage_UnknownSha(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "y")
+	proj := filepath.Join(root, "projects", "project-y-0123456789")
 	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01NOIMG", UpdatedAt: time.Now(),
+		ID: "02wMz5TxvKDoXaaLN6ENX1", UpdatedAt: time.Now(),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	tpath := filepath.Join(proj, "sessions", "01NOIMG.transcript.jsonl")
+	tpath := filepath.Join(proj, "sessions", "02wMz5TxvKDoXaaLN6ENX1.transcript.jsonl")
 	tw, err := transcript.NewWriter(tpath, transcript.Header{
-		SessionID: "01NOIMG", ProfileID: "openai", Model: "gpt-5",
+		SessionID: "02wMz5TxvKDoXaaLN6ENX1", ProfileID: "openai", Model: "gpt-5",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1725,7 +1769,7 @@ func TestWeb_SessionImage_UnknownSha(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: idx})
 
 	allZeros := strings.Repeat("0", 64)
-	req := httptest.NewRequest(http.MethodGet, "/s/01NOIMG/images/"+allZeros, nil)
+	req := httptest.NewRequest(http.MethodGet, "/s/02wMz5TxvKDoXaaLN6ENX1/images/"+allZeros, nil)
 	req.Host = "127.0.0.1:9180"
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
@@ -2448,15 +2492,16 @@ func TestWeb_ThreadDocument_DirectGet_ServesChromeLessThreadDocument(t *testing.
 }
 
 func TestWeb_ThreadDocument_RouteEncoding(t *testing.T) {
-	// Seed the past index with a local session whose canonical ID is "child-A"
+	// Seed the past index with a local session whose canonical ID is valid.
 	// (what canonicalRouteID produces by stripping the "local:" source prefix).
-	// The test then requests /thread/local%3Achild-A — the %3A must be decoded
+	// The test then requests an encoded local ref — the %3A must be decoded
 	// to ':' before the prefix is stripped, otherwise the wrong key is used and
 	// the registered session is not found.
 	stateParent := t.TempDir()
-	stateDir := filepath.Join(stateParent, "project1")
+	stateDir := filepath.Join(stateParent, "project-route-0000000000")
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
 	sessionMeta := schema.SessionMeta{
-		ID:   "child-A",
+		ID:   sessionID,
 		Name: "route-encoding-test-title",
 	}
 	if err := schema.SaveSessionMeta(stateDir, sessionMeta); err != nil {
@@ -2474,9 +2519,9 @@ func TestWeb_ThreadDocument_RouteEncoding(t *testing.T) {
 	})
 
 	// Encoded local ref: %3A must decode to ':' so the source prefix is stripped
-	// and the "child-A" session is resolved from the past index.
+	// and the local session is resolved from the past index.
 	t.Run("encoded-local-ref", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/thread/local%3Achild-A", nil)
+		req := httptest.NewRequest(http.MethodGet, "/thread/local%3A"+sessionID, nil)
 		req.Host = "127.0.0.1:9180"
 		rec := httptest.NewRecorder()
 		web.Handler().ServeHTTP(rec, req)
@@ -2582,12 +2627,12 @@ func TestWeb_ThreadDocument_CompactsSubagentChromeAndFooter(t *testing.T) {
 
 func TestWeb_ThreadDocument_StateRefreshPreservesCompactLocationMode(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID:           "01THREADSTATE",
+		ID:           "02wMz5TxvLgZ6BB3uYgqz5",
 		WorktreePath: "/state/worktrees/serf/dlg_01H",
 		EnvInfo:      schema.EnvironmentInfo{WorkingDir: "/tmp/thread-wd", GitBranch: "thread-main"},
 	}); err != nil {
@@ -2603,7 +2648,7 @@ func TestWeb_ThreadDocument_StateRefreshPreservesCompactLocationMode(t *testing.
 		Past:    past,
 	})
 
-	threadReq := httptest.NewRequest(http.MethodGet, "/thread/01THREADSTATE", nil)
+	threadReq := httptest.NewRequest(http.MethodGet, "/thread/02wMz5TxvLgZ6BB3uYgqz5", nil)
 	threadReq.Host = "127.0.0.1:9180"
 	threadRec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(threadRec, threadReq)
@@ -2616,11 +2661,11 @@ func TestWeb_ThreadDocument_StateRefreshPreservesCompactLocationMode(t *testing.
 			t.Errorf("initial thread document unexpectedly renders location telemetry %q:\n%s", forbidden, initial)
 		}
 	}
-	if !strings.Contains(initial, `hx-get="/_partials/s/01THREADSTATE/state?thread_document=1"`) {
+	if !strings.Contains(initial, `hx-get="/_partials/s/02wMz5TxvLgZ6BB3uYgqz5/state?thread_document=1"`) {
 		t.Fatalf("initial thread document did not preserve mode in status refresh URL:\n%s", initial)
 	}
 
-	refreshReq := httptest.NewRequest(http.MethodGet, "/_partials/s/01THREADSTATE/state?thread_document=1", nil)
+	refreshReq := httptest.NewRequest(http.MethodGet, "/_partials/s/02wMz5TxvLgZ6BB3uYgqz5/state?thread_document=1", nil)
 	refreshReq.Host = "127.0.0.1:9180"
 	refreshReq.Header.Set("HX-Request", "true")
 	refreshRec := httptest.NewRecorder()
@@ -2634,7 +2679,7 @@ func TestWeb_ThreadDocument_StateRefreshPreservesCompactLocationMode(t *testing.
 		}
 	}
 
-	normalReq := httptest.NewRequest(http.MethodGet, "/_partials/s/01THREADSTATE/state", nil)
+	normalReq := httptest.NewRequest(http.MethodGet, "/_partials/s/02wMz5TxvLgZ6BB3uYgqz5/state", nil)
 	normalReq.Host = "127.0.0.1:9180"
 	normalReq.Header.Set("HX-Request", "true")
 	normalRec := httptest.NewRecorder()
@@ -2759,7 +2804,7 @@ func TestWeb_SessionRoute_LocalRefCanonicalizesWorkspaceURL(t *testing.T) {
 func TestWeb_WorkspacePartial_LiveSession_RendersHeader(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{PID: 10, Address: "127.0.0.1:55556"})
-	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01LIVE001", status: "idle"})
+	r := hubcore.NewRoster(dir, fakeProber{sessionID: "02wMz5Txv1C3Hut0M8GCeB", status: "idle"})
 	r.Refresh()
 
 	web := NewWebServer(hubcore.WebConfig{
@@ -2767,7 +2812,7 @@ func TestWeb_WorkspacePartial_LiveSession_RendersHeader(t *testing.T) {
 		Roster:  r,
 		Past:    hubcore.NewPastIndex(""),
 	})
-	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01LIVE001/workspace", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/02wMz5Txv1C3Hut0M8GCeB/workspace", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -2777,8 +2822,8 @@ func TestWeb_WorkspacePartial_LiveSession_RendersHeader(t *testing.T) {
 		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "01LIVE001") {
-		t.Errorf("body missing session id 01LIVE001: %q", body)
+	if !strings.Contains(body, "02wMz5Txv1C3Hut0M8GCeB") {
+		t.Errorf("body missing session id 02wMz5Txv1C3Hut0M8GCeB: %q", body)
 	}
 	if !strings.Contains(body, "idle") {
 		t.Errorf("body missing status 'idle': %q", body)
@@ -2796,7 +2841,7 @@ func TestWeb_WorkspacePartial_LiveSession_RendersHeader(t *testing.T) {
 func TestWeb_WorkspacePartial_LocalRefCanonicalizesToLiveSession(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{PID: 10, Address: "127.0.0.1:55556"})
-	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01LIVE001", status: "idle"})
+	r := hubcore.NewRoster(dir, fakeProber{sessionID: "02wMz5Txv1C3Hut0M8GCeB", status: "idle"})
 	r.Refresh()
 
 	web := NewWebServer(hubcore.WebConfig{
@@ -2804,7 +2849,7 @@ func TestWeb_WorkspacePartial_LocalRefCanonicalizesToLiveSession(t *testing.T) {
 		Roster:  r,
 		Past:    hubcore.NewPastIndex(""),
 	})
-	req := httptest.NewRequest(http.MethodGet, "/_partials/s/local:01LIVE001/workspace", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/local:02wMz5Txv1C3Hut0M8GCeB/workspace", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -2813,7 +2858,7 @@ func TestWeb_WorkspacePartial_LocalRefCanonicalizesToLiveSession(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "01LIVE001") {
+	if body := rec.Body.String(); !strings.Contains(body, "02wMz5Txv1C3Hut0M8GCeB") {
 		t.Fatalf("body missing canonical local session id: %q", body)
 	}
 }
@@ -2822,10 +2867,10 @@ func TestWeb_WorkspacePartial_LocalRefCanonicalizesToLiveSession(t *testing.T) {
 // renders via the workspace partial with its OriginalPrompt and state="ended".
 func TestWeb_WorkspacePartial_PastSession_RendersTitleAndState(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
 	_ = schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01PAST001", UpdatedAt: time.Now(), OriginalPrompt: "fix the widget", TurnCount: 7,
+		ID: "02wMz5Txv2enqVTitaig6F", UpdatedAt: time.Now(), OriginalPrompt: "fix the widget", TurnCount: 7,
 	})
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
@@ -2837,7 +2882,7 @@ func TestWeb_WorkspacePartial_PastSession_RendersTitleAndState(t *testing.T) {
 		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
-	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01PAST001/workspace", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/02wMz5Txv2enqVTitaig6F/workspace", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -2860,10 +2905,10 @@ func TestWeb_WorkspacePartial_PastSession_RendersTitleAndState(t *testing.T) {
 // (attach button, drop zone, mode chip, three composer zones, status row).
 func TestWeb_WorkspacePartial_RendersBottomStripAffordances(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
 	_ = schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01BOTTOM01", UpdatedAt: time.Now(), OriginalPrompt: "render bottom strip",
+		ID: "02wMz5Txv47YP64RR3B9YJ", UpdatedAt: time.Now(), OriginalPrompt: "render bottom strip",
 	})
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
@@ -2875,7 +2920,7 @@ func TestWeb_WorkspacePartial_RendersBottomStripAffordances(t *testing.T) {
 		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
-	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01BOTTOM01/workspace", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/02wMz5Txv47YP64RR3B9YJ/workspace", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -2906,10 +2951,10 @@ func TestWeb_WorkspacePartial_RendersBottomStripAffordances(t *testing.T) {
 // with EnvInfo.WorkingDir populated renders the cwd in the status row.
 func TestWeb_WorkspacePartial_RendersWorkingDirInStatusRow(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
 	_ = schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01CWD00001", UpdatedAt: time.Now(), OriginalPrompt: "cwd test",
+		ID: "02wMz5Txv5aIxgf9yVdd0N", UpdatedAt: time.Now(), OriginalPrompt: "cwd test",
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/foo", GitBranch: "feature/bar"},
 	})
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
@@ -2922,7 +2967,7 @@ func TestWeb_WorkspacePartial_RendersWorkingDirInStatusRow(t *testing.T) {
 		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
-	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01CWD00001/workspace", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/02wMz5Txv5aIxgf9yVdd0N/workspace", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -2968,10 +3013,10 @@ func TestWeb_WorkspacePartial_RendersWorkingDirInStatusRow(t *testing.T) {
 // returns the new input_status block content.
 func TestWeb_State_RendersInputStatusPartial(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
 	_ = schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01STATE001", UpdatedAt: time.Now(),
+		ID: "02wMz5Txv733WHFsVy66SR", UpdatedAt: time.Now(),
 		WorktreePath: "/state/worktrees/serf/dlg_01H",
 		EnvInfo:      schema.EnvironmentInfo{WorkingDir: "/tmp/wd", GitBranch: "main"},
 	})
@@ -2985,7 +3030,7 @@ func TestWeb_State_RendersInputStatusPartial(t *testing.T) {
 		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
-	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01STATE001/state", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/02wMz5Txv733WHFsVy66SR/state", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -3028,7 +3073,7 @@ func TestWeb_State_RendersInputStatusPartial(t *testing.T) {
 	if strings.Contains(body, `data-tasks-trigger`) {
 		t.Errorf("state partial should not duplicate task trigger; task status row lives above input: %q", body)
 	}
-	data := web.workspaceData("01STATE001")
+	data := web.workspaceData("02wMz5Txv733WHFsVy66SR")
 	if data.Worktree != "dlg_01H" {
 		t.Errorf("WorkspaceData.Worktree = %q, want dlg_01H", data.Worktree)
 	}
@@ -3038,10 +3083,10 @@ func TestWeb_State_RendersInputStatusPartial(t *testing.T) {
 // cost while the Details panel retains the full cost estimate.
 func TestWeb_State_RendersCostEstimate(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
 	_ = schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01STATECOST", UpdatedAt: time.Now(),
+		ID: "02wMz5Txv8Vo4rqb3QYZuV", UpdatedAt: time.Now(),
 		Model: "claude-opus-4-5",
 		CumulativeUsage: schema.CumulativeUsage{
 			InputTokens:  100_000,
@@ -3058,7 +3103,7 @@ func TestWeb_State_RendersCostEstimate(t *testing.T) {
 		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
-	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01STATECOST/state", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/02wMz5Txv8Vo4rqb3QYZuV/state", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -3072,7 +3117,7 @@ func TestWeb_State_RendersCostEstimate(t *testing.T) {
 		t.Errorf("compact state partial should omit cost detail: %q", body)
 	}
 
-	detailsReq := httptest.NewRequest(http.MethodGet, "/_partials/s/01STATECOST/details", nil)
+	detailsReq := httptest.NewRequest(http.MethodGet, "/_partials/s/02wMz5Txv8Vo4rqb3QYZuV/details", nil)
 	detailsReq.Host = "127.0.0.1:9180"
 	detailsReq.Header.Set("HX-Request", "true")
 	detailsRec := httptest.NewRecorder()
@@ -3098,7 +3143,7 @@ func TestWeb_State_ShowsWorkTimeAndTokenClustersWithLeanFetch(t *testing.T) {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"session_id":        "01WORKTOK",
+			"session_id":        "02wMz5Txv9yYdSRJat13MZ",
 			"state":             "active",
 			"turns":             12,
 			"model":             "gpt-5",
@@ -3113,16 +3158,16 @@ func TestWeb_State_ShowsWorkTimeAndTokenClustersWithLeanFetch(t *testing.T) {
 
 	addr := strings.TrimPrefix(daemon.URL, "http://")
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
-		Entry:     rendezvous.Entry{Address: addr, SessionID: "01WORKTOK", Model: "gpt-5", WorkingDir: "/tmp/worktok"},
-		SessionID: "01WORKTOK",
+		Entry:     rendezvous.Entry{Address: addr, SessionID: "02wMz5Txv9yYdSRJat13MZ", Model: "gpt-5", WorkingDir: "/tmp/worktok"},
+		SessionID: "02wMz5Txv9yYdSRJat13MZ",
 		Status:    "active",
 	})
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: roster})
 	source := &scriptedAppSource{
 		id: "local",
 		thread: appwire.Thread{
-			ID:            "01WORKTOK",
-			SessionID:     "01WORKTOK",
+			ID:            "02wMz5Txv9yYdSRJat13MZ",
+			SessionID:     "02wMz5Txv9yYdSRJat13MZ",
 			Source:        "local",
 			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
 			ModelProvider: "gpt-5",
@@ -3133,7 +3178,7 @@ func TestWeb_State_ShowsWorkTimeAndTokenClustersWithLeanFetch(t *testing.T) {
 				{ID: "t3", Status: appwire.TurnStatusCompleted},
 			},
 			Serf: appwire.SerfThread{
-				Ref:              "local:01WORKTOK",
+				Ref:              "local:02wMz5Txv9yYdSRJat13MZ",
 				Capabilities:     appwire.ThreadCapabilities{Send: true},
 				ContextUsed:      42000,
 				ContextWindow:    100000,
@@ -3151,7 +3196,7 @@ func TestWeb_State_ShowsWorkTimeAndTokenClustersWithLeanFetch(t *testing.T) {
 	}
 	web.sources.Add(source)
 
-	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01WORKTOK/state", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/02wMz5Txv9yYdSRJat13MZ/state", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -3198,11 +3243,11 @@ func TestWeb_State_ShowsWorkTimeAndTokenClustersWithLeanFetch(t *testing.T) {
 // span, using the freshest generated Name rather than the long OriginalPrompt.
 func TestWeb_StatePartialRefreshesGeneratedSessionTitle(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	const sessionID = "01TITLE001"
+	const sessionID = "02wMz5TxvBRJC3228LTWod"
 	longPrompt := "please investigate the session titling feature because the web ui is showing this entire initial prompt instead of a compact generated title"
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{ID: sessionID, UpdatedAt: time.Now(), OriginalPrompt: longPrompt}); err != nil {
 		t.Fatal(err)
@@ -3241,11 +3286,11 @@ func TestWeb_StatePartialRefreshesGeneratedSessionTitle(t *testing.T) {
 
 func TestWeb_WorkspaceInitialMetaDoesNotDuplicateTitleOOB(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	const sessionID = "01TITLE002"
+	const sessionID = "02wMz5TxvCu3kdckfnw0Gh"
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{ID: sessionID, UpdatedAt: time.Now(), Name: "Compact title"}); err != nil {
 		t.Fatal(err)
 	}
@@ -3310,11 +3355,11 @@ func TestWorktreeLabelUsesLeafAndIgnoresEmpty(t *testing.T) {
 
 func TestWeb_WorkspaceDataUsesPersistedWorktree(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	const sessionID = "01WORKTREE"
+	const sessionID = "02wMz5TxvEMoJEDTDGOTil"
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID:           sessionID,
 		WorktreePath: "/state/worktrees/serf/dlg_01H",
@@ -3350,7 +3395,7 @@ func TestWorkspaceDataUsesDaemonStatusTurnCountForLiveLocalSession(t *testing.T)
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"session_id":  "01TURNCOUNT",
+			"session_id":  "02wMz5TxvFpYrooBkiqxAp",
 			"state":       "active",
 			"turns":       37,
 			"model":       "gpt-5",
@@ -3361,13 +3406,13 @@ func TestWorkspaceDataUsesDaemonStatusTurnCountForLiveLocalSession(t *testing.T)
 
 	addr := strings.TrimPrefix(daemon.URL, "http://")
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
-		Entry:     rendezvous.Entry{Address: addr, SessionID: "01TURNCOUNT", Model: "gpt-5", WorkingDir: "/tmp/turns"},
-		SessionID: "01TURNCOUNT",
+		Entry:     rendezvous.Entry{Address: addr, SessionID: "02wMz5TxvFpYrooBkiqxAp", Model: "gpt-5", WorkingDir: "/tmp/turns"},
+		SessionID: "02wMz5TxvFpYrooBkiqxAp",
 		Status:    "active",
 	})
 	web := NewWebServer(hubcore.WebConfig{Roster: roster})
 
-	got := web.workspaceData("01TURNCOUNT")
+	got := web.workspaceData("02wMz5TxvFpYrooBkiqxAp")
 	if got.TurnCount != 37 {
 		t.Fatalf("TurnCount = %d, want daemon /status turns 37", got.TurnCount)
 	}
@@ -3383,7 +3428,7 @@ func TestWorkspaceData_LiveSessionCarriesCostEstimate(t *testing.T) {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"session_id":  "01COSTLIVE",
+			"session_id":  "02wMz5TxvHIJQPOuIBJQct",
 			"state":       "active",
 			"turns":       1,
 			"model":       "claude-opus-4-5",
@@ -3398,13 +3443,13 @@ func TestWorkspaceData_LiveSessionCarriesCostEstimate(t *testing.T) {
 
 	addr := strings.TrimPrefix(daemon.URL, "http://")
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
-		Entry:     rendezvous.Entry{Address: addr, SessionID: "01COSTLIVE", Model: "claude-opus-4-5", WorkingDir: "/tmp/costlive"},
-		SessionID: "01COSTLIVE",
+		Entry:     rendezvous.Entry{Address: addr, SessionID: "02wMz5TxvHIJQPOuIBJQct", Model: "claude-opus-4-5", WorkingDir: "/tmp/costlive"},
+		SessionID: "02wMz5TxvHIJQPOuIBJQct",
 		Status:    "active",
 	})
 	web := NewWebServer(hubcore.WebConfig{Roster: roster})
 
-	got := web.workspaceData("01COSTLIVE")
+	got := web.workspaceData("02wMz5TxvHIJQPOuIBJQct")
 	if got.Cost != "~$1.00" {
 		t.Fatalf("Cost = %q, want ~$1.00", got.Cost)
 	}
@@ -3415,11 +3460,11 @@ func TestWorkspaceData_LiveSessionCarriesCostEstimate(t *testing.T) {
 // CumulativeUsage.
 func TestWorkspaceData_PastSessionCarriesCostEstimate(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	const sessionID = "01COSTPAST"
+	const sessionID = "02wMz5TxvIl3yzzcpdlu4x"
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID:    sessionID,
 		Model: "claude-opus-4-5",
@@ -3446,11 +3491,11 @@ func TestWorkspaceData_PastSessionCarriesCostEstimate(t *testing.T) {
 // CumulativeUsage renders no Cost, rather than a misleading "~$0.00".
 func TestWorkspaceData_NoCostWhenUsageNil(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	const sessionID = "01COSTNONE"
+	const sessionID = "02wMz5TxvKDoXaaLN6ENX1"
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID:    sessionID,
 		Model: "claude-opus-4-5",
@@ -3491,7 +3536,7 @@ func TestWeb_Send_ClosedSessionRequiresSpawner(t *testing.T) {
 
 func TestWeb_SendLiveStartTurnErrorDoesNotResume(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "past")
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
@@ -3569,8 +3614,17 @@ func TestWeb_SendLiveStartTurnErrorDoesNotResume(t *testing.T) {
 
 func TestWeb_Send_EndedRosterEntryResumesForwardsAndKeepsReplay(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "past")
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir)
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sessionID, ProfileID: "openai", Model: "gpt-5",
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: workingDir},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		TurnCount: 2, OriginalPrompt: "second task",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
@@ -3600,7 +3654,7 @@ func TestWeb_Send_EndedRosterEntryResumesForwardsAndKeepsReplay(t *testing.T) {
 		SourceID:   "local",
 		ThreadID:   sessionID,
 		SessionID:  sessionID,
-		WorkingDir: "/tmp/project",
+		WorkingDir: workingDir,
 		Model:      "gpt-5",
 		StartedAt:  time.Now().Add(-time.Hour),
 	})
@@ -3609,7 +3663,7 @@ func TestWeb_Send_EndedRosterEntryResumesForwardsAndKeepsReplay(t *testing.T) {
 			if req.SessionID != sessionID {
 				t.Fatalf("resume session=%q, want %q", req.SessionID, sessionID)
 			}
-			if req.StateDir != stateDir || req.WorkingDir != "/tmp/project" {
+			if req.StateDir != stateDir || req.WorkingDir != workingDir {
 				t.Fatalf("resume request=%+v", req)
 			}
 			if req.Resolved.Effective.Model != "openai/gpt-5" {
@@ -3623,7 +3677,7 @@ func TestWeb_Send_EndedRosterEntryResumesForwardsAndKeepsReplay(t *testing.T) {
 				SourceID:   "local",
 				ThreadID:   sessionID,
 				SessionID:  sessionID,
-				WorkingDir: "/tmp/project",
+				WorkingDir: workingDir,
 				Model:      "gpt-5",
 				StartedAt:  time.Now(),
 			}
@@ -3660,11 +3714,11 @@ func TestWeb_Send_EndedRosterEntryResumesForwardsAndKeepsReplay(t *testing.T) {
 // + meta, POST /s/<id>/fork, expect 200 + JSON child_session_id.
 func TestWeb_Fork_CallsForkSession(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 
 	// Build the parent session using the shared helper from agent fork tests.
 	// We mirror the logic inline here since it's in a different package.
-	parentID := "01PARENT00000000000000001"
+	parentID := "02wMz5Txv5aIxgf9yVdd0N"
 	sessionsDir := filepath.Join(proj, "sessions")
 	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -3727,14 +3781,14 @@ func TestWeb_Fork_CallsForkSession(t *testing.T) {
 // queries for one by name, and asserts only that result is returned.
 func TestWeb_ApiSearch_FiltersPast(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
 	_ = schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01MATCH", UpdatedAt: time.Now(), OriginalPrompt: "fix the frobnitz",
+		ID: "02wMz5TxvLgZ6BB3uYgqz5", UpdatedAt: time.Now(), OriginalPrompt: "fix the frobnitz",
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"},
 	})
 	_ = schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01OTHER", UpdatedAt: time.Now(), OriginalPrompt: "unrelated work",
+		ID: "02wMz5TxvN5hMuXqRCJbTp", UpdatedAt: time.Now(), OriginalPrompt: "unrelated work",
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/beta"},
 	})
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
@@ -3755,11 +3809,11 @@ func TestWeb_ApiSearch_FiltersPast(t *testing.T) {
 		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "01MATCH") {
-		t.Errorf("body missing 01MATCH: %q", body)
+	if !strings.Contains(body, "02wMz5TxvLgZ6BB3uYgqz5") {
+		t.Errorf("body missing 02wMz5TxvLgZ6BB3uYgqz5: %q", body)
 	}
-	if strings.Contains(body, "01OTHER") {
-		t.Errorf("body incorrectly includes 01OTHER: %q", body)
+	if strings.Contains(body, "02wMz5TxvN5hMuXqRCJbTp") {
+		t.Errorf("body incorrectly includes 02wMz5TxvN5hMuXqRCJbTp: %q", body)
 	}
 	var resp searchResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
@@ -3768,17 +3822,17 @@ func TestWeb_ApiSearch_FiltersPast(t *testing.T) {
 	if len(resp.Past) != 1 {
 		t.Fatalf("past results = %d, want 1: %q", len(resp.Past), rec.Body.String())
 	}
-	if resp.Past[0].Title != "01MATCH" {
-		t.Fatalf("past title = %q, want compact ID without original prompt", resp.Past[0].Title)
+	if resp.Past[0].Title != "session uYgqz5" {
+		t.Fatalf("past title = %q, want compact generated ID title without original prompt", resp.Past[0].Title)
 	}
 }
 
 func TestWeb_ApiSearch_PastUsesGeneratedNameTitle(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
 	_ = schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID:             "01MATCH",
+		ID:             "02wMz5TxvLgZ6BB3uYgqz5",
 		UpdatedAt:      time.Now(),
 		Name:           "Generated Frobnitz Title",
 		OriginalPrompt: "unrelated original prompt",
@@ -3815,25 +3869,31 @@ func TestWeb_ApiSearch_PastUsesGeneratedNameTitle(t *testing.T) {
 
 func TestWeb_ApiSearch_OrdersLiveResultsByStartedAtAndID(t *testing.T) {
 	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	const (
+		newestID = "02wMz5Txv1C3Hut0M8GCeB"
+		olderID  = "02wMz5Txv2enqVTitaig6F"
+		tieAID   = "02wMz5Txv47YP64RR3B9YJ"
+		tieBID   = "02wMz5Txv5aIxgf9yVdd0N"
+	)
 	r := hubcore.NewRosterWithEntries(
 		hubcore.LiveEntry{
 			Entry:     rendezvous.Entry{PID: 2, StartedAt: base.Add(-time.Hour), WorkingDir: "/projects/serf"},
-			SessionID: "02LIVEOLD",
+			SessionID: olderID,
 			Status:    appwire.ThreadStatusIdle,
 		},
 		hubcore.LiveEntry{
 			Entry:     rendezvous.Entry{PID: 1, StartedAt: base, WorkingDir: "/projects/serf"},
-			SessionID: "01LIVENEW",
+			SessionID: newestID,
 			Status:    appwire.ThreadStatusIdle,
 		},
 		hubcore.LiveEntry{
 			Entry:     rendezvous.Entry{PID: 4, StartedAt: base.Add(-2 * time.Hour), WorkingDir: "/projects/serf"},
-			SessionID: "04LIVETIEB",
+			SessionID: tieBID,
 			Status:    appwire.ThreadStatusIdle,
 		},
 		hubcore.LiveEntry{
 			Entry:     rendezvous.Entry{PID: 3, StartedAt: base.Add(-2 * time.Hour), WorkingDir: "/projects/serf"},
-			SessionID: "03LIVETIEA",
+			SessionID: tieAID,
 			Status:    appwire.ThreadStatusIdle,
 		},
 	)
@@ -3842,7 +3902,7 @@ func TestWeb_ApiSearch_OrdersLiveResultsByStartedAtAndID(t *testing.T) {
 		Roster:  r,
 		Past:    hubcore.NewPastIndex(""),
 	})
-	req := httptest.NewRequest(http.MethodGet, "/api/search?q=live", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/search", nil)
 	req.Host = "127.0.0.1:9180"
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
@@ -3858,7 +3918,7 @@ func TestWeb_ApiSearch_OrdersLiveResultsByStartedAtAndID(t *testing.T) {
 	for _, result := range got.Live {
 		gotIDs = append(gotIDs, result.ID)
 	}
-	want := []string{"01LIVENEW", "02LIVEOLD", "03LIVETIEA", "04LIVETIEB"}
+	want := []string{newestID, olderID, tieAID, tieBID}
 	if strings.Join(gotIDs, ",") != strings.Join(want, ",") {
 		t.Fatalf("live order=%v, want %v", gotIDs, want)
 	}
@@ -4597,12 +4657,13 @@ func TestWeb_Settings_Providers_RendersSerfLaunchContract(t *testing.T) {
 // for an ended session reads <StateDir>/tasks/<id>.json and returns its contents.
 func TestWeb_SessionTasks_PastReturnsPersistedFile(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	sessionID := "02wMz5Txv733WHFsVy66SR"
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01PASTTASK", UpdatedAt: time.Now(), OriginalPrompt: "demo",
+		ID: sessionID, UpdatedAt: time.Now(), OriginalPrompt: "demo",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -4615,7 +4676,7 @@ func TestWeb_SessionTasks_PastReturnsPersistedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := json.MarshalIndent(tasks, "", "  ")
-	if err := os.WriteFile(filepath.Join(tasksDir, "01PASTTASK.json"), data, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(tasksDir, sessionID+".json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -4629,7 +4690,7 @@ func TestWeb_SessionTasks_PastReturnsPersistedFile(t *testing.T) {
 		Past:    idx,
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01PASTTASK/tasks", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/"+sessionID+"/tasks", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -4651,7 +4712,7 @@ func TestWeb_SessionTasks_PastReturnsPersistedFile(t *testing.T) {
 // tasks have been persisted for the session.
 func TestWeb_SessionTasks_PastNoTasksFile(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -4688,13 +4749,13 @@ func TestWeb_SessionTasks_PastNoTasksFile(t *testing.T) {
 // and verifies the hub proxies through.
 func TestWeb_SessionTasks_LiveProxiesDaemon(t *testing.T) {
 	dir := t.TempDir()
-	daemon := startAppwireTestDaemon(t, dir, "01LIVETASK", func(app *appserver.Server) {
+	daemon := startAppwireTestDaemon(t, dir, "02wMz5Txv9yYdSRJat13MZ", func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodSerfTasksList, func(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
 			return appwire.TaskListResponse{Data: []task.Task{{ID: 1, Type: task.TaskTypeImplement, Description: "live task", Status: task.TaskInProgress}}}, nil
 		})
 	})
 	defer daemon.Close()
-	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01LIVETASK", status: "idle"})
+	r := hubcore.NewRoster(dir, fakeProber{sessionID: "02wMz5Txv9yYdSRJat13MZ", status: "idle"})
 	r.Refresh()
 
 	web := NewWebServer(hubcore.WebConfig{
@@ -4702,7 +4763,7 @@ func TestWeb_SessionTasks_LiveProxiesDaemon(t *testing.T) {
 		Roster:  r,
 		Past:    hubcore.NewPastIndex(""),
 	})
-	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01LIVETASK/tasks", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/02wMz5Txv9yYdSRJat13MZ/tasks", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -4837,14 +4898,14 @@ func TestWeb_Send_ForwardsTextAndImages(t *testing.T) {
 func TestWeb_Send_ImageOnly_Forwards(t *testing.T) {
 	var got appwire.TurnStartParams
 	dir := t.TempDir()
-	daemon := startAppwireTestDaemon(t, dir, "01IMGONLY", func(app *appserver.Server) {
+	daemon := startAppwireTestDaemon(t, dir, "02wMz5TxvHIJQPOuIBJQct", func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 			got = params
 			return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}, nil
 		})
 	})
 	defer daemon.Close()
-	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01IMGONLY", status: "idle"})
+	r := hubcore.NewRoster(dir, fakeProber{sessionID: "02wMz5TxvHIJQPOuIBJQct", status: "idle"})
 	r.Refresh()
 
 	web := NewWebServer(hubcore.WebConfig{
@@ -4866,7 +4927,7 @@ func TestWeb_Send_ImageOnly_Forwards(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/s/01IMGONLY/send", strings.NewReader(string(reqBody)))
+	req := httptest.NewRequest(http.MethodPost, "/s/02wMz5TxvHIJQPOuIBJQct/send", strings.NewReader(string(reqBody)))
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("Origin", "http://127.0.0.1:9180")
 	req.Header.Set("Content-Type", "application/json")
@@ -4965,12 +5026,12 @@ func TestWeb_Send_RejectsOversizeImage(t *testing.T) {
 
 func TestWeb_WorkspacePartial_RosterEndedSessionKeepsResumeSendEnabled(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01ENDED001", UpdatedAt: time.Now(), OriginalPrompt: "resume this", TurnCount: 2,
+		ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: time.Now(), OriginalPrompt: "resume this", TurnCount: 2,
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"},
 	}); err != nil {
 		t.Fatal(err)
@@ -4981,7 +5042,7 @@ func TestWeb_WorkspacePartial_RosterEndedSessionKeepsResumeSendEnabled(t *testin
 	}
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 10, Address: "127.0.0.1:55556", WorkingDir: "/projects/serf"})
-	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01ENDED001", status: appwire.ThreadStatusClosed})
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "02wMz5Txv1C3Hut0M8GCeB", status: appwire.ThreadStatusClosed})
 	r.Refresh()
 
 	web := NewWebServer(hubcore.WebConfig{
@@ -4990,7 +5051,7 @@ func TestWeb_WorkspacePartial_RosterEndedSessionKeepsResumeSendEnabled(t *testin
 		Past:    idx,
 		Spawner: &fakeSpawner{},
 	})
-	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01ENDED001/workspace", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/02wMz5Txv1C3Hut0M8GCeB/workspace", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -5013,13 +5074,13 @@ func TestWeb_WorkspacePartial_RosterEndedSessionKeepsResumeSendEnabled(t *testin
 // at turn N" banner above the workspace title.
 func TestWeb_Workspace_ForkOriginalBanner(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	// Original (preserved) branch — carries ForkLabel.
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01ORIGINAL", UpdatedAt: time.Now().Add(-time.Hour),
+		ID: "02wMz5Txv2enqVTitaig6F", UpdatedAt: time.Now().Add(-time.Hour),
 		OriginalPrompt: "the original prompt",
 		ForkLabel:      "before TDD",
 		DivergenceTurn: 5,
@@ -5028,9 +5089,9 @@ func TestWeb_Workspace_ForkOriginalBanner(t *testing.T) {
 	}
 	// New branch — its ParentSessionID points back at the original.
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01NEWBRANCH", UpdatedAt: time.Now(),
+		ID: "02wMz5Txv47YP64RR3B9YJ", UpdatedAt: time.Now(),
 		OriginalPrompt:  "the new branch title",
-		ParentSessionID: "01ORIGINAL",
+		ParentSessionID: "02wMz5Txv2enqVTitaig6F",
 		DivergenceTurn:  5,
 	}); err != nil {
 		t.Fatal(err)
@@ -5045,7 +5106,7 @@ func TestWeb_Workspace_ForkOriginalBanner(t *testing.T) {
 		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
-	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01ORIGINAL/workspace", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/02wMz5Txv2enqVTitaig6F/workspace", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -5074,22 +5135,22 @@ func TestWeb_Workspace_ForkOriginalBanner(t *testing.T) {
 // The parent crumb is a real link to the parent's workspace.
 func TestWeb_Workspace_SubagentParentBreadcrumb(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	// Parent session.
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01PARENT", UpdatedAt: time.Now().Add(-time.Hour),
+		ID: "02wMz5Txv5aIxgf9yVdd0N", UpdatedAt: time.Now().Add(-time.Hour),
 		OriginalPrompt: "Refactor auth token cache",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	// Subagent — IsSubagent + ParentSessionID points at the parent.
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01CHILD", UpdatedAt: time.Now(),
+		ID: "02wMz5Txv733WHFsVy66SR", UpdatedAt: time.Now(),
 		OriginalPrompt:  "verify-billing",
-		ParentSessionID: "01PARENT",
+		ParentSessionID: "02wMz5Txv5aIxgf9yVdd0N",
 		IsSubagent:      true,
 	}); err != nil {
 		t.Fatal(err)
@@ -5104,7 +5165,7 @@ func TestWeb_Workspace_SubagentParentBreadcrumb(t *testing.T) {
 		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
-	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01CHILD/workspace", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/02wMz5Txv733WHFsVy66SR/workspace", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -5115,10 +5176,10 @@ func TestWeb_Workspace_SubagentParentBreadcrumb(t *testing.T) {
 	}
 	body := rec.Body.String()
 	wants := []string{
-		"subagent-parent-banner",    // the breadcrumb container
-		`href="/s/01PARENT"`,        // a real link up to the parent workspace
-		"Refactor auth token cache", // the parent's title as the crumb label
-		"verify-billing",            // the current (subagent) crumb
+		"subagent-parent-banner",           // the breadcrumb container
+		`href="/s/02wMz5Txv5aIxgf9yVdd0N"`, // a real link up to the parent workspace
+		"Refactor auth token cache",        // the parent's title as the crumb label
+		"verify-billing",                   // the current (subagent) crumb
 	}
 	for _, w := range wants {
 		if !strings.Contains(body, w) {
@@ -5126,7 +5187,7 @@ func TestWeb_Workspace_SubagentParentBreadcrumb(t *testing.T) {
 		}
 	}
 	// A non-subagent session must NOT get the breadcrumb.
-	req2 := httptest.NewRequest(http.MethodGet, "/_partials/s/01PARENT/workspace", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/_partials/s/02wMz5Txv5aIxgf9yVdd0N/workspace", nil)
 	req2.Host = "127.0.0.1:9180"
 	req2.Header.Set("HX-Request", "true")
 	rec2 := httptest.NewRecorder()
@@ -5197,8 +5258,17 @@ func TestWeb_SessionAction_CompactForwards(t *testing.T) {
 
 func TestWeb_SessionAction_CompactResumesPastThread(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "past")
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir)
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sessionID, ProfileID: "openai", Model: "gpt-5",
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: workingDir},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		TurnCount: 2, OriginalPrompt: "second task",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
@@ -5231,17 +5301,18 @@ func TestWeb_SessionAction_CompactResumesPastThread(t *testing.T) {
 	resumeCalls := 0
 	spawner := &fakeRPCSpawner{
 		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
-			if req.SessionID != sessionID || req.StateDir != stateDir {
+			if req.SessionID != sessionID || req.StateDir != stateDir || req.WorkingDir != workingDir {
 				t.Fatalf("resume request=%+v", req)
 			}
 			resumeCalls++
 			entry := rendezvous.Entry{
-				PID:       201,
-				Protocol:  appwire.ProtocolVersion,
-				Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
-				SourceID:  "local",
-				ThreadID:  sessionID,
-				SessionID: sessionID,
+				PID:        201,
+				Protocol:   appwire.ProtocolVersion,
+				Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:   "local",
+				ThreadID:   sessionID,
+				SessionID:  sessionID,
+				WorkingDir: workingDir,
 			}
 			writeRendezvous(t, runDir, entry)
 			return entry, nil
@@ -5335,7 +5406,7 @@ func TestWeb_SessionAction_NotLive_404(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
 
 	for _, action := range []string{"interrupt", "compact", "shutdown", "clear"} {
-		req := httptest.NewRequest(http.MethodPost, "/s/01NOLIVE/"+action, nil)
+		req := httptest.NewRequest(http.MethodPost, "/s/02wMz5Txv8Vo4rqb3QYZuV/"+action, nil)
 		req.Host = "127.0.0.1:9180"
 		req.Header.Set("Origin", "http://127.0.0.1:9180")
 		rec := httptest.NewRecorder()
@@ -5406,7 +5477,7 @@ func TestWeb_Steer_NotLive_404(t *testing.T) {
 	r.Refresh()
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
 
-	req := httptest.NewRequest(http.MethodPost, "/s/01STEEROFF/steer", strings.NewReader(`{"text":"hello"}`))
+	req := httptest.NewRequest(http.MethodPost, "/s/02wMz5Txv8Vo4rqb3QYZuV/steer", strings.NewReader(`{"text":"hello"}`))
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("Origin", "http://127.0.0.1:9180")
 	req.Header.Set("Content-Type", "application/json")
@@ -5758,13 +5829,21 @@ func TestWeb_APIHealthReportsCodexLaunchSpawnCapability(t *testing.T) {
 
 func TestWeb_APITreeReturnsRefsAndNormalizesAwaitingInput(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workingDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(workingDir)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01TREE", UpdatedAt: time.Now(), OriginalPrompt: "tree task",
-		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"},
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: project.CanonicalPath},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -5774,7 +5853,7 @@ func TestWeb_APITreeReturnsRefsAndNormalizesAwaitingInput(t *testing.T) {
 	}
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{
-		PID: 44, Address: "127.0.0.1:4444", WorkingDir: "/projects/serf", Model: "gpt-5",
+		PID: 44, Address: "127.0.0.1:4444", WorkingDir: project.CanonicalPath, Model: "gpt-5",
 	})
 	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01TREE", status: appwire.ThreadStatusAwaiting})
 	r.Refresh()
@@ -5806,12 +5885,20 @@ func TestWeb_APITreeReturnsRefsAndNormalizesAwaitingInput(t *testing.T) {
 }
 
 func TestWeb_APITreeGroupsLiveOnlySessionsByProject(t *testing.T) {
+	workingDir := filepath.Join(t.TempDir(), "serf")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(workingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 50, Address: "127.0.0.1:4050", WorkingDir: "/projects/serf", Model: "gpt-5"})
-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 51, Address: "127.0.0.1:4051", WorkingDir: "/projects/serf", Model: "gpt-5"})
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 50, Address: "127.0.0.1:4050", WorkingDir: project.CanonicalPath, Model: "gpt-5"})
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 51, Address: "127.0.0.1:4051", WorkingDir: project.CanonicalPath, Model: "gpt-5"})
 	r := hubcore.NewRoster(runDir, perAddrProber{byAddr: map[string]struct{ SessionID, Status string }{
-		"127.0.0.1:4050": {SessionID: "01LIVEA", Status: appwire.ThreadStatusIdle},
-		"127.0.0.1:4051": {SessionID: "01LIVEB", Status: appwire.ThreadStatusAwaiting},
+		"127.0.0.1:4050": {SessionID: "02wMz5Txv9yYdSRJat13MZ", Status: appwire.ThreadStatusIdle},
+		"127.0.0.1:4051": {SessionID: "02wMz5TxvBRJC3228LTWod", Status: appwire.ThreadStatusAwaiting},
 	}})
 	r.Refresh()
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
@@ -5839,14 +5926,22 @@ func TestWeb_APITreeGroupsLiveOnlySessionsByProject(t *testing.T) {
 	if len(serfProjects[0].Sessions) != 2 || serfProjects[0].RollupState != "awaiting" {
 		t.Fatalf("unexpected serf project: %+v", serfProjects[0])
 	}
-	if serfProjects[0].WorkingDir != "/projects/serf" {
-		t.Fatalf("working_dir=%q, want /projects/serf", serfProjects[0].WorkingDir)
+	if serfProjects[0].WorkingDir != project.CanonicalPath {
+		t.Fatalf("working_dir=%q, want %q", serfProjects[0].WorkingDir, project.CanonicalPath)
 	}
 }
 
 func TestWeb_APITreeSkipsLiveEntriesUntilSessionIDKnown(t *testing.T) {
+	workingDir := filepath.Join(t.TempDir(), "serf")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(workingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 52, Address: "127.0.0.1:4052", WorkingDir: "/projects/serf", Model: "gpt-5"})
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 52, Address: "127.0.0.1:4052", WorkingDir: project.CanonicalPath, Model: "gpt-5"})
 	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "", status: appwire.ThreadStatusIdle})
 	r.Refresh()
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
@@ -5869,12 +5964,12 @@ func TestWeb_APITreeSkipsLiveEntriesUntilSessionIDKnown(t *testing.T) {
 
 func TestWeb_APISessionDetailsLiveAndPast(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01DETAIL", UpdatedAt: time.Now(), OriginalPrompt: "details task", Model: "gpt-5", ProfileID: "openai", TurnCount: 3,
+		ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: time.Now(), OriginalPrompt: "details task", Model: "gpt-5", ProfileID: "openai", TurnCount: 3,
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf", GitBranch: "serf-hub"},
 	}); err != nil {
 		t.Fatal(err)
@@ -5885,11 +5980,11 @@ func TestWeb_APISessionDetailsLiveAndPast(t *testing.T) {
 	}
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 45, Address: "127.0.0.1:4545", WorkingDir: "/projects/serf", Model: "gpt-5"})
-	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01DETAIL", status: appwire.ThreadStatusIdle})
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "02wMz5Txv1C3Hut0M8GCeB", status: appwire.ThreadStatusIdle})
 	r.Refresh()
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/local:01DETAIL", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/local:02wMz5Txv1C3Hut0M8GCeB", nil)
 	req.Host = "127.0.0.1:9180"
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
@@ -5900,7 +5995,7 @@ func TestWeb_APISessionDetailsLiveAndPast(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.Ref != "local:01DETAIL" || !got.Live || got.Title != "details task" || got.WorkingDir != "/projects/serf" {
+	if got.Ref != "local:02wMz5Txv1C3Hut0M8GCeB" || !got.Live || got.Title != "details task" || got.WorkingDir != "/projects/serf" {
 		t.Fatalf("unexpected detail: %+v", got)
 	}
 	if !got.Capabilities.Resume {
@@ -5913,12 +6008,12 @@ func TestWeb_APISessionDetailsLiveAndPast(t *testing.T) {
 
 func TestWeb_APISessionDetailsLiveWithoutAppWireDoesNotAdvertiseActions(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01DETAIL", UpdatedAt: time.Now(), OriginalPrompt: "details task", Model: "gpt-5", ProfileID: "openai", TurnCount: 3,
+		ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: time.Now(), OriginalPrompt: "details task", Model: "gpt-5", ProfileID: "openai", TurnCount: 3,
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf", GitBranch: "serf-hub"},
 	}); err != nil {
 		t.Fatal(err)
@@ -5929,11 +6024,11 @@ func TestWeb_APISessionDetailsLiveWithoutAppWireDoesNotAdvertiseActions(t *testi
 	}
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 45, Address: "127.0.0.1:4545", WorkingDir: "/projects/serf", Model: "gpt-5"})
-	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01DETAIL", status: appwire.ThreadStatusIdle})
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "02wMz5Txv1C3Hut0M8GCeB", status: appwire.ThreadStatusIdle})
 	r.Refresh()
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/local:01DETAIL", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/local:02wMz5Txv1C3Hut0M8GCeB", nil)
 	req.Host = "127.0.0.1:9180"
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
@@ -6162,26 +6257,26 @@ func TestWeb_APISpawnSchema(t *testing.T) {
 func TestWeb_APISessionActionClearReturnsRef(t *testing.T) {
 	var clearParams appwire.ThreadClearParams
 	runDir := t.TempDir()
-	daemon := startAppwireTestDaemon(t, runDir, "01OLD", func(app *appserver.Server) {
+	daemon := startAppwireTestDaemon(t, runDir, "02wMz5Txv2enqVTitaig6F", func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadClear, func(_ context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 			clearParams = params
 			return appwire.ThreadClearResponse{
-				Ref: "local:01NEW",
+				Ref: "local:02wMz5Txv1C3Hut0M8GCeB",
 				Thread: appwire.Thread{
-					ID:        "01NEW",
-					SessionID: "01NEW",
+					ID:        "02wMz5Txv1C3Hut0M8GCeB",
+					SessionID: "02wMz5Txv1C3Hut0M8GCeB",
 					Source:    "local",
-					Serf:      appwire.SerfThread{Ref: "local:01NEW"},
+					Serf:      appwire.SerfThread{Ref: "local:02wMz5Txv1C3Hut0M8GCeB"},
 				},
 			}, nil
 		})
 	})
 	defer daemon.Close()
-	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01OLD", status: appwire.ThreadStatusIdle})
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "02wMz5Txv2enqVTitaig6F", status: appwire.ThreadStatusIdle})
 	r.Refresh()
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:01OLD/clear", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:02wMz5Txv2enqVTitaig6F/clear", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("Origin", "http://127.0.0.1:9180")
 	rec := httptest.NewRecorder()
@@ -6193,11 +6288,11 @@ func TestWeb_APISessionActionClearReturnsRef(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &clearResp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if clearResp.Ref != "local:01NEW" || clearResp.SessionID != "01NEW" {
+	if clearResp.Ref != "local:02wMz5Txv1C3Hut0M8GCeB" || clearResp.SessionID != "02wMz5Txv1C3Hut0M8GCeB" {
 		t.Fatalf("unexpected clear response: %+v", clearResp)
 	}
-	if clearParams.Ref != "local:01OLD" {
-		t.Fatalf("clear params ref=%q, want local:01OLD", clearParams.Ref)
+	if clearParams.Ref != "local:02wMz5Txv2enqVTitaig6F" {
+		t.Fatalf("clear params ref=%q, want local:02wMz5Txv2enqVTitaig6F", clearParams.Ref)
 	}
 }
 
@@ -6416,14 +6511,14 @@ func TestInputStatusGaugeAmberThreshold(t *testing.T) {
 func observerWorkspaceFixture(t *testing.T, observedBy []string, liveSessionIDs ...string) *WebServer {
 	t.Helper()
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "p")
+	proj := filepath.Join(root, "projects", "project-observer-0123456789")
 	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "WORKER", UpdatedAt: time.Now(), OriginalPrompt: "do work",
-		IsSubagent: true, ParentSessionID: "PARENT", ObservedBy: observedBy,
-		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/p"},
+		ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: time.Now(), OriginalPrompt: "do work",
+		IsSubagent: true, ParentSessionID: "02wMz5Txv2enqVTitaig6F", ObservedBy: observedBy,
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/project-observer-0123456789"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -6447,10 +6542,10 @@ func observerWorkspaceFixture(t *testing.T, observedBy []string, liveSessionIDs 
 // A worker whose meta carries a LIVE observer surfaces that observer's route id
 // in WorkspaceData.ObserverRouteIDs (the data-observers source for auto-open).
 func TestWeb_WorkspaceData_CarriesLiveObserver(t *testing.T) {
-	web := observerWorkspaceFixture(t, []string{"OBSERVER"}, "OBSERVER")
-	wd := web.workspaceData("WORKER")
-	if len(wd.ObserverRouteIDs) != 1 || wd.ObserverRouteIDs[0] != "OBSERVER" {
-		t.Fatalf("ObserverRouteIDs = %v, want [OBSERVER]", wd.ObserverRouteIDs)
+	web := observerWorkspaceFixture(t, []string{"02wMz5Txv47YP64RR3B9YJ"}, "02wMz5Txv47YP64RR3B9YJ")
+	wd := web.workspaceData("02wMz5Txv1C3Hut0M8GCeB")
+	if len(wd.ObserverRouteIDs) != 1 || wd.ObserverRouteIDs[0] != "02wMz5Txv47YP64RR3B9YJ" {
+		t.Fatalf("ObserverRouteIDs = %v, want [02wMz5Txv47YP64RR3B9YJ]", wd.ObserverRouteIDs)
 	}
 }
 
@@ -6459,9 +6554,9 @@ func TestWeb_WorkspaceData_CarriesLiveObserver(t *testing.T) {
 // or ended). The flood of a worker with many past observers is bounded by the
 // side-pane cap + closed-pane suppression on the client.
 func TestWeb_WorkspaceData_IncludesEndedObserver(t *testing.T) {
-	web := observerWorkspaceFixture(t, []string{"OBSERVER"}) // OBSERVER not in roster (ended)
-	wd := web.workspaceData("WORKER")
-	if len(wd.ObserverRouteIDs) != 1 || wd.ObserverRouteIDs[0] != "OBSERVER" {
+	web := observerWorkspaceFixture(t, []string{"02wMz5Txv47YP64RR3B9YJ"}) // observer not in roster (ended)
+	wd := web.workspaceData("02wMz5Txv1C3Hut0M8GCeB")
+	if len(wd.ObserverRouteIDs) != 1 || wd.ObserverRouteIDs[0] != "02wMz5Txv47YP64RR3B9YJ" {
 		t.Fatalf("ended observer must still be surfaced; got %v", wd.ObserverRouteIDs)
 	}
 }
@@ -6469,7 +6564,7 @@ func TestWeb_WorkspaceData_IncludesEndedObserver(t *testing.T) {
 // An ordinary worker with no ObservedBy carries no observer route ids.
 func TestWeb_WorkspaceData_NoObserversWhenUnwatched(t *testing.T) {
 	web := observerWorkspaceFixture(t, nil)
-	wd := web.workspaceData("WORKER")
+	wd := web.workspaceData("02wMz5Txv1C3Hut0M8GCeB")
 	if len(wd.ObserverRouteIDs) != 0 {
 		t.Fatalf("un-watched worker must have no observers; got %v", wd.ObserverRouteIDs)
 	}
@@ -6478,13 +6573,13 @@ func TestWeb_WorkspaceData_NoObserversWhenUnwatched(t *testing.T) {
 // The workspace template renders ObserverRouteIDs as a space-separated
 // data-observers attribute on #conversation (the JS↔server contract).
 func TestWeb_WorkspaceTemplate_RendersDataObservers(t *testing.T) {
-	web := observerWorkspaceFixture(t, []string{"OBSERVER", "OBS2"}, "OBSERVER", "OBS2")
+	web := observerWorkspaceFixture(t, []string{"02wMz5Txv47YP64RR3B9YJ", "02wMz5Txv5aIxgf9yVdd0N"}, "02wMz5Txv47YP64RR3B9YJ", "02wMz5Txv5aIxgf9yVdd0N")
 	var buf bytes.Buffer
-	if err := web.workspaceTmpl.ExecuteTemplate(&buf, "workspace", web.workspaceData("WORKER")); err != nil {
+	if err := web.workspaceTmpl.ExecuteTemplate(&buf, "workspace", web.workspaceData("02wMz5Txv1C3Hut0M8GCeB")); err != nil {
 		t.Fatalf("render workspace: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, `data-observers="OBSERVER OBS2"`) {
+	if !strings.Contains(out, `data-observers="02wMz5Txv47YP64RR3B9YJ 02wMz5Txv5aIxgf9yVdd0N"`) {
 		t.Fatalf("workspace must render data-observers; got:\n%s", out)
 	}
 }
@@ -6515,18 +6610,18 @@ func writeObserverGrantLog(t *testing.T, project, watchingSessID, watchedJobID, 
 func observerGrantWorkspaceFixture(t *testing.T, observerSessID, workerRef string, liveSessionIDs ...string) *WebServer {
 	t.Helper()
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "p")
+	proj := filepath.Join(root, "projects", "project-observer-0123456789")
 	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "WORKER", UpdatedAt: time.Now(), OriginalPrompt: "do work",
-		IsSubagent: true, ParentSessionID: "PARENT", // no ObservedBy stamp
-		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/p"},
+		ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: time.Now(), OriginalPrompt: "do work",
+		IsSubagent: true, ParentSessionID: "02wMz5Txv2enqVTitaig6F", // no ObservedBy stamp
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/project-observer-0123456789"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	writeObserverGrantLog(t, proj, "PARENT", "job_watched", workerRef, observerSessID)
+	writeObserverGrantLog(t, proj, "02wMz5Txv2enqVTitaig6F", "job_watched", workerRef, observerSessID)
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
@@ -6548,19 +6643,19 @@ func observerGrantWorkspaceFixture(t *testing.T, observerSessID, workerRef strin
 // ObservedBy stamp) still surfaces the live observer — the grant-history source
 // feeds fillObserverLink, which is the whole point on existing data.
 func TestWeb_WorkspaceData_CarriesObserverFromGrantHistory(t *testing.T) {
-	web := observerGrantWorkspaceFixture(t, "OBSERVER", "local:WORKER", "OBSERVER")
-	wd := web.workspaceData("WORKER")
-	if len(wd.ObserverRouteIDs) != 1 || wd.ObserverRouteIDs[0] != "OBSERVER" {
-		t.Fatalf("ObserverRouteIDs = %v, want [OBSERVER] from grant history", wd.ObserverRouteIDs)
+	web := observerGrantWorkspaceFixture(t, "02wMz5Txv47YP64RR3B9YJ", "local:02wMz5Txv1C3Hut0M8GCeB", "02wMz5Txv47YP64RR3B9YJ")
+	wd := web.workspaceData("02wMz5Txv1C3Hut0M8GCeB")
+	if len(wd.ObserverRouteIDs) != 1 || wd.ObserverRouteIDs[0] != "02wMz5Txv47YP64RR3B9YJ" {
+		t.Fatalf("ObserverRouteIDs = %v, want [02wMz5Txv47YP64RR3B9YJ]", wd.ObserverRouteIDs)
 	}
 }
 
 // A grant-history observer that is no longer live is filtered out, same as a
 // stamped one — auto-open stays live-only regardless of source.
 func TestWeb_WorkspaceData_IncludesEndedGrantHistoryObserver(t *testing.T) {
-	web := observerGrantWorkspaceFixture(t, "OBSERVER", "local:WORKER") // OBSERVER not live (ended)
-	wd := web.workspaceData("WORKER")
-	if len(wd.ObserverRouteIDs) != 1 || wd.ObserverRouteIDs[0] != "OBSERVER" {
+	web := observerGrantWorkspaceFixture(t, "02wMz5Txv47YP64RR3B9YJ", "local:02wMz5Txv1C3Hut0M8GCeB") // observer not live (ended)
+	wd := web.workspaceData("02wMz5Txv1C3Hut0M8GCeB")
+	if len(wd.ObserverRouteIDs) != 1 || wd.ObserverRouteIDs[0] != "02wMz5Txv47YP64RR3B9YJ" {
 		t.Fatalf("ended grant-history observer must still be surfaced; got %v", wd.ObserverRouteIDs)
 	}
 }
@@ -6569,21 +6664,21 @@ func TestWeb_WorkspaceData_IncludesEndedGrantHistoryObserver(t *testing.T) {
 // present in both sources surfaces exactly once.
 func TestWeb_WorkspaceData_UnionsStampAndGrantHistory(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "p")
+	proj := filepath.Join(root, "projects", "project-observer-0123456789")
 	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	// Worker carries STAMPED on its meta; GRANTED comes only from the grant log;
 	// STAMPED is ALSO in the grant log (must not duplicate).
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "WORKER", UpdatedAt: time.Now(), IsSubagent: true, ParentSessionID: "PARENT",
-		ObservedBy: []string{"STAMPED"},
-		EnvInfo:    schema.EnvironmentInfo{WorkingDir: "/projects/p"},
+		ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: time.Now(), IsSubagent: true, ParentSessionID: "02wMz5Txv2enqVTitaig6F",
+		ObservedBy: []string{"02wMz5Txv47YP64RR3B9YJ"},
+		EnvInfo:    schema.EnvironmentInfo{WorkingDir: "/projects/project-observer-0123456789"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	writeObserverGrantLog(t, proj, "PARENT", "job_w1", "local:WORKER", "GRANTED")
-	writeObserverGrantLog(t, proj, "PARENT2", "job_w2", "local:WORKER", "STAMPED")
+	writeObserverGrantLog(t, proj, "02wMz5Txv2enqVTitaig6F", "job_w1", "local:02wMz5Txv1C3Hut0M8GCeB", "02wMz5Txv5aIxgf9yVdd0N")
+	writeObserverGrantLog(t, proj, "02wMz5Txv733WHFsVy66SR", "job_w2", "local:02wMz5Txv1C3Hut0M8GCeB", "02wMz5Txv47YP64RR3B9YJ")
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
@@ -6591,17 +6686,17 @@ func TestWeb_WorkspaceData_UnionsStampAndGrantHistory(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster: hubcore.NewRosterWithEntries(
-			hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 1}, SessionID: "STAMPED", Status: appwire.ThreadStatusActive},
-			hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 2}, SessionID: "GRANTED", Status: appwire.ThreadStatusActive},
+			hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 1}, SessionID: "02wMz5Txv47YP64RR3B9YJ", Status: appwire.ThreadStatusActive},
+			hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 2}, SessionID: "02wMz5Txv5aIxgf9yVdd0N", Status: appwire.ThreadStatusActive},
 		),
 		Past: idx,
 	})
-	wd := web.workspaceData("WORKER")
+	wd := web.workspaceData("02wMz5Txv1C3Hut0M8GCeB")
 	seen := map[string]int{}
 	for _, id := range wd.ObserverRouteIDs {
 		seen[id]++
 	}
-	if len(wd.ObserverRouteIDs) != 2 || seen["STAMPED"] != 1 || seen["GRANTED"] != 1 {
+	if len(wd.ObserverRouteIDs) != 2 || seen["02wMz5Txv47YP64RR3B9YJ"] != 1 || seen["02wMz5Txv5aIxgf9yVdd0N"] != 1 {
 		t.Fatalf("ObserverRouteIDs = %v, want STAMPED+GRANTED once each", wd.ObserverRouteIDs)
 	}
 }
@@ -6636,7 +6731,7 @@ func TestDetailsPanel_LiveSessionShowsContextWorkTokensCost(t *testing.T) {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"session_id":        "01DETAILLIVE",
+			"session_id":        "02wMz5Txv2enqVTitaig6F",
 			"state":             "active",
 			"model":             "claude-opus-4-5",
 			"context_pressure":  0.42,
@@ -6654,13 +6749,13 @@ func TestDetailsPanel_LiveSessionShowsContextWorkTokensCost(t *testing.T) {
 
 	addr := strings.TrimPrefix(daemon.URL, "http://")
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
-		Entry:     rendezvous.Entry{Address: addr, SessionID: "01DETAILLIVE", Model: "claude-opus-4-5"},
-		SessionID: "01DETAILLIVE",
+		Entry:     rendezvous.Entry{Address: addr, SessionID: "02wMz5Txv2enqVTitaig6F", Model: "claude-opus-4-5"},
+		SessionID: "02wMz5Txv2enqVTitaig6F",
 		Status:    "active",
 	})
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: roster})
 
-	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01DETAILLIVE/details", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/02wMz5Txv2enqVTitaig6F/details", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -6692,10 +6787,10 @@ func TestDetailsPanel_LiveSessionShowsContextWorkTokensCost(t *testing.T) {
 // drawer's ContextPressure > 0 guard).
 func TestDetailsPanel_EndedSessionShowsWorkTokensCostNoContext(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01DETAILENDED", UpdatedAt: time.Now(),
+		ID: "02wMz5Txv47YP64RR3B9YJ", UpdatedAt: time.Now(),
 		Model:      "claude-opus-4-5",
 		WorkMillis: 4200,
 		CumulativeUsage: schema.CumulativeUsage{
@@ -6715,7 +6810,7 @@ func TestDetailsPanel_EndedSessionShowsWorkTokensCostNoContext(t *testing.T) {
 		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
-	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01DETAILENDED/details", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/02wMz5Txv47YP64RR3B9YJ/details", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -6773,11 +6868,11 @@ func detailsTestDaemon(t *testing.T, sessionID string) *httptest.Server {
 // and cost exactly once each — the live status takes precedence over the
 // persisted meta instead of both being appended.
 func TestDetailsPanel_LiveWithPastMetaDeduplicatesFacts(t *testing.T) {
-	const id = "01DETAILDUP0000000000000000"
+	const id = "02wMz5Txv5aIxgf9yVdd0N"
 	daemon := detailsTestDaemon(t, id)
 
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: id, UpdatedAt: time.Now(),
 		Model:      "claude-opus-4-5",
@@ -6830,11 +6925,11 @@ func TestDetailsPanel_LiveWithPastMetaDeduplicatesFacts(t *testing.T) {
 // groups its facts under titled sections (Session / Usage / Runtime / Files)
 // instead of one flat label:value table.
 func TestDetailsPanel_GroupsFactsIntoTitledSections(t *testing.T) {
-	const id = "01DETAILSECT000000000000000"
+	const id = "02wMz5Txv733WHFsVy66SR"
 	daemon := detailsTestDaemon(t, id)
 
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: id, UpdatedAt: time.Now(), Model: "claude-opus-4-5",
 	}); err != nil {
@@ -6875,9 +6970,9 @@ func TestDetailsPanel_GroupsFactsIntoTitledSections(t *testing.T) {
 // (<StateDir>/sessions/<id>.transcript.jsonl) with a click-to-copy
 // affordance, and omits the row when no transcript file exists.
 func TestDetailsPanel_ShowsTranscriptPathWithCopy(t *testing.T) {
-	const id = "01DETAILPATH000000000000000"
+	const id = "02wMz5Txv8Vo4rqb3QYZuV"
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: id, UpdatedAt: time.Now(),
 	}); err != nil {
@@ -6931,9 +7026,9 @@ func TestDetailsPanel_ShowsTranscriptPathWithCopy(t *testing.T) {
 // with a click-to-copy affordance when the file exists, and omits the row
 // otherwise (same stat-guarded pattern as the transcript row).
 func TestDetailsPanel_ShowsAPILogPathWithCopy(t *testing.T) {
-	const id = "01DETAILAPILOG0000000000000"
+	const id = "02wMz5Txv9yYdSRJat13MZ"
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: id, UpdatedAt: time.Now(),
 	}); err != nil {
@@ -6987,7 +7082,7 @@ func TestDetailsPanel_ShowsAPILogPathWithCopy(t *testing.T) {
 // ("42% used · 42k / 100k · 58k left") instead of the old nested-parens
 // sentence "42% used (42k / 100k tokens (58k left))".
 func TestDetailsPanel_ContextRendersStructuredMeter(t *testing.T) {
-	const id = "01DETAILMETER00000000000000"
+	const id = "02wMz5TxvBRJC3228LTWod"
 	daemon := detailsTestDaemon(t, id)
 
 	addr := strings.TrimPrefix(daemon.URL, "http://")

@@ -117,7 +117,7 @@ func (s *Session) runLaneResidueSweep(ctx context.Context) (budgetHit bool) {
 	if err != nil {
 		return false
 	}
-	projectDir := filepath.Join(st.worktreeRoot, worktree.ProjectID(st.mainRepoRoot))
+	projectDir := filepath.Join(st.worktreeRoot, st.project.ID)
 	metaDir := metaDirForProject(projectDir)
 
 	out, err := run("worktree", "list", "--porcelain")

@@ -210,7 +210,7 @@ func TestListSessions_PrintsFormattedList(t *testing.T) {
 	dir := t.TempDir()
 
 	meta1 := schema.SessionMeta{
-		ID:        "01JTEST000000000000000001",
+		ID:        "02wMz5Txv1C3Hut0M8GCeB",
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
 		CreatedAt: time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC),
@@ -218,7 +218,7 @@ func TestListSessions_PrintsFormattedList(t *testing.T) {
 		TurnCount: 2,
 	}
 	meta2 := schema.SessionMeta{
-		ID:        "01JTEST000000000000000002",
+		ID:        "02wMz5Txv2enqVTitaig6F",
 		ProfileID: "anthropic",
 		Model:     "claude-opus-4-6",
 		CreatedAt: time.Date(2025, 1, 15, 11, 0, 0, 0, time.UTC),
@@ -245,10 +245,10 @@ func TestListSessions_PrintsFormattedList(t *testing.T) {
 	}
 	output := out.String()
 	// Most recent first (snap2).
-	if !strings.Contains(output, "01JTEST000000000000000002") {
+	if !strings.Contains(output, meta2.ID) {
 		t.Fatalf("expected snap2 ID in output, got:\n%s", output)
 	}
-	if !strings.Contains(output, "01JTEST000000000000000001") {
+	if !strings.Contains(output, meta1.ID) {
 		t.Fatalf("expected snap1 ID in output, got:\n%s", output)
 	}
 }

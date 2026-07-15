@@ -17,7 +17,7 @@ const wantDisposalSentence = "When you're done with this delegate's work (e.g., 
 
 func disposalHintLane(t *testing.T, r *wtDlgRepo, id string) *jobstore.DelegateRestoreDescriptor {
 	t.Helper()
-	lane, _, _, _, err := r.s.createDelegateWorktree(context.Background(), id)
+	lane, _, _, _, _, err := r.s.createDelegateWorktree(context.Background(), id)
 	if err != nil {
 		t.Fatalf("createDelegateWorktree: %v", err)
 	}

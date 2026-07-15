@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/worktree"
 	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/serf/identifier"
 )
 
 func FuzzWorktreeSeed100ExactProgram(f *testing.F) {
@@ -26,7 +27,11 @@ func worktreeSeed100ExactProgram(t *testing.T) {
 
 	t.Run("derived runtime root", func(t *testing.T) {
 		h, _ := newWorktreeFaultSession(t)
-		if got := h.s.worktreeRootFor(h.s.currentEnv(), "", h.root); got == "" {
+		project, err := identifier.ResolveProjectWith(h.root, execenv.NewProjectResolver(h.s.currentEnv()))
+		if err != nil {
+			t.Fatalf("resolve project: %v", err)
+		}
+		if got, err := h.s.worktreeRootForProject("", project); err != nil || got == "" {
 			t.Fatal("empty derived worktree root")
 		}
 	})
@@ -49,7 +54,7 @@ func worktreeSeed100ExactProgram(t *testing.T) {
 		if _, err := h.s.worktreeRemove(context.Background(), "lane", false, false, false); err == nil {
 			t.Fatal("remove outside repository succeeded")
 		}
-		h.s.rollbackFreshDelegateWorktree("delegate", filepath.Join(h.root, "delegate"))
+		h.s.rollbackFreshDelegateWorktree("delegate", filepath.Join(h.root, "delegate"), identifier.Project{})
 	})
 
 	t.Run("managed switch by path", func(t *testing.T) {
@@ -132,7 +137,7 @@ func worktreeSeed100ExactProgram(t *testing.T) {
 		if _, err := h.s.worktreeExit(context.Background()); err == nil {
 			t.Fatal("exit accepted unavailable control sandbox")
 		}
-		h.s.rollbackFreshDelegateWorktree("delegate", filepath.Join(h.root, "delegate"))
+		h.s.rollbackFreshDelegateWorktree("delegate", filepath.Join(h.root, "delegate"), identifier.Project{})
 	})
 
 	t.Run("injected boundaries", func(t *testing.T) {
@@ -144,7 +149,7 @@ func worktreeSeed100ExactProgram(t *testing.T) {
 			if _, err := h.s.worktreeControlEnv(h.root); err == nil {
 				t.Fatal("control environment accepted policy failure")
 			}
-			h.s.rollbackFreshDelegateWorktree("delegate", filepath.Join(h.root, "delegate"))
+			h.s.rollbackFreshDelegateWorktree("delegate", filepath.Join(h.root, "delegate"), identifier.Project{})
 		})
 
 		t.Run("sidecar write", func(t *testing.T) {

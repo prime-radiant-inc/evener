@@ -24,8 +24,8 @@ func writeMeta(t *testing.T, dir string, meta schema.SessionMeta) {
 
 func fuzzScenarioPastIndex_RebuildLoadsAllMetas(t *testing.T) {
 	root := t.TempDir()
-	projA := filepath.Join(root, "projects", "aaa")
-	projB := filepath.Join(root, "projects", "bbb")
+	projA := filepath.Join(root, "projects", "project-a-0123456789")
+	projB := filepath.Join(root, "projects", "project-b-0123456789")
 	for _, p := range []string{projA, projB} {
 		if err := os.MkdirAll(p, 0o755); err != nil {
 			t.Fatal(err)
@@ -34,7 +34,7 @@ func fuzzScenarioPastIndex_RebuildLoadsAllMetas(t *testing.T) {
 
 	now := time.Now().UTC()
 	writeMeta(t, projA, schema.SessionMeta{
-		ID:             "01A",
+		ID:             "02wMz5Txv1C3Hut0M8GCeB",
 		Model:          "gpt-5.2",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/a"},
 		CreatedAt:      now.Add(-2 * time.Hour),
@@ -42,7 +42,7 @@ func fuzzScenarioPastIndex_RebuildLoadsAllMetas(t *testing.T) {
 		OriginalPrompt: "fix the bug",
 	})
 	writeMeta(t, projB, schema.SessionMeta{
-		ID:             "01B",
+		ID:             "02wMz5Txv2enqVTitaig6F",
 		Model:          "claude-opus-4-7",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/b"},
 		CreatedAt:      now.Add(-30 * time.Minute),
@@ -59,39 +59,39 @@ func fuzzScenarioPastIndex_RebuildLoadsAllMetas(t *testing.T) {
 		t.Fatalf("got %d, want 2", len(got))
 	}
 	// Sorted by UpdatedAt desc.
-	if got[0].ID != "01B" {
+	if got[0].ID != "02wMz5Txv2enqVTitaig6F" {
 		t.Errorf("first: %s", got[0].ID)
 	}
 }
 
 func fuzzScenarioPastIndex_RebuildOrdersByUpdatedCreatedTitleAndID(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
 	updated := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:             "02OLD",
+		ID:             "02wMz5TxvFpYrooBkiqxAp",
 		CreatedAt:      updated.Add(-2 * time.Hour),
 		UpdatedAt:      updated,
 		OriginalPrompt: "beta task",
 	})
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:             "01NEW",
+		ID:             "02wMz5Txv8Vo4rqb3QYZuV",
 		CreatedAt:      updated.Add(-time.Hour),
 		UpdatedAt:      updated,
 		OriginalPrompt: "alpha task",
 	})
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:             "03TITLEB",
+		ID:             "02wMz5TxvHIJQPOuIBJQct",
 		CreatedAt:      updated.Add(-3 * time.Hour),
 		UpdatedAt:      updated.Add(-time.Hour),
 		OriginalPrompt: "bravo task",
 	})
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:             "04TITLEA",
+		ID:             "02wMz5TxvIl3yzzcpdlu4x",
 		CreatedAt:      updated.Add(-3 * time.Hour),
 		UpdatedAt:      updated.Add(-time.Hour),
 		OriginalPrompt: "alpha task",
@@ -107,7 +107,7 @@ func fuzzScenarioPastIndex_RebuildOrdersByUpdatedCreatedTitleAndID(t *testing.T)
 	for _, entry := range got {
 		gotIDs = append(gotIDs, entry.ID)
 	}
-	want := []string{"01NEW", "02OLD", "04TITLEA", "03TITLEB"}
+	want := []string{"02wMz5Txv8Vo4rqb3QYZuV", "02wMz5TxvFpYrooBkiqxAp", "02wMz5TxvIl3yzzcpdlu4x", "02wMz5TxvHIJQPOuIBJQct"}
 	if strings.Join(gotIDs, ",") != strings.Join(want, ",") {
 		t.Fatalf("order=%v, want %v", gotIDs, want)
 	}
@@ -115,16 +115,16 @@ func fuzzScenarioPastIndex_RebuildOrdersByUpdatedCreatedTitleAndID(t *testing.T)
 
 func fuzzScenarioPastIndex_Search(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:             "01A",
+		ID:             "02wMz5Txv1C3Hut0M8GCeB",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/a"},
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "fix the bug in handler",
 	})
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:             "01B",
+		ID:             "02wMz5Txv2enqVTitaig6F",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/b"},
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "refactor auth flow",
@@ -134,15 +134,15 @@ func fuzzScenarioPastIndex_Search(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := idx.Search("auth", 50, 0)
-	if len(got) != 1 || got[0].ID != "01B" {
+	if len(got) != 1 || got[0].ID != "02wMz5Txv2enqVTitaig6F" {
 		t.Fatalf("Search auth: got %v", got)
 	}
 	got = idx.Search("/work/a", 50, 0)
-	if len(got) != 1 || got[0].ID != "01A" {
+	if len(got) != 1 || got[0].ID != "02wMz5Txv1C3Hut0M8GCeB" {
 		t.Fatalf("Search /work/a: got %v", got)
 	}
-	got = idx.Search("01B", 50, 0)
-	if len(got) != 1 || got[0].ID != "01B" {
+	got = idx.Search("02wMz5Txv2enqVTitaig6F", 50, 0)
+	if len(got) != 1 || got[0].ID != "02wMz5Txv2enqVTitaig6F" {
 		t.Fatalf("Search 01B: got %v", got)
 	}
 	got = idx.Search("xyz", 50, 0)
@@ -153,10 +153,10 @@ func fuzzScenarioPastIndex_Search(t *testing.T) {
 
 func fuzzScenarioPastIndex_SearchMatchesGeneratedName(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:             "01NAMED",
+		ID:             "02wMz5Txv47YP64RR3B9YJ",
 		Name:           "Launch Config Cheap Model",
 		OriginalPrompt: "unrelated original prompt",
 		UpdatedAt:      time.Now(),
@@ -167,17 +167,17 @@ func fuzzScenarioPastIndex_SearchMatchesGeneratedName(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := idx.Search("cheap model", 50, 0)
-	if len(got) != 1 || got[0].ID != "01NAMED" {
+	if len(got) != 1 || got[0].ID != "02wMz5Txv47YP64RR3B9YJ" {
 		t.Fatalf("Search cheap model: got %v", got)
 	}
 }
 
 func fuzzScenarioPastIndex_SearchSQLiteFTSMatchesGeneratedName(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:             "01NAMED",
+		ID:             "02wMz5Txv47YP64RR3B9YJ",
 		Name:           "Launch Config Cheap Model",
 		OriginalPrompt: "unrelated original prompt",
 		UpdatedAt:      time.Now(),
@@ -188,23 +188,23 @@ func fuzzScenarioPastIndex_SearchSQLiteFTSMatchesGeneratedName(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := idx.Search("cheap model", 50, 0)
-	if len(got) != 1 || got[0].ID != "01NAMED" {
+	if len(got) != 1 || got[0].ID != "02wMz5Txv47YP64RR3B9YJ" {
 		t.Fatalf("Search cheap model: got %v", got)
 	}
 }
 
 func fuzzScenarioPastIndex_SearchUsesSQLiteFTSWhenConfigured(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:             "01AUTH",
+		ID:             "02wMz5Txv5aIxgf9yVdd0N",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/auth-service"},
 		UpdatedAt:      time.Now().Add(time.Hour),
 		OriginalPrompt: "repair login token refresh",
 	})
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:             "01BILLING",
+		ID:             "02wMz5Txv733WHFsVy66SR",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/invoices"},
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "invoice cleanup",
@@ -220,35 +220,35 @@ func fuzzScenarioPastIndex_SearchUsesSQLiteFTSWhenConfigured(t *testing.T) {
 	}
 
 	got := idx.Search("token", 50, 0)
-	if len(got) != 1 || got[0].ID != "01AUTH" {
+	if len(got) != 1 || got[0].ID != "02wMz5Txv5aIxgf9yVdd0N" {
 		t.Fatalf("Search token: got %v", got)
 	}
 	got = idx.Search("auth-service", 50, 0)
-	if len(got) != 1 || got[0].ID != "01AUTH" {
+	if len(got) != 1 || got[0].ID != "02wMz5Txv5aIxgf9yVdd0N" {
 		t.Fatalf("Search working dir: got %v", got)
 	}
-	got = idx.Search("01BILL", 50, 0)
-	if len(got) != 1 || got[0].ID != "01BILLING" {
+	got = idx.Search("02wMz5Txv733", 50, 0)
+	if len(got) != 1 || got[0].ID != "02wMz5Txv733WHFsVy66SR" {
 		t.Fatalf("Search ID prefix: got %v", got)
 	}
-	got = idx.Search("BILL", 50, 0)
-	if len(got) != 1 || got[0].ID != "01BILLING" {
+	got = idx.Search("733", 50, 0)
+	if len(got) != 1 || got[0].ID != "02wMz5Txv733WHFsVy66SR" {
 		t.Fatalf("Search ID substring: got %v", got)
 	}
 }
 
 func fuzzScenarioPastIndex_SearchWithSQLitePreservesSubstringMatches(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:             "01PREFIX",
+		ID:             "02wMz5TxvKDoXaaLN6ENX1",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/prefix"},
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "auth token cleanup",
 	})
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:             "02SUBSTR",
+		ID:             "02wMz5TxvLgZ6BB3uYgqz5",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/substr"},
 		UpdatedAt:      time.Now().Add(-time.Minute),
 		OriginalPrompt: "preauth redirect cleanup",
@@ -263,7 +263,7 @@ func fuzzScenarioPastIndex_SearchWithSQLitePreservesSubstringMatches(t *testing.
 	for _, entry := range got {
 		gotIDs = append(gotIDs, entry.ID)
 	}
-	want := []string{"01PREFIX", "02SUBSTR"}
+	want := []string{"02wMz5TxvKDoXaaLN6ENX1", "02wMz5TxvLgZ6BB3uYgqz5"}
 	if strings.Join(gotIDs, ",") != strings.Join(want, ",") {
 		t.Fatalf("Search auth IDs=%v, want %v", gotIDs, want)
 	}
@@ -271,16 +271,16 @@ func fuzzScenarioPastIndex_SearchWithSQLitePreservesSubstringMatches(t *testing.
 
 func fuzzScenarioPastIndex_SearchWithSQLiteMergesFTSAndSubstringMatches(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:             "01FTS",
+		ID:             "02wMz5TxvBRJC3228LTWod",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/fts"},
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "auth token cleanup",
 	})
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:             "02SUBSTR",
+		ID:             "02wMz5TxvLgZ6BB3uYgqz5",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/substr"},
 		UpdatedAt:      time.Now().Add(-time.Minute),
 		OriginalPrompt: "preauth cleanup",
@@ -295,7 +295,7 @@ func fuzzScenarioPastIndex_SearchWithSQLiteMergesFTSAndSubstringMatches(t *testi
 	for _, entry := range got {
 		gotIDs = append(gotIDs, entry.ID)
 	}
-	want := []string{"01FTS", "02SUBSTR"}
+	want := []string{"02wMz5TxvBRJC3228LTWod", "02wMz5TxvLgZ6BB3uYgqz5"}
 	if strings.Join(gotIDs, ",") != strings.Join(want, ",") {
 		t.Fatalf("Search auth cleanup IDs=%v, want %v", gotIDs, want)
 	}
@@ -303,10 +303,10 @@ func fuzzScenarioPastIndex_SearchWithSQLiteMergesFTSAndSubstringMatches(t *testi
 
 func fuzzScenarioPastIndex_SQLiteIndexUsesPrivateFilePermissions(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:             "01PRIVATE",
+		ID:             "02wMz5TxvLgZ6BB3uYgqz5",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/private"},
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "sensitive prompt",
@@ -341,10 +341,10 @@ func fuzzScenarioPastIndex_SQLiteIndexUsesPrivateFilePermissions(t *testing.T) {
 
 func fuzzScenarioPastIndex_SearchFallsBackWhenSQLiteUnavailable(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:             "01A",
+		ID:             "02wMz5Txv1C3Hut0M8GCeB",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/a"},
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "fix auth",
@@ -355,18 +355,18 @@ func fuzzScenarioPastIndex_SearchFallsBackWhenSQLiteUnavailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := idx.Search("auth", 50, 0)
-	if len(got) != 1 || got[0].ID != "01A" {
+	if len(got) != 1 || got[0].ID != "02wMz5Txv1C3Hut0M8GCeB" {
 		t.Fatalf("fallback search: got %v", got)
 	}
 }
 
 func fuzzScenarioPastIndex_Pagination(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
 	for i := 0; i < 5; i++ {
 		writeMeta(t, proj, schema.SessionMeta{
-			ID:        string(rune('A' + i)),
+			ID:        []string{"02wMz5Txv1C3Hut0M8GCeB", "02wMz5Txv2enqVTitaig6F", "02wMz5Txv47YP64RR3B9YJ", "02wMz5Txv5aIxgf9yVdd0N", "02wMz5Txv733WHFsVy66SR"}[i],
 			UpdatedAt: time.Now().Add(time.Duration(i) * time.Minute),
 		})
 	}
@@ -384,21 +384,21 @@ func fuzzScenarioPastIndex_Pagination(t *testing.T) {
 
 func fuzzScenarioPastIndex_Find(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:        "01A",
+		ID:        "02wMz5Txv1C3Hut0M8GCeB",
 		UpdatedAt: time.Now(),
 	})
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	got, ok := idx.Find("01A")
+	got, ok := idx.Find("02wMz5Txv1C3Hut0M8GCeB")
 	if !ok {
 		t.Fatal("expected found")
 	}
-	if got.Meta.ID != "01A" {
+	if got.Meta.ID != "02wMz5Txv1C3Hut0M8GCeB" {
 		t.Errorf("meta.ID: %q", got.Meta.ID)
 	}
 	if got.StateDir != proj {
@@ -408,23 +408,23 @@ func fuzzScenarioPastIndex_Find(t *testing.T) {
 
 func fuzzScenarioPastIndex_FindRefreshesNewSessionOnMiss(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
 
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := idx.Find("01NEW"); ok {
+	if _, ok := idx.Find("02wMz5Txv8Vo4rqb3QYZuV"); ok {
 		t.Fatal("session should not be indexed before meta exists")
 	}
 
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:             "01NEW",
+		ID:             "02wMz5Txv8Vo4rqb3QYZuV",
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "created after hub start",
 	})
-	got, ok := idx.Find("01NEW")
+	got, ok := idx.Find("02wMz5Txv8Vo4rqb3QYZuV")
 	if !ok {
 		t.Fatal("expected Find to refresh a newly persisted session")
 	}
@@ -452,10 +452,10 @@ func fuzzScenarioPastIndex_FindWithMalformedGlob(t *testing.T) {
 
 func fuzzScenarioPastIndex_RebuildFTSError(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:             "01A",
+		ID:             "02wMz5Txv1C3Hut0M8GCeB",
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "fix auth",
 	})
@@ -471,17 +471,17 @@ func fuzzScenarioPastIndex_RebuildFTSError(t *testing.T) {
 	// The Rebuild should succeed even though rebuildFTS failed.
 	// FTS flag should be false.
 	got := idx.Search("auth", 50, 0)
-	if len(got) != 1 || got[0].ID != "01A" {
+	if len(got) != 1 || got[0].ID != "02wMz5Txv1C3Hut0M8GCeB" {
 		t.Fatalf("expected fallback search to work: got %v", got)
 	}
 }
 
 func fuzzScenarioPastIndex_AllMetas(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:        "01A",
+		ID:        "02wMz5Txv1C3Hut0M8GCeB",
 		UpdatedAt: time.Now(),
 	})
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
@@ -489,17 +489,17 @@ func fuzzScenarioPastIndex_AllMetas(t *testing.T) {
 		t.Fatal(err)
 	}
 	metas := idx.AllMetas()
-	if len(metas) != 1 || metas[0].ID != "01A" {
+	if len(metas) != 1 || metas[0].ID != "02wMz5Txv1C3Hut0M8GCeB" {
 		t.Fatalf("AllMetas: got %v", metas)
 	}
 }
 
 func fuzzScenarioPastIndex_SearchFTSSpecialCharsOnly(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:             "01A",
+		ID:             "02wMz5Txv1C3Hut0M8GCeB",
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "fix auth",
 	})
@@ -528,7 +528,7 @@ func fuzzScenarioChmodSQLiteIndexFiles_Error(t *testing.T) {
 	// directory. chmod on any path beneath it returns ENOTDIR regardless of uid,
 	// so this exercises the error path even when the test runs as root.
 	blocker := filepath.Join(dir, "blocker")
-	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+	if err := os.WriteFile(blocker, []byte("project-x-0123456789"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	dbPath := filepath.Join(blocker, "db")
@@ -559,10 +559,10 @@ func fuzzScenarioPastIndex_FindEmptyStateGlob(t *testing.T) {
 // side effect — observable here as a non-empty All() snapshot.
 func fuzzScenarioPastIndex_FindEmptySessionIDSkipsRebuild(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "x")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
 	writeMeta(t, proj, schema.SessionMeta{
-		ID:        "01A",
+		ID:        "02wMz5Txv1C3Hut0M8GCeB",
 		UpdatedAt: time.Now(),
 	})
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
@@ -580,14 +580,14 @@ func fuzzScenarioPastIndex_FindEmptySessionIDSkipsRebuild(t *testing.T) {
 
 func fuzzScenarioPastIndexOnChangeFiresOnContentDeltaOnly(t *testing.T) {
 	dir := t.TempDir()
-	proj := filepath.Join(dir, "proj")
+	proj := filepath.Join(dir, "project-test-0123456789")
 	writeMeta := func(id string) {
 		m := schema.SessionMeta{ID: id, UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}
 		if err := schema.SaveSessionMeta(proj, m); err != nil {
 			t.Fatal(err)
 		}
 	}
-	writeMeta("01A")
+	writeMeta("02wMz5Txv1C3Hut0M8GCeB")
 	idx := NewPastIndex(filepath.Join(dir, "*"))
 	fired := 0
 	idx.SetOnChange(func() { fired++ })
@@ -599,7 +599,7 @@ func fuzzScenarioPastIndexOnChangeFiresOnContentDeltaOnly(t *testing.T) {
 	if fired != 1 {
 		t.Fatalf("re-rebuild with no delta must not fire, got %d", fired)
 	}
-	writeMeta("01B")
+	writeMeta("02wMz5Txv2enqVTitaig6F")
 	_ = idx.Rebuild() // new meta → delta → fires
 	if fired != 2 {
 		t.Fatalf("rebuild after new content should fire, got %d", fired)
@@ -608,8 +608,8 @@ func fuzzScenarioPastIndexOnChangeFiresOnContentDeltaOnly(t *testing.T) {
 
 func fuzzScenarioUpdateMetaReordersAndPreservesStateDir(t *testing.T) {
 	dir := t.TempDir()
-	proj := filepath.Join(dir, "proj")
-	for _, id := range []string{"01A", "01B"} {
+	proj := filepath.Join(dir, "project-test-0123456789")
+	for _, id := range []string{"02wMz5Txv1C3Hut0M8GCeB", "02wMz5Txv2enqVTitaig6F"} {
 		m := schema.SessionMeta{ID: id, Name: id, UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}
 		if err := schema.SaveSessionMeta(proj, m); err != nil {
 			t.Fatal(err)
@@ -617,24 +617,24 @@ func fuzzScenarioUpdateMetaReordersAndPreservesStateDir(t *testing.T) {
 	}
 	idx := NewPastIndexWithDB(filepath.Join(dir, "*"), filepath.Join(dir, "index.db"))
 	_ = idx.Rebuild()
-	before, _ := idx.Find("01A")
+	before, _ := idx.Find("02wMz5Txv1C3Hut0M8GCeB")
 	renamed := before.Meta
 	renamed.Name = "renamed-title"
 	renamed.UpdatedAt = time.Unix(1_700_100_000, 0) // newer → sorts first
-	idx.UpdateMeta("01A", renamed)
+	idx.UpdateMeta("02wMz5Txv1C3Hut0M8GCeB", renamed)
 
-	got, ok := idx.Find("01A")
+	got, ok := idx.Find("02wMz5Txv1C3Hut0M8GCeB")
 	if !ok || got.Meta.Name != "renamed-title" {
 		t.Fatalf("UpdateMeta did not update the entry: %+v", got)
 	}
 	if got.StateDir != before.StateDir {
 		t.Fatalf("StateDir must be preserved: %q != %q", got.StateDir, before.StateDir)
 	}
-	if all := idx.All(); all[0].ID != "01A" {
+	if all := idx.All(); all[0].ID != "02wMz5Txv1C3Hut0M8GCeB" {
 		t.Fatalf("renamed newer entry should sort first, got %q", all[0].ID)
 	}
 	// FTS search must find the new title.
-	if hits := idx.Search("renamed-title", 10, 0); len(hits) == 0 || hits[0].ID != "01A" {
+	if hits := idx.Search("renamed-title", 10, 0); len(hits) == 0 || hits[0].ID != "02wMz5Txv1C3Hut0M8GCeB" {
 		t.Fatalf("search must reflect the new title, got %+v", hits)
 	}
 }
@@ -650,8 +650,8 @@ func fuzzScenarioUpdateMetaReordersAndPreservesStateDir(t *testing.T) {
 // failure mode.
 func fuzzScenarioUpdateMetaConcurrentWithRebuildIsRaceFree(t *testing.T) {
 	dir := t.TempDir()
-	proj := filepath.Join(dir, "proj")
-	for _, id := range []string{"01A", "01B"} {
+	proj := filepath.Join(dir, "project-test-0123456789")
+	for _, id := range []string{"02wMz5Txv1C3Hut0M8GCeB", "02wMz5Txv2enqVTitaig6F"} {
 		m := schema.SessionMeta{ID: id, Name: id, UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}
 		if err := schema.SaveSessionMeta(proj, m); err != nil {
 			t.Fatal(err)
@@ -677,12 +677,12 @@ func fuzzScenarioUpdateMetaConcurrentWithRebuildIsRaceFree(t *testing.T) {
 		defer wg.Done()
 		for n := 0; n < iterations; n++ {
 			meta := schema.SessionMeta{
-				ID:        "01A",
+				ID:        "02wMz5Txv1C3Hut0M8GCeB",
 				Name:      "renamed-title",
 				UpdatedAt: time.Unix(1_700_000_000+int64(n), 0),
 				EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/w"},
 			}
-			idx.UpdateMeta("01A", meta)
+			idx.UpdateMeta("02wMz5Txv1C3Hut0M8GCeB", meta)
 		}
 	}()
 	wg.Wait()
@@ -692,13 +692,13 @@ func fuzzScenarioPastIndex_RecentModels_DedupesGlobalRecencyLastN(t *testing.T) 
 	idx := NewPastIndex("")
 	now := time.Now().UTC()
 	idx.SeedForTest([]schema.SessionMeta{
-		{ID: "a", ProfileID: "anthropic", Model: "claude-opus-4-6", UpdatedAt: now.Add(-1 * time.Minute)},
-		{ID: "b", ProfileID: "openai", Model: "gpt-5.2", UpdatedAt: now.Add(-2 * time.Minute)},
-		{ID: "c", ProfileID: "anthropic", Model: "claude-opus-4-6", UpdatedAt: now.Add(-3 * time.Minute)}, // dup of a, older — dropped
-		{ID: "d", ProfileID: "openai", Model: "gpt-5-mini", UpdatedAt: now.Add(-4 * time.Minute)},
-		{ID: "e", ProfileID: "google", Model: "gemini-3-pro", UpdatedAt: now.Add(-5 * time.Minute)},
-		{ID: "f", ProfileID: "zai", Model: "glm-5.2", UpdatedAt: now.Add(-6 * time.Minute)},
-		{ID: "g", ProfileID: "mistral", Model: "mistral-large", UpdatedAt: now.Add(-7 * time.Minute)}, // 6th distinct — excluded by limit=5
+		{ID: "02wMz5Txv1C3Hut0M8GCeB", ProfileID: "anthropic", Model: "claude-opus-4-6", UpdatedAt: now.Add(-1 * time.Minute)},
+		{ID: "02wMz5Txv2enqVTitaig6F", ProfileID: "openai", Model: "gpt-5.2", UpdatedAt: now.Add(-2 * time.Minute)},
+		{ID: "02wMz5Txv47YP64RR3B9YJ", ProfileID: "anthropic", Model: "claude-opus-4-6", UpdatedAt: now.Add(-3 * time.Minute)}, // dup of a, older — dropped
+		{ID: "02wMz5Txv5aIxgf9yVdd0N", ProfileID: "openai", Model: "gpt-5-mini", UpdatedAt: now.Add(-4 * time.Minute)},
+		{ID: "02wMz5Txv733WHFsVy66SR", ProfileID: "google", Model: "gemini-3-pro", UpdatedAt: now.Add(-5 * time.Minute)},
+		{ID: "02wMz5Txv8Vo4rqb3QYZuV", ProfileID: "zai", Model: "glm-5.2", UpdatedAt: now.Add(-6 * time.Minute)},
+		{ID: "02wMz5Txv9yYdSRJat13MZ", ProfileID: "mistral", Model: "mistral-large", UpdatedAt: now.Add(-7 * time.Minute)}, // 6th distinct — excluded by limit=5
 	})
 	got := idx.RecentModels(5)
 	want := []appwire.ModelDescriptor{
@@ -721,27 +721,27 @@ func fuzzScenarioPastIndex_RecentModels_DedupesGlobalRecencyLastN(t *testing.T) 
 // for the next full Rebuild.
 func fuzzScenarioPastIndex_RefreshOneRereadsChangedMetaAndReorders(t *testing.T) {
 	dir := t.TempDir()
-	proj := filepath.Join(dir, "proj")
+	proj := filepath.Join(dir, "project-test-0123456789")
 	base := time.Unix(1_700_000_000, 0)
-	writeMeta(t, proj, schema.SessionMeta{ID: "01A", Name: "01A", UpdatedAt: base, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
-	writeMeta(t, proj, schema.SessionMeta{ID: "01B", Name: "01B", UpdatedAt: base.Add(time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+	writeMeta(t, proj, schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeB", Name: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: base, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+	writeMeta(t, proj, schema.SessionMeta{ID: "02wMz5Txv2enqVTitaig6F", Name: "02wMz5Txv2enqVTitaig6F", UpdatedAt: base.Add(time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
 
 	idx := NewPastIndex(filepath.Join(dir, "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	if all := idx.All(); len(all) != 2 || all[0].ID != "01B" {
+	if all := idx.All(); len(all) != 2 || all[0].ID != "02wMz5Txv2enqVTitaig6F" {
 		t.Fatalf("expected 01B first before refresh, got %+v", all)
 	}
 
 	// Out-of-process rewrite: 01A's UpdatedAt jumps ahead of 01B, exactly like a
 	// daemon's maybeAutoSave touching its own meta.json.
-	writeMeta(t, proj, schema.SessionMeta{ID: "01A", Name: "01A", UpdatedAt: base.Add(2 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+	writeMeta(t, proj, schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeB", Name: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: base.Add(2 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
 
-	idx.RefreshOne("01A")
+	idx.RefreshOne("02wMz5Txv1C3Hut0M8GCeB")
 
 	all := idx.All()
-	if len(all) != 2 || all[0].ID != "01A" {
+	if len(all) != 2 || all[0].ID != "02wMz5Txv1C3Hut0M8GCeB" {
 		t.Fatalf("expected 01A to sort first after RefreshOne, got %+v", all)
 	}
 	if !all[0].Meta.UpdatedAt.Equal(base.Add(2 * time.Minute)) {
@@ -754,8 +754,8 @@ func fuzzScenarioPastIndex_RefreshOneRereadsChangedMetaAndReorders(t *testing.T)
 // memo depends on), same as a direct UpdateMeta call.
 func fuzzScenarioPastIndex_RefreshOneOnChangeFires(t *testing.T) {
 	dir := t.TempDir()
-	proj := filepath.Join(dir, "proj")
-	writeMeta(t, proj, schema.SessionMeta{ID: "01A", UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+	proj := filepath.Join(dir, "project-test-0123456789")
+	writeMeta(t, proj, schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
 
 	idx := NewPastIndex(filepath.Join(dir, "*"))
 	if err := idx.Rebuild(); err != nil {
@@ -764,8 +764,8 @@ func fuzzScenarioPastIndex_RefreshOneOnChangeFires(t *testing.T) {
 	fired := 0
 	idx.SetOnChange(func() { fired++ })
 
-	writeMeta(t, proj, schema.SessionMeta{ID: "01A", UpdatedAt: time.Unix(1_700_000_100, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
-	idx.RefreshOne("01A")
+	writeMeta(t, proj, schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: time.Unix(1_700_000_100, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+	idx.RefreshOne("02wMz5Txv1C3Hut0M8GCeB")
 	if fired != 1 {
 		t.Fatalf("expected RefreshOne to fire onChange once for a genuine delta, got %d", fired)
 	}
@@ -788,23 +788,23 @@ func fuzzScenarioPastIndex_RefreshOneNoOpsOnUntrackedID(t *testing.T) {
 // never panic or corrupt the existing entry.
 func fuzzScenarioPastIndex_RefreshOneNoOpsOnMissingMetaFile(t *testing.T) {
 	dir := t.TempDir()
-	proj := filepath.Join(dir, "proj")
-	writeMeta(t, proj, schema.SessionMeta{ID: "01A", UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+	proj := filepath.Join(dir, "project-test-0123456789")
+	writeMeta(t, proj, schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
 
 	idx := NewPastIndex(filepath.Join(dir, "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	before, _ := idx.Find("01A")
+	before, _ := idx.Find("02wMz5Txv1C3Hut0M8GCeB")
 
 	// Remove the underlying meta file out from under the index.
-	if err := os.Remove(filepath.Join(proj, "sessions", "01A.meta.json")); err != nil {
+	if err := os.Remove(filepath.Join(proj, "sessions", "02wMz5Txv1C3Hut0M8GCeB.meta.json")); err != nil {
 		t.Fatal(err)
 	}
 
-	idx.RefreshOne("01A") // must not panic
+	idx.RefreshOne("02wMz5Txv1C3Hut0M8GCeB") // must not panic
 
-	after, ok := idx.Find("01A")
+	after, ok := idx.Find("02wMz5Txv1C3Hut0M8GCeB")
 	if !ok {
 		t.Fatal("expected the stale entry to remain indexed after a failed RefreshOne")
 	}
@@ -823,9 +823,9 @@ func fuzzScenarioPastIndex_RecentModels_EmptyIndexReturnsNil(t *testing.T) {
 func fuzzScenarioPastIndex_RecentModels_SkipsBlankProviderOrModel(t *testing.T) {
 	idx := NewPastIndex("")
 	idx.SeedForTest([]schema.SessionMeta{
-		{ID: "a", ProfileID: "", Model: "gpt-5.2", UpdatedAt: time.Now()},
-		{ID: "b", ProfileID: "openai", Model: "", UpdatedAt: time.Now()},
-		{ID: "c", ProfileID: "openai", Model: "gpt-5.2", UpdatedAt: time.Now()},
+		{ID: "02wMz5Txv1C3Hut0M8GCeB", ProfileID: "", Model: "gpt-5.2", UpdatedAt: time.Now()},
+		{ID: "02wMz5Txv2enqVTitaig6F", ProfileID: "openai", Model: "", UpdatedAt: time.Now()},
+		{ID: "02wMz5Txv47YP64RR3B9YJ", ProfileID: "openai", Model: "gpt-5.2", UpdatedAt: time.Now()},
 	})
 	got := idx.RecentModels(5)
 	want := []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.2"}}

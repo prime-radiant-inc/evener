@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitext"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/internal/appserver"
 )
 
@@ -2062,6 +2063,11 @@ func TestHubModelSpawnFormFocusControlsHarnessAndModel(t *testing.T) {
 
 func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
 	var gotSpawn appwire.ThreadStartParams
+	projectDir := t.TempDir()
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	app := appserver.NewServer(appserver.ServerConfig{
 		ServerName: "serf-hub",
 		SourceID:   "local",
@@ -2069,9 +2075,9 @@ func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
 	})
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return threadListResponse(hubTreeResponse{Projects: []hubTreeProject{{
-			Key:        "serf",
+			Key:        project.ID,
 			Name:       "serf",
-			WorkingDir: "/tmp/serf",
+			WorkingDir: project.CanonicalPath,
 			Sessions: []hubTreeNode{
 				{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
 			},
@@ -2088,12 +2094,12 @@ func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 		return appwire.ThreadStartResponse{Thread: appwireThread(hubTreeNode{
 			Ref: "local:02SLOW", SessionID: "02SLOW", Title: "spawned session", State: "idle", Project: "serf", Live: true,
-		}, "/tmp/serf")}, nil
+		}, project.CanonicalPath)}, nil
 	})
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		return appwire.ThreadReadResponse{Thread: appwireThread(hubTreeNode{
 			Ref: "local:02SLOW", SessionID: "02SLOW", Title: "spawned session", State: "idle", Project: "serf", Live: true,
-		}, "/tmp/serf")}, nil
+		}, project.CanonicalPath)}, nil
 	})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/rpc" {
@@ -2150,8 +2156,8 @@ func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
 	if model.mode != hubModeSession || model.detail.SessionID != "02SLOW" {
 		t.Fatalf("mode=%v detail=%+v", model.mode, model.detail)
 	}
-	if gotSpawn.CWD != "/tmp/serf" {
-		t.Fatalf("cwd=%q, want /tmp/serf", gotSpawn.CWD)
+	if gotSpawn.CWD != project.CanonicalPath {
+		t.Fatalf("cwd=%q, want %q", gotSpawn.CWD, project.CanonicalPath)
 	}
 	if testInputText(gotSpawn.Input) != "slow spawn" {
 		t.Fatalf("prompt=%q, want slow spawn", testInputText(gotSpawn.Input))
@@ -4191,9 +4197,20 @@ func threadListResponse(tree hubTreeResponse) appwire.ThreadListResponse {
 	}
 	for _, project := range tree.Projects {
 		for _, node := range project.Sessions {
-			add(node, project.WorkingDir)
+			thread := appwireThread(node, project.WorkingDir)
+			thread.ProjectID = project.Key
+			thread.ProjectPath = project.WorkingDir
+			data = append(data, thread)
+			seen[node.Ref] = true
 			for _, child := range node.Children {
-				add(child, project.WorkingDir)
+				childThread := appwireThread(child, project.WorkingDir)
+				childThread.ProjectID = project.Key
+				childThread.ProjectPath = project.WorkingDir
+				childRef := childThread.Serf.Ref
+				if childRef != "" && !seen[childRef] {
+					seen[childRef] = true
+					data = append(data, childThread)
+				}
 			}
 		}
 	}

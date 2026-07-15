@@ -61,6 +61,21 @@ go test ./agent/ -bench BenchmarkRoundOverhead -benchtime 10x -run "^$"
 
 This uses a mock LLM client with 10ms simulated latency and reports per-round overhead in microseconds. Useful for detecting framework regressions without real API calls.
 
+## State paths and identifiers
+
+Profiling artifacts that inspect persisted sessions should use the canonical
+state layout:
+
+```text
+${XDG_STATE_HOME:-~/.local/state}/serf/projects/<project-id>/sessions/<session-id>.transcript.jsonl
+```
+
+`<project-id>` is a readable canonical-project ID with a 10-character base62
+suffix. The main checkout and linked worktrees resolve to the same project
+bucket; a distinct clone resolves to a distinct bucket. `<session-id>` is a
+22-character UUIDv7 base62 payload. The clean break does not migrate or remove
+inert old state; remove it manually when it is no longer needed.
+
 ## Analyzing Real Runs
 
 ### API log timing

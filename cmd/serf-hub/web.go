@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/httpsec"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubedge"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/internal/appserver"
 )
 
@@ -349,7 +350,10 @@ func appRefFromRouteID(id string) string {
 
 func isLocalRouteID(id string) bool {
 	ref, err := appwire.ParseRef(id)
-	return err != nil || ref.SourceID == "local"
+	if err != nil {
+		return identifier.ValidateSessionID(id) == nil
+	}
+	return ref.SourceID == "local" && identifier.ValidateSessionID(ref.ThreadID) == nil
 }
 
 func canonicalRouteID(id string) string {

@@ -4,7 +4,11 @@
 // value which is then turned into argv + env via ToArgs/ToEnv.
 package launchconfig
 
-import "time"
+import (
+	"time"
+
+	"primeradiant.com/serf/identifier"
+)
 
 // Layer is one writable or in-memory layer of launch configuration. All
 // scalar value fields are pointer-typed so the merge logic can
@@ -66,6 +70,9 @@ const (
 // Resolved is the output of merging every layer. Provenance maps each
 // effective field name to the topmost contributing LayerName.
 type Resolved struct {
+	// Project is the identity resolved for the active launch cwd. It is kept
+	// separate from the active cwd used to execute the daemon.
+	Project     identifier.Project
 	Effective   Layer
 	Layers      map[LayerName]Layer
 	Provenance  map[string]LayerName

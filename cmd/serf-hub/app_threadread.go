@@ -178,6 +178,7 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 		}
 		thread = enrichThreadFileBackedOutputImages(thread)
 	}
+	annotateThreadProjects([]appwire.Thread{thread})
 	return thread
 }
 

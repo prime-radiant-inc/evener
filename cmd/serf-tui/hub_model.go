@@ -45,7 +45,8 @@ type hubRow struct {
 	sourceLabel string
 	title       string
 	project     string
-	projectKey  string
+	projectKey  string // server-supplied canonical project ID; empty is non-actionable
+	groupKey    string // presentation-only grouping key; never sent to the server
 	state       string
 	askPending  bool
 	live        bool

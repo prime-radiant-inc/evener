@@ -14,9 +14,9 @@ import (
 
 func TestHubRPCTranscriptTargetsUseSerfParentRefs(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "repo")
+	stateDir := filepath.Join(root, "projects", "project-repo-0000000000")
 	parentID := buildRPCParentSession(t, stateDir)
-	subID := "01SUBAGENT00000000000001"
+	subID := "02wMz5Txv8Vo4rqb3QYZuV"
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -9,8 +9,9 @@ import (
 	"primeradiant.com/serf/agent/schema"
 )
 
-const childSID = "01TESTCHILDSESSIONXXXXXXXXX"
-const obsSID = "01TESTOBSERVERSESSIONXXXXXX"
+const childSID = "02wMz5Txv2enqVTitaig6F"
+const obsSID = "02wMz5Txv47YP64RR3B9YJ"
+const grandchildSID = "02wMz5Txv1C3Hut0M8GCeB"
 
 // treeFixture builds: root (hash1) --delegate--> child (hash2, cross-bucket),
 // with root observed by an observer session (hash1).
@@ -101,9 +102,10 @@ func TestTree_DepthLimit(t *testing.T) {
 	// grandchild to report and the depth-1 suppression is observable in the note.
 	childBucket := stateHomeBucket(base, hash2)
 	childJobs := filepath.Join(childBucket, "sessions", childSID, "jobs.jsonl")
+	writeSession(t, childBucket, grandchildSID)
 	writeJobsEvents(t, childJobs, []jobstore.Event{
 		{Kind: jobstore.EventDelegateCreated, DelegateID: "del2", Delegate: &jobstore.DelegateEvent{
-			ChildSessionID: "grandchild-placeholder",
+			ChildSessionID: grandchildSID,
 			AgentType:      "leaf",
 		}},
 	})

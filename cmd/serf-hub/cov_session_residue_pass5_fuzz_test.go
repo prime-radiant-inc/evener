@@ -101,7 +101,7 @@ func FuzzSessionResiduePass5(f *testing.F) {
 			cache.Store([]appwire.Thread{thread})
 			inputs := &hubcore.InputsVersion{}
 			web := NewWebServer(hubcore.WebConfig{RemoteThreadCache: cache, Inputs: inputs})
-			_, _ = web.navigationTreeInputs(context.Background())
+			_, _, _ = web.navigationTreeInputs(context.Background())
 			_, _ = web.memoTree(context.Background())
 			_, _ = web.memoTree(context.Background())
 			inputs.Bump()

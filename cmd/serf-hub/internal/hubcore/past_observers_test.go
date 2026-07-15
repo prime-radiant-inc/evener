@@ -38,35 +38,35 @@ func writeGrantLog(t *testing.T, project, sessID, watchedJobID, workerRef, obser
 // forward ObservedBy stamp (the existing-data case: 0/2211 stamped).
 func fuzzScenarioPastIndex_ObserversOf_FromGrantLog(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "p")
-	writeMeta(t, proj, schema.SessionMeta{ID: "PARENT", UpdatedAt: time.Now()})
-	writeMeta(t, proj, schema.SessionMeta{ID: "WORKER", IsSubagent: true, ParentSessionID: "PARENT", UpdatedAt: time.Now()})
-	writeMeta(t, proj, schema.SessionMeta{ID: "OBSERVER", IsSubagent: true, ParentSessionID: "PARENT", UpdatedAt: time.Now()})
+	proj := filepath.Join(root, "projects", "project-p-0123456789")
+	writeMeta(t, proj, schema.SessionMeta{ID: "02wMz5TxvBRJC3228LTWod", UpdatedAt: time.Now()})
+	writeMeta(t, proj, schema.SessionMeta{ID: "02wMz5TxvCu3kdckfnw0Gh", IsSubagent: true, ParentSessionID: "02wMz5TxvBRJC3228LTWod", UpdatedAt: time.Now()})
+	writeMeta(t, proj, schema.SessionMeta{ID: "02wMz5TxvEMoJEDTDGOTil", IsSubagent: true, ParentSessionID: "02wMz5TxvBRJC3228LTWod", UpdatedAt: time.Now()})
 	// The grant + watched-job record live in the WATCHING (parent) session's log.
-	writeGrantLog(t, proj, "PARENT", "job_watched", "local:WORKER", "OBSERVER")
+	writeGrantLog(t, proj, "02wMz5TxvBRJC3228LTWod", "job_watched", "local:02wMz5TxvCu3kdckfnw0Gh", "02wMz5TxvEMoJEDTDGOTil")
 
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
-	got := idx.ObserversOf("WORKER")
-	if len(got) != 1 || got[0] != "OBSERVER" {
-		t.Fatalf("ObserversOf(WORKER) = %v, want [OBSERVER]", got)
+	got := idx.ObserversOf("02wMz5TxvCu3kdckfnw0Gh")
+	if len(got) != 1 || got[0] != "02wMz5TxvEMoJEDTDGOTil" {
+		t.Fatalf("ObserversOf(worker) = %v, want observer", got)
 	}
 }
 
 // A worker with no grants anywhere on disk has no observers.
 func fuzzScenarioPastIndex_ObserversOf_NoneWhenUngranted(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "p")
-	writeMeta(t, proj, schema.SessionMeta{ID: "WORKER", UpdatedAt: time.Now()})
+	proj := filepath.Join(root, "projects", "project-p-0123456789")
+	writeMeta(t, proj, schema.SessionMeta{ID: "02wMz5TxvCu3kdckfnw0Gh", UpdatedAt: time.Now()})
 
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
-	if got := idx.ObserversOf("WORKER"); len(got) != 0 {
-		t.Fatalf("ObserversOf(WORKER) = %v, want none", got)
+	if got := idx.ObserversOf("02wMz5TxvCu3kdckfnw0Gh"); len(got) != 0 {
+		t.Fatalf("ObserversOf(worker) = %v, want none", got)
 	}
 }
 
@@ -75,15 +75,15 @@ func fuzzScenarioPastIndex_ObserversOf_NoneWhenUngranted(t *testing.T) {
 // sessions, mirroring the stamp's ok=false handling.
 func fuzzScenarioPastIndex_ObserversOf_SkipsCrossProjectRef(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "p")
-	writeMeta(t, proj, schema.SessionMeta{ID: "PARENT", UpdatedAt: time.Now()})
-	writeGrantLog(t, proj, "PARENT", "job_watched", "proj:otherbucket:WORKER", "OBSERVER")
+	proj := filepath.Join(root, "projects", "project-p-0123456789")
+	writeMeta(t, proj, schema.SessionMeta{ID: "02wMz5TxvBRJC3228LTWod", UpdatedAt: time.Now()})
+	writeGrantLog(t, proj, "02wMz5TxvBRJC3228LTWod", "job_watched", "proj:otherbucket:WORKER", "02wMz5TxvEMoJEDTDGOTil")
 
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
-	if got := idx.ObserversOf("WORKER"); len(got) != 0 {
+	if got := idx.ObserversOf("02wMz5TxvCu3kdckfnw0Gh"); len(got) != 0 {
 		t.Fatalf("cross-project ref must be skipped; got %v", got)
 	}
 }
@@ -92,20 +92,23 @@ func fuzzScenarioPastIndex_ObserversOf_SkipsCrossProjectRef(t *testing.T) {
 // both surface, deduped.
 func fuzzScenarioPastIndex_ObserversOf_MultipleObservers(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "p")
-	writeMeta(t, proj, schema.SessionMeta{ID: "P1", UpdatedAt: time.Now()})
-	writeMeta(t, proj, schema.SessionMeta{ID: "P2", UpdatedAt: time.Now()})
-	writeGrantLog(t, proj, "P1", "job_w1", "local:WORKER", "OBS1")
-	writeGrantLog(t, proj, "P2", "job_w2", "local:WORKER", "OBS2")
+	proj := filepath.Join(root, "projects", "project-p-0123456789")
+	const workerID = "02wMz5TxvCu3kdckfnw0Gh"
+	const observer1ID = "02wMz5TxvFpYrooBkiqxAp"
+	const observer2ID = "02wMz5TxvHIJQPOuIBJQct"
+	writeMeta(t, proj, schema.SessionMeta{ID: observer1ID, UpdatedAt: time.Now()})
+	writeMeta(t, proj, schema.SessionMeta{ID: observer2ID, UpdatedAt: time.Now()})
+	writeGrantLog(t, proj, observer1ID, "job_w1", "local:"+workerID, observer1ID)
+	writeGrantLog(t, proj, observer2ID, "job_w2", "local:"+workerID, observer2ID)
 
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
-	got := idx.ObserversOf("WORKER")
-	want := map[string]bool{"OBS1": true, "OBS2": true}
+	got := idx.ObserversOf(workerID)
+	want := map[string]bool{observer1ID: true, observer2ID: true}
 	if len(got) != 2 || !want[got[0]] || !want[got[1]] || got[0] == got[1] {
-		t.Fatalf("ObserversOf(WORKER) = %v, want OBS1+OBS2", got)
+		t.Fatalf("ObserversOf(worker) = %v, want %s+%s", got, observer1ID, observer2ID)
 	}
 }
 
@@ -113,14 +116,14 @@ func fuzzScenarioPastIndex_ObserversOf_MultipleObservers(t *testing.T) {
 // over existing data) — opening a jobstore with O_CREATE would litter empty logs.
 func fuzzScenarioPastIndex_ObserversOf_DoesNotCreateJobsLog(t *testing.T) {
 	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "p")
-	writeMeta(t, proj, schema.SessionMeta{ID: "WORKER", UpdatedAt: time.Now()})
+	proj := filepath.Join(root, "projects", "project-p-0123456789")
+	writeMeta(t, proj, schema.SessionMeta{ID: "02wMz5TxvCu3kdckfnw0Gh", UpdatedAt: time.Now()})
 
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(proj, "sessions", "WORKER", "jobs.jsonl")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(proj, "sessions", "02wMz5TxvCu3kdckfnw0Gh", "jobs.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("rebuild must not create jobs.jsonl; stat err = %v", err)
 	}
 }

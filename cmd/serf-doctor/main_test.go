@@ -18,8 +18,8 @@ import (
 func fixture(t *testing.T) (base, sid string) {
 	t.Helper()
 	base = t.TempDir()
-	sid = "01CMDTESTSESSIONXXXXXXXXXXX"
-	bucket := filepath.Join(base, "serf", "projects", "00aa00bb00cc00dd")
+	sid = "02wLIRxqmq3AUo6vl2OW37"
+	bucket := filepath.Join(base, "serf", "projects", "project-test-0123456789")
 	sess := filepath.Join(bucket, "sessions")
 	if err := os.MkdirAll(filepath.Join(sess, sid), 0o755); err != nil {
 		t.Fatal(err)
@@ -142,8 +142,8 @@ func TestRun_NoSelectorErrors(t *testing.T) {
 func fixtureWithAPILogData(t *testing.T) (base, sid string) {
 	t.Helper()
 	base = t.TempDir()
-	sid = "01CMDTESTSESSIONXXXXXXXXXXX"
-	bucket := filepath.Join(base, "serf", "projects", "00aa00bb00cc00dd")
+	sid = "02wLIRxqmq3AUo6vl2OW37"
+	bucket := filepath.Join(base, "serf", "projects", "project-test-0123456789")
 	sess := filepath.Join(bucket, "sessions")
 	if err := os.MkdirAll(filepath.Join(sess, sid), 0o755); err != nil {
 		t.Fatal(err)
@@ -170,7 +170,7 @@ func fixtureWithAPILogData(t *testing.T) (base, sid string) {
 // treeGrandchildSID is the delegate two hops below the root in
 // fixtureWithTreeData; it is only reachable when the depth limit allows a
 // second expansion hop.
-const treeGrandchildSID = "01CMDGRANDCHILD0000000001"
+const treeGrandchildSID = "02wLIRxqmq3AUo6vl2OW38"
 
 // fixtureWithTreeData writes a session state tree with delegate_created events
 // in jobs.jsonl and observed_by in meta.json so cmdTree has edges to walk. The
@@ -179,11 +179,11 @@ const treeGrandchildSID = "01CMDGRANDCHILD0000000001"
 func fixtureWithTreeData(t *testing.T) (base, sid string) {
 	t.Helper()
 	base = t.TempDir()
-	sid = "01CMDTESTSESSIONXXXXXXXXXXX"
-	childSID := "01CMDCHILD000000000000001"
+	sid = "02wLIRxqmq3AUo6vl2OW37"
+	childSID := "02wLIRxqmq3AUo6vl2OW39"
 	grandchildSID := treeGrandchildSID
-	observerSID := "01CMDOBSERVER000000000001"
-	bucket := filepath.Join(base, "serf", "projects", "00aa00bb00cc00dd")
+	observerSID := "02wLIRxqmq3AUo6vl2OW3A"
+	bucket := filepath.Join(base, "serf", "projects", "project-test-0123456789")
 	sess := filepath.Join(bucket, "sessions")
 	if err := os.MkdirAll(filepath.Join(sess, sid), 0o755); err != nil {
 		t.Fatal(err)

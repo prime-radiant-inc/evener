@@ -241,6 +241,61 @@ func TestResumeWorktreeReentry_ManagedForeign_RestoresRootAndNotices(t *testing.
 	}
 }
 
+func TestResumeWorktreeReentry_ManagedRegisteredOutsideProject_RestoresRootAndNotices(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	sibling := r.addSiblingWorktree(t, "outside-managed", "outside-managed")
+
+	meta := schema.SessionMeta{
+		ID:                  "01RESUMEMANAGEDOUTSIDE001",
+		WorktreePath:        sibling,
+		WorktreeManaged:     true,
+		WorktreeRestoreRoot: r.mainRoot,
+	}
+	sess := r.restoreWorktreeSession(t, meta, r.mainRoot)
+
+	if got := sess.currentEnv().WorkingDirectory(); got != r.mainRoot {
+		t.Fatalf("currentEnv WorkingDirectory = %q, want restore root %q", got, r.mainRoot)
+	}
+	msgs := warningMessages(sess)
+	if !anyContainsAll(msgs, sibling, "managed") {
+		t.Fatalf("no managed-containment notice among warnings: %v", msgs)
+	}
+	if got := sess.Meta().WorktreePath; got != "" {
+		t.Fatalf("resumed outside managed tree with WorktreePath %q, want empty", got)
+	}
+}
+
+func TestResumeWorktreeReentry_ManagedSymlinkCanonicalizesBeforeContainment(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "canonical-lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	wtGit(t, r.mainRoot, "worktree", "unlock", path)
+	alias := filepath.Join(t.TempDir(), "canonical-lane-alias")
+	if err := os.Symlink(path, alias); err != nil {
+		t.Fatalf("symlink managed lane: %v", err)
+	}
+
+	meta := schema.SessionMeta{
+		ID:                  "01RESUMEMANAGEDSYMLINK001",
+		WorktreePath:        alias,
+		WorktreeManaged:     true,
+		WorktreeRestoreRoot: r.mainRoot,
+	}
+	sess := r.restoreWorktreeSession(t, meta, r.mainRoot)
+
+	if got := sess.currentEnv().WorkingDirectory(); got != path {
+		t.Fatalf("currentEnv WorkingDirectory = %q, want canonical lane %q", got, path)
+	}
+	if got := sess.Meta().WorktreePath; got != path {
+		t.Fatalf("resumed WorktreePath = %q, want canonical lane %q", got, path)
+	}
+}
+
 func TestResumeWorktreeReentry_NonManagedPathEntered_ReentersNoLock(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)

@@ -9,13 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/oklog/ulid/v2"
-
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
 
@@ -67,7 +66,7 @@ func singleAttemptRequestMetadata(req llm.Request) (llm.Request, ModelAttemptMet
 }
 
 func newAttemptGroupID() string {
-	return "ag_" + ulid.Make().String()
+	return identifier.MustNewAgentCallID()
 }
 
 type modelAttemptRecorder struct {

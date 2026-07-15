@@ -75,7 +75,7 @@ up as a normal active project again, not stuck under Archived).
   that already finished its first turn and is sitting in `awaiting` is still
   "live" (and will 409 a delete) until you `POST .../shutdown`.
 - The 409 body's `live` array uses short IDs (`"session " + last 6 chars`),
-  not full ULIDs — don't match on the full session ID.
+  not full session IDs — don't match on the full session ID.
 - Step 5 requires overriding `window.confirm` before clicking —
   `confirmDeleteProject` calls the real `window.confirm(...)`; a scripted
   click on Delete… will otherwise hang waiting on a dialog no one answers.

@@ -13,6 +13,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/afero"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/identifier"
 )
 
 var errExternalEdge = errors.New("external edge")
@@ -278,23 +279,28 @@ func fuzzScenarioRemainingPureBranches(t *testing.T) {
 		t.Fatal("case-sensitive fallback")
 	}
 
+	projectDir := t.TempDir()
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	metas := []schema.SessionMeta{
-		{ID: "active", ParentSessionID: "original", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p"}},
-		{ID: "original", ForkLabel: "b", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p"}, UpdatedAt: time.Unix(1, 0)},
-		{ID: "original", ForkLabel: "a", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p"}, UpdatedAt: time.Unix(2, 0)},
+		{ID: "02wMz5Txv1C3Hut0M8GCeB", ParentSessionID: "02wMz5Txv2enqVTitaig6F", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p"}},
+		{ID: "02wMz5Txv2enqVTitaig6F", ForkLabel: "b", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p"}, UpdatedAt: time.Unix(1, 0)},
+		{ID: "02wMz5Txv2enqVTitaig6F", ForkLabel: "a", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p"}, UpdatedAt: time.Unix(2, 0)},
 	}
 	BuildTreeAt(metas, nil, nil, time.Now())
-	if _, ok := BuildProjectTreeAt([]schema.SessionMeta{{ID: "p", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p"}}}, nil, nil, time.Now(), "p"); !ok {
+	if _, ok := BuildProjectTreeAt([]schema.SessionMeta{{ID: "02wMz5Txv1C3Hut0M8GCeB", EnvInfo: schema.EnvironmentInfo{WorkingDir: projectDir}}}, nil, nil, time.Now(), project.ID); !ok {
 		t.Fatal("missing project")
 	}
 
-	project := t.TempDir()
+	projectRoot := t.TempDir()
 	fs := afero.NewMemMapFs()
-	if err := fs.MkdirAll(project+"/sessions/id", 0o700); err != nil {
+	if err := fs.MkdirAll(projectRoot+"/sessions/id", 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(project+"/sessions/id/jobs.jsonl", 0o700); err != nil {
+	if err := os.MkdirAll(projectRoot+"/sessions/id/jobs.jsonl", 0o700); err != nil {
 		t.Fatal(err)
 	}
-	foldProjectObserverGrants(make(map[string][]string), fs, project)
+	foldProjectObserverGrants(make(map[string][]string), fs, projectRoot)
 }

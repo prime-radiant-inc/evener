@@ -34,7 +34,7 @@ func FuzzSessionEngineCoverage(f *testing.F) {
 			{"continuation_input", TestS2Cov_AcceptContinuationInput_AppendsSteeringAndMarker},
 			{"queue_preview", TestS2Cov_QueuedEntryPreviewLine},
 			{"job_notifications", TestS2Cov_JobNotifications},
-			{"compaction_turn", TestS2Cov_HandleCompactionTurn_SteersTranscriptRef},
+			{"compaction_turn", TestS2Cov_HandleCompactionTurn_WritesTranscriptAndEmitsEvent},
 			{"restore_guards", TestS2Cov_RestoreSession_NilArgGuards},
 			{"namer_guards", TestS2Cov_SessionNamerModelGuards},
 			{"name_sanitize", TestS2Cov_SanitizeSessionName},

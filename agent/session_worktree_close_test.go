@@ -30,7 +30,7 @@ import (
 func (r *wtRepo) seedIsolationLane(t *testing.T) (delegateID, lanePath, baseSHA string) {
 	t.Helper()
 	delegateID = jobstore.NewDelegateID()
-	path, _, base, _, err := r.s.createDelegateWorktree(context.Background(), delegateID)
+	path, _, base, _, _, err := r.s.createDelegateWorktree(context.Background(), delegateID)
 	if err != nil {
 		t.Fatalf("createDelegateWorktree: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestDisposeUnchangedLane_RemovedAndMarked(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
-	metaDir := r.metaDir(r.canonicalMain(t))
+	metaDir := r.metaDir(t, r.canonicalMain(t))
 
 	r.s.disposeDelegateLanesAtClose(context.Background())
 
@@ -401,7 +401,7 @@ func TestDisposeAncestryMergedLane_Collected(t *testing.T) {
 	r := newWorktreeRepo(t)
 	mergedID, mergedPath, _ := r.seedIsolationLane(t)
 	unchangedID, unchangedPath, _ := r.seedIsolationLane(t)
-	metaDir := r.metaDir(r.canonicalMain(t))
+	metaDir := r.metaDir(t, r.canonicalMain(t))
 
 	// Commit twice in the merged lane, then fast-forward main to the lane tip so
 	// the lane's commits are reachable from refs/heads/main (ancestry-merged).
@@ -521,7 +521,7 @@ func TestDisposeRemoteTrackingOnlyMergeTarget_Kept(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
-	metaDir := r.metaDir(r.canonicalMain(t))
+	metaDir := r.metaDir(t, r.canonicalMain(t))
 
 	if err := os.WriteFile(filepath.Join(lanePath, "work.txt"), []byte("feat\n"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
@@ -583,7 +583,7 @@ func TestDisposeKeptLane_TouchesSidecarBeforeUnlock(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
-	metaDir := r.metaDir(r.canonicalMain(t))
+	metaDir := r.metaDir(t, r.canonicalMain(t))
 	if err := os.WriteFile(filepath.Join(lanePath, "work.txt"), []byte("wip\n"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -682,7 +682,7 @@ func TestDisposeUnchangedLaneMechanics_RelockPolicy(t *testing.T) {
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	lane := isolationLane{delegateID: delegateID, path: lanePath}
-	metaDir := r.metaDir(r.canonicalMain(t))
+	metaDir := r.metaDir(t, r.canonicalMain(t))
 	run, st := r.laneDisposalRunner(t, lane)
 	r.s.worktreeDisposeBeforeRemove = func(p string) {
 		_ = os.WriteFile(filepath.Join(p, "raced.txt"), []byte("late\n"), 0o644)
@@ -719,7 +719,7 @@ func TestDisposeUnchangedLaneMechanics_UnlockPolicy(t *testing.T) {
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	lane := isolationLane{delegateID: delegateID, path: lanePath}
-	metaDir := r.metaDir(r.canonicalMain(t))
+	metaDir := r.metaDir(t, r.canonicalMain(t))
 	run, st := r.laneDisposalRunner(t, lane)
 	r.s.worktreeDisposeBeforeRemove = func(p string) {
 		_ = os.WriteFile(filepath.Join(p, "raced.txt"), []byte("late\n"), 0o644)
@@ -880,7 +880,7 @@ func TestDisposeOneDelegateLane_MissingSidecarLeavesLane(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
-	metaDir := r.metaDir(r.canonicalMain(t))
+	metaDir := r.metaDir(t, r.canonicalMain(t))
 	if err := worktree.DeleteSidecar(metaDir, delegateID); err != nil {
 		t.Fatalf("delete sidecar: %v", err)
 	}
@@ -1078,7 +1078,7 @@ func TestDisposeOneDelegateLane_DisposedMarkAppendFailureWarnsButStillRemoves(t 
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
-	metaDir := r.metaDir(r.canonicalMain(t))
+	metaDir := r.metaDir(t, r.canonicalMain(t))
 	origAppend := r.s.jobManager.appendEvent
 	markErr := errors.New("disk full")
 	r.s.jobManager.appendEvent = func(e jobstore.Event) error {
@@ -1114,7 +1114,7 @@ func TestDisposeOneDelegateLane_BranchDeleteFailureWarnsButLaneStillGone(t *test
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
-	metaDir := r.metaDir(r.canonicalMain(t))
+	metaDir := r.metaDir(t, r.canonicalMain(t))
 	gitFailOnArgsRepoShim(t, r.mainRoot, "branch", "-D", delegateID)
 
 	r.s.disposeDelegateLanesAtClose(context.Background())

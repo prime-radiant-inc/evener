@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/identifier"
 )
 
 type historicalJobStore interface {
@@ -128,6 +129,9 @@ func LoadSessionObserverGrants(stateDir, sessionID string) (map[string][]string,
 	// Invert observer→watchedJobs into worker→observers, deduped.
 	workerObservers := make(map[string]map[string]bool)
 	for observerSessionID, watchedJobs := range grants {
+		if identifier.ValidateSessionID(observerSessionID) != nil {
+			continue
+		}
 		for watchedJobID := range watchedJobs {
 			workerSessionID, ok := workerSessionForWatchedJob(records, watchedJobID)
 			if !ok {
@@ -163,8 +167,8 @@ func workerSessionForWatchedJob(records map[string]*jobstore.JobRecord, watchedJ
 	if rec == nil || rec.Type != jobstore.JobDelegate {
 		return "", false
 	}
-	bucketHash, childID, err := decodeRef(rec.TranscriptRef)
-	if err != nil || bucketHash != "" {
+	projectID, childID, err := decodeRef(rec.TranscriptRef)
+	if err != nil || projectID != "" || identifier.ValidateSessionID(childID) != nil {
 		return "", false
 	}
 	return childID, true

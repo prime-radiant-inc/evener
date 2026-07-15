@@ -265,7 +265,7 @@
       { label: "New session", run: function () { window.location.href = "/new?dir=" + encodeURIComponent(p.working_dir); } },
       { label: "Settings", run: function () { window.location.href = "/settings/project?cwd=" + encodeURIComponent(p.working_dir); } },
       { label: archived ? "Unarchive" : "Archive", run: function () {
-          window.fetch("/api/archive", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "project", id: p.working_dir, archived: !archived }) }).then(scheduleResync);
+          window.fetch("/api/archive", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "project", id: p.key, working_dir: p.working_dir, archived: !archived }) }).then(scheduleResync);
         } },
       { label: "Delete…", run: function () { confirmDeleteProject(p); } },
     ];
@@ -972,30 +972,12 @@
     return fetchTreeJSON().then(function (tree) {
       if (mySeq !== model.seq) return; // sequence guard: a newer fetch won
       renderTree(tree);
-      migrateExpansionKeys(); // Task 22 (no-op until then)
+      // Project expansion state is keyed only by the server-supplied ID.
       // Previously-expanded archived stubs (restored from localStorage by
       // renderTree) must load their sessions now, not wait for a resync.
       model.expanded.forEach(function (key) { hydrateProjectStub(key); });
     }).catch(function () {});
   }
-  // One-time migration of legacy basename-keyed expansion entries to the new
-  // path-slug keys. Runs after the first render (needs each project's key+name);
-  // co-basename collisions copy the old value to every matching new key.
-  var migratedExpansion = false;
-  function migrateExpansionKeys() {
-    if (migratedExpansion || !model.tree) return;
-    migratedExpansion = true;
-    var all = (model.tree.projects || []).concat(model.tree.archived_projects || [], model.tree.test_runs || []);
-    all.forEach(function (p) {
-      try {
-        var legacy = window.localStorage.getItem(EXPAND_PREFIX + p.name);
-        if (legacy === null) return;
-        if (window.localStorage.getItem(EXPAND_PREFIX + p.key) === null) window.localStorage.setItem(EXPAND_PREFIX + p.key, legacy);
-        if (legacy === "true") model.expanded.add(p.key);
-      } catch (e) {}
-    });
-  }
-
   // --- Coalesced resync + event wiring ---------------------------------------
   var resyncTimer = null, lastResync = 0;
   function scheduleResync() {

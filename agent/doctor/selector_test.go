@@ -34,9 +34,9 @@ func TestParseSelector(t *testing.T) {
 			t.Errorf("parseSelector(%q) error: %v", tt.in, err)
 			continue
 		}
-		if got.hash != tt.wantHash || got.sid != tt.wantSID {
-			t.Errorf("parseSelector(%q) = {hash:%q sid:%q}, want {hash:%q sid:%q}",
-				tt.in, got.hash, got.sid, tt.wantHash, tt.wantSID)
+		if got.projectID != tt.wantHash || got.sid != tt.wantSID {
+			t.Errorf("parseSelector(%q) = {projectID:%q sid:%q}, want {projectID:%q sid:%q}",
+				tt.in, got.projectID, got.sid, tt.wantHash, tt.wantSID)
 		}
 	}
 }

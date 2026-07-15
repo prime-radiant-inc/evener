@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/hubapi"
+	"primeradiant.com/serf/identifier"
 )
 
 // Tree is the navigation data model.
@@ -33,15 +33,13 @@ type Tree struct {
 	ArchivedProjects []TreeProject
 }
 
-// TreeProject groups sessions by working-directory basename. Its sessions are
+// TreeProject groups sessions by canonical project identity. Its sessions are
 // split into activity tiers (Current / Recent / Archived) computed from each
 // session's last activity and archive decision.
 type TreeProject struct {
 	Name string
-	// Key is the stable, path-derived project identifier: a slug of the full
-	// working directory ("<basename>-<8-hex sha256(path)>", or "no-project" for
-	// pathless sessions). Readable and collision-resistant, not collision-free —
-	// every destructive use is path-validated. Name stays the basename for display.
+	// Key is the canonical identifier.Project.ID (or "no-project" for pathless
+	// sessions). Name stays the basename for display.
 	Key        string
 	WorkingDir string // absolute path of the project's working directory; used to prefill the spawn form
 	// Sessions split by activity tier:
@@ -191,27 +189,11 @@ func projectName(m schema.SessionMeta) string {
 	return filepath.Base(wd)
 }
 
-// projectSlug is the stable path-derived project key: "<basename>-<8hex>" of
-// the full working directory, or "no-project" when the path is empty. The
-// basename is sanitized for use as a URL/query key.
-func projectSlug(path string) string {
-	if path == "" {
-		return "no-project"
-	}
-	sum := sha256.Sum256([]byte(path))
-	base := strings.NewReplacer("/", "_", ":", "_", " ", "_").Replace(filepath.Base(path))
-	return base + "-" + hex.EncodeToString(sum[:4])
-}
-
-// ProjectSlug is the exported path-derived project key used by the hub's
-// orphan-live grouping and project-key resolution. See projectSlug.
-func ProjectSlug(path string) string { return projectSlug(path) }
-
 // nodeTitle computes the display title for a tree node.
 //
 // Older sessions persisted before OriginalPrompt was captured fall back to a
 // short, human-friendlier rendering of the session ID rather than the full
-// 26-character ULID, which clutters the sidebar.
+// 22-character UUIDv7 base62 payload, which clutters the sidebar.
 func nodeTitle(m schema.SessionMeta, kind string) string {
 	base := truncateTitle(schema.SessionDisplayName(m))
 	if base == "" {
@@ -299,9 +281,83 @@ func BuildTree(metas []schema.SessionMeta, live []LiveEntry, decisions map[Archi
 	return BuildTreeAt(metas, live, decisions, time.Now())
 }
 
+// BuildTreeWithProjects builds a tree from identities resolved by the caller
+// at ingestion. The project map is keyed by the effective working directory;
+// grouping and ordering do not perform filesystem or Git resolution.
+func BuildTreeWithProjects(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, projects map[string]identifier.Project) Tree {
+	return BuildTreeAtWithProjects(metas, live, decisions, time.Now(), projects)
+}
+
 // BuildTreeAt is BuildTree with an injected clock so tier classification
 // (Current/Recent/Archived, by last-activity age) is deterministic in tests.
 func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, now time.Time) Tree {
+	projects := ResolveProjectMap(metas, live)
+	return BuildTreeAtWithProjects(metas, live, decisions, now, projects)
+}
+
+// ResolveProjectMap resolves every distinct live/past working directory once
+// at the tree ingestion boundary. Failed resolutions are intentionally absent;
+// pathless entries remain in the presentation-only no-project bucket.
+func ResolveProjectMap(metas []schema.SessionMeta, live []LiveEntry) map[string]identifier.Project {
+	projects, _ := resolveProjectMap(metas, live, false)
+	return projects
+}
+
+// ResolveProjectMapStrict resolves the same working-directory identities as
+// ResolveProjectMap, but returns an error if any non-empty path cannot be
+// resolved. Destructive callers use this form so they cannot act on a partial
+// view of canonical project membership.
+func ResolveProjectMapStrict(metas []schema.SessionMeta, live []LiveEntry) (map[string]identifier.Project, error) {
+	return resolveProjectMap(metas, live, true)
+}
+
+func resolveProjectMap(metas []schema.SessionMeta, live []LiveEntry, strict bool) (map[string]identifier.Project, error) {
+	projects := make(map[string]identifier.Project)
+	for _, m := range metas {
+		path := EffectiveWorkingDir(m)
+		if path == "" {
+			continue
+		}
+		if _, ok := projects[path]; ok {
+			continue
+		}
+		project, err := identifier.ResolveProject(path)
+		if err != nil {
+			if strict {
+				return nil, fmt.Errorf("resolve project %q: %w", path, err)
+			}
+			continue
+		}
+		projects[path] = project
+	}
+	for _, le := range live {
+		path := le.WorkingDir
+		if path == "" {
+			continue
+		}
+		if _, ok := projects[path]; ok {
+			continue
+		}
+		if le.Project.ID != "" {
+			projects[path] = le.Project
+			continue
+		}
+		project, err := identifier.ResolveProject(path)
+		if err != nil {
+			if strict {
+				return nil, fmt.Errorf("resolve project %q: %w", path, err)
+			}
+			continue
+		}
+		projects[path] = project
+	}
+	return projects, nil
+}
+
+// BuildTreeAtWithProjects assembles a tree using projects resolved by the
+// caller. The map is keyed by EffectiveWorkingDir; it prevents resolver calls
+// from leaking into grouping/sorting helpers.
+func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, now time.Time, resolvedProjects map[string]identifier.Project) Tree {
 	metas = append([]schema.SessionMeta(nil), metas...)
 	sort.SliceStable(metas, func(i, j int) bool {
 		return sessionMetaLess(metas[i], metas[j])
@@ -372,7 +428,8 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		}
 	}
 
-	// Group metas by project name.
+	// Group metas by canonical project identity while preserving each record's
+	// explicit parent lineage.
 	type projectAccum struct {
 		name       string // basename for display
 		topLevel   []schema.SessionMeta
@@ -380,9 +437,17 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		worktrees  map[string]bool // distinct WorktreePath set
 		count      int             // number of sessions seen for this project
 		anyNonTest bool            // true once any session's Origin != "test"
+		project    identifier.Project
+		path       string
 	}
-	projects := make(map[string]*projectAccum) // keyed by EffectiveWorkingDir path
-	projectOrder := []string{}                 // insertion order (paths) for stable output
+	projects := make(map[string]*projectAccum) // keyed by canonical project ID or presentation path
+	projectOrder := []string{}                 // insertion order for stable output
+	resolveProject := func(path string) identifier.Project {
+		if path == "" {
+			return identifier.Project{}
+		}
+		return resolvedProjects[path]
+	}
 	nestedMetaIDs := make(map[string]struct{}) // IDs attached below a top-level row
 	childrenByParent := make(map[string][]schema.SessionMeta)
 
@@ -419,18 +484,32 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 
 	for _, m := range metas {
 		path := lineageProjectPath(m)
-		acc := projects[path]
-		if acc == nil {
-			name := "(no project)"
-			if path != "" {
-				name = filepath.Base(path)
-			}
-			acc = &projectAccum{name: name, worktrees: map[string]bool{}}
-			projects[path] = acc
-			projectOrder = append(projectOrder, path)
+		project := resolveProject(path)
+		groupKey := path
+		if project.ID != "" {
+			groupKey = project.ID
 		}
-		if acc.workingDir == "" && path != "" {
-			acc.workingDir = path
+		acc := projects[groupKey]
+		if acc == nil {
+			displayPath := path
+			if project.CanonicalPath != "" {
+				displayPath = project.CanonicalPath
+			}
+			name := "(no project)"
+			if displayPath != "" {
+				name = filepath.Base(displayPath)
+			}
+			acc = &projectAccum{name: name, worktrees: map[string]bool{}, project: project, path: path}
+			projects[groupKey] = acc
+			projectOrder = append(projectOrder, groupKey)
+		}
+		if acc.project.ID == "" && project.ID != "" {
+			acc.project = project
+		}
+		if acc.workingDir == "" && project.CanonicalPath != "" {
+			acc.workingDir = project.CanonicalPath
+		} else if acc.workingDir == "" && acc.path != "" {
+			acc.workingDir = acc.path
 		}
 		if m.WorktreePath != "" {
 			acc.worktrees[m.WorktreePath] = true
@@ -606,7 +685,12 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 
 		// Project placement: a project is archived when manually archived or when
 		// it has no non-archived (Current/Recent) sessions.
-		isArchived := projectArchivedDecision(decisions, path, acc.name) ||
+		projectKey := acc.project.ID
+		if projectKey == "" {
+			projectKey = "no-project"
+			acc.workingDir = ""
+		}
+		isArchived := projectArchivedDecision(decisions, projectKey) ||
 			(len(current) == 0 && len(recent) == 0)
 
 		// Cap each tier so a project with hundreds of runs can't bloat the
@@ -617,7 +701,7 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 
 		treeProjects = append(treeProjects, TreeProject{
 			Name:         acc.name,
-			Key:          projectSlug(path),
+			Key:          projectKey,
 			WorkingDir:   acc.workingDir,
 			Worktrees:    len(acc.worktrees),
 			Current:      current,
@@ -787,17 +871,20 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 	}
 }
 
-// BuildProjectTree builds the single TreeProject named by name, for the lazy
+// BuildProjectTree builds the single TreeProject identified by canonical ID, for the lazy
 // sidebar expand endpoint, using the current wall clock.
-func BuildProjectTree(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, name string) (TreeProject, bool) {
-	return BuildProjectTreeAt(metas, live, decisions, time.Now(), name)
+func BuildProjectTree(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, projectID string) (TreeProject, bool) {
+	return BuildProjectTreeAt(metas, live, decisions, time.Now(), projectID)
 }
 
 // BuildProjectTreeAt is BuildProjectTree with an injected clock. It filters the
-// metas to the requested project, runs the normal tree build on that subset, and
-// returns the resulting TreeProject (searching both the active and archived
-// lists). ok is false when no project of that name exists.
-func BuildProjectTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, now time.Time, name string) (TreeProject, bool) {
+// metas to the requested canonical project ID, runs the normal tree build on
+// that subset, and returns the resulting TreeProject (searching both the active
+// and archived lists). Explicit parent lineage determines a subagent's project,
+// even when the subagent runs from another effective directory. ok is false
+// when no project with that ID exists.
+func BuildProjectTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, now time.Time, projectID string) (TreeProject, bool) {
+	resolvedProjects := ResolveProjectMap(metas, live)
 	metaByID := make(map[string]schema.SessionMeta, len(metas))
 	for _, m := range metas {
 		if m.ID != "" {
@@ -806,20 +893,19 @@ func BuildProjectTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions 
 	}
 	belongsToProject := func(m schema.SessionMeta) bool {
 		seen := map[string]bool{m.ID: true}
-		for {
-			if projectName(m) == name {
-				return true
-			}
-			if !m.IsSubagent || m.ParentSessionID == "" {
-				return false
-			}
+		for m.IsSubagent && m.ParentSessionID != "" {
 			parent, ok := metaByID[m.ParentSessionID]
 			if !ok || seen[parent.ID] {
-				return false
+				break
 			}
 			seen[parent.ID] = true
 			m = parent
 		}
+		key := "no-project"
+		if project := resolvedProjects[EffectiveWorkingDir(m)]; project.ID != "" {
+			key = project.ID
+		}
+		return key == projectID
 	}
 	subset := make([]schema.SessionMeta, 0, len(metas))
 	for _, m := range metas {
@@ -830,13 +916,13 @@ func BuildProjectTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions 
 	if len(subset) == 0 {
 		return TreeProject{}, false
 	}
-	tree := BuildTreeAt(subset, live, decisions, now)
+	tree := BuildTreeAtWithProjects(subset, live, decisions, now, resolvedProjects)
 	for _, p := range tree.Projects {
-		if p.Name == name {
+		if p.Key == projectID {
 			return p, true
 		}
 	}
-	// A non-empty subset always produces at least one project with this name.
+	// A non-empty subset always produces at least one project with this ID.
 	// If none is active, the first archived project has the same precedence the
 	// original search loop provided.
 	return tree.ArchivedProjects[0], true
@@ -855,15 +941,10 @@ func decisionFor(decisions map[ArchiveKey]bool, id string) *bool {
 	return nil
 }
 
-// projectArchivedDecision resolves a project's manual archive decision. A
-// path-keyed row always wins; a legacy basename-keyed row is honored only when
-// no path-keyed row exists (round-2 B7 / round-3 G3 precedence). Returns false
-// when neither row is present.
-func projectArchivedDecision(decisions map[ArchiveKey]bool, path, basename string) bool {
-	if v, ok := decisions[ArchiveKey{Kind: "project", ID: path}]; ok {
-		return v
-	}
-	if v, ok := decisions[ArchiveKey{Kind: "project", ID: basename}]; ok {
+// projectArchivedDecision resolves a project's manual archive decision by its
+// canonical project ID. Returns false when no row is present.
+func projectArchivedDecision(decisions map[ArchiveKey]bool, projectID string) bool {
+	if v, ok := decisions[ArchiveKey{Kind: "project", ID: projectID}]; ok {
 		return v
 	}
 	return false

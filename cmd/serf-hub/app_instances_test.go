@@ -84,6 +84,7 @@ func TestInstances_Create_ListIncludesEntry(t *testing.T) {
 	}
 	if found == nil {
 		t.Fatalf("List did not include 'mywork'; instances=%v", resp.Instances)
+		return
 	}
 	if found.Type != "anthropic" {
 		t.Errorf("Type = %q, want anthropic", found.Type)
@@ -106,6 +107,7 @@ func TestInstances_Create_ListIncludesEntry(t *testing.T) {
 	}
 	if diskInst == nil {
 		t.Fatal("'mywork' not found in providers.toml after Create")
+		return
 	}
 	if diskInst.APIKey != "" {
 		t.Errorf("api_key must not be written; got %q", diskInst.APIKey)
@@ -219,6 +221,7 @@ func TestInstances_Edit_ChangesBaseURLAndAPIStyle(t *testing.T) {
 	}
 	if found == nil {
 		t.Fatal("'myoai' not found after Edit")
+		return
 	}
 	if found.APIStyle != "chat-completions" {
 		t.Errorf("APIStyle = %q, want chat-completions", found.APIStyle)
@@ -291,6 +294,7 @@ context_window = 131072
 	}
 	if inst == nil {
 		t.Fatal("'gw' not found after Edit")
+		return
 	}
 	if inst.APIStyle != "chat-completions" {
 		t.Errorf("APIStyle = %q, want chat-completions", inst.APIStyle)

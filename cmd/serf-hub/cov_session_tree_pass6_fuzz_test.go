@@ -151,7 +151,7 @@ func FuzzSessionTreePass6(f *testing.F) {
 			favorite := hubcore.NewFavoriteStore(filepath.Join(dir, "index.db"))
 			past := hubcore.NewPastIndex("")
 			past.SeedForTest([]schema.SessionMeta{{ID: "past-6", Name: title, CreatedAt: now.Add(-time.Hour), UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/work/project"}}})
-			if err := archive.Set("project", hubcore.ProjectSlug("/work/project"), true, now); err != nil {
+			if err := archive.Set("project", testProjectID(t, "/work/project"), true, now); err != nil {
 				t.Fatal(err)
 			}
 			if err := favorite.Set("session", "past-6", true, now); err != nil {
@@ -172,7 +172,7 @@ func FuzzSessionTreePass6(f *testing.F) {
 		case 8:
 			// No-roster/no-source helpers and fetchStatus transport failures.
 			empty := NewWebServer(hubcore.WebConfig{})
-			_, _ = empty.navigationTreeInputs(context.Background())
+			_, _, _ = empty.navigationTreeInputs(context.Background())
 			_ = empty.apiTreeSources()
 			_, _ = empty.liveEntry("missing")
 			_ = empty.fetchStatus(hubcore.LiveEntry{})

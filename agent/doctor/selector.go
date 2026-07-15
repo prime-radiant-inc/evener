@@ -3,43 +3,45 @@ package doctor
 import (
 	"fmt"
 	"strings"
+
+	"primeradiant.com/serf/identifier"
 )
 
-// selector is a parsed session selector. hash is non-empty only for a proj:
+// selector is a parsed session selector. projectID is non-empty only for a proj:
 // ref; sid is always the bare session id.
 type selector struct {
-	hash string
-	sid  string
+	projectID string
+	sid       string
 }
 
 // parseSelector parses a session selector in the dialect read_session_transcript
-// accepts: local:<sid>, proj:<hash>:<sid>, or a bare <sid>. The empty selector
+// accepts: local:<sid>, proj:<project-id>:<sid>, or a bare <sid>. The empty selector
 // and "current" are rejected: a standalone forensic tool has no current session,
 // so the caller must name one. All tokens are validated to be bare identifiers
 // (no path separators or dots) to reject traversal.
 func parseSelector(s string) (selector, error) {
 	if s == "" || s == "current" {
-		return selector{}, fmt.Errorf("no session selector: pass a session id, local:<id>, or proj:<hash>:<id> (a standalone forensic tool has no %q session)", "current")
+		return selector{}, fmt.Errorf("no session selector: pass a session id, local:<id>, or proj:<project-id>:<id> (a standalone forensic tool has no %q session)", "current")
 	}
 	if strings.HasPrefix(s, "local:") {
 		sid := strings.TrimPrefix(s, "local:")
-		if !validToken(sid) {
+		if err := identifier.ValidateSessionID(sid); err != nil {
 			return selector{}, fmt.Errorf("invalid session id in selector %q", s)
 		}
 		return selector{sid: sid}, nil
 	}
 	if strings.HasPrefix(s, "proj:") {
 		rest := strings.TrimPrefix(s, "proj:")
-		hash, sid, ok := strings.Cut(rest, ":")
+		projectID, sid, ok := strings.Cut(rest, ":")
 		if !ok {
-			return selector{}, fmt.Errorf("malformed proj ref %q (want proj:<hash>:<id>)", s)
+			return selector{}, fmt.Errorf("malformed proj ref %q (want proj:<project-id>:<id>)", s)
 		}
-		if !validToken(hash) || !validToken(sid) {
+		if identifier.ValidateProjectID(projectID) != nil || identifier.ValidateSessionID(sid) != nil {
 			return selector{}, fmt.Errorf("invalid token in selector %q", s)
 		}
-		return selector{hash: hash, sid: sid}, nil
+		return selector{projectID: projectID, sid: sid}, nil
 	}
-	if !validToken(s) {
+	if err := identifier.ValidateSessionID(s); err != nil {
 		return selector{}, fmt.Errorf("invalid session id %q", s)
 	}
 	return selector{sid: s}, nil

@@ -7,6 +7,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/rendezvous"
@@ -82,6 +83,7 @@ type Spawner interface {
 
 // SpawnRequest carries the per-spawn knobs passed directly from the caller.
 type SpawnRequest struct {
+	Project       identifier.Project
 	Resolved      launchconfig.Resolved
 	WorkingDir    string
 	StateDir      string
@@ -93,6 +95,7 @@ type SpawnRequest struct {
 
 // ResumeRequest carries the resolved state needed to resume a saved session.
 type ResumeRequest struct {
+	Project       identifier.Project
 	SessionID     string
 	WorkingDir    string
 	StateDir      string

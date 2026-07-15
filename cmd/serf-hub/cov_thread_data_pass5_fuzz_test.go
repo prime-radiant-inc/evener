@@ -40,8 +40,8 @@ func (s *pass5ThreadSource) ReadThread(ctx context.Context, params appwire.Threa
 func pass5Past(t *testing.T) (*hubcore.PastIndex, string, string) {
 	t.Helper()
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "repo")
-	id := "01PASS5LOCAL"
+	stateDir := filepath.Join(root, "projects", "project-pass5-0123456789")
+	id := "02wMz5Txv1C3Hut0M8GCeB"
 	meta := schema.SessionMeta{
 		ID: id, Name: "Past title", ProfileID: "openai", Model: "gpt-5",
 		CreatedAt: time.Unix(1_700_000_000, 0), UpdatedAt: time.Unix(1_700_000_100, 0),

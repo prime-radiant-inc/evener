@@ -45,14 +45,34 @@ func appendGrantLog(t *testing.T, stateDir, sessID, watchedJobID, workerRef, obs
 func TestLoadSessionObserverGrants_ResolvesWorkerToObserver(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	appendGrantLog(t, stateDir, "PARENT", "job_watched", encodeRef("", "WORKER"), "OBSERVER")
+	const workerID = "02wMz5Txv1C3Hut0M8GCeB"
+	const observerID = "02wMz5Txv2enqVTitaig6F"
+	appendGrantLog(t, stateDir, "PARENT", "job_watched", encodeRef("", workerID), observerID)
 
 	got, err := LoadSessionObserverGrants(stateDir, "PARENT")
 	if err != nil {
 		t.Fatalf("LoadSessionObserverGrants: %v", err)
 	}
-	if obs := got["WORKER"]; len(obs) != 1 || obs[0] != "OBSERVER" {
-		t.Fatalf("got[WORKER] = %v, want [OBSERVER]", obs)
+	if obs := got[workerID]; len(obs) != 1 || obs[0] != observerID {
+		t.Fatalf("got[%s] = %v, want [%s]", workerID, obs, observerID)
+	}
+}
+
+func TestLoadSessionObserverGrants_SkipsInvalidLocalSessionIDs(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	const validWorker = "02wMz5Txv1C3Hut0M8GCeB"
+	const validObserver = "02wMz5Txv2enqVTitaig6F"
+	appendGrantLog(t, stateDir, "PARENT", "job_bad_worker", encodeRef("", "01LEGACYWORKER"), validObserver)
+	appendGrantLog(t, stateDir, "PARENT", "job_bad_observer", encodeRef("", validWorker), "01LEGACYOBSERVER")
+	appendGrantLog(t, stateDir, "PARENT", "job_valid", encodeRef("", validWorker), validObserver)
+
+	got, err := LoadSessionObserverGrants(stateDir, "PARENT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || len(got[validWorker]) != 1 || got[validWorker][0] != validObserver {
+		t.Fatalf("grants=%v, want only valid local worker/observer IDs", got)
 	}
 }
 
@@ -74,7 +94,7 @@ func TestLoadSessionObserverGrants_MissingLogIsEmptyNoCreate(t *testing.T) {
 
 // A grant whose watched job resolves via a proj: (cross-project) transcript ref
 // is skipped — the hub cannot read a cross-bucket worker's meta. Mirrors
-// watchedWorkerSessionID's bucketHash != "" -> ok=false handling.
+// watchedWorkerSessionID's projectID != "" -> ok=false handling.
 func TestLoadSessionObserverGrants_SkipsCrossProjectRef(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()

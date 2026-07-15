@@ -221,13 +221,12 @@ func fuzzScenarioCoveragePureEdges(t *testing.T) {
 		t.Fatal(q)
 	}
 
-	if ProjectSlug("/tmp/a") == "" {
-		t.Fatal("empty slug")
-	}
 	if decisionFor(nil, "") != nil {
 		t.Fatal("empty decision")
 	}
-	_, _ = BuildProjectTree([]schema.SessionMeta{{ID: "s", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/p"}}}, nil, nil, "p")
+	path := t.TempDir()
+	projects := ResolveProjectMap([]schema.SessionMeta{{ID: "s", EnvInfo: schema.EnvironmentInfo{WorkingDir: path}}}, nil)
+	_, _ = BuildProjectTree([]schema.SessionMeta{{ID: "s", EnvInfo: schema.EnvironmentInfo{WorkingDir: path}}}, nil, nil, projects[path].ID)
 	BuildTreeAt([]schema.SessionMeta{{ID: "sub", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/p"}}}, []LiveEntry{{SessionID: ""}, {SessionID: "missing-session-id", Status: "awaiting"}, {SessionID: "sub", Status: "awaiting"}}, nil, time.Now())
 }
 

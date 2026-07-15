@@ -67,8 +67,6 @@ func FuzzLaunchConfigBehaviorProgram(f *testing.F) {
 		checkLoadProjectLayer_LegacyLoadError,
 		checkLoadRepoLayer_ReadFileError,
 		checkValidateAndExpandRepoLayer_InvalidPaths,
-		checkProjectID_Stable,
-		checkProjectID_Differs,
 		checkPathsFor,
 		checkValidateRepoPath,
 		checkValidateAbsolutePath,

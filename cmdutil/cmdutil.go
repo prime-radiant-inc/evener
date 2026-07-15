@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/envvars"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/kimicoding"
@@ -286,6 +287,9 @@ func ResolveSessionMeta(stateDir, sessionID string, resumeLast bool) (schema.Ses
 			return schema.SessionMeta{}, fmt.Errorf("no saved sessions in %s", stateDir)
 		}
 		return list[0], nil
+	}
+	if err := identifier.ValidateSessionID(sessionID); err != nil {
+		return schema.SessionMeta{}, fmt.Errorf("invalid local session ID %q: %w", sessionID, err)
 	}
 	meta, err := schema.LoadSessionMeta(stateDir, sessionID)
 	if err != nil {

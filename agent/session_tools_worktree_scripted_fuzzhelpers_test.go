@@ -12,7 +12,7 @@ import (
 )
 
 func (h *scriptedWorktreeSession) managedPath(name string) string {
-	return filepath.Join(h.s.currentStateDir(), "worktrees", worktree.ProjectID(h.root), filepath.FromSlash(name))
+	return filepath.Join(h.s.currentStateDir(), "worktrees", resolvedProjectID(h.t, h.s.currentEnv(), h.root), filepath.FromSlash(name))
 }
 
 func (h *scriptedWorktreeSession) metaDir() string {

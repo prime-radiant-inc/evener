@@ -19,7 +19,7 @@ import (
 func seedIsolationLaneOn(t *testing.T, sess *Session) (delegateID, lanePath string) {
 	t.Helper()
 	delegateID = jobstore.NewDelegateID()
-	path, _, _, _, err := sess.createDelegateWorktree(context.Background(), delegateID)
+	path, _, _, _, _, err := sess.createDelegateWorktree(context.Background(), delegateID)
 	if err != nil {
 		t.Fatalf("createDelegateWorktree on %s: %v", sess.ID(), err)
 	}
@@ -280,7 +280,7 @@ func TestDispose_RemoveRefused_RelockFailure_Warns(t *testing.T) {
 func TestDispose_HalfRemoved_MarksAndDeletesBranch(t *testing.T) {
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedIsolationLane(t)
-	metaDir := r.metaDir(r.canonicalMain(t))
+	metaDir := r.metaDir(t, r.canonicalMain(t))
 	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
 	wtGit(t, r.mainRoot, "worktree", "remove", "--force", lanePath)
 

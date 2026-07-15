@@ -35,7 +35,7 @@ func (r *wtRepo) unlockLane(t *testing.T, path string) {
 func (r *wtRepo) seedForeignUnlockedLane(t *testing.T) (delegateID, lanePath, baseSHA string) {
 	t.Helper()
 	delegateID = jobstore.NewDelegateID()
-	path, _, base, _, err := r.s.createDelegateWorktree(context.Background(), delegateID)
+	path, _, base, _, _, err := r.s.createDelegateWorktree(context.Background(), delegateID)
 	if err != nil {
 		t.Fatalf("createDelegateWorktree: %v", err)
 	}
@@ -57,7 +57,7 @@ func (r *wtRepo) commitAndFastForwardMerge(t *testing.T, delegateID, lanePath st
 
 func (r *wtRepo) ageBeyondGrace(t *testing.T, delegateID string) {
 	t.Helper()
-	ageSidecar(t, r.metaDir(r.canonicalMain(t)), delegateID, laneGrace+time.Minute)
+	ageSidecar(t, r.metaDir(t, r.canonicalMain(t)), delegateID, laneGrace+time.Minute)
 }
 
 func (r *wtRepo) lanePresent(path string) bool {
@@ -97,7 +97,7 @@ func TestP3Sweep_CollectsUnlockedMergedForeignLanePastGrace(t *testing.T) {
 	if r.branchExists(t, id) {
 		t.Error("lane branch survived residue collection")
 	}
-	if _, err := worktree.ReadSidecar(r.metaDir(r.canonicalMain(t)), id); err == nil {
+	if _, err := worktree.ReadSidecar(r.metaDir(t, r.canonicalMain(t)), id); err == nil {
 		t.Error("lane sidecar survived residue collection")
 	}
 }
@@ -191,7 +191,7 @@ func TestP3Sweep_ManagedNonDelegateUntouched(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	path := r.addManagedWorktreeFixture(t, "managed-lane") // unchanged, unlocked, no DelegateID
-	ageSidecar(t, r.metaDir(r.canonicalMain(t)), "managed-lane", laneGrace+time.Minute)
+	ageSidecar(t, r.metaDir(t, r.canonicalMain(t)), "managed-lane", laneGrace+time.Minute)
 
 	r.s.runLaneResidueSweep(context.Background())
 
@@ -247,7 +247,7 @@ func TestP3Sweep_OrphanBranchAndSidecarReclaimed(t *testing.T) {
 	if r.branchExists(t, id) {
 		t.Error("orphan branch not reclaimed by the sweep-2 arm")
 	}
-	if _, err := worktree.ReadSidecar(r.metaDir(r.canonicalMain(t)), id); err == nil {
+	if _, err := worktree.ReadSidecar(r.metaDir(t, r.canonicalMain(t)), id); err == nil {
 		t.Error("orphan sidecar not reclaimed by the sweep-2 arm")
 	}
 }

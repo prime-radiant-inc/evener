@@ -68,7 +68,9 @@ func TestMaybeClearOpenAIAPIKeyRestoresExistingValue(t *testing.T) {
 
 func TestAllTranscriptToolCountsIncludesChildSessions(t *testing.T) {
 	stateDir := t.TempDir()
-	writeFluencyTranscript(t, stateDir, "root_session", []schema.Turn{
+	const rootID = "02wMz5Txv1C3Hut0M8GCeB"
+	const childID = "02wMz5Txv2enqVTitaig6F"
+	writeFluencyTranscript(t, stateDir, rootID, []schema.Turn{
 		schema.NewTurn(schema.TurnAssistant, llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
@@ -77,13 +79,13 @@ func TestAllTranscriptToolCountsIncludesChildSessions(t *testing.T) {
 			},
 		}),
 	})
-	writeFluencyTranscript(t, stateDir, "child_session", []schema.Turn{
+	writeFluencyTranscript(t, stateDir, childID, []schema.Turn{
 		schema.NewTurn(schema.TurnAssistant, llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				fluencyToolCall("job_watch", `{"source":"parent"}`),
 				fluencyToolCall("communicate", `{"message":"OBSERVER_READY","end_turn":true}`),
-				// read_file also appears in root_session; its counts must be summed, not overwritten.
+				// read_file also appears in rootID; its counts must be summed, not overwritten.
 				fluencyToolCall("read_file", `{"file_path":"child-result.txt"}`),
 			},
 		}),

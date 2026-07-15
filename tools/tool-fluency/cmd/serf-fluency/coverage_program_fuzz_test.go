@@ -301,7 +301,12 @@ func FuzzFluencyCoverage(f *testing.F) {
 
 		state := t.TempDir()
 		old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
-		for _, meta := range []schema.SessionMeta{{ID: "child", IsSubagent: true, CreatedAt: old.Add(-time.Hour)}, {ID: "parented", ParentSessionID: "root", CreatedAt: old.Add(-time.Hour)}, {ID: "new", CreatedAt: old.Add(time.Hour)}, {ID: "old", CreatedAt: old}} {
+		const childID = "02wMz5Txv1C3Hut0M8GCeB"
+		const parentID = "02wMz5Txv2enqVTitaig6F"
+		const parentedID = "02wMz5Txv3fQm7JtYx4a8P"
+		const newID = "02wMz5Txv4gRz8KuZb5c9Q"
+		const oldID = "02wMz5Txv5hSa9LvAc6d0R"
+		for _, meta := range []schema.SessionMeta{{ID: childID, IsSubagent: true, ParentSessionID: parentID, CreatedAt: old.Add(-time.Hour)}, {ID: parentedID, ParentSessionID: parentID, CreatedAt: old.Add(-time.Hour)}, {ID: newID, CreatedAt: old.Add(time.Hour)}, {ID: oldID, CreatedAt: old}} {
 			if err := schema.SaveSessionMeta(state, meta); err != nil {
 				t.Fatal(err)
 			}

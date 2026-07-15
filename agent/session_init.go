@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/oklog/ulid/v2"
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/clock"
@@ -32,6 +31,7 @@ import (
 	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/envvars"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
 
@@ -102,6 +102,12 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	}
 
 	sessCtx, sessCancel := context.WithCancel(context.Background())
+	initComplete := false
+	defer func() {
+		if !initComplete {
+			sessCancel()
+		}
+	}()
 	delegationAllowance := cfg.spawn.delegationAllowance
 	if cfg.spawn.parentSessionID == "" {
 		// Root sessions derive their allowance from MaxSubagentDepth (already
@@ -118,8 +124,12 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// subCfg := s.cfg, so the mirror is what carries the root's minted counter
 	// down the tree.
 	cfg.spawn.treeCounter = tc
+	sessionID, err := identifier.NewSessionID()
+	if err != nil {
+		return nil, fmt.Errorf("generate session ID: %w", err)
+	}
 	s := &Session{
-		id:                            ulid.Make().String(),
+		id:                            sessionID,
 		cfg:                           cfg,
 		client:                        client,
 		profile:                       profile,
@@ -146,7 +156,6 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		newJM = newJobManagerNoSync
 	}
 	var jm *jobManager
-	var err error
 	if fault := s.sessionInitFault("new_job_manager"); fault != nil {
 		err = fault
 	} else {
@@ -288,6 +297,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// a local exec env sweeps foreign lane residue laneSweepDelay after it opens.
 	// The method itself no-ops for subagent sessions and non-local envs.
 	s.armLaneResidueSweepTimer()
+	initComplete = true
 	closeJobManagerOnError = false
 	closeMCPManagerOnError = false
 	return s, nil
@@ -298,6 +308,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 // struct layers non-serialized values such as StateDir and ResolveProfile.
 type RestoreSessionConfig struct {
 	StateDir                    string
+	Project                     identifier.Project
 	ResolveProfile              func(ref string) (*provider.Profile, error)
 	ModelFallbacks              []string
 	OpenAIResponsesContinuation string
@@ -325,6 +336,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile *provider.Profile, env e
 func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, meta schema.SessionMeta, restoreCfg RestoreSessionConfig) (*Session, error) {
 	cfg := configFromSnapshot(meta.Config)
 	cfg.StateDir = restoreCfg.StateDir
+	cfg.Project = restoreCfg.Project
 	cfg.ResolveProfile = restoreCfg.ResolveProfile
 	if restoreCfg.spawn.parentSessionID != "" {
 		cfg.spawn = restoreCfg.spawn
@@ -503,7 +515,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// the session is rooted in it before the environment snapshot, system
 	// prompt, and tool registry are built (native worktree tools spec §7
 	// "Persistence and resume": this ordering is load-bearing).
-	s.resumeWorktreeReentry(meta)
+	if err := s.resumeWorktreeReentry(meta); err != nil {
+		return nil, err
+	}
 
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, !restoreCfg.deferRestoreSideEffects)
 	if err != nil {

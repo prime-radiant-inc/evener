@@ -56,8 +56,8 @@ func TestThreadReadReconciliationIgnoresMismatchedJobID(t *testing.T) {
 
 func TestPastThreadReadReconcilesDelegateRawWithTerminalJobstoreState(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "repo")
-	parentID := "01PARENT"
+	stateDir := filepath.Join(root, "projects", "project-repo-0000000000")
+	parentID := "02wMz5Txv1C3Hut0M8GCeB"
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions", parentID), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -127,8 +127,8 @@ func TestPastThreadReadReconcilesDelegateRawWithTerminalJobstoreState(t *testing
 
 func TestPastThreadReadProjectsThinkingFromTranscript(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "repo")
-	sessionID := "01THINK"
+	stateDir := filepath.Join(root, "projects", "project-repo-0000000000")
+	sessionID := "02wMz5Txv5aIxgf9yVdd0N"
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions", sessionID), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -191,8 +191,8 @@ func TestPastThreadReadProjectsThinkingFromTranscript(t *testing.T) {
 
 func TestPastThreadReadProjectsToolResultOutputImages(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "repo")
-	sessionID := "01TOOLIMG"
+	stateDir := filepath.Join(root, "projects", "project-repo-0000000000")
+	sessionID := "02wMz5Txv733WHFsVy66SR"
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestPastThreadReadProjectsToolResultOutputImages(t *testing.T) {
 // appwire.EstimateCost needs a model to look up catalog rates.
 func TestPastEntryTurns_StampsCostFromSessionModel(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "repo")
+	stateDir := filepath.Join(root, "projects", "project-repo-0000000000")
 	sessionID := "01COST"
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
@@ -342,10 +342,10 @@ func TestPastEntryThread_CarriesWorkMetrics(t *testing.T) {
 func runningSubagentProjectionConfig(t *testing.T) (hubcore.WebConfig, string) {
 	t.Helper()
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "serf")
+	stateDir := filepath.Join(root, "projects", "project-running-subagent-0000000000")
 	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
-	parentID := "01PARENT"
-	childID := "01CHILD"
+	parentID := "02wMz5Txv1C3Hut0M8GCeB"
+	childID := "02wMz5Txv2enqVTitaig6F"
 	for _, meta := range []schema.SessionMeta{
 		{ID: parentID, CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
 		{ID: childID, CreatedAt: now, UpdatedAt: now, ParentSessionID: parentID, IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
@@ -386,7 +386,7 @@ func writeHistoricalJobLog(t *testing.T, path string, ts time.Time, jobID string
 	startedAt := ts.Format(time.RFC3339Nano)
 	endedAt := ts.Add(time.Second).Format(time.RFC3339Nano)
 	lines := []string{
-		`{"kind":"job_started","seq":1,"ts":"` + startedAt + `","job_id":"` + jobID + `","type":"delegate","task":"inspect billing","owner_session_id":"01PARENT","visible_to_session_id":"01PARENT","delegate_id":"dlg_A","origin_tool_call_id":"call_delegate","started_at":"` + startedAt + `"}`,
+		`{"kind":"job_started","seq":1,"ts":"` + startedAt + `","job_id":"` + jobID + `","type":"delegate","task":"inspect billing","owner_session_id":"02wMz5Txv1C3Hut0M8GCeB","visible_to_session_id":"02wMz5Txv1C3Hut0M8GCeB","delegate_id":"dlg_A","origin_tool_call_id":"call_delegate","started_at":"` + startedAt + `"}`,
 		`{"kind":"job_session_assigned","seq":2,"ts":"` + startedAt + `","job_id":"` + jobID + `","transcript_ref":"local:child"}`,
 		`{"kind":"job_finished","seq":3,"ts":"` + endedAt + `","job_id":"` + jobID + `","status":"completed","reason":"exit_zero","ended_at":"` + endedAt + `","output_bytes":42}`,
 	}

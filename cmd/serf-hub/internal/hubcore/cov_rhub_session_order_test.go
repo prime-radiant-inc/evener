@@ -81,8 +81,8 @@ func liveEntry(sessionID, address string, started time.Time) LiveEntry {
 }
 
 func fuzzScenarioLiveEntryWithPastLessNilIndex(t *testing.T) {
-	newer := liveEntry("s1", "addr1", time.Unix(200, 0))
-	older := liveEntry("s2", "addr2", time.Unix(100, 0))
+	newer := liveEntry("02wMz5Txv1C3Hut0M8GCeB", "addr1", time.Unix(200, 0))
+	older := liveEntry("02wMz5Txv2enqVTitaig6F", "addr2", time.Unix(100, 0))
 	// With no past index, ordering uses the live entry's own StartedAt.
 	if !LiveEntryWithPastLess(newer, older, nil) {
 		t.Fatal("more recently started entry should sort first")
@@ -94,19 +94,19 @@ func fuzzScenarioLiveEntryWithPastLessUsesPastMeta(t *testing.T) {
 	// even though s1's live StartedAt is older — the past meta is authoritative.
 	past := &PastIndex{
 		byID: map[string]PastEntry{
-			"s1": {ID: "s1", Meta: schema.SessionMeta{ID: "s1", UpdatedAt: time.Unix(9000, 0), CreatedAt: time.Unix(9000, 0)}},
+			"02wMz5Txv1C3Hut0M8GCeB": {ID: "02wMz5Txv1C3Hut0M8GCeB", Meta: schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: time.Unix(9000, 0), CreatedAt: time.Unix(9000, 0)}},
 		},
 	}
-	s1 := liveEntry("s1", "addr1", time.Unix(1, 0))    // live start is ancient
-	s2 := liveEntry("s2", "addr2", time.Unix(5000, 0)) // no past entry, falls back to StartedAt
+	s1 := liveEntry("02wMz5Txv1C3Hut0M8GCeB", "addr1", time.Unix(1, 0))    // live start is ancient
+	s2 := liveEntry("02wMz5Txv2enqVTitaig6F", "addr2", time.Unix(5000, 0)) // no past entry, falls back to StartedAt
 
 	if !LiveEntryWithPastLess(s1, s2, past) {
-		t.Fatal("s1 with a newer past meta should sort before s2")
+		t.Fatal("newer session with a newer past meta should sort before s2")
 	}
 	// Confirm the fallback path is what makes the difference: without the past
 	// index, s2 (newer live start) sorts first instead.
 	if LiveEntryWithPastLess(s1, s2, nil) {
-		t.Fatal("without past index, ancient-start s1 must not sort before s2")
+		t.Fatal("without past index, ancient-start newer session must not sort before s2")
 	}
 }
 

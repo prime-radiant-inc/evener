@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oklog/ulid/v2"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
 
@@ -98,7 +98,7 @@ func fromGeminiResponse(raw map[string]any, requestedModel string) llm.Response 
 							msg.Content = append(msg.Content, llm.ContentPart{
 								Kind: llm.ContentToolCall,
 								ToolCall: &llm.ToolCallData{
-									ID:               "call_" + ulid.Make().String(), // synthetic per spec
+									ID:               identifier.MustNewSyntheticCallID(),
 									Name:             name,
 									Arguments:        argsRaw,
 									Type:             "function",
