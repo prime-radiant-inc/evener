@@ -34,6 +34,9 @@ type turnCacheEntry struct {
 	turns          []appwire.Turn
 	full           bool
 	turnIndex      *turnIndexDisk
+	// toolResolver is private scanning state. indexMu protects it; published
+	// turnIndex snapshots never reference this mutable map.
+	toolResolver map[string]string
 }
 
 // NewTurnCache returns a TurnCache bounded to a default number of transcripts.

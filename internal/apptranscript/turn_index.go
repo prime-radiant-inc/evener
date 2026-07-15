@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -23,8 +22,9 @@ import (
 )
 
 const (
-	turnIndexVersion        = 3
-	turnIndexJournalVersion = 1
+	turnIndexVersion        = 4
+	turnIndexJournalVersion = 2
+	turnIndexAnchorBytes    = 256
 )
 
 // FilePage is one bounded page read directly from a transcript file.
@@ -41,9 +41,15 @@ type ReadStats struct {
 
 	// The remaining fields are intentionally unexported test/benchmark
 	// instrumentation. Production callers do not depend on them.
-	indexBytesCopied     int64
-	indexBytesSerialized int64
-	indexBytesPersisted  int64
+	indexBytesCopied      int64
+	indexBytesSerialized  int64
+	indexBytesPersisted   int64
+	resolverEntriesCopied int64
+	resolverHistoryVisits int64
+	recordVisits          int64
+	anchorBytesRead       int64
+	journalRecords        int64
+	rebuilt               bool
 }
 
 var observeTurnIndexRead func(ReadStats)
@@ -56,7 +62,6 @@ type turnIndexDisk struct {
 	FirstCall      *transcript.APICall `json:"first_call,omitempty"`
 	Records        []indexedTurn       `json:"records"`
 	VisibleRecords int                 `json:"visible_records"`
-	ToolNames      map[string]string   `json:"tool_names,omitempty"`
 	MaxLineBytes   int                 `json:"max_line_bytes"`
 	ProjectionID   string              `json:"projection_identity"`
 	PrefixStamp    string              `json:"prefix_stamp"`
@@ -64,6 +69,8 @@ type turnIndexDisk struct {
 	ChangeIdentity string              `json:"change_identity"`
 	ModTimeUnixNS  int64               `json:"mod_time_unix_ns"`
 	IntegrityStamp string              `json:"integrity_stamp"`
+	FirstAnchor    turnIndexAnchor     `json:"first_anchor"`
+	TailAnchor     turnIndexAnchor     `json:"tail_anchor"`
 
 	// deltaRoot is an immutable persistent rope of records loaded from or
 	// destined for the append-only journal. Keeping suffixes out of Records
@@ -73,12 +80,14 @@ type turnIndexDisk struct {
 	journalValidBytes  int64                `json:"-"`
 	journalNeedsRepair bool                 `json:"-"`
 	journalApplied     bool                 `json:"-"`
+	baseVisible        []int                `json:"-"`
 }
 
 type turnIndexRecordNode struct {
 	left, right *turnIndexRecordNode
 	records     []indexedTurn
 	count       int
+	visible     int
 	height      int
 }
 
@@ -91,7 +100,6 @@ type turnIndexJournalFrame struct {
 	FirstCall      *transcript.APICall `json:"first_call,omitempty"`
 	Records        []indexedTurn       `json:"records"`
 	VisibleRecords int                 `json:"visible_records"`
-	ToolNames      map[string]string   `json:"tool_names,omitempty"`
 	MaxLineBytes   int                 `json:"max_line_bytes"`
 	ProjectionID   string              `json:"projection_identity"`
 	PrefixStamp    string              `json:"prefix_stamp"`
@@ -99,26 +107,33 @@ type turnIndexJournalFrame struct {
 	ChangeIdentity string              `json:"change_identity"`
 	ModTimeUnixNS  int64               `json:"mod_time_unix_ns"`
 	IntegrityStamp string              `json:"integrity_stamp"`
+	FirstAnchor    turnIndexAnchor     `json:"first_anchor"`
+	TailAnchor     turnIndexAnchor     `json:"tail_anchor"`
 }
 
 type indexedTurn struct {
-	Offset          int64             `json:"offset"`
-	Length          int64             `json:"length"`
-	Index           int               `json:"index"`
-	Kind            string            `json:"kind"`
-	Visible         bool              `json:"visible"`
-	VisibleIndex    int               `json:"visible_index,omitempty"`
-	ToolNamesBefore map[string]string `json:"tool_names_before,omitempty"`
-	ToolChanges     []toolNameChange  `json:"tool_changes,omitempty"`
+	Offset       int64             `json:"offset"`
+	Length       int64             `json:"length"`
+	Index        int               `json:"index"`
+	Kind         string            `json:"kind"`
+	Visible      bool              `json:"visible"`
+	VisibleIndex int               `json:"visible_index,omitempty"`
+	ToolSeed     map[string]string `json:"tool_seed,omitempty"`
+	ToolChanges  []toolNameChange  `json:"tool_changes,omitempty"`
+}
+
+type turnIndexAnchor struct {
+	Offset int64  `json:"offset"`
+	Length int    `json:"length"`
+	Stamp  string `json:"stamp"`
 }
 
 type toolNameChange struct {
 	ID     string `json:"id"`
 	Name   string `json:"name,omitempty"`
+	Lookup bool   `json:"lookup,omitempty"`
 	Delete bool   `json:"delete,omitempty"`
 }
-
-const toolNameCheckpointInterval = 128
 
 // LatestFromFile returns the newest bounded turn window without projecting the
 // historical prefix. A non-positive limit preserves the full-read behavior.
@@ -134,7 +149,7 @@ func (c *TurnCache) LatestFromFile(path string, maxLineBytes int, limit int, pro
 		lo = count - limit
 		olderCursor = strconv.Itoa(lo)
 	}
-	turns, projected := projectIndexedRange(path, index, lo, count, project)
+	turns, projected := projectIndexedRangeObserved(path, index, lo, count, project, &stats)
 	stats.ProjectedTurns = projected
 	observeIndexRead(stats)
 	return turns, olderCursor
@@ -169,7 +184,7 @@ func (c *TurnCache) PageFromFile(path string, maxLineBytes int, cursor string, l
 	if lo > 0 {
 		next = strconv.Itoa(lo)
 	}
-	turns, projected := projectIndexedRange(path, index, lo, hi, project)
+	turns, projected := projectIndexedRangeObserved(path, index, lo, hi, project, &stats)
 	stats.ProjectedTurns = projected
 	observeIndexRead(stats)
 	return FilePage{Turns: turns, NextCursor: next}
@@ -228,7 +243,13 @@ func newRecordLeaf(records []indexedTurn) *turnIndexRecordNode {
 	if len(records) == 0 {
 		return nil
 	}
-	return &turnIndexRecordNode{records: records, count: len(records), height: 1}
+	visible := 0
+	for i := range records {
+		if records[i].Visible {
+			visible++
+		}
+	}
+	return &turnIndexRecordNode{records: records, count: len(records), visible: visible, height: 1}
 }
 
 func joinRecordNodes(left, right *turnIndexRecordNode) *turnIndexRecordNode {
@@ -270,7 +291,68 @@ func makeRecordBranch(left, right *turnIndexRecordNode) *turnIndexRecordNode {
 	if got := recordNodeHeight(right); got > height {
 		height = got
 	}
-	return &turnIndexRecordNode{left: left, right: right, count: recordNodeCount(left) + recordNodeCount(right), height: height + 1}
+	return &turnIndexRecordNode{left: left, right: right, count: recordNodeCount(left) + recordNodeCount(right), visible: recordNodeVisible(left) + recordNodeVisible(right), height: height + 1}
+}
+
+func recordNodeVisible(node *turnIndexRecordNode) int {
+	if node == nil {
+		return 0
+	}
+	return node.visible
+}
+
+// visibleRecordAt returns the record with zero-based visible rank. It uses the
+// immutable rope's visible subtree counts, so invisible history is never walked.
+func (d turnIndexDisk) visibleRecordAt(rank int, stats *ReadStats) (indexedTurn, bool) {
+	if rank < 0 || rank >= d.VisibleRecords {
+		return indexedTurn{}, false
+	}
+	baseVisible := d.baseVisible
+	if baseVisible == nil {
+		baseVisible = visibleRecordOrdinals(d.Records)
+	}
+	if rank < len(baseVisible) {
+		if stats != nil {
+			stats.recordVisits++
+		}
+		return d.Records[baseVisible[rank]], true
+	}
+	return visibleNodeAt(d.deltaRoot, rank-len(baseVisible), stats)
+}
+
+func visibleNodeAt(node *turnIndexRecordNode, rank int, stats *ReadStats) (indexedTurn, bool) {
+	if node == nil || rank < 0 || rank >= node.visible {
+		return indexedTurn{}, false
+	}
+	if stats != nil {
+		stats.recordVisits++
+	}
+	if node.records != nil {
+		for i := range node.records {
+			if node.records[i].Visible {
+				if rank == 0 {
+					return node.records[i], true
+				}
+				rank--
+			}
+		}
+		return indexedTurn{}, false
+	}
+	leftVisible := recordNodeVisible(node.left)
+	if rank < leftVisible {
+		return visibleNodeAt(node.left, rank, stats)
+	}
+	return visibleNodeAt(node.right, rank-leftVisible, stats)
+}
+
+func visibleRecordOrdinals(records []indexedTurn) []int {
+	ordinals := make([]int, 0)
+	for i := range records {
+		if records[i].Visible {
+			ordinals = append(ordinals, i)
+		}
+	}
+	return ordinals
 }
 
 func recordNodeAt(node *turnIndexRecordNode, i int) indexedTurn {
@@ -328,12 +410,12 @@ func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int, project Bounded
 	}
 	sameFile := candidate != nil && currentFileIdentity != "" && candidate.FileIdentity == currentFileIdentity
 	appendOnly := sameFile && candidate.TranscriptSize < info.Size()
-	index, start, validatedBytes := usableTurnIndex(file, info.Size(), maxLineBytes, projectionID, candidate, identityMatches, appendOnly, fromCache)
+	index, start, validatedBytes := usableTurnIndex(file, info.Size(), maxLineBytes, projectionID, candidate, identityMatches, appendOnly, fromCache, &stats)
 	rebuilt := start < 0
+	stats.rebuilt = rebuilt
 	if start < 0 {
 		index = turnIndexDisk{
 			Version:      turnIndexVersion,
-			ToolNames:    map[string]string{},
 			MaxLineBytes: maxLineBytes,
 			ProjectionID: projectionID,
 			PrefixStamp:  initialPrefixStamp(),
@@ -347,8 +429,21 @@ func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int, project Bounded
 	}
 	stats.IndexedBytes = validatedBytes
 	previousIndex := index
+	resolver := map[string]string{}
+	if !rebuilt {
+		c.mu.Lock()
+		entry := c.entries[path]
+		if fromCache && entry.toolResolver != nil {
+			// indexMu excludes every other scanner for this cache, so the private
+			// resolver can advance in place. It is never published in an index.
+			resolver = entry.toolResolver
+		} else {
+			resolver = replayToolResolver(index, &stats)
+		}
+		c.mu.Unlock()
+	}
 	index = cloneTurnIndexForAppend(index)
-	indexedBytes := scanTurnIndex(file, info.Size(), start, maxLineBytes, &index, project)
+	indexedBytes := scanTurnIndex(file, info.Size(), start, maxLineBytes, &index, resolver, project)
 	stats.IndexedBytes += indexedBytes
 	index.TranscriptSize = info.Size()
 	index.MaxLineBytes = maxLineBytes
@@ -368,6 +463,7 @@ func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int, project Bounded
 	entry.fileIdentity = currentFileIdentity
 	entry.changeIdentity = currentChangeIdentity
 	entry.turnIndex = &stored
+	entry.toolResolver = resolver
 	c.entries[path] = entry
 	c.touch(path)
 	c.evictLocked()
@@ -396,7 +492,7 @@ func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int, project Bounded
 	return index, stats
 }
 
-func usableTurnIndex(file *os.File, size int64, maxLineBytes int, projectionID string, candidate *turnIndexDisk, identityMatches bool, appendOnly bool, trustedMemory bool) (turnIndexDisk, int64, int64) {
+func usableTurnIndex(file *os.File, size int64, maxLineBytes int, projectionID string, candidate *turnIndexDisk, identityMatches bool, appendOnly bool, trustedMemory bool, stats *ReadStats) (turnIndexDisk, int64, int64) {
 	if candidate == nil || candidate.Version != turnIndexVersion || candidate.MaxLineBytes != maxLineBytes || candidate.ProjectionID != projectionID {
 		return turnIndexDisk{}, -1, 0
 	}
@@ -407,6 +503,9 @@ func usableTurnIndex(file *os.File, size int64, maxLineBytes int, projectionID s
 		return turnIndexDisk{}, -1, 0
 	}
 	validatedBytes := int64(0)
+	if appendOnly && !anchorsMatchObserved(file, stats, candidate.FirstAnchor, candidate.TailAnchor) {
+		return turnIndexDisk{}, -1, validatedBytes
+	}
 	if !identityMatches && !appendOnly {
 		stamp, readBytes := prefixStamp(file, candidate.CompleteSize)
 		validatedBytes = readBytes
@@ -429,14 +528,10 @@ func usableTurnIndex(file *os.File, size int64, maxLineBytes int, projectionID s
 		if record.Kind != "entry" && record.Kind != "api_call" {
 			return turnIndexDisk{}, -1, validatedBytes
 		}
-		if record.Kind == "api_call" && (!record.Visible || len(record.ToolChanges) > 0 || len(record.ToolNamesBefore) > 0) {
+		if record.Kind == "api_call" && (!record.Visible || len(record.ToolChanges) > 0 || len(record.ToolSeed) > 0) {
 			return turnIndexDisk{}, -1, validatedBytes
 		}
-		if record.Kind == "entry" && i%toolNameCheckpointInterval == 0 {
-			if !equalToolNames(record.ToolNamesBefore, toolNames) {
-				return turnIndexDisk{}, -1, validatedBytes
-			}
-		} else if len(record.ToolNamesBefore) > 0 {
+		if record.Kind == "entry" && !validToolSeed(record.ToolSeed, record.ToolChanges, toolNames) {
 			return turnIndexDisk{}, -1, validatedBytes
 		}
 		for _, change := range record.ToolChanges {
@@ -454,13 +549,14 @@ func usableTurnIndex(file *os.File, size int64, maxLineBytes int, projectionID s
 		previousEnd = record.Offset + record.Length
 		previousIndex = record.Index
 	}
-	if visibleRecords != candidate.VisibleRecords || !equalToolNames(candidate.ToolNames, toolNames) {
+	if visibleRecords != candidate.VisibleRecords {
 		return turnIndexDisk{}, -1, validatedBytes
 	}
+	candidate.baseVisible = visibleRecordOrdinals(candidate.Records)
 	return *candidate, candidate.CompleteSize, validatedBytes
 }
 
-func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineBytes int, index *turnIndexDisk, project BoundedEntryProjector) int64 {
+func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineBytes int, index *turnIndexDisk, projectNames map[string]string, project BoundedEntryProjector) int64 {
 	if start >= transcriptSize {
 		return 0
 	}
@@ -472,7 +568,6 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 		entryIndex = index.recordAt(n - 1).Index
 	}
 	var readBytes int64
-	projectNames := cloneToolNames(index.ToolNames)
 	visibleRecords := index.VisibleRecords
 	var appended []indexedTurn
 	for {
@@ -512,13 +607,12 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 			case "entry":
 				entryIndex++
 				record := indexedTurn{Offset: offset, Length: length, Index: entryIndex, Kind: head.Kind}
-				if (index.recordCount()+len(appended))%toolNameCheckpointInterval == 0 {
-					record.ToolNamesBefore = cloneToolNames(projectNames)
-				}
-				record.ToolChanges = toolNameChanges(line, projectNames)
+				record.ToolSeed, record.ToolChanges = toolProjectionState(line, projectNames)
 				visible := false
 				if project != nil {
-					visible = len(project(line, fmt.Sprintf("turn_%d", entryIndex), entryIndex, projectNames)) > 0
+					recordNames := cloneToolNames(record.ToolSeed)
+					visible = len(project(line, fmt.Sprintf("turn_%d", entryIndex), entryIndex, recordNames)) > 0
+					applyToolNameChanges(projectNames, record.ToolChanges)
 				} else {
 					applyToolNameChanges(projectNames, record.ToolChanges)
 				}
@@ -528,7 +622,6 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 				}
 				record.VisibleIndex = visibleRecords
 				appended = append(appended, record)
-				index.ToolNames = cloneToolNames(projectNames)
 			}
 		}
 		offset += length
@@ -540,36 +633,65 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 	} else {
 		index.deltaRoot = joinRecordNodes(index.deltaRoot, newRecordLeaf(appended))
 	}
+	if index.baseVisible == nil {
+		index.baseVisible = visibleRecordOrdinals(index.Records)
+	}
 	index.VisibleRecords = visibleRecords
+	index.FirstAnchor, index.TailAnchor = transcriptAnchors(file, index.CompleteSize)
 	return readBytes
 }
 
-func toolNameChanges(raw []byte, names map[string]string) []toolNameChange {
+func toolProjectionState(raw []byte, names map[string]string) (map[string]string, []toolNameChange) {
 	var entry transcript.Entry
 	if json.Unmarshal(raw, &entry) != nil {
-		return nil
+		return nil, nil
 	}
+	var seed map[string]string
 	var changes []toolNameChange
+	localNames := map[string]string{}
+	localDeleted := map[string]bool{}
+	touched := map[string]bool{}
 	for _, part := range entry.Turn.Message.Content {
 		switch {
 		case part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.ID != "":
 			changes = append(changes, toolNameChange{ID: part.ToolCall.ID, Name: part.ToolCall.Name})
+			localNames[part.ToolCall.ID] = part.ToolCall.Name
+			delete(localDeleted, part.ToolCall.ID)
+			touched[part.ToolCall.ID] = true
 		case part.Kind == llm.ContentToolResult && part.ToolResult != nil:
 			name := part.ToolResult.Name
 			if name == "" {
-				name = names[part.ToolResult.ToolCallID]
+				id := part.ToolResult.ToolCallID
+				if touched[id] {
+					if !localDeleted[id] {
+						name = localNames[id]
+					}
+				} else {
+					name = names[id]
+					if seed == nil {
+						seed = map[string]string{}
+					}
+					// Assignment deliberately preserves an explicitly empty lookup.
+					seed[id] = name
+				}
+				changes = append(changes, toolNameChange{ID: id, Name: name, Lookup: true})
 			}
 			if name == "communicate" {
 				changes = append(changes, toolNameChange{ID: part.ToolResult.ToolCallID, Delete: true})
+				delete(localNames, part.ToolResult.ToolCallID)
+				localDeleted[part.ToolResult.ToolCallID] = true
+				touched[part.ToolResult.ToolCallID] = true
 			}
 		}
 	}
-	return changes
+	return seed, changes
 }
 
 func applyToolNameChanges(names map[string]string, changes []toolNameChange) {
 	for _, change := range changes {
-		if change.Delete {
+		if change.Lookup {
+			continue
+		} else if change.Delete {
 			delete(names, change.ID)
 		} else {
 			names[change.ID] = change.Name
@@ -577,26 +699,91 @@ func applyToolNameChanges(names map[string]string, changes []toolNameChange) {
 	}
 }
 
-func toolNamesBeforeRecord(index turnIndexDisk, target int) map[string]string {
-	if target <= 0 {
-		return map[string]string{}
-	}
-	start := 0
+func replayToolResolver(index turnIndexDisk, stats *ReadStats) map[string]string {
 	names := map[string]string{}
-	for i := target; i >= 0; i-- {
-		if i < index.recordCount() && index.recordAt(i).ToolNamesBefore != nil {
-			start = i
-			names = cloneToolNames(index.recordAt(i).ToolNamesBefore)
-			break
+	for i := 0; i < index.recordCount(); i++ {
+		if stats != nil {
+			stats.resolverHistoryVisits++
 		}
-	}
-	for i := start; i < target; i++ {
 		applyToolNameChanges(names, index.recordAt(i).ToolChanges)
 	}
 	return names
 }
 
+func validToolSeed(seed map[string]string, changes []toolNameChange, names map[string]string) bool {
+	localNames := cloneToolNames(seed)
+	required := map[string]string{}
+	for _, change := range changes {
+		if change.ID == "" {
+			return false
+		}
+		switch {
+		case change.Lookup:
+			if _, ok := required[change.ID]; !ok {
+				required[change.ID] = names[change.ID]
+			}
+			if localNames[change.ID] != change.Name {
+				return false
+			}
+		case change.Delete:
+			delete(localNames, change.ID)
+		default:
+			localNames[change.ID] = change.Name
+		}
+	}
+	return equalToolNames(seed, required)
+}
+
+func transcriptAnchors(file *os.File, completeSize int64) (turnIndexAnchor, turnIndexAnchor) {
+	if completeSize <= 0 {
+		return turnIndexAnchor{}, turnIndexAnchor{}
+	}
+	firstLength := int64(turnIndexAnchorBytes)
+	if firstLength > completeSize {
+		firstLength = completeSize
+	}
+	first := anchorAt(file, 0, int(firstLength))
+	tailOffset := completeSize - int64(turnIndexAnchorBytes)
+	if tailOffset < 0 {
+		tailOffset = 0
+	}
+	tail := anchorAt(file, tailOffset, int(completeSize-tailOffset))
+	return first, tail
+}
+
+func anchorAt(file *os.File, offset int64, length int) turnIndexAnchor {
+	data := make([]byte, length)
+	n, _ := file.ReadAt(data, offset)
+	sum := sha256.Sum256(data[:n])
+	return turnIndexAnchor{Offset: offset, Length: n, Stamp: hex.EncodeToString(sum[:])}
+}
+
+func anchorsMatchObserved(file *os.File, stats *ReadStats, anchors ...turnIndexAnchor) bool {
+	for _, anchor := range anchors {
+		if anchor.Length <= 0 || anchor.Stamp == "" {
+			return false
+		}
+		data := make([]byte, anchor.Length)
+		n, err := file.ReadAt(data, anchor.Offset)
+		if stats != nil {
+			stats.anchorBytesRead += int64(n)
+		}
+		if err != nil && err != io.EOF {
+			return false
+		}
+		sum := sha256.Sum256(data[:n])
+		if n != anchor.Length || hex.EncodeToString(sum[:]) != anchor.Stamp {
+			return false
+		}
+	}
+	return true
+}
+
 func projectIndexedRange(path string, index turnIndexDisk, lo int, hi int, project BoundedEntryProjector) ([]appwire.Turn, int) {
+	return projectIndexedRangeObserved(path, index, lo, hi, project, nil)
+}
+
+func projectIndexedRangeObserved(path string, index turnIndexDisk, lo int, hi int, project BoundedEntryProjector, stats *ReadStats) ([]appwire.Turn, int) {
 	if lo >= hi {
 		return nil, 0
 	}
@@ -620,27 +807,9 @@ func projectIndexedRange(path string, index turnIndexDisk, lo int, hi int, proje
 	if recordLogicalLo < 0 {
 		recordLogicalLo = 0
 	}
-	recordCount := index.recordCount()
-	startRecord := sort.Search(recordCount, func(i int) bool {
-		return index.recordAt(i).VisibleIndex > recordLogicalLo
-	})
-	if startRecord == recordCount {
-		return turns, projected
-	}
-	toolNames := toolNamesBeforeRecord(index, startRecord)
-	logicalPosition := recordBase + recordLogicalLo
-	for i := startRecord; i < recordCount; i++ {
-		record := index.recordAt(i)
-		if !record.Visible {
-			applyToolNameChanges(toolNames, record.ToolChanges)
-			continue
-		}
-		position := logicalPosition
-		logicalPosition++
-		if position < lo {
-			continue
-		}
-		if position >= hi {
+	for rank := recordLogicalLo; rank < hi-recordBase && rank < index.VisibleRecords; rank++ {
+		record, ok := index.visibleRecordAt(rank, stats)
+		if !ok {
 			break
 		}
 		raw := make([]byte, record.Length)
@@ -656,7 +825,7 @@ func projectIndexedRange(path string, index turnIndexDisk, lo int, hi int, proje
 		}
 		var items []appwire.ThreadItem
 		if project != nil {
-			items = project(raw, fmt.Sprintf("turn_%d", record.Index), record.Index, toolNames)
+			items = project(raw, fmt.Sprintf("turn_%d", record.Index), record.Index, cloneToolNamesObserved(record.ToolSeed, stats))
 		}
 		if len(items) == 0 {
 			continue
@@ -754,12 +923,13 @@ func readTurnIndexWithJournal(path string) (turnIndexDisk, error) {
 		index.Header = frame.Header
 		index.FirstCall = frame.FirstCall
 		index.VisibleRecords = frame.VisibleRecords
-		index.ToolNames = frame.ToolNames
 		index.PrefixStamp = frame.PrefixStamp
 		index.FileIdentity = frame.FileIdentity
 		index.ChangeIdentity = frame.ChangeIdentity
 		index.ModTimeUnixNS = frame.ModTimeUnixNS
 		index.IntegrityStamp = frame.IntegrityStamp
+		index.FirstAnchor = frame.FirstAnchor
+		index.TailAnchor = frame.TailAnchor
 		index.journalApplied = true
 		validBytes += int64(len(line))
 	}
@@ -785,13 +955,17 @@ func appendTurnIndexJournal(path string, previous turnIndexDisk, index *turnInde
 		FirstCall:      index.FirstCall,
 		Records:        records,
 		VisibleRecords: index.VisibleRecords,
-		ToolNames:      index.ToolNames,
 		MaxLineBytes:   index.MaxLineBytes,
 		ProjectionID:   index.ProjectionID,
 		PrefixStamp:    index.PrefixStamp,
 		FileIdentity:   index.FileIdentity,
 		ChangeIdentity: index.ChangeIdentity,
 		ModTimeUnixNS:  index.ModTimeUnixNS,
+		FirstAnchor:    index.FirstAnchor,
+		TailAnchor:     index.TailAnchor,
+	}
+	if stats != nil {
+		stats.journalRecords += int64(len(records))
 	}
 	frame.IntegrityStamp = turnIndexJournalStampObserved(frame, stats)
 	data, err := json.Marshal(frame)
@@ -1059,7 +1233,6 @@ func cloneTurnIndex(index turnIndexDisk) turnIndexDisk {
 }
 
 func cloneTurnIndexForAppend(index turnIndexDisk) turnIndexDisk {
-	index.ToolNames = cloneToolNames(index.ToolNames)
 	if index.FirstCall != nil {
 		copy := *index.FirstCall
 		index.FirstCall = &copy
@@ -1075,10 +1248,10 @@ func cloneTurnIndexObserved(index turnIndexDisk, stats *ReadStats) turnIndexDisk
 	}
 	index.Records = append([]indexedTurn(nil), index.Records...)
 	for i := range index.Records {
-		index.Records[i].ToolNamesBefore = cloneToolNames(index.Records[i].ToolNamesBefore)
+		index.Records[i].ToolSeed = cloneToolNames(index.Records[i].ToolSeed)
 		index.Records[i].ToolChanges = append([]toolNameChange(nil), index.Records[i].ToolChanges...)
 	}
-	index.ToolNames = cloneToolNames(index.ToolNames)
+	index.baseVisible = append([]int(nil), index.baseVisible...)
 	if index.FirstCall != nil {
 		copy := *index.FirstCall
 		index.FirstCall = &copy
@@ -1099,9 +1272,16 @@ func equalToolNames(a, b map[string]string) bool {
 }
 
 func cloneToolNames(names map[string]string) map[string]string {
+	return cloneToolNamesObserved(names, nil)
+}
+
+func cloneToolNamesObserved(names map[string]string, stats *ReadStats) map[string]string {
 	clone := make(map[string]string, len(names))
 	for id, name := range names {
 		clone[id] = name
+	}
+	if stats != nil {
+		stats.resolverEntriesCopied += int64(len(names))
 	}
 	return clone
 }

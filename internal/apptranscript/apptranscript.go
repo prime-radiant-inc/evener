@@ -19,7 +19,9 @@ import (
 type EntryProjector func(raw json.RawMessage, turnID string, turnIndex int) []appwire.ThreadItem
 
 // BoundedEntryProjector converts one transcript entry JSON object into AppWire
-// items while sharing the tool-name state collected by the transcript index.
+// items. The supported bounded-reader contract is a named adapter that decodes
+// the entry and calls ProjectTurn. Its toolNames argument is mutable, ephemeral
+// state for that record only; callers must not inspect unrelated history.
 // EntryProjector remains the full-read contract for existing callers.
 type BoundedEntryProjector func(raw json.RawMessage, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem
 

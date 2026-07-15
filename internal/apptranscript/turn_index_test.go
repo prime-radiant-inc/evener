@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -302,6 +303,196 @@ func TestTurnCacheAppendIndexWorkIsBoundedBySuffix(t *testing.T) {
 			got.stat.indexBytesPersisted > baseline.indexBytesPersisted+8<<10 {
 			t.Fatalf("entries=%d: append index work grew with history: baseline=%+v got=%+v", got.count, baseline, got.stat)
 		}
+	}
+}
+
+func TestTurnCacheToolHeavyAppendDoesNotPersistCumulativeResolver(t *testing.T) {
+	type work struct {
+		count  int
+		bytes  uint64
+		allocs float64
+	}
+	var observed []work
+	for _, count := range []int{100, 1_000, 10_000} {
+		t.Run(fmt.Sprintf("calls=%d", count), func(t *testing.T) {
+			path := writeToolHeavyTranscript(t, count)
+			cache := NewTurnCache()
+			cache.LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
+			line := numberedEntryLine(t, count+1, "fixed-size-append")
+			appendFile(t, path, line)
+
+			var stat ReadStats
+			previous := observeTurnIndexRead
+			observeTurnIndexRead = func(got ReadStats) { stat = got }
+			got, cursor := cache.LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
+			observeTurnIndexRead = previous
+			full := TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
+			want, wantCursor := appwire.WindowTurns(full, 1)
+			if !reflect.DeepEqual(got, want) || cursor != wantCursor {
+				t.Fatalf("append projection got=(%#v,%q) want=(%#v,%q)", got, cursor, want, wantCursor)
+			}
+
+			if stat.resolverEntriesCopied != 0 || stat.indexBytesCopied != 0 || stat.journalRecords != 1 ||
+				stat.indexBytesSerialized > 8<<10 || stat.indexBytesPersisted > 4<<10 {
+				t.Fatalf("tool history leaked into append work: %+v", stat)
+			}
+			journal, err := os.ReadFile(path + ".appwire-index.json.journal")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(journal, []byte(`"tool_names"`)) {
+				t.Fatalf("journal contains cumulative tool resolver (%d bytes)", len(journal))
+			}
+
+			seq := count + 2
+			allocs := testing.AllocsPerRun(1, func() {
+				appendFile(t, path, numberedEntryLine(t, seq, "fixed-size-append"))
+				cache.LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
+				seq++
+			})
+			runtime.GC()
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			appendFile(t, path, numberedEntryLine(t, seq, "fixed-size-append"))
+			cache.LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
+			runtime.ReadMemStats(&after)
+			allocated := after.TotalAlloc - before.TotalAlloc
+			if allocs > 256 || allocated > 64<<10 {
+				t.Fatalf("actual append allocations grew with tool history: allocs=%.0f bytes=%d", allocs, allocated)
+			}
+			observed = append(observed, work{count: count, bytes: allocated, allocs: allocs})
+		})
+	}
+	baseline := observed[0]
+	for _, got := range observed[1:] {
+		if got.bytes > baseline.bytes+16<<10 || got.allocs > baseline.allocs+32 {
+			t.Fatalf("calls=%d actual append work grew with history: baseline=%+v got=%+v", got.count, baseline, got)
+		}
+	}
+}
+
+func TestTurnCacheToolProjectionSeedsMatchSequentialProjection(t *testing.T) {
+	multiple := transcript.Entry{Kind: "entry", Seq: 5, Turn: schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Content: []llm.ContentPart{
+		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "ordinary", Content: "first"}},
+		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "communicate", Content: "hidden"}},
+		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "orphan", Content: "third"}},
+	}}}}
+	path := writeEntries(t,
+		assistantToolCallEntry(1, "ordinary", "read_file", `{}`),
+		assistantToolCallEntry(2, "communicate", "communicate", `{"message":"sent"}`),
+		toolResultEntry(3, "communicate", "", "hidden"),
+		toolResultEntry(4, "communicate", "", "orphan"),
+		multiple,
+	)
+	full := TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
+	cache := NewTurnCache()
+	got, cursor := cache.LatestFromFile(path, testMaxLineBytes, len(full), boundedTestProjector)
+	if !reflect.DeepEqual(got, full) || cursor != "" {
+		t.Fatalf("seed projection differs\n got: %#v\nwant: %#v", got, full)
+	}
+	index, err := readTurnIndex(path + ".appwire-index.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seed := index.Records[3].ToolSeed; seed == nil {
+		t.Fatal("orphan missing-name result has no explicit seed")
+	} else if got, ok := seed["communicate"]; !ok || got != "" {
+		t.Fatalf("orphan seed=%v, want explicit empty resolution", seed)
+	}
+	if seed := index.Records[4].ToolSeed; seed["ordinary"] != "read_file" || seed["communicate"] != "" || seed["orphan"] != "" {
+		t.Fatalf("multiple-result seed=%v", seed)
+	}
+}
+
+func TestTurnCacheFailedAPICallSelectionIsVisibleRankBounded(t *testing.T) {
+	for _, count := range []int{100, 1_000, 10_000} {
+		t.Run(fmt.Sprintf("failed=%d", count), func(t *testing.T) {
+			path := writeFailedAPICalls(t, count)
+			cache := NewTurnCache()
+			cache.LatestFromFile(path, testMaxLineBytes, 20, boundedTestProjector)
+			var stat ReadStats
+			previous := observeTurnIndexRead
+			observeTurnIndexRead = func(got ReadStats) { stat = got }
+			got, cursor := cache.LatestFromFile(path, testMaxLineBytes, 20, boundedTestProjector)
+			observeTurnIndexRead = previous
+			full := TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
+			want, wantCursor := appwire.WindowTurns(full, 20)
+			if !reflect.DeepEqual(got, want) || cursor != wantCursor {
+				t.Fatalf("latest differs: got=(%v,%q) want=(%v,%q)", turnIDs(got), cursor, turnIDs(want), wantCursor)
+			}
+			if stat.resolverHistoryVisits != 0 || stat.recordVisits > 80 {
+				t.Fatalf("warm selection work=%+v, want no resolver replay and <=80 rope/rank visits", stat)
+			}
+		})
+	}
+}
+
+func TestTurnCacheGrowthRewriteAnchorMismatchRebuilds(t *testing.T) {
+	for _, fresh := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fresh=%v", fresh), func(t *testing.T) {
+			path := writeNumberedTranscript(t, 40)
+			cache := NewTurnCache()
+			cache.LatestFromFile(path, testMaxLineBytes, 5, boundedTestProjector)
+			before, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			file, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := 1; i <= 60; i++ {
+				if _, err := file.Write(numberedEntryLine(t, i, fmt.Sprintf("replacement-%03d", i))); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := file.Close(); err != nil {
+				t.Fatal(err)
+			}
+			after, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fileIdentity(before) != fileIdentity(after) || after.Size() <= before.Size() {
+				t.Fatalf("fixture identity/growth invalid: before=%d after=%d", before.Size(), after.Size())
+			}
+			if fresh {
+				cache = NewTurnCache()
+			}
+			var stat ReadStats
+			previous := observeTurnIndexRead
+			observeTurnIndexRead = func(got ReadStats) { stat = got }
+			got, cursor := cache.LatestFromFile(path, testMaxLineBytes, 5, boundedTestProjector)
+			observeTurnIndexRead = previous
+			full := TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
+			want, wantCursor := appwire.WindowTurns(full, 5)
+			if !reflect.DeepEqual(got, want) || cursor != wantCursor || !stat.rebuilt {
+				t.Fatalf("anchor recovery got=(%v,%q) stats=%+v want=(%v,%q) rebuild", turnIDs(got), cursor, stat, turnIDs(want), wantCursor)
+			}
+			if stat.anchorBytesRead <= 0 || stat.anchorBytesRead > 2*turnIndexAnchorBytes {
+				t.Fatalf("anchor bytes=%d want 1..%d", stat.anchorBytesRead, 2*turnIndexAnchorBytes)
+			}
+		})
+	}
+}
+
+func TestTurnCacheSidecarStoresRecordSeedsAndBoundedAnchors(t *testing.T) {
+	path := writeEntries(t,
+		assistantToolCallEntry(1, "call", "read_file", `{}`),
+		toolResultEntry(2, "call", "", "done"),
+	)
+	NewTurnCache().LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
+	data, err := os.ReadFile(path + ".appwire-index.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"tool_seed"`, `"first_anchor"`, `"tail_anchor"`} {
+		if !bytes.Contains(data, []byte(key)) {
+			t.Errorf("sidecar missing %s", key)
+		}
+	}
+	if bytes.Contains(data, []byte(`"tool_names"`)) || bytes.Contains(data, []byte(`"tool_names_before"`)) {
+		t.Errorf("sidecar retains cumulative/checkpoint tool state")
 	}
 }
 
@@ -647,12 +838,12 @@ func TestTurnCacheRebuildsIndexWhenProjectionIdentityChanges(t *testing.T) {
 	}
 }
 
-func TestTurnCacheRebuildsSidecarWithInvalidToolCheckpoint(t *testing.T) {
+func TestTurnCacheRebuildsSidecarWithInvalidToolSeed(t *testing.T) {
 	entries := []transcript.Entry{assistantToolCallEntry(1, "shared", "correct_tool", `{}`)}
-	for seq := 2; seq <= toolNameCheckpointInterval; seq++ {
+	for seq := 2; seq <= 128; seq++ {
 		entries = append(entries, userEntry(seq, fmt.Sprintf("entry-%d", seq)))
 	}
-	entries = append(entries, toolResultEntry(toolNameCheckpointInterval+1, "shared", "", "done"))
+	entries = append(entries, toolResultEntry(129, "shared", "", "done"))
 	path := writeEntries(t, entries...)
 	indexPath := path + ".appwire-index.json"
 	NewTurnCache().LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
@@ -660,11 +851,11 @@ func TestTurnCacheRebuildsSidecarWithInvalidToolCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	record := &index.Records[toolNameCheckpointInterval]
-	if record.ToolNamesBefore["shared"] != "correct_tool" {
-		t.Fatalf("checkpoint fixture=%v", record.ToolNamesBefore)
+	record := &index.Records[128]
+	if record.ToolSeed["shared"] != "correct_tool" {
+		t.Fatalf("seed fixture=%v", record.ToolSeed)
 	}
-	record.ToolNamesBefore["shared"] = "wrong_tool"
+	record.ToolSeed["shared"] = "wrong_tool"
 	index.IntegrityStamp = turnIndexIntegrityStamp(index)
 	data, err := json.Marshal(index)
 	if err != nil {
@@ -676,7 +867,7 @@ func TestTurnCacheRebuildsSidecarWithInvalidToolCheckpoint(t *testing.T) {
 
 	got, _ := NewTurnCache().LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
 	if len(got) != 1 || len(got[0].Items) != 1 || got[0].Items[0].ToolName != "correct_tool" {
-		t.Fatalf("invalid checkpoint was reused: turns=%#v", got)
+		t.Fatalf("invalid seed was reused: turns=%#v", got)
 	}
 }
 
@@ -843,6 +1034,22 @@ func BenchmarkTurnCacheLatest40AfterAppend(b *testing.B) {
 			}
 			reportReadMetrics(b, indexedBytes, projectedTurns)
 			reportIndexWriteMetrics(b, indexBytesCopied, indexBytesSerialized, indexBytesPersisted)
+		})
+	}
+}
+
+func BenchmarkTurnCacheToolHeavyLatestAfterAppend(b *testing.B) {
+	for _, count := range []int{100, 1_000, 10_000} {
+		b.Run(fmt.Sprintf("calls=%d", count), func(b *testing.B) {
+			path := writeToolHeavyTranscript(b, count)
+			cache := NewTurnCache()
+			cache.LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				appendFile(b, path, numberedEntryLine(b, count+i+1, "fixed-size-append"))
+				cache.LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
+			}
 		})
 	}
 }
@@ -1026,6 +1233,49 @@ func writeNumberedTranscript(t testing.TB, count int) string {
 		data = append(data, numberedEntryLine(t, i, fmt.Sprintf("entry-%d", i))...)
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writeToolHeavyTranscript(t testing.TB, count int) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "tool-heavy.transcript.jsonl")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= count; i++ {
+		if _, err := file.Write(assistantToolCallLine(t, i, fmt.Sprintf("call-%d", i), fmt.Sprintf("tool-%d", i))); err != nil {
+			_ = file.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writeFailedAPICalls(t testing.TB, count int) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "failed-api-calls.transcript.jsonl")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= count; i++ {
+		line, err := json.Marshal(transcript.APICall{Kind: "api_call", Seq: i, Error: fmt.Sprintf("failed-%d", i)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		line = append(line, '\n')
+		if _, err := file.Write(line); err != nil {
+			_ = file.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
 	return path
