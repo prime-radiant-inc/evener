@@ -598,3 +598,33 @@ func TestServerAppWireOldIdentityRejectsCallbackBackingSwitchBeforeIdentity(t *t
 		t.Fatalf("old identity returned new callback backing before identity switch: %v", turnIDs(turns))
 	}
 }
+
+func TestValidatedTranscriptPathReadsOnlyLeadingHeader(t *testing.T) {
+	writeNoAPICallTranscript := func(entries int) string {
+		path := filepath.Join(t.TempDir(), "no-api-call.transcript.jsonl")
+		writer, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1", CreatedAt: time.Unix(1700000000, 0), ProfileID: "openai", Model: "gpt-5"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < entries; i++ {
+			if err := writer.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("historical entry"))); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	small := writeNoAPICallTranscript(1)
+	large := writeNoAPICallTranscript(2000)
+	if got := validatedTranscriptPath("th_1", large); got != large {
+		t.Fatalf("validated path=%q, want %q", got, large)
+	}
+
+	smallAllocs := testing.AllocsPerRun(3, func() { _ = validatedTranscriptPath("th_1", small) })
+	largeAllocs := testing.AllocsPerRun(3, func() { _ = validatedTranscriptPath("th_1", large) })
+	if largeAllocs > smallAllocs+10 {
+		t.Fatalf("large no-api_call identity validation inspected historical entries: allocations large=%.0f small=%.0f", largeAllocs, smallAllocs)
+	}
+}

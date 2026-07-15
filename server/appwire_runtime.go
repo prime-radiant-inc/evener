@@ -1,17 +1,20 @@
 package server
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/appprojector"
 	"primeradiant.com/serf/internal/appserver"
-	"primeradiant.com/serf/internal/apptranscript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -190,11 +193,30 @@ func validatedTranscriptPath(threadID, path string) string {
 	if path == "" {
 		return ""
 	}
-	header, _ := apptranscript.ScanPrelude(path, 128<<20)
+	header := transcriptHeader(path, 128<<20)
 	if header.SessionID != "" && header.SessionID != threadID {
 		return ""
 	}
 	return path
+}
+
+func transcriptHeader(path string, maxLineBytes int) transcript.Header {
+	file, err := os.Open(path)
+	if err != nil {
+		return transcript.Header{}
+	}
+	defer file.Close() //nolint:errcheck // read-only file; close error is not actionable
+
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
+	if !scanner.Scan() {
+		return transcript.Header{}
+	}
+	var header transcript.Header
+	if json.Unmarshal(scanner.Bytes(), &header) != nil || header.Kind != "header" {
+		return transcript.Header{}
+	}
+	return header
 }
 
 func (s *Server) transcriptPath() string {
