@@ -65,9 +65,6 @@ func (s *WebServer) handleAPIArchive(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "archive store error: "+err.Error())
 		return
 	}
-	if body.Kind == "project" && !body.Archived {
-		// Canonical project IDs are the sole project decision keys.
-	}
 	// An archive decision can move a session in or out of tier eligibility;
 	// nudge the attention watcher so the badge/notification state doesn't lag
 	// behind the sidebar until the next tick.

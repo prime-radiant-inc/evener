@@ -6645,6 +6645,7 @@ func TestWeb_WorkspaceData_CarriesObserverFromGrantHistory(t *testing.T) {
 	web := observerGrantWorkspaceFixture(t, "02wMz5Txv47YP64RR3B9YJ", "local:02wMz5Txv1C3Hut0M8GCeB", "02wMz5Txv47YP64RR3B9YJ")
 	wd := web.workspaceData("02wMz5Txv1C3Hut0M8GCeB")
 	if len(wd.ObserverRouteIDs) != 1 || wd.ObserverRouteIDs[0] != "02wMz5Txv47YP64RR3B9YJ" {
+		t.Fatalf("ObserverRouteIDs = %v, want [02wMz5Txv47YP64RR3B9YJ]", wd.ObserverRouteIDs)
 	}
 }
 

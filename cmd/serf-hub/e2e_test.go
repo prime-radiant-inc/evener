@@ -139,7 +139,9 @@ func TestE2E_LayeredLaunchConfig(t *testing.T) {
 
 	// Local per-project layer.
 	paths, err := launchconfig.PathsFor(stateRoot, cwd)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	pid := paths.Project.ID
 	if err := launchconfig.SaveLayer(paths.ProjectFile, launchconfig.Layer{
 		PluginDirs: []string{"/proj/plugins"},

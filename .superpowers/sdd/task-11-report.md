@@ -91,3 +91,39 @@ The required TUI test commands cannot complete in this sandbox because local
 IPv6 listener creation is denied; this is unrelated to the harness diff. The
 pre-existing task-1 report remains modified and is intentionally outside the
 scoped commit. `.superpowers/sdd/progress.md` was not edited.
+
+## Third gate failure: six hub lint issues
+
+### RED evidence
+
+`make lint` was run before the fixes and failed with exactly 6 issues: three
+gofmt findings in `app_launch_test.go`,
+`cov_launch_models_plugins_fuzz_test.go`, and `e2e_test.go`; QF1012 in
+`cov_small_faults_pass5_fuzz_test.go:152`; SA9003 in
+`web_api_archive.go:68`; and SA9003 in `web_test.go:6647`.
+
+### Root cause
+
+Three branch-introduced one-line `if` statements were not gofmt-formatted. The
+pass5 fuzz helper used `WriteString(fmt.Sprintf(...))`, triggering QF1012. The
+archive handler contained a dead empty project branch. The observer grant
+workspace test had an empty failure body, so its intended assertion did not
+report failures.
+
+### Change
+
+Formatted only the three touched test files, changed the pass5 helper to
+`_, _ = fmt.Fprintf(&many, "x%d.png ", i)`, removed the dead archive branch,
+and restored a `t.Fatalf` reporting `wd.ObserverRouteIDs` in the observer test.
+
+### Verification
+
+- `gofmt -w cmd/serf-hub/app_launch_test.go cmd/serf-hub/cov_launch_models_plugins_fuzz_test.go cmd/serf-hub/e2e_test.go cmd/serf-hub/cov_small_faults_pass5_fuzz_test.go cmd/serf-hub/web_api_archive.go cmd/serf-hub/web_test.go` — PASS.
+- Focused hub tests for launch config, archive API, observer grant workspace, and `FuzzSmallFaultsPass5` — PASS (`ok primeradiant.com/serf/cmd/serf-hub 0.473s`; pass5 `0.387s`).
+- `go test ./cmd/serf-hub -count=1` — BLOCKED by sandbox IPv6 listener permission in `TestHubRPCAuthStatusUsesUserScopedOpenAIAuth`: `httptest` bind `[::1]:0`, `operation not permitted`.
+- `make lint` — the six reported issues are resolved; the command reaches unrelated pre-existing repository findings (20 issues: errcheck 1, gocritic 4, govet 2, ineffassign 1, nilerr 1, staticcheck 9, unused 2), so exits 2. It also emitted a non-fatal golangci cache permission warning.
+- `make vet` — PASS (exit 0).
+- `git diff --check` — PASS (exit 0).
+
+No changes were made to `.superpowers/sdd/task-1-report.md` or
+`.superpowers/sdd/progress.md`.

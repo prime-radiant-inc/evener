@@ -82,7 +82,9 @@ func TestLaunchController_SetLayer_ProjectWritesLocalFile(t *testing.T) {
 		t.Fatalf("SetLayer: %v", err)
 	}
 	paths, err := launchconfig.PathsFor(stateRoot, cwd)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(paths.ProjectFile); err != nil {
 		t.Fatalf("project layer was not written to %s: %v", paths.ProjectFile, err)
 	}
@@ -103,7 +105,9 @@ func TestLaunchController_GetLayer_ProjectReadsLegacyFallback(t *testing.T) {
 	cwd := canonicalTempDir(t)
 	c := newHubLaunchController(stateRoot)
 	paths, err := launchconfig.PathsFor(stateRoot, cwd)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := launchconfig.SaveLayer(paths.LegacyProject, launchconfig.Layer{Model: "legacy-project"}); err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +167,9 @@ func TestLaunchController_TrustRepo_DoesNotCarryRejectedHashes(t *testing.T) {
 		t.Fatal(err)
 	}
 	paths, err := launchconfig.PathsFor(stateRoot, cwd)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := launchconfig.SaveMeta(paths.Meta, launchconfig.Meta{
 		Schema:    1,
 		CWD:       cwd,
