@@ -44,11 +44,12 @@
   }
 
   function paneFor(href) {
+    href = normalizePaneHref(href);
     var r = region();
     if (!r) return null;
     var frames = r.querySelectorAll(".pane-frame");
     for (var i = 0; i < frames.length; i++) {
-      if (frames[i].getAttribute("src") === href) return frames[i].closest(".pane");
+      if (normalizePaneHref(frames[i].getAttribute("src")) === href) return frames[i].closest(".pane");
     }
     return null;
   }
@@ -138,18 +139,19 @@
     }
   }
 
-  function openFromChild(source, href, title) {
+  function openFromChild(source, href, title, afterHref, explicitAfter) {
     href = normalizePaneHref(href);
+    afterHref = afterHref == null ? null : normalizePaneHref(afterHref);
     if (!isKnownPaneSource(source)) return null;
     if (!isPaneSafeHref(href)) return null;
-    return open(href, String(title || href));
+    return explicitAfter ? openAfter(href, String(title || href), afterHref) : open(href, String(title || href));
   }
 
   function onMessage(e) {
     if (!e || e.origin !== window.location.origin) return;
     var data = e.data || {};
     if (data.type !== "serf:open-beside") return;
-    openFromChild(e.source, data.href, data.title);
+    openFromChild(e.source, data.href, data.title, data.afterHref, Object.prototype.hasOwnProperty.call(data, "afterHref"));
   }
 
   function showRegion(show) {
@@ -158,13 +160,15 @@
     if (s) s.hidden = !show;
   }
 
-  function open(href, title) {
+  function openPane(href, title, afterHref, prepend, explicitAfter) {
     href = normalizePaneHref(href);
     if (!href) return null;
     var r = region();
     if (!r) {
       if (window.parent && window.parent !== window) {
-        window.parent.postMessage({ type: "serf:open-beside", href: href, title: title || href }, window.location.origin);
+        var message = { type: "serf:open-beside", href: href, title: title || href };
+        if (explicitAfter) message.afterHref = afterHref == null ? null : normalizePaneHref(afterHref);
+        window.parent.postMessage(message, window.location.origin);
       }
       return null;
     }
@@ -173,6 +177,7 @@
     unsuppress(href);
     var existing = paneFor(href);
     if (existing) { existing.querySelector(".pane-frame").focus(); return existing; }
+    if (afterHref != null && !paneFor(normalizePaneHref(afterHref))) return null;
     if (r.querySelectorAll(".pane").length >= MAX_SIDE_PANES) return null;
 
     var pane = document.createElement("section");
@@ -203,11 +208,26 @@
     });
     markLoading(pane, href);
     pane.appendChild(head); pane.appendChild(frame);
-    r.appendChild(pane);
+    if (afterHref == null) {
+      if (prepend) r.insertBefore(pane, r.firstChild);
+      else r.appendChild(pane);
+    } else {
+      var parent = paneFor(normalizePaneHref(afterHref));
+      if (!parent) return null;
+      r.insertBefore(pane, parent.nextSibling);
+    }
     showRegion(true);
     applyPaneMinWidth();
     persist();
     return pane;
+  }
+
+  function open(href, title) {
+    return openPane(href, title, null, false, false);
+  }
+
+  function openAfter(href, title, afterHref) {
+    return openPane(href, title, afterHref, true, true);
   }
 
   function close(href) {
@@ -431,7 +451,7 @@
     data.forEach(function (p) { if (p && p.href) open(normalizePaneHref(p.href), p.title); });
   }
 
-  window.SerfPanes = { open: open, close: close, openHrefs: openHrefs, restore: restore, isSuppressed: isSuppressed, setSidePanesWidth: setSidePanesWidth, threadHref: threadHref, normalizePaneHref: normalizePaneHref, openFromChild: openFromChild, isPaneSafeHref: isPaneSafeHref, markError: markError, MAX_SIDE_PANES: MAX_SIDE_PANES, PANE_MIN: PANE_MIN, _persist: persist };
+  window.SerfPanes = { open: open, openAfter: openAfter, close: close, openHrefs: openHrefs, restore: restore, isSuppressed: isSuppressed, setSidePanesWidth: setSidePanesWidth, threadHref: threadHref, normalizePaneHref: normalizePaneHref, openFromChild: openFromChild, isPaneSafeHref: isPaneSafeHref, markError: markError, MAX_SIDE_PANES: MAX_SIDE_PANES, PANE_MIN: PANE_MIN, _persist: persist };
   window.addEventListener("message", onMessage);
 
   function onLoad() { restore(); bindSplitter(); bindSidebarResizer(); restoreWidth(); }

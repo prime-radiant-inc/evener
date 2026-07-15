@@ -85,6 +85,9 @@ type Roster struct {
 	mu     sync.RWMutex
 	bySess map[string]LiveEntry // session_id -> entry
 	byPID  map[int]LiveEntry    // pid -> entry (for fsnotify event correlation)
+	// refreshGen rejects a completed probe pass that started before a newer
+	// refresh attempt, while allowing probes to run without holding mu.
+	refreshGen uint64
 
 	// procAlive reports whether a daemon PID is still running. A failed /status
 	// probe to a live process means the daemon is busy, not gone, so its session
@@ -161,6 +164,7 @@ func processAlive(pid int) bool {
 func NewRosterWithEntries(entries ...LiveEntry) *Roster {
 	r := NewRoster("", nil)
 	for _, e := range entries {
+		e.RunningSubagentIDs = append([]string(nil), e.RunningSubagentIDs...)
 		r.byPID[e.PID] = e
 		if e.SessionID != "" {
 			r.bySess[e.SessionID] = e
@@ -214,6 +218,11 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 // probe miss (busy daemon, overloaded host) must not blank the session from the
 // UI. It is dropped only when its process is gone (a stale rendezvous file).
 func (r *Roster) Refresh() {
+	r.mu.Lock()
+	r.refreshGen++
+	generation := r.refreshGen
+	r.mu.Unlock()
+
 	entries, err := rendezvous.List(r.runDir)
 	if err != nil {
 		return
@@ -279,26 +288,34 @@ func (r *Roster) Refresh() {
 		byPID[e.PID] = live
 	}
 
-	r.mu.Lock()
-	r.bySess = bySess
-	r.byPID = byPID
-	r.mu.Unlock()
-
-	if r.onStatusChange != nil {
-		for id, cur := range bySess {
-			if prev, had := prevBySess[id]; had && prev.Status != cur.Status {
-				r.onStatusChange(id)
-			}
-		}
-	}
-
 	fp := rosterFingerprint(bySess)
 	r.mu.Lock()
+	if generation != r.refreshGen {
+		r.mu.Unlock()
+		return
+	}
+	r.bySess = bySess
+	r.byPID = byPID
 	changed := fp != r.fingerprint
 	r.fingerprint = fp
+	statusChanges := make([]string, 0)
+	for id, cur := range bySess {
+		if prev, had := prevBySess[id]; had && prev.Status != cur.Status {
+			statusChanges = append(statusChanges, id)
+		}
+	}
+	sort.Strings(statusChanges)
+	onStatusChange := r.onStatusChange
+	onChange := r.onChange
 	r.mu.Unlock()
-	if changed && r.onChange != nil {
-		r.onChange()
+
+	if onStatusChange != nil {
+		for _, id := range statusChanges {
+			onStatusChange(id)
+		}
+	}
+	if changed && onChange != nil {
+		onChange()
 	}
 }
 
@@ -309,6 +326,7 @@ func (r *Roster) List() []LiveEntry {
 	bySession := make(map[string]LiveEntry, len(r.byPID))
 	out := make([]LiveEntry, 0, len(r.byPID))
 	for _, e := range r.byPID {
+		e.RunningSubagentIDs = append([]string(nil), e.RunningSubagentIDs...)
 		sessionID := strutil.FirstNonEmpty(e.SessionID, e.Entry.SessionID, e.ThreadID)
 		if sessionID == "" {
 			out = append(out, e)
@@ -336,7 +354,7 @@ func (r *Roster) IsSubagentActive(sessionID string) bool {
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	for _, entry := range r.bySess {
+	for _, entry := range r.byPID {
 		for _, childID := range entry.RunningSubagentIDs {
 			if childID == sessionID {
 				return true
@@ -363,6 +381,7 @@ func (r *Roster) Find(sessionID string) (LiveEntry, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	e, ok := r.bySess[sessionID]
+	e.RunningSubagentIDs = append([]string(nil), e.RunningSubagentIDs...)
 	return e, ok
 }
 

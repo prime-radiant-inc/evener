@@ -2,8 +2,10 @@ package hubcore
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +17,10 @@ type statusStub struct {
 	SessionID string `json:"session_id"`
 	State     string `json:"state"`
 }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 func fuzzScenarioStatusProber_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -127,31 +133,6 @@ func fuzzScenarioStatusProber_DecodesPendingEscalation(t *testing.T) {
 	}
 }
 
-func fuzzScenarioStatusProber_DecodesRunningSubagentIDs(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"session_id": "01PARENT",
-			"state":      "idle",
-			"detailed": map[string]any{"jobs": []map[string]any{
-				{"job_type": "delegate", "status": "running", "transcript_ref": "local:child-running"},
-				{"job_type": "delegate", "status": "completed", "transcript_ref": "local:child-done"},
-				{"job_type": "shell", "status": "running", "transcript_ref": "local:not-a-child"},
-				{"job_type": "delegate", "status": "running", "transcript_ref": "codex:remote-child"},
-				{"job_type": "delegate", "status": "running", "transcript_ref": "invalid"},
-			}},
-		})
-	}))
-	defer srv.Close()
-
-	result := (&StatusProber{}).Probe(rendezvous.Entry{Address: strings.TrimPrefix(srv.URL, "http://")})
-	if !result.OK {
-		t.Fatal("expected ok result")
-	}
-	if len(result.RunningSubagentIDs) != 1 || result.RunningSubagentIDs[0] != "child-running" {
-		t.Fatalf("running subagent ids = %v, want [child-running]", result.RunningSubagentIDs)
-	}
-}
-
 func fuzzScenarioStatusProber_AbsentPendingAskDecodesFalse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"session_id": "01A", "state": "active"})
@@ -161,5 +142,33 @@ func fuzzScenarioStatusProber_AbsentPendingAskDecodesFalse(t *testing.T) {
 	entry := rendezvous.Entry{Address: strings.TrimPrefix(srv.URL, "http://")}
 	if p.Probe(entry).PendingAsk {
 		t.Fatal("absent pending_ask (old daemon / Codex thread) must decode as false")
+	}
+}
+
+func fuzzScenarioStatusProber_DecodesRunningSubagentIDs(t *testing.T) {
+	payload := `{"session_id":"parent","state":"idle","detailed":{"jobs":[{"job_type":"delegate","status":"running","transcript_ref":"local:child-b"},{"job_type":"delegate","status":"completed","transcript_ref":"local:child-done"},{"job_type":"shell","status":"running","transcript_ref":"local:not-a-child"},{"job_type":"delegate","status":"running","transcript_ref":"remote:child-remote"},{"job_type":"delegate","status":"running","transcript_ref":"invalid"},{"job_type":"delegate","status":"running","transcript_ref":"local:child-a"},{"job_type":"delegate","status":"running","transcript_ref":"local:child-a"}]}}`
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(payload)), Header: make(http.Header)}, nil
+	})}
+	result := (&StatusProber{client: client}).Probe(rendezvous.Entry{Address: "status.test"})
+	if !result.OK {
+		t.Fatal("expected successful status probe")
+	}
+	want := []string{"child-a", "child-b"}
+	if !reflect.DeepEqual(result.RunningSubagentIDs, want) {
+		t.Fatalf("running subagent IDs = %v, want %v", result.RunningSubagentIDs, want)
+	}
+}
+
+func TestProbeRunningSubagent(t *testing.T) { fuzzScenarioStatusProber_DecodesRunningSubagentIDs(t) }
+
+func TestProbeSubagentTypeFallback(t *testing.T) {
+	payload := `{"session_id":"parent","state":"idle","detailed":{"jobs":[{"type":"delegate","status":"running","transcript_ref":"local:child-type"}]}}`
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(payload)), Header: make(http.Header)}, nil
+	})}
+	result := (&StatusProber{client: client}).Probe(rendezvous.Entry{Address: "status.test"})
+	if !reflect.DeepEqual(result.RunningSubagentIDs, []string{"child-type"}) {
+		t.Fatalf("type fallback running subagent IDs = %v, want [child-type]", result.RunningSubagentIDs)
 	}
 }

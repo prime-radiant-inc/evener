@@ -15,6 +15,7 @@ import (
 // parsing the session_id field from the response.
 type StatusProber struct {
 	Timeout time.Duration
+	client  *http.Client
 }
 
 // statusInfo is a partial mirror of server.StatusInfo containing the fields
@@ -27,6 +28,7 @@ type statusInfo struct {
 	Detailed          *struct {
 		Jobs []struct {
 			JobType       string `json:"job_type"`
+			Type          string `json:"type"`
 			Status        string `json:"status"`
 			TranscriptRef string `json:"transcript_ref"`
 		} `json:"jobs"`
@@ -39,7 +41,10 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	if timeout == 0 {
 		timeout = 500 * time.Millisecond
 	}
-	client := &http.Client{Timeout: timeout}
+	client := p.client
+	if client == nil {
+		client = &http.Client{Timeout: timeout}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+entry.Address+"/status", nil)
@@ -63,11 +68,15 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	var runningSubagentIDs []string
 	if s.Detailed != nil {
 		for _, job := range s.Detailed.Jobs {
-			if job.JobType != "delegate" || job.Status != "running" {
+			jobType := job.JobType
+			if jobType == "" {
+				jobType = job.Type
+			}
+			if jobType != "delegate" || job.Status != "running" {
 				continue
 			}
 			ref, err := appwire.ParseRef(job.TranscriptRef)
-			if err != nil || ref.SourceID != "local" || seen[ref.ThreadID] {
+			if err != nil || ref.SourceID != "local" || ref.ThreadID == "" || seen[ref.ThreadID] {
 				continue
 			}
 			seen[ref.ThreadID] = true

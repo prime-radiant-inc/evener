@@ -201,6 +201,38 @@ func TestAPITreeProjectServedFromTree(t *testing.T) {
 	}
 }
 
+func TestAPITreeDoesNotReprojectLiveNestedForkAsTopLevel(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "branch", ParentSessionID: "fork", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/proj"}},
+		{ID: "fork", ForkLabel: "before edit", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/proj"}},
+	}
+	roster := hubcore.NewRosterWithEntries(
+		hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 1}, SessionID: "branch", Status: appwire.ThreadStatusActive},
+		hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 2}, SessionID: "fork", Status: appwire.ThreadStatusAwaiting},
+	)
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), Roster: roster})
+	web.injectMetasForTest(metas)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Projects) != 1 || len(resp.Projects[0].Sessions) != 1 || resp.Projects[0].Sessions[0].SessionID != "branch" {
+		t.Fatalf("projects = %#v, want one top-level branch row", resp.Projects)
+	}
+	children := resp.Projects[0].Sessions[0].Children
+	if len(children) != 1 || children[0].SessionID != "fork" {
+		t.Fatalf("branch children = %#v, want nested fork", children)
+	}
+}
+
 // TestAPITree_SummaryOnly: /api/tree?summary=1 returns just generated_at +
 // attentionSummary — no tiers, no projects — so notification clients can poll
 // the badge counts without downloading the whole (potentially multi-MB) tree.

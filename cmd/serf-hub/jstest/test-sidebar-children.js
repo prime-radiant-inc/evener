@@ -1,15 +1,12 @@
-// Subagent children disclosure: a session node whose wire data carries
-// `children` (subagent threads run under it — hubapi.TreeNode.Children,
-// T6-capped at 50 server-side) gains a collapsed-by-default toggle on its own
-// row; expanding reveals the children as keyed session rows (buildRow +
-// .subagent-row indent), reusing the SAME reconcile + pending-overlay
-// machinery as any other row. Also covers the T22 auto-reveal: a deep-link
-// whose target is nested behind a collapsed disclosure/project must still
-// end up visible + data-active after the initial render.
+// Recursive subagent projection: current children are always visible directly
+// beneath their parent; terminal children live behind that parent's independent
+// inactive disclosure. This fixture exercises nested current + inactive states,
+// keyed reconciliation, and resync persistence against the real sidebar.js.
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
 const src = fs.readFileSync(__dirname + "/../assets/sidebar.js", "utf8");
 const iconsSrc = fs.readFileSync(__dirname + "/../assets/icons.js", "utf8");
+const css = fs.readFileSync(__dirname + "/../assets/style.css", "utf8");
 
 function boot(url) {
   const dom = new JSDOM(`<!DOCTYPE html><html><body><aside id="sidebar"></aside></body></html>`, {
@@ -30,17 +27,20 @@ function boot(url) {
 function emptyTree() {
   return { needs_you: [], favorites: [], projects: [], archived_projects: [], test_runs: [], attentionSummary: { needsYou: 0, error: 0, working: 0 } };
 }
+function node(id, title, state, children) {
+  return { row_id: "project:p1:local:" + id, ref: "local:" + id, session_id: id, title, state, kind: "session", tier: "current", children: children || [] };
+}
 function treeWithChildren() {
   var t = emptyTree();
+  var runningGrandchild = node("GRAND-IDLE", "idle grandchild", "idle");
+  var endedGrandchild = node("GRAND-ENDED", "ended grandchild", "ended");
+  var runningChild = node("CHILD-RUNNING", "running child", "active", [runningGrandchild, endedGrandchild]);
   t.projects = [{
-    key: "p1", name: "proj", working_dir: "/w/p1", default_expanded: true,
+    key: "p1", name: "main", working_dir: "/w/p1", default_expanded: true,
     sessions: [{
-      row_id: "project:p1:local:01PARENT", ref: "local:01PARENT", session_id: "01PARENT",
-      title: "parent task", state: "active", kind: "session", tier: "current",
-      children: [
-        { row_id: "project:p1:local:01CHILD1", ref: "local:01CHILD1", session_id: "01CHILD1", title: "child one", state: "ended", kind: "session", tier: "current" },
-        { row_id: "project:p1:local:01CHILD2", ref: "local:01CHILD2", session_id: "01CHILD2", title: "child two", state: "active", kind: "session", tier: "current" },
-      ],
+      row_id: "project:p1:local:MAIN", ref: "local:MAIN", session_id: "MAIN",
+      title: "main", state: "active", kind: "session", tier: "current",
+      children: [runningChild, node("CHILD-IDLE", "idle retained child", "idle"), node("CHILD-UNKNOWN", "unknown retained child", "mystery"), node("CHILD-ERROR", "errored child", "errored"), node("CHILD-ENDED", "ended child", "ended")],
     }],
   }];
   return t;
@@ -48,93 +48,183 @@ function treeWithChildren() {
 
 const { w, posts } = boot();
 const tree = treeWithChildren();
-
-// 1. Collapsed by default: the parent row renders a disclosure toggle
-// showing the child count; no child rows are in the DOM yet.
+w.SerfPanes = { calls: [], state: [], openHrefs: function () { return this.state.slice(); }, openAfter: function (href, title, afterHref) {
+  this.calls.push({ href, title, afterHref });
+  if (href.indexOf("CHILD-ERROR") !== -1) return null;
+  if (this.state.indexOf(href) === -1) this.state.push(href);
+  return { href: href };
+} };
 w.SerfSidebar.renderTree(tree);
-const parentRow = w.document.querySelector('[data-row-id="project:p1:local:01PARENT"]');
-if (!parentRow) throw new Error("parent row must render");
-const toggle = parentRow.querySelector(".sb-children-toggle");
-if (!toggle) throw new Error("a parent row with children must carry a disclosure toggle");
-if (toggle.textContent.indexOf("2") === -1) {
-  throw new Error('toggle must show the child count "2", got ' + JSON.stringify(toggle.textContent));
+const mainRow = w.document.querySelector('[data-row-id="project:p1:local:MAIN"]');
+if (!mainRow) throw new Error("main row must render");
+const running = w.document.querySelector('[data-row-id="project:p1:local:CHILD-RUNNING"]');
+const retained = w.document.querySelector('[data-row-id="project:p1:local:CHILD-IDLE"]');
+if (!running || !retained) throw new Error("running and idle direct children must render automatically");
+const unknownSource = tree.projects[0].sessions[0].children[2];
+const unknownRow = w.document.querySelector('[data-row-id="project:p1:local:CHILD-UNKNOWN"]');
+if (!unknownRow || !unknownRow.classList.contains("subagent-row")) throw new Error("unknown child state must remain visible as a current child");
+if (unknownRow.getAttribute("data-state") !== "notLoaded") throw new Error("unknown child state must use neutral notLoaded presentation");
+if (unknownRow.querySelector(".status-icon").getAttribute("title") !== "Not loaded") throw new Error("unknown child state must use neutral text");
+if (w.SerfSidebarInternal.stateIconKey("notLoaded") !== "idle") throw new Error("unknown child state must use neutral icon");
+if (unknownSource.state !== "mystery") throw new Error("unknown state normalization must not mutate the source node");
+if (unknownSource.row_id !== "project:p1:local:CHILD-UNKNOWN" || unknownSource.ref !== "local:CHILD-UNKNOWN") throw new Error("unknown state normalization must not mutate server identity fields");
+if (!running.classList.contains("subagent-row") || !retained.classList.contains("subagent-row")) {
+  throw new Error("current direct children must be indented subagent rows");
 }
-if (toggle.getAttribute("aria-expanded") !== "false") {
-  throw new Error('collapsed children toggle must have aria-expanded="false", got ' + JSON.stringify(toggle.getAttribute("aria-expanded")));
+if (!w.document.querySelector('[data-row-id="project:p1:local:GRAND-IDLE"]')) {
+  throw new Error("current grandchild must render under its direct parent");
 }
-if (w.document.querySelector('[data-row-id="project:p1:local:01CHILD1"]')) {
-  throw new Error("child rows must NOT render while the parent's disclosure is collapsed");
+const ordinaryClick = new w.MouseEvent("click", { bubbles: true, cancelable: true });
+mainRow.dispatchEvent(ordinaryClick);
+if (ordinaryClick.defaultPrevented) throw new Error("ordinary main-session rows must retain HTMX navigation");
+const runningClick = new w.MouseEvent("click", { bubbles: true, cancelable: true });
+running.dispatchEvent(runningClick);
+if (!runningClick.defaultPrevented) throw new Error("current child activation must prevent ordinary navigation");
+if (w.SerfPanes.calls.length !== 1 ||
+    w.SerfPanes.calls[0].href !== "/thread/local%3ACHILD-RUNNING" || w.SerfPanes.calls[0].afterHref !== null) {
+  throw new Error("direct child activation must open only the child as the first side pane: " + JSON.stringify(w.SerfPanes.calls));
+}
+// Existing ancestors are skipped; duplicate target activation makes one
+// openAfter call and leaves the pane order to the pane manager.
+w.SerfPanes.calls.length = 0;
+w.SerfPanes.state = [];
+running.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
+if (w.SerfPanes.calls.length !== 1 ||
+    w.SerfPanes.calls[0].href !== "/thread/local%3ACHILD-RUNNING" || w.SerfPanes.calls[0].afterHref !== null) {
+  throw new Error("direct child activation must open only the child as the first side pane: " + JSON.stringify(w.SerfPanes.calls));
+}
+// Existing ancestors are skipped; duplicate target activation makes one openAfter call and leaves the pane order to the pane manager.
+w.SerfPanes.calls.length = 0;
+w.SerfPanes.state = ["/thread/local%3ACHILD-RUNNING"];
+running.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
+if (w.SerfPanes.calls.length !== 1 || w.SerfPanes.calls[0].href !== "/thread/local%3ACHILD-RUNNING") throw new Error("existing ancestors must be skipped and duplicate target must use one openAfter call");
+const grandchildCurrent = w.document.querySelector('[data-row-id="project:p1:local:GRAND-IDLE"]');
+w.SerfPanes.calls.length = 0; w.SerfPanes.state = [];
+grandchildCurrent.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
+if (w.SerfPanes.calls.length !== 2 ||
+    w.SerfPanes.calls[0].href !== "/thread/local%3ACHILD-RUNNING" || w.SerfPanes.calls[0].afterHref !== null ||
+    w.SerfPanes.calls[1].href !== "/thread/local%3AGRAND-IDLE" || w.SerfPanes.calls[1].afterHref !== "/thread/local%3ACHILD-RUNNING") {
+  throw new Error("nested child activation must use source-qualified parent-to-child calls: " + JSON.stringify(w.SerfPanes.calls));
+}
+// Keyed rows must retain identity while transitioning child -> ordinary and
+// ordinary -> child; only the current descriptor controls interception.
+const promoted = w.document.querySelector('[data-row-id="project:p1:local:CHILD-IDLE"]');
+promoted.__identity = true;
+const promotedNode = JSON.parse(JSON.stringify(tree));
+promotedNode.projects[0].sessions[0].children = promotedNode.projects[0].sessions[0].children.filter(function (n) { return n.row_id !== "project:p1:local:CHILD-IDLE"; });
+promotedNode.projects[0].sessions.push({ row_id: "project:p1:local:CHILD-IDLE", ref: "local:CHILD-IDLE", session_id: "CHILD-IDLE", title: "idle retained child", state: "active", kind: "session", tier: "current" });
+w.SerfSidebar.renderTree(promotedNode);
+const promotedAfter = w.document.querySelector('[data-row-id="project:p1:local:CHILD-IDLE"]');
+if (promotedAfter !== promoted || promotedAfter.__identity !== true || promotedAfter.classList.contains("subagent-row") || promotedAfter.getAttribute("data-subagent-depth") !== null) throw new Error("child -> ordinary patch must preserve row identity and clear child stamping");
+const ordinaryTransitionClick = new w.MouseEvent("click", { bubbles: true, cancelable: true });
+promotedAfter.dispatchEvent(ordinaryTransitionClick);
+if (ordinaryTransitionClick.defaultPrevented) throw new Error("demoted row must retain ordinary navigation");
+const demotedNode = JSON.parse(JSON.stringify(tree));
+demotedNode.projects[0].sessions = demotedNode.projects[0].sessions.filter(function (n) { return n.row_id !== "project:p1:local:CHILD-IDLE"; });
+demotedNode.projects[0].sessions[0].children.push({ row_id: "project:p1:local:CHILD-IDLE", ref: "local:CHILD-IDLE", session_id: "CHILD-IDLE", title: "idle retained child", state: "idle", kind: "session", tier: "current" });
+w.SerfSidebar.renderTree(demotedNode);
+const demotedAfter = w.document.querySelector('[data-row-id="project:p1:local:CHILD-IDLE"]');
+if (demotedAfter !== promoted || !demotedAfter.classList.contains("subagent-row")) throw new Error("ordinary -> child patch must preserve identity and child styling");
+const promotedClick = new w.MouseEvent("click", { bubbles: true, cancelable: true });
+demotedAfter.dispatchEvent(promotedClick);
+if (!promotedClick.defaultPrevented) throw new Error("promoted child must intercept activation");
+const mainInactive = w.document.querySelector('[data-row-id="inactive:project:p1:local:MAIN"]');
+if (!mainInactive) throw new Error("main must have an inactive disclosure row");
+if (mainInactive.textContent.indexOf("Inactive subagents (2)") === -1) {
+  throw new Error("main inactive disclosure must count direct terminal children only");
+}
+if (mainInactive.getAttribute("aria-expanded") !== "false") {
+  throw new Error("main inactive disclosure must start collapsed");
+}
+const childInactive = w.document.querySelector('[data-row-id="inactive:project:p1:local:CHILD-RUNNING"]');
+if (!childInactive || childInactive.textContent.indexOf("Inactive subagents (1)") === -1) {
+  throw new Error("running child must control its own ended grandchild disclosure");
+}
+if (w.document.querySelector('[data-row-id="project:p1:local:GRAND-ENDED"]')) {
+  throw new Error("ended grandchild must stay behind the child's inactive disclosure");
+}
+if (w.document.querySelector('[data-row-id="project:p1:local:CHILD-ERROR"]')) {
+  throw new Error("errored direct child must stay behind main inactive disclosure");
+}
+const controlled = w.document.getElementById(mainInactive.getAttribute("aria-controls"));
+if (!controlled) throw new Error("inactive disclosure must expose a stable aria-controls target");
+if (mainInactive.getAttribute("aria-controls") !== "inactive-rows-project:p1:local:MAIN") {
+  throw new Error("inactive disclosure must expose a stable aria-controls target");
 }
 
-// A row with no children must NOT carry the toggle at all (only the
-// project's own session row, "parent task", has children in this fixture —
-// nothing else to check here directly, but guard against a stray toggle on
-// the project header itself).
-const projHeader = w.document.querySelector('[data-row-id="header:p1"]');
-if (projHeader && projHeader.querySelector(".sb-children-toggle")) {
-  throw new Error("a project header must never carry a children disclosure toggle");
+// Expanding main only reveals its direct terminal children; it must not flatten
+// the nested ended grandchild out of the running child's own disclosure.
+mainInactive.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
+if (!w.document.querySelector('[data-row-id="project:p1:local:CHILD-ERROR"]') || !w.document.querySelector('[data-row-id="project:p1:local:CHILD-ENDED"]')) {
+  throw new Error("expanding main inactive must reveal its two direct terminal children");
+}
+const expandedControlled = w.document.getElementById(mainInactive.getAttribute("aria-controls"));
+if (!expandedControlled || !expandedControlled.contains(w.document.querySelector('[data-row-id="project:p1:local:CHILD-ERROR"]')) ||
+    !expandedControlled.contains(w.document.querySelector('[data-row-id="project:p1:local:CHILD-ENDED"]'))) {
+  throw new Error("inactive disclosure controlled region must contain its inactive direct child rows");
+}
+if (w.document.querySelector('[data-row-id="project:p1:local:GRAND-ENDED"]')) {
+  throw new Error("expanding main inactive must not flatten grandchildren");
+}
+if (w.localStorage.getItem("serf-hub.sidebar.expanded.inactive:project:p1:local:MAIN") !== "true") {
+  throw new Error("main inactive expansion must persist under inactive:<row_id>");
+}
+const inactiveChild = w.document.querySelector('[data-row-id="project:p1:local:CHILD-ERROR"]');
+w.SerfPanes.calls.length = 0; w.SerfPanes.state = [];
+inactiveChild.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
+if (w.SerfPanes.calls.length !== 1 ||
+    w.SerfPanes.calls[0].href !== "/thread/local%3ACHILD-ERROR" || w.SerfPanes.calls[0].afterHref !== null) {
+  throw new Error("revealed inactive child activation must open ancestry in order: " + JSON.stringify(w.SerfPanes.calls));
 }
 
-// 2. Click the toggle -> children appear as keyed rows; aria flips to true.
-toggle.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
-const toggle2 = w.document.querySelector('[data-row-id="project:p1:local:01PARENT"] .sb-children-toggle');
-if (!toggle2) throw new Error("toggle must survive the re-render (reconcile identity)");
-if (toggle2.getAttribute("aria-expanded") !== "true") {
-  throw new Error('expanded children toggle must have aria-expanded="true", got ' + JSON.stringify(toggle2.getAttribute("aria-expanded")));
-}
-const child1 = w.document.querySelector('[data-row-id="project:p1:local:01CHILD1"]');
-const child2 = w.document.querySelector('[data-row-id="project:p1:local:01CHILD2"]');
-if (!child1 || !child2) throw new Error("expanding the parent's disclosure must render both children as keyed rows");
-if (!child1.classList.contains("subagent-row")) throw new Error("a child row must carry the subagent-row indent class (style.css reuse)");
-if (!child1.classList.contains("sb-row")) throw new Error("a child row must still be a normal .sb-row (keyed reconcile, hx-*, menu, etc.)");
-if (child1.getAttribute("href") !== "/s/01CHILD1") throw new Error("a child row must be a normal navigable session row");
-
-// 3. localStorage persistence under a "children:<row_id>" key that cannot
-// collide with a project slug ("p1") or a "section:*"/cluster row_id.
-if (w.localStorage.getItem("serf-hub.sidebar.expanded.children:project:p1:local:01PARENT") !== "true") {
-  throw new Error("children disclosure must persist under a children:<row_id> localStorage key");
-}
-
-// 4. Identity probe: a child row keeps DOM node identity across a re-render
-// (same reconcile machinery as every other row).
-child1.__probe = true;
+// Expand the child's independent disclosure, then prove all state survives a
+// resync while keyed rows retain their existing DOM identity.
+childInactive.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
+const grandEnded = w.document.querySelector('[data-row-id="project:p1:local:GRAND-ENDED"]');
+if (!grandEnded) throw new Error("child inactive disclosure must reveal only its ended grandchild");
+if (!grandEnded.classList.contains("subagent-row")) throw new Error("inactive rows retain normal indented row styling");
+if (grandEnded.getAttribute("data-state") !== "ended") throw new Error("inactive rows retain their normal status state");
+const retainedBefore = w.document.querySelector('[data-row-id="project:p1:local:CHILD-IDLE"]');
+retainedBefore.__probe = true;
 w.SerfSidebar.renderTree(tree);
-const child1b = w.document.querySelector('[data-row-id="project:p1:local:01CHILD1"]');
-if (!child1b || child1b.__probe !== true) throw new Error("a child row must keep DOM node identity across re-renders");
-
-// 5. Collapse again -> children removed, aria flips back to false.
-const toggle3 = w.document.querySelector('[data-row-id="project:p1:local:01PARENT"] .sb-children-toggle');
-toggle3.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
-if (w.document.querySelector('[data-row-id="project:p1:local:01CHILD1"]')) {
-  throw new Error("collapsing the disclosure again must remove the child rows");
+const retainedAfter = w.document.querySelector('[data-row-id="project:p1:local:CHILD-IDLE"]');
+if (!retainedAfter || retainedAfter.__probe !== true) throw new Error("resync must preserve keyed current child row identity");
+if (w.document.querySelector('[data-row-id="project:p1:local:GRAND-ENDED"]') !== grandEnded) {
+  throw new Error("resync must preserve keyed inactive child row identity");
 }
-if (w.document.querySelector('[data-row-id="project:p1:local:01PARENT"] .sb-children-toggle').getAttribute("aria-expanded") !== "false") {
-  throw new Error("re-collapsed toggle must flip aria-expanded back to false");
-}
-// Re-expand for the remaining assertions below (overlay recursion needs the
-// child rendered so we can observe its data-favorite attribute).
-w.document.querySelector('[data-row-id="project:p1:local:01PARENT"] .sb-children-toggle')
-  .dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
-
-// 6. Pending overlay recursion: a favorite op on a CHILD ref must apply to
-// the child's row even though it lives inside another row's children[]
-// (forEachNode must recurse into .children, not just top-level lists).
-w.SerfSidebar.favorite("local:01CHILD1", true);
-const child1c = w.document.querySelector('[data-row-id="project:p1:local:01CHILD1"]');
-if (!child1c.hasAttribute("data-favorite")) {
-  throw new Error("a pending favorite op on a child ref must apply to the child's row (forEachNode must recurse into children)");
-}
-if (!posts.some((p) => p.url === "/api/favorite" && p.body.id === "01CHILD1" && p.body.favorited === true)) {
-  throw new Error("favoriting a child must POST /api/favorite with the child's session id");
+if (w.document.querySelector('[data-row-id="inactive:project:p1:local:MAIN"]').getAttribute("aria-expanded") !== "true" ||
+    w.document.querySelector('[data-row-id="inactive:project:p1:local:CHILD-RUNNING"]').getAttribute("aria-expanded") !== "true") {
+  throw new Error("resync must preserve each parent's inactive expansion state");
 }
 
-console.log("ok sidebar children: disclosure collapsed-by-default + count + expand/collapse + identity + overlay recursion");
+// The visual contract is indentation + spacing only: no lineage rail and no
+// left-edge active/selected stripe for subagent rows.
+const stampedRule = /\.sb-row\[data-subagent-depth\]\s*\{([^}]*)\}/.exec(css);
+const stampedBody = stampedRule && stampedRule[1];
+const stampedBorderColor = stampedBody && /(?:^|;)\s*border-left-color\s*:\s*([^;}]*)/.exec(stampedBody);
+const stampedBorder = stampedBody && /(?:^|;)\s*border-left\s*:\s*([^;}]*)/.exec(stampedBody);
+if (!stampedRule || (stampedBorder && stampedBorder[1].trim() !== "none") ||
+    !stampedBorderColor || stampedBorderColor[1].trim() !== "transparent" ||
+    /\.sb-row\[data-subagent-depth\]\s*::?(?:before|after)/.test(css)) {
+  throw new Error("subagent styling must not add a lineage rail or left-edge pseudo stripe");
+}
+running.setAttribute("data-active", "");
+if (!stampedBorderColor || stampedBorderColor[1].trim() !== "transparent") throw new Error("active child must retain transparent left border while selected background remains generic");
+
+// Existing recursive pending overlay and ordinary row navigation remain intact.
+w.SerfSidebar.favorite("local:GRAND-ENDED", true);
+if (!w.document.querySelector('[data-row-id="project:p1:local:GRAND-ENDED"]').hasAttribute("data-favorite")) {
+  throw new Error("pending favorite must recurse through inactive descendants");
+}
+if (!posts.some((p) => p.url === "/api/favorite" && p.body.id === "GRAND-ENDED" && p.body.favorited === true)) {
+  throw new Error("favoriting a nested child must POST its source-qualified session id");
+}
+
+console.log("ok sidebar children: recursive current/inactive projection + independent expansion + keyed resync");
 
 // ---------------------------------------------------------------------------
-// Auto-reveal (closes the T22 known-issue): a deep-link whose session is
-// nested behind a collapsed PROJECT and a collapsed children disclosure must
-// still be revealed + marked data-active after the initial render, with both
-// expansion keys persisted to localStorage.
+// Auto-reveal: a deep-link behind a collapsed project and inactive/current
+// disclosures must still reveal the exact target without flattening siblings.
 // ---------------------------------------------------------------------------
 function treeWithDeepChild() {
   var t = emptyTree();
@@ -143,31 +233,25 @@ function treeWithDeepChild() {
     sessions: [{
       row_id: "project:p2:local:01PARENT2", ref: "local:01PARENT2", session_id: "01PARENT2",
       title: "deep parent", state: "idle", kind: "session", tier: "current",
-      children: [
-        { row_id: "project:p2:local:01CHILDDEEP", ref: "local:01CHILDDEEP", session_id: "01CHILDDEEP", title: "deep child", state: "ended", kind: "session", tier: "current" },
-      ],
+      children: [node("CHILDDEEP", "deep child", "ended")],
     }],
   }];
+  // node() uses p1's row prefix; make this fixture's source-qualified identity explicit.
+  t.projects[0].sessions[0].children[0].row_id = "project:p2:local:CHILDDEEP";
+  t.projects[0].sessions[0].children[0].ref = "local:CHILDDEEP";
+  t.projects[0].sessions[0].children[0].session_id = "CHILDDEEP";
   return t;
 }
 
-const { w: w2 } = boot("http://localhost/s/01CHILDDEEP");
+const { w: w2 } = boot("http://localhost/s/CHILDDEEP");
 const deepTree = treeWithDeepChild();
 w2.SerfSidebar.renderTree(deepTree);
-const revealed = w2.document.querySelector('[data-row-id="project:p2:local:01CHILDDEEP"]');
-if (!revealed) throw new Error("auto-reveal must expand the project + children chain so the deep-linked child renders");
+const revealed = w2.document.querySelector('[data-row-id="project:p2:local:CHILDDEEP"]');
+if (!revealed) throw new Error("auto-reveal must expand the project + current/inactive chain so the deep-linked child renders");
 if (!revealed.hasAttribute("data-active")) throw new Error("the auto-revealed row must be marked data-active");
-if (w2.localStorage.getItem("serf-hub.sidebar.expanded.p2") !== "true") {
-  throw new Error("auto-reveal must persist the enclosing project's expansion key");
-}
-if (w2.localStorage.getItem("serf-hub.sidebar.expanded.children:project:p2:local:01PARENT2") !== "true") {
-  throw new Error("auto-reveal must persist the parent's children disclosure key");
-}
+if (w2.localStorage.getItem("serf-hub.sidebar.expanded.p2") !== "true") throw new Error("auto-reveal must persist the enclosing project's expansion key");
+if (w2.localStorage.getItem("serf-hub.sidebar.expanded.inactive:project:p2:local:01PARENT2") !== "true") throw new Error("auto-reveal must persist the parent's inactive disclosure key");
 
-// Guard: a second render for the SAME pathname (e.g. a periodic resync) must
-// not redo the reveal — no additional expansion-key writes. This proves the
-// "attempt at most once per distinct pathname" guard is actually gating
-// re-attempts, not merely happening not to loop.
 let expandWrites = 0;
 const realSetItem = w2.localStorage.setItem.bind(w2.localStorage);
 w2.localStorage.setItem = function (k, v) {
@@ -175,25 +259,13 @@ w2.localStorage.setItem = function (k, v) {
   return realSetItem(k, v);
 };
 w2.SerfSidebar.renderTree(deepTree);
-if (expandWrites !== 0) {
-  throw new Error("a second render for the same pathname must not re-run the reveal (loop guard), got " + expandWrites + " new expansion writes");
-}
+if (expandWrites !== 0) throw new Error("a second render for the same pathname must not re-run the reveal, got " + expandWrites + " new expansion writes");
+console.log("ok sidebar auto-reveal: deep-link through collapsed project + inactive chain, loop-guarded");
 
-console.log("ok sidebar auto-reveal: deep-link through collapsed project + children chain, loop-guarded");
-
-// Guard: a pathname pointing at a nonexistent session must not hang or blow
-// the call stack — the reveal search finds nothing and gives up cleanly.
 const { w: w3 } = boot("http://localhost/s/01DOES-NOT-EXIST");
 let threw = null;
-try {
-  w3.SerfSidebar.renderTree(treeWithDeepChild());
-} catch (e) {
-  threw = e;
-}
-if (threw) throw new Error("auto-reveal for a nonexistent session must not throw (guard missing?): " + threw);
-if (w3.document.querySelector("#sidebar .sb-row[data-active]")) {
-  throw new Error("a nonexistent session must not mark any row active");
-}
-
+try { w3.SerfSidebar.renderTree(treeWithDeepChild()); } catch (e) { threw = e; }
+if (threw) throw new Error("auto-reveal for a nonexistent session must not throw: " + threw);
+if (w3.document.querySelector("#sidebar .sb-row[data-active]")) throw new Error("a nonexistent session must not mark any row active");
 console.log("ok sidebar auto-reveal: nonexistent session does not loop or throw");
-process.exit(0); // sidebar.js's 60s idle-resync interval keeps the event loop alive otherwise
+process.exit(0);

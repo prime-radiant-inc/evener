@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -288,6 +289,96 @@ func fuzzScenarioRoster_CarriesPendingAskFromProber(t *testing.T) {
 	entries := r.List()
 	if len(entries) != 1 || !entries[0].PendingAsk {
 		t.Fatalf("expected one live entry with PendingAsk=true, got %+v", entries)
+	}
+}
+
+func TestRosterRunningSubagent(t *testing.T) {
+	fuzzScenarioRoster_CarriesRunningSubagentsWithoutRoutingThem(t)
+}
+
+func TestRosterSubagentUnresolvedOwner(t *testing.T) {
+	r := NewRosterWithEntries(LiveEntry{
+		RunningSubagentIDs: []string{"child-unresolved-owner"},
+	})
+	if !r.IsSubagentActive("child-unresolved-owner") {
+		t.Fatal("running child must be active even when its owner has no resolved session ID")
+	}
+}
+
+func fuzzScenarioRoster_ListReturnsDefensiveRunningIDs(t *testing.T) {
+	r := NewRosterWithEntries(LiveEntry{
+		SessionID:          "parent",
+		RunningSubagentIDs: []string{"child"},
+	})
+	got := r.List()
+	got[0].RunningSubagentIDs[0] = "mutated"
+	if r.List()[0].RunningSubagentIDs[0] != "child" {
+		t.Fatal("List must return a defensive copy of running subagent IDs")
+	}
+}
+
+func TestRosterListReturnsDefensiveSubagentIDs(t *testing.T) {
+	fuzzScenarioRoster_ListReturnsDefensiveRunningIDs(t)
+}
+
+func fuzzScenarioRoster_FingerprintIncludesRunningIDs(t *testing.T) {
+	base := map[string]LiveEntry{"parent": {RunningSubagentIDs: []string{"child-a"}}}
+	changed := map[string]LiveEntry{"parent": {RunningSubagentIDs: []string{"child-b"}}}
+	if rosterFingerprint(base) == rosterFingerprint(changed) {
+		t.Fatal("roster fingerprint must change when only running IDs change")
+	}
+}
+
+func TestRosterFingerprint(t *testing.T) { fuzzScenarioRoster_FingerprintIncludesRunningIDs(t) }
+
+type overlappingRefreshProber struct {
+	calls         atomic.Int32
+	firstStarted  chan struct{}
+	secondStarted chan struct{}
+	releaseFirst  chan struct{}
+}
+
+func (p *overlappingRefreshProber) Probe(rendezvous.Entry) ProbeResult {
+	switch p.calls.Add(1) {
+	case 1:
+		close(p.firstStarted)
+		<-p.releaseFirst
+		return ProbeResult{SessionID: "parent", Status: "old", RunningSubagentIDs: []string{"old-child"}, OK: true}
+	case 2:
+		close(p.secondStarted)
+		return ProbeResult{SessionID: "parent", Status: "new", RunningSubagentIDs: []string{"new-child"}, OK: true}
+	default:
+		return ProbeResult{SessionID: "parent", Status: "unexpected", OK: true}
+	}
+}
+
+func TestRoster_RefreshRejectsStaleConcurrentCommit(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:1"})
+	prober := &overlappingRefreshProber{
+		firstStarted:  make(chan struct{}),
+		secondStarted: make(chan struct{}),
+		releaseFirst:  make(chan struct{}),
+	}
+	r := NewRoster(dir, prober)
+	var callbacks atomic.Int32
+	r.SetOnChange(func() { callbacks.Add(1) })
+	oldDone := make(chan struct{})
+	go func() { r.Refresh(); close(oldDone) }()
+	<-prober.firstStarted
+	newDone := make(chan struct{})
+	go func() { r.Refresh(); close(newDone) }()
+	<-prober.secondStarted
+	close(prober.releaseFirst)
+	<-oldDone
+	<-newDone
+
+	entry, ok := r.Find("parent")
+	if !ok || entry.Status != "new" || len(entry.RunningSubagentIDs) != 1 || entry.RunningSubagentIDs[0] != "new-child" {
+		t.Fatalf("final roster = %+v, found=%v; want newer status and running child", entry, ok)
+	}
+	if got := callbacks.Load(); got != 1 {
+		t.Fatalf("onChange callbacks = %d, want one committed refresh callback", got)
 	}
 }
 

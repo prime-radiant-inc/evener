@@ -13,7 +13,7 @@
   // could not be folded back up.
   var model = { tree: null, expanded: new Set(), collapsed: new Set(), lazyCache: new Map(), seq: 0, pending: new Map() };
   window.SerfSidebarModel = model; // test/inspection surface
-  window.SerfSidebarInternal = { buildRow: buildRow, stateIconKey: stateIconKey, stateWord: stateWord, buildRollupBadge: buildRollupBadge, sessionRouteID: sessionRouteID, sessionHref: sessionHref, sessionMenuItems: sessionMenuItems, findRevealChain: findRevealChain }; // test/inspection surface
+  window.SerfSidebarInternal = { buildRow: buildRow, stateIconKey: stateIconKey, stateWord: stateWord, buildRollupBadge: buildRollupBadge, sessionRouteID: sessionRouteID, sessionHref: sessionHref, sessionMenuItems: sessionMenuItems, findRevealChain: findRevealChain, isInactiveSubagent: isInactiveSubagent, pushChildren: pushChildren }; // test/inspection surface
 
   function sidebarEl() { return document.getElementById("sidebar"); }
 
@@ -64,6 +64,7 @@
     if (state === "warning") return "warning";
     if (state === "errored") return "error";
     if (state === "idle") return "idle";
+    if (state === "notLoaded") return "idle";
     return "ended";
   }
   function stateWord(state, askPending) {
@@ -106,7 +107,6 @@
     if (n.favorite) a.setAttribute("data-favorite", "");
     if (n.ask_pending) a.setAttribute("data-ask", "true");
     var rowEnd = a.querySelector(".row-end");
-    if (n.children && n.children.length) rowEnd.insertBefore(buildChildrenToggle(n), rowEnd.firstChild);
     var menuBtn = document.createElement("button");
     menuBtn.type = "button";
     menuBtn.className = "sb-menu-btn btn-icon";
@@ -139,62 +139,71 @@
     if (title && title.textContent !== n.title) { title.textContent = n.title; title.setAttribute("title", n.title); }
     if (n.favorite) a.setAttribute("data-favorite", ""); else a.removeAttribute("data-favorite");
     if (n.ask_pending) a.setAttribute("data-ask", "true"); else a.removeAttribute("data-ask");
-    patchChildrenToggle(a, n);
   }
 
-  // --- Subagent children disclosure ------------------------------------------
-  // A session row whose node carries `children` (subagent threads spawned
-  // under it — hubapi.TreeNode.Children, capped at 50 server-side, Task 6)
-  // gains a small disclosure toggle inside the row: collapsed by default,
-  // expanding reveals the children as their own keyed rows (flatten's
-  // pushChildren, below). Expansion key is "children:<row_id>" — the
-  // "children:" prefix guarantees it can never collide with a project slug
-  // or a "section:*"/cluster row_id, all of which share the one
-  // model.expanded Set + localStorage namespace.
-  function childrenKey(n) { return "children:" + n.row_id; }
-  function buildChildrenToggle(n) {
-    var count = n.children.length;
-    var btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "subagent-toggle sb-children-toggle";
-    btn.setAttribute("aria-expanded", String(model.expanded.has(childrenKey(n))));
-    btn.innerHTML = '<span class="sb-children-chevron">›</span><span class="sb-children-count"></span>';
-    setChildrenToggleText(btn, count);
-    // Nested inside the row's own <a>, so a click must not also navigate it —
-    // same technique as the row's ⋯ menu button above.
-    btn.addEventListener("click", function (e) {
-      e.preventDefault(); e.stopPropagation();
-      toggleExpanded(childrenKey(n));
-    });
-    btn.addEventListener("keydown", function (e) {
+  // --- Subagent children projection ------------------------------------------
+  // Current children are emitted directly below their parent. Terminal
+  // children are emitted below one independent disclosure belonging to that
+  // parent, so expanding one parent never flattens another subtree.
+  var CURRENT_SUBAGENT_STATES = { active: true, awaiting: true, idle: true, warning: true, notLoaded: true };
+  var INACTIVE_SUBAGENT_STATES = { ended: true, closed: true, errored: true };
+  function isInactiveSubagent(n) {
+    return !!n && INACTIVE_SUBAGENT_STATES[n.state] === true;
+  }
+  function isCurrentSubagent(n) {
+    return !!n && INACTIVE_SUBAGENT_STATES[n.state] !== true;
+  }
+  function inactiveKey(n) { return "inactive:" + n.row_id; }
+  function inactiveRowsID(n) { return "inactive-rows-" + n.row_id; }
+  function childDescriptor(child, parent, ancestry) {
+    var descriptor = Object.assign({}, child);
+    if (isCurrentSubagent(descriptor) && CURRENT_SUBAGENT_STATES[descriptor.state] !== true) descriptor.state = "notLoaded";
+    descriptor.__child = true;
+    descriptor.__parentNode = parent;
+    descriptor.__ancestry = (ancestry || []).concat([parent]);
+    if (parent.__projectKey) descriptor.__projectKey = parent.__projectKey;
+    return descriptor;
+  }
+  function buildInactiveDisclosure(n, depth) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "subagent-inactive-disclosure";
+    b.setAttribute("data-row-id", inactiveKey(n));
+    b.setAttribute("data-inactive-parent", n.row_id);
+    b.setAttribute("data-subagent-depth", String(depth));
+    b.style.paddingLeft = "calc(var(--space-4) * " + (depth + 1) + ")";
+    b.setAttribute("aria-expanded", String(model.expanded.has(inactiveKey(n))));
+    b.setAttribute("aria-controls", inactiveRowsID(n));
+    b.innerHTML = '<span class="sb-children-chevron" aria-hidden="true">›</span><span class="subagent-inactive-label"></span>';
+    b.querySelector(".subagent-inactive-label").textContent = "Inactive subagents (" + inactiveChildCount(n) + ")";
+    b.addEventListener("click", function () { toggleExpanded(inactiveKey(n)); });
+    b.addEventListener("keydown", function (e) {
       if (e.key !== "Enter" && e.key !== " ") return;
-      e.preventDefault(); e.stopPropagation();
-      toggleExpanded(childrenKey(n));
+      e.preventDefault();
+      toggleExpanded(inactiveKey(n));
     });
-    return btn;
+    return b;
   }
-  function setChildrenToggleText(btn, count) {
-    btn.querySelector(".sb-children-count").textContent = String(count);
-    // Bare count, not "Completed (N)": children may still be running, so
-    // claiming "completed" would misrepresent live subagents.
-    btn.setAttribute("aria-label", count + (count === 1 ? " subagent" : " subagents"));
+  function patchInactiveDisclosure(el, n) {
+    el.setAttribute("aria-expanded", String(model.expanded.has(inactiveKey(n))));
+    var label = el.querySelector(".subagent-inactive-label");
+    if (label) label.textContent = "Inactive subagents (" + inactiveChildCount(n) + ")";
   }
-  // Keeps the toggle's DOM node identity across reconcile — add/remove/update
-  // in place rather than rebuilding the row, mirroring how patchRow itself
-  // never recreates .title/.meta.
-  function patchChildrenToggle(a, n) {
-    var btn = a.querySelector(".sb-children-toggle");
-    var hasChildren = !!(n.children && n.children.length);
-    if (hasChildren && !btn) {
-      var rowEnd = a.querySelector(".row-end");
-      rowEnd.insertBefore(buildChildrenToggle(n), rowEnd.firstChild);
-      return;
-    }
-    if (!hasChildren && btn) { btn.remove(); return; }
-    if (btn) {
-      btn.setAttribute("aria-expanded", String(model.expanded.has(childrenKey(n))));
-      setChildrenToggleText(btn, n.children.length);
-    }
+  function inactiveChildCount(n) {
+    return (n.children || []).filter(function (c) { return !c.__drop && isInactiveSubagent(c); }).length;
+  }
+  function buildInactiveRows(n) {
+    var d = document.createElement("div");
+    d.className = "subagent-inactive-rows";
+    d.id = inactiveRowsID(n.__inactiveParent);
+    d.setAttribute("data-row-id", n.row_id);
+    d.hidden = !model.expanded.has(inactiveKey(n.__inactiveParent));
+    reconcile(d, n.__nodes || [], buildRowOrSection, patchRowOrSection);
+    return d;
+  }
+  function patchInactiveRows(el, n) {
+    el.hidden = !model.expanded.has(inactiveKey(n.__inactiveParent));
+    reconcile(el, n.__nodes || [], buildRowOrSection, patchRowOrSection);
   }
 
   // --- Row menu (⋯ popover) ----------------------------------------------------
@@ -352,8 +361,8 @@
   // lazy children are honored via model.expanded.
   function flatten(tree) {
     var out = [];
-    (tree.needs_you || []).forEach(function (n) { if (!n.__drop) { out.push(n); pushChildren(out, n); } });
-    (tree.favorites || []).forEach(function (n) { if (!n.__drop) { out.push(n); pushChildren(out, n); } });
+    (tree.needs_you || []).forEach(function (n) { if (!n.__drop) { out.push(n); pushChildren(out, n, []); } });
+    (tree.favorites || []).forEach(function (n) { if (!n.__drop) { out.push(n); pushChildren(out, n, []); } });
     (tree.projects || []).forEach(function (p) { pushProject(out, p); });
     pushArchivedSection(out, tree);
     pushTestRunsSection(out, tree);
@@ -368,24 +377,39 @@
       n.__projectKey = p.key;
       if (n.kind === "cluster") { pushCluster(out, n); return; }
       out.push(n);
-      pushChildren(out, n);
+      pushChildren(out, n, []);
     });
   }
 
-  // Subagent children: emitted right after their parent row, once the
-  // parent's own disclosure (childrenKey) is expanded. Any tier's node may
-  // carry children — apiTreeNode recurses the same way for NeedsYou/Pinned
-  // and project sessions alike — so this is called from every push site
-  // above, not just pushProject. Children render via buildRow itself
-  // (buildRowOrSection stamps the .subagent-row indent class from __child).
-  function pushChildren(out, n) {
-    if (!n.children || !n.children.length || !model.expanded.has(childrenKey(n))) return;
-    n.children.forEach(function (c) {
-      if (c.__drop) return;
-      c.__child = true;
-      c.__projectKey = n.__projectKey;
-      out.push(c);
+  // Subagent children: current descendants are emitted directly after their
+  // parent. Terminal descendants stay inside that parent's keyed inactive
+  // region, so each disclosure owns only its direct inactive children while
+  // nested regions retain their own independent state.
+  function pushChildren(out, n, ancestry) {
+    var children = n.children || [];
+    if (!children.length) return;
+    var current = children.filter(function (c) { return !c.__drop && isCurrentSubagent(c); });
+    current.forEach(function (c) {
+      var descriptor = childDescriptor(c, n, ancestry);
+      out.push(descriptor);
+      pushChildren(out, descriptor, (ancestry || []).concat([n]));
     });
+    var inactive = children.filter(function (c) { return !c.__drop && isInactiveSubagent(c); });
+    if (!inactive.length) return;
+    var disclosure = { row_id: inactiveKey(n), __inactiveDisclosure: true, __inactiveParent: n, __child: true, __ancestry: ancestry || [], __subagentDepth: (ancestry || []).length + 1 };
+    out.push(disclosure);
+    var inactiveRows = { row_id: inactiveRowsID(n), __inactiveRows: true, __inactiveParent: n, __nodes: model.expanded.has(inactiveKey(n)) ? inactiveRegionNodes(n, ancestry) : [] };
+    out.push(inactiveRows);
+  }
+  function inactiveRegionNodes(parent, ancestry) {
+    var out = [];
+    (parent.children || []).forEach(function (c) {
+      if (c.__drop || !isInactiveSubagent(c)) return;
+      var descriptor = childDescriptor(c, parent, ancestry);
+      out.push(descriptor);
+      pushChildren(out, descriptor, (ancestry || []).concat([parent]));
+    });
+    return out;
   }
 
   // Cluster fold: a T5 synthetic kind:"cluster" node folding a run of
@@ -442,14 +466,73 @@
     if (n.__section) return buildSectionHeader(n);
     if (n.kind === "cluster") return buildClusterFold(n);
     if (n.__project) return buildProjectHeader(n.__project);
+    if (n.__inactiveDisclosure) return buildInactiveDisclosure(n.__inactiveParent, n.__subagentDepth);
+    if (n.__inactiveRows) return buildInactiveRows(n);
     var row = buildRow(n);
-    if (n.__child) row.classList.add("subagent-row");
+    if (n.__child) {
+      row.classList.add("subagent-row");
+      row.setAttribute("data-subagent-depth", String((n.__ancestry || []).length + 1));
+      row.style.paddingLeft = "calc(var(--space-4) * " + ((n.__ancestry || []).length + 2) + ")";
+      bindChildActivation(row, n);
+    } else {
+      row.__childDescriptor = null;
+    }
     return row;
   }
   function patchRowOrSection(el, n) {
     if (n.__section) { patchSectionHeader(el, n); return; }
     if (n.kind === "cluster") { patchClusterFold(el, n); return; }
+    if (n.__inactiveDisclosure) { patchInactiveDisclosure(el, n.__inactiveParent); return; }
+    if (n.__inactiveRows) { patchInactiveRows(el, n); return; }
     if (n.__project) patchProjectHeader(el, n.__project); else patchRow(el, n);
+    if (n.__child) {
+      el.classList.add("subagent-row");
+      el.setAttribute("data-subagent-depth", String((n.__ancestry || []).length + 1));
+      el.style.paddingLeft = "calc(var(--space-4) * " + ((n.__ancestry || []).length + 2) + ")";
+      bindChildActivation(el, n);
+    } else {
+      el.__childDescriptor = null;
+      el.classList.remove("subagent-row");
+      el.removeAttribute("data-subagent-depth");
+      el.style.removeProperty("padding-left");
+    }
+  }
+
+  function childThreadHref(n) {
+    return "/thread/" + encodeURIComponent(n && n.ref || "");
+  }
+  function bindChildActivation(row, n) {
+    row.__childDescriptor = n;
+    if (row.__childActivationBound) return;
+    row.__childActivationBound = true;
+    row.addEventListener("click", function (e) {
+      var descriptor = row.__childDescriptor;
+      if (!descriptor || !descriptor.__child || !window.SerfPanes || typeof window.SerfPanes.openAfter !== "function") return;
+      e.preventDefault();
+      var chain = (descriptor.__ancestry || []).concat([descriptor]);
+      // The main session is already rendered in #workspace, so it is not a
+      // missing side-pane ancestor. Only descendants below the main session
+      // belong in the side-pane lineage. A direct child therefore opens with
+      // afterHref=null; nested children retain parent-relative insertion.
+      var first = chain.length && chain[0];
+      var openStart = first && first.__child ? 0 : 1;
+      var previousHref = null;
+      var openHrefs = typeof window.SerfPanes.openHrefs === "function" ? window.SerfPanes.openHrefs() : [];
+      for (var i = openStart; i < chain.length; i++) {
+        var ancestor = chain[i];
+        var href = childThreadHref(ancestor);
+        var isTarget = ancestor === descriptor;
+        var alreadyOpen = openHrefs.indexOf(href) !== -1;
+        if (!alreadyOpen) {
+          var opened = window.SerfPanes.openAfter(href, ancestor.title, previousHref);
+          if (!opened) break;
+          openHrefs = typeof window.SerfPanes.openHrefs === "function" ? window.SerfPanes.openHrefs() : openHrefs.concat([href]);
+        } else if (isTarget && typeof window.SerfPanes.openAfter === "function") {
+          window.SerfPanes.openAfter(href, ancestor.title, previousHref);
+        }
+        previousHref = href;
+      }
+    });
   }
 
   // A cluster fold is a button-like row — NOT a session link, it has no
@@ -670,6 +753,15 @@
     var all = (tree.projects || []).concat(tree.archived_projects || [], tree.test_runs || []);
     all.forEach(function (p) { restoreExpansionPref(p.key); });
     SECTION_KEYS.forEach(restoreExpansionPref);
+    restoreInactiveExpansion(tree.needs_you || []);
+    restoreInactiveExpansion(tree.favorites || []);
+    all.forEach(function (p) { restoreInactiveExpansion(p.sessions || []); });
+  }
+  function restoreInactiveExpansion(nodes) {
+    (nodes || []).forEach(function (n) {
+      if (n.children && n.children.length) restoreExpansionPref(inactiveKey(n));
+      restoreInactiveExpansion(n.children || []);
+    });
   }
 
   // Pending overlay: every optimistic op is re-applied on top of every admitted
@@ -852,8 +944,11 @@
         var cm = searchNodes(n.children, routeID, chain.concat([n.row_id]));
         if (cm) return cm;
       } else if (n.children && n.children.length) {
-        var cc = searchNodes(n.children, routeID, chain.concat([childrenKey(n)]));
-        if (cc) return cc;
+        for (var j = 0; j < n.children.length; j++) {
+          var childChain = chain.concat(isInactiveSubagent(n.children[j]) ? [inactiveKey(n)] : []);
+          var cc = searchNodes([n.children[j]], routeID, childChain);
+          if (cc) return cc;
+        }
       }
     }
     return null;

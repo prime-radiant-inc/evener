@@ -13,6 +13,71 @@ global.window = dom.window; global.document = dom.window.document;
 eval(fs.readFileSync(path.join(__dirname, "..", "assets", "panes.js"), "utf8"));
 const P = dom.window.SerfPanes;
 
+// Parent-relative insertion keeps the side-pane order aligned with the DOM,
+// URL, and persisted state while existing hrefs remain focused in place.
+(function () {
+  var savedWindow = global.window, savedDocument = global.document;
+  var domOrder = new JSDOM(`<!DOCTYPE html><body class="app">
+    <main id="workspace"></main>
+    <div id="pane-splitter" hidden></div>
+    <aside id="side-panes" hidden></aside>
+  </body>`, { url: "http://localhost/" });
+  global.window = domOrder.window; global.document = domOrder.window.document;
+  eval(fs.readFileSync(path.join(__dirname, "..", "assets", "panes.js"), "utf8"));
+  var POrder = domOrder.window.SerfPanes;
+  var hrefs = function () { return POrder.openHrefs(); };
+  var frameFocus = false;
+  POrder.openAfter("/thread/child", "child", null);
+  POrder.openAfter("/thread/sibling", "sibling", null);
+  if (hrefs().join("|") !== "/thread/sibling|/thread/child") throw new Error("null parent must prepend side pane");
+  POrder.openAfter("/thread/grandchild", "grandchild", "/thread/child");
+  if (hrefs().join("|") !== "/thread/sibling|/thread/child|/thread/grandchild") throw new Error("child pane must insert after normalized parent");
+  var grandchild = document.querySelector('[src="/thread/grandchild"]');
+  grandchild.focus = function () { frameFocus = true; };
+  POrder.openAfter("/thread/grandchild", "grandchild", "/s/grandchild");
+  if (hrefs().filter(function (h) { return h === "/thread/grandchild"; }).length !== 1) throw new Error("existing href must not duplicate");
+  if (!frameFocus) throw new Error("existing href must focus its iframe");
+  if (hrefs().join("|") !== "/thread/sibling|/thread/child|/thread/grandchild") throw new Error("existing href must not reorder panes");
+  if (POrder.openAfter("/thread/orphan", "orphan", "/thread/missing") !== null || hrefs().indexOf("/thread/orphan") !== -1) throw new Error("missing non-null parent must fail closed");
+  var storedOrder = JSON.parse(domOrder.window.localStorage.getItem("serf-hub.panes") || "[]").map(function (p) { return p.href; });
+  if (storedOrder.join("|") !== hrefs().join("|")) throw new Error("localStorage order must match DOM order");
+  var urlOrder = new domOrder.window.URLSearchParams(domOrder.window.location.search).getAll("pane");
+  if (urlOrder.join("|") !== hrefs().join("|")) throw new Error("URL order must match DOM order");
+  POrder.openAfter("/thread/fourth", "fourth", null);
+  if (hrefs().length !== POrder.MAX_SIDE_PANES) throw new Error("openAfter must enforce MAX_SIDE_PANES");
+  console.log("test-panes parent-relative insertion: ok");
+  global.window = savedWindow; global.document = savedDocument;
+}());
+
+// Equivalent /s and /thread hrefs identify one pane; message activation keeps
+// its parent-relative placement through the host bridge.
+(function () {
+  var domMsg = new JSDOM(`<!DOCTYPE html><body><main id="workspace"></main><div id="pane-splitter"></div><aside id="side-panes"></aside></body>`, { url: "http://localhost/" });
+  global.window = domMsg.window; global.document = domMsg.window.document;
+  eval(fs.readFileSync(path.join(__dirname, "..", "assets", "panes.js"), "utf8"));
+  var PM = domMsg.window.SerfPanes;
+  var parent = PM.open("/s/parent", "parent");
+  var source = parent.querySelector(".pane-frame").contentWindow;
+  PM.open("/thread/child", "child");
+  if (PM.open("/s/parent", "parent") !== parent || PM.openHrefs().length !== 2) throw new Error("equivalent pane hrefs must not duplicate");
+  PM.openFromChild(source, "/s/grand", "grand", "/s/parent", true);
+  if (PM.openHrefs().join("|") !== "/thread/parent|/thread/grand|/thread/child") throw new Error("host message must preserve normalized afterHref placement: " + PM.openHrefs().join("|"));
+  PM.close("/thread/child");
+  PM.openFromChild(source, "/s/prepended", "prepended", null, true);
+  if (PM.openHrefs()[0] !== "/thread/prepended") throw new Error("null-parent host bridge must prepend: " + PM.openHrefs().join("|"));
+  PM.openFromChild(source, "/s/untrusted", "untrusted", "/thread/not-a-pane", true);
+  if (PM.openHrefs().indexOf("/thread/untrusted") !== -1) throw new Error("untrusted afterHref must fail closed");
+  var existingFocus = false;
+  parent.querySelector(".pane-frame").focus = function () { existingFocus = true; };
+  var orderBeforeExisting = PM.openHrefs().join("|");
+  if (PM.openAfter("/thread/parent", "parent", "/thread/not-a-pane") !== parent || !existingFocus || PM.openHrefs().join("|") !== orderBeforeExisting) throw new Error("existing target must focus before missing-parent validation");
+  var beforeTimers = domMsg.window.setTimeout;
+  var timerCalls = 0;
+  domMsg.window.setTimeout = function () { timerCalls++; return beforeTimers.apply(this, arguments); };
+  if (PM.openAfter("/thread/orphan", "orphan", "/thread/not-a-pane") !== null || timerCalls !== 0) throw new Error("missing parent must not create a pane or loading timer");
+  global.window = dom.window; global.document = dom.window.document;
+}());
+
 // open one pane
 const pane = P.open("/s/sub-1", "Subagent 1");
 if (!pane) throw new Error("open returned null");
