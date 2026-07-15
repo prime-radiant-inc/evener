@@ -8,17 +8,6 @@ import (
 	"testing"
 )
 
-func gitInit(t *testing.T, dir string) {
-	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-	cmd := exec.Command("git", "init", "-q", dir)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v\n%s", err, out)
-	}
-}
-
 func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
@@ -173,17 +162,17 @@ func TestFilteredGitEnvironmentCaseInsensitive(t *testing.T) {
 
 func TestSubmoduleGitDirShape(t *testing.T) {
 	for _, path := range []string{
-		filepath.Join("/repo", ".git", "modules", "sub"),
-		filepath.Join("/repo", ".git", "modules", "sub", "modules", "nested"),
+		"/repo/.git/modules/sub",
+		"/repo/.git/modules/sub/modules/nested",
 	} {
 		if !isSubmoduleGitDirShape(path) {
 			t.Fatalf("isSubmoduleGitDirShape(%q) = false", path)
 		}
 	}
 	for _, path := range []string{
-		filepath.Join("/repo", ".git"),
-		filepath.Join("/repo", ".git", "worktrees", "wt"),
-		filepath.Join("/repo", "other", "modules", "sub"),
+		"/repo/.git",
+		"/repo/.git/worktrees/wt",
+		"/repo/other/modules/sub",
 	} {
 		if isSubmoduleGitDirShape(path) {
 			t.Fatalf("isSubmoduleGitDirShape(%q) = true", path)

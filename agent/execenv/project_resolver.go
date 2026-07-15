@@ -30,7 +30,7 @@ func isNilExecutionEnvironment(env ExecutionEnvironment) bool {
 	}
 	value := reflect.ValueOf(env)
 	switch value.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
 		return value.IsNil()
 	default:
 		return false
@@ -170,13 +170,13 @@ func validateSubmodulePointer(content, ancestor string) error {
 	}
 	info, err := os.Stat(target)
 	if err != nil {
-		return fmt.Errorf("Git pointer target %q: %w", target, err)
+		return fmt.Errorf("git pointer target %q: %w", target, err)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("Git pointer target %q is not a directory", target)
+		return fmt.Errorf("git pointer target %q is not a directory", target)
 	}
 	if !isSubmoduleGitDirShape(target) {
-		return fmt.Errorf("Git pointer target %q is not a submodule Git directory", target)
+		return fmt.Errorf("git pointer target %q is not a submodule Git directory", target)
 	}
 	return nil
 }
@@ -227,22 +227,22 @@ func gitBinaryMainRootStrict(env ExecutionEnvironment, cwd string) (string, bool
 		return "", true, fmt.Errorf("resolve Git checkout root: %w", err)
 	}
 	if !pathContains(top, cwd, isLocalEnv(env)) {
-		return "", true, fmt.Errorf("Git checkout root %q does not contain %q", top, cwd)
+		return "", true, fmt.Errorf("git checkout root %q does not contain %q", top, cwd)
 	}
 	if isSubmoduleGitDirShape(commonPath) {
 		if !isLocalEnv(env) && !env.FileExists(commonPath) {
-			return "", true, fmt.Errorf("Git submodule common directory %q does not exist", commonPath)
+			return "", true, fmt.Errorf("git submodule common directory %q does not exist", commonPath)
 		}
 		return resolveCleanForEnv(env, top), true, nil
 	}
 	if !isLocalEnv(env) {
 		if candidate == "" || !env.FileExists(filepath.Join(candidate, ".git")) || commonPath != filepath.Join(filepath.Clean(candidate), ".git") {
-			return "", true, fmt.Errorf("Git common directory %q does not identify a validated checkout root", common)
+			return "", true, fmt.Errorf("git common directory %q does not identify a validated checkout root", common)
 		}
 		return filepath.Clean(candidate), true, nil
 	}
 	if candidate == "" || !pathContains(candidate, top, true) {
-		return "", true, fmt.Errorf("Git common directory %q does not identify checkout root %q", common, top)
+		return "", true, fmt.Errorf("git common directory %q does not identify checkout root %q", common, top)
 	}
 	return resolveCleanForEnv(env, candidate), true, nil
 }

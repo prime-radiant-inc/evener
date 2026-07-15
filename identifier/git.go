@@ -166,13 +166,13 @@ func validateSubmodulePointer(content, ancestor string) error {
 	}
 	info, err := os.Stat(target)
 	if err != nil {
-		return fmt.Errorf("Git pointer target %q: %w", target, err)
+		return fmt.Errorf("git pointer target %q: %w", target, err)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("Git pointer target %q is not a directory", target)
+		return fmt.Errorf("git pointer target %q is not a directory", target)
 	}
 	if !isSubmoduleGitDirShape(target) {
-		return fmt.Errorf("Git pointer target %q is not a submodule Git directory", target)
+		return fmt.Errorf("git pointer target %q is not a submodule Git directory", target)
 	}
 	return nil
 }
@@ -194,7 +194,7 @@ func gitBinaryMainRootLocal(cwd string) (string, bool, error) {
 	defer cancel()
 	common, ok := runGitCmd(ctx, cwd, "rev-parse", "--git-common-dir")
 	if !ok || common == "" {
-		return "", true, errors.New("Git common directory could not be resolved")
+		return "", true, errors.New("git common directory could not be resolved")
 	}
 	candidate := MainRootCandidateFromCommonDir(cwd, common)
 	if candidate != "" && GitEntryResolvesToCommon(candidate, common) {
@@ -202,7 +202,7 @@ func gitBinaryMainRootLocal(cwd string) (string, bool, error) {
 	}
 	top, ok := runGitCmd(ctx, cwd, "rev-parse", "--show-toplevel")
 	if !ok || top == "" {
-		return "", true, errors.New("Git checkout root could not be resolved")
+		return "", true, errors.New("git checkout root could not be resolved")
 	}
 	return resolveClean(top), true, nil
 }

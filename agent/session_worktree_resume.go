@@ -56,7 +56,7 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	}
 
 	// The path must still exist and still be a real (linked) worktree.
-	if _, err := os.Stat(filepath.Join(target, ".git")); err != nil {
+	if !worktreeGitEntryExists(filepath.Join(target, ".git")) {
 		notice(fmt.Sprintf("previous working directory %s no longer exists", target))
 		return nil
 	}
@@ -156,6 +156,11 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 		s.worktreeRestoreEnv = local.WithWorkingDirectory(restoreRoot)
 	}
 	return nil
+}
+
+func worktreeGitEntryExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // applyInitInsideWorktreeLock implements the native worktree tools spec §5

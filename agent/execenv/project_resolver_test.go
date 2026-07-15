@@ -27,7 +27,7 @@ func TestProjectResolver_NilEnvironment(t *testing.T) {
 			}
 		})
 	}
-	if reflect.TypeOf(NewProjectResolver(nil)).Kind() != reflect.Ptr {
+	if reflect.TypeOf(NewProjectResolver(nil)).Kind() != reflect.Pointer {
 		t.Fatal("nil environment resolver is not a pointer nil-resolver")
 	}
 }

@@ -177,7 +177,7 @@ func formatTree(root string, entries []treeEntry, truncated bool, entryLimit int
 	flushFiles()
 
 	if truncated {
-		b.WriteString(fmt.Sprintf("  ... (truncated, >%d entries)\n", entryLimit))
+		_, _ = fmt.Fprintf(&b, "  ... (truncated, >%d entries)\n", entryLimit)
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

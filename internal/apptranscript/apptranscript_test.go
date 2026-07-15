@@ -629,6 +629,7 @@ func TestScanPrelude(t *testing.T) {
 	}
 	if call == nil {
 		t.Fatal("expected api_call")
+		return
 	}
 	// The api_call line must be fully parsed, not discarded.
 	if call.SystemPrompt != "Call prompt." {

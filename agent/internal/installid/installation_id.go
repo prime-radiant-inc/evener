@@ -109,6 +109,9 @@ func createInstallationIDWhileLocked(fs afero.Fs, path string) string {
 		if err == nil {
 			err = fs.Rename(tmpName, path)
 		}
+		if err != nil {
+			return readValidInstallationID(fs, path)
+		}
 	}
 	if winner := readValidInstallationID(fs, path); winner != "" {
 		return winner

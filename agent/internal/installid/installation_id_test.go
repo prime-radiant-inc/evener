@@ -74,7 +74,7 @@ func TestLoadOrCreateInstallationID_AtomicReplacementLeavesNoTemporaryFiles(t *t
 	if len(entries) != 1 || entries[0].Name() != "installation_id" {
 		t.Fatalf("state directory entries = %#v", entries)
 	}
-	info, err := fs.Stat(filepath.Join("/state", "installation_id"))
+	info, err := fs.Stat("/state/installation_id")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,6 @@ type installationIDOverlapFS struct {
 	initialReady chan struct{}
 	tempWrites   int
 	tempReady    chan struct{}
-	renameCount  int
 	renameReady  chan struct{}
 	renameTurn   chan struct{}
 	postReadAcks chan struct{}
@@ -249,7 +248,7 @@ func (fs *installationIDOverlapFS) Open(name string) (afero.File, error) {
 			<-fs.initialReady
 		} else {
 			fs.mu.Unlock()
-			if _, err := fs.Fs.Stat(filepath.Join(filepath.Dir(name), "installation_id.lock")); os.IsNotExist(err) {
+			if _, err := fs.Stat(filepath.Join(filepath.Dir(name), "installation_id.lock")); os.IsNotExist(err) {
 				fs.postReadAcks <- struct{}{}
 			}
 		}
@@ -263,7 +262,7 @@ func (fs *installationIDOverlapFS) OpenFile(name string, flag int, perm os.FileM
 		fs.mu.Lock()
 		fs.tempWrites++
 		fs.mu.Unlock()
-		_, lockErr := fs.Fs.Stat(filepath.Join(filepath.Dir(name), "installation_id.lock"))
+		_, lockErr := fs.Stat(filepath.Join(filepath.Dir(name), "installation_id.lock"))
 		control := os.IsNotExist(lockErr)
 		if control {
 			fs.mu.Lock()
@@ -281,7 +280,7 @@ func (fs *installationIDOverlapFS) OpenFile(name string, flag int, perm os.FileM
 
 func (fs *installationIDOverlapFS) Rename(oldname, newname string) error {
 	if strings.HasPrefix(filepath.Base(oldname), ".installation_id.") {
-		_, lockErr := fs.Fs.Stat(filepath.Join(filepath.Dir(newname), "installation_id.lock"))
+		_, lockErr := fs.Stat(filepath.Join(filepath.Dir(newname), "installation_id.lock"))
 		control := os.IsNotExist(lockErr)
 		if control {
 			<-fs.renameTurn

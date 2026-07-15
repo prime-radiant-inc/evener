@@ -509,6 +509,7 @@ func fuzzScenarioBuildTreeSessionTiersAndProjectOrder(t *testing.T) {
 	}
 	if alpha == nil {
 		t.Fatalf("alpha should be an active project")
+		return
 	}
 	if len(alpha.Current) != 1 || len(alpha.Archived) != 1 || len(alpha.Recent) != 0 {
 		t.Fatalf("alpha tiers: current=%d recent=%d archived=%d", len(alpha.Current), len(alpha.Recent), len(alpha.Archived))
@@ -892,6 +893,7 @@ func fuzzScenarioBuildTree_ExpandedOnlyForLiveProjects(t *testing.T) {
 	}
 	if archivedProj == nil {
 		t.Fatalf("archived-proj should be an archived project")
+		return
 	}
 	if archivedProj.Expanded {
 		t.Errorf("archived-proj should NOT be Expanded")

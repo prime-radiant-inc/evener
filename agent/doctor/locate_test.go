@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -230,7 +231,7 @@ func TestLocate_CleanBreakSkipsLegacyProjectAndSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(after) != string(before) || !afterInfo.ModTime().Equal(info.ModTime()) {
+	if !bytes.Equal(after, before) || !afterInfo.ModTime().Equal(info.ModTime()) {
 		t.Fatal("legacy doctor fixture changed")
 	}
 }

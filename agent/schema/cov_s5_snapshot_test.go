@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -144,7 +145,7 @@ func TestListSessionMetas_CleanBreakValidatesFilenameAndMetadataID(t *testing.T)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if string(got) != string(want) {
+		if !bytes.Equal(got, want) {
 			t.Fatalf("legacy fixture %s was modified", path)
 		}
 		info, err := os.Stat(path)

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -349,7 +350,7 @@ func TestResolveTranscript_CleanBreakSkipsLegacyLocalState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(gotBytes) != string(legacyBytes) || !gotInfo.ModTime().Equal(legacyInfo.ModTime()) {
+	if !bytes.Equal(gotBytes, legacyBytes) || !gotInfo.ModTime().Equal(legacyInfo.ModTime()) {
 		t.Fatalf("legacy fixture changed: bytes=%q mtime=%v want bytes=%q mtime=%v", gotBytes, gotInfo.ModTime(), legacyBytes, legacyInfo.ModTime())
 	}
 }

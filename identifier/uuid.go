@@ -79,11 +79,3 @@ func newUUIDv7Payload() (string, error) {
 	}
 	return EncodeUUID(value), nil
 }
-
-func mustNewUUIDv7Payload() string {
-	payload, err := newUUIDv7Payload()
-	if err != nil {
-		panic(err)
-	}
-	return payload
-}

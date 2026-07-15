@@ -180,16 +180,6 @@ func mainRootCandidateFromCommonDir(cwd, common string) string {
 	return identifier.MainRootCandidateFromCommonDir(cwd, common)
 }
 
-// gitEntryResolvesToCommon reports whether candidate holds a .git entry that
-// resolves back to the given common .git dir. This distinguishes a genuine main
-// repo root (candidate/.git IS the common dir) from a submodule's fake candidate
-// (<super>/.git/modules, which has no .git entry of its own).
-//
-// Compatibility wrapper around the shared identifier helper.
-func gitEntryResolvesToCommon(candidate, common string) bool {
-	return identifier.GitEntryResolvesToCommon(candidate, common)
-}
-
 // resolveClean returns the symlink-resolved, cleaned form of p, falling back to
 // a plain Clean when the path cannot be resolved (e.g. it does not exist).
 //

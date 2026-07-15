@@ -128,6 +128,71 @@ and restored a `t.Fatalf` reporting `wd.ObserverRouteIDs` in the observer test.
 No changes were made to `.superpowers/sdd/task-1-report.md` or
 `.superpowers/sdd/progress.md`.
 
+## Full remaining lint wave
+
+### RED evidence
+
+Started by reproducing `make lint` after commit `78b1ce30c`. It reported the
+20 findings listed in the prior section. The wave was then run to completion;
+each newly exposed mechanical finding was fixed and `make lint` was rerun until
+it reached exit 0.
+
+### Root causes and changes
+
+- `agent/execenv/securepath_darwin.go`: replaced deprecated raw
+  `unix.Syscall(SYS_FCNTL, ...)` with x/sys's supported `unix.FcntlInt` wrapper
+  for Darwin `F_GETPATH`, preserving the canonical open-fd path query. The
+  root fd close is now explicitly discarded in a deferred closure. x/sys
+  inspection confirmed there is no F_GETPATH-specific wrapper; `FcntlInt` is
+  the available Darwin fcntl wrapper and carries the pointer argument through
+  the supported entry point.
+- `agent/execenv/project_resolver.go` and its test: changed `reflect.Ptr` to
+  `reflect.Pointer` and lowercased all six newly linted Git error strings.
+- `agent/internal/installid/installation_id.go`: made the temporary-file
+  persistence failure path return the existing winner reread after any write,
+  sync, close, chmod, or rename failure, preserving empty-on-failure behavior
+  and avoiding the ineffectual error assignment. Removed the unused contention
+  seam field and simplified promoted filesystem selectors in its tests.
+- `agent/session_worktree_resume.go`: introduced a boolean existence helper for
+  the documented missing-worktree recovery path, preserving warning-and-fallback
+  behavior without nilerr confusion.
+- `agent/workspace_info.go`: changed `WriteString(fmt.Sprintf(...))` to direct
+  `fmt.Fprintf`.
+- `agent/execenv/gitpath.go`: removed the unused duplicate helper; the fuzz
+  test now calls identifier's single implementation directly.
+- Replaced string-to-string byte comparisons with `bytes.Equal` in doctor,
+  schema, and transcript tests; simplified the installid path join; used direct
+  `fmt.Fprint`; simplified promoted `fs.Fs` selectors; and removed the unused
+  UUID helper.
+- Added explicit fatal-path returns in newly surfaced SA5011 tests in hubcore
+  and apptranscript. Lowercased identifier Git errors, used `reflect.Pointer`,
+  simplified identifier test paths, removed the unused `gitInit` helper, and
+  applied golangci's exact UUID composite-literal formatter rewrite.
+
+### Verification
+
+- `make lint` — PASS, `0 issues`, exit 0. The command also completed generation;
+  the environment emitted only non-fatal golangci cache-permission warnings
+  and the existing warning that gitleaks is not installed.
+- `make vet` — PASS, exit 0.
+- `git diff --check` — PASS, exit 0.
+- `go test ./agent/internal/installid -count=1` — PASS.
+- `go test ./agent/execenv -run '^(Test(Secure|Path|GitPath|ProjectResolver)|Test.*Canonical|Test.*Root)' -count=1` — PASS.
+- `go test ./agent/execenv -count=1` — the touched tests ran, but the package
+  was blocked by unrelated sandbox process restrictions in
+  `TestStreamCommandSignalKillsWholeProcessGroup`: `/proc/.../cmdline` was
+  absent and `/bin/ps` failed with `operation not permitted`.
+- `go test ./agent -run '(Resume|Worktree)' -count=1` — PASS.
+- `go test ./agent/internal/contextmgr -count=1` — PASS.
+- `go test ./agent/schema -count=1` — PASS.
+- `go test ./agent/doctor -count=1` — PASS.
+- `go test ./internal/apptranscript -count=1` — PASS.
+- `go test ./identifier -count=1` — PASS.
+- `GOOS=darwin GOARCH=arm64 go test -c ./agent/execenv -o .task11-execenv-darwin.test` — PASS; the temporary binary was removed.
+
+No suppressions were added. No changes were made to
+`.superpowers/sdd/task-1-report.md` or `.superpowers/sdd/progress.md`.
+
 ## Fourth gate failure: SA5011 fatal-return control flow
 
 ### RED evidence

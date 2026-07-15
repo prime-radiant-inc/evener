@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"primeradiant.com/serf/identifier"
 )
 
 // FuzzGitPathResolutionProgram drives both structural and scripted-fallback
@@ -260,10 +262,10 @@ func runGitPathResolutionProgram(t *testing.T, program []byte) gitPathResolution
 	if got := mainRootCandidateFromCommonDir(main, ".git"); got != main {
 		t.Fatalf("relative common candidate = %q, want %q", got, main)
 	}
-	if !gitEntryResolvesToCommon(main, mainGit) {
+	if !identifier.GitEntryResolvesToCommon(main, mainGit) {
 		t.Fatalf("main .git did not resolve to its common directory")
 	}
-	if gitEntryResolvesToCommon(submodule, ".git/modules/submodule") {
+	if identifier.GitEntryResolvesToCommon(submodule, ".git/modules/submodule") {
 		t.Fatal("submodule candidate without .git entry unexpectedly resolved to common dir")
 	}
 	if got := resolveClean(filepath.Join(main, "missing", "..", "known")); got != filepath.Join(main, "known") {

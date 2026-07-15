@@ -291,7 +291,7 @@ func t8AssertHistoryEvidence(t *testing.T, history []schema.Turn, evidence ...st
 				text.Write(part.ToolCall.Arguments)
 			}
 			if part.ToolResult != nil {
-				text.WriteString(fmt.Sprint(part.ToolResult.Content))
+				_, _ = fmt.Fprint(&text, part.ToolResult.Content)
 			}
 		}
 	}
