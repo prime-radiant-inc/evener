@@ -42,7 +42,7 @@ func acquireInstallationIDFileLock(path string) (installationIDLock, bool, error
 		return closeOnError(fmt.Errorf("stat installation ID lock: %w", err))
 	}
 	if info.FileAttributes&(windows.FILE_ATTRIBUTE_DIRECTORY|windows.FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
-		return closeOnError(fmt.Errorf("installation ID lock is not a regular file"))
+		return closeOnError(errors.New("installation ID lock is not a regular file"))
 	}
 	lock := &installationIDFileLock{handle: handle}
 	err = windows.LockFileEx(

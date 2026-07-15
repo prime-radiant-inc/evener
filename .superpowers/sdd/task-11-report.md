@@ -396,9 +396,9 @@ Exit 1: `stale lock path suppressed installation ID recovery: got "": invalid UU
 **Implementation:** Production now opens a persistent lock file without following
 Unix symlinks or Windows reparse points, validates that it is a regular file,
 secures its mode on Unix, and holds a real advisory lock for the complete
-read/generate/temp-write/sync/close/chmod/atomic-replace operation. Unix targets
-use nonblocking `flock`; AIX uses nonblocking `fcntl` record locks; Windows uses
-`LockFileEx`. All release and close errors are joined and surfaced as an empty
+read/generate/temp-write/sync/close/chmod/atomic-replace operation. Supported
+Unix targets use nonblocking `flock`; Windows uses `LockFileEx`. All release and
+close errors are joined and surfaced as an empty
 result rather than reporting success. Advisory locks release on process death, so
 stale lock-file contents no longer block recovery. The existing 100-attempt/5ms
 bounded contention policy and winner reread remain. The injectable afero entry
@@ -410,12 +410,11 @@ filesystem provides host advisory locking.
 - Focused stale, convergence, live-winner, bounded-wait, and held-owner tests — PASS (`0.473s`).
 - `go test ./agent/internal/installid -count=1` — PASS (`0.260s`).
 - `GOTOOLCHAIN=go1.26.5 go test -race ./agent/internal/installid -count=1` — PASS (`1.382s`).
-- Additional compile checks for Linux/amd64, FreeBSD/amd64, and AIX/ppc64 passed; temporary binaries were removed.
+- Additional compile checks for Linux/amd64 and FreeBSD/amd64 passed; temporary binaries were removed.
 
 **Files:** `agent/internal/installid/installation_id.go`,
 `agent/internal/installid/installation_id_test.go`,
 `agent/internal/installid/lock_unix.go`,
-`agent/internal/installid/lock_aix.go`, and
 `agent/internal/installid/lock_windows.go`.
 
 ### Finding 3: Windows atomic replacement guarantee
@@ -435,7 +434,7 @@ proving the production path had no platform atomic-replacement seam.
 
 **Implementation:** The production OS entry point now routes persistence through
 `atomicReplaceInstallationID`; the injectable afero entry point retains generic
-rename for non-OS deterministic tests. Unix and AIX use same-directory
+rename for non-OS deterministic tests. Supported Unix targets use same-directory
 `os.Rename`, whose underlying rename operation atomically replaces the destination.
 Windows uses `kernel32!ReplaceFileW` whenever an invalid destination already
 exists; it does not use delete-then-rename or `MoveFileEx`. First creation, for
@@ -452,7 +451,6 @@ remain; temp cleanup, mode, write, sync, and close ordering are unchanged.
 **Files:** `agent/internal/installid/installation_id.go`,
 `agent/internal/installid/installation_id_test.go`,
 `agent/internal/installid/replace_unix.go`,
-`agent/internal/installid/replace_aix.go`, and
 `agent/internal/installid/replace_windows.go`.
 
 ### Final checks and concerns
@@ -464,3 +462,38 @@ remain; temp cleanup, mode, write, sync, and close ordering are unchanged.
   because local IPv6 listener creation is prohibited; focused affected tests pass.
 - The pre-existing `.superpowers/sdd/task-1-report.md` modification was not edited,
   staged, reverted, or committed. `.superpowers/sdd/progress.md` was not edited.
+
+## Re-review platform-scope correction
+
+The fix-wave re-review found that the newly added IBM AIX implementation used
+process-associated `fcntl` record locks, which do not serialize two callers in
+the same process. Investigation then established that AIX support itself was
+unjustified scope: Serf's release matrix contains only Linux/amd64 and
+Darwin/arm64, self-update rejects every other release target, the repository
+does not document AIX support, and the two AIX-specific files first appeared in
+the fix wave. Go still exposes `aix/ppc64`, but that does not make it a declared
+Serf platform.
+
+**RED:** a repository assertion requiring
+`agent/internal/installid/lock_aix.go` and
+`agent/internal/installid/replace_aix.go` to be absent failed because both files
+existed. `git diff --name-status 4249041be..HEAD -- '*aix*'` showed both as new
+files.
+
+**Implementation:** Removed the unclaimed AIX-specific lock and replacement
+implementations instead of expanding this identifier refactor with an AIX-only
+in-process lock registry. The retained Windows lock's static regular-file error
+now uses `errors.New`, matching the Unix copy and clearing the cross-platform
+`perfsprint` finding. No Linux, Darwin, other supported Unix, or Windows lock or
+replacement behavior changed.
+
+**GREEN:**
+
+- The repository assertion confirms both AIX-specific files are absent.
+- `go test ./agent/internal/installid -count=1` — PASS (`0.437s`).
+- `GOTOOLCHAIN=go1.26.5 go test -race ./agent/internal/installid -count=1` — PASS (`1.345s`).
+- `(cd agent && golangci-lint run ./internal/installid/...)` — PASS (`0 issues`).
+- `go vet ./agent/internal/installid` — PASS.
+- Windows/amd64 and FreeBSD/amd64 installid test-binary cross-compiles — PASS;
+  temporary binaries were removed.
+- `gofmt -d agent/internal/installid/lock_windows.go` and `git diff --check` — PASS.
