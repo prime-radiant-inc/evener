@@ -497,3 +497,58 @@ replacement behavior changed.
 - Windows/amd64 and FreeBSD/amd64 installid test-binary cross-compiles — PASS;
   temporary binaries were removed.
 - `gofmt -d agent/internal/installid/lock_windows.go` and `git diff --check` — PASS.
+
+## Corrected-tip final verification and review
+
+The complete Task 11 gate ran at
+`40bda5507d72f6e65bac62683241f2fde42d603c` and exited 0.
+
+### Focused tests
+
+- `go test ./identifier/... -count=1` — PASS (`0.942s`).
+- `(cd agent && go test ./execenv ./internal/installid ./internal/jobstore ./internal/worktree . -count=1)` — PASS (`8.587s`, `0.307s`, `6.312s`, `4.937s`, and `50.941s`).
+- `(cd llm && go test ./providers/google/... -count=1)` — PASS (`0.541s`).
+- `go test ./cmdutil ./cmd/serf ./cmd/serf-hub/internal/launchconfig ./cmd/serf-hub/internal/hubcore ./cmd/serf-hub ./cmd/serf-tui -count=1` — PASS (`1.195s`, `5.635s`, `1.084s`, `2.442s`, `48.999s`, and `4.637s`).
+
+### Static, repository, and race gates
+
+- `make vet` — PASS.
+- `make lint` — PASS; all seven golangci module runs reported `0 issues` and
+  generation completed. The environment reported that `gitleaks` was not
+  installed, so the Makefile's secret-scan target emitted its documented warning
+  and skipped that optional binary.
+- `make test` — PASS: root `35.65s`, agent `53.73s`, llm `9.43s`, auth
+  `2.67s`, envvars `1.03s`, invariant `0.83s`, and identifier `3.91s`. The
+  runner reported that `systemd-run` was unavailable and ran uncapped.
+- `(cd agent && GOTOOLCHAIN=go1.26.5 go test -race ./internal/installid ./internal/jobstore . -count=1)` — PASS (`1.474s`, `9.747s`, and `85.714s`).
+- `GOTOOLCHAIN=go1.26.5 go test -race ./cmd/serf-hub/internal/hubcore ./cmd/serf-hub -count=1` — PASS (`4.779s` and `140.731s`).
+- The production identifier search returned only the intended shared
+  `identifier/project.go:118` `ProjectID` definition.
+- The stale-terminology search returned only historical plans/specifications and
+  the approved identifier design/plan's descriptions of the old contract,
+  rejected compatibility, fixtures, and audit command.
+- The unsupported-scope assertion found no AIX-specific installation-ID files or
+  references.
+- `git diff --check` — PASS.
+
+### Fresh whole-branch review
+
+The most-capable reviewer examined the fresh package
+`.superpowers/sdd/review-cbab0b92..40bda5507.diff` for the complete
+`cbab0b92..40bda5507d72f6e65bac62683241f2fde42d603c` range (54 commits).
+It independently found all three prior Important findings resolved and approved
+the AIX scope correction. Final verdict: 0 Critical, 0 Important, 1 Minor;
+Spec Compliance PASS; Task Quality Approved; Ready to merge: Yes.
+
+The sole nonblocking Minor is a stale production comment in
+`cmd/serf-hub/internal/hubcore/past.go:30` that says `<sha>` where the bucket is
+now a canonical `<project-id>`. Runtime behavior and validation are correct; the
+comment can be corrected separately without reopening this completed fix wave.
+
+Task 11 implementation, gate, and review commits are `24a69ccc6`, `abfea7ff9`,
+`6014c193e`, `90d301a25`, `78b1ce30c`, `9ffc4dd7b`, `fca76fd51`, `4249041be`,
+`114501de4`, `3c191944c`, and `40bda5507`.
+
+The pre-existing `.superpowers/sdd/task-1-report.md` modification remains the
+sole protected unrelated worktree exception. It was not edited, staged,
+reverted, or committed during Task 11.
