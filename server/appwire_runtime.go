@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/appprojector"
 	"primeradiant.com/serf/internal/appserver"
+	"primeradiant.com/serf/internal/apptranscript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -148,16 +149,19 @@ func (s *Server) appNotificationTurnsForIdentity(threadID string, snapshot *appT
 	if snapshot == nil || snapshot.threadID != threadID || !s.appReadIdentityCurrent(threadID, snapshot, generation) {
 		return nil, snapshot
 	}
-	window := s.appNotifier.RetainedWindow(threadID)
-	snapshot.AlignRetainedWindow(window.LowerSeq, window.Records)
-	snapshot.Apply(window.Records)
-	s.mu.RLock()
-	stillCurrent := s.appTurns == snapshot && s.appThreadID == threadID && s.appIdentityGeneration == generation
-	s.mu.RUnlock()
-	if !stillCurrent {
-		return nil, snapshot
+	for {
+		window := s.appNotifier.RetainedWindow(threadID)
+		turns := snapshot.ReconcileAndSnapshot(window.LowerSeq, window.Records)
+		if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
+			return nil, snapshot
+		}
+		if s.appNotifier.RetainedWindowCurrent(window.UpperSeq) {
+			if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
+				return nil, snapshot
+			}
+			return turns, snapshot
+		}
 	}
-	return snapshot.Snapshot(), snapshot
 }
 
 func (s *Server) appReadIdentity(threadID string) (*appTurnSnapshot, uint64, func() string, bool) {
@@ -182,6 +186,17 @@ func transcriptPathFrom(fn func() string) string {
 	return strings.TrimSpace(fn())
 }
 
+func validatedTranscriptPath(threadID, path string) string {
+	if path == "" {
+		return ""
+	}
+	header, _ := apptranscript.ScanPrelude(path, 128<<20)
+	if header.SessionID != "" && header.SessionID != threadID {
+		return ""
+	}
+	return path
+}
+
 func (s *Server) transcriptPath() string {
 	s.mu.RLock()
 	fn := s.transcriptPathFn
@@ -204,7 +219,7 @@ func (s *Server) appLatestTurns(threadID string, limit int) ([]appwire.Turn, str
 	if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
 		return nil, ""
 	}
-	path := transcriptPathFrom(pathFn)
+	path := validatedTranscriptPath(threadID, transcriptPathFrom(pathFn))
 	if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
 		return nil, ""
 	}
@@ -240,7 +255,7 @@ func (s *Server) appPageTurns(threadID, cursor string, limit int) appwire.Thread
 	if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
 		return appwire.ThreadTurnsListResponse{}
 	}
-	path := transcriptPathFrom(pathFn)
+	path := validatedTranscriptPath(threadID, transcriptPathFrom(pathFn))
 	if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
 		return appwire.ThreadTurnsListResponse{}
 	}

@@ -55,21 +55,29 @@ func projectBoundedDaemonTranscriptTurn(raw json.RawMessage, turnID string, entr
 }
 
 type appTurnSnapshot struct {
-	mu        sync.Mutex
-	threadID  string
-	limit     int
-	cursor    uint64
-	records   []appserver.SequencedNotification
-	turns     []appwire.Turn
-	turnIndex map[string]int
+	mu            sync.Mutex
+	threadID      string
+	limit         int
+	cursor        uint64
+	retainedLower uint64
+	records       []appserver.SequencedNotification
+	turns         []appwire.Turn
+	turnIndex     map[string]int
 }
 
 func (s *appTurnSnapshot) Apply(records []appserver.SequencedNotification) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.applyLocked(records)
+}
+
+func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification) {
 	var appended []appserver.SequencedNotification
 	rebuild := false
 	for _, record := range records {
+		if s.retainedLower > 0 && record.Seq < s.retainedLower {
+			continue
+		}
 		if record.Seq <= s.cursor {
 			found := false
 			for _, retained := range s.records {
@@ -271,24 +279,36 @@ func (s *appTurnSnapshot) Cursor() uint64 {
 	return s.cursor
 }
 
-func (s *appTurnSnapshot) AlignRetainedWindow(lowerSeq uint64, records []appserver.SequencedNotification) {
+func (s *appTurnSnapshot) ReconcileAndSnapshot(lowerSeq uint64, records []appserver.SequencedNotification) []appwire.Turn {
 	s.mu.Lock()
-	needsRebuild := len(s.records) > 0 && lowerSeq > s.records[0].Seq
-	if !needsRebuild {
-		s.mu.Unlock()
-		return
+	defer s.mu.Unlock()
+	s.retainedLower = lowerSeq
+	exact := len(s.records) == len(records)
+	if exact {
+		for i := range records {
+			if s.records[i].Seq != records[i].Seq {
+				exact = false
+				break
+			}
+		}
 	}
-	s.cursor = 0
-	s.records = nil
-	s.turns = nil
-	s.turnIndex = nil
-	s.mu.Unlock()
-	s.Apply(records)
+	if !exact {
+		s.cursor = 0
+		s.records = nil
+		s.turns = nil
+		s.turnIndex = nil
+		s.applyLocked(records)
+	}
+	return s.snapshotLocked()
 }
 
 func (s *appTurnSnapshot) Snapshot() []appwire.Turn {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.snapshotLocked()
+}
+
+func (s *appTurnSnapshot) snapshotLocked() []appwire.Turn {
 	turns := make([]appwire.Turn, len(s.turns))
 	for i := range turns {
 		turns[i] = cloneAppTurn(s.turns[i])

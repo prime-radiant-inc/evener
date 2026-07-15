@@ -527,3 +527,74 @@ func TestServerAppWireStaleTranscriptPathCannotCrossIdentity(t *testing.T) {
 		t.Fatalf("stale page crossed identity generation: %+v", page)
 	}
 }
+
+func TestAppTurnSnapshotRejectsStaleWindowAfterCurrentApply(t *testing.T) {
+	notifier := appserver.NewNotifier(2)
+	snapshot := &appTurnSnapshot{threadID: "current", limit: 2}
+	current := notifier.Record("current", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{TurnID: "turn_1", ItemID: "item_1", Delta: "one"})
+	snapshot.Apply([]appserver.SequencedNotification{current})
+	notifier.Record("other", appwire.NotifyAgentMessageDelta, nil)
+	stale := notifier.RetainedWindow("current")
+
+	notifier.Record("other", appwire.NotifyAgentMessageDelta, nil) // globally evicts current seq 1
+	latest := notifier.Record("current", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{TurnID: "turn_4", ItemID: "item_4", Delta: "four"})
+	snapshot.Apply([]appserver.SequencedNotification{latest})
+
+	got := snapshot.ReconcileAndSnapshot(stale.LowerSeq, stale.Records)
+	if !notifier.RetainedWindowCurrent(stale.UpperSeq) {
+		fresh := notifier.RetainedWindow("current")
+		got = snapshot.ReconcileAndSnapshot(fresh.LowerSeq, fresh.Records)
+	}
+	want := appTurnsFromNotifications(notifier.RetainedWindow("current").Records)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("stale retained window produced state that never existed\n got: %v\nwant: %v", turnIDs(got), turnIDs(want))
+	}
+}
+
+func TestAppTurnSnapshotRejectsDelayedGloballyEvictedDirectApply(t *testing.T) {
+	notifier := appserver.NewNotifier(2)
+	snapshot := &appTurnSnapshot{threadID: "current", limit: 2}
+	delayed := notifier.Record("current", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{TurnID: "turn_1", ItemID: "item_1", Delta: "evicted"})
+	notifier.Record("other", appwire.NotifyAgentMessageDelta, nil)
+	notifier.Record("other", appwire.NotifyAgentMessageDelta, nil) // globally evicts delayed seq 1
+
+	window := notifier.RetainedWindow("current")
+	_ = snapshot.ReconcileAndSnapshot(window.LowerSeq, window.Records)
+	snapshot.Apply([]appserver.SequencedNotification{delayed})
+	if got := snapshot.Snapshot(); len(got) != 0 {
+		t.Fatalf("delayed globally evicted direct apply contaminated snapshot: %+v", got)
+	}
+}
+
+func TestServerAppWireOldIdentityRejectsCallbackBackingSwitchBeforeIdentity(t *testing.T) {
+	writeTranscript := func(sessionID string, turns int) string {
+		path := filepath.Join(t.TempDir(), sessionID+".transcript.jsonl")
+		writer, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID, CreatedAt: time.Unix(1700000000, 0), ProfileID: "openai", Model: "gpt-5"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < turns; i++ {
+			if err := writer.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(sessionID))); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	oldPath := writeTranscript("old", 1)
+	newPath := writeTranscript("new", 3)
+	backingPath := oldPath
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "old")
+	srv.SetTranscriptPathFunc(func() string { return backingPath })
+
+	// Match production clear ordering: setSession changes callback backing before
+	// SetAppIdentity advances the server identity generation.
+	backingPath = newPath
+	turns, _ := srv.appLatestTurns("old", 40)
+	if len(turns) != 0 {
+		t.Fatalf("old identity returned new callback backing before identity switch: %v", turnIDs(turns))
+	}
+}

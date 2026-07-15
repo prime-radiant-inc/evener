@@ -48,4 +48,11 @@ func TestNotifierRetainedWindowReportsGlobalLowerBoundary(t *testing.T) {
 	if len(window.Records) != 0 {
 		t.Fatalf("current retained records=%+v, want none", window.Records)
 	}
+	if window.UpperSeq != 3 || !notifier.RetainedWindowCurrent(window.UpperSeq) {
+		t.Fatalf("window upper/current = %d/%v, want 3/true", window.UpperSeq, notifier.RetainedWindowCurrent(window.UpperSeq))
+	}
+	notifier.Record("old", appwire.NotifyAgentMessageDelta, nil)
+	if notifier.RetainedWindowCurrent(window.UpperSeq) {
+		t.Fatal("stale retained window remained current after notifier advance")
+	}
 }

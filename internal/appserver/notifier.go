@@ -16,6 +16,7 @@ type SequencedNotification struct {
 // retained sequence boundary and the retained records for one thread.
 type RetainedNotificationWindow struct {
 	LowerSeq uint64
+	UpperSeq uint64
 	Records  []SequencedNotification
 }
 
@@ -69,7 +70,7 @@ func (n *Notifier) ReplayAfter(cursor uint64, threadID string) []SequencedNotifi
 func (n *Notifier) RetainedWindow(threadID string) RetainedNotificationWindow {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	window := RetainedNotificationWindow{}
+	window := RetainedNotificationWindow{UpperSeq: n.nextSeq}
 	if len(n.history) > 0 {
 		window.LowerSeq = n.history[0].Seq
 	} else if n.nextSeq > 0 {
@@ -83,4 +84,12 @@ func (n *Notifier) RetainedWindow(threadID string) RetainedNotificationWindow {
 		window.Records = append(window.Records, record)
 	}
 	return window
+}
+
+// RetainedWindowCurrent reports whether no notification has been recorded
+// since a RetainedWindow carrying upperSeq was captured.
+func (n *Notifier) RetainedWindowCurrent(upperSeq uint64) bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.nextSeq == upperSeq
 }
