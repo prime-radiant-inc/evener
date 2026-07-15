@@ -1046,7 +1046,8 @@ func startTUITmuxSized(t *testing.T, bin, hubURL string, width, height int) *tmu
 	t.Helper()
 	acquireTmuxSlot(t)
 	session := uniqueTmuxSessionName()
-	command := tuiCoverEnvPrefix() + shellQuote(bin) + " -debug -no-auto-start-hub -hub-addr " + shellQuote(hubURL)
+	stateDir := t.TempDir()
+	command := tuiCoverEnvPrefix() + shellQuote(bin) + " -debug -no-auto-start-hub -hub-addr " + shellQuote(hubURL) + " -state-dir " + shellQuote(stateDir)
 	runTmux(t, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
 	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
 	pinTmuxWindowSize(t, session, width, height)
@@ -1059,6 +1060,7 @@ func startTUITmuxAltScreen(t *testing.T, bin, hubURL string, width, height int) 
 	t.Helper()
 	acquireTmuxSlot(t)
 	session := uniqueTmuxSessionName()
+	stateDir := t.TempDir()
 	// Keep the pane's shell alive past serf-tui's own exit. serf-tui leaves the
 	// alternate screen and prints its restore instructions to the normal screen
 	// as the very last thing it does before exiting; if the process then dies
@@ -1067,7 +1069,7 @@ func startTUITmuxAltScreen(t *testing.T, bin, hubURL string, width, height int) 
 	// scrollback comes back blank). Blocking the shell on a read it never
 	// receives holds the pty open so tmux drains and renders the message; the
 	// test reads it via WaitForHistory and Close() tears the session down.
-	command := tuiCoverEnvPrefix() + shellQuote(bin) + " -no-auto-start-hub -hub-addr " + shellQuote(hubURL) + "; read _"
+	command := tuiCoverEnvPrefix() + shellQuote(bin) + " -no-auto-start-hub -hub-addr " + shellQuote(hubURL) + " -state-dir " + shellQuote(stateDir) + "; read _"
 	runTmux(t, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
 	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
 	pinTmuxWindowSize(t, session, width, height)
