@@ -1098,9 +1098,9 @@ func fuzzScenarioNormalizeState(t *testing.T) {
 		{"warning", "warning"},
 		{"idle", "idle"},
 		{"closed", "ended"},
-		{"notLoaded", "ended"},
+		{"notLoaded", "notLoaded"},
 		{"ended", "ended"},
-		{"unknown", "idle"},
+		{"unknown", "notLoaded"},
 	}
 	for _, c := range cases {
 		if got := NormalizeState(c.in); got != c.want {

@@ -64,6 +64,8 @@ const unknownSource = tree.projects[0].sessions[0].children[2];
 const unknownRow = w.document.querySelector('[data-row-id="project:p1:local:CHILD-UNKNOWN"]');
 if (!unknownRow || !unknownRow.classList.contains("subagent-row")) throw new Error("unknown child state must remain visible as a current child");
 if (unknownRow.getAttribute("data-state") !== "notLoaded") throw new Error("unknown child state must use neutral notLoaded presentation");
+if (unknownRow.querySelector(".status-icon").getAttribute("title") !== "Not loaded") throw new Error("unknown child state must use neutral text");
+if (w.SerfSidebarInternal.stateIconKey("notLoaded") !== "idle") throw new Error("unknown child state must use neutral icon");
 if (unknownSource.state !== "mystery") throw new Error("unknown state normalization must not mutate the source node");
 if (unknownSource.row_id !== "project:p1:local:CHILD-UNKNOWN" || unknownSource.ref !== "local:CHILD-UNKNOWN") throw new Error("unknown state normalization must not mutate server identity fields");
 if (!running.classList.contains("subagent-row") || !retained.classList.contains("subagent-row")) {
@@ -78,24 +80,30 @@ if (ordinaryClick.defaultPrevented) throw new Error("ordinary main-session rows 
 const runningClick = new w.MouseEvent("click", { bubbles: true, cancelable: true });
 running.dispatchEvent(runningClick);
 if (!runningClick.defaultPrevented) throw new Error("current child activation must prevent ordinary navigation");
-if (w.SerfPanes.calls.length !== 2 ||
-    w.SerfPanes.calls[0].href !== "/thread/local%3AMAIN" || w.SerfPanes.calls[0].afterHref !== null ||
-    w.SerfPanes.calls[1].href !== "/thread/local%3ACHILD-RUNNING" || w.SerfPanes.calls[1].afterHref !== "/thread/local%3AMAIN") {
-  throw new Error("current child activation must open source-qualified ancestry in order: " + JSON.stringify(w.SerfPanes.calls));
+if (w.SerfPanes.calls.length !== 1 ||
+    w.SerfPanes.calls[0].href !== "/thread/local%3ACHILD-RUNNING" || w.SerfPanes.calls[0].afterHref !== null) {
+  throw new Error("direct child activation must open only the child as the first side pane: " + JSON.stringify(w.SerfPanes.calls));
 }
 // Existing ancestors are skipped; duplicate target activation makes one
 // openAfter call and leaves the pane order to the pane manager.
 w.SerfPanes.calls.length = 0;
-w.SerfPanes.state = ["/thread/local%3AMAIN", "/thread/local%3ACHILD-RUNNING"];
+w.SerfPanes.state = [];
+running.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
+if (w.SerfPanes.calls.length !== 1 ||
+    w.SerfPanes.calls[0].href !== "/thread/local%3ACHILD-RUNNING" || w.SerfPanes.calls[0].afterHref !== null) {
+  throw new Error("direct child activation must open only the child as the first side pane: " + JSON.stringify(w.SerfPanes.calls));
+}
+// Existing ancestors are skipped; duplicate target activation makes one openAfter call and leaves the pane order to the pane manager.
+w.SerfPanes.calls.length = 0;
+w.SerfPanes.state = ["/thread/local%3ACHILD-RUNNING"];
 running.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
 if (w.SerfPanes.calls.length !== 1 || w.SerfPanes.calls[0].href !== "/thread/local%3ACHILD-RUNNING") throw new Error("existing ancestors must be skipped and duplicate target must use one openAfter call");
 const grandchildCurrent = w.document.querySelector('[data-row-id="project:p1:local:GRAND-IDLE"]');
 w.SerfPanes.calls.length = 0; w.SerfPanes.state = [];
 grandchildCurrent.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
-if (w.SerfPanes.calls.length !== 3 ||
-    w.SerfPanes.calls[0].href !== "/thread/local%3AMAIN" || w.SerfPanes.calls[0].afterHref !== null ||
-    w.SerfPanes.calls[1].href !== "/thread/local%3ACHILD-RUNNING" || w.SerfPanes.calls[1].afterHref !== "/thread/local%3AMAIN" ||
-    w.SerfPanes.calls[2].href !== "/thread/local%3AGRAND-IDLE" || w.SerfPanes.calls[2].afterHref !== "/thread/local%3ACHILD-RUNNING") {
+if (w.SerfPanes.calls.length !== 2 ||
+    w.SerfPanes.calls[0].href !== "/thread/local%3ACHILD-RUNNING" || w.SerfPanes.calls[0].afterHref !== null ||
+    w.SerfPanes.calls[1].href !== "/thread/local%3AGRAND-IDLE" || w.SerfPanes.calls[1].afterHref !== "/thread/local%3ACHILD-RUNNING") {
   throw new Error("nested child activation must use source-qualified parent-to-child calls: " + JSON.stringify(w.SerfPanes.calls));
 }
 // Keyed rows must retain identity while transitioning child -> ordinary and
@@ -164,9 +172,8 @@ if (w.localStorage.getItem("serf-hub.sidebar.expanded.inactive:project:p1:local:
 const inactiveChild = w.document.querySelector('[data-row-id="project:p1:local:CHILD-ERROR"]');
 w.SerfPanes.calls.length = 0; w.SerfPanes.state = [];
 inactiveChild.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
-if (w.SerfPanes.calls.length !== 2 ||
-    w.SerfPanes.calls[0].href !== "/thread/local%3AMAIN" || w.SerfPanes.calls[0].afterHref !== null ||
-    w.SerfPanes.calls[1].href !== "/thread/local%3ACHILD-ERROR" || w.SerfPanes.calls[1].afterHref !== "/thread/local%3AMAIN") {
+if (w.SerfPanes.calls.length !== 1 ||
+    w.SerfPanes.calls[0].href !== "/thread/local%3ACHILD-ERROR" || w.SerfPanes.calls[0].afterHref !== null) {
   throw new Error("revealed inactive child activation must open ancestry in order: " + JSON.stringify(w.SerfPanes.calls));
 }
 

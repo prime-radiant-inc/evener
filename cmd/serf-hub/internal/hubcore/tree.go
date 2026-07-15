@@ -265,10 +265,14 @@ func NormalizeState(s string) string {
 		return "warning"
 	case appwire.ThreadStatusIdle:
 		return "idle"
-	case appwire.ThreadStatusClosed, appwire.ThreadStatusNotLoaded, "ended":
+	case appwire.ThreadStatusClosed, "ended":
 		return "ended"
+	case "errored":
+		return "errored"
+	case appwire.ThreadStatusNotLoaded:
+		return "notLoaded"
 	default:
-		return "idle"
+		return "notLoaded"
 	}
 }
 
@@ -363,15 +367,15 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 	type projectAccum struct {
 		name       string // basename for display
 		topLevel   []schema.SessionMeta
-		children   map[string][]schema.SessionMeta // parentID -> children
-		workingDir string                          // the full grouping path ("" for no-project)
-		worktrees  map[string]bool                 // distinct WorktreePath set
-		count      int                             // number of sessions seen for this project
-		anyNonTest bool                            // true once any session's Origin != "test"
+		workingDir string          // the full grouping path ("" for no-project)
+		worktrees  map[string]bool // distinct WorktreePath set
+		count      int             // number of sessions seen for this project
+		anyNonTest bool            // true once any session's Origin != "test"
 	}
 	projects := make(map[string]*projectAccum) // keyed by EffectiveWorkingDir path
 	projectOrder := []string{}                 // insertion order (paths) for stable output
 	nestedMetaIDs := make(map[string]struct{}) // IDs attached below a top-level row
+	childrenByParent := make(map[string][]schema.SessionMeta)
 
 	// Build a reverse-lookup index: which session forked from each origin?
 	// Used to attach a "snapshotted original" (the parent meta with ForkLabel
@@ -385,11 +389,34 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		}
 	}
 
-	for _, m := range metas {
+	// A subagent's persisted working directory may be an isolated worktree or
+	// another effective directory. Its explicit parent is still authoritative
+	// for sidebar lineage, so assign the record to the root parent's project
+	// accumulator while retaining its own metadata for title/state rendering.
+	lineageProjectPath := func(m schema.SessionMeta) string {
 		path := EffectiveWorkingDir(m)
+		seen := map[string]bool{m.ID: true}
+		for m.IsSubagent && m.ParentSessionID != "" {
+			parent, ok := metaMap[m.ParentSessionID]
+			if !ok || seen[parent.ID] {
+				break
+			}
+			seen[parent.ID] = true
+			m = parent
+			path = EffectiveWorkingDir(m)
+		}
+		return path
+	}
+
+	for _, m := range metas {
+		path := lineageProjectPath(m)
 		acc := projects[path]
 		if acc == nil {
-			acc = &projectAccum{name: projectName(m), children: map[string][]schema.SessionMeta{}, worktrees: map[string]bool{}}
+			name := "(no project)"
+			if path != "" {
+				name = filepath.Base(path)
+			}
+			acc = &projectAccum{name: name, worktrees: map[string]bool{}}
 			projects[path] = acc
 			projectOrder = append(projectOrder, path)
 		}
@@ -406,14 +433,14 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		switch {
 		case m.IsSubagent && m.ParentSessionID != "":
 			// Subagents nest under their origin.
-			acc.children[m.ParentSessionID] = append(acc.children[m.ParentSessionID], m)
+			childrenByParent[m.ParentSessionID] = append(childrenByParent[m.ParentSessionID], m)
 			nestedMetaIDs[m.ID] = struct{}{}
 		case m.ForkLabel != "":
 			// This meta is the snapshotted original of a fork. The active
 			// branch (the meta whose ParentSessionID == m.ID) is top-level;
 			// this one becomes the dim child of that active branch.
 			if newID, ok := forkChildren[m.ID]; ok {
-				acc.children[newID] = append(acc.children[newID], m)
+				childrenByParent[newID] = append(childrenByParent[newID], m)
 				nestedMetaIDs[m.ID] = struct{}{}
 			} else {
 				// No active branch references this — keep top-level.
@@ -447,7 +474,7 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		node := TreeNode{
 			ID:         m.ID,
 			Title:      nodeTitle(m, kind),
-			Project:    projectName(m),
+			Project:    acc.name,
 			Branch:     m.EnvInfo.GitBranch,
 			State:      state,
 			AskPending: askPending,
@@ -457,7 +484,7 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 			Age:        AgeString(OrderUpdatedAt(m.UpdatedAt, m.CreatedAt)),
 		}
 
-		childMetas := acc.children[m.ID]
+		childMetas := childrenByParent[m.ID]
 		var subagents, forks []schema.SessionMeta
 		for _, c := range childMetas {
 			if c.IsSubagent {
@@ -762,9 +789,32 @@ func BuildProjectTree(metas []schema.SessionMeta, live []LiveEntry, decisions ma
 // returns the resulting TreeProject (searching both the active and archived
 // lists). ok is false when no project of that name exists.
 func BuildProjectTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, now time.Time, name string) (TreeProject, bool) {
+	metaByID := make(map[string]schema.SessionMeta, len(metas))
+	for _, m := range metas {
+		if m.ID != "" {
+			metaByID[m.ID] = m
+		}
+	}
+	belongsToProject := func(m schema.SessionMeta) bool {
+		seen := map[string]bool{m.ID: true}
+		for {
+			if projectName(m) == name {
+				return true
+			}
+			if !m.IsSubagent || m.ParentSessionID == "" {
+				return false
+			}
+			parent, ok := metaByID[m.ParentSessionID]
+			if !ok || seen[parent.ID] {
+				return false
+			}
+			seen[parent.ID] = true
+			m = parent
+		}
+	}
 	subset := make([]schema.SessionMeta, 0, len(metas))
 	for _, m := range metas {
-		if projectName(m) == name {
+		if belongsToProject(m) {
 			subset = append(subset, m)
 		}
 	}

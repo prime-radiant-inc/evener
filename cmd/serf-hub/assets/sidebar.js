@@ -64,6 +64,7 @@
     if (state === "warning") return "warning";
     if (state === "errored") return "error";
     if (state === "idle") return "idle";
+    if (state === "notLoaded") return "idle";
     return "ended";
   }
   function stateWord(state, askPending) {
@@ -509,9 +510,15 @@
       if (!descriptor || !descriptor.__child || !window.SerfPanes || typeof window.SerfPanes.openAfter !== "function") return;
       e.preventDefault();
       var chain = (descriptor.__ancestry || []).concat([descriptor]);
+      // The main session is already rendered in #workspace, so it is not a
+      // missing side-pane ancestor. Only descendants below the main session
+      // belong in the side-pane lineage. A direct child therefore opens with
+      // afterHref=null; nested children retain parent-relative insertion.
+      var first = chain.length && chain[0];
+      var openStart = first && first.__child ? 0 : 1;
       var previousHref = null;
       var openHrefs = typeof window.SerfPanes.openHrefs === "function" ? window.SerfPanes.openHrefs() : [];
-      for (var i = 0; i < chain.length; i++) {
+      for (var i = openStart; i < chain.length; i++) {
         var ancestor = chain[i];
         var href = childThreadHref(ancestor);
         var isTarget = ancestor === descriptor;

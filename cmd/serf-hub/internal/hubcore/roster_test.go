@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -314,6 +315,57 @@ func fuzzScenarioRoster_FingerprintIncludesRunningIDs(t *testing.T) {
 }
 
 func TestRosterFingerprint(t *testing.T) { fuzzScenarioRoster_FingerprintIncludesRunningIDs(t) }
+
+type overlappingRefreshProber struct {
+	calls         atomic.Int32
+	firstStarted  chan struct{}
+	secondStarted chan struct{}
+	releaseFirst  chan struct{}
+}
+
+func (p *overlappingRefreshProber) Probe(rendezvous.Entry) ProbeResult {
+	switch p.calls.Add(1) {
+	case 1:
+		close(p.firstStarted)
+		<-p.releaseFirst
+		return ProbeResult{SessionID: "parent", Status: "old", RunningSubagentIDs: []string{"old-child"}, OK: true}
+	case 2:
+		close(p.secondStarted)
+		return ProbeResult{SessionID: "parent", Status: "new", RunningSubagentIDs: []string{"new-child"}, OK: true}
+	default:
+		return ProbeResult{SessionID: "parent", Status: "unexpected", OK: true}
+	}
+}
+
+func TestRoster_RefreshRejectsStaleConcurrentCommit(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:1"})
+	prober := &overlappingRefreshProber{
+		firstStarted:  make(chan struct{}),
+		secondStarted: make(chan struct{}),
+		releaseFirst:  make(chan struct{}),
+	}
+	r := NewRoster(dir, prober)
+	var callbacks atomic.Int32
+	r.SetOnChange(func() { callbacks.Add(1) })
+	oldDone := make(chan struct{})
+	go func() { r.Refresh(); close(oldDone) }()
+	<-prober.firstStarted
+	newDone := make(chan struct{})
+	go func() { r.Refresh(); close(newDone) }()
+	<-prober.secondStarted
+	close(prober.releaseFirst)
+	<-oldDone
+	<-newDone
+
+	entry, ok := r.Find("parent")
+	if !ok || entry.Status != "new" || len(entry.RunningSubagentIDs) != 1 || entry.RunningSubagentIDs[0] != "new-child" {
+		t.Fatalf("final roster = %+v, found=%v; want newer status and running child", entry, ok)
+	}
+	if got := callbacks.Load(); got != 1 {
+		t.Fatalf("onChange callbacks = %d, want one committed refresh callback", got)
+	}
+}
 
 // gateProber blocks each probe on a channel, so a test can hold a Refresh in
 // the middle of its probe pass and assert List() stays responsive.

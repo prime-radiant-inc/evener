@@ -85,6 +85,9 @@ type Roster struct {
 	mu     sync.RWMutex
 	bySess map[string]LiveEntry // session_id -> entry
 	byPID  map[int]LiveEntry    // pid -> entry (for fsnotify event correlation)
+	// refreshGen rejects a completed probe pass that started before a newer
+	// refresh attempt, while allowing probes to run without holding mu.
+	refreshGen uint64
 
 	// procAlive reports whether a daemon PID is still running. A failed /status
 	// probe to a live process means the daemon is busy, not gone, so its session
@@ -215,6 +218,11 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 // probe miss (busy daemon, overloaded host) must not blank the session from the
 // UI. It is dropped only when its process is gone (a stale rendezvous file).
 func (r *Roster) Refresh() {
+	r.mu.Lock()
+	r.refreshGen++
+	generation := r.refreshGen
+	r.mu.Unlock()
+
 	entries, err := rendezvous.List(r.runDir)
 	if err != nil {
 		return
@@ -280,26 +288,34 @@ func (r *Roster) Refresh() {
 		byPID[e.PID] = live
 	}
 
-	r.mu.Lock()
-	r.bySess = bySess
-	r.byPID = byPID
-	r.mu.Unlock()
-
-	if r.onStatusChange != nil {
-		for id, cur := range bySess {
-			if prev, had := prevBySess[id]; had && prev.Status != cur.Status {
-				r.onStatusChange(id)
-			}
-		}
-	}
-
 	fp := rosterFingerprint(bySess)
 	r.mu.Lock()
+	if generation != r.refreshGen {
+		r.mu.Unlock()
+		return
+	}
+	r.bySess = bySess
+	r.byPID = byPID
 	changed := fp != r.fingerprint
 	r.fingerprint = fp
+	statusChanges := make([]string, 0)
+	for id, cur := range bySess {
+		if prev, had := prevBySess[id]; had && prev.Status != cur.Status {
+			statusChanges = append(statusChanges, id)
+		}
+	}
+	sort.Strings(statusChanges)
+	onStatusChange := r.onStatusChange
+	onChange := r.onChange
 	r.mu.Unlock()
-	if changed && r.onChange != nil {
-		r.onChange()
+
+	if onStatusChange != nil {
+		for _, id := range statusChanges {
+			onStatusChange(id)
+		}
+	}
+	if changed && onChange != nil {
+		onChange()
 	}
 }
 
