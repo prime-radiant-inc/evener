@@ -6087,6 +6087,35 @@ func TestWeb_WorkspaceDataLocalLiveUsesAppWireCapabilities(t *testing.T) {
 	}
 }
 
+func TestLiveWorkspaceSnapshotSkipsTurns(t *testing.T) {
+	source := &scriptedAppSource{
+		id: "local",
+		thread: appwire.Thread{
+			ID:        "01METADATA",
+			SessionID: "01METADATA",
+			Source:    "local",
+			Serf: appwire.SerfThread{
+				Ref:          "local:01METADATA",
+				Capabilities: appwire.ThreadCapabilities{Send: true},
+				ActiveTurnID: "turn_active",
+			},
+		},
+	}
+	web := NewWebServer(hubcore.WebConfig{})
+	web.sources.Add(source)
+
+	caps, activeTurnID := web.liveWorkspaceSnapshot("local:01METADATA", hubapi.SessionCapabilities{})
+	if len(source.readParams) != 1 {
+		t.Fatalf("ReadThread calls=%d, want 1", len(source.readParams))
+	}
+	if got := source.readParams[0]; got.IncludeTurns {
+		t.Fatal("workspace metadata requested transcript turns")
+	}
+	if !caps.Send || activeTurnID != "turn_active" {
+		t.Fatalf("caps=%+v activeTurnID=%q", caps, activeTurnID)
+	}
+}
+
 func TestWeb_APISessionDetailsLocalLiveUsesAppWireForkCapability(t *testing.T) {
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 65, Address: "127.0.0.1:6565", WorkingDir: "/projects/serf", Model: "gpt-5"})

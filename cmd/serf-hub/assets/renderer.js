@@ -158,7 +158,7 @@
       // re-parsing the END event.
       this.pendingAskCalls = new Map(); // callId -> parsed questions[]
       this.lastCurrentTaskId = null;     // dedupe state for "now on X" system-line
-      this.eventBuffer = [];             // queued until cold-load /tasks fetch resolves
+      this.eventBuffer = [];             // queued until initialization enables transcript replay
       this.descriptionsReady = false;
       // Description cache is per-session: clear before entering this conversation
       // so a stale id→title mapping from a prior session can't bleed in.
@@ -235,21 +235,18 @@
       this.bindAskCardEscape();
       this.ensureLivenessEl();
       this.startLivenessTimer();
-      // Cold-load hydration: fetch the task list ONCE before processing any
-      // events so the first transition (system-line) renders with task
-      // descriptions instead of a #N → title flash a few seconds later.
-      // After this lands, descriptionsReady flips and any buffered events
-      // get drained through handle().
-      this.hydrateDescriptions().then(() => {
-        this.descriptionsReady = true;
-        const buffered = this.eventBuffer || [];
-        this.eventBuffer = null;
-        for (const [kind, ev] of buffered) this.handle(kind, ev);
-        // Cold start (mockup #21 Alt C): a session that hydrated with no
-        // transcript content is a crafted welcome, not a void. Shown only
-        // once nothing has rendered, so resumed/active sessions never see it.
-        this.maybeShowWelcome();
-      });
+      // Fetch task descriptions independently; transcript replay must not wait
+      // for this auxiliary metadata. applyTasks refreshes any numeric labels
+      // when the task promise resolves.
+      this.hydrateDescriptions();
+      this.descriptionsReady = true;
+      const buffered = this.eventBuffer || [];
+      this.eventBuffer = null;
+      for (const [kind, ev] of buffered) this.handle(kind, ev);
+      // Cold start (mockup #21 Alt C): a session that hydrated with no
+      // transcript content is a crafted welcome, not a void. Shown only
+      // once nothing has rendered, so resumed/active sessions never see it.
+      this.maybeShowWelcome();
       this.autoOpenObservers(conversationEl);
     },
 
@@ -487,6 +484,7 @@
           rememberTask(t);
         }
       }
+      if (tasks.length && this.livePlanCard) this.renderLivePlan(tasks);
       const done = tasks.filter(t => t.status === "done").length;
       updateTasksBadge(done, tasks.length, currentTaskSummary(tasks));
     },
@@ -955,9 +953,8 @@
     handle(kind, ev) {
       // Every frame from the daemon (incl. reasoning) resets the liveness clock.
       this.lastFrameAt = Date.now();
-      // Buffer events until the cold-load /tasks fetch resolves, so the
-      // first batch of system-lines renders with task descriptions and
-      // never shows the #N → title flash on resume.
+      // Buffer only during synchronous initialization. Task descriptions are
+      // auxiliary metadata and must never gate transcript replay.
       if (!this.descriptionsReady && this.eventBuffer) {
         this.eventBuffer.push([kind, ev]);
         return;

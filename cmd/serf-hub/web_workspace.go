@@ -571,7 +571,7 @@ func (s *WebServer) liveWorkspaceSnapshot(id string, fallback hubapi.SessionCapa
 	if err != nil {
 		return fallback, ""
 	}
-	resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true})
+	resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false})
 	if err != nil {
 		return fallback, ""
 	}

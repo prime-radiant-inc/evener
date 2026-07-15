@@ -18,6 +18,12 @@ if [ -z "${NODE_PATH:-}" ]; then
 fi
 
 fail=0
+for required_test in test-renderer-hydration-order.js; do
+  if [ ! -f "$required_test" ]; then
+    echo "MISSING $required_test"
+    fail=1
+  fi
+done
 for test in test-*.js; do
   out=$(timeout "$TIMEOUT" node "$test" 2>&1)
   rc=$?
