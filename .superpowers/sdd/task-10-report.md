@@ -152,3 +152,22 @@ git diff --check                                      PASS
 
 - Implementation commit: `3878f6e9a7be2876f06e95b98a405bc733a17352` — `docs: document unified identifier formats`
 - Follow-up fix/report commit: recorded after the follow-up verification commit.
+
+## Closed-world audit follow-up
+
+Replaced heuristic SHA argument taint checks with a closed-world AST inventory. Every production `crypto/sha256` import is resolved with its actual package alias; dot imports and aliases are rejected. Every package selector operation is fingerprinted by enclosing declaration/function and exact operation expression. Package-level initializers are inventoried under `<package>` and fail unless explicitly reviewed. Chained `sha256.New().Write` and any additional selector/call shape fail because they are absent from the inventory. Existing HMAC `sha256.New` function-value uses are represented explicitly.
+
+Added deterministic tests for reviewed operation acceptance, extra hidden-input `Sum256`, package initializer, `New().Write`, aliases/dot imports, comments/strings, and nested `cmd/identifier` scanning.
+
+Final verification:
+
+```text
+go test . -run '^TestIdentifierAudit' -count=1                 PASS
+go test . -run 'Test.*Identifier.*Audit' -count=1              PASS
+make lint-docs                                                 PASS
+go test ./identifier ./cmd/serf-doctor -count=1               PASS
+go test ./cmd/serf-hub/internal/hubcore -count=1              BLOCKED: httptest listener bind denied
+go test ./cmd/serf-hub/internal/hubcore -run '^Test' -count=1 PASS
+git diff --check                                               PASS
+required forbidden production search                         PASS (only identifier/project.go ProjectID)
+```

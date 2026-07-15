@@ -15,21 +15,12 @@ import (
 )
 
 func TestIdentifierAuditRejectsInjectedDuplicateImplementation(t *testing.T) {
-	t.Parallel()
-
 	root := t.TempDir()
 	writeIdentifierAuditFixture(t, root, "fixture.go", `package fixture
 
 func ProjectSlug(path string) string { return path }
 `)
-
-	findings, err := identifierAuditFindings(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(findings) == 0 {
-		t.Fatal("identifier audit accepted an injected ProjectSlug implementation")
-	}
+	assertIdentifierAuditFinds(t, root, "duplicate project identifier declaration")
 }
 
 func TestIdentifierAuditRejectsProjectPathHashInAllowlistedFile(t *testing.T) {
@@ -38,19 +29,12 @@ func TestIdentifierAuditRejectsProjectPathHashInAllowlistedFile(t *testing.T) {
 
 import "crypto/sha256"
 
-func nonProjectHash(path string) string {
-	sum := sha256.Sum256([]byte(path))
+func nonProjectHash(x string) string {
+	sum := sha256.Sum256([]byte(x))
 	return string(sum[:])
 }
 `)
-
-	findings, err := identifierAuditFindings(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !containsIdentifierFinding(findings, "project/path data") {
-		t.Fatalf("project-path SHA fixture was accepted: %v", findings)
-	}
+	assertIdentifierAuditFinds(t, root, "unreviewed SHA-256 operation")
 }
 
 func TestIdentifierAuditAllowsReviewedNonProjectHash(t *testing.T) {
@@ -64,13 +48,88 @@ func nonProjectHash(input string) string {
 	return string(sum[:])
 }
 `)
-
 	findings, err := identifierAuditFindings(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(findings) != 0 {
 		t.Fatalf("reviewed non-project SHA fixture was rejected: %v", findings)
+	}
+}
+
+func TestIdentifierAuditRejectsAdditionalSHAOperationInReviewedFunction(t *testing.T) {
+	root := t.TempDir()
+	writeIdentifierAuditFixture(t, root, filepath.Join("agent", "runtime_dir.go"), `package agent
+
+import "crypto/sha256"
+
+func nonProjectHash(input string) string {
+	first := sha256.Sum256([]byte(input))
+	x := input
+	second := sha256.Sum256([]byte(x))
+	return string(first[:]) + string(second[:])
+}
+`)
+	assertIdentifierAuditFinds(t, root, "unreviewed SHA-256 operation")
+}
+
+func TestIdentifierAuditRejectsPackageInitializerSHA(t *testing.T) {
+	root := t.TempDir()
+	writeIdentifierAuditFixture(t, root, filepath.Join("agent", "runtime_dir.go"), `package agent
+
+import "crypto/sha256"
+
+var packageHash = sha256.Sum256([]byte("package initializer"))
+
+func nonProjectHash(input string) string { return input }
+`)
+	assertIdentifierAuditFinds(t, root, "unreviewed SHA-256 operation")
+}
+
+func TestIdentifierAuditRejectsSHA256NewWriteFlow(t *testing.T) {
+	root := t.TempDir()
+	writeIdentifierAuditFixture(t, root, filepath.Join("agent", "runtime_dir.go"), `package agent
+
+import "crypto/sha256"
+
+func nonProjectHash(input string) string {
+	_, _ = sha256.New().Write([]byte(input))
+	return input
+}
+`)
+	assertIdentifierAuditFinds(t, root, "unreviewed SHA-256 operation")
+}
+
+func TestIdentifierAuditRejectsSHA256AliasAndDotImports(t *testing.T) {
+	for name, source := range map[string]string{
+		"alias": `package agent
+
+import cryptohash "crypto/sha256"
+
+func nonProjectHash(input string) string {
+	sum := cryptohash.Sum256([]byte(input))
+	return string(sum[:])
+}
+`,
+		"dot": `package agent
+
+import . "crypto/sha256"
+
+func nonProjectHash(input string) string {
+	sum := Sum256([]byte(input))
+	return string(sum[:])
+}
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			writeIdentifierAuditFixture(t, root, filepath.Join("agent", "runtime_dir.go"), source)
+			needle := "crypto/sha256 alias"
+			if name == "dot" {
+				needle = "crypto/sha256 dot import"
+			}
+			assertIdentifierAuditFinds(t, root, needle)
+		})
 	}
 }
 
@@ -81,7 +140,6 @@ func TestIdentifierAuditUsesSyntaxNotCommentsOrStrings(t *testing.T) {
 // func ProjectSlug(path string) string { return path }
 var text = "ulid.Make( project-hash sha256.Sum256([]byte(path)) )"
 `)
-
 	findings, err := identifierAuditFindings(root)
 	if err != nil {
 		t.Fatal(err)
@@ -97,14 +155,7 @@ func TestIdentifierAuditDoesNotExcludeNestedIdentifierDirectory(t *testing.T) {
 
 func ProjectID(path string) string { return path }
 `)
-
-	findings, err := identifierAuditFindings(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(findings) == 0 {
-		t.Fatal("identifier audit excluded a nested cmd/identifier directory")
-	}
+	assertIdentifierAuditFinds(t, root, "duplicate project identifier declaration")
 }
 
 func TestIdentifierAudit(t *testing.T) {
@@ -117,37 +168,38 @@ func TestIdentifierAudit(t *testing.T) {
 	}
 }
 
-// This is an exact allowlist of reviewed production files and functions. A
-// new SHA-256 use must be reviewed here, and its call arguments must still be
-// free of project identity/path data.
-var identifierSHA256Allowlist = map[string]map[string]bool{
+// This closed-world inventory records every currently reviewed crypto/sha256
+// package operation. A new package use, selector, method shape, alias, or
+// package initializer fails until its exact AST fingerprint is reviewed here.
+var identifierSHA256Inventory = map[string]map[string]map[string]bool{
 	"agent/internal/jobstore/output.go": {
-		"outputFileHasPrefixSHA256": true, "outputFileHasSuffixSHA256": true,
-		"outputFileSHA256": true, "outputBytesSHA256": true,
+		"outputFileHasPrefixSHA256": {"New()": true},
+		"outputFileHasSuffixSHA256": {"New()": true},
+		"outputFileSHA256":          {"New()": true},
+		"outputBytesSHA256":         {"Sum256(b)": true},
 	},
-	"agent/internal/tool/registry.go":             {"shortHash": true},
-	"agent/job_watch.go":                          {"normalizedWatchConfigHash": true},
-	"agent/runtime_dir.go":                        {"nonProjectHash": true},
-	"auth/openai/pkce.go":                         {"GeneratePKCE": true},
-	"cmd/serf-fuzz-harvest/emit.go":               {"write": true},
-	"cmd/serf-hub/image_serve.go":                 {"findImageInTranscript": true, "imageSha": true},
-	"cmd/serf-hub/internal/hubcore/tree.go":       {"clusterID": true},
-	"cmd/serf-hub/internal/launchconfig/trust.go": {"canonicalHashTOML": true},
-	"cmd/serf-hub/output_images.go":               {"outputImageSHA": true},
-	"fuzz/promoter/emit_go.go":                    {"ShortHash": true},
-	"llm/continuation_secret.go": {
-		"deriveContinuationSubkey": true, "versionedContinuationHMAC": true,
+	"agent/internal/tool/registry.go": {"shortHash": {"Sum256(b)": true}},
+	"agent/job_watch.go":              {"normalizedWatchConfigHash": {"Sum256(b)": true}},
+	"agent/runtime_dir.go":            {"nonProjectHash": {"Sum256([]byte(input))": true}},
+	"auth/openai/pkce.go":             {"GeneratePKCE": {"Sum256([]byte(verifier))": true}},
+	"cmd/serf-fuzz-harvest/emit.go":   {"write": {"Sum256(encoded)": true}},
+	"cmd/serf-hub/image_serve.go": {"findImageInTranscript": {
+		"Sum256(p.Image.Data)": true, "Sum256(p.ToolResult.ImageData)": true,
+	}, "imageSha": {"Sum256(data)": true}},
+	"cmd/serf-hub/internal/hubcore/tree.go": {
+		"clusterID": {"Sum256([]byte(project + \"\\x00\" + title))": true},
 	},
+	"cmd/serf-hub/internal/launchconfig/trust.go": {"canonicalHashTOML": {"Sum256(buf.Bytes())": true}},
+	"cmd/serf-hub/output_images.go":               {"outputImageSHA": {"Sum256(data)": true}},
+	"fuzz/promoter/emit_go.go":                    {"ShortHash": {"New()": true}},
 	"llm/providers/openai/responses_continuation_fingerprint.go": {
-		"requestFingerprintForResponsesBody": true,
+		"requestFingerprintForResponsesBody": {"Sum256(b)": true},
+	},
+	"llm/continuation_secret.go": {
+		"deriveContinuationSubkey":  {"New": true},
+		"versionedContinuationHMAC": {"New": true},
 	},
 }
-
-// clusterID is the one reviewed non-project hash that receives a project label;
-// it hashes a synthetic sidebar key (project + title), not a project path. Keep
-// the exact expression pinned so a future path hash in this function is not
-// accepted merely because the file/function is allowlisted.
-const reviewedClusterHashArgument = `[]byte(project + "\x00" + title)`
 
 func identifierAuditFindings(root string) ([]string, error) {
 	var findings []string
@@ -157,9 +209,9 @@ func identifierAuditFindings(root string) ([]string, error) {
 			return walkErr
 		}
 		if entry.IsDir() {
-			rel, relErr := filepath.Rel(root, path)
-			if relErr != nil {
-				return relErr
+			rel, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
 			}
 			if !strings.Contains(filepath.ToSlash(rel), "/") && identifierAuditExcludedRootDir(entry.Name()) {
 				return filepath.SkipDir
@@ -169,21 +221,21 @@ func identifierAuditFindings(root string) ([]string, error) {
 		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		raw, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return readErr
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
 		}
 		if isGeneratedGo(raw) {
 			return nil
 		}
-		rel, relErr := filepath.Rel(root, path)
-		if relErr != nil {
-			return relErr
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
 		}
 		rel = filepath.ToSlash(rel)
-		file, parseErr := parser.ParseFile(fset, path, raw, 0)
-		if parseErr != nil {
-			return fmt.Errorf("parse %s: %w", path, parseErr)
+		file, err := parser.ParseFile(fset, path, raw, 0)
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", path, err)
 		}
 		addSyntaxIdentifierFindings(&findings, rel, file)
 		checkSHA256Findings(&findings, rel, file, fset)
@@ -215,9 +267,11 @@ func addSyntaxIdentifierFindings(findings *[]string, path string, file *ast.File
 		*findings = append(*findings, path+": forbidden ULID import")
 	}
 	ast.Inspect(file, func(node ast.Node) bool {
-		fn, ok := node.(*ast.FuncDecl)
-		if ok && fn.Name != nil && (fn.Name.Name == "ProjectID" || fn.Name.Name == "ProjectSlug" || fn.Name.Name == "projectSlug") {
-			*findings = append(*findings, fmt.Sprintf("%s: duplicate project identifier declaration %s", path, fn.Name.Name))
+		if fn, ok := node.(*ast.FuncDecl); ok && fn.Name != nil {
+			switch fn.Name.Name {
+			case "ProjectID", "ProjectSlug", "projectSlug":
+				*findings = append(*findings, fmt.Sprintf("%s: duplicate project identifier declaration %s", path, fn.Name.Name))
+			}
 		}
 		call, ok := node.(*ast.CallExpr)
 		if !ok || len(call.Args) != 0 {
@@ -236,7 +290,7 @@ func addSyntaxIdentifierFindings(findings *[]string, path string, file *ast.File
 }
 
 func checkSHA256Findings(findings *[]string, path string, file *ast.File, fset *token.FileSet) {
-	var shaNames []string
+	shaNames := map[string]bool{}
 	for _, imp := range file.Imports {
 		if strings.Trim(imp.Path.Value, `"`) != "crypto/sha256" {
 			continue
@@ -245,103 +299,111 @@ func checkSHA256Findings(findings *[]string, path string, file *ast.File, fset *
 			*findings = append(*findings, path+": crypto/sha256 dot import is not allowed")
 			continue
 		}
+		if imp.Name != nil {
+			*findings = append(*findings, path+": crypto/sha256 alias is not in the closed-world inventory")
+			continue
+		}
 		name := "sha256"
 		if imp.Name != nil {
 			name = imp.Name.Name
 		}
-		shaNames = append(shaNames, name)
+		shaNames[name] = true
 	}
 	if len(shaNames) == 0 {
 		return
 	}
-	allowedFunctions, allowed := identifierSHA256Allowlist[path]
-	if !allowed {
-		*findings = append(*findings, path+": crypto/sha256 import is not in the reviewed non-project allowlist")
+	inventory, ok := identifierSHA256Inventory[path]
+	if !ok {
+		*findings = append(*findings, path+": crypto/sha256 import is not in the closed-world inventory")
 		return
 	}
+	parents := astParentMap(file)
+	seen := map[string]bool{}
+	checkNode := func(node ast.Node, function string) {
+		selector, ok := node.(*ast.SelectorExpr)
+		if !ok {
+			return
+		}
+		pkg, ok := selector.X.(*ast.Ident)
+		if !ok || !shaNames[pkg.Name] {
+			return
+		}
+		call, isCall := parents[selector].(*ast.CallExpr)
+		fingerprint := selector.Sel.Name
+		if isCall && call.Fun == selector {
+			fingerprint = shaOperationFingerprint(call, parents, fset)
+		}
+		key := function + "\x00" + fingerprint
+		if !seen[key] {
+			seen[key] = true
+			if inventory[function] == nil || !inventory[function][fingerprint] {
+				*findings = append(*findings, fmt.Sprintf("%s: unreviewed SHA-256 operation %s in %s", path, fingerprint, function))
+			}
+		}
+	}
 	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Body == nil {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil {
+			ast.Inspect(fn.Body, func(node ast.Node) bool {
+				checkNode(node, fn.Name.Name)
+				return true
+			})
 			continue
 		}
-		functionAllowed := allowedFunctions[fn.Name.Name]
-		ast.Inspect(fn.Body, func(node ast.Node) bool {
-			call, ok := node.(*ast.CallExpr)
-			if !ok || !isSHA256Call(call, shaNames) {
-				return true
-			}
-			if !functionAllowed {
-				*findings = append(*findings, fmt.Sprintf("%s: SHA-256 call is outside reviewed function %s", path, fn.Name.Name))
-				return true
-			}
-			if fn.Name.Name == "clusterID" && formatSHAArgument(call, fset) == reviewedClusterHashArgument {
-				return true
-			}
-			for _, arg := range call.Args {
-				if expressionContainsProjectPathData(arg) {
-					*findings = append(*findings, path+": SHA-256 call consumes project/path data")
-				}
-			}
+		ast.Inspect(decl, func(node ast.Node) bool {
+			checkNode(node, "<package>")
 			return true
 		})
 	}
 }
 
-func isSHA256Call(call *ast.CallExpr, names []string) bool {
-	selector, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok || selector.Sel.Name != "Sum256" && selector.Sel.Name != "New" {
-		return false
-	}
-	pkg, ok := selector.X.(*ast.Ident)
-	if !ok {
-		return false
-	}
-	for _, name := range names {
-		if pkg.Name == name {
-			return true
-		}
-	}
-	return false
+func astParentMap(file *ast.File) map[ast.Node]ast.Node {
+	parents := make(map[ast.Node]ast.Node)
+	ast.Walk(astParentVisitor{parents: parents}, file)
+	return parents
 }
 
-func formatSHAArgument(call *ast.CallExpr, fset *token.FileSet) string {
-	if len(call.Args) != 1 {
-		return ""
+type astParentVisitor struct {
+	parents map[ast.Node]ast.Node
+	parent  ast.Node
+}
+
+func (v astParentVisitor) Visit(node ast.Node) ast.Visitor {
+	if node == nil {
+		return nil
 	}
+	v.parents[node] = v.parent
+	return astParentVisitor{parents: v.parents, parent: node}
+}
+
+func shaOperationFingerprint(call *ast.CallExpr, parents map[ast.Node]ast.Node, fset *token.FileSet) string {
 	var buf bytes.Buffer
-	if err := format.Node(&buf, fset, call.Args[0]); err != nil {
-		return ""
+	if err := format.Node(&buf, fset, call); err != nil {
+		return "<unformattable>"
 	}
-	return buf.String()
+	text := buf.String()
+	for _, prefix := range []string{"sha256.", "cryptohash."} {
+		text = strings.TrimPrefix(text, prefix)
+	}
+	if selector, ok := parents[call].(*ast.SelectorExpr); ok && selector.X == call {
+		if outer, ok := parents[selector].(*ast.CallExpr); ok && outer.Fun == selector {
+			var outerBuf bytes.Buffer
+			if err := format.Node(&outerBuf, fset, outer); err == nil {
+				text = strings.TrimPrefix(outerBuf.String(), "sha256.")
+			}
+		}
+	}
+	return text
 }
 
-func expressionContainsProjectPathData(expr ast.Expr) bool {
-	found := false
-	ast.Inspect(expr, func(node ast.Node) bool {
-		if found {
-			return false
-		}
-		switch n := node.(type) {
-		case *ast.Ident:
-			name := strings.ToLower(n.Name)
-			for _, marker := range []string{"path", "project", "working", "canonical", "root", "repo", "directory", "bucket"} {
-				if strings.Contains(name, marker) {
-					found = true
-					return false
-				}
-			}
-		case *ast.SelectorExpr:
-			field := strings.ToLower(n.Sel.Name)
-			for _, marker := range []string{"id", "path", "project", "working", "canonical", "root", "repo", "directory", "bucket"} {
-				if strings.Contains(field, marker) {
-					found = true
-					return false
-				}
-			}
-		}
-		return true
-	})
-	return found
+func assertIdentifierAuditFinds(t *testing.T, root, needle string) {
+	t.Helper()
+	findings, err := identifierAuditFindings(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsIdentifierFinding(findings, needle) {
+		t.Fatalf("audit did not report %q: %v", needle, findings)
+	}
 }
 
 func containsIdentifierFinding(findings []string, needle string) bool {
@@ -363,8 +425,7 @@ func identifierAuditExcludedRootDir(name string) bool {
 }
 
 func isGeneratedGo(raw []byte) bool {
-	lines := strings.SplitN(string(raw), "\n", 12)
-	for _, line := range lines {
+	for _, line := range strings.SplitN(string(raw), "\n", 12) {
 		if strings.Contains(line, "Code generated") && strings.Contains(line, "DO NOT EDIT") {
 			return true
 		}
