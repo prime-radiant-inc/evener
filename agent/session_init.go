@@ -102,6 +102,12 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	}
 
 	sessCtx, sessCancel := context.WithCancel(context.Background())
+	initComplete := false
+	defer func() {
+		if !initComplete {
+			sessCancel()
+		}
+	}()
 	delegationAllowance := cfg.spawn.delegationAllowance
 	if cfg.spawn.parentSessionID == "" {
 		// Root sessions derive their allowance from MaxSubagentDepth (already
@@ -287,6 +293,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// Write the initial meta.json so the hub's past index can discover this
 	// session immediately (without waiting for the first completed turn).
 	s.maybeAutoSave()
+	initComplete = true
 	closeJobManagerOnError = false
 	closeMCPManagerOnError = false
 	return s, nil
