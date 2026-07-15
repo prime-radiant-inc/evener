@@ -486,7 +486,7 @@
       }
       return request.then((tasks) => {
         if (this.sessionId !== sessionId || this.conversation !== conversation) return;
-        if (generation < this.taskResponseGeneration) return;
+        if (generation !== this.taskRequestGeneration) return;
         this.taskResponseGeneration = generation;
         this.applyTasks(tasks);
       }).catch(() => {});
@@ -505,8 +505,17 @@
           if (task && task.id != null && task.description) descriptions.set(String(task.id), task.description);
         }
         this.livePlanCard.querySelectorAll(".plan-step").forEach((step) => {
-          const match = /^#(.+)$/.exec(String(step.textContent || "").trim());
-          if (match && descriptions.has(match[1])) step.textContent = descriptions.get(match[1]);
+          if (!step.dataset.taskId) {
+            const match = /^#(.+)$/.exec(String(step.textContent || "").trim());
+            if (match) {
+              step.dataset.taskId = match[1];
+              step.dataset.taskLabelUnresolved = "true";
+            }
+          }
+          if (step.dataset.taskLabelUnresolved === "true" && descriptions.has(step.dataset.taskId)) {
+            step.textContent = descriptions.get(step.dataset.taskId);
+            delete step.dataset.taskLabelUnresolved;
+          }
         });
       }
       const done = tasks.filter(t => t.status === "done").length;

@@ -2,6 +2,9 @@ const assert = require("assert");
 const { JSDOM } = require("jsdom");
 
 const dom = new JSDOM(`<!DOCTYPE html><html><body>
+  <div class="workspace-actions">
+    <button data-tasks-trigger><span class="panel-toggle-label">tasks</span></button>
+  </div>
   <header class="workspace-header" data-session-id="01TEST">
     <span class="status-dot" data-state="active"></span>
   </header>
@@ -77,8 +80,23 @@ const drainMicrotasks = async () => {
 
 const deferred = () => {
   let resolve;
-  const promise = new Promise((r) => { resolve = r; });
-  return { promise, resolve };
+  let reject;
+  const promise = new Promise((r, j) => { resolve = r; reject = j; });
+  return { promise, resolve, reject };
+};
+
+const renderUnresolvedTask = (callId, taskId) => {
+  window.SerfRenderer.handleData("TOOL_CALL_START", {
+    call_id: callId,
+    tool_name: "task_list",
+    arguments_json: JSON.stringify({ action: "update", updates: [{ id: taskId, status: "in_progress" }] }),
+  });
+  window.SerfRenderer.handleData("TOOL_CALL_END", {
+    call_id: callId,
+    tool_name: "task_list",
+    output: "Updated.",
+    tool_state: JSON.stringify([{ id: taskId, status: "in_progress" }]),
+  });
 };
 
 (async () => {
@@ -135,6 +153,48 @@ const deferred = () => {
   assert.strictEqual(conversation.querySelectorAll(".task-card").length, 1, "task hydration duplicated the task card");
   assert.strictEqual(conversation.querySelectorAll(".user-message").length, 2, "task hydration duplicated user transcript items");
 
+  const issuedFirst = deferred();
+  const issuedLatest = deferred();
+  let issuedOrderReads = 0;
+  tasksImpl = () => (++issuedOrderReads === 1 ? issuedFirst.promise : issuedLatest.promise);
+  readThreadImpl = (sessionId) => Promise.resolve({
+    thread: { id: sessionId, sessionId, serf: { ref: "local:" + sessionId }, turns: [] },
+  });
+  const issuedOrderConversation = window.document.createElement("div");
+  issuedOrderConversation.dataset.sessionId = "issued-order-session";
+  conversation.replaceWith(issuedOrderConversation);
+  window.SerfRenderer.init(issuedOrderConversation);
+  renderUnresolvedTask("issued_order_task", 101);
+  window.SerfRenderer.handleData("TASKS_CHANGED", { done: 0, total: 1 });
+  const issuedOrderBadge = window.document.querySelector(".panel-toggle-badge");
+  issuedFirst.resolve([{ id: 101, description: "Stale issued-first metadata", status: "done" }]);
+  await drainMicrotasks();
+  assert.strictEqual(window.SerfRendererInternal.taskDescriptions.has(101), false, "request N mutated cache after N+1 was issued");
+  assert.strictEqual(issuedOrderConversation.querySelector(".plan-step").textContent, "#101", "request N mutated a plan label after N+1 was issued");
+  assert.strictEqual(issuedOrderBadge.textContent, "0/1", "request N mutated the pushed task badge after N+1 was issued");
+  issuedLatest.resolve([{ id: 101, description: "Latest issued metadata", status: "in_progress" }]);
+  await drainMicrotasks();
+  assert.strictEqual(window.SerfRendererInternal.taskDescriptions.get(101), "Latest issued metadata", "latest issued response did not apply");
+
+  const rejectedOlder = deferred();
+  const rejectedLatest = deferred();
+  let rejectedOrderReads = 0;
+  tasksImpl = () => (++rejectedOrderReads === 1 ? rejectedOlder.promise : rejectedLatest.promise);
+  const rejectedOrderConversation = window.document.createElement("div");
+  rejectedOrderConversation.dataset.sessionId = "rejected-order-session";
+  issuedOrderConversation.replaceWith(rejectedOrderConversation);
+  window.SerfRenderer.init(rejectedOrderConversation);
+  renderUnresolvedTask("rejected_order_task", 102);
+  window.SerfRenderer.handleData("TASKS_CHANGED", { done: 0, total: 1 });
+  const rejectedOrderBadge = window.document.querySelector(".panel-toggle-badge");
+  rejectedLatest.reject(new Error("newest task read failed"));
+  await drainMicrotasks();
+  rejectedOlder.resolve([{ id: 102, description: "Stale after latest rejection", status: "done" }]);
+  await drainMicrotasks();
+  assert.strictEqual(window.SerfRendererInternal.taskDescriptions.has(102), false, "request N mutated cache after N+1 rejected");
+  assert.strictEqual(rejectedOrderConversation.querySelector(".plan-step").textContent, "#102", "request N mutated a plan label after N+1 rejected");
+  assert.strictEqual(rejectedOrderBadge.textContent, "0/1", "request N mutated the pushed task badge after N+1 rejected");
+
   const initialTasks = deferred();
   const newerTasks = deferred();
   let sameSessionTaskReads = 0;
@@ -178,6 +238,21 @@ const deferred = () => {
   sessionATasks.resolve([{ id: 1, description: "Stale session A task", status: "done" }]);
   await drainMicrotasks();
   assert.strictEqual(window.SerfRendererInternal.taskDescriptions.get(1), "Session B task", "stale session A task metadata mutated session B");
+
+  tasksImpl = () => new Promise(() => {});
+  const stableLabelConversation = window.document.createElement("div");
+  stableLabelConversation.dataset.sessionId = "stable-label-session";
+  conversationB.replaceWith(stableLabelConversation);
+  window.SerfRenderer.init(stableLabelConversation);
+  window.SerfRendererInternal.taskDescriptions.delete(201);
+  window.SerfRendererInternal.taskDescriptions.delete(202);
+  renderUnresolvedTask("stable_label_task", 201);
+  const stableLabel = stableLabelConversation.querySelector(".plan-step");
+  assert.strictEqual(stableLabel.textContent, "#201", "stable-label fixture did not render an unresolved task placeholder");
+  window.SerfRenderer.applyTasks([{ id: 201, description: "#202", status: "in_progress" }]);
+  assert.strictEqual(stableLabel.textContent, "#202", "task 201's hash-prefixed description did not hydrate");
+  window.SerfRenderer.applyTasks([{ id: 202, description: "Second task", status: "open" }]);
+  assert.strictEqual(stableLabel.textContent, "#202", "task 201's legitimate #202 description was reinterpreted as task 202's placeholder");
 
   console.log("PASS: transcript paints before task descriptions and task labels hydrate in place");
   process.exit(0);
