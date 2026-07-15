@@ -139,6 +139,8 @@
       this.liveInterruptCap = null;
       this.liveCapabilitiesStatus = "";
       this.statusUpdateSeq = 0;
+      if (!Number.isFinite(this.taskRequestGeneration)) this.taskRequestGeneration = 0;
+      if (!Number.isFinite(this.taskResponseGeneration)) this.taskResponseGeneration = 0;
 
       this.activeMessages = new Map();   // messageId -> {el, textBuf, markdownTimer}
       this.activeTools = new Map();      // callId -> {el, outputBuf}
@@ -467,14 +469,27 @@
 
     hydrateDescriptions() {
       if (!this.sessionId) return Promise.resolve();
+      return this.requestTasks();
+    },
+
+    requestTasks() {
+      if (!this.sessionId) return Promise.resolve();
+      const sessionId = this.sessionId;
+      const conversation = this.conversation;
+      const generation = ++this.taskRequestGeneration;
+      let request;
       if (window.SerfAppwire) {
-        return window.SerfAppwire.tasks(this.sessionId)
-          .then(tasks => this.applyTasks(tasks))
-          .catch(() => {});
+        request = window.SerfAppwire.tasks(sessionId);
+      } else {
+        request = partialFetch(sessionPartialPath(sessionId, "tasks"))
+          .then(r => r.ok ? r.json() : []);
       }
-      return partialFetch(sessionPartialPath(this.sessionId, "tasks"))
-        .then(r => r.ok ? r.json() : [])
-        .then(tasks => this.applyTasks(tasks)).catch(() => {});
+      return request.then((tasks) => {
+        if (this.sessionId !== sessionId || this.conversation !== conversation) return;
+        if (generation < this.taskResponseGeneration) return;
+        this.taskResponseGeneration = generation;
+        this.applyTasks(tasks);
+      }).catch(() => {});
     },
 
     applyTasks(tasks) {
@@ -484,7 +499,16 @@
           rememberTask(t);
         }
       }
-      if (tasks.length && this.livePlanCard) this.renderLivePlan(tasks);
+      if (tasks.length && this.livePlanCard) {
+        const descriptions = new Map();
+        for (const task of tasks) {
+          if (task && task.id != null && task.description) descriptions.set(String(task.id), task.description);
+        }
+        this.livePlanCard.querySelectorAll(".plan-step").forEach((step) => {
+          const match = /^#(.+)$/.exec(String(step.textContent || "").trim());
+          if (match && descriptions.has(match[1])) step.textContent = descriptions.get(match[1]);
+        });
+      }
       const done = tasks.filter(t => t.status === "done").length;
       updateTasksBadge(done, tasks.length, currentTaskSummary(tasks));
     },
@@ -1112,9 +1136,7 @@
           // pushed counts, then refetch the full list once to refresh the
           // panel's per-row detail. This replaces the old 5s poll.
           updateTasksBadge(data.done, data.total, "");
-          if (window.SerfAppwire) {
-            window.SerfAppwire.tasks(this.sessionId).then(tasks => this.applyTasks(tasks)).catch(() => {});
-          }
+          this.requestTasks();
           break;
         case "SANDBOX_ESCALATION_REQUESTED":
           this.appendSandboxEscalation(data);
@@ -4329,15 +4351,7 @@
 
     refreshTaskBadgeSoon() {
       if (!this.sessionId) return;
-      if (window.SerfAppwire) {
-        window.SerfAppwire.tasks(this.sessionId)
-          .then(tasks => this.applyTasks(tasks))
-          .catch(() => {});
-        return;
-      }
-      partialFetch(sessionPartialPath(this.sessionId, "tasks"))
-        .then(r => r.ok ? r.json() : [])
-        .then(tasks => this.applyTasks(tasks)).catch(() => {});
+      this.requestTasks();
     },
 
     scrollToBottom() {
