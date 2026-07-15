@@ -148,10 +148,41 @@ broad operational stale search                         PASS (only intentional ge
 git diff --check                                      PASS
 ```
 
+## Final independent re-review
+
+The final review iteration replaced SHA dataflow heuristics with an exact closed-world AST inventory. Any new SHA-256 package operation, enclosing declaration, call shape, alias, dot import, or package initializer now fails unless that exact existing non-project use is reviewed. Direct regressions cover hidden-input `Sum256`, package initializers, `New().Write`, aliases, and dot imports.
+
+Fresh parent completion verification passed:
+
+```text
+go test . -run '^TestIdentifierAudit' -count=1
+ok primeradiant.com/serf 0.435s
+
+go test ./identifier ./cmd/serf-doctor ./cmd/serf-hub/internal/hubcore -count=1
+ok primeradiant.com/serf/identifier 0.913s
+ok primeradiant.com/serf/cmd/serf-doctor 0.548s
+ok primeradiant.com/serf/cmd/serf-hub/internal/hubcore 0.705s
+
+make lint-docs
+serf-docscheck: all exported package-level declarations in the library packages are documented
+
+git diff --check
+PASS
+```
+
+The independent final re-review reported no findings:
+
+- Spec compliance: pass.
+- Task quality: Approved.
+- Critical: 0; Important: 0; Minor: 0.
+
 ## Commit hash(es)
 
-- Implementation commit: `3878f6e9a7be2876f06e95b98a405bc733a17352` — `docs: document unified identifier formats`
-- Follow-up fix/report commit: recorded after the follow-up verification commit.
+- `3878f6e9a` — documentation and initial repository audit.
+- `e423cfa06` — initial Task 10 implementation report.
+- `187e70951` — workspace/tidy verification and doctor fixture migration.
+- `b5888ddbd` — AST audit hardening and operational documentation cleanup.
+- `e1f975abb` — closed-world SHA-256 audit inventory and bypass regressions.
 
 ## Closed-world audit follow-up
 
