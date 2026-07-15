@@ -331,3 +331,52 @@ Result: focused, subscription, and realistic renderer tests passed with exit 0; 
 ### Concerns
 
 The recurring `packed-refs.lock` permission warning remains an environment-only commit concern; tests and diff checks passed.
+
+## Re-review fix: reject malformed optional fields and unknown properties
+
+### Status
+
+DONE
+
+### Changes
+
+- Added malformed regressions for append optional `depends_on`/`reasoning_effort` types and unknown properties.
+- Added malformed regressions for update optional `notes`/`depends_on`/`reasoning_effort` types and unknown properties.
+- Added malformed regressions for unknown top-level append/update keys and missing append payload.
+- Renderer now enforces exact top-level keys (`action` plus `tasks` or `updates`), exact allowed entry keys, string optional text/effort fields, and integer-number dependency arrays.
+- Omitted update status remains valid for approved metadata-only updates; explicit status validation remains unchanged.
+
+### TDD evidence
+
+Red command before strict key/optional validation:
+
+```text
+cd cmd/serf-hub/jstest
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
+```
+
+Result: failed at `malformed nested task mutations render and refresh no card`; malformed optional/unknown payloads rendered cards.
+
+Green commands:
+
+```text
+cd cmd/serf-hub/jstest
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-realistic-flow.js
+cd ../..
+git diff --check
+```
+
+Result: focused, subscription, and realistic renderer tests passed with exit 0; `git diff --check` passed.
+
+### Self-review
+
+- Unknown top-level and nested properties reject the entire mutation before cache seeding, rendering, or badge refresh.
+- Append optional fields accept only their schema types; dependency IDs must be integer numbers.
+- Update optional fields accept only their schema types; omitted status remains supported.
+- Existing malformed silence/refresh suppression and all valid changes-only scenarios remain green.
+
+### Concerns
+
+The recurring `packed-refs.lock` permission warning remains an environment-only commit concern; tests and diff checks passed.

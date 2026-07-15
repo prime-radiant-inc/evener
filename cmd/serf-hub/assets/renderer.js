@@ -55,26 +55,43 @@
     return Number.isInteger(id) && id > 0;
   }
 
+  function hasOnlyKeys(value, keys) {
+    return Object.keys(value).every(key => keys.includes(key));
+  }
+
+  function validDependencyList(value) {
+    return Array.isArray(value) && value.every(id => typeof id === "number" && Number.isInteger(id));
+  }
+
   function validTaskMutationEntry(entry, allowStatus) {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry) || !usableTaskID(entry.id)) return false;
-    return !allowStatus || !Object.prototype.hasOwnProperty.call(entry, "status") ||
-      VALID_TASK_STATUSES.has(entry.status);
+    if (!entry || typeof entry !== "object" || Array.isArray(entry) || !usableTaskID(entry.id) ||
+        !hasOnlyKeys(entry, ["id", "status", "notes", "depends_on", "reasoning_effort"])) return false;
+    if (Object.prototype.hasOwnProperty.call(entry, "status") && !VALID_TASK_STATUSES.has(entry.status)) return false;
+    if (Object.prototype.hasOwnProperty.call(entry, "notes") && typeof entry.notes !== "string") return false;
+    if (Object.prototype.hasOwnProperty.call(entry, "depends_on") && !validDependencyList(entry.depends_on)) return false;
+    if (Object.prototype.hasOwnProperty.call(entry, "reasoning_effort") && typeof entry.reasoning_effort !== "string") return false;
+    return true;
   }
 
   function validTaskAppendEntry(entry) {
     return entry && typeof entry === "object" && !Array.isArray(entry) &&
+      hasOnlyKeys(entry, ["type", "description", "prompt", "depends_on", "reasoning_effort"]) &&
       typeof entry.type === "string" && VALID_TASK_TYPES.has(entry.type) &&
       typeof entry.description === "string" &&
-      typeof entry.prompt === "string";
+      typeof entry.prompt === "string" &&
+      (!Object.prototype.hasOwnProperty.call(entry, "depends_on") || validDependencyList(entry.depends_on)) &&
+      (!Object.prototype.hasOwnProperty.call(entry, "reasoning_effort") || typeof entry.reasoning_effort === "string");
   }
 
   function validTaskMutationArgs(args) {
     if (!args || typeof args !== "object" || Array.isArray(args)) return false;
     if (args.action === "append") {
+      if (!hasOnlyKeys(args, ["action", "tasks"])) return false;
       return Array.isArray(args.tasks) && args.tasks.length > 0 &&
         args.tasks.every(validTaskAppendEntry);
     }
     if (args.action === "update") {
+      if (!hasOnlyKeys(args, ["action", "updates"])) return false;
       return Array.isArray(args.updates) && args.updates.length > 0 &&
         args.updates.every(update => validTaskMutationEntry(update, true));
     }
