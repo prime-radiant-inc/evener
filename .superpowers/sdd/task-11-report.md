@@ -258,3 +258,44 @@ agent/internal/installid/installation_id_test.go:220:2: field renameCount is unu
 required next lint wave needs parent direction/context before changing those
 files. No changes were made to `.superpowers/sdd/task-1-report.md` or
 `.superpowers/sdd/progress.md`.
+
+## Fifth gate failure: stale tool-fluency transcript IDs
+
+### RED evidence
+
+Reproduced the clean-break failure with:
+
+```text
+go test ./tools/tool-fluency/cmd/serf-fluency -run '^TestAllTranscriptToolCountsIncludesChildSessions$' -count=1
+```
+
+Result: FAIL — `allTranscriptToolCounts: invalid session id "child_session"`.
+
+### Root cause and change
+
+The transcript reader now validates local transcript filename/header session
+IDs as strict 22-character UUIDv7/base62 IDs. The regression fixture used
+`root_session` and `child_session`, so the child transcript was rejected before
+tool counts could be accumulated. Replaced them with distinct deterministic
+valid IDs `02wMz5Txv1C3Hut0M8GCeB` and `02wMz5Txv2enqVTitaig6F`; the test still
+asserts `read_file == 2`, preserving the cross-session accumulation contract.
+
+Audited all local transcript/meta fixtures in this package. Migrated the
+synchronized offline and coverage-program metadata IDs (`child`, `new`, `old`,
+`parented`, and `root` parent linkage) to distinct valid IDs and updated the
+root-session expectation. Deliberately invalid fixtures remain unchanged:
+`invalid.meta.json`, malformed JSON, `unreadable.meta.json`, empty transcript
+name, and `bad.transcript.jsonl` continue to exercise error paths. Generic
+non-fixture labels were not indiscriminately rewritten.
+
+### Verification
+
+- Focused transcript test — PASS.
+- `go test ./tools/tool-fluency/cmd/serf-fluency -count=1` — PASS.
+- `MODULES=. scripts/run-module-tests.sh -short -count=1` — tool-fluency passed; the root-module runner was blocked by the sandbox listener restriction in `server/TestWSTransportRecordsFrames` (`httptest` bind `[::1]:0`, `operation not permitted`).
+- `make lint` — PASS, 0 issues, exit 0.
+- `make vet` — PASS, exit 0.
+- `git diff --check` — PASS, exit 0.
+
+No changes were made to `.superpowers/sdd/task-1-report.md` or
+`.superpowers/sdd/progress.md`.

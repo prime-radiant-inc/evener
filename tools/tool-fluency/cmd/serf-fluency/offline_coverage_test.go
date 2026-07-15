@@ -175,17 +175,20 @@ func TestRootSessionAndResultPersistence(t *testing.T) {
 	state := t.TempDir()
 	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	newer := old.Add(time.Hour)
+	const childID = "02wMz5Txv1C3Hut0M8GCeB"
+	const newID = "02wMz5Txv2enqVTitaig6F"
+	const oldID = "02wMz5Txv3fQm7JtYx4a8P"
 	for _, meta := range []schema.SessionMeta{
-		{ID: "child", IsSubagent: true, CreatedAt: old.Add(-time.Hour)},
-		{ID: "new", CreatedAt: newer},
-		{ID: "old", CreatedAt: old},
+		{ID: childID, IsSubagent: true, CreatedAt: old.Add(-time.Hour)},
+		{ID: newID, CreatedAt: newer},
+		{ID: oldID, CreatedAt: old},
 	} {
 		if err := schema.SaveSessionMeta(state, meta); err != nil {
 			t.Fatal(err)
 		}
 	}
 	mustWrite(t, filepath.Join(state, "sessions", "invalid.meta.json"), "{")
-	if id, err := rootSessionID(state); err != nil || id != "old" {
+	if id, err := rootSessionID(state); err != nil || id != oldID {
 		t.Fatalf("rootSessionID = %q, %v", id, err)
 	}
 	if _, err := rootSessionID(t.TempDir()); err == nil {
