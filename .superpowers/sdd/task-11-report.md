@@ -41,7 +41,7 @@ The pre-existing `.superpowers/sdd/task-1-report.md` worktree modification was n
 
 ## Commit
 
-The final commit hash is recorded here after committing the scoped files.
+`24a69ccc64714059fe9c4e14f2c657d4676141e3`
 
 ## Concerns
 
