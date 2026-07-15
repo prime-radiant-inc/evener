@@ -512,8 +512,9 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 				Branch:       pe.Meta.EnvInfo.GitBranch,
 				Worktree:     worktreeLabel(pe.Meta.WorktreePath),
 				Capabilities: s.apiSessionCapabilities(id, false),
-				// ActiveTurnStartedAt stays 0: the session has ended, so no
-				// turn is in flight.
+				// ActiveTurnStartedAt stays 0: archived child metadata does not
+				// expose the current turn's start time, even when the parent roster
+				// projects this child as active.
 				WorkMillis: pe.Meta.WorkMillis,
 				Usage:      serfUsageFromCumulative(pe.Meta.CumulativeUsage),
 			}
