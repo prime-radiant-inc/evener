@@ -8,6 +8,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -158,8 +159,40 @@ func ProjectID(path string) string { return path }
 	assertIdentifierAuditFinds(t, root, "duplicate project identifier declaration")
 }
 
+func TestIdentifierAuditTrackedScopeExcludesIgnoredNestedCheckout(t *testing.T) {
+	root := t.TempDir()
+	if out, err := exec.Command("git", "-C", root, "init", "-q").CombinedOutput(); err != nil {
+		t.Skipf("git init unavailable: %v: %s", err, out)
+	}
+	writeIdentifierAuditFixture(t, root, ".gitignore", "ignored/\n")
+	writeIdentifierAuditFixture(t, root, filepath.Join("active", "fixture.go"), `package fixture
+
+func ProjectID(path string) string { return path }
+`)
+	writeIdentifierAuditFixture(t, root, filepath.Join("ignored", "nested-checkout", "legacy.go"), `package legacy
+
+func ProjectSlug(path string) string { return path }
+`)
+	if out, err := exec.Command("git", "-C", root, "add", ".gitignore", "active/fixture.go").CombinedOutput(); err != nil {
+		t.Fatalf("git add audit fixtures: %v: %s", err, out)
+	}
+
+	findings, err := identifierAuditTrackedFindings(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsIdentifierFinding(findings, "active/fixture.go: duplicate project identifier declaration") {
+		t.Fatalf("active checkout finding missing: %v", findings)
+	}
+	for _, finding := range findings {
+		if strings.Contains(finding, "nested-checkout") {
+			t.Fatalf("nested checkout was audited: %v", findings)
+		}
+	}
+}
+
 func TestIdentifierAudit(t *testing.T) {
-	findings, err := identifierAuditFindings(".")
+	findings, err := identifierAuditTrackedFindings(".")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,8 +235,7 @@ var identifierSHA256Inventory = map[string]map[string]map[string]bool{
 }
 
 func identifierAuditFindings(root string) ([]string, error) {
-	var findings []string
-	fset := token.NewFileSet()
+	var paths []string
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -221,28 +253,67 @@ func identifierAuditFindings(root string) ([]string, error) {
 		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if isGeneratedGo(raw) {
-			return nil
-		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
 		}
-		rel = filepath.ToSlash(rel)
-		file, err := parser.ParseFile(fset, path, raw, 0)
-		if err != nil {
-			return fmt.Errorf("parse %s: %w", path, err)
-		}
-		addSyntaxIdentifierFindings(&findings, rel, file)
-		checkSHA256Findings(&findings, rel, file, fset)
+		paths = append(paths, filepath.ToSlash(rel))
 		return nil
 	})
 	if err != nil {
 		return nil, err
+	}
+	return identifierAuditFindingsForFiles(root, paths)
+}
+
+func identifierAuditTrackedFindings(root string) ([]string, error) {
+	cmd := exec.Command("git", "-C", root, "ls-files", "-z", "--cached", "--", "*.go")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("list tracked Go files: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	paths := make([]string, 0, bytes.Count(out, []byte{0}))
+	for _, rawPath := range bytes.Split(out, []byte{0}) {
+		if len(rawPath) == 0 {
+			continue
+		}
+		rel := filepath.ToSlash(string(rawPath))
+		rootDir := rel
+		if slash := strings.IndexByte(rel, '/'); slash >= 0 {
+			rootDir = rel[:slash]
+		}
+		if identifierAuditExcludedRootDir(rootDir) {
+			continue
+		}
+		paths = append(paths, rel)
+	}
+	return identifierAuditFindingsForFiles(root, paths)
+}
+
+func identifierAuditFindingsForFiles(root string, paths []string) ([]string, error) {
+	var findings []string
+	fset := token.NewFileSet()
+	for _, rel := range paths {
+		if filepath.Ext(rel) != ".go" || strings.HasSuffix(rel, "_test.go") {
+			continue
+		}
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		if isGeneratedGo(raw) {
+			continue
+		}
+		file, err := parser.ParseFile(fset, path, raw, 0)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", path, err)
+		}
+		addSyntaxIdentifierFindings(&findings, rel, file)
+		checkSHA256Findings(&findings, rel, file, fset)
 	}
 	sort.Strings(findings)
 	return findings, nil

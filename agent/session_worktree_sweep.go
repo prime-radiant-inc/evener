@@ -131,8 +131,15 @@ func (s *Session) runLaneResidueSweep(ctx context.Context) (budgetHit bool) {
 	// refusal/ENOENT (a concurrent collector won the race) is a reported skip and
 	// the pass moves on. Sweep 1 collects registered unlocked delegate lanes;
 	// sweep 2 reclaims orphan branch+sidecar residue a crash stranded between a
-	// worktree remove and its branch delete.
+	// worktree remove and its branch delete. Refresh the registry snapshot between
+	// them: sweep 1 may itself create that orphan after its remove succeeds but a
+	// concurrent Git operation makes branch deletion lose the race.
 	_, _, _ = s.worktreePruneSweep1(ctx, run, managed, metaDir, policy)
+	out, err = run("worktree", "list", "--porcelain")
+	if err != nil {
+		return false
+	}
+	managed = managedPorcelainEntries(worktree.ParsePorcelain(out), projectDir)
 	_, _, _ = s.worktreePruneSweep2(ctx, run, managed, metaDir, policy)
 	return false
 }

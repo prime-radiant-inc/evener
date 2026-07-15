@@ -128,6 +128,22 @@ func TestResolveProjectWithPipeline_NonGitRetainsCanonicalPath(t *testing.T) {
 	}
 }
 
+func TestResolveProjectWithPipeline_UsesResolverFilesystem(t *testing.T) {
+	canonical := filepath.Join(t.TempDir(), "virtual-environment-only")
+	resolver := &pipelineResolver{
+		abs:  canonical,
+		eval: []string{canonical, canonical},
+	}
+
+	got, err := ResolveProjectWith("input", resolver)
+	if err != nil {
+		t.Fatalf("ResolveProjectWith virtual resolver path: %v", err)
+	}
+	if got.CanonicalPath != canonical {
+		t.Fatalf("CanonicalPath = %q, want resolver path %q", got.CanonicalPath, canonical)
+	}
+}
+
 func TestResolveProjectWithPipeline_ErrorsAndValidation(t *testing.T) {
 	t.Run("empty path", func(t *testing.T) {
 		if _, err := ResolveProjectWith("", &pipelineResolver{}); err == nil {

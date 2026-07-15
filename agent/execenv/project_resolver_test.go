@@ -48,12 +48,6 @@ func TestProjectResolver_GenericLinkedWorktreeUsesMainRoot(t *testing.T) {
 	worktree := filepath.Join(base, "worktree")
 	cwd := filepath.Join(worktree, "nested")
 	common := filepath.Join(main, ".git")
-	if err := os.MkdirAll(filepath.Join(main, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(cwd, 0o755); err != nil {
-		t.Fatal(err)
-	}
 	commands := []string{}
 	env := &fakeExecEnv{workDir: cwd, exists: func(path string) bool {
 		return path == filepath.Join(main, ".git")
@@ -80,6 +74,29 @@ func TestProjectResolver_GenericLinkedWorktreeUsesMainRoot(t *testing.T) {
 	}
 	if len(commands) != 4 || commands[0] != "pwd -P @ "+cwd || commands[1] != "git rev-parse --git-common-dir @ "+cwd || commands[2] != "git rev-parse --show-toplevel @ "+cwd {
 		t.Fatalf("generic command evidence = %v, want pwd, both Git commands, and final main-root pwd", commands)
+	}
+}
+
+func TestProjectResolver_GenericVirtualNonGitDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "virtual-non-git")
+	env := &fakeExecEnv{workDir: dir, exec: func(_ context.Context, command string, _ int, workingDir string, _ map[string]string) (ExecResult, error) {
+		switch command {
+		case "pwd -P":
+			return ExecResult{Stdout: workingDir + "\n", ExitCode: 0}, nil
+		case "git rev-parse --git-common-dir":
+			return ExecResult{ExitCode: 128}, nil
+		default:
+			t.Fatalf("unexpected command %q", command)
+			return ExecResult{}, nil
+		}
+	}}
+
+	project, err := identifier.ResolveProjectWith(dir, NewProjectResolver(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if project.CanonicalPath != dir {
+		t.Fatalf("canonical path = %q, want virtual path %q", project.CanonicalPath, dir)
 	}
 }
 
@@ -247,6 +264,16 @@ func TestProjectResolver_NonexistentDirectory(t *testing.T) {
 	_, err := identifier.ResolveProjectWith(dir, NewProjectResolver(NewLocalExecutionEnvironment(dir)))
 	if err == nil {
 		t.Fatal("ResolveProjectWith(nonexistent) error = nil")
+	}
+}
+
+func TestProjectResolver_LocalRegularFileRejected(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "project-file")
+	if err := os.WriteFile(file, []byte("not a directory\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identifier.ResolveProjectWith(file, NewProjectResolver(NewLocalExecutionEnvironment(filepath.Dir(file)))); err == nil {
+		t.Fatal("ResolveProjectWith(regular file) error = nil")
 	}
 }
 

@@ -27,7 +27,7 @@ type PastEntry struct {
 	StateDir string // the project's state-dir root (parent of `sessions/`)
 }
 
-// PastIndex globs `<projectsRoot>/<sha>/sessions/*.meta.json` style paths
+// PastIndex globs `<projectsRoot>/<project-id>/sessions/*.meta.json` style paths
 // (state_glob points at the projects-root pattern with a trailing wildcard).
 // All metas are kept in memory; rebuild is lazy or scheduled.
 type PastIndex struct {

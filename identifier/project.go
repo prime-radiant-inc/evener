@@ -19,6 +19,8 @@ type Project struct {
 }
 
 // Resolver is the filesystem and Git seam used by project resolution.
+// EvalSymlinks must reject paths that do not name an existing directory in the
+// resolver's environment.
 type Resolver interface {
 	Abs(string) (string, error)
 	EvalSymlinks(string) (string, error)
@@ -29,7 +31,14 @@ type localResolver struct{}
 
 func (localResolver) Abs(path string) (string, error) { return filepath.Abs(path) }
 func (localResolver) EvalSymlinks(path string) (string, error) {
-	return filepath.EvalSymlinks(path)
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	if err := existingDirectory(resolved); err != nil {
+		return "", err
+	}
+	return resolved, nil
 }
 func (localResolver) MainCheckout(path string) (string, bool, error) {
 	return mainCheckoutLocal(path)
@@ -65,9 +74,6 @@ func ResolveProjectWith(path string, resolver Resolver) (Project, error) {
 		return Project{}, fmt.Errorf("resolve project symlinks: %w", err)
 	}
 	canonical = filepath.Clean(canonical)
-	if err := existingDirectory(canonical); err != nil {
-		return Project{}, fmt.Errorf("resolve project path: %w", err)
-	}
 
 	selected, isGit, err := resolver.MainCheckout(canonical)
 	if err != nil {
@@ -84,9 +90,6 @@ func ResolveProjectWith(path string, resolver Resolver) (Project, error) {
 		return Project{}, fmt.Errorf("resolve project identity symlinks: %w", err)
 	}
 	canonical = filepath.Clean(canonical)
-	if err := existingDirectory(canonical); err != nil {
-		return Project{}, fmt.Errorf("resolve project identity path: %w", err)
-	}
 	return Project{ID: projectID(canonical), CanonicalPath: canonical}, nil
 }
 

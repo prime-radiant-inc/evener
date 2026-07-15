@@ -2257,13 +2257,20 @@ func (s *Session) worktreePruneSweep1(ctx context.Context, run worktree.GitRunne
 // collectLane runs the collection mechanics for one lane (spec §5 sweep 1 /
 // §P3): `git worktree remove` (only when a worktree is registered), then — for
 // a policy that marks — the own-store Disposed mark, then `branch -D`, then the
-// sidecar delete. Any failure is returned wrapped; the caller decides whether to
-// abort (prune) or treat it as a lost race (P3). The mark is best-effort inside
-// markDisposed itself, so it never blocks the branch/sidecar cleanup.
+// sidecar delete. A remove error with a definitively absent lane is a concurrent
+// collector win, so this collector continues the remaining cleanup; a present
+// lane or transient stat failure remains an error. Other failures are returned
+// wrapped, and the caller decides whether to abort (prune) or treat them as a
+// lost race (P3). The mark is best-effort inside markDisposed itself, so it never
+// blocks the branch/sidecar cleanup.
 func (s *Session) collectLane(run worktree.GitRunner, metaDir, name, path string, hasWorktree bool, policy laneSweepPolicy) error {
 	if hasWorktree {
 		if _, err := run("worktree", "remove", "--", path); err != nil {
-			return fmt.Errorf("removing %s: %w", path, err)
+			// Another collector may have completed the same remove first. Continue
+			// only when the lane is definitively gone; doubt is non-destructive.
+			if _, statErr := s.statLaneGitDir(path); !os.IsNotExist(statErr) {
+				return fmt.Errorf("removing %s: %w", path, err)
+			}
 		}
 	}
 	if policy.markDisposed != nil {

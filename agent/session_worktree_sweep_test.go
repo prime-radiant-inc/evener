@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -346,6 +347,87 @@ func TestP3Sweep_TwoConcurrentPassesCollectOnce(t *testing.T) {
 	}
 	if r.branchExists(t, id) {
 		t.Error("lane branch survived two concurrent passes")
+	}
+}
+
+// TestP3CollectLane_ConcurrentWinnerCompletesRemoval proves that a remove
+// error means "lost race" rather than "lane survived" when another collector
+// has already removed the worktree. The losing collector must finish the
+// branch+sidecar cleanup instead of stranding residue.
+func TestP3CollectLane_ConcurrentWinnerCompletesRemoval(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	id, path, _ := r.seedForeignUnlockedLane(t)
+	r.commitAndFastForwardMerge(t, id, path)
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available")
+	}
+	script := "#!/bin/sh\n" +
+		"if [ \"$*\" = 'worktree remove -- " + path + "' ]; then\n" +
+		"  '" + realGit + "' \"$@\" || exit $?\n" +
+		"  echo 'shim: concurrent collector already removed worktree' >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"exec '" + realGit + "' \"$@\"\n"
+	writeRepoGitShim(t, r.mainRoot, script)
+
+	run, err := r.s.worktreeControlRun(context.Background(), r.mainRoot)
+	if err != nil {
+		t.Fatalf("worktreeControlRun: %v", err)
+	}
+	metaDir := r.metaDir(t, r.canonicalMain(t))
+	if err := r.s.collectLane(run, metaDir, id, path, true, r.s.residueSweepPolicy()); err != nil {
+		t.Fatalf("collectLane after concurrent removal: %v", err)
+	}
+
+	if r.lanePresent(path) {
+		t.Error("lane survived concurrent removal")
+	}
+	if r.branchExists(t, id) {
+		t.Error("branch survived concurrent-winner cleanup")
+	}
+	if _, err := worktree.ReadSidecar(metaDir, id); err == nil {
+		t.Error("sidecar survived concurrent-winner cleanup")
+	}
+}
+
+// TestP3Sweep_Sweep2CollectsSweep1BranchFailure proves the remnant-cleanup
+// contract behind concurrent P3 passes: if sweep 1 removes the worktree but
+// loses its branch-delete race, sweep 2 must observe the now-orphaned
+// branch+sidecar and finish collection in the same pass.
+func TestP3Sweep_Sweep2CollectsSweep1BranchFailure(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	id, path, _ := r.seedForeignUnlockedLane(t)
+	r.commitAndFastForwardMerge(t, id, path)
+	r.ageBeyondGrace(t, id)
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available")
+	}
+	marker := filepath.Join(t.TempDir(), "failed-once")
+	script := "#!/bin/sh\n" +
+		"if [ \"$*\" = 'branch -D " + id + "' ] && [ ! -e '" + marker + "' ]; then\n" +
+		"  : > '" + marker + "'\n" +
+		"  echo 'shim: forced one-shot branch failure' >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"exec '" + realGit + "' \"$@\"\n"
+	writeRepoGitShim(t, r.mainRoot, script)
+
+	r.s.runLaneResidueSweep(context.Background())
+
+	if r.lanePresent(path) {
+		t.Error("lane survived one-shot branch-delete failure")
+	}
+	if r.branchExists(t, id) {
+		t.Error("sweep 2 did not collect sweep 1's orphaned branch")
+	}
+	if _, err := worktree.ReadSidecar(r.metaDir(t, r.canonicalMain(t)), id); err == nil {
+		t.Error("sweep 2 did not collect sweep 1's orphaned sidecar")
 	}
 }
 

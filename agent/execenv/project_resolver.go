@@ -54,7 +54,18 @@ func (r *projectResolver) Abs(path string) (string, error) {
 
 func (r *projectResolver) EvalSymlinks(path string) (string, error) {
 	if _, local := r.env.(*LocalExecutionEnvironment); local {
-		return filepath.EvalSymlinks(path)
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return "", err
+		}
+		info, err := os.Stat(resolved)
+		if err != nil {
+			return "", err
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("%q is not a directory", resolved)
+		}
+		return resolved, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), gitExecTimeout)
 	defer cancel()
