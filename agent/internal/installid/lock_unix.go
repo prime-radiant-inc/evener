@@ -31,7 +31,7 @@ func acquireInstallationIDFileLock(path string) (installationIDLock, bool, error
 		return closeOnError(fmt.Errorf("stat installation ID lock: %w", err))
 	}
 	if !info.Mode().IsRegular() {
-		return closeOnError(fmt.Errorf("installation ID lock is not a regular file"))
+		return closeOnError(errors.New("installation ID lock is not a regular file"))
 	}
 	if err := file.Chmod(0o600); err != nil {
 		return closeOnError(fmt.Errorf("secure installation ID lock: %w", err))
