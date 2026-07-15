@@ -146,7 +146,7 @@ await scenario("append 3 tasks", [
   return { ok: true };
 });
 
-// 2. Multi-update in one call collapses to one prose summary on the card.
+// 2. Multi-update in one call renders only the changed rows on the card.
 //    Descriptions are seeded via the STEERING full-list (the realistic
 //    post-compaction path where the daemon emits the full task table).
 await scenario("multi-update in one call (descriptions seeded via full-list)", [
