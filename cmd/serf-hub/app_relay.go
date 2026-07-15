@@ -91,7 +91,7 @@ var observeHubRelayWait func()
 
 func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) hubRelayFunctions {
 	relayIdleInterval := hubRelayIdleInterval
-	var retryClock relayRetryClock = newRelayRetryClock()
+	retryClock := newRelayRetryClock()
 	if cfg.RelayHooks.RetryWait != nil {
 		retryClock = relayRetryClockFunc(cfg.RelayHooks.RetryWait)
 	}

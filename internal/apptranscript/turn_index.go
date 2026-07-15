@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -237,13 +238,6 @@ func observeIndexRead(stats ReadStats) {
 	if observer != nil {
 		observer(stats)
 	}
-}
-
-func turnIndexReadObserverInstalled() bool {
-	observeTurnIndexReadMu.RLock()
-	installed := observeTurnIndexRead != nil
-	observeTurnIndexReadMu.RUnlock()
-	return installed
 }
 
 func (d turnIndexDisk) logicalTurnCount() int {
@@ -630,8 +624,8 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 				var call transcript.APICall
 				if json.Unmarshal(line, &call) == nil {
 					if index.FirstCall == nil {
-						copy := call
-						index.FirstCall = &copy
+						firstCall := call
+						index.FirstCall = &firstCall
 					}
 					if strings.TrimSpace(call.Error) != "" {
 						entryIndex++
@@ -922,7 +916,7 @@ func readTurnIndexWithJournal(path string) (turnIndexDisk, error) {
 		return turnIndexDisk{}, err
 	}
 	if index.IntegrityStamp == "" || index.IntegrityStamp != turnIndexIntegrityStamp(index) {
-		return turnIndexDisk{}, fmt.Errorf("invalid base index integrity")
+		return turnIndexDisk{}, errors.New("invalid base index integrity")
 	}
 	journal, err := os.Open(path + ".journal")
 	if err != nil {
@@ -952,11 +946,11 @@ func readTurnIndexWithJournal(path string) (turnIndexDisk, error) {
 		}
 		if frame.Version != turnIndexJournalVersion || frame.PreviousStamp != index.IntegrityStamp ||
 			frame.IntegrityStamp == "" || frame.IntegrityStamp != turnIndexJournalStamp(frame) {
-			return turnIndexDisk{}, fmt.Errorf("invalid index journal integrity chain")
+			return turnIndexDisk{}, errors.New("invalid index journal integrity chain")
 		}
 		if frame.TranscriptSize < index.TranscriptSize || frame.CompleteSize < index.CompleteSize ||
 			frame.MaxLineBytes != index.MaxLineBytes || frame.ProjectionID != index.ProjectionID {
-			return turnIndexDisk{}, fmt.Errorf("invalid index journal state transition")
+			return turnIndexDisk{}, errors.New("invalid index journal state transition")
 		}
 		index.deltaRoot = joinRecordNodes(index.deltaRoot, newRecordLeaf(frame.Records))
 		index.TranscriptSize = frame.TranscriptSize
@@ -981,7 +975,7 @@ func readTurnIndexWithJournal(path string) (turnIndexDisk, error) {
 func appendTurnIndexJournal(path string, previous turnIndexDisk, index *turnIndexDisk, stats *ReadStats) error {
 	previousCount := previous.recordCount()
 	if previousCount > index.recordCount() {
-		return fmt.Errorf("index journal record count regressed")
+		return errors.New("index journal record count regressed")
 	}
 	records := make([]indexedTurn, index.recordCount()-previousCount)
 	for i := range records {
@@ -1269,33 +1263,10 @@ func projectionIdentity(project BoundedEntryProjector) string {
 	return fmt.Sprintf("turn-index-v%d:%s", turnIndexVersion, name)
 }
 
-func cloneTurnIndex(index turnIndexDisk) turnIndexDisk {
-	return cloneTurnIndexObserved(index, nil)
-}
-
 func cloneTurnIndexForAppend(index turnIndexDisk) turnIndexDisk {
 	if index.FirstCall != nil {
-		copy := *index.FirstCall
-		index.FirstCall = &copy
-	}
-	return index
-}
-
-func cloneTurnIndexObserved(index turnIndexDisk, stats *ReadStats) turnIndexDisk {
-	if stats != nil && turnIndexReadObserverInstalled() {
-		if data, err := json.Marshal(index); err == nil {
-			stats.indexBytesCopied += int64(len(data))
-		}
-	}
-	index.Records = append([]indexedTurn(nil), index.Records...)
-	for i := range index.Records {
-		index.Records[i].ToolSeed = cloneToolNames(index.Records[i].ToolSeed)
-		index.Records[i].ToolChanges = append([]toolNameChange(nil), index.Records[i].ToolChanges...)
-	}
-	index.baseVisible = append([]int(nil), index.baseVisible...)
-	if index.FirstCall != nil {
-		copy := *index.FirstCall
-		index.FirstCall = &copy
+		firstCall := *index.FirstCall
+		index.FirstCall = &firstCall
 	}
 	return index
 }
