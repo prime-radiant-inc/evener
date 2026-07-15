@@ -3,6 +3,7 @@ package hubcore
 import (
 	"context"
 	"os"
+	"time"
 
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
@@ -20,6 +21,7 @@ import (
 type RelayLifecycleHooks struct {
 	IdleExit        func(threadID string)
 	AfterIdleDelete func(threadID string)
+	RetryWait       func(context.Context, time.Duration) error
 }
 
 // WebConfig is everything the web server needs.
