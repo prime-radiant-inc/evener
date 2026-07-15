@@ -253,6 +253,7 @@ const renderUnresolvedTask = (callId, taskId) => {
   tasksBeforeRead.resolve([{ id: 301, description: "Cached before transcript", status: "done" }]);
   await drainMicrotasks();
   assert.strictEqual(tasksFirstConversation.querySelector(".task-card"), null, "tasks-first fixture created a plan before readThread resolved");
+  window.SerfRendererInternal.rememberTask({ id: 301, description: "Stale panel description", status: "open" });
   readAfterTasks.resolve({
     thread: {
       id: "tasks-first-session",
@@ -311,6 +312,7 @@ const renderUnresolvedTask = (callId, taskId) => {
   renderUnresolvedTask("stable_label_task", 401);
   const stableLabel = stableLabelConversation.querySelector(".plan-step");
   assert.strictEqual(stableLabel.textContent, "#401", "stable-label fixture did not render an unresolved task placeholder");
+  assert.strictEqual(window.SerfRenderer.taskDescriptionsForRows && window.SerfRenderer.taskDescriptionsForRows.has(301), false, "renderer re-init leaked guarded task descriptions from the prior session");
   window.SerfRenderer.applyTasks([{ id: 401, description: "#402", status: "in_progress" }]);
   assert.strictEqual(stableLabel.textContent, "#402", "task 401's hash-prefixed description did not hydrate");
   window.SerfRenderer.applyTasks([{ id: 402, description: "Second task", status: "open" }]);

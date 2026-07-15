@@ -140,7 +140,7 @@
       this.liveCapabilitiesStatus = "";
       this.statusUpdateSeq = 0;
       if (!Number.isFinite(this.taskRequestGeneration)) this.taskRequestGeneration = 0;
-      if (!Number.isFinite(this.taskResponseGeneration)) this.taskResponseGeneration = 0;
+      this.taskDescriptionsForRows = new Map();
 
       this.activeMessages = new Map();   // messageId -> {el, textBuf, markdownTimer}
       this.activeTools = new Map();      // callId -> {el, outputBuf}
@@ -487,7 +487,6 @@
       return request.then((tasks) => {
         if (this.sessionId !== sessionId || this.conversation !== conversation) return;
         if (generation !== this.taskRequestGeneration) return;
-        this.taskResponseGeneration = generation;
         this.applyTasks(tasks);
       }).catch(() => {});
     },
@@ -496,6 +495,7 @@
       if (!Array.isArray(tasks)) return;
       for (const t of tasks) {
         if (t && t.id != null && t.description) {
+          this.taskDescriptionsForRows.set(Number(t.id), t.description);
           rememberTask(t);
         }
       }
@@ -4084,7 +4084,7 @@
 
     buildPlanTaskRow(task) {
       const taskID = String(task.id);
-      const cachedDescription = taskDescriptions.get(Number(task.id));
+      const cachedDescription = this.taskDescriptionsForRows.get(Number(task.id));
       const hasOwnLabel = !!(task.description || task.title);
       const rowTask = !hasOwnLabel && cachedDescription
         ? Object.assign({}, task, { description: cachedDescription })
