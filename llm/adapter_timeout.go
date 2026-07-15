@@ -41,7 +41,7 @@ func configuredAdapterTransport(base *http.Transport, at *AdapterTimeout) *http.
 	if at.Connect > 0 {
 		connectTimeout := at.Connect
 		dialContext := transport.DialContext
-		if dialContext == nil && transport.Dial == nil {
+		if dialContext == nil && transport.Dial == nil { //nolint:staticcheck // Preserve a caller-supplied legacy Dial hook rather than overriding it.
 			dialContext = (&net.Dialer{}).DialContext
 		}
 		if dialContext != nil {
@@ -110,21 +110,21 @@ func ClientWithAdapterTimeout(client *http.Client, at *AdapterTimeout) *http.Cli
 		return client
 	}
 
-	copy := *client
+	clientCopy := *client
 	base := client.Transport
 	if base == nil {
 		base = http.DefaultTransport
 	}
 	transport, ok := base.(*http.Transport)
 	if !ok {
-		return &copy
+		return &clientCopy
 	}
 	configured := configuredAdapterTransport(transport, at)
-	copy.Transport = configured
+	clientCopy.Transport = configured
 	if at.Request > 0 {
-		copy.Transport = &responseHeaderTimeoutTransport{base: configured}
+		clientCopy.Transport = &responseHeaderTimeoutTransport{base: configured}
 	}
-	return &copy
+	return &clientCopy
 }
 
 // StreamReadSSEOptions returns ParseSSE options for the StreamRead timeout.

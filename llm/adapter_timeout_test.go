@@ -269,7 +269,7 @@ func TestClientWithAdapterTimeout_PreservesDialAuthority(t *testing.T) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	transport.DialContext = nil
-	transport.Dial = func(network, address string) (net.Conn, error) {
+	transport.Dial = func(network, address string) (net.Conn, error) { //nolint:staticcheck // The test verifies legacy Dial remains caller-authoritative.
 		called <- struct{}{}
 		var dialer net.Dialer
 		return dialer.Dial(network, address)
@@ -352,7 +352,7 @@ func TestClientWithAdapterTimeout_PreservesDialTLSAuthority(t *testing.T) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	transport.DialTLSContext = nil
-	transport.DialTLS = func(string, string) (net.Conn, error) {
+	transport.DialTLS = func(string, string) (net.Conn, error) { //nolint:staticcheck // The test verifies legacy DialTLS remains caller-authoritative.
 		called <- struct{}{}
 		return nil, dialErr
 	}
