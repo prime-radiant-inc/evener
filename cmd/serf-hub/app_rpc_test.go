@@ -1924,10 +1924,81 @@ func TestHubRPCThreadReadRelayRecoveryBackoffAndReset(t *testing.T) {
 	awaitRelaySubscribeCall(t, subscribeCalls)
 	notificationsB := make(chan appwire.Notification)
 	results <- relaySubscribeResult{notifications: notificationsB}
+	notificationsB <- relayDeltaNotification(t, threadID, "recovered")
+	expectRelayDelta(t, client.Notifications(), "recovered")
 
 	close(notificationsB)
 	awaitRelaySubscribeCall(t, subscribeCalls)
 	results <- relaySubscribeResult{err: errors.New("recovery failed after success")}
+	retryClock.expectWait(t, 100*time.Millisecond)
+}
+
+func TestHubRPCThreadReadRecoveryBacksOffUnusableChannelsWithoutDroppingFirstNotification(t *testing.T) {
+	const threadID = "th_retry_unusable"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	retryClock := newScriptedRelayRetryClock()
+	source := &scriptedRelaySource{
+		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		}},
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.RetryWait = retryClock.Wait
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
+		readErr <- err
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	established := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: established}
+	select {
+	case err := <-readErr:
+		if err != nil {
+			t.Fatalf("ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial ThreadRead")
+	}
+
+	close(established)
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{notifications: nil}
+	retryClock.releaseWait(t, 100*time.Millisecond)
+
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	closed := make(chan appwire.Notification)
+	close(closed)
+	results <- relaySubscribeResult{notifications: closed}
+	retryClock.releaseWait(t, 200*time.Millisecond)
+
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	buffered := make(chan appwire.Notification, 1)
+	buffered <- relayDeltaNotification(t, threadID, "first notification")
+	close(buffered)
+	results <- relaySubscribeResult{notifications: buffered}
+	expectRelayDelta(t, client.Notifications(), "first notification")
+
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("failed after usable channel")}
 	retryClock.expectWait(t, 100*time.Millisecond)
 }
 
@@ -2041,6 +2112,110 @@ func TestHubRPCThreadReadClientCloseCancelsRelayRecoveryWait(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for replacement ThreadRead")
+	}
+}
+
+func TestHubRPCThreadReadClientCloseCancelsBlockingRecoverySubscribe(t *testing.T) {
+	const threadID = "th_blocking_recovery_cancel"
+	established := make(chan appwire.Notification)
+	replacementResults := make(chan relaySubscribeResult)
+	source := &blockingRecoveryRelaySource{
+		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		}},
+		established:        established,
+		recoveryStarted:    make(chan struct{}),
+		recoveryCanceled:   make(chan struct{}),
+		recoveryReturned:   make(chan struct{}),
+		replacementStarted: make(chan struct{}),
+		replacementResults: replacementResults,
+	}
+	idleExit := make(chan struct{})
+	afterIdleDelete := make(chan struct{})
+	var idleOnce sync.Once
+	var deleteOnce sync.Once
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.IdleExit = func(gotThreadID string) {
+		if gotThreadID == threadID {
+			idleOnce.Do(func() { close(idleExit) })
+		}
+	}
+	cfg.RelayHooks.AfterIdleDelete = func(gotThreadID string) {
+		if gotThreadID == threadID {
+			deleteOnce.Do(func() { close(afterIdleDelete) })
+		}
+	}
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	close(established)
+	select {
+	case <-source.recoveryStarted:
+	case <-time.After(time.Second):
+		t.Fatal("blocking recovery subscribe did not start")
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("client close: %v", err)
+	}
+	select {
+	case <-idleExit:
+	case <-time.After(time.Second):
+		t.Fatal("relay did not service idle tick during blocking recovery subscribe")
+	}
+	select {
+	case <-source.recoveryCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("blocking recovery source context was not canceled")
+	}
+	select {
+	case <-source.recoveryReturned:
+	case <-time.After(time.Second):
+		t.Fatal("blocking recovery subscribe was not joined")
+	}
+	select {
+	case <-afterIdleDelete:
+	case <-time.After(time.Second):
+		t.Fatal("blocking recovery relay handle was not removed")
+	}
+
+	replacementClient := dialHubRPC(t, srv)
+	defer replacementClient.Close()
+	if _, err := replacementClient.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize replacement: %v", err)
+	}
+	replacementRead := make(chan error, 1)
+	go func() {
+		_, err := replacementClient.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
+		replacementRead <- err
+	}()
+	select {
+	case <-source.replacementStarted:
+	case <-time.After(time.Second):
+		t.Fatal("fresh replacement relay did not subscribe")
+	}
+	replacementNotifications := make(chan appwire.Notification)
+	replacementResults <- relaySubscribeResult{notifications: replacementNotifications}
+	select {
+	case err := <-replacementRead:
+		if err != nil {
+			t.Fatalf("replacement ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fresh replacement relay did not become ready")
 	}
 }
 
@@ -2243,6 +2418,182 @@ func TestHubRelayCanceledRecoveryDoesNotSubscribeAgain(t *testing.T) {
 	case <-subscribeCalls:
 		t.Fatal("canceled relay supervisor subscribed again")
 	default:
+	}
+}
+
+func TestHubRelayStopDuringInitializationCancelsSharedHandleAndAllowsFreshStart(t *testing.T) {
+	const threadID = "th_stop_initializing"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	source := &scriptedRelaySource{
+		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		}},
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	placeholderPublished := make(chan struct{})
+	releaseInitializer := make(chan struct{})
+	var placeholderOnce sync.Once
+	cfg := hubcore.WebConfig{}
+	cfg.RelayHooks.AfterPlaceholder = func(gotThreadID string) {
+		if gotThreadID == threadID {
+			placeholderOnce.Do(func() { close(placeholderPublished) })
+			<-releaseInitializer
+		}
+	}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
+	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+
+	startResults := make(chan error, 2)
+	go func() {
+		startResults <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
+	}()
+	select {
+	case <-placeholderPublished:
+	case <-time.After(time.Second):
+		t.Fatal("initial relay placeholder was not published")
+	}
+	waiterJoined := make(chan struct{}, 1)
+	previousObserveWait := observeHubRelayWait
+	observeHubRelayWait = func() { waiterJoined <- struct{}{} }
+	defer func() { observeHubRelayWait = previousObserveWait }()
+	go func() {
+		startResults <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
+	}()
+	select {
+	case <-waiterJoined:
+	case <-time.After(time.Second):
+		t.Fatal("concurrent initializer did not join shared relay handle")
+	}
+
+	relays.stopRelay("codex:" + threadID)
+	select {
+	case err := <-startResults:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("shared stop error=%v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		close(releaseInitializer)
+		awaitRelaySubscribeCall(t, subscribeCalls)
+		initial := make(chan appwire.Notification)
+		results <- relaySubscribeResult{notifications: initial}
+		t.Fatal("stopRelay did not unblock initialization waiter")
+	}
+	close(releaseInitializer)
+	select {
+	case err := <-startResults:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("initial owner stop error=%v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("initial relay owner did not return shared cancellation")
+	}
+	select {
+	case <-subscribeCalls:
+		t.Fatal("canceled placeholder entered initial SubscribeThread")
+	default:
+	}
+
+	observeHubRelayWait = previousObserveWait
+	freshResult := make(chan error, 1)
+	go func() {
+		freshResult <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	freshNotifications := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: freshNotifications}
+	select {
+	case err := <-freshResult:
+		if err != nil {
+			t.Fatalf("fresh start after initialization stop: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fresh relay did not become ready after initialization stop")
+	}
+}
+
+func TestHubRelayStopImmediatelyAfterReadinessAllowsFreshStart(t *testing.T) {
+	const threadID = "th_stop_ready"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	source := &scriptedRelaySource{
+		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		}},
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	readyReached := make(chan struct{})
+	releaseReady := make(chan struct{})
+	blockFirstReady := make(chan struct{}, 1)
+	blockFirstReady <- struct{}{}
+	cfg := hubcore.WebConfig{}
+	cfg.RelayHooks.AfterReady = func(gotThreadID string) {
+		if gotThreadID != threadID {
+			return
+		}
+		select {
+		case <-blockFirstReady:
+			close(readyReached)
+			<-releaseReady
+		default:
+		}
+	}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
+	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+	initialResult := make(chan error, 1)
+	go func() {
+		initialResult <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	initialNotifications := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: initialNotifications}
+	select {
+	case <-readyReached:
+	case <-time.After(time.Second):
+		t.Fatal("initial relay did not reach readiness boundary")
+	}
+
+	relays.stopRelay("codex:" + threadID)
+	freshResult := make(chan error, 1)
+	go func() {
+		freshResult <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
+	}()
+	select {
+	case <-subscribeCalls:
+	case err := <-freshResult:
+		close(releaseReady)
+		t.Fatalf("fresh start returned without subscribing after ready stop: %v", err)
+	case <-time.After(time.Second):
+		close(releaseReady)
+		t.Fatal("fresh start did not replace ready stopped relay")
+	}
+	freshNotifications := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: freshNotifications}
+	select {
+	case err := <-freshResult:
+		if err != nil {
+			t.Fatalf("fresh start after ready stop: %v", err)
+		}
+	case <-time.After(time.Second):
+		close(releaseReady)
+		t.Fatal("fresh relay did not become ready after ready stop")
+	}
+	close(releaseReady)
+	select {
+	case err := <-initialResult:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("initial ready relay stop error=%v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("initial ready start did not return shared cancellation")
 	}
 }
 
@@ -2451,6 +2802,96 @@ func TestHubRPCThreadReadKeepsRelayWhenSubscriberArrivesDuringIdleRetirement(t *
 		t.Fatal("relay was canceled despite a new subscriber")
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for notification after idle-race subscriber")
+	}
+}
+
+func TestHubRPCThreadReadSerializesRereadRegistrationAgainstIdleRetirement(t *testing.T) {
+	const threadID = "th_join_idle"
+	source := &relayBroadcastSource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 1),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	reregistrationReached := make(chan struct{})
+	releaseReregistration := make(chan struct{})
+	idleReached := make(chan struct{})
+	var registrationOnce sync.Once
+	var idleOnce sync.Once
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.BeforeExistingRegistration = func(gotThreadID string) {
+		if gotThreadID == threadID {
+			registrationOnce.Do(func() {
+				close(reregistrationReached)
+				<-releaseReregistration
+			})
+		}
+	}
+	cfg.RelayHooks.IdleExit = func(gotThreadID string) {
+		if gotThreadID == threadID {
+			idleOnce.Do(func() { close(idleReached) })
+		}
+	}
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client1 := dialHubRPC(t, srv)
+	if _, err := client1.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize client1: %v", err)
+	}
+	if _, err := client1.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead client1: %v", err)
+	}
+	expectRelaySubscription(t, source.subscribed)
+
+	client2 := dialHubRPC(t, srv)
+	defer client2.Close()
+	if _, err := client2.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize client2: %v", err)
+	}
+	rereadResult := make(chan error, 1)
+	go func() {
+		_, err := client2.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
+		rereadResult <- err
+	}()
+	select {
+	case <-reregistrationReached:
+	case <-time.After(time.Second):
+		t.Fatal("reread did not reach post-ready pre-registration boundary")
+	}
+	if err := client1.Close(); err != nil {
+		t.Fatalf("client1 close: %v", err)
+	}
+	select {
+	case <-idleReached:
+	case <-time.After(time.Second):
+		t.Fatal("relay did not reach idle retirement while reread registration paused")
+	}
+	close(releaseReregistration)
+	select {
+	case err := <-rereadResult:
+		if err != nil {
+			t.Fatalf("reread ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reread registration did not complete")
+	}
+
+	source.notifications <- relayDeltaNotification(t, threadID, "joined before idle delete")
+	expectRelayDelta(t, client2.Notifications(), "joined before idle delete")
+	select {
+	case <-source.canceled:
+		t.Fatal("idle retirement canceled relay after serialized reread registration")
+	default:
 	}
 }
 
@@ -2763,6 +3204,45 @@ type scriptedRelaySource struct {
 	id             string
 	results        <-chan relaySubscribeResult
 	subscribeCalls chan<- struct{}
+}
+
+type blockingRecoveryRelaySource struct {
+	relayLifecycleSource
+	mu                 sync.Mutex
+	calls              int
+	established        <-chan appwire.Notification
+	recoveryStarted    chan struct{}
+	recoveryCanceled   chan struct{}
+	recoveryReturned   chan struct{}
+	replacementStarted chan struct{}
+	replacementResults <-chan relaySubscribeResult
+}
+
+func (s *blockingRecoveryRelaySource) SubscribeThread(ctx context.Context, _ appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
+	s.mu.Lock()
+	s.calls++
+	call := s.calls
+	s.mu.Unlock()
+	switch call {
+	case 1:
+		return s.established, nil
+	case 2:
+		close(s.recoveryStarted)
+		<-ctx.Done()
+		close(s.recoveryCanceled)
+		close(s.recoveryReturned)
+		return nil, ctx.Err()
+	default:
+		if call == 3 {
+			close(s.replacementStarted)
+		}
+		select {
+		case result := <-s.replacementResults:
+			return result.notifications, result.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 }
 
 func (s *scriptedRelaySource) ID() string {

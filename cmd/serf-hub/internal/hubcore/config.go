@@ -19,9 +19,12 @@ import (
 // WebConfig at construction (never mutated after a relay goroutine starts), so
 // each hub server instance carries its own — no shared global, no data race.
 type RelayLifecycleHooks struct {
-	IdleExit        func(threadID string)
-	AfterIdleDelete func(threadID string)
-	RetryWait       func(context.Context, time.Duration) error
+	IdleExit                   func(threadID string)
+	AfterIdleDelete            func(threadID string)
+	RetryWait                  func(context.Context, time.Duration) error
+	AfterPlaceholder           func(threadID string)
+	AfterReady                 func(threadID string)
+	BeforeExistingRegistration func(threadID string)
 }
 
 // WebConfig is everything the web server needs.

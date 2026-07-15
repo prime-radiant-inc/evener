@@ -97,6 +97,15 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	}
 	var relayMu sync.Mutex
 	relayedThreads := map[string]*hubRelayHandle{}
+	finishHandleLocked := func(handle *hubRelayHandle, err error) {
+		select {
+		case <-handle.ready:
+			handle.err = err
+		default:
+			handle.err = err
+			close(handle.ready)
+		}
+	}
 	startRelay := func(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams, thread appwire.Thread) error {
 		threadID := thread.ID
 		if threadID == "" {
@@ -112,14 +121,20 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			subscribeParams.Ref = appwire.Ref{SourceID: source.ID(), ThreadID: threadID}.String()
 		}
 
+		var relayCtx context.Context
 		var relayHandle *hubRelayHandle
+		var cancelRelay context.CancelFunc
 		for {
 			relayMu.Lock()
 			existing := relayedThreads[relayKey]
 			if existing == nil {
-				relayHandle = &hubRelayHandle{ready: make(chan struct{})}
+				relayCtx, cancelRelay = context.WithCancel(context.WithoutCancel(ctx))
+				relayHandle = &hubRelayHandle{ready: make(chan struct{}), cancel: cancelRelay}
 				relayedThreads[relayKey] = relayHandle
 				relayMu.Unlock()
+				if cfg.RelayHooks.AfterPlaceholder != nil {
+					cfg.RelayHooks.AfterPlaceholder(threadID)
+				}
 				break
 			}
 			ready := existing.ready
@@ -137,24 +152,34 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			relayMu.Lock()
 			active := relayedThreads[relayKey] == existing
 			err := existing.err
-			relayMu.Unlock()
 			if active && err == nil {
+				if cfg.RelayHooks.BeforeExistingRegistration != nil {
+					cfg.RelayHooks.BeforeExistingRegistration(threadID)
+				}
 				if subscribeParams.ReplaceSubscription {
 					appserver.ReplaceSubscriptions(ctx, relayKey)
 				} else {
 					appserver.Subscribe(ctx, relayKey)
 				}
+				relayMu.Unlock()
 				return nil
 			}
+			relayMu.Unlock()
 			if err != nil {
 				return err
 			}
 		}
 
-		relayCtx, cancelRelay := context.WithCancel(context.WithoutCancel(ctx))
 		relayMu.Lock()
-		relayHandle.cancel = cancelRelay
+		active := relayedThreads[relayKey] == relayHandle && relayCtx.Err() == nil
+		err := relayHandle.err
 		relayMu.Unlock()
+		if !active {
+			if err == nil {
+				err = context.Canceled
+			}
+			return err
+		}
 		notifications, err := source.SubscribeThread(relayCtx, subscribeParams)
 		if err != nil {
 			cancelRelay()
@@ -162,9 +187,22 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			if relayedThreads[relayKey] == relayHandle {
 				delete(relayedThreads, relayKey)
 			}
-			relayHandle.err = err
-			close(relayHandle.ready)
+			if relayHandle.err != nil {
+				err = relayHandle.err
+			}
+			finishHandleLocked(relayHandle, err)
 			relayMu.Unlock()
+			return err
+		}
+		relayMu.Lock()
+		if relayedThreads[relayKey] != relayHandle || relayCtx.Err() != nil {
+			err = relayHandle.err
+			if err == nil {
+				err = context.Canceled
+			}
+			finishHandleLocked(relayHandle, err)
+			relayMu.Unlock()
+			cancelRelay()
 			return err
 		}
 		if subscribeParams.ReplaceSubscription {
@@ -172,9 +210,22 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		} else {
 			appserver.Subscribe(ctx, relayKey)
 		}
-		relayMu.Lock()
-		close(relayHandle.ready)
+		finishHandleLocked(relayHandle, nil)
 		relayMu.Unlock()
+		if cfg.RelayHooks.AfterReady != nil {
+			cfg.RelayHooks.AfterReady(threadID)
+		}
+		relayMu.Lock()
+		active = relayedThreads[relayKey] == relayHandle && relayCtx.Err() == nil
+		err = relayHandle.err
+		relayMu.Unlock()
+		if !active {
+			if err == nil {
+				err = context.Canceled
+			}
+			cancelRelay()
+			return err
+		}
 		go func() {
 			ticker := time.NewTicker(relayIdleInterval)
 			cleanupRelay := func() {
@@ -189,6 +240,13 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			defer cleanupRelay()
 			argsByCallID := map[string]string{}
 			var backoff relayRetryBackoff
+			broadcastNotification := func(notification appwire.Notification) {
+				backoff.Reset()
+				if source.ID() == "local" {
+					notification = enrichOutputImageNotification(thread.SessionID, thread.CWD, argsByCallID, notification)
+				}
+				server.Broadcast(relayKey, notification.Method, notification.Params)
+			}
 			retireIfIdle := func() bool {
 				if server.SubscriberCount(relayKey) != 0 {
 					return false
@@ -235,20 +293,63 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					}
 				}
 			}
+			type subscribeResult struct {
+				notifications <-chan appwire.Notification
+				err           error
+			}
+			subscribeForRecovery := func() (subscribeResult, bool) {
+				result := make(chan subscribeResult, 1)
+				go func() {
+					notifications, err := subscribeRelayRecovery(relayCtx, source, subscribeParams)
+					result <- subscribeResult{notifications: notifications, err: err}
+				}()
+				for {
+					select {
+					case got := <-result:
+						return got, false
+					case <-relayCtx.Done():
+						return <-result, true
+					case <-ticker.C:
+						if retireIfIdle() {
+							return <-result, true
+						}
+					}
+				}
+			}
 			for {
 				if relayCtx.Err() != nil {
 					return
 				}
 				if notifications == nil {
-					next, err := subscribeRelayRecovery(relayCtx, source, subscribeParams)
-					if err != nil {
+					result, stopped := subscribeForRecovery()
+					if stopped {
+						return
+					}
+					if result.err != nil {
 						if waitForRetry(backoff.Next()) {
 							return
 						}
 						continue
 					}
-					notifications = next
-					backoff.Reset()
+					if result.notifications == nil {
+						if waitForRetry(backoff.Next()) {
+							return
+						}
+						continue
+					}
+					select {
+					case notification, ok := <-result.notifications:
+						if !ok {
+							if waitForRetry(backoff.Next()) {
+								return
+							}
+							continue
+						}
+						broadcastNotification(notification)
+					default:
+						backoff.Reset()
+					}
+					notifications = result.notifications
 				}
 				select {
 				case <-relayCtx.Done():
@@ -262,11 +363,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						notifications = nil
 						continue
 					}
-					backoff.Reset()
-					if source.ID() == "local" {
-						notification = enrichOutputImageNotification(thread.SessionID, thread.CWD, argsByCallID, notification)
-					}
-					server.Broadcast(relayKey, notification.Method, notification.Params)
+					broadcastNotification(notification)
 				}
 			}
 		}()
@@ -318,6 +415,8 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		handle := relayedThreads[key]
 		var cancel context.CancelFunc
 		if handle != nil {
+			delete(relayedThreads, key)
+			finishHandleLocked(handle, context.Canceled)
 			cancel = handle.cancel
 		}
 		relayMu.Unlock()
