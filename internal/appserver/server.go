@@ -15,11 +15,13 @@ type ServerConfig struct {
 }
 
 type Server struct {
-	cfg    ServerConfig
-	router *Router
-	subs   *Subscriptions
-	mu     sync.RWMutex
-	conns  map[string]*Connection
+	cfg                            ServerConfig
+	router                         *Router
+	subs                           *Subscriptions
+	mu                             sync.RWMutex
+	conns                          map[string]*Connection
+	afterUnregisterDelete          func()
+	beforeSubscriptionRegistration func()
 }
 
 func NewServer(cfg ServerConfig) *Server {
@@ -55,8 +57,11 @@ func (s *Server) unregisterConnection(id string) {
 		conn.cancelContext()
 		conn.closeSend()
 	}
-	s.mu.Unlock()
+	if s.afterUnregisterDelete != nil {
+		s.afterUnregisterDelete()
+	}
 	s.subs.RemoveConnection(id)
+	s.mu.Unlock()
 }
 
 func (s *Server) Broadcast(threadID, method string, params any) {
@@ -222,20 +227,43 @@ func (c *Connection) handleNotification(notification appwire.Notification) appwi
 
 type connectionContextKey struct{}
 
-func Subscribe(ctx context.Context, threadID string) {
-	conn, ok := ctx.Value(connectionContextKey{}).(*Connection)
-	if !ok || conn == nil || threadID == "" {
-		return
-	}
-	conn.Subscribe(threadID)
-}
-
-func ReplaceSubscriptions(ctx context.Context, threadID string) {
+func Subscribe(ctx context.Context, threadID string) bool {
 	conn, ok := ctx.Value(connectionContextKey{}).(*Connection)
 	if !ok || conn == nil {
-		return
+		return true
 	}
-	conn.ReplaceSubscriptions(threadID)
+	if threadID == "" {
+		return false
+	}
+	server := conn.server
+	if server.beforeSubscriptionRegistration != nil {
+		server.beforeSubscriptionRegistration()
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if server.conns[conn.id] != conn {
+		return false
+	}
+	server.subs.Subscribe(conn.id, threadID)
+	return true
+}
+
+func ReplaceSubscriptions(ctx context.Context, threadID string) bool {
+	conn, ok := ctx.Value(connectionContextKey{}).(*Connection)
+	if !ok || conn == nil {
+		return true
+	}
+	server := conn.server
+	if server.beforeSubscriptionRegistration != nil {
+		server.beforeSubscriptionRegistration()
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if server.conns[conn.id] != conn {
+		return false
+	}
+	server.subs.ReplaceConnectionSubscriptions(conn.id, threadID)
+	return true
 }
 
 func Notify(ctx context.Context, method string, params any) {

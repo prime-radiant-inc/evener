@@ -95,6 +95,15 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	if cfg.RelayHooks.RetryWait != nil {
 		retryClock = relayRetryClockFunc(cfg.RelayHooks.RetryWait)
 	}
+	registerSubscription := func(ctx context.Context, relayKey string, replace bool) bool {
+		if cfg.RelayHooks.RegisterSubscription != nil {
+			return cfg.RelayHooks.RegisterSubscription(ctx, relayKey, replace)
+		}
+		if replace {
+			return appserver.ReplaceSubscriptions(ctx, relayKey)
+		}
+		return appserver.Subscribe(ctx, relayKey)
+	}
 	var relayMu sync.Mutex
 	relayedThreads := map[string]*hubRelayHandle{}
 	finishHandleLocked := func(handle *hubRelayHandle, err error) {
@@ -156,10 +165,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				if cfg.RelayHooks.BeforeExistingRegistration != nil {
 					cfg.RelayHooks.BeforeExistingRegistration(threadID)
 				}
-				if subscribeParams.ReplaceSubscription {
-					appserver.ReplaceSubscriptions(ctx, relayKey)
-				} else {
-					appserver.Subscribe(ctx, relayKey)
+				if !registerSubscription(ctx, relayKey, subscribeParams.ReplaceSubscription) {
+					relayMu.Unlock()
+					return context.Canceled
 				}
 				relayMu.Unlock()
 				return nil
@@ -205,10 +213,13 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			cancelRelay()
 			return err
 		}
-		if subscribeParams.ReplaceSubscription {
-			appserver.ReplaceSubscriptions(ctx, relayKey)
-		} else {
-			appserver.Subscribe(ctx, relayKey)
+		if !registerSubscription(ctx, relayKey, subscribeParams.ReplaceSubscription) {
+			delete(relayedThreads, relayKey)
+			err = context.Canceled
+			finishHandleLocked(relayHandle, err)
+			relayMu.Unlock()
+			cancelRelay()
+			return err
 		}
 		finishHandleLocked(relayHandle, nil)
 		relayMu.Unlock()
@@ -225,6 +236,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			}
 			cancelRelay()
 			return err
+		}
+		if cfg.RelayHooks.BeforeSupervisor != nil {
+			cfg.RelayHooks.BeforeSupervisor(threadID)
 		}
 		go func() {
 			ticker := time.NewTicker(relayIdleInterval)

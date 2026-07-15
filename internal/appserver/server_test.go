@@ -233,3 +233,113 @@ func TestReplaceSubscriptionsScopesConnectionToLatestThread(t *testing.T) {
 		t.Fatal("connection was not subscribed to new thread")
 	}
 }
+
+func TestContextSubscriptionRegistrationRejectsRemovedConnection(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		register func(context.Context, string) bool
+	}{
+		{name: "subscribe", register: Subscribe},
+		{name: "replace", register: ReplaceSubscriptions},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+			conn := server.NewConnection("conn-removed")
+			server.registerConnection(conn)
+			ctx := context.WithValue(context.Background(), connectionContextKey{}, conn)
+			server.unregisterConnection(conn.ID())
+
+			if tc.register(ctx, "th_after_remove") {
+				t.Fatal("registration succeeded for removed connection")
+			}
+			if got := server.SubscriberCount("th_after_remove"); got != 0 {
+				t.Fatalf("subscriber count=%d, want no phantom subscriber", got)
+			}
+		})
+	}
+}
+
+func TestContextSubscriptionRegistrationWithoutConnectionRemainsNoop(t *testing.T) {
+	if !Subscribe(context.Background(), "th_no_connection") {
+		t.Fatal("Subscribe without connection should preserve no-op success")
+	}
+	if !ReplaceSubscriptions(context.Background(), "th_no_connection") {
+		t.Fatal("ReplaceSubscriptions without connection should preserve no-op success")
+	}
+}
+
+func TestContextSubscriptionRegistrationSerializesWithConnectionTeardown(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		register func(context.Context, string) bool
+	}{
+		{name: "subscribe", register: Subscribe},
+		{name: "replace", register: ReplaceSubscriptions},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+			conn := server.NewConnection("conn-race")
+			server.registerConnection(conn)
+			conn.Subscribe("th_old")
+			ctx := context.WithValue(context.Background(), connectionContextKey{}, conn)
+
+			connectionDeleted := make(chan struct{})
+			registrationAttempted := make(chan struct{})
+			releaseTeardown := make(chan struct{})
+			server.afterUnregisterDelete = func() {
+				close(connectionDeleted)
+				<-registrationAttempted
+				<-releaseTeardown
+			}
+			server.beforeSubscriptionRegistration = func() {
+				close(registrationAttempted)
+			}
+
+			teardownDone := make(chan struct{})
+			go func() {
+				server.unregisterConnection(conn.ID())
+				close(teardownDone)
+			}()
+			select {
+			case <-connectionDeleted:
+			case <-time.After(time.Second):
+				t.Fatal("connection teardown did not reach registry deletion")
+			}
+
+			registrationResult := make(chan bool, 1)
+			go func() {
+				registrationResult <- tc.register(ctx, "th_new")
+			}()
+			select {
+			case <-registrationAttempted:
+			case <-time.After(time.Second):
+				t.Fatal("subscription registration did not reach teardown interleaving")
+			}
+			select {
+			case result := <-registrationResult:
+				t.Fatalf("registration returned before connection-registry teardown unlocked: %v", result)
+			default:
+			}
+			close(releaseTeardown)
+			select {
+			case <-teardownDone:
+			case <-time.After(time.Second):
+				t.Fatal("connection teardown did not complete")
+			}
+			select {
+			case result := <-registrationResult:
+				if result {
+					t.Fatal("registration succeeded after connection-registry deletion")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("subscription registration did not return after teardown")
+			}
+			if got := server.SubscriberCount("th_old"); got != 0 {
+				t.Fatalf("old subscriber count=%d, want teardown cleanup", got)
+			}
+			if got := server.SubscriberCount("th_new"); got != 0 {
+				t.Fatalf("new subscriber count=%d, want no phantom subscriber", got)
+			}
+		})
+	}
+}
