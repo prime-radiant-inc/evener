@@ -127,6 +127,7 @@ func TestSeqAdapter_PromotesDeterministicFailure(t *testing.T) {
 	f := seqOracleRun(ops, boomTable, registrar)
 	if f == nil {
 		t.Fatal("expected a panic failure when a dispatched handler panics")
+		return
 	}
 	if f.Oracle != promoter.Panic {
 		t.Fatalf("oracle = %v, want Panic", f.Oracle)
